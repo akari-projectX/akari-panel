@@ -40,10 +40,12 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   writes an agent bootstrap file.
 - Agent dials out (TLS 1.3, client cert = node identity), sends `Hello` with
   its held config/user versions; node flips to `online`, versions recorded.
-- Panel pushes a `ConfigSnapshot` (xray inbounds + full user set); the agent
-  starts an embedded xray-core and applies users via dynamic `AddUser` — no
-  restart, no reload. Disabling a user via the API propagates to connected
-  agents within a second.
+- Panel pushes a `ConfigSnapshot` (xray inbounds + full user set) when the
+  inbounds change or the agent's state is unknown, and a `UserDelta`
+  (base/target versions, REPLACE semantics) when only the user set changed:
+  adding, disabling or rotating one user never rebuilds xray, and only that
+  user's live connections are closed. Disabling a user via the API
+  propagates to connected agents within a second.
 - Heartbeats (15s) land in Valkey; traffic counters (10s polls) flow to the
   panel where deltas are applied idempotently against a session-scoped
   baseline.
@@ -137,10 +139,30 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   identity; the protocol itself carries no credentials. Agent keys are
   panel-issued in v1 (CSR enrollment is the planned upgrade).
 - **Convergence**: the panel is the source of truth. Every node state has a
-  monotonically increasing `config_version`/`user_version`; any mismatch on
-  Hello, Ack, or a change notification triggers a full snapshot, so agents
-  converge from any state (including panel rollbacks) without a diff
-  protocol.
+  monotonically increasing `config_version`/`user_version`. A mismatch on
+  Hello, Ack, or a change notification is repaired with a `UserDelta` if the
+  panel knows (this session) the exact user set the agent runs and only
+  users changed, otherwise with a full snapshot, so agents converge from any
+  state (including panel rollbacks). Deltas carry base and target versions:
+  the agent applies one only on top of its base, answers a resend of the
+  target as a no-op, and rejects anything else with `BASE_MISMATCH` (the
+  panel then sends a snapshot at once). Hello and every Ack carry a state
+  hash of what the agent actually runs (see `proto/agent.proto`, shared test
+  vectors in `proto/state_hash_vectors.json`); a mismatch is repaired with a
+  snapshot.
+- **Control protocol revisions**: agents send `Hello.protocol_version`
+  (current: 1). Agents below the panel's `MIN_AGENT_PROTOCOL` (e.g. old
+  agents that send 0) are still accepted but served the empty state (no
+  inbounds, no users) and flagged in the node's `last_error` /
+  `agent_protocol`. **Rollout: upgrade agents before the panel.**
+- **Fail-closed lease**: after every successful read of a node's desired
+  state (initial sync, every 60 s reconcile) the panel grants the agent a
+  lease (`grpc.lease_seconds`, default 24 h). An agent that gets no grant for
+  that long (panel unreachable, or panel up but its database down) stops
+  xray, forgets its versions and reports the final counters after it
+  reconnects. The agent measures the lease on CLOCK_BOOTTIME (suspend does
+  not extend it), clamps it to >= 1 h and only arms it after the first
+  grant (older panels never arm it). Node view: `lease_remaining_seconds`.
 - **Traffic accounting**: agents report *cumulative* per-user counters; the
   agent tags each report with the session (xray instance lifetime) the
   counters belong to. The panel keeps the high-water mark per

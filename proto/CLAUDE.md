@@ -8,7 +8,14 @@
 3. `make -C ../akari-agent sync-proto`（拷贝 + `buf generate`），再 `check-proto` 确认无漂移。
 4. 两侧代码一起改，跑 `make smoke`。
 
-语义要点：
-- `Hello.session_id` 应在 agent 计数器重置（xray 实例重建）后更新；面板用它重置流量基线。**目前 agent 重建后不会重发 Hello**（见 REVIEW）。
-- `ConfigSnapshot` 是完整期望状态；`UserDelta` 已定义但面板从未发送。
+agent 仓库的 `make sync-proto`/`check-proto` 写死 `../akari-panel`；在 worktree 里要手工 `cp` + `buf generate proto` + `diff`。
+`state_hash_vectors.json` 也要同步到 agent 的 `proto/`（两边测试都读本地副本）。
+
+语义要点（完整定义见 proto 注释）：
+- `TrafficReport.session_id` 是计费键（与计数原子读取）；Hello 的 session 仅供展示/日志。
+- `Hello.protocol_version`：当前 1；旧 agent 不发 = 0。面板 `MIN_AGENT_PROTOCOL` 以下给空状态并标记，不拒绝连接。**先升级 agent 再升级面板**；改协议语义时加版本号并更新两侧常量。
+- `ConfigSnapshot` 是完整期望状态；`UserDelta` 带 base/target：持有 == base 才应用，持有 == target 按 no-op ack，其余 `BASE_MISMATCH`；delta 不改 config_version。`UserOp.ADD` = REPLACE（恰好列出的 inbound，旧/轮换凭据的活连接被断开）。
+- `Ack.reason`（OK / APPLY_FAILED / BASE_MISMATCH）+ `held_*`（处理后 agent 实际持有）+ `state_hash`。
+- State hash：SHA-256，`"akari-state-v1\n"` + u64be(config_version) + 按 (user_id, tag) 字节序的长度前缀四元组；account_json **原样**参与（面板用 serde_json 紧凑+键排序输出，agent 不重新序列化）。
+- `LeaseGrant`：面板读库成功后才发；agent 用 CLOCK_BOOTTIME、0=24h、≥1h、只接受当前流；到期拆 xray、持有版本归 (0,0)、最终计数留待重连上报。`Heartbeat.lease_remaining_seconds` 未武装时不设置。
 - gRPC 方法名不可叫 `Connect`（与 tonic 客户端构造函数撞名）。

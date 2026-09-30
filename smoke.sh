@@ -120,6 +120,7 @@ SUB_TOKEN=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'
     -d '{"inbound_tag":"in-vless","protocol":"vless"}')" = "201" ] \
   || { echo "FAIL: assign account failed"; cat /tmp/akari-smoke/last; exit 1; }
 grep -q '"flow":""' /tmp/akari-smoke/last || { echo "FAIL: generated vless account missing"; cat /tmp/akari-smoke/last; exit 1; }
+VLESS_A=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['account']['id'])")
 echo "api setup: ok (user $USER_ID on node $NODE_ID)"
 
 echo "== subscription =="
@@ -155,13 +156,14 @@ sleep 3
 grep -q '"users":0' "$LOG/agent.log" || { echo "FAIL: agent did not converge to empty user set"; cat "$LOG/agent.log"; exit 1; }
 
 # --- Sprint 2: "disable means disabled" -----------------------------------
-# Last applied snapshot's user count must reach $1 within $2 seconds.
+# The user count the agent last applied (snapshot or delta) must reach $1
+# within $2 seconds.
 wait_users() {
   for _ in $(seq 1 "$2"); do
-    grep '"msg":"applying config snapshot"' "$LOG/agent.log" | tail -1 | grep -q "\"users\":$1[,}]" && return 0
+    grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | grep -q "\"users\":$1[,}]" && return 0
     sleep 1
   done
-  echo "FAIL: agent did not converge to users=$1 ($3)"; grep 'applying config snapshot' "$LOG/agent.log" | tail -3; exit 1
+  echo "FAIL: agent did not converge to users=$1 ($3)"; grep 'state applied' "$LOG/agent.log" | tail -3; exit 1
 }
 port_open() { (exec 3<>/dev/tcp/127.0.0.1/11443) 2>/dev/null; }
 wait_port() { # open|closed timeout
@@ -226,6 +228,88 @@ wait_users 0 20 "expiry"
 wait_users 1 10 "expiry cleared"
 echo "expiry: ok"
 
+echo "== Sprint 3a: user-only change = UserDelta, no rebuild, other users' connections survive =="
+# A tiny raw-VLESS client (no flow, plain TCP) and an echo target.
+cat >"$LOG/vless.py" <<'PY'
+import os, socket, struct, sys, threading, time, uuid
+mode, a_id, b_id, ready, go = sys.argv[1:6]
+echo = socket.socket(); echo.bind(("127.0.0.1", 0)); echo.listen(8)
+eport = echo.getsockname()[1]
+def serve():
+    while True:
+        c, _ = echo.accept()
+        threading.Thread(target=lambda c=c: [c.sendall(d) for d in iter(lambda: c.recv(4096), b"")], daemon=True).start()
+threading.Thread(target=serve, daemon=True).start()
+def dial(uid):
+    s = socket.create_connection(("127.0.0.1", 11443), timeout=5)
+    s.sendall(b"\x00" + uuid.UUID(uid).bytes + b"\x00\x01" + struct.pack(">H", eport) + b"\x01" + socket.inet_aton("127.0.0.1"))
+    return [s, False]
+def roundtrip(c, msg):
+    s = c[0]; s.settimeout(5); s.sendall(msg)
+    want = len(msg) + (0 if c[1] else 2); got = b""
+    while len(got) < want:
+        d = s.recv(want - len(got))
+        if not d: raise EOFError("closed")
+        got += d
+    if not c[1]: got = got[2:]; c[1] = True
+    assert got == msg, got
+def closed(c, secs):
+    c[0].settimeout(secs)
+    try: return c[0].recv(1) == b""
+    except socket.timeout: return False
+    except OSError: return True
+a, b = dial(a_id), dial(b_id)
+roundtrip(a, b"a-before"); roundtrip(b, b"b-before")
+open(ready, "w").close()
+for _ in range(300):
+    if os.path.exists(go): break
+    time.sleep(0.1)
+else:
+    sys.exit("timeout waiting for go")
+roundtrip(a, b"a-after")                      # A's live connection survived
+if not closed(b, 5): sys.exit("B's live connection stayed open")
+try:
+    nb = dial(b_id); roundtrip(nb, b"b-new"); sys.exit("B can still connect")
+except (EOFError, OSError, AssertionError):
+    pass
+roundtrip(a, b"a-end")
+print("vless: A kept its connection, B was cut and refused")
+PY
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+    -d '{"login":"smoke-user-b","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create user B"; exit 1; }
+USER_B=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_B/nodes/$NODE_ID" -H 'Content-Type: application/json' \
+    -d '{"inbound_tag":"in-vless","protocol":"vless"}')" = "201" ] || { echo "FAIL: assign B"; exit 1; }
+VLESS_B=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['account']['id'])")
+wait_users 2 10 "user B added"
+grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | grep -q '"via":"delta"' \
+  || { echo "FAIL: adding a user was not a delta"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
+SNAPS_BEFORE=$(grep -c '"msg":"applying config snapshot"' "$LOG/agent.log")
+SESSION_BEFORE=$(grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['session'])")
+rm -f "$LOG/vless.ready" "$LOG/vless.go"
+python3 "$LOG/vless.py" hold "$VLESS_A" "$VLESS_B" "$LOG/vless.ready" "$LOG/vless.go" >"$LOG/vless.out" 2>&1 &
+VLESS_PID=$!
+for _ in $(seq 1 50); do [ -e "$LOG/vless.ready" ] && break; sleep 0.2; done
+[ -e "$LOG/vless.ready" ] || { echo "FAIL: vless client could not connect"; cat "$LOG/vless.out"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/users/$USER_B" '{"enabled": false}')" = "200" ] || { echo "FAIL: disable B"; exit 1; }
+wait_users 1 10 "user B disabled"
+touch "$LOG/vless.go"
+wait $VLESS_PID || { echo "FAIL: live-connection check"; cat "$LOG/vless.out"; exit 1; }
+cat "$LOG/vless.out"
+SNAPS_AFTER=$(grep -c '"msg":"applying config snapshot"' "$LOG/agent.log")
+SESSION_AFTER=$(grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['session'])")
+[ "$SNAPS_BEFORE" = "$SNAPS_AFTER" ] || { echo "FAIL: disabling a user rebuilt xray ($SNAPS_BEFORE -> $SNAPS_AFTER snapshots)"; exit 1; }
+[ "$SESSION_BEFORE" = "$SESSION_AFTER" ] || { echo "FAIL: xray session changed ($SESSION_BEFORE -> $SESSION_AFTER)"; exit 1; }
+grep -q '"msg":"applying user delta"' "$LOG/agent.log" || { echo "FAIL: no user delta in agent log"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_B")" = "204" ] || { echo "FAIL: delete B"; exit 1; }
+echo "user delta: ok (no rebuild, session $SESSION_AFTER)"
+
+echo "== Sprint 3a: protocol + lease surfaced on the node =="
+[ "$(node_field agent_protocol)" = "1" ] || { echo "FAIL: agent_protocol $(node_field agent_protocol)"; exit 1; }
+LEASE=$(node_field lease_remaining_seconds)
+[ "$LEASE" != "null" ] && [ "$LEASE" -gt 80000 ] || { echo "FAIL: lease_remaining_seconds '$LEASE'"; exit 1; }
+echo "lease: ok (${LEASE}s left)"
+
 echo "== node online + heartbeat =="
 STATUS=$(docker compose exec -T postgres psql -U akari -d akari -tAc "SELECT status FROM nodes WHERE id='$NODE_ID'")
 [ "$STATUS" = "online" ] || { echo "FAIL: node status '$STATUS'"; exit 1; }
@@ -244,6 +328,32 @@ echo "== delete user: node converges to users=0 =="
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_ID")" = "204" ] || { echo "FAIL: delete user"; exit 1; }
 wait_users 0 10 "delete user"
 echo "delete user: ok"
+
+echo "== Sprint 3a: a protocol-0 agent gets the empty state and is flagged (N5) =="
+OLD_SRC="$LOG/old-agent-src"
+mkdir -p "$OLD_SRC"
+if git -C "${AGENT_DIR:-../akari-agent}" archive 2b3e7e3 2>/dev/null | tar -x -C "$OLD_SRC" \
+    && (cd "$OLD_SRC" && go build -o "$LOG/old-agent" . ) >"$LOG/old-build.log" 2>&1; then
+  kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+  "$LOG/old-agent" -config "$BOOT" >"$LOG/old-agent.log" 2>&1 &
+  AGENT_PID=$!
+  for _ in $(seq 1 15); do node_field last_error | grep -q "agent too old" && break; sleep 1; done
+  node_field last_error | grep -q "agent too old" || { echo "FAIL: too-old agent not flagged: $(node_field last_error)"; exit 1; }
+  [ "$(node_field agent_protocol)" = "0" ] || { echo "FAIL: agent_protocol not 0"; exit 1; }
+  for _ in $(seq 1 10); do grep -q '"config_version":0,"user_version":0' "$LOG/old-agent.log" && break; sleep 1; done
+  grep '"msg":"applying config snapshot"' "$LOG/old-agent.log" | tail -1 | grep -q '"config_version":0' \
+    || { echo "FAIL: old agent did not get the empty state"; cat "$LOG/old-agent.log"; exit 1; }
+  wait_port closed 10
+  kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+  "$AGENT" -config "$BOOT" >>"$LOG/agent.log" 2>&1 &
+  AGENT_PID=$!
+  for _ in $(seq 1 15); do [ "$(node_field last_error)" = "null" ] && break; sleep 1; done
+  [ "$(node_field last_error)" = "null" ] || { echo "FAIL: too-old flag not cleared by a current agent"; exit 1; }
+  wait_port open 10
+  echo "old agent: ok (empty state, flagged, cleared after upgrade)"
+else
+  echo "old agent: SKIPPED (could not build the pinned protocol-0 agent)"; tail -3 "$LOG/old-build.log"
+fi
 
 echo "== me + logout =="
 [ "$(code -b "$JAR" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: me failed"; exit 1; }

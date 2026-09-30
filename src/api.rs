@@ -529,6 +529,13 @@ pub struct NodeView {
     last_error_at: Option<DateTime<Utc>>,
     failed_config_version: Option<i64>,
     failed_user_version: Option<i64>,
+    /// Hello.protocol_version of the last connected agent; below the
+    /// panel's minimum the node runs the empty state (see last_error).
+    agent_protocol: Option<i32>,
+    /// When the agent's fail-closed lease runs out (renewed while the panel
+    /// can read the node's desired state), and the seconds left.
+    lease_expires_at: Option<DateTime<Utc>>,
+    lease_remaining_seconds: Option<i64>,
     last_seen_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
 }
@@ -536,7 +543,9 @@ pub struct NodeView {
 const NODE_VIEW_COLS: &str =
     "id, name, enabled, status, agent_version, core_version, config_version, \
      user_version, xray_inbounds, server_addr, last_error, last_error_at, failed_config_version, \
-     failed_user_version, last_seen_at, created_at";
+     failed_user_version, agent_protocol, lease_expires_at, \
+     GREATEST(0, EXTRACT(EPOCH FROM lease_expires_at - now()))::bigint AS lease_remaining_seconds, \
+     last_seen_at, created_at";
 
 pub async fn list_nodes(
     State(state): State<AppState>,

@@ -113,6 +113,10 @@ fn issue_server_cert(ca_pem: &str, ca_key_pem: &str, names: &[String]) -> Result
     let mut dn = DistinguishedName::new();
     dn.push(DnType::CommonName, "akari");
     params.distinguished_name = dn;
+    // Server identity only: an agent (or anyone holding this key) must not
+    // be able to use it as a client certificate, and vice versa.
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     params.not_before = OffsetDateTime::now_utc() - TimeDuration::hours(1);
     params.not_after = OffsetDateTime::now_utc() + TimeDuration::days(365 * 2);
 
@@ -168,4 +172,39 @@ fn write_secret(path: &Path, bytes: &[u8]) -> Result<()> {
 fn write_secret(path: &Path, bytes: &[u8]) -> Result<()> {
     fs::write(path, bytes)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use x509_parser::prelude::{parse_x509_pem, FromDer, X509Certificate};
+
+    fn test_ca() -> (String, String) {
+        let key = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::default();
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params.key_usages = vec![KeyUsagePurpose::KeyCertSign];
+        let key_pem = key.serialize_pem();
+        let ca = CertifiedIssuer::self_signed(params, key).unwrap();
+        (ca.pem(), key_pem)
+    }
+
+    /// (server_auth, client_auth, any)
+    fn eku(pem: &str) -> (bool, bool, bool) {
+        let (_, p) = parse_x509_pem(pem.as_bytes()).unwrap();
+        let (_, cert) = X509Certificate::from_der(&p.contents).unwrap();
+        let e = cert.extended_key_usage().unwrap().unwrap().value;
+        (e.server_auth, e.client_auth, e.any)
+    }
+
+    /// R8: the server certificate is ServerAuth only; agent certificates are
+    /// ClientAuth only.
+    #[test]
+    fn certificate_ekus_are_exclusive() {
+        let (ca, ca_key) = test_ca();
+        let (server, _) = issue_server_cert(&ca, &ca_key, &["localhost".into()]).unwrap();
+        assert_eq!(eku(&server), (true, false, false));
+        let (agent, _, _) = issue_agent_cert(&ca, &ca_key, "n1").unwrap();
+        assert_eq!(eku(&agent), (false, true, false));
+    }
 }
