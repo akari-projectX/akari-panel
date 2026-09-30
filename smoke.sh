@@ -14,8 +14,8 @@ AGENT_PID=""
 rm -rf "$LOG" data "$BOOT" "$JAR" && mkdir -p "$LOG"
 
 # Clean up any leftovers from earlier runs (zombie panels keep port 8443).
-pkill -f "target/release/akari serve" 2>/dev/null || true
-pkill -f "agent -config" 2>/dev/null || true
+pkill -f "[t]arget/release/akari serve" 2>/dev/null || true
+pkill -f "[a]gent -config" 2>/dev/null || true
 sleep 1
 
 echo "== start panel (runs migrations) =="
@@ -42,10 +42,39 @@ PREFIX=$("$PANEL" info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')
 BASE="http://127.0.0.1:8080/$PREFIX"
 code() { curl -s --noproxy '*' -o /tmp/akari-smoke/last -w "%{http_code}" "$@"; }
 
-echo "== decoy on wrong prefix =="
-[ "$(code http://127.0.0.1:8080/deadbeef/api/v1/users)" = "404" ] || { echo "FAIL: wrong prefix not 404"; exit 1; }
-grep -q "Meridian Systems" /tmp/akari-smoke/last || { echo "FAIL: wrong prefix did not return decoy"; exit 1; }
-echo "decoy: ok"
+echo "== rejections: one identical empty 404 (SEC-1) =="
+# Fingerprint = status line + headers (minus Date) + body.
+fp() {
+  curl -s --noproxy '*' -D - -o /tmp/akari-smoke/fpbody "$@" | tr -d '\r' | grep -vi '^date:' >/tmp/akari-smoke/fphead
+  cat /tmp/akari-smoke/fphead /tmp/akari-smoke/fpbody | sha256sum | cut -d' ' -f1
+}
+REJ=$(fp http://127.0.0.1:8080/definitely-not-here)
+head -1 /tmp/akari-smoke/fphead | grep -q " 404" || { echo "FAIL: rejection is not 404"; cat /tmp/akari-smoke/fphead; exit 1; }
+[ ! -s /tmp/akari-smoke/fpbody ] || { echo "FAIL: rejection has a body"; exit 1; }
+grep -qiE '^(x-frame-options|x-content-type-options|referrer-policy|content-security-policy|content-type):' /tmp/akari-smoke/fphead \
+  && { echo "FAIL: rejection carries distinctive headers"; cat /tmp/akari-smoke/fphead; exit 1; }
+for probe in \
+    "http://127.0.0.1:8080/" \
+    "-X POST http://127.0.0.1:8080/" \
+    "http://127.0.0.1:8080/deadbeef/api/v1/users" \
+    "http://127.0.0.1:8080/assets/missing.js" \
+    "$BASE" \
+    "$BASE/" \
+    "$BASE/nope" \
+    "$BASE/api/v1/nope" \
+    "$BASE/auth/login" \
+    "-X DELETE $BASE/auth/logout" \
+    "-X POST $BASE/healthz" \
+    "-X POST $BASE/api/v1/auth/login" \
+    "$BASE/sub/not-a-real-token" \
+    "$BASE/assets/missing.js"; do
+  # shellcheck disable=SC2086
+  [ "$(fp $probe)" = "$REJ" ] || { echo "FAIL: rejection differs for: $probe"; cat /tmp/akari-smoke/fphead; exit 1; }
+done
+# Real responses keep the security headers.
+curl -s --noproxy '*' -D - -o /dev/null "$BASE/healthz" | grep -qi '^x-frame-options: DENY' \
+  || { echo "FAIL: security headers missing on real responses"; exit 1; }
+echo "rejections: ok ($REJ)"
 
 echo "== login (wrong password x3, then ok) =="
 for i in 1 2 3; do
@@ -58,10 +87,10 @@ grep -q '"role":"admin"' /tmp/akari-smoke/last || { echo "FAIL: login response m
 echo "login: ok"
 
 echo "== auth lives at /{prefix}/auth, not /api/v1/auth (REVIEW P0 #1) =="
-# Nothing may depend on the wrong path: it must stay a decoy 404.
+# Nothing may depend on the wrong path: it must stay a rejection.
 [ "$(code -X POST "$BASE/api/v1/auth/login" -H 'Content-Type: application/json' \
     -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "404" ] || { echo "FAIL: /api/v1/auth/login not 404"; exit 1; }
-grep -q "Meridian Systems" /tmp/akari-smoke/last || { echo "FAIL: /api/v1/auth/login not the decoy"; exit 1; }
+[ ! -s /tmp/akari-smoke/last ] || { echo "FAIL: /api/v1/auth/login is not the empty rejection"; exit 1; }
 [ "$(code -X POST "$BASE/api/v1/auth/logout")" = "404" ] || { echo "FAIL: /api/v1/auth/logout not 404"; exit 1; }
 echo "auth path: ok"
 
@@ -104,12 +133,9 @@ echo "$INFO" | grep -q "download=0" && echo "$INFO" | grep -q "total=10737418240
   || { echo "FAIL: subscription-userinfo header: $INFO"; exit 1; }
 SIZE=$(curl -s --noproxy '*' -o /tmp/akari-smoke/subbody "$SUB" && wc -c < /tmp/akari-smoke/subbody)
 [ "$SIZE" -ge 8192 ] || { echo "FAIL: body not padded ($SIZE bytes)"; exit 1; }
-# Wrong token must be a byte-identical decoy, and never carry quota headers.
-DECOY=$(curl -s --noproxy '*' http://127.0.0.1:8080/junk | sha256sum | cut -d' ' -f1)
-SUBDECOY=$(curl -s --noproxy '*' "$BASE/sub/not-a-real-token" | sha256sum | cut -d' ' -f1)
-[ "$DECOY" = "$SUBDECOY" ] || { echo "FAIL: bad-token response differs from decoy"; exit 1; }
+# Wrong token: identical rejection (checked above), never quota headers.
 curl -s --noproxy '*' -D - -o /dev/null "$BASE/sub/not-a-real-token" | grep -qi "subscription-userinfo" \
-  && { echo "FAIL: quota header leaked on decoy"; exit 1; }
+  && { echo "FAIL: quota header leaked on rejection"; exit 1; }
 echo "subscription: ok ($SIZE-byte padded body)"
 
 echo "== start agent: initial snapshot =="
@@ -144,8 +170,8 @@ echo "== me + logout =="
 [ "$(code -b "$JAR" -c "$JAR" -X POST "$BASE/auth/logout")" = "200" ] || { echo "FAIL: logout failed"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: me after logout not 401"; exit 1; }
 
-echo "== decoy site checks =="
-[ "$(code http://127.0.0.1:8080/)" = "200" ] || { echo "FAIL: / not 200"; exit 1; }
+echo "== root + healthz =="
+[ "$(code http://127.0.0.1:8080/)" = "404" ] || { echo "FAIL: / not 404"; exit 1; }
 [ "$(code http://127.0.0.1:8080/definitely-not-here)" = "404" ] || { echo "FAIL: junk not 404"; exit 1; }
 [ "$(code "$BASE/healthz")" = "200" ] || { echo "FAIL: healthz not 200"; exit 1; }
 
@@ -157,7 +183,7 @@ JS=$(grep -o "/$PREFIX/assets/[^\"]*\.js" /tmp/akari-smoke/last | head -1)
 CT=$(curl -s --noproxy '*' -o /dev/null -w "%{content_type}" "http://127.0.0.1:8080$JS")
 echo "$CT" | grep -q javascript || { echo "FAIL: asset content-type '$CT'"; exit 1; }
 [ "$(code "$BASE/app/some-client-route")" = "200" ] || { echo "FAIL: SPA client-route fallback"; exit 1; }
-[ "$(code "$BASE/assets/missing.js")" = "404" ] || { echo "FAIL: missing asset not decoy 404"; exit 1; }
+[ "$(code "$BASE/assets/missing.js")" = "404" ] || { echo "FAIL: missing asset not 404"; exit 1; }
 [ "$(code http://127.0.0.1:8080/assets/missing.js)" = "404" ] || { echo "FAIL: asset path reachable without prefix"; exit 1; }
 # REVIEW P0 #1 regression guards. (a) Behavioural: run the real api.ts with a
 # fake location/fetch and check the URLs it requests. (b) Bundle: the shipped

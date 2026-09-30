@@ -7,7 +7,7 @@ identifies the software to unauthenticated probes.
 
 ```
 ┌──────────────── Rust binary (akari) ────────────────┐
-│ axum web        decoy site at /, panel API behind   │
+│ axum web        empty 404 for all, panel API behind │
 │                 a per-install random route prefix   │
 │ tonic gRPC      mTLS AgentChannel (server)          │
 │ PG 18           users / nodes / traffic ledger      │
@@ -27,7 +27,8 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
 - `akari admin add <login>` creates the first account (password via
   `AKARI_ADMIN_PASSWORD` env or hidden prompt; argon2id hashing).
 - All panel API lives under a per-install random route prefix. Anything that
-  guesses wrong — including the bare prefix — gets the decoy site.
+  guesses wrong — including the bare prefix and `/` — gets one identical
+  empty 404 (no body, none of the panel's security headers).
 - `POST /{prefix}/auth/login` verifies argon2id hashes (timing-equalized for
   unknown users, per-IP rate limit 20/15min via Valkey) and issues an HS256
   JWT in an `HttpOnly` `SameSite=Strict` cookie (12h; Secure everywhere
@@ -53,7 +54,7 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   (base64 share links / Clash YAML / sing-box JSON); TLS, REALITY and
   WebSocket transport params are mapped from each inbound's streamSettings.
   `subscription-userinfo` and other quota headers are sent only on success;
-  bad tokens get the byte-identical decoy 404. Bodies are padded to 8 KiB
+  bad tokens get the same empty 404 as every other rejection. Bodies are padded to 8 KiB
   buckets so size does not reveal node counts.
 
 Not yet: web API/SPA, subscription endpoints, payments, agent auto-update.
@@ -68,7 +69,7 @@ panel/   (Rust)        src/grpc.rs  agent sessions, snapshot convergence
                        src/auth.rs  argon2id passwords, JWT sessions, extractor
                        src/api.rs  REST handlers (users, nodes, accounts)
                        src/spa.rs  embedded frontend serving (rust-embed)
-                       src/web.rs + decoy.rs  camouflage front + prefix gate
+                       src/web.rs + reject.rs  prefix gate + uniform rejection
                        spa/  React 19 + Vite 8 + Tailwind 4 frontend
 agent/   (Go)          agent.go  stream lifecycle, reconnect backoff
                        core.go   xray-core embedding, user store access
@@ -83,7 +84,7 @@ shadcn/ui-style components; TanStack Query is the data layer. The compiled
 bundle is embedded into the binary via rust-embed and served only under the
 secret prefix (`/{prefix}/app`); Vite's `/assets/` URLs are rewritten to the
 prefix at serve time, so nothing about the app leaks without the prefix.
-Missing assets return the decoy 404, and the dev tree is never served.
+Missing assets return the uniform empty 404, and the dev tree is never served.
 
 ```bash
 make spa               # npm install + vite build (updates panel/spa/dist)
@@ -141,15 +142,19 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   converge from any state (including panel rollbacks) without a diff
   protocol.
 - **Traffic accounting**: agents report *cumulative* per-user counters; the
-  panel stores the latest values per `(node, user, session)` and applies
-  deltas. A session id change (xray instance rebuild) resets the baseline,
-  which makes counter resets and lost reports harmless.
+  agent tags each report with the session (xray instance lifetime) the
+  counters belong to. The panel keeps the high-water mark per
+  `(node, user, session)` in `traffic_counters` and bills
+  `max(new - old, 0)` computed by PostgreSQL in one statement, so restarts,
+  retries, duplicates and reordered reports never double-bill and a failed
+  flush loses nothing. Requires PostgreSQL >= 18 (`RETURNING old/new`).
 - **Per-user counters** are keyed by xray's user `email` field, which is set
   to the panel user id — the identity mapping between panel and core is
   identity itself.
-- **No features by default**: the decoy site is served for everything that
-  doesn't know the install's random route prefix; response bytes for
-  "found" and "not found" are identical to frustrate size-based probing.
+- **Nothing to fingerprint**: every request that doesn't know the install's
+  random route prefix (including `/`), and every rejection behind it (wrong
+  method, bad token, missing asset), gets the same empty 404 without the
+  panel's security headers, byte-identical apart from `Date`.
 
 ## Roadmap
 

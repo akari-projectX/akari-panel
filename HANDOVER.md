@@ -47,9 +47,9 @@
 | `auth.rs` | argon2id + 等时烧录；JWT(HS256,12h,HttpOnly,SameSite=Strict)；AuthUser 提取器每请求回查 DB | cookie 名 `sid`；Secure 回环自动关 |
 | `api.rs` | REST handlers；账号生成（vless uuid/vmess id/trojan 32B 密码）；动态 SET 手工逗号 | Path 全是 `(String, Uuid)` 元组 |
 | `sub.rs` | 订阅（**过渡期**）：UA 分流三格式；streamSettings→TLS/REALITY/WS 映射；userinfo 头；≥8KiB 填充；token 只存 SHA-256 | 终态退役计划见 PLAN.md Phase 3 |
-| `spa.rs` | rust-embed 服务 dist；`/assets/` 运行时重写到前缀；缺失→伪装 404 | 只服务 dist，源码树不可达 |
+| `spa.rs` | rust-embed 服务 dist；`/assets/` 运行时重写到前缀；缺失→统一空 404 | 只服务 dist，源码树不可达 |
 | `web.rs` | 路由全部带 `/{prefix}` 参数 + 门禁中间件（常数时间校验） | axum 路由先于中间件，勿改剥前缀方案 |
-| `decoy.rs` + `decoy.html` | 伪装站；200 与 404 字节同构 | 所有"拒绝"必须落在这里 |
+| `reject.rs` | 统一拒绝：404、空 body、不带安全头（伪装站已于 2026-10 删除，SEC-1） | 所有"拒绝"必须落在这里 |
 | `nodeops.rs` | node add/list、admin add CLI | bootstrap 文件**含 agent 私钥**（v1，Phase 4 改 CSR） |
 
 ### akari-agent（agent/）

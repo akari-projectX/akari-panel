@@ -15,9 +15,9 @@
 | `auth.rs` | `ApiError`、argon2id、HS256 JWT、`AuthUser` 提取器（每请求回查 DB） | JWT 无吊销；改密码不失效旧会话 |
 | `api.rs` | REST handler（登录、me、用户、节点、分配） | 动态 SET 用手工逗号 + `#[allow(unused_assignments)]`；空 body 会拼出非法 SQL |
 | `sub.rs` | 过渡期订阅：UA 分流 links/clash/sing-box，8KiB 填充 | 终态只留 Clash；token 只存 SHA-256 |
-| `web.rs` | 路由表 + `prefix_gate` 常数时间前缀校验 + 安全头 | 新路由照抄 `/{prefix}/...` 形式 |
-| `decoy.rs` + `decoy.html` | 伪装站 | 200 与 404 同字节 |
-| `spa.rs` | rust-embed 服务 `spa/dist`，运行时把 `/assets/` 改写到前缀下 | — |
+| `web.rs` | 路由表 + `prefix_gate` 常数时间前缀校验 + 安全头（仅真实响应） | 新路由照抄 `/{prefix}/...` 形式；fallback 与 `method_not_allowed_fallback` 都走 reject（否则 405 是前缀探针） |
+| `reject.rs` | 统一拒绝响应：404 + 空 body，带 `Rejected` 扩展标记 | 所有拒绝都用 `reject::not_found()`；web.rs 的安全头中间件跳过带标记的响应（404 上的安全头组合本身就是指纹） |
+| `spa.rs` | rust-embed 服务 `spa/dist`，运行时把 `/assets/` 改写到前缀下 | 缺失资源 → `reject::not_found()` |
 | `nodeops.rs` | `node add/list`、`admin add` CLI | bootstrap 文件含 agent 私钥（v1） |
 | `valkey_util.rs` | 带 TTL 的 set；失败只记日志 | 键名空间 `akari:*` |
 | `gen.rs` | `tonic::include_proto!("akari.v1")` | 由 build.rs 生成 |

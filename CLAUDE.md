@@ -28,7 +28,8 @@ make smoke         # 全量构建 + smoke.sh（会 TRUNCATE PG、flushall Valkey
 
 ## 硬性不变量
 
-- **伪装**：任何"拒绝"（错前缀、裸前缀、坏 token、缺资源）都必须返回 `decoy::not_found()` 字节同构响应；订阅失败绝不带 quota 头。
+- **拒绝同构**：任何"拒绝"（`/`、错前缀、裸前缀、未匹配路由、错误方法、坏 token、缺资源）都必须返回 `reject::not_found()`：404、空 body、不带安全头，除 `Date` 外字节同构（smoke 断言）；订阅失败绝不带 quota 头。没有伪装站。
+- **PostgreSQL ≥ 18**：计费依赖 `RETURNING old/new`；`db::migrate` 启动时校验版本。
 - **路由**：所有路由带 `/{prefix}` 参数，`Path` 提取器用 `(String, ...)` 元组吃掉前缀；axum 路由匹配先于中间件，不要改成"中间件剥前缀"。
 - **收敛**：面板是唯一事实源。改了节点/用户期望状态 → 先落库并 bump `config_version`/`user_version` → **之后**再 `state.notify_change()`。顺序反了会让 agent 收敛到旧状态（见 REVIEW 中 delete_user 缺陷）。
 - **身份**：agent 身份 = mTLS 客户端证书序列号；xray `email` = 面板 user UUID。
