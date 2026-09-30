@@ -10,8 +10,8 @@ sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18）在 `serve`、`n
 
 | 表 | 关键点 |
 |---|---|
-| `nodes` | `cert_serial` UNIQUE = agent 身份；`config_version`/`user_version` 单调递增；`server_addr`（0002）供订阅使用 |
-| `users` | `id` 同时是 xray `email`；`sub_token_hash`（0002）只存 SHA-256；`traffic_used_bytes` 由 traffic.rs 累加 |
+| `nodes` | `cert_serial` UNIQUE = agent 身份；`config_version`/`user_version` 单调递增；`server_addr`（0002）供订阅使用；0003：`last_error`/`last_error_at`/`failed_config_version`/`failed_user_version`（agent 最近一次失败的应用及其尝试的版本，被覆盖它的 ok Ack 清空），`online_session`（最后标记 online 的 gRPC 会话） |
+| `users` | `id` 同时是 xray `email`；`sub_token_hash`（0002）只存 SHA-256；`traffic_used_bytes` 由 traffic.rs 累加；0003：`expiry_enforced`（过期移除已下发的标记，改 `expires_at` 时重置） |
 | `node_users` | PK (node_id,user_id)；`credentials` JSONB = `[{inbound_tag, protocol, account}]` |
 | `traffic_counters` | PK (node_id,user_id,session_id) 的最高累计值（GREATEST）。**这是计费基线，不是日志**：flush 用它算差值（`new - old`）。删掉一个仍会上报的会话的行 = 下次上报把整段累计值重新计费。**无外键、无清理**，会随会话数增长 |
 

@@ -441,10 +441,12 @@ pub async fn subscription(
 ) -> Response {
     let hash = hash_token(&token);
 
-    let user = match sqlx::query_as::<_, SubUser>(
-        "SELECT traffic_used_bytes, traffic_limit_bytes, expires_at \
-         FROM users WHERE sub_token_hash = $1 AND enabled = true",
-    )
+    // Expiry via the shared DB-clock predicate (enforce::EXPIRED).
+    let user = match sqlx::query_as::<_, SubUser>(sqlx::AssertSqlSafe(format!(
+        "SELECT u.traffic_used_bytes, u.traffic_limit_bytes, u.expires_at \
+         FROM users u WHERE u.sub_token_hash = $1 AND u.enabled = true AND NOT {}",
+        crate::enforce::EXPIRED
+    )))
     .bind(&hash)
     .fetch_optional(state.pg())
     .await
@@ -456,12 +458,6 @@ pub async fn subscription(
             return reject::not_found();
         }
     };
-    if let Some(exp) = user.expires_at {
-        if exp < Utc::now() {
-            return reject::not_found();
-        }
-    }
-
     let rows = match sqlx::query_as::<_, NodeRow>(
         "SELECT n.name, n.xray_inbounds, n.server_addr, nu.credentials \
          FROM node_users nu \

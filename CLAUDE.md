@@ -31,7 +31,9 @@ make smoke         # 全量构建 + smoke.sh（会 TRUNCATE PG、flushall Valkey
 - **拒绝同构**：任何"拒绝"（`/`、错前缀、裸前缀、未匹配路由、错误方法、坏 token、缺资源）都必须返回 `reject::not_found()`：404、空 body、不带安全头，除 `Date` 外字节同构（smoke 断言）；订阅失败绝不带 quota 头。没有伪装站。
 - **PostgreSQL ≥ 18**：计费依赖 `RETURNING old/new`；`db::migrate` 启动时校验版本。
 - **路由**：所有路由带 `/{prefix}` 参数，`Path` 提取器用 `(String, ...)` 元组吃掉前缀；axum 路由匹配先于中间件，不要改成"中间件剥前缀"。
-- **收敛**：面板是唯一事实源。改了节点/用户期望状态 → 先落库并 bump `config_version`/`user_version` → **之后**再 `state.notify_change()`。顺序反了会让 agent 收敛到旧状态（见 REVIEW 中 delete_user 缺陷）。
+- **收敛**：面板是唯一事实源。改变节点/用户期望状态的操作都是 `apply_*(&mut PgConnection, …)`：写库 + bump 受影响节点的 `config_version`/`user_version` 在**同一事务**；handler 提交后才 `state.notify_change()`。全局加锁顺序：nodes（`ORDER BY id FOR UPDATE`）→ users → node_users。`api::tests::every_access_change_bumps_affected_nodes` 是这条规则的表驱动测试，新增 mutator 必须加进去。
+- **禁用即停用**：禁用节点的期望状态 = 无 inbound、无用户（不拒绝连接）；启用/禁用都 bump `config_version`。用户期望集 = enabled 且未过期（`enforce::EXPIRED`，DB 时钟，仅 role=user）。每个会话另有 60s 对账 tick。
+- **agent 先于面板升级**：面板丢弃不带 `session_id` 的流量上报，并依赖 agent 失败时不前移持有版本。
 - **身份**：agent 身份 = mTLS 客户端证书序列号；xray `email` = 面板 user UUID。
 - 验收门：`make check` 与 `make smoke` 全绿；新 API 必须在 smoke.sh 加断言。
 
