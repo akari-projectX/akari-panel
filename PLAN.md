@@ -40,14 +40,14 @@
 
 | 仓库 | 内容 | 依赖的契约 |
 |---|---|---|
-| `akari-panel` | Rust 后端 `panel/`、双前端 `spa/`、数据库迁移、proto 定义 | 无（契约的所有者） |
-| `akari-agent` | Go agent `agent/`（含生成的 `pb/`） | 控制面 proto（AgentChannel） |
+| `akari-panel` | Rust 后端 `src/`、前端 `spa/`、数据库迁移、proto 定义、smoke.sh | 无（契约的所有者） |
+| `akari-agent` | Go agent（仓库根，含生成的 `pb/`） | 控制面 proto（AgentChannel） |
 | `akari-client` | Go 客户端（mihomo 内嵌） | 订阅端点 URL 约定 → 终态 client API |
 
 **契约共享策略**（Phase 0 决策并落地）：
-- `proto/agent.proto` 的所有者是 akari-panel；akari-agent 通过 **git submodule**（推荐，简单可控）或 buf schema registry 引用。改契约必须先改 panel 仓库、再 bump submodule
+- `proto/agent.proto` 的所有者是 akari-panel；akari-agent 持有 **vendor 副本**（`make sync-proto` / `make check-proto`；git submodule 方案已否决，见 Phase 0）。改契约必须先改 panel 仓库再同步 agent
 - 面板↔客户端之间没有 proto：客户端走 REST（注册/拉配置），配置本身是 Clash YAML
-- 三仓库各自 CI：panel = cargo clippy+smoke；agent = go vet+构建；client = go vet+构建（后期加打包）
+- 三仓库各自 CI（GitHub Actions `.github/workflows/ci.yml`，Sprint 4a）：panel = fmt/clippy/test（PG+Valkey 服务）/spa/cargo-deny/smoke；agent = gofmt/vet/test(-race+canary)/build/govulncheck/check-proto；client = 待建
 
 ---
 
@@ -80,9 +80,9 @@
 12. 会话清理按代数判断后再写 offline；最后一个管理员保护；改密码/登出吊销会话（jwt 加 `pwd_ver` 或 Valkey 黑名单）
 
 **工程**
-13. CI：panel（fmt/clippy/test/tsc/build）、agent（gofmt/vet/build/check-proto，其中 check-proto 需检出 panel）；smoke 作为可手动触发的 workflow
+13. ✅ CI（Sprint 4a）：panel（fmt/clippy/test/tsc/build）、agent（gofmt/vet/build/check-proto，其中 check-proto 需检出 panel）；smoke 作为可手动触发的 workflow
 14. 单元测试起步：traffic 差值、sub 渲染（三格式快照测试）、prefix gate、PATCH 构造
-15. 文档去漂移：README/HANDOVER 的 `panel/`、`agent/` 旧路径，决策表中的 submodule
+15. ✅ 文档去漂移（Sprint 4a）：README/HANDOVER 的 `panel/`、`agent/` 旧路径，决策表中的 submodule
 - **验收**：`make check` 通过、`cargo test` 通过、smoke 全绿且覆盖 P0 各项；浏览器人工验收登录与管理全流程
 
 ### Phase 1：面板过渡期补强（与 Phase 2 并行，1–2 周）

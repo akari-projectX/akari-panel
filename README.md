@@ -45,9 +45,14 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
 - Panel pushes a `ConfigSnapshot` (xray inbounds + full user set) when the
   inbounds change or the agent's state is unknown, and a `UserDelta`
   (base/target versions, REPLACE semantics) when only the user set changed:
-  adding, disabling or rotating one user never rebuilds xray, and only that
-  user's live connections are closed. Disabling a user via the API
-  propagates to connected agents within a second.
+  adding, disabling or rotating one user does not rebuild xray, and only
+  that user's live connections are closed. A `ConfigSnapshot` DOES rebuild
+  the agent's xray instance and drops every live connection on the node:
+  inbound changes, an agent whose state is unknown or diverged
+  (Hello/Ack state hash), a failed delta, a new session after a restart or
+  lease expiry, and `agent.remove_mode = "rebuild"` all take that path.
+  Disabling a user via the API propagates to connected agents within a
+  second.
 - Heartbeats (15s) land in Valkey; traffic counters (10s polls) flow to the
   panel where deltas are applied idempotently against a session-scoped
   baseline.
@@ -61,28 +66,32 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   bad tokens get the same empty 404 as every other rejection. Bodies are padded to 8 KiB
   buckets so size does not reveal node counts.
 
-Not yet: web API/SPA, subscription endpoints, payments, agent auto-update.
+Not yet: payments/orders, agent CSR enrollment and auto-update, akari-client.
 
 ## Layout
 
 ```
 proto/agent.proto      the control-plane contract (single source of truth)
-panel/   (Rust)        src/grpc.rs  agent sessions, snapshot convergence
-                       src/traffic.rs  delta accounting + limit enforcement
-                       src/install.rs  CA, server/agent cert issuance
-                       src/auth.rs  argon2id passwords, JWT sessions, extractor
-                       src/api.rs  REST handlers (users, nodes, accounts)
-                       src/spa.rs  embedded frontend serving (rust-embed)
-                       src/web.rs + reject.rs  prefix gate + uniform rejection
-                       spa/  React 19 + Vite 8 + Tailwind 4 frontend
-agent/   (Go)          agent.go  stream lifecycle, reconnect backoff
-                       core.go   xray-core embedding, user store access
-                       monitor.go  heartbeat + traffic loops
+src/grpc.rs            agent sessions, snapshot/delta convergence
+src/traffic.rs         delta accounting + limit enforcement
+src/install.rs         CA, server/agent cert issuance
+src/auth.rs            argon2id passwords, JWT sessions, extractor
+src/api.rs             REST handlers (users, nodes, accounts)
+src/spa.rs             embedded frontend serving (rust-embed)
+src/web.rs + reject.rs prefix gate + uniform rejection
+spa/                   React 19 + Vite 8 + Tailwind 4 frontend
+migrations/            sqlx migrations (run at startup)
+smoke.sh               cross-repo end-to-end check (needs ../akari-agent)
 ```
+
+The agent lives in the sibling repo `akari-agent` (Go: `agent.go` stream
+lifecycle and reconnect backoff, `core.go` xray-core embedding, `gate.go`
+revocation gate, `monitor.go` heartbeat + traffic loops). Both repos must be
+checked out side by side; `src/CLAUDE.md` has the per-file map.
 
 ## Frontend
 
-`panel/spa` is a single-page console (login, admin: users/nodes/accounts,
+`spa/` is a single-page console (login, admin: users/nodes/accounts,
 user portal) built with React 19, Vite 8 (Rolldown), Tailwind 4 and
 shadcn/ui-style components; TanStack Query is the data layer. The compiled
 bundle is embedded into the binary via rust-embed and served only under the
@@ -91,7 +100,7 @@ prefix at serve time, so nothing about the app leaks without the prefix.
 Missing assets return the uniform empty 404, and the dev tree is never served.
 
 ```bash
-make spa               # npm install + vite build (updates panel/spa/dist)
+make spa               # npm install + vite build (updates spa/dist)
 make panel             # rebuild the binary to embed the new bundle
 ```
 
@@ -101,14 +110,16 @@ make panel             # rebuild the binary to embed the new bundle
 make dev-up            # PG 18 + Valkey 9 (docker compose)
 make spa               # frontend build (first run installs npm deps)
 make panel             # cargo build --release
-make agent             # go build
-make proto             # regenerate Go bindings after editing proto/
+make agent-build       # go build of ../akari-agent
+# contract change: edit proto/agent.proto, then in ../akari-agent:
+#   make sync-proto && make check-proto
 
-./panel/target/release/akari serve
-AKARI_ADMIN_PASSWORD=... ./panel/target/release/akari admin add root
-./panel/target/release/akari node add test-node   # writes test-node-bootstrap.toml
-(cd agent && ./agent -config ../test-node-bootstrap.toml)
-make smoke             # full end-to-end check
+./target/release/akari serve
+AKARI_ADMIN_PASSWORD=... ./target/release/akari admin add root
+./target/release/akari node add test-node   # writes test-node-bootstrap.toml
+(cd ../akari-agent && ./agent -config ../akari-panel/test-node-bootstrap.toml)
+make smoke             # full end-to-end check (truncates the dev DB)
+make check             # fmt + clippy + tsc (fast gate); make lint test deny = CI
 ```
 
 ### API surface (all under the secret prefix)
@@ -129,7 +140,7 @@ make smoke             # full end-to-end check
 | GET | /healthz | — | panel liveness |
 
 Defaults bind web on `127.0.0.1:8080` and gRPC on `127.0.0.1:8443`; override
-via `panel.toml` (see `panel/src/config.rs`) or `DATABASE_URL`/`VALKEY_URL`.
+via `panel.toml` (see `src/config.rs`) or `DATABASE_URL`/`VALKEY_URL`.
 
 Pinned versions: xray-core `v1.260327.0` (the Go module form of release
 v26.3.27 — Xray uses calendar tags, Go needs semver), axum 0.8, tonic 0.14,
