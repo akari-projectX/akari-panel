@@ -232,7 +232,8 @@ impl TrafficBuffer {
                     "traffic counters went backwards within a session; ignored");
             }
             let dirty = e.dirty();
-            drop(e);
+            // Index updated while the entry guard is held (lock order:
+            // entries -> index), so no other writer can interleave.
             let mut idx = self.index.entry(node_id).or_default();
             if inserted {
                 idx.entries += 1;
@@ -243,6 +244,8 @@ impl TrafficBuffer {
             }
             sess.dirty = (sess.dirty + usize::from(dirty)).saturating_sub(usize::from(was_dirty));
             sess.touched = Some(now);
+            drop(idx);
+            drop(e);
         }
     }
 
@@ -285,10 +288,13 @@ impl TrafficBuffer {
         }
     }
 
+    /// Remove an entry; index bookkeeping happens inside the entry's shard
+    /// lock (entries -> index), never after the entry left the map.
     fn remove(&self, key: &Key) {
-        if let Some((_, e)) = self.entries.remove(key) {
-            self.forget(key, e.dirty());
-        }
+        self.entries.remove_if(key, |k, e| {
+            self.forget(k, e.dirty());
+            true
+        });
     }
 
     fn node_entry_count(&self, node_id: Uuid) -> usize {
@@ -317,10 +323,14 @@ impl TrafficBuffer {
         for u in users {
             let key = (node_id, u, session.clone());
             // Skip anything that became dirty meanwhile.
-            if self.entries.remove_if(&key, |_, e| !e.dirty()).is_some() {
-                self.forget(&key, false);
-                freed = true;
-            }
+            let removed = self.entries.remove_if(&key, |k, e| {
+                let clean = !e.dirty();
+                if clean {
+                    self.forget(k, false);
+                }
+                clean
+            });
+            freed |= removed.is_some();
         }
         freed
     }
@@ -370,19 +380,16 @@ impl TrafficBuffer {
     /// their entry dirty.
     fn mark_flushed(&self, rows: &[FlushRow]) {
         for r in rows {
-            let cleaned = match self.entries.get_mut(&r.key()) {
-                Some(mut e) => {
-                    let before = e.dirty();
-                    e.flushed = Some((r.up, r.down));
-                    e.failures = 0;
-                    before && !e.dirty()
-                }
-                None => false,
-            };
-            if cleaned {
-                if let Some(mut idx) = self.index.get_mut(&r.node_id) {
-                    if let Some(sess) = idx.sessions.get_mut(&r.session_id) {
-                        sess.dirty = sess.dirty.saturating_sub(1);
+            if let Some(mut e) = self.entries.get_mut(&r.key()) {
+                let before = e.dirty();
+                e.flushed = Some((r.up, r.down));
+                e.failures = 0;
+                if before && !e.dirty() {
+                    // Still under the entry guard (entries -> index).
+                    if let Some(mut idx) = self.index.get_mut(&r.node_id) {
+                        if let Some(sess) = idx.sessions.get_mut(&r.session_id) {
+                            sess.dirty = sess.dirty.saturating_sub(1);
+                        }
                     }
                 }
             }
@@ -408,17 +415,35 @@ impl TrafficBuffer {
     }
 
     /// Evict fully persisted, idle entries.
+    /// Evict fully persisted, idle entries, then rebuild the per-node index
+    /// from `entries` (self-heal: whatever drift a bug could introduce
+    /// lives at most one tick). Operations racing with the rebuild may be
+    /// off by one until the next tick; they cannot corrupt `entries`.
     fn prune(&self, now: Instant) {
-        let mut gone = Vec::new();
         self.entries.retain(|k, e| {
             let keep = e.dirty() || now.duration_since(e.touched) < PRUNE_IDLE;
             if !keep {
-                gone.push(k.clone());
+                self.forget(k, false);
             }
             keep
         });
-        for k in &gone {
-            self.forget(k, false);
+        self.rebuild_index();
+    }
+
+    fn rebuild_index(&self) {
+        let mut fresh: HashMap<Uuid, NodeIndex> = HashMap::new();
+        for e in self.entries.iter() {
+            let (node, user, session) = e.key();
+            let idx = fresh.entry(*node).or_default();
+            idx.entries += 1;
+            let sess = idx.sessions.entry(session.clone()).or_default();
+            sess.users.insert(*user);
+            sess.dirty += usize::from(e.value().dirty());
+            sess.touched = sess.touched.max(Some(e.value().touched));
+        }
+        self.index.retain(|n, _| fresh.contains_key(n));
+        for (n, idx) in fresh {
+            self.index.insert(n, idx);
         }
     }
 }
@@ -1351,6 +1376,99 @@ mod db_tests {
         b.prune(Instant::now() + PRUNE_IDLE + Duration::from_secs(1));
         assert_eq!(b.node_entry_count(n), 0);
         assert!(b.index.is_empty());
+    }
+
+    fn index_matches_entries(b: &TrafficBuffer, n: Uuid) {
+        let actual: Vec<(Key, bool)> = b
+            .entries
+            .iter()
+            .filter(|e| e.key().0 == n)
+            .map(|e| (e.key().clone(), e.value().dirty()))
+            .collect();
+        let (ie, idirty, iusers) = b
+            .index
+            .get(&n)
+            .map(|i| {
+                (
+                    i.entries,
+                    i.sessions.values().map(|s| s.dirty).sum::<usize>(),
+                    i.sessions.values().map(|s| s.users.len()).sum::<usize>(),
+                )
+            })
+            .unwrap_or((0, 0, 0));
+        let ad = actual.iter().filter(|x| x.1).count();
+        assert_eq!(
+            (actual.len(), actual.len(), ad),
+            (ie, iusers, idirty),
+            "index drifted from entries"
+        );
+    }
+
+    /// Red team R7: concurrent writers vs a flusher that marks flushed and
+    /// removes ("SQL refused") rows. The index must match `entries` exactly
+    /// without relying on prune's rebuild. Repeated to make it meaningful.
+    #[test]
+    fn index_drift_under_concurrency() {
+        for _ in 0..REPEAT_STRESS {
+            let b = Arc::new(TrafficBuffer::new());
+            let n = Uuid::new_v4();
+            let us: Vec<Uuid> = (0..4000).map(|_| Uuid::new_v4()).collect();
+            b.set_members(n, us.iter().copied().collect());
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let fl = {
+                let (b, stop) = (b.clone(), stop.clone());
+                std::thread::spawn(move || {
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        let s = b.snapshot();
+                        for (i, r) in s.iter().enumerate() {
+                            if i % 7 == 0 {
+                                b.remove(&r.key());
+                            }
+                        }
+                        b.mark_flushed(&s);
+                    }
+                })
+            };
+            let mut hs = vec![];
+            for t in 0..4 {
+                let (b, us) = (b.clone(), us.clone());
+                hs.push(std::thread::spawn(move || {
+                    for round in 0..60u64 {
+                        let s = format!("t{t}r{}", round % 12);
+                        for c in us.chunks(50) {
+                            b.update(n, &s, &rep_users(c, round + 1, &s));
+                        }
+                    }
+                }));
+            }
+            for h in hs {
+                h.join().unwrap();
+            }
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            fl.join().unwrap();
+            index_matches_entries(&b, n);
+        }
+    }
+
+    /// Stress iterations per test run.
+    const REPEAT_STRESS: usize = 5;
+
+    #[test]
+    fn prune_rebuilds_a_corrupted_index() {
+        let (b, n) = (TrafficBuffer::new(), Uuid::new_v4());
+        let us: Vec<Uuid> = (0..10).map(|_| Uuid::new_v4()).collect();
+        b.set_members(n, us.iter().copied().collect());
+        b.update(n, "s", &rep_users(&us, 1, "s"));
+        // Simulate drift: phantom dirty session and wrong counts.
+        {
+            let mut idx = b.index.get_mut(&n).unwrap();
+            idx.entries = 999;
+            idx.sessions.entry("phantom".into()).or_default().dirty = 3;
+        }
+        assert_eq!(b.dirty_sessions(n), 2);
+        b.prune(Instant::now());
+        index_matches_entries(&b, n);
+        assert_eq!(b.dirty_sessions(n), 1);
     }
 
     /// No membership loaded for the node (session not started): nothing

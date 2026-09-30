@@ -14,8 +14,11 @@ AGENT_PID=""
 rm -rf "$LOG" data "$BOOT" "$JAR" && mkdir -p "$LOG"
 
 # Clean up any leftovers from earlier runs (zombie panels keep port 8443).
-pkill -f "[t]arget/release/akari serve" 2>/dev/null || true
-pkill -f "[a]gent -config" 2>/dev/null || true
+# Anchored full-command-line patterns: only the exact processes this script
+# starts (panel binary here, any sibling agent checkout's binary with this
+# script's bootstrap file) — never a shell that merely mentions them.
+pkill -f '^\./target/release/akari serve$' 2>/dev/null || true
+pkill -f "^\.\./[A-Za-z0-9_.-]+/agent -config ${BOOT//./\\.}\$" 2>/dev/null || true
 sleep 1
 
 echo "== start panel (runs migrations) =="
