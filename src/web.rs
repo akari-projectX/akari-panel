@@ -17,7 +17,7 @@ pub fn router(state: AppState) -> Router {
     // bare prefix, wrong method — is the same empty 404 (reject.rs) without
     // the security headers, so nothing about the panel is observable without
     // the prefix.
-    Router::new()
+    let routes = Router::new()
         .route("/{prefix}/healthz", get(healthz))
         .route("/{prefix}/app", get(spa::index))
         .route("/{prefix}/app/{*rest}", get(spa::index))
@@ -56,8 +56,14 @@ pub fn router(state: AppState) -> Router {
         // answers 405 + Allow: a prefix oracle.
         .method_not_allowed_fallback(rejected)
         .layer(middleware::from_fn_with_state(state.clone(), prefix_gate))
+        .with_state(state);
+    // `Router::layer` wraps each method handler *inside* its MethodRouter,
+    // which appends `Allow` on a method mismatch after those layers run.
+    // Wrapping the finished router as one service puts security_headers
+    // outside everything, so it sees (and re-mints) the final response.
+    Router::new()
+        .fallback_service(routes)
         .layer(middleware::from_fn(security_headers))
-        .with_state(state)
 }
 
 /// Constant-time check of the first path segment against the secret
@@ -86,7 +92,10 @@ async fn prefix_gate(State(state): State<AppState>, req: Request, next: Next) ->
 async fn security_headers(req: Request, next: Next) -> Response {
     let mut res = next.run(req).await;
     if res.extensions().get::<reject::Rejected>().is_some() {
-        return res;
+        // Re-mint the canonical rejection: axum appends headers after the
+        // fallback runs (e.g. `Allow` on a method mismatch), and any such
+        // header would reveal that a real route exists under the prefix.
+        return reject::not_found();
     }
     let h = res.headers_mut();
     for (name, value) in [
