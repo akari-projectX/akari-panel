@@ -501,31 +501,37 @@ impl TrafficBuffer {
 /// One statement, run in `write_rows`' transaction after the input's node
 /// rows are locked. Parameters: $1..$6 the rows, $7 per-key rate, $8
 /// MIN_PLAUSIBLE_SECS, $9 PLAUSIBLE_SLACK_SECS, $10 departed grace, $11
-/// default node rate, $12 window (lease + slack), $13 DEPARTED_SLACK_SECS.
+/// default node rate, $12 burst window, $13 DEPARTED_SLACK_SECS. All times
+/// are statement_timestamp() (never a transaction start that may precede a
+/// concurrent flusher's writes).
 ///
 /// Admission: only (node, user) pairs that are assigned (node_users) — or
 /// were until less than $10 s ago (node_users_departed: the final counters
 /// of an unassigned user arrive after the REMOVE) — are stored or billed: a
 /// node cannot bill users it does not serve.
 ///
+/// Credit window (R13): every cap counts time only back to the node's
+/// floor = now − $12 (the burst window), or further back to
+/// nodes.traffic_credit_floor while a reconnect credit is valid
+/// (traffic_credit_until > now; granted once per real disconnection by
+/// `grpc::set_online_row`, min(disconnected time, lease)). So an idle or
+/// under-using node never accumulates more than a burst window, and only a
+/// recorded connectivity gap lets delayed traffic bill in full.
+///
 /// Every cap only ever under-bills (the full counter is always stored):
-/// 1. per row (node, user, session), assigned pair: the increase over
-///    the stored value, clamped to $7 B/s × (time since the row was last
-///    written, at most the window, + $9 s), or for a new row × (time since
-///    the panel first saw it, at least $8 s, at most the window);
+/// 1. per row, assigned pair: the increase over the stored value, clamped
+///    to $7 × (now − max(row last written, floor) + $9 s), or for a new row
+///    × (time since first seen, at least $8 s, at most now − floor);
 /// 2. per row, departed pair (R12 D6): $7 × max(0, departed_at + $13 −
-///    start), start = when the row was last written (or first seen, DB or
-///    memory): only traffic plausibly carried before the unassignment. No
-///    minimum. Then per departed PAIR the sum over its sessions is clamped
-///    to $7 × max(0, departed_at + $13 − earliest start) (scaled, floored),
-///    so sessions cannot multiply the window;
-/// 3. per node (R6 L4, R12 D4), GCRA: tat = max(traffic_tat (NULL: now −
-///    60 s), now − window); the node's sum of (1)/(2) is clamped to
-///    node_rate × max(0, now − tat), every row scaled by the same factor
-///    and floored (Σ ≤ allowance exactly; no division when nothing was
-///    billed); traffic_tat := tat + billed / node_rate (monotonic). Kept in
-///    the DB: a restarted panel grants nothing extra; an outage accrues
-///    allowance up to the window.
+///    start), start = max(row last written or first seen, floor); then per
+///    departed PAIR the sum is clamped to $7 × max(0, departed_at + $13 −
+///    earliest start) minus what the pair was already billed since the
+///    departure (node_users_departed.billed_bytes, R13: cumulative across
+///    flushes);
+/// 3. per node (GCRA): tat = max(traffic_tat (NULL: now − 60 s), floor); the
+///    node's sum is clamped to node_rate × max(0, now − tat), rows scaled
+///    and floored (Σ ≤ allowance; no division when nothing was billed);
+///    traffic_tat := tat + billed / node_rate (monotonic).
 ///
 /// Returns the refused keys, the rows clamped by (1)/(2) and the nodes
 /// clamped by (3).
@@ -533,6 +539,15 @@ const FLUSH_SQL: &str = r#"
 WITH input AS (
     SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::text[], $4::bigint[], $5::bigint[], $6::float8[])
         AS t(node_id, user_id, session_id, up, down, age_secs)
+), nf AS (
+    SELECT n.id AS node_id,
+           COALESCE(n.traffic_max_rate_bytes_per_sec, $11)::numeric AS rate,
+           n.traffic_tat,
+           CASE WHEN n.traffic_credit_until > statement_timestamp()
+                THEN LEAST(statement_timestamp() - make_interval(secs => $12),
+                           COALESCE(n.traffic_credit_floor, 'infinity'::timestamptz))
+                ELSE statement_timestamp() - make_interval(secs => $12) END AS floor
+    FROM nodes n WHERE n.id IN (SELECT DISTINCT node_id FROM input)
 ), member AS (
     SELECT i.*, CASE WHEN a.assigned THEN NULL ELSE d.departed_at END AS departed_at
     FROM input i
@@ -541,33 +556,38 @@ WITH input AS (
                         AS assigned) a
     LEFT JOIN node_users_departed d
            ON d.node_id = i.node_id AND d.user_id = i.user_id
-          AND d.departed_at > now() - make_interval(secs => $10)
+          AND d.departed_at > statement_timestamp() - make_interval(secs => $10)
     WHERE a.assigned OR d.departed_at IS NOT NULL
 ), upsert AS (
     INSERT INTO traffic_counters AS c
         (node_id, user_id, session_id, up_bytes, down_bytes, updated_at, first_seen_at)
-    SELECT node_id, user_id, session_id, up, down, now(), now() FROM member
+    SELECT node_id, user_id, session_id, up, down, statement_timestamp(), statement_timestamp()
+    FROM member
     ON CONFLICT (node_id, user_id, session_id) DO UPDATE
     SET up_bytes   = GREATEST(c.up_bytes, EXCLUDED.up_bytes),
         down_bytes = GREATEST(c.down_bytes, EXCLUDED.down_bytes),
-        updated_at = EXCLUDED.updated_at
+        updated_at = GREATEST(c.updated_at, EXCLUDED.updated_at)
     RETURNING new.node_id, new.user_id, new.session_id,
               old.up_bytes AS old_up, old.down_bytes AS old_down, old.updated_at AS old_at,
               COALESCE(old.first_seen_at, old.updated_at) AS old_first,
               new.up_bytes AS new_up, new.down_bytes AS new_down
 ), rows AS (
-    SELECT u.node_id, u.user_id, u.old_at, m.age_secs, m.departed_at,
+    SELECT u.node_id, u.user_id, u.old_at, m.age_secs, m.departed_at, f.floor,
            GREATEST(u.new_up - COALESCE(u.old_up, 0), 0)::numeric
          + GREATEST(u.new_down - COALESCE(u.old_down, 0), 0)::numeric AS raw,
-           COALESCE(GREATEST(u.old_at, u.old_first),
-                    statement_timestamp() - make_interval(secs => m.age_secs)) AS start
+           GREATEST(COALESCE(GREATEST(u.old_at, u.old_first),
+                             statement_timestamp() - make_interval(secs => m.age_secs)),
+                    f.floor) AS start
     FROM upsert u JOIN member m USING (node_id, user_id, session_id)
+    JOIN nf f USING (node_id)
 ), per_row AS (
     SELECT node_id, user_id, departed_at, start, raw,
            CASE WHEN departed_at IS NULL THEN
                $7::numeric * COALESCE(
-                   LEAST(GREATEST(extract(epoch FROM now() - old_at), 0), $12::numeric) + $9::numeric,
-                   LEAST(GREATEST(age_secs::numeric, $8::numeric), $12::numeric))
+                   GREATEST(extract(epoch FROM statement_timestamp() - GREATEST(old_at, floor)), 0)
+                     + $9::numeric,
+                   LEAST(GREATEST(age_secs::numeric, $8::numeric),
+                         GREATEST(extract(epoch FROM statement_timestamp() - floor), 0)))
            ELSE
                $7::numeric * GREATEST(extract(epoch FROM
                    departed_at + make_interval(secs => $13) - start), 0)
@@ -576,27 +596,28 @@ WITH input AS (
 ), capped AS (
     SELECT node_id, user_id, departed_at, start, raw, cap, LEAST(raw, cap) AS amount FROM per_row
 ), pair AS (
-    SELECT node_id, user_id, sum(amount) AS total,
-           $7::numeric * GREATEST(extract(epoch FROM
-               min(departed_at) + make_interval(secs => $13) - min(start)), 0) AS allowance
-    FROM capped WHERE departed_at IS NOT NULL
-    GROUP BY node_id, user_id
+    SELECT c.node_id, c.user_id, sum(c.amount) AS total,
+           GREATEST($7::numeric * GREATEST(extract(epoch FROM
+               min(c.departed_at) + make_interval(secs => $13) - min(c.start)), 0)
+             - min(d.billed_bytes)::numeric, 0) AS allowance
+    FROM capped c
+    JOIN node_users_departed d ON d.node_id = c.node_id AND d.user_id = c.user_id
+    WHERE c.departed_at IS NOT NULL
+    GROUP BY c.node_id, c.user_id
 ), row2 AS (
-    SELECT c.node_id, c.user_id,
+    SELECT c.node_id, c.user_id, c.departed_at IS NOT NULL AS departed,
            CASE WHEN p.total > p.allowance THEN floor(c.amount * p.allowance / p.total)
                 ELSE c.amount END AS amount
     FROM capped c LEFT JOIN pair p USING (node_id, user_id)
 ), node_cap AS (
-    SELECT n.id AS node_id, g.rate, g.tat, t.total,
-           g.rate * GREATEST(extract(epoch FROM statement_timestamp() - g.tat), 0) AS allowance
-    FROM nodes n
-    JOIN (SELECT node_id, sum(amount) AS total FROM row2 GROUP BY node_id) t ON t.node_id = n.id
-    CROSS JOIN LATERAL (SELECT
-        COALESCE(n.traffic_max_rate_bytes_per_sec, $11)::numeric AS rate,
-        GREATEST(COALESCE(n.traffic_tat, statement_timestamp() - interval '60 seconds'),
-                 statement_timestamp() - make_interval(secs => $12)) AS tat) g
+    SELECT f.node_id, f.rate, g.tat, t.total,
+           f.rate * GREATEST(extract(epoch FROM statement_timestamp() - g.tat), 0) AS allowance
+    FROM nf f
+    JOIN (SELECT node_id, sum(amount) AS total FROM row2 GROUP BY node_id) t USING (node_id)
+    CROSS JOIN LATERAL (SELECT GREATEST(
+        COALESCE(f.traffic_tat, statement_timestamp() - interval '60 seconds'), f.floor) AS tat) g
 ), scaled AS (
-    SELECT r.node_id, r.user_id,
+    SELECT r.node_id, r.user_id, r.departed,
            CASE WHEN nc.total > nc.allowance THEN floor(r.amount * nc.allowance / nc.total)
                 ELSE r.amount END AS billed
     FROM row2 r JOIN node_cap nc USING (node_id)
@@ -607,6 +628,13 @@ WITH input AS (
     SET traffic_used_bytes = LEAST(u.traffic_used_bytes::numeric + p.delta, 9223372036854775807)::bigint
     FROM per_user p
     WHERE u.id = p.user_id AND p.delta > 0
+    RETURNING 1
+), departed_billed AS (
+    UPDATE node_users_departed d
+    SET billed_bytes = LEAST(d.billed_bytes::numeric + b.billed, 9223372036854775807)::bigint
+    FROM (SELECT node_id, user_id, sum(billed) AS billed FROM scaled
+          WHERE departed GROUP BY node_id, user_id) b
+    WHERE d.node_id = b.node_id AND d.user_id = b.user_id AND b.billed > 0
     RETURNING 1
 ), advanced AS (
     UPDATE nodes n
@@ -639,9 +667,9 @@ pub struct Rates {
     pub key: i64,
     /// traffic.node_max_rate_bytes_per_sec (per node, unless overridden).
     pub node: i64,
-    /// Longest period any cap may credit: the agent lease (an agent that
-    /// heard nothing for that long stopped serving) + slack.
-    pub window_secs: i64,
+    /// Burst window: the longest period any cap credits, except for a
+    /// recorded reconnect gap (traffic.node_burst_secs).
+    pub burst_secs: i64,
 }
 
 impl Rates {
@@ -649,7 +677,7 @@ impl Rates {
         Self {
             key: cfg.traffic.max_rate_bytes_per_sec.max(1),
             node: cfg.traffic.node_max_rate_bytes_per_sec.max(1),
-            window_secs: cfg.grpc.lease_seconds() as i64 + PLAUSIBLE_SLACK_SECS,
+            burst_secs: cfg.traffic.node_burst_secs.max(1) as i64,
         }
     }
 }
@@ -692,7 +720,7 @@ async fn write_rows(
             .bind(PLAUSIBLE_SLACK_SECS)
             .bind(grace_secs as f64)
             .bind(rates.node)
-            .bind(rates.window_secs)
+            .bind(rates.burst_secs)
             .bind(DEPARTED_SLACK_SECS)
             .fetch_one(&mut *tx)
             .await?;
@@ -1036,11 +1064,11 @@ mod db_tests {
 
     /// Default plausibility cap (10 Gbit/s).
     const RATE: i64 = 1_250_000_000;
-    /// Default rates (per key and per node), window = 24h lease + slack.
+    /// Default rates (per key and per node) and burst window.
     const RATES: Rates = Rates {
         key: RATE,
         node: RATE,
-        window_secs: 86_400 + PLAUSIBLE_SLACK_SECS,
+        burst_secs: crate::config::DEFAULT_NODE_BURST_SECS as i64,
     };
 
     trait Flush {
@@ -1409,7 +1437,7 @@ mod db_tests {
         let unlimited = Rates {
             key: i64::MAX,
             node: i64::MAX,
-            window_secs: RATES.window_secs,
+            burst_secs: RATES.burst_secs,
         };
         flush_buffer(&db.pool, &b, unlimited, None).await.unwrap();
         assert_eq!(db.used(u).await, i64::MAX);
@@ -1821,12 +1849,17 @@ mod db_tests {
             .await
             .unwrap();
         }
-        // The node itself was last billed 2 h ago as well (panel outage).
-        sqlx::query("UPDATE nodes SET traffic_tat = now() - interval '2 hours' WHERE id = $1")
-            .bind(n)
-            .execute(&db.pool)
-            .await
-            .unwrap();
+        // A 2 h outage: the node was last seen 2 h ago and was last billed
+        // then; its agent reconnects (R13 reconnect credit).
+        sqlx::query(
+            "UPDATE nodes SET traffic_tat = now() - interval '2 hours', status = 'offline', \
+             last_seen_at = now() - interval '2 hours' WHERE id = $1",
+        )
+        .bind(n)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        crate::grpc::reconnect_for_test(&db.pool, n).await;
         let big: u64 = 8_000_000_000_000; // 8 TB < 10 Gbit/s * 2 h = 9 TB
         let b = buf(&db).await;
         b.update(n, "s1", &report(u, big, 0));
@@ -1960,7 +1993,8 @@ mod db_tests {
         let tat = tat_from_now(&db, n).await;
         assert!((-1.0..=0.0).contains(&tat), "allowance used up: tat {tat}");
 
-        // Unequal: 1:2:3 TB on a second node.
+        // Unequal: 1:2:3 x 20 GB on a second node (below the per-row cap of
+        // a burst window, so only the node cap scales them).
         let n2 = db.node().await;
         for (i, &u) in us.iter().enumerate() {
             db.assign(n2, u).await;
@@ -1972,7 +2006,7 @@ mod db_tests {
         let rows: Vec<FlushRow> = us
             .iter()
             .enumerate()
-            .map(|(i, &u)| row(n2, u, "s2", (i as i64 + 1) * TB, 1.0))
+            .map(|(i, &u)| row(n2, u, "s2", (i as i64 + 1) * 20_000_000_000, 1.0))
             .collect();
         write(&db, &rows).await;
         let after = futures_join(&db, &us).await;
@@ -2184,6 +2218,117 @@ mod db_tests {
         write(&db, &rows).await;
         let many = db.used(u3).await;
         assert!(many <= window(81), "16 sessions billed {many}");
+        db.drop().await;
+    }
+
+    /// RT3b-1: the D6 per-pair window is per flush statement: sessions
+    /// flushed in separate flushes each get the full window.
+    #[tokio::test]
+    async fn rt_departed_window_multiplies_across_flushes() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n3, u3) = db.member().await;
+        set_tat(&db, n3, Some(86_000.0)).await;
+        for i in 0..16 {
+            seed(&db, n3, u3, &format!("s{i}"), 0, 100.0).await;
+        }
+        unassign(&db, n3, u3, 50.0).await;
+        for i in 0..16 {
+            write(&db, &[row(n3, u3, &format!("s{i}"), 1 << 55, 100.0)]).await;
+        }
+        let many = db.used(u3).await;
+        eprintln!(
+            "RT3b-1 billed {many} = {:.1} s of rate (window 80 s)",
+            many as f64 / RATE as f64
+        );
+        assert!(
+            many <= RATE * 81,
+            "16 sessions across 16 flushes billed {many}"
+        );
+        db.drop().await;
+    }
+
+    /// RT3b-2: an honest node running below its cap drifts its GCRA tat
+    /// back to the window floor, so a burst of (window) x rate is always
+    /// available: the node cap bounds only the long-run average.
+    #[tokio::test]
+    async fn rt_gcra_honest_drift_gives_full_burst() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = db.member().await;
+        let victim = db.user().await;
+        db.assign(n, victim).await;
+        // pre-seeded idle session of the victim
+        seed(&db, n, victim, "idle", 0, 0.0).await;
+        let mut cum = 0i64;
+        let mut first = true;
+        for k in 0..720 {
+            elapse(&db, 5.0).await;
+            cum += RATE / 10 * 5; // 10% of the node rate
+            let age = if first { 5.0 } else { 5.0 * k as f64 };
+            first = false;
+            write(&db, &[row(n, u, "s1", cum, age)]).await;
+        }
+        let tat = tat_from_now(&db, n).await;
+        eprintln!("RT3b-2 after 1h at 10%: tat {tat:.0}s from now");
+        write(&db, &[row(n, victim, "idle", 1 << 55, 3600.0)]).await;
+        let dumped = db.used(victim).await;
+        eprintln!(
+            "RT3b-2 one flush billed victim {dumped} = {:.0} s of node rate",
+            dumped as f64 / RATE as f64
+        );
+        assert!(
+            dumped <= RATE * 120,
+            "one flush billed {} s worth",
+            dumped / RATE
+        );
+        db.drop().await;
+    }
+
+    /// R13: the reconnect credit equals the real disconnected time, is
+    /// granted once, and repeated reconnects do not mint more.
+    #[tokio::test]
+    async fn reconnect_credit_is_the_real_gap_and_not_repeatable() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = db.member().await;
+        seed(&db, n, u, "s1", 0, 86_000.0).await;
+        sqlx::query(
+            "UPDATE nodes SET status = 'offline', last_seen_at = now() - interval '600 seconds', \
+             traffic_tat = now() - interval '1 day' WHERE id = $1",
+        )
+        .bind(n)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        for _ in 0..20 {
+            crate::grpc::reconnect_for_test(&db.pool, n).await; // flapping
+        }
+        write(&db, &[row(n, u, "s1", TB, 1.0)]).await;
+        let billed = db.used(u).await;
+        assert!(
+            billed <= RATE * 601,
+            "credit beyond the 600 s gap: {billed}"
+        );
+        assert!(billed >= RATE * 599, "the gap is credited: {billed}");
+        // Credit used up; after it expires, more reconnects mint (almost)
+        // nothing: the node is back to the burst window from its tat.
+        sqlx::query(
+            "UPDATE nodes SET traffic_credit_until = now() - interval '1 second' WHERE id = $1",
+        )
+        .bind(n)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        for _ in 0..20 {
+            crate::grpc::reconnect_for_test(&db.pool, n).await;
+        }
+        write(&db, &[row(n, u, "s1", 2 * TB, 1.0)]).await;
+        let more = db.used(u).await - billed;
+        assert!(more <= RATE, "reconnects minted {more}");
         db.drop().await;
     }
 }

@@ -56,16 +56,23 @@ pub struct TrafficConfig {
     /// nodes.traffic_flushed_at (DB). A node's
     /// traffic_max_rate_bytes_per_sec overrides it. Default 10 Gbit/s.
     pub node_max_rate_bytes_per_sec: i64,
+    /// Burst window of the billing caps (R13): a node (or row) is credited
+    /// at most this much elapsed time, except for a recorded reconnect gap
+    /// (then up to the lease, once). Default 120 s.
+    pub node_burst_secs: u64,
     /// How long after an unassignment the user's final counters from that
     /// node are still billed (node_users_departed). Default 15 min.
     pub departed_grace_secs: u64,
 }
+
+pub const DEFAULT_NODE_BURST_SECS: u64 = 120;
 
 impl Default for TrafficConfig {
     fn default() -> Self {
         Self {
             max_rate_bytes_per_sec: 1_250_000_000,
             node_max_rate_bytes_per_sec: 1_250_000_000,
+            node_burst_secs: DEFAULT_NODE_BURST_SECS,
             departed_grace_secs: crate::traffic::DEFAULT_DEPARTED_GRACE_SECS,
         }
     }
