@@ -49,7 +49,7 @@ export const patch = <T,>(path: string, body: unknown) =>
 export const del = (path: string) => api<void>(path, { method: "DELETE" });
 
 // Auth endpoints live at /{prefix}/auth/*, NOT under /api/v1 (see src/web.rs).
-// Do not route them through get/post: that yields /api/v1/auth/* -> decoy 404.
+// Do not route them through get/post: that yields /api/v1/auth/* -> 404.
 export const login = (body: { login: string; password: string }) =>
   request<unknown>(`${authBase}/login`, { method: "POST", body: JSON.stringify(body) });
 export const logout = () => request<void>(`${authBase}/logout`, { method: "POST" });
