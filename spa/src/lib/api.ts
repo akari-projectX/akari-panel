@@ -8,7 +8,11 @@ export const appBase: string = (() => {
   return `${base}${APP_MARK}`;
 })();
 
-export const apiBase: string = `${appBase.replace(/\/app$/, "")}/api/v1`;
+// `/{prefix}`: the secret route prefix root. Not everything lives under
+// /api/v1 — the auth endpoints are mounted at `/{prefix}/auth/*`.
+export const prefixBase: string = appBase.replace(/\/app$/, "");
+export const apiBase: string = `${prefixBase}/api/v1`;
+export const authBase: string = `${prefixBase}/auth`;
 
 export class ApiError extends Error {
   status: number;
@@ -18,8 +22,8 @@ export class ApiError extends Error {
   }
 }
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${apiBase}${path}`, {
+async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, {
     credentials: "same-origin",
     headers: init?.body ? { "content-type": "application/json" } : undefined,
     ...init,
@@ -32,6 +36,9 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+// REST helpers: `path` is relative to apiBase (/{prefix}/api/v1).
+const api = <T,>(path: string, init?: RequestInit) => request<T>(`${apiBase}${path}`, init);
+
 export const get = <T,>(path: string) => api<T>(path);
 export const post = <T,>(path: string, body: unknown) =>
   api<T>(path, { method: "POST", body: JSON.stringify(body) });
@@ -40,6 +47,12 @@ export const put = <T,>(path: string, body: unknown) =>
 export const patch = <T,>(path: string, body: unknown) =>
   api<T>(path, { method: "PATCH", body: JSON.stringify(body) });
 export const del = (path: string) => api<void>(path, { method: "DELETE" });
+
+// Auth endpoints live at /{prefix}/auth/*, NOT under /api/v1 (see src/web.rs).
+// Do not route them through get/post: that yields /api/v1/auth/* -> decoy 404.
+export const login = (body: { login: string; password: string }) =>
+  request<unknown>(`${authBase}/login`, { method: "POST", body: JSON.stringify(body) });
+export const logout = () => request<void>(`${authBase}/logout`, { method: "POST" });
 
 // --- API shapes (mirror of panel/src/api.rs views) ---
 

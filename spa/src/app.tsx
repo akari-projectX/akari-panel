@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { appBase, get, post } from "./lib/api";
+import { appBase, get, logout as apiLogout } from "./lib/api";
 import { navigate } from "./lib/router";
 import { Login } from "./pages/login";
 import { AdminUsers } from "./pages/admin-users";
@@ -18,6 +18,7 @@ function App() {
   const [view, setView] = useState<View>(() =>
     location.pathname.endsWith("/nodes") ? "nodes" : "users",
   );
+  const [logoutError, setLogoutError] = useState<string | null>(null);
 
   if (me.isPending) return null;
   if (me.isError) return <Login />;
@@ -26,8 +27,17 @@ function App() {
   const isAdmin = user.role === "admin";
 
   async function logout() {
-    await post("/auth/logout", undefined).catch(() => undefined);
-    await queryClient.invalidateQueries({ queryKey: ["me"] });
+    setLogoutError(null);
+    try {
+      await apiLogout();
+    } catch (err) {
+      // Surface it: a silently swallowed failure here is how REVIEW P0 #1
+      // (logout posted to a decoy 404) went unnoticed.
+      setLogoutError(err instanceof Error ? `Log out failed: ${err.message}` : "Log out failed");
+      return;
+    }
+    // Drop every cached query so no previous-user data survives the session.
+    queryClient.clear();
     navigate(`${appBase}/`);
   }
 
@@ -51,6 +61,11 @@ function App() {
           <div className="flex items-center gap-3">
             <Badge variant="secondary">{user.role}</Badge>
             <span className="text-sm text-muted-foreground">{user.login}</span>
+            {logoutError && (
+              <span role="alert" className="text-sm text-destructive">
+                {logoutError}
+              </span>
+            )}
             <Button variant="outline" size="sm" onClick={logout}>
               Log out
             </Button>

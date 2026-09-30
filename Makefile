@@ -19,7 +19,7 @@ agent-build:
 
 check:
 	cargo fmt --check && cargo clippy -- -D warnings
-	cd spa && npx tsc --noEmit
+	cd spa && npx tsc --noEmit && node scripts/check-auth-paths.mjs
 
 smoke: dev-up spa panel agent-build
 	./smoke.sh
