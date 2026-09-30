@@ -24,6 +24,7 @@
 //! (pre-2026-10 agents) are rejected; agent and panel ship together.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
@@ -52,6 +53,11 @@ const MAX_SESSION_LEN: usize = 128;
 /// above legitimate rebuild rates, while bounding what a compromised node
 /// can make the panel store and bill (REVIEW Phase C F1).
 const MAX_DIRTY_SESSIONS_PER_NODE: usize = 16;
+
+/// A report may carry at most this many rows beyond 4x the node's assigned
+/// users (slack for assignments the cache has not seen yet); larger reports
+/// are dropped whole.
+const REPORT_SLACK_ROWS: usize = 64;
 
 /// A key seen for the first time is assumed to have been counting for at
 /// least this long when applying the plausibility cap.
@@ -110,6 +116,15 @@ fn valid_session_id(s: &str) -> bool {
 #[derive(Default)]
 pub struct TrafficBuffer {
     entries: DashMap<Key, Entry>,
+    /// Entry counts per node and per (node, session), so admission checks
+    /// never scan `entries`.
+    node_entries: DashMap<Uuid, usize>,
+    session_entries: DashMap<(Uuid, String), usize>,
+    /// node -> users assigned to it (node_users). Loaded when an agent
+    /// session starts and refreshed on every notify/reconcile. Reports for
+    /// nodes without a loaded set, and rows for users outside it, are
+    /// dropped before they touch memory (REVIEW Phase B H1).
+    members: DashMap<Uuid, Arc<HashSet<Uuid>>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -149,38 +164,128 @@ impl TrafficBuffer {
             tracing::warn!(node = %node_id, len = session_id.len(), "traffic report with invalid session id dropped");
             return;
         }
+        let Some(members) = self.members.get(&node_id).map(|m| m.clone()) else {
+            tracing::warn!(node = %node_id, "traffic report before node membership was loaded; dropped");
+            return;
+        };
+        if report.users.len() > 4 * members.len() + REPORT_SLACK_ROWS {
+            tracing::warn!(node = %node_id, rows = report.users.len(), assigned = members.len(),
+                "oversized traffic report dropped");
+            return;
+        }
+        // Hard bound on memory per node: every assigned user in every
+        // admissible session.
+        let max_entries = members.len().max(1) * MAX_DIRTY_SESSIONS_PER_NODE;
+        let session = session_id.to_string();
         for u in &report.users {
             let Ok(user_id) = Uuid::parse_str(&u.user_id) else {
                 tracing::warn!(node = %node_id, user = %u.user_id, "traffic report for unparseable user id");
                 continue;
             };
+            if !members.contains(&user_id) {
+                tracing::debug!(node = %node_id, user = %user_id, "traffic for unassigned user dropped");
+                continue;
+            }
             let (Ok(up), Ok(down)) = (i64::try_from(u.up_bytes), i64::try_from(u.down_bytes))
             else {
                 tracing::warn!(node = %node_id, user = %user_id, up = u.up_bytes, down = u.down_bytes,
                     "traffic counters exceed i64::MAX; row dropped");
                 continue;
             };
-            let key = (node_id, user_id, session_id.to_string());
-            if !self.entries.contains_key(&key)
-                && !self.session_known(node_id, session_id)
-                && self.dirty_sessions(node_id) >= MAX_DIRTY_SESSIONS_PER_NODE
-            {
-                tracing::warn!(node = %node_id, session = %session_id,
-                    "too many unpersisted sessions on node; report for new session dropped");
-                return;
+            let key = (node_id, user_id, session.clone());
+            if !self.entries.contains_key(&key) {
+                if !self.session_known(node_id, session_id)
+                    && self.dirty_sessions(node_id) >= MAX_DIRTY_SESSIONS_PER_NODE
+                {
+                    tracing::warn!(node = %node_id, session = %session_id,
+                        "too many unpersisted sessions on node; report for new session dropped");
+                    return;
+                }
+                if self.node_entries.get(&node_id).map_or(0, |c| *c) >= max_entries
+                    && !self.evict_oldest_clean(node_id)
+                {
+                    tracing::warn!(node = %node_id, "traffic entry cap reached for node; row dropped");
+                    continue;
+                }
             }
-            let mut e = self.entries.entry(key).or_insert_with(|| Entry::new(now));
+            let mut inserted = false;
+            let mut e = self.entries.entry(key).or_insert_with(|| {
+                inserted = true;
+                Entry::new(now)
+            });
             if e.observe(up, down, now) {
                 tracing::warn!(node = %node_id, user = %user_id, session = %session_id,
                     "traffic counters went backwards within a session; ignored");
             }
+            drop(e);
+            if inserted {
+                *self.node_entries.entry(node_id).or_insert(0) += 1;
+                *self
+                    .session_entries
+                    .entry((node_id, session.clone()))
+                    .or_insert(0) += 1;
+            }
+        }
+    }
+
+    /// Test helper: add users to a node's assigned set.
+    #[cfg(test)]
+    fn permit(&self, node_id: Uuid, users: &[Uuid]) {
+        let mut set: HashSet<Uuid> = self
+            .members
+            .get(&node_id)
+            .map(|m| (**m).clone())
+            .unwrap_or_default();
+        set.extend(users.iter().copied());
+        self.set_members(node_id, set);
+    }
+
+    /// Replace the assigned-user set of a node.
+    pub fn set_members(&self, node_id: Uuid, users: HashSet<Uuid>) {
+        self.members.insert(node_id, Arc::new(users));
+    }
+
+    /// Bookkeeping for a removed entry.
+    fn forget(&self, key: &Key) {
+        if let Some(mut c) = self.node_entries.get_mut(&key.0) {
+            *c = c.saturating_sub(1);
+        }
+        self.node_entries.remove_if(&key.0, |_, c| *c == 0);
+        let sk = (key.0, key.2.clone());
+        if let Some(mut c) = self.session_entries.get_mut(&sk) {
+            *c = c.saturating_sub(1);
+        }
+        self.session_entries.remove_if(&sk, |_, c| *c == 0);
+    }
+
+    /// At the per-node cap: make room by dropping the node's least recently
+    /// touched fully-persisted entry (always safe: billing compares against
+    /// the DB row). Scans, but only runs at the cap.
+    fn evict_oldest_clean(&self, node_id: Uuid) -> bool {
+        let victim = self
+            .entries
+            .iter()
+            .filter(|e| e.key().0 == node_id && !e.value().dirty())
+            .min_by_key(|e| e.value().touched)
+            .map(|e| e.key().clone());
+        match victim {
+            Some(k) => {
+                self.remove(&k);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn remove(&self, key: &Key) {
+        if self.entries.remove(key).is_some() {
+            self.forget(key);
         }
     }
 
     fn session_known(&self, node_id: Uuid, session_id: &str) -> bool {
-        self.entries
-            .iter()
-            .any(|e| e.key().0 == node_id && e.key().2 == session_id)
+        self.session_entries
+            .contains_key(&(node_id, session_id.to_string()))
     }
 
     /// Distinct sessions of `node_id` with at least one unpersisted value.
@@ -245,7 +350,7 @@ impl TrafficBuffer {
             None => false,
         };
         if give_up {
-            self.entries.remove(&r.key());
+            self.remove(&r.key());
             tracing::error!(node = %r.node_id, user = %r.user_id, session = %r.session_id,
                 up = r.up, down = r.down, "traffic row repeatedly rejected by database; dropped");
         }
@@ -253,8 +358,17 @@ impl TrafficBuffer {
 
     /// Evict fully persisted, idle entries.
     fn prune(&self, now: Instant) {
-        self.entries
-            .retain(|_, e| e.dirty() || now.duration_since(e.touched) < PRUNE_IDLE);
+        let mut gone = Vec::new();
+        self.entries.retain(|k, e| {
+            let keep = e.dirty() || now.duration_since(e.touched) < PRUNE_IDLE;
+            if !keep {
+                gone.push(k.clone());
+            }
+            keep
+        });
+        for k in &gone {
+            self.forget(k);
+        }
     }
 }
 
@@ -263,7 +377,8 @@ impl TrafficBuffer {
 /// users it does not serve. Upsert the high-water marks and bill the
 /// increase over what was stored before, clamped to `$7` bytes/s over the
 /// time since the row was last written (+ PLAUSIBLE_SLACK_SECS), or since
-/// first sighting (at least MIN_PLAUSIBLE_SECS) for a new row. The full counter is stored even when the bill is
+/// first sighting (at least MIN_PLAUSIBLE_SECS) for a new row. Returns the
+/// keys it refused (unassigned pairs) and the number of clamped rows. The full counter is stored even when the bill is
 /// clamped, so clamping can only under-bill. Returns (dropped, clamped).
 const FLUSH_SQL: &str = r#"
 WITH input AS (
@@ -299,22 +414,28 @@ WITH input AS (
     WHERE u.id = p.user_id AND p.delta > 0
     RETURNING 1
 )
-SELECT (SELECT count(*) FROM input) - (SELECT count(*) FROM member) AS dropped,
+SELECT coalesce(array_agg(i.node_id), '{}') AS dropped_nodes,
+       coalesce(array_agg(i.user_id), '{}') AS dropped_users,
+       coalesce(array_agg(i.session_id), '{}') AS dropped_sessions,
        (SELECT count(*) FROM per_row WHERE raw > cap) AS clamped
+FROM input i
+WHERE NOT EXISTS (SELECT 1 FROM member m
+                  WHERE m.node_id = i.node_id AND m.user_id = i.user_id AND m.session_id = i.session_id)
 "#;
 
+/// Writes `rows`; returns the keys the database refused as unassigned.
 async fn write_rows(
     pg: &sqlx::PgPool,
     rows: &[FlushRow],
     max_rate: i64,
-) -> Result<(), sqlx::Error> {
+) -> Result<Vec<Key>, sqlx::Error> {
     let nodes: Vec<Uuid> = rows.iter().map(|r| r.node_id).collect();
     let users: Vec<Uuid> = rows.iter().map(|r| r.user_id).collect();
     let sessions: Vec<&str> = rows.iter().map(|r| r.session_id.as_str()).collect();
     let ups: Vec<i64> = rows.iter().map(|r| r.up).collect();
     let downs: Vec<i64> = rows.iter().map(|r| r.down).collect();
     let ages: Vec<f64> = rows.iter().map(|r| r.age_secs).collect();
-    let (dropped, clamped): (i64, i64) = sqlx::query_as(FLUSH_SQL)
+    let (dn, du, ds, clamped): (Vec<Uuid>, Vec<Uuid>, Vec<String>, i64) = sqlx::query_as(FLUSH_SQL)
         .bind(&nodes)
         .bind(&users)
         .bind(&sessions)
@@ -326,9 +447,9 @@ async fn write_rows(
         .bind(PLAUSIBLE_SLACK_SECS)
         .fetch_one(pg)
         .await?;
-    if dropped > 0 {
+    if !dn.is_empty() {
         tracing::warn!(
-            rows = dropped,
+            rows = dn.len(),
             "traffic for unassigned (node, user) pairs not billed"
         );
     }
@@ -339,7 +460,12 @@ async fn write_rows(
             "implausible traffic deltas clamped"
         );
     }
-    Ok(())
+    Ok(dn
+        .into_iter()
+        .zip(du)
+        .zip(ds)
+        .map(|((n, u), s)| (n, u, s))
+        .collect())
 }
 
 /// Only data/integrity errors (SQLSTATE class 22/23) are properties of the
@@ -368,18 +494,27 @@ async fn flush_buffer(
         return Ok(0);
     }
     match write_rows(pg, &rows, max_rate).await {
-        Ok(()) => {
+        Ok(dropped) => {
             buf.mark_flushed(&rows);
-            Ok(rows.len())
+            // Refused rows are removed, not kept as "flushed": they must
+            // not occupy memory or admission slots.
+            for k in &dropped {
+                buf.remove(k);
+            }
+            Ok(rows.len() - dropped.len())
         }
         Err(e) if is_row_poison(&e) => {
             tracing::warn!(error = %e, rows = rows.len(), "traffic batch rejected; retrying row by row");
             let mut written = 0;
             for r in &rows {
                 match write_rows(pg, std::slice::from_ref(r), max_rate).await {
-                    Ok(()) => {
-                        buf.mark_flushed(std::slice::from_ref(r));
-                        written += 1;
+                    Ok(dropped) => {
+                        if dropped.is_empty() {
+                            buf.mark_flushed(std::slice::from_ref(r));
+                            written += 1;
+                        } else {
+                            buf.remove(&r.key());
+                        }
                     }
                     Err(e) if is_row_poison(&e) => {
                         tracing::warn!(error = %e, node = %r.node_id, user = %r.user_id, "traffic row rejected");
@@ -392,6 +527,20 @@ async fn flush_buffer(
         }
         Err(e) => Err(e.into()),
     }
+}
+
+/// Load `node_id`'s assigned users into the buffer's membership cache.
+pub async fn refresh_members(
+    pg: &sqlx::PgPool,
+    buf: &TrafficBuffer,
+    node_id: Uuid,
+) -> sqlx::Result<()> {
+    let users: Vec<Uuid> = sqlx::query_scalar("SELECT user_id FROM node_users WHERE node_id = $1")
+        .bind(node_id)
+        .fetch_all(pg)
+        .await?;
+    buf.set_members(node_id, users.into_iter().collect());
+    Ok(())
 }
 
 pub async fn flush_loop(state: AppState) {
@@ -443,7 +592,9 @@ mod tests {
     }
 
     fn ids() -> (TrafficBuffer, Uuid, Uuid) {
-        (TrafficBuffer::new(), Uuid::new_v4(), Uuid::new_v4())
+        let (b, n, u) = (TrafficBuffer::new(), Uuid::new_v4(), Uuid::new_v4());
+        b.permit(n, &[u]);
+        (b, n, u)
     }
 
     fn rows(b: &TrafficBuffer) -> Vec<(String, i64, i64)> {
@@ -510,6 +661,7 @@ mod tests {
     fn repeatedly_rejected_row_is_dropped_others_unaffected() {
         let (b, n, u) = ids();
         let u2 = Uuid::new_v4();
+        b.permit(n, &[u2]);
         b.update(n, "s1", &report(&[(u, 1, 1), (u2, 2, 2)]));
         let bad = b.snapshot().into_iter().find(|r| r.user_id == u).unwrap();
         for _ in 0..MAX_ROW_FAILURES - 1 {
@@ -543,14 +695,16 @@ mod tests {
         b.update(n, "a\0b", &report(&[(u, 1, 1)]));
         b.update(n, &"x".repeat(MAX_SESSION_LEN + 1), &report(&[(u, 1, 1)]));
         assert!(b.entries.is_empty());
-        let mut r = report(&[(u, u64::MAX, 7), (Uuid::new_v4(), 3, 4)]);
+        let v = Uuid::new_v4();
+        b.permit(n, &[v]);
+        let mut r = report(&[(u, u64::MAX, 7), (v, 3, 4), (Uuid::new_v4(), 5, 5)]);
         r.users.push(UserTraffic {
             user_id: "not-a-uuid".into(),
             up_bytes: 9,
             down_bytes: 9,
         });
         b.update(n, "s1", &r);
-        assert_eq!(b.entries.len(), 1, "only the valid row is kept");
+        assert_eq!(b.entries.len(), 1, "only the valid, assigned row is kept");
         assert!(!b.entries.contains_key(&(n, u, "s1".into())));
         let max = i64::MAX as u64;
         b.update(n, "s1", &report(&[(u, max, max)]));
@@ -564,6 +718,19 @@ mod db_tests {
     use super::*;
     use crate::gen::UserTraffic;
     use crate::testdb::TestDb;
+
+    /// A buffer whose membership cache holds every current assignment.
+    async fn buf(db: &TestDb) -> TrafficBuffer {
+        let b = TrafficBuffer::new();
+        let nodes: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM nodes")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+        for n in nodes {
+            refresh_members(&db.pool, &b, n).await.unwrap();
+        }
+        b
+    }
 
     /// Default plausibility cap (10 Gbit/s).
     const RATE: i64 = 1_250_000_000;
@@ -595,14 +762,14 @@ mod db_tests {
             return;
         };
         let (n, u) = db.member().await;
-        let before = TrafficBuffer::new();
+        let before = buf(&db).await;
         before.update(n, "s1", &report(u, 1000, 5000));
         db.flush(&before).await;
         // Reported but never flushed: the panel dies here.
         before.update(n, "s1", &report(u, 1200, 5500));
         drop(before);
 
-        let after = TrafficBuffer::new();
+        let after = buf(&db).await;
         after.update(n, "s1", &report(u, 1300, 6000));
         db.flush(&after).await;
         assert_eq!(db.used(u).await, 1300 + 6000);
@@ -615,7 +782,7 @@ mod db_tests {
             return;
         };
         let (n, u) = db.member().await;
-        let b = TrafficBuffer::new();
+        let b = buf(&db).await;
         b.update(n, "s1", &report(u, 100, 200));
         let rows = b.snapshot();
         // Ambiguous commit: written, but the panel thinks it failed.
@@ -633,14 +800,14 @@ mod db_tests {
             return;
         };
         let (n, u) = db.member().await;
-        let b = TrafficBuffer::new();
+        let b = buf(&db).await;
         b.update(n, "s1", &report(u, 100, 100));
         db.flush(&b).await;
         b.update(n, "s1", &report(u, 400, 100));
         let _lost = b.snapshot(); // transaction failed
                                   // Even if memory were wiped (eviction/restart), the next cumulative
                                   // report carries the missed delta.
-        let fresh = TrafficBuffer::new();
+        let fresh = buf(&db).await;
         fresh.update(n, "s1", &report(u, 450, 150));
         db.flush(&fresh).await;
         assert_eq!(db.used(u).await, 450 + 150);
@@ -653,7 +820,7 @@ mod db_tests {
             return;
         };
         let (n, u) = db.member().await;
-        let b = TrafficBuffer::new();
+        let b = buf(&db).await;
         for i in 1..=5u64 {
             b.update(n, "sa", &report(u, 100 * i, 0));
             db.flush(&b).await;
@@ -672,14 +839,14 @@ mod db_tests {
             return;
         };
         let (n, u) = db.member().await;
-        let b = TrafficBuffer::new();
+        let b = buf(&db).await;
         b.update(n, "s1", &report(u, 200, 0));
         b.update(n, "s1", &report(u, 150, 0)); // stale, out of order
         b.update(n, "s1", &report(u, 300, 0));
         db.flush(&b).await;
         assert_eq!(db.used(u).await, 300);
         // A second panel instance (fresh memory) replaying the stale value.
-        let other = TrafficBuffer::new();
+        let other = buf(&db).await;
         other.update(n, "s1", &report(u, 150, 0));
         db.flush(&other).await;
         assert_eq!(db.used(u).await, 300);
@@ -707,12 +874,12 @@ mod db_tests {
         let feed = |b: &TrafficBuffer, _hello: &str, r: TrafficReport| {
             b.update(n, &r.session_id, &r);
         };
-        let panel = TrafficBuffer::new();
+        let panel = buf(&db).await;
         feed(&panel, "s0", rep("s1", 1000));
         db.flush(&panel).await;
         feed(&panel, "s1", rep("s1", 1500)); // reconnected
         db.flush(&panel).await;
-        let panel = TrafficBuffer::new(); // panel restart
+        let panel = buf(&db).await; // panel restart
         feed(&panel, "s1", rep("s1", 1600));
         db.flush(&panel).await;
         feed(&panel, "s1", rep("s1", 1700)); // final report before rebuild
@@ -730,7 +897,7 @@ mod db_tests {
             return;
         };
         let (n, u) = db.member().await;
-        let b = TrafficBuffer::new();
+        let b = buf(&db).await;
         let mut truth = 0;
         for k in 1..=10u64 {
             truth = 1000 * k;
@@ -754,7 +921,7 @@ mod db_tests {
         };
         let (n, u) = db.member().await;
         for v in [1000u64, 900, 2000, 1900, 3000] {
-            let b = TrafficBuffer::new();
+            let b = buf(&db).await;
             b.update(n, "s1", &report(u, v, 0));
             db.flush(&b).await;
         }
@@ -779,7 +946,7 @@ mod db_tests {
         }
         let mut errors = 0;
         for round in 1..=30u64 {
-            let (a, b) = (TrafficBuffer::new(), TrafficBuffer::new());
+            let (a, b) = (buf(&db).await, buf(&db).await);
             for (i, &u) in us.iter().enumerate() {
                 a.update(n, "s1", &report(u, round * 100 + i as u64, 0));
             }
@@ -809,7 +976,7 @@ mod db_tests {
             return;
         };
         let (n, u) = db.member().await;
-        let b = TrafficBuffer::new();
+        let b = buf(&db).await;
         b.update(n, "s1", &report(u, 1000, 0));
         db.flush(&b).await;
         b.update(n, "s1", &report(u, 1500, 0));
@@ -839,7 +1006,7 @@ mod db_tests {
         let (n, good, bad) = (db.node().await, db.user().await, db.user().await);
         db.assign(n, good).await;
         db.assign(n, bad).await;
-        let b = TrafficBuffer::new();
+        let b = buf(&db).await;
         b.update(n, "s1", &report(good, 10, 10));
         // Bypass validation to plant a row PostgreSQL rejects (NUL in TEXT).
         b.entries
@@ -866,7 +1033,7 @@ mod db_tests {
             return;
         };
         let (n, u) = db.member().await;
-        let b = TrafficBuffer::new();
+        let b = buf(&db).await;
         let max = i64::MAX as u64;
         b.update(n, "s1", &report(u, max, max));
         flush_buffer(&db.pool, &b, i64::MAX).await.unwrap();
@@ -881,7 +1048,7 @@ mod db_tests {
             return;
         };
         let (n, u) = (db.node().await, db.user().await);
-        let b = TrafficBuffer::new();
+        let b = buf(&db).await;
         b.update(n, "s1", &report(u, 5, 5));
         db.flush(&b).await;
         assert_eq!(db.used(u).await, 0);
@@ -900,11 +1067,11 @@ mod db_tests {
             return;
         };
         let (n, victim) = (db.node().await, db.user().await);
-        let b = TrafficBuffer::new();
+        let b = buf(&db).await;
         for i in 0..1000 {
             b.update(n, &format!("mint-{i}"), &report(victim, 1_000_000_000, 0));
         }
-        assert_eq!(b.entries.len(), MAX_DIRTY_SESSIONS_PER_NODE);
+        assert_eq!(b.entries.len(), 0, "unassigned victim never enters memory");
         db.flush(&b).await;
         assert_eq!(db.used(victim).await, 0);
         let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM traffic_counters")
@@ -923,7 +1090,7 @@ mod db_tests {
             return;
         };
         let (n, u) = db.member().await;
-        let b = TrafficBuffer::new();
+        let b = buf(&db).await;
         for i in 0..100 {
             b.update(n, &format!("mint-{i}"), &report(u, 1 << 50, 0));
         }
@@ -956,7 +1123,7 @@ mod db_tests {
             return;
         };
         let (n, u) = db.member().await;
-        let b = TrafficBuffer::new();
+        let b = buf(&db).await;
         for i in 0..60u64 {
             let s = format!("s{i}");
             b.update(n, &s, &report(u, 400, 0));
@@ -973,22 +1140,96 @@ mod db_tests {
     #[test]
     fn dirty_cap_admits_known_sessions_and_frees_after_flush() {
         let (b, n, u) = (TrafficBuffer::new(), Uuid::new_v4(), Uuid::new_v4());
+        let (u2, other) = (Uuid::new_v4(), Uuid::new_v4());
+        b.permit(n, &[u, u2]);
+        b.permit(other, &[u]);
         for i in 0..MAX_DIRTY_SESSIONS_PER_NODE {
             b.update(n, &format!("s{i}"), &report(u, 1, 1));
         }
         b.update(n, "one-too-many", &report(u, 1, 1));
         assert_eq!(b.entries.len(), MAX_DIRTY_SESSIONS_PER_NODE);
         // A known session (e.g. the final report of a rebuilt instance) and
-        // a new user in a known session are always accepted.
+        // another assigned user in a known session are always accepted.
         b.update(n, "s0", &report(u, 9, 9));
-        b.update(n, "s0", &report(Uuid::new_v4(), 1, 1));
+        b.update(n, "s0", &report(u2, 1, 1));
         assert_eq!(b.entries.len(), MAX_DIRTY_SESSIONS_PER_NODE + 1);
         // Other nodes are unaffected.
-        b.update(Uuid::new_v4(), "x", &report(u, 1, 1));
+        b.update(other, "x", &report(u, 1, 1));
+        assert_eq!(b.entries.len(), MAX_DIRTY_SESSIONS_PER_NODE + 2);
         // Once persisted, sessions stop counting.
         b.mark_flushed(&b.snapshot());
         b.update(n, "one-too-many", &report(u, 1, 1));
         assert!(b.entries.contains_key(&(n, u, "one-too-many".into())));
+    }
+
+    /// Red team Phase B H1: a known session used to accept unlimited fake
+    /// user ids (1M entries / 380 MB in < 1 s). Non-members never enter
+    /// memory, oversized reports are dropped whole, and a node's entries
+    /// are bounded by assigned users x MAX_DIRTY_SESSIONS_PER_NODE.
+    #[test]
+    fn known_session_accepts_unbounded_fake_users() {
+        let (b, node, real) = (TrafficBuffer::new(), Uuid::new_v4(), Uuid::new_v4());
+        b.permit(node, &[real]);
+        b.update(node, "one", &report(real, 1, 1));
+        let t = Instant::now();
+        for _ in 0..20 {
+            let r = TrafficReport {
+                users: (0..50_000)
+                    .map(|_| UserTraffic {
+                        user_id: Uuid::new_v4().to_string(),
+                        up_bytes: 1,
+                        down_bytes: 1,
+                    })
+                    .collect(),
+                session_id: "one".into(),
+                ..Default::default()
+            };
+            b.update(node, "one", &r);
+        }
+        // Small fake reports (under the size cap) are filtered per row.
+        for _ in 0..1000 {
+            b.update(node, "one", &report(Uuid::new_v4(), 1, 1));
+        }
+        assert_eq!(b.entries.len(), 1);
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+        // Many sessions of the one real user stay within the per-node bound.
+        for i in 0..1000 {
+            b.update(node, &format!("s{i}"), &report(real, 1, 1));
+        }
+        assert!(b.entries.len() <= MAX_DIRTY_SESSIONS_PER_NODE);
+        assert_eq!(*b.node_entries.get(&node).unwrap(), b.entries.len());
+    }
+
+    /// No membership loaded for the node (session not started): nothing
+    /// is accepted.
+    #[test]
+    fn reports_before_membership_load_are_dropped() {
+        let (b, n, u) = (TrafficBuffer::new(), Uuid::new_v4(), Uuid::new_v4());
+        b.update(n, "s1", &report(u, 1, 1));
+        assert!(b.entries.is_empty());
+    }
+
+    /// Rows the SQL refused (unassigned after the cache was loaded) are
+    /// removed from memory and the counters, not kept as "flushed".
+    #[tokio::test]
+    async fn sql_refused_rows_are_removed() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = db.member().await;
+        let b = buf(&db).await;
+        sqlx::query("DELETE FROM node_users")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        b.update(n, "s1", &report(u, 5, 5));
+        assert_eq!(b.entries.len(), 1, "cache still says assigned");
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, 0);
+        assert!(b.entries.is_empty());
+        assert!(b.node_entries.get(&n).is_none());
+        assert!(!b.session_known(n, "s1"));
+        db.drop().await;
     }
 
     /// Plausibility: elapsed is measured from the row's updated_at.
@@ -1011,7 +1252,7 @@ mod db_tests {
             .unwrap();
         }
         let big: u64 = 8_000_000_000_000; // 8 TB < 10 Gbit/s * 2 h = 9 TB
-        let b = TrafficBuffer::new();
+        let b = buf(&db).await;
         b.update(n, "s1", &report(u, big, 0));
         b.update(n2, "s1", &report(u2, big, 0));
         db.flush(&b).await;
