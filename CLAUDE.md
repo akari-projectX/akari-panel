@@ -35,6 +35,7 @@ make smoke         # 全量构建 + smoke.sh（会 TRUNCATE PG、flushall Valkey
 - **禁用即停用**：禁用节点的期望状态 = 无 inbound、无用户（不拒绝连接）；启用/禁用都 bump `config_version`。用户期望集 = `enforce::SERVED`：role=user、enabled、未过期（DB 时钟）。**管理员账户不是代理用户**：不下发到节点、订阅返回拒绝、不能被分配（400）、不受流量上限禁用；user→admin 会移除其节点访问，admin→user 恢复。每个会话另有 60s 对账 tick。
 - **agent 先于面板升级**：面板丢弃不带 `session_id` 的流量上报，并依赖 agent 失败时不前移持有版本。`Hello.protocol_version < MIN_AGENT_PROTOCOL`（旧 agent = 0）的节点被下发空状态并在 `last_error`/`agent_protocol` 标出——这是有意的降级模式，不是 bug。
 - **下发**：只有用户集变化（config_version 不变、节点启用、本会话已验证 agent 所跑用户集）才发 `UserDelta`，其余一律 Snapshot（重建 xray = 断开全部连接）。agent 与面板的 state hash 必须按 proto 定义一致，改动时同步更新 `proto/state_hash_vectors.json`。
+- **取消分配的尾部计费**：删 node_users 行（用户仍在）必须同事务写 `node_users_departed`，否则 agent 在 REMOVE 之后上报的最终计数被丢。
 - **失联租约**：面板只在成功读到期望状态后发 `LeaseGrant`；DB 不可用时不续约（R8 产品决定）。
 - **身份**：agent 身份 = mTLS 客户端证书序列号；xray `email` = 面板 user UUID。
 - 验收门：`make check` 与 `make smoke` 全绿；新 API 必须在 smoke.sh 加断言。

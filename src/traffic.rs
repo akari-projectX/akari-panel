@@ -139,7 +139,14 @@ pub struct TrafficBuffer {
     /// nodes without a loaded set, and rows for users outside it, are
     /// dropped before they touch memory (REVIEW Phase B H1).
     members: DashMap<Uuid, Arc<HashSet<Uuid>>>,
+    /// Grace (seconds) during which a departed pair (node_users_departed)
+    /// is still billed; 0 = DEFAULT_DEPARTED_GRACE_SECS.
+    departed_grace: std::sync::atomic::AtomicU64,
 }
+
+/// Default for `traffic.departed_grace_secs`: an unassigned user's final
+/// counters (reported after the REMOVE delta) are still billed this long.
+pub const DEFAULT_DEPARTED_GRACE_SECS: u64 = 900;
 
 #[derive(Clone, Debug, PartialEq)]
 struct FlushRow {
@@ -162,6 +169,21 @@ impl FlushRow {
 impl TrafficBuffer {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn set_departed_grace(&self, secs: u64) {
+        self.departed_grace
+            .store(secs, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn departed_grace_secs(&self) -> u64 {
+        match self
+            .departed_grace
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            0 => DEFAULT_DEPARTED_GRACE_SECS,
+            s => s,
+        }
     }
 
     /// Record a report whose counters belong to `session_id`.
@@ -449,7 +471,9 @@ impl TrafficBuffer {
 }
 
 /// One statement = one transaction. Only (node, user) pairs that are
-/// actually assigned (node_users) are stored or billed — a node cannot bill
+/// actually assigned (node_users) — or were until less than `$10` seconds
+/// ago (node_users_departed: the final counters of an unassigned user
+/// arrive after the REMOVE) — are stored or billed: a node cannot bill
 /// users it does not serve. Upsert the high-water marks and bill the
 /// increase over what was stored before, clamped to `$7` bytes/s over the
 /// time since the row was last written (+ PLAUSIBLE_SLACK_SECS), or since
@@ -463,6 +487,9 @@ WITH input AS (
 ), member AS (
     SELECT i.* FROM input i
     WHERE EXISTS (SELECT 1 FROM node_users nu WHERE nu.node_id = i.node_id AND nu.user_id = i.user_id)
+       OR EXISTS (SELECT 1 FROM node_users_departed d
+                  WHERE d.node_id = i.node_id AND d.user_id = i.user_id
+                    AND d.departed_at > now() - make_interval(secs => $10))
 ), upsert AS (
     INSERT INTO traffic_counters AS c (node_id, user_id, session_id, up_bytes, down_bytes, updated_at)
     SELECT node_id, user_id, session_id, up, down, now() FROM member
@@ -504,6 +531,7 @@ async fn write_rows(
     pg: &sqlx::PgPool,
     rows: &[FlushRow],
     max_rate: i64,
+    grace_secs: u64,
 ) -> Result<Vec<Key>, sqlx::Error> {
     let nodes: Vec<Uuid> = rows.iter().map(|r| r.node_id).collect();
     let users: Vec<Uuid> = rows.iter().map(|r| r.user_id).collect();
@@ -521,6 +549,7 @@ async fn write_rows(
         .bind(max_rate)
         .bind(MIN_PLAUSIBLE_SECS)
         .bind(PLAUSIBLE_SLACK_SECS)
+        .bind(grace_secs as f64)
         .fetch_one(pg)
         .await?;
     if !dn.is_empty() {
@@ -569,7 +598,8 @@ async fn flush_buffer(
     if rows.is_empty() {
         return Ok(0);
     }
-    match write_rows(pg, &rows, max_rate).await {
+    let grace = buf.departed_grace_secs();
+    match write_rows(pg, &rows, max_rate, grace).await {
         Ok(dropped) => {
             buf.mark_flushed(&rows);
             // Refused rows are removed, not kept as "flushed": they must
@@ -583,7 +613,7 @@ async fn flush_buffer(
             tracing::warn!(error = %e, rows = rows.len(), "traffic batch rejected; retrying row by row");
             let mut written = 0;
             for r in &rows {
-                match write_rows(pg, std::slice::from_ref(r), max_rate).await {
+                match write_rows(pg, std::slice::from_ref(r), max_rate, grace).await {
                     Ok(dropped) => {
                         if dropped.is_empty() {
                             buf.mark_flushed(std::slice::from_ref(r));
@@ -605,18 +635,38 @@ async fn flush_buffer(
     }
 }
 
-/// Load `node_id`'s assigned users into the buffer's membership cache.
+/// Load `node_id`'s assigned users — plus users unassigned less than the
+/// departed grace ago (their final counters are still billable) — into the
+/// buffer's membership cache.
 pub async fn refresh_members(
     pg: &sqlx::PgPool,
     buf: &TrafficBuffer,
     node_id: Uuid,
 ) -> sqlx::Result<()> {
-    let users: Vec<Uuid> = sqlx::query_scalar("SELECT user_id FROM node_users WHERE node_id = $1")
-        .bind(node_id)
-        .fetch_all(pg)
-        .await?;
+    let users: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT user_id FROM node_users WHERE node_id = $1 \
+         UNION SELECT user_id FROM node_users_departed \
+         WHERE node_id = $1 AND departed_at > now() - make_interval(secs => $2)",
+    )
+    .bind(node_id)
+    .bind(buf.departed_grace_secs() as f64)
+    .fetch_all(pg)
+    .await?;
     buf.set_members(node_id, users.into_iter().collect());
     Ok(())
+}
+
+/// Departed pairs past the grace can no longer be billed: drop them.
+async fn prune_departed(pg: &sqlx::PgPool, grace_secs: u64) {
+    if let Err(e) = sqlx::query(
+        "DELETE FROM node_users_departed WHERE departed_at <= now() - make_interval(secs => $1)",
+    )
+    .bind(grace_secs as f64)
+    .execute(pg)
+    .await
+    {
+        tracing::warn!(error = %e, "failed to prune departed node users");
+    }
 }
 
 pub async fn flush_loop(state: AppState) {
@@ -640,6 +690,7 @@ async fn flush_once(state: &AppState) -> anyhow::Result<()> {
     )
     .await;
     state.traffic().prune(Instant::now());
+    prune_departed(state.pg(), state.traffic().departed_grace_secs()).await;
     let enforced = crate::enforce::run_all(state).await;
     let n = flushed?;
     if n > 0 {
@@ -832,6 +883,64 @@ mod db_tests {
         }
     }
 
+    /// R10 F1: the agent reports an unassigned user's final counters after
+    /// the REMOVE (and after the watcher refreshed membership). Within the
+    /// departed grace they are billed; 20 min later the same pair is not.
+    #[tokio::test]
+    async fn departed_user_final_counters_billed_within_grace_only() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = db.member().await;
+        let b = buf(&db).await;
+        b.update(n, "s1", &report(u, 100, 0));
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, 100);
+
+        let mut tx = db.pool.begin().await.unwrap();
+        crate::api::apply_unassign(&mut tx, u, n).await.unwrap();
+        tx.commit().await.unwrap();
+        refresh_members(&db.pool, &b, n).await.unwrap(); // watcher, before the final report
+        b.update(n, "s1", &report(u, 250, 0));
+        db.flush(&b).await;
+        assert_eq!(
+            db.used(u).await,
+            250,
+            "final counters after unassign are billed"
+        );
+
+        sqlx::query("UPDATE node_users_departed SET departed_at = now() - interval '20 minutes'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        // SQL gate (a cache that still admits the pair must not matter).
+        let row = FlushRow {
+            node_id: n,
+            user_id: u,
+            session_id: "s1".into(),
+            up: 400,
+            down: 0,
+            age_secs: 60.0,
+        };
+        let dropped = write_rows(&db.pool, &[row], RATE, DEFAULT_DEPARTED_GRACE_SECS)
+            .await
+            .unwrap();
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(db.used(u).await, 250, "past the grace: not billed");
+        // Memory gate: after the next refresh the pair is gone.
+        refresh_members(&db.pool, &b, n).await.unwrap();
+        b.update(n, "s1", &report(u, 500, 0));
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, 250);
+        prune_departed(&db.pool, DEFAULT_DEPARTED_GRACE_SECS).await;
+        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM node_users_departed")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(left, 0, "expired departed rows are pruned");
+        db.drop().await;
+    }
+
     #[tokio::test]
     async fn panel_restart_between_reports_bills_only_the_increase() {
         let Some(db) = TestDb::new().await else {
@@ -862,10 +971,14 @@ mod db_tests {
         b.update(n, "s1", &report(u, 100, 200));
         let rows = b.snapshot();
         // Ambiguous commit: written, but the panel thinks it failed.
-        write_rows(&db.pool, &rows, RATE).await.unwrap();
+        write_rows(&db.pool, &rows, RATE, DEFAULT_DEPARTED_GRACE_SECS)
+            .await
+            .unwrap();
         db.flush(&b).await;
         db.flush(&b).await;
-        write_rows(&db.pool, &rows, RATE).await.unwrap();
+        write_rows(&db.pool, &rows, RATE, DEFAULT_DEPARTED_GRACE_SECS)
+            .await
+            .unwrap();
         assert_eq!(db.used(u).await, 300);
         db.drop().await;
     }

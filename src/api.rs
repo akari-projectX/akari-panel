@@ -715,8 +715,26 @@ fn validate_inbounds(inbounds: &serde_json::Value) -> Result<(), ApiError> {
                 )))
             }
         }
+        // The agent's gate dispatcher wraps a DefaultDispatcher without a
+        // FakeDNS engine (R10 F4): fakedns sniffing would silently misroute.
+        if mentions_fakedns(item) {
+            return Err(ApiError::bad_request(format!(
+                "inbound {tag:?}: fakedns is not supported by the agent"
+            )));
+        }
     }
     Ok(())
+}
+
+fn mentions_fakedns(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::String(s) => s.to_ascii_lowercase().contains("fakedns"),
+        serde_json::Value::Array(a) => a.iter().any(mentions_fakedns),
+        serde_json::Value::Object(o) => o
+            .iter()
+            .any(|(k, v)| k.to_ascii_lowercase().contains("fakedns") || mentions_fakedns(v)),
+        _ => false,
+    }
 }
 
 /// Keep only credentials whose inbound still exists with the same protocol.
@@ -774,6 +792,7 @@ async fn apply_set_inbounds(
                 .bind(user_id)
                 .execute(&mut *conn)
                 .await?;
+            record_departed(conn, id, user_id).await?;
         } else {
             sqlx::query(
                 "UPDATE node_users SET credentials = $3 WHERE node_id = $1 AND user_id = $2",
@@ -938,6 +957,12 @@ async fn apply_assign(
         Err(e) if is_fk_violation(&e) => return Err(ApiError::not_found()),
         Err(e) => return Err(e.into()),
     }
+    // Assigned again: no longer a departed pair.
+    sqlx::query("DELETE FROM node_users_departed WHERE node_id = $1 AND user_id = $2")
+        .bind(node_id)
+        .bind(user_id)
+        .execute(&mut *conn)
+        .await?;
     bump_node_users(conn, node_id).await?;
     Ok(account)
 }
@@ -964,7 +989,7 @@ pub async fn assign_user(
     ))
 }
 
-async fn apply_unassign(
+pub(crate) async fn apply_unassign(
     conn: &mut PgConnection,
     user_id: Uuid,
     node_id: Uuid,
@@ -984,7 +1009,28 @@ async fn apply_unassign(
     if res.rows_affected() == 0 {
         return Err(ApiError::not_found());
     }
+    record_departed(conn, node_id, user_id).await?;
     bump_node_users(conn, node_id).await?;
+    Ok(())
+}
+
+/// The user still exists but no longer has this node: its final counters
+/// (reported by the agent after the REMOVE) stay billable for the departed
+/// grace (traffic::FLUSH_SQL). Not used for user deletion (nothing left to
+/// bill; the row cascades away).
+async fn record_departed(
+    conn: &mut PgConnection,
+    node_id: Uuid,
+    user_id: Uuid,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO node_users_departed (node_id, user_id, departed_at) VALUES ($1, $2, now()) \
+         ON CONFLICT (node_id, user_id) DO UPDATE SET departed_at = now()",
+    )
+    .bind(node_id)
+    .bind(user_id)
+    .execute(&mut *conn)
+    .await?;
     Ok(())
 }
 
@@ -1639,5 +1685,59 @@ mod tests {
             "no lost/duplicate creds"
         );
         db.drop().await;
+    }
+
+    /// R10 F1: removing a node_users row of a still-existing user leaves a
+    /// departed marker (unassign, set_inbounds pruning to nothing);
+    /// re-assigning clears it.
+    #[tokio::test]
+    async fn departed_marker_written_and_cleared() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let departed = |n: Uuid, u: Uuid| {
+            let pool = db.pool.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT count(*) FROM node_users_departed WHERE node_id = $1 AND user_id = $2",
+                )
+                .bind(n)
+                .bind(u)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        let (n, u) = db.member().await;
+        let mut tx = db.pool.begin().await.unwrap();
+        apply_unassign(&mut tx, u, n).await.ok().unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(departed(n, u).await, 1);
+        let req = AssignReq {
+            inbound_tag: "in-vless".into(),
+            protocol: "vless".into(),
+        };
+        let mut tx = db.pool.begin().await.unwrap();
+        apply_assign(&mut tx, u, n, &req).await.ok().unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(departed(n, u).await, 0, "re-assign clears it");
+        let mut tx = db.pool.begin().await.unwrap();
+        apply_set_inbounds(&mut tx, n, &json!([{"tag": "other", "protocol": "trojan"}]))
+            .await
+            .ok()
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(departed(n, u).await, 1, "pruned to nothing = departed");
+        db.drop().await;
+    }
+
+    #[test]
+    fn fakedns_inbounds_rejected() {
+        let bad = json!([{"tag": "a", "protocol": "vless",
+            "sniffing": {"enabled": true, "destOverride": ["http", "fakedns+others"]}}]);
+        assert!(validate_inbounds(&bad).is_err());
+        let ok = json!([{"tag": "a", "protocol": "vless",
+            "sniffing": {"enabled": true, "destOverride": ["http", "tls"]}}]);
+        assert!(validate_inbounds(&ok).is_ok());
     }
 }

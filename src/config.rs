@@ -13,6 +13,35 @@ pub struct PanelConfig {
     pub web: WebConfig,
     pub grpc: GrpcConfig,
     pub traffic: TrafficConfig,
+    pub agent: AgentConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct AgentConfig {
+    /// How agents apply user removals/rotations (R10 fallback switch):
+    /// "gate" (default) = in place via UserDelta, the agent's gate
+    /// dispatcher closes the user's live connections; "rebuild" = every
+    /// removal/rotation is a full Snapshot (xray rebuild, all connections on
+    /// the node drop). Pushed to agents on every LeaseGrant.
+    pub remove_mode: RemoveMode,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoveMode {
+    #[default]
+    Gate,
+    Rebuild,
+}
+
+impl RemoveMode {
+    pub fn proto(self) -> crate::gen::RemoveMode {
+        match self {
+            RemoveMode::Gate => crate::gen::RemoveMode::Gate,
+            RemoveMode::Rebuild => crate::gen::RemoveMode::Rebuild,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -22,12 +51,16 @@ pub struct TrafficConfig {
     /// billed per second since its counters were last persisted. Excess is
     /// not billed (the counter is still stored). Default 10 Gbit/s.
     pub max_rate_bytes_per_sec: i64,
+    /// How long after an unassignment the user's final counters from that
+    /// node are still billed (node_users_departed). Default 15 min.
+    pub departed_grace_secs: u64,
 }
 
 impl Default for TrafficConfig {
     fn default() -> Self {
         Self {
             max_rate_bytes_per_sec: 1_250_000_000,
+            departed_grace_secs: crate::traffic::DEFAULT_DEPARTED_GRACE_SECS,
         }
     }
 }
@@ -71,6 +104,7 @@ impl Default for PanelConfig {
             web: WebConfig::default(),
             grpc: GrpcConfig::default(),
             traffic: TrafficConfig::default(),
+            agent: AgentConfig::default(),
         }
     }
 }
