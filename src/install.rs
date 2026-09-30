@@ -72,7 +72,7 @@ fn ensure_state(data_dir: &Path) -> Result<String> {
             let st = StateFile {
                 route_prefix: hex::encode(b),
             };
-            fs::write(&path, serde_json::to_vec_pretty(&st)?)?;
+            write_secret(&path, &serde_json::to_vec_pretty(&st)?)?;
             Ok(st.route_prefix)
         }
     }
@@ -213,6 +213,22 @@ mod tests {
         let key_pem = key.serialize_pem();
         let ca = CertifiedIssuer::self_signed(params, key).unwrap();
         (ca.pem(), key_pem)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_json_is_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("akari-state-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let prefix = ensure_state(&dir).unwrap();
+        let mode = fs::metadata(dir.join("state.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(ensure_state(&dir).unwrap(), prefix);
+        fs::remove_dir_all(&dir).ok();
     }
 
     /// (server_auth, client_auth, any)
