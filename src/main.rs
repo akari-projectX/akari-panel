@@ -152,6 +152,7 @@ mod api;
 mod auth;
 mod config;
 mod db;
+mod enforce;
 mod gen;
 mod grpc;
 mod install;

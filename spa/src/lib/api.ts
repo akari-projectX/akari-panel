@@ -92,6 +92,11 @@ export interface NodeView {
   user_version: number;
   xray_inbounds: Inbound[];
   server_addr: string | null;
+  // The agent's last failed apply; null once an update applies cleanly.
+  last_error: string | null;
+  last_error_at: string | null;
+  failed_config_version: number | null;
+  failed_user_version: number | null;
   last_seen_at: string | null;
   created_at: string;
 }

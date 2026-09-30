@@ -29,6 +29,10 @@ pub struct ApiError {
 }
 
 impl ApiError {
+    #[cfg(test)]
+    pub fn status(&self) -> StatusCode {
+        self.status
+    }
     pub fn new(status: StatusCode, message: impl Into<String>) -> Self {
         Self {
             status,
@@ -185,16 +189,20 @@ impl FromRequestParts<AppState> for AuthUser {
             role: String,
             enabled: bool,
         }
-        let row =
-            sqlx::query_as::<_, Row>("SELECT id, login, role, enabled FROM users WHERE id = $1")
-                .bind(claims.sub)
-                .fetch_optional(state.pg())
-                .await
-                .map_err(|e| {
-                    tracing::error!(error = %e, "auth db error");
-                    ApiError::internal()
-                })?
-                .ok_or_else(ApiError::unauthorized)?;
+        // Disabled or expired (role=user) accounts lose existing sessions.
+        let row = sqlx::query_as::<_, Row>(sqlx::AssertSqlSafe(format!(
+            "SELECT u.id, u.login, u.role, (u.enabled AND NOT {}) AS enabled \
+             FROM users u WHERE u.id = $1",
+            crate::enforce::EXPIRED
+        )))
+        .bind(claims.sub)
+        .fetch_optional(state.pg())
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "auth db error");
+            ApiError::internal()
+        })?
+        .ok_or_else(ApiError::unauthorized)?;
 
         if !row.enabled {
             return Err(ApiError::unauthorized());
