@@ -22,4 +22,4 @@ check:
 	cd spa && npx tsc --noEmit && node scripts/check-auth-paths.mjs
 
 smoke: dev-up spa panel agent-build
-	./smoke.sh
+	AGENT_DIR=$(AGENT_DIR) ./smoke.sh
