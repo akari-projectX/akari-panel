@@ -535,15 +535,24 @@ mod db_tests {
                 .execute(&admin)
                 .await
                 .unwrap();
-            let mut o = vec![("search_path", schema.as_str())];
-            o.extend_from_slice(extra);
-            let opts = PgConnectOptions::from_str(&url).unwrap().options(o);
-            let pool = PgPoolOptions::new()
-                .max_connections(8)
-                .connect_with(opts)
+            let base = PgConnectOptions::from_str(&url)
+                .unwrap()
+                .options([("search_path", schema.as_str())]);
+            // Migrate without `extra`: the migrator's advisory lock is shared
+            // by concurrently running tests and must not hit e.g. a tiny
+            // lock_timeout.
+            let migrator = PgPoolOptions::new()
+                .max_connections(1)
+                .connect_with(base.clone())
                 .await
                 .unwrap();
-            sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+            sqlx::migrate!("./migrations").run(&migrator).await.unwrap();
+            migrator.close().await;
+            let pool = PgPoolOptions::new()
+                .max_connections(8)
+                .connect_with(base.options(extra.iter().copied()))
+                .await
+                .unwrap();
             Some(Self {
                 admin,
                 pool,
