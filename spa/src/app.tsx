@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { appBase, get, logout as apiLogout } from "./lib/api";
 import { navigate } from "./lib/router";
+import { resetAfterLogout } from "./lib/session";
 import { Login } from "./pages/login";
 import { AdminUsers } from "./pages/admin-users";
 import { AdminNodes } from "./pages/admin-nodes";
@@ -32,12 +33,13 @@ function App() {
       await apiLogout();
     } catch (err) {
       // Surface it: a silently swallowed failure here is how REVIEW P0 #1
-      // (logout posted to a decoy 404) went unnoticed.
+      // (logout posted to a rejected 404 path) went unnoticed.
       setLogoutError(err instanceof Error ? `Log out failed: ${err.message}` : "Log out failed");
       return;
     }
-    // Drop every cached query so no previous-user data survives the session.
-    queryClient.clear();
+    // No previous-user data may survive, and the "me" observer must see the
+    // 401 so the app actually leaves the dashboard.
+    await resetAfterLogout(queryClient);
     navigate(`${appBase}/`);
   }
 

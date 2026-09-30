@@ -1,7 +1,13 @@
 // Behavioural guard for REVIEW P0 #1: the SPA must call the auth endpoints at
 // /{prefix}/auth/*, never under /{prefix}/api/v1. Loads the real api.ts
 // (Node >= 22.18 strips TS types natively) with a fake location/fetch.
-// Usage: node scripts/check-auth-paths.mjs
+// Also checks the logout cache transition (lib/session.ts) against the real
+// @tanstack/query-core. Usage: node scripts/check-auth-paths.mjs
+const [maj, min] = process.versions.node.split(".").map(Number);
+if (maj < 22 || (maj === 22 && min < 18)) {
+  console.error(`FAIL: Node ${process.versions.node} is too old: >= 22.18 is required to load TypeScript (type stripping).`);
+  process.exit(1);
+}
 const calls = [];
 globalThis.location = { pathname: "/pfx0123/app/users" };
 globalThis.fetch = async (url, init) => {
@@ -25,3 +31,38 @@ if (got !== JSON.stringify(want)) {
   process.exit(1);
 }
 console.log("spa auth paths: ok");
+
+// Logout transition: an active "me" observer must end in the error state
+// (-> <Login />) and no other cached query may survive.
+const { QueryClient, QueryObserver } = await import("@tanstack/query-core");
+const { resetAfterLogout } = await import("../src/lib/session.ts");
+const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+let loggedIn = true;
+const me = new QueryObserver(qc, {
+  queryKey: ["me"],
+  queryFn: async () => {
+    if (!loggedIn) throw new Error("401");
+    return { login: "root" };
+  },
+});
+const seen = [];
+const unsub = me.subscribe((r) => seen.push(r.status));
+await qc.fetchQuery({ queryKey: ["users"], queryFn: async () => ["secret-user"] });
+await new Promise((r) => setTimeout(r, 20));
+if (me.getCurrentResult().status !== "success") {
+  console.error("FAIL: logout test setup: me not loaded");
+  process.exit(1);
+}
+loggedIn = false;
+await resetAfterLogout(qc);
+await new Promise((r) => setTimeout(r, 20));
+unsub();
+if (me.getCurrentResult().status !== "error" || !seen.includes("error")) {
+  console.error(`FAIL: logout did not notify the "me" observer (statuses ${JSON.stringify(seen)})`);
+  process.exit(1);
+}
+if (qc.getQueryData(["users"]) !== undefined) {
+  console.error("FAIL: logout left other cached queries behind");
+  process.exit(1);
+}
+console.log("spa logout transition: ok");
