@@ -1,7 +1,7 @@
 //! Periodic, restart-safe enforcement passes (run from the traffic flush
 //! loop). Each pass flips its marker AND bumps the affected nodes' versions
-//! in one transaction; the caller notifies only after commit and only if
-//! something changed. Lock order as in api.rs: nodes -> users -> node_users.
+//! in one transaction; the bump's trigger (migration 0007) notifies every
+//! panel instance on commit. Lock order as in api.rs: nodes -> users -> node_users.
 
 use sqlx::PgConnection;
 use uuid::Uuid;
@@ -102,18 +102,14 @@ pub async fn apply_expiry(conn: &mut PgConnection) -> sqlx::Result<Vec<Uuid>> {
 }
 
 pub async fn run_all(state: &crate::state::AppState) -> anyhow::Result<()> {
-    let mut changed = false;
     for pass in [Pass::Limits, Pass::Expiry] {
         let mut tx = state.pg().begin().await?;
-        let nodes = match pass {
+        // The bump's trigger notifies every instance on commit.
+        match pass {
             Pass::Limits => apply_traffic_limits(&mut tx).await?,
             Pass::Expiry => apply_expiry(&mut tx).await?,
         };
         tx.commit().await?;
-        changed |= !nodes.is_empty();
-    }
-    if changed {
-        state.notify_change();
     }
     Ok(())
 }

@@ -30,6 +30,7 @@ sleep 2
 # Reset AFTER startup: fresh volumes have no tables until the panel migrates,
 # and Valkey rate-limit counters would poison the next run's login test.
 docker compose exec -T postgres psql -U akari -d akari -c "TRUNCATE nodes CASCADE; TRUNCATE users CASCADE;" >/dev/null 2>&1 || true
+docker compose exec -T postgres psql -U akari -d akari -c "TRUNCATE revoked_certs, traffic_counters;" >/dev/null 2>&1 || true
 docker compose exec -T valkey valkey-cli flushall >/dev/null
 
 echo "== first admin (env password) =="
@@ -357,6 +358,83 @@ if git -C "${AGENT_DIR:-../akari-agent}" archive 2b3e7e3 2>/dev/null | tar -x -C
 else
   echo "old agent: SKIPPED (could not build the pinned protocol-0 agent)"; tail -3 "$LOG/old-build.log"
 fi
+
+echo "== Sprint 3b: node delete = empty state, then revoke + close; billing rows kept =="
+psql_q() { docker compose exec -T postgres psql -U akari -d akari -tAc "$1"; }
+# Some billed traffic on the node first (a user C with one VLESS round trip).
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+    -d '{"login":"smoke-user-c","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create user C"; exit 1; }
+USER_C=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_C/nodes/$NODE_ID" -H 'Content-Type: application/json' \
+    -d '{"inbound_tag":"in-vless","protocol":"vless"}')" = "201" ] || { echo "FAIL: assign C"; exit 1; }
+VLESS_C=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['account']['id'])")
+wait_users 1 10 "user C added"
+wait_port open 10
+cat >"$LOG/vless1.py" <<'PY'
+import socket, struct, sys, threading, uuid
+echo = socket.socket(); echo.bind(("127.0.0.1", 0)); echo.listen(1)
+def serve():
+    c, _ = echo.accept()
+    for d in iter(lambda: c.recv(65536), b""): c.sendall(d)
+threading.Thread(target=serve, daemon=True).start()
+s = socket.create_connection(("127.0.0.1", 11443), timeout=5)
+s.sendall(b"\x00" + uuid.UUID(sys.argv[1]).bytes + b"\x00\x01" + struct.pack(">H", echo.getsockname()[1]) + b"\x01" + socket.inet_aton("127.0.0.1"))
+msg = b"x" * 100000; s.sendall(msg); got = b""
+while len(got) < len(msg) + 2:
+    d = s.recv(65536)
+    if not d: sys.exit("closed")
+    got += d
+print("vless round trip ok")
+PY
+python3 "$LOG/vless1.py" "$VLESS_C" || { echo "FAIL: vless round trip for C"; exit 1; }
+for _ in $(seq 1 30); do
+  [ "$(psql_q "SELECT count(*) FROM traffic_counters WHERE node_id='$NODE_ID' AND user_id='$USER_C'")" -ge 1 ] && break; sleep 1
+done
+COUNTERS_BEFORE=$(psql_q "SELECT count(*) FROM traffic_counters WHERE node_id='$NODE_ID'")
+[ "$(psql_q "SELECT count(*) FROM traffic_counters WHERE node_id='$NODE_ID' AND user_id='$USER_C'")" -ge 1 ] \
+  || { echo "FAIL: user C's traffic never reached traffic_counters"; exit 1; }
+[ "$(psql_q "SELECT traffic_used_bytes FROM users WHERE id='$USER_C'")" -ge 200000 ] \
+  || { echo "FAIL: user C not billed: $(psql_q "SELECT traffic_used_bytes FROM users WHERE id='$USER_C'")"; exit 1; }
+SERIAL=$(psql_q "SELECT cert_serial FROM nodes WHERE id='$NODE_ID'")
+wait_port open 10
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$NODE_ID")" = "202" ] || { echo "FAIL: delete node not 202"; cat /tmp/akari-smoke/last; exit 1; }
+grep -q '"deleting":true' /tmp/akari-smoke/last || { echo "FAIL: delete response"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"enabled": true}')" = "409" ] || { echo "FAIL: deleting node re-enabled"; exit 1; }
+wait_users 0 10 "node deleting"
+wait_port closed 10
+for _ in $(seq 1 40); do
+  [ "$(psql_q "SELECT count(*) FROM nodes WHERE id='$NODE_ID'")" = "0" ] && break; sleep 1
+done
+[ "$(psql_q "SELECT count(*) FROM nodes WHERE id='$NODE_ID'")" = "0" ] || { echo "FAIL: node row not deleted"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM revoked_certs WHERE cert_serial='$SERIAL' AND node_id='$NODE_ID'")" = "1" ] \
+  || { echo "FAIL: certificate not tombstoned"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM traffic_counters WHERE node_id='$NODE_ID'")" = "$COUNTERS_BEFORE" ] \
+  || { echo "FAIL: billing rows not kept"; exit 1; }
+for _ in $(seq 1 15); do grep -q 'node deleted' "$LOG/agent.log" && break; sleep 1; done
+grep '"msg":"channel closed"' "$LOG/agent.log" | grep -q 'Unauthenticated desc = node deleted' \
+  || { echo "FAIL: agent stream not closed as deleted"; grep 'channel closed' "$LOG/agent.log" | tail -3; exit 1; }
+# Reconnects with the same (revoked) certificate: accepted only to be closed.
+for _ in $(seq 1 20); do grep -q 'certificate revoked' "$LOG/agent.log" && break; sleep 1; done
+grep '"msg":"channel closed"' "$LOG/agent.log" | grep -q 'Unauthenticated desc = certificate revoked' \
+  || { echo "FAIL: revoked certificate not closed on reconnect"; grep 'channel closed' "$LOG/agent.log" | tail -3; exit 1; }
+port_open && { echo "FAIL: revoked agent serves again"; exit 1; }
+docker compose exec -T valkey valkey-cli exists "akari:node:online:$NODE_ID" | grep -q 0 \
+  || { echo "FAIL: online key left behind"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$NODE_ID")" = "404" ] || { echo "FAIL: second delete not 404"; exit 1; }
+code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
+grep -q "$NODE_ID" /tmp/akari-smoke/last && { echo "FAIL: deleted node still listed"; exit 1; }
+# CLI: an offline node is deleted right away by the running panel.
+"$PANEL" node add spare-node --out "$LOG/spare-bootstrap.toml" >/dev/null
+SPARE_ID=$("$PANEL" node list | awk '$2=="spare-node"{print $1}')
+"$PANEL" node delete "$SPARE_ID" | grep -q "deletion started" || { echo "FAIL: CLI node delete"; exit 1; }
+for _ in $(seq 1 20); do
+  [ "$(psql_q "SELECT count(*) FROM nodes WHERE id='$SPARE_ID'")" = "0" ] && break; sleep 1
+done
+[ "$(psql_q "SELECT count(*) FROM nodes WHERE id='$SPARE_ID'")" = "0" ] || { echo "FAIL: CLI-deleted offline node not reaped"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM revoked_certs WHERE node_id='$SPARE_ID'")" = "1" ] || { echo "FAIL: CLI delete did not revoke"; exit 1; }
+kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+AGENT_PID=""
+echo "node delete: ok (empty state, revoked, closed; $COUNTERS_BEFORE billing rows kept)"
 
 echo "== me + logout =="
 [ "$(code -b "$JAR" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: me failed"; exit 1; }

@@ -46,6 +46,10 @@ enum NodeCmd {
     },
     /// List nodes
     List,
+    /// Delete a node and revoke its certificate. Marks it deleting and
+    /// disables it; a running panel finishes the deletion once the agent
+    /// runs the empty state (or after a timeout / at once if offline).
+    Delete { id: uuid::Uuid },
 }
 
 #[derive(Subcommand)]
@@ -75,6 +79,7 @@ async fn main() -> Result<()> {
         Cmd::Node { action } => match action {
             NodeCmd::Add { name, out } => nodeops::node_add(cfg, name, out).await,
             NodeCmd::List => nodeops::node_list(cfg).await,
+            NodeCmd::Delete { id } => nodeops::node_delete(cfg, id).await,
         },
         Cmd::Admin { action } => match action {
             AdminCmd::Add { login, role } => nodeops::admin_add(cfg, login, role).await,
@@ -112,7 +117,11 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
     let valkey = state::connect_valkey(&cfg).await?;
     let state = state::AppState::new(cfg.clone(), install, pg, valkey);
 
+    // LISTEN must be in place before any agent session can start.
+    let _listener = notify::start(state.clone()).await;
+    tokio::spawn(notify::queue_monitor(state.clone()));
     tokio::spawn(traffic::flush_loop(state.clone()));
+    tokio::spawn(reaper::reap_loop(state.clone()));
     tokio::spawn(state.clone().persist_online_loop());
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
@@ -157,6 +166,8 @@ mod gen;
 mod grpc;
 mod install;
 mod nodeops;
+mod notify;
+mod reaper;
 mod reject;
 mod spa;
 mod state;

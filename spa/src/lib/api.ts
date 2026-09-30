@@ -100,6 +100,10 @@ export interface NodeView {
   lease_remaining_seconds: number | null;
   failed_config_version: number | null;
   failed_user_version: number | null;
+  // Per-node billing plausibility cap override (bytes/s); null = default.
+  traffic_max_rate_bytes_per_sec: number | null;
+  // Set while the node is being deleted; the row disappears when done.
+  deleting_at: string | null;
   last_seen_at: string | null;
   created_at: string;
 }

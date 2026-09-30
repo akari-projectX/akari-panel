@@ -51,6 +51,11 @@ pub struct TrafficConfig {
     /// billed per second since its counters were last persisted. Excess is
     /// not billed (the counter is still stored). Default 10 Gbit/s.
     pub max_rate_bytes_per_sec: i64,
+    /// Per-node aggregate plausibility cap: the most one node may bill per
+    /// second, summed over all its users and sessions, measured against
+    /// nodes.traffic_flushed_at (DB). A node's
+    /// traffic_max_rate_bytes_per_sec overrides it. Default 10 Gbit/s.
+    pub node_max_rate_bytes_per_sec: i64,
     /// How long after an unassignment the user's final counters from that
     /// node are still billed (node_users_departed). Default 15 min.
     pub departed_grace_secs: u64,
@@ -60,6 +65,7 @@ impl Default for TrafficConfig {
     fn default() -> Self {
         Self {
             max_rate_bytes_per_sec: 1_250_000_000,
+            node_max_rate_bytes_per_sec: 1_250_000_000,
             departed_grace_secs: crate::traffic::DEFAULT_DEPARTED_GRACE_SECS,
         }
     }

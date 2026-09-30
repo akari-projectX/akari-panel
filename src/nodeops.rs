@@ -85,6 +85,28 @@ pub async fn node_add(cfg: PanelConfig, name: String, out: Option<PathBuf>) -> R
     Ok(())
 }
 
+/// Phase 1 of a node deletion (see api::apply_begin_delete_node); a running
+/// panel (reaper) completes it.
+pub async fn node_delete(cfg: PanelConfig, id: uuid::Uuid) -> Result<()> {
+    let pg = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&cfg.database_url)
+        .await?;
+    crate::db::migrate(&pg).await?;
+    let mut tx = pg.begin().await?;
+    let started = crate::api::apply_begin_delete_node(&mut tx, id)
+        .await
+        .map_err(|e| anyhow::anyhow!("node {id}: {}", e.message()))?;
+    tx.commit().await?;
+    if started {
+        println!("node {id}: deletion started (disabled; certificate is revoked and the node");
+        println!("removed by the running panel once the agent runs the empty state)");
+    } else {
+        println!("node {id}: deletion already in progress");
+    }
+    Ok(())
+}
+
 #[derive(sqlx::FromRow)]
 struct NodeListRow {
     id: uuid::Uuid,
@@ -102,8 +124,9 @@ pub async fn node_list(cfg: PanelConfig) -> Result<()> {
         .connect(&cfg.database_url)
         .await?;
     let rows = sqlx::query_as::<_, NodeListRow>(
-        "SELECT id, name, status, enabled, agent_version, core_version, last_seen_at \
-         FROM nodes ORDER BY created_at",
+        "SELECT id, name, CASE WHEN deleting_at IS NOT NULL THEN 'deleting' ELSE status END \
+         AS status, enabled OR deleting_at IS NOT NULL AS enabled, agent_version, core_version, \
+         last_seen_at FROM nodes ORDER BY created_at",
     )
     .fetch_all(&pg)
     .await?;

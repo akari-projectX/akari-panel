@@ -37,7 +37,9 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   editing, account generation + assignment (VLESS/VMess/Trojan credentials
   are panel-generated, one per inbound).
 - `akari node add <name>` issues a per-node client certificate (panel CA) and
-  writes an agent bootstrap file.
+  writes an agent bootstrap file. `akari node delete <id>` (or
+  `DELETE /api/v1/nodes/{id}`, or the Delete button) retires a node: see
+  "Node deletion" below.
 - Agent dials out (TLS 1.3, client cert = node identity), sends `Hello` with
   its held config/user versions; node flips to `online`, versions recorded.
 - Panel pushes a `ConfigSnapshot` (xray inbounds + full user set) when the
@@ -120,7 +122,7 @@ make smoke             # full end-to-end check
 | PATCH/DELETE | /api/v1/users/{id} | admin | update / delete user |
 | POST/DELETE | /api/v1/users/{id}/nodes/{node_id} | admin | assign (generates account) / remove |
 | GET | /api/v1/nodes | admin | node list with live status |
-| PATCH | /api/v1/nodes/{id} | admin | enable / rename |
+| PATCH/DELETE | /api/v1/nodes/{id} | admin | enable / rename / billing cap override; delete (202, revokes the certificate) |
 | PUT | /api/v1/nodes/{id}/inbounds | admin | replace xray inbounds (bumps config_version) |
 | POST | /api/v1/users/{id}/sub-token | admin | regenerate subscription token |
 | GET | /sub/{token} | token | subscription (UA-based format) |
@@ -158,7 +160,9 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   users in place; `"rebuild"` sends every removal/rotation as a full
   snapshot (fallback if the agent's gate is ever in doubt). User-less
   inbounds (dokodemo/socks/http without clients) are neither gated nor
-  billed; `fakedns` in inbounds is rejected (400).
+  billed; FakeDNS sniffing (`sniffing.destOverride` containing `fakedns` /
+  `fakedns+others`, any key case) is rejected (400), and the agent refuses
+  it again after xray's own parse.
 - **Control protocol revisions**: agents send `Hello.protocol_version`
   (current: 1). Agents below the panel's `MIN_AGENT_PROTOCOL` (e.g. old
   agents that send 0) are still accepted but served the empty state (no
@@ -186,6 +190,40 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   random route prefix (including `/`), and every rejection behind it (wrong
   method, bad token, missing asset), gets the same empty 404 without the
   panel's security headers, byte-identical apart from `Date`.
+
+- **Change notification (multi-instance)**: every change of a node's
+  desired-state versions (and every node deletion) raises
+  `NOTIFY akari_change '<node id>'` (`'del:<id>'`) from a trigger on `nodes`,
+  inside the writing transaction; every panel instance LISTENs on a
+  dedicated connection and wakes only its own sessions of that node. After
+  any listener reconnect all local sessions re-read their node, a self-ping
+  every 30 s detects half-open listener connections, and every session still
+  reconciles every 60 s. Several panel instances can therefore share one
+  database. **LISTEN needs a direct PostgreSQL session: do not put the panel
+  behind PgBouncer in transaction/statement pooling mode** (session pooling
+  is fine). A warning is logged when `pg_notification_queue_usage()`
+  exceeds 10% (a stuck listener; when the queue is full every mutation
+  fails).
+- **Node deletion** (two phases): the delete marks the node deleting and
+  disables it, so its agent converges to the empty state (no inbounds, no
+  users) while its final counters are still billed. Once the agent acked
+  that (plus 10 s for flushes), or after 2 min, or at once if no agent is
+  online, a background task on any panel instance tombstones the
+  certificate serial (`revoked_certs`, permanent) and deletes the node
+  (assignments cascade; `traffic_counters` billing rows are kept). A
+  session still open is closed with UNAUTHENTICATED. A revoked certificate
+  that connects again is accepted only to be served the empty state and
+  closed (a refused agent would keep running its last config); it is never
+  billed and can never be registered again. Reinstalling needs a new
+  `akari node add`.
+- **Billing plausibility caps** (only ever under-bill; the counter is stored
+  in full): per (node, user, session) `traffic.max_rate_bytes_per_sec` over
+  the time since the row was last written; per node (all users together) a
+  GCRA budget of `traffic.node_max_rate_bytes_per_sec` (default 10 Gbit/s;
+  per-node override `traffic_max_rate_bytes_per_sec` via PATCH) against
+  `nodes.traffic_tat` in the DB, so a panel restart grants nothing and an
+  outage accrues allowance for up to the lease; an unassigned user's pair
+  only bills traffic plausibly carried before the unassignment (+30 s).
 
 ## Accounts
 
