@@ -8,6 +8,8 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+pub mod fake_agent;
+
 /// Payloads received until the channel stays quiet for `quiet`.
 pub async fn drain(l: &mut sqlx::postgres::PgListener, quiet: std::time::Duration) -> Vec<String> {
     let mut got = Vec::new();
