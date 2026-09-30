@@ -8,6 +8,15 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// Payloads received until the channel stays quiet for `quiet`.
+pub async fn drain(l: &mut sqlx::postgres::PgListener, quiet: std::time::Duration) -> Vec<String> {
+    let mut got = Vec::new();
+    while let Ok(Ok(n)) = tokio::time::timeout(quiet, l.recv()).await {
+        got.push(n.payload().to_string());
+    }
+    got
+}
+
 pub struct TestDb {
     pub admin: PgPool,
     pub pool: PgPool,
@@ -123,6 +132,16 @@ impl TestDb {
             .fetch_one(&self.pool)
             .await
             .unwrap()
+    }
+
+    /// A LISTEN on the change channel (see notify.rs). Channels are
+    /// database-wide: callers must filter by their own node ids.
+    pub async fn listener(&self) -> sqlx::postgres::PgListener {
+        let mut l = sqlx::postgres::PgListener::connect_with(&self.pool)
+            .await
+            .unwrap();
+        l.listen(crate::notify::CHANNEL).await.unwrap();
+        l
     }
 
     pub async fn drop(self) {

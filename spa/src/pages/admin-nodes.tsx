@@ -35,6 +35,28 @@ export function AdminNodes() {
   const [selected, setSelected] = useState<string | null>(null);
 
   const node = (nodes.data ?? []).find((n) => n.id === selected) ?? null;
+  const [error, setError] = useState<string | null>(null);
+
+  // Deletion revokes the node's certificate for good: the agent is pushed
+  // the empty state, then the node disappears (a reinstall needs a new
+  // bootstrap file).
+  async function remove(n: NodeView) {
+    setError(null);
+    if (
+      !window.confirm(
+        `Delete node "${n.name}"? Its agent stops serving and its certificate is revoked permanently.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await del(`/nodes/${n.id}`);
+      if (selected === n.id) setSelected(null);
+      await nodes.refetch();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Delete failed");
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -44,6 +66,7 @@ export function AdminNodes() {
           <CardDescription>Agents connect outbound; select one to configure.</CardDescription>
         </CardHeader>
         <CardContent>
+          {error && <p className="mb-2 text-sm text-destructive">{error}</p>}
           <Table>
             <TableHeader>
               <TableRow>
@@ -61,7 +84,9 @@ export function AdminNodes() {
                 <TableRow key={n.id}>
                   <TableCell className="font-medium">{n.name}</TableCell>
                   <TableCell>
-                    {!n.enabled ? (
+                    {n.deleting_at ? (
+                      <Badge variant="destructive">deleting</Badge>
+                    ) : !n.enabled ? (
                       <Badge variant="secondary">disabled</Badge>
                     ) : n.status === "online" ? (
                       <Badge variant="success">online</Badge>
@@ -96,12 +121,21 @@ export function AdminNodes() {
                     <Button
                       variant="ghost"
                       size="sm"
+                      disabled={!!n.deleting_at}
                       onClick={async () => {
                         await patch(`/nodes/${n.id}`, { enabled: !n.enabled });
                         await nodes.refetch();
                       }}
                     >
                       {n.enabled ? "Disable" : "Enable"}
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      disabled={!!n.deleting_at}
+                      onClick={() => remove(n)}
+                    >
+                      Delete
                     </Button>
                   </TableCell>
                 </TableRow>

@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use sqlx::PgPool;
-use tokio::sync::watch;
 use uuid::Uuid;
 
 use crate::config::PanelConfig;
@@ -13,6 +12,18 @@ use crate::traffic::TrafficBuffer;
 #[derive(Clone)]
 pub struct AppState(Arc<Inner>);
 
+/// A live agent session on this instance.
+#[derive(Clone)]
+pub struct AgentEntry {
+    pub gen: u64,
+    pub online_session: Uuid,
+    /// Notified when a newer stream of the same node replaces this one.
+    pub superseded: Arc<tokio::sync::Notify>,
+}
+
+/// Concurrent desired-state reads per instance (the pool has 16).
+const READ_PERMITS: usize = 8;
+
 struct Inner {
     cfg: PanelConfig,
     route_prefix: String,
@@ -20,13 +31,18 @@ struct Inner {
     install: Install,
     pg: PgPool,
     valkey: fred::clients::Pool,
-    /// Connected node id -> connection generation, so a stale session's
-    /// cleanup can never evict a newer connection's registration.
-    agents: DashMap<Uuid, (u64, Uuid)>,
+    /// Connected node id -> its (single) live session on this instance.
+    /// The generation keeps a stale session's cleanup from evicting a newer
+    /// registration; a newer session supersedes (terminates) the older.
+    agents: DashMap<Uuid, AgentEntry>,
+    /// Bounds concurrent desired-state reads by agent sessions (a wake-all
+    /// after a listener gap, or a mass reconnect, must not drain the pool).
+    read_permits: tokio::sync::Semaphore,
     gen: AtomicU64,
-    /// Bumped whenever node/user configuration changes; gRPC sessions watch
-    /// it to push fresh snapshots to connected agents.
-    changes: watch::Sender<u64>,
+    /// Per-node wakeups for this instance's agent sessions, fed by the
+    /// PostgreSQL LISTEN task (`crate::notify`). There is no in-process
+    /// shortcut: every committed change reaches every instance the same way.
+    wakeups: crate::notify::Wakeups,
     traffic: TrafficBuffer,
 }
 
@@ -39,7 +55,6 @@ impl AppState {
     ) -> Self {
         let route_prefix = install.route_prefix.clone();
         let jwt_secret = install.jwt_secret.clone();
-        let (changes, _) = watch::channel(0);
         let traffic = TrafficBuffer::new();
         traffic.set_departed_grace(cfg.traffic.departed_grace_secs);
         Self(Arc::new(Inner {
@@ -50,8 +65,9 @@ impl AppState {
             pg,
             valkey,
             agents: DashMap::new(),
+            read_permits: tokio::sync::Semaphore::new(READ_PERMITS),
             gen: AtomicU64::new(1),
-            changes,
+            wakeups: crate::notify::Wakeups::default(),
             traffic,
         }))
     }
@@ -74,9 +90,11 @@ impl AppState {
     pub fn valkey(&self) -> &fred::clients::Pool {
         &self.0.valkey
     }
-    /// node -> (connection generation, online_session)
-    pub fn agents(&self) -> &DashMap<Uuid, (u64, Uuid)> {
+    pub fn agents(&self) -> &DashMap<Uuid, AgentEntry> {
         &self.0.agents
+    }
+    pub fn read_permits(&self) -> &tokio::sync::Semaphore {
+        &self.0.read_permits
     }
     pub fn traffic(&self) -> &TrafficBuffer {
         &self.0.traffic
@@ -84,11 +102,8 @@ impl AppState {
     pub fn next_gen(&self) -> u64 {
         self.0.gen.fetch_add(1, Ordering::Relaxed)
     }
-    pub fn notify_change(&self) {
-        self.0.changes.send_modify(|v| *v += 1);
-    }
-    pub fn subscribe_changes(&self) -> watch::Receiver<u64> {
-        self.0.changes.subscribe()
+    pub fn wakeups(&self) -> &crate::notify::Wakeups {
+        &self.0.wakeups
     }
 
     /// Periodically persists online status for connected agents.
@@ -97,28 +112,64 @@ impl AppState {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
         loop {
             tick.tick().await;
-            let (ids, sessions): (Vec<Uuid>, Vec<Uuid>) = self
+            let mut rows: Vec<(Uuid, Uuid)> = self
                 .agents()
                 .iter()
-                .map(|e| (*e.key(), e.value().1))
-                .unzip();
-            if ids.is_empty() {
+                .map(|e| (*e.key(), e.value().online_session))
+                .collect();
+            if rows.is_empty() {
                 continue;
             }
-            // Only refresh rows this instance's sessions still own.
-            if let Err(e) = sqlx::query(
-                "UPDATE nodes n SET status = 'online', last_seen_at = now() \
-                 FROM unnest($1::uuid[], $2::uuid[]) AS s(id, sess) \
-                 WHERE n.id = s.id AND n.online_session = s.sess",
-            )
-            .bind(&ids)
-            .bind(&sessions)
-            .execute(self.pg())
-            .await
-            {
+            rows.sort();
+            let (ids, sessions): (Vec<Uuid>, Vec<Uuid>) = rows.into_iter().unzip();
+            if let Err(e) = self.persist_online(&ids, &sessions).await {
                 tracing::warn!(error = %e, "persist online status failed");
             }
         }
+    }
+}
+
+impl AppState {
+    /// Refresh the rows this instance's sessions still own, locking them in
+    /// id order first (global lock order; flushes lock nodes too).
+    async fn persist_online(&self, ids: &[Uuid], sessions: &[Uuid]) -> sqlx::Result<()> {
+        let mut tx = self.pg().begin().await?;
+        sqlx::query("SELECT 1 FROM nodes WHERE id = ANY($1) ORDER BY id FOR NO KEY UPDATE")
+            .bind(ids)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "UPDATE nodes n SET status = 'online', last_seen_at = now() \
+             FROM unnest($1::uuid[], $2::uuid[]) AS s(id, sess) \
+             WHERE n.id = s.id AND n.online_session = s.sess",
+        )
+        .bind(ids)
+        .bind(sessions)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await
+    }
+
+    /// Test instance on a test database: default config, dummy install, the
+    /// dev Valkey (VALKEY_URL or the default).
+    #[cfg(test)]
+    pub async fn for_test(pg: PgPool) -> Self {
+        let mut cfg = PanelConfig::default();
+        if let Ok(v) = std::env::var("VALKEY_URL") {
+            cfg.valkey_url = v;
+        }
+        let valkey = connect_valkey(&cfg)
+            .await
+            .expect("dev valkey (make dev-up)");
+        let install = Install {
+            route_prefix: "test".into(),
+            ca_pem: String::new(),
+            ca_key_pem: String::new(),
+            server_cert_pem: String::new(),
+            server_key_pem: String::new(),
+            jwt_secret: "test".into(),
+        };
+        Self::new(cfg, install, pg, valkey)
     }
 }
 

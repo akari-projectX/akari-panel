@@ -45,7 +45,7 @@ pub fn router(state: AppState) -> Router {
         .route("/{prefix}/api/v1/nodes", get(api::list_nodes))
         .route(
             "/{prefix}/api/v1/nodes/{id}",
-            axum::routing::patch(api::update_node),
+            axum::routing::patch(api::update_node).delete(api::delete_node),
         )
         .route(
             "/{prefix}/api/v1/nodes/{id}/inbounds",

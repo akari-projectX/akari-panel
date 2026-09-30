@@ -134,14 +134,36 @@ pub fn issue_agent_cert(
     ca_key_pem: &str,
     agent_id: &str,
 ) -> Result<(String, String, String)> {
+    let mut serial_bytes = [0u8; 16];
+    rand::rng().fill_bytes(&mut serial_bytes);
+    // Positive and minimal as a DER INTEGER (top byte 0x40..=0x7f): no
+    // sign padding, no leading zero byte. `normalize_serial` would cope
+    // either way; this keeps every representation identical.
+    serial_bytes[0] = (serial_bytes[0] & 0x3f) | 0x40;
+    issue_agent_cert_with_serial(ca_pem, ca_key_pem, agent_id, &serial_bytes)
+}
+
+/// Certificate serial as stored in nodes.cert_serial / revoked_certs and
+/// looked up by identify_node: lowercase hex of the serial's magnitude
+/// without leading zero bytes (what x509 parsers return as the integer).
+/// Every producer and consumer of a serial string goes through this.
+pub fn normalize_serial(bytes: &[u8]) -> String {
+    let start = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len());
+    hex::encode(&bytes[start..])
+}
+
+fn issue_agent_cert_with_serial(
+    ca_pem: &str,
+    ca_key_pem: &str,
+    agent_id: &str,
+    serial_bytes: &[u8],
+) -> Result<(String, String, String)> {
     let key = KeyPair::generate()?;
     let mut params = CertificateParams::default();
     let mut dn = DistinguishedName::new();
     dn.push(DnType::CommonName, format!("agent-{agent_id}"));
     params.distinguished_name = dn;
-    let mut serial_bytes = [0u8; 16];
-    rand::rng().fill_bytes(&mut serial_bytes);
-    params.serial_number = Some(SerialNumber::from_slice(&serial_bytes));
+    params.serial_number = Some(SerialNumber::from_slice(serial_bytes));
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
     params.not_before = OffsetDateTime::now_utc() - TimeDuration::hours(1);
@@ -150,7 +172,11 @@ pub fn issue_agent_cert(
     let issuer_key = KeyPair::from_pem(ca_key_pem)?;
     let issuer = Issuer::from_ca_cert_pem(ca_pem, issuer_key)?;
     let cert = params.signed_by(&key, &issuer)?;
-    Ok((cert.pem(), key.serialize_pem(), hex::encode(serial_bytes)))
+    Ok((
+        cert.pem(),
+        key.serialize_pem(),
+        normalize_serial(serial_bytes),
+    ))
 }
 
 fn san(name: &str) -> Result<SanType> {
@@ -206,5 +232,38 @@ mod tests {
         assert_eq!(eku(&server), (true, false, false));
         let (agent, _, _) = issue_agent_cert(&ca, &ca_key, "n1").unwrap();
         assert_eq!(eku(&agent), (false, true, false));
+    }
+
+    fn parsed_serial(pem: &str) -> String {
+        let (_, p) = parse_x509_pem(pem.as_bytes()).unwrap();
+        let (_, cert) = X509Certificate::from_der(&p.contents).unwrap();
+        // Both views the identify path could use agree after normalization.
+        assert_eq!(
+            normalize_serial(cert.raw_serial()),
+            normalize_serial(&cert.serial.to_bytes_be())
+        );
+        normalize_serial(cert.raw_serial())
+    }
+
+    /// R12 P2: the stored serial is what identification computes from the
+    /// presented certificate, including serials with a leading zero byte
+    /// (1/256 of the old random serials) and a set top bit.
+    #[test]
+    fn stored_serial_matches_identified_serial() {
+        let (ca, ca_key) = test_ca();
+        let mut leading_zero = [0x5au8; 16];
+        leading_zero[0] = 0;
+        let mut high_bit = [0x11u8; 16];
+        high_bit[0] = 0x80;
+        for bytes in [leading_zero, high_bit, [0x42u8; 16]] {
+            let (pem, _, stored) = issue_agent_cert_with_serial(&ca, &ca_key, "n", &bytes).unwrap();
+            assert_eq!(parsed_serial(&pem), stored, "{bytes:02x?}");
+        }
+        assert_eq!(normalize_serial(&[0, 0, 0xab, 0]), "ab00");
+        for _ in 0..64 {
+            let (pem, _, stored) = issue_agent_cert(&ca, &ca_key, "n").unwrap();
+            assert_eq!(stored.len(), 32, "fresh serials are 16 significant bytes");
+            assert_eq!(parsed_serial(&pem), stored);
+        }
     }
 }

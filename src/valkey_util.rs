@@ -30,3 +30,10 @@ pub async fn set_online(state: &AppState, node_id: uuid::Uuid) {
     )
     .await;
 }
+
+/// Delete keys (best effort; they carry TTLs anyway).
+pub async fn del(state: &AppState, keys: Vec<String>) {
+    if let Err(e) = state.valkey().del::<(), _>(keys).await {
+        tracing::warn!(error = %e, "valkey del failed");
+    }
+}

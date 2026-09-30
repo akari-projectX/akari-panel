@@ -276,8 +276,10 @@ pub struct CreatedUser {
 //
 // Every mutation that changes what a node must run is an `apply_*` function
 // taking the open transaction: it writes the change AND bumps the affected
-// nodes' versions in that transaction; the handler commits and only then
-// calls notify_change() (REVIEW P0-3). Global lock order, to stay
+// nodes' versions in that transaction (REVIEW P0-3). The version bump itself
+// raises the per-node NOTIFY (trigger, migration 0007), delivered to every
+// panel instance on commit — handlers do nothing after committing. Global
+// lock order, to stay
 // deadlock-free: nodes (ORDER BY id, FOR UPDATE) -> users -> node_users.
 // ---------------------------------------------------------------------------
 
@@ -446,11 +448,8 @@ pub async fn update_user(
 ) -> Result<Json<UserView>, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    let bumped = apply_update_user(&mut tx, id, &req).await?;
+    apply_update_user(&mut tx, id, &req).await?;
     tx.commit().await?;
-    if !bumped.is_empty() {
-        state.notify_change();
-    }
     let row = sqlx::query_as::<_, UserView>(
         "SELECT id, login, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at \
          FROM users WHERE id = $1",
@@ -497,11 +496,8 @@ pub async fn delete_user(
 ) -> Result<axum::http::StatusCode, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    let bumped = apply_delete_user(&mut tx, id).await?;
+    apply_delete_user(&mut tx, id).await?;
     tx.commit().await?;
-    if !bumped.is_empty() {
-        state.notify_change();
-    }
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -536,6 +532,10 @@ pub struct NodeView {
     /// can read the node's desired state), and the seconds left.
     lease_expires_at: Option<DateTime<Utc>>,
     lease_remaining_seconds: Option<i64>,
+    /// Per-node billing cap override (bytes/s); null = global default.
+    traffic_max_rate_bytes_per_sec: Option<i64>,
+    /// Set while the node is being deleted (it disappears once done).
+    deleting_at: Option<DateTime<Utc>>,
     last_seen_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
 }
@@ -545,7 +545,7 @@ const NODE_VIEW_COLS: &str =
      user_version, xray_inbounds, server_addr, last_error, last_error_at, failed_config_version, \
      failed_user_version, agent_protocol, lease_expires_at, \
      GREATEST(0, EXTRACT(EPOCH FROM lease_expires_at - now()))::bigint AS lease_remaining_seconds, \
-     last_seen_at, created_at";
+     traffic_max_rate_bytes_per_sec, deleting_at, last_seen_at, created_at";
 
 pub async fn list_nodes(
     State(state): State<AppState>,
@@ -570,6 +570,10 @@ pub struct UpdateNodeReq {
     /// null (or "") clears it.
     #[serde(default, deserialize_with = "double_option")]
     pub server_addr: Option<Option<String>>,
+    /// Per-node aggregate billing plausibility cap (bytes/s, > 0); null
+    /// falls back to traffic.node_max_rate_bytes_per_sec.
+    #[serde(default, deserialize_with = "double_option")]
+    pub traffic_max_rate_bytes_per_sec: Option<Option<i64>>,
 }
 
 /// PATCH /nodes/{id}. Disabling AND enabling bump config_version (the
@@ -582,8 +586,19 @@ async fn apply_update_node(
 ) -> Result<bool, ApiError> {
     let enabled = non_null("enabled", &req.enabled)?;
     let name = non_null("name", &req.name)?;
-    if enabled.is_none() && name.is_none() && req.server_addr.is_none() {
+    if enabled.is_none()
+        && name.is_none()
+        && req.server_addr.is_none()
+        && req.traffic_max_rate_bytes_per_sec.is_none()
+    {
         return Err(ApiError::bad_request("no fields to update"));
+    }
+    if let Some(Some(r)) = req.traffic_max_rate_bytes_per_sec {
+        if r <= 0 {
+            return Err(ApiError::bad_request(
+                "traffic_max_rate_bytes_per_sec must be > 0",
+            ));
+        }
     }
     let name = match name {
         Some(n) if n.trim().is_empty() => {
@@ -599,14 +614,11 @@ async fn apply_update_node(
             .map(String::from)
     });
 
-    let current: Option<bool> =
-        sqlx::query_scalar("SELECT enabled FROM nodes WHERE id = $1 FOR UPDATE")
-            .bind(id)
-            .fetch_optional(&mut *conn)
-            .await?;
-    let Some(was_enabled) = current else {
-        return Err(ApiError::not_found());
-    };
+    refuse_if_deleting(conn, id).await?;
+    let was_enabled: bool = sqlx::query_scalar("SELECT enabled FROM nodes WHERE id = $1")
+        .bind(id)
+        .fetch_one(&mut *conn)
+        .await?;
     let toggles = enabled.is_some_and(|e| e != was_enabled);
 
     let mut qb = sqlx::QueryBuilder::new("UPDATE nodes SET ");
@@ -623,6 +635,10 @@ async fn apply_update_node(
     }
     if let Some(v) = server_addr {
         set.push("server_addr = ").push_bind_unseparated(v);
+    }
+    if let Some(v) = req.traffic_max_rate_bytes_per_sec {
+        set.push("traffic_max_rate_bytes_per_sec = ")
+            .push_bind_unseparated(v);
     }
     qb.push(" WHERE id = ").push_bind(id);
     match qb.build().execute(&mut *conn).await {
@@ -642,11 +658,8 @@ pub async fn update_node(
 ) -> Result<Json<NodeView>, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    let bumped = apply_update_node(&mut tx, id, &req).await?;
+    apply_update_node(&mut tx, id, &req).await?;
     tx.commit().await?;
-    if bumped {
-        state.notify_change();
-    }
     let row = sqlx::query_as::<_, NodeView>(sqlx::AssertSqlSafe(format!(
         "SELECT {NODE_VIEW_COLS} FROM nodes WHERE id = $1"
     )))
@@ -655,6 +668,74 @@ pub async fn update_node(
     .await?
     .ok_or_else(ApiError::not_found)?;
     Ok(Json(row))
+}
+
+/// Phase 1 of a node deletion (R12 D1), in the caller's transaction: lock
+/// the node, mark it deleting and disable it. The first call bumps
+/// config_version, so the agent (wherever it is connected) converges to
+/// the empty state and acks it; its final counters are still billed
+/// (node_users is untouched). Phase 2 (`crate::reaper`) revokes the
+/// certificate and deletes the row. Idempotent. Returns whether this call
+/// started the deletion.
+pub(crate) async fn apply_begin_delete_node(
+    conn: &mut PgConnection,
+    id: Uuid,
+) -> Result<bool, ApiError> {
+    let deleting: Option<bool> =
+        sqlx::query_scalar("SELECT deleting_at IS NOT NULL FROM nodes WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    match deleting {
+        None => Err(ApiError::not_found()),
+        Some(true) => Ok(false),
+        Some(false) => {
+            sqlx::query(
+                "UPDATE nodes SET deleting_at = now(), delete_acked_at = NULL, enabled = false, \
+                 config_version = config_version + 1, updated_at = now() WHERE id = $1",
+            )
+            .bind(id)
+            .execute(&mut *conn)
+            .await?;
+            Ok(true)
+        }
+    }
+}
+
+/// Mutations other than deletion are refused on a node being deleted (it
+/// must stay disabled until phase 2 removes it). Locks the node row.
+async fn refuse_if_deleting(conn: &mut PgConnection, id: Uuid) -> Result<(), ApiError> {
+    let deleting: Option<bool> =
+        sqlx::query_scalar("SELECT deleting_at IS NOT NULL FROM nodes WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    match deleting {
+        None => Err(ApiError::not_found()),
+        Some(true) => Err(ApiError::conflict("node is being deleted")),
+        Some(false) => Ok(()),
+    }
+}
+
+/// DELETE /nodes/{id}: phase 1 (see `apply_begin_delete_node`). 202: the
+/// row disappears once the agent acked the empty state (or after a
+/// timeout, or at once if no agent is online), on any panel instance.
+pub async fn delete_node(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((_, id)): Path<(String, Uuid)>,
+) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), ApiError> {
+    user.require_admin()?;
+    let mut tx = state.pg().begin().await?;
+    let started = apply_begin_delete_node(&mut tx, id).await?;
+    tx.commit().await?;
+    if started {
+        tracing::info!(node = %id, "node deletion started");
+    }
+    Ok((
+        axum::http::StatusCode::ACCEPTED,
+        Json(json!({ "id": id, "deleting": true })),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -726,15 +807,55 @@ fn validate_inbounds(inbounds: &serde_json::Value) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn mentions_fakedns(v: &serde_json::Value) -> bool {
-    match v {
-        serde_json::Value::String(s) => s.to_ascii_lowercase().contains("fakedns"),
-        serde_json::Value::Array(a) => a.iter().any(mentions_fakedns),
-        serde_json::Value::Object(o) => o
-            .iter()
-            .any(|(k, v)| k.to_ascii_lowercase().contains("fakedns") || mentions_fakedns(v)),
-        _ => false,
+/// Key comparison as Go's encoding/json does it (xray parses the inbounds
+/// with it): case-insensitive, including the two non-ASCII runes that fold
+/// onto ASCII letters (U+017F long s, U+212A Kelvin sign).
+fn json_key_eq(key: &str, want: &str) -> bool {
+    let fold = |c: char| match c {
+        '\u{17f}' => 's',
+        '\u{212a}' => 'k',
+        c => c.to_ascii_lowercase(),
+    };
+    key.chars().map(fold).eq(want.chars())
+}
+
+/// Values of `obj`'s keys matching `name` the Go-json way (every duplicate
+/// or case variant: which one Go picks must not matter).
+fn json_fields<'a>(
+    obj: &'a serde_json::Map<String, serde_json::Value>,
+    name: &'a str,
+) -> impl Iterator<Item = &'a serde_json::Value> + 'a {
+    obj.iter()
+        .filter(move |(k, _)| json_key_eq(k, name))
+        .map(|(_, v)| v)
+}
+
+/// Does this inbound turn on FakeDNS (R11 L1: only
+/// `sniffing.destOverride` containing "fakedns" / "fakedns+others", as
+/// xray's SniffingConfig reads it: an array or a comma-separated string,
+/// lowercased)? Tags, paths, server names etc. that merely contain the
+/// substring are fine. The agent re-checks after xray's own parse.
+fn mentions_fakedns(inbound: &serde_json::Value) -> bool {
+    let is_fakedns = |s: &str| {
+        s.split(',').any(|p| {
+            let p = p.trim().to_lowercase();
+            p == "fakedns" || p == "fakedns+others"
+        })
+    };
+    let Some(obj) = inbound.as_object() else {
+        return false;
+    };
+    if json_fields(obj, "protocol").any(|p| p.as_str().is_some_and(is_fakedns)) {
+        return true;
     }
+    json_fields(obj, "sniffing")
+        .filter_map(|s| s.as_object())
+        .flat_map(|s| json_fields(s, "destoverride"))
+        .any(|d| match d {
+            serde_json::Value::String(s) => is_fakedns(s),
+            serde_json::Value::Array(a) => a.iter().any(|v| v.as_str().is_some_and(is_fakedns)),
+            _ => false,
+        })
 }
 
 /// Keep only credentials whose inbound still exists with the same protocol.
@@ -759,6 +880,7 @@ async fn apply_set_inbounds(
 ) -> Result<i64, ApiError> {
     validate_inbounds(inbounds)?;
     let protocols = inbound_protocols(inbounds);
+    refuse_if_deleting(conn, id).await?;
 
     let version: Option<i64> = sqlx::query_scalar(
         "UPDATE nodes SET xray_inbounds = $2, config_version = config_version + 1, updated_at = now() \
@@ -817,7 +939,6 @@ pub async fn set_inbounds(
     let mut tx = state.pg().begin().await?;
     let version = apply_set_inbounds(&mut tx, id, &req.inbounds).await?;
     tx.commit().await?;
-    state.notify_change();
     Ok(Json(json!({ "config_version": version })))
 }
 
@@ -884,6 +1005,7 @@ async fn apply_assign(
     req: &AssignReq,
 ) -> Result<serde_json::Value, ApiError> {
     let account = generate_account(&req.protocol)?;
+    refuse_if_deleting(conn, node_id).await?;
     let inbounds: Option<serde_json::Value> =
         sqlx::query_scalar("SELECT xray_inbounds FROM nodes WHERE id = $1 FOR UPDATE")
             .bind(node_id)
@@ -977,7 +1099,6 @@ pub async fn assign_user(
     let mut tx = state.pg().begin().await?;
     let account = apply_assign(&mut tx, user_id, node_id, &req).await?;
     tx.commit().await?;
-    state.notify_change();
     Ok((
         axum::http::StatusCode::CREATED,
         Json(json!({
@@ -1043,7 +1164,6 @@ pub async fn unassign_user(
     let mut tx = state.pg().begin().await?;
     apply_unassign(&mut tx, user_id, node_id).await?;
     tx.commit().await?;
-    state.notify_change();
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -1146,6 +1266,10 @@ mod tests {
         let n2 = db.node().await;
         db.assign(n2, u).await;
         let other = db.node().await;
+        let doomed = db.node().await;
+        let ours = [n1, n2, other, doomed];
+        // R12 D3: the bump itself notifies (trigger), once per node.
+        let mut listener = db.listener().await;
 
         type Op = Box<
             dyn for<'c> Fn(
@@ -1360,8 +1484,34 @@ mod tests {
                 vec![n1, n2],
                 true,
             ),
+            (
+                "begin node deletion",
+                Box::new(move |c| {
+                    Box::pin(async move { apply_begin_delete_node(c, doomed).await.map(|_| ()) })
+                }),
+                vec![doomed],
+                true,
+            ),
+            (
+                "begin node deletion again (no-op)",
+                Box::new(move |c| {
+                    Box::pin(async move { apply_begin_delete_node(c, doomed).await.map(|_| ()) })
+                }),
+                vec![doomed],
+                false,
+            ),
         ];
+        let ours_notified = |payloads: Vec<String>| -> Vec<String> {
+            let mut v: Vec<String> = payloads
+                .into_iter()
+                .filter(|p| ours.iter().any(|n| p.ends_with(&n.to_string())))
+                .collect();
+            v.sort();
+            v
+        };
+        let quiet = std::time::Duration::from_millis(150);
         for (name, op, nodes, bumps) in cases {
+            crate::testdb::drain(&mut listener, std::time::Duration::from_millis(20)).await;
             let mut before = vec![];
             for n in &nodes {
                 before.push(db.versions(*n).await);
@@ -1375,7 +1525,36 @@ mod tests {
                 let after = db.versions(*n).await;
                 assert_eq!(after != b, bumps, "{name}: node {n} {b:?} -> {after:?}");
             }
+            let got = ours_notified(crate::testdb::drain(&mut listener, quiet).await);
+            let mut want: Vec<String> = if bumps {
+                nodes.iter().map(|n| n.to_string()).collect()
+            } else {
+                vec![]
+            };
+            want.sort();
+            assert_eq!(
+                got, want,
+                "{name}: exactly one notification per bumped node"
+            );
         }
+        // Phase 2 of the deletion: the delete trigger says 'del:<id>'.
+        sqlx::query("UPDATE nodes SET delete_acked_at = now() - interval '1 minute' WHERE id = $1")
+            .bind(doomed)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        crate::testdb::drain(&mut listener, std::time::Duration::from_millis(20)).await;
+        let mut tx = db.pool.begin().await.unwrap();
+        assert!(crate::reaper::finalize_delete(&mut tx, doomed)
+            .await
+            .unwrap()
+            .is_some());
+        tx.commit().await.unwrap();
+        assert_eq!(
+            ours_notified(crate::testdb::drain(&mut listener, quiet).await),
+            vec![format!("del:{doomed}")]
+        );
+        drop(listener); // holds a pool connection: close() would wait on it
         let left: i64 = sqlx::query_scalar("SELECT count(*) FROM node_users")
             .fetch_one(&db.pool)
             .await
@@ -1731,13 +1910,110 @@ mod tests {
         db.drop().await;
     }
 
+    /// A node being deleted stays disabled: other node mutations are 409;
+    /// the per-node rate override is validated.
+    #[tokio::test]
+    async fn deleting_node_refuses_mutations_and_rate_override_validated() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = db.member().await;
+        let mut tx = db.pool.begin().await.unwrap();
+        let bad = apply_update_node(
+            &mut tx,
+            n,
+            &UpdateNodeReq {
+                traffic_max_rate_bytes_per_sec: Some(Some(0)),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(err_status(bad), StatusCode::BAD_REQUEST);
+        tx.rollback().await.unwrap();
+        let mut tx = db.pool.begin().await.unwrap();
+        apply_update_node(
+            &mut tx,
+            n,
+            &UpdateNodeReq {
+                traffic_max_rate_bytes_per_sec: Some(Some(1000)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(apply_begin_delete_node(&mut tx, n).await.unwrap());
+        tx.commit().await.unwrap();
+        let mut tx = db.pool.begin().await.unwrap();
+        let r = apply_update_node(
+            &mut tx,
+            n,
+            &UpdateNodeReq {
+                enabled: Some(Some(true)),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(err_status(r), StatusCode::CONFLICT);
+        tx.rollback().await.unwrap();
+        let mut tx = db.pool.begin().await.unwrap();
+        let r = apply_set_inbounds(&mut tx, n, &json!([{"tag": "x", "protocol": "vless"}])).await;
+        assert_eq!(err_status(r), StatusCode::CONFLICT);
+        tx.rollback().await.unwrap();
+        let mut tx = db.pool.begin().await.unwrap();
+        let req = AssignReq {
+            inbound_tag: "in-vless".into(),
+            protocol: "vless".into(),
+        };
+        assert_eq!(
+            err_status(apply_assign(&mut tx, u, n, &req).await),
+            StatusCode::CONFLICT
+        );
+        tx.rollback().await.unwrap();
+        let (enabled, rate): (bool, Option<i64>) = sqlx::query_as(
+            "SELECT enabled, traffic_max_rate_bytes_per_sec FROM nodes WHERE id = $1",
+        )
+        .bind(n)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!((enabled, rate), (false, Some(1000)));
+        let mut tx = db.pool.begin().await.unwrap();
+        assert_eq!(
+            err_status(apply_begin_delete_node(&mut tx, Uuid::new_v4()).await),
+            StatusCode::NOT_FOUND
+        );
+        tx.rollback().await.unwrap();
+        db.drop().await;
+    }
+
     #[test]
     fn fakedns_inbounds_rejected() {
-        let bad = json!([{"tag": "a", "protocol": "vless",
-            "sniffing": {"enabled": true, "destOverride": ["http", "fakedns+others"]}}]);
-        assert!(validate_inbounds(&bad).is_err());
-        let ok = json!([{"tag": "a", "protocol": "vless",
-            "sniffing": {"enabled": true, "destOverride": ["http", "tls"]}}]);
-        assert!(validate_inbounds(&ok).is_ok());
+        let one = |inb: serde_json::Value| validate_inbounds(&json!([inb]));
+        for bad in [
+            json!({"tag": "a", "protocol": "vless",
+                "sniffing": {"enabled": true, "destOverride": ["http", "fakedns+others"]}}),
+            json!({"tag": "a", "protocol": "vless", "sniffing": {"destOverride": ["FakeDNS"]}}),
+            json!({"tag": "a", "protocol": "vless", "sniffing": {"destOverride": "http, fakedns"}}),
+            json!({"tag": "a", "protocol": "vless", "Sniffing": {"DESTOVERRIDE": ["fakedns"]}}),
+            // Go's json folds U+017F onto 's', xray lowercases U+212A to 'k'.
+            json!({"tag": "a", "protocol": "vless", "\u{17f}niffing": {"de\u{17f}tOverride": ["fa\u{212a}edns"]}}),
+            // Duplicate keys by case: whichever Go picks must be safe.
+            json!({"tag": "a", "protocol": "vless", "sniffing": {"destOverride": ["http"]},
+                "SNIFFING": {"destOverride": ["fakedns"]}}),
+            json!({"tag": "a", "protocol": "fakedns"}),
+        ] {
+            assert!(one(bad.clone()).is_err(), "{bad}");
+        }
+        for ok in [
+            json!({"tag": "a", "protocol": "vless",
+                "sniffing": {"enabled": true, "destOverride": ["http", "tls"]}}),
+            json!({"tag": "fakedns-in", "protocol": "vless"}),
+            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "ws",
+                "wsSettings": {"path": "/fakedns"}, "tlsSettings": {"serverName": "fakedns.example"}}}),
+            json!({"tag": "a", "protocol": "vless", "settings": {"fakedns": true},
+                "sniffing": {"destOverride": ["fakednsx", "notfakedns"]}}),
+        ] {
+            assert!(one(ok.clone()).is_ok(), "{ok}");
+        }
     }
 }

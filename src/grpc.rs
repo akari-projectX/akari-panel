@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tonic::transport::{Certificate, Identity, ServerTlsConfig};
 use tonic::{Request, Response, Status, Streaming};
@@ -38,13 +39,15 @@ impl AgentChannel for AgentChannelService {
 
         // Identity comes exclusively from the mTLS client certificate;
         // there is no token or credential in the protocol itself.
-        let node_id = identify_node(&state, &request).await?;
+        let identity = identify_node(&state, &request).await?;
 
         // Disabled nodes are NOT rejected: a rejected agent would keep its
         // last xray config running forever. They are accepted and converge
-        // to the disabled desired state (no inbounds, no users).
+        // to the disabled desired state (no inbounds, no users). For the
+        // same reason a revoked (deleted node's) certificate is accepted,
+        // served the empty state and closed (R12 D2).
         let (tx, rx) = mpsc::channel::<Result<PanelDown, Status>>(64);
-        tokio::spawn(session(state.clone(), node_id, request.into_inner(), tx));
+        tokio::spawn(session(state.clone(), identity, request.into_inner(), tx));
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 }
@@ -53,7 +56,7 @@ impl AgentChannel for AgentChannelService {
 async fn identify_node(
     state: &AppState,
     req: &Request<Streaming<AgentUp>>,
-) -> Result<Uuid, Status> {
+) -> Result<AgentIdentity, Status> {
     let certs = req
         .peer_certs()
         .ok_or_else(|| Status::unauthenticated("missing client certificate"))?;
@@ -62,14 +65,40 @@ async fn identify_node(
         .ok_or_else(|| Status::unauthenticated("missing client certificate"))?;
     let (_, cert) = X509Certificate::from_der(der.as_ref())
         .map_err(|_| Status::unauthenticated("malformed certificate"))?;
-    let serial = hex::encode(cert.serial.to_bytes_be());
+    let serial = crate::install::normalize_serial(cert.raw_serial());
+    node_for_serial(state.pg(), &serial).await
+}
 
-    let id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM nodes WHERE cert_serial = $1")
-        .bind(&serial)
-        .fetch_optional(state.pg())
-        .await
-        .map_err(|e| Status::internal(e.to_string()))?;
-    id.ok_or_else(|| Status::unauthenticated("unknown certificate"))
+/// Who a certificate serial belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentIdentity {
+    Node(Uuid),
+    /// A deleted node's tombstoned certificate: served the empty state,
+    /// never trusted with traffic, then closed.
+    Revoked(Uuid),
+}
+
+/// The node a certificate serial belongs to. The revocation tombstones are
+/// consulted FIRST: a revoked serial stays revoked even if some node row
+/// carried it again (the DB also refuses that, migration 0007). Only
+/// serials that are neither registered nor tombstoned are refused.
+pub(crate) async fn node_for_serial(
+    pg: &sqlx::PgPool,
+    serial: &str,
+) -> Result<AgentIdentity, Status> {
+    let (revoked, id): (Option<Uuid>, Option<Uuid>) = sqlx::query_as(
+        "SELECT (SELECT node_id FROM revoked_certs WHERE cert_serial = $1), \
+                (SELECT id FROM nodes WHERE cert_serial = $1)",
+    )
+    .bind(serial)
+    .fetch_one(pg)
+    .await
+    .map_err(|e| Status::internal(e.to_string()))?;
+    if let Some(node) = revoked {
+        return Ok(AgentIdentity::Revoked(node));
+    }
+    id.map(AgentIdentity::Node)
+        .ok_or_else(|| Status::unauthenticated("unknown certificate"))
 }
 
 /// Lowest `Hello.protocol_version` the panel converges. Older agents are
@@ -249,6 +278,8 @@ struct SyncState {
     /// Hello's state hash, verified against the desired set once the held
     /// versions equal the desired ones (then the set becomes `acked`).
     hello_hash: Option<String>,
+    /// The last Hello's claim (versions, hash), kept for `runs_empty`.
+    hello_claim: Option<((u64, u64), String)>,
     /// The user set the agent verifiably runs at `held` in THIS session
     /// (acked by us, or hash-verified from its Hello). Deltas are only
     /// computed from it (or from the in-flight state).
@@ -471,6 +502,32 @@ impl SyncState {
         self.acked = None;
         self.diverged = false;
         self.hello_hash = (!self.too_old() && !hash.is_empty()).then(|| hash.to_string());
+        self.hello_claim = (!self.too_old()).then(|| (held, hash.to_string()));
+    }
+
+    /// Does the agent verifiably run the empty state (no inbounds, no
+    /// users) right now? Either acked in this session, or its Hello's hash
+    /// is the empty state's at the versions it still holds. A too-old
+    /// agent's claims are never trusted.
+    fn runs_empty(&self) -> bool {
+        if self.too_old() {
+            return false;
+        }
+        let empty = |v: u64| {
+            state_hash(
+                v,
+                &NodeState {
+                    inbounds: "[]".into(),
+                    users: UserSet::new(),
+                },
+            )
+        };
+        if let Some((v, set)) = &self.acked {
+            if *v == self.held && set.inbounds == "[]" && set.users.is_empty() {
+                return true;
+            }
+        }
+        matches!(&self.hello_claim, Some((v, h)) if *v == self.held && *h == empty(v.0))
     }
 
     fn on_ack(&mut self, ack: &crate::gen::Ack, now: Instant) -> AckOutcome {
@@ -558,55 +615,216 @@ impl SyncState {
     }
 }
 
-type SharedSync = Arc<Mutex<SyncState>>;
-
-async fn session(
+/// One agent stream. Shared by the stream reader and the watcher task.
+struct Session {
     state: AppState,
     node_id: Uuid,
-    mut inbound: Streaming<AgentUp>,
     tx: mpsc::Sender<Result<PanelDown, Status>>,
-) {
+    sync: Mutex<SyncState>,
+    /// R12 P1: held across a whole `sync_if_stale` (ticket → DB read →
+    /// decide → LeaseGrant/Snapshot/Delta sends) and around every other
+    /// send, so what is decided later is never sent earlier.
+    send_lock: tokio::sync::Mutex<()>,
+    /// Sticky, set under `send_lock`: nothing is sent after it.
+    terminated: AtomicBool,
+    /// The node is gone or the certificate revoked: only the empty state
+    /// and the close are sent; traffic reports are ignored.
+    retiring: AtomicBool,
+    /// Last desired-state read said the node is being deleted (phase 1).
+    deleting: AtomicBool,
+    /// This session marked the node online (nodes.online_session).
+    marked_online: AtomicBool,
+    online_session: Uuid,
+    /// A reader-side read found the node gone: the watcher retires.
+    gone: Notify,
+    /// The watcher closed the stream: the reader stops.
+    stop: Notify,
+    /// Hello / ack of the empty state, while retiring.
+    hello: Notify,
+    retire_ack: Notify,
+    /// A newer stream of the same node replaced this one (local instance;
+    /// across instances it shows as a foreign nodes.online_session).
+    superseded: Arc<Notify>,
+}
+
+impl Session {
+    fn new(
+        state: AppState,
+        node_id: Uuid,
+        tx: mpsc::Sender<Result<PanelDown, Status>>,
+        revoked: bool,
+    ) -> Arc<Self> {
+        let sess = Arc::new(Session {
+            node_id,
+            tx,
+            sync: Mutex::default(),
+            send_lock: tokio::sync::Mutex::new(()),
+            terminated: AtomicBool::new(false),
+            retiring: AtomicBool::new(revoked),
+            deleting: AtomicBool::new(false),
+            marked_online: AtomicBool::new(false),
+            online_session: Uuid::new_v4(),
+            gone: Notify::new(),
+            stop: Notify::new(),
+            hello: Notify::new(),
+            retire_ack: Notify::new(),
+            superseded: Arc::new(Notify::new()),
+            state,
+        });
+        sess.sync.lock().unwrap().remove_rebuild =
+            sess.state.cfg().agent.remove_mode == crate::config::RemoveMode::Rebuild;
+        sess
+    }
+
+    fn terminated(&self) -> bool {
+        self.terminated.load(Ordering::SeqCst)
+    }
+    fn retiring(&self) -> bool {
+        self.retiring.load(Ordering::SeqCst)
+    }
+
+    /// Send under the send lock unless the session is terminated. Returns
+    /// whether it was sent.
+    async fn send(
+        &self,
+        _guard: &tokio::sync::MutexGuard<'_, ()>,
+        msg: DownMsg,
+    ) -> anyhow::Result<bool> {
+        if self.terminated() {
+            return Ok(false);
+        }
+        self.tx.send(Ok(PanelDown { msg: Some(msg) })).await?;
+        Ok(true)
+    }
+
+    /// End the stream with `status` (once; sticky) and stop the reader.
+    async fn terminate(&self, status: Status) {
+        let guard = self.send_lock.lock().await;
+        if !self.terminated.swap(true, Ordering::SeqCst) {
+            // Bounded: a peer that stopped reading cannot pin us here.
+            let _ = tokio::time::timeout(TERMINATE_SEND_WAIT, self.tx.send(Err(status))).await;
+        }
+        drop(guard);
+        self.stop.notify_one();
+    }
+}
+
+/// How long a retiring agent gets for its Hello and for acking the empty
+/// state before its stream is closed anyway.
+const RETIRE_WAIT: Duration = Duration::from_secs(10);
+const TERMINATE_SEND_WAIT: Duration = Duration::from_secs(5);
+
+/// The versions of the empty state pushed to a retiring agent.
+const RETIRED_VERSIONS: (u64, u64) = (0, 0);
+
+async fn session<S>(
+    state: AppState,
+    identity: AgentIdentity,
+    mut inbound: S,
+    tx: mpsc::Sender<Result<PanelDown, Status>>,
+) where
+    S: Stream<Item = Result<AgentUp, Status>> + Unpin + Send + 'static,
+{
     use crate::gen::agent_up::Msg as UpMsg;
 
-    tracing::info!(node = %node_id, "agent connected");
-    // Owner token for nodes.status across panel instances: only the session
-    // that last marked the node online may refresh it or mark it offline.
-    let online_session = Uuid::new_v4();
+    let (node_id, revoked) = match identity {
+        AgentIdentity::Node(n) => (n, false),
+        AgentIdentity::Revoked(n) => (n, true),
+    };
+    tracing::info!(node = %node_id, revoked, "agent connected");
+    // Subscribe BEFORE the membership load and the first read of the
+    // desired state, so no committed change can fall between them.
+    let mut wake_rx = state.wakeups().subscribe(node_id);
+    let sess = Session::new(state.clone(), node_id, tx, revoked);
     let gen = state.next_gen();
-    state.agents().insert(node_id, (gen, online_session));
+    if !revoked {
+        // One live stream per node on this instance: the newest wins.
+        let entry = crate::state::AgentEntry {
+            gen,
+            online_session: sess.online_session,
+            superseded: sess.superseded.clone(),
+        };
+        if let Some(old) = state.agents().insert(node_id, entry) {
+            old.superseded.notify_one();
+        }
+        // Traffic is only accepted for assigned users; load them before the
+        // first report can arrive.
+        refresh_members(&state, node_id).await;
+    }
 
-    let sync: SharedSync = Arc::default();
-    sync.lock().unwrap().remove_rebuild =
-        state.cfg().agent.remove_mode == crate::config::RemoveMode::Rebuild;
-    // Traffic is only accepted for assigned users; load them before the
-    // first report can arrive.
-    refresh_members(&state, node_id).await;
-
-    // Push snapshots on panel-side changes, and reconcile periodically.
-    let watcher_state = state.clone();
-    let watcher_tx = tx.clone();
-    let watcher_sync = sync.clone();
-    let mut watch_rx = state.subscribe_changes();
+    // Push state on this node's wakeups (pg_notify, see notify.rs), and
+    // reconcile periodically. A node found gone (or a revoked certificate)
+    // is retired: empty state, then the stream is closed.
+    let w = sess.clone();
     let watcher = tokio::spawn(async move {
+        let sess = w;
+        if revoked {
+            retire(&sess, "certificate revoked").await;
+            return;
+        }
         let mut tick = tokio::time::interval(RECONCILE_EVERY);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         tick.tick().await; // the first tick is immediate; Hello covers it
         loop {
             tokio::select! {
-                r = watch_rx.changed() => if r.is_err() { break },
+                r = wake_rx.changed() => if r.is_err() { break },
                 _ = tick.tick() => {}
+                _ = sess.gone.notified() => {
+                    retire(&sess, "node deleted").await;
+                    break;
+                }
+                _ = sess.superseded.notified() => {
+                    sess.terminate(Status::aborted("superseded by a newer stream")).await;
+                    break;
+                }
             }
-            refresh_members(&watcher_state, node_id).await;
-            if let Err(e) = sync_if_stale(&watcher_state, node_id, &watcher_sync, &watcher_tx).await
-            {
-                tracing::warn!(node = %node_id, error = %e, "config push failed");
+            refresh_members(&sess.state, node_id).await;
+            match sync_if_stale(&sess).await {
+                Ok(Synced::Current) => {}
+                Ok(Synced::Gone) => {
+                    retire(&sess, "node deleted").await;
+                    break;
+                }
+                Ok(Synced::Superseded) => {
+                    sess.terminate(Status::aborted("superseded by a newer stream"))
+                        .await;
+                    break;
+                }
+                Err(e) => tracing::warn!(node = %node_id, error = %e, "config push failed"),
             }
         }
     });
 
     let result: Result<(), Status> = async {
-        while let Some(msg) = inbound.next().await {
-            let msg = msg?;
+        loop {
+            let msg = tokio::select! {
+                m = inbound.next() => match m {
+                    Some(m) => m?,
+                    None => break,
+                },
+                _ = sess.stop.notified() => break,
+            };
+            if sess.retiring() {
+                // Only the agent's state and the ack of the empty state
+                // matter; traffic is never accepted (R12 D2).
+                match &msg.msg {
+                    Some(UpMsg::Hello(h)) => {
+                        sess.sync.lock().unwrap().on_hello(
+                            (h.config_version, h.user_version),
+                            h.protocol_version,
+                            &h.state_hash,
+                        );
+                        sess.hello.notify_one();
+                    }
+                    Some(UpMsg::Ack(a))
+                        if (a.config_version, a.user_version) == RETIRED_VERSIONS =>
+                    {
+                        sess.retire_ack.notify_one();
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             match msg.msg {
                 Some(UpMsg::Hello(hello)) => {
                     tracing::info!(
@@ -616,10 +834,15 @@ async fn session(
                         "agent hello"
                     );
                     let held = (hello.config_version, hello.user_version);
-                    sync.lock()
-                        .unwrap()
-                        .on_hello(held, hello.protocol_version, &hello.state_hash);
-                    mark_online(&state, node_id, online_session, &hello).await;
+                    sess.sync.lock().unwrap().on_hello(
+                        held,
+                        hello.protocol_version,
+                        &hello.state_hash,
+                    );
+                    sess.hello.notify_one();
+                    if mark_online(&state, node_id, sess.online_session, &hello).await {
+                        sess.marked_online.store(true, Ordering::SeqCst);
+                    }
                     if hello.protocol_version < MIN_AGENT_PROTOCOL {
                         // Never trusted for convergence; say why it runs
                         // nothing.
@@ -628,9 +851,11 @@ async fn session(
                         // The agent only claims versions it applied cleanly.
                         record_converged(state.pg(), node_id, held).await;
                     }
-                    if let Err(e) = sync_if_stale(&state, node_id, &sync, &tx).await {
-                        tracing::warn!(node = %node_id, error = %e, "failed to sync after hello");
-                    }
+                    after_sync(
+                        &sess,
+                        sync_if_stale(&sess).await,
+                        "failed to sync after hello",
+                    );
                 }
                 Some(UpMsg::Heartbeat(hb)) => {
                     store_heartbeat(&state, node_id, &hb).await;
@@ -651,13 +876,18 @@ async fn session(
                         "agent ack"
                     );
                     let (held_before, outcome) = {
-                        let mut st = sync.lock().unwrap();
+                        let mut st = sess.sync.lock().unwrap();
                         let held = st.held;
                         (held, st.on_ack(&ack, Instant::now()))
                     };
                     let v = (ack.config_version, ack.user_version);
                     match outcome {
-                        AckOutcome::Converged => record_converged(state.pg(), node_id, v).await,
+                        AckOutcome::Converged => {
+                            record_converged(state.pg(), node_id, v).await;
+                            if sess.deleting.load(Ordering::SeqCst) {
+                                mark_delete_acked(state.pg(), node_id, v).await;
+                            }
+                        }
                         AckOutcome::Failed(msg) => {
                             let f = DbFailure {
                                 versions: v,
@@ -667,9 +897,7 @@ async fn session(
                             record_failure(state.pg(), node_id, f, &msg).await;
                         }
                         AckOutcome::Resync => {
-                            if let Err(e) = sync_if_stale(&state, node_id, &sync, &tx).await {
-                                tracing::warn!(node = %node_id, error = %e, "failed to resync");
-                            }
+                            after_sync(&sess, sync_if_stale(&sess).await, "failed to resync")
                         }
                         AckOutcome::Ignore => {}
                     }
@@ -682,28 +910,128 @@ async fn session(
     .await;
 
     watcher.abort();
-    state
-        .agents()
-        .remove_if(&node_id, |_, &(entry_gen, _)| entry_gen == gen);
+    let _ = watcher.await; // drops its wakeup receiver
+    state.wakeups().release(node_id);
+    let retired = sess.retiring();
+    let superseded = !retired && sess.terminated();
+    if !revoked {
+        state.agents().remove_if(&node_id, |_, e| e.gen == gen);
+    }
     // A snapshot still unacked when the stream dies counts as a failed
     // apply, so a crash-looping agent gets backoff instead of resends.
     let lost = {
-        let st = sync.lock().unwrap();
-        // A too-old agent's answers are not trusted either way.
-        st.pending.filter(|_| !st.too_old()).map(|p| DbFailure {
-            versions: p.versions,
-            held: st.held,
-            no_ack: true,
-        })
+        let st = sess.sync.lock().unwrap();
+        // A too-old agent's answers are not trusted either way; a retired
+        // or superseded session's in-flight state is moot.
+        st.pending
+            .filter(|_| !st.too_old() && !retired && !superseded)
+            .map(|p| DbFailure {
+                versions: p.versions,
+                held: st.held,
+                no_ack: true,
+            })
     };
     if let Some(f) = lost {
         record_failure(state.pg(), node_id, f, "no ack before the stream closed").await;
     }
-    let _ = mark_offline(state.pg(), node_id, online_session).await;
+    if retired {
+        if !revoked {
+            forget_node(&state, node_id).await;
+        }
+    } else {
+        let _ = mark_offline(state.pg(), node_id, sess.online_session).await;
+        if !state.agents().contains_key(&node_id) {
+            // Last local session of the node: its membership cache goes
+            // (buffered entries stay until flushed).
+            state.traffic().drop_members(node_id);
+        }
+    }
     if let Err(e) = result {
         tracing::warn!(node = %node_id, error = %e, "agent stream error");
     }
-    tracing::info!(node = %node_id, "agent disconnected");
+    tracing::info!(node = %node_id, retired, superseded, "agent disconnected");
+}
+
+/// Route a reader-side sync result: a gone/superseded node is handled by
+/// the watcher (which may wait on the reader).
+fn after_sync(sess: &Session, r: anyhow::Result<Synced>, what: &str) {
+    match r {
+        Ok(Synced::Current) => {}
+        Ok(Synced::Gone) => sess.gone.notify_one(),
+        Ok(Synced::Superseded) => sess.superseded.notify_one(),
+        Err(e) => tracing::warn!(node = %sess.node_id, error = %e, "{what}"),
+    }
+}
+
+/// The node is gone (deleted) or the certificate revoked: make sure the
+/// agent runs the empty state (no inbounds, no users) — pushed at versions
+/// (0,0) unless it verifiably runs it already — give it RETIRE_WAIT to ack,
+/// then end the stream with UNAUTHENTICATED. A refused agent would keep its
+/// last config (R3), hence push-then-close rather than reject.
+async fn retire(sess: &Session, why: &'static str) {
+    {
+        let _g = sess.send_lock.lock().await;
+        sess.retiring.store(true, Ordering::SeqCst);
+    }
+    let node_id = sess.node_id;
+    tracing::info!(node = %node_id, why, "retiring agent session");
+    let hello_seen = sess.sync.lock().unwrap().hello_seen;
+    if !hello_seen {
+        let _ = tokio::time::timeout(RETIRE_WAIT, sess.hello.notified()).await;
+    }
+    let empty_already = sess.sync.lock().unwrap().runs_empty();
+    if !empty_already {
+        let empty = DownMsg::Snapshot(ConfigSnapshot {
+            config_version: RETIRED_VERSIONS.0,
+            inbounds_json: "[]".into(),
+            user_version: RETIRED_VERSIONS.1,
+            users: vec![],
+        });
+        let sent = {
+            let g = sess.send_lock.lock().await;
+            sess.send(&g, empty).await.unwrap_or(false)
+        };
+        if sent
+            && tokio::time::timeout(RETIRE_WAIT, sess.retire_ack.notified())
+                .await
+                .is_err()
+        {
+            tracing::warn!(node = %node_id, "retiring agent did not ack the empty state; closing anyway");
+        }
+    }
+    sess.terminate(Status::unauthenticated(why)).await;
+}
+
+/// A deleted node's leftovers on this instance: live-status keys and the
+/// in-memory traffic state (membership, buffered entries, index).
+pub(crate) async fn forget_node(state: &AppState, node_id: Uuid) {
+    state.traffic().forget_node(node_id);
+    valkey_util::del(
+        state,
+        vec![
+            format!("akari:node:online:{node_id}"),
+            format!("akari:node:hb:{node_id}"),
+        ],
+    )
+    .await;
+}
+
+/// Phase 1 of a deletion is converged: the agent acked the (empty) state
+/// at the node's current versions. Lets phase 2 (reaper) proceed early.
+async fn mark_delete_acked(pg: &sqlx::PgPool, node_id: Uuid, versions: (u64, u64)) {
+    let res = sqlx::query(
+        "UPDATE nodes SET delete_acked_at = now() \
+         WHERE id = $1 AND deleting_at IS NOT NULL AND delete_acked_at IS NULL \
+           AND NOT enabled AND config_version = $2 AND user_version = $3",
+    )
+    .bind(node_id)
+    .bind(versions.0 as i64)
+    .bind(versions.1 as i64)
+    .execute(pg)
+    .await;
+    if let Err(e) = res {
+        tracing::warn!(node = %node_id, error = %e, "failed to record the deletion ack");
+    }
 }
 
 /// Clear the recorded failure if `versions` (now running on the agent, per
@@ -782,27 +1110,30 @@ async fn record_too_old(pg: &sqlx::PgPool, node_id: Uuid, protocol: u32) {
     }
 }
 
+/// Returns whether the node row now names this session as its owner.
 async fn mark_online(
     state: &AppState,
     node_id: Uuid,
     online_session: Uuid,
     hello: &crate::gen::Hello,
-) {
+) -> bool {
     valkey_util::set_online(state, node_id).await;
     let info = hello.info.as_ref();
-    let _ = set_online_row(
+    let owned = set_online_row(
         state.pg(),
         node_id,
         online_session,
         info.map(|i| i.agent_version.as_str()),
         info.map(|i| i.core_version.as_str()),
     )
-    .await;
+    .await
+    .is_ok();
     let _ = sqlx::query("UPDATE nodes SET agent_protocol = $2 WHERE id = $1")
         .bind(node_id)
         .bind(hello.protocol_version as i32)
         .execute(state.pg())
         .await;
+    owned
 }
 
 async fn set_online_row(
@@ -814,7 +1145,7 @@ async fn set_online_row(
 ) -> sqlx::Result<()> {
     sqlx::query(
         "UPDATE nodes SET status = 'online', agent_version = $1, core_version = $2, \
-         online_session = $4 WHERE id = $3",
+         online_session = $4, last_seen_at = now() WHERE id = $3",
     )
     .bind(agent_version)
     .bind(core_version)
@@ -875,6 +1206,8 @@ struct NodeRow {
     failed_held_config_version: Option<i64>,
     failed_held_user_version: Option<i64>,
     failed_reason: Option<String>,
+    online_session: Option<Uuid>,
+    deleting: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -896,6 +1229,10 @@ struct Desired {
     enabled: bool,
     /// The persisted failed apply, if any.
     failed: Option<DbFailure>,
+    /// The session that last marked the node online (any instance).
+    online_session: Option<Uuid>,
+    /// Phase 1 of a deletion: served like a disabled node.
+    deleting: bool,
 }
 
 /// The desired state of a node. A disabled node runs nothing (no inbounds,
@@ -913,7 +1250,8 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
     let node = sqlx::query_as::<_, NodeRow>(
         "SELECT enabled, xray_inbounds, config_version, user_version, \
          failed_config_version, failed_user_version, failed_held_config_version, \
-         failed_held_user_version, failed_reason FROM nodes WHERE id = $1",
+         failed_held_user_version, failed_reason, online_session, \
+         deleting_at IS NOT NULL AS deleting FROM nodes WHERE id = $1",
     )
     .bind(node_id)
     .fetch_optional(&mut *tx)
@@ -923,7 +1261,10 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
     };
 
     let mut users = Vec::new();
-    let inbounds_json = if node.enabled {
+    // A node being deleted is served like a disabled one (it is disabled
+    // in the same transaction; this is belt and braces).
+    let serve = node.enabled && !node.deleting;
+    let inbounds_json = if serve {
         let rows = sqlx::query_as::<_, NodeUserRow>(sqlx::AssertSqlSafe(format!(
             "SELECT nu.user_id, nu.credentials \
              FROM node_users nu JOIN users u ON u.id = nu.user_id \
@@ -964,7 +1305,9 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
             user_version: node.user_version as u64,
             users,
         },
-        enabled: node.enabled,
+        enabled: serve,
+        online_session: node.online_session,
+        deleting: node.deleting,
         failed: node
             .failed_config_version
             .zip(node.failed_user_version)
@@ -990,16 +1333,33 @@ const LEASE_WRITE_EVERY: Duration = Duration::from_secs(30);
 /// read of the desired state renews the agent's fail-closed lease (sent
 /// BEFORE any snapshot, so an agent whose lease ran out keeps what it
 /// rebuilds); a failed read grants nothing.
-async fn sync_if_stale(
-    state: &AppState,
-    node_id: Uuid,
-    sync: &SharedSync,
-    tx: &mpsc::Sender<Result<PanelDown, Status>>,
-) -> anyhow::Result<()> {
-    let ticket = sync.lock().unwrap().ticket(); // BEFORE the read
-    let Some(desired) = desired_state(state.pg(), node_id).await? else {
-        return Ok(());
+async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
+    let (state, node_id) = (&sess.state, sess.node_id);
+    // R12 P1: the whole ticket → read → decide → send sequence runs under
+    // the session's send lock, so a later decision is never sent first.
+    let guard = sess.send_lock.lock().await;
+    if sess.terminated() || sess.retiring() {
+        return Ok(Synced::Current);
+    }
+    let ticket = sess.sync.lock().unwrap().ticket(); // BEFORE the read
+    let desired = {
+        let _permit = state.read_permits().acquire().await?;
+        desired_state(state.pg(), node_id).await?
     };
+    let Some(desired) = desired else {
+        // Deleted (maybe while its notification was missed): the caller
+        // retires the session. No lease for a node that does not exist.
+        return Ok(Synced::Gone);
+    };
+    sess.deleting.store(desired.deleting, Ordering::SeqCst);
+    if sess.marked_online.load(Ordering::SeqCst)
+        && desired
+            .online_session
+            .is_some_and(|o| o != sess.online_session)
+    {
+        // A newer stream of this node (on some instance) took over.
+        return Ok(Synced::Superseded);
+    }
     let now = Instant::now();
     let snap = desired.snapshot;
     let want = (snap.config_version, snap.user_version);
@@ -1007,8 +1367,8 @@ async fn sync_if_stale(
         inbounds: snap.inbounds_json.clone(),
         users: user_set(&snap.users),
     });
-    let (plan, grant, write_lease) = {
-        let mut st = sync.lock().unwrap();
+    let (plan, grant, write_lease, converged) = {
+        let mut st = sess.sync.lock().unwrap();
         let grant = st.hello_seen && !st.too_old();
         let write_lease = grant
             && st
@@ -1018,16 +1378,23 @@ async fn sync_if_stale(
             st.lease_written = Some(now);
         }
         let plan = st.decide(ticket, want, &set, desired.enabled, desired.failed, now);
-        (plan, grant, write_lease)
+        let converged =
+            plan.is_none() && st.held == want && st.acked.as_ref().is_some_and(|(v, _)| *v == want);
+        (plan, grant, write_lease, converged)
     };
+    if desired.deleting && converged {
+        // Reconnected agent already runs the deleting node's empty state.
+        mark_delete_acked(state.pg(), node_id, want).await;
+    }
     if grant {
         let secs = state.cfg().grpc.lease_seconds();
-        tx.send(Ok(PanelDown {
-            msg: Some(DownMsg::Lease(LeaseGrant {
+        sess.send(
+            &guard,
+            DownMsg::Lease(LeaseGrant {
                 duration_seconds: secs,
                 remove_mode: state.cfg().agent.remove_mode.proto() as i32,
-            })),
-        }))
+            }),
+        )
         .await?;
         if write_lease {
             let _ = sqlx::query(
@@ -1041,7 +1408,7 @@ async fn sync_if_stale(
         }
     }
     let Some(plan) = plan else {
-        return Ok(());
+        return Ok(Synced::Current);
     };
     let msg = match plan {
         Plan::Snapshot { empty: true } => {
@@ -1083,11 +1450,28 @@ async fn sync_if_stale(
             })
         }
     };
-    if let Err(e) = tx.send(Ok(PanelDown { msg: Some(msg) })).await {
-        sync.lock().unwrap().pending = None;
-        return Err(e.into());
+    match sess.send(&guard, msg).await {
+        Ok(true) => Ok(Synced::Current),
+        Ok(false) => {
+            sess.sync.lock().unwrap().pending = None;
+            Ok(Synced::Current)
+        }
+        Err(e) => {
+            sess.sync.lock().unwrap().pending = None;
+            Err(e)
+        }
     }
-    Ok(())
+}
+
+/// What `sync_if_stale` found.
+#[derive(Debug, PartialEq, Eq)]
+enum Synced {
+    /// The node exists; whatever it needed was sent.
+    Current,
+    /// The node no longer exists.
+    Gone,
+    /// Another (newer) stream of the node owns it now.
+    Superseded,
 }
 
 pub async fn serve(
@@ -1501,7 +1885,6 @@ mod tests {
     /// or a mismatch means Snapshot (the latter even at equal versions).
     #[test]
     fn new_session_verifies_before_delta() {
-        let t0 = Instant::now();
         let s1 = set_of(&[op("a", &[("t", "1")])]);
         let s2 = set_of(&[op("b", &[("t", "2")])]);
 
@@ -1872,6 +2255,348 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+        db.drop().await;
+    }
+
+    // ---------------------------------------------------------------------
+    // Whole-session tests with a fake agent stream (real DB, real listener).
+    // ---------------------------------------------------------------------
+
+    use crate::gen::agent_up::Msg as UpMsg;
+
+    struct FakeAgent {
+        up: mpsc::Sender<Result<AgentUp, Status>>,
+        down: mpsc::Receiver<Result<PanelDown, Status>>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    fn spawn_agent(state: &AppState, who: AgentIdentity) -> FakeAgent {
+        let (up, up_rx) = mpsc::channel(64);
+        let (down_tx, down) = mpsc::channel(64);
+        let task = tokio::spawn(session(
+            state.clone(),
+            who,
+            ReceiverStream::new(up_rx),
+            down_tx,
+        ));
+        FakeAgent { up, down, task }
+    }
+
+    impl FakeAgent {
+        async fn send(&self, m: UpMsg) {
+            self.up.send(Ok(AgentUp { msg: Some(m) })).await.unwrap();
+        }
+        async fn hello(&self, held: (u64, u64), hash: String) {
+            self.send(UpMsg::Hello(crate::gen::Hello {
+                session_id: "s1".into(),
+                config_version: held.0,
+                user_version: held.1,
+                protocol_version: MIN_AGENT_PROTOCOL,
+                state_hash: hash,
+                ..Default::default()
+            }))
+            .await;
+        }
+        async fn ack(&self, v: (u64, u64), hash: String) {
+            self.send(UpMsg::Ack(ack_v1(v, crate::gen::ack::Reason::Ok, v, hash)))
+                .await;
+        }
+        async fn traffic(&self, user: Uuid, up: u64) {
+            self.send(UpMsg::Traffic(crate::gen::TrafficReport {
+                users: vec![crate::gen::UserTraffic {
+                    user_id: user.to_string(),
+                    up_bytes: up,
+                    down_bytes: 0,
+                }],
+                session_id: "s1".into(),
+                ..Default::default()
+            }))
+            .await;
+        }
+        /// Next message that is not a LeaseGrant.
+        async fn next(&mut self) -> Option<Result<DownMsg, Status>> {
+            loop {
+                let m = tokio::time::timeout(Duration::from_secs(15), self.down.recv())
+                    .await
+                    .expect("panel went silent");
+                match m {
+                    None => return None,
+                    Some(Err(st)) => return Some(Err(st)),
+                    Some(Ok(PanelDown {
+                        msg: Some(DownMsg::Lease(_)),
+                    })) => continue,
+                    Some(Ok(PanelDown { msg: Some(m) })) => return Some(Ok(m)),
+                    Some(Ok(PanelDown { msg: None })) => continue,
+                }
+            }
+        }
+        async fn snapshot(&mut self) -> ConfigSnapshot {
+            match self.next().await {
+                Some(Ok(DownMsg::Snapshot(s))) => s,
+                other => panic!("expected a snapshot, got {other:?}"),
+            }
+        }
+        /// The stream ends with `code` and then closes.
+        async fn closed_with(&mut self, code: tonic::Code) {
+            match self.next().await {
+                Some(Err(st)) => assert_eq!(st.code(), code, "{st:?}"),
+                other => panic!("expected {code:?}, got {other:?}"),
+            }
+            assert!(self.next().await.is_none(), "stream closed");
+        }
+    }
+
+    fn hash_of(s: &ConfigSnapshot) -> String {
+        state_hash(
+            s.config_version,
+            &NodeState {
+                inbounds: s.inbounds_json.clone(),
+                users: user_set(&s.users),
+            },
+        )
+    }
+
+    async fn delete_acked(db: &TestDb, n: Uuid) -> bool {
+        sqlx::query_scalar("SELECT delete_acked_at IS NOT NULL FROM nodes WHERE id = $1")
+            .bind(n)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+    }
+
+    /// S3-3 / R12 D1+D2 end to end: DELETE while the agent is connected.
+    /// Phase 1 pushes the empty state (the node is disabled) and the final
+    /// counters reported before the ack are billed; phase 2 revokes and
+    /// deletes; the stream closes UNAUTHENTICATED. A reconnect with the same
+    /// certificate is served the empty state (if needed) and closed; its
+    /// traffic is never accepted; unknown serials are refused.
+    #[tokio::test]
+    async fn delete_while_connected_then_revoked_reconnect() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = db.member().await;
+        sqlx::query("UPDATE nodes SET cert_serial = 'abc123' WHERE id = $1")
+            .bind(n)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let state = AppState::for_test(db.pool.clone()).await;
+        let listener = crate::notify::start(state.clone()).await;
+        assert_eq!(
+            node_for_serial(&db.pool, "abc123").await.unwrap(),
+            AgentIdentity::Node(n)
+        );
+
+        let mut agent = spawn_agent(&state, AgentIdentity::Node(n));
+        agent.hello((0, 0), String::new()).await;
+        let s1 = agent.snapshot().await;
+        assert_eq!(s1.users.len(), 1);
+        agent
+            .ack((s1.config_version, s1.user_version), hash_of(&s1))
+            .await;
+        agent.traffic(u, 100).await;
+
+        let mut tx = db.pool.begin().await.unwrap();
+        assert!(crate::api::apply_begin_delete_node(&mut tx, n)
+            .await
+            .unwrap());
+        tx.commit().await.unwrap();
+        let s2 = agent.snapshot().await;
+        assert_eq!((s2.inbounds_json.as_str(), s2.users.len()), ("[]", 0));
+        agent.traffic(u, 300).await; // final counters, before the ack
+        agent
+            .ack((s2.config_version, s2.user_version), hash_of(&s2))
+            .await;
+        for _ in 0..100 {
+            if delete_acked(&db, n).await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            delete_acked(&db, n).await,
+            "the ack of the empty state is recorded"
+        );
+        // Not yet: the ack must settle (the session's instance flushes).
+        assert!(crate::reaper::reap_once(&state).await.unwrap().is_empty());
+        sqlx::query("UPDATE nodes SET delete_acked_at = now() - interval '1 minute'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(crate::reaper::reap_once(&state).await.unwrap(), vec![n]);
+        // Already running the empty state: no second push, just the close.
+        agent.closed_with(tonic::Code::Unauthenticated).await;
+        agent.task.await.unwrap();
+        assert_eq!(
+            db.used(u).await,
+            300,
+            "final counters billed before deletion"
+        );
+        let kept: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM traffic_counters WHERE node_id = $1")
+                .bind(n)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(kept, 1, "billing rows are kept");
+        assert!(!state.agents().contains_key(&n));
+        assert!(state.traffic().is_empty());
+
+        // Same certificate again: tombstoned, served, closed.
+        assert_eq!(
+            node_for_serial(&db.pool, "abc123").await.unwrap(),
+            AgentIdentity::Revoked(n)
+        );
+        let mut again = spawn_agent(&state, AgentIdentity::Revoked(n));
+        again
+            .hello(
+                (s2.config_version, s2.user_version),
+                hash_of(&s2), // it runs the empty state already
+            )
+            .await;
+        again.closed_with(tonic::Code::Unauthenticated).await;
+
+        let mut stale = spawn_agent(&state, AgentIdentity::Revoked(n));
+        stale
+            .hello((s1.config_version, s1.user_version), hash_of(&s1))
+            .await;
+        let empty = stale.snapshot().await;
+        assert_eq!(
+            (
+                empty.config_version,
+                empty.user_version,
+                empty.inbounds_json.as_str()
+            ),
+            (0, 0, "[]")
+        );
+        assert!(empty.users.is_empty());
+        stale.traffic(u, 10_000).await;
+        stale.ack((0, 0), hash_of(&empty)).await;
+        stale.closed_with(tonic::Code::Unauthenticated).await;
+        assert!(state.traffic().is_empty(), "revoked traffic never buffered");
+        assert_eq!(db.used(u).await, 300);
+
+        let unknown = node_for_serial(&db.pool, "not-a-serial").await.unwrap_err();
+        assert_eq!(unknown.code(), tonic::Code::Unauthenticated);
+        // A revoked serial can never be registered again.
+        let err = sqlx::query(
+            "INSERT INTO nodes (id, name, cert_serial) VALUES (gen_random_uuid(), 'again', 'abc123')",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("revoked"), "{err}");
+
+        listener.abort();
+        let _ = listener.await;
+        drop(state);
+        db.drop().await;
+    }
+
+    /// Deletion is derived from the DB, not from the notification: a node
+    /// deleted while this instance heard nothing is found gone on the next
+    /// read, and an agent still running users gets the empty state pushed
+    /// before the close.
+    #[tokio::test]
+    async fn gone_without_notification_pushes_empty_then_closes() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, _u) = db.member().await;
+        let state = AppState::for_test(db.pool.clone()).await; // no listener
+        let mut agent = spawn_agent(&state, AgentIdentity::Node(n));
+        agent.hello((0, 0), String::new()).await;
+        let s1 = agent.snapshot().await;
+        let v1 = (s1.config_version, s1.user_version);
+        agent.ack(v1, hash_of(&s1)).await;
+        sqlx::query("DELETE FROM nodes WHERE id = $1")
+            .bind(n)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        agent.hello(v1, hash_of(&s1)).await; // any read finds it gone
+        let empty = agent.snapshot().await;
+        assert_eq!((empty.config_version, empty.users.len()), (0, 0));
+        agent.ack((0, 0), hash_of(&empty)).await;
+        agent.closed_with(tonic::Code::Unauthenticated).await;
+        drop(state);
+        db.drop().await;
+    }
+
+    /// One live stream per node: a newer stream supersedes the older one.
+    #[tokio::test]
+    async fn newer_stream_supersedes_older() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, _u) = db.member().await;
+        let state = AppState::for_test(db.pool.clone()).await;
+        let mut old = spawn_agent(&state, AgentIdentity::Node(n));
+        old.hello((0, 0), String::new()).await;
+        let s = old.snapshot().await;
+        let mut new = spawn_agent(&state, AgentIdentity::Node(n));
+        old.closed_with(tonic::Code::Aborted).await;
+        new.hello((0, 0), String::new()).await;
+        assert_eq!(new.snapshot().await.config_version, s.config_version);
+        assert_eq!(state.agents().len(), 1);
+        drop(new);
+        drop(state);
+        db.drop().await;
+    }
+
+    /// R12 P1: the whole sync (ticket, read, decide, send) runs under the
+    /// session's send lock — a sync cannot even take its read ticket while
+    /// another send is in progress — and nothing is sent once terminated.
+    #[tokio::test]
+    async fn sync_is_serialized_and_terminated_is_sticky() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, _u) = db.member().await;
+        let state = AppState::for_test(db.pool.clone()).await;
+        let (tx, mut rx) = mpsc::channel(64);
+        let sess = Session::new(state.clone(), n, tx, false);
+        sess.sync
+            .lock()
+            .unwrap()
+            .on_hello((0, 0), MIN_AGENT_PROTOCOL, "");
+
+        let gate = sess.send_lock.lock().await; // an in-progress send
+        let s2 = sess.clone();
+        let pending = tokio::spawn(async move { sync_if_stale(&s2).await });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(sess.sync.lock().unwrap().tickets, 0, "no ticket taken");
+        assert!(rx.try_recv().is_err(), "nothing sent");
+        drop(gate);
+        assert_eq!(pending.await.unwrap().unwrap(), Synced::Current);
+        assert!(matches!(
+            rx.recv().await,
+            Some(Ok(PanelDown {
+                msg: Some(DownMsg::Lease(_))
+            }))
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(Ok(PanelDown {
+                msg: Some(DownMsg::Snapshot(_))
+            }))
+        ));
+
+        sess.terminate(Status::aborted("test")).await;
+        assert!(matches!(rx.recv().await, Some(Err(_))));
+        sqlx::query("UPDATE nodes SET user_version = user_version + 1 WHERE id = $1")
+            .bind(n)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(sync_if_stale(&sess).await.unwrap(), Synced::Current);
+        assert!(
+            rx.try_recv().is_err(),
+            "no lease, no state after termination"
+        );
+        drop(sess);
+        drop(state);
         db.drop().await;
     }
 }
