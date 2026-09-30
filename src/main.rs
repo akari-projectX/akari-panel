@@ -160,6 +160,8 @@ mod reject;
 mod spa;
 mod state;
 mod sub;
+#[cfg(test)]
+mod testdb;
 mod traffic;
 mod valkey_util;
 mod web;
