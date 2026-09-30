@@ -6,17 +6,17 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde_json::json;
 use subtle::ConstantTimeEq;
-use tower_http::set_header::SetResponseHeaderLayer;
 
-use crate::{api, decoy, spa, state::AppState, sub};
+use crate::{api, reject, spa, state::AppState, sub};
 
 pub fn router(state: AppState) -> Router {
     // Routes carry the secret prefix as a {prefix} path parameter (handlers
     // ignore it). The gate layer wraps every route and the fallback: it runs
     // after route matching but before any handler, validating the first path
-    // segment in constant time. Requests that guessed the prefix wrong — and
-    // junk URLs alike — get the same decoy site, so nothing about the panel
-    // is observable without the prefix.
+    // segment in constant time. Every rejection — "/", junk URLs, wrong or
+    // bare prefix, wrong method — is the same empty 404 (reject.rs) without
+    // the security headers, so nothing about the panel is observable without
+    // the prefix.
     Router::new()
         .route("/{prefix}/healthz", get(healthz))
         .route("/{prefix}/app", get(spa::index))
@@ -51,35 +51,20 @@ pub fn router(state: AppState) -> Router {
             "/{prefix}/api/v1/nodes/{id}/inbounds",
             put(api::set_inbounds),
         )
-        .fallback(decoy_404)
+        .fallback(rejected)
+        // Otherwise a wrong method on a real route (GET /{p}/auth/login)
+        // answers 405 + Allow: a prefix oracle.
+        .method_not_allowed_fallback(rejected)
         .layer(middleware::from_fn_with_state(state.clone(), prefix_gate))
-        .layer(SetResponseHeaderLayer::if_not_present(
-            header::X_CONTENT_TYPE_OPTIONS,
-            HeaderValue::from_static("nosniff"),
-        ))
-        .layer(SetResponseHeaderLayer::if_not_present(
-            header::X_FRAME_OPTIONS,
-            HeaderValue::from_static("DENY"),
-        ))
-        .layer(SetResponseHeaderLayer::if_not_present(
-            header::REFERRER_POLICY,
-            HeaderValue::from_static("no-referrer"),
-        ))
-        .layer(SetResponseHeaderLayer::if_not_present(
-            header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static("default-src 'self'; style-src 'unsafe-inline'"),
-        ))
+        .layer(middleware::from_fn(security_headers))
         .with_state(state)
 }
 
-/// "/" serves the decoy site itself; a bare correct prefix still 404s
-/// (staying stealthy even for someone who knows the prefix); wrong prefixes
-/// are byte-identical to other junk URLs.
+/// Constant-time check of the first path segment against the secret
+/// prefix. A bare correct prefix is rejected too (stealthy even for someone
+/// who knows the prefix).
 async fn prefix_gate(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let path = req.uri().path();
-    if path == "/" {
-        return decoy::page();
-    }
     let stripped = path.strip_prefix('/').unwrap_or(path);
     let (seg, rest) = match stripped.split_once('/') {
         Some((seg, rest)) => (seg, rest),
@@ -87,12 +72,35 @@ async fn prefix_gate(State(state): State<AppState>, req: Request, next: Next) ->
     };
     let expected = state.route_prefix();
     if seg.len() != expected.len() || !bool::from(seg.as_bytes().ct_eq(expected.as_bytes())) {
-        return decoy::not_found();
+        return reject::not_found();
     }
     if rest.is_empty() {
-        return decoy::not_found();
+        return reject::not_found();
     }
     next.run(req).await
+}
+
+/// Security headers for real (prefixed, accepted) responses only. They are
+/// deliberately absent from rejections: that header combination on a 404
+/// would fingerprint the panel.
+async fn security_headers(req: Request, next: Next) -> Response {
+    let mut res = next.run(req).await;
+    if res.extensions().get::<reject::Rejected>().is_some() {
+        return res;
+    }
+    let h = res.headers_mut();
+    for (name, value) in [
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        (header::X_FRAME_OPTIONS, "DENY"),
+        (header::REFERRER_POLICY, "no-referrer"),
+        (
+            header::CONTENT_SECURITY_POLICY,
+            "default-src 'self'; style-src 'unsafe-inline'",
+        ),
+    ] {
+        h.entry(name).or_insert(HeaderValue::from_static(value));
+    }
+    res
 }
 
 /// Liveness for the panel itself, behind the secret prefix (knowing the
@@ -101,6 +109,6 @@ async fn healthz() -> Response {
     (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
 }
 
-async fn decoy_404() -> Response {
-    decoy::not_found()
+async fn rejected() -> Response {
+    reject::not_found()
 }

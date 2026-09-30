@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use sqlx::FromRow;
 use uuid::Uuid;
 
-use crate::{decoy, state::AppState};
+use crate::{reject, state::AppState};
 
 // ---------------------------------------------------------------------------
 // Token management. The subscription URL credential is a 256-bit random; the
@@ -432,7 +432,7 @@ fn pad(body: String) -> String {
 
 /// GET /{prefix}/sub/{token} — the client-facing subscription. The token is
 /// the credential; no cookie or other auth applies. Any failure (unknown
-/// token, disabled or expired user) returns the same decoy 404 as everything
+/// token, disabled or expired user) returns the same empty 404 rejection as everything
 /// else, and success headers are only sent on success.
 pub async fn subscription(
     State(state): State<AppState>,
@@ -450,15 +450,15 @@ pub async fn subscription(
     .await
     {
         Ok(Some(user)) => user,
-        Ok(None) => return decoy::not_found(),
+        Ok(None) => return reject::not_found(),
         Err(e) => {
             tracing::error!(error = %e, "subscription db error");
-            return decoy::not_found();
+            return reject::not_found();
         }
     };
     if let Some(exp) = user.expires_at {
         if exp < Utc::now() {
-            return decoy::not_found();
+            return reject::not_found();
         }
     }
 
@@ -476,7 +476,7 @@ pub async fn subscription(
         Ok(rows) => rows,
         Err(e) => {
             tracing::error!(error = %e, "subscription db error");
-            return decoy::not_found();
+            return reject::not_found();
         }
     };
 

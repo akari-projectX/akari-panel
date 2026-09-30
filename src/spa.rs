@@ -3,7 +3,7 @@ use axum::http::{header, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use rust_embed::RustEmbed;
 
-use crate::{decoy, state::AppState};
+use crate::{reject, state::AppState};
 
 // The compiled SPA (panel/spa/dist). A placeholder index.html is committed so
 // `cargo build` works without a node toolchain; `make spa` refreshes it.
@@ -17,7 +17,7 @@ struct SpaAssets;
 /// /app/) all land here.
 pub async fn index(State(state): State<AppState>) -> Response {
     let Some(file) = SpaAssets::get("index.html") else {
-        return decoy::not_found();
+        return reject::not_found();
     };
     let prefix = state.route_prefix();
     let html = String::from_utf8_lossy(&file.data)
@@ -40,7 +40,7 @@ pub async fn index(State(state): State<AppState>) -> Response {
 pub async fn asset(Path((_, rel)): Path<(String, String)>) -> Response {
     let key = format!("assets/{rel}");
     let Some(file) = SpaAssets::get(&key) else {
-        return decoy::not_found();
+        return reject::not_found();
     };
     let mime = mime_guess::from_path(&key)
         .first_or_octet_stream()
