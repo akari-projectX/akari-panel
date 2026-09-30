@@ -356,7 +356,7 @@ if git -C "${AGENT_DIR:-../akari-agent}" archive 2b3e7e3 2>/dev/null | tar -x -C
   wait_port open 10
   echo "old agent: ok (empty state, flagged, cleared after upgrade)"
 else
-  echo "old agent: SKIPPED (could not build the pinned protocol-0 agent)"; tail -3 "$LOG/old-build.log"
+  echo "old agent: SKIPPED (could not build the pinned protocol-0 agent)"; tail -3 "$LOG/old-build.log" 2>/dev/null || true
 fi
 
 echo "== Sprint 3b: node delete = empty state, then revoke + close; billing rows kept =="
