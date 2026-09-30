@@ -143,6 +143,11 @@ async fn session(
                     store_heartbeat(&state, node_id, &hb).await;
                 }
                 Some(UpMsg::Traffic(report)) => {
+                    // Accounting is keyed by the session the counters belong
+                    // to. Current agents only announce it in Hello and do not
+                    // re-send Hello after a Snapshot rebuild, so this can be
+                    // stale (REVIEW P0 #2 residual; fix needs agent + proto:
+                    // TrafficReport.session_id, preferred here when non-empty).
                     if !current_session.is_empty() {
                         state.traffic().update(node_id, &current_session, &report);
                     }

@@ -11,7 +11,7 @@
 | `install.rs` | data/ 下的 route prefix、CA、jwt.key；每次启动重签服务端证书 | SAN 取自 `web.advertised_names`（虽然证书用于 gRPC） |
 | `state.rs` | AppState、agent 代数注册表、`notify_change()` watch 通道 | `notify_change` 只唤醒，不携带内容；每个会话自行重读 DB |
 | `grpc.rs` | AgentChannel：证书→节点、Hello/心跳/流量/Ack、`sync_if_stale` 全量快照 | 只发 Snapshot，从不发 UserDelta；节点被禁用时不会断开流 |
-| `traffic.rs` | 累计值→差值记账，5s 批量落库，超限禁用 | 内存基线未从 `traffic_counters` 恢复：面板重启后会重复计费 |
+| `traffic.rs` | 累计值记账：内存只存每 (node,user,session) 最新累计值；5s flush 用**单条 SQL** upsert `traffic_counters`(GREATEST) 并按 PG18 `RETURNING old/new` 算差值加到 users；然后超限禁用 | 差值只能在 SQL 里算，**不要**在内存里攒 pending（重放/重启/重试的幂等性全靠它）。会话内计数回退 → 新 epoch 键 `"{session}#n"`，首值作基线计 0。session id 拒收空/超 128/含 NUL 或 `#`；>i64::MAX 丢弃。批量被库拒 → 逐行重试，单行连续 12 次被拒则放弃。干净且闲置 10 分钟的条目被淘汰。单测 + 真库测试（`db_tests`，需 `make dev-up`，`AKARI_SKIP_DB_TESTS=1` 跳过）。**残留**：旧 agent 重建后不重发 Hello，面板按过期 session 记账，重连/重启后重复计费，需 proto `TrafficReport.session_id` + agent 改动 |
 | `auth.rs` | `ApiError`、argon2id、HS256 JWT、`AuthUser` 提取器（每请求回查 DB） | JWT 无吊销；改密码不失效旧会话 |
 | `api.rs` | REST handler（登录、me、用户、节点、分配） | 动态 SET 用手工逗号 + `#[allow(unused_assignments)]`；空 body 会拼出非法 SQL |
 | `sub.rs` | 过渡期订阅：UA 分流 links/clash/sing-box，8KiB 填充 | 终态只留 Clash；token 只存 SHA-256 |
@@ -27,4 +27,4 @@
 - 错误：handler 返回 `Result<_, ApiError>`；`sqlx::Error`/`anyhow::Error` 自动转 500，并记录日志，不向客户端泄露细节。
 - SQL：运行时 `sqlx::query*`（非编译期宏），手写 SQL，列名与 migrations 保持一致。
 - 状态变更的顺序：**写库 → bump 版本 → notify_change**，放在同一事务里更好。
-- 目前**没有单元测试**；新增纯逻辑（traffic 差值、sub 渲染、prefix gate）应带 `#[cfg(test)]` 测试。
+- 单元测试：`traffic.rs` 已有（含依赖开发库的 `db_tests`）；新增纯逻辑（sub 渲染、prefix gate）应带 `#[cfg(test)]` 测试。
