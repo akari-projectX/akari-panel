@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { appBase, post } from "../lib/api";
+import { appBase, login as apiLogin } from "../lib/api";
 import { navigate } from "../lib/router";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -20,7 +20,7 @@ export function Login() {
     setBusy(true);
     setError(null);
     try {
-      await post("/auth/login", { login, password });
+      await apiLogin({ login, password });
       await queryClient.invalidateQueries({ queryKey: ["me"] });
       navigate(`${appBase}/`);
     } catch (err) {

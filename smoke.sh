@@ -40,7 +40,7 @@ NODE_ID=$("$PANEL" node list | awk 'NR==2{print $1}')
 
 PREFIX=$("$PANEL" info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')
 BASE="http://127.0.0.1:8080/$PREFIX"
-code() { curl -s -o /tmp/akari-smoke/last -w "%{http_code}" "$@"; }
+code() { curl -s --noproxy '*' -o /tmp/akari-smoke/last -w "%{http_code}" "$@"; }
 
 echo "== decoy on wrong prefix =="
 [ "$(code http://127.0.0.1:8080/deadbeef/api/v1/users)" = "404" ] || { echo "FAIL: wrong prefix not 404"; exit 1; }
@@ -56,6 +56,14 @@ done
     -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "200" ] || { echo "FAIL: good login failed"; exit 1; }
 grep -q '"role":"admin"' /tmp/akari-smoke/last || { echo "FAIL: login response missing role"; exit 1; }
 echo "login: ok"
+
+echo "== auth lives at /{prefix}/auth, not /api/v1/auth (REVIEW P0 #1) =="
+# Nothing may depend on the wrong path: it must stay a decoy 404.
+[ "$(code -X POST "$BASE/api/v1/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "404" ] || { echo "FAIL: /api/v1/auth/login not 404"; exit 1; }
+grep -q "Meridian Systems" /tmp/akari-smoke/last || { echo "FAIL: /api/v1/auth/login not the decoy"; exit 1; }
+[ "$(code -X POST "$BASE/api/v1/auth/logout")" = "404" ] || { echo "FAIL: /api/v1/auth/logout not 404"; exit 1; }
+echo "auth path: ok"
 
 echo "== unauthorized access =="
 [ "$(code "$BASE/api/v1/users")" = "401" ] || { echo "FAIL: cookieless access not 401"; exit 1; }
@@ -151,6 +159,15 @@ echo "$CT" | grep -q javascript || { echo "FAIL: asset content-type '$CT'"; exit
 [ "$(code "$BASE/app/some-client-route")" = "200" ] || { echo "FAIL: SPA client-route fallback"; exit 1; }
 [ "$(code "$BASE/assets/missing.js")" = "404" ] || { echo "FAIL: missing asset not decoy 404"; exit 1; }
 [ "$(code http://127.0.0.1:8080/assets/missing.js)" = "404" ] || { echo "FAIL: asset path reachable without prefix"; exit 1; }
+# REVIEW P0 #1 regression guards. (a) Behavioural: run the real api.ts with a
+# fake location/fetch and check the URLs it requests. (b) Bundle: the shipped
+# JS derives an `${prefix}/auth` base and never carries a bare "/auth/login"
+# literal (that shape is what gets prefixed with /api/v1 by get/post).
+node spa/scripts/check-auth-paths.mjs || { echo "FAIL: SPA auth request paths"; exit 1; }
+curl -s --noproxy '*' "http://127.0.0.1:8080$JS" >/tmp/akari-smoke/app.js
+grep -q '}/auth[`"'"'"']' /tmp/akari-smoke/app.js || { echo "FAIL: bundle lacks the {prefix}/auth base"; exit 1; }
+grep -qE '[`"'"'"']/auth/(login|logout)' /tmp/akari-smoke/app.js \
+  && { echo "FAIL: bundle posts a bare /auth/* path (would be joined to /api/v1)"; exit 1; }
 echo "spa: ok (asset $JS)"
 
 echo
