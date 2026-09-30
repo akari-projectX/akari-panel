@@ -66,9 +66,14 @@ pub async fn reap_once(state: &AppState) -> anyhow::Result<Vec<Uuid>> {
         if let Err(e) = crate::traffic::flush_node(state, id).await {
             tracing::warn!(node = %id, error = %e, "flush before node deletion failed");
         }
-        let mut tx = state.pg().begin().await?;
-        let serial = finalize_delete(&mut tx, id).await?;
-        tx.commit().await?;
+        // One node's failure must not stall the others.
+        let serial = match finalize_one(state, id).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(node = %id, error = %e, "node deletion (phase 2) failed; retrying next tick");
+                continue;
+            }
+        };
         if let Some(serial) = serial {
             tracing::info!(node = %id, serial = serial.as_deref().unwrap_or("-"),
                 "node deleted, certificate revoked");
@@ -77,6 +82,13 @@ pub async fn reap_once(state: &AppState) -> anyhow::Result<Vec<Uuid>> {
         }
     }
     Ok(done)
+}
+
+async fn finalize_one(state: &AppState, id: Uuid) -> sqlx::Result<Option<Option<String>>> {
+    let mut tx = state.pg().begin().await?;
+    let serial = finalize_delete(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok(serial)
 }
 
 /// Lock, re-check that phase 2 is due, tombstone the serial, delete.

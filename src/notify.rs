@@ -63,6 +63,15 @@ pub fn parse(payload: &str) -> Event {
     }
 }
 
+/// Added to a node's counter by `wake_all` (targeted wakes add 1), so a
+/// session can tell a mass wakeup and spread its re-read (jitter).
+pub const WAKE_ALL: u64 = 1 << 32;
+
+/// Did the counter move from `old` to `new` by a wake-all?
+pub fn is_wake_all(old: u64, new: u64) -> bool {
+    old >> 32 != new >> 32
+}
+
 /// node -> wakeup counter shared by this instance's sessions of that node.
 #[derive(Default)]
 pub struct Wakeups {
@@ -110,7 +119,7 @@ impl Wakeups {
     /// (AppState::read_permits), so this is no thundering herd on the pool.
     pub fn wake_all(&self) {
         for tx in self.nodes.iter() {
-            tx.send_modify(|v| *v += 1);
+            tx.send_modify(|v| *v += WAKE_ALL);
         }
     }
 
@@ -238,6 +247,7 @@ async fn supervise(state: AppState, first: PgListener) {
 /// is aborted — dropping the connection — when the connection is judged
 /// dead.
 async fn run(state: &AppState, mut listener: PgListener) -> String {
+    let pid = state.wakeups().listener_pid();
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<Result<Event, String>>();
     let reader = tokio::spawn(async move {
         loop {
@@ -266,8 +276,10 @@ async fn run(state: &AppState, mut listener: PgListener) -> String {
                 Some(Ok(ev)) => {
                     if let Event::Deleted(n) = ev {
                         // Hint only (sessions re-read the DB); drop what
-                        // this instance buffered for the node.
-                        state.traffic().forget_node(n);
+                        // this instance buffered for the node — off the
+                        // listener task (a full buffer scan).
+                        let st = state.clone();
+                        tokio::spawn(async move { st.traffic().forget_node(n) });
                     }
                     w.dispatch(ev)
                 }
@@ -291,6 +303,20 @@ async fn run(state: &AppState, mut listener: PgListener) -> String {
             }
         }
     };
+    // Hard-close the old backend server-side (bounded), so a half-open
+    // connection does not keep a LISTEN session (and its queue position)
+    // alive on the server. Dropping the PgListener spawns sqlx's UNLISTEN
+    // task, which on a half-open socket ends only when the kernel gives up
+    // on the connection; that leaks one idle task per such incident.
+    if pid > 0 {
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            sqlx::query("SELECT pg_terminate_backend($1)")
+                .bind(pid)
+                .execute(state.pg()),
+        )
+        .await;
+    }
     reader.abort();
     let _ = reader.await;
     err

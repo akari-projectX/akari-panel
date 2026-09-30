@@ -625,8 +625,13 @@ struct Session {
     /// decide → LeaseGrant/Snapshot/Delta sends) and around every other
     /// send, so what is decided later is never sent earlier.
     send_lock: tokio::sync::Mutex<()>,
-    /// Sticky, set under `send_lock`: nothing is sent after it.
+    /// Sticky: nothing is sent after it. Set by `terminate`, which never
+    /// needs `send_lock` (R13: a wedged peer cannot keep a superseded,
+    /// deleted or timed-out session alive).
     terminated: AtomicBool,
+    /// Flips to true on termination; every lock wait, send and the reader
+    /// race it.
+    closed: tokio::sync::watch::Sender<bool>,
     /// The node is gone or the certificate revoked: only the empty state
     /// and the close are sent; traffic reports are ignored.
     retiring: AtomicBool,
@@ -637,14 +642,9 @@ struct Session {
     online_session: Uuid,
     /// A reader-side read found the node gone: the watcher retires.
     gone: Notify,
-    /// The watcher closed the stream: the reader stops.
-    stop: Notify,
     /// Hello / ack of the empty state, while retiring.
     hello: Notify,
     retire_ack: Notify,
-    /// A newer stream of the same node replaced this one (local instance;
-    /// across instances it shows as a foreign nodes.online_session).
-    superseded: Arc<Notify>,
 }
 
 impl Session {
@@ -665,10 +665,9 @@ impl Session {
             marked_online: AtomicBool::new(false),
             online_session: Uuid::new_v4(),
             gone: Notify::new(),
-            stop: Notify::new(),
+            closed: tokio::sync::watch::channel(false).0,
             hello: Notify::new(),
             retire_ack: Notify::new(),
-            superseded: Arc::new(Notify::new()),
             state,
         });
         sess.sync.lock().unwrap().remove_rebuild =
@@ -683,8 +682,23 @@ impl Session {
         self.retiring.load(Ordering::SeqCst)
     }
 
+    /// Resolves once the session is terminated.
+    async fn cancelled(&self) {
+        let mut rx = self.closed.subscribe();
+        let _ = rx.wait_for(|c| *c).await;
+    }
+
+    /// The send lock, unless the session terminates first.
+    async fn lock(&self) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        tokio::select! {
+            g = self.send_lock.lock() => (!self.terminated()).then_some(g),
+            _ = self.cancelled() => None,
+        }
+    }
+
     /// Send under the send lock unless the session is terminated. Returns
-    /// whether it was sent.
+    /// whether it was sent. A peer that does not take the message within
+    /// SEND_TIMEOUT (stopped reading) gets the session terminated.
     async fn send(
         &self,
         _guard: &tokio::sync::MutexGuard<'_, ()>,
@@ -693,26 +707,40 @@ impl Session {
         if self.terminated() {
             return Ok(false);
         }
-        self.tx.send(Ok(PanelDown { msg: Some(msg) })).await?;
-        Ok(true)
+        tokio::select! {
+            r = self.tx.send(Ok(PanelDown { msg: Some(msg) })) => {
+                r?;
+                Ok(true)
+            }
+            _ = self.cancelled() => Ok(false),
+            _ = tokio::time::sleep(SEND_TIMEOUT) => {
+                tracing::warn!(node = %self.node_id, "agent stopped reading its stream; closing it");
+                self.terminate(Status::deadline_exceeded("agent not reading its stream"));
+                Ok(false)
+            }
+        }
     }
 
-    /// End the stream with `status` (once; sticky) and stop the reader.
-    async fn terminate(&self, status: Status) {
-        let guard = self.send_lock.lock().await;
+    /// End the stream with `status` (once; sticky) and stop the reader and
+    /// the watcher. Needs no lock and never waits: if the peer's buffer is
+    /// full the status is dropped and the stream just ends.
+    fn terminate(&self, status: Status) {
         if !self.terminated.swap(true, Ordering::SeqCst) {
-            // Bounded: a peer that stopped reading cannot pin us here.
-            let _ = tokio::time::timeout(TERMINATE_SEND_WAIT, self.tx.send(Err(status))).await;
+            let _ = self.tx.try_send(Err(status));
         }
-        drop(guard);
-        self.stop.notify_one();
+        self.closed.send_replace(true);
     }
 }
+
+/// Upper bound of the random delay before re-reading after a wake-all.
+const WAKE_ALL_JITTER_MS: u64 = 2000;
+
+/// A send the peer does not accept within this long ends the session.
+const SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long a retiring agent gets for its Hello and for acking the empty
 /// state before its stream is closed anyway.
 const RETIRE_WAIT: Duration = Duration::from_secs(10);
-const TERMINATE_SEND_WAIT: Duration = Duration::from_secs(5);
 
 /// The versions of the empty state pushed to a retiring agent.
 const RETIRED_VERSIONS: (u64, u64) = (0, 0);
@@ -742,10 +770,17 @@ async fn session<S>(
         let entry = crate::state::AgentEntry {
             gen,
             online_session: sess.online_session,
-            superseded: sess.superseded.clone(),
+            supersede: {
+                let weak = Arc::downgrade(&sess);
+                Arc::new(move || {
+                    if let Some(s) = weak.upgrade() {
+                        s.terminate(Status::aborted("superseded by a newer stream"));
+                    }
+                })
+            },
         };
         if let Some(old) = state.agents().insert(node_id, entry) {
-            old.superseded.notify_one();
+            (old.supersede)();
         }
         // Traffic is only accepted for assigned users; load them before the
         // first report can arrive.
@@ -765,18 +800,29 @@ async fn session<S>(
         let mut tick = tokio::time::interval(RECONCILE_EVERY);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         tick.tick().await; // the first tick is immediate; Hello covers it
+        let mut seen = *wake_rx.borrow_and_update();
         loop {
             tokio::select! {
-                r = wake_rx.changed() => if r.is_err() { break },
+                r = wake_rx.changed() => {
+                    if r.is_err() { break }
+                    let now = *wake_rx.borrow_and_update();
+                    if crate::notify::is_wake_all(seen, now) {
+                        // Every local session was woken at once: spread
+                        // the re-reads (the read permits bound them too).
+                        let ms = rand::random_range(0..WAKE_ALL_JITTER_MS);
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_millis(ms)) => {}
+                            _ = sess.cancelled() => break,
+                        }
+                    }
+                    seen = now;
+                },
                 _ = tick.tick() => {}
                 _ = sess.gone.notified() => {
                     retire(&sess, "node deleted").await;
                     break;
                 }
-                _ = sess.superseded.notified() => {
-                    sess.terminate(Status::aborted("superseded by a newer stream")).await;
-                    break;
-                }
+                _ = sess.cancelled() => break,
             }
             refresh_members(&sess.state, node_id).await;
             match sync_if_stale(&sess).await {
@@ -786,8 +832,7 @@ async fn session<S>(
                     break;
                 }
                 Ok(Synced::Superseded) => {
-                    sess.terminate(Status::aborted("superseded by a newer stream"))
-                        .await;
+                    sess.terminate(Status::aborted("superseded by a newer stream"));
                     break;
                 }
                 Err(e) => tracing::warn!(node = %node_id, error = %e, "config push failed"),
@@ -802,7 +847,7 @@ async fn session<S>(
                     Some(m) => m?,
                     None => break,
                 },
-                _ = sess.stop.notified() => break,
+                _ = sess.cancelled() => break,
             };
             if sess.retiring() {
                 // Only the agent's state and the ack of the empty state
@@ -958,7 +1003,7 @@ fn after_sync(sess: &Session, r: anyhow::Result<Synced>, what: &str) {
     match r {
         Ok(Synced::Current) => {}
         Ok(Synced::Gone) => sess.gone.notify_one(),
-        Ok(Synced::Superseded) => sess.superseded.notify_one(),
+        Ok(Synced::Superseded) => sess.terminate(Status::aborted("superseded by a newer stream")),
         Err(e) => tracing::warn!(node = %sess.node_id, error = %e, "{what}"),
     }
 }
@@ -970,14 +1015,19 @@ fn after_sync(sess: &Session, r: anyhow::Result<Synced>, what: &str) {
 /// last config (R3), hence push-then-close rather than reject.
 async fn retire(sess: &Session, why: &'static str) {
     {
-        let _g = sess.send_lock.lock().await;
+        let Some(_g) = sess.lock().await else {
+            return;
+        };
         sess.retiring.store(true, Ordering::SeqCst);
     }
     let node_id = sess.node_id;
     tracing::info!(node = %node_id, why, "retiring agent session");
     let hello_seen = sess.sync.lock().unwrap().hello_seen;
     if !hello_seen {
-        let _ = tokio::time::timeout(RETIRE_WAIT, sess.hello.notified()).await;
+        tokio::select! {
+            _ = tokio::time::timeout(RETIRE_WAIT, sess.hello.notified()) => {}
+            _ = sess.cancelled() => return,
+        }
     }
     let empty_already = sess.sync.lock().unwrap().runs_empty();
     if !empty_already {
@@ -987,19 +1037,20 @@ async fn retire(sess: &Session, why: &'static str) {
             user_version: RETIRED_VERSIONS.1,
             users: vec![],
         });
-        let sent = {
-            let g = sess.send_lock.lock().await;
-            sess.send(&g, empty).await.unwrap_or(false)
+        let sent = match sess.lock().await {
+            Some(g) => sess.send(&g, empty).await.unwrap_or(false),
+            None => return,
         };
-        if sent
-            && tokio::time::timeout(RETIRE_WAIT, sess.retire_ack.notified())
-                .await
-                .is_err()
-        {
-            tracing::warn!(node = %node_id, "retiring agent did not ack the empty state; closing anyway");
+        if sent {
+            tokio::select! {
+                r = tokio::time::timeout(RETIRE_WAIT, sess.retire_ack.notified()) => if r.is_err() {
+                    tracing::warn!(node = %node_id, "retiring agent did not ack the empty state; closing anyway");
+                },
+                _ = sess.cancelled() => return,
+            }
         }
     }
-    sess.terminate(Status::unauthenticated(why)).await;
+    sess.terminate(Status::unauthenticated(why));
 }
 
 /// A deleted node's leftovers on this instance: live-status keys and the
@@ -1125,6 +1176,7 @@ async fn mark_online(
         online_session,
         info.map(|i| i.agent_version.as_str()),
         info.map(|i| i.core_version.as_str()),
+        CreditWindow::from_cfg(state.cfg()),
     )
     .await
     .is_ok();
@@ -1136,24 +1188,63 @@ async fn mark_online(
     owned
 }
 
+/// Mark the node online for this session. Also grants the billing
+/// reconnect credit (R13): the time since the node was last seen (min
+/// lease) — traffic the agent carried while the panel could not hear it —
+/// becomes the caps' credit floor for one burst window. A credit still
+/// valid is neither replaced nor extended, and last_seen_at moves to now,
+/// so each disconnection can be claimed once.
 async fn set_online_row(
     pg: &sqlx::PgPool,
     node_id: Uuid,
     online_session: Uuid,
     agent_version: Option<&str>,
     core_version: Option<&str>,
+    credit: CreditWindow,
 ) -> sqlx::Result<()> {
     sqlx::query(
         "UPDATE nodes SET status = 'online', agent_version = $1, core_version = $2, \
-         online_session = $4, last_seen_at = now() WHERE id = $3",
+         online_session = $4, last_seen_at = now(), \
+         traffic_credit_floor = CASE WHEN traffic_credit_until > now() THEN traffic_credit_floor \
+             ELSE now() - make_interval(secs => LEAST(GREATEST(COALESCE( \
+                 extract(epoch FROM now() - last_seen_at)::float8, 0), 0), $5)) END, \
+         traffic_credit_until = CASE WHEN traffic_credit_until > now() THEN traffic_credit_until \
+             ELSE now() + make_interval(secs => $6) END \
+         WHERE id = $3",
     )
     .bind(agent_version)
     .bind(core_version)
     .bind(node_id)
     .bind(online_session)
+    .bind(credit.lease_secs as f64)
+    .bind(credit.burst_secs as f64)
     .execute(pg)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) async fn reconnect_for_test(pg: &sqlx::PgPool, node: Uuid) {
+    let cw = CreditWindow::from_cfg(&crate::config::PanelConfig::default());
+    set_online_row(pg, node, Uuid::new_v4(), None, None, cw)
+        .await
+        .unwrap();
+}
+
+/// Bounds of the reconnect credit.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CreditWindow {
+    pub lease_secs: u64,
+    pub burst_secs: u64,
+}
+
+impl CreditWindow {
+    pub(crate) fn from_cfg(cfg: &crate::config::PanelConfig) -> Self {
+        Self {
+            lease_secs: cfg.grpc.lease_seconds(),
+            burst_secs: cfg.traffic.node_burst_secs.max(1),
+        }
+    }
 }
 
 /// Only the session that last marked the node online may mark it offline.
@@ -1170,6 +1261,9 @@ async fn mark_offline(pg: &sqlx::PgPool, node_id: Uuid, online_session: Uuid) ->
 }
 
 async fn refresh_members(state: &AppState, node_id: Uuid) {
+    let Ok(_permit) = state.read_permits().acquire().await else {
+        return;
+    };
     if let Err(e) = crate::traffic::refresh_members(state.pg(), state.traffic(), node_id).await {
         tracing::warn!(node = %node_id, error = %e, "failed to load node membership");
     }
@@ -1337,8 +1431,10 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
     let (state, node_id) = (&sess.state, sess.node_id);
     // R12 P1: the whole ticket → read → decide → send sequence runs under
     // the session's send lock, so a later decision is never sent first.
-    let guard = sess.send_lock.lock().await;
-    if sess.terminated() || sess.retiring() {
+    let Some(guard) = sess.lock().await else {
+        return Ok(Synced::Current);
+    };
+    if sess.retiring() {
         return Ok(Synced::Current);
     }
     let ticket = sess.sync.lock().unwrap().ticket(); // BEFORE the read
@@ -2200,8 +2296,13 @@ mod tests {
                 .await
                 .unwrap()
         };
-        set_online_row(&db.pool, n, a, None, None).await.unwrap();
-        set_online_row(&db.pool, n, b, None, None).await.unwrap();
+        let cw = CreditWindow::from_cfg(&crate::config::PanelConfig::default());
+        set_online_row(&db.pool, n, a, None, None, cw)
+            .await
+            .unwrap();
+        set_online_row(&db.pool, n, b, None, None, cw)
+            .await
+            .unwrap();
         mark_offline(&db.pool, n, a).await.unwrap(); // old session ends late
         assert_eq!(status().await, "online");
         mark_offline(&db.pool, n, b).await.unwrap();
@@ -2583,7 +2684,7 @@ mod tests {
             }))
         ));
 
-        sess.terminate(Status::aborted("test")).await;
+        sess.terminate(Status::aborted("test"));
         assert!(matches!(rx.recv().await, Some(Err(_))));
         sqlx::query("UPDATE nodes SET user_version = user_version + 1 WHERE id = $1")
             .bind(n)
@@ -2597,6 +2698,46 @@ mod tests {
         );
         drop(sess);
         drop(state);
+        db.drop().await;
+    }
+
+    /// RT3b-3: a peer that stops reading its downstream wedges the session:
+    /// the watcher blocks in tx.send while holding send_lock, so neither a
+    /// supersede nor a deletion can ever terminate it.
+    #[tokio::test]
+    async fn rt_wedged_peer_blocks_supersede_and_retire() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = db.member().await;
+        let state = AppState::for_test(db.pool.clone()).await;
+        let _l = crate::notify::start(state.clone()).await;
+        let mut a = spawn_agent(&state, AgentIdentity::Node(n));
+        a.hello((0, 0), String::new()).await;
+        let s1 = a.snapshot().await;
+        a.ack((s1.config_version, s1.user_version), hash_of(&s1))
+            .await;
+        let _ = u;
+        // Stop reading `a.down`; the panel keeps getting wakeups.
+        for _ in 0..80 {
+            sqlx::query("UPDATE nodes SET user_version = user_version + 1 WHERE id = $1")
+                .bind(n)
+                .execute(&db.pool)
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Delete it (phase 1 + forced phase 2) and supersede it.
+        let mut tx = db.pool.begin().await.unwrap();
+        crate::api::apply_begin_delete_node(&mut tx, n)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let _b = spawn_agent(&state, AgentIdentity::Node(n));
+        let r = tokio::time::timeout(Duration::from_secs(30), &mut a.task).await;
+        eprintln!("RT3b-3 old session ended: {}", r.is_ok());
+        assert!(r.is_ok(), "wedged session never terminates");
         db.drop().await;
     }
 }

@@ -217,13 +217,18 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   billed and can never be registered again. Reinstalling needs a new
   `akari node add`.
 - **Billing plausibility caps** (only ever under-bill; the counter is stored
-  in full): per (node, user, session) `traffic.max_rate_bytes_per_sec` over
-  the time since the row was last written; per node (all users together) a
+  in full): every cap credits at most a short burst window of elapsed time
+  (`traffic.node_burst_secs`, default 120 s) — per (node, user, session)
+  `traffic.max_rate_bytes_per_sec`, and per node (all users together) a
   GCRA budget of `traffic.node_max_rate_bytes_per_sec` (default 10 Gbit/s;
   per-node override `traffic_max_rate_bytes_per_sec` via PATCH) against
   `nodes.traffic_tat` in the DB, so a panel restart grants nothing and an
-  outage accrues allowance for up to the lease; an unassigned user's pair
-  only bills traffic plausibly carried before the unassignment (+30 s).
+  under-using node cannot bank a large burst. Only a recorded connectivity
+  gap extends it: when an agent comes back online, the time since the node
+  was last seen (at most the lease) is credited once, so traffic delayed by
+  an outage still bills in full. An unassigned user's pair only bills
+  traffic plausibly carried before the unassignment (+30 s), cumulatively
+  across flushes.
 
 ## Accounts
 

@@ -112,7 +112,6 @@ struct NodeListRow {
     id: uuid::Uuid,
     name: String,
     status: String,
-    enabled: bool,
     agent_version: Option<String>,
     core_version: Option<String>,
     last_seen_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -124,9 +123,9 @@ pub async fn node_list(cfg: PanelConfig) -> Result<()> {
         .connect(&cfg.database_url)
         .await?;
     let rows = sqlx::query_as::<_, NodeListRow>(
-        "SELECT id, name, CASE WHEN deleting_at IS NOT NULL THEN 'deleting' ELSE status END \
-         AS status, enabled OR deleting_at IS NOT NULL AS enabled, agent_version, core_version, \
-         last_seen_at FROM nodes ORDER BY created_at",
+        "SELECT id, name, CASE WHEN deleting_at IS NOT NULL THEN 'deleting' \
+         WHEN NOT enabled THEN 'disabled' ELSE status END AS status, agent_version, \
+         core_version, last_seen_at FROM nodes ORDER BY created_at",
     )
     .fetch_all(&pg)
     .await?;
@@ -140,11 +139,7 @@ pub async fn node_list(cfg: PanelConfig) -> Result<()> {
             "{:<38} {:<14} {:<9} {:<12} {:<12} {}",
             r.id,
             r.name,
-            if r.enabled {
-                r.status
-            } else {
-                "disabled".to_string()
-            },
+            r.status,
             r.agent_version.unwrap_or_default(),
             r.core_version.unwrap_or_default(),
             r.last_seen_at

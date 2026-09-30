@@ -17,8 +17,8 @@ pub struct AppState(Arc<Inner>);
 pub struct AgentEntry {
     pub gen: u64,
     pub online_session: Uuid,
-    /// Notified when a newer stream of the same node replaces this one.
-    pub superseded: Arc<tokio::sync::Notify>,
+    /// Terminates this session (a newer stream of the node replaced it).
+    pub supersede: Arc<dyn Fn() + Send + Sync>,
 }
 
 /// Concurrent desired-state reads per instance (the pool has 16).

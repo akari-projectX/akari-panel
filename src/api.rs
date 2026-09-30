@@ -1146,7 +1146,7 @@ async fn record_departed(
 ) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO node_users_departed (node_id, user_id, departed_at) VALUES ($1, $2, now()) \
-         ON CONFLICT (node_id, user_id) DO UPDATE SET departed_at = now()",
+         ON CONFLICT (node_id, user_id) DO UPDATE SET departed_at = now(), billed_bytes = 0",
     )
     .bind(node_id)
     .bind(user_id)
