@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 PANEL=./target/release/akari
-AGENT=../akari-agent/agent
+AGENT="${AGENT_DIR:-../akari-agent}/agent"
 BOOT=test-node-bootstrap.toml
 JAR=/tmp/akari-smoke.cookies
 LOG=/tmp/akari-smoke
