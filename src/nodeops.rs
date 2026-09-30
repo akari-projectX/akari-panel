@@ -1,0 +1,133 @@
+use std::path::PathBuf;
+
+use anyhow::{bail, Context, Result};
+
+use crate::config::PanelConfig;
+use crate::install;
+
+/// Creates the first admin (or any) account. Reads the password from
+/// AKARI_ADMIN_PASSWORD or a hidden interactive prompt.
+pub async fn admin_add(cfg: PanelConfig, login: String, role: String) -> Result<()> {
+    if role != "admin" && role != "user" {
+        bail!("role must be 'admin' or 'user'");
+    }
+    let password = match std::env::var("AKARI_ADMIN_PASSWORD") {
+        Ok(p) if !p.is_empty() => p,
+        _ => rpassword::prompt_password("password: ")?,
+    };
+    if password.len() < 8 {
+        bail!("password must be at least 8 characters");
+    }
+    let hash = crate::auth::hash_password(&password)?;
+
+    let pg = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&cfg.database_url)
+        .await?;
+    sqlx::migrate!("./migrations").run(&pg).await?;
+
+    let id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO users (id, login, password_hash, role) VALUES ($1, $2, $3, $4)")
+        .bind(id)
+        .bind(&login)
+        .bind(&hash)
+        .bind(&role)
+        .execute(&pg)
+        .await
+        .with_context(|| format!("insert user {login}"))?;
+    println!("created {role} account: {login} ({id})");
+    Ok(())
+}
+
+pub async fn node_add(cfg: PanelConfig, name: String, out: Option<PathBuf>) -> Result<()> {
+    let inst = install::ensure(&cfg)?;
+    let pg = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&cfg.database_url)
+        .await?;
+    sqlx::migrate!("./migrations").run(&pg).await?;
+
+    let id = uuid::Uuid::new_v4();
+    let (cert_pem, key_pem, serial) =
+        install::issue_agent_cert(&inst.ca_pem, &inst.ca_key_pem, &id.to_string())?;
+
+    sqlx::query("INSERT INTO nodes (id, name, cert_serial, status) VALUES ($1, $2, $3, 'pending')")
+        .bind(id)
+        .bind(&name)
+        .bind(&serial)
+        .execute(&pg)
+        .await
+        .with_context(|| format!("insert node {name}"))?;
+
+    let bootstrap = format!(
+        "# akari agent bootstrap for node '{name}'\n\
+         # Contains the agent private key. Transfer securely and delete after provisioning.\n\
+         panel_addr = \"{addr}\"\n\
+         server_name = \"{server_name}\"\n\
+         \n[identity]\nca_pem = '''{ca}'''\ncert_pem = '''{cert}'''\nkey_pem = '''{key}'''\n",
+        addr = cfg.grpc.advertise,
+        server_name = cfg.grpc.server_name,
+        ca = inst.ca_pem,
+        cert = cert_pem,
+        key = key_pem,
+    );
+
+    let out_path = out.unwrap_or_else(|| PathBuf::from(format!("{name}-bootstrap.toml")));
+    std::fs::write(&out_path, bootstrap)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    println!("node registered:  {id}");
+    println!("bootstrap file:   {}", out_path.display());
+    Ok(())
+}
+
+#[derive(sqlx::FromRow)]
+struct NodeListRow {
+    id: uuid::Uuid,
+    name: String,
+    status: String,
+    enabled: bool,
+    agent_version: Option<String>,
+    core_version: Option<String>,
+    last_seen_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+pub async fn node_list(cfg: PanelConfig) -> Result<()> {
+    let pg = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&cfg.database_url)
+        .await?;
+    let rows = sqlx::query_as::<_, NodeListRow>(
+        "SELECT id, name, status, enabled, agent_version, core_version, last_seen_at \
+         FROM nodes ORDER BY created_at",
+    )
+    .fetch_all(&pg)
+    .await?;
+
+    println!(
+        "{:<38} {:<14} {:<9} {:<12} {:<12} LAST SEEN",
+        "ID", "NAME", "STATUS", "AGENT", "CORE"
+    );
+    for r in rows {
+        println!(
+            "{:<38} {:<14} {:<9} {:<12} {:<12} {}",
+            r.id,
+            r.name,
+            if r.enabled {
+                r.status
+            } else {
+                "disabled".to_string()
+            },
+            r.agent_version.unwrap_or_default(),
+            r.core_version.unwrap_or_default(),
+            r.last_seen_at
+                .map(|t| t.to_rfc3339())
+                .unwrap_or_else(|| "-".into()),
+        );
+    }
+    Ok(())
+}

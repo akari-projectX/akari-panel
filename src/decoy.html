@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meridian Systems — Infrastructure Tooling</title>
+<style>
+  :root { --ink: #1c2430; --muted: #5b6673; --line: #e4e8ed; --accent: #2b5d8c; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font: 16px/1.6 Georgia, "Times New Roman", serif; color: var(--ink); background: #fbfbfa; }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 0 24px; }
+  header { border-bottom: 1px solid var(--line); }
+  header .wrap { display: flex; align-items: baseline; justify-content: space-between; padding-top: 22px; padding-bottom: 22px; }
+  .brand { font-size: 20px; letter-spacing: .04em; font-weight: bold; }
+  .brand span { color: var(--accent); }
+  nav a { color: var(--muted); text-decoration: none; margin-left: 20px; font-family: Helvetica, Arial, sans-serif; font-size: 14px; }
+  nav a:hover { color: var(--ink); }
+  main { padding: 64px 0 72px; }
+  h1 { font-size: 34px; line-height: 1.25; max-width: 640px; margin-bottom: 18px; }
+  .lede { color: var(--muted); max-width: 560px; margin-bottom: 48px; }
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 36px; }
+  .col h2 { font-size: 17px; margin-bottom: 10px; }
+  .col p { color: var(--muted); font-size: 15px; }
+  .rule { border: 0; border-top: 1px solid var(--line); margin: 0; }
+  footer .wrap { padding-top: 26px; padding-bottom: 34px; display: flex; justify-content: space-between; color: var(--muted); font-size: 13px; font-family: Helvetica, Arial, sans-serif; }
+  @media (max-width: 640px) { h1 { font-size: 26px; } main { padding: 40px 0 48px; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="brand">Meridian <span>Systems</span></div>
+    <nav>
+      <a href="/">Products</a>
+      <a href="/">Company</a>
+      <a href="/">Contact</a>
+    </nav>
+  </div>
+</header>
+<main class="wrap">
+  <h1>Practical infrastructure tooling for teams that ship.</h1>
+  <p class="lede">
+    We build quiet, dependable software for deployment pipelines, data
+    reconciliation and internal reporting. Fifteen years in, our customers
+    still get a human on the phone.
+  </p>
+  <div class="cols">
+    <div class="col">
+      <h2>Concourse CI</h2>
+      <p>Self-hosted continuous integration with reproducible builds and
+      first-class caching for monorepos.</p>
+    </div>
+    <div class="col">
+      <h2>Ledgerline</h2>
+      <p>Reconciliation and reporting for finance teams. Imports, matches and
+      audits, with a full change history.</p>
+    </div>
+    <div class="col">
+      <h2>Support</h2>
+      <p>Long-term maintenance contracts for our products, with scheduled
+      upgrades and migration assistance.</p>
+    </div>
+  </div>
+</main>
+<hr class="rule">
+<footer>
+  <div class="wrap">
+    <div>&copy; 2026 Meridian Systems Ltd.</div>
+    <div>Manchester &middot; Rotterdam</div>
+  </div>
+</footer>
+</body>
+</html>

@@ -1,0 +1,75 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+
+import { appBase, get, post } from "./lib/api";
+import { navigate } from "./lib/router";
+import { Login } from "./pages/login";
+import { AdminUsers } from "./pages/admin-users";
+import { AdminNodes } from "./pages/admin-nodes";
+import { Portal } from "./pages/portal";
+import { Button } from "./components/ui/button";
+import { Badge } from "./components/ui/badge";
+
+type View = "users" | "nodes";
+
+function App() {
+  const queryClient = useQueryClient();
+  const me = useQuery({ queryKey: ["me"], queryFn: () => get<import("./lib/api").Me>("/me") });
+  const [view, setView] = useState<View>(() =>
+    location.pathname.endsWith("/nodes") ? "nodes" : "users",
+  );
+
+  if (me.isPending) return null;
+  if (me.isError) return <Login />;
+
+  const user = me.data;
+  const isAdmin = user.role === "admin";
+
+  async function logout() {
+    await post("/auth/logout", undefined).catch(() => undefined);
+    await queryClient.invalidateQueries({ queryKey: ["me"] });
+    navigate(`${appBase}/`);
+  }
+
+  return (
+    <div className="min-h-screen">
+      <header className="border-b border-border bg-card">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-3">
+          <div className="flex items-center gap-4">
+            <span className="text-sm font-semibold tracking-tight">Console</span>
+            {isAdmin && (
+              <nav className="flex gap-1">
+                <Button variant={view === "users" ? "default" : "ghost"} size="sm" onClick={() => setView("users")}>
+                  Users
+                </Button>
+                <Button variant={view === "nodes" ? "default" : "ghost"} size="sm" onClick={() => setView("nodes")}>
+                  Nodes
+                </Button>
+              </nav>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            <Badge variant="secondary">{user.role}</Badge>
+            <span className="text-sm text-muted-foreground">{user.login}</span>
+            <Button variant="outline" size="sm" onClick={logout}>
+              Log out
+            </Button>
+          </div>
+        </div>
+      </header>
+      <main className="mx-auto max-w-6xl px-6 py-8">
+        {isAdmin ? (
+          view === "nodes" ? (
+            <AdminNodes />
+          ) : (
+            <AdminUsers />
+          )
+        ) : (
+          <Portal me={user} />
+        )}
+      </main>
+    </div>
+  );
+}
+
+export { App };

@@ -1,0 +1,49 @@
+[package]
+name = "akari-panel"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "akari"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+argon2 = "0.6"
+base64 = "0.22"
+axum = "0.8"
+axum-extra = { version = "0.12", features = ["cookie"] }
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+dashmap = "6"
+fred = { version = "10", features = ["enable-rustls"] }
+hex = "0.4"
+mime_guess = "2"
+jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "rust_crypto"] }
+prost = "0.14"
+rand = "0.9"
+rcgen = { version = "0.14", features = ["pem", "x509-parser", "ring"] }
+rpassword = "7"
+rust-embed = "8"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "macros", "migrate", "uuid", "chrono", "json"] }
+subtle = "2"
+thiserror = "2"
+time = "0.3"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+toml = "0.9"
+tonic = { version = "0.14", features = ["tls-ring"] }
+tonic-prost = "0.14"
+tower-http = { version = "0.7", features = ["set-header"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+x509-parser = "0.18"
+
+[build-dependencies]
+protox = "0.9"
+tonic-prost-build = "0.14"
