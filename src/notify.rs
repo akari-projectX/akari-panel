@@ -80,6 +80,9 @@ pub struct Wakeups {
     /// Backend pid of the current listener connection (0 = none); lets
     /// tests (and operators) find it in pg_stat_activity.
     listener_pid: AtomicI32,
+    /// Identity of the current listener backend (for the guarded
+    /// server-side termination).
+    listener_backend: std::sync::Mutex<Option<ListenerBackend>>,
     /// Completed (re)connects, for tests and logs.
     connects: AtomicU64,
     /// This instance's ping id.
@@ -171,25 +174,74 @@ const QUEUE_WARN: f64 = 0.1;
 async fn connect(state: &AppState) -> sqlx::Result<PgListener> {
     // Own single-connection pool with the main pool's connect options (same
     // server, TLS, search_path): never a connection borrowed from the pool.
+    let w = state.wakeups();
+    // A per-connection application_name marks the backend as this
+    // instance's listener (see `terminate_listener`).
+    let app_name = format!(
+        "akari-listener-{}-{}",
+        w.instance().simple(),
+        w.connects.load(Ordering::SeqCst)
+    );
     let pool = PgPoolOptions::new()
         .max_connections(1)
         .min_connections(0)
         .idle_timeout(None)
         .max_lifetime(None)
         .acquire_timeout(Duration::from_secs(10))
-        .connect_with((*state.pg().connect_options()).clone())
+        .connect_with(
+            (*state.pg().connect_options())
+                .clone()
+                .application_name(&app_name),
+        )
         .await?;
     let mut l = PgListener::connect_with(&pool).await?;
     // Reconnects are handled by the supervisor (to wake everyone), never
     // silently inside sqlx.
     l.eager_reconnect(false);
     l.ignore_pool_close_event(true);
+    let (pid, started): (i32, chrono::DateTime<chrono::Utc>) = sqlx::query_as(
+        "SELECT pid, backend_start FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+    )
+    .fetch_one(&mut l)
+    .await?;
+    // LISTEN last: it stays the backend's reported query.
     l.listen(CHANNEL).await?;
-    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-        .fetch_one(&mut l)
-        .await?;
-    state.wakeups().listener_pid.store(pid, Ordering::SeqCst);
+    *w.listener_backend.lock().unwrap() = Some(ListenerBackend {
+        pid,
+        started,
+        app_name,
+    });
+    w.listener_pid.store(pid, Ordering::SeqCst);
     Ok(l)
+}
+
+/// Identity of a listener backend, captured when it connected: a pid alone
+/// may have been reused by an unrelated backend by the time the old
+/// connection is judged dead.
+#[derive(Clone, Debug)]
+pub struct ListenerBackend {
+    pub pid: i32,
+    pub started: chrono::DateTime<chrono::Utc>,
+    pub app_name: String,
+}
+
+/// R14 N2: terminate `b` server-side only if that pid is still the same
+/// backend (same backend_start), still ours (application_name, database,
+/// role) and still a LISTEN session. Returns whether it was terminated.
+pub async fn terminate_listener(pg: &sqlx::PgPool, b: &ListenerBackend) -> sqlx::Result<bool> {
+    let hit: Option<bool> = sqlx::query_scalar(
+        "SELECT pg_terminate_backend(a.pid) FROM pg_stat_activity a \
+         WHERE a.pid = $1 AND a.backend_start = $2 AND a.application_name = $3 \
+           AND a.datname = current_database() AND a.usename = current_user \
+           AND a.backend_type = 'client backend' \
+           AND a.query ILIKE 'LISTEN %'",
+    )
+    .bind(b.pid)
+    .bind(b.started)
+    .bind(&b.app_name)
+    .fetch_optional(pg)
+    .await?;
+    Ok(hit.unwrap_or(false))
 }
 
 /// Connect with backoff until LISTEN is established.
@@ -237,6 +289,7 @@ async fn supervise(state: AppState, first: PgListener) {
         let err = run(&state, listener).await;
         w.connected.store(false, Ordering::SeqCst);
         w.listener_pid.store(0, Ordering::SeqCst);
+        *w.listener_backend.lock().unwrap() = None;
         tracing::warn!(error = %err, "change listener: disconnected; reconnecting");
         tokio::time::sleep(RECONNECT_MIN).await;
     }
@@ -247,7 +300,7 @@ async fn supervise(state: AppState, first: PgListener) {
 /// is aborted — dropping the connection — when the connection is judged
 /// dead.
 async fn run(state: &AppState, mut listener: PgListener) -> String {
-    let pid = state.wakeups().listener_pid();
+    let backend = state.wakeups().listener_backend.lock().unwrap().clone();
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<Result<Event, String>>();
     let reader = tokio::spawn(async move {
         loop {
@@ -308,14 +361,14 @@ async fn run(state: &AppState, mut listener: PgListener) -> String {
     // alive on the server. Dropping the PgListener spawns sqlx's UNLISTEN
     // task, which on a half-open socket ends only when the kernel gives up
     // on the connection; that leaks one idle task per such incident.
-    if pid > 0 {
-        let _ = tokio::time::timeout(
-            Duration::from_secs(5),
-            sqlx::query("SELECT pg_terminate_backend($1)")
-                .bind(pid)
-                .execute(state.pg()),
-        )
-        .await;
+    if let Some(b) = backend {
+        match tokio::time::timeout(Duration::from_secs(5), terminate_listener(state.pg(), &b)).await
+        {
+            Ok(Ok(true)) => tracing::info!(pid = b.pid, "change listener: old backend terminated"),
+            Ok(Ok(false)) => {}
+            Ok(Err(e)) => tracing::debug!(error = %e, "change listener: terminate failed"),
+            Err(_) => tracing::debug!("change listener: terminate timed out"),
+        }
     }
     reader.abort();
     let _ = reader.await;
@@ -547,6 +600,94 @@ mod tests {
             .collect();
         assert!(got.is_empty(), "{got:?}");
         drop(l);
+        db.drop().await;
+    }
+
+    /// R14 N2: the dead-listener cleanup terminates a backend only if it is
+    /// still the very listener session we connected (same pid AND
+    /// backend_start, our application_name, a LISTEN session) — never a
+    /// reused pid.
+    #[tokio::test]
+    async fn listener_termination_is_guarded_by_backend_identity() {
+        let Some(db) = crate::testdb::TestDb::new().await else {
+            return;
+        };
+        let a = AppState::for_test(db.pool.clone()).await;
+        let la = start(a.clone()).await;
+        let real = a
+            .wakeups()
+            .listener_backend
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("listener connected");
+        assert!(real.app_name.starts_with("akari-listener-"));
+
+        // An unrelated live backend of the same role (a pool connection):
+        // stands in for "the pid was reused".
+        let mut other = db.pool.acquire().await.unwrap();
+        let (opid, ostart): (i32, chrono::DateTime<chrono::Utc>) = sqlx::query_as(
+            "SELECT pid, backend_start FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+        )
+        .fetch_one(&mut *other)
+        .await
+        .unwrap();
+        for spoof in [
+            // reused pid, our recorded start time and name
+            ListenerBackend {
+                pid: opid,
+                ..real.clone()
+            },
+            // right pid and start, but not our name
+            ListenerBackend {
+                pid: opid,
+                started: ostart,
+                app_name: "x".into(),
+            },
+            // right pid and name, different start (the old backend died)
+            ListenerBackend {
+                started: real.started - chrono::Duration::seconds(1),
+                ..real.clone()
+            },
+        ] {
+            assert!(
+                !terminate_listener(&db.pool, &spoof).await.unwrap(),
+                "{spoof:?}"
+            );
+        }
+        // The pool connection is alive and well.
+        let one: i32 = sqlx::query_scalar("SELECT 1")
+            .fetch_one(&mut *other)
+            .await
+            .unwrap();
+        assert_eq!(one, 1);
+        // Even a correct identity of a backend that is not LISTENing is
+        // refused (e.g. our pool connection with a matching name).
+        sqlx::query("SET application_name = 'akari-listener-fake'")
+            .execute(&mut *other)
+            .await
+            .unwrap();
+        let not_listening = ListenerBackend {
+            pid: opid,
+            started: ostart,
+            app_name: "akari-listener-fake".into(),
+        };
+        assert!(!terminate_listener(&db.pool, &not_listening).await.unwrap());
+        drop(other);
+
+        // The genuine listener is terminated (and the supervisor reconnects).
+        let connects = a.wakeups().connects();
+        assert!(terminate_listener(&db.pool, &real).await.unwrap());
+        for _ in 0..250 {
+            if a.wakeups().connects() > connects && a.wakeups().connected() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(a.wakeups().connects() > connects, "reconnected");
+        la.abort();
+        let _ = la.await;
+        drop(a);
         db.drop().await;
     }
 }

@@ -85,6 +85,18 @@ impl TestDb {
         id
     }
 
+    /// An enabled admin account.
+    pub async fn admin(&self) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, login, role) VALUES ($1, $2, 'admin')")
+            .bind(id)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .unwrap();
+        id
+    }
+
     /// An enabled node with one vless inbound tagged "in-vless".
     pub async fn node(&self) -> Uuid {
         let id = Uuid::new_v4();

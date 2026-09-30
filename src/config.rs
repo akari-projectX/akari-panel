@@ -85,6 +85,15 @@ pub struct WebConfig {
     /// DNS names / IPs the auto-issued TLS certificate is valid for.
     /// Must include the name agents use to reach the gRPC endpoint.
     pub advertised_names: Vec<String>,
+    /// Reverse proxies in front of the panel (CIDRs or addresses). Only
+    /// when the TCP peer is one of them is X-Forwarded-For consulted: the
+    /// client is the rightmost hop that is not a trusted proxy. Default
+    /// empty: the TCP peer is the client, headers are ignored.
+    pub trusted_proxies: Vec<crate::client_ip::Cidr>,
+    /// `Secure` attribute of the session cookie. Default true (browsers
+    /// then only send it over HTTPS — put the panel behind a TLS proxy);
+    /// set false only for plain-HTTP development.
+    pub cookie_secure: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -127,6 +136,8 @@ impl Default for WebConfig {
         Self {
             bind: "127.0.0.1:8080".parse().unwrap(),
             advertised_names: vec!["localhost".into(), "127.0.0.1".into()],
+            trusted_proxies: Vec::new(),
+            cookie_secure: true,
         }
     }
 }

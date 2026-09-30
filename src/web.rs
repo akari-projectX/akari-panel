@@ -35,6 +35,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(api::update_user).delete(api::delete_user),
         )
         .route(
+            "/{prefix}/api/v1/users/{id}/revoke-sessions",
+            post(api::revoke_sessions),
+        )
+        .route(
             "/{prefix}/api/v1/users/{id}/sub-token",
             post(api::regenerate_sub_token),
         )

@@ -17,12 +17,20 @@ rm -rf "$LOG" data "$BOOT" "$JAR" && mkdir -p "$LOG"
 # Anchored full-command-line patterns: only the exact processes this script
 # starts (panel binary here, any sibling agent checkout's binary with this
 # script's bootstrap file) — never a shell that merely mentions them.
-pkill -f '^\./target/release/akari serve$' 2>/dev/null || true
+pkill -f '^\./target/release/akari (-c [^ ]+ )?serve$' 2>/dev/null || true
 pkill -f "^\.\./[A-Za-z0-9_.-]+/agent -config ${BOOT//./\\.}\$" 2>/dev/null || true
 sleep 1
 
 echo "== start panel (runs migrations) =="
-"$PANEL" serve >"$LOG/panel.log" 2>&1 &
+# Plain-HTTP development: the session cookie must not be Secure. 127.0.0.2
+# plays a trusted reverse proxy (curl --interface 127.0.0.2); requests from
+# 127.0.0.1 are direct clients whose X-Forwarded-For must be ignored.
+cat >"$LOG/panel.toml" <<'TOML'
+[web]
+cookie_secure = false
+trusted_proxies = ["127.0.0.2/32"]
+TOML
+"$PANEL" -c "$LOG/panel.toml" serve >"$LOG/panel.log" 2>&1 &
 PANEL_PID=$!
 trap 'kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
 sleep 2
@@ -109,6 +117,14 @@ echo "== configure node + user via API =="
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' \
     -d '{"inbounds":[{"tag":"in-vless","listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"sniffing":{"enabled":true,"destOverride":["fakedns"]}}]}')" = "400" ] \
   || { echo "FAIL: fakedns inbound not rejected"; exit 1; }
+# GO-2026-6443: xray's grpc transport (grpc-go < 1.85 panics on a request
+# without :authority) is refused until the agent ships the fix.
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' \
+    -d '{"inbounds":[{"tag":"in-vless","listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"Gun"}}]}')" = "400" ] \
+  || { echo "FAIL: grpc/gun transport not rejected"; exit 1; }
+grep -q 'GO-2026-6443' /tmp/akari-smoke/last || { echo "FAIL: grpc rejection does not name the advisory"; exit 1; }
+code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
+grep -q '"warnings":\[\]' /tmp/akari-smoke/last || { echo "FAIL: node view lacks empty warnings"; exit 1; }
 
 [ "$(code -b "$JAR" -X PATCH "$BASE/api/v1/nodes/$NODE_ID" -H 'Content-Type: application/json' \
     -d '{"server_addr":"node1.example.test"}')" = "200" ] \
@@ -320,12 +336,40 @@ STATUS=$(docker compose exec -T postgres psql -U akari -d akari -tAc "SELECT sta
 docker compose exec -T valkey valkey-cli exists "akari:node:online:$NODE_ID" | grep -q 1 \
   || { echo "FAIL: online key missing"; exit 1; }
 
-echo "== rate limit (20/15min) =="
-CODE=200
-for i in $(seq 1 25); do
-  CODE=$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d '{"login":"root","password":"nope"}')
+echo "== S4-1 login rate limit: failures only, per client; XFF only from trusted proxies =="
+login_code() { # extra curl args..., then login, password (last two)
+  local n=$#; local pw="${!n}"; local lg="${@:$((n-1)):1}"
+  code "${@:1:$((n-2))}" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"login\":\"$lg\",\"password\":\"$pw\"}"
+}
+rl_clear() {
+  docker compose exec -T valkey valkey-cli EVAL \
+    "for _,k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call('DEL', k) end return 1" 0 'akari:rl:*' >/dev/null
+}
+rl_clear
+# Successful logins never count.
+for _ in $(seq 1 25); do
+  [ "$(login_code root "$ADMIN_PW")" = "200" ] || { echo "FAIL: successful logins were rate limited"; exit 1; }
 done
-[ "$CODE" = "429" ] || { echo "FAIL: login rate limit never hit (last $CODE)"; exit 1; }
+# A direct client (untrusted peer 127.0.0.1) rotating X-Forwarded-For stays
+# in its own bucket.
+for i in $(seq 1 20); do
+  [ "$(login_code -H "X-Forwarded-For: 198.51.100.$i" rl-direct nope)" = "401" ] || { echo "FAIL: bad login $i not 401"; exit 1; }
+done
+[ "$(login_code -H 'X-Forwarded-For: 203.0.113.250' root "$ADMIN_PW")" = "429" ] \
+  || { echo "FAIL: X-Forwarded-For from an untrusted peer escaped the rate limit"; exit 1; }
+# Behind the trusted proxy each forwarded client has its own bucket.
+for i in $(seq 1 20); do
+  [ "$(login_code --interface 127.0.0.2 -H 'X-Forwarded-For: 203.0.113.7' rl-proxied nope)" = "401" ] \
+    || { echo "FAIL: proxied bad login $i not 401"; exit 1; }
+done
+[ "$(login_code --interface 127.0.0.2 -H 'X-Forwarded-For: 203.0.113.7' root "$ADMIN_PW")" = "429" ] \
+  || { echo "FAIL: proxied client 203.0.113.7 not limited"; exit 1; }
+[ "$(login_code --interface 127.0.0.2 -H 'X-Forwarded-For: 203.0.113.7, 203.0.113.8' root "$ADMIN_PW")" = "200" ] \
+  || { echo "FAIL: another client behind the proxy was locked out"; exit 1; }
+[ "$(login_code --interface 127.0.0.2 -H 'X-Forwarded-For: 203.0.113.8, 203.0.113.7' root "$ADMIN_PW")" = "429" ] \
+  || { echo "FAIL: a forged left-hand XFF hop escaped the limit"; exit 1; }
+rl_clear
 echo "rate limit: ok"
 
 echo "== delete user: node converges to users=0 =="
@@ -436,10 +480,26 @@ kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
 AGENT_PID=""
 echo "node delete: ok (empty state, revoked, closed; $COUNTERS_BEFORE billing rows kept)"
 
-echo "== me + logout =="
+echo "== S4-2 sessions: revoke-sessions, last admin, logout kills copies of the cookie =="
 [ "$(code -b "$JAR" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: me failed"; exit 1; }
+ROOT_ID=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
+[ "$(patch_code "$BASE/api/v1/users/$ROOT_ID" '{"enabled": false}')" = "409" ] || { echo "FAIL: last admin disable not 409"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/users/$ROOT_ID" '{"role": "user"}')" = "409" ] || { echo "FAIL: last admin demote not 409"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$ROOT_ID")" = "409" ] || { echo "FAIL: last admin delete not 409"; exit 1; }
+JAR2="$LOG/cookies2"
+[ "$(code -c "$JAR2" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "200" ] || { echo "FAIL: second login"; exit 1; }
+[ "$(code -b "$JAR2" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: second session"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$ROOT_ID/revoke-sessions")" = "204" ] || { echo "FAIL: revoke-sessions"; exit 1; }
+[ "$(code -b "$JAR2" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: revoked session still works"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: own session survived revoke-sessions"; exit 1; }
+[ "$(code -c "$JAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "200" ] || { echo "FAIL: login after revoke"; exit 1; }
+cp "$JAR" "$LOG/stolen-cookies"
 [ "$(code -b "$JAR" -c "$JAR" -X POST "$BASE/auth/logout")" = "200" ] || { echo "FAIL: logout failed"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: me after logout not 401"; exit 1; }
+[ "$(code -b "$LOG/stolen-cookies" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: a copy of the cookie survived logout"; exit 1; }
+echo "sessions: ok"
 
 echo "== root + healthz =="
 [ "$(code http://127.0.0.1:8080/)" = "404" ] || { echo "FAIL: / not 404"; exit 1; }
@@ -466,6 +526,27 @@ grep -q '}/auth[`"'"'"']' /tmp/akari-smoke/app.js || { echo "FAIL: bundle lacks 
 grep -qE '[`"'"'"']/auth/(login|logout)' /tmp/akari-smoke/app.js \
   && { echo "FAIL: bundle posts a bare /auth/* path (would be joined to /api/v1)"; exit 1; }
 echo "spa: ok (asset $JS)"
+
+echo "== S4-3 SIGTERM: agent streams end, final flush, clean exit =="
+"$PANEL" node add term-node --out "$LOG/term-bootstrap.toml" >/dev/null
+"$AGENT" -config "$LOG/term-bootstrap.toml" >"$LOG/term-agent.log" 2>&1 &
+AGENT_PID=$!
+for _ in $(seq 1 15); do grep -q "channel established" "$LOG/term-agent.log" && break; sleep 1; done
+grep -q "channel established" "$LOG/term-agent.log" || { echo "FAIL: term agent never connected"; exit 1; }
+kill -TERM $PANEL_PID
+EXIT=""
+for _ in $(seq 1 24); do
+  if ! kill -0 $PANEL_PID 2>/dev/null; then EXIT=0; wait $PANEL_PID || EXIT=$?; break; fi
+  sleep 0.5
+done
+[ "$EXIT" = "0" ] || { echo "FAIL: panel did not exit cleanly within 12 s after SIGTERM (exit '$EXIT')"; tail -5 "$LOG/panel.log"; exit 1; }
+for m in "SIGTERM received" "agent sessions ended" "final traffic flush done" "shutdown complete"; do
+  grep -q "$m" "$LOG/panel.log" || { echo "FAIL: shutdown log lacks '$m'"; tail -8 "$LOG/panel.log"; exit 1; }
+done
+grep -q 'panel shutting down' "$LOG/term-agent.log" || { echo "FAIL: agent stream not ended with 'panel shutting down'"; grep 'channel closed' "$LOG/term-agent.log" | tail -2; exit 1; }
+kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+AGENT_PID=""
+echo "sigterm: ok"
 
 echo
 echo "SMOKE TEST PASSED"

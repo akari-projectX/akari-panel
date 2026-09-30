@@ -17,7 +17,7 @@ axum-extra = { version = "0.12", features = ["cookie"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 dashmap = "6"
-fred = { version = "10", features = ["enable-rustls"] }
+fred = { version = "10", features = ["enable-rustls", "i-scripts"] }
 hex = "0.4"
 mime_guess = "2"
 jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "rust_crypto"] }

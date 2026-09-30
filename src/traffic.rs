@@ -142,6 +142,35 @@ pub struct TrafficBuffer {
     /// Grace (seconds) during which a departed pair (node_users_departed)
     /// is still billed; 0 = DEFAULT_DEPARTED_GRACE_SECS.
     departed_grace: std::sync::atomic::AtomicU64,
+    /// This instance's own flush health (R14 N1).
+    health: std::sync::Mutex<FlushHealth>,
+}
+
+/// R14 N1: while this instance cannot flush (database down, failover),
+/// its agents stay connected — no reconnect credit — and their backlog
+/// would be cut to one burst window by the caps. So the instance remembers
+/// when its last full flush succeeded; the first flush after failures
+/// credits the nodes it writes back to that time (see `write_rows`). Only
+/// this process's own failed flushes set `failing`: no agent input can.
+struct FlushHealth {
+    /// When the last successful full flush took its snapshot.
+    last_ok: Instant,
+    /// The last full flush failed.
+    failing: bool,
+    /// Tests: pretend `last_ok` was this much earlier.
+    #[cfg(test)]
+    backdate: Duration,
+}
+
+impl Default for FlushHealth {
+    fn default() -> Self {
+        Self {
+            last_ok: Instant::now(),
+            failing: false,
+            #[cfg(test)]
+            backdate: Duration::ZERO,
+        }
+    }
 }
 
 /// Default for `traffic.departed_grace_secs`: an unassigned user's final
@@ -184,6 +213,45 @@ impl TrafficBuffer {
             0 => DEFAULT_DEPARTED_GRACE_SECS,
             s => s,
         }
+    }
+
+    /// Seconds since the last successful full flush, if the last full
+    /// flush failed (this instance's own outage), else None.
+    fn outage_secs(&self) -> Option<f64> {
+        let h = self.health.lock().unwrap();
+        #[cfg(test)]
+        let elapsed = h.last_ok.elapsed() + h.backdate;
+        #[cfg(not(test))]
+        let elapsed = h.last_ok.elapsed();
+        h.failing.then_some(elapsed.as_secs_f64())
+    }
+
+    fn flush_succeeded(&self, snapshot_at: Instant) {
+        let mut h = self.health.lock().unwrap();
+        h.failing = false;
+        h.last_ok = snapshot_at;
+        #[cfg(test)]
+        {
+            h.backdate = Duration::ZERO;
+        }
+    }
+
+    fn flush_failed(&self) {
+        self.health.lock().unwrap().failing = true;
+    }
+
+    /// Tests: pretend the last successful flush was `ago` ago (does NOT
+    /// mark the instance failing; only a failed flush does).
+    #[cfg(test)]
+    pub fn backdate_last_ok(&self, ago: Duration) {
+        let mut h = self.health.lock().unwrap();
+        h.last_ok = Instant::now();
+        h.backdate = ago;
+    }
+
+    #[cfg(test)]
+    pub fn failing(&self) -> bool {
+        self.health.lock().unwrap().failing
     }
 
     /// Record a report whose counters belong to `session_id`.
@@ -668,8 +736,10 @@ pub struct Rates {
     /// traffic.node_max_rate_bytes_per_sec (per node, unless overridden).
     pub node: i64,
     /// Burst window: the longest period any cap credits, except for a
-    /// recorded reconnect gap (traffic.node_burst_secs).
+    /// recorded reconnect gap or flush outage (traffic.node_burst_secs).
     pub burst_secs: i64,
+    /// Upper bound of any credit (grpc.lease_seconds, clamped).
+    pub lease_secs: i64,
 }
 
 impl Rates {
@@ -678,9 +748,28 @@ impl Rates {
             key: cfg.traffic.max_rate_bytes_per_sec.max(1),
             node: cfg.traffic.node_max_rate_bytes_per_sec.max(1),
             burst_secs: cfg.traffic.node_burst_secs.max(1) as i64,
+            lease_secs: cfg.grpc.lease_seconds() as i64,
         }
     }
 }
+
+/// R14 N1: credit this instance's own flush outage (`outage_secs` since its
+/// last successful flush, at most the lease) to `nodes` — the nodes whose
+/// backlog is being written now, rows already locked. Same one-time
+/// semantics as the reconnect credit (grpc::set_online_row): a credit is
+/// valid for one burst window from the grant and never extended; a valid
+/// credit's floor is only lowered (LEAST), never raised. An outage no
+/// longer than the burst window is covered by the window itself. Runs in
+/// the flush transaction, so it exists only if that flush commits.
+const OUTAGE_CREDIT_SQL: &str = "\
+UPDATE nodes SET
+    traffic_credit_floor = CASE WHEN traffic_credit_until > statement_timestamp()
+        THEN LEAST(traffic_credit_floor, statement_timestamp() - make_interval(secs => $2))
+        ELSE statement_timestamp() - make_interval(secs => $2) END,
+    traffic_credit_until = CASE WHEN traffic_credit_until > statement_timestamp()
+        THEN traffic_credit_until
+        ELSE statement_timestamp() + make_interval(secs => $3) END
+WHERE id IN (SELECT DISTINCT unnest($1::uuid[]))";
 
 /// Writes `rows` in one transaction: lock the rows' nodes (id order, the
 /// global lock order: nodes before users), then FLUSH_SQL. The node locks
@@ -692,6 +781,7 @@ async fn write_rows(
     rows: &[FlushRow],
     rates: Rates,
     grace_secs: u64,
+    outage_secs: Option<f64>,
 ) -> Result<Vec<Key>, sqlx::Error> {
     let nodes: Vec<Uuid> = rows.iter().map(|r| r.node_id).collect();
     let users: Vec<Uuid> = rows.iter().map(|r| r.user_id).collect();
@@ -707,6 +797,20 @@ async fn write_rows(
     .bind(&nodes)
     .execute(&mut *tx)
     .await?;
+    if let Some(secs) = outage_secs.filter(|s| *s > rates.burst_secs as f64) {
+        let n = sqlx::query(OUTAGE_CREDIT_SQL)
+            .bind(&nodes)
+            .bind(secs.min(rates.lease_secs as f64))
+            .bind(rates.burst_secs as f64)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        tracing::info!(
+            nodes = n,
+            outage_secs = secs as u64,
+            "crediting this instance's flush outage to its nodes' billing caps"
+        );
+    }
     let (dn, du, ds, clamped, nodes_clamped): (Vec<Uuid>, Vec<Uuid>, Vec<String>, i64, i64) =
         sqlx::query_as(FLUSH_SQL)
             .bind(&nodes)
@@ -775,15 +879,36 @@ async fn flush_buffer(
     rates: Rates,
     only_node: Option<Uuid>,
 ) -> anyhow::Result<usize> {
+    let snapshot_at = Instant::now();
+    let outage = buf.outage_secs();
+    let r = flush_rows(pg, buf, rates, only_node, outage).await;
+    // Only a full flush says anything about this instance's health.
+    if only_node.is_none() {
+        match &r {
+            Ok(_) => buf.flush_succeeded(snapshot_at),
+            Err(_) => buf.flush_failed(),
+        }
+    }
+    r
+}
+
+async fn flush_rows(
+    pg: &sqlx::PgPool,
+    buf: &TrafficBuffer,
+    rates: Rates,
+    only_node: Option<Uuid>,
+    outage: Option<f64>,
+) -> anyhow::Result<usize> {
     let mut rows = buf.snapshot();
     if let Some(n) = only_node {
         rows.retain(|r| r.node_id == n);
     }
     if rows.is_empty() {
+        // Nothing buffered: nothing of this instance's is unbilled.
         return Ok(0);
     }
     let grace = buf.departed_grace_secs();
-    match write_rows(pg, &rows, rates, grace).await {
+    match write_rows(pg, &rows, rates, grace, outage).await {
         Ok(dropped) => {
             buf.mark_flushed(&rows);
             // Refused rows are removed, not kept as "flushed": they must
@@ -797,7 +922,7 @@ async fn flush_buffer(
             tracing::warn!(error = %e, rows = rows.len(), "traffic batch rejected; retrying row by row");
             let mut written = 0;
             for r in &rows {
-                match write_rows(pg, std::slice::from_ref(r), rates, grace).await {
+                match write_rows(pg, std::slice::from_ref(r), rates, grace, outage).await {
                     Ok(dropped) => {
                         if dropped.is_empty() {
                             buf.mark_flushed(std::slice::from_ref(r));
@@ -868,6 +993,18 @@ pub async fn flush_loop(state: AppState) {
 pub async fn flush_for_test(pg: &sqlx::PgPool, buf: &TrafficBuffer) {
     let rates = Rates::from_cfg(&crate::config::PanelConfig::default());
     flush_buffer(pg, buf, rates, None).await.unwrap();
+}
+
+/// Persist (and bill) everything this instance buffered (the shutdown's
+/// final flush). Counts toward the instance's flush health like the loop.
+pub async fn flush_all(state: &AppState) -> anyhow::Result<usize> {
+    flush_buffer(
+        state.pg(),
+        state.traffic(),
+        Rates::from_cfg(state.cfg()),
+        None,
+    )
+    .await
 }
 
 /// Persist (and bill) what this instance buffered for `node_id` now — used
@@ -1069,6 +1206,7 @@ mod db_tests {
         key: RATE,
         node: RATE,
         burst_secs: crate::config::DEFAULT_NODE_BURST_SECS as i64,
+        lease_secs: 86400,
     };
 
     trait Flush {
@@ -1131,7 +1269,7 @@ mod db_tests {
             down: 0,
             age_secs: 60.0,
         };
-        let dropped = write_rows(&db.pool, &[row], RATES, DEFAULT_DEPARTED_GRACE_SECS)
+        let dropped = write_rows(&db.pool, &[row], RATES, DEFAULT_DEPARTED_GRACE_SECS, None)
             .await
             .unwrap();
         assert_eq!(dropped.len(), 1);
@@ -1180,12 +1318,12 @@ mod db_tests {
         b.update(n, "s1", &report(u, 100, 200));
         let rows = b.snapshot();
         // Ambiguous commit: written, but the panel thinks it failed.
-        write_rows(&db.pool, &rows, RATES, DEFAULT_DEPARTED_GRACE_SECS)
+        write_rows(&db.pool, &rows, RATES, DEFAULT_DEPARTED_GRACE_SECS, None)
             .await
             .unwrap();
         db.flush(&b).await;
         db.flush(&b).await;
-        write_rows(&db.pool, &rows, RATES, DEFAULT_DEPARTED_GRACE_SECS)
+        write_rows(&db.pool, &rows, RATES, DEFAULT_DEPARTED_GRACE_SECS, None)
             .await
             .unwrap();
         assert_eq!(db.used(u).await, 300);
@@ -1438,6 +1576,7 @@ mod db_tests {
             key: i64::MAX,
             node: i64::MAX,
             burst_secs: RATES.burst_secs,
+            lease_secs: RATES.lease_secs,
         };
         flush_buffer(&db.pool, &b, unlimited, None).await.unwrap();
         assert_eq!(db.used(u).await, i64::MAX);
@@ -1943,7 +2082,7 @@ mod db_tests {
     }
 
     async fn write(db: &TestDb, rows: &[FlushRow]) {
-        write_rows(&db.pool, rows, RATES, DEFAULT_DEPARTED_GRACE_SECS)
+        write_rows(&db.pool, rows, RATES, DEFAULT_DEPARTED_GRACE_SECS, None)
             .await
             .unwrap();
     }
@@ -2095,8 +2234,8 @@ mod db_tests {
         set_tat(&db, n, Some(10.0)).await;
         let (ra, rb) = ([row(n, u, "a", TB, 1.0)], [row(n, u2, "b", TB, 1.0)]);
         let (x, y) = tokio::join!(
-            write_rows(&db.pool, &ra, RATES, DEFAULT_DEPARTED_GRACE_SECS),
-            write_rows(&db.pool, &rb, RATES, DEFAULT_DEPARTED_GRACE_SECS),
+            write_rows(&db.pool, &ra, RATES, DEFAULT_DEPARTED_GRACE_SECS, None),
+            write_rows(&db.pool, &rb, RATES, DEFAULT_DEPARTED_GRACE_SECS, None),
         );
         x.unwrap();
         y.unwrap();
@@ -2329,6 +2468,168 @@ mod db_tests {
         write(&db, &[row(n, u, "s1", 2 * TB, 1.0)]).await;
         let more = db.used(u).await - billed;
         assert!(more <= RATE, "reconnects minted {more}");
+        db.drop().await;
+    }
+
+    // ----- R14 N1: this instance's own flush outage -------------------
+
+    /// A node with its own rate cap `r` that was last billed (tat, counter
+    /// row s1 = 0) `ago` seconds ago, and a buffer holding `cum` bytes of
+    /// cumulative traffic for it.
+    async fn outage_setup(db: &TestDb, r: i64, ago: f64, cum: u64) -> (Uuid, Uuid, TrafficBuffer) {
+        let (n, u) = db.member().await;
+        seed(db, n, u, "s1", 0, ago).await;
+        sqlx::query(
+            "UPDATE nodes SET traffic_max_rate_bytes_per_sec = $2, \
+             traffic_tat = now() - make_interval(secs => $3) WHERE id = $1",
+        )
+        .bind(n)
+        .bind(r)
+        .bind(ago)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let b = buf(db).await;
+        b.update(n, "s1", &report(u, cum, 0));
+        (n, u, b)
+    }
+
+    /// Make one real flush attempt fail (the pool is closed): the only
+    /// way the instance enters the failing state.
+    async fn failing_flush(db: &TestDb, b: &TrafficBuffer) {
+        let dead = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with((*db.pool.connect_options()).clone())
+            .await
+            .unwrap();
+        dead.close().await;
+        assert!(flush_buffer(&dead, b, RATES, None).await.is_err());
+        assert!(b.failing());
+    }
+
+    /// Red team RTC-1: a 1 h flush outage at 10 % of the node rate. The
+    /// agents stayed connected (no reconnect credit); the first flush after
+    /// the outage must bill ~100 % of the backlog, not one burst window
+    /// (33 %).
+    #[tokio::test]
+    async fn rtc1_flush_outage_backlog_is_billed_in_full() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        const R: i64 = 1_000_000;
+        let cum = (R / 10 * 3600) as u64; // 10 % of R for 1 h
+        let (n, u, b) = outage_setup(&db, R, 3600.0, cum).await;
+        failing_flush(&db, &b).await;
+        b.backdate_last_ok(Duration::from_secs(3600));
+        flush_buffer(&db.pool, &b, RATES, None).await.unwrap();
+        let billed = db.used(u).await;
+        assert!(
+            billed as f64 >= cum as f64 * 0.99,
+            "outage backlog under-billed: {billed} of {cum}"
+        );
+        assert!(billed as u64 <= cum, "over-billed: {billed} > {cum}");
+        assert!(!b.failing(), "recovered");
+        // One-time: the credit is valid for one burst window and is not
+        // renewed by later (healthy) flushes.
+        let (floor_age, until_left): (f64, f64) = sqlx::query_as(
+            "SELECT extract(epoch FROM now() - traffic_credit_floor)::float8, \
+                    extract(epoch FROM traffic_credit_until - now())::float8 \
+             FROM nodes WHERE id = $1",
+        )
+        .bind(n)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert!((3590.0..3700.0).contains(&floor_age), "floor {floor_age}");
+        assert!(until_left <= RATES.burst_secs as f64, "until {until_left}");
+        db.drop().await;
+    }
+
+    /// The same backlog without a real outage (only elapsed time, no failed
+    /// flush) gets no credit: one burst window of the node rate.
+    #[tokio::test]
+    async fn no_outage_credit_without_a_failed_flush() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        const R: i64 = 1_000_000;
+        let cum = (R / 10 * 3600) as u64;
+        let (n, u, b) = outage_setup(&db, R, 3600.0, cum).await;
+        b.backdate_last_ok(Duration::from_secs(3600));
+        flush_buffer(&db.pool, &b, RATES, None).await.unwrap();
+        let billed = db.used(u).await;
+        let burst = R * RATES.burst_secs;
+        assert!(
+            billed <= burst + R,
+            "credit without an outage: {billed} > {burst}"
+        );
+        assert!(billed >= burst - R, "burst window billed: {billed}");
+        let floor: Option<chrono::DateTime<chrono::Utc>> =
+            sqlx::query_scalar("SELECT traffic_credit_floor FROM nodes WHERE id = $1")
+                .bind(n)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert!(floor.is_none(), "no credit granted");
+        // A node's own input cannot make the flush fail: reports the
+        // database refuses (unassigned user) still leave the instance
+        // healthy.
+        let stranger = db.user().await;
+        b.update(n, "s1", &report(stranger, 1 << 40, 0));
+        flush_buffer(&db.pool, &b, RATES, None).await.unwrap();
+        assert!(!b.failing());
+        db.drop().await;
+    }
+
+    /// A short outage (within the burst window) grants nothing (the window
+    /// covers it and the credit slot is not consumed); a long one is capped
+    /// at the lease.
+    #[tokio::test]
+    async fn outage_credit_bounds() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        const R: i64 = 1_000_000;
+        // Short: 60 s < burst.
+        let (n, _u, b) = outage_setup(&db, R, 60.0, 1).await;
+        failing_flush(&db, &b).await;
+        b.backdate_last_ok(Duration::from_secs(60));
+        flush_buffer(&db.pool, &b, RATES, None).await.unwrap();
+        let floor: Option<chrono::DateTime<chrono::Utc>> =
+            sqlx::query_scalar("SELECT traffic_credit_floor FROM nodes WHERE id = $1")
+                .bind(n)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert!(floor.is_none(), "short outage consumed the credit slot");
+        // Long: 3 days of outage, full-rate claim; lease = 1 day.
+        let days3 = 3.0 * 86400.0;
+        let (_n, u, b) = outage_setup(&db, R, days3, (R as u64) * 300_000).await;
+        failing_flush(&db, &b).await;
+        b.backdate_last_ok(Duration::from_secs_f64(days3));
+        flush_buffer(&db.pool, &b, RATES, None).await.unwrap();
+        let billed = db.used(u).await;
+        let lease = R * RATES.lease_secs;
+        assert!(billed <= lease + R, "beyond the lease: {billed} > {lease}");
+        assert!(billed >= lease - R, "lease credited: {billed}");
+        db.drop().await;
+    }
+
+    /// A per-node flush (the reaper's, before a delete) neither clears nor
+    /// sets the instance's failing state, but credits the outage too.
+    #[tokio::test]
+    async fn node_flush_keeps_the_outage_state() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        const R: i64 = 1_000_000;
+        let cum = (R / 10 * 3600) as u64;
+        let (n, u, b) = outage_setup(&db, R, 3600.0, cum).await;
+        failing_flush(&db, &b).await;
+        b.backdate_last_ok(Duration::from_secs(3600));
+        flush_buffer(&db.pool, &b, RATES, Some(n)).await.unwrap();
+        assert!(b.failing(), "a partial flush does not end the outage");
+        assert!(db.used(u).await as f64 >= cum as f64 * 0.99);
         db.drop().await;
     }
 }
