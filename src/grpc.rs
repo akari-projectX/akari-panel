@@ -79,13 +79,19 @@ struct SyncState {
     /// Snapshot sent and not yet acked: never resend the same versions
     /// while one is in flight (rebuild storms).
     pending: Option<((u64, u64), Instant)>,
-    /// Consecutive retries of versions that already failed, and when the
-    /// next one is allowed.
+    /// Versions whose apply failed in this session (also persisted, but
+    /// kept here so a failed DB write cannot skip the backoff).
+    failed: Option<(u64, u64)>,
+    /// Consecutive retries of failed versions, and when the next is allowed.
     attempts: u32,
     next_retry: Option<Instant>,
+    /// Read tickets: a desired state read before the last sent one (older
+    /// ticket) that is not newer must never overwrite it.
+    tickets: u64,
+    last_sent: Option<(u64, (u64, u64))>,
 }
 
-/// An unacked snapshot older than this is assumed lost.
+/// An unacked snapshot older than this is treated as a failed apply.
 const PENDING_TIMEOUT: Duration = Duration::from_secs(120);
 /// Reconcile tick: self-heals missed notifies and transient DB errors.
 const RECONCILE_EVERY: Duration = Duration::from_secs(60);
@@ -94,19 +100,54 @@ fn retry_backoff(attempts: u32) -> Duration {
     Duration::from_secs((30u64 << attempts.min(5)).min(600))
 }
 
+fn covers(v: (u64, u64), of: (u64, u64)) -> bool {
+    v.0 >= of.0 && v.1 >= of.1
+}
+
 impl SyncState {
-    /// Should a snapshot for `desired` be sent now? `failed` is the node's
-    /// persisted failed versions. Marks it pending when returning true.
-    fn decide(&mut self, desired: (u64, u64), failed: Option<(u64, u64)>, now: Instant) -> bool {
-        if self.held == desired {
-            return false;
-        }
-        if let Some((v, at)) = self.pending {
-            if v == desired && now.duration_since(at) < PENDING_TIMEOUT {
+    /// Take a ticket BEFORE reading the desired state from the DB.
+    fn ticket(&mut self) -> u64 {
+        self.tickets += 1;
+        self.tickets
+    }
+
+    fn fail(&mut self, v: (u64, u64), now: Instant) {
+        self.failed = Some(v);
+        self.next_retry = Some(now + retry_backoff(self.attempts));
+    }
+
+    /// Should the snapshot for `desired` (read under `ticket`) be sent now?
+    /// `db_failed` is the node's persisted failed versions. Marks it pending
+    /// and sent when returning true.
+    fn decide(
+        &mut self,
+        ticket: u64,
+        desired: (u64, u64),
+        db_failed: Option<(u64, u64)>,
+        now: Instant,
+    ) -> bool {
+        if let Some((t, v)) = self.last_sent {
+            // An older read that isn't newer than what went out is stale:
+            // sending it would roll the agent back (access leak).
+            if ticket < t && !covers(desired, v) {
                 return false;
             }
         }
-        if failed == Some(desired) {
+        if let Some((v, at)) = self.pending {
+            if now.duration_since(at) < PENDING_TIMEOUT {
+                if v == desired {
+                    return false;
+                }
+            } else {
+                // Lost ack: treat as a failed apply (backoff, no storm).
+                self.pending = None;
+                self.fail(v, now);
+            }
+        }
+        if self.held == desired {
+            return false;
+        }
+        if self.failed == Some(desired) || db_failed == Some(desired) {
             // Already failed: only retry on backoff, until desired changes.
             match self.next_retry {
                 None => {
@@ -121,6 +162,7 @@ impl SyncState {
             }
         }
         self.pending = Some((desired, now));
+        self.last_sent = Some((ticket, desired));
         true
     }
 
@@ -129,13 +171,20 @@ impl SyncState {
     }
 
     fn on_ack(&mut self, ok: bool, versions: (u64, u64), now: Instant) {
-        self.pending = None;
+        // Only the ack for the in-flight snapshot ends it; an older ack
+        // must not let the newer one be resent.
+        if self.pending.is_some_and(|(v, _)| v == versions) {
+            self.pending = None;
+        }
         if ok {
             self.held = versions;
-            self.attempts = 0;
-            self.next_retry = None;
-        } else if self.next_retry.is_none() {
-            self.next_retry = Some(now + retry_backoff(self.attempts));
+            if self.failed.is_some_and(|f| covers(versions, f)) {
+                self.failed = None;
+                self.attempts = 0;
+                self.next_retry = None;
+            }
+        } else {
+            self.fail(versions, now);
         }
     }
 }
@@ -158,6 +207,9 @@ async fn session(
     state.agents().insert(node_id, (gen, online_session));
 
     let sync: SharedSync = Arc::default();
+    // Traffic is only accepted for assigned users; load them before the
+    // first report can arrive.
+    refresh_members(&state, node_id).await;
 
     // Push snapshots on panel-side changes, and reconcile periodically.
     let watcher_state = state.clone();
@@ -173,6 +225,7 @@ async fn session(
                 r = watch_rx.changed() => if r.is_err() { break },
                 _ = tick.tick() => {}
             }
+            refresh_members(&watcher_state, node_id).await;
             if let Err(e) = sync_if_stale(&watcher_state, node_id, &watcher_sync, &watcher_tx).await
             {
                 tracing::warn!(node = %node_id, error = %e, "config push failed");
@@ -190,6 +243,13 @@ async fn session(
                         .unwrap()
                         .on_hello((hello.config_version, hello.user_version));
                     mark_online(&state, node_id, online_session, &hello).await;
+                    // The agent only claims versions it applied cleanly.
+                    record_converged(
+                        state.pg(),
+                        node_id,
+                        (hello.config_version, hello.user_version),
+                    )
+                    .await;
                     if let Err(e) = sync_if_stale(&state, node_id, &sync, &tx).await {
                         tracing::warn!(node = %node_id, error = %e, "failed to send snapshot");
                     }
@@ -229,57 +289,69 @@ async fn session(
     state
         .agents()
         .remove_if(&node_id, |_, &(entry_gen, _)| entry_gen == gen);
-    let _ = sqlx::query(
-        "UPDATE nodes SET status = 'offline', last_seen_at = now() \
-         WHERE id = $1 AND online_session = $2",
-    )
-    .bind(node_id)
-    .bind(online_session)
-    .execute(state.pg())
-    .await;
+    // A snapshot still unacked when the stream dies counts as a failed
+    // apply, so a crash-looping agent gets backoff instead of resends.
+    let lost = sync.lock().unwrap().pending.map(|(v, _)| v);
+    if let Some(v) = lost {
+        record_failure(state.pg(), node_id, v, "no ack before the stream closed").await;
+    }
+    let _ = mark_offline(state.pg(), node_id, online_session).await;
     if let Err(e) = result {
         tracing::warn!(node = %node_id, error = %e, "agent stream error");
     }
     tracing::info!(node = %node_id, "agent disconnected");
 }
 
-/// A failed Ack records the error and the ATTEMPTED versions; an ok Ack
-/// clears them, but only if it covers the failed versions (a stale ok Ack
-/// for older versions must not launder a newer failure).
-async fn record_ack(state: &AppState, node_id: Uuid, ack: &crate::gen::Ack) {
-    let res = if ack.ok {
-        sqlx::query(
-            "UPDATE nodes SET last_error = NULL, last_error_at = NULL, \
-                 failed_config_version = NULL, failed_user_version = NULL \
-             WHERE id = $1 AND last_error IS NOT NULL \
-               AND $2 >= COALESCE(failed_config_version, 0) \
-               AND $3 >= COALESCE(failed_user_version, 0)",
-        )
-        .bind(node_id)
-        .bind(ack.config_version as i64)
-        .bind(ack.user_version as i64)
-        .execute(state.pg())
-        .await
-    } else {
-        tracing::warn!(node = %node_id, error = %ack.error, "agent failed to apply update");
-        let msg: String = if ack.error.is_empty() {
-            "agent reported failure without detail".into()
-        } else {
-            ack.error.chars().take(2000).collect()
-        };
-        sqlx::query(
-            "UPDATE nodes SET last_error = $2, last_error_at = now(), \
-                 failed_config_version = $3, failed_user_version = $4 WHERE id = $1",
-        )
-        .bind(node_id)
-        .bind(msg)
-        .bind(ack.config_version as i64)
-        .bind(ack.user_version as i64)
-        .execute(state.pg())
-        .await
-    };
+/// Clear the recorded failure if `versions` (now running on the agent, per
+/// an ok Ack or a Hello) cover the failed ones. A stale report for older
+/// versions must not launder a newer failure.
+async fn record_converged(pg: &sqlx::PgPool, node_id: Uuid, versions: (u64, u64)) {
+    let res = sqlx::query(
+        "UPDATE nodes SET last_error = NULL, last_error_at = NULL, \
+             failed_config_version = NULL, failed_user_version = NULL \
+         WHERE id = $1 AND last_error IS NOT NULL \
+           AND $2 >= COALESCE(failed_config_version, 0) \
+           AND $3 >= COALESCE(failed_user_version, 0)",
+    )
+    .bind(node_id)
+    .bind(versions.0 as i64)
+    .bind(versions.1 as i64)
+    .execute(pg)
+    .await;
     if let Err(e) = res {
-        tracing::warn!(node = %node_id, error = %e, "failed to record ack");
+        tracing::warn!(node = %node_id, error = %e, "failed to clear node error");
+    }
+}
+
+/// Persist a failed apply: the error and the ATTEMPTED versions.
+async fn record_failure(pg: &sqlx::PgPool, node_id: Uuid, versions: (u64, u64), error: &str) {
+    tracing::warn!(node = %node_id, error = %error, "agent failed to apply update");
+    let msg: String = if error.is_empty() {
+        "agent reported failure without detail".into()
+    } else {
+        error.chars().take(2000).collect()
+    };
+    let res = sqlx::query(
+        "UPDATE nodes SET last_error = $2, last_error_at = now(), \
+             failed_config_version = $3, failed_user_version = $4 WHERE id = $1",
+    )
+    .bind(node_id)
+    .bind(msg)
+    .bind(versions.0 as i64)
+    .bind(versions.1 as i64)
+    .execute(pg)
+    .await;
+    if let Err(e) = res {
+        tracing::warn!(node = %node_id, error = %e, "failed to record node error");
+    }
+}
+
+async fn record_ack(state: &AppState, node_id: Uuid, ack: &crate::gen::Ack) {
+    let v = (ack.config_version, ack.user_version);
+    if ack.ok {
+        record_converged(state.pg(), node_id, v).await;
+    } else {
+        record_failure(state.pg(), node_id, v, &ack.error).await;
     }
 }
 
@@ -290,16 +362,54 @@ async fn mark_online(
     hello: &crate::gen::Hello,
 ) {
     valkey_util::set_online(state, node_id).await;
-    let _ = sqlx::query(
-        "UPDATE nodes SET status = 'online', agent_version = $1, core_version = $2, online_session = $4 \
-         WHERE id = $3",
+    let info = hello.info.as_ref();
+    let _ = set_online_row(
+        state.pg(),
+        node_id,
+        online_session,
+        info.map(|i| i.agent_version.as_str()),
+        info.map(|i| i.core_version.as_str()),
     )
-    .bind(hello.info.as_ref().map(|i| i.agent_version.clone()))
-    .bind(hello.info.as_ref().map(|i| i.core_version.clone()))
+    .await;
+}
+
+async fn set_online_row(
+    pg: &sqlx::PgPool,
+    node_id: Uuid,
+    online_session: Uuid,
+    agent_version: Option<&str>,
+    core_version: Option<&str>,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE nodes SET status = 'online', agent_version = $1, core_version = $2, \
+         online_session = $4 WHERE id = $3",
+    )
+    .bind(agent_version)
+    .bind(core_version)
     .bind(node_id)
     .bind(online_session)
-    .execute(state.pg())
-    .await;
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// Only the session that last marked the node online may mark it offline.
+async fn mark_offline(pg: &sqlx::PgPool, node_id: Uuid, online_session: Uuid) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE nodes SET status = 'offline', last_seen_at = now() \
+         WHERE id = $1 AND online_session = $2",
+    )
+    .bind(node_id)
+    .bind(online_session)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+async fn refresh_members(state: &AppState, node_id: Uuid) {
+    if let Err(e) = crate::traffic::refresh_members(state.pg(), state.traffic(), node_id).await {
+        tracing::warn!(node = %node_id, error = %e, "failed to load node membership");
+    }
 }
 
 async fn store_heartbeat(state: &AppState, node_id: Uuid, hb: &Heartbeat) {
@@ -373,9 +483,9 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
         let rows = sqlx::query_as::<_, NodeUserRow>(sqlx::AssertSqlSafe(format!(
             "SELECT nu.user_id, nu.credentials \
              FROM node_users nu JOIN users u ON u.id = nu.user_id \
-             WHERE nu.node_id = $1 AND u.enabled = true AND NOT {} \
+             WHERE nu.node_id = $1 AND {} \
              ORDER BY nu.user_id",
-            crate::enforce::EXPIRED
+            crate::enforce::SERVED
         )))
         .bind(node_id)
         .fetch_all(pg)
@@ -423,6 +533,7 @@ async fn sync_if_stale(
     sync: &SharedSync,
     tx: &mpsc::Sender<Result<PanelDown, Status>>,
 ) -> anyhow::Result<()> {
+    let ticket = sync.lock().unwrap().ticket(); // BEFORE the read
     let Some(desired) = desired_state(state.pg(), node_id).await? else {
         return Ok(());
     };
@@ -431,7 +542,7 @@ async fn sync_if_stale(
     if !sync
         .lock()
         .unwrap()
-        .decide(want, desired.failed, Instant::now())
+        .decide(ticket, want, desired.failed, Instant::now())
     {
         return Ok(());
     }
@@ -488,24 +599,41 @@ mod tests {
     use super::*;
     use crate::testdb::TestDb;
 
+    /// decide() with a fresh ticket taken now (the common case).
+    fn d(s: &mut SyncState, want: (u64, u64), failed: Option<(u64, u64)>, now: Instant) -> bool {
+        let t = s.ticket();
+        s.decide(t, want, failed, now)
+    }
+
     #[test]
     fn sync_sends_once_until_acked() {
         let t0 = Instant::now();
         let mut s = SyncState::default();
         s.on_hello((1, 1));
-        assert!(!s.decide((1, 1), None, t0), "converged");
-        assert!(s.decide((2, 1), None, t0));
-        assert!(!s.decide((2, 1), None, t0), "pending: no resend storm");
+        assert!(!d(&mut s, (1, 1), None, t0), "converged");
+        assert!(d(&mut s, (2, 1), None, t0));
+        assert!(!d(&mut s, (2, 1), None, t0), "pending: no resend storm");
         assert!(
-            s.decide((2, 1), None, t0 + PENDING_TIMEOUT),
-            "lost ack times out"
-        );
-        assert!(
-            s.decide((3, 1), None, t0),
+            d(&mut s, (3, 1), None, t0),
             "new desired state goes out at once"
         );
         s.on_ack(true, (3, 1), t0);
-        assert!(!s.decide((3, 1), None, t0));
+        assert!(!d(&mut s, (3, 1), None, t0));
+    }
+
+    /// L3: a lost ack (pending timeout) is a failure -> backoff, not resend.
+    #[test]
+    fn pending_timeout_counts_as_failure() {
+        let t0 = Instant::now();
+        let mut s = SyncState::default();
+        s.on_hello((1, 1));
+        assert!(d(&mut s, (2, 1), None, t0));
+        let t1 = t0 + PENDING_TIMEOUT;
+        assert!(
+            !d(&mut s, (2, 1), None, t1),
+            "no immediate resend after a lost ack"
+        );
+        assert!(d(&mut s, (2, 1), None, t1 + retry_backoff(0)));
     }
 
     #[test]
@@ -513,24 +641,18 @@ mod tests {
         let t0 = Instant::now();
         let mut s = SyncState::default();
         s.on_hello((1, 1));
-        assert!(s.decide((2, 1), None, t0));
+        assert!(d(&mut s, (2, 1), None, t0));
         // Agent fails: keeps (1,1), Ack reports the attempted (2,1).
         s.on_ack(false, (2, 1), t0);
         s.on_hello((1, 1));
-        let failed = Some((2, 1));
-        assert!(!s.decide((2, 1), failed, t0), "no immediate retry");
-        assert!(!s.decide((2, 1), failed, t0 + Duration::from_secs(29)));
+        // L2: no DB record needed (db_failed = None) to honour the backoff.
+        assert!(!d(&mut s, (2, 1), None, t0), "no immediate retry");
+        assert!(!d(&mut s, (2, 1), None, t0 + Duration::from_secs(29)));
         let t1 = t0 + Duration::from_secs(30);
-        assert!(s.decide((2, 1), failed, t1), "retry after backoff");
+        assert!(d(&mut s, (2, 1), None, t1), "retry after backoff");
         s.on_ack(false, (2, 1), t1);
         assert!(
-            !s.decide((2, 1), failed, t1 + Duration::from_secs(59)),
-            "backoff grows"
-        );
-        assert!(s.decide((2, 1), failed, t1 + Duration::from_secs(60)));
-        s.on_ack(false, (2, 1), t1);
-        assert!(
-            s.decide((3, 1), failed, t1),
+            d(&mut s, (3, 1), None, t1),
             "a changed desired state is sent at once"
         );
         assert_eq!(
@@ -545,8 +667,68 @@ mod tests {
         let t0 = Instant::now();
         let mut s = SyncState::default();
         s.on_hello((1, 1));
-        assert!(!s.decide((2, 1), Some((2, 1)), t0));
-        assert!(s.decide((2, 1), Some((2, 1)), t0 + retry_backoff(0)));
+        assert!(!d(&mut s, (2, 1), Some((2, 1)), t0));
+        assert!(d(&mut s, (2, 1), Some((2, 1)), t0 + retry_backoff(0)));
+    }
+
+    /// Red team M1: the Hello path read v5 before a commit, the watcher
+    /// read v6 after it and sent first; the late v5 must not go out.
+    #[test]
+    fn stale_desired_after_newer_is_sent() {
+        let t0 = Instant::now();
+        let mut s = SyncState::default();
+        s.on_hello((4, 4));
+        let hello_ticket = s.ticket(); // Hello path reads (5,5) ...
+        let watch_ticket = s.ticket(); // ... watcher reads (6,6) later
+        assert!(s.decide(watch_ticket, (6, 6), None, t0));
+        assert!(
+            !s.decide(hello_ticket, (5, 5), None, t0),
+            "stale v5 after v6"
+        );
+        // An older ticket that nevertheless read newer data still counts.
+        let mut s = SyncState::default();
+        let t_old = s.ticket();
+        let t_new = s.ticket();
+        assert!(s.decide(t_new, (6, 6), None, t0));
+        assert!(s.decide(t_old, (7, 7), None, t0));
+    }
+
+    /// Red team L1: the ack of an older snapshot must not clear the pending
+    /// newer one (which would then be resent while in flight).
+    #[test]
+    fn older_ack_does_not_clear_newer_pending() {
+        let t0 = Instant::now();
+        let mut s = SyncState::default();
+        s.on_hello((4, 4));
+        assert!(d(&mut s, (5, 5), None, t0));
+        assert!(d(&mut s, (6, 6), None, t0));
+        s.on_ack(true, (5, 5), t0);
+        assert!(!d(&mut s, (6, 6), None, t0), "v6 resent while in flight");
+    }
+
+    /// S2-7: only the session that last marked the node online may mark
+    /// it offline — cleanup of an older session running last is a no-op.
+    #[tokio::test]
+    async fn online_session_ownership() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let n = db.node().await;
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let status = || async {
+            sqlx::query_scalar::<_, String>("SELECT status FROM nodes WHERE id = $1")
+                .bind(n)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap()
+        };
+        set_online_row(&db.pool, n, a, None, None).await.unwrap();
+        set_online_row(&db.pool, n, b, None, None).await.unwrap();
+        mark_offline(&db.pool, n, a).await.unwrap(); // old session ends late
+        assert_eq!(status().await, "online");
+        mark_offline(&db.pool, n, b).await.unwrap();
+        assert_eq!(status().await, "offline");
+        db.drop().await;
     }
 
     #[tokio::test]
@@ -577,7 +759,8 @@ mod tests {
         let d = desired_state(&db.pool, n).await.unwrap().unwrap();
         let mut got: Vec<String> = d.snapshot.users.iter().map(|u| u.user_id.clone()).collect();
         got.sort();
-        let mut want = vec![active.to_string(), admin_past.to_string()];
+        // Admins are not proxy users (R6 L6), expired/disabled users are out.
+        let mut want = vec![active.to_string()];
         want.sort();
         assert_eq!(got, want);
         assert_ne!(d.snapshot.inbounds_json, "[]");

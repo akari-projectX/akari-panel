@@ -866,13 +866,18 @@ async fn apply_assign(
     };
     // FOR SHARE conflicts with the user-row locks of update/delete_user, so
     // a concurrent user change is ordered strictly before or after us.
-    let user_exists: Option<i32> =
-        sqlx::query_scalar("SELECT 1 FROM users WHERE id = $1 FOR SHARE")
-            .bind(user_id)
-            .fetch_optional(&mut *conn)
-            .await?;
-    if user_exists.is_none() {
-        return Err(ApiError::not_found());
+    let role: Option<String> = sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR SHARE")
+        .bind(user_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+    match role.as_deref() {
+        None => return Err(ApiError::not_found()),
+        Some("user") => {}
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "admin accounts are not proxy users and cannot be assigned to nodes",
+            ))
+        }
     }
     match inbound_protocols(&inbounds).get(&req.inbound_tag) {
         None => {
@@ -1393,6 +1398,15 @@ mod tests {
         .await
         .unwrap();
         assert!(run(1).await.is_empty());
+        // ... and from the traffic-limit disable.
+        sqlx::query(
+            "UPDATE users SET traffic_limit_bytes = 1, traffic_used_bytes = 5 WHERE id = $1",
+        )
+        .bind(admin)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        assert!(run(0).await.is_empty());
         db.drop().await;
     }
 
@@ -1432,6 +1446,17 @@ mod tests {
         assert_eq!(
             err_status(assign(u, Uuid::new_v4(), "in-vless", "vless").await),
             StatusCode::NOT_FOUND
+        );
+        // Admin accounts are not proxy users (R6 L6).
+        let admin = db.user().await;
+        sqlx::query("UPDATE users SET role = 'admin' WHERE id = $1")
+            .bind(admin)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            err_status(assign(admin, n, "in-vless", "vless").await),
+            StatusCode::BAD_REQUEST
         );
 
         let upd_node = |req: UpdateNodeReq| {
