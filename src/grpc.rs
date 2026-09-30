@@ -104,28 +104,49 @@ pub fn user_set(ops: &[UserOp]) -> UserSet {
     set
 }
 
-/// agent.proto "State hash": lowercase hex SHA-256 over "akari-state-v1\n",
-/// u64be(config_version), then per (user_id, inbound_tag) in bytewise order
-/// the u32be-length-prefixed user_id, inbound_tag, protocol, account_json.
-/// BTreeMap<String, _> iterates in bytewise order, which is exactly that.
-pub fn state_hash(config_version: u64, set: &UserSet) -> String {
+/// What the agent must run: the inbounds JSON exactly as sent in the
+/// Snapshot and the user set.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct NodeState {
+    pub inbounds: String,
+    pub users: UserSet,
+}
+
+/// agent.proto "State hash" (v2): lowercase hex SHA-256 over
+/// "akari-state-v2\n", u64be(config_version), then per (user_id,
+/// inbound_tag) in bytewise order the u32be-length-prefixed user_id,
+/// inbound_tag, protocol, account_json, then u32be(32) ||
+/// SHA-256(inbounds_json). BTreeMap<String, _> iterates in bytewise order,
+/// which is exactly the required order.
+pub fn state_hash(config_version: u64, state: &NodeState) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    h.update(b"akari-state-v1\n");
+    h.update(b"akari-state-v2\n");
     h.update(config_version.to_be_bytes());
-    let mut field = |b: &str| {
+    let mut field = |b: &[u8]| {
         h.update((b.len() as u32).to_be_bytes());
-        h.update(b.as_bytes());
+        h.update(b);
     };
-    for (user, tags) in set {
+    for (user, tags) in &state.users {
         for (tag, (protocol, account)) in tags {
-            field(user);
-            field(tag);
-            field(protocol);
-            field(account);
+            field(user.as_bytes());
+            field(tag.as_bytes());
+            field(protocol.as_bytes());
+            field(account.as_bytes());
         }
     }
+    let inbounds = Sha256::digest(state.inbounds.as_bytes());
+    field(&inbounds);
     hex::encode(h.finalize())
+}
+
+/// Does going from `base` to `want` drop or change any live credential
+/// (a removal or rotation, as opposed to pure additions)?
+pub fn drops_credential(base: &UserSet, want: &UserSet) -> bool {
+    base.iter().any(|(user, tags)| {
+        tags.iter()
+            .any(|(tag, cred)| want.get(user).and_then(|w| w.get(tag)) != Some(cred))
+    })
 }
 
 /// UserDelta ops turning `base` into `want` (REPLACE semantics: a changed
@@ -174,7 +195,7 @@ enum Plan {
     /// Delta from `base` (a state the agent holds or is about to hold).
     Delta {
         base: (u64, u64),
-        base_set: Arc<UserSet>,
+        base_set: Arc<NodeState>,
     },
 }
 
@@ -231,10 +252,10 @@ struct SyncState {
     /// The user set the agent verifiably runs at `held` in THIS session
     /// (acked by us, or hash-verified from its Hello). Deltas are only
     /// computed from it (or from the in-flight state).
-    acked: Option<((u64, u64), Arc<UserSet>)>,
+    acked: Option<((u64, u64), Arc<NodeState>)>,
     /// Sets sent this session, by versions (bounded), to know what an ok
     /// Ack means.
-    sent: VecDeque<((u64, u64), Arc<UserSet>)>,
+    sent: VecDeque<((u64, u64), Arc<NodeState>)>,
     /// The agent's state hash disagrees with what it should run at its
     /// versions: repair with a Snapshot even though the versions match.
     diverged: bool,
@@ -243,6 +264,8 @@ struct SyncState {
     old_pushed: bool,
     /// Last time this session persisted `nodes.lease_expires_at`.
     lease_written: Option<Instant>,
+    /// agent.remove_mode = "rebuild": a removal/rotation is never a delta.
+    remove_rebuild: bool,
 }
 
 /// A failed apply as persisted on the node.
@@ -288,7 +311,7 @@ impl SyncState {
         self.next_retry = Some(now + retry_backoff(self.attempts));
     }
 
-    fn sent_set(&self, v: (u64, u64)) -> Option<Arc<UserSet>> {
+    fn sent_set(&self, v: (u64, u64)) -> Option<Arc<NodeState>> {
         self.sent
             .iter()
             .rev()
@@ -296,7 +319,7 @@ impl SyncState {
             .map(|(_, s)| s.clone())
     }
 
-    fn remember(&mut self, v: (u64, u64), set: Arc<UserSet>) {
+    fn remember(&mut self, v: (u64, u64), set: Arc<NodeState>) {
         self.sent.retain(|(sv, _)| *sv != v);
         self.sent.push_back((v, set));
         while self.sent.len() > SENT_MEMORY {
@@ -311,8 +334,9 @@ impl SyncState {
     fn delta_base(
         &self,
         desired: (u64, u64),
+        want: &NodeState,
         can_delta: bool,
-    ) -> Option<((u64, u64), Arc<UserSet>)> {
+    ) -> Option<((u64, u64), Arc<NodeState>)> {
         if !can_delta || self.diverged || self.failed == Some(desired) {
             return None;
         }
@@ -326,7 +350,10 @@ impl SyncState {
                 (*v, s.clone())
             }
         };
-        if bv.0 != desired.0 || bv == desired {
+        if bv.0 != desired.0 || bv == desired || bset.inbounds != want.inbounds {
+            return None;
+        }
+        if self.remove_rebuild && drops_credential(&bset.users, &want.users) {
             return None;
         }
         Some((bv, bset))
@@ -339,7 +366,7 @@ impl SyncState {
         &mut self,
         ticket: u64,
         desired: (u64, u64),
-        set: &Arc<UserSet>,
+        set: &Arc<NodeState>,
         can_delta: bool,
         db_failed: Option<DbFailure>,
         now: Instant,
@@ -414,7 +441,7 @@ impl SyncState {
         let plan = if old {
             self.old_pushed = true;
             Plan::Snapshot { empty: true }
-        } else if let Some((base, base_set)) = self.delta_base(desired, can_delta) {
+        } else if let Some((base, base_set)) = self.delta_base(desired, set, can_delta) {
             Plan::Delta { base, base_set }
         } else {
             Plan::Snapshot { empty: false }
@@ -549,6 +576,8 @@ async fn session(
     state.agents().insert(node_id, (gen, online_session));
 
     let sync: SharedSync = Arc::default();
+    sync.lock().unwrap().remove_rebuild =
+        state.cfg().agent.remove_mode == crate::config::RemoveMode::Rebuild;
     // Traffic is only accepted for assigned users; load them before the
     // first report can arrive.
     refresh_members(&state, node_id).await;
@@ -974,7 +1003,10 @@ async fn sync_if_stale(
     let now = Instant::now();
     let snap = desired.snapshot;
     let want = (snap.config_version, snap.user_version);
-    let set = Arc::new(user_set(&snap.users));
+    let set = Arc::new(NodeState {
+        inbounds: snap.inbounds_json.clone(),
+        users: user_set(&snap.users),
+    });
     let (plan, grant, write_lease) = {
         let mut st = sync.lock().unwrap();
         let grant = st.hello_seen && !st.too_old();
@@ -993,6 +1025,7 @@ async fn sync_if_stale(
         tx.send(Ok(PanelDown {
             msg: Some(DownMsg::Lease(LeaseGrant {
                 duration_seconds: secs,
+                remove_mode: state.cfg().agent.remove_mode.proto() as i32,
             })),
         }))
         .await?;
@@ -1032,7 +1065,7 @@ async fn sync_if_stale(
             DownMsg::Snapshot(snap)
         }
         Plan::Delta { base, base_set } => {
-            let ops = diff_user_sets(&base_set, &set);
+            let ops = diff_user_sets(&base_set.users, &set.users);
             tracing::info!(
                 node = %node_id,
                 base_config_version = base.0,
@@ -1090,8 +1123,8 @@ mod tests {
     use super::*;
     use crate::testdb::TestDb;
 
-    fn empty() -> Arc<UserSet> {
-        Arc::new(UserSet::new())
+    fn empty() -> Arc<NodeState> {
+        Arc::new(NodeState::default())
     }
 
     /// decide() with a fresh ticket taken now (the common case), no user
@@ -1286,8 +1319,11 @@ mod tests {
         }
     }
 
-    fn set_of(ops: &[UserOp]) -> Arc<UserSet> {
-        Arc::new(user_set(ops))
+    fn set_of(ops: &[UserOp]) -> Arc<NodeState> {
+        Arc::new(NodeState {
+            inbounds: "[]".into(),
+            users: user_set(ops),
+        })
     }
 
     /// A protocol-current Ack as the new agent sends it.
@@ -1327,6 +1363,7 @@ mod tests {
         struct Case {
             name: String,
             config_version: u64,
+            inbounds_json: String,
             users: Vec<U>,
             hash: String,
         }
@@ -1335,7 +1372,7 @@ mod tests {
             cases: Vec<Case>,
         }
         let f: F = serde_json::from_str(include_str!("../proto/state_hash_vectors.json")).unwrap();
-        assert!(f.cases.len() >= 5);
+        assert!(f.cases.len() >= 10);
         for c in f.cases {
             let ops: Vec<UserOp> = c
                 .users
@@ -1355,7 +1392,13 @@ mod tests {
                 })
                 .collect();
             assert_eq!(
-                state_hash(c.config_version, &user_set(&ops)),
+                state_hash(
+                    c.config_version,
+                    &NodeState {
+                        inbounds: c.inbounds_json,
+                        users: user_set(&ops)
+                    }
+                ),
                 c.hash,
                 "{}",
                 c.name
@@ -1397,7 +1440,7 @@ mod tests {
     }
 
     /// Convergence to (c,u) with set `set` acked by a v1 agent.
-    fn converge(s: &mut SyncState, v: (u64, u64), set: &Arc<UserSet>, t: Instant) {
+    fn converge(s: &mut SyncState, v: (u64, u64), set: &Arc<NodeState>, t: Instant) {
         let tk = s.ticket();
         assert!(matches!(
             s.decide(tk, v, set, true, None, t),
@@ -1416,7 +1459,11 @@ mod tests {
         let s1 = set_of(&[op("a", &[("t", "1")])]);
         let s2 = set_of(&[op("a", &[("t", "1")]), op("b", &[("t", "2")])]);
         let mut s = SyncState::default();
-        s.on_hello((0, 0), MIN_AGENT_PROTOCOL, &state_hash(0, &UserSet::new()));
+        s.on_hello(
+            (0, 0),
+            MIN_AGENT_PROTOCOL,
+            &state_hash(0, &NodeState::default()),
+        );
         converge(&mut s, (2, 5), &s1, t0);
 
         let tk = s.ticket();
@@ -1485,7 +1532,7 @@ mod tests {
         );
     }
 
-    fn d_set(s: &mut SyncState, v: (u64, u64), set: &Arc<UserSet>) -> Option<Plan> {
+    fn d_set(s: &mut SyncState, v: (u64, u64), set: &Arc<NodeState>) -> Option<Plan> {
         let tk = s.ticket();
         s.decide(tk, v, set, true, None, Instant::now())
     }
@@ -1648,13 +1695,56 @@ mod tests {
         let mut s = SyncState::default();
         s.on_hello((0, 0), MIN_AGENT_PROTOCOL, "");
         converge(&mut s, (2, 5), &s1, t0);
-        s.on_hello((0, 0), MIN_AGENT_PROTOCOL, &state_hash(0, &UserSet::new()));
+        s.on_hello(
+            (0, 0),
+            MIN_AGENT_PROTOCOL,
+            &state_hash(0, &NodeState::default()),
+        );
         let f = nack((2, 5), (2, 4));
         let tk = s.ticket();
         assert!(matches!(
             s.decide(tk, (2, 5), &s1, true, f, t0),
             Some(Plan::Snapshot { empty: false })
         ));
+    }
+
+    /// R10 fallback switch: in rebuild mode a removal or rotation is a
+    /// Snapshot, a pure addition still a delta; gate mode deltas both.
+    #[test]
+    fn remove_mode_gate_vs_rebuild() {
+        let t0 = Instant::now();
+        let s1 = set_of(&[op("a", &[("t", "1")]), op("b", &[("t", "2")])]);
+        let add = set_of(&[
+            op("a", &[("t", "1")]),
+            op("b", &[("t", "2")]),
+            op("c", &[("t", "3")]),
+        ]);
+        let remove = set_of(&[op("a", &[("t", "1")])]);
+        let rotate = set_of(&[op("a", &[("t", "1")]), op("b", &[("t", "9")])]);
+        assert!(!drops_credential(&s1.users, &add.users));
+        assert!(drops_credential(&s1.users, &remove.users));
+        assert!(drops_credential(&s1.users, &rotate.users));
+        for (rebuild, want, delta) in [
+            (false, &add, true),
+            (false, &remove, true),
+            (false, &rotate, true),
+            (true, &add, true),
+            (true, &remove, false),
+            (true, &rotate, false),
+        ] {
+            let mut s = SyncState {
+                remove_rebuild: rebuild,
+                ..Default::default()
+            };
+            s.on_hello((0, 0), MIN_AGENT_PROTOCOL, "");
+            converge(&mut s, (2, 5), &s1, t0);
+            let plan = d_set(&mut s, (2, 6), want);
+            assert_eq!(
+                matches!(plan, Some(Plan::Delta { .. })),
+                delta,
+                "rebuild={rebuild} plan={plan:?}"
+            );
+        }
     }
 
     #[test]
@@ -1703,7 +1793,11 @@ mod tests {
             set[&u.to_string()]["in-vless"],
             ("vless".to_string(), "{\"id\":\"x\"}".to_string())
         );
-        assert_eq!(state_hash(1, &set).len(), 64);
+        let st = NodeState {
+            inbounds: d.snapshot.inbounds_json.clone(),
+            users: set,
+        };
+        assert_eq!(state_hash(1, &st).len(), 64);
         db.drop().await;
     }
 

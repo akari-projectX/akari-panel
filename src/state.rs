@@ -40,6 +40,8 @@ impl AppState {
         let route_prefix = install.route_prefix.clone();
         let jwt_secret = install.jwt_secret.clone();
         let (changes, _) = watch::channel(0);
+        let traffic = TrafficBuffer::new();
+        traffic.set_departed_grace(cfg.traffic.departed_grace_secs);
         Self(Arc::new(Inner {
             cfg,
             route_prefix,
@@ -50,7 +52,7 @@ impl AppState {
             agents: DashMap::new(),
             gen: AtomicU64::new(1),
             changes,
-            traffic: TrafficBuffer::new(),
+            traffic,
         }))
     }
 

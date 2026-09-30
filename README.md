@@ -150,6 +150,15 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   hash of what the agent actually runs (see `proto/agent.proto`, shared test
   vectors in `proto/state_hash_vectors.json`); a mismatch is repaired with a
   snapshot.
+- **Unassigned users' last bytes**: unassigning a user (or pruning all of
+  its credentials via `PUT inbounds`) records `node_users_departed`; the
+  agent's final counters, which arrive after the removal, are still billed
+  for `traffic.departed_grace_secs` (default 15 min).
+- **Removal mode**: `agent.remove_mode = "gate"` (default) removes/rotates
+  users in place; `"rebuild"` sends every removal/rotation as a full
+  snapshot (fallback if the agent's gate is ever in doubt). User-less
+  inbounds (dokodemo/socks/http without clients) are neither gated nor
+  billed; `fakedns` in inbounds is rejected (400).
 - **Control protocol revisions**: agents send `Hello.protocol_version`
   (current: 1). Agents below the panel's `MIN_AGENT_PROTOCOL` (e.g. old
   agents that send 0) are still accepted but served the empty state (no
