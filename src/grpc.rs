@@ -110,7 +110,6 @@ async fn session(
     state.agents().insert(node_id, gen);
 
     let versions = Arc::new(AgentVersions::default());
-    let mut current_session = String::new();
 
     // Push snapshots whenever panel-side configuration changes.
     let watcher_state = state.clone();
@@ -132,7 +131,7 @@ async fn session(
             let msg = msg?;
             match msg.msg {
                 Some(UpMsg::Hello(hello)) => {
-                    current_session = hello.session_id.clone();
+                    tracing::info!(node = %node_id, session = %hello.session_id, "agent hello");
                     versions.set(hello.config_version, hello.user_version);
                     mark_online(&state, node_id, &hello).await;
                     if let Err(e) = sync_if_stale(&state, node_id, &versions, &tx).await {
@@ -143,13 +142,9 @@ async fn session(
                     store_heartbeat(&state, node_id, &hb).await;
                 }
                 Some(UpMsg::Traffic(report)) => {
-                    // Counters are billed per the session they belong to: the
-                    // agent tags each report atomically with it. Older agents
-                    // leave it empty; fall back to the stream's Hello session.
-                    let session = crate::traffic::report_session(&report, &current_session);
-                    if !session.is_empty() {
-                        state.traffic().update(node_id, session, &report);
-                    }
+                    // Billed per the session the report carries; the agent
+                    // reads it atomically with the counters (REVIEW P0 #2).
+                    state.traffic().update(node_id, &report.session_id, &report);
                 }
                 Some(UpMsg::Ack(ack)) => {
                     tracing::debug!(

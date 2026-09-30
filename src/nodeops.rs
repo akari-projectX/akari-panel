@@ -24,7 +24,7 @@ pub async fn admin_add(cfg: PanelConfig, login: String, role: String) -> Result<
         .max_connections(2)
         .connect(&cfg.database_url)
         .await?;
-    sqlx::migrate!("./migrations").run(&pg).await?;
+    crate::db::migrate(&pg).await?;
 
     let id = uuid::Uuid::new_v4();
     sqlx::query("INSERT INTO users (id, login, password_hash, role) VALUES ($1, $2, $3, $4)")
@@ -45,7 +45,7 @@ pub async fn node_add(cfg: PanelConfig, name: String, out: Option<PathBuf>) -> R
         .max_connections(2)
         .connect(&cfg.database_url)
         .await?;
-    sqlx::migrate!("./migrations").run(&pg).await?;
+    crate::db::migrate(&pg).await?;
 
     let id = uuid::Uuid::new_v4();
     let (cert_pem, key_pem, serial) =
