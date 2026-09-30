@@ -2063,7 +2063,7 @@ mod db_tests {
         seed(&db, n, u, "s1", 0, 86_000.0).await;
         write(&db, &[row(n, u, "s1", TB, 1.0)]).await; // tat NULL
         let billed = db.used(u).await;
-        assert!(billed <= RATE * 61 && billed >= RATE * 59, "{billed}");
+        assert!((RATE * 59..=RATE * 61).contains(&billed), "{billed}");
 
         let (n2, u2) = db.member().await;
         seed(&db, n2, u2, "s1", 0, 86_000.0).await;
