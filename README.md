@@ -156,6 +156,14 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   method, bad token, missing asset), gets the same empty 404 without the
   panel's security headers, byte-identical apart from `Date`.
 
+## Upgrading
+
+Upgrade **agents before the panel**. The panel drops traffic reports that
+lack `TrafficReport.session_id` and relies on agents never claiming a
+version they failed to apply; an old agent against a new panel is not
+billed and can look converged when it is not. Migrations run automatically
+on `akari serve` (PostgreSQL >= 18 is required and checked at startup).
+
 ## Roadmap
 
 The authoritative plan lives in `PLAN.md` (three-repo end state:

@@ -22,7 +22,7 @@ struct Inner {
     valkey: fred::clients::Pool,
     /// Connected node id -> connection generation, so a stale session's
     /// cleanup can never evict a newer connection's registration.
-    agents: DashMap<Uuid, u64>,
+    agents: DashMap<Uuid, (u64, Uuid)>,
     gen: AtomicU64,
     /// Bumped whenever node/user configuration changes; gRPC sessions watch
     /// it to push fresh snapshots to connected agents.
@@ -72,7 +72,8 @@ impl AppState {
     pub fn valkey(&self) -> &fred::clients::Pool {
         &self.0.valkey
     }
-    pub fn agents(&self) -> &DashMap<Uuid, u64> {
+    /// node -> (connection generation, online_session)
+    pub fn agents(&self) -> &DashMap<Uuid, (u64, Uuid)> {
         &self.0.agents
     }
     pub fn traffic(&self) -> &TrafficBuffer {
@@ -94,14 +95,22 @@ impl AppState {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
         loop {
             tick.tick().await;
-            let ids: Vec<Uuid> = self.agents().iter().map(|e| *e.key()).collect();
+            let (ids, sessions): (Vec<Uuid>, Vec<Uuid>) = self
+                .agents()
+                .iter()
+                .map(|e| (*e.key(), e.value().1))
+                .unzip();
             if ids.is_empty() {
                 continue;
             }
+            // Only refresh rows this instance's sessions still own.
             if let Err(e) = sqlx::query(
-                "UPDATE nodes SET status = 'online', last_seen_at = now() WHERE id = ANY($1)",
+                "UPDATE nodes n SET status = 'online', last_seen_at = now() \
+                 FROM unnest($1::uuid[], $2::uuid[]) AS s(id, sess) \
+                 WHERE n.id = s.id AND n.online_session = s.sess",
             )
             .bind(&ids)
+            .bind(&sessions)
             .execute(self.pg())
             .await
             {

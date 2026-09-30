@@ -415,47 +415,12 @@ async fn flush_once(state: &AppState) -> anyhow::Result<()> {
     )
     .await;
     state.traffic().prune(Instant::now());
-    let enforced = enforce_limits(state).await;
+    let enforced = crate::enforce::run_all(state).await;
     let n = flushed?;
     if n > 0 {
         tracing::debug!(rows = n, "traffic flushed");
     }
     enforced
-}
-
-async fn enforce_limits(state: &AppState) -> anyhow::Result<()> {
-    // Traffic-limit enforcement: disable users past their limit, bump the
-    // user_version on their nodes and wake connected agents so the removal
-    // propagates without waiting for a reconnect.
-    let disabled: Vec<Uuid> = sqlx::query_scalar(
-        r#"UPDATE users SET enabled = false
-           WHERE enabled = true AND traffic_limit_bytes IS NOT NULL
-             AND traffic_used_bytes > traffic_limit_bytes
-           RETURNING id"#,
-    )
-    .fetch_all(state.pg())
-    .await?;
-    if !disabled.is_empty() {
-        let node_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT DISTINCT node_id FROM node_users WHERE user_id = ANY($1)")
-                .bind(&disabled)
-                .fetch_all(state.pg())
-                .await?;
-        sqlx::query("UPDATE nodes SET user_version = user_version + 1 WHERE id = ANY($1)")
-            .bind(&node_ids)
-            .execute(state.pg())
-            .await?;
-        // One bump wakes every connected agent's session; each session
-        // re-reads its own node state and converges independently.
-        state.notify_change();
-        tracing::info!(
-            nodes = node_ids.len(),
-            users = disabled.len(),
-            "disabled users over traffic limit"
-        );
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

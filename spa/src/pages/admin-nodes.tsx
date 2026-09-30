@@ -68,6 +68,14 @@ export function AdminNodes() {
                     ) : (
                       <Badge variant="outline">{n.status}</Badge>
                     )}
+                    {n.last_error && (
+                      <span
+                        className="ml-2 text-xs font-medium text-destructive"
+                        title={n.last_error}
+                      >
+                        apply failed
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell className="text-muted-foreground">{n.agent_version ?? "—"}</TableCell>
                   <TableCell className="text-muted-foreground">{n.core_version ?? "—"}</TableCell>
@@ -179,6 +187,15 @@ function NodeEditor({ node }: { node: NodeView }) {
         <CardDescription>
           Inbounds are pushed to the agent as a full snapshot; users re-apply without restarts.
         </CardDescription>
+        {node.last_error && (
+          <p role="alert" className="mt-2 break-all text-sm text-destructive">
+            Last apply failed
+            {node.failed_config_version !== null &&
+              ` (cfg ${node.failed_config_version} · usr ${node.failed_user_version})`}
+            {node.last_error_at && ` at ${new Date(node.last_error_at).toLocaleString()}`}:{" "}
+            {node.last_error}
+          </p>
+        )}
       </CardHeader>
       <CardContent className="space-y-6">
         <form className="flex flex-wrap items-end gap-3" onSubmit={saveServerAddr}>

@@ -151,6 +151,78 @@ echo "== disable user: expect instant push =="
 sleep 3
 grep -q '"users":0' "$LOG/agent.log" || { echo "FAIL: agent did not converge to empty user set"; cat "$LOG/agent.log"; exit 1; }
 
+# --- Sprint 2: "disable means disabled" -----------------------------------
+# Last applied snapshot's user count must reach $1 within $2 seconds.
+wait_users() {
+  for _ in $(seq 1 "$2"); do
+    grep '"msg":"applying config snapshot"' "$LOG/agent.log" | tail -1 | grep -q "\"users\":$1[,}]" && return 0
+    sleep 1
+  done
+  echo "FAIL: agent did not converge to users=$1 ($3)"; grep 'applying config snapshot' "$LOG/agent.log" | tail -3; exit 1
+}
+port_open() { (exec 3<>/dev/tcp/127.0.0.1/11443) 2>/dev/null; }
+wait_port() { # open|closed timeout
+  for _ in $(seq 1 "$2"); do
+    if port_open; then [ "$1" = open ] && return 0; else [ "$1" = closed ] && return 0; fi
+    sleep 1
+  done
+  echo "FAIL: inbound port 11443 not $1"; exit 1
+}
+patch_code() { code -b "$JAR" -X PATCH "$1" -H 'Content-Type: application/json' -d "$2"; }
+
+echo "== re-enable user =="
+[ "$(patch_code "$BASE/api/v1/users/$USER_ID" '{"enabled": true}')" = "200" ] || { echo "FAIL: enable user"; exit 1; }
+wait_users 1 10 "re-enable"
+wait_port open 10
+
+echo "== PATCH semantics =="
+[ "$(patch_code "$BASE/api/v1/users/$USER_ID" '{}')" = "400" ] || { echo "FAIL: PATCH user {} not 400"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{}')" = "400" ] || { echo "FAIL: PATCH node {} not 400"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"enabled": null}')" = "400" ] || { echo "FAIL: enabled null not 400"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/users/$USER_ID" '{"expires_at": "2030-01-01"}')" = "400" ] || { echo "FAIL: date-only not 400"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"server_addr": null}')" = "200" ] || { echo "FAIL: clear server_addr not 200"; exit 1; }
+grep -q '"server_addr":null' /tmp/akari-smoke/last || { echo "FAIL: server_addr not cleared"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"server_addr": "node1.example.test"}')" = "200" ] || { echo "FAIL: restore server_addr"; exit 1; }
+echo "patch: ok"
+
+echo "== failed apply is recorded (last_error) and cleared =="
+GOOD_INB='{"inbounds":[{"tag":"in-vless","listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp"}}]}'
+BAD_INB='{"inbounds":[{"tag":"in-vless","listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp"}},{"tag":"in-bad","listen":"127.0.0.1","port":11444,"protocol":"no-such-protocol","settings":{}}]}'
+node_field() { # jq-less: print field $1 of node $NODE_ID
+  code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
+  python3 -c "import json,sys; print(json.dumps([n for n in json.load(open('/tmp/akari-smoke/last')) if n['id']=='$NODE_ID'][0]['$1']))"
+}
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' -d "$BAD_INB")" = "200" ] \
+  || { echo "FAIL: put bad inbounds"; exit 1; }
+for _ in $(seq 1 10); do [ "$(node_field last_error)" != "null" ] && break; sleep 1; done
+[ "$(node_field last_error)" != "null" ] || { echo "FAIL: last_error not recorded"; exit 1; }
+echo "last_error: $(node_field last_error | cut -c1-100)"
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' -d "$GOOD_INB")" = "200" ] \
+  || { echo "FAIL: restore inbounds"; exit 1; }
+for _ in $(seq 1 10); do [ "$(node_field last_error)" = "null" ] && break; sleep 1; done
+[ "$(node_field last_error)" = "null" ] || { echo "FAIL: last_error not cleared by a good apply"; exit 1; }
+wait_users 1 10 "after restoring inbounds"
+wait_port open 10
+echo "last_error: ok"
+
+echo "== disable node: no inbounds, no users; re-enable restores =="
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"enabled": false}')" = "200" ] || { echo "FAIL: disable node"; exit 1; }
+wait_users 0 10 "node disabled"
+wait_port closed 10
+grep -q "node disabled" "$LOG/agent.log" && { echo "FAIL: disabled node's stream was rejected"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"enabled": true}')" = "200" ] || { echo "FAIL: enable node"; exit 1; }
+wait_users 1 10 "node re-enabled"
+wait_port open 10
+echo "node disable/enable: ok"
+
+echo "== expiry removes the user from the node =="
+EXP=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(seconds=3)).isoformat())")
+[ "$(patch_code "$BASE/api/v1/users/$USER_ID" "{\"expires_at\": \"$EXP\"}")" = "200" ] || { echo "FAIL: set expiry"; cat /tmp/akari-smoke/last; exit 1; }
+wait_users 0 20 "expiry"
+[ "$(patch_code "$BASE/api/v1/users/$USER_ID" '{"expires_at": null}')" = "200" ] || { echo "FAIL: clear expiry"; exit 1; }
+wait_users 1 10 "expiry cleared"
+echo "expiry: ok"
+
 echo "== node online + heartbeat =="
 STATUS=$(docker compose exec -T postgres psql -U akari -d akari -tAc "SELECT status FROM nodes WHERE id='$NODE_ID'")
 [ "$STATUS" = "online" ] || { echo "FAIL: node status '$STATUS'"; exit 1; }
@@ -164,6 +236,11 @@ for i in $(seq 1 25); do
 done
 [ "$CODE" = "429" ] || { echo "FAIL: login rate limit never hit (last $CODE)"; exit 1; }
 echo "rate limit: ok"
+
+echo "== delete user: node converges to users=0 =="
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_ID")" = "204" ] || { echo "FAIL: delete user"; exit 1; }
+wait_users 0 10 "delete user"
+echo "delete user: ok"
 
 echo "== me + logout =="
 [ "$(code -b "$JAR" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: me failed"; exit 1; }
