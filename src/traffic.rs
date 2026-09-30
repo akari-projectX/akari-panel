@@ -23,7 +23,7 @@
 //! bug: it is logged and bills nothing. Reports without a session id
 //! (pre-2026-10 agents) are rejected; agent and panel ship together.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -54,10 +54,10 @@ const MAX_SESSION_LEN: usize = 128;
 /// can make the panel store and bill (REVIEW Phase C F1).
 const MAX_DIRTY_SESSIONS_PER_NODE: usize = 16;
 
-/// A report may carry at most this many rows beyond 4x the node's assigned
-/// users (slack for assignments the cache has not seen yet); larger reports
-/// are dropped whole.
-const REPORT_SLACK_ROWS: usize = 64;
+/// Absolute bound on rows per report (larger reports are dropped whole).
+/// Non-member rows inside an admissible report are dropped one by one, so a
+/// mass unassignment never loses the remaining users' final counters.
+const MAX_REPORT_ROWS: usize = 65_536;
 
 /// A key seen for the first time is assumed to have been counting for at
 /// least this long when applying the plausibility cap.
@@ -113,13 +113,27 @@ fn valid_session_id(s: &str) -> bool {
     !s.is_empty() && s.len() <= MAX_SESSION_LEN && !s.contains('\0')
 }
 
+#[derive(Default, Debug)]
+struct NodeIndex {
+    entries: usize,
+    sessions: HashMap<String, SessionIndex>,
+}
+
+#[derive(Default, Debug)]
+struct SessionIndex {
+    users: HashSet<Uuid>,
+    /// Entries of this session with unpersisted values.
+    dirty: usize,
+    touched: Option<Instant>,
+}
+
 #[derive(Default)]
 pub struct TrafficBuffer {
     entries: DashMap<Key, Entry>,
-    /// Entry counts per node and per (node, session), so admission checks
-    /// never scan `entries`.
-    node_entries: DashMap<Uuid, usize>,
-    session_entries: DashMap<(Uuid, String), usize>,
+    /// Per-node index of `entries` (counts, per-session users, dirtiness,
+    /// recency), so admission, the dirty-session cap and eviction never scan
+    /// `entries` (REVIEW Phase C N1).
+    index: DashMap<Uuid, NodeIndex>,
     /// node -> users assigned to it (node_users). Loaded when an agent
     /// session starts and refreshed on every notify/reconcile. Reports for
     /// nodes without a loaded set, and rows for users outside it, are
@@ -168,9 +182,8 @@ impl TrafficBuffer {
             tracing::warn!(node = %node_id, "traffic report before node membership was loaded; dropped");
             return;
         };
-        if report.users.len() > 4 * members.len() + REPORT_SLACK_ROWS {
-            tracing::warn!(node = %node_id, rows = report.users.len(), assigned = members.len(),
-                "oversized traffic report dropped");
+        if report.users.len() > MAX_REPORT_ROWS {
+            tracing::warn!(node = %node_id, rows = report.users.len(), "oversized traffic report dropped");
             return;
         }
         // Hard bound on memory per node: every assigned user in every
@@ -201,8 +214,8 @@ impl TrafficBuffer {
                         "too many unpersisted sessions on node; report for new session dropped");
                     return;
                 }
-                if self.node_entries.get(&node_id).map_or(0, |c| *c) >= max_entries
-                    && !self.evict_oldest_clean(node_id)
+                if self.node_entry_count(node_id) >= max_entries
+                    && !self.evict_oldest_clean_session(node_id, session_id)
                 {
                     tracing::warn!(node = %node_id, "traffic entry cap reached for node; row dropped");
                     continue;
@@ -213,18 +226,23 @@ impl TrafficBuffer {
                 inserted = true;
                 Entry::new(now)
             });
+            let was_dirty = !inserted && e.dirty();
             if e.observe(up, down, now) {
                 tracing::warn!(node = %node_id, user = %user_id, session = %session_id,
                     "traffic counters went backwards within a session; ignored");
             }
+            let dirty = e.dirty();
             drop(e);
+            let mut idx = self.index.entry(node_id).or_default();
             if inserted {
-                *self.node_entries.entry(node_id).or_insert(0) += 1;
-                *self
-                    .session_entries
-                    .entry((node_id, session.clone()))
-                    .or_insert(0) += 1;
+                idx.entries += 1;
             }
+            let sess = idx.sessions.entry(session.clone()).or_default();
+            if inserted {
+                sess.users.insert(user_id);
+            }
+            sess.dirty = (sess.dirty + usize::from(dirty)).saturating_sub(usize::from(was_dirty));
+            sess.touched = Some(now);
         }
     }
 
@@ -245,58 +263,79 @@ impl TrafficBuffer {
         self.members.insert(node_id, Arc::new(users));
     }
 
-    /// Bookkeeping for a removed entry.
-    fn forget(&self, key: &Key) {
-        if let Some(mut c) = self.node_entries.get_mut(&key.0) {
-            *c = c.saturating_sub(1);
-        }
-        self.node_entries.remove_if(&key.0, |_, c| *c == 0);
-        let sk = (key.0, key.2.clone());
-        if let Some(mut c) = self.session_entries.get_mut(&sk) {
-            *c = c.saturating_sub(1);
-        }
-        self.session_entries.remove_if(&sk, |_, c| *c == 0);
-    }
-
-    /// At the per-node cap: make room by dropping the node's least recently
-    /// touched fully-persisted entry (always safe: billing compares against
-    /// the DB row). Scans, but only runs at the cap.
-    fn evict_oldest_clean(&self, node_id: Uuid) -> bool {
-        let victim = self
-            .entries
-            .iter()
-            .filter(|e| e.key().0 == node_id && !e.value().dirty())
-            .min_by_key(|e| e.value().touched)
-            .map(|e| e.key().clone());
-        match victim {
-            Some(k) => {
-                self.remove(&k);
-                true
+    /// Index bookkeeping for a removed entry.
+    fn forget(&self, key: &Key, was_dirty: bool) {
+        let Some(mut idx) = self.index.get_mut(&key.0) else {
+            return;
+        };
+        idx.entries = idx.entries.saturating_sub(1);
+        if let Some(sess) = idx.sessions.get_mut(&key.2) {
+            sess.users.remove(&key.1);
+            if was_dirty {
+                sess.dirty = sess.dirty.saturating_sub(1);
             }
-            None => false,
+            if sess.users.is_empty() {
+                idx.sessions.remove(&key.2);
+            }
+        }
+        let empty = idx.entries == 0;
+        drop(idx);
+        if empty {
+            self.index.remove_if(&key.0, |_, i| i.entries == 0);
         }
     }
 
     fn remove(&self, key: &Key) {
-        if self.entries.remove(key).is_some() {
-            self.forget(key);
+        if let Some((_, e)) = self.entries.remove(key) {
+            self.forget(key, e.dirty());
         }
     }
 
+    fn node_entry_count(&self, node_id: Uuid) -> usize {
+        self.index.get(&node_id).map_or(0, |i| i.entries)
+    }
+
+    /// At the per-node cap: evict the node's least recently touched session
+    /// with no unpersisted values, whole (always safe: billing compares
+    /// against the DB row). Cost is proportional to the evicted session,
+    /// not to the buffer. Never evicts `keep` (the session being written).
+    fn evict_oldest_clean_session(&self, node_id: Uuid, keep: &str) -> bool {
+        let victim = {
+            let Some(idx) = self.index.get(&node_id) else {
+                return false;
+            };
+            idx.sessions
+                .iter()
+                .filter(|(s, i)| i.dirty == 0 && s.as_str() != keep)
+                .min_by_key(|(_, i)| i.touched)
+                .map(|(s, i)| (s.clone(), i.users.iter().copied().collect::<Vec<_>>()))
+        };
+        let Some((session, users)) = victim else {
+            return false;
+        };
+        let mut freed = false;
+        for u in users {
+            let key = (node_id, u, session.clone());
+            // Skip anything that became dirty meanwhile.
+            if self.entries.remove_if(&key, |_, e| !e.dirty()).is_some() {
+                self.forget(&key, false);
+                freed = true;
+            }
+        }
+        freed
+    }
+
     fn session_known(&self, node_id: Uuid, session_id: &str) -> bool {
-        self.session_entries
-            .contains_key(&(node_id, session_id.to_string()))
+        self.index
+            .get(&node_id)
+            .is_some_and(|i| i.sessions.contains_key(session_id))
     }
 
     /// Distinct sessions of `node_id` with at least one unpersisted value.
     fn dirty_sessions(&self, node_id: Uuid) -> usize {
-        let mut seen = HashSet::new();
-        for e in self.entries.iter() {
-            if e.key().0 == node_id && e.value().dirty() {
-                seen.insert(e.key().2.clone());
-            }
-        }
-        seen.len()
+        self.index
+            .get(&node_id)
+            .map_or(0, |i| i.sessions.values().filter(|s| s.dirty > 0).count())
     }
 
     /// Everything not yet durably persisted, in a stable (user, node,
@@ -331,9 +370,21 @@ impl TrafficBuffer {
     /// their entry dirty.
     fn mark_flushed(&self, rows: &[FlushRow]) {
         for r in rows {
-            if let Some(mut e) = self.entries.get_mut(&r.key()) {
-                e.flushed = Some((r.up, r.down));
-                e.failures = 0;
+            let cleaned = match self.entries.get_mut(&r.key()) {
+                Some(mut e) => {
+                    let before = e.dirty();
+                    e.flushed = Some((r.up, r.down));
+                    e.failures = 0;
+                    before && !e.dirty()
+                }
+                None => false,
+            };
+            if cleaned {
+                if let Some(mut idx) = self.index.get_mut(&r.node_id) {
+                    if let Some(sess) = idx.sessions.get_mut(&r.session_id) {
+                        sess.dirty = sess.dirty.saturating_sub(1);
+                    }
+                }
             }
         }
     }
@@ -367,7 +418,7 @@ impl TrafficBuffer {
             keep
         });
         for k in &gone {
-            self.forget(k);
+            self.forget(k, false);
         }
     }
 }
@@ -1186,7 +1237,7 @@ mod db_tests {
             };
             b.update(node, "one", &r);
         }
-        // Small fake reports (under the size cap) are filtered per row.
+        // Fake reports are filtered per row.
         for _ in 0..1000 {
             b.update(node, "one", &report(Uuid::new_v4(), 1, 1));
         }
@@ -1197,7 +1248,109 @@ mod db_tests {
             b.update(node, &format!("s{i}"), &report(real, 1, 1));
         }
         assert!(b.entries.len() <= MAX_DIRTY_SESSIONS_PER_NODE);
-        assert_eq!(*b.node_entries.get(&node).unwrap(), b.entries.len());
+        assert_eq!(b.node_entry_count(node), b.entries.len());
+    }
+
+    fn rep_users(users: &[Uuid], v: u64, session: &str) -> TrafficReport {
+        TrafficReport {
+            users: users
+                .iter()
+                .map(|u| UserTraffic {
+                    user_id: u.to_string(),
+                    up_bytes: v,
+                    down_bytes: v,
+                })
+                .collect(),
+            session_id: session.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Red team Phase C N1: at the per-node cap, eviction used to scan the
+    /// whole buffer per inserted row (1000-user report: 4.9 s on a tokio
+    /// worker). It now evicts the oldest clean session whole via the index.
+    #[test]
+    fn eviction_scan_cost_at_cap() {
+        let b = TrafficBuffer::new();
+        // Background: 100 other nodes x 2000 clean entries.
+        for _ in 0..100 {
+            let n = Uuid::new_v4();
+            let us: Vec<Uuid> = (0..2000).map(|_| Uuid::new_v4()).collect();
+            b.set_members(n, us.iter().copied().collect());
+            b.update(n, "s", &rep_users(&us, 1, "s"));
+        }
+        let n = Uuid::new_v4();
+        let us: Vec<Uuid> = (0..1000).map(|_| Uuid::new_v4()).collect();
+        b.set_members(n, us.iter().copied().collect());
+        for s in 0..MAX_DIRTY_SESSIONS_PER_NODE {
+            b.update(n, &format!("s{s}"), &rep_users(&us, 1, &format!("s{s}")));
+        }
+        b.mark_flushed(&b.snapshot());
+        assert_eq!(b.node_entry_count(n), 1000 * MAX_DIRTY_SESSIONS_PER_NODE);
+        let t = Instant::now();
+        b.update(n, "s16", &rep_users(&us, 1, "s16"));
+        let took = t.elapsed();
+        eprintln!("report at cap: {took:?}");
+        // Measured: ~4 ms debug, <1 ms release (the old scan: ~4.9 s).
+        assert!(
+            took < Duration::from_millis(250),
+            "report at cap took {took:?}"
+        );
+        assert_eq!(b.node_entry_count(n), 1000 * MAX_DIRTY_SESSIONS_PER_NODE);
+        assert!(
+            !b.session_known(n, "s0"),
+            "oldest clean session evicted whole"
+        );
+        assert!(b.entries.contains_key(&(n, us[999], "s16".into())));
+        assert_eq!(
+            b.node_entry_count(n),
+            b.entries.iter().filter(|e| e.key().0 == n).count()
+        );
+    }
+
+    /// Red team Phase C N2: a mass unassignment shrinks the cache before the
+    /// agent rebuilds; the old instance's final report still carries every
+    /// old user. The remaining users' rows must be kept.
+    #[test]
+    fn mass_unassign_drops_remaining_users_report() {
+        let (b, n) = (TrafficBuffer::new(), Uuid::new_v4());
+        let us: Vec<Uuid> = (0..1000).map(|_| Uuid::new_v4()).collect();
+        b.set_members(n, us.iter().copied().collect());
+        b.update(n, "s", &rep_users(&us, 100, "s"));
+        b.mark_flushed(&b.snapshot());
+        b.set_members(n, us[..10].iter().copied().collect());
+        b.update(n, "s", &rep_users(&us, 200, "s"));
+        let kept = b
+            .entries
+            .get(&(n, us[0], "s".into()))
+            .map(|e| e.up)
+            .unwrap();
+        assert_eq!(kept, 200);
+        assert_eq!(
+            b.snapshot().len(),
+            10,
+            "only the still-assigned users are dirty"
+        );
+    }
+
+    #[test]
+    fn index_counts_stay_consistent() {
+        let (b, n) = (TrafficBuffer::new(), Uuid::new_v4());
+        let us: Vec<Uuid> = (0..5).map(|_| Uuid::new_v4()).collect();
+        b.set_members(n, us.iter().copied().collect());
+        b.update(n, "a", &rep_users(&us, 1, "a"));
+        b.update(n, "b", &rep_users(&us[..2], 1, "b"));
+        assert_eq!(b.dirty_sessions(n), 2);
+        b.mark_flushed(&b.snapshot());
+        assert_eq!(b.dirty_sessions(n), 0);
+        b.update(n, "b", &rep_users(&us[..1], 2, "b"));
+        assert_eq!(b.dirty_sessions(n), 1);
+        b.remove(&(n, us[0], "b".into()));
+        assert_eq!(b.dirty_sessions(n), 0);
+        assert_eq!(b.node_entry_count(n), 6);
+        b.prune(Instant::now() + PRUNE_IDLE + Duration::from_secs(1));
+        assert_eq!(b.node_entry_count(n), 0);
+        assert!(b.index.is_empty());
     }
 
     /// No membership loaded for the node (session not started): nothing
@@ -1227,7 +1380,7 @@ mod db_tests {
         db.flush(&b).await;
         assert_eq!(db.used(u).await, 0);
         assert!(b.entries.is_empty());
-        assert!(b.node_entries.get(&n).is_none());
+        assert_eq!(b.node_entry_count(n), 0);
         assert!(!b.session_known(n, "s1"));
         db.drop().await;
     }

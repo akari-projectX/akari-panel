@@ -23,18 +23,6 @@ const OVER_LIMIT: &str = "(u.role = 'user' AND u.enabled AND u.traffic_limit_byt
 pub const SERVED: &str = "(u.role = 'user' AND u.enabled AND NOT \
      (u.expires_at IS NOT NULL AND u.expires_at <= now()))";
 
-async fn lock_nodes_of(conn: &mut PgConnection, user_pred: &str) -> sqlx::Result<()> {
-    sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT n.id FROM nodes n WHERE n.id IN ( \
-           SELECT nu.node_id FROM node_users nu JOIN users u ON u.id = nu.user_id \
-           WHERE {user_pred}) \
-         ORDER BY n.id FOR UPDATE"
-    )))
-    .execute(conn)
-    .await?;
-    Ok(())
-}
-
 async fn lock_nodes_of_ids(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::Result<()> {
     sqlx::query(
         "SELECT id FROM nodes WHERE id IN (SELECT node_id FROM node_users WHERE user_id = ANY($1)) \
@@ -56,44 +44,61 @@ async fn bump_nodes_of(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::Result<
     .await
 }
 
+/// One enforcement pass, in the global lock order (nodes before users):
+///   1. plain SELECT of candidate user ids (no locks),
+///   2. lock their nodes FOR UPDATE in id order,
+///   3. UPDATE the users, re-checking the predicate (RETURNING the ones
+///      actually changed),
+///   4. bump the nodes of those users.
+///
+/// A node assigned to a candidate between 1 and 4 is locked by the bump
+/// itself, out of order; a resulting deadlock aborts this tick's pass and
+/// is retried on the next one (the pass is idempotent). Candidates that
+/// appear after step 1 are handled next tick.
+async fn apply_pass(conn: &mut PgConnection, pred: &str, set: &str) -> sqlx::Result<Vec<Uuid>> {
+    let candidates: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT u.id FROM users u WHERE {pred} ORDER BY u.id"
+    )))
+    .fetch_all(&mut *conn)
+    .await?;
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    lock_nodes_of_ids(conn, &candidates).await?;
+    let users: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "UPDATE users u SET {set} WHERE {pred} AND u.id = ANY($1) RETURNING u.id"
+    )))
+    .bind(&candidates)
+    .fetch_all(&mut *conn)
+    .await?;
+    if users.is_empty() {
+        return Ok(Vec::new());
+    }
+    bump_nodes_of(conn, &users).await
+}
+
 /// Disable users past their traffic limit and bump their nodes. Raising a
 /// limit later does NOT re-enable them (an admin sets enabled=true).
 /// Returns the bumped nodes.
 pub async fn apply_traffic_limits(conn: &mut PgConnection) -> sqlx::Result<Vec<Uuid>> {
-    lock_nodes_of(conn, OVER_LIMIT).await?;
-    let users: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "UPDATE users u SET enabled = false WHERE {OVER_LIMIT} RETURNING u.id"
-    )))
-    .fetch_all(&mut *conn)
-    .await?;
-    if users.is_empty() {
-        return Ok(Vec::new());
+    let nodes = apply_pass(conn, OVER_LIMIT, "enabled = false").await?;
+    if !nodes.is_empty() {
+        tracing::info!(nodes = nodes.len(), "disabled users over traffic limit");
     }
-    tracing::info!(users = users.len(), "disabled users over traffic limit");
-    // Re-lock by the returned ids (nodes assigned between the pre-lock and
-    // the UPDATE), still in id order, before bumping.
-    lock_nodes_of_ids(conn, &users).await?;
-    bump_nodes_of(conn, &users).await
+    Ok(nodes)
 }
 
 /// Push the removal of users whose expiry has passed: mark them enforced
-/// and bump their nodes (snapshots already exclude them by EXPIRED; the
-/// bump makes connected agents actually converge). Idempotent via the
-/// marker, which PATCHing expires_at resets. Returns the bumped nodes.
+/// and bump their nodes (snapshots already exclude them; the bump makes
+/// connected agents actually converge). Idempotent via the marker, which
+/// PATCHing expires_at resets. Returns the bumped nodes.
 pub async fn apply_expiry(conn: &mut PgConnection) -> sqlx::Result<Vec<Uuid>> {
     let due = format!("({EXPIRED} AND NOT u.expiry_enforced)");
-    lock_nodes_of(conn, &due).await?;
-    let users: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "UPDATE users u SET expiry_enforced = true WHERE {due} RETURNING u.id"
-    )))
-    .fetch_all(&mut *conn)
-    .await?;
-    if users.is_empty() {
-        return Ok(Vec::new());
+    let nodes = apply_pass(conn, &due, "expiry_enforced = true").await?;
+    if !nodes.is_empty() {
+        tracing::info!(nodes = nodes.len(), "expired users removed from nodes");
     }
-    tracing::info!(users = users.len(), "expired users removed from nodes");
-    lock_nodes_of_ids(conn, &users).await?;
-    bump_nodes_of(conn, &users).await
+    Ok(nodes)
 }
 
 pub async fn run_all(state: &crate::state::AppState) -> anyhow::Result<()> {

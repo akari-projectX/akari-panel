@@ -89,6 +89,21 @@ struct SyncState {
     /// ticket) that is not newer must never overwrite it.
     tickets: u64,
     last_sent: Option<(u64, (u64, u64))>,
+    /// A new session may send once immediately for a persisted no-ack
+    /// failure (the previous stream may just have flapped).
+    no_ack_grace_used: bool,
+}
+
+/// A failed apply as persisted on the node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DbFailure {
+    /// The attempted versions.
+    versions: (u64, u64),
+    /// What the agent held when the failure was recorded.
+    held: (u64, u64),
+    /// The agent never answered (stream closed / ack timeout), as opposed
+    /// to an explicit Ack ok=false.
+    no_ack: bool,
 }
 
 /// An unacked snapshot older than this is treated as a failed apply.
@@ -117,13 +132,13 @@ impl SyncState {
     }
 
     /// Should the snapshot for `desired` (read under `ticket`) be sent now?
-    /// `db_failed` is the node's persisted failed versions. Marks it pending
+    /// `db_failed` is the node's persisted failure, if any. Marks it pending
     /// and sent when returning true.
     fn decide(
         &mut self,
         ticket: u64,
         desired: (u64, u64),
-        db_failed: Option<(u64, u64)>,
+        db_failed: Option<DbFailure>,
         now: Instant,
     ) -> bool {
         if let Some((t, v)) = self.last_sent {
@@ -147,7 +162,21 @@ impl SyncState {
         if self.held == desired {
             return false;
         }
-        if self.failed == Some(desired) || db_failed == Some(desired) {
+        // A failure persisted by an earlier session only backs this one off
+        // if nothing has changed since: same agent state, and the agent
+        // actually answered (a no-ack failure gets one immediate retry per
+        // session; an agent restart reports held (0,0)).
+        let db_repeat = db_failed.is_some_and(|f| {
+            if f.versions != desired || self.held == (0, 0) || self.held != f.held {
+                return false;
+            }
+            if f.no_ack && !self.no_ack_grace_used {
+                self.no_ack_grace_used = true;
+                return false;
+            }
+            true
+        });
+        if self.failed == Some(desired) || db_repeat {
             // Already failed: only retry on backoff, until desired changes.
             match self.next_retry {
                 None => {
@@ -271,12 +300,17 @@ async fn session(
                         user_version = ack.user_version,
                         "agent ack"
                     );
-                    sync.lock().unwrap().on_ack(
-                        ack.ok,
-                        (ack.config_version, ack.user_version),
-                        Instant::now(),
-                    );
-                    record_ack(&state, node_id, &ack).await;
+                    let held = {
+                        let mut st = sync.lock().unwrap();
+                        let held = st.held;
+                        st.on_ack(
+                            ack.ok,
+                            (ack.config_version, ack.user_version),
+                            Instant::now(),
+                        );
+                        held
+                    };
+                    record_ack(&state, node_id, &ack, held).await;
                 }
                 None => {}
             }
@@ -291,9 +325,16 @@ async fn session(
         .remove_if(&node_id, |_, &(entry_gen, _)| entry_gen == gen);
     // A snapshot still unacked when the stream dies counts as a failed
     // apply, so a crash-looping agent gets backoff instead of resends.
-    let lost = sync.lock().unwrap().pending.map(|(v, _)| v);
-    if let Some(v) = lost {
-        record_failure(state.pg(), node_id, v, "no ack before the stream closed").await;
+    let lost = {
+        let st = sync.lock().unwrap();
+        st.pending.map(|(v, _)| DbFailure {
+            versions: v,
+            held: st.held,
+            no_ack: true,
+        })
+    };
+    if let Some(f) = lost {
+        record_failure(state.pg(), node_id, f, "no ack before the stream closed").await;
     }
     let _ = mark_offline(state.pg(), node_id, online_session).await;
     if let Err(e) = result {
@@ -308,7 +349,9 @@ async fn session(
 async fn record_converged(pg: &sqlx::PgPool, node_id: Uuid, versions: (u64, u64)) {
     let res = sqlx::query(
         "UPDATE nodes SET last_error = NULL, last_error_at = NULL, \
-             failed_config_version = NULL, failed_user_version = NULL \
+             failed_config_version = NULL, failed_user_version = NULL, \
+             failed_held_config_version = NULL, failed_held_user_version = NULL, \
+             failed_reason = NULL \
          WHERE id = $1 AND last_error IS NOT NULL \
            AND $2 >= COALESCE(failed_config_version, 0) \
            AND $3 >= COALESCE(failed_user_version, 0)",
@@ -323,9 +366,10 @@ async fn record_converged(pg: &sqlx::PgPool, node_id: Uuid, versions: (u64, u64)
     }
 }
 
-/// Persist a failed apply: the error and the ATTEMPTED versions.
-async fn record_failure(pg: &sqlx::PgPool, node_id: Uuid, versions: (u64, u64), error: &str) {
-    tracing::warn!(node = %node_id, error = %error, "agent failed to apply update");
+/// Persist a failed apply: the error, the ATTEMPTED versions, what the agent
+/// held at the time and whether it answered at all.
+async fn record_failure(pg: &sqlx::PgPool, node_id: Uuid, failure: DbFailure, error: &str) {
+    tracing::warn!(node = %node_id, error = %error, no_ack = failure.no_ack, "agent failed to apply update");
     let msg: String = if error.is_empty() {
         "agent reported failure without detail".into()
     } else {
@@ -333,12 +377,17 @@ async fn record_failure(pg: &sqlx::PgPool, node_id: Uuid, versions: (u64, u64), 
     };
     let res = sqlx::query(
         "UPDATE nodes SET last_error = $2, last_error_at = now(), \
-             failed_config_version = $3, failed_user_version = $4 WHERE id = $1",
+             failed_config_version = $3, failed_user_version = $4, \
+             failed_held_config_version = $5, failed_held_user_version = $6, \
+             failed_reason = $7 WHERE id = $1",
     )
     .bind(node_id)
     .bind(msg)
-    .bind(versions.0 as i64)
-    .bind(versions.1 as i64)
+    .bind(failure.versions.0 as i64)
+    .bind(failure.versions.1 as i64)
+    .bind(failure.held.0 as i64)
+    .bind(failure.held.1 as i64)
+    .bind(if failure.no_ack { "no_ack" } else { "nack" })
     .execute(pg)
     .await;
     if let Err(e) = res {
@@ -346,12 +395,17 @@ async fn record_failure(pg: &sqlx::PgPool, node_id: Uuid, versions: (u64, u64), 
     }
 }
 
-async fn record_ack(state: &AppState, node_id: Uuid, ack: &crate::gen::Ack) {
+async fn record_ack(state: &AppState, node_id: Uuid, ack: &crate::gen::Ack, held: (u64, u64)) {
     let v = (ack.config_version, ack.user_version);
     if ack.ok {
         record_converged(state.pg(), node_id, v).await;
     } else {
-        record_failure(state.pg(), node_id, v, &ack.error).await;
+        let f = DbFailure {
+            versions: v,
+            held,
+            no_ack: false,
+        };
+        record_failure(state.pg(), node_id, f, &ack.error).await;
     }
 }
 
@@ -439,6 +493,9 @@ struct NodeRow {
     user_version: i64,
     failed_config_version: Option<i64>,
     failed_user_version: Option<i64>,
+    failed_held_config_version: Option<i64>,
+    failed_held_user_version: Option<i64>,
+    failed_reason: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -457,8 +514,8 @@ struct Credential {
 /// What the node must run right now, plus its recorded apply error.
 struct Desired {
     snapshot: ConfigSnapshot,
-    /// Versions whose apply failed (persisted), if any.
-    failed: Option<(u64, u64)>,
+    /// The persisted failed apply, if any.
+    failed: Option<DbFailure>,
 }
 
 /// The desired state of a node. A disabled node runs nothing (no inbounds,
@@ -469,7 +526,8 @@ struct Desired {
 async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Option<Desired>> {
     let node = sqlx::query_as::<_, NodeRow>(
         "SELECT enabled, xray_inbounds, config_version, user_version, \
-         failed_config_version, failed_user_version FROM nodes WHERE id = $1",
+         failed_config_version, failed_user_version, failed_held_config_version, \
+         failed_held_user_version, failed_reason FROM nodes WHERE id = $1",
     )
     .bind(node_id)
     .fetch_optional(pg)
@@ -520,7 +578,14 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
         failed: node
             .failed_config_version
             .zip(node.failed_user_version)
-            .map(|(c, u)| (c as u64, u as u64)),
+            .map(|(c, u)| DbFailure {
+                versions: (c as u64, u as u64),
+                held: (
+                    node.failed_held_config_version.unwrap_or(0) as u64,
+                    node.failed_held_user_version.unwrap_or(0) as u64,
+                ),
+                no_ack: node.failed_reason.as_deref() == Some("no_ack"),
+            }),
     }))
 }
 
@@ -600,7 +665,7 @@ mod tests {
     use crate::testdb::TestDb;
 
     /// decide() with a fresh ticket taken now (the common case).
-    fn d(s: &mut SyncState, want: (u64, u64), failed: Option<(u64, u64)>, now: Instant) -> bool {
+    fn d(s: &mut SyncState, want: (u64, u64), failed: Option<DbFailure>, now: Instant) -> bool {
         let t = s.ticket();
         s.decide(t, want, failed, now)
     }
@@ -662,13 +727,60 @@ mod tests {
         );
     }
 
+    fn nack(v: (u64, u64), held: (u64, u64)) -> Option<DbFailure> {
+        Some(DbFailure {
+            versions: v,
+            held,
+            no_ack: false,
+        })
+    }
+
     #[test]
     fn new_session_waits_for_backoff_on_known_failure() {
         let t0 = Instant::now();
         let mut s = SyncState::default();
         s.on_hello((1, 1));
-        assert!(!d(&mut s, (2, 1), Some((2, 1)), t0));
-        assert!(d(&mut s, (2, 1), Some((2, 1)), t0 + retry_backoff(0)));
+        let f = nack((2, 1), (1, 1));
+        assert!(!d(&mut s, (2, 1), f, t0));
+        assert!(d(&mut s, (2, 1), f, t0 + retry_backoff(0)));
+    }
+
+    /// N3: the stream flapped while the disable snapshot was in flight
+    /// (no-ack failure). The next session sends it immediately once —
+    /// no >= 30 s access leak — then backs off if it fails again.
+    #[test]
+    fn no_ack_failure_gets_one_immediate_send_per_session() {
+        let t0 = Instant::now();
+        let f = Some(DbFailure {
+            versions: (2, 1),
+            held: (1, 1),
+            no_ack: true,
+        });
+        let mut s = SyncState::default();
+        s.on_hello((1, 1));
+        assert!(d(&mut s, (2, 1), f, t0), "immediate send after a flap");
+        s.on_ack(false, (2, 1), t0);
+        assert!(!d(&mut s, (2, 1), f, t0), "a real failure then backs off");
+        // Lost again (still no ack): the next session gets its one try too.
+        let mut s2 = SyncState::default();
+        s2.on_hello((1, 1));
+        assert!(d(&mut s2, (2, 1), f, t0));
+        s2.pending = None;
+        assert!(!d(&mut s2, (2, 1), f, t0), "only once per session");
+    }
+
+    /// N3: the agent restarted mid-apply (Hello (0,0)) or otherwise holds
+    /// different versions than when it failed: no backoff.
+    #[test]
+    fn changed_agent_state_skips_backoff() {
+        let t0 = Instant::now();
+        let f = nack((2, 1), (1, 1));
+        let mut s = SyncState::default();
+        s.on_hello((0, 0));
+        assert!(d(&mut s, (2, 1), f, t0), "restarted agent");
+        let mut s = SyncState::default();
+        s.on_hello((1, 0));
+        assert!(d(&mut s, (2, 1), f, t0), "held differs from failure time");
     }
 
     /// Red team M1: the Hello path read v5 before a commit, the watcher
