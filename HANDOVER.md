@@ -35,13 +35,13 @@
 
 ## 3. 已完成工作明细
 
-### akari-panel（panel/src/）
+### akari-panel（src/）
 | 文件 | 职责 | 接手要点 |
 |---|---|---|
 | `main.rs` | CLI（serve/info/admin add/node）+ 启动装配；最先安装 rustls ring provider | 改依赖前先看 §8 |
 | `config.rs` | panel.toml + 环境变量覆盖；gRPC advertise 必须显式 IP | — |
-| `install.rs` | 安装态：随机前缀(24hex)、内部 CA、agent 证书、JWT 密钥(0600) | 证书 SAN 来自 web.advertised_names |
-| `state.rs` | AppState：pg/valkey/agents(gen 注册表)/watch 变更通道/流量缓冲 | `notify_change()` 是推送入口 |
+| `install.rs` | 安装态：随机前缀(24hex)、内部 CA、agent 证书、JWT 密钥与 state.json（0600） | 证书 SAN 来自 web.advertised_names |
+| `state.rs` | AppState：pg/valkey/agents(gen 注册表)/流量缓冲 | 变更推送：`nodes` 触发器 `pg_notify` → `notify.rs` LISTEN，无进程内通知路径 |
 | `grpc.rs` | AgentChannel gRPC：证书序列号→节点身份；版本比对→全量快照；Hello/心跳/流量/Ack 处理；代数防重连竞态 | 契约改了先改 proto/agent.proto |
 | `traffic.rs` | 累计值差值记账；session_id 变化重置基线；5s 批量落库；超限禁用→bump 版本→notify | 计费粒度 5s |
 | `auth.rs` | argon2id + 等时烧录；JWT(HS256,12h,HttpOnly,SameSite=Strict)；AuthUser 提取器每请求回查 DB | cookie 名 `sid`；Secure 回环自动关 |
@@ -52,7 +52,7 @@
 | `reject.rs` | 统一拒绝：404、空 body、不带安全头（伪装站已于 2026-10 删除，SEC-1） | 所有"拒绝"必须落在这里 |
 | `nodeops.rs` | node add/list、admin add CLI | bootstrap 文件**含 agent 私钥**（v1，Phase 4 改 CSR） |
 
-### akari-agent（agent/）
+### akari-agent（仓库根，包 main；详见 akari-agent/CLAUDE.md）
 | 文件 | 职责 |
 |---|---|
 | `agent.go` | 会话生命周期、指数退避重连（>1min 重置）、Hello/Ack |
@@ -61,7 +61,7 @@
 | `config.go` | bootstrap.toml 解析（panel_addr/server_name/身份三件套 PEM） |
 | `pb/` | buf 生成（`make proto`） |
 
-### 前端（panel/spa/）
+### 前端（spa/）
 - 技术栈：React 19.3 / Vite 8.3(Rolldown) / Tailwind 4.3 / shadcn 风格手拷组件（button/input/card/table/badge/label）/ TanStack Query 5 / 手写 history 路由（`lib/router.ts`，零路由依赖）
 - 页面：`login`、`admin-users`（建户+sub token 展示/重发+启停删除）、`admin-nodes`（状态/版本表、server_addr、inbounds JSON 编辑推送、账号签发）、`portal`（用量进度）
 - API 前缀自位置推导（`lib/api.ts` 的 appBase/apiBase），**不内嵌任何前缀知识**
@@ -92,10 +92,10 @@ GET  /app, /assets/*, /healthz           SPA / 静态资源 / 存活
 ## 6. 构建与运行
 
 ```bash
-make dev-up spa panel agent     # 全量构建
+make dev-up spa panel agent-build  # 全量构建
 make smoke                      # 验收（TRUNCATE PG + flushall Valkey，仅限开发）
-make proto                      # 改 proto 后生成 Go 绑定
-make check                      # clippy -D warnings + tsc + go vet/gofmt
+make check                      # fmt + clippy -D warnings + tsc（快速门）；CI 另跑 make lint test deny
+# agent 侧：make -C ../akari-agent vet fmt-check test build；改 proto 后 make sync-proto
 ```
 运行顺序：`akari serve` → `AKARI_ADMIN_PASSWORD=… akari admin add root` → `akari node add test-node` → agent `-config bootstrap` → 浏览器 `/{prefix}/app`。默认 `127.0.0.1:8080`(web) / `:8443`(gRPC)。
 
@@ -129,7 +129,7 @@ make check                      # clippy -D warnings + tsc + go vet/gofmt
 
 ## 8. 设计决策（为什么）
 
-- 全量快照而非增量：面板唯一事实源+单调版本号，任意状态（含面板回滚）可收敛，无 diff 协议边角态
+- 快照为收敛兜底，用户集变化走 UserDelta：面板唯一事实源+单调版本号+state hash，任意状态（含面板回滚）可收敛；delta 带 base/target，不匹配即 BASE_MISMATCH→快照。注意 Snapshot 会重建 xray、断开节点上全部连接，delta 不会
 - xray `email` 字段 = 面板用户 UUID：统计键即身份，零映射
 - agent 只出不进：节点零管理端口
 - token/证书序列号只存哈希或单向引用：拖库≠失守
