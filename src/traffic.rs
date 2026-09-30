@@ -1,21 +1,25 @@
 //! Traffic accounting: agents report cumulative per-user counters; the panel
 //! turns them into usage.
 //!
-//! Model (REVIEW P0 #2 / P1 #10): memory holds only the latest cumulative
-//! value per (node, user, session) — no pending deltas. The delta is computed
-//! by PostgreSQL at flush time against the persisted `traffic_counters` row,
-//! in a single statement:
+//! Model (REVIEW P0 #2 / P1 #10): memory holds only the highest cumulative
+//! value seen per (node, user, session) — no pending deltas. The delta is
+//! computed by PostgreSQL at flush time against the persisted
+//! `traffic_counters` row, in a single statement:
 //!
 //! ```text
 //! upsert counters := GREATEST(stored, reported) ... RETURNING old, new
-//! users.traffic_used_bytes += Σ max(new - coalesce(old, baseline), 0)
+//! users.traffic_used_bytes += Σ max(new - coalesce(old, 0), 0)
 //! ```
 //!
 //! Replaying a value (panel restart, flush retry, ambiguous commit, duplicate
-//! stream) therefore never bills twice, and a failed flush loses nothing: the
-//! next write of the same or a later cumulative value recovers the delta.
-//! A counter regression inside one session starts a new "epoch" key whose
-//! first value is a baseline (billed 0); see [`Epoch`].
+//! or reordered reports) therefore never bills twice, and a failed flush
+//! loses nothing: the next write of the same or a later cumulative value
+//! recovers the delta.
+//!
+//! The session comes from `TrafficReport.session_id`, which the agent reads
+//! atomically with the counters of the xray instance it names, so counters
+//! within one session are monotonic. A lower value is therefore stale or a
+//! bug: it is logged and bills nothing.
 
 use std::time::{Duration, Instant};
 
@@ -34,40 +38,43 @@ const PRUNE_IDLE: Duration = Duration::from_secs(600);
 /// flushes in a row is dropped so it cannot block the rest forever.
 const MAX_ROW_FAILURES: u32 = 12;
 
+/// Session ids are agent-chosen UUIDs. Bound them so a buggy agent cannot
+/// inflate memory or feed PostgreSQL an invalid TEXT value (NUL).
 const MAX_SESSION_LEN: usize = 128;
 
 /// (node, user, agent session id)
 type Key = (Uuid, Uuid, String);
 
-/// One monotonic run of counters. Epoch 0 is the session itself; a counter
-/// regression within a session (agent rebuilt xray without announcing a new
-/// session) starts epoch n+1, persisted under `"{session}#{n}"`, whose
-/// baseline is the first post-regression value (billed 0).
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Epoch {
-    n: u32,
-    /// Values at epoch start; only used if the DB has no row yet.
-    base_up: i64,
-    base_down: i64,
-    /// Highest cumulative counters seen in this epoch.
+struct Entry {
+    /// Highest cumulative counters seen in this session.
     up: i64,
     down: i64,
     /// What was last durably written to `traffic_counters` (None = never).
     flushed: Option<(i64, i64)>,
+    touched: Instant,
     failures: u32,
 }
 
-impl Epoch {
-    fn new(n: u32, base_up: i64, base_down: i64) -> Self {
+impl Entry {
+    fn new(now: Instant) -> Self {
         Self {
-            n,
-            base_up,
-            base_down,
-            up: base_up,
-            down: base_down,
+            up: 0,
+            down: 0,
             flushed: None,
+            touched: now,
             failures: 0,
         }
+    }
+
+    /// Record a cumulative report, keeping the per-column high-water mark
+    /// (what the database does too). Returns true if the report was lower.
+    fn observe(&mut self, up: i64, down: i64, now: Instant) -> bool {
+        let regressed = up < self.up || down < self.down;
+        self.up = self.up.max(up);
+        self.down = self.down.max(down);
+        self.touched = now;
+        regressed
     }
 
     fn dirty(&self) -> bool {
@@ -75,66 +82,18 @@ impl Epoch {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Entry {
-    current: Epoch,
-    /// Superseded epochs whose final values are not persisted yet.
-    retired: Vec<Epoch>,
-    touched: Instant,
-}
-
-impl Entry {
-    fn new(now: Instant) -> Self {
-        Self {
-            current: Epoch::new(0, 0, 0),
-            retired: Vec::new(),
-            touched: now,
-        }
-    }
-
-    /// Record a cumulative report. Returns true if it regressed, in which
-    /// case the report becomes a new baseline and bills nothing.
-    fn observe(&mut self, up: i64, down: i64, now: Instant) -> bool {
-        self.touched = now;
-        let c = &mut self.current;
-        if up < c.up || down < c.down {
-            let next = Epoch::new(c.n.saturating_add(1), up, down);
-            let old = std::mem::replace(c, next);
-            if old.dirty() {
-                self.retired.push(old);
-            }
-            return true;
-        }
-        c.up = up;
-        c.down = down;
-        false
-    }
-
-    fn dirty(&self) -> bool {
-        self.current.dirty() || !self.retired.is_empty()
-    }
-
-    fn epoch_mut(&mut self, n: u32) -> Option<&mut Epoch> {
-        if self.current.n == n {
-            Some(&mut self.current)
-        } else {
-            self.retired.iter_mut().find(|e| e.n == n)
-        }
-    }
-}
-
-/// Session ids are agent-chosen UUIDs. Bound them so a buggy agent cannot
-/// inflate memory, collide with epoch keys (`#`) or feed PostgreSQL an
-/// invalid TEXT value (NUL).
 fn valid_session_id(s: &str) -> bool {
-    !s.is_empty() && s.len() <= MAX_SESSION_LEN && !s.contains(['\0', '#'])
+    !s.is_empty() && s.len() <= MAX_SESSION_LEN && !s.contains('\0')
 }
 
-fn db_session_key(session: &str, epoch: u32) -> String {
-    if epoch == 0 {
-        session.to_string()
+/// The session a report's counters belong to: the report's own (current
+/// agents), else the stream's Hello session (agents predating
+/// `TrafficReport.session_id`, which may be stale after a rebuild).
+pub fn report_session<'a>(report: &'a TrafficReport, hello_session: &'a str) -> &'a str {
+    if report.session_id.is_empty() {
+        hello_session
     } else {
-        format!("{session}#{epoch}")
+        &report.session_id
     }
 }
 
@@ -148,27 +107,11 @@ struct FlushRow {
     node_id: Uuid,
     user_id: Uuid,
     session_id: String,
-    epoch: u32,
     up: i64,
     down: i64,
-    base_up: i64,
-    base_down: i64,
 }
 
 impl FlushRow {
-    fn new(key: &Key, e: &Epoch) -> Self {
-        Self {
-            node_id: key.0,
-            user_id: key.1,
-            session_id: key.2.clone(),
-            epoch: e.n,
-            up: e.up,
-            down: e.down,
-            base_up: e.base_up,
-            base_down: e.base_down,
-        }
-    }
-
     fn key(&self) -> Key {
         (self.node_id, self.user_id, self.session_id.clone())
     }
@@ -205,63 +148,60 @@ impl TrafficBuffer {
                 .entry((node_id, user_id, session_id.to_string()))
                 .or_insert_with(|| Entry::new(now));
             if e.observe(up, down, now) {
-                tracing::warn!(node = %node_id, user = %user_id, session = %session_id, epoch = e.current.n,
-                    "traffic counters went backwards within a session; new baseline, not billed");
+                tracing::warn!(node = %node_id, user = %user_id, session = %session_id,
+                    "traffic counters went backwards within a session; ignored");
             }
         }
     }
 
     /// Everything not yet durably persisted. Nothing is cleared here.
     fn snapshot(&self) -> Vec<FlushRow> {
-        let mut out = Vec::new();
-        for e in self.entries.iter() {
-            let v = e.value();
-            out.extend(v.retired.iter().map(|r| FlushRow::new(e.key(), r)));
-            if v.current.dirty() {
-                out.push(FlushRow::new(e.key(), &v.current));
-            }
-        }
-        out
+        self.entries
+            .iter()
+            .filter(|e| e.value().dirty())
+            .map(|e| {
+                let (node_id, user_id, session_id) = e.key().clone();
+                FlushRow {
+                    node_id,
+                    user_id,
+                    session_id,
+                    up: e.value().up,
+                    down: e.value().down,
+                }
+            })
+            .collect()
     }
 
     /// `rows` are durably written. Newer values that arrived meanwhile keep
-    /// their epoch dirty; persisted retired epochs are forgotten.
+    /// their entry dirty.
     fn mark_flushed(&self, rows: &[FlushRow]) {
         for r in rows {
-            let Some(mut e) = self.entries.get_mut(&r.key()) else {
-                continue;
-            };
-            if let Some(ep) = e.epoch_mut(r.epoch) {
-                ep.flushed = Some((r.up, r.down));
-                ep.failures = 0;
+            if let Some(mut e) = self.entries.get_mut(&r.key()) {
+                e.flushed = Some((r.up, r.down));
+                e.failures = 0;
             }
-            e.retired.retain(|x| x.dirty());
         }
     }
 
     /// The database rejected this row on its own (not a connectivity
-    /// error). After MAX_ROW_FAILURES consecutive rejections the row is
-    /// given up on so it cannot block the rest forever.
+    /// error). After MAX_ROW_FAILURES consecutive rejections the entry is
+    /// dropped so it cannot block the rest forever.
     fn mark_failed(&self, r: &FlushRow) {
-        let Some(mut e) = self.entries.get_mut(&r.key()) else {
-            return;
+        let give_up = match self.entries.get_mut(&r.key()) {
+            Some(mut e) => {
+                e.failures += 1;
+                e.failures >= MAX_ROW_FAILURES
+            }
+            None => false,
         };
-        let Some(ep) = e.epoch_mut(r.epoch) else {
-            return;
-        };
-        ep.failures += 1;
-        if ep.failures < MAX_ROW_FAILURES {
-            return;
+        if give_up {
+            self.entries.remove(&r.key());
+            tracing::error!(node = %r.node_id, user = %r.user_id, session = %r.session_id,
+                up = r.up, down = r.down, "traffic row repeatedly rejected by database; dropped");
         }
-        ep.flushed = Some((r.up, r.down));
-        ep.failures = 0;
-        e.retired.retain(|x| x.dirty());
-        tracing::error!(node = %r.node_id, user = %r.user_id, session = %r.session_id,
-            up = r.up, down = r.down, "traffic row repeatedly rejected by database; dropped");
     }
 
-    /// Evict fully persisted, idle entries. Always safe for billing: the
-    /// delta is computed against `traffic_counters`, not against memory.
+    /// Evict fully persisted, idle entries.
     fn prune(&self, now: Instant) {
         self.entries
             .retain(|_, e| e.dirty() || now.duration_since(e.touched) < PRUNE_IDLE);
@@ -269,13 +209,11 @@ impl TrafficBuffer {
 }
 
 /// One statement = one transaction: upsert the high-water marks and bill
-/// exactly the increase over what was stored before (or over the epoch
-/// baseline for a key seen for the first time).
+/// exactly the increase over what was stored before.
 const FLUSH_SQL: &str = r#"
 WITH input AS (
-    SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::text[], $4::bigint[], $5::bigint[],
-                         $6::bigint[], $7::bigint[])
-        AS t(node_id, user_id, session_id, up, down, base_up, base_down)
+    SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::text[], $4::bigint[], $5::bigint[])
+        AS t(node_id, user_id, session_id, up, down)
 ), upsert AS (
     INSERT INTO traffic_counters AS c (node_id, user_id, session_id, up_bytes, down_bytes, updated_at)
     SELECT node_id, user_id, session_id, up, down, now() FROM input
@@ -283,15 +221,11 @@ WITH input AS (
     SET up_bytes   = GREATEST(c.up_bytes, EXCLUDED.up_bytes),
         down_bytes = GREATEST(c.down_bytes, EXCLUDED.down_bytes),
         updated_at = EXCLUDED.updated_at
-    RETURNING new.node_id, new.user_id, new.session_id,
-              old.up_bytes AS old_up, old.down_bytes AS old_down,
-              new.up_bytes AS new_up, new.down_bytes AS new_down
+    RETURNING new.user_id,
+              GREATEST(new.up_bytes - COALESCE(old.up_bytes, 0), 0)::numeric
+            + GREATEST(new.down_bytes - COALESCE(old.down_bytes, 0), 0)::numeric AS delta
 ), per_user AS (
-    SELECT u.user_id,
-           sum(GREATEST(u.new_up - COALESCE(u.old_up, i.base_up), 0)::numeric
-             + GREATEST(u.new_down - COALESCE(u.old_down, i.base_down), 0)::numeric) AS delta
-    FROM upsert u JOIN input i USING (node_id, user_id, session_id)
-    GROUP BY u.user_id
+    SELECT user_id, sum(delta) AS delta FROM upsert GROUP BY user_id
 )
 UPDATE users u
 SET traffic_used_bytes = LEAST(u.traffic_used_bytes::numeric + p.delta, 9223372036854775807)::bigint
@@ -302,22 +236,15 @@ WHERE u.id = p.user_id AND p.delta > 0
 async fn write_rows(pg: &sqlx::PgPool, rows: &[FlushRow]) -> Result<(), sqlx::Error> {
     let nodes: Vec<Uuid> = rows.iter().map(|r| r.node_id).collect();
     let users: Vec<Uuid> = rows.iter().map(|r| r.user_id).collect();
-    let sessions: Vec<String> = rows
-        .iter()
-        .map(|r| db_session_key(&r.session_id, r.epoch))
-        .collect();
+    let sessions: Vec<&str> = rows.iter().map(|r| r.session_id.as_str()).collect();
     let ups: Vec<i64> = rows.iter().map(|r| r.up).collect();
     let downs: Vec<i64> = rows.iter().map(|r| r.down).collect();
-    let base_ups: Vec<i64> = rows.iter().map(|r| r.base_up).collect();
-    let base_downs: Vec<i64> = rows.iter().map(|r| r.base_down).collect();
     sqlx::query(FLUSH_SQL)
         .bind(&nodes)
         .bind(&users)
         .bind(&sessions)
         .bind(&ups)
         .bind(&downs)
-        .bind(&base_ups)
-        .bind(&base_downs)
         .execute(pg)
         .await?;
     Ok(())
@@ -440,14 +367,22 @@ mod tests {
         (TrafficBuffer::new(), Uuid::new_v4(), Uuid::new_v4())
     }
 
-    fn rows(b: &TrafficBuffer) -> Vec<(String, u32, i64, i64, i64, i64)> {
+    fn rows(b: &TrafficBuffer) -> Vec<(String, i64, i64)> {
         let mut v: Vec<_> = b
             .snapshot()
             .into_iter()
-            .map(|r| (r.session_id, r.epoch, r.up, r.down, r.base_up, r.base_down))
+            .map(|r| (r.session_id, r.up, r.down))
             .collect();
         v.sort();
         v
+    }
+
+    #[test]
+    fn report_session_prefers_report_then_hello() {
+        let mut r = report(&[]);
+        assert_eq!(report_session(&r, "hello"), "hello");
+        r.session_id = "from-report".into();
+        assert_eq!(report_session(&r, "hello"), "from-report");
     }
 
     #[test]
@@ -455,7 +390,7 @@ mod tests {
         let (b, n, u) = ids();
         b.update(n, "s1", &report(&[(u, 100, 1000)]));
         b.update(n, "s1", &report(&[(u, 150, 1600)]));
-        assert_eq!(rows(&b), vec![("s1".into(), 0, 150, 1600, 0, 0)]);
+        assert_eq!(rows(&b), vec![("s1".into(), 150, 1600)]);
     }
 
     #[test]
@@ -466,49 +401,16 @@ mod tests {
         b.update(n, "sa", &report(&[(u, 600, 600)]));
         assert_eq!(
             rows(&b),
-            vec![
-                ("sa".into(), 0, 600, 600, 0, 0),
-                ("sb".into(), 0, 10, 20, 0, 0)
-            ]
+            vec![("sa".into(), 600, 600), ("sb".into(), 10, 20)]
         );
     }
 
     #[test]
-    fn regression_starts_new_epoch_with_zero_billed_baseline() {
-        let (b, n, u) = ids();
-        b.update(n, "s1", &report(&[(u, 1000, 1000)]));
-        b.update(n, "s1", &report(&[(u, 50, 60)]));
-        // Old epoch's final value still pending; new epoch's base == value.
-        assert_eq!(
-            rows(&b),
-            vec![
-                ("s1".into(), 0, 1000, 1000, 0, 0),
-                ("s1".into(), 1, 50, 60, 50, 60)
-            ]
-        );
-        b.update(n, "s1", &report(&[(u, 80, 60)]));
-        assert_eq!(rows(&b)[1], ("s1".into(), 1, 80, 60, 50, 60));
-    }
-
-    #[test]
-    fn regression_of_a_single_column_also_rebaselines() {
+    fn regression_is_ignored_per_column() {
         let (b, n, u) = ids();
         b.update(n, "s1", &report(&[(u, 1000, 10)]));
-        b.update(n, "s1", &report(&[(u, 2000, 5)]));
-        assert_eq!(rows(&b)[1], ("s1".into(), 1, 2000, 5, 2000, 5));
-    }
-
-    #[test]
-    fn flushed_retired_epoch_is_forgotten_current_stays_until_clean() {
-        let (b, n, u) = ids();
-        b.update(n, "s1", &report(&[(u, 1000, 1000)]));
         b.update(n, "s1", &report(&[(u, 50, 60)]));
-        let snap = b.snapshot();
-        b.mark_flushed(&snap);
-        assert!(b.snapshot().is_empty());
-        let e = b.entries.get(&(n, u, "s1".into())).unwrap();
-        assert!(e.retired.is_empty());
-        assert_eq!(e.current.n, 1);
+        assert_eq!(rows(&b), vec![("s1".into(), 1000, 60)]);
     }
 
     #[test]
@@ -518,7 +420,7 @@ mod tests {
         let failed = b.snapshot(); // write fails: no mark_flushed
         b.update(n, "s1", &report(&[(u, 150, 260)]));
         assert_eq!(failed.len(), 1);
-        assert_eq!(rows(&b), vec![("s1".into(), 0, 150, 260, 0, 0)]);
+        assert_eq!(rows(&b), vec![("s1".into(), 150, 260)]);
     }
 
     #[test]
@@ -528,7 +430,7 @@ mod tests {
         let snap = b.snapshot();
         b.update(n, "s1", &report(&[(u, 130, 190)]));
         b.mark_flushed(&snap);
-        assert_eq!(rows(&b), vec![("s1".into(), 0, 130, 190, 0, 0)]);
+        assert_eq!(rows(&b), vec![("s1".into(), 130, 190)]);
         b.mark_flushed(&b.snapshot());
         assert!(b.snapshot().is_empty());
     }
@@ -568,7 +470,6 @@ mod tests {
         let (b, n, u) = ids();
         b.update(n, "", &report(&[(u, 1, 1)]));
         b.update(n, "a\0b", &report(&[(u, 1, 1)]));
-        b.update(n, "s#1", &report(&[(u, 1, 1)]));
         b.update(n, &"x".repeat(MAX_SESSION_LEN + 1), &report(&[(u, 1, 1)]));
         assert!(b.entries.is_empty());
         let mut r = report(&[(u, u64::MAX, 7), (Uuid::new_v4(), 3, 4)]);
@@ -583,13 +484,6 @@ mod tests {
         let max = i64::MAX as u64;
         b.update(n, "s1", &report(&[(u, max, max)]));
         assert!(b.entries.contains_key(&(n, u, "s1".into())));
-    }
-
-    #[test]
-    fn epoch_keys_never_collide_with_real_sessions() {
-        assert_eq!(db_session_key("s", 0), "s");
-        assert_eq!(db_session_key("s", 2), "s#2");
-        assert!(!valid_session_id("s#2"));
     }
 }
 
@@ -768,13 +662,8 @@ mod db_tests {
         db.drop().await;
     }
 
-    /// Documents the price of the "regression = new baseline" rule: a stale
-    /// (older, lower) value arriving AFTER a newer one is indistinguishable
-    /// from a counter reset, so the next real value over-bills by
-    /// (newest - stale). Within one gRPC stream order is preserved, so this
-    /// needs two concurrent streams of one agent interleaving by >= 10 s.
     #[tokio::test]
-    async fn known_limitation_out_of_order_stale_value_overbills() {
+    async fn stale_or_regressed_values_bill_nothing() {
         let Some(db) = TestDb::new().await else {
             return;
         };
@@ -784,25 +673,46 @@ mod db_tests {
         b.update(n, "s1", &report(u, 150, 0)); // stale, out of order
         b.update(n, "s1", &report(u, 300, 0));
         db.flush(&b).await;
-        assert_eq!(db.used(u).await, 200 + (300 - 150)); // truth: 300
+        assert_eq!(db.used(u).await, 300);
+        // A second panel instance (fresh memory) replaying the stale value.
+        let other = TrafficBuffer::new();
+        other.update(n, "s1", &report(u, 150, 0));
+        db.flush(&other).await;
+        assert_eq!(db.used(u).await, 300);
         db.drop().await;
     }
 
+    /// The agent-fixed main path (REVIEW P0 #2 / red team): the first
+    /// Snapshot rebuilds xray under a new session S1 that the stream's Hello
+    /// (S0) does not name; reports carry S1. Then the stream reconnects
+    /// (Hello S1), the panel restarts, and another rebuild starts S2. Only
+    /// increases are ever billed.
     #[tokio::test]
-    async fn regression_rebaselines_then_bills_growth() {
+    async fn rebuild_then_reconnect_then_restart_bills_only_increase() {
         let Some(db) = TestDb::new().await else {
             return;
         };
         let (n, u) = (Uuid::new_v4(), db.user().await);
-        let b = TrafficBuffer::new();
-        b.update(n, "s1", &report(u, 1000, 0));
-        db.flush(&b).await;
-        b.update(n, "s1", &report(u, 40, 0)); // baseline, billed 0
-        db.flush(&b).await;
-        assert_eq!(db.used(u).await, 1000);
-        b.update(n, "s1", &report(u, 100, 0));
-        db.flush(&b).await;
-        assert_eq!(db.used(u).await, 1060);
+        let rep = |s: &str, up| {
+            let mut r = report(u, up, 0);
+            r.session_id = s.into();
+            r
+        };
+        let feed = |b: &TrafficBuffer, hello: &str, r: TrafficReport| {
+            b.update(n, report_session(&r, hello), &r);
+        };
+        let panel = TrafficBuffer::new();
+        feed(&panel, "s0", rep("s1", 1000));
+        db.flush(&panel).await;
+        feed(&panel, "s1", rep("s1", 1500)); // reconnected
+        db.flush(&panel).await;
+        let panel = TrafficBuffer::new(); // panel restart
+        feed(&panel, "s1", rep("s1", 1600));
+        db.flush(&panel).await;
+        feed(&panel, "s1", rep("s1", 1700)); // final report before rebuild
+        feed(&panel, "s1", rep("s2", 40)); // new instance, Hello not yet seen
+        db.flush(&panel).await;
+        assert_eq!(db.used(u).await, 1700 + 40);
         db.drop().await;
     }
 

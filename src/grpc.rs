@@ -143,13 +143,12 @@ async fn session(
                     store_heartbeat(&state, node_id, &hb).await;
                 }
                 Some(UpMsg::Traffic(report)) => {
-                    // Accounting is keyed by the session the counters belong
-                    // to. Current agents only announce it in Hello and do not
-                    // re-send Hello after a Snapshot rebuild, so this can be
-                    // stale (REVIEW P0 #2 residual; fix needs agent + proto:
-                    // TrafficReport.session_id, preferred here when non-empty).
-                    if !current_session.is_empty() {
-                        state.traffic().update(node_id, &current_session, &report);
+                    // Counters are billed per the session they belong to: the
+                    // agent tags each report atomically with it. Older agents
+                    // leave it empty; fall back to the stream's Hello session.
+                    let session = crate::traffic::report_session(&report, &current_session);
+                    if !session.is_empty() {
+                        state.traffic().update(node_id, session, &report);
                     }
                 }
                 Some(UpMsg::Ack(ack)) => {
