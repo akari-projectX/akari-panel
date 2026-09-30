@@ -107,7 +107,7 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
         .acquire_timeout(std::time::Duration::from_secs(10))
         .connect(&cfg.database_url)
         .await?;
-    sqlx::migrate!("./migrations").run(&pg).await?;
+    crate::db::migrate(&pg).await?;
 
     let valkey = state::connect_valkey(&cfg).await?;
     let state = state::AppState::new(cfg.clone(), install, pg, valkey);
@@ -151,6 +151,7 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
 mod api;
 mod auth;
 mod config;
+mod db;
 mod decoy;
 mod gen;
 mod grpc;

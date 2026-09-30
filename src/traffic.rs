@@ -18,8 +18,10 @@
 //!
 //! The session comes from `TrafficReport.session_id`, which the agent reads
 //! atomically with the counters of the xray instance it names, so counters
-//! within one session are monotonic. A lower value is therefore stale or a
-//! bug: it is logged and bills nothing.
+//! within one session are monotonic. A lower value is therefore stale (e.g.
+//! a report buffered in an old stream, processed after a newer one) or a
+//! bug: it is logged and bills nothing. Reports without a session id
+//! (pre-2026-10 agents) are rejected; agent and panel ship together.
 
 use std::time::{Duration, Instant};
 
@@ -86,17 +88,6 @@ fn valid_session_id(s: &str) -> bool {
     !s.is_empty() && s.len() <= MAX_SESSION_LEN && !s.contains('\0')
 }
 
-/// The session a report's counters belong to: the report's own (current
-/// agents), else the stream's Hello session (agents predating
-/// `TrafficReport.session_id`, which may be stale after a rebuild).
-pub fn report_session<'a>(report: &'a TrafficReport, hello_session: &'a str) -> &'a str {
-    if report.session_id.is_empty() {
-        hello_session
-    } else {
-        &report.session_id
-    }
-}
-
 #[derive(Default)]
 pub struct TrafficBuffer {
     entries: DashMap<Key, Entry>,
@@ -128,6 +119,10 @@ impl TrafficBuffer {
     }
 
     fn update_at(&self, node_id: Uuid, session_id: &str, report: &TrafficReport, now: Instant) {
+        if session_id.is_empty() {
+            tracing::warn!(node = %node_id, "traffic report without session_id dropped (agent predates the field; upgrade it)");
+            return;
+        }
         if !valid_session_id(session_id) {
             tracing::warn!(node = %node_id, len = session_id.len(), "traffic report with invalid session id dropped");
             return;
@@ -154,9 +149,13 @@ impl TrafficBuffer {
         }
     }
 
-    /// Everything not yet durably persisted. Nothing is cleared here.
+    /// Everything not yet durably persisted, in a stable (user, node,
+    /// session) order so concurrent flushers (e.g. two panel instances) lock
+    /// `traffic_counters`/`users` rows in the same order and cannot
+    /// deadlock. Nothing is cleared here.
     fn snapshot(&self) -> Vec<FlushRow> {
-        self.entries
+        let mut rows: Vec<FlushRow> = self
+            .entries
             .iter()
             .filter(|e| e.value().dirty())
             .map(|e| {
@@ -169,7 +168,11 @@ impl TrafficBuffer {
                     down: e.value().down,
                 }
             })
-            .collect()
+            .collect();
+        rows.sort_by(|a, b| {
+            (a.user_id, a.node_id, &a.session_id).cmp(&(b.user_id, b.node_id, &b.session_id))
+        });
+        rows
     }
 
     /// `rows` are durably written. Newer values that arrived meanwhile keep
@@ -250,9 +253,22 @@ async fn write_rows(pg: &sqlx::PgPool, rows: &[FlushRow]) -> Result<(), sqlx::Er
     Ok(())
 }
 
+/// Only data/integrity errors (SQLSTATE class 22/23) are properties of the
+/// row itself. Everything else (serialization/deadlock 40xxx, lock timeout
+/// 55P03, statement timeout 57014, connection loss, ...) is transient: the
+/// write is idempotent, so it is simply retried next tick.
+fn is_row_poison(e: &sqlx::Error) -> bool {
+    match e {
+        sqlx::Error::Database(d) => d
+            .code()
+            .is_some_and(|c| c.starts_with("22") || c.starts_with("23")),
+        _ => false,
+    }
+}
+
 /// Persist `buf`'s dirty rows. A data error on the batch falls back to
-/// per-row writes so one bad row cannot poison the rest; connectivity
-/// errors keep everything for the next tick (retry is idempotent).
+/// per-row writes so one bad row cannot poison the rest; transient errors
+/// keep everything for the next tick (retry is idempotent).
 async fn flush_buffer(pg: &sqlx::PgPool, buf: &TrafficBuffer) -> anyhow::Result<usize> {
     let rows = buf.snapshot();
     if rows.is_empty() {
@@ -263,7 +279,7 @@ async fn flush_buffer(pg: &sqlx::PgPool, buf: &TrafficBuffer) -> anyhow::Result<
             buf.mark_flushed(&rows);
             Ok(rows.len())
         }
-        Err(sqlx::Error::Database(e)) => {
+        Err(e) if is_row_poison(&e) => {
             tracing::warn!(error = %e, rows = rows.len(), "traffic batch rejected; retrying row by row");
             let mut written = 0;
             for r in &rows {
@@ -272,7 +288,7 @@ async fn flush_buffer(pg: &sqlx::PgPool, buf: &TrafficBuffer) -> anyhow::Result<
                         buf.mark_flushed(std::slice::from_ref(r));
                         written += 1;
                     }
-                    Err(sqlx::Error::Database(e)) => {
+                    Err(e) if is_row_poison(&e) => {
                         tracing::warn!(error = %e, node = %r.node_id, user = %r.user_id, "traffic row rejected");
                         buf.mark_failed(r);
                     }
@@ -375,14 +391,6 @@ mod tests {
             .collect();
         v.sort();
         v
-    }
-
-    #[test]
-    fn report_session_prefers_report_then_hello() {
-        let mut r = report(&[]);
-        assert_eq!(report_session(&r, "hello"), "hello");
-        r.session_id = "from-report".into();
-        assert_eq!(report_session(&r, "hello"), "from-report");
     }
 
     #[test]
@@ -506,6 +514,10 @@ mod db_tests {
 
     impl TestDb {
         async fn new() -> Option<Self> {
+            Self::with_options(&[]).await
+        }
+
+        async fn with_options(extra: &[(&str, &str)]) -> Option<Self> {
             if std::env::var("AKARI_SKIP_DB_TESTS").is_ok_and(|v| v == "1") {
                 eprintln!("AKARI_SKIP_DB_TESTS=1: skipping");
                 return None;
@@ -523,11 +535,11 @@ mod db_tests {
                 .execute(&admin)
                 .await
                 .unwrap();
-            let opts = PgConnectOptions::from_str(&url)
-                .unwrap()
-                .options([("search_path", schema.as_str())]);
+            let mut o = vec![("search_path", schema.as_str())];
+            o.extend_from_slice(extra);
+            let opts = PgConnectOptions::from_str(&url).unwrap().options(o);
             let pool = PgPoolOptions::new()
-                .max_connections(2)
+                .max_connections(8)
                 .connect_with(opts)
                 .await
                 .unwrap();
@@ -698,8 +710,10 @@ mod db_tests {
             r.session_id = s.into();
             r
         };
-        let feed = |b: &TrafficBuffer, hello: &str, r: TrafficReport| {
-            b.update(n, report_session(&r, hello), &r);
+        // The Hello session (2nd arg) is deliberately ignored: only the
+        // report's own session_id counts.
+        let feed = |b: &TrafficBuffer, _hello: &str, r: TrafficReport| {
+            b.update(n, &r.session_id, &r);
         };
         let panel = TrafficBuffer::new();
         feed(&panel, "s0", rep("s1", 1000));
@@ -713,6 +727,110 @@ mod db_tests {
         feed(&panel, "s1", rep("s2", 40)); // new instance, Hello not yet seen
         db.flush(&panel).await;
         assert_eq!(db.used(u).await, 1700 + 40);
+        db.drop().await;
+    }
+
+    /// Red team RT1: one late (stale) report per flip, e.g. buffered in an
+    /// old stream task after reconnect. Must never over-bill.
+    #[tokio::test]
+    async fn rt1_stale_reorder_never_overbills() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = (Uuid::new_v4(), db.user().await);
+        let b = TrafficBuffer::new();
+        let mut truth = 0;
+        for k in 1..=10u64 {
+            truth = 1000 * k;
+            b.update(n, "s1", &report(u, truth, 0));
+            db.flush(&b).await;
+            b.update(n, "s1", &report(u, truth - 100, 0));
+            db.flush(&b).await;
+        }
+        b.update(n, "s1", &report(u, truth, 0));
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, truth as i64);
+        db.drop().await;
+    }
+
+    /// Red team RT1b: every report through fresh memory (restarts between
+    /// each), interleaving stale values: GREATEST alone keeps it exact.
+    #[tokio::test]
+    async fn rt1b_reorder_across_restarts_is_exact() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = (Uuid::new_v4(), db.user().await);
+        for v in [1000u64, 900, 2000, 1900, 3000] {
+            let b = TrafficBuffer::new();
+            b.update(n, "s1", &report(u, v, 0));
+            db.flush(&b).await;
+        }
+        assert_eq!(db.used(u).await, 3000);
+        db.drop().await;
+    }
+
+    /// Red team RT2: two flushers (e.g. two panel instances) writing
+    /// overlapping keys concurrently. Errors (if any) are transient and the
+    /// retry is idempotent: final billing equals the high-water mark.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn rt2_concurrent_flushers_bill_exactly() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let n = Uuid::new_v4();
+        let mut us = vec![];
+        for _ in 0..40 {
+            us.push(db.user().await);
+        }
+        let mut errors = 0;
+        for round in 1..=30u64 {
+            let (a, b) = (TrafficBuffer::new(), TrafficBuffer::new());
+            for (i, &u) in us.iter().enumerate() {
+                a.update(n, "s1", &report(u, round * 100 + i as u64, 0));
+            }
+            for (i, &u) in us.iter().enumerate().rev() {
+                b.update(n, "s1", &report(u, round * 100 + i as u64 + 50, 0));
+            }
+            let (ra, rb) = tokio::join!(flush_buffer(&db.pool, &a), flush_buffer(&db.pool, &b));
+            errors += ra.is_err() as u32 + rb.is_err() as u32;
+            db.flush(&a).await;
+            db.flush(&b).await;
+        }
+        for (i, &u) in us.iter().enumerate() {
+            assert_eq!(db.used(u).await, 30 * 100 + i as i64 + 50, "user {i}");
+        }
+        eprintln!("rt2: transient errors retried: {errors}");
+        db.drop().await;
+    }
+
+    /// Red team RT3: transient errors (here lock_timeout, SQLSTATE 55P03)
+    /// must not count toward MAX_ROW_FAILURES and must not drop anything.
+    #[tokio::test]
+    async fn rt3_transient_errors_never_drop_rows() {
+        let Some(db) = TestDb::with_options(&[("lock_timeout", "50ms")]).await else {
+            return;
+        };
+        let (n, u) = (Uuid::new_v4(), db.user().await);
+        let b = TrafficBuffer::new();
+        b.update(n, "s1", &report(u, 1000, 0));
+        db.flush(&b).await;
+        b.update(n, "s1", &report(u, 1500, 0));
+        let mut tx = db.admin.begin().await.unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT 1 FROM {}.users WHERE id = $1 FOR UPDATE",
+            db.schema
+        )))
+        .bind(u)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        for _ in 0..MAX_ROW_FAILURES + 2 {
+            assert!(flush_buffer(&db.pool, &b).await.is_err());
+        }
+        tx.rollback().await.unwrap();
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, 1500);
         db.drop().await;
     }
 
