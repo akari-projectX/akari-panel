@@ -1,0 +1,134 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * *" # nightly: advisories appear without code changes; smoke drift
+  workflow_dispatch:
+    inputs:
+      agent_ref:
+        description: akari-agent ref for the smoke job
+        default: main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Same values as docker-compose.yml (the local dev stack).
+  DATABASE_URL: postgres://akari:akari-dev@localhost:5432/akari
+  VALKEY_URL: redis://127.0.0.1:6379
+
+jobs:
+  rust:
+    name: rust (fmt, clippy, test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: akari
+          POSTGRES_PASSWORD: akari-dev
+          POSTGRES_DB: akari
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U akari" --health-interval 3s
+          --health-timeout 3s --health-retries 20
+      valkey:
+        image: valkey/valkey:9-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "valkey-cli ping" --health-interval 3s
+          --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      # DB tests must run, not skip: AKARI_SKIP_DB_TESTS is deliberately
+      # unset, and an unreachable database makes them panic (not pass).
+      - run: cargo test --locked
+        env:
+          AKARI_SKIP_DB_TESTS: ""
+
+  spa:
+    name: spa (tsc, auth paths, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: spa
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24" # package.json engines: >=22.18
+          cache: npm
+          cache-dependency-path: spa/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: node scripts/check-auth-paths.mjs
+      - run: npx vite build
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          # rust-version: the action's bundled cargo-deny needs no toolchain.
+
+  smoke:
+    # Cross-repo end-to-end (smoke.sh). Needs the sibling layout
+    # ../akari-agent, so both repos are checked out under the workspace dir.
+    # Runs on PRs, pushes and nightly; promote to a required check once it
+    # has been green for ~10 consecutive runs (see ROADMAP S4-4).
+    name: smoke (panel + agent e2e)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: akari-panel
+      - uses: actions/checkout@v4
+        with:
+          repository: akari-projectX/akari-agent
+          ref: ${{ inputs.agent_ref || 'main' }}
+          path: akari-agent
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: akari-panel
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: akari-agent/go.mod
+          cache-dependency-path: akari-agent/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: akari-panel/spa/package-lock.json
+      # The runner's own Postgres/Valkey would collide with compose's ports.
+      - run: sudo systemctl stop postgresql || true
+      - run: make smoke AGENT_DIR=../akari-agent
+        working-directory: akari-panel
+      - if: failure()
+        run: |
+          tail -n 80 /tmp/akari-smoke/*.log || true
+      - if: always()
+        working-directory: akari-panel
+        run: docker compose down -v || true

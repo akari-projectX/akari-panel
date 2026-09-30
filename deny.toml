@@ -1,0 +1,60 @@
+# cargo-deny policy (S4-4 / M1-11). Run: `make deny` (or `cargo deny check`).
+#
+# akari-panel is PROPRIETARY and ships as a single closed binary that
+# statically links every dependency. The license allow-list is therefore
+# limited to permissive licenses whose obligations (attribution) we can meet
+# in a notices file. Copyleft is excluded on purpose:
+#   - GPL/AGPL/LGPL/EPL/CDDL: linking obligations incompatible with a closed
+#     binary; none are allowed.
+#   - MPL-2.0 / OpenSSL-style licenses are not needed by the current tree and
+#     so are not allowed; a new dependency needing one fails CI and forces a
+#     conscious decision (MPL-2.0 would be acceptable for unmodified crates).
+# Adding a license here is a legal decision: record why in the commit.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+# Unmaintained/yanked crates are reported but do not fail; vulnerabilities do.
+unmaintained = "workspace"
+yanked = "warn"
+ignore = [
+    # Each entry needs a justification and a revisit condition.
+    # rsa Marvin attack (no patch exists upstream). Reached only through
+    # jsonwebtoken's `rust_crypto` feature; the panel signs/verifies HS256
+    # only (auth.rs), so no RSA operation runs. Revisit: switch jsonwebtoken
+    # to its `aws_lc_rs` feature (drops rsa) and delete this entry.
+    { id = "RUSTSEC-2023-0071", reason = "rsa linked via jsonwebtoken but unused (HS256 only)" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0", # webpki-roots
+]
+
+# The panel itself is proprietary and unpublished: not subject to the policy.
+[licenses.private]
+ignore = true
+
+[bans]
+# Duplicate versions bloat the binary but are rarely a defect: warn only.
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
