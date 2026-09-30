@@ -49,6 +49,17 @@ pub struct GrpcConfig {
     pub advertise: String,
     /// TLS server name agents verify on the gRPC connection.
     pub server_name: String,
+    /// Fail-closed lease granted to agents after every successful read of
+    /// their desired state (default 24h; agents clamp to >= 1h). An agent
+    /// that hears nothing for this long stops xray.
+    pub lease_seconds: u64,
+}
+
+impl GrpcConfig {
+    /// The lease actually granted: [1h, 30d].
+    pub fn lease_seconds(&self) -> u64 {
+        self.lease_seconds.clamp(3600, 30 * 86400)
+    }
 }
 
 impl Default for PanelConfig {
@@ -81,6 +92,7 @@ impl Default for GrpcConfig {
             // the default bind is IPv4, which silently refuses connections.
             advertise: "127.0.0.1:8443".into(),
             server_name: "localhost".into(),
+            lease_seconds: 86400,
         }
     }
 }

@@ -95,6 +95,9 @@ export interface NodeView {
   // The agent's last failed apply; null once an update applies cleanly.
   last_error: string | null;
   last_error_at: string | null;
+  agent_protocol: number | null;
+  lease_expires_at: string | null;
+  lease_remaining_seconds: number | null;
   failed_config_version: number | null;
   failed_user_version: number | null;
   last_seen_at: string | null;
