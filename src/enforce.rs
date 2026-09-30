@@ -13,9 +13,15 @@ use uuid::Uuid;
 pub const EXPIRED: &str =
     "(u.role = 'user' AND u.expires_at IS NOT NULL AND u.expires_at <= now())";
 
-/// Users over their traffic limit.
-const OVER_LIMIT: &str = "(u.enabled AND u.traffic_limit_bytes IS NOT NULL \
+/// Users over their traffic limit. Admins are not proxy users and are never
+/// disabled by it.
+const OVER_LIMIT: &str = "(u.role = 'user' AND u.enabled AND u.traffic_limit_bytes IS NOT NULL \
      AND u.traffic_used_bytes > u.traffic_limit_bytes)";
+
+/// Users a node serves: role=user, enabled, not expired (alias `u`).
+/// Admin accounts are never proxy users.
+pub const SERVED: &str = "(u.role = 'user' AND u.enabled AND NOT \
+     (u.expires_at IS NOT NULL AND u.expires_at <= now()))";
 
 async fn lock_nodes_of(conn: &mut PgConnection, user_pred: &str) -> sqlx::Result<()> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -24,6 +30,17 @@ async fn lock_nodes_of(conn: &mut PgConnection, user_pred: &str) -> sqlx::Result
            WHERE {user_pred}) \
          ORDER BY n.id FOR UPDATE"
     )))
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+async fn lock_nodes_of_ids(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::Result<()> {
+    sqlx::query(
+        "SELECT id FROM nodes WHERE id IN (SELECT node_id FROM node_users WHERE user_id = ANY($1)) \
+         ORDER BY id FOR UPDATE",
+    )
+    .bind(users)
     .execute(conn)
     .await?;
     Ok(())
@@ -53,6 +70,9 @@ pub async fn apply_traffic_limits(conn: &mut PgConnection) -> sqlx::Result<Vec<U
         return Ok(Vec::new());
     }
     tracing::info!(users = users.len(), "disabled users over traffic limit");
+    // Re-lock by the returned ids (nodes assigned between the pre-lock and
+    // the UPDATE), still in id order, before bumping.
+    lock_nodes_of_ids(conn, &users).await?;
     bump_nodes_of(conn, &users).await
 }
 
@@ -72,6 +92,7 @@ pub async fn apply_expiry(conn: &mut PgConnection) -> sqlx::Result<Vec<Uuid>> {
         return Ok(Vec::new());
     }
     tracing::info!(users = users.len(), "expired users removed from nodes");
+    lock_nodes_of_ids(conn, &users).await?;
     bump_nodes_of(conn, &users).await
 }
 

@@ -156,6 +156,14 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   method, bad token, missing asset), gets the same empty 404 without the
   panel's security headers, byte-identical apart from `Date`.
 
+## Accounts
+
+Only `role=user` accounts are proxy users. Admin accounts are never pushed
+to nodes, cannot be assigned to one (400), get the rejection 404 on
+subscription URLs and are exempt from traffic-limit disabling and expiry.
+Changing a user to admin removes their node access; changing back restores
+it. Raising a traffic limit does not re-enable a user the limit disabled.
+
 ## Upgrading
 
 Upgrade **agents before the panel**. The panel drops traffic reports that

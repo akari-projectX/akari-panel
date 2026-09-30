@@ -441,11 +441,11 @@ pub async fn subscription(
 ) -> Response {
     let hash = hash_token(&token);
 
-    // Expiry via the shared DB-clock predicate (enforce::EXPIRED).
+    // Only served users (role=user, enabled, not expired; enforce::SERVED).
     let user = match sqlx::query_as::<_, SubUser>(sqlx::AssertSqlSafe(format!(
         "SELECT u.traffic_used_bytes, u.traffic_limit_bytes, u.expires_at \
-         FROM users u WHERE u.sub_token_hash = $1 AND u.enabled = true AND NOT {}",
-        crate::enforce::EXPIRED
+         FROM users u WHERE u.sub_token_hash = $1 AND {}",
+        crate::enforce::SERVED
     )))
     .bind(&hash)
     .fetch_optional(state.pg())
