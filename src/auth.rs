@@ -6,7 +6,7 @@ use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use axum::{http::StatusCode, Json};
-use axum_extra::extract::cookie::CookieJar;
+use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -78,8 +78,16 @@ impl From<anyhow::Error> for ApiError {
     }
 }
 
+/// SQLSTATE raised by the last-admin guard (migration 0009).
+pub const LAST_ADMIN_SQLSTATE: &str = "AK001";
+
 impl From<sqlx::Error> for ApiError {
     fn from(e: sqlx::Error) -> Self {
+        if let sqlx::Error::Database(d) = &e {
+            if d.code().as_deref() == Some(LAST_ADMIN_SQLSTATE) {
+                return ApiError::conflict("cannot remove the last enabled admin");
+            }
+        }
         tracing::error!(error = %e, "api db error");
         ApiError::internal()
     }
@@ -122,15 +130,26 @@ pub fn scrub_password(password: &str) {
 pub struct Claims {
     pub sub: Uuid,
     pub role: String,
+    /// users.session_ver at issue time (S4-2). A token whose sv differs
+    /// from the row is dead: password change, disable, role change, expiry
+    /// enforcement, logout and "revoke sessions" all bump it. Required:
+    /// pre-0009 tokens (no sv) fail to decode.
+    pub sv: i64,
     pub iat: u64,
     pub exp: u64,
 }
 
-pub fn issue_token(state: &AppState, user_id: Uuid, role: &str) -> anyhow::Result<String> {
+pub fn issue_token(
+    state: &AppState,
+    user_id: Uuid,
+    role: &str,
+    session_ver: i64,
+) -> anyhow::Result<String> {
     let now = chrono::Utc::now().timestamp() as u64;
     let claims = Claims {
         sub: user_id,
         role: role.to_owned(),
+        sv: session_ver,
         iat: now,
         exp: now + COOKIE_TTL_SECS as u64,
     };
@@ -139,6 +158,40 @@ pub fn issue_token(state: &AppState, user_id: Uuid, role: &str) -> anyhow::Resul
         &claims,
         &EncodingKey::from_secret(state.jwt_secret().as_bytes()),
     )?)
+}
+
+/// A valid (signature, expiry) token's claims; says nothing about whether
+/// the session is still live (see AuthUser).
+pub fn decode_token(state: &AppState, token: &str) -> Option<Claims> {
+    decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(state.jwt_secret().as_bytes()),
+        &Validation::new(Algorithm::HS256),
+    )
+    .ok()
+    .map(|t| t.claims)
+}
+
+/// The session cookie carrying `token` (web.cookie_secure decides Secure).
+pub fn session_cookie(state: &AppState, token: String) -> Cookie<'static> {
+    Cookie::build((COOKIE_NAME, token))
+        .http_only(true)
+        .same_site(SameSite::Strict)
+        .path("/")
+        .secure(state.cfg().web.cookie_secure)
+        .max_age(time::Duration::seconds(COOKIE_TTL_SECS))
+        .build()
+}
+
+/// A cookie that deletes the session cookie in the browser.
+pub fn cleared_cookie(state: &AppState) -> Cookie<'static> {
+    Cookie::build((COOKIE_NAME, ""))
+        .http_only(true)
+        .same_site(SameSite::Strict)
+        .path("/")
+        .secure(state.cfg().web.cookie_secure)
+        .max_age(time::Duration::ZERO)
+        .build()
 }
 
 // ---------------------------------------------------------------------------
@@ -177,13 +230,7 @@ impl FromRequestParts<AppState> for AuthUser {
             .map(|c| c.value())
             .ok_or_else(ApiError::unauthorized)?;
 
-        let claims = decode::<Claims>(
-            token,
-            &DecodingKey::from_secret(state.jwt_secret().as_bytes()),
-            &Validation::new(Algorithm::HS256),
-        )
-        .map_err(|_| ApiError::unauthorized())?
-        .claims;
+        let claims = decode_token(state, token).ok_or_else(ApiError::unauthorized)?;
 
         #[derive(sqlx::FromRow)]
         struct Row {
@@ -191,10 +238,12 @@ impl FromRequestParts<AppState> for AuthUser {
             login: String,
             role: String,
             enabled: bool,
+            session_ver: i64,
         }
-        // Disabled or expired (role=user) accounts lose existing sessions.
+        // Disabled or expired (role=user) accounts lose existing sessions;
+        // so does every token issued before the last session_ver bump.
         let row = sqlx::query_as::<_, Row>(sqlx::AssertSqlSafe(format!(
-            "SELECT u.id, u.login, u.role, (u.enabled AND NOT {}) AS enabled \
+            "SELECT u.id, u.login, u.role, (u.enabled AND NOT {}) AS enabled, u.session_ver \
              FROM users u WHERE u.id = $1",
             crate::enforce::EXPIRED
         )))
@@ -207,7 +256,7 @@ impl FromRequestParts<AppState> for AuthUser {
         })?
         .ok_or_else(ApiError::unauthorized)?;
 
-        if !row.enabled {
+        if !row.enabled || row.session_ver != claims.sv {
             return Err(ApiError::unauthorized());
         }
         Ok(AuthUser {

@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tokio::signal;
 
 use crate::config::PanelConfig;
 
@@ -61,6 +60,9 @@ enum AdminCmd {
         #[arg(long, default_value = "admin")]
         role: String,
     },
+    /// Set an account's password (prompts unless AKARI_ADMIN_PASSWORD is
+    /// set). Ends all of the account's sessions.
+    Passwd { login: String },
 }
 
 #[tokio::main]
@@ -83,6 +85,7 @@ async fn main() -> Result<()> {
         },
         Cmd::Admin { action } => match action {
             AdminCmd::Add { login, role } => nodeops::admin_add(cfg, login, role).await,
+            AdminCmd::Passwd { login } => nodeops::admin_passwd(cfg, login).await,
         },
     }
 }
@@ -118,11 +121,14 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
     let state = state::AppState::new(cfg.clone(), install, pg, valkey);
 
     // LISTEN must be in place before any agent session can start.
-    let _listener = notify::start(state.clone()).await;
-    tokio::spawn(notify::queue_monitor(state.clone()));
-    tokio::spawn(traffic::flush_loop(state.clone()));
-    tokio::spawn(reaper::reap_loop(state.clone()));
-    tokio::spawn(state.clone().persist_online_loop());
+    let listener = notify::start(state.clone()).await;
+    let background = [
+        listener,
+        tokio::spawn(notify::queue_monitor(state.clone())),
+        tokio::spawn(traffic::flush_loop(state.clone())),
+        tokio::spawn(reaper::reap_loop(state.clone())),
+        tokio::spawn(state.clone().persist_online_loop()),
+    ];
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
     let mut shutdown_rx_web = shutdown_tx.subscribe();
@@ -130,7 +136,7 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
 
     let web_state = state.clone();
     let web_bind = state.cfg().web.bind;
-    let web_task = tokio::spawn(async move {
+    let mut web_task = tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(web_bind).await?;
         axum::serve(
             listener,
@@ -142,33 +148,73 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
         .await
     });
 
-    let grpc_task = tokio::spawn(async move {
-        if let Err(e) = grpc::serve(state, shutdown_rx_grpc).await {
+    let grpc_state = state.clone();
+    let mut grpc_task = tokio::spawn(async move {
+        if let Err(e) = grpc::serve(grpc_state, shutdown_rx_grpc).await {
             tracing::error!(error = %e, "grpc server failed");
         }
     });
 
-    signal::ctrl_c().await?;
+    let (mut web_done, mut grpc_done) = (false, false);
+    tokio::select! {
+        _ = shutdown::signal() => {}
+        r = &mut web_task => {
+            web_done = true;
+            tracing::error!(result = ?r.map(|r| r.map_err(|e| e.to_string())), "web server stopped");
+        }
+        _ = &mut grpc_task => {
+            grpc_done = true;
+            tracing::error!("grpc server stopped");
+        }
+    }
     tracing::info!("shutting down");
+    // Stop accepting (web + gRPC), then end the agent streams: the gRPC
+    // server's graceful shutdown waits for them.
+    state.begin_shutdown();
     let _ = shutdown_tx.send(());
-    let _ = web_task.await;
-    grpc_task.abort();
-    let _ = grpc_task.await;
+    shutdown::end_sessions(&state, shutdown::SESSION_DRAIN).await;
+    // No loop may run concurrently with (or after) the final flush.
+    for t in &background {
+        t.abort();
+    }
+    for t in background {
+        let _ = t.await;
+    }
+    shutdown::final_flush(&state, shutdown::FINAL_FLUSH).await;
+    // In-flight requests had the whole sequence to finish; then stop.
+    if !web_done
+        && tokio::time::timeout(shutdown::SERVER_DRAIN, &mut web_task)
+            .await
+            .is_err()
+    {
+        web_task.abort();
+    }
+    if !grpc_done
+        && tokio::time::timeout(shutdown::SERVER_DRAIN, &mut grpc_task)
+            .await
+            .is_err()
+    {
+        grpc_task.abort();
+    }
+    tracing::info!("shutdown complete");
     Ok(())
 }
 
 mod api;
 mod auth;
+mod client_ip;
 mod config;
 mod db;
 mod enforce;
 mod gen;
 mod grpc;
 mod install;
+mod login_limit;
 mod nodeops;
 mod notify;
 mod reaper;
 mod reject;
+mod shutdown;
 mod spa;
 mod state;
 mod sub;

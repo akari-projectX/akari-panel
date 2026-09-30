@@ -11,14 +11,7 @@ pub async fn admin_add(cfg: PanelConfig, login: String, role: String) -> Result<
     if role != "admin" && role != "user" {
         bail!("role must be 'admin' or 'user'");
     }
-    let password = match std::env::var("AKARI_ADMIN_PASSWORD") {
-        Ok(p) if !p.is_empty() => p,
-        _ => rpassword::prompt_password("password: ")?,
-    };
-    if password.len() < 8 {
-        bail!("password must be at least 8 characters");
-    }
-    let hash = crate::auth::hash_password(&password)?;
+    let hash = read_password_hash()?;
 
     let pg = sqlx::postgres::PgPoolOptions::new()
         .max_connections(2)
@@ -36,6 +29,40 @@ pub async fn admin_add(cfg: PanelConfig, login: String, role: String) -> Result<
         .await
         .with_context(|| format!("insert user {login}"))?;
     println!("created {role} account: {login} ({id})");
+    Ok(())
+}
+
+fn read_password_hash() -> Result<String> {
+    let password = match std::env::var("AKARI_ADMIN_PASSWORD") {
+        Ok(p) if !p.is_empty() => p,
+        _ => rpassword::prompt_password("password: ")?,
+    };
+    if password.len() < 8 {
+        bail!("password must be at least 8 characters");
+    }
+    crate::auth::hash_password(&password)
+}
+
+/// Reset an account's password. The users trigger (migration 0009) bumps
+/// session_ver, so every existing session of the account ends.
+pub async fn admin_passwd(cfg: PanelConfig, login: String) -> Result<()> {
+    let hash = read_password_hash()?;
+    let pg = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&cfg.database_url)
+        .await?;
+    crate::db::migrate(&pg).await?;
+    let n = sqlx::query("UPDATE users SET password_hash = $2 WHERE login = $1")
+        .bind(&login)
+        .bind(&hash)
+        .execute(&pg)
+        .await
+        .with_context(|| format!("update user {login}"))?
+        .rows_affected();
+    if n == 0 {
+        bail!("no such account: {login}");
+    }
+    println!("password changed for {login}; its sessions are revoked");
     Ok(())
 }
 

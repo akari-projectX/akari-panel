@@ -17,8 +17,9 @@ pub struct AppState(Arc<Inner>);
 pub struct AgentEntry {
     pub gen: u64,
     pub online_session: Uuid,
-    /// Terminates this session (a newer stream of the node replaced it).
-    pub supersede: Arc<dyn Fn() + Send + Sync>,
+    /// Ends this session with the given status (a newer stream of the node
+    /// replaced it, or the panel shuts down).
+    pub close: Arc<dyn Fn(tonic::Status) + Send + Sync>,
 }
 
 /// Concurrent desired-state reads per instance (the pool has 16).
@@ -44,6 +45,21 @@ struct Inner {
     /// shortcut: every committed change reaches every instance the same way.
     wakeups: crate::notify::Wakeups,
     traffic: TrafficBuffer,
+    /// Flips to true once, when the shutdown sequence starts (S4-3); every
+    /// agent session ends on it.
+    shutdown: tokio::sync::watch::Sender<bool>,
+    /// Agent session tasks still running on this instance (including
+    /// revoked/retiring ones and their cleanup).
+    live_sessions: std::sync::atomic::AtomicUsize,
+}
+
+/// Counts a running agent session task (see `AppState::live_sessions`).
+pub struct LiveSession(AppState);
+
+impl Drop for LiveSession {
+    fn drop(&mut self) {
+        self.0 .0.live_sessions.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl AppState {
@@ -69,6 +85,8 @@ impl AppState {
             gen: AtomicU64::new(1),
             wakeups: crate::notify::Wakeups::default(),
             traffic,
+            shutdown: tokio::sync::watch::channel(false).0,
+            live_sessions: std::sync::atomic::AtomicUsize::new(0),
         }))
     }
 
@@ -104,6 +122,22 @@ impl AppState {
     }
     pub fn wakeups(&self) -> &crate::notify::Wakeups {
         &self.0.wakeups
+    }
+    /// Start the shutdown: every agent session (current or starting) ends.
+    pub fn begin_shutdown(&self) {
+        self.0.shutdown.send_replace(true);
+    }
+    /// Resolves once the shutdown has begun.
+    pub async fn shutdown_begun(&self) {
+        let mut rx = self.0.shutdown.subscribe();
+        let _ = rx.wait_for(|v| *v).await;
+    }
+    pub fn session_started(&self) -> LiveSession {
+        self.0.live_sessions.fetch_add(1, Ordering::SeqCst);
+        LiveSession(self.clone())
+    }
+    pub fn live_sessions(&self) -> usize {
+        self.0.live_sessions.load(Ordering::SeqCst)
     }
 
     /// Periodically persists online status for connected agents.
@@ -154,7 +188,14 @@ impl AppState {
     /// dev Valkey (VALKEY_URL or the default).
     #[cfg(test)]
     pub async fn for_test(pg: PgPool) -> Self {
+        Self::for_test_with(pg, |_| {}).await
+    }
+
+    /// `for_test` with a config tweak.
+    #[cfg(test)]
+    pub async fn for_test_with(pg: PgPool, tweak: impl FnOnce(&mut PanelConfig)) -> Self {
         let mut cfg = PanelConfig::default();
+        tweak(&mut cfg);
         if let Ok(v) = std::env::var("VALKEY_URL") {
             cfg.valkey_url = v;
         }

@@ -40,6 +40,9 @@ make smoke         # 全量构建 + smoke.sh（会 TRUNCATE PG、flushall Valkey
 - **身份**：agent 身份 = mTLS 客户端证书序列号（`install::normalize_serial`：小写 hex、去前导零字节，签发/识别/墓碑共用）；xray `email` = 面板 user UUID。
 - **删除节点两阶段**：阶段 1（API/CLI）置 `deleting_at` + 禁用 + bump（agent 收敛到空状态，最终计数照常计费）；阶段 2（`reaper`，任意实例）在 ack+10s / 2min 超时 / 节点离线时写 `revoked_certs` 墓碑并删行。已吊销证书**接受连接**、推空状态后关闭（拒绝会让 agent 留着旧配置），永不计费。删除只从 DB 推导，`del:` 通知仅是提示。
 - **多实例**：LISTEN 需要直连 PG，不支持 PgBouncer 事务/语句池模式。
+- **会话吊销（S4-2）**：JWT 带 `sv` = `users.session_ver`，`AuthUser` 不一致即 401。改密码/禁用/改角色/过期执行由 0009 的 `users` 触发器自动 bump（任何路径，包括 CLI 与手写 SQL）；登出、`revoke-sessions` 显式 bump。**最后一个启用的管理员**不能被禁用/降级/删除：0009 触发器在 advisory xact lock 下检查，SQLSTATE `AK001` → 409（仅在 READ COMMITTED 下无竞争，应用事务全是 RC）。
+- **反代（S4-1）**：客户端地址只在 TCP 对端属于 `web.trusted_proxies` 时才取 X-Forwarded-For（最右侧非受信跳）；登录限速只计失败，按地址（IPv6 按 /64）和按登录名，Valkey Lua 原子预留。`web.cookie_secure` 默认 true。
+- **GO-2026-6443**：agent 的 grpc-go < 1.85 遇缺 :authority 的请求会 panic，`streamSettings.network` = grpc/gun 的 inbound 一律 400；已存的在 NodeView `warnings` 中提示。agent 升级 grpc ≥ 1.85.0 后可解除。
 - 验收门：`make check` 与 `make smoke` 全绿；新 API 必须在 smoke.sh 加断言。
 
 ## 已知问题

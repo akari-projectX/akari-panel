@@ -2,9 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 
 use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use axum_extra::extract::cookie::CookieJar;
 use chrono::{DateTime, Utc};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -25,49 +26,69 @@ pub struct LoginReq {
     pub password: String,
 }
 
-const LOGIN_RATE_LIMIT: i64 = 20;
-const LOGIN_RATE_WINDOW_SECS: i64 = 900;
-
+/// POST /auth/login. Failed attempts are rate limited per client address
+/// (behind trusted proxies: the X-Forwarded-For client, see client_ip.rs)
+/// and per login name (login_limit.rs). Every credential failure is the
+/// same 401 after the same argon2 work, whether or not the account exists.
 pub async fn login(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     jar: CookieJar,
     Json(req): Json<LoginReq>,
 ) -> Result<(CookieJar, Json<serde_json::Value>), ApiError> {
-    // Fixed-window per-IP limit; failures and successes both count.
-    let key = format!("akari:rl:login:{}", addr.ip());
-    use fred::prelude::*;
-    let count: i64 = state.valkey().incr(key.clone()).await.map_err(|e| {
-        tracing::error!(error = %e, "valkey incr failed");
-        ApiError::internal()
-    })?;
-    if count == 1 {
-        let _: i64 = state
-            .valkey()
-            .expire(key, LOGIN_RATE_WINDOW_SECS, None)
-            .await
-            .unwrap_or(0);
-    }
-    if count > LOGIN_RATE_LIMIT {
-        return Err(ApiError::too_many());
-    }
     if req.login.is_empty() || req.password.is_empty() {
         return Err(ApiError::bad_request("login and password are required"));
     }
+    let client = crate::client_ip::client_ip(addr.ip(), &headers, &state.cfg().web.trusted_proxies);
+    let attempt =
+        crate::login_limit::Attempt::reserve(&state, &crate::client_ip::bucket(client), &req.login)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "login rate limit unavailable");
+                ApiError::internal()
+            })?
+            .ok_or_else(ApiError::too_many)?;
 
-    #[derive(sqlx::FromRow)]
-    struct Row {
-        id: Uuid,
-        login: String,
-        role: String,
-        enabled: bool,
-        expired: bool,
-        password_hash: Option<String>,
+    match check_credentials(&state, &req).await {
+        Ok(Some(row)) => {
+            attempt.release(&state).await;
+            let token = auth::issue_token(&state, row.id, &row.role, row.session_ver)?;
+            Ok((
+                jar.add(auth::session_cookie(&state, token)),
+                Json(json!({ "id": row.id, "login": row.login, "role": row.role })),
+            ))
+        }
+        Ok(None) => {
+            attempt.fail();
+            Err(ApiError::unauthorized())
+        }
+        Err(e) => {
+            // Not a credential failure (e.g. the database is down).
+            attempt.release(&state).await;
+            Err(e)
+        }
     }
+}
+
+#[derive(sqlx::FromRow)]
+struct LoginRow {
+    id: Uuid,
+    login: String,
+    role: String,
+    enabled: bool,
+    expired: bool,
+    password_hash: Option<String>,
+    session_ver: i64,
+}
+
+/// The account if the credentials are valid and it may log in; `None` for
+/// every kind of credential failure (with equal argon2 work).
+async fn check_credentials(state: &AppState, req: &LoginReq) -> Result<Option<LoginRow>, ApiError> {
     // Expiry applies to role=user only (an admin must never lock themselves
     // out by a date).
-    let row = sqlx::query_as::<_, Row>(sqlx::AssertSqlSafe(format!(
-        "SELECT u.id, u.login, u.role, u.enabled, u.password_hash, {} AS expired \
+    let row = sqlx::query_as::<_, LoginRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT u.id, u.login, u.role, u.enabled, u.password_hash, u.session_ver, {} AS expired \
              FROM users u WHERE u.login = $1",
         crate::enforce::EXPIRED
     )))
@@ -77,34 +98,59 @@ pub async fn login(
 
     let Some(row) = row.filter(|r| r.enabled && !r.expired && r.password_hash.is_some()) else {
         auth::scrub_password(&req.password);
-        return Err(ApiError::unauthorized());
+        return Ok(None);
     };
-    let hash = row.password_hash.unwrap_or_default();
-    if !auth::verify_password(&req.password, &hash) {
-        return Err(ApiError::unauthorized());
-    }
-
-    let token = auth::issue_token(&state, row.id, &row.role)?;
-    // Secure cookies everywhere except loopback binds (development).
-    let secure = !state.cfg().web.bind.ip().is_loopback();
-    let cookie = Cookie::build((COOKIE_NAME, token))
-        .http_only(true)
-        .same_site(SameSite::Strict)
-        .path("/")
-        .secure(secure)
-        .max_age(time::Duration::seconds(auth::COOKIE_TTL_SECS))
-        .build();
-    Ok((
-        jar.add(cookie),
-        Json(json!({ "id": row.id, "login": row.login, "role": row.role })),
-    ))
+    let ok = auth::verify_password(
+        &req.password,
+        row.password_hash.as_deref().unwrap_or_default(),
+    );
+    Ok(ok.then_some(row))
 }
 
-pub async fn logout(jar: CookieJar) -> (CookieJar, Json<serde_json::Value>) {
-    let expired = Cookie::build(COOKIE_NAME)
-        .path("/")
-        .max_age(time::Duration::ZERO);
-    (jar.add(expired.build()), Json(json!({ "ok": true })))
+/// POST /auth/logout. Always clears the cookie; a live session also bumps
+/// the account's session_ver, which ends every session of the account (a
+/// copied cookie dies with the logout).
+pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
+    let cleared = jar.clone().add(auth::cleared_cookie(&state));
+    let claims = jar
+        .get(COOKIE_NAME)
+        .and_then(|c| auth::decode_token(&state, c.value()));
+    if let Some(c) = claims {
+        // Only a token that is still live may end the sessions (a stale
+        // token is dead already).
+        if let Err(e) = sqlx::query(
+            "UPDATE users SET session_ver = session_ver + 1 WHERE id = $1 AND session_ver = $2",
+        )
+        .bind(c.sub)
+        .bind(c.sv)
+        .execute(state.pg())
+        .await
+        {
+            // Visible failure (R1): the cookie is cleared, but other
+            // copies of it may still be live.
+            return (cleared, ApiError::from(e)).into_response();
+        }
+    }
+    (cleared, Json(json!({ "ok": true }))).into_response()
+}
+
+/// POST /api/v1/users/{id}/revoke-sessions (admin): log the account out
+/// everywhere. Revoking your own sessions ends this one too.
+pub async fn revoke_sessions(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((_, id)): Path<(String, Uuid)>,
+) -> Result<axum::http::StatusCode, ApiError> {
+    user.require_admin()?;
+    let n = sqlx::query("UPDATE users SET session_ver = session_ver + 1 WHERE id = $1")
+        .bind(id)
+        .execute(state.pg())
+        .await?
+        .rows_affected();
+    if n == 0 {
+        return Err(ApiError::not_found());
+    }
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 // ---------------------------------------------------------------------------
@@ -443,13 +489,32 @@ async fn apply_update_user(
 pub async fn update_user(
     State(state): State<AppState>,
     user: AuthUser,
+    jar: CookieJar,
     Path((_, id)): Path<(String, Uuid)>,
     ApiJson(req): ApiJson<UpdateUserReq>,
-) -> Result<Json<UserView>, ApiError> {
+) -> Result<(CookieJar, Json<UserView>), ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
     apply_update_user(&mut tx, id, &req).await?;
+    // An admin changing their own password (or role) revokes their own
+    // sessions too; this one carries on with a fresh token. Read in the
+    // same transaction, so the token matches exactly what was committed.
+    let own: Option<(String, bool, i64)> = if id == user.id {
+        sqlx::query_as("SELECT role, enabled, session_ver FROM users WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+    } else {
+        None
+    };
     tx.commit().await?;
+    let jar = match own {
+        Some((role, true, sv)) => jar.add(auth::session_cookie(
+            &state,
+            auth::issue_token(&state, id, &role, sv)?,
+        )),
+        _ => jar,
+    };
     let row = sqlx::query_as::<_, UserView>(
         "SELECT id, login, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at \
          FROM users WHERE id = $1",
@@ -458,7 +523,7 @@ pub async fn update_user(
     .fetch_optional(state.pg())
     .await?
     .ok_or_else(ApiError::not_found)?;
-    Ok(Json(row))
+    Ok((jar, Json(row)))
 }
 
 /// Lock the user's nodes, then the user; remove the assignments, bump
@@ -538,6 +603,18 @@ pub struct NodeView {
     deleting_at: Option<DateTime<Utc>>,
     last_seen_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
+    /// Problems with the stored configuration the admin must fix (e.g. an
+    /// inbound using a transport the agent refuses for security reasons,
+    /// stored before the check existed). Computed, not stored.
+    #[sqlx(skip)]
+    warnings: Vec<String>,
+}
+
+impl NodeView {
+    fn with_warnings(mut self) -> Self {
+        self.warnings = inbound_warnings(&self.xray_inbounds);
+        self
+    }
 }
 
 const NODE_VIEW_COLS: &str =
@@ -557,7 +634,9 @@ pub async fn list_nodes(
     )))
     .fetch_all(state.pg())
     .await?;
-    Ok(Json(rows))
+    Ok(Json(
+        rows.into_iter().map(NodeView::with_warnings).collect(),
+    ))
 }
 
 #[derive(Deserialize, Default)]
@@ -667,7 +746,7 @@ pub async fn update_node(
     .fetch_optional(state.pg())
     .await?
     .ok_or_else(ApiError::not_found)?;
-    Ok(Json(row))
+    Ok(Json(row.with_warnings()))
 }
 
 /// Phase 1 of a node deletion (R12 D1), in the caller's transaction: lock
@@ -803,6 +882,11 @@ fn validate_inbounds(inbounds: &serde_json::Value) -> Result<(), ApiError> {
                 "inbound {tag:?}: fakedns is not supported by the agent"
             )));
         }
+        if uses_grpc_transport(item) {
+            return Err(ApiError::bad_request(format!(
+                "inbound {tag:?}: {GRPC_TRANSPORT_REFUSED}"
+            )));
+        }
     }
     Ok(())
 }
@@ -856,6 +940,46 @@ fn mentions_fakedns(inbound: &serde_json::Value) -> bool {
             serde_json::Value::Array(a) => a.iter().any(|v| v.as_str().is_some_and(is_fakedns)),
             _ => false,
         })
+}
+
+/// Why grpc/gun transports are refused (lead addendum, Sprint 4b).
+const GRPC_TRANSPORT_REFUSED: &str = "streamSettings.network \"grpc\"/\"gun\" is refused: \
+     the agent's google.golang.org/grpc (< v1.85.0) panics on a request without :authority \
+     (GO-2026-6443), so any unauthenticated client could crash the whole agent; \
+     use another transport until the agent ships the fixed grpc";
+
+/// Does this inbound use xray's gRPC transport (`streamSettings.network`
+/// "grpc" or its alias "gun", any case — xray lowercases it; keys matched
+/// the Go-json way as in `mentions_fakedns`)?
+fn uses_grpc_transport(inbound: &serde_json::Value) -> bool {
+    let Some(obj) = inbound.as_object() else {
+        return false;
+    };
+    json_fields(obj, "streamsettings")
+        .filter_map(|s| s.as_object())
+        .flat_map(|s| json_fields(s, "network"))
+        .any(|n| {
+            n.as_str().is_some_and(|n| {
+                let n = n.trim().to_lowercase();
+                n == "grpc" || n == "gun"
+            })
+        })
+}
+
+/// Warnings for stored inbounds (NodeView): configurations accepted before
+/// a check existed stay as they are until an admin changes them.
+fn inbound_warnings(inbounds: &serde_json::Value) -> Vec<String> {
+    let Some(items) = inbounds.as_array() else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter(|i| uses_grpc_transport(i))
+        .map(|i| {
+            let tag = i.get("tag").and_then(|t| t.as_str()).unwrap_or("?");
+            format!("inbound {tag:?}: {GRPC_TRANSPORT_REFUSED}")
+        })
+        .collect()
 }
 
 /// Keep only credentials whose inbound still exists with the same protocol.
@@ -1268,6 +1392,8 @@ mod tests {
         let other = db.node().await;
         let doomed = db.node().await;
         let ours = [n1, n2, other, doomed];
+        // u is promoted and demoted below; another admin stays (0009 guard).
+        db.admin().await;
         // R12 D3: the bump itself notifies (trigger), once per node.
         let mut listener = db.listener().await;
 
@@ -2015,5 +2141,779 @@ mod tests {
         ] {
             assert!(one(ok.clone()).is_ok(), "{ok}");
         }
+    }
+
+    /// GO-2026-6443: xray's gRPC transport runs a grpc-go server that
+    /// panics on a request without :authority — refused until the agent
+    /// ships grpc >= 1.85.0; stored ones are surfaced as warnings.
+    #[test]
+    fn grpc_transport_refused_and_warned() {
+        let one = |inb: serde_json::Value| validate_inbounds(&json!([inb]));
+        for bad in [
+            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "grpc"}}),
+            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "gun"}}),
+            json!({"tag": "a", "protocol": "trojan", "streamSettings": {"network": "GRPC"}}),
+            json!({"tag": "a", "protocol": "vless", "StreamSettings": {"NETWORK": "Gun"}}),
+            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": " grpc "}}),
+            // Go-json key folding (U+017F -> s, U+212A -> k).
+            json!({"tag": "a", "protocol": "vless", "\u{17f}tream\u{17f}ettings": {"network": "grpc"}}),
+            json!({"tag": "a", "protocol": "vless", "streamSettings": {"net\u{212a}": "x", "networ\u{212a}": "grpc"}}),
+            // Duplicate keys by case: whichever Go picks must be safe.
+            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "ws"},
+                "STREAMSETTINGS": {"network": "grpc"}}),
+            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "tcp", "Network": "grpc"}}),
+        ] {
+            let e = one(bad.clone()).expect_err(&bad.to_string());
+            assert!(e.message().contains("GO-2026-6443"), "{}", e.message());
+        }
+        for ok in [
+            json!({"tag": "grpc", "protocol": "vless"}),
+            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "ws",
+                "wsSettings": {"path": "/grpc"}}}),
+            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "tcp",
+                "grpcSettings": {"serviceName": "gun"}}}),
+            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "grpcx"}}),
+            json!({"tag": "a", "protocol": "vless", "network": "grpc"}),
+        ] {
+            assert!(one(ok.clone()).is_ok(), "{ok}");
+        }
+        let stored = json!([
+            {"tag": "ok", "protocol": "vless"},
+            {"tag": "old-grpc", "protocol": "vless", "streamSettings": {"network": "gun"}},
+        ]);
+        let w = inbound_warnings(&stored);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].contains("old-grpc") && w[0].contains("GO-2026-6443"));
+        assert!(inbound_warnings(&json!([{"tag": "a"}])).is_empty());
+        assert!(inbound_warnings(&json!({"not": "an array"})).is_empty());
+    }
+
+    // ----- S4-2: session revocation and the last-admin guard ----------
+
+    async fn token_for(state: &AppState, id: Uuid) -> String {
+        let (role, sv): (String, i64) =
+            sqlx::query_as("SELECT role, session_ver FROM users WHERE id = $1")
+                .bind(id)
+                .fetch_one(state.pg())
+                .await
+                .unwrap();
+        auth::issue_token(state, id, &role, sv).unwrap()
+    }
+
+    /// Does the extractor accept this session token?
+    async fn live(state: &AppState, token: &str) -> bool {
+        use axum::extract::FromRequestParts;
+        let (mut parts, _) = axum::http::Request::builder()
+            .header(axum::http::header::COOKIE, format!("{COOKIE_NAME}={token}"))
+            .body(())
+            .unwrap()
+            .into_parts();
+        AuthUser::from_request_parts(&mut parts, state)
+            .await
+            .is_ok()
+    }
+
+    async fn update(db: &TestDb, id: Uuid, req: UpdateUserReq) -> Result<(), ApiError> {
+        let mut tx = db.pool.begin().await.unwrap();
+        apply_update_user(&mut tx, id, &req).await?;
+        tx.commit().await.map_err(ApiError::from)
+    }
+
+    fn admin_user(id: Uuid) -> AuthUser {
+        AuthUser {
+            id,
+            login: "a".into(),
+            role: "admin".into(),
+        }
+    }
+
+    /// Every revocation trigger kills the tokens issued before it — whatever
+    /// path writes the row — and changes that must not revoke do not.
+    #[tokio::test]
+    async fn session_revocation_on_every_trigger() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let admin = db.admin().await;
+        let u = db.user().await;
+        let state = AppState::for_test(db.pool.clone()).await;
+        type Step<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'a>>;
+        let sql = |q: &'static str| -> Step<'_> {
+            let db = &db;
+            Box::pin(async move {
+                sqlx::query(sqlx::AssertSqlSafe(q))
+                    .bind(u)
+                    .execute(&db.pool)
+                    .await
+                    .unwrap();
+            })
+        };
+        let upd = |req: UpdateUserReq| -> Step<'_> {
+            let db = &db;
+            Box::pin(async move { update(db, u, req).await.unwrap() })
+        };
+        let cases: Vec<(&str, Step<'_>, bool)> = vec![
+            (
+                "traffic limit change",
+                upd(UpdateUserReq {
+                    traffic_limit_bytes: Some(Some(1 << 40)),
+                    ..Default::default()
+                }),
+                false,
+            ),
+            (
+                "expiry change",
+                upd(UpdateUserReq {
+                    expires_at: Some(Some(Utc::now() + chrono::Duration::days(30))),
+                    ..Default::default()
+                }),
+                false,
+            ),
+            (
+                "billing update",
+                sql("UPDATE users SET traffic_used_bytes = traffic_used_bytes + 1 WHERE id = $1"),
+                false,
+            ),
+            (
+                "enable (already enabled)",
+                upd(UpdateUserReq {
+                    enabled: Some(Some(true)),
+                    ..Default::default()
+                }),
+                false,
+            ),
+            (
+                "API password change",
+                upd(UpdateUserReq {
+                    password: Some(Some("another-password".into())),
+                    ..Default::default()
+                }),
+                true,
+            ),
+            // Re-enabling must not revive the sessions the disable ended.
+            (
+                "API disable, then re-enable",
+                Box::pin(async {
+                    update(
+                        &db,
+                        u,
+                        UpdateUserReq {
+                            enabled: Some(Some(false)),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    update(
+                        &db,
+                        u,
+                        UpdateUserReq {
+                            enabled: Some(Some(true)),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap();
+                }),
+                true,
+            ),
+            (
+                "API role change",
+                upd(UpdateUserReq {
+                    role: Some(Some("admin".into())),
+                    ..Default::default()
+                }),
+                true,
+            ),
+            (
+                "API role back",
+                upd(UpdateUserReq {
+                    role: Some(Some("user".into())),
+                    ..Default::default()
+                }),
+                true,
+            ),
+            (
+                "CLI password reset (admin passwd)",
+                sql("UPDATE users SET password_hash = 'x' WHERE id = $1"),
+                true,
+            ),
+            (
+                "traffic-limit enforcement",
+                Box::pin(async {
+                    sqlx::query("UPDATE users SET traffic_limit_bytes = 1, traffic_used_bytes = 5 WHERE id = $1")
+                    .bind(u).execute(&db.pool).await.unwrap();
+                    let mut tx = db.pool.begin().await.unwrap();
+                    crate::enforce::apply_traffic_limits(&mut tx).await.unwrap();
+                    tx.commit().await.unwrap();
+                    sqlx::query(
+                        "UPDATE users SET enabled = true, traffic_limit_bytes = NULL WHERE id = $1",
+                    )
+                    .bind(u)
+                    .execute(&db.pool)
+                    .await
+                    .unwrap();
+                }),
+                true,
+            ),
+            (
+                "expiry enforcement",
+                Box::pin(async {
+                    sqlx::query(
+                        "UPDATE users SET expires_at = now() - interval '1 hour' WHERE id = $1",
+                    )
+                    .bind(u)
+                    .execute(&db.pool)
+                    .await
+                    .unwrap();
+                    let mut tx = db.pool.begin().await.unwrap();
+                    crate::enforce::apply_expiry(&mut tx).await.unwrap();
+                    tx.commit().await.unwrap();
+                    sqlx::query("UPDATE users SET expires_at = NULL WHERE id = $1")
+                        .bind(u)
+                        .execute(&db.pool)
+                        .await
+                        .unwrap();
+                }),
+                true,
+            ),
+            (
+                "admin revoke-sessions",
+                Box::pin(async {
+                    revoke_sessions(
+                        State(state.clone()),
+                        admin_user(admin),
+                        Path(("p".into(), u)),
+                    )
+                    .await
+                    .unwrap();
+                }),
+                true,
+            ),
+        ];
+        for (name, step, revokes) in cases {
+            let before = token_for(&state, u).await;
+            assert!(live(&state, &before).await, "{name}: fresh token live");
+            step.await;
+            assert_eq!(!live(&state, &before).await, revokes, "{name}");
+            assert!(
+                live(&state, &token_for(&state, u).await).await,
+                "{name}: new login works"
+            );
+        }
+        // Unknown account.
+        let e = revoke_sessions(
+            State(state.clone()),
+            admin_user(admin),
+            Path(("p".into(), Uuid::new_v4())),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.status(), StatusCode::NOT_FOUND);
+        // Non-admins cannot revoke.
+        let e = revoke_sessions(
+            State(state.clone()),
+            AuthUser {
+                id: u,
+                login: "u".into(),
+                role: "user".into(),
+            },
+            Path(("p".into(), admin)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.status(), StatusCode::FORBIDDEN);
+        // A token without `sv` (issued before 0009) is refused.
+        let legacy = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+            &json!({"sub": u, "role": "user", "iat": 0, "exp": 4_000_000_000u64}),
+            &jsonwebtoken::EncodingKey::from_secret(state.jwt_secret().as_bytes()),
+        )
+        .unwrap();
+        assert!(!live(&state, &legacy).await);
+        drop(state);
+        db.drop().await;
+    }
+
+    /// Logout kills the presented session — and every other session of the
+    /// account (a stolen copy of the cookie dies with it); a stale or
+    /// garbage cookie just gets cleared.
+    #[tokio::test]
+    async fn logout_revokes_copies_of_the_cookie() {
+        use axum_extra::extract::cookie::Cookie;
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let u = db.user().await;
+        let state = AppState::for_test(db.pool.clone()).await;
+        let mine = token_for(&state, u).await;
+        let stolen = mine.clone();
+        let other_device = token_for(&state, u).await;
+        let jar = CookieJar::new().add(Cookie::new(COOKIE_NAME, mine.clone()));
+        let res = logout(State(state.clone()), jar).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let set = res
+            .headers()
+            .get(axum::http::header::SET_COOKIE)
+            .expect("removal cookie")
+            .to_str()
+            .unwrap();
+        let c = Cookie::parse(set.to_string()).unwrap();
+        assert_eq!((c.name(), c.value()), (COOKIE_NAME, ""));
+        assert_eq!(c.max_age(), Some(time::Duration::ZERO));
+        assert!(!live(&state, &stolen).await, "copied cookie dead");
+        assert!(!live(&state, &other_device).await, "logged out everywhere");
+        let sv: i64 = sqlx::query_scalar("SELECT session_ver FROM users WHERE id = $1")
+            .bind(u)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        // Logging out again with the dead cookie bumps nothing.
+        for garbage in [mine.as_str(), "not-a-jwt"] {
+            let jar = CookieJar::new().add(Cookie::new(COOKIE_NAME, garbage.to_string()));
+            let res = logout(State(state.clone()), jar).await;
+            assert_eq!(res.status(), StatusCode::OK);
+        }
+        let res = logout(State(state.clone()), CookieJar::new()).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let sv2: i64 = sqlx::query_scalar("SELECT session_ver FROM users WHERE id = $1")
+            .bind(u)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(sv, sv2);
+        drop(state);
+        db.drop().await;
+    }
+
+    /// An admin changing their own password keeps working (fresh cookie);
+    /// their other sessions die.
+    #[tokio::test]
+    async fn own_password_change_reissues_the_cookie() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let a = db.admin().await;
+        let state = AppState::for_test(db.pool.clone()).await;
+        let old = token_for(&state, a).await;
+        let (jar, _) = update_user(
+            State(state.clone()),
+            admin_user(a),
+            CookieJar::new(),
+            Path(("p".into(), a)),
+            ApiJson(UpdateUserReq {
+                password: Some(Some("brand-new-password".into())),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(!live(&state, &old).await);
+        let fresh = jar.get(COOKIE_NAME).expect("reissued cookie");
+        assert!(live(&state, fresh.value()).await);
+        assert_eq!(fresh.secure(), Some(true), "cookie_secure defaults to true");
+        drop(state);
+        db.drop().await;
+    }
+
+    #[tokio::test]
+    async fn last_enabled_admin_cannot_be_removed() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let a = db.admin().await;
+        let conflict = |r: Result<(), ApiError>| {
+            let e = r.expect_err("expected 409");
+            assert_eq!(e.status(), StatusCode::CONFLICT);
+            assert_eq!(e.message(), "cannot remove the last enabled admin");
+        };
+        conflict(
+            update(
+                &db,
+                a,
+                UpdateUserReq {
+                    enabled: Some(Some(false)),
+                    ..Default::default()
+                },
+            )
+            .await,
+        );
+        conflict(
+            update(
+                &db,
+                a,
+                UpdateUserReq {
+                    role: Some(Some("user".into())),
+                    ..Default::default()
+                },
+            )
+            .await,
+        );
+        let mut tx = db.pool.begin().await.unwrap();
+        conflict(apply_delete_user(&mut tx, a).await.map(|_| ()));
+        drop(tx);
+        // Harmless changes to the last admin still work.
+        update(
+            &db,
+            a,
+            UpdateUserReq {
+                password: Some(Some("new-password-1".into())),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        update(
+            &db,
+            a,
+            UpdateUserReq {
+                enabled: Some(Some(true)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        // With a second enabled admin either may go, but not both.
+        let b = db.admin().await;
+        update(
+            &db,
+            a,
+            UpdateUserReq {
+                enabled: Some(Some(false)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        conflict(
+            update(
+                &db,
+                b,
+                UpdateUserReq {
+                    role: Some(Some("user".into())),
+                    ..Default::default()
+                },
+            )
+            .await,
+        );
+        // A disabled admin does not count and may be deleted.
+        let mut tx = db.pool.begin().await.unwrap();
+        apply_delete_user(&mut tx, a).await.unwrap();
+        tx.commit().await.unwrap();
+        // A newly promoted user makes room.
+        let u = db.user().await;
+        update(
+            &db,
+            u,
+            UpdateUserReq {
+                role: Some(Some("admin".into())),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let mut tx = db.pool.begin().await.unwrap();
+        apply_delete_user(&mut tx, b).await.unwrap();
+        tx.commit().await.unwrap();
+        // Direct SQL is guarded too (the trigger, not the handler).
+        let e = sqlx::query("UPDATE users SET enabled = false WHERE role = 'admin'")
+            .execute(&db.pool)
+            .await
+            .unwrap_err();
+        assert_eq!(ApiError::from(e).status(), StatusCode::CONFLICT);
+        let e = sqlx::query("DELETE FROM users")
+            .execute(&db.pool)
+            .await
+            .unwrap_err();
+        assert_eq!(ApiError::from(e).status(), StatusCode::CONFLICT);
+        db.drop().await;
+    }
+
+    /// Two admins demoting each other at the same time: exactly one wins.
+    #[tokio::test]
+    async fn concurrent_mutual_demotion_leaves_one_admin() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        // Deterministic interleaving: T1 demotes b and holds its tx open;
+        // T2 (demote a) must wait for it and then fail.
+        let (a, b) = (db.admin().await, db.admin().await);
+        let demote = UpdateUserReq {
+            role: Some(Some("user".into())),
+            ..Default::default()
+        };
+        let mut t1 = db.pool.begin().await.unwrap();
+        apply_update_user(&mut t1, b, &demote).await.unwrap();
+        let pool = db.pool.clone();
+        let t2 = tokio::spawn(async move {
+            let mut t2 = pool.begin().await.unwrap();
+            let r = apply_update_user(
+                &mut t2,
+                a,
+                &UpdateUserReq {
+                    role: Some(Some("user".into())),
+                    ..Default::default()
+                },
+            )
+            .await;
+            match r {
+                Ok(_) => t2.commit().await.map_err(ApiError::from),
+                Err(e) => Err(e),
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!t2.is_finished(), "T2 must wait for T1's guard lock");
+        t1.commit().await.unwrap();
+        let e = t2.await.unwrap().expect_err("second demotion must fail");
+        assert_eq!(e.status(), StatusCode::CONFLICT);
+
+        // Free-running races, disable vs demote vs delete.
+        for round in 0..15 {
+            let (x, y) = (db.admin().await, db.admin().await);
+            // Everyone else stops being an enabled admin (never the last:
+            // x and y remain).
+            sqlx::query("UPDATE users SET enabled = false WHERE role = 'admin' AND id <> ALL($1)")
+                .bind(vec![x, y])
+                .execute(&db.pool)
+                .await
+                .unwrap();
+            let go = |id: Uuid, kind: usize| {
+                let pool = db.pool.clone();
+                tokio::spawn(async move {
+                    let mut tx = pool.begin().await.unwrap();
+                    let r = match kind % 3 {
+                        0 => apply_update_user(
+                            &mut tx,
+                            id,
+                            &UpdateUserReq {
+                                enabled: Some(Some(false)),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .map(|_| ()),
+                        1 => apply_update_user(
+                            &mut tx,
+                            id,
+                            &UpdateUserReq {
+                                role: Some(Some("user".into())),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .map(|_| ()),
+                        _ => apply_delete_user(&mut tx, id).await.map(|_| ()),
+                    };
+                    match r {
+                        Ok(()) => tx.commit().await.map_err(ApiError::from),
+                        Err(e) => Err(e),
+                    }
+                })
+            };
+            let (r1, r2) = tokio::join!(go(x, round), go(y, round + 1));
+            let (r1, r2) = (r1.unwrap(), r2.unwrap());
+            assert!(r1.is_ok() != r2.is_ok(), "round {round}: exactly one wins");
+            let left: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM users WHERE role = 'admin' AND enabled")
+                    .fetch_one(&db.pool)
+                    .await
+                    .unwrap();
+            assert_eq!(left, 1, "round {round}");
+        }
+        db.drop().await;
+    }
+
+    // ----- S4-1: login rate limit behind proxies ----------------------
+
+    async fn account(db: &TestDb, password: &str) -> String {
+        let login = format!("acct-{}", Uuid::new_v4().simple());
+        sqlx::query("INSERT INTO users (id, login, password_hash) VALUES ($1, $2, $3)")
+            .bind(Uuid::new_v4())
+            .bind(&login)
+            .bind(auth::hash_password(password).unwrap())
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        login
+    }
+
+    /// A random public-looking IPv4 address (tests must not share Valkey
+    /// buckets across runs or with each other).
+    fn rand_v4() -> std::net::IpAddr {
+        let x: u32 = rand::random();
+        std::net::IpAddr::V4(std::net::Ipv4Addr::from(0x2d00_0000 | (x & 0x00ff_ffff)))
+    }
+
+    async fn try_login(
+        state: &AppState,
+        peer: std::net::IpAddr,
+        xff: Option<&str>,
+        login: &str,
+        password: &str,
+    ) -> StatusCode {
+        let mut headers = HeaderMap::new();
+        if let Some(x) = xff {
+            headers.insert("x-forwarded-for", x.parse().unwrap());
+        }
+        let r = super::login(
+            State(state.clone()),
+            ConnectInfo(SocketAddr::new(peer, 40000)),
+            headers,
+            CookieJar::new(),
+            Json(LoginReq {
+                login: login.into(),
+                password: password.into(),
+            }),
+        )
+        .await;
+        match r {
+            Ok(_) => StatusCode::OK,
+            Err(e) => e.status(),
+        }
+    }
+
+    async fn clear_rl(state: &AppState, ips: &[std::net::IpAddr], logins: &[&str]) {
+        use fred::prelude::*;
+        let mut keys = Vec::new();
+        for ip in ips {
+            for l in logins {
+                keys.extend(crate::login_limit::keys(&crate::client_ip::bucket(*ip), l));
+            }
+        }
+        let _: i64 = state.valkey().del(keys).await.unwrap();
+    }
+
+    /// Without trusted proxies X-Forwarded-For is ignored: rotating it does
+    /// not escape the peer's bucket. Successful logins never count; every
+    /// failure is the same 401.
+    #[tokio::test]
+    async fn login_limit_ignores_xff_from_untrusted_peers() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let state = AppState::for_test(db.pool.clone()).await;
+        let login = account(&db, "right-password").await;
+        let peer = rand_v4();
+        for _ in 0..30 {
+            assert_eq!(
+                try_login(&state, peer, None, &login, "right-password").await,
+                StatusCode::OK
+            );
+        }
+        let mut junk = Vec::new();
+        for i in 0..crate::login_limit::PER_IP {
+            let xff = format!("198.51.100.{i}");
+            // Wrong password and unknown account: the same 401.
+            let (l, p) = if i % 2 == 0 {
+                (login.as_str(), "wrong")
+            } else {
+                ("no-such-user", "x")
+            };
+            assert_eq!(
+                try_login(&state, peer, Some(&xff), l, p).await,
+                StatusCode::UNAUTHORIZED
+            );
+            junk.push(xff);
+        }
+        assert_eq!(
+            try_login(&state, peer, Some("203.0.113.99"), &login, "right-password").await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "a forged header does not open a new bucket"
+        );
+        // Another address is unaffected.
+        let other = rand_v4();
+        assert_eq!(
+            try_login(&state, other, None, &login, "right-password").await,
+            StatusCode::OK
+        );
+        clear_rl(&state, &[peer, other], &[&login, "no-such-user"]).await;
+        drop(state);
+        db.drop().await;
+    }
+
+    /// Behind a trusted proxy each forwarded client has its own bucket, a
+    /// spoofed left-hand XFF entry does not help, and the per-login bucket
+    /// still caps a distributed guesser.
+    #[tokio::test]
+    async fn login_limit_per_client_behind_trusted_proxy() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let proxy = rand_v4();
+        let state = AppState::for_test_with(db.pool.clone(), |c| {
+            c.web.trusted_proxies =
+                vec![crate::client_ip::Cidr::parse(&proxy.to_string()).unwrap()];
+        })
+        .await;
+        let login = account(&db, "right-password").await;
+        let (c1, c2) = (rand_v4(), rand_v4());
+        for _ in 0..crate::login_limit::PER_IP {
+            assert_eq!(
+                try_login(&state, proxy, Some(&c1.to_string()), &login, "wrong").await,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        assert_eq!(
+            try_login(
+                &state,
+                proxy,
+                Some(&c1.to_string()),
+                &login,
+                "right-password"
+            )
+            .await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        // The client prepends a forged hop: the proxy's appended entry wins.
+        assert_eq!(
+            try_login(
+                &state,
+                proxy,
+                Some(&format!("{c2}, {c1}")),
+                &login,
+                "right-password"
+            )
+            .await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        // Another client behind the same proxy is not locked out.
+        assert_eq!(
+            try_login(
+                &state,
+                proxy,
+                Some(&c2.to_string()),
+                &login,
+                "right-password"
+            )
+            .await,
+            StatusCode::OK
+        );
+        // Per-login bucket: failures from many clients add up.
+        let victim = account(&db, "victim-password").await;
+        let mut ips = vec![proxy, c1, c2];
+        for _ in 0..crate::login_limit::PER_LOGIN {
+            let c = rand_v4();
+            assert_eq!(
+                try_login(&state, proxy, Some(&c.to_string()), &victim, "guess").await,
+                StatusCode::UNAUTHORIZED
+            );
+            ips.push(c);
+        }
+        let fresh = rand_v4();
+        ips.push(fresh);
+        assert_eq!(
+            try_login(
+                &state,
+                proxy,
+                Some(&fresh.to_string()),
+                &victim,
+                "victim-password"
+            )
+            .await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        clear_rl(&state, &ips, &[&login, &victim]).await;
+        drop(state);
+        db.drop().await;
     }
 }

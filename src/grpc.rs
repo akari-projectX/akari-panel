@@ -93,7 +93,11 @@ pub(crate) async fn node_for_serial(
     .bind(serial)
     .fetch_one(pg)
     .await
-    .map_err(|e| Status::internal(e.to_string()))?;
+    .map_err(|e| {
+        // Details stay in the log; the agent learns nothing about the DB.
+        tracing::error!(serial, error = %e, "certificate lookup failed");
+        Status::unavailable("temporarily unavailable")
+    })?;
     if let Some(node) = revoked {
         return Ok(AgentIdentity::Revoked(node));
     }
@@ -639,6 +643,8 @@ struct Session {
     deleting: AtomicBool,
     /// This session marked the node online (nodes.online_session).
     marked_online: AtomicBool,
+    /// A pre-Hello traffic report was dropped (logged once per session).
+    pre_hello_warned: AtomicBool,
     online_session: Uuid,
     /// A reader-side read found the node gone: the watcher retires.
     gone: Notify,
@@ -663,6 +669,7 @@ impl Session {
             retiring: AtomicBool::new(revoked),
             deleting: AtomicBool::new(false),
             marked_online: AtomicBool::new(false),
+            pre_hello_warned: AtomicBool::new(false),
             online_session: Uuid::new_v4(),
             gone: Notify::new(),
             closed: tokio::sync::watch::channel(false).0,
@@ -732,6 +739,10 @@ impl Session {
     }
 }
 
+/// Status message of streams ended by a panel shutdown (S4-3); agents
+/// reconnect (to this instance once it is back, or another one).
+pub const SHUTDOWN_MESSAGE: &str = "panel shutting down";
+
 /// Upper bound of the random delay before re-reading after a wake-all.
 const WAKE_ALL_JITTER_MS: u64 = 2000;
 
@@ -755,6 +766,7 @@ async fn session<S>(
 {
     use crate::gen::agent_up::Msg as UpMsg;
 
+    let _live = state.session_started();
     let (node_id, revoked) = match identity {
         AgentIdentity::Node(n) => (n, false),
         AgentIdentity::Revoked(n) => (n, true),
@@ -770,17 +782,17 @@ async fn session<S>(
         let entry = crate::state::AgentEntry {
             gen,
             online_session: sess.online_session,
-            supersede: {
+            close: {
                 let weak = Arc::downgrade(&sess);
-                Arc::new(move || {
+                Arc::new(move |status: Status| {
                     if let Some(s) = weak.upgrade() {
-                        s.terminate(Status::aborted("superseded by a newer stream"));
+                        s.terminate(status);
                     }
                 })
             },
         };
         if let Some(old) = state.agents().insert(node_id, entry) {
-            (old.supersede)();
+            (old.close)(Status::aborted("superseded by a newer stream"));
         }
         // Traffic is only accepted for assigned users; load them before the
         // first report can arrive.
@@ -848,6 +860,12 @@ async fn session<S>(
                     None => break,
                 },
                 _ = sess.cancelled() => break,
+                // S4-3: also a session that started after the shutdown
+                // began (the value is sticky).
+                _ = state.shutdown_begun() => {
+                    sess.terminate(Status::unavailable(SHUTDOWN_MESSAGE));
+                    break;
+                }
             };
             if sess.retiring() {
                 // Only the agent's state and the ack of the empty state
@@ -906,6 +924,14 @@ async fn session<S>(
                     store_heartbeat(&state, node_id, &hb).await;
                 }
                 Some(UpMsg::Traffic(report)) => {
+                    // R14 N3: nothing is accepted from a stream before its
+                    // Hello (the agent always says Hello first).
+                    if !sess.sync.lock().unwrap().hello_seen {
+                        if !sess.pre_hello_warned.swap(true, Ordering::Relaxed) {
+                            tracing::warn!(node = %node_id, "traffic report before hello dropped");
+                        }
+                        continue;
+                    }
                     // Billed per the session the report carries; the agent
                     // reads it atomically with the counters (REVIEW P0 #2).
                     state.traffic().update(node_id, &report.session_id, &report);
@@ -2738,6 +2764,90 @@ mod tests {
         let r = tokio::time::timeout(Duration::from_secs(30), &mut a.task).await;
         eprintln!("RT3b-3 old session ended: {}", r.is_ok());
         assert!(r.is_ok(), "wedged session never terminates");
+        db.drop().await;
+    }
+
+    /// Wait until `cond` holds (bounded).
+    async fn until(what: &str, mut cond: impl FnMut() -> bool) {
+        for _ in 0..250 {
+            if cond() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    /// R14 N3: traffic reports before the stream's Hello are dropped.
+    #[tokio::test]
+    async fn traffic_before_hello_is_dropped() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = db.member().await;
+        let state = AppState::for_test(db.pool.clone()).await;
+        let mut a = spawn_agent(&state, AgentIdentity::Node(n));
+        a.traffic(u, 5_000_000).await; // before Hello: must not count
+        a.hello((0, 0), String::new()).await;
+        let _ = a.snapshot().await;
+        crate::traffic::flush_for_test(&db.pool, state.traffic()).await;
+        assert_eq!(db.used(u).await, 0, "pre-Hello report billed");
+        a.traffic(u, 100).await;
+        let st = state.clone();
+        until("post-Hello report buffered", || !st.traffic().is_empty()).await;
+        crate::traffic::flush_for_test(&db.pool, state.traffic()).await;
+        assert_eq!(db.used(u).await, 100);
+        drop(a);
+        drop(state);
+        db.drop().await;
+    }
+
+    /// S4-3: shutdown ends every stream with UNAVAILABLE (also one that
+    /// starts afterwards), waits for the sessions' cleanup, and the final
+    /// flush bills what was buffered last.
+    #[tokio::test]
+    async fn shutdown_ends_streams_and_final_flush_bills_last_batch() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = db.member().await;
+        let state = AppState::for_test(db.pool.clone()).await;
+        let mut a = spawn_agent(&state, AgentIdentity::Node(n));
+        a.hello((0, 0), String::new()).await;
+        let _ = a.snapshot().await;
+        a.traffic(u, 777).await;
+        let st = state.clone();
+        until("report buffered", || !st.traffic().is_empty()).await;
+        assert_eq!(db.used(u).await, 0, "nothing flushed yet");
+        assert_eq!(state.live_sessions(), 1);
+
+        assert!(crate::shutdown::end_sessions(&state, crate::shutdown::SESSION_DRAIN).await);
+        a.closed_with(tonic::Code::Unavailable).await;
+        assert_eq!(state.live_sessions(), 0);
+        assert!(state.agents().is_empty());
+        let status: String = sqlx::query_scalar("SELECT status FROM nodes WHERE id = $1")
+            .bind(n)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(status, "offline", "session cleanup ran before the flush");
+        // A no-ack failure is not recorded for a shutdown.
+        let failed: Option<i64> =
+            sqlx::query_scalar("SELECT failed_config_version FROM nodes WHERE id = $1")
+                .bind(n)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(failed, None);
+
+        // A stream arriving during the shutdown is ended at once.
+        let mut late = spawn_agent(&state, AgentIdentity::Node(n));
+        late.closed_with(tonic::Code::Unavailable).await;
+
+        assert!(crate::shutdown::final_flush(&state, crate::shutdown::FINAL_FLUSH).await);
+        assert_eq!(db.used(u).await, 777, "last batch billed");
+        drop((a, late));
+        drop(state);
         db.drop().await;
     }
 }

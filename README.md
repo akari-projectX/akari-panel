@@ -30,9 +30,15 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   guesses wrong — including the bare prefix and `/` — gets one identical
   empty 404 (no body, none of the panel's security headers).
 - `POST /{prefix}/auth/login` verifies argon2id hashes (timing-equalized for
-  unknown users, per-IP rate limit 20/15min via Valkey) and issues an HS256
-  JWT in an `HttpOnly` `SameSite=Strict` cookie (12h; Secure everywhere
-  except loopback binds).
+  unknown users; failed attempts rate limited per client address — IPv6 per
+  /64 — at 20/15min and per login name at 50/15min, in Valkey) and issues
+  an HS256 JWT in an `HttpOnly` `SameSite=Strict` cookie (12h; `Secure`
+  unless `web.cookie_secure = false`). The token carries the account's
+  `session_ver`: a password change, disable, role change, expiry, logout or
+  `POST /api/v1/users/{id}/revoke-sessions` ends every session of the
+  account (logout = log out everywhere; a copied cookie dies with it). The
+  last enabled admin cannot be disabled, demoted or deleted (409; enforced
+  by a DB trigger, race-free).
 - Admin API: user CRUD, node listing/enable, per-node xray `inbounds`
   editing, account generation + assignment (VLESS/VMess/Trojan credentials
   are panel-generated, one per inbound).
@@ -127,7 +133,7 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | POST | /auth/login | — | argon2id login, sets session cookie |
-| POST | /auth/logout | — | clears session cookie |
+| POST | /auth/logout | — | clears the cookie and ends all of the account's sessions |
 | GET | /api/v1/me | user | profile + traffic usage |
 | GET/POST | /api/v1/users | admin | list / create users |
 | PATCH/DELETE | /api/v1/users/{id} | admin | update / delete user |
@@ -136,11 +142,53 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | PATCH/DELETE | /api/v1/nodes/{id} | admin | enable / rename / billing cap override; delete (202, revokes the certificate) |
 | PUT | /api/v1/nodes/{id}/inbounds | admin | replace xray inbounds (bumps config_version) |
 | POST | /api/v1/users/{id}/sub-token | admin | regenerate subscription token |
+| POST | /api/v1/users/{id}/revoke-sessions | admin | log the account out everywhere (204) |
 | GET | /sub/{token} | token | subscription (UA-based format) |
 | GET | /healthz | — | panel liveness |
 
 Defaults bind web on `127.0.0.1:8080` and gRPC on `127.0.0.1:8443`; override
 via `panel.toml` (see `src/config.rs`) or `DATABASE_URL`/`VALKEY_URL`.
+`akari admin passwd <login>` resets a password (and ends its sessions).
+
+### Deployment behind a reverse proxy
+
+Serve the web port only through a TLS-terminating proxy (Caddy, nginx) and
+keep it bound to loopback or a private address. The gRPC port is **not**
+proxied: agents need direct mTLS to it.
+
+```toml
+[web]
+bind = "127.0.0.1:8080"
+cookie_secure = true                 # default; false only for plain-HTTP dev
+trusted_proxies = ["127.0.0.1/32"]   # the proxy's address(es) as seen by the panel
+```
+
+- The client address (login rate limit) is taken from `X-Forwarded-For`
+  **only** when the TCP peer is in `trusted_proxies`; it is the rightmost
+  hop that is not itself a trusted proxy. Anything a client writes into the
+  header is ignored, and requests from untrusted peers are attributed to
+  the peer. With the default (empty) list the header is never read — then
+  every client behind a proxy shares the proxy's bucket, so set it.
+- The proxy must **append** to `X-Forwarded-For` (nginx:
+  `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` Caddy
+  does this by default) and must not be reachable in a way that lets
+  clients connect to the panel directly from a trusted address.
+- Forward everything under the route prefix unchanged; do not add
+  distinguishing error pages for the panel's 404s.
+- Shutdown: `SIGTERM`/`SIGINT` stop accepting, end agent streams
+  (UNAVAILABLE, agents reconnect), run a final traffic flush (≤ 5 s) and
+  exit within ~10 s, inside `docker stop`'s default grace; with a
+  process manager allow at least 15 s.
+
+### Security advisory GO-2026-6443 (xray gRPC transport)
+
+The agent's `google.golang.org/grpc` (< v1.85.0) panics on a request
+without `:authority`, and xray runs a grpc server for any inbound with
+`streamSettings.network = "grpc"` (alias `"gun"`), so any unauthenticated
+client could crash the agent. Until the agent ships the fixed grpc, `PUT
+/nodes/{id}/inbounds` refuses such inbounds (400, any case, Go-json key
+folding). Inbounds stored before this check are left as they are: the node
+list shows them under `warnings`; replace them with another transport.
 
 Pinned versions: xray-core `v1.260327.0` (the Go module form of release
 v26.3.27 — Xray uses calendar tags, Go needs semver), axum 0.8, tonic 0.14,
@@ -237,7 +285,10 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   under-using node cannot bank a large burst. Only a recorded connectivity
   gap extends it: when an agent comes back online, the time since the node
   was last seen (at most the lease) is credited once, so traffic delayed by
-  an outage still bills in full. An unassigned user's pair only bills
+  an outage still bills in full. Likewise the panel's own flush outage
+  (database down while agents stayed connected): the first successful
+  flush after failures credits the time since this instance's last
+  successful flush (at most the lease) to the nodes it writes, once. An unassigned user's pair only bills
   traffic plausibly carried before the unassignment (+30 s), cumulatively
   across flushes.
 
