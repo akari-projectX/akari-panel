@@ -12,6 +12,24 @@ pub struct PanelConfig {
     pub valkey_url: String,
     pub web: WebConfig,
     pub grpc: GrpcConfig,
+    pub traffic: TrafficConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct TrafficConfig {
+    /// Plausibility cap: the most a single (node, user, session) may be
+    /// billed per second since its counters were last persisted. Excess is
+    /// not billed (the counter is still stored). Default 10 Gbit/s.
+    pub max_rate_bytes_per_sec: i64,
+}
+
+impl Default for TrafficConfig {
+    fn default() -> Self {
+        Self {
+            max_rate_bytes_per_sec: 1_250_000_000,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -41,6 +59,7 @@ impl Default for PanelConfig {
             valkey_url: "redis://127.0.0.1:6379".into(),
             web: WebConfig::default(),
             grpc: GrpcConfig::default(),
+            traffic: TrafficConfig::default(),
         }
     }
 }
