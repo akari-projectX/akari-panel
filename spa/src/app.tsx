@@ -70,7 +70,8 @@ function App() {
     navigate(`${appBase}/`);
   }
 
-  if (me.isPending || (unauthorized && totp.isPending)) return <UserSurface>{(t) => <Loading label={t("common.loading")} />}</UserSurface>;
+  if (me.isPending || (unauthorized && totp.isPending))
+    return <UserSurface>{(t) => <Loading label={t("common.loading")} />}</UserSurface>;
   if (me.isError) {
     if (unauthorized && totp.data?.stage === "enroll") {
       return (
@@ -95,11 +96,7 @@ function App() {
         </UserSurface>
       );
     }
-    return (
-      <UserSurface>
-        {() => <Login />}
-      </UserSurface>
-    );
+    return <UserSurface>{() => <Login />}</UserSurface>;
   }
 
   const user = me.data;

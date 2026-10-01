@@ -2,7 +2,7 @@ import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { NodeView, ReleaseView, RolloutView } from "../lib/api";
-import { fakeApi, renderWithClient } from "../test/harness";
+import { fakeApi, renderAdmin } from "../test/harness";
 import { AdminUpdates, parseWaves } from "./admin-updates";
 
 afterEach(() => {
@@ -45,7 +45,13 @@ const rollout = (over: Partial<RolloutView>): RolloutView => ({
   ...over,
 });
 
-const node = { id: "n1", name: "tokyo", enrolled: true, deleting_at: null, agent_version: "v1.0.0" } as unknown as NodeView;
+const node = {
+  id: "n1",
+  name: "tokyo",
+  enrolled: true,
+  deleting_at: null,
+  agent_version: "v1.0.0",
+} as unknown as NodeView;
 
 describe("parseWaves", () => {
   it("accepts ascending percentages ending at 100", () => {
@@ -67,11 +73,11 @@ describe("AdminUpdates", () => {
       "GET /nodes": [node],
       "POST /rollouts": () => ({ status: 201, body: rollout({}) }),
     });
-    renderWithClient(<AdminUpdates />);
-    await screen.findByText("ready");
-    fireEvent.change(screen.getByLabelText("Waves"), { target: { value: "25, 100" } });
+    renderAdmin(<AdminUpdates />);
+    await screen.findByText("就绪");
+    fireEvent.change(screen.getByLabelText("分批（waves）"), { target: { value: "25, 100" } });
     fireEvent.click(await screen.findByRole("checkbox"));
-    fireEvent.click(screen.getByRole("button", { name: "Start rollout" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始更新" }));
     await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.path === "/rollouts")).toBe(true));
     const body = calls.find((c) => c.method === "POST" && c.path === "/rollouts")?.body;
     expect(body).toEqual({
@@ -86,11 +92,11 @@ describe("AdminUpdates", () => {
 
   it("refuses malformed waves without calling the API", async () => {
     const calls = fakeApi({ "GET /agent-releases": [release], "GET /rollouts": [], "GET /nodes": [] });
-    renderWithClient(<AdminUpdates />);
-    await screen.findByText("ready");
-    fireEvent.change(screen.getByLabelText("Waves"), { target: { value: "50" } });
-    fireEvent.click(screen.getByRole("button", { name: "Start rollout" }));
-    expect((await screen.findByRole("alert")).textContent).toMatch(/waves/);
+    renderAdmin(<AdminUpdates />);
+    await screen.findByText("就绪");
+    fireEvent.change(screen.getByLabelText("分批（waves）"), { target: { value: "50" } });
+    fireEvent.click(screen.getByRole("button", { name: "开始更新" }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/分批/);
     expect(calls.some((c) => c.method === "POST")).toBe(false);
   });
 
@@ -103,11 +109,31 @@ describe("AdminUpdates", () => {
       ],
       "POST /rollouts/a/abort": rollout({ id: "a", status: "aborted" }),
     });
-    renderWithClient(<AdminUpdates />);
+    renderAdmin(<AdminUpdates />);
     await screen.findByText(/2 failed \/ 3 finished/);
-    expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Abort" }));
+    expect(screen.queryByRole("button", { name: "继续" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "暂停" })).toBeNull();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "中止" }));
     await waitFor(() => expect(calls.some((c) => c.path === "/rollouts/a/abort")).toBe(true));
+  });
+
+  it("asks before deleting a release and shows rollout states in Chinese", async () => {
+    const calls = fakeApi({
+      "GET /agent-releases": [release],
+      "GET /nodes": [],
+      "GET /rollouts": [rollout({ status: "paused" })],
+      "DELETE /agent-releases/rel1": () => ({ status: 204 }),
+    });
+    renderAdmin(<AdminUpdates />);
+    expect(await screen.findByText("已暂停")).toBeTruthy();
+    expect(screen.getByText("健康 1 · 等待 3")).toBeTruthy();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+    expect(confirm).toHaveBeenCalled();
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+    await waitFor(() => expect(calls.some((c) => c.method === "DELETE")).toBe(true));
   });
 });

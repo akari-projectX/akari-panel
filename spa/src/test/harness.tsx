@@ -5,9 +5,13 @@ import { render } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { vi } from "vitest";
 
+import { FixedLocale } from "../i18n";
+
 export interface Call {
   method: string;
   path: string;
+  /** The query string ("?limit=50&offset=0"), "" when none. */
+  search: string;
   body: unknown;
 }
 
@@ -19,9 +23,10 @@ export function fakeApi(routes: Routes): Call[] {
     "fetch",
     vi.fn(async (url: string, init?: RequestInit) => {
       const method = init?.method ?? "GET";
-      const path = new URL(url, "http://localhost").pathname.replace(/^.*\/api\/v1/, "");
+      const parsed = new URL(url, "http://localhost");
+      const path = parsed.pathname.replace(/^.*\/api\/v1/, "");
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
-      calls.push({ method, path, body });
+      calls.push({ method, path, search: parsed.search, body });
       const route = routes[`${method} ${path}`];
       if (route === undefined) {
         return new Response(JSON.stringify({ error: `no route ${method} ${path}` }), { status: 404 });
@@ -40,4 +45,9 @@ export function fakeApi(routes: Routes): Call[] {
 export function renderWithClient(ui: ReactElement) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
+
+/** Render an admin-console component the way the app does (Chinese pinned). */
+export function renderAdmin(ui: ReactElement) {
+  return renderWithClient(<FixedLocale locale="zh">{ui}</FixedLocale>);
 }

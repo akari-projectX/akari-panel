@@ -47,10 +47,7 @@ function numRawDataModules(ver: number): number {
 
 function numDataCodewords(ver: number, ecc: Ecc): number {
   const e = ECC_ORDINAL[ecc];
-  return (
-    Math.floor(numRawDataModules(ver) / 8) -
-    ECC_CODEWORDS_PER_BLOCK[e][ver] * NUM_ERROR_CORRECTION_BLOCKS[e][ver]
-  );
+  return Math.floor(numRawDataModules(ver) / 8) - ECC_CODEWORDS_PER_BLOCK[e][ver] * NUM_ERROR_CORRECTION_BLOCKS[e][ver];
 }
 
 // GF(2^8) with the QR polynomial 0x11D.

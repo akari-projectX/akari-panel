@@ -14,7 +14,6 @@ import { en } from "./en";
 import type { Locale, MessageKey, Messages, TFunction, Vars } from "./types";
 import { zh } from "./zh";
 
-
 export const LOCALES: readonly Locale[] = ["zh", "en"];
 const STORAGE_KEY = "akari.locale";
 const DICTS: Record<Locale, Messages> = { zh, en };

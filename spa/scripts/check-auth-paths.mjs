@@ -5,7 +5,9 @@
 // @tanstack/query-core. Usage: node scripts/check-auth-paths.mjs
 const [maj, min] = process.versions.node.split(".").map(Number);
 if (maj < 22 || (maj === 22 && min < 18)) {
-  console.error(`FAIL: Node ${process.versions.node} is too old: >= 22.18 is required to load TypeScript (type stripping).`);
+  console.error(
+    `FAIL: Node ${process.versions.node} is too old: >= 22.18 is required to load TypeScript (type stripping).`,
+  );
   process.exit(1);
 }
 const calls = [];

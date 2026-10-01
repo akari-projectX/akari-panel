@@ -8,21 +8,8 @@ import { errorText } from "../lib/errors";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../components/ui/table";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
 const PAGE = 50;
 
@@ -74,7 +61,12 @@ export function AdminAudit() {
         >
           <div className="space-y-1.5">
             <Label htmlFor="audit-actor">操作者</Label>
-            <Input id="audit-actor" placeholder="账号，或 cli / system" value={actor} onChange={(e) => setActor(e.target.value)} />
+            <Input
+              id="audit-actor"
+              placeholder="账号，或 cli / system"
+              value={actor}
+              onChange={(e) => setActor(e.target.value)}
+            />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="audit-action">操作</Label>

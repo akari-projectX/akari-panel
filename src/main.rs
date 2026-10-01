@@ -122,8 +122,8 @@ enum AdminCmd {
     /// set). Ends all of the account's sessions.
     Passwd { login: String },
     /// Remove an account's two-factor authentication (lost authenticator
-    /// and recovery codes) and end its sessions; an admin re-enrolls at the
-    /// next login with the one-time enrollment code printed here.
+    /// and recovery codes) and end its sessions; the account then logs in
+    /// with its password (and may set 2FA up again).
     #[command(name = "reset-2fa")]
     Reset2fa { login: String },
 }

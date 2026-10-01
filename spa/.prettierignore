@@ -1,0 +1,8 @@
+dist/
+node_modules/
+playwright-report/
+test-results/
+package-lock.json
+# Owned by the parallel R18 node-form work (W1): formatted when it merges.
+src/pages/admin-nodes.tsx
+*.md

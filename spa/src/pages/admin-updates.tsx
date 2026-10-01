@@ -21,14 +21,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../components/ui/table";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
 // Admin console (Chinese only).
 const ROLLOUT_STATUS: Record<string, string> = {
@@ -130,7 +123,12 @@ function Releases() {
         <div className="grid gap-3 sm:grid-cols-4">
           <div>
             <Label htmlFor="rel-manifest">清单（manifest）</Label>
-            <Input id="rel-manifest" type="file" accept=".json" onChange={(e) => setManifest(e.target.files?.[0] ?? null)} />
+            <Input
+              id="rel-manifest"
+              type="file"
+              accept=".json"
+              onChange={(e) => setManifest(e.target.files?.[0] ?? null)}
+            />
           </div>
           <div>
             <Label htmlFor="rel-sig">签名</Label>
@@ -161,12 +159,18 @@ function Releases() {
           </TableHeader>
           <TableBody>
             {releases.isPending && <TableNote colSpan={7}>加载中…</TableNote>}
-            {releases.isSuccess && releases.data.length === 0 && <TableNote colSpan={7}>还没有上传任何发布。</TableNote>}
+            {releases.isSuccess && releases.data.length === 0 && (
+              <TableNote colSpan={7}>还没有上传任何发布。</TableNote>
+            )}
             {(releases.data ?? []).map((r) => (
               <TableRow key={r.id}>
                 <TableCell>
                   {r.version}
-                  {r.rollback && <Badge variant="secondary" className="ml-2">回滚</Badge>}
+                  {r.rollback && (
+                    <Badge variant="secondary" className="ml-2">
+                      回滚
+                    </Badge>
+                  )}
                 </TableCell>
                 <TableCell>
                   {r.os}/{r.arch}
@@ -254,8 +258,8 @@ function Rollouts() {
           <h1>灰度更新</h1>
         </CardTitle>
         <CardDescription>
-          分批（waves）是所选节点按固定随机顺序的累计百分比。节点在超时时间内以新版本重新连接并确认配置即为健康；
-          失败数 / 已完成数超过比例时自动熔断。协议版本低于 3 的 agent 会被跳过。
+          分批（waves）是所选节点按固定随机顺序的累计百分比。节点在超时时间内以新版本重新连接并确认配置即为健康； 失败数
+          / 已完成数超过比例时自动熔断。协议版本低于 3 的 agent 会被跳过。
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -384,7 +388,9 @@ function RolloutRow({
           </button>
         </TableCell>
         <TableCell>
-          <Badge variant={r.status === "halted" ? "destructive" : "secondary"}>{ROLLOUT_STATUS[r.status] ?? r.status}</Badge>
+          <Badge variant={r.status === "halted" ? "destructive" : "secondary"}>
+            {ROLLOUT_STATUS[r.status] ?? r.status}
+          </Badge>
           {r.halted_reason && <div className="text-xs text-destructive">{r.halted_reason}</div>}
         </TableCell>
         <TableCell>
@@ -431,7 +437,9 @@ function RolloutRow({
                   <TableRow key={n.node_id}>
                     <TableCell>{n.name}</TableCell>
                     <TableCell>{n.wave + 1}</TableCell>
-                    <TableCell className={n.status === "failed" ? "text-destructive" : undefined}>{NODE_STATUS[n.status] ?? n.status}</TableCell>
+                    <TableCell className={n.status === "failed" ? "text-destructive" : undefined}>
+                      {NODE_STATUS[n.status] ?? n.status}
+                    </TableCell>
                     <TableCell>{n.from_version ?? "—"}</TableCell>
                     <TableCell>{n.agent_version ?? "—"}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{n.detail ?? ""}</TableCell>
