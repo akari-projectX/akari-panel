@@ -577,7 +577,11 @@ impl TrafficBuffer {
 /// Admission: only (node, user) pairs that are assigned (node_users) — or
 /// were until less than $10 s ago (node_users_departed: the final counters
 /// of an unassigned user arrive after the REMOVE) — are stored or billed: a
-/// node cannot bill users it does not serve.
+/// node cannot bill users it does not serve. Reports of a RETIRED (node,
+/// session) (traffic_sessions.retired_at, M2-5 retention) are refused too:
+/// its rows may be gone, and re-inserting one would re-bill the session's
+/// whole cumulative. Every admitted (node, session) is recorded in
+/// traffic_sessions.
 ///
 /// Credit window (R13): every cap counts time only back to the node's
 /// floor = now − $12 (the burst window), or further back to
@@ -619,7 +623,8 @@ WITH input AS (
     FROM nodes n WHERE n.id IN (SELECT DISTINCT node_id FROM input)
 ), classified AS (
     SELECT i.*,
-           (nu.node_id IS NOT NULL OR d.departed_at IS NOT NULL) AS is_member,
+           (nu.node_id IS NOT NULL OR d.departed_at IS NOT NULL) AND ts.retired_at IS NULL
+               AS is_member,
            CASE WHEN nu.node_id IS NOT NULL THEN NULL ELSE d.departed_at END AS departed_at,
            d.billed_bytes AS departed_billed,
            f.rate, f.traffic_tat, f.floor
@@ -629,8 +634,14 @@ WITH input AS (
            ON d.node_id = i.node_id AND d.user_id = i.user_id
           AND d.departed_at > statement_timestamp() - make_interval(secs => $10)
     LEFT JOIN nf f ON f.node_id = i.node_id
+    LEFT JOIN traffic_sessions ts ON ts.node_id = i.node_id AND ts.session_id = i.session_id
 ), member AS (
     SELECT * FROM classified WHERE is_member
+), new_sessions AS (
+    INSERT INTO traffic_sessions (node_id, session_id, first_seen_at)
+    SELECT DISTINCT node_id, session_id, statement_timestamp() FROM member
+    ON CONFLICT (node_id, session_id) DO NOTHING
+    RETURNING 1
 ), upsert AS (
     INSERT INTO traffic_counters AS c
         (node_id, user_id, session_id, up_bytes, down_bytes, updated_at, first_seen_at)
@@ -860,7 +871,7 @@ async fn write_rows(
     if !dn.is_empty() {
         tracing::warn!(
             rows = dn.len(),
-            "traffic for unassigned (node, user) pairs not billed"
+            "traffic for unassigned (node, user) pairs or retired sessions not billed"
         );
     }
     if clamped > 0 {
@@ -1031,6 +1042,159 @@ async fn prune_departed(pg: &sqlx::PgPool, grace_secs: u64) {
     {
         tracing::warn!(error = %e, "failed to prune departed node users");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Retention (M2-5).
+// ---------------------------------------------------------------------------
+
+/// Drain proof: the stream owning a node must stay up this long after its
+/// Hello. The agent sends its queued final reports right after Hello and
+/// drops each once the stream survived one traffic interval (10 s).
+pub const DRAIN_PROOF_SECS: u64 = 60;
+/// Retire a session only once the drain proof is this old: every instance
+/// has long since flushed (5 s tick) what it buffered for that session,
+/// even across a long flush outage. Late reports of a retired session are
+/// refused (under-billing at worst), so this bounds that risk, not
+/// correctness.
+pub const RETENTION_MARGIN_SECS: u64 = 3600;
+/// How often `retention_pass` runs (reaper loop, any instance).
+pub const RETENTION_EVERY: Duration = Duration::from_secs(600);
+/// Rows per DELETE statement.
+const RETENTION_BATCH: i64 = 10_000;
+
+/// Retire node $1's sessions that are provably dead: the node has a drain
+/// proof at least $2 s old (`finals_drained_at`: Hello time of a stream
+/// that stayed up DRAIN_PROOF_SECS), and the session was first seen before
+/// that Hello, is not the session that Hello carried, and is not the
+/// agent's current session. Such a session was superseded before the Hello,
+/// so the agent delivered its final report on that stream and will never
+/// send it again. Runs after locking the node row (serialized with flushes
+/// of the node).
+pub const RETIRE_SQL: &str = "\
+UPDATE traffic_sessions ts SET retired_at = now()
+FROM nodes n
+WHERE n.id = $1 AND ts.node_id = n.id
+  AND ts.retired_at IS NULL
+  AND n.finals_drained_at <= now() - make_interval(secs => $2)
+  AND ts.first_seen_at < n.finals_drained_at
+  AND ts.session_id IS DISTINCT FROM n.finals_drained_session
+  AND ts.session_id IS DISTINCT FROM n.agent_session
+RETURNING ts.session_id";
+
+/// Node ids present in traffic_counters whose node no longer exists (one
+/// index probe per distinct node: a loose scan of the primary key).
+pub const DEAD_NODES_SQL: &str = "\
+WITH RECURSIVE t AS (
+    (SELECT node_id FROM traffic_counters ORDER BY node_id LIMIT 1)
+    UNION ALL
+    SELECT (SELECT c.node_id FROM traffic_counters c WHERE c.node_id > t.node_id
+            ORDER BY c.node_id LIMIT 1)
+    FROM t WHERE t.node_id IS NOT NULL
+)
+SELECT node_id FROM t
+WHERE node_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id = t.node_id)";
+
+/// What one `retention_pass` did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Retention {
+    pub sessions_retired: u64,
+    pub rows_retired_session: u64,
+    pub rows_deleted_node: u64,
+}
+
+/// traffic_counters retention: delete only provably dead rows — those of
+/// deleted nodes, and those of retired sessions (`RETIRE_SQL`; the
+/// tombstone makes FLUSH_SQL refuse the session, so a deleted row can
+/// never be re-inserted and re-billed). Rows of a live session are never
+/// deleted, whatever their age: re-assigning a user would make its
+/// still-running cumulative counter bill again. Batched (RETENTION_BATCH
+/// rows per statement, each its own transaction); safe to run on several
+/// instances at once.
+pub async fn retention_pass(pg: &sqlx::PgPool, margin_secs: u64) -> anyhow::Result<Retention> {
+    let mut done = Retention::default();
+    // 1. Retire, node by node, under the node row lock.
+    let nodes: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM nodes WHERE finals_drained_at <= now() - make_interval(secs => $1) \
+         ORDER BY id",
+    )
+    .bind(margin_secs as f64)
+    .fetch_all(pg)
+    .await?;
+    for node in nodes {
+        let mut tx = pg.begin().await?;
+        sqlx::query("SELECT 1 FROM nodes WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(node)
+            .execute(&mut *tx)
+            .await?;
+        let retired: Vec<String> = sqlx::query_scalar(RETIRE_SQL)
+            .bind(node)
+            .bind(margin_secs as f64)
+            .fetch_all(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        if !retired.is_empty() {
+            tracing::info!(node = %node, sessions = retired.len(), "traffic sessions retired");
+        }
+        done.sessions_retired += retired.len() as u64;
+    }
+    // 2. Purge retired sessions' rows. FLUSH_SQL refuses them from the
+    // retirement's commit on, so the rows are frozen.
+    let retired: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT node_id, session_id FROM traffic_sessions \
+         WHERE retired_at IS NOT NULL AND purged_at IS NULL ORDER BY node_id, session_id",
+    )
+    .fetch_all(pg)
+    .await?;
+    for (node, session) in retired {
+        loop {
+            let n = sqlx::query(
+                "DELETE FROM traffic_counters WHERE ctid = ANY(ARRAY( \
+                 SELECT ctid FROM traffic_counters WHERE node_id = $1 AND session_id = $2 LIMIT $3))",
+            )
+            .bind(node)
+            .bind(&session)
+            .bind(RETENTION_BATCH)
+            .execute(pg)
+            .await?
+            .rows_affected();
+            done.rows_retired_session += n;
+            if n < RETENTION_BATCH as u64 {
+                break;
+            }
+        }
+        sqlx::query(
+            "UPDATE traffic_sessions SET purged_at = now() WHERE node_id = $1 AND session_id = $2",
+        )
+        .bind(node)
+        .bind(&session)
+        .execute(pg)
+        .await?;
+    }
+    // 3. Rows of deleted nodes (node ids are never reused; without
+    // node_users nothing can bill them).
+    let dead: Vec<Uuid> = sqlx::query_scalar(DEAD_NODES_SQL).fetch_all(pg).await?;
+    for node in dead {
+        loop {
+            let n = sqlx::query(
+                "DELETE FROM traffic_counters WHERE ctid = ANY(ARRAY( \
+                 SELECT ctid FROM traffic_counters WHERE node_id = $1 LIMIT $2))",
+            )
+            .bind(node)
+            .bind(RETENTION_BATCH)
+            .execute(pg)
+            .await?
+            .rows_affected();
+            done.rows_deleted_node += n;
+            if n < RETENTION_BATCH as u64 {
+                break;
+            }
+        }
+    }
+    crate::metrics::retention("session_retired", done.sessions_retired);
+    crate::metrics::retention("rows_retired_session", done.rows_retired_session);
+    crate::metrics::retention("rows_deleted_node", done.rows_deleted_node);
+    Ok(done)
 }
 
 pub async fn flush_loop(state: AppState) {
@@ -1283,6 +1447,175 @@ mod db_tests {
             }],
             ..Default::default()
         }
+    }
+
+    async fn rows_of(db: &TestDb, node: Uuid) -> Vec<(String, i64)> {
+        sqlx::query_as(
+            "SELECT session_id, up_bytes + down_bytes FROM traffic_counters \
+             WHERE node_id = $1 ORDER BY session_id",
+        )
+        .bind(node)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap()
+    }
+
+    /// M2-5: only provably dead sessions are retired and purged; live ones
+    /// (no drain proof, the current session, the session the proof's Hello
+    /// carried, a session first seen after that Hello) are never touched,
+    /// and a late report of a retired session is refused, never re-billed.
+    #[tokio::test]
+    async fn retention_purges_only_provably_dead_sessions() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = db.member().await;
+        let b = buf(&db).await;
+        for (sess, v) in [("old", 100u64), ("prev", 200), ("cur", 300)] {
+            b.update(n, sess, &report(u, v, 0));
+        }
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, 600);
+        let set_seen = |sess: &'static str, secs_ago: i64| {
+            let pool = db.pool.clone();
+            async move {
+                sqlx::query(
+                    "UPDATE traffic_sessions SET first_seen_at = now() - make_interval(secs => $3) \
+                     WHERE node_id = $1 AND session_id = $2",
+                )
+                .bind(n)
+                .bind(sess)
+                .bind(secs_ago as f64)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+        };
+        set_seen("old", 7200).await;
+        set_seen("prev", 7000).await;
+        set_seen("cur", 10).await; // first seen after the proof's Hello
+        let none = Retention::default();
+        // No drain proof yet: nothing retired, nothing deleted.
+        assert_eq!(retention_pass(&db.pool, 0).await.unwrap(), none);
+        // Proof: a stream whose Hello carried "prev", 1 h ago; the agent
+        // now runs "cur". "old" was superseded before that Hello.
+        sqlx::query(
+            "UPDATE nodes SET agent_session = 'cur', agent_session_at = now(), \
+             finals_drained_session = 'prev', finals_drained_at = now() - interval '3600 seconds' \
+             WHERE id = $1",
+        )
+        .bind(n)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        // Proof younger than the margin: nothing.
+        assert_eq!(retention_pass(&db.pool, 7200).await.unwrap(), none);
+        let r = retention_pass(&db.pool, 60).await.unwrap();
+        assert_eq!(r.sessions_retired, 1);
+        assert_eq!(r.rows_retired_session, 1);
+        assert_eq!(
+            rows_of(&db, n).await,
+            vec![("cur".to_string(), 300), ("prev".to_string(), 200)]
+        );
+        // Idempotent.
+        assert_eq!(retention_pass(&db.pool, 60).await.unwrap(), none);
+        // A late (or replayed) report of the retired session, even from a
+        // fresh buffer: refused — not stored, not billed.
+        let fresh = buf(&db).await;
+        fresh.update(n, "old", &report(u, 5000, 0));
+        fresh.update(n, "cur", &report(u, 350, 0));
+        db.flush(&fresh).await;
+        assert_eq!(db.used(u).await, 650);
+        assert_eq!(
+            rows_of(&db, n).await,
+            vec![("cur".to_string(), 350), ("prev".to_string(), 200)]
+        );
+        // The agent's current session is never retired, whatever the proof
+        // says (e.g. a newer Hello on another stream).
+        sqlx::query(
+            "UPDATE nodes SET agent_session = 'prev', finals_drained_session = 'x' WHERE id = $1",
+        )
+        .bind(n)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(retention_pass(&db.pool, 60).await.unwrap(), none);
+        db.drop().await;
+    }
+
+    /// M2-5: rows of a deleted node are purged; other nodes' rows are not.
+    #[tokio::test]
+    async fn retention_purges_deleted_nodes_rows() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (a, u) = db.member().await;
+        let c = db.node().await;
+        db.assign(c, u).await;
+        let b = buf(&db).await;
+        b.update(a, "s", &report(u, 10, 0));
+        b.update(c, "s", &report(u, 20, 0));
+        db.flush(&b).await;
+        sqlx::query("DELETE FROM nodes WHERE id = $1")
+            .bind(a)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let r = retention_pass(&db.pool, 60).await.unwrap();
+        assert_eq!(r.rows_deleted_node, 1);
+        assert!(rows_of(&db, a).await.is_empty());
+        assert_eq!(rows_of(&db, c).await, vec![("s".to_string(), 20)]);
+        db.drop().await;
+    }
+
+    /// M2-5: the drain proof is only recorded once the stream owning the
+    /// node has been up DRAIN_PROOF_SECS since its Hello.
+    #[tokio::test]
+    async fn drain_proof_needs_a_stable_stream() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let n = db.node().await;
+        let state = crate::state::AppState::for_test(db.pool.clone()).await;
+        let mine = Uuid::new_v4();
+        let set = |secs_ago: i64, owner: Uuid| {
+            let pool = db.pool.clone();
+            async move {
+                sqlx::query(
+                    "UPDATE nodes SET online_session = $2, agent_session = 'cur', \
+                     agent_session_at = now() - make_interval(secs => $3) WHERE id = $1",
+                )
+                .bind(n)
+                .bind(owner)
+                .bind(secs_ago as f64)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+        };
+        let proof = || {
+            let pool = db.pool.clone();
+            async move {
+                sqlx::query_as::<_, (Option<String>, bool)>(
+                    "SELECT finals_drained_session, finals_drained_at IS NOT NULL \
+                     FROM nodes WHERE id = $1",
+                )
+                .bind(n)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        set(10, mine).await; // too young
+        state.persist_online(&[n], &[mine]).await.unwrap();
+        assert_eq!(proof().await, (None, false));
+        set(DRAIN_PROOF_SECS as i64 + 5, Uuid::new_v4()).await; // not our stream
+        state.persist_online(&[n], &[mine]).await.unwrap();
+        assert_eq!(proof().await, (None, false));
+        set(DRAIN_PROOF_SECS as i64 + 5, mine).await;
+        state.persist_online(&[n], &[mine]).await.unwrap();
+        assert_eq!(proof().await, (Some("cur".to_string()), true));
+        db.drop().await;
     }
 
     /// M2: a backlog larger than one flush chunk (here 2.5 chunks, one

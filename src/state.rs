@@ -169,19 +169,29 @@ impl AppState {
 impl AppState {
     /// Refresh the rows this instance's sessions still own, locking them in
     /// id order first (global lock order; flushes lock nodes too).
-    async fn persist_online(&self, ids: &[Uuid], sessions: &[Uuid]) -> sqlx::Result<()> {
+    pub(crate) async fn persist_online(&self, ids: &[Uuid], sessions: &[Uuid]) -> sqlx::Result<()> {
         let mut tx = self.pg().begin().await?;
         sqlx::query("SELECT 1 FROM nodes WHERE id = ANY($1) ORDER BY id FOR NO KEY UPDATE")
             .bind(ids)
             .execute(&mut *tx)
             .await?;
+        // M2-5 drain proof: this instance's stream that owns the node has
+        // been up >= DRAIN_PROOF_SECS since its latest Hello, so the agent
+        // has sent (and confirmed) every final report it queued before that
+        // Hello. traffic::retention_pass retires sessions superseded before
+        // finals_drained_at.
         sqlx::query(
-            "UPDATE nodes n SET status = 'online', last_seen_at = now() \
+            "UPDATE nodes n SET status = 'online', last_seen_at = now(), \
+             finals_drained_session = CASE WHEN n.agent_session_at <= now() - make_interval(secs => $3) \
+                 THEN n.agent_session ELSE n.finals_drained_session END, \
+             finals_drained_at = CASE WHEN n.agent_session_at <= now() - make_interval(secs => $3) \
+                 THEN n.agent_session_at ELSE n.finals_drained_at END \
              FROM unnest($1::uuid[], $2::uuid[]) AS s(id, sess) \
              WHERE n.id = s.id AND n.online_session = s.sess",
         )
         .bind(ids)
         .bind(sessions)
+        .bind(crate::traffic::DRAIN_PROOF_SECS as f64)
         .execute(&mut *tx)
         .await?;
         tx.commit().await
