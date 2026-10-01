@@ -67,7 +67,13 @@ printf '\n[updates]\nrelease_keys = ["%s TEST-ONLY"]\n' "$TEST_RELEASE_PUB" >>"$
 "$PANEL" -c "$LOG/panel.toml" serve >"$LOG/panel.log" 2>&1 &
 PANEL_PID=$!
 trap 'cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
-sleep 2
+# Poll instead of a fixed sleep: migrations run before the listener binds.
+for _ in $(seq 1 100); do
+  (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null && break
+  kill -0 "$PANEL_PID" 2>/dev/null || { echo "FAIL: panel exited during startup"; cat "$LOG/panel.log"; exit 1; }
+  sleep 0.3
+done
+(exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null || { echo "FAIL: panel not listening"; cat "$LOG/panel.log"; exit 1; }
 
 # Reset AFTER startup: fresh volumes have no tables until the panel migrates,
 # and Valkey rate-limit counters would poison the next run's login test.
@@ -315,7 +321,7 @@ echo "sub token + rate limit: ok"
 echo "== start agent: initial snapshot =="
 "$AGENT" -config "$BOOT" -state-dir "$LOG/state-main" >"$LOG/agent.log" 2>&1 &
 AGENT_PID=$!
-sleep 6
+for _ in $(seq 1 60); do grep -q "channel established" "$LOG/agent.log" && break; sleep 0.5; done
 grep -q '"msg":"enrolled"' "$LOG/agent.log" || { echo "FAIL: agent did not enroll"; cat "$LOG/agent.log"; exit 1; }
 grep -q "channel established" "$LOG/agent.log" || { echo "FAIL: agent channel"; exit 1; }
 for f in identity.pem enrolled.token.sha256; do
@@ -330,7 +336,7 @@ grep -q '"users":1' "$LOG/agent.log" || { echo "FAIL: initial snapshot without 1
 echo "== disable user: expect instant push =="
 [ "$(code -b "$JAR" -X PATCH "$BASE/api/v1/users/$USER_ID" -H 'Content-Type: application/json' \
     -d '{"enabled": false}')" = "200" ] || { echo "FAIL: disable user failed"; exit 1; }
-sleep 3
+for _ in $(seq 1 30); do grep -q '"users":0' "$LOG/agent.log" && break; sleep 0.5; done
 grep -q '"users":0' "$LOG/agent.log" || { echo "FAIL: agent did not converge to empty user set"; cat "$LOG/agent.log"; exit 1; }
 
 # --- Sprint 2: "disable means disabled" -----------------------------------
