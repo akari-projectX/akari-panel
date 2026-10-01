@@ -76,7 +76,7 @@ pub struct SwarmArgs {
     pub active_frac: f64,
     /// Report every user of the session (an agent reports every user with
     /// nonzero counters; a long session approaches all of them).
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub report_all: bool,
 }
 
