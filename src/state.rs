@@ -39,6 +39,8 @@ struct Inner {
     /// Bounds concurrent desired-state reads by agent sessions (a wake-all
     /// after a listener gap, or a mass reconnect, must not drain the pool).
     read_permits: tokio::sync::Semaphore,
+    /// Bounds concurrent artifact downloads (M6, `updates::fetch_artifact`).
+    fetch_permits: Arc<tokio::sync::Semaphore>,
     gen: AtomicU64,
     /// Per-node wakeups for this instance's agent sessions, fed by the
     /// PostgreSQL LISTEN task (`crate::notify`). There is no in-process
@@ -71,6 +73,7 @@ impl AppState {
     ) -> Self {
         let route_prefix = install.route_prefix.clone();
         let jwt_secret = install.jwt_secret.clone();
+        let fetch_permits = cfg.updates.max_concurrent_downloads.max(1);
         let traffic = TrafficBuffer::new();
         traffic.set_departed_grace(cfg.traffic.departed_grace_secs);
         Self(Arc::new(Inner {
@@ -82,6 +85,7 @@ impl AppState {
             valkey,
             agents: DashMap::new(),
             read_permits: tokio::sync::Semaphore::new(READ_PERMITS),
+            fetch_permits: Arc::new(tokio::sync::Semaphore::new(fetch_permits)),
             gen: AtomicU64::new(1),
             wakeups: crate::notify::Wakeups::default(),
             traffic,
@@ -113,6 +117,9 @@ impl AppState {
     }
     pub fn agents(&self) -> &DashMap<Uuid, AgentEntry> {
         &self.0.agents
+    }
+    pub fn fetch_permits(&self) -> &Arc<tokio::sync::Semaphore> {
+        &self.0.fetch_permits
     }
     pub fn read_permits(&self) -> &tokio::sync::Semaphore {
         &self.0.read_permits

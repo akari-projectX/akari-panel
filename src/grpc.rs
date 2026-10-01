@@ -30,6 +30,26 @@ type DownStream = Pin<Box<dyn Stream<Item = Result<PanelDown, Status>> + Send>>;
 #[tonic::async_trait]
 impl AgentChannel for AgentChannelService {
     type OpenChannelStream = DownStream;
+    type FetchArtifactStream = crate::updates::ChunkStream;
+
+    async fn fetch_artifact(
+        &self,
+        request: Request<crate::gen::FetchArtifactRequest>,
+    ) -> Result<Response<Self::FetchArtifactStream>, Status> {
+        // Same identity rules as the channel: a verified certificate of a
+        // live node (a deleted node's tombstoned one gets nothing).
+        let (serial, _) = crate::enroll::peer_cert(&request)?;
+        let ip = request.remote_addr().map(|a| a.ip());
+        let node = match node_for_serial_from(self.state.pg(), &serial, ip).await? {
+            AgentIdentity::Node(n) => n,
+            AgentIdentity::Revoked(_) => {
+                return Err(Status::unauthenticated("certificate revoked"))
+            }
+        };
+        crate::updates::fetch_artifact(&self.state, node, request.into_inner())
+            .await
+            .map(Response::new)
+    }
 
     async fn open_channel(
         &self,
@@ -844,6 +864,12 @@ struct Session {
     online_session: Uuid,
     /// A reader-side read found the node gone: the watcher retires.
     gone: Notify,
+    /// M6: what the latest Hello said (agent version, protocol, platform),
+    /// rollouts already offered on this stream, and whether an ok Ack must
+    /// be reported to the rollout health gate.
+    agent: Mutex<HelloInfo>,
+    offered: Mutex<Vec<Uuid>>,
+    update_watch: AtomicBool,
     /// Hello / ack of the empty state, while retiring.
     hello: Notify,
     retire_ack: Notify,
@@ -866,6 +892,9 @@ impl Session {
             deleting: AtomicBool::new(false),
             marked_online: AtomicBool::new(false),
             pre_hello_warned: AtomicBool::new(false),
+            agent: Mutex::default(),
+            offered: Mutex::default(),
+            update_watch: AtomicBool::new(false),
             online_session: Uuid::new_v4(),
             gone: Notify::new(),
             closed: tokio::sync::watch::channel(false).0,
@@ -1034,7 +1063,7 @@ async fn session<S>(
             }
             refresh_members(&sess.state, node_id).await;
             match sync_if_stale(&sess).await {
-                Ok(Synced::Current) => {}
+                Ok(Synced::Current) => maybe_offer_update(&sess).await,
                 Ok(Synced::Gone) => {
                     retire(&sess, "node deleted").await;
                     break;
@@ -1115,6 +1144,12 @@ async fn session<S>(
                         sync_if_stale(&sess).await,
                         "failed to sync after hello",
                     );
+                    on_hello_update(&sess, &hello).await;
+                }
+                Some(UpMsg::UpdateStatus(us)) => {
+                    if let Err(e) = crate::rollout::on_status(state.pg(), node_id, &us).await {
+                        tracing::warn!(node = %node_id, error = %e, "failed to record update status");
+                    }
                 }
                 Some(UpMsg::Heartbeat(hb)) => {
                     store_heartbeat(&state, node_id, &hb).await;
@@ -1155,6 +1190,7 @@ async fn session<S>(
                     match outcome {
                         AckOutcome::Converged => {
                             record_converged(state.pg(), node_id, v).await;
+                            note_update_health(&sess).await;
                             if sess.deleting.load(Ordering::SeqCst) {
                                 mark_delete_acked(state.pg(), node_id, v).await;
                             }
@@ -1388,6 +1424,97 @@ async fn record_too_old(pg: &sqlx::PgPool, node_id: Uuid, protocol: u32) {
 }
 
 /// Returns whether the node row now names this session as its owner.
+/// The agent fields of a Hello the update code needs.
+#[derive(Default, Clone)]
+struct HelloInfo {
+    version: String,
+    protocol: u32,
+    os: String,
+    arch: String,
+}
+
+fn lock_or_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// M6: after a Hello: remember the agent's version/platform, move a node
+/// that came back with a rollout's target version to `updating` (its next
+/// ok Ack makes it healthy), and offer an update if one is due.
+async fn on_hello_update(sess: &Session, hello: &crate::gen::Hello) {
+    let info = hello.info.clone().unwrap_or_default();
+    *lock_or_recover(&sess.agent) = HelloInfo {
+        version: info.agent_version.clone(),
+        protocol: hello.protocol_version,
+        os: info.os,
+        arch: info.arch,
+    };
+    if hello.protocol_version >= crate::updates::MIN_UPDATE_PROTOCOL
+        && !info.agent_version.is_empty()
+    {
+        match crate::rollout::on_hello(sess.state.pg(), sess.node_id, &info.agent_version).await {
+            Ok(true) => sess.update_watch.store(true, Ordering::SeqCst),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(node = %sess.node_id, error = %e, "rollout hello hook failed"),
+        }
+    }
+    maybe_offer_update(sess).await;
+}
+
+/// An ok Ack on a stream that came back with a rollout's target version:
+/// the node passed the health gate.
+async fn note_update_health(sess: &Session) {
+    if !sess.update_watch.load(Ordering::SeqCst) {
+        return;
+    }
+    let version = lock_or_recover(&sess.agent).version.clone();
+    match crate::rollout::on_converged(sess.state.pg(), sess.node_id, &version).await {
+        Ok(_) => sess.update_watch.store(false, Ordering::SeqCst),
+        Err(e) => tracing::warn!(node = %sess.node_id, error = %e, "rollout health hook failed"),
+    }
+}
+
+/// Sends the node's due UpdateOffer (protocol >= 3 only), at most once per
+/// stream and rollout.
+async fn maybe_offer_update(sess: &Session) {
+    let info = lock_or_recover(&sess.agent).clone();
+    if info.protocol < crate::updates::MIN_UPDATE_PROTOCOL || sess.retiring() || sess.terminated() {
+        return;
+    }
+    let offer = match crate::rollout::offer_for(
+        sess.state.pg(),
+        sess.node_id,
+        info.protocol,
+        &info.version,
+        (&info.os, &info.arch),
+    )
+    .await
+    {
+        Ok(Some(o)) => o,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!(node = %sess.node_id, error = %e, "update offer lookup failed");
+            return;
+        }
+    };
+    let Ok(rollout) = Uuid::parse_str(&offer.rollout_id) else {
+        return;
+    };
+    {
+        let mut offered = lock_or_recover(&sess.offered);
+        if offered.contains(&rollout) {
+            return;
+        }
+        offered.push(rollout);
+    }
+    let Some(guard) = sess.lock().await else {
+        return;
+    };
+    tracing::info!(node = %sess.node_id, rollout = %rollout, "sending update offer");
+    if let Err(e) = sess.send(&guard, DownMsg::UpdateOffer(offer)).await {
+        tracing::warn!(node = %sess.node_id, error = %e, "update offer send failed");
+    }
+}
+
 async fn mark_online(
     state: &AppState,
     node_id: Uuid,
@@ -1406,11 +1533,15 @@ async fn mark_online(
     )
     .await
     .is_ok();
-    let _ = sqlx::query("UPDATE nodes SET agent_protocol = $2 WHERE id = $1")
-        .bind(node_id)
-        .bind(hello.protocol_version as i32)
-        .execute(state.pg())
-        .await;
+    let _ = sqlx::query(
+        "UPDATE nodes SET agent_protocol = $2, agent_os = $3, agent_arch = $4 WHERE id = $1",
+    )
+    .bind(node_id)
+    .bind(hello.protocol_version as i32)
+    .bind(info.map(|i| i.os.as_str()).filter(|s| !s.is_empty()))
+    .bind(info.map(|i| i.arch.as_str()).filter(|s| !s.is_empty()))
+    .execute(state.pg())
+    .await;
     if owned {
         // M2-5: the agent's current traffic session, as of this Hello on
         // the stream that owns the node (traffic::retention_pass; the drain

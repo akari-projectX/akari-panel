@@ -7,7 +7,7 @@ use axum::{Json, Router};
 use serde_json::json;
 use subtle::ConstantTimeEq;
 
-use crate::{account, api, audit, plans, reject, spa, state::AppState, sub};
+use crate::{account, api, audit, plans, reject, rollout, spa, state::AppState, sub, updates};
 
 pub fn router(state: AppState) -> Router {
     // Routes carry the secret prefix as a {prefix} path parameter (handlers
@@ -111,6 +111,35 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/{prefix}/api/v1/nodes/{id}/inbounds",
             put(api::set_inbounds),
+        )
+        .route(
+            "/{prefix}/api/v1/agent-releases",
+            get(updates::list_releases).post(updates::create_release),
+        )
+        .route(
+            "/{prefix}/api/v1/agent-releases/{id}",
+            axum::routing::delete(updates::delete_release),
+        )
+        .route(
+            "/{prefix}/api/v1/agent-releases/{id}/binary",
+            put(updates::upload_binary),
+        )
+        .route(
+            "/{prefix}/api/v1/rollouts",
+            get(rollout::list_rollouts).post(rollout::create_rollout),
+        )
+        .route("/{prefix}/api/v1/rollouts/{id}", get(rollout::get_rollout))
+        .route(
+            "/{prefix}/api/v1/rollouts/{id}/pause",
+            post(rollout::pause_rollout),
+        )
+        .route(
+            "/{prefix}/api/v1/rollouts/{id}/resume",
+            post(rollout::resume_rollout),
+        )
+        .route(
+            "/{prefix}/api/v1/rollouts/{id}/abort",
+            post(rollout::abort_rollout),
         )
         .fallback(rejected)
         // Otherwise a wrong method on a real route (GET /{p}/auth/login)

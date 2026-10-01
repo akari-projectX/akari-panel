@@ -58,7 +58,18 @@ impl PanelConfig {
         self.validate_numbers(&mut r);
         self.validate_urls(&mut r);
         self.validate_proxy_consistency(&mut r);
+        self.validate_updates(&mut r);
         r
+    }
+
+    fn validate_updates(&self, r: &mut Report) {
+        let u = &self.updates;
+        if let Err(e) = crate::updates::parse_release_keys(&u.release_keys) {
+            r.err(format!("updates.release_keys: {e}"));
+        }
+        if !(1..=256).contains(&u.max_concurrent_downloads) {
+            r.err("updates.max_concurrent_downloads: must be 1..=256");
+        }
     }
 
     fn validate_addresses(&self, r: &mut Report) {

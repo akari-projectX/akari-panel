@@ -91,6 +91,32 @@ impl Client {
         }
     }
 
+    /// A raw (octet-stream) request body.
+    pub async fn put_raw(&self, path: &str, body: Vec<u8>) -> Resp {
+        let mut b = Request::builder()
+            .method(Method::PUT)
+            .uri(path)
+            .header(header::CONTENT_TYPE, "application/octet-stream");
+        if let Some(c) = &self.cookie {
+            b = b.header(header::COOKIE, format!("{}={c}", crate::auth::COOKIE_NAME));
+        }
+        let mut req = b.body(Body::from(body)).unwrap();
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::new(self.ip, 40000)));
+        let res = self.router.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let headers = res.headers().clone();
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec();
+        Resp {
+            status,
+            headers,
+            body,
+        }
+    }
+
     pub async fn get(&self, path: &str) -> Resp {
         self.req(Method::GET, path, None).await
     }
