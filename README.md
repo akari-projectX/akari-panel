@@ -44,6 +44,13 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
 - Admin API: user CRUD, node listing/enable, per-node xray `inbounds`
   editing, account generation + assignment (VLESS/VMess/Trojan credentials
   are panel-generated, one per inbound).
+- **Plans (M3)**: node groups, plans (traffic quota, monthly / every-N-days
+  / no reset, granted groups) and user plans. A user's nodes follow their
+  plan automatically — credentials are issued and revoked by the panel (see
+  "Plans and node groups" below); manual per-node assignment remains as an
+  admin override. Periodic traffic resets re-enable users disabled only for
+  quota. Users see their plan, usage, next reset, expiry and node list
+  (names/regions) in the portal and can change their password.
 - `akari node add <name>` (or `POST /api/v1/nodes`, or New node in the UI)
   creates the node with a one-time enrollment token and writes a bootstrap
   file without any private key: the agent generates its key (ECDSA P-256)
@@ -161,10 +168,17 @@ separate loopback listener, never on the public port.
 | POST | /api/v1/me/totp/confirm | any session | `{code, enrollment_code?}`: activate 2FA (admins: plus their one-time enrollment code), returns 10 recovery codes once |
 | POST | /api/v1/me/totp/recovery-codes | user | `{code}`: replace recovery codes |
 | POST | /api/v1/me/sub-token | user (role=user) | regenerate own subscription token (5/hour) |
+| GET | /api/v1/me/plan | user | own active plan (or null), usage, enforced limit/expiry, node names + regions |
+| POST | /api/v1/me/password | user/admin | `{current_password, new_password}`: change own password (wrong current = 400, counts against the login rate limit; other sessions end, this one continues) |
 | GET | /api/v1/audit | admin | audit log, `?limit&before&actor&action` (keyset, newest first) |
 | GET/POST | /api/v1/users | admin | list / create users |
 | PATCH/DELETE | /api/v1/users/{id} | admin | update / delete user |
-| POST/DELETE | /api/v1/users/{id}/nodes/{node_id} | admin | assign (generates account) / remove |
+| POST/DELETE | /api/v1/users/{id}/nodes/{node_id} | admin | manual override: assign (generates account, pins the pair) / remove (hands a plan-granted pair back to the plan; 409 on plan-managed rows) |
+| GET/PUT/PATCH/DELETE | /api/v1/users/{id}/plan | admin | active plan + history / assign or change `{plan_id, expires_at?, period_anchor?, reset_traffic?}` / `{expires_at?, period_anchor?}` / cancel |
+| GET/POST | /api/v1/node-groups | admin | list / create `{name, description?, node_ids?}` |
+| PATCH/DELETE | /api/v1/node-groups/{id} | admin | rename, describe, replace `node_ids` / delete |
+| GET/POST | /api/v1/plans | admin | list / create `{name, period, traffic_quota_bytes?, speed_limit_mbps?, device_seats?, sort?, enabled?, group_ids?}` |
+| PATCH/DELETE | /api/v1/plans/{id} | admin | update (same fields; null clears nullable ones) / delete (409 while users hold it) |
 | GET/POST | /api/v1/nodes | admin | node list with live status, certificate expiry, last heartbeat, warnings / create a node (201: one-time enrollment token + bootstrap file, shown once) |
 | POST | /api/v1/nodes/{id}/enroll-token | admin | new one-time enrollment token + bootstrap file (re-enrollment) |
 | PATCH/DELETE | /api/v1/nodes/{id} | admin | enable / rename / billing cap override; delete (202, revokes the certificate) |
@@ -326,6 +340,42 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   traffic plausibly carried before the unassignment (+30 s), cumulatively
   across flushes.
 
+## Plans and node groups
+
+- **Node groups** collect nodes (a node can be in many groups). **Plans**
+  grant groups and set a traffic quota (`null` = unlimited) and a reset
+  period: `monthly` (on the anchor's day of month, clamped to the month's
+  end, UTC), `days-N` (every N days, 1–3650) or `none`. `speed_limit_mbps`
+  is a hint shown to users and **not enforced**; `device_seats` is stored
+  for seat binding (M5) and **not enforced**. A disabled plan is no longer
+  offered for new assignments; existing subscribers keep it.
+- **User plans**: one active plan per user (admins cannot have one).
+  Assigning replaces the active plan; while it is active the user's
+  `traffic_limit_bytes` and `expires_at` are the plan's (PATCH /users
+  refuses to edit them, 409; renew with PATCH /users/{id}/plan). Cancel or
+  expiry ends the plan and removes plan access; the enforced limit/expiry
+  stay as they were.
+- **Entitlement**: the user's nodes = the members of their active plan's
+  groups. Every change to groups, memberships, plans, user plans or a node's
+  inbounds reconciles `node_users` in the same transaction: one credential
+  per eligible inbound (vless/vmess/trojan) is issued, credentials of
+  inbounds that still exist are kept (clients keep working across plan
+  changes), access no longer granted is revoked (final counters are still
+  billed for the departed grace), and exactly the affected nodes are bumped.
+- **Manual assignment is an override**: `POST /users/{id}/nodes/{node}` pins
+  the pair (the reconcile never touches it); `DELETE` hands a pinned pair
+  back to the plan when the plan grants it (credentials of still eligible
+  inbounds kept), or removes it. Assignments made before M3 are all pins:
+  to migrate, create groups/plans, assign the plans, then remove the pins.
+- **Quota and resets**: the traffic-limit pass disables over-quota users
+  with `disabled_reason = quota`. The period reset (any instance, every
+  flush tick, DB clock) zeroes usage once per period — restart-safe and
+  idempotent via `user_plans.next_reset_at`; missed periods collapse into
+  one reset — and re-enables users disabled **only** for quota; a plan
+  change that admits a quota-disabled user re-enables them too. An admin's
+  explicit disable (`disabled_reason = admin`) is never undone
+  automatically. Resets and plan expiry are audited with actor `system`.
+
 ## Accounts
 
 Only `role=user` accounts are proxy users. Admin accounts are never pushed
@@ -387,6 +437,11 @@ Run the CLI as the panel's service user, against the same `data/`
 directory (and database) the panel uses.
 
 ## Upgrading
+
+**M3 (plans) upgrade:** migration 0020 adds node groups, plans and user
+plans. Existing node assignments become manual overrides and keep working
+unchanged; existing disabled users get `disabled_reason = admin` (so no
+reset will ever re-enable them).
 
 **M1b (2FA) upgrade:** session tokens now carry a stage claim; every
 existing session is invalid after the upgrade (everyone logs in again), and
