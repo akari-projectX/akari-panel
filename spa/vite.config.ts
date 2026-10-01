@@ -10,7 +10,7 @@ export default defineConfig({
   // never imported by the app, so they are not in the bundle.
   test: {
     environment: "jsdom",
-    include: ["src/**/*.test.tsx"],
+    include: ["src/**/*.test.{ts,tsx}"],
     restoreMocks: true,
   },
 });

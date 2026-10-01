@@ -1,15 +1,17 @@
-import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 
-import { appBase, login as apiLogin } from "../lib/api";
-import { navigate } from "../lib/router";
 import { Button } from "../components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { LocaleSwitch, useT } from "../i18n";
+import { ApiError, login as apiLogin } from "../lib/api";
+import { errorText } from "../lib/errors";
 
 export function Login() {
   const queryClient = useQueryClient();
+  const t = useT();
   const [login, setLogin] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
@@ -18,32 +20,43 @@ export function Login() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setBusy(true);
     setError(null);
+    if (!login.trim() || !password) {
+      setError(t("login.required"));
+      return;
+    }
+    setBusy(true);
     try {
       const trimmed = code.trim();
       await apiLogin(trimmed ? { login, password, code: trimmed } : { login, password });
+      // Stay on the requested URL (deep links survive the login).
       await queryClient.resetQueries({ queryKey: ["totp"] });
       await queryClient.invalidateQueries({ queryKey: ["me"] });
-      navigate(`${appBase}/`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed");
+      // Every credential failure is the server's uniform 401: one message,
+      // no hint which part was wrong.
+      setError(err instanceof ApiError && err.status === 401 ? t("login.invalid") : errorText(err, t));
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center px-6">
+    <main className="flex min-h-screen flex-col items-center justify-center gap-4 px-4">
+      <div className="flex w-full max-w-sm justify-end">
+        <LocaleSwitch />
+      </div>
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle>Sign in</CardTitle>
-          <CardDescription>Use your account credentials.</CardDescription>
+          <CardTitle>
+            <h1>{t("login.title")}</h1>
+          </CardTitle>
+          <CardDescription>{t("login.subtitle")}</CardDescription>
         </CardHeader>
         <CardContent>
-          <form className="space-y-4" onSubmit={submit}>
+          <form className="space-y-4" onSubmit={submit} noValidate>
             <div className="space-y-1.5">
-              <Label htmlFor="login">Login</Label>
+              <Label htmlFor="login">{t("login.login")}</Label>
               <Input
                 id="login"
                 value={login}
@@ -53,7 +66,7 @@ export function Login() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="password">Password</Label>
+              <Label htmlFor="password">{t("login.password")}</Label>
               <Input
                 id="password"
                 type="password"
@@ -64,27 +77,31 @@ export function Login() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="code">Authentication code</Label>
+              <Label htmlFor="code">{t("login.code")}</Label>
               <Input
                 id="code"
                 value={code}
                 inputMode="numeric"
                 autoComplete="one-time-code"
-                placeholder="if two-factor is enabled"
+                placeholder={t("login.codePlaceholder")}
+                aria-describedby="code-hint"
                 onChange={(e) => setCode(e.target.value)}
               />
-              <p className="text-xs text-muted-foreground">
-                Authenticator code, or a recovery code. Leave empty if you have not set up two-factor
-                authentication.
+              <p id="code-hint" className="text-xs text-muted-foreground">
+                {t("login.codeHint")}
               </p>
             </div>
-            {error && <p className="text-sm text-destructive">{error}</p>}
+            {error && (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
             <Button className="w-full" type="submit" disabled={busy}>
-              {busy ? "Signing in..." : "Sign in"}
+              {busy ? t("login.submitting") : t("login.submit")}
             </Button>
           </form>
         </CardContent>
       </Card>
-    </div>
+    </main>
   );
 }

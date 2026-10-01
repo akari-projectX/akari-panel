@@ -13,6 +13,9 @@ import {
   type RolloutView,
 } from "../lib/api";
 import { humanBytes } from "../lib/utils";
+import { ErrorText, TableNote } from "../components/status";
+import { useT } from "../i18n";
+import { errorText } from "../lib/errors";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -27,7 +30,22 @@ import {
   TableRow,
 } from "../components/ui/table";
 
-const errText = (err: unknown, fallback: string) => (err instanceof Error ? err.message : fallback);
+// Admin console (Chinese only).
+const ROLLOUT_STATUS: Record<string, string> = {
+  running: "进行中",
+  paused: "已暂停",
+  halted: "已熔断",
+  aborted: "已中止",
+  completed: "已完成",
+};
+const NODE_STATUS: Record<string, string> = {
+  pending: "等待",
+  offered: "已下发",
+  updating: "更新中",
+  healthy: "健康",
+  failed: "失败",
+  skipped: "跳过",
+};
 
 /** "10, 50, 100" -> [10, 50, 100]; null when malformed. */
 export function parseWaves(text: string): number[] | null {
@@ -55,6 +73,7 @@ export function AdminUpdates() {
 }
 
 function Releases() {
+  const t = useT();
   const qc = useQueryClient();
   const releases = useQuery({ queryKey: ["releases"], queryFn: () => get<ReleaseView[]>("/agent-releases") });
   const [manifest, setManifest] = useState<File | null>(null);
@@ -77,19 +96,21 @@ function Releases() {
       setSig(null);
       setBinary(null);
     } catch (err) {
-      setError(errText(err, "upload failed"));
+      setError(errorText(err, t));
     } finally {
       setBusy(false);
       await qc.invalidateQueries({ queryKey: ["releases"] });
     }
   }
 
-  async function remove(id: string) {
+  async function remove(r: ReleaseView) {
+    if (!window.confirm(`删除发布 ${r.version}（${r.os}/${r.arch}）？`)) return;
+    const id = r.id;
     setError(null);
     try {
       await del(`/agent-releases/${id}`);
     } catch (err) {
-      setError(errText(err, "delete failed"));
+      setError(errorText(err, t));
     }
     await qc.invalidateQueries({ queryKey: ["releases"] });
   }
@@ -97,56 +118,55 @@ function Releases() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Agent releases</CardTitle>
+        <CardTitle>
+          <h2>Agent 发布</h2>
+        </CardTitle>
         <CardDescription>
-          Upload a release from the agent's GitHub release: the binary, its <code>.manifest.json</code> and{" "}
-          <code>.manifest.sig</code>. The panel checks the signature against <code>updates.release_keys</code>;
-          agents check it again against the keys compiled into them.
+          从 agent 的 GitHub Release 上传三个文件：二进制、<code>.manifest.json</code> 与 <code>.manifest.sig</code>。
+          面板先用 <code>updates.release_keys</code> 校验签名，agent 再用编译进自身的公钥校验一次。
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-4">
           <div>
-            <Label htmlFor="rel-manifest">Manifest</Label>
+            <Label htmlFor="rel-manifest">清单（manifest）</Label>
             <Input id="rel-manifest" type="file" accept=".json" onChange={(e) => setManifest(e.target.files?.[0] ?? null)} />
           </div>
           <div>
-            <Label htmlFor="rel-sig">Signature</Label>
+            <Label htmlFor="rel-sig">签名</Label>
             <Input id="rel-sig" type="file" accept=".sig" onChange={(e) => setSig(e.target.files?.[0] ?? null)} />
           </div>
           <div>
-            <Label htmlFor="rel-bin">Binary</Label>
+            <Label htmlFor="rel-bin">二进制</Label>
             <Input id="rel-bin" type="file" onChange={(e) => setBinary(e.target.files?.[0] ?? null)} />
           </div>
           <div className="flex items-end">
             <Button disabled={busy || !manifest || !sig || !binary} onClick={upload}>
-              {busy ? "Uploading…" : "Upload"}
+              {busy ? "上传中…" : "上传"}
             </Button>
           </div>
         </div>
-        {error && (
-          <p role="alert" className="text-sm text-destructive">
-            {error}
-          </p>
-        )}
+        <ErrorText>{error}</ErrorText>
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Version</TableHead>
-              <TableHead>Platform</TableHead>
-              <TableHead>Size</TableHead>
+              <TableHead>版本</TableHead>
+              <TableHead>平台</TableHead>
+              <TableHead>大小</TableHead>
               <TableHead>SHA-256</TableHead>
-              <TableHead>Key</TableHead>
-              <TableHead>State</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
+              <TableHead>公钥</TableHead>
+              <TableHead>状态</TableHead>
+              <TableHead className="text-right">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
+            {releases.isPending && <TableNote colSpan={7}>加载中…</TableNote>}
+            {releases.isSuccess && releases.data.length === 0 && <TableNote colSpan={7}>还没有上传任何发布。</TableNote>}
             {(releases.data ?? []).map((r) => (
               <TableRow key={r.id}>
                 <TableCell>
                   {r.version}
-                  {r.rollback && <Badge variant="secondary" className="ml-2">rollback</Badge>}
+                  {r.rollback && <Badge variant="secondary" className="ml-2">回滚</Badge>}
                 </TableCell>
                 <TableCell>
                   {r.os}/{r.arch}
@@ -156,10 +176,10 @@ function Releases() {
                   {r.sha256.slice(0, 16)}…
                 </TableCell>
                 <TableCell className="font-mono text-xs">{r.key_id}</TableCell>
-                <TableCell>{r.complete ? "ready" : "binary missing"}</TableCell>
+                <TableCell>{r.complete ? "就绪" : "缺少二进制"}</TableCell>
                 <TableCell className="text-right">
-                  <Button variant="ghost" size="sm" onClick={() => remove(r.id)}>
-                    Delete
+                  <Button variant="ghost" size="sm" onClick={() => remove(r)}>
+                    删除
                   </Button>
                 </TableCell>
               </TableRow>
@@ -172,6 +192,7 @@ function Releases() {
 }
 
 function Rollouts() {
+  const t = useT();
   const qc = useQueryClient();
   const rollouts = useQuery({
     queryKey: ["rollouts"],
@@ -194,7 +215,7 @@ function Rollouts() {
     setError(null);
     const w = parseWaves(waves);
     if (!w) {
-      setError("waves: ascending percentages ending at 100, e.g. 10, 50, 100");
+      setError("分批（waves）须为递增且以 100 结尾的百分比，例如 10, 50, 100");
       return;
     }
     const body: CreateRollout = {
@@ -209,17 +230,18 @@ function Rollouts() {
       await post<RolloutView>("/rollouts", body);
       setSelected([]);
     } catch (err) {
-      setError(errText(err, "create failed"));
+      setError(errorText(err, t));
     }
     await qc.invalidateQueries({ queryKey: ["rollouts"] });
   }
 
   async function act(id: string, action: "pause" | "resume" | "abort") {
+    if (action === "abort" && !window.confirm("中止这次灰度更新？未更新的节点将保持当前版本。")) return;
     setError(null);
     try {
       await post<RolloutView>(`/rollouts/${id}/${action}`, {});
     } catch (err) {
-      setError(errText(err, `${action} failed`));
+      setError(errorText(err, t));
     }
     await qc.invalidateQueries({ queryKey: ["rollouts"] });
     await qc.invalidateQueries({ queryKey: ["rollout", id] });
@@ -228,17 +250,18 @@ function Rollouts() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Rollouts</CardTitle>
+        <CardTitle>
+          <h1>灰度更新</h1>
+        </CardTitle>
         <CardDescription>
-          Waves are cumulative shares of the selected nodes, in a fixed random order. A node is healthy once it
-          reconnects with the new version and acknowledges its configuration within the timeout; the rollout halts
-          when failed / finished exceeds the ratio. Agents older than protocol 3 are skipped.
+          分批（waves）是所选节点按固定随机顺序的累计百分比。节点在超时时间内以新版本重新连接并确认配置即为健康；
+          失败数 / 已完成数超过比例时自动熔断。协议版本低于 3 的 agent 会被跳过。
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-6">
           <div>
-            <Label htmlFor="ro-version">Version</Label>
+            <Label htmlFor="ro-version">版本</Label>
             <select
               id="ro-version"
               className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm"
@@ -253,30 +276,30 @@ function Rollouts() {
             </select>
           </div>
           <div>
-            <Label htmlFor="ro-pct">Percentage</Label>
+            <Label htmlFor="ro-pct">覆盖比例（%）</Label>
             <Input id="ro-pct" value={percentage} onChange={(e) => setPercentage(e.target.value)} />
           </div>
           <div>
-            <Label htmlFor="ro-waves">Waves</Label>
+            <Label htmlFor="ro-waves">分批（waves）</Label>
             <Input id="ro-waves" value={waves} onChange={(e) => setWaves(e.target.value)} />
           </div>
           <div>
-            <Label htmlFor="ro-timeout">Health timeout (s)</Label>
+            <Label htmlFor="ro-timeout">健康超时（秒）</Label>
             <Input id="ro-timeout" value={timeout} onChange={(e) => setTimeoutSecs(e.target.value)} />
           </div>
           <div>
-            <Label htmlFor="ro-ratio">Max failure ratio</Label>
+            <Label htmlFor="ro-ratio">最大失败比例</Label>
             <Input id="ro-ratio" value={ratio} onChange={(e) => setRatio(e.target.value)} />
           </div>
           <div className="flex items-end">
             <Button disabled={versions.length === 0} onClick={create}>
-              Start rollout
+              开始更新
             </Button>
           </div>
         </div>
         <details>
           <summary className="cursor-pointer text-sm text-muted-foreground">
-            Only these nodes ({selected.length === 0 ? "all enrolled" : selected.length})
+            仅限这些节点（{selected.length === 0 ? "全部已注册节点" : `已选 ${selected.length} 个`}）
           </summary>
           <div className="mt-2 flex flex-wrap gap-3">
             {(nodes.data ?? [])
@@ -295,23 +318,21 @@ function Rollouts() {
               ))}
           </div>
         </details>
-        {error && (
-          <p role="alert" className="text-sm text-destructive">
-            {error}
-          </p>
-        )}
+        <ErrorText>{error}</ErrorText>
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Version</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Wave</TableHead>
-              <TableHead>Nodes</TableHead>
-              <TableHead>Started</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
+              <TableHead>版本</TableHead>
+              <TableHead>状态</TableHead>
+              <TableHead>批次</TableHead>
+              <TableHead>节点</TableHead>
+              <TableHead>开始</TableHead>
+              <TableHead className="text-right">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
+            {rollouts.isPending && <TableNote colSpan={6}>加载中…</TableNote>}
+            {rollouts.isSuccess && rollouts.data.length === 0 && <TableNote colSpan={6}>还没有灰度更新。</TableNote>}
             {(rollouts.data ?? []).map((r) => (
               <RolloutRow
                 key={r.id}
@@ -346,19 +367,24 @@ function RolloutRow({
     refetchInterval: open ? 5000 : false,
   });
   const counts = Object.entries(r.counts)
-    .map(([k, v]) => `${v} ${k}`)
+    .map(([k, v]) => `${NODE_STATUS[k] ?? k} ${v}`)
     .join(" · ");
   const isOpen = r.status === "running" || r.status === "paused" || r.status === "halted";
   return (
     <>
       <TableRow>
         <TableCell>
-          <button className="underline-offset-2 hover:underline" onClick={onToggle}>
+          <button
+            type="button"
+            aria-expanded={open}
+            className="rounded underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={onToggle}
+          >
             {r.version}
           </button>
         </TableCell>
         <TableCell>
-          <Badge variant={r.status === "halted" ? "destructive" : "secondary"}>{r.status}</Badge>
+          <Badge variant={r.status === "halted" ? "destructive" : "secondary"}>{ROLLOUT_STATUS[r.status] ?? r.status}</Badge>
           {r.halted_reason && <div className="text-xs text-destructive">{r.halted_reason}</div>}
         </TableCell>
         <TableCell>
@@ -366,22 +392,22 @@ function RolloutRow({
         </TableCell>
         <TableCell className="text-sm">{counts || "—"}</TableCell>
         <TableCell className="text-sm text-muted-foreground">
-          {new Date(r.created_at).toLocaleString()} by {r.created_by}
+          {new Date(r.created_at).toLocaleString("zh-CN")} · {r.created_by}
         </TableCell>
         <TableCell className="space-x-1 text-right">
           {r.status === "running" && (
             <Button variant="ghost" size="sm" onClick={() => onAction("pause")}>
-              Pause
+              暂停
             </Button>
           )}
           {r.status === "paused" && (
             <Button variant="ghost" size="sm" onClick={() => onAction("resume")}>
-              Resume
+              继续
             </Button>
           )}
           {isOpen && (
             <Button variant="ghost" size="sm" onClick={() => onAction("abort")}>
-              Abort
+              中止
             </Button>
           )}
         </TableCell>
@@ -392,12 +418,12 @@ function RolloutRow({
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Node</TableHead>
-                  <TableHead>Wave</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>From</TableHead>
-                  <TableHead>Now</TableHead>
-                  <TableHead>Detail</TableHead>
+                  <TableHead>节点</TableHead>
+                  <TableHead>批次</TableHead>
+                  <TableHead>状态</TableHead>
+                  <TableHead>原版本</TableHead>
+                  <TableHead>当前版本</TableHead>
+                  <TableHead>详情</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -405,7 +431,7 @@ function RolloutRow({
                   <TableRow key={n.node_id}>
                     <TableCell>{n.name}</TableCell>
                     <TableCell>{n.wave + 1}</TableCell>
-                    <TableCell className={n.status === "failed" ? "text-destructive" : undefined}>{n.status}</TableCell>
+                    <TableCell className={n.status === "failed" ? "text-destructive" : undefined}>{NODE_STATUS[n.status] ?? n.status}</TableCell>
                     <TableCell>{n.from_version ?? "—"}</TableCell>
                     <TableCell>{n.agent_version ?? "—"}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{n.detail ?? ""}</TableCell>
