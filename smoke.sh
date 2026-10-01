@@ -19,7 +19,17 @@ rm -rf "$LOG" data "$BOOT" "$JAR" && mkdir -p "$LOG"
 # script's bootstrap file) — never a shell that merely mentions them.
 pkill -f '^\./target/release/akari (-c [^ ]+ )?serve$' 2>/dev/null || true
 pkill -f "^\.\./[A-Za-z0-9_.-]+/agent -config ${BOOT//./\\.}( .*)?\$" 2>/dev/null || true
+# M6 self-update agents (staged binaries keep their -state-dir argument).
+pkill -f -- "-state-dir $LOG/state-upd\$" 2>/dev/null || true
 sleep 1
+UPD_LOOP=""
+cleanup_upd() {
+  if [ -n "$UPD_LOOP" ]; then
+    touch "$LOG/upd/stop" 2>/dev/null || true
+    kill "$UPD_LOOP" 2>/dev/null || true
+    pkill -f -- "-state-dir $LOG/state-upd\$" 2>/dev/null || true
+  fi
+}
 
 echo "== start panel (runs migrations) =="
 # Plain-HTTP development: the session cookie must not be Secure. 127.0.0.2
@@ -35,9 +45,13 @@ bind = "127.0.0.1:9109"
 [sub]
 rate_per_token = 8
 TOML
+# M6: the agent's TEST release key (testdata/, public on purpose) is the
+# panel's trusted key here; production configures the real one.
+TEST_RELEASE_PUB=$(cut -d' ' -f1 "${AGENT_DIR:-../akari-agent}/testdata/TEST-ONLY-release.pub")
+printf '\n[updates]\nrelease_keys = ["%s TEST-ONLY"]\n' "$TEST_RELEASE_PUB" >>"$LOG/panel.toml"
 "$PANEL" -c "$LOG/panel.toml" serve >"$LOG/panel.log" 2>&1 &
 PANEL_PID=$!
-trap 'kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
+trap 'cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
 sleep 2
 
 # Reset AFTER startup: fresh volumes have no tables until the panel migrates,
@@ -781,7 +795,7 @@ cert_validity_secs = 60
 TOML
 "$PANEL" -c "$LOG/panel-b.toml" serve >"$LOG/panel-b.log" 2>&1 &
 PANEL_B=$!
-trap 'kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
+trap 'cleanup_upd; kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
 for _ in $(seq 1 20); do [ "$(code "http://127.0.0.1:8081/$PREFIX/healthz")" = "200" ] && break; sleep 0.5; done
 "$PANEL" -c "$LOG/panel-b.toml" node add renew-node --out "$LOG/renew-bootstrap.toml" >/dev/null
 RENEW_ID=$("$PANEL" node list | awk '$2=="renew-node"{print $1}')
@@ -938,6 +952,124 @@ curl -s --noproxy '*' -D - -o /dev/null -H 'X-Request-Id: smoke-req-1' "$BASE/no
   && { echo "FAIL: request id on a rejection"; exit 1; }
 [ "$(fp -H 'X-Request-Id: smoke-req-1' "$BASE/nope")" = "$REJ" ] || { echo "FAIL: rejection differs with a request id"; exit 1; }
 echo "m1a: ok"
+
+echo "== M6 signed agent self-update: staged rollout, health gate, automatic rollback =="
+AD="${AGENT_DIR:-../akari-agent}"
+UPD="$LOG/upd"
+mkdir -p "$UPD/v1" "$UPD/v2"
+GOOS_=$(cd "$AD" && go env GOOS)
+GOARCH_=$(cd "$AD" && go env GOARCH)
+# Test-key builds (build tag akari_testkeys; `make dist` refuses them).
+make -s -C "$AD" build-testkeys VERSION=v900.0.0 OUT="$UPD/agent-v900.0.0" >/dev/null
+make -s -C "$AD" build-testkeys VERSION=v900.0.1 OUT="$UPD/v1/akari-agent" >/dev/null
+(cd "$AD" && CGO_ENABLED=0 go build -o "$UPD/akari-sign" ./cmd/akari-sign)
+"$UPD/agent-v900.0.0" -release-keys | grep -q TEST-ONLY || { echo "FAIL: smoke agent does not pin the test key"; exit 1; }
+"$AGENT" -release-keys | grep -q TEST-ONLY && { echo "FAIL: the regular build pins the TEST release key"; exit 1; }
+# vN+2 is broken: it exits at once (the launcher must roll it back).
+printf '#!/bin/sh\necho "broken agent build" >&2\nexit 3\n' >"$UPD/v2/akari-agent"
+chmod 0755 "$UPD/v2/akari-agent"
+upd_sign() { # $1 binary, $2 version
+  "$UPD/akari-sign" sign -key "$AD/testdata/TEST-ONLY-release.key" -binary "$1" -version "$2" \
+    -os "$GOOS_" -arch "$GOARCH_" >/dev/null
+  "$UPD/akari-sign" verify -keys "$AD/testdata/TEST-ONLY-release.pub" -manifest "$1.manifest.json" \
+    -sig "$1.manifest.sig" -binary "$1" >/dev/null || { echo "FAIL: akari-sign verify"; exit 1; }
+}
+upd_upload() { # $1 binary (signed) -> release id
+  python3 -c "import json,sys; print(json.dumps({'manifest': open(sys.argv[1]+'.manifest.json').read(), 'sig': json.load(open(sys.argv[1]+'.manifest.sig'))}))" "$1" >"$UPD/req.json"
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/agent-releases" -H 'Content-Type: application/json' --data-binary @"$UPD/req.json")" = "201" ] \
+    || { echo "FAIL: release create"; cat /tmp/akari-smoke/last; exit 1; }
+  local id; id=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
+  [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/agent-releases/$id/binary" -H 'Content-Type: application/octet-stream' --data-binary @"$1")" = "200" ] \
+    || { echo "FAIL: release upload"; cat /tmp/akari-smoke/last; exit 1; }
+  echo "$id"
+}
+upd_sign "$UPD/v1/akari-agent" v900.0.1
+upd_sign "$UPD/v2/akari-agent" v900.0.2
+# A manifest signed by another key is refused before anything is stored.
+"$UPD/akari-sign" keygen -out "$UPD/other.key" >/dev/null
+cp "$UPD/v1/akari-agent" "$UPD/other-bin"
+"$UPD/akari-sign" sign -key "$UPD/other.key" -binary "$UPD/other-bin" -version v900.0.9 -os "$GOOS_" -arch "$GOARCH_" >/dev/null
+python3 -c "import json,sys; print(json.dumps({'manifest': open(sys.argv[1]+'.manifest.json').read(), 'sig': json.load(open(sys.argv[1]+'.manifest.sig'))}))" "$UPD/other-bin" >"$UPD/req.json"
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/agent-releases" -H 'Content-Type: application/json' --data-binary @"$UPD/req.json")" = "400" ] \
+  || { echo "FAIL: release signed by an untrusted key accepted"; exit 1; }
+REL1=$(upd_upload "$UPD/v1/akari-agent")
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/agent-releases/$REL1/binary" --data-binary @"$UPD/v1/akari-agent")" = "409" ] \
+  || { echo "FAIL: second upload not 409"; exit 1; }
+upd_upload "$UPD/v2/akari-agent" >/dev/null
+[ "$(psql_q "SELECT count(*) FROM agent_releases WHERE complete_at IS NOT NULL")" = "2" ] || { echo "FAIL: releases not stored"; exit 1; }
+
+"$PANEL" node add upd-node --out "$LOG/upd-bootstrap.toml" >/dev/null
+UPD_ID=$("$PANEL" node list | awk '$2=="upd-node"{print $1}')
+# The service manager: restart on exit (systemd Restart=always).
+( while :; do
+    "$UPD/agent-v900.0.0" -config "$LOG/upd-bootstrap.toml" -update-self-check 60s -state-dir "$LOG/state-upd" >>"$LOG/upd-agent.log" 2>&1 || true
+    [ -f "$UPD/stop" ] && break
+    sleep 1
+  done ) &
+UPD_LOOP=$!
+upd_node() { psql_q "SELECT $1 FROM nodes WHERE id='$UPD_ID'"; }
+for _ in $(seq 1 20); do [ "$(upd_node agent_version)" = "v900.0.0" ] && break; sleep 1; done
+[ "$(upd_node agent_version)" = "v900.0.0" ] && [ "$(upd_node agent_protocol)" = "3" ] \
+  || { echo "FAIL: update agent not connected ($(upd_node agent_version)/$(upd_node agent_protocol))"; tail -5 "$LOG/upd-agent.log"; exit 1; }
+# Only the update node takes part: the others run development builds.
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/rollouts" -H 'Content-Type: application/json' \
+    -d "{\"version\":\"v900.0.1\",\"node_ids\":[\"$UPD_ID\"],\"health_timeout_secs\":90}")" = "201" ] \
+  || { echo "FAIL: rollout create"; cat /tmp/akari-smoke/last; exit 1; }
+RO1=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
+ro_status() { psql_q "SELECT status FROM rollouts WHERE id='$1'"; }
+for _ in $(seq 1 90); do [ "$(ro_status "$RO1")" = "completed" ] && break; sleep 1; done
+[ "$(ro_status "$RO1")" = "completed" ] || { echo "FAIL: rollout to v900.0.1 not completed ($(ro_status "$RO1"))"; \
+  psql_q "SELECT status, detail FROM rollout_nodes WHERE rollout_id='$RO1'"; tail -20 "$LOG/upd-agent.log"; exit 1; }
+[ "$(upd_node agent_version)" = "v900.0.1" ] || { echo "FAIL: node not on v900.0.1"; exit 1; }
+[ "$(psql_q "SELECT status FROM rollout_nodes WHERE rollout_id='$RO1'")" = "healthy" ] || { echo "FAIL: node not healthy"; exit 1; }
+for m in "update offer accepted" "agent update verified and staged" "switching to the new agent" "agent update passed its self-check"; do
+  grep -q "$m" "$LOG/upd-agent.log" || { echo "FAIL: agent log lacks '$m'"; tail -20 "$LOG/upd-agent.log"; exit 1; }
+done
+# exec-replace, not a crash: no restart by the service loop so far.
+[ "$(grep -c '"msg":"agent starting"' "$LOG/upd-agent.log")" = "2" ] || { echo "FAIL: expected exactly one in-place restart"; exit 1; }
+python3 -c "
+import json; s=json.load(open('$LOG/state-upd/update/state.json'))
+assert s['current']['version']=='v900.0.1' and 'trial' not in s and s.get('previous') is None, s" \
+  || { echo "FAIL: update state after v900.0.1"; exit 1; }
+[ "$(stat -c %a "$LOG/state-upd/update/state.json")" = "600" ] || { echo "FAIL: update state not 0600"; exit 1; }
+code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
+python3 -c "
+import json; n=[x for x in json.load(open('/tmp/akari-smoke/last')) if x['id']=='$UPD_ID'][0]
+assert n['update_status']['status']=='healthy' and n['agent_version']=='v900.0.1', n['update_status']" \
+  || { echo "FAIL: node view update status"; exit 1; }
+echo "update to v900.0.1: ok"
+
+# Broken vN+2: the binary dies on start; the launcher counts boots and goes
+# back to v900.0.1; the agent reports ROLLED_BACK; the rollout halts.
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/rollouts" -H 'Content-Type: application/json' \
+    -d "{\"version\":\"v900.0.2\",\"node_ids\":[\"$UPD_ID\"],\"health_timeout_secs\":90}")" = "201" ] \
+  || { echo "FAIL: rollout 2 create"; cat /tmp/akari-smoke/last; exit 1; }
+RO2=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
+for _ in $(seq 1 90); do [ "$(ro_status "$RO2")" = "halted" ] && break; sleep 1; done
+[ "$(ro_status "$RO2")" = "halted" ] || { echo "FAIL: broken rollout not halted ($(ro_status "$RO2"))"; \
+  psql_q "SELECT status, detail FROM rollout_nodes WHERE rollout_id='$RO2'"; tail -20 "$LOG/upd-agent.log"; exit 1; }
+psql_q "SELECT detail FROM rollout_nodes WHERE rollout_id='$RO2'" | grep -q "rolled back" \
+  || { echo "FAIL: no rollback report: $(psql_q "SELECT status, detail FROM rollout_nodes WHERE rollout_id='$RO2'")"; exit 1; }
+grep -q "broken agent build" "$LOG/upd-agent.log" || { echo "FAIL: broken build never ran"; exit 1; }
+grep -q "rolling back agent update" "$LOG/upd-agent.log" || { echo "FAIL: launcher did not roll back"; exit 1; }
+for _ in $(seq 1 20); do [ "$(upd_node agent_version)" = "v900.0.1" ] && [ "$(upd_node status)" = "online" ] && break; sleep 1; done
+[ "$(upd_node agent_version)" = "v900.0.1" ] || { echo "FAIL: node not back on v900.0.1"; exit 1; }
+python3 -c "
+import json; s=json.load(open('$LOG/state-upd/update/state.json'))
+assert s['current']['version']=='v900.0.1' and 'v900.0.2' in s['rolled_back'], s" \
+  || { echo "FAIL: update state after rollback"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='rollout.halt' AND actor_login='system'")" = "1" ] \
+  || { echo "FAIL: halt not audited"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/rollouts/$RO2/resume")" = "409" ] || { echo "FAIL: halted rollout resumed"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/rollouts/$RO2/abort")" = "200" ] || { echo "FAIL: abort"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/rollouts")" = "200" ] && grep -q '"aborted"' /tmp/akari-smoke/last || { echo "FAIL: rollout list"; exit 1; }
+for a in agent_release.create agent_release.upload rollout.create rollout.complete rollout.abort; do
+  [ "$(psql_q "SELECT count(*) > 0 FROM audit_log WHERE action='$a'")" = "t" ] || { echo "FAIL: $a not audited"; exit 1; }
+done
+cleanup_upd
+wait "$UPD_LOOP" 2>/dev/null || true
+UPD_LOOP=""
+echo "m6 self-update: ok (v900.0.0 -> v900.0.1 healthy; broken v900.0.2 rolled back, rollout halted)"
 
 echo "== SPA =="
 [ "$(code "$BASE/app")" = "200" ] || { echo "FAIL: /app not 200"; exit 1; }
