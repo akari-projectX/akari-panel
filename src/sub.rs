@@ -730,6 +730,158 @@ mod tests {
         assert!(render_sing_box(&p)["outbounds"][0].get("tls").is_none());
     }
 
+    /// A user on one node with a REALITY vless, a websocket vmess and a TLS
+    /// trojan inbound (every protocol and transport the renderers branch on).
+    fn snapshot_rows() -> Vec<NodeRow> {
+        let inbounds = json!([
+            {"tag": "in-vless", "protocol": "vless", "port": 443, "streamSettings": {
+                "network": "tcp", "security": "reality",
+                "realitySettings": {"serverNames": ["www.apple.com"], "publicKey": "PUBKEY",
+                                    "shortId": "ab12", "fingerprint": "firefox"}}},
+            {"tag": "in-vmess", "protocol": "vmess", "port": 8443, "streamSettings": {
+                "network": "ws", "security": "none",
+                "wsSettings": {"path": "/ws", "headers": {"Host": "cdn.example.com"}}}},
+            {"tag": "in-trojan", "protocol": "trojan", "port": 9443, "streamSettings": {
+                "network": "tcp", "security": "tls",
+                "tlsSettings": {"serverName": "t.example.com"}}},
+        ]);
+        let creds = json!([
+            {"inbound_tag": "in-vless", "protocol": "vless", "account":
+                {"id": "11111111-1111-1111-1111-111111111111", "flow": "xtls-rprx-vision"}},
+            {"inbound_tag": "in-vmess", "protocol": "vmess", "account":
+                {"id": "22222222-2222-2222-2222-222222222222"}},
+            {"inbound_tag": "in-trojan", "protocol": "trojan", "account": {"password": "pw"}},
+        ]);
+        vec![NodeRow {
+            name: "HK 1".into(),
+            xray_inbounds: inbounds,
+            server_addr: Some("hk.example.com".into()),
+            credentials: creds,
+        }]
+    }
+
+    /// A10: the three renderers' exact output (any change to a client-facing
+    /// format must be deliberate), plus UA routing, content types and the
+    /// padding bucket.
+    #[test]
+    fn three_formats_snapshot() {
+        let rows = snapshot_rows();
+
+        let (ct, body) = render("Shadowrocket/2.2", &rows);
+        assert_eq!(ct, "text/plain; charset=utf-8");
+        assert_eq!(body.len(), 8192, "padded to the 8 KiB minimum bucket");
+        let links = String::from_utf8(STANDARD.decode(body.trim_end()).unwrap()).unwrap();
+        let lines: Vec<&str> = links.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(
+            lines[0],
+            "vless://11111111-1111-1111-1111-111111111111@hk.example.com:443?type=tcp&security=reality\
+             &flow=xtls-rprx-vision&sni=www.apple.com&pbk=PUBKEY&sid=ab12&fp=firefox#HK%201%20%C2%B7%20in-vless"
+        );
+        let vmess: Value = serde_json::from_slice(
+            &STANDARD
+                .decode(lines[1].strip_prefix("vmess://").unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            vmess,
+            json!({"add": "hk.example.com", "aid": "0", "host": "cdn.example.com",
+                   "id": "22222222-2222-2222-2222-222222222222", "net": "ws", "path": "/ws",
+                   "port": "8443", "ps": "HK 1 · in-vmess", "scy": "auto", "tls": "",
+                   "type": "none", "v": "2"})
+        );
+        assert_eq!(
+            lines[2],
+            "trojan://pw@hk.example.com:9443?type=tcp&security=tls&sni=t.example.com#HK%201%20%C2%B7%20in-trojan"
+        );
+
+        let (ct, body) = render("clash.meta", &rows);
+        assert_eq!(ct, "text/yaml; charset=utf-8");
+        assert_eq!(
+            body.trim_end(),
+            r#"proxies:
+  - name: "HK 1 · in-vless"
+    type: vless
+    server: hk.example.com
+    port: 443
+    uuid: 11111111-1111-1111-1111-111111111111
+    flow: xtls-rprx-vision
+    network: tcp
+    tls: true
+    servername: www.apple.com
+    client-fingerprint: firefox
+    reality-opts:
+      public-key: PUBKEY
+      short-id: ab12
+  - name: "HK 1 · in-vmess"
+    type: vmess
+    server: hk.example.com
+    port: 8443
+    uuid: 22222222-2222-2222-2222-222222222222
+    alterId: 0
+    cipher: auto
+    network: ws
+    ws-opts:
+      path: /ws
+      headers:
+        Host: cdn.example.com
+  - name: "HK 1 · in-trojan"
+    type: trojan
+    server: hk.example.com
+    port: 9443
+    password: pw
+    network: tcp
+    tls: true
+    servername: t.example.com
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - "HK 1 · in-vless"
+      - "HK 1 · in-vmess"
+      - "HK 1 · in-trojan"
+rules:
+  - MATCH,PROXY"#
+        );
+
+        let (ct, body) = render("sing-box 1.12", &rows);
+        assert_eq!(ct, "application/json; charset=utf-8");
+        let want = json!({"outbounds": [
+            {"flow": "xtls-rprx-vision", "server": "hk.example.com", "server_port": 443,
+             "tag": "HK 1 · in-vless",
+             "tls": {"enabled": true, "reality": {"enabled": true, "public_key": "PUBKEY", "short_id": "ab12"},
+                     "server_name": "www.apple.com", "utls": {"enabled": true, "fingerprint": "firefox"}},
+             "type": "vless", "uuid": "11111111-1111-1111-1111-111111111111"},
+            {"server": "hk.example.com", "server_port": 8443, "tag": "HK 1 · in-vmess",
+             "transport": {"headers": {"Host": "cdn.example.com"}, "path": "/ws", "type": "ws"},
+             "type": "vmess", "uuid": "22222222-2222-2222-2222-222222222222"},
+            {"password": "pw", "server": "hk.example.com", "server_port": 9443, "tag": "HK 1 · in-trojan",
+             "tls": {"enabled": true, "server_name": "t.example.com"}, "type": "trojan"},
+            {"tag": "direct", "type": "direct"}]});
+        assert_eq!(
+            serde_json::from_str::<Value>(body.trim_end()).unwrap(),
+            want
+        );
+    }
+
+    #[test]
+    fn ua_routing_and_padding_buckets() {
+        for (ua, ct) in [
+            ("sing-box/1.9", "application/json; charset=utf-8"),
+            ("Stash/2.0", "text/yaml; charset=utf-8"),
+            ("mihomo", "text/yaml; charset=utf-8"),
+            ("ClashX", "text/yaml; charset=utf-8"),
+            ("curl/8", "text/plain; charset=utf-8"),
+            ("", "text/plain; charset=utf-8"),
+        ] {
+            assert_eq!(render(ua, &snapshot_rows()).0, ct, "{ua}");
+        }
+        assert_eq!(pad("x".into()).len(), 8192);
+        assert_eq!(pad("x".repeat(8192)).len(), 8192);
+        assert_eq!(pad("x".repeat(8193)).len(), 12288);
+    }
+
     async fn user_with_token(db: &TestDb) -> (Uuid, String) {
         let u = db.user().await;
         let token = generate_token();

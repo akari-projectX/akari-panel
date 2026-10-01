@@ -248,6 +248,55 @@ async fn rejected() -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testdb::http::{rand_ip, Client};
+    use crate::testdb::TestDb;
+    use axum::http::Method;
+
+    /// A10: every rejection the gate (or a fallback) produces is
+    /// byte-identical to the canonical one: wrong or bare prefix, prefix
+    /// of the wrong length, unknown route, wrong method on a real route.
+    #[tokio::test]
+    async fn prefix_gate_rejections_are_byte_identical() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let state = AppState::for_test(db.pool.clone()).await;
+        let c = Client::new(&state, rand_ip());
+        let canonical = c.get("/definitely/not/here").await.fingerprint();
+        assert_eq!(canonical.0, StatusCode::NOT_FOUND);
+        assert!(
+            canonical.1.is_empty() && canonical.2.is_empty(),
+            "{canonical:?}"
+        );
+        for path in [
+            "/",
+            "/test",
+            "/test/",
+            "/tes/healthz",
+            "/testx/healthz",
+            "/TEST/healthz",
+            "/test/no-such-route",
+            "/test/api/v1/nothing",
+            "/test/auth/login", // GET on a POST route
+        ] {
+            assert_eq!(c.get(path).await.fingerprint(), canonical, "GET {path}");
+        }
+        for (m, path) in [
+            (Method::PUT, "/test/healthz"),
+            (Method::DELETE, "/test/healthz"),
+            (Method::POST, "/"),
+            (Method::POST, "/wrong/auth/login"),
+        ] {
+            assert_eq!(
+                c.req(m.clone(), path, None).await.fingerprint(),
+                canonical,
+                "{m} {path}"
+            );
+        }
+        // Control: the right prefix does reach a real route.
+        assert_eq!(c.get("/test/healthz").await.status, StatusCode::OK);
+        db.drop().await;
+    }
 
     #[test]
     fn redacted_paths_hide_prefix_and_tokens() {
