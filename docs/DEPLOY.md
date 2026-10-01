@@ -103,6 +103,10 @@ logs. `trusted_proxies = ["127.0.0.1/32"]` matches a same-host proxy.
 ```
 
 Omit the variable to be prompted. Open `https://panel.example.com/<prefix>/app` and log in.
+Admins must use two-factor authentication: the first login only opens the authenticator setup
+(TOTP); store the 10 recovery codes it shows. Do this right after creating the account — until
+enrolled, the password alone is enough to enroll. Lost authenticator and recovery codes:
+`akari admin reset-2fa <login>`.
 
 ## 3. Add a node and install the agent
 

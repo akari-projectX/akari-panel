@@ -5,16 +5,20 @@ What must be backed up:
 | What | Where | Why |
 |---|---|---|
 | PostgreSQL | `database_url` | the source of truth: users, nodes, traffic ledger, tombstones |
-| `data_dir` | `/var/lib/akari`, compose volume `akari-data` | **route prefix, the CA private key (`ca.key`) and `jwt.key`** |
+| `data_dir` | `/var/lib/akari`, compose volume `akari-data` | **route prefix, the CA private key (`ca.key`), `jwt.key` and `totp.key`** |
 | Valkey | -- | hot state only (liveness, rate-limit counters); not backed up |
 
-> **WARNING: `data/` holds the CA private key and `jwt.key`.** Whoever has them can mint agent
-> certificates (impersonate any node, receive its users' credentials) and forge admin sessions.
+> **WARNING: `data/` holds the CA private key, `jwt.key` and `totp.key`.** Whoever has them can
+> mint agent certificates (impersonate any node, receive its users' credentials) and forge admin
+> sessions; `totp.key` together with a database copy decrypts every TOTP secret.
 > Backups are therefore always encrypted; keep the decryption key offline, away from the
 > backup storage. Never commit or copy `data/` anywhere unencrypted.
 
 Losing `data/` while keeping the database means: new route prefix, new CA, every agent
-needs a re-issued bootstrap file. Losing the database means losing everything else.
+needs a re-issued bootstrap file, and every two-factor account (all admins) is locked out —
+the TOTP secrets in the database can no longer be decrypted; recover each with
+`akari admin reset-2fa <login>`. `totp.key` and the database belong to the same backup:
+restore them together. Losing the database means losing everything else.
 
 ## Tooling (age)
 

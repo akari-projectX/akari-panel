@@ -25,7 +25,7 @@ services:
       - ./env/panel.env
     command: ["-c", "/etc/akari/panel.toml", "serve"]
     volumes:
-      - akari-data:/data              # route prefix, CA key, jwt.key: BACK UP (docs/BACKUP.md)
+      - akari-data:/data              # route prefix, CA key, jwt.key, totp.key: BACK UP (docs/BACKUP.md)
       - ./panel.toml:/etc/akari/panel.toml:ro   # from panel.toml.compose.example
     ports:
       - "8443:8443"                   # gRPC, agents dial this directly (mTLS)
