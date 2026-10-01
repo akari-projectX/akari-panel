@@ -153,7 +153,12 @@ export function AdminUsers() {
               <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage(page - 1)}>
                 上一页
               </Button>
-              <Button variant="outline" size="sm" disabled={!hasNext || users.isFetching} onClick={() => setPage(page + 1)}>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!hasNext || users.isFetching}
+                onClick={() => setPage(page + 1)}
+              >
                 下一页
               </Button>
             </div>
@@ -382,7 +387,9 @@ function EditUser({ user }: { user: UserView }) {
         </p>
       )}
       {!user.enabled && user.disabled_reason === "quota" && (
-        <p className="text-xs text-muted-foreground">提高上限不会自动启用因超出流量而停用的用户，请同时勾选「启用」。</p>
+        <p className="text-xs text-muted-foreground">
+          提高上限不会自动启用因超出流量而停用的用户，请同时勾选「启用」。
+        </p>
       )}
       {msg && (
         <p role={msg.ok ? "status" : "alert"} className={`text-sm ${msg.ok ? "text-emerald-700" : "text-destructive"}`}>
@@ -524,7 +531,10 @@ function CreateUser({ onSubToken }: { onSubToken: (login: string, token: string)
           <Button type="submit">创建</Button>
         </form>
         {msg && (
-          <p role={msg.ok ? "status" : "alert"} className={`mt-3 text-sm ${msg.ok ? "text-emerald-700" : "text-destructive"}`}>
+          <p
+            role={msg.ok ? "status" : "alert"}
+            className={`mt-3 text-sm ${msg.ok ? "text-emerald-700" : "text-destructive"}`}
+          >
             {msg.text}
           </p>
         )}

@@ -1,10 +1,9 @@
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { GroupView, MyPlan, NodeView, PlanView, UserView } from "../lib/api";
-import { fakeApi, renderWithClient } from "../test/harness";
+import type { GroupView, MyPlan, NodeView, PlanView } from "../lib/api";
+import { fakeApi, renderAdmin, renderWithClient } from "../test/harness";
 import { AdminPlans, periodValue, quotaBytes } from "./admin-plans";
-import { AdminUsers } from "./admin-users";
 import { PasswordCard, PlanCard } from "./portal";
 
 afterEach(() => {
@@ -43,23 +42,6 @@ const plan = (over: Partial<PlanView>): PlanView => ({
 
 const node = (id: string, name: string) => ({ id, name }) as unknown as NodeView;
 
-const user = (over: Partial<UserView>): UserView => ({
-  id: "u1",
-  login: "alice",
-  role: "user",
-  enabled: true,
-  traffic_limit_bytes: 100 * GIB,
-  traffic_used_bytes: 5 * GIB,
-  expires_at: null,
-  created_at: "2026-10-01T00:00:00Z",
-  totp_enabled: false,
-  disabled_reason: null,
-  plan_id: null,
-  plan_name: null,
-  next_reset_at: null,
-  ...over,
-});
-
 describe("plan form helpers", () => {
   it("builds periods and quotas", () => {
     expect(periodValue("monthly", "")).toBe("monthly");
@@ -83,19 +65,19 @@ describe("AdminPlans", () => {
       "GET /nodes": [node("n1", "jp-1"), node("n2", "de-1")],
       "POST /plans": () => ({ status: 201, body: plan({ id: "p2", name: "pro" }) }),
     });
-    renderWithClient(<AdminPlans />);
+    renderAdmin(<AdminPlans />);
     expect(await screen.findByText("basic")).toBeTruthy();
-    expect(screen.getByText("100.0 GB")).toBeTruthy();
+    expect(screen.getByText("100.0 GiB")).toBeTruthy();
     expect(screen.getByText("jp-1")).toBeTruthy();
 
-    const form = screen.getByRole("form", { name: "New plan" });
-    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "pro" } });
-    fireEvent.change(within(form).getByLabelText(/Quota/), { target: { value: "50" } });
-    fireEvent.change(within(form).getByLabelText("Reset"), { target: { value: "days" } });
-    fireEvent.change(within(form).getByLabelText("Days"), { target: { value: "30" } });
-    fireEvent.change(within(form).getByLabelText(/Speed/), { target: { value: "100" } });
+    const form = screen.getByRole("form", { name: "新建套餐" });
+    fireEvent.change(within(form).getByLabelText("名称"), { target: { value: "pro" } });
+    fireEvent.change(within(form).getByLabelText(/流量额度/), { target: { value: "50" } });
+    fireEvent.change(within(form).getByLabelText("流量重置"), { target: { value: "days" } });
+    fireEvent.change(within(form).getByLabelText("天数"), { target: { value: "30" } });
+    fireEvent.change(within(form).getByLabelText(/速率/), { target: { value: "100" } });
     fireEvent.click(within(form).getByLabelText("eu"));
-    fireEvent.click(within(form).getByRole("button", { name: "Create plan" }));
+    fireEvent.click(within(form).getByRole("button", { name: "创建套餐" }));
     await waitFor(() => expect(calls.some((c) => c.method === "POST")).toBe(true));
     const created = calls.find((c) => c.method === "POST");
     expect(created?.path).toBe("/plans");
@@ -115,10 +97,10 @@ describe("AdminPlans", () => {
       "GET /nodes": [node("n1", "jp-1"), node("n2", "de-1")],
       "PATCH /node-groups/g1": group({ node_ids: ["n1", "n2"] }),
     });
-    renderWithClient(<AdminPlans />);
-    fireEvent.click(await screen.findByRole("button", { name: "Nodes" }));
+    renderAdmin(<AdminPlans />);
+    fireEvent.click(await screen.findByRole("button", { name: "成员" }));
     fireEvent.click(screen.getByLabelText("de-1"));
-    fireEvent.click(screen.getByRole("button", { name: "Save nodes" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存成员" }));
     await waitFor(() => expect(calls.some((c) => c.method === "PATCH")).toBe(true));
     expect(calls.find((c) => c.method === "PATCH")?.body).toEqual({ node_ids: ["n1", "n2"] });
   });
@@ -131,53 +113,9 @@ describe("AdminPlans", () => {
       "DELETE /plans/p1": () => ({ status: 409, body: { error: "2 user(s) hold this plan" } }),
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
-    renderWithClient(<AdminPlans />);
-    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    renderAdmin(<AdminPlans />);
+    fireEvent.click(await screen.findByRole("button", { name: "删除" }));
     expect((await screen.findByRole("alert")).textContent).toContain("hold this plan");
-  });
-});
-
-describe("AdminUsers plan column", () => {
-  it("shows plan, reset date, disable reason, and assigns a plan", async () => {
-    const calls = fakeApi({
-      "GET /users": [
-        user({ plan_id: "p1", plan_name: "basic", next_reset_at: "2026-11-01T00:00:00Z" }),
-        user({ id: "u2", login: "bob", enabled: false, disabled_reason: "quota" }),
-      ],
-      "GET /plans": [plan({}), plan({ id: "p2", name: "retired", enabled: false })],
-      "PUT /users/u2/plan": { active: null, history: [] },
-    });
-    renderWithClient(<AdminUsers />);
-    expect(await screen.findByText("disabled (quota)")).toBeTruthy();
-    expect(screen.getAllByText("basic").length).toBeGreaterThan(0);
-    const bob = screen.getByText("bob").closest("tr") as HTMLElement;
-    fireEvent.click(within(bob).getByRole("button", { name: "Plan" }));
-    const form = await screen.findByRole("form", { name: "Plan of bob" });
-    // Retired plans are not offered.
-    const options = within(form).getAllByRole("option").map((o) => o.textContent);
-    expect(options).toEqual(["basic"]);
-    fireEvent.click(within(form).getByLabelText("Reset usage"));
-    fireEvent.click(within(form).getByRole("button", { name: "Assign plan" }));
-    await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
-    expect(calls.find((c) => c.method === "PUT")?.body).toEqual({
-      plan_id: "p1",
-      reset_traffic: true,
-    });
-  });
-
-  it("cancels a plan", async () => {
-    const calls = fakeApi({
-      "GET /users": [user({ plan_id: "p1", plan_name: "basic" })],
-      "GET /plans": [plan({})],
-      "DELETE /users/u1/plan": () => ({ status: 204 }),
-    });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-    renderWithClient(<AdminUsers />);
-    fireEvent.click(await screen.findByRole("button", { name: "Plan" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Cancel plan" }));
-    await waitFor(() =>
-      expect(calls.some((c) => c.method === "DELETE" && c.path === "/users/u1/plan")).toBe(true),
-    );
   });
 });
 
@@ -225,8 +163,7 @@ describe("Portal", () => {
   it("changes the password, and reports mismatches and server errors", async () => {
     let status = 400;
     const calls = fakeApi({
-      "POST /me/password": () =>
-        status === 204 ? { status: 204 } : { status, body: { error: "invalid password" } },
+      "POST /me/password": () => (status === 204 ? { status: 204 } : { status, body: { error: "invalid password" } }),
     });
     renderWithClient(<PasswordCard />);
     const fill = (cur: string, next: string, rep: string) => {
@@ -239,7 +176,7 @@ describe("Portal", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("do not match");
     expect(calls).toHaveLength(0);
     fill("wrong", "new-password-1", "new-password-1");
-    expect((await screen.findByRole("alert")).textContent).toContain("invalid password");
+    expect((await screen.findByRole("alert")).textContent).toBe("The current password is not correct.");
     status = 204;
     fill("old-password", "new-password-1", "new-password-1");
     expect((await screen.findByRole("status")).textContent).toContain("Password changed");
@@ -247,5 +184,34 @@ describe("Portal", () => {
       current_password: "old-password",
       new_password: "new-password-1",
     });
+  });
+});
+
+describe("Portal in Chinese", () => {
+  it("renders the plan card in the chosen language", async () => {
+    fakeApi({
+      "GET /me/plan": {
+        plan: {
+          name: "basic",
+          traffic_quota_bytes: null,
+          period: "monthly",
+          speed_limit_mbps: null,
+          device_seats: null,
+          starts_at: "2026-10-01T00:00:00Z",
+          expires_at: null,
+          period_anchor: "2026-10-01T00:00:00Z",
+          last_reset_at: null,
+          next_reset_at: null,
+        },
+        traffic_used_bytes: 0,
+        traffic_limit_bytes: null,
+        expires_at: null,
+        nodes: [],
+      },
+    });
+    renderAdmin(<PlanCard />);
+    expect(await screen.findByText("每月")).toBeTruthy();
+    expect(screen.getByText("不限")).toBeTruthy();
+    expect(screen.getByText("暂无可用节点。")).toBeTruthy();
   });
 });

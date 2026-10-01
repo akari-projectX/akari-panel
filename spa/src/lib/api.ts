@@ -39,18 +39,15 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 // REST helpers: `path` is relative to apiBase (/{prefix}/api/v1).
-const api = <T,>(path: string, init?: RequestInit) => request<T>(`${apiBase}${path}`, init);
+const api = <T>(path: string, init?: RequestInit) => request<T>(`${apiBase}${path}`, init);
 
-export const get = <T,>(path: string) => api<T>(path);
-export const post = <T,>(path: string, body: unknown) =>
-  api<T>(path, { method: "POST", body: JSON.stringify(body) });
-export const put = <T,>(path: string, body: unknown) =>
-  api<T>(path, { method: "PUT", body: JSON.stringify(body) });
-export const patch = <T,>(path: string, body: unknown) =>
-  api<T>(path, { method: "PATCH", body: JSON.stringify(body) });
-export const del = <T = void,>(path: string) => api<T>(path, { method: "DELETE" });
+export const get = <T>(path: string) => api<T>(path);
+export const post = <T>(path: string, body: unknown) => api<T>(path, { method: "POST", body: JSON.stringify(body) });
+export const put = <T>(path: string, body: unknown) => api<T>(path, { method: "PUT", body: JSON.stringify(body) });
+export const patch = <T>(path: string, body: unknown) => api<T>(path, { method: "PATCH", body: JSON.stringify(body) });
+export const del = <T = void>(path: string) => api<T>(path, { method: "DELETE" });
 // Raw body (agent release binaries, M6).
-export const putBinary = <T,>(path: string, body: Blob) =>
+export const putBinary = <T>(path: string, body: Blob) =>
   request<T>(`${apiBase}${path}`, {
     method: "PUT",
     body,
@@ -127,8 +124,7 @@ export interface AuditPage {
 }
 
 // Subscription URL for a token (same origin, current secret prefix).
-export const subscriptionUrl = (token: string): string =>
-  `${location.origin}${prefixBase}/sub/${token}`;
+export const subscriptionUrl = (token: string): string => `${location.origin}${prefixBase}/sub/${token}`;
 
 export interface UserView {
   id: string;

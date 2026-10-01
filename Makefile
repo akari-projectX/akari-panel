@@ -1,6 +1,6 @@
 AGENT_DIR ?= ../akari-agent
 
-.PHONY: bench-up bench-down dev-up dev-down spa panel agent-build check smoke lint test deny ci bench bench-seed bench-lint
+.PHONY: bench-up bench-down dev-up dev-down spa panel agent-build check smoke e2e lint test deny ci bench bench-seed bench-lint
 
 dev-up:
 	docker compose up -d --wait
@@ -19,7 +19,13 @@ agent-build:
 
 check:
 	cargo fmt --check && cargo clippy -- -D warnings
-	cd spa && npx tsc --noEmit && node scripts/check-auth-paths.mjs && npx vitest run
+	cd spa && npx tsc --noEmit && npm run lint && node scripts/check-auth-paths.mjs && npx vitest run
+
+# Playwright end-to-end against a real panel (release build, real CSP) on its
+# own database / Valkey index / data dir / port 8090 (does not touch smoke's).
+# Needs `make dev-up` and `npx playwright install chromium` once.
+e2e: dev-up spa panel
+	./scripts/e2e.sh
 
 # Smoke isolation (parallel checkouts): SMOKE_DB=<name> runs against its own
 # Postgres database and Valkey db index (SMOKE_VALKEY_DB to override); default

@@ -26,11 +26,7 @@ export function RecoveryCodes({ codes, login, onAck }: { codes: string[]; login:
         ))}
       </ul>
       <div className="flex flex-wrap gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          onClick={async () => setCopied(await copyText(codes.join("\n")))}
-        >
+        <Button type="button" variant="outline" onClick={async () => setCopied(await copyText(codes.join("\n")))}>
           {copied ? t("common.copied") : t("common.copy")}
         </Button>
         <Button type="button" variant="outline" onClick={() => downloadText(`akari-recovery-codes-${login}.txt`, text)}>

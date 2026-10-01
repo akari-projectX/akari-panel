@@ -1,16 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import {
-  del,
-  describePeriod,
-  get,
-  patch,
-  post,
-  type GroupView,
-  type NodeView,
-  type PlanView,
-} from "../lib/api";
+import { del, describePeriod, get, patch, post, type GroupView, type NodeView, type PlanView } from "../lib/api";
 import { GIB, humanBytes } from "../lib/utils";
 import { ErrorText, TableNote } from "../components/status";
 import { useT } from "../i18n";
@@ -20,15 +11,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../components/ui/table";
-
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
 // Plans grant node groups; a user's nodes are the members of their plan's
 // groups (credentials are issued and revoked by the panel). Admin console:
@@ -76,9 +59,7 @@ function Checklist({
           <input
             type="checkbox"
             checked={selected.includes(it.id)}
-            onChange={(e) =>
-              onChange(e.target.checked ? [...selected, it.id] : selected.filter((x) => x !== it.id))
-            }
+            onChange={(e) => onChange(e.target.checked ? [...selected, it.id] : selected.filter((x) => x !== it.id))}
           />
           {it.name}
         </label>
@@ -184,7 +165,14 @@ function PlansCard({ plans = [], loading, groups }: { plans?: PlanView[]; loadin
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="np-quota">流量额度（GiB，留空不限）</Label>
-              <Input id="np-quota" type="number" min="0" step="any" value={quota} onChange={(e) => setQuota(e.target.value)} />
+              <Input
+                id="np-quota"
+                type="number"
+                min="0"
+                step="any"
+                value={quota}
+                onChange={(e) => setQuota(e.target.value)}
+              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="np-period">流量重置</Label>
@@ -202,7 +190,14 @@ function PlansCard({ plans = [], loading, groups }: { plans?: PlanView[]; loadin
             {kind === "days" && (
               <div className="space-y-1.5">
                 <Label htmlFor="np-days">天数</Label>
-                <Input id="np-days" type="number" min="1" max="3650" value={days} onChange={(e) => setDays(e.target.value)} />
+                <Input
+                  id="np-days"
+                  type="number"
+                  min="1"
+                  max="3650"
+                  value={days}
+                  onChange={(e) => setDays(e.target.value)}
+                />
               </div>
             )}
             <div className="space-y-1.5">
@@ -287,9 +282,7 @@ function EditPlan({
 }) {
   const t = useT();
   const invalidate = useInvalidate();
-  const [quota, setQuota] = useState(
-    plan.traffic_quota_bytes != null ? String(plan.traffic_quota_bytes / GIB) : "",
-  );
+  const [quota, setQuota] = useState(plan.traffic_quota_bytes != null ? String(plan.traffic_quota_bytes / GIB) : "");
   const [groupIds, setGroupIds] = useState<string[]>(plan.group_ids);
 
   async function save(e: React.FormEvent) {
@@ -310,7 +303,14 @@ function EditPlan({
     <form className="mt-2 space-y-2" onSubmit={save} aria-label={`编辑 ${plan.name}`}>
       <div className="space-y-1.5">
         <Label htmlFor={`ep-quota-${plan.id}`}>流量额度（GiB，留空不限）</Label>
-        <Input id={`ep-quota-${plan.id}`} type="number" min="0" step="any" value={quota} onChange={(e) => setQuota(e.target.value)} />
+        <Input
+          id={`ep-quota-${plan.id}`}
+          type="number"
+          min="0"
+          step="any"
+          value={quota}
+          onChange={(e) => setQuota(e.target.value)}
+        />
       </div>
       <Checklist label="节点组" items={groups} selected={groupIds} onChange={setGroupIds} />
       <Button type="submit" size="sm">
