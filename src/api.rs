@@ -488,7 +488,11 @@ pub async fn list_users(
     let limit = p.limit.unwrap_or(50).clamp(1, 200);
     let offset = p.offset.unwrap_or(0).max(0);
     let rows = sqlx::query_as::<_, UserView>(sqlx::AssertSqlSafe(format!(
-        "SELECT {USER_VIEW_COLS} FROM users ORDER BY created_at, id LIMIT $1 OFFSET $2"
+        // Deferred join (M2-2): the offset walks the (created_at, id)
+        // index only; the view columns (and their subquery) are computed
+        // for the page's rows alone.
+        "SELECT {USER_VIEW_COLS} FROM users WHERE id IN (SELECT id FROM users \
+         ORDER BY created_at, id LIMIT $1 OFFSET $2) ORDER BY created_at, id"
     )))
     .bind(limit)
     .bind(offset)
