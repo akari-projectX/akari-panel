@@ -21,6 +21,11 @@ check:
 	cargo fmt --check && cargo clippy -- -D warnings
 	cd spa && npx tsc --noEmit && node scripts/check-auth-paths.mjs && npx vitest run
 
+# Smoke isolation (parallel checkouts): SMOKE_DB=<name> runs against its own
+# Postgres database and Valkey db index (SMOKE_VALKEY_DB to override); default
+# "akari" = db index 0. Serialise runs on the shared ports (flock) and set
+# COMPOSE_PROJECT_NAME to the shared compose project.
+#   SMOKE_DB=akari_w4 COMPOSE_PROJECT_NAME=akari-panel make smoke   (AGENT_DIR=<agent checkout>)
 smoke: dev-up spa panel agent-build
 	AGENT_DIR=$(AGENT_DIR) ./smoke.sh
 

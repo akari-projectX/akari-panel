@@ -5,7 +5,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 PANEL=./target/release/akari
-AGENT="${AGENT_DIR:-../akari-agent}/agent"
+AGENT_DIR="${AGENT_DIR:-../akari-agent}"
+AGENT="$AGENT_DIR/agent"
 BOOT=test-node-bootstrap.toml
 JAR=/tmp/akari-smoke.cookies
 LOG=/tmp/akari-smoke
@@ -15,6 +16,14 @@ AGENT_PID=""
 # shared DB fails with "migration N was previously applied but is missing").
 SMOKE_DB=${SMOKE_DB:-akari}
 export DATABASE_URL=${DATABASE_URL:-postgres://akari:akari-dev@localhost:5432/$SMOKE_DB}
+# Valkey isolation: one logical db index (1..15) per SMOKE_DB; the default
+# database keeps index 0. FLUSHDB below only ever wipes this index.
+if [ -z "${SMOKE_VALKEY_DB:-}" ]; then
+  if [ "$SMOKE_DB" = akari ]; then SMOKE_VALKEY_DB=0
+  else SMOKE_VALKEY_DB=$(( $(printf '%s' "$SMOKE_DB" | cksum | cut -d' ' -f1) % 15 + 1 )); fi
+fi
+export VALKEY_URL="redis://127.0.0.1:6379/$SMOKE_VALKEY_DB"
+vk() { docker compose exec -T valkey valkey-cli -n "$SMOKE_VALKEY_DB" "$@"; }
 docker compose exec -T postgres psql -U akari -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$SMOKE_DB'" | grep -q 1 \
   || docker compose exec -T postgres psql -U akari -d postgres -qc "CREATE DATABASE \"$SMOKE_DB\"" >/dev/null
 rm -rf "$LOG" data "$BOOT" "$JAR" && mkdir -p "$LOG"
@@ -24,7 +33,7 @@ rm -rf "$LOG" data "$BOOT" "$JAR" && mkdir -p "$LOG"
 # starts (panel binary here, any sibling agent checkout's binary with this
 # script's bootstrap file) — never a shell that merely mentions them.
 pkill -f '^\./target/release/akari (-c [^ ]+ )?serve$' 2>/dev/null || true
-pkill -f "^\.\./[A-Za-z0-9_.-]+/agent -config ${BOOT//./\\.}( .*)?\$" 2>/dev/null || true
+pkill -f "^[A-Za-z0-9_./-]+/agent -config ${BOOT//./\\.}( .*)?\$" 2>/dev/null || true
 # M6 self-update agents (staged binaries keep their -state-dir argument).
 pkill -f -- "-state-dir $LOG/state-upd\$" 2>/dev/null || true
 sleep 1
@@ -53,7 +62,7 @@ rate_per_token = 8
 TOML
 # M6: the agent's TEST release key (testdata/, public on purpose) is the
 # panel's trusted key here; production configures the real one.
-TEST_RELEASE_PUB=$(cut -d' ' -f1 "${AGENT_DIR:-../akari-agent}/testdata/TEST-ONLY-release.pub")
+TEST_RELEASE_PUB=$(cut -d' ' -f1 "$AGENT_DIR/testdata/TEST-ONLY-release.pub")
 printf '\n[updates]\nrelease_keys = ["%s TEST-ONLY"]\n' "$TEST_RELEASE_PUB" >>"$LOG/panel.toml"
 "$PANEL" -c "$LOG/panel.toml" serve >"$LOG/panel.log" 2>&1 &
 PANEL_PID=$!
@@ -64,7 +73,7 @@ sleep 2
 # and Valkey rate-limit counters would poison the next run's login test.
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE nodes CASCADE; TRUNCATE users CASCADE;" >/dev/null 2>&1 || true
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE revoked_certs, traffic_counters, audit_log, agent_releases, rollouts CASCADE;" >/dev/null 2>&1 || true
-docker compose exec -T valkey valkey-cli flushall >/dev/null
+vk flushdb >/dev/null
 
 echo "== first admin (env password) =="
 AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" admin add root | tee "$LOG/admin-add.out"
@@ -482,7 +491,7 @@ echo "lease: ok (${LEASE}s left)"
 echo "== node online + heartbeat =="
 STATUS=$(docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -tAc "SELECT status FROM nodes WHERE id='$NODE_ID'")
 [ "$STATUS" = "online" ] || { echo "FAIL: node status '$STATUS'"; exit 1; }
-docker compose exec -T valkey valkey-cli exists "akari:node:online:$NODE_ID" | grep -q 1 \
+vk exists "akari:node:online:$NODE_ID" | grep -q 1 \
   || { echo "FAIL: online key missing"; exit 1; }
 
 echo "== S4-1 login rate limit: failures only, per client; XFF only from trusted proxies =="
@@ -492,7 +501,7 @@ login_code() { # extra curl args..., then login, password (last two)
     -d "{\"login\":\"$lg\",\"password\":\"$pw\"}"
 }
 rl_clear() {
-  docker compose exec -T valkey valkey-cli EVAL \
+  vk EVAL \
     "for _,k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call('DEL', k) end return 1" 0 'akari:rl:*' >/dev/null
 }
 rl_clear
@@ -645,7 +654,7 @@ echo "m3: ok (plan access, quota disable, reset re-enable, cancel)"
 echo "== Sprint 3a: a protocol-0 agent gets the empty state and is flagged (N5) =="
 OLD_SRC="$LOG/old-agent-src"
 mkdir -p "$OLD_SRC"
-if git -C "${AGENT_DIR:-../akari-agent}" archive 2b3e7e3 2>/dev/null | tar -x -C "$OLD_SRC" \
+if git -C "$AGENT_DIR" archive 2b3e7e3 2>/dev/null | tar -x -C "$OLD_SRC" \
     && (cd "$OLD_SRC" && go build -o "$LOG/old-agent" . ) >"$LOG/old-build.log" 2>&1; then
   kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
   # The old agent only reads v1 bootstrap files (key inside): build one from
@@ -740,7 +749,7 @@ for _ in $(seq 1 20); do grep -q 'certificate revoked' "$LOG/agent.log" && break
 grep '"msg":"channel closed"' "$LOG/agent.log" | grep -q 'Unauthenticated desc = certificate revoked' \
   || { echo "FAIL: revoked certificate not closed on reconnect"; grep 'channel closed' "$LOG/agent.log" | tail -3; exit 1; }
 port_open && { echo "FAIL: revoked agent serves again"; exit 1; }
-docker compose exec -T valkey valkey-cli exists "akari:node:online:$NODE_ID" | grep -q 0 \
+vk exists "akari:node:online:$NODE_ID" | grep -q 0 \
   || { echo "FAIL: online key left behind"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$NODE_ID")" = "404" ] || { echo "FAIL: second delete not 404"; exit 1; }
 code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
@@ -877,7 +886,7 @@ python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); assert d['e
 echo "audit: ok"
 
 echo "== M6 signed agent self-update: staged rollout, health gate, automatic rollback =="
-AD="${AGENT_DIR:-../akari-agent}"
+AD="$AGENT_DIR"
 UPD="$LOG/upd"
 mkdir -p "$UPD/v1" "$UPD/v2"
 GOOS_=$(cd "$AD" && go env GOOS)
