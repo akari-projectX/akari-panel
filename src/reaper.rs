@@ -53,6 +53,10 @@ pub async fn reap_loop(state: AppState) {
         if let Err(e) = reap_once(&state).await {
             tracing::warn!(error = %e, "node reaper failed");
         }
+        // M6 rollouts: timeouts, settling, halt, waves (any instance).
+        if let Err(e) = crate::rollout::tick(state.pg()).await {
+            tracing::warn!(error = %e, "rollout tick failed");
+        }
         if tokio::time::Instant::now() >= next_retention {
             next_retention = tokio::time::Instant::now() + crate::traffic::RETENTION_EVERY;
             match crate::traffic::retention_pass(state.pg(), crate::traffic::RETENTION_MARGIN_SECS)

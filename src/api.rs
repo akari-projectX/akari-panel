@@ -966,6 +966,11 @@ pub struct NodeView {
     status: String,
     agent_version: Option<String>,
     core_version: Option<String>,
+    /// M6: platform of the connected agent and its latest rollout entry
+    /// ({rollout_id, version, rollout_status, status, detail}).
+    agent_os: Option<String>,
+    agent_arch: Option<String>,
+    update_status: Option<serde_json::Value>,
     config_version: i64,
     user_version: i64,
     xray_inbounds: serde_json::Value,
@@ -1076,7 +1081,12 @@ async fn with_heartbeats(state: &AppState, mut views: Vec<NodeView>) -> Vec<Node
 }
 
 pub const NODE_VIEW_COLS: &str =
-    "id, name, enabled, status, agent_version, core_version, config_version, \
+    "id, name, enabled, status, agent_version, core_version, agent_os, agent_arch, \
+     (SELECT jsonb_build_object('rollout_id', r.id, 'version', r.version, \
+        'rollout_status', r.status, 'status', rn.status, 'detail', rn.detail) \
+        FROM rollout_nodes rn JOIN rollouts r ON r.id = rn.rollout_id \
+        WHERE rn.node_id = nodes.id ORDER BY r.created_at DESC LIMIT 1) AS update_status, \
+     config_version, \
      user_version, xray_inbounds, server_addr, region, last_error, last_error_at, failed_config_version, \
      failed_user_version, agent_protocol, lease_expires_at, \
      GREATEST(0, EXTRACT(EPOCH FROM lease_expires_at - now()))::bigint AS lease_remaining_seconds, \

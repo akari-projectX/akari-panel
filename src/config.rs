@@ -17,6 +17,31 @@ pub struct PanelConfig {
     pub metrics: MetricsConfig,
     pub audit: AuditConfig,
     pub sub: SubConfig,
+    pub updates: UpdatesConfig,
+}
+
+/// Agent self-update (M6). The panel only relays signed releases; agents
+/// verify them under keys compiled into the agent. The panel checks the
+/// same signatures (keys below) before it stores or offers a release, so a
+/// mistaken upload is refused early.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UpdatesConfig {
+    /// Ed25519 release public keys, "<base64> [label]" (the lines of the
+    /// agent's release-keys.txt). Empty = uploads refused (feature off).
+    pub release_keys: Vec<String>,
+    /// Concurrent artifact downloads (AgentChannel.FetchArtifact) served by
+    /// this instance; more get RESOURCE_EXHAUSTED and retry. Default 8.
+    pub max_concurrent_downloads: usize,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        Self {
+            release_keys: Vec::new(),
+            max_concurrent_downloads: 8,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -212,6 +237,7 @@ impl Default for PanelConfig {
             metrics: MetricsConfig::default(),
             audit: AuditConfig::default(),
             sub: SubConfig::default(),
+            updates: UpdatesConfig::default(),
         }
     }
 }

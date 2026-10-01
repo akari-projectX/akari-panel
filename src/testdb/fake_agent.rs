@@ -230,6 +230,28 @@ impl PanelHarness {
         })
     }
 
+    /// AgentChannel.FetchArtifact (M6): the whole stream's bytes.
+    pub async fn fetch(
+        &self,
+        creds: Option<&AgentCreds>,
+        sha256: &str,
+        offset: u64,
+    ) -> Result<Vec<u8>, Status> {
+        let mut client = AgentChannelClient::new(self.channel(creds).await?);
+        let mut stream = client
+            .fetch_artifact(crate::gen::FetchArtifactRequest {
+                sha256: sha256.into(),
+                offset,
+            })
+            .await?
+            .into_inner();
+        let mut out = Vec::new();
+        while let Some(c) = stream.message().await? {
+            out.extend_from_slice(&c.data);
+        }
+        Ok(out)
+    }
+
     pub async fn stop(mut self) {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
@@ -281,6 +303,28 @@ impl WireAgent {
             ..Default::default()
         }))
         .await;
+    }
+
+    /// Hello with agent info (M6: version and platform drive updates).
+    pub async fn hello_as(&self, held: (u64, u64), hash: String, protocol: u32, version: &str) {
+        self.send(UpMsg::Hello(Hello {
+            session_id: self.session_id.clone(),
+            config_version: held.0,
+            user_version: held.1,
+            protocol_version: protocol,
+            state_hash: hash,
+            info: Some(crate::gen::AgentInfo {
+                agent_version: version.into(),
+                core_version: "test".into(),
+                os: "linux".into(),
+                arch: "amd64".into(),
+            }),
+        }))
+        .await;
+    }
+
+    pub async fn update_status(&self, s: crate::gen::UpdateStatus) {
+        self.send(UpMsg::UpdateStatus(s)).await;
     }
 
     /// Ack the snapshot as successfully applied, with the correct state hash.
