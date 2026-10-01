@@ -65,7 +65,7 @@ test("login page: real CSP, language switch persists, <html lang> follows", asyn
   const ctx = await browser.newContext({ locale: "en-US" });
   const page = await ctx.newPage();
   const problems = watch(page);
-  const res = await page.goto(`${BASE}/`);
+  const res = await page.goto(BASE);
   expect(res?.headers()["content-security-policy"]).toContain("default-src 'self'");
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
@@ -85,7 +85,7 @@ test("user portal: password login, language switch", async ({ browser }) => {
   const ctx = await browser.newContext({ locale: "zh-CN" });
   const page = await ctx.newPage();
   const problems = watch(page);
-  await page.goto(`${BASE}/`);
+  await page.goto(BASE);
   await login(page, USER, USER_PW);
   await expect(page.getByRole("heading", { name: "我的账户" })).toBeVisible();
   await page.getByRole("button", { name: "English" }).click();
@@ -146,7 +146,7 @@ test("admin with 2FA: password alone refused, TOTP code accepted", async ({ brow
   const ctx = await browser.newContext({ locale: "zh-CN" });
   const page = await ctx.newPage();
   const problems = watch(page);
-  await page.goto(`${BASE}/`);
+  await page.goto(BASE);
   await login(page, ADMIN, ADMIN_PW);
   await expect(page.getByRole("alert")).toHaveText("账号、密码或验证码错误");
   const next = await nextCode(secret, usedStep); // the confirm step is spent
