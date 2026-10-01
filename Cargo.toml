@@ -46,6 +46,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 x509-parser = "0.18"
 prometheus = { version = "0.14", default-features = false }
+mimalloc = { version = "0.1", default-features = false }
 
 [build-dependencies]
 protox = "0.9"
