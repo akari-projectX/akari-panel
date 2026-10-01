@@ -846,6 +846,45 @@ EXP2=$(psql_q "SELECT extract(epoch FROM expires_at)::bigint FROM user_plans WHE
 for a in order.create order.paid plan.price.set user.plan.set user.plan.update; do
   [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='$a'")" -ge 1 ] || { echo "FAIL: audit lacks $a"; exit 1; }
 done
+# R21: expired and quota-disabled users (renewal scope) can shop, order,
+# poll and cancel; an admin-disabled user cannot.
+for who in expired quota; do
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+      -d "{\"login\":\"smoke-renew-$who\",\"password\":\"renew-password-123\"}")" = "201" ] || { echo "FAIL: create $who user"; exit 1; }
+  RU=$(last_json "d['id']")
+  if [ "$who" = expired ]; then
+    psql_q "UPDATE users SET expires_at = now() - interval '1 minute' WHERE id='$RU'" >/dev/null
+  else
+    psql_q "UPDATE users SET enabled = false, disabled_reason = 'quota' WHERE id='$RU'" >/dev/null
+  fi
+  RJAR="$LOG/renew-$who-cookies"
+  [ "$(code -c "$RJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+      -d "{\"login\":\"smoke-renew-$who\",\"password\":\"renew-password-123\"}")" = "200" ] || { echo "FAIL: $who user login (R21)"; exit 1; }
+  [ "$(code -b "$RJAR" "$BASE/api/v1/me/shop")" = "200" ] && [ "$(last_json "d['enabled']")" = "True" ] \
+    || { echo "FAIL: $who user cannot list the shop (R21)"; cat /tmp/akari-smoke/last; exit 1; }
+  [ "$(code -b "$RJAR" -X POST "$BASE/api/v1/me/orders" -H 'Content-Type: application/json' \
+      -d "{\"plan_id\":\"$PAID_PLAN\"}")" = "201" ] || { echo "FAIL: $who user cannot order (R21)"; cat /tmp/akari-smoke/last; exit 1; }
+  RO=$(last_json "d['id']")
+  [ "$(code -b "$RJAR" "$BASE/api/v1/me/orders/$RO")" = "200" ] && [ "$(last_json "d['status']")" = "pending" ] \
+    || { echo "FAIL: $who user cannot poll the order (R21)"; exit 1; }
+  [ "$(code -b "$RJAR" "$BASE/api/v1/me/orders")" = "200" ] || { echo "FAIL: $who user order list (R21)"; exit 1; }
+  [ "$(code -b "$RJAR" -X POST "$BASE/api/v1/me/orders/$RO/cancel" -H 'Content-Type: application/json' -d '{}')" = "200" ] \
+    && [ "$(last_json "d['status']")" = "cancelled" ] || { echo "FAIL: $who user cannot cancel (R21)"; cat /tmp/akari-smoke/last; exit 1; }
+  [ "$(code -b "$RJAR" -X POST "$BASE/api/v1/me/sub-token" -H 'Content-Type: application/json' -d '{}')" = "401" ] \
+    || { echo "FAIL: $who user regenerated the subscription token"; exit 1; }
+done
+# Disabled by an admin (the quota user's session stays signed with the same
+# session_ver: the reason alone must end the renewal scope).
+psql_q "UPDATE users SET disabled_reason = 'admin' WHERE id='$RU'" >/dev/null
+[ "$(code -b "$RJAR" "$BASE/api/v1/me/shop")" = "401" ] || { echo "FAIL: admin-disabled user listed the shop"; exit 1; }
+[ "$(code -b "$RJAR" -X POST "$BASE/api/v1/me/orders" -H 'Content-Type: application/json' \
+    -d "{\"plan_id\":\"$PAID_PLAN\"}")" = "401" ] || { echo "FAIL: admin-disabled user ordered"; exit 1; }
+[ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d '{"login":"smoke-renew-quota","password":"renew-password-123"}')" = "401" ] || { echo "FAIL: admin-disabled user logged in"; exit 1; }
+for who in expired quota; do
+  RU=$(psql_q "SELECT id FROM users WHERE login='smoke-renew-$who'")
+  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$RU")" = "204" ] || { echo "FAIL: delete $who user"; exit 1; }
+done
 # Clean up for the following sections (the node serves nobody again).
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$BUYER")" = "204" ] || { echo "FAIL: delete buyer"; exit 1; }
 wait_users 0 10 "buyer deleted"

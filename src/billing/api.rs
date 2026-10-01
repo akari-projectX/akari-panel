@@ -24,7 +24,7 @@ use super::alipay::{self, Alipay};
 use super::orders::{self, payment_actor, Paid, Pending, Via};
 use crate::api::ApiJson;
 use crate::audit::Actor;
-use crate::auth::{ApiError, AuthUser, MaybeClientIp};
+use crate::auth::{ApiError, AuthUser, MaybeClientIp, ShopUser};
 use crate::state::AppState;
 
 /// Notify body cap (Alipay's are ~1-2 KiB).
@@ -159,7 +159,14 @@ struct ShopRow {
 
 /// GET /me/shop: purchasable plans with the action buying one would take
 /// for the caller ("new" | "renew" | "replace" | "unavailable").
-pub async fn shop(State(state): State<AppState>, user: AuthUser) -> Result<Json<Value>, ApiError> {
+///
+/// The user-side shop/order handlers take `ShopUser` (R21 renewal scope):
+/// expired and quota-disabled accounts must be able to buy and pay. They
+/// reveal and grant no proxy access themselves (fulfilment applies the plan).
+pub async fn shop(
+    State(state): State<AppState>,
+    ShopUser { user, .. }: ShopUser,
+) -> Result<Json<Value>, ApiError> {
     let enabled = state.alipay().is_some() && user.role == "user";
     let mut c = state.pg().acquire().await?;
     let current: Option<(Uuid, String, Option<DateTime<Utc>>)> = sqlx::query_as(
@@ -236,7 +243,7 @@ fn new_out_trade_no() -> String {
 /// ended first (queried: if it was paid it is fulfilled instead).
 pub async fn create_order(
     State(state): State<AppState>,
-    user: AuthUser,
+    ShopUser { user, .. }: ShopUser,
     ApiJson(req): ApiJson<CreateOrderReq>,
 ) -> Result<(StatusCode, Json<MyOrderView>), ApiError> {
     let Some(alipay) = state.alipay().cloned() else {
@@ -419,7 +426,7 @@ pub async fn create_order(
 /// GET /me/orders: the caller's last 50 orders.
 pub async fn my_orders(
     State(state): State<AppState>,
-    user: AuthUser,
+    ShopUser { user, .. }: ShopUser,
 ) -> Result<Json<Vec<MyOrderView>>, ApiError> {
     let rows = sqlx::query_as::<_, MyOrderView>(sqlx::AssertSqlSafe(format!(
         "{MY_ORDER_SQL} WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT 50"
@@ -435,7 +442,7 @@ pub async fn my_orders(
 /// is detected even when the notify cannot reach the panel.
 pub async fn my_order(
     State(state): State<AppState>,
-    user: AuthUser,
+    ShopUser { user, .. }: ShopUser,
     Path((_, id)): Path<(String, Uuid)>,
 ) -> Result<Json<MyOrderView>, ApiError> {
     let view = my_order_view(&state, user.id, id).await?;
@@ -452,7 +459,7 @@ pub async fn my_order(
 /// was paid meanwhile it is fulfilled and returned as paid).
 pub async fn cancel_order(
     State(state): State<AppState>,
-    user: AuthUser,
+    ShopUser { user, .. }: ShopUser,
     Path((_, id)): Path<(String, Uuid)>,
 ) -> Result<Json<MyOrderView>, ApiError> {
     let Some(alipay) = state.alipay().cloned() else {

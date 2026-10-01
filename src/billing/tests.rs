@@ -532,6 +532,99 @@ async fn http_purchase_flow() {
     db.drop().await;
 }
 
+/// R21: expired and quota-disabled users (renewal scope, `auth::ShopUser`)
+/// can list the shop, create an order, poll it and cancel it; a user
+/// disabled by an admin cannot reach any of it.
+#[tokio::test]
+async fn renewal_scope_users_can_shop() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let (_, plan) = priced_plan(&db, "renew", 500, 30).await;
+
+    let expired = db.user().await;
+    sqlx::query("UPDATE users SET expires_at = now() - interval '1 minute' WHERE id = $1")
+        .bind(expired)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let quota = db.user().await;
+    sqlx::query("UPDATE users SET enabled = false, disabled_reason = 'quota' WHERE id = $1")
+        .bind(quota)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    for (who, user) in [("expired", expired), ("quota", quota)] {
+        let mut c = Client::new(&state, rand_ip());
+        // Issued before the state change would be revoked (session_ver):
+        // a fresh token is what a renewal-scope login hands out.
+        c.cookie = Some(token(&state, user).await);
+        // Proxy access stays blocked for this session.
+        assert_eq!(
+            c.post("/test/api/v1/me/sub-token", json!({})).await.status,
+            StatusCode::UNAUTHORIZED,
+            "{who}"
+        );
+        let r = c.get("/test/api/v1/me/shop").await;
+        assert_eq!(r.status, StatusCode::OK, "{who}");
+        assert_eq!(r.json()["enabled"], true, "{who}");
+        assert_eq!(r.json()["plans"][0]["action"], "new", "{who}");
+        let r = c
+            .post("/test/api/v1/me/orders", json!({ "plan_id": plan }))
+            .await;
+        assert_eq!(r.status, StatusCode::CREATED, "{who}: {:?}", r.json());
+        let oid = r.json()["id"].as_str().unwrap().to_string();
+        let r = c.get(&format!("/test/api/v1/me/orders/{oid}")).await;
+        assert_eq!(r.status, StatusCode::OK, "{who}");
+        assert_eq!(r.json()["status"], "pending", "{who}");
+        let r = c.get("/test/api/v1/me/orders").await;
+        assert_eq!(r.status, StatusCode::OK, "{who}");
+        assert_eq!(r.json().as_array().map(Vec::len), Some(1), "{who}");
+        let r = c
+            .post(&format!("/test/api/v1/me/orders/{oid}/cancel"), json!({}))
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "{who}: {:?}", r.json());
+        assert_eq!(r.json()["status"], "cancelled", "{who}");
+    }
+
+    // Disabled by an admin: no renewal scope.
+    let banned = db.user().await;
+    sqlx::query("UPDATE users SET enabled = false, disabled_reason = 'admin' WHERE id = $1")
+        .bind(banned)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let mut c = Client::new(&state, rand_ip());
+    c.cookie = Some(token(&state, banned).await);
+    assert_eq!(
+        c.get("/test/api/v1/me/shop").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        c.get("/test/api/v1/me/orders").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        c.post("/test/api/v1/me/orders", json!({ "plan_id": plan }))
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM orders WHERE user_id = $1",
+            banned
+        )
+        .await,
+        0
+    );
+    drop(state);
+    db.drop().await;
+}
+
 /// Every notify refusal is byte-identical to the canonical rejection, and
 /// leaves an event row; nothing is fulfilled.
 #[tokio::test]
