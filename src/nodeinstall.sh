@@ -181,6 +181,10 @@ while [ "$i" -lt 90 ]; do
 		result=refused
 		break
 		;;
+	*'too many enrollment attempts'*)
+		result=ratelimited
+		break
+		;;
 	esac
 	# Restart=always: a crash loop never reaches "failed".
 	restarts=$(systemctl show -p NRestarts --value akari-agent.service 2>/dev/null || echo 0)
@@ -204,6 +208,9 @@ ok)
 refused)
 	journalctl -u akari-agent.service --since "@$START" -o cat --no-pager -n 20 >&2 || true
 	die "the panel refused the enrollment token (expired or already used): create a new install command in the panel"
+	;;
+ratelimited)
+	die "the panel is rate limiting enrollments from this address; the agent keeps retrying (journalctl -u akari-agent -f), or run this again in a few minutes"
 	;;
 *)
 	journalctl -u akari-agent.service --since "@$START" -o cat --no-pager -n 30 >&2 || true
