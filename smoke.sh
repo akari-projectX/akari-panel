@@ -1067,7 +1067,8 @@ if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
   # Host network: the node reaches the panel on 127.0.0.1 (web 8080, gRPC 8443).
   docker run -d --name akari-smoke-node --network host --privileged --cgroupns=host \
     -v /sys/fs/cgroup:/sys/fs/cgroup:rw akari-node-test:debian13 >/dev/null
-  trap 'docker rm -f akari-smoke-node >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
+  PREV_EXIT_TRAP=$(trap -p EXIT)
+  trap 'docker rm -f akari-smoke-node >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
   for _ in $(seq 1 30); do docker exec akari-smoke-node systemctl is-system-running 2>/dev/null | grep -qE 'running|degraded' && break; sleep 1; done
   # Exactly what the admin copies, minus sudo (root in the container).
   docker exec akari-smoke-node sh -c "${INST_CMD% | sudo sh} | sh" >"$LOG/install.out" 2>&1 \
@@ -1102,7 +1103,7 @@ if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
   [ "$(fp "$INST_URL2")" = "$REJ" ] || { echo "FAIL: second link not burned"; exit 1; }
   docker exec akari-smoke-node akari-agent-uninstall >>"$LOG/install.out" 2>&1 || { echo "FAIL: uninstall helper"; exit 1; }
   docker rm -f akari-smoke-node >/dev/null
-  trap 'cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
+  eval "$PREV_EXIT_TRAP"
   echo "installer (container): ok"
 else
   echo "installer container test skipped (SMOKE_INSTALL_CONTAINER=0)"
