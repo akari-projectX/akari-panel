@@ -13,6 +13,13 @@
 # keeps key + certificates in its StateDirectory (/var/lib/private/
 # akari-agent, 0700, files 0600; $STATE_DIRECTORY): back it up or the node
 # must re-enroll with a new token (`akari node enroll-token`).
+#
+# Self-update (M6, docs/DEPLOY.md "Agent updates"): the binary above stays
+# the launcher. Verified updates are staged in the StateDirectory (update/)
+# and the agent replaces its own process image (same PID). A staged binary
+# that crashes is restarted by Restart=always through the launcher, which
+# counts the boots and falls back to the previous binary. Nothing here needs
+# to change; the StateDirectory must not be mounted noexec.
 [Unit]
 Description=Akari node agent (xray-core)
 Documentation=https://github.com/akari-projectX/akari-agent
