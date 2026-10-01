@@ -7,7 +7,10 @@ use axum::{Json, Router};
 use serde_json::json;
 use subtle::ConstantTimeEq;
 
-use crate::{account, api, audit, plans, reject, rollout, spa, state::AppState, sub, updates};
+use crate::{
+    account, api, audit, nodeinstall, nodetpl, plans, reject, rollout, spa, state::AppState, sub,
+    updates,
+};
 
 pub fn router(state: AppState) -> Router {
     // Routes carry the secret prefix as a {prefix} path parameter (handlers
@@ -23,6 +26,11 @@ pub fn router(state: AppState) -> Router {
         .route("/{prefix}/app/{*rest}", get(spa::index))
         .route("/{prefix}/assets/{*path}", get(spa::asset))
         .route("/{prefix}/sub/{token}", get(sub::subscription))
+        .route("/{prefix}/install/{token}", get(nodeinstall::script))
+        .route(
+            "/{prefix}/install/{token}/agent/{arch}",
+            get(nodeinstall::binary),
+        )
         .route("/{prefix}/auth/login", post(api::login))
         .route("/{prefix}/auth/logout", post(api::logout))
         .route("/{prefix}/api/v1/me", get(api::me))
@@ -111,6 +119,19 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/{prefix}/api/v1/nodes/{id}/inbounds",
             put(api::set_inbounds),
+        )
+        .route(
+            "/{prefix}/api/v1/nodes/{id}/install",
+            post(nodeinstall::issue_install),
+        )
+        .route("/{prefix}/api/v1/inbound-templates", get(nodetpl::catalog))
+        .route(
+            "/{prefix}/api/v1/inbound-templates/render",
+            post(nodetpl::render_templates),
+        )
+        .route(
+            "/{prefix}/api/v1/inbound-templates/check-dest",
+            post(nodetpl::check_dest),
         )
         .route(
             "/{prefix}/api/v1/agent-releases",
@@ -226,7 +247,7 @@ pub fn redacted_path(path: &str) -> String {
     let mut out = String::from("/{prefix}");
     for (i, seg) in rest.iter().enumerate() {
         out.push('/');
-        if i == 1 && rest.first() == Some(&"sub") {
+        if i == 1 && matches!(rest.first(), Some(&"sub") | Some(&"install")) {
             out.push_str("{token}");
         } else {
             out.push_str(seg);
@@ -304,6 +325,11 @@ mod tests {
             ("/0123abcd/sub/SECRET-TOKEN", "/{prefix}/sub/{token}"),
             ("/0123abcd/sub/SECRET-TOKEN?x=1", "/{prefix}/sub/{token}"),
             ("/0123abcd/sub/SECRET/extra", "/{prefix}/sub/{token}/extra"),
+            ("/0123abcd/install/SECRET", "/{prefix}/install/{token}"),
+            (
+                "/0123abcd/install/SECRET/agent/amd64",
+                "/{prefix}/install/{token}/agent/amd64",
+            ),
             ("/0123abcd/api/v1/users", "/{prefix}/api/v1/users"),
             ("/0123abcd", "/{prefix}"),
             ("/", "/{prefix}"),

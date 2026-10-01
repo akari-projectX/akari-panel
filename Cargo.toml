@@ -38,6 +38,9 @@ thiserror = "2"
 time = "0.3"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
+# R18-2: TLS probes (install pin, REALITY dest check); same versions sqlx/fred already link.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
 toml = "0.9"
 tonic = { version = "0.14", features = ["tls-ring"] }
 tonic-prost = "0.14"
@@ -45,6 +48,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 x509-parser = "0.18"
+# R18-2: REALITY key pairs (curve25519-dalek 4 is already linked via ed25519-dalek).
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 prometheus = { version = "0.14", default-features = false }
 mimalloc = { version = "0.1", default-features = false }
 

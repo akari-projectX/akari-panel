@@ -1116,6 +1116,22 @@ pub async fn list_nodes(
 #[serde(deny_unknown_fields)]
 pub struct CreateNodeReq {
     pub name: String,
+    /// R18-2 form fields (all optional; the CLI path sends only `name`).
+    #[serde(default)]
+    pub region: Option<String>,
+    /// Public address clients dial (IP or domain).
+    #[serde(default)]
+    pub server_addr: Option<String>,
+    /// Inbounds from templates (`nodetpl::InboundSpec`) ...
+    #[serde(default)]
+    pub templates: Option<Vec<crate::nodetpl::InboundSpec>>,
+    /// ... or a raw xray inbounds array (not both).
+    #[serde(default)]
+    pub inbounds: Option<serde_json::Value>,
+    /// Issue an install link (one-line installer) instead of a 24 h
+    /// bootstrap token; same token either way.
+    #[serde(default)]
+    pub install: Option<crate::nodeinstall::InstallReq>,
 }
 
 /// The one-time enrollment material returned by create / enroll-token: the
@@ -1128,6 +1144,9 @@ pub struct EnrollmentView {
     enrollment_token: String,
     expires_at: DateTime<Utc>,
     bootstrap: String,
+    /// The one-line install command (R18-2), when requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install: Option<crate::nodeinstall::InstallView>,
 }
 
 fn enrollment_view(
@@ -1152,36 +1171,74 @@ fn enrollment_view(
         enrollment_token: token,
         expires_at,
         bootstrap,
+        install: None,
     }
 }
 
-/// POST /nodes {name} (admin): create a node (pending) with a one-time
-/// enrollment token (M1-8). 201 with the token and bootstrap file.
+/// POST /nodes (admin): create a node (pending) with a one-time enrollment
+/// token (M1-8). R18-2: optionally region, public address and inbounds
+/// (templates rendered server-side, or raw JSON — same validation as PUT
+/// inbounds) in the same transaction, and an install link (`install`).
+/// 201 with the token, bootstrap file and install command.
 pub async fn create_node(
     State(state): State<AppState>,
     user: AuthUser,
     ApiJson(req): ApiJson<CreateNodeReq>,
 ) -> Result<(axum::http::StatusCode, Json<EnrollmentView>), ApiError> {
     user.require_admin()?;
+    let inbounds = match (&req.templates, &req.inbounds) {
+        (Some(_), Some(_)) => {
+            return Err(ApiError::bad_request(
+                "give either templates or inbounds, not both",
+            ))
+        }
+        (Some(t), None) => Some(serde_json::Value::Array(crate::nodetpl::render(t, &[])?)),
+        (None, Some(raw)) => Some(raw.clone()),
+        (None, None) => None,
+    };
+    if let Some(i) = &inbounds {
+        validate_inbounds(i)?;
+    }
+    let prepared = match &req.install {
+        Some(r) => Some(crate::nodeinstall::prepare(&state, r).await?),
+        None => None,
+    };
+    let actor = Actor::of(&user);
     let mut tx = state.pg().begin().await?;
-    let (id, token, expires) = crate::enroll::apply_create_node(
-        &mut tx,
-        &Actor::of(&user),
-        &req.name,
-        state.cfg().agent.enroll_token_ttl_secs,
-    )
-    .await?;
+    if inbounds.is_some() {
+        // Lock order: the entitlement lock before any row (set_inbounds
+        // takes it again; advisory xact locks nest).
+        crate::entitle::lock(&mut tx).await?;
+    }
+    let (ttl, link) = match &prepared {
+        Some(p) => (state.cfg().install.token_ttl_secs, Some(p.link())),
+        None => (state.cfg().agent.enroll_token_ttl_secs, None),
+    };
+    let (id, token, expires) =
+        crate::enroll::apply_create_node(&mut tx, &actor, &req.name, ttl, link).await?;
+    if req.region.is_some() || req.server_addr.is_some() {
+        let patch = UpdateNodeReq {
+            server_addr: req.server_addr.clone().map(Some),
+            region: req.region.clone().map(Some),
+            ..Default::default()
+        };
+        apply_update_node(&mut tx, &actor, id, &patch).await?;
+    }
+    if let Some(i) = &inbounds {
+        apply_set_inbounds(&mut tx, &actor, id, i).await?;
+    }
     tx.commit().await?;
-    Ok((
-        axum::http::StatusCode::CREATED,
-        Json(enrollment_view(
-            &state,
-            id,
-            req.name.trim().to_string(),
-            token,
-            expires,
-        )),
-    ))
+    let mut view = enrollment_view(
+        &state,
+        id,
+        req.name.trim().to_string(),
+        token.clone(),
+        expires,
+    );
+    if let Some(p) = prepared {
+        view.install = Some(crate::nodeinstall::view(&state, p, &token, expires).await?);
+    }
+    Ok((axum::http::StatusCode::CREATED, Json(view)))
 }
 
 /// POST /nodes/{id}/enroll-token (admin): a new one-time enrollment token
@@ -1199,6 +1256,7 @@ pub async fn issue_enroll_token(
         &Actor::of(&user),
         id,
         state.cfg().agent.enroll_token_ttl_secs,
+        None,
     )
     .await?;
     let name: String = sqlx::query_scalar("SELECT name FROM nodes WHERE id = $1")
@@ -1472,7 +1530,7 @@ fn reserved_tag(tag: &str) -> bool {
 }
 
 /// Every inbound needs a unique, non-reserved, non-empty tag and a protocol.
-fn validate_inbounds(inbounds: &serde_json::Value) -> Result<(), ApiError> {
+pub(crate) fn validate_inbounds(inbounds: &serde_json::Value) -> Result<(), ApiError> {
     let Some(items) = inbounds.as_array() else {
         return Err(ApiError::bad_request("inbounds must be an array"));
     };

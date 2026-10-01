@@ -61,7 +61,7 @@ pub fn hash_token(token: &str) -> Vec<u8> {
 }
 
 /// Shape check before any database work.
-fn plausible_token(token: &str) -> bool {
+pub(crate) fn plausible_token(token: &str) -> bool {
     token.len() == 43
         && token
             .bytes()
@@ -72,11 +72,23 @@ fn plausible_token(token: &str) -> bool {
 /// (lock order: nodes first); refuses deleting nodes (409) and unknown ones
 /// (404). Audited as `node.enroll_token`. Returns the token (shown once)
 /// and its expiry.
+/// Where an install link's script downloads from (R18-2). `None` for a
+/// token meant for a bootstrap file (never served as a script).
+#[derive(Debug, Clone, Copy)]
+pub struct InstallLink<'a> {
+    /// "https://host[:port]" (validated by `nodeinstall::parse_origin`).
+    pub origin: &'a str,
+    /// curl --pinnedpubkey value, when the origin's certificate is not
+    /// publicly trusted.
+    pub pin: Option<&'a str>,
+}
+
 pub async fn apply_issue_token(
     conn: &mut PgConnection,
     actor: &Actor,
     node_id: Uuid,
     ttl_secs: u64,
+    link: Option<InstallLink<'_>>,
 ) -> Result<(String, DateTime<Utc>), ApiError> {
     let deleting: Option<bool> =
         sqlx::query_scalar("SELECT deleting_at IS NOT NULL FROM nodes WHERE id = $1 FOR UPDATE")
@@ -90,15 +102,18 @@ pub async fn apply_issue_token(
     }
     let token = generate_token();
     let expires: DateTime<Utc> = sqlx::query_scalar(
-        "INSERT INTO node_enrollments (node_id, token_hash, expires_at) \
-         VALUES ($1, $2, now() + make_interval(secs => $3)) \
+        "INSERT INTO node_enrollments (node_id, token_hash, expires_at, install_origin, install_pin) \
+         VALUES ($1, $2, now() + make_interval(secs => $3), $4, $5) \
          ON CONFLICT (node_id) DO UPDATE SET token_hash = EXCLUDED.token_hash, \
-             created_at = now(), expires_at = EXCLUDED.expires_at, used_at = NULL \
+             created_at = now(), expires_at = EXCLUDED.expires_at, used_at = NULL, \
+             install_origin = EXCLUDED.install_origin, install_pin = EXCLUDED.install_pin \
          RETURNING expires_at",
     )
     .bind(node_id)
     .bind(hash_token(&token))
     .bind(ttl_secs as f64)
+    .bind(link.map(|l| l.origin))
+    .bind(link.and_then(|l| l.pin))
     .fetch_one(&mut *conn)
     .await?;
     crate::audit::record(
@@ -108,7 +123,11 @@ pub async fn apply_issue_token(
         "node",
         Some(node_id.to_string()),
         None,
-        Some(json!({ "token": crate::audit::CHANGED, "expires_at": expires })),
+        Some(json!({
+            "token": crate::audit::CHANGED,
+            "expires_at": expires,
+            "install_link": link.is_some(),
+        })),
     )
     .await?;
     Ok((token, expires))
@@ -121,6 +140,7 @@ pub async fn apply_create_node(
     actor: &Actor,
     name: &str,
     ttl_secs: u64,
+    link: Option<InstallLink<'_>>,
 ) -> Result<(Uuid, String, DateTime<Utc>), ApiError> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
@@ -151,7 +171,7 @@ pub async fn apply_create_node(
         Some(json!({ "name": name })),
     )
     .await?;
-    let (token, expires) = apply_issue_token(conn, actor, id, ttl_secs).await?;
+    let (token, expires) = apply_issue_token(conn, actor, id, ttl_secs, link).await?;
     Ok((id, token, expires))
 }
 
@@ -597,7 +617,7 @@ mod tests {
 
     async fn token_for(db: &TestDb, node: Uuid) -> String {
         let mut tx = db.pool.begin().await.unwrap();
-        let (t, _) = apply_issue_token(&mut tx, &Actor::test(), node, 3600)
+        let (t, _) = apply_issue_token(&mut tx, &Actor::test(), node, 3600, None)
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -674,7 +694,7 @@ mod tests {
         };
         let panel = PanelHarness::start(&db).await;
         let mut tx = db.pool.begin().await.unwrap();
-        let (node, token, _) = apply_create_node(&mut tx, &Actor::test(), "n-enroll", 3600)
+        let (node, token, _) = apply_create_node(&mut tx, &Actor::test(), "n-enroll", 3600, None)
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -823,7 +843,7 @@ mod tests {
         }
         // A deleting node cannot get a token either.
         let mut tx = db.pool.begin().await.unwrap();
-        let e = apply_issue_token(&mut tx, &Actor::test(), n3, 3600)
+        let e = apply_issue_token(&mut tx, &Actor::test(), n3, 3600, None)
             .await
             .unwrap_err();
         assert_eq!(e.status(), axum::http::StatusCode::CONFLICT);
