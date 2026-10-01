@@ -30,4 +30,4 @@ sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18）在 `serve`、`n
 
 **保留策略须知**：任何清理任务只能删除**可证明已死**的会话行（该 agent 已换新 session 且旧 session 不可能再上报，例如节点已删除，或 `updated_at` 远早于该节点当前 session 首次出现且超过安全窗口）；不确定就不删。
 
-已知缺口（见 REVIEW）：`role`/`status` 为自由文本，无 CHECK 约束。
+0050（W4 加固）：CHECK 约束——`users.role IN (admin,user)`、`nodes.status IN (pending,online,offline)`、`traffic_used_bytes`/`traffic_limit_bytes`/`traffic_counters.up/down_bytes`/`node_users_departed.billed_bytes` >= 0、`node_users.credentials` 为 JSON 数组。新增 role/status 取值须同时加迁移。迁移号 0050–0059 为加固批次预留。
