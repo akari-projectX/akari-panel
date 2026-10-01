@@ -122,7 +122,7 @@ impl Period {
         }
     }
 
-    fn from_columns(kind: &str, days: Option<i32>) -> Self {
+    pub fn from_columns(kind: &str, days: Option<i32>) -> Self {
         match (kind, days) {
             ("monthly", _) => Self::Monthly,
             ("days", Some(d)) => Self::Days(d),

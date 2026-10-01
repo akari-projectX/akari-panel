@@ -6,6 +6,7 @@ pub mod account;
 pub mod api;
 pub mod audit;
 pub mod auth;
+pub mod billing;
 pub mod client_ip;
 pub mod config;
 pub mod config_check;

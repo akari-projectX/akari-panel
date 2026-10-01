@@ -22,6 +22,7 @@ pub fn router(state: AppState) -> Router {
     // the prefix.
     let routes = Router::new()
         .route("/{prefix}/healthz", get(healthz))
+        .merge(crate::billing::routes())
         .route("/{prefix}/app", get(spa::index))
         .route("/{prefix}/app/{*rest}", get(spa::index))
         .route("/{prefix}/assets/{*path}", get(spa::asset))
