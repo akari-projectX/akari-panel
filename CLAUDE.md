@@ -31,7 +31,9 @@ make bench-up      # 基准专用栈（bench/compose.yml：PG 5433 / Valkey 6380
 make bench-seed    # 200 节点 / 5 万用户 / 每节点 1 万（约 60s，独立库 akari_bench）
 make bench         # criterion（快照构建、订阅渲染、flush 5 万行）；其余工具见 docs/PERF.md
 make bench-lint    # bench crate 的 fmt + clippy（CI 也跑）
-make smoke         # 全量构建 + smoke.sh（会 TRUNCATE PG、flushall Valkey、删 data/）
+make smoke         # 全量构建 + smoke.sh（会 TRUNCATE PG、FLUSHDB 本次 Valkey db、删 data/）
+# 并行 checkout/worktree：SMOKE_DB=<名> 用独立 PG 库 + 独立 Valkey db 序号（cksum%15+1，可用 SMOKE_VALKEY_DB 覆盖；
+# 默认 akari→db 0）；AGENT_DIR=<agent 检出> 指向 agent；共享端口 8443/8081，须用 flock 串行化 smoke
 ./target/release/akari info    # 查看 route prefix
 ./target/release/akari config check   # 校验并打印生效配置（凭据已打码）
 ./target/release/akari --version      # 版本 + git sha（build.rs，Docker 构建用 AKARI_GIT_SHA）
