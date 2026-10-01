@@ -7,15 +7,17 @@ import { resetAfterLogout } from "./lib/session";
 import { Login } from "./pages/login";
 import { AdminUsers } from "./pages/admin-users";
 import { AdminNodes } from "./pages/admin-nodes";
+import { AdminPlans } from "./pages/admin-plans";
+import { PasswordCard } from "./pages/portal";
 import { Portal } from "./pages/portal";
 import { AdminAudit } from "./pages/audit";
 import { EnrollPage, TwoFactorCard } from "./pages/two-factor";
 import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
 
-type View = "users" | "nodes" | "audit" | "account";
+type View = "users" | "plans" | "nodes" | "audit" | "account";
 
-const VIEWS: View[] = ["users", "nodes", "audit", "account"];
+const VIEWS: View[] = ["users", "plans", "nodes", "audit", "account"];
 
 function App() {
   const queryClient = useQueryClient();
@@ -73,6 +75,9 @@ function App() {
                 <Button variant={view === "users" ? "default" : "ghost"} size="sm" onClick={() => setView("users")}>
                   Users
                 </Button>
+                <Button variant={view === "plans" ? "default" : "ghost"} size="sm" onClick={() => setView("plans")}>
+                  Plans
+                </Button>
                 <Button variant={view === "nodes" ? "default" : "ghost"} size="sm" onClick={() => setView("nodes")}>
                   Nodes
                 </Button>
@@ -101,12 +106,17 @@ function App() {
       </header>
       <main className="mx-auto max-w-6xl px-6 py-8">
         {isAdmin ? (
-          view === "nodes" ? (
+          view === "plans" ? (
+            <AdminPlans />
+          ) : view === "nodes" ? (
             <AdminNodes />
           ) : view === "audit" ? (
             <AdminAudit />
           ) : view === "account" ? (
-            <TwoFactorCard />
+            <div className="space-y-6">
+              <PasswordCard />
+              <TwoFactorCard />
+            </div>
           ) : (
             <AdminUsers />
           )
