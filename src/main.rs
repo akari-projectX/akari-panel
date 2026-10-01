@@ -1,5 +1,12 @@
 use std::path::PathBuf;
 
+/// mimalloc instead of the platform allocator (M2, docs/PERF.md): the
+/// release binary is static musl, whose allocator serializes this
+/// allocation-heavy multithreaded workload; glibc's per-thread arenas keep
+/// RSS at the transient peak.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 

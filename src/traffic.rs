@@ -438,10 +438,11 @@ impl TrafficBuffer {
             .map_or(0, |i| i.sessions.values().filter(|s| s.dirty > 0).count())
     }
 
-    /// Everything not yet durably persisted, in a stable (user, node,
-    /// session) order so concurrent flushers (e.g. two panel instances) lock
-    /// `traffic_counters`/`users` rows in the same order and cannot
-    /// deadlock. Nothing is cleared here.
+    /// Everything not yet durably persisted, in (node, user, session) order:
+    /// flush chunks then hold few nodes each and write `traffic_counters` in
+    /// index order. (Deadlock freedom between concurrent flushers does not
+    /// depend on it: `write_rows` locks nodes, then users, each in id
+    /// order.) Nothing is cleared here.
     fn snapshot(&self) -> Vec<FlushRow> {
         let now = Instant::now();
         let mut rows: Vec<FlushRow> = self
@@ -461,7 +462,7 @@ impl TrafficBuffer {
             })
             .collect();
         rows.sort_by(|a, b| {
-            (a.user_id, a.node_id, &a.session_id).cmp(&(b.user_id, b.node_id, &b.session_id))
+            (a.node_id, a.user_id, &a.session_id).cmp(&(b.node_id, b.user_id, &b.session_id))
         });
         rows
     }
@@ -778,11 +779,13 @@ UPDATE nodes SET
         ELSE statement_timestamp() + make_interval(secs => $3) END
 WHERE id IN (SELECT DISTINCT unnest($1::uuid[]))";
 
-/// Writes `rows` in one transaction: lock the rows' nodes (id order, the
-/// global lock order: nodes before users), then FLUSH_SQL. The node locks
-/// serialize concurrent flushers of the same node (e.g. two panel
-/// instances), so each reads the traffic_flushed_at the other advanced.
-/// Returns the keys the database refused as unassigned.
+/// Writes `rows` in one transaction: lock the rows' nodes, then their
+/// users (each in id order — the global lock order: nodes before users),
+/// then FLUSH_SQL. The node locks serialize concurrent flushers of the same
+/// node (e.g. two panel instances), so each reads the traffic_tat the other
+/// advanced; the ordered user locks keep flushers of disjoint nodes that
+/// share users from deadlocking. Returns the keys the database refused as
+/// unassigned.
 async fn write_rows(
     pg: &sqlx::PgPool,
     rows: &[FlushRow],
@@ -935,9 +938,34 @@ async fn flush_rows(
         return Ok(0);
     }
     let grace = buf.departed_grace_secs();
-    match write_rows(pg, &rows, rates, grace, outage).await {
+    let mut written = 0;
+    for chunk in rows.chunks(FLUSH_CHUNK_ROWS) {
+        written += flush_chunk(pg, buf, chunk, rates, grace, outage).await?;
+    }
+    Ok(written)
+}
+
+/// Rows per flush transaction (M2). Each chunk is one `write_rows`
+/// transaction holding its nodes' row locks only for its own duration, so
+/// a large backlog (e.g. every agent re-reporting its whole session after
+/// a panel restart: millions of rows) never blocks admin writes and change
+/// propagation behind one long statement. Splitting is safe for billing:
+/// every row is idempotent on its own, and all per-node/per-pair caps are
+/// cumulative across transactions (GCRA tat, departed billed_bytes) — a
+/// chunk boundary is the same as one more flush tick.
+pub const FLUSH_CHUNK_ROWS: usize = 10_000;
+
+async fn flush_chunk(
+    pg: &sqlx::PgPool,
+    buf: &TrafficBuffer,
+    rows: &[FlushRow],
+    rates: Rates,
+    grace: u64,
+    outage: Option<f64>,
+) -> anyhow::Result<usize> {
+    match write_rows(pg, rows, rates, grace, outage).await {
         Ok(dropped) => {
-            buf.mark_flushed(&rows);
+            buf.mark_flushed(rows);
             // Refused rows are removed, not kept as "flushed": they must
             // not occupy memory or admission slots.
             for k in &dropped {
@@ -948,7 +976,7 @@ async fn flush_rows(
         Err(e) if is_row_poison(&e) => {
             tracing::warn!(error = %e, rows = rows.len(), "traffic batch rejected; retrying row by row");
             let mut written = 0;
-            for r in &rows {
+            for r in rows {
                 match write_rows(pg, std::slice::from_ref(r), rates, grace, outage).await {
                     Ok(dropped) => {
                         if dropped.is_empty() {
@@ -1255,6 +1283,69 @@ mod db_tests {
             }],
             ..Default::default()
         }
+    }
+
+    /// M2: a backlog larger than one flush chunk (here 2.5 chunks, one
+    /// node spanning chunk boundaries) is written in several transactions
+    /// and billed exactly; replaying it bills nothing more.
+    #[tokio::test]
+    async fn multi_chunk_flush_bills_exactly() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (a, b) = (db.node().await, db.node().await);
+        let n = FLUSH_CHUNK_ROWS * 5 / 4; // per node
+        let users: Vec<Uuid> = (0..n).map(|_| Uuid::new_v4()).collect();
+        sqlx::query("INSERT INTO users (id, login) SELECT u, u::text FROM unnest($1::uuid[]) u")
+            .bind(&users)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO node_users (node_id, user_id, credentials) \
+             SELECT n, u, '[]'::jsonb FROM unnest($1::uuid[]) n, unnest($2::uuid[]) u",
+        )
+        .bind(vec![a, b])
+        .bind(&users)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let bf = buf(&db).await;
+        let rep = |k: u64| TrafficReport {
+            users: users
+                .iter()
+                .map(|u| UserTraffic {
+                    user_id: u.to_string(),
+                    up_bytes: 100 * k,
+                    down_bytes: 1000 * k,
+                })
+                .collect(),
+            ..Default::default()
+        };
+        bf.update(a, "s", &rep(1));
+        bf.update(b, "s", &rep(1));
+        assert_eq!(db.flush(&bf).await, 2 * n);
+        let total = |db: &TestDb| {
+            let pool = db.pool.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>("SELECT sum(traffic_used_bytes)::bigint FROM users")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(total(&db).await, (2 * n * 1100) as i64);
+        // Grow and flush again; then replay the same values from a fresh
+        // buffer (panel restart): only the growth is billed, once.
+        bf.update(a, "s", &rep(3));
+        bf.update(b, "s", &rep(3));
+        db.flush(&bf).await;
+        let fresh = buf(&db).await;
+        fresh.update(a, "s", &rep(3));
+        fresh.update(b, "s", &rep(3));
+        db.flush(&fresh).await;
+        assert_eq!(total(&db).await, (2 * n * 3300) as i64);
+        db.drop().await;
     }
 
     /// R10 F1: the agent reports an unassigned user's final counters after

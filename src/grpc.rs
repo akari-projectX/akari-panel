@@ -261,6 +261,138 @@ pub fn diff_user_sets(base: &UserSet, want: &UserSet) -> Vec<UserOp> {
     ops
 }
 
+/// A user id inside a `SetDigest`: a canonical (lowercase, hyphenated)
+/// UUID — every id the panel generates — packed into 16 bytes; anything
+/// else kept verbatim (so the id can always be given back for a REMOVE).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum UserKey {
+    Uuid(Uuid),
+    Other(Box<str>),
+}
+
+impl UserKey {
+    fn of(id: &str) -> Self {
+        if let Ok(u) = Uuid::parse_str(id) {
+            let mut buf = Uuid::encode_buffer();
+            if u.hyphenated().encode_lower(&mut buf) == id {
+                return UserKey::Uuid(u);
+            }
+        }
+        UserKey::Other(id.into())
+    }
+
+    fn id(&self) -> String {
+        match self {
+            UserKey::Uuid(u) => u.to_string(),
+            UserKey::Other(s) => s.to_string(),
+        }
+    }
+}
+
+/// 128-bit digest of one user's inbound credentials (tag, protocol,
+/// account_json per tag, length-prefixed, in tag order).
+fn user_digest(tags: &BTreeMap<String, (String, String)>) -> [u8; 16] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for (tag, (protocol, account)) in tags {
+        for f in [tag.as_bytes(), protocol.as_bytes(), account.as_bytes()] {
+            h.update((f.len() as u32).to_be_bytes());
+            h.update(f);
+        }
+    }
+    let d = h.finalize();
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&d[..16]);
+    out
+}
+
+/// What a session remembers about a state it sent or verified (M2): the
+/// state hash at its config version, the inbounds' SHA-256 and a 128-bit
+/// digest per user — about 40 bytes per user instead of the ~1.3 KB a full
+/// `NodeState` costs (200 sessions x 10k users each made full sets the
+/// panel's dominant memory use). Enough to interpret Acks and Hellos (the
+/// hash), decide whether a delta applies (inbounds) and compute it against
+/// the freshly read full set (`diff_from_digest`). A digest collision can
+/// only make a delta miss a changed user; the agent's acked state hash then
+/// disagrees with `hash` (computed from the full set) and the session
+/// repairs with a Snapshot.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SetDigest {
+    hash: String,
+    inbounds: [u8; 32],
+    users: BTreeMap<UserKey, [u8; 16]>,
+}
+
+impl SetDigest {
+    pub fn of(config_version: u64, state: &NodeState) -> Self {
+        use sha2::{Digest, Sha256};
+        SetDigest {
+            hash: state_hash(config_version, state),
+            inbounds: Sha256::digest(state.inbounds.as_bytes()).into(),
+            users: state
+                .users
+                .iter()
+                .map(|(id, tags)| (UserKey::of(id), user_digest(tags)))
+                .collect(),
+        }
+    }
+
+    pub fn hash(&self) -> &str {
+        &self.hash
+    }
+
+    /// No inbounds, no users (what a disabled/deleted node runs).
+    fn is_empty_state(&self) -> bool {
+        use sha2::{Digest, Sha256};
+        self.users.is_empty() && self.inbounds == <[u8; 32]>::from(Sha256::digest(b"[]"))
+    }
+}
+
+/// `diff_user_sets` against a remembered base: the same ops (REPLACE
+/// semantics; ADDs carry the user's complete list from `want`).
+pub fn diff_from_digest(base: &SetDigest, want: &UserSet) -> Vec<UserOp> {
+    let mut ops = Vec::new();
+    let mut wanted = std::collections::HashSet::with_capacity(want.len());
+    for (user, tags) in want {
+        let key = UserKey::of(user);
+        if base.users.get(&key) != Some(&user_digest(tags)) {
+            ops.push(UserOp {
+                op: UserOpKind::Add as i32,
+                user_id: user.clone(),
+                inbound_users: tags
+                    .iter()
+                    .map(|(tag, (protocol, account))| InboundUser {
+                        inbound_tag: tag.clone(),
+                        account_json: account.clone(),
+                        protocol: protocol.clone(),
+                    })
+                    .collect(),
+            });
+        }
+        wanted.insert(key);
+    }
+    for key in base.users.keys() {
+        if !wanted.contains(key) {
+            ops.push(UserOp {
+                op: UserOpKind::Remove as i32,
+                user_id: key.id(),
+                inbound_users: vec![],
+            });
+        }
+    }
+    ops
+}
+
+/// `drops_credential` on digests, conservatively: any base user whose
+/// credentials changed at all (or who is gone) counts, so a user that only
+/// GAINS an inbound also counts. Only consulted with remove_mode=rebuild,
+/// where it can only turn a delta into a Snapshot (always correct).
+fn drops_credential_digest(base: &SetDigest, want: &SetDigest) -> bool {
+    base.users
+        .iter()
+        .any(|(user, d)| want.users.get(user) != Some(d))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Snapshot,
@@ -275,7 +407,7 @@ enum Plan {
     /// Delta from `base` (a state the agent holds or is about to hold).
     Delta {
         base: (u64, u64),
-        base_set: Arc<NodeState>,
+        base_set: Arc<SetDigest>,
     },
 }
 
@@ -334,10 +466,11 @@ struct SyncState {
     /// The user set the agent verifiably runs at `held` in THIS session
     /// (acked by us, or hash-verified from its Hello). Deltas are only
     /// computed from it (or from the in-flight state).
-    acked: Option<((u64, u64), Arc<NodeState>)>,
-    /// Sets sent this session, by versions (bounded), to know what an ok
-    /// Ack means.
-    sent: VecDeque<((u64, u64), Arc<NodeState>)>,
+    acked: Option<((u64, u64), Arc<SetDigest>)>,
+    /// Sets sent this session and not yet answered, by versions, in send
+    /// order (bounded), to know what an ok Ack means. An Ack also drops
+    /// every entry sent before the one it answers (acks arrive in order).
+    sent: VecDeque<((u64, u64), Arc<SetDigest>)>,
     /// The agent's state hash disagrees with what it should run at its
     /// versions: repair with a Snapshot even though the versions match.
     diverged: bool,
@@ -393,7 +526,7 @@ impl SyncState {
         self.next_retry = Some(now + retry_backoff(self.attempts));
     }
 
-    fn sent_set(&self, v: (u64, u64)) -> Option<Arc<NodeState>> {
+    fn sent_set(&self, v: (u64, u64)) -> Option<Arc<SetDigest>> {
         self.sent
             .iter()
             .rev()
@@ -401,7 +534,7 @@ impl SyncState {
             .map(|(_, s)| s.clone())
     }
 
-    fn remember(&mut self, v: (u64, u64), set: Arc<NodeState>) {
+    fn remember(&mut self, v: (u64, u64), set: Arc<SetDigest>) {
         self.sent.retain(|(sv, _)| *sv != v);
         self.sent.push_back((v, set));
         while self.sent.len() > SENT_MEMORY {
@@ -416,9 +549,9 @@ impl SyncState {
     fn delta_base(
         &self,
         desired: (u64, u64),
-        want: &NodeState,
+        want: &SetDigest,
         can_delta: bool,
-    ) -> Option<((u64, u64), Arc<NodeState>)> {
+    ) -> Option<((u64, u64), Arc<SetDigest>)> {
         if !can_delta || self.diverged || self.failed == Some(desired) {
             return None;
         }
@@ -435,7 +568,7 @@ impl SyncState {
         if bv.0 != desired.0 || bv == desired || bset.inbounds != want.inbounds {
             return None;
         }
-        if self.remove_rebuild && drops_credential(&bset.users, &want.users) {
+        if self.remove_rebuild && drops_credential_digest(&bset, want) {
             return None;
         }
         Some((bv, bset))
@@ -476,10 +609,19 @@ impl SyncState {
                 self.fail(p.versions, now);
             }
         }
+        // The compact record of `set` at the desired versions, built once
+        // and only when needed (verification or a send).
+        let mut digest: Option<Arc<SetDigest>> = None;
+        let mut digest_of = |d: (u64, u64)| -> Arc<SetDigest> {
+            digest
+                .get_or_insert_with(|| Arc::new(SetDigest::of(d.0, set)))
+                .clone()
+        };
         if !old && self.held == desired {
             if let Some(h) = self.hello_hash.take() {
-                if h == state_hash(desired.0, set) {
-                    self.acked = Some((desired, set.clone()));
+                let dg = digest_of(desired);
+                if h == dg.hash {
+                    self.acked = Some((desired, dg));
                     self.diverged = false;
                 } else {
                     self.acked = None;
@@ -523,7 +665,9 @@ impl SyncState {
         let plan = if old {
             self.old_pushed = true;
             Plan::Snapshot { empty: true }
-        } else if let Some((base, base_set)) = self.delta_base(desired, set, can_delta) {
+        } else if let Some((base, base_set)) =
+            self.delta_base(desired, &digest_of(desired), can_delta)
+        {
             Plan::Delta { base, base_set }
         } else {
             Plan::Snapshot { empty: false }
@@ -539,7 +683,7 @@ impl SyncState {
         });
         self.last_sent = Some((ticket, desired));
         if !old {
-            self.remember(desired, set.clone());
+            self.remember(desired, digest_of(desired));
         }
         Some(plan)
     }
@@ -574,7 +718,7 @@ impl SyncState {
             )
         };
         if let Some((v, set)) = &self.acked {
-            if *v == self.held && set.inbounds == "[]" && set.users.is_empty() {
+            if *v == self.held && set.is_empty_state() {
                 return true;
             }
         }
@@ -599,6 +743,11 @@ impl SyncState {
             }
             _ => None,
         };
+        // Acks come in send order: whatever was sent before the answered
+        // message can no longer be acked (bounded memory, M2).
+        if let Some(pos) = self.sent.iter().position(|(v, _)| *v == versions) {
+            self.sent.drain(..pos);
+        }
         let reports_held = !old && ack.reason != Reason::Unspecified as i32;
         self.held = if reports_held {
             (ack.held_config_version, ack.held_user_version)
@@ -616,8 +765,8 @@ impl SyncState {
                     .sent_set(versions)
                     .filter(|_| self.held == versions)
                     .map(|s| (versions, s));
-                if let Some((v, set)) = &self.acked {
-                    if !ack.state_hash.is_empty() && state_hash(v.0, set) != ack.state_hash {
+                if let Some((_, set)) = &self.acked {
+                    if !ack.state_hash.is_empty() && set.hash != ack.state_hash {
                         self.acked = None;
                         self.diverged = true;
                         if kind == Some(Kind::Snapshot) {
@@ -1525,10 +1674,11 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
         return Ok(Synced::Current);
     }
     let ticket = sess.sync.lock().unwrap().ticket(); // BEFORE the read
-    let desired = {
-        let _permit = state.read_permits().acquire().await?;
-        desired_state(state.pg(), node_id).await?
-    };
+                                                     // The permit bounds concurrent reads AND the full in-memory sets built
+                                                     // from them (~1.3 KB per user): it is held until the message is built
+                                                     // (M2: 200 sessions waking at once must not hold 200 full sets).
+    let permit = state.read_permits().acquire().await?;
+    let desired = desired_state(state.pg(), node_id).await?;
     let Some(desired) = desired else {
         // Deleted (maybe while its notification was missed): the caller
         // retires the session. No lease for a node that does not exist.
@@ -1565,6 +1715,58 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
             plan.is_none() && st.held == want && st.acked.as_ref().is_some_and(|(v, _)| *v == want);
         (plan, grant, write_lease, converged)
     };
+    // Build the message while the permit is held, then drop the full set
+    // and the permit before any send (a slow agent must not pin them).
+    let out = plan.map(|plan| {
+        let sent_kind = match &plan {
+            Plan::Snapshot { empty: true } => "empty_snapshot",
+            Plan::Snapshot { empty: false } => "snapshot",
+            Plan::Delta { .. } => "delta",
+        };
+        let msg = match plan {
+            Plan::Snapshot { empty: true } => {
+                tracing::info!(node = %node_id, "sending the empty state to a too-old agent");
+                DownMsg::Snapshot(ConfigSnapshot {
+                    config_version: 0,
+                    inbounds_json: "[]".into(),
+                    user_version: 0,
+                    users: vec![],
+                })
+            }
+            Plan::Snapshot { empty: false } => {
+                tracing::info!(
+                    node = %node_id,
+                    config_version = snap.config_version,
+                    user_version = snap.user_version,
+                    users = snap.users.len(),
+                    inbounds_json_len = snap.inbounds_json.len(),
+                    "sending snapshot"
+                );
+                DownMsg::Snapshot(snap)
+            }
+            Plan::Delta { base, base_set } => {
+                let ops = diff_from_digest(&base_set, &set.users);
+                tracing::info!(
+                    node = %node_id,
+                    base_config_version = base.0,
+                    base_user_version = base.1,
+                    user_version = want.1,
+                    ops = ops.len(),
+                    "sending user delta"
+                );
+                DownMsg::Delta(UserDelta {
+                    user_version: want.1,
+                    ops,
+                    base_config_version: base.0,
+                    base_user_version: base.1,
+                    config_version: want.0,
+                })
+            }
+        };
+        (sent_kind, msg)
+    });
+    drop(set);
+    drop(permit);
     if desired.deleting && converged {
         // Reconnected agent already runs the deleting node's empty state.
         mark_delete_acked(state.pg(), node_id, want).await;
@@ -1590,53 +1792,8 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
             .await;
         }
     }
-    let Some(plan) = plan else {
+    let Some((sent_kind, msg)) = out else {
         return Ok(Synced::Current);
-    };
-    let sent_kind = match &plan {
-        Plan::Snapshot { empty: true } => "empty_snapshot",
-        Plan::Snapshot { empty: false } => "snapshot",
-        Plan::Delta { .. } => "delta",
-    };
-    let msg = match plan {
-        Plan::Snapshot { empty: true } => {
-            tracing::info!(node = %node_id, "sending the empty state to a too-old agent");
-            DownMsg::Snapshot(ConfigSnapshot {
-                config_version: 0,
-                inbounds_json: "[]".into(),
-                user_version: 0,
-                users: vec![],
-            })
-        }
-        Plan::Snapshot { empty: false } => {
-            tracing::info!(
-                node = %node_id,
-                config_version = snap.config_version,
-                user_version = snap.user_version,
-                users = snap.users.len(),
-                inbounds_json_len = snap.inbounds_json.len(),
-                "sending snapshot"
-            );
-            DownMsg::Snapshot(snap)
-        }
-        Plan::Delta { base, base_set } => {
-            let ops = diff_user_sets(&base_set.users, &set.users);
-            tracing::info!(
-                node = %node_id,
-                base_config_version = base.0,
-                base_user_version = base.1,
-                user_version = want.1,
-                ops = ops.len(),
-                "sending user delta"
-            );
-            DownMsg::Delta(UserDelta {
-                user_version: want.1,
-                ops,
-                base_config_version: base.0,
-                base_user_version: base.1,
-                config_version: want.0,
-            })
-        }
     };
     match sess.send(&guard, msg).await {
         Ok(true) => {
@@ -1994,6 +2151,117 @@ mod tests {
         }
     }
 
+    /// The digest diff (what sessions use) yields exactly the full-set
+    /// diff: canonical UUID ids, other ids, rotations, tag gains/losses,
+    /// additions and removals.
+    #[test]
+    fn digest_diff_equals_full_diff() {
+        let u = |n: u128| Uuid::from_u128(n).to_string();
+        let base = user_set(&[
+            op(&u(1), &[("t1", "{\"id\":\"1\"}")]),
+            op(&u(2), &[("t1", "{\"id\":\"2\"}"), ("t2", "{\"id\":\"2\"}")]),
+            op(&u(3), &[("t1", "{\"id\":\"3\"}")]),
+            op("not-a-uuid", &[("t1", "{\"id\":\"x\"}")]),
+            op("8C2D9B1E-0000-4000-8000-000000000001", &[("t1", "{}")]), // non-canonical
+            op(&u(5), &[("t1", "{\"id\":\"5\"}")]),
+        ]);
+        let want = user_set(&[
+            op(&u(1), &[("t1", "{\"id\":\"1\"}")]),        // unchanged
+            op(&u(2), &[("t1", "{\"id\":\"2b\"}")]),       // rotated, lost t2
+            op(&u(4), &[("t2", "{\"id\":\"4\"}")]),        // added
+            op("not-a-uuid", &[("t1", "{\"id\":\"x\"}")]), // unchanged
+            op(&u(5), &[("t1", "{\"id\":\"5\"}"), ("t2", "{\"id\":\"5\"}")]), // gained t2
+        ]);
+        let norm = |mut ops: Vec<UserOp>| {
+            ops.sort_by(|a, b| (a.op, &a.user_id).cmp(&(b.op, &b.user_id)));
+            ops
+        };
+        let full = norm(diff_user_sets(&base, &want));
+        let base_state = NodeState {
+            inbounds: "[]".into(),
+            users: base.clone(),
+        };
+        let dg = SetDigest::of(3, &base_state);
+        assert_eq!(dg.hash(), state_hash(3, &base_state));
+        assert_eq!(norm(diff_from_digest(&dg, &want)), full);
+        assert!(diff_from_digest(&dg, &base).is_empty(), "no-op");
+        // Removed ids come back verbatim, canonical UUID or not.
+        let removed: Vec<String> = full
+            .iter()
+            .filter(|o| o.op == UserOpKind::Remove as i32)
+            .map(|o| o.user_id.clone())
+            .collect();
+        assert_eq!(
+            removed,
+            vec![u(3), "8C2D9B1E-0000-4000-8000-000000000001".to_string()]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
+        // Conservative drop check: rotation and removal count; so does a
+        // pure tag gain (u5), which only costs a Snapshot in rebuild mode.
+        let want_state = NodeState {
+            inbounds: "[]".into(),
+            users: want,
+        };
+        assert!(drops_credential_digest(&dg, &SetDigest::of(3, &want_state)));
+        assert!(!drops_credential_digest(&dg, &dg));
+        let only_add = NodeState {
+            inbounds: "[]".into(),
+            users: {
+                let mut b = base.clone();
+                b.extend(user_set(&[op(&u(9), &[("t1", "{}")])]));
+                b
+            },
+        };
+        assert!(!drops_credential_digest(&dg, &SetDigest::of(3, &only_add)));
+        assert!(SetDigest::of(
+            1,
+            &NodeState {
+                inbounds: "[]".into(),
+                users: UserSet::new()
+            }
+        )
+        .is_empty_state());
+        assert!(!dg.is_empty_state());
+    }
+
+    /// A session keeps only what an Ack can still refer to: acking a
+    /// message drops everything sent before it.
+    #[test]
+    fn acks_release_older_sent_sets() {
+        let t0 = Instant::now();
+        let mut s = SyncState::default();
+        s.on_hello((0, 0), MIN_AGENT_PROTOCOL, "");
+        let sets: Vec<Arc<NodeState>> = (0..5)
+            .map(|i| set_of(&[op(&format!("u{i}"), &[("t1", "{}")])]))
+            .collect();
+        for (i, set) in sets.iter().enumerate() {
+            let tk = s.ticket();
+            // Config changes each time: every one is a Snapshot in flight.
+            assert!(s
+                .decide(tk, (i as u64 + 1, 1), set, true, None, t0)
+                .is_some());
+        }
+        assert_eq!(s.sent.len(), 5);
+        let v = (4u64, 1u64);
+        let ack = crate::gen::Ack {
+            config_version: v.0,
+            user_version: v.1,
+            ok: true,
+            reason: crate::gen::ack::Reason::Ok as i32,
+            held_config_version: v.0,
+            held_user_version: v.1,
+            state_hash: state_hash(v.0, &sets[3]),
+            error: String::new(),
+        };
+        assert_eq!(s.on_ack(&ack, t0), AckOutcome::Converged);
+        let left: Vec<(u64, u64)> = s.sent.iter().map(|(v, _)| *v).collect();
+        assert_eq!(left, vec![(4, 1), (5, 1)]);
+        assert!(s.acked.as_ref().is_some_and(|(av, _)| *av == v));
+    }
+
     #[test]
     fn delta_diff_add_remove_replace_noop() {
         let base = user_set(&[
@@ -2058,7 +2326,7 @@ mod tests {
         match s.decide(tk, (2, 6), &s2, true, None, t0) {
             Some(Plan::Delta { base, base_set }) => {
                 assert_eq!(base, (2, 5));
-                assert_eq!(*base_set, *s1);
+                assert_eq!(*base_set, SetDigest::of(base.0, &s1));
             }
             p => panic!("want delta, got {p:?}"),
         }
@@ -2237,7 +2505,7 @@ mod tests {
         match d_set(&mut s, (2, 7), &s3) {
             Some(Plan::Delta { base, base_set }) => {
                 assert_eq!(base, (2, 6));
-                assert_eq!(*base_set, *s2);
+                assert_eq!(*base_set, SetDigest::of(base.0, &s2));
             }
             p => panic!("{p:?}"),
         }

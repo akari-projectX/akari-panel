@@ -43,10 +43,11 @@ pub struct HttpArgs {
 
 #[derive(Clone, Copy, Debug)]
 enum Scenario {
+    Healthz,
     Me,
     UsersFirstPage,
     UsersDeepPage,
-    UserGet,
+    UserPatch,
     Nodes,
     AuditFirstPage,
     AuditDeepPage,
@@ -57,11 +58,12 @@ enum Scenario {
 }
 
 impl Scenario {
-    const ALL: [Scenario; 11] = [
+    const ALL: [Scenario; 12] = [
+        Scenario::Healthz,
         Scenario::Me,
         Scenario::UsersFirstPage,
         Scenario::UsersDeepPage,
-        Scenario::UserGet,
+        Scenario::UserPatch,
         Scenario::Nodes,
         Scenario::AuditFirstPage,
         Scenario::AuditDeepPage,
@@ -73,10 +75,11 @@ impl Scenario {
 
     fn name(self) -> &'static str {
         match self {
+            Scenario::Healthz => "healthz",
             Scenario::Me => "me",
             Scenario::UsersFirstPage => "users_page1",
             Scenario::UsersDeepPage => "users_deep",
-            Scenario::UserGet => "user_get",
+            Scenario::UserPatch => "user_patch",
             Scenario::Nodes => "nodes",
             Scenario::AuditFirstPage => "audit_page1",
             Scenario::AuditDeepPage => "audit_deep",
@@ -258,20 +261,28 @@ async fn request(ctx: &Ctx, s: Scenario, i: usize) -> bool {
     let req = {
         let mut rng = rand::rng();
         match s {
+            // No auth, no database: the HTTP stack's floor.
+            Scenario::Healthz => ctx.client.get(format!("{base}/healthz")),
             Scenario::Me => admin("me".into()),
             Scenario::UsersFirstPage => admin("users?limit=50".into()),
             Scenario::UsersDeepPage => admin(format!(
                 "users?limit=50&offset={}",
                 rng.random_range(0..ctx.users.max(1))
             )),
-            Scenario::UserGet => {
+            Scenario::UserPatch => {
+                // A write: apply_update_user + audit row in one transaction.
                 let Some(id) = ctx
                     .user_ids
                     .get(rng.random_range(0..ctx.user_ids.len().max(1)))
                 else {
                     return false;
                 };
-                admin(format!("users/{id}"))
+                ctx.client
+                    .patch(format!("{base}/api/v1/users/{id}"))
+                    .header(reqwest::header::COOKIE, &ctx.cookie)
+                    .json(&serde_json::json!({
+                        "traffic_limit_bytes": rng.random_range(1i64 << 40..1i64 << 41)
+                    }))
             }
             Scenario::Nodes => admin("nodes".into()),
             Scenario::AuditFirstPage => admin("audit?limit=50".into()),
