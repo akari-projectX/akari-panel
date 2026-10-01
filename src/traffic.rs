@@ -37,6 +37,10 @@ use crate::state::AppState;
 /// always safe for billing: a later report for the same key is compared
 /// against the persisted row, not against memory.
 const PRUNE_IDLE: Duration = Duration::from_secs(600);
+/// `maintain` runs the idle scan every this many 5 s flush ticks (60 s) ...
+const PRUNE_EVERY_TICKS: u64 = 12;
+/// ... and the index self-heal rebuild on every this-many-th scan (15 min).
+const REBUILD_EVERY_PRUNES: u64 = 15;
 
 /// A row rejected by the database (data error, not connectivity) this many
 /// flushes in a row is dropped so it cannot block the rest forever.
@@ -123,7 +127,7 @@ struct NodeIndex {
 struct SessionIndex {
     users: HashSet<Uuid>,
     /// Entries of this session with unpersisted values.
-    dirty: usize,
+    dirty_users: HashSet<Uuid>,
     touched: Option<Instant>,
 }
 
@@ -144,6 +148,8 @@ pub struct TrafficBuffer {
     departed_grace: std::sync::atomic::AtomicU64,
     /// This instance's own flush health (R14 N1).
     health: std::sync::Mutex<FlushHealth>,
+    /// Flush ticks seen by `maintain`.
+    maintain_ticks: std::sync::atomic::AtomicU64,
 }
 
 /// R14 N1: while this instance cannot flush (database down, failover),
@@ -316,7 +322,6 @@ impl TrafficBuffer {
                 inserted = true;
                 Entry::new(now)
             });
-            let was_dirty = !inserted && e.dirty();
             if e.observe(up, down, now) {
                 tracing::warn!(node = %node_id, user = %user_id, session = %session_id,
                     "traffic counters went backwards within a session; ignored");
@@ -332,7 +337,11 @@ impl TrafficBuffer {
             if inserted {
                 sess.users.insert(user_id);
             }
-            sess.dirty = (sess.dirty + usize::from(dirty)).saturating_sub(usize::from(was_dirty));
+            if dirty {
+                sess.dirty_users.insert(user_id);
+            } else {
+                sess.dirty_users.remove(&user_id);
+            }
             sess.touched = Some(now);
             drop(idx);
             drop(e);
@@ -357,16 +366,14 @@ impl TrafficBuffer {
     }
 
     /// Index bookkeeping for a removed entry.
-    fn forget(&self, key: &Key, was_dirty: bool) {
+    fn forget(&self, key: &Key) {
         let Some(mut idx) = self.index.get_mut(&key.0) else {
             return;
         };
         idx.entries = idx.entries.saturating_sub(1);
         if let Some(sess) = idx.sessions.get_mut(&key.2) {
             sess.users.remove(&key.1);
-            if was_dirty {
-                sess.dirty = sess.dirty.saturating_sub(1);
-            }
+            sess.dirty_users.remove(&key.1);
             if sess.users.is_empty() {
                 idx.sessions.remove(&key.2);
             }
@@ -381,8 +388,8 @@ impl TrafficBuffer {
     /// Remove an entry; index bookkeeping happens inside the entry's shard
     /// lock (entries -> index), never after the entry left the map.
     fn remove(&self, key: &Key) {
-        self.entries.remove_if(key, |k, e| {
-            self.forget(k, e.dirty());
+        self.entries.remove_if(key, |k, _| {
+            self.forget(k);
             true
         });
     }
@@ -402,7 +409,7 @@ impl TrafficBuffer {
             };
             idx.sessions
                 .iter()
-                .filter(|(s, i)| i.dirty == 0 && s.as_str() != keep)
+                .filter(|(s, i)| i.dirty_users.is_empty() && s.as_str() != keep)
                 .min_by_key(|(_, i)| i.touched)
                 .map(|(s, i)| (s.clone(), i.users.iter().copied().collect::<Vec<_>>()))
         };
@@ -416,7 +423,7 @@ impl TrafficBuffer {
             let removed = self.entries.remove_if(&key, |k, e| {
                 let clean = !e.dirty();
                 if clean {
-                    self.forget(k, false);
+                    self.forget(k);
                 }
                 clean
             });
@@ -433,9 +440,12 @@ impl TrafficBuffer {
 
     /// Distinct sessions of `node_id` with at least one unpersisted value.
     fn dirty_sessions(&self, node_id: Uuid) -> usize {
-        self.index
-            .get(&node_id)
-            .map_or(0, |i| i.sessions.values().filter(|s| s.dirty > 0).count())
+        self.index.get(&node_id).map_or(0, |i| {
+            i.sessions
+                .values()
+                .filter(|s| !s.dirty_users.is_empty())
+                .count()
+        })
     }
 
     /// Everything not yet durably persisted, in (node, user, session) order:
@@ -445,26 +455,66 @@ impl TrafficBuffer {
     /// order.) Nothing is cleared here.
     fn snapshot(&self) -> Vec<FlushRow> {
         let now = Instant::now();
-        let mut rows: Vec<FlushRow> = self
-            .entries
-            .iter()
-            .filter(|e| e.value().dirty())
-            .map(|e| {
-                let (node_id, user_id, session_id) = e.key().clone();
-                FlushRow {
+        // Candidates come from the per-session dirty sets (index), so the
+        // cost is proportional to the dirty rows, not to the whole buffer
+        // (B6). The index guard is released before `entries` is read (lock
+        // order is entries -> index, never the reverse); values are read
+        // from `entries` and re-checked for dirtiness, so a row flushed
+        // meanwhile is simply skipped.
+        let mut keys: Vec<Key> = Vec::new();
+        for node in self.index.iter() {
+            for (session, s) in &node.sessions {
+                keys.extend(
+                    s.dirty_users
+                        .iter()
+                        .map(|u| (*node.key(), *u, session.clone())),
+                );
+            }
+        }
+        let mut rows: Vec<FlushRow> = keys
+            .into_iter()
+            .filter_map(|key| {
+                let e = self.entries.get(&key)?;
+                if !e.dirty() {
+                    return None;
+                }
+                let (up, down) = (e.up, e.down);
+                let age_secs = now.duration_since(e.first_seen).as_secs_f64();
+                drop(e);
+                let (node_id, user_id, session_id) = key;
+                Some(FlushRow {
                     node_id,
                     user_id,
                     session_id,
-                    up: e.value().up,
-                    down: e.value().down,
-                    age_secs: now.duration_since(e.value().first_seen).as_secs_f64(),
-                }
+                    up,
+                    down,
+                    age_secs,
+                })
             })
             .collect();
         rows.sort_by(|a, b| {
             (a.node_id, a.user_id, &a.session_id).cmp(&(b.node_id, b.user_id, &b.session_id))
         });
         rows
+    }
+
+    /// Benchmark hook (`make bench`): rows a flush would write now.
+    #[doc(hidden)]
+    pub fn bench_snapshot_len(&self) -> usize {
+        self.snapshot().len()
+    }
+
+    /// Benchmark hook: the idle scan without the index rebuild.
+    #[doc(hidden)]
+    pub fn bench_prune_idle(&self, now: Instant) {
+        self.prune_idle(now);
+    }
+
+    /// Benchmark hook: mark every buffered entry as persisted.
+    #[doc(hidden)]
+    pub fn bench_mark_all_flushed(&self) {
+        let rows = self.snapshot();
+        self.mark_flushed(&rows);
     }
 
     /// `rows` are durably written. Newer values that arrived meanwhile keep
@@ -479,7 +529,7 @@ impl TrafficBuffer {
                     // Still under the entry guard (entries -> index).
                     if let Some(mut idx) = self.index.get_mut(&r.node_id) {
                         if let Some(sess) = idx.sessions.get_mut(&r.session_id) {
-                            sess.dirty = sess.dirty.saturating_sub(1);
+                            sess.dirty_users.remove(&r.user_id);
                         }
                     }
                 }
@@ -505,20 +555,44 @@ impl TrafficBuffer {
         }
     }
 
-    /// Evict fully persisted, idle entries.
     /// Evict fully persisted, idle entries, then rebuild the per-node index
     /// from `entries` (self-heal: whatever drift a bug could introduce
-    /// lives at most one tick). Operations racing with the rebuild may be
-    /// off by one until the next tick; they cannot corrupt `entries`.
-    fn prune(&self, now: Instant) {
+    /// lives until the next rebuild). Operations racing with the rebuild may
+    /// be off by one until the next one; they cannot corrupt `entries`.
+    /// A full pass is O(entries) (about 2 s at 2M entries, see PERF.md):
+    /// the flush tick calls `maintain`, which runs it rarely.
+    pub fn prune(&self, now: Instant) {
+        self.prune_idle(now);
+        self.rebuild_index();
+    }
+
+    /// Idle eviction only; the index is kept exact by `forget`.
+    fn prune_idle(&self, now: Instant) {
         self.entries.retain(|k, e| {
             let keep = e.dirty() || now.duration_since(e.touched) < PRUNE_IDLE;
             if !keep {
-                self.forget(k, false);
+                self.forget(k);
             }
             keep
         });
-        self.rebuild_index();
+    }
+
+    /// Called on every flush tick (5 s). Entries become evictable after
+    /// PRUNE_IDLE (10 min), so the O(entries) idle scan runs every
+    /// PRUNE_EVERY_TICKS ticks and the index self-heal rebuild every
+    /// REBUILD_EVERY_PRUNES-th of those (B6).
+    pub fn maintain(&self, now: Instant) {
+        let tick = self
+            .maintain_ticks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if tick % PRUNE_EVERY_TICKS != 0 {
+            return;
+        }
+        if (tick / PRUNE_EVERY_TICKS) % REBUILD_EVERY_PRUNES == 0 {
+            self.prune(now);
+        } else {
+            self.prune_idle(now);
+        }
     }
 
     /// The node's last local session ended: drop its membership cache
@@ -539,10 +613,10 @@ impl TrafficBuffer {
     /// acceptable here — never on the report path.
     pub fn forget_node(&self, node_id: Uuid) {
         self.members.remove(&node_id);
-        self.entries.retain(|k, e| {
+        self.entries.retain(|k, _| {
             let keep = k.0 != node_id;
             if !keep {
-                self.forget(k, e.dirty());
+                self.forget(k);
             }
             keep
         });
@@ -557,7 +631,9 @@ impl TrafficBuffer {
             idx.entries += 1;
             let sess = idx.sessions.entry(session.clone()).or_default();
             sess.users.insert(*user);
-            sess.dirty += usize::from(e.value().dirty());
+            if e.value().dirty() {
+                sess.dirty_users.insert(*user);
+            }
             sess.touched = sess.touched.max(Some(e.value().touched));
         }
         self.index.retain(|n, _| fresh.contains_key(n));
@@ -1287,7 +1363,7 @@ async fn flush_once(state: &AppState) -> anyhow::Result<()> {
         None,
     )
     .await;
-    state.traffic().prune(Instant::now());
+    state.traffic().maintain(Instant::now());
     prune_departed(state.pg(), state.traffic().departed_grace_secs()).await;
     let enforced = crate::enforce::run_all(state).await;
     let n = flushed?;
@@ -1397,6 +1473,37 @@ mod tests {
         let left = b.snapshot();
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].user_id, u2);
+    }
+
+    /// B6: the flush tick's `maintain` runs the idle scan only every
+    /// PRUNE_EVERY_TICKS ticks, keeps the index exact through it, and
+    /// never touches dirty rows.
+    #[test]
+    fn maintain_scans_rarely_and_keeps_index_exact() {
+        let (b, n, u) = ids();
+        let t0 = Instant::now();
+        let late = t0 + PRUNE_IDLE + Duration::from_secs(1);
+        b.update_at(n, "clean", &report(&[(u, 1, 1)]), t0);
+        b.mark_flushed(&b.snapshot());
+        b.update_at(n, "dirty", &report(&[(u, 2, 2)]), t0);
+        b.maintain(late); // tick 0: full pass
+        assert!(!b.entries.contains_key(&(n, u, "clean".into())));
+        assert_eq!(b.node_entry_count(n), 1);
+        b.update_at(n, "clean2", &report(&[(u, 1, 1)]), t0);
+        b.mark_flushed(&b.snapshot());
+        b.update_at(n, "dirty", &report(&[(u, 3, 3)]), t0);
+        for _ in 1..PRUNE_EVERY_TICKS {
+            b.maintain(late);
+            assert!(
+                b.entries.contains_key(&(n, u, "clean2".into())),
+                "scan skipped"
+            );
+        }
+        b.maintain(late); // next scan tick
+        assert!(!b.entries.contains_key(&(n, u, "clean2".into())));
+        assert!(b.entries.contains_key(&(n, u, "dirty".into())));
+        assert_eq!(b.node_entry_count(n), 1);
+        assert_eq!(b.dirty_sessions(n), 1);
     }
 
     #[test]
@@ -2349,7 +2456,10 @@ mod db_tests {
             .map(|i| {
                 (
                     i.entries,
-                    i.sessions.values().map(|s| s.dirty).sum::<usize>(),
+                    i.sessions
+                        .values()
+                        .map(|s| s.dirty_users.len())
+                        .sum::<usize>(),
                     i.sessions.values().map(|s| s.users.len()).sum::<usize>(),
                 )
             })
@@ -2421,7 +2531,11 @@ mod db_tests {
         {
             let mut idx = b.index.get_mut(&n).unwrap();
             idx.entries = 999;
-            idx.sessions.entry("phantom".into()).or_default().dirty = 3;
+            idx.sessions
+                .entry("phantom".into())
+                .or_default()
+                .dirty_users
+                .extend((0..3).map(|_| Uuid::new_v4()));
         }
         assert_eq!(b.dirty_sessions(n), 2);
         b.prune(Instant::now());

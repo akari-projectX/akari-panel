@@ -119,6 +119,25 @@ in ci.yml keeps the crate compiling against the panel library.
 - Users are locked in id order after nodes (global lock order) so two
   instances flushing nodes that share users cannot deadlock.
 
+## W4-A9: flush-tick buffer maintenance (`make bench`, group `buffer`)
+
+The 5 s flush tick used to run `TrafficBuffer::prune` (idle eviction plus a
+full rebuild of the per-node index) and `snapshot` (a full walk of `entries`)
+every time. Pure CPU, 200 nodes x 10k users = 2M entries, 2.5% dirty
+(criterion, same machine as above; `prune` is noisy because it allocates 2M
+set entries):
+
+| Operation | Before (every 5 s) | After |
+|---|---|---|
+| `snapshot` (what to flush) | 64 ms (walk all 2M entries) | 27-30 ms (walks only the per-session dirty sets: cost follows the dirty rows) |
+| `prune` | 1.1-3.5 s (mean about 2.2 s), holds shard write locks | `prune_idle` 46 ms every 60 s; full index rebuild (self-heal) 0.87-0.98 s every 15 min |
+
+Per 5 s tick that is about 2.2 s of CPU before (the reason being a full
+2M-entry index rebuild) against about 30 ms plus an amortised 4 ms after.
+Idle eviction is unaffected in effect (entries only become evictable after
+10 minutes). The index stays exact incrementally; the periodic rebuild is only
+the self-heal.
+
 ## EXPLAIN highlights (`akari-bench explain`, rolled back)
 
 Every hot query is index-driven or a single scan of a bounded set; the
