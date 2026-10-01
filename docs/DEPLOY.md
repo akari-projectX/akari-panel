@@ -272,6 +272,43 @@ Grafana, pick the Prometheus data source). Metric labels never contain the route
 Every response of an accepted request carries `X-Request-Id` (an incoming one is reused if it is
 short and printable); it is on the log lines of that request. Rejections never carry it.
 
+### Sizing
+
+At the M2 target (200 nodes, 50k users, 10k users per node) the database holds about 2M
+`node_users` and 2M `traffic_counters` rows. Give PostgreSQL room for that working set
+(`shared_buffers` 2 GB, `effective_cache_size` 6 GB, `max_wal_size` 4 GB were used for the
+measurements in docs/PERF.md; the stock 128 MB `shared_buffers` is too small) and about 1.5 GiB of
+RAM per panel instance at peak.
+
+### Several panel instances (optional)
+
+One instance carries the M2 target (200 nodes / 50k users, docs/PERF.md). Run
+two or more for availability or headroom:
+
+```
+ admins, subscribers --> HTTPS reverse proxy (round-robin to the web ports)  --> panel A :8080, panel B :8080
+ agents              --> L4 TCP balancer :8443 (TLS passthrough, no termination) --> panel A :8443, panel B :8443
+ panel A, panel B    --> one PostgreSQL (direct connection), one Valkey
+```
+
+- All instances use the same `database_url`, `valkey_url` and an identical
+  `data_dir` (CA, `jwt.key`, `totp.key`, route prefix: share the directory or
+  copy it byte for byte); each has its own web and gRPC bind addresses.
+- gRPC must be balanced at L4. The balancer must not terminate TLS (the agent's
+  client certificate is the node identity). No stickiness is needed: an agent
+  may land on any instance, and a reconnect elsewhere supersedes the old stream
+  (the old instance notices on its next database read, within 60 s).
+- PostgreSQL must be reached directly: change notification uses `LISTEN`, which
+  PgBouncer in transaction or statement mode breaks.
+- Nothing else to configure: change notification, session revocation, login
+  rate limiting and the flush/reaper/retention loops are database/Valkey
+  based and idempotent, so every instance runs them. Metrics are per instance
+  (scrape each).
+- Upgrade one instance at a time after the agents (section 5); migrations run on
+  the first instance that starts and are forward-only.
+- Verified by `akari-bench multi` and a 200-agent swarm through a balancer
+  (docs/PERF.md).
+
 ## 5. Upgrade (agents BEFORE the panel)
 
 1. Read the release notes for protocol changes. Take a backup (docs/BACKUP.md).
@@ -309,6 +346,6 @@ cosign verify ghcr.io/akari-projectx/akari-panel:X.Y.Z \
 ## Build notes
 
 The binary is a static musl build (`rust:alpine`; ring/rustls/sqlx need no system library):
-it runs on any Linux kernel, in distroless/scratch, and needs no glibc on the VPS. Trade-off: musl's
-allocator is slower under heavy multi-thread contention; revisit with mimalloc in M2 if profiling
-says so. `akari --version` prints version and git sha.
+it runs on any Linux kernel, in distroless/scratch, and needs no glibc on the VPS. musl's own
+allocator serializes this allocation-heavy multi-threaded workload, so the binary uses mimalloc
+(M2). `akari --version` prints version and git sha.

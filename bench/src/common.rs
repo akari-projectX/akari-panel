@@ -8,9 +8,9 @@ use base64::Engine;
 use hdrhistogram::Histogram;
 use sha2::{Digest, Sha256};
 
-/// Default database of the bench data set: its own database on the dev
-/// server, so seeding never touches the smoke/test database (`akari`).
-pub const DEFAULT_DB: &str = "postgres://akari:akari-dev@localhost:5432/akari_bench";
+/// Default database of the bench data set: the dedicated bench stack
+/// (bench/compose.yml, port 5433), so seeding never touches the dev stack.
+pub const DEFAULT_DB: &str = "postgres://akari:akari-dev@localhost:5433/akari_bench";
 
 /// Login of the seeded admin (active placeholder TOTP; the load tool signs
 /// its session with data/jwt.key instead of logging in).

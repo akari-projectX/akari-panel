@@ -21,8 +21,10 @@ pub struct ExplainArgs {
     /// Print full plans (default: one summary line per query).
     #[arg(long)]
     pub plans: bool,
-    /// Rows in the explained flush batch.
-    #[arg(long, default_value_t = 50_000)]
+    /// Rows in the explained flush batch (default: one production chunk;
+    /// a 50k-row single statement is planned differently and is not what
+    /// the panel runs).
+    #[arg(long, default_value_t = akari_panel::traffic::FLUSH_CHUNK_ROWS)]
     pub flush_rows: usize,
 }
 

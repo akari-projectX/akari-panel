@@ -1,6 +1,6 @@
 AGENT_DIR ?= ../akari-agent
 
-.PHONY: dev-up dev-down spa panel agent-build check smoke lint test deny ci bench bench-seed bench-lint
+.PHONY: bench-up bench-down dev-up dev-down spa panel agent-build check smoke lint test deny ci bench bench-seed bench-lint
 
 dev-up:
 	docker compose up -d --wait
@@ -42,10 +42,17 @@ ci: lint test deny check
 
 # --- M2 benchmarks and load tooling (bench/, docs/PERF.md) ----------------
 # Own crate and lockfile: nothing here reaches the release binary. DB
-# benches need the seeded bench database (its own database, akari_bench).
+# benches need the bench stack (bench/compose.yml: PostgreSQL :5433, Valkey
+# :6380, never the dev stack) and its seeded database.
 # Run from the repo root: CARGO_TARGET_DIR pins the shared target dir (cargo
 # reads bench/.cargo/config.toml only when invoked from bench/), and the
 # tools' default paths (bench/data) are root-relative.
+bench-up:
+	docker compose -f bench/compose.yml up -d --wait
+
+bench-down:
+	docker compose -f bench/compose.yml down -v
+
 bench-seed:
 	CARGO_TARGET_DIR=target cargo run --release --manifest-path bench/Cargo.toml -- seed --reset
 
