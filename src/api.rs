@@ -7,7 +7,6 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use axum_extra::extract::cookie::CookieJar;
 use chrono::{DateTime, Utc};
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgConnection;
@@ -1632,11 +1631,14 @@ pub(crate) fn validate_inbounds(inbounds: &serde_json::Value) -> Result<(), ApiE
                 "inbound {tag:?}: fakedns is not supported by the agent"
             )));
         }
-        if uses_grpc_transport(item) {
-            return Err(ApiError::bad_request(format!(
-                "inbound {tag:?}: {GRPC_TRANSPORT_REFUSED}"
-            )));
+        // W8: protocol/transport matrix (protocols.rs). gRPC is allowed
+        // again since R26 (agent grpc-go pinned past GO-2026-6443).
+        if let Err(e) = crate::protocols::check_inbound(item) {
+            return Err(ApiError::bad_request(format!("inbound {tag:?}: {e}")));
         }
+    }
+    if let Some(e) = crate::protocols::port_clash(items) {
+        return Err(ApiError::bad_request(e));
     }
     Ok(())
 }
@@ -1692,44 +1694,24 @@ fn mentions_fakedns(inbound: &serde_json::Value) -> bool {
         })
 }
 
-/// Why grpc/gun transports are refused (lead addendum, Sprint 4b).
-const GRPC_TRANSPORT_REFUSED: &str = "streamSettings.network \"grpc\"/\"gun\" is refused: \
-     the agent's google.golang.org/grpc (< v1.85.0) panics on a request without :authority \
-     (GO-2026-6443), so any unauthenticated client could crash the whole agent; \
-     use another transport until the agent ships the fixed grpc";
-
-/// Does this inbound use xray's gRPC transport (`streamSettings.network`
-/// "grpc" or its alias "gun", any case — xray lowercases it; keys matched
-/// the Go-json way as in `mentions_fakedns`)?
-fn uses_grpc_transport(inbound: &serde_json::Value) -> bool {
-    let Some(obj) = inbound.as_object() else {
-        return false;
-    };
-    json_fields(obj, "streamsettings")
-        .filter_map(|s| s.as_object())
-        .flat_map(|s| json_fields(s, "network"))
-        .any(|n| {
-            n.as_str().is_some_and(|n| {
-                let n = n.trim().to_lowercase();
-                n == "grpc" || n == "gun"
-            })
-        })
-}
-
 /// Warnings for stored inbounds (NodeView): configurations accepted before
-/// a check existed stay as they are until an admin changes them.
+/// a check existed stay as they are until an admin changes them; each
+/// inbound that would now be refused is listed with the reason.
 fn inbound_warnings(inbounds: &serde_json::Value) -> Vec<String> {
     let Some(items) = inbounds.as_array() else {
         return Vec::new();
     };
-    items
+    let mut out: Vec<String> = items
         .iter()
-        .filter(|i| uses_grpc_transport(i))
-        .map(|i| {
+        .filter_map(|i| {
             let tag = i.get("tag").and_then(|t| t.as_str()).unwrap_or("?");
-            format!("inbound {tag:?}: {GRPC_TRANSPORT_REFUSED}")
+            crate::protocols::check_inbound(i)
+                .err()
+                .map(|e| format!("inbound {tag:?}: {e}"))
         })
-        .collect()
+        .collect();
+    out.extend(crate::protocols::port_clash(items));
+    out
 }
 
 /// Keep only credentials whose inbound still exists with the same protocol.
@@ -1740,6 +1722,26 @@ fn prune_credentials(
     creds
         .into_iter()
         .filter(|c| inbounds.get(&c.inbound_tag) == Some(&c.protocol))
+        .collect()
+}
+
+/// Accounts adjusted to their (current) inbounds (protocols::refit_account:
+/// VLESS flow follows the inbound, a Shadowsocks key of the wrong length
+/// is reissued).
+pub(crate) fn refit_credentials(
+    creds: Vec<Credential>,
+    inbounds: &serde_json::Value,
+) -> Vec<Credential> {
+    creds
+        .into_iter()
+        .map(|mut c| {
+            if let Some(a) = inbound_by_tag(inbounds, &c.inbound_tag)
+                .and_then(|i| crate::protocols::refit_account(i, &c.account))
+            {
+                c.account = a;
+            }
+            c
+        })
         .collect()
 }
 
@@ -1783,9 +1785,9 @@ async fn apply_set_inbounds(
     for (user_id, raw) in rows {
         let creds: Vec<Credential> = serde_json::from_value(raw)
             .map_err(|e| anyhow::anyhow!("corrupt credentials json: {e}"))?;
-        let before = creds.len();
-        let kept = prune_credentials(creds, &protocols);
-        if kept.len() == before {
+        let before = creds.clone();
+        let kept = refit_credentials(prune_credentials(creds, &protocols), inbounds);
+        if kept == before {
             continue;
         }
         pruned.push(user_id);
@@ -1871,19 +1873,21 @@ pub(crate) struct Credential {
     pub(crate) account: serde_json::Value,
 }
 
-pub(crate) fn generate_account(protocol: &str) -> Result<serde_json::Value, ApiError> {
-    match protocol {
-        "vless" => Ok(json!({ "id": Uuid::new_v4().to_string(), "flow": "" })),
-        "vmess" => Ok(json!({ "id": Uuid::new_v4().to_string() })),
-        "trojan" => {
-            let mut pw = [0u8; 32];
-            rand::rng().fill_bytes(&mut pw);
-            Ok(json!({ "password": hex::encode(pw) }))
-        }
-        other => Err(ApiError::bad_request(format!(
-            "unsupported protocol {other:?} (vless, vmess, trojan)"
-        ))),
-    }
+/// A new account for `inbound` (protocols.rs: the inbound's protocol and
+/// settings decide its shape).
+pub(crate) fn generate_account(inbound: &serde_json::Value) -> Result<serde_json::Value, ApiError> {
+    crate::protocols::generate_account(inbound).map_err(ApiError::bad_request)
+}
+
+/// The inbound of `inbounds` tagged `tag`.
+pub(crate) fn inbound_by_tag<'a>(
+    inbounds: &'a serde_json::Value,
+    tag: &str,
+) -> Option<&'a serde_json::Value> {
+    inbounds
+        .as_array()?
+        .iter()
+        .find(|i| i.get("tag").and_then(|t| t.as_str()) == Some(tag))
 }
 
 fn is_fk_violation(e: &sqlx::Error) -> bool {
@@ -1904,7 +1908,13 @@ async fn apply_assign(
     node_id: Uuid,
     req: &AssignReq,
 ) -> Result<serde_json::Value, ApiError> {
-    let account = generate_account(&req.protocol)?;
+    if !crate::protocols::MANAGED.contains(&req.protocol.as_str()) {
+        return Err(ApiError::bad_request(format!(
+            "unsupported protocol {:?} ({})",
+            req.protocol,
+            crate::protocols::MANAGED.join(", ")
+        )));
+    }
     // M3: assignments take the entitlement lock like every node_users
     // writer that interacts with the reconcile (entitle.rs), before rows.
     crate::entitle::lock(conn).await?;
@@ -1947,6 +1957,9 @@ async fn apply_assign(
         }
         Some(_) => {}
     }
+    let account = generate_account(
+        inbound_by_tag(&inbounds, &req.inbound_tag).unwrap_or(&serde_json::Value::Null),
+    )?;
 
     let existing: Option<serde_json::Value> = sqlx::query_scalar(
         "SELECT credentials FROM node_users WHERE node_id = $1 AND user_id = $2 FOR UPDATE",
@@ -3333,47 +3346,35 @@ mod tests {
         }
     }
 
-    /// GO-2026-6443: xray's gRPC transport runs a grpc-go server that
-    /// panics on a request without :authority — refused until the agent
-    /// ships grpc >= 1.85.0; stored ones are surfaced as warnings.
+    /// R26: the gRPC transport is accepted again (the agent pins a grpc-go
+    /// past GO-2026-6443); W8: stored inbounds that the protocol matrix
+    /// would now refuse are surfaced as NodeView warnings.
     #[test]
-    fn grpc_transport_refused_and_warned() {
+    fn grpc_transport_accepted_and_stored_problems_warned() {
         let one = |inb: serde_json::Value| validate_inbounds(&json!([inb]));
-        for bad in [
-            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "grpc"}}),
-            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "gun"}}),
-            json!({"tag": "a", "protocol": "trojan", "streamSettings": {"network": "GRPC"}}),
-            json!({"tag": "a", "protocol": "vless", "StreamSettings": {"NETWORK": "Gun"}}),
-            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": " grpc "}}),
-            // Go-json key folding (U+017F -> s, U+212A -> k).
-            json!({"tag": "a", "protocol": "vless", "\u{17f}tream\u{17f}ettings": {"network": "grpc"}}),
-            json!({"tag": "a", "protocol": "vless", "streamSettings": {"net\u{212a}": "x", "networ\u{212a}": "grpc"}}),
-            // Duplicate keys by case: whichever Go picks must be safe.
-            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "ws"},
-                "STREAMSETTINGS": {"network": "grpc"}}),
-            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "tcp", "Network": "grpc"}}),
-        ] {
-            let e = one(bad.clone()).expect_err(&bad.to_string());
-            assert!(e.message().contains("GO-2026-6443"), "{}", e.message());
-        }
         for ok in [
-            json!({"tag": "grpc", "protocol": "vless"}),
-            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "ws",
-                "wsSettings": {"path": "/grpc"}}}),
-            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "tcp",
-                "grpcSettings": {"serviceName": "gun"}}}),
-            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "grpcx"}}),
-            json!({"tag": "a", "protocol": "vless", "network": "grpc"}),
+            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "grpc",
+                "grpcSettings": {"serviceName": "svc"}}}),
+            json!({"tag": "a", "protocol": "trojan", "streamSettings": {"network": "grpc", "security": "tls"}}),
+            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "grpc", "security": "reality"}}),
         ] {
             assert!(one(ok.clone()).is_ok(), "{ok}");
         }
+        let e = one(
+            json!({"tag": "a", "protocol": "vless", "settings": {"flow": "xtls-rprx-vision"},
+            "streamSettings": {"network": "grpc", "security": "tls"}}),
+        )
+        .expect_err("vision over grpc");
+        assert!(e.message().contains("inbound \"a\"") && e.message().contains("xtls-rprx-vision"));
         let stored = json!([
-            {"tag": "ok", "protocol": "vless"},
-            {"tag": "old-grpc", "protocol": "vless", "streamSettings": {"network": "gun"}},
+            {"tag": "ok", "protocol": "vless", "port": 443},
+            {"tag": "old-kcp", "protocol": "vless", "port": 444, "streamSettings": {"network": "kcp"}},
+            {"tag": "dup", "protocol": "vmess", "port": 443},
         ]);
         let w = inbound_warnings(&stored);
-        assert_eq!(w.len(), 1);
-        assert!(w[0].contains("old-grpc") && w[0].contains("GO-2026-6443"));
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(w[0].contains("old-kcp") && w[0].contains("kcp"));
+        assert!(w[1].contains("port 443"));
         assert!(inbound_warnings(&json!([{"tag": "a"}])).is_empty());
         assert!(inbound_warnings(&json!({"not": "an array"})).is_empty());
     }

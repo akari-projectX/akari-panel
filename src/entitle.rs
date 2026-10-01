@@ -37,8 +37,8 @@ use uuid::Uuid;
 
 use crate::api::Credential;
 
-/// Protocols the panel can generate accounts for.
-pub const ELIGIBLE_PROTOCOLS: [&str; 3] = ["vless", "vmess", "trojan"];
+/// Protocols the panel can generate accounts for (protocols.rs).
+pub const ELIGIBLE_PROTOCOLS: [&str; 5] = crate::protocols::MANAGED;
 
 /// Take the entitlement lock (held until the transaction ends). Must be the
 /// first lock of the transaction.
@@ -114,8 +114,10 @@ pub fn eligible_inbounds(inbounds: &Value) -> Vec<(String, String)> {
                 .filter_map(|i| {
                     let tag = i.get("tag")?.as_str()?;
                     let proto = i.get("protocol")?.as_str()?;
-                    (!tag.is_empty() && ELIGIBLE_PROTOCOLS.contains(&proto))
-                        .then(|| (tag.to_string(), proto.to_string()))
+                    (!tag.is_empty()
+                        && ELIGIBLE_PROTOCOLS.contains(&proto)
+                        && crate::protocols::issuable(i))
+                    .then(|| (tag.to_string(), proto.to_string()))
                 })
                 .collect()
         })
@@ -123,18 +125,20 @@ pub fn eligible_inbounds(inbounds: &Value) -> Vec<(String, String)> {
 }
 
 /// The credentials a plan-granted pair must have: existing ones for still
-/// eligible (tag, protocol) kept in their order, then new ones for the
-/// rest in inbound order. `None` = unchanged.
+/// eligible (tag, protocol) kept in their order (accounts refit to their
+/// inbound, see protocols::refit_account), then new ones for the rest in
+/// inbound order. `None` = unchanged.
 fn merge_credentials(
     existing: &[Credential],
     eligible: &[(String, String)],
+    inbounds: &Value,
 ) -> Result<Option<Vec<Credential>>, crate::auth::ApiError> {
     let want: HashSet<(&str, &str)> = eligible
         .iter()
         .map(|(t, p)| (t.as_str(), p.as_str()))
         .collect();
     let mut seen = HashSet::new();
-    let mut out: Vec<Credential> = existing
+    let kept: Vec<Credential> = existing
         .iter()
         .filter(|c| {
             want.contains(&(c.inbound_tag.as_str(), c.protocol.as_str()))
@@ -142,12 +146,15 @@ fn merge_credentials(
         })
         .cloned()
         .collect();
+    let mut out = crate::api::refit_credentials(kept, inbounds);
     for (tag, proto) in eligible {
         if !seen.contains(tag) {
             out.push(Credential {
                 inbound_tag: tag.clone(),
                 protocol: proto.clone(),
-                account: crate::api::generate_account(proto)?,
+                account: crate::api::generate_account(
+                    crate::api::inbound_by_tag(inbounds, tag).unwrap_or(&Value::Null),
+                )?,
             });
         }
     }
@@ -266,7 +273,7 @@ async fn reconcile_node(
         }
         let creds: Vec<Credential> = serde_json::from_value(raw)
             .map_err(|e| anyhow::anyhow!("corrupt credentials json: {e}"))?;
-        if let Some(new) = merge_credentials(&creds, &eligible)? {
+        if let Some(new) = merge_credentials(&creds, &eligible, &inbounds)? {
             update.push((user, serde_json::to_value(&new)?));
         }
     }
@@ -274,7 +281,7 @@ async fn reconcile_node(
     let mut new_users: Vec<Uuid> = granted.difference(&have).copied().collect();
     new_users.sort();
     for user in new_users {
-        if let Some(new) = merge_credentials(&[], &eligible)? {
+        if let Some(new) = merge_credentials(&[], &eligible, &inbounds)? {
             issue.push((user, serde_json::to_value(&new)?));
         }
     }
@@ -435,8 +442,9 @@ mod tests {
             ("a".to_string(), "vless".to_string()),
             ("b".to_string(), "vmess".to_string()),
         ];
+        let inb = json!([{"tag": "a", "protocol": "vless"}, {"tag": "b", "protocol": "vmess"}]);
         let existing = vec![cred("a", "vless", "keep")];
-        let out = merge_credentials(&existing, &elig)
+        let out = merge_credentials(&existing, &elig, &inb)
             .ok()
             .flatten()
             .unwrap_or_default();
@@ -444,7 +452,7 @@ mod tests {
         assert_eq!(out[0], existing[0], "kept byte for byte");
         assert_eq!(out[1].inbound_tag, "b");
         // Unchanged when complete.
-        assert_eq!(merge_credentials(&out, &elig).ok(), Some(None));
+        assert_eq!(merge_credentials(&out, &elig, &inb).ok(), Some(None));
         // Re-protocoled or removed inbounds are dropped, duplicates too.
         let stale = vec![
             cred("a", "vmess", "x"),
@@ -452,7 +460,7 @@ mod tests {
             cred("b", "vmess", "dup"),
             cred("gone", "vless", "z"),
         ];
-        let out = merge_credentials(&stale, &elig)
+        let out = merge_credentials(&stale, &elig, &inb)
             .ok()
             .flatten()
             .unwrap_or_default();
@@ -461,6 +469,6 @@ mod tests {
         assert_eq!(out[1].protocol, "vless");
         assert_eq!(out.len(), 2);
         // Nothing eligible: empty.
-        assert_eq!(merge_credentials(&[], &[]).ok(), Some(None));
+        assert_eq!(merge_credentials(&[], &[], &json!([])).ok(), Some(None));
     }
 }

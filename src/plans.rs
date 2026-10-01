@@ -1959,6 +1959,90 @@ mod tests {
     /// the right credentials, write departed rows, keep credentials across
     /// changes, bump exactly the affected nodes; manual rows win.
     #[tokio::test]
+    /// W8: plan credentials for every managed protocol, shaped by their
+    /// inbound; inbound changes refit kept accounts (VLESS flow follows
+    /// settings.flow keeping the id; a Shadowsocks key is reissued when
+    /// the method's key length changes), on plan rows and manual rows.
+    async fn w8_credentials_follow_inbound_settings() {
+        use base64::Engine;
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let b64 = |n: usize| base64::engine::general_purpose::STANDARD.encode(vec![7u8; n]);
+        let n = db.node().await;
+        let u = db.user().await;
+        let g = group(&db, "g", &[n]).await;
+        let p = plan(&db, "p", &[g], None).await;
+        let inb = |flow: &str, method: &str, psk: String| {
+            json!([
+                {"tag": "in-vless", "protocol": "vless", "port": 443,
+                 "settings": {"clients": [], "decryption": "none", "flow": flow},
+                 "streamSettings": {"network": "tcp", "security": "reality"}},
+                {"tag": "in-ss", "protocol": "shadowsocks", "port": 8388,
+                 "settings": {"method": method, "password": psk, "clients": [], "network": "tcp,udp"}},
+                {"tag": "in-hy", "protocol": "hysteria", "port": 443,
+                 "settings": {"version": 2, "clients": []},
+                 "streamSettings": {"network": "hysteria", "security": "tls", "hysteriaSettings": {"version": 2}}},
+                {"tag": "in-socks", "protocol": "socks", "port": 1080},
+            ])
+        };
+        set_inbounds(
+            &db,
+            n,
+            inb("xtls-rprx-vision", "2022-blake3-aes-128-gcm", b64(16)),
+        )
+        .await;
+        give(&db, u, p, None).await;
+        let creds = |r: &Value, tag: &str| -> Value {
+            r.as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["inbound_tag"] == tag)
+                .map(|c| c["account"].clone())
+                .unwrap_or(Value::Null)
+        };
+        let key_len = |a: &Value| {
+            base64::engine::general_purpose::STANDARD
+                .decode(a["password"].as_str().unwrap())
+                .unwrap()
+                .len()
+        };
+        let r = rows(&db, u).await[0].1.clone();
+        assert_eq!(r.as_array().unwrap().len(), 3, "socks gets none: {r}");
+        let v = creds(&r, "in-vless");
+        assert_eq!(v["flow"], "xtls-rprx-vision");
+        assert_eq!(key_len(&creds(&r, "in-ss")), 16);
+        assert_eq!(creds(&r, "in-hy")["auth"].as_str().unwrap().len(), 64);
+        let hy = creds(&r, "in-hy");
+        // Method 128 -> 256 and Vision off: SS key reissued (32 bytes),
+        // VLESS id kept with flow "", hysteria untouched.
+        set_inbounds(&db, n, inb("", "2022-blake3-aes-256-gcm", b64(32))).await;
+        let r2 = rows(&db, u).await[0].1.clone();
+        assert_eq!(creds(&r2, "in-vless")["id"], v["id"]);
+        assert_eq!(creds(&r2, "in-vless")["flow"], "");
+        assert_eq!(key_len(&creds(&r2, "in-ss")), 32);
+        assert_eq!(creds(&r2, "in-hy"), hy);
+        // Same again: nothing changes (idempotent).
+        set_inbounds(&db, n, inb("", "2022-blake3-aes-256-gcm", b64(32))).await;
+        assert_eq!(rows(&db, u).await[0].1, r2);
+        // Manual rows refit the same way.
+        let mut tx = db.pool.begin().await.unwrap();
+        crate::api::apply_assign_for_test(&mut tx, u, n).await;
+        tx.commit().await.unwrap();
+        set_inbounds(
+            &db,
+            n,
+            inb("xtls-rprx-vision", "2022-blake3-aes-256-gcm", b64(32)),
+        )
+        .await;
+        let r3 = rows(&db, u).await[0].clone();
+        assert!(r3.2, "manual row");
+        assert_eq!(creds(&r3.1, "in-vless")["flow"], "xtls-rprx-vision");
+        assert_consistent(&db).await;
+        db.drop().await;
+    }
+
+    #[tokio::test]
     async fn reconcile_follows_every_entitlement_change() {
         let Some(db) = TestDb::new().await else {
             return;
@@ -2025,7 +2109,7 @@ mod tests {
             nc,
             json!([{"tag": "in-vless", "protocol": "vless"},
                    {"tag": "in-trojan", "protocol": "trojan"},
-                   {"tag": "in-ss", "protocol": "shadowsocks"}]),
+                   {"tag": "in-socks", "protocol": "socks"}]),
         )
         .await;
         let creds = rows(&db, u).await[0].1.clone();
@@ -2037,12 +2121,7 @@ mod tests {
         assert_ne!(db.versions(nc).await, before_v);
         assert_consistent(&db).await;
         // Only non-eligible inbounds left: revoked.
-        set_inbounds(
-            &db,
-            nc,
-            json!([{"tag": "in-ss", "protocol": "shadowsocks"}]),
-        )
-        .await;
+        set_inbounds(&db, nc, json!([{"tag": "in-socks", "protocol": "socks"}])).await;
         assert!(nodes_of(&db, u).await.is_empty());
         assert_eq!(departed(&db, u).await, sorted(vec![na, nb, nc]));
         // Back: issued again, departed row cleared.

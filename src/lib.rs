@@ -24,6 +24,7 @@ pub mod nodeops;
 pub mod nodetpl;
 pub mod notify;
 pub mod plans;
+pub mod protocols;
 pub mod rate;
 pub mod reaper;
 pub mod reject;
