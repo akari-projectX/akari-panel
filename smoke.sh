@@ -975,6 +975,7 @@ python3 -c "
 import json; s=json.load(open('$LOG/state-upd/update/state.json'))
 assert s['current']['version']=='v900.0.1' and 'v900.0.2' in s['rolled_back'], s" \
   || { echo "FAIL: update state after rollback"; exit 1; }
+ls "$LOG/state-upd/update/bin" | grep -q v900.0.2 && { echo "FAIL: rolled-back binary kept in bin/"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='rollout.halt' AND actor_login='system'")" = "1" ] \
   || { echo "FAIL: halt not audited"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/rollouts/$RO2/resume")" = "409" ] || { echo "FAIL: halted rollout resumed"; exit 1; }
