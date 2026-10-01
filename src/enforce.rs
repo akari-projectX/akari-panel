@@ -78,11 +78,18 @@ async fn apply_pass(conn: &mut PgConnection, pred: &str, set: &str) -> sqlx::Res
     bump_nodes_of(conn, &users).await
 }
 
-/// Disable users past their traffic limit and bump their nodes. Raising a
-/// limit later does NOT re-enable them (an admin sets enabled=true).
+/// Disable users past their traffic limit (`disabled_reason = 'quota'`)
+/// and bump their nodes. Raising a limit by PATCH /users does NOT re-enable
+/// them (an admin sets enabled=true); the plan period reset and plan
+/// changes that admit them do (plans.rs).
 /// Returns the bumped nodes.
 pub async fn apply_traffic_limits(conn: &mut PgConnection) -> sqlx::Result<Vec<Uuid>> {
-    let nodes = apply_pass(conn, OVER_LIMIT, "enabled = false").await?;
+    let nodes = apply_pass(
+        conn,
+        OVER_LIMIT,
+        "enabled = false, disabled_reason = 'quota'",
+    )
+    .await?;
     if !nodes.is_empty() {
         tracing::info!(nodes = nodes.len(), "disabled users over traffic limit");
     }
@@ -103,8 +110,12 @@ pub async fn apply_expiry(conn: &mut PgConnection) -> sqlx::Result<Vec<Uuid>> {
 }
 
 pub async fn run_all(state: &crate::state::AppState) -> anyhow::Result<()> {
-    for pass in [Pass::Limits, Pass::Expiry] {
+    // Plan passes first: a due reset re-enables before the limit pass
+    // would look at the old usage.
+    for pass in [Pass::PlanExpiry, Pass::Resets, Pass::Limits, Pass::Expiry] {
         let name = match pass {
+            Pass::PlanExpiry => "plan_expiry",
+            Pass::Resets => "period_reset",
             Pass::Limits => "limits",
             Pass::Expiry => "expiry",
         };
@@ -121,6 +132,12 @@ async fn run_pass(state: &crate::state::AppState, pass: Pass) -> anyhow::Result<
     match pass {
         Pass::Limits => apply_traffic_limits(&mut tx).await?,
         Pass::Expiry => apply_expiry(&mut tx).await?,
+        Pass::PlanExpiry => crate::plans::apply_plan_expiry(&mut tx)
+            .await
+            .map_err(|e| anyhow::anyhow!("plan expiry pass: {}", e.message()))?,
+        Pass::Resets => crate::plans::apply_period_resets(&mut tx)
+            .await
+            .map_err(|e| anyhow::anyhow!("period reset pass: {}", e.message()))?,
     };
     tx.commit().await?;
     Ok(())
@@ -128,6 +145,8 @@ async fn run_pass(state: &crate::state::AppState, pass: Pass) -> anyhow::Result<
 
 #[derive(Clone, Copy)]
 enum Pass {
+    PlanExpiry,
+    Resets,
     Limits,
     Expiry,
 }
