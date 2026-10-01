@@ -1,5 +1,7 @@
+// 节点管理（R18-2）：节点列表、新建/编辑向导（协议模板）、一键安装命令。
+// 后台只做中文（R18）。
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   del,
@@ -7,10 +9,16 @@ import {
   patch,
   post,
   put,
+  type CheckDestView,
   type GeneratedAccount,
+  type Inbound,
+  type InboundSpec,
+  type InstallView,
   type NodeEnrollment,
   type NodeUpdateStatus,
   type NodeView,
+  type RenderedInbounds,
+  type TemplateCatalog,
 } from "../lib/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -32,43 +40,97 @@ import {
   TableRow,
 } from "../components/ui/table";
 
+const msg = (err: unknown, fallback: string) => (err instanceof Error ? err.message : fallback);
+
+const selectCls = "h-9 rounded-lg border border-border bg-card px-3 text-sm";
+
+// What the install card shows: the one-line command (and, after a create,
+// the bootstrap file for the manual path).
+interface InstallShown {
+  name: string;
+  install: InstallView;
+  needsCertificate: boolean;
+  bootstrap?: string;
+}
+
 export function AdminNodes() {
   const nodes = useQuery({ queryKey: ["nodes"], queryFn: () => get<NodeView[]>("/nodes") });
   const [selected, setSelected] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [shown, setShown] = useState<InstallShown | null>(null);
+  const [bootstrap, setBootstrap] = useState<NodeEnrollment | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const node = (nodes.data ?? []).find((n) => n.id === selected) ?? null;
-  const [error, setError] = useState<string | null>(null);
-  const [enrollment, setEnrollment] = useState<NodeEnrollment | null>(null);
 
-  // A new one-time enrollment token (expired token, lost agent state).
-  // Once the agent enrolls with it the node's older certificates stop
-  // working.
-  async function newToken(n: NodeView) {
+  // Re-install: a fresh one-line command (the previous unused one stops
+  // working; once the agent enrolls with it, the node's older certificate
+  // is revoked).
+  async function reinstall(n: NodeView) {
     setError(null);
     if (
       n.enrolled &&
       !window.confirm(
-        `Issue a new enrollment token for "${n.name}"? When an agent enrolls with it, the current certificate stops working.`,
+        `为「${n.name}」生成新的安装命令？节点用它重新注册后，当前证书将失效（正在运行的 agent 需要用新命令重装）。`,
       )
     ) {
       return;
     }
     try {
-      setEnrollment(await post<NodeEnrollment>(`/nodes/${n.id}/enroll-token`, undefined));
+      const install = await post<InstallView>(`/nodes/${n.id}/install`, {
+        origin: location.origin,
+      });
+      setBootstrap(null);
+      setShown({ name: n.name, install, needsCertificate: needsCertificate(n.xray_inbounds) });
       await nodes.refetch();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Token failed");
+      setError(msg(err, "生成安装命令失败"));
+    }
+  }
+
+  // Manual path (ops): a bootstrap file with a 24 h token.
+  async function newBootstrap(n: NodeView) {
+    setError(null);
+    if (
+      n.enrolled &&
+      !window.confirm(
+        `为「${n.name}」签发新的注册令牌？节点用它注册后，当前证书将失效。`,
+      )
+    ) {
+      return;
+    }
+    try {
+      setShown(null);
+      setBootstrap(await post<NodeEnrollment>(`/nodes/${n.id}/enroll-token`, undefined));
+      await nodes.refetch();
+    } catch (err) {
+      setError(msg(err, "签发令牌失败"));
+    }
+  }
+
+  async function toggle(n: NodeView) {
+    setError(null);
+    if (
+      n.enabled &&
+      !window.confirm(`停用节点「${n.name}」？节点上的所有入站与用户连接会立即断开。`)
+    ) {
+      return;
+    }
+    try {
+      await patch(`/nodes/${n.id}`, { enabled: !n.enabled });
+      await nodes.refetch();
+    } catch (err) {
+      setError(msg(err, n.enabled ? "停用失败" : "启用失败"));
     }
   }
 
   // Deletion revokes the node's certificate for good: the agent is pushed
-  // the empty state, then the node disappears (a reinstall needs a new
-  // bootstrap file).
+  // the empty state, then the node disappears.
   async function remove(n: NodeView) {
     setError(null);
     if (
       !window.confirm(
-        `Delete node "${n.name}"? Its agent stops serving and its certificate is revoked permanently.`,
+        `删除节点「${n.name}」？节点停止服务，证书永久吊销（不可恢复，重新上线需新建节点）。`,
       )
     ) {
       return;
@@ -78,193 +140,800 @@ export function AdminNodes() {
       if (selected === n.id) setSelected(null);
       await nodes.refetch();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Delete failed");
+      setError(msg(err, "删除失败"));
     }
   }
 
   return (
     <div className="space-y-6">
-      <CreateNode
-        onCreated={async (e) => {
-          setEnrollment(e);
-          await nodes.refetch();
-        }}
-      />
-      {enrollment && (
-        <BootstrapCard enrollment={enrollment} onClose={() => setEnrollment(null)} />
-      )}
+      {creating ? (
+        <NodeWizard
+          onCancel={() => setCreating(false)}
+          onCreated={async (e, needsCert) => {
+            setCreating(false);
+            setBootstrap(null);
+            if (e.install) {
+              setShown({
+                name: e.name,
+                install: e.install,
+                needsCertificate: needsCert,
+                bootstrap: e.bootstrap,
+              });
+            } else {
+              setBootstrap(e);
+            }
+            await nodes.refetch();
+          }}
+        />
+      ) : null}
+      {shown && <InstallCard shown={shown} onClose={() => setShown(null)} />}
+      {bootstrap && <BootstrapCard enrollment={bootstrap} onClose={() => setBootstrap(null)} />}
       <Card>
-        <CardHeader>
-          <CardTitle>Nodes</CardTitle>
-          <CardDescription>Agents connect outbound; select one to configure.</CardDescription>
+        <CardHeader className="flex flex-row items-start justify-between gap-4">
+          <div>
+            <CardTitle>节点</CardTitle>
+            <CardDescription>
+              agent 主动连接面板；新建后在节点服务器上执行一行安装命令即可上线。
+            </CardDescription>
+          </div>
+          {!creating && (
+            <Button
+              onClick={() => {
+                setCreating(true);
+                setShown(null);
+              }}
+            >
+              新建节点
+            </Button>
+          )}
         </CardHeader>
         <CardContent>
-          {error && <p className="mb-2 text-sm text-destructive">{error}</p>}
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Agent</TableHead>
-                <TableHead>Core</TableHead>
-                <TableHead>Versions</TableHead>
-                <TableHead>Certificate</TableHead>
-                <TableHead>Last seen</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {(nodes.data ?? []).map((n) => (
-                <TableRow key={n.id}>
-                  <TableCell className="font-medium">{n.name}</TableCell>
-                  <TableCell>
-                    {n.deleting_at ? (
-                      <Badge variant="destructive">deleting</Badge>
-                    ) : !n.enabled ? (
-                      <Badge variant="secondary">disabled</Badge>
-                    ) : n.status === "online" ? (
-                      <Badge variant="success">online</Badge>
-                    ) : !n.enrolled ? (
-                      <Badge variant="outline">awaiting enrollment</Badge>
-                    ) : (
-                      <Badge variant="outline">{n.status}</Badge>
-                    )}
-                    {n.warnings.length > 0 && (
-                      <span
-                        className="ml-2 text-xs font-medium text-amber-600"
-                        title={n.warnings.join("\n")}
-                      >
-                        {n.warnings.length} warning{n.warnings.length > 1 ? "s" : ""}
-                      </span>
-                    )}
-                    {n.last_error && (
-                      <span
-                        className="ml-2 text-xs font-medium text-destructive"
-                        title={n.last_error}
-                      >
-                        apply failed
-                      </span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {n.agent_version ?? "—"}
-                    {n.agent_os && n.agent_arch && (
-                      <span className="ml-1 text-xs">
-                        {n.agent_os}/{n.agent_arch}
-                      </span>
-                    )}
-                    {n.update_status && <UpdateBadge s={n.update_status} />}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">{n.core_version ?? "—"}</TableCell>
-                  <TableCell className="text-muted-foreground">
-                    cfg {n.config_version} · usr {n.user_version}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {n.cert_not_after
-                      ? `until ${new Date(n.cert_not_after).toLocaleDateString()}`
-                      : n.enroll_token_expires_at
-                        ? `token until ${new Date(n.enroll_token_expires_at).toLocaleString()}`
-                        : n.enrolled
-                          ? "—"
-                          : "token expired"}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {n.last_seen_at ? new Date(n.last_seen_at).toLocaleTimeString() : "—"}
-                    {n.heartbeat && (
-                      <span className="block text-xs">
-                        {n.heartbeat.connections} conn
-                        {n.heartbeat.uptime_seconds != null &&
-                          ` · up ${Math.floor(n.heartbeat.uptime_seconds / 3600)} h`}
-                      </span>
-                    )}
-                  </TableCell>
-                  <TableCell className="space-x-2 text-right">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setSelected(n.id === selected ? null : n.id)}
-                    >
-                      {n.id === selected ? "Close" : "Configure"}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={!!n.deleting_at}
-                      onClick={async () => {
-                        await patch(`/nodes/${n.id}`, { enabled: !n.enabled });
-                        await nodes.refetch();
-                      }}
-                    >
-                      {n.enabled ? "Disable" : "Enable"}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={!!n.deleting_at}
-                      onClick={() => newToken(n)}
-                    >
-                      Enrollment token
-                    </Button>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      disabled={!!n.deleting_at}
-                      onClick={() => remove(n)}
-                    >
-                      Delete
-                    </Button>
-                  </TableCell>
+          {error && (
+            <p role="alert" className="mb-2 text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          {nodes.isPending ? (
+            <p className="text-sm text-muted-foreground">加载中…</p>
+          ) : nodes.isError ? (
+            <p role="alert" className="text-sm text-destructive">
+              节点列表加载失败：{msg(nodes.error, "未知错误")}
+            </p>
+          ) : (nodes.data ?? []).length === 0 ? (
+            <p className="text-sm text-muted-foreground">还没有节点。点击「新建节点」开始。</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>名称</TableHead>
+                  <TableHead>状态</TableHead>
+                  <TableHead>地区 / 地址</TableHead>
+                  <TableHead>Agent</TableHead>
+                  <TableHead>租约剩余</TableHead>
+                  <TableHead>证书</TableHead>
+                  <TableHead>最后在线</TableHead>
+                  <TableHead className="text-right">操作</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {(nodes.data ?? []).map((n) => (
+                  <TableRow key={n.id}>
+                    <TableCell className="font-medium">{n.name}</TableCell>
+                    <TableCell>
+                      <StatusBadge n={n} />
+                      {n.warnings.length > 0 && (
+                        <span
+                          className="ml-2 text-xs font-medium text-amber-600"
+                          title={n.warnings.join("\n")}
+                        >
+                          {n.warnings.length} 条警告
+                        </span>
+                      )}
+                      {n.last_error && (
+                        <span
+                          className="ml-2 text-xs font-medium text-destructive"
+                          title={n.last_error}
+                        >
+                          配置应用失败
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {n.region ?? "—"}
+                      <span className="block text-xs">{n.server_addr ?? "未设置地址"}</span>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {n.agent_version ?? "—"}
+                      {n.agent_os && n.agent_arch && (
+                        <span className="ml-1 text-xs">
+                          {n.agent_os}/{n.agent_arch}
+                        </span>
+                      )}
+                      {n.update_status && <UpdateBadge s={n.update_status} />}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {formatLease(n.lease_remaining_seconds)}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {n.cert_not_after
+                        ? `至 ${new Date(n.cert_not_after).toLocaleDateString()}`
+                        : n.enroll_token_expires_at
+                          ? `安装链接 ${new Date(n.enroll_token_expires_at).toLocaleString()} 过期`
+                          : n.enrolled
+                            ? "—"
+                            : "安装链接已过期"}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {n.last_seen_at ? new Date(n.last_seen_at).toLocaleString() : "—"}
+                      {n.heartbeat && (
+                        <span className="block text-xs">
+                          {n.heartbeat.connections} 连接
+                          {n.heartbeat.uptime_seconds != null &&
+                            ` · 运行 ${Math.floor(n.heartbeat.uptime_seconds / 3600)} 小时`}
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell className="space-x-1 whitespace-nowrap text-right">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSelected(n.id === selected ? null : n.id)}
+                      >
+                        {n.id === selected ? "收起" : "配置"}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={!!n.deleting_at}
+                        onClick={() => reinstall(n)}
+                      >
+                        {n.enrolled ? "重装命令" : "安装命令"}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={!!n.deleting_at}
+                        onClick={() => toggle(n)}
+                      >
+                        {n.enabled ? "停用" : "启用"}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={!!n.deleting_at}
+                        title="手动安装用：下载 bootstrap 文件（24 小时有效）"
+                        onClick={() => newBootstrap(n)}
+                      >
+                        bootstrap
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        disabled={!!n.deleting_at}
+                        onClick={() => remove(n)}
+                      >
+                        删除
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
         </CardContent>
       </Card>
-      {node && <NodeEditor node={node} />}
+      {/* key: switching nodes must never carry one node's form into another (F1). */}
+      {node && <NodeEditor key={node.id} node={node} />}
     </div>
   );
 }
 
-function CreateNode({ onCreated }: { onCreated: (e: NodeEnrollment) => Promise<void> }) {
+function StatusBadge({ n }: { n: NodeView }) {
+  if (n.deleting_at) return <Badge variant="destructive">删除中</Badge>;
+  if (!n.enabled) return <Badge variant="secondary">已停用</Badge>;
+  if (n.status === "online") return <Badge variant="success">在线</Badge>;
+  if (!n.enrolled) return <Badge variant="outline">等待安装</Badge>;
+  return <Badge variant="outline">{n.status === "offline" ? "离线" : n.status}</Badge>;
+}
+
+export function formatLease(secs: number | null): string {
+  if (secs == null) return "—";
+  if (secs <= 0) return "已到期";
+  const h = Math.floor(secs / 3600);
+  if (h >= 24) return `${Math.floor(h / 24)} 天 ${h % 24} 小时`;
+  if (h >= 1) return `${h} 小时 ${Math.floor((secs % 3600) / 60)} 分`;
+  return `${Math.max(1, Math.floor(secs / 60))} 分钟`;
+}
+
+// --- inbound templates -------------------------------------------------------
+
+type TemplateKind = InboundSpec["template"];
+
+const TEMPLATE_LABELS: Record<TemplateKind, string> = {
+  vless_reality: "VLESS + REALITY（推荐，无需证书与域名）",
+  vless_ws_tls: "VLESS + WebSocket + TLS（需节点证书）",
+  vmess_ws: "VMess + WebSocket（可选 TLS）",
+  trojan_tls: "Trojan + TLS（需节点证书）",
+};
+
+// One row of the form; strings while editing, converted on submit.
+interface SpecRow {
+  key: number;
+  template: TemplateKind;
+  port: string;
+  tag: string;
+  dest: string;
+  customDest: string;
+  serverName: string;
+  fingerprint: string;
+  domain: string;
+  path: string;
+  tls: boolean;
+}
+
+let rowSeq = 0;
+function newRow(template: TemplateKind = "vless_reality", port = "443"): SpecRow {
+  rowSeq += 1;
+  return {
+    key: rowSeq,
+    template,
+    port,
+    tag: "",
+    dest: "",
+    customDest: "",
+    serverName: "",
+    fingerprint: "chrome",
+    domain: "",
+    path: "",
+    tls: false,
+  };
+}
+
+// Form rows → API specs; an error string for the first invalid row.
+export function toSpecs(rows: SpecRow[]): InboundSpec[] | string {
+  const out: InboundSpec[] = [];
+  const ports = new Set<number>();
+  for (const [i, r] of rows.entries()) {
+    const n = i + 1;
+    const port = Number(r.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return `第 ${n} 个入站：端口须为 1–65535`;
+    if (ports.has(port)) return `第 ${n} 个入站：端口 ${port} 重复`;
+    ports.add(port);
+    const tag = r.tag.trim() || undefined;
+    switch (r.template) {
+      case "vless_reality": {
+        const dest = r.dest === "custom" ? r.customDest.trim() : r.dest;
+        if (r.dest === "custom" && !dest) return `第 ${n} 个入站：请填写自定义目标站点`;
+        out.push({
+          template: "vless_reality",
+          port,
+          tag,
+          dest: dest || undefined,
+          server_name: r.serverName.trim() || undefined,
+          fingerprint: r.fingerprint || undefined,
+        });
+        break;
+      }
+      case "vless_ws_tls":
+      case "trojan_tls": {
+        const domain = r.domain.trim();
+        if (!domain) return `第 ${n} 个入站：请填写证书域名`;
+        out.push(
+          r.template === "trojan_tls"
+            ? { template: "trojan_tls", port, tag, domain }
+            : { template: "vless_ws_tls", port, tag, domain, path: r.path.trim() || undefined },
+        );
+        break;
+      }
+      case "vmess_ws": {
+        const domain = r.domain.trim();
+        if (r.tls && !domain) return `第 ${n} 个入站：启用 TLS 时请填写证书域名`;
+        out.push({
+          template: "vmess_ws",
+          port,
+          tag,
+          path: r.path.trim() || undefined,
+          tls_domain: r.tls ? domain : undefined,
+        });
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+const CERT_FILE = "/run/credentials/akari-agent.service/tls_fullchain.pem";
+
+export function needsCertificate(inbounds: Inbound[]): boolean {
+  return inbounds.some((i) => JSON.stringify(i).includes(CERT_FILE));
+}
+
+function TemplateRows({
+  rows,
+  setRows,
+  catalog,
+}: {
+  rows: SpecRow[];
+  setRows: (r: SpecRow[]) => void;
+  catalog: TemplateCatalog | undefined;
+}) {
+  const [checks, setChecks] = useState<Record<number, string>>({});
+  const update = (key: number, p: Partial<SpecRow>) =>
+    setRows(rows.map((r) => (r.key === key ? { ...r, ...p } : r)));
+
+  async function checkDest(r: SpecRow) {
+    const dest = r.dest === "custom" ? r.customDest.trim() : r.dest || catalog?.reality_dests[0];
+    if (!dest) return;
+    setChecks((c) => ({ ...c, [r.key]: "检测中…" }));
+    try {
+      const v = await post<CheckDestView>("/inbound-templates/check-dest", { dest });
+      setChecks((c) => ({
+        ...c,
+        [r.key]: v.ok
+          ? `可用：TLS 1.3 + h2${v.trusted ? "" : "（证书非公共信任）"}`
+          : `不可用：${v.error ?? "未知原因"}`,
+      }));
+    } catch (err) {
+      setChecks((c) => ({ ...c, [r.key]: `检测失败：${msg(err, "未知错误")}` }));
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      {rows.map((r, i) => (
+        <div key={r.key} className="space-y-3 rounded-lg border border-border p-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor={`tpl-${r.key}`}>入站 {i + 1} 协议</Label>
+              <select
+                id={`tpl-${r.key}`}
+                className={selectCls}
+                value={r.template}
+                onChange={(e) => update(r.key, { template: e.target.value as TemplateKind })}
+              >
+                {(Object.keys(TEMPLATE_LABELS) as TemplateKind[]).map((k) => (
+                  <option key={k} value={k}>
+                    {TEMPLATE_LABELS[k]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor={`port-${r.key}`}>端口</Label>
+              <Input
+                id={`port-${r.key}`}
+                className="w-24"
+                inputMode="numeric"
+                value={r.port}
+                onChange={(e) => update(r.key, { port: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor={`tag-${r.key}`}>标签（可选）</Label>
+              <Input
+                id={`tag-${r.key}`}
+                className="w-40"
+                value={r.tag}
+                placeholder="自动生成"
+                onChange={(e) => update(r.key, { tag: e.target.value })}
+              />
+            </div>
+            {rows.length > 1 && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setRows(rows.filter((x) => x.key !== r.key))}
+              >
+                移除
+              </Button>
+            )}
+          </div>
+          {r.template === "vless_reality" && (
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor={`dest-${r.key}`}>目标站点（dest）</Label>
+                <select
+                  id={`dest-${r.key}`}
+                  className={selectCls}
+                  value={r.dest}
+                  onChange={(e) => update(r.key, { dest: e.target.value })}
+                >
+                  <option value="">{catalog?.reality_dests[0] ?? "www.apple.com"}（默认）</option>
+                  {(catalog?.reality_dests ?? []).slice(1).map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
+                  <option value="custom">自定义…</option>
+                </select>
+              </div>
+              {r.dest === "custom" && (
+                <div className="space-y-1.5">
+                  <Label htmlFor={`cdest-${r.key}`}>自定义目标（域名[:端口]）</Label>
+                  <Input
+                    id={`cdest-${r.key}`}
+                    className="w-56"
+                    value={r.customDest}
+                    placeholder="example.com:443"
+                    onChange={(e) => update(r.key, { customDest: e.target.value })}
+                  />
+                </div>
+              )}
+              <div className="space-y-1.5">
+                <Label htmlFor={`sni-${r.key}`}>SNI（可选）</Label>
+                <Input
+                  id={`sni-${r.key}`}
+                  className="w-48"
+                  value={r.serverName}
+                  placeholder="同目标站点"
+                  onChange={(e) => update(r.key, { serverName: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor={`fp-${r.key}`}>客户端指纹</Label>
+                <select
+                  id={`fp-${r.key}`}
+                  className={selectCls}
+                  value={r.fingerprint}
+                  onChange={(e) => update(r.key, { fingerprint: e.target.value })}
+                >
+                  {(catalog?.fingerprints ?? ["chrome"]).map((f) => (
+                    <option key={f} value={f}>
+                      {f}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <Button type="button" variant="outline" size="sm" onClick={() => checkDest(r)}>
+                检测目标站点
+              </Button>
+              {checks[r.key] && (
+                <span className="text-xs text-muted-foreground" role="status">
+                  {checks[r.key]}
+                </span>
+              )}
+            </div>
+          )}
+          {(r.template === "vless_ws_tls" || r.template === "trojan_tls" || r.template === "vmess_ws") && (
+            <div className="flex flex-wrap items-end gap-3">
+              {r.template === "vmess_ws" && (
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={r.tls}
+                    onChange={(e) => update(r.key, { tls: e.target.checked })}
+                  />
+                  启用 TLS
+                </label>
+              )}
+              {(r.template !== "vmess_ws" || r.tls) && (
+                <div className="space-y-1.5">
+                  <Label htmlFor={`dom-${r.key}`}>证书域名</Label>
+                  <Input
+                    id={`dom-${r.key}`}
+                    className="w-56"
+                    value={r.domain}
+                    placeholder="node1.example.com"
+                    onChange={(e) => update(r.key, { domain: e.target.value })}
+                  />
+                </div>
+              )}
+              {r.template !== "trojan_tls" && (
+                <div className="space-y-1.5">
+                  <Label htmlFor={`path-${r.key}`}>WebSocket 路径（可选）</Label>
+                  <Input
+                    id={`path-${r.key}`}
+                    className="w-40"
+                    value={r.path}
+                    placeholder="随机生成"
+                    onChange={(e) => update(r.key, { path: e.target.value })}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+          {(r.template === "vless_ws_tls" ||
+            r.template === "trojan_tls" ||
+            (r.template === "vmess_ws" && r.tls)) && (
+            <p className="text-xs text-muted-foreground">
+              证书放在节点的 {catalog?.tls_cert_dir ?? "/etc/akari-agent/tls"}/fullchain.pem 与
+              privkey.pem（如 certbot / acme.sh 签发），放好后执行 systemctl restart akari-agent。
+            </p>
+          )}
+        </div>
+      ))}
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => setRows([...rows, newRow("vless_reality", "")])}
+      >
+        添加入站
+      </Button>
+    </div>
+  );
+}
+
+// --- create wizard -----------------------------------------------------------
+
+function NodeWizard({
+  onCreated,
+  onCancel,
+}: {
+  onCreated: (e: NodeEnrollment, needsCert: boolean) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const catalog = useQuery({
+    queryKey: ["inbound-templates"],
+    queryFn: () => get<TemplateCatalog>("/inbound-templates"),
+  });
   const [name, setName] = useState("");
+  const [region, setRegion] = useState("");
+  const [addr, setAddr] = useState("");
+  const [rows, setRows] = useState<SpecRow[]>(() => [newRow()]);
+  const [raw, setRaw] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    const body: Record<string, unknown> = {
+      name: name.trim(),
+      install: { origin: location.origin },
+    };
+    if (region.trim()) body.region = region.trim();
+    if (addr.trim()) body.server_addr = addr.trim();
+    let needsCert = false;
+    if (raw !== null) {
+      try {
+        const parsed = JSON.parse(raw) as Inbound[];
+        body.inbounds = parsed;
+        needsCert = Array.isArray(parsed) && needsCertificate(parsed);
+      } catch {
+        setError("入站 JSON 格式错误");
+        return;
+      }
+    } else {
+      const specs = toSpecs(rows);
+      if (typeof specs === "string") {
+        setError(specs);
+        return;
+      }
+      body.templates = specs;
+      needsCert = specs.some(
+        (s) => s.template === "vless_ws_tls" || s.template === "trojan_tls" || (s.template === "vmess_ws" && !!s.tls_domain),
+      );
+    }
+    setBusy(true);
     try {
-      const res = await post<NodeEnrollment>("/nodes", { name: name.trim() });
-      setName("");
-      await onCreated(res);
+      const res = await post<NodeEnrollment>("/nodes", body);
+      await onCreated(res, needsCert);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Create failed");
+      setError(msg(err, "创建失败"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Advanced: start the raw editor from the rendered templates.
+  async function toRaw() {
+    setError(null);
+    const specs = toSpecs(rows);
+    if (typeof specs === "string") {
+      setRaw("[]");
+      return;
+    }
+    try {
+      const r = await post<RenderedInbounds>("/inbound-templates/render", { templates: specs });
+      setRaw(JSON.stringify(r.inbounds, null, 2));
+    } catch (err) {
+      setError(msg(err, "生成 JSON 失败"));
     }
   }
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>New node</CardTitle>
+        <CardTitle>新建节点</CardTitle>
         <CardDescription>
-          Creates the node with a one-time enrollment token. The agent generates its own key; the
-          bootstrap file holds no private key.
+          填写基本信息并选择协议模板，面板会生成入站配置（REALITY 密钥对、shortId 等）。创建后给出一行安装命令。
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <form className="flex flex-wrap items-end gap-3" onSubmit={submit}>
-          <div className="space-y-1.5">
-            <Label htmlFor="nn-name">Name</Label>
-            <Input id="nn-name" value={name} onChange={(e) => setName(e.target.value)} required />
+        <form className="space-y-5" onSubmit={submit}>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="nn-name">名称</Label>
+              <Input
+                id="nn-name"
+                className="w-48"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+                maxLength={64}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="nn-region">地区（用户可见）</Label>
+              <Input
+                id="nn-region"
+                className="w-40"
+                value={region}
+                placeholder="东京"
+                onChange={(e) => setRegion(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="nn-addr">公网地址（IP 或域名）</Label>
+              <Input
+                id="nn-addr"
+                className="w-64"
+                value={addr}
+                placeholder="203.0.113.10 或 node1.example.com"
+                onChange={(e) => setAddr(e.target.value)}
+              />
+            </div>
           </div>
-          <Button type="submit">Create</Button>
+          {raw === null ? (
+            <>
+              <TemplateRows rows={rows} setRows={setRows} catalog={catalog.data} />
+              <Button type="button" variant="ghost" size="sm" onClick={toRaw}>
+                高级：直接编辑入站 JSON
+              </Button>
+            </>
+          ) : (
+            <div className="space-y-2">
+              <Label htmlFor="nn-raw">Xray 入站 JSON（数组）</Label>
+              <textarea
+                id="nn-raw"
+                className="h-64 w-full rounded-lg border border-border bg-card p-3 font-mono text-xs"
+                value={raw}
+                onChange={(e) => setRaw(e.target.value)}
+                spellCheck={false}
+              />
+              <Button type="button" variant="ghost" size="sm" onClick={() => setRaw(null)}>
+                返回模板
+              </Button>
+            </div>
+          )}
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          <div className="flex gap-2">
+            <Button type="submit" disabled={busy}>
+              {busy ? "创建中…" : "创建并生成安装命令"}
+            </Button>
+            <Button type="button" variant="outline" onClick={onCancel}>
+              取消
+            </Button>
+          </div>
         </form>
-        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
       </CardContent>
     </Card>
   );
 }
 
-// The bootstrap file: shown once (the panel keeps only the token's hash).
+// --- install command ---------------------------------------------------------
+
+function CopyLine({ label, text }: { label: string; text: string }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  }
+  return (
+    <div className="space-y-1">
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <div className="flex items-start gap-2">
+        <pre className="flex-1 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted p-3 text-xs">
+          {text}
+        </pre>
+        <Button type="button" variant="outline" size="sm" onClick={copy}>
+          {copied ? "已复制" : "复制"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function useCountdown(until: string): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  return Math.max(0, Math.floor((new Date(until).getTime() - now) / 1000));
+}
+
+function InstallCard({ shown, onClose }: { shown: InstallShown; onClose: () => void }) {
+  const { install } = shown;
+  const left = useCountdown(install.expires_at);
+  const [manual, setManual] = useState(false);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>安装「{shown.name}」</CardTitle>
+        <CardDescription>
+          在节点服务器（Linux，systemd，amd64/arm64）上以 root 执行下面的命令。命令只显示这一次，
+          {left > 0
+            ? `${Math.floor(left / 60)} 分 ${left % 60} 秒后过期`
+            : "已过期，请重新生成"}
+          ；节点注册成功后立即失效。
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <CopyLine label="curl" text={install.command} />
+        {install.command_wget && <CopyLine label="或 wget" text={install.command_wget} />}
+        {install.pin && (
+          <p className="text-xs text-muted-foreground">
+            面板证书不是公共 CA 签发的（例如仅用 IP 部署），命令已固定面板证书公钥（{install.pin}
+            ）：curl 在发送请求前校验它，公钥不符即中止，所以 -k 不会在未校验的情况下生效。面板证书更换后需重新生成命令。
+          </p>
+        )}
+        {install.warnings.length > 0 && (
+          <ul role="alert" className="list-disc space-y-1 pl-5 text-sm text-amber-600">
+            {install.warnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        )}
+        {shown.needsCertificate && (
+          <p className="text-sm text-amber-600">
+            该节点有 TLS 入站：请把证书放在节点的 /etc/akari-agent/tls/fullchain.pem 与 privkey.pem，然后执行
+            systemctl restart akari-agent。
+          </p>
+        )}
+        <p className="text-xs text-muted-foreground">
+          卸载：在节点上执行 <code>{install.uninstall_command}</code>。以 root 登录时可去掉 sudo。
+        </p>
+        {shown.bootstrap && (
+          <div>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setManual(!manual)}>
+              {manual ? "隐藏手动安装" : "手动安装（bootstrap 文件）"}
+            </Button>
+            {manual && <BootstrapBody name={shown.name} bootstrap={shown.bootstrap} />}
+          </div>
+        )}
+        <Button variant="outline" onClick={onClose}>
+          完成
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+function BootstrapBody({ name, bootstrap }: { name: string; bootstrap: string }) {
+  function download() {
+    const url = URL.createObjectURL(new Blob([bootstrap], { type: "application/toml" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${name}-bootstrap.toml`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  return (
+    <div className="mt-2 space-y-2">
+      <p className="text-xs text-muted-foreground">
+        保存为节点上的 /etc/akari-agent/bootstrap.toml（权限 0600），再按部署文档安装 agent 与 systemd 单元。文件只含一次性令牌，不含私钥。
+      </p>
+      <pre className="max-h-64 overflow-auto rounded-lg bg-muted p-3 text-xs">{bootstrap}</pre>
+      <Button type="button" onClick={download}>
+        下载
+      </Button>
+    </div>
+  );
+}
+
+// The bootstrap file (manual path): shown once (only the token's hash is kept).
 function BootstrapCard({
   enrollment,
   onClose,
@@ -272,193 +941,352 @@ function BootstrapCard({
   enrollment: NodeEnrollment;
   onClose: () => void;
 }) {
-  function download() {
-    const url = URL.createObjectURL(new Blob([enrollment.bootstrap], { type: "application/toml" }));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${enrollment.name}-bootstrap.toml`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Bootstrap file for {enrollment.name}</CardTitle>
+        <CardTitle>「{enrollment.name}」的 bootstrap 文件</CardTitle>
         <CardDescription>
-          Shown once. The enrollment token is single use and expires{" "}
-          {new Date(enrollment.expires_at).toLocaleString()}. Install it as{" "}
-          <code>/etc/akari-agent/bootstrap.toml</code> (mode 0600) on the node.
+          只显示这一次。注册令牌单次有效，{new Date(enrollment.expires_at).toLocaleString()} 过期。
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        <pre className="max-h-64 overflow-auto rounded-lg bg-muted p-3 text-xs">
-          {enrollment.bootstrap}
-        </pre>
-        <div className="flex gap-2">
-          <Button onClick={download}>Download</Button>
-          <Button variant="outline" onClick={onClose}>
-            Done
-          </Button>
-        </div>
+        <BootstrapBody name={enrollment.name} bootstrap={enrollment.bootstrap} />
+        <Button variant="outline" onClick={onClose}>
+          完成
+        </Button>
       </CardContent>
     </Card>
   );
 }
 
+// --- editor --------------------------------------------------------------------
+
+function describeInbound(i: Inbound): string {
+  const ss = (i.streamSettings ?? {}) as Record<string, unknown>;
+  const net = typeof ss.network === "string" ? ss.network : "tcp";
+  const sec = typeof ss.security === "string" ? ss.security : "none";
+  const proto = typeof i.protocol === "string" ? i.protocol : "?";
+  return `${proto} · ${net}${sec !== "none" ? ` · ${sec}` : ""}`;
+}
+
 function NodeEditor({ node }: { node: NodeView }) {
   const queryClient = useQueryClient();
-  const [inbounds, setInbounds] = useState(() => JSON.stringify(node.xray_inbounds, null, 2));
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  const catalog = useQuery({
+    queryKey: ["inbound-templates"],
+    queryFn: () => get<TemplateCatalog>("/inbound-templates"),
+  });
 
-  const [userId, setUserId] = useState("");
+  // Basics (own error/state: F4).
+  const [name, setName] = useState(node.name);
   const [serverAddr, setServerAddr] = useState(node.server_addr ?? "");
   const [region, setRegion] = useState(node.region ?? "");
-  const [addrSaved, setAddrSaved] = useState(false);
+  const [basicsMsg, setBasicsMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // Inbounds: the pending list (starts as the stored one).
+  const [pending, setPending] = useState<Inbound[]>(() => node.xray_inbounds);
+  const [adding, setAdding] = useState<SpecRow[] | null>(null);
+  const [raw, setRaw] = useState<string | null>(null);
+  const [inboundMsg, setInboundMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // Manual assignment.
+  const [userId, setUserId] = useState("");
   const [inboundTag, setInboundTag] = useState(node.xray_inbounds[0]?.tag ?? "");
   const [protocol, setProtocol] = useState("vless");
   const [account, setAccount] = useState<GeneratedAccount | null>(null);
   const [assignError, setAssignError] = useState<string | null>(null);
 
-  async function saveServerAddr(e: React.FormEvent) {
+  async function saveBasics(e: React.FormEvent) {
     e.preventDefault();
-    setAddrSaved(false);
+    setBasicsMsg(null);
     try {
       await patch(`/nodes/${node.id}`, {
+        name: name.trim(),
         server_addr: serverAddr.trim() || null,
         region: region.trim() || null,
       });
-      setAddrSaved(true);
+      setBasicsMsg({ ok: true, text: "已保存" });
       await queryClient.invalidateQueries({ queryKey: ["nodes"] });
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : "Save failed");
+      setBasicsMsg({ ok: false, text: msg(err, "保存失败") });
     }
   }
 
-  async function saveInbounds(e: React.FormEvent) {
-    e.preventDefault();
-    setSaveError(null);
-    setSaved(false);
+  async function addFromTemplates() {
+    if (!adding) return;
+    setInboundMsg(null);
+    const specs = toSpecs(adding);
+    if (typeof specs === "string") {
+      setInboundMsg({ ok: false, text: specs });
+      return;
+    }
+    const taken = pending
+      .map((i) => (typeof i.port === "number" ? i.port : Number(i.port)))
+      .filter((p) => Number.isInteger(p));
     try {
-      const parsed = JSON.parse(inbounds) as unknown;
-      await put(`/nodes/${node.id}/inbounds`, { inbounds: parsed });
-      setSaved(true);
-      await queryClient.invalidateQueries({ queryKey: ["nodes"] });
+      const r = await post<RenderedInbounds>("/inbound-templates/render", {
+        templates: specs,
+        taken_ports: taken,
+      });
+      setPending([...pending, ...r.inbounds]);
+      setAdding(null);
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : "Invalid JSON");
+      setInboundMsg({ ok: false, text: msg(err, "生成失败") });
     }
   }
 
-  async function assign(e: React.FormEvent, userId: string) {
+  async function saveInbounds() {
+    setInboundMsg(null);
+    let list = pending;
+    if (raw !== null) {
+      try {
+        list = JSON.parse(raw) as Inbound[];
+      } catch {
+        setInboundMsg({ ok: false, text: "入站 JSON 格式错误" });
+        return;
+      }
+    }
+    const before = new Set(node.xray_inbounds.map((i) => i.tag));
+    const removed = [...before].filter((t) => !list.some((i) => i.tag === t));
+    if (
+      !window.confirm(
+        removed.length > 0
+          ? `保存入站？将移除 ${removed.join("、")}，这些入站上的用户凭据会被删除；节点会重建配置并断开现有连接。`
+          : "保存入站？节点会重建配置并断开现有连接。",
+      )
+    ) {
+      return;
+    }
+    try {
+      await put(`/nodes/${node.id}/inbounds`, { inbounds: list });
+      setPending(list);
+      setRaw(null);
+      setInboundMsg({ ok: true, text: "已下发" });
+      await queryClient.invalidateQueries({ queryKey: ["nodes"] });
+    } catch (err) {
+      setInboundMsg({ ok: false, text: msg(err, "保存失败") });
+    }
+  }
+
+  async function assign(e: React.FormEvent) {
     e.preventDefault();
     setAssignError(null);
     try {
-      const acc = await post<GeneratedAccount>(
-        `/users/${userId}/nodes/${node.id}`,
-        { inbound_tag: inboundTag, protocol },
-      );
+      const acc = await post<GeneratedAccount>(`/users/${userId.trim()}/nodes/${node.id}`, {
+        inbound_tag: inboundTag,
+        protocol,
+      });
       setAccount(acc);
     } catch (err) {
-      setAssignError(err instanceof Error ? err.message : "Assign failed");
+      setAssignError(msg(err, "分配失败"));
     }
   }
 
-  async function unassign(e: React.FormEvent, userId: string) {
-    e.preventDefault();
+  async function unassign() {
     setAssignError(null);
     setAccount(null);
+    if (!userId.trim()) {
+      setAssignError("请填写用户 ID");
+      return;
+    }
+    if (!window.confirm("把该用户从此节点移除？其在此节点上的连接会被断开。")) return;
     try {
-      await del(`/users/${userId}/nodes/${node.id}`);
+      await del(`/users/${userId.trim()}/nodes/${node.id}`);
     } catch (err) {
-      setAssignError(err instanceof Error ? err.message : "Unassign failed");
+      setAssignError(msg(err, "移除失败"));
     }
   }
+
+  const dirty = raw !== null || JSON.stringify(pending) !== JSON.stringify(node.xray_inbounds);
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Configure “{node.name}”</CardTitle>
-        <CardDescription>
-          Inbounds are pushed to the agent as a full snapshot; users re-apply without restarts.
-        </CardDescription>
+        <CardTitle>配置「{node.name}」</CardTitle>
+        <CardDescription>入站变更会以完整快照下发给 agent（重建 xray，断开现有连接）。</CardDescription>
         {node.last_error && (
           <p role="alert" className="mt-2 break-all text-sm text-destructive">
-            Last apply failed
+            最近一次应用失败
             {node.failed_config_version !== null &&
-              ` (cfg ${node.failed_config_version} · usr ${node.failed_user_version})`}
-            {node.last_error_at && ` at ${new Date(node.last_error_at).toLocaleString()}`}:{" "}
+              `（cfg ${node.failed_config_version} · usr ${node.failed_user_version}）`}
+            {node.last_error_at && ` 于 ${new Date(node.last_error_at).toLocaleString()}`}：
             {node.last_error}
           </p>
         )}
+        {node.warnings.length > 0 && (
+          <ul role="alert" className="mt-2 list-disc pl-5 text-sm text-amber-600">
+            {node.warnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        )}
       </CardHeader>
       <CardContent className="space-y-6">
-        <form className="flex flex-wrap items-end gap-3" onSubmit={saveServerAddr}>
+        <form className="flex flex-wrap items-end gap-3" onSubmit={saveBasics}>
           <div className="space-y-1.5">
-            <Label htmlFor="saddr">Public server address</Label>
+            <Label htmlFor="ed-name">名称</Label>
+            <Input
+              id="ed-name"
+              className="w-48"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              maxLength={64}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="saddr">公网地址</Label>
             <Input
               id="saddr"
-              className="w-72"
+              className="w-64"
               value={serverAddr}
               onChange={(e) => setServerAddr(e.target.value)}
               placeholder="node.example.com"
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="region">Region (shown to users)</Label>
+            <Label htmlFor="region">地区（用户可见）</Label>
             <Input
               id="region"
-              className="w-48"
+              className="w-40"
               value={region}
               onChange={(e) => setRegion(e.target.value)}
-              placeholder="Tokyo"
+              placeholder="东京"
             />
           </div>
           <Button variant="outline" type="submit">
-            Save address
+            保存
           </Button>
-          {addrSaved && <span className="text-sm text-emerald-600">saved</span>}
+          {basicsMsg && (
+            <span
+              role={basicsMsg.ok ? "status" : "alert"}
+              className={`text-sm ${basicsMsg.ok ? "text-emerald-600" : "text-destructive"}`}
+            >
+              {basicsMsg.text}
+            </span>
+          )}
         </form>
 
-        <form className="space-y-3" onSubmit={saveInbounds}>
-          <Label htmlFor="inbounds">Xray inbounds JSON</Label>
-          <textarea
-            id="inbounds"
-            className="h-64 w-full rounded-lg border border-border bg-card p-3 font-mono text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            value={inbounds}
-            onChange={(e) => setInbounds(e.target.value)}
-            spellCheck={false}
-          />
+        <div className="space-y-3">
+          <p className="text-sm font-medium">入站</p>
+          {raw === null ? (
+            <>
+              {pending.length === 0 ? (
+                <p className="text-sm text-muted-foreground">没有入站。</p>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>标签</TableHead>
+                      <TableHead>协议</TableHead>
+                      <TableHead>端口</TableHead>
+                      <TableHead className="text-right">操作</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {pending.map((i) => (
+                      <TableRow key={i.tag}>
+                        <TableCell className="font-mono text-xs">{i.tag}</TableCell>
+                        <TableCell>{describeInbound(i)}</TableCell>
+                        <TableCell>{String(i.port ?? "—")}</TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setPending(pending.filter((x) => x.tag !== i.tag))}
+                          >
+                            移除
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+              {adding ? (
+                <div className="space-y-2">
+                  <TemplateRows rows={adding} setRows={setAdding} catalog={catalog.data} />
+                  <div className="flex gap-2">
+                    <Button type="button" size="sm" onClick={addFromTemplates}>
+                      加入列表
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" onClick={() => setAdding(null)}>
+                      取消
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setAdding([newRow("vless_reality", "")])}
+                  >
+                    从模板添加入站
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setRaw(JSON.stringify(pending, null, 2))}
+                  >
+                    高级：编辑 JSON
+                  </Button>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="space-y-2">
+              <Label htmlFor="inbounds">Xray 入站 JSON（数组）</Label>
+              <textarea
+                id="inbounds"
+                className="h-64 w-full rounded-lg border border-border bg-card p-3 font-mono text-xs"
+                value={raw}
+                onChange={(e) => setRaw(e.target.value)}
+                spellCheck={false}
+              />
+              <Button type="button" variant="ghost" size="sm" onClick={() => setRaw(null)}>
+                放弃 JSON 修改
+              </Button>
+            </div>
+          )}
           <div className="flex items-center gap-3">
-            <Button type="submit">Push inbounds</Button>
-            {saved && <span className="text-sm text-emerald-600">pushed</span>}
-            {saveError && <span className="text-sm text-destructive">{saveError}</span>}
+            <Button type="button" disabled={!dirty} onClick={saveInbounds}>
+              保存并下发入站
+            </Button>
+            {inboundMsg && (
+              <span
+                role={inboundMsg.ok ? "status" : "alert"}
+                className={`text-sm ${inboundMsg.ok ? "text-emerald-600" : "text-destructive"}`}
+              >
+                {inboundMsg.text}
+              </span>
+            )}
           </div>
-        </form>
+        </div>
 
         <div className="rounded-lg border border-border p-4">
-          <p className="mb-1 text-sm font-medium">Manual override: issue an account for a user on this node</p>
+          <p className="mb-1 text-sm font-medium">手动分配（覆盖套餐）</p>
           <p className="mb-3 text-xs text-muted-foreground">
-            Normally access comes from the user&apos;s plan (Plans → node groups). A manual
-            assignment pins this user&apos;s access on this node regardless of their plan;
-            removing it hands the node back to the plan.
+            通常用户的节点权限来自套餐（套餐 → 节点组）。手动分配会在此节点上固定该用户的权限，与套餐无关；移除后交还给套餐。
           </p>
-          <form className="flex flex-wrap items-end gap-3" onSubmit={(e) => assign(e, userId)}>
+          <form className="flex flex-wrap items-end gap-3" onSubmit={assign}>
             <div className="space-y-1.5">
-              <Label htmlFor="uid">User ID</Label>
+              <Label htmlFor="uid">用户 ID</Label>
               <Input
                 id="uid"
                 className="w-72 font-mono text-xs"
                 value={userId}
                 onChange={(e) => setUserId(e.target.value)}
-                placeholder="user uuid"
+                placeholder="用户 UUID"
                 required
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="itag">Inbound</Label>
+              <Label htmlFor="itag">入站</Label>
               <select
                 id="itag"
-                className="h-9 rounded-lg border border-border bg-card px-3 text-sm"
+                className={selectCls}
                 value={inboundTag}
                 onChange={(e) => setInboundTag(e.target.value)}
               >
@@ -470,10 +1298,10 @@ function NodeEditor({ node }: { node: NodeView }) {
               </select>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="proto">Protocol</Label>
+              <Label htmlFor="proto">协议</Label>
               <select
                 id="proto"
-                className="h-9 rounded-lg border border-border bg-card px-3 text-sm"
+                className={selectCls}
                 value={protocol}
                 onChange={(e) => setProtocol(e.target.value)}
               >
@@ -482,21 +1310,21 @@ function NodeEditor({ node }: { node: NodeView }) {
                 <option value="trojan">trojan</option>
               </select>
             </div>
-            <Button type="submit">Generate &amp; assign</Button>
+            <Button type="submit">生成并分配</Button>
+            <Button type="button" variant="outline" onClick={unassign}>
+              从节点移除该用户
+            </Button>
           </form>
-          {assignError && <p className="mt-2 text-sm text-destructive">{assignError}</p>}
+          {assignError && (
+            <p role="alert" className="mt-2 text-sm text-destructive">
+              {assignError}
+            </p>
+          )}
           {account && (
             <pre className="mt-3 overflow-auto rounded-lg bg-muted p-3 text-xs">
               {JSON.stringify(account, null, 2)}
             </pre>
           )}
-          <div className="mt-3">
-            <form className="flex items-end gap-3" onSubmit={(e) => unassign(e, userId)}>
-              <Button variant="outline" size="sm" type="submit">
-                Remove user from node
-              </Button>
-            </form>
-          </div>
         </div>
       </CardContent>
     </Card>
