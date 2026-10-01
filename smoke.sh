@@ -870,91 +870,6 @@ python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); assert d['e
 [ "$(code -b "$UJAR" "$BASE/api/v1/audit")" = "403" ] || { echo "FAIL: non-admin read the audit log"; exit 1; }
 echo "audit: ok"
 
-echo "== S4-2 sessions: revoke-sessions, last admin, logout kills copies of the cookie =="
-[ "$(code -b "$JAR" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: me failed"; exit 1; }
-ROOT_ID=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
-[ "$(patch_code "$BASE/api/v1/users/$ROOT_ID" '{"enabled": false}')" = "409" ] || { echo "FAIL: last admin disable not 409"; exit 1; }
-[ "$(patch_code "$BASE/api/v1/users/$ROOT_ID" '{"role": "user"}')" = "409" ] || { echo "FAIL: last admin demote not 409"; exit 1; }
-[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$ROOT_ID")" = "409" ] || { echo "FAIL: last admin delete not 409"; exit 1; }
-JAR2="$LOG/cookies2"
-# Second session via a recovery code (single use).
-RC1=$(sed -n 1p "$LOG/recovery")
-[ "$(code -c "$JAR2" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
-    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\",\"code\":\"$RC1\"}")" = "200" ] || { echo "FAIL: second login (recovery code)"; exit 1; }
-[ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
-    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\",\"code\":\"$RC1\"}")" = "401" ] || { echo "FAIL: recovery code reused"; exit 1; }
-[ "$(code -b "$JAR2" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: second session"; exit 1; }
-[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$ROOT_ID/revoke-sessions")" = "204" ] || { echo "FAIL: revoke-sessions"; exit 1; }
-[ "$(code -b "$JAR2" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: revoked session still works"; exit 1; }
-[ "$(code -b "$JAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: own session survived revoke-sessions"; exit 1; }
-[ "$(login_root "$(sed -n 2p "$LOG/recovery")")" = "200" ] || { echo "FAIL: login after revoke"; exit 1; }
-cp "$JAR" "$LOG/stolen-cookies"
-[ "$(code -b "$JAR" -c "$JAR" -X POST "$BASE/auth/logout")" = "200" ] || { echo "FAIL: logout failed"; exit 1; }
-[ "$(code -b "$JAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: me after logout not 401"; exit 1; }
-[ "$(code -b "$LOG/stolen-cookies" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: a copy of the cookie survived logout"; exit 1; }
-echo "sessions: ok"
-
-echo "== M1-6/M1-9 CLI: reset-2fa, rotate-jwt =="
-[ "$(login_root "$(totp)")" = "200" ] || { echo "FAIL: TOTP login before reset"; exit 1; }
-"$PANEL" admin reset-2fa root >"$LOG/reset.out"
-grep -q "reset" "$LOG/reset.out" || { echo "FAIL: CLI reset-2fa"; exit 1; }
-grep -qE '^  [A-Z2-7]{4}(-[A-Z2-7]{1,4})+$' "$LOG/reset.out" || { echo "FAIL: reset-2fa printed no new enrollment code"; exit 1; }
-[ "$(code -b "$JAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: session survived reset-2fa"; exit 1; }
-[ "$(code -c "$JAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
-    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "200" ] && grep -q '"stage":"enroll"' /tmp/akari-smoke/last \
-  || { echo "FAIL: after reset-2fa the admin must re-enroll"; exit 1; }
-[ "$(code -b "$UJAR" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: user session before rotate-jwt"; exit 1; }
-"$PANEL" secrets rotate-jwt | grep -q "revoked" || { echo "FAIL: CLI rotate-jwt"; exit 1; }
-[ "$(code -b "$UJAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: session survived rotate-jwt"; exit 1; }
-[ "$(psql_q "SELECT count(*) FROM audit_log WHERE actor_login = 'cli' AND action IN ('user.totp.reset', 'secrets.rotate_jwt')")" = "2" ] \
-  || { echo "FAIL: CLI secret actions not audited"; exit 1; }
-echo "cli 2fa/jwt: ok"
-
-echo "== root + healthz =="
-[ "$(code http://127.0.0.1:8080/)" = "404" ] || { echo "FAIL: / not 404"; exit 1; }
-[ "$(code http://127.0.0.1:8080/definitely-not-here)" = "404" ] || { echo "FAIL: junk not 404"; exit 1; }
-[ "$(code "$BASE/healthz")" = "200" ] || { echo "FAIL: healthz not 200"; exit 1; }
-
-echo "== M1-3/M1-4: config check, version, metrics listener, request id =="
-"$PANEL" -c "$LOG/panel.toml" config check >"$LOG/config-check.out" 2>&1 \
-  || { echo "FAIL: config check on the smoke config"; cat "$LOG/config-check.out"; exit 1; }
-grep -q 'configuration OK' "$LOG/config-check.out" || { echo "FAIL: config check output"; exit 1; }
-printf '[grpc]\nlease_seconds = 5\n' >"$LOG/bad.toml"
-"$PANEL" -c "$LOG/bad.toml" config check >"$LOG/bad.out" 2>&1 \
-  && { echo "FAIL: invalid config accepted"; exit 1; }
-grep -q 'lease_seconds' "$LOG/bad.out" || { echo "FAIL: invalid config error not readable"; cat "$LOG/bad.out"; exit 1; }
-# AKARI_CONFIG replaces -c (compose run/exec drop the service command).
-AKARI_CONFIG="$LOG/bad.toml" "$PANEL" config check >"$LOG/bad-env.out" 2>&1 \
-  && { echo "FAIL: AKARI_CONFIG ignored (invalid config accepted)"; exit 1; }
-grep -q 'lease_seconds' "$LOG/bad-env.out" || { echo "FAIL: AKARI_CONFIG not honored"; cat "$LOG/bad-env.out"; exit 1; }
-"$PANEL" --version | grep -Eq '^akari [0-9]+\.[0-9]+\.[0-9]+ \(([0-9a-f]+|unknown)\)' \
-  || { echo "FAIL: akari --version"; exit 1; }
-# Metrics live on their own listener only; the public port has no /metrics.
-for probe in "http://127.0.0.1:8080/metrics" "$BASE/metrics"; do
-  [ "$(fp "$probe")" = "$REJ" ] || { echo "FAIL: /metrics reachable on the web port: $probe"; exit 1; }
-done
-curl -s --noproxy '*' "http://127.0.0.1:9109/metrics" >"$LOG/metrics.txt"
-for m in akari_build_info akari_agents_connected akari_sync_sent_total akari_acks_total \
-         akari_traffic_flush_duration_seconds_count akari_login_attempts_total; do
-  grep -q "^$m" "$LOG/metrics.txt" || { echo "FAIL: metric $m missing"; exit 1; }
-done
-grep -q 'route="/{prefix}/healthz"' "$LOG/metrics.txt" || { echo "FAIL: route template label missing"; exit 1; }
-grep -q "$PREFIX" "$LOG/metrics.txt" && { echo "FAIL: route prefix leaked into metrics"; exit 1; }
-grep -qF "$NEW_TOKEN" "$LOG/metrics.txt" && { echo "FAIL: a subscription token leaked into metrics"; exit 1; }
-grep -q 'route="/{prefix}/sub/{token}"' "$LOG/metrics.txt" || { echo "FAIL: subscription route not labelled by template"; exit 1; }
-[ "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' http://127.0.0.1:9109/)" = "404" ] \
-  || { echo "FAIL: metrics listener serves more than /metrics"; exit 1; }
-# Request IDs: accepted requests get one (a valid incoming id is echoed);
-# rejections get no header at all (byte-identical, checked above).
-curl -s --noproxy '*' -D - -o /dev/null "$BASE/healthz" | grep -qi '^x-request-id: [0-9a-f]\{32\}' \
-  || { echo "FAIL: no minted request id on a real response"; exit 1; }
-curl -s --noproxy '*' -D - -o /dev/null -H 'X-Request-Id: smoke-req-1' "$BASE/healthz" | grep -qi '^x-request-id: smoke-req-1' \
-  || { echo "FAIL: incoming request id not echoed"; exit 1; }
-curl -s --noproxy '*' -D - -o /dev/null -H 'X-Request-Id: smoke-req-1' "$BASE/nope" | grep -qi '^x-request-id' \
-  && { echo "FAIL: request id on a rejection"; exit 1; }
-[ "$(fp -H 'X-Request-Id: smoke-req-1' "$BASE/nope")" = "$REJ" ] || { echo "FAIL: rejection differs with a request id"; exit 1; }
-echo "m1a: ok"
-
 echo "== M6 signed agent self-update: staged rollout, health gate, automatic rollback =="
 AD="${AGENT_DIR:-../akari-agent}"
 UPD="$LOG/upd"
@@ -1072,6 +987,91 @@ cleanup_upd
 wait "$UPD_LOOP" 2>/dev/null || true
 UPD_LOOP=""
 echo "m6 self-update: ok (v900.0.0 -> v900.0.1 healthy; broken v900.0.2 rolled back, rollout halted)"
+
+echo "== S4-2 sessions: revoke-sessions, last admin, logout kills copies of the cookie =="
+[ "$(code -b "$JAR" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: me failed"; exit 1; }
+ROOT_ID=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
+[ "$(patch_code "$BASE/api/v1/users/$ROOT_ID" '{"enabled": false}')" = "409" ] || { echo "FAIL: last admin disable not 409"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/users/$ROOT_ID" '{"role": "user"}')" = "409" ] || { echo "FAIL: last admin demote not 409"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$ROOT_ID")" = "409" ] || { echo "FAIL: last admin delete not 409"; exit 1; }
+JAR2="$LOG/cookies2"
+# Second session via a recovery code (single use).
+RC1=$(sed -n 1p "$LOG/recovery")
+[ "$(code -c "$JAR2" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\",\"code\":\"$RC1\"}")" = "200" ] || { echo "FAIL: second login (recovery code)"; exit 1; }
+[ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\",\"code\":\"$RC1\"}")" = "401" ] || { echo "FAIL: recovery code reused"; exit 1; }
+[ "$(code -b "$JAR2" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: second session"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$ROOT_ID/revoke-sessions")" = "204" ] || { echo "FAIL: revoke-sessions"; exit 1; }
+[ "$(code -b "$JAR2" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: revoked session still works"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: own session survived revoke-sessions"; exit 1; }
+[ "$(login_root "$(sed -n 2p "$LOG/recovery")")" = "200" ] || { echo "FAIL: login after revoke"; exit 1; }
+cp "$JAR" "$LOG/stolen-cookies"
+[ "$(code -b "$JAR" -c "$JAR" -X POST "$BASE/auth/logout")" = "200" ] || { echo "FAIL: logout failed"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: me after logout not 401"; exit 1; }
+[ "$(code -b "$LOG/stolen-cookies" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: a copy of the cookie survived logout"; exit 1; }
+echo "sessions: ok"
+
+echo "== M1-6/M1-9 CLI: reset-2fa, rotate-jwt =="
+[ "$(login_root "$(totp)")" = "200" ] || { echo "FAIL: TOTP login before reset"; exit 1; }
+"$PANEL" admin reset-2fa root >"$LOG/reset.out"
+grep -q "reset" "$LOG/reset.out" || { echo "FAIL: CLI reset-2fa"; exit 1; }
+grep -qE '^  [A-Z2-7]{4}(-[A-Z2-7]{1,4})+$' "$LOG/reset.out" || { echo "FAIL: reset-2fa printed no new enrollment code"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: session survived reset-2fa"; exit 1; }
+[ "$(code -c "$JAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "200" ] && grep -q '"stage":"enroll"' /tmp/akari-smoke/last \
+  || { echo "FAIL: after reset-2fa the admin must re-enroll"; exit 1; }
+[ "$(code -b "$UJAR" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: user session before rotate-jwt"; exit 1; }
+"$PANEL" secrets rotate-jwt | grep -q "revoked" || { echo "FAIL: CLI rotate-jwt"; exit 1; }
+[ "$(code -b "$UJAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: session survived rotate-jwt"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE actor_login = 'cli' AND action IN ('user.totp.reset', 'secrets.rotate_jwt')")" = "2" ] \
+  || { echo "FAIL: CLI secret actions not audited"; exit 1; }
+echo "cli 2fa/jwt: ok"
+
+echo "== root + healthz =="
+[ "$(code http://127.0.0.1:8080/)" = "404" ] || { echo "FAIL: / not 404"; exit 1; }
+[ "$(code http://127.0.0.1:8080/definitely-not-here)" = "404" ] || { echo "FAIL: junk not 404"; exit 1; }
+[ "$(code "$BASE/healthz")" = "200" ] || { echo "FAIL: healthz not 200"; exit 1; }
+
+echo "== M1-3/M1-4: config check, version, metrics listener, request id =="
+"$PANEL" -c "$LOG/panel.toml" config check >"$LOG/config-check.out" 2>&1 \
+  || { echo "FAIL: config check on the smoke config"; cat "$LOG/config-check.out"; exit 1; }
+grep -q 'configuration OK' "$LOG/config-check.out" || { echo "FAIL: config check output"; exit 1; }
+printf '[grpc]\nlease_seconds = 5\n' >"$LOG/bad.toml"
+"$PANEL" -c "$LOG/bad.toml" config check >"$LOG/bad.out" 2>&1 \
+  && { echo "FAIL: invalid config accepted"; exit 1; }
+grep -q 'lease_seconds' "$LOG/bad.out" || { echo "FAIL: invalid config error not readable"; cat "$LOG/bad.out"; exit 1; }
+# AKARI_CONFIG replaces -c (compose run/exec drop the service command).
+AKARI_CONFIG="$LOG/bad.toml" "$PANEL" config check >"$LOG/bad-env.out" 2>&1 \
+  && { echo "FAIL: AKARI_CONFIG ignored (invalid config accepted)"; exit 1; }
+grep -q 'lease_seconds' "$LOG/bad-env.out" || { echo "FAIL: AKARI_CONFIG not honored"; cat "$LOG/bad-env.out"; exit 1; }
+"$PANEL" --version | grep -Eq '^akari [0-9]+\.[0-9]+\.[0-9]+ \(([0-9a-f]+|unknown)\)' \
+  || { echo "FAIL: akari --version"; exit 1; }
+# Metrics live on their own listener only; the public port has no /metrics.
+for probe in "http://127.0.0.1:8080/metrics" "$BASE/metrics"; do
+  [ "$(fp "$probe")" = "$REJ" ] || { echo "FAIL: /metrics reachable on the web port: $probe"; exit 1; }
+done
+curl -s --noproxy '*' "http://127.0.0.1:9109/metrics" >"$LOG/metrics.txt"
+for m in akari_build_info akari_agents_connected akari_sync_sent_total akari_acks_total \
+         akari_traffic_flush_duration_seconds_count akari_login_attempts_total; do
+  grep -q "^$m" "$LOG/metrics.txt" || { echo "FAIL: metric $m missing"; exit 1; }
+done
+grep -q 'route="/{prefix}/healthz"' "$LOG/metrics.txt" || { echo "FAIL: route template label missing"; exit 1; }
+grep -q "$PREFIX" "$LOG/metrics.txt" && { echo "FAIL: route prefix leaked into metrics"; exit 1; }
+grep -qF "$NEW_TOKEN" "$LOG/metrics.txt" && { echo "FAIL: a subscription token leaked into metrics"; exit 1; }
+grep -q 'route="/{prefix}/sub/{token}"' "$LOG/metrics.txt" || { echo "FAIL: subscription route not labelled by template"; exit 1; }
+[ "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' http://127.0.0.1:9109/)" = "404" ] \
+  || { echo "FAIL: metrics listener serves more than /metrics"; exit 1; }
+# Request IDs: accepted requests get one (a valid incoming id is echoed);
+# rejections get no header at all (byte-identical, checked above).
+curl -s --noproxy '*' -D - -o /dev/null "$BASE/healthz" | grep -qi '^x-request-id: [0-9a-f]\{32\}' \
+  || { echo "FAIL: no minted request id on a real response"; exit 1; }
+curl -s --noproxy '*' -D - -o /dev/null -H 'X-Request-Id: smoke-req-1' "$BASE/healthz" | grep -qi '^x-request-id: smoke-req-1' \
+  || { echo "FAIL: incoming request id not echoed"; exit 1; }
+curl -s --noproxy '*' -D - -o /dev/null -H 'X-Request-Id: smoke-req-1' "$BASE/nope" | grep -qi '^x-request-id' \
+  && { echo "FAIL: request id on a rejection"; exit 1; }
+[ "$(fp -H 'X-Request-Id: smoke-req-1' "$BASE/nope")" = "$REJ" ] || { echo "FAIL: rejection differs with a request id"; exit 1; }
+echo "m1a: ok"
 
 echo "== SPA =="
 [ "$(code "$BASE/app")" = "200" ] || { echo "FAIL: /app not 200"; exit 1; }
