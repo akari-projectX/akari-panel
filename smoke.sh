@@ -150,7 +150,13 @@ PY
 "$PANEL" -c "$LOG/panel.toml" serve >"$LOG/panel.log" 2>&1 &
 PANEL_PID=$!
 trap 'cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} $MOCK_PID 2>/dev/null || true' EXIT
-sleep 2
+# Poll instead of a fixed sleep: migrations run before the listener binds.
+for _ in $(seq 1 100); do
+  (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null && break
+  kill -0 "$PANEL_PID" 2>/dev/null || { echo "FAIL: panel exited during startup"; cat "$LOG/panel.log"; exit 1; }
+  sleep 0.3
+done
+(exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null || { echo "FAIL: panel not listening"; cat "$LOG/panel.log"; exit 1; }
 
 # Reset AFTER startup: fresh volumes have no tables until the panel migrates,
 # and Valkey rate-limit counters would poison the next run's login test.
