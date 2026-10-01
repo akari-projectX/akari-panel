@@ -1,6 +1,6 @@
 AGENT_DIR ?= ../akari-agent
 
-.PHONY: dev-up dev-down spa panel agent-build check smoke lint test deny ci
+.PHONY: dev-up dev-down spa panel agent-build check smoke lint test deny ci bench bench-seed bench-lint
 
 dev-up:
 	docker compose up -d --wait
@@ -39,3 +39,15 @@ deny:
 	cargo deny check
 
 ci: lint test deny check
+
+# --- M2 benchmarks and load tooling (bench/, docs/PERF.md) ----------------
+# Own crate and lockfile: nothing here reaches the release binary. DB
+# benches need the seeded bench database (its own database, akari_bench).
+bench-seed:
+	cargo run --release --manifest-path bench/Cargo.toml -- seed --reset
+
+bench:
+	cargo bench --manifest-path bench/Cargo.toml --bench panel
+
+bench-lint:
+	cd bench && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings
