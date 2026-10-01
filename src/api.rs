@@ -905,6 +905,9 @@ async fn apply_delete_user(
     actor: &Actor,
     id: Uuid,
 ) -> Result<Vec<Uuid>, ApiError> {
+    // Global lock order: entitlement lock first (a concurrent reconcile
+    // holds it while locking nodes), then nodes, then the user row.
+    crate::entitle::lock(conn).await?;
     lock_user_nodes(conn, id).await?;
     let before: Option<serde_json::Value> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT {} FROM users u WHERE id = $1 FOR UPDATE",
