@@ -321,6 +321,70 @@ to agents below `MIN_AGENT_PROTOCOL`. (M1c: protocol 2 agents work with older pa
 then fails with "unimplemented" and is retried hourly; certificates from before M1c are valid for
 2 years.) The agent unit file gained `StateDirectory=` in M1c: install the new one with the agent.
 
+## 5b. Agent updates (M6: signed self-update, staged rollout)
+
+Agents of protocol 3 can be updated from the panel. The panel only **relays**: an agent runs a
+new binary only if its manifest is signed by a release key **compiled into the agent**
+(`release-keys.txt` in akari-agent), the platform matches, and the version is newer than what
+runs (a signed `rollback` manifest is the only way down, and never to a version the node already
+rolled back from). A compromised panel can withhold or delay updates; it cannot push an unsigned,
+foreign or older binary. Protocol 1/2 agents are never offered anything (update them by hand once).
+
+**Release key custody.** One Ed25519 key, generated and kept OFFLINE (not on the panel, not on a
+build host): `go run ./cmd/akari-sign keygen -out release.key` in akari-agent prints the public
+line for `release-keys.txt`. Keep `release.key` on encrypted offline media with a second copy;
+whoever holds it can update every node. The agent release workflow signs manifests only if the
+repository secret `AKARI_RELEASE_SIGNING_KEY` holds the key (otherwise the release has no
+manifests, with a warning) and checks them against `release-keys.txt` before publishing.
+Rotation: add the next public key to `release-keys.txt` and release (agents pin both); sign the
+following releases with both keys (`akari-sign countersign`); once every node runs a build that
+pins the next key, remove the old one. A lost or leaked key needs a manual agent release with a
+new key set on every node.
+
+**Panel config.** Trust the same keys (early refusal of wrong uploads; agents check again):
+```toml
+[updates]
+release_keys = ["<base64 public key> release-2026"]   # the lines of release-keys.txt
+max_concurrent_downloads = 8                           # FetchArtifact streams per instance
+```
+
+**Publish a release** (Updates view, or the API): upload `akari-agent-linux-<arch>` with its
+`.manifest.json` and `.manifest.sig` from the GitHub release (verify it first, see "Verify a
+release"). The binary is stored in PostgreSQL (1 MiB rows, every panel instance can serve it;
+mind the backup size) and agents download it over their existing mTLS gRPC connection
+(`AgentChannel.FetchArtifact`): nodes need no extra egress.
+```bash
+curl -b cookies -H 'Content-Type: application/json' -X POST "$BASE/api/v1/agent-releases" \
+  -d "$(jq -n --rawfile m akari-agent-linux-amd64.manifest.json --slurpfile s akari-agent-linux-amd64.manifest.sig '{manifest:$m, sig:$s[0]}')"
+curl -b cookies -X PUT --data-binary @akari-agent-linux-amd64 "$BASE/api/v1/agent-releases/<id>/binary"
+```
+
+**Roll out** (`POST /api/v1/rollouts {version, percentage?, node_ids?, waves?, health_timeout_secs?,
+max_failure_ratio?}`; defaults 100 %, all enrolled nodes, `[100]`, 600 s, 0.2). Waves are
+cumulative percentages of the selection (e.g. `[10, 50, 100]`) in a fixed random order; the next
+wave starts once every node of the current one is healthy, failed or skipped. A node is
+**healthy** when it reconnects with the new version and acks its configuration within the
+timeout; **failed** when the agent rejects the offer, the download/verification fails, it rolls
+back, or the timeout passes; **skipped** when it cannot be offered (protocol < 3, no artifact for
+its platform, development build, offline for the whole timeout). The rollout **halts** when
+failed / (healthy + failed) > `max_failure_ratio`; a halted rollout can only be aborted. Pause
+stops new offers (in-flight updates finish). Every action and every automatic transition is in
+the audit log (`agent_release.*`, `rollout.*`; automatic ones with actor `system`).
+
+**On the node** (no unit change needed; the installed binary stays the launcher):
+- the agent downloads into `$STATE_DIRECTORY/update/bin/`, checks size, SHA-256, signature and
+  version policy, stops xray (live connections drop once, as with any restart), persists its
+  final traffic counters (`update/finals.json`, resent by the next process), then **replaces
+  its process image** with the new binary (same PID; systemd sees no restart);
+- the new binary is on probation: it must connect and get an apply acknowledged within
+  `-update-self-check` (default 5 min), or it execs the previous binary again;
+- if it crashes instead, systemd (`Restart=always`) starts the installed binary, which execs the
+  staged one again and counts boots; after `-update-max-boots` (default 3) it goes back to the
+  previous binary. Either way the version is marked failed on that node and reported
+  (`ROLLED_BACK`), which fails the node in the rollout;
+- installing a newer agent package by hand wins over staged binaries (they are dropped).
+- `akari-agent -release-keys` prints the pinned keys ("no release keys pinned" = self-update off).
+
 ## 6. Rollback
 
 Agents are backward-tolerant, so roll back the **panel** first: previous image tag / binary, restart.

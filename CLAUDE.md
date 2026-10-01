@@ -63,6 +63,7 @@ make smoke         # 全量构建 + smoke.sh（会 TRUNCATE PG、flushall Valkey
 - **请求路径即秘密**：前缀与订阅 token 不得出现在任何日志/trace/指标标签中，记录路径一律用 `web::redacted_path`（或匹配到的路由模板）。
 - **管理员首次 2FA 注册码（M1c）**：admin 激活 TOTP（`/me/totp/confirm`）除当前验证码外还需一次性注册码（`akari admin add`/`admin reset-2fa` 打印、API 建 admin/重置 2FA 时只返回一次；128-bit，存 SHA-256(user id‖码)，24h，激活事务内消费），错误统一 400 "invalid code" 并计入登录限速。
 - **性能（M2）**：达标数字与复现步骤在 `docs/PERF.md`（flush 5 万行 0.91s 余量只有约 9%，改 `traffic::FLUSH_SQL`/`write_rows` 前后都跑 `make bench`；快照 10k 用户 43ms；管理 API/订阅 p99 见 PERF）。`traffic_counters` 保留任务（`traffic::retention_pass`，reaper 循环）只删可证明已死的会话行，见 `src/CLAUDE.md`/`migrations/CLAUDE.md`；`AuthUser` 每请求一次索引查询（约 0.4ms），**不加缓存**——吊销必须在下一次请求、所有实例上生效（`akari-bench multi` 断言）。多实例参考拓扑在 `docs/DEPLOY.md`。
+- **agent 自更新（M6，`updates.rs`/`rollout.rs`）**：信任根是**编译进 agent 的** Ed25519 发布公钥（akari-agent `release-keys.txt`），面板只是中继——面板被攻破也只能扣住/延迟更新，不能推未签名、异平台或降级的二进制（降级仅限签名的 `rollback` manifest，且节点已回滚过的版本永不再接受）。面板用 `updates.release_keys` 再验一遍（提前拒绝，不是安全边界）；manifest 字节原样存储与下发，**不得重新序列化**。二进制按 1 MiB 存 `agent_release_chunks`（任意实例可服务），下载走现有 mTLS 的 `AgentChannel.FetchArtifact`（需已验证客户端证书、已删除节点拒绝、每实例并发 `updates.max_concurrent_downloads`）。协议门：只给 `protocol_version >= 3` 的 agent 发 `UpdateOffer`（1/2 照常服务，永不收到 offer，rollout 中记为 skipped）。健康门是面板自己的：节点以目标版本重新 Hello 且本流有 ok Ack；agent 的 REJECTED/FAILED/ROLLED_BACK 立即判失败；超时判失败；失败比 > 阈值自动 halt（halted 只能 abort）；至多一个未结束 rollout（唯一索引）；所有状态变更同事务审计（自动的用 actor `system`），advisory lock `akari.rollout` 串行化。
 - 验收门：`make check` 与 `make smoke` 全绿；新 API 必须在 smoke.sh 加断言。
 
 ## 已知问题
