@@ -415,6 +415,102 @@ async fn regenerate_inner(
     Ok(Some(codes))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChangePasswordReq {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+/// POST /api/v1/me/password {current_password, new_password} (full
+/// session, any role): change your own password. The current password is
+/// required; a wrong one is 400 "invalid password" and counts against the
+/// login rate limit of the account and the client address. In one
+/// transaction: new hash (the 0009 trigger bumps session_ver, ending every
+/// other session of the account), audit row. This session continues with
+/// a fresh cookie.
+pub async fn change_own_password(
+    State(state): State<AppState>,
+    user: AuthUser,
+    jar: CookieJar,
+    ApiJson(req): ApiJson<ChangePasswordReq>,
+) -> Result<(CookieJar, axum::http::StatusCode), ApiError> {
+    if req.new_password.len() < 8 {
+        return Err(ApiError::bad_request(
+            "password must be at least 8 characters",
+        ));
+    }
+    let bucket = user
+        .ip
+        .map(crate::client_ip::bucket)
+        .unwrap_or_else(|| "unknown".into());
+    let attempt = crate::login_limit::Attempt::reserve(&state, &bucket, &user.login)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "login rate limit unavailable");
+            ApiError::internal()
+        })?
+        .ok_or_else(ApiError::too_many)?;
+    match change_password_inner(&state, &user, &req).await {
+        Ok(Some((role, sv))) => {
+            attempt.release(&state).await;
+            let token = auth::issue_token(&state, user.id, &role, sv, Stage::Full)?;
+            Ok((
+                jar.add(auth::session_cookie(&state, token, Stage::Full)),
+                axum::http::StatusCode::NO_CONTENT,
+            ))
+        }
+        Ok(None) => {
+            attempt.fail();
+            Err(ApiError::bad_request("invalid password"))
+        }
+        Err(e) => {
+            attempt.release(&state).await;
+            Err(e)
+        }
+    }
+}
+
+/// None = wrong current password.
+async fn change_password_inner(
+    state: &AppState,
+    user: &AuthUser,
+    req: &ChangePasswordReq,
+) -> Result<Option<(String, i64)>, ApiError> {
+    let mut tx = state.pg().begin().await?;
+    let hash: Option<Option<String>> =
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1 FOR UPDATE")
+            .bind(user.id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some(hash) = hash else {
+        return Err(ApiError::unauthorized());
+    };
+    if !auth::verify_password(&req.current_password, hash.as_deref().unwrap_or_default()) {
+        return Ok(None);
+    }
+    let new_hash = auth::hash_password(&req.new_password)?;
+    let (role, sv): (String, i64) = sqlx::query_as(
+        "UPDATE users SET password_hash = $2 WHERE id = $1 RETURNING role, session_ver",
+    )
+    .bind(user.id)
+    .bind(&new_hash)
+    .fetch_one(&mut *tx)
+    .await?;
+    crate::audit::record(
+        &mut tx,
+        &Actor::of(user),
+        "user.password.change",
+        "user",
+        Some(user.id.to_string()),
+        None,
+        Some(json!({ "password": crate::audit::CHANGED, "self_service": true })),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Some((role, sv)))
+}
+
 /// Self-service subscription token regenerations per account per hour.
 pub const SUB_TOKEN_PER_HOUR: i64 = 5;
 

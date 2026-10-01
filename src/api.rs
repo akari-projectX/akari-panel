@@ -465,13 +465,25 @@ pub struct UserView {
     created_at: DateTime<Utc>,
     /// Active TOTP second factor (mandatory for admins).
     totp_enabled: bool,
+    /// Why the account is disabled: admin | quota | expiry (null = enabled).
+    disabled_reason: Option<String>,
+    /// M3: the active plan (null = none) and the next traffic reset.
+    plan_id: Option<Uuid>,
+    plan_name: Option<String>,
+    next_reset_at: Option<DateTime<Utc>>,
 }
 
 /// UserView columns (alias `users` table as itself).
 pub const USER_VIEW_COLS: &str =
     "id, login, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, \
      EXISTS (SELECT 1 FROM user_totp t WHERE t.user_id = users.id AND t.enabled_at IS NOT NULL) \
-     AS totp_enabled";
+     AS totp_enabled, disabled_reason::text AS disabled_reason, \
+     (SELECT up.plan_id FROM user_plans up WHERE up.user_id = users.id AND up.status = 'active') \
+     AS plan_id, \
+     (SELECT p.name FROM user_plans up JOIN plans p ON p.id = up.plan_id \
+      WHERE up.user_id = users.id AND up.status = 'active') AS plan_name, \
+     (SELECT up.next_reset_at FROM user_plans up \
+      WHERE up.user_id = users.id AND up.status = 'active') AS next_reset_at";
 
 #[derive(Deserialize)]
 pub struct Pagination {
@@ -550,7 +562,8 @@ pub async fn create_user(
         "INSERT INTO users (id, login, password_hash, role, traffic_limit_bytes, expires_at, sub_token_hash) \
          VALUES ($1, $2, $3, $4, $5, $6, $7) \
          RETURNING id, login, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, \
-         created_at, false AS totp_enabled",
+         created_at, false AS totp_enabled, disabled_reason::text AS disabled_reason, \
+         NULL::uuid AS plan_id, NULL::text AS plan_name, NULL::timestamptz AS next_reset_at",
     )
     .bind(id)
     .bind(&req.login)
@@ -649,7 +662,7 @@ where
 }
 
 /// PATCH field that distinguishes "absent" (None) from "null" (Some(None)).
-fn double_option<'de, T, D>(d: D) -> Result<Option<Option<T>>, D::Error>
+pub(crate) fn double_option<'de, T, D>(d: D) -> Result<Option<Option<T>>, D::Error>
 where
     T: Deserialize<'de>,
     D: serde::Deserializer<'de>,
@@ -658,7 +671,10 @@ where
 }
 
 /// A PATCH field that may not be null.
-fn non_null<T: Clone>(field: &str, v: &Option<Option<T>>) -> Result<Option<T>, ApiError> {
+pub(crate) fn non_null<T: Clone>(
+    field: &str,
+    v: &Option<Option<T>>,
+) -> Result<Option<T>, ApiError> {
     match v {
         None => Ok(None),
         Some(None) => Err(ApiError::bad_request(format!("{field} cannot be null"))),
@@ -756,6 +772,32 @@ async fn apply_update_user(
     // what nodes serve.
     let affects_nodes = enabled.is_some() || role.is_some() || req.expires_at.is_some();
 
+    // M3: with an active plan, the traffic limit and expiry are the plan's
+    // (written on every plan change; edit the user's plan instead), and the
+    // account must stay a proxy user. Checked under the entitlement lock,
+    // which every plan assignment takes, so the check cannot race one.
+    let plan_managed = req.traffic_limit_bytes.is_some() || req.expires_at.is_some();
+    if plan_managed || role.as_deref().is_some_and(|r| r != "user") {
+        crate::entitle::lock(conn).await?;
+        let has_plan: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM user_plans WHERE user_id = $1 AND status = 'active')",
+        )
+        .bind(id)
+        .fetch_one(&mut *conn)
+        .await?;
+        if has_plan && plan_managed {
+            return Err(ApiError::conflict(
+                "traffic_limit_bytes and expires_at are managed by the user's plan; \
+                 change the plan (PUT/PATCH /users/{id}/plan) or cancel it first",
+            ));
+        }
+        if has_plan {
+            return Err(ApiError::conflict(
+                "the user has an active plan; cancel it before making the account an admin",
+            ));
+        }
+    }
+
     if affects_nodes {
         lock_user_nodes(conn, id).await?;
     }
@@ -763,6 +805,11 @@ async fn apply_update_user(
     let mut set = qb.separated(", ");
     if let Some(v) = enabled {
         set.push("enabled = ").push_bind_unseparated(v);
+        // An explicit disable is an admin decision, even over a quota
+        // disable (only 'quota' is ever re-enabled automatically).
+        if !v {
+            set.push("disabled_reason = 'admin'");
+        }
     }
     if let Some(v) = &password {
         set.push("password_hash = ")
@@ -925,6 +972,8 @@ pub struct NodeView {
     /// Public hostname/IP clients dial for this node's inbounds; null until
     /// the admin sets it. Subscriptions skip accounts on such nodes.
     server_addr: Option<String>,
+    /// M3: free-text region shown to users (portal node list).
+    region: Option<String>,
     /// The agent's last failed apply (e.g. xray rejected the inbounds) and
     /// the versions it was attempting; null once an update applies cleanly.
     last_error: Option<String>,
@@ -1028,7 +1077,7 @@ async fn with_heartbeats(state: &AppState, mut views: Vec<NodeView>) -> Vec<Node
 
 pub const NODE_VIEW_COLS: &str =
     "id, name, enabled, status, agent_version, core_version, config_version, \
-     user_version, xray_inbounds, server_addr, last_error, last_error_at, failed_config_version, \
+     user_version, xray_inbounds, server_addr, region, last_error, last_error_at, failed_config_version, \
      failed_user_version, agent_protocol, lease_expires_at, \
      GREATEST(0, EXTRACT(EPOCH FROM lease_expires_at - now()))::bigint AS lease_remaining_seconds, \
      traffic_max_rate_bytes_per_sec, deleting_at, last_seen_at, created_at, \
@@ -1161,6 +1210,9 @@ pub struct UpdateNodeReq {
     /// falls back to traffic.node_max_rate_bytes_per_sec.
     #[serde(default, deserialize_with = "double_option")]
     pub traffic_max_rate_bytes_per_sec: Option<Option<i64>>,
+    /// M3: region shown to users; null (or "") clears it. <= 64 chars.
+    #[serde(default, deserialize_with = "double_option")]
+    pub region: Option<Option<String>>,
 }
 
 /// PATCH /nodes/{id}. Disabling AND enabling bump config_version (the
@@ -1178,6 +1230,7 @@ async fn apply_update_node(
         && name.is_none()
         && req.server_addr.is_none()
         && req.traffic_max_rate_bytes_per_sec.is_none()
+        && req.region.is_none()
     {
         return Err(ApiError::bad_request("no fields to update"));
     }
@@ -1194,6 +1247,20 @@ async fn apply_update_node(
         }
         n => n.map(|n| n.trim().to_string()),
     };
+    let region: Option<Option<String>> = req.region.as_ref().map(|r| {
+        r.as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .map(String::from)
+    });
+    if region
+        .as_ref()
+        .is_some_and(|r| r.as_ref().is_some_and(|r| r.chars().count() > 64))
+    {
+        return Err(ApiError::bad_request(
+            "region must be at most 64 characters",
+        ));
+    }
     // "" and whitespace normalize to null (cleared).
     let server_addr: Option<Option<String>> = req.server_addr.as_ref().map(|a| {
         a.as_deref()
@@ -1227,6 +1294,9 @@ async fn apply_update_node(
     if let Some(v) = req.traffic_max_rate_bytes_per_sec {
         set.push("traffic_max_rate_bytes_per_sec = ")
             .push_bind_unseparated(v);
+    }
+    if let Some(v) = region {
+        set.push("region = ").push_bind_unseparated(v);
     }
     qb.push(" WHERE id = ").push_bind(id);
     qb.push(format!(
@@ -1547,6 +1617,7 @@ async fn apply_set_inbounds(
 ) -> Result<i64, ApiError> {
     validate_inbounds(inbounds)?;
     let protocols = inbound_protocols(inbounds);
+    crate::entitle::lock(conn).await?;
     refuse_if_deleting(conn, id).await?;
 
     let updated: Option<(i64, serde_json::Value)> = sqlx::query_as(
@@ -1562,8 +1633,11 @@ async fn apply_set_inbounds(
     };
     let mut pruned = Vec::new();
 
+    // Manual rows are pruned here; plan rows by the reconcile below (which
+    // also issues credentials for new eligible inbounds).
     let rows: Vec<(Uuid, serde_json::Value)> = sqlx::query_as(
-        "SELECT user_id, credentials FROM node_users WHERE node_id = $1 ORDER BY user_id FOR UPDATE",
+        "SELECT user_id, credentials FROM node_users WHERE node_id = $1 AND manual \
+         ORDER BY user_id FOR UPDATE",
     )
     .bind(id)
     .fetch_all(&mut *conn)
@@ -1595,8 +1669,10 @@ async fn apply_set_inbounds(
             .await?;
         }
     }
+    let plan = crate::entitle::apply_reconcile(conn, crate::entitle::Scope::Nodes(&[id])).await?;
     let mut after = crate::audit::inbounds_summary(inbounds);
     after["pruned_credentials_of"] = json!(pruned);
+    after["entitlement"] = plan.summary();
     crate::audit::record(
         conn,
         actor,
@@ -1651,13 +1727,13 @@ pub struct AssignReq {
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq, Clone)]
-struct Credential {
-    inbound_tag: String,
-    protocol: String,
-    account: serde_json::Value,
+pub(crate) struct Credential {
+    pub(crate) inbound_tag: String,
+    pub(crate) protocol: String,
+    pub(crate) account: serde_json::Value,
 }
 
-fn generate_account(protocol: &str) -> Result<serde_json::Value, ApiError> {
+pub(crate) fn generate_account(protocol: &str) -> Result<serde_json::Value, ApiError> {
     match protocol {
         "vless" => Ok(json!({ "id": Uuid::new_v4().to_string(), "flow": "" })),
         "vmess" => Ok(json!({ "id": Uuid::new_v4().to_string() })),
@@ -1676,7 +1752,10 @@ fn is_fk_violation(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(d) if d.code().as_deref() == Some("23503"))
 }
 
-/// Read-modify-write of the user's credentials on one node. The node row
+/// Read-modify-write of the user's credentials on one node; the row
+/// becomes a manual override (M3: the plan reconcile never touches it, and
+/// its plan-issued credentials for other inbounds are kept as they are).
+/// The node row
 /// lock serializes all assignments on that node (including first-time ones,
 /// where there is no node_users row to lock) and the inbound protocol is
 /// read under it. Returns the generated account.
@@ -1688,6 +1767,9 @@ async fn apply_assign(
     req: &AssignReq,
 ) -> Result<serde_json::Value, ApiError> {
     let account = generate_account(&req.protocol)?;
+    // M3: assignments take the entitlement lock like every node_users
+    // writer that interacts with the reconcile (entitle.rs), before rows.
+    crate::entitle::lock(conn).await?;
     refuse_if_deleting(conn, node_id).await?;
     let inbounds: Option<serde_json::Value> =
         sqlx::query_scalar("SELECT xray_inbounds FROM nodes WHERE id = $1 FOR UPDATE")
@@ -1749,8 +1831,8 @@ async fn apply_assign(
     });
 
     let res = sqlx::query(
-        "INSERT INTO node_users (node_id, user_id, credentials) VALUES ($1, $2, $3) \
-         ON CONFLICT (node_id, user_id) DO UPDATE SET credentials = EXCLUDED.credentials",
+        "INSERT INTO node_users (node_id, user_id, credentials, manual) VALUES ($1, $2, $3, true) \
+         ON CONFLICT (node_id, user_id) DO UPDATE SET credentials = EXCLUDED.credentials, manual = true",
     )
     .bind(node_id)
     .bind(user_id)
@@ -1806,12 +1888,19 @@ pub async fn assign_user(
     ))
 }
 
+/// Remove a manual assignment. M3: if the user's plan grants the node, the
+/// pair is handed back to the plan instead (row kept, `manual = false`,
+/// credentials normalized by the reconcile: those of still eligible
+/// inbounds are kept, so clients keep working); otherwise the row is
+/// deleted (departed). Plan-managed rows cannot be unassigned (409: change
+/// the plan or its groups).
 pub(crate) async fn apply_unassign(
     conn: &mut PgConnection,
     actor: &Actor,
     user_id: Uuid,
     node_id: Uuid,
 ) -> Result<(), ApiError> {
+    crate::entitle::lock(conn).await?;
     let node: Option<i32> = sqlx::query_scalar("SELECT 1 FROM nodes WHERE id = $1 FOR UPDATE")
         .bind(node_id)
         .fetch_optional(&mut *conn)
@@ -1819,15 +1908,48 @@ pub(crate) async fn apply_unassign(
     if node.is_none() {
         return Err(ApiError::not_found());
     }
-    let res = sqlx::query("DELETE FROM node_users WHERE node_id = $1 AND user_id = $2")
-        .bind(node_id)
-        .bind(user_id)
-        .execute(&mut *conn)
-        .await?;
-    if res.rows_affected() == 0 {
-        return Err(ApiError::not_found());
+    let manual: Option<bool> = sqlx::query_scalar(
+        "SELECT manual FROM node_users WHERE node_id = $1 AND user_id = $2 FOR UPDATE",
+    )
+    .bind(node_id)
+    .bind(user_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    match manual {
+        None => return Err(ApiError::not_found()),
+        Some(false) => {
+            return Err(ApiError::conflict(
+                "this access is granted by the user's plan; change the plan or its node groups",
+            ))
+        }
+        Some(true) => {}
     }
-    record_departed(conn, node_id, user_id).await?;
+    let to_plan = crate::entitle::is_granted(conn, user_id, node_id).await?;
+    if to_plan {
+        sqlx::query("UPDATE node_users SET manual = false WHERE node_id = $1 AND user_id = $2")
+            .bind(node_id)
+            .bind(user_id)
+            .execute(&mut *conn)
+            .await?;
+        crate::entitle::apply_reconcile(
+            conn,
+            crate::entitle::Scope::Pairs {
+                users: &[user_id],
+                nodes: &[node_id],
+            },
+        )
+        .await?;
+    } else {
+        sqlx::query("DELETE FROM node_users WHERE node_id = $1 AND user_id = $2")
+            .bind(node_id)
+            .bind(user_id)
+            .execute(&mut *conn)
+            .await?;
+        record_departed(conn, node_id, user_id).await?;
+    }
+    // Always bump: either the row went away or (reconciled) its
+    // credentials may have changed; a bump with an unchanged set is a
+    // no-op delta.
     bump_node_users(conn, node_id).await?;
     crate::audit::record(
         conn,
@@ -1835,8 +1957,8 @@ pub(crate) async fn apply_unassign(
         "node.unassign",
         "assignment",
         Some(format!("{user_id}@{node_id}")),
-        Some(json!({ "user_id": user_id, "node_id": node_id })),
-        None,
+        Some(json!({ "user_id": user_id, "node_id": node_id, "manual": true })),
+        to_plan.then(|| json!({ "user_id": user_id, "node_id": node_id, "manual": false })),
     )
     .await?;
     Ok(())
@@ -1846,7 +1968,7 @@ pub(crate) async fn apply_unassign(
 /// (reported by the agent after the REMOVE) stay billable for the departed
 /// grace (traffic::FLUSH_SQL). Not used for user deletion (nothing left to
 /// bill; the row cascades away).
-async fn record_departed(
+pub(crate) async fn record_departed(
     conn: &mut PgConnection,
     node_id: Uuid,
     user_id: Uuid,
