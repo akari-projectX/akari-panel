@@ -89,7 +89,7 @@ struct Credential {
 }
 
 /// uTLS fingerprints a client library accepts for REALITY.
-const FINGERPRINTS: &[&str] = &[
+pub(crate) const FINGERPRINTS: &[&str] = &[
     "chrome",
     "firefox",
     "safari",

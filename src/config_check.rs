@@ -218,6 +218,38 @@ impl PanelConfig {
                 a.enroll_rate_window_secs
             ));
         }
+        let i = &self.install;
+        if !(300..=7 * 86400).contains(&i.token_ttl_secs) {
+            r.err(format!(
+                "install.token_ttl_secs = {} is outside 300..=604800 (5 minutes to 7 days)",
+                i.token_ttl_secs
+            ));
+        }
+        if i.rate_per_ip <= 0 {
+            r.err("install.rate_per_ip must be > 0");
+        }
+        if !(1..=86_400).contains(&i.rate_window_secs) {
+            r.err(format!(
+                "install.rate_window_secs = {} is outside 1..=86400",
+                i.rate_window_secs
+            ));
+        }
+        if !i.public_url.is_empty() {
+            if let Err(e) = crate::nodeinstall::parse_origin(&i.public_url) {
+                r.err(format!("install.public_url: {e}"));
+            }
+        }
+        if !i.tls_pin.is_empty() && !crate::nodeinstall::valid_pin(&i.tls_pin) {
+            r.err("install.tls_pin must be \"sha256//<base64 of the SHA-256 of the SPKI>\"");
+        }
+        if !i.fallback_binary_url.is_empty()
+            && !crate::nodeinstall::fallback_url_ok(&i.fallback_binary_url)
+        {
+            r.err(
+                "install.fallback_binary_url must be an https:// URL containing {arch}, \
+                 without quotes, spaces or shell metacharacters",
+            );
+        }
         if self.audit.retention_days == 0 {
             r.warn("audit.retention_days = 0: the audit log is never pruned");
         } else if self.audit.retention_days < 30 {

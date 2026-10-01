@@ -122,6 +122,7 @@ pub async fn node_add(cfg: PanelConfig, name: String, out: Option<PathBuf>) -> R
         &Actor::cli(),
         &name,
         cfg.agent.enroll_token_ttl_secs,
+        None,
     )
     .await
     .map_err(|e| anyhow::anyhow!("node {name}: {}", e.message()))?;
@@ -168,6 +169,7 @@ pub async fn node_enroll_token(
         &Actor::cli(),
         id,
         cfg.agent.enroll_token_ttl_secs,
+        None,
     )
     .await
     .map_err(|e| anyhow::anyhow!("node {id}: {}", e.message()))?;

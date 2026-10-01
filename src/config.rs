@@ -18,6 +18,53 @@ pub struct PanelConfig {
     pub audit: AuditConfig,
     pub sub: SubConfig,
     pub updates: UpdatesConfig,
+    pub install: InstallConfig,
+}
+
+/// One-line node installer (R18-2, `nodeinstall.rs`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct InstallConfig {
+    /// Public origin of the panel's web endpoint as nodes reach it
+    /// ("https://panel.example.com" or "https://203.0.113.7", no path; the
+    /// route prefix is appended). Empty = the origin of the admin's browser
+    /// (sent by the UI when it asks for an install command).
+    pub public_url: String,
+    /// SPKI pin of the web endpoint's TLS certificate for the install
+    /// command ("sha256//<base64>", curl --pinnedpubkey). Empty = automatic:
+    /// the panel connects to the public origin when it issues a command; a
+    /// certificate public CAs vouch for needs no pin, any other one (IP-only
+    /// panel with Caddy's internal CA) is pinned as served.
+    pub tls_pin: String,
+    /// Lifetime of an install link (its enrollment token). Default 1 h;
+    /// 5 min to 7 days.
+    pub token_ttl_secs: u64,
+    /// Install-script and agent-binary downloads per source address (IPv6
+    /// per /64) per window. Defaults 20 per 600 s.
+    pub rate_per_ip: i64,
+    pub rate_window_secs: i64,
+    /// Where the script downloads the agent when no complete signed
+    /// release for the node's architecture was uploaded to the panel
+    /// (Updates view). `{arch}` = amd64 | arm64; `SHA256SUMS` next to it
+    /// (same directory) is checked. Empty = no fallback (the script stops
+    /// with a clear error).
+    pub fallback_binary_url: String,
+}
+
+pub const DEFAULT_FALLBACK_BINARY_URL: &str =
+    "https://github.com/akari-projectX/akari-agent/releases/latest/download/akari-agent-linux-{arch}";
+
+impl Default for InstallConfig {
+    fn default() -> Self {
+        Self {
+            public_url: String::new(),
+            tls_pin: String::new(),
+            token_ttl_secs: 3600,
+            rate_per_ip: 20,
+            rate_window_secs: 600,
+            fallback_binary_url: DEFAULT_FALLBACK_BINARY_URL.into(),
+        }
+    }
 }
 
 /// Agent self-update (M6). The panel only relays signed releases; agents
@@ -238,6 +285,7 @@ impl Default for PanelConfig {
             audit: AuditConfig::default(),
             sub: SubConfig::default(),
             updates: UpdatesConfig::default(),
+            install: InstallConfig::default(),
         }
     }
 }
