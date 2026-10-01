@@ -216,8 +216,14 @@ fn collect_proxies(rows: &[NodeRow]) -> Vec<Proxy> {
         let Some(server) = row.server_addr.as_deref().filter(|s| !s.is_empty()) else {
             continue; // admin has not set a public address yet
         };
-        let credentials: Vec<Credential> =
-            serde_json::from_value(row.credentials.clone()).unwrap_or_default();
+        let credentials: Vec<Credential> = match serde_json::from_value(row.credentials.clone()) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(node = %row.name, error = %e,
+                    "node_users.credentials is not a valid credential list; node skipped in subscription");
+                continue;
+            }
+        };
         for cred in credentials {
             let Some(inbound) = row
                 .xray_inbounds
