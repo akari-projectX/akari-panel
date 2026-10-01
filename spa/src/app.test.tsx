@@ -21,6 +21,7 @@ const me = (role: string): Me => ({
   traffic_used_bytes: 0,
   traffic_limit_bytes: null,
   expires_at: null,
+  expired: false,
 });
 const totp = (over: Partial<TotpStatus>): TotpStatus => ({
   id: "admin-id",
@@ -70,6 +71,19 @@ describe("App session routing", () => {
     fireEvent.click(screen.getByRole("button", { name: "中文" }));
     expect(await screen.findByRole("heading", { name: "我的账户" })).toBeTruthy();
     expect(document.documentElement.lang).toBe("zh-CN");
+  });
+
+  it("expired users (R21) see the renewal notice, not the subscription or 2FA cards", async () => {
+    const calls = fakeApi({
+      "GET /me": { ...me("user"), expires_at: "2026-01-01T00:00:00Z", expired: true },
+      "GET /me/plan": { plan: null, nodes: [] },
+    });
+    renderWithClient(<App />);
+    expect(await screen.findByText(/Your account has expired/)).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Password" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Subscription link" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Two-factor authentication" })).toBeNull();
+    expect(calls.some((c) => c.path === "/me/totp")).toBe(false);
   });
 
   it("admins get the Chinese console; deep links, nav and back button follow the URL", async () => {

@@ -71,6 +71,9 @@ export interface Me {
   traffic_used_bytes: number;
   traffic_limit_bytes: number | null;
   expires_at: string | null;
+  // R21: past expiry (role=user): renewal scope only (account, plan,
+  // password, shop/orders); subscription and 2FA are unavailable.
+  expired: boolean;
 }
 
 // "enroll": only with auth.require_admin_2fa, an admin without 2FA; only the

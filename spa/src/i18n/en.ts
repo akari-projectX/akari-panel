@@ -49,6 +49,7 @@ export const en: Messages = {
   },
   portal: {
     title: "My account",
+    expiredBanner: "Your account has expired: nodes and the subscription are paused. Renew or buy a plan to continue.",
     usage: "Your usage overview.",
     trafficUsed: "Traffic used",
     trafficLimit: "Traffic limit",
