@@ -836,9 +836,11 @@ assert n['enrolled'] and n['cert_not_after'] and n['enroll_token_expires_at'] is
 assert any('agent certificate expires' in w for w in n['warnings']), n['warnings']
 assert n['heartbeat'] is None or 'uptime_seconds' in n['heartbeat'], n['heartbeat']" \
   || { echo "FAIL: enrolled node view"; exit 1; }
-for f in "$LOG"/state-renew/*; do
-  [ "$(stat -c %a "$f")" = "600" ] || { echo "FAIL: $f is not 0600"; exit 1; }
-done
+# Files 0600; directories (M6: update/, update/bin/) 0700.
+while IFS= read -r f; do
+  want=600; [ -d "$f" ] && want=700
+  [ "$(stat -c %a "$f")" = "$want" ] || { echo "FAIL: $f is not 0$want"; exit 1; }
+done < <(find "$LOG/state-renew" -mindepth 1)
 grep -q 'PRIVATE KEY' "$LOG/renew-agent.log" "$LOG/panel-b.log" && { echo "FAIL: key material in a log"; exit 1; }
 kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
 AGENT_PID=""
