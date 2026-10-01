@@ -15,7 +15,8 @@ pub const EXPIRED: &str =
 
 /// Users over their traffic limit. Admins are not proxy users and are never
 /// disabled by it.
-const OVER_LIMIT: &str = "(u.role = 'user' AND u.enabled AND u.traffic_limit_bytes IS NOT NULL \
+pub const OVER_LIMIT: &str =
+    "(u.role = 'user' AND u.enabled AND u.traffic_limit_bytes IS NOT NULL \
      AND u.traffic_used_bytes > u.traffic_limit_bytes)";
 
 /// Users a node serves: role=user, enabled, not expired (alias `u`).

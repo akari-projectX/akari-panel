@@ -1,0 +1,26 @@
+# Bench panel instance 1 (akari-bench; docs/PERF.md). Both instances share
+# data_dir (CA, jwt.key, route prefix), the database and Valkey, like a
+# production multi-instance deployment. Bench limits are lifted so the load
+# generator measures the code paths, not the rate limiters.
+data_dir = "bench/data"
+database_url = "postgres://akari:akari-dev@localhost:5432/akari_bench"
+valkey_url = "redis://127.0.0.1:6379/1"
+
+[web]
+bind = "127.0.0.1:18080"
+cookie_secure = false
+
+[grpc]
+bind = "127.0.0.1:18443"
+advertise = "127.0.0.1:18443"
+
+[agent]
+enroll_rate_per_ip = 1000000
+enroll_rate_global = 1000000
+
+[sub]
+rate_per_ip = 1000000000
+rate_per_token = 1000000000
+
+[metrics]
+bind = "127.0.0.1:19100"
