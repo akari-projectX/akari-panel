@@ -64,16 +64,93 @@ TOML
 # panel's trusted key here; production configures the real one.
 TEST_RELEASE_PUB=$(cut -d' ' -f1 "$AGENT_DIR/testdata/TEST-ONLY-release.pub")
 printf '\n[updates]\nrelease_keys = ["%s TEST-ONLY"]\n' "$TEST_RELEASE_PUB" >>"$LOG/panel.toml"
+# R18-3: Alipay Face-to-Face against a local mock gateway, with throwaway
+# RSA keys made here (never real credentials). The notify URL must carry
+# the route prefix, so the data dir (prefix) is created first.
+PAY="$LOG/pay"; mkdir -p "$PAY"
+for k in app alipay; do
+  openssl genrsa -out "$PAY/$k-key.pem" 2048 2>/dev/null
+  openssl rsa -in "$PAY/$k-key.pem" -pubout -out "$PAY/$k-pub.pem" 2>/dev/null
+done
+chmod 600 "$PAY"/*.pem
+PAY_PREFIX=$("$PANEL" info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')
+cat >>"$LOG/panel.toml" <<TOML
+
+[payments.alipay]
+enabled = true
+app_id = "2021000000000001"
+seller_id = "2088000000000001"
+app_private_key_file = "$PAY/app-key.pem"
+alipay_public_key_file = "$PAY/alipay-pub.pem"
+gateway_url = "http://127.0.0.1:18089/gateway.do"
+notify_url = "http://127.0.0.1:8080/$PAY_PREFIX/pay/alipay/notify"
+TOML
+# The mock gateway: verifies the panel's request signature (app public
+# key), answers signed with the "Alipay" key; POST /control/pay?otn=X
+# marks a trade paid (TRADE_SUCCESS) for the query path.
+cat >"$PAY/mock.py" <<'PY'
+import base64, json, subprocess, sys, urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+D = sys.argv[1]; trades = {}
+def sign(data):
+    return base64.b64encode(subprocess.run(["openssl", "dgst", "-sha256", "-sign", D + "/alipay-key.pem"],
+        input=data.encode(), capture_output=True, check=True).stdout).decode()
+def verify(data, sig):
+    open(D + "/req.sig", "wb").write(base64.b64decode(sig))
+    return subprocess.run(["openssl", "dgst", "-sha256", "-verify", D + "/app-pub.pem", "-signature", D + "/req.sig"],
+        input=data.encode(), capture_output=True).returncode == 0
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def answer(self, code, body):
+        b = body.encode(); self.send_response(code)
+        self.send_header("Content-Type", "application/json;charset=utf-8"); self.send_header("Content-Length", str(len(b)))
+        self.end_headers(); self.wfile.write(b)
+    def do_POST(self):
+        u = urllib.parse.urlparse(self.path)
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+        if u.path == "/control/pay":
+            otn = urllib.parse.parse_qs(u.query)["otn"][0]; trades[otn]["status"] = "TRADE_SUCCESS"
+            return self.answer(200, "{}")
+        p = dict(urllib.parse.parse_qsl(raw, keep_blank_values=True))
+        content = "&".join(f"{k}={v}" for k, v in sorted(p.items()) if k != "sign" and v != "")
+        if not verify(content, p["sign"]): return self.answer(400, '{"error":"bad request signature"}')
+        m = p["method"]; biz = json.loads(p["biz_content"]); otn = biz["out_trade_no"]
+        if m == "alipay.trade.precreate":
+            trades[otn] = {"total": biz["total_amount"], "status": None}
+            obj = {"code": "10000", "msg": "Success", "out_trade_no": otn, "qr_code": "https://qr.alipay.com/smoke" + otn[-6:]}
+        elif m == "alipay.trade.query" and trades.get(otn, {}).get("status"):
+            t = trades[otn]
+            obj = {"code": "10000", "msg": "Success", "out_trade_no": otn, "trade_no": "2026" + otn[-10:],
+                   "trade_status": t["status"], "total_amount": t["total"]}
+        else:
+            obj = {"code": "40004", "msg": "Business Failed", "sub_code": "ACQ.TRADE_NOT_EXIST", "sub_msg": "x"}
+        body = json.dumps(obj, separators=(",", ":"))
+        self.answer(200, '{"%s_response":%s,"sign":"%s"}' % (m.replace(".", "_"), body, sign(body)))
+ThreadingHTTPServer(("127.0.0.1", 18089), H).serve_forever()
+PY
+pkill -f "^python3 $PAY/mock.py" 2>/dev/null || true
+python3 "$PAY/mock.py" "$PAY" >"$LOG/mock-alipay.log" 2>&1 &
+MOCK_PID=$!
+# Sign Alipay-style notify params (sorted, without sign/sign_type) with the
+# mock "Alipay" key; prints the form body.
+cat >"$PAY/notify.py" <<'PY'
+import base64, subprocess, sys, urllib.parse
+d, otn, total, status = sys.argv[1:5]
+p = {"app_id": "2021000000000001", "seller_id": "2088000000000001", "out_trade_no": otn,
+     "total_amount": total, "trade_status": status, "trade_no": "2026" + otn[-10:],
+     "notify_type": "trade_status_sync", "notify_id": "smoke" + otn[-8:], "charset": "utf-8",
+     "version": "1.0", "subject": "Akari - smoke 套餐", "notify_time": "2026-10-02 12:00:00"}
+content = "&".join(f"{k}={v}" for k, v in sorted(p.items()))
+sig = subprocess.run(["openssl", "dgst", "-sha256", "-sign", d + "/alipay-key.pem"], input=content.encode(),
+                     capture_output=True, check=True).stdout
+p["sign_type"] = "RSA2"; p["sign"] = base64.b64encode(sig).decode()
+if len(sys.argv) > 5: p["total_amount"] = sys.argv[5]  # tamper after signing
+print(urllib.parse.urlencode(p), end="")
+PY
 "$PANEL" -c "$LOG/panel.toml" serve >"$LOG/panel.log" 2>&1 &
 PANEL_PID=$!
-trap 'cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
-# Poll instead of a fixed sleep: migrations run before the listener binds.
-for _ in $(seq 1 100); do
-  (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null && break
-  kill -0 "$PANEL_PID" 2>/dev/null || { echo "FAIL: panel exited during startup"; cat "$LOG/panel.log"; exit 1; }
-  sleep 0.3
-done
-(exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null || { echo "FAIL: panel not listening"; cat "$LOG/panel.log"; exit 1; }
+trap 'cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} $MOCK_PID 2>/dev/null || true' EXIT
+sleep 2
 
 # Reset AFTER startup: fresh volumes have no tables until the panel migrates,
 # and Valkey rate-limit counters would poison the next run's login test.
@@ -657,6 +734,94 @@ for a in plan.create plan.delete group.create group.delete; do
 done
 echo "m3: ok (plan access, quota disable, reset re-enable, cancel)"
 
+echo "== R18-3 Alipay F2F: price -> order (precreate) -> signed notify -> plan + node access; replay no-op; bad notify = rejection =="
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/node-groups" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"paid-group\",\"node_ids\":[\"$NODE_ID\"]}")" = "201" ] || { echo "FAIL: create paid group"; exit 1; }
+PAID_GROUP=$(last_json "d['id']")
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/plans" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"paid-plan\",\"period\":\"monthly\",\"group_ids\":[\"$PAID_GROUP\"]}")" = "201" ] || { echo "FAIL: create paid plan"; exit 1; }
+PAID_PLAN=$(last_json "d['id']")
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/plans/$PAID_PLAN/price" -H 'Content-Type: application/json' \
+    -d '{"price_cents":0,"period_days":30,"purchasable":true}')" = "400" ] || { echo "FAIL: zero price accepted"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/plans/$PAID_PLAN/price" -H 'Content-Type: application/json' \
+    -d '{"price_cents":1,"period_days":30,"purchasable":true}')" = "204" ] || { echo "FAIL: set price"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/plan-prices")" = "200" ] && last_json "d['payments_enabled']" | grep -q True \
+  || { echo "FAIL: plan-prices / payments not enabled"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+    -d '{"login":"smoke-buyer","password":"buyer-password-123"}')" = "201" ] || { echo "FAIL: create buyer"; exit 1; }
+BUYER=$(last_json "d['id']")
+BJAR="$LOG/buyer-cookies"
+[ "$(code -c "$BJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d '{"login":"smoke-buyer","password":"buyer-password-123"}')" = "200" ] || { echo "FAIL: buyer login"; exit 1; }
+[ "$(code -b "$BJAR" "$BASE/api/v1/me/shop")" = "200" ] || { echo "FAIL: shop"; exit 1; }
+python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); p=[x for x in d['plans'] if x['plan_id']=='$PAID_PLAN'][0]; assert d['enabled'] and p['price_cents']==1 and p['action']=='new', d" \
+  || { echo "FAIL: shop content"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$BJAR" -X POST "$BASE/api/v1/me/orders" -H 'Content-Type: application/json' \
+    -d "{\"plan_id\":\"$PAID_PLAN\",\"amount_cents\":0}")" = "400" ] || { echo "FAIL: client amount accepted"; exit 1; }
+[ "$(code -b "$BJAR" -X POST "$BASE/api/v1/me/orders" -H 'Content-Type: application/json' \
+    -d "{\"plan_id\":\"$PAID_PLAN\"}")" = "201" ] || { echo "FAIL: create order"; cat /tmp/akari-smoke/last "$LOG/mock-alipay.log"; exit 1; }
+ORDER=$(last_json "d['id']"); OTN=$(last_json "d['out_trade_no']")
+last_json "d['qr_code']" | grep -q '^https://qr.alipay.com/smoke' || { echo "FAIL: no QR from precreate"; exit 1; }
+[ "$(last_json "d['status']")" = "pending" ] || { echo "FAIL: new order not pending"; exit 1; }
+NOTIFY="$BASE/pay/alipay/notify"
+# Tampered amount (signature no longer matches) / wrong amount (validly
+# signed): both the canonical rejection; nothing fulfilled.
+[ "$(fp -X POST "$NOTIFY" --data-binary "$(python3 "$PAY/notify.py" "$PAY" "$OTN" 0.01 TRADE_SUCCESS 0.02)")" = "$REJ" ] \
+  || { echo "FAIL: bad-signature notify not the canonical rejection"; cat /tmp/akari-smoke/fphead; exit 1; }
+[ "$(fp -X POST "$NOTIFY" --data-binary "$(python3 "$PAY/notify.py" "$PAY" "$OTN" 0.02 TRADE_SUCCESS)")" = "$REJ" ] \
+  || { echo "FAIL: wrong-amount notify not the canonical rejection"; exit 1; }
+[ "$(fp "$NOTIFY")" = "$REJ" ] || { echo "FAIL: GET notify not the canonical rejection"; exit 1; }
+[ "$(psql_q "SELECT status FROM orders WHERE id='$ORDER'")" = "pending" ] || { echo "FAIL: rejected notify changed the order"; exit 1; }
+GOOD_NOTIFY=$(python3 "$PAY/notify.py" "$PAY" "$OTN" 0.01 TRADE_SUCCESS)
+[ "$(curl -s --noproxy '*' -X POST "$NOTIFY" --data-binary "$GOOD_NOTIFY")" = "success" ] \
+  || { echo "FAIL: valid notify not acknowledged"; tail -5 "$LOG/panel.log"; exit 1; }
+[ "$(code -b "$BJAR" "$BASE/api/v1/me/orders/$ORDER")" = "200" ] || { echo "FAIL: order status"; exit 1; }
+python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); assert d['status']=='paid' and d['fulfilled'] and d['qr_code'] is None, d" \
+  || { echo "FAIL: order not paid+fulfilled"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT plan_id FROM user_plans WHERE user_id='$BUYER' AND status='active'")" = "$PAID_PLAN" ] || { echo "FAIL: plan not active"; exit 1; }
+wait_users 1 10 "purchased plan grants the node"
+BUYER_VLESS=$(psql_q "SELECT credentials->0->'account'->>'id' FROM node_users WHERE user_id='$BUYER' AND node_id='$NODE_ID'")
+wait_port open 10
+python3 "$LOG/vless1.py" "$BUYER_VLESS" || { echo "FAIL: vless round trip for the buyer"; exit 1; }
+# Replay: acknowledged, fulfilled exactly once.
+[ "$(curl -s --noproxy '*' -X POST "$NOTIFY" --data-binary "$GOOD_NOTIFY")" = "success" ] || { echo "FAIL: replayed notify"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='order.paid' AND target_id='$ORDER'")" = "1" ] || { echo "FAIL: order paid twice"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM user_plans WHERE user_id='$BUYER'")" = "1" ] || { echo "FAIL: plan granted twice"; exit 1; }
+[ "$(psql_q "SELECT outcome FROM payment_events WHERE order_id='$ORDER' AND source='notify' AND verified ORDER BY id DESC LIMIT 1")" = "duplicate" ] \
+  || { echo "FAIL: replay not logged as duplicate"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM payment_events WHERE params->>'sign' IS NOT NULL AND params->>'sign' <> '<redacted>'")" = "0" ] \
+  || { echo "FAIL: a signature was stored"; exit 1; }
+# Renewal through the active query (no notify reaches the panel): +30 days.
+EXP1=$(psql_q "SELECT extract(epoch FROM expires_at)::bigint FROM user_plans WHERE user_id='$BUYER' AND status='active'")
+[ "$(code -b "$BJAR" -X POST "$BASE/api/v1/me/orders" -H 'Content-Type: application/json' \
+    -d "{\"plan_id\":\"$PAID_PLAN\"}")" = "201" ] || { echo "FAIL: renewal order"; exit 1; }
+ORDER2=$(last_json "d['id']"); OTN2=$(last_json "d['out_trade_no']")
+curl -s --noproxy '*' -X POST "http://127.0.0.1:18089/control/pay?otn=$OTN2" >/dev/null
+for _ in $(seq 1 10); do
+  code -b "$BJAR" "$BASE/api/v1/me/orders/$ORDER2" >/dev/null
+  [ "$(last_json "d['status']")" = "paid" ] && break; sleep 1
+done
+[ "$(last_json "d['status']")" = "paid" ] || { echo "FAIL: polling did not detect the payment"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT paid_via FROM orders WHERE id='$ORDER2'")" = "query" ] || { echo "FAIL: renewal not paid via query"; exit 1; }
+EXP2=$(psql_q "SELECT extract(epoch FROM expires_at)::bigint FROM user_plans WHERE user_id='$BUYER' AND status='active'")
+[ $((EXP2 - EXP1)) -eq $((30 * 86400)) ] || { echo "FAIL: renewal did not extend by 30 days ($EXP1 -> $EXP2)"; exit 1; }
+# Admin views and audit.
+[ "$(code -b "$JAR" "$BASE/api/v1/orders?login=smoke-buyer")" = "200" ] || { echo "FAIL: admin orders"; exit 1; }
+[ "$(last_json "len(d)")" = "2" ] || { echo "FAIL: admin order list"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/orders/$ORDER")" = "200" ] || { echo "FAIL: admin order detail"; exit 1; }
+[ "$(code -b "$BJAR" "$BASE/api/v1/orders")" = "403" ] || { echo "FAIL: user reached admin orders"; exit 1; }
+for a in order.create order.paid plan.price.set user.plan.set user.plan.update; do
+  [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='$a'")" -ge 1 ] || { echo "FAIL: audit lacks $a"; exit 1; }
+done
+# Clean up for the following sections (the node serves nobody again).
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$BUYER")" = "204" ] || { echo "FAIL: delete buyer"; exit 1; }
+wait_users 0 10 "buyer deleted"
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/plans/$PAID_PLAN")" = "204" ] || { echo "FAIL: delete paid plan"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/node-groups/$PAID_GROUP")" = "204" ] || { echo "FAIL: delete paid group"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM orders WHERE user_id IS NULL AND user_login='smoke-buyer' AND plan_id IS NULL")" = "2" ] \
+  || { echo "FAIL: orders not kept after user/plan deletion"; exit 1; }
+echo "r18-3 payments: ok"
+
 echo "== Sprint 3a: a protocol-0 agent gets the empty state and is flagged (N5) =="
 OLD_SRC="$LOG/old-agent-src"
 mkdir -p "$OLD_SRC"
@@ -816,7 +981,7 @@ cert_validity_secs = 60
 TOML
 "$PANEL" -c "$LOG/panel-b.toml" serve >"$LOG/panel-b.log" 2>&1 &
 PANEL_B=$!
-trap 'cleanup_upd; kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
+trap 'cleanup_upd; kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} $MOCK_PID 2>/dev/null || true' EXIT
 for _ in $(seq 1 20); do [ "$(code "http://127.0.0.1:8081/$PREFIX/healthz")" = "200" ] && break; sleep 0.5; done
 "$PANEL" -c "$LOG/panel-b.toml" node add renew-node --out "$LOG/renew-bootstrap.toml" >/dev/null
 RENEW_ID=$("$PANEL" node list | awk '$2=="renew-node"{print $1}')
@@ -1250,6 +1415,12 @@ OLD_BASE="$BASE"
 PREFIX=$("$PANEL" info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')
 BASE="http://127.0.0.1:8080/$PREFIX"
 [ "$BASE" != "$OLD_BASE" ] || { echo "FAIL: prefix unchanged"; exit 1; }
+# R18-3: notify_url still carries the old prefix: the panel refuses to start.
+"$PANEL" -c "$LOG/panel.toml" serve >"$LOG/panel-stale.log" 2>&1 \
+  && { echo "FAIL: started with a stale payments.alipay.notify_url"; exit 1; }
+grep -q 'notify_url does not carry' "$LOG/panel-stale.log" || { echo "FAIL: stale notify_url error"; cat "$LOG/panel-stale.log"; exit 1; }
+grep -qF "${OLD_BASE##*/}" "$LOG/panel-stale.log" && { echo "FAIL: the old prefix appears in the startup error"; exit 1; }
+sed -i "s|^notify_url = .*|notify_url = \"http://127.0.0.1:8080/$PREFIX/pay/alipay/notify\"|" "$LOG/panel.toml"
 "$PANEL" -c "$LOG/panel.toml" serve >"$LOG/panel2.log" 2>&1 &
 PANEL_PID=$!
 for _ in $(seq 1 20); do [ "$(code "$BASE/healthz")" = "200" ] && break; sleep 0.5; done
