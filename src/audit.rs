@@ -227,31 +227,73 @@ pub async fn list(
 }
 
 async fn query_page(pg: &sqlx::PgPool, q: &AuditQuery) -> Result<AuditPage, ApiError> {
+    const COLS: &str =
+        "id, at, actor_id, actor_login, ip, action, target_type, target_id, before, after";
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
-    let mut qb = sqlx::QueryBuilder::new(
-        "SELECT id, at, actor_id, actor_login, ip, action, target_type, target_id, before, after \
-         FROM audit_log WHERE true",
-    );
+    let action = q.action.as_deref().filter(|a| !a.is_empty());
+    let mut qb = sqlx::QueryBuilder::new("");
+    let prefix = action.filter(|a| a.ends_with('.'));
+    if let Some(p) = prefix {
+        // Prefix match (M2-2) without LIKE wildcards from the input and
+        // without scanning the newest rows of every other action: list the
+        // distinct actions with a loose scan of the (action, id) index,
+        // keep those starting with the prefix (exact, any collation), take
+        // the newest rows of each from its own index range, merge.
+        qb.push(
+            "WITH RECURSIVE acts AS ( \
+               (SELECT action FROM audit_log ORDER BY action LIMIT 1) \
+               UNION ALL \
+               SELECT (SELECT a.action FROM audit_log a WHERE a.action > acts.action \
+                       ORDER BY a.action LIMIT 1) \
+               FROM acts WHERE acts.action IS NOT NULL) \
+             SELECT e.* FROM (SELECT action FROM acts WHERE action IS NOT NULL AND left(action, ",
+        )
+        .push_bind(p.chars().count() as i32)
+        .push(") = ")
+        .push_bind(p.to_string())
+        .push(") m CROSS JOIN LATERAL (SELECT ")
+        .push(COLS)
+        .push(" FROM audit_log WHERE action >= m.action AND action <= m.action");
+    } else {
+        qb.push("SELECT ")
+            .push(COLS)
+            .push(" FROM audit_log WHERE true");
+        if let Some(a) = action {
+            qb.push(" AND action >= ")
+                .push_bind(a.to_string())
+                .push(" AND action <= ")
+                .push_bind(a.to_string());
+        }
+    }
     if let Some(b) = q.before {
         qb.push(" AND id < ").push_bind(b);
     }
     if let Some(a) = q.actor.as_deref().filter(|a| !a.is_empty()) {
-        qb.push(" AND actor_login = ").push_bind(a.to_string());
-    }
-    match q.action.as_deref().filter(|a| !a.is_empty()) {
-        Some(a) if a.ends_with('.') => {
-            // Prefix match without LIKE wildcards from the input.
-            qb.push(" AND left(action, ")
-                .push_bind(a.chars().count() as i32)
-                .push(") = ")
+        if action.is_some() {
+            qb.push(" AND actor_login = ").push_bind(a.to_string());
+        } else {
+            qb.push(" AND actor_login >= ")
+                .push_bind(a.to_string())
+                .push(" AND actor_login <= ")
                 .push_bind(a.to_string());
         }
-        Some(a) => {
-            qb.push(" AND action = ").push_bind(a.to_string());
-        }
-        None => {}
     }
-    qb.push(" ORDER BY id DESC LIMIT ").push_bind(limit + 1);
+    // M2-2: equality on the filtered column is written as `>= x AND <= x`
+    // (identical under the database's deterministic collation) and leads
+    // the ORDER BY: the planner then walks that column's (column, id)
+    // index backward. With a plain `=` it prunes the constant sort key and
+    // filters the primary key from the newest row down instead — fast for
+    // common values, a scan of most of the table for rare ones.
+    let order = match (action, q.actor.as_deref().filter(|a| !a.is_empty())) {
+        (Some(_), _) => " ORDER BY action DESC, id DESC LIMIT ",
+        (None, Some(_)) => " ORDER BY actor_login DESC, id DESC LIMIT ",
+        (None, None) => " ORDER BY id DESC LIMIT ",
+    };
+    qb.push(order).push_bind(limit + 1);
+    if prefix.is_some() {
+        qb.push(") e ORDER BY e.id DESC LIMIT ")
+            .push_bind(limit + 1);
+    }
     let mut entries: Vec<AuditEntry> = qb.build_query_as().fetch_all(pg).await?;
     let more = entries.len() as i64 > limit;
     entries.truncate(limit as usize);
@@ -391,6 +433,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(p.entries.len(), 10, "prefix");
+        // Prefix (M2-2 merge of per-action ranges): newest first across
+        // actions, pages via `before`, combines with actor, and ignores
+        // look-alikes a linguistic collation sorts in between.
+        insert(&db, 2, "bob", "username.x").await;
+        insert(&db, 2, "bob", "user").await;
+        insert(&db, 2, "alice", "userx.y").await;
+        let mut prefix = Vec::new();
+        let mut before = None;
+        loop {
+            let p = query_page(&db.pool, &q(3, before, None, Some("user.")))
+                .await
+                .unwrap();
+            assert!(p.entries.iter().all(|e| e.action.starts_with("user.")));
+            prefix.extend(p.entries.iter().map(|e| e.id));
+            match p.next_before {
+                Some(b) => before = Some(b),
+                None => break,
+            }
+        }
+        assert_eq!(prefix.len(), 10, "prefix across pages");
+        assert!(prefix.windows(2).all(|w| w[0] > w[1]), "newest first");
+        let p = query_page(&db.pool, &q(50, None, Some("cli"), Some("user.")))
+            .await
+            .unwrap();
+        assert_eq!(p.entries.len(), 3, "prefix + actor");
+        let p = query_page(&db.pool, &q(50, None, None, Some("nothing.")))
+            .await
+            .unwrap();
+        assert!(p.entries.is_empty() && p.next_before.is_none());
         let p = query_page(&db.pool, &q(50, None, None, Some("user.create")))
             .await
             .unwrap();
