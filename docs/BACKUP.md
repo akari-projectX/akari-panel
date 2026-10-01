@@ -15,7 +15,7 @@ What must be backed up:
 > backup storage. Never commit or copy `data/` anywhere unencrypted.
 
 Losing `data/` while keeping the database means: new route prefix, new CA, every agent
-needs a new enrollment token (`akari node enroll-token <id>`, a new bootstrap file), and every two-factor account (all admins) is locked out —
+needs a new enrollment token (`akari node enroll-token <id>`, a new bootstrap file), and every account with two-factor authentication is locked out —
 the TOTP secrets in the database can no longer be decrypted; recover each with
 `akari admin reset-2fa <login>`. `totp.key` and the database belong to the same backup:
 restore them together. Losing the database means losing everything else.

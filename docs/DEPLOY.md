@@ -117,15 +117,19 @@ logs. `trusted_proxies = ["127.0.0.1/32"]` matches a same-host proxy.
 # bare metal: sudo -u akari env AKARI_ADMIN_PASSWORD='...' akari -c /etc/akari/panel.toml admin add root
 ```
 
-Omit the variable to be prompted. The command also prints a one-time **2FA enrollment code**
-(valid 24 h). Open `https://panel.example.com/<prefix>/app` and log in. Admins must use two-factor
-authentication: the first login only opens the authenticator setup (TOTP), which needs a current
-code from the app **and** the enrollment code — a leaked password alone cannot bind an attacker's
-authenticator. Store the 10 recovery codes it shows. Lost authenticator and recovery codes, or an
-expired enrollment code: `akari admin reset-2fa <login>` (prints a new enrollment code; in the UI
-an admin's **Reset 2FA** / **2FA code** shows it once). Admins created through the API get theirs
-in the create response; a user promoted to admin gets one through **2FA code**. Admin accounts
-created before this release that never enrolled need `admin reset-2fa` once.
+Omit the variable to be prompted. Open `https://panel.example.com/<prefix>/app` and log in with
+the password. Two-factor authentication (TOTP) is **optional but recommended**: the console shows a
+banner until you turn it on under **账户** (scan the QR code, or type the key; save or download the
+10 recovery codes). Deployments that want it mandatory for admins set
+
+```toml
+[auth]
+require_admin_2fa = true   # default false
+```
+
+— an admin without 2FA then only gets a 15-minute setup session at login. Lost authenticator and
+recovery codes: `akari admin reset-2fa <login>` (or another admin: 用户 → 管理 → 重置两步验证); the
+account then logs in with its password and can set 2FA up again.
 
 ## 3. Add a node and install the agent
 

@@ -3715,7 +3715,10 @@ mod tests {
         assert_eq!(v[0]["node_id"], json!(n));
         assert_eq!(v[0]["manual"], true);
         assert_eq!(v[0]["deleting"], false);
-        assert_eq!(v[0]["inbounds"], json!([{"tag": "in-vless", "protocol": "vless"}]));
+        assert_eq!(
+            v[0]["inbounds"],
+            json!([{"tag": "in-vless", "protocol": "vless"}])
+        );
         assert!(!v.to_string().contains("account"), "{v}");
         let e = user_nodes(
             State(state.clone()),
