@@ -53,6 +53,9 @@ struct Inner {
     /// Agent session tasks still running on this instance (including
     /// revoked/retiring ones and their cleanup).
     live_sessions: std::sync::atomic::AtomicUsize,
+    /// R18-3: the Alipay client when `[payments.alipay]` is enabled (set
+    /// once at startup after the key files were checked).
+    alipay: std::sync::OnceLock<Arc<crate::billing::alipay::Alipay>>,
 }
 
 /// Counts a running agent session task (see `AppState::live_sessions`).
@@ -91,6 +94,7 @@ impl AppState {
             traffic,
             shutdown: tokio::sync::watch::channel(false).0,
             live_sessions: std::sync::atomic::AtomicUsize::new(0),
+            alipay: std::sync::OnceLock::new(),
         }))
     }
 
@@ -129,6 +133,14 @@ impl AppState {
     }
     pub fn next_gen(&self) -> u64 {
         self.0.gen.fetch_add(1, Ordering::Relaxed)
+    }
+    /// The Alipay client (None = payments disabled).
+    pub fn alipay(&self) -> Option<&Arc<crate::billing::alipay::Alipay>> {
+        self.0.alipay.get()
+    }
+    /// Install the Alipay client (once; later calls are ignored).
+    pub fn set_alipay(&self, a: crate::billing::alipay::Alipay) {
+        let _ = self.0.alipay.set(Arc::new(a));
     }
     pub fn wakeups(&self) -> &crate::notify::Wakeups {
         &self.0.wakeups

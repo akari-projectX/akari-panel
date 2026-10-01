@@ -59,7 +59,75 @@ impl PanelConfig {
         self.validate_urls(&mut r);
         self.validate_proxy_consistency(&mut r);
         self.validate_updates(&mut r);
+        self.validate_payments(&mut r);
         r
+    }
+
+    /// `[payments.alipay]` (R18-3). Key files are checked separately
+    /// (`billing::check_files`, startup and `config check`).
+    fn validate_payments(&self, r: &mut Report) {
+        let a = &self.payments.alipay;
+        if !a.enabled {
+            return;
+        }
+        let p = "payments.alipay";
+        if a.app_id.is_empty()
+            || a.app_id.len() > 32
+            || !a.app_id.bytes().all(|b| b.is_ascii_digit())
+        {
+            r.err(format!("{p}.app_id: required, digits only"));
+        }
+        if !a.seller_id.is_empty()
+            && (a.seller_id.len() > 32 || !a.seller_id.bytes().all(|b| b.is_ascii_digit()))
+        {
+            r.err(format!("{p}.seller_id: digits only (or empty)"));
+        }
+        if a.app_private_key_file.as_os_str().is_empty() {
+            r.err(format!("{p}.app_private_key_file: required"));
+        }
+        if a.alipay_public_key_file.as_os_str().is_empty() {
+            r.err(format!("{p}.alipay_public_key_file: required"));
+        }
+        if !(5..=120).contains(&a.order_timeout_minutes) {
+            r.err(format!("{p}.order_timeout_minutes: must be 5..=120"));
+        }
+        match url_parts(&a.gateway_url) {
+            Some((scheme, host, _)) => {
+                if scheme == "http" && crate::billing::http::is_loopback_host(&host) {
+                    r.warn(format!(
+                        "{p}.gateway_url is plain http on loopback (a mock gateway, not Alipay)"
+                    ));
+                } else if scheme != "https" {
+                    r.err(format!("{p}.gateway_url: must be https (http only on loopback)"));
+                }
+            }
+            None => r.err(format!("{p}.gateway_url: not a URL")),
+        }
+        // The message never echoes notify_url: it contains the route prefix.
+        match url_parts(&a.notify_url) {
+            Some((scheme, _, path)) => {
+                if !matches!(scheme.as_str(), "http" | "https") {
+                    r.err(format!("{p}.notify_url: must be http(s)"));
+                } else if scheme == "http" {
+                    r.warn(format!(
+                        "{p}.notify_url is plain http: Alipay delivers notifies over the \
+                         internet; use https in production"
+                    ));
+                }
+                let segs: Vec<&str> = path.split('/').collect();
+                if segs.len() != 5
+                    || !segs[0].is_empty()
+                    || segs[1].is_empty()
+                    || segs[2..] != ["pay", "alipay", "notify"]
+                {
+                    r.err(format!(
+                        "{p}.notify_url: path must be /<route prefix>/pay/alipay/notify \
+                         (no query, no extra segments)"
+                    ));
+                }
+            }
+            None => r.err(format!("{p}.notify_url: required, absolute URL")),
+        }
     }
 
     fn validate_updates(&self, r: &mut Report) {
@@ -301,8 +369,23 @@ impl PanelConfig {
         let mut c = self.clone();
         c.database_url = redact_url(&c.database_url);
         c.valkey_url = redact_url(&c.valkey_url);
+        if !c.payments.alipay.notify_url.is_empty() {
+            // Carries the secret route prefix.
+            c.payments.alipay.notify_url = "***".into();
+        }
         Ok(toml::to_string_pretty(&c)?)
     }
+}
+
+/// (scheme, host, path) of an absolute URL without query/fragment/userinfo.
+fn url_parts(u: &str) -> Option<(String, String, String)> {
+    let uri: axum::http::Uri = u.parse().ok()?;
+    let scheme = uri.scheme_str()?.to_ascii_lowercase();
+    let auth = uri.authority()?;
+    if auth.as_str().contains('@') || uri.query().is_some() || u.contains('#') {
+        return None;
+    }
+    Some((scheme, auth.host().to_string(), uri.path().to_string()))
 }
 
 /// Filesystem checks of `data_dir`: it must be (or be creatable as) a

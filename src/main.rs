@@ -169,6 +169,10 @@ fn validate_startup(cfg: &PanelConfig) -> Result<Vec<String>> {
     if let Err(e) = config_check::check_data_dir(&cfg.data_dir) {
         report.errors.push(e);
     }
+    // R18-3: key files (presence, mode 0600, parse) when payments are on.
+    if let Err(e) = akari_panel::billing::load(cfg) {
+        report.errors.push(e);
+    }
     report.into_result()
 }
 
@@ -215,6 +219,9 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
         "akari starting"
     );
     let install = install::ensure(&cfg)?;
+    akari_panel::billing::check_notify_prefix(&cfg, &install.route_prefix)
+        .map_err(anyhow::Error::msg)?;
+    let alipay = akari_panel::billing::load(&cfg).map_err(anyhow::Error::msg)?;
 
     let pg = sqlx::postgres::PgPoolOptions::new()
         .max_connections(16)
@@ -225,6 +232,9 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
 
     let valkey = state::connect_valkey(&cfg).await?;
     let state = state::AppState::new(cfg.clone(), install, pg, valkey);
+    if let Some(a) = alipay {
+        state.set_alipay(a);
+    }
 
     // LISTEN must be in place before any agent session can start.
     let listener = notify::start(state.clone()).await;
@@ -234,6 +244,7 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
         tokio::spawn(traffic::flush_loop(state.clone())),
         tokio::spawn(reaper::reap_loop(state.clone())),
         tokio::spawn(state.clone().persist_online_loop()),
+        tokio::spawn(akari_panel::billing::reconcile_loop(state.clone())),
     ];
 
     // Metrics have their own listener (never the public web port). Bound

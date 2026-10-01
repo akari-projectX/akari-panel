@@ -19,6 +19,7 @@ pub struct PanelConfig {
     pub sub: SubConfig,
     pub updates: UpdatesConfig,
     pub install: InstallConfig,
+    pub payments: PaymentsConfig,
 }
 
 /// One-line node installer (R18-2, `nodeinstall.rs`).
@@ -87,6 +88,53 @@ impl Default for UpdatesConfig {
         Self {
             release_keys: Vec::new(),
             max_concurrent_downloads: 8,
+        }
+    }
+}
+
+/// Payments (R18-3, src/billing/). Only Alipay Face-to-Face.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PaymentsConfig {
+    pub alipay: AlipayConfig,
+}
+
+/// `[payments.alipay]`: Alipay Face-to-Face (当面付), public-key mode,
+/// RSA2. Key files are loaded and checked at startup (`config check` too).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AlipayConfig {
+    pub enabled: bool,
+    /// The Alipay app id (APPID).
+    pub app_id: String,
+    /// The merchant (seller) id, 2088...; when set, notifies must carry it.
+    pub seller_id: String,
+    /// App RSA private key (PKCS#8/PKCS#1, PEM or bare base64); mode 0600.
+    pub app_private_key_file: PathBuf,
+    /// Alipay's public key (not the app public key).
+    pub alipay_public_key_file: PathBuf,
+    /// Production https://openapi.alipay.com/gateway.do; sandbox
+    /// https://openapi-sandbox.dl.alipaydev.com/gateway.do.
+    pub gateway_url: String,
+    /// The panel's PUBLIC prefixed notify URL:
+    /// https://<host>/<route prefix>/pay/alipay/notify. Contains the
+    /// secret prefix: redacted in `config check`, never logged.
+    pub notify_url: String,
+    /// Order (and QR) lifetime, minutes (5..=120, default 15).
+    pub order_timeout_minutes: u32,
+}
+
+impl Default for AlipayConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            app_id: String::new(),
+            seller_id: String::new(),
+            app_private_key_file: PathBuf::new(),
+            alipay_public_key_file: PathBuf::new(),
+            gateway_url: "https://openapi.alipay.com/gateway.do".into(),
+            notify_url: String::new(),
+            order_timeout_minutes: 15,
         }
     }
 }
@@ -286,6 +334,7 @@ impl Default for PanelConfig {
             sub: SubConfig::default(),
             updates: UpdatesConfig::default(),
             install: InstallConfig::default(),
+            payments: PaymentsConfig::default(),
         }
     }
 }
