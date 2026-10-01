@@ -585,10 +585,10 @@ impl TrafficBuffer {
         let tick = self
             .maintain_ticks
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if tick % PRUNE_EVERY_TICKS != 0 {
+        if !tick.is_multiple_of(PRUNE_EVERY_TICKS) {
             return;
         }
-        if (tick / PRUNE_EVERY_TICKS) % REBUILD_EVERY_PRUNES == 0 {
+        if (tick / PRUNE_EVERY_TICKS).is_multiple_of(REBUILD_EVERY_PRUNES) {
             self.prune(now);
         } else {
             self.prune_idle(now);
