@@ -8,6 +8,7 @@ mod common;
 mod explain;
 mod lb;
 mod load;
+mod multi;
 mod seed;
 mod swarm;
 
@@ -32,6 +33,8 @@ enum Cmd {
     Lb(lb::LbArgs),
     /// Run one traffic_counters retention pass (M2-5) and time it
     Retention(RetentionArgs),
+    /// Cross-instance correctness checks (two panel instances, M2-4)
+    Multi(multi::MultiArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -72,5 +75,6 @@ async fn main() -> Result<()> {
         Cmd::Swarm(a) => swarm::run(a).await,
         Cmd::Lb(a) => lb::run(a).await,
         Cmd::Retention(a) => retention(a).await,
+        Cmd::Multi(a) => multi::run(a).await,
     }
 }
