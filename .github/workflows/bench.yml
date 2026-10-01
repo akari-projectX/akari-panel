@@ -1,0 +1,60 @@
+name: bench
+
+# M2-1: criterion benchmarks of the panel's hot paths on the seeded M2 data
+# set (docs/PERF.md). Manual only: GitHub runners are noisy shared VMs, so
+# results are for trend-watching (download the criterion artifact and
+# compare against a previous run with `critcmp` or criterion's
+# --baseline), not for the absolute targets, which are measured on a
+# dedicated machine and recorded in docs/PERF.md.
+on:
+  workflow_dispatch:
+    inputs:
+      nodes:
+        description: seeded nodes
+        default: "200"
+      users:
+        description: seeded users
+        default: "50000"
+      per_node:
+        description: users per node
+        default: "10000"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  BENCH_DATABASE_URL: postgres://akari:akari-dev@localhost:5432/akari_bench
+
+jobs:
+  criterion:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: akari
+          POSTGRES_PASSWORD: akari-dev
+          POSTGRES_DB: akari
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U akari" --health-interval 3s
+          --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bench -> ../target
+      - name: seed
+        run: >-
+          cargo run --release --locked --manifest-path bench/Cargo.toml -- seed --reset
+          --nodes "${{ inputs.nodes }}" --users "${{ inputs.users }}"
+          --per-node "${{ inputs.per_node }}"
+      - name: criterion
+        run: cargo bench --locked --manifest-path bench/Cargo.toml --bench panel -- --save-baseline ci
+      - uses: actions/upload-artifact@v4
+        with:
+          name: criterion-${{ github.sha }}
+          path: target/criterion
