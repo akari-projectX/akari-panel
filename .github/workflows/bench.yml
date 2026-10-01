@@ -44,9 +44,10 @@ jobs:
           --health-cmd "pg_isready -U akari" --health-interval 3s
           --health-timeout 3s --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # rust-toolchain.toml pins the compiler (same as the Dockerfile).
+      - run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: bench -> ../target
       - name: seed
@@ -56,7 +57,7 @@ jobs:
           --per-node "${{ inputs.per_node }}"
       - name: criterion
         run: cargo bench --locked --manifest-path bench/Cargo.toml --bench panel -- --save-baseline ci
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: criterion-${{ github.sha }}
           path: target/criterion
