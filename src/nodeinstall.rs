@@ -12,8 +12,8 @@
 //!
 //! on the node. `GET /{prefix}/install/{token}` serves a POSIX sh script
 //! with the bootstrap file inside (panel address, server name, CA, the same
-//! token) and `GET .../install/{token}/agent/{arch}` the newest complete
-//! signed agent release for linux/<arch> from `agent_release_chunks` (the
+//! token) and `GET .../install/{token}/agent/{sha256}` the binary of the
+//! newest complete signed linux/<arch> release (`agent_release_chunks`; the
 //! script checks its SHA-256; without a release it falls back to
 //! `install.fallback_binary_url` + `SHA256SUMS`). Both answer only while the
 //! token is live: once the agent enrolls (burning the token) or the link
@@ -321,24 +321,20 @@ async fn probe_origin(o: &Origin) -> Result<Option<String>, String> {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ReleaseRef {
-    #[serde(skip)]
-    id: Uuid,
     pub version: String,
     pub sha256: String,
-    #[serde(skip)]
-    size: i64,
 }
 
 /// The newest complete (non-rollback) linux release per architecture.
 async fn latest_releases(pg: &sqlx::PgPool) -> sqlx::Result<HashMap<String, ReleaseRef>> {
-    let rows: Vec<(Uuid, String, String, String, i64)> = sqlx::query_as(
-        "SELECT id, arch, version, sha256, size FROM agent_releases \
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT arch, version, sha256 FROM agent_releases \
          WHERE os = 'linux' AND complete_at IS NOT NULL AND NOT rollback",
     )
     .fetch_all(pg)
     .await?;
     let mut best: HashMap<String, ReleaseRef> = HashMap::new();
-    for (id, arch, version, sha256, size) in rows {
+    for (arch, version, sha256) in rows {
         if !ARCHES.contains(&arch.as_str()) {
             continue;
         }
@@ -350,15 +346,7 @@ async fn latest_releases(pg: &sqlx::PgPool) -> sqlx::Result<HashMap<String, Rele
             }
         };
         if newer {
-            best.insert(
-                arch,
-                ReleaseRef {
-                    id,
-                    version,
-                    sha256,
-                    size,
-                },
-            );
+            best.insert(arch, ReleaseRef { version, sha256 });
         }
     }
     Ok(best)
@@ -722,25 +710,37 @@ pub async fn script(
     }
 }
 
-/// GET /{prefix}/install/{token}/agent/{arch}: the newest complete release
-/// binary for linux/<arch> (the script checks its SHA-256). Downloads share
-/// the per-instance limit of FetchArtifact (`updates.max_concurrent_downloads`).
+/// GET /{prefix}/install/{token}/agent/{sha256}: the complete linux
+/// release with that digest — the one the script was rendered with, so a
+/// release uploaded in between cannot make the check fail (the script still
+/// verifies the SHA-256). Downloads share the per-instance limit of
+/// FetchArtifact (`updates.max_concurrent_downloads`).
 pub async fn binary(
     State(state): State<AppState>,
     MaybeClientIp(ip): MaybeClientIp,
-    Path((_, token, arch)): Path<(String, String, String)>,
+    Path((_, token, sha)): Path<(String, String, String)>,
 ) -> Response {
     let Some(link) = live_link(&state, ip, &token).await else {
         return crate::reject::not_found();
     };
-    let releases = match latest_releases(state.pg()).await {
+    if sha.len() != 64 || !sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return crate::reject::not_found();
+    }
+    let rel: Option<(Uuid, i64)> = match sqlx::query_as(
+        "SELECT id, size FROM agent_releases \
+         WHERE sha256 = $1 AND os = 'linux' AND complete_at IS NOT NULL",
+    )
+    .bind(&sha)
+    .fetch_optional(state.pg())
+    .await
+    {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "release lookup failed");
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         }
     };
-    let Some(rel) = releases.get(&arch).cloned() else {
+    let Some((rel_id, rel_size)) = rel else {
         return crate::reject::not_found();
     };
     let Ok(permit) = state.fetch_permits().clone().try_acquire_owned() else {
@@ -750,7 +750,7 @@ pub async fn binary(
         )
             .into_response();
     };
-    tracing::info!(node = %link.node, release = %rel.id, "install binary download");
+    tracing::info!(node = %link.node, release = %rel_id, "install binary download");
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(2);
     let pg = state.pg().clone();
     tokio::spawn(async move {
@@ -760,7 +760,7 @@ pub async fn binary(
             let data: Result<Option<Vec<u8>>, sqlx::Error> = sqlx::query_scalar(
                 "SELECT data FROM agent_release_chunks WHERE release_id = $1 AND idx = $2",
             )
-            .bind(rel.id)
+            .bind(rel_id)
             .bind(idx)
             .fetch_optional(&pg)
             .await;
@@ -768,7 +768,7 @@ pub async fn binary(
                 Ok(Some(d)) => Ok(d),
                 Ok(None) => return,
                 Err(e) => {
-                    tracing::warn!(release = %rel.id, idx, error = %e, "install chunk read failed");
+                    tracing::warn!(release = %rel_id, idx, error = %e, "install chunk read failed");
                     Err(std::io::Error::other("chunk read failed"))
                 }
             };
@@ -789,7 +789,7 @@ pub async fn binary(
             ),
             (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
         ],
-        [(header::CONTENT_LENGTH, rel.size.to_string())],
+        [(header::CONTENT_LENGTH, rel_size.to_string())],
         body,
     )
         .into_response()

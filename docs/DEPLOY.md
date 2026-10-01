@@ -79,7 +79,8 @@ certificate from its own internal CA, which no browser or client trusts. That is
 admin UI (accept the browser warning once), but subscription clients and browsers will refuse it:
 use a real domain (an A record to the VPS, ports 80/443 open) so Caddy obtains a certificate by
 ACME. The Caddyfile sets `default_sni` to `AKARI_DOMAIN` because clients send no SNI for an IP
-address. The agent's gRPC channel is unaffected: it pins the panel CA, not the web certificate.
+address. The agent's gRPC channel is unaffected: it pins the panel CA, not the web certificate,
+and the one-line node installer pins the web certificate's key (§3).
 
 Notes: the image is distroless (no shell; `exec panel /akari ...` works because it runs the
 binary directly), runs as UID 65532, state lives in the `akari-data` volume (`/data`).
@@ -128,6 +129,91 @@ created before this release that never enrolled need `admin reset-2fa` once.
 
 ## 3. Add a node and install the agent
 
+**In the UI: Nodes → 新建节点.** Fill in the name, the region users see, the node's public
+address (IP or domain) and one or more inbounds from the protocol templates:
+
+| Template | Needs on the node | Notes |
+|---|---|---|
+| VLESS + REALITY (default) | nothing | the panel generates the X25519 key pair and a short id; `dest`/SNI from a list that works with the agent's xray (default `www.apple.com`, see §3b); **检测目标站点** runs a TLS 1.3 + h2 handshake from the panel |
+| VLESS + WebSocket + TLS | certificate | WS path random unless set |
+| VMess + WebSocket | certificate only with TLS | plain WS without a domain |
+| Trojan + TLS | certificate | |
+
+"Certificate" = the node's own certificate for the domain you enter, as
+`/etc/akari-agent/tls/fullchain.pem` and `privkey.pem` (certbot, acme.sh, …; root-only files are
+fine). The installer hands that directory to the agent as systemd credentials (the agent runs as a
+dynamic user and cannot read `/etc` otherwise); after renewing it run `systemctl restart
+akari-agent`. The agent does not run ACME itself. A WS inbound behind the node's own reverse proxy
+or a CDN is not a template (subscriptions would advertise the inbound's local port): write that
+JSON by hand. **高级：直接编辑入站 JSON** shows/edits the generated JSON; both paths go through the
+same validation (no `grpc` transport, no `fakedns`).
+
+Creating the node shows a **one-line install command**, valid for `install.token_ttl_secs`
+(default 1 h) and only until the agent has enrolled with it:
+
+```bash
+curl -fsSL 'https://panel.example.com/<prefix>/install/<token>' | sudo sh
+# or: wget -qO- 'https://panel.example.com/<prefix>/install/<token>' | sudo sh
+```
+
+Run it as root on the node (Linux with systemd >= 250, amd64 or arm64; Debian 12/13, Ubuntu
+22.04+ are fine). It
+
+1. downloads the agent from the panel (the newest complete release uploaded under **Updates**,
+   §5b) and checks its SHA-256 — without an uploaded release it falls back to
+   `install.fallback_binary_url` (default: the latest GitHub release asset, checked against the
+   release's `SHA256SUMS`); with neither it stops with a clear error before changing anything;
+2. writes `/etc/akari-agent/bootstrap.toml` (0600: panel address, gRPC server name, panel CA,
+   the one-time enrollment token — no private key), the systemd unit
+   (`deploy/systemd/akari-agent.service`, embedded) and a drop-in for the TLS credentials;
+3. starts the agent and waits until it has enrolled and connected (prints `SUCCESS`, or the
+   agent's log and the reason).
+
+Running it again is safe (reinstall/upgrade in place). The node shows `online` within seconds.
+Uninstall: `sudo akari-agent-uninstall` on the node (written by the installer), or a fresh
+command with `| sudo sh -s -- --uninstall`; then delete the node in the panel.
+
+**Security of the link.** The token in the URL *is* the node's enrollment token (256 bit, only
+its SHA-256 stored, single use, short TTL). The panel serves the script and the binary only while
+it is live; once the agent enrolls (or the link expires, or a newer link/token is issued for the
+node, or the node is being deleted) every request is the panel's uniform empty 404, as are wrong
+tokens and sources over the rate limit (`install.rate_per_ip` per `install.rate_window_secs`,
+default 20 / 10 min per address). Whoever runs the command first gets the node, exactly as with
+a bootstrap file: copy it over a trusted channel. The script passes the token to no command
+line (downloads read their URL from stdin) and the panel never logs it (`/{prefix}/install/{token}`
+in logs). **重装命令** in the node list issues a new link for an existing node; when the agent
+enrolls with it, the node's previous certificate is revoked.
+
+**Where the link points.** `install.public_url` (e.g. `https://panel.example.com`, no prefix)
+if set; otherwise the address the admin's browser uses for the panel. When the panel issues a
+command it connects to that origin: a certificate a public CA vouches for → plain `curl`/`wget`.
+Anything else (an IP-only deployment with Caddy's internal CA) → the command **pins the served
+certificate's public key**:
+
+```bash
+curl -fsSL --proto '=https' -k --pinnedpubkey 'sha256//<base64>' 'https://203.0.113.10/<prefix>/install/<token>' | sudo sh
+```
+
+curl checks the pin during the handshake, before it sends the request, so a mismatch aborts
+without revealing the token; `-k` only skips the CA check a self-signed panel cannot pass and is
+never emitted without a pin (there is no wget variant: wget cannot pin). The script uses the
+same pin for the binary download. Caddy's internal certificates are short-lived (about 12 h): if
+the command fails with "public key does not match", generate a new one. Set `install.tls_pin`
+to pin a fixed key instead of probing (e.g. when the panel cannot reach its own public address).
+
+```toml
+[install]
+public_url = "https://panel.example.com"   # default "": the browser's origin
+tls_pin = ""                                # "sha256//<base64>"; default: probe
+token_ttl_secs = 3600                       # 5 min .. 7 days
+rate_per_ip = 20
+rate_window_secs = 600
+fallback_binary_url = "https://github.com/akari-projectX/akari-agent/releases/latest/download/akari-agent-linux-{arch}"
+```
+
+**Manual path (CLI / no outbound HTTPS on the node).** The bootstrap file still works (and is
+shown under the install command after a create; **bootstrap** in the node list issues a new one):
+
 ```bash
 # bare metal, on the panel host
 sudo -u akari akari -c /etc/akari/panel.toml node add tokyo-1 --out /tmp/tokyo-1-bootstrap.toml
@@ -138,14 +224,9 @@ sudo -u akari akari -c /etc/akari/panel.toml node add tokyo-1 --out /tmp/tokyo-1
 chmod 600 vps-1-bootstrap.toml
 ```
 
-`node enroll-token <id> --out -` works the same way.
-
-Or in the UI: Nodes → **New node** (the bootstrap file is shown once, with a Download button).
-
-The bootstrap file holds the panel address, the TLS server name, the panel CA and a **one-time
-enrollment token** — no private key. The token is single use and expires after
-`agent.enroll_token_ttl_secs` (default 24 h); only its SHA-256 is stored. Still treat the file as
-a credential until the agent has enrolled (copy it over SSH, delete the copy). On the node:
+`node enroll-token <id> --out -` works the same way. The bootstrap token is single use and
+expires after `agent.enroll_token_ttl_secs` (default 24 h). Treat the file as a credential until
+the agent has enrolled (copy it over SSH, delete the copy). On the node:
 
 ```bash
 install -m 0755 akari-agent-linux-amd64 /usr/local/bin/akari-agent   # arm64: akari-agent-linux-arm64
@@ -165,14 +246,13 @@ certificate next to the key. The private key never leaves the node. The panel de
 certificate (CN `agent-<node id>`, client-auth only, `agent.cert_validity_secs`, default 90 days).
 
 The unit grants only `CAP_NET_BIND_SERVICE` (inbounds on 443) and reads the bootstrap file as a
-systemd credential (systemd >= 250). In the UI, set the node's `server_addr` and inbounds, create
-users, assign them. The node shows `online` within seconds.
+systemd credential (systemd >= 250).
 
 **Token expired / agent state lost / certificate expired** (agent offline longer than its
-validity): `akari node enroll-token <node id>` (UI: **Enrollment token**) writes a new bootstrap
-file; install it and restart the agent. The agent re-enrolls once when the bootstrap file carries a
-token it has not used yet; after that the node's older certificates are refused. A used, unknown
-or expired token is refused with one uniform error ("enrollment refused"), and the agent exits.
+validity): **重装命令** (or `akari node enroll-token <node id>` for a bootstrap file). The agent
+re-enrolls once when the bootstrap file carries a token it has not used yet; after that the node's
+older certificates are refused. A used, unknown or expired token is refused with one uniform error
+("enrollment refused"), and the agent exits.
 
 Enrollment is rate limited per source address and globally (`agent.enroll_rate_per_ip`,
 `agent.enroll_rate_global`, `agent.enroll_rate_window_secs`; defaults 10 / 60 per 10 min).
@@ -221,6 +301,9 @@ xray x25519                      # prints PrivateKey and Password (= the public 
 # cannot use logs "REALITY: processed invalid connection" on the server.
 openssl s_client -connect www.apple.com:443 -tls1_3 -alpn h2 </dev/null 2>/dev/null | grep -E 'Protocol|ALPN'
 ```
+
+The node form's REALITY template does all of the following for you (key pair, short id,
+`publicKey`/`shortId`/`fingerprint`); the rest of this section is for hand-written JSON.
 
 **The panel's inbound must carry `publicKey`.** xray's server side only needs `privateKey`; the
 panel builds subscriptions from the same JSON, so it reads the client-side fields from

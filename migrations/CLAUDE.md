@@ -18,7 +18,7 @@ sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18）在 `serve`、`n
 | `user_plans` | 0020：`status` 枚举 active/replaced/cancelled/expired（`(status='active') = (ended_at IS NULL)`），部分唯一索引 `user_plans_one_active (user_id) WHERE active`；`period_anchor`、`last_reset_at`、`next_reset_at`（重置标记，pass 处理 `<= now()` 并在同一 UPDATE 推进）、`expires_at`；用户/套餐删除级联；函数 `akari_next_reset(anchor, period, days, after)`（UTC 月份边界夹到月末、N 天精确秒数，严格晚于 after） |
 | `node_users_departed` | 0006：PK (node_id,user_id) + departed_at。user 仍存在但 node_users 行被删（unassign、set_inbounds 裁空）时写入，宽限期内仍计费最终计数；re-assign 删除；flush 循环清理过期行；user/node 删除级联；0008：`billed_bytes`（离开后累计已计费，重新离开时清零） |
 | `revoked_certs` | 0007：`cert_serial` PK（规范化形式）、node_id、revoked_at。永久墓碑，身份识别最先查它；0011：`reason`（`deleted` = 接受→空状态→关闭；`rotated` = 续期/重新注册取代，按未知证书拒绝） |
-| `node_enrollments` | 0011：PK node_id（级联删除；重新签发覆盖）、`token_hash` BYTEA UNIQUE（SHA-256）、expires_at、used_at（条件 UPDATE 烧掉，单次使用） |
+| `node_enrollments` | 0011：PK node_id（级联删除；重新签发覆盖）、`token_hash` BYTEA UNIQUE（SHA-256）、expires_at、used_at（条件 UPDATE 烧掉，单次使用）；0030（R18-2）：`install_origin`（非空 = 一键安装链接，脚本从这个 origin 下载）、`install_pin`（curl `--pinnedpubkey`，CHECK 需有 origin）；bootstrap token 两列为 NULL，永不作为脚本提供 |
 | `totp_enroll_codes` | 0011：PK user_id（级联）、`code_hash` BYTEA（SHA-256(user id‖规范化码)）、expires_at（24h）；admin 激活 TOTP 时消费 |
 | `user_totp` | 0010：PK user_id（级联删除）；`secret_enc` BYTEA（0x01‖nonce‖AES-256-GCM 密文，AAD=user id）；`enabled_at` NULL=待确认；`last_step` 已接受的最大时间步（防重放） |
 | `user_recovery_codes` | 0010：PK (user_id, code_hash)；`code_hash` = hex HMAC-SHA256；`used_at` 非空 = 已用 |

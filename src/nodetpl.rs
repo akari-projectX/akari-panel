@@ -19,7 +19,6 @@
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
-use axum::extract::State;
 use axum::Json;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -29,7 +28,6 @@ use serde_json::{json, Value};
 
 use crate::api::ApiJson;
 use crate::auth::{ApiError, AuthUser};
-use crate::state::AppState;
 
 /// REALITY targets known to work with the agent's xray (v26.3.27),
 /// checked 2026-10-01 (docs/DEPLOY.md §3b). The first is the default.
@@ -467,7 +465,6 @@ fn forbidden_target(ip: IpAddr) -> bool {
 /// target). Only public addresses (no SSRF into the panel's network).
 /// The node's own network path may differ: this is a first check.
 pub async fn check_dest(
-    State(_state): State<AppState>,
     user: AuthUser,
     ApiJson(req): ApiJson<CheckDestReq>,
 ) -> Result<Json<CheckDestView>, ApiError> {

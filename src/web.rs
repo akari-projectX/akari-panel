@@ -28,7 +28,7 @@ pub fn router(state: AppState) -> Router {
         .route("/{prefix}/sub/{token}", get(sub::subscription))
         .route("/{prefix}/install/{token}", get(nodeinstall::script))
         .route(
-            "/{prefix}/install/{token}/agent/{arch}",
+            "/{prefix}/install/{token}/agent/{sha256}",
             get(nodeinstall::binary),
         )
         .route("/{prefix}/auth/login", post(api::login))
@@ -327,8 +327,8 @@ mod tests {
             ("/0123abcd/sub/SECRET/extra", "/{prefix}/sub/{token}/extra"),
             ("/0123abcd/install/SECRET", "/{prefix}/install/{token}"),
             (
-                "/0123abcd/install/SECRET/agent/amd64",
-                "/{prefix}/install/{token}/agent/amd64",
+                "/0123abcd/install/SECRET/agent/ab12",
+                "/{prefix}/install/{token}/agent/ab12",
             ),
             ("/0123abcd/api/v1/users", "/{prefix}/api/v1/users"),
             ("/0123abcd", "/{prefix}"),

@@ -17,3 +17,7 @@ server_name = "panel.example.com"
 # Scrape from another container on the backend network, never published.
 bind = "0.0.0.0:9100"
 allow_non_loopback = true
+
+[install]
+# One-line node installer (docs/DEPLOY.md §3); default = the browser's origin.
+# public_url = "https://panel.example.com"

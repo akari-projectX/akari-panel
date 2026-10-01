@@ -1058,7 +1058,7 @@ if [ "${SMOKE_SHELLCHECK:-1}" = 1 ]; then
     || { echo "FAIL: shellcheck"; exit 1; }
 fi
 # Unknown arch / bad token: the canonical rejection.
-for p in "$INST_URL/agent/mips" "${INST_URL%?}x" "$BASE/install/short"; do
+for p in "$INST_URL/agent/amd64" "$INST_URL/agent/$(printf "%064d" 0)" "${INST_URL%?}x" "$BASE/install/short"; do
   [ "$(fp "$p")" = "$REJ" ] || { echo "FAIL: install rejection differs for $p"; exit 1; }
 done
 if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
@@ -1087,7 +1087,8 @@ if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
     && { echo "FAIL: token visible in the process list"; exit 1; }
   # The link died with the enrollment: script and binary are the rejection.
   [ "$(fp "$INST_URL")" = "$REJ" ] || { echo "FAIL: used install link not rejected"; exit 1; }
-  [ "$(fp "$INST_URL/agent/amd64")" = "$REJ" ] || { echo "FAIL: used install link serves the binary"; exit 1; }
+  INST_SHA=$(python3 -c "import json;print(json.load(open('$LOG/inst-create.json'))['install']['releases']['amd64']['sha256'])")
+  [ "$(fp "$INST_URL/agent/$INST_SHA")" = "$REJ" ] || { echo "FAIL: used install link serves the binary"; exit 1; }
   # Uninstall with a fresh link (re-install command), then reinstall with it.
   [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$INST_ID/install" -H 'Content-Type: application/json' \
       -d '{"origin":"http://127.0.0.1:8080"}')" = "200" ] || { echo "FAIL: re-install link"; exit 1; }
