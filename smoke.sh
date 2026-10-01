@@ -11,6 +11,12 @@ JAR=/tmp/akari-smoke.cookies
 LOG=/tmp/akari-smoke
 ADMIN_PW=smoke-admin-password-123
 AGENT_PID=""
+# Per-checkout database (parallel worktrees carry different migrations; a
+# shared DB fails with "migration N was previously applied but is missing").
+SMOKE_DB=${SMOKE_DB:-akari}
+export DATABASE_URL=${DATABASE_URL:-postgres://akari:akari-dev@localhost:5432/$SMOKE_DB}
+docker compose exec -T postgres psql -U akari -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$SMOKE_DB'" | grep -q 1 \
+  || docker compose exec -T postgres psql -U akari -d postgres -qc "CREATE DATABASE \"$SMOKE_DB\"" >/dev/null
 rm -rf "$LOG" data "$BOOT" "$JAR" && mkdir -p "$LOG"
 
 # Clean up any leftovers from earlier runs (zombie panels keep port 8443).
@@ -56,8 +62,8 @@ sleep 2
 
 # Reset AFTER startup: fresh volumes have no tables until the panel migrates,
 # and Valkey rate-limit counters would poison the next run's login test.
-docker compose exec -T postgres psql -U akari -d akari -c "TRUNCATE nodes CASCADE; TRUNCATE users CASCADE;" >/dev/null 2>&1 || true
-docker compose exec -T postgres psql -U akari -d akari -c "TRUNCATE revoked_certs, traffic_counters, audit_log, agent_releases, rollouts CASCADE;" >/dev/null 2>&1 || true
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE nodes CASCADE; TRUNCATE users CASCADE;" >/dev/null 2>&1 || true
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE revoked_certs, traffic_counters, audit_log, agent_releases, rollouts CASCADE;" >/dev/null 2>&1 || true
 docker compose exec -T valkey valkey-cli flushall >/dev/null
 
 echo "== first admin (env password) =="
@@ -474,7 +480,7 @@ LEASE=$(node_field lease_remaining_seconds)
 echo "lease: ok (${LEASE}s left)"
 
 echo "== node online + heartbeat =="
-STATUS=$(docker compose exec -T postgres psql -U akari -d akari -tAc "SELECT status FROM nodes WHERE id='$NODE_ID'")
+STATUS=$(docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -tAc "SELECT status FROM nodes WHERE id='$NODE_ID'")
 [ "$STATUS" = "online" ] || { echo "FAIL: node status '$STATUS'"; exit 1; }
 docker compose exec -T valkey valkey-cli exists "akari:node:online:$NODE_ID" | grep -q 1 \
   || { echo "FAIL: online key missing"; exit 1; }
@@ -523,7 +529,7 @@ wait_users 0 10 "delete user"
 echo "delete user: ok"
 
 echo "== M3 operations model: group + plan -> automatic access; quota; period reset; cancel =="
-psql_q() { docker compose exec -T postgres psql -U akari -d akari -tAc "$1"; }
+psql_q() { docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -tAc "$1"; }
 last_json() { python3 -c "import json,sys; d=json.load(open('/tmp/akari-smoke/last')); print($1)"; }
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"region": "Smokeland"}')" = "200" ] || { echo "FAIL: set region"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/node-groups" -H 'Content-Type: application/json' \
@@ -676,7 +682,7 @@ else
 fi
 
 echo "== Sprint 3b: node delete = empty state, then revoke + close; billing rows kept =="
-psql_q() { docker compose exec -T postgres psql -U akari -d akari -tAc "$1"; }
+psql_q() { docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -tAc "$1"; }
 # Some billed traffic on the node first (a user C with one VLESS round trip).
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
     -d '{"login":"smoke-user-c","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create user C"; exit 1; }
