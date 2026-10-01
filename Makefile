@@ -43,11 +43,14 @@ ci: lint test deny check
 # --- M2 benchmarks and load tooling (bench/, docs/PERF.md) ----------------
 # Own crate and lockfile: nothing here reaches the release binary. DB
 # benches need the seeded bench database (its own database, akari_bench).
+# Run from the repo root: CARGO_TARGET_DIR pins the shared target dir (cargo
+# reads bench/.cargo/config.toml only when invoked from bench/), and the
+# tools' default paths (bench/data) are root-relative.
 bench-seed:
-	cargo run --release --manifest-path bench/Cargo.toml -- seed --reset
+	CARGO_TARGET_DIR=target cargo run --release --manifest-path bench/Cargo.toml -- seed --reset
 
 bench:
-	cargo bench --manifest-path bench/Cargo.toml --bench panel
+	CARGO_TARGET_DIR=target cargo bench --manifest-path bench/Cargo.toml --bench panel
 
 bench-lint:
 	cd bench && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings
