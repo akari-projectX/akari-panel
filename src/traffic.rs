@@ -61,11 +61,11 @@ const MAX_REPORT_ROWS: usize = 65_536;
 
 /// A key seen for the first time is assumed to have been counting for at
 /// least this long when applying the plausibility cap.
-const MIN_PLAUSIBLE_SECS: i64 = 60;
+pub const MIN_PLAUSIBLE_SECS: i64 = 60;
 
 /// Added to the time since a row was last written: its previous value may
 /// have been persisted up to a flush interval after the agent read it.
-const PLAUSIBLE_SLACK_SECS: i64 = 15;
+pub const PLAUSIBLE_SLACK_SECS: i64 = 15;
 
 /// (node, user, agent session id)
 type Key = (Uuid, Uuid, String);
@@ -603,7 +603,7 @@ impl TrafficBuffer {
 ///
 /// Returns the refused keys, the rows clamped by (1)/(2) and the nodes
 /// clamped by (3).
-const FLUSH_SQL: &str = r#"
+pub const FLUSH_SQL: &str = r#"
 WITH input AS (
     SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::text[], $4::bigint[], $5::bigint[], $6::float8[])
         AS t(node_id, user_id, session_id, up, down, age_secs)
@@ -616,21 +616,25 @@ WITH input AS (
                            COALESCE(n.traffic_credit_floor, 'infinity'::timestamptz))
                 ELSE statement_timestamp() - make_interval(secs => $12) END AS floor
     FROM nodes n WHERE n.id IN (SELECT DISTINCT node_id FROM input)
-), member AS (
-    SELECT i.*, CASE WHEN a.assigned THEN NULL ELSE d.departed_at END AS departed_at
+), classified AS (
+    SELECT i.*,
+           (nu.node_id IS NOT NULL OR d.departed_at IS NOT NULL) AS is_member,
+           CASE WHEN nu.node_id IS NOT NULL THEN NULL ELSE d.departed_at END AS departed_at,
+           d.billed_bytes AS departed_billed,
+           f.rate, f.traffic_tat, f.floor
     FROM input i
-    CROSS JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM node_users nu
-                                       WHERE nu.node_id = i.node_id AND nu.user_id = i.user_id)
-                        AS assigned) a
+    LEFT JOIN node_users nu ON nu.node_id = i.node_id AND nu.user_id = i.user_id
     LEFT JOIN node_users_departed d
            ON d.node_id = i.node_id AND d.user_id = i.user_id
           AND d.departed_at > statement_timestamp() - make_interval(secs => $10)
-    WHERE a.assigned OR d.departed_at IS NOT NULL
+    LEFT JOIN nf f ON f.node_id = i.node_id
+), member AS (
+    SELECT * FROM classified WHERE is_member
 ), upsert AS (
     INSERT INTO traffic_counters AS c
         (node_id, user_id, session_id, up_bytes, down_bytes, updated_at, first_seen_at)
     SELECT node_id, user_id, session_id, up, down, statement_timestamp(), statement_timestamp()
-    FROM member
+    FROM member ORDER BY node_id, user_id, session_id
     ON CONFLICT (node_id, user_id, session_id) DO UPDATE
     SET up_bytes   = GREATEST(c.up_bytes, EXCLUDED.up_bytes),
         down_bytes = GREATEST(c.down_bytes, EXCLUDED.down_bytes),
@@ -640,16 +644,16 @@ WITH input AS (
               COALESCE(old.first_seen_at, old.updated_at) AS old_first,
               new.up_bytes AS new_up, new.down_bytes AS new_down
 ), rows AS (
-    SELECT u.node_id, u.user_id, u.old_at, m.age_secs, m.departed_at, f.floor,
+    SELECT u.node_id, u.user_id, u.old_at, m.age_secs, m.departed_at, m.departed_billed,
+           m.rate, m.traffic_tat, m.floor,
            GREATEST(u.new_up - COALESCE(u.old_up, 0), 0)::numeric
          + GREATEST(u.new_down - COALESCE(u.old_down, 0), 0)::numeric AS raw,
            GREATEST(COALESCE(GREATEST(u.old_at, u.old_first),
                              statement_timestamp() - make_interval(secs => m.age_secs)),
-                    f.floor) AS start
+                    m.floor) AS start
     FROM upsert u JOIN member m USING (node_id, user_id, session_id)
-    JOIN nf f USING (node_id)
 ), per_row AS (
-    SELECT node_id, user_id, departed_at, start, raw,
+    SELECT node_id, user_id, departed_at, departed_billed, rate, traffic_tat, floor, start, raw,
            CASE WHEN departed_at IS NULL THEN
                $7::numeric * COALESCE(
                    GREATEST(extract(epoch FROM statement_timestamp() - GREATEST(old_at, floor)), 0)
@@ -662,33 +666,36 @@ WITH input AS (
            END AS cap
     FROM rows
 ), capped AS (
-    SELECT node_id, user_id, departed_at, start, raw, cap, LEAST(raw, cap) AS amount FROM per_row
+    SELECT *, LEAST(raw, cap) AS amount FROM per_row
 ), pair AS (
-    SELECT c.node_id, c.user_id, sum(c.amount) AS total,
+    -- Per (node, user): a pair is either assigned or departed in all of
+    -- its rows (departed_at belongs to the pair), so the departed pair's
+    -- sum and allowance are window aggregates over the pair's rows.
+    SELECT *,
+           sum(amount) OVER w AS pair_total,
            GREATEST($7::numeric * GREATEST(extract(epoch FROM
-               min(c.departed_at) + make_interval(secs => $13) - min(c.start)), 0)
-             - min(d.billed_bytes)::numeric, 0) AS allowance
-    FROM capped c
-    JOIN node_users_departed d ON d.node_id = c.node_id AND d.user_id = c.user_id
-    WHERE c.departed_at IS NOT NULL
-    GROUP BY c.node_id, c.user_id
+               min(departed_at) OVER w + make_interval(secs => $13) - min(start) OVER w), 0)
+             - min(departed_billed) OVER w::numeric, 0) AS pair_allowance
+    FROM capped
+    WINDOW w AS (PARTITION BY node_id, user_id)
 ), row2 AS (
-    SELECT c.node_id, c.user_id, c.departed_at IS NOT NULL AS departed,
-           CASE WHEN p.total > p.allowance THEN floor(c.amount * p.allowance / p.total)
-                ELSE c.amount END AS amount
-    FROM capped c LEFT JOIN pair p USING (node_id, user_id)
+    SELECT node_id, user_id, departed_at IS NOT NULL AS departed, rate, floor,
+           GREATEST(COALESCE(traffic_tat, statement_timestamp() - interval '60 seconds'), floor) AS tat,
+           CASE WHEN departed_at IS NOT NULL AND pair_total > pair_allowance
+                THEN floor(amount * pair_allowance / pair_total)
+                ELSE amount END AS amount
+    FROM pair
 ), node_cap AS (
-    SELECT f.node_id, f.rate, g.tat, t.total,
-           f.rate * GREATEST(extract(epoch FROM statement_timestamp() - g.tat), 0) AS allowance
-    FROM nf f
-    JOIN (SELECT node_id, sum(amount) AS total FROM row2 GROUP BY node_id) t USING (node_id)
-    CROSS JOIN LATERAL (SELECT GREATEST(
-        COALESCE(f.traffic_tat, statement_timestamp() - interval '60 seconds'), f.floor) AS tat) g
+    SELECT *,
+           sum(amount) OVER (PARTITION BY node_id) AS node_total,
+           rate * GREATEST(extract(epoch FROM statement_timestamp() - tat), 0) AS node_allowance
+    FROM row2
 ), scaled AS (
-    SELECT r.node_id, r.user_id, r.departed,
-           CASE WHEN nc.total > nc.allowance THEN floor(r.amount * nc.allowance / nc.total)
-                ELSE r.amount END AS billed
-    FROM row2 r JOIN node_cap nc USING (node_id)
+    SELECT node_id, user_id, departed, rate, tat,
+           node_total > node_allowance AS node_clamped,
+           CASE WHEN node_total > node_allowance THEN floor(amount * node_allowance / node_total)
+                ELSE amount END AS billed
+    FROM node_cap
 ), per_user AS (
     SELECT user_id, sum(billed) AS delta FROM scaled GROUP BY user_id
 ), billed AS (
@@ -708,27 +715,25 @@ WITH input AS (
     UPDATE nodes n
     SET traffic_tat = GREATEST(
             COALESCE(n.traffic_tat, '-infinity'::timestamptz),
-            nc.tat + make_interval(secs => (b.billed / nc.rate)::float8))
-    FROM node_cap nc
-    JOIN (SELECT node_id, sum(billed) AS billed FROM scaled GROUP BY node_id) b USING (node_id)
-    WHERE n.id = nc.node_id
+            b.tat + make_interval(secs => (b.billed / b.rate)::float8))
+    FROM (SELECT node_id, min(tat) AS tat, min(rate) AS rate, sum(billed) AS billed
+          FROM scaled GROUP BY node_id) b
+    WHERE n.id = b.node_id
     RETURNING 1
 )
-SELECT coalesce(array_agg(i.node_id), '{}') AS dropped_nodes,
-       coalesce(array_agg(i.user_id), '{}') AS dropped_users,
-       coalesce(array_agg(i.session_id), '{}') AS dropped_sessions,
+SELECT coalesce(array_agg(c.node_id) FILTER (WHERE NOT c.is_member), '{}') AS dropped_nodes,
+       coalesce(array_agg(c.user_id) FILTER (WHERE NOT c.is_member), '{}') AS dropped_users,
+       coalesce(array_agg(c.session_id) FILTER (WHERE NOT c.is_member), '{}') AS dropped_sessions,
        (SELECT count(*) FROM per_row WHERE raw > cap) AS clamped,
-       (SELECT count(*) FROM node_cap WHERE total > allowance) AS nodes_clamped,
+       (SELECT count(DISTINCT node_id) FROM scaled WHERE node_clamped) AS nodes_clamped,
        (SELECT LEAST(coalesce(sum(delta) FILTER (WHERE delta > 0), 0),
                      9223372036854775807)::bigint FROM per_user) AS billed_total
-FROM input i
-WHERE NOT EXISTS (SELECT 1 FROM member m
-                  WHERE m.node_id = i.node_id AND m.user_id = i.user_id AND m.session_id = i.session_id)
+FROM classified c
 "#;
 
 /// Departed pairs (R12 D6): traffic up to this long after departed_at is
 /// still plausible (≈ 2 report intervals + a flush).
-const DEPARTED_SLACK_SECS: i64 = 30;
+pub const DEPARTED_SLACK_SECS: i64 = 30;
 
 /// Rate limits for `write_rows`.
 #[derive(Clone, Copy, Debug)]
@@ -797,6 +802,17 @@ async fn write_rows(
          ORDER BY id FOR NO KEY UPDATE",
     )
     .bind(&nodes)
+    .execute(&mut *tx)
+    .await?;
+    // Then the users the batch can bill, in id order: FLUSH_SQL's UPDATE of
+    // users visits them in plan order, and two instances flushing disjoint
+    // nodes that share users (a user is served by many nodes) would
+    // otherwise deadlock on them (M2-4).
+    sqlx::query(
+        "SELECT 1 FROM users WHERE id IN (SELECT DISTINCT unnest($1::uuid[])) \
+         ORDER BY id FOR NO KEY UPDATE",
+    )
+    .bind(&users)
     .execute(&mut *tx)
     .await?;
     if let Some(secs) = outage_secs.filter(|s| *s > rates.burst_secs as f64) {
@@ -881,8 +897,9 @@ fn is_row_poison(e: &sqlx::Error) -> bool {
 
 /// Persist `buf`'s dirty rows. A data error on the batch falls back to
 /// per-row writes so one bad row cannot poison the rest; transient errors
-/// keep everything for the next tick (retry is idempotent).
-async fn flush_buffer(
+/// keep everything for the next tick (retry is idempotent). Public for the
+/// benchmarks; the panel calls it through `flush_all`/`flush_node`/the loop.
+pub async fn flush_buffer(
     pg: &sqlx::PgPool,
     buf: &TrafficBuffer,
     rates: Rates,

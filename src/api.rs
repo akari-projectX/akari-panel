@@ -468,7 +468,7 @@ pub struct UserView {
 }
 
 /// UserView columns (alias `users` table as itself).
-const USER_VIEW_COLS: &str =
+pub const USER_VIEW_COLS: &str =
     "id, login, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, \
      EXISTS (SELECT 1 FROM user_totp t WHERE t.user_id = users.id AND t.enabled_at IS NOT NULL) \
      AS totp_enabled";
@@ -488,7 +488,7 @@ pub async fn list_users(
     let limit = p.limit.unwrap_or(50).clamp(1, 200);
     let offset = p.offset.unwrap_or(0).max(0);
     let rows = sqlx::query_as::<_, UserView>(sqlx::AssertSqlSafe(format!(
-        "SELECT {USER_VIEW_COLS} FROM users ORDER BY created_at LIMIT $1 OFFSET $2"
+        "SELECT {USER_VIEW_COLS} FROM users ORDER BY created_at, id LIMIT $1 OFFSET $2"
     )))
     .bind(limit)
     .bind(offset)
@@ -1022,7 +1022,7 @@ async fn with_heartbeats(state: &AppState, mut views: Vec<NodeView>) -> Vec<Node
     views
 }
 
-const NODE_VIEW_COLS: &str =
+pub const NODE_VIEW_COLS: &str =
     "id, name, enabled, status, agent_version, core_version, config_version, \
      user_version, xray_inbounds, server_addr, last_error, last_error_at, failed_config_version, \
      failed_user_version, agent_protocol, lease_expires_at, \

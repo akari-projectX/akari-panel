@@ -1494,6 +1494,15 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
     }))
 }
 
+/// The snapshot `desired_state` would send `node_id` now (benchmarks and
+/// load tooling; sessions use `desired_state` itself). None: no such node.
+pub async fn desired_snapshot(
+    pg: &sqlx::PgPool,
+    node_id: Uuid,
+) -> anyhow::Result<Option<ConfigSnapshot>> {
+    Ok(desired_state(pg, node_id).await?.map(|d| d.snapshot))
+}
+
 /// Persist how long the node's current lease runs (NodeView), at most
 /// every 30 s per session.
 const LEASE_WRITE_EVERY: Duration = Duration::from_secs(30);

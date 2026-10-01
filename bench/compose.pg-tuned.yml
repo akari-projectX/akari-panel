@@ -1,0 +1,24 @@
+# Bench-only override of the dev stack's PostgreSQL: settings sized for the
+# M2 data set (50k users, 2M assignments), i.e. what docs/DEPLOY.md
+# recommends for a production server of that size. Stock postgres:18 uses
+# shared_buffers=128MB, which the 2M-row working set does not fit.
+#
+#   docker compose -p akari-panel -f docker-compose.yml -f bench/compose.pg-tuned.yml up -d --wait postgres
+#   docker compose -p akari-panel up -d --wait postgres     # back to stock
+services:
+  postgres:
+    command:
+      - postgres
+      - -c
+      - shared_buffers=2GB
+      - -c
+      - effective_cache_size=6GB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - checkpoint_completion_target=0.9
+    shm_size: 2560mb

@@ -71,12 +71,14 @@ struct SubUser {
     expires_at: Option<DateTime<Utc>>,
 }
 
+/// One assignment of the subscribing user: the node's public data and the
+/// user's credentials on it (input of `render`).
 #[derive(FromRow)]
-struct NodeRow {
-    name: String,
-    xray_inbounds: Value,
-    server_addr: Option<String>,
-    credentials: Value,
+pub struct NodeRow {
+    pub name: String,
+    pub xray_inbounds: Value,
+    pub server_addr: Option<String>,
+    pub credentials: Value,
 }
 
 #[derive(serde::Deserialize)]
@@ -482,6 +484,24 @@ fn pad(body: String) -> String {
     body
 }
 
+/// The subscription body for `user_agent` (format by UA) and its content
+/// type, padded (`pad`). Pure: the request path and the benchmarks share it.
+pub fn render(user_agent: &str, rows: &[NodeRow]) -> (&'static str, String) {
+    let format = detect_format(user_agent);
+    let proxies = collect_proxies(rows);
+    let body = match format {
+        Format::SingBox => render_sing_box(&proxies).to_string(),
+        Format::Clash => render_clash(&proxies),
+        Format::Links => render_links(&proxies),
+    };
+    let content_type = match format {
+        Format::SingBox => "application/json; charset=utf-8",
+        Format::Clash => "text/yaml; charset=utf-8",
+        Format::Links => "text/plain; charset=utf-8",
+    };
+    (content_type, pad(body))
+}
+
 /// GET /{prefix}/sub/{token} — the client-facing subscription. The token is
 /// the credential; no cookie or other auth applies. Any failure (unknown
 /// token, disabled or expired user, rate limit) returns the same empty 404
@@ -561,20 +581,7 @@ pub async fn subscription(
         .get(header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let format = detect_format(user_agent);
-    let proxies = collect_proxies(&rows);
-    let body = match format {
-        Format::SingBox => render_sing_box(&proxies).to_string(),
-        Format::Clash => render_clash(&proxies),
-        Format::Links => render_links(&proxies),
-    };
-    let body = pad(body);
-
-    let content_type = match format {
-        Format::SingBox => "application/json; charset=utf-8",
-        Format::Clash => "text/yaml; charset=utf-8",
-        Format::Links => "text/plain; charset=utf-8",
-    };
+    let (content_type, body) = render(user_agent, &rows);
 
     // Quota header only after every failure path is cleared.
     let expire = user
