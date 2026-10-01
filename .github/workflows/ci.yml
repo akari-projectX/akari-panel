@@ -95,6 +95,8 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: node scripts/check-auth-paths.mjs
+      # M3: frontend unit tests (vitest + Testing Library, jsdom).
+      - run: npx vitest run
       - run: npx vite build
 
   deny:

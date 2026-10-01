@@ -304,6 +304,7 @@ function NodeEditor({ node }: { node: NodeView }) {
 
   const [userId, setUserId] = useState("");
   const [serverAddr, setServerAddr] = useState(node.server_addr ?? "");
+  const [region, setRegion] = useState(node.region ?? "");
   const [addrSaved, setAddrSaved] = useState(false);
   const [inboundTag, setInboundTag] = useState(node.xray_inbounds[0]?.tag ?? "");
   const [protocol, setProtocol] = useState("vless");
@@ -314,7 +315,10 @@ function NodeEditor({ node }: { node: NodeView }) {
     e.preventDefault();
     setAddrSaved(false);
     try {
-      await patch(`/nodes/${node.id}`, { server_addr: serverAddr.trim() || null });
+      await patch(`/nodes/${node.id}`, {
+        server_addr: serverAddr.trim() || null,
+        region: region.trim() || null,
+      });
       setAddrSaved(true);
       await queryClient.invalidateQueries({ queryKey: ["nodes"] });
     } catch (err) {
@@ -390,6 +394,16 @@ function NodeEditor({ node }: { node: NodeView }) {
               placeholder="node.example.com"
             />
           </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="region">Region (shown to users)</Label>
+            <Input
+              id="region"
+              className="w-48"
+              value={region}
+              onChange={(e) => setRegion(e.target.value)}
+              placeholder="Tokyo"
+            />
+          </div>
           <Button variant="outline" type="submit">
             Save address
           </Button>
@@ -413,7 +427,12 @@ function NodeEditor({ node }: { node: NodeView }) {
         </form>
 
         <div className="rounded-lg border border-border p-4">
-          <p className="mb-3 text-sm font-medium">Issue account for a user on this node</p>
+          <p className="mb-1 text-sm font-medium">Manual override: issue an account for a user on this node</p>
+          <p className="mb-3 text-xs text-muted-foreground">
+            Normally access comes from the user&apos;s plan (Plans → node groups). A manual
+            assignment pins this user&apos;s access on this node regardless of their plan;
+            removing it hands the node back to the plan.
+          </p>
           <form className="flex flex-wrap items-end gap-3" onSubmit={(e) => assign(e, userId)}>
             <div className="space-y-1.5">
               <Label htmlFor="uid">User ID</Label>
