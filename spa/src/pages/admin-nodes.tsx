@@ -20,27 +20,17 @@ import {
   type RenderedInbounds,
   type TemplateCatalog,
 } from "../lib/api";
+import { adminErrorText } from "../lib/errors";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Badge } from "../components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../components/ui/table";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
-const msg = (err: unknown, fallback: string) => (err instanceof Error ? err.message : fallback);
+// Server errors in Chinese (known messages / status classes mapped, the rest
+// shown verbatim after "操作失败："); `fallback` when there is no error object.
+const msg = (err: unknown, fallback: string) => (err instanceof Error ? adminErrorText(err) : fallback);
 
 const selectCls = "h-9 rounded-lg border border-border bg-card px-3 text-sm";
 
@@ -91,12 +81,7 @@ export function AdminNodes() {
   // Manual path (ops): a bootstrap file with a 24 h token.
   async function newBootstrap(n: NodeView) {
     setError(null);
-    if (
-      n.enrolled &&
-      !window.confirm(
-        `为「${n.name}」签发新的注册令牌？节点用它注册后，当前证书将失效。`,
-      )
-    ) {
+    if (n.enrolled && !window.confirm(`为「${n.name}」签发新的注册令牌？节点用它注册后，当前证书将失效。`)) {
       return;
     }
     try {
@@ -110,10 +95,7 @@ export function AdminNodes() {
 
   async function toggle(n: NodeView) {
     setError(null);
-    if (
-      n.enabled &&
-      !window.confirm(`停用节点「${n.name}」？节点上的所有入站与用户连接会立即断开。`)
-    ) {
+    if (n.enabled && !window.confirm(`停用节点「${n.name}」？节点上的所有入站与用户连接会立即断开。`)) {
       return;
     }
     try {
@@ -128,11 +110,7 @@ export function AdminNodes() {
   // the empty state, then the node disappears.
   async function remove(n: NodeView) {
     setError(null);
-    if (
-      !window.confirm(
-        `删除节点「${n.name}」？节点停止服务，证书永久吊销（不可恢复，重新上线需新建节点）。`,
-      )
-    ) {
+    if (!window.confirm(`删除节点「${n.name}」？节点停止服务，证书永久吊销（不可恢复，重新上线需新建节点）。`)) {
       return;
     }
     try {
@@ -171,10 +149,10 @@ export function AdminNodes() {
       <Card>
         <CardHeader className="flex flex-row items-start justify-between gap-4">
           <div>
-            <CardTitle>节点</CardTitle>
-            <CardDescription>
-              agent 主动连接面板；新建后在节点服务器上执行一行安装命令即可上线。
-            </CardDescription>
+            <CardTitle>
+              <h1>节点</h1>
+            </CardTitle>
+            <CardDescription>agent 主动连接面板；新建后在节点服务器上执行一行安装命令即可上线。</CardDescription>
           </div>
           {!creating && (
             <Button
@@ -222,18 +200,12 @@ export function AdminNodes() {
                     <TableCell>
                       <StatusBadge n={n} />
                       {n.warnings.length > 0 && (
-                        <span
-                          className="ml-2 text-xs font-medium text-amber-600"
-                          title={n.warnings.join("\n")}
-                        >
+                        <span className="ml-2 text-xs font-medium text-amber-600" title={n.warnings.join("\n")}>
                           {n.warnings.length} 条警告
                         </span>
                       )}
                       {n.last_error && (
-                        <span
-                          className="ml-2 text-xs font-medium text-destructive"
-                          title={n.last_error}
-                        >
+                        <span className="ml-2 text-xs font-medium text-destructive" title={n.last_error}>
                           配置应用失败
                         </span>
                       )}
@@ -251,9 +223,7 @@ export function AdminNodes() {
                       )}
                       {n.update_status && <UpdateBadge s={n.update_status} />}
                     </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {formatLease(n.lease_remaining_seconds)}
-                    </TableCell>
+                    <TableCell className="text-muted-foreground">{formatLease(n.lease_remaining_seconds)}</TableCell>
                     <TableCell className="text-muted-foreground">
                       {n.cert_not_after
                         ? `至 ${new Date(n.cert_not_after).toLocaleDateString()}`
@@ -274,27 +244,13 @@ export function AdminNodes() {
                       )}
                     </TableCell>
                     <TableCell className="space-x-1 whitespace-nowrap text-right">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setSelected(n.id === selected ? null : n.id)}
-                      >
+                      <Button variant="outline" size="sm" onClick={() => setSelected(n.id === selected ? null : n.id)}>
                         {n.id === selected ? "收起" : "配置"}
                       </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        disabled={!!n.deleting_at}
-                        onClick={() => reinstall(n)}
-                      >
+                      <Button variant="ghost" size="sm" disabled={!!n.deleting_at} onClick={() => reinstall(n)}>
                         {n.enrolled ? "重装命令" : "安装命令"}
                       </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        disabled={!!n.deleting_at}
-                        onClick={() => toggle(n)}
-                      >
+                      <Button variant="ghost" size="sm" disabled={!!n.deleting_at} onClick={() => toggle(n)}>
                         {n.enabled ? "停用" : "启用"}
                       </Button>
                       <Button
@@ -306,12 +262,7 @@ export function AdminNodes() {
                       >
                         bootstrap
                       </Button>
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        disabled={!!n.deleting_at}
-                        onClick={() => remove(n)}
-                      >
+                      <Button variant="destructive" size="sm" disabled={!!n.deleting_at} onClick={() => remove(n)}>
                         删除
                       </Button>
                     </TableCell>
@@ -458,8 +409,7 @@ function TemplateRows({
   catalog: TemplateCatalog | undefined;
 }) {
   const [checks, setChecks] = useState<Record<number, string>>({});
-  const update = (key: number, p: Partial<SpecRow>) =>
-    setRows(rows.map((r) => (r.key === key ? { ...r, ...p } : r)));
+  const update = (key: number, p: Partial<SpecRow>) => setRows(rows.map((r) => (r.key === key ? { ...r, ...p } : r)));
 
   async function checkDest(r: SpecRow) {
     const dest = r.dest === "custom" ? r.customDest.trim() : r.dest || catalog?.reality_dests[0];
@@ -599,11 +549,7 @@ function TemplateRows({
             <div className="flex flex-wrap items-end gap-3">
               {r.template === "vmess_ws" && (
                 <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={r.tls}
-                    onChange={(e) => update(r.key, { tls: e.target.checked })}
-                  />
+                  <input type="checkbox" checked={r.tls} onChange={(e) => update(r.key, { tls: e.target.checked })} />
                   启用 TLS
                 </label>
               )}
@@ -633,22 +579,15 @@ function TemplateRows({
               )}
             </div>
           )}
-          {(r.template === "vless_ws_tls" ||
-            r.template === "trojan_tls" ||
-            (r.template === "vmess_ws" && r.tls)) && (
+          {(r.template === "vless_ws_tls" || r.template === "trojan_tls" || (r.template === "vmess_ws" && r.tls)) && (
             <p className="text-xs text-muted-foreground">
-              证书放在节点的 {catalog?.tls_cert_dir ?? "/etc/akari-agent/tls"}/fullchain.pem 与
-              privkey.pem（如 certbot / acme.sh 签发），放好后执行 systemctl restart akari-agent。
+              证书放在节点的 {catalog?.tls_cert_dir ?? "/etc/akari-agent/tls"}/fullchain.pem 与 privkey.pem（如 certbot
+              / acme.sh 签发），放好后执行 systemctl restart akari-agent。
             </p>
           )}
         </div>
       ))}
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={() => setRows([...rows, newRow("vless_reality", "")])}
-      >
+      <Button type="button" variant="outline" size="sm" onClick={() => setRows([...rows, newRow("vless_reality", "")])}>
         添加入站
       </Button>
     </div>
@@ -703,7 +642,8 @@ function NodeWizard({
       }
       body.templates = specs;
       needsCert = specs.some(
-        (s) => s.template === "vless_ws_tls" || s.template === "trojan_tls" || (s.template === "vmess_ws" && !!s.tls_domain),
+        (s) =>
+          s.template === "vless_ws_tls" || s.template === "trojan_tls" || (s.template === "vmess_ws" && !!s.tls_domain),
       );
     }
     setBusy(true);
@@ -736,7 +676,9 @@ function NodeWizard({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>新建节点</CardTitle>
+        <CardTitle>
+          <h2>新建节点</h2>
+        </CardTitle>
         <CardDescription>
           填写基本信息并选择协议模板，面板会生成入站配置（REALITY 密钥对、shortId 等）。创建后给出一行安装命令。
         </CardDescription>
@@ -834,9 +776,7 @@ function CopyLine({ label, text }: { label: string; text: string }) {
     <div className="space-y-1">
       <p className="text-xs text-muted-foreground">{label}</p>
       <div className="flex items-start gap-2">
-        <pre className="flex-1 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted p-3 text-xs">
-          {text}
-        </pre>
+        <pre className="flex-1 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted p-3 text-xs">{text}</pre>
         <Button type="button" variant="outline" size="sm" onClick={copy}>
           {copied ? "已复制" : "复制"}
         </Button>
@@ -861,12 +801,12 @@ function InstallCard({ shown, onClose }: { shown: InstallShown; onClose: () => v
   return (
     <Card>
       <CardHeader>
-        <CardTitle>安装「{shown.name}」</CardTitle>
+        <CardTitle>
+          <h2>安装「{shown.name}」</h2>
+        </CardTitle>
         <CardDescription>
           在节点服务器（Linux，systemd，amd64/arm64）上以 root 执行下面的命令。命令只显示这一次，
-          {left > 0
-            ? `${Math.floor(left / 60)} 分 ${left % 60} 秒后过期`
-            : "已过期，请重新生成"}
+          {left > 0 ? `${Math.floor(left / 60)} 分 ${left % 60} 秒后过期` : "已过期，请重新生成"}
           ；节点注册成功后立即失效。
         </CardDescription>
       </CardHeader>
@@ -876,7 +816,8 @@ function InstallCard({ shown, onClose }: { shown: InstallShown; onClose: () => v
         {install.pin && (
           <p className="text-xs text-muted-foreground">
             面板证书不是公共 CA 签发的（例如仅用 IP 部署），命令已固定面板证书公钥（{install.pin}
-            ）：curl 在发送请求前校验它，公钥不符即中止，所以 -k 不会在未校验的情况下生效。面板证书更换后需重新生成命令。
+            ）：curl 在发送请求前校验它，公钥不符即中止，所以 -k
+            不会在未校验的情况下生效。面板证书更换后需重新生成命令。
           </p>
         )}
         {install.warnings.length > 0 && (
@@ -888,8 +829,8 @@ function InstallCard({ shown, onClose }: { shown: InstallShown; onClose: () => v
         )}
         {shown.needsCertificate && (
           <p className="text-sm text-amber-600">
-            该节点有 TLS 入站：请把证书放在节点的 /etc/akari-agent/tls/fullchain.pem 与 privkey.pem，然后执行
-            systemctl restart akari-agent。
+            该节点有 TLS 入站：请把证书放在节点的 /etc/akari-agent/tls/fullchain.pem 与 privkey.pem，然后执行 systemctl
+            restart akari-agent。
           </p>
         )}
         <p className="text-xs text-muted-foreground">
@@ -923,7 +864,8 @@ function BootstrapBody({ name, bootstrap }: { name: string; bootstrap: string })
   return (
     <div className="mt-2 space-y-2">
       <p className="text-xs text-muted-foreground">
-        保存为节点上的 /etc/akari-agent/bootstrap.toml（权限 0600），再按部署文档安装 agent 与 systemd 单元。文件只含一次性令牌，不含私钥。
+        保存为节点上的 /etc/akari-agent/bootstrap.toml（权限 0600），再按部署文档安装 agent 与 systemd
+        单元。文件只含一次性令牌，不含私钥。
       </p>
       <pre className="max-h-64 overflow-auto rounded-lg bg-muted p-3 text-xs">{bootstrap}</pre>
       <Button type="button" onClick={download}>
@@ -934,17 +876,13 @@ function BootstrapBody({ name, bootstrap }: { name: string; bootstrap: string })
 }
 
 // The bootstrap file (manual path): shown once (only the token's hash is kept).
-function BootstrapCard({
-  enrollment,
-  onClose,
-}: {
-  enrollment: NodeEnrollment;
-  onClose: () => void;
-}) {
+function BootstrapCard({ enrollment, onClose }: { enrollment: NodeEnrollment; onClose: () => void }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>「{enrollment.name}」的 bootstrap 文件</CardTitle>
+        <CardTitle>
+          <h2>「{enrollment.name}」的 bootstrap 文件</h2>
+        </CardTitle>
         <CardDescription>
           只显示这一次。注册令牌单次有效，{new Date(enrollment.expires_at).toLocaleString()} 过期。
         </CardDescription>
@@ -1101,15 +1039,16 @@ function NodeEditor({ node }: { node: NodeView }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>配置「{node.name}」</CardTitle>
+        <CardTitle>
+          <h2>配置「{node.name}」</h2>
+        </CardTitle>
         <CardDescription>入站变更会以完整快照下发给 agent（重建 xray，断开现有连接）。</CardDescription>
         {node.last_error && (
           <p role="alert" className="mt-2 break-all text-sm text-destructive">
             最近一次应用失败
             {node.failed_config_version !== null &&
               `（cfg ${node.failed_config_version} · usr ${node.failed_user_version}）`}
-            {node.last_error_at && ` 于 ${new Date(node.last_error_at).toLocaleString()}`}：
-            {node.last_error}
+            {node.last_error_at && ` 于 ${new Date(node.last_error_at).toLocaleString()}`}：{node.last_error}
           </p>
         )}
         {node.warnings.length > 0 && (
@@ -1268,7 +1207,8 @@ function NodeEditor({ node }: { node: NodeView }) {
         <div className="rounded-lg border border-border p-4">
           <p className="mb-1 text-sm font-medium">手动分配（覆盖套餐）</p>
           <p className="mb-3 text-xs text-muted-foreground">
-            通常用户的节点权限来自套餐（套餐 → 节点组）。手动分配会在此节点上固定该用户的权限，与套餐无关；移除后交还给套餐。
+            通常用户的节点权限来自套餐（套餐 →
+            节点组）。手动分配会在此节点上固定该用户的权限，与套餐无关；移除后交还给套餐。
           </p>
           <form className="flex flex-wrap items-end gap-3" onSubmit={assign}>
             <div className="space-y-1.5">
@@ -1299,12 +1239,7 @@ function NodeEditor({ node }: { node: NodeView }) {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="proto">协议</Label>
-              <select
-                id="proto"
-                className={selectCls}
-                value={protocol}
-                onChange={(e) => setProtocol(e.target.value)}
-              >
+              <select id="proto" className={selectCls} value={protocol} onChange={(e) => setProtocol(e.target.value)}>
                 <option value="vless">vless</option>
                 <option value="vmess">vmess</option>
                 <option value="trojan">trojan</option>
@@ -1321,9 +1256,7 @@ function NodeEditor({ node }: { node: NodeView }) {
             </p>
           )}
           {account && (
-            <pre className="mt-3 overflow-auto rounded-lg bg-muted p-3 text-xs">
-              {JSON.stringify(account, null, 2)}
-            </pre>
+            <pre className="mt-3 overflow-auto rounded-lg bg-muted p-3 text-xs">{JSON.stringify(account, null, 2)}</pre>
           )}
         </div>
       </CardContent>
@@ -1334,11 +1267,7 @@ function NodeEditor({ node }: { node: NodeView }) {
 // M6: the node's latest rollout entry (Updates view has the details).
 function UpdateBadge({ s }: { s: NodeUpdateStatus }) {
   const tone =
-    s.status === "failed"
-      ? "text-destructive"
-      : s.status === "healthy"
-        ? "text-muted-foreground"
-        : "text-primary";
+    s.status === "failed" ? "text-destructive" : s.status === "healthy" ? "text-muted-foreground" : "text-primary";
   return (
     <div className={`text-xs ${tone}`} title={s.detail ?? undefined}>
       {s.version}: {s.status}

@@ -88,9 +88,9 @@ describe("toSpecs", () => {
       ]),
     ).toMatch(/重复/);
     expect(toSpecs([{ ...base, template: "trojan_tls", port: "443" }])).toMatch(/证书域名/);
-    expect(
-      toSpecs([{ ...base, template: "vmess_ws", port: "80", tls: true, domain: "a.example.com" }]),
-    ).toEqual([{ template: "vmess_ws", port: 80, tls_domain: "a.example.com" }]);
+    expect(toSpecs([{ ...base, template: "vmess_ws", port: "80", tls: true, domain: "a.example.com" }])).toEqual([
+      { template: "vmess_ws", port: 80, tls_domain: "a.example.com" },
+    ]);
   });
   it("formats the lease", () => {
     expect(formatLease(null)).toBe("—");
@@ -143,7 +143,7 @@ describe("AdminNodes", () => {
           name: "osaka",
           enrollment_token: "TOKEN",
           expires_at: install.expires_at,
-          bootstrap: "panel_addr = \"x\"",
+          bootstrap: 'panel_addr = "x"',
           install,
         },
       }),

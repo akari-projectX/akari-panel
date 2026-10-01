@@ -88,8 +88,13 @@ test("user portal: password login, language switch", async ({ browser }) => {
   await page.goto(BASE);
   await login(page, USER, USER_PW);
   await expect(page.getByRole("heading", { name: "我的账户" })).toBeVisible();
+  // Purchase and orders (R18-3) speak the portal's language too.
+  await expect(page.getByRole("heading", { name: "购买套餐" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "我的订单" })).toBeVisible();
   await page.getByRole("button", { name: "English" }).click();
   await expect(page.getByRole("heading", { name: "My account" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Buy a plan" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "My orders" })).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
   await page.getByRole("button", { name: "Log out" }).click();
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
@@ -154,6 +159,17 @@ test("admin with 2FA: password alone refused, TOTP code accepted", async ({ brow
   await login(page, ADMIN, ADMIN_PW, next.code);
   await expect(page.getByRole("heading", { name: "用户", exact: true })).toBeVisible();
   await expect(page.getByText("建议开启两步验证")).toHaveCount(0);
+  // Deep links (a full page load of /app/<view>) for every console view.
+  for (const [view, label, heading] of [
+    ["nodes", "节点", "节点"],
+    ["orders", "订单", "订单"],
+    ["updates", "更新", "灰度更新"],
+    ["plans", "套餐", "套餐"],
+  ]) {
+    await page.goto(`${BASE}/${view}`);
+    await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: label, exact: true })).toHaveAttribute("aria-current", "page");
+  }
   expect(problems).toEqual([]);
   await ctx.close();
 });

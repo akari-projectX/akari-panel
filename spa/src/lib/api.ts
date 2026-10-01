@@ -5,7 +5,8 @@ import type { TFunction } from "../i18n";
 const APP_MARK = "/app";
 
 export const appBase: string = (() => {
-  const i = location.pathname.indexOf(APP_MARK);
+  // "/app" as a whole path segment (a prefix may itself start with "app").
+  const i = location.pathname.search(/\/app(?:\/|$)/);
   const base = i >= 0 ? location.pathname.slice(0, i) : "";
   return `${base}${APP_MARK}`;
 })();

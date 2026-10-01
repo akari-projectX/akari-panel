@@ -1,10 +1,10 @@
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { setLocale, translate } from "../i18n";
 import { parseYuan, yuan, type AdminOrder, type MyOrder, type Shop } from "../lib/billing";
-import { fakeApi, renderWithClient } from "../test/harness";
+import { fakeApi, renderAdmin, renderWithClient } from "../test/harness";
 import { AdminOrders } from "./admin-orders";
-import { billing, translate } from "./billing-i18n";
 import { Billing } from "./purchase";
 
 afterEach(() => {
@@ -63,16 +63,15 @@ describe("money formatting", () => {
 });
 
 describe("billing i18n", () => {
-  it("has the same keys in every locale", () => {
-    expect(Object.keys(billing.zh).sort()).toEqual(Object.keys(billing.en).sort());
-    expect(translate("en", "perPeriod", { price: "9.90", days: 30 })).toBe("¥9.90 / 30 days");
-    expect(translate("zh", "perPeriod", { price: "9.90", days: 30 })).toBe("¥9.90 / 30 天");
+  it("lives in the shared dictionaries (namespace billing)", () => {
+    expect(translate("en", "billing.perPeriod", { price: "9.90", days: 30 })).toBe("¥9.90 / 30 days");
+    expect(translate("zh", "billing.perPeriod", { price: "9.90", days: 30 })).toBe("¥9.90 / 30 天");
   });
 });
 
 describe("Billing (user)", () => {
   it("buys, shows the QR and flips to paid by polling", async () => {
-    localStorage.setItem("akari.locale", "en");
+    setLocale("en");
     let polls = 0;
     const calls = fakeApi({
       "GET /me/shop": shop(),
@@ -101,7 +100,7 @@ describe("Billing (user)", () => {
   }, 10_000);
 
   it("asks before replacing the current plan and speaks Chinese", async () => {
-    localStorage.setItem("akari.locale", "zh");
+    setLocale("zh");
     const confirm = vi.fn(() => false);
     vi.stubGlobal("confirm", confirm);
     const calls = fakeApi({
@@ -117,8 +116,22 @@ describe("Billing (user)", () => {
     expect(calls.some((c) => c.method === "POST")).toBe(false);
   });
 
+  it("shows server errors localized (errorText)", async () => {
+    setLocale("en");
+    fakeApi({
+      "GET /me/shop": shop(),
+      "GET /me/orders": [],
+      "POST /me/orders": () => ({ status: 502, body: { error: "payment gateway unavailable, try again" } }),
+    });
+    renderWithClient(<Billing />);
+    fireEvent.click(await screen.findByRole("button", { name: "Buy" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "The payment service is unavailable. Please try again.",
+    );
+  });
+
   it("explains when payments are off", async () => {
-    localStorage.setItem("akari.locale", "en");
+    setLocale("en");
     fakeApi({ "GET /me/shop": shop({ enabled: false, plans: [] }), "GET /me/orders": [] });
     renderWithClient(<Billing />);
     expect(await screen.findByText(/Online purchase is not available/)).toBeTruthy();
@@ -170,7 +183,7 @@ describe("AdminOrders", () => {
       "GET /orders": [],
       "PUT /plans/p1/price": { status: 204 },
     });
-    renderWithClient(<AdminOrders />);
+    renderAdmin(<AdminOrders />);
     fireEvent.change(await screen.findByLabelText("Monthly 价格"), { target: { value: "0.29" } });
     fireEvent.click(screen.getByLabelText("Monthly 上架"));
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
@@ -180,14 +193,17 @@ describe("AdminOrders", () => {
   });
 
   it("retries fulfilment only with a reason", async () => {
-    vi.stubGlobal("confirm", vi.fn(() => true));
+    vi.stubGlobal(
+      "confirm",
+      vi.fn(() => true),
+    );
     const calls = fakeApi({
       "GET /plan-prices": { payments_enabled: true, prices: [] },
       "GET /orders": [adminOrder()],
       "GET /orders/o1": { order: adminOrder(), events: [] },
       "POST /orders/o1/fulfil": { fulfilled: true },
     });
-    renderWithClient(<AdminOrders />);
+    renderAdmin(<AdminOrders />);
     expect(await screen.findByText("未开通")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "详情" }));
     const retry = await screen.findByRole("button", { name: "重试开通" });

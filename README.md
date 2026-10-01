@@ -163,7 +163,7 @@ separate loopback listener, never on the public port.
 |---|---|---|---|
 | POST | /auth/login | — | `{login, password, code?}`: argon2id + TOTP/recovery code, sets session cookie |
 | POST | /auth/logout | — | clears the cookie and ends all of the account's sessions |
-| GET | /api/v1/me | user | profile + traffic usage |
+| GET | /api/v1/me | user (renewal scope*) | profile + traffic usage; `expired` / `quota_exhausted` (R21) |
 | GET | /api/v1/me/totp | any session | session stage, 2FA state (never the secret) |
 | POST | /api/v1/me/totp/enroll | any session | new pending TOTP secret (shown once) |
 | POST | /api/v1/me/totp/confirm | any session | `{code}`: activate 2FA, returns 10 recovery codes once |
@@ -192,10 +192,10 @@ separate loopback listener, never on the public port.
 | POST | /api/v1/users/{id}/sub-token | admin | regenerate subscription token |
 | POST | /api/v1/users/{id}/revoke-sessions | admin | log the account out everywhere (204) |
 | DELETE | /api/v1/users/{id}/totp | admin | reset the account's 2FA, end its sessions; `{"totp": "active"\|"pending"\|"none"}` (what was removed) |
-| GET | /api/v1/me/shop | user | R18-3: purchasable plans (price in cents, days) and what buying does (`new`/`renew`/`replace`/`unavailable`) |
-| GET/POST | /api/v1/me/orders | user | own orders (last 50) / create `{plan_id}` → order + Alipay QR (the amount is the server's price) |
-| GET | /api/v1/me/orders/{id} | user | order status; a pending order is actively queried at Alipay (throttled) |
-| POST | /api/v1/me/orders/{id}/cancel | user | cancel a pending order (queried + closed at Alipay first) |
+| GET | /api/v1/me/shop | user (renewal scope*) | R18-3: purchasable plans (price in cents, days) and what buying does (`new`/`renew`/`replace`/`unavailable`) |
+| GET/POST | /api/v1/me/orders | user (renewal scope*) | own orders (last 50) / create `{plan_id}` → order + Alipay QR (the amount is the server's price) |
+| GET | /api/v1/me/orders/{id} | user (renewal scope*) | order status; a pending order is actively queried at Alipay (throttled) |
+| POST | /api/v1/me/orders/{id}/cancel | user (renewal scope*) | cancel a pending order (queried + closed at Alipay first) |
 | GET | /api/v1/plan-prices | admin | every plan with its price / purchasable flag, `payments_enabled` |
 | PUT/DELETE | /api/v1/plans/{id}/price | admin | `{price_cents, period_days, purchasable}` / remove the price |
 | GET | /api/v1/orders | admin | orders, `?status&login&out_trade_no&unfulfilled&before&limit` (keyset) |
@@ -205,6 +205,8 @@ separate loopback listener, never on the public port.
 | GET | /sub/{token} | token | subscription (UA-based format) |
 | GET | /install/{token}[/agent/{arch}] | install link | node install script / agent binary while the link is live (docs/DEPLOY.md §3) |
 | GET | /healthz | — | panel liveness |
+
+\* Renewal scope (R21): also reachable by an expired or quota-disabled `role=user` account (login answers `expired` / `quota_exhausted`), together with `/me/plan` and `/me/password`; everything that serves or reveals proxy access (subscription, sub-token, 2FA) stays refused. Accounts disabled for any other reason cannot log in.
 
 Defaults bind web on `127.0.0.1:8080` and gRPC on `127.0.0.1:8443`; override
 via `panel.toml` (see `src/config.rs`) or `DATABASE_URL`/`VALKEY_URL`.

@@ -44,6 +44,7 @@ describe("viewOf", () => {
     expect(viewOf("/app/audit")).toBe("audit");
     expect(viewOf("/app/plans/extra")).toBe("plans");
     expect(viewOf("/app/nope")).toBe("users");
+    for (const v of ["nodes", "orders", "updates", "account"]) expect(viewOf(`/app/${v}`)).toBe(v);
   });
 });
 
