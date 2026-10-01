@@ -48,6 +48,7 @@ export const zh = {
   },
   portal: {
     title: "我的账户",
+    expiredBanner: "你的账户已到期，节点与订阅已停用。续费或购买套餐后即可恢复使用。",
     usage: "用量概览",
     trafficUsed: "已用流量",
     trafficLimit: "流量上限",

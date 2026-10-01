@@ -288,6 +288,8 @@ struct SessionRow {
     login: String,
     role: String,
     enabled: bool,
+    /// role=user past expires_at (DB clock; `enforce::EXPIRED`).
+    expired: bool,
     session_ver: i64,
     totp_active: bool,
 }
@@ -303,10 +305,11 @@ async fn session(parts: &mut Parts, state: &AppState) -> Result<(Claims, Session
 
     let claims = decode_token(state, token).ok_or_else(ApiError::unauthorized)?;
 
-    // Disabled or expired (role=user) accounts lose existing sessions;
-    // so does every token issued before the last session_ver bump.
+    // Disabled accounts lose existing sessions; so does every token issued
+    // before the last session_ver bump. Expired role=user accounts keep only
+    // the renewal scope (`ShopUser`, R21); the callers decide.
     let row = sqlx::query_as::<_, SessionRow>(sqlx::AssertSqlSafe(format!(
-        "SELECT u.id, u.login, u.role, (u.enabled AND NOT {}) AS enabled, u.session_ver, \
+        "SELECT u.id, u.login, u.role, u.enabled, {} AS expired, u.session_ver, \
          EXISTS (SELECT 1 FROM user_totp t WHERE t.user_id = u.id AND t.enabled_at IS NOT NULL) \
          AS totp_active FROM users u WHERE u.id = $1",
         crate::enforce::EXPIRED
@@ -341,7 +344,10 @@ impl FromRequestParts<AppState> for AuthUser {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let (claims, row) = session(parts, state).await?;
-        if claims.st != Stage::Full || needs_enrollment(state, &row.role, row.totp_active) {
+        if row.expired
+            || claims.st != Stage::Full
+            || needs_enrollment(state, &row.role, row.totp_active)
+        {
             return Err(ApiError::unauthorized());
         }
         Ok(AuthUser {
@@ -361,6 +367,9 @@ impl FromRequestParts<AppState> for SessionUser {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let (claims, row) = session(parts, state).await?;
+        if row.expired {
+            return Err(ApiError::unauthorized());
+        }
         // A full token of an admin the policy now confines to enrollment
         // (the option was turned on later) reports as an enrollment
         // session, so the console shows the enrollment page.
@@ -375,6 +384,42 @@ impl FromRequestParts<AppState> for SessionUser {
             role: row.role,
             stage,
             ip: request_ip(parts, state),
+        })
+    }
+}
+
+/// The renewal scope (R21, xboard parity): a full session that may also
+/// belong to an EXPIRED role=user account, so it can still see its account
+/// and plan, change its password and buy/renew (shop, orders). Everything
+/// that serves or reveals proxy access (subscription, sub-token, nodes) keeps
+/// `AuthUser`, which refuses expired accounts. Disabled accounts (any
+/// reason) are refused here exactly as in `AuthUser`; admins are never
+/// expired (`enforce::EXPIRED` is role=user only) and get the same checks.
+pub struct ShopUser {
+    pub user: AuthUser,
+    /// The account is past its expiry (role=user): renewal scope only.
+    pub expired: bool,
+}
+
+impl FromRequestParts<AppState> for ShopUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let (claims, row) = session(parts, state).await?;
+        if claims.st != Stage::Full || needs_enrollment(state, &row.role, row.totp_active) {
+            return Err(ApiError::unauthorized());
+        }
+        Ok(ShopUser {
+            expired: row.expired,
+            user: AuthUser {
+                id: row.id,
+                login: row.login,
+                role: row.role,
+                ip: request_ip(parts, state),
+            },
         })
     }
 }

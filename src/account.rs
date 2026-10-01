@@ -334,7 +334,7 @@ pub struct ChangePasswordReq {
 }
 
 /// POST /api/v1/me/password {current_password, new_password} (full
-/// session, any role): change your own password. The current password is
+/// session, any role; renewal scope: also expired users, R21): change your own password. The current password is
 /// required; a wrong one is 400 "invalid password" and counts against the
 /// login rate limit of the account and the client address. In one
 /// transaction: new hash (the 0009 trigger bumps session_ver, ending every
@@ -342,7 +342,7 @@ pub struct ChangePasswordReq {
 /// a fresh cookie.
 pub async fn change_own_password(
     State(state): State<AppState>,
-    user: AuthUser,
+    auth::ShopUser { user, .. }: auth::ShopUser,
     jar: CookieJar,
     ApiJson(req): ApiJson<ChangePasswordReq>,
 ) -> Result<(CookieJar, axum::http::StatusCode), ApiError> {
@@ -867,6 +867,98 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(n.unwrap_or(0), 0, "parse errors are not attempts");
+        drop(state);
+        db.drop().await;
+    }
+
+    /// R21: an expired user logs in with the renewal scope only (account,
+    /// plan, own password; shop/orders use the same extractor); proxy
+    /// access stays blocked (subscription, sub-token, 2FA endpoints). A
+    /// disabled user cannot log in at all; admins are unaffected.
+    #[tokio::test]
+    async fn expired_user_gets_the_renewal_scope_only() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let state = AppState::for_test(db.pool.clone()).await;
+        let (id, login) = account(&db, "user").await;
+        let mut c = Client::new(&state, rand_ip());
+        assert_eq!(c.login(&login, PW, None).await.status, StatusCode::OK);
+        let token = c.post("/test/api/v1/me/sub-token", json!({})).await.json()["sub_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            c.get(&format!("/test/sub/{token}")).await.status,
+            StatusCode::OK
+        );
+        sqlx::query("UPDATE users SET expires_at = now() - interval '1 minute' WHERE id = $1")
+            .bind(id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let mut e = Client::new(&state, rand_ip());
+        let r = e.login(&login, PW, None).await;
+        assert_eq!(r.status, StatusCode::OK, "expired users can log in");
+        assert_eq!(r.json()["expired"], true);
+        let me = e.get("/test/api/v1/me").await;
+        assert_eq!(me.status, StatusCode::OK);
+        assert_eq!(me.json()["expired"], true);
+        assert_eq!(e.get("/test/api/v1/me/plan").await.status, StatusCode::OK);
+        // Blocked: anything that serves or reveals proxy access.
+        assert_eq!(
+            e.post("/test/api/v1/me/sub-token", json!({})).await.status,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            e.get("/test/api/v1/me/totp").await.status,
+            StatusCode::UNAUTHORIZED
+        );
+        let junk = e.get("/test/definitely-not-here").await.fingerprint();
+        assert_eq!(
+            e.get(&format!("/test/sub/{token}")).await.fingerprint(),
+            junk
+        );
+        // Allowed: change the own password (this session continues).
+        let r = e
+            .post(
+                "/test/api/v1/me/password",
+                json!({"current_password": PW, "new_password": "renewed-password-1"}),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::NO_CONTENT);
+        e.cookie = r.session_cookie();
+        assert_eq!(e.get("/test/api/v1/me").await.status, StatusCode::OK);
+
+        // Disabled (not expired): no login, no session.
+        sqlx::query("UPDATE users SET enabled = false WHERE id = $1")
+            .bind(id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            e.get("/test/api/v1/me").await.status,
+            StatusCode::UNAUTHORIZED
+        );
+        let mut d = Client::new(&state, rand_ip());
+        assert_eq!(
+            d.login(&login, "renewed-password-1", None).await.status,
+            StatusCode::UNAUTHORIZED
+        );
+
+        let _: i64 = state
+            .valkey()
+            .del(vec![
+                format!("akari:rl:subtoken:{id}"),
+                format!("akari:rl:sub:user:{id}"),
+                format!("akari:rl:sub:ip:{}", crate::client_ip::bucket(c.ip)),
+                format!("akari:rl:sub:ip:{}", crate::client_ip::bucket(e.ip)),
+                format!("akari:audit:login_ok:{id}"),
+            ])
+            .await
+            .unwrap();
+        clear_limits(&state, &[c.ip, e.ip, d.ip], &login).await;
         drop(state);
         db.drop().await;
     }

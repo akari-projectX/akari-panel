@@ -1386,9 +1386,10 @@ struct MyPlanRow {
 /// GET /api/v1/me/plan (any full session): the caller's active plan (or
 /// null), usage, enforced limit/expiry, and the nodes they can use (names
 /// and regions only — no addresses, ids or inbounds).
+/// GET /api/v1/me/plan (renewal scope: also for expired users, R21).
 pub async fn my_plan(
     State(state): State<AppState>,
-    user: AuthUser,
+    crate::auth::ShopUser { user, .. }: crate::auth::ShopUser,
 ) -> Result<Json<Value>, ApiError> {
     let mut c = state.pg().acquire().await?;
     let (used, limit, expires): (i64, Option<i64>, Option<DateTime<Utc>>) = sqlx::query_as(

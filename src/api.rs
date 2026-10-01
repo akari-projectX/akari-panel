@@ -14,7 +14,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::audit::Actor;
-use crate::auth::{self, ApiError, AuthUser, COOKIE_NAME};
+use crate::auth::{self, ApiError, AuthUser, ShopUser, COOKIE_NAME};
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ pub async fn login(
                         jar.add(auth::session_cookie(&state, token, stage)),
                         Json(json!({
                             "id": row.id, "login": row.login, "role": row.role,
-                            "stage": stage.as_str(),
+                            "stage": stage.as_str(), "expired": row.expired,
                         })),
                     ))
                 }
@@ -188,7 +188,9 @@ async fn check_credentials(state: &AppState, req: &LoginReq) -> Result<Checked, 
         None => crate::totp::check(state.totp(), Uuid::nil(), None, None, &[], code, 0),
     };
 
-    let Some(row) = row.filter(|r| r.enabled && !r.expired && r.password_hash.is_some()) else {
+    // R21: an expired (role=user) account still logs in — its sessions only
+    // reach the renewal scope (`auth::ShopUser`). Disabled accounts do not.
+    let Some(row) = row.filter(|r| r.enabled && r.password_hash.is_some()) else {
         auth::scrub_password(&req.password);
         return Ok(Checked::Failed {
             account,
@@ -486,9 +488,15 @@ pub struct MeView {
     traffic_used_bytes: i64,
     traffic_limit_bytes: Option<i64>,
     expires_at: Option<DateTime<Utc>>,
+    /// R21: past expiry (role=user): the session has the renewal scope only.
+    expired: bool,
 }
 
-pub async fn me(State(state): State<AppState>, user: AuthUser) -> Result<Json<MeView>, ApiError> {
+/// GET /api/v1/me (renewal scope: also for expired users, R21).
+pub async fn me(
+    State(state): State<AppState>,
+    ShopUser { user, expired }: ShopUser,
+) -> Result<Json<MeView>, ApiError> {
     let row = sqlx::query_as::<_, MeRow>(
         "SELECT traffic_used_bytes, traffic_limit_bytes, expires_at FROM users WHERE id = $1",
     )
@@ -503,6 +511,7 @@ pub async fn me(State(state): State<AppState>, user: AuthUser) -> Result<Json<Me
         traffic_used_bytes: row.traffic_used_bytes,
         traffic_limit_bytes: row.traffic_limit_bytes,
         expires_at: row.expires_at,
+        expired,
     }))
 }
 

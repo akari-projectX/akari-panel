@@ -36,6 +36,11 @@ export function Portal({ me }: { me: Me }) {
           <CardDescription>{t("portal.usage")}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {me.expired && (
+            <p role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+              {t("portal.expiredBanner")}
+            </p>
+          )}
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
               <p className="text-muted-foreground">{t("portal.trafficUsed")}</p>
@@ -64,9 +69,10 @@ export function Portal({ me }: { me: Me }) {
         </CardContent>
       </Card>
       <PlanCard />
-      <SubscriptionCard />
+      {/* Expired (R21): renewal scope only; these endpoints refuse it. */}
+      {!me.expired && <SubscriptionCard />}
       <PasswordCard />
-      <TwoFactorCard />
+      {!me.expired && <TwoFactorCard />}
     </div>
   );
 }
