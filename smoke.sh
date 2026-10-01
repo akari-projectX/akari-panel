@@ -1010,6 +1010,105 @@ wait "$UPD_LOOP" 2>/dev/null || true
 UPD_LOOP=""
 echo "m6 self-update: ok (v900.0.0 -> v900.0.1 healthy; broken v900.0.2 rolled back, rollout halted)"
 
+echo "== R18-2 node form + one-line installer: template inbounds, install link, Debian 13 container =="
+# The newest complete release is what the installer serves: drop the broken
+# v900.0.2 of the M6 section (its rollout is over), leaving v900.0.1.
+REL2=$(psql_q "SELECT id FROM agent_releases WHERE version='v900.0.2'")
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/agent-releases/$REL2")" = "204" ] \
+  || { echo "FAIL: delete broken release: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM agent_releases WHERE version='v900.0.2'")" = "0" ] || { echo "FAIL: broken release kept"; exit 1; }
+# Templates catalog + render (REALITY keys made by the panel).
+[ "$(code -b "$JAR" "$BASE/api/v1/inbound-templates")" = "200" ] && grep -q '"www.apple.com"' /tmp/akari-smoke/last \
+  || { echo "FAIL: template catalog"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/inbound-templates/render" -H 'Content-Type: application/json' \
+    -d '{"templates":[{"template":"vless_reality","port":443},{"template":"vless_reality","port":443}]}')" = "400" ] \
+  || { echo "FAIL: duplicate template ports accepted"; exit 1; }
+INST_PORT_R=24443
+INST_PORT_W=24080
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"inst-node\",\"region\":\"Smoke\",\"server_addr\":\"127.0.0.1\",
+         \"templates\":[{\"template\":\"vless_reality\",\"port\":$INST_PORT_R},{\"template\":\"vmess_ws\",\"port\":$INST_PORT_W}],
+         \"install\":{\"origin\":\"http://127.0.0.1:8080\"}}")" = "201" ] \
+  || { echo "FAIL: create node with templates: $(cat /tmp/akari-smoke/last)"; exit 1; }
+cp /tmp/akari-smoke/last "$LOG/inst-create.json"
+INST_ID=$(python3 -c "import json;print(json.load(open('$LOG/inst-create.json'))['id'])")
+INST_URL=$(python3 -c "import json;print(json.load(open('$LOG/inst-create.json'))['install']['url'])")
+INST_CMD=$(python3 -c "import json;print(json.load(open('$LOG/inst-create.json'))['install']['command'])")
+python3 - "$LOG/inst-create.json" "$INST_URL" <<'PY' || { echo "FAIL: create response"; exit 1; }
+import base64, json, sys
+v = json.load(open(sys.argv[1])); i = v["install"]
+assert i["command"] == "curl -fsSL '%s' | sudo sh" % sys.argv[2], i["command"]
+assert i["pin"] is None and i["command_wget"].startswith("wget -qO- ")
+assert i["releases"]["amd64"]["version"] == "v900.0.1", i["releases"]
+assert sys.argv[2].endswith("/install/" + v["enrollment_token"])
+PY
+psql_q "SELECT xray_inbounds FROM nodes WHERE id='$INST_ID'" | python3 -c "
+import json, sys; ib = json.load(sys.stdin)
+r = ib[0]['streamSettings']['realitySettings']
+assert ib[0]['port'] == $INST_PORT_R and r['dest'] == 'www.apple.com:443' and len(r['privateKey']) == 43 and len(r['publicKey']) == 43
+assert ib[1]['protocol'] == 'vmess' and ib[1]['streamSettings']['network'] == 'ws'" \
+  || { echo "FAIL: template inbounds not stored"; exit 1; }
+# The script: complete, POSIX sh, shellcheck-clean.
+[ "$(code "$INST_URL")" = "200" ] || { echo "FAIL: install script not served"; exit 1; }
+cp /tmp/akari-smoke/last "$LOG/install.sh"
+grep -q '@@' "$LOG/install.sh" && { echo "FAIL: placeholder left in the script"; exit 1; }
+sh -n "$LOG/install.sh" || { echo "FAIL: script does not parse"; exit 1; }
+if [ "${SMOKE_SHELLCHECK:-1}" = 1 ]; then
+  docker run --rm -v "$LOG:/mnt:ro" koalaman/shellcheck:stable -s sh /mnt/install.sh \
+    || { echo "FAIL: shellcheck"; exit 1; }
+fi
+# Unknown arch / bad token: the canonical rejection.
+for p in "$INST_URL/agent/mips" "${INST_URL%?}x" "$BASE/install/short"; do
+  [ "$(fp "$p")" = "$REJ" ] || { echo "FAIL: install rejection differs for $p"; exit 1; }
+done
+if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
+  docker build -q -t akari-node-test:debian13 scripts/install-test >/dev/null
+  docker rm -f akari-smoke-node >/dev/null 2>&1 || true
+  # Host network: the node reaches the panel on 127.0.0.1 (web 8080, gRPC 8443).
+  docker run -d --name akari-smoke-node --network host --privileged --cgroupns=host \
+    -v /sys/fs/cgroup:/sys/fs/cgroup:rw akari-node-test:debian13 >/dev/null
+  trap 'docker rm -f akari-smoke-node >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
+  for _ in $(seq 1 30); do docker exec akari-smoke-node systemctl is-system-running 2>/dev/null | grep -qE 'running|degraded' && break; sleep 1; done
+  # Exactly what the admin copies, minus sudo (root in the container).
+  docker exec akari-smoke-node sh -c "${INST_CMD% | sudo sh} | sh" >"$LOG/install.out" 2>&1 \
+    || { echo "FAIL: installer failed"; cat "$LOG/install.out"; exit 1; }
+  grep -q "SUCCESS: the agent enrolled and is connected" "$LOG/install.out" || { echo "FAIL: installer output"; cat "$LOG/install.out"; exit 1; }
+  for _ in $(seq 1 20); do [ "$(psql_q "SELECT status FROM nodes WHERE id='$INST_ID'")" = "online" ] && break; sleep 1; done
+  [ "$(psql_q "SELECT status FROM nodes WHERE id='$INST_ID'")" = "online" ] || { echo "FAIL: installed node not online"; exit 1; }
+  for _ in $(seq 1 20); do [ "$(psql_q "SELECT agent_version FROM nodes WHERE id='$INST_ID'")" = "v900.0.1" ] && break; sleep 1; done
+  [ "$(psql_q "SELECT agent_version || ' ' || coalesce(last_error, 'ok') FROM nodes WHERE id='$INST_ID'")" = "v900.0.1 ok" ] \
+    || { echo "FAIL: installed agent: $(psql_q "SELECT agent_version, last_error FROM nodes WHERE id='$INST_ID'")"; exit 1; }
+  # xray took the generated REALITY key pair: the inbound listens.
+  for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/$INST_PORT_R) 2>/dev/null && break; sleep 1; done
+  (exec 3<>/dev/tcp/127.0.0.1/$INST_PORT_R) 2>/dev/null || { echo "FAIL: REALITY inbound not listening"; exit 1; }
+  [ "$(docker exec akari-smoke-node stat -c '%a %U' /etc/akari-agent/bootstrap.toml)" = "600 root" ] \
+    || { echo "FAIL: bootstrap.toml mode"; exit 1; }
+  docker exec akari-smoke-node sh -c 'cat /proc/[0-9]*/cmdline 2>/dev/null | tr "\\0" " "' | grep -q "$(python3 -c "import json;print(json.load(open('$LOG/inst-create.json'))['enrollment_token'])")" \
+    && { echo "FAIL: token visible in the process list"; exit 1; }
+  # The link died with the enrollment: script and binary are the rejection.
+  [ "$(fp "$INST_URL")" = "$REJ" ] || { echo "FAIL: used install link not rejected"; exit 1; }
+  [ "$(fp "$INST_URL/agent/amd64")" = "$REJ" ] || { echo "FAIL: used install link serves the binary"; exit 1; }
+  # Uninstall with a fresh link (re-install command), then reinstall with it.
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$INST_ID/install" -H 'Content-Type: application/json' \
+      -d '{"origin":"http://127.0.0.1:8080"}')" = "200" ] || { echo "FAIL: re-install link"; exit 1; }
+  INST_URL2=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['url'])")
+  docker exec akari-smoke-node sh -c "curl -fsSL '$INST_URL2' | sh -s -- --uninstall" >>"$LOG/install.out" 2>&1 \
+    || { echo "FAIL: uninstall"; tail -5 "$LOG/install.out"; exit 1; }
+  docker exec akari-smoke-node sh -c 'test ! -e /usr/local/bin/akari-agent && test ! -e /etc/akari-agent && ! systemctl is-active -q akari-agent' \
+    || { echo "FAIL: uninstall left files or a running agent"; exit 1; }
+  docker exec akari-smoke-node sh -c "curl -fsSL '$INST_URL2' | sh" >>"$LOG/install.out" 2>&1 \
+    || { echo "FAIL: reinstall"; tail -20 "$LOG/install.out"; exit 1; }
+  [ "$(fp "$INST_URL2")" = "$REJ" ] || { echo "FAIL: second link not burned"; exit 1; }
+  docker exec akari-smoke-node akari-agent-uninstall >>"$LOG/install.out" 2>&1 || { echo "FAIL: uninstall helper"; exit 1; }
+  docker rm -f akari-smoke-node >/dev/null
+  trap 'cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
+  echo "installer (container): ok"
+else
+  echo "installer container test skipped (SMOKE_INSTALL_CONTAINER=0)"
+fi
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$INST_ID")" = "202" ] || { echo "FAIL: delete inst-node"; exit 1; }
+echo "r18-2 node install: ok"
+
 echo "== S4-2 sessions: revoke-sessions, last admin, logout kills copies of the cookie =="
 [ "$(code -b "$JAR" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: me failed"; exit 1; }
 ROOT_ID=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
