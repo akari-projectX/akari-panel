@@ -627,6 +627,7 @@ WITH input AS (
                AS is_member,
            CASE WHEN nu.node_id IS NOT NULL THEN NULL ELSE d.departed_at END AS departed_at,
            d.billed_bytes AS departed_billed,
+           ts.node_id IS NULL AS new_session,
            f.rate, f.traffic_tat, f.floor
     FROM input i
     LEFT JOIN node_users nu ON nu.node_id = i.node_id AND nu.user_id = i.user_id
@@ -639,14 +640,34 @@ WITH input AS (
     SELECT * FROM classified WHERE is_member
 ), new_sessions AS (
     INSERT INTO traffic_sessions (node_id, session_id, first_seen_at)
-    SELECT DISTINCT node_id, session_id, statement_timestamp() FROM member
+    SELECT DISTINCT node_id, session_id, statement_timestamp() FROM member WHERE new_session
     ON CONFLICT (node_id, session_id) DO NOTHING
     RETURNING 1
-), upsert AS (
+), upd AS (
+    -- Existing rows (the steady state: every report after a session's
+    -- first) are plain UPDATEs: one index probe each, where ON CONFLICT
+    -- costs a speculative-insert probe plus the update. Counters only move
+    -- forward (GREATEST).
+    UPDATE traffic_counters c
+    SET up_bytes   = GREATEST(c.up_bytes, m.up),
+        down_bytes = GREATEST(c.down_bytes, m.down),
+        updated_at = GREATEST(c.updated_at, statement_timestamp())
+    FROM member m
+    WHERE c.node_id = m.node_id AND c.user_id = m.user_id AND c.session_id = m.session_id
+    RETURNING new.node_id, new.user_id, new.session_id,
+              old.up_bytes AS old_up, old.down_bytes AS old_down, old.updated_at AS old_at,
+              COALESCE(old.first_seen_at, old.updated_at) AS old_first,
+              new.up_bytes AS new_up, new.down_bytes AS new_down
+), ins AS (
+    -- The rest are new rows. ON CONFLICT stays as the race arbiter (two
+    -- instances inserting the same key; the node locks make that rare).
     INSERT INTO traffic_counters AS c
         (node_id, user_id, session_id, up_bytes, down_bytes, updated_at, first_seen_at)
     SELECT node_id, user_id, session_id, up, down, statement_timestamp(), statement_timestamp()
-    FROM member ORDER BY node_id, user_id, session_id
+    FROM member m
+    WHERE NOT EXISTS (SELECT 1 FROM upd u WHERE u.node_id = m.node_id
+                      AND u.user_id = m.user_id AND u.session_id = m.session_id)
+    ORDER BY node_id, user_id, session_id
     ON CONFLICT (node_id, user_id, session_id) DO UPDATE
     SET up_bytes   = GREATEST(c.up_bytes, EXCLUDED.up_bytes),
         down_bytes = GREATEST(c.down_bytes, EXCLUDED.down_bytes),
@@ -655,6 +676,8 @@ WITH input AS (
               old.up_bytes AS old_up, old.down_bytes AS old_down, old.updated_at AS old_at,
               COALESCE(old.first_seen_at, old.updated_at) AS old_first,
               new.up_bytes AS new_up, new.down_bytes AS new_down
+), upsert AS (
+    SELECT * FROM upd UNION ALL SELECT * FROM ins
 ), rows AS (
     SELECT u.node_id, u.user_id, u.old_at, m.age_secs, m.departed_at, m.departed_billed,
            m.rate, m.traffic_tat, m.floor,
