@@ -1581,3 +1581,1311 @@ pub async fn apply_period_resets(conn: &mut PgConnection) -> Result<Vec<Uuid>, A
     );
     Ok(bumped)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testdb::http::{rand_ip, Client};
+    use crate::testdb::TestDb;
+    use axum::http::StatusCode;
+
+    #[test]
+    fn period_parsing() {
+        assert_eq!(Period::parse("monthly"), Some(Period::Monthly));
+        assert_eq!(Period::parse("none"), Some(Period::None));
+        assert_eq!(Period::parse("days-30"), Some(Period::Days(30)));
+        assert_eq!(Period::parse("days-3650"), Some(Period::Days(3650)));
+        for bad in [
+            "days-0",
+            "days-3651",
+            "days-",
+            "days-07",
+            "days--1",
+            "days-+1",
+            "days-1x",
+            "Monthly",
+            "weekly",
+            "",
+            "days-99999999999",
+        ] {
+            assert_eq!(Period::parse(bad), None, "{bad}");
+        }
+        for p in [Period::Monthly, Period::None, Period::Days(7)] {
+            assert_eq!(Period::parse(&p.render()), Some(p));
+            let (k, d) = p.columns();
+            assert_eq!(Period::from_columns(k, d), p);
+        }
+    }
+
+    // ----- real-DB helpers ----------------------------------------------
+
+    fn a() -> Actor {
+        Actor::test()
+    }
+
+    async fn group(db: &TestDb, name: &str, nodes: &[Uuid]) -> Uuid {
+        let mut tx = db.pool.begin().await.unwrap();
+        let id = apply_create_group(
+            &mut tx,
+            &a(),
+            &CreateGroupReq {
+                name: name.into(),
+                description: None,
+                node_ids: Some(nodes.to_vec()),
+            },
+        )
+        .await
+        .ok()
+        .unwrap();
+        tx.commit().await.unwrap();
+        id
+    }
+
+    async fn set_group(db: &TestDb, g: Uuid, nodes: &[Uuid]) -> Outcome {
+        let mut tx = db.pool.begin().await.unwrap();
+        let o = apply_update_group(
+            &mut tx,
+            &a(),
+            g,
+            &UpdateGroupReq {
+                node_ids: Some(Some(nodes.to_vec())),
+                ..Default::default()
+            },
+        )
+        .await
+        .ok()
+        .unwrap();
+        tx.commit().await.unwrap();
+        o
+    }
+
+    async fn plan(db: &TestDb, name: &str, groups: &[Uuid], quota: Option<i64>) -> Uuid {
+        let mut tx = db.pool.begin().await.unwrap();
+        let id = apply_create_plan(
+            &mut tx,
+            &a(),
+            &CreatePlanReq {
+                name: name.into(),
+                traffic_quota_bytes: quota,
+                period: "monthly".into(),
+                speed_limit_mbps: None,
+                device_seats: None,
+                sort: None,
+                enabled: None,
+                group_ids: Some(groups.to_vec()),
+            },
+        )
+        .await
+        .ok()
+        .unwrap();
+        tx.commit().await.unwrap();
+        id
+    }
+
+    async fn give(
+        db: &TestDb,
+        user: Uuid,
+        plan: Uuid,
+        expires: Option<DateTime<Utc>>,
+    ) -> Vec<Uuid> {
+        let mut tx = db.pool.begin().await.unwrap();
+        let r = apply_set_user_plan(
+            &mut tx,
+            &a(),
+            user,
+            &SetUserPlanReq {
+                plan_id: plan,
+                expires_at: expires,
+                period_anchor: None,
+                reset_traffic: None,
+            },
+        )
+        .await
+        .unwrap_or_else(|e| panic!("set plan: {}", e.message()));
+        tx.commit().await.unwrap();
+        r.bumped()
+    }
+
+    async fn plan_update(db: &TestDb, plan: Uuid, req: UpdatePlanReq) -> PlanUpdate {
+        let mut tx = db.pool.begin().await.unwrap();
+        let r = apply_update_plan(&mut tx, &a(), plan, &req)
+            .await
+            .unwrap_or_else(|e| panic!("update plan: {}", e.message()));
+        tx.commit().await.unwrap();
+        r
+    }
+
+    async fn set_inbounds(db: &TestDb, node: Uuid, inbounds: Value) {
+        let req = crate::api::SetInboundsReq { inbounds };
+        let state = crate::state::AppState::for_test(db.pool.clone()).await;
+        let mut c = Client::new(&state, rand_ip());
+        let admin = db.admin().await;
+        c.cookie = Some(admin_token(&state, admin).await);
+        let r = c
+            .req(
+                axum::http::Method::PUT,
+                &format!("/test/api/v1/nodes/{node}/inbounds"),
+                Some(json!({ "inbounds": req.inbounds })),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    }
+
+    async fn admin_token(state: &AppState, id: Uuid) -> String {
+        let (role, sv): (String, i64) =
+            sqlx::query_as("SELECT role, session_ver FROM users WHERE id = $1")
+                .bind(id)
+                .fetch_one(state.pg())
+                .await
+                .unwrap();
+        crate::auth::issue_token(state, id, &role, sv, crate::auth::Stage::Full).unwrap()
+    }
+
+    /// (node, credentials, manual) of a user's rows, by node.
+    async fn rows(db: &TestDb, user: Uuid) -> Vec<(Uuid, Value, bool)> {
+        sqlx::query_as(
+            "SELECT node_id, credentials, manual FROM node_users WHERE user_id = $1 ORDER BY node_id",
+        )
+        .bind(user)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap()
+    }
+
+    async fn nodes_of(db: &TestDb, user: Uuid) -> Vec<Uuid> {
+        rows(db, user).await.into_iter().map(|r| r.0).collect()
+    }
+
+    async fn departed(db: &TestDb, user: Uuid) -> Vec<Uuid> {
+        sqlx::query_scalar(
+            "SELECT node_id FROM node_users_departed WHERE user_id = $1 ORDER BY node_id",
+        )
+        .bind(user)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap()
+    }
+
+    fn sorted(mut v: Vec<Uuid>) -> Vec<Uuid> {
+        v.sort();
+        v
+    }
+
+    /// The reconcile invariant over the whole database: plan rows are
+    /// exactly the granted pairs (minus manual pairs and nodes without an
+    /// eligible inbound), each with one credential per eligible inbound.
+    async fn assert_consistent(db: &TestDb) {
+        let mut c = db.pool.acquire().await.unwrap();
+        let granted = entitle::granted_pairs(&mut c).await;
+        let all: Vec<(Uuid, Uuid, Value, bool)> =
+            sqlx::query_as("SELECT node_id, user_id, credentials, manual FROM node_users")
+                .fetch_all(&mut *c)
+                .await
+                .unwrap();
+        let inbounds: std::collections::HashMap<Uuid, Value> =
+            sqlx::query_as::<_, (Uuid, Value)>("SELECT id, xray_inbounds FROM nodes")
+                .fetch_all(&mut *c)
+                .await
+                .unwrap()
+                .into_iter()
+                .collect();
+        let manual: std::collections::HashSet<(Uuid, Uuid)> =
+            all.iter().filter(|r| r.3).map(|r| (r.0, r.1)).collect();
+        let mut want: Vec<(Uuid, Uuid)> = granted
+            .iter()
+            .flat_map(|(u, ns)| ns.iter().map(move |n| (*n, *u)))
+            .filter(|p| !manual.contains(p))
+            .filter(|(n, _)| !entitle::eligible_inbounds(&inbounds[n]).is_empty())
+            .collect();
+        want.sort();
+        let mut have: Vec<(Uuid, Uuid)> = all.iter().filter(|r| !r.3).map(|r| (r.0, r.1)).collect();
+        have.sort();
+        assert_eq!(have, want, "plan rows == granted pairs");
+        for (n, _, creds, m) in &all {
+            if *m {
+                continue;
+            }
+            let tags: Vec<(String, String)> = creds
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| {
+                    (
+                        c["inbound_tag"].as_str().unwrap().to_string(),
+                        c["protocol"].as_str().unwrap().to_string(),
+                    )
+                })
+                .collect();
+            let mut want = entitle::eligible_inbounds(&inbounds[n]);
+            let mut tags_sorted = tags.clone();
+            tags_sorted.sort();
+            want.sort();
+            assert_eq!(tags_sorted, want, "one credential per eligible inbound");
+        }
+    }
+
+    async fn audit_rows(db: &TestDb, action: &str) -> Vec<(String, Option<String>, Option<Value>)> {
+        sqlx::query_as(
+            "SELECT actor_login, target_id, after FROM audit_log WHERE action = $1 ORDER BY id",
+        )
+        .bind(action)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap()
+    }
+
+    // ----- tests ----------------------------------------------------------
+
+    #[tokio::test]
+    async fn next_reset_boundaries() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let q = |anchor: &str, period: &str, days: Option<i32>, after: &str| {
+            let pool = db.pool.clone();
+            let (anchor, period, after) =
+                (anchor.to_string(), period.to_string(), after.to_string());
+            async move {
+                sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+                    "SELECT akari_next_reset($1::timestamptz, $2, $3, $4::timestamptz)",
+                )
+                .bind(anchor)
+                .bind(period)
+                .bind(days)
+                .bind(after)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .map(|t| t.to_rfc3339())
+            }
+        };
+        let some = |s: &str| Some(s.to_string());
+        // Monthly on the anchor day, clamped to the month's end, no drift.
+        assert_eq!(
+            q(
+                "2026-01-31T10:00:00Z",
+                "monthly",
+                None,
+                "2026-02-01T00:00:00Z"
+            )
+            .await,
+            some("2026-02-28T10:00:00+00:00")
+        );
+        assert_eq!(
+            q(
+                "2026-01-31T10:00:00Z",
+                "monthly",
+                None,
+                "2026-02-28T10:00:00Z"
+            )
+            .await,
+            some("2026-03-31T10:00:00+00:00"),
+            "strictly after"
+        );
+        assert_eq!(
+            q(
+                "2024-01-31T00:00:00Z",
+                "monthly",
+                None,
+                "2024-02-15T00:00:00Z"
+            )
+            .await,
+            some("2024-02-29T00:00:00+00:00"),
+            "leap year"
+        );
+        assert_eq!(
+            q(
+                "2026-01-15T00:00:00Z",
+                "monthly",
+                None,
+                "2026-10-02T12:00:00Z"
+            )
+            .await,
+            some("2026-10-15T00:00:00+00:00"),
+            "long gap: next boundary after now, not the missed ones"
+        );
+        assert_eq!(
+            q(
+                "2025-12-20T00:00:00Z",
+                "monthly",
+                None,
+                "2026-01-25T00:00:00Z"
+            )
+            .await,
+            some("2026-02-20T00:00:00+00:00"),
+            "across a year"
+        );
+        assert_eq!(
+            q(
+                "2026-05-01T00:00:00Z",
+                "monthly",
+                None,
+                "2026-04-01T00:00:00Z"
+            )
+            .await,
+            some("2026-05-01T00:00:00+00:00"),
+            "anchor in the future of `after`"
+        );
+        // Every N days, exact seconds.
+        assert_eq!(
+            q(
+                "2026-01-01T00:00:00Z",
+                "days",
+                Some(30),
+                "2026-01-31T00:00:00Z"
+            )
+            .await,
+            some("2026-03-02T00:00:00+00:00")
+        );
+        assert_eq!(
+            q(
+                "2026-01-01T00:00:00Z",
+                "days",
+                Some(30),
+                "2026-01-30T23:59:59Z"
+            )
+            .await,
+            some("2026-01-31T00:00:00+00:00")
+        );
+        assert_eq!(
+            q("2026-01-01T00:00:00Z", "none", None, "2026-01-30T23:59:59Z").await,
+            None
+        );
+        db.drop().await;
+    }
+
+    /// Group / plan / user-plan / inbound changes issue and revoke exactly
+    /// the right credentials, write departed rows, keep credentials across
+    /// changes, bump exactly the affected nodes; manual rows win.
+    #[tokio::test]
+    async fn reconcile_follows_every_entitlement_change() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (na, nb, nc) = (db.node().await, db.node().await, db.node().await);
+        let u = db.user().await;
+        let bystander = db.user().await;
+        let g1 = group(&db, "g1", &[na, nb]).await;
+        let g2 = group(&db, "g2", &[nc]).await;
+        let p1 = plan(&db, "p1", &[g1], Some(1000)).await;
+        let p2 = plan(&db, "p2", &[g2], None).await;
+
+        // Assign: rows on A and B, plan-managed, one vless credential each.
+        assert_eq!(give(&db, u, p1, None).await, sorted(vec![na, nb]));
+        let r = rows(&db, u).await;
+        assert_eq!(r.len(), 2);
+        assert!(r
+            .iter()
+            .all(|(_, c, m)| !m && c.as_array().unwrap().len() == 1));
+        let limit: Option<i64> =
+            sqlx::query_scalar("SELECT traffic_limit_bytes FROM users WHERE id = $1")
+                .bind(u)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(limit, Some(1000), "limit derived from the plan");
+        assert_consistent(&db).await;
+
+        // Group gains C: only C is bumped.
+        let o = set_group(&db, g1, &[na, nb, nc]).await;
+        assert_eq!(o.bumped, vec![nc]);
+        assert_eq!((o.issued, o.revoked), (1, 0));
+        // Group loses A: A bumped, departed row for (A, u).
+        let o = set_group(&db, g1, &[nb, nc]).await;
+        assert_eq!((o.bumped.clone(), o.revoked), (vec![na], 1));
+        assert_eq!(departed(&db, u).await, vec![na]);
+        assert_consistent(&db).await;
+
+        // Plan change P1 -> P2 (C only): B revoked, C's credentials kept
+        // byte for byte; A untouched (already gone).
+        let c_before = rows(&db, u)
+            .await
+            .into_iter()
+            .find(|r| r.0 == nc)
+            .unwrap()
+            .1;
+        assert_eq!(give(&db, u, p2, None).await, vec![nb]);
+        assert_eq!(nodes_of(&db, u).await, vec![nc]);
+        assert_eq!(rows(&db, u).await[0].1, c_before, "credentials kept");
+        assert_eq!(departed(&db, u).await, sorted(vec![na, nb]));
+        let limit: Option<i64> =
+            sqlx::query_scalar("SELECT traffic_limit_bytes FROM users WHERE id = $1")
+                .bind(u)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(limit, None, "P2 is unlimited");
+        assert_consistent(&db).await;
+
+        // Inbound added to C: a trojan credential appears, vless kept.
+        let before_v = db.versions(nc).await;
+        set_inbounds(
+            &db,
+            nc,
+            json!([{"tag": "in-vless", "protocol": "vless"},
+                   {"tag": "in-trojan", "protocol": "trojan"},
+                   {"tag": "in-ss", "protocol": "shadowsocks"}]),
+        )
+        .await;
+        let creds = rows(&db, u).await[0].1.clone();
+        let creds = creds.as_array().unwrap();
+        assert_eq!(creds.len(), 2);
+        assert_eq!(creds[0], c_before.as_array().unwrap()[0]);
+        assert_eq!(creds[1]["protocol"], "trojan");
+        assert!(creds[1]["account"]["password"].as_str().unwrap().len() == 64);
+        assert_ne!(db.versions(nc).await, before_v);
+        assert_consistent(&db).await;
+        // Only non-eligible inbounds left: revoked.
+        set_inbounds(
+            &db,
+            nc,
+            json!([{"tag": "in-ss", "protocol": "shadowsocks"}]),
+        )
+        .await;
+        assert!(nodes_of(&db, u).await.is_empty());
+        assert_eq!(departed(&db, u).await, sorted(vec![na, nb, nc]));
+        // Back: issued again, departed row cleared.
+        set_inbounds(&db, nc, json!([{"tag": "in-vless", "protocol": "vless"}])).await;
+        assert_eq!(nodes_of(&db, u).await, vec![nc]);
+        assert_eq!(departed(&db, u).await, sorted(vec![na, nb]));
+        assert_consistent(&db).await;
+
+        // Manual override wins: a manual assignment on B (not granted)
+        // survives plan changes; on C it pins the plan row.
+        let mut tx = db.pool.begin().await.unwrap();
+        crate::api::apply_assign_for_test(&mut tx, u, nb).await;
+        crate::api::apply_assign_for_test(&mut tx, u, nc).await;
+        tx.commit().await.unwrap();
+        assert!(rows(&db, u).await.iter().all(|r| r.2), "both manual now");
+        let o = set_group(&db, g2, &[]).await;
+        assert!(o.bumped.is_empty(), "manual rows untouched");
+        assert_eq!(nodes_of(&db, u).await, sorted(vec![nb, nc]));
+        set_group(&db, g2, &[nc]).await;
+        // Unassign C: granted -> handed back to the plan (row kept).
+        let mut tx = db.pool.begin().await.unwrap();
+        crate::api::apply_unassign(&mut tx, &a(), u, nc)
+            .await
+            .ok()
+            .unwrap();
+        tx.commit().await.unwrap();
+        let r = rows(&db, u).await;
+        assert!(r.iter().any(|(n, _, m)| *n == nc && !m), "plan row again");
+        // Unassign of a plan row: 409.
+        let mut tx = db.pool.begin().await.unwrap();
+        let e = crate::api::apply_unassign(&mut tx, &a(), u, nc)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(e.status(), StatusCode::CONFLICT);
+        drop(tx);
+        // Unassign B: not granted -> deleted, departed.
+        let mut tx = db.pool.begin().await.unwrap();
+        crate::api::apply_unassign(&mut tx, &a(), u, nb)
+            .await
+            .ok()
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(nodes_of(&db, u).await, vec![nc]);
+        assert_consistent(&db).await;
+
+        // Idempotent: reconciling everything again changes nothing.
+        let mut tx = db.pool.begin().await.unwrap();
+        entitle::lock(&mut tx).await.unwrap();
+        let o = entitle::apply_reconcile(&mut tx, Scope::Nodes(&[na, nb, nc]))
+            .await
+            .ok()
+            .unwrap();
+        assert_eq!(o, Outcome::default());
+        tx.commit().await.unwrap();
+
+        // Cancel: access gone, departed; limits stay; second cancel 404.
+        let mut tx = db.pool.begin().await.unwrap();
+        let r = apply_cancel_user_plan(&mut tx, &a(), u).await.ok().unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(r.bumped(), vec![nc]);
+        assert!(nodes_of(&db, u).await.is_empty());
+        let mut tx = db.pool.begin().await.unwrap();
+        let e = apply_cancel_user_plan(&mut tx, &a(), u)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(e.status(), StatusCode::NOT_FOUND);
+        drop(tx);
+        assert!(nodes_of(&db, bystander).await.is_empty());
+        assert_consistent(&db).await;
+
+        // Deleting a group removes its nodes from plans.
+        give(&db, u, p2, None).await;
+        assert_eq!(nodes_of(&db, u).await, vec![nc]);
+        let mut tx = db.pool.begin().await.unwrap();
+        let o = apply_delete_group(&mut tx, &a(), g2).await.ok().unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(o.bumped, vec![nc]);
+        assert!(nodes_of(&db, u).await.is_empty());
+        // A plan with subscribers cannot be deleted.
+        let mut tx = db.pool.begin().await.unwrap();
+        let e = apply_delete_plan(&mut tx, &a(), p2).await.err().unwrap();
+        assert_eq!(e.status(), StatusCode::CONFLICT);
+        drop(tx);
+        // A node being deleted is skipped (its rows stay for final billing).
+        let g3 = group(&db, "g3", &[na]).await;
+        plan_update(
+            &db,
+            p2,
+            UpdatePlanReq {
+                group_ids: Some(Some(vec![g3])),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(nodes_of(&db, u).await, vec![na]);
+        let mut tx = db.pool.begin().await.unwrap();
+        crate::api::apply_begin_delete_node(&mut tx, &a(), na)
+            .await
+            .ok()
+            .unwrap();
+        tx.commit().await.unwrap();
+        let o = set_group(&db, g3, &[]).await;
+        assert!(o.bumped.is_empty(), "deleting node not reconciled");
+        assert_eq!(nodes_of(&db, u).await, vec![na]);
+        db.drop().await;
+    }
+
+    /// Admins cannot get plans; plan-managed user fields are refused; a
+    /// user with a plan cannot be promoted.
+    #[tokio::test]
+    async fn plan_rules() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let admin = db.admin().await;
+        let u = db.user().await;
+        let p = plan(&db, "p", &[], Some(10)).await;
+        let mut tx = db.pool.begin().await.unwrap();
+        let req = SetUserPlanReq {
+            plan_id: p,
+            expires_at: None,
+            period_anchor: None,
+            reset_traffic: None,
+        };
+        let e = apply_set_user_plan(&mut tx, &a(), admin, &req)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(e.status(), StatusCode::BAD_REQUEST);
+        drop(tx);
+        let mut tx = db.pool.begin().await.unwrap();
+        let bad = SetUserPlanReq {
+            plan_id: Uuid::new_v4(),
+            expires_at: None,
+            period_anchor: None,
+            reset_traffic: None,
+        };
+        let e = apply_set_user_plan(&mut tx, &a(), u, &bad)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(e.status(), StatusCode::BAD_REQUEST);
+        drop(tx);
+        let mut tx = db.pool.begin().await.unwrap();
+        let past = SetUserPlanReq {
+            plan_id: p,
+            expires_at: Some(Utc::now() - chrono::Duration::seconds(5)),
+            period_anchor: None,
+            reset_traffic: None,
+        };
+        let e = apply_set_user_plan(&mut tx, &a(), u, &past)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(e.status(), StatusCode::BAD_REQUEST);
+        drop(tx);
+        give(&db, u, p, None).await;
+        // One active plan: a second assignment replaces the first.
+        give(&db, u, p, None).await;
+        let statuses: Vec<String> = sqlx::query_scalar(
+            "SELECT status::text FROM user_plans WHERE user_id = $1 ORDER BY created_at, status",
+        )
+        .bind(u)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(statuses, vec!["replaced", "active"]);
+        // The partial unique index is the backstop.
+        let dup = sqlx::query(
+            "INSERT INTO user_plans (id, user_id, plan_id, period_anchor) VALUES ($1, $2, $3, now())",
+        )
+        .bind(Uuid::new_v4())
+        .bind(u)
+        .bind(p)
+        .execute(&db.pool)
+        .await;
+        assert!(dup.is_err(), "second active plan refused by the index");
+
+        for req in [
+            crate::api::UpdateUserReq {
+                traffic_limit_bytes: Some(Some(5)),
+                ..Default::default()
+            },
+            crate::api::UpdateUserReq {
+                expires_at: Some(None),
+                ..Default::default()
+            },
+            crate::api::UpdateUserReq {
+                role: Some(Some("admin".into())),
+                ..Default::default()
+            },
+        ] {
+            let mut tx = db.pool.begin().await.unwrap();
+            let e = crate::api::apply_update_user_for_test(&mut tx, u, &req)
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(e.status(), StatusCode::CONFLICT);
+        }
+        // Disabled plans are not offered.
+        plan_update(
+            &db,
+            p,
+            UpdatePlanReq {
+                enabled: Some(Some(false)),
+                ..Default::default()
+            },
+        )
+        .await;
+        let u2 = db.user().await;
+        let mut tx = db.pool.begin().await.unwrap();
+        let e = apply_set_user_plan(&mut tx, &a(), u2, &req)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(e.status(), StatusCode::CONFLICT);
+        tx.rollback().await.unwrap();
+        db.drop().await;
+    }
+
+    async fn user_state(db: &TestDb, u: Uuid) -> (i64, bool, Option<String>) {
+        sqlx::query_as(
+            "SELECT traffic_used_bytes, enabled, disabled_reason::text FROM users WHERE id = $1",
+        )
+        .bind(u)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+    }
+
+    async fn make_due(db: &TestDb, u: Uuid, ago: &str) {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE user_plans SET next_reset_at = now() - interval '{ago}' \
+             WHERE user_id = $1 AND status = 'active'"
+        )))
+        .bind(u)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    }
+
+    async fn run_resets(db: &TestDb) -> Vec<Uuid> {
+        let mut tx = db.pool.begin().await.unwrap();
+        let r = apply_period_resets(&mut tx).await.ok().unwrap();
+        tx.commit().await.unwrap();
+        r
+    }
+
+    /// Period reset: zeroes usage, re-enables quota-disabled users only,
+    /// bumps only their nodes, audits as `system`; idempotent, restart-safe
+    /// (a rolled-back pass changes nothing), missed periods collapse.
+    #[tokio::test]
+    async fn period_reset_rules() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n1, n2, n3) = (db.node().await, db.node().await, db.node().await);
+        let g1 = group(&db, "g1", &[n1]).await;
+        let g2 = group(&db, "g2", &[n2]).await;
+        let g3 = group(&db, "g3", &[n3]).await;
+        let p1 = plan(&db, "p1", &[g1], Some(100)).await;
+        let p2 = plan(&db, "p2", &[g2], Some(100)).await;
+        let p3 = plan(&db, "p3", &[g3], Some(100)).await;
+        let (quota, admin_off, fine) = (db.user().await, db.user().await, db.user().await);
+        give(&db, quota, p1, None).await;
+        give(&db, admin_off, p2, None).await;
+        give(&db, fine, p3, None).await;
+        for u in [quota, admin_off, fine] {
+            sqlx::query("UPDATE users SET traffic_used_bytes = 150 WHERE id = $1")
+                .bind(u)
+                .execute(&db.pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("UPDATE users SET traffic_used_bytes = 50 WHERE id = $1")
+            .bind(fine)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        // The limit pass disables the two over quota, reason 'quota'.
+        let mut tx = db.pool.begin().await.unwrap();
+        let bumped = crate::enforce::apply_traffic_limits(&mut tx).await.unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(sorted(bumped), sorted(vec![n1, n2]));
+        assert_eq!(
+            user_state(&db, quota).await,
+            (150, false, Some("quota".into()))
+        );
+        // The admin then disables admin_off explicitly: reason 'admin'.
+        let mut tx = db.pool.begin().await.unwrap();
+        crate::api::apply_update_user_for_test(
+            &mut tx,
+            admin_off,
+            &crate::api::UpdateUserReq {
+                enabled: Some(Some(false)),
+                ..Default::default()
+            },
+        )
+        .await
+        .ok()
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(user_state(&db, admin_off).await.2.as_deref(), Some("admin"));
+
+        // Not due yet: nothing.
+        assert!(run_resets(&db).await.is_empty());
+        for u in [quota, admin_off, fine] {
+            make_due(&db, u, "1 second").await;
+        }
+        // A crashed pass (rolled back) changes nothing.
+        let mut tx = db.pool.begin().await.unwrap();
+        apply_period_resets(&mut tx).await.ok().unwrap();
+        tx.rollback().await.unwrap();
+        assert_eq!(user_state(&db, quota).await.0, 150);
+        assert!(audit_rows(&db, "user.traffic.reset").await.is_empty());
+
+        let v = db.versions(n1).await;
+        let (v2, v3) = (db.versions(n2).await, db.versions(n3).await);
+        assert_eq!(
+            run_resets(&db).await,
+            vec![n1],
+            "only the re-enabled user's node"
+        );
+        assert_ne!(db.versions(n1).await, v);
+        assert_eq!((db.versions(n2).await, db.versions(n3).await), (v2, v3));
+        assert_eq!(user_state(&db, quota).await, (0, true, None));
+        assert_eq!(
+            user_state(&db, admin_off).await,
+            (0, false, Some("admin".into())),
+            "admin-disabled stays disabled"
+        );
+        assert_eq!(user_state(&db, fine).await, (0, true, None));
+        let rows = audit_rows(&db, "user.traffic.reset").await;
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|r| r.0 == "system"));
+        // Marker advanced past now: idempotent.
+        let next_ok: bool = sqlx::query_scalar(
+            "SELECT bool_and(next_reset_at > now() AND last_reset_at IS NOT NULL) \
+             FROM user_plans WHERE status = 'active'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert!(next_ok);
+        sqlx::query("UPDATE users SET traffic_used_bytes = 7 WHERE id = $1")
+            .bind(fine)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert!(run_resets(&db).await.is_empty());
+        assert_eq!(user_state(&db, fine).await.0, 7, "no second reset");
+        assert_eq!(audit_rows(&db, "user.traffic.reset").await.len(), 3);
+
+        // Downtime of many periods: exactly one reset, next boundary in
+        // the future.
+        make_due(&db, fine, "95 days").await;
+        run_resets(&db).await;
+        assert!(run_resets(&db).await.is_empty());
+        assert_eq!(audit_rows(&db, "user.traffic.reset").await.len(), 4);
+        db.drop().await;
+    }
+
+    /// Plan quota changes rewrite enforced limits and re-enable only
+    /// quota-disabled users the new quota admits.
+    #[tokio::test]
+    async fn plan_quota_change_reenables_quota_disabled_only() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let n = db.node().await;
+        let g = group(&db, "g", &[n]).await;
+        let p = plan(&db, "p", &[g], Some(100)).await;
+        let (q, adm) = (db.user().await, db.user().await);
+        give(&db, q, p, None).await;
+        give(&db, adm, p, None).await;
+        sqlx::query("UPDATE users SET traffic_used_bytes = 150 WHERE id = ANY($1)")
+            .bind(vec![q, adm])
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE users SET enabled = false, disabled_reason = 'quota' WHERE id = $1")
+            .bind(q)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE users SET enabled = false WHERE id = $1")
+            .bind(adm)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            user_state(&db, adm).await.2.as_deref(),
+            Some("admin"),
+            "trigger default"
+        );
+        // Still over quota: nobody re-enabled.
+        let r = plan_update(
+            &db,
+            p,
+            UpdatePlanReq {
+                traffic_quota_bytes: Some(Some(120)),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(r.served_bumped.is_empty());
+        assert!(!user_state(&db, q).await.1);
+        // Raised above usage: the quota-disabled user is back.
+        let r = plan_update(
+            &db,
+            p,
+            UpdatePlanReq {
+                traffic_quota_bytes: Some(Some(200)),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(r.served_bumped, vec![n]);
+        assert_eq!(user_state(&db, q).await, (150, true, None));
+        assert!(!user_state(&db, adm).await.1, "admin-disabled stays");
+        let limits: Vec<Option<i64>> =
+            sqlx::query_scalar("SELECT traffic_limit_bytes FROM users WHERE id = ANY($1)")
+                .bind(vec![q, adm])
+                .fetch_all(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(limits, vec![Some(200), Some(200)]);
+        // CHECK: enabled <=> no reason, whatever SQL says.
+        let bad = sqlx::query("UPDATE users SET disabled_reason = 'quota' WHERE id = $1")
+            .bind(q)
+            .execute(&db.pool)
+            .await;
+        assert!(bad.is_ok(), "trigger clears it on an enabled user");
+        assert_eq!(user_state(&db, q).await.2, None);
+        db.drop().await;
+    }
+
+    /// Plan expiry pass: status expired, access revoked (departed),
+    /// audited as system; idempotent.
+    #[tokio::test]
+    async fn plan_expiry_pass() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let n = db.node().await;
+        let g = group(&db, "g", &[n]).await;
+        let p = plan(&db, "p", &[g], None).await;
+        let u = db.user().await;
+        give(
+            &db,
+            u,
+            p,
+            Some(Utc::now() + chrono::Duration::milliseconds(400)),
+        )
+        .await;
+        let exp: Option<DateTime<Utc>> =
+            sqlx::query_scalar("SELECT expires_at FROM users WHERE id = $1")
+                .bind(u)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert!(exp.is_some(), "user expiry derived from the plan");
+        let run = || async {
+            let mut tx = db.pool.begin().await.unwrap();
+            let r = apply_plan_expiry(&mut tx).await.ok().unwrap();
+            tx.commit().await.unwrap();
+            r
+        };
+        assert!(run().await.is_empty());
+        assert_eq!(nodes_of(&db, u).await, vec![n]);
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert_eq!(run().await, vec![n]);
+        assert!(nodes_of(&db, u).await.is_empty());
+        assert_eq!(departed(&db, u).await, vec![n]);
+        assert!(run().await.is_empty(), "idempotent");
+        let rows = audit_rows(&db, "user.plan.expire").await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "system");
+        let status: String =
+            sqlx::query_scalar("SELECT status::text FROM user_plans WHERE user_id = $1")
+                .bind(u)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "expired");
+        assert_consistent(&db).await;
+        db.drop().await;
+    }
+
+    /// Two admins changing the same plan at once, and the write-skew pair
+    /// (group gains a node || a user gets a plan with that group): the
+    /// entitlement lock serializes them; the end state is consistent.
+    #[tokio::test]
+    async fn concurrent_entitlement_changes_stay_consistent() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let nodes: Vec<Uuid> = {
+            let mut v = Vec::new();
+            for _ in 0..4 {
+                v.push(db.node().await);
+            }
+            v
+        };
+        let ga = group(&db, "ga", &nodes[..2]).await;
+        let gb = group(&db, "gb", &nodes[2..]).await;
+        let p = plan(&db, "p", &[ga], None).await;
+        let mut users = Vec::new();
+        for _ in 0..6 {
+            let u = db.user().await;
+            give(&db, u, p, None).await;
+            users.push(u);
+        }
+        for round in 0..6 {
+            let (x, y) = if round % 2 == 0 {
+                (vec![ga], vec![gb])
+            } else {
+                (vec![gb], vec![ga, gb])
+            };
+            let t = |groups: Vec<Uuid>| {
+                let pool = db.pool.clone();
+                tokio::spawn(async move {
+                    let mut tx = pool.begin().await.unwrap();
+                    apply_update_plan(
+                        &mut tx,
+                        &Actor::test(),
+                        p,
+                        &UpdatePlanReq {
+                            group_ids: Some(Some(groups)),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .ok()
+                    .unwrap();
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    tx.commit().await.unwrap();
+                })
+            };
+            let (r1, r2) = tokio::join!(t(x), t(y));
+            r1.unwrap();
+            r2.unwrap();
+            assert_consistent(&db).await;
+        }
+        assert_eq!(audit_rows(&db, "plan.update").await.len(), 12);
+
+        // Write skew: group membership vs. plan assignment.
+        let n_new = db.node().await;
+        let gc = group(&db, "gc", &[]).await;
+        let pc = plan(&db, "pc", &[gc], None).await;
+        let late = db.user().await;
+        let pool = db.pool.clone();
+        let t1 = tokio::spawn(async move {
+            let mut tx = pool.begin().await.unwrap();
+            apply_update_group(
+                &mut tx,
+                &Actor::test(),
+                gc,
+                &UpdateGroupReq {
+                    node_ids: Some(Some(vec![n_new])),
+                    ..Default::default()
+                },
+            )
+            .await
+            .ok()
+            .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tx.commit().await.unwrap();
+        });
+        let pool = db.pool.clone();
+        let t2 = tokio::spawn(async move {
+            let mut tx = pool.begin().await.unwrap();
+            apply_set_user_plan(
+                &mut tx,
+                &Actor::test(),
+                late,
+                &SetUserPlanReq {
+                    plan_id: pc,
+                    expires_at: None,
+                    period_anchor: None,
+                    reset_traffic: None,
+                },
+            )
+            .await
+            .ok()
+            .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tx.commit().await.unwrap();
+        });
+        let (r1, r2) = tokio::join!(t1, t2);
+        r1.unwrap();
+        r2.unwrap();
+        assert_eq!(nodes_of(&db, late).await, vec![n_new], "no write skew");
+        assert_consistent(&db).await;
+        db.drop().await;
+    }
+
+    /// The HTTP surface: CRUD, validation (deny_unknown_fields, double
+    /// option), 409s, self-service plan view and password change.
+    #[tokio::test]
+    async fn http_surface() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let state = crate::state::AppState::for_test(db.pool.clone()).await;
+        let admin = db.admin().await;
+        let mut c = Client::new(&state, rand_ip());
+        c.cookie = Some(admin_token(&state, admin).await);
+        let n = db.node().await;
+        sqlx::query("UPDATE nodes SET region = 'Tokyo', name = 'jp-1' WHERE id = $1")
+            .bind(n)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        use axum::http::Method;
+        let r = c
+            .post(
+                "/test/api/v1/node-groups",
+                json!({ "name": "asia", "node_ids": [n] }),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+        let g = r.json()["id"].as_str().unwrap().to_string();
+        assert_eq!(r.json()["node_ids"], json!([n]));
+        for (body, want) in [
+            (json!({ "name": "asia" }), StatusCode::CONFLICT),
+            (json!({ "name": "" }), StatusCode::BAD_REQUEST),
+            (json!({ "name": "x", "nodes": [] }), StatusCode::BAD_REQUEST),
+            (
+                json!({ "name": "x", "node_ids": [Uuid::new_v4()] }),
+                StatusCode::BAD_REQUEST,
+            ),
+        ] {
+            let r = c.post("/test/api/v1/node-groups", body.clone()).await;
+            assert_eq!(r.status, want, "{body}");
+        }
+        for (body, want) in [
+            (json!({}), StatusCode::BAD_REQUEST),
+            (json!({ "name": null }), StatusCode::BAD_REQUEST),
+            (json!({ "node_ids": null }), StatusCode::BAD_REQUEST),
+            (json!({ "description": null }), StatusCode::OK),
+            (json!({ "description": "east" }), StatusCode::OK),
+        ] {
+            let r = c
+                .req(
+                    Method::PATCH,
+                    &format!("/test/api/v1/node-groups/{g}"),
+                    Some(body.clone()),
+                )
+                .await;
+            assert_eq!(r.status, want, "{body}");
+        }
+        let r = c
+            .post(
+                "/test/api/v1/plans",
+                json!({ "name": "basic", "traffic_quota_bytes": 1000, "period": "days-30",
+                        "speed_limit_mbps": 100, "device_seats": 3, "group_ids": [g] }),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+        let p = r.json()["id"].as_str().unwrap().to_string();
+        assert_eq!(r.json()["period"], "days-30");
+        for body in [
+            json!({ "name": "x", "period": "weekly" }),
+            json!({ "name": "x", "period": "monthly", "traffic_quota_bytes": -1 }),
+            json!({ "name": "x", "period": "monthly", "speed_limit_mbps": 0 }),
+            json!({ "name": "x" }),
+        ] {
+            let r = c.post("/test/api/v1/plans", body.clone()).await;
+            assert_eq!(r.status, StatusCode::BAD_REQUEST, "{body}");
+        }
+        let r = c
+            .req(
+                Method::PATCH,
+                &format!("/test/api/v1/plans/{p}"),
+                Some(json!({ "speed_limit_mbps": null, "period": "monthly" })),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(r.json()["speed_limit_mbps"], Value::Null);
+        assert_eq!(r.json()["period"], "monthly");
+        let r = c
+            .req(
+                Method::PATCH,
+                &format!("/test/api/v1/plans/{p}"),
+                Some(json!({ "period": null })),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST);
+
+        // A user with a password, given the plan.
+        let u = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, login, password_hash) VALUES ($1, 'm3user', $2)")
+            .bind(u)
+            .bind(crate::auth::hash_password("old-password-1").unwrap())
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let r = c
+            .req(
+                Method::PUT,
+                &format!("/test/api/v1/users/{u}/plan"),
+                Some(json!({ "plan_id": p, "bogus": 1 })),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "deny_unknown_fields");
+        let r = c
+            .req(
+                Method::PUT,
+                &format!("/test/api/v1/users/{u}/plan"),
+                Some(json!({ "plan_id": p })),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+        assert_eq!(r.json()["active"]["plan_name"], "basic");
+        let r = c
+            .req(
+                Method::PATCH,
+                &format!("/test/api/v1/users/{u}"),
+                Some(json!({ "traffic_limit_bytes": 5 })),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::CONFLICT);
+        let r = c.get("/test/api/v1/users").await;
+        let me_row = r
+            .json()
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["id"] == json!(u))
+            .cloned()
+            .unwrap();
+        assert_eq!(me_row["plan_name"], "basic");
+        assert_eq!(me_row["traffic_limit_bytes"], 1000);
+        assert!(me_row["next_reset_at"].is_string());
+        let r = c
+            .req(
+                Method::PATCH,
+                &format!("/test/api/v1/users/{u}/plan"),
+                Some(json!({ "expires_at": "2099-01-01T00:00:00Z" })),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(r.json()["active"]["expires_at"], "2099-01-01T00:00:00Z");
+        let r = c.get(&format!("/test/api/v1/users/{u}/plan")).await;
+        assert_eq!(r.status, StatusCode::OK);
+        let r = c
+            .req(Method::DELETE, &format!("/test/api/v1/plans/{p}"), None)
+            .await;
+        assert_eq!(r.status, StatusCode::CONFLICT);
+
+        // Self-service.
+        let mut me = Client::new(&state, rand_ip());
+        let r = me.login("m3user", "old-password-1", None).await;
+        assert_eq!(r.status, StatusCode::OK);
+        let r = me.get("/test/api/v1/me/plan").await;
+        assert_eq!(r.status, StatusCode::OK);
+        let v = r.json();
+        assert_eq!(v["plan"]["name"], "basic");
+        assert_eq!(v["plan"]["period"], "monthly");
+        assert_eq!(v["traffic_limit_bytes"], 1000);
+        assert_eq!(v["nodes"], json!([{ "name": "jp-1", "region": "Tokyo" }]));
+        assert!(v["plan"]["next_reset_at"].is_string());
+        // Users cannot reach the admin API.
+        assert_eq!(
+            me.get("/test/api/v1/plans").await.status,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            me.get("/test/api/v1/node-groups").await.status,
+            StatusCode::FORBIDDEN
+        );
+        // Password change: wrong current -> 400; right -> 204, other
+        // sessions end, this one continues.
+        let old_cookie = me.cookie.clone();
+        let r = me
+            .post(
+                "/test/api/v1/me/password",
+                json!({ "current_password": "nope-nope", "new_password": "new-password-2" }),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST);
+        let r = me
+            .post(
+                "/test/api/v1/me/password",
+                json!({ "current_password": "old-password-1", "new_password": "short" }),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST);
+        let r = me
+            .post(
+                "/test/api/v1/me/password",
+                json!({ "current_password": "old-password-1", "new_password": "new-password-2" }),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::NO_CONTENT);
+        let fresh = r.session_cookie();
+        assert!(fresh.is_some());
+        me.cookie = old_cookie;
+        assert_eq!(
+            me.get("/test/api/v1/me").await.status,
+            StatusCode::UNAUTHORIZED
+        );
+        me.cookie = fresh;
+        assert_eq!(me.get("/test/api/v1/me").await.status, StatusCode::OK);
+        let mut again = Client::new(&state, rand_ip());
+        assert_eq!(
+            again.login("m3user", "new-password-2", None).await.status,
+            StatusCode::OK
+        );
+        assert_eq!(audit_rows(&db, "user.password.change").await.len(), 1);
+
+        // Cancel via HTTP.
+        let r = c
+            .req(
+                Method::DELETE,
+                &format!("/test/api/v1/users/{u}/plan"),
+                None,
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::NO_CONTENT);
+        let r = c
+            .req(
+                Method::DELETE,
+                &format!("/test/api/v1/users/{u}/plan"),
+                None,
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::NOT_FOUND);
+        let r = c
+            .req(Method::DELETE, &format!("/test/api/v1/plans/{p}"), None)
+            .await;
+        assert_eq!(r.status, StatusCode::NO_CONTENT);
+        let r = c
+            .req(
+                Method::DELETE,
+                &format!("/test/api/v1/node-groups/{g}"),
+                None,
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::NO_CONTENT);
+        drop(state);
+        db.drop().await;
+    }
+}

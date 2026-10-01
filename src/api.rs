@@ -2077,6 +2077,32 @@ pub async fn reset_totp(
     Ok(Json(json!({ "totp_enrollment_code": code })))
 }
 
+/// Test hooks for other modules' tests (plans.rs).
+#[cfg(test)]
+pub(crate) async fn apply_assign_for_test(conn: &mut PgConnection, user: Uuid, node: Uuid) {
+    apply_assign(
+        conn,
+        &Actor::test(),
+        user,
+        node,
+        &AssignReq {
+            inbound_tag: "in-vless".into(),
+            protocol: "vless".into(),
+        },
+    )
+    .await
+    .unwrap_or_else(|e| panic!("assign: {}", e.message()));
+}
+
+#[cfg(test)]
+pub(crate) async fn apply_update_user_for_test(
+    conn: &mut PgConnection,
+    user: Uuid,
+    req: &UpdateUserReq,
+) -> Result<Vec<Uuid>, ApiError> {
+    apply_update_user(conn, &Actor::test(), user, req).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2198,6 +2224,80 @@ mod tests {
         let other = db.node().await;
         let doomed = db.node().await;
         let ours = [n1, n2, other, doomed];
+        // M3: an (initially empty) group granted by a plan.
+        let (group, plan) = {
+            let mut tx = db.pool.begin().await.unwrap();
+            let actor = crate::audit::Actor::test();
+            let g = crate::plans::apply_create_group(
+                &mut tx,
+                &actor,
+                &crate::plans::CreateGroupReq {
+                    name: "g".into(),
+                    description: None,
+                    node_ids: None,
+                },
+            )
+            .await
+            .ok()
+            .unwrap();
+            let p = crate::plans::apply_create_plan(
+                &mut tx,
+                &actor,
+                &crate::plans::CreatePlanReq {
+                    name: "p".into(),
+                    traffic_quota_bytes: None,
+                    period: "monthly".into(),
+                    speed_limit_mbps: None,
+                    device_seats: None,
+                    sort: None,
+                    enabled: None,
+                    group_ids: Some(vec![g]),
+                },
+            )
+            .await
+            .ok()
+            .unwrap();
+            tx.commit().await.unwrap();
+            (g, p)
+        };
+        let group_nodes = move |nodes: Vec<Uuid>| -> Op {
+            let nodes = std::sync::Arc::new(nodes);
+            Box::new(move |c| {
+                let nodes = nodes.clone();
+                Box::pin(async move {
+                    crate::plans::apply_update_group(
+                        c,
+                        &crate::audit::Actor::test(),
+                        group,
+                        &crate::plans::UpdateGroupReq {
+                            node_ids: Some(Some(nodes.to_vec())),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .map(|_| ())
+                })
+            })
+        };
+        let plan_groups = move |groups: Vec<Uuid>| -> Op {
+            let groups = std::sync::Arc::new(groups);
+            Box::new(move |c| {
+                let groups = groups.clone();
+                Box::pin(async move {
+                    crate::plans::apply_update_plan(
+                        c,
+                        &crate::audit::Actor::test(),
+                        plan,
+                        &crate::plans::UpdatePlanReq {
+                            group_ids: Some(Some(groups.to_vec())),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .map(|_| ())
+                })
+            })
+        };
         // u is promoted and demoted below; another admin stays (0009 guard).
         db.admin().await;
         // R12 D3: the bump itself notifies (trigger), once per node.
@@ -2421,6 +2521,85 @@ mod tests {
                 }),
                 vec![other],
                 true,
+            ),
+            (
+                "set user plan (empty group)",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        crate::plans::apply_set_user_plan(
+                            c,
+                            &crate::audit::Actor::test(),
+                            u,
+                            &crate::plans::SetUserPlanReq {
+                                plan_id: plan,
+                                expires_at: None,
+                                period_anchor: None,
+                                reset_traffic: None,
+                            },
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                }),
+                vec![n1, n2, other],
+                false,
+            ),
+            (
+                "group gains node",
+                group_nodes(vec![other]),
+                vec![other],
+                true,
+            ),
+            (
+                "group gains a manually assigned node",
+                group_nodes(vec![other, n1]),
+                vec![n1],
+                false,
+            ),
+            ("plan drops group", plan_groups(vec![]), vec![other], true),
+            (
+                "plan regains group",
+                plan_groups(vec![group]),
+                vec![other],
+                true,
+            ),
+            (
+                "user plan expiry",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        crate::plans::apply_update_user_plan(
+                            c,
+                            &crate::audit::Actor::test(),
+                            u,
+                            &crate::plans::UpdateUserPlanReq {
+                                expires_at: Some(Some(Utc::now() + chrono::Duration::days(30))),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                }),
+                vec![n1, n2, other],
+                true,
+            ),
+            (
+                "cancel user plan",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        crate::plans::apply_cancel_user_plan(c, &crate::audit::Actor::test(), u)
+                            .await
+                            .map(|_| ())
+                    })
+                }),
+                vec![other],
+                true,
+            ),
+            (
+                "group change without subscribers",
+                group_nodes(vec![]),
+                vec![other, n1],
+                false,
             ),
             (
                 "delete user",
