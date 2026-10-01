@@ -1,3 +1,5 @@
+import type { TFunction } from "../i18n";
+
 // The SPA is served under the panel's secret route prefix. Everything is
 // derived from the current location: no prefix knowledge is baked in.
 const APP_MARK = "/app";
@@ -74,7 +76,8 @@ export interface Me {
   expires_at: string | null;
 }
 
-// "enroll": an admin without 2FA; only the /me/totp endpoints accept it.
+// "enroll": only with auth.require_admin_2fa, an admin without 2FA; only the
+// /me/totp endpoints accept it.
 export type Stage = "full" | "enroll";
 
 export interface LoginResult {
@@ -92,10 +95,9 @@ export interface TotpStatus {
   enabled: boolean;
   pending: boolean;
   recovery_codes_left: number;
-  // Admins activating 2FA need their one-time enrollment code (printed by
-  // `akari admin add` / `admin reset-2fa`, or shown once to the admin who
-  // reset them).
-  enroll_code_required: boolean;
+  // auth.require_admin_2fa: admins without 2FA only get an enrollment
+  // session. Off by default (2FA is optional, recommended to admins).
+  admin_2fa_required: boolean;
 }
 
 export interface TotpEnrollment {
@@ -216,11 +218,24 @@ export interface MyPlan {
   nodes: { name: string; region: string | null }[];
 }
 
-export function describePeriod(p: Period): string {
-  if (p === "monthly") return "Monthly";
-  if (p === "none") return "No reset";
+export function describePeriod(p: Period, t: TFunction): string {
+  if (p === "monthly") return t("portal.periodMonthly");
+  if (p === "none") return t("portal.periodNone");
   const m = /^days-(\d+)$/.exec(p);
-  return m ? `Every ${m[1]} days` : p;
+  return m ? t("portal.periodDays", { days: m[1] }) : p;
+}
+
+// GET /users/{id}/nodes: an account's node access (no credentials).
+export interface UserNodeView {
+  node_id: string;
+  name: string;
+  region: string | null;
+  enabled: boolean;
+  status: string;
+  deleting: boolean;
+  // true = admin assignment, false = granted by the plan.
+  manual: boolean;
+  inbounds: { tag: string; protocol: string }[];
 }
 
 export interface Inbound {

@@ -12,6 +12,7 @@
   --color-border: var(--border);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  --color-ring: var(--ring);
   --radius-lg: 0.5rem;
 }
 
@@ -27,6 +28,8 @@
   --border: oklch(0.9 0.01 260);
   --destructive: oklch(0.55 0.19 25);
   --destructive-foreground: oklch(0.98 0 0);
+  /* Keyboard focus ring (focus-visible:ring-ring); WCAG 3:1 against the card. */
+  --ring: oklch(0.55 0.15 260);
 }
 
 body {
@@ -37,4 +40,10 @@ body {
     -apple-system,
     "Segoe UI",
     sans-serif;
+}
+
+/* A visible focus indicator for elements without their own ring utility. */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }
