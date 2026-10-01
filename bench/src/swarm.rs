@@ -225,6 +225,8 @@ pub async fn run(args: SwarmArgs) -> Result<()> {
     let cookie = crate::load::admin_cookie(&pg, &args.data_dir).await?;
     let mut each = common::histogram()?;
     let mut all = common::histogram()?;
+    let mut api = common::histogram()?;
+    let mut after_commit = common::histogram()?;
     let run_until = Instant::now() + Duration::from_secs(args.seconds);
     let gap = Duration::from_secs(args.seconds) / (args.changes.max(1) as u32 * 2 + 1);
     for c in 0..args.changes {
@@ -249,6 +251,8 @@ pub async fn run(args: SwarmArgs) -> Result<()> {
             if !r.status().is_success() {
                 bail!("PATCH user: {}", r.status());
             }
+            let committed = Instant::now();
+            common::record(&mut api, committed - t0);
             let mut got = 0;
             let mut last = Duration::ZERO;
             let wait_until = Instant::now() + Duration::from_secs(10);
@@ -258,6 +262,7 @@ pub async fn run(args: SwarmArgs) -> Result<()> {
                     Ok(Some((_agent, present, at))) if present == enable => {
                         let d = at.saturating_duration_since(t0);
                         common::record(&mut each, d);
+                        common::record(&mut after_commit, at.saturating_duration_since(committed));
                         last = last.max(d);
                         got += 1;
                     }
@@ -280,6 +285,8 @@ pub async fn run(args: SwarmArgs) -> Result<()> {
     tokio::time::sleep(rest).await;
     println!("change -> agent, per agent:     {}", common::summary(&each));
     println!("change -> agent, all holders:   {}", common::summary(&all));
+    println!("  of which PATCH (commit):       {}", common::summary(&api));
+    println!("  commit -> agent, per agent:    {}", common::summary(&after_commit));
 
     let _ = stop_tx.send(true);
     for t in tasks {
