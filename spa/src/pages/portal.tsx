@@ -93,8 +93,9 @@ function SubscriptionCard() {
     setCopied(false);
     setBusy(true);
     try {
-      const res = await post<{ sub_token: string }>("/me/sub-token", {});
-      setUrl(subscriptionUrl(res.sub_token));
+      const res = await post<{ sub_token: string; sub_url?: string | null }>("/me/sub-token", {});
+      // R22: the panel builds it on the subscription domain when one is set.
+      setUrl(res.sub_url ?? subscriptionUrl(res.sub_token));
     } catch (err) {
       setError(errorText(err, t));
     } finally {

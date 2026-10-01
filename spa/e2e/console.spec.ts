@@ -165,6 +165,7 @@ test("admin with 2FA: password alone refused, TOTP code accepted", async ({ brow
     ["orders", "订单", "订单"],
     ["updates", "更新", "灰度更新"],
     ["plans", "套餐", "套餐"],
+    ["settings", "系统设置", "系统设置"],
   ]) {
     await page.goto(`${BASE}/${view}`);
     await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();

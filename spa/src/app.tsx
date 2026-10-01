@@ -13,6 +13,7 @@ import { AdminNodes } from "./pages/admin-nodes";
 import { AdminPlans } from "./pages/admin-plans";
 import { AdminUpdates } from "./pages/admin-updates";
 import { AdminOrders } from "./pages/admin-orders";
+import { AdminSettings } from "./pages/admin-settings";
 import { AdminUsers } from "./pages/admin-users";
 import { AdminAudit } from "./pages/audit";
 import { Login } from "./pages/login";
@@ -29,6 +30,7 @@ export const VIEWS = [
   { id: "nodes", label: "节点" },
   { id: "updates", label: "更新" },
   { id: "audit", label: "审计" },
+  { id: "settings", label: "系统设置" },
   { id: "account", label: "账户" },
 ] as const;
 export type View = (typeof VIEWS)[number]["id"];
@@ -253,6 +255,8 @@ function AdminConsole({ user, onLogout, logoutError }: { user: Me; onLogout: () 
           <AdminUpdates />
         ) : view === "audit" ? (
           <AdminAudit />
+        ) : view === "settings" ? (
+          <AdminSettings />
         ) : view === "account" ? (
           <div className="space-y-6">
             <PasswordCard />
