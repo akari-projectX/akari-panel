@@ -18,8 +18,16 @@ server_name = "panel.example.com"
 bind = "0.0.0.0:9100"
 allow_non_loopback = true
 
+[tls_ask]
+# Caddy on-demand TLS: certificates for the main/subscription domains set in
+# the admin "系统设置" (deploy/caddy/Caddyfile asks here). Private frontend
+# network only, never published.
+bind = "0.0.0.0:8082"
+allow_non_loopback = true
+
 [install]
 # One-line node installer (docs/DEPLOY.md §3); default = the browser's origin.
+# The admin "系统设置" main domain overrides it once set.
 # public_url = "https://panel.example.com"
 
 [updates]

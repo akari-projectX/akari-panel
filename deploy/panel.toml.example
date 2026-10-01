@@ -16,8 +16,14 @@ cookie_secure = true
 # from these peers (login rate limit, per-client addressing).
 trusted_proxies = ["127.0.0.1/32"]
 # Names/IPs the gRPC server certificate is valid for. Must include the host
-# part of grpc.advertise AND grpc.server_name.
+# part of grpc.advertise AND grpc.server_name. (The node communication
+# domain set in 系统设置, and every name a bootstrap file was issued for, are
+# added automatically: docs/DEPLOY.md "Domains".)
 advertised_names = ["panel.example.com"]
+# Defaults for 系统设置 (the database value wins once saved there):
+# sub_domain = "sub.example.com"     # subscription links ("" = main domain)
+# trust_cloudflare = false           # CF-Connecting-IP behind Cloudflare edges
+# cloudflare_ranges = []             # [] = the list shipped in the binary
 
 [grpc]
 # Agents dial this directly with mTLS: public, NOT behind an HTTP proxy.
@@ -32,6 +38,11 @@ lease_seconds = 86400
 # Prometheus endpoint on its own listener (never the web port). Unset =
 # disabled. Loopback unless allow_non_loopback = true (then firewall it).
 bind = "127.0.0.1:9100"
+
+[tls_ask]
+# Caddy on-demand TLS ask endpoint (deploy/caddy/Caddyfile, AKARI_ASK):
+# certificates for the domains set in the admin "系统设置". Loopback only.
+bind = "127.0.0.1:8082"
 
 [install]
 # One-line node installer (docs/DEPLOY.md §3). Origin nodes download from;
