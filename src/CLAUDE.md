@@ -6,8 +6,11 @@
 
 | 模块 | 职责 | 改动须知 |
 |---|---|---|
-| `main.rs` | clap CLI（serve/info/node/admin add/admin passwd）与启动装配 | 顶部强制装 rustls ring provider，勿删；SIGTERM/SIGINT → `shutdown.rs` 顺序 |
+| `main.rs` | clap CLI（serve/info/config check/node/admin add/admin passwd，`--version` = 版本+git sha）与启动装配（校验配置 → `metrics::init` → 可选 metrics 监听） | 顶部强制装 rustls ring provider，勿删；SIGTERM/SIGINT → `shutdown.rs` 顺序 |
 | `shutdown.rs` | 优雅退出（S4-3） | 置 shutdown watch（所有会话含关闭后新连的都以 UNAVAILABLE "panel shutting down" 结束）→ 等会话任务（含清理）≤3s → abort 后台循环 → 最终 flush ≤5s → 服务器 ≤1s；总计 <10s（docker stop 默认宽限）。关停导致的在途未 ack 不记失败 |
+| `config_check.rs` | 启动配置校验（M1-3）与 `akari config check` | `validate()` 纯函数收集全部错误/警告：地址端口冲突、`grpc.advertise` 必须显式 IP:port/hostname:port、`advertised_names` 非空且覆盖 advertise 主机与 `server_name`（通配符 `*.x` 仅覆盖一级）、租约 1h–30d、burst/速率 >0、URL 格式、metrics 绑定规则；警告：`cookie_secure=false` + 非回环 + 无 trusted_proxies、公网 bind 无 trusted_proxies。`check_data_dir` 探测可写。`effective_toml` 对 URL 密码打码。新增配置项要同步校验与测试 |
+| `metrics.rs` | Prometheus（`prometheus` crate，无 protobuf 特性）：`OnceLock` 全局收集器 + 自由函数钩子（未 `init` 时空操作）；独立监听 `serve`；`track_http` 中间件按 `MatchedPath` 模板记延迟 | 钩子：`grpc.rs`（sync_sent、ack）、`traffic.rs`（flush 时延/失败、billed_bytes 来自 FLUSH_SQL 的 `billed_total`）、`enforce.rs`、`notify.rs`（connects、队列占用）、`login_limit.rs`。抓取时才从 AppState 读 agents/sessions/listener 状态。**标签不得含前缀/id** |
+| `request_id.rs` | 请求 ID 中间件（在 `prefix_gate` 之内） | 采纳短且可打印的入站 `X-Request-Id`，否则生成；放入 tracing span 并回写响应头；跳过带 `Rejected` 的响应 |
 | `client_ip.rs` | `web.trusted_proxies` CIDR 与客户端地址 | 仅受信对端才读 XFF，取最右侧非受信跳；遇垃圾跳取最后一个可信地址；最多看 32 跳；IPv4-mapped 归一；限速桶 IPv6 按 /64 |
 | `login_limit.rs` | 登录失败限速（S4-1） | Valkey Lua：两个桶（地址 20、登录名 sha256 50，900s，EXPIRE NX）原子 INCR，超限回滚不计；成功/非凭据错误释放，只有凭据失败保留；键基数受 argon2 吞吐 × 窗口约束 |
 | `config.rs` | `panel.toml` + `DATABASE_URL`/`VALKEY_URL` 覆盖 | gRPC advertise 必须写显式 IP；`web.trusted_proxies`（默认空）；`web.cookie_secure`（默认 true，smoke 用 false）；`traffic.node_burst_secs`（默认 120）；`traffic.node_max_rate_bytes_per_sec`（默认 1.25e9）；`grpc.lease_seconds` 失联租约（默认 86400）；`traffic.departed_grace_secs`（默认 900）；`agent.remove_mode` = gate（默认）/rebuild |

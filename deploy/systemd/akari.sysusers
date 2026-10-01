@@ -1,0 +1,2 @@
+# systemd-sysusers: the panel's service account (no login, no home).
+u akari - "Akari panel" /var/lib/akari /usr/sbin/nologin

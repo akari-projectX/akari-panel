@@ -128,6 +128,17 @@ make smoke             # full end-to-end check (truncates the dev DB)
 make check             # fmt + clippy + tsc (fast gate); make lint test deny = CI
 ```
 
+### Production deployment
+
+`docs/DEPLOY.md` (fresh VPS in ~30 minutes: Docker Compose or systemd, Caddy/nginx, firewall,
+first admin, node install, upgrade order, rollback, release verification), `docs/BACKUP.md`
+(age-encrypted backup/restore and the restore drill), `deploy/` (units, compose, proxy examples,
+Prometheus alerts, Grafana dashboard). Release artifacts (static linux amd64/arm64 binaries,
+distroless image `ghcr.io/akari-projectx/akari-panel`, SBOM, cosign signatures) come from the
+`release.yml` workflow on `v*` tags. `akari --version`, `akari config check` (validates and prints
+the effective config, secrets redacted). Optional `[metrics] bind` serves Prometheus metrics on a
+separate loopback listener, never on the public port.
+
 ### API surface (all under the secret prefix)
 
 | Method | Path | Auth | Purpose |

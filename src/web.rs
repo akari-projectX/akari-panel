@@ -59,7 +59,11 @@ pub fn router(state: AppState) -> Router {
         // Otherwise a wrong method on a real route (GET /{p}/auth/login)
         // answers 405 + Allow: a prefix oracle.
         .method_not_allowed_fallback(rejected)
+        // Inside the gate: request IDs exist for accepted requests only.
+        .layer(middleware::from_fn(crate::request_id::layer))
         .layer(middleware::from_fn_with_state(state.clone(), prefix_gate))
+        // Outside the gate, observation only (separate metrics listener).
+        .layer(middleware::from_fn(crate::metrics::track_http))
         .with_state(state);
     // `Router::layer` wraps each method handler *inside* its MethodRouter,
     // which appends `Allow` on a method mismatch after those layers run.

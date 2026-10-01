@@ -2,10 +2,10 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct PanelConfig {
     pub data_dir: PathBuf,
     pub database_url: String,
@@ -14,10 +14,24 @@ pub struct PanelConfig {
     pub grpc: GrpcConfig,
     pub traffic: TrafficConfig,
     pub agent: AgentConfig,
+    pub metrics: MetricsConfig,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+/// Prometheus metrics (M1-4). Served on its OWN listener, never on the
+/// public web port (a `/metrics` there would be a rejection-identity leak).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MetricsConfig {
+    /// Listen address of the metrics endpoint; unset = metrics disabled.
+    /// Must be a loopback address unless `allow_non_loopback` is set.
+    pub bind: Option<SocketAddr>,
+    /// Permit a non-loopback `bind` (e.g. a private interface scraped by
+    /// Prometheus). The endpoint has no authentication: firewall it.
+    pub allow_non_loopback: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct AgentConfig {
     /// How agents apply user removals/rotations (R10 fallback switch):
     /// "gate" (default) = in place via UserDelta, the agent's gate
@@ -27,7 +41,7 @@ pub struct AgentConfig {
     pub remove_mode: RemoveMode,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RemoveMode {
     #[default]
@@ -44,8 +58,8 @@ impl RemoveMode {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct TrafficConfig {
     /// Plausibility cap: the most a single (node, user, session) may be
     /// billed per second since its counters were last persisted. Excess is
@@ -78,8 +92,8 @@ impl Default for TrafficConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct WebConfig {
     pub bind: SocketAddr,
     /// DNS names / IPs the auto-issued TLS certificate is valid for.
@@ -96,8 +110,8 @@ pub struct WebConfig {
     pub cookie_secure: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct GrpcConfig {
     pub bind: SocketAddr,
     /// host:port agents dial (written into bootstrap files).
@@ -127,6 +141,7 @@ impl Default for PanelConfig {
             grpc: GrpcConfig::default(),
             traffic: TrafficConfig::default(),
             agent: AgentConfig::default(),
+            metrics: MetricsConfig::default(),
         }
     }
 }

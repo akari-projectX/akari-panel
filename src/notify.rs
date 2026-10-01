@@ -134,7 +134,6 @@ impl Wakeups {
         }
     }
 
-    #[cfg(test)]
     pub fn connected(&self) -> bool {
         self.connected.load(Ordering::SeqCst)
     }
@@ -283,6 +282,7 @@ async fn supervise(state: AppState, first: PgListener) {
         };
         w.connected.store(true, Ordering::SeqCst);
         w.connects.fetch_add(1, Ordering::SeqCst);
+        crate::metrics::listener_connected();
         tracing::info!(pid = w.listener_pid(), "change listener: listening");
         // LISTEN is in place; anything committed before it may be missed.
         w.wake_all();
@@ -393,12 +393,16 @@ pub async fn queue_monitor(state: AppState) {
             .fetch_one(state.pg())
             .await
         {
-            Ok(u) if u > QUEUE_WARN => tracing::warn!(
-                usage = u,
-                "PostgreSQL notification queue over 10% full: some LISTEN session is not \
-                 consuming; when it fills, every mutation fails"
-            ),
-            Ok(_) => {}
+            Ok(u) => {
+                crate::metrics::queue_usage(u);
+                if u > QUEUE_WARN {
+                    tracing::warn!(
+                        usage = u,
+                        "PostgreSQL notification queue over 10% full: some LISTEN session is not \
+                         consuming; when it fills, every mutation fails"
+                    );
+                }
+            }
             Err(e) => tracing::debug!(error = %e, "notification queue check failed"),
         }
     }

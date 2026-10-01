@@ -1,0 +1,108 @@
+# Alert rules for the Akari panel (M1-4). Validate:
+#   promtool check rules alerts.yml
+# Thresholds assume the default 15 s scrape interval and a single panel
+# instance; with several instances aggregate with `sum()` where noted.
+groups:
+  - name: akari-panel
+    rules:
+      - alert: AkariPanelDown
+        expr: up{job="akari-panel"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Akari panel is down"
+          description: "The metrics endpoint of {{ $labels.instance }} has not answered for 2 minutes. Agents keep running their last state until their lease (default 24 h) expires, then stop xray."
+
+      - alert: AkariTrafficFlushFailing
+        expr: increase(akari_traffic_flush_failures_total[10m]) > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Traffic flush to PostgreSQL keeps failing"
+          description: "{{ $labels.instance }}: flushes failed for 5+ minutes. Usage is buffered in memory and not billed or enforced until the database is back; check PostgreSQL."
+
+      - alert: AkariTrafficFlushSlow
+        expr: histogram_quantile(0.99, sum by (le, instance) (rate(akari_traffic_flush_duration_seconds_bucket[10m]))) > 2.5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Traffic flush p99 above 2.5 s"
+          description: "{{ $labels.instance }}: flush tick is 5 s; sustained slow flushes mean billing lags and the loop skips ticks."
+
+      - alert: AkariNoAgentsConnected
+        expr: akari_agents_connected == 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "No agents connected"
+          description: "{{ $labels.instance }} has no live agent stream for 5 minutes (expected if you have no nodes yet)."
+
+      - alert: AkariAgentsDropped
+        expr: akari_agents_connected < 0.7 * max_over_time(akari_agents_connected[1h])
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "More than 30% of the agents of the last hour are offline"
+          description: "{{ $labels.instance }}: {{ $value }} agents connected, well below the last hour's peak. Network or panel-side trouble, or nodes down."
+
+      - alert: AkariListenerDisconnected
+        expr: akari_notify_listener_connected == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "PostgreSQL change listener is down"
+          description: "{{ $labels.instance }} cannot receive change notifications: config changes reach agents only on the 60 s reconcile."
+
+      - alert: AkariListenerReconnectStorm
+        expr: increase(akari_notify_listener_connects_total[10m]) > 5
+        labels: { severity: warning }
+        annotations:
+          summary: "Change listener reconnecting repeatedly"
+          description: "{{ $labels.instance }}: {{ $value }} LISTEN connections in 10 minutes (PostgreSQL restarts, a pooler in the way, or network flaps). Each one wakes every session."
+
+      - alert: AkariNotifyQueueFilling
+        expr: akari_notify_queue_usage_ratio > 0.1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "PostgreSQL notification queue above 10%"
+          description: "Some LISTEN session is not consuming. When the queue is full every write that bumps a node version fails."
+
+      - alert: AkariNotifyQueueNearlyFull
+        expr: akari_notify_queue_usage_ratio > 0.5
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "PostgreSQL notification queue above 50%"
+          description: "Imminent write failures. Find the stuck listener (pg_stat_activity, application_name like 'akari-listener-%')."
+
+      - alert: AkariEnforcementErrors
+        expr: increase(akari_enforcement_passes_total{result="error"}[15m]) > 3
+        labels: { severity: warning }
+        annotations:
+          summary: "Limit/expiry enforcement passes failing"
+          description: "{{ $labels.instance }} pass={{ $labels.pass }}: users over their limit or expired may stay enabled."
+
+      - alert: AkariAgentApplyFailures
+        expr: increase(akari_acks_total{reason="apply_failed"}[15m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "An agent failed to apply a state"
+          description: "{{ $labels.instance }}: nodes report apply_failed; see the node's last_error in the admin UI."
+
+      - alert: AkariLoginRateLimited
+        expr: increase(akari_login_attempts_total{result="limited"}[10m]) > 20
+        labels: { severity: info }
+        annotations:
+          summary: "Many logins hit the rate limit"
+          description: "{{ $value }} rate-limited login attempts in 10 minutes: password guessing, or a proxy misconfiguration (trusted_proxies) lumping clients together."
+
+      - alert: AkariHigh5xxRate
+        expr: |
+          sum by (instance) (rate(akari_http_request_duration_seconds_count{status=~"5.."}[5m]))
+            / sum by (instance) (rate(akari_http_request_duration_seconds_count[5m])) > 0.05
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "More than 5% of web requests fail with 5xx"
+          description: "{{ $labels.instance }}: check the panel log (request_id field) and PostgreSQL/Valkey."

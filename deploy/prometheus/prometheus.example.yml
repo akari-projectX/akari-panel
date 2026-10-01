@@ -1,0 +1,10 @@
+# Minimal scrape config. Panel `[metrics] bind` must be reachable from here
+# (loopback: run Prometheus on the same host or tunnel; compose: the metrics
+# port is on the private backend network only).
+scrape_configs:
+  - job_name: akari-panel
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["127.0.0.1:9100"]
+rule_files:
+  - alerts.yml

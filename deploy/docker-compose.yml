@@ -1,0 +1,96 @@
+# Production stack: panel + PostgreSQL 18 + Valkey 9 + Caddy (TLS).
+# See docs/DEPLOY.md. Quick start:
+#
+#   cp .env.example .env; for f in env/*.example; do cp $f ${f%.example}; done
+#   cp panel.toml.compose.example panel.toml        # then edit names/domain
+#   docker compose up -d postgres valkey panel
+#   docker compose exec panel /akari info        # prints the route prefix
+#   # put it into .env as AKARI_PREFIX, then:
+#   docker compose up -d
+#
+# Exposure: only Caddy (80/443) and the panel's gRPC port (8443, mTLS, agents
+# dial it directly) are published. PostgreSQL, Valkey and the panel's web
+# port live on private networks and are never published.
+name: akari
+
+services:
+  panel:
+    image: ghcr.io/akari-projectx/akari-panel:${AKARI_VERSION:?set AKARI_VERSION in .env}
+    restart: unless-stopped
+    stop_grace_period: 20s
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    env_file:
+      - ./env/panel.env
+    command: ["-c", "/etc/akari/panel.toml", "serve"]
+    volumes:
+      - akari-data:/data              # route prefix, CA key, jwt.key: BACK UP (docs/BACKUP.md)
+      - ./panel.toml:/etc/akari/panel.toml:ro   # from panel.toml.compose.example
+    ports:
+      - "8443:8443"                   # gRPC, agents dial this directly (mTLS)
+    networks: [backend, frontend]
+    depends_on:
+      postgres: { condition: service_healthy }
+      valkey: { condition: service_healthy }
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    env_file:
+      - ./env/postgres.env            # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
+    volumes:
+      - pgdata:/var/lib/postgresql
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  valkey:
+    image: valkey/valkey:9-alpine
+    restart: unless-stopped
+    env_file:
+      - ./env/valkey.env              # VALKEY_PASSWORD
+    # Hot state only (liveness keys, rate-limit counters): no persistence.
+    command: ["sh", "-c", "exec valkey-server --save '' --appendonly no --requirepass \"$$VALKEY_PASSWORD\""]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"$$VALKEY_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      AKARI_DOMAIN: ${AKARI_DOMAIN:?set AKARI_DOMAIN in .env}
+      AKARI_PREFIX: ${AKARI_PREFIX:-set-after-akari-info}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data              # certificates
+      - caddy-config:/config
+    networks: [frontend]
+    depends_on: [panel]
+
+networks:
+  # No route out, no way in: PostgreSQL and Valkey are reachable by the panel only.
+  backend:
+    internal: true
+  # The panel's web port is reachable by Caddy here; the subnet is fixed so
+  # panel.toml `web.trusted_proxies` can name it.
+  frontend:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+volumes:
+  akari-data:
+  pgdata:
+  caddy-data:
+  caddy-config:

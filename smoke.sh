@@ -29,6 +29,8 @@ cat >"$LOG/panel.toml" <<'TOML'
 [web]
 cookie_secure = false
 trusted_proxies = ["127.0.0.2/32"]
+[metrics]
+bind = "127.0.0.1:9109"
 TOML
 "$PANEL" -c "$LOG/panel.toml" serve >"$LOG/panel.log" 2>&1 &
 PANEL_PID=$!
@@ -505,6 +507,40 @@ echo "== root + healthz =="
 [ "$(code http://127.0.0.1:8080/)" = "404" ] || { echo "FAIL: / not 404"; exit 1; }
 [ "$(code http://127.0.0.1:8080/definitely-not-here)" = "404" ] || { echo "FAIL: junk not 404"; exit 1; }
 [ "$(code "$BASE/healthz")" = "200" ] || { echo "FAIL: healthz not 200"; exit 1; }
+
+echo "== M1-3/M1-4: config check, version, metrics listener, request id =="
+"$PANEL" -c "$LOG/panel.toml" config check >"$LOG/config-check.out" 2>&1 \
+  || { echo "FAIL: config check on the smoke config"; cat "$LOG/config-check.out"; exit 1; }
+grep -q 'configuration OK' "$LOG/config-check.out" || { echo "FAIL: config check output"; exit 1; }
+printf '[grpc]\nlease_seconds = 5\n' >"$LOG/bad.toml"
+"$PANEL" -c "$LOG/bad.toml" config check >"$LOG/bad.out" 2>&1 \
+  && { echo "FAIL: invalid config accepted"; exit 1; }
+grep -q 'lease_seconds' "$LOG/bad.out" || { echo "FAIL: invalid config error not readable"; cat "$LOG/bad.out"; exit 1; }
+"$PANEL" --version | grep -Eq '^akari [0-9]+\.[0-9]+\.[0-9]+ \(([0-9a-f]+|unknown)\)' \
+  || { echo "FAIL: akari --version"; exit 1; }
+# Metrics live on their own listener only; the public port has no /metrics.
+for probe in "http://127.0.0.1:8080/metrics" "$BASE/metrics"; do
+  [ "$(fp "$probe")" = "$REJ" ] || { echo "FAIL: /metrics reachable on the web port: $probe"; exit 1; }
+done
+curl -s --noproxy '*' "http://127.0.0.1:9109/metrics" >"$LOG/metrics.txt"
+for m in akari_build_info akari_agents_connected akari_sync_sent_total akari_acks_total \
+         akari_traffic_flush_duration_seconds_count akari_login_attempts_total; do
+  grep -q "^$m" "$LOG/metrics.txt" || { echo "FAIL: metric $m missing"; exit 1; }
+done
+grep -q 'route="/{prefix}/healthz"' "$LOG/metrics.txt" || { echo "FAIL: route template label missing"; exit 1; }
+grep -q "$PREFIX" "$LOG/metrics.txt" && { echo "FAIL: route prefix leaked into metrics"; exit 1; }
+[ "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' http://127.0.0.1:9109/)" = "404" ] \
+  || { echo "FAIL: metrics listener serves more than /metrics"; exit 1; }
+# Request IDs: accepted requests get one (a valid incoming id is echoed);
+# rejections get no header at all (byte-identical, checked above).
+curl -s --noproxy '*' -D - -o /dev/null "$BASE/healthz" | grep -qi '^x-request-id: [0-9a-f]\{32\}' \
+  || { echo "FAIL: no minted request id on a real response"; exit 1; }
+curl -s --noproxy '*' -D - -o /dev/null -H 'X-Request-Id: smoke-req-1' "$BASE/healthz" | grep -qi '^x-request-id: smoke-req-1' \
+  || { echo "FAIL: incoming request id not echoed"; exit 1; }
+curl -s --noproxy '*' -D - -o /dev/null -H 'X-Request-Id: smoke-req-1' "$BASE/nope" | grep -qi '^x-request-id' \
+  && { echo "FAIL: request id on a rejection"; exit 1; }
+[ "$(fp -H 'X-Request-Id: smoke-req-1' "$BASE/nope")" = "$REJ" ] || { echo "FAIL: rejection differs with a request id"; exit 1; }
+echo "m1a: ok"
 
 echo "== SPA =="
 [ "$(code "$BASE/app")" = "200" ] || { echo "FAIL: /app not 200"; exit 1; }
