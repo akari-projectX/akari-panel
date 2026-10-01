@@ -9,7 +9,7 @@ dev-down:
 	docker compose down
 
 spa:
-	cd spa && npm install && npm run build
+	cd spa && npm ci && npm run build
 
 panel:
 	cargo build --release
