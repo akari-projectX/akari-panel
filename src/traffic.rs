@@ -950,7 +950,10 @@ async fn flush_rows(
     }
     let grace = buf.departed_grace_secs();
     let mut written = 0;
-    for chunk in rows.chunks(FLUSH_CHUNK_ROWS) {
+    // Highest node ids first: lock takers that follow the global order
+    // (nodes in ascending id order: admin writes, enforcement) then wait
+    // for at most one chunk instead of trailing the flush chunk by chunk.
+    for chunk in rows.chunks(FLUSH_CHUNK_ROWS).rev() {
         written += flush_chunk(pg, buf, chunk, rates, grace, outage).await?;
     }
     Ok(written)
@@ -964,7 +967,7 @@ async fn flush_rows(
 /// every row is idempotent on its own, and all per-node/per-pair caps are
 /// cumulative across transactions (GCRA tat, departed billed_bytes) — a
 /// chunk boundary is the same as one more flush tick.
-pub const FLUSH_CHUNK_ROWS: usize = 10_000;
+pub const FLUSH_CHUNK_ROWS: usize = 5_000;
 
 async fn flush_chunk(
     pg: &sqlx::PgPool,
