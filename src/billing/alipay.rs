@@ -33,6 +33,9 @@ use crate::config::AlipayConfig;
 const CODE_OK: &str = "10000";
 /// Gateway call timeout (connect + TLS + request + response).
 const CALL_TIMEOUT: Duration = Duration::from_secs(15);
+/// Attempts per gateway call (transport errors / non-200 only).
+const CALL_ATTEMPTS: u32 = 3;
+const RETRY_DELAY: Duration = Duration::from_millis(300);
 
 // ---------------------------------------------------------------------------
 // Amounts
@@ -382,8 +385,30 @@ impl Alipay {
     /// One signed call; returns the verified `<method>_response` object
     /// with code 10000. A success without a valid signature is an error.
     async fn call(&self, method: &str, biz: Value, with_notify: bool) -> Result<Value, CallError> {
+        // All three calls are idempotent per out_trade_no (a repeated
+        // precreate returns the same QR), so a transport failure or a
+        // non-200 answer is retried once: the sandbox gateway answers a
+        // sizeable share of requests with HTTP 404 HTML.
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            match self.call_once(method, &biz, with_notify).await {
+                Err(CallError::Transport(_) | CallError::Status(_)) if attempt < CALL_ATTEMPTS => {
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+                r => return r,
+            }
+        }
+    }
+
+    async fn call_once(
+        &self,
+        method: &str,
+        biz: &Value,
+        with_notify: bool,
+    ) -> Result<Value, CallError> {
         let body = self
-            .request_body(method, &biz, with_notify, Utc::now())
+            .request_body(method, biz, with_notify, Utc::now())
             .map_err(|_| CallError::Malformed("could not sign the request"))?;
         let (status, bytes) = super::http::post_form(&self.gateway, body, CALL_TIMEOUT)
             .await
