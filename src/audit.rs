@@ -21,9 +21,12 @@
 //!   remote client can create; failure rows are written off the request
 //!   path so their cost is not a timing oracle for account existence.
 //! - Not recorded: logout (it only ends the caller's own sessions), the
-//!   automatic enforcement passes (traffic-limit disable, expiry — system
-//!   actions, visible in the user's state), pending (unconfirmed) TOTP
+//!   traffic-limit disable and user-expiry passes (visible in the user's
+//!   state: `disabled_reason`, `expires_at`), pending (unconfirmed) TOTP
 //!   enrollments, subscription fetches.
+//! - M3 periodic passes ARE recorded, actor `system`: traffic period
+//!   resets (`user.traffic.reset`, one row per user and period) and plan
+//!   expiry (`user.plan.expire`), since they change usage and access.
 //! - Retention: rows older than `audit.retention_days` (default 365; 0 =
 //!   keep forever) are pruned hourly by the reaper loop on any instance.
 
@@ -51,6 +54,9 @@ pub struct Actor {
 
 /// actor_login of command-line actions.
 pub const CLI: &str = "cli";
+/// actor_login of the panel's own periodic passes (M3: traffic period
+/// resets, plan expiry).
+pub const SYSTEM: &str = "system";
 /// actor_login of actions an agent triggers itself (enrollment, certificate
 /// renewal); `ip` = the agent's source address.
 pub const AGENT: &str = "agent";
@@ -60,6 +66,14 @@ impl Actor {
         Self {
             id: None,
             login: CLI.into(),
+            ip: None,
+        }
+    }
+
+    pub fn system() -> Self {
+        Self {
+            id: None,
+            login: SYSTEM.into(),
             ip: None,
         }
     }
@@ -145,6 +159,7 @@ pub fn user_snapshot_sql(alias: &str) -> String {
 pub fn node_snapshot_sql(alias: &str) -> String {
     format!(
         "jsonb_build_object('name', {a}.name, 'enabled', {a}.enabled, 'server_addr', {a}.server_addr, \
+         'region', {a}.region, \
          'traffic_max_rate_bytes_per_sec', {a}.traffic_max_rate_bytes_per_sec, \
          'deleting', {a}.deleting_at IS NOT NULL)",
         a = alias

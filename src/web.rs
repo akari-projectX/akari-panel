@@ -7,7 +7,7 @@ use axum::{Json, Router};
 use serde_json::json;
 use subtle::ConstantTimeEq;
 
-use crate::{account, api, audit, reject, spa, state::AppState, sub};
+use crate::{account, api, audit, plans, reject, spa, state::AppState, sub};
 
 pub fn router(state: AppState) -> Router {
     // Routes carry the secret prefix as a {prefix} path parameter (handlers
@@ -43,6 +43,11 @@ pub fn router(state: AppState) -> Router {
             "/{prefix}/api/v1/me/sub-token",
             post(account::regenerate_own_sub_token),
         )
+        .route("/{prefix}/api/v1/me/plan", get(plans::my_plan))
+        .route(
+            "/{prefix}/api/v1/me/password",
+            post(account::change_own_password),
+        )
         .route("/{prefix}/api/v1/audit", get(audit::list))
         .route(
             "/{prefix}/api/v1/users",
@@ -67,6 +72,29 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/{prefix}/api/v1/users/{id}/nodes/{node_id}",
             post(api::assign_user).delete(api::unassign_user),
+        )
+        .route(
+            "/{prefix}/api/v1/users/{id}/plan",
+            get(plans::get_user_plan)
+                .put(plans::set_user_plan)
+                .patch(plans::update_user_plan)
+                .delete(plans::cancel_user_plan),
+        )
+        .route(
+            "/{prefix}/api/v1/node-groups",
+            get(plans::list_groups).post(plans::create_group),
+        )
+        .route(
+            "/{prefix}/api/v1/node-groups/{id}",
+            axum::routing::patch(plans::update_group).delete(plans::delete_group),
+        )
+        .route(
+            "/{prefix}/api/v1/plans",
+            get(plans::list_plans).post(plans::create_plan),
+        )
+        .route(
+            "/{prefix}/api/v1/plans/{id}",
+            axum::routing::patch(plans::update_plan).delete(plans::delete_plan),
         )
         .route(
             "/{prefix}/api/v1/nodes",
