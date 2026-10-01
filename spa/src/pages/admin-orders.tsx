@@ -1,0 +1,441 @@
+// R18-3 后台（仅中文）：套餐定价、订单列表/筛选、订单详情与支付事件、
+// 人工确认收款 / 重试开通（必须填写原因，写审计）。
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+
+import { del, get, post, put } from "../lib/api";
+import {
+  parseYuan,
+  yuan,
+  type AdminOrder,
+  type OrderDetail,
+  type OrderStatus,
+  type PriceRow,
+  type Prices,
+} from "../lib/billing";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+
+const errText = (err: unknown) => (err instanceof Error ? err.message : "失败");
+const fmt = (s: string | null) => (s ? new Date(s).toLocaleString("zh-CN") : "—");
+
+export const STATUS_ZH: Record<OrderStatus, string> = {
+  pending: "待付款",
+  paid: "已付款",
+  expired: "已过期",
+  cancelled: "已取消",
+};
+
+const VIA_ZH: Record<string, string> = { notify: "异步通知", query: "主动查询", manual: "人工确认" };
+
+export function AdminOrders() {
+  const [selected, setSelected] = useState<string | null>(null);
+  return (
+    <div className="space-y-6">
+      <PricesCard />
+      <OrdersCard onSelect={setSelected} />
+      {selected && <OrderDetailCard id={selected} onClose={() => setSelected(null)} />}
+    </div>
+  );
+}
+
+function PricesCard() {
+  const prices = useQuery({ queryKey: ["plan-prices"], queryFn: () => get<Prices>("/plan-prices") });
+  const data = prices.data;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>套餐定价</CardTitle>
+        <CardDescription>
+          价格以「元」填写（最多两位小数），每次购买获得「天数」的有效期；同一套餐再次购买为续费，购买其他套餐将替换当前套餐并清零已用流量。
+          {data && !data.payments_enabled && " 当前未启用支付宝（配置 [payments.alipay]），用户无法下单。"}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>套餐</TableHead>
+              <TableHead>价格（元）</TableHead>
+              <TableHead>天数</TableHead>
+              <TableHead>上架</TableHead>
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {(data?.prices ?? []).map((p) => (
+              <PriceEditor key={p.plan_id} row={p} />
+            ))}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  );
+}
+
+function PriceEditor({ row }: { row: PriceRow }) {
+  const queryClient = useQueryClient();
+  const [price, setPrice] = useState(row.price_cents != null ? yuan(row.price_cents) : "");
+  const [days, setDays] = useState(row.period_days != null ? String(row.period_days) : "30");
+  const [purchasable, setPurchasable] = useState(row.purchasable);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  async function save() {
+    setError(null);
+    setSaved(false);
+    const cents = parseYuan(price);
+    const d = Number(days);
+    if (cents == null) return setError("价格无效");
+    if (!Number.isInteger(d) || d < 1 || d > 3650) return setError("天数须为 1–3650");
+    try {
+      await put(`/plans/${row.plan_id}/price`, { price_cents: cents, period_days: d, purchasable });
+      setSaved(true);
+      await queryClient.invalidateQueries({ queryKey: ["plan-prices"] });
+    } catch (err) {
+      setError(errText(err));
+    }
+  }
+
+  async function remove() {
+    if (!window.confirm(`删除「${row.plan_name}」的定价？该套餐将无法购买。`)) return;
+    setError(null);
+    try {
+      await del(`/plans/${row.plan_id}/price`);
+      setPrice("");
+      setPurchasable(false);
+      await queryClient.invalidateQueries({ queryKey: ["plan-prices"] });
+    } catch (err) {
+      setError(errText(err));
+    }
+  }
+
+  return (
+    <TableRow>
+      <TableCell>
+        {row.plan_name}
+        {!row.plan_enabled && (
+          <Badge variant="secondary" className="ml-2">
+            已停用
+          </Badge>
+        )}
+      </TableCell>
+      <TableCell>
+        <Input
+          aria-label={`${row.plan_name} 价格`}
+          className="w-28"
+          inputMode="decimal"
+          value={price}
+          onChange={(e) => setPrice(e.target.value)}
+          placeholder="9.90"
+        />
+      </TableCell>
+      <TableCell>
+        <Input
+          aria-label={`${row.plan_name} 天数`}
+          className="w-20"
+          inputMode="numeric"
+          value={days}
+          onChange={(e) => setDays(e.target.value)}
+        />
+      </TableCell>
+      <TableCell>
+        <input
+          type="checkbox"
+          aria-label={`${row.plan_name} 上架`}
+          checked={purchasable}
+          onChange={(e) => setPurchasable(e.target.checked)}
+        />
+      </TableCell>
+      <TableCell className="space-x-2 whitespace-nowrap">
+        <Button size="sm" onClick={save}>
+          保存
+        </Button>
+        {row.price_cents != null && (
+          <Button size="sm" variant="ghost" onClick={remove}>
+            删除定价
+          </Button>
+        )}
+        {saved && <span className="text-sm text-muted-foreground">已保存</span>}
+        {error && (
+          <span role="alert" className="text-sm text-destructive">
+            {error}
+          </span>
+        )}
+      </TableCell>
+    </TableRow>
+  );
+}
+
+function OrdersCard({ onSelect }: { onSelect: (id: string) => void }) {
+  const [status, setStatus] = useState<"" | OrderStatus | "unfulfilled">("");
+  const [login, setLogin] = useState("");
+  const [tradeNo, setTradeNo] = useState("");
+  const [cursor, setCursor] = useState<string[]>([]);
+  const before = cursor[cursor.length - 1];
+  const params = new URLSearchParams();
+  if (status === "unfulfilled") params.set("unfulfilled", "true");
+  else if (status) params.set("status", status);
+  if (login.trim()) params.set("login", login.trim());
+  if (tradeNo.trim()) params.set("out_trade_no", tradeNo.trim());
+  if (before) params.set("before", before);
+  params.set("limit", "50");
+  const qs = params.toString();
+  const orders = useQuery({
+    queryKey: ["orders", qs],
+    queryFn: () => get<AdminOrder[]>(`/orders?${qs}`),
+    refetchInterval: 10_000,
+  });
+  const rows = orders.data ?? [];
+  const resetPage = () => setCursor([]);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>订单</CardTitle>
+        <CardDescription>金额均为订单创建时的价格；「已付款未开通」表示收到了钱但套餐开通失败，需人工处理。</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="space-y-1">
+            <Label htmlFor="order-status">状态</Label>
+            <select
+              id="order-status"
+              className="h-9 rounded-lg border border-border bg-background px-2 text-sm"
+              value={status}
+              onChange={(e) => {
+                setStatus(e.target.value as typeof status);
+                resetPage();
+              }}
+            >
+              <option value="">全部</option>
+              <option value="pending">待付款</option>
+              <option value="paid">已付款</option>
+              <option value="unfulfilled">已付款未开通</option>
+              <option value="expired">已过期</option>
+              <option value="cancelled">已取消</option>
+            </select>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="order-login">用户名</Label>
+            <Input
+              id="order-login"
+              value={login}
+              onChange={(e) => {
+                setLogin(e.target.value);
+                resetPage();
+              }}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="order-no">订单号 / 支付宝交易号</Label>
+            <Input
+              id="order-no"
+              value={tradeNo}
+              onChange={(e) => {
+                setTradeNo(e.target.value);
+                resetPage();
+              }}
+            />
+          </div>
+        </div>
+        {orders.isError && (
+          <p role="alert" className="text-sm text-destructive">
+            {errText(orders.error)}
+          </p>
+        )}
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>下单时间</TableHead>
+                <TableHead>用户</TableHead>
+                <TableHead>套餐</TableHead>
+                <TableHead>金额</TableHead>
+                <TableHead>状态</TableHead>
+                <TableHead>付款方式</TableHead>
+                <TableHead />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((o) => (
+                <TableRow key={o.id}>
+                  <TableCell>{fmt(o.created_at)}</TableCell>
+                  <TableCell>{o.user_login}</TableCell>
+                  <TableCell>{o.plan_name}</TableCell>
+                  <TableCell>¥{yuan(o.amount_cents)}</TableCell>
+                  <TableCell>
+                    <Badge variant={o.status === "paid" ? "default" : "secondary"}>{STATUS_ZH[o.status]}</Badge>
+                    {o.status === "paid" && !o.fulfilled_at && (
+                      <Badge variant="destructive" className="ml-1">
+                        未开通
+                      </Badge>
+                    )}
+                  </TableCell>
+                  <TableCell>{o.paid_via ? VIA_ZH[o.paid_via] : "—"}</TableCell>
+                  <TableCell>
+                    <Button size="sm" variant="outline" onClick={() => onSelect(o.id)}>
+                      详情
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {rows.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={7} className="text-center text-sm text-muted-foreground">
+                    无订单
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" disabled={cursor.length === 0} onClick={() => setCursor(cursor.slice(0, -1))}>
+            上一页
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={rows.length < 50}
+            onClick={() => setCursor([...cursor, rows[rows.length - 1].id])}
+          >
+            下一页
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function OrderDetailCard({ id, onClose }: { id: string; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const detail = useQuery({ queryKey: ["order-detail", id], queryFn: () => get<OrderDetail>(`/orders/${id}`) });
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const o = detail.data?.order;
+
+  async function fulfil() {
+    if (!o) return;
+    const what = o.status === "paid" ? "重试开通套餐" : "人工确认收款并开通套餐";
+    if (!reason.trim()) return setError("请填写原因（写入审计）");
+    if (!window.confirm(`${what}：订单 ${o.out_trade_no}，用户 ${o.user_login}，¥${yuan(o.amount_cents)}。确定吗？`)) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const r = await post<{ fulfilled: boolean }>(`/orders/${id}/fulfil`, { reason: reason.trim() });
+      if (!r.fulfilled) setError("已记为已付款，但开通失败（见开通错误）");
+      setReason("");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["order-detail", id] }),
+        queryClient.invalidateQueries({ queryKey: ["orders"] }),
+        queryClient.invalidateQueries({ queryKey: ["users"] }),
+      ]);
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!o) return null;
+  const canFulfil = o.status !== "paid" || !o.fulfilled_at;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>订单详情</CardTitle>
+        <CardDescription className="font-mono">{o.out_trade_no}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
+          <dt className="text-muted-foreground">用户</dt>
+          <dd>{o.user_login}</dd>
+          <dt className="text-muted-foreground">套餐</dt>
+          <dd>
+            {o.plan_name}（{o.period_days} 天）
+          </dd>
+          <dt className="text-muted-foreground">金额</dt>
+          <dd>¥{yuan(o.amount_cents)}</dd>
+          <dt className="text-muted-foreground">实付</dt>
+          <dd>{o.paid_amount_cents != null ? `¥${yuan(o.paid_amount_cents)}` : "—"}</dd>
+          <dt className="text-muted-foreground">状态</dt>
+          <dd>{STATUS_ZH[o.status]}</dd>
+          <dt className="text-muted-foreground">付款方式</dt>
+          <dd>{o.paid_via ? VIA_ZH[o.paid_via] : "—"}</dd>
+          <dt className="text-muted-foreground">支付宝交易号</dt>
+          <dd className="font-mono">{o.trade_no ?? "—"}</dd>
+          <dt className="text-muted-foreground">下单 / 过期</dt>
+          <dd>
+            {fmt(o.created_at)} / {fmt(o.expires_at)}
+          </dd>
+          <dt className="text-muted-foreground">付款时间</dt>
+          <dd>{fmt(o.paid_at)}</dd>
+          <dt className="text-muted-foreground">开通时间</dt>
+          <dd>{fmt(o.fulfilled_at)}</dd>
+          <dt className="text-muted-foreground">关单结果</dt>
+          <dd>{o.close_state ?? "—"}</dd>
+          <dt className="text-muted-foreground">人工原因</dt>
+          <dd>{o.manual_reason ?? "—"}</dd>
+        </dl>
+        {o.fulfil_error && (
+          <p role="alert" className="text-sm text-destructive">
+            开通错误：{o.fulfil_error}
+          </p>
+        )}
+        {o.fulfil_result && (
+          <p className="text-sm text-muted-foreground">开通结果：{JSON.stringify(o.fulfil_result)}</p>
+        )}
+        {canFulfil && (
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="space-y-1">
+              <Label htmlFor="fulfil-reason">原因（必填，写入审计）</Label>
+              <Input id="fulfil-reason" className="w-80" value={reason} onChange={(e) => setReason(e.target.value)} />
+            </div>
+            <Button size="sm" disabled={busy} onClick={fulfil}>
+              {o.status === "paid" ? "重试开通" : "人工确认收款"}
+            </Button>
+          </div>
+        )}
+        {error && (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>时间</TableHead>
+                <TableHead>来源</TableHead>
+                <TableHead>验签</TableHead>
+                <TableHead>结果</TableHead>
+                <TableHead>交易状态</TableHead>
+                <TableHead>来源地址</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {(detail.data?.events ?? []).map((e) => (
+                <TableRow key={e.id}>
+                  <TableCell>{fmt(e.created_at)}</TableCell>
+                  <TableCell>{e.source}</TableCell>
+                  <TableCell>{e.verified ? "通过" : "未通过"}</TableCell>
+                  <TableCell>{e.outcome}</TableCell>
+                  <TableCell>{e.trade_status ?? "—"}</TableCell>
+                  <TableCell>{e.ip ?? "—"}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+        <Button size="sm" variant="ghost" onClick={onClose}>
+          关闭
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
