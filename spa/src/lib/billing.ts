@@ -1,6 +1,8 @@
 // R18-3 billing API shapes (mirror of src/billing/api.rs views). Amounts
 // are integer CNY cents everywhere; the client never sends an amount.
 
+import type { MessageKey } from "../i18n";
+
 export interface ShopPlan {
   plan_id: string;
   name: string;
@@ -20,6 +22,14 @@ export interface Shop {
 }
 
 export type OrderStatus = "pending" | "paid" | "expired" | "cancelled";
+
+/** The user-facing label of each order status (i18n key). */
+export const STATUS_KEY = {
+  pending: "billing.statusPending",
+  paid: "billing.statusPaid",
+  expired: "billing.statusExpired",
+  cancelled: "billing.statusCancelled",
+} as const satisfies Record<OrderStatus, MessageKey>;
 
 export interface MyOrder {
   id: string;

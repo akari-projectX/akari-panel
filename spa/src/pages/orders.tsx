@@ -2,38 +2,40 @@
 // reopened to finish paying.
 import { useQuery } from "@tanstack/react-query";
 
+import { useLocale, useT } from "../i18n";
 import { get } from "../lib/api";
-import { yuan, type MyOrder } from "../lib/billing";
+import { STATUS_KEY, yuan, type MyOrder } from "../lib/billing";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
-import { useBillingT } from "./billing-i18n";
 
 export function MyOrders({ onContinue }: { onContinue: (id: string) => void }) {
-  const { t, locale } = useBillingT();
+  const t = useT();
+  const locale = useLocale();
   const orders = useQuery({ queryKey: ["my-orders"], queryFn: () => get<MyOrder[]>("/me/orders") });
-  const fmt = (s: string | null) =>
-    s ? new Date(s).toLocaleString(locale === "zh" ? "zh-CN" : "en") : "—";
+  const fmt = (s: string | null) => (s ? new Date(s).toLocaleString(locale === "zh" ? "zh-CN" : "en") : "—");
   const rows = orders.data ?? [];
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{t("ordersTitle")}</CardTitle>
+        <CardTitle>
+          <h2>{t("billing.ordersTitle")}</h2>
+        </CardTitle>
       </CardHeader>
       <CardContent>
         {rows.length === 0 ? (
-          <p className="text-sm text-muted-foreground">{t("ordersEmpty")}</p>
+          <p className="text-sm text-muted-foreground">{t("billing.ordersEmpty")}</p>
         ) : (
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>{t("colCreated")}</TableHead>
-                  <TableHead>{t("colPlan")}</TableHead>
-                  <TableHead>{t("colAmount")}</TableHead>
-                  <TableHead>{t("colStatus")}</TableHead>
-                  <TableHead>{t("colPaid")}</TableHead>
+                  <TableHead>{t("billing.colCreated")}</TableHead>
+                  <TableHead>{t("billing.colPlan")}</TableHead>
+                  <TableHead>{t("billing.colAmount")}</TableHead>
+                  <TableHead>{t("billing.colStatus")}</TableHead>
+                  <TableHead>{t("billing.colPaid")}</TableHead>
                   <TableHead />
                 </TableRow>
               </TableHeader>
@@ -44,13 +46,13 @@ export function MyOrders({ onContinue }: { onContinue: (id: string) => void }) {
                     <TableCell>{o.plan_name}</TableCell>
                     <TableCell>¥{yuan(o.amount_cents)}</TableCell>
                     <TableCell>
-                      <Badge variant={o.status === "paid" ? "default" : "secondary"}>{t(`status_${o.status}`)}</Badge>
+                      <Badge variant={o.status === "paid" ? "default" : "secondary"}>{t(STATUS_KEY[o.status])}</Badge>
                     </TableCell>
                     <TableCell>{fmt(o.paid_at)}</TableCell>
                     <TableCell>
                       {o.status === "pending" && (
                         <Button size="sm" variant="outline" onClick={() => onContinue(o.id)}>
-                          {t("continuePay")}
+                          {t("billing.continuePay")}
                         </Button>
                       )}
                     </TableCell>

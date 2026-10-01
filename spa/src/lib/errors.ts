@@ -1,4 +1,4 @@
-import type { TFunction } from "../i18n";
+import { translate, type TFunction } from "../i18n";
 import { ApiError } from "./api";
 
 // Server messages with a translation; anything else is shown as-is inside
@@ -8,6 +8,12 @@ const KNOWN: Record<string, Parameters<TFunction>[0]> = {
   "invalid password": "errors.invalidPassword",
   "login already exists": "errors.loginExists",
   "cannot remove the last enabled admin": "errors.lastAdmin",
+  "payments are not enabled": "errors.paymentsOff",
+  "payment gateway unavailable, try again": "errors.paymentGateway",
+  "plan is not for sale": "errors.notForSale",
+  "your current plan does not expire; nothing to renew": "errors.nothingToRenew",
+  "another order is being created": "errors.orderInProgress",
+  "order is not pending": "errors.orderNotPending",
 };
 
 /** A user-presentable, localized message for a failed request. */
@@ -23,4 +29,11 @@ export function errorText(err: unknown, t: TFunction): string {
   if (err.status === 429) return t("errors.tooMany");
   if (err.status >= 500) return t("errors.server");
   return t("errors.generic", { message: err.message });
+}
+
+const zh: TFunction = (key, vars) => translate("zh", key, vars);
+
+/** errorText for the admin console (Chinese only, R18), usable outside components. */
+export function adminErrorText(err: unknown): string {
+  return errorText(err, zh);
 }

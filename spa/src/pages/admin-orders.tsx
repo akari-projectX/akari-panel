@@ -13,6 +13,7 @@ import {
   type PriceRow,
   type Prices,
 } from "../lib/billing";
+import { adminErrorText } from "../lib/errors";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
@@ -20,7 +21,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
-const errText = (err: unknown) => (err instanceof Error ? err.message : "失败");
+const errText = (err: unknown) => (err instanceof Error ? adminErrorText(err) : "失败");
 const fmt = (s: string | null) => (s ? new Date(s).toLocaleString("zh-CN") : "—");
 
 export const STATUS_ZH: Record<OrderStatus, string> = {
@@ -49,7 +50,9 @@ function PricesCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>套餐定价</CardTitle>
+        <CardTitle>
+          <h2>套餐定价</h2>
+        </CardTitle>
         <CardDescription>
           价格以「元」填写（最多两位小数），每次购买获得「天数」的有效期；同一套餐再次购买为续费，购买其他套餐将替换当前套餐并清零已用流量。
           {data && !data.payments_enabled && " 当前未启用支付宝（配置 [payments.alipay]），用户无法下单。"}
@@ -196,8 +199,12 @@ function OrdersCard({ onSelect }: { onSelect: (id: string) => void }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>订单</CardTitle>
-        <CardDescription>金额均为订单创建时的价格；「已付款未开通」表示收到了钱但套餐开通失败，需人工处理。</CardDescription>
+        <CardTitle>
+          <h1>订单</h1>
+        </CardTitle>
+        <CardDescription>
+          金额均为订单创建时的价格；「已付款未开通」表示收到了钱但套餐开通失败，需人工处理。
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex flex-wrap items-end gap-3">
@@ -295,7 +302,12 @@ function OrdersCard({ onSelect }: { onSelect: (id: string) => void }) {
           </Table>
         </div>
         <div className="flex gap-2">
-          <Button size="sm" variant="outline" disabled={cursor.length === 0} onClick={() => setCursor(cursor.slice(0, -1))}>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={cursor.length === 0}
+            onClick={() => setCursor(cursor.slice(0, -1))}
+          >
             上一页
           </Button>
           <Button
@@ -324,7 +336,8 @@ function OrderDetailCard({ id, onClose }: { id: string; onClose: () => void }) {
     if (!o) return;
     const what = o.status === "paid" ? "重试开通套餐" : "人工确认收款并开通套餐";
     if (!reason.trim()) return setError("请填写原因（写入审计）");
-    if (!window.confirm(`${what}：订单 ${o.out_trade_no}，用户 ${o.user_login}，¥${yuan(o.amount_cents)}。确定吗？`)) return;
+    if (!window.confirm(`${what}：订单 ${o.out_trade_no}，用户 ${o.user_login}，¥${yuan(o.amount_cents)}。确定吗？`))
+      return;
     setError(null);
     setBusy(true);
     try {
@@ -348,7 +361,9 @@ function OrderDetailCard({ id, onClose }: { id: string; onClose: () => void }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>订单详情</CardTitle>
+        <CardTitle>
+          <h2>订单详情</h2>
+        </CardTitle>
         <CardDescription className="font-mono">{o.out_trade_no}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
