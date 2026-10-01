@@ -86,6 +86,32 @@ struct Credential {
     account: Value,
 }
 
+/// uTLS fingerprints a client library accepts for REALITY.
+const FINGERPRINTS: &[&str] = &[
+    "chrome",
+    "firefox",
+    "safari",
+    "ios",
+    "android",
+    "edge",
+    "360",
+    "qq",
+    "random",
+    "randomized",
+];
+const DEFAULT_FINGERPRINT: &str = "chrome";
+
+/// The admin's `realitySettings.fingerprint` hint when it is on the
+/// allow-list, else the default. Most clients refuse REALITY without one.
+fn reality_fingerprint(reality: Option<&Value>) -> String {
+    reality
+        .and_then(|t| t.get("fingerprint"))
+        .and_then(|v| v.as_str())
+        .filter(|f| FINGERPRINTS.contains(f))
+        .unwrap_or(DEFAULT_FINGERPRINT)
+        .to_string()
+}
+
 struct Net {
     port: u16,
     network: String,
@@ -93,6 +119,8 @@ struct Net {
     sni: String,
     public_key: String,
     short_id: String,
+    /// uTLS client fingerprint (REALITY only; empty otherwise).
+    fingerprint: String,
     ws_path: String,
     ws_host: String,
 }
@@ -125,7 +153,7 @@ fn net_from_inbound(inbound: &Value) -> Option<Net> {
         _ => String::new(),
     };
     let reality = get("realitySettings");
-    let (public_key, short_id) = if security == "reality" {
+    let (public_key, short_id, fingerprint) = if security == "reality" {
         (
             reality
                 .and_then(|t| t.get("publicKey"))
@@ -137,9 +165,10 @@ fn net_from_inbound(inbound: &Value) -> Option<Net> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string(),
+            reality_fingerprint(reality),
         )
     } else {
-        (String::new(), String::new())
+        (String::new(), String::new(), String::new())
     };
     let ws = get("wsSettings");
     let (ws_path, ws_host) = if network == "ws" {
@@ -164,6 +193,7 @@ fn net_from_inbound(inbound: &Value) -> Option<Net> {
         sni,
         public_key,
         short_id,
+        fingerprint,
         ws_path,
         ws_host,
     })
@@ -258,6 +288,9 @@ fn query_params(p: &Proxy, include_flow: bool) -> String {
     if !p.net.short_id.is_empty() {
         params.push(format!("sid={}", p.net.short_id));
     }
+    if !p.net.fingerprint.is_empty() {
+        params.push(format!("fp={}", p.net.fingerprint));
+    }
     if p.net.network == "ws" {
         if !p.net.ws_path.is_empty() {
             params.push(format!("path={}", encode_fragment(&p.net.ws_path)));
@@ -351,6 +384,9 @@ fn render_clash(proxies: &[Proxy]) -> String {
                 out.push_str(&format!("    servername: {}\n", p.net.sni));
             }
         }
+        if !p.net.fingerprint.is_empty() {
+            out.push_str(&format!("    client-fingerprint: {}\n", p.net.fingerprint));
+        }
         if p.net.security == "reality" {
             out.push_str("    reality-opts:\n");
             out.push_str(&format!("      public-key: {}\n", p.net.public_key));
@@ -402,6 +438,10 @@ fn render_sing_box(proxies: &[Proxy]) -> Value {
                     tls["server_name"] = json!(p.net.sni);
                 }
                 if p.net.security == "reality" {
+                    tls["utls"] = json!({
+                        "enabled": true,
+                        "fingerprint": p.net.fingerprint,
+                    });
                     tls["reality"] = json!({
                         "enabled": true,
                         "public_key": p.net.public_key,
@@ -618,6 +658,64 @@ mod tests {
     use crate::testdb::TestDb;
     use axum::http::StatusCode;
     use fred::prelude::KeysInterface;
+
+    fn reality_proxy(inbound_fp: Option<&str>) -> Proxy {
+        let mut rs = json!({
+            "serverNames": ["www.apple.com"],
+            "publicKey": "PUB",
+            "shortId": "ab12",
+        });
+        if let Some(f) = inbound_fp {
+            rs["fingerprint"] = json!(f);
+        }
+        let inbound = json!({
+            "port": 443,
+            "streamSettings": {"network": "tcp", "security": "reality", "realitySettings": rs},
+        });
+        Proxy {
+            name: "n".into(),
+            protocol: "vless".into(),
+            id_or_password: "u".into(),
+            flow: "xtls-rprx-vision".into(),
+            server: "s.example".into(),
+            net: net_from_inbound(&inbound).unwrap(),
+        }
+    }
+
+    #[test]
+    fn reality_renders_utls_fingerprint_in_all_formats() {
+        for (hint, want) in [
+            (None, "chrome"),
+            (Some("firefox"), "firefox"),
+            (Some("bogus"), "chrome"),
+            (Some(""), "chrome"),
+        ] {
+            let p = [reality_proxy(hint)];
+            let links = String::from_utf8(STANDARD.decode(render_links(&p)).unwrap()).unwrap();
+            assert!(links.contains(&format!("&fp={want}")), "{links}");
+            assert!(render_clash(&p).contains(&format!("    client-fingerprint: {want}\n")));
+            let sb = render_sing_box(&p);
+            assert_eq!(sb["outbounds"][0]["tls"]["utls"]["fingerprint"], want);
+            assert_eq!(sb["outbounds"][0]["tls"]["utls"]["enabled"], true);
+        }
+    }
+
+    #[test]
+    fn non_reality_has_no_fingerprint() {
+        let inbound = json!({"port": 1, "streamSettings": {"network": "tcp"}});
+        let p = [Proxy {
+            name: "n".into(),
+            protocol: "vless".into(),
+            id_or_password: "u".into(),
+            flow: String::new(),
+            server: "s".into(),
+            net: net_from_inbound(&inbound).unwrap(),
+        }];
+        let links = String::from_utf8(STANDARD.decode(render_links(&p)).unwrap()).unwrap();
+        assert!(!links.contains("fp="));
+        assert!(!render_clash(&p).contains("client-fingerprint"));
+        assert!(render_sing_box(&p)["outbounds"][0].get("tls").is_none());
+    }
 
     async fn user_with_token(db: &TestDb) -> (Uuid, String) {
         let u = db.user().await;

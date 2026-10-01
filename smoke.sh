@@ -232,6 +232,40 @@ curl -s --noproxy '*' -D - -o /dev/null "$BASE/sub/not-a-real-token" | grep -qi 
   && { echo "FAIL: quota header leaked on rejection"; exit 1; }
 echo "subscription: ok ($SIZE-byte padded body)"
 
+echo "== subscription: REALITY inbound carries a uTLS fingerprint (default + admin hint) =="
+# Throwaway REALITY inbound + user; the panel only reads publicKey/fingerprint
+# for subscriptions (the keys here are never used by a client).
+RKEY=$(python3 -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip('='))")
+reality_inbounds() { # $1 = extra realitySettings JSON members (leading comma) or empty
+  printf '{"inbounds":[{"tag":"in-vless","listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp"}},{"tag":"in-reality","listen":"127.0.0.1","port":11445,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"dest":"www.apple.com:443","serverNames":["www.apple.com"],"privateKey":"%s","publicKey":"%s","shortIds":["ab12"],"shortId":"ab12"%s}}}]}' "$RKEY" "$RKEY" "$1"
+}
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+    -d '{"login":"smoke-fp","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create fp user"; cat /tmp/akari-smoke/last; exit 1; }
+FP_USER=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
+FP_SUB="$BASE/sub/$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['sub_token'])")"
+check_fp() { # $1 = expected fingerprint
+  curl -s --noproxy '*' "$FP_SUB" | base64 -d 2>/dev/null | grep -q "security=reality.*&fp=$1" \
+    || { echo "FAIL: link lacks fp=$1"; exit 1; }
+  curl -s --noproxy '*' -A "clash-meta/1.19" "$FP_SUB" | grep -q "^    client-fingerprint: $1" \
+    || { echo "FAIL: clash lacks client-fingerprint $1"; exit 1; }
+  curl -s --noproxy '*' -A "sing-box/1.12.0" "$FP_SUB" \
+    | python3 -c "import json,sys; d=json.load(sys.stdin); u=[o['tls']['utls'] for o in d['outbounds'] if o.get('tls',{}).get('reality')][0]; assert u=={'enabled':True,'fingerprint':'$1'}, u" \
+    || { echo "FAIL: sing-box lacks tls.utls $1"; exit 1; }
+}
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' -d "$(reality_inbounds '')")" = "200" ] \
+  || { echo "FAIL: put reality inbound"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$FP_USER/nodes/$NODE_ID" -H 'Content-Type: application/json' \
+    -d '{"inbound_tag":"in-reality","protocol":"vless"}')" = "201" ] || { echo "FAIL: assign reality account"; cat /tmp/akari-smoke/last; exit 1; }
+check_fp chrome
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' -d "$(reality_inbounds ',"fingerprint":"firefox"')")" = "200" ] \
+  || { echo "FAIL: put reality inbound with fingerprint"; exit 1; }
+check_fp firefox
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$FP_USER")" = "204" ] || { echo "FAIL: delete fp user"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' \
+    -d '{"inbounds":[{"tag":"in-vless","listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp"}}]}')" = "200" ] \
+  || { echo "FAIL: restore inbounds"; exit 1; }
+echo "reality fingerprint: ok"
+
 echo "== M1-9 self-service sub token; M1-10 over the limit = the canonical rejection =="
 UJAR="$LOG/user-cookies"
 [ "$(code -c "$UJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
@@ -578,7 +612,11 @@ docker compose exec -T valkey valkey-cli exists "akari:node:online:$NODE_ID" | g
 code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
 grep -q "$NODE_ID" /tmp/akari-smoke/last && { echo "FAIL: deleted node still listed"; exit 1; }
 # CLI: an offline node is deleted right away by the running panel.
-"$PANEL" node add spare-node --out "$LOG/spare-bootstrap.toml" >/dev/null
+# `--out -`: bootstrap on stdout (compose flow), progress on stderr.
+"$PANEL" node add spare-node --out - >"$LOG/spare-bootstrap.toml" 2>"$LOG/spare-add.err"
+grep -q '^enrollment_token = ' "$LOG/spare-bootstrap.toml" || { echo "FAIL: node add --out - lacks bootstrap on stdout"; exit 1; }
+grep -q 'node registered' "$LOG/spare-add.err" || { echo "FAIL: node add --out - progress not on stderr"; exit 1; }
+grep -q 'node registered' "$LOG/spare-bootstrap.toml" && { echo "FAIL: progress leaked into stdout bootstrap"; exit 1; }
 SPARE_ID=$("$PANEL" node list | awk '$2=="spare-node"{print $1}')
 "$PANEL" node delete "$SPARE_ID" | grep -q "deletion started" || { echo "FAIL: CLI node delete"; exit 1; }
 for _ in $(seq 1 20); do
@@ -755,6 +793,10 @@ printf '[grpc]\nlease_seconds = 5\n' >"$LOG/bad.toml"
 "$PANEL" -c "$LOG/bad.toml" config check >"$LOG/bad.out" 2>&1 \
   && { echo "FAIL: invalid config accepted"; exit 1; }
 grep -q 'lease_seconds' "$LOG/bad.out" || { echo "FAIL: invalid config error not readable"; cat "$LOG/bad.out"; exit 1; }
+# AKARI_CONFIG replaces -c (compose run/exec drop the service command).
+AKARI_CONFIG="$LOG/bad.toml" "$PANEL" config check >"$LOG/bad-env.out" 2>&1 \
+  && { echo "FAIL: AKARI_CONFIG ignored (invalid config accepted)"; exit 1; }
+grep -q 'lease_seconds' "$LOG/bad-env.out" || { echo "FAIL: AKARI_CONFIG not honored"; cat "$LOG/bad-env.out"; exit 1; }
 "$PANEL" --version | grep -Eq '^akari [0-9]+\.[0-9]+\.[0-9]+ \(([0-9a-f]+|unknown)\)' \
   || { echo "FAIL: akari --version"; exit 1; }
 # Metrics live on their own listener only; the public port has no /metrics.

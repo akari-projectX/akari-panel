@@ -12,8 +12,10 @@ use crate::config::PanelConfig;
     version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("AKARI_GIT_SHA"), ")")
 )]
 struct Cli {
-    /// Path to panel.toml (defaults are used when omitted)
-    #[arg(short, long, global = true)]
+    /// Path to panel.toml (defaults are used when omitted). Also read from
+    /// AKARI_CONFIG, which survives `docker compose run/exec` (they replace
+    /// the service's `command:`)
+    #[arg(short, long, global = true, env = "AKARI_CONFIG")]
     config: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -72,7 +74,9 @@ enum NodeCmd {
     /// enrollment token, no private key)
     Add {
         name: String,
-        /// Where to write the agent bootstrap file (default: ./<name>-bootstrap.toml)
+        /// Where to write the agent bootstrap file (default:
+        /// ./<name>-bootstrap.toml); `-` writes it to stdout
+        /// (progress goes to stderr)
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
@@ -81,7 +85,9 @@ enum NodeCmd {
     /// current certificates are revoked once the agent enrolls with it.
     EnrollToken {
         id: uuid::Uuid,
-        /// Where to write the bootstrap file (default: ./<name>-bootstrap.toml)
+        /// Where to write the bootstrap file (default:
+        /// ./<name>-bootstrap.toml); `-` writes it to stdout
+        /// (progress goes to stderr)
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
@@ -331,3 +337,30 @@ mod totp;
 mod traffic;
 mod valkey_util;
 mod web;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// `docker compose run/exec` replace the service `command:` (which
+    /// carried `-c`), so the config path must also come from AKARI_CONFIG.
+    #[test]
+    fn config_path_is_read_from_akari_config() {
+        let arg_env = Cli::command()
+            .get_arguments()
+            .find(|a| a.get_id() == "config")
+            .and_then(|a| a.get_env().map(|e| e.to_os_string()));
+        assert_eq!(arg_env.as_deref(), Some("AKARI_CONFIG".as_ref()));
+
+        std::env::set_var("AKARI_CONFIG", "/etc/akari/panel.toml");
+        let from_env = Cli::try_parse_from(["akari", "info"]).map(|c| c.config);
+        let explicit = Cli::try_parse_from(["akari", "-c", "/x.toml", "info"]).map(|c| c.config);
+        std::env::remove_var("AKARI_CONFIG");
+        assert_eq!(
+            from_env.ok().flatten(),
+            Some(PathBuf::from("/etc/akari/panel.toml"))
+        );
+        assert_eq!(explicit.ok().flatten(), Some(PathBuf::from("/x.toml")));
+    }
+}

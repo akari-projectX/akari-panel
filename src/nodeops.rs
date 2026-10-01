@@ -1,3 +1,4 @@
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
@@ -126,11 +127,20 @@ pub async fn node_add(cfg: PanelConfig, name: String, out: Option<PathBuf>) -> R
     .map_err(|e| anyhow::anyhow!("node {name}: {}", e.message()))?;
     let out_path = out.unwrap_or_else(|| PathBuf::from(format!("{name}-bootstrap.toml")));
     // Written before the commit: a committed node always has its file.
-    write_bootstrap(&cfg, &inst, &out_path, &name, &token, expires)?;
+    write_bootstrap(
+        &cfg,
+        &inst,
+        &out_path,
+        &name,
+        &token,
+        expires,
+        &mut std::io::stdout(),
+    )?;
     tx.commit().await?;
-    println!("node registered:  {id}");
-    println!("bootstrap file:   {}", out_path.display());
-    println!("enrollment token expires {}", expires.to_rfc3339());
+    let mut say = progress(&out_path);
+    writeln!(say, "node registered:  {id}")?;
+    writeln!(say, "bootstrap file:   {}", out_path.display())?;
+    writeln!(say, "enrollment token expires {}", expires.to_rfc3339())?;
     Ok(())
 }
 
@@ -162,12 +172,36 @@ pub async fn node_enroll_token(
     .await
     .map_err(|e| anyhow::anyhow!("node {id}: {}", e.message()))?;
     let out_path = out.unwrap_or_else(|| PathBuf::from(format!("{name}-bootstrap.toml")));
-    write_bootstrap(&cfg, &inst, &out_path, &name, &token, expires)?;
+    write_bootstrap(
+        &cfg,
+        &inst,
+        &out_path,
+        &name,
+        &token,
+        expires,
+        &mut std::io::stdout(),
+    )?;
     tx.commit().await?;
-    println!("new enrollment token for node {id}");
-    println!("bootstrap file:   {}", out_path.display());
-    println!("enrollment token expires {}", expires.to_rfc3339());
+    let mut say = progress(&out_path);
+    writeln!(say, "new enrollment token for node {id}")?;
+    writeln!(say, "bootstrap file:   {}", out_path.display())?;
+    writeln!(say, "enrollment token expires {}", expires.to_rfc3339())?;
     Ok(())
+}
+
+/// `--out -`: the bootstrap file goes to stdout (so it can be redirected on
+/// the host, e.g. out of a distroless container), progress goes to stderr.
+fn to_stdout(path: &std::path::Path) -> bool {
+    path.as_os_str() == "-"
+}
+
+/// Where the human-readable progress lines go.
+fn progress(out_path: &std::path::Path) -> Box<dyn std::io::Write> {
+    if to_stdout(out_path) {
+        Box::new(std::io::stderr())
+    } else {
+        Box::new(std::io::stdout())
+    }
 }
 
 fn write_bootstrap(
@@ -177,6 +211,7 @@ fn write_bootstrap(
     name: &str,
     token: &str,
     expires: chrono::DateTime<chrono::Utc>,
+    stdout: &mut dyn std::io::Write,
 ) -> Result<()> {
     let body = crate::enroll::bootstrap_toml(
         name,
@@ -186,6 +221,13 @@ fn write_bootstrap(
         token,
         expires,
     );
+    if to_stdout(path) {
+        stdout
+            .write_all(body.as_bytes())
+            .and_then(|()| stdout.flush())
+            .context("write bootstrap to stdout")?;
+        return Ok(());
+    }
     // 0600: the token is a credential until used or expired.
     install::write_secret(path, body.as_bytes())
         .with_context(|| format!("write {}", path.display()))
@@ -360,6 +402,43 @@ async fn rotate_jwt(pg: &sqlx::PgPool, data_dir: &std::path::Path) -> Result<u64
 mod tests {
     use super::*;
     use crate::testdb::TestDb;
+
+    /// `--out -` writes the bootstrap to the given stdout writer and leaves
+    /// no file behind (distroless images cannot delete one).
+    #[test]
+    fn bootstrap_out_dash_goes_to_stdout_without_a_file() {
+        let dir = std::env::temp_dir().join(format!("akari-boot-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = PanelConfig {
+            data_dir: dir.clone(),
+            ..Default::default()
+        };
+        let inst = install::ensure(&cfg).unwrap();
+        let expires = chrono::Utc::now();
+
+        let mut buf = Vec::new();
+        write_bootstrap(
+            &cfg,
+            &inst,
+            std::path::Path::new("-"),
+            "vps-1",
+            "tok-123",
+            expires,
+            &mut buf,
+        )
+        .unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.contains("tok-123") && text.contains("BEGIN CERTIFICATE"));
+        assert!(!std::path::Path::new("-").exists());
+
+        // A file path still writes a 0600 file and nothing to stdout.
+        let file = dir.join("b.toml");
+        let mut buf = Vec::new();
+        write_bootstrap(&cfg, &inst, &file, "vps-1", "tok-123", expires, &mut buf).unwrap();
+        assert!(buf.is_empty());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     async fn text_of_audit(db: &TestDb) -> String {
         sqlx::query_scalar("SELECT COALESCE(string_agg(after::text, ' '), '') FROM audit_log")
