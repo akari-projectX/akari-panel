@@ -174,7 +174,7 @@ async fn security_headers(req: Request, next: Next) -> Response {
         (header::REFERRER_POLICY, "no-referrer"),
         (
             header::CONTENT_SECURITY_POLICY,
-            "default-src 'self'; style-src 'unsafe-inline'",
+            "default-src 'self'; style-src 'self' 'unsafe-inline'",
         ),
     ] {
         h.entry(name).or_insert(HeaderValue::from_static(value));
