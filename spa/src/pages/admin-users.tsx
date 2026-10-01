@@ -33,14 +33,14 @@ export function AdminUsers() {
   });
   const plans = useQuery({ queryKey: ["plans"], queryFn: () => get<PlanView[]>("/plans") });
   const [open, setOpen] = useState<string | null>(null);
-  const [subToken, setSubToken] = useState<{ login: string; token: string } | null>(null);
+  const [subToken, setSubToken] = useState<{ login: string; token: string; url?: string | null } | null>(null);
 
   const rows = users.data ?? [];
   const hasNext = rows.length === PAGE_SIZE;
 
   return (
     <div className="space-y-6">
-      <CreateUser onSubToken={(login, token) => setSubToken({ login, token })} />
+      <CreateUser onSubToken={(login, token, url) => setSubToken({ login, token, url })} />
       {subToken && (
         <Card>
           <CardContent className="pt-6">
@@ -49,6 +49,7 @@ export function AdminUsers() {
               的订阅令牌——只显示这一次，请立即保存：
             </p>
             <pre className="mt-2 overflow-auto rounded-lg bg-muted p-3 text-xs">{subToken.token}</pre>
+            {subToken.url && <pre className="mt-2 overflow-auto rounded-lg bg-muted p-3 text-xs">{subToken.url}</pre>}
           </CardContent>
         </Card>
       )}
@@ -135,7 +136,7 @@ export function AdminUsers() {
                         <ManageUser
                           user={u}
                           plans={plans.data ?? []}
-                          onSubToken={(token) => setSubToken({ login: u.login, token })}
+                          onSubToken={(token, url) => setSubToken({ login: u.login, token, url })}
                           onClose={() => setOpen(null)}
                         />
                       </TableCell>
@@ -179,7 +180,7 @@ function ManageUser({
 }: {
   user: UserView;
   plans: PlanView[];
-  onSubToken: (token: string) => void;
+  onSubToken: (token: string, url?: string | null) => void;
   onClose: () => void;
 }) {
   const t = useT();
@@ -216,8 +217,11 @@ function ManageUser({
                 run(
                   `为「${user.login}」生成新的订阅令牌？旧的订阅链接会立即失效。`,
                   async () => {
-                    const res = await post<{ sub_token: string }>(`/users/${user.id}/sub-token`, {});
-                    onSubToken(res.sub_token);
+                    const res = await post<{ sub_token: string; sub_url?: string | null }>(
+                      `/users/${user.id}/sub-token`,
+                      {},
+                    );
+                    onSubToken(res.sub_token, res.sub_url);
                   },
                   "已生成新的订阅令牌（见页面上方）。",
                 )
@@ -446,7 +450,7 @@ function UserNodes({ user }: { user: UserView }) {
   );
 }
 
-function CreateUser({ onSubToken }: { onSubToken: (login: string, token: string) => void }) {
+function CreateUser({ onSubToken }: { onSubToken: (login: string, token: string, url?: string | null) => void }) {
   const t = useT();
   const queryClient = useQueryClient();
   const [login, setLogin] = useState("");
@@ -466,9 +470,9 @@ function CreateUser({ onSubToken }: { onSubToken: (login: string, token: string)
     }
     if (limitGb.trim() !== "" && gb > 0) body.traffic_limit_bytes = Math.round(gb * GIB);
     try {
-      const u = await post<UserView & { sub_token: string }>("/users", body);
+      const u = await post<UserView & { sub_token: string; sub_url?: string | null }>("/users", body);
       setMsg({ ok: true, text: `已创建 ${u.login}。` });
-      if (u.role === "user") onSubToken(u.login, u.sub_token);
+      if (u.role === "user") onSubToken(u.login, u.sub_token, u.sub_url);
       setLogin("");
       setPassword("");
       setLimitGb("");

@@ -1,0 +1,527 @@
+// R22 系统设置：主域名 / 订阅域名 / 节点通信域名 + 信任 Cloudflare。
+// 后台管理只有中文。类型手工镜像 src/settings.rs 的 SettingsView。
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+
+import { get, post, put } from "../lib/api";
+import { adminErrorText } from "../lib/errors";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+
+export type Source = "settings" | "config" | "main" | "browser";
+
+export interface DomainView {
+  value: string | null;
+  display: string | null;
+  effective: string | null;
+  source: Source;
+  config: string | null;
+}
+
+export interface AffectedNode {
+  id: string;
+  name: string;
+  reason: "enrolled" | "pending" | "unknown";
+}
+
+export interface ServerNameView {
+  name: string;
+  display: string;
+  source: string;
+  first_used_at: string;
+  current: boolean;
+  locked: string | null;
+  nodes: AffectedNode[];
+}
+
+export interface SettingsView {
+  version: number;
+  updated_at: string | null;
+  main: DomainView;
+  sub: DomainView;
+  node: {
+    value: string | null;
+    display: string | null;
+    panel_addr: string;
+    server_name: string;
+    source: Source;
+    config_addr: string;
+    config_server_name: string;
+  };
+  trust_cloudflare: { value: boolean | null; effective: boolean; source: Source; config: boolean };
+  server_names: ServerNameView[];
+  legacy_nodes: AffectedNode[];
+  certificate_names: string[];
+  hot_reload: boolean;
+  host_gate: boolean;
+  ask_enabled: boolean;
+  cloudflare_ranges: number;
+  warnings: string[];
+}
+
+export interface DnsCheck {
+  domain: string;
+  addresses: { ip: string; cloudflare: boolean }[];
+  level: "ok" | "warn" | "block";
+  message: string;
+}
+
+type Kind = "main" | "sub" | "node";
+
+const SOURCE_TEXT: Record<Source, string> = {
+  settings: "系统设置",
+  config: "配置文件 panel.toml",
+  main: "跟随主域名",
+  browser: "未设置（使用浏览器当前地址）",
+};
+
+const REASON_TEXT: Record<AffectedNode["reason"], string> = {
+  enrolled: "已注册的节点在使用",
+  pending: "未使用的安装命令/注册文件包含它",
+  unknown: "早期注册，未记录",
+};
+
+const errText = (err: unknown, fallback: string) => (err instanceof Error ? adminErrorText(err) : fallback);
+
+/** 去掉 :端口 与 [] 后的主机名（小写）。 */
+export function hostOf(value: string): string {
+  const v = value.trim().toLowerCase();
+  if (v.startsWith("[")) return v.slice(1, v.indexOf("]") > 0 ? v.indexOf("]") : undefined);
+  const parts = v.split(":");
+  return (parts.length === 2 ? parts[0] : v).replace(/\.$/, "");
+}
+
+const isIpLiteral = (h: string) => /^[\d.]+$/.test(h) || h.includes(":");
+
+/**
+ * 保存主域名后，当前浏览器访问的地址还能不能用（与后端 host gate 规则一致：
+ * IP 地址总是可以；域名只接受主域名/订阅域名）。IDN 的比较交给后端兜底。
+ */
+export function hostStillAllowed(current: string, main: string, sub: string): boolean {
+  const h = current
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.$/, "");
+  if (main.trim() === "") return true;
+  if (isIpLiteral(h)) return true;
+  return [main, sub].filter((d) => d.trim() !== "").some((d) => hostOf(d) === h);
+}
+
+function SourceBadge({ source }: { source: Source }) {
+  return <Badge variant={source === "settings" ? "default" : "secondary"}>{SOURCE_TEXT[source]}</Badge>;
+}
+
+function DnsResult({ check }: { check: DnsCheck }) {
+  const color =
+    check.level === "ok" ? "text-emerald-700" : check.level === "warn" ? "text-amber-700" : "text-destructive";
+  return (
+    <div role="status" className={`mt-2 rounded-lg bg-muted p-3 text-sm ${color}`}>
+      <p>{check.message}</p>
+      {check.addresses.length > 0 && (
+        <ul className="mt-1 text-xs text-muted-foreground">
+          {check.addresses.map((a) => (
+            <li key={a.ip}>
+              {a.ip}
+              {a.cloudflare ? "（Cloudflare）" : ""}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function DomainField(props: {
+  id: Kind;
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  help: React.ReactNode;
+  effective: React.ReactNode;
+  source: Source;
+  check: DnsCheck | null;
+  checking: boolean;
+  onCheck: () => void;
+  checkError: string | null;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Label htmlFor={`settings-${props.id}`}>{props.label}</Label>
+        <SourceBadge source={props.source} />
+      </div>
+      <div className="flex gap-2">
+        <Input
+          id={`settings-${props.id}`}
+          value={props.value}
+          placeholder={props.placeholder}
+          onChange={(e) => props.onChange(e.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+        />
+        <Button
+          type="button"
+          variant="outline"
+          disabled={props.checking || props.value.trim() === ""}
+          onClick={props.onCheck}
+        >
+          {props.checking ? "检测中…" : "DNS 检测"}
+        </Button>
+      </div>
+      <div className="text-xs text-muted-foreground">{props.help}</div>
+      <div className="text-xs">当前生效：{props.effective}</div>
+      {props.checkError && (
+        <p role="alert" className="text-sm text-destructive">
+          {props.checkError}
+        </p>
+      )}
+      {props.check && <DnsResult check={props.check} />}
+    </div>
+  );
+}
+
+export function AdminSettings() {
+  const settings = useQuery({ queryKey: ["settings"], queryFn: () => get<SettingsView>("/settings") });
+  if (settings.isPending) return <p className="text-sm text-muted-foreground">加载中…</p>;
+  if (settings.isError)
+    return (
+      <p role="alert" className="text-sm text-destructive">
+        {errText(settings.error, "加载失败")}
+      </p>
+    );
+  return (
+    <div className="space-y-6">
+      {/* key: 重新加载（保存/他人修改）后表单回到服务器的值 */}
+      <SettingsForm key={settings.data.version} data={settings.data} />
+      <ServerNames data={settings.data} />
+    </div>
+  );
+}
+
+function SettingsForm({ data }: { data: SettingsView }) {
+  const qc = useQueryClient();
+  const [main, setMain] = useState(data.main.display ?? "");
+  const [sub, setSub] = useState(data.sub.display ?? "");
+  const [node, setNode] = useState(data.node.display ?? "");
+  const [trust, setTrust] = useState<"config" | "on" | "off">(
+    data.trust_cloudflare.value === null ? "config" : data.trust_cloudflare.value ? "on" : "off",
+  );
+  const [checks, setChecks] = useState<Partial<Record<Kind, DnsCheck>>>({});
+  const [checkErrors, setCheckErrors] = useState<Partial<Record<Kind, string>>>({});
+  const [checking, setChecking] = useState<Kind | null>(null);
+  const [forceNode, setForceNode] = useState(false);
+  const [confirmHost, setConfirmHost] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [warnings, setWarnings] = useState<string[]>(data.warnings);
+  const [saved, setSaved] = useState(false);
+
+  const value = { main, sub, node } as const;
+  const nodeChanged = node.trim() !== (data.node.display ?? "");
+  const hostAtRisk = !hostStillAllowed(location.hostname, main, sub);
+  const nodeBlocked = checks.node?.level === "block";
+
+  async function dnsCheck(kind: Kind): Promise<DnsCheck | null> {
+    setChecking(kind);
+    setCheckErrors((e) => ({ ...e, [kind]: undefined }));
+    try {
+      const res = await post<DnsCheck>("/settings/dns-check", { kind, domain: value[kind].trim() });
+      setChecks((c) => ({ ...c, [kind]: res }));
+      return res;
+    } catch (err) {
+      setCheckErrors((e) => ({ ...e, [kind]: errText(err, "检测失败") }));
+      return null;
+    } finally {
+      setChecking(null);
+    }
+  }
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setSaved(false);
+    if (nodeChanged && node.trim() !== "") {
+      // 改节点通信域名前先检测：解析到 Cloudflare 时要求明确的强制确认。
+      const c = checks.node?.domain ? checks.node : await dnsCheck("node");
+      if (c?.level === "block" && !forceNode) {
+        setError("节点通信域名解析到了 Cloudflare（橙色云朵）。请改为灰色云朵，或勾选下方的强制保存。");
+        return;
+      }
+    }
+    if (nodeChanged) {
+      const target = node.trim() === "" ? `配置文件中的 ${data.node.config_addr}` : node.trim();
+      if (
+        !window.confirm(
+          `把节点通信域名改为 ${target}？\n\n` +
+            "· 只影响之后新生成的安装命令和注册文件；\n" +
+            "· 已经注册的节点继续使用它们注册时的域名，不会断线（面板证书会同时包含新旧域名）；\n" +
+            "· 新域名必须是灰色云朵（仅 DNS），并且节点能直连面板的 gRPC 端口。",
+        )
+      )
+        return;
+    }
+    setBusy(true);
+    try {
+      const res = await put<SettingsView>("/settings", {
+        version: data.version,
+        main_domain: main.trim() || null,
+        sub_domain: sub.trim() || null,
+        node_domain: node.trim() || null,
+        trust_cloudflare: trust === "config" ? null : trust === "on",
+        force_node_cloudflare: forceNode,
+        confirm_host_change: confirmHost,
+      });
+      setWarnings(res.warnings);
+      setSaved(true);
+      qc.setQueryData(["settings"], res);
+    } catch (err) {
+      setError(errText(err, "保存失败"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>
+          <h1>系统设置</h1>
+        </CardTitle>
+        <CardDescription>
+          三个域名各司其职。留空 = 使用配置文件 panel.toml
+          中的值；在这里填写后以这里为准。修改立即在所有面板实例生效，无需重启。
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form className="space-y-6" onSubmit={save}>
+          <DomainField
+            id="main"
+            label="主域名"
+            value={main}
+            onChange={setMain}
+            placeholder="panel.example.com"
+            source={data.main.source}
+            effective={data.main.effective ?? "浏览器当前地址"}
+            help={
+              <>
+                后台管理、用户门户、节点一键安装链接、支付宝回调地址都使用这个域名。可以开启 Cloudflare 橙色云朵（SSL
+                模式请选 Full (strict)）。设置后，面板只接受通过主域名、订阅域名或 IP 地址的访问，其他域名一律返回 404。
+              </>
+            }
+            check={checks.main ?? null}
+            checking={checking === "main"}
+            onCheck={() => void dnsCheck("main")}
+            checkError={checkErrors.main ?? null}
+          />
+          <DomainField
+            id="sub"
+            label="订阅域名"
+            value={sub}
+            onChange={setSub}
+            placeholder="sub.example.com（留空 = 使用主域名）"
+            source={data.sub.source}
+            effective={data.sub.effective ?? "浏览器当前地址"}
+            help={
+              <>
+                用户拿到的订阅链接使用这个域名，建议在 Cloudflare 开启<strong>橙色云朵</strong>
+                （代理），隐藏服务器 IP、抵御扫描。配合下方「信任 Cloudflare」，面板才能看到用户的真实 IP。
+              </>
+            }
+            check={checks.sub ?? null}
+            checking={checking === "sub"}
+            onCheck={() => void dnsCheck("sub")}
+            checkError={checkErrors.sub ?? null}
+          />
+          <DomainField
+            id="node"
+            label="节点通信域名"
+            value={node}
+            onChange={(v) => {
+              setNode(v);
+              setChecks((c) => ({ ...c, node: undefined }));
+              setForceNode(false);
+            }}
+            placeholder="node.example.com 或 node.example.com:8443"
+            source={data.node.source}
+            effective={
+              <>
+                {data.node.panel_addr}（证书名称 {data.node.server_name}）
+              </>
+            }
+            help={
+              <>
+                节点 agent 连接面板 gRPC 端口用的域名，写进新的安装命令和注册文件。必须是
+                <strong>灰色云朵</strong>（仅 DNS，不经过代理）：agent 与面板之间是双向 TLS 直连，经过 Cloudflare
+                代理会被它终止 TLS，节点就连不上了。不写端口时使用配置文件中的 gRPC 端口。
+              </>
+            }
+            check={checks.node ?? null}
+            checking={checking === "node"}
+            onCheck={() => void dnsCheck("node")}
+            checkError={checkErrors.node ?? null}
+          />
+          {nodeBlocked && (
+            <label className="flex items-start gap-2 text-sm text-destructive">
+              <input type="checkbox" checked={forceNode} onChange={(e) => setForceNode(e.target.checked)} />
+              我确认这个域名不会经过 Cloudflare 代理（例如检测结果已过时），仍然保存。
+            </label>
+          )}
+
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Label htmlFor="settings-trust">信任 Cloudflare</Label>
+              <SourceBadge source={data.trust_cloudflare.source} />
+            </div>
+            <select
+              id="settings-trust"
+              className="h-9 rounded-lg border border-border bg-transparent px-3 text-sm"
+              value={trust}
+              onChange={(e) => setTrust(e.target.value as "config" | "on" | "off")}
+            >
+              <option value="config">跟随配置文件（当前：{data.trust_cloudflare.config ? "开启" : "关闭"}）</option>
+              <option value="on">开启</option>
+              <option value="off">关闭</option>
+            </select>
+            <p className="text-xs text-muted-foreground">
+              开启后，来自 Cloudflare 官方 IP 段（内置 {data.cloudflare_ranges} 个网段）的请求会读取 CF-Connecting-IP
+              作为用户真实 IP，用于登录/订阅限速和审计。只有请求确实经过受信任的反向代理和 Cloudflare
+              时才读取，直接访问源站伪造的头会被忽略。没有使用 Cloudflare 时请保持关闭。
+            </p>
+          </div>
+
+          {hostAtRisk && (
+            <label className="flex items-start gap-2 text-sm text-amber-700">
+              <input type="checkbox" checked={confirmHost} onChange={(e) => setConfirmHost(e.target.checked)} />
+              你当前通过 {location.hostname} 访问，保存后这个地址将无法打开后台（只接受主域名、订阅域名和 IP
+              地址）。我已确认主域名可以正常打开。
+            </label>
+          )}
+
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          {saved && <p className="text-sm text-emerald-700">已保存，所有面板实例已生效。</p>}
+          {warnings.length > 0 && (
+            <ul className="space-y-1 text-sm text-amber-700">
+              {warnings.map((w) => (
+                <li key={w}>{w}</li>
+              ))}
+            </ul>
+          )}
+          <Button type="submit" disabled={busy || (hostAtRisk && !confirmHost)}>
+            {busy ? "保存中…" : "保存"}
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ServerNames({ data }: { data: SettingsView }) {
+  const qc = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  async function remove(n: ServerNameView) {
+    const users = n.nodes.map((x) => `· ${x.name}（${REASON_TEXT[x.reason]}）`).join("\n");
+    const msg =
+      `从面板证书中移除 ${n.display}？\n\n` +
+      (n.nodes.length > 0
+        ? `以下节点仍在使用它，移除后它们将无法连接面板，需要重新安装：\n${users}\n\n`
+        : "没有记录到正在使用它的节点。") +
+      (data.legacy_nodes.length > 0
+        ? `\n另有 ${data.legacy_nodes.length} 个早期注册的节点没有记录使用的域名，也可能受影响。\n`
+        : "") +
+      "\n此操作不可撤销（之后重新保存该域名可以恢复）。";
+    if (!window.confirm(msg)) return;
+    setBusy(n.name);
+    setError(null);
+    try {
+      await post("/settings/server-names/remove", { name: n.name, confirm: true });
+      await qc.invalidateQueries({ queryKey: ["settings"] });
+    } catch (err) {
+      setError(errText(err, "移除失败"));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>
+          <h2>节点通信证书域名</h2>
+        </CardTitle>
+        <CardDescription>
+          面板 gRPC
+          证书包含下列所有名称。已注册的节点一直使用注册时的域名，所以更换节点通信域名不会删除旧名称；只有在这里手动移除才会生效。
+          {data.hot_reload && " 证书变更即时生效，无需重启。"}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {error && (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>名称</TableHead>
+              <TableHead>来源</TableHead>
+              <TableHead>使用中的节点</TableHead>
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {data.server_names.map((n) => (
+              <TableRow key={n.name}>
+                <TableCell>
+                  {n.display} {n.current && <Badge>当前</Badge>}
+                </TableCell>
+                <TableCell className="text-xs text-muted-foreground">
+                  {n.source === "settings" ? "系统设置" : n.source === "config" ? "配置文件" : "注册文件"}
+                </TableCell>
+                <TableCell className="text-xs">
+                  {n.nodes.length === 0 ? "—" : n.nodes.map((x) => x.name).join("、")}
+                </TableCell>
+                <TableCell className="text-right">
+                  {n.locked ? (
+                    <span className="text-xs text-muted-foreground" title={n.locked}>
+                      不可移除
+                    </span>
+                  ) : (
+                    <Button variant="outline" size="sm" disabled={busy === n.name} onClick={() => void remove(n)}>
+                      移除
+                    </Button>
+                  )}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+        {data.legacy_nodes.length > 0 && (
+          <p className="text-xs text-muted-foreground">
+            早期注册、未记录域名的节点：{data.legacy_nodes.map((x) => x.name).join("、")}（一般使用配置文件中的{" "}
+            {data.node.config_server_name}）。
+          </p>
+        )}
+        <p className="text-xs text-muted-foreground">本实例证书当前包含：{data.certificate_names.join("、") || "—"}</p>
+        <p className="text-xs text-muted-foreground">
+          反向代理证书：
+          {data.ask_enabled
+            ? "已启用 Caddy 按需签发（主域名、订阅域名自动获取证书）"
+            : "未启用 Caddy ask 端点（tls_ask.bind），新域名需要手动配置反向代理证书"}
+          ；域名访问限制：{data.host_gate ? "已开启" : "未开启（设置主域名后开启）"}。
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
