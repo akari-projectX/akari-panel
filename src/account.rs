@@ -1,10 +1,11 @@
 //! Self-service account endpoints: TOTP enrollment and recovery codes
 //! (M1-6), subscription token regeneration (M1-9).
 //!
-//! Enrollment endpoints take `SessionUser`, the only extractor that accepts
-//! an enrollment-only session (an admin without active TOTP after the
-//! password step); everything else in the API requires `AuthUser` (a full
-//! session, and for admins an active TOTP).
+//! 2FA is optional for every account (R18). Enrollment endpoints take
+//! `SessionUser`, the only extractor that also accepts an enrollment-only
+//! session (with `auth.require_admin_2fa`: an admin without active TOTP
+//! after the password step); everything else in the API requires `AuthUser`
+//! (a full session).
 
 use axum::extract::State;
 use axum::Json;
@@ -42,8 +43,9 @@ pub async fn totp_status(
         "stage": user.stage.as_str(),
         "enabled": enabled,
         "pending": pending,
-        // Admins need their one-time enrollment code to activate 2FA.
-        "enroll_code_required": user.role == "admin" && !enabled,
+        // The console recommends 2FA to admins without it; with this set it
+        // is mandatory for them.
+        "admin_2fa_required": state.cfg().auth.require_admin_2fa,
         "recovery_codes_left": left,
     })))
 }
@@ -119,98 +121,16 @@ async fn new_recovery_codes(
     Ok(codes)
 }
 
-/// Admin 2FA enrollment codes (M1c): an admin's TOTP activation requires
-/// a one-time code handed out of band (`akari admin add` / `admin
-/// reset-2fa`, or once in the admin API's create/reset answer), so a leaked
-/// password alone cannot bind an attacker's authenticator. 128-bit random,
-/// shown as base32 in dash-separated groups; stored as SHA-256(user id ||
-/// normalized code); valid 24 h; consumed by the activation.
-pub const ENROLL_CODE_TTL_SECS: f64 = 86400.0;
-
-pub fn generate_enroll_code() -> String {
-    let mut bytes = [0u8; 16];
-    rand::RngCore::fill_bytes(&mut rand::rng(), &mut bytes);
-    let raw = data_encoding::BASE32_NOPAD.encode(&bytes);
-    raw.as_bytes()
-        .chunks(4)
-        .map(|c| String::from_utf8_lossy(c).into_owned())
-        .collect::<Vec<_>>()
-        .join("-")
-}
-
-fn enroll_code_hash(user: Uuid, code: &str) -> Vec<u8> {
-    use sha2::{Digest, Sha256};
-    let normalized: String = code
-        .chars()
-        .filter(|c| !c.is_whitespace() && *c != '-')
-        .map(|c| c.to_ascii_uppercase())
-        .collect();
-    let mut h = Sha256::new();
-    h.update(user.as_bytes());
-    h.update(normalized.as_bytes());
-    h.finalize().to_vec()
-}
-
-/// Store (replace) the account's enrollment code; returns it (shown once).
-/// The caller's audit row records `"totp_enroll_code": "changed"` (the code
-/// itself is never recorded).
-pub async fn store_enroll_code(conn: &mut PgConnection, user: Uuid) -> Result<String, ApiError> {
-    let code = generate_enroll_code();
-    sqlx::query(
-        "INSERT INTO totp_enroll_codes (user_id, code_hash, expires_at) \
-         VALUES ($1, $2, now() + make_interval(secs => $3)) \
-         ON CONFLICT (user_id) DO UPDATE SET code_hash = EXCLUDED.code_hash, \
-             created_at = now(), expires_at = EXCLUDED.expires_at",
-    )
-    .bind(user)
-    .bind(enroll_code_hash(user, &code))
-    .bind(ENROLL_CODE_TTL_SECS)
-    .execute(&mut *conn)
-    .await?;
-    Ok(code)
-}
-
-/// Whether `code` is the account's live enrollment code (constant-time).
-async fn enroll_code_ok(
-    conn: &mut PgConnection,
-    user: Uuid,
-    code: Option<&str>,
-) -> Result<bool, ApiError> {
-    let stored: Option<Vec<u8>> = sqlx::query_scalar(
-        "SELECT code_hash FROM totp_enroll_codes WHERE user_id = $1 AND expires_at > now() \
-         FOR UPDATE",
-    )
-    .bind(user)
-    .fetch_optional(&mut *conn)
-    .await?;
-    // Same hashing work whether or not a code exists.
-    let given = enroll_code_hash(user, code.unwrap_or(""));
-    Ok(match stored {
-        Some(h) => {
-            code.is_some()
-                && bool::from(subtle::ConstantTimeEq::ct_eq(
-                    h.as_slice(),
-                    given.as_slice(),
-                ))
-        }
-        None => false,
-    })
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfirmReq {
     pub code: String,
-    /// Required for admins: the one-time enrollment code.
-    #[serde(default)]
-    pub enrollment_code: Option<String>,
 }
 
-/// POST /api/v1/me/totp/confirm {code, enrollment_code?} (any session):
-/// activate the pending secret with a valid current code — and, for an
-/// admin, the account's one-time enrollment code. In one transaction:
-/// activate (the code's step is recorded, so it cannot be replayed at
-/// login), consume the enrollment code, issue ten recovery codes, bump
+/// POST /api/v1/me/totp/confirm {code} (any session): activate the pending
+/// secret with a valid current code. (R18 removed the admins' one-time
+/// enrollment code, M1c.) In one transaction: activate (the code's step is
+/// recorded, so it cannot be replayed at login), issue ten recovery codes, bump
 /// session_ver (every other session of the account, e.g. another
 /// enrollment-only one, ends), audit. This session continues with a fresh
 /// full cookie. Returns the recovery codes (shown once). Wrong codes are
@@ -253,7 +173,7 @@ pub async fn totp_confirm(
     }
 }
 
-/// None = a wrong code (TOTP or enrollment code).
+/// None = a wrong code.
 async fn confirm_inner(
     state: &AppState,
     user: &SessionUser,
@@ -266,9 +186,9 @@ async fn confirm_inner(
             .bind(user.id)
             .fetch_optional(&mut *tx)
             .await?;
-    let Some(role) = role else {
+    if role.is_none() {
         return Err(ApiError::unauthorized());
-    };
+    }
     let pending: Option<(Vec<u8>, bool, i64)> = sqlx::query_as(
         "SELECT secret_enc, enabled_at IS NOT NULL, EXTRACT(EPOCH FROM now())::bigint \
          FROM user_totp WHERE user_id = $1 FOR UPDATE",
@@ -290,22 +210,13 @@ async fn confirm_inner(
             "enrollment is no longer valid; start again",
         ));
     };
-    // Both checks always run (no hint which one failed).
-    let code_ok = enroll_code_ok(&mut tx, user.id, req.enrollment_code.as_deref()).await?;
     let step = totp::verify(&secret, req.code.trim(), totp::step_of(now), None);
     let Some(step) = step else {
         return Ok(None);
     };
-    if role == "admin" && !code_ok {
-        return Ok(None);
-    }
     sqlx::query("UPDATE user_totp SET enabled_at = now(), last_step = $2 WHERE user_id = $1")
         .bind(user.id)
         .bind(step)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("DELETE FROM totp_enroll_codes WHERE user_id = $1")
-        .bind(user.id)
         .execute(&mut *tx)
         .await?;
     let codes = new_recovery_codes(&mut tx, state, user.id).await?;
@@ -632,13 +543,14 @@ mod tests {
         }
     }
 
-    /// M1-6 end to end through the router: an admin without TOTP only gets
-    /// an enrollment session that reaches nothing else; enrollment needs a
-    /// valid code; afterwards login needs password + code in one request,
-    /// codes are single-use (replay), recovery codes work once, and wrong
-    /// second factors are uniform 401s that count toward the login limit.
+    /// M1-6 / R18 end to end through the router: 2FA is optional, so an
+    /// admin without TOTP logs in with the password alone (full session);
+    /// enrolling needs only a valid current code (no enrollment code since
+    /// R18); afterwards login needs password + code in one request, codes
+    /// are single-use (replay), recovery codes work once, and wrong second
+    /// factors are uniform 401s that count toward the login limit.
     #[tokio::test]
-    async fn admin_totp_enrollment_login_replay_and_recovery() {
+    async fn admin_totp_optional_enrollment_login_replay_and_recovery() {
         let Some(db) = TestDb::new().await else {
             return;
         };
@@ -646,44 +558,33 @@ mod tests {
         let (id, login) = account(&db, "admin").await;
         let mut c = Client::new(&state, rand_ip());
 
+        // A stray code is ignored for an account without 2FA.
         let r = c.login(&login, PW, Some("123456")).await;
         assert_eq!(r.status, StatusCode::OK);
-        assert_eq!(
-            r.json()["stage"],
-            "enroll",
-            "admin without TOTP: enrollment only"
-        );
-        let max_age = r
+        assert_eq!(r.json()["stage"], "full", "admin 2FA is optional");
+        let cookie = r
             .headers
             .get("set-cookie")
             .unwrap()
             .to_str()
             .unwrap()
             .to_string();
-        assert!(max_age.contains("Max-Age=900"), "{max_age}");
-        for path in [
-            "/test/api/v1/users",
-            "/test/api/v1/me",
-            "/test/api/v1/nodes",
-            "/test/api/v1/audit",
-        ] {
-            assert_eq!(c.get(path).await.status, StatusCode::UNAUTHORIZED, "{path}");
-        }
-        assert_eq!(
-            c.post(
-                "/test/api/v1/users",
-                json!({"login": "x-y-z", "password": "12345678"})
-            )
-            .await
-            .status,
-            StatusCode::UNAUTHORIZED
+        assert!(
+            cookie.contains(&format!("Max-Age={}", auth::COOKIE_TTL_SECS)),
+            "{cookie}"
         );
+        assert_eq!(c.get("/test/api/v1/users").await.status, StatusCode::OK);
         let st = c.get("/test/api/v1/me/totp").await;
         assert_eq!(st.status, StatusCode::OK);
         assert_eq!(
-            (st.json()["stage"].clone(), st.json()["enabled"].clone()),
-            (json!("enroll"), json!(false))
+            (
+                st.json()["stage"].clone(),
+                st.json()["enabled"].clone(),
+                st.json()["admin_2fa_required"].clone()
+            ),
+            (json!("full"), json!(false), json!(false))
         );
+        assert!(st.json().get("enroll_code_required").is_none());
         assert_eq!(
             c.post("/test/api/v1/me/totp/confirm", json!({"code": "123456"}))
                 .await
@@ -719,74 +620,28 @@ mod tests {
             )
             .await;
         assert_eq!(r.status, StatusCode::BAD_REQUEST);
-        // M1c: an admin also needs the one-time enrollment code. A valid
-        // TOTP code alone (leaked password scenario), a wrong or expired
-        // enrollment code: the same 400, nothing activated.
-        assert_eq!(st.json()["enroll_code_required"], true);
-        let with_code = |e: &str| json!({"code": good, "enrollment_code": e});
+        // The removed M1c field is an unknown field now.
         assert_eq!(
-            c.post("/test/api/v1/me/totp/confirm", json!({"code": good}))
-                .await
-                .status,
-            StatusCode::BAD_REQUEST
-        );
-        assert_eq!(
-            c.post("/test/api/v1/me/totp/confirm", with_code("AAAA-BBBB"))
-                .await
-                .status,
-            StatusCode::BAD_REQUEST
-        );
-        let ecode = {
-            let mut tx = db.pool.begin().await.unwrap();
-            let code = store_enroll_code(&mut tx, id).await.unwrap();
-            tx.commit().await.unwrap();
-            code
-        };
-        assert_eq!(ecode.len(), 26 + 6, "{ecode}");
-        let stored: Vec<u8> =
-            sqlx::query_scalar("SELECT code_hash FROM totp_enroll_codes WHERE user_id = $1")
-                .bind(id)
-                .fetch_one(&db.pool)
-                .await
-                .unwrap();
-        assert_ne!(stored, ecode.as_bytes(), "only a hash is stored");
-        sqlx::query("UPDATE totp_enroll_codes SET expires_at = now() - interval '1 s'")
-            .execute(&db.pool)
-            .await
-            .unwrap();
-        assert_eq!(
-            c.post("/test/api/v1/me/totp/confirm", with_code(&ecode))
-                .await
-                .status,
-            StatusCode::BAD_REQUEST,
-            "expired"
-        );
-        sqlx::query("UPDATE totp_enroll_codes SET expires_at = now() + interval '1 h'")
-            .execute(&db.pool)
-            .await
-            .unwrap();
-        let enroll_cookie = c.cookie.clone();
-        // Lower case without dashes is the same code.
-        let typed = ecode.replace('-', "").to_lowercase();
-        let r = c
-            .post(
+            c.post(
                 "/test/api/v1/me/totp/confirm",
-                json!({"code": good, "enrollment_code": typed}),
+                json!({"code": good, "enrollment_code": "AAAA-BBBB"})
             )
+            .await
+            .status,
+            StatusCode::BAD_REQUEST
+        );
+        let before_cookie = c.cookie.clone();
+        let r = c
+            .post("/test/api/v1/me/totp/confirm", json!({"code": good}))
             .await;
         assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
-        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM totp_enroll_codes")
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
-        assert_eq!(left, 0, "the enrollment code is consumed");
         let codes: Vec<String> =
             serde_json::from_value(r.json()["recovery_codes"].clone()).unwrap();
         assert_eq!(codes.len(), 10);
         c.cookie = r.session_cookie();
         assert_eq!(c.get("/test/api/v1/users").await.status, StatusCode::OK);
         let mut stale = Client::new(&state, rand_ip());
-        stale.cookie = enroll_cookie;
+        stale.cookie = before_cookie;
         assert_eq!(
             stale.get("/test/api/v1/me/totp").await.status,
             StatusCode::UNAUTHORIZED,
@@ -847,14 +702,14 @@ mod tests {
         assert_eq!(st.json()["recovery_codes_left"], 8);
 
         // Wrong second factors count toward the login limit (name bucket:
-        // 4 failed confirms on c (bad TOTP, missing / wrong / expired
-        // enrollment code) + 4 on c2 + 1 on c3 + 1 on c4; the unknown
+        // 1 failed confirm on c (the unknown-field body is a parse error
+        // before the limiter) + 4 on c2 + 1 on c3 + 1 on c4; the unknown
         // account has its own).
         let name_key = crate::login_limit::keys("x", &login)[1].clone();
         let n: i64 = state.valkey().get(&name_key).await.unwrap();
-        assert_eq!(n, 10);
+        assert_eq!(n, 7);
 
-        let rows = audit_of(&db, id, 8).await;
+        let rows = audit_of(&db, id, 7).await;
         let actions: Vec<&str> = rows.iter().map(|(a, _)| a.as_str()).collect();
         assert!(actions.contains(&"user.totp.enable"), "{actions:?}");
         let methods: Vec<&str> = rows
@@ -873,7 +728,7 @@ mod tests {
         assert!(!text.contains(&b32) && !text.contains(&codes[2]) && !text.contains(&good));
 
         // Admin reset (here: by itself) ends the sessions; the next login
-        // is enrollment-only again.
+        // is password-only again.
         let r = c2
             .req(
                 axum::http::Method::DELETE,
@@ -882,28 +737,136 @@ mod tests {
             )
             .await;
         assert_eq!(r.status, StatusCode::OK);
-        let code = r.json()["totp_enrollment_code"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        assert!(!all_audit_text(&db).await.contains(&code));
-        let has_code: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM totp_enroll_codes WHERE user_id = $1)",
-        )
-        .bind(id)
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-        assert!(has_code, "the admin gets a new enrollment code");
+        assert_eq!(r.json(), json!({"totp": "active"}));
         assert_eq!(
             c4.get("/test/api/v1/users").await.status,
             StatusCode::UNAUTHORIZED
         );
         let mut c5 = Client::new(&state, rand_ip());
         let r = c5.login(&login, PW, None).await;
-        assert_eq!(r.json()["stage"], "enroll");
+        assert_eq!(r.json()["stage"], "full");
         clear_limits(&state, &[c.ip, c2.ip, c3.ip, c4.ip, c5.ip], &login).await;
         clear_limits(&state, &[c2.ip], "no-such-account").await;
+        drop(state);
+        db.drop().await;
+    }
+
+    /// `auth.require_admin_2fa = true` (opt-in, the pre-R18 policy minus
+    /// the enrollment code): an admin without TOTP only gets a 15-minute
+    /// enrollment session that reaches nothing else; a full session issued
+    /// before the option was turned on stops working and reports as an
+    /// enrollment session; activation yields a full session. Regular users
+    /// are unaffected.
+    #[tokio::test]
+    async fn require_admin_2fa_confines_admins_without_totp() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let lax = AppState::for_test(db.pool.clone()).await;
+        let strict =
+            AppState::for_test_with(db.pool.clone(), |c| c.auth.require_admin_2fa = true).await;
+        let (_, login) = account(&db, "admin").await;
+        let (_, ulogin) = account(&db, "user").await;
+
+        // Full session issued while 2FA was optional...
+        let mut old = Client::new(&lax, rand_ip());
+        assert_eq!(old.login(&login, PW, None).await.json()["stage"], "full");
+        // ...is refused once the option is on (same JWT key, same DB).
+        let mut old_strict = Client::new(&strict, old.ip);
+        old_strict.cookie = old.cookie.clone();
+        assert_eq!(
+            old_strict.get("/test/api/v1/users").await.status,
+            StatusCode::UNAUTHORIZED
+        );
+        let st = old_strict.get("/test/api/v1/me/totp").await;
+        assert_eq!(st.status, StatusCode::OK);
+        assert_eq!(st.json()["stage"], "enroll");
+        assert_eq!(st.json()["admin_2fa_required"], true);
+
+        let mut c = Client::new(&strict, rand_ip());
+        let r = c.login(&login, PW, None).await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(r.json()["stage"], "enroll");
+        let cookie = r
+            .headers
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(cookie.contains("Max-Age=900"), "{cookie}");
+        for path in [
+            "/test/api/v1/users",
+            "/test/api/v1/me",
+            "/test/api/v1/nodes",
+            "/test/api/v1/audit",
+        ] {
+            assert_eq!(c.get(path).await.status, StatusCode::UNAUTHORIZED, "{path}");
+        }
+        let e = c.post("/test/api/v1/me/totp/enroll", json!({})).await;
+        assert_eq!(e.status, StatusCode::OK);
+        let secret = BASE32_NOPAD
+            .decode(e.json()["secret"].as_str().unwrap().as_bytes())
+            .unwrap();
+        let good = totp::code_at(&secret, db_step(&db).await);
+        let r = c
+            .post("/test/api/v1/me/totp/confirm", json!({"code": good}))
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+        assert_eq!(r.json()["stage"], "full");
+        c.cookie = r.session_cookie();
+        assert_eq!(c.get("/test/api/v1/users").await.status, StatusCode::OK);
+
+        // Users never need 2FA.
+        let mut u = Client::new(&strict, rand_ip());
+        assert_eq!(u.login(&ulogin, PW, None).await.json()["stage"], "full");
+        assert_eq!(u.get("/test/api/v1/me").await.status, StatusCode::OK);
+
+        clear_limits(&strict, &[old.ip, c.ip, u.ip], &login).await;
+        clear_limits(&strict, &[u.ip], &ulogin).await;
+        let uid: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE login = $1")
+            .bind(&ulogin)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        let _: i64 = strict
+            .valkey()
+            .del(format!("akari:audit:login_ok:{uid}"))
+            .await
+            .unwrap();
+        drop(lax);
+        drop(strict);
+        db.drop().await;
+    }
+
+    /// The login body is parsed like every other API body (A5): malformed
+    /// JSON, wrong types and unknown fields are 400s with a JSON error, not
+    /// axum's plain-text 415/422; none of them counts as a login attempt.
+    #[tokio::test]
+    async fn login_body_is_strict_json() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let state = AppState::for_test(db.pool.clone()).await;
+        let (_, login) = account(&db, "user").await;
+        let c = Client::new(&state, rand_ip());
+        for body in [
+            json!({"login": login, "password": PW, "extra": 1}),
+            json!({"login": login, "password": 5}),
+            json!({"login": login}),
+            json!([]),
+        ] {
+            let r = c.post("/test/auth/login", body.clone()).await;
+            assert_eq!(r.status, StatusCode::BAD_REQUEST, "{body}");
+            assert!(r.json()["error"].is_string(), "{body}");
+            assert!(r.session_cookie().is_none());
+        }
+        let n: Option<i64> = state
+            .valkey()
+            .get(&crate::login_limit::keys("x", &login)[1])
+            .await
+            .unwrap();
+        assert_eq!(n.unwrap_or(0), 0, "parse errors are not attempts");
         drop(state);
         db.drop().await;
     }

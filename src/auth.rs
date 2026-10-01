@@ -133,10 +133,11 @@ pub fn scrub_password(password: &str) {
 #[serde(rename_all = "lowercase")]
 pub enum Stage {
     /// Fully authenticated (password, plus the second factor when the
-    /// account has one; admins always have one).
+    /// account has one).
     Full,
-    /// An admin that passed the password but has no active TOTP yet: only
-    /// the enrollment endpoints accept it (`SessionUser`), never `AuthUser`.
+    /// Only with `auth.require_admin_2fa`: an admin that passed the
+    /// password but has no active TOTP yet. Only the enrollment endpoints
+    /// accept it (`SessionUser`), never `AuthUser`.
     Enroll,
 }
 
@@ -236,9 +237,11 @@ pub fn cleared_cookie(state: &AppState) -> Cookie<'static> {
 // request (no stale-role or stale-enabled states from old tokens).
 // ---------------------------------------------------------------------------
 
-/// A fully authenticated session (stage Full). An admin session is only
-/// accepted while the admin has an active TOTP (defense in depth: every
-/// path that removes it also bumps session_ver).
+/// A fully authenticated session (stage Full). With
+/// `auth.require_admin_2fa` an admin session is only accepted while the
+/// admin has an active TOTP (defense in depth: every path that removes it
+/// also bumps session_ver; turning the option on ends the full sessions of
+/// admins without 2FA at their next request).
 pub struct AuthUser {
     pub id: Uuid,
     pub login: String,
@@ -323,6 +326,13 @@ async fn session(parts: &mut Parts, state: &AppState) -> Result<(Claims, Session
     Ok((claims, row))
 }
 
+/// Whether this account may only hold an enrollment-only session: an
+/// admin without active TOTP while `auth.require_admin_2fa` is on (R18:
+/// otherwise 2FA is optional for everyone).
+pub fn needs_enrollment(state: &AppState, role: &str, totp_active: bool) -> bool {
+    state.cfg().auth.require_admin_2fa && role == "admin" && !totp_active
+}
+
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = ApiError;
 
@@ -331,7 +341,7 @@ impl FromRequestParts<AppState> for AuthUser {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let (claims, row) = session(parts, state).await?;
-        if claims.st != Stage::Full || (row.role == "admin" && !row.totp_active) {
+        if claims.st != Stage::Full || needs_enrollment(state, &row.role, row.totp_active) {
             return Err(ApiError::unauthorized());
         }
         Ok(AuthUser {
@@ -351,11 +361,19 @@ impl FromRequestParts<AppState> for SessionUser {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let (claims, row) = session(parts, state).await?;
+        // A full token of an admin the policy now confines to enrollment
+        // (the option was turned on later) reports as an enrollment
+        // session, so the console shows the enrollment page.
+        let stage = if needs_enrollment(state, &row.role, row.totp_active) {
+            Stage::Enroll
+        } else {
+            claims.st
+        };
         Ok(SessionUser {
             id: row.id,
             login: row.login,
             role: row.role,
-            stage: claims.st,
+            stage,
             ip: request_ip(parts, state),
         })
     }

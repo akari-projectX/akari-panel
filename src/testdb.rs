@@ -87,8 +87,8 @@ impl TestDb {
     }
 
     /// An enabled admin account with an active (placeholder) TOTP, so its
-    /// full sessions are accepted (admins without 2FA only get
-    /// enrollment-only sessions).
+    /// full sessions are accepted under either `auth.require_admin_2fa`
+    /// setting.
     pub async fn admin(&self) -> Uuid {
         let id = Uuid::new_v4();
         sqlx::query("INSERT INTO users (id, login, role) VALUES ($1, $2, 'admin')")

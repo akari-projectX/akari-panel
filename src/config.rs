@@ -20,6 +20,7 @@ pub struct PanelConfig {
     pub updates: UpdatesConfig,
     pub install: InstallConfig,
     pub payments: PaymentsConfig,
+    pub auth: AuthConfig,
 }
 
 /// One-line node installer (R18-2, `nodeinstall.rs`).
@@ -66,6 +67,17 @@ impl Default for InstallConfig {
             fallback_binary_url: DEFAULT_FALLBACK_BINARY_URL.into(),
         }
     }
+}
+
+/// Login policy (R18).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AuthConfig {
+    /// Admins without an active TOTP only get an enrollment-only session
+    /// (15 min, reaches nothing but the /me/totp endpoints) until they set
+    /// one up. Default false: 2FA is optional (recommended in the console)
+    /// for every account.
+    pub require_admin_2fa: bool,
 }
 
 /// Agent self-update (M6). The panel only relays signed releases; agents
@@ -335,6 +347,7 @@ impl Default for PanelConfig {
             updates: UpdatesConfig::default(),
             install: InstallConfig::default(),
             payments: PaymentsConfig::default(),
+            auth: AuthConfig::default(),
         }
     }
 }

@@ -35,21 +35,9 @@ pub async fn admin_add(cfg: PanelConfig, login: String, role: String) -> Result<
         .execute(&mut *tx)
         .await
         .with_context(|| format!("insert user {login}"))?;
-    let code = if role == "admin" {
-        Some(
-            crate::account::store_enroll_code(&mut tx, id)
-                .await
-                .map_err(|e| anyhow::anyhow!("{}", e.message()))?,
-        )
-    } else {
-        None
-    };
-    let mut after = serde_json::json!({
+    let after = serde_json::json!({
         "login": login, "role": role, "enabled": true, "password": crate::audit::CHANGED,
     });
-    if code.is_some() {
-        after["totp_enroll_code"] = serde_json::json!(crate::audit::CHANGED);
-    }
     crate::audit::record(
         &mut tx,
         &Actor::cli(),
@@ -62,8 +50,8 @@ pub async fn admin_add(cfg: PanelConfig, login: String, role: String) -> Result<
     .await?;
     tx.commit().await?;
     println!("created {role} account: {login} ({id})");
-    if let Some(code) = code {
-        print_enroll_code(&code);
+    if role == "admin" {
+        print_2fa_hint(&cfg);
     }
     Ok(())
 }
@@ -296,26 +284,27 @@ pub async fn node_list(cfg: PanelConfig) -> Result<()> {
     Ok(())
 }
 
-fn print_enroll_code(code: &str) {
-    println!("two-factor authentication is mandatory: enroll at the first login.");
-    println!("2FA enrollment code (one-time, valid 24h; give it to the account holder");
-    println!("over a separate channel — it is required to activate the authenticator):");
-    println!("  {code}");
+fn print_2fa_hint(cfg: &PanelConfig) {
+    if cfg.auth.require_admin_2fa {
+        println!("two-factor authentication is required (auth.require_admin_2fa): set up an");
+        println!("authenticator app at the first login.");
+    } else {
+        println!("two-factor authentication is recommended: set it up in the console");
+        println!("(账户 / Account) after logging in.");
+    }
 }
 
-/// `akari admin reset-2fa <login>`. For an admin also issues a new
-/// enrollment code (required to enroll again).
+/// `akari admin reset-2fa <login>`: remove the account's 2FA (it logs in
+/// with the password alone until it sets 2FA up again) and end its
+/// sessions.
 pub async fn admin_reset_2fa(cfg: PanelConfig, login: String) -> Result<()> {
     let pg = connect(&cfg).await?;
-    let (was, code) = reset_2fa(&pg, &login).await?;
+    let was = reset_2fa(&pg, &login).await?;
     println!("two-factor authentication of {login} reset (was: {was}); its sessions are revoked");
-    if let Some(code) = code {
-        print_enroll_code(&code);
-    }
     Ok(())
 }
 
-async fn reset_2fa(pg: &sqlx::PgPool, login: &str) -> Result<(&'static str, Option<String>)> {
+async fn reset_2fa(pg: &sqlx::PgPool, login: &str) -> Result<&'static str> {
     let mut tx = pg.begin().await?;
     let id: Option<uuid::Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE login = $1")
         .bind(login)
@@ -442,13 +431,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    async fn text_of_audit(db: &TestDb) -> String {
-        sqlx::query_scalar("SELECT COALESCE(string_agg(after::text, ' '), '') FROM audit_log")
-            .fetch_one(&db.pool)
-            .await
-            .unwrap()
-    }
-
     async fn audit_actions(db: &TestDb) -> Vec<(String, String)> {
         sqlx::query_as("SELECT actor_login, action FROM audit_log ORDER BY id")
             .fetch_all(&db.pool)
@@ -506,10 +488,8 @@ mod tests {
             .await
             .unwrap();
         let a1 = sv(a).await;
-        let (was, code) = reset_2fa(&db.pool, &login).await.unwrap();
+        let was = reset_2fa(&db.pool, &login).await.unwrap();
         assert_eq!(was, "active");
-        let code = code.expect("an admin gets a new enrollment code");
-        assert!(!text_of_audit(&db).await.contains(&code));
         assert_eq!(sv(a).await, a1 + 1);
         let left: i64 = sqlx::query_scalar(
             "SELECT (SELECT count(*) FROM user_totp) + (SELECT count(*) FROM user_recovery_codes)",

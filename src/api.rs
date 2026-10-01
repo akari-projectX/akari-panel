@@ -22,6 +22,7 @@ use crate::state::AppState;
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoginReq {
     pub login: String,
     pub password: String,
@@ -46,14 +47,20 @@ const MAX_CODE_LEN: usize = 64;
 /// is no half-authenticated state or step token to store, bind, expire or
 /// replay, and the rate limit sees one attempt per guess of the pair.
 ///
-/// An admin without active TOTP gets an enrollment-only session (stage
-/// "enroll", 15 min) that reaches nothing but the enrollment endpoints.
+/// 2FA is optional (R18): an account without active TOTP logs in with the
+/// password alone. Only with `auth.require_admin_2fa` does an admin without
+/// TOTP get an enrollment-only session (stage "enroll", 15 min) that
+/// reaches nothing but the enrollment endpoints.
+///
+/// The body goes through `ApiJson` like every other endpoint: malformed
+/// JSON, a wrong type or an unknown field is a 400 with the parser's
+/// message (it carries no credential information).
 pub async fn login(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     jar: CookieJar,
-    Json(req): Json<LoginReq>,
+    ApiJson(req): ApiJson<LoginReq>,
 ) -> Result<(CookieJar, Json<serde_json::Value>), ApiError> {
     if req.login.is_empty() || req.password.is_empty() {
         return Err(ApiError::bad_request("login and password are required"));
@@ -215,7 +222,7 @@ async fn check_credentials(state: &AppState, req: &LoginReq) -> Result<Checked, 
             proof,
         });
     }
-    let stage = if row.role == "admin" {
+    let stage = if auth::needs_enrollment(state, &row.role, false) {
         auth::Stage::Enroll
     } else {
         auth::Stage::Full
@@ -410,6 +417,56 @@ pub async fn revoke_sessions(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
+#[derive(sqlx::FromRow, Serialize)]
+pub struct UserNodeView {
+    node_id: Uuid,
+    name: String,
+    region: Option<String>,
+    enabled: bool,
+    status: String,
+    deleting: bool,
+    /// true = an admin assignment (override), false = granted by the plan.
+    manual: bool,
+    /// `[{tag, protocol}]` of the credentials (never the accounts).
+    inbounds: serde_json::Value,
+}
+
+/// GET /api/v1/users/{id}/nodes (admin): the nodes the account can use
+/// (its node_users rows) with the inbounds it has credentials for and
+/// whether each row is a manual assignment or plan-granted. Read-only; the
+/// credentials themselves (UUIDs, passwords) are not returned. 404 for an
+/// unknown user.
+pub async fn user_nodes(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((_, id)): Path<(String, Uuid)>,
+) -> Result<Json<Vec<UserNodeView>>, ApiError> {
+    user.require_admin()?;
+    let mut tx = state.pg().begin().await?;
+    let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM users WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if exists.is_none() {
+        return Err(ApiError::not_found());
+    }
+    let rows = sqlx::query_as::<_, UserNodeView>(
+        "SELECT n.id AS node_id, n.name, n.region, n.enabled, n.status, \
+         n.deleting_at IS NOT NULL AS deleting, nu.manual, \
+         COALESCE((SELECT jsonb_agg(jsonb_build_object( \
+             'tag', c->>'inbound_tag', 'protocol', c->>'protocol') ORDER BY c->>'inbound_tag') \
+           FROM jsonb_array_elements(CASE WHEN jsonb_typeof(nu.credentials) = 'array' \
+                THEN nu.credentials ELSE '[]'::jsonb END) c), '[]'::jsonb) AS inbounds \
+         FROM node_users nu JOIN nodes n ON n.id = nu.node_id \
+         WHERE nu.user_id = $1 ORDER BY n.name, n.id",
+    )
+    .bind(id)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Json(rows))
+}
+
 // ---------------------------------------------------------------------------
 // Self
 // ---------------------------------------------------------------------------
@@ -576,19 +633,11 @@ pub async fn create_user(
     .await
     {
         Ok(view) => {
-            let totp_enrollment_code = if view.role == "admin" {
-                Some(crate::account::store_enroll_code(&mut tx, view.id).await?)
-            } else {
-                None
-            };
-            let mut after = json!({
+            let after = json!({
                 "login": view.login, "role": view.role, "enabled": view.enabled,
                 "traffic_limit_bytes": view.traffic_limit_bytes, "expires_at": view.expires_at,
                 "password": crate::audit::CHANGED, "sub_token": crate::audit::CHANGED,
             });
-            if totp_enrollment_code.is_some() {
-                after["totp_enroll_code"] = json!(crate::audit::CHANGED);
-            }
             crate::audit::record(
                 &mut tx,
                 &Actor::of(&user),
@@ -605,7 +654,6 @@ pub async fn create_user(
                 Json(CreatedUser {
                     user: view,
                     sub_token,
-                    totp_enrollment_code,
                 }),
             ))
         }
@@ -625,9 +673,6 @@ pub struct CreatedUser {
     user: UserView,
     /// Only ever visible in this create response (and after regeneration).
     sub_token: String,
-    /// Admins only: the one-time code required for their first 2FA
-    /// activation (24 h). Shown only here.
-    totp_enrollment_code: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2073,23 +2118,21 @@ pub async fn unassign_user(
 
 /// Remove an account's TOTP (active or pending) and recovery codes and end
 /// all its sessions, in the caller's transaction; audited
-/// ("user.totp.reset"). An admin then gets an enrollment-only session at
-/// the next login. Returns what was removed ("active", "pending", "none").
-/// Reset an account's 2FA. For an admin a fresh one-time enrollment code
-/// is issued (returned; shown once) — required to activate 2FA again.
+/// ("user.totp.reset"). The account then logs in with the password alone
+/// (R18; with `auth.require_admin_2fa` an admin gets an enrollment-only
+/// session). Returns what was removed ("active", "pending", "none").
 pub(crate) async fn apply_reset_totp(
     conn: &mut PgConnection,
     actor: &Actor,
     user_id: Uuid,
-) -> Result<(&'static str, Option<String>), ApiError> {
-    let role: Option<String> =
-        sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR UPDATE")
-            .bind(user_id)
-            .fetch_optional(&mut *conn)
-            .await?;
-    let Some(role) = role else {
+) -> Result<&'static str, ApiError> {
+    let found: Option<i32> = sqlx::query_scalar("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
+        .bind(user_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+    if found.is_none() {
         return Err(ApiError::not_found());
-    };
+    }
     let removed: Option<bool> = sqlx::query_scalar(
         "DELETE FROM user_totp WHERE user_id = $1 RETURNING enabled_at IS NOT NULL",
     )
@@ -2110,15 +2153,7 @@ pub(crate) async fn apply_reset_totp(
         Some(false) => "pending",
         None => "none",
     };
-    let enroll_code = if role == "admin" {
-        Some(crate::account::store_enroll_code(conn, user_id).await?)
-    } else {
-        None
-    };
-    let mut after = json!({ "totp": "none", "recovery_codes": 0 });
-    if enroll_code.is_some() {
-        after["totp_enroll_code"] = json!(crate::audit::CHANGED);
-    }
+    let after = json!({ "totp": "none", "recovery_codes": 0 });
     crate::audit::record(
         conn,
         actor,
@@ -2129,13 +2164,12 @@ pub(crate) async fn apply_reset_totp(
         Some(after),
     )
     .await?;
-    Ok((was, enroll_code))
+    Ok(was)
 }
 
 /// DELETE /api/v1/users/{id}/totp (admin): reset the account's 2FA and end
 /// its sessions (resetting your own ends this session too). 200 with
-/// `totp_enrollment_code` (admins: the one-time code required to enroll
-/// again, shown only here; null for regular users).
+/// `{"totp": <what was removed: "active" | "pending" | "none">}`.
 pub async fn reset_totp(
     State(state): State<AppState>,
     user: AuthUser,
@@ -2143,9 +2177,9 @@ pub async fn reset_totp(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    let (_, code) = apply_reset_totp(&mut tx, &Actor::of(&user), id).await?;
+    let was = apply_reset_totp(&mut tx, &Actor::of(&user), id).await?;
     tx.commit().await?;
-    Ok(Json(json!({ "totp_enrollment_code": code })))
+    Ok(Json(json!({ "totp": was })))
 }
 
 /// Test hooks for other modules' tests (plans.rs).
@@ -3362,6 +3396,15 @@ mod tests {
         }
     }
 
+    fn plain_user(id: Uuid) -> AuthUser {
+        AuthUser {
+            id,
+            login: "u".into(),
+            role: "user".into(),
+            ip: None,
+        }
+    }
+
     /// Every revocation trigger kills the tokens issued before it — whatever
     /// path writes the row — and changes that must not revoke do not.
     #[tokio::test]
@@ -3654,6 +3697,44 @@ mod tests {
         db.drop().await;
     }
 
+    /// GET /users/{id}/nodes: the account's node rows with inbound tags
+    /// and manual/plan origin; never the credentials; 404 for no user.
+    #[tokio::test]
+    async fn user_nodes_lists_access_without_secrets() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let a = db.admin().await;
+        let (n, u) = db.member().await;
+        let state = AppState::for_test(db.pool.clone()).await;
+        let Json(rows) = user_nodes(State(state.clone()), admin_user(a), Path(("p".into(), u)))
+            .await
+            .unwrap_or_else(|e| panic!("{}", e.message()));
+        let v = serde_json::to_value(&rows).unwrap();
+        assert_eq!(v.as_array().map(Vec::len), Some(1));
+        assert_eq!(v[0]["node_id"], json!(n));
+        assert_eq!(v[0]["manual"], true);
+        assert_eq!(v[0]["deleting"], false);
+        assert_eq!(v[0]["inbounds"], json!([{"tag": "in-vless", "protocol": "vless"}]));
+        assert!(!v.to_string().contains("account"), "{v}");
+        let e = user_nodes(
+            State(state.clone()),
+            admin_user(a),
+            Path(("p".into(), Uuid::new_v4())),
+        )
+        .await
+        .err()
+        .map(|e| e.status());
+        assert_eq!(e, Some(StatusCode::NOT_FOUND));
+        let e = user_nodes(State(state.clone()), plain_user(u), Path(("p".into(), u)))
+            .await
+            .err()
+            .map(|e| e.status());
+        assert_eq!(e, Some(StatusCode::FORBIDDEN));
+        drop(state);
+        db.drop().await;
+    }
+
     #[tokio::test]
     async fn last_enabled_admin_cannot_be_removed() {
         let Some(db) = TestDb::new().await else {
@@ -3913,7 +3994,7 @@ mod tests {
             ConnectInfo(SocketAddr::new(peer, 40000)),
             headers,
             CookieJar::new(),
-            Json(LoginReq {
+            ApiJson(LoginReq {
                 login: login.into(),
                 password: password.into(),
                 code: None,
