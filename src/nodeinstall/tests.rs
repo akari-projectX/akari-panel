@@ -444,8 +444,8 @@ async fn create_and_install_validation() {
             "port 443",
         ),
         (
-            json!({"name": "a", "inbounds": [{"tag": "x", "protocol": "vless", "streamSettings": {"network": "grpc"}}]}),
-            "grpc",
+            json!({"name": "a", "inbounds": [{"tag": "x", "protocol": "vless", "streamSettings": {"network": "kcp"}}]}),
+            "kcp",
         ),
         (json!({"name": "a", "region": "x".repeat(65)}), "region"),
     ] {

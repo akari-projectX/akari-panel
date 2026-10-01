@@ -341,6 +341,12 @@ pub struct SetDigest {
     hash: String,
     inbounds: [u8; 32],
     users: BTreeMap<UserKey, [u8; 16]>,
+    /// W8: the inbounds include a Shadowsocks one. The agent refuses
+    /// deltas that remove/rotate users there (xray's multi-user SS2022
+    /// inbound cannot safely shrink while running; akari-agent
+    /// `shrinkUnsafe`), so such changes go out as a Snapshot right away
+    /// instead of a delta the agent answers BASE_MISMATCH.
+    shrink_unsafe: bool,
 }
 
 impl SetDigest {
@@ -349,6 +355,7 @@ impl SetDigest {
         SetDigest {
             hash: state_hash(config_version, state),
             inbounds: Sha256::digest(state.inbounds.as_bytes()).into(),
+            shrink_unsafe: has_shadowsocks(&state.inbounds),
             users: state
                 .users
                 .iter()
@@ -401,6 +408,22 @@ pub fn diff_from_digest(base: &SetDigest, want: &UserSet) -> Vec<UserOp> {
         }
     }
     ops
+}
+
+/// Does this inbounds JSON hold a shadowsocks inbound? Cheap substring
+/// test first (the digest is computed for every desired-state read).
+fn has_shadowsocks(inbounds: &str) -> bool {
+    inbounds.to_ascii_lowercase().contains("shadowsocks")
+        && serde_json::from_str::<serde_json::Value>(inbounds)
+            .ok()
+            .and_then(|v| v.as_array().cloned())
+            .is_some_and(|a| {
+                a.iter().any(|i| {
+                    i.get("protocol")
+                        .and_then(|p| p.as_str())
+                        .is_some_and(|p| p.eq_ignore_ascii_case("shadowsocks"))
+                })
+            })
 }
 
 /// `drops_credential` on digests, conservatively: any base user whose
@@ -588,7 +611,7 @@ impl SyncState {
         if bv.0 != desired.0 || bv == desired || bset.inbounds != want.inbounds {
             return None;
         }
-        if self.remove_rebuild && drops_credential_digest(&bset, want) {
+        if (self.remove_rebuild || bset.shrink_unsafe) && drops_credential_digest(&bset, want) {
             return None;
         }
         Some((bv, bset))
@@ -2783,6 +2806,41 @@ mod tests {
                 "rebuild={rebuild} plan={plan:?}"
             );
         }
+    }
+
+    /// W8: on a node with a Shadowsocks inbound, removals/rotations are
+    /// Snapshots whatever the remove mode (the agent would refuse the
+    /// delta); additions stay deltas.
+    #[test]
+    fn shadowsocks_node_shrinks_by_snapshot() {
+        let t0 = Instant::now();
+        let ss = r#"[{"tag":"t","protocol":"shadowsocks"}]"#;
+        let with = |ops: &[UserOp]| {
+            Arc::new(NodeState {
+                inbounds: ss.into(),
+                users: user_set(ops),
+            })
+        };
+        let s1 = with(&[op("a", &[("t", "1")]), op("b", &[("t", "2")])]);
+        let add = with(&[
+            op("a", &[("t", "1")]),
+            op("b", &[("t", "2")]),
+            op("c", &[("t", "3")]),
+        ]);
+        let remove = with(&[op("a", &[("t", "1")])]);
+        let rotate = with(&[op("a", &[("t", "1")]), op("b", &[("t", "9")])]);
+        for (want, delta) in [(&add, true), (&remove, false), (&rotate, false)] {
+            let mut s = SyncState::default();
+            s.on_hello((0, 0), MIN_AGENT_PROTOCOL, "");
+            converge(&mut s, (2, 5), &s1, t0);
+            let plan = d_set(&mut s, (2, 6), want);
+            assert_eq!(matches!(plan, Some(Plan::Delta { .. })), delta, "{plan:?}");
+        }
+        assert!(has_shadowsocks(r#"[{"protocol":"Shadowsocks"}]"#));
+        assert!(!has_shadowsocks(
+            r#"[{"tag":"shadowsocks","protocol":"vless"}]"#
+        ));
+        assert!(!has_shadowsocks("not json shadowsocks"));
     }
 
     #[test]
