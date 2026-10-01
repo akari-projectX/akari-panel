@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { del, get, patch, post, type UserView } from "../lib/api";
+import { del, get, patch, post, put, type PlanView, type UserView } from "../lib/api";
 import { humanBytes } from "../lib/utils";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -26,6 +26,8 @@ import {
 export function AdminUsers() {
   const queryClient = useQueryClient();
   const users = useQuery({ queryKey: ["users"], queryFn: () => get<UserView[]>("/users") });
+  const plans = useQuery({ queryKey: ["plans"], queryFn: () => get<PlanView[]>("/plans") });
+  const [planFor, setPlanFor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [subToken, setSubToken] = useState<{ login: string; token: string } | null>(null);
   const [enrollCode, setEnrollCode] = useState<{ login: string; code: string } | null>(null);
@@ -123,7 +125,9 @@ export function AdminUsers() {
               <TableRow>
                 <TableHead>Login</TableHead>
                 <TableHead>Role</TableHead>
+                <TableHead>Plan</TableHead>
                 <TableHead>Traffic</TableHead>
+                <TableHead>Resets</TableHead>
                 <TableHead>Expires</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>2FA</TableHead>
@@ -138,8 +142,22 @@ export function AdminUsers() {
                     <Badge variant="secondary">{u.role}</Badge>
                   </TableCell>
                   <TableCell>
+                    {u.plan_name ? <Badge variant="secondary">{u.plan_name}</Badge> : <span className="text-muted-foreground">—</span>}
+                    {planFor === u.id && (
+                      <UserPlanForm
+                        user={u}
+                        plans={plans.data ?? []}
+                        onDone={() => setPlanFor(null)}
+                        onError={setError}
+                      />
+                    )}
+                  </TableCell>
+                  <TableCell>
                     {humanBytes(u.traffic_used_bytes)}
                     {u.traffic_limit_bytes != null && ` / ${humanBytes(u.traffic_limit_bytes)}`}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {u.next_reset_at ? new Date(u.next_reset_at).toLocaleDateString() : "—"}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {u.expires_at ? new Date(u.expires_at).toLocaleDateString() : "—"}
@@ -148,7 +166,9 @@ export function AdminUsers() {
                     {u.enabled ? (
                       <Badge variant="success">enabled</Badge>
                     ) : (
-                      <Badge variant="destructive">disabled</Badge>
+                      <Badge variant="destructive">
+                        {u.disabled_reason ? `disabled (${u.disabled_reason})` : "disabled"}
+                      </Badge>
                     )}
                   </TableCell>
                   <TableCell>
@@ -159,6 +179,15 @@ export function AdminUsers() {
                     )}
                   </TableCell>
                   <TableCell className="space-x-2 text-right">
+                    {u.role === "user" && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setPlanFor(planFor === u.id ? null : u.id)}
+                      >
+                        Plan
+                      </Button>
+                    )}
                     <Button variant="outline" size="sm" onClick={() => regenerate(u)}>
                       Sub token
                     </Button>
@@ -265,5 +294,93 @@ function CreateUser({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+// Assign / change / cancel a user's plan. Assigning replaces the active
+// plan; the user's node access, quota and expiry follow the plan.
+export function UserPlanForm({
+  user,
+  plans,
+  onDone,
+  onError,
+}: {
+  user: UserView;
+  plans: PlanView[];
+  onDone: () => void;
+  onError: (e: string | null) => void;
+}) {
+  const queryClient = useQueryClient();
+  const offered = plans.filter((p) => p.enabled || p.id === user.plan_id);
+  const [planId, setPlanId] = useState(user.plan_id ?? offered[0]?.id ?? "");
+  const [expires, setExpires] = useState("");
+  const [resetTraffic, setResetTraffic] = useState(false);
+
+  async function refresh() {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["users"] }),
+      queryClient.invalidateQueries({ queryKey: ["plans"] }),
+    ]);
+    onDone();
+  }
+
+  async function assign(e: React.FormEvent) {
+    e.preventDefault();
+    onError(null);
+    const body: Record<string, unknown> = { plan_id: planId };
+    if (expires) body.expires_at = new Date(`${expires}T00:00:00Z`).toISOString();
+    if (resetTraffic) body.reset_traffic = true;
+    try {
+      await put(`/users/${user.id}/plan`, body);
+      await refresh();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Assign failed");
+    }
+  }
+
+  async function cancel() {
+    if (!window.confirm(`Cancel the plan of "${user.login}"? Their plan nodes are removed.`)) return;
+    onError(null);
+    try {
+      await del(`/users/${user.id}/plan`);
+      await refresh();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Cancel failed");
+    }
+  }
+
+  return (
+    <form className="mt-2 space-y-2" onSubmit={assign} aria-label={`Plan of ${user.login}`}>
+      <select
+        aria-label="Plan"
+        className="h-9 rounded-lg border border-border bg-card px-2 text-sm"
+        value={planId}
+        onChange={(e) => setPlanId(e.target.value)}
+      >
+        {offered.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.name}
+          </option>
+        ))}
+      </select>
+      <div className="space-y-1">
+        <Label htmlFor={`up-exp-${user.id}`}>Expires (UTC date, optional)</Label>
+        <Input id={`up-exp-${user.id}`} type="date" value={expires} onChange={(e) => setExpires(e.target.value)} />
+      </div>
+      <label className="flex items-center gap-1.5 text-sm">
+        <input type="checkbox" checked={resetTraffic} onChange={(e) => setResetTraffic(e.target.checked)} />
+        Reset usage
+      </label>
+      <div className="space-x-2">
+        <Button type="submit" size="sm" disabled={!planId}>
+          {user.plan_id ? "Change plan" : "Assign plan"}
+        </Button>
+        {user.plan_id && (
+          <Button type="button" variant="destructive" size="sm" onClick={cancel}>
+            Cancel plan
+          </Button>
+        )}
+      </div>
+    </form>
   );
 }

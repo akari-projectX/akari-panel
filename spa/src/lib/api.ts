@@ -131,6 +131,89 @@ export interface UserView {
   expires_at: string | null;
   created_at: string;
   totp_enabled: boolean;
+  // Why the account is disabled (null while enabled). Only "quota" is ever
+  // re-enabled automatically (period reset, plan change).
+  disabled_reason: "admin" | "quota" | "expiry" | null;
+  // M3: the active plan (null = none) and its next traffic reset.
+  plan_id: string | null;
+  plan_name: string | null;
+  next_reset_at: string | null;
+}
+
+// --- M3: node groups, plans, user plans (mirror of src/plans.rs) ---
+
+export interface GroupView {
+  id: string;
+  name: string;
+  description: string;
+  node_ids: string[];
+  plan_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+// "monthly" | "none" | "days-N"
+export type Period = string;
+
+export interface PlanView {
+  id: string;
+  name: string;
+  traffic_quota_bytes: number | null;
+  period: Period;
+  // Hint only: not enforced.
+  speed_limit_mbps: number | null;
+  // Reserved for seat binding (M5): not enforced.
+  device_seats: number | null;
+  sort: number;
+  enabled: boolean;
+  group_ids: string[];
+  active_users: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserPlanView {
+  id: string;
+  plan_id: string;
+  plan_name: string;
+  status: "active" | "replaced" | "cancelled" | "expired";
+  starts_at: string;
+  expires_at: string | null;
+  period_anchor: string;
+  last_reset_at: string | null;
+  next_reset_at: string | null;
+  ended_at: string | null;
+}
+
+export interface UserPlanState {
+  active: UserPlanView | null;
+  history: UserPlanView[];
+}
+
+export interface MyPlan {
+  plan: {
+    name: string;
+    traffic_quota_bytes: number | null;
+    period: Period;
+    speed_limit_mbps: number | null;
+    device_seats: number | null;
+    starts_at: string;
+    expires_at: string | null;
+    period_anchor: string;
+    last_reset_at: string | null;
+    next_reset_at: string | null;
+  } | null;
+  traffic_used_bytes: number;
+  traffic_limit_bytes: number | null;
+  expires_at: string | null;
+  nodes: { name: string; region: string | null }[];
+}
+
+export function describePeriod(p: Period): string {
+  if (p === "monthly") return "Monthly";
+  if (p === "none") return "No reset";
+  const m = /^days-(\d+)$/.exec(p);
+  return m ? `Every ${m[1]} days` : p;
 }
 
 export interface Inbound {
@@ -149,6 +232,8 @@ export interface NodeView {
   user_version: number;
   xray_inbounds: Inbound[];
   server_addr: string | null;
+  // M3: region shown to users in the portal.
+  region: string | null;
   // The agent's last failed apply; null once an update applies cleanly.
   last_error: string | null;
   last_error_at: string | null;
