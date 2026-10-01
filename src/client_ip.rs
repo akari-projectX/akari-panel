@@ -6,6 +6,16 @@
 //! is not a trusted proxy (everything left of it was written by the client
 //! and is ignored). A request from an untrusted peer is always attributed to
 //! the peer, whatever headers it carries.
+//!
+//! R22 "trust Cloudflare" (system settings): Cloudflare's edge ranges
+//! (`cloudflare.rs`) join the trusted set, and when the walk ends at a
+//! Cloudflare hop that was reached through trusted hops only (the chain
+//! client → Cloudflare → [Caddy →] panel), the client is the
+//! `CF-Connecting-IP` header — Cloudflare overwrites it on every request,
+//! and a proxy in front of the panel that does not trust Cloudflare (stock
+//! Caddy) replaces Cloudflare's X-Forwarded-For with the edge address, so
+//! that header is the only place the client survives. It is never read
+//! unless the nearest genuine hop is a Cloudflare address.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -136,12 +146,80 @@ fn parse_hop(s: &str) -> Option<IpAddr> {
 /// Hops examined at most (right to left) before giving up on a chain.
 const MAX_HOPS: usize = 32;
 
-/// The client address of a request whose TCP peer is `peer`.
+/// Who may forward a client address (see the module docs).
+#[derive(Debug, Clone, Default)]
+pub struct Trust {
+    /// `web.trusted_proxies`.
+    pub proxies: Vec<Cidr>,
+    /// Cloudflare's edge ranges when "trust Cloudflare" is on, else empty.
+    pub cloudflare: Vec<Cidr>,
+}
+
+impl Trust {
+    fn trusted(&self, ip: IpAddr) -> bool {
+        self.proxies.iter().any(|c| c.contains(ip)) || self.is_cloudflare(ip)
+    }
+    fn is_cloudflare(&self, ip: IpAddr) -> bool {
+        self.cloudflare.iter().any(|c| c.contains(ip))
+    }
+}
+
+/// The client address of a request whose TCP peer is `peer`, trusting
+/// `trusted` proxies only (no Cloudflare).
 pub fn client_ip(peer: IpAddr, headers: &HeaderMap, trusted: &[Cidr]) -> IpAddr {
+    resolve(
+        peer,
+        headers,
+        &Trust {
+            proxies: trusted.to_vec(),
+            cloudflare: Vec::new(),
+        },
+    )
+}
+
+/// The client address of a request whose TCP peer is `peer`.
+pub fn resolve(peer: IpAddr, headers: &HeaderMap, trust: &Trust) -> IpAddr {
+    let genuine = walk(peer, headers, trust);
+    if genuine.exhausted && trust.is_cloudflare(genuine.last) {
+        if let Some(ip) = cf_connecting_ip(headers) {
+            return ip;
+        }
+    }
+    genuine.last
+}
+
+/// `CF-Connecting-IP`: exactly one header line holding one address.
+fn cf_connecting_ip(headers: &HeaderMap) -> Option<IpAddr> {
+    let mut it = headers.get_all("cf-connecting-ip").iter();
+    let v = it.next()?;
+    if it.next().is_some() {
+        return None;
+    }
+    v.to_str()
+        .ok()?
+        .trim()
+        .parse::<IpAddr>()
+        .ok()
+        .map(canonical)
+}
+
+/// Result of the right-to-left walk: the nearest address known to be
+/// genuine, and whether the walk ran out of hops while every hop so far
+/// was trusted (only then may a Cloudflare hop vouch for CF-Connecting-IP).
+struct Walk {
+    last: IpAddr,
+    exhausted: bool,
+}
+
+fn walk(peer: IpAddr, headers: &HeaderMap, trust: &Trust) -> Walk {
     let peer = canonical(peer);
-    let is_trusted = |ip: IpAddr| trusted.iter().any(|c| c.contains(ip));
+    let is_trusted = |ip: IpAddr| trust.trusted(ip);
+    let stop = |last: IpAddr| Walk {
+        last,
+        exhausted: false,
+    };
     if !is_trusted(peer) {
-        return peer;
+        return stop(peer);
     }
     // Several X-Forwarded-For header lines are one list, in order.
     let mut hops: Vec<&str> = Vec::new();
@@ -149,23 +227,29 @@ pub fn client_ip(peer: IpAddr, headers: &HeaderMap, trusted: &[Cidr]) -> IpAddr 
         let Ok(v) = v.to_str() else {
             // Not visible ASCII: the chain cannot be trusted past here;
             // the peer (a trusted proxy) is the best we know.
-            return peer;
+            return stop(peer);
         };
         hops.extend(v.split(','));
     }
     // Walking right to left, `last` is the nearest address known to be
     // genuine: the peer, then each trusted proxy that forwarded to it.
     let mut last = peer;
-    for hop in hops.iter().rev().take(MAX_HOPS) {
+    for (i, hop) in hops.iter().rev().enumerate() {
+        if i >= MAX_HOPS {
+            return stop(last);
+        }
         match parse_hop(hop) {
             Some(ip) if is_trusted(ip) => last = ip,
-            Some(ip) => return ip,
+            Some(ip) => return stop(ip),
             // Garbage where an address must be: whoever wrote it is not a
             // proxy we trust; attribute to the last genuine hop.
-            None => return last,
+            None => return stop(last),
         }
     }
-    last
+    Walk {
+        last,
+        exhausted: true,
+    }
 }
 
 /// Rate-limit identity of a client address: IPv4 as is, IPv6 by its /64
@@ -351,6 +435,137 @@ mod tests {
             client_ip(ip("10.0.0.2"), &hdrs(&[&long]), &t),
             ip("10.0.0.9")
         );
+    }
+
+    /// R22: Cloudflare in front (directly, or CF → Caddy → panel with Caddy
+    /// trusting or not trusting Cloudflare).
+    #[test]
+    fn cloudflare_chains() {
+        let cf = crate::cloudflare::shipped().unwrap();
+        let caddy = cidrs(&["172.28.0.0/24"]);
+        let on = Trust {
+            proxies: caddy.clone(),
+            cloudflare: cf.clone(),
+        };
+        let off = Trust {
+            proxies: caddy,
+            cloudflare: Vec::new(),
+        };
+        let h = |xff: &[&str], cfip: Option<&str>| {
+            let mut h = hdrs(xff);
+            if let Some(v) = cfip {
+                h.append("cf-connecting-ip", HeaderValue::from_str(v).unwrap());
+            }
+            h
+        };
+        // (peer, XFF, CF-Connecting-IP, expected with trust on, why)
+        type Case<'a> = (&'a str, &'a [&'a str], Option<&'a str>, &'a str, &'a str);
+        let cases: &[Case] = &[
+            (
+                "172.28.0.5",
+                &["104.16.1.1"],
+                Some("198.51.100.7"),
+                "198.51.100.7",
+                "stock Caddy: XFF = edge, client in CF-Connecting-IP",
+            ),
+            (
+                "172.28.0.5",
+                &["198.51.100.7, 104.16.1.1"],
+                Some("198.51.100.7"),
+                "198.51.100.7",
+                "Caddy trusting CF: client in XFF",
+            ),
+            (
+                "172.28.0.5",
+                &["6.6.6.6, 198.51.100.7, 104.16.1.1"],
+                Some("198.51.100.7"),
+                "198.51.100.7",
+                "client-forged XFF prefix ignored",
+            ),
+            (
+                "104.16.1.1",
+                &[],
+                Some("198.51.100.7"),
+                "198.51.100.7",
+                "CF connects to the panel directly",
+            ),
+            (
+                "104.16.1.1",
+                &["198.51.100.7"],
+                Some("9.9.9.9"),
+                "198.51.100.7",
+                "XFF names an untrusted hop first: that is the client",
+            ),
+            (
+                "172.28.0.5",
+                &["2a06:98c0::1"],
+                Some("2001:db8::7"),
+                "2001:db8::7",
+                "IPv6 edge and client",
+            ),
+            (
+                "172.28.0.5",
+                &["203.0.113.9"],
+                Some("198.51.100.7"),
+                "203.0.113.9",
+                "not via an edge: CF-Connecting-IP ignored",
+            ),
+            (
+                "203.0.113.9",
+                &["104.16.1.1"],
+                Some("198.51.100.7"),
+                "203.0.113.9",
+                "untrusted peer forging the chain",
+            ),
+            (
+                "172.28.0.5",
+                &["104.16.1.1"],
+                None,
+                "104.16.1.1",
+                "edge without the header",
+            ),
+            (
+                "172.28.0.5",
+                &["104.16.1.1"],
+                Some("garbage"),
+                "104.16.1.1",
+                "unparsable header",
+            ),
+            (
+                "172.28.0.5",
+                &["garbage, 104.16.1.1"],
+                Some("198.51.100.7"),
+                "104.16.1.1",
+                "garbage hop: chain not exhausted, header not trusted",
+            ),
+            (
+                "172.28.0.5",
+                &["::ffff:104.16.1.1"],
+                Some("::ffff:198.51.100.7"),
+                "198.51.100.7",
+                "mapped addresses",
+            ),
+        ];
+        for (peer, xff, cfip, want, why) in cases {
+            assert_eq!(resolve(ip(peer), &h(xff, *cfip), &on), ip(want), "{why}");
+        }
+        // Trust off: Cloudflare is just another untrusted hop.
+        assert_eq!(
+            resolve(
+                ip("172.28.0.5"),
+                &h(&["104.16.1.1"], Some("198.51.100.7")),
+                &off
+            ),
+            ip("104.16.1.1")
+        );
+        assert_eq!(
+            resolve(ip("104.16.1.1"), &h(&[], Some("198.51.100.7")), &off),
+            ip("104.16.1.1")
+        );
+        // Two CF-Connecting-IP lines: ambiguous, ignored.
+        let mut two = h(&["104.16.1.1"], Some("198.51.100.7"));
+        two.append("cf-connecting-ip", HeaderValue::from_static("198.51.100.8"));
+        assert_eq!(resolve(ip("172.28.0.5"), &two, &on), ip("104.16.1.1"));
     }
 
     #[test]

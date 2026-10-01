@@ -455,7 +455,8 @@ pub async fn regenerate_own_sub_token(
         .await?
         .ok_or_else(ApiError::unauthorized)?;
     tx.commit().await?;
-    Ok(Json(json!({ "sub_token": token })))
+    let sub_url = state.settings().get().sub_url(state.route_prefix(), &token);
+    Ok(Json(json!({ "sub_token": token, "sub_url": sub_url })))
 }
 
 #[cfg(test)]

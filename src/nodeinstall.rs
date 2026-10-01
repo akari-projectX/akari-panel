@@ -391,12 +391,13 @@ pub struct Prepared {
 
 pub async fn prepare(state: &AppState, req: &InstallReq) -> Result<Prepared, ApiError> {
     let cfg = &state.cfg().install;
-    let raw = if !cfg.public_url.is_empty() {
-        cfg.public_url.clone()
-    } else {
-        req.origin.clone().ok_or_else(|| {
-            ApiError::bad_request("origin is required (or set install.public_url)")
-        })?
+    // R22: the main domain (system settings, else install.public_url),
+    // else the admin's browser origin.
+    let raw = match state.settings().get().install_origin() {
+        Some(o) => o,
+        None => req.origin.clone().ok_or_else(|| {
+            ApiError::bad_request("origin is required (or set the main domain in 系统设置)")
+        })?,
     };
     let origin = parse_origin(&raw).map_err(|e| ApiError::bad_request(format!("origin: {e}")))?;
     let mut warnings = Vec::new();
@@ -440,12 +441,14 @@ pub async fn apply_issue(
     node: Uuid,
     p: &Prepared,
 ) -> Result<(String, DateTime<Utc>), ApiError> {
+    let endpoint = crate::settings::node_endpoint(conn, state.cfg()).await?;
     crate::enroll::apply_issue_token(
         conn,
         actor,
         node,
         state.cfg().install.token_ttl_secs,
         Some(p.link()),
+        &endpoint,
     )
     .await
 }
@@ -519,6 +522,10 @@ struct Link {
     pin: Option<String>,
     expires_at: DateTime<Utc>,
     inbounds: serde_json::Value,
+    /// R22: endpoint fixed when the link was issued (NULL for links issued
+    /// before 0060: the current node endpoint).
+    panel_addr: Option<String>,
+    server_name: Option<String>,
 }
 
 /// Rate limit, token shape, then one lookup that only matches a live
@@ -552,10 +559,12 @@ async fn live_link(state: &AppState, ip: Option<IpAddr>, token: &str) -> Option<
         DateTime<Utc>,
         String,
         serde_json::Value,
+        Option<String>,
+        Option<String>,
     );
     let row: Option<Row> = match sqlx::query_as(
         "SELECT e.node_id, e.token_hash, e.install_origin, e.install_pin, e.expires_at, \
-                n.name, n.xray_inbounds \
+                n.name, n.xray_inbounds, e.panel_addr, e.server_name \
          FROM node_enrollments e JOIN nodes n ON n.id = e.node_id \
          WHERE e.token_hash = $1 AND e.used_at IS NULL AND e.expires_at > now() \
            AND e.install_origin IS NOT NULL AND n.deleting_at IS NULL",
@@ -571,7 +580,7 @@ async fn live_link(state: &AppState, ip: Option<IpAddr>, token: &str) -> Option<
             return None;
         }
     };
-    let (node, stored, origin, pin, expires_at, name, inbounds) = row?;
+    let (node, stored, origin, pin, expires_at, name, inbounds, panel_addr, server_name) = row?;
     if !bool::from(subtle::ConstantTimeEq::ct_eq(
         stored.as_slice(),
         hash.as_slice(),
@@ -585,6 +594,8 @@ async fn live_link(state: &AppState, ip: Option<IpAddr>, token: &str) -> Option<
         pin,
         expires_at,
         inbounds,
+        panel_addr,
+        server_name,
     })
 }
 
@@ -617,11 +628,19 @@ fn render_script(
     token: &str,
     releases: &HashMap<String, ReleaseRef>,
 ) -> anyhow::Result<String> {
-    let g = &state.cfg().grpc;
+    let current = state.settings().get();
+    let panel_addr = link
+        .panel_addr
+        .as_deref()
+        .unwrap_or(&current.node.panel_addr);
+    let server_name = link
+        .server_name
+        .as_deref()
+        .unwrap_or(&current.node.server_name);
     let bootstrap = crate::enroll::bootstrap_toml(
         &tame(&link.name),
-        sq(&g.advertise)?,
-        sq(&g.server_name)?,
+        sq(panel_addr)?,
+        sq(server_name)?,
         &state.install().ca_pem,
         token,
         link.expires_at,

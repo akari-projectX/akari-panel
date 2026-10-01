@@ -51,6 +51,8 @@ pub struct Client {
     router: axum::Router,
     pub ip: IpAddr,
     pub cookie: Option<String>,
+    /// Extra request headers (Host, X-Forwarded-For, CF-Connecting-IP…).
+    pub headers: Vec<(String, String)>,
 }
 
 impl Client {
@@ -59,11 +61,15 @@ impl Client {
             router: crate::web::router(state.clone()),
             ip,
             cookie: None,
+            headers: Vec::new(),
         }
     }
 
     pub async fn req(&self, method: Method, path: &str, body: Option<Value>) -> Resp {
         let mut b = Request::builder().method(method).uri(path);
+        for (k, v) in &self.headers {
+            b = b.header(k.as_str(), v.as_str());
+        }
         if let Some(c) = &self.cookie {
             b = b.header(header::COOKIE, format!("{}={c}", crate::auth::COOKIE_NAME));
         }

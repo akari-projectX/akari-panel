@@ -8,8 +8,8 @@ use serde_json::json;
 use subtle::ConstantTimeEq;
 
 use crate::{
-    account, api, audit, nodeinstall, nodetpl, plans, reject, rollout, spa, state::AppState, sub,
-    updates,
+    account, api, audit, nodeinstall, nodetpl, plans, reject, rollout, settings, spa,
+    state::AppState, sub, updates,
 };
 
 pub fn router(state: AppState) -> Router {
@@ -136,6 +136,18 @@ pub fn router(state: AppState) -> Router {
             post(nodetpl::check_dest),
         )
         .route(
+            "/{prefix}/api/v1/settings",
+            get(settings::get_settings).put(settings::put_settings),
+        )
+        .route(
+            "/{prefix}/api/v1/settings/dns-check",
+            post(settings::dns_check),
+        )
+        .route(
+            "/{prefix}/api/v1/settings/server-names/remove",
+            post(settings::remove_server_name),
+        )
+        .route(
             "/{prefix}/api/v1/agent-releases",
             get(updates::list_releases).post(updates::create_release),
         )
@@ -185,8 +197,15 @@ pub fn router(state: AppState) -> Router {
 
 /// Constant-time check of the first path segment against the secret
 /// prefix. A bare correct prefix is rejected too (stealthy even for someone
-/// who knows the prefix).
+/// who knows the prefix). R22 host gate: once the main domain is set in the
+/// system settings, a request addressed to any other DNS name (Host) gets
+/// the same canonical rejection, on every path (IP-literal hosts stay
+/// allowed; `settings::Effective::host_allowed`).
 async fn prefix_gate(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let host = settings::host_of(req.headers(), req.uri());
+    if !state.settings().get().host_allowed(host.as_deref()) {
+        return reject::not_found();
+    }
     let path = req.uri().path();
     let stripped = path.strip_prefix('/').unwrap_or(path);
     let (seg, rest) = match stripped.split_once('/') {

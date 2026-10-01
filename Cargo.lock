@@ -16,6 +16,7 @@ name = "akari-panel"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "argon2",
  "axum",
  "axum-extra",
@@ -30,6 +31,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "idna",
  "jsonwebtoken",
  "mimalloc",
  "mime_guess",

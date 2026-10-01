@@ -67,7 +67,7 @@ pub async fn login(
     if req.code.as_deref().is_some_and(|c| c.len() > MAX_CODE_LEN) {
         return Err(ApiError::bad_request("code is too long"));
     }
-    let client = crate::client_ip::client_ip(addr.ip(), &headers, &state.cfg().web.trusted_proxies);
+    let client = state.client_ip(addr.ip(), &headers);
     let attempt =
         crate::login_limit::Attempt::reserve(&state, &crate::client_ip::bucket(client), &req.login)
             .await
@@ -674,6 +674,10 @@ pub async fn create_user(
                 axum::http::StatusCode::CREATED,
                 Json(CreatedUser {
                     user: view,
+                    sub_url: state
+                        .settings()
+                        .get()
+                        .sub_url(state.route_prefix(), &sub_token),
                     sub_token,
                 }),
             ))
@@ -694,6 +698,9 @@ pub struct CreatedUser {
     user: UserView,
     /// Only ever visible in this create response (and after regeneration).
     sub_token: String,
+    /// R22: the subscription URL on the subscription domain (null = not
+    /// configured: the client builds it from its own origin).
+    sub_url: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1221,12 +1228,12 @@ fn enrollment_view(
     name: String,
     token: String,
     expires_at: DateTime<Utc>,
+    endpoint: &crate::settings::NodeEndpoint,
 ) -> EnrollmentView {
-    let g = &state.cfg().grpc;
     let bootstrap = crate::enroll::bootstrap_toml(
         &name,
-        &g.advertise,
-        &g.server_name,
+        &endpoint.panel_addr,
+        &endpoint.server_name,
         &state.install().ca_pem,
         &token,
         expires_at,
@@ -1280,8 +1287,9 @@ pub async fn create_node(
         Some(p) => (state.cfg().install.token_ttl_secs, Some(p.link())),
         None => (state.cfg().agent.enroll_token_ttl_secs, None),
     };
+    let endpoint = crate::settings::node_endpoint(&mut tx, state.cfg()).await?;
     let (id, token, expires) =
-        crate::enroll::apply_create_node(&mut tx, &actor, &req.name, ttl, link).await?;
+        crate::enroll::apply_create_node(&mut tx, &actor, &req.name, ttl, link, &endpoint).await?;
     if req.region.is_some() || req.server_addr.is_some() {
         let patch = UpdateNodeReq {
             server_addr: req.server_addr.clone().map(Some),
@@ -1300,6 +1308,7 @@ pub async fn create_node(
         req.name.trim().to_string(),
         token.clone(),
         expires,
+        &endpoint,
     );
     if let Some(p) = prepared {
         view.install = Some(crate::nodeinstall::view(&state, p, &token, expires).await?);
@@ -1317,12 +1326,14 @@ pub async fn issue_enroll_token(
 ) -> Result<Json<EnrollmentView>, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
+    let endpoint = crate::settings::node_endpoint(&mut tx, state.cfg()).await?;
     let (token, expires) = crate::enroll::apply_issue_token(
         &mut tx,
         &Actor::of(&user),
         id,
         state.cfg().agent.enroll_token_ttl_secs,
         None,
+        &endpoint,
     )
     .await?;
     let name: String = sqlx::query_scalar("SELECT name FROM nodes WHERE id = $1")
@@ -1330,7 +1341,9 @@ pub async fn issue_enroll_token(
         .fetch_one(&mut *tx)
         .await?;
     tx.commit().await?;
-    Ok(Json(enrollment_view(&state, id, name, token, expires)))
+    Ok(Json(enrollment_view(
+        &state, id, name, token, expires, &endpoint,
+    )))
 }
 
 #[derive(Deserialize, Default)]
@@ -1856,7 +1869,8 @@ pub async fn regenerate_sub_token(
         .await?
         .ok_or_else(ApiError::not_found)?;
     tx.commit().await?;
-    Ok(Json(json!({ "sub_token": token })))
+    let sub_url = state.settings().get().sub_url(state.route_prefix(), &token);
+    Ok(Json(json!({ "sub_token": token, "sub_url": sub_url })))
 }
 
 #[derive(Deserialize)]
