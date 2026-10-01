@@ -937,6 +937,10 @@ async fn session<S>(
                     state.traffic().update(node_id, &report.session_id, &report);
                 }
                 Some(UpMsg::Ack(ack)) => {
+                    crate::metrics::ack(
+                        crate::gen::ack::Reason::try_from(ack.reason)
+                            .unwrap_or(crate::gen::ack::Reason::Unspecified),
+                    );
                     tracing::debug!(
                         node = %node_id,
                         ok = ack.ok,
@@ -1532,6 +1536,11 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
     let Some(plan) = plan else {
         return Ok(Synced::Current);
     };
+    let sent_kind = match &plan {
+        Plan::Snapshot { empty: true } => "empty_snapshot",
+        Plan::Snapshot { empty: false } => "snapshot",
+        Plan::Delta { .. } => "delta",
+    };
     let msg = match plan {
         Plan::Snapshot { empty: true } => {
             tracing::info!(node = %node_id, "sending the empty state to a too-old agent");
@@ -1573,7 +1582,10 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
         }
     };
     match sess.send(&guard, msg).await {
-        Ok(true) => Ok(Synced::Current),
+        Ok(true) => {
+            crate::metrics::sync_sent(sent_kind);
+            Ok(Synced::Current)
+        }
         Ok(false) => {
             sess.sync.lock().unwrap().pending = None;
             Ok(Synced::Current)

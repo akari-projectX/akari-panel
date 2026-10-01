@@ -78,6 +78,7 @@ impl Attempt {
             .valkey()
             .eval(RESERVE, keys.clone(), vec![PER_IP, PER_LOGIN, WINDOW_SECS])
             .await?;
+        crate::metrics::login_attempt(ok == 1);
         Ok((ok == 1).then_some(Self { keys }))
     }
 

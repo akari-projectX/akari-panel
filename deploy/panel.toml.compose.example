@@ -1,0 +1,19 @@
+# Mounted by docker-compose.yml as /etc/akari/panel.toml (no secrets here:
+# database_url / valkey_url come from env/panel.env).
+data_dir = "/data"
+
+[web]
+bind = "0.0.0.0:8080"              # private `frontend` network only, never published
+cookie_secure = true
+trusted_proxies = ["172.28.0.0/24"] # the compose `frontend` subnet (Caddy lives there)
+advertised_names = ["panel.example.com"]
+
+[grpc]
+bind = "0.0.0.0:8443"
+advertise = "panel.example.com:8443"
+server_name = "panel.example.com"
+
+[metrics]
+# Scrape from another container on the backend network, never published.
+bind = "0.0.0.0:9100"
+allow_non_loopback = true

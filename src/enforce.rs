@@ -103,14 +103,25 @@ pub async fn apply_expiry(conn: &mut PgConnection) -> sqlx::Result<Vec<Uuid>> {
 
 pub async fn run_all(state: &crate::state::AppState) -> anyhow::Result<()> {
     for pass in [Pass::Limits, Pass::Expiry] {
-        let mut tx = state.pg().begin().await?;
-        // The bump's trigger notifies every instance on commit.
-        match pass {
-            Pass::Limits => apply_traffic_limits(&mut tx).await?,
-            Pass::Expiry => apply_expiry(&mut tx).await?,
+        let name = match pass {
+            Pass::Limits => "limits",
+            Pass::Expiry => "expiry",
         };
-        tx.commit().await?;
+        let r = run_pass(state, pass).await;
+        crate::metrics::enforcement_pass(name, r.is_ok());
+        r?;
     }
+    Ok(())
+}
+
+async fn run_pass(state: &crate::state::AppState, pass: Pass) -> anyhow::Result<()> {
+    let mut tx = state.pg().begin().await?;
+    // The bump's trigger notifies every instance on commit.
+    match pass {
+        Pass::Limits => apply_traffic_limits(&mut tx).await?,
+        Pass::Expiry => apply_expiry(&mut tx).await?,
+    };
+    tx.commit().await?;
     Ok(())
 }
 

@@ -1,0 +1,35 @@
+# Caddy in front of the panel (compose service or bare metal).
+#
+# ONLY the secret prefix is forwarded. Everything else (including "/") gets
+# an empty 404 from Caddy itself: the panel is not reachable, and not
+# identifiable, without the prefix.
+#
+# Bare metal: replace {$AKARI_DOMAIN}/{$AKARI_PREFIX} (or export them in
+# Caddy's environment) and point reverse_proxy at 127.0.0.1:8080; panel.toml
+# then needs trusted_proxies = ["127.0.0.1/32"].
+{$AKARI_DOMAIN} {
+	encode zstd gzip
+	header -Server
+
+	# Access logging is OFF by default in Caddy. If you enable it, keep the
+	# URI out: it contains the secret prefix and subscription tokens.
+	#   log {
+	#       format filter {
+	#           request>uri delete
+	#           request>headers delete
+	#       }
+	#   }
+
+	handle /{$AKARI_PREFIX}/* {
+		# Caddy appends the client to X-Forwarded-For (and, because upstream
+		# proxies are not trusted, discards a client-supplied one).
+		reverse_proxy panel:8080 {
+			header_up X-Request-Id {http.request.uuid}
+		}
+	}
+
+	# Everything else: empty 404.
+	handle {
+		respond 404
+	}
+}

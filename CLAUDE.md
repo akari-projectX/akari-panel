@@ -13,6 +13,10 @@ Cargo.toml 在仓库根（文档里的 `panel/` 前缀是拆仓前的旧路径�
 | `proto/` | **控制协议正本** `agent.proto` | `proto/CLAUDE.md` |
 | `build.rs` | protox 编译 proto；缺 `spa/dist` 时写占位 index.html | — |
 | `smoke.sh` | 跨仓端到端验收（需 `../akari-agent`） | — |
+| `Dockerfile` | 多阶段：spa → musl 静态二进制 → distroless nonroot 镜像（target `artifact`/`prebuilt`/`runtime`） | — |
+| `deploy/` | systemd 单元、生产 compose、Caddy/nginx、Prometheus 告警、Grafana 面板 | `docs/DEPLOY.md` |
+| `scripts/` | `backup.sh`/`restore.sh`（age 加密）、`restore-drill.sh`（开发栈恢复演练） | `docs/BACKUP.md` |
+| `.github/workflows/` | `ci.yml`（含 docker build）、`release.yml`（tag `v*`：构建、SBOM、cosign 无密钥签名、GitHub Release、ghcr 镜像） | — |
 | `data/` | 运行时生成：route prefix、CA、jwt.key（gitignored，机密） | — |
 
 ## 命令
@@ -24,6 +28,8 @@ make panel         # cargo build --release（嵌入当前 spa/dist）
 make check         # cargo fmt --check + clippy -D warnings + tsc
 make smoke         # 全量构建 + smoke.sh（会 TRUNCATE PG、flushall Valkey、删 data/）
 ./target/release/akari info    # 查看 route prefix
+./target/release/akari config check   # 校验并打印生效配置（凭据已打码）
+./target/release/akari --version      # 版本 + git sha（build.rs，Docker 构建用 AKARI_GIT_SHA）
 ```
 
 ## 硬性不变量
@@ -43,6 +49,8 @@ make smoke         # 全量构建 + smoke.sh（会 TRUNCATE PG、flushall Valkey
 - **会话吊销（S4-2）**：JWT 带 `sv` = `users.session_ver`，`AuthUser` 不一致即 401。改密码/禁用/改角色/过期执行由 0009 的 `users` 触发器自动 bump（任何路径，包括 CLI 与手写 SQL）；登出、`revoke-sessions` 显式 bump。**最后一个启用的管理员**不能被禁用/降级/删除：0009 触发器在 advisory xact lock 下检查，SQLSTATE `AK001` → 409（仅在 READ COMMITTED 下无竞争，应用事务全是 RC）。
 - **反代（S4-1）**：客户端地址只在 TCP 对端属于 `web.trusted_proxies` 时才取 X-Forwarded-For（最右侧非受信跳）；登录限速只计失败，按地址（IPv6 按 /64）和按登录名，Valkey Lua 原子预留。`web.cookie_secure` 默认 true。
 - **GO-2026-6443**：agent 的 grpc-go < 1.85 遇缺 :authority 的请求会 panic，`streamSettings.network` = grpc/gun 的 inbound 一律 400；已存的在 NodeView `warnings` 中提示。agent 升级 grpc ≥ 1.85.0 后可解除。
+- **可观测性（M1-4）**：Prometheus 指标只在独立监听 `metrics.bind`（默认关闭；非回环须 `allow_non_loopback`；不得与 web/grpc 同端口），**永不**挂在公网 web 端口。标签只用路由模板（`/{prefix}/...`）与有限枚举，不得出现前缀或 id。`X-Request-Id` 只加在通过前缀闸门的响应上（`request_id.rs` 在闸门之内；带 `Rejected` 标记的响应不加），拒绝响应必须保持字节同构；URI 不进日志（可能含订阅 token）。
+- **启动校验（M1-3）**：`config.rs` 结构体 `deny_unknown_fields`；`config_check.rs` 的 `validate()`（纯函数）+ `check_data_dir`，`serve` 与 `config check` 共用；错误一次列全，警告不阻止启动。
 - 验收门：`make check` 与 `make smoke` 全绿；新 API 必须在 smoke.sh 加断言。
 
 ## 已知问题

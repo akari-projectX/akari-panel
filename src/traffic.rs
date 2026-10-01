@@ -718,7 +718,9 @@ SELECT coalesce(array_agg(i.node_id), '{}') AS dropped_nodes,
        coalesce(array_agg(i.user_id), '{}') AS dropped_users,
        coalesce(array_agg(i.session_id), '{}') AS dropped_sessions,
        (SELECT count(*) FROM per_row WHERE raw > cap) AS clamped,
-       (SELECT count(*) FROM node_cap WHERE total > allowance) AS nodes_clamped
+       (SELECT count(*) FROM node_cap WHERE total > allowance) AS nodes_clamped,
+       (SELECT LEAST(coalesce(sum(delta) FILTER (WHERE delta > 0), 0),
+                     9223372036854775807)::bigint FROM per_user) AS billed_total
 FROM input i
 WHERE NOT EXISTS (SELECT 1 FROM member m
                   WHERE m.node_id = i.node_id AND m.user_id = i.user_id AND m.session_id = i.session_id)
@@ -811,24 +813,31 @@ async fn write_rows(
             "crediting this instance's flush outage to its nodes' billing caps"
         );
     }
-    let (dn, du, ds, clamped, nodes_clamped): (Vec<Uuid>, Vec<Uuid>, Vec<String>, i64, i64) =
-        sqlx::query_as(FLUSH_SQL)
-            .bind(&nodes)
-            .bind(&users)
-            .bind(&sessions)
-            .bind(&ups)
-            .bind(&downs)
-            .bind(&ages)
-            .bind(rates.key)
-            .bind(MIN_PLAUSIBLE_SECS)
-            .bind(PLAUSIBLE_SLACK_SECS)
-            .bind(grace_secs as f64)
-            .bind(rates.node)
-            .bind(rates.burst_secs)
-            .bind(DEPARTED_SLACK_SECS)
-            .fetch_one(&mut *tx)
-            .await?;
+    let (dn, du, ds, clamped, nodes_clamped, billed_total): (
+        Vec<Uuid>,
+        Vec<Uuid>,
+        Vec<String>,
+        i64,
+        i64,
+        i64,
+    ) = sqlx::query_as(FLUSH_SQL)
+        .bind(&nodes)
+        .bind(&users)
+        .bind(&sessions)
+        .bind(&ups)
+        .bind(&downs)
+        .bind(&ages)
+        .bind(rates.key)
+        .bind(MIN_PLAUSIBLE_SECS)
+        .bind(PLAUSIBLE_SLACK_SECS)
+        .bind(grace_secs as f64)
+        .bind(rates.node)
+        .bind(rates.burst_secs)
+        .bind(DEPARTED_SLACK_SECS)
+        .fetch_one(&mut *tx)
+        .await?;
     tx.commit().await?;
+    crate::metrics::billed(billed_total);
     if !dn.is_empty() {
         tracing::warn!(
             rows = dn.len(),
@@ -884,6 +893,7 @@ async fn flush_buffer(
     let r = flush_rows(pg, buf, rates, only_node, outage).await;
     // Only a full flush says anything about this instance's health.
     if only_node.is_none() {
+        crate::metrics::flush_done(snapshot_at.elapsed(), r.is_ok());
         match &r {
             Ok(_) => buf.flush_succeeded(snapshot_at),
             Err(_) => buf.flush_failed(),

@@ -6,7 +6,11 @@ use clap::{Parser, Subcommand};
 use crate::config::PanelConfig;
 
 #[derive(Parser)]
-#[command(name = "akari", about = "Akari control panel")]
+#[command(
+    name = "akari",
+    about = "Akari control panel",
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("AKARI_GIT_SHA"), ")")
+)]
 struct Cli {
     /// Path to panel.toml (defaults are used when omitted)
     #[arg(short, long, global = true)]
@@ -22,6 +26,11 @@ enum Cmd {
     Serve,
     /// Show install info: route prefix, listen addresses
     Info,
+    /// Configuration tools
+    Config {
+        #[command(subcommand)]
+        action: ConfigCmd,
+    },
     /// Node management
     Node {
         #[command(subcommand)]
@@ -32,6 +41,13 @@ enum Cmd {
         #[command(subcommand)]
         action: AdminCmd,
     },
+}
+
+#[derive(Subcommand)]
+enum ConfigCmd {
+    /// Load and validate the configuration, print the effective values
+    /// (credentials redacted). Exit status 1 when it is invalid.
+    Check,
 }
 
 #[derive(Subcommand)]
@@ -78,6 +94,9 @@ async fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Serve => serve(cfg).await,
         Cmd::Info => info(cfg),
+        Cmd::Config { action } => match action {
+            ConfigCmd::Check => config_check(cfg),
+        },
         Cmd::Node { action } => match action {
             NodeCmd::Add { name, out } => nodeops::node_add(cfg, name, out).await,
             NodeCmd::List => nodeops::node_list(cfg).await,
@@ -88,6 +107,30 @@ async fn main() -> Result<()> {
             AdminCmd::Passwd { login } => nodeops::admin_passwd(cfg, login).await,
         },
     }
+}
+
+/// Validate `cfg` completely (pure rules + data_dir probe). Warnings are
+/// returned for the caller to show; any error is one readable message.
+fn validate_startup(cfg: &PanelConfig) -> Result<Vec<String>> {
+    let mut report = cfg.validate();
+    if let Err(e) = config_check::check_data_dir(&cfg.data_dir) {
+        report.errors.push(e);
+    }
+    report.into_result()
+}
+
+fn config_check(cfg: PanelConfig) -> Result<()> {
+    let warnings = validate_startup(&cfg)?;
+    print!("{}", cfg.effective_toml()?);
+    for w in &warnings {
+        eprintln!("warning: {w}");
+    }
+    eprintln!(
+        "configuration OK ({} warning{})",
+        warnings.len(),
+        if warnings.len() == 1 { "" } else { "s" }
+    );
+    Ok(())
 }
 
 fn info(cfg: PanelConfig) -> Result<()> {
@@ -108,6 +151,16 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
         )
         .init();
 
+    let warnings = validate_startup(&cfg)?;
+    for w in &warnings {
+        tracing::warn!("config: {w}");
+    }
+    metrics::init()?;
+    tracing::info!(
+        version = metrics::VERSION,
+        git_sha = metrics::GIT_SHA,
+        "akari starting"
+    );
     let install = install::ensure(&cfg)?;
 
     let pg = sqlx::postgres::PgPoolOptions::new()
@@ -129,6 +182,13 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
         tokio::spawn(reaper::reap_loop(state.clone())),
         tokio::spawn(state.clone().persist_online_loop()),
     ];
+
+    // Metrics have their own listener (never the public web port). Bound
+    // before serving so a bad/busy address stops the start with a message.
+    let metrics_task = match cfg.metrics.bind {
+        Some(bind) => Some(metrics::serve(state.clone(), bind).await?),
+        None => None,
+    };
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
     let mut shutdown_rx_web = shutdown_tx.subscribe();
@@ -181,6 +241,9 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
         let _ = t.await;
     }
     shutdown::final_flush(&state, shutdown::FINAL_FLUSH).await;
+    if let Some(t) = metrics_task {
+        t.abort();
+    }
     // In-flight requests had the whole sequence to finish; then stop.
     if !web_done
         && tokio::time::timeout(shutdown::SERVER_DRAIN, &mut web_task)
@@ -204,16 +267,19 @@ mod api;
 mod auth;
 mod client_ip;
 mod config;
+mod config_check;
 mod db;
 mod enforce;
 mod gen;
 mod grpc;
 mod install;
 mod login_limit;
+mod metrics;
 mod nodeops;
 mod notify;
 mod reaper;
 mod reject;
+mod request_id;
 mod shutdown;
 mod spa;
 mod state;

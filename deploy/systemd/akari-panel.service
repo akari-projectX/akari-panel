@@ -1,0 +1,65 @@
+# akari panel (bare-metal install; see docs/DEPLOY.md).
+#
+#   install -m 0755 akari /usr/local/bin/akari
+#   install -m 0644 deploy/systemd/akari.sysusers /usr/lib/sysusers.d/akari.conf && systemd-sysusers
+#   install -d -m 0750 -o root -g akari /etc/akari
+#   install -m 0640 -o root -g akari deploy/panel.toml.example /etc/akari/panel.toml
+#   install -m 0644 deploy/systemd/akari-panel.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now akari-panel
+#
+# A dedicated static user (not DynamicUser) so that the operator CLI
+# (`sudo -u akari akari -c /etc/akari/panel.toml node add ...`) works on the
+# same state directory as the service.
+[Unit]
+Description=Akari panel (web + gRPC)
+Documentation=https://github.com/akari-projectX/akari-panel
+After=network-online.target postgresql.service valkey.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=akari
+Group=akari
+ExecStart=/usr/local/bin/akari -c /etc/akari/panel.toml serve
+Restart=on-failure
+RestartSec=3
+# The panel's graceful shutdown (agent streams, final traffic flush) is < 10 s.
+TimeoutStopSec=20
+LimitNOFILE=65536
+
+# State: route prefix, CA key, jwt.key. /var/lib/akari, owned by akari, 0750.
+StateDirectory=akari
+StateDirectoryMode=0750
+WorkingDirectory=/var/lib/akari
+UMask=0077
+
+# --- hardening (systemd-analyze security akari-panel) ---------------------
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ReadWritePaths=/var/lib/akari
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+target
+.git
+data
+spa/node_modules
+spa/dist
+*-bootstrap.toml
+deploy
+docs
+scripts
+*.md
+!README.md
