@@ -49,6 +49,8 @@ export const en: Messages = {
   },
   portal: {
     title: "My account",
+    quotaBanner:
+      "You have used up your traffic: nodes and the subscription are paused. Buy or renew a plan to continue.",
     expiredBanner: "Your account has expired: nodes and the subscription are paused. Renew or buy a plan to continue.",
     usage: "Your usage overview.",
     trafficUsed: "Traffic used",

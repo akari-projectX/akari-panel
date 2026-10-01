@@ -290,6 +290,9 @@ struct SessionRow {
     enabled: bool,
     /// role=user past expires_at (DB clock; `enforce::EXPIRED`).
     expired: bool,
+    /// role=user disabled by the traffic-limit pass (disabled_reason
+    /// 'quota'): renewal scope only (R21).
+    quota_disabled: bool,
     session_ver: i64,
     totp_active: bool,
 }
@@ -305,11 +308,14 @@ async fn session(parts: &mut Parts, state: &AppState) -> Result<(Claims, Session
 
     let claims = decode_token(state, token).ok_or_else(ApiError::unauthorized)?;
 
-    // Disabled accounts lose existing sessions; so does every token issued
-    // before the last session_ver bump. Expired role=user accounts keep only
-    // the renewal scope (`ShopUser`, R21); the callers decide.
+    // Disabled accounts lose existing sessions (quota-disabled users keep
+    // the renewal scope); so does every token issued before the last
+    // session_ver bump. Expired or quota-disabled role=user accounts keep
+    // only the renewal scope (`ShopUser`, R21): `restricted()` callers refuse.
     let row = sqlx::query_as::<_, SessionRow>(sqlx::AssertSqlSafe(format!(
-        "SELECT u.id, u.login, u.role, u.enabled, {} AS expired, u.session_ver, \
+        "SELECT u.id, u.login, u.role, u.enabled, {} AS expired, \
+         (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'quota') AS quota_disabled, \
+         u.session_ver, \
          EXISTS (SELECT 1 FROM user_totp t WHERE t.user_id = u.id AND t.enabled_at IS NOT NULL) \
          AS totp_active FROM users u WHERE u.id = $1",
         crate::enforce::EXPIRED
@@ -323,10 +329,17 @@ async fn session(parts: &mut Parts, state: &AppState) -> Result<(Claims, Session
     })?
     .ok_or_else(ApiError::unauthorized)?;
 
-    if !row.enabled || row.session_ver != claims.sv {
+    if (!row.enabled && !row.quota_disabled) || row.session_ver != claims.sv {
         return Err(ApiError::unauthorized());
     }
     Ok((claims, row))
+}
+
+impl SessionRow {
+    /// Renewal scope only (R21): `AuthUser`/`SessionUser` refuse it.
+    fn restricted(&self) -> bool {
+        self.expired || !self.enabled
+    }
 }
 
 /// Whether this account may only hold an enrollment-only session: an
@@ -344,7 +357,7 @@ impl FromRequestParts<AppState> for AuthUser {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let (claims, row) = session(parts, state).await?;
-        if row.expired
+        if row.restricted()
             || claims.st != Stage::Full
             || needs_enrollment(state, &row.role, row.totp_active)
         {
@@ -367,7 +380,7 @@ impl FromRequestParts<AppState> for SessionUser {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let (claims, row) = session(parts, state).await?;
-        if row.expired {
+        if row.restricted() {
             return Err(ApiError::unauthorized());
         }
         // A full token of an admin the policy now confines to enrollment
@@ -389,16 +402,19 @@ impl FromRequestParts<AppState> for SessionUser {
 }
 
 /// The renewal scope (R21, xboard parity): a full session that may also
-/// belong to an EXPIRED role=user account, so it can still see its account
-/// and plan, change its password and buy/renew (shop, orders). Everything
-/// that serves or reveals proxy access (subscription, sub-token, nodes) keeps
-/// `AuthUser`, which refuses expired accounts. Disabled accounts (any
-/// reason) are refused here exactly as in `AuthUser`; admins are never
-/// expired (`enforce::EXPIRED` is role=user only) and get the same checks.
+/// belong to an EXPIRED or QUOTA-DISABLED (disabled_reason 'quota') role=user
+/// account, so it can still see its account and plan, change its password
+/// and buy/renew (shop, orders). Everything that serves or reveals proxy
+/// access (subscription, sub-token, nodes, 2FA) keeps `AuthUser`, which
+/// refuses both. Accounts disabled for any other reason are refused here
+/// exactly as in `AuthUser`; admins are never expired or quota-disabled
+/// (role=user only) and get the same checks.
 pub struct ShopUser {
     pub user: AuthUser,
-    /// The account is past its expiry (role=user): renewal scope only.
+    /// The account is past its expiry (role=user).
     pub expired: bool,
+    /// The account was disabled for exceeding its traffic limit.
+    pub quota_exhausted: bool,
 }
 
 impl FromRequestParts<AppState> for ShopUser {
@@ -414,6 +430,7 @@ impl FromRequestParts<AppState> for ShopUser {
         }
         Ok(ShopUser {
             expired: row.expired,
+            quota_exhausted: row.quota_disabled,
             user: AuthUser {
                 id: row.id,
                 login: row.login,

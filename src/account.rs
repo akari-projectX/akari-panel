@@ -871,7 +871,7 @@ mod tests {
         db.drop().await;
     }
 
-    /// R21: an expired user logs in with the renewal scope only (account,
+    /// R21: an expired or quota-disabled user logs in with the renewal scope only (account,
     /// plan, own password; shop/orders use the same extractor); proxy
     /// access stays blocked (subscription, sub-token, 2FA endpoints). A
     /// disabled user cannot log in at all; admins are unaffected.
@@ -931,14 +931,46 @@ mod tests {
         e.cookie = r.session_cookie();
         assert_eq!(e.get("/test/api/v1/me").await.status, StatusCode::OK);
 
-        // Disabled (not expired): no login, no session.
-        sqlx::query("UPDATE users SET enabled = false WHERE id = $1")
+        // Quota-disabled (not expired): the same renewal scope.
+        sqlx::query(
+            "UPDATE users SET expires_at = NULL, enabled = false, disabled_reason = 'quota' \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let mut q = Client::new(&state, rand_ip());
+        let r = q.login(&login, "renewed-password-1", None).await;
+        assert_eq!(r.status, StatusCode::OK, "quota-disabled users can log in");
+        assert_eq!(
+            (
+                r.json()["expired"].clone(),
+                r.json()["quota_exhausted"].clone()
+            ),
+            (json!(false), json!(true))
+        );
+        let me = q.get("/test/api/v1/me").await;
+        assert_eq!(me.status, StatusCode::OK);
+        assert_eq!(me.json()["quota_exhausted"], true);
+        assert_eq!(q.get("/test/api/v1/me/plan").await.status, StatusCode::OK);
+        assert_eq!(
+            q.post("/test/api/v1/me/sub-token", json!({})).await.status,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            q.get(&format!("/test/sub/{token}")).await.fingerprint(),
+            junk
+        );
+
+        // Disabled by an admin: no login, no session.
+        sqlx::query("UPDATE users SET disabled_reason = 'admin' WHERE id = $1")
             .bind(id)
             .execute(&db.pool)
             .await
             .unwrap();
         assert_eq!(
-            e.get("/test/api/v1/me").await.status,
+            q.get("/test/api/v1/me").await.status,
             StatusCode::UNAUTHORIZED
         );
         let mut d = Client::new(&state, rand_ip());
@@ -958,7 +990,15 @@ mod tests {
             ])
             .await
             .unwrap();
-        clear_limits(&state, &[c.ip, e.ip, d.ip], &login).await;
+        let _: i64 = state
+            .valkey()
+            .del(format!(
+                "akari:rl:sub:ip:{}",
+                crate::client_ip::bucket(q.ip)
+            ))
+            .await
+            .unwrap();
+        clear_limits(&state, &[c.ip, e.ip, q.ip, d.ip], &login).await;
         drop(state);
         db.drop().await;
     }

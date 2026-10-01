@@ -22,6 +22,7 @@ const me = (role: string): Me => ({
   traffic_limit_bytes: null,
   expires_at: null,
   expired: false,
+  quota_exhausted: false,
 });
 const totp = (over: Partial<TotpStatus>): TotpStatus => ({
   id: "admin-id",
@@ -84,6 +85,16 @@ describe("App session routing", () => {
     expect(screen.queryByRole("heading", { name: "Subscription link" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Two-factor authentication" })).toBeNull();
     expect(calls.some((c) => c.path === "/me/totp")).toBe(false);
+  });
+
+  it("quota-disabled users (R21) get the same renewal scope", async () => {
+    fakeApi({
+      "GET /me": { ...me("user"), quota_exhausted: true },
+      "GET /me/plan": { plan: null, nodes: [] },
+    });
+    renderWithClient(<App />);
+    expect(await screen.findByText(/used up your traffic/)).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Subscription link" })).toBeNull();
   });
 
   it("admins get the Chinese console; deep links, nav and back button follow the URL", async () => {

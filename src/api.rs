@@ -102,6 +102,7 @@ pub async fn login(
                         Json(json!({
                             "id": row.id, "login": row.login, "role": row.role,
                             "stage": stage.as_str(), "expired": row.expired,
+                            "quota_exhausted": row.quota_disabled,
                         })),
                     ))
                 }
@@ -129,6 +130,8 @@ struct LoginRow {
     role: String,
     enabled: bool,
     expired: bool,
+    /// role=user disabled for quota: may log in to renew (R21).
+    quota_disabled: bool,
     password_hash: Option<String>,
     session_ver: i64,
     /// Active TOTP only (enabled_at set); pending enrollments do not count.
@@ -160,6 +163,7 @@ async fn check_credentials(state: &AppState, req: &LoginReq) -> Result<Checked, 
     // query, so failures cost the same whatever the account's 2FA state.
     let row = sqlx::query_as::<_, LoginRow>(sqlx::AssertSqlSafe(format!(
         "SELECT u.id, u.login, u.role, u.enabled, u.password_hash, u.session_ver, {} AS expired, \
+         (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'quota') AS quota_disabled, \
          t.secret_enc AS totp_secret, t.last_step AS totp_last_step, \
          ARRAY(SELECT r.code_hash FROM user_recovery_codes r \
                WHERE r.user_id = u.id AND r.used_at IS NULL ORDER BY r.code_hash) AS recovery, \
@@ -188,9 +192,11 @@ async fn check_credentials(state: &AppState, req: &LoginReq) -> Result<Checked, 
         None => crate::totp::check(state.totp(), Uuid::nil(), None, None, &[], code, 0),
     };
 
-    // R21: an expired (role=user) account still logs in — its sessions only
-    // reach the renewal scope (`auth::ShopUser`). Disabled accounts do not.
-    let Some(row) = row.filter(|r| r.enabled && r.password_hash.is_some()) else {
+    // R21: an expired or quota-disabled (role=user) account still logs in —
+    // its sessions only reach the renewal scope (`auth::ShopUser`).
+    // Accounts disabled for any other reason do not.
+    let Some(row) = row.filter(|r| (r.enabled || r.quota_disabled) && r.password_hash.is_some())
+    else {
         auth::scrub_password(&req.password);
         return Ok(Checked::Failed {
             account,
@@ -490,12 +496,18 @@ pub struct MeView {
     expires_at: Option<DateTime<Utc>>,
     /// R21: past expiry (role=user): the session has the renewal scope only.
     expired: bool,
+    /// R21: disabled for exceeding the traffic limit: renewal scope only.
+    quota_exhausted: bool,
 }
 
 /// GET /api/v1/me (renewal scope: also for expired users, R21).
 pub async fn me(
     State(state): State<AppState>,
-    ShopUser { user, expired }: ShopUser,
+    ShopUser {
+        user,
+        expired,
+        quota_exhausted,
+    }: ShopUser,
 ) -> Result<Json<MeView>, ApiError> {
     let row = sqlx::query_as::<_, MeRow>(
         "SELECT traffic_used_bytes, traffic_limit_bytes, expires_at FROM users WHERE id = $1",
@@ -512,6 +524,7 @@ pub async fn me(
         traffic_limit_bytes: row.traffic_limit_bytes,
         expires_at: row.expires_at,
         expired,
+        quota_exhausted,
     }))
 }
 

@@ -25,6 +25,7 @@ export function Portal({ me }: { me: Me }) {
   const limit = me.traffic_limit_bytes;
   const used = me.traffic_used_bytes;
   const pct = limit != null && limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
+  const restricted = me.expired || me.quota_exhausted;
 
   return (
     <div className="space-y-6">
@@ -36,9 +37,9 @@ export function Portal({ me }: { me: Me }) {
           <CardDescription>{t("portal.usage")}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {me.expired && (
+          {restricted && (
             <p role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
-              {t("portal.expiredBanner")}
+              {me.expired ? t("portal.expiredBanner") : t("portal.quotaBanner")}
             </p>
           )}
           <div className="grid grid-cols-2 gap-4 text-sm">
@@ -69,10 +70,10 @@ export function Portal({ me }: { me: Me }) {
         </CardContent>
       </Card>
       <PlanCard />
-      {/* Expired (R21): renewal scope only; these endpoints refuse it. */}
-      {!me.expired && <SubscriptionCard />}
+      {/* Expired / quota-disabled (R21): renewal scope only; these endpoints refuse it. */}
+      {!restricted && <SubscriptionCard />}
       <PasswordCard />
-      {!me.expired && <TwoFactorCard />}
+      {!restricted && <TwoFactorCard />}
     </div>
   );
 }
