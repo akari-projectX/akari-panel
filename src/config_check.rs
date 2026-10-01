@@ -568,6 +568,43 @@ mod tests {
         c.traffic.node_burst_secs = c.grpc.lease_seconds + 1;
         assert!(has(&errors(&c), "exceeds grpc.lease_seconds"));
 
+        // R18-2 installer settings.
+        for (f, field) in [
+            (
+                (|c: &mut PanelConfig| c.install.token_ttl_secs = 299) as fn(&mut PanelConfig),
+                "install.token_ttl_secs",
+            ),
+            (|c| c.install.rate_per_ip = 0, "install.rate_per_ip"),
+            (
+                |c| c.install.rate_window_secs = 0,
+                "install.rate_window_secs",
+            ),
+            (
+                |c| c.install.public_url = "http://panel.example.com".into(),
+                "install.public_url",
+            ),
+            (
+                |c| c.install.public_url = "https://panel.example.com/x".into(),
+                "install.public_url",
+            ),
+            (
+                |c| c.install.tls_pin = "sha256//nope".into(),
+                "install.tls_pin",
+            ),
+            (
+                |c| c.install.fallback_binary_url = "https://x.com/agent".into(),
+                "install.fallback_binary_url",
+            ),
+        ] {
+            let mut c = PanelConfig::default();
+            f(&mut c);
+            assert!(has(&errors(&c), field), "{field}");
+        }
+        let mut c = PanelConfig::default();
+        c.install.public_url = "https://203.0.113.7:8443".into();
+        c.install.fallback_binary_url = String::new();
+        assert!(!errors(&c).iter().any(|e| e.contains("install.")));
+
         let mut c = PanelConfig::default();
         c.sub.rate_per_ip = 0;
         assert!(has(&errors(&c), "sub.rate_per_ip"));
