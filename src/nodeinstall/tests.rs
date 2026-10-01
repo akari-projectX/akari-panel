@@ -182,14 +182,16 @@ async fn install_link_lifecycle() {
         assert!(s.contains("ExecStart=/usr/local/bin/akari-agent"));
     }
     // No release: the binary endpoint has nothing (canonical reject).
-    let r = c.get(&format!("/test/install/{token}/agent/amd64")).await;
+    let r = c
+        .get(&format!("/test/install/{token}/agent/{}", "0".repeat(64)))
+        .await;
     assert_eq!(r.fingerprint(), junk(&c).await);
 
     // Enrollment burns it: from now on byte-identical to junk.
     panel.enroll(&token).await.unwrap();
     for p in [
         format!("/test/install/{token}"),
-        format!("/test/install/{token}/agent/amd64"),
+        format!("/test/install/{token}/agent/{}", "0".repeat(64)),
     ] {
         assert_eq!(c.get(&p).await.fingerprint(), junk(&c).await, "{p}");
     }
@@ -305,7 +307,8 @@ async fn only_live_install_links_are_served() {
     for p in [
         format!("/test/install/{t3}x"),
         format!("/test/install/{}", &t3[..42]),
-        format!("/test/install/{t3}/agent/mips"),
+        format!("/test/install/{t3}/agent/amd64"),
+        format!("/test/install/{t3}/agent/{}", "A".repeat(64)),
         format!("/test/install/{t3}/agent"),
     ] {
         assert_eq!(c.get(&p).await.fingerprint(), want, "{p}");
@@ -396,13 +399,14 @@ async fn newest_release_is_served_and_pinned_in_the_script() {
     assert!(s.contains(&format!("SHA_amd64='{sha}'")));
     assert!(s.contains("VER_amd64='v1.10.0'"));
     assert!(s.contains("SHA_arm64=''"));
-    let r = c.get(&format!("/test/install/{t}/agent/amd64")).await;
+    let r = c.get(&format!("/test/install/{t}/agent/{sha}")).await;
     assert_eq!(r.status, 200);
     assert_eq!(r.headers["content-length"], bin.len().to_string());
     assert_eq!(r.body, bin);
-    // arm64 has no release here.
+    // Only complete linux releases: the incomplete one is not served.
+    let partial = hex::encode(Sha256::digest(b"partial"));
     assert_eq!(
-        c.get(&format!("/test/install/{t}/agent/arm64"))
+        c.get(&format!("/test/install/{t}/agent/{partial}"))
             .await
             .fingerprint(),
         junk(&c).await

@@ -32,3 +32,10 @@ lease_seconds = 86400
 # Prometheus endpoint on its own listener (never the web port). Unset =
 # disabled. Loopback unless allow_non_loopback = true (then firewall it).
 bind = "127.0.0.1:9100"
+
+[install]
+# One-line node installer (docs/DEPLOY.md §3). Origin nodes download from;
+# default "" = the origin of the admin's browser.
+# public_url = "https://panel.example.com"
+# Install links (enrollment tokens) live 1 h by default.
+# token_ttl_secs = 3600

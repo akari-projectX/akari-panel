@@ -179,7 +179,11 @@ separate loopback listener, never on the public port.
 | PATCH/DELETE | /api/v1/node-groups/{id} | admin | rename, describe, replace `node_ids` / delete |
 | GET/POST | /api/v1/plans | admin | list / create `{name, period, traffic_quota_bytes?, speed_limit_mbps?, device_seats?, sort?, enabled?, group_ids?}` |
 | PATCH/DELETE | /api/v1/plans/{id} | admin | update (same fields; null clears nullable ones) / delete (409 while users hold it) |
-| GET/POST | /api/v1/nodes | admin | node list with live status, certificate expiry, last heartbeat, warnings / create a node (201: one-time enrollment token + bootstrap file, shown once) |
+| GET/POST | /api/v1/nodes | admin | node list with live status, certificate expiry, last heartbeat, warnings / create a node `{name, region?, server_addr?, templates? \| inbounds?, install?: {origin?}}` (201: one-time enrollment token + bootstrap file + one-line install command, shown once) |
+| POST | /api/v1/nodes/{id}/install | admin | new one-line install command `{origin?}` (re-install; replaces the node's unused token) |
+| GET | /api/v1/inbound-templates | admin | template choices (REALITY dests, fingerprints) |
+| POST | /api/v1/inbound-templates/render | admin | templates → xray inbounds JSON (fresh REALITY keys; nothing stored) |
+| POST | /api/v1/inbound-templates/check-dest | admin | TLS 1.3 + h2 check of a REALITY dest from the panel |
 | POST | /api/v1/nodes/{id}/enroll-token | admin | new one-time enrollment token + bootstrap file (re-enrollment) |
 | PATCH/DELETE | /api/v1/nodes/{id} | admin | enable / rename / billing cap override; delete (202, revokes the certificate) |
 | PUT | /api/v1/nodes/{id}/inbounds | admin | replace xray inbounds (bumps config_version) |
@@ -187,6 +191,7 @@ separate loopback listener, never on the public port.
 | POST | /api/v1/users/{id}/revoke-sessions | admin | log the account out everywhere (204) |
 | DELETE | /api/v1/users/{id}/totp | admin | reset the account's 2FA, end its sessions; returns an admin's new one-time `totp_enrollment_code` |
 | GET | /sub/{token} | token | subscription (UA-based format) |
+| GET | /install/{token}[/agent/{arch}] | install link | node install script / agent binary while the link is live (docs/DEPLOY.md §3) |
 | GET | /healthz | — | panel liveness |
 
 Defaults bind web on `127.0.0.1:8080` and gRPC on `127.0.0.1:8443`; override

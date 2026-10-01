@@ -105,7 +105,7 @@ amd64) want=$SHA_amd64 ver=$VER_amd64 ;;
 esac
 if [ -n "$want" ]; then
 	say "downloading akari-agent $ver ($ARCH) from the panel"
-	fetch_panel "$BASE/agent/$ARCH" "$TMP/akari-agent" || die "download from the panel failed"
+	fetch_panel "$BASE/agent/$want" "$TMP/akari-agent" || die "download from the panel failed"
 elif [ -n "$FALLBACK_URL" ]; then
 	url=$(printf '%s' "$FALLBACK_URL" | sed "s/{arch}/$ARCH/g")
 	sums="${url%/*}/SHA256SUMS"

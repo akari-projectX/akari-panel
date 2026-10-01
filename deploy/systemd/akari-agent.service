@@ -1,5 +1,9 @@
 # akari node agent (see docs/DEPLOY.md, "Add a node").
 #
+# Normally installed by the panel's one-line installer (which embeds this
+# file and adds a drop-in: LoadCredential=tls:/etc/akari-agent/tls for TLS
+# inbounds). By hand:
+#
 #   install -m 0755 agent /usr/local/bin/akari-agent
 #   install -d -m 0700 /etc/akari-agent
 #   install -m 0600 <node>-bootstrap.toml /etc/akari-agent/bootstrap.toml
