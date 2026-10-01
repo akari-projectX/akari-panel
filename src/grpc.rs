@@ -1077,6 +1077,10 @@ async fn session<S>(
         }
     });
 
+    // A Hello whose online row write failed (DB blip): retried on each
+    // heartbeat until it lands (B1), so the node is never left 'offline'
+    // with a stale online_session for the whole stream.
+    let mut online_retry: Option<crate::gen::Hello> = None;
     let result: Result<(), Status> = async {
         loop {
             let msg = tokio::select! {
@@ -1128,8 +1132,12 @@ async fn session<S>(
                         &hello.state_hash,
                     );
                     sess.hello.notify_one();
+                    online_retry = None;
                     if mark_online(&state, node_id, sess.online_session, &hello).await {
                         sess.marked_online.store(true, Ordering::SeqCst);
+                    } else {
+                        tracing::warn!(node = %node_id, "failed to mark node online; retrying on heartbeat");
+                        online_retry = Some(hello.clone());
                     }
                     if hello.protocol_version < MIN_AGENT_PROTOCOL {
                         // Never trusted for convergence; say why it runs
@@ -1153,6 +1161,13 @@ async fn session<S>(
                 }
                 Some(UpMsg::Heartbeat(hb)) => {
                     store_heartbeat(&state, node_id, &hb).await;
+                    if let Some(h) = online_retry.take() {
+                        if mark_online(&state, node_id, sess.online_session, &h).await {
+                            sess.marked_online.store(true, Ordering::SeqCst);
+                        } else {
+                            online_retry = Some(h);
+                        }
+                    }
                 }
                 Some(UpMsg::Traffic(report)) => {
                     // R14 N3: nothing is accepted from a stream before its
@@ -1246,7 +1261,9 @@ async fn session<S>(
             forget_node(&state, node_id).await;
         }
     } else {
-        let _ = mark_offline(state.pg(), node_id, sess.online_session).await;
+        if let Err(e) = mark_offline(state.pg(), node_id, sess.online_session).await {
+            tracing::warn!(node = %node_id, error = %e, "failed to mark node offline");
+        }
         if !state.agents().contains_key(&node_id) {
             // Last local session of the node: its membership cache goes
             // (buffered entries stay until flushed).
@@ -1533,7 +1550,7 @@ async fn mark_online(
     )
     .await
     .is_ok();
-    let _ = sqlx::query(
+    if let Err(e) = sqlx::query(
         "UPDATE nodes SET agent_protocol = $2, agent_os = $3, agent_arch = $4 WHERE id = $1",
     )
     .bind(node_id)
@@ -1541,12 +1558,17 @@ async fn mark_online(
     .bind(info.map(|i| i.os.as_str()).filter(|s| !s.is_empty()))
     .bind(info.map(|i| i.arch.as_str()).filter(|s| !s.is_empty()))
     .execute(state.pg())
-    .await;
+    .await
+    {
+        tracing::warn!(node = %node_id, error = %e, "failed to record agent platform");
+    }
     if owned {
         // M2-5: the agent's current traffic session, as of this Hello on
         // the stream that owns the node (traffic::retention_pass; the drain
         // proof is written by `AppState::persist_online`).
-        let _ = sqlx::query(
+        // Losing this write stops retention_pass from ever retiring the
+        // node's superseded sessions (M2-5 drain proof): say so.
+        if let Err(e) = sqlx::query(
             "UPDATE nodes SET agent_session = $2, agent_session_at = now() \
              WHERE id = $1 AND online_session = $3",
         )
@@ -1554,7 +1576,10 @@ async fn mark_online(
         .bind(Some(hello.session_id.as_str()).filter(|s| !s.is_empty()))
         .bind(online_session)
         .execute(state.pg())
-        .await;
+        .await
+        {
+            tracing::warn!(node = %node_id, error = %e, "failed to record agent traffic session");
+        }
     }
     owned
 }
@@ -1742,7 +1767,17 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
         .fetch_all(&mut *tx)
         .await?;
         for r in rows {
-            let creds: Vec<Credential> = serde_json::from_value(r.credentials).unwrap_or_default();
+            // Corrupt credentials: log and leave the user out of the snapshot
+            // (the REST paths answer 500 for the same data); never silently
+            // serve an empty inbound set as if it were valid.
+            let creds: Vec<Credential> = match serde_json::from_value(r.credentials) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(%node_id, user_id = %r.user_id, error = %e,
+                        "node_users.credentials is not a valid credential list; user skipped in snapshot");
+                    continue;
+                }
+            };
             users.push(UserOp {
                 op: UserOpKind::Add as i32,
                 user_id: r.user_id.to_string(),
@@ -1927,14 +1962,17 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
         )
         .await?;
         if write_lease {
-            let _ = sqlx::query(
+            if let Err(e) = sqlx::query(
                 "UPDATE nodes SET lease_expires_at = now() + make_interval(secs => $2) \
                  WHERE id = $1",
             )
             .bind(node_id)
             .bind(secs as f64)
             .execute(state.pg())
-            .await;
+            .await
+            {
+                tracing::warn!(node = %node_id, error = %e, "failed to persist lease expiry");
+            }
         }
     }
     let Some((sent_kind, msg)) = out else {
