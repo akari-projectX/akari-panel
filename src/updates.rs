@@ -8,7 +8,7 @@
 //! it stores or offers a release (an early, friendly refusal — not the
 //! security boundary). Manifest format and signature: see "Agent
 //! self-update" in proto/agent.proto; the Go reference is
-//! akari-agent/release (cross-checked by `proto/testdata/update_vector.json`).
+//! akari-agent/release (cross-checked by `proto/update_vector.json`).
 //!
 //! Storage: manifest bytes verbatim + the binary in 1 MiB rows
 //! (`agent_release_chunks`), so every panel instance can serve it.
@@ -838,7 +838,7 @@ mod tests {
     /// verifies here: one wire format on both sides.
     #[test]
     fn cross_language_vector() {
-        let raw = include_str!("../proto/testdata/update_vector.json");
+        let raw = include_str!("../proto/update_vector.json");
         let v: serde_json::Value = serde_json::from_str(raw).unwrap_or_default();
         let keys = parse_release_keys(&[v["public_key"].as_str().unwrap_or("").to_string()])
             .unwrap_or_default();

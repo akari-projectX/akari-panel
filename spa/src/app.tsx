@@ -8,6 +8,7 @@ import { Login } from "./pages/login";
 import { AdminUsers } from "./pages/admin-users";
 import { AdminNodes } from "./pages/admin-nodes";
 import { AdminPlans } from "./pages/admin-plans";
+import { AdminUpdates } from "./pages/admin-updates";
 import { PasswordCard } from "./pages/portal";
 import { Portal } from "./pages/portal";
 import { AdminAudit } from "./pages/audit";
@@ -15,9 +16,9 @@ import { EnrollPage, TwoFactorCard } from "./pages/two-factor";
 import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
 
-type View = "users" | "plans" | "nodes" | "audit" | "account";
+type View = "users" | "plans" | "nodes" | "updates" | "audit" | "account";
 
-const VIEWS: View[] = ["users", "plans", "nodes", "audit", "account"];
+const VIEWS: View[] = ["users", "plans", "nodes", "updates", "audit", "account"];
 
 function App() {
   const queryClient = useQueryClient();
@@ -81,6 +82,9 @@ function App() {
                 <Button variant={view === "nodes" ? "default" : "ghost"} size="sm" onClick={() => setView("nodes")}>
                   Nodes
                 </Button>
+                <Button variant={view === "updates" ? "default" : "ghost"} size="sm" onClick={() => setView("updates")}>
+                  Updates
+                </Button>
                 <Button variant={view === "audit" ? "default" : "ghost"} size="sm" onClick={() => setView("audit")}>
                   Audit
                 </Button>
@@ -110,6 +114,8 @@ function App() {
             <AdminPlans />
           ) : view === "nodes" ? (
             <AdminNodes />
+          ) : view === "updates" ? (
+            <AdminUpdates />
           ) : view === "audit" ? (
             <AdminAudit />
           ) : view === "account" ? (

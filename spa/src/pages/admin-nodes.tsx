@@ -9,6 +9,7 @@ import {
   put,
   type GeneratedAccount,
   type NodeEnrollment,
+  type NodeUpdateStatus,
   type NodeView,
 } from "../lib/api";
 import { Button } from "../components/ui/button";
@@ -145,7 +146,15 @@ export function AdminNodes() {
                       </span>
                     )}
                   </TableCell>
-                  <TableCell className="text-muted-foreground">{n.agent_version ?? "—"}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {n.agent_version ?? "—"}
+                    {n.agent_os && n.agent_arch && (
+                      <span className="ml-1 text-xs">
+                        {n.agent_os}/{n.agent_arch}
+                      </span>
+                    )}
+                    {n.update_status && <UpdateBadge s={n.update_status} />}
+                  </TableCell>
                   <TableCell className="text-muted-foreground">{n.core_version ?? "—"}</TableCell>
                   <TableCell className="text-muted-foreground">
                     cfg {n.config_version} · usr {n.user_version}
@@ -491,5 +500,20 @@ function NodeEditor({ node }: { node: NodeView }) {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+// M6: the node's latest rollout entry (Updates view has the details).
+function UpdateBadge({ s }: { s: NodeUpdateStatus }) {
+  const tone =
+    s.status === "failed"
+      ? "text-destructive"
+      : s.status === "healthy"
+        ? "text-muted-foreground"
+        : "text-primary";
+  return (
+    <div className={`text-xs ${tone}`} title={s.detail ?? undefined}>
+      {s.version}: {s.status}
+    </div>
   );
 }

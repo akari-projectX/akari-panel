@@ -41,7 +41,7 @@ use crate::api::ApiJson;
 use crate::audit::Actor;
 use crate::auth::{ApiError, AuthUser};
 use crate::state::AppState;
-use crate::updates::{compare_versions, MIN_UPDATE_PROTOCOL};
+use crate::updates::{compare_versions, parse_version, MIN_UPDATE_PROTOCOL};
 
 pub const DEFAULT_HEALTH_TIMEOUT_SECS: i32 = 600;
 pub const DEFAULT_MAX_FAILURE_RATIO: f64 = 0.2;
@@ -128,6 +128,17 @@ pub fn should_halt(healthy: i64, failed: i64, ratio: f64) -> bool {
     failed > 0 && (failed as f64) / ((healthy + failed) as f64) > ratio
 }
 
+/// Whether an agent running `running` needs the `target` release: a newer
+/// version; for an explicitly signed rollback release any other version.
+/// Never for a build without a release version (the agent would refuse).
+pub fn update_due(running: &str, target: &str, rollback: bool) -> bool {
+    match compare_versions(running, target) {
+        Some(Ordering::Less) => true,
+        Some(Ordering::Greater) => rollback,
+        _ => false,
+    }
+}
+
 /// What a pending node of an active wave becomes now (None = stays
 /// pending until it is offered).
 #[derive(Debug, PartialEq, Eq)]
@@ -143,6 +154,8 @@ pub struct PendingNode<'a> {
     pub agent_version: Option<&'a str>,
     pub platform: Option<(&'a str, &'a str)>,
     pub has_artifact: bool,
+    /// The target release is a signed rollback target.
+    pub rollback: bool,
     /// The node's wave started more than the health timeout ago.
     pub wave_timed_out: bool,
 }
@@ -152,10 +165,7 @@ pub fn classify_pending(target: &str, n: &PendingNode) -> Option<PendingOutcome>
         return Some(PendingOutcome::Skipped("node being deleted".into()));
     }
     if let Some(v) = n.agent_version {
-        if matches!(
-            compare_versions(v, target),
-            Some(Ordering::Greater | Ordering::Equal)
-        ) {
+        if !update_due(v, target, n.rollback) && parse_version(v).is_some() {
             return Some(PendingOutcome::Healthy(format!("already at {v}")));
         }
     }
@@ -163,6 +173,11 @@ pub fn classify_pending(target: &str, n: &PendingNode) -> Option<PendingOutcome>
         if let Some(p) = n.protocol.filter(|p| *p < MIN_UPDATE_PROTOCOL as i32) {
             return Some(PendingOutcome::Skipped(format!(
                 "agent protocol {p} < {MIN_UPDATE_PROTOCOL}: update this node by hand"
+            )));
+        }
+        if let Some(v) = n.agent_version.filter(|v| parse_version(v).is_none()) {
+            return Some(PendingOutcome::Skipped(format!(
+                "agent version {v:?} is not a release version (development build)"
             )));
         }
         if let Some((os, arch)) = n.platform {
@@ -571,6 +586,7 @@ struct PendingRow {
     agent_os: Option<String>,
     agent_arch: Option<String>,
     has_artifact: bool,
+    rollback: bool,
     wave_timed_out: bool,
 }
 
@@ -626,6 +642,7 @@ pub async fn tick_one(conn: &mut PgConnection, id: Uuid) -> anyhow::Result<()> {
            n.agent_os, n.agent_arch, \
            EXISTS (SELECT 1 FROM agent_releases a WHERE a.version = $2 AND a.os = n.agent_os \
                    AND a.arch = n.agent_arch AND a.complete_at IS NOT NULL) AS has_artifact, \
+           EXISTS (SELECT 1 FROM agent_releases a WHERE a.version = $2 AND a.rollback) AS rollback, \
            (SELECT wave_started_at FROM rollouts WHERE id = $1) < now() - make_interval(secs => $3) \
              AS wave_timed_out \
          FROM rollout_nodes rn JOIN nodes n ON n.id = rn.node_id \
@@ -649,6 +666,7 @@ pub async fn tick_one(conn: &mut PgConnection, id: Uuid) -> anyhow::Result<()> {
                 agent_version: p.agent_version.as_deref(),
                 platform,
                 has_artifact: p.has_artifact,
+                rollback: p.rollback,
                 wave_timed_out: p.wave_timed_out,
             },
         );
@@ -771,9 +789,9 @@ pub async fn offer_for(
     if protocol < MIN_UPDATE_PROTOCOL {
         return Ok(None);
     }
-    type R = (Uuid, String, Vec<u8>, serde_json::Value);
+    type R = (Uuid, String, Vec<u8>, serde_json::Value, bool);
     let row: Option<R> = sqlx::query_as(
-        "SELECT r.id, r.version, a.manifest, a.signatures \
+        "SELECT r.id, r.version, a.manifest, a.signatures, a.rollback \
          FROM rollout_nodes rn JOIN rollouts r ON r.id = rn.rollout_id \
          JOIN agent_releases a ON a.version = r.version AND a.os = $2 AND a.arch = $3 \
               AND a.complete_at IS NOT NULL \
@@ -785,13 +803,10 @@ pub async fn offer_for(
     .bind(platform.1)
     .fetch_optional(pg)
     .await?;
-    let Some((rollout, version, manifest, sigs)) = row else {
+    let Some((rollout, version, manifest, sigs, rollback)) = row else {
         return Ok(None);
     };
-    if !matches!(
-        compare_versions(agent_version, &version),
-        Some(Ordering::Less)
-    ) {
+    if !update_due(agent_version, &version, rollback) {
         // Already there (or unversioned build): the tick settles it.
         return Ok(None);
     }
@@ -972,8 +987,32 @@ mod tests {
             agent_version: Some("v1.0.0"),
             platform: Some(("linux", "amd64")),
             has_artifact: true,
+            rollback: false,
             wave_timed_out: false,
         };
+        assert!(update_due("v1.0.0", "v1.1.0", false));
+        assert!(!update_due("v1.2.0", "v1.1.0", false));
+        assert!(update_due("v1.2.0", "v1.1.0", true));
+        assert!(!update_due("v1.1.0", "v1.1.0", true));
+        assert!(!update_due("dev", "v1.1.0", false));
+        let newer = PendingNode {
+            agent_version: Some("v1.2.0"),
+            rollback: true,
+            ..base
+        };
+        assert_eq!(
+            classify_pending("v1.1.0", &newer),
+            None,
+            "rollback target is due"
+        );
+        let dev = PendingNode {
+            agent_version: Some("dev"),
+            ..base
+        };
+        assert!(matches!(
+            classify_pending("v1.1.0", &dev),
+            Some(PendingOutcome::Skipped(_))
+        ));
         assert_eq!(classify_pending("v1.1.0", &base), None);
         let at = PendingNode {
             agent_version: Some("v1.1.0"),

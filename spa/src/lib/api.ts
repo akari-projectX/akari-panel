@@ -47,6 +47,13 @@ export const put = <T,>(path: string, body: unknown) =>
 export const patch = <T,>(path: string, body: unknown) =>
   api<T>(path, { method: "PATCH", body: JSON.stringify(body) });
 export const del = <T = void,>(path: string) => api<T>(path, { method: "DELETE" });
+// Raw body (agent release binaries, M6).
+export const putBinary = <T,>(path: string, body: Blob) =>
+  request<T>(`${apiBase}${path}`, {
+    method: "PUT",
+    body,
+    headers: { "content-type": "application/octet-stream" },
+  });
 
 // Auth endpoints live at /{prefix}/auth/*, NOT under /api/v1 (see src/web.rs).
 // Do not route them through get/post: that yields /api/v1/auth/* -> 404.
@@ -228,6 +235,10 @@ export interface NodeView {
   status: string;
   agent_version: string | null;
   core_version: string | null;
+  // M6: platform of the connected agent and its latest rollout entry.
+  agent_os: string | null;
+  agent_arch: string | null;
+  update_status: NodeUpdateStatus | null;
   config_version: number;
   user_version: number;
   xray_inbounds: Inbound[];
@@ -257,6 +268,79 @@ export interface NodeView {
   heartbeat: Heartbeat | null;
   // Problems the admin must fix (stored config, certificate expiry).
   warnings: string[];
+}
+
+export interface NodeUpdateStatus {
+  rollout_id: string;
+  version: string;
+  rollout_status: RolloutStatus;
+  status: RolloutNodeStatus;
+  detail: string | null;
+}
+
+// --- M6 agent self-update (mirror of src/updates.rs / src/rollout.rs) ---
+
+export interface ReleaseView {
+  id: string;
+  version: string;
+  os: string;
+  arch: string;
+  sha256: string;
+  size: number;
+  key_id: string;
+  min_panel_protocol: number;
+  rollback: boolean;
+  complete: boolean;
+  created_at: string;
+  complete_at: string | null;
+}
+
+export type RolloutStatus = "running" | "paused" | "halted" | "aborted" | "completed";
+export type RolloutNodeStatus = "pending" | "offered" | "updating" | "healthy" | "failed" | "skipped";
+
+export interface RolloutView {
+  id: string;
+  version: string;
+  status: RolloutStatus;
+  waves: number[];
+  percentage: number;
+  explicit_nodes: boolean;
+  current_wave: number;
+  wave_started_at: string;
+  health_timeout_secs: number;
+  max_failure_ratio: number;
+  halted_reason: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
+  counts: Partial<Record<RolloutNodeStatus, number>>;
+}
+
+export interface RolloutNodeView {
+  node_id: string;
+  name: string;
+  wave: number;
+  position: number;
+  status: RolloutNodeStatus;
+  from_version: string | null;
+  agent_version: string | null;
+  offered_at: string | null;
+  finished_at: string | null;
+  detail: string | null;
+}
+
+export interface RolloutDetail extends RolloutView {
+  nodes: RolloutNodeView[];
+}
+
+export interface CreateRollout {
+  version: string;
+  percentage?: number;
+  node_ids?: string[];
+  waves?: number[];
+  health_timeout_secs?: number;
+  max_failure_ratio?: number;
 }
 
 export interface Heartbeat {
