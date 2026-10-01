@@ -166,10 +166,9 @@ vk flushdb >/dev/null
 
 echo "== first admin (env password) =="
 AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" admin add root | tee "$LOG/admin-add.out"
-# M1c: the one-time 2FA enrollment code (required for the first TOTP
-# activation, so a leaked password alone cannot enroll an authenticator).
-ENROLL_CODE=$(grep -E '^  [A-Z2-7]{4}(-[A-Z2-7]{1,4})+$' "$LOG/admin-add.out" | tr -d ' ')
-[ -n "$ENROLL_CODE" ] || { echo "FAIL: admin add printed no 2FA enrollment code"; exit 1; }
+# R18: admin 2FA is optional (recommended); no one-time enrollment code.
+grep -q "two-factor authentication is recommended" "$LOG/admin-add.out" || { echo "FAIL: admin add lacks the 2FA hint"; exit 1; }
+grep -qE '^  [A-Z2-7]{4}(-[A-Z2-7]{1,4})+$' "$LOG/admin-add.out" && { echo "FAIL: admin add still prints an enrollment code"; exit 1; }
 AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" admin add root 2>&1 | grep -q "created admin account: root" \
   && { echo "FAIL: duplicate admin creation should error"; exit 1; } || echo "duplicate rejected: ok"
 
@@ -228,12 +227,17 @@ done
 grep -q '"role":"admin"' /tmp/akari-smoke/last || { echo "FAIL: login response missing role"; exit 1; }
 echo "login: ok"
 
-echo "== M1-6 admin 2FA: enrollment-only session, enroll, log in with a code =="
-grep -q '"stage":"enroll"' /tmp/akari-smoke/last || { echo "FAIL: admin without 2FA did not get an enrollment-only session"; exit 1; }
-[ "$(code -b "$JAR" "$BASE/api/v1/users")" = "401" ] || { echo "FAIL: admin without 2FA can list users"; exit 1; }
-[ "$(code -b "$JAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: enrollment-only session reached /me"; exit 1; }
+echo "== M1-6/R18 admin 2FA: optional, enroll voluntarily, log in with a code =="
+grep -q '"stage":"full"' /tmp/akari-smoke/last || { echo "FAIL: admin without 2FA did not get a full session (2FA is optional)"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/users")" = "200" ] || { echo "FAIL: admin without 2FA cannot list users"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/me/totp")" = "200" ] || { echo "FAIL: totp status"; exit 1; }
-grep -q '"stage":"enroll"' /tmp/akari-smoke/last || { echo "FAIL: totp status stage"; exit 1; }
+python3 -c "import json;d=json.load(open('/tmp/akari-smoke/last'));assert d['stage']=='full' and d['enabled'] is False and d['admin_2fa_required'] is False and 'enroll_code_required' not in d, d" \
+  || { echo "FAIL: totp status (optional 2FA)"; exit 1; }
+# A5: the login body is strict JSON (400 + JSON error, not axum's 415/422).
+[ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\",\"extra\":1}")" = "400" ] && grep -q '"error"' /tmp/akari-smoke/last \
+  || { echo "FAIL: unknown login field not a 400"; exit 1; }
+[ "$(code -X POST "$BASE/auth/login" -d 'not json')" = "400" ] || { echo "FAIL: non-JSON login body not a 400"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/me/totp/enroll" -H 'Content-Type: application/json' -d '{}')" = "200" ] \
   || { echo "FAIL: totp enroll"; cat /tmp/akari-smoke/last; exit 1; }
 TOTP_SECRET=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['secret'])")
@@ -257,11 +261,11 @@ totp() { python3 "$LOG/totp.py" "$TOTP_SECRET" "$LOG/totp.last"; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/me/totp/confirm" -H 'Content-Type: application/json' -d '{"code":"000000x"}')" = "400" ] \
   || { echo "FAIL: bad confirm code not 400"; exit 1; }
 CODE0=$(totp)
-# A valid TOTP code without the enrollment code (password-only attacker).
+# The removed M1c field is refused (unknown field), not silently ignored.
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/me/totp/confirm" -H 'Content-Type: application/json' \
-    -d "{\"code\":\"$CODE0\"}")" = "400" ] || { echo "FAIL: admin 2FA activated without the enrollment code"; exit 1; }
+    -d "{\"code\":\"$CODE0\",\"enrollment_code\":\"AAAA-BBBB\"}")" = "400" ] || { echo "FAIL: enrollment_code field accepted"; exit 1; }
 [ "$(code -b "$JAR" -c "$JAR" -X POST "$BASE/api/v1/me/totp/confirm" -H 'Content-Type: application/json' \
-    -d "{\"code\":\"$CODE0\",\"enrollment_code\":\"$ENROLL_CODE\"}")" = "200" ] || { echo "FAIL: totp confirm"; cat /tmp/akari-smoke/last; exit 1; }
+    -d "{\"code\":\"$CODE0\"}")" = "200" ] || { echo "FAIL: totp confirm"; cat /tmp/akari-smoke/last; exit 1; }
 python3 -c "import json;print('\n'.join(json.load(open('/tmp/akari-smoke/last'))['recovery_codes']))" >"$LOG/recovery"
 [ "$(wc -l <"$LOG/recovery")" = "10" ] || { echo "FAIL: 10 recovery codes expected"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/users")" = "200" ] || { echo "FAIL: full session after enrollment"; exit 1; }
@@ -653,6 +657,11 @@ wait_users 1 10 "plan grants the node (no manual assignment)"
 [ "$(psql_q "SELECT traffic_limit_bytes FROM users WHERE id='$PU'")" = "150000" ] || { echo "FAIL: limit not derived from the plan"; exit 1; }
 [ "$(patch_code "$BASE/api/v1/users/$PU" '{"traffic_limit_bytes": 1}')" = "409" ] || { echo "FAIL: plan-managed limit editable"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$PU/nodes/$NODE_ID")" = "409" ] || { echo "FAIL: plan row unassignable"; exit 1; }
+# R18: per-user node access view (no credentials in it).
+[ "$(code -b "$JAR" "$BASE/api/v1/users/$PU/nodes")" = "200" ] || { echo "FAIL: user nodes view"; exit 1; }
+python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); r=[x for x in d if x['node_id']=='$NODE_ID'][0]; assert r['manual'] is False and r['inbounds'] and 'account' not in json.dumps(d), d" \
+  || { echo "FAIL: user nodes view content"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/users/00000000-0000-0000-0000-000000000000/nodes")" = "404" ] || { echo "FAIL: user nodes of no user not 404"; exit 1; }
 code -b "$JAR" "$BASE/api/v1/users" >/dev/null
 python3 -c "import json; u=[x for x in json.load(open('/tmp/akari-smoke/last')) if x['id']=='$PU'][0]; assert u['plan_name']=='smoke-plan' and u['next_reset_at']" \
   || { echo "FAIL: users list lacks plan/reset"; exit 1; }
@@ -984,11 +993,29 @@ bind = "127.0.0.1:8444"
 advertise = "127.0.0.1:8444"
 [agent]
 cert_validity_secs = 60
+[auth]
+require_admin_2fa = true
 TOML
 "$PANEL" -c "$LOG/panel-b.toml" serve >"$LOG/panel-b.log" 2>&1 &
 PANEL_B=$!
 trap 'cleanup_upd; kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} $MOCK_PID 2>/dev/null || true' EXIT
 for _ in $(seq 1 20); do [ "$(code "http://127.0.0.1:8081/$PREFIX/healthz")" = "200" ] && break; sleep 0.5; done
+# R18 opt-in policy on instance B (auth.require_admin_2fa): an admin without
+# 2FA only gets an enrollment-only session there, a full one on A.
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+    -d '{"login":"admin-no2fa","password":"admin-no2fa-pw","role":"admin"}')" = "201" ] || { echo "FAIL: create 2nd admin"; exit 1; }
+ADMIN2=$(python3 -c "import json;d=json.load(open('/tmp/akari-smoke/last'));assert 'totp_enrollment_code' not in d;print(d['id'])") \
+  || { echo "FAIL: create admin still returns an enrollment code"; exit 1; }
+A2JAR="$LOG/admin2-cookies"
+[ "$(code -c "$A2JAR" -X POST "http://127.0.0.1:8081/$PREFIX/auth/login" -H 'Content-Type: application/json' \
+    -d '{"login":"admin-no2fa","password":"admin-no2fa-pw"}')" = "200" ] && grep -q '"stage":"enroll"' /tmp/akari-smoke/last \
+  || { echo "FAIL: require_admin_2fa did not confine the admin"; exit 1; }
+[ "$(code -b "$A2JAR" "http://127.0.0.1:8081/$PREFIX/api/v1/users")" = "401" ] || { echo "FAIL: enrollment-only session listed users"; exit 1; }
+[ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d '{"login":"admin-no2fa","password":"admin-no2fa-pw"}')" = "200" ] && grep -q '"stage":"full"' /tmp/akari-smoke/last \
+  || { echo "FAIL: optional-2FA instance confined the admin"; exit 1; }
+# Keep root the last admin (S4-2 assertions below).
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$ADMIN2")" = "204" ] || { echo "FAIL: delete 2nd admin"; exit 1; }
 "$PANEL" -c "$LOG/panel-b.toml" node add renew-node --out "$LOG/renew-bootstrap.toml" >/dev/null
 RENEW_ID=$("$PANEL" node list | awk '$2=="renew-node"{print $1}')
 "$AGENT" -config "$LOG/renew-bootstrap.toml" -state-dir "$LOG/state-renew" >"$LOG/renew-agent.log" 2>&1 &
@@ -1050,7 +1077,7 @@ for a in user.create node.create node.set_inbounds node.update node.assign user.
 done
 grep -q '"actor_login":"cli"' /tmp/akari-smoke/last || { echo "FAIL: CLI actions not audited as cli"; exit 1; }
 for secret in "$ADMIN_PW" "$TOTP_SECRET" "$NEW_TOKEN" "$VLESS_A" "user-password-123" '$argon2' \
-              "$ENROLL_CODE" "$TOKEN" "$API_TOKEN" "$API_TOKEN2"; do
+              "$TOKEN" "$API_TOKEN" "$API_TOKEN2"; do
   grep -qF -- "$secret" /tmp/akari-smoke/last && { echo "FAIL: audit log contains a secret"; exit 1; }
 done
 [ "$(code -b "$JAR" "$BASE/api/v1/audit?action=user.totp.&limit=5")" = "200" ] || { echo "FAIL: audit filter"; exit 1; }
@@ -1310,11 +1337,11 @@ echo "== M1-6/M1-9 CLI: reset-2fa, rotate-jwt =="
 [ "$(login_root "$(totp)")" = "200" ] || { echo "FAIL: TOTP login before reset"; exit 1; }
 "$PANEL" admin reset-2fa root >"$LOG/reset.out"
 grep -q "reset" "$LOG/reset.out" || { echo "FAIL: CLI reset-2fa"; exit 1; }
-grep -qE '^  [A-Z2-7]{4}(-[A-Z2-7]{1,4})+$' "$LOG/reset.out" || { echo "FAIL: reset-2fa printed no new enrollment code"; exit 1; }
+grep -qE '^  [A-Z2-7]{4}(-[A-Z2-7]{1,4})+$' "$LOG/reset.out" && { echo "FAIL: reset-2fa still prints an enrollment code"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: session survived reset-2fa"; exit 1; }
 [ "$(code -c "$JAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
-    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "200" ] && grep -q '"stage":"enroll"' /tmp/akari-smoke/last \
-  || { echo "FAIL: after reset-2fa the admin must re-enroll"; exit 1; }
+    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "200" ] && grep -q '"stage":"full"' /tmp/akari-smoke/last \
+  || { echo "FAIL: after reset-2fa the admin logs in with the password alone"; exit 1; }
 [ "$(code -b "$UJAR" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: user session before rotate-jwt"; exit 1; }
 "$PANEL" secrets rotate-jwt | grep -q "revoked" || { echo "FAIL: CLI rotate-jwt"; exit 1; }
 [ "$(code -b "$UJAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: session survived rotate-jwt"; exit 1; }
