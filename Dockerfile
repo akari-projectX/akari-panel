@@ -45,6 +45,7 @@ COPY Cargo.toml Cargo.lock build.rs ./
 COPY proto proto
 COPY migrations migrations
 COPY src src
+COPY deploy/systemd deploy/systemd
 COPY --from=spa /src/spa/dist spa/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \

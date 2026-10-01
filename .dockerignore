@@ -4,7 +4,8 @@ data
 spa/node_modules
 spa/dist
 *-bootstrap.toml
-deploy
+deploy/*
+!deploy/systemd
 docs
 scripts
 *.md
