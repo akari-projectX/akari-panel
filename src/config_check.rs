@@ -98,7 +98,9 @@ impl PanelConfig {
                         "{p}.gateway_url is plain http on loopback (a mock gateway, not Alipay)"
                     ));
                 } else if scheme != "https" {
-                    r.err(format!("{p}.gateway_url: must be https (http only on loopback)"));
+                    r.err(format!(
+                        "{p}.gateway_url: must be https (http only on loopback)"
+                    ));
                 }
             }
             None => r.err(format!("{p}.gateway_url: not a URL")),

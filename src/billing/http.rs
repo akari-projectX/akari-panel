@@ -61,7 +61,10 @@ async fn post_inner(url: &str, body: String) -> Result<(u16, Bytes), String> {
         .path_and_query()
         .map(|p| p.as_str().to_string())
         .unwrap_or_else(|| "/".into());
-    let connect_host = host.trim_start_matches('[').trim_end_matches(']').to_string();
+    let connect_host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
     let tcp = tokio::net::TcpStream::connect((connect_host.as_str(), port))
         .await
         .map_err(|e| format!("connect: {}", e.kind()))?;

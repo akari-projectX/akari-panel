@@ -126,6 +126,7 @@ pub async fn apply_mark_paid(
     reason: Option<&str>,
 ) -> Result<Paid, ApiError> {
     entitle::lock(conn).await?;
+    #[allow(clippy::type_complexity)]
     let row: Option<(Value, Value, Option<Uuid>, Option<Uuid>, i32)> =
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "UPDATE orders SET status = 'paid', paid_at = now(), ended_at = NULL, \
@@ -283,19 +284,27 @@ pub async fn apply_admin_fulfil(
     reason: &str,
 ) -> Result<Paid, ApiError> {
     entitle::lock(conn).await?;
-    let row: Option<(String, Option<DateTime<Utc>>, Option<Uuid>, Option<Uuid>, i32, String)> =
-        sqlx::query_as(
-            "SELECT status, fulfilled_at, user_id, plan_id, period_days, out_trade_no \
+    #[allow(clippy::type_complexity)]
+    let row: Option<(
+        String,
+        Option<DateTime<Utc>>,
+        Option<Uuid>,
+        Option<Uuid>,
+        i32,
+        String,
+    )> = sqlx::query_as(
+        "SELECT status, fulfilled_at, user_id, plan_id, period_days, out_trade_no \
              FROM orders WHERE id = $1 FOR UPDATE",
-        )
-        .bind(order_id)
-        .fetch_optional(&mut *conn)
-        .await?;
+    )
+    .bind(order_id)
+    .fetch_optional(&mut *conn)
+    .await?;
     let Some((status, fulfilled_at, user_id, plan_id, period_days, otn)) = row else {
         return Err(ApiError::not_found());
     };
     if status != "paid" {
-        let r = apply_mark_paid(conn, actor, order_id, Via::Manual, None, None, Some(reason)).await?;
+        let r =
+            apply_mark_paid(conn, actor, order_id, Via::Manual, None, None, Some(reason)).await?;
         record_event(
             conn,
             Some(order_id),
@@ -330,7 +339,11 @@ pub async fn apply_admin_fulfil(
         Some(&otn),
         "manual",
         true,
-        if fulfilled { "fulfilled" } else { "fulfil_failed" },
+        if fulfilled {
+            "fulfilled"
+        } else {
+            "fulfil_failed"
+        },
         None,
         Some(json!({ "reason": reason, "by": actor.login })),
         actor.ip,
@@ -512,7 +525,11 @@ pub async fn end_order(
         &mut tx,
         Some(order.id),
         Some(&order.out_trade_no),
-        if target == "expired" { "expire" } else { "close" },
+        if target == "expired" {
+            "expire"
+        } else {
+            "close"
+        },
         true,
         target,
         None,
@@ -557,16 +574,22 @@ pub async fn reconcile_tick(state: &AppState, alipay: &Arc<Alipay>) -> Result<us
     let n = batch.len();
     for order in batch {
         let res = if order.due {
-            let force = sqlx::query_scalar::<_, bool>(
-                "SELECT $1 <= now() - make_interval(secs => $2)",
+            let force =
+                sqlx::query_scalar::<_, bool>("SELECT $1 <= now() - make_interval(secs => $2)")
+                    .bind(order.expires_at)
+                    .bind(CLOSE_GRACE_SECS as f64)
+                    .fetch_one(state.pg())
+                    .await?;
+            end_order(
+                state,
+                alipay,
+                &order,
+                "expired",
+                &crate::audit::Actor::system(),
+                force,
             )
-            .bind(order.expires_at)
-            .bind(CLOSE_GRACE_SECS as f64)
-            .fetch_one(state.pg())
-            .await?;
-            end_order(state, alipay, &order, "expired", &crate::audit::Actor::system(), force)
-                .await
-                .map(|_| ())
+            .await
+            .map(|_| ())
         } else {
             match alipay.query(&order.out_trade_no).await {
                 Ok(q) => apply_query_result(state, &order, &q, "query")
