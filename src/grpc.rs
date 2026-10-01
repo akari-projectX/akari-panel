@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, Notify};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
-use tonic::transport::{Certificate, Identity, ServerTlsConfig};
 use tonic::{Request, Response, Status, Streaming};
 use uuid::Uuid;
 
@@ -2028,45 +2027,52 @@ enum Synced {
     Superseded,
 }
 
-/// The gRPC server's TLS: the panel's server certificate; client
+/// The gRPC server's TLS (tlsserver.rs): the panel's server certificate,
+/// hot-swapped when the gRPC server names change (R22); client
 /// certificates OPTIONAL at the handshake (a presented one must verify
 /// against the panel CA, including expiry and ClientAuth) so a fresh agent
 /// can call AgentEnrollment.Enroll. Every AgentChannel method requires one
 /// (`enroll::peer_cert`).
-pub fn server_tls(install: &crate::install::Install) -> ServerTlsConfig {
-    ServerTlsConfig::new()
-        .identity(Identity::from_pem(
-            &install.server_cert_pem,
-            &install.server_key_pem,
-        ))
-        .client_ca_root(Certificate::from_pem(&install.ca_pem))
-        .client_auth_optional(true)
+pub fn server_tls(state: &AppState) -> anyhow::Result<Arc<rustls::ServerConfig>> {
+    crate::tlsserver::server_config(&state.install().ca_pem, state.settings().certs().clone())
 }
 
-pub async fn serve(
+/// Serve AgentChannel + AgentEnrollment on an already bound listener until
+/// `shutdown` resolves (serve and the test harness share it).
+pub async fn serve_on(
     state: AppState,
-    shutdown: tokio::sync::broadcast::Receiver<()>,
+    listener: tokio::net::TcpListener,
+    shutdown: impl std::future::Future<Output = ()>,
 ) -> anyhow::Result<()> {
     use tonic::transport::Server;
 
-    let tls = server_tls(state.install());
-    let bind = state.cfg().grpc.bind;
-    let mut shutdown = shutdown;
-    Server::builder()
+    let (incoming, accept_task) = crate::tlsserver::incoming(listener, server_tls(&state)?);
+    let result = Server::builder()
         .http2_keepalive_interval(Some(std::time::Duration::from_secs(30)))
         .http2_keepalive_timeout(Some(std::time::Duration::from_secs(60)))
-        .tls_config(tls)?
         .add_service(AgentChannelServer::new(AgentChannelService {
             state: state.clone(),
         }))
         .add_service(AgentEnrollmentServer::new(
             crate::enroll::AgentEnrollmentService { state },
         ))
-        .serve_with_shutdown(bind, async move {
-            let _ = shutdown.recv().await;
-        })
-        .await?;
+        .serve_with_incoming_shutdown(incoming, shutdown)
+        .await;
+    accept_task.abort();
+    result?;
     Ok(())
+}
+
+pub async fn serve(
+    state: AppState,
+    shutdown: tokio::sync::broadcast::Receiver<()>,
+) -> anyhow::Result<()> {
+    let listener = tokio::net::TcpListener::bind(state.cfg().grpc.bind).await?;
+    let mut shutdown = shutdown;
+    serve_on(state, listener, async move {
+        let _ = shutdown.recv().await;
+    })
+    .await
 }
 
 #[cfg(test)]

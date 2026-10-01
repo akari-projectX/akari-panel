@@ -17,6 +17,20 @@ async fn connect(cfg: &PanelConfig) -> Result<sqlx::PgPool> {
     Ok(pg)
 }
 
+/// `akari settings show`: stored system settings (R22) and the effective
+/// values (database wins over panel.toml).
+pub async fn settings_show(cfg: PanelConfig) -> Result<()> {
+    let pg = connect(&cfg).await?;
+    crate::settings::cli_show(&cfg, &pg).await
+}
+
+/// `akari settings unset <field>`: clear a database setting (audited as
+/// cli), e.g. a mistyped main domain that the host gate now refuses.
+pub async fn settings_unset(cfg: PanelConfig, field: String) -> Result<()> {
+    let pg = connect(&cfg).await?;
+    crate::settings::cli_unset(&pg, &field).await
+}
+
 /// Creates the first admin (or any) account. Reads the password from
 /// AKARI_ADMIN_PASSWORD or a hidden interactive prompt.
 pub async fn admin_add(cfg: PanelConfig, login: String, role: String) -> Result<()> {
@@ -105,19 +119,21 @@ pub async fn node_add(cfg: PanelConfig, name: String, out: Option<PathBuf>) -> R
     let inst = install::ensure(&cfg)?;
     let pg = connect(&cfg).await?;
     let mut tx = pg.begin().await?;
+    let endpoint = crate::settings::node_endpoint(&mut tx, &cfg).await?;
     let (id, token, expires) = crate::enroll::apply_create_node(
         &mut tx,
         &Actor::cli(),
         &name,
         cfg.agent.enroll_token_ttl_secs,
         None,
+        &endpoint,
     )
     .await
     .map_err(|e| anyhow::anyhow!("node {name}: {}", e.message()))?;
     let out_path = out.unwrap_or_else(|| PathBuf::from(format!("{name}-bootstrap.toml")));
     // Written before the commit: a committed node always has its file.
     write_bootstrap(
-        &cfg,
+        &endpoint,
         &inst,
         &out_path,
         &name,
@@ -152,18 +168,20 @@ pub async fn node_enroll_token(
     let Some(name) = name else {
         bail!("no such node: {id}");
     };
+    let endpoint = crate::settings::node_endpoint(&mut tx, &cfg).await?;
     let (token, expires) = crate::enroll::apply_issue_token(
         &mut tx,
         &Actor::cli(),
         id,
         cfg.agent.enroll_token_ttl_secs,
         None,
+        &endpoint,
     )
     .await
     .map_err(|e| anyhow::anyhow!("node {id}: {}", e.message()))?;
     let out_path = out.unwrap_or_else(|| PathBuf::from(format!("{name}-bootstrap.toml")));
     write_bootstrap(
-        &cfg,
+        &endpoint,
         &inst,
         &out_path,
         &name,
@@ -195,7 +213,7 @@ fn progress(out_path: &std::path::Path) -> Box<dyn std::io::Write> {
 }
 
 fn write_bootstrap(
-    cfg: &PanelConfig,
+    endpoint: &crate::settings::NodeEndpoint,
     inst: &install::Install,
     path: &std::path::Path,
     name: &str,
@@ -205,8 +223,8 @@ fn write_bootstrap(
 ) -> Result<()> {
     let body = crate::enroll::bootstrap_toml(
         name,
-        &cfg.grpc.advertise,
-        &cfg.grpc.server_name,
+        &endpoint.panel_addr,
+        &endpoint.server_name,
         &inst.ca_pem,
         token,
         expires,
@@ -406,10 +424,14 @@ mod tests {
         };
         let inst = install::ensure(&cfg).unwrap();
         let expires = chrono::Utc::now();
+        let ep = crate::settings::NodeEndpoint {
+            panel_addr: cfg.grpc.advertise.clone(),
+            server_name: cfg.grpc.server_name.clone(),
+        };
 
         let mut buf = Vec::new();
         write_bootstrap(
-            &cfg,
+            &ep,
             &inst,
             std::path::Path::new("-"),
             "vps-1",
@@ -425,7 +447,7 @@ mod tests {
         // A file path still writes a 0600 file and nothing to stdout.
         let file = dir.join("b.toml");
         let mut buf = Vec::new();
-        write_bootstrap(&cfg, &inst, &file, "vps-1", "tok-123", expires, &mut buf).unwrap();
+        write_bootstrap(&ep, &inst, &file, "vps-1", "tok-123", expires, &mut buf).unwrap();
         assert!(buf.is_empty());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
         std::fs::remove_dir_all(&dir).ok();

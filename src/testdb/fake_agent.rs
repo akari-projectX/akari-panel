@@ -7,31 +7,27 @@
 //! `session()` directly, no TLS/transport): this one exercises the TLS
 //! handshake, serial -> node identification and the real stream plumbing.
 //!
-//! Seam note: `grpc::serve` binds `cfg.grpc.bind` and cannot report the bound
-//! port, so `PanelHarness` reimplements its ~10 lines on a pre-bound
-//! ephemeral listener (same `AgentChannelService`, same TLS config). If
-//! `serve` is ever changed, keep `PanelHarness::start` in sync (or make
-//! `serve` accept a listener).
+//! The harness serves through `grpc::serve_on` (the production server on a
+//! pre-bound ephemeral listener, same TLS acceptor and certificate
+//! resolver).
 
 use std::time::Duration;
 
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
-use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity, Server};
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 use tonic::{Status, Streaming};
 use uuid::Uuid;
 
 use crate::gen::agent_channel_client::AgentChannelClient;
-use crate::gen::agent_channel_server::AgentChannelServer;
 use crate::gen::agent_enrollment_client::AgentEnrollmentClient;
-use crate::gen::agent_enrollment_server::AgentEnrollmentServer;
 use crate::gen::agent_up::Msg as UpMsg;
 use crate::gen::panel_down::Msg as DownMsg;
 use crate::gen::{
     ack, Ack, AgentUp, ConfigSnapshot, EnrollRequest, Hello, PanelDown, RenewRequest,
     TrafficReport, UserTraffic,
 };
-use crate::grpc::{state_hash, user_set, AgentChannelService, NodeState, MIN_AGENT_PROTOCOL};
+use crate::grpc::{state_hash, user_set, NodeState, MIN_AGENT_PROTOCOL};
 use crate::state::AppState;
 use crate::testdb::TestDb;
 
@@ -77,29 +73,21 @@ impl PanelHarness {
         let valkey = crate::state::connect_valkey(&cfg)
             .await
             .expect("dev valkey (make dev-up)");
-        let tls = crate::grpc::server_tls(&install);
         let state = AppState::new(cfg, install, db.pool.clone(), valkey);
+        // R22: the database settings (server name history) and the
+        // hot-swappable certificate, as `serve` does at startup.
+        crate::settings::init(&state).await.expect("settings init");
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-        let svc = AgentChannelService {
-            state: state.clone(),
-        };
-        let enroll = crate::enroll::AgentEnrollmentService {
-            state: state.clone(),
-        };
+        let st = state.clone();
         let server = tokio::spawn(async move {
-            Server::builder()
-                .tls_config(tls)
-                .unwrap()
-                .add_service(AgentChannelServer::new(svc))
-                .add_service(AgentEnrollmentServer::new(enroll))
-                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
-                    let _ = rx.await;
-                })
-                .await
-                .unwrap();
+            crate::grpc::serve_on(st, listener, async {
+                let _ = rx.await;
+            })
+            .await
+            .unwrap();
         });
         Self {
             state,
@@ -134,9 +122,19 @@ impl PanelHarness {
     /// A TLS channel to the panel, with `creds` as client certificate or
     /// none (verifying the panel's certificate either way).
     pub async fn channel(&self, creds: Option<&AgentCreds>) -> Result<Channel, Status> {
+        self.channel_named(creds, "localhost").await
+    }
+
+    /// `channel`, verifying the panel certificate against `server_name`
+    /// (what a bootstrap file's server_name makes an agent do).
+    pub async fn channel_named(
+        &self,
+        creds: Option<&AgentCreds>,
+        server_name: &str,
+    ) -> Result<Channel, Status> {
         let mut tls = ClientTlsConfig::new()
             .ca_certificate(Certificate::from_pem(&self.ca_pem))
-            .domain_name("localhost");
+            .domain_name(server_name);
         if let Some(c) = creds {
             tls = tls
                 .ca_certificate(Certificate::from_pem(&c.ca))
@@ -202,10 +200,19 @@ impl PanelHarness {
     /// Dial the panel as an agent with `creds` and open the channel. Errors
     /// (TLS refusal, unauthenticated) come back as a `Status`.
     pub async fn connect(&self, creds: &AgentCreds) -> Result<WireAgent, Status> {
+        self.connect_named(creds, "localhost").await
+    }
+
+    /// `connect`, verifying the panel certificate against `server_name`.
+    pub async fn connect_named(
+        &self,
+        creds: &AgentCreds,
+        server_name: &str,
+    ) -> Result<WireAgent, Status> {
         let tls = ClientTlsConfig::new()
             .ca_certificate(Certificate::from_pem(&creds.ca))
             .identity(Identity::from_pem(&creds.cert, &creds.key))
-            .domain_name("localhost");
+            .domain_name(server_name);
         let channel = Channel::from_shared(format!("https://{}", self.addr))
             .unwrap()
             .tls_config(tls)

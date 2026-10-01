@@ -58,6 +58,20 @@ enum Cmd {
         #[command(subcommand)]
         action: SecretsCmd,
     },
+    /// System settings stored in the database (domains, trust Cloudflare)
+    Settings {
+        #[command(subcommand)]
+        action: SettingsCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum SettingsCmd {
+    /// Show the stored settings and the effective values
+    Show,
+    /// Clear a stored setting so panel.toml applies again (audited):
+    /// main | sub | node | trust-cloudflare | all
+    Unset { field: String },
 }
 
 #[derive(Subcommand)]
@@ -159,6 +173,10 @@ async fn main() -> Result<()> {
             SecretsCmd::RotatePrefix => nodeops::secrets_rotate_prefix(cfg).await,
             SecretsCmd::RotateJwt => nodeops::secrets_rotate_jwt(cfg).await,
         },
+        Cmd::Settings { action } => match action {
+            SettingsCmd::Show => nodeops::settings_show(cfg).await,
+            SettingsCmd::Unset { field } => nodeops::settings_unset(cfg, field).await,
+        },
     }
 }
 
@@ -235,6 +253,9 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
     if let Some(a) = alipay {
         state.set_alipay(a);
     }
+    // R22: database settings and the gRPC certificate covering every
+    // recorded server name, before any agent can connect.
+    akari_panel::settings::init(&state).await?;
 
     // LISTEN must be in place before any agent session can start.
     let listener = notify::start(state.clone()).await;
@@ -251,6 +272,11 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
     // before serving so a bad/busy address stops the start with a message.
     let metrics_task = match cfg.metrics.bind {
         Some(bind) => Some(metrics::serve(state.clone(), bind).await?),
+        None => None,
+    };
+    // Caddy on-demand TLS ask endpoint: its own listener too (R22).
+    let ask_task = match cfg.tls_ask.bind {
+        Some(bind) => Some(akari_panel::settings::serve_ask(state.clone(), bind).await?),
         None => None,
     };
 
@@ -305,7 +331,7 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
         let _ = t.await;
     }
     shutdown::final_flush(&state, shutdown::FINAL_FLUSH).await;
-    if let Some(t) = metrics_task {
+    for t in [metrics_task, ask_task].into_iter().flatten() {
         t.abort();
     }
     // In-flight requests had the whole sequence to finish; then stop.

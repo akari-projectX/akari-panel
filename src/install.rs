@@ -159,7 +159,14 @@ fn ensure_ca(data_dir: &Path) -> Result<(String, String)> {
     Ok((ca_pem, ca_key_pem))
 }
 
-fn issue_server_cert(ca_pem: &str, ca_key_pem: &str, names: &[String]) -> Result<(String, String)> {
+/// The gRPC server certificate for `names` (IPs become IP SANs), signed
+/// by the panel CA. Re-issued at boot and whenever the gRPC server name set
+/// changes (settings.rs, R22).
+pub fn issue_server_cert(
+    ca_pem: &str,
+    ca_key_pem: &str,
+    names: &[String],
+) -> Result<(String, String)> {
     let key = KeyPair::generate()?;
     let mut params = CertificateParams::default();
     params.subject_alt_names = names.iter().map(|n| san(n)).collect::<Result<Vec<_>>>()?;

@@ -56,6 +56,9 @@ struct Inner {
     /// R18-3: the Alipay client when `[payments.alipay]` is enabled (set
     /// once at startup after the key files were checked).
     alipay: std::sync::OnceLock<Arc<crate::billing::alipay::Alipay>>,
+    /// R22 system settings (domains, trust Cloudflare, gRPC certificate),
+    /// kept current by `settings::reload` on every instance.
+    settings: crate::settings::Live,
 }
 
 /// Counts a running agent session task (see `AppState::live_sessions`).
@@ -79,6 +82,7 @@ impl AppState {
         let fetch_permits = cfg.updates.max_concurrent_downloads.max(1);
         let traffic = TrafficBuffer::new();
         traffic.set_departed_grace(cfg.traffic.departed_grace_secs);
+        let settings = crate::settings::Live::new(&cfg, &install);
         Self(Arc::new(Inner {
             cfg,
             route_prefix,
@@ -95,6 +99,7 @@ impl AppState {
             shutdown: tokio::sync::watch::channel(false).0,
             live_sessions: std::sync::atomic::AtomicUsize::new(0),
             alipay: std::sync::OnceLock::new(),
+            settings,
         }))
     }
 
@@ -127,6 +132,18 @@ impl AppState {
     }
     pub fn read_permits(&self) -> &tokio::sync::Semaphore {
         &self.0.read_permits
+    }
+    pub fn settings(&self) -> &crate::settings::Live {
+        &self.0.settings
+    }
+    /// The client address of a request (web.trusted_proxies, plus
+    /// Cloudflare when the settings trust it; client_ip.rs).
+    pub fn client_ip(
+        &self,
+        peer: std::net::IpAddr,
+        headers: &axum::http::HeaderMap,
+    ) -> std::net::IpAddr {
+        crate::client_ip::resolve(peer, headers, &self.0.settings.get().trust)
     }
     pub fn traffic(&self) -> &TrafficBuffer {
         &self.0.traffic

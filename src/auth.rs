@@ -277,9 +277,7 @@ pub fn request_ip(parts: &Parts, state: &AppState) -> Option<IpAddr> {
     parts
         .extensions
         .get::<axum::extract::ConnectInfo<SocketAddr>>()
-        .map(|ci| {
-            crate::client_ip::client_ip(ci.0.ip(), &parts.headers, &state.cfg().web.trusted_proxies)
-        })
+        .map(|ci| state.client_ip(ci.0.ip(), &parts.headers))
 }
 
 #[derive(sqlx::FromRow)]

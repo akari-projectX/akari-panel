@@ -60,6 +60,7 @@ impl PanelConfig {
         self.validate_proxy_consistency(&mut r);
         self.validate_updates(&mut r);
         self.validate_payments(&mut r);
+        self.validate_settings_defaults(&mut r);
         r
     }
 
@@ -129,6 +130,48 @@ impl PanelConfig {
                 }
             }
             None => r.err(format!("{p}.notify_url: required, absolute URL")),
+        }
+    }
+
+    /// R22: panel.toml defaults of the system settings and the Caddy ask
+    /// listener.
+    fn validate_settings_defaults(&self, r: &mut Report) {
+        if !self.web.sub_domain.is_empty() {
+            if let Err(e) = crate::settings::Domain::parse(&self.web.sub_domain) {
+                r.err(format!("web.sub_domain {:?}: {e}", self.web.sub_domain));
+            }
+        }
+        let a = &self.tls_ask;
+        if let Some(b) = a.bind {
+            if b.port() == 0 {
+                r.err("tls_ask.bind: port 0 is not allowed");
+            }
+            let others = [Some(self.web.bind), Some(self.grpc.bind), self.metrics.bind];
+            if others.into_iter().flatten().any(|o| conflicts(b, o)) {
+                r.err(format!(
+                    "tls_ask.bind {b} collides with web/grpc/metrics: the ask endpoint needs its \
+                     own listener, never the public web port"
+                ));
+            }
+            if !b.ip().is_loopback() && !a.allow_non_loopback {
+                r.err(format!(
+                    "tls_ask.bind {b} is not a loopback address: only the reverse proxy may \
+                     reach it. Bind 127.0.0.1, or set tls_ask.allow_non_loopback = true on a \
+                     private network (compose) and never publish the port"
+                ));
+            }
+            if a.rate_per_sec == 0 {
+                r.err("tls_ask.rate_per_sec must be > 0");
+            }
+        } else if a.allow_non_loopback {
+            r.warn("tls_ask.allow_non_loopback is set but tls_ask.bind is not: ask is disabled");
+        }
+        if self.web.trust_cloudflare && self.web.trusted_proxies.is_empty() {
+            r.warn(
+                "web.trust_cloudflare = true without web.trusted_proxies: only requests whose \
+                 TCP peer is a Cloudflare edge are attributed to CF-Connecting-IP (correct when \
+                 Cloudflare connects to the panel directly; behind Caddy list Caddy's address)",
+            );
         }
     }
 

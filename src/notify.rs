@@ -40,12 +40,18 @@ pub enum Event {
     Deleted(Uuid),
     /// Liveness probe of some panel instance (see PING_EVERY).
     Ping(Uuid),
+    /// System settings changed (0060 triggers, payload `settings`): reload
+    /// them (settings.rs). Agent sessions are not woken.
+    Settings,
     /// Not ours or malformed: wake everyone (cheap insurance; a session
     /// only re-reads its node).
     Unknown,
 }
 
 pub fn parse(payload: &str) -> Event {
+    if payload == "settings" {
+        return Event::Settings;
+    }
     let (kind, id) = match payload.split_once(':') {
         Some((k, id)) => (k, id),
         None => ("", payload),
@@ -129,7 +135,7 @@ impl Wakeups {
     pub fn dispatch(&self, ev: Event) {
         match ev {
             Event::Changed(n) | Event::Deleted(n) => self.wake(n),
-            Event::Ping(_) => {}
+            Event::Ping(_) | Event::Settings => {}
             Event::Unknown => self.wake_all(),
         }
     }
@@ -286,6 +292,7 @@ async fn supervise(state: AppState, first: PgListener) {
         tracing::info!(pid = w.listener_pid(), "change listener: listening");
         // LISTEN is in place; anything committed before it may be missed.
         w.wake_all();
+        crate::settings::spawn_reload(&state);
         let err = run(&state, listener).await;
         w.connected.store(false, Ordering::SeqCst);
         w.listener_pid.store(0, Ordering::SeqCst);
@@ -326,6 +333,7 @@ async fn run(state: &AppState, mut listener: PgListener) -> String {
         tokio::select! {
             ev = ev_rx.recv() => match ev {
                 Some(Ok(Event::Ping(id))) if id == me => awaiting = None,
+                Some(Ok(Event::Settings)) => crate::settings::spawn_reload(state),
                 Some(Ok(ev)) => {
                     if let Event::Deleted(n) = ev {
                         // Hint only (sessions re-read the DB); drop what
@@ -418,6 +426,7 @@ mod tests {
         assert_eq!(parse(&n.to_string()), Event::Changed(n));
         assert_eq!(parse(&format!("del:{n}")), Event::Deleted(n));
         assert_eq!(parse(&format!("ping:{n}")), Event::Ping(n));
+        assert_eq!(parse("settings"), Event::Settings);
         for bad in [
             String::new(),
             "del:".into(),
@@ -428,6 +437,8 @@ mod tests {
             n.simple().to_string(),
             n.to_string().to_uppercase(),
             format!("{{{n}}}"),
+            "settings:".into(),
+            "Settings".into(),
         ] {
             assert_eq!(parse(&bad), Event::Unknown, "{bad:?}");
         }

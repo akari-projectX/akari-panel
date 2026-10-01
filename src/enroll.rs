@@ -83,12 +83,18 @@ pub struct InstallLink<'a> {
     pub pin: Option<&'a str>,
 }
 
+///
+/// `endpoint` (R22) is what the token's bootstrap tells the agent
+/// (panel_addr, server_name; `settings::node_endpoint` in the caller's
+/// transaction): stored with the token, and its server name is recorded in
+/// `grpc_server_names` so the gRPC certificate keeps covering it.
 pub async fn apply_issue_token(
     conn: &mut PgConnection,
     actor: &Actor,
     node_id: Uuid,
     ttl_secs: u64,
     link: Option<InstallLink<'_>>,
+    endpoint: &crate::settings::NodeEndpoint,
 ) -> Result<(String, DateTime<Utc>), ApiError> {
     let deleting: Option<bool> =
         sqlx::query_scalar("SELECT deleting_at IS NOT NULL FROM nodes WHERE id = $1 FOR UPDATE")
@@ -102,11 +108,13 @@ pub async fn apply_issue_token(
     }
     let token = generate_token();
     let expires: DateTime<Utc> = sqlx::query_scalar(
-        "INSERT INTO node_enrollments (node_id, token_hash, expires_at, install_origin, install_pin) \
-         VALUES ($1, $2, now() + make_interval(secs => $3), $4, $5) \
+        "INSERT INTO node_enrollments (node_id, token_hash, expires_at, install_origin, install_pin, \
+             panel_addr, server_name) \
+         VALUES ($1, $2, now() + make_interval(secs => $3), $4, $5, $6, $7) \
          ON CONFLICT (node_id) DO UPDATE SET token_hash = EXCLUDED.token_hash, \
              created_at = now(), expires_at = EXCLUDED.expires_at, used_at = NULL, \
-             install_origin = EXCLUDED.install_origin, install_pin = EXCLUDED.install_pin \
+             install_origin = EXCLUDED.install_origin, install_pin = EXCLUDED.install_pin, \
+             panel_addr = EXCLUDED.panel_addr, server_name = EXCLUDED.server_name \
          RETURNING expires_at",
     )
     .bind(node_id)
@@ -114,8 +122,11 @@ pub async fn apply_issue_token(
     .bind(ttl_secs as f64)
     .bind(link.map(|l| l.origin))
     .bind(link.and_then(|l| l.pin))
+    .bind(&endpoint.panel_addr)
+    .bind(&endpoint.server_name)
     .fetch_one(&mut *conn)
     .await?;
+    crate::settings::record_server_name(conn, &endpoint.server_name, "enrollment").await?;
     crate::audit::record(
         conn,
         actor,
@@ -127,6 +138,8 @@ pub async fn apply_issue_token(
             "token": crate::audit::CHANGED,
             "expires_at": expires,
             "install_link": link.is_some(),
+            "panel_addr": endpoint.panel_addr,
+            "server_name": endpoint.server_name,
         })),
     )
     .await?;
@@ -141,6 +154,7 @@ pub async fn apply_create_node(
     name: &str,
     ttl_secs: u64,
     link: Option<InstallLink<'_>>,
+    endpoint: &crate::settings::NodeEndpoint,
 ) -> Result<(Uuid, String, DateTime<Utc>), ApiError> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
@@ -171,7 +185,7 @@ pub async fn apply_create_node(
         Some(json!({ "name": name })),
     )
     .await?;
-    let (token, expires) = apply_issue_token(conn, actor, id, ttl_secs, link).await?;
+    let (token, expires) = apply_issue_token(conn, actor, id, ttl_secs, link, endpoint).await?;
     Ok((id, token, expires))
 }
 
@@ -439,7 +453,8 @@ async fn burn_and_issue(
         tombstone_rotated(&mut tx, s, node).await?;
     }
     sqlx::query(
-        "UPDATE nodes SET cert_serial = $2, prev_cert_serial = NULL, cert_not_after = $3 \
+        "UPDATE nodes SET cert_serial = $2, prev_cert_serial = NULL, cert_not_after = $3, \
+             server_name = (SELECT server_name FROM node_enrollments WHERE node_id = $1) \
          WHERE id = $1",
     )
     .bind(node)
@@ -615,9 +630,17 @@ mod tests {
     use crate::testdb::TestDb;
     use tonic::Code;
 
+    /// The default config's node endpoint.
+    pub(crate) fn test_endpoint() -> crate::settings::NodeEndpoint {
+        crate::settings::NodeEndpoint {
+            panel_addr: "127.0.0.1:8443".into(),
+            server_name: "localhost".into(),
+        }
+    }
+
     async fn token_for(db: &TestDb, node: Uuid) -> String {
         let mut tx = db.pool.begin().await.unwrap();
-        let (t, _) = apply_issue_token(&mut tx, &Actor::test(), node, 3600, None)
+        let (t, _) = apply_issue_token(&mut tx, &Actor::test(), node, 3600, None, &test_endpoint())
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -694,9 +717,16 @@ mod tests {
         };
         let panel = PanelHarness::start(&db).await;
         let mut tx = db.pool.begin().await.unwrap();
-        let (node, token, _) = apply_create_node(&mut tx, &Actor::test(), "n-enroll", 3600, None)
-            .await
-            .unwrap();
+        let (node, token, _) = apply_create_node(
+            &mut tx,
+            &Actor::test(),
+            "n-enroll",
+            3600,
+            None,
+            &test_endpoint(),
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
         assert_eq!(serials(&db, node).await, (None, None), "no certificate yet");
         let stored: Vec<u8> =
@@ -843,7 +873,7 @@ mod tests {
         }
         // A deleting node cannot get a token either.
         let mut tx = db.pool.begin().await.unwrap();
-        let e = apply_issue_token(&mut tx, &Actor::test(), n3, 3600, None)
+        let e = apply_issue_token(&mut tx, &Actor::test(), n3, 3600, None, &test_endpoint())
             .await
             .unwrap_err();
         assert_eq!(e.status(), axum::http::StatusCode::CONFLICT);

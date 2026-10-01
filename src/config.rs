@@ -21,6 +21,34 @@ pub struct PanelConfig {
     pub install: InstallConfig,
     pub payments: PaymentsConfig,
     pub auth: AuthConfig,
+    pub tls_ask: TlsAskConfig,
+}
+
+/// Caddy on-demand TLS `ask` endpoint (R22): `GET /ask?domain=<name>`
+/// answers 200 only for the configured main/subscription domains, so the
+/// reverse proxy obtains certificates for them without Caddyfile edits.
+/// Served on its OWN listener (never the public web port; like metrics).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TlsAskConfig {
+    /// Listen address; unset = disabled. Loopback unless
+    /// `allow_non_loopback` (compose: Caddy reaches it on the private
+    /// frontend network).
+    pub bind: Option<SocketAddr>,
+    pub allow_non_loopback: bool,
+    /// Requests answered per second by this instance (CPU guard; more get
+    /// a refusal, which Caddy treats as "no certificate"). Default 20.
+    pub rate_per_sec: u32,
+}
+
+impl Default for TlsAskConfig {
+    fn default() -> Self {
+        Self {
+            bind: None,
+            allow_non_loopback: false,
+            rate_per_sec: 20,
+        }
+    }
 }
 
 /// One-line node installer (R18-2, `nodeinstall.rs`).
@@ -308,6 +336,18 @@ pub struct WebConfig {
     /// then only send it over HTTPS — put the panel behind a TLS proxy);
     /// set false only for plain-HTTP development.
     pub cookie_secure: bool,
+    /// R22: initial subscription domain (host[:port]) shown in
+    /// subscription links; the admin "系统设置" value (database) wins once
+    /// set. Empty = the main domain.
+    pub sub_domain: String,
+    /// R22: initial "trust Cloudflare" (Cloudflare's edge ranges count as
+    /// trusted proxies, CF-Connecting-IP is honoured behind them); the
+    /// database setting wins once set. Default false.
+    pub trust_cloudflare: bool,
+    /// Cloudflare edge ranges; empty = the list shipped in the binary
+    /// (src/cloudflare_ips.txt). Set to follow a Cloudflare change without
+    /// a new release (docs/DEPLOY.md "Cloudflare").
+    pub cloudflare_ranges: Vec<crate::client_ip::Cidr>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -348,6 +388,7 @@ impl Default for PanelConfig {
             install: InstallConfig::default(),
             payments: PaymentsConfig::default(),
             auth: AuthConfig::default(),
+            tls_ask: TlsAskConfig::default(),
         }
     }
 }
@@ -359,6 +400,9 @@ impl Default for WebConfig {
             advertised_names: vec!["localhost".into(), "127.0.0.1".into()],
             trusted_proxies: Vec::new(),
             cookie_secure: true,
+            sub_domain: String::new(),
+            trust_cloudflare: false,
+            cloudflare_ranges: Vec::new(),
         }
     }
 }
