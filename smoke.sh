@@ -57,7 +57,7 @@ sleep 2
 # Reset AFTER startup: fresh volumes have no tables until the panel migrates,
 # and Valkey rate-limit counters would poison the next run's login test.
 docker compose exec -T postgres psql -U akari -d akari -c "TRUNCATE nodes CASCADE; TRUNCATE users CASCADE;" >/dev/null 2>&1 || true
-docker compose exec -T postgres psql -U akari -d akari -c "TRUNCATE revoked_certs, traffic_counters, audit_log;" >/dev/null 2>&1 || true
+docker compose exec -T postgres psql -U akari -d akari -c "TRUNCATE revoked_certs, traffic_counters, audit_log, agent_releases, rollouts CASCADE;" >/dev/null 2>&1 || true
 docker compose exec -T valkey valkey-cli flushall >/dev/null
 
 echo "== first admin (env password) =="
@@ -894,10 +894,10 @@ upd_sign() { # $1 binary, $2 version
 upd_upload() { # $1 binary (signed) -> release id
   python3 -c "import json,sys; print(json.dumps({'manifest': open(sys.argv[1]+'.manifest.json').read(), 'sig': json.load(open(sys.argv[1]+'.manifest.sig'))}))" "$1" >"$UPD/req.json"
   [ "$(code -b "$JAR" -X POST "$BASE/api/v1/agent-releases" -H 'Content-Type: application/json' --data-binary @"$UPD/req.json")" = "201" ] \
-    || { echo "FAIL: release create"; cat /tmp/akari-smoke/last; exit 1; }
+    || { echo "FAIL: release create: $(cat /tmp/akari-smoke/last)" >&2; exit 1; }
   local id; id=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
   [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/agent-releases/$id/binary" -H 'Content-Type: application/octet-stream' --data-binary @"$1")" = "200" ] \
-    || { echo "FAIL: release upload"; cat /tmp/akari-smoke/last; exit 1; }
+    || { echo "FAIL: release upload: $(cat /tmp/akari-smoke/last)" >&2; exit 1; }
   echo "$id"
 }
 upd_sign "$UPD/v1/akari-agent" v900.0.1
