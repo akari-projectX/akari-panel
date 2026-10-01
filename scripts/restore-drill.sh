@@ -3,12 +3,14 @@
 #
 #   DESTROYS the dev database and flushes the dev Valkey. Development
 #   machines only. Needs: make dev-up, a release build (make panel), the
-#   agent binary (../akari-agent/agent), age + age-keygen, jq, curl.
+#   agent binary (../akari-agent/agent), age + age-keygen, jq, curl,
+#   python3 (TOTP codes: admins must use two-factor authentication).
 #
 # Flow: fresh install -> admin + user + node, agent online -> backup.sh ->
 # stop panel, WIPE database and data dir (agent keeps running) -> restore.sh
-# -> start panel: same route prefix, same logins and users, the (unchanged)
-# agent reconnects and the node is online again.
+# -> start panel: same route prefix, same logins and users, the admin's
+# TOTP still works (data/totp.key restored with the database), the
+# (unchanged) agent reconnects and the node is online again.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -55,8 +57,27 @@ api() { # api <jar> curl-args... (with $BASE)
   local jar="$1"; shift
   curl -s --noproxy '*' -b "$jar" -c "$jar" "$@"
 }
-login() { api "$W/jar" -o /dev/null -w '%{http_code}' -X POST "$BASE/auth/login" \
-  -H 'Content-Type: application/json' -d "{\"login\":\"root\",\"password\":\"$PW\"}"; }
+# RFC 6238 code for a step strictly after the last one used (the panel
+# refuses replays); waits for the next 30 s step when needed.
+cat >"$W/totp.py" <<'PY'
+import base64, hashlib, hmac, os, struct, sys, time
+secret, state = sys.argv[1], sys.argv[2]
+key = base64.b32decode(secret + "=" * (-len(secret) % 8))
+last = int(open(state).read()) if os.path.exists(state) else -1
+while int(time.time()) // 30 <= last:
+    time.sleep(30 - time.time() % 30 + 0.3)
+step = int(time.time()) // 30
+h = hmac.new(key, struct.pack(">Q", step), hashlib.sha1).digest()
+o = h[-1] & 15
+print("%06d" % ((struct.unpack(">I", h[o:o + 4])[0] & 0x7FFFFFFF) % 1000000))
+open(state, "w").write(str(step))
+PY
+totp() { python3 "$W/totp.py" "$TOTP_SECRET" "$W/totp.last"; }
+login() { # [code] -> http status
+  local body="{\"login\":\"root\",\"password\":\"$PW\"${1:+,\"code\":\"$1\"}}"
+  api "$W/jar" -o "$W/login.json" -w '%{http_code}' -X POST "$BASE/auth/login" \
+    -H 'Content-Type: application/json' -d "$body"
+}
 
 echo "== 1. fresh install: admin, user, node, agent online =="
 wipe_db
@@ -65,7 +86,13 @@ PREFIX="$(p info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')"
 BASE="http://127.0.0.1:8080/$PREFIX"
 start_panel
 p admin add root >/dev/null
+# Admins must enroll TOTP: the password alone yields an enrollment-only session.
 [ "$(login)" = 200 ] || fail "login before backup"
+[ "$(jq -r .stage "$W/login.json")" = enroll ] || fail "admin without 2FA did not get an enrollment session"
+TOTP_SECRET="$(api "$W/jar" -X POST "$BASE/api/v1/me/totp/enroll" -H 'Content-Type: application/json' -d '{}' | jq -r .secret)"
+[ -n "$TOTP_SECRET" ] && [ "$TOTP_SECRET" != null ] || fail "totp enroll"
+[ "$(api "$W/jar" -o /dev/null -w '%{http_code}' -X POST "$BASE/api/v1/me/totp/confirm" \
+  -H 'Content-Type: application/json' -d "{\"code\":\"$(totp)\"}")" = 200 ] || fail "totp confirm"
 [ "$(api "$W/jar" -o /dev/null -w '%{http_code}' -X POST "$BASE/api/v1/users" \
   -H 'Content-Type: application/json' -d '{"login":"alice","password":"alice-password-123"}')" = 201 ] \
   || fail "create user"
@@ -87,6 +114,9 @@ AGE_RECIPIENT="$RECIP" AKARI_DATA_DIR="$W/data" AKARI_BACKUP_DIR="$W/backups" \
 BACKUP="$(find "$W/backups" -maxdepth 1 -name 'akari-*' -type d | head -1)"
 ls -l "$BACKUP"
 grep -q "BEGIN" "$BACKUP/db.dump.age" && fail "backup is not encrypted"
+# The TOTP key must be in the backup: without it every 2FA account is locked out.
+age -d -i "$W/age.key" "$BACKUP/data.tar.age" | tar -tf - | grep -qx './totp.key' \
+  || fail "data/totp.key missing from the backup"
 
 echo "== 3. disaster: stop panel, wipe database and data dir (agent keeps running) =="
 stop_panel
@@ -106,11 +136,13 @@ PREFIX2="$(p info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')"
 : >"$W/jar"
 started="$(date +%s)"
 start_panel
-[ "$(login)" = 200 ] || fail "admin login after restore"
+[ "$(login)" = 401 ] || fail "password-only admin login after restore must fail"
+[ "$(login "$(totp)")" = 200 ] || fail "admin TOTP login after restore (totp.key restored?)"
+[ "$(jq -r .stage "$W/login.json")" = full ] || fail "admin login after restore is not a full session"
 [ "$(api "$W/jar" "$BASE/api/v1/users" | jq -r '[.[] | select(.login=="alice")] | length')" = 1 ] \
   || fail "user alice missing after restore"
 for _ in $(seq 1 90); do [ "$(online)" = online ] && break; sleep 1; done
 [ "$(online)" = online ] || fail "agent did not reconnect"
 [ "$(api "$W/jar" "$BASE/api/v1/nodes" | jq -r '.[0].id')" = "$NODE_ID" ] || fail "node identity changed"
 [ "$(grep -c "channel established" "$W/agent.log")" -ge 2 ] || fail "agent did not re-establish its channel"
-echo "DRILL PASS: prefix kept, logins and users restored, agent reconnected in $(( $(date +%s) - started )) s (panel start to online)"
+echo "DRILL PASS: prefix kept, logins (with TOTP) and users restored, agent reconnected in $(( $(date +%s) - started )) s (panel start to online)"
