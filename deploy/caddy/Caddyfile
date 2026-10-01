@@ -7,6 +7,13 @@
 # Bare metal: replace {$AKARI_DOMAIN}/{$AKARI_PREFIX} (or export them in
 # Caddy's environment) and point reverse_proxy at 127.0.0.1:8080; panel.toml
 # then needs trusted_proxies = ["127.0.0.1/32"].
+{
+	# An IP-only site address makes clients send no SNI, and the handshake
+	# fails; default_sni makes Caddy pick the certificate anyway. Harmless
+	# with a domain.
+	default_sni {$AKARI_DOMAIN}
+}
+
 {$AKARI_DOMAIN} {
 	encode zstd gzip
 	header -Server

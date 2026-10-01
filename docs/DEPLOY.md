@@ -64,8 +64,22 @@ docker compose up -d postgres valkey panel
 docker compose exec panel /akari info                  # prints the route prefix
 ```
 
+The compose file sets `AKARI_CONFIG=/etc/akari/panel.toml` on the panel service, so every
+`/akari ...` you run through `docker compose run` or `exec` reads your `panel.toml` (these
+commands replace the service's `command:`, which is why the path is an environment variable and
+not a `-c` flag). `config check` prints the effective values: confirm they are yours (your
+`grpc.advertise`, not `127.0.0.1`). The image itself sets no default `AKARI_CONFIG`: a bare
+`docker run` of it uses built-in defaults. Outside compose use `-c <file>` or export `AKARI_CONFIG`.
+
 Put the prefix (without the slash) into `.env` as `AKARI_PREFIX`, then `docker compose up -d`
 (starts Caddy, which obtains the certificate and forwards only `/<prefix>/*`).
+
+**IP-only deployments (no domain).** With `AKARI_DOMAIN` set to an IP address, Caddy issues the
+certificate from its own internal CA, which no browser or client trusts. That is fine to try the
+admin UI (accept the browser warning once), but subscription clients and browsers will refuse it:
+use a real domain (an A record to the VPS, ports 80/443 open) so Caddy obtains a certificate by
+ACME. The Caddyfile sets `default_sni` to `AKARI_DOMAIN` because clients send no SNI for an IP
+address. The agent's gRPC channel is unaffected: it pins the panel CA, not the web certificate.
 
 Notes: the image is distroless (no shell; `exec panel /akari ...` works because it runs the
 binary directly), runs as UID 65532, state lives in the `akari-data` volume (`/data`).
@@ -115,9 +129,16 @@ created before this release that never enrolled need `admin reset-2fa` once.
 ## 3. Add a node and install the agent
 
 ```bash
-# on the panel host (compose: docker compose exec panel /akari node add ... then docker cp the file out)
+# bare metal, on the panel host
 sudo -u akari akari -c /etc/akari/panel.toml node add tokyo-1 --out /tmp/tokyo-1-bootstrap.toml
+
+# compose: `--out -` writes the bootstrap to stdout (progress goes to stderr), so nothing is left
+# in the distroless container (it has no `rm`). Redirect on the host; -T = no TTY, keeps it clean.
+( umask 077; docker compose exec -T panel /akari node add vps-1 --out - > vps-1-bootstrap.toml )
+chmod 600 vps-1-bootstrap.toml
 ```
+
+`node enroll-token <id> --out -` works the same way.
 
 Or in the UI: Nodes → **New node** (the bootstrap file is shown once, with a Download button).
 
@@ -177,6 +198,71 @@ first renewal it moves onto a key generated on the node and the panel revokes th
 panel-generated one. Then delete `cert_pem`/`key_pem` from `/etc/akari-agent/bootstrap.toml`. To
 migrate at once instead of at renewal time, issue a new enrollment token for the node and install
 that bootstrap file.
+
+## 3b. REALITY inbounds
+
+A REALITY inbound borrows the TLS handshake of a real site (`dest`) and lets clients that know
+your public key through. Three things go wrong in practice.
+
+**Pick a `dest` the current xray-core accepts.** Not every site works with every xray release. On
+2026-10-01 with xray 26.3.27, `www.microsoft.com:443` failed (the agent log showed `REALITY:
+processed invalid connection ... handshake did not complete`) while `www.apple.com`,
+`dl.google.com`, `www.cloudflare.com` and `addons.mozilla.org` worked. Re-check after xray
+upgrades. Needs TLS 1.3 and H2 on the target; test it from the node before you rely on it, with
+a standalone xray (any machine with the same xray version, reality client in one file):
+
+```bash
+# on the node: key pair for the server side (private key stays in the inbound, public goes to clients)
+xray x25519                      # prints PrivateKey and Password (= the public key)
+# quick dest check: run `xray run -c server.json` with only the REALITY inbound
+# (realitySettings.dest = the candidate), then from another host
+#   curl -sv --resolve <dest-host>:<port>:<node-ip> https://<dest-host>:<port>/ -o /dev/null
+# must complete the handshake and return the real site's page; a dest xray
+# cannot use logs "REALITY: processed invalid connection" on the server.
+openssl s_client -connect www.apple.com:443 -tls1_3 -alpn h2 </dev/null 2>/dev/null | grep -E 'Protocol|ALPN'
+```
+
+**The panel's inbound must carry `publicKey`.** xray's server side only needs `privateKey`; the
+panel builds subscriptions from the same JSON, so it reads the client-side fields from
+`realitySettings` too: `publicKey` (required, subscriptions are broken without it), `shortId`
+(one id handed to clients; must be one of `shortIds`) and optionally `fingerprint`. The panel-only
+fields are not used by xray. Subscriptions always carry a uTLS fingerprint for REALITY (`fp=` in
+links, `client-fingerprint` in Clash, `tls.utls` in sing-box): `fingerprint` if you set one of
+`chrome`, `firefox`, `safari`, `ios`, `android`, `edge`, `360`, `qq`, `random`, `randomized`,
+otherwise (or for any other value) `chrome`.
+
+```json
+{
+  "tag": "in-reality",
+  "listen": "0.0.0.0",
+  "port": 443,
+  "protocol": "vless",
+  "settings": { "clients": [], "decryption": "none" },
+  "streamSettings": {
+    "network": "tcp",
+    "security": "reality",
+    "realitySettings": {
+      "dest": "www.apple.com:443",
+      "serverNames": ["www.apple.com"],
+      "privateKey": "<xray x25519 PrivateKey>",
+      "shortIds": ["6ba85179e30d4fc2"],
+      "publicKey": "<xray x25519 Password / public key>",
+      "shortId": "6ba85179e30d4fc2",
+      "fingerprint": "chrome"
+    }
+  }
+}
+```
+
+`serverNames[0]` is the SNI clients send. Assign users to the inbound with protocol `vless` and
+flow `xtls-rprx-vision`.
+
+## 3c. Resource footprint (measured)
+
+One real deployment on a 1 vCPU-class VPS with 920 MB RAM (Debian 13, compose, IP-only), resident
+memory at idle: panel 5 MB, PostgreSQL 56 MB, Valkey 8 MB, Caddy 17 MB, agent 27 MB. The whole
+stack plus an agent fits a 1 GB machine with room to spare. The first full deployment from this
+guide took about 23 minutes including troubleshooting.
 
 ## 4. Observability (optional)
 

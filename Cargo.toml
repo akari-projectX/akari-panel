@@ -15,7 +15,7 @@ base64 = "0.22"
 axum = "0.8"
 axum-extra = { version = "0.12", features = ["cookie"] }
 chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 dashmap = "6"
 data-encoding = "2"
 fred = { version = "10", features = ["enable-rustls", "i-scripts"] }
