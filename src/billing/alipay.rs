@@ -24,7 +24,6 @@ use base64::Engine as _;
 use chrono::{DateTime, FixedOffset, Utc};
 use ring::rand::SystemRandom;
 use ring::signature::{self, RsaKeyPair};
-use serde::Deserialize;
 use serde_json::value::RawValue;
 use serde_json::Value;
 
@@ -61,7 +60,11 @@ pub fn parse_amount(s: &str) -> Option<i64> {
         return None;
     }
     let whole: i64 = int.parse().ok()?;
-    let mut f: i64 = if frac.is_empty() { 0 } else { frac.parse().ok()? };
+    let mut f: i64 = if frac.is_empty() {
+        0
+    } else {
+        frac.parse().ok()?
+    };
     if frac.len() == 1 {
         f *= 10;
     }
@@ -321,7 +324,8 @@ impl Alipay {
                 cfg.alipay_public_key_file.display()
             )
         })?;
-        let keys = Keys::from_texts(&private, &public).map_err(|e| format!("payments.alipay: {e}"))?;
+        let keys =
+            Keys::from_texts(&private, &public).map_err(|e| format!("payments.alipay: {e}"))?;
         Ok(Self::new(cfg, keys))
     }
 
@@ -461,24 +465,17 @@ impl Alipay {
 
 /// Parse and verify a gateway response body for `method`.
 pub fn parse_response(keys: &Keys, method: &str, body: &[u8]) -> Result<Value, CallError> {
-    #[derive(Deserialize)]
-    struct Envelope<'a> {
-        #[serde(borrow, flatten)]
-        fields: BTreeMap<String, &'a RawValue>,
-    }
-    let env: Envelope =
+    let fields: BTreeMap<String, &RawValue> =
         serde_json::from_slice(body).map_err(|_| CallError::Malformed("not JSON"))?;
     let key = format!("{}_response", method.replace('.', "_"));
     // An unknown method/app answers `error_response` (never signed).
-    let raw = env
-        .fields
+    let raw = fields
         .get(&key)
-        .or_else(|| env.fields.get("error_response"))
+        .or_else(|| fields.get("error_response"))
         .ok_or(CallError::Malformed("no response object"))?;
     let obj: Value =
         serde_json::from_str(raw.get()).map_err(|_| CallError::Malformed("bad response object"))?;
-    let sig: Option<String> = env
-        .fields
+    let sig: Option<String> = fields
         .get("sign")
         .and_then(|s| serde_json::from_str::<String>(s.get()).ok());
     let verified = sig
@@ -614,8 +611,14 @@ pub(crate) mod tests {
             request_sign_content(&p),
             "a=1&b=2&biz_content={\"x\":\"y z\"}&sign_type=RSA2"
         );
-        assert_eq!(notify_sign_content(&p, true), "a=1&b=2&biz_content={\"x\":\"y z\"}&empty=");
-        assert_eq!(notify_sign_content(&p, false), "a=1&b=2&biz_content={\"x\":\"y z\"}");
+        assert_eq!(
+            notify_sign_content(&p, true),
+            "a=1&b=2&biz_content={\"x\":\"y z\"}&empty="
+        );
+        assert_eq!(
+            notify_sign_content(&p, false),
+            "a=1&b=2&biz_content={\"x\":\"y z\"}"
+        );
         // Byte order: upper case before lower case, '_' between.
         let p = map(&[("a_b", "1"), ("aB", "2"), ("ab", "3")]);
         assert_eq!(request_sign_content(&p), "aB=2&a_b=1&ab=3");
@@ -639,7 +642,10 @@ pub(crate) mod tests {
             ("total_amount", "9.90"),
             ("trade_status", "TRADE_SUCCESS"),
             ("subject", "Akari 月付 & more"),
-            ("fund_bill_list", "[{\"amount\":\"9.90\",\"fundChannel\":\"ALIPAYACCOUNT\"}]"),
+            (
+                "fund_bill_list",
+                "[{\"amount\":\"9.90\",\"fundChannel\":\"ALIPAYACCOUNT\"}]",
+            ),
         ]);
         sign_notify(&mut p);
         assert!(verify_notify(&keys, &p));
@@ -712,7 +718,9 @@ pub(crate) mod tests {
         // Unsigned business errors are reported as such.
         let err = r#"{"alipay_trade_query_response":{"code":"40004","msg":"Business Failed","sub_code":"ACQ.TRADE_NOT_EXIST","sub_msg":"交易不存在"}}"#;
         match parse_response(&keys, "alipay.trade.query", err.as_bytes()) {
-            Err(CallError::Business { sub_code, .. }) => assert_eq!(sub_code, "ACQ.TRADE_NOT_EXIST"),
+            Err(CallError::Business { sub_code, .. }) => {
+                assert_eq!(sub_code, "ACQ.TRADE_NOT_EXIST")
+            }
             other => panic!("{other:?}"),
         }
         let err = r#"{"error_response":{"code":"40002","msg":"Invalid Arguments","sub_code":"isv.invalid-app-id","sub_msg":"x"}}"#;
@@ -755,7 +763,75 @@ pub(crate) mod tests {
         assert_eq!(p["notify_url"], cfg.notify_url);
         assert!(p["biz_content"].contains("中文 & x"));
         assert!(alipay_side_keys().verify(request_sign_content(&p).as_bytes(), &p["sign"]));
-        let a2 = a.request_body("alipay.trade.query", &serde_json::json!({}), false, now).unwrap();
+        let a2 = a
+            .request_body("alipay.trade.query", &serde_json::json!({}), false, now)
+            .unwrap();
         assert!(!a2.contains("notify_url"));
+    }
+}
+
+/// Manual check against the REAL Alipay sandbox (ignored; needs network
+/// and the operator's sandbox credentials, never committed):
+///   AKARI_ALIPAY_LIVE_ENV=~/secrets/alipay-sandbox.env \
+///   AKARI_ALIPAY_LIVE_KEY=~/secrets/alipay-sandbox-app-private.pem \
+///   AKARI_ALIPAY_LIVE_PUB=~/secrets/alipay-sandbox-alipay-public.pem \
+///   cargo test --lib live_sandbox -- --ignored --nocapture
+/// The env file holds ALIPAY_SANDBOX_APP_ID= and ALIPAY_SANDBOX_SELLER_ID=.
+/// Prints outcomes only (no keys, no signatures).
+#[cfg(test)]
+mod live {
+    use super::*;
+
+    fn env_value(text: &str, key: &str) -> String {
+        text.lines()
+            .filter_map(|l| l.trim().split_once('='))
+            .find(|(k, _)| k.trim() == key)
+            .map(|(_, v)| v.trim().trim_matches('"').to_string())
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_sandbox() {
+        let path = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("{k} not set"));
+        let env = std::fs::read_to_string(path("AKARI_ALIPAY_LIVE_ENV")).unwrap();
+        let cfg = AlipayConfig {
+            enabled: true,
+            app_id: env_value(&env, "ALIPAY_SANDBOX_APP_ID"),
+            seller_id: env_value(&env, "ALIPAY_SANDBOX_SELLER_ID"),
+            app_private_key_file: path("AKARI_ALIPAY_LIVE_KEY").into(),
+            alipay_public_key_file: path("AKARI_ALIPAY_LIVE_PUB").into(),
+            gateway_url: "https://openapi-sandbox.dl.alipaydev.com/gateway.do".into(),
+            notify_url: "http://myapp.test:8080/PREFIX/pay/alipay/notify".into(),
+            order_timeout_minutes: 15,
+        };
+        let a = Alipay::from_config(&cfg).expect("sandbox keys load");
+        let otn = format!("AKLIVE{}", hex::encode(rand::random::<[u8; 8]>()));
+        let qr = a.precreate(&otn, 1, "Akari sandbox check").await;
+        println!(
+            "precreate: {:?}",
+            qr.as_ref()
+                .map(|q| q.split('/').take(3).collect::<Vec<_>>().join("/"))
+        );
+        assert!(qr.is_ok(), "precreate failed: {:?}", qr.err());
+        let q = a.query(&otn).await;
+        println!("query after precreate: {q:?}");
+        // The sandbox gateway intermittently answers HTTP 404 (HTML);
+        // callers treat that as a transient failure and retry.
+        assert!(!matches!(q, Err(CallError::BadSignature)));
+        let c = a.close(&otn).await;
+        println!("close: {c:?}");
+        let q = a.query(&otn).await;
+        println!("query after close: {q:?}");
+        // A tampered signature must fail verification of a real response:
+        // query an unknown order through a client whose Alipay key is the
+        // test key → BadSignature for any signed response.
+        let wrong = Alipay::new(&cfg, tests::panel_keys());
+        let r = wrong.query(&otn).await;
+        println!("query with the wrong alipay public key: {r:?}");
+        assert!(matches!(
+            r,
+            Err(CallError::BadSignature) | Err(CallError::Status(_))
+        ));
     }
 }

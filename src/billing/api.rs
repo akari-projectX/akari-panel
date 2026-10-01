@@ -277,17 +277,22 @@ pub async fn create_order(
     let out_trade_no = new_out_trade_no();
     let mut tx = state.pg().begin().await?;
     #[allow(clippy::type_complexity)]
-    let price: Option<(String, i64, i32, bool, Option<(Uuid, Option<DateTime<Utc>>)>)> =
-        sqlx::query_as(
-            "SELECT p.name, pp.price_cents, pp.period_days, pp.purchasable AND p.enabled, \
+    let price: Option<(
+        String,
+        i64,
+        i32,
+        bool,
+        Option<(Uuid, Option<DateTime<Utc>>)>,
+    )> = sqlx::query_as(
+        "SELECT p.name, pp.price_cents, pp.period_days, pp.purchasable AND p.enabled, \
              (SELECT ROW(up.plan_id, up.expires_at) FROM user_plans up \
               WHERE up.user_id = $2 AND up.status = 'active') \
              FROM plan_prices pp JOIN plans p ON p.id = pp.plan_id WHERE pp.plan_id = $1",
-        )
-        .bind(req.plan_id)
-        .bind(user.id)
-        .fetch_optional(&mut *tx)
-        .await?;
+    )
+    .bind(req.plan_id)
+    .bind(user.id)
+    .fetch_optional(&mut *tx)
+    .await?;
     let Some((plan_name, cents, days, purchasable, active)) = price else {
         return Err(ApiError::bad_request("plan is not for sale"));
     };
@@ -405,7 +410,10 @@ pub async fn create_order(
             ));
         }
     }
-    Ok((StatusCode::CREATED, Json(my_order_view(&state, user.id, id).await?)))
+    Ok((
+        StatusCode::CREATED,
+        Json(my_order_view(&state, user.id, id).await?),
+    ))
 }
 
 /// GET /me/orders: the caller's last 50 orders.
@@ -681,13 +689,12 @@ pub async fn get_order(
     Path((_, id)): Path<(String, Uuid)>,
 ) -> Result<Json<Value>, ApiError> {
     user.require_admin()?;
-    let order = sqlx::query_as::<_, OrderView>(sqlx::AssertSqlSafe(format!(
-        "{ORDER_SQL} WHERE id = $1"
-    )))
-    .bind(id)
-    .fetch_optional(state.pg())
-    .await?
-    .ok_or_else(ApiError::not_found)?;
+    let order =
+        sqlx::query_as::<_, OrderView>(sqlx::AssertSqlSafe(format!("{ORDER_SQL} WHERE id = $1")))
+            .bind(id)
+            .fetch_optional(state.pg())
+            .await?
+            .ok_or_else(ApiError::not_found)?;
     let events: Vec<EventView> = sqlx::query_as(
         "SELECT id, source, verified, outcome, trade_status, params, ip, created_at \
          FROM payment_events WHERE order_id = $1 ORDER BY id LIMIT 500",
@@ -797,13 +804,33 @@ pub async fn handle_notify(
 ) -> Result<bool, ApiError> {
     let mut c = state.pg().acquire().await?;
     if body.len() > MAX_NOTIFY_BODY {
-        orders::record_event(&mut c, None, None, "notify", false, "oversized", None, None, ip)
-            .await?;
+        orders::record_event(
+            &mut c,
+            None,
+            None,
+            "notify",
+            false,
+            "oversized",
+            None,
+            None,
+            ip,
+        )
+        .await?;
         return Ok(false);
     }
     let Some(p) = parse_form(body) else {
-        orders::record_event(&mut c, None, None, "notify", false, "malformed", None, None, ip)
-            .await?;
+        orders::record_event(
+            &mut c,
+            None,
+            None,
+            "notify",
+            false,
+            "malformed",
+            None,
+            None,
+            ip,
+        )
+        .await?;
         return Ok(false);
     };
     let otn = p.get("out_trade_no").cloned();

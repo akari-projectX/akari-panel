@@ -82,7 +82,7 @@ pub async fn reconcile_loop(state: AppState) {
             tracing::warn!(error = e.message(), "order reconcile tick failed");
         }
         n += 1;
-        if n % PRUNE_EVERY_TICKS == 0 {
+        if n.is_multiple_of(PRUNE_EVERY_TICKS) {
             if let Err(e) = orders::prune_events(&state).await {
                 tracing::warn!(error = %e, "payment event pruning failed");
             }
