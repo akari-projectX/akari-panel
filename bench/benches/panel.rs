@@ -280,5 +280,51 @@ fn database(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, pure, subscription, database);
+/// Buffer maintenance at the M2 scale (200 nodes x 10k users = 2M entries,
+/// 2.5% dirty per report): the work the 5 s flush tick does besides SQL
+/// (`snapshot` = what to write, `prune` = eviction + index upkeep).
+fn buffer(c: &mut Criterion) {
+    let mut g = c.benchmark_group("buffer");
+    g.sample_size(10);
+    let (nodes, per_node) = (200usize, 10_000usize);
+    let buf = akari_panel::traffic::TrafficBuffer::new();
+    let session = "criterion-buffer".to_string();
+    let report = |users: &[Uuid], step: u64| TrafficReport {
+        users: users
+            .iter()
+            .map(|u| UserTraffic {
+                user_id: u.to_string(),
+                up_bytes: 1000 * step,
+                down_bytes: 5000 * step,
+            })
+            .collect(),
+        monotonic_ms: 0,
+        session_id: session.clone(),
+    };
+    let mut all = Vec::new();
+    for _ in 0..nodes {
+        let node = Uuid::new_v4();
+        let users: Vec<Uuid> = (0..per_node).map(|_| Uuid::new_v4()).collect();
+        buf.set_members(node, users.iter().copied().collect::<HashSet<_>>());
+        buf.update(node, &session, &report(&users, 1));
+        all.push((node, users));
+    }
+    buf.bench_mark_all_flushed();
+    // 2.5% of users report new traffic.
+    for (node, users) in &all {
+        buf.update(*node, &session, &report(&users[..per_node / 40], 2));
+    }
+    g.bench_function("snapshot/2M_entries_2.5pct_dirty", |b| {
+        b.iter(|| std::hint::black_box(buf.bench_snapshot_len()))
+    });
+    g.bench_function("prune_idle/2M_entries", |b| {
+        b.iter(|| buf.bench_prune_idle(Instant::now()))
+    });
+    g.bench_function("prune_full/2M_entries", |b| {
+        b.iter(|| buf.prune(Instant::now()))
+    });
+    g.finish();
+}
+
+criterion_group!(benches, pure, subscription, database, buffer);
 criterion_main!(benches);
