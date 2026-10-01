@@ -41,6 +41,8 @@ pub const MIN_UPDATE_PROTOCOL: u32 = 3;
 pub const CHUNK: usize = 1 << 20;
 pub const MAX_ARTIFACT: i64 = 256 << 20;
 const MAX_MANIFEST: usize = 4096;
+/// A download whose reader takes no chunk for this long is dropped.
+const SEND_STALL: std::time::Duration = std::time::Duration::from_secs(60);
 const SIG_CONTEXT: &[u8] = b"akari-agent-manifest-v1\n";
 
 // ---------------------------------------------------------------------------
@@ -654,8 +656,15 @@ pub async fn fetch_artifact(
                 }
             };
             let failed = msg.is_err();
-            if tx.send(msg).await.is_err() || failed {
-                return;
+            // A peer that stops reading must not hold a download permit
+            // forever.
+            match tokio::time::timeout(SEND_STALL, tx.send(msg)).await {
+                Ok(Ok(())) if !failed => {}
+                Ok(_) => return,
+                Err(_) => {
+                    tracing::warn!(node = %node, release = %id, "artifact download stalled; dropped");
+                    return;
+                }
             }
             idx += 1;
         }
