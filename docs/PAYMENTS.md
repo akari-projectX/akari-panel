@@ -177,8 +177,11 @@ unscanned order → `40004 ACQ.TRADE_NOT_EXIST` (mapped to "not paid");
 `alipay.trade.close` → `ACQ.TRADE_NOT_EXIST` (nothing to close); the same
 query verified against a wrong Alipay public key → rejected
 (`BadSignature`). The sandbox gateway intermittently answered **HTTP 404
-with an HTML page** (2 of ~10 calls); the panel treats that as a transient
-gateway failure (order stays pending, polling/reconcile retry). A scanned
+with an HTML page** (roughly 1 in 4 calls); every gateway call is therefore
+retried up to 3 times on transport errors / non-200 answers (all three
+calls are idempotent per `out_trade_no`), after which the order stays
+pending and polling/reconcile retry. With the retry, repeated live runs
+passed. A scanned
 but unpaid trade (`WAIT_BUYER_PAY`) and a real `TRADE_SUCCESS` need the
 sandbox app and were not exercised live; they are covered by the mock
 gateway tests and smoke.
