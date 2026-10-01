@@ -1411,6 +1411,20 @@ async fn mark_online(
         .bind(hello.protocol_version as i32)
         .execute(state.pg())
         .await;
+    if owned {
+        // M2-5: the agent's current traffic session, as of this Hello on
+        // the stream that owns the node (traffic::retention_pass; the drain
+        // proof is written by `AppState::persist_online`).
+        let _ = sqlx::query(
+            "UPDATE nodes SET agent_session = $2, agent_session_at = now() \
+             WHERE id = $1 AND online_session = $3",
+        )
+        .bind(node_id)
+        .bind(Some(hello.session_id.as_str()).filter(|s| !s.is_empty()))
+        .bind(online_session)
+        .execute(state.pg())
+        .await;
+    }
     owned
 }
 

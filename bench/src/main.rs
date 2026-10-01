@@ -30,6 +30,35 @@ enum Cmd {
     Swarm(swarm::SwarmArgs),
     /// TCP round-robin balancer (multi-instance test)
     Lb(lb::LbArgs),
+    /// Run one traffic_counters retention pass (M2-5) and time it
+    Retention(RetentionArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct RetentionArgs {
+    #[arg(long, env = "BENCH_DATABASE_URL", default_value = common::DEFAULT_DB)]
+    database_url: String,
+    /// Drain-proof age required (the panel uses 3600 s).
+    #[arg(long, default_value_t = akari_panel::traffic::RETENTION_MARGIN_SECS)]
+    margin_secs: u64,
+}
+
+async fn retention(a: RetentionArgs) -> Result<()> {
+    let pg = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&a.database_url)
+        .await?;
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM traffic_counters")
+        .fetch_one(&pg)
+        .await?;
+    let t = std::time::Instant::now();
+    let r = akari_panel::traffic::retention_pass(&pg, a.margin_secs).await?;
+    let took = t.elapsed();
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM traffic_counters")
+        .fetch_one(&pg)
+        .await?;
+    println!("retention: {r:?} in {took:.2?}; traffic_counters {before} -> {after} rows");
+    Ok(())
 }
 
 #[tokio::main]
@@ -42,5 +71,6 @@ async fn main() -> Result<()> {
         Cmd::Http(a) => load::run(a).await,
         Cmd::Swarm(a) => swarm::run(a).await,
         Cmd::Lb(a) => lb::run(a).await,
+        Cmd::Retention(a) => retention(a).await,
     }
 }
