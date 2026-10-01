@@ -1329,6 +1329,52 @@ pub async fn cli_show(cfg: &PanelConfig, pg: &sqlx::PgPool) -> anyhow::Result<()
     Ok(())
 }
 
+/// `akari config check`: the database side of the settings, when the
+/// database is reachable (short timeout; never an error — the check is
+/// about panel.toml). Lines are TOML comments.
+pub async fn describe_db(cfg: &PanelConfig) -> String {
+    let attempt = async {
+        let pg = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(3))
+            .connect(&cfg.database_url)
+            .await?;
+        let mut conn = pg.acquire().await?;
+        let stored: Stored = sqlx::query_as(SELECT_STORED).fetch_one(&mut *conn).await?;
+        Ok::<_, sqlx::Error>(stored)
+    };
+    match tokio::time::timeout(Duration::from_secs(5), attempt).await {
+        Ok(Ok(s)) => {
+            let e = compute(cfg, s.clone(), Vec::new(), &[]);
+            let show = |v: &Option<String>| v.clone().unwrap_or_else(|| "(not set)".into());
+            format!(
+                "\n# --- 系统设置 in the database (they WIN over the values above) ---\n\
+                 # main_domain      = {}  -> {} [{:?}]\n\
+                 # sub_domain       = {}  -> {} [{:?}]\n\
+                 # node_domain      = {}  -> {} / {} [{:?}]\n\
+                 # trust_cloudflare = {}  -> {} [{:?}]\n",
+                show(&s.main_domain),
+                e.main.as_ref().map(Origin::as_string).unwrap_or_else(|| "(browser origin)".into()),
+                e.main_source,
+                show(&s.sub_domain),
+                e.sub.as_ref().map(Origin::as_string).unwrap_or_else(|| "(browser origin)".into()),
+                e.sub_source,
+                show(&s.node_domain),
+                e.node.panel_addr,
+                e.node.server_name,
+                e.node_source,
+                s.trust_cloudflare.map(|b| b.to_string()).unwrap_or_else(|| "(not set)".into()),
+                e.trust_cloudflare,
+                e.trust_source,
+            )
+        }
+        Ok(Err(e)) => format!(
+            "\n# 系统设置: database not readable ({e}); database values, once set, win over the values above\n"
+        ),
+        Err(_) => "\n# 系统设置: database not reachable; database values, once set, win over the values above\n".into(),
+    }
+}
+
 /// `akari settings unset <field>`: back to panel.toml (audited, actor cli).
 pub async fn cli_unset(pg: &sqlx::PgPool, field: &str) -> anyhow::Result<()> {
     let mut tx = pg.begin().await?;

@@ -51,6 +51,90 @@ web.trusted_proxies = the proxy's address as the panel sees it
 `akari config check` validates everything and prints the effective config with
 secrets redacted; `akari serve` runs the same validation and refuses to start on errors.
 
+## 1b. Domains (系统设置) and Cloudflare
+
+The admin console's **系统设置** page holds three domains and one switch. They live in the
+database (table `panel_settings`): a value saved there wins over panel.toml; an empty field means
+"use panel.toml". `akari config check` prints both sides; `akari settings show` the database side;
+`akari settings unset main|sub|node|trust-cloudflare|all` clears it (audited) — e.g. after a
+mistyped main domain. Changes take effect on every panel instance within a second (database
+notification), **no restart** — including the gRPC certificate.
+
+| Field | Used for | Cloudflare | panel.toml default |
+|---|---|---|---|
+| 主域名 (main) | admin console, user portal, install links, payment notify URLs | orange or grey | `install.public_url` |
+| 订阅域名 (subscription) | every subscription URL the panel hands out (portal, admin, API `sub_url`) | **orange** recommended (hides the server IP) | `web.sub_domain`, else the main domain |
+| 节点通信域名 (node) | `panel_addr`/`server_name` of NEW install commands and bootstrap files | **grey only** | `grpc.advertise` / `grpc.server_name` |
+| 信任 Cloudflare | real client IP behind Cloudflare (`CF-Connecting-IP`) | — | `web.trust_cloudflare` |
+
+Values are host names (IDN is stored as punycode) or IP addresses, optionally with `:port`; no
+scheme or path. The **DNS 检测** buttons resolve the name from the panel: the subscription domain
+warns if it does not resolve into Cloudflare's ranges; the node domain **refuses to save** if it
+does (the admin can override after an explicit confirmation): agents talk gRPC with mutual TLS
+directly to port 8443, and an orange-clouded record makes Cloudflare terminate TLS (and it does not
+proxy arbitrary ports), so agents cannot connect.
+
+**Host check.** Once a main domain is saved, the panel answers only requests whose Host is the
+main or subscription domain (or `install.public_url`'s host) or an IP address; any other domain
+name gets the same empty 404 as every other rejection. Saving asks for confirmation when the
+address you are using would stop working.
+
+**Node domain and existing nodes.** An enrolled agent keeps the server name of its bootstrap
+file forever. The panel therefore records every server name it ever wrote into a bootstrap
+(`grpc_server_names`) and its gRPC certificate covers all of them plus `web.advertised_names`:
+changing the node domain only affects new installs, existing nodes keep connecting. A name leaves
+the certificate only through **移除** in the "节点通信证书域名" table, which lists the nodes still
+using it (they must be re-installed afterwards). Nodes enrolled before this release have no
+recorded name and are listed separately (they use the panel.toml `grpc.server_name`, which is
+always covered).
+
+**Reverse proxy certificates.** `deploy/caddy/Caddyfile` serves `AKARI_DOMAIN` as before and any
+other name **on demand**: at the first handshake for a new name Caddy asks the panel's
+`ask` endpoint (`[tls_ask] bind`, its own listener: compose `0.0.0.0:8082` on the private network
+with `allow_non_loopback = true`, bare metal `127.0.0.1:8082`; `AKARI_ASK` in Caddy's
+environment). The panel answers 200 only for the configured main and subscription domains
+(rate-limited, `tls_ask.rate_per_sec`), so no Caddyfile edit is needed when domains change and
+nobody can make Caddy issue certificates for arbitrary names. Only the secret prefix is forwarded
+on every domain. With nginx, add each domain's `server_name` and certificate yourself.
+
+### Cloudflare
+
+1. DNS: main domain orange or grey, subscription domain **orange** (proxied), node domain
+   **grey** (DNS only) pointing at the panel's IP. Keep 8443 reachable directly (firewall it to
+   your node IPs if you like).
+2. SSL/TLS mode **Full (strict)**: Cloudflare then verifies the origin certificate Caddy obtained.
+   "Flexible" would make Cloudflare talk plain HTTP to port 80 (Caddy redirects it: a loop); "Full"
+   without strict accepts any origin certificate.
+3. First certificate for an orange-clouded name: Caddy uses the HTTP-01 challenge on port 80,
+   which works through Cloudflare. If "Always Use HTTPS" is on and issuance fails, switch the
+   record to grey until Caddy has the certificate (seconds after the first visit to
+   `https://<domain>/<prefix>/healthz`), then back to orange; renewals work proxied.
+4. In 系统设置 turn on **信任 Cloudflare**. The panel then treats Cloudflare's edge ranges as
+   trusted proxies: a request whose chain is client → Cloudflare → [Caddy →] panel is attributed to
+   `CF-Connecting-IP` (login/subscription rate limits, audit). The header is read only when the
+   nearest genuine hop is a Cloudflare edge reached through trusted proxies (`web.trusted_proxies`
+   = Caddy); someone connecting to the origin directly and forging the header is attributed to
+   their own address. Without the switch, all requests through Cloudflare count as the edge's
+   address (coarser rate limits, nothing breaks).
+5. WebSocket works through the orange cloud (subscription and admin traffic do not need it; a
+   node's own WS inbound behind Cloudflare is a separate, per-node choice). gRPC through
+   Cloudflare needs its "gRPC" network setting and is **never** suitable for the agent channel.
+
+**Updating the Cloudflare ranges.** The list ships in the binary (`src/cloudflare_ips.txt`, from
+https://www.cloudflare.com/ips-v4 and /ips-v6). If Cloudflare announces new ranges before a panel
+release picks them up, set them in panel.toml without rebuilding:
+
+```bash
+curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # review the list
+# panel.toml, [web]:
+#   cloudflare_ranges = ["173.245.48.0/20", ..., "2c0f:f248::/32"]
+akari config check && systemctl restart akari-panel      # compose: docker compose up -d panel
+```
+
+A stale list fails safe: traffic from an unknown edge range is simply attributed to the edge.
+Release maintainers refresh `src/cloudflare_ips.txt` from the same URLs (the unit test
+`cloudflare::tests` checks it parses).
+
 ## A. Docker Compose
 
 ```bash
@@ -72,7 +156,8 @@ not a `-c` flag). `config check` prints the effective values: confirm they are y
 `docker run` of it uses built-in defaults. Outside compose use `-c <file>` or export `AKARI_CONFIG`.
 
 Put the prefix (without the slash) into `.env` as `AKARI_PREFIX`, then `docker compose up -d`
-(starts Caddy, which obtains the certificate and forwards only `/<prefix>/*`).
+(starts Caddy, which obtains the certificate and forwards only `/<prefix>/*`; domains added later
+in 系统设置 get theirs on demand, §1b).
 
 **IP-only deployments (no domain).** With `AKARI_DOMAIN` set to an IP address, Caddy issues the
 certificate from its own internal CA, which no browser or client trusts. That is fine to try the
@@ -470,6 +555,8 @@ two or more for availability or headroom:
   (the old instance notices on its next database read, within 60 s).
 - PostgreSQL must be reached directly: change notification uses `LISTEN`, which
   PgBouncer in transaction or statement mode breaks.
+- 系统设置 changes reach every instance through the same notification; each
+  re-issues its gRPC certificate when the server-name set changed (no restart).
 - Nothing else to configure: change notification, session revocation, login
   rate limiting and the flush/reaper/retention loops are database/Valkey
   based and idempotent, so every instance runs them. Metrics are per instance

@@ -156,7 +156,11 @@ async fn main() -> Result<()> {
         Cmd::Serve => serve(cfg).await,
         Cmd::Info => info(cfg),
         Cmd::Config { action } => match action {
-            ConfigCmd::Check => config_check(cfg),
+            ConfigCmd::Check => {
+                config_check(&cfg)?;
+                print!("{}", akari_panel::settings::describe_db(&cfg).await);
+                Ok(())
+            }
         },
         Cmd::Node { action } => match action {
             NodeCmd::Add { name, out } => nodeops::node_add(cfg, name, out).await,
@@ -194,8 +198,8 @@ fn validate_startup(cfg: &PanelConfig) -> Result<Vec<String>> {
     report.into_result()
 }
 
-fn config_check(cfg: PanelConfig) -> Result<()> {
-    let warnings = validate_startup(&cfg)?;
+fn config_check(cfg: &PanelConfig) -> Result<()> {
+    let warnings = validate_startup(cfg)?;
     print!("{}", cfg.effective_toml()?);
     for w in &warnings {
         eprintln!("warning: {w}");

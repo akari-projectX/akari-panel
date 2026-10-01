@@ -1,23 +1,44 @@
 # Caddy in front of the panel (compose service or bare metal).
 #
-# ONLY the secret prefix is forwarded. Everything else (including "/") gets
-# an empty 404 from Caddy itself: the panel is not reachable, and not
-# identifiable, without the prefix.
+# ONLY the secret prefix is forwarded, on every domain. Everything else
+# (including "/") gets an empty 404 from Caddy itself: the panel is not
+# reachable, and not identifiable, without the prefix.
 #
-# Bare metal: replace {$AKARI_DOMAIN}/{$AKARI_PREFIX} (or export them in
-# Caddy's environment) and point reverse_proxy at 127.0.0.1:8080; panel.toml
-# then needs trusted_proxies = ["127.0.0.1/32"].
+# Domains (R22): AKARI_DOMAIN is served as before. Every other domain set in
+# the admin "系统设置" (main domain, subscription domain) gets its
+# certificate on demand: at the first TLS handshake for a new name Caddy asks
+# the panel's internal `ask` endpoint (panel.toml [tls_ask]) and obtains a
+# certificate only if the panel answers 200 for it. No Caddyfile edits when
+# the domains change. The node communication domain is NOT served here:
+# agents dial the panel's gRPC port (8443) directly.
+#
+# Bare metal: export AKARI_DOMAIN / AKARI_PREFIX in Caddy's environment and
+#   AKARI_UPSTREAM=127.0.0.1:8080  AKARI_ASK=http://127.0.0.1:8082/ask
+# panel.toml then needs trusted_proxies = ["127.0.0.1/32"] and
+# [tls_ask] bind = "127.0.0.1:8082".
 {
 	# An IP-only site address makes clients send no SNI, and the handshake
 	# fails; default_sni makes Caddy pick the certificate anyway. Harmless
 	# with a domain.
 	default_sni {$AKARI_DOMAIN}
+	on_demand_tls {
+		# 200 only for the configured domains (rate limited by the panel).
+		ask {$AKARI_ASK:http://panel:8082/ask}
+	}
+	# Optional, with Cloudflare in front: let Caddy keep Cloudflare's
+	# X-Forwarded-For (the panel also works without it: with "trust
+	# Cloudflare" it reads CF-Connecting-IP behind an edge hop). List the
+	# ranges from https://www.cloudflare.com/ips (docs/DEPLOY.md "Cloudflare"):
+	#   servers {
+	#       trusted_proxies static 173.245.48.0/20 103.21.244.0/22 ...
+	#   }
 }
 
-{$AKARI_DOMAIN} {
+(akari) {
 	encode zstd gzip
 	# -Via: Caddy adds "Via: 1.1 Caddy" to proxied responses, so the panel's own
-	# rejections would differ from the 404 below (a prefix oracle).
+	# rejections would differ from the 404 below (a prefix oracle). Block form:
+	# both deletions apply to every response, proxied or not.
 	header {
 		-Server
 		-Via
@@ -34,8 +55,9 @@
 
 	handle /{$AKARI_PREFIX}/* {
 		# Caddy appends the client to X-Forwarded-For (and, because upstream
-		# proxies are not trusted, discards a client-supplied one).
-		reverse_proxy panel:8080 {
+		# proxies are not trusted, discards a client-supplied one). The Host
+		# header is passed through: the panel refuses names it does not know.
+		reverse_proxy {$AKARI_UPSTREAM:panel:8080} {
 			header_up X-Request-Id {http.request.uuid}
 		}
 	}
@@ -46,9 +68,15 @@
 	}
 }
 
-# Any other host (e.g. the bare IP, or a name that is not AKARI_DOMAIN):
-# the same empty 404 instead of Caddy's default empty 200.
-:443 {
-	header -Server
-	respond 404
+{$AKARI_DOMAIN} {
+	import akari
+}
+
+# Any other name: certificate on demand, only for domains the panel
+# confirms through the ask endpoint (unknown names fail the TLS handshake).
+https:// {
+	tls {
+		on_demand
+	}
+	import akari
 }

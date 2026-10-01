@@ -9,8 +9,9 @@
 #   docker compose up -d
 #
 # Exposure: only Caddy (80/443) and the panel's gRPC port (8443, mTLS, agents
-# dial it directly) are published. PostgreSQL, Valkey and the panel's web
-# port live on private networks and are never published.
+# dial it directly) are published. PostgreSQL, Valkey, the panel's web port
+# and its Caddy `ask` endpoint (8082, on-demand TLS for the domains set in
+# 系统设置) live on private networks and are never published.
 name: akari
 
 services:
@@ -72,6 +73,8 @@ services:
     environment:
       AKARI_DOMAIN: ${AKARI_DOMAIN:?set AKARI_DOMAIN in .env}
       AKARI_PREFIX: ${AKARI_PREFIX:-set-after-akari-info}
+      # The panel's on-demand TLS ask endpoint (panel.toml [tls_ask]).
+      AKARI_ASK: http://panel:8082/ask
     ports:
       - "80:80"
       - "443:443"
