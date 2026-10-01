@@ -190,6 +190,16 @@ separate loopback listener, never on the public port.
 | POST | /api/v1/users/{id}/sub-token | admin | regenerate subscription token |
 | POST | /api/v1/users/{id}/revoke-sessions | admin | log the account out everywhere (204) |
 | DELETE | /api/v1/users/{id}/totp | admin | reset the account's 2FA, end its sessions; returns an admin's new one-time `totp_enrollment_code` |
+| GET | /api/v1/me/shop | user | R18-3: purchasable plans (price in cents, days) and what buying does (`new`/`renew`/`replace`/`unavailable`) |
+| GET/POST | /api/v1/me/orders | user | own orders (last 50) / create `{plan_id}` → order + Alipay QR (the amount is the server's price) |
+| GET | /api/v1/me/orders/{id} | user | order status; a pending order is actively queried at Alipay (throttled) |
+| POST | /api/v1/me/orders/{id}/cancel | user | cancel a pending order (queried + closed at Alipay first) |
+| GET | /api/v1/plan-prices | admin | every plan with its price / purchasable flag, `payments_enabled` |
+| PUT/DELETE | /api/v1/plans/{id}/price | admin | `{price_cents, period_days, purchasable}` / remove the price |
+| GET | /api/v1/orders | admin | orders, `?status&login&out_trade_no&unfulfilled&before&limit` (keyset) |
+| GET | /api/v1/orders/{id} | admin | order + payment events |
+| POST | /api/v1/orders/{id}/fulfil | admin | `{reason}`: mark an unpaid order paid (manual) or retry a failed fulfilment (audited) |
+| POST | /pay/alipay/notify | Alipay signature | Alipay async notify (RSA2); every refusal = the canonical rejection; see docs/PAYMENTS.md |
 | GET | /sub/{token} | token | subscription (UA-based format) |
 | GET | /install/{token}[/agent/{arch}] | install link | node install script / agent binary while the link is live (docs/DEPLOY.md §3) |
 | GET | /healthz | — | panel liveness |
@@ -380,6 +390,17 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   change that admits a quota-disabled user re-enables them too. An admin's
   explicit disable (`disabled_reason = admin`) is never undone
   automatically. Resets and plan expiry are audited with actor `system`.
+
+## Payments (Alipay Face-to-Face)
+
+Plans can be sold through Alipay 当面付 (QR code): admins price plans
+(integer CNY cents per `period_days`), users buy from the portal, and the
+paid order grants or extends the plan in one transaction, exactly once,
+whether the payment is learned from the async notify, from status polling
+or from the background reconcile. Buying the active plan again extends it
+by its period; buying another plan replaces the active one (usage reset).
+Setup, sandbox testing, notify URL rules and reconciliation:
+[docs/PAYMENTS.md](docs/PAYMENTS.md).
 
 ## Accounts
 

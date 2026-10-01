@@ -50,7 +50,6 @@ tonic = { version = "0.14", features = ["tls-ring"] }
 tonic-prost = "0.14"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-webpki-roots = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 x509-parser = "0.18"
 # R18-2: REALITY key pairs (curve25519-dalek 4 is already linked via ed25519-dalek).
