@@ -38,9 +38,10 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   `POST /api/v1/users/{id}/revoke-sessions` ends every session of the
   account (logout = log out everywhere; a copied cookie dies with it). The
   last enabled admin cannot be disabled, demoted or deleted (409; enforced
-  by a DB trigger, race-free). **Admins must use TOTP two-factor
-  authentication**; every administrative change is in the audit log (see
-  "Security" below).
+  by a DB trigger, race-free). TOTP two-factor authentication is optional
+  (recommended; `[auth] require_admin_2fa = true` makes it mandatory for
+  admins); every administrative change is in the audit log (see "Security"
+  below).
 - Admin API: user CRUD, node listing/enable, per-node xray `inbounds`
   editing, account generation + assignment (VLESS/VMess/Trojan credentials
   are panel-generated, one per inbound).
@@ -165,7 +166,7 @@ separate loopback listener, never on the public port.
 | GET | /api/v1/me | user | profile + traffic usage |
 | GET | /api/v1/me/totp | any session | session stage, 2FA state (never the secret) |
 | POST | /api/v1/me/totp/enroll | any session | new pending TOTP secret (shown once) |
-| POST | /api/v1/me/totp/confirm | any session | `{code, enrollment_code?}`: activate 2FA (admins: plus their one-time enrollment code), returns 10 recovery codes once |
+| POST | /api/v1/me/totp/confirm | any session | `{code}`: activate 2FA, returns 10 recovery codes once |
 | POST | /api/v1/me/totp/recovery-codes | user | `{code}`: replace recovery codes |
 | POST | /api/v1/me/sub-token | user (role=user) | regenerate own subscription token (5/hour) |
 | GET | /api/v1/me/plan | user | own active plan (or null), usage, enforced limit/expiry, node names + regions |
@@ -173,6 +174,7 @@ separate loopback listener, never on the public port.
 | GET | /api/v1/audit | admin | audit log, `?limit&before&actor&action` (keyset, newest first) |
 | GET/POST | /api/v1/users | admin | list / create users |
 | PATCH/DELETE | /api/v1/users/{id} | admin | update / delete user |
+| GET | /api/v1/users/{id}/nodes | admin | the account's node access: node, region, state, inbound tags/protocols, plan-granted or manual (no credentials) |
 | POST/DELETE | /api/v1/users/{id}/nodes/{node_id} | admin | manual override: assign (generates account, pins the pair) / remove (hands a plan-granted pair back to the plan; 409 on plan-managed rows) |
 | GET/PUT/PATCH/DELETE | /api/v1/users/{id}/plan | admin | active plan + history / assign or change `{plan_id, expires_at?, period_anchor?, reset_traffic?}` / `{expires_at?, period_anchor?}` / cancel |
 | GET/POST | /api/v1/node-groups | admin | list / create `{name, description?, node_ids?}` |
@@ -189,7 +191,7 @@ separate loopback listener, never on the public port.
 | PUT | /api/v1/nodes/{id}/inbounds | admin | replace xray inbounds (bumps config_version) |
 | POST | /api/v1/users/{id}/sub-token | admin | regenerate subscription token |
 | POST | /api/v1/users/{id}/revoke-sessions | admin | log the account out everywhere (204) |
-| DELETE | /api/v1/users/{id}/totp | admin | reset the account's 2FA, end its sessions; returns an admin's new one-time `totp_enrollment_code` |
+| DELETE | /api/v1/users/{id}/totp | admin | reset the account's 2FA, end its sessions; `{"totp": "active"\|"pending"\|"none"}` (what was removed) |
 | GET | /api/v1/me/shop | user | R18-3: purchasable plans (price in cents, days) and what buying does (`new`/`renew`/`replace`/`unavailable`) |
 | GET/POST | /api/v1/me/orders | user | own orders (last 50) / create `{plan_id}` → order + Alipay QR (the amount is the server's price) |
 | GET | /api/v1/me/orders/{id} | user | order status; a pending order is actively queried at Alipay (throttled) |
@@ -207,8 +209,8 @@ separate loopback listener, never on the public port.
 Defaults bind web on `127.0.0.1:8080` and gRPC on `127.0.0.1:8443`; override
 via `panel.toml` (see `src/config.rs`) or `DATABASE_URL`/`VALKEY_URL`.
 `akari admin passwd <login>` resets a password (and ends its sessions).
-`akari admin reset-2fa <login>` removes an account's 2FA (lockout recovery)
-and prints an admin's new enrollment code. `akari node enroll-token <id>`
+`akari admin reset-2fa <login>` removes an account's 2FA (lockout recovery);
+the account then logs in with its password. `akari node enroll-token <id>`
 issues a new one-time node enrollment token.
 `akari secrets rotate-prefix` / `akari secrets rotate-jwt` rotate secrets
 (see "Security").
@@ -412,18 +414,16 @@ it. Raising a traffic limit does not re-enable a user the limit disabled.
 
 ## Security: two-factor, audit log, secret rotation
 
-**Two-factor (TOTP, RFC 6238: SHA-1, 6 digits, 30 s, ±1 step).** Mandatory
-for admins: an admin without active TOTP who logs in with the right
-password gets a 15-minute *enrollment-only* session that reaches nothing
-but `/api/v1/me/totp*` (the SPA shows the setup screen). Enrollment shows
-the secret once (base32 + `otpauth://` URI) and activates only after a
-valid code — for an admin also the one-time **enrollment code** that
-`akari admin add` / `admin reset-2fa` print (or the API returns once on
-admin create / 2FA reset; 128-bit, SHA-256 stored, 24 h, consumed by the
-activation), so a leaked password alone cannot bind an attacker's
-authenticator; activation issues 10 single-use recovery codes (shown once) and
-ends the account's other sessions. Regular users may opt in from the
-portal. Login sends password and code in **one** request (`code` = TOTP
+**Two-factor (TOTP, RFC 6238: SHA-1, 6 digits, 30 s, ±1 step).** Optional
+for every account and recommended (the admin console shows a banner until
+it is on). With `[auth] require_admin_2fa = true` it is mandatory for
+admins: an admin without active TOTP who logs in with the right password
+gets a 15-minute *enrollment-only* session that reaches nothing but
+`/api/v1/me/totp*` (the SPA shows the setup screen). Enrollment shows the
+secret once (a QR code drawn in the browser — nothing is fetched — plus the
+base32 key and the `otpauth://` URI) and activates only after a valid code;
+activation issues 10 single-use recovery codes (shown once; copy or
+download as .txt) and ends the account's other sessions. Login sends password and code in **one** request (`code` = TOTP
 code or recovery code); every failure — unknown account, wrong password,
 missing/wrong/replayed code — is the same 401 after the same work, and
 counts toward the login rate limit. A code (and any older one) is accepted
@@ -432,8 +432,8 @@ is used. Secrets are stored AES-256-GCM-encrypted with a key derived from
 `data/totp.key` (0600, created on first start — **back it up with the rest
 of `data/`**: without it every enrolled account needs a reset); recovery
 codes as keyed HMAC-SHA-256. Lost authenticator: `akari admin reset-2fa
-<login>` (or another admin: Users → Reset 2FA); the account's sessions end
-and an admin re-enrolls at the next login.
+<login>` (or another admin: 用户 → 管理 → 重置两步验证); the account's
+sessions end and it logs in with its password again.
 
 **Audit log.** Every administrative change (API and CLI — CLI actions are
 recorded as actor `cli`), 2FA change, secret rotation and login is recorded
@@ -463,6 +463,11 @@ Run the CLI as the panel's service user, against the same `data/`
 directory (and database) the panel uses.
 
 ## Upgrading
+
+**R18 (optional 2FA) upgrade:** migration 0035 drops the unused
+`totp_enroll_codes` table (the one-time admin enrollment code is gone).
+Admins without 2FA now log in with their password (full session) unless
+`[auth] require_admin_2fa = true`. Existing 2FA setups are unchanged.
 
 **M3 (plans) upgrade:** migration 0020 adds node groups, plans and user
 plans. Existing node assignments become manual overrides and keep working

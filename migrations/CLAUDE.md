@@ -3,7 +3,7 @@
 sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18）在 `serve`、`node add`、`admin add` 启动时自动执行。
 
 - **只追加，不修改**已存在的迁移文件（sqlx 会校验 checksum，改了已部署环境会拒绝启动）。
-- 命名：`NNNN_<topic>.sql`，四位递增（M3 从 0020 起，0014–0019 留给 M2）。
+- 命名：`NNNN_<topic>.sql`，四位递增（M3 从 0020 起，0014–0019 留给 M2；R18 并行分段：0030+ 节点表单、0035+ i18n/2FA、0040+ 支付、0050+ 加固）。
 - 改列名/加列后，同步检查 `src/` 中所有手写 SQL 与 `FromRow` 结构体（没有编译期 SQL 校验）。
 
 ## 当前表
@@ -19,7 +19,7 @@ sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18）在 `serve`、`n
 | `node_users_departed` | 0006：PK (node_id,user_id) + departed_at。user 仍存在但 node_users 行被删（unassign、set_inbounds 裁空）时写入，宽限期内仍计费最终计数；re-assign 删除；flush 循环清理过期行；user/node 删除级联；0008：`billed_bytes`（离开后累计已计费，重新离开时清零） |
 | `revoked_certs` | 0007：`cert_serial` PK（规范化形式）、node_id、revoked_at。永久墓碑，身份识别最先查它；0011：`reason`（`deleted` = 接受→空状态→关闭；`rotated` = 续期/重新注册取代，按未知证书拒绝） |
 | `node_enrollments` | 0011：PK node_id（级联删除；重新签发覆盖）、`token_hash` BYTEA UNIQUE（SHA-256）、expires_at、used_at（条件 UPDATE 烧掉，单次使用）；0030（R18-2）：`install_origin`（非空 = 一键安装链接，脚本从这个 origin 下载）、`install_pin`（curl `--pinnedpubkey`，CHECK 需有 origin）；bootstrap token 两列为 NULL，永不作为脚本提供 |
-| `totp_enroll_codes` | 0011：PK user_id（级联）、`code_hash` BYTEA（SHA-256(user id‖规范化码)）、expires_at（24h）；admin 激活 TOTP 时消费 |
+| ~~`totp_enroll_codes`~~ | 0011 建、**0035 删除**（R18：管理员 2FA 一次性注册码取消） |
 | `user_totp` | 0010：PK user_id（级联删除）；`secret_enc` BYTEA（0x01‖nonce‖AES-256-GCM 密文，AAD=user id）；`enabled_at` NULL=待确认；`last_step` 已接受的最大时间步（防重放） |
 | `user_recovery_codes` | 0010：PK (user_id, code_hash)；`code_hash` = hex HMAC-SHA256；`used_at` 非空 = 已用 |
 | `audit_log` | 0010：`id` IDENTITY（keyset 游标）、`at`（事务开始）、`actor_id`（无外键，CLI 为 NULL）、`actor_login`（CLI = `cli`）、`ip` TEXT、`action`、`target_type`/`target_id`、`before`/`after` JSONB（已脱敏）；索引 at / (actor_login,id) / (action,id)；按 `audit.retention_days` 清理 |

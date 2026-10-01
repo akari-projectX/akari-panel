@@ -78,10 +78,7 @@ pub fn router(state: AppState) -> Router {
             "/{prefix}/api/v1/users/{id}/totp",
             axum::routing::delete(api::reset_totp),
         )
-        .route(
-            "/{prefix}/api/v1/users/{id}/nodes",
-            get(api::user_nodes),
-        )
+        .route("/{prefix}/api/v1/users/{id}/nodes", get(api::user_nodes))
         .route(
             "/{prefix}/api/v1/users/{id}/nodes/{node_id}",
             post(api::assign_user).delete(api::unassign_user),
