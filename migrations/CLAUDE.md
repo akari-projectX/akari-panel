@@ -15,8 +15,11 @@ sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18）在 `serve`、`n
 | `node_users` | PK (node_id,user_id)；`credentials` JSONB = `[{inbound_tag, protocol, account}]` |
 | `node_users_departed` | 0006：PK (node_id,user_id) + departed_at。user 仍存在但 node_users 行被删（unassign、set_inbounds 裁空）时写入，宽限期内仍计费最终计数；re-assign 删除；flush 循环清理过期行；user/node 删除级联；0008：`billed_bytes`（离开后累计已计费，重新离开时清零） |
 | `revoked_certs` | 0007：`cert_serial` PK（规范化形式）、node_id、revoked_at。永久墓碑，身份识别最先查它 |
+| `user_totp` | 0010：PK user_id（级联删除）；`secret_enc` BYTEA（0x01‖nonce‖AES-256-GCM 密文，AAD=user id）；`enabled_at` NULL=待确认；`last_step` 已接受的最大时间步（防重放） |
+| `user_recovery_codes` | 0010：PK (user_id, code_hash)；`code_hash` = hex HMAC-SHA256；`used_at` 非空 = 已用 |
+| `audit_log` | 0010：`id` IDENTITY（keyset 游标）、`at`（事务开始）、`actor_id`（无外键，CLI 为 NULL）、`actor_login`（CLI = `cli`）、`ip` TEXT、`action`、`target_type`/`target_id`、`before`/`after` JSONB（已脱敏）；索引 at / (actor_login,id) / (action,id)；按 `audit.retention_days` 清理 |
 | `traffic_counters` | PK (node_id,user_id,session_id) 的最高累计值（GREATEST）。0007：`first_seen_at`（插入时写、之后不改；NULL = 旧行，按 updated_at）。**这是计费基线，不是日志**：flush 用它算差值（`new - old`）。删掉一个仍会上报的会话的行 = 下次上报把整段累计值重新计费。**无外键、无清理**，会随会话数增长；删除节点时保留 |
 
 **保留策略须知**：任何清理任务只能删除**可证明已死**的会话行（该 agent 已换新 session 且旧 session 不可能再上报，例如节点已删除，或 `updated_at` 远早于该节点当前 session 首次出现且超过安全窗口）；不确定就不删。
 
-已知缺口（见 REVIEW）：`traffic_counters` 无保留策略；无审计日志表；`role`/`status` 为自由文本，无 CHECK 约束。
+已知缺口（见 REVIEW）：`traffic_counters` 无保留策略；`role`/`status` 为自由文本，无 CHECK 约束。

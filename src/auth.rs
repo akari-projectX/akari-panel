@@ -10,6 +10,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::net::{IpAddr, SocketAddr};
 use uuid::Uuid;
 
 use crate::state::AppState;
@@ -126,15 +127,49 @@ pub fn scrub_password(password: &str) {
     let _ = Argon2::default().hash_password(password.as_bytes());
 }
 
+/// What a session may do (M1-6). Required claim: tokens issued before it
+/// existed fail to decode (everyone logs in again after the upgrade).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Stage {
+    /// Fully authenticated (password, plus the second factor when the
+    /// account has one; admins always have one).
+    Full,
+    /// An admin that passed the password but has no active TOTP yet: only
+    /// the enrollment endpoints accept it (`SessionUser`), never `AuthUser`.
+    Enroll,
+}
+
+impl Stage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Stage::Full => "full",
+            Stage::Enroll => "enroll",
+        }
+    }
+    /// Session (JWT exp and cookie Max-Age) lifetime.
+    pub fn ttl_secs(self) -> i64 {
+        match self {
+            Stage::Full => COOKIE_TTL_SECS,
+            Stage::Enroll => ENROLL_TTL_SECS,
+        }
+    }
+}
+
+/// Lifetime of an enrollment-only session.
+pub const ENROLL_TTL_SECS: i64 = 15 * 60;
+
 #[derive(Serialize, Deserialize)]
 pub struct Claims {
     pub sub: Uuid,
     pub role: String,
     /// users.session_ver at issue time (S4-2). A token whose sv differs
     /// from the row is dead: password change, disable, role change, expiry
-    /// enforcement, logout and "revoke sessions" all bump it. Required:
-    /// pre-0009 tokens (no sv) fail to decode.
+    /// enforcement, logout, "revoke sessions", 2FA activation/reset and JWT
+    /// key rotation all bump it. Required: pre-0009 tokens (no sv) fail to
+    /// decode.
     pub sv: i64,
+    pub st: Stage,
     pub iat: u64,
     pub exp: u64,
 }
@@ -144,14 +179,16 @@ pub fn issue_token(
     user_id: Uuid,
     role: &str,
     session_ver: i64,
+    stage: Stage,
 ) -> anyhow::Result<String> {
     let now = chrono::Utc::now().timestamp() as u64;
     let claims = Claims {
         sub: user_id,
         role: role.to_owned(),
         sv: session_ver,
+        st: stage,
         iat: now,
-        exp: now + COOKIE_TTL_SECS as u64,
+        exp: now + stage.ttl_secs() as u64,
     };
     Ok(encode(
         &Header::new(Algorithm::HS256),
@@ -173,13 +210,13 @@ pub fn decode_token(state: &AppState, token: &str) -> Option<Claims> {
 }
 
 /// The session cookie carrying `token` (web.cookie_secure decides Secure).
-pub fn session_cookie(state: &AppState, token: String) -> Cookie<'static> {
+pub fn session_cookie(state: &AppState, token: String, stage: Stage) -> Cookie<'static> {
     Cookie::build((COOKIE_NAME, token))
         .http_only(true)
         .same_site(SameSite::Strict)
         .path("/")
         .secure(state.cfg().web.cookie_secure)
-        .max_age(time::Duration::seconds(COOKIE_TTL_SECS))
+        .max_age(time::Duration::seconds(stage.ttl_secs()))
         .build()
 }
 
@@ -195,14 +232,20 @@ pub fn cleared_cookie(state: &AppState) -> Cookie<'static> {
 }
 
 // ---------------------------------------------------------------------------
-// Authenticated-user extractor. Binds the session to a live, enabled user on
-// every request (no stale-role or stale-enabled states from old tokens).
+// Session extractors. Both bind the session to a live, enabled user on every
+// request (no stale-role or stale-enabled states from old tokens).
 // ---------------------------------------------------------------------------
 
+/// A fully authenticated session (stage Full). An admin session is only
+/// accepted while the admin has an active TOTP (defense in depth: every
+/// path that removes it also bumps session_ver).
 pub struct AuthUser {
     pub id: Uuid,
     pub login: String,
     pub role: String,
+    /// Client address (behind trusted proxies: the forwarded client);
+    /// None only where no connection info exists (tests).
+    pub ip: Option<IpAddr>,
 }
 
 impl AuthUser {
@@ -215,6 +258,71 @@ impl AuthUser {
     }
 }
 
+/// Any live session, including an enrollment-only one. Only the 2FA
+/// enrollment endpoints take this.
+pub struct SessionUser {
+    pub id: Uuid,
+    pub login: String,
+    pub role: String,
+    pub stage: Stage,
+    pub ip: Option<IpAddr>,
+}
+
+/// The request's client address (see client_ip.rs), if the connection info
+/// is present.
+pub fn request_ip(parts: &Parts, state: &AppState) -> Option<IpAddr> {
+    parts
+        .extensions
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|ci| {
+            crate::client_ip::client_ip(ci.0.ip(), &parts.headers, &state.cfg().web.trusted_proxies)
+        })
+}
+
+#[derive(sqlx::FromRow)]
+struct SessionRow {
+    id: Uuid,
+    login: String,
+    role: String,
+    enabled: bool,
+    session_ver: i64,
+    totp_active: bool,
+}
+
+async fn session(parts: &mut Parts, state: &AppState) -> Result<(Claims, SessionRow), ApiError> {
+    let jar = CookieJar::from_request_parts(parts, state)
+        .await
+        .unwrap_or_default();
+    let token = jar
+        .get(COOKIE_NAME)
+        .map(|c| c.value())
+        .ok_or_else(ApiError::unauthorized)?;
+
+    let claims = decode_token(state, token).ok_or_else(ApiError::unauthorized)?;
+
+    // Disabled or expired (role=user) accounts lose existing sessions;
+    // so does every token issued before the last session_ver bump.
+    let row = sqlx::query_as::<_, SessionRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT u.id, u.login, u.role, (u.enabled AND NOT {}) AS enabled, u.session_ver, \
+         EXISTS (SELECT 1 FROM user_totp t WHERE t.user_id = u.id AND t.enabled_at IS NOT NULL) \
+         AS totp_active FROM users u WHERE u.id = $1",
+        crate::enforce::EXPIRED
+    )))
+    .bind(claims.sub)
+    .fetch_optional(state.pg())
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "auth db error");
+        ApiError::internal()
+    })?
+    .ok_or_else(ApiError::unauthorized)?;
+
+    if !row.enabled || row.session_ver != claims.sv {
+        return Err(ApiError::unauthorized());
+    }
+    Ok((claims, row))
+}
+
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = ApiError;
 
@@ -222,47 +330,49 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let jar = CookieJar::from_request_parts(parts, state)
-            .await
-            .unwrap_or_default();
-        let token = jar
-            .get(COOKIE_NAME)
-            .map(|c| c.value())
-            .ok_or_else(ApiError::unauthorized)?;
-
-        let claims = decode_token(state, token).ok_or_else(ApiError::unauthorized)?;
-
-        #[derive(sqlx::FromRow)]
-        struct Row {
-            id: Uuid,
-            login: String,
-            role: String,
-            enabled: bool,
-            session_ver: i64,
-        }
-        // Disabled or expired (role=user) accounts lose existing sessions;
-        // so does every token issued before the last session_ver bump.
-        let row = sqlx::query_as::<_, Row>(sqlx::AssertSqlSafe(format!(
-            "SELECT u.id, u.login, u.role, (u.enabled AND NOT {}) AS enabled, u.session_ver \
-             FROM users u WHERE u.id = $1",
-            crate::enforce::EXPIRED
-        )))
-        .bind(claims.sub)
-        .fetch_optional(state.pg())
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "auth db error");
-            ApiError::internal()
-        })?
-        .ok_or_else(ApiError::unauthorized)?;
-
-        if !row.enabled || row.session_ver != claims.sv {
+        let (claims, row) = session(parts, state).await?;
+        if claims.st != Stage::Full || (row.role == "admin" && !row.totp_active) {
             return Err(ApiError::unauthorized());
         }
         Ok(AuthUser {
             id: row.id,
             login: row.login,
             role: row.role,
+            ip: request_ip(parts, state),
         })
+    }
+}
+
+impl FromRequestParts<AppState> for SessionUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let (claims, row) = session(parts, state).await?;
+        Ok(SessionUser {
+            id: row.id,
+            login: row.login,
+            role: row.role,
+            stage: claims.st,
+            ip: request_ip(parts, state),
+        })
+    }
+}
+
+/// The request's client address, if connection info is present (always in
+/// production). Never rejects, so it is safe on endpoints whose every
+/// failure must be the canonical rejection (the subscription).
+pub struct MaybeClientIp(pub Option<IpAddr>);
+
+impl FromRequestParts<AppState> for MaybeClientIp {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(MaybeClientIp(request_ip(parts, state)))
     }
 }

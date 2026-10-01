@@ -7,7 +7,8 @@ React 19 + Vite 8 (Rolldown) + Tailwind 4 + TanStack Query 5；shadcn 风格组�
 
 - `src/lib/api.ts` — fetch 封装与 API 类型（手工镜像 `src/api.rs` 的 View 结构，改后端字段要同步）。`appBase`/`apiBase` 从 `location` 推导，**不内嵌前缀**。
 - `src/lib/router.ts` — 极简 history 路由，无路由依赖。
-- `src/pages/` — `login`、`admin-users`、`admin-nodes`、`portal`（单 SPA 双角色视图）。
+- `src/pages/` — `login`（含可选的验证码字段：TOTP 或恢复码）、`admin-users`（2FA 列 + Reset 2FA）、`admin-nodes`、`audit`（管理员审计视图，keyset 翻页）、`two-factor`（`EnrollPage` = enroll 会话的全屏引导，`TwoFactorCard` = 账户页/门户的 2FA 卡片）、`portal`（含"新订阅链接"）。
+- 会话阶段：`/me` 401 时探测 `/me/totp`，`stage === "enroll"`（无 2FA 的管理员）则只显示 `EnrollPage`；秘密与恢复码只在生成那次响应里出现，界面不缓存它们。
 - `src/components/ui/` — button/input/card/table/badge/label。
 
 ## 规则

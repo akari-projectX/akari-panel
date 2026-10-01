@@ -2,8 +2,19 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 
+use crate::audit::Actor;
 use crate::config::PanelConfig;
 use crate::install;
+
+/// A small pool for one CLI command, migrations applied.
+async fn connect(cfg: &PanelConfig) -> Result<sqlx::PgPool> {
+    let pg = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&cfg.database_url)
+        .await?;
+    crate::db::migrate(&pg).await?;
+    Ok(pg)
+}
 
 /// Creates the first admin (or any) account. Reads the password from
 /// AKARI_ADMIN_PASSWORD or a hidden interactive prompt.
@@ -12,23 +23,34 @@ pub async fn admin_add(cfg: PanelConfig, login: String, role: String) -> Result<
         bail!("role must be 'admin' or 'user'");
     }
     let hash = read_password_hash()?;
-
-    let pg = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&cfg.database_url)
-        .await?;
-    crate::db::migrate(&pg).await?;
-
+    let pg = connect(&cfg).await?;
     let id = uuid::Uuid::new_v4();
+    let mut tx = pg.begin().await?;
     sqlx::query("INSERT INTO users (id, login, password_hash, role) VALUES ($1, $2, $3, $4)")
         .bind(id)
         .bind(&login)
         .bind(&hash)
         .bind(&role)
-        .execute(&pg)
+        .execute(&mut *tx)
         .await
         .with_context(|| format!("insert user {login}"))?;
+    crate::audit::record(
+        &mut tx,
+        &Actor::cli(),
+        "user.create",
+        "user",
+        Some(id.to_string()),
+        None,
+        Some(serde_json::json!({
+            "login": login, "role": role, "enabled": true, "password": crate::audit::CHANGED,
+        })),
+    )
+    .await?;
+    tx.commit().await?;
     println!("created {role} account: {login} ({id})");
+    if role == "admin" {
+        println!("two-factor authentication is mandatory: enroll at the first login");
+    }
     Ok(())
 }
 
@@ -47,44 +69,60 @@ fn read_password_hash() -> Result<String> {
 /// session_ver, so every existing session of the account ends.
 pub async fn admin_passwd(cfg: PanelConfig, login: String) -> Result<()> {
     let hash = read_password_hash()?;
-    let pg = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&cfg.database_url)
-        .await?;
-    crate::db::migrate(&pg).await?;
-    let n = sqlx::query("UPDATE users SET password_hash = $2 WHERE login = $1")
-        .bind(&login)
-        .bind(&hash)
-        .execute(&pg)
-        .await
-        .with_context(|| format!("update user {login}"))?
-        .rows_affected();
-    if n == 0 {
+    let pg = connect(&cfg).await?;
+    let mut tx = pg.begin().await?;
+    let id: Option<uuid::Uuid> =
+        sqlx::query_scalar("UPDATE users SET password_hash = $2 WHERE login = $1 RETURNING id")
+            .bind(&login)
+            .bind(&hash)
+            .fetch_optional(&mut *tx)
+            .await
+            .with_context(|| format!("update user {login}"))?;
+    let Some(id) = id else {
         bail!("no such account: {login}");
-    }
+    };
+    crate::audit::record(
+        &mut tx,
+        &Actor::cli(),
+        "user.update",
+        "user",
+        Some(id.to_string()),
+        None,
+        Some(serde_json::json!({ "password": crate::audit::CHANGED })),
+    )
+    .await?;
+    tx.commit().await?;
     println!("password changed for {login}; its sessions are revoked");
     Ok(())
 }
 
 pub async fn node_add(cfg: PanelConfig, name: String, out: Option<PathBuf>) -> Result<()> {
     let inst = install::ensure(&cfg)?;
-    let pg = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&cfg.database_url)
-        .await?;
-    crate::db::migrate(&pg).await?;
+    let pg = connect(&cfg).await?;
 
     let id = uuid::Uuid::new_v4();
     let (cert_pem, key_pem, serial) =
         install::issue_agent_cert(&inst.ca_pem, &inst.ca_key_pem, &id.to_string())?;
 
+    let mut tx = pg.begin().await?;
     sqlx::query("INSERT INTO nodes (id, name, cert_serial, status) VALUES ($1, $2, $3, 'pending')")
         .bind(id)
         .bind(&name)
         .bind(&serial)
-        .execute(&pg)
+        .execute(&mut *tx)
         .await
         .with_context(|| format!("insert node {name}"))?;
+    crate::audit::record(
+        &mut tx,
+        &Actor::cli(),
+        "node.create",
+        "node",
+        Some(id.to_string()),
+        None,
+        Some(serde_json::json!({ "name": name, "cert_serial": serial })),
+    )
+    .await?;
+    tx.commit().await?;
 
     let bootstrap = format!(
         "# akari agent bootstrap for node '{name}'\n\
@@ -115,13 +153,9 @@ pub async fn node_add(cfg: PanelConfig, name: String, out: Option<PathBuf>) -> R
 /// Phase 1 of a node deletion (see api::apply_begin_delete_node); a running
 /// panel (reaper) completes it.
 pub async fn node_delete(cfg: PanelConfig, id: uuid::Uuid) -> Result<()> {
-    let pg = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&cfg.database_url)
-        .await?;
-    crate::db::migrate(&pg).await?;
+    let pg = connect(&cfg).await?;
     let mut tx = pg.begin().await?;
-    let started = crate::api::apply_begin_delete_node(&mut tx, id)
+    let started = crate::api::apply_begin_delete_node(&mut tx, &Actor::cli(), id)
         .await
         .map_err(|e| anyhow::anyhow!("node {id}: {}", e.message()))?;
     tx.commit().await?;
@@ -175,4 +209,194 @@ pub async fn node_list(cfg: PanelConfig) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// `akari admin reset-2fa <login>`.
+pub async fn admin_reset_2fa(cfg: PanelConfig, login: String) -> Result<()> {
+    let pg = connect(&cfg).await?;
+    let was = reset_2fa(&pg, &login).await?;
+    println!("two-factor authentication of {login} reset (was: {was}); its sessions are revoked");
+    Ok(())
+}
+
+async fn reset_2fa(pg: &sqlx::PgPool, login: &str) -> Result<&'static str> {
+    let mut tx = pg.begin().await?;
+    let id: Option<uuid::Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE login = $1")
+        .bind(login)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let Some(id) = id else {
+        bail!("no such account: {login}");
+    };
+    let was = crate::api::apply_reset_totp(&mut tx, &Actor::cli(), id)
+        .await
+        .map_err(|e| anyhow::anyhow!("{login}: {}", e.message()))?;
+    tx.commit().await?;
+    Ok(was)
+}
+
+/// `akari secrets rotate-prefix`.
+pub async fn secrets_rotate_prefix(cfg: PanelConfig) -> Result<()> {
+    let pg = connect(&cfg).await?;
+    let prefix = rotate_prefix(&pg, &cfg.data_dir).await?;
+    println!("new route prefix: /{prefix}");
+    println!("restart every panel instance to apply it; until then the old prefix keeps working.");
+    println!("every subscription URL changes with it: users need their new URL (portal).");
+    Ok(())
+}
+
+/// Audit row and file write: the new prefix is written before the commit,
+/// so a committed row always means the file changed. The prefix itself is
+/// never recorded.
+async fn rotate_prefix(pg: &sqlx::PgPool, data_dir: &std::path::Path) -> Result<String> {
+    let mut tx = pg.begin().await?;
+    crate::audit::record(
+        &mut tx,
+        &Actor::cli(),
+        "secrets.rotate_prefix",
+        "install",
+        None,
+        None,
+        Some(serde_json::json!({ "route_prefix": crate::audit::CHANGED })),
+    )
+    .await?;
+    let prefix = install::rotate_prefix(data_dir)?;
+    tx.commit()
+        .await
+        .context("prefix rotated, but recording it in the audit log failed")?;
+    Ok(prefix)
+}
+
+/// `akari secrets rotate-jwt`.
+pub async fn secrets_rotate_jwt(cfg: PanelConfig) -> Result<()> {
+    let pg = connect(&cfg).await?;
+    let n = rotate_jwt(&pg, &cfg.data_dir).await?;
+    println!("new jwt.key written; all sessions of {n} accounts revoked now.");
+    println!("restart every panel instance to sign new sessions with the new key.");
+    Ok(())
+}
+
+/// Bump every account's session_ver (all sessions die at once, on every
+/// running instance, even before the restart that loads the new key),
+/// write the new key, commit with the audit row.
+async fn rotate_jwt(pg: &sqlx::PgPool, data_dir: &std::path::Path) -> Result<u64> {
+    let mut tx = pg.begin().await?;
+    let n = sqlx::query("UPDATE users SET session_ver = session_ver + 1")
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    crate::audit::record(
+        &mut tx,
+        &Actor::cli(),
+        "secrets.rotate_jwt",
+        "install",
+        None,
+        None,
+        Some(
+            serde_json::json!({ "jwt_key": crate::audit::CHANGED, "sessions_revoked_accounts": n }),
+        ),
+    )
+    .await?;
+    install::rotate_jwt_key(data_dir)?;
+    tx.commit()
+        .await
+        .context("jwt key rotated, but revoking sessions / auditing failed")?;
+    Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testdb::TestDb;
+
+    async fn audit_actions(db: &TestDb) -> Vec<(String, String)> {
+        sqlx::query_as("SELECT actor_login, action FROM audit_log ORDER BY id")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn rotations_and_reset_are_audited_and_effective() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("akari-rot-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = PanelConfig {
+            data_dir: dir.clone(),
+            ..Default::default()
+        };
+        let before = install::ensure(&cfg).unwrap();
+        let u = db.user().await;
+        let a = db.admin().await;
+        let sv = |id: uuid::Uuid| {
+            let pool = db.pool.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>("SELECT session_ver FROM users WHERE id = $1")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        let (u0, a0) = (sv(u).await, sv(a).await);
+
+        // JWT: new key on disk, every session_ver bumped now.
+        assert_eq!(rotate_jwt(&db.pool, &dir).await.unwrap(), 2);
+        assert_eq!((sv(u).await, sv(a).await), (u0 + 1, a0 + 1));
+        let after = install::ensure(&cfg).unwrap();
+        assert_ne!(after.jwt_secret, before.jwt_secret);
+
+        // Prefix: the next start serves the new one.
+        let p = rotate_prefix(&db.pool, &dir).await.unwrap();
+        assert_ne!(p, before.route_prefix);
+        assert_eq!(install::ensure(&cfg).unwrap().route_prefix, p);
+
+        // reset-2fa by login: rows gone, sessions revoked.
+        let login: String = sqlx::query_scalar("SELECT login FROM users WHERE id = $1")
+            .bind(a)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        // db.admin() has an active TOTP.
+        sqlx::query("INSERT INTO user_recovery_codes (user_id, code_hash) VALUES ($1, 'h')")
+            .bind(a)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let a1 = sv(a).await;
+        assert_eq!(reset_2fa(&db.pool, &login).await.unwrap(), "active");
+        assert_eq!(sv(a).await, a1 + 1);
+        let left: i64 = sqlx::query_scalar(
+            "SELECT (SELECT count(*) FROM user_totp) + (SELECT count(*) FROM user_recovery_codes)",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(left, 0);
+        assert!(reset_2fa(&db.pool, "no-such-login").await.is_err());
+
+        let rows = audit_actions(&db).await;
+        let want: Vec<(String, String)> = [
+            "secrets.rotate_jwt",
+            "secrets.rotate_prefix",
+            "user.totp.reset",
+        ]
+        .iter()
+        .map(|a| ("cli".to_string(), a.to_string()))
+        .collect();
+        assert_eq!(rows, want);
+        // No secret material in the rows.
+        let text: String = sqlx::query_scalar("SELECT string_agg(after::text, ' ') FROM audit_log")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert!(
+            !text.contains(&p) && !text.contains(&after.jwt_secret),
+            "{text}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+        db.drop().await;
+    }
 }

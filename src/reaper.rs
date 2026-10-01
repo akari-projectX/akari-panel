@@ -43,10 +43,21 @@ const DUE: &str = "(n.deleting_at IS NOT NULL AND ( \
 pub async fn reap_loop(state: AppState) {
     let mut tick = tokio::time::interval(EVERY);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Audit retention (M1-7) rides on this loop: hourly, any instance
+    // (concurrent prunes are harmless).
+    let mut next_prune = tokio::time::Instant::now();
     loop {
         tick.tick().await;
         if let Err(e) = reap_once(&state).await {
             tracing::warn!(error = %e, "node reaper failed");
+        }
+        if tokio::time::Instant::now() >= next_prune {
+            next_prune = tokio::time::Instant::now() + crate::audit::PRUNE_EVERY;
+            match crate::audit::prune(state.pg(), state.cfg().audit.retention_days).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(rows = n, "audit log pruned"),
+                Err(e) => tracing::warn!(error = %e, "audit log prune failed"),
+            }
         }
     }
 }
@@ -160,7 +171,7 @@ mod tests {
         set("UPDATE nodes SET status = 'online', last_seen_at = now() WHERE id = $1").await;
         assert!(!due(&db, n).await, "not deleting");
         let mut tx = db.pool.begin().await.unwrap();
-        crate::api::apply_begin_delete_node(&mut tx, n)
+        crate::api::apply_begin_delete_node(&mut tx, &crate::audit::Actor::test(), n)
             .await
             .unwrap();
         tx.commit().await.unwrap();

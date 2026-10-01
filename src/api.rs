@@ -13,6 +13,7 @@ use serde_json::json;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
+use crate::audit::Actor;
 use crate::auth::{self, ApiError, AuthUser, COOKIE_NAME};
 use crate::state::AppState;
 
@@ -24,12 +25,29 @@ use crate::state::AppState;
 pub struct LoginReq {
     pub login: String,
     pub password: String,
+    /// Second factor (M1-6): a 6-digit TOTP code or an unused recovery
+    /// code. Required by accounts with active 2FA, ignored by others.
+    #[serde(default)]
+    pub code: Option<String>,
 }
+
+/// Longest accepted `code` (a recovery code with separators is 14).
+const MAX_CODE_LEN: usize = 64;
 
 /// POST /auth/login. Failed attempts are rate limited per client address
 /// (behind trusted proxies: the X-Forwarded-For client, see client_ip.rs)
-/// and per login name (login_limit.rs). Every credential failure is the
-/// same 401 after the same argon2 work, whether or not the account exists.
+/// and per login name (login_limit.rs). Every credential failure — unknown
+/// account, wrong password, missing/wrong/replayed second factor — is the
+/// same 401 after the same work (one query, one argon2, the TOTP/recovery
+/// computations), so the response says nothing about which part was wrong
+/// or whether the account has 2FA.
+///
+/// Password and code arrive in the same request (no second step): there
+/// is no half-authenticated state or step token to store, bind, expire or
+/// replay, and the rate limit sees one attempt per guess of the pair.
+///
+/// An admin without active TOTP gets an enrollment-only session (stage
+/// "enroll", 15 min) that reaches nothing but the enrollment endpoints.
 pub async fn login(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -39,6 +57,9 @@ pub async fn login(
 ) -> Result<(CookieJar, Json<serde_json::Value>), ApiError> {
     if req.login.is_empty() || req.password.is_empty() {
         return Err(ApiError::bad_request("login and password are required"));
+    }
+    if req.code.as_deref().is_some_and(|c| c.len() > MAX_CODE_LEN) {
+        return Err(ApiError::bad_request("code is too long"));
     }
     let client = crate::client_ip::client_ip(addr.ip(), &headers, &state.cfg().web.trusted_proxies);
     let attempt =
@@ -50,19 +71,42 @@ pub async fn login(
             })?
             .ok_or_else(ApiError::too_many)?;
 
-    match check_credentials(&state, &req).await {
-        Ok(Some(row)) => {
-            attempt.release(&state).await;
-            let token = auth::issue_token(&state, row.id, &row.role, row.session_ver)?;
-            Ok((
-                jar.add(auth::session_cookie(&state, token)),
-                Json(json!({ "id": row.id, "login": row.login, "role": row.role })),
-            ))
-        }
-        Ok(None) => {
+    let failed =
+        |attempt: crate::login_limit::Attempt, account: Option<(Uuid, String)>, second: bool| {
+            let n = attempt.name_count;
             attempt.fail();
+            if let Some((id, login)) = account {
+                if second || n == 1 || n == crate::login_limit::PER_LOGIN {
+                    audit_login_failure(&state, id, login, client, second, n);
+                }
+            }
             Err(ApiError::unauthorized())
+        };
+
+    match check_credentials(&state, &req).await {
+        Ok(Checked::Ok { row, stage, proof }) => {
+            match finish_login(&state, &row, stage, proof.as_ref(), client).await {
+                Ok(true) => {
+                    attempt.release(&state).await;
+                    let token =
+                        auth::issue_token(&state, row.id, &row.role, row.session_ver, stage)?;
+                    Ok((
+                        jar.add(auth::session_cookie(&state, token, stage)),
+                        Json(json!({
+                            "id": row.id, "login": row.login, "role": row.role,
+                            "stage": stage.as_str(),
+                        })),
+                    ))
+                }
+                // Lost a race for the same TOTP step / recovery code.
+                Ok(false) => failed(attempt, Some((row.id, row.login)), true),
+                Err(e) => {
+                    attempt.release(&state).await;
+                    Err(e)
+                }
+            }
         }
+        Ok(Checked::Failed { account, second }) => failed(attempt, account, second),
         Err(e) => {
             // Not a credential failure (e.g. the database is down).
             attempt.release(&state).await;
@@ -80,31 +124,232 @@ struct LoginRow {
     expired: bool,
     password_hash: Option<String>,
     session_ver: i64,
+    /// Active TOTP only (enabled_at set); pending enrollments do not count.
+    totp_secret: Option<Vec<u8>>,
+    totp_last_step: Option<i64>,
+    recovery: Vec<String>,
+    db_now: i64,
 }
 
-/// The account if the credentials are valid and it may log in; `None` for
-/// every kind of credential failure (with equal argon2 work).
-async fn check_credentials(state: &AppState, req: &LoginReq) -> Result<Option<LoginRow>, ApiError> {
+enum Checked {
+    Ok {
+        row: LoginRow,
+        stage: auth::Stage,
+        proof: Option<crate::totp::Proof>,
+    },
+    /// `account`: the existing account the attempt named (for the audit
+    /// log only); `second`: the password was right, the second factor not.
+    Failed {
+        account: Option<(Uuid, String)>,
+        second: bool,
+    },
+}
+
+/// Verify password and second factor with the same work for every kind of
+/// failure.
+async fn check_credentials(state: &AppState, req: &LoginReq) -> Result<Checked, ApiError> {
     // Expiry applies to role=user only (an admin must never lock themselves
-    // out by a date).
+    // out by a date). TOTP state and unused recovery codes come in the same
+    // query, so failures cost the same whatever the account's 2FA state.
     let row = sqlx::query_as::<_, LoginRow>(sqlx::AssertSqlSafe(format!(
-        "SELECT u.id, u.login, u.role, u.enabled, u.password_hash, u.session_ver, {} AS expired \
-             FROM users u WHERE u.login = $1",
+        "SELECT u.id, u.login, u.role, u.enabled, u.password_hash, u.session_ver, {} AS expired, \
+         t.secret_enc AS totp_secret, t.last_step AS totp_last_step, \
+         ARRAY(SELECT r.code_hash FROM user_recovery_codes r \
+               WHERE r.user_id = u.id AND r.used_at IS NULL ORDER BY r.code_hash) AS recovery, \
+         EXTRACT(EPOCH FROM now())::bigint AS db_now \
+         FROM users u LEFT JOIN user_totp t ON t.user_id = u.id AND t.enabled_at IS NOT NULL \
+         WHERE u.login = $1",
         crate::enforce::EXPIRED
     )))
     .bind(&req.login)
     .fetch_optional(state.pg())
     .await?;
 
+    let code = req.code.as_deref().unwrap_or("");
+    let account = row.as_ref().map(|r| (r.id, r.login.clone()));
+    // Always run the second-factor computation (dummy key without a row).
+    let proof = match &row {
+        Some(r) => crate::totp::check(
+            state.totp(),
+            r.id,
+            r.totp_secret.as_deref(),
+            r.totp_last_step,
+            &r.recovery,
+            code,
+            crate::totp::step_of(r.db_now),
+        ),
+        None => crate::totp::check(state.totp(), Uuid::nil(), None, None, &[], code, 0),
+    };
+
     let Some(row) = row.filter(|r| r.enabled && !r.expired && r.password_hash.is_some()) else {
         auth::scrub_password(&req.password);
-        return Ok(None);
+        return Ok(Checked::Failed {
+            account,
+            second: false,
+        });
     };
-    let ok = auth::verify_password(
+    if !auth::verify_password(
         &req.password,
         row.password_hash.as_deref().unwrap_or_default(),
-    );
-    Ok(ok.then_some(row))
+    ) {
+        return Ok(Checked::Failed {
+            account,
+            second: false,
+        });
+    }
+    if let Some(secret) = row.totp_secret.as_deref() {
+        if proof.is_none() {
+            if state.totp().open(row.id, secret).is_none() {
+                tracing::error!(user = %row.id,
+                    "TOTP secret cannot be decrypted (data/totp.key changed?); \
+                     recover the account with `akari admin reset-2fa`");
+            }
+            return Ok(Checked::Failed {
+                account,
+                second: true,
+            });
+        }
+        return Ok(Checked::Ok {
+            row,
+            stage: auth::Stage::Full,
+            proof,
+        });
+    }
+    let stage = if row.role == "admin" {
+        auth::Stage::Enroll
+    } else {
+        auth::Stage::Full
+    };
+    Ok(Checked::Ok {
+        row,
+        stage,
+        proof: None,
+    })
+}
+
+/// Seconds between recorded successful logins of one regular user (admins:
+/// every login).
+const LOGIN_OK_THROTTLE_SECS: i64 = 600;
+
+/// Commit a successful login: consume the second factor (replay-checked,
+/// multi-instance safe) and write the audit row, in one transaction.
+/// `Ok(false)`: the TOTP step or recovery code was used concurrently.
+async fn finish_login(
+    state: &AppState,
+    row: &LoginRow,
+    stage: auth::Stage,
+    proof: Option<&crate::totp::Proof>,
+    ip: std::net::IpAddr,
+) -> Result<bool, ApiError> {
+    use crate::totp::Proof;
+    let mut tx = state.pg().begin().await?;
+    let consumed = match proof {
+        Some(Proof::Totp(step)) => sqlx::query(
+            "UPDATE user_totp SET last_step = $2 WHERE user_id = $1 \
+             AND enabled_at IS NOT NULL AND (last_step IS NULL OR last_step < $2)",
+        )
+        .bind(row.id)
+        .bind(step)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected(),
+        Some(Proof::Recovery(hash)) => sqlx::query(
+            "UPDATE user_recovery_codes SET used_at = now() \
+             WHERE user_id = $1 AND code_hash = $2 AND used_at IS NULL",
+        )
+        .bind(row.id)
+        .bind(hash)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected(),
+        None => 1,
+    };
+    if consumed != 1 {
+        return Ok(false);
+    }
+    if row.role == "admin" || login_ok_due(state, row.id).await {
+        let mut after = json!({
+            "stage": stage.as_str(),
+            "method": proof.map_or("password", |p| p.method()),
+        });
+        if let Some(Proof::Recovery(_)) = proof {
+            after["recovery_codes_left"] = json!(row.recovery.len().saturating_sub(1));
+        }
+        crate::audit::record(
+            &mut tx,
+            &Actor::account(row.id, &row.login, Some(ip)),
+            "auth.login",
+            "user",
+            Some(row.id.to_string()),
+            None,
+            Some(after),
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// Throttle for regular users' login audit rows (one per account per
+/// LOGIN_OK_THROTTLE_SECS); records when Valkey cannot say.
+async fn login_ok_due(state: &AppState, user: Uuid) -> bool {
+    use fred::prelude::*;
+    let r: Result<Option<String>, _> = state
+        .valkey()
+        .set(
+            format!("akari:audit:login_ok:{user}"),
+            "1",
+            Some(Expiration::EX(LOGIN_OK_THROTTLE_SECS)),
+            Some(SetOptions::NX),
+            false,
+        )
+        .await;
+    match r {
+        Ok(v) => v.is_some(),
+        Err(e) => {
+            tracing::warn!(error = %e, "login audit throttle unavailable");
+            true
+        }
+    }
+}
+
+/// Record a failed login of an existing account, off the request path (its
+/// cost must not tell an attacker that the account exists).
+fn audit_login_failure(
+    state: &AppState,
+    id: Uuid,
+    login: String,
+    ip: std::net::IpAddr,
+    second_factor: bool,
+    failures_in_window: i64,
+) {
+    let state = state.clone();
+    tokio::spawn(async move {
+        let r = async {
+            let mut c = state.pg().acquire().await?;
+            crate::audit::record(
+                &mut c,
+                &Actor {
+                    id: None,
+                    login,
+                    ip: Some(ip),
+                },
+                "auth.login_failed",
+                "user",
+                Some(id.to_string()),
+                None,
+                Some(json!({
+                    "reason": if second_factor { "second_factor" } else { "credentials" },
+                    "failures_in_window": failures_in_window,
+                    "window_limit": crate::login_limit::PER_LOGIN,
+                })),
+            )
+            .await
+        };
+        if let Err(e) = r.await {
+            tracing::warn!(error = %e, "login failure audit failed");
+        }
+    });
 }
 
 /// POST /auth/logout. Always clears the cookie; a live session also bumps
@@ -142,14 +387,26 @@ pub async fn revoke_sessions(
     Path((_, id)): Path<(String, Uuid)>,
 ) -> Result<axum::http::StatusCode, ApiError> {
     user.require_admin()?;
+    let mut tx = state.pg().begin().await?;
     let n = sqlx::query("UPDATE users SET session_ver = session_ver + 1 WHERE id = $1")
         .bind(id)
-        .execute(state.pg())
+        .execute(&mut *tx)
         .await?
         .rows_affected();
     if n == 0 {
         return Err(ApiError::not_found());
     }
+    crate::audit::record(
+        &mut tx,
+        &Actor::of(&user),
+        "user.revoke_sessions",
+        "user",
+        Some(id.to_string()),
+        None,
+        None,
+    )
+    .await?;
+    tx.commit().await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -206,7 +463,15 @@ pub struct UserView {
     traffic_used_bytes: i64,
     expires_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
+    /// Active TOTP second factor (mandatory for admins).
+    totp_enabled: bool,
 }
+
+/// UserView columns (alias `users` table as itself).
+const USER_VIEW_COLS: &str =
+    "id, login, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, \
+     EXISTS (SELECT 1 FROM user_totp t WHERE t.user_id = users.id AND t.enabled_at IS NOT NULL) \
+     AS totp_enabled";
 
 #[derive(Deserialize)]
 pub struct Pagination {
@@ -222,10 +487,9 @@ pub async fn list_users(
     user.require_admin()?;
     let limit = p.limit.unwrap_or(50).clamp(1, 200);
     let offset = p.offset.unwrap_or(0).max(0);
-    let rows = sqlx::query_as::<_, UserView>(
-        "SELECT id, login, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at \
-         FROM users ORDER BY created_at LIMIT $1 OFFSET $2",
-    )
+    let rows = sqlx::query_as::<_, UserView>(sqlx::AssertSqlSafe(format!(
+        "SELECT {USER_VIEW_COLS} FROM users ORDER BY created_at LIMIT $1 OFFSET $2"
+    )))
     .bind(limit)
     .bind(offset)
     .fetch_all(state.pg())
@@ -277,10 +541,12 @@ pub async fn create_user(
     let id = Uuid::new_v4();
     // Mint the subscription token now; its plaintext is returned exactly once.
     let sub_token = crate::sub::generate_token();
+    let mut tx = state.pg().begin().await?;
     match sqlx::query_as::<_, UserView>(
         "INSERT INTO users (id, login, password_hash, role, traffic_limit_bytes, expires_at, sub_token_hash) \
          VALUES ($1, $2, $3, $4, $5, $6, $7) \
-         RETURNING id, login, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at",
+         RETURNING id, login, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, \
+         created_at, false AS totp_enabled",
     )
     .bind(id)
     .bind(&req.login)
@@ -289,16 +555,33 @@ pub async fn create_user(
     .bind(req.traffic_limit_bytes)
     .bind(req.expires_at)
     .bind(crate::sub::hash_token(&sub_token))
-    .fetch_one(state.pg())
+    .fetch_one(&mut *tx)
     .await
     {
-        Ok(view) => Ok((
-            axum::http::StatusCode::CREATED,
-            Json(CreatedUser {
-                user: view,
-                sub_token,
-            })),
-        ),
+        Ok(view) => {
+            crate::audit::record(
+                &mut tx,
+                &Actor::of(&user),
+                "user.create",
+                "user",
+                Some(view.id.to_string()),
+                None,
+                Some(json!({
+                    "login": view.login, "role": view.role, "enabled": view.enabled,
+                    "traffic_limit_bytes": view.traffic_limit_bytes, "expires_at": view.expires_at,
+                    "password": crate::audit::CHANGED, "sub_token": crate::audit::CHANGED,
+                })),
+            )
+            .await?;
+            tx.commit().await?;
+            Ok((
+                axum::http::StatusCode::CREATED,
+                Json(CreatedUser {
+                    user: view,
+                    sub_token,
+                }),
+            ))
+        }
         Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
             Err(ApiError::conflict("login already exists"))
         }
@@ -417,8 +700,10 @@ pub struct UpdateUserReq {
 }
 
 /// PATCH /users/{id}. Returns the nodes whose versions were bumped.
+/// Audited ("user.update", exact before/after via RETURNING old/new).
 async fn apply_update_user(
     conn: &mut PgConnection,
+    actor: &Actor,
     id: Uuid,
     req: &UpdateUserReq,
 ) -> Result<Vec<Uuid>, ApiError> {
@@ -477,9 +762,31 @@ async fn apply_update_user(
         set.push("expiry_enforced = false");
     }
     qb.push(" WHERE id = ").push_bind(id);
-    if qb.build().execute(&mut *conn).await?.rows_affected() == 0 {
+    qb.push(format!(
+        " RETURNING {}, {}",
+        crate::audit::user_snapshot_sql("old"),
+        crate::audit::user_snapshot_sql("new")
+    ));
+    let Some((before, mut after)) = qb
+        .build_query_as::<(serde_json::Value, serde_json::Value)>()
+        .fetch_optional(&mut *conn)
+        .await?
+    else {
         return Err(ApiError::not_found());
+    };
+    if password.is_some() {
+        after["password"] = json!(crate::audit::CHANGED);
     }
+    crate::audit::record(
+        conn,
+        actor,
+        "user.update",
+        "user",
+        Some(id.to_string()),
+        Some(before),
+        Some(after),
+    )
+    .await?;
     if !affects_nodes {
         return Ok(Vec::new());
     }
@@ -495,7 +802,7 @@ pub async fn update_user(
 ) -> Result<(CookieJar, Json<UserView>), ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    apply_update_user(&mut tx, id, &req).await?;
+    apply_update_user(&mut tx, &Actor::of(&user), id, &req).await?;
     // An admin changing their own password (or role) revokes their own
     // sessions too; this one carries on with a fresh token. Read in the
     // same transaction, so the token matches exactly what was committed.
@@ -511,14 +818,14 @@ pub async fn update_user(
     let jar = match own {
         Some((role, true, sv)) => jar.add(auth::session_cookie(
             &state,
-            auth::issue_token(&state, id, &role, sv)?,
+            auth::issue_token(&state, id, &role, sv, auth::Stage::Full)?,
+            auth::Stage::Full,
         )),
         _ => jar,
     };
-    let row = sqlx::query_as::<_, UserView>(
-        "SELECT id, login, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at \
-         FROM users WHERE id = $1",
-    )
+    let row = sqlx::query_as::<_, UserView>(sqlx::AssertSqlSafe(format!(
+        "SELECT {USER_VIEW_COLS} FROM users WHERE id = $1"
+    )))
     .bind(id)
     .fetch_optional(state.pg())
     .await?
@@ -529,15 +836,22 @@ pub async fn update_user(
 /// Lock the user's nodes, then the user; remove the assignments, bump
 /// exactly those nodes, delete the user — one transaction, so an agent
 /// woken by the bump can never read "new version + old user set".
-async fn apply_delete_user(conn: &mut PgConnection, id: Uuid) -> Result<Vec<Uuid>, ApiError> {
+async fn apply_delete_user(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    id: Uuid,
+) -> Result<Vec<Uuid>, ApiError> {
     lock_user_nodes(conn, id).await?;
-    let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
-        .bind(id)
-        .fetch_optional(&mut *conn)
-        .await?;
-    if exists.is_none() {
+    let before: Option<serde_json::Value> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM users u WHERE id = $1 FOR UPDATE",
+        crate::audit::user_snapshot_sql("u")
+    )))
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(before) = before else {
         return Err(ApiError::not_found());
-    }
+    };
     let nodes: Vec<Uuid> =
         sqlx::query_scalar("DELETE FROM node_users WHERE user_id = $1 RETURNING node_id")
             .bind(id)
@@ -551,6 +865,16 @@ async fn apply_delete_user(conn: &mut PgConnection, id: Uuid) -> Result<Vec<Uuid
         .bind(id)
         .execute(&mut *conn)
         .await?;
+    crate::audit::record(
+        conn,
+        actor,
+        "user.delete",
+        "user",
+        Some(id.to_string()),
+        Some(before),
+        Some(json!({ "unassigned_nodes": nodes })),
+    )
+    .await?;
     Ok(nodes)
 }
 
@@ -561,7 +885,7 @@ pub async fn delete_user(
 ) -> Result<axum::http::StatusCode, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    apply_delete_user(&mut tx, id).await?;
+    apply_delete_user(&mut tx, &Actor::of(&user), id).await?;
     tx.commit().await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
@@ -660,6 +984,7 @@ pub struct UpdateNodeReq {
 /// agent converges either way. Returns whether it bumped.
 async fn apply_update_node(
     conn: &mut PgConnection,
+    actor: &Actor,
     id: Uuid,
     req: &UpdateNodeReq,
 ) -> Result<bool, ApiError> {
@@ -720,13 +1045,33 @@ async fn apply_update_node(
             .push_bind_unseparated(v);
     }
     qb.push(" WHERE id = ").push_bind(id);
-    match qb.build().execute(&mut *conn).await {
-        Ok(_) => Ok(toggles),
+    qb.push(format!(
+        " RETURNING {}, {}",
+        crate::audit::node_snapshot_sql("old"),
+        crate::audit::node_snapshot_sql("new")
+    ));
+    let (before, after) = match qb
+        .build_query_as::<(serde_json::Value, serde_json::Value)>()
+        .fetch_one(&mut *conn)
+        .await
+    {
+        Ok(r) => r,
         Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
-            Err(ApiError::conflict("node name already exists"))
+            return Err(ApiError::conflict("node name already exists"))
         }
-        Err(e) => Err(e.into()),
-    }
+        Err(e) => return Err(e.into()),
+    };
+    crate::audit::record(
+        conn,
+        actor,
+        "node.update",
+        "node",
+        Some(id.to_string()),
+        Some(before),
+        Some(after),
+    )
+    .await?;
+    Ok(toggles)
 }
 
 pub async fn update_node(
@@ -737,7 +1082,7 @@ pub async fn update_node(
 ) -> Result<Json<NodeView>, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    apply_update_node(&mut tx, id, &req).await?;
+    apply_update_node(&mut tx, &Actor::of(&user), id, &req).await?;
     tx.commit().await?;
     let row = sqlx::query_as::<_, NodeView>(sqlx::AssertSqlSafe(format!(
         "SELECT {NODE_VIEW_COLS} FROM nodes WHERE id = $1"
@@ -758,6 +1103,7 @@ pub async fn update_node(
 /// started the deletion.
 pub(crate) async fn apply_begin_delete_node(
     conn: &mut PgConnection,
+    actor: &Actor,
     id: Uuid,
 ) -> Result<bool, ApiError> {
     let deleting: Option<bool> =
@@ -769,12 +1115,24 @@ pub(crate) async fn apply_begin_delete_node(
         None => Err(ApiError::not_found()),
         Some(true) => Ok(false),
         Some(false) => {
-            sqlx::query(
+            let before: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
                 "UPDATE nodes SET deleting_at = now(), delete_acked_at = NULL, enabled = false, \
-                 config_version = config_version + 1, updated_at = now() WHERE id = $1",
-            )
+                 config_version = config_version + 1, updated_at = now() WHERE id = $1 \
+                 RETURNING {}",
+                crate::audit::node_snapshot_sql("old")
+            )))
             .bind(id)
-            .execute(&mut *conn)
+            .fetch_one(&mut *conn)
+            .await?;
+            crate::audit::record(
+                conn,
+                actor,
+                "node.delete",
+                "node",
+                Some(id.to_string()),
+                Some(before),
+                Some(json!({ "phase": "deleting" })),
+            )
             .await?;
             Ok(true)
         }
@@ -806,7 +1164,7 @@ pub async fn delete_node(
 ) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    let started = apply_begin_delete_node(&mut tx, id).await?;
+    let started = apply_begin_delete_node(&mut tx, &Actor::of(&user), id).await?;
     tx.commit().await?;
     if started {
         tracing::info!(node = %id, "node deletion started");
@@ -999,6 +1357,7 @@ fn prune_credentials(
 /// config_version (the snapshot it triggers carries the pruned users).
 async fn apply_set_inbounds(
     conn: &mut PgConnection,
+    actor: &Actor,
     id: Uuid,
     inbounds: &serde_json::Value,
 ) -> Result<i64, ApiError> {
@@ -1006,17 +1365,18 @@ async fn apply_set_inbounds(
     let protocols = inbound_protocols(inbounds);
     refuse_if_deleting(conn, id).await?;
 
-    let version: Option<i64> = sqlx::query_scalar(
+    let updated: Option<(i64, serde_json::Value)> = sqlx::query_as(
         "UPDATE nodes SET xray_inbounds = $2, config_version = config_version + 1, updated_at = now() \
-         WHERE id = $1 RETURNING config_version",
+         WHERE id = $1 RETURNING new.config_version, old.xray_inbounds",
     )
     .bind(id)
     .bind(inbounds)
     .fetch_optional(&mut *conn)
     .await?;
-    let Some(version) = version else {
+    let Some((version, old_inbounds)) = updated else {
         return Err(ApiError::not_found());
     };
+    let mut pruned = Vec::new();
 
     let rows: Vec<(Uuid, serde_json::Value)> = sqlx::query_as(
         "SELECT user_id, credentials FROM node_users WHERE node_id = $1 ORDER BY user_id FOR UPDATE",
@@ -1032,6 +1392,7 @@ async fn apply_set_inbounds(
         if kept.len() == before {
             continue;
         }
+        pruned.push(user_id);
         if kept.is_empty() {
             sqlx::query("DELETE FROM node_users WHERE node_id = $1 AND user_id = $2")
                 .bind(id)
@@ -1050,6 +1411,18 @@ async fn apply_set_inbounds(
             .await?;
         }
     }
+    let mut after = crate::audit::inbounds_summary(inbounds);
+    after["pruned_credentials_of"] = json!(pruned);
+    crate::audit::record(
+        conn,
+        actor,
+        "node.set_inbounds",
+        "node",
+        Some(id.to_string()),
+        Some(crate::audit::inbounds_summary(&old_inbounds)),
+        Some(after),
+    )
+    .await?;
     Ok(version)
 }
 
@@ -1061,7 +1434,7 @@ pub async fn set_inbounds(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    let version = apply_set_inbounds(&mut tx, id, &req.inbounds).await?;
+    let version = apply_set_inbounds(&mut tx, &Actor::of(&user), id, &req.inbounds).await?;
     tx.commit().await?;
     Ok(Json(json!({ "config_version": version })))
 }
@@ -1078,10 +1451,11 @@ pub async fn regenerate_sub_token(
     Path((_, id)): Path<(String, Uuid)>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     user.require_admin()?;
-    let token = crate::sub::issue_token_for(&state, id).await.map_err(|e| {
-        tracing::error!(error = %e, "sub token issue failed");
-        ApiError::internal()
-    })?;
+    let mut tx = state.pg().begin().await?;
+    let token = crate::sub::rotate_token(&mut tx, &Actor::of(&user), id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    tx.commit().await?;
     Ok(Json(json!({ "sub_token": token })))
 }
 
@@ -1124,6 +1498,7 @@ fn is_fk_violation(e: &sqlx::Error) -> bool {
 /// read under it. Returns the generated account.
 async fn apply_assign(
     conn: &mut PgConnection,
+    actor: &Actor,
     user_id: Uuid,
     node_id: Uuid,
     req: &AssignReq,
@@ -1210,6 +1585,19 @@ async fn apply_assign(
         .execute(&mut *conn)
         .await?;
     bump_node_users(conn, node_id).await?;
+    crate::audit::record(
+        conn,
+        actor,
+        "node.assign",
+        "assignment",
+        Some(format!("{user_id}@{node_id}")),
+        None,
+        Some(json!({
+            "user_id": user_id, "node_id": node_id, "inbound_tag": req.inbound_tag,
+            "protocol": req.protocol, "account": crate::audit::CHANGED,
+        })),
+    )
+    .await?;
     Ok(account)
 }
 
@@ -1221,7 +1609,7 @@ pub async fn assign_user(
 ) -> Result<(axum::http::StatusCode, Response), ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    let account = apply_assign(&mut tx, user_id, node_id, &req).await?;
+    let account = apply_assign(&mut tx, &Actor::of(&user), user_id, node_id, &req).await?;
     tx.commit().await?;
     Ok((
         axum::http::StatusCode::CREATED,
@@ -1236,6 +1624,7 @@ pub async fn assign_user(
 
 pub(crate) async fn apply_unassign(
     conn: &mut PgConnection,
+    actor: &Actor,
     user_id: Uuid,
     node_id: Uuid,
 ) -> Result<(), ApiError> {
@@ -1256,6 +1645,16 @@ pub(crate) async fn apply_unassign(
     }
     record_departed(conn, node_id, user_id).await?;
     bump_node_users(conn, node_id).await?;
+    crate::audit::record(
+        conn,
+        actor,
+        "node.unassign",
+        "assignment",
+        Some(format!("{user_id}@{node_id}")),
+        Some(json!({ "user_id": user_id, "node_id": node_id })),
+        None,
+    )
+    .await?;
     Ok(())
 }
 
@@ -1286,7 +1685,74 @@ pub async fn unassign_user(
 ) -> Result<axum::http::StatusCode, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    apply_unassign(&mut tx, user_id, node_id).await?;
+    apply_unassign(&mut tx, &Actor::of(&user), user_id, node_id).await?;
+    tx.commit().await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------------
+// Second factor: admin reset (also `akari admin reset-2fa`).
+// ---------------------------------------------------------------------------
+
+/// Remove an account's TOTP (active or pending) and recovery codes and end
+/// all its sessions, in the caller's transaction; audited
+/// ("user.totp.reset"). An admin then gets an enrollment-only session at
+/// the next login. Returns what was removed ("active", "pending", "none").
+pub(crate) async fn apply_reset_totp(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    user_id: Uuid,
+) -> Result<&'static str, ApiError> {
+    let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
+        .bind(user_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+    if exists.is_none() {
+        return Err(ApiError::not_found());
+    }
+    let removed: Option<bool> = sqlx::query_scalar(
+        "DELETE FROM user_totp WHERE user_id = $1 RETURNING enabled_at IS NOT NULL",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let codes = sqlx::query("DELETE FROM user_recovery_codes WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected();
+    sqlx::query("UPDATE users SET session_ver = session_ver + 1 WHERE id = $1")
+        .bind(user_id)
+        .execute(&mut *conn)
+        .await?;
+    let was = match removed {
+        Some(true) => "active",
+        Some(false) => "pending",
+        None => "none",
+    };
+    crate::audit::record(
+        conn,
+        actor,
+        "user.totp.reset",
+        "user",
+        Some(user_id.to_string()),
+        Some(json!({ "totp": was, "recovery_codes": codes })),
+        Some(json!({ "totp": "none", "recovery_codes": 0 })),
+    )
+    .await?;
+    Ok(was)
+}
+
+/// DELETE /api/v1/users/{id}/totp (admin): reset the account's 2FA and end
+/// its sessions (resetting your own ends this session too).
+pub async fn reset_totp(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((_, id)): Path<(String, Uuid)>,
+) -> Result<axum::http::StatusCode, ApiError> {
+    user.require_admin()?;
+    let mut tx = state.pg().begin().await?;
+    apply_reset_totp(&mut tx, &Actor::of(&user), id).await?;
     tx.commit().await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
@@ -1408,7 +1874,11 @@ mod tests {
             let req = std::sync::Arc::new(req);
             Box::new(move |c| {
                 let req = req.clone();
-                Box::pin(async move { apply_update_user(c, u, &req).await.map(|_| ()) })
+                Box::pin(async move {
+                    apply_update_user(c, &crate::audit::Actor::test(), u, &req)
+                        .await
+                        .map(|_| ())
+                })
             })
         };
         let cases: Vec<(&str, Op, Vec<Uuid>, bool)> = vec![
@@ -1490,6 +1960,7 @@ mod tests {
                     Box::pin(async move {
                         apply_update_node(
                             c,
+                            &crate::audit::Actor::test(),
                             n1,
                             &UpdateNodeReq {
                                 enabled: Some(Some(false)),
@@ -1509,6 +1980,7 @@ mod tests {
                     Box::pin(async move {
                         apply_update_node(
                             c,
+                            &crate::audit::Actor::test(),
                             n1,
                             &UpdateNodeReq {
                                 enabled: Some(Some(true)),
@@ -1528,6 +2000,7 @@ mod tests {
                     Box::pin(async move {
                         apply_update_node(
                             c,
+                            &crate::audit::Actor::test(),
                             n1,
                             &UpdateNodeReq {
                                 enabled: Some(Some(true)),
@@ -1547,6 +2020,7 @@ mod tests {
                     Box::pin(async move {
                         apply_update_node(
                             c,
+                            &crate::audit::Actor::test(),
                             n1,
                             &UpdateNodeReq {
                                 server_addr: Some(Some("h".into())),
@@ -1566,6 +2040,7 @@ mod tests {
                     Box::pin(async move {
                         apply_set_inbounds(
                             c,
+                            &crate::audit::Actor::test(),
                             n1,
                             &json!([{"tag": "in-vless", "protocol": "vless"}]),
                         )
@@ -1582,6 +2057,7 @@ mod tests {
                     Box::pin(async move {
                         apply_assign(
                             c,
+                            &crate::audit::Actor::test(),
                             u,
                             other,
                             &AssignReq {
@@ -1598,14 +2074,22 @@ mod tests {
             ),
             (
                 "unassign",
-                Box::new(move |c| Box::pin(async move { apply_unassign(c, u, other).await })),
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        apply_unassign(c, &crate::audit::Actor::test(), u, other).await
+                    })
+                }),
                 vec![other],
                 true,
             ),
             (
                 "delete user",
                 Box::new(move |c| {
-                    Box::pin(async move { apply_delete_user(c, u).await.map(|_| ()) })
+                    Box::pin(async move {
+                        apply_delete_user(c, &crate::audit::Actor::test(), u)
+                            .await
+                            .map(|_| ())
+                    })
                 }),
                 vec![n1, n2],
                 true,
@@ -1613,7 +2097,11 @@ mod tests {
             (
                 "begin node deletion",
                 Box::new(move |c| {
-                    Box::pin(async move { apply_begin_delete_node(c, doomed).await.map(|_| ()) })
+                    Box::pin(async move {
+                        apply_begin_delete_node(c, &crate::audit::Actor::test(), doomed)
+                            .await
+                            .map(|_| ())
+                    })
                 }),
                 vec![doomed],
                 true,
@@ -1621,7 +2109,11 @@ mod tests {
             (
                 "begin node deletion again (no-op)",
                 Box::new(move |c| {
-                    Box::pin(async move { apply_begin_delete_node(c, doomed).await.map(|_| ()) })
+                    Box::pin(async move {
+                        apply_begin_delete_node(c, &crate::audit::Actor::test(), doomed)
+                            .await
+                            .map(|_| ())
+                    })
                 }),
                 vec![doomed],
                 false,
@@ -1642,11 +2134,20 @@ mod tests {
             for n in &nodes {
                 before.push(db.versions(*n).await);
             }
+            let audit_before = audit_count(&db.pool).await;
             let mut tx = db.pool.begin().await.unwrap();
             op(&mut tx)
                 .await
                 .unwrap_or_else(|e| panic!("{name}: {}", e.status()));
             tx.commit().await.unwrap();
+            // M1-7: every mutation writes exactly one audit row (an
+            // idempotent repeat of a node deletion changes nothing).
+            let want_rows = i64::from(name != "begin node deletion again (no-op)");
+            assert_eq!(
+                audit_count(&db.pool).await - audit_before,
+                want_rows,
+                "{name}: audit rows"
+            );
             for (n, b) in nodes.iter().zip(before) {
                 let after = db.versions(*n).await;
                 assert_eq!(after != b, bumps, "{name}: node {n} {b:?} -> {after:?}");
@@ -1740,7 +2241,10 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            apply_update_user(&mut tx, u, &req).await.ok().unwrap(),
+            apply_update_user(&mut tx, &crate::audit::Actor::test(), u, &req)
+                .await
+                .ok()
+                .unwrap(),
             vec![n]
         );
         tx.commit().await.unwrap();
@@ -1784,7 +2288,7 @@ mod tests {
             let pool = db.pool.clone();
             async move {
                 let mut tx = pool.begin().await.unwrap();
-                let r = apply_assign(&mut tx, user, node, &req).await;
+                let r = apply_assign(&mut tx, &crate::audit::Actor::test(), user, node, &req).await;
                 if r.is_ok() {
                     tx.commit().await.unwrap();
                 }
@@ -1823,7 +2327,7 @@ mod tests {
             let pool = db.pool.clone();
             async move {
                 let mut tx = pool.begin().await.unwrap();
-                let r = apply_update_node(&mut tx, n, &req).await;
+                let r = apply_update_node(&mut tx, &crate::audit::Actor::test(), n, &req).await;
                 tx.commit().await.unwrap();
                 r
             }
@@ -1866,13 +2370,22 @@ mod tests {
 
         let mut tx = db.pool.begin().await.unwrap();
         assert_eq!(
-            err_status(apply_update_user(&mut tx, u, &UpdateUserReq::default()).await),
+            err_status(
+                apply_update_user(
+                    &mut tx,
+                    &crate::audit::Actor::test(),
+                    u,
+                    &UpdateUserReq::default()
+                )
+                .await
+            ),
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
             err_status(
                 apply_update_user(
                     &mut tx,
+                    &crate::audit::Actor::test(),
                     u,
                     &UpdateUserReq {
                         traffic_limit_bytes: Some(Some(-1)),
@@ -1887,6 +2400,7 @@ mod tests {
             err_status(
                 apply_update_user(
                     &mut tx,
+                    &crate::audit::Actor::test(),
                     Uuid::new_v4(),
                     &UpdateUserReq {
                         enabled: Some(Some(true)),
@@ -1921,7 +2435,7 @@ mod tests {
         let mut tx = db.pool.begin().await.unwrap();
         // in-vless becomes vmess (protocol change) and in-t stays.
         apply_set_inbounds(
-            &mut tx,
+            &mut tx, &crate::audit::Actor::test(),
             n,
             &json!([{"tag": "in-vless", "protocol": "vmess"}, {"tag": "in-t", "protocol": "trojan"}]),
         )
@@ -1969,7 +2483,10 @@ mod tests {
                     inbound_tag: "in-vless".into(),
                     protocol: "vless".into(),
                 };
-                apply_assign(&mut tx, who, n, &req).await.ok().unwrap();
+                apply_assign(&mut tx, &crate::audit::Actor::test(), who, n, &req)
+                    .await
+                    .ok()
+                    .unwrap();
                 tx.commit().await.unwrap();
             }));
         }
@@ -2015,7 +2532,10 @@ mod tests {
         };
         let (n, u) = db.member().await;
         let mut tx = db.pool.begin().await.unwrap();
-        apply_unassign(&mut tx, u, n).await.ok().unwrap();
+        apply_unassign(&mut tx, &crate::audit::Actor::test(), u, n)
+            .await
+            .ok()
+            .unwrap();
         tx.commit().await.unwrap();
         assert_eq!(departed(n, u).await, 1);
         let req = AssignReq {
@@ -2023,14 +2543,22 @@ mod tests {
             protocol: "vless".into(),
         };
         let mut tx = db.pool.begin().await.unwrap();
-        apply_assign(&mut tx, u, n, &req).await.ok().unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(departed(n, u).await, 0, "re-assign clears it");
-        let mut tx = db.pool.begin().await.unwrap();
-        apply_set_inbounds(&mut tx, n, &json!([{"tag": "other", "protocol": "trojan"}]))
+        apply_assign(&mut tx, &crate::audit::Actor::test(), u, n, &req)
             .await
             .ok()
             .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(departed(n, u).await, 0, "re-assign clears it");
+        let mut tx = db.pool.begin().await.unwrap();
+        apply_set_inbounds(
+            &mut tx,
+            &crate::audit::Actor::test(),
+            n,
+            &json!([{"tag": "other", "protocol": "trojan"}]),
+        )
+        .await
+        .ok()
+        .unwrap();
         tx.commit().await.unwrap();
         assert_eq!(departed(n, u).await, 1, "pruned to nothing = departed");
         db.drop().await;
@@ -2047,6 +2575,7 @@ mod tests {
         let mut tx = db.pool.begin().await.unwrap();
         let bad = apply_update_node(
             &mut tx,
+            &crate::audit::Actor::test(),
             n,
             &UpdateNodeReq {
                 traffic_max_rate_bytes_per_sec: Some(Some(0)),
@@ -2059,6 +2588,7 @@ mod tests {
         let mut tx = db.pool.begin().await.unwrap();
         apply_update_node(
             &mut tx,
+            &crate::audit::Actor::test(),
             n,
             &UpdateNodeReq {
                 traffic_max_rate_bytes_per_sec: Some(Some(1000)),
@@ -2067,11 +2597,16 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(apply_begin_delete_node(&mut tx, n).await.unwrap());
+        assert!(
+            apply_begin_delete_node(&mut tx, &crate::audit::Actor::test(), n)
+                .await
+                .unwrap()
+        );
         tx.commit().await.unwrap();
         let mut tx = db.pool.begin().await.unwrap();
         let r = apply_update_node(
             &mut tx,
+            &crate::audit::Actor::test(),
             n,
             &UpdateNodeReq {
                 enabled: Some(Some(true)),
@@ -2082,7 +2617,13 @@ mod tests {
         assert_eq!(err_status(r), StatusCode::CONFLICT);
         tx.rollback().await.unwrap();
         let mut tx = db.pool.begin().await.unwrap();
-        let r = apply_set_inbounds(&mut tx, n, &json!([{"tag": "x", "protocol": "vless"}])).await;
+        let r = apply_set_inbounds(
+            &mut tx,
+            &crate::audit::Actor::test(),
+            n,
+            &json!([{"tag": "x", "protocol": "vless"}]),
+        )
+        .await;
         assert_eq!(err_status(r), StatusCode::CONFLICT);
         tx.rollback().await.unwrap();
         let mut tx = db.pool.begin().await.unwrap();
@@ -2091,7 +2632,7 @@ mod tests {
             protocol: "vless".into(),
         };
         assert_eq!(
-            err_status(apply_assign(&mut tx, u, n, &req).await),
+            err_status(apply_assign(&mut tx, &crate::audit::Actor::test(), u, n, &req).await),
             StatusCode::CONFLICT
         );
         tx.rollback().await.unwrap();
@@ -2105,7 +2646,10 @@ mod tests {
         assert_eq!((enabled, rate), (false, Some(1000)));
         let mut tx = db.pool.begin().await.unwrap();
         assert_eq!(
-            err_status(apply_begin_delete_node(&mut tx, Uuid::new_v4()).await),
+            err_status(
+                apply_begin_delete_node(&mut tx, &crate::audit::Actor::test(), Uuid::new_v4())
+                    .await
+            ),
             StatusCode::NOT_FOUND
         );
         tx.rollback().await.unwrap();
@@ -2197,7 +2741,7 @@ mod tests {
                 .fetch_one(state.pg())
                 .await
                 .unwrap();
-        auth::issue_token(state, id, &role, sv).unwrap()
+        auth::issue_token(state, id, &role, sv, auth::Stage::Full).unwrap()
     }
 
     /// Does the extractor accept this session token?
@@ -2215,7 +2759,7 @@ mod tests {
 
     async fn update(db: &TestDb, id: Uuid, req: UpdateUserReq) -> Result<(), ApiError> {
         let mut tx = db.pool.begin().await.unwrap();
-        apply_update_user(&mut tx, id, &req).await?;
+        apply_update_user(&mut tx, &crate::audit::Actor::test(), id, &req).await?;
         tx.commit().await.map_err(ApiError::from)
     }
 
@@ -2224,6 +2768,7 @@ mod tests {
             id,
             login: "a".into(),
             role: "admin".into(),
+            ip: None,
         }
     }
 
@@ -2236,6 +2781,8 @@ mod tests {
         };
         let admin = db.admin().await;
         let u = db.user().await;
+        // u is promoted below: an admin's full session needs active 2FA.
+        db.totp_active(u).await;
         let state = AppState::for_test(db.pool.clone()).await;
         type Step<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'a>>;
         let sql = |q: &'static str| -> Step<'_> {
@@ -2417,6 +2964,7 @@ mod tests {
                 id: u,
                 login: "u".into(),
                 role: "user".into(),
+                ip: None,
             },
             Path(("p".into(), admin)),
         )
@@ -2550,7 +3098,11 @@ mod tests {
             .await,
         );
         let mut tx = db.pool.begin().await.unwrap();
-        conflict(apply_delete_user(&mut tx, a).await.map(|_| ()));
+        conflict(
+            apply_delete_user(&mut tx, &crate::audit::Actor::test(), a)
+                .await
+                .map(|_| ()),
+        );
         drop(tx);
         // Harmless changes to the last admin still work.
         update(
@@ -2598,7 +3150,9 @@ mod tests {
         );
         // A disabled admin does not count and may be deleted.
         let mut tx = db.pool.begin().await.unwrap();
-        apply_delete_user(&mut tx, a).await.unwrap();
+        apply_delete_user(&mut tx, &crate::audit::Actor::test(), a)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
         // A newly promoted user makes room.
         let u = db.user().await;
@@ -2613,7 +3167,9 @@ mod tests {
         .await
         .unwrap();
         let mut tx = db.pool.begin().await.unwrap();
-        apply_delete_user(&mut tx, b).await.unwrap();
+        apply_delete_user(&mut tx, &crate::audit::Actor::test(), b)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
         // Direct SQL is guarded too (the trigger, not the handler).
         let e = sqlx::query("UPDATE users SET enabled = false WHERE role = 'admin'")
@@ -2643,12 +3199,15 @@ mod tests {
             ..Default::default()
         };
         let mut t1 = db.pool.begin().await.unwrap();
-        apply_update_user(&mut t1, b, &demote).await.unwrap();
+        apply_update_user(&mut t1, &crate::audit::Actor::test(), b, &demote)
+            .await
+            .unwrap();
         let pool = db.pool.clone();
         let t2 = tokio::spawn(async move {
             let mut t2 = pool.begin().await.unwrap();
             let r = apply_update_user(
                 &mut t2,
+                &crate::audit::Actor::test(),
                 a,
                 &UpdateUserReq {
                     role: Some(Some("user".into())),
@@ -2684,6 +3243,7 @@ mod tests {
                     let r = match kind % 3 {
                         0 => apply_update_user(
                             &mut tx,
+                            &crate::audit::Actor::test(),
                             id,
                             &UpdateUserReq {
                                 enabled: Some(Some(false)),
@@ -2694,6 +3254,7 @@ mod tests {
                         .map(|_| ()),
                         1 => apply_update_user(
                             &mut tx,
+                            &crate::audit::Actor::test(),
                             id,
                             &UpdateUserReq {
                                 role: Some(Some("user".into())),
@@ -2702,7 +3263,9 @@ mod tests {
                         )
                         .await
                         .map(|_| ()),
-                        _ => apply_delete_user(&mut tx, id).await.map(|_| ()),
+                        _ => apply_delete_user(&mut tx, &crate::audit::Actor::test(), id)
+                            .await
+                            .map(|_| ()),
                     };
                     match r {
                         Ok(()) => tx.commit().await.map_err(ApiError::from),
@@ -2763,6 +3326,7 @@ mod tests {
             Json(LoginReq {
                 login: login.into(),
                 password: password.into(),
+                code: None,
             }),
         )
         .await;
@@ -2913,6 +3477,219 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS
         );
         clear_rl(&state, &ips, &[&login, &victim]).await;
+        drop(state);
+        db.drop().await;
+    }
+
+    // ----- M1-7: audit log ------------------------------------------------
+
+    async fn audit_count(pool: &sqlx::PgPool) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM audit_log")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// The audit row lives and dies with its mutation's transaction.
+    #[tokio::test]
+    async fn audit_row_shares_the_mutation_transaction() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = db.member().await;
+        let actor = Actor {
+            id: Some(Uuid::new_v4()),
+            login: "boss".into(),
+            ip: Some("2001:db8::7".parse().unwrap()),
+        };
+        let mut tx = db.pool.begin().await.unwrap();
+        apply_update_user(
+            &mut tx,
+            &actor,
+            u,
+            &UpdateUserReq {
+                enabled: Some(Some(false)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let inside: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_log")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(inside, 1);
+        assert_eq!(audit_count(&db.pool).await, 0, "not visible before commit");
+        tx.rollback().await.unwrap();
+        assert_eq!(audit_count(&db.pool).await, 0, "rollback = no audit row");
+        let enabled: bool = sqlx::query_scalar("SELECT enabled FROM users WHERE id = $1")
+            .bind(u)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert!(enabled);
+        // A failing mutation leaves nothing either (deleting node: 409).
+        let mut tx = db.pool.begin().await.unwrap();
+        apply_begin_delete_node(&mut tx, &actor, n).await.unwrap();
+        tx.commit().await.unwrap();
+        let mut tx = db.pool.begin().await.unwrap();
+        let r = apply_set_inbounds(
+            &mut tx,
+            &actor,
+            n,
+            &json!([{"tag": "x", "protocol": "vless"}]),
+        )
+        .await;
+        assert_eq!(err_status(r), StatusCode::CONFLICT);
+        drop(tx);
+        // Committed: who, from where, what, before/after.
+        let mut tx = db.pool.begin().await.unwrap();
+        apply_update_user(
+            &mut tx,
+            &actor,
+            u,
+            &UpdateUserReq {
+                traffic_limit_bytes: Some(Some(42)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let row: (
+            Option<Uuid>,
+            String,
+            Option<String>,
+            String,
+            String,
+            serde_json::Value,
+            serde_json::Value,
+        ) = sqlx::query_as(
+            "SELECT actor_id, actor_login, ip, action, target_id, before, after FROM audit_log \
+                 WHERE action = 'user.update'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, actor.id);
+        assert_eq!(row.1, "boss");
+        assert_eq!(row.2.as_deref(), Some("2001:db8::7"));
+        assert_eq!(row.4, u.to_string());
+        assert_eq!(row.5["traffic_limit_bytes"], serde_json::Value::Null);
+        assert_eq!(row.6["traffic_limit_bytes"], 42);
+        assert_eq!(audit_count(&db.pool).await, 2, "node.delete + user.update");
+        db.drop().await;
+    }
+
+    /// No secret ever reaches the audit log: password hashes, generated
+    /// proxy credentials, inbound keys, subscription tokens.
+    #[tokio::test]
+    async fn audit_rows_are_redacted() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let a = db.admin().await;
+        let state = AppState::for_test(db.pool.clone()).await;
+        let admin = admin_user(a);
+        let (_, Json(created)) = create_user(
+            State(state.clone()),
+            admin_user(a),
+            ApiJson(CreateUserReq {
+                login: "redact-me".into(),
+                password: "first-password-123".into(),
+                role: None,
+                traffic_limit_bytes: None,
+                expires_at: None,
+            }),
+        )
+        .await
+        .unwrap();
+        let u = created.user.id;
+        let mut secrets = vec![
+            "first-password-123".to_string(),
+            created.sub_token.clone(),
+            crate::sub::hash_token(&created.sub_token),
+        ];
+        let n = db.node().await;
+        let mut tx = db.pool.begin().await.unwrap();
+        apply_set_inbounds(
+            &mut tx,
+            &Actor::of(&admin),
+            n,
+            &json!([{"tag": "in-vless", "protocol": "vless", "port": 443,
+                "streamSettings": {"network": "tcp", "security": "reality",
+                    "realitySettings": {"privateKey": "REALITY-PRIVATE-KEY", "shortIds": ["5eed"]}}}]),
+        )
+        .await
+        .unwrap();
+        let account = apply_assign(
+            &mut tx,
+            &Actor::of(&admin),
+            u,
+            n,
+            &AssignReq {
+                inbound_tag: "in-vless".into(),
+                protocol: "vless".into(),
+            },
+        )
+        .await
+        .unwrap();
+        secrets.push(account["id"].as_str().unwrap().to_string());
+        secrets.push("REALITY-PRIVATE-KEY".into());
+        apply_update_user(
+            &mut tx,
+            &Actor::of(&admin),
+            u,
+            &UpdateUserReq {
+                password: Some(Some("second-password-456".into())),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        secrets.push("second-password-456".into());
+        let token = crate::sub::rotate_token(&mut tx, &Actor::of(&admin), u)
+            .await
+            .unwrap()
+            .unwrap();
+        secrets.push(token.clone());
+        secrets.push(crate::sub::hash_token(&token));
+        tx.commit().await.unwrap();
+        let hash: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
+            .bind(u)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        secrets.push(hash);
+        secrets.push("$argon2".into());
+        let text: String = sqlx::query_scalar(
+            "SELECT string_agg(concat_ws(' ', actor_login, action, target_id, before::text, after::text), ' ') \
+             FROM audit_log",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        for s in &secrets {
+            assert!(
+                !text.contains(s.as_str()),
+                "{s} leaked into the audit log: {text}"
+            );
+        }
+        for want in [
+            "user.create",
+            "node.set_inbounds",
+            "node.assign",
+            "user.update",
+            "user.sub_token.rotate",
+        ] {
+            assert!(text.contains(want), "{want} missing");
+        }
+        let marker: serde_json::Value =
+            sqlx::query_scalar("SELECT after FROM audit_log WHERE action = 'user.update'")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(marker["password"], "changed");
         drop(state);
         db.drop().await;
     }

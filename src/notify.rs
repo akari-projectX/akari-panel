@@ -501,7 +501,7 @@ mod tests {
         rx_other.borrow_and_update();
 
         let mut tx = a.pg().begin().await.unwrap();
-        crate::api::apply_begin_delete_node(&mut tx, n)
+        crate::api::apply_begin_delete_node(&mut tx, &crate::audit::Actor::test(), n)
             .await
             .unwrap();
         tx.commit().await.unwrap();

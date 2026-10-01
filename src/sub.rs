@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use sqlx::FromRow;
 use uuid::Uuid;
 
+use crate::auth::MaybeClientIp;
 use crate::{reject, state::AppState};
 
 // ---------------------------------------------------------------------------
@@ -26,6 +27,18 @@ pub fn generate_token() -> String {
 
 pub fn hash_token(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
+}
+
+/// Length of a generated token (32 bytes, base64url without padding).
+const TOKEN_LEN: usize = 43;
+
+/// Could this path segment be a token we issued? Anything else is
+/// rejected before any hashing or database work.
+fn plausible_token(token: &str) -> bool {
+    token.len() == TOKEN_LEN
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 // ---------------------------------------------------------------------------
@@ -52,6 +65,7 @@ fn detect_format(user_agent: &str) -> Format {
 
 #[derive(FromRow)]
 struct SubUser {
+    id: Uuid,
     traffic_used_bytes: i64,
     traffic_limit_bytes: Option<i64>,
     expires_at: Option<DateTime<Utc>>,
@@ -365,13 +379,11 @@ fn render_sing_box(proxies: &[Proxy]) -> Value {
     let outbounds: Vec<Value> = proxies
         .iter()
         .map(|p| {
-            let mut ob = json!({
-                "tag": p.name,
-                "type": p.protocol,
-                "server": p.server,
-                "server_port": p.net.port,
-            });
-            let obj = ob.as_object_mut().unwrap();
+            let mut obj = serde_json::Map::new();
+            obj.insert("tag".into(), json!(p.name));
+            obj.insert("type".into(), json!(p.protocol));
+            obj.insert("server".into(), json!(p.server));
+            obj.insert("server_port".into(), json!(p.net.port));
             match p.protocol.as_str() {
                 "vless" | "vmess" => {
                     obj.insert("uuid".into(), json!(p.id_or_password));
@@ -408,7 +420,7 @@ fn render_sing_box(proxies: &[Proxy]) -> Value {
                 }
                 obj.insert("transport".into(), transport);
             }
-            ob
+            Value::Object(obj)
         })
         .collect();
     json!({
@@ -432,18 +444,41 @@ fn pad(body: String) -> String {
 
 /// GET /{prefix}/sub/{token} — the client-facing subscription. The token is
 /// the credential; no cookie or other auth applies. Any failure (unknown
-/// token, disabled or expired user) returns the same empty 404 rejection as everything
-/// else, and success headers are only sent on success.
+/// token, disabled or expired user, rate limit) returns the same empty 404
+/// rejection as everything else, and success headers are only sent on
+/// success.
+///
+/// Rate limit (M1-10, `[sub]` config): per client address (IPv6 per /64)
+/// checked first, then per token — the per-token counter is only created
+/// for tokens that belong to a served user, so junk tokens cannot multiply
+/// Valkey keys (per-address keys are bounded by the distinct addresses
+/// seen in a window). Over a limit = the canonical rejection, never 429.
+/// If Valkey is unreachable the limit fails open (subscriptions keep
+/// working; logged).
+///
+/// The token never reaches a log line: nothing here logs it, and request
+/// paths that are logged anywhere must go through `web::redacted_path`.
 pub async fn subscription(
     State(state): State<AppState>,
+    MaybeClientIp(client): MaybeClientIp,
     Path((_, token)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
+    let limits = &state.cfg().sub;
+    if let Some(ip) = client {
+        let key = format!("akari:rl:sub:ip:{}", crate::client_ip::bucket(ip));
+        if !within_limit(&state, key, limits.rate_per_ip, limits.rate_window_secs).await {
+            return reject::not_found();
+        }
+    }
+    if !plausible_token(&token) {
+        return reject::not_found();
+    }
     let hash = hash_token(&token);
 
     // Only served users (role=user, enabled, not expired; enforce::SERVED).
     let user = match sqlx::query_as::<_, SubUser>(sqlx::AssertSqlSafe(format!(
-        "SELECT u.traffic_used_bytes, u.traffic_limit_bytes, u.expires_at \
+        "SELECT u.id, u.traffic_used_bytes, u.traffic_limit_bytes, u.expires_at \
          FROM users u WHERE u.sub_token_hash = $1 AND {}",
         crate::enforce::SERVED
     )))
@@ -458,14 +493,20 @@ pub async fn subscription(
             return reject::not_found();
         }
     };
+    // Keyed by user id (bounded by the number of users; a rotated token
+    // does not reset the user's window).
+    let key = format!("akari:rl:sub:user:{}", user.id);
+    if !within_limit(&state, key, limits.rate_per_token, limits.rate_window_secs).await {
+        return reject::not_found();
+    }
     let rows = match sqlx::query_as::<_, NodeRow>(
         "SELECT n.name, n.xray_inbounds, n.server_addr, nu.credentials \
          FROM node_users nu \
          JOIN nodes n ON n.id = nu.node_id AND n.enabled = true \
          JOIN users u ON u.id = nu.user_id AND u.enabled = true \
-         WHERE nu.user_id = (SELECT id FROM users WHERE sub_token_hash = $1)",
+         WHERE nu.user_id = $1",
     )
-    .bind(&hash)
+    .bind(user.id)
     .fetch_all(state.pg())
     .await
     {
@@ -528,14 +569,142 @@ pub async fn subscription(
         .into_response()
 }
 
-/// Admin-side helper: mint a subscription token for a user, store only its
-/// hash. The plaintext is shown exactly once, to the admin.
-pub async fn issue_token_for(state: &AppState, user_id: Uuid) -> anyhow::Result<String> {
+async fn within_limit(state: &AppState, key: String, limit: i64, window: i64) -> bool {
+    match crate::rate::hit(state, key, limit, window).await {
+        Ok(ok) => ok,
+        Err(e) => {
+            tracing::warn!(error = %e, "subscription rate limit unavailable (failing open)");
+            true
+        }
+    }
+}
+
+/// Mint a new subscription token for a user (the old one stops working at
+/// commit), in the caller's transaction, audited ("user.sub_token.rotate"
+/// with no token material). The plaintext is returned exactly once; the
+/// database keeps only its SHA-256. `None` if the user does not exist.
+pub async fn rotate_token(
+    conn: &mut sqlx::PgConnection,
+    actor: &crate::audit::Actor,
+    user_id: Uuid,
+) -> sqlx::Result<Option<String>> {
     let token = generate_token();
-    sqlx::query("UPDATE users SET sub_token_hash = $2 WHERE id = $1")
+    let n = sqlx::query("UPDATE users SET sub_token_hash = $2 WHERE id = $1")
         .bind(user_id)
         .bind(hash_token(&token))
-        .execute(state.pg())
-        .await?;
-    Ok(token)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected();
+    if n == 0 {
+        return Ok(None);
+    }
+    crate::audit::record(
+        conn,
+        actor,
+        "user.sub_token.rotate",
+        "user",
+        Some(user_id.to_string()),
+        None,
+        Some(json!({ "sub_token": crate::audit::CHANGED })),
+    )
+    .await?;
+    Ok(Some(token))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testdb::http::{rand_ip, Client};
+    use crate::testdb::TestDb;
+    use axum::http::StatusCode;
+    use fred::prelude::KeysInterface;
+
+    async fn user_with_token(db: &TestDb) -> (Uuid, String) {
+        let u = db.user().await;
+        let token = generate_token();
+        sqlx::query("UPDATE users SET sub_token_hash = $2 WHERE id = $1")
+            .bind(u)
+            .bind(hash_token(&token))
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        (u, token)
+    }
+
+    /// M1-10: over either limit the subscription answers the canonical
+    /// rejection — the same bytes as a junk URL or an unknown token, no
+    /// 429, no quota headers — while other clients/tokens are unaffected.
+    #[tokio::test]
+    async fn over_limit_is_byte_identical_to_junk() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let state = AppState::for_test_with(db.pool.clone(), |c| {
+            c.sub.rate_per_token = 3;
+            c.sub.rate_per_ip = 5;
+        })
+        .await;
+        let (u, token) = user_with_token(&db).await;
+        let (u2, token2) = user_with_token(&db).await;
+        let a = Client::new(&state, rand_ip());
+        let b = Client::new(&state, rand_ip());
+        let junk = a.get("/test/definitely-not-here").await.fingerprint();
+        assert_eq!(junk.0, StatusCode::NOT_FOUND);
+        assert!(junk.1.is_empty() && junk.2.is_empty(), "{junk:?}");
+        let unknown = format!("/test/sub/{}", generate_token());
+        assert_eq!(b.get(&unknown).await.fingerprint(), junk);
+        // Per token (any address): 3 fetches, then the rejection.
+        for c in [&a, &b, &a] {
+            let r = c.get(&format!("/test/sub/{token}")).await;
+            assert_eq!(r.status, StatusCode::OK);
+            assert!(r.headers.contains_key("subscription-userinfo"));
+        }
+        assert_eq!(
+            b.get(&format!("/test/sub/{token}")).await.fingerprint(),
+            junk
+        );
+        assert_eq!(
+            b.get(&format!("/test/sub/{token2}")).await.status,
+            StatusCode::OK
+        );
+        // Per address: a has made 1 junk + 2 token + ... requests; exhaust it.
+        let mut n = 0;
+        while a.get(&unknown).await.fingerprint() == junk {
+            n += 1;
+            if n > 10 {
+                break;
+            }
+            // Keep going until a valid token is refused for this address.
+            let r = a.get(&format!("/test/sub/{token2}")).await;
+            if r.status != StatusCode::OK {
+                assert_eq!(r.fingerprint(), junk);
+                break;
+            }
+        }
+        assert_eq!(
+            a.get(&format!("/test/sub/{token2}")).await.fingerprint(),
+            junk
+        );
+        // Another address still gets token2.
+        let c = Client::new(&state, rand_ip());
+        assert_eq!(
+            c.get(&format!("/test/sub/{token2}")).await.status,
+            StatusCode::OK
+        );
+        // Implausible tokens never touch Valkey or the database.
+        assert_eq!(c.get("/test/sub/short").await.fingerprint(), junk);
+        let mut keys = vec![
+            format!("akari:rl:sub:user:{u}"),
+            format!("akari:rl:sub:user:{u2}"),
+        ];
+        for cl in [&a, &b, &c] {
+            keys.push(format!(
+                "akari:rl:sub:ip:{}",
+                crate::client_ip::bucket(cl.ip)
+            ));
+        }
+        let _: i64 = state.valkey().del(keys).await.unwrap();
+        drop(state);
+        db.drop().await;
+    }
 }

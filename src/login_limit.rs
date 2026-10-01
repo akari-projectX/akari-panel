@@ -14,6 +14,10 @@
 //! number of live keys is bounded by argon2 throughput × the window; each
 //! key has a TTL set in the same script (EXPIRE NX), and the name bucket is
 //! a fixed-size hash of the login.
+//!
+//! M1-6: a wrong or replayed second factor (TOTP / recovery code) is a
+//! credential failure like a wrong password and keeps its slot; the 2FA
+//! recovery-code regeneration endpoint reserves here too.
 
 use fred::prelude::*;
 use sha2::{Digest, Sha256};
@@ -39,7 +43,7 @@ if a > tonumber(ARGV[1]) or b > tonumber(ARGV[2]) then
   end
   return 0
 end
-return 1
+return b
 "#;
 
 const RELEASE: &str = r#"
@@ -54,6 +58,10 @@ return 1
 /// One login attempt's reservation.
 pub struct Attempt {
     keys: Vec<String>,
+    /// Reserved slots in the login-name bucket including this one: if this
+    /// attempt fails, it is failure number `name_count` of the window
+    /// (audit.rs records the first and the one that fills the bucket).
+    pub name_count: i64,
 }
 
 pub fn keys(client_bucket: &str, login: &str) -> Vec<String> {
@@ -74,12 +82,15 @@ impl Attempt {
         login: &str,
     ) -> Result<Option<Self>, fred::error::Error> {
         let keys = keys(client_bucket, login);
-        let ok: i64 = state
+        let n: i64 = state
             .valkey()
             .eval(RESERVE, keys.clone(), vec![PER_IP, PER_LOGIN, WINDOW_SECS])
             .await?;
-        crate::metrics::login_attempt(ok == 1);
-        Ok((ok == 1).then_some(Self { keys }))
+        crate::metrics::login_attempt(n >= 1);
+        Ok((n >= 1).then_some(Self {
+            keys,
+            name_count: n,
+        }))
     }
 
     /// The attempt did not fail on credentials: give the slots back.

@@ -15,6 +15,47 @@ pub struct PanelConfig {
     pub traffic: TrafficConfig,
     pub agent: AgentConfig,
     pub metrics: MetricsConfig,
+    pub audit: AuditConfig,
+    pub sub: SubConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AuditConfig {
+    /// Audit rows older than this are pruned (hourly). 0 = keep forever.
+    /// Default 365.
+    pub retention_days: u32,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            retention_days: 365,
+        }
+    }
+}
+
+/// Subscription endpoint rate limit (M1-10). Over a limit the endpoint
+/// answers the canonical rejection (indistinguishable from a bad token).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SubConfig {
+    /// Requests per client address (IPv6 per /64) per window. Default 120.
+    pub rate_per_ip: i64,
+    /// Requests per (valid) token per window. Default 30.
+    pub rate_per_token: i64,
+    /// Fixed window length. Default 600 s.
+    pub rate_window_secs: i64,
+}
+
+impl Default for SubConfig {
+    fn default() -> Self {
+        Self {
+            rate_per_ip: 120,
+            rate_per_token: 30,
+            rate_window_secs: 600,
+        }
+    }
 }
 
 /// Prometheus metrics (M1-4). Served on its OWN listener, never on the
@@ -142,6 +183,8 @@ impl Default for PanelConfig {
             traffic: TrafficConfig::default(),
             agent: AgentConfig::default(),
             metrics: MetricsConfig::default(),
+            audit: AuditConfig::default(),
+            sub: SubConfig::default(),
         }
     }
 }

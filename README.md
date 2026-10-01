@@ -38,7 +38,9 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   `POST /api/v1/users/{id}/revoke-sessions` ends every session of the
   account (logout = log out everywhere; a copied cookie dies with it). The
   last enabled admin cannot be disabled, demoted or deleted (409; enforced
-  by a DB trigger, race-free).
+  by a DB trigger, race-free). **Admins must use TOTP two-factor
+  authentication**; every administrative change is in the audit log (see
+  "Security" below).
 - Admin API: user CRUD, node listing/enable, per-node xray `inbounds`
   editing, account generation + assignment (VLESS/VMess/Trojan credentials
   are panel-generated, one per inbound).
@@ -70,7 +72,8 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   WebSocket transport params are mapped from each inbound's streamSettings.
   `subscription-userinfo` and other quota headers are sent only on success;
   bad tokens get the same empty 404 as every other rejection. Bodies are padded to 8 KiB
-  buckets so size does not reveal node counts.
+  buckets so size does not reveal node counts. Rate limited per client
+  address and per user (`[sub]`); over the limit is the same empty 404.
 
 Not yet: payments/orders, agent CSR enrollment and auto-update, akari-client.
 
@@ -143,9 +146,15 @@ separate loopback listener, never on the public port.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| POST | /auth/login | — | argon2id login, sets session cookie |
+| POST | /auth/login | — | `{login, password, code?}`: argon2id + TOTP/recovery code, sets session cookie |
 | POST | /auth/logout | — | clears the cookie and ends all of the account's sessions |
 | GET | /api/v1/me | user | profile + traffic usage |
+| GET | /api/v1/me/totp | any session | session stage, 2FA state (never the secret) |
+| POST | /api/v1/me/totp/enroll | any session | new pending TOTP secret (shown once) |
+| POST | /api/v1/me/totp/confirm | any session | `{code}`: activate 2FA, returns 10 recovery codes once |
+| POST | /api/v1/me/totp/recovery-codes | user | `{code}`: replace recovery codes |
+| POST | /api/v1/me/sub-token | user (role=user) | regenerate own subscription token (5/hour) |
+| GET | /api/v1/audit | admin | audit log, `?limit&before&actor&action` (keyset, newest first) |
 | GET/POST | /api/v1/users | admin | list / create users |
 | PATCH/DELETE | /api/v1/users/{id} | admin | update / delete user |
 | POST/DELETE | /api/v1/users/{id}/nodes/{node_id} | admin | assign (generates account) / remove |
@@ -154,12 +163,16 @@ separate loopback listener, never on the public port.
 | PUT | /api/v1/nodes/{id}/inbounds | admin | replace xray inbounds (bumps config_version) |
 | POST | /api/v1/users/{id}/sub-token | admin | regenerate subscription token |
 | POST | /api/v1/users/{id}/revoke-sessions | admin | log the account out everywhere (204) |
+| DELETE | /api/v1/users/{id}/totp | admin | reset the account's 2FA, end its sessions (204) |
 | GET | /sub/{token} | token | subscription (UA-based format) |
 | GET | /healthz | — | panel liveness |
 
 Defaults bind web on `127.0.0.1:8080` and gRPC on `127.0.0.1:8443`; override
 via `panel.toml` (see `src/config.rs`) or `DATABASE_URL`/`VALKEY_URL`.
 `akari admin passwd <login>` resets a password (and ends its sessions).
+`akari admin reset-2fa <login>` removes an account's 2FA (lockout recovery).
+`akari secrets rotate-prefix` / `akari secrets rotate-jwt` rotate secrets
+(see "Security").
 
 ### Deployment behind a reverse proxy
 
@@ -311,7 +324,60 @@ subscription URLs and are exempt from traffic-limit disabling and expiry.
 Changing a user to admin removes their node access; changing back restores
 it. Raising a traffic limit does not re-enable a user the limit disabled.
 
+## Security: two-factor, audit log, secret rotation
+
+**Two-factor (TOTP, RFC 6238: SHA-1, 6 digits, 30 s, ±1 step).** Mandatory
+for admins: an admin without active TOTP who logs in with the right
+password gets a 15-minute *enrollment-only* session that reaches nothing
+but `/api/v1/me/totp*` (the SPA shows the setup screen). Enrollment shows
+the secret once (base32 + `otpauth://` URI) and activates only after a
+valid code; activation issues 10 single-use recovery codes (shown once) and
+ends the account's other sessions. Regular users may opt in from the
+portal. Login sends password and code in **one** request (`code` = TOTP
+code or recovery code); every failure — unknown account, wrong password,
+missing/wrong/replayed code — is the same 401 after the same work, and
+counts toward the login rate limit. A code (and any older one) is accepted
+once per account across all instances (DB-recorded time step); the DB clock
+is used. Secrets are stored AES-256-GCM-encrypted with a key derived from
+`data/totp.key` (0600, created on first start — **back it up with the rest
+of `data/`**: without it every enrolled account needs a reset); recovery
+codes as keyed HMAC-SHA-256. Lost authenticator: `akari admin reset-2fa
+<login>` (or another admin: Users → Reset 2FA); the account's sessions end
+and an admin re-enrolls at the next login.
+
+**Audit log.** Every administrative change (API and CLI — CLI actions are
+recorded as actor `cli`), 2FA change, secret rotation and login is recorded
+with time (transaction start), actor, client address, action, target and
+redacted before/after snapshots — in the same transaction as the change.
+Passwords, hashes, tokens, TOTP secrets, recovery codes, proxy credentials
+and inbound keys are never recorded (only that they changed; inbounds as a
+tag/protocol/port summary plus a digest). Failed logins are recorded only
+for existing accounts (first failure per rate-limit window, the one that
+fills it, every second-factor failure); successful logins of regular users
+at most once per 10 minutes per account. Admins: Audit view, or `GET
+/api/v1/audit`. Retention: `[audit] retention_days` (default 365, 0 =
+forever), pruned hourly.
+
+**Secret rotation.**
+- `akari secrets rotate-jwt`: new `data/jwt.key`; every session ends at once
+  (all instances); restart every instance to sign with the new key.
+- `akari secrets rotate-prefix`: new route prefix in `data/state.json`,
+  effective when the panel (every instance) restarts; the old prefix then
+  becomes the plain rejection. **Every subscription URL contains the prefix
+  and changes with it**: users get a new link from the portal ("New
+  subscription link") and must be told the new console address.
+- Users regenerate their own subscription link in the portal
+  (`POST /api/v1/me/sub-token`, 5 per hour); admins can do it per user.
+
+Run the CLI as the panel's service user, against the same `data/`
+directory (and database) the panel uses.
+
 ## Upgrading
+
+**M1b (2FA) upgrade:** session tokens now carry a stage claim; every
+existing session is invalid after the upgrade (everyone logs in again), and
+every admin must enroll TOTP at the next login. A new `data/totp.key` is
+created on first start: include it in backups.
 
 Upgrade **agents before the panel**. The panel drops traffic reports that
 lack `TrafficReport.session_id` and relies on agents never claiming a

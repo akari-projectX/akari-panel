@@ -24,12 +24,16 @@ pub struct Install {
     pub server_cert_pem: String,
     pub server_key_pem: String,
     pub jwt_secret: String,
+    /// Keys derived from data/totp.key (TOTP secrets at rest, recovery-code
+    /// hashes; totp.rs).
+    pub totp: crate::totp::Keys,
 }
 
 pub fn ensure(cfg: &PanelConfig) -> Result<Install> {
     fs::create_dir_all(&cfg.data_dir).context("create data dir")?;
     let route_prefix = ensure_state(&cfg.data_dir)?;
     let jwt_secret = ensure_jwt_key(&cfg.data_dir)?;
+    let totp = crate::totp::Keys::from_material(&ensure_totp_key(&cfg.data_dir)?)?;
     let (ca_pem, ca_key_pem) = ensure_ca(&cfg.data_dir)?;
     // The server cert is ephemeral: regenerated at every boot so SAN changes
     // in config take effect without any certificate management.
@@ -42,11 +46,13 @@ pub fn ensure(cfg: &PanelConfig) -> Result<Install> {
         server_cert_pem,
         server_key_pem,
         jwt_secret,
+        totp,
     })
 }
 
 /// Session-signing secret (32 random bytes, hex). Stored next to the CA key
-/// with 0600 permissions; rotating it invalidates all sessions.
+/// with 0600 permissions; rotating it (`akari secrets rotate-jwt`)
+/// invalidates all sessions.
 fn ensure_jwt_key(data_dir: &Path) -> Result<String> {
     let path = data_dir.join("jwt.key");
     if path.exists() {
@@ -55,11 +61,60 @@ fn ensure_jwt_key(data_dir: &Path) -> Result<String> {
             return Ok(existing.trim().to_string());
         }
     }
-    let mut key = [0u8; 32];
-    rand::rng().fill_bytes(&mut key);
-    let secret = hex::encode(key);
+    let secret = random_hex(32);
     write_secret(&path, secret.as_bytes())?;
     Ok(secret)
+}
+
+/// Key material for TOTP secrets at rest and recovery-code hashes (32
+/// random bytes, hex, 0600). Unlike jwt.key it is never regenerated over a
+/// malformed file: that would silently make every enrolled secret
+/// unreadable. Losing it locks out every 2FA account until
+/// `akari admin reset-2fa`.
+fn ensure_totp_key(data_dir: &Path) -> Result<Vec<u8>> {
+    let path = data_dir.join("totp.key");
+    if path.exists() {
+        let existing = fs::read_to_string(&path).context("read totp.key")?;
+        let key = hex::decode(existing.trim())
+            .ok()
+            .filter(|k| k.len() == 32)
+            .with_context(|| format!("{} is not 32 bytes of hex", path.display()))?;
+        return Ok(key);
+    }
+    let secret = random_hex(32);
+    write_secret(&path, secret.as_bytes())?;
+    Ok(hex::decode(secret)?)
+}
+
+fn random_hex(n: usize) -> String {
+    let mut key = vec![0u8; n];
+    rand::rng().fill_bytes(&mut key);
+    hex::encode(key)
+}
+
+/// `akari secrets rotate-jwt`: a new jwt.key. Running panels keep the old
+/// key until restarted; the caller also bumps every session_ver so existing
+/// sessions die at once on every instance.
+pub fn rotate_jwt_key(data_dir: &Path) -> Result<()> {
+    fs::create_dir_all(data_dir).context("create data dir")?;
+    write_secret(&data_dir.join("jwt.key"), random_hex(32).as_bytes())
+}
+
+/// `akari secrets rotate-prefix`: a new random route prefix in state.json.
+/// Takes effect when the panel (every instance) restarts; until then the
+/// running panels keep answering on the old one. Returns the new prefix.
+pub fn rotate_prefix(data_dir: &Path) -> Result<String> {
+    fs::create_dir_all(data_dir).context("create data dir")?;
+    let path = data_dir.join("state.json");
+    let st = StateFile {
+        route_prefix: new_prefix(),
+    };
+    write_secret(&path, &serde_json::to_vec_pretty(&st)?)?;
+    Ok(st.route_prefix)
+}
+
+fn new_prefix() -> String {
+    random_hex(12)
 }
 
 fn ensure_state(data_dir: &Path) -> Result<String> {
@@ -67,10 +122,8 @@ fn ensure_state(data_dir: &Path) -> Result<String> {
     match fs::read_to_string(&path) {
         Ok(s) => Ok(serde_json::from_str::<StateFile>(&s)?.route_prefix),
         Err(_) => {
-            let mut b = [0u8; 12];
-            rand::rng().fill_bytes(&mut b);
             let st = StateFile {
-                route_prefix: hex::encode(b),
+                route_prefix: new_prefix(),
             };
             write_secret(&path, &serde_json::to_vec_pretty(&st)?)?;
             Ok(st.route_prefix)
@@ -186,17 +239,42 @@ fn san(name: &str) -> Result<SanType> {
     }
 }
 
-#[cfg(unix)]
+/// Write a secret file atomically: a fresh 0600 temp file in the same
+/// directory (never readable by others, not even briefly), fsync, rename
+/// over the target. A crash leaves the old or the new content, never a
+/// truncated key.
 fn write_secret(path: &Path, bytes: &[u8]) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::write(path, bytes)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn write_secret(path: &Path, bytes: &[u8]) -> Result<()> {
-    fs::write(path, bytes)?;
+    use std::io::Write;
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .context("secret path has no file name")?;
+    let tmp = dir.join(format!(".{name}.{}.tmp", random_hex(6)));
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let result = (|| -> Result<()> {
+        let mut f = opts
+            .open(&tmp)
+            .with_context(|| format!("create {}", tmp.display()))?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result?;
+    #[cfg(unix)]
+    if let Ok(d) = fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
     Ok(())
 }
 
@@ -228,6 +306,46 @@ mod tests {
             .mode();
         assert_eq!(mode & 0o777, 0o600);
         assert_eq!(ensure_state(&dir).unwrap(), prefix);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secrets_are_0600_and_rotate() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("akari-secrets-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let mode = |f: &str| fs::metadata(dir.join(f)).unwrap().permissions().mode() & 0o777;
+        let jwt = ensure_jwt_key(&dir).unwrap();
+        let totp = ensure_totp_key(&dir).unwrap();
+        let prefix = ensure_state(&dir).unwrap();
+        assert_eq!(
+            (mode("jwt.key"), mode("totp.key"), mode("state.json")),
+            (0o600, 0o600, 0o600)
+        );
+        assert_eq!(totp.len(), 32);
+        assert_eq!(ensure_totp_key(&dir).unwrap(), totp, "stable");
+        rotate_jwt_key(&dir).unwrap();
+        let jwt2 = ensure_jwt_key(&dir).unwrap();
+        assert_ne!(jwt, jwt2);
+        assert_eq!(jwt2.len(), 64);
+        let p2 = rotate_prefix(&dir).unwrap();
+        assert_ne!(p2, prefix);
+        assert_eq!(
+            ensure_state(&dir).unwrap(),
+            p2,
+            "the next start uses the new prefix"
+        );
+        assert_eq!((mode("jwt.key"), mode("state.json")), (0o600, 0o600));
+        // No temp files left behind.
+        let names: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().all(|n| !n.ends_with(".tmp")), "{names:?}");
+        // A corrupt totp.key is an error, never silently replaced.
+        fs::write(dir.join("totp.key"), "junk").unwrap();
+        assert!(ensure_totp_key(&dir).is_err());
         fs::remove_dir_all(&dir).ok();
     }
 
