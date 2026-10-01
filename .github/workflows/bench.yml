@@ -24,6 +24,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # One target dir for the panel library and the bench crate (see Makefile).
+  CARGO_TARGET_DIR: target
   BENCH_DATABASE_URL: postgres://akari:akari-dev@localhost:5432/akari_bench
 
 jobs:
