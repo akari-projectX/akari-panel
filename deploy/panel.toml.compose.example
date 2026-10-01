@@ -21,3 +21,8 @@ allow_non_loopback = true
 [install]
 # One-line node installer (docs/DEPLOY.md §3); default = the browser's origin.
 # public_url = "https://panel.example.com"
+
+[updates]
+# M6 agent self-update (docs/DEPLOY.md §5b): the akari-agent release-keys.txt
+# lines. Empty = uploads of agent releases are refused.
+release_keys = ["ciJILGk6W1TnPr56Dncgv0mVQFBzqOrawiOaH0/d5Pg= key-f2ad18a8bb718a1a"]

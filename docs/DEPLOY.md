@@ -442,10 +442,13 @@ following releases with both keys (`akari-sign countersign`); once every node ru
 pins the next key, remove the old one. A lost or leaked key needs a manual agent release with a
 new key set on every node.
 
+The project's production key is `key-f2ad18a8bb718a1a` (pinned in agents since v0.2.0; custody
+and rotation: akari-agent README "Release signing keys").
+
 **Panel config.** Trust the same keys (early refusal of wrong uploads; agents check again):
 ```toml
 [updates]
-release_keys = ["<base64 public key> release-2026"]   # the lines of release-keys.txt
+release_keys = ["ciJILGk6W1TnPr56Dncgv0mVQFBzqOrawiOaH0/d5Pg= key-f2ad18a8bb718a1a"]   # the lines of release-keys.txt
 max_concurrent_downloads = 8                           # FetchArtifact streams per instance
 ```
 
