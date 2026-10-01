@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use crate::config::PanelConfig;
+use akari_panel::config::PanelConfig;
+use akari_panel::{
+    config_check, grpc, install, metrics, nodeops, notify, reaper, shutdown, state, traffic, web,
+};
 
 #[derive(Parser)]
 #[command(
@@ -205,7 +208,7 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
         .acquire_timeout(std::time::Duration::from_secs(10))
         .connect(&cfg.database_url)
         .await?;
-    crate::db::migrate(&pg).await?;
+    akari_panel::db::migrate(&pg).await?;
 
     let valkey = state::connect_valkey(&cfg).await?;
     let state = state::AppState::new(cfg.clone(), install, pg, valkey);
@@ -300,34 +303,3 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
     Ok(())
 }
 
-mod account;
-mod api;
-mod audit;
-mod auth;
-mod client_ip;
-mod config;
-mod config_check;
-mod db;
-mod enforce;
-mod enroll;
-mod gen;
-mod grpc;
-mod install;
-mod login_limit;
-mod metrics;
-mod nodeops;
-mod notify;
-mod rate;
-mod reaper;
-mod reject;
-mod request_id;
-mod shutdown;
-mod spa;
-mod state;
-mod sub;
-#[cfg(test)]
-mod testdb;
-mod totp;
-mod traffic;
-mod valkey_util;
-mod web;
