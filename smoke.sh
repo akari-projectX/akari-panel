@@ -31,6 +31,9 @@ cookie_secure = false
 trusted_proxies = ["127.0.0.2/32"]
 [metrics]
 bind = "127.0.0.1:9109"
+
+[sub]
+rate_per_token = 8
 TOML
 "$PANEL" -c "$LOG/panel.toml" serve >"$LOG/panel.log" 2>&1 &
 PANEL_PID=$!
@@ -40,7 +43,7 @@ sleep 2
 # Reset AFTER startup: fresh volumes have no tables until the panel migrates,
 # and Valkey rate-limit counters would poison the next run's login test.
 docker compose exec -T postgres psql -U akari -d akari -c "TRUNCATE nodes CASCADE; TRUNCATE users CASCADE;" >/dev/null 2>&1 || true
-docker compose exec -T postgres psql -U akari -d akari -c "TRUNCATE revoked_certs, traffic_counters;" >/dev/null 2>&1 || true
+docker compose exec -T postgres psql -U akari -d akari -c "TRUNCATE revoked_certs, traffic_counters, audit_log;" >/dev/null 2>&1 || true
 docker compose exec -T valkey valkey-cli flushall >/dev/null
 
 echo "== first admin (env password) =="
@@ -99,6 +102,60 @@ done
     -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "200" ] || { echo "FAIL: good login failed"; exit 1; }
 grep -q '"role":"admin"' /tmp/akari-smoke/last || { echo "FAIL: login response missing role"; exit 1; }
 echo "login: ok"
+
+echo "== M1-6 admin 2FA: enrollment-only session, enroll, log in with a code =="
+grep -q '"stage":"enroll"' /tmp/akari-smoke/last || { echo "FAIL: admin without 2FA did not get an enrollment-only session"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/users")" = "401" ] || { echo "FAIL: admin without 2FA can list users"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: enrollment-only session reached /me"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/me/totp")" = "200" ] || { echo "FAIL: totp status"; exit 1; }
+grep -q '"stage":"enroll"' /tmp/akari-smoke/last || { echo "FAIL: totp status stage"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/me/totp/enroll" -H 'Content-Type: application/json' -d '{}')" = "200" ] \
+  || { echo "FAIL: totp enroll"; cat /tmp/akari-smoke/last; exit 1; }
+TOTP_SECRET=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['secret'])")
+grep -q 'otpauth://totp/Akari:root?secret=' /tmp/akari-smoke/last || { echo "FAIL: otpauth uri"; exit 1; }
+# RFC 6238 code for a time step strictly after the last one used (the
+# server refuses replays), waiting for the next step when needed.
+cat >"$LOG/totp.py" <<'PY'
+import base64, hashlib, hmac, os, struct, sys, time
+secret, state = sys.argv[1], sys.argv[2]
+key = base64.b32decode(secret + "=" * (-len(secret) % 8))
+last = int(open(state).read()) if os.path.exists(state) else -1
+while int(time.time()) // 30 <= last:
+    time.sleep(30 - time.time() % 30 + 0.3)
+step = int(time.time()) // 30
+h = hmac.new(key, struct.pack(">Q", step), hashlib.sha1).digest()
+o = h[-1] & 15
+print("%06d" % ((struct.unpack(">I", h[o:o + 4])[0] & 0x7FFFFFFF) % 1000000))
+open(state, "w").write(str(step))
+PY
+totp() { python3 "$LOG/totp.py" "$TOTP_SECRET" "$LOG/totp.last"; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/me/totp/confirm" -H 'Content-Type: application/json' -d '{"code":"000000x"}')" = "400" ] \
+  || { echo "FAIL: bad confirm code not 400"; exit 1; }
+[ "$(code -b "$JAR" -c "$JAR" -X POST "$BASE/api/v1/me/totp/confirm" -H 'Content-Type: application/json' \
+    -d "{\"code\":\"$(totp)\"}")" = "200" ] || { echo "FAIL: totp confirm"; cat /tmp/akari-smoke/last; exit 1; }
+python3 -c "import json;print('\n'.join(json.load(open('/tmp/akari-smoke/last'))['recovery_codes']))" >"$LOG/recovery"
+[ "$(wc -l <"$LOG/recovery")" = "10" ] || { echo "FAIL: 10 recovery codes expected"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/users")" = "200" ] || { echo "FAIL: full session after enrollment"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/me/totp")" = "200" ] && ! grep -q "$TOTP_SECRET" /tmp/akari-smoke/last \
+  || { echo "FAIL: totp status leaks the secret"; exit 1; }
+login_root() { # code -> http status; session in $JAR
+  code -c "$JAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\",\"code\":\"$1\"}"
+}
+[ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "401" ] || { echo "FAIL: password-only login of a 2FA admin"; exit 1; }
+REJ401=$(cat /tmp/akari-smoke/last)
+CODE=$(totp)
+[ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"login\":\"root\",\"password\":\"wrong-password\",\"code\":\"$CODE\"}")" = "401" ] \
+  && [ "$(cat /tmp/akari-smoke/last)" = "$REJ401" ] || { echo "FAIL: wrong password + code not the uniform 401"; exit 1; }
+[ "$(login_root "$CODE")" = "200" ] || { echo "FAIL: login with a TOTP code"; cat /tmp/akari-smoke/last; exit 1; }
+grep -q '"stage":"full"' /tmp/akari-smoke/last || { echo "FAIL: login with code not full"; exit 1; }
+[ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\",\"code\":\"$CODE\"}")" = "401" ] \
+  && [ "$(cat /tmp/akari-smoke/last)" = "$REJ401" ] || { echo "FAIL: TOTP code replay accepted"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/users")" = "200" ] || { echo "FAIL: admin API after TOTP login"; exit 1; }
+echo "2fa: ok (enrolled, code login, replay refused)"
 
 echo "== auth lives at /{prefix}/auth, not /api/v1/auth (REVIEW P0 #1) =="
 # Nothing may depend on the wrong path: it must stay a rejection.
@@ -163,6 +220,23 @@ SIZE=$(curl -s --noproxy '*' -o /tmp/akari-smoke/subbody "$SUB" && wc -c < /tmp/
 curl -s --noproxy '*' -D - -o /dev/null "$BASE/sub/not-a-real-token" | grep -qi "subscription-userinfo" \
   && { echo "FAIL: quota header leaked on rejection"; exit 1; }
 echo "subscription: ok ($SIZE-byte padded body)"
+
+echo "== M1-9 self-service sub token; M1-10 over the limit = the canonical rejection =="
+UJAR="$LOG/user-cookies"
+[ "$(code -c "$UJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d '{"login":"smoke-user","password":"user-password-123"}')" = "200" ] || { echo "FAIL: user login"; exit 1; }
+[ "$(code -b "$UJAR" -X POST "$BASE/api/v1/me/sub-token" -H 'Content-Type: application/json' -d '{}')" = "200" ] \
+  || { echo "FAIL: self-service sub token"; cat /tmp/akari-smoke/last; exit 1; }
+NEW_TOKEN=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['sub_token'])")
+[ "$(fp "$SUB")" = "$REJ" ] || { echo "FAIL: old subscription URL still answers differently"; exit 1; }
+SUB="$BASE/sub/$NEW_TOKEN"
+# rate_per_token = 8 per window (smoke panel.toml): 5 fetches above + 3 here.
+for i in 1 2 3; do
+  [ "$(code -A "clash-meta/1.19" "$SUB")" = "200" ] || { echo "FAIL: new subscription URL fetch $i"; exit 1; }
+done
+[ "$(fp "$SUB")" = "$REJ" ] || { echo "FAIL: over-limit subscription is not the canonical rejection"; cat /tmp/akari-smoke/fphead; exit 1; }
+[ "$(fp -A "clash-meta/1.19" "$SUB")" = "$REJ" ] || { echo "FAIL: over-limit (clash UA) differs"; exit 1; }
+echo "sub token + rate limit: ok"
 
 echo "== start agent: initial snapshot =="
 "$AGENT" -config "$BOOT" >"$LOG/agent.log" 2>&1 &
@@ -349,27 +423,29 @@ rl_clear() {
     "for _,k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call('DEL', k) end return 1" 0 'akari:rl:*' >/dev/null
 }
 rl_clear
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+    -d '{"login":"rl-user","password":"rl-user-password"}')" = "201" ] || { echo "FAIL: create rl-user"; exit 1; }
 # Successful logins never count.
 for _ in $(seq 1 25); do
-  [ "$(login_code root "$ADMIN_PW")" = "200" ] || { echo "FAIL: successful logins were rate limited"; exit 1; }
+  [ "$(login_code rl-user rl-user-password)" = "200" ] || { echo "FAIL: successful logins were rate limited"; exit 1; }
 done
 # A direct client (untrusted peer 127.0.0.1) rotating X-Forwarded-For stays
 # in its own bucket.
 for i in $(seq 1 20); do
   [ "$(login_code -H "X-Forwarded-For: 198.51.100.$i" rl-direct nope)" = "401" ] || { echo "FAIL: bad login $i not 401"; exit 1; }
 done
-[ "$(login_code -H 'X-Forwarded-For: 203.0.113.250' root "$ADMIN_PW")" = "429" ] \
+[ "$(login_code -H 'X-Forwarded-For: 203.0.113.250' rl-user rl-user-password)" = "429" ] \
   || { echo "FAIL: X-Forwarded-For from an untrusted peer escaped the rate limit"; exit 1; }
 # Behind the trusted proxy each forwarded client has its own bucket.
 for i in $(seq 1 20); do
   [ "$(login_code --interface 127.0.0.2 -H 'X-Forwarded-For: 203.0.113.7' rl-proxied nope)" = "401" ] \
     || { echo "FAIL: proxied bad login $i not 401"; exit 1; }
 done
-[ "$(login_code --interface 127.0.0.2 -H 'X-Forwarded-For: 203.0.113.7' root "$ADMIN_PW")" = "429" ] \
+[ "$(login_code --interface 127.0.0.2 -H 'X-Forwarded-For: 203.0.113.7' rl-user rl-user-password)" = "429" ] \
   || { echo "FAIL: proxied client 203.0.113.7 not limited"; exit 1; }
-[ "$(login_code --interface 127.0.0.2 -H 'X-Forwarded-For: 203.0.113.7, 203.0.113.8' root "$ADMIN_PW")" = "200" ] \
+[ "$(login_code --interface 127.0.0.2 -H 'X-Forwarded-For: 203.0.113.7, 203.0.113.8' rl-user rl-user-password)" = "200" ] \
   || { echo "FAIL: another client behind the proxy was locked out"; exit 1; }
-[ "$(login_code --interface 127.0.0.2 -H 'X-Forwarded-For: 203.0.113.8, 203.0.113.7' root "$ADMIN_PW")" = "429" ] \
+[ "$(login_code --interface 127.0.0.2 -H 'X-Forwarded-For: 203.0.113.8, 203.0.113.7' rl-user rl-user-password)" = "429" ] \
   || { echo "FAIL: a forged left-hand XFF hop escaped the limit"; exit 1; }
 rl_clear
 echo "rate limit: ok"
@@ -482,6 +558,25 @@ kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
 AGENT_PID=""
 echo "node delete: ok (empty state, revoked, closed; $COUNTERS_BEFORE billing rows kept)"
 
+echo "== M1-7 audit log: admin view lists the actions, no secrets =="
+[ "$(code -b "$JAR" "$BASE/api/v1/audit?limit=200")" = "200" ] || { echo "FAIL: audit list"; exit 1; }
+for a in user.create node.create node.set_inbounds node.update node.assign user.update user.delete \
+         user.totp.enable auth.login auth.login_failed user.sub_token.rotate node.delete; do
+  grep -q "\"action\":\"$a\"" /tmp/akari-smoke/last || { echo "FAIL: audit lacks $a"; exit 1; }
+done
+grep -q '"actor_login":"cli"' /tmp/akari-smoke/last || { echo "FAIL: CLI actions not audited as cli"; exit 1; }
+for secret in "$ADMIN_PW" "$TOTP_SECRET" "$NEW_TOKEN" "$VLESS_A" "user-password-123" '$argon2'; do
+  grep -qF -- "$secret" /tmp/akari-smoke/last && { echo "FAIL: audit log contains a secret"; exit 1; }
+done
+[ "$(code -b "$JAR" "$BASE/api/v1/audit?action=user.totp.&limit=5")" = "200" ] || { echo "FAIL: audit filter"; exit 1; }
+python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); assert d['entries'] and all(e['action'].startswith('user.totp.') for e in d['entries'])" \
+  || { echo "FAIL: audit action filter"; exit 1; }
+# smoke-user is gone by now; rl-user (role user) is the non-admin.
+[ "$(code -c "$UJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d '{"login":"rl-user","password":"rl-user-password"}')" = "200" ] || { echo "FAIL: rl-user login"; exit 1; }
+[ "$(code -b "$UJAR" "$BASE/api/v1/audit")" = "403" ] || { echo "FAIL: non-admin read the audit log"; exit 1; }
+echo "audit: ok"
+
 echo "== S4-2 sessions: revoke-sessions, last admin, logout kills copies of the cookie =="
 [ "$(code -b "$JAR" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: me failed"; exit 1; }
 ROOT_ID=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
@@ -489,19 +584,36 @@ ROOT_ID=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))
 [ "$(patch_code "$BASE/api/v1/users/$ROOT_ID" '{"role": "user"}')" = "409" ] || { echo "FAIL: last admin demote not 409"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$ROOT_ID")" = "409" ] || { echo "FAIL: last admin delete not 409"; exit 1; }
 JAR2="$LOG/cookies2"
+# Second session via a recovery code (single use).
+RC1=$(sed -n 1p "$LOG/recovery")
 [ "$(code -c "$JAR2" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
-    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "200" ] || { echo "FAIL: second login"; exit 1; }
+    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\",\"code\":\"$RC1\"}")" = "200" ] || { echo "FAIL: second login (recovery code)"; exit 1; }
+[ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\",\"code\":\"$RC1\"}")" = "401" ] || { echo "FAIL: recovery code reused"; exit 1; }
 [ "$(code -b "$JAR2" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: second session"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$ROOT_ID/revoke-sessions")" = "204" ] || { echo "FAIL: revoke-sessions"; exit 1; }
 [ "$(code -b "$JAR2" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: revoked session still works"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: own session survived revoke-sessions"; exit 1; }
-[ "$(code -c "$JAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
-    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "200" ] || { echo "FAIL: login after revoke"; exit 1; }
+[ "$(login_root "$(sed -n 2p "$LOG/recovery")")" = "200" ] || { echo "FAIL: login after revoke"; exit 1; }
 cp "$JAR" "$LOG/stolen-cookies"
 [ "$(code -b "$JAR" -c "$JAR" -X POST "$BASE/auth/logout")" = "200" ] || { echo "FAIL: logout failed"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: me after logout not 401"; exit 1; }
 [ "$(code -b "$LOG/stolen-cookies" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: a copy of the cookie survived logout"; exit 1; }
 echo "sessions: ok"
+
+echo "== M1-6/M1-9 CLI: reset-2fa, rotate-jwt =="
+[ "$(login_root "$(totp)")" = "200" ] || { echo "FAIL: TOTP login before reset"; exit 1; }
+"$PANEL" admin reset-2fa root | grep -q "reset" || { echo "FAIL: CLI reset-2fa"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: session survived reset-2fa"; exit 1; }
+[ "$(code -c "$JAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "200" ] && grep -q '"stage":"enroll"' /tmp/akari-smoke/last \
+  || { echo "FAIL: after reset-2fa the admin must re-enroll"; exit 1; }
+[ "$(code -b "$UJAR" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: user session before rotate-jwt"; exit 1; }
+"$PANEL" secrets rotate-jwt | grep -q "revoked" || { echo "FAIL: CLI rotate-jwt"; exit 1; }
+[ "$(code -b "$UJAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: session survived rotate-jwt"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE actor_login = 'cli' AND action IN ('user.totp.reset', 'secrets.rotate_jwt')")" = "2" ] \
+  || { echo "FAIL: CLI secret actions not audited"; exit 1; }
+echo "cli 2fa/jwt: ok"
 
 echo "== root + healthz =="
 [ "$(code http://127.0.0.1:8080/)" = "404" ] || { echo "FAIL: / not 404"; exit 1; }
@@ -529,6 +641,8 @@ for m in akari_build_info akari_agents_connected akari_sync_sent_total akari_ack
 done
 grep -q 'route="/{prefix}/healthz"' "$LOG/metrics.txt" || { echo "FAIL: route template label missing"; exit 1; }
 grep -q "$PREFIX" "$LOG/metrics.txt" && { echo "FAIL: route prefix leaked into metrics"; exit 1; }
+grep -qF "$NEW_TOKEN" "$LOG/metrics.txt" && { echo "FAIL: a subscription token leaked into metrics"; exit 1; }
+grep -q 'route="/{prefix}/sub/{token}"' "$LOG/metrics.txt" || { echo "FAIL: subscription route not labelled by template"; exit 1; }
 [ "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' http://127.0.0.1:9109/)" = "404" ] \
   || { echo "FAIL: metrics listener serves more than /metrics"; exit 1; }
 # Request IDs: accepted requests get one (a valid incoming id is echoed);
@@ -583,6 +697,25 @@ grep -q 'panel shutting down' "$LOG/term-agent.log" || { echo "FAIL: agent strea
 kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
 AGENT_PID=""
 echo "sigterm: ok"
+
+echo "== M1-9 rotate-prefix: the old prefix is a rejection after restart =="
+OLD_BASE="$BASE"
+"$PANEL" secrets rotate-prefix | grep -q "new route prefix" || { echo "FAIL: CLI rotate-prefix"; exit 1; }
+PREFIX=$("$PANEL" info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')
+BASE="http://127.0.0.1:8080/$PREFIX"
+[ "$BASE" != "$OLD_BASE" ] || { echo "FAIL: prefix unchanged"; exit 1; }
+"$PANEL" -c "$LOG/panel.toml" serve >"$LOG/panel2.log" 2>&1 &
+PANEL_PID=$!
+for _ in $(seq 1 20); do [ "$(code "$BASE/healthz")" = "200" ] && break; sleep 0.5; done
+[ "$(code "$BASE/healthz")" = "200" ] || { echo "FAIL: new prefix not served"; exit 1; }
+[ "$(fp "$OLD_BASE/healthz")" = "$REJ" ] || { echo "FAIL: old prefix still answers"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'secrets.rotate_prefix'")" = "1" ] || { echo "FAIL: rotate-prefix not audited"; exit 1; }
+for p in "$PREFIX" "${OLD_BASE##*/}"; do
+  grep -qF "$p" "$LOG/panel.log" "$LOG/panel2.log" && { echo "FAIL: a route prefix appears in the panel log"; exit 1; }
+done
+grep -qF "$NEW_TOKEN" "$LOG/panel.log" "$LOG/panel2.log" && { echo "FAIL: a subscription token appears in the panel log"; exit 1; }
+kill $PANEL_PID 2>/dev/null; wait $PANEL_PID 2>/dev/null || true
+echo "rotate-prefix: ok"
 
 echo
 echo "SMOKE TEST PASSED"

@@ -102,6 +102,9 @@ impl AppState {
     pub fn install(&self) -> &Install {
         &self.0.install
     }
+    pub fn totp(&self) -> &crate::totp::Keys {
+        &self.0.install.totp
+    }
     pub fn pg(&self) -> &PgPool {
         &self.0.pg
     }
@@ -209,6 +212,7 @@ impl AppState {
             server_cert_pem: String::new(),
             server_key_pem: String::new(),
             jwt_secret: "test".into(),
+            totp: crate::totp::Keys::from_material(&[0x42; 32]).expect("test totp keys"),
         };
         Self::new(cfg, install, pg, valkey)
     }

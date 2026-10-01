@@ -1,28 +1,47 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { appBase, get, logout as apiLogout } from "./lib/api";
+import { ApiError, appBase, get, logout as apiLogout, type TotpStatus } from "./lib/api";
 import { navigate } from "./lib/router";
 import { resetAfterLogout } from "./lib/session";
 import { Login } from "./pages/login";
 import { AdminUsers } from "./pages/admin-users";
 import { AdminNodes } from "./pages/admin-nodes";
 import { Portal } from "./pages/portal";
+import { AdminAudit } from "./pages/audit";
+import { EnrollPage, TwoFactorCard } from "./pages/two-factor";
 import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
 
-type View = "users" | "nodes";
+type View = "users" | "nodes" | "audit" | "account";
+
+const VIEWS: View[] = ["users", "nodes", "audit", "account"];
 
 function App() {
   const queryClient = useQueryClient();
   const me = useQuery({ queryKey: ["me"], queryFn: () => get<import("./lib/api").Me>("/me") });
-  const [view, setView] = useState<View>(() =>
-    location.pathname.endsWith("/nodes") ? "nodes" : "users",
+  // An admin without 2FA has an enrollment-only session: /me is 401 but
+  // /me/totp answers with stage "enroll".
+  const unauthorized = me.isError && me.error instanceof ApiError && me.error.status === 401;
+  const totp = useQuery({
+    queryKey: ["totp"],
+    queryFn: () => get<TotpStatus>("/me/totp"),
+    enabled: unauthorized,
+    retry: false,
+  });
+  const [view, setView] = useState<View>(
+    () => VIEWS.find((v) => location.pathname.endsWith(`/${v}`)) ?? "users",
   );
   const [logoutError, setLogoutError] = useState<string | null>(null);
 
   if (me.isPending) return null;
-  if (me.isError) return <Login />;
+  if (me.isError) {
+    if (unauthorized && totp.isPending) return null;
+    if (unauthorized && totp.data?.stage === "enroll") {
+      return <EnrollPage status={totp.data} onLogout={logout} />;
+    }
+    return <Login />;
+  }
 
   const user = me.data;
   const isAdmin = user.role === "admin";
@@ -57,6 +76,12 @@ function App() {
                 <Button variant={view === "nodes" ? "default" : "ghost"} size="sm" onClick={() => setView("nodes")}>
                   Nodes
                 </Button>
+                <Button variant={view === "audit" ? "default" : "ghost"} size="sm" onClick={() => setView("audit")}>
+                  Audit
+                </Button>
+                <Button variant={view === "account" ? "default" : "ghost"} size="sm" onClick={() => setView("account")}>
+                  Account
+                </Button>
               </nav>
             )}
           </div>
@@ -78,6 +103,10 @@ function App() {
         {isAdmin ? (
           view === "nodes" ? (
             <AdminNodes />
+          ) : view === "audit" ? (
+            <AdminAudit />
+          ) : view === "account" ? (
+            <TwoFactorCard />
           ) : (
             <AdminUsers />
           )

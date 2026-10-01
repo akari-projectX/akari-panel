@@ -12,6 +12,7 @@ export function Login() {
   const queryClient = useQueryClient();
   const [login, setLogin] = useState("");
   const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -20,7 +21,9 @@ export function Login() {
     setBusy(true);
     setError(null);
     try {
-      await apiLogin({ login, password });
+      const trimmed = code.trim();
+      await apiLogin(trimmed ? { login, password, code: trimmed } : { login, password });
+      await queryClient.resetQueries({ queryKey: ["totp"] });
       await queryClient.invalidateQueries({ queryKey: ["me"] });
       navigate(`${appBase}/`);
     } catch (err) {
@@ -59,6 +62,21 @@ export function Login() {
                 onChange={(e) => setPassword(e.target.value)}
                 required
               />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="code">Authentication code</Label>
+              <Input
+                id="code"
+                value={code}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                placeholder="if two-factor is enabled"
+                onChange={(e) => setCode(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Authenticator code, or a recovery code. Leave empty if you have not set up two-factor
+                authentication.
+              </p>
             </div>
             {error && <p className="text-sm text-destructive">{error}</p>}
             <Button className="w-full" type="submit" disabled={busy}>

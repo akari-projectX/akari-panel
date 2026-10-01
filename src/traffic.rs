@@ -1255,7 +1255,9 @@ mod db_tests {
         assert_eq!(db.used(u).await, 100);
 
         let mut tx = db.pool.begin().await.unwrap();
-        crate::api::apply_unassign(&mut tx, u, n).await.unwrap();
+        crate::api::apply_unassign(&mut tx, &crate::audit::Actor::test(), u, n)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
         refresh_members(&db.pool, &b, n).await.unwrap(); // watcher, before the final report
         b.update(n, "s1", &report(u, 250, 0));
@@ -2295,7 +2297,9 @@ mod db_tests {
 
     async fn unassign(db: &TestDb, n: Uuid, u: Uuid, ago: f64) {
         let mut tx = db.pool.begin().await.unwrap();
-        crate::api::apply_unassign(&mut tx, u, n).await.unwrap();
+        crate::api::apply_unassign(&mut tx, &crate::audit::Actor::test(), u, n)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
         sqlx::query(
             "UPDATE node_users_departed SET departed_at = now() - make_interval(secs => $3) \

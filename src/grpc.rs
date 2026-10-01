@@ -2537,9 +2537,11 @@ mod tests {
         agent.traffic(u, 100).await;
 
         let mut tx = db.pool.begin().await.unwrap();
-        assert!(crate::api::apply_begin_delete_node(&mut tx, n)
-            .await
-            .unwrap());
+        assert!(
+            crate::api::apply_begin_delete_node(&mut tx, &crate::audit::Actor::test(), n)
+                .await
+                .unwrap()
+        );
         tx.commit().await.unwrap();
         let s2 = agent.snapshot().await;
         assert_eq!((s2.inbounds_json.as_str(), s2.users.len()), ("[]", 0));
@@ -2768,7 +2770,7 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
         // Delete it (phase 1 + forced phase 2) and supersede it.
         let mut tx = db.pool.begin().await.unwrap();
-        crate::api::apply_begin_delete_node(&mut tx, n)
+        crate::api::apply_begin_delete_node(&mut tx, &crate::audit::Actor::test(), n)
             .await
             .unwrap();
         tx.commit().await.unwrap();

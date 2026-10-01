@@ -168,6 +168,24 @@ impl PanelConfig {
         if t.departed_grace_secs == 0 {
             r.err("traffic.departed_grace_secs must be > 0");
         }
+        let sub = &self.sub;
+        if sub.rate_per_ip <= 0 || sub.rate_per_token <= 0 {
+            r.err("sub.rate_per_ip and sub.rate_per_token must be > 0");
+        }
+        if !(1..=86_400).contains(&sub.rate_window_secs) {
+            r.err(format!(
+                "sub.rate_window_secs = {} is outside 1..=86400",
+                sub.rate_window_secs
+            ));
+        }
+        if self.audit.retention_days == 0 {
+            r.warn("audit.retention_days = 0: the audit log is never pruned");
+        } else if self.audit.retention_days < 30 {
+            r.warn(format!(
+                "audit.retention_days = {} keeps less than a month of audit history",
+                self.audit.retention_days
+            ));
+        }
     }
 
     fn validate_urls(&self, r: &mut Report) {
@@ -246,8 +264,8 @@ pub fn check_data_dir(dir: &Path) -> Result<(), String> {
             Ok(())
         }
         Err(e) => Err(format!(
-            "data_dir {} is not writable ({}: {e}). The panel stores the route prefix, CA \
-             and jwt.key there; fix ownership/permissions (see docs/DEPLOY.md)",
+            "data_dir {} is not writable ({}: {e}). The panel stores the route prefix, CA, \
+             jwt.key and totp.key there; fix ownership/permissions (see docs/DEPLOY.md)",
             dir.display(),
             probe_dir.display()
         )),
@@ -477,6 +495,24 @@ mod tests {
         let mut c = PanelConfig::default();
         c.traffic.node_burst_secs = c.grpc.lease_seconds + 1;
         assert!(has(&errors(&c), "exceeds grpc.lease_seconds"));
+
+        let mut c = PanelConfig::default();
+        c.sub.rate_per_ip = 0;
+        assert!(has(&errors(&c), "sub.rate_per_ip"));
+        let mut c = PanelConfig::default();
+        c.sub.rate_window_secs = 0;
+        assert!(has(&errors(&c), "sub.rate_window_secs"));
+        let mut c = PanelConfig::default();
+        c.audit.retention_days = 0;
+        assert!(
+            errors(&c).is_empty(),
+            "0 = keep forever is valid (warning only)"
+        );
+        assert!(c
+            .validate()
+            .warnings
+            .iter()
+            .any(|w| w.contains("never pruned")));
     }
 
     #[test]

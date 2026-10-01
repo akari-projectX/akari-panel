@@ -17,12 +17,14 @@ axum-extra = { version = "0.12", features = ["cookie"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 dashmap = "6"
+data-encoding = "2"
 fred = { version = "10", features = ["enable-rustls", "i-scripts"] }
 hex = "0.4"
 mime_guess = "2"
 jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "rust_crypto"] }
 prost = "0.14"
 rand = "0.9"
+ring = "0.17"
 rcgen = { version = "0.14", features = ["pem", "x509-parser", "ring"] }
 rpassword = "7"
 rust-embed = "8"
@@ -48,3 +50,6 @@ prometheus = { version = "0.14", default-features = false }
 [build-dependencies]
 protox = "0.9"
 tonic-prost-build = "0.14"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

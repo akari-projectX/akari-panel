@@ -50,8 +50,10 @@ export const del = (path: string) => api<void>(path, { method: "DELETE" });
 
 // Auth endpoints live at /{prefix}/auth/*, NOT under /api/v1 (see src/web.rs).
 // Do not route them through get/post: that yields /api/v1/auth/* -> 404.
-export const login = (body: { login: string; password: string }) =>
-  request<unknown>(`${authBase}/login`, { method: "POST", body: JSON.stringify(body) });
+// `code`: TOTP code or recovery code (required by accounts with 2FA; every
+// failure is the same 401, so the form always offers the field).
+export const login = (body: { login: string; password: string; code?: string }) =>
+  request<LoginResult>(`${authBase}/login`, { method: "POST", body: JSON.stringify(body) });
 export const logout = () => request<void>(`${authBase}/logout`, { method: "POST" });
 
 // --- API shapes (mirror of panel/src/api.rs views) ---
@@ -65,6 +67,56 @@ export interface Me {
   expires_at: string | null;
 }
 
+// "enroll": an admin without 2FA; only the /me/totp endpoints accept it.
+export type Stage = "full" | "enroll";
+
+export interface LoginResult {
+  id: string;
+  login: string;
+  role: string;
+  stage: Stage;
+}
+
+export interface TotpStatus {
+  id: string;
+  login: string;
+  role: string;
+  stage: Stage;
+  enabled: boolean;
+  pending: boolean;
+  recovery_codes_left: number;
+}
+
+export interface TotpEnrollment {
+  secret: string;
+  otpauth_uri: string;
+  digits: number;
+  period: number;
+  algorithm: string;
+}
+
+export interface AuditEntry {
+  id: number;
+  at: string;
+  actor_id: string | null;
+  actor_login: string;
+  ip: string | null;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  before: unknown;
+  after: unknown;
+}
+
+export interface AuditPage {
+  entries: AuditEntry[];
+  next_before: number | null;
+}
+
+// Subscription URL for a token (same origin, current secret prefix).
+export const subscriptionUrl = (token: string): string =>
+  `${location.origin}${prefixBase}/sub/${token}`;
+
 export interface UserView {
   id: string;
   login: string;
@@ -74,6 +126,7 @@ export interface UserView {
   traffic_used_bytes: number;
   expires_at: string | null;
   created_at: string;
+  totp_enabled: boolean;
 }
 
 export interface Inbound {

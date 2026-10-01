@@ -41,6 +41,22 @@ enum Cmd {
         #[command(subcommand)]
         action: AdminCmd,
     },
+    /// Secret rotation (audited)
+    Secrets {
+        #[command(subcommand)]
+        action: SecretsCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum SecretsCmd {
+    /// New random route prefix in data/state.json. Restart every panel
+    /// instance to apply; the old prefix (and every subscription URL built
+    /// on it) stops working then.
+    RotatePrefix,
+    /// New data/jwt.key and every session revoked at once (restart every
+    /// panel instance to sign with the new key).
+    RotateJwt,
 }
 
 #[derive(Subcommand)]
@@ -79,6 +95,11 @@ enum AdminCmd {
     /// Set an account's password (prompts unless AKARI_ADMIN_PASSWORD is
     /// set). Ends all of the account's sessions.
     Passwd { login: String },
+    /// Remove an account's two-factor authentication (lost authenticator
+    /// and recovery codes) and end its sessions; an admin re-enrolls at the
+    /// next login.
+    #[command(name = "reset-2fa")]
+    Reset2fa { login: String },
 }
 
 #[tokio::main]
@@ -105,6 +126,11 @@ async fn main() -> Result<()> {
         Cmd::Admin { action } => match action {
             AdminCmd::Add { login, role } => nodeops::admin_add(cfg, login, role).await,
             AdminCmd::Passwd { login } => nodeops::admin_passwd(cfg, login).await,
+            AdminCmd::Reset2fa { login } => nodeops::admin_reset_2fa(cfg, login).await,
+        },
+        Cmd::Secrets { action } => match action {
+            SecretsCmd::RotatePrefix => nodeops::secrets_rotate_prefix(cfg).await,
+            SecretsCmd::RotateJwt => nodeops::secrets_rotate_jwt(cfg).await,
         },
     }
 }
@@ -263,7 +289,9 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
     Ok(())
 }
 
+mod account;
 mod api;
+mod audit;
 mod auth;
 mod client_ip;
 mod config;
@@ -277,6 +305,7 @@ mod login_limit;
 mod metrics;
 mod nodeops;
 mod notify;
+mod rate;
 mod reaper;
 mod reject;
 mod request_id;
@@ -286,6 +315,7 @@ mod state;
 mod sub;
 #[cfg(test)]
 mod testdb;
+mod totp;
 mod traffic;
 mod valkey_util;
 mod web;

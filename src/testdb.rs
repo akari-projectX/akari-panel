@@ -9,6 +9,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 pub mod fake_agent;
+pub mod http;
 
 /// Payloads received until the channel stays quiet for `quiet`.
 pub async fn drain(l: &mut sqlx::postgres::PgListener, quiet: std::time::Duration) -> Vec<String> {
@@ -85,7 +86,9 @@ impl TestDb {
         id
     }
 
-    /// An enabled admin account.
+    /// An enabled admin account with an active (placeholder) TOTP, so its
+    /// full sessions are accepted (admins without 2FA only get
+    /// enrollment-only sessions).
     pub async fn admin(&self) -> Uuid {
         let id = Uuid::new_v4();
         sqlx::query("INSERT INTO users (id, login, role) VALUES ($1, $2, 'admin')")
@@ -94,7 +97,20 @@ impl TestDb {
             .execute(&self.pool)
             .await
             .unwrap();
+        self.totp_active(id).await;
         id
+    }
+
+    /// Mark an account's 2FA active (placeholder secret: no code verifies).
+    pub async fn totp_active(&self, id: Uuid) {
+        sqlx::query(
+            "INSERT INTO user_totp (user_id, secret_enc, enabled_at) VALUES ($1, '\\x00', now()) \
+             ON CONFLICT (user_id) DO UPDATE SET enabled_at = now()",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .unwrap();
     }
 
     /// An enabled node with one vless inbound tagged "in-vless".

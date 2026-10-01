@@ -39,6 +39,24 @@ export function AdminUsers() {
     }
   }
 
+  async function resetTotp(u: UserView) {
+    if (
+      !window.confirm(
+        `Reset two-factor authentication of "${u.login}"? Their sessions end` +
+          (u.role === "admin" ? " and they must enroll again at the next login." : "."),
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    try {
+      await del(`/users/${u.id}/totp`);
+      await queryClient.invalidateQueries({ queryKey: ["users"] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Reset failed");
+    }
+  }
+
   async function toggle(u: UserView) {
     setError(null);
     try {
@@ -90,6 +108,7 @@ export function AdminUsers() {
                 <TableHead>Traffic</TableHead>
                 <TableHead>Expires</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>2FA</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -114,10 +133,22 @@ export function AdminUsers() {
                       <Badge variant="destructive">disabled</Badge>
                     )}
                   </TableCell>
+                  <TableCell>
+                    {u.totp_enabled ? (
+                      <Badge variant="success">on</Badge>
+                    ) : (
+                      <Badge variant={u.role === "admin" ? "destructive" : "secondary"}>off</Badge>
+                    )}
+                  </TableCell>
                   <TableCell className="space-x-2 text-right">
                     <Button variant="outline" size="sm" onClick={() => regenerate(u)}>
                       Sub token
                     </Button>
+                    {u.totp_enabled && (
+                      <Button variant="outline" size="sm" onClick={() => resetTotp(u)}>
+                        Reset 2FA
+                      </Button>
+                    )}
                     <Button variant="outline" size="sm" onClick={() => toggle(u)}>
                       {u.enabled ? "Disable" : "Enable"}
                     </Button>

@@ -7,7 +7,7 @@ use axum::{Json, Router};
 use serde_json::json;
 use subtle::ConstantTimeEq;
 
-use crate::{api, reject, spa, state::AppState, sub};
+use crate::{account, api, audit, reject, spa, state::AppState, sub};
 
 pub fn router(state: AppState) -> Router {
     // Routes carry the secret prefix as a {prefix} path parameter (handlers
@@ -26,6 +26,24 @@ pub fn router(state: AppState) -> Router {
         .route("/{prefix}/auth/login", post(api::login))
         .route("/{prefix}/auth/logout", post(api::logout))
         .route("/{prefix}/api/v1/me", get(api::me))
+        .route("/{prefix}/api/v1/me/totp", get(account::totp_status))
+        .route(
+            "/{prefix}/api/v1/me/totp/enroll",
+            post(account::totp_enroll),
+        )
+        .route(
+            "/{prefix}/api/v1/me/totp/confirm",
+            post(account::totp_confirm),
+        )
+        .route(
+            "/{prefix}/api/v1/me/totp/recovery-codes",
+            post(account::regenerate_recovery_codes),
+        )
+        .route(
+            "/{prefix}/api/v1/me/sub-token",
+            post(account::regenerate_own_sub_token),
+        )
+        .route("/{prefix}/api/v1/audit", get(audit::list))
         .route(
             "/{prefix}/api/v1/users",
             get(api::list_users).post(api::create_user),
@@ -41,6 +59,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/{prefix}/api/v1/users/{id}/sub-token",
             post(api::regenerate_sub_token),
+        )
+        .route(
+            "/{prefix}/api/v1/users/{id}/totp",
+            axum::routing::delete(api::reset_totp),
         )
         .route(
             "/{prefix}/api/v1/users/{id}/nodes/{node_id}",
@@ -98,7 +120,12 @@ async fn prefix_gate(State(state): State<AppState>, req: Request, next: Next) ->
 /// deliberately absent from rejections: that header combination on a 404
 /// would fingerprint the panel.
 async fn security_headers(req: Request, next: Next) -> Response {
+    // Captured before the request is consumed; logged only redacted.
+    let path = redacted_path(req.uri().path());
     let mut res = next.run(req).await;
+    if res.status().is_server_error() {
+        tracing::warn!(path = %path, status = res.status().as_u16(), "request failed");
+    }
     if res.extensions().get::<reject::Rejected>().is_some() {
         // Re-mint the canonical rejection: axum appends headers after the
         // fallback runs (e.g. `Allow` on a method mismatch), and any such
@@ -120,6 +147,30 @@ async fn security_headers(req: Request, next: Next) -> Response {
     res
 }
 
+/// A request path safe to log: the secret route prefix and subscription
+/// tokens are replaced (`/{prefix}/sub/{token}`). Any request logging,
+/// tracing span or metric label must use this (or the matched route
+/// template), never the raw URI — the prefix and the tokens are
+/// credentials. Query strings are dropped.
+pub fn redacted_path(path: &str) -> String {
+    let path = path.split('?').next().unwrap_or("");
+    let mut segs = path.split('/').skip(1);
+    let Some(_prefix) = segs.next() else {
+        return "/".into();
+    };
+    let rest: Vec<&str> = segs.collect();
+    let mut out = String::from("/{prefix}");
+    for (i, seg) in rest.iter().enumerate() {
+        out.push('/');
+        if i == 1 && rest.first() == Some(&"sub") {
+            out.push_str("{token}");
+        } else {
+            out.push_str(seg);
+        }
+    }
+    out
+}
+
 /// Liveness for the panel itself, behind the secret prefix (knowing the
 /// prefix is the gate).
 async fn healthz() -> Response {
@@ -128,4 +179,26 @@ async fn healthz() -> Response {
 
 async fn rejected() -> Response {
     reject::not_found()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redacted_paths_hide_prefix_and_tokens() {
+        for (raw, want) in [
+            ("/0123abcd/sub/SECRET-TOKEN", "/{prefix}/sub/{token}"),
+            ("/0123abcd/sub/SECRET-TOKEN?x=1", "/{prefix}/sub/{token}"),
+            ("/0123abcd/sub/SECRET/extra", "/{prefix}/sub/{token}/extra"),
+            ("/0123abcd/api/v1/users", "/{prefix}/api/v1/users"),
+            ("/0123abcd", "/{prefix}"),
+            ("/", "/{prefix}"),
+            ("", "/"),
+        ] {
+            let got = redacted_path(raw);
+            assert_eq!(got, want, "{raw}");
+            assert!(!got.contains("SECRET") && !got.contains("0123abcd"));
+        }
+    }
 }

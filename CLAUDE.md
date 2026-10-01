@@ -17,7 +17,7 @@ Cargo.toml 在仓库根（文档里的 `panel/` 前缀是拆仓前的旧路径�
 | `deploy/` | systemd 单元、生产 compose、Caddy/nginx、Prometheus 告警、Grafana 面板 | `docs/DEPLOY.md` |
 | `scripts/` | `backup.sh`/`restore.sh`（age 加密）、`restore-drill.sh`（开发栈恢复演练） | `docs/BACKUP.md` |
 | `.github/workflows/` | `ci.yml`（含 docker build）、`release.yml`（tag `v*`：构建、SBOM、cosign 无密钥签名、GitHub Release、ghcr 镜像） | — |
-| `data/` | 运行时生成：route prefix、CA、jwt.key（gitignored，机密） | — |
+| `data/` | 运行时生成：route prefix、CA、jwt.key、totp.key（gitignored，机密；totp.key 丢失 = 所有 2FA 账户需 `admin reset-2fa`） | — |
 
 ## 命令
 
@@ -51,6 +51,9 @@ make smoke         # 全量构建 + smoke.sh（会 TRUNCATE PG、flushall Valkey
 - **GO-2026-6443**：agent 的 grpc-go < 1.85 遇缺 :authority 的请求会 panic，`streamSettings.network` = grpc/gun 的 inbound 一律 400；已存的在 NodeView `warnings` 中提示。agent 升级 grpc ≥ 1.85.0 后可解除。
 - **可观测性（M1-4）**：Prometheus 指标只在独立监听 `metrics.bind`（默认关闭；非回环须 `allow_non_loopback`；不得与 web/grpc 同端口），**永不**挂在公网 web 端口。标签只用路由模板（`/{prefix}/...`）与有限枚举，不得出现前缀或 id。`X-Request-Id` 只加在通过前缀闸门的响应上（`request_id.rs` 在闸门之内；带 `Rejected` 标记的响应不加），拒绝响应必须保持字节同构；URI 不进日志（可能含订阅 token）。
 - **启动校验（M1-3）**：`config.rs` 结构体 `deny_unknown_fields`；`config_check.rs` 的 `validate()`（纯函数）+ `check_data_dir`，`serve` 与 `config check` 共用；错误一次列全，警告不阻止启动。
+- **管理员双因素（M1-6）**：JWT 带必需 claim `st`（`full`/`enroll`）。`AuthUser` 只收 `full`，且 role=admin 时还要求 `user_totp` 有已启用行；无 2FA 的管理员密码登录只得 15 分钟 `enroll` 会话，仅 `SessionUser`（`/me/totp*` 三个端点）接受。登录 = 同一个 POST 带 `code`（TOTP 或恢复码），所有凭据失败统一 401、同样工作量（一条查询带出 TOTP 与未用恢复码哈希、一次 argon2、固定的 HMAC 计算），二因素失败计入登录限速。防重放 = `user_totp.last_step` 条件 UPDATE（只接受 > last_step 的步，DB 时钟），恢复码 = `used_at IS NULL` 条件 UPDATE，均多实例安全；**不得**用进程内缓存。启用/重置 2FA、rotate-jwt 都 bump `session_ver`。秘密 AES-256-GCM（AAD=user id）存库，恢复码 HMAC-SHA256，密钥派生自 `data/totp.key`。
+- **审计（M1-7）**：每个 `apply_*` 自带 `&Actor` 参数并在**同一事务**内写 `audit::record`（回滚 = 无审计行）；新增 mutator 必须同样写审计，`every_access_change_bumps_affected_nodes` 断言每个操作恰好一行。快照只走 `audit::user_snapshot_sql`/`node_snapshot_sql`/`inbounds_summary`（白名单），秘密只记 `"changed"`。登录失败审计在请求路径之外写（spawn），只记已存在账户。
+- **请求路径即秘密**：前缀与订阅 token 不得出现在任何日志/trace/指标标签中，记录路径一律用 `web::redacted_path`（或匹配到的路由模板）。
 - 验收门：`make check` 与 `make smoke` 全绿；新 API 必须在 smoke.sh 加断言。
 
 ## 已知问题
