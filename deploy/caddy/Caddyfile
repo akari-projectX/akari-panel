@@ -16,7 +16,12 @@
 
 {$AKARI_DOMAIN} {
 	encode zstd gzip
-	header -Server
+	# -Via: Caddy adds "Via: 1.1 Caddy" to proxied responses, so the panel's own
+	# rejections would differ from the 404 below (a prefix oracle).
+	header {
+		-Server
+		-Via
+	}
 
 	# Access logging is OFF by default in Caddy. If you enable it, keep the
 	# URI out: it contains the secret prefix and subscription tokens.
@@ -39,4 +44,11 @@
 	handle {
 		respond 404
 	}
+}
+
+# Any other host (e.g. the bare IP, or a name that is not AKARI_DOMAIN):
+# the same empty 404 instead of Caddy's default empty 200.
+:443 {
+	header -Server
+	respond 404
 }
