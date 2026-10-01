@@ -2839,6 +2839,50 @@ mod tests {
         db.drop().await;
     }
 
+    /// B2: corrupt credentials are logged and the user is left out of the
+    /// snapshot instead of being served as a valid empty inbound set; the
+    /// healthy users are unaffected. (The 0050 CHECK already keeps non-array
+    /// JSON out; a wrongly shaped array is what reaches this path.)
+    #[tokio::test]
+    async fn desired_state_skips_corrupt_credentials() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = db.member().await;
+        sqlx::query(
+            "UPDATE node_users SET credentials = '[{\"nope\": 1}]'::jsonb WHERE user_id = $1",
+        )
+        .bind(u)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let d = desired_state(&db.pool, n).await.unwrap().unwrap();
+        assert!(d.snapshot.users.is_empty());
+        db.drop().await;
+    }
+
+    /// B7 (0050): the database refuses nonsense the app never writes.
+    #[tokio::test]
+    async fn check_constraints_reject_nonsense() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = db.member().await;
+        for (sql, id) in [
+            ("UPDATE users SET role = 'root' WHERE id = $1", u),
+            ("UPDATE users SET traffic_used_bytes = -1 WHERE id = $1", u),
+            ("UPDATE nodes SET status = 'zombie' WHERE id = $1", n),
+            (
+                "UPDATE node_users SET credentials = '{}'::jsonb WHERE user_id = $1",
+                u,
+            ),
+        ] {
+            let r = sqlx::query(sql).bind(id).execute(&db.pool).await;
+            assert!(r.is_err(), "accepted: {sql}");
+        }
+        db.drop().await;
+    }
+
     /// S2-7: only the session that last marked the node online may mark
     /// it offline — cleanup of an older session running last is a no-op.
     #[tokio::test]
