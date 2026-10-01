@@ -12,6 +12,9 @@
 # address, server name, panel CA, one-time enrollment token; no private
 # key), installs the systemd unit and starts it, then waits until the agent
 # has enrolled and connected. Running it again is safe.
+# The whole script is one compound command: sh reads it completely before
+# running anything, so a download cut short runs nothing.
+{
 set -eu
 umask 077
 
@@ -96,8 +99,10 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
 # --- agent binary --------------------------------------------------------------
-eval "want=\$SHA_$ARCH"
-eval "ver=\$VER_$ARCH"
+case "$ARCH" in
+amd64) want=$SHA_amd64 ver=$VER_amd64 ;;
+*) want=$SHA_arm64 ver=$VER_arm64 ;;
+esac
 if [ -n "$want" ]; then
 	say "downloading akari-agent $ver ($ARCH) from the panel"
 	fetch_panel "$BASE/agent/$ARCH" "$TMP/akari-agent" || die "download from the panel failed"
@@ -160,6 +165,7 @@ START=$(date +%s)
 systemctl daemon-reload
 systemctl enable akari-agent.service >/dev/null 2>&1
 systemctl restart akari-agent.service
+restarts0=$(systemctl show -p NRestarts --value akari-agent.service 2>/dev/null || echo 0)
 say "agent started; waiting for it to enroll and connect"
 
 i=0
@@ -167,7 +173,7 @@ result=
 while [ "$i" -lt 90 ]; do
 	log=$(journalctl -u akari-agent.service --since "@$START" -o cat --no-pager 2>/dev/null || true)
 	case "$log" in
-	*'"msg":"channel established"'*)
+	*'"msg":"enrolled"'*'"msg":"channel established"'*)
 		result=ok
 		break
 		;;
@@ -176,7 +182,9 @@ while [ "$i" -lt 90 ]; do
 		break
 		;;
 	esac
-	if systemctl is-failed --quiet akari-agent.service; then
+	# Restart=always: a crash loop never reaches "failed".
+	restarts=$(systemctl show -p NRestarts --value akari-agent.service 2>/dev/null || echo 0)
+	if systemctl is-failed --quiet akari-agent.service || [ $((${restarts:-0} - ${restarts0:-0})) -ge 3 ]; then
 		result=failed
 		break
 	fi
@@ -202,3 +210,4 @@ refused)
 	die "the agent did not connect within 90 s (see the log above; journalctl -u akari-agent)"
 	;;
 esac
+}
