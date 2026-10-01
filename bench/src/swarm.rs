@@ -286,7 +286,10 @@ pub async fn run(args: SwarmArgs) -> Result<()> {
     println!("change -> agent, per agent:     {}", common::summary(&each));
     println!("change -> agent, all holders:   {}", common::summary(&all));
     println!("  of which PATCH (commit):       {}", common::summary(&api));
-    println!("  commit -> agent, per agent:    {}", common::summary(&after_commit));
+    println!(
+        "  commit -> agent, per agent:    {}",
+        common::summary(&after_commit)
+    );
 
     let _ = stop_tx.send(true);
     for t in tasks {

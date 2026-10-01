@@ -44,6 +44,7 @@ struct Metrics {
     login_attempts: IntCounterVec,
     enrollments: IntCounterVec,
     http_seconds: HistogramVec,
+    retention: IntCounterVec,
 }
 
 static METRICS: OnceLock<Metrics> = OnceLock::new();
@@ -132,6 +133,12 @@ impl Metrics {
                 ]),
                 &["method", "route", "status"],
             )?,
+            retention: cv(
+                "akari_traffic_retention_total",
+                "traffic_counters retention: sessions retired (kind=session_retired) and rows \
+                 deleted by reason (kind=rows_retired_session, rows_deleted_node)",
+                &["kind"],
+            )?,
             registry,
         };
         let build = IntGaugeVec::new(
@@ -155,6 +162,7 @@ impl Metrics {
         m.registry.register(Box::new(m.login_attempts.clone()))?;
         m.registry.register(Box::new(m.enrollments.clone()))?;
         m.registry.register(Box::new(m.http_seconds.clone()))?;
+        m.registry.register(Box::new(m.retention.clone()))?;
         // Series that should read 0, not "absent", before the first event.
         for k in ["snapshot", "delta", "empty_snapshot"] {
             m.syncs_sent.with_label_values(&[k]);
@@ -234,6 +242,12 @@ pub fn flush_done(took: Duration, ok: bool) {
 pub fn billed(bytes: i64) {
     if let (Some(m), Ok(b)) = (m(), u64::try_from(bytes)) {
         m.billed_bytes.inc_by(b);
+    }
+}
+
+pub fn retention(kind: &'static str, n: u64) {
+    if let Some(m) = m() {
+        m.retention.with_label_values(&[kind]).inc_by(n);
     }
 }
 

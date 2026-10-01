@@ -300,6 +300,23 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         .bind(ids.user),
     )
     .await?;
+    explain(
+        &mut tx,
+        p,
+        "traffic::RETIRE_SQL (1 node)",
+        q!(traffic::RETIRE_SQL)
+            .bind(ids.node)
+            .bind(traffic::RETENTION_MARGIN_SECS as f64),
+    )
+    .await?;
+    explain(
+        &mut tx,
+        p,
+        "traffic::DEAD_NODES_SQL",
+        q!(traffic::DEAD_NODES_SQL),
+    )
+    .await?;
+
     // The flush: `flush_rows` (node, user) pairs of a new session.
     let n = ids.flush.len();
     let nodes: Vec<Uuid> = ids.flush.iter().map(|r| r.0).collect();

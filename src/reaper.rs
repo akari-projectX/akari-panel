@@ -46,10 +46,27 @@ pub async fn reap_loop(state: AppState) {
     // Audit retention (M1-7) rides on this loop: hourly, any instance
     // (concurrent prunes are harmless).
     let mut next_prune = tokio::time::Instant::now();
+    // traffic_counters retention (M2-5) too: every 10 min, any instance.
+    let mut next_retention = tokio::time::Instant::now() + crate::traffic::RETENTION_EVERY;
     loop {
         tick.tick().await;
         if let Err(e) = reap_once(&state).await {
             tracing::warn!(error = %e, "node reaper failed");
+        }
+        if tokio::time::Instant::now() >= next_retention {
+            next_retention = tokio::time::Instant::now() + crate::traffic::RETENTION_EVERY;
+            match crate::traffic::retention_pass(state.pg(), crate::traffic::RETENTION_MARGIN_SECS)
+                .await
+            {
+                Ok(r) if r == crate::traffic::Retention::default() => {}
+                Ok(r) => tracing::info!(
+                    sessions_retired = r.sessions_retired,
+                    rows_retired_session = r.rows_retired_session,
+                    rows_deleted_node = r.rows_deleted_node,
+                    "traffic counters retention"
+                ),
+                Err(e) => tracing::warn!(error = %e, "traffic counters retention failed"),
+            }
         }
         if tokio::time::Instant::now() >= next_prune {
             next_prune = tokio::time::Instant::now() + crate::audit::PRUNE_EVERY;
