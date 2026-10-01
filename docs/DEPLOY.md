@@ -82,6 +82,22 @@ ACME. The Caddyfile sets `default_sni` to `AKARI_DOMAIN` because clients send no
 address. The agent's gRPC channel is unaffected: it pins the panel CA, not the web certificate,
 and the one-line node installer pins the web certificate's key (§3).
 
+**Moving an IP-only deployment to a domain** (verified 2026-10-02): add the A record (no
+proxying CDN; ports 80/443 open), set `AKARI_DOMAIN` in `.env`, and in `panel.toml` keep the IP
+**and** add the name: `web.advertised_names = ["panel.example.com", "203.0.113.10"]`. Agents
+enrolled earlier keep dialing the IP with the IP as gRPC server name (their bootstrap file says
+so), and the panel's gRPC certificate is regenerated at every start from `advertised_names`:
+dropping the IP strands them. `grpc.advertise`/`grpc.server_name` can then move to the name (only
+new bootstrap files and install links use them), and `[install] public_url =
+"https://panel.example.com"` makes install commands plain `curl` (no pin). `config check`,
+`docker compose up -d` (Caddy obtains the certificate within seconds; `docker compose logs caddy`
+shows "certificate obtained successfully"), then restart one agent to confirm it reconnects. Any
+other host name, including the bare IP, now gets the same empty 404.
+
+The Caddyfile is bind-mounted as a single file: `git pull`/`git checkout` replace the file (new
+inode) and the running container keeps the old one, so `caddy reload` changes nothing. After
+updating the checkout run `docker compose up -d --force-recreate caddy`.
+
 Notes: the image is distroless (no shell; `exec panel /akari ...` works because it runs the
 binary directly), runs as UID 65532, state lives in the `akari-data` volume (`/data`).
 There is no container HEALTHCHECK; probe `https://panel.example.com/<prefix>/healthz`
@@ -337,8 +353,10 @@ otherwise (or for any other value) `chrome`.
 }
 ```
 
-`serverNames[0]` is the SNI clients send. Assign users to the inbound with protocol `vless` and
-flow `xtls-rprx-vision`.
+`serverNames[0]` is the SNI clients send. Assign users to the inbound with protocol `vless`. The
+panel issues VLESS accounts with an empty `flow` (no Vision); subscriptions only carry
+`flow=xtls-rprx-vision` for an account whose stored credential has it, and neither the assign API
+nor the plan reconcile sets it yet.
 
 ## 3c. Resource footprint (measured)
 
