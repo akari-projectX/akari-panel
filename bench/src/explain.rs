@@ -162,7 +162,8 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         p,
         "api::list_users page 1",
         q!(format!(
-            "SELECT {} FROM users ORDER BY created_at, id LIMIT $1 OFFSET $2",
+            "SELECT {} FROM users WHERE id IN (SELECT id FROM users \
+             ORDER BY created_at, id LIMIT $1 OFFSET $2) ORDER BY created_at, id",
             api::USER_VIEW_COLS
         ))
         .bind(50i64)
@@ -174,7 +175,8 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         p,
         "api::list_users offset 49000",
         q!(format!(
-            "SELECT {} FROM users ORDER BY created_at, id LIMIT $1 OFFSET $2",
+            "SELECT {} FROM users WHERE id IN (SELECT id FROM users \
+             ORDER BY created_at, id LIMIT $1 OFFSET $2) ORDER BY created_at, id",
             api::USER_VIEW_COLS
         ))
         .bind(50i64)
@@ -226,7 +228,17 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         p,
         "audit::list action prefix",
         q!(format!(
-            "{audit} AND left(action, $1) = $2 ORDER BY id DESC LIMIT $3"
+            "WITH RECURSIVE acts AS ( \
+               (SELECT action FROM audit_log ORDER BY action LIMIT 1) \
+               UNION ALL \
+               SELECT (SELECT a.action FROM audit_log a WHERE a.action > acts.action \
+                       ORDER BY a.action LIMIT 1) \
+               FROM acts WHERE acts.action IS NOT NULL) \
+             SELECT e.* FROM (SELECT action FROM acts WHERE action IS NOT NULL \
+                              AND left(action, $1) = $2) m \
+             CROSS JOIN LATERAL ({audit} AND action >= m.action AND action <= m.action \
+                                 ORDER BY action DESC, id DESC LIMIT $3) e \
+             ORDER BY e.id DESC LIMIT $3"
         ))
         .bind(5i32)
         .bind("node.")
@@ -238,7 +250,8 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         p,
         "audit::list actor",
         q!(format!(
-            "{audit} AND actor_login = $1 ORDER BY id DESC LIMIT $2"
+            "{audit} AND actor_login >= $1 AND actor_login <= $1 \
+             ORDER BY actor_login DESC, id DESC LIMIT $2"
         ))
         .bind("cli")
         .bind(51i64),
