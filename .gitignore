@@ -4,3 +4,4 @@ spa/dist
 data/
 *-bootstrap.toml
 /bench/data
+/bench/target

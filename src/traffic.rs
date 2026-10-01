@@ -657,7 +657,8 @@ WITH input AS (
     RETURNING new.node_id, new.user_id, new.session_id,
               old.up_bytes AS old_up, old.down_bytes AS old_down, old.updated_at AS old_at,
               COALESCE(old.first_seen_at, old.updated_at) AS old_first,
-              new.up_bytes AS new_up, new.down_bytes AS new_down
+              new.up_bytes AS new_up, new.down_bytes AS new_down,
+              m.age_secs, m.departed_at, m.departed_billed, m.rate, m.traffic_tat, m.floor
 ), ins AS (
     -- The rest are new rows. ON CONFLICT stays as the race arbiter (two
     -- instances inserting the same key; the node locks make that rare).
@@ -665,7 +666,8 @@ WITH input AS (
         (node_id, user_id, session_id, up_bytes, down_bytes, updated_at, first_seen_at)
     SELECT node_id, user_id, session_id, up, down, statement_timestamp(), statement_timestamp()
     FROM member m
-    WHERE NOT EXISTS (SELECT 1 FROM upd u WHERE u.node_id = m.node_id
+    WHERE (SELECT count(*) FROM upd) < (SELECT count(*) FROM member)
+      AND NOT EXISTS (SELECT 1 FROM upd u WHERE u.node_id = m.node_id
                       AND u.user_id = m.user_id AND u.session_id = m.session_id)
     ORDER BY node_id, user_id, session_id
     ON CONFLICT (node_id, user_id, session_id) DO UPDATE
@@ -677,16 +679,23 @@ WITH input AS (
               COALESCE(old.first_seen_at, old.updated_at) AS old_first,
               new.up_bytes AS new_up, new.down_bytes AS new_down
 ), upsert AS (
-    SELECT * FROM upd UNION ALL SELECT * FROM ins
+    -- Updated rows carry their member columns straight out of the UPDATE
+    -- (no re-join); the few inserted rows join member.
+    SELECT * FROM upd
+    UNION ALL
+    SELECT i.node_id, i.user_id, i.session_id, i.old_up, i.old_down, i.old_at, i.old_first,
+           i.new_up, i.new_down,
+           m.age_secs, m.departed_at, m.departed_billed, m.rate, m.traffic_tat, m.floor
+    FROM ins i JOIN member m USING (node_id, user_id, session_id)
 ), rows AS (
-    SELECT u.node_id, u.user_id, u.old_at, m.age_secs, m.departed_at, m.departed_billed,
-           m.rate, m.traffic_tat, m.floor,
+    SELECT u.node_id, u.user_id, u.old_at, u.age_secs, u.departed_at, u.departed_billed,
+           u.rate, u.traffic_tat, u.floor,
            GREATEST(u.new_up - COALESCE(u.old_up, 0), 0)::numeric
          + GREATEST(u.new_down - COALESCE(u.old_down, 0), 0)::numeric AS raw,
            GREATEST(COALESCE(GREATEST(u.old_at, u.old_first),
-                             statement_timestamp() - make_interval(secs => m.age_secs)),
-                    m.floor) AS start
-    FROM upsert u JOIN member m USING (node_id, user_id, session_id)
+                             statement_timestamp() - make_interval(secs => u.age_secs)),
+                    u.floor) AS start
+    FROM upsert u
 ), per_row AS (
     SELECT node_id, user_id, departed_at, departed_billed, rate, traffic_tat, floor, start, raw,
            CASE WHEN departed_at IS NULL THEN
@@ -704,15 +713,19 @@ WITH input AS (
     SELECT *, LEAST(raw, cap) AS amount FROM per_row
 ), pair AS (
     -- Per (node, user): a pair is either assigned or departed in all of
-    -- its rows (departed_at belongs to the pair), so the departed pair's
-    -- sum and allowance are window aggregates over the pair's rows.
-    SELECT *,
-           sum(amount) OVER w AS pair_total,
-           GREATEST($7::numeric * GREATEST(extract(epoch FROM
-               min(departed_at) OVER w + make_interval(secs => $13) - min(start) OVER w), 0)
-             - min(departed_billed) OVER w::numeric, 0) AS pair_allowance
-    FROM capped
-    WINDOW w AS (PARTITION BY node_id, user_id)
+    -- its rows (departed_at belongs to the pair), so only departed pairs
+    -- need their sum and allowance across the pair's rows; assigned rows
+    -- (the bulk) skip the aggregation.
+    SELECT c.*, p.pair_total, p.pair_allowance
+    FROM capped c
+    LEFT JOIN (
+        SELECT node_id, user_id, sum(amount) AS pair_total,
+               GREATEST($7::numeric * GREATEST(extract(epoch FROM
+                   min(departed_at) + make_interval(secs => $13) - min(start)), 0)
+                 - min(departed_billed)::numeric, 0) AS pair_allowance
+        FROM capped WHERE departed_at IS NOT NULL
+        GROUP BY node_id, user_id
+    ) p USING (node_id, user_id)
 ), row2 AS (
     SELECT node_id, user_id, departed_at IS NOT NULL AS departed, rate, floor,
            GREATEST(COALESCE(traffic_tat, statement_timestamp() - interval '60 seconds'), floor) AS tat,
