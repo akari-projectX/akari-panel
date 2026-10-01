@@ -361,6 +361,55 @@ export interface NodeEnrollment {
   enrollment_token: string;
   expires_at: string;
   bootstrap: string;
+  // R18-2: present when the create request asked for an install link.
+  install?: InstallView;
+}
+
+// R18-2 one-line installer (mirror of src/nodeinstall.rs InstallView).
+export interface InstallView {
+  url: string;
+  command: string;
+  // Absent when the panel certificate is pinned (wget cannot pin).
+  command_wget: string | null;
+  uninstall_command: string;
+  expires_at: string;
+  pin: string | null;
+  releases: Record<string, { version: string; sha256: string }>;
+  fallback_binary_url: string | null;
+  warnings: string[];
+}
+
+// R18-2 inbound templates (mirror of src/nodetpl.rs InboundSpec).
+export type InboundSpec =
+  | {
+      template: "vless_reality";
+      port: number;
+      tag?: string;
+      dest?: string;
+      server_name?: string;
+      fingerprint?: string;
+    }
+  | { template: "vless_ws_tls"; port: number; tag?: string; domain: string; path?: string }
+  | { template: "vmess_ws"; port: number; tag?: string; path?: string; tls_domain?: string }
+  | { template: "trojan_tls"; port: number; tag?: string; domain: string };
+
+export interface TemplateCatalog {
+  reality_dests: string[];
+  fingerprints: string[];
+  tls_cert_dir: string;
+}
+
+export interface RenderedInbounds {
+  inbounds: Inbound[];
+  needs_certificate: boolean;
+}
+
+export interface CheckDestView {
+  ok: boolean;
+  tls13: boolean;
+  h2: boolean;
+  trusted: boolean;
+  error: string | null;
 }
 
 export interface GeneratedAccount {
