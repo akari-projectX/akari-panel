@@ -16,7 +16,7 @@ use uuid::Uuid;
 use akari_panel::gen::{user_op, InboundUser, TrafficReport, UserOp, UserTraffic};
 use akari_panel::grpc::{diff_user_sets, state_hash, user_set, NodeState, UserSet};
 
-const DEFAULT_DB: &str = "postgres://akari:akari-dev@localhost:5432/akari_bench";
+const DEFAULT_DB: &str = "postgres://akari:akari-dev@localhost:5433/akari_bench";
 
 /// A node's user set like the seeded ones: one vless + one trojan
 /// credential per user.

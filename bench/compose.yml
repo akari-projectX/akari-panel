@@ -1,0 +1,53 @@
+# Dedicated stack for the M2 benchmarks (docs/PERF.md): its own PostgreSQL
+# and Valkey on their own ports, so seeding 2M rows and saturating the disk
+# never touches the dev stack (smoke truncates it, other work shares it).
+# PostgreSQL is sized for the data set (50k users, 2M assignments), i.e.
+# what docs/DEPLOY.md recommends for a production server of that size; the
+# stock postgres:18 default (shared_buffers=128MB) does not hold the
+# working set.
+#
+#   make bench-up      # start (project akari-bench)
+#   make bench-down    # stop and delete the data
+name: akari-bench
+services:
+  postgres:
+    image: postgres:18-alpine
+    command:
+      - postgres
+      - -c
+      - shared_buffers=2GB
+      - -c
+      - effective_cache_size=6GB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - checkpoint_completion_target=0.9
+    shm_size: 2560mb
+    environment:
+      POSTGRES_USER: akari
+      POSTGRES_PASSWORD: akari-dev
+      POSTGRES_DB: akari_bench
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - benchpg:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U akari -d akari_bench"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  valkey:
+    image: valkey/valkey:9-alpine
+    ports:
+      - "127.0.0.1:6380:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+volumes:
+  benchpg:

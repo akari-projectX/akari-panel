@@ -7,7 +7,8 @@ Cargo.toml 在仓库根（文档里的 `panel/` 前缀是拆仓前的旧路径�
 
 | 路径 | 内容 | 子文档 |
 |---|---|---|
-| `src/` | 全部 Rust 代码 | `src/CLAUDE.md` |
+| `src/` | 全部 Rust 代码（`lib.rs` = crate `akari_panel` 的全部模块，`main.rs` = CLI/启动入口；全局分配器 mimalloc） | `src/CLAUDE.md` |
+| `bench/` | M2 基准与压测工具 crate（独立 workspace + lockfile，**不在**面板依赖图/发布二进制里）：`akari-bench seed/explain/http/swarm/lb/retention/multi` + criterion；专用 PG/Valkey 栈 `bench/compose.yml`（端口 5433/6380，不碰开发栈） | `docs/PERF.md` |
 | `spa/` | React 19 + Vite 8 + Tailwind 4 前端 | `spa/CLAUDE.md` |
 | `migrations/` | sqlx 迁移（启动时自动执行） | `migrations/CLAUDE.md` |
 | `proto/` | **控制协议正本** `agent.proto` | `proto/CLAUDE.md` |
@@ -16,7 +17,7 @@ Cargo.toml 在仓库根（文档里的 `panel/` 前缀是拆仓前的旧路径�
 | `Dockerfile` | 多阶段：spa → musl 静态二进制 → distroless nonroot 镜像（target `artifact`/`prebuilt`/`runtime`） | — |
 | `deploy/` | systemd 单元、生产 compose、Caddy/nginx、Prometheus 告警、Grafana 面板 | `docs/DEPLOY.md` |
 | `scripts/` | `backup.sh`/`restore.sh`（age 加密）、`restore-drill.sh`（开发栈恢复演练） | `docs/BACKUP.md` |
-| `.github/workflows/` | `ci.yml`（含 docker build）、`release.yml`（tag `v*`：构建、SBOM、cosign 无密钥签名、GitHub Release、ghcr 镜像） | — |
+| `.github/workflows/` | `ci.yml`（含 docker build、`bench-tooling` fmt/clippy）、`bench.yml`（手动：种子数据 + criterion，工件 `target/criterion`；噪声大，只看趋势）、`release.yml`（tag `v*`：构建、SBOM、cosign 无密钥签名、GitHub Release、ghcr 镜像） | — |
 | `data/` | 运行时生成：route prefix、CA、jwt.key、totp.key（gitignored，机密；totp.key 丢失 = 所有 2FA 账户需 `admin reset-2fa`；CA 丢失 = 所有节点需 `node enroll-token` 重新注册） | — |
 
 ## 命令
@@ -26,6 +27,10 @@ make dev-up        # docker compose: PG 5432 / Valkey 6379（仅 127.0.0.1）
 make spa           # npm install + tsc + vite build → spa/dist
 make panel         # cargo build --release（嵌入当前 spa/dist）
 make check         # cargo fmt --check + clippy -D warnings + tsc
+make bench-up      # 基准专用栈（bench/compose.yml：PG 5433 / Valkey 6380）
+make bench-seed    # 200 节点 / 5 万用户 / 每节点 1 万（约 60s，独立库 akari_bench）
+make bench         # criterion（快照构建、订阅渲染、flush 5 万行）；其余工具见 docs/PERF.md
+make bench-lint    # bench crate 的 fmt + clippy（CI 也跑）
 make smoke         # 全量构建 + smoke.sh（会 TRUNCATE PG、flushall Valkey、删 data/）
 ./target/release/akari info    # 查看 route prefix
 ./target/release/akari config check   # 校验并打印生效配置（凭据已打码）
@@ -56,6 +61,7 @@ make smoke         # 全量构建 + smoke.sh（会 TRUNCATE PG、flushall Valkey
 - **审计（M1-7）**：每个 `apply_*` 自带 `&Actor` 参数并在**同一事务**内写 `audit::record`（回滚 = 无审计行）；新增 mutator 必须同样写审计，`every_access_change_bumps_affected_nodes` 断言每个操作恰好一行。快照只走 `audit::user_snapshot_sql`/`node_snapshot_sql`/`inbounds_summary`（白名单），秘密只记 `"changed"`。登录失败审计在请求路径之外写（spawn），只记已存在账户。
 - **请求路径即秘密**：前缀与订阅 token 不得出现在任何日志/trace/指标标签中，记录路径一律用 `web::redacted_path`（或匹配到的路由模板）。
 - **管理员首次 2FA 注册码（M1c）**：admin 激活 TOTP（`/me/totp/confirm`）除当前验证码外还需一次性注册码（`akari admin add`/`admin reset-2fa` 打印、API 建 admin/重置 2FA 时只返回一次；128-bit，存 SHA-256(user id‖码)，24h，激活事务内消费），错误统一 400 "invalid code" 并计入登录限速。
+- **性能（M2）**：达标数字与复现步骤在 `docs/PERF.md`（flush 5 万行 0.91s 余量只有约 9%，改 `traffic::FLUSH_SQL`/`write_rows` 前后都跑 `make bench`；快照 10k 用户 43ms；管理 API/订阅 p99 见 PERF）。`traffic_counters` 保留任务（`traffic::retention_pass`，reaper 循环）只删可证明已死的会话行，见 `src/CLAUDE.md`/`migrations/CLAUDE.md`；`AuthUser` 每请求一次索引查询（约 0.4ms），**不加缓存**——吊销必须在下一次请求、所有实例上生效（`akari-bench multi` 断言）。多实例参考拓扑在 `docs/DEPLOY.md`。
 - 验收门：`make check` 与 `make smoke` 全绿；新 API 必须在 smoke.sh 加断言。
 
 ## 已知问题
