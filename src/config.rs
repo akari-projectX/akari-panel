@@ -71,7 +71,7 @@ pub struct MetricsConfig {
     pub allow_non_loopback: bool,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AgentConfig {
     /// How agents apply user removals/rotations (R10 fallback switch):
@@ -80,6 +80,33 @@ pub struct AgentConfig {
     /// removal/rotation is a full Snapshot (xray rebuild, all connections on
     /// the node drop). Pushed to agents on every LeaseGrant.
     pub remove_mode: RemoveMode,
+    /// Validity of agent client certificates (M1-8). Protocol >= 2 agents
+    /// renew when less than a third is left. Default 90 days; 60 s to 825
+    /// days.
+    pub cert_validity_secs: u64,
+    /// Lifetime of a node enrollment token. Default 24 h; 5 min to 7 days.
+    pub enroll_token_ttl_secs: u64,
+    /// Enrollment RPC rate limit (Valkey fixed windows): calls per source
+    /// address (IPv6 per /64) and over all sources, per window. Defaults
+    /// 10 and 60 per 600 s.
+    pub enroll_rate_per_ip: i64,
+    pub enroll_rate_global: i64,
+    pub enroll_rate_window_secs: i64,
+}
+
+pub const DEFAULT_CERT_VALIDITY_SECS: u64 = 90 * 86400;
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            remove_mode: RemoveMode::default(),
+            cert_validity_secs: DEFAULT_CERT_VALIDITY_SECS,
+            enroll_token_ttl_secs: 86400,
+            enroll_rate_per_ip: 10,
+            enroll_rate_global: 60,
+            enroll_rate_window_secs: 600,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]

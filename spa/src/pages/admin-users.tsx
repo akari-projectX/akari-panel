@@ -28,6 +28,7 @@ export function AdminUsers() {
   const users = useQuery({ queryKey: ["users"], queryFn: () => get<UserView[]>("/users") });
   const [error, setError] = useState<string | null>(null);
   const [subToken, setSubToken] = useState<{ login: string; token: string } | null>(null);
+  const [enrollCode, setEnrollCode] = useState<{ login: string; code: string } | null>(null);
 
   async function regenerate(u: UserView) {
     setError(null);
@@ -50,7 +51,10 @@ export function AdminUsers() {
     }
     setError(null);
     try {
-      await del(`/users/${u.id}/totp`);
+      const res = await del<{ totp_enrollment_code: string | null }>(`/users/${u.id}/totp`);
+      if (res?.totp_enrollment_code) {
+        setEnrollCode({ login: u.login, code: res.totp_enrollment_code });
+      }
       await queryClient.invalidateQueries({ queryKey: ["users"] });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Reset failed");
@@ -83,6 +87,20 @@ export function AdminUsers() {
         onSubToken={(login, token) => setSubToken({ login, token })}
       />
       {error && <p className="text-sm text-destructive">{error}</p>}
+      {enrollCode && (
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-sm text-muted-foreground">
+              2FA enrollment code for <span className="font-medium">{enrollCode.login}</span> — shown
+              once, valid 24 h. Hand it over on a separate channel; it is required to set up the
+              authenticator again:
+            </p>
+            <pre className="mt-2 overflow-auto rounded-lg bg-muted p-3 text-sm tracking-wider">
+              {enrollCode.code}
+            </pre>
+          </CardContent>
+        </Card>
+      )}
       {subToken && (
         <Card>
           <CardContent className="pt-6">
@@ -144,10 +162,18 @@ export function AdminUsers() {
                     <Button variant="outline" size="sm" onClick={() => regenerate(u)}>
                       Sub token
                     </Button>
-                    {u.totp_enabled && (
+                    {u.totp_enabled ? (
                       <Button variant="outline" size="sm" onClick={() => resetTotp(u)}>
                         Reset 2FA
                       </Button>
+                    ) : (
+                      u.role === "admin" && (
+                        // An admin without 2FA (e.g. promoted, or the code
+                        // expired) needs a fresh one-time enrollment code.
+                        <Button variant="outline" size="sm" onClick={() => resetTotp(u)}>
+                          2FA code
+                        </Button>
+                      )
                     )}
                     <Button variant="outline" size="sm" onClick={() => toggle(u)}>
                       {u.enabled ? "Disable" : "Enable"}

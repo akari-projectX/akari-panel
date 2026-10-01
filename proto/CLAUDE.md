@@ -13,10 +13,12 @@ agent 仓库的 `make sync-proto`/`check-proto` 写死 `../akari-panel`；在 wo
 
 语义要点（完整定义见 proto 注释）：
 - `TrafficReport.session_id` 是计费键（与计数原子读取）；Hello 的 session 仅供展示/日志。
-- `Hello.protocol_version`：当前 1；旧 agent 不发 = 0。面板 `MIN_AGENT_PROTOCOL` 以下给空状态并标记，不拒绝连接。**先升级 agent 再升级面板**；改协议语义时加版本号并更新两侧常量。
+- `Hello.protocol_version`：当前 2（= 会用 `AgentChannel.Renew` 续期证书）；1 = 不续期，面板照常服务（NodeView 在证书 14 天内到期时警告）；旧 agent 不发 = 0。面板 `MIN_AGENT_PROTOCOL` 以下给空状态并标记，不拒绝连接。**先升级 agent 再升级面板**；改协议语义时加版本号并更新两侧常量。
 - `ConfigSnapshot` 是完整期望状态；`UserDelta` 带 base/target：持有 == base 才应用，持有 == target 按 no-op ack，其余 `BASE_MISMATCH`；delta 不改 config_version。`UserOp.ADD` = REPLACE（恰好列出的 inbound，旧/轮换凭据的活连接被断开）。
 - `Ack.reason`（OK / APPLY_FAILED / BASE_MISMATCH）+ `held_*`（处理后 agent 实际持有）+ `state_hash`。
 - State hash v2：SHA-256，`"akari-state-v2\n"` + u64be(config_version) + 按 (user_id, tag) 字节序的长度前缀四元组 + u32be(32)‖SHA-256(inbounds_json 原文，无实例时 "")；account_json **原样**参与（面板用 serde_json 紧凑+键排序输出，agent 不重新序列化）。向量由 `testdata/gen_vectors.py`（独立 Python 参考实现）生成，改算法先改它再重生成、同步到 agent。
 - `LeaseGrant.remove_mode`（`RemoveMode` GATE/REBUILD）：REBUILD 时删除/轮换走 Snapshot，agent 拒收此类 delta。
 - `LeaseGrant`：面板读库成功后才发；agent 用 CLOCK_BOOTTIME、0=24h、≥1h、只接受当前流；到期拆 xray、持有版本归 (0,0)、最终计数留待重连上报。`Heartbeat.lease_remaining_seconds` 未武装时不设置。
 - gRPC 方法名不可叫 `Connect`（与 tonic 客户端构造函数撞名）。
+- **TLS 与两个服务（M1c）**：客户端证书在 TLS 层可选；`AgentEnrollment.Enroll(token, CSR)` 是唯一无证书可调用的方法（agent 仍用 bootstrap 里的 CA 校验服务端）；`AgentChannel` 每个方法都必须有已验证客户端证书。CSR：ECDSA P-256 + ecdsa-with-SHA256、零 attribute/扩展（无 SAN），subject 忽略。所有 token 问题 = PERMISSION_DENIED "enrollment refused"；坏 CSR = INVALID_ARGUMENT（token 不消耗）；限速 = RESOURCE_EXHAUSTED。`Renew(CSR 新密钥)`：面板记录新序列号，调用证书在新证书首次被看到前一直有效（之后墓碑），没收到回复的 agent 用旧证书重试即可（未见过的那张被墓碑）。agent 只在用新证书的流上收到第一条面板消息后才把它提升为当前身份。
+- `Heartbeat.connections` = gate 跟踪的分发数，`uptime_seconds` = agent 进程运行秒数。

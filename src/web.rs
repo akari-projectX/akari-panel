@@ -68,7 +68,14 @@ pub fn router(state: AppState) -> Router {
             "/{prefix}/api/v1/users/{id}/nodes/{node_id}",
             post(api::assign_user).delete(api::unassign_user),
         )
-        .route("/{prefix}/api/v1/nodes", get(api::list_nodes))
+        .route(
+            "/{prefix}/api/v1/nodes",
+            get(api::list_nodes).post(api::create_node),
+        )
+        .route(
+            "/{prefix}/api/v1/nodes/{id}/enroll-token",
+            post(api::issue_enroll_token),
+        )
         .route(
             "/{prefix}/api/v1/nodes/{id}",
             axum::routing::patch(api::update_node).delete(api::delete_node),

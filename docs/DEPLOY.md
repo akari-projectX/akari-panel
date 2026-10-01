@@ -13,7 +13,7 @@ name pointing at it (`panel.example.com` below), ports 80/443 (TLS proxy) and
 | Port | Who connects | Exposure |
 |---|---|---|
 | 443 (80 for ACME) | admins, subscription clients | public, via the TLS reverse proxy; **only the secret prefix path is forwarded** |
-| 8443 gRPC | agents (mTLS, client certificate = node identity) | public or allow-listed to your node IPs; **never behind an HTTP proxy that terminates TLS** |
+| 8443 gRPC | agents (mTLS, client certificate = node identity; enrollment = server TLS + one-time token) | public or allow-listed to your node IPs; **never behind an HTTP proxy that terminates TLS** |
 | 8080 panel web | the reverse proxy only | loopback / private network, never published |
 | 5432, 6379 | the panel only | never published |
 | 9100 metrics | Prometheus | loopback / private, off by default |
@@ -102,11 +102,15 @@ logs. `trusted_proxies = ["127.0.0.1/32"]` matches a same-host proxy.
 # bare metal: sudo -u akari env AKARI_ADMIN_PASSWORD='...' akari -c /etc/akari/panel.toml admin add root
 ```
 
-Omit the variable to be prompted. Open `https://panel.example.com/<prefix>/app` and log in.
-Admins must use two-factor authentication: the first login only opens the authenticator setup
-(TOTP); store the 10 recovery codes it shows. Do this right after creating the account — until
-enrolled, the password alone is enough to enroll. Lost authenticator and recovery codes:
-`akari admin reset-2fa <login>`.
+Omit the variable to be prompted. The command also prints a one-time **2FA enrollment code**
+(valid 24 h). Open `https://panel.example.com/<prefix>/app` and log in. Admins must use two-factor
+authentication: the first login only opens the authenticator setup (TOTP), which needs a current
+code from the app **and** the enrollment code — a leaked password alone cannot bind an attacker's
+authenticator. Store the 10 recovery codes it shows. Lost authenticator and recovery codes, or an
+expired enrollment code: `akari admin reset-2fa <login>` (prints a new enrollment code; in the UI
+an admin's **Reset 2FA** / **2FA code** shows it once). Admins created through the API get theirs
+in the create response; a user promoted to admin gets one through **2FA code**. Admin accounts
+created before this release that never enrolled need `admin reset-2fa` once.
 
 ## 3. Add a node and install the agent
 
@@ -115,8 +119,12 @@ enrolled, the password alone is enough to enroll. Lost authenticator and recover
 sudo -u akari akari -c /etc/akari/panel.toml node add tokyo-1 --out /tmp/tokyo-1-bootstrap.toml
 ```
 
-The bootstrap file contains the node's **private key** (v1): copy it over SSH, delete the copy.
-On the node:
+Or in the UI: Nodes → **New node** (the bootstrap file is shown once, with a Download button).
+
+The bootstrap file holds the panel address, the TLS server name, the panel CA and a **one-time
+enrollment token** — no private key. The token is single use and expires after
+`agent.enroll_token_ttl_secs` (default 24 h); only its SHA-256 is stored. Still treat the file as
+a credential until the agent has enrolled (copy it over SSH, delete the copy). On the node:
 
 ```bash
 install -m 0755 akari-agent-linux-amd64 /usr/local/bin/akari-agent   # arm64: akari-agent-linux-arm64
@@ -125,12 +133,50 @@ install -d -m 0700 /etc/akari-agent
 install -m 0600 tokyo-1-bootstrap.toml /etc/akari-agent/bootstrap.toml && shred -u tokyo-1-bootstrap.toml
 install -m 0644 akari-agent.service /etc/systemd/system/             # deploy/systemd/ in the panel repo
 systemctl daemon-reload && systemctl enable --now akari-agent
-journalctl -u akari-agent -f                                         # "channel established"
+journalctl -u akari-agent -f                                         # "enrolled", then "channel established"
 ```
+
+On its first start the agent generates its key (ECDSA P-256) in its state directory
+(`StateDirectory=akari-agent`, i.e. `/var/lib/private/akari-agent`, mode 0700, files 0600; without
+systemd: `-state-dir`, default the config file's directory), sends a CSR with the token to the
+panel's gRPC port (the one call that works without a client certificate) and stores the issued
+certificate next to the key. The private key never leaves the node. The panel decides the whole
+certificate (CN `agent-<node id>`, client-auth only, `agent.cert_validity_secs`, default 90 days).
 
 The unit grants only `CAP_NET_BIND_SERVICE` (inbounds on 443) and reads the bootstrap file as a
 systemd credential (systemd >= 250). In the UI, set the node's `server_addr` and inbounds, create
 users, assign them. The node shows `online` within seconds.
+
+**Token expired / agent state lost / certificate expired** (agent offline longer than its
+validity): `akari node enroll-token <node id>` (UI: **Enrollment token**) writes a new bootstrap
+file; install it and restart the agent. The agent re-enrolls once when the bootstrap file carries a
+token it has not used yet; after that the node's older certificates are refused. A used, unknown
+or expired token is refused with one uniform error ("enrollment refused"), and the agent exits.
+
+Enrollment is rate limited per source address and globally (`agent.enroll_rate_per_ip`,
+`agent.enroll_rate_global`, `agent.enroll_rate_window_secs`; defaults 10 / 60 per 10 min).
+
+### Certificate renewal
+
+Agents of protocol 2 renew automatically once less than a third of the validity is left
+(day 60 of 90): a new key and CSR go over the existing mTLS connection, the agent reconnects with
+the new certificate, and the panel revokes the old one the first time it sees the new one. Until
+then the old certificate keeps working, so a crash or network failure in between costs nothing
+(the agent simply renews again). Nodes whose certificate is within 14 days of expiry carry a
+warning in the node list (protocol 1 agents never renew: upgrade them, or re-enroll before the
+certificate expires — an expired certificate is refused at the TLS handshake).
+
+Back up the agent's state directory if you want to restore a node without re-enrolling it.
+
+### Nodes added before M1c (bootstrap files with a private key)
+
+Nothing to do for them to keep working: the agent still accepts `identity.cert_pem` /
+`identity.key_pem` in the bootstrap file (v1), and the panel keeps their certificates (2-year
+validity). Upgrade the agent (section 5) and give it a state directory (the new unit file); at its
+first renewal it moves onto a key generated on the node and the panel revokes the old,
+panel-generated one. Then delete `cert_pem`/`key_pem` from `/etc/akari-agent/bootstrap.toml`. To
+migrate at once instead of at renewal time, issue a new enrollment token for the node and install
+that bootstrap file.
 
 ## 4. Observability (optional)
 
@@ -148,7 +194,9 @@ short and printable); it is on the log lines of that request. Rejections never c
 4. `akari config check`, `/healthz`, check the nodes are `online`.
 
 Why this order: a new panel drops traffic reports without `session_id` and serves the empty state
-to agents below `MIN_AGENT_PROTOCOL`.
+to agents below `MIN_AGENT_PROTOCOL`. (M1c: protocol 2 agents work with older panels — renewal
+then fails with "unimplemented" and is retried hourly; certificates from before M1c are valid for
+2 years.) The agent unit file gained `StateDirectory=` in M1c: install the new one with the agent.
 
 ## 6. Rollback
 

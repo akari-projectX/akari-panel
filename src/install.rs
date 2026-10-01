@@ -179,21 +179,15 @@ fn issue_server_cert(ca_pem: &str, ca_key_pem: &str, names: &[String]) -> Result
     Ok((cert.pem(), key.serialize_pem()))
 }
 
-/// Issues the agent client certificate that identifies a node.
-/// v1: the panel generates the key and writes it into the bootstrap file;
-/// CSR-based enrollment (key never leaves the agent) is a planned upgrade.
-pub fn issue_agent_cert(
-    ca_pem: &str,
-    ca_key_pem: &str,
-    agent_id: &str,
-) -> Result<(String, String, String)> {
+/// A fresh certificate serial: 16 random bytes, positive and minimal as a
+/// DER INTEGER (top byte 0x40..=0x7f): no sign padding, no leading zero
+/// byte. `normalize_serial` would cope either way; this keeps every
+/// representation identical.
+pub fn new_serial() -> [u8; 16] {
     let mut serial_bytes = [0u8; 16];
     rand::rng().fill_bytes(&mut serial_bytes);
-    // Positive and minimal as a DER INTEGER (top byte 0x40..=0x7f): no
-    // sign padding, no leading zero byte. `normalize_serial` would cope
-    // either way; this keeps every representation identical.
     serial_bytes[0] = (serial_bytes[0] & 0x3f) | 0x40;
-    issue_agent_cert_with_serial(ca_pem, ca_key_pem, agent_id, &serial_bytes)
+    serial_bytes
 }
 
 /// Certificate serial as stored in nodes.cert_serial / revoked_certs and
@@ -205,6 +199,166 @@ pub fn normalize_serial(bytes: &[u8]) -> String {
     hex::encode(&bytes[start..])
 }
 
+/// Why a CSR was refused (shown to the agent; carries no token
+/// information).
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum CsrError {
+    #[error("malformed certificate signing request")]
+    Malformed,
+    #[error("the key must be ECDSA P-256 signed with ecdsa-with-SHA256")]
+    KeyType,
+    #[error("the request must carry no attributes or extensions (no SANs)")]
+    Attributes,
+    #[error("the request's signature does not verify")]
+    Signature,
+}
+
+/// Largest CSR accepted (a P-256 CSR is ~250 bytes).
+pub const MAX_CSR_LEN: usize = 4096;
+
+/// The public key of a checked CSR.
+pub struct CsrKey(rcgen::PublicKey);
+
+/// Strict CSR check (M1-8): DER PKCS#10, version 1, an ECDSA P-256 key,
+/// signed with ecdsa-with-SHA256 by that key (proof of possession), and NO
+/// attributes at all (no extensionRequest: no SANs, no key usages, no
+/// challenge password). The subject is ignored: the panel decides every
+/// field of the certificate.
+///
+/// P-256 (not Ed25519): supported for TLS 1.3 client authentication by
+/// both rustls/webpki (panel) and Go crypto/tls (agent), by rcgen for
+/// signing, and by hardware keystores (TPM 2.0, PKCS#11) should agent keys
+/// move there.
+pub fn check_csr(der: &[u8]) -> Result<CsrKey, CsrError> {
+    use x509_parser::certification_request::X509CertificationRequest;
+    use x509_parser::oid_registry::{
+        OID_EC_P256, OID_KEY_TYPE_EC_PUBLIC_KEY, OID_SIG_ECDSA_WITH_SHA256,
+    };
+    use x509_parser::prelude::FromDer;
+    if der.is_empty() || der.len() > MAX_CSR_LEN {
+        return Err(CsrError::Malformed);
+    }
+    let (rest, csr) = X509CertificationRequest::from_der(der).map_err(|_| CsrError::Malformed)?;
+    if !rest.is_empty() {
+        return Err(CsrError::Malformed);
+    }
+    let info = &csr.certification_request_info;
+    if info.version.0 != 0 {
+        return Err(CsrError::Malformed);
+    }
+    let spki = &info.subject_pki;
+    let curve = spki
+        .algorithm
+        .parameters
+        .as_ref()
+        .and_then(|p| p.as_oid().ok());
+    if spki.algorithm.algorithm != OID_KEY_TYPE_EC_PUBLIC_KEY
+        || curve.as_ref() != Some(&OID_EC_P256)
+        || csr.signature_algorithm.algorithm != OID_SIG_ECDSA_WITH_SHA256
+        // Uncompressed point: 0x04 || X || Y.
+        || spki.subject_public_key.data.len() != 65
+        || spki.subject_public_key.data.first() != Some(&0x04)
+    {
+        return Err(CsrError::KeyType);
+    }
+    if !info.attributes().is_empty() {
+        return Err(CsrError::Attributes);
+    }
+    csr.verify_signature().map_err(|_| CsrError::Signature)?;
+    // rcgen re-verifies and extracts the key in the form it signs with.
+    let parsed =
+        rcgen::CertificateSigningRequestParams::from_der(&der.into()).map_err(|e| match e {
+            rcgen::Error::InvalidCertificationRequestSignature => CsrError::Signature,
+            _ => CsrError::Malformed,
+        })?;
+    if parsed.public_key.algorithm() != &rcgen::PKCS_ECDSA_P256_SHA256 {
+        return Err(CsrError::KeyType);
+    }
+    Ok(CsrKey(parsed.public_key))
+}
+
+/// A certificate issued to a node.
+#[derive(Debug, Clone)]
+pub struct IssuedCert {
+    pub cert_pem: String,
+    /// Normalized (`normalize_serial`).
+    pub serial: String,
+    pub not_after: chrono::DateTime<chrono::Utc>,
+}
+
+/// How far back not_before is set (clock skew between panel and node):
+/// 5 minutes, at most a quarter of the validity (short test validities).
+fn backdate(validity_secs: u64) -> TimeDuration {
+    TimeDuration::seconds((validity_secs / 4).min(300) as i64)
+}
+
+/// Sign a node's client certificate for a checked CSR key: subject
+/// CN=agent-<node id>, ClientAuth only, a fresh serial, valid for
+/// `validity_secs` from now.
+pub fn sign_agent_csr(
+    ca_pem: &str,
+    ca_key_pem: &str,
+    node_id: &str,
+    key: &CsrKey,
+    validity_secs: u64,
+) -> Result<IssuedCert> {
+    sign_agent_key(
+        ca_pem,
+        ca_key_pem,
+        node_id,
+        &key.0,
+        &new_serial(),
+        validity_secs,
+    )
+}
+
+fn agent_params(node_id: &str, serial_bytes: &[u8], validity_secs: u64) -> CertificateParams {
+    let mut params = CertificateParams::default();
+    let mut dn = DistinguishedName::new();
+    dn.push(DnType::CommonName, format!("agent-{node_id}"));
+    params.distinguished_name = dn;
+    params.serial_number = Some(SerialNumber::from_slice(serial_bytes));
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+    let now = OffsetDateTime::now_utc();
+    params.not_before = now - backdate(validity_secs);
+    params.not_after = now + TimeDuration::seconds(validity_secs.min(i64::MAX as u64) as i64);
+    params
+}
+
+fn sign_agent_key(
+    ca_pem: &str,
+    ca_key_pem: &str,
+    node_id: &str,
+    key: &impl rcgen::PublicKeyData,
+    serial_bytes: &[u8],
+    validity_secs: u64,
+) -> Result<IssuedCert> {
+    let params = agent_params(node_id, serial_bytes, validity_secs);
+    let not_after = chrono::DateTime::from_timestamp(params.not_after.unix_timestamp(), 0)
+        .context("certificate expiry out of range")?;
+    let issuer_key = KeyPair::from_pem(ca_key_pem)?;
+    let issuer = Issuer::from_ca_cert_pem(ca_pem, issuer_key)?;
+    let cert = params.signed_by(key, &issuer)?;
+    Ok(IssuedCert {
+        cert_pem: cert.pem(),
+        serial: normalize_serial(serial_bytes),
+        not_after,
+    })
+}
+
+/// Test helper: what a v1 (pre-M1c) `node add` did — the panel generated
+/// the key. Returns (cert, key, serial).
+#[cfg(test)]
+pub fn issue_agent_cert(
+    ca_pem: &str,
+    ca_key_pem: &str,
+    agent_id: &str,
+) -> Result<(String, String, String)> {
+    issue_agent_cert_with_serial(ca_pem, ca_key_pem, agent_id, &new_serial())
+}
+
+#[cfg(test)]
 fn issue_agent_cert_with_serial(
     ca_pem: &str,
     ca_key_pem: &str,
@@ -212,24 +366,15 @@ fn issue_agent_cert_with_serial(
     serial_bytes: &[u8],
 ) -> Result<(String, String, String)> {
     let key = KeyPair::generate()?;
-    let mut params = CertificateParams::default();
-    let mut dn = DistinguishedName::new();
-    dn.push(DnType::CommonName, format!("agent-{agent_id}"));
-    params.distinguished_name = dn;
-    params.serial_number = Some(SerialNumber::from_slice(serial_bytes));
-    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
-    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
-    params.not_before = OffsetDateTime::now_utc() - TimeDuration::hours(1);
-    params.not_after = OffsetDateTime::now_utc() + TimeDuration::days(365 * 2);
-
-    let issuer_key = KeyPair::from_pem(ca_key_pem)?;
-    let issuer = Issuer::from_ca_cert_pem(ca_pem, issuer_key)?;
-    let cert = params.signed_by(&key, &issuer)?;
-    Ok((
-        cert.pem(),
-        key.serialize_pem(),
-        normalize_serial(serial_bytes),
-    ))
+    let c = sign_agent_key(
+        ca_pem,
+        ca_key_pem,
+        agent_id,
+        &key,
+        serial_bytes,
+        2 * 365 * 86400,
+    )?;
+    Ok((c.cert_pem, key.serialize_pem(), c.serial))
 }
 
 fn san(name: &str) -> Result<SanType> {
@@ -243,7 +388,7 @@ fn san(name: &str) -> Result<SanType> {
 /// directory (never readable by others, not even briefly), fsync, rename
 /// over the target. A crash leaves the old or the new content, never a
 /// truncated key.
-fn write_secret(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_secret(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path
@@ -366,6 +511,99 @@ mod tests {
         assert_eq!(eku(&server), (true, false, false));
         let (agent, _, _) = issue_agent_cert(&ca, &ca_key, "n1").unwrap();
         assert_eq!(eku(&agent), (false, true, false));
+    }
+
+    fn csr(key: &KeyPair, f: impl FnOnce(&mut CertificateParams)) -> Vec<u8> {
+        let mut params = CertificateParams::default();
+        f(&mut params);
+        params.serialize_request(key).unwrap().der().to_vec()
+    }
+
+    /// M1-8: only a plain P-256 CSR signed by its own key is accepted; the
+    /// panel decides the certificate (CN, EKU, serial, validity).
+    #[test]
+    fn csr_rules() {
+        let (ca, ca_key) = test_ca();
+        let key = KeyPair::generate().unwrap(); // P-256
+        let good = csr(&key, |p| {
+            p.distinguished_name.push(DnType::CommonName, "agent-evil")
+        });
+        let k = check_csr(&good).unwrap();
+        let issued = sign_agent_csr(&ca, &ca_key, "n1", &k, 90 * 86400).unwrap();
+        let (_, pem) = parse_x509_pem(issued.cert_pem.as_bytes()).unwrap();
+        let (_, cert) = X509Certificate::from_der(&pem.contents).unwrap();
+        assert_eq!(
+            cert.subject()
+                .iter_common_name()
+                .next()
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "agent-n1",
+            "the CSR's subject is ignored"
+        );
+        assert_eq!(eku(&issued.cert_pem), (false, true, false));
+        assert!(cert.subject_alternative_name().unwrap().is_none());
+        assert_eq!(parsed_serial(&issued.cert_pem), issued.serial);
+        let top = u8::from_str_radix(&issued.serial[..2], 16).unwrap();
+        assert!((0x40..=0x7f).contains(&top));
+        assert_eq!(
+            cert.public_key().raw,
+            x509_parser::certification_request::X509CertificationRequest::from_der(&good)
+                .unwrap()
+                .1
+                .certification_request_info
+                .subject_pki
+                .raw,
+            "the certificate carries the CSR's key"
+        );
+        let life = cert.validity().not_after.timestamp() - chrono::Utc::now().timestamp();
+        assert!((90 * 86400 - 60..=90 * 86400).contains(&life), "{life}");
+        assert_eq!(
+            issued.not_after.timestamp(),
+            cert.validity().not_after.timestamp()
+        );
+
+        // SANs / any extension request: refused.
+        let sans = csr(&key, |p| {
+            p.subject_alt_names = vec![SanType::DnsName("evil.example".try_into().unwrap())]
+        });
+        assert_eq!(check_csr(&sans).err(), Some(CsrError::Attributes));
+        let ku = csr(&key, |p| p.key_usages = vec![KeyUsagePurpose::KeyCertSign]);
+        assert_eq!(check_csr(&ku).err(), Some(CsrError::Attributes));
+        let ca_req = csr(&key, |p| {
+            p.is_ca = IsCa::Ca(BasicConstraints::Unconstrained)
+        });
+        assert_eq!(check_csr(&ca_req).err(), Some(CsrError::Attributes));
+        // Other key types: refused.
+        for alg in [&rcgen::PKCS_ED25519, &rcgen::PKCS_ECDSA_P384_SHA384] {
+            let other = KeyPair::generate_for(alg).unwrap();
+            assert_eq!(
+                check_csr(&csr(&other, |_| {})).err(),
+                Some(CsrError::KeyType)
+            );
+        }
+        // Broken signature (possession not proven), garbage, trailing data.
+        let mut bad_sig = good.clone();
+        let n = bad_sig.len();
+        bad_sig[n - 5] ^= 0x01;
+        assert!(check_csr(&bad_sig).is_err());
+        assert_eq!(check_csr(b"junk").err(), Some(CsrError::Malformed));
+        assert_eq!(check_csr(&[]).err(), Some(CsrError::Malformed));
+        let mut trailing = good.clone();
+        trailing.push(0);
+        assert_eq!(check_csr(&trailing).err(), Some(CsrError::Malformed));
+        assert_eq!(
+            check_csr(&vec![0u8; MAX_CSR_LEN + 1]).err(),
+            Some(CsrError::Malformed)
+        );
+    }
+
+    /// Short validities (tests, smoke) are backdated proportionally.
+    #[test]
+    fn short_validity_backdate() {
+        assert_eq!(backdate(90 * 86400), TimeDuration::seconds(300));
+        assert_eq!(backdate(60), TimeDuration::seconds(15));
     }
 
     fn parsed_serial(pem: &str) -> String {

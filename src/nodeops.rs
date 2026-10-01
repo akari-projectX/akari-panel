@@ -34,6 +34,21 @@ pub async fn admin_add(cfg: PanelConfig, login: String, role: String) -> Result<
         .execute(&mut *tx)
         .await
         .with_context(|| format!("insert user {login}"))?;
+    let code = if role == "admin" {
+        Some(
+            crate::account::store_enroll_code(&mut tx, id)
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e.message()))?,
+        )
+    } else {
+        None
+    };
+    let mut after = serde_json::json!({
+        "login": login, "role": role, "enabled": true, "password": crate::audit::CHANGED,
+    });
+    if code.is_some() {
+        after["totp_enroll_code"] = serde_json::json!(crate::audit::CHANGED);
+    }
     crate::audit::record(
         &mut tx,
         &Actor::cli(),
@@ -41,15 +56,13 @@ pub async fn admin_add(cfg: PanelConfig, login: String, role: String) -> Result<
         "user",
         Some(id.to_string()),
         None,
-        Some(serde_json::json!({
-            "login": login, "role": role, "enabled": true, "password": crate::audit::CHANGED,
-        })),
+        Some(after),
     )
     .await?;
     tx.commit().await?;
     println!("created {role} account: {login} ({id})");
-    if role == "admin" {
-        println!("two-factor authentication is mandatory: enroll at the first login");
+    if let Some(code) = code {
+        print_enroll_code(&code);
     }
     Ok(())
 }
@@ -96,58 +109,86 @@ pub async fn admin_passwd(cfg: PanelConfig, login: String) -> Result<()> {
     Ok(())
 }
 
+/// `akari node add <name>`: create the node with a one-time enrollment
+/// token and write the bootstrap file (panel address, server name, CA,
+/// token — no private key: the agent generates its key and enrolls, M1-8).
 pub async fn node_add(cfg: PanelConfig, name: String, out: Option<PathBuf>) -> Result<()> {
     let inst = install::ensure(&cfg)?;
     let pg = connect(&cfg).await?;
-
-    let id = uuid::Uuid::new_v4();
-    let (cert_pem, key_pem, serial) =
-        install::issue_agent_cert(&inst.ca_pem, &inst.ca_key_pem, &id.to_string())?;
-
     let mut tx = pg.begin().await?;
-    sqlx::query("INSERT INTO nodes (id, name, cert_serial, status) VALUES ($1, $2, $3, 'pending')")
-        .bind(id)
-        .bind(&name)
-        .bind(&serial)
-        .execute(&mut *tx)
-        .await
-        .with_context(|| format!("insert node {name}"))?;
-    crate::audit::record(
+    let (id, token, expires) = crate::enroll::apply_create_node(
         &mut tx,
         &Actor::cli(),
-        "node.create",
-        "node",
-        Some(id.to_string()),
-        None,
-        Some(serde_json::json!({ "name": name, "cert_serial": serial })),
+        &name,
+        cfg.agent.enroll_token_ttl_secs,
     )
-    .await?;
-    tx.commit().await?;
-
-    let bootstrap = format!(
-        "# akari agent bootstrap for node '{name}'\n\
-         # Contains the agent private key. Transfer securely and delete after provisioning.\n\
-         panel_addr = \"{addr}\"\n\
-         server_name = \"{server_name}\"\n\
-         \n[identity]\nca_pem = '''{ca}'''\ncert_pem = '''{cert}'''\nkey_pem = '''{key}'''\n",
-        addr = cfg.grpc.advertise,
-        server_name = cfg.grpc.server_name,
-        ca = inst.ca_pem,
-        cert = cert_pem,
-        key = key_pem,
-    );
-
+    .await
+    .map_err(|e| anyhow::anyhow!("node {name}: {}", e.message()))?;
     let out_path = out.unwrap_or_else(|| PathBuf::from(format!("{name}-bootstrap.toml")));
-    std::fs::write(&out_path, bootstrap)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(0o600))?;
-    }
-
+    // Written before the commit: a committed node always has its file.
+    write_bootstrap(&cfg, &inst, &out_path, &name, &token, expires)?;
+    tx.commit().await?;
     println!("node registered:  {id}");
     println!("bootstrap file:   {}", out_path.display());
+    println!("enrollment token expires {}", expires.to_rfc3339());
     Ok(())
+}
+
+/// `akari node enroll-token <id>`: a new one-time enrollment token for an
+/// existing node (the first one expired, or the agent's state was lost)
+/// and its bootstrap file. Once the agent enrolls with it, the node's
+/// previous certificates are revoked.
+pub async fn node_enroll_token(
+    cfg: PanelConfig,
+    id: uuid::Uuid,
+    out: Option<PathBuf>,
+) -> Result<()> {
+    let inst = install::ensure(&cfg)?;
+    let pg = connect(&cfg).await?;
+    let mut tx = pg.begin().await?;
+    let name: Option<String> = sqlx::query_scalar("SELECT name FROM nodes WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let Some(name) = name else {
+        bail!("no such node: {id}");
+    };
+    let (token, expires) = crate::enroll::apply_issue_token(
+        &mut tx,
+        &Actor::cli(),
+        id,
+        cfg.agent.enroll_token_ttl_secs,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("node {id}: {}", e.message()))?;
+    let out_path = out.unwrap_or_else(|| PathBuf::from(format!("{name}-bootstrap.toml")));
+    write_bootstrap(&cfg, &inst, &out_path, &name, &token, expires)?;
+    tx.commit().await?;
+    println!("new enrollment token for node {id}");
+    println!("bootstrap file:   {}", out_path.display());
+    println!("enrollment token expires {}", expires.to_rfc3339());
+    Ok(())
+}
+
+fn write_bootstrap(
+    cfg: &PanelConfig,
+    inst: &install::Install,
+    path: &std::path::Path,
+    name: &str,
+    token: &str,
+    expires: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    let body = crate::enroll::bootstrap_toml(
+        name,
+        &cfg.grpc.advertise,
+        &cfg.grpc.server_name,
+        &inst.ca_pem,
+        token,
+        expires,
+    );
+    // 0600: the token is a credential until used or expired.
+    install::write_secret(path, body.as_bytes())
+        .with_context(|| format!("write {}", path.display()))
 }
 
 /// Phase 1 of a node deletion (see api::apply_begin_delete_node); a running
@@ -211,15 +252,26 @@ pub async fn node_list(cfg: PanelConfig) -> Result<()> {
     Ok(())
 }
 
-/// `akari admin reset-2fa <login>`.
+fn print_enroll_code(code: &str) {
+    println!("two-factor authentication is mandatory: enroll at the first login.");
+    println!("2FA enrollment code (one-time, valid 24h; give it to the account holder");
+    println!("over a separate channel — it is required to activate the authenticator):");
+    println!("  {code}");
+}
+
+/// `akari admin reset-2fa <login>`. For an admin also issues a new
+/// enrollment code (required to enroll again).
 pub async fn admin_reset_2fa(cfg: PanelConfig, login: String) -> Result<()> {
     let pg = connect(&cfg).await?;
-    let was = reset_2fa(&pg, &login).await?;
+    let (was, code) = reset_2fa(&pg, &login).await?;
     println!("two-factor authentication of {login} reset (was: {was}); its sessions are revoked");
+    if let Some(code) = code {
+        print_enroll_code(&code);
+    }
     Ok(())
 }
 
-async fn reset_2fa(pg: &sqlx::PgPool, login: &str) -> Result<&'static str> {
+async fn reset_2fa(pg: &sqlx::PgPool, login: &str) -> Result<(&'static str, Option<String>)> {
     let mut tx = pg.begin().await?;
     let id: Option<uuid::Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE login = $1")
         .bind(login)
@@ -309,6 +361,13 @@ mod tests {
     use super::*;
     use crate::testdb::TestDb;
 
+    async fn text_of_audit(db: &TestDb) -> String {
+        sqlx::query_scalar("SELECT COALESCE(string_agg(after::text, ' '), '') FROM audit_log")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+    }
+
     async fn audit_actions(db: &TestDb) -> Vec<(String, String)> {
         sqlx::query_as("SELECT actor_login, action FROM audit_log ORDER BY id")
             .fetch_all(&db.pool)
@@ -366,7 +425,10 @@ mod tests {
             .await
             .unwrap();
         let a1 = sv(a).await;
-        assert_eq!(reset_2fa(&db.pool, &login).await.unwrap(), "active");
+        let (was, code) = reset_2fa(&db.pool, &login).await.unwrap();
+        assert_eq!(was, "active");
+        let code = code.expect("an admin gets a new enrollment code");
+        assert!(!text_of_audit(&db).await.contains(&code));
         assert_eq!(sv(a).await, a1 + 1);
         let left: i64 = sqlx::query_scalar(
             "SELECT (SELECT count(*) FROM user_totp) + (SELECT count(*) FROM user_recovery_codes)",

@@ -51,6 +51,9 @@ pub struct Actor {
 
 /// actor_login of command-line actions.
 pub const CLI: &str = "cli";
+/// actor_login of actions an agent triggers itself (enrollment, certificate
+/// renewal); `ip` = the agent's source address.
+pub const AGENT: &str = "agent";
 
 impl Actor {
     pub fn cli() -> Self {
@@ -58,6 +61,14 @@ impl Actor {
             id: None,
             login: CLI.into(),
             ip: None,
+        }
+    }
+
+    pub fn agent(ip: Option<IpAddr>) -> Self {
+        Self {
+            id: None,
+            login: AGENT.into(),
+            ip,
         }
     }
 

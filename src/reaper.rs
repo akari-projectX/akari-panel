@@ -109,28 +109,39 @@ pub(crate) async fn finalize_delete(
     conn: &mut PgConnection,
     id: Uuid,
 ) -> sqlx::Result<Option<Option<String>>> {
-    let row: Option<Option<String>> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT n.cert_serial FROM nodes n WHERE n.id = $4 AND {DUE} FOR UPDATE"
+    let row: Option<(Option<String>, Option<String>)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT n.cert_serial, n.prev_cert_serial FROM nodes n WHERE n.id = $4 AND {DUE} FOR UPDATE"
     )))
-    .bind(ACK_SETTLE_SECS)
-    .bind(DELETE_TIMEOUT_SECS)
-    .bind(ONLINE_FRESH_SECS)
-    .bind(id)
-    .fetch_optional(&mut *conn)
-    .await?;
-    let Some(serial) = row else {
+        .bind(ACK_SETTLE_SECS)
+        .bind(DELETE_TIMEOUT_SECS)
+        .bind(ONLINE_FRESH_SECS)
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await?;
+    let Some((serial, prev)) = row else {
         return Ok(None);
     };
-    if let Some(serial) = &serial {
+    // Both certificates the node may still present (M1-8: the one renewed
+    // from stays valid until the newer one is seen).
+    for s in [&serial, &prev].into_iter().flatten() {
         sqlx::query(
-            "INSERT INTO revoked_certs (cert_serial, node_id) VALUES ($1, $2) \
-             ON CONFLICT (cert_serial) DO NOTHING",
+            "INSERT INTO revoked_certs (cert_serial, node_id, reason) VALUES ($1, $2, 'deleted') \
+             ON CONFLICT (cert_serial) DO UPDATE SET reason = 'deleted'",
         )
-        .bind(serial)
+        .bind(s)
         .bind(id)
         .execute(&mut *conn)
         .await?;
     }
+    // Certificates superseded by renewals: an agent still holding one is
+    // retired (empty state) now, no longer merely refused.
+    sqlx::query(
+        "UPDATE revoked_certs SET reason = 'deleted' WHERE node_id = $1 AND reason <> 'deleted'",
+    )
+    .bind(id)
+    .execute(&mut *conn)
+    .await?;
     sqlx::query("DELETE FROM nodes WHERE id = $1")
         .bind(id)
         .execute(&mut *conn)

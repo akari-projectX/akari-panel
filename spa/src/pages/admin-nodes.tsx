@@ -8,6 +8,7 @@ import {
   post,
   put,
   type GeneratedAccount,
+  type NodeEnrollment,
   type NodeView,
 } from "../lib/api";
 import { Button } from "../components/ui/button";
@@ -36,6 +37,28 @@ export function AdminNodes() {
 
   const node = (nodes.data ?? []).find((n) => n.id === selected) ?? null;
   const [error, setError] = useState<string | null>(null);
+  const [enrollment, setEnrollment] = useState<NodeEnrollment | null>(null);
+
+  // A new one-time enrollment token (expired token, lost agent state).
+  // Once the agent enrolls with it the node's older certificates stop
+  // working.
+  async function newToken(n: NodeView) {
+    setError(null);
+    if (
+      n.enrolled &&
+      !window.confirm(
+        `Issue a new enrollment token for "${n.name}"? When an agent enrolls with it, the current certificate stops working.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      setEnrollment(await post<NodeEnrollment>(`/nodes/${n.id}/enroll-token`, undefined));
+      await nodes.refetch();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Token failed");
+    }
+  }
 
   // Deletion revokes the node's certificate for good: the agent is pushed
   // the empty state, then the node disappears (a reinstall needs a new
@@ -60,6 +83,15 @@ export function AdminNodes() {
 
   return (
     <div className="space-y-6">
+      <CreateNode
+        onCreated={async (e) => {
+          setEnrollment(e);
+          await nodes.refetch();
+        }}
+      />
+      {enrollment && (
+        <BootstrapCard enrollment={enrollment} onClose={() => setEnrollment(null)} />
+      )}
       <Card>
         <CardHeader>
           <CardTitle>Nodes</CardTitle>
@@ -75,6 +107,7 @@ export function AdminNodes() {
                 <TableHead>Agent</TableHead>
                 <TableHead>Core</TableHead>
                 <TableHead>Versions</TableHead>
+                <TableHead>Certificate</TableHead>
                 <TableHead>Last seen</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
@@ -90,8 +123,18 @@ export function AdminNodes() {
                       <Badge variant="secondary">disabled</Badge>
                     ) : n.status === "online" ? (
                       <Badge variant="success">online</Badge>
+                    ) : !n.enrolled ? (
+                      <Badge variant="outline">awaiting enrollment</Badge>
                     ) : (
                       <Badge variant="outline">{n.status}</Badge>
+                    )}
+                    {n.warnings.length > 0 && (
+                      <span
+                        className="ml-2 text-xs font-medium text-amber-600"
+                        title={n.warnings.join("\n")}
+                      >
+                        {n.warnings.length} warning{n.warnings.length > 1 ? "s" : ""}
+                      </span>
                     )}
                     {n.last_error && (
                       <span
@@ -108,7 +151,23 @@ export function AdminNodes() {
                     cfg {n.config_version} · usr {n.user_version}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
+                    {n.cert_not_after
+                      ? `until ${new Date(n.cert_not_after).toLocaleDateString()}`
+                      : n.enroll_token_expires_at
+                        ? `token until ${new Date(n.enroll_token_expires_at).toLocaleString()}`
+                        : n.enrolled
+                          ? "—"
+                          : "token expired"}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
                     {n.last_seen_at ? new Date(n.last_seen_at).toLocaleTimeString() : "—"}
+                    {n.heartbeat && (
+                      <span className="block text-xs">
+                        {n.heartbeat.connections} conn
+                        {n.heartbeat.uptime_seconds != null &&
+                          ` · up ${Math.floor(n.heartbeat.uptime_seconds / 3600)} h`}
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell className="space-x-2 text-right">
                     <Button
@@ -130,6 +189,14 @@ export function AdminNodes() {
                       {n.enabled ? "Disable" : "Enable"}
                     </Button>
                     <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={!!n.deleting_at}
+                      onClick={() => newToken(n)}
+                    >
+                      Enrollment token
+                    </Button>
+                    <Button
                       variant="destructive"
                       size="sm"
                       disabled={!!n.deleting_at}
@@ -146,6 +213,86 @@ export function AdminNodes() {
       </Card>
       {node && <NodeEditor node={node} />}
     </div>
+  );
+}
+
+function CreateNode({ onCreated }: { onCreated: (e: NodeEnrollment) => Promise<void> }) {
+  const [name, setName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    try {
+      const res = await post<NodeEnrollment>("/nodes", { name: name.trim() });
+      setName("");
+      await onCreated(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Create failed");
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>New node</CardTitle>
+        <CardDescription>
+          Creates the node with a one-time enrollment token. The agent generates its own key; the
+          bootstrap file holds no private key.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form className="flex flex-wrap items-end gap-3" onSubmit={submit}>
+          <div className="space-y-1.5">
+            <Label htmlFor="nn-name">Name</Label>
+            <Input id="nn-name" value={name} onChange={(e) => setName(e.target.value)} required />
+          </div>
+          <Button type="submit">Create</Button>
+        </form>
+        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
+// The bootstrap file: shown once (the panel keeps only the token's hash).
+function BootstrapCard({
+  enrollment,
+  onClose,
+}: {
+  enrollment: NodeEnrollment;
+  onClose: () => void;
+}) {
+  function download() {
+    const url = URL.createObjectURL(new Blob([enrollment.bootstrap], { type: "application/toml" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${enrollment.name}-bootstrap.toml`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Bootstrap file for {enrollment.name}</CardTitle>
+        <CardDescription>
+          Shown once. The enrollment token is single use and expires{" "}
+          {new Date(enrollment.expires_at).toLocaleString()}. Install it as{" "}
+          <code>/etc/akari-agent/bootstrap.toml</code> (mode 0600) on the node.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <pre className="max-h-64 overflow-auto rounded-lg bg-muted p-3 text-xs">
+          {enrollment.bootstrap}
+        </pre>
+        <div className="flex gap-2">
+          <Button onClick={download}>Download</Button>
+          <Button variant="outline" onClick={onClose}>
+            Done
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

@@ -6,9 +6,13 @@
 #   install -m 0644 akari-agent.service /etc/systemd/system/
 #   systemctl daemon-reload && systemctl enable --now akari-agent
 #
-# The bootstrap file holds the node's private key: it stays root-only
-# (0600) and is handed to the service as a credential (needs systemd >= 250),
-# so the service runs as a throw-away user and cannot read /etc.
+# The bootstrap file holds a one-time enrollment token (v1 files: the
+# node's private key): it stays root-only (0600) and is handed to the
+# service as a credential (needs systemd >= 250), so the service runs as a
+# throw-away user and cannot read /etc. The agent generates its own key and
+# keeps key + certificates in its StateDirectory (/var/lib/private/
+# akari-agent, 0700, files 0600; $STATE_DIRECTORY): back it up or the node
+# must re-enroll with a new token (`akari node enroll-token`).
 [Unit]
 Description=Akari node agent (xray-core)
 Documentation=https://github.com/akari-projectX/akari-agent
@@ -19,6 +23,8 @@ Wants=network-online.target
 Type=simple
 DynamicUser=yes
 LoadCredential=bootstrap.toml:/etc/akari-agent/bootstrap.toml
+StateDirectory=akari-agent
+StateDirectoryMode=0700
 ExecStart=/usr/local/bin/akari-agent -config %d/bootstrap.toml
 Restart=always
 RestartSec=3

@@ -15,10 +15,14 @@ What must be backed up:
 > backup storage. Never commit or copy `data/` anywhere unencrypted.
 
 Losing `data/` while keeping the database means: new route prefix, new CA, every agent
-needs a re-issued bootstrap file, and every two-factor account (all admins) is locked out —
+needs a new enrollment token (`akari node enroll-token <id>`, a new bootstrap file), and every two-factor account (all admins) is locked out —
 the TOTP secrets in the database can no longer be decrypted; recover each with
 `akari admin reset-2fa <login>`. `totp.key` and the database belong to the same backup:
 restore them together. Losing the database means losing everything else.
+
+Agents keep their own key and certificate in their state directory (`/var/lib/private/akari-agent`
+under the shipped unit). Losing it means re-enrolling that node with a new token; it is not part of
+the panel backup.
 
 ## Tooling (age)
 

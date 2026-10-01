@@ -85,19 +85,22 @@ PREFIX="$(p info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')"
 [ -n "$PREFIX" ] || fail "no route prefix"
 BASE="http://127.0.0.1:8080/$PREFIX"
 start_panel
-p admin add root >/dev/null
+# Admins need the one-time 2FA enrollment code `admin add` prints.
+ENROLL_CODE="$(p admin add root | grep -E '^  [A-Z2-7]{4}(-[A-Z2-7]{1,4})+$' | tr -d ' ')"
+[ -n "$ENROLL_CODE" ] || fail "admin add printed no enrollment code"
 # Admins must enroll TOTP: the password alone yields an enrollment-only session.
 [ "$(login)" = 200 ] || fail "login before backup"
 [ "$(jq -r .stage "$W/login.json")" = enroll ] || fail "admin without 2FA did not get an enrollment session"
 TOTP_SECRET="$(api "$W/jar" -X POST "$BASE/api/v1/me/totp/enroll" -H 'Content-Type: application/json' -d '{}' | jq -r .secret)"
 [ -n "$TOTP_SECRET" ] && [ "$TOTP_SECRET" != null ] || fail "totp enroll"
 [ "$(api "$W/jar" -o /dev/null -w '%{http_code}' -X POST "$BASE/api/v1/me/totp/confirm" \
-  -H 'Content-Type: application/json' -d "{\"code\":\"$(totp)\"}")" = 200 ] || fail "totp confirm"
+  -H 'Content-Type: application/json' -d "{\"code\":\"$(totp)\",\"enrollment_code\":\"$ENROLL_CODE\"}")" = 200 ] \
+  || fail "totp confirm"
 [ "$(api "$W/jar" -o /dev/null -w '%{http_code}' -X POST "$BASE/api/v1/users" \
   -H 'Content-Type: application/json' -d '{"login":"alice","password":"alice-password-123"}')" = 201 ] \
   || fail "create user"
 p node add drill-node --out "$W/boot.toml" >/dev/null
-"$AGENT" -config "$W/boot.toml" >"$W/agent.log" 2>&1 &
+"$AGENT" -config "$W/boot.toml" -state-dir "$W/agent-state" >"$W/agent.log" 2>&1 &
 AGENT_PID=$!
 online() { api "$W/jar" "$BASE/api/v1/nodes" | jq -r '.[0].status'; }
 for _ in $(seq 1 30); do [ "$(online)" = online ] && break; sleep 1; done

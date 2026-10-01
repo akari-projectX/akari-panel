@@ -42,6 +42,8 @@ pub async fn totp_status(
         "stage": user.stage.as_str(),
         "enabled": enabled,
         "pending": pending,
+        // Admins need their one-time enrollment code to activate 2FA.
+        "enroll_code_required": user.role == "admin" && !enabled,
         "recovery_codes_left": left,
     })))
 }
@@ -117,27 +119,156 @@ async fn new_recovery_codes(
     Ok(codes)
 }
 
-/// POST /api/v1/me/totp/confirm {code} (any session): activate the pending
-/// secret with a valid current code. In one transaction: activate (the
-/// code's step is recorded, so it cannot be replayed at login), issue ten
-/// recovery codes, bump session_ver (every other session of the account,
-/// e.g. another enrollment-only one, ends), audit. This session continues
-/// with a fresh full cookie. Returns the recovery codes (shown once).
+/// Admin 2FA enrollment codes (M1c): an admin's TOTP activation requires
+/// a one-time code handed out of band (`akari admin add` / `admin
+/// reset-2fa`, or once in the admin API's create/reset answer), so a leaked
+/// password alone cannot bind an attacker's authenticator. 128-bit random,
+/// shown as base32 in dash-separated groups; stored as SHA-256(user id ||
+/// normalized code); valid 24 h; consumed by the activation.
+pub const ENROLL_CODE_TTL_SECS: f64 = 86400.0;
+
+pub fn generate_enroll_code() -> String {
+    let mut bytes = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::rng(), &mut bytes);
+    let raw = data_encoding::BASE32_NOPAD.encode(&bytes);
+    raw.as_bytes()
+        .chunks(4)
+        .map(|c| String::from_utf8_lossy(c).into_owned())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+fn enroll_code_hash(user: Uuid, code: &str) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let normalized: String = code
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    let mut h = Sha256::new();
+    h.update(user.as_bytes());
+    h.update(normalized.as_bytes());
+    h.finalize().to_vec()
+}
+
+/// Store (replace) the account's enrollment code; returns it (shown once).
+/// The caller's audit row records `"totp_enroll_code": "changed"` (the code
+/// itself is never recorded).
+pub async fn store_enroll_code(conn: &mut PgConnection, user: Uuid) -> Result<String, ApiError> {
+    let code = generate_enroll_code();
+    sqlx::query(
+        "INSERT INTO totp_enroll_codes (user_id, code_hash, expires_at) \
+         VALUES ($1, $2, now() + make_interval(secs => $3)) \
+         ON CONFLICT (user_id) DO UPDATE SET code_hash = EXCLUDED.code_hash, \
+             created_at = now(), expires_at = EXCLUDED.expires_at",
+    )
+    .bind(user)
+    .bind(enroll_code_hash(user, &code))
+    .bind(ENROLL_CODE_TTL_SECS)
+    .execute(&mut *conn)
+    .await?;
+    Ok(code)
+}
+
+/// Whether `code` is the account's live enrollment code (constant-time).
+async fn enroll_code_ok(
+    conn: &mut PgConnection,
+    user: Uuid,
+    code: Option<&str>,
+) -> Result<bool, ApiError> {
+    let stored: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT code_hash FROM totp_enroll_codes WHERE user_id = $1 AND expires_at > now() \
+         FOR UPDATE",
+    )
+    .bind(user)
+    .fetch_optional(&mut *conn)
+    .await?;
+    // Same hashing work whether or not a code exists.
+    let given = enroll_code_hash(user, code.unwrap_or(""));
+    Ok(match stored {
+        Some(h) => {
+            code.is_some()
+                && bool::from(subtle::ConstantTimeEq::ct_eq(
+                    h.as_slice(),
+                    given.as_slice(),
+                ))
+        }
+        None => false,
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfirmReq {
+    pub code: String,
+    /// Required for admins: the one-time enrollment code.
+    #[serde(default)]
+    pub enrollment_code: Option<String>,
+}
+
+/// POST /api/v1/me/totp/confirm {code, enrollment_code?} (any session):
+/// activate the pending secret with a valid current code — and, for an
+/// admin, the account's one-time enrollment code. In one transaction:
+/// activate (the code's step is recorded, so it cannot be replayed at
+/// login), consume the enrollment code, issue ten recovery codes, bump
+/// session_ver (every other session of the account, e.g. another
+/// enrollment-only one, ends), audit. This session continues with a fresh
+/// full cookie. Returns the recovery codes (shown once). Wrong codes are
+/// one 400 "invalid code" and count against the login rate limit of the
+/// account and the client address.
 pub async fn totp_confirm(
     State(state): State<AppState>,
     user: SessionUser,
     jar: CookieJar,
-    ApiJson(req): ApiJson<CodeReq>,
+    ApiJson(req): ApiJson<ConfirmReq>,
 ) -> Result<(CookieJar, Json<Value>), ApiError> {
+    let bucket = user
+        .ip
+        .map(crate::client_ip::bucket)
+        .unwrap_or_else(|| "unknown".into());
+    let attempt = crate::login_limit::Attempt::reserve(&state, &bucket, &user.login)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "login rate limit unavailable");
+            ApiError::internal()
+        })?
+        .ok_or_else(ApiError::too_many)?;
+    match confirm_inner(&state, &user, &req).await {
+        Ok(Some((role, sv, codes))) => {
+            attempt.release(&state).await;
+            let token = auth::issue_token(&state, user.id, &role, sv, Stage::Full)?;
+            Ok((
+                jar.add(auth::session_cookie(&state, token, Stage::Full)),
+                Json(json!({ "recovery_codes": codes, "stage": Stage::Full.as_str() })),
+            ))
+        }
+        Ok(None) => {
+            attempt.fail();
+            Err(ApiError::bad_request("invalid code"))
+        }
+        Err(e) => {
+            attempt.release(&state).await;
+            Err(e)
+        }
+    }
+}
+
+/// None = a wrong code (TOTP or enrollment code).
+async fn confirm_inner(
+    state: &AppState,
+    user: &SessionUser,
+    req: &ConfirmReq,
+) -> Result<Option<(String, i64, Vec<String>)>, ApiError> {
     let mut tx = state.pg().begin().await?;
     // Lock order: users, then the account's 2FA rows.
-    let locked: Option<i32> = sqlx::query_scalar("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
-        .bind(user.id)
-        .fetch_optional(&mut *tx)
-        .await?;
-    if locked.is_none() {
+    let role: Option<String> =
+        sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR UPDATE")
+            .bind(user.id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some(role) = role else {
         return Err(ApiError::unauthorized());
-    }
+    };
     let pending: Option<(Vec<u8>, bool, i64)> = sqlx::query_as(
         "SELECT secret_enc, enabled_at IS NOT NULL, EXTRACT(EPOCH FROM now())::bigint \
          FROM user_totp WHERE user_id = $1 FOR UPDATE",
@@ -159,15 +290,25 @@ pub async fn totp_confirm(
             "enrollment is no longer valid; start again",
         ));
     };
-    let Some(step) = totp::verify(&secret, req.code.trim(), totp::step_of(now), None) else {
-        return Err(ApiError::bad_request("invalid code"));
+    // Both checks always run (no hint which one failed).
+    let code_ok = enroll_code_ok(&mut tx, user.id, req.enrollment_code.as_deref()).await?;
+    let step = totp::verify(&secret, req.code.trim(), totp::step_of(now), None);
+    let Some(step) = step else {
+        return Ok(None);
     };
+    if role == "admin" && !code_ok {
+        return Ok(None);
+    }
     sqlx::query("UPDATE user_totp SET enabled_at = now(), last_step = $2 WHERE user_id = $1")
         .bind(user.id)
         .bind(step)
         .execute(&mut *tx)
         .await?;
-    let codes = new_recovery_codes(&mut tx, &state, user.id).await?;
+    sqlx::query("DELETE FROM totp_enroll_codes WHERE user_id = $1")
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
+    let codes = new_recovery_codes(&mut tx, state, user.id).await?;
     let (role, sv): (String, i64) = sqlx::query_as(
         "UPDATE users SET session_ver = session_ver + 1 WHERE id = $1 RETURNING role, session_ver",
     )
@@ -185,11 +326,7 @@ pub async fn totp_confirm(
     )
     .await?;
     tx.commit().await?;
-    let token = auth::issue_token(&state, user.id, &role, sv, Stage::Full)?;
-    Ok((
-        jar.add(auth::session_cookie(&state, token, Stage::Full)),
-        Json(json!({ "recovery_codes": codes, "stage": Stage::Full.as_str() })),
-    ))
+    Ok(Some((role, sv, codes)))
 }
 
 /// POST /api/v1/me/totp/recovery-codes {code} (full session): replace the
@@ -486,11 +623,67 @@ mod tests {
             )
             .await;
         assert_eq!(r.status, StatusCode::BAD_REQUEST);
+        // M1c: an admin also needs the one-time enrollment code. A valid
+        // TOTP code alone (leaked password scenario), a wrong or expired
+        // enrollment code: the same 400, nothing activated.
+        assert_eq!(st.json()["enroll_code_required"], true);
+        let with_code = |e: &str| json!({"code": good, "enrollment_code": e});
+        assert_eq!(
+            c.post("/test/api/v1/me/totp/confirm", json!({"code": good}))
+                .await
+                .status,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            c.post("/test/api/v1/me/totp/confirm", with_code("AAAA-BBBB"))
+                .await
+                .status,
+            StatusCode::BAD_REQUEST
+        );
+        let ecode = {
+            let mut tx = db.pool.begin().await.unwrap();
+            let code = store_enroll_code(&mut tx, id).await.unwrap();
+            tx.commit().await.unwrap();
+            code
+        };
+        assert_eq!(ecode.len(), 26 + 6, "{ecode}");
+        let stored: Vec<u8> =
+            sqlx::query_scalar("SELECT code_hash FROM totp_enroll_codes WHERE user_id = $1")
+                .bind(id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_ne!(stored, ecode.as_bytes(), "only a hash is stored");
+        sqlx::query("UPDATE totp_enroll_codes SET expires_at = now() - interval '1 s'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            c.post("/test/api/v1/me/totp/confirm", with_code(&ecode))
+                .await
+                .status,
+            StatusCode::BAD_REQUEST,
+            "expired"
+        );
+        sqlx::query("UPDATE totp_enroll_codes SET expires_at = now() + interval '1 h'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
         let enroll_cookie = c.cookie.clone();
+        // Lower case without dashes is the same code.
+        let typed = ecode.replace('-', "").to_lowercase();
         let r = c
-            .post("/test/api/v1/me/totp/confirm", json!({"code": good}))
+            .post(
+                "/test/api/v1/me/totp/confirm",
+                json!({"code": good, "enrollment_code": typed}),
+            )
             .await;
         assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM totp_enroll_codes")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(left, 0, "the enrollment code is consumed");
         let codes: Vec<String> =
             serde_json::from_value(r.json()["recovery_codes"].clone()).unwrap();
         assert_eq!(codes.len(), 10);
@@ -558,10 +751,12 @@ mod tests {
         assert_eq!(st.json()["recovery_codes_left"], 8);
 
         // Wrong second factors count toward the login limit (name bucket:
-        // 4 on c2 + 1 on c3 + 1 on c4; the unknown account has its own).
+        // 4 failed confirms on c (bad TOTP, missing / wrong / expired
+        // enrollment code) + 4 on c2 + 1 on c3 + 1 on c4; the unknown
+        // account has its own).
         let name_key = crate::login_limit::keys("x", &login)[1].clone();
         let n: i64 = state.valkey().get(&name_key).await.unwrap();
-        assert_eq!(n, 6);
+        assert_eq!(n, 10);
 
         let rows = audit_of(&db, id, 8).await;
         let actions: Vec<&str> = rows.iter().map(|(a, _)| a.as_str()).collect();
@@ -590,7 +785,20 @@ mod tests {
                 None,
             )
             .await;
-        assert_eq!(r.status, StatusCode::NO_CONTENT);
+        assert_eq!(r.status, StatusCode::OK);
+        let code = r.json()["totp_enrollment_code"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(!all_audit_text(&db).await.contains(&code));
+        let has_code: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM totp_enroll_codes WHERE user_id = $1)",
+        )
+        .bind(id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert!(has_code, "the admin gets a new enrollment code");
         assert_eq!(
             c4.get("/test/api/v1/users").await.status,
             StatusCode::UNAUTHORIZED
