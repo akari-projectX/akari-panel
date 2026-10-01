@@ -31,7 +31,7 @@ pub struct SeedArgs {
     pub audit: usize,
     /// One old traffic_counters session row per assignment (the billing
     /// baseline a long-running install accumulates).
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub counters: bool,
     /// Drop and recreate the bench database first.
     #[arg(long)]
