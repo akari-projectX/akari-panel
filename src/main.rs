@@ -302,4 +302,3 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
     tracing::info!("shutdown complete");
     Ok(())
 }
-

@@ -1,0 +1,4 @@
+# Share the panel's target dir (the panel crate is a path dependency; one
+# build of it serves both).
+[build]
+target-dir = "../target"

@@ -1,0 +1,44 @@
+# Benchmarks and load tooling for akari-panel (M2). Deliberately NOT part of
+# the panel's dependency graph: its own workspace and lockfile, so criterion,
+# the HTTP client and histograms never reach the release binary, the Docker
+# build or the panel's cargo-deny policy. See docs/PERF.md.
+[package]
+name = "akari-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "akari-bench"
+path = "src/main.rs"
+
+[[bench]]
+name = "panel"
+harness = false
+
+[dependencies]
+akari-panel = { path = ".." }
+anyhow = "1"
+base64 = "0.22"
+clap = { version = "4", features = ["derive", "env"] }
+hdrhistogram = { version = "7", default-features = false }
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+rand = "0.9"
+rcgen = { version = "0.14", features = ["pem", "ring"] }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.9", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json"] }
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tonic = { version = "0.14", features = ["tls-ring"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = "0.4"
+prost = "0.14"
+
+[dev-dependencies]
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support", "async_tokio"] }

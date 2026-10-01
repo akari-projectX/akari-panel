@@ -1,0 +1,315 @@
+//! `akari-bench http`: closed-loop HTTP load against a running panel on
+//! the seeded data set. Each scenario runs `concurrency` workers for
+//! `duration` and reports latency percentiles (client side, loopback).
+//!
+//! The admin session is minted directly with data/jwt.key for the seeded
+//! admin (its TOTP is a placeholder, so it cannot log in): the extractor
+//! path (`AuthUser`: JWT + one DB lookup) is exactly what a logged-in
+//! admin's requests run.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use anyhow::{bail, Context, Result};
+use hdrhistogram::Histogram;
+use rand::Rng;
+use sqlx::postgres::PgPoolOptions;
+use uuid::Uuid;
+
+use crate::common;
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct HttpArgs {
+    #[arg(long, env = "BENCH_DATABASE_URL", default_value = common::DEFAULT_DB)]
+    pub database_url: String,
+    /// The panel's data dir (route prefix, jwt.key).
+    #[arg(long, default_value = "bench/data")]
+    pub data_dir: PathBuf,
+    /// Panel web base URL(s); several = round-robin per request.
+    #[arg(long, default_value = "http://127.0.0.1:18080")]
+    pub url: Vec<String>,
+    #[arg(long, default_value_t = 16)]
+    pub concurrency: usize,
+    #[arg(long, default_value_t = 15)]
+    pub seconds: u64,
+    /// Scenarios to run (default: all but login).
+    #[arg(long, value_delimiter = ',')]
+    pub only: Vec<String>,
+    /// Seeded user count (subscription tokens are derived from 0..users).
+    #[arg(long, default_value_t = 50_000)]
+    pub users: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Scenario {
+    Me,
+    UsersFirstPage,
+    UsersDeepPage,
+    UserGet,
+    Nodes,
+    AuditFirstPage,
+    AuditDeepPage,
+    AuditActionPrefix,
+    SubClash,
+    SubLinks,
+    Login,
+}
+
+impl Scenario {
+    const ALL: [Scenario; 11] = [
+        Scenario::Me,
+        Scenario::UsersFirstPage,
+        Scenario::UsersDeepPage,
+        Scenario::UserGet,
+        Scenario::Nodes,
+        Scenario::AuditFirstPage,
+        Scenario::AuditDeepPage,
+        Scenario::AuditActionPrefix,
+        Scenario::SubClash,
+        Scenario::SubLinks,
+        Scenario::Login,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            Scenario::Me => "me",
+            Scenario::UsersFirstPage => "users_page1",
+            Scenario::UsersDeepPage => "users_deep",
+            Scenario::UserGet => "user_get",
+            Scenario::Nodes => "nodes",
+            Scenario::AuditFirstPage => "audit_page1",
+            Scenario::AuditDeepPage => "audit_deep",
+            Scenario::AuditActionPrefix => "audit_prefix",
+            Scenario::SubClash => "sub_clash",
+            Scenario::SubLinks => "sub_links",
+            Scenario::Login => "login",
+        }
+    }
+}
+
+struct Ctx {
+    client: reqwest::Client,
+    urls: Vec<String>,
+    prefix: String,
+    cookie: String,
+    users: usize,
+    user_ids: Vec<Uuid>,
+    max_audit_id: i64,
+}
+
+impl Ctx {
+    fn base(&self, i: usize) -> String {
+        format!("{}/{}", self.urls[i % self.urls.len()], self.prefix)
+    }
+}
+
+/// A full-stage session cookie for the seeded admin, signed with jwt.key.
+pub async fn admin_cookie(pg: &sqlx::PgPool, data_dir: &std::path::Path) -> Result<String> {
+    let secret = std::fs::read_to_string(data_dir.join("jwt.key"))
+        .with_context(|| format!("read {}/jwt.key (start the panel once)", data_dir.display()))?;
+    let (id, sv): (Uuid, i64) =
+        sqlx::query_as("SELECT id, session_ver FROM users WHERE login = $1")
+            .bind(common::ADMIN_LOGIN)
+            .fetch_one(pg)
+            .await
+            .context("seeded admin missing (akari-bench seed)")?;
+    let now = chrono::Utc::now().timestamp() as u64;
+    let claims = akari_panel::auth::Claims {
+        sub: id,
+        role: "admin".into(),
+        sv,
+        st: akari_panel::auth::Stage::Full,
+        iat: now,
+        exp: now + 3600,
+    };
+    let token = jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(secret.trim().as_bytes()),
+    )?;
+    Ok(format!("{}={token}", akari_panel::auth::COOKIE_NAME))
+}
+
+pub fn route_prefix(data_dir: &std::path::Path) -> Result<String> {
+    let s = std::fs::read_to_string(data_dir.join("state.json"))
+        .with_context(|| format!("read {}/state.json", data_dir.display()))?;
+    let v: serde_json::Value = serde_json::from_str(&s)?;
+    v.get("route_prefix")
+        .and_then(|p| p.as_str())
+        .map(str::to_owned)
+        .context("state.json without route_prefix")
+}
+
+pub async fn run(args: HttpArgs) -> Result<()> {
+    let pg = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&args.database_url)
+        .await?;
+    let user_ids: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM users WHERE login LIKE 'bench-user-%' LIMIT 5000")
+            .fetch_all(&pg)
+            .await?;
+    let max_audit_id: i64 = sqlx::query_scalar("SELECT coalesce(max(id), 0) FROM audit_log")
+        .fetch_one(&pg)
+        .await?;
+    let ctx = Arc::new(Ctx {
+        client: reqwest::Client::builder()
+            .no_proxy()
+            .pool_max_idle_per_host(args.concurrency * 2)
+            .timeout(Duration::from_secs(30))
+            .build()?,
+        urls: args.url.clone(),
+        prefix: route_prefix(&args.data_dir)?,
+        cookie: admin_cookie(&pg, &args.data_dir).await?,
+        users: args.users,
+        user_ids,
+        max_audit_id,
+    });
+    pg.close().await;
+    let selected: Vec<Scenario> = if args.only.is_empty() {
+        Scenario::ALL
+            .into_iter()
+            .filter(|s| !matches!(s, Scenario::Login))
+            .collect()
+    } else {
+        let mut v = Vec::new();
+        for name in &args.only {
+            match Scenario::ALL.into_iter().find(|s| s.name() == name) {
+                Some(s) => v.push(s),
+                None => bail!("unknown scenario {name:?}"),
+            }
+        }
+        v
+    };
+    println!(
+        "http load: {} worker(s) x {}s per scenario against {:?}",
+        args.concurrency, args.seconds, args.url
+    );
+    for s in selected {
+        // Login is argon2-bound by design: fewer workers.
+        let conc = if matches!(s, Scenario::Login) {
+            args.concurrency.min(4)
+        } else {
+            args.concurrency
+        };
+        let (h, errors, elapsed) =
+            scenario(ctx.clone(), s, conc, Duration::from_secs(args.seconds)).await?;
+        println!(
+            "{:<13} {:>8.0} req/s  errors={errors}  {}",
+            s.name(),
+            h.len() as f64 / elapsed.as_secs_f64(),
+            common::summary(&h)
+        );
+    }
+    Ok(())
+}
+
+async fn scenario(
+    ctx: Arc<Ctx>,
+    s: Scenario,
+    concurrency: usize,
+    duration: Duration,
+) -> Result<(Histogram<u64>, u64, Duration)> {
+    // Warm up connections and caches.
+    for i in 0..concurrency.max(4) {
+        let _ = request(&ctx, s, i).await;
+    }
+    let start = Instant::now();
+    let deadline = start + duration;
+    let mut tasks = Vec::new();
+    for w in 0..concurrency {
+        let ctx = ctx.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut h = common::histogram()?;
+            let mut errors = 0u64;
+            let mut i = w;
+            while Instant::now() < deadline {
+                let t = Instant::now();
+                let ok = request(&ctx, s, i).await;
+                common::record(&mut h, t.elapsed());
+                if !ok {
+                    errors += 1;
+                }
+                i += concurrency;
+            }
+            anyhow::Ok((h, errors))
+        }));
+    }
+    let mut all = common::histogram()?;
+    let mut errors = 0;
+    for t in tasks {
+        let (h, e) = t.await??;
+        all.add(&h)?;
+        errors += e;
+    }
+    Ok((all, errors, start.elapsed()))
+}
+
+/// One request; true on the expected status.
+async fn request(ctx: &Ctx, s: Scenario, i: usize) -> bool {
+    let base = ctx.base(i);
+    let admin = |path: String| {
+        ctx.client
+            .get(format!("{base}/api/v1/{path}"))
+            .header(reqwest::header::COOKIE, &ctx.cookie)
+    };
+    // ThreadRng is !Send: confine it to this synchronous block.
+    let req = {
+        let mut rng = rand::rng();
+        match s {
+            Scenario::Me => admin("me".into()),
+            Scenario::UsersFirstPage => admin("users?limit=50".into()),
+            Scenario::UsersDeepPage => admin(format!(
+                "users?limit=50&offset={}",
+                rng.random_range(0..ctx.users.max(1))
+            )),
+            Scenario::UserGet => {
+                let Some(id) = ctx
+                    .user_ids
+                    .get(rng.random_range(0..ctx.user_ids.len().max(1)))
+                else {
+                    return false;
+                };
+                admin(format!("users/{id}"))
+            }
+            Scenario::Nodes => admin("nodes".into()),
+            Scenario::AuditFirstPage => admin("audit?limit=50".into()),
+            Scenario::AuditDeepPage => admin(format!(
+                "audit?limit=50&before={}",
+                rng.random_range(1..ctx.max_audit_id.max(2))
+            )),
+            Scenario::AuditActionPrefix => admin("audit?limit=50&action=node.".into()),
+            Scenario::SubClash | Scenario::SubLinks => {
+                let ua = if matches!(s, Scenario::SubClash) {
+                    "clash-verge/v2"
+                } else {
+                    "v2rayN/7"
+                };
+                ctx.client
+                    .get(format!(
+                        "{base}/sub/{}",
+                        common::sub_token(rng.random_range(0..ctx.users.max(1)))
+                    ))
+                    .header(reqwest::header::USER_AGENT, ua)
+            }
+            Scenario::Login => {
+                ctx.client
+                    .post(format!("{base}/auth/login"))
+                    .json(&serde_json::json!({
+                        "login": common::LOGIN_USER,
+                        "password": common::LOGIN_PASSWORD,
+                    }))
+            }
+        }
+    };
+    match req.send().await {
+        Ok(r) => {
+            let ok = r.status().is_success();
+            // Read the body: the latency includes the full response.
+            let _ = r.bytes().await;
+            ok
+        }
+        Err(_) => false,
+    }
+}
