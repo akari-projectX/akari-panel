@@ -10,9 +10,9 @@ use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tonic::transport::{Certificate, Identity, ServerTlsConfig};
 use tonic::{Request, Response, Status, Streaming};
 use uuid::Uuid;
-use x509_parser::prelude::*;
 
 use crate::gen::agent_channel_server::{AgentChannel, AgentChannelServer};
+use crate::gen::agent_enrollment_server::AgentEnrollmentServer;
 use crate::gen::panel_down::Msg as DownMsg;
 use crate::gen::user_op::Op as UserOpKind;
 use crate::gen::{
@@ -50,23 +50,33 @@ impl AgentChannel for AgentChannelService {
         tokio::spawn(session(state.clone(), identity, request.into_inner(), tx));
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
+
+    async fn renew(
+        &self,
+        request: Request<crate::gen::RenewRequest>,
+    ) -> Result<Response<crate::gen::IssuedCertificate>, Status> {
+        // Identity from the verified client certificate only (enroll.rs).
+        crate::enroll::renew(&self.state, request)
+            .await
+            .map(Response::new)
+    }
 }
 
-/// Maps the peer certificate serial to a registered node.
+/// Maps the peer certificate to a registered node. TLS client auth is
+/// optional at the handshake (for AgentEnrollment.Enroll); here a verified
+/// client certificate is mandatory, so a client without one never reaches
+/// session code.
 async fn identify_node(
     state: &AppState,
     req: &Request<Streaming<AgentUp>>,
 ) -> Result<AgentIdentity, Status> {
-    let certs = req
-        .peer_certs()
-        .ok_or_else(|| Status::unauthenticated("missing client certificate"))?;
-    let der = certs
-        .first()
-        .ok_or_else(|| Status::unauthenticated("missing client certificate"))?;
-    let (_, cert) = X509Certificate::from_der(der.as_ref())
-        .map_err(|_| Status::unauthenticated("malformed certificate"))?;
-    let serial = crate::install::normalize_serial(cert.raw_serial());
-    node_for_serial(state.pg(), &serial).await
+    let (serial, not_after) = crate::enroll::peer_cert(req)?;
+    let ip = req.remote_addr().map(|a| a.ip());
+    let who = node_for_serial_from(state.pg(), &serial, ip).await?;
+    if let AgentIdentity::Node(node) = who {
+        crate::enroll::note_legacy_expiry(state.pg(), node, &serial, not_after).await;
+    }
+    Ok(who)
 }
 
 /// Who a certificate serial belongs to.
@@ -78,17 +88,42 @@ pub(crate) enum AgentIdentity {
     Revoked(Uuid),
 }
 
-/// The node a certificate serial belongs to. The revocation tombstones are
-/// consulted FIRST: a revoked serial stays revoked even if some node row
-/// carried it again (the DB also refuses that, migration 0007). Only
-/// serials that are neither registered nor tombstoned are refused.
+#[cfg(test)]
 pub(crate) async fn node_for_serial(
     pg: &sqlx::PgPool,
     serial: &str,
 ) -> Result<AgentIdentity, Status> {
-    let (revoked, id): (Option<Uuid>, Option<Uuid>) = sqlx::query_as(
-        "SELECT (SELECT node_id FROM revoked_certs WHERE cert_serial = $1), \
-                (SELECT id FROM nodes WHERE cert_serial = $1)",
+    node_for_serial_from(pg, serial, None).await
+}
+
+/// The node a certificate serial belongs to. The revocation tombstones are
+/// consulted FIRST: a revoked serial stays revoked even if some node row
+/// carried it again (the DB also refuses that, migrations 0007/0011). A
+/// 'deleted' tombstone is accepted as `Revoked` (empty state, then closed);
+/// a 'rotated' one (superseded by a renewal, M1-8) is refused like an
+/// unknown serial — the node lives on and its agent must use its newer
+/// certificate. Otherwise the serial is the node's newest certificate
+/// (cert_serial; the first sight while an older one is still accepted
+/// tombstones that one) or the one it renewed from (prev_cert_serial, still
+/// valid until the newer one is seen).
+async fn node_for_serial_from(
+    pg: &sqlx::PgPool,
+    serial: &str,
+    ip: Option<std::net::IpAddr>,
+) -> Result<AgentIdentity, Status> {
+    type Row = (
+        Option<Uuid>,
+        Option<String>,
+        Option<Uuid>,
+        Option<bool>,
+        Option<Uuid>,
+    );
+    let (revoked, reason, current, has_prev, prev): Row = sqlx::query_as(
+        "SELECT r.node_id, r.reason, c.id, c.prev_cert_serial IS NOT NULL, p.id \
+         FROM (SELECT 1) one \
+         LEFT JOIN revoked_certs r ON r.cert_serial = $1 \
+         LEFT JOIN nodes c ON c.cert_serial = $1 \
+         LEFT JOIN nodes p ON p.prev_cert_serial = $1",
     )
     .bind(serial)
     .fetch_one(pg)
@@ -99,9 +134,21 @@ pub(crate) async fn node_for_serial(
         Status::unavailable("temporarily unavailable")
     })?;
     if let Some(node) = revoked {
-        return Ok(AgentIdentity::Revoked(node));
+        if reason.as_deref() == Some("deleted") {
+            return Ok(AgentIdentity::Revoked(node));
+        }
+        return Err(Status::unauthenticated("unknown certificate"));
     }
-    id.map(AgentIdentity::Node)
+    if let Some(node) = current {
+        if has_prev == Some(true) {
+            if let Err(e) = crate::enroll::promote_on_first_sight(pg, node, serial, ip).await {
+                // The older certificate just stays accepted a bit longer.
+                tracing::warn!(node = %node, error = %e, "failed to retire the renewed-from certificate");
+            }
+        }
+        return Ok(AgentIdentity::Node(node));
+    }
+    prev.map(AgentIdentity::Node)
         .ok_or_else(|| Status::unauthenticated("unknown certificate"))
 }
 
@@ -1305,6 +1352,7 @@ async fn store_heartbeat(state: &AppState, node_id: Uuid, hb: &Heartbeat) {
         "mem_used_bytes": hb.mem_used_bytes,
         "mem_total_bytes": hb.mem_total_bytes,
         "connections": hb.connections,
+        "uptime_seconds": hb.uptime_seconds,
         "lease_remaining_seconds": hb.lease_remaining_seconds,
         "ts": chrono::Utc::now().to_rfc3339(),
     });
@@ -1608,27 +1656,40 @@ enum Synced {
     Superseded,
 }
 
+/// The gRPC server's TLS: the panel's server certificate; client
+/// certificates OPTIONAL at the handshake (a presented one must verify
+/// against the panel CA, including expiry and ClientAuth) so a fresh agent
+/// can call AgentEnrollment.Enroll. Every AgentChannel method requires one
+/// (`enroll::peer_cert`).
+pub fn server_tls(install: &crate::install::Install) -> ServerTlsConfig {
+    ServerTlsConfig::new()
+        .identity(Identity::from_pem(
+            &install.server_cert_pem,
+            &install.server_key_pem,
+        ))
+        .client_ca_root(Certificate::from_pem(&install.ca_pem))
+        .client_auth_optional(true)
+}
+
 pub async fn serve(
     state: AppState,
     shutdown: tokio::sync::broadcast::Receiver<()>,
 ) -> anyhow::Result<()> {
     use tonic::transport::Server;
 
-    let install = state.install();
-    let tls = ServerTlsConfig::new()
-        .identity(Identity::from_pem(
-            &install.server_cert_pem,
-            &install.server_key_pem,
-        ))
-        .client_ca_root(Certificate::from_pem(&install.ca_pem));
-
+    let tls = server_tls(state.install());
     let bind = state.cfg().grpc.bind;
     let mut shutdown = shutdown;
     Server::builder()
         .http2_keepalive_interval(Some(std::time::Duration::from_secs(30)))
         .http2_keepalive_timeout(Some(std::time::Duration::from_secs(60)))
         .tls_config(tls)?
-        .add_service(AgentChannelServer::new(AgentChannelService { state }))
+        .add_service(AgentChannelServer::new(AgentChannelService {
+            state: state.clone(),
+        }))
+        .add_service(AgentEnrollmentServer::new(
+            crate::enroll::AgentEnrollmentService { state },
+        ))
         .serve_with_shutdown(bind, async move {
             let _ = shutdown.recv().await;
         })

@@ -68,10 +68,20 @@ enum ConfigCmd {
 
 #[derive(Subcommand)]
 enum NodeCmd {
-    /// Register a node and write an agent bootstrap file
+    /// Register a node and write an agent bootstrap file (one-time
+    /// enrollment token, no private key)
     Add {
         name: String,
         /// Where to write the agent bootstrap file (default: ./<name>-bootstrap.toml)
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+    /// Issue a new one-time enrollment token for an existing node (expired
+    /// token, lost agent state) and write its bootstrap file. The node's
+    /// current certificates are revoked once the agent enrolls with it.
+    EnrollToken {
+        id: uuid::Uuid,
+        /// Where to write the bootstrap file (default: ./<name>-bootstrap.toml)
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
@@ -97,7 +107,7 @@ enum AdminCmd {
     Passwd { login: String },
     /// Remove an account's two-factor authentication (lost authenticator
     /// and recovery codes) and end its sessions; an admin re-enrolls at the
-    /// next login.
+    /// next login with the one-time enrollment code printed here.
     #[command(name = "reset-2fa")]
     Reset2fa { login: String },
 }
@@ -120,6 +130,7 @@ async fn main() -> Result<()> {
         },
         Cmd::Node { action } => match action {
             NodeCmd::Add { name, out } => nodeops::node_add(cfg, name, out).await,
+            NodeCmd::EnrollToken { id, out } => nodeops::node_enroll_token(cfg, id, out).await,
             NodeCmd::List => nodeops::node_list(cfg).await,
             NodeCmd::Delete { id } => nodeops::node_delete(cfg, id).await,
         },
@@ -298,6 +309,7 @@ mod config;
 mod config_check;
 mod db;
 mod enforce;
+mod enroll;
 mod gen;
 mod grpc;
 mod install;

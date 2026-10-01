@@ -17,7 +17,7 @@ Cargo.toml 在仓库根（文档里的 `panel/` 前缀是拆仓前的旧路径�
 | `deploy/` | systemd 单元、生产 compose、Caddy/nginx、Prometheus 告警、Grafana 面板 | `docs/DEPLOY.md` |
 | `scripts/` | `backup.sh`/`restore.sh`（age 加密）、`restore-drill.sh`（开发栈恢复演练） | `docs/BACKUP.md` |
 | `.github/workflows/` | `ci.yml`（含 docker build）、`release.yml`（tag `v*`：构建、SBOM、cosign 无密钥签名、GitHub Release、ghcr 镜像） | — |
-| `data/` | 运行时生成：route prefix、CA、jwt.key、totp.key（gitignored，机密；totp.key 丢失 = 所有 2FA 账户需 `admin reset-2fa`） | — |
+| `data/` | 运行时生成：route prefix、CA、jwt.key、totp.key（gitignored，机密；totp.key 丢失 = 所有 2FA 账户需 `admin reset-2fa`；CA 丢失 = 所有节点需 `node enroll-token` 重新注册） | — |
 
 ## 命令
 
@@ -44,16 +44,18 @@ make smoke         # 全量构建 + smoke.sh（会 TRUNCATE PG、flushall Valkey
 - **取消分配的尾部计费**：删 node_users 行（用户仍在）必须同事务写 `node_users_departed`，否则 agent 在 REMOVE 之后上报的最终计数被丢。
 - **失联租约**：面板只在成功读到期望状态后发 `LeaseGrant`；DB 不可用时不续约（R8 产品决定）。
 - **身份**：agent 身份 = mTLS 客户端证书序列号（`install::normalize_serial`：小写 hex、去前导零字节，签发/识别/墓碑共用）；xray `email` = 面板 user UUID。
+- **注册与轮换（M1c / M1-8）**：bootstrap 文件**不含私钥**（panel_addr、server_name、CA、一次性 enrollment token）。gRPC TLS 客户端证书为**可选**（`grpc::server_tls`，出示的仍须经 CA/有效期/ClientAuth 校验），只为 `AgentEnrollment.Enroll`；`AgentChannel` 的每个方法（OpenChannel、Renew）都经 `enroll::peer_cert` 强制要求已验证的客户端证书，无证书在进入会话代码前就 UNAUTHENTICATED。token：256-bit，只存 SHA-256，TTL 默认 24h，单次使用 = 锁节点行后的条件 UPDATE（`used_at IS NULL AND expires_at > now()`），未知/已用/过期/节点删除中统一 PERMISSION_DENIED "enrollment refused"（同一条只匹配有效 token 的查询，无 oracle）；CSR 先于 token 检查（仅 P-256 + ecdsa-with-SHA256、无任何 attribute/扩展，subject 忽略，面板决定 CN=agent-<id>、仅 ClientAuth、新序列号、`agent.cert_validity_secs`）。Enroll 按来源地址（/64）与全局在 Valkey 限速。`nodes.cert_serial` = 最新签发，`prev_cert_serial` = 续期来源，新证书首次被看到时（`promote_on_first_sight`）旧的写 `revoked_certs`（reason `rotated`）；从 prev 再次续期会把未见过的 cert_serial 墓碑。墓碑 reason：`deleted` → 接受、推空状态、关闭（原语义）；`rotated` → 与未知证书一样拒绝（节点仍在，agent 必须保留配置改用新证书）。删除节点阶段 2 把 cert_serial 与 prev 都写 `deleted` 并把该节点的 `rotated` 升级为 `deleted`。签发/续期/提升/发 token 都在同一事务审计（actor `agent`/调用者）。
 - **删除节点两阶段**：阶段 1（API/CLI）置 `deleting_at` + 禁用 + bump（agent 收敛到空状态，最终计数照常计费）；阶段 2（`reaper`，任意实例）在 ack+10s / 2min 超时 / 节点离线时写 `revoked_certs` 墓碑并删行。已吊销证书**接受连接**、推空状态后关闭（拒绝会让 agent 留着旧配置），永不计费。删除只从 DB 推导，`del:` 通知仅是提示。
 - **多实例**：LISTEN 需要直连 PG，不支持 PgBouncer 事务/语句池模式。
 - **会话吊销（S4-2）**：JWT 带 `sv` = `users.session_ver`，`AuthUser` 不一致即 401。改密码/禁用/改角色/过期执行由 0009 的 `users` 触发器自动 bump（任何路径，包括 CLI 与手写 SQL）；登出、`revoke-sessions` 显式 bump。**最后一个启用的管理员**不能被禁用/降级/删除：0009 触发器在 advisory xact lock 下检查，SQLSTATE `AK001` → 409（仅在 READ COMMITTED 下无竞争，应用事务全是 RC）。
 - **反代（S4-1）**：客户端地址只在 TCP 对端属于 `web.trusted_proxies` 时才取 X-Forwarded-For（最右侧非受信跳）；登录限速只计失败，按地址（IPv6 按 /64）和按登录名，Valkey Lua 原子预留。`web.cookie_secure` 默认 true。
-- **GO-2026-6443**：agent 的 grpc-go < 1.85 遇缺 :authority 的请求会 panic，`streamSettings.network` = grpc/gun 的 inbound 一律 400；已存的在 NodeView `warnings` 中提示。agent 升级 grpc ≥ 1.85.0 后可解除。
+- **GO-2026-6443**：agent 的 grpc-go < 1.85 遇缺 :authority 的请求会 panic，`streamSettings.network` = grpc/gun 的 inbound 一律 400；已存的在 NodeView `warnings` 中提示；agent 在 xray 解析后由 `refuseGRPCTransport` 再拒一次（APPLY_FAILED，权威检查）。agent 升级 grpc ≥ 1.85.0 后可解除。
 - **可观测性（M1-4）**：Prometheus 指标只在独立监听 `metrics.bind`（默认关闭；非回环须 `allow_non_loopback`；不得与 web/grpc 同端口），**永不**挂在公网 web 端口。标签只用路由模板（`/{prefix}/...`）与有限枚举，不得出现前缀或 id。`X-Request-Id` 只加在通过前缀闸门的响应上（`request_id.rs` 在闸门之内；带 `Rejected` 标记的响应不加），拒绝响应必须保持字节同构；URI 不进日志（可能含订阅 token）。
 - **启动校验（M1-3）**：`config.rs` 结构体 `deny_unknown_fields`；`config_check.rs` 的 `validate()`（纯函数）+ `check_data_dir`，`serve` 与 `config check` 共用；错误一次列全，警告不阻止启动。
 - **管理员双因素（M1-6）**：JWT 带必需 claim `st`（`full`/`enroll`）。`AuthUser` 只收 `full`，且 role=admin 时还要求 `user_totp` 有已启用行；无 2FA 的管理员密码登录只得 15 分钟 `enroll` 会话，仅 `SessionUser`（`/me/totp*` 三个端点）接受。登录 = 同一个 POST 带 `code`（TOTP 或恢复码），所有凭据失败统一 401、同样工作量（一条查询带出 TOTP 与未用恢复码哈希、一次 argon2、固定的 HMAC 计算），二因素失败计入登录限速。防重放 = `user_totp.last_step` 条件 UPDATE（只接受 > last_step 的步，DB 时钟），恢复码 = `used_at IS NULL` 条件 UPDATE，均多实例安全；**不得**用进程内缓存。启用/重置 2FA、rotate-jwt 都 bump `session_ver`。秘密 AES-256-GCM（AAD=user id）存库，恢复码 HMAC-SHA256，密钥派生自 `data/totp.key`。
 - **审计（M1-7）**：每个 `apply_*` 自带 `&Actor` 参数并在**同一事务**内写 `audit::record`（回滚 = 无审计行）；新增 mutator 必须同样写审计，`every_access_change_bumps_affected_nodes` 断言每个操作恰好一行。快照只走 `audit::user_snapshot_sql`/`node_snapshot_sql`/`inbounds_summary`（白名单），秘密只记 `"changed"`。登录失败审计在请求路径之外写（spawn），只记已存在账户。
 - **请求路径即秘密**：前缀与订阅 token 不得出现在任何日志/trace/指标标签中，记录路径一律用 `web::redacted_path`（或匹配到的路由模板）。
+- **管理员首次 2FA 注册码（M1c）**：admin 激活 TOTP（`/me/totp/confirm`）除当前验证码外还需一次性注册码（`akari admin add`/`admin reset-2fa` 打印、API 建 admin/重置 2FA 时只返回一次；128-bit，存 SHA-256(user id‖码)，24h，激活事务内消费），错误统一 400 "invalid code" 并计入登录限速。
 - 验收门：`make check` 与 `make smoke` 全绿；新 API 必须在 smoke.sh 加断言。
 
 ## 已知问题

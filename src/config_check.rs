@@ -178,6 +178,35 @@ impl PanelConfig {
                 sub.rate_window_secs
             ));
         }
+        let a = &self.agent;
+        if !(60..=825 * 86400).contains(&a.cert_validity_secs) {
+            r.err(format!(
+                "agent.cert_validity_secs = {} is outside 60..={} (1 minute to 825 days)",
+                a.cert_validity_secs,
+                825 * 86400
+            ));
+        } else if a.cert_validity_secs < 86400 {
+            r.warn(format!(
+                "agent.cert_validity_secs = {}: agent certificates live less than a day \
+                 (testing only; an agent offline longer than that must re-enroll)",
+                a.cert_validity_secs
+            ));
+        }
+        if !(300..=7 * 86400).contains(&a.enroll_token_ttl_secs) {
+            r.err(format!(
+                "agent.enroll_token_ttl_secs = {} is outside 300..=604800 (5 minutes to 7 days)",
+                a.enroll_token_ttl_secs
+            ));
+        }
+        if a.enroll_rate_per_ip <= 0 || a.enroll_rate_global <= 0 {
+            r.err("agent.enroll_rate_per_ip and agent.enroll_rate_global must be > 0");
+        }
+        if !(1..=86_400).contains(&a.enroll_rate_window_secs) {
+            r.err(format!(
+                "agent.enroll_rate_window_secs = {} is outside 1..=86400",
+                a.enroll_rate_window_secs
+            ));
+        }
         if self.audit.retention_days == 0 {
             r.warn("audit.retention_days = 0: the audit log is never pruned");
         } else if self.audit.retention_days < 30 {
@@ -502,6 +531,43 @@ mod tests {
         let mut c = PanelConfig::default();
         c.sub.rate_window_secs = 0;
         assert!(has(&errors(&c), "sub.rate_window_secs"));
+        // M1-8 enrollment / certificate settings.
+        for (f, field) in [
+            (
+                (|c: &mut PanelConfig| c.agent.cert_validity_secs = 59) as fn(&mut PanelConfig),
+                "cert_validity_secs",
+            ),
+            (
+                |c| c.agent.cert_validity_secs = 826 * 86400,
+                "cert_validity_secs",
+            ),
+            (
+                |c| c.agent.enroll_token_ttl_secs = 299,
+                "enroll_token_ttl_secs",
+            ),
+            (
+                |c| c.agent.enroll_token_ttl_secs = 8 * 86400,
+                "enroll_token_ttl_secs",
+            ),
+            (|c| c.agent.enroll_rate_per_ip = 0, "enroll_rate_per_ip"),
+            (|c| c.agent.enroll_rate_global = -1, "enroll_rate_global"),
+            (
+                |c| c.agent.enroll_rate_window_secs = 0,
+                "enroll_rate_window_secs",
+            ),
+        ] {
+            let mut c = PanelConfig::default();
+            f(&mut c);
+            assert!(has(&errors(&c), field), "{field}");
+        }
+        let mut c = PanelConfig::default();
+        c.agent.cert_validity_secs = 120;
+        assert!(errors(&c).is_empty(), "short validity is a warning only");
+        assert!(c
+            .validate()
+            .warnings
+            .iter()
+            .any(|w| w.contains("cert_validity_secs")));
         let mut c = PanelConfig::default();
         c.audit.retention_days = 0;
         assert!(

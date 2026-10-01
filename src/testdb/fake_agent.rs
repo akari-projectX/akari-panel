@@ -17,15 +17,20 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
-use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity, Server, ServerTlsConfig};
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity, Server};
 use tonic::{Status, Streaming};
 use uuid::Uuid;
 
 use crate::gen::agent_channel_client::AgentChannelClient;
 use crate::gen::agent_channel_server::AgentChannelServer;
+use crate::gen::agent_enrollment_client::AgentEnrollmentClient;
+use crate::gen::agent_enrollment_server::AgentEnrollmentServer;
 use crate::gen::agent_up::Msg as UpMsg;
 use crate::gen::panel_down::Msg as DownMsg;
-use crate::gen::{ack, Ack, AgentUp, ConfigSnapshot, Hello, PanelDown, TrafficReport, UserTraffic};
+use crate::gen::{
+    ack, Ack, AgentUp, ConfigSnapshot, EnrollRequest, Hello, PanelDown, RenewRequest,
+    TrafficReport, UserTraffic,
+};
 use crate::grpc::{state_hash, user_set, AgentChannelService, NodeState, MIN_AGENT_PROTOCOL};
 use crate::state::AppState;
 use crate::testdb::TestDb;
@@ -44,28 +49,35 @@ pub struct PanelHarness {
 
 impl PanelHarness {
     pub async fn start(db: &TestDb) -> Self {
+        Self::start_with(db, |_| {}).await
+    }
+
+    /// With a config tweak. Enrollment rate limits are lifted (their Valkey
+    /// keys are shared by concurrently running tests; enroll.rs tests the
+    /// limit with private addresses).
+    pub async fn start_with(
+        db: &TestDb,
+        tweak: impl FnOnce(&mut crate::config::PanelConfig),
+    ) -> Self {
         // Process-wide, idempotent (main() does the same at startup).
         let _ = rustls::crypto::ring::default_provider().install_default();
         let data_dir = std::env::temp_dir().join(format!("akari-fake-agent-{}", Uuid::new_v4()));
-        let cfg = crate::config::PanelConfig {
+        let mut cfg = crate::config::PanelConfig {
             data_dir: data_dir.clone(),
             ..Default::default()
         };
+        cfg.agent.enroll_rate_per_ip = 1_000_000;
+        cfg.agent.enroll_rate_global = 1_000_000;
+        tweak(&mut cfg);
         let install = crate::install::ensure(&cfg).expect("issue CA + server cert");
         let (ca_pem, ca_key_pem) = (install.ca_pem.clone(), install.ca_key_pem.clone());
-        let mut cfg = cfg;
         if let Ok(v) = std::env::var("VALKEY_URL") {
             cfg.valkey_url = v;
         }
         let valkey = crate::state::connect_valkey(&cfg)
             .await
             .expect("dev valkey (make dev-up)");
-        let tls = ServerTlsConfig::new()
-            .identity(Identity::from_pem(
-                &install.server_cert_pem,
-                &install.server_key_pem,
-            ))
-            .client_ca_root(Certificate::from_pem(&install.ca_pem));
+        let tls = crate::grpc::server_tls(&install);
         let state = AppState::new(cfg, install, db.pool.clone(), valkey);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -74,11 +86,15 @@ impl PanelHarness {
         let svc = AgentChannelService {
             state: state.clone(),
         };
+        let enroll = crate::enroll::AgentEnrollmentService {
+            state: state.clone(),
+        };
         let server = tokio::spawn(async move {
             Server::builder()
                 .tls_config(tls)
                 .unwrap()
                 .add_service(AgentChannelServer::new(svc))
+                .add_service(AgentEnrollmentServer::new(enroll))
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                     let _ = rx.await;
                 })
@@ -96,8 +112,8 @@ impl PanelHarness {
         }
     }
 
-    /// Mint an agent certificate and register its serial on `node`
-    /// (what `akari node add` does).
+    /// Mint an agent certificate and register its serial on `node` (what a
+    /// v1 `akari node add` did: panel-generated key; still supported).
     pub async fn register(&self, db: &TestDb, node: Uuid) -> AgentCreds {
         let (cert, key, serial) =
             crate::install::issue_agent_cert(&self.ca_pem, &self.ca_key_pem, &node.to_string())
@@ -115,6 +131,74 @@ impl PanelHarness {
         }
     }
 
+    /// A TLS channel to the panel, with `creds` as client certificate or
+    /// none (verifying the panel's certificate either way).
+    pub async fn channel(&self, creds: Option<&AgentCreds>) -> Result<Channel, Status> {
+        let mut tls = ClientTlsConfig::new()
+            .ca_certificate(Certificate::from_pem(&self.ca_pem))
+            .domain_name("localhost");
+        if let Some(c) = creds {
+            tls = tls
+                .ca_certificate(Certificate::from_pem(&c.ca))
+                .identity(Identity::from_pem(&c.cert, &c.key));
+        }
+        Channel::from_shared(format!("https://{}", self.addr))
+            .unwrap()
+            .tls_config(tls)
+            .map_err(|e| Status::unavailable(e.to_string()))?
+            .connect()
+            .await
+            .map_err(|e| Status::unavailable(e.to_string()))
+    }
+
+    /// AgentEnrollment.Enroll without a client certificate, for a fresh
+    /// P-256 key; returns the credentials an agent would store.
+    pub async fn enroll(&self, token: &str) -> Result<AgentCreds, Status> {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let csr = rcgen::CertificateParams::default()
+            .serialize_request(&key)
+            .unwrap();
+        let mut client = AgentEnrollmentClient::new(self.channel(None).await?);
+        let issued = client
+            .enroll(EnrollRequest {
+                token: token.into(),
+                csr_der: csr.der().to_vec(),
+            })
+            .await?
+            .into_inner();
+        Ok(AgentCreds {
+            cert: issued.cert_pem,
+            key: key.serialize_pem(),
+            ca: issued.ca_pem,
+        })
+    }
+
+    /// AgentChannel.Renew with `creds` (None: no client certificate) for a
+    /// fresh key.
+    pub async fn renew(&self, creds: Option<&AgentCreds>) -> Result<AgentCreds, Status> {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let csr = rcgen::CertificateParams::default()
+            .serialize_request(&key)
+            .unwrap();
+        let mut client = AgentChannelClient::new(self.channel(creds).await?);
+        let issued = client
+            .renew(RenewRequest {
+                csr_der: csr.der().to_vec(),
+            })
+            .await?
+            .into_inner();
+        Ok(AgentCreds {
+            cert: issued.cert_pem,
+            key: key.serialize_pem(),
+            ca: issued.ca_pem,
+        })
+    }
+
+    /// Open the channel without a client certificate (must be refused).
+    pub async fn connect_anonymous(&self) -> Result<WireAgent, Status> {
+        self.open(self.channel(None).await?).await
+    }
+
     /// Dial the panel as an agent with `creds` and open the channel. Errors
     /// (TLS refusal, unauthenticated) come back as a `Status`.
     pub async fn connect(&self, creds: &AgentCreds) -> Result<WireAgent, Status> {
@@ -129,6 +213,10 @@ impl PanelHarness {
             .connect()
             .await
             .map_err(|e| Status::unavailable(e.to_string()))?;
+        self.open(channel).await
+    }
+
+    async fn open(&self, channel: Channel) -> Result<WireAgent, Status> {
         let mut client = AgentChannelClient::new(channel);
         let (up, up_rx) = mpsc::channel(64);
         let down = client
@@ -159,6 +247,13 @@ pub struct AgentCreds {
     pub ca: String,
 }
 
+impl std::fmt::Debug for AgentCreds {
+    // Never print key material, even in tests.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AgentCreds { .. }")
+    }
+}
+
 /// Scriptable agent end of the stream. Methods mirror what a real agent
 /// sends; nothing is automatic, so tests control ordering precisely.
 pub struct WireAgent {
@@ -173,11 +268,15 @@ impl WireAgent {
     }
 
     pub async fn hello(&self, held: (u64, u64), hash: String) {
+        self.hello_v(held, hash, MIN_AGENT_PROTOCOL).await
+    }
+
+    pub async fn hello_v(&self, held: (u64, u64), hash: String, protocol: u32) {
         self.send(UpMsg::Hello(Hello {
             session_id: self.session_id.clone(),
             config_version: held.0,
             user_version: held.1,
-            protocol_version: MIN_AGENT_PROTOCOL,
+            protocol_version: protocol,
             state_hash: hash,
             ..Default::default()
         }))

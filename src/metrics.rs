@@ -42,6 +42,7 @@ struct Metrics {
     listener_connected: IntGauge,
     queue_usage: prometheus::Gauge,
     login_attempts: IntCounterVec,
+    enrollments: IntCounterVec,
     http_seconds: HistogramVec,
 }
 
@@ -115,6 +116,12 @@ impl Metrics {
                 "Login attempts by rate-limit outcome (allowed, limited)",
                 &["result"],
             )?,
+            enrollments: cv(
+                "akari_agent_enrollments_total",
+                "Agent enrollment / renewal RPC outcomes (ok, refused, bad_csr, rate_limited, \
+                 renewed)",
+                &["result"],
+            )?,
             http_seconds: HistogramVec::new(
                 HistogramOpts::new(
                     "akari_http_request_duration_seconds",
@@ -146,6 +153,7 @@ impl Metrics {
             .register(Box::new(m.listener_connected.clone()))?;
         m.registry.register(Box::new(m.queue_usage.clone()))?;
         m.registry.register(Box::new(m.login_attempts.clone()))?;
+        m.registry.register(Box::new(m.enrollments.clone()))?;
         m.registry.register(Box::new(m.http_seconds.clone()))?;
         // Series that should read 0, not "absent", before the first event.
         for k in ["snapshot", "delta", "empty_snapshot"] {
@@ -156,6 +164,9 @@ impl Metrics {
         }
         for r in ["allowed", "limited"] {
             m.login_attempts.with_label_values(&[r]);
+        }
+        for r in ENROLL_RESULTS {
+            m.enrollments.with_label_values(&[r]);
         }
         for s in ["active", "closing"] {
             m.sessions.with_label_values(&[s]);
@@ -184,6 +195,16 @@ fn m() -> Option<&'static Metrics> {
 pub fn sync_sent(kind: &'static str) {
     if let Some(m) = m() {
         m.syncs_sent.with_label_values(&[kind]).inc();
+    }
+}
+
+const ENROLL_RESULTS: [&str; 5] = ["ok", "refused", "bad_csr", "rate_limited", "renewed"];
+
+/// An enrollment/renewal RPC finished. `result` is one of ENROLL_RESULTS.
+pub fn enroll(result: &'static str) {
+    debug_assert!(ENROLL_RESULTS.contains(&result));
+    if let Some(m) = m() {
+        m.enrollments.with_label_values(&[result]).inc();
     }
 }
 

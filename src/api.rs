@@ -559,6 +559,19 @@ pub async fn create_user(
     .await
     {
         Ok(view) => {
+            let totp_enrollment_code = if view.role == "admin" {
+                Some(crate::account::store_enroll_code(&mut tx, view.id).await?)
+            } else {
+                None
+            };
+            let mut after = json!({
+                "login": view.login, "role": view.role, "enabled": view.enabled,
+                "traffic_limit_bytes": view.traffic_limit_bytes, "expires_at": view.expires_at,
+                "password": crate::audit::CHANGED, "sub_token": crate::audit::CHANGED,
+            });
+            if totp_enrollment_code.is_some() {
+                after["totp_enroll_code"] = json!(crate::audit::CHANGED);
+            }
             crate::audit::record(
                 &mut tx,
                 &Actor::of(&user),
@@ -566,11 +579,7 @@ pub async fn create_user(
                 "user",
                 Some(view.id.to_string()),
                 None,
-                Some(json!({
-                    "login": view.login, "role": view.role, "enabled": view.enabled,
-                    "traffic_limit_bytes": view.traffic_limit_bytes, "expires_at": view.expires_at,
-                    "password": crate::audit::CHANGED, "sub_token": crate::audit::CHANGED,
-                })),
+                Some(after),
             )
             .await?;
             tx.commit().await?;
@@ -579,6 +588,7 @@ pub async fn create_user(
                 Json(CreatedUser {
                     user: view,
                     sub_token,
+                    totp_enrollment_code,
                 }),
             ))
         }
@@ -598,6 +608,9 @@ pub struct CreatedUser {
     user: UserView,
     /// Only ever visible in this create response (and after regeneration).
     sub_token: String,
+    /// Admins only: the one-time code required for their first 2FA
+    /// activation (24 h). Shown only here.
+    totp_enrollment_code: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -927,6 +940,16 @@ pub struct NodeView {
     deleting_at: Option<DateTime<Utc>>,
     last_seen_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
+    /// M1-8: whether the agent holds a certificate (enrolled), when the
+    /// newest one expires (null for a pre-M1c certificate until its agent
+    /// next connects), and the expiry of a live (unused) enrollment token.
+    enrolled: bool,
+    cert_not_after: Option<DateTime<Utc>>,
+    enroll_token_expires_at: Option<DateTime<Utc>>,
+    /// Last heartbeat (Valkey, ~15 s cadence, 10 min TTL): cpu/mem,
+    /// connections, uptime_seconds, lease_remaining_seconds, ts.
+    #[sqlx(skip)]
+    heartbeat: Option<serde_json::Value>,
     /// Problems with the stored configuration the admin must fix (e.g. an
     /// inbound using a transport the agent refuses for security reasons,
     /// stored before the check existed). Computed, not stored.
@@ -934,11 +957,69 @@ pub struct NodeView {
     warnings: Vec<String>,
 }
 
+/// A certificate expiring within this many days is flagged (agents of
+/// protocol >= 2 renew with a third of the validity left, i.e. 30 days at
+/// the default 90; protocol 1 agents never renew).
+const CERT_WARN_DAYS: i64 = 14;
+
 impl NodeView {
     fn with_warnings(mut self) -> Self {
         self.warnings = inbound_warnings(&self.xray_inbounds);
+        if let Some(w) = cert_warning(self.cert_not_after, self.agent_protocol, Utc::now()) {
+            self.warnings.push(w);
+        }
         self
     }
+}
+
+fn cert_warning(
+    not_after: Option<DateTime<Utc>>,
+    protocol: Option<i32>,
+    now: DateTime<Utc>,
+) -> Option<String> {
+    let left = not_after? - now;
+    if left > chrono::Duration::days(CERT_WARN_DAYS) {
+        return None;
+    }
+    let why = if protocol.unwrap_or(0) < 2 {
+        "the agent is too old to renew it (protocol < 2): upgrade the agent, or issue a new \
+         enrollment token"
+    } else {
+        "the agent has not renewed it: check its logs"
+    };
+    Some(if left <= chrono::Duration::zero() {
+        format!(
+            "agent certificate expired at {}; {why}",
+            not_after?.to_rfc3339()
+        )
+    } else {
+        format!(
+            "agent certificate expires in {} days ({}); {why}",
+            left.num_days(),
+            not_after?.to_rfc3339()
+        )
+    })
+}
+
+/// Attach the last heartbeat of each node (one MGET; best effort).
+async fn with_heartbeats(state: &AppState, mut views: Vec<NodeView>) -> Vec<NodeView> {
+    use fred::prelude::KeysInterface;
+    if views.is_empty() {
+        return views;
+    }
+    let keys: Vec<String> = views
+        .iter()
+        .map(|v| format!("akari:node:hb:{}", v.id))
+        .collect();
+    match state.valkey().mget::<Vec<Option<String>>, _>(keys).await {
+        Ok(blobs) => {
+            for (v, b) in views.iter_mut().zip(blobs) {
+                v.heartbeat = b.and_then(|b| serde_json::from_str(&b).ok());
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "heartbeat lookup failed"),
+    }
+    views
 }
 
 const NODE_VIEW_COLS: &str =
@@ -946,7 +1027,10 @@ const NODE_VIEW_COLS: &str =
      user_version, xray_inbounds, server_addr, last_error, last_error_at, failed_config_version, \
      failed_user_version, agent_protocol, lease_expires_at, \
      GREATEST(0, EXTRACT(EPOCH FROM lease_expires_at - now()))::bigint AS lease_remaining_seconds, \
-     traffic_max_rate_bytes_per_sec, deleting_at, last_seen_at, created_at";
+     traffic_max_rate_bytes_per_sec, deleting_at, last_seen_at, created_at, \
+     cert_serial IS NOT NULL AS enrolled, cert_not_after, \
+     (SELECT e.expires_at FROM node_enrollments e WHERE e.node_id = nodes.id \
+        AND e.used_at IS NULL AND e.expires_at > now()) AS enroll_token_expires_at";
 
 pub async fn list_nodes(
     State(state): State<AppState>,
@@ -958,9 +1042,105 @@ pub async fn list_nodes(
     )))
     .fetch_all(state.pg())
     .await?;
-    Ok(Json(
-        rows.into_iter().map(NodeView::with_warnings).collect(),
+    let views = rows.into_iter().map(NodeView::with_warnings).collect();
+    Ok(Json(with_heartbeats(&state, views).await))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateNodeReq {
+    pub name: String,
+}
+
+/// The one-time enrollment material returned by create / enroll-token: the
+/// token and the complete bootstrap file (shown once; only the token's
+/// SHA-256 is stored).
+#[derive(Serialize)]
+pub struct EnrollmentView {
+    id: Uuid,
+    name: String,
+    enrollment_token: String,
+    expires_at: DateTime<Utc>,
+    bootstrap: String,
+}
+
+fn enrollment_view(
+    state: &AppState,
+    id: Uuid,
+    name: String,
+    token: String,
+    expires_at: DateTime<Utc>,
+) -> EnrollmentView {
+    let g = &state.cfg().grpc;
+    let bootstrap = crate::enroll::bootstrap_toml(
+        &name,
+        &g.advertise,
+        &g.server_name,
+        &state.install().ca_pem,
+        &token,
+        expires_at,
+    );
+    EnrollmentView {
+        id,
+        name,
+        enrollment_token: token,
+        expires_at,
+        bootstrap,
+    }
+}
+
+/// POST /nodes {name} (admin): create a node (pending) with a one-time
+/// enrollment token (M1-8). 201 with the token and bootstrap file.
+pub async fn create_node(
+    State(state): State<AppState>,
+    user: AuthUser,
+    ApiJson(req): ApiJson<CreateNodeReq>,
+) -> Result<(axum::http::StatusCode, Json<EnrollmentView>), ApiError> {
+    user.require_admin()?;
+    let mut tx = state.pg().begin().await?;
+    let (id, token, expires) = crate::enroll::apply_create_node(
+        &mut tx,
+        &Actor::of(&user),
+        &req.name,
+        state.cfg().agent.enroll_token_ttl_secs,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(enrollment_view(
+            &state,
+            id,
+            req.name.trim().to_string(),
+            token,
+            expires,
+        )),
     ))
+}
+
+/// POST /nodes/{id}/enroll-token (admin): a new one-time enrollment token
+/// (replaces any unused one). Once the agent enrolls with it, the node's
+/// previous certificates are revoked. 409 for a deleting node.
+pub async fn issue_enroll_token(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((_, id)): Path<(String, Uuid)>,
+) -> Result<Json<EnrollmentView>, ApiError> {
+    user.require_admin()?;
+    let mut tx = state.pg().begin().await?;
+    let (token, expires) = crate::enroll::apply_issue_token(
+        &mut tx,
+        &Actor::of(&user),
+        id,
+        state.cfg().agent.enroll_token_ttl_secs,
+    )
+    .await?;
+    let name: String = sqlx::query_scalar("SELECT name FROM nodes WHERE id = $1")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Json(enrollment_view(&state, id, name, token, expires)))
 }
 
 #[derive(Deserialize, Default)]
@@ -1698,18 +1878,21 @@ pub async fn unassign_user(
 /// all its sessions, in the caller's transaction; audited
 /// ("user.totp.reset"). An admin then gets an enrollment-only session at
 /// the next login. Returns what was removed ("active", "pending", "none").
+/// Reset an account's 2FA. For an admin a fresh one-time enrollment code
+/// is issued (returned; shown once) — required to activate 2FA again.
 pub(crate) async fn apply_reset_totp(
     conn: &mut PgConnection,
     actor: &Actor,
     user_id: Uuid,
-) -> Result<&'static str, ApiError> {
-    let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
-        .bind(user_id)
-        .fetch_optional(&mut *conn)
-        .await?;
-    if exists.is_none() {
+) -> Result<(&'static str, Option<String>), ApiError> {
+    let role: Option<String> =
+        sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR UPDATE")
+            .bind(user_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let Some(role) = role else {
         return Err(ApiError::not_found());
-    }
+    };
     let removed: Option<bool> = sqlx::query_scalar(
         "DELETE FROM user_totp WHERE user_id = $1 RETURNING enabled_at IS NOT NULL",
     )
@@ -1730,6 +1913,15 @@ pub(crate) async fn apply_reset_totp(
         Some(false) => "pending",
         None => "none",
     };
+    let enroll_code = if role == "admin" {
+        Some(crate::account::store_enroll_code(conn, user_id).await?)
+    } else {
+        None
+    };
+    let mut after = json!({ "totp": "none", "recovery_codes": 0 });
+    if enroll_code.is_some() {
+        after["totp_enroll_code"] = json!(crate::audit::CHANGED);
+    }
     crate::audit::record(
         conn,
         actor,
@@ -1737,24 +1929,26 @@ pub(crate) async fn apply_reset_totp(
         "user",
         Some(user_id.to_string()),
         Some(json!({ "totp": was, "recovery_codes": codes })),
-        Some(json!({ "totp": "none", "recovery_codes": 0 })),
+        Some(after),
     )
     .await?;
-    Ok(was)
+    Ok((was, enroll_code))
 }
 
 /// DELETE /api/v1/users/{id}/totp (admin): reset the account's 2FA and end
-/// its sessions (resetting your own ends this session too).
+/// its sessions (resetting your own ends this session too). 200 with
+/// `totp_enrollment_code` (admins: the one-time code required to enroll
+/// again, shown only here; null for regular users).
 pub async fn reset_totp(
     State(state): State<AppState>,
     user: AuthUser,
     Path((_, id)): Path<(String, Uuid)>,
-) -> Result<axum::http::StatusCode, ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    apply_reset_totp(&mut tx, &Actor::of(&user), id).await?;
+    let (_, code) = apply_reset_totp(&mut tx, &Actor::of(&user), id).await?;
     tx.commit().await?;
-    Ok(axum::http::StatusCode::NO_CONTENT)
+    Ok(Json(json!({ "totp_enrollment_code": code })))
 }
 
 #[cfg(test)]
@@ -1770,6 +1964,26 @@ mod tests {
             protocol: proto.into(),
             account: json!({}),
         }
+    }
+
+    /// M1-8: a certificate within 14 days of expiry (or expired) is flagged,
+    /// with the likely cause by agent protocol.
+    #[test]
+    fn cert_expiry_warning() {
+        let now = Utc::now();
+        let d = chrono::Duration::days;
+        assert_eq!(cert_warning(None, Some(2), now), None, "unknown expiry");
+        assert_eq!(cert_warning(Some(now + d(15)), Some(1), now), None);
+        let w = cert_warning(Some(now + d(10)), Some(1), now).unwrap();
+        assert!(
+            w.contains("expires in 9 days") || w.contains("expires in 10 days"),
+            "{w}"
+        );
+        assert!(w.contains("too old to renew"), "{w}");
+        let w = cert_warning(Some(now + d(3)), Some(2), now).unwrap();
+        assert!(w.contains("has not renewed"), "{w}");
+        let w = cert_warning(Some(now - d(1)), None, now).unwrap();
+        assert!(w.contains("expired at"), "{w}");
     }
 
     #[test]

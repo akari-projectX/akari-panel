@@ -44,8 +44,15 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
 - Admin API: user CRUD, node listing/enable, per-node xray `inbounds`
   editing, account generation + assignment (VLESS/VMess/Trojan credentials
   are panel-generated, one per inbound).
-- `akari node add <name>` issues a per-node client certificate (panel CA) and
-  writes an agent bootstrap file. `akari node delete <id>` (or
+- `akari node add <name>` (or `POST /api/v1/nodes`, or New node in the UI)
+  creates the node with a one-time enrollment token and writes a bootstrap
+  file without any private key: the agent generates its key (ECDSA P-256)
+  locally and enrolls with a CSR over the gRPC port (the only call that
+  works without a client certificate); the panel signs a 90-day client
+  certificate. Protocol 2 agents renew it over mTLS when a third is left
+  (new key; the old certificate is revoked once the new one is seen).
+  `akari node enroll-token <id>` re-enrolls a node. See docs/DEPLOY.md.
+  `akari node delete <id>` (or
   `DELETE /api/v1/nodes/{id}`, or the Delete button) retires a node: see
   "Node deletion" below.
 - Agent dials out (TLS 1.3, client cert = node identity), sends `Hello` with
@@ -125,8 +132,8 @@ make agent-build       # go build of ../akari-agent
 
 ./target/release/akari serve
 AKARI_ADMIN_PASSWORD=... ./target/release/akari admin add root
-./target/release/akari node add test-node   # writes test-node-bootstrap.toml
-(cd ../akari-agent && ./agent -config ../akari-panel/test-node-bootstrap.toml)
+./target/release/akari node add test-node   # writes test-node-bootstrap.toml (one-time token)
+(cd ../akari-agent && ./agent -config ../akari-panel/test-node-bootstrap.toml -state-dir /tmp/akari-agent-state)
 make smoke             # full end-to-end check (truncates the dev DB)
 make check             # fmt + clippy + tsc (fast gate); make lint test deny = CI
 ```
@@ -151,26 +158,29 @@ separate loopback listener, never on the public port.
 | GET | /api/v1/me | user | profile + traffic usage |
 | GET | /api/v1/me/totp | any session | session stage, 2FA state (never the secret) |
 | POST | /api/v1/me/totp/enroll | any session | new pending TOTP secret (shown once) |
-| POST | /api/v1/me/totp/confirm | any session | `{code}`: activate 2FA, returns 10 recovery codes once |
+| POST | /api/v1/me/totp/confirm | any session | `{code, enrollment_code?}`: activate 2FA (admins: plus their one-time enrollment code), returns 10 recovery codes once |
 | POST | /api/v1/me/totp/recovery-codes | user | `{code}`: replace recovery codes |
 | POST | /api/v1/me/sub-token | user (role=user) | regenerate own subscription token (5/hour) |
 | GET | /api/v1/audit | admin | audit log, `?limit&before&actor&action` (keyset, newest first) |
 | GET/POST | /api/v1/users | admin | list / create users |
 | PATCH/DELETE | /api/v1/users/{id} | admin | update / delete user |
 | POST/DELETE | /api/v1/users/{id}/nodes/{node_id} | admin | assign (generates account) / remove |
-| GET | /api/v1/nodes | admin | node list with live status |
+| GET/POST | /api/v1/nodes | admin | node list with live status, certificate expiry, last heartbeat, warnings / create a node (201: one-time enrollment token + bootstrap file, shown once) |
+| POST | /api/v1/nodes/{id}/enroll-token | admin | new one-time enrollment token + bootstrap file (re-enrollment) |
 | PATCH/DELETE | /api/v1/nodes/{id} | admin | enable / rename / billing cap override; delete (202, revokes the certificate) |
 | PUT | /api/v1/nodes/{id}/inbounds | admin | replace xray inbounds (bumps config_version) |
 | POST | /api/v1/users/{id}/sub-token | admin | regenerate subscription token |
 | POST | /api/v1/users/{id}/revoke-sessions | admin | log the account out everywhere (204) |
-| DELETE | /api/v1/users/{id}/totp | admin | reset the account's 2FA, end its sessions (204) |
+| DELETE | /api/v1/users/{id}/totp | admin | reset the account's 2FA, end its sessions; returns an admin's new one-time `totp_enrollment_code` |
 | GET | /sub/{token} | token | subscription (UA-based format) |
 | GET | /healthz | — | panel liveness |
 
 Defaults bind web on `127.0.0.1:8080` and gRPC on `127.0.0.1:8443`; override
 via `panel.toml` (see `src/config.rs`) or `DATABASE_URL`/`VALKEY_URL`.
 `akari admin passwd <login>` resets a password (and ends its sessions).
-`akari admin reset-2fa <login>` removes an account's 2FA (lockout recovery).
+`akari admin reset-2fa <login>` removes an account's 2FA (lockout recovery)
+and prints an admin's new enrollment code. `akari node enroll-token <id>`
+issues a new one-time node enrollment token.
 `akari secrets rotate-prefix` / `akari secrets rotate-jwt` rotate secrets
 (see "Security").
 
@@ -297,8 +307,8 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   session still open is closed with UNAUTHENTICATED. A revoked certificate
   that connects again is accepted only to be served the empty state and
   closed (a refused agent would keep running its last config); it is never
-  billed and can never be registered again. Reinstalling needs a new
-  `akari node add`.
+  billed and can never be registered again (also the certificate it renewed
+  from, if still accepted). Reinstalling needs a new `akari node add`.
 - **Billing plausibility caps** (only ever under-bill; the counter is stored
   in full): every cap credits at most a short burst window of elapsed time
   (`traffic.node_burst_secs`, default 120 s) — per (node, user, session)
@@ -331,7 +341,11 @@ for admins: an admin without active TOTP who logs in with the right
 password gets a 15-minute *enrollment-only* session that reaches nothing
 but `/api/v1/me/totp*` (the SPA shows the setup screen). Enrollment shows
 the secret once (base32 + `otpauth://` URI) and activates only after a
-valid code; activation issues 10 single-use recovery codes (shown once) and
+valid code — for an admin also the one-time **enrollment code** that
+`akari admin add` / `admin reset-2fa` print (or the API returns once on
+admin create / 2FA reset; 128-bit, SHA-256 stored, 24 h, consumed by the
+activation), so a leaked password alone cannot bind an attacker's
+authenticator; activation issues 10 single-use recovery codes (shown once) and
 ends the account's other sessions. Regular users may opt in from the
 portal. Login sends password and code in **one** request (`code` = TOTP
 code or recovery code); every failure — unknown account, wrong password,

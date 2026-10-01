@@ -46,7 +46,7 @@ export const put = <T,>(path: string, body: unknown) =>
   api<T>(path, { method: "PUT", body: JSON.stringify(body) });
 export const patch = <T,>(path: string, body: unknown) =>
   api<T>(path, { method: "PATCH", body: JSON.stringify(body) });
-export const del = (path: string) => api<void>(path, { method: "DELETE" });
+export const del = <T = void,>(path: string) => api<T>(path, { method: "DELETE" });
 
 // Auth endpoints live at /{prefix}/auth/*, NOT under /api/v1 (see src/web.rs).
 // Do not route them through get/post: that yields /api/v1/auth/* -> 404.
@@ -85,6 +85,10 @@ export interface TotpStatus {
   enabled: boolean;
   pending: boolean;
   recovery_codes_left: number;
+  // Admins activating 2FA need their one-time enrollment code (printed by
+  // `akari admin add` / `admin reset-2fa`, or shown once to the admin who
+  // reset them).
+  enroll_code_required: boolean;
 }
 
 export interface TotpEnrollment {
@@ -159,6 +163,35 @@ export interface NodeView {
   deleting_at: string | null;
   last_seen_at: string | null;
   created_at: string;
+  // Certificate enrollment (M1-8): whether the agent holds a certificate,
+  // its expiry, and the expiry of a live (unused) enrollment token.
+  enrolled: boolean;
+  cert_not_after: string | null;
+  enroll_token_expires_at: string | null;
+  // Last heartbeat (null when none in the last 10 minutes).
+  heartbeat: Heartbeat | null;
+  // Problems the admin must fix (stored config, certificate expiry).
+  warnings: string[];
+}
+
+export interface Heartbeat {
+  cpu_percent: number;
+  mem_used_bytes: number;
+  mem_total_bytes: number;
+  connections: number;
+  uptime_seconds?: number;
+  lease_remaining_seconds: number | null;
+  ts: string;
+}
+
+// One-time enrollment material (POST /nodes, POST /nodes/{id}/enroll-token):
+// shown once, only the token's hash is stored.
+export interface NodeEnrollment {
+  id: string;
+  name: string;
+  enrollment_token: string;
+  expires_at: string;
+  bootstrap: string;
 }
 
 export interface GeneratedAccount {

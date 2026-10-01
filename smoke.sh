@@ -18,7 +18,7 @@ rm -rf "$LOG" data "$BOOT" "$JAR" && mkdir -p "$LOG"
 # starts (panel binary here, any sibling agent checkout's binary with this
 # script's bootstrap file) — never a shell that merely mentions them.
 pkill -f '^\./target/release/akari (-c [^ ]+ )?serve$' 2>/dev/null || true
-pkill -f "^\.\./[A-Za-z0-9_.-]+/agent -config ${BOOT//./\\.}\$" 2>/dev/null || true
+pkill -f "^\.\./[A-Za-z0-9_.-]+/agent -config ${BOOT//./\\.}( .*)?\$" 2>/dev/null || true
 sleep 1
 
 echo "== start panel (runs migrations) =="
@@ -47,13 +47,20 @@ docker compose exec -T postgres psql -U akari -d akari -c "TRUNCATE revoked_cert
 docker compose exec -T valkey valkey-cli flushall >/dev/null
 
 echo "== first admin (env password) =="
-AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" admin add root
+AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" admin add root | tee "$LOG/admin-add.out"
+# M1c: the one-time 2FA enrollment code (required for the first TOTP
+# activation, so a leaked password alone cannot enroll an authenticator).
+ENROLL_CODE=$(grep -E '^  [A-Z2-7]{4}(-[A-Z2-7]{1,4})+$' "$LOG/admin-add.out" | tr -d ' ')
+[ -n "$ENROLL_CODE" ] || { echo "FAIL: admin add printed no 2FA enrollment code"; exit 1; }
 AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" admin add root 2>&1 | grep -q "created admin account: root" \
   && { echo "FAIL: duplicate admin creation should error"; exit 1; } || echo "duplicate rejected: ok"
 
-echo "== register node =="
+echo "== register node (M1-8: key-less bootstrap with a one-time enrollment token) =="
 "$PANEL" node add test-node --out "$BOOT" >/dev/null
 NODE_ID=$("$PANEL" node list | awk 'NR==2{print $1}')
+grep -q 'PRIVATE KEY' "$BOOT" && { echo "FAIL: bootstrap file contains a private key"; exit 1; }
+grep -qE '^enrollment_token = "[A-Za-z0-9_-]{43}"$' "$BOOT" || { echo "FAIL: bootstrap file lacks the enrollment token"; exit 1; }
+[ "$(stat -c %a "$BOOT")" = "600" ] || { echo "FAIL: bootstrap file is not 0600"; exit 1; }
 
 PREFIX=$("$PANEL" info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')
 BASE="http://127.0.0.1:8080/$PREFIX"
@@ -131,8 +138,12 @@ PY
 totp() { python3 "$LOG/totp.py" "$TOTP_SECRET" "$LOG/totp.last"; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/me/totp/confirm" -H 'Content-Type: application/json' -d '{"code":"000000x"}')" = "400" ] \
   || { echo "FAIL: bad confirm code not 400"; exit 1; }
+CODE0=$(totp)
+# A valid TOTP code without the enrollment code (password-only attacker).
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/me/totp/confirm" -H 'Content-Type: application/json' \
+    -d "{\"code\":\"$CODE0\"}")" = "400" ] || { echo "FAIL: admin 2FA activated without the enrollment code"; exit 1; }
 [ "$(code -b "$JAR" -c "$JAR" -X POST "$BASE/api/v1/me/totp/confirm" -H 'Content-Type: application/json' \
-    -d "{\"code\":\"$(totp)\"}")" = "200" ] || { echo "FAIL: totp confirm"; cat /tmp/akari-smoke/last; exit 1; }
+    -d "{\"code\":\"$CODE0\",\"enrollment_code\":\"$ENROLL_CODE\"}")" = "200" ] || { echo "FAIL: totp confirm"; cat /tmp/akari-smoke/last; exit 1; }
 python3 -c "import json;print('\n'.join(json.load(open('/tmp/akari-smoke/last'))['recovery_codes']))" >"$LOG/recovery"
 [ "$(wc -l <"$LOG/recovery")" = "10" ] || { echo "FAIL: 10 recovery codes expected"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/users")" = "200" ] || { echo "FAIL: full session after enrollment"; exit 1; }
@@ -239,10 +250,18 @@ done
 echo "sub token + rate limit: ok"
 
 echo "== start agent: initial snapshot =="
-"$AGENT" -config "$BOOT" >"$LOG/agent.log" 2>&1 &
+"$AGENT" -config "$BOOT" -state-dir "$LOG/state-main" >"$LOG/agent.log" 2>&1 &
 AGENT_PID=$!
 sleep 6
+grep -q '"msg":"enrolled"' "$LOG/agent.log" || { echo "FAIL: agent did not enroll"; cat "$LOG/agent.log"; exit 1; }
 grep -q "channel established" "$LOG/agent.log" || { echo "FAIL: agent channel"; exit 1; }
+for f in identity.pem enrolled.token.sha256; do
+  [ "$(stat -c %a "$LOG/state-main/$f")" = "600" ] || { echo "FAIL: agent state file $f is not 0600"; exit 1; }
+done
+[ -e "$LOG/state-main/enroll.key.pem" ] && { echo "FAIL: enrollment key left behind"; exit 1; }
+TOKEN=$(sed -n 's/^enrollment_token = "\(.*\)"$/\1/p' "$BOOT")
+grep -qF "$TOKEN" "$LOG/agent.log" "$LOG/panel.log" && { echo "FAIL: enrollment token in a log"; exit 1; }
+grep -q 'PRIVATE KEY' "$LOG/agent.log" "$LOG/panel.log" && { echo "FAIL: key material in a log"; exit 1; }
 grep -q '"users":1' "$LOG/agent.log" || { echo "FAIL: initial snapshot without 1 user"; cat "$LOG/agent.log"; exit 1; }
 
 echo "== disable user: expect instant push =="
@@ -401,7 +420,7 @@ grep -q '"msg":"applying user delta"' "$LOG/agent.log" || { echo "FAIL: no user 
 echo "user delta: ok (no rebuild, session $SESSION_AFTER)"
 
 echo "== Sprint 3a: protocol + lease surfaced on the node =="
-[ "$(node_field agent_protocol)" = "1" ] || { echo "FAIL: agent_protocol $(node_field agent_protocol)"; exit 1; }
+[ "$(node_field agent_protocol)" = "2" ] || { echo "FAIL: agent_protocol $(node_field agent_protocol)"; exit 1; }
 LEASE=$(node_field lease_remaining_seconds)
 [ "$LEASE" != "null" ] && [ "$LEASE" -gt 80000 ] || { echo "FAIL: lease_remaining_seconds '$LEASE'"; exit 1; }
 echo "lease: ok (${LEASE}s left)"
@@ -461,7 +480,20 @@ mkdir -p "$OLD_SRC"
 if git -C "${AGENT_DIR:-../akari-agent}" archive 2b3e7e3 2>/dev/null | tar -x -C "$OLD_SRC" \
     && (cd "$OLD_SRC" && go build -o "$LOG/old-agent" . ) >"$LOG/old-build.log" 2>&1; then
   kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
-  "$LOG/old-agent" -config "$BOOT" >"$LOG/old-agent.log" 2>&1 &
+  # The old agent only reads v1 bootstrap files (key inside): build one from
+  # the enrolled identity — the same shape as pre-M1c bootstrap files.
+  python3 - "$BOOT" "$LOG/state-main/identity.pem" "$LOG/v1-bootstrap.toml" <<'PY'
+import re, sys
+boot, ident, out = open(sys.argv[1]).read(), open(sys.argv[2]).read(), sys.argv[3]
+key = re.search(r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----\n", ident, re.S).group(0)
+cert = re.search(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----\n", ident, re.S).group(0)
+head = "".join(l for l in boot.splitlines(True) if l.startswith(("panel_addr", "server_name")))
+q = "'" * 3
+ca = re.search(r"ca_pem = '{3}(.*?)'{3}", boot, re.S).group(1)
+open(out, "w").write(head + "\n[identity]\nca_pem = %s%s%s\ncert_pem = %s%s%s\nkey_pem = %s%s%s\n" % (q, ca, q, q, cert, q, q, key, q))
+PY
+  chmod 600 "$LOG/v1-bootstrap.toml"
+  "$LOG/old-agent" -config "$LOG/v1-bootstrap.toml" >"$LOG/old-agent.log" 2>&1 &
   AGENT_PID=$!
   for _ in $(seq 1 15); do node_field last_error | grep -q "agent too old" && break; sleep 1; done
   node_field last_error | grep -q "agent too old" || { echo "FAIL: too-old agent not flagged: $(node_field last_error)"; exit 1; }
@@ -471,7 +503,7 @@ if git -C "${AGENT_DIR:-../akari-agent}" archive 2b3e7e3 2>/dev/null | tar -x -C
     || { echo "FAIL: old agent did not get the empty state"; cat "$LOG/old-agent.log"; exit 1; }
   wait_port closed 10
   kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
-  "$AGENT" -config "$BOOT" >>"$LOG/agent.log" 2>&1 &
+  "$AGENT" -config "$BOOT" -state-dir "$LOG/state-main" >>"$LOG/agent.log" 2>&1 &
   AGENT_PID=$!
   for _ in $(seq 1 15); do [ "$(node_field last_error)" = "null" ] && break; sleep 1; done
   [ "$(node_field last_error)" = "null" ] || { echo "FAIL: too-old flag not cleared by a current agent"; exit 1; }
@@ -553,19 +585,112 @@ for _ in $(seq 1 20); do
   [ "$(psql_q "SELECT count(*) FROM nodes WHERE id='$SPARE_ID'")" = "0" ] && break; sleep 1
 done
 [ "$(psql_q "SELECT count(*) FROM nodes WHERE id='$SPARE_ID'")" = "0" ] || { echo "FAIL: CLI-deleted offline node not reaped"; exit 1; }
-[ "$(psql_q "SELECT count(*) FROM revoked_certs WHERE node_id='$SPARE_ID'")" = "1" ] || { echo "FAIL: CLI delete did not revoke"; exit 1; }
+# Never enrolled (pending, no certificate): nothing to revoke; its token died
+# with the row.
+[ "$(psql_q "SELECT count(*) FROM revoked_certs WHERE node_id='$SPARE_ID'")" = "0" ] || { echo "FAIL: pending node left a tombstone"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM node_enrollments WHERE node_id='$SPARE_ID'")" = "0" ] || { echo "FAIL: enrollment token outlived its node"; exit 1; }
 kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
 AGENT_PID=""
 echo "node delete: ok (empty state, revoked, closed; $COUNTERS_BEFORE billing rows kept)"
 
+echo "== M1-8 enrollment API, token reuse, certificate renewal (2nd instance, 60 s certificates) =="
+# Admin API: create a node -> one-time token + key-less bootstrap (201).
+[ "$(code -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' -d '{"name":"api-node"}')" = "401" ] \
+  || { echo "FAIL: anonymous node create"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' -d '{"name":"api-node"}')" = "201" ] \
+  || { echo "FAIL: API node create"; cat /tmp/akari-smoke/last; exit 1; }
+read -r API_NODE API_TOKEN < <(python3 -c "import json;d=json.load(open('/tmp/akari-smoke/last'));print(d['id'],d['enrollment_token'])")
+python3 -c "import json,sys;b=json.load(open('/tmp/akari-smoke/last'))['bootstrap'];sys.exit('PRIVATE KEY' in b or 'enrollment_token = \"$API_TOKEN\"' not in b)" \
+  || { echo "FAIL: API bootstrap"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' -d '{"name":"api-node"}')" = "409" ] \
+  || { echo "FAIL: duplicate node name not 409"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$API_NODE/enroll-token")" = "200" ] || { echo "FAIL: API enroll-token"; exit 1; }
+API_TOKEN2=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['enrollment_token'])")
+[ "$API_TOKEN2" != "$API_TOKEN" ] || { echo "FAIL: enroll-token reused the token"; exit 1; }
+code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
+python3 -c "
+import json; n=[x for x in json.load(open('/tmp/akari-smoke/last')) if x['id']=='$API_NODE'][0]
+assert n['enrolled'] is False and n['enroll_token_expires_at'] and n['cert_not_after'] is None, n" \
+  || { echo "FAIL: pending node view"; exit 1; }
+[ "$(psql_q "SELECT encode(token_hash,'hex') FROM node_enrollments WHERE node_id='$API_NODE'")" != "$API_TOKEN2" ] \
+  || { echo "FAIL: token stored in clear"; exit 1; }
+
+# Second panel instance (same DB/CA, multi-instance) issuing 60 s
+# certificates: its agent must renew within about a minute.
+cat >"$LOG/panel-b.toml" <<'TOML'
+[web]
+bind = "127.0.0.1:8081"
+cookie_secure = false
+[grpc]
+bind = "127.0.0.1:8444"
+advertise = "127.0.0.1:8444"
+[agent]
+cert_validity_secs = 60
+TOML
+"$PANEL" -c "$LOG/panel-b.toml" serve >"$LOG/panel-b.log" 2>&1 &
+PANEL_B=$!
+trap 'kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
+for _ in $(seq 1 20); do [ "$(code "http://127.0.0.1:8081/$PREFIX/healthz")" = "200" ] && break; sleep 0.5; done
+"$PANEL" -c "$LOG/panel-b.toml" node add renew-node --out "$LOG/renew-bootstrap.toml" >/dev/null
+RENEW_ID=$("$PANEL" node list | awk '$2=="renew-node"{print $1}')
+"$AGENT" -config "$LOG/renew-bootstrap.toml" -state-dir "$LOG/state-renew" >"$LOG/renew-agent.log" 2>&1 &
+AGENT_PID=$!
+for _ in $(seq 1 15); do grep -q "channel established" "$LOG/renew-agent.log" && break; sleep 1; done
+grep -q '"msg":"enrolled"' "$LOG/renew-agent.log" || { echo "FAIL: renew agent did not enroll"; cat "$LOG/renew-agent.log"; exit 1; }
+for _ in $(seq 1 10); do [ "$(psql_q "SELECT status FROM nodes WHERE id='$RENEW_ID'")" = "online" ] && break; sleep 1; done
+[ "$(psql_q "SELECT status FROM nodes WHERE id='$RENEW_ID'")" = "online" ] || { echo "FAIL: enrolled node not online"; exit 1; }
+FIRST_SERIAL=$(psql_q "SELECT cert_serial FROM nodes WHERE id='$RENEW_ID'")
+# The same (used) token on a fresh state dir: refused, the agent exits.
+REUSE_RC=0
+timeout 20 "$AGENT" -config "$LOG/renew-bootstrap.toml" -state-dir "$LOG/state-reuse" >"$LOG/reuse-agent.log" 2>&1 || REUSE_RC=$?
+[ "$REUSE_RC" = "1" ] && grep -q "enrollment refused" "$LOG/reuse-agent.log" \
+  || { echo "FAIL: reused enrollment token not refused (rc $REUSE_RC)"; cat "$LOG/reuse-agent.log"; exit 1; }
+[ "$(psql_q "SELECT cert_serial FROM nodes WHERE id='$RENEW_ID'")" = "$FIRST_SERIAL" ] || { echo "FAIL: refused enrollment changed the node"; exit 1; }
+# Renewal: < 1/3 of 75 s left -> Renew over mTLS, reconnect, promote; the
+# panel tombstones the first serial when it sees the new one.
+for _ in $(seq 1 90); do grep -q "renewed certificate accepted by the panel" "$LOG/renew-agent.log" && break; sleep 1; done
+grep -q "renewed certificate accepted by the panel" "$LOG/renew-agent.log" \
+  || { echo "FAIL: no certificate renewal"; tail -20 "$LOG/renew-agent.log"; exit 1; }
+for _ in $(seq 1 10); do
+  [ "$(psql_q "SELECT reason FROM revoked_certs WHERE cert_serial='$FIRST_SERIAL'")" = "rotated" ] && break; sleep 1
+done
+[ "$(psql_q "SELECT reason FROM revoked_certs WHERE cert_serial='$FIRST_SERIAL'")" = "rotated" ] \
+  || { echo "FAIL: renewed-from certificate not tombstoned"; exit 1; }
+[ "$(psql_q "SELECT cert_serial <> '$FIRST_SERIAL' AND cert_not_after > now() FROM nodes WHERE id='$RENEW_ID'")" = "t" ] \
+  || { echo "FAIL: node does not carry the renewed certificate"; exit 1; }
+for a in node.enroll node.cert.renew node.cert.rotated; do
+  [ "$(psql_q "SELECT count(*) > 0 FROM audit_log WHERE action='$a' AND actor_login='agent' AND target_id='$RENEW_ID'")" = "t" ] \
+    || { echo "FAIL: $a not audited"; exit 1; }
+done
+grep -q '"protocol":2' "$LOG/panel-b.log" || { echo "FAIL: agent does not speak protocol 2"; exit 1; }
+code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
+python3 -c "
+import json; n=[x for x in json.load(open('/tmp/akari-smoke/last')) if x['id']=='$RENEW_ID'][0]
+assert n['enrolled'] and n['cert_not_after'] and n['enroll_token_expires_at'] is None, n
+assert any('agent certificate expires' in w for w in n['warnings']), n['warnings']
+assert n['heartbeat'] is None or 'uptime_seconds' in n['heartbeat'], n['heartbeat']" \
+  || { echo "FAIL: enrolled node view"; exit 1; }
+for f in "$LOG"/state-renew/*; do
+  [ "$(stat -c %a "$f")" = "600" ] || { echo "FAIL: $f is not 0600"; exit 1; }
+done
+grep -q 'PRIVATE KEY' "$LOG/renew-agent.log" "$LOG/panel-b.log" && { echo "FAIL: key material in a log"; exit 1; }
+kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+AGENT_PID=""
+kill $PANEL_B 2>/dev/null; wait $PANEL_B 2>/dev/null || true
+PANEL_B=""
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$API_NODE")" = "202" ] || { echo "FAIL: delete api-node"; exit 1; }
+echo "enrollment + renewal: ok"
+
 echo "== M1-7 audit log: admin view lists the actions, no secrets =="
 [ "$(code -b "$JAR" "$BASE/api/v1/audit?limit=200")" = "200" ] || { echo "FAIL: audit list"; exit 1; }
 for a in user.create node.create node.set_inbounds node.update node.assign user.update user.delete \
-         user.totp.enable auth.login auth.login_failed user.sub_token.rotate node.delete; do
+         user.totp.enable auth.login auth.login_failed user.sub_token.rotate node.delete \
+         node.enroll_token node.enroll node.cert.renew node.cert.rotated; do
   grep -q "\"action\":\"$a\"" /tmp/akari-smoke/last || { echo "FAIL: audit lacks $a"; exit 1; }
 done
 grep -q '"actor_login":"cli"' /tmp/akari-smoke/last || { echo "FAIL: CLI actions not audited as cli"; exit 1; }
-for secret in "$ADMIN_PW" "$TOTP_SECRET" "$NEW_TOKEN" "$VLESS_A" "user-password-123" '$argon2'; do
+for secret in "$ADMIN_PW" "$TOTP_SECRET" "$NEW_TOKEN" "$VLESS_A" "user-password-123" '$argon2' \
+              "$ENROLL_CODE" "$TOKEN" "$API_TOKEN" "$API_TOKEN2"; do
   grep -qF -- "$secret" /tmp/akari-smoke/last && { echo "FAIL: audit log contains a secret"; exit 1; }
 done
 [ "$(code -b "$JAR" "$BASE/api/v1/audit?action=user.totp.&limit=5")" = "200" ] || { echo "FAIL: audit filter"; exit 1; }
@@ -603,7 +728,9 @@ echo "sessions: ok"
 
 echo "== M1-6/M1-9 CLI: reset-2fa, rotate-jwt =="
 [ "$(login_root "$(totp)")" = "200" ] || { echo "FAIL: TOTP login before reset"; exit 1; }
-"$PANEL" admin reset-2fa root | grep -q "reset" || { echo "FAIL: CLI reset-2fa"; exit 1; }
+"$PANEL" admin reset-2fa root >"$LOG/reset.out"
+grep -q "reset" "$LOG/reset.out" || { echo "FAIL: CLI reset-2fa"; exit 1; }
+grep -qE '^  [A-Z2-7]{4}(-[A-Z2-7]{1,4})+$' "$LOG/reset.out" || { echo "FAIL: reset-2fa printed no new enrollment code"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: session survived reset-2fa"; exit 1; }
 [ "$(code -c "$JAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
     -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "200" ] && grep -q '"stage":"enroll"' /tmp/akari-smoke/last \
@@ -679,7 +806,7 @@ echo "spa: ok (asset $JS)"
 
 echo "== S4-3 SIGTERM: agent streams end, final flush, clean exit =="
 "$PANEL" node add term-node --out "$LOG/term-bootstrap.toml" >/dev/null
-"$AGENT" -config "$LOG/term-bootstrap.toml" >"$LOG/term-agent.log" 2>&1 &
+"$AGENT" -config "$LOG/term-bootstrap.toml" -state-dir "$LOG/state-term" >"$LOG/term-agent.log" 2>&1 &
 AGENT_PID=$!
 for _ in $(seq 1 15); do grep -q "channel established" "$LOG/term-agent.log" && break; sleep 1; done
 grep -q "channel established" "$LOG/term-agent.log" || { echo "FAIL: term agent never connected"; exit 1; }

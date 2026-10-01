@@ -38,9 +38,16 @@ function RecoveryCodes({ codes, onAck }: { codes: string[]; onAck: () => void })
 // Enrollment: generate a secret (shown once), confirm with a current code.
 // On success the server ends the account's other sessions and gives this
 // one a full session cookie.
-export function TotpEnroll({ onDone }: { onDone: () => void }) {
+export function TotpEnroll({
+  onDone,
+  needsEnrollCode = false,
+}: {
+  onDone: () => void;
+  needsEnrollCode?: boolean;
+}) {
   const [enrollment, setEnrollment] = useState<TotpEnrollment | null>(null);
   const [code, setCode] = useState("");
+  const [enrollCode, setEnrollCode] = useState("");
   const [codes, setCodes] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -63,7 +70,9 @@ export function TotpEnroll({ onDone }: { onDone: () => void }) {
     setError(null);
     setBusy(true);
     try {
-      const res = await post<{ recovery_codes: string[] }>("/me/totp/confirm", { code: code.trim() });
+      const body: Record<string, string> = { code: code.trim() };
+      if (needsEnrollCode) body.enrollment_code = enrollCode.trim();
+      const res = await post<{ recovery_codes: string[] }>("/me/totp/confirm", body);
       setEnrollment(null);
       setCodes(res.recovery_codes);
     } catch (err) {
@@ -107,6 +116,23 @@ export function TotpEnroll({ onDone }: { onDone: () => void }) {
               required
             />
           </div>
+          {needsEnrollCode && (
+            <div className="space-y-1.5">
+              <Label htmlFor="totp-enroll-code">Enrollment code</Label>
+              <Input
+                id="totp-enroll-code"
+                autoComplete="off"
+                placeholder="XXXX-XXXX-…"
+                value={enrollCode}
+                onChange={(e) => setEnrollCode(e.target.value)}
+                required
+              />
+              <p className="text-xs text-muted-foreground">
+                The one-time code from <code>akari admin add</code> / <code>admin reset-2fa</code> (or
+                from the administrator who reset your 2FA).
+              </p>
+            </div>
+          )}
           <div className="flex gap-2">
             <Button type="submit" disabled={busy}>
               Activate
@@ -138,6 +164,7 @@ export function EnrollPage({ status, onLogout }: { status: TotpStatus; onLogout:
         </CardHeader>
         <CardContent className="space-y-4">
           <TotpEnroll
+            needsEnrollCode={status.enroll_code_required}
             onDone={async () => {
               await queryClient.resetQueries({ queryKey: ["totp"] });
               await queryClient.resetQueries({ queryKey: ["me"] });
@@ -186,7 +213,10 @@ export function TwoFactorCard() {
       </CardHeader>
       <CardContent className="space-y-4">
         {s && !s.enabled && (
-          <TotpEnroll onDone={() => queryClient.invalidateQueries({ queryKey: ["totp"] })} />
+          <TotpEnroll
+            needsEnrollCode={s.enroll_code_required}
+            onDone={() => queryClient.invalidateQueries({ queryKey: ["totp"] })}
+          />
         )}
         {s?.enabled &&
           (codes ? (
