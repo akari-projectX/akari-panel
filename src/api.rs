@@ -1275,7 +1275,7 @@ pub struct HeartbeatMetricsSummary {
     online_users: u64,
 }
 
-const NODE_SUMMARY_COLS: &str = "nodes.id, name, display_name, enabled, status, \
+pub const NODE_SUMMARY_COLS: &str = "nodes.id, name, display_name, enabled, status, \
      (nodes.status = 'online' AND nodes.last_seen_at > now() - interval '90 seconds') AS online, \
      deleting_at, region, server_addr, agent_version, agent_os, agent_arch, agent_protocol, \
      ro.update_status, lease_expires_at, cert_serial IS NOT NULL AS enrolled, cert_not_after, \
@@ -1288,7 +1288,7 @@ const NODE_SUMMARY_COLS: &str = "nodes.id, name, display_name, enabled, status, 
         WHERE nu.node_id = nodes.id AND p.speed_limit_mbps IS NOT NULL) \
         ELSE false END AS unenforced_speed_limits";
 
-const NODE_SUMMARY_FROM: &str = "FROM nodes \
+pub const NODE_SUMMARY_FROM: &str = "FROM nodes \
      LEFT JOIN node_enrollments enr ON enr.node_id = nodes.id \
         AND enr.used_at IS NULL AND enr.expires_at > now() \
      LEFT JOIN (SELECT DISTINCT ON (l.node_id) l.node_id, jsonb_build_object('source', l.source, \
