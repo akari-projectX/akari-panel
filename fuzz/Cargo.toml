@@ -18,6 +18,7 @@ cargo-fuzz = true
 [dependencies]
 akari-panel = { path = ".." }
 base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 form_urlencoded = "1"
 http = "1"
 libfuzzer-sys = "0.4"
@@ -114,6 +115,13 @@ bench = false
 [[bin]]
 name = "signup"
 path = "fuzz_targets/signup.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "support_input"
+path = "fuzz_targets/support_input.rs"
 test = false
 doc = false
 bench = false
