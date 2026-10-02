@@ -183,7 +183,8 @@ try:
         time.sleep(1)
     else:
         fail(f"panel does not show a valid certificate: {cert}")
-    if cert["domain"] != DOMAIN or not cert["not_after"] or cert["challenge"] != "http-01" or n["warnings"]:
+    warnings = [w for w in n["warnings"] if "akari-agent-update" not in w]  # W18 updater hint
+    if cert["domain"] != DOMAIN or not cert["not_after"] or cert["challenge"] != "http-01" or warnings:
         fail(f"certificate status: {cert} warnings={n['warnings']}")
     if n["agent_protocol"] < 6 or n["agent_addr"] != "127.0.0.1":
         fail(f"agent protocol/address: {n['agent_protocol']} {n['agent_addr']}")
