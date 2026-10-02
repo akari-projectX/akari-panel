@@ -207,6 +207,17 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         )),
     )
     .await?;
+    explain(
+        &mut tx,
+        p,
+        "api::list_nodes (view=summary, W17)",
+        q!(format!(
+            "SELECT {} {} ORDER BY sort, nodes.created_at, nodes.id",
+            api::NODE_SUMMARY_COLS,
+            api::NODE_SUMMARY_FROM
+        )),
+    )
+    .await?;
     let audit =
         "SELECT id, at, actor_id, actor_login, ip, action, target_type, target_id, before, after \
                  FROM audit_log WHERE true";

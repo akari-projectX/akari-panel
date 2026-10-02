@@ -49,6 +49,8 @@ enum Scenario {
     UsersDeepPage,
     UserPatch,
     Nodes,
+    NodesSummary,
+    NodesEtag,
     AuditFirstPage,
     AuditDeepPage,
     AuditActionPrefix,
@@ -58,13 +60,15 @@ enum Scenario {
 }
 
 impl Scenario {
-    const ALL: [Scenario; 12] = [
+    const ALL: [Scenario; 14] = [
         Scenario::Healthz,
         Scenario::Me,
         Scenario::UsersFirstPage,
         Scenario::UsersDeepPage,
         Scenario::UserPatch,
         Scenario::Nodes,
+        Scenario::NodesSummary,
+        Scenario::NodesEtag,
         Scenario::AuditFirstPage,
         Scenario::AuditDeepPage,
         Scenario::AuditActionPrefix,
@@ -81,6 +85,10 @@ impl Scenario {
             Scenario::UsersDeepPage => "users_deep",
             Scenario::UserPatch => "user_patch",
             Scenario::Nodes => "nodes",
+            // W17: the console's list (summary view), cold and revalidated
+            // (If-None-Match with the last ETag, as the browser does).
+            Scenario::NodesSummary => "nodes_summary",
+            Scenario::NodesEtag => "nodes_etag",
             Scenario::AuditFirstPage => "audit_page1",
             Scenario::AuditDeepPage => "audit_deep",
             Scenario::AuditActionPrefix => "audit_prefix",
@@ -99,6 +107,8 @@ struct Ctx {
     users: usize,
     user_ids: Vec<Uuid>,
     max_audit_id: i64,
+    /// W17: the last ETag of the summary list (nodes_etag).
+    etag: std::sync::Mutex<String>,
 }
 
 impl Ctx {
@@ -168,6 +178,7 @@ pub async fn run(args: HttpArgs) -> Result<()> {
         users: args.users,
         user_ids,
         max_audit_id,
+        etag: std::sync::Mutex::new(String::new()),
     });
     pg.close().await;
     let selected: Vec<Scenario> = if args.only.is_empty() {
@@ -285,6 +296,11 @@ async fn request(ctx: &Ctx, s: Scenario, i: usize) -> bool {
                     }))
             }
             Scenario::Nodes => admin("nodes".into()),
+            Scenario::NodesSummary => admin("nodes?view=summary".into()),
+            Scenario::NodesEtag => {
+                let tag = ctx.etag.lock().map(|t| t.clone()).unwrap_or_default();
+                admin("nodes?view=summary".into()).header(reqwest::header::IF_NONE_MATCH, tag)
+            }
             Scenario::AuditFirstPage => admin("audit?limit=50".into()),
             Scenario::AuditDeepPage => admin(format!(
                 "audit?limit=50&before={}",
@@ -316,6 +332,16 @@ async fn request(ctx: &Ctx, s: Scenario, i: usize) -> bool {
     };
     match req.send().await {
         Ok(r) => {
+            if matches!(s, Scenario::NodesEtag) {
+                if let Some(t) = r.headers().get(reqwest::header::ETAG) {
+                    if let (Ok(mut slot), Ok(t)) = (ctx.etag.lock(), t.to_str()) {
+                        *slot = t.to_string();
+                    }
+                }
+                let ok = r.status().is_success() || r.status() == reqwest::StatusCode::NOT_MODIFIED;
+                let _ = r.bytes().await;
+                return ok;
+            }
             let ok = r.status().is_success();
             // Read the body: the latency includes the full response.
             let _ = r.bytes().await;
