@@ -103,3 +103,9 @@ path = "fuzz_targets/json_bodies.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "billing_input"
+path = "fuzz_targets/billing_input.rs"
+test = false
+doc = false
