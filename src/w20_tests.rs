@@ -99,7 +99,7 @@ async fn subscription_link_is_stored_encrypted_and_retrievable() {
     })
     .await;
     let (id, login) = user_with_password(&db).await;
-    let mut c = signed_in(&state, &login).await;
+    let c = signed_in(&state, &login).await;
     assert_eq!(stored(&db, id).await, (None, None));
 
     let me = c.get("/test/api/v1/me").await;
@@ -255,7 +255,7 @@ async fn legacy_tokens_are_kept_and_guarded() {
         .execute(&db.pool)
         .await
         .unwrap();
-    let mut c = signed_in(&state, &login).await;
+    let c = signed_in(&state, &login).await;
     let me = c.get("/test/api/v1/me").await.json();
     assert_eq!(me["sub_legacy"], true);
     assert!(me["sub_token"].is_null() && me["sub_url"].is_null());
