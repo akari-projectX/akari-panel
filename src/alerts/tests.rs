@@ -800,7 +800,15 @@ async fn delivery_telegram_retry_dead_exclusive() {
         .await;
     assert_eq!(r.status, StatusCode::CONFLICT);
     tg.set(200, r#"{"ok":true}"#);
-    assert_eq!(channels::deliver_due(&state).await.unwrap(), 1);
+    channels::deliver_due(&state).await.unwrap();
+    let (status, attempts, err): (String, i32, Option<String>) = sqlx::query_as(
+        "SELECT status, attempts, last_error FROM alert_notifications WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(status, "sent", "attempts {attempts}, last error {err:?}");
     let list = admin.get("/test/api/v1/alerts/notifications").await.json();
     assert_eq!(list.as_array().unwrap().len(), 12);
     drop((state, other));

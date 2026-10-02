@@ -1733,8 +1733,20 @@ matches -F 'xray_inbounds' </tmp/akari-smoke/last && { echo "FAIL: summary carri
 SUM_BYTES=$(wc -c </tmp/akari-smoke/last)
 [ "$(code -b "$JAR" "$BASE/api/v1/nodes")" = "200" ] && [ "$(wc -c </tmp/akari-smoke/last)" -gt "$SUM_BYTES" ] \
   || { echo "FAIL: full list"; exit 1; }
-[ "$(code -b "$JAR" -H "If-None-Match: $ETAG" "$BASE/api/v1/nodes?view=summary")" = "304" ] && [ ! -s /tmp/akari-smoke/last ] \
-  || { echo "FAIL: If-None-Match not answered with an empty 304"; exit 1; }
+# The agent here heartbeats every 2 s (the list changes with it): revalidate
+# right after fetching, a few times, until the body held still in between.
+GOT304=""
+for _ in $(seq 1 10); do
+  code -D "$LOG/sum.h" -b "$JAR" "$BASE/api/v1/nodes?view=summary" >/dev/null
+  ETAG=$(tr -d '\r' <"$LOG/sum.h" | awk -F': ' 'tolower($1)=="etag"{print $2}')
+  if [ "$(code -b "$JAR" -H "If-None-Match: $ETAG" "$BASE/api/v1/nodes?view=summary")" = "304" ]; then
+    [ ! -s /tmp/akari-smoke/last ] || { echo "FAIL: 304 with a body"; exit 1; }
+    GOT304=1; break
+  fi
+done
+[ -n "$GOT304" ] || { echo "FAIL: If-None-Match never answered with 304"; exit 1; }
+[ "$(code -b "$JAR" -H 'If-None-Match: "stale"' "$BASE/api/v1/nodes?view=summary")" = "200" ] \
+  || { echo "FAIL: a stale ETag did not get the body"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID")" = "200" ] && matches -F 'xray_inbounds' </tmp/akari-smoke/last \
   || { echo "FAIL: GET /nodes/{id}"; exit 1; }
 echo "summary view: ok ($SUM_BYTES bytes, 304 on revalidation)"
