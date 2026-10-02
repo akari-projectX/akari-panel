@@ -144,27 +144,63 @@ Release maintainers refresh `src/cloudflare_ips.txt` from the same URLs (the uni
 
 ## A. Docker Compose
 
+Commands run as root on the panel host. This section, §2, §2b, §3 and §3g take a clean Debian 13
+machine to a user's proxied connection through a new node (timed drill: §3c).
+
 ```bash
-git clone https://github.com/akari-projectX/akari-panel && cd akari-panel/deploy
-cp .env.example .env                                   # AKARI_VERSION, AKARI_DOMAIN
+# 0. Docker Engine + compose v2 (Debian 13 packages; Docker's own apt repository works the same)
+apt-get update && apt-get install -y docker.io docker-compose git
+docker compose version                                 # v2.x
+
+# 1. the deploy files of the release you install (the tag matches the image in step 3)
+git clone -b v0.2.0 https://github.com/akari-projectX/akari-panel /opt/akari-panel
+cd /opt/akari-panel/deploy
+cp .env.example .env
 for f in env/*.example; do cp "$f" "${f%.example}"; done
-chmod 600 env/*.env                                    # set the 3 passwords (db, valkey; same value in panel.env)
-cp panel.toml.compose.example panel.toml               # replace panel.example.com
-docker compose run --rm panel config check             # must say "configuration OK"
+chmod 600 env/*.env
+
+# 2. passwords (database, Valkey): random, the same value in panel.env and the service's file
+DBPW=$(tr -dc a-z0-9 </dev/urandom | head -c 32); VKPW=$(tr -dc a-z0-9 </dev/urandom | head -c 32)
+sed -i "s/CHANGE-ME-db/$DBPW/" env/panel.env env/postgres.env
+sed -i "s/CHANGE-ME-valkey/$VKPW/" env/panel.env env/valkey.env
+
+# 3. your domain, and the image: the tag@digest line from the release notes, verified first
+#    ("Verify a release" below)
+cp panel.toml.compose.example panel.toml
+sed -i 's/panel.example.com/panel.yourdomain.com/g' panel.toml .env
+sed -i 's|^AKARI_IMAGE=.*|AKARI_IMAGE=ghcr.io/akari-projectx/akari-panel:0.2.0@sha256:<digest>|' .env
+
+# 4. check, start, read the route prefix
+docker compose run --rm panel config check             # last line: "configuration OK (0 warnings)"
 docker compose up -d postgres valkey panel
-docker compose exec panel /akari info                  # prints the route prefix
+docker compose exec panel /akari info                  # route prefix: /<prefix>
+sed -i "s|^AKARI_PREFIX=.*|AKARI_PREFIX=<prefix without the slash>|" .env
+docker compose up -d                                   # Caddy: certificate, forwards /<prefix>/* only
+curl -s -o /dev/null -w '%{http_code}\n' https://panel.yourdomain.com/<prefix>/healthz   # 200
 ```
 
 The compose file sets `AKARI_CONFIG=/etc/akari/panel.toml` on the panel service, so every
 `/akari ...` you run through `docker compose run` or `exec` reads your `panel.toml` (these
 commands replace the service's `command:`, which is why the path is an environment variable and
-not a `-c` flag). `config check` prints the effective values: confirm they are yours (your
-`grpc.advertise`, not `127.0.0.1`). The image itself sets no default `AKARI_CONFIG`: a bare
-`docker run` of it uses built-in defaults. Outside compose use `-c <file>` or export `AKARI_CONFIG`.
+not a `-c` flag). `config check` prints the effective values (confirm they are yours: your
+`grpc.advertise`, not `127.0.0.1`) and then `configuration OK`. On a fresh install its output also
+ends with `# 系统设置: database not readable (... relation "panel_settings" does not exist ...)`:
+the database is still empty; that line disappears once the panel has started. The image itself
+sets no default `AKARI_CONFIG`: a bare `docker run` of it uses built-in defaults. Outside compose
+use `-c <file>` or export `AKARI_CONFIG`.
 
-Put the prefix (without the slash) into `.env` as `AKARI_PREFIX`, then `docker compose up -d`
-(starts Caddy, which obtains the certificate and forwards only `/<prefix>/*`; domains added later
-in 系统设置 get theirs on demand, §1b).
+Caddy obtains the certificate for `AKARI_DOMAIN` at its first start (`docker compose logs caddy`:
+"certificate obtained successfully"; the DNS record must already point at the host and ports
+80/443 must be open); domains added later in 系统设置 get theirs on demand (§1b).
+
+**A name without public DNS** (a test or LAN name such as `myapp.test`): Let's Encrypt cannot
+issue for it (`rejectedIdentifier` in Caddy's log). Set `AKARI_CADDY_OPTIONS=local_certs` in `.env`
+and `docker compose up -d --force-recreate caddy`: every certificate then comes from Caddy's
+internal CA (as for an IP, below). The node installer pins that certificate (§3): the panel
+probes its own address for it, so the panel container must resolve the name too (your LAN DNS,
+or a `docker-compose.override.yml` with `services: {panel: {extra_hosts: ["myapp.test:<host IP>"]}}`);
+when it cannot, the install command comes with the warning "could not check the TLS certificate"
+and fails on the node with a certificate error.
 
 **IP-only deployments (no domain).** With `AKARI_DOMAIN` set to an IP address, Caddy issues the
 certificate from its own internal CA, which no browser or client trusts. That is fine to try the
@@ -240,6 +276,14 @@ require_admin_2fa = true   # default false
 — an admin without 2FA then only gets a 15-minute setup session at login. Lost authenticator and
 recovery codes: `akari admin reset-2fa <login>` (or another admin: 用户 → 管理 → 重置两步验证); the
 account then logs in with its password and can set 2FA up again.
+
+## 2b. 系统设置 (main domain)
+
+In the console, **系统设置**: set **主域名** to the name you deployed with (`panel.yourdomain.com`)
+and save. Install links, subscription URLs and payment callbacks are then built from it instead of
+from whatever address a browser happened to use, and the Host check (§1b) turns on: requests for
+any other name get the empty 404. A subscription domain (for Cloudflare) and a node communication
+domain are optional (§1b).
 
 ## 3. Add a node and install the agent
 
@@ -413,6 +457,27 @@ first renewal it moves onto a key generated on the node and the panel revokes th
 panel-generated one. Then delete `cert_pem`/`key_pem` from `/etc/akari-agent/bootstrap.toml`. To
 migrate at once instead of at renewal time, issue a new enrollment token for the node and install
 that bootstrap file.
+
+## 3g. First user: node group, plan, subscription
+
+Access is granted by plan (M3): a user with an active plan may use every node in the plan's node
+groups; nodes, groups and plans can change later and every node converges by itself.
+
+1. **套餐 → 新建节点组**: name it, tick the node(s).
+2. **套餐 → 新建套餐**: traffic quota, reset period (monthly …), optional speed limit;
+   tick the node group (expiry is set per user when assigning, or by the shop period). Prices only
+   matter for the shop (docs/PAYMENTS.md).
+3. **用户 → 新建用户**: login and password, then **分配套餐** on the user. The node receives the
+   user within a second or two (`POST /api/v1/users`, `PUT /api/v1/users/{id}/plan
+   {"plan_id": …}`).
+4. The user logs in at `https://panel.yourdomain.com/<prefix>/app` and copies **订阅链接** (the
+   admin sees the same URL on the user, `sub_url`). The link serves the format the client asks
+   for by its User-Agent: Clash/mihomo YAML, sing-box JSON, or base64 share links (v2rayN,
+   Shadowrocket, …); quota and expiry travel in `subscription-userinfo`.
+5. Import the link in the client and connect. Usage shows up on the user within about 15 s
+   (agent report every 10 s, flush every 5 s).
+
+**重新生成订阅令牌** invalidates the old link at once (the user can do it in the portal too).
 
 ## 3b. REALITY inbounds
 
@@ -655,6 +720,33 @@ One real deployment on a 1 vCPU-class VPS with 920 MB RAM (Debian 13, compose, I
 memory at idle: panel 5 MB, PostgreSQL 56 MB, Valkey 8 MB, Caddy 17 MB, agent 27 MB. The whole
 stack plus an agent fits a 1 GB machine with room to spare. The first full deployment from this
 guide took about 23 minutes including troubleshooting.
+
+**Timed fresh-deploy drill (2026-10-02, W14).** Clean Debian 13 machines (systemd containers: a
+panel host with Docker installed from Debian's packages, a node, a client), §A → §2 → §2b → §3 →
+§3g followed literally, the image pulled by digest from a registry (a stand-in for ghcr.io before
+the first release), `myapp.test` with `AKARI_CADDY_OPTIONS=local_certs`. Machine time per step;
+"reading and typing" is an estimate for a person doing the same by hand and in the console.
+
+| Step | Machine | Reading and typing |
+|---|---|---|
+| 0. install Docker + git (`apt-get`) | 22 s | 2 min |
+| 1–3. clone, env files, passwords, domain, image line | 2 s | 6 min |
+| 4. `config check` (pulls panel, PostgreSQL, Valkey images) | 39 s | 1 min |
+| 4. `up -d postgres valkey panel`, `akari info`, prefix into `.env` | 4 s | 1 min |
+| 4. `up -d` (Caddy pull + certificate), `/healthz` 200 | 49 s | 2 min |
+| §2 first admin, log in | 1 s | 2 min |
+| §2b 主域名 | 1 s | 1 min |
+| §3 新建节点 (REALITY template) → pinned install command | 1 s | 3 min |
+| §3 install command on the node → SUCCESS, node online | 7 s | 2 min |
+| §3g node group, plan, user, assign plan | 1 s | 4 min |
+| §3g subscription into a client (xray 26.3.27), connect, usage billed | 5 s + 15 s | 3 min |
+| **Total** | **~2.5 min** | **~27 min** |
+
+Through the node the client fetched `https://www.gstatic.com/generate_204` (204) and 5 MB, which
+appeared on the user as 5.02 MB within 15 s. Gaps the drill found are fixed in this section (Docker
+install, password/domain/prefix commands, the `config check` notice on an empty database, names
+without public DNS, §2b, §3g) and in the compose file (Debian's compose 2.26 rejected a nested
+`${VAR:?}`).
 
 ## 4. Observability (optional)
 
