@@ -542,21 +542,21 @@ async fn session(
             }
             _ = hb.tick() => {
                 send(UpMsg::Heartbeat(Heartbeat {
-                    cpu_percent: 1.0,
-                    mem_used_bytes: 1 << 28,
-                    mem_total_bytes: 1 << 32,
+                    cpu_percent: Some(1.0),
+                    mem_used_bytes: Some(1 << 28),
+                    mem_total_bytes: Some(1 << 32),
                     connections: 100,
                     uptime_seconds: started.elapsed().as_secs(),
                     lease_remaining_seconds: None,
                     // W11: exercises the metrics history path (one upsert
                     // per node per heartbeat, MIN_SAMPLE_GAP-throttled).
                     metrics: Some(akari_panel::gen::NodeMetrics {
-                        load1: 0.5,
-                        cpu_count: 2,
+                        load1: Some(0.5),
+                        cpu_count: Some(2),
                         net_interface: "eth0".into(),
-                        net_rx_bytes_per_sec: 1 << 20,
-                        net_tx_bytes_per_sec: 1 << 20,
-                        tcp_sockets: 100,
+                        net_rx_bytes_per_sec: Some(1 << 20),
+                        net_tx_bytes_per_sec: Some(1 << 20),
+                        tcp_sockets: Some(100),
                         online_users: 50,
                         ..Default::default()
                     }),
