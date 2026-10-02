@@ -2116,6 +2116,9 @@ fi
 echo "r18-2 node install: ok"
 
 echo "== R22 系统设置: domains, Caddy on-demand ask, host gate, node domain + hot-swapped gRPC certificate =="
+# Earlier sections (W15) may have audited settings changes of their own.
+R22_AUDIT0=$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.update'")
+R22_CLI0=$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.update' AND actor_login = 'cli'")
 # An agent enrolled BEFORE the change (bootstrap server_name = panel.toml's
 # grpc.server_name, "localhost"): it must keep connecting afterwards.
 "$PANEL" node add r22-old --out "$LOG/r22-old.toml" >/dev/null
@@ -2155,7 +2158,7 @@ assert v["node"]["panel_addr"] == "grpc.akari.test:8443" and v["node"]["server_n
 assert v["trust_cloudflare"]["effective"] is True and v["host_gate"] is True and v["ask_enabled"] is True
 assert "grpc.akari.test" in v["certificate_names"] and "localhost" in v["certificate_names"], v["certificate_names"]
 PY
-[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.update'")" = "1" ] || { echo "FAIL: settings change not audited"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.update'")" = "$((R22_AUDIT0 + 1))" ] || { echo "FAIL: settings change not audited"; exit 1; }
 
 # Caddy on-demand TLS ask endpoint (own listener, never the web port).
 ASK=http://127.0.0.1:8092/ask
@@ -2294,7 +2297,7 @@ eval "$PREV_EXIT_TRAP"
 # CLI: show + unset (audited); the name history (certificate) stays.
 "$PANEL" settings show | matches 'node domain: *grpc.akari.test' || { echo "FAIL: settings show"; "$PANEL" settings show; exit 1; }
 "$PANEL" settings unset all >/dev/null || { echo "FAIL: settings unset"; exit 1; }
-[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.update' AND actor_login = 'cli'")" = "1" ] || { echo "FAIL: CLI unset not audited"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.update' AND actor_login = 'cli'")" = "$((R22_CLI0 + 1))" ] || { echo "FAIL: CLI unset not audited"; exit 1; }
 for _ in $(seq 1 20); do [ "$(code "$ASK?domain=myapp.test")" = "404" ] && break; sleep 0.25; done
 [ "$(code "$ASK?domain=myapp.test")" = "404" ] || { echo "FAIL: running panel did not pick up the CLI change"; exit 1; }
 [ "$(code -H 'Host: evil.test' "$BASE/healthz")" = "200" ] || { echo "FAIL: host gate still on after unset"; exit 1; }
