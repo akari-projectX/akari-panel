@@ -759,7 +759,8 @@ assert 'id' not in v[0] and 'server_addr' not in v[0], v
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"visible":false}')" = "200" ] || { echo "FAIL: hide node"; exit 1; }
 code -b "$DJAR" "$BASE/api/v1/me/nodes" >/dev/null
 [ "$(cat /tmp/akari-smoke/last)" = "[]" ] || { echo "FAIL: hidden node listed to the user"; exit 1; }
-curl -s --noproxy '*' -A 'clash.meta' "$BASE/sub/$SUB_D" | grep -q '冒烟' && { echo "FAIL: hidden node in subscription"; exit 1; }
+curl -s --noproxy '*' -A 'clash.meta' "$BASE/sub/$SUB_D" >"$LOG/w11-sub-hidden.yaml"
+grep -q '冒烟' "$LOG/w11-sub-hidden.yaml" && { echo "FAIL: hidden node in subscription"; exit 1; }
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"visible":true}')" = "200" ] || { echo "FAIL: show node"; exit 1; }
 echo "portal + subscription: ok"
 
@@ -781,8 +782,10 @@ assert v['traffic_rate'] == 0.5, v
   [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID/metrics?range=1h")" = "200" ] || { echo "FAIL: metrics API"; exit 1; }
   python3 -c "import json; v = json.load(open('/tmp/akari-smoke/last')); assert v['points'] and v['points'][0]['mem_total'] > 0, v" \
     || { echo "FAIL: no metrics history"; cat /tmp/akari-smoke/last; exit 1; }
-  curl -s --noproxy '*' http://127.0.0.1:9109/metrics | grep -q '^akari_fleet{kind="nodes_reporting"} 1$' \
-    || { echo "FAIL: fleet gauge"; curl -s --noproxy '*' http://127.0.0.1:9109/metrics | grep akari_fleet; exit 1; }
+  # (to a file: `curl | grep -q` fails under pipefail when grep exits first)
+  curl -s --noproxy '*' http://127.0.0.1:9109/metrics >"$LOG/w11-metrics.txt"
+  grep -q '^akari_fleet{kind="nodes_reporting"} 1$' "$LOG/w11-metrics.txt" \
+    || { echo "FAIL: fleet gauge"; grep akari_fleet "$LOG/w11-metrics.txt"; exit 1; }
   echo "machine status: ok"
   # Latency: "立即测速" -> the agent tests the (local) URL from [probe], the
   # panel TCP-tests the inbound's connect address; a second request inside
