@@ -122,13 +122,184 @@ quota (that is what the reset pack is for).
 - Manual mark-paid (support case, e.g. a payment proven out of band):
   same button on an unpaid order; `paid_via = manual`, reason stored and
   audited.
-- **Refunds are not supported** by the panel (do them in the Alipay
-  merchant console; cancel the plan by hand if needed).
+- **Refunds** of the Alipay amount happen in the Alipay merchant console;
+  the panel records them (W16, 订单 → 退款, see "Refunds (admin)" below),
+  returns the balance part and, if chosen, credits the amount to the
+  balance instead. Cancel the plan by hand if needed.
 - Expiry: the reconcile queries a pending order past `expires_at`; paid →
   fulfilled, otherwise `alipay.trade.close` (best effort) and the order
   becomes `expired`. While the gateway is unreachable the order stays
   pending and is retried; after 1 h it is expired anyway (`close_state =
   failed`; a later notify still fulfils it).
+
+## Coupons, balance, invite commission (W16, M7)
+
+Code: `src/billing/{coupons,ledger,commission}.rs`; migrations
+`0105_inviter.sql` … `0108_commissions.sql`; SPA: purchase page (coupon
+field, "pay with my balance"), portal `wallet.tsx` (余额 + 我的邀请), console
+`admin-coupons.tsx` (优惠券), `admin-finance.tsx` (资金), refund in
+`admin-orders.tsx`.
+
+### How the amount is split
+
+An order's list price (the period's price) is covered, **in this order**:
+
+```
+discount = coupon on the LIST price      percent: floor(list × p / 100); fixed: min(value, list)
+credit   = min(switch credit, list − discount)            excess forfeited (W7 rule)
+balance  = min(user's balance, list − discount − credit)  only when the buyer asks (use_balance)
+amount   = list − discount − credit − balance  ≥ 0        what Alipay is asked for
+```
+
+All of it is computed by the server in SQL (`akari_coupon_discount`,
+`akari_split`) at order creation and copied into the order
+(`discount_cents`, `coupon_id`/`coupon_code`, `credit_cents`,
+`balance_cents`, `amount_cents`); the `orders` CHECK enforces
+`amount = list − credit − discount − balance ≥ 0` for every row. The client
+sends `{plan_id, period, coupon?, use_balance?}` — never an amount — and the
+shop (`GET /me/shop?coupon=&use_balance=`) shows the same split beforehand.
+An amount of 0 is paid at creation through `apply_mark_paid` (`paid_via`
+`balance` when the balance took part, else `credit`, else `coupon`) and
+never reaches Alipay.
+
+Why this order: the coupon is a promotion on the advertised price
+("20% off ¥30" is ¥6 whatever the buyer's situation), so it is computed on
+the list price, independent of the credit; the switch credit is the buyer's
+own value and covers what is left; the balance, the buyer's money, is used
+last and only as far as needed. Nothing can turn negative: each part is
+capped at what is left, and the CHECK is the backstop.
+
+The commission base is **the Alipay amount only** (`amount_cents`): coupon,
+switch credit and balance parts earn nothing (no commission on commission
+paid back in, no commission on discounts).
+
+### Coupons
+
+| Field | Meaning |
+|---|---|
+| `code` | 3–32 of `[A-Za-z0-9_-]`, unique **case-insensitively**, entered in any case, immutable |
+| `kind`, `value` | `percent` 1–100 (% off the list price, floored to the fen) or `fixed` fen (capped at the list price) |
+| `plan_ids`, `periods` | scope; null = every plan / period kind (the reset pack included) |
+| `min_amount_cents` | the list price must be at least this |
+| `starts_at`, `ends_at` | validity window, DB clock (`ends_at` exclusive) |
+| `max_uses` | total uses (null = unlimited); `used` counts reservations of pending orders + redemptions |
+| `per_user_limit` | uses per buyer (pending orders count) |
+| `new_users_only` | only for buyers without any paid order yet |
+| `enabled` | off = "invalid coupon code" |
+
+**Reservation, race-free (decision)**: the use is **reserved at order
+creation and released when the order ends unpaid**, rather than counted at
+fulfilment. Counting at fulfilment would let two buyers pay for the last use
+and leave one of them paid at a price the coupon no longer allowed;
+reserving makes the last use go to exactly one buyer before anyone pays.
+Order creation takes `entitle::lock` (the lock apply_mark_paid starts
+with), then the coupon row `FOR UPDATE`, re-checks every rule under that
+lock (the per-user count after the lock, so a buyer racing herself is
+serialised too), then `UPDATE coupons SET used = used + 1 WHERE … AND (max_uses
+IS NULL OR used < max_uses)` and inserts `coupon_redemptions` (`reserved`)
+in the order's transaction; `CHECK (used <= max_uses)` is the backstop. N
+buyers racing for the last use: exactly one order is created with it, the
+others get 409 "coupon has been used up"
+(`billing::tests::w16::coupon_last_use_race_and_per_user_limit`).
+
+- An order that ends unpaid (cancel, a new order replacing it, expiry,
+  precreate failure) releases the reservation in the transaction that ends
+  it (`orders::release_holds`): `released`, `used − 1`.
+- A paid order redeems it inside `apply_mark_paid` (`redeemed`).
+- A **late payment** of an ended order (Alipay took the discounted amount)
+  re-reserves the use if one is free; if the coupon is used up by then the
+  payment is honoured anyway: `redeemed` with `over_limit = true` (not
+  counted; flagged in the order's `order.paid` audit row and the coupon's
+  redemptions for review).
+- A coupon that discounts 0 fen on a given order (1% of a few fen) is not
+  applied to it (no reservation).
+- Coupons used by any order cannot be deleted (409: disable them).
+- The shop preview with a code is rate-limited per user (30 / 10 min) against
+  code guessing; order creation has its own limit (20 / h).
+
+### Balance (余额)
+
+`user_balances.balance_cents` (materialised) changes **only** through an
+INSERT into the append-only `balance_ledger`: the ledger's trigger applies
+the amount under the balance row's lock and refuses a negative result
+(SQLSTATE `AK003` → 409 "insufficient balance"); a guard trigger refuses any
+other write of the column; ledger rows cannot be updated or deleted (only
+`user_id → NULL` when the user is deleted; `user_login` stays). So
+`balance = sum(ledger) ≥ 0` for every user, at every commit, whoever writes.
+Every movement is written by `ledger::apply_entry`: **one ledger row + one
+`balance.<kind>` audit row, in the transaction of its cause**.
+
+| kind | sign | when |
+|---|---|---|
+| `admin_adjust` | ± | 资金 → 用户余额 → 调整 (`POST /users/{id}/balance {amount_cents, reason}`), customers only |
+| `order_payment` | − | the balance part of an order, at creation (held); or re-taken by a late payment |
+| `refund_to_balance` | + | the held balance part of an order that ended unpaid; an admin refund to balance |
+| `commission` | + | an invite commission past its hold |
+| `withdrawal` | − | a withdrawal request (funds held until decided) |
+| `withdrawal_reversal` | + | a rejected or cancelled withdrawal |
+
+Paying with the balance (`use_balance: true`): as much of the remainder as
+the balance holds is debited when the order is created (`balance_state`
+`held`). If that covers it, the order is paid at once; otherwise Alipay is
+asked for the rest. When the order ends unpaid, the balance part goes back
+(`refunded`). A late payment of such an order re-takes it inside the
+fulfilment savepoint; if the balance no longer covers it the order stays
+**paid with `fulfil_error` "insufficient balance"** (never a negative
+balance): top the balance up and 重试开通, or refund.
+
+### Invite commission (邀请返利)
+
+Settings (资金 → 邀请返利设置, `PUT /commission-settings`, audited
+`commission.settings.update`): `enabled`, `rate_percent` (0–100),
+`first_order_only`, `hold_days` (0–365), `min_withdrawal_cents`.
+
+- Attribution: `users.inviter_id` (set at registration with an invite code —
+  W15; migration 0105 only guarantees the column and that it never expresses
+  a self-referral or a cycle, trigger `users_inviter_acyclic`, SQLSTATE
+  `AK002` → 409). Only customer (`role=user`) inviters earn.
+- When an invited customer's order is paid (inside `apply_mark_paid`, so
+  exactly once — `commissions.order_id` is UNIQUE too): if the programme is
+  enabled and the Alipay amount is > 0 (and, with `first_order_only`, it is
+  the invitee's first paid order with an Alipay amount), a **pending**
+  commission of `floor(amount_cents × rate / 100)` is created, available
+  `hold_days` after the payment. It is created even when fulfilment failed
+  (the money was received); a refund reverses it.
+- An enforce pass (every instance, every flush tick, `FOR UPDATE SKIP
+  LOCKED`, conditional on `pending`) credits due commissions to the
+  inviter's balance (ledger `commission`) exactly once
+  (`billing::tests::w16::commission_exactly_once_under_duplicates`). An
+  inviter deleted meanwhile → reversed.
+- An admin refund within the hold reverses the pending commission
+  (`commission.reverse`); after the hold it stays credited (the hold is the
+  refund window; claw back with an admin adjustment if needed).
+
+### Withdrawals (提现)
+
+Withdrawable = min(balance, credited commissions − withdrawals not rejected
+or cancelled): refunds and admin credits are spendable on plans, not cash.
+A request (`POST /me/withdrawals {amount_cents, method, account}`, at least
+`min_withdrawal_cents`, one open request per user) debits the amount at once
+(ledger `withdrawal`). The admin pays out by hand (Alipay/WeChat/bank) and
+then approves with the payout reference (资金 → 提现审核), or rejects with a
+reason (ledger `withdrawal_reversal`); the user may cancel while pending.
+Withdrawals of a deleted user can only be approved.
+
+### Refunds (admin)
+
+订单 → 详情 → 退款 (`POST /orders/{id}/refund {reason, to_balance}`), paid
+orders only, once: the held balance part always goes back to the balance;
+with `to_balance` the Alipay amount is credited to the balance too (one
+`refund_to_balance` row for both) — otherwise refund it in the Alipay
+merchant console. A pending commission is reversed. The plan is **not**
+touched (cancel it in 用户 if needed); a refunded order cannot be fulfilled
+again. Audited `order.refund`.
+
+### Lock order
+
+`entitle::lock` (order creation and `apply_mark_paid`) → `orders` row →
+`coupons` / `coupon_redemptions` → `commissions` → `user_balances` →
+`withdrawals`. The commission pass and withdrawals never take an earlier
+lock after a later one.
 
 ## Configuration
 
@@ -206,7 +377,11 @@ badly signed success is an error.
 `order.expire`, `order.paid` (actor `alipay` for notify/query, the admin
 for manual; includes the fulfilment result), `order.fulfil.retry`,
 `order.payment.rejected`, plus the plan change's own `user.plan.set` /
-`user.plan.update` row.
+`user.plan.update` row. W16: `order.refund`, `coupon.create` /
+`coupon.update` / `coupon.delete`, `commission.create` /
+`commission.reverse`, `commission.settings.update`,
+`withdrawal.approved` / `withdrawal.rejected` / `withdrawal.cancelled`, and
+one `balance.<kind>` row per ledger row (kind as in the ledger table).
 
 ## Reconciliation (operator)
 
@@ -272,6 +447,25 @@ gateway tests and smoke.
   notify + query, renew/replace with node bumps and notifications,
   failed fulfilment + admin retry + manual mark-paid, reconcile expiry and
   late payment, one open order per user, config validation, key file mode.
+- `billing::tests::w16` (real DB): SQL money functions vs their Rust
+  mirrors; coupon rules, preview, rounding, admin API; the last-use race and
+  per-user limit; release on expiry and late payment (over the limit); the
+  ledger invariants (triggers, append-only, concurrent spends never
+  overdraw); full/partial balance payment, refund on cancel/expiry, late
+  payment with the balance spent; refunds; commission lifecycle (pending →
+  credited by the enforce pass, first order only, reversed by a refund,
+  coupon/balance parts earn nothing, admin inviter, deleted inviter);
+  exactly once under duplicate notifies/queries and concurrent credit
+  passes; withdrawals; one ledger row + one audit row per money movement
+  (table-driven). `api::tests::every_access_change_bumps_affected_nodes`
+  has a balance-adjustment row (money moves, no node bump).
+- Fuzz target `billing_input` (docs/FUZZING.md).
+- `smoke.sh` "W16": coupon order paid by a signed notify, the coupon's last
+  use refused to another buyer, commission pending → credited after a SQL
+  time travel, withdrawal approve, balance-paid and partially balance-paid
+  orders (cancel returns the balance part), refund to balance, ledger
+  invariants in SQL. e2e "W16": console coupon + balance adjustment, user
+  buys with coupon + balance (paid without the gateway).
 - `smoke.sh` "R18-3": throwaway keys made with openssl, a Python mock
   gateway, price → order → tampered / wrong-amount notify = canonical
   rejection → signed notify → plan active → VLESS round trip through the
