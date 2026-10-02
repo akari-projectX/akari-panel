@@ -213,13 +213,14 @@ separate loopback listener, never on the public port.
 | PATCH/DELETE | /api/v1/node-groups/{id} | admin | rename, describe, replace `node_ids` / delete |
 | GET/POST | /api/v1/plans | admin | list / create `{name, period, traffic_quota_bytes?, speed_limit_mbps?, device_seats?, sort?, enabled?, group_ids?, description?, capacity?, renewal_only?, allow_switch_in?}` (views include `on_sale` and `prices`) |
 | PATCH/DELETE | /api/v1/plans/{id} | admin | update (same fields; null clears nullable ones) / delete (409 while users hold it) |
-| GET/POST | /api/v1/nodes | admin | node list with live status, certificate expiry, last heartbeat (W11: machine status, latency, multiplier, tags, groups), warnings / create a node `{name, region?, server_addr?, templates? \| inbounds?, install?: {origin?}, display_name?, sort?, visible?, tags?, traffic_rate?, connect_overrides?, group_ids?}` (201: one-time enrollment token + bootstrap file + one-line install command, shown once) |
+| GET/POST | /api/v1/nodes | admin | node list with live status, certificate expiry, last heartbeat (W11: machine status, latency, multiplier, tags, groups), warnings / create a node `{name, region?, server_addr?, tls_domain?, templates? \| inbounds?, install?: {origin?}, display_name?, sort?, visible?, tags?, traffic_rate?, connect_overrides?, group_ids?}` (201: one-time enrollment token + bootstrap file + one-line install command, shown once) |
 | POST | /api/v1/nodes/{id}/install | admin | new one-line install command `{origin?}` (re-install; replaces the node's unused token) |
 | GET | /api/v1/inbound-templates | admin | template choices (REALITY dests, fingerprints) |
-| POST | /api/v1/inbound-templates/render | admin | templates → xray inbounds JSON (fresh REALITY keys; nothing stored) |
+| POST | /api/v1/inbound-templates/render | admin | templates → xray inbounds JSON (fresh REALITY keys; nothing stored; `tls_domain` = the node's TLS domain, default certificate domain) |
+| POST | /api/v1/inbound-templates/check-domain | admin | `{domain, node_id?, server_addr?}` → what the domain resolves to vs. the node's addresses (warn-only pre-flight for 节点域名) |
 | POST | /api/v1/inbound-templates/check-dest | admin | TLS 1.3 + h2 check of a REALITY dest from the panel |
 | POST | /api/v1/nodes/{id}/enroll-token | admin | new one-time enrollment token + bootstrap file (re-enrollment) |
-| PATCH/DELETE | /api/v1/nodes/{id} | admin | enable / rename / billing cap override / W11 `display_name`, `sort`, `visible`, `tags`, `traffic_rate`, `connect_overrides`, `group_ids`; delete (202, revokes the certificate) |
+| PATCH/DELETE | /api/v1/nodes/{id} | admin | enable / rename / billing cap override / W11 `display_name`, `sort`, `visible`, `tags`, `traffic_rate`, `connect_overrides`, `group_ids`; delete (202, revokes the certificate); `tls_domain` = 节点域名: the agent obtains its certificate itself (change bumps config_version, DEPLOY §3f) |
 | GET | /api/v1/nodes/{id}/status | admin | W11: latest heartbeat + machine status, online, latency results, raw/billed traffic |
 | GET | /api/v1/nodes/{id}/metrics | admin | W11: history `?range=1h\|6h\|24h\|48h\|7d\|30d\|90d` (averages and maxima per point, ≤ 360 points) |
 | POST | /api/v1/nodes/{id}/probe | admin | W11: "立即测速" (202; 429 within `[probe].manual_cooldown_secs`) |

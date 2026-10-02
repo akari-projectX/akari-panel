@@ -886,7 +886,7 @@ pub async fn check_domain(
         .map(String::from);
     if let Some(id) = req.node_id {
         let row: Option<(Option<String>, Option<String>)> =
-            sqlx::query_as("SELECT agent_addr::text, server_addr FROM nodes WHERE id = $1")
+            sqlx::query_as("SELECT host(agent_addr), server_addr FROM nodes WHERE id = $1")
                 .bind(id)
                 .fetch_optional(state.pg())
                 .await?;
