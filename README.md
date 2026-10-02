@@ -247,15 +247,14 @@ trusted_proxies = ["127.0.0.1/32"]   # the proxy's address(es) as seen by the pa
   exit within ~10 s, inside `docker stop`'s default grace; with a
   process manager allow at least 15 s.
 
-### Security advisory GO-2026-6443 (xray gRPC transport)
+### Security advisory GO-2026-6443 (更正, R26)
 
-The agent's `google.golang.org/grpc` (< v1.85.0) panics on a request
-without `:authority`, and xray runs a grpc server for any inbound with
-`streamSettings.network = "grpc"` (alias `"gun"`), so any unauthenticated
-client could crash the agent. Until the agent ships the fixed grpc, `PUT
-/nodes/{id}/inbounds` refuses such inbounds (400, any case, Go-json key
-folding). Inbounds stored before this check are left as they are: the node
-list shows them under `warnings`; replace them with another transport.
+Earlier releases refused the xray gRPC transport because the agent's
+grpc-go (< v1.85.0) was listed under GO-2026-6443 (server panic on a
+request without `:authority`). The agent now pins grpc-go to the fixed
+upstream commit (`v1.85.0-dev.0.20260825072537-93e31b48545e`, to be replaced
+by v1.85.0 when tagged) and gRPC inbounds are accepted again; see
+docs/DEPLOY.md §3d for the protocol/transport matrix.
 
 Pinned versions: xray-core `v1.260327.0` (the Go module form of release
 v26.3.27 — Xray uses calendar tags, Go needs semver), axum 0.8, tonic 0.14,

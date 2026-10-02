@@ -154,10 +154,18 @@ address (IP or domain) and one or more inbounds from the protocol templates:
 
 | Template | Needs on the node | Notes |
 |---|---|---|
-| VLESS + REALITY (default) | nothing | the panel generates the X25519 key pair and a short id; `dest`/SNI from a list that works with the agent's xray (default `www.apple.com`, see §3b); **检测目标站点** runs a TLS 1.3 + h2 handshake from the panel |
+| VLESS + REALITY + Vision (default) | nothing | the panel generates the X25519 key pair and a short id; `dest`/SNI from a list that works with the agent's xray (default `www.apple.com`, see §3b); **检测目标站点** runs a TLS 1.3 + h2 handshake from the panel; Vision (`xtls-rprx-vision`) on unless unticked |
+| VLESS + REALITY + XHTTP | nothing | as above, XHTTP path/mode; no Vision (not raw TCP) |
+| VLESS + TCP + TLS + Vision | certificate | |
 | VLESS + WebSocket + TLS | certificate | WS path random unless set |
 | VMess + WebSocket | certificate only with TLS | plain WS without a domain |
+| VMess + TCP | nothing | plain VMess (AEAD, alterId 0) |
 | Trojan + TLS | certificate | |
+| 自选传输 (VLESS/VMess/Trojan × WS/HTTPUpgrade/XHTTP/gRPC) | certificate with TLS | TLS optional for VLESS/VMess over WS/HTTPUpgrade/XHTTP, required for Trojan and gRPC; path/Host/XHTTP mode/gRPC service name |
+| Shadowsocks 2022 | nothing | multi-user, `2022-blake3-aes-128-gcm` (default) or `-256-gcm`; server key generated; TCP+UDP |
+| Hysteria 2 | certificate | QUIC on UDP (may share the TCP port of another inbound) |
+
+Full matrix (what each client format can carry, what is refused and why): §3d.
 
 "Certificate" = the node's own certificate for the domain you enter, as
 `/etc/akari-agent/tls/fullchain.pem` and `privkey.pem` (certbot, acme.sh, …; root-only files are
@@ -166,7 +174,7 @@ dynamic user and cannot read `/etc` otherwise); after renewing it run `systemctl
 akari-agent`. The agent does not run ACME itself. A WS inbound behind the node's own reverse proxy
 or a CDN is not a template (subscriptions would advertise the inbound's local port): write that
 JSON by hand. **高级：直接编辑入站 JSON** shows/edits the generated JSON; both paths go through the
-same validation (no `grpc` transport, no `fakedns`).
+same validation (the §3d matrix, no `fakedns`).
 
 Creating the node shows a **one-line install command**, valid for `install.token_ttl_secs`
 (default 1 h) and only until the agent has enrolled with it:
@@ -357,10 +365,67 @@ otherwise (or for any other value) `chrome`.
 }
 ```
 
-`serverNames[0]` is the SNI clients send. Assign users to the inbound with protocol `vless`. The
-panel issues VLESS accounts with an empty `flow` (no Vision); subscriptions only carry
-`flow=xtls-rprx-vision` for an account whose stored credential has it, and neither the assign API
-nor the plan reconcile sets it yet.
+`serverNames[0]` is the SNI clients send. Users get the flow of the inbound's `settings.flow`
+(add `"flow": "xtls-rprx-vision"` to `settings` for Vision, as the template does); changing it
+later updates every user's credential (same id) and subscriptions follow.
+
+## 3d. Protocol / transport matrix (W8, agent xray-core v26.3.27)
+
+Every row was checked end to end: template → `validate_inbounds` → per-user credential →
+agent apply (gate revocation) → subscription in all three formats → a real client relaying
+traffic (`smoke.sh` W8 section: mihomo 1.19 and sing-box 1.12+ when available; the agent's
+`TestRT_ProtocolMatrix` canary with xray's own client, including billing and revocation).
+
+| Protocol | Transport | Security | Flow | Links (v2rayN/Shadowrocket) | Clash (mihomo) | sing-box |
+|---|---|---|---|---|---|---|
+| VLESS | raw TCP | REALITY | `xtls-rprx-vision` (default) or none | ✓ `flow=` | ✓ `flow:` | ✓ `flow` |
+| VLESS | raw TCP | TLS | `xtls-rprx-vision` or none | ✓ | ✓ | ✓ |
+| VLESS | XHTTP | REALITY / TLS / none | — | ✓ `type=xhttp&path&host&mode` | ✓ `network: xhttp` + `xhttp-opts` | ✗ left out (sing-box has no XHTTP) |
+| VLESS | gRPC | REALITY / TLS | — | ✓ `type=grpc&serviceName&mode=gun` | ✓ `grpc-opts` | ✓ `transport: grpc` |
+| VLESS | WebSocket | TLS / none | — | ✓ | ✓ | ✓ |
+| VLESS | HTTPUpgrade | TLS / none | — | ✓ `type=httpupgrade` | ✓ `ws-opts.v2ray-http-upgrade: true` | ✓ `transport: httpupgrade` |
+| VMess | raw TCP / WS / HTTPUpgrade / gRPC | TLS / none (gRPC: TLS) | — | ✓ (`aid 0`, `scy auto`) | ✓ (`alterId: 0`, `cipher: auto`) | ✓ |
+| VMess | XHTTP | TLS / none | — | ✓ | ✗ left out (mihomo: XHTTP is VLESS-only) | ✗ left out |
+| Trojan | raw TCP / WS / HTTPUpgrade / gRPC | TLS (required) | — | ✓ | ✓ | ✓ |
+| Trojan | XHTTP | TLS | — | ✓ | ✗ left out | ✗ left out |
+| Shadowsocks 2022 | (own, TCP+UDP) | — | — | ✓ `ss://method:psk%3Akey@` (SIP002, AEAD-2022 form) | ✓ `type: ss`, `cipher`, `password: "psk:key"` | ✓ `shadowsocks`, `method`, `password` |
+| Hysteria 2 | QUIC (UDP) | TLS (node certificate) | — | ✓ `hysteria2://auth@host:port/?sni=` | ✓ `type: hysteria2` | ✓ `hysteria2` |
+
+A proxy a format cannot express is left out of that format (logged at info with the reason)
+instead of being rendered as a config the client rejects.
+
+**Shadowsocks 2022 specifics.** Multi-user Shadowsocks needs one of the AES methods:
+`2022-blake3-chacha20-poly1305` has no multi-user server in xray, legacy (non-2022) methods have no
+per-user keys — both are refused (400). `settings.password` is the server PSK (base64, 16 bytes for
+aes-128, 32 for aes-256) and `settings.clients` must be `[]`; each user gets their own key and
+clients connect with `server_psk:user_key`. Changing the method reissues every user key (the
+subscription must be refreshed). **Removing a user from a Shadowsocks inbound rebuilds the node**
+(a Snapshot: every connection on that node drops once). xray's multi-user Shadowsocks inbound
+cannot drop a user while running without racing its own connection path (the removed user's
+in-flight handshake can run as another user, or crash the agent), so the agent refuses such
+deltas and the panel sends a Snapshot directly; additions stay live deltas.
+
+**Hysteria 2** uses the node certificate like the TLS templates; `hysteriaSettings.auth` must not
+be set (a shared password would bypass per-user auth); bandwidth/congestion settings are left at
+xray's defaults.
+
+**Refused (400)**, with the reason in the error: transports other than raw TCP, WebSocket,
+HTTPUpgrade, XHTTP (`splithttp`), gRPC (and `hysteria` for Hysteria 2) — e.g. mKCP; `security`
+other than none/tls/reality; REALITY with anything but VLESS over raw TCP/XHTTP/gRPC; Vision on
+any transport but raw TCP with TLS/REALITY; VLESS `decryption` other than `none` (VLESS Encryption
+is not in subscriptions); bad paths (must start with `/`, no spaces/quotes/`#`), Host values,
+XHTTP modes (`auto`, `packet-up`, `stream-up`, `stream-one`) or gRPC service names; non-numeric
+ports; two inbounds on the same port and L4 protocol (a UDP Hysteria 2 may share a TCP port).
+Inbounds stored before these checks keep working; the node list shows them under `warnings`.
+
+**gRPC (R26).** gRPC was refused while the agent's grpc-go was affected by GO-2026-6443. The agent
+now pins grpc-go to the fixed upstream commit (`v1.85.0-dev.0.20260825072537-93e31b48545e`;
+moves to v1.85.0 when tagged) and gRPC is back for VLESS/VMess/Trojan. (The advisory concerns
+grpc-go's xDS server path; xray's plain gRPC server was not the vulnerable path, but the pin
+keeps `govulncheck` clean without an allow-list.)
+
+**Not supported by the embedded core:** TUIC (xray-core has no TUIC). No other core is added.
+Hysteria 2 is supported because xray-core v26.3.27 implements it as a multi-user inbound.
 
 ## 3c. Resource footprint (measured)
 
