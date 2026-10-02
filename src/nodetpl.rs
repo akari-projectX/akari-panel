@@ -13,9 +13,13 @@
 //! (`LoadCredential=tls:/etc/akari-agent/tls` → files appear as
 //! `$CREDENTIALS_DIRECTORY/tls_<file>`). The agent runs as a dynamic user
 //! under ProtectSystem=strict and cannot read root-owned key files any
-//! other way. ACME inside the agent is out of scope; a WS inbound behind
-//! the node's own reverse proxy needs hand-written JSON (subscriptions
-//! would otherwise advertise the inbound's local port).
+//! other way. W10: when the node has a TLS domain (`nodes.tls_domain`,
+//! "节点域名") the agent (protocol 6) obtains and renews the certificate for
+//! it over ACME and serves it to exactly these entries (the JSON stays the
+//! same; ConfigSnapshot.acme); templates then default their domain to it
+//! and refuse another one (the certificate covers only that name). A WS
+//! inbound behind the node's own reverse proxy needs hand-written JSON
+//! (subscriptions would otherwise advertise the inbound's local port).
 
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
@@ -90,20 +94,25 @@ pub enum InboundSpec {
         port: u16,
         #[serde(default)]
         tag: Option<String>,
-        domain: String,
+        /// Certificate domain (= SNI); default the node's TLS domain.
+        #[serde(default)]
+        domain: Option<String>,
     },
     /// VLESS over WebSocket with TLS (certificate on the node).
     VlessWsTls {
         port: u16,
         #[serde(default)]
         tag: Option<String>,
-        /// Domain of the node's certificate (= SNI).
-        domain: String,
+        /// Domain of the node's certificate (= SNI); default the node's
+        /// TLS domain.
+        #[serde(default)]
+        domain: Option<String>,
         #[serde(default)]
         path: Option<String>,
     },
-    /// VMess over WebSocket; TLS when `tls_domain` is set (certificate on
-    /// the node), plain otherwise.
+    /// VMess over WebSocket; TLS when `tls_domain` is set or `tls` is
+    /// true (certificate on the node; domain default the node's TLS
+    /// domain), plain otherwise.
     VmessWs {
         port: u16,
         #[serde(default)]
@@ -112,6 +121,8 @@ pub enum InboundSpec {
         path: Option<String>,
         #[serde(default)]
         tls_domain: Option<String>,
+        #[serde(default)]
+        tls: Option<bool>,
     },
     /// VMess over raw TCP (no TLS; alterId 0, security auto).
     VmessTcp {
@@ -124,11 +135,13 @@ pub enum InboundSpec {
         port: u16,
         #[serde(default)]
         tag: Option<String>,
-        domain: String,
+        #[serde(default)]
+        domain: Option<String>,
     },
     /// Any of vless/vmess/trojan over an HTTP-family transport (ws,
-    /// httpupgrade, xhttp, grpc), TLS when `tls_domain` is set (required
-    /// for trojan and for grpc).
+    /// httpupgrade, xhttp, grpc), TLS when `tls_domain` is set or `tls` is
+    /// true (domain default the node's TLS domain; required for trojan and
+    /// for grpc).
     Transport {
         port: u16,
         #[serde(default)]
@@ -148,6 +161,8 @@ pub enum InboundSpec {
         service_name: Option<String>,
         #[serde(default)]
         tls_domain: Option<String>,
+        #[serde(default)]
+        tls: Option<bool>,
     },
     /// Shadowsocks 2022, multi-user (server PSK generated here; one key
     /// per user). TCP and UDP.
@@ -165,7 +180,8 @@ pub enum InboundSpec {
         port: u16,
         #[serde(default)]
         tag: Option<String>,
-        domain: String,
+        #[serde(default)]
+        domain: Option<String>,
     },
 }
 
@@ -200,14 +216,62 @@ impl InboundSpec {
             | InboundSpec::VlessRealityXhttp { .. }
             | InboundSpec::VmessTcp { .. }
             | InboundSpec::Shadowsocks2022 { .. } => false,
-            InboundSpec::VmessWs { tls_domain, .. } | InboundSpec::Transport { tls_domain, .. } => {
-                tls_domain.as_deref().is_some_and(|d| !d.trim().is_empty())
+            InboundSpec::VmessWs {
+                tls_domain, tls, ..
             }
+            | InboundSpec::Transport {
+                tls_domain, tls, ..
+            } => wants_tls(tls_domain, *tls),
             InboundSpec::VlessTlsVision { .. }
             | InboundSpec::VlessWsTls { .. }
             | InboundSpec::TrojanTls { .. }
             | InboundSpec::Hysteria2 { .. } => true,
         }
+    }
+}
+
+fn wants_tls(tls_domain: &Option<String>, tls: Option<bool>) -> bool {
+    tls.unwrap_or(false) || tls_domain.as_deref().is_some_and(|d| !d.trim().is_empty())
+}
+
+/// The node's TLS domain ("节点域名", W10) as stored: lowercase DNS name with
+/// at least two labels, no trailing dot, no wildcard, no IP literal (the
+/// CHECK of migration 0080 is the same rule).
+pub fn node_tls_domain(d: &str) -> Result<String, ApiError> {
+    let d = d.trim().trim_end_matches('.').to_ascii_lowercase();
+    if !valid_hostname(&d) || !d.contains('.') || d.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+    {
+        return Err(ApiError::bad_request(
+            "tls_domain must be a domain name like node1.example.com (no IP, no wildcard)",
+        ));
+    }
+    Ok(d)
+}
+
+/// The certificate domain of a TLS template: its own `explicit` value, or
+/// the node's TLS domain. With a node TLS domain (automatic certificate)
+/// another name is refused: the certificate covers only the node's.
+fn cert_domain(
+    explicit: &Option<String>,
+    node: Option<&str>,
+    what: &str,
+) -> Result<String, ApiError> {
+    match explicit.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        Some(d) => {
+            let d = domain(d, what)?;
+            if let Some(n) = node.filter(|n| *n != d) {
+                return Err(ApiError::bad_request(format!(
+                    "{what} {d} differs from the node's TLS domain {n}: the automatic certificate \
+                     covers only {n} (leave {what} empty to use it)"
+                )));
+            }
+            Ok(d)
+        }
+        None => node.map(str::to_string).ok_or_else(|| {
+            ApiError::bad_request(format!(
+                "{what}: set the node's TLS domain (节点域名) or a domain for this inbound"
+            ))
+        }),
     }
 }
 
@@ -376,8 +440,9 @@ fn grpc_service_name(name: &Option<String>) -> Result<String, ApiError> {
     Ok(n.to_string())
 }
 
-/// Render one template into an xray inbound.
-pub fn render_one(spec: &InboundSpec) -> Result<Value, ApiError> {
+/// Render one template into an xray inbound. `node_domain`: the node's
+/// TLS domain (W10), the default certificate domain.
+pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value, ApiError> {
     let port = spec.port();
     if port == 0 {
         return Err(ApiError::bad_request("port must be 1-65535"));
@@ -436,7 +501,7 @@ pub fn render_one(spec: &InboundSpec) -> Result<Value, ApiError> {
             },
         }),
         InboundSpec::VlessTlsVision { tag, domain: d, .. } => {
-            let d = domain(d, "domain")?;
+            let d = cert_domain(d, node_domain, "domain")?;
             json!({
                 "tag": tag_or(tag, format!("vless-vision-{port}")),
                 "port": port,
@@ -465,6 +530,7 @@ pub fn render_one(spec: &InboundSpec) -> Result<Value, ApiError> {
             mode,
             service_name,
             tls_domain,
+            tls,
             ..
         } => {
             let proto = protocol.trim().to_ascii_lowercase();
@@ -474,13 +540,17 @@ pub fn render_one(spec: &InboundSpec) -> Result<Value, ApiError> {
                 ));
             }
             let net = network.trim().to_ascii_lowercase();
-            let tls = match tls_domain.as_deref().map(str::trim) {
-                Some(d) if !d.is_empty() => Some(domain(d, "tls_domain")?),
-                _ => None,
+            if *tls == Some(false) && wants_tls(tls_domain, None) {
+                return Err(ApiError::bad_request("tls is false but tls_domain is set"));
+            }
+            let tls = if wants_tls(tls_domain, *tls) {
+                Some(cert_domain(tls_domain, node_domain, "tls_domain")?)
+            } else {
+                None
             };
             if tls.is_none() && (proto == "trojan" || net == "grpc") {
                 return Err(ApiError::bad_request(
-                    "trojan and grpc need tls_domain (the node's certificate)",
+                    "trojan and grpc need TLS (tls: true with the node's TLS domain, or tls_domain)",
                 ));
             }
             let host = match host.as_deref().map(str::trim) {
@@ -559,7 +629,7 @@ pub fn render_one(spec: &InboundSpec) -> Result<Value, ApiError> {
             })
         }
         InboundSpec::Hysteria2 { tag, domain: d, .. } => {
-            let d = domain(d, "domain")?;
+            let d = cert_domain(d, node_domain, "domain")?;
             json!({
                 "tag": tag_or(tag, format!("hysteria2-{port}")),
                 "port": port,
@@ -579,7 +649,7 @@ pub fn render_one(spec: &InboundSpec) -> Result<Value, ApiError> {
             path,
             ..
         } => {
-            let d = domain(d, "domain")?;
+            let d = cert_domain(d, node_domain, "domain")?;
             json!({
                 "tag": tag_or(tag, format!("vless-ws-{port}")),
                 "port": port,
@@ -597,14 +667,18 @@ pub fn render_one(spec: &InboundSpec) -> Result<Value, ApiError> {
             tag,
             path,
             tls_domain,
+            tls,
             ..
         } => {
             let mut ss = json!({
                 "network": "ws",
                 "wsSettings": { "path": ws_path(path)? },
             });
-            if let Some(d) = tls_domain.as_deref().filter(|d| !d.trim().is_empty()) {
-                let d = domain(d, "tls_domain")?;
+            if *tls == Some(false) && wants_tls(tls_domain, None) {
+                return Err(ApiError::bad_request("tls is false but tls_domain is set"));
+            }
+            if wants_tls(tls_domain, *tls) {
+                let d = cert_domain(tls_domain, node_domain, "tls_domain")?;
                 ss["security"] = json!("tls");
                 ss["tlsSettings"] = tls_settings(&d, &["http/1.1"]);
             }
@@ -617,7 +691,7 @@ pub fn render_one(spec: &InboundSpec) -> Result<Value, ApiError> {
             })
         }
         InboundSpec::TrojanTls { tag, domain: d, .. } => {
-            let d = domain(d, "domain")?;
+            let d = cert_domain(d, node_domain, "domain")?;
             json!({
                 "tag": tag_or(tag, format!("trojan-{port}")),
                 "port": port,
@@ -635,7 +709,12 @@ pub fn render_one(spec: &InboundSpec) -> Result<Value, ApiError> {
 
 /// Render a list of templates, refusing duplicate ports (also against
 /// `taken`, the ports of inbounds kept from the node's current config).
-pub fn render(specs: &[InboundSpec], taken: &[u16]) -> Result<Vec<Value>, ApiError> {
+/// `node_domain`: the node's TLS domain (default certificate domain).
+pub fn render(
+    specs: &[InboundSpec],
+    taken: &[u16],
+    node_domain: Option<&str>,
+) -> Result<Vec<Value>, ApiError> {
     if specs.len() > 16 {
         return Err(ApiError::bad_request("at most 16 templates at once"));
     }
@@ -655,7 +734,7 @@ pub fn render(specs: &[InboundSpec], taken: &[u16]) -> Result<Vec<Value>, ApiErr
             )));
         }
         ports.push((p, t, u));
-        out.push(render_one(s)?);
+        out.push(render_one(s, node_domain)?);
     }
     Ok(out)
 }
@@ -686,6 +765,10 @@ pub struct RenderReq {
     /// Ports already used by the inbounds the new ones are added to.
     #[serde(default)]
     pub taken_ports: Vec<u16>,
+    /// The node's TLS domain (W10): default certificate domain of the
+    /// TLS templates.
+    #[serde(default)]
+    pub tls_domain: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -703,7 +786,11 @@ pub async fn render_templates(
     ApiJson(req): ApiJson<RenderReq>,
 ) -> Result<Json<RenderView>, ApiError> {
     user.require_admin()?;
-    let inbounds = render(&req.templates, &req.taken_ports)?;
+    let node_domain = match req.tls_domain.as_deref().map(str::trim) {
+        Some(d) if !d.is_empty() => Some(node_tls_domain(d)?),
+        _ => None,
+    };
+    let inbounds = render(&req.templates, &req.taken_ports, node_domain.as_deref())?;
     Ok(Json(RenderView {
         needs_certificate: req.templates.iter().any(InboundSpec::needs_certificate),
         inbounds,
@@ -732,6 +819,120 @@ pub async fn catalog(user: AuthUser) -> Result<Json<TemplateCatalog>, ApiError> 
             .collect(),
         xhttp_modes: &crate::protocols::XHTTP_MODES,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// W10: TLS domain pre-flight (warn only)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckDomainReq {
+    pub domain: String,
+    /// Existing node: compare with its agent's address and public address.
+    #[serde(default)]
+    pub node_id: Option<uuid::Uuid>,
+    /// New node (wizard): the public address typed in the form.
+    #[serde(default)]
+    pub server_addr: Option<String>,
+}
+
+#[derive(Serialize, Default, Debug)]
+pub struct CheckDomainView {
+    domain: String,
+    /// What the domain resolves to (from the panel).
+    addresses: Vec<String>,
+    /// Addresses the node is known by: its agent's source address and its
+    /// public address (resolved when a name). Empty = unknown yet (a new
+    /// node before install): nothing to compare.
+    expected: Vec<String>,
+    /// null when nothing could be compared.
+    matches: Option<bool>,
+    /// Some resolved address is a Cloudflare edge (orange cloud): the CA
+    /// and TLS clients would reach Cloudflare, not the node.
+    cloudflare: bool,
+    /// Resolution failure (NXDOMAIN, timeout).
+    error: Option<String>,
+}
+
+async fn resolve(host: &str) -> Result<Vec<IpAddr>, String> {
+    let addrs = tokio::time::timeout(Duration::from_secs(5), tokio::net::lookup_host((host, 0)))
+        .await
+        .map_err(|_| "DNS lookup timed out".to_string())?
+        .map_err(|e| format!("DNS lookup failed: {e}"))?;
+    let mut ips: Vec<IpAddr> = addrs.map(|a| a.ip().to_canonical()).collect();
+    ips.sort();
+    ips.dedup();
+    Ok(ips)
+}
+
+/// POST /inbound-templates/check-domain (admin): does the node's TLS domain
+/// resolve to the node? Only a warning in the UI: the node's address may be
+/// unknown before the agent connects, and the panel's resolver may differ
+/// from the CA's.
+pub async fn check_domain(
+    axum::extract::State(state): axum::extract::State<crate::state::AppState>,
+    user: AuthUser,
+    ApiJson(req): ApiJson<CheckDomainReq>,
+) -> Result<Json<CheckDomainView>, ApiError> {
+    user.require_admin()?;
+    let domain = node_tls_domain(&req.domain)?;
+    let mut expected: Vec<IpAddr> = Vec::new();
+    let mut server_addr = req
+        .server_addr
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    if let Some(id) = req.node_id {
+        let row: Option<(Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT agent_addr::text, server_addr FROM nodes WHERE id = $1")
+                .bind(id)
+                .fetch_optional(state.pg())
+                .await?;
+        let (agent, server) = row.ok_or_else(ApiError::not_found)?;
+        if let Some(ip) = agent
+            .as_deref()
+            .and_then(|a| a.split('/').next()?.parse::<IpAddr>().ok())
+        {
+            expected.push(ip.to_canonical());
+        }
+        if server_addr.is_none() {
+            server_addr = server;
+        }
+    }
+    if let Some(sa) = server_addr.as_deref() {
+        let host = sa.trim_start_matches('[').trim_end_matches(']');
+        match host.parse::<IpAddr>() {
+            Ok(ip) => expected.push(ip.to_canonical()),
+            Err(_) if valid_hostname(host) && !host.eq_ignore_ascii_case(&domain) => {
+                if let Ok(ips) = resolve(host).await {
+                    expected.extend(ips);
+                }
+            }
+            Err(_) => {}
+        }
+    }
+    expected.sort();
+    expected.dedup();
+    let mut view = CheckDomainView {
+        domain: domain.clone(),
+        expected: expected.iter().map(ToString::to_string).collect(),
+        ..Default::default()
+    };
+    match resolve(&domain).await {
+        Ok(ips) if ips.is_empty() => view.error = Some("the domain has no A/AAAA record".into()),
+        Ok(ips) => {
+            let cf = crate::cloudflare::ranges(state.cfg());
+            view.cloudflare = ips.iter().any(|ip| crate::cloudflare::contains(&cf, *ip));
+            if !expected.is_empty() {
+                view.matches = Some(ips.iter().any(|ip| expected.contains(ip)));
+            }
+            view.addresses = ips.iter().map(ToString::to_string).collect();
+        }
+        Err(e) => view.error = Some(e),
+    }
+    Ok(Json(view))
 }
 
 #[derive(Deserialize)]
@@ -833,6 +1034,93 @@ async fn probe_dest(host: &str, port: u16) -> Result<CheckDestView, String> {
 mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD as STANDARD_B64;
+
+    /// Templates without a node TLS domain (the pre-W10 behaviour).
+    fn render(specs: &[InboundSpec], taken: &[u16]) -> Result<Vec<Value>, ApiError> {
+        super::render(specs, taken, None)
+    }
+
+    #[test]
+    fn node_tls_domain_is_the_default_and_the_only_certificate_domain() {
+        let d = Some("node1.example.com");
+        let v = super::render(
+            &[
+                spec(json!({"template": "vless_ws_tls", "port": 443})),
+                spec(json!({"template": "trojan_tls", "port": 8443, "domain": "NODE1.example.com"})),
+                spec(json!({"template": "hysteria2", "port": 443})),
+                spec(json!({"template": "vless_tls_vision", "port": 2083})),
+                spec(json!({"template": "transport", "port": 2096, "protocol": "vmess", "network": "grpc", "tls": true})),
+                spec(json!({"template": "vmess_ws", "port": 8080, "tls": true})),
+                spec(json!({"template": "vmess_ws", "port": 8081})),
+            ],
+            &[],
+            d,
+        )
+        .unwrap();
+        for i in &v[..6] {
+            assert_eq!(
+                i["streamSettings"]["tlsSettings"]["serverName"], "node1.example.com",
+                "{i}"
+            );
+            assert_eq!(
+                i["streamSettings"]["tlsSettings"]["certificates"][0]["certificateFile"],
+                TLS_CERT_FILE
+            );
+        }
+        assert!(
+            v[6]["streamSettings"].get("security").is_none(),
+            "plain ws stays plain"
+        );
+        assert!(needs_certificate(&Value::Array(v)));
+        // Another name than the node's is refused (the certificate covers
+        // only the node's TLS domain); without one a TLS template needs a
+        // domain.
+        let e = super::render(
+            &[spec(
+                json!({"template": "trojan_tls", "port": 443, "domain": "other.example.com"}),
+            )],
+            &[],
+            d,
+        )
+        .unwrap_err();
+        assert!(e.message().contains("node1.example.com"), "{e:?}");
+        assert!(render(&[spec(json!({"template": "trojan_tls", "port": 443}))], &[]).is_err());
+        assert!(render(&[spec(json!({"template": "transport", "port": 443, "protocol": "trojan", "network": "ws", "tls": true}))], &[]).is_err());
+        assert!(super::render(&[spec(json!({"template": "vmess_ws", "port": 80, "tls": false, "tls_domain": "node1.example.com"}))], &[], d).is_err());
+        // Without a node domain the explicit domain still works (manual
+        // certificate files).
+        let v = render(
+            &[spec(
+                json!({"template": "trojan_tls", "port": 443, "domain": "own.example.com"}),
+            )],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            v[0]["streamSettings"]["tlsSettings"]["serverName"],
+            "own.example.com"
+        );
+    }
+
+    #[test]
+    fn node_tls_domain_rules() {
+        assert_eq!(
+            node_tls_domain(" Node1.Example.COM. ").unwrap(),
+            "node1.example.com"
+        );
+        for bad in [
+            "",
+            "localhost",
+            "1.2.3.4",
+            "*.example.com",
+            "a..b",
+            "-a.example.com",
+            "a_b.example.com",
+            "exa mple.com",
+        ] {
+            assert!(node_tls_domain(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn x25519_rfc7748_vector() {

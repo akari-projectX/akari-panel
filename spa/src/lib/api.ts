@@ -269,6 +269,11 @@ export interface NodeView {
   server_addr: string | null;
   // M3: region shown to users in the portal.
   region: string | null;
+  // W10: the node's TLS domain ("节点域名": the agent obtains the
+  // certificate itself; null = certificate files installed by hand) and the
+  // agent's source address as the panel saw it.
+  tls_domain?: string | null;
+  agent_addr?: string | null;
   // The agent's last failed apply; null once an update applies cleanly.
   last_error: string | null;
   last_error_at: string | null;
@@ -465,6 +470,9 @@ export interface Heartbeat {
   connections: number;
   uptime_seconds?: number;
   lease_remaining_seconds: number | null;
+  // W10 (agent protocol 6): the automatic certificate, while the node has a
+  // TLS domain and an inbound that needs a certificate.
+  cert?: CertStatus | null;
   ts: string;
   // W11: machine status from agents with capability "metrics".
   metrics?: HeartbeatMetrics;
@@ -489,6 +497,32 @@ export interface HeartbeatMetrics {
   online_users: number;
   process_rss_bytes: number;
   xray_version: string;
+}
+
+export type CertErrorKind =
+  "dns" | "connection" | "rate_limited" | "port_busy" | "caa" | "rejected" | "ca_unreachable" | "other";
+
+// Mirror of grpc::cert_status_json.
+export interface CertStatus {
+  domain: string;
+  state: "pending" | "valid" | "failed" | "unknown";
+  not_after: string | null;
+  next_attempt: string | null;
+  last_error: string | null;
+  error_kind: CertErrorKind | null;
+  last_error_at: string | null;
+  challenge: string | null;
+  failures: number;
+}
+
+// POST /inbound-templates/check-domain (warn only).
+export interface CheckDomainView {
+  domain: string;
+  addresses: string[];
+  expected: string[];
+  matches: boolean | null;
+  cloudflare: boolean;
+  error: string | null;
 }
 
 // One-time enrollment material (POST /nodes, POST /nodes/{id}/enroll-token):
@@ -526,11 +560,12 @@ interface RealityOpts {
 export type InboundSpec =
   | ({ template: "vless_reality"; port: number; tag?: string; vision?: boolean } & RealityOpts)
   | ({ template: "vless_reality_xhttp"; port: number; tag?: string; path?: string; mode?: string } & RealityOpts)
-  | { template: "vless_tls_vision"; port: number; tag?: string; domain: string }
-  | { template: "vless_ws_tls"; port: number; tag?: string; domain: string; path?: string }
-  | { template: "vmess_ws"; port: number; tag?: string; path?: string; tls_domain?: string }
+  // W10: domain/tls_domain default to the node's TLS domain (tls: true).
+  | { template: "vless_tls_vision"; port: number; tag?: string; domain?: string }
+  | { template: "vless_ws_tls"; port: number; tag?: string; domain?: string; path?: string }
+  | { template: "vmess_ws"; port: number; tag?: string; path?: string; tls_domain?: string; tls?: boolean }
   | { template: "vmess_tcp"; port: number; tag?: string }
-  | { template: "trojan_tls"; port: number; tag?: string; domain: string }
+  | { template: "trojan_tls"; port: number; tag?: string; domain?: string }
   | {
       template: "transport";
       port: number;
@@ -542,9 +577,10 @@ export type InboundSpec =
       mode?: string;
       service_name?: string;
       tls_domain?: string;
+      tls?: boolean;
     }
   | { template: "shadowsocks_2022"; port: number; tag?: string; method?: string }
-  | { template: "hysteria2"; port: number; tag?: string; domain: string };
+  | { template: "hysteria2"; port: number; tag?: string; domain?: string };
 
 export interface TemplateCatalog {
   reality_dests: string[];

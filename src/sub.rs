@@ -839,7 +839,8 @@ pub async fn subscription(
         return reject::not_found();
     }
     let rows = match sqlx::query_as::<_, NodeRow>(
-        "SELECT n.name, n.xray_inbounds, n.server_addr, nu.credentials, \
+        "SELECT n.name, n.xray_inbounds, \
+         COALESCE(NULLIF(n.server_addr, ''), n.tls_domain) AS server_addr, nu.credentials, \
          n.display_name, n.tags, n.connect_overrides \
          FROM node_users nu \
          JOIN nodes n ON n.id = nu.node_id AND n.enabled = true AND n.visible \

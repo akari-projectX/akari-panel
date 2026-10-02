@@ -32,6 +32,7 @@ import {
   type NodeOpsValue,
 } from "./admin-node-form";
 import { NodeDetail, NodeLiveCells, NodeLiveHeads } from "./admin-node-status";
+import { NodeCertStatus, TlsDomainField } from "./admin-node-cert";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
@@ -365,7 +366,7 @@ export function specNeedsCertificate(s: InboundSpec): boolean {
       return true;
     case "vmess_ws":
     case "transport":
-      return !!s.tls_domain;
+      return !!s.tls_domain || !!s.tls;
     default:
       return false;
   }
@@ -427,7 +428,10 @@ function rowL4(t: TemplateKind): ("tcp" | "udp")[] {
 }
 
 // Form rows → API specs; an error string for the first invalid row.
-export function toSpecs(rows: SpecRow[]): InboundSpec[] | string {
+// nodeDomain (W10): the node's TLS domain — TLS rows without their own
+// domain use it (the panel fills it in).
+export function toSpecs(rows: SpecRow[], nodeDomain = ""): InboundSpec[] | string {
+  const hasNodeDomain = nodeDomain.trim() !== "";
   const out: InboundSpec[] = [];
   const ports = new Set<string>();
   for (const [i, r] of rows.entries()) {
@@ -478,20 +482,27 @@ export function toSpecs(rows: SpecRow[]): InboundSpec[] | string {
       case "trojan_tls":
       case "vless_tls_vision":
       case "hysteria2": {
-        if (!domain) return `第 ${n} 个入站：请填写证书域名`;
+        if (!domain && !hasNodeDomain) return `第 ${n} 个入站：请填写证书域名（或填写节点域名）`;
         if (r.template === "vless_ws_tls")
-          out.push({ template: "vless_ws_tls", port, tag, domain, path: r.path.trim() || undefined });
-        else out.push({ template: r.template, port, tag, domain });
+          out.push({
+            template: "vless_ws_tls",
+            port,
+            tag,
+            domain: domain || undefined,
+            path: r.path.trim() || undefined,
+          });
+        else out.push({ template: r.template, port, tag, domain: domain || undefined });
         break;
       }
       case "vmess_ws": {
-        if (r.tls && !domain) return `第 ${n} 个入站：启用 TLS 时请填写证书域名`;
+        if (r.tls && !domain && !hasNodeDomain) return `第 ${n} 个入站：启用 TLS 时请填写证书域名（或填写节点域名）`;
         out.push({
           template: "vmess_ws",
           port,
           tag,
           path: r.path.trim() || undefined,
-          tls_domain: r.tls ? domain : undefined,
+          tls_domain: r.tls ? domain || undefined : undefined,
+          tls: r.tls && !domain ? true : undefined,
         });
         break;
       }
@@ -502,7 +513,8 @@ export function toSpecs(rows: SpecRow[]): InboundSpec[] | string {
         const protocol = r.protocol ?? "vless";
         const network = r.network ?? "ws";
         const tls = r.tls || protocol === "trojan" || network === "grpc";
-        if (tls && !domain) return `第 ${n} 个入站：Trojan 与 gRPC 必须启用 TLS，请填写证书域名`;
+        if (tls && !domain && !hasNodeDomain)
+          return `第 ${n} 个入站：Trojan 与 gRPC 必须启用 TLS，请填写证书域名（或填写节点域名）`;
         out.push({
           template: "transport",
           port,
@@ -513,7 +525,8 @@ export function toSpecs(rows: SpecRow[]): InboundSpec[] | string {
           host: network !== "grpc" ? r.host?.trim() || undefined : undefined,
           mode: network === "xhttp" && r.mode && r.mode !== "auto" ? r.mode : undefined,
           service_name: network === "grpc" ? r.serviceName?.trim() || undefined : undefined,
-          tls_domain: tls ? domain : undefined,
+          tls_domain: tls ? domain || undefined : undefined,
+          tls: tls && !domain ? true : undefined,
         });
         break;
       }
@@ -535,11 +548,14 @@ function TemplateRows({
   rows,
   setRows,
   catalog,
+  nodeDomain = "",
 }: {
   rows: SpecRow[];
   setRows: (r: SpecRow[]) => void;
   catalog: TemplateCatalog | undefined;
+  nodeDomain?: string;
 }) {
+  const domainHint = nodeDomain.trim() ? `默认：${nodeDomain.trim()}` : "node1.example.com";
   const [checks, setChecks] = useState<Record<number, string>>({});
   const update = (key: number, p: Partial<SpecRow>) => setRows(rows.map((r) => (r.key === key ? { ...r, ...p } : r)));
 
@@ -730,7 +746,7 @@ function TemplateRows({
                     id={`tdom-${r.key}`}
                     className="w-56"
                     value={r.domain}
-                    placeholder="node1.example.com"
+                    placeholder={domainHint}
                     onChange={(e) => update(r.key, { domain: e.target.value })}
                   />
                 </div>
@@ -833,7 +849,7 @@ function TemplateRows({
                 id={`vdom-${r.key}`}
                 className="w-56"
                 value={r.domain}
-                placeholder="node1.example.com"
+                placeholder={domainHint}
                 onChange={(e) => update(r.key, { domain: e.target.value })}
               />
             </div>
@@ -853,7 +869,7 @@ function TemplateRows({
                     id={`dom-${r.key}`}
                     className="w-56"
                     value={r.domain}
-                    placeholder="node1.example.com"
+                    placeholder={domainHint}
                     onChange={(e) => update(r.key, { domain: e.target.value })}
                   />
                 </div>
@@ -879,8 +895,15 @@ function TemplateRows({
             ((r.template === "vmess_ws" || r.template === "transport") &&
               (r.tls || (r.template === "transport" && (r.protocol === "trojan" || r.network === "grpc"))))) && (
             <p className="text-xs text-muted-foreground">
-              证书放在节点的 {catalog?.tls_cert_dir ?? "/etc/akari-agent/tls"}/fullchain.pem 与 privkey.pem（如 certbot
-              / acme.sh 签发），放好后执行 systemctl restart akari-agent。
+              {nodeDomain.trim() ? (
+                <>证书由 agent 为节点域名 {nodeDomain.trim()} 自动申请与续期，无需手工操作。</>
+              ) : (
+                <>
+                  填写上方「节点域名」即可自动申请证书；否则请把证书放在节点的{" "}
+                  {catalog?.tls_cert_dir ?? "/etc/akari-agent/tls"}/fullchain.pem 与 privkey.pem，放好后执行 systemctl
+                  restart akari-agent。
+                </>
+              )}
             </p>
           )}
         </div>
@@ -908,6 +931,7 @@ function NodeWizard({
   const [name, setName] = useState("");
   const [region, setRegion] = useState("");
   const [addr, setAddr] = useState("");
+  const [tlsDomain, setTlsDomain] = useState("");
   const [rows, setRows] = useState<SpecRow[]>(() => [newRow()]);
   const [raw, setRaw] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -930,6 +954,7 @@ function NodeWizard({
     };
     if (region.trim()) body.region = region.trim();
     if (addr.trim()) body.server_addr = addr.trim();
+    if (tlsDomain.trim()) body.tls_domain = tlsDomain.trim();
     let needsCert = false;
     if (raw !== null) {
       try {
@@ -941,13 +966,14 @@ function NodeWizard({
         return;
       }
     } else {
-      const specs = toSpecs(rows);
+      const specs = toSpecs(rows, tlsDomain);
       if (typeof specs === "string") {
         setError(specs);
         return;
       }
       body.templates = specs;
-      needsCert = specs.some(specNeedsCertificate);
+      // With a node domain the agent obtains the certificate itself.
+      needsCert = specs.some(specNeedsCertificate) && !tlsDomain.trim();
     }
     setBusy(true);
     try {
@@ -963,13 +989,16 @@ function NodeWizard({
   // Advanced: start the raw editor from the rendered templates.
   async function toRaw() {
     setError(null);
-    const specs = toSpecs(rows);
+    const specs = toSpecs(rows, tlsDomain);
     if (typeof specs === "string") {
       setRaw("[]");
       return;
     }
     try {
-      const r = await post<RenderedInbounds>("/inbound-templates/render", { templates: specs });
+      const r = await post<RenderedInbounds>("/inbound-templates/render", {
+        templates: specs,
+        tls_domain: tlsDomain.trim() || undefined,
+      });
       setRaw(JSON.stringify(r.inbounds, null, 2));
     } catch (err) {
       setError(msg(err, "生成 JSON 失败"));
@@ -1022,9 +1051,10 @@ function NodeWizard({
             </div>
           </div>
           <NodeOpsFields value={ops} onChange={setOps} idPrefix="nn-ops" />
+          <TlsDomainField id="nn-tls" value={tlsDomain} onChange={setTlsDomain} serverAddr={addr} />
           {raw === null ? (
             <>
-              <TemplateRows rows={rows} setRows={setRows} catalog={catalog.data} />
+              <TemplateRows rows={rows} setRows={setRows} catalog={catalog.data} nodeDomain={tlsDomain} />
               <Button type="button" variant="ghost" size="sm" onClick={toRaw}>
                 高级：直接编辑入站 JSON
               </Button>
@@ -1222,6 +1252,7 @@ function NodeEditor({ node }: { node: NodeView }) {
   const [name, setName] = useState(node.name);
   const [serverAddr, setServerAddr] = useState(node.server_addr ?? "");
   const [region, setRegion] = useState(node.region ?? "");
+  const [tlsDomain, setTlsDomain] = useState(node.tls_domain ?? "");
   const [basicsMsg, setBasicsMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   // Inbounds: the pending list (starts as the stored one).
@@ -1240,11 +1271,14 @@ function NodeEditor({ node }: { node: NodeView }) {
   async function saveBasics(e: React.FormEvent) {
     e.preventDefault();
     setBasicsMsg(null);
+    const domainChanges = (tlsDomain.trim().toLowerCase() || null) !== (node.tls_domain ?? null);
+    if (domainChanges && !window.confirm("更改节点域名会向节点下发新配置（重建 xray，断开现有连接）。继续？")) return;
     try {
       await patch(`/nodes/${node.id}`, {
         name: name.trim(),
         server_addr: serverAddr.trim() || null,
         region: region.trim() || null,
+        tls_domain: tlsDomain.trim() || null,
       });
       setBasicsMsg({ ok: true, text: "已保存" });
       await queryClient.invalidateQueries({ queryKey: ["nodes"] });
@@ -1256,7 +1290,7 @@ function NodeEditor({ node }: { node: NodeView }) {
   async function addFromTemplates() {
     if (!adding) return;
     setInboundMsg(null);
-    const specs = toSpecs(adding);
+    const specs = toSpecs(adding, node.tls_domain ?? "");
     if (typeof specs === "string") {
       setInboundMsg({ ok: false, text: specs });
       return;
@@ -1268,6 +1302,7 @@ function NodeEditor({ node }: { node: NodeView }) {
       const r = await post<RenderedInbounds>("/inbound-templates/render", {
         templates: specs,
         taken_ports: taken,
+        tls_domain: node.tls_domain ?? undefined,
       });
       setPending([...pending, ...r.inbounds]);
       setAdding(null);
@@ -1362,6 +1397,7 @@ function NodeEditor({ node }: { node: NodeView }) {
             ))}
           </ul>
         )}
+        <NodeCertStatus node={node} />
       </CardHeader>
       <CardContent className="space-y-6">
         <form className="flex flex-wrap items-end gap-3" onSubmit={saveBasics}>
@@ -1396,6 +1432,13 @@ function NodeEditor({ node }: { node: NodeView }) {
               placeholder="东京"
             />
           </div>
+          <TlsDomainField
+            id="ed-tls"
+            value={tlsDomain}
+            onChange={setTlsDomain}
+            nodeId={node.id}
+            serverAddr={serverAddr}
+          />
           <Button variant="outline" type="submit">
             保存
           </Button>
@@ -1447,7 +1490,12 @@ function NodeEditor({ node }: { node: NodeView }) {
               )}
               {adding ? (
                 <div className="space-y-2">
-                  <TemplateRows rows={adding} setRows={setAdding} catalog={catalog.data} />
+                  <TemplateRows
+                    rows={adding}
+                    setRows={setAdding}
+                    catalog={catalog.data}
+                    nodeDomain={node.tls_domain ?? ""}
+                  />
                   <div className="flex gap-2">
                     <Button type="button" size="sm" onClick={addFromTemplates}>
                       加入列表

@@ -159,7 +159,7 @@ pub fn user_snapshot_sql(alias: &str) -> String {
 pub fn node_snapshot_sql(alias: &str) -> String {
     format!(
         "jsonb_build_object('name', {a}.name, 'enabled', {a}.enabled, 'server_addr', {a}.server_addr, \
-         'region', {a}.region, \
+         'region', {a}.region, 'tls_domain', {a}.tls_domain, \
          'traffic_max_rate_bytes_per_sec', {a}.traffic_max_rate_bytes_per_sec, \
          'display_name', {a}.display_name, 'sort', {a}.sort, 'visible', {a}.visible, \
          'tags', {a}.tags, 'traffic_rate_permille', {a}.traffic_rate_permille, \
