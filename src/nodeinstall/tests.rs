@@ -135,7 +135,11 @@ async fn install_link_lifecycle() {
     let inst = &v["install"];
     assert_eq!(
         inst["command"],
-        format!("curl -fsSL '{ORIGIN}/test/install/{token}' | sudo sh")
+        format!("curl -fsSL '{ORIGIN}/test/install/{token}' | {AS_ROOT}")
+    );
+    assert_eq!(
+        AS_ROOT, r#"sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'"#,
+        "root runs it directly (no sudo needed), others through sudo"
     );
     assert!(inst["command_wget"]
         .as_str()
@@ -178,6 +182,7 @@ async fn install_link_lifecycle() {
         assert!(s.contains(&format!("enrollment_token = \"{token}\"")));
         assert!(s.contains("[identity]\nca_pem = '''"));
         assert!(s.contains("NEEDS_CERT='0'"));
+        assert!(s.contains("TLS_DOMAIN=''"));
         assert!(s.contains("SHA_amd64=''"), "no release uploaded");
         assert!(s.contains("ExecStart=/usr/local/bin/akari-agent"));
     }
@@ -514,7 +519,7 @@ async fn configured_public_url_and_pin_win() {
     assert_eq!(
         v["install"]["command"],
         format!(
-            "curl -fsSL --proto '=https' -k --pinnedpubkey '{pin}' 'https://203.0.113.7/test/install/{t}' | sudo sh"
+            "curl -fsSL --proto '=https' -k --pinnedpubkey '{pin}' 'https://203.0.113.7/test/install/{t}' | {AS_ROOT}"
         )
     );
     assert!(v["install"]["command_wget"].is_null());
@@ -528,5 +533,136 @@ async fn configured_public_url_and_pin_win() {
     assert!(s.contains(&format!("PIN='{pin}'")));
     assert!(s.contains("ORIGIN='https://203.0.113.7'"));
     drop(st);
+    db.drop().await;
+}
+
+/// W10: a node with a TLS domain: TLS templates take it, the script knows
+/// the agent obtains the certificate itself (firewall + note), and the
+/// create is one transaction with the domain.
+#[tokio::test]
+async fn tls_domain_flows_into_templates_and_script() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = AppState::for_test(db.pool.clone()).await;
+    let admin = admin_client(&st, &db).await;
+    let r = admin
+        .post(
+            "/test/api/v1/nodes",
+            json!({
+                "name": "hk-tls",
+                "tls_domain": "HK1.Example.com",
+                "templates": [
+                    {"template": "vless_ws_tls", "port": 443},
+                    {"template": "hysteria2", "port": 443},
+                ],
+                "install": {"origin": ORIGIN},
+            }),
+        )
+        .await;
+    assert_eq!(r.status, 201, "{}", String::from_utf8_lossy(&r.body));
+    let v: Value = r.json();
+    let id: Uuid = v["id"].as_str().unwrap().parse().unwrap();
+    let (domain, inbounds, cv): (Option<String>, Value, i64) =
+        sqlx::query_as("SELECT tls_domain, xray_inbounds, config_version FROM nodes WHERE id = $1")
+            .bind(id)
+            .fetch_one(st.pg())
+            .await
+            .unwrap();
+    assert_eq!(domain.as_deref(), Some("hk1.example.com"));
+    assert!(cv >= 1);
+    for i in inbounds.as_array().unwrap() {
+        assert_eq!(
+            i["streamSettings"]["tlsSettings"]["serverName"],
+            "hk1.example.com"
+        );
+    }
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE target_id = $1 AND action = 'node.update' \
+         AND after->>'tls_domain' = 'hk1.example.com'",
+    )
+    .bind(id.to_string())
+    .fetch_one(st.pg())
+    .await
+    .unwrap();
+    assert_eq!(n, 1, "the domain is audited");
+    let token = token_of(&v);
+    let s = String::from_utf8(
+        Client::new(&st, rand_ip())
+            .get(&format!("/test/install/{token}"))
+            .await
+            .body,
+    )
+    .unwrap();
+    assert!(s.contains("NEEDS_CERT='1'") && s.contains("TLS_DOMAIN='hk1.example.com'"));
+    // A different certificate name than the node's is refused.
+    let r = admin
+        .post(
+            "/test/api/v1/nodes",
+            json!({
+                "name": "hk-bad",
+                "tls_domain": "hk2.example.com",
+                "templates": [{"template": "trojan_tls", "port": 443, "domain": "other.example.com"}],
+            }),
+        )
+        .await;
+    assert_eq!(r.status, 400);
+    let r = admin
+        .post(
+            "/test/api/v1/nodes",
+            json!({"name": "hk-bad2", "tls_domain": "203.0.113.1"}),
+        )
+        .await;
+    assert_eq!(r.status, 400);
+    db.drop().await;
+}
+
+/// W10: the TLS domain pre-flight answers (warn-only) with what the domain
+/// resolves to and what the node is known by.
+#[tokio::test]
+async fn tls_domain_check_compares_with_the_node() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = AppState::for_test(db.pool.clone()).await;
+    let admin = admin_client(&st, &db).await;
+    let v = create(&admin, "dns-1").await;
+    let id: Uuid = v["id"].as_str().unwrap().parse().unwrap();
+    sqlx::query("UPDATE nodes SET agent_addr = '198.51.100.7' WHERE id = $1")
+        .bind(id)
+        .execute(st.pg())
+        .await
+        .unwrap();
+    // RFC 6761: .invalid never resolves.
+    let r = admin
+        .post(
+            "/test/api/v1/inbound-templates/check-domain",
+            json!({"domain": "Node.Invalid", "node_id": id}),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    let c: Value = r.json();
+    assert_eq!(c["domain"], "node.invalid");
+    assert!(c["error"].is_string(), "{c}");
+    assert!(c["matches"].is_null());
+    assert_eq!(c["expected"], json!(["198.51.100.7", "203.0.113.9"]));
+    // Wizard (no node yet): the typed address is what it is compared with.
+    let r = admin
+        .post(
+            "/test/api/v1/inbound-templates/check-domain",
+            json!({"domain": "node.invalid", "server_addr": "192.0.2.1"}),
+        )
+        .await;
+    let c: Value = r.json();
+    assert_eq!(c["expected"], json!(["192.0.2.1"]));
+    for bad in [
+        json!({"domain": "1.2.3.4"}),
+        json!({"domain": "x.example.com", "nope": 1}),
+    ] {
+        let r = admin
+            .post("/test/api/v1/inbound-templates/check-domain", bad)
+            .await;
+        assert_eq!(r.status, 400);
+    }
     db.drop().await;
 }

@@ -59,6 +59,11 @@ impl AgentChannel for AgentChannelService {
         // Identity comes exclusively from the mTLS client certificate;
         // there is no token or credential in the protocol itself.
         let identity = identify_node(&state, &request).await?;
+        if let (AgentIdentity::Node(node), Some(peer)) =
+            (identity, request.remote_addr().map(|a| a.ip()))
+        {
+            record_agent_addr(&state, node, peer).await;
+        }
 
         // Disabled nodes are NOT rejected: a rejected agent would keep its
         // last xray config running forever. They are accepted and converge
@@ -78,6 +83,22 @@ impl AgentChannel for AgentChannelService {
         crate::enroll::renew(&self.state, request)
             .await
             .map(Response::new)
+    }
+}
+
+/// W10: the agent's source address (gRPC peer) for the node page and the
+/// TLS domain check. Best effort.
+async fn record_agent_addr(state: &AppState, node: Uuid, peer: std::net::IpAddr) {
+    let peer = crate::client_ip::canonical(peer).to_string();
+    if let Err(e) = sqlx::query(
+        "UPDATE nodes SET agent_addr = $2::inet WHERE id = $1 AND agent_addr IS DISTINCT FROM $2::inet",
+    )
+    .bind(node)
+    .bind(peer)
+    .execute(state.pg())
+    .await
+    {
+        tracing::warn!(node = %node, error = %e, "failed to record the agent address");
     }
 }
 
@@ -188,6 +209,12 @@ pub const SPEED_LIMIT_PROTOCOL: u32 = 4;
 /// over a tombstone, too many tombstones): the panel then sends a Snapshot,
 /// which also compacts. Older agents get a Snapshot for any removal there.
 pub const SS_TOMBSTONE_PROTOCOL: u32 = 5;
+
+/// W10: agents from this protocol on obtain and renew the node certificate
+/// for `nodes.tls_domain` themselves (ConfigSnapshot.acme) and report it
+/// (Heartbeat.cert). Older ones ignore both and keep reading the files the
+/// admin installs (NodeView warns).
+pub const ACME_PROTOCOL: i32 = 6;
 
 /// A node's user set as the agent must run it: user id -> inbound tag ->
 /// (protocol, account_json). Users without any inbound are absent. Built
@@ -1450,6 +1477,7 @@ async fn retire(sess: &Session, why: &'static str) {
             config_version: RETIRED_VERSIONS.0,
             inbounds_json: "[]".into(),
             user_version: RETIRED_VERSIONS.1,
+            acme: None,
             users: vec![],
         });
         let sent = match sess.lock().await {
@@ -1830,10 +1858,56 @@ async fn refresh_members(state: &AppState, node_id: Uuid) {
     }
 }
 
+/// Heartbeat.cert (agent protocol 6) as the node page reads it: enums as
+/// lowercase names, times as RFC 3339 (null when unset), the error text
+/// capped (the agent caps it at 512 bytes too).
+pub(crate) fn cert_status_json(c: &crate::gen::CertStatus) -> serde_json::Value {
+    use crate::gen::cert_status::{ErrorKind, State};
+    let ts = |secs: i64| {
+        (secs > 0)
+            .then(|| chrono::DateTime::from_timestamp(secs, 0))
+            .flatten()
+            .map(|t| t.to_rfc3339())
+    };
+    let state = match State::try_from(c.state) {
+        Ok(State::Pending) => "pending",
+        Ok(State::Valid) => "valid",
+        Ok(State::Failed) => "failed",
+        _ => "unknown",
+    };
+    let kind = match ErrorKind::try_from(c.error_kind) {
+        Ok(ErrorKind::ErrorNone) => None,
+        Ok(ErrorKind::ErrorDns) => Some("dns"),
+        Ok(ErrorKind::ErrorConnection) => Some("connection"),
+        Ok(ErrorKind::ErrorRateLimited) => Some("rate_limited"),
+        Ok(ErrorKind::ErrorPortBusy) => Some("port_busy"),
+        Ok(ErrorKind::ErrorCaa) => Some("caa"),
+        Ok(ErrorKind::ErrorRejected) => Some("rejected"),
+        Ok(ErrorKind::ErrorCaUnreachable) => Some("ca_unreachable"),
+        _ => Some("other"),
+    };
+    let err: String = c.last_error.chars().take(512).collect();
+    serde_json::json!({
+        "domain": c.domain,
+        "state": state,
+        "not_after": ts(c.not_after),
+        "next_attempt": ts(c.next_attempt),
+        "last_error": (!err.is_empty()).then_some(err),
+        "error_kind": kind,
+        "last_error_at": ts(c.last_error_at),
+        "challenge": (!c.challenge.is_empty()).then(|| c.challenge.clone()),
+        "failures": c.failures,
+    })
+}
+
 async fn store_heartbeat(state: &AppState, node_id: Uuid, hb: &Heartbeat) {
     // W11: the blob carries the machine status too (nodestat.rs), and the
     // sample feeds the history and the fleet gauges.
-    let blob = crate::nodestat::heartbeat_blob(hb);
+    let mut blob = crate::nodestat::heartbeat_blob(hb);
+    // W10: the automatic certificate (agent protocol 6).
+    if let Some(c) = &hb.cert {
+        blob["cert"] = cert_status_json(c);
+    }
     crate::nodestat::on_heartbeat(state, node_id, hb);
     valkey_util::set_with_ttl(
         state,
@@ -1859,6 +1933,7 @@ struct NodeRow {
     failed_reason: Option<String>,
     online_session: Option<Uuid>,
     deleting: bool,
+    tls_domain: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -1913,7 +1988,7 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
         "SELECT enabled, xray_inbounds, config_version, user_version, \
          failed_config_version, failed_user_version, failed_held_config_version, \
          failed_held_user_version, failed_reason, online_session, \
-         deleting_at IS NOT NULL AS deleting FROM nodes WHERE id = $1",
+         deleting_at IS NOT NULL AS deleting, tls_domain FROM nodes WHERE id = $1",
     )
     .bind(node_id)
     .fetch_optional(&mut *tx)
@@ -1972,6 +2047,16 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
         "[]".to_string()
     };
     tx.commit().await?;
+    // W10: an automatic certificate only where an inbound reads the node
+    // certificate files (a REALITY-only node never orders one).
+    // directory_url/email come from the panel config (sync_if_stale).
+    let acme = node
+        .tls_domain
+        .filter(|_| serve && crate::nodetpl::needs_certificate(&node.xray_inbounds))
+        .map(|domain| crate::gen::AcmeConfig {
+            domain,
+            ..Default::default()
+        });
 
     Ok(Some(Desired {
         snapshot: ConfigSnapshot {
@@ -1979,6 +2064,7 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
             inbounds_json,
             user_version: node.user_version as u64,
             users,
+            acme,
         },
         enabled: serve,
         online_session: node.online_session,
@@ -2033,12 +2119,16 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
                                                      // (M2: 200 sessions waking at once must not hold 200 full sets).
     let permit = state.read_permits().acquire().await?;
     let desired = desired_state(state.pg(), node_id).await?;
-    let Some(desired) = desired else {
+    let Some(mut desired) = desired else {
         // Deleted (maybe while its notification was missed): the caller
         // retires the session. No lease for a node that does not exist.
         return Ok(Synced::Gone);
     };
     sess.deleting.store(desired.deleting, Ordering::SeqCst);
+    if let Some(a) = desired.snapshot.acme.as_mut() {
+        a.directory_url = state.cfg().acme.directory_url.clone();
+        a.email = state.cfg().acme.email.clone();
+    }
     if sess.marked_online.load(Ordering::SeqCst)
         && desired
             .online_session
@@ -2085,6 +2175,7 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
                     inbounds_json: "[]".into(),
                     user_version: 0,
                     users: vec![],
+                    acme: None,
                 })
             }
             Plan::Snapshot { empty: false } => {
@@ -3101,6 +3192,96 @@ mod tests {
         };
         assert_eq!(state_hash(1, &st).len(), 64);
         db.drop().await;
+    }
+
+    /// W10: a node with a TLS domain and an inbound reading the node
+    /// certificate files gets ConfigSnapshot.acme; REALITY-only nodes and
+    /// disabled nodes do not.
+    #[tokio::test]
+    async fn desired_state_carries_acme_only_where_a_certificate_is_read() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, _) = db.member().await;
+        let d = desired_state(&db.pool, n).await.unwrap().unwrap();
+        assert!(d.snapshot.acme.is_none());
+        sqlx::query("UPDATE nodes SET tls_domain = 'n1.example.com' WHERE id = $1")
+            .bind(n)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let d = desired_state(&db.pool, n).await.unwrap().unwrap();
+        assert!(
+            d.snapshot.acme.is_none(),
+            "no inbound reads the node certificate"
+        );
+        let tls = serde_json::json!([{
+            "tag": "in-vless", "port": 443, "protocol": "vless",
+            "settings": {"clients": [], "decryption": "none"},
+            "streamSettings": {"network": "ws", "security": "tls", "tlsSettings": {
+                "serverName": "n1.example.com",
+                "certificates": [{"certificateFile": crate::nodetpl::TLS_CERT_FILE, "keyFile": crate::nodetpl::TLS_KEY_FILE}]}}
+        }]);
+        sqlx::query("UPDATE nodes SET xray_inbounds = $2 WHERE id = $1")
+            .bind(n)
+            .bind(&tls)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let d = desired_state(&db.pool, n).await.unwrap().unwrap();
+        assert_eq!(
+            d.snapshot.acme.as_ref().map(|a| a.domain.as_str()),
+            Some("n1.example.com")
+        );
+        sqlx::query("UPDATE nodes SET enabled = false WHERE id = $1")
+            .bind(n)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let d = desired_state(&db.pool, n).await.unwrap().unwrap();
+        assert!(d.snapshot.acme.is_none(), "a disabled node orders nothing");
+        // The column refuses what the API refuses.
+        for bad in ["1.2.3.4", "*.example.com", "Upper.example.com", "nodot"] {
+            assert!(
+                sqlx::query("UPDATE nodes SET tls_domain = $2 WHERE id = $1")
+                    .bind(n)
+                    .bind(bad)
+                    .execute(&db.pool)
+                    .await
+                    .is_err(),
+                "{bad}"
+            );
+        }
+        db.drop().await;
+    }
+
+    #[test]
+    fn cert_status_json_names() {
+        use crate::gen::cert_status::{ErrorKind, State};
+        let v = cert_status_json(&crate::gen::CertStatus {
+            domain: "n1.example.com".into(),
+            state: State::Failed as i32,
+            not_after: 1_800_000_000,
+            next_attempt: 0,
+            last_error: "x".repeat(600),
+            error_kind: ErrorKind::ErrorPortBusy as i32,
+            last_error_at: 1_790_000_000,
+            challenge: "http-01".into(),
+            failures: 3,
+        });
+        assert_eq!(v["state"], "failed");
+        assert_eq!(v["error_kind"], "port_busy");
+        assert_eq!(v["next_attempt"], serde_json::Value::Null);
+        assert_eq!(v["not_after"], "2027-01-15T08:00:00+00:00");
+        assert_eq!(v["last_error"].as_str().unwrap().len(), 512);
+        assert_eq!(v["failures"], 3);
+        let ok = cert_status_json(&crate::gen::CertStatus {
+            state: State::Valid as i32,
+            ..Default::default()
+        });
+        assert_eq!(ok["state"], "valid");
+        assert_eq!(ok["error_kind"], serde_json::Value::Null);
+        assert_eq!(ok["last_error"], serde_json::Value::Null);
     }
 
     /// B2: corrupt credentials are logged and the user is left out of the

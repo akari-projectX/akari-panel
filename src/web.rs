@@ -156,6 +156,10 @@ pub fn router(state: AppState) -> Router {
             post(nodetpl::check_dest),
         )
         .route(
+            "/{prefix}/api/v1/inbound-templates/check-domain",
+            post(nodetpl::check_domain),
+        )
+        .route(
             "/{prefix}/api/v1/settings",
             get(settings::get_settings).put(settings::put_settings),
         )

@@ -1055,6 +1055,12 @@ pub struct NodeView {
     server_addr: Option<String>,
     /// M3: free-text region shown to users (portal node list).
     region: Option<String>,
+    /// W10: the node's TLS domain (automatic certificate; null = the
+    /// certificate files installed by hand), and the agent's source address
+    /// as the panel saw it (the certificate status compares the domain's
+    /// DNS with it). The certificate state itself is `heartbeat.cert`.
+    tls_domain: Option<String>,
+    agent_addr: Option<String>,
     /// The agent's last failed apply (e.g. xray rejected the inbounds) and
     /// the versions it was attempting; null once an update applies cleanly.
     last_error: Option<String>,
@@ -1126,6 +1132,11 @@ impl NodeView {
     fn with_warnings(mut self) -> Self {
         self.traffic_rate = f64::from(self.traffic_rate_permille) / 1000.0;
         self.warnings = inbound_warnings(&self.xray_inbounds);
+        self.warnings.extend(tls_domain_warnings(
+            self.tls_domain.as_deref(),
+            &self.xray_inbounds,
+            self.agent_protocol,
+        ));
         if let Some(w) = cert_warning(self.cert_not_after, self.agent_protocol, Utc::now()) {
             self.warnings.push(w);
         }
@@ -1138,6 +1149,53 @@ impl NodeView {
         }
         self
     }
+}
+
+/// W10: what keeps the automatic certificate from working.
+fn tls_domain_warnings(
+    domain: Option<&str>,
+    inbounds: &serde_json::Value,
+    protocol: Option<i32>,
+) -> Vec<String> {
+    let Some(domain) = domain else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    if !crate::nodetpl::needs_certificate(inbounds) {
+        return out;
+    }
+    if protocol.is_some_and(|p| p < crate::grpc::ACME_PROTOCOL) {
+        out.push(format!(
+            "the agent is too old to obtain the certificate itself (protocol < {}): upgrade it, \
+             or install the certificate for {domain} by hand",
+            crate::grpc::ACME_PROTOCOL
+        ));
+    }
+    for i in inbounds.as_array().into_iter().flatten() {
+        let uses_node_cert = i
+            .pointer("/streamSettings/tlsSettings/certificates")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|c| {
+                c.iter().any(|c| {
+                    c.get("certificateFile").and_then(serde_json::Value::as_str)
+                        == Some(crate::nodetpl::TLS_CERT_FILE)
+                })
+            });
+        let sni = i
+            .pointer("/streamSettings/tlsSettings/serverName")
+            .and_then(serde_json::Value::as_str);
+        if uses_node_cert && sni.is_some_and(|s| !s.eq_ignore_ascii_case(domain)) {
+            out.push(format!(
+                "inbound {:?}: serverName {:?} is not the node's TLS domain {domain}; the \
+                 automatic certificate only covers {domain}",
+                i.get("tag")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("?"),
+                sni.unwrap_or_default()
+            ));
+        }
+    }
+    out
 }
 
 fn cert_warning(
@@ -1197,7 +1255,7 @@ pub const NODE_VIEW_COLS: &str =
         FROM rollout_nodes rn JOIN rollouts r ON r.id = rn.rollout_id \
         WHERE rn.node_id = nodes.id ORDER BY r.created_at DESC LIMIT 1) AS update_status, \
      config_version, \
-     user_version, xray_inbounds, server_addr, region, last_error, last_error_at, failed_config_version, \
+     user_version, xray_inbounds, server_addr, region, tls_domain, agent_addr::text AS agent_addr, last_error, last_error_at, failed_config_version, \
      failed_user_version, agent_protocol, lease_expires_at, \
      GREATEST(0, EXTRACT(EPOCH FROM lease_expires_at - now()))::bigint AS lease_remaining_seconds, \
      traffic_max_rate_bytes_per_sec, deleting_at, last_seen_at, created_at, \
@@ -1242,6 +1300,10 @@ pub struct CreateNodeReq {
     /// Public address clients dial (IP or domain).
     #[serde(default)]
     pub server_addr: Option<String>,
+    /// W10: the node's TLS domain ("节点域名"): the agent obtains its
+    /// certificate automatically; TLS templates default to it.
+    #[serde(default)]
+    pub tls_domain: Option<String>,
     /// Inbounds from templates (`nodetpl::InboundSpec`) ...
     #[serde(default)]
     pub templates: Option<Vec<crate::nodetpl::InboundSpec>>,
@@ -1321,13 +1383,21 @@ pub async fn create_node(
     ApiJson(req): ApiJson<CreateNodeReq>,
 ) -> Result<(axum::http::StatusCode, Json<EnrollmentView>), ApiError> {
     user.require_admin()?;
+    let tls_domain = match req.tls_domain.as_deref().map(str::trim) {
+        Some(d) if !d.is_empty() => Some(crate::nodetpl::node_tls_domain(d)?),
+        _ => None,
+    };
     let inbounds = match (&req.templates, &req.inbounds) {
         (Some(_), Some(_)) => {
             return Err(ApiError::bad_request(
                 "give either templates or inbounds, not both",
             ))
         }
-        (Some(t), None) => Some(serde_json::Value::Array(crate::nodetpl::render(t, &[])?)),
+        (Some(t), None) => Some(serde_json::Value::Array(crate::nodetpl::render(
+            t,
+            &[],
+            tls_domain.as_deref(),
+        )?)),
         (None, Some(raw)) => Some(raw.clone()),
         (None, None) => None,
     };
@@ -1366,6 +1436,7 @@ pub async fn create_node(
         tags: req.tags.clone().map(Some),
         traffic_rate: req.traffic_rate.map(Some),
         connect_overrides: req.connect_overrides.clone().map(Some),
+        tls_domain: tls_domain.clone().map(Some),
         ..Default::default()
     };
     if w11.has_node_fields() {
@@ -1458,6 +1529,11 @@ pub struct UpdateNodeReq {
     /// `nodemeta::apply_set_node_groups`, not `apply_update_node`.
     #[serde(default, deserialize_with = "double_option")]
     pub group_ids: Option<Option<Vec<Uuid>>>,
+    /// W10: the node's TLS domain (automatic certificate); null (or "")
+    /// clears it (back to certificate files installed by hand). A change
+    /// bumps config_version (the agent gets it with a Snapshot).
+    #[serde(default, deserialize_with = "double_option")]
+    pub tls_domain: Option<Option<String>>,
 }
 
 impl UpdateNodeReq {
@@ -1474,6 +1550,7 @@ impl UpdateNodeReq {
             || self.tags.is_some()
             || self.traffic_rate.is_some()
             || self.connect_overrides.is_some()
+            || self.tls_domain.is_some()
     }
 }
 
@@ -1507,6 +1584,13 @@ async fn apply_update_node(
     let rate = non_null("traffic_rate", &req.traffic_rate)?
         .map(crate::nodemeta::rate_permille)
         .transpose()?;
+    let tls_domain: Option<Option<String>> = match &req.tls_domain {
+        None => None,
+        Some(d) => Some(match d.as_deref().map(str::trim) {
+            Some(d) if !d.is_empty() => Some(crate::nodetpl::node_tls_domain(d)?),
+            _ => None,
+        }),
+    };
     if let Some(Some(r)) = req.traffic_max_rate_bytes_per_sec {
         if r <= 0 {
             return Err(ApiError::bad_request(
@@ -1543,8 +1627,8 @@ async fn apply_update_node(
     });
 
     refuse_if_deleting(conn, id).await?;
-    let (was_enabled, inbounds): (bool, serde_json::Value) =
-        sqlx::query_as("SELECT enabled, xray_inbounds FROM nodes WHERE id = $1")
+    let (was_enabled, inbounds, was_domain): (bool, serde_json::Value, Option<String>) =
+        sqlx::query_as("SELECT enabled, xray_inbounds, tls_domain FROM nodes WHERE id = $1")
             .bind(id)
             .fetch_one(&mut *conn)
             .await?;
@@ -1554,6 +1638,8 @@ async fn apply_update_node(
         Some(Some(v)) => Some(crate::nodemeta::connect_overrides(v, &inbounds)?),
     };
     let toggles = enabled.is_some_and(|e| e != was_enabled);
+    // The agent learns the domain from a Snapshot (ConfigSnapshot.acme).
+    let domain_changes = tls_domain.as_ref().is_some_and(|d| *d != was_domain);
 
     let mut qb = sqlx::QueryBuilder::new("UPDATE nodes SET ");
     let mut set = qb.separated(", ");
@@ -1561,8 +1647,11 @@ async fn apply_update_node(
     if let Some(v) = enabled {
         set.push("enabled = ").push_bind_unseparated(v);
     }
-    if toggles {
+    if toggles || domain_changes {
         set.push("config_version = config_version + 1");
+    }
+    if let Some(v) = tls_domain {
+        set.push("tls_domain = ").push_bind_unseparated(v);
     }
     if let Some(v) = name {
         set.push("name = ").push_bind_unseparated(v);
@@ -1623,7 +1712,7 @@ async fn apply_update_node(
         Some(after),
     )
     .await?;
-    Ok(toggles)
+    Ok(toggles || domain_changes)
 }
 
 pub async fn update_node(
@@ -2456,6 +2545,32 @@ mod tests {
         assert!(w.contains("expired at"), "{w}");
     }
 
+    /// W10: an old agent or an inbound naming another SNI keeps the
+    /// automatic certificate from working; said on the node.
+    #[test]
+    fn tls_domain_warnings_flag_old_agents_and_other_names() {
+        let tls = |sni: &str| {
+            json!([{"tag": "t", "streamSettings": {"security": "tls", "tlsSettings": {
+                "serverName": sni,
+                "certificates": [{"certificateFile": crate::nodetpl::TLS_CERT_FILE, "keyFile": crate::nodetpl::TLS_KEY_FILE}]}}}])
+        };
+        let d = Some("n1.example.com");
+        assert!(tls_domain_warnings(None, &tls("x.example.com"), Some(5)).is_empty());
+        assert!(tls_domain_warnings(d, &tls("n1.example.com"), Some(6)).is_empty());
+        assert!(
+            tls_domain_warnings(d, &tls("N1.example.com"), None).is_empty(),
+            "not connected yet"
+        );
+        assert!(
+            tls_domain_warnings(d, &json!([]), Some(1)).is_empty(),
+            "no certificate needed"
+        );
+        let w = tls_domain_warnings(d, &tls("n1.example.com"), Some(5));
+        assert!(w.len() == 1 && w[0].contains("too old"), "{w:?}");
+        let w = tls_domain_warnings(d, &tls("other.example.com"), Some(6));
+        assert!(w.len() == 1 && w[0].contains("other.example.com"), "{w:?}");
+    }
+
     #[test]
     fn prune_keeps_only_matching_tag_and_protocol() {
         let inb = inbound_protocols(&json!([
@@ -2792,6 +2907,66 @@ mod tests {
                 }),
                 vec![n1],
                 false,
+            ),
+            (
+                "tls domain (W10: the agent gets it with a Snapshot)",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        apply_update_node(
+                            c,
+                            &crate::audit::Actor::test(),
+                            n1,
+                            &UpdateNodeReq {
+                                tls_domain: Some(Some("N1.Example.com".into())),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                }),
+                vec![n1],
+                true,
+            ),
+            (
+                "same tls domain (no-op)",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        apply_update_node(
+                            c,
+                            &crate::audit::Actor::test(),
+                            n1,
+                            &UpdateNodeReq {
+                                tls_domain: Some(Some("n1.example.com".into())),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                }),
+                vec![n1],
+                false,
+            ),
+            (
+                "clear tls domain",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        apply_update_node(
+                            c,
+                            &crate::audit::Actor::test(),
+                            n1,
+                            &UpdateNodeReq {
+                                tls_domain: Some(None),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                }),
+                vec![n1],
+                true,
             ),
             (
                 "set inbounds",

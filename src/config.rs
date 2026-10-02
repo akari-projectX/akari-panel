@@ -23,6 +23,22 @@ pub struct PanelConfig {
     pub auth: AuthConfig,
     pub tls_ask: TlsAskConfig,
     pub probe: ProbeConfig,
+    pub acme: AcmeConfig,
+}
+
+/// Automatic node certificates (W10, agent protocol 6): what the panel
+/// tells agents of nodes with a TLS domain (ConfigSnapshot.acme). The agent
+/// does the ACME work itself.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AcmeConfig {
+    /// ACME directory URL; empty = Let's Encrypt production. Staging:
+    /// "https://acme-staging-v02.api.letsencrypt.org/directory". Takes
+    /// effect on each node's next Snapshot.
+    pub directory_url: String,
+    /// Optional contact e-mail of the agents' ACME accounts (expiry notices
+    /// from the CA).
+    pub email: String,
 }
 
 /// W11 latency tests (`nodestat.rs`): the agents' url-test from their own
@@ -429,6 +445,7 @@ impl Default for PanelConfig {
             auth: AuthConfig::default(),
             tls_ask: TlsAskConfig::default(),
             probe: ProbeConfig::default(),
+            acme: AcmeConfig::default(),
         }
     }
 }

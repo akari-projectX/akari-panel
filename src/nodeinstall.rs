@@ -7,8 +7,12 @@
 //! replaces any earlier token of the node). The admin runs
 //!
 //! ```text
-//! curl -fsSL https://<panel>/<prefix>/install/<token> | sudo sh
+//! curl -fsSL https://<panel>/<prefix>/install/<token> | sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'
 //! ```
+//!
+//! (`AS_ROOT`: as root the script runs directly, otherwise through sudo,
+//! so the same line works on root-only images without sudo and for sudo
+//! users; it only needs some shell that runs `sh -c '…'`.)
 //!
 //! on the node. `GET /{prefix}/install/{token}` serves a POSIX sh script
 //! with the bootstrap file inside (panel address, server name, CA, the same
@@ -453,6 +457,12 @@ pub async fn apply_issue(
     .await
 }
 
+/// The end of every install command: run the script as root, directly
+/// when already root (images without sudo), else through sudo. stdin (the
+/// script) passes through `sh -c` untouched to the shell that runs it; a
+/// missing sudo fails (exec) instead of running the script unprivileged.
+pub const AS_ROOT: &str = r#"sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'"#;
+
 pub async fn view(
     state: &AppState,
     p: Prepared,
@@ -462,12 +472,12 @@ pub async fn view(
     let url = format!("{}/{}/install/{token}", p.origin, state.route_prefix());
     let (command, command_wget) = match &p.pin {
         Some(pin) => (
-            format!("curl -fsSL --proto '=https' -k --pinnedpubkey '{pin}' '{url}' | sudo sh"),
+            format!("curl -fsSL --proto '=https' -k --pinnedpubkey '{pin}' '{url}' | {AS_ROOT}"),
             None,
         ),
         None => (
-            format!("curl -fsSL '{url}' | sudo sh"),
-            Some(format!("wget -qO- '{url}' | sudo sh")),
+            format!("curl -fsSL '{url}' | {AS_ROOT}"),
+            Some(format!("wget -qO- '{url}' | {AS_ROOT}")),
         ),
     };
     let releases = latest_releases(state.pg()).await?;
@@ -526,6 +536,8 @@ struct Link {
     /// before 0060: the current node endpoint).
     panel_addr: Option<String>,
     server_name: Option<String>,
+    /// W10: the node's TLS domain (automatic certificate).
+    tls_domain: Option<String>,
 }
 
 /// Rate limit, token shape, then one lookup that only matches a live
@@ -561,10 +573,11 @@ async fn live_link(state: &AppState, ip: Option<IpAddr>, token: &str) -> Option<
         serde_json::Value,
         Option<String>,
         Option<String>,
+        Option<String>,
     );
     let row: Option<Row> = match sqlx::query_as(
         "SELECT e.node_id, e.token_hash, e.install_origin, e.install_pin, e.expires_at, \
-                n.name, n.xray_inbounds, e.panel_addr, e.server_name \
+                n.name, n.xray_inbounds, e.panel_addr, e.server_name, n.tls_domain \
          FROM node_enrollments e JOIN nodes n ON n.id = e.node_id \
          WHERE e.token_hash = $1 AND e.used_at IS NULL AND e.expires_at > now() \
            AND e.install_origin IS NOT NULL AND n.deleting_at IS NULL",
@@ -580,7 +593,18 @@ async fn live_link(state: &AppState, ip: Option<IpAddr>, token: &str) -> Option<
             return None;
         }
     };
-    let (node, stored, origin, pin, expires_at, name, inbounds, panel_addr, server_name) = row?;
+    let (
+        node,
+        stored,
+        origin,
+        pin,
+        expires_at,
+        name,
+        inbounds,
+        panel_addr,
+        server_name,
+        tls_domain,
+    ) = row?;
     if !bool::from(subtle::ConstantTimeEq::ct_eq(
         stored.as_slice(),
         hash.as_slice(),
@@ -596,6 +620,7 @@ async fn live_link(state: &AppState, ip: Option<IpAddr>, token: &str) -> Option<
         inbounds,
         panel_addr,
         server_name,
+        tls_domain,
     })
 }
 
@@ -658,7 +683,14 @@ fn render_script(
     };
     let fallback = &state.cfg().install.fallback_binary_url;
     let needs_cert = crate::nodetpl::needs_certificate(&link.inbounds);
-    let vars: [(&str, String); 15] = [
+    // W10: the agent obtains the certificate itself (only where an inbound
+    // needs one, like ConfigSnapshot.acme).
+    let acme_domain = link
+        .tls_domain
+        .as_deref()
+        .filter(|_| needs_cert)
+        .unwrap_or("");
+    let vars: [(&str, String); 16] = [
         ("@@UNINSTALL_FN@@", UNINSTALL_FN.trim_end().to_string()),
         ("@@NODE_NAME@@", tame(&link.name)),
         ("@@EXPIRES@@", link.expires_at.to_rfc3339()),
@@ -670,6 +702,7 @@ fn render_script(
             sq(link.pin.as_deref().unwrap_or(""))?.to_string(),
         ),
         ("@@NEEDS_CERT@@", if needs_cert { "1" } else { "0" }.into()),
+        ("@@TLS_DOMAIN@@", sq(acme_domain)?.to_string()),
         ("@@FALLBACK_URL@@", sq(fallback)?.to_string()),
         ("@@SHA_AMD64@@", rel("amd64", |r| &r.sha256)),
         ("@@SHA_ARM64@@", rel("arm64", |r| &r.sha256)),

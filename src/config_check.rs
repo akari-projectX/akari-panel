@@ -62,6 +62,7 @@ impl PanelConfig {
         self.validate_payments(&mut r);
         self.validate_settings_defaults(&mut r);
         self.validate_probe(&mut r);
+        self.validate_acme(&mut r);
         r
     }
 
@@ -89,6 +90,26 @@ impl PanelConfig {
         }
         if p.manual_cooldown_secs > 86_400 {
             r.err("probe.manual_cooldown_secs: at most 86400");
+        }
+    }
+
+    /// `[acme]` (W10): what agents are told; they validate again.
+    fn validate_acme(&self, r: &mut Report) {
+        let a = &self.acme;
+        if !a.directory_url.is_empty() {
+            match a.directory_url.parse::<axum::http::Uri>() {
+                Ok(u) if u.scheme_str() == Some("https") && u.authority().is_some() => {}
+                _ => r.err("acme.directory_url must be an https URL (or empty for Let's Encrypt)"),
+            }
+        }
+        let e = &a.email;
+        if !e.is_empty()
+            && (e.len() > 254
+                || e.chars().any(|c| c.is_whitespace() || c.is_control())
+                || e.split_once('@')
+                    .is_none_or(|(l, d)| l.is_empty() || !d.contains('.')))
+        {
+            r.err("acme.email must be an e-mail address (or empty)");
         }
     }
 
@@ -883,6 +904,20 @@ mod tests {
             !w.iter().any(|m| m.contains("cookie_secure = false")),
             "{w:?}"
         );
+    }
+
+    #[test]
+    fn acme_section_is_checked() {
+        assert!(!has(&errors(&cfg("")), "acme."));
+        let ok = cfg("[acme]\ndirectory_url = \"https://acme-staging-v02.api.letsencrypt.org/directory\"\nemail = \"ops@example.com\"\n");
+        assert!(!has(&errors(&ok), "acme."), "{:?}", errors(&ok));
+        let bad = cfg("[acme]\ndirectory_url = \"http://ca.example/dir\"\nemail = \"nobody\"\n");
+        let e = errors(&bad);
+        assert!(
+            has(&e, "acme.directory_url") && has(&e, "acme.email"),
+            "{e:?}"
+        );
+        assert!(toml::from_str::<PanelConfig>("[acme]\nstaging = true\n").is_err());
     }
 
     #[test]
