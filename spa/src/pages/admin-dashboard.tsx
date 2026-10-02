@@ -129,8 +129,8 @@ function TrafficCard({ d }: { d: Dashboard }) {
         </CardTitle>
         <CardDescription>全部节点每日上下行（UTC 日），合计 {humanBytes(total)}。</CardDescription>
       </CardHeader>
-      <CardContent className="grid gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2">
+      <CardContent className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <div className="min-w-0 lg:col-span-2">
           <LineChart
             title="每日流量"
             times={days.map((x) => `${x}T12:00:00Z`)}
@@ -150,7 +150,7 @@ function TrafficCard({ d }: { d: Dashboard }) {
               {d.traffic_top_nodes.map((n) => (
                 <li key={n.node_id} className="flex items-baseline justify-between gap-3">
                   <a
-                    className="truncate underline-offset-2 hover:underline"
+                    className="min-w-0 truncate underline-offset-2 hover:underline"
                     href={`${adminBase}/nodes/${n.node_id}`}
                     onClick={go(`nodes/${n.node_id}`)}
                   >
@@ -239,8 +239,8 @@ export function AdminDashboard() {
             </div>
           </section>
           <TrafficCard d={d} />
-          <div className="grid gap-6 lg:grid-cols-3">
-            <Card className="lg:col-span-1">
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+            <Card className="min-w-0 lg:col-span-1">
               <CardHeader>
                 <CardTitle>
                   <h2>待处理</h2>
@@ -254,7 +254,7 @@ export function AdminDashboard() {
                 <Todo label="发送失败的邮件" count={d.pending.mail_failed} view="settings/failed-mail" />
               </CardContent>
             </Card>
-            <Card className="lg:col-span-2">
+            <Card className="min-w-0 lg:col-span-2">
               <CardHeader>
                 <CardTitle>
                   <h2>最新订单</h2>
