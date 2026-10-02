@@ -489,11 +489,15 @@ instead of being rendered as a config the client rejects.
 per-user keys — both are refused (400). `settings.password` is the server PSK (base64, 16 bytes for
 aes-128, 32 for aes-256) and `settings.clients` must be `[]`; each user gets their own key and
 clients connect with `server_psk:user_key`. Changing the method reissues every user key (the
-subscription must be refreshed). **Removing a user from a Shadowsocks inbound rebuilds the node**
-(a Snapshot: every connection on that node drops once). xray's multi-user Shadowsocks inbound
-cannot drop a user while running without racing its own connection path (the removed user's
-in-flight handshake can run as another user, or crash the agent), so the agent refuses such
-deltas and the panel sends a Snapshot directly; additions stay live deltas.
+subscription must be refreshed). xray's multi-user Shadowsocks inbound cannot drop a user from its
+table while running without racing its own connection path (the removed user's in-flight handshake
+can run as another user, or crash the agent). Agents of protocol 5 and later (W9) therefore never
+drop one: a **removed user is revoked in the agent's gate and their key stays in xray's table as a
+tombstone**, so removing (and re-adding the same key, e.g. a renewed plan) is a live delta and other
+users' connections are untouched. **Rotating a user's key still rebuilds the node** (a Snapshot:
+every connection on that node drops once), as does a removal past the tombstone bound
+(max(1024, live users) per inbound; the rebuild compacts). With an older agent, every removal from a
+Shadowsocks inbound rebuilds the node. Additions are always live deltas.
 
 **Hysteria 2** uses the node certificate like the TLS templates; `hysteriaSettings.auth` must not
 be set (a shared password would bypass per-user auth); bandwidth/congestion settings are left at

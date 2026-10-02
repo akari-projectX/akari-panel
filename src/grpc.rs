@@ -180,6 +180,15 @@ pub const MIN_AGENT_PROTOCOL: u32 = 1;
 /// (older ones ignore the field: NodeView warns).
 pub const SPEED_LIMIT_PROTOCOL: u32 = 4;
 
+/// W9: agents from this protocol on remove Shadowsocks 2022 users in place
+/// (the credential stays in xray's table as a gate-refused tombstone), so a
+/// removal on a Shadowsocks node is a delta. A rotation still needs a
+/// Snapshot (xray's table holds one entry per user), and the agent answers
+/// BASE_MISMATCH for what it cannot apply in place (a re-add with a new key
+/// over a tombstone, too many tombstones): the panel then sends a Snapshot,
+/// which also compacts. Older agents get a Snapshot for any removal there.
+pub const SS_TOMBSTONE_PROTOCOL: u32 = 5;
+
 /// A node's user set as the agent must run it: user id -> inbound tag ->
 /// (protocol, account_json). Users without any inbound are absent. Built
 /// with the proto's collapsing rules (a later InboundUser for the same tag,
@@ -401,10 +410,11 @@ pub struct SetDigest {
     /// W7: non-zero speed limits (bytes/s) of the users, by user.
     limits: BTreeMap<UserKey, u64>,
     /// W8: the inbounds include a Shadowsocks one. The agent refuses
-    /// deltas that remove/rotate users there (xray's multi-user SS2022
-    /// inbound cannot safely shrink while running; akari-agent
-    /// `shrinkUnsafe`), so such changes go out as a Snapshot right away
-    /// instead of a delta the agent answers BASE_MISMATCH.
+    /// deltas that rotate users there (xray's multi-user SS2022 inbound
+    /// cannot safely shrink while running; akari-agent `shrinkUnsafe`) —
+    /// and, below `SS_TOMBSTONE_PROTOCOL`, removals too — so such changes
+    /// go out as a Snapshot right away instead of a delta the agent
+    /// answers BASE_MISMATCH.
     shrink_unsafe: bool,
 }
 
@@ -486,6 +496,17 @@ fn drops_credential_digest(base: &SetDigest, want: &SetDigest) -> bool {
     base.users
         .iter()
         .any(|(user, d)| want.users.get(user) != Some(d))
+}
+
+/// Like `drops_credential_digest`, but only users that stay with changed
+/// credentials count (a user that is gone does not): on a Shadowsocks node
+/// of a protocol >= `SS_TOMBSTONE_PROTOCOL` agent, removals are deltas and
+/// rotations Snapshots. Conservative: any change of a staying user's
+/// credentials counts, on any inbound.
+fn rotates_credential_digest(base: &SetDigest, want: &SetDigest) -> bool {
+    base.users
+        .iter()
+        .any(|(user, d)| want.users.get(user).is_some_and(|w| w != d))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -663,8 +684,18 @@ impl SyncState {
         if bv.0 != desired.0 || bv == desired || bset.inbounds != want.inbounds {
             return None;
         }
-        if (self.remove_rebuild || bset.shrink_unsafe) && drops_credential_digest(&bset, want) {
+        if self.remove_rebuild && drops_credential_digest(&bset, want) {
             return None;
+        }
+        if bset.shrink_unsafe {
+            let unsafe_change = if self.protocol >= SS_TOMBSTONE_PROTOCOL {
+                rotates_credential_digest(&bset, want)
+            } else {
+                drops_credential_digest(&bset, want)
+            };
+            if unsafe_change {
+                return None;
+            }
         }
         Some((bv, bset))
     }
@@ -2914,7 +2945,9 @@ mod tests {
 
     /// W8: on a node with a Shadowsocks inbound, removals/rotations are
     /// Snapshots whatever the remove mode (the agent would refuse the
-    /// delta); additions stay deltas.
+    /// delta); additions stay deltas. W9: from SS_TOMBSTONE_PROTOCOL on,
+    /// removals (and re-adds) are deltas too; rotations stay Snapshots, as
+    /// does everything that drops a credential in remove_mode=rebuild.
     #[test]
     fn shadowsocks_node_shrinks_by_snapshot() {
         let t0 = Instant::now();
@@ -2928,12 +2961,31 @@ mod tests {
         ]);
         let remove = with(&[op("a", &[("t", "1")])]);
         let rotate = with(&[op("a", &[("t", "1")]), op("b", &[("t", "9")])]);
-        for (want, delta) in [(&add, true), (&remove, false), (&rotate, false)] {
-            let mut s = SyncState::default();
-            s.on_hello((0, 0), MIN_AGENT_PROTOCOL, "");
-            converge(&mut s, (2, 5), &s1, t0);
+        let readd = s1.clone();
+        for (protocol, rebuild, from, want, delta) in [
+            (MIN_AGENT_PROTOCOL, false, &s1, &add, true),
+            (MIN_AGENT_PROTOCOL, false, &s1, &remove, false),
+            (MIN_AGENT_PROTOCOL, false, &s1, &rotate, false),
+            (SS_TOMBSTONE_PROTOCOL - 1, false, &s1, &remove, false),
+            (SS_TOMBSTONE_PROTOCOL, false, &s1, &add, true),
+            (SS_TOMBSTONE_PROTOCOL, false, &s1, &remove, true),
+            (SS_TOMBSTONE_PROTOCOL, false, &remove, &readd, true),
+            (SS_TOMBSTONE_PROTOCOL, false, &s1, &rotate, false),
+            (SS_TOMBSTONE_PROTOCOL, true, &s1, &remove, false),
+            (SS_TOMBSTONE_PROTOCOL, true, &s1, &rotate, false),
+        ] {
+            let mut s = SyncState {
+                remove_rebuild: rebuild,
+                ..Default::default()
+            };
+            s.on_hello((0, 0), protocol, "");
+            converge(&mut s, (2, 5), from, t0);
             let plan = d_set(&mut s, (2, 6), want);
-            assert_eq!(matches!(plan, Some(Plan::Delta { .. })), delta, "{plan:?}");
+            assert_eq!(
+                matches!(plan, Some(Plan::Delta { .. })),
+                delta,
+                "protocol={protocol} rebuild={rebuild} {plan:?}"
+            );
         }
         assert!(has_shadowsocks(r#"[{"protocol":"Shadowsocks"}]"#));
         assert!(!has_shadowsocks(
