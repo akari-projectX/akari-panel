@@ -130,7 +130,8 @@ export const zh = {
     forgotLink: "忘记密码？",
   },
   register: {
-    subtitleNoVerify: "使用邮箱和密码注册，注册后用邮箱登录。邮箱暂不验证：之后可在「账户」中验证，验证后才能用于找回密码。",
+    subtitleNoVerify:
+      "使用邮箱和密码注册，注册后用邮箱登录。邮箱暂不验证：之后可在「账户」中验证，验证后才能用于找回密码。",
     title: "注册",
     subtitle: "使用邮箱注册账号，注册后可使用邮箱登录。",
     email: "邮箱",
@@ -179,7 +180,8 @@ export const zh = {
     emailTitle: "邮箱",
     emailNone: "尚未绑定邮箱。绑定后可以接收到期提醒和支付回执，并能通过邮件找回密码。",
     emailVerified: "{email} · 已验证",
-    emailUnverified: "{email} · 未验证：不会收到邮件，也不能用于找回密码。站点开启邮件发送后，在下方向该邮箱发送验证码即可验证。",
+    emailUnverified:
+      "{email} · 未验证：不会收到邮件，也不能用于找回密码。站点开启邮件发送后，在下方向该邮箱发送验证码即可验证。",
     bind: "绑定邮箱",
     change: "更换邮箱",
     newEmail: "邮箱地址",

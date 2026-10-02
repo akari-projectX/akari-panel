@@ -54,6 +54,9 @@ PREFIX=$("$PANEL" -c "$DIR/panel.toml" info | awk '/route prefix/{sub(/^\//,"",$
 # W16: payments on (throwaway keys, a gateway nobody listens on) so the
 # shop, coupons and balance can be driven; the e2e purchases are fully
 # covered by a coupon / the balance and never reach the gateway.
+# W24/R40: [payments.alipay] is OBSOLETE — kept here on purpose: the first
+# start imports it once into 系统设置 → 支付 as a payment method (the
+# upgrade path), which the W24 test then sees in the console.
 ( umask 077
   openssl genrsa -out "$DIR/app-key.pem" 2048 2>/dev/null
   openssl genrsa -out "$DIR/alipay-key.pem" 2048 2>/dev/null )
@@ -97,7 +100,7 @@ cd spa
 E2E_BASE="http://$E2E_HOST:$PORT/$PREFIX/app" \
   E2E_ADMIN=e2e-admin E2E_ADMIN_PW="$ADMIN_PW" \
   E2E_USER=e2e-user E2E_USER_PW="$USER_PW" \
-  E2E_QUOTA_USER=e2e-quota E2E_DB="$E2E_DB" \
+  E2E_QUOTA_USER=e2e-quota E2E_DB="$E2E_DB" E2E_PAY_DIR="$DIR" \
   E2E_MAILPIT=http://127.0.0.1:18026/api/v1 E2E_SMTP_PORT=11026 \
   NO_PROXY='*' no_proxy='*' \
   npx playwright test "$@"

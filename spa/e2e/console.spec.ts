@@ -904,3 +904,81 @@ test("W15: 系统设置 注册/邮件, sign up by email code, reset the password
   expect(problems).toEqual([]);
   await ctx.close();
 });
+
+test("W24: 系统设置 → 支付 (imported + added method, 测试连接), sign-up without email verification, method picker", async ({
+  browser,
+}) => {
+  test.skip(!secret, "needs the enrollment test");
+  const payDir = process.env.E2E_PAY_DIR ?? "";
+  test.skip(!payDir, "needs scripts/e2e.sh");
+  const { readFileSync } = await import("node:fs");
+  const actx = await browser.newContext({ locale: "zh-CN" });
+  const ap = await actx.newPage();
+  const adminProblems = watch(ap);
+  await ap.goto(BASE);
+  const next = await nextCode(secret, usedStep);
+  usedStep = next.step;
+  await login(ap, ADMIN, ADMIN_PW, next.code);
+  await expect(ap).toHaveURL(ADMIN_BASE);
+  await ap.goto(`${ADMIN_BASE}/settings/payments`);
+  // The obsolete panel.toml section was imported once at the first start.
+  await expect(ap.getByRole("heading", { name: "支付方式" })).toBeVisible();
+  const imported = ap.locator("li", { hasText: "支付宝当面付" }).first();
+  await expect(imported).toContainText("支付宝");
+  await expect(ap.getByText(/panel.toml 中仍有已废弃的 \[payments\] 段/)).toBeVisible();
+  // 测试连接 reports the (unreachable) gateway in Chinese.
+  await imported.getByRole("button", { name: "测试连接" }).click();
+  await expect(imported.getByRole("alert")).toContainText("无法连接支付宝网关");
+  // Add a second method through the form (keys pasted; never shown back).
+  await ap.getByLabel("添加支付方式").selectOption("alipay_f2f");
+  await ap.getByRole("button", { name: "添加", exact: true }).click();
+  await ap.getByLabel("名称（用户可见）").fill("支付宝 B");
+  await ap.getByLabel("环境").selectOption("custom");
+  await ap.getByLabel("网关地址（仅自定义）").fill("http://127.0.0.1:9/gateway.do");
+  await ap.getByLabel("APPID").fill("2021000000000002");
+  await ap.getByLabel("应用私钥").fill(readFileSync(`${payDir}/app-key.pem`, "utf8"));
+  await ap.getByLabel("支付宝公钥").fill(readFileSync(`${payDir}/alipay-pub.pem`, "utf8"));
+  await ap.getByLabel("启用（用户下单时可选）").check();
+  await ap.getByRole("button", { name: "保存", exact: true }).click();
+  const added = ap.locator("li", { hasText: "支付宝 B" });
+  await expect(added).toContainText("已启用");
+  await added.getByRole("button", { name: "编辑" }).click();
+  await expect(ap.getByText(/已设置（公钥指纹/)).toBeVisible();
+  await expect(ap.getByLabel("应用私钥")).toHaveValue("");
+  await expect(ap.getByLabel("异步通知地址")).toHaveValue(/\/pay\/[0-9a-f-]{36}\/notify$/);
+  await ap.getByRole("button", { name: "取消" }).click();
+  // 注册: no email verification.
+  await ap.getByRole("tab", { name: "注册" }).click();
+  await ap.getByLabel("注册需要邮箱验证").selectOption("off");
+  await ap.getByRole("button", { name: "保存注册设置" }).click();
+  await expect(ap.getByText("已保存。").first()).toBeVisible();
+  expect(adminProblems).toEqual([]);
+  await actx.close();
+
+  // Sign up with email + password only (the proof of work runs in the page).
+  const ctx = await browser.newContext({ locale: "en-US" });
+  const page = await ctx.newPage();
+  const problems = watch(page);
+  const email = `e2e-nov-${Date.now()}@e2e.test`;
+  await page.goto(`${BASE}/register`);
+  await expect(page.getByLabel("Email code")).toHaveCount(0);
+  await page.getByLabel("Email", { exact: true }).fill(email);
+  await page.getByLabel("Password", { exact: true }).fill("e2e-password-1");
+  await page.getByLabel("Repeat password").fill("e2e-password-1");
+  await page.getByRole("button", { name: "Sign up" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Dashboard" })).toBeVisible({ timeout: 20_000 });
+  await page.goto(`${BASE}/account`);
+  await expect(page.getByText(`${email} · not verified`)).toBeVisible();
+  // Two methods enabled: the checkout asks which one.
+  await page.goto(`${BASE}/shop`);
+  await page.getByRole("button", { name: "Buy", exact: true }).first().click();
+  const sheet = page.getByRole("dialog", { name: "Confirm your order" });
+  await expect(sheet.getByRole("group", { name: "Payment method" })).toBeVisible();
+  const payBtn = sheet.getByRole("button", { name: /^Pay / });
+  await expect(payBtn).toBeDisabled();
+  await sheet.getByLabel("支付宝 B").check();
+  await expect(payBtn).toBeEnabled();
+  await sheet.getByRole("button", { name: "Cancel" }).click();
+  expect(problems).toEqual([]);
+  await ctx.close();
+});

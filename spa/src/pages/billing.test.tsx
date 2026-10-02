@@ -66,7 +66,7 @@ const shopPlan = (over: Partial<Shop["plans"][number]> = {}): Shop["plans"][numb
 
 const shop = (over: Partial<Shop> = {}): Shop => ({
   enabled: true,
-  methods: [{ id: 'm1', kind: 'alipay_f2f', display_name: '支付宝', icon: null }],
+  methods: [{ id: "m1", kind: "alipay_f2f", display_name: "支付宝", icon: null }],
   current: null,
   credit_cents: 0,
   balance_cents: 0,

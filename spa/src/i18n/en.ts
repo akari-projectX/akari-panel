@@ -130,7 +130,8 @@ export const en: Messages = {
     forgotLink: "Forgot password?",
   },
   register: {
-    subtitleNoVerify: "Sign up with your email and a password, then log in with that email. The address is not verified yet: verify it later under Account to use it for password resets.",
+    subtitleNoVerify:
+      "Sign up with your email and a password, then log in with that email. The address is not verified yet: verify it later under Account to use it for password resets.",
     title: "Sign up",
     subtitle: "Create an account with your email address; you can then sign in with it.",
     email: "Email",
@@ -181,7 +182,8 @@ export const en: Messages = {
     emailNone:
       "No email address yet. Add one to receive expiry reminders and receipts, and to reset your password by email.",
     emailVerified: "{email} · verified",
-    emailUnverified: "{email} · not verified: no mail and no password reset. Once the site sends mail, send a code to this address below to verify it.",
+    emailUnverified:
+      "{email} · not verified: no mail and no password reset. Once the site sends mail, send a code to this address below to verify it.",
     bind: "Add email",
     change: "Change email",
     newEmail: "Email address",
