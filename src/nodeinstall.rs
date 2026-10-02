@@ -65,6 +65,9 @@ use crate::state::AppState;
 const SCRIPT: &str = include_str!("nodeinstall.sh");
 const UNINSTALL_FN: &str = include_str!("nodeinstall-uninstall.sh");
 const UNIT: &str = include_str!("../deploy/systemd/akari-agent.service");
+/// W18: the agent's privileged updater (its state directory is noexec).
+const UNIT_UPDATE_SERVICE: &str = include_str!("../deploy/systemd/akari-agent-update.service");
+const UNIT_UPDATE_PATH: &str = include_str!("../deploy/systemd/akari-agent-update.path");
 
 /// Architectures the installer knows (agent release names).
 pub const ARCHES: [&str; 2] = ["amd64", "arm64"];
@@ -671,8 +674,10 @@ fn render_script(
         link.expires_at,
     );
     for (body, delim) in [
-        (&bootstrap, "AKARI_BOOTSTRAP_EOF"),
-        (&UNIT.to_string(), "AKARI_UNIT_EOF"),
+        (bootstrap.as_str(), "AKARI_BOOTSTRAP_EOF"),
+        (UNIT, "AKARI_UNIT_EOF"),
+        (UNIT_UPDATE_SERVICE, "AKARI_UPDATE_SERVICE_EOF"),
+        (UNIT_UPDATE_PATH, "AKARI_UPDATE_PATH_EOF"),
     ] {
         if body.lines().any(|l| l.trim() == delim) {
             anyhow::bail!("heredoc delimiter inside the payload");
@@ -690,7 +695,7 @@ fn render_script(
         .as_deref()
         .filter(|_| needs_cert)
         .unwrap_or("");
-    let vars: [(&str, String); 16] = [
+    let vars: [(&str, String); 18] = [
         ("@@UNINSTALL_FN@@", UNINSTALL_FN.trim_end().to_string()),
         ("@@NODE_NAME@@", tame(&link.name)),
         ("@@EXPIRES@@", link.expires_at.to_rfc3339()),
@@ -716,6 +721,14 @@ fn render_script(
         ),
         ("@@BOOTSTRAP@@", bootstrap.trim_end().to_string()),
         ("@@UNIT@@", UNIT.trim_end().to_string()),
+        (
+            "@@UNIT_UPDATE_SERVICE@@",
+            UNIT_UPDATE_SERVICE.trim_end().to_string(),
+        ),
+        (
+            "@@UNIT_UPDATE_PATH@@",
+            UNIT_UPDATE_PATH.trim_end().to_string(),
+        ),
     ];
     let mut out = SCRIPT.to_string();
     for (k, v) in vars {

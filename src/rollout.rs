@@ -884,7 +884,7 @@ pub async fn on_status(
     let detail = if err.is_empty() {
         format!("{label} ({})", s.version)
     } else {
-        format!("{label} ({}): {err}", s.version)
+        format!("{label} ({}): {err}{}", s.version, failure_hint(&err))
     };
     let set = if terminal {
         "status = 'failed', finished_at = now(), "
@@ -908,9 +908,35 @@ pub async fn on_status(
     Ok(())
 }
 
+/// W18: what the admin can do about a failed update (shown in the rollout
+/// and node views).
+pub(crate) fn failure_hint(err: &str) -> &'static str {
+    if err.contains("updater unit missing") || err.contains("did not pick up the request") {
+        " — 节点缺少更新服务（akari-agent-update）：请在节点上重新运行一次安装命令（重装命令）"
+    } else if err.contains("permission denied") && err.contains("switch to") {
+        " — 旧版 agent 无法在 systemd 257 及以上（如 Debian 13）执行暂存的新版本：请在节点上重新运行一次安装命令（重装命令），之后即可自动更新"
+    } else {
+        ""
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// W18: failures the admin fixes with one reinstall say so.
+    #[test]
+    fn failure_hints_name_the_reinstall() {
+        for e in [
+            "updater unit missing (akari-agent-update.path): run the panel's install command (重装命令) once on this node",
+            "switch to v0.4.0: the updater did not pick up the request (is akari-agent-update.path enabled? ...)",
+            "switch to v0.4.0: permission denied",
+        ] {
+            assert!(failure_hint(e).contains("重装命令"), "{e}");
+        }
+        assert_eq!(failure_hint("download: sha256 mismatch"), "");
+        assert_eq!(failure_hint("open x: permission denied"), "");
+    }
 
     fn ids(n: usize) -> Vec<Uuid> {
         (0..n).map(|i| Uuid::from_u128(i as u128 + 1)).collect()

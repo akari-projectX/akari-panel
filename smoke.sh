@@ -50,15 +50,14 @@ rm -rf "$LOG" data "$BOOT" "$JAR" && mkdir -p "$LOG"
 # script's bootstrap file) — never a shell that merely mentions them.
 pkill -f '^\./target/release/akari (-c [^ ]+ )?serve$' 2>/dev/null || true
 pkill -f "^[A-Za-z0-9_./-]+/agent -config ${BOOT//./\\.}( .*)?\$" 2>/dev/null || true
-# M6 self-update agents (staged binaries keep their -state-dir argument).
-pkill -f -- "-state-dir $LOG/state-upd\$" 2>/dev/null || true
+# M6 self-update node (W18: a systemd container).
+docker rm -f akari-smoke-upd >/dev/null 2>&1 || true
 sleep 1
-UPD_LOOP=""
+UPD_CONTAINER=""
 cleanup_upd() {
-  if [ -n "$UPD_LOOP" ]; then
-    touch "$LOG/upd/stop" 2>/dev/null || true
-    kill "$UPD_LOOP" 2>/dev/null || true
-    pkill -f -- "-state-dir $LOG/state-upd\$" 2>/dev/null || true
+  if [ -n "$UPD_CONTAINER" ]; then
+    docker rm -f akari-smoke-upd >/dev/null 2>&1 || true
+    UPD_CONTAINER=""
   fi
 }
 
@@ -2067,6 +2066,7 @@ upd_upload() { # $1 binary (signed) -> release id
     || { echo "FAIL: release upload: $(cat /tmp/akari-smoke/last)" >&2; exit 1; }
   echo "$id"
 }
+upd_sign "$UPD/agent-v900.0.0" v900.0.0
 upd_sign "$UPD/v1/akari-agent" v900.0.1
 upd_sign "$UPD/v2/akari-agent" v900.0.2
 # A manifest signed by another key is refused before anything is stored.
@@ -2076,85 +2076,132 @@ cp "$UPD/v1/akari-agent" "$UPD/other-bin"
 python3 -c "import json,sys; print(json.dumps({'manifest': open(sys.argv[1]+'.manifest.json').read(), 'sig': json.load(open(sys.argv[1]+'.manifest.sig'))}))" "$UPD/other-bin" >"$UPD/req.json"
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/agent-releases" -H 'Content-Type: application/json' --data-binary @"$UPD/req.json")" = "400" ] \
   || { echo "FAIL: release signed by an untrusted key accepted"; exit 1; }
-REL1=$(upd_upload "$UPD/v1/akari-agent")
-[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/agent-releases/$REL1/binary" --data-binary @"$UPD/v1/akari-agent")" = "409" ] \
-  || { echo "FAIL: second upload not 409"; exit 1; }
-upd_upload "$UPD/v2/akari-agent" >/dev/null
-[ "$(psql_q "SELECT count(*) FROM agent_releases WHERE complete_at IS NOT NULL")" = "2" ] || { echo "FAIL: releases not stored"; exit 1; }
 
-"$PANEL" node add upd-node --out "$LOG/upd-bootstrap.toml" >/dev/null
-UPD_ID=$("$PANEL" node list | awk '$2=="upd-node"{print $1}')
-# The service manager: restart on exit (systemd Restart=always).
-( while :; do
-    "$UPD/agent-v900.0.0" -config "$LOG/upd-bootstrap.toml" -update-self-check 60s -state-dir "$LOG/state-upd" >>"$LOG/upd-agent.log" 2>&1 || true
-    [ -f "$UPD/stop" ] && break
-    sleep 1
-  done ) &
-UPD_LOOP=$!
-upd_node() { psql_q "SELECT $1 FROM nodes WHERE id='$UPD_ID'"; }
-for _ in $(seq 1 20); do [ "$(upd_node agent_version)" = "v900.0.0" ] && break; sleep 1; done
-[ "$(upd_node agent_version)" = "v900.0.0" ] && [ "$(upd_node agent_protocol)" -ge 3 ] \
-  || { echo "FAIL: update agent not connected ($(upd_node agent_version)/$(upd_node agent_protocol))"; tail -5 "$LOG/upd-agent.log"; exit 1; }
-# Only the update node takes part: the others run development builds.
-[ "$(code -b "$JAR" -X POST "$BASE/api/v1/rollouts" -H 'Content-Type: application/json' \
-    -d "{\"version\":\"v900.0.1\",\"node_ids\":[\"$UPD_ID\"],\"health_timeout_secs\":90}")" = "201" ] \
-  || { echo "FAIL: rollout create"; cat /tmp/akari-smoke/last; exit 1; }
-RO1=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
-ro_status() { psql_q "SELECT status FROM rollouts WHERE id='$1'"; }
-for _ in $(seq 1 90); do [ "$(ro_status "$RO1")" = "completed" ] && break; sleep 1; done
-[ "$(ro_status "$RO1")" = "completed" ] || { echo "FAIL: rollout to v900.0.1 not completed ($(ro_status "$RO1"))"; \
-  psql_q "SELECT status, detail FROM rollout_nodes WHERE rollout_id='$RO1'"; tail -20 "$LOG/upd-agent.log"; exit 1; }
-[ "$(upd_node agent_version)" = "v900.0.1" ] || { echo "FAIL: node not on v900.0.1"; exit 1; }
-[ "$(psql_q "SELECT status FROM rollout_nodes WHERE rollout_id='$RO1'")" = "healthy" ] || { echo "FAIL: node not healthy"; exit 1; }
-for m in "update offer accepted" "agent update verified and staged" "switching to the new agent" "agent update passed its self-check"; do
-  grep -q "$m" "$LOG/upd-agent.log" || { echo "FAIL: agent log lacks '$m'"; tail -20 "$LOG/upd-agent.log"; exit 1; }
-done
-# exec-replace, not a crash: no restart by the service loop so far.
-[ "$(grep -c '"msg":"agent starting"' "$LOG/upd-agent.log")" = "2" ] || { echo "FAIL: expected exactly one in-place restart"; exit 1; }
-python3 -c "
-import json; s=json.load(open('$LOG/state-upd/update/state.json'))
-assert s['current']['version']=='v900.0.1' and 'trial' not in s and s.get('previous') is None, s" \
-  || { echo "FAIL: update state after v900.0.1"; exit 1; }
-[ "$(stat -c %a "$LOG/state-upd/update/state.json")" = "600" ] || { echo "FAIL: update state not 0600"; exit 1; }
-code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
-python3 -c "
+# W18: the update runs on a real node: Debian 13 with systemd 257 as PID 1,
+# the units the installer ships, and the agent's StateDirectory on a
+# filesystem that takes idmapped mounts (tmpfs), so systemd mounts it
+# noexec,idmapped exactly as on a production VPS. Agents up to v0.4.0
+# executed the staged binary from there and failed ("permission denied");
+# now the privileged updater unit installs it.
+upd_rel_store() {
+  REL0=$(upd_upload "$UPD/agent-v900.0.0")
+  [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/agent-releases/$REL0/binary" --data-binary @"$UPD/agent-v900.0.0")" = "409" ] \
+    || { echo "FAIL: second upload not 409"; exit 1; }
+}
+if need_agent "cap:updater" "M6 self-update through the updater unit (systemd container)" \
+   && { [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ] || { echo "M6 container test skipped (SMOKE_INSTALL_CONTAINER=0)"; false; }; }; then
+  # Only v900.0.0 is published while the node is installed (the installer
+  # serves the newest complete release).
+  upd_rel_store
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' \
+      -d '{"name":"upd-node","install":{"origin":"http://127.0.0.1:8080"}}')" = "201" ] \
+    || { echo "FAIL: create upd-node: $(cat /tmp/akari-smoke/last)"; exit 1; }
+  UPD_ID=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
+  UPD_CMD=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['install']['command'])")
+  docker build -q -t akari-node-test:debian13 scripts/install-test >/dev/null
+  docker rm -f akari-smoke-upd >/dev/null 2>&1 || true
+  docker run -d --name akari-smoke-upd --network host --privileged --cgroupns=host \
+    -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /var/lib/private:mode=0700 akari-node-test:debian13 >/dev/null
+  UPD_CONTAINER=1
+  for _ in $(seq 1 30); do docker exec akari-smoke-upd systemctl is-system-running 2>/dev/null | matches -E 'running|degraded' && break; sleep 1; done
+  docker exec akari-smoke-upd sh -c "$UPD_CMD" >"$LOG/upd-install.out" 2>&1 \
+    || { echo "FAIL: installer (update node)"; cat "$LOG/upd-install.out"; exit 1; }
+  udx() { docker exec akari-smoke-upd sh -c "$1"; }
+  upd_logs() {
+    udx 'journalctl -u akari-agent -o cat --no-pager' >"$LOG/upd-agent.log" 2>&1 || true
+    udx 'journalctl -u akari-agent-update -o cat --no-pager' >"$LOG/upd-updater.log" 2>&1 || true
+  }
+  upd_node() { psql_q "SELECT $1 FROM nodes WHERE id='$UPD_ID'"; }
+  for _ in $(seq 1 20); do [ "$(upd_node agent_version)" = "v900.0.0" ] && break; sleep 1; done
+  [ "$(upd_node agent_version)" = "v900.0.0" ] && [ "$(upd_node agent_protocol)" -ge 3 ] \
+    || { echo "FAIL: update agent not connected ($(upd_node agent_version)/$(upd_node agent_protocol))"; upd_logs; tail -5 "$LOG/upd-agent.log"; exit 1; }
+  # The condition that broke v0.4.0 holds here: the agent's state dir is
+  # mounted noexec in its namespace, and the updater trigger is armed.
+  udx 'grep " /var/lib/private/akari-agent " /proc/$(systemctl show -p MainPID --value akari-agent)/mountinfo' | matches noexec \
+    || { echo "FAIL: the agent's state dir is not noexec in this container (test does not reproduce production)"; exit 1; }
+  udx 'systemctl is-active -q akari-agent-update.path && systemctl is-enabled -q akari-agent-update.path' \
+    || { echo "FAIL: updater trigger not active/enabled"; exit 1; }
+  # Then the releases to roll out.
+  upd_upload "$UPD/v1/akari-agent" >/dev/null
+  upd_upload "$UPD/v2/akari-agent" >/dev/null
+  [ "$(psql_q "SELECT count(*) FROM agent_releases WHERE complete_at IS NOT NULL")" = "3" ] || { echo "FAIL: releases not stored"; exit 1; }
+  # Only the update node takes part: the others run development builds.
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/rollouts" -H 'Content-Type: application/json' \
+      -d "{\"version\":\"v900.0.1\",\"node_ids\":[\"$UPD_ID\"],\"health_timeout_secs\":90}")" = "201" ] \
+    || { echo "FAIL: rollout create"; cat /tmp/akari-smoke/last; exit 1; }
+  RO1=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
+  ro_status() { psql_q "SELECT status FROM rollouts WHERE id='$1'"; }
+  for _ in $(seq 1 90); do [ "$(ro_status "$RO1")" = "completed" ] && break; sleep 1; done
+  upd_logs
+  [ "$(ro_status "$RO1")" = "completed" ] || { echo "FAIL: rollout to v900.0.1 not completed ($(ro_status "$RO1"))"; \
+    psql_q "SELECT status, detail FROM rollout_nodes WHERE rollout_id='$RO1'"; tail -20 "$LOG/upd-agent.log" "$LOG/upd-updater.log"; exit 1; }
+  [ "$(upd_node agent_version)" = "v900.0.1" ] || { echo "FAIL: node not on v900.0.1"; exit 1; }
+  [ "$(psql_q "SELECT status FROM rollout_nodes WHERE rollout_id='$RO1'")" = "healthy" ] || { echo "FAIL: node not healthy"; exit 1; }
+  for m in "update offer accepted" "agent update verified and staged" "switching to the new agent" "agent update passed its self-check"; do
+    grep -q "$m" "$LOG/upd-agent.log" || { echo "FAIL: agent log lacks '$m'"; tail -20 "$LOG/upd-agent.log"; exit 1; }
+  done
+  for m in "agent update installed; restarting the agent" "agent update passed its self-check"; do
+    grep -q "$m" "$LOG/upd-updater.log" || { echo "FAIL: updater log lacks '$m'"; cat "$LOG/upd-updater.log"; exit 1; }
+  done
+  grep -q "permission denied" "$LOG/upd-agent.log" && { echo "FAIL: permission denied during the update"; exit 1; }
+  # Installed by root in place (old one kept), nothing executable in the
+  # agent-writable directory, the updater's probation record closed.
+  udx '/usr/local/bin/akari-agent -version' | matches "akari-agent v900.0.1 " || { echo "FAIL: installed binary not v900.0.1"; exit 1; }
+  udx '/usr/local/bin/akari-agent.prev -version' | matches "akari-agent v900.0.0 " || { echo "FAIL: previous binary not kept"; exit 1; }
+  [ "$(udx 'stat -c "%a %U" /usr/local/bin/akari-agent')" = "755 root" ] || { echo "FAIL: installed binary mode/owner"; exit 1; }
+  [ -z "$(udx 'find /var/lib/private/akari-agent -type f -perm /111')" ] || { echo "FAIL: executable file in the agent state dir"; exit 1; }
+  udx 'cat /var/lib/akari-agent-update/updater.json' | python3 -c "import json,sys; s=json.load(sys.stdin); assert 'trial' not in s, s" \
+    || { echo "FAIL: updater probation not closed"; exit 1; }
+  code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
+  python3 -c "
 import json; n=[x for x in json.load(open('/tmp/akari-smoke/last')) if x['id']=='$UPD_ID'][0]
-assert n['update_status']['status']=='healthy' and n['agent_version']=='v900.0.1', n['update_status']" \
-  || { echo "FAIL: node view update status"; exit 1; }
-echo "update to v900.0.1: ok"
+assert n['update_status']['status']=='healthy' and n['agent_version']=='v900.0.1', n['update_status']
+assert 'updater' in n['agent_capabilities'] and not any('重装命令' in w for w in n['warnings']), n" \
+    || { echo "FAIL: node view update status"; exit 1; }
+  echo "update to v900.0.1 (updater unit): ok"
 
-# Broken vN+2: the binary dies on start; the launcher counts boots and goes
-# back to v900.0.1; the agent reports ROLLED_BACK; the rollout halts.
-[ "$(code -b "$JAR" -X POST "$BASE/api/v1/rollouts" -H 'Content-Type: application/json' \
-    -d "{\"version\":\"v900.0.2\",\"node_ids\":[\"$UPD_ID\"],\"health_timeout_secs\":90}")" = "201" ] \
-  || { echo "FAIL: rollout 2 create"; cat /tmp/akari-smoke/last; exit 1; }
-RO2=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
-for _ in $(seq 1 90); do [ "$(ro_status "$RO2")" = "halted" ] && break; sleep 1; done
-[ "$(ro_status "$RO2")" = "halted" ] || { echo "FAIL: broken rollout not halted ($(ro_status "$RO2"))"; \
-  psql_q "SELECT status, detail FROM rollout_nodes WHERE rollout_id='$RO2'"; tail -20 "$LOG/upd-agent.log"; exit 1; }
-psql_q "SELECT detail FROM rollout_nodes WHERE rollout_id='$RO2'" | matches "rolled back" \
-  || { echo "FAIL: no rollback report: $(psql_q "SELECT status, detail FROM rollout_nodes WHERE rollout_id='$RO2'")"; exit 1; }
-grep -q "broken agent build" "$LOG/upd-agent.log" || { echo "FAIL: broken build never ran"; exit 1; }
-grep -q "rolling back agent update" "$LOG/upd-agent.log" || { echo "FAIL: launcher did not roll back"; exit 1; }
-for _ in $(seq 1 20); do [ "$(upd_node agent_version)" = "v900.0.1" ] && [ "$(upd_node status)" = "online" ] && break; sleep 1; done
-[ "$(upd_node agent_version)" = "v900.0.1" ] || { echo "FAIL: node not back on v900.0.1"; exit 1; }
-python3 -c "
-import json; s=json.load(open('$LOG/state-upd/update/state.json'))
-assert s['current']['version']=='v900.0.1' and 'v900.0.2' in s['rolled_back'], s" \
-  || { echo "FAIL: update state after rollback"; exit 1; }
-ls "$LOG/state-upd/update/bin" | matches v900.0.2 && { echo "FAIL: rolled-back binary kept in bin/"; exit 1; }
-[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='rollout.halt' AND actor_login='system'")" = "1" ] \
-  || { echo "FAIL: halt not audited"; exit 1; }
-[ "$(code -b "$JAR" -X POST "$BASE/api/v1/rollouts/$RO2/resume")" = "409" ] || { echo "FAIL: halted rollout resumed"; exit 1; }
-[ "$(code -b "$JAR" -X POST "$BASE/api/v1/rollouts/$RO2/abort")" = "200" ] || { echo "FAIL: abort"; exit 1; }
-[ "$(code -b "$JAR" "$BASE/api/v1/rollouts")" = "200" ] && grep -q '"aborted"' /tmp/akari-smoke/last || { echo "FAIL: rollout list"; exit 1; }
-for a in agent_release.create agent_release.upload rollout.create rollout.complete rollout.abort; do
-  [ "$(psql_q "SELECT count(*) > 0 FROM audit_log WHERE action='$a'")" = "t" ] || { echo "FAIL: $a not audited"; exit 1; }
-done
-cleanup_upd
-wait "$UPD_LOOP" 2>/dev/null || true
-UPD_LOOP=""
-echo "m6 self-update: ok (v900.0.0 -> v900.0.1 healthy; broken v900.0.2 rolled back, rollout halted)"
+  # Broken vN+2: the binary dies on start; the updater sees the restarts,
+  # puts v900.0.1 back; the agent reports ROLLED_BACK; the rollout halts.
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/rollouts" -H 'Content-Type: application/json' \
+      -d "{\"version\":\"v900.0.2\",\"node_ids\":[\"$UPD_ID\"],\"health_timeout_secs\":90}")" = "201" ] \
+    || { echo "FAIL: rollout 2 create"; cat /tmp/akari-smoke/last; exit 1; }
+  RO2=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
+  for _ in $(seq 1 90); do [ "$(ro_status "$RO2")" = "halted" ] && break; sleep 1; done
+  upd_logs
+  [ "$(ro_status "$RO2")" = "halted" ] || { echo "FAIL: broken rollout not halted ($(ro_status "$RO2"))"; \
+    psql_q "SELECT status, detail FROM rollout_nodes WHERE rollout_id='$RO2'"; tail -20 "$LOG/upd-agent.log" "$LOG/upd-updater.log"; exit 1; }
+  psql_q "SELECT detail FROM rollout_nodes WHERE rollout_id='$RO2'" | matches "rolled back" \
+    || { echo "FAIL: no rollback report: $(psql_q "SELECT status, detail FROM rollout_nodes WHERE rollout_id='$RO2'")"; exit 1; }
+  grep -q "broken agent build" "$LOG/upd-agent.log" || { echo "FAIL: broken build never ran"; exit 1; }
+  grep -q "rolling back agent update" "$LOG/upd-updater.log" || { echo "FAIL: updater did not roll back"; exit 1; }
+  for _ in $(seq 1 20); do [ "$(upd_node agent_version)" = "v900.0.1" ] && [ "$(upd_node status)" = "online" ] && break; sleep 1; done
+  [ "$(upd_node agent_version)" = "v900.0.1" ] || { echo "FAIL: node not back on v900.0.1"; exit 1; }
+  udx '/usr/local/bin/akari-agent -version' | matches "akari-agent v900.0.1 " || { echo "FAIL: binary not rolled back"; exit 1; }
+  udx 'cat /var/lib/akari-agent-update/updater.json' | python3 -c "import json,sys; s=json.load(sys.stdin); assert 'v900.0.2' in s['rolled_back'] and 'trial' not in s, s" \
+    || { echo "FAIL: updater state after rollback"; exit 1; }
+  udx 'cat /var/lib/private/akari-agent/update/state.json' | python3 -c "import json,sys; s=json.load(sys.stdin); assert 'v900.0.2' in s['rolled_back'], s" \
+    || { echo "FAIL: agent state after rollback"; exit 1; }
+  [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='rollout.halt' AND actor_login='system'")" = "1" ] \
+    || { echo "FAIL: halt not audited"; exit 1; }
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/rollouts/$RO2/resume")" = "409" ] || { echo "FAIL: halted rollout resumed"; exit 1; }
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/rollouts/$RO2/abort")" = "200" ] || { echo "FAIL: abort"; exit 1; }
+  [ "$(code -b "$JAR" "$BASE/api/v1/rollouts")" = "200" ] && grep -q '"aborted"' /tmp/akari-smoke/last || { echo "FAIL: rollout list"; exit 1; }
+  for a in agent_release.create agent_release.upload rollout.create rollout.complete rollout.abort; do
+    [ "$(psql_q "SELECT count(*) > 0 FROM audit_log WHERE action='$a'")" = "t" ] || { echo "FAIL: $a not audited"; exit 1; }
+  done
+  # Uninstall removes the updater as well.
+  udx 'akari-agent-uninstall' >>"$LOG/upd-install.out" 2>&1 || { echo "FAIL: uninstall (update node)"; exit 1; }
+  udx 'test ! -e /etc/systemd/system/akari-agent-update.path && test ! -e /etc/systemd/system/akari-agent-update.service && test ! -e /var/lib/akari-agent-update && test ! -e /usr/local/bin/akari-agent.prev' \
+    || { echo "FAIL: uninstall left the updater behind"; exit 1; }
+  cleanup_upd
+  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$UPD_ID")" = "202" ] || { echo "FAIL: delete upd-node"; exit 1; }
+  echo "m6 self-update: ok (installer + updater unit on systemd 257, noexec state dir: v900.0.0 -> v900.0.1 healthy; broken v900.0.2 rolled back, rollout halted)"
+else
+  # The installer section below still needs the releases.
+  upd_rel_store
+  upd_upload "$UPD/v1/akari-agent" >/dev/null
+  upd_upload "$UPD/v2/akari-agent" >/dev/null
+fi
 
 echo "== R18-2 node form + one-line installer: template inbounds, install link, Debian 13 container =="
 # The newest complete release is what the installer serves: drop the broken
@@ -2213,8 +2260,9 @@ if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
   docker build -q -t akari-node-test:debian13 scripts/install-test >/dev/null
   docker rm -f akari-smoke-node >/dev/null 2>&1 || true
   # Host network: the node reaches the panel on 127.0.0.1 (web 8080, gRPC 8443).
+  # tmpfs state: idmapped (noexec) StateDirectory mounts as on a VPS (W18).
   docker run -d --name akari-smoke-node --network host --privileged --cgroupns=host \
-    -v /sys/fs/cgroup:/sys/fs/cgroup:rw akari-node-test:debian13 >/dev/null
+    -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /var/lib/private:mode=0700 akari-node-test:debian13 >/dev/null
   PREV_EXIT_TRAP=$(trap -p EXIT)
   trap 'docker rm -f akari-smoke-node >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
   for _ in $(seq 1 30); do docker exec akari-smoke-node systemctl is-system-running 2>/dev/null | matches -E 'running|degraded' && break; sleep 1; done

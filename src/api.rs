@@ -1172,6 +1172,7 @@ impl NodeView {
             self.agent_protocol,
             self.cert_not_after,
             self.unenforced_speed_limits,
+            self.agent_capabilities.as_deref(),
         );
         self
     }
@@ -1184,11 +1185,15 @@ fn node_warnings(
     agent_protocol: Option<i32>,
     cert_not_after: Option<DateTime<Utc>>,
     unenforced_speed_limits: bool,
+    agent_capabilities: Option<&[String]>,
 ) -> Vec<String> {
     let mut w = inbound_warnings(inbounds);
     w.extend(tls_domain_warnings(tls_domain, inbounds, agent_protocol));
     if let Some(c) = cert_warning(cert_not_after, agent_protocol, Utc::now()) {
         w.push(c);
+    }
+    if let Some(u) = updater_warning(agent_protocol, agent_capabilities) {
+        w.push(u);
     }
     if unenforced_speed_limits {
         w.push(format!(
@@ -1252,6 +1257,9 @@ pub struct NodeSummary {
     tls_domain: Option<String>,
     #[serde(skip)]
     unenforced_speed_limits: bool,
+    /// W18: for the updater warning only.
+    #[serde(skip)]
+    agent_capabilities: Option<Vec<String>>,
 }
 
 /// The heartbeat fields the list shows.
@@ -1281,7 +1289,7 @@ pub const NODE_SUMMARY_COLS: &str = "nodes.id, name, display_name, enabled, stat
      ro.update_status, lease_expires_at, cert_serial IS NOT NULL AS enrolled, cert_not_after, \
      enr.expires_at AS enroll_token_expires_at, last_seen_at, last_error, sort, visible, tags, \
      traffic_rate_permille, lb.latency, coalesce(al.n, 0) AS alerts_firing, xray_inbounds, \
-     tls_domain, \
+     tls_domain, agent_capabilities, \
      CASE WHEN agent_protocol < 4 THEN EXISTS (SELECT 1 FROM node_users nu \
         JOIN user_plans up ON up.user_id = nu.user_id AND up.status = 'active' \
         JOIN plans p ON p.id = up.plan_id \
@@ -1313,6 +1321,7 @@ impl NodeSummary {
             self.agent_protocol,
             self.cert_not_after,
             self.unenforced_speed_limits,
+            self.agent_capabilities.as_deref(),
         );
         self.needs_certificate = crate::nodetpl::needs_certificate(&self.xray_inbounds);
         self.heartbeat = blob.and_then(|b| serde_json::from_str(&b).ok());
@@ -1388,6 +1397,57 @@ pub fn json_with_etag(req: &HeaderMap, body: Vec<u8>) -> Response {
     res
 }
 
+/// W18: agents that can be offered updates (protocol >= 3) but predate the
+/// privileged updater try to execute the update from their state
+/// directory, which systemd >= 256 mounts noexec ("permission denied").
+/// One run of the install command (重装命令) installs the updater units and
+/// the current agent.
+fn updater_warning(protocol: Option<i32>, caps: Option<&[String]>) -> Option<String> {
+    let p = protocol?;
+    if p < 3 || caps.is_some_and(|c| c.iter().any(|c| c == "updater")) {
+        return None;
+    }
+    Some(
+        "agent 不支持新的自更新方式：在 systemd 257 及以上（如 Debian 13）的节点上自更新会失败\
+         （permission denied）。请在节点上重新运行一次安装命令（重装命令），它会安装更新服务\
+         akari-agent-update 并升级 agent"
+            .to_string(),
+    )
+}
+
+/// W18: a node certificate the agent must obtain itself (节点域名 + an
+/// inbound reading the certificate files) for an agent too old to do it
+/// (protocol 1..6): such an agent ignores ConfigSnapshot.acme and fails the
+/// WHOLE snapshot when the files are missing. Refused at write time.
+fn acme_needs_newer_agent(
+    domain: Option<&str>,
+    inbounds: &serde_json::Value,
+    protocol: Option<i32>,
+) -> Option<i32> {
+    let p = protocol.filter(|p| (1..crate::grpc::ACME_PROTOCOL).contains(p))?;
+    (domain.is_some() && crate::nodetpl::needs_certificate(inbounds)).then_some(p)
+}
+
+async fn refuse_acme_for_old_agent(conn: &mut PgConnection, id: Uuid) -> Result<(), ApiError> {
+    let row: Option<(Option<String>, serde_json::Value, Option<i32>)> =
+        sqlx::query_as("SELECT tls_domain, xray_inbounds, agent_protocol FROM nodes WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let Some((domain, inbounds, protocol)) = row else {
+        return Ok(());
+    };
+    if let Some(p) = acme_needs_newer_agent(domain.as_deref(), &inbounds, protocol) {
+        return Err(ApiError::bad_request(format!(
+            "该节点的 agent 版本过旧（协议 {p} < {}），不支持节点域名自动证书：它会忽略节点域名，并因缺少证书文件\
+             导致整份配置下发失败。请先升级 agent（升级发布，或在节点上重新运行一次安装命令），\
+             或清空节点域名并手动放置证书",
+            crate::grpc::ACME_PROTOCOL
+        )));
+    }
+    Ok(())
+}
+
 /// W10: what keeps the automatic certificate from working.
 fn tls_domain_warnings(
     domain: Option<&str>,
@@ -1403,8 +1463,8 @@ fn tls_domain_warnings(
     }
     if protocol.is_some_and(|p| p < crate::grpc::ACME_PROTOCOL) {
         out.push(format!(
-            "the agent is too old to obtain the certificate itself (protocol < {}): upgrade it, \
-             or install the certificate for {domain} by hand",
+            "agent 版本过旧（协议 < {}）：不会自动申请 {domain} 的证书，且在缺少证书文件时整份配置下发失败。\
+             请先升级 agent（升级发布，或在节点上重新运行一次安装命令），或手动放置 {domain} 的证书",
             crate::grpc::ACME_PROTOCOL
         ));
     }
@@ -1987,6 +2047,9 @@ async fn apply_update_node(
         }
         Err(e) => return Err(e.into()),
     };
+    if domain_changes {
+        refuse_acme_for_old_agent(conn, id).await?;
+    }
     crate::audit::record(
         conn,
         actor,
@@ -2355,6 +2418,7 @@ async fn apply_set_inbounds(
             .await?;
         }
     }
+    refuse_acme_for_old_agent(conn, id).await?;
     let plan = crate::entitle::apply_reconcile(conn, crate::entitle::Scope::Nodes(&[id])).await?;
     let mut after = crate::audit::inbounds_summary(inbounds);
     after["pruned_credentials_of"] = json!(pruned);
@@ -2846,9 +2910,49 @@ mod tests {
             "no certificate needed"
         );
         let w = tls_domain_warnings(d, &tls("n1.example.com"), Some(5));
-        assert!(w.len() == 1 && w[0].contains("too old"), "{w:?}");
+        assert!(w.len() == 1 && w[0].contains("版本过旧"), "{w:?}");
         let w = tls_domain_warnings(d, &tls("other.example.com"), Some(6));
         assert!(w.len() == 1 && w[0].contains("other.example.com"), "{w:?}");
+    }
+
+    /// W18: a node certificate the agent must obtain itself is refused for
+    /// agents of protocol 1..6 (they would fail the whole snapshot); not
+    /// connected yet (None) and protocol-0 agents (served the empty state)
+    /// pass, as does a node without a TLS domain (certificates by hand).
+    #[test]
+    fn acme_inbounds_need_an_acme_agent() {
+        let tls = json!([{"tag": "t", "streamSettings": {"security": "tls", "tlsSettings": {
+            "certificates": [{"certificateFile": crate::nodetpl::TLS_CERT_FILE, "keyFile": crate::nodetpl::TLS_KEY_FILE}]}}}]);
+        let d = Some("n1.example.com");
+        assert_eq!(acme_needs_newer_agent(d, &tls, Some(5)), Some(5));
+        assert_eq!(acme_needs_newer_agent(d, &tls, Some(1)), Some(1));
+        assert_eq!(acme_needs_newer_agent(d, &tls, Some(6)), None);
+        assert_eq!(acme_needs_newer_agent(d, &tls, None), None);
+        assert_eq!(acme_needs_newer_agent(d, &tls, Some(0)), None);
+        assert_eq!(acme_needs_newer_agent(None, &tls, Some(5)), None);
+        assert_eq!(acme_needs_newer_agent(d, &json!([]), Some(5)), None);
+    }
+
+    /// W18: self-updatable agents without the "updater" capability fail on
+    /// systemd >= 256 (noexec state directory): told on the node.
+    #[test]
+    fn updater_warning_for_pre_updater_agents() {
+        let caps = |c: &[&str]| c.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let w = updater_warning(Some(6), Some(&caps(&["metrics", "latency"]))).unwrap();
+        assert!(
+            w.contains("重装命令") && w.contains("akari-agent-update"),
+            "{w}"
+        );
+        assert!(
+            updater_warning(Some(3), None).is_some(),
+            "protocol 3, no capabilities"
+        );
+        assert!(updater_warning(Some(6), Some(&caps(&["metrics", "updater"]))).is_none());
+        assert!(
+            updater_warning(Some(2), None).is_none(),
+            "never offered updates"
+        );
+        assert!(updater_warning(None, None).is_none(), "not connected yet");
     }
 
     #[test]

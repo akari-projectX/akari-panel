@@ -185,6 +185,15 @@ async fn install_link_lifecycle() {
         assert!(s.contains("TLS_DOMAIN=''"));
         assert!(s.contains("SHA_amd64=''"), "no release uploaded");
         assert!(s.contains("ExecStart=/usr/local/bin/akari-agent"));
+        // W18: the privileged updater units, verbatim, and enabled.
+        assert!(s.contains(super::UNIT_UPDATE_SERVICE.trim_end()));
+        assert!(s.contains(super::UNIT_UPDATE_PATH.trim_end()));
+        assert!(s.contains(
+            "ExecStart=/usr/local/bin/akari-agent -apply-update /var/lib/private/akari-agent"
+        ));
+        assert!(s.contains("PathExists=/var/lib/private/akari-agent/update/apply-request.json"));
+        assert!(s.contains("systemctl enable --now akari-agent-update.path"));
+        assert!(s.contains("rm -f \"$UNIT\" \"$UPDATE_SERVICE\" \"$UPDATE_PATH\""));
     }
     // No release: the binary endpoint has nothing (canonical reject).
     let r = c
@@ -536,6 +545,53 @@ async fn configured_public_url_and_pin_win() {
     db.drop().await;
 }
 
+/// W18: the updater units the installer ships fit the agent unit, and
+/// nothing makes the agent-writable state directory executable (W^X).
+#[test]
+fn updater_units_fit_the_agent_unit() {
+    let lines = |u: &'static str| u.lines().map(str::trim).collect::<Vec<_>>();
+    let agent = lines(UNIT);
+    let svc = lines(UNIT_UPDATE_SERVICE);
+    let path = lines(UNIT_UPDATE_PATH);
+    // DynamicUser + StateDirectory=akari-agent = /var/lib/private/akari-agent.
+    for l in [
+        "DynamicUser=yes",
+        "StateDirectory=akari-agent",
+        "ExecStart=/usr/local/bin/akari-agent -config %d/bootstrap.toml",
+    ] {
+        assert!(agent.contains(&l), "{l}");
+    }
+    for l in [
+        "Type=oneshot",
+        "ExecStart=/usr/local/bin/akari-agent -apply-update /var/lib/private/akari-agent",
+        "StateDirectory=akari-agent-update",
+        "NoNewPrivileges=yes",
+        "ProtectSystem=strict",
+        "ReadWritePaths=/usr/local/bin -/var/lib/private/akari-agent",
+        "PrivateNetwork=yes",
+        "RestrictAddressFamilies=AF_UNIX",
+    ] {
+        assert!(svc.contains(&l), "{l}");
+    }
+    for l in [
+        "PathExists=/var/lib/private/akari-agent/update/apply-request.json",
+        "Unit=akari-agent-update.service",
+    ] {
+        assert!(path.contains(&l), "{l}");
+    }
+    for u in [&agent, &svc] {
+        assert!(
+            !u.iter()
+                .any(|l| l.starts_with("ExecPaths") || l.starts_with("NoExecPaths")),
+            "no exec exceptions for the state directory"
+        );
+    }
+    // The updater never gets the network or the agent's capabilities.
+    assert!(!svc
+        .iter()
+        .any(|l| l.contains("CAP_NET") || l.starts_with("DynamicUser")));
+}
+
 /// W10: a node with a TLS domain: TLS templates take it, the script knows
 /// the agent obtains the certificate itself (firewall + note), and the
 /// create is one transaction with the domain.
@@ -614,6 +670,62 @@ async fn tls_domain_flows_into_templates_and_script() {
         )
         .await;
     assert_eq!(r.status, 400);
+    // W18: an agent older than protocol 6 ignores the node domain and
+    // fails the whole snapshot without certificate files: neither the
+    // inbounds nor a domain change is accepted for it (nothing changes).
+    sqlx::query("UPDATE nodes SET agent_protocol = 5 WHERE id = $1")
+        .bind(id)
+        .execute(st.pg())
+        .await
+        .unwrap();
+    let path = format!("/test/api/v1/nodes/{id}");
+    let r = admin
+        .req(
+            axum::http::Method::PUT,
+            &format!("{path}/inbounds"),
+            Some(json!({"inbounds": inbounds})),
+        )
+        .await;
+    assert_eq!(r.status, 400);
+    assert!(String::from_utf8_lossy(&r.body).contains("agent 版本过旧"));
+    let r = admin
+        .req(
+            axum::http::Method::PATCH,
+            &path,
+            Some(json!({"tls_domain": "hk9.example.com"})),
+        )
+        .await;
+    assert_eq!(r.status, 400);
+    let (domain2, cv2): (Option<String>, i64) =
+        sqlx::query_as("SELECT tls_domain, config_version FROM nodes WHERE id = $1")
+            .bind(id)
+            .fetch_one(st.pg())
+            .await
+            .unwrap();
+    assert_eq!((domain2.as_deref(), cv2), (Some("hk1.example.com"), cv));
+    // Clearing the domain (certificates by hand) is fine; so is the same
+    // change once the agent speaks protocol 6.
+    let r = admin
+        .req(
+            axum::http::Method::PATCH,
+            &path,
+            Some(json!({"tls_domain": null})),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    sqlx::query("UPDATE nodes SET agent_protocol = 6 WHERE id = $1")
+        .bind(id)
+        .execute(st.pg())
+        .await
+        .unwrap();
+    let r = admin
+        .req(
+            axum::http::Method::PATCH,
+            &path,
+            Some(json!({"tls_domain": "hk1.example.com"})),
+        )
+        .await;
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
     db.drop().await;
 }
 
