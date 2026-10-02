@@ -56,6 +56,8 @@ cookie_secure = false
 trusted_proxies = ["127.0.0.2/32"]
 [metrics]
 bind = "127.0.0.1:9109"
+[tls_ask]
+bind = "127.0.0.1:8092"
 
 [sub]
 rate_per_token = 8
@@ -1369,6 +1371,166 @@ else
 fi
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$INST_ID")" = "202" ] || { echo "FAIL: delete inst-node"; exit 1; }
 echo "r18-2 node install: ok"
+
+echo "== R22 系统设置: domains, Caddy on-demand ask, host gate, node domain + hot-swapped gRPC certificate =="
+# An agent enrolled BEFORE the change (bootstrap server_name = panel.toml's
+# grpc.server_name, "localhost"): it must keep connecting afterwards.
+"$PANEL" node add r22-old --out "$LOG/r22-old.toml" >/dev/null
+grep -q '^server_name = "localhost"$' "$LOG/r22-old.toml" || { echo "FAIL: CLI bootstrap server_name"; exit 1; }
+"$AGENT" -config "$LOG/r22-old.toml" -state-dir "$LOG/state-r22-old" >"$LOG/r22-old-agent.log" 2>&1 &
+AGENT_PID=$!
+for _ in $(seq 1 30); do grep -q "channel established" "$LOG/r22-old-agent.log" && break; sleep 0.5; done
+grep -q "channel established" "$LOG/r22-old-agent.log" || { echo "FAIL: r22-old agent never connected"; exit 1; }
+kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+AGENT_PID=""
+[ "$(psql_q "SELECT server_name FROM nodes WHERE name='r22-old'")" = "localhost" ] || { echo "FAIL: enrolled server name not recorded"; exit 1; }
+
+[ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
+VER=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['version'])")
+# A node domain on Cloudflare is refused (422) unless forced: 104.16.0.1 is a
+# Cloudflare edge address (IP literal: no DNS involved).
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings" -H 'Content-Type: application/json' \
+    -d "{\"version\":$VER,\"main_domain\":null,\"sub_domain\":null,\"node_domain\":\"104.16.0.1\",\"trust_cloudflare\":null}")" = "422" ] \
+  || { echo "FAIL: orange-clouded node domain accepted: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/dns-check" -H 'Content-Type: application/json' \
+    -d '{"kind":"node","domain":"104.16.0.1"}')" = "200" ] && grep -q '"level":"block"' /tmp/akari-smoke/last \
+  || { echo "FAIL: dns-check verdict: $(cat /tmp/akari-smoke/last)"; exit 1; }
+# The real values. The request goes to 127.0.0.1 (an IP: still allowed by
+# the host gate, so no confirmation needed).
+R22_MAIN=myapp.test:8446
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings" -H 'Content-Type: application/json' \
+    -d "{\"version\":$VER,\"main_domain\":\"$R22_MAIN\",\"sub_domain\":\"sub.akari.test\",
+         \"node_domain\":\"grpc.akari.test\",\"trust_cloudflare\":true}")" = "200" ] \
+  || { echo "FAIL: PUT settings: $(cat /tmp/akari-smoke/last)"; exit 1; }
+cp /tmp/akari-smoke/last "$LOG/r22-settings.json"
+python3 - "$LOG/r22-settings.json" <<'PY' || { echo "FAIL: settings view"; cat "$LOG/r22-settings.json"; exit 1; }
+import json, sys
+v = json.load(open(sys.argv[1]))
+assert v["main"]["effective"] == "https://myapp.test:8446" and v["main"]["source"] == "settings"
+assert v["sub"]["effective"] == "https://sub.akari.test"
+assert v["node"]["panel_addr"] == "grpc.akari.test:8443" and v["node"]["server_name"] == "grpc.akari.test"
+assert v["trust_cloudflare"]["effective"] is True and v["host_gate"] is True and v["ask_enabled"] is True
+assert "grpc.akari.test" in v["certificate_names"] and "localhost" in v["certificate_names"], v["certificate_names"]
+PY
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.update'")" = "1" ] || { echo "FAIL: settings change not audited"; exit 1; }
+
+# Caddy on-demand TLS ask endpoint (own listener, never the web port).
+ASK=http://127.0.0.1:8092/ask
+for d in myapp.test sub.akari.test; do
+  [ "$(code "$ASK?domain=$d")" = "200" ] || { echo "FAIL: ask refuses configured $d"; exit 1; }
+done
+for d in evil.test grpc.akari.test 127.0.0.1; do
+  [ "$(code "$ASK?domain=$d")" = "404" ] || { echo "FAIL: ask allows $d"; exit 1; }
+done
+[ "$(code http://127.0.0.1:8080/ask?domain=myapp.test)" = "404" ] || { echo "FAIL: ask reachable on the web port"; exit 1; }
+
+# Host gate: unknown DNS names get the canonical rejection even with the
+# right prefix; configured names and IP literals pass.
+for h in evil.test grpc.akari.test www.myapp.test; do
+  [ "$(fp -H "Host: $h" "$BASE/healthz")" = "$REJ" ] || { echo "FAIL: Host $h not rejected canonically"; exit 1; }
+done
+for h in myapp.test:8446 sub.akari.test 127.0.0.1:8080; do
+  [ "$(code -H "Host: $h" "$BASE/healthz")" = "200" ] || { echo "FAIL: Host $h refused"; exit 1; }
+done
+
+# Caddy in front (host network, internal CA, on demand via the ask endpoint):
+# only the prefix is forwarded, unknown names get no certificate.
+docker rm -f akari-smoke-caddy >/dev/null 2>&1 || true
+cat >"$LOG/Caddyfile" <<'CADDY'
+{
+	admin off
+	auto_https disable_redirects
+	http_port 8447
+	https_port 8446
+	skip_install_trust
+	on_demand_tls {
+		ask http://127.0.0.1:8092/ask
+	}
+}
+https:// {
+	tls internal {
+		on_demand
+	}
+	handle /{$AKARI_PREFIX}/* {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle {
+		respond 404
+	}
+}
+CADDY
+docker run -d --name akari-smoke-caddy --network host -e AKARI_PREFIX="$PREFIX" \
+  -v "$LOG/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine >/dev/null
+PREV_EXIT_TRAP=$(trap -p EXIT)
+trap 'docker rm -f akari-smoke-caddy akari-smoke-r22 >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
+for _ in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/8446) 2>/dev/null && break; sleep 0.5; done
+MAIN_URL="https://$R22_MAIN/$PREFIX"
+[ "$(code -k "$MAIN_URL/healthz")" = "200" ] || { echo "FAIL: main domain through Caddy"; docker logs akari-smoke-caddy 2>&1 | tail -5; exit 1; }
+[ "$(code -k "https://$R22_MAIN/")" = "404" ] || { echo "FAIL: Caddy forwards outside the prefix"; exit 1; }
+curl -sk --noproxy '*' --resolve evil.test:8446:127.0.0.1 -o /dev/null "https://evil.test:8446/$PREFIX/healthz" \
+  && { echo "FAIL: Caddy served a certificate for an unconfigured name"; exit 1; }
+
+# Subscription URLs on the subscription domain (API create response).
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+    -d '{"login":"r22-user","password":"r22-user-password"}')" = "201" ] || { echo "FAIL: create r22 user"; exit 1; }
+python3 -c "import json,sys;v=json.load(open('/tmp/akari-smoke/last'));sys.exit(0 if v['sub_url']=='https://sub.akari.test/$PREFIX/sub/'+v['sub_token'] else 1)" \
+  || { echo "FAIL: sub_url not on the subscription domain: $(cat /tmp/akari-smoke/last)"; exit 1; }
+
+# Install command: main domain origin (browser origin ignored), pinned
+# (Caddy's internal CA), script carries the node domain.
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' \
+    -d '{"name":"r22-new","install":{"origin":"http://127.0.0.1:8080"}}')" = "201" ] \
+  || { echo "FAIL: create r22-new: $(cat /tmp/akari-smoke/last)"; exit 1; }
+cp /tmp/akari-smoke/last "$LOG/r22-create.json"
+R22_URL=$(python3 -c "import json;print(json.load(open('$LOG/r22-create.json'))['install']['url'])")
+R22_PIN=$(python3 -c "import json;print(json.load(open('$LOG/r22-create.json'))['install']['pin'] or '')")
+case "$R22_URL" in "$MAIN_URL/install/"*) ;; *) echo "FAIL: install URL not on the main domain: $R22_URL"; exit 1;; esac
+[ -n "$R22_PIN" ] || { echo "FAIL: no pin for Caddy's internal certificate"; exit 1; }
+python3 -c "import json;b=json.load(open('$LOG/r22-create.json'))['bootstrap'];assert 'panel_addr = \"grpc.akari.test:8443\"' in b and 'server_name = \"grpc.akari.test\"' in b, b" \
+  || { echo "FAIL: bootstrap lacks the node domain"; exit 1; }
+curl -fsS --noproxy '*' --proto '=https' -k --pinnedpubkey "$R22_PIN" "$R22_URL" >"$LOG/r22-install.sh" \
+  || { echo "FAIL: install script through Caddy with the pin"; exit 1; }
+grep -q '^panel_addr = "grpc.akari.test:8443"$' "$LOG/r22-install.sh" && grep -q '^server_name = "grpc.akari.test"$' "$LOG/r22-install.sh" \
+  || { echo "FAIL: install script lacks the node domain"; exit 1; }
+# The agent enrolls verifying the NEW name (only resolvable inside its
+# container: --add-host); the certificate was swapped without a restart.
+sed -n "/<<'AKARI_BOOTSTRAP_EOF'$/,/^AKARI_BOOTSTRAP_EOF$/p" "$LOG/r22-install.sh" | sed '1d;$d' >"$LOG/r22-new.toml"
+grep -q '^enrollment_token = ' "$LOG/r22-new.toml" || { echo "FAIL: bootstrap not extracted from the script"; head -c 400 "$LOG/r22-new.toml"; exit 1; }
+mkdir -p "$LOG/state-r22-new"
+docker rm -f akari-smoke-r22 >/dev/null 2>&1 || true
+docker run -d --name akari-smoke-r22 --network host --add-host grpc.akari.test:127.0.0.1 --user "$(id -u):$(id -g)" \
+  -v "$(realpath "$AGENT"):/agent:ro" -v "$LOG:/smoke" alpine:3 \
+  /agent -config /smoke/r22-new.toml -state-dir /smoke/state-r22-new >/dev/null
+R22_ID=$(python3 -c "import json;print(json.load(open('$LOG/r22-create.json'))['id'])")
+for _ in $(seq 1 40); do [ "$(psql_q "SELECT status FROM nodes WHERE id='$R22_ID'")" = "online" ] && break; sleep 0.5; done
+[ "$(psql_q "SELECT status FROM nodes WHERE id='$R22_ID'")" = "online" ] \
+  || { echo "FAIL: agent with the new server name did not connect"; docker logs akari-smoke-r22 2>&1 | tail -8; exit 1; }
+[ "$(psql_q "SELECT server_name FROM nodes WHERE id='$R22_ID'")" = "grpc.akari.test" ] || { echo "FAIL: new server name not recorded"; exit 1; }
+docker rm -f akari-smoke-r22 >/dev/null
+# The agent enrolled before the change (server name localhost) still connects.
+"$AGENT" -config "$LOG/r22-old.toml" -state-dir "$LOG/state-r22-old" >"$LOG/r22-old-agent2.log" 2>&1 &
+AGENT_PID=$!
+for _ in $(seq 1 30); do grep -q "channel established" "$LOG/r22-old-agent2.log" && break; sleep 0.5; done
+grep -q "channel established" "$LOG/r22-old-agent2.log" || { echo "FAIL: old-server-name agent lost after the change"; tail -5 "$LOG/r22-old-agent2.log"; exit 1; }
+kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+AGENT_PID=""
+# The current node name cannot be removed; the panel.toml one neither.
+for n in grpc.akari.test localhost; do
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/server-names/remove" -H 'Content-Type: application/json' \
+      -d "{\"name\":\"$n\",\"confirm\":true}")" = "400" ] || { echo "FAIL: locked server name $n removable"; exit 1; }
+done
+docker rm -f akari-smoke-caddy >/dev/null
+eval "$PREV_EXIT_TRAP"
+# CLI: show + unset (audited); the name history (certificate) stays.
+"$PANEL" settings show | grep -q 'node domain: *grpc.akari.test' || { echo "FAIL: settings show"; "$PANEL" settings show; exit 1; }
+"$PANEL" settings unset all >/dev/null || { echo "FAIL: settings unset"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.update' AND actor_login = 'cli'")" = "1" ] || { echo "FAIL: CLI unset not audited"; exit 1; }
+for _ in $(seq 1 20); do [ "$(code "$ASK?domain=myapp.test")" = "404" ] && break; sleep 0.25; done
+[ "$(code "$ASK?domain=myapp.test")" = "404" ] || { echo "FAIL: running panel did not pick up the CLI change"; exit 1; }
+[ "$(code -H 'Host: evil.test' "$BASE/healthz")" = "200" ] || { echo "FAIL: host gate still on after unset"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM grpc_server_names WHERE name = 'grpc.akari.test'")" = "1" ] || { echo "FAIL: server name dropped implicitly"; exit 1; }
+for p in "$PREFIX"; do grep -qF "$p" "$LOG/panel.log" && { echo "FAIL: prefix in the panel log"; exit 1; }; done
+echo "r22 settings: ok"
 
 echo "== S4-2 sessions: revoke-sessions, last admin, logout kills copies of the cookie =="
 [ "$(code -b "$JAR" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: me failed"; exit 1; }
