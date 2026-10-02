@@ -190,7 +190,8 @@ test("user portal: views with navigation and deep links, permanent subscription 
   await page.setViewportSize({ width: 390, height: 844 });
   const tabs = page.getByRole("navigation", { name: "Main navigation" }).last();
   await expect(tabs).toBeVisible();
-  await expect(page.getByRole("navigation", { name: "Main navigation" }).first()).toBeHidden();
+  // Only one navigation is exposed at this width (the top nav is display:none).
+  await expect(page.getByRole("navigation", { name: "Main navigation" })).toHaveCount(1);
   await tabs.getByRole("link", { name: "Orders" }).click();
   await expect(page).toHaveURL(`${BASE}/orders`);
   await expect(page.getByRole("heading", { level: 1, name: "Orders" })).toBeVisible();
