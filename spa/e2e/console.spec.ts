@@ -554,8 +554,25 @@ test("W21: dashboard, user search + create dialog, plan dialog, settings tabs, c
     await page.goto(`${ADMIN_BASE}/${view}`);
     await expect(page.getByRole("navigation", { name: "主导航" })).toBeVisible();
     await page.waitForLoadState("networkidle");
-    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-    expect(overflow, view).toBeLessThanOrEqual(0);
+    const { overflow, culprits } = await page.evaluate(() => {
+      const w = window.innerWidth;
+      // Elements sticking out of the viewport that no scroller clips (an
+      // absolutely positioned element is clipped only by a scroller that is
+      // also its containing block: the W21 sr-only bug).
+      const clipped = (el: Element) => {
+        for (let p = el.parentElement; p; p = p.parentElement) {
+          const o = getComputedStyle(p).overflowX;
+          if (o === "auto" || o === "scroll" || o === "hidden") return true;
+        }
+        return false;
+      };
+      const out = [...document.body.querySelectorAll("*")]
+        .filter((el) => el.getBoundingClientRect().right > w + 1 && !clipped(el))
+        .slice(0, 5)
+        .map((el) => `${el.tagName.toLowerCase()}.${String(el.className).slice(0, 60)}`);
+      return { overflow: document.documentElement.scrollWidth - w, culprits: out };
+    });
+    expect(overflow, `${view}: ${culprits.join(" | ")}`).toBeLessThanOrEqual(0);
   }
   await page.goto(`${ADMIN_BASE}/plans`);
   const region = page.getByRole("region", { name: "套餐列表" });
