@@ -142,7 +142,7 @@ export function AdminUsers() {
             <pre className="overflow-auto rounded-lg bg-muted p-3 text-xs">{subToken.token}</pre>
             {subToken.url && <pre className="overflow-auto rounded-lg bg-muted p-3 text-xs">{subToken.url}</pre>}
             <Button variant="ghost" size="sm" onClick={() => setSubToken(null)}>
-              我已保存，隐藏
+              隐藏
             </Button>
           </CardContent>
         </Card>
