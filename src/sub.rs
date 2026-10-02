@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::{header, HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -52,6 +52,20 @@ enum Format {
     SingBox,
     Clash,
     Links,
+}
+
+/// W20: `?format=clash|sing-box|links` on the subscription URL picks the
+/// format explicitly (the portal's format selector and one-click import
+/// links); anything else — no query, other keys, unknown values — falls
+/// back to User-Agent detection. Never a rejection: the token alone decides
+/// whether the request is answered.
+fn requested_format(query: Option<&str>) -> Option<Format> {
+    query?.split('&').find_map(|pair| match pair {
+        "format=clash" => Some(Format::Clash),
+        "format=sing-box" | "format=singbox" => Some(Format::SingBox),
+        "format=links" | "format=base64" => Some(Format::Links),
+        _ => None,
+    })
 }
 
 fn detect_format(user_agent: &str) -> Format {
@@ -774,7 +788,17 @@ fn pad(body: String) -> String {
 /// The subscription body for `user_agent` (format by UA) and its content
 /// type, padded (`pad`). Pure: the request path and the benchmarks share it.
 pub fn render(user_agent: &str, rows: &[NodeRow]) -> (&'static str, String) {
-    let format = detect_format(user_agent);
+    render_for(None, user_agent, rows)
+}
+
+/// `render` with the URL's query string (`requested_format`) taking
+/// precedence over the User-Agent.
+pub fn render_for(
+    query: Option<&str>,
+    user_agent: &str,
+    rows: &[NodeRow],
+) -> (&'static str, String) {
+    let format = requested_format(query).unwrap_or_else(|| detect_format(user_agent));
     let proxies = collect_proxies(rows);
     let body = match format {
         Format::SingBox => render_sing_box(&proxies).to_string(),
@@ -809,6 +833,7 @@ pub async fn subscription(
     State(state): State<AppState>,
     MaybeClientIp(client): MaybeClientIp,
     Path((_, token)): Path<(String, String)>,
+    RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Response {
     let limits = &state.cfg().sub;
@@ -871,7 +896,7 @@ pub async fn subscription(
         .get(header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let (content_type, body) = render(user_agent, &rows);
+    let (content_type, body) = render_for(query.as_deref(), user_agent, &rows);
 
     // Quota header only after every failure path is cleared.
     let expire = user
@@ -918,17 +943,21 @@ async fn within_limit(state: &AppState, key: String, limit: i64, window: i64) ->
 
 /// Mint a new subscription token for a user (the old one stops working at
 /// commit), in the caller's transaction, audited ("user.sub_token.rotate"
-/// with no token material). The plaintext is returned exactly once; the
-/// database keeps only its SHA-256. `None` if the user does not exist.
+/// with no token material). The database keeps its SHA-256 (lookup) and,
+/// W20, its ciphertext (`users.sub_token_enc`, `totp::Keys::seal_sub_token`)
+/// so the owner can see the link again. `None` if the user does not exist.
 pub async fn rotate_token(
     conn: &mut sqlx::PgConnection,
+    keys: &crate::totp::Keys,
     actor: &crate::audit::Actor,
     user_id: Uuid,
-) -> sqlx::Result<Option<String>> {
+) -> anyhow::Result<Option<String>> {
     let token = generate_token();
-    let n = sqlx::query("UPDATE users SET sub_token_hash = $2 WHERE id = $1")
+    let enc = keys.seal_sub_token(user_id, &token)?;
+    let n = sqlx::query("UPDATE users SET sub_token_hash = $2, sub_token_enc = $3 WHERE id = $1")
         .bind(user_id)
         .bind(hash_token(&token))
+        .bind(&enc)
         .execute(&mut *conn)
         .await?
         .rows_affected();
@@ -946,6 +975,91 @@ pub async fn rotate_token(
     )
     .await?;
     Ok(Some(token))
+}
+
+/// W20: what the panel can show about an account's subscription link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Stored {
+    /// The working token (decrypted, and its hash matches the lookup hash).
+    Ready(String),
+    /// A token works but cannot be shown: issued before 0120 (hash only),
+    /// or the ciphertext does not open (data/totp.key changed). Only a
+    /// reset gives a showable link; it is never rotated implicitly.
+    Legacy,
+}
+
+#[derive(FromRow)]
+struct StoredRow {
+    sub_token_hash: Option<String>,
+    sub_token_enc: Option<Vec<u8>>,
+}
+
+/// W20: the account's subscription token, issuing one if the account has
+/// none at all (no working link exists, so nothing is disrupted: audited
+/// "user.sub_token.issue" by `actor`). An existing token is never replaced
+/// here. `None` if the user does not exist. Runs in the caller's
+/// transaction; the conditional UPDATE (`sub_token_hash IS NULL`) makes
+/// concurrent first reads issue exactly one token.
+pub async fn ensure_token(
+    conn: &mut sqlx::PgConnection,
+    keys: &crate::totp::Keys,
+    actor: &crate::audit::Actor,
+    user_id: Uuid,
+) -> anyhow::Result<Option<Stored>> {
+    for _ in 0..2 {
+        let Some(row) = sqlx::query_as::<_, StoredRow>(
+            "SELECT sub_token_hash, sub_token_enc FROM users WHERE id = $1",
+        )
+        .bind(user_id)
+        .fetch_optional(&mut *conn)
+        .await?
+        else {
+            return Ok(None);
+        };
+        match (row.sub_token_hash, row.sub_token_enc) {
+            (Some(hash), Some(enc)) => {
+                return Ok(Some(match keys.open_sub_token(user_id, &enc) {
+                    Some(t) if hash_token(&t) == hash => Stored::Ready(t),
+                    _ => {
+                        tracing::error!(user = %user_id,
+                            "stored subscription token does not open (data/totp.key changed?); \
+                             the user must reset the link to see it");
+                        Stored::Legacy
+                    }
+                }));
+            }
+            (Some(_), None) => return Ok(Some(Stored::Legacy)),
+            (None, _) => {
+                let token = generate_token();
+                let enc = keys.seal_sub_token(user_id, &token)?;
+                let n = sqlx::query(
+                    "UPDATE users SET sub_token_hash = $2, sub_token_enc = $3 \
+                     WHERE id = $1 AND sub_token_hash IS NULL",
+                )
+                .bind(user_id)
+                .bind(hash_token(&token))
+                .bind(&enc)
+                .execute(&mut *conn)
+                .await?
+                .rows_affected();
+                if n == 1 {
+                    crate::audit::record(
+                        conn,
+                        actor,
+                        "user.sub_token.issue",
+                        "user",
+                        Some(user_id.to_string()),
+                        None,
+                        Some(json!({ "sub_token": crate::audit::CHANGED })),
+                    )
+                    .await?;
+                    return Ok(Some(Stored::Ready(token)));
+                }
+                // Issued concurrently: read what the other request stored.
+            }
+        }
+    }
+    Ok(Some(Stored::Legacy))
 }
 
 #[cfg(test)]
@@ -1396,6 +1510,30 @@ rules:
         assert_eq!(pad("x".into()).len(), 8192);
         assert_eq!(pad("x".repeat(8192)).len(), 8192);
         assert_eq!(pad("x".repeat(8193)).len(), 12288);
+    }
+
+    /// W20: `?format=` beats the User-Agent; anything unrecognised falls
+    /// back to UA detection (never a rejection).
+    #[test]
+    fn query_format_overrides_user_agent() {
+        let rows = snapshot_rows();
+        for (q, ua, ct) in [
+            (Some("format=clash"), "curl/8", "text/yaml; charset=utf-8"),
+            (Some("format=sing-box"), "clash.meta", "application/json; charset=utf-8"),
+            (Some("format=singbox"), "", "application/json; charset=utf-8"),
+            (Some("x=1&format=links"), "mihomo", "text/plain; charset=utf-8"),
+            (Some("format=base64"), "sing-box", "text/plain; charset=utf-8"),
+            (Some("format=CLASH"), "sing-box", "application/json; charset=utf-8"),
+            (Some("format=yaml"), "", "text/plain; charset=utf-8"),
+            (Some(""), "mihomo", "text/yaml; charset=utf-8"),
+            (None, "mihomo", "text/yaml; charset=utf-8"),
+        ] {
+            assert_eq!(render_for(q, ua, &rows).0, ct, "{q:?} {ua}");
+        }
+        assert_eq!(
+            render_for(Some("format=clash"), "", &rows).1,
+            render("clash.meta", &rows).1
+        );
     }
 
     async fn user_with_token(db: &TestDb) -> (Uuid, String) {

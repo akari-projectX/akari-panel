@@ -84,6 +84,10 @@ pub fn router(state: AppState) -> Router {
             post(api::regenerate_sub_token),
         )
         .route(
+            "/{prefix}/api/v1/users/{id}/subscription",
+            get(api::user_subscription),
+        )
+        .route(
             "/{prefix}/api/v1/users/{id}/totp",
             axum::routing::delete(api::reset_totp),
         )
