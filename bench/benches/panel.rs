@@ -97,6 +97,7 @@ fn pure(c: &mut Criterion) {
             inbounds_json: state.inbounds.clone(),
             user_version: 9,
             users: o.clone(),
+            ..Default::default()
         };
         g.bench_with_input(BenchmarkId::new("snapshot_encode", n), &snap, |b, s| {
             b.iter(|| prost::Message::encode_to_vec(std::hint::black_box(s)))
