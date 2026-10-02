@@ -1070,6 +1070,9 @@ pub struct NodeView {
     /// Hello.protocol_version of the last connected agent; below the
     /// panel's minimum the node runs the empty state (see last_error).
     agent_protocol: Option<i32>,
+    /// W12: Hello.capabilities of the last connected agent (sorted; null
+    /// before any Hello recorded them).
+    agent_capabilities: Option<Vec<String>>,
     /// When the agent's fail-closed lease runs out (renewed while the panel
     /// can read the node's desired state), and the seconds left.
     lease_expires_at: Option<DateTime<Utc>>,
@@ -1256,7 +1259,7 @@ pub const NODE_VIEW_COLS: &str =
         WHERE rn.node_id = nodes.id ORDER BY r.created_at DESC LIMIT 1) AS update_status, \
      config_version, \
      user_version, xray_inbounds, server_addr, region, tls_domain, host(agent_addr) AS agent_addr, last_error, last_error_at, failed_config_version, \
-     failed_user_version, agent_protocol, lease_expires_at, \
+     failed_user_version, agent_protocol, agent_capabilities, lease_expires_at, \
      GREATEST(0, EXTRACT(EPOCH FROM lease_expires_at - now()))::bigint AS lease_remaining_seconds, \
      traffic_max_rate_bytes_per_sec, deleting_at, last_seen_at, created_at, \
      cert_serial IS NOT NULL AS enrolled, cert_not_after, \

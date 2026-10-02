@@ -22,10 +22,19 @@
 //!   (`sans_never_shrink`).
 //! * **trust Cloudflare**: Cloudflare's edge ranges join the trusted proxies
 //!   (`client_ip.rs`).
+//! * **Latency tests** (W12, 0091): `[probe]` interval, test URLs and the
+//!   panel's TCP test (`Effective::probe`). Agents with the `latency`
+//!   capability get the effective values in `LatencyProbeConfig`: a change
+//!   wakes every local session on every instance (`reload` →
+//!   `Wakeups::wake_all`), each re-sends the config when it differs from
+//!   what it last sent; the panel TCP test loop reads them every round. A
+//!   shorter interval pulls far-off scheduled panel tests forward in the
+//!   saving transaction (`apply_update_probe`).
 //!
 //! Precedence: a database value (non-NULL column) wins; NULL = panel.toml
 //! (`install.public_url`, `web.sub_domain`, `grpc.advertise` /
-//! `grpc.server_name`, `web.trust_cloudflare`). `akari config check` shows
+//! `grpc.server_name`, `web.trust_cloudflare`, `[probe] interval_secs` /
+//! `urls` / `panel_tcp`). `akari config check` shows
 //! both; `akari settings show|unset` reads/clears the database side (e.g.
 //! after a mistyped main domain).
 //!
@@ -59,7 +68,7 @@ use crate::api::ApiJson;
 use crate::audit::Actor;
 use crate::auth::{ApiError, AuthUser};
 use crate::client_ip::{Cidr, Trust};
-use crate::config::PanelConfig;
+use crate::config::{PanelConfig, ProbeConfig};
 use crate::install::Install;
 use crate::nodeinstall::Origin;
 use crate::state::AppState;
@@ -230,14 +239,22 @@ pub struct Stored {
     pub sub_domain: Option<String>,
     pub node_domain: Option<String>,
     pub trust_cloudflare: Option<bool>,
+    /// W12: latency tests (NULL = panel.toml `[probe]`).
+    pub probe_interval_secs: Option<i32>,
+    pub probe_urls: Option<Vec<String>>,
+    pub probe_panel_tcp: Option<bool>,
     #[serde(skip)]
     pub updated_at: Option<DateTime<Utc>>,
 }
 
+const STORED_COLS: &str = "version, main_domain, sub_domain, node_domain, trust_cloudflare, \
+     probe_interval_secs, probe_urls, probe_panel_tcp, updated_at";
 const SELECT_STORED: &str = "SELECT version, main_domain, sub_domain, node_domain, \
-     trust_cloudflare, updated_at FROM panel_settings WHERE id = 1";
+     trust_cloudflare, probe_interval_secs, probe_urls, probe_panel_tcp, updated_at \
+     FROM panel_settings WHERE id = 1";
 const LOCK_STORED: &str = "SELECT version, main_domain, sub_domain, node_domain, \
-     trust_cloudflare, updated_at FROM panel_settings WHERE id = 1 FOR UPDATE";
+     trust_cloudflare, probe_interval_secs, probe_urls, probe_panel_tcp, updated_at \
+     FROM panel_settings WHERE id = 1 FOR UPDATE";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
 pub struct ServerName {
@@ -282,6 +299,10 @@ pub struct Effective {
     pub trust_cloudflare: bool,
     pub trust_source: Source,
     pub trust: Trust,
+    /// W12: the effective latency-test settings (`[probe]` with the stored
+    /// interval / URLs / panel TCP switch applied) and where each comes from.
+    pub probe: ProbeConfig,
+    pub probe_sources: ProbeSources,
     /// Some = the host gate is on (main domain set in the database): DNS
     /// names allowed as Host.
     host_gate: Option<HashSet<String>>,
@@ -289,6 +310,59 @@ pub struct Effective {
     ask_hosts: HashSet<String>,
     /// Names the gRPC server certificate must cover (sorted).
     pub sans: Vec<String>,
+}
+
+/// Where each editable latency-test value comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ProbeSources {
+    pub interval_secs: Source,
+    pub urls: Source,
+    pub panel_tcp: Source,
+}
+
+/// Bounds of the editable latency-test values (= `config_check`'s).
+pub const PROBE_INTERVAL_SECS: std::ops::RangeInclusive<u64> = 600..=604_800;
+pub const PROBE_MAX_URLS: usize = 4;
+
+/// Pure: `[probe]` with the stored values applied. A stored value outside
+/// the bounds (impossible through the API and the 0091 CHECKs) is ignored
+/// with an error log.
+fn effective_probe(cfg: &PanelConfig, stored: &Stored) -> (ProbeConfig, ProbeSources) {
+    let mut p = cfg.probe.clone();
+    let mut src = ProbeSources {
+        interval_secs: Source::Config,
+        urls: Source::Config,
+        panel_tcp: Source::Config,
+    };
+    if let Some(v) = stored.probe_interval_secs {
+        match u64::try_from(v) {
+            Ok(v) if PROBE_INTERVAL_SECS.contains(&v) => {
+                p.interval_secs = v;
+                src.interval_secs = Source::Settings;
+            }
+            _ => tracing::error!(value = v, "stored probe interval out of range; ignored"),
+        }
+    }
+    if let Some(urls) = &stored.probe_urls {
+        if valid_probe_urls(urls) {
+            p.urls = urls.clone();
+            src.urls = Source::Settings;
+        } else {
+            tracing::error!("stored probe URLs invalid; ignored");
+        }
+    }
+    if let Some(b) = stored.probe_panel_tcp {
+        p.panel_tcp = b;
+        src.panel_tcp = Source::Settings;
+    }
+    (p, src)
+}
+
+fn valid_probe_urls(urls: &[String]) -> bool {
+    !urls.is_empty()
+        && urls.len() <= PROBE_MAX_URLS
+        && urls.iter().all(|u| crate::nodestat::valid_probe_url(u))
+        && urls.iter().collect::<HashSet<_>>().len() == urls.len()
 }
 
 fn origin_host(o: &Origin) -> String {
@@ -407,7 +481,10 @@ pub fn compute(
         allowed
     });
     let sans = sans(cfg, &server_names, &node.server_name);
+    let (probe, probe_sources) = effective_probe(cfg, &stored);
     Effective {
+        probe,
+        probe_sources,
         stored,
         server_names,
         main,
@@ -612,8 +689,21 @@ pub async fn reload(state: &AppState) -> anyhow::Result<()> {
         live.certs.set(&cert, &key, eff.sans.clone())?;
         tracing::info!(names = ?eff.sans, "gRPC server certificate re-issued");
     }
+    let probe_changed = probe_wire(&live.get().probe) != probe_wire(&eff.probe);
     live.current.store(Arc::new(eff));
+    if probe_changed {
+        // Every local session re-reads and re-sends LatencyProbeConfig when
+        // it differs from what it sent (jittered wake-all; settings changes
+        // are rare admin actions).
+        tracing::info!("latency test settings changed; waking agent sessions");
+        state.wakeups().wake_all();
+    }
     Ok(())
+}
+
+/// The latency-test values agents receive (what a change must re-send).
+fn probe_wire(p: &ProbeConfig) -> (u64, &[String], u32, u32) {
+    (p.interval_secs, &p.urls, p.timeout_ms, p.attempts)
 }
 
 /// Startup: record panel.toml's grpc.server_name (agents enrolled before
@@ -726,7 +816,8 @@ pub async fn apply_update(
         "UPDATE panel_settings SET main_domain = $1, sub_domain = $2, node_domain = $3, \
              trust_cloudflare = $4, version = version + 1, updated_at = now() \
          WHERE id = 1 \
-         RETURNING version, main_domain, sub_domain, node_domain, trust_cloudflare, updated_at",
+         RETURNING version, main_domain, sub_domain, node_domain, trust_cloudflare, \
+             probe_interval_secs, probe_urls, probe_panel_tcp, updated_at",
     )
     .bind(&new.main_domain)
     .bind(&new.sub_domain)
@@ -747,6 +838,87 @@ pub async fn apply_update(
         conn,
         actor,
         "settings.update",
+        "settings",
+        None,
+        Some(before.audit()),
+        Some(new.audit()),
+    )
+    .await?;
+    Ok(row)
+}
+
+/// W12: new latency-test values (validated; None = unset → panel.toml).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProbeValues {
+    pub interval_secs: Option<i32>,
+    pub urls: Option<Vec<String>>,
+    pub panel_tcp: Option<bool>,
+}
+
+impl ProbeValues {
+    fn of(s: &Stored) -> Self {
+        Self {
+            interval_secs: s.probe_interval_secs,
+            urls: s.probe_urls.clone(),
+            panel_tcp: s.probe_panel_tcp,
+        }
+    }
+    fn audit(&self) -> serde_json::Value {
+        json!({
+            "probe_interval_secs": self.interval_secs,
+            "probe_urls": self.urls,
+            "probe_panel_tcp": self.panel_tcp,
+        })
+    }
+}
+
+/// Write the latency-test settings (same row and `version` as the domains:
+/// 409 on a stale form). Audited as `settings.probe.update`. When the
+/// effective interval got shorter, panel TCP tests scheduled beyond the new
+/// interval are re-spread over it (otherwise a 5 h → 10 min change would
+/// wait up to 5 h). Agents follow through the reload's session wake-up.
+pub async fn apply_update_probe(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    cfg: &PanelConfig,
+    expected_version: i64,
+    new: &ProbeValues,
+) -> Result<Stored, ApiError> {
+    let cur: Stored = sqlx::query_as(LOCK_STORED).fetch_one(&mut *conn).await?;
+    if cur.version != expected_version {
+        return Err(ApiError::conflict(
+            "设置已被修改（可能是其他管理员），请刷新后重试",
+        ));
+    }
+    let before = ProbeValues::of(&cur);
+    if &before == new {
+        return Ok(cur);
+    }
+    let row: Stored = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "UPDATE panel_settings SET probe_interval_secs = $1, probe_urls = $2, \
+             probe_panel_tcp = $3, version = version + 1, updated_at = now() \
+         WHERE id = 1 RETURNING {STORED_COLS}"
+    )))
+    .bind(new.interval_secs)
+    .bind(&new.urls)
+    .bind(new.panel_tcp)
+    .fetch_one(&mut *conn)
+    .await?;
+    let old_iv = effective_probe(cfg, &cur).0.interval_secs;
+    let new_iv = effective_probe(cfg, &row).0.interval_secs;
+    if new_iv < old_iv {
+        sqlx::query(
+            "UPDATE nodes SET panel_probe_next_at = now() + make_interval(secs => $1 * random()) \
+             WHERE panel_probe_next_at > now() + make_interval(secs => $1)",
+        )
+        .bind(new_iv as f64)
+        .execute(&mut *conn)
+        .await?;
+    }
+    crate::audit::record(
+        conn,
+        actor,
+        "settings.probe.update",
         "settings",
         None,
         Some(before.audit()),
@@ -1041,8 +1213,59 @@ pub struct SettingsView {
     /// The Caddy ask endpoint is enabled on this instance.
     pub ask_enabled: bool,
     pub cloudflare_ranges: usize,
+    /// W12: latency tests (agents' url-test + the panel's TCP test).
+    pub probe: ProbeView,
     /// Advisory notes from the last save (DNS checks).
     pub warnings: Vec<String>,
+}
+
+/// One editable latency-test value: stored (null = panel.toml), effective,
+/// panel.toml's, and where the effective one comes from.
+#[derive(Serialize)]
+pub struct ProbeField<T> {
+    pub value: Option<T>,
+    pub effective: T,
+    pub config: T,
+    pub source: Source,
+}
+
+#[derive(Serialize)]
+pub struct ProbeView {
+    pub interval_secs: ProbeField<u64>,
+    pub urls: ProbeField<Vec<String>>,
+    pub panel_tcp: ProbeField<bool>,
+    /// panel.toml only (not editable here).
+    pub timeout_ms: u32,
+    pub attempts: u32,
+    pub manual_cooldown_secs: u64,
+}
+
+fn probe_view(cfg: &PanelConfig, eff: &Effective) -> ProbeView {
+    let s = &eff.stored;
+    let (p, src, c) = (&eff.probe, &eff.probe_sources, &cfg.probe);
+    ProbeView {
+        interval_secs: ProbeField {
+            value: s.probe_interval_secs.and_then(|v| u64::try_from(v).ok()),
+            effective: p.interval_secs,
+            config: c.interval_secs,
+            source: src.interval_secs,
+        },
+        urls: ProbeField {
+            value: s.probe_urls.clone(),
+            effective: p.urls.clone(),
+            config: c.urls.clone(),
+            source: src.urls,
+        },
+        panel_tcp: ProbeField {
+            value: s.probe_panel_tcp,
+            effective: p.panel_tcp,
+            config: c.panel_tcp,
+            source: src.panel_tcp,
+        },
+        timeout_ms: p.timeout_ms,
+        attempts: p.attempts,
+        manual_cooldown_secs: p.manual_cooldown_secs,
+    }
 }
 
 fn display_of(v: &Option<String>) -> Option<String> {
@@ -1073,6 +1296,7 @@ pub async fn view(state: &AppState, mut warnings: Vec<String>) -> Result<Setting
         });
     }
     let legacy = legacy_nodes(&mut conn).await?;
+    let probe = probe_view(cfg, &eff);
     let s = &eff.stored;
     Ok(SettingsView {
         version: s.version,
@@ -1113,6 +1337,7 @@ pub async fn view(state: &AppState, mut warnings: Vec<String>) -> Result<Setting
         host_gate: eff.host_gate_on(),
         ask_enabled: cfg.tls_ask.bind.is_some(),
         cloudflare_ranges: live.cloudflare().len(),
+        probe,
         warnings,
     })
 }
@@ -1228,6 +1453,69 @@ pub async fn put_settings(
     // failure here is retried by the notification path.
     reload_logged(&state).await;
     Ok(Json(view(&state, warnings).await?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProbeReq {
+    /// The version the form was loaded at (409 if someone saved since).
+    pub version: i64,
+    /// PUT replaces all three: null = not set (panel.toml `[probe]` applies).
+    pub interval_secs: Option<u64>,
+    /// 1..=4 http(s) URLs, primary first; null or [] = panel.toml.
+    pub urls: Option<Vec<String>>,
+    pub panel_tcp: Option<bool>,
+}
+
+/// Validate a latency-test form (pure; Chinese messages for the console).
+pub fn probe_values(req: &ProbeReq) -> Result<ProbeValues, ApiError> {
+    let interval_secs = match req.interval_secs {
+        None => None,
+        Some(v) if PROBE_INTERVAL_SECS.contains(&v) => Some(v as i32),
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "测速间隔：须在 600 秒（10 分钟）到 604800 秒（7 天）之间",
+            ))
+        }
+    };
+    let urls = match req.urls.as_deref() {
+        None | Some([]) => None,
+        Some(list) => {
+            let list: Vec<String> = list.iter().map(|u| u.trim().to_string()).collect();
+            if list.len() > PROBE_MAX_URLS {
+                return Err(ApiError::bad_request("测速地址：最多 4 个"));
+            }
+            if let Some(bad) = list.iter().find(|u| !crate::nodestat::valid_probe_url(u)) {
+                return Err(ApiError::bad_request(format!(
+                    "测速地址：{bad:?} 不是有效的 http(s) 地址（不能含空白或用户名）"
+                )));
+            }
+            if !valid_probe_urls(&list) {
+                return Err(ApiError::bad_request("测速地址：不能重复"));
+            }
+            Some(list)
+        }
+    };
+    Ok(ProbeValues {
+        interval_secs,
+        urls,
+        panel_tcp: req.panel_tcp,
+    })
+}
+
+/// PUT /api/v1/settings/probe (admin): latency-test settings.
+pub async fn put_probe(
+    State(state): State<AppState>,
+    user: AuthUser,
+    ApiJson(req): ApiJson<ProbeReq>,
+) -> Result<Json<SettingsView>, ApiError> {
+    user.require_admin()?;
+    let new = probe_values(&req)?;
+    let mut tx = state.pg().begin().await?;
+    apply_update_probe(&mut tx, &Actor::of(&user), state.cfg(), req.version, &new).await?;
+    tx.commit().await?;
+    reload_logged(&state).await;
+    Ok(Json(view(&state, Vec::new()).await?))
 }
 
 #[derive(Deserialize)]
@@ -1368,6 +1656,34 @@ pub async fn cli_show(cfg: &PanelConfig, pg: &sqlx::PgPool) -> anyhow::Result<()
         eff.trust_cloudflare,
         eff.trust_source
     );
+    println!(
+        "probe interval:   {}  -> {}s [{:?}]",
+        stored
+            .probe_interval_secs
+            .map(|v| format!("{v}s"))
+            .unwrap_or_else(|| "(not set)".into()),
+        eff.probe.interval_secs,
+        eff.probe_sources.interval_secs
+    );
+    println!(
+        "probe urls:       {}  -> {} [{:?}]",
+        stored
+            .probe_urls
+            .as_ref()
+            .map(|u| u.join(" "))
+            .unwrap_or_else(|| "(not set)".into()),
+        eff.probe.urls.join(" "),
+        eff.probe_sources.urls
+    );
+    println!(
+        "probe panel tcp:  {}  -> {} [{:?}]",
+        stored
+            .probe_panel_tcp
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "(not set)".into()),
+        eff.probe.panel_tcp,
+        eff.probe_sources.panel_tcp
+    );
     println!("host gate:        {}", eff.host_gate_on());
     println!("gRPC certificate names: {}", eff.sans.join(", "));
     for w in eff.standing_warnings(cfg) {
@@ -1399,7 +1715,10 @@ pub async fn describe_db(cfg: &PanelConfig) -> String {
                  # main_domain      = {}  -> {} [{:?}]\n\
                  # sub_domain       = {}  -> {} [{:?}]\n\
                  # node_domain      = {}  -> {} / {} [{:?}]\n\
-                 # trust_cloudflare = {}  -> {} [{:?}]\n",
+                 # trust_cloudflare = {}  -> {} [{:?}]\n\
+                 # probe.interval_secs = {}  -> {} [{:?}]\n\
+                 # probe.urls          = {}  -> {} [{:?}]\n\
+                 # probe.panel_tcp     = {}  -> {} [{:?}]\n",
                 show(&s.main_domain),
                 e.main.as_ref().map(Origin::as_string).unwrap_or_else(|| "(browser origin)".into()),
                 e.main_source,
@@ -1413,6 +1732,15 @@ pub async fn describe_db(cfg: &PanelConfig) -> String {
                 s.trust_cloudflare.map(|b| b.to_string()).unwrap_or_else(|| "(not set)".into()),
                 e.trust_cloudflare,
                 e.trust_source,
+                s.probe_interval_secs.map(|v| v.to_string()).unwrap_or_else(|| "(not set)".into()),
+                e.probe.interval_secs,
+                e.probe_sources.interval_secs,
+                s.probe_urls.as_ref().map(|u| u.join(" ")).unwrap_or_else(|| "(not set)".into()),
+                e.probe.urls.join(" "),
+                e.probe_sources.urls,
+                s.probe_panel_tcp.map(|b| b.to_string()).unwrap_or_else(|| "(not set)".into()),
+                e.probe.panel_tcp,
+                e.probe_sources.panel_tcp,
             ) + &e
                 .standing_warnings(cfg)
                 .iter()
@@ -1427,8 +1755,26 @@ pub async fn describe_db(cfg: &PanelConfig) -> String {
 }
 
 /// `akari settings unset <field>`: back to panel.toml (audited, actor cli).
-pub async fn cli_unset(pg: &sqlx::PgPool, field: &str) -> anyhow::Result<()> {
+pub async fn cli_unset(cfg: &PanelConfig, pg: &sqlx::PgPool, field: &str) -> anyhow::Result<()> {
     let mut tx = pg.begin().await?;
+    let cur: Stored = sqlx::query_as(SELECT_STORED).fetch_one(&mut *tx).await?;
+    if field == "probe" || field == "all" {
+        // W12: the latency-test values (own audit action).
+        apply_update_probe(
+            &mut tx,
+            &Actor::cli(),
+            cfg,
+            cur.version,
+            &ProbeValues::default(),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e.message()))?;
+        if field == "probe" {
+            tx.commit().await?;
+            println!("probe: unset (panel.toml applies); running panels pick it up at once");
+            return Ok(());
+        }
+    }
     let cur: Stored = sqlx::query_as(SELECT_STORED).fetch_one(&mut *tx).await?;
     let mut new = Values::of(&cur);
     match field {
@@ -1437,7 +1783,7 @@ pub async fn cli_unset(pg: &sqlx::PgPool, field: &str) -> anyhow::Result<()> {
         "node" => new.node_domain = None,
         "trust-cloudflare" => new.trust_cloudflare = None,
         "all" => new = Values::default(),
-        _ => anyhow::bail!("field must be main, sub, node, trust-cloudflare or all"),
+        _ => anyhow::bail!("field must be main, sub, node, trust-cloudflare, probe or all"),
     }
     apply_update(&mut tx, &Actor::cli(), cur.version, &new)
         .await

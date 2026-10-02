@@ -3,7 +3,7 @@
 sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18）在 `serve`、`node add`、`admin add` 启动时自动执行。
 
 - **只追加，不修改**已存在的迁移文件（sqlx 会校验 checksum，改了已部署环境会拒绝启动）。
-- 命名：`NNNN_<topic>.sql`，四位递增（M3 从 0020 起，0014–0019 留给 M2；R18 并行分段：0030+ 节点表单、0035+ i18n/2FA、0040+ 支付、0050+ 加固；W7 套餐目录 0070–0079；W10 节点证书 0080–0084，W11 0085–0089）。
+- 命名：`NNNN_<topic>.sql`，四位递增（M3 从 0020 起，0014–0019 留给 M2；R18 并行分段：0030+ 节点表单、0035+ i18n/2FA、0040+ 支付、0050+ 加固；W7 套餐目录 0070–0079；W10 节点证书 0080–0084，W11 0085–0089，W12 0090–0094）。
 - 改列名/加列后，同步检查 `src/` 中所有手写 SQL 与 `FromRow` 结构体（没有编译期 SQL 校验）。
 
 ## 当前表
@@ -11,6 +11,8 @@ sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18）在 `serve`、`n
 | 表 | 关键点 |
 |---|---|
 | `nodes` | 0020：`region`（给用户看的地区，可空）；`cert_serial` UNIQUE = agent 身份；`config_version`/`user_version` 单调递增；`server_addr`（0002）供订阅使用；0003：`last_error`/`last_error_at`/`failed_config_version`/`failed_user_version`（agent 最近一次失败的应用及其尝试的版本，被覆盖它的 ok Ack 清空），`online_session`（最后标记 online 的 gRPC 会话）；0004：`failed_reason`（nack/no_ack）、`failed_held_config_version`/`failed_held_user_version`（失败时 agent 持有的版本）；0005：`agent_protocol`（最近连接 agent 的 Hello.protocol_version）、`lease_expires_at`（最近一次下发的失联租约到期时间）；0007：`deleting_at`/`delete_acked_at`（两阶段删除）、`traffic_tat`（节点 GCRA 虚拟时钟，NULL=now−60s）、`traffic_max_rate_bytes_per_sec`（节点计费上限覆盖，>0）；触发器 `nodes_notify_versions`（(config_version,user_version) 变化 → `pg_notify('akari_change', id)`）、`nodes_notify_delete`（`del:<id>`）、`nodes_refuse_revoked_serial`（拒绝插入/改成已吊销序列号）；0007 把旧的带前导 `00` 的 `cert_serial` 规范化；0008：`traffic_credit_floor`/`traffic_credit_until`（重连计费额度，见 traffic.rs）；0011：`cert_serial` 在注册前为 NULL（pending 节点），`prev_cert_serial` UNIQUE（续期来源，新证书首次出现前仍有效），`cert_not_after`（cert_serial 的到期时间；M1c 前签发的证书在 agent 下次连接时补上），`nodes_refuse_revoked_serial` 触发器同时检查 prev_cert_serial |
+| `nodes`（W12，0090） | `agent_capabilities` TEXT[]（最近一次 Hello 的 `capabilities`，排序去重；NULL = 本列存在后还没有 Hello） |
+| `panel_settings`（W12，0091） | `probe_interval_secs`（600–604800）、`probe_urls` TEXT[]（1–4 个、无 NULL 元素）、`probe_panel_tcp`；NULL = panel.toml `[probe]`；沿用 0060 的触发器与 `version` |
 | `nodes`（W10，0080） | `tls_domain`（节点域名：agent 协议 6 自动申请证书；NULL = 手工证书文件；CHECK 小写 DNS 名、≥2 段、非 IP/通配，与 `nodetpl::node_tls_domain` 同规则；改动经 `apply_update_node` bump config_version 并审计）、`agent_addr` INET（最近一条流的 gRPC 对端地址，节点页与 DNS 预检用） |
 | `users` | 0012：`users_created_at (created_at, id)`（用户列表的 deferred-join 分页）、fillfactor 85（计费 UPDATE 走 HOT，勿给 `traffic_used_bytes` 建索引）；`id` 同时是 xray `email`；`sub_token_hash`（0002）只存 SHA-256；`traffic_used_bytes` 由 traffic.rs 累加；0003：`expiry_enforced`（过期移除已下发的标记，改 `expires_at` 时重置）；0020：`disabled_reason` 枚举 admin/quota/expiry（触发器 `users_disabled_reason`：启用清空、禁用未给原因 = admin；CHECK `enabled = (disabled_reason IS NULL)`；expiry 预留未用——过期由谓词执行）；0009：`session_ver`（JWT `sv`），触发器 `users_bump_session_ver`（BEFORE UPDATE OF password_hash/role/enabled/expiry_enforced：改密码、改角色、禁用、过期执行时 +1；计费 UPDATE 不触发），`users_keep_last_admin_update/_delete`（advisory xact lock 下保证至少一个 role=admin AND enabled，否则 SQLSTATE AK001） |
 | `node_users` | PK (node_id,user_id)；`credentials` JSONB = `[{inbound_tag, protocol, account}]`；0020：`manual`（默认 TRUE：手工分配/旧行/任何其他写入者 = 管理员覆盖；reconcile 只写 FALSE 行） |

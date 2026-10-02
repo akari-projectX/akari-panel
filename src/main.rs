@@ -70,7 +70,7 @@ enum SettingsCmd {
     /// Show the stored settings and the effective values
     Show,
     /// Clear a stored setting so panel.toml applies again (audited):
-    /// main | sub | node | trust-cloudflare | all
+    /// main | sub | node | trust-cloudflare | probe | all
     Unset { field: String },
 }
 

@@ -12,6 +12,13 @@
 # TOTP still works (data/totp.key restored with the database), the
 # (unchanged) agent reconnects and the node is online again.
 set -euo pipefail
+
+# Pattern test on a command's output that READS ALL OF IT (grep -q exits at
+# the first match; the writer's next write then fails with EPIPE/SIGPIPE and
+# pipefail turns a match into a FAIL — flaky, depending on chunking). Use
+# `cmd | matches [grep flags] PATTERN`, never `cmd | grep -q`, and
+# `| sed -n 1p` instead of `| head -1`.
+matches() { grep "$@" >/dev/null; }
 cd "$(dirname "$0")/.."
 
 PANEL="${PANEL:-./target/release/akari}"
@@ -113,11 +120,11 @@ RECIP="$(awk '/Public key:/{print $3}' "$W/age.pub.txt")"
 AGE_RECIPIENT="$RECIP" AKARI_DATA_DIR="$W/data" AKARI_BACKUP_DIR="$W/backups" \
   AKARI_PG_DUMP_CMD='docker compose exec -T postgres pg_dump -U akari -Fc akari' \
   scripts/backup.sh
-BACKUP="$(find "$W/backups" -maxdepth 1 -name 'akari-*' -type d | head -1)"
+BACKUP="$(find "$W/backups" -maxdepth 1 -name 'akari-*' -type d | sed -n 1p)"
 ls -l "$BACKUP"
 grep -q "BEGIN" "$BACKUP/db.dump.age" && fail "backup is not encrypted"
 # The TOTP key must be in the backup: without it every 2FA account is locked out.
-age -d -i "$W/age.key" "$BACKUP/data.tar.age" | tar -tf - | grep -qx './totp.key' \
+age -d -i "$W/age.key" "$BACKUP/data.tar.age" | tar -tf - | matches -x './totp.key' \
   || fail "data/totp.key missing from the backup"
 
 echo "== 3. disaster: stop panel, wipe database and data dir (agent keeps running) =="

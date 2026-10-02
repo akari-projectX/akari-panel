@@ -4,10 +4,20 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Pattern test on a command's output that READS ALL OF IT (grep -q exits at
+# the first match; the writer's next write then fails with EPIPE/SIGPIPE and
+# pipefail turns a match into a FAIL — flaky, depending on chunking). Use
+# `cmd | matches [grep flags] PATTERN`, never `cmd | grep -q`, and
+# `| sed -n 1p` instead of `| head -1`.
+matches() { grep "$@" >/dev/null; }
+if grep -nE '^[^#]*[^|]\| *(grep -[a-zA-Z]*q|head -(n *)?1([^0-9]|$))' smoke.sh scripts/*.sh; then
+  echo "FAIL: early-exiting pipe consumer above (use matches / sed -n 1p)"; exit 1
+fi
+
 # R22 (main domain behind Caddy): the PANEL itself dials https://myapp.test
 # (install-link TLS pin probe), so the name must resolve to loopback here
 # (CI adds it to /etc/hosts; curl calls use --resolve).
-getent hosts myapp.test | grep -qE '^(127\.0\.0\.1|::1)[[:space:]]' \
+getent hosts myapp.test | matches -E '^(127\.0\.0\.1|::1)[[:space:]]' \
   || { echo "smoke needs 'myapp.test' -> 127.0.0.1 (echo '127.0.0.1 myapp.test' | sudo tee -a /etc/hosts)"; exit 1; }
 
 PANEL=./target/release/akari
@@ -30,7 +40,7 @@ if [ -z "${SMOKE_VALKEY_DB:-}" ]; then
 fi
 export VALKEY_URL="redis://127.0.0.1:6379/$SMOKE_VALKEY_DB"
 vk() { docker compose exec -T valkey valkey-cli -n "$SMOKE_VALKEY_DB" "$@"; }
-docker compose exec -T postgres psql -U akari -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$SMOKE_DB'" | grep -q 1 \
+docker compose exec -T postgres psql -U akari -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$SMOKE_DB'" | matches 1 \
   || docker compose exec -T postgres psql -U akari -d postgres -qc "CREATE DATABASE \"$SMOKE_DB\"" >/dev/null
 rm -rf "$LOG" data "$BOOT" "$JAR" && mkdir -p "$LOG"
 
@@ -72,7 +82,7 @@ rate_per_token = 8
 [probe]
 urls = ["http://127.0.0.1:18204/generate_204"]
 timeout_ms = 2000
-manual_cooldown_secs = 30
+manual_cooldown_secs = 5
 
 # W10: agents of nodes with a TLS domain order from the local pebble CA
 # (docker, W10 section), never from Let's Encrypt.
@@ -212,7 +222,7 @@ docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE nodes 
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE revoked_certs, traffic_counters, audit_log, agent_releases, rollouts CASCADE;" >/dev/null 2>&1 || true
 # R22 settings left behind by an aborted run (e.g. a node domain the agents
 # here cannot reach): back to "use panel.toml" (the trigger reloads them).
-docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "UPDATE panel_settings SET version = 0, main_domain = NULL, sub_domain = NULL, node_domain = NULL, trust_cloudflare = NULL; TRUNCATE grpc_server_names;" >/dev/null 2>&1 || true
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "UPDATE panel_settings SET version = 0, main_domain = NULL, sub_domain = NULL, node_domain = NULL, trust_cloudflare = NULL, probe_interval_secs = NULL, probe_urls = NULL, probe_panel_tcp = NULL; TRUNCATE grpc_server_names;" >/dev/null 2>&1 || true
 vk flushdb >/dev/null
 
 echo "== first admin (env password) =="
@@ -220,7 +230,7 @@ AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" admin add root | tee "$LOG/admin-add.o
 # R18: admin 2FA is optional (recommended); no one-time enrollment code.
 grep -q "two-factor authentication is recommended" "$LOG/admin-add.out" || { echo "FAIL: admin add lacks the 2FA hint"; exit 1; }
 grep -qE '^  [A-Z2-7]{4}(-[A-Z2-7]{1,4})+$' "$LOG/admin-add.out" && { echo "FAIL: admin add still prints an enrollment code"; exit 1; }
-AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" admin add root 2>&1 | grep -q "created admin account: root" \
+AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" admin add root 2>&1 | matches "created admin account: root" \
   && { echo "FAIL: duplicate admin creation should error"; exit 1; } || echo "duplicate rejected: ok"
 
 echo "== register node (M1-8: key-less bootstrap with a one-time enrollment token) =="
@@ -241,7 +251,7 @@ fp() {
   cat /tmp/akari-smoke/fphead /tmp/akari-smoke/fpbody | sha256sum | cut -d' ' -f1
 }
 REJ=$(fp http://127.0.0.1:8080/definitely-not-here)
-head -1 /tmp/akari-smoke/fphead | grep -q " 404" || { echo "FAIL: rejection is not 404"; cat /tmp/akari-smoke/fphead; exit 1; }
+head -1 /tmp/akari-smoke/fphead | matches " 404" || { echo "FAIL: rejection is not 404"; cat /tmp/akari-smoke/fphead; exit 1; }
 [ ! -s /tmp/akari-smoke/fpbody ] || { echo "FAIL: rejection has a body"; exit 1; }
 grep -qiE '^(x-frame-options|x-content-type-options|referrer-policy|content-security-policy|content-type):' /tmp/akari-smoke/fphead \
   && { echo "FAIL: rejection carries distinctive headers"; cat /tmp/akari-smoke/fphead; exit 1; }
@@ -267,7 +277,7 @@ for probe in \
   [ "$(fp $probe)" = "$REJ" ] || { echo "FAIL: rejection differs for: $probe"; cat /tmp/akari-smoke/fphead; exit 1; }
 done
 # Real responses keep the security headers.
-curl -s --noproxy '*' -D - -o /dev/null "$BASE/healthz" | grep -qi '^x-frame-options: DENY' \
+curl -s --noproxy '*' -D - -o /dev/null "$BASE/healthz" | matches -i '^x-frame-options: DENY' \
   || { echo "FAIL: security headers missing on real responses"; exit 1; }
 echo "rejections: ok ($REJ)"
 
@@ -391,20 +401,20 @@ echo "api setup: ok (user $USER_ID on node $NODE_ID)"
 
 echo "== subscription =="
 SUB="$BASE/sub/$SUB_TOKEN"
-curl -s --noproxy '*' "$SUB" | base64 -d 2>/dev/null | grep -q "vless://.*@node1.example.test:11443" \
+curl -s --noproxy '*' "$SUB" | base64 -d 2>/dev/null | matches "vless://.*@node1.example.test:11443" \
   || { echo "FAIL: base64 links missing vless"; exit 1; }
 curl -s --noproxy '*' -A "sing-box/1.12.0" "$SUB" \
   | python3 -c "import json,sys; d=json.load(sys.stdin); ob=[o for o in d['outbounds'] if o.get('type')=='vless']; assert ob and ob[0]['server']=='node1.example.test' and ob[0]['server_port']==11443" \
   || { echo "FAIL: sing-box format"; exit 1; }
-curl -s --noproxy '*' -A "clash-meta/1.19" "$SUB" | grep -q "^    type: vless" \
+curl -s --noproxy '*' -A "clash-meta/1.19" "$SUB" | matches "^    type: vless" \
   || { echo "FAIL: clash format"; exit 1; }
 INFO=$(curl -s --noproxy '*' -D - -o /dev/null "$SUB" | grep -i "^subscription-userinfo:")
-echo "$INFO" | grep -q "download=0" && echo "$INFO" | grep -q "total=107374182400" \
+echo "$INFO" | matches "download=0" && echo "$INFO" | matches "total=107374182400" \
   || { echo "FAIL: subscription-userinfo header: $INFO"; exit 1; }
 SIZE=$(curl -s --noproxy '*' -o /tmp/akari-smoke/subbody "$SUB" && wc -c < /tmp/akari-smoke/subbody)
 [ "$SIZE" -ge 8192 ] || { echo "FAIL: body not padded ($SIZE bytes)"; exit 1; }
 # Wrong token: identical rejection (checked above), never quota headers.
-curl -s --noproxy '*' -D - -o /dev/null "$BASE/sub/not-a-real-token" | grep -qi "subscription-userinfo" \
+curl -s --noproxy '*' -D - -o /dev/null "$BASE/sub/not-a-real-token" | matches -i "subscription-userinfo" \
   && { echo "FAIL: quota header leaked on rejection"; exit 1; }
 echo "subscription: ok ($SIZE-byte padded body)"
 
@@ -420,9 +430,9 @@ reality_inbounds() { # $1 = extra realitySettings JSON members (leading comma) o
 FP_USER=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
 FP_SUB="$BASE/sub/$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['sub_token'])")"
 check_fp() { # $1 = expected fingerprint
-  curl -s --noproxy '*' "$FP_SUB" | base64 -d 2>/dev/null | grep -q "security=reality.*&fp=$1" \
+  curl -s --noproxy '*' "$FP_SUB" | base64 -d 2>/dev/null | matches "security=reality.*&fp=$1" \
     || { echo "FAIL: link lacks fp=$1"; exit 1; }
-  curl -s --noproxy '*' -A "clash-meta/1.19" "$FP_SUB" | grep -q "^    client-fingerprint: $1" \
+  curl -s --noproxy '*' -A "clash-meta/1.19" "$FP_SUB" | matches "^    client-fingerprint: $1" \
     || { echo "FAIL: clash lacks client-fingerprint $1"; exit 1; }
   curl -s --noproxy '*' -A "sing-box/1.12.0" "$FP_SUB" \
     | python3 -c "import json,sys; d=json.load(sys.stdin); u=[o['tls']['utls'] for o in d['outbounds'] if o.get('tls',{}).get('reality')][0]; assert u=={'enabled':True,'fingerprint':'$1'}, u" \
@@ -462,7 +472,7 @@ echo "sub token + rate limit: ok"
 echo "== start agent: initial snapshot =="
 # W11: frequent heartbeats here (production default 15 s) when supported.
 HB_FLAG=""
-"$AGENT" -h 2>&1 | grep -q heartbeat-interval && HB_FLAG="-heartbeat-interval 2s"
+"$AGENT" -h 2>&1 | matches heartbeat-interval && HB_FLAG="-heartbeat-interval 2s"
 # shellcheck disable=SC2086
 "$AGENT" -config "$BOOT" -state-dir "$LOG/state-main" $HB_FLAG >"$LOG/agent.log" 2>&1 &
 AGENT_PID=$!
@@ -489,7 +499,7 @@ grep -q '"users":0' "$LOG/agent.log" || { echo "FAIL: agent did not converge to 
 # within $2 seconds.
 wait_users() {
   for _ in $(seq 1 "$2"); do
-    grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | grep -q "\"users\":$1[,}]" && return 0
+    grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | matches "\"users\":$1[,}]" && return 0
     sleep 1
   done
   echo "FAIL: agent did not converge to users=$1 ($3)"; grep 'state applied' "$LOG/agent.log" | tail -3; exit 1
@@ -538,6 +548,52 @@ for _ in $(seq 1 10); do [ "$(node_field last_error)" = "null" ] && break; sleep
 wait_users 1 10 "after restoring inbounds"
 wait_port open 10
 echo "last_error: ok"
+
+echo "== W12: agent capabilities (gates for agent-dependent sections) =="
+# Sections that exercise an AGENT feature run only when the agent under test
+# has it and otherwise SKIP LOUDLY (a panel PR may land before the agent PR:
+# panel-first merge order, CLAUDE.md). The gate is what the panel recorded
+# from the agent's Hello (admin API: agent_protocol, agent_capabilities).
+# Skips cannot hide a regression: the agent checkout's own source declares
+# its protocol and capabilities, and the panel must have recorded exactly
+# those (an agent that stops advertising, or a panel that stops recording,
+# fails right here instead of silently skipping). SMOKE_REQUIRE_AGENT=1
+# (CI's agent_ref dispatch runs) turns every skip into a failure.
+AGENT_SRC_PROTO=$(sed -n 's/^const agentProtocol = \([0-9][0-9]*\)$/\1/p' "$AGENT_DIR/agent.go")
+[ -n "$AGENT_SRC_PROTO" ] || { echo "FAIL: cannot read agentProtocol from $AGENT_DIR/agent.go"; exit 1; }
+AGENT_SRC_CAPS=$(sed -n 's/^var agentCapabilities = \[\]string{\(.*\)}$/\1/p' "$AGENT_DIR/agent.go" \
+  | tr -d '" ' | tr ',' '\n' | sed '/^$/d' | sort -u | paste -sd, -)
+if [ -z "$AGENT_SRC_CAPS" ] && grep -q 'agentCapabilities' "$AGENT_DIR/agent.go"; then
+  echo "FAIL: agent.go declares agentCapabilities in a form this smoke cannot read; update the parser"; exit 1
+fi
+for _ in $(seq 1 20); do [ "$(node_field agent_protocol)" = "$AGENT_SRC_PROTO" ] && break; sleep 0.5; done
+AGENT_PROTO=$(node_field agent_protocol)
+AGENT_CAPS=$(node_field agent_capabilities | python3 -c "import json,sys; print(','.join(sorted(set(json.load(sys.stdin) or []))))")
+[ "$AGENT_PROTO" = "$AGENT_SRC_PROTO" ] \
+  || { echo "FAIL: agent source declares protocol $AGENT_SRC_PROTO, the panel recorded $AGENT_PROTO"; exit 1; }
+[ "$AGENT_CAPS" = "$AGENT_SRC_CAPS" ] \
+  || { echo "FAIL: agent source declares capabilities [$AGENT_SRC_CAPS], the panel recorded [$AGENT_CAPS]"; exit 1; }
+echo "agent under test: protocol $AGENT_PROTO, capabilities [$AGENT_CAPS] ($(git -C "$AGENT_DIR" describe --tags --always 2>/dev/null || echo '?'))"
+SKIPPED=()
+# agent_has REQ: REQ = "protocol>=N" or "cap:NAME" (from the gate above).
+agent_has() {
+  case "$1" in
+    protocol\>=*) [ "$AGENT_PROTO" -ge "${1#protocol>=}" ] ;;
+    cap:*) [[ ",$AGENT_CAPS," == *",${1#cap:},"* ]] ;;
+    *) echo "FAIL: bad agent requirement '$1'"; exit 1 ;;
+  esac
+}
+# need_agent REQ SECTION: 0 = run the section; else print the loud skip
+# (and a GitHub warning annotation) and return 1.
+need_agent() {
+  agent_has "$1" && return 0
+  local msg="SKIP: agent lacks $1 (protocol $AGENT_PROTO, capabilities [$AGENT_CAPS]) - '$2' not exercised; run ci with agent_ref=<agent branch>"
+  echo "$msg"
+  [ -n "${GITHUB_ACTIONS:-}" ] && echo "::warning title=smoke skipped an agent-dependent section::$msg"
+  if [ "${SMOKE_REQUIRE_AGENT:-0}" = 1 ]; then echo "FAIL: SMOKE_REQUIRE_AGENT=1 forbids skips"; exit 1; fi
+  SKIPPED+=("$2 (needs $1)")
+  return 1
+}
 
 echo "== disable node: no inbounds, no users; re-enable restores =="
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"enabled": false}')" = "200" ] || { echo "FAIL: disable node"; exit 1; }
@@ -621,7 +677,7 @@ USER_B=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))[
     -d '{"inbound_tag":"in-vless","protocol":"vless"}')" = "201" ] || { echo "FAIL: assign B"; exit 1; }
 VLESS_B=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['account']['id'])")
 wait_users 2 10 "user B added"
-grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | grep -q '"via":"delta"' \
+grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | matches '"via":"delta"' \
   || { echo "FAIL: adding a user was not a delta"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
 SNAPS_BEFORE=$(grep -c '"msg":"applying config snapshot"' "$LOG/agent.log")
 SESSION_BEFORE=$(grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['session'])")
@@ -644,38 +700,40 @@ grep -q '"msg":"applying user delta"' "$LOG/agent.log" || { echo "FAIL: no user 
 echo "user delta: ok (no rebuild, session $SESSION_AFTER)"
 
 echo "== W9: Shadowsocks 2022 removal/re-add = UserDelta (agent protocol >= 5), Snapshot before =="
-# Agents of protocol >= 5 keep a removed SS2022 credential as a gate-refused
-# tombstone (indices never move), so the panel sends removals and re-adds
-# on a Shadowsocks node as deltas; older agents get a Snapshot (W8 rule).
-SS_PSK=$(python3 -c "import base64,os;print(base64.b64encode(os.urandom(16)).decode())")
-SS_INB="{\"inbounds\":[{\"tag\":\"in-vless\",\"listen\":\"127.0.0.1\",\"port\":11443,\"protocol\":\"vless\",\"settings\":{\"clients\":[],\"decryption\":\"none\"},\"streamSettings\":{\"network\":\"tcp\"}},{\"tag\":\"in-ss\",\"listen\":\"127.0.0.1\",\"port\":11445,\"protocol\":\"shadowsocks\",\"settings\":{\"method\":\"2022-blake3-aes-128-gcm\",\"password\":\"$SS_PSK\",\"clients\":[],\"network\":\"tcp\"}}]}"
-[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' -d "$SS_INB")" = "200" ] \
-  || { echo "FAIL: put shadowsocks inbounds"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
-    -d '{"login":"smoke-user-ss","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create SS user"; exit 1; }
-USER_SS=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
-[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_SS/nodes/$NODE_ID" -H 'Content-Type: application/json' \
-    -d '{"inbound_tag":"in-ss","protocol":"shadowsocks"}')" = "201" ] || { echo "FAIL: assign SS user"; cat /tmp/akari-smoke/last; exit 1; }
-wait_users 2 15 "SS user added"
-for _ in $(seq 1 10); do [ "$(node_field last_error)" = "null" ] && break; sleep 1; done
-SS_PROTO=$(node_field agent_protocol)
-snaps() { grep -c '"msg":"applying config snapshot"' "$LOG/agent.log"; }
-last_via() { grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['via'])"; }
-SS_SNAPS=$(snaps)
-[ "$(patch_code "$BASE/api/v1/users/$USER_SS" '{"enabled": false}')" = "200" ] || { echo "FAIL: disable SS user"; exit 1; }
-wait_users 1 15 "SS user disabled"
-if [ "$SS_PROTO" -ge 5 ]; then
-  [ "$(snaps)" = "$SS_SNAPS" ] && [ "$(last_via)" = "delta" ] \
-    || { echo "FAIL: SS removal was not a delta on a protocol $SS_PROTO agent"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
-  grep -q 'shadowsocks credential change' "$LOG/agent.log" && { echo "FAIL: agent refused an SS delta"; exit 1; }
-  [ "$(patch_code "$BASE/api/v1/users/$USER_SS" '{"enabled": true}')" = "200" ] || { echo "FAIL: re-enable SS user"; exit 1; }
-  wait_users 2 15 "SS user re-enabled"
-  [ "$(snaps)" = "$SS_SNAPS" ] && [ "$(last_via)" = "delta" ] \
-    || { echo "FAIL: SS re-add (tombstone revival) was not a delta"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
-  echo "shadowsocks: removal and re-add applied as deltas (agent protocol $SS_PROTO, no rebuild)"
-else
-  [ "$(snaps)" -gt "$SS_SNAPS" ] || { echo "FAIL: SS removal on a protocol $SS_PROTO agent was not a Snapshot"; exit 1; }
-  echo "shadowsocks: removal is a Snapshot (agent protocol $SS_PROTO < 5)"
+# SS2022 is a managed protocol from W8 on (agent protocol >= 4).
+if need_agent "protocol>=4" "W9 Shadowsocks 2022 delta/snapshot"; then
+  # Agents of protocol >= 5 keep a removed SS2022 credential as a gate-refused
+  # tombstone (indices never move), so the panel sends removals and re-adds
+  # on a Shadowsocks node as deltas; older agents get a Snapshot (W8 rule).
+  SS_PSK=$(python3 -c "import base64,os;print(base64.b64encode(os.urandom(16)).decode())")
+  SS_INB="{\"inbounds\":[{\"tag\":\"in-vless\",\"listen\":\"127.0.0.1\",\"port\":11443,\"protocol\":\"vless\",\"settings\":{\"clients\":[],\"decryption\":\"none\"},\"streamSettings\":{\"network\":\"tcp\"}},{\"tag\":\"in-ss\",\"listen\":\"127.0.0.1\",\"port\":11445,\"protocol\":\"shadowsocks\",\"settings\":{\"method\":\"2022-blake3-aes-128-gcm\",\"password\":\"$SS_PSK\",\"clients\":[],\"network\":\"tcp\"}}]}"
+  [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' -d "$SS_INB")" = "200" ] \
+    || { echo "FAIL: put shadowsocks inbounds"; cat /tmp/akari-smoke/last; exit 1; }
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+      -d '{"login":"smoke-user-ss","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create SS user"; exit 1; }
+  USER_SS=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_SS/nodes/$NODE_ID" -H 'Content-Type: application/json' \
+      -d '{"inbound_tag":"in-ss","protocol":"shadowsocks"}')" = "201" ] || { echo "FAIL: assign SS user"; cat /tmp/akari-smoke/last; exit 1; }
+  wait_users 2 15 "SS user added"
+  for _ in $(seq 1 10); do [ "$(node_field last_error)" = "null" ] && break; sleep 1; done
+  SS_PROTO=$(node_field agent_protocol)
+  snaps() { grep -c '"msg":"applying config snapshot"' "$LOG/agent.log"; }
+  last_via() { grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['via'])"; }
+  SS_SNAPS=$(snaps)
+  [ "$(patch_code "$BASE/api/v1/users/$USER_SS" '{"enabled": false}')" = "200" ] || { echo "FAIL: disable SS user"; exit 1; }
+  wait_users 1 15 "SS user disabled"
+  if [ "$SS_PROTO" -ge 5 ]; then
+    [ "$(snaps)" = "$SS_SNAPS" ] && [ "$(last_via)" = "delta" ] \
+      || { echo "FAIL: SS removal was not a delta on a protocol $SS_PROTO agent"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
+    grep -q 'shadowsocks credential change' "$LOG/agent.log" && { echo "FAIL: agent refused an SS delta"; exit 1; }
+    [ "$(patch_code "$BASE/api/v1/users/$USER_SS" '{"enabled": true}')" = "200" ] || { echo "FAIL: re-enable SS user"; exit 1; }
+    wait_users 2 15 "SS user re-enabled"
+    [ "$(snaps)" = "$SS_SNAPS" ] && [ "$(last_via)" = "delta" ] \
+      || { echo "FAIL: SS re-add (tombstone revival) was not a delta"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
+    echo "shadowsocks: removal and re-add applied as deltas (agent protocol $SS_PROTO, no rebuild)"
+  else
+    [ "$(snaps)" -gt "$SS_SNAPS" ] || { echo "FAIL: SS removal on a protocol $SS_PROTO agent was not a Snapshot"; exit 1; }
+    echo "shadowsocks: removal is a Snapshot (agent protocol $SS_PROTO < 5)"
 fi
 [ "$(node_field last_error)" = "null" ] || { echo "FAIL: last_error after SS changes: $(node_field last_error)"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_SS")" = "204" ] || { echo "FAIL: delete SS user"; exit 1; }
@@ -683,6 +741,7 @@ fi
   || { echo "FAIL: restore inbounds after SS"; exit 1; }
 wait_users 1 15 "after SS inbound removed"
 wait_port open 10
+fi
 
 echo "== Sprint 3a: protocol + lease surfaced on the node =="
 [ "$(node_field agent_protocol)" -ge 3 ] || { echo "FAIL: agent_protocol $(node_field agent_protocol)"; exit 1; }
@@ -693,16 +752,13 @@ echo "lease: ok (${LEASE}s left)"
 echo "== node online + heartbeat =="
 STATUS=$(docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -tAc "SELECT status FROM nodes WHERE id='$NODE_ID'")
 [ "$STATUS" = "online" ] || { echo "FAIL: node status '$STATUS'"; exit 1; }
-vk exists "akari:node:online:$NODE_ID" | grep -q 1 \
+vk exists "akari:node:online:$NODE_ID" | matches 1 \
   || { echo "FAIL: online key missing"; exit 1; }
 
 echo "== W11: node form fields, multiplier billing, machine status, latency =="
 psql_q() { docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -tAc "$1"; }
-# The agent checkout has the W11 features (metrics + latency capabilities)
-# iff its source says so; an older agent (CI before the agent PR merges)
-# skips only the agent-side assertions, never the panel-side ones.
-W11_AGENT=0
-grep -q '"metrics", "latency"' "$AGENT_DIR/agent.go" 2>/dev/null && W11_AGENT=1
+# Agent-side assertions need the agent capabilities "metrics" / "latency"
+# (W12 gates); the panel-side ones always run.
 # xboard-style fields: display name, tags, multiplier, connect override.
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" \
     '{"display_name":"冒烟 01","tags":["IPLC","0.5x"],"traffic_rate":0.5,"sort":1,"connect_overrides":{"in-vless":{"host":"127.0.0.1","port":11443}}}')" = "200" ] \
@@ -787,13 +843,13 @@ grep -q '冒烟' "$LOG/w11-sub-hidden.yaml" && { echo "FAIL: hidden node in subs
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"visible":true}')" = "200" ] || { echo "FAIL: show node"; exit 1; }
 echo "portal + subscription: ok"
 
-if [ "$W11_AGENT" = 1 ]; then
+if need_agent cap:metrics "W11 machine status"; then
   # Machine status: the heartbeat blob carries metrics; history and
   # Prometheus fleet gauges follow.
   for _ in $(seq 1 30); do
-    vk get "akari:node:hb:$NODE_ID" | grep -q '"online_users"' && break; sleep 1
+    vk get "akari:node:hb:$NODE_ID" | matches '"online_users"' && break; sleep 1
   done
-  vk get "akari:node:hb:$NODE_ID" | grep -q '"xray_version"' || { echo "FAIL: heartbeat lacks machine status"; vk get "akari:node:hb:$NODE_ID"; exit 1; }
+  vk get "akari:node:hb:$NODE_ID" | matches '"xray_version"' || { echo "FAIL: heartbeat lacks machine status"; vk get "akari:node:hb:$NODE_ID"; exit 1; }
   [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID/status")" = "200" ] || { echo "FAIL: node status API"; exit 1; }
   python3 -c "
 import json; v = json.load(open('/tmp/akari-smoke/last')); m = v['heartbeat']['metrics']
@@ -805,11 +861,13 @@ assert v['traffic_rate'] == 0.5, v
   [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID/metrics?range=1h")" = "200" ] || { echo "FAIL: metrics API"; exit 1; }
   python3 -c "import json; v = json.load(open('/tmp/akari-smoke/last')); assert v['points'] and v['points'][0]['mem_total'] > 0, v" \
     || { echo "FAIL: no metrics history"; cat /tmp/akari-smoke/last; exit 1; }
-  # (to a file: `curl | grep -q` fails under pipefail when grep exits first)
+  # (to a file: `curl | matches` fails under pipefail when grep exits first)
   curl -s --noproxy '*' http://127.0.0.1:9109/metrics >"$LOG/w11-metrics.txt"
   grep -q '^akari_fleet{kind="nodes_reporting"} 1$' "$LOG/w11-metrics.txt" \
     || { echo "FAIL: fleet gauge"; grep akari_fleet "$LOG/w11-metrics.txt"; exit 1; }
   echo "machine status: ok"
+fi
+if need_agent cap:latency "W11 latency test"; then
   # Latency: "立即测速" -> the agent tests the (local) URL from [probe], the
   # panel TCP-tests the inbound's connect address; a second request inside
   # the cooldown is refused.
@@ -828,9 +886,63 @@ assert v['traffic_rate'] == 0.5, v
   python3 -c "import json; v = json.load(open('/tmp/akari-smoke/last')); assert v[0]['latency_status'] == 'ok' and v[0]['latency_ms'] >= 1, v" \
     || { echo "FAIL: portal latency"; cat /tmp/akari-smoke/last; exit 1; }
   echo "latency: ok ($(psql_q "SELECT source || ' ' || target || ' ' || delay_ms || 'ms' FROM node_latency WHERE node_id='$NODE_ID' ORDER BY source" | tr '\n' ';'))"
-else
-  echo "SKIP: agent checkout predates W11 (no metrics/latency capability): agent-side assertions skipped"
 fi
+echo "-- W12: latency-test settings in 系统设置 (versioned, audited, reloaded on every instance) --"
+put_probe() { code -b "$JAR" -X PUT "$BASE/api/v1/settings/probe" -H 'Content-Type: application/json' -d "$1"; }
+[ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
+SV=$(python3 -c "
+import json; v = json.load(open('/tmp/akari-smoke/last')); p = v['probe']
+assert p['urls']['source'] == 'config' and p['urls']['effective'] == ['http://127.0.0.1:18204/generate_204'], p
+assert p['interval_secs']['effective'] == 18000 and p['panel_tcp']['effective'] is True, p
+print(v['version'])") || { echo "FAIL: probe settings view"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(put_probe "{\"version\":$SV,\"interval_secs\":60,\"urls\":null,\"panel_tcp\":null}")" = "400" ] \
+  || { echo "FAIL: probe interval below 10 min accepted"; exit 1; }
+[ "$(put_probe "{\"version\":$SV,\"interval_secs\":1200,\"urls\":[\"http://127.0.0.1:18204/generate_204?via=settings\"],\"panel_tcp\":true}")" = "200" ] \
+  || { echo "FAIL: save probe settings"; cat /tmp/akari-smoke/last; exit 1; }
+python3 -c "
+import json; p = json.load(open('/tmp/akari-smoke/last'))['probe']
+assert p['interval_secs']['effective'] == 1200 and p['interval_secs']['source'] == 'settings', p
+assert p['urls']['effective'] == ['http://127.0.0.1:18204/generate_204?via=settings'], p
+assert p['panel_tcp']['source'] == 'settings', p
+" || { echo "FAIL: probe settings not applied"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(put_probe "{\"version\":$SV,\"interval_secs\":null,\"urls\":null,\"panel_tcp\":null}")" = "409" ] \
+  || { echo "FAIL: stale probe form accepted"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='settings.probe.update' AND after->>'probe_interval_secs' = '1200'")" = "1" ] \
+  || { echo "FAIL: probe settings not audited"; exit 1; }
+echo "probe settings: ok (version $SV -> $((SV + 1)))"
+if need_agent cap:latency "W12 probe settings reach the agent"; then
+  # W12: the URL saved in 系统设置 reached the connected agent (notify ->
+  # reload -> session re-sends LatencyProbeConfig): the next "立即测速"
+  # tests it. Wait out the agent's 10 s gap after its last run first: a
+  # request inside it is coalesced, and agents before the W12 fix lose a
+  # coalesced request when the interval changes at the same time.
+  sleep 11
+  for _ in $(seq 1 20); do
+    [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$NODE_ID/probe")" = "202" ] && break; sleep 1
+  done
+  for _ in $(seq 1 30); do
+    [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='agent' AND delay_ms IS NOT NULL AND target='http://127.0.0.1:18204/generate_204?via=settings'")" = "1" ] && break
+    sleep 1
+  done
+  [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='agent' AND target='http://127.0.0.1:18204/generate_204?via=settings'")" = "1" ] \
+    || { echo "FAIL: the agent did not test the URL from 系统设置"; psql_q "SELECT * FROM node_latency WHERE source='agent'"; exit 1; }
+  echo "probe settings reached the agent: ok"
+fi
+# Back to panel.toml's [probe] through the CLI (audited as cli; the running
+# panel reloads through the notification).
+"$PANEL" settings unset probe >"$LOG/unset-probe.out" || { echo "FAIL: settings unset probe"; cat "$LOG/unset-probe.out"; exit 1; }
+"$PANEL" settings show >"$LOG/settings-show.out"
+matches 'probe interval: *(not set) *-> 18000s \[Config\]' <"$LOG/settings-show.out" \
+  || { echo "FAIL: settings show (probe)"; cat "$LOG/settings-show.out"; exit 1; }
+for _ in $(seq 1 20); do
+  code -b "$JAR" "$BASE/api/v1/settings" >/dev/null
+  python3 -c "import json; p = json.load(open('/tmp/akari-smoke/last'))['probe']; assert p['urls']['source'] == 'config'" 2>/dev/null && break
+  sleep 0.5
+done
+python3 -c "import json; p = json.load(open('/tmp/akari-smoke/last'))['probe']; assert p['urls']['source'] == 'config' and p['interval_secs']['effective'] == 18000, p" \
+  || { echo "FAIL: running panel did not reload the unset probe settings"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='settings.probe.update' AND actor_login='cli'")" = "1" ] \
+  || { echo "FAIL: CLI probe unset not audited"; exit 1; }
 # Back to the defaults the rest of the smoke expects.
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"display_name":null,"tags":[],"traffic_rate":1,"sort":0,"connect_overrides":null}')" = "200" ] \
   || { echo "FAIL: reset W11 fields"; exit 1; }
@@ -1027,7 +1139,7 @@ PRICES="$BASE/api/v1/plans/$PAID_PLAN/prices"
 [ "$(code -b "$JAR" -X PUT "$PRICES" -H 'Content-Type: application/json' \
     -d '{"on_sale":true,"prices":[{"period":"days","days":30,"price_cents":1},{"period":"month","price_cents":2},{"period":"reset","price_cents":3}]}')" = "204" ] \
   || { echo "FAIL: set prices"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(code -b "$JAR" "$BASE/api/v1/plan-prices")" = "200" ] && last_json "d['payments_enabled']" | grep -q True \
+[ "$(code -b "$JAR" "$BASE/api/v1/plan-prices")" = "200" ] && last_json "d['payments_enabled']" | matches True \
   || { echo "FAIL: plan-prices / payments not enabled"; cat /tmp/akari-smoke/last; exit 1; }
 python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); p=[x for x in d['plans'] if x['plan_id']=='$PAID_PLAN'][0]; assert p['on_sale'] and len(p['prices'])==3, d" \
   || { echo "FAIL: plan-prices content"; cat /tmp/akari-smoke/last; exit 1; }
@@ -1057,7 +1169,7 @@ assert sorted(o)==['days','month'] and o['days']['price_cents']==1 and o['days']
 [ "$(last_json "d['period']")/$(last_json "d['credit_cents']")/$(last_json "d['list_price_cents']")" = "days/0/1" ] \
   || { echo "FAIL: order period/credit"; cat /tmp/akari-smoke/last; exit 1; }
 ORDER=$(last_json "d['id']"); OTN=$(last_json "d['out_trade_no']")
-last_json "d['qr_code']" | grep -q '^https://qr.alipay.com/smoke' || { echo "FAIL: no QR from precreate"; exit 1; }
+last_json "d['qr_code']" | matches '^https://qr.alipay.com/smoke' || { echo "FAIL: no QR from precreate"; exit 1; }
 [ "$(last_json "d['status']")" = "pending" ] || { echo "FAIL: new order not pending"; exit 1; }
 NOTIFY="$BASE/pay/alipay/notify"
 # Tampered amount (signature no longer matches) / wrong amount (validly
@@ -1128,7 +1240,6 @@ done
 # W7: plan speed limits are enforced by the agent (protocol 4, per user,
 # both directions). A limit change alone is a UserDelta (no xray rebuild)
 # and VLESS throughput drops to the limit; removing it restores it.
-AGENT_PROTO=$(psql_q "SELECT agent_protocol FROM nodes WHERE id='$NODE_ID'")
 cat >"$LOG/vless_rate.py" <<'PY'
 import socket, struct, sys, threading, time, uuid
 n = int(sys.argv[2])
@@ -1151,12 +1262,12 @@ PY
 wait_uv() { # wait until the agent applied the node's current user_version; $1 = expected via
   local uv; uv=$(psql_q "SELECT user_version FROM nodes WHERE id='$NODE_ID'")
   for _ in $(seq 1 15); do
-    grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | grep -q "\"user_version\":$uv[,}]" && break; sleep 1
+    grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | matches "\"user_version\":$uv[,}]" && break; sleep 1
   done
-  grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | grep -q "\"via\":\"$1\".*\"user_version\":$uv[,}]" \
+  grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | matches "\"via\":\"$1\".*\"user_version\":$uv[,}]" \
     || { echo "FAIL: agent did not apply user_version $uv via $1"; grep 'state applied' "$LOG/agent.log" | tail -3; exit 1; }
 }
-if [ "$AGENT_PROTO" -ge 4 ]; then
+if need_agent "protocol>=4" "W7 speed limit throughput"; then
   FAST=$(python3 "$LOG/vless_rate.py" "$BUYER_VLESS" 400000) || { echo "FAIL: unlimited transfer"; exit 1; }
   [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": 1}')" = "200" ] || { echo "FAIL: set speed limit"; exit 1; }
   wait_uv delta
@@ -1174,7 +1285,7 @@ else
   [ "$(code -b "$JAR" "$BASE/api/v1/nodes")" = "200" ] && grep -q "too old to enforce speed limits" /tmp/akari-smoke/last \
     || { echo "FAIL: no warning for an agent that cannot enforce speed limits"; cat /tmp/akari-smoke/last; exit 1; }
   [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": null}')" = "200" ] || { echo "FAIL: clear speed limit"; exit 1; }
-  echo "speed limit: SKIPPED throughput check (agent protocol $AGENT_PROTO < 4); NodeView warning present"
+  echo "speed limit: NodeView warning for the protocol $AGENT_PROTO agent present (throughput check skipped above)"
 fi
 # Admin views and audit.
 [ "$(code -b "$JAR" "$BASE/api/v1/orders?login=smoke-buyer")" = "200" ] || { echo "FAIL: admin orders"; exit 1; }
@@ -1233,11 +1344,17 @@ wait_users 0 10 "buyer deleted"
 echo "r18-3 payments: ok"
 
 echo "== W8 protocol matrix: every template -> agent -> three subscription formats -> real clients =="
-BASE="$BASE" JAR="$JAR" NODE_ID="$NODE_ID" LOG="$LOG" AGENT_LOG="$LOG/agent.log" \
-  python3 scripts/smoke-protocols.py || { echo "FAIL: W8 protocol matrix"; tail -20 "$LOG/agent.log"; exit 1; }
+# The agent's W8 matrix (SS2022, Hysteria 2, XHTTP, HTTPUpgrade, gRPC) came
+# before protocol 4 bumped; protocol >= 4 implies it.
+if need_agent "protocol>=4" "W8 protocol matrix"; then
+  BASE="$BASE" JAR="$JAR" NODE_ID="$NODE_ID" LOG="$LOG" AGENT_LOG="$LOG/agent.log" \
+    python3 scripts/smoke-protocols.py || { echo "FAIL: W8 protocol matrix"; tail -20 "$LOG/agent.log"; exit 1; }
+fi
 
 echo "== W10: automatic node certificate (pebble ACME CA in docker) -> agent -> verified clients =="
-if [ "${SMOKE_ACME:-1}" = 1 ]; then
+if [ "${SMOKE_ACME:-1}" != 1 ]; then
+  echo "W10 ACME test skipped (SMOKE_ACME=0)"
+elif need_agent "protocol>=6" "W10 automatic node certificate"; then
   # pebble validates HTTP-01 on 5002 / TLS-ALPN-01 on 5001 of whatever its
   # DNS (challtestsrv: every name -> 127.0.0.1) says; its own challenge
   # servers and DoH (:8443 = the panel's gRPC port) are off.
@@ -1256,8 +1373,6 @@ if [ "${SMOKE_ACME:-1}" = 1 ]; then
     python3 scripts/smoke-acme.py || { echo "FAIL: W10 automatic certificate"; docker logs akari-smoke-pebble 2>&1 | tail -10; exit 1; }
   docker rm -f akari-smoke-pebble akari-smoke-dns >/dev/null
   eval "$PREV_EXIT_TRAP"
-else
-  echo "W10 ACME test skipped (SMOKE_ACME=0)"
 fi
 
 echo "== Sprint 3a: a protocol-0 agent gets the empty state and is flagged (N5) =="
@@ -1281,11 +1396,11 @@ PY
   chmod 600 "$LOG/v1-bootstrap.toml"
   "$LOG/old-agent" -config "$LOG/v1-bootstrap.toml" >"$LOG/old-agent.log" 2>&1 &
   AGENT_PID=$!
-  for _ in $(seq 1 15); do node_field last_error | grep -q "agent too old" && break; sleep 1; done
-  node_field last_error | grep -q "agent too old" || { echo "FAIL: too-old agent not flagged: $(node_field last_error)"; exit 1; }
+  for _ in $(seq 1 15); do node_field last_error | matches "agent too old" && break; sleep 1; done
+  node_field last_error | matches "agent too old" || { echo "FAIL: too-old agent not flagged: $(node_field last_error)"; exit 1; }
   [ "$(node_field agent_protocol)" = "0" ] || { echo "FAIL: agent_protocol not 0"; exit 1; }
   for _ in $(seq 1 10); do grep -q '"config_version":0,"user_version":0' "$LOG/old-agent.log" && break; sleep 1; done
-  grep '"msg":"applying config snapshot"' "$LOG/old-agent.log" | tail -1 | grep -q '"config_version":0' \
+  grep '"msg":"applying config snapshot"' "$LOG/old-agent.log" | tail -1 | matches '"config_version":0' \
     || { echo "FAIL: old agent did not get the empty state"; cat "$LOG/old-agent.log"; exit 1; }
   wait_port closed 10
   kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
@@ -1351,14 +1466,14 @@ done
 [ "$(psql_q "SELECT count(*) FROM traffic_counters WHERE node_id='$NODE_ID'")" = "$COUNTERS_BEFORE" ] \
   || { echo "FAIL: billing rows not kept"; exit 1; }
 for _ in $(seq 1 15); do grep -q 'node deleted' "$LOG/agent.log" && break; sleep 1; done
-grep '"msg":"channel closed"' "$LOG/agent.log" | grep -q 'Unauthenticated desc = node deleted' \
+grep '"msg":"channel closed"' "$LOG/agent.log" | matches 'Unauthenticated desc = node deleted' \
   || { echo "FAIL: agent stream not closed as deleted"; grep 'channel closed' "$LOG/agent.log" | tail -3; exit 1; }
 # Reconnects with the same (revoked) certificate: accepted only to be closed.
 for _ in $(seq 1 20); do grep -q 'certificate revoked' "$LOG/agent.log" && break; sleep 1; done
-grep '"msg":"channel closed"' "$LOG/agent.log" | grep -q 'Unauthenticated desc = certificate revoked' \
+grep '"msg":"channel closed"' "$LOG/agent.log" | matches 'Unauthenticated desc = certificate revoked' \
   || { echo "FAIL: revoked certificate not closed on reconnect"; grep 'channel closed' "$LOG/agent.log" | tail -3; exit 1; }
 port_open && { echo "FAIL: revoked agent serves again"; exit 1; }
-vk exists "akari:node:online:$NODE_ID" | grep -q 0 \
+vk exists "akari:node:online:$NODE_ID" | matches 0 \
   || { echo "FAIL: online key left behind"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$NODE_ID")" = "404" ] || { echo "FAIL: second delete not 404"; exit 1; }
 code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
@@ -1370,7 +1485,7 @@ grep -q '^enrollment_token = ' "$LOG/spare-bootstrap.toml" || { echo "FAIL: node
 grep -q 'node registered' "$LOG/spare-add.err" || { echo "FAIL: node add --out - progress not on stderr"; exit 1; }
 grep -q 'node registered' "$LOG/spare-bootstrap.toml" && { echo "FAIL: progress leaked into stdout bootstrap"; exit 1; }
 SPARE_ID=$("$PANEL" node list | awk '$2=="spare-node"{print $1}')
-"$PANEL" node delete "$SPARE_ID" | grep -q "deletion started" || { echo "FAIL: CLI node delete"; exit 1; }
+"$PANEL" node delete "$SPARE_ID" | matches "deletion started" || { echo "FAIL: CLI node delete"; exit 1; }
 for _ in $(seq 1 20); do
   [ "$(psql_q "SELECT count(*) FROM nodes WHERE id='$SPARE_ID'")" = "0" ] && break; sleep 1
 done
@@ -1522,8 +1637,8 @@ GOARCH_=$(cd "$AD" && go env GOARCH)
 make -s -C "$AD" build-testkeys VERSION=v900.0.0 OUT="$UPD/agent-v900.0.0" >/dev/null
 make -s -C "$AD" build-testkeys VERSION=v900.0.1 OUT="$UPD/v1/akari-agent" >/dev/null
 (cd "$AD" && CGO_ENABLED=0 go build -o "$UPD/akari-sign" ./cmd/akari-sign)
-"$UPD/agent-v900.0.0" -release-keys | grep -q TEST-ONLY || { echo "FAIL: smoke agent does not pin the test key"; exit 1; }
-"$AGENT" -release-keys | grep -q TEST-ONLY && { echo "FAIL: the regular build pins the TEST release key"; exit 1; }
+"$UPD/agent-v900.0.0" -release-keys | matches TEST-ONLY || { echo "FAIL: smoke agent does not pin the test key"; exit 1; }
+"$AGENT" -release-keys | matches TEST-ONLY && { echo "FAIL: the regular build pins the TEST release key"; exit 1; }
 # vN+2 is broken: it exits at once (the launcher must roll it back).
 printf '#!/bin/sh\necho "broken agent build" >&2\nexit 3\n' >"$UPD/v2/akari-agent"
 chmod 0755 "$UPD/v2/akari-agent"
@@ -1607,7 +1722,7 @@ RO2=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id
 for _ in $(seq 1 90); do [ "$(ro_status "$RO2")" = "halted" ] && break; sleep 1; done
 [ "$(ro_status "$RO2")" = "halted" ] || { echo "FAIL: broken rollout not halted ($(ro_status "$RO2"))"; \
   psql_q "SELECT status, detail FROM rollout_nodes WHERE rollout_id='$RO2'"; tail -20 "$LOG/upd-agent.log"; exit 1; }
-psql_q "SELECT detail FROM rollout_nodes WHERE rollout_id='$RO2'" | grep -q "rolled back" \
+psql_q "SELECT detail FROM rollout_nodes WHERE rollout_id='$RO2'" | matches "rolled back" \
   || { echo "FAIL: no rollback report: $(psql_q "SELECT status, detail FROM rollout_nodes WHERE rollout_id='$RO2'")"; exit 1; }
 grep -q "broken agent build" "$LOG/upd-agent.log" || { echo "FAIL: broken build never ran"; exit 1; }
 grep -q "rolling back agent update" "$LOG/upd-agent.log" || { echo "FAIL: launcher did not roll back"; exit 1; }
@@ -1617,7 +1732,7 @@ python3 -c "
 import json; s=json.load(open('$LOG/state-upd/update/state.json'))
 assert s['current']['version']=='v900.0.1' and 'v900.0.2' in s['rolled_back'], s" \
   || { echo "FAIL: update state after rollback"; exit 1; }
-ls "$LOG/state-upd/update/bin" | grep -q v900.0.2 && { echo "FAIL: rolled-back binary kept in bin/"; exit 1; }
+ls "$LOG/state-upd/update/bin" | matches v900.0.2 && { echo "FAIL: rolled-back binary kept in bin/"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='rollout.halt' AND actor_login='system'")" = "1" ] \
   || { echo "FAIL: halt not audited"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/rollouts/$RO2/resume")" = "409" ] || { echo "FAIL: halted rollout resumed"; exit 1; }
@@ -1692,7 +1807,7 @@ if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
     -v /sys/fs/cgroup:/sys/fs/cgroup:rw akari-node-test:debian13 >/dev/null
   PREV_EXIT_TRAP=$(trap -p EXIT)
   trap 'docker rm -f akari-smoke-node >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
-  for _ in $(seq 1 30); do docker exec akari-smoke-node systemctl is-system-running 2>/dev/null | grep -qE 'running|degraded' && break; sleep 1; done
+  for _ in $(seq 1 30); do docker exec akari-smoke-node systemctl is-system-running 2>/dev/null | matches -E 'running|degraded' && break; sleep 1; done
   # Not root and no sudo (the image has none): the command stops at sudo,
   # nothing of the script runs unprivileged.
   docker exec -u nobody akari-smoke-node sh -c "$INST_CMD" >"$LOG/install-nobody.out" 2>&1 \
@@ -1713,7 +1828,7 @@ if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
   (exec 3<>/dev/tcp/127.0.0.1/$INST_PORT_R) 2>/dev/null || { echo "FAIL: REALITY inbound not listening"; exit 1; }
   [ "$(docker exec akari-smoke-node stat -c '%a %U' /etc/akari-agent/bootstrap.toml)" = "600 root" ] \
     || { echo "FAIL: bootstrap.toml mode"; exit 1; }
-  docker exec akari-smoke-node sh -c 'cat /proc/[0-9]*/cmdline 2>/dev/null | tr "\\0" " "' | grep -q "$(python3 -c "import json;print(json.load(open('$LOG/inst-create.json'))['enrollment_token'])")" \
+  docker exec akari-smoke-node sh -c 'cat /proc/[0-9]*/cmdline 2>/dev/null | tr "\\0" " "' | matches "$(python3 -c "import json;print(json.load(open('$LOG/inst-create.json'))['enrollment_token'])")" \
     && { echo "FAIL: token visible in the process list"; exit 1; }
   # The link died with the enrollment: script and binary are the rejection.
   [ "$(fp "$INST_URL")" = "$REJ" ] || { echo "FAIL: used install link not rejected"; exit 1; }
@@ -1844,7 +1959,7 @@ for base in "https://myapp.test:8446" "https://sub.akari.test:8446" "https://127
   for enc in identity "gzip, zstd"; do
     A=$(fp -k "${RES[@]}" -H "Accept-Encoding: $enc" "$base/junk")
     grep -qiE '^(server|via):' /tmp/akari-smoke/fphead && { echo "FAIL: Server/Via through Caddy ($base)"; cat /tmp/akari-smoke/fphead; exit 1; }
-    head -1 /tmp/akari-smoke/fphead | grep -q " 404" || { echo "FAIL: Caddy 404 ($base)"; cat /tmp/akari-smoke/fphead; exit 1; }
+    head -1 /tmp/akari-smoke/fphead | matches " 404" || { echo "FAIL: Caddy 404 ($base)"; cat /tmp/akari-smoke/fphead; exit 1; }
     for p in "$PREFIX/nope" "$PREFIX/api/v1/nope" "$PREFIX"; do
       [ "$(fp -k "${RES[@]}" -H "Accept-Encoding: $enc" "$base/$p")" = "$A" ] \
         || { echo "FAIL: prefix oracle through Caddy: $base/<prefix>${p#"$PREFIX"} ($enc)"; cat /tmp/akari-smoke/fphead; exit 1; }
@@ -1860,7 +1975,7 @@ grep -qiE '^(server|via):' /tmp/akari-smoke/fphead && { echo "FAIL: http redirec
 grep -qiE '^location: https://myapp\.test/x\?y' /tmp/akari-smoke/fphead || { echo "FAIL: http redirect target"; cat /tmp/akari-smoke/fphead; exit 1; }
 for base in "http://127.0.0.1:8447" "http://evil.test:8447"; do
   A=$(fp "${RES[@]}" "$base/junk")
-  head -1 /tmp/akari-smoke/fphead | grep -q " 404" || { echo "FAIL: plain http $base"; cat /tmp/akari-smoke/fphead; exit 1; }
+  head -1 /tmp/akari-smoke/fphead | matches " 404" || { echo "FAIL: plain http $base"; cat /tmp/akari-smoke/fphead; exit 1; }
   grep -qiE '^(server|via|location):' /tmp/akari-smoke/fphead && { echo "FAIL: plain http headers ($base)"; cat /tmp/akari-smoke/fphead; exit 1; }
   [ "$(fp "${RES[@]}" "$base/$PREFIX/healthz")" = "$A" ] || { echo "FAIL: plain http prefix oracle ($base)"; exit 1; }
 done
@@ -1917,7 +2032,7 @@ done
 docker rm -f akari-smoke-caddy >/dev/null
 eval "$PREV_EXIT_TRAP"
 # CLI: show + unset (audited); the name history (certificate) stays.
-"$PANEL" settings show | grep -q 'node domain: *grpc.akari.test' || { echo "FAIL: settings show"; "$PANEL" settings show; exit 1; }
+"$PANEL" settings show | matches 'node domain: *grpc.akari.test' || { echo "FAIL: settings show"; "$PANEL" settings show; exit 1; }
 "$PANEL" settings unset all >/dev/null || { echo "FAIL: settings unset"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.update' AND actor_login = 'cli'")" = "1" ] || { echo "FAIL: CLI unset not audited"; exit 1; }
 for _ in $(seq 1 20); do [ "$(code "$ASK?domain=myapp.test")" = "404" ] && break; sleep 0.25; done
@@ -1986,7 +2101,7 @@ grep -q 'lease_seconds' "$LOG/bad.out" || { echo "FAIL: invalid config error not
 AKARI_CONFIG="$LOG/bad.toml" "$PANEL" config check >"$LOG/bad-env.out" 2>&1 \
   && { echo "FAIL: AKARI_CONFIG ignored (invalid config accepted)"; exit 1; }
 grep -q 'lease_seconds' "$LOG/bad-env.out" || { echo "FAIL: AKARI_CONFIG not honored"; cat "$LOG/bad-env.out"; exit 1; }
-"$PANEL" --version | grep -Eq '^akari [0-9]+\.[0-9]+\.[0-9]+ \(([0-9a-f]+|unknown)\)' \
+"$PANEL" --version | matches -E '^akari [0-9]+\.[0-9]+\.[0-9]+ \(([0-9a-f]+|unknown)\)' \
   || { echo "FAIL: akari --version"; exit 1; }
 # Metrics live on their own listener only; the public port has no /metrics.
 for probe in "http://127.0.0.1:8080/metrics" "$BASE/metrics"; do
@@ -2005,11 +2120,11 @@ grep -q 'route="/{prefix}/sub/{token}"' "$LOG/metrics.txt" || { echo "FAIL: subs
   || { echo "FAIL: metrics listener serves more than /metrics"; exit 1; }
 # Request IDs: accepted requests get one (a valid incoming id is echoed);
 # rejections get no header at all (byte-identical, checked above).
-curl -s --noproxy '*' -D - -o /dev/null "$BASE/healthz" | grep -qi '^x-request-id: [0-9a-f]\{32\}' \
+curl -s --noproxy '*' -D - -o /dev/null "$BASE/healthz" | matches -i '^x-request-id: [0-9a-f]\{32\}' \
   || { echo "FAIL: no minted request id on a real response"; exit 1; }
-curl -s --noproxy '*' -D - -o /dev/null -H 'X-Request-Id: smoke-req-1' "$BASE/healthz" | grep -qi '^x-request-id: smoke-req-1' \
+curl -s --noproxy '*' -D - -o /dev/null -H 'X-Request-Id: smoke-req-1' "$BASE/healthz" | matches -i '^x-request-id: smoke-req-1' \
   || { echo "FAIL: incoming request id not echoed"; exit 1; }
-curl -s --noproxy '*' -D - -o /dev/null -H 'X-Request-Id: smoke-req-1' "$BASE/nope" | grep -qi '^x-request-id' \
+curl -s --noproxy '*' -D - -o /dev/null -H 'X-Request-Id: smoke-req-1' "$BASE/nope" | matches -i '^x-request-id' \
   && { echo "FAIL: request id on a rejection"; exit 1; }
 [ "$(fp -H 'X-Request-Id: smoke-req-1' "$BASE/nope")" = "$REJ" ] || { echo "FAIL: rejection differs with a request id"; exit 1; }
 echo "m1a: ok"
@@ -2017,15 +2132,15 @@ echo "m1a: ok"
 echo "== SPA =="
 [ "$(code "$BASE/app")" = "200" ] || { echo "FAIL: /app not 200"; exit 1; }
 grep -q 'id="root"' /tmp/akari-smoke/last || { echo "FAIL: SPA index has no root div"; exit 1; }
-JS=$(grep -o "/$PREFIX/assets/[^\"]*\.js" /tmp/akari-smoke/last | head -1)
+JS=$(grep -o "/$PREFIX/assets/[^\"]*\.js" /tmp/akari-smoke/last | sed -n 1p)
 [ -n "$JS" ] || { echo "FAIL: SPA index did not reference prefixed asset"; exit 1; }
 CT=$(curl -s --noproxy '*' -o /dev/null -w "%{content_type}" "http://127.0.0.1:8080$JS")
-echo "$CT" | grep -q javascript || { echo "FAIL: asset content-type '$CT'"; exit 1; }
+echo "$CT" | matches javascript || { echo "FAIL: asset content-type '$CT'"; exit 1; }
 # The SPA's own stylesheet and script must be allowed by the CSP it is served
 # with (a real-browser check found style-src missing 'self': unstyled UI).
 CSP=$(curl -s --noproxy '*' -D - -o /dev/null "$BASE/app" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-security-policy"{print $2}')
-echo "$CSP" | grep -Eq "style-src[^;]*'self'" || { echo "FAIL: CSP style-src lacks 'self': $CSP"; exit 1; }
-echo "$CSP" | grep -Eq "default-src[^;]*'self'" || { echo "FAIL: CSP default-src lacks 'self': $CSP"; exit 1; }
+echo "$CSP" | matches -E "style-src[^;]*'self'" || { echo "FAIL: CSP style-src lacks 'self': $CSP"; exit 1; }
+echo "$CSP" | matches -E "default-src[^;]*'self'" || { echo "FAIL: CSP default-src lacks 'self': $CSP"; exit 1; }
 grep -q "/$PREFIX/assets/[^\"]*\.css" /tmp/akari-smoke/last || { echo "FAIL: SPA index has no prefixed stylesheet"; exit 1; }
 [ "$(code "$BASE/app/some-client-route")" = "200" ] || { echo "FAIL: SPA client-route fallback"; exit 1; }
 [ "$(code "$BASE/assets/missing.js")" = "404" ] || { echo "FAIL: missing asset not 404"; exit 1; }
@@ -2063,15 +2178,15 @@ cp "$RJAR" "$RJAR.kept"
 cache_of() { curl -s --noproxy '*' -D - -o /dev/null "$@" | tr -d '\r' | awk -F': ' 'tolower($1)=="cache-control"{print $2}'; }
 [ "$(code -b "$AJAR" "$BASE/admin")" = "200" ] || { echo "FAIL: /admin not 200 for an admin"; exit 1; }
 grep -q 'id="root"' /tmp/akari-smoke/last || { echo "FAIL: console index has no root div"; exit 1; }
-AJS=$(grep -o "/$PREFIX/admin/assets/[^\"]*\.js" /tmp/akari-smoke/last | head -1)
-ACSS=$(grep -o "/$PREFIX/admin/assets/[^\"]*\.css" /tmp/akari-smoke/last | head -1)
+AJS=$(grep -o "/$PREFIX/admin/assets/[^\"]*\.js" /tmp/akari-smoke/last | sed -n 1p)
+ACSS=$(grep -o "/$PREFIX/admin/assets/[^\"]*\.css" /tmp/akari-smoke/last | sed -n 1p)
 [ -n "$AJS" ] && [ -n "$ACSS" ] || { echo "FAIL: console index lacks prefixed /admin/assets/ script or stylesheet"; exit 1; }
 [ "$(cache_of -b "$AJAR" "$BASE/admin")" = "private, no-store" ] || { echo "FAIL: console index cacheable"; exit 1; }
 [ "$(cache_of -b "$AJAR" "http://127.0.0.1:8080$AJS")" = "private, no-store" ] || { echo "FAIL: console asset cacheable"; exit 1; }
 [ "$(cache_of "http://127.0.0.1:8080$JS")" = "public, max-age=31536000, immutable" ] || { echo "FAIL: portal asset not immutable"; exit 1; }
 CT=$(curl -s --noproxy '*' -b "$AJAR" -o /dev/null -w "%{content_type}" "http://127.0.0.1:8080$AJS")
-echo "$CT" | grep -q javascript || { echo "FAIL: console asset content-type '$CT'"; exit 1; }
-curl -s --noproxy '*' -D - -o /dev/null -b "$AJAR" "$BASE/admin" | grep -qi "^content-security-policy: default-src 'self'" \
+echo "$CT" | matches javascript || { echo "FAIL: console asset content-type '$CT'"; exit 1; }
+curl -s --noproxy '*' -D - -o /dev/null -b "$AJAR" "$BASE/admin" | matches -i "^content-security-policy: default-src 'self'" \
   || { echo "FAIL: console index without the CSP"; exit 1; }
 # Deep links: every console view loads on reload.
 for v in users plans orders nodes updates audit account settings; do
@@ -2127,7 +2242,7 @@ echo "sigterm: ok"
 
 echo "== M1-9 rotate-prefix: the old prefix is a rejection after restart =="
 OLD_BASE="$BASE"
-"$PANEL" secrets rotate-prefix | grep -q "new route prefix" || { echo "FAIL: CLI rotate-prefix"; exit 1; }
+"$PANEL" secrets rotate-prefix | matches "new route prefix" || { echo "FAIL: CLI rotate-prefix"; exit 1; }
 PREFIX=$("$PANEL" info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')
 BASE="http://127.0.0.1:8080/$PREFIX"
 [ "$BASE" != "$OLD_BASE" ] || { echo "FAIL: prefix unchanged"; exit 1; }
@@ -2151,4 +2266,15 @@ kill $PANEL_PID 2>/dev/null; wait $PANEL_PID 2>/dev/null || true
 echo "rotate-prefix: ok"
 
 echo
+if [ "${#SKIPPED[@]}" -gt 0 ]; then
+  # Loud on purpose: these agent features were NOT exercised by this run.
+  echo "!! ${#SKIPPED[@]} agent-dependent section(s) SKIPPED (agent protocol $AGENT_PROTO, capabilities [$AGENT_CAPS]):"
+  printf '!!   - %s\n' "${SKIPPED[@]}"
+  echo "!! run ci (workflow_dispatch) with agent_ref=<agent branch> to exercise them"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    { echo "### smoke: ${#SKIPPED[@]} agent-dependent section(s) skipped"
+      echo "agent protocol $AGENT_PROTO, capabilities [$AGENT_CAPS]"
+      printf -- '- %s\n' "${SKIPPED[@]}"; } >>"$GITHUB_STEP_SUMMARY"
+  fi
+fi
 echo "SMOKE TEST PASSED"
