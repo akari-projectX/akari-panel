@@ -163,7 +163,13 @@ pub fn mail_render(plan_name: &str, code: &str) -> Vec<(String, String, String)>
         Template::OrderPaid {
             order_no: "AK1".into(),
             plan_name: plan_name.into(),
-            amount_cents: 1,
+            money: crate::mail::templates::OrderMoney {
+                list_cents: 3,
+                discount_cents: 1,
+                credit_cents: 1,
+                balance_cents: 1,
+                paid_cents: 0,
+            },
             paid_at: at,
             expires_at: None,
         },

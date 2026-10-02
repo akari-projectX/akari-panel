@@ -323,7 +323,7 @@ export interface MyInvite {
   first_order_only: boolean;
   hold_days: number;
   min_withdrawal_cents: number;
-  // W15 (registration) provides invite codes; null until then.
+  // W15: the account's invite codes (managed via /me/invite-codes).
   invite_codes: string[] | null;
   invited_count: number;
   pending_cents: number;

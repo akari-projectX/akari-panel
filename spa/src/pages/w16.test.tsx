@@ -226,6 +226,18 @@ const withdrawal = (over: Partial<Withdrawal> = {}): Withdrawal => ({
   ...over,
 });
 
+// W15's invite codes inside the 我的邀请 card.
+const invites = (over: Record<string, unknown> = {}) => ({
+  codes: [],
+  limit: 5,
+  register_enabled: true,
+  invite_required: false,
+  single_use: false,
+  invited: 0,
+  link_base: null,
+  ...over,
+});
+
 describe("portal wallet and invitations", () => {
   it("shows the ledger, requests and cancels a withdrawal", async () => {
     setLocale("en");
@@ -233,6 +245,7 @@ describe("portal wallet and invitations", () => {
     const calls = fakeApi({
       "GET /me/balance": balance(),
       "GET /me/invite": invite(),
+      "GET /me/invite-codes": invites({ register_enabled: false }),
       "GET /me/withdrawals": () => ({ status: 200, body: list }),
       "POST /me/withdrawals": () => {
         list = [withdrawal()];
@@ -247,8 +260,8 @@ describe("portal wallet and invitations", () => {
     expect(screen.getAllByText("Invite commission").length).toBeGreaterThan(0);
     expect(screen.getByText("¥+100.00")).toBeTruthy();
     expect(screen.getByText("补偿")).toBeTruthy();
-    // Invitations: W15 codes not there yet.
-    expect(screen.getByText("Invite codes are coming soon.")).toBeTruthy();
+    // Invitations: W15 codes need open registration.
+    expect(await screen.findByText("Registration is closed, so invite codes are not available.")).toBeTruthy();
     expect(screen.getByText("3 friends invited")).toBeTruthy();
     expect(screen.getByText(/Only your friend's first paid order counts/)).toBeTruthy();
     // Withdraw: text amount -> integer fen.
@@ -284,12 +297,13 @@ describe("portal wallet and invitations", () => {
     setLocale("zh");
     fakeApi({
       "GET /me/balance": balance({ withdrawable_cents: 0 }),
-      "GET /me/invite": invite({ enabled: false, invite_codes: ["ABC123"], commissions: [] }),
+      "GET /me/invite": invite({ enabled: false, invite_codes: ["abcdefgh23"], commissions: [] }),
+      "GET /me/invite-codes": invites({ codes: [{ code: "abcdefgh23", uses: 1, created_at: "2026-10-01T00:00:00Z" }] }),
       "GET /me/withdrawals": [withdrawal({ status: "approved", payout_reference: "T1" })],
     });
     renderWithClient(<Wallet me={me()} />);
     expect(await screen.findByText("邀请返利暂未开放。")).toBeTruthy();
-    expect(screen.getByText("ABC123")).toBeTruthy();
+    expect(await screen.findByText("abcdefgh23")).toBeTruthy();
     expect(screen.getByText("暂无返利。")).toBeTruthy();
     expect(await screen.findByText("打款凭证：T1")).toBeTruthy();
     // Nothing withdrawable, no open request: no form.

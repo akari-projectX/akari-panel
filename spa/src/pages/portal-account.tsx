@@ -1,6 +1,6 @@
-// W15 portal cards (user bundle, zh/en): the account's email address
-// (bind/change with the current password + an emailed code) and invite
-// codes (only while registration is open).
+// W15 portal (user bundle, zh/en): the account's email address (bind/change
+// with the current password + an emailed code) and the invite codes shown
+// in the wallet's 我的邀请 card (W16).
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
@@ -154,7 +154,7 @@ export function EmailCard({ me }: { me: Me }) {
   );
 }
 
-interface InviteCodes {
+interface InviteCodesView {
   codes: { code: string; uses: number; created_at: string }[];
   limit: number;
   register_enabled: boolean;
@@ -169,24 +169,34 @@ export function inviteLink(code: string, linkBase: string | null): string {
   return `${linkBase ?? `${location.origin}${appBase}/register?invite=`}${encodeURIComponent(code)}`;
 }
 
-export function InviteCard() {
+/**
+ * The account's invite codes (embedded in the wallet's 我的邀请 card, W16):
+ * list with uses, copy link, delete, create (per-user limit). While
+ * registration is closed only a note is shown.
+ */
+export function InviteCodes() {
   const t = useT();
   const qc = useQueryClient();
-  const q = useQuery({ queryKey: ["invite-codes"], queryFn: () => get<InviteCodes>("/me/invite-codes") });
+  const q = useQuery({ queryKey: ["invite-codes"], queryFn: () => get<InviteCodesView>("/me/invite-codes") });
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Invites only mean something while registration is open.
-  if (!q.data || !q.data.register_enabled) return null;
+  if (!q.data) return null;
   const data = q.data;
+  if (!data.register_enabled) return <p className="text-muted-foreground">{t("account.inviteClosed")}</p>;
+
+  async function refresh() {
+    await qc.invalidateQueries({ queryKey: ["invite-codes"] });
+    await qc.invalidateQueries({ queryKey: ["my-invite"] });
+  }
 
   async function create() {
     setError(null);
     setBusy(true);
     try {
       await post("/me/invite-codes", {});
-      await qc.invalidateQueries({ queryKey: ["invite-codes"] });
+      await refresh();
     } catch (err) {
       setError(errorText(err, t));
     } finally {
@@ -199,7 +209,7 @@ export function InviteCard() {
     setError(null);
     try {
       await del(`/me/invite-codes/${encodeURIComponent(code)}`);
-      await qc.invalidateQueries({ queryKey: ["invite-codes"] });
+      await refresh();
     } catch (err) {
       setError(errorText(err, t));
     }
@@ -211,58 +221,50 @@ export function InviteCard() {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>
-          <h2>{t("account.inviteTitle")}</h2>
-        </CardTitle>
-        <CardDescription>
-          {t("account.inviteDesc")} {data.single_use ? t("account.inviteSingle") : ""}{" "}
-          {t("account.invited", { count: data.invited })}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {data.codes.length === 0 ? (
-          <p className="text-sm text-muted-foreground">{t("account.inviteEmpty")}</p>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>{t("account.colCode")}</TableHead>
-                <TableHead>{t("account.colUses")}</TableHead>
-                <TableHead />
+    <div className="space-y-3">
+      <p className="text-muted-foreground">
+        {t("account.inviteDesc")} {data.single_use ? t("account.inviteSingle") : ""}
+      </p>
+      {data.codes.length === 0 ? (
+        <p className="text-muted-foreground">{t("account.inviteEmpty")}</p>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>{t("account.colCode")}</TableHead>
+              <TableHead>{t("account.colUses")}</TableHead>
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {data.codes.map((c) => (
+              <TableRow key={c.code}>
+                <TableCell className="font-mono">{c.code}</TableCell>
+                <TableCell>{c.uses}</TableCell>
+                <TableCell className="space-x-2 text-right">
+                  <Button size="sm" variant="outline" onClick={() => void copy(c.code)}>
+                    {copied === c.code ? t("common.copied") : t("account.copyLink")}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => void remove(c.code)}>
+                    {t("account.delete")}
+                  </Button>
+                </TableCell>
               </TableRow>
-            </TableHeader>
-            <TableBody>
-              {data.codes.map((c) => (
-                <TableRow key={c.code}>
-                  <TableCell className="font-mono">{c.code}</TableCell>
-                  <TableCell>{c.uses}</TableCell>
-                  <TableCell className="space-x-2 text-right">
-                    <Button size="sm" variant="outline" onClick={() => void copy(c.code)}>
-                      {copied === c.code ? t("common.copied") : t("account.copyLink")}
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => void remove(c.code)}>
-                      {t("account.delete")}
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
-        <div className="flex flex-wrap items-center gap-3">
-          <Button onClick={() => void create()} disabled={busy || data.codes.length >= data.limit}>
-            {t("account.inviteCreate")}
-          </Button>
-          <span className="text-xs text-muted-foreground">{t("account.inviteLimit", { limit: data.limit })}</span>
-        </div>
-        {error && (
-          <p role="alert" className="text-sm text-destructive">
-            {error}
-          </p>
-        )}
-      </CardContent>
-    </Card>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+      <div className="flex flex-wrap items-center gap-3">
+        <Button size="sm" onClick={() => void create()} disabled={busy || data.codes.length >= data.limit}>
+          {t("account.inviteCreate")}
+        </Button>
+        <span className="text-xs text-muted-foreground">{t("account.inviteLimit", { limit: data.limit })}</span>
+      </div>
+      {error && (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }

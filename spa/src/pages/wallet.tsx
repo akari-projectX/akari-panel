@@ -26,6 +26,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { InviteCodes } from "./portal-account";
 
 export const KIND_KEY = {
   commission: "wallet.kindCommission",
@@ -296,13 +297,10 @@ function InviteCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="space-y-1 text-sm">
+        <div className="space-y-2 text-sm">
           <p className="font-medium">{t("invite.codes")}</p>
-          {d.invite_codes && d.invite_codes.length > 0 ? (
-            <p className="font-mono">{d.invite_codes.join("  ")}</p>
-          ) : (
-            <p className="text-muted-foreground">{t("invite.codesPending")}</p>
-          )}
+          {/* W15: create / copy link / delete (registration invite codes). */}
+          <InviteCodes />
         </div>
         <div className="flex flex-wrap gap-4 text-sm">
           <span>{t("invite.invited", { count: d.invited_count })}</span>

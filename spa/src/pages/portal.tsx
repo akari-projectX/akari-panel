@@ -10,7 +10,7 @@ import { useLocale, useT } from "../i18n";
 import { describePeriod, get, post, subscriptionUrl, type Me, type MyPlan } from "../lib/api";
 import { errorText } from "../lib/errors";
 import { copyText, humanBytes } from "../lib/utils";
-import { EmailCard, InviteCard } from "./portal-account";
+import { EmailCard } from "./portal-account";
 import { NodesCard } from "./portal-nodes";
 import { TwoFactorCard } from "./two-factor";
 
@@ -78,7 +78,6 @@ export function Portal({ me }: { me: Me }) {
       <EmailCard me={me} />
       <PasswordCard />
       {!restricted && <TwoFactorCard />}
-      {!restricted && me.role === "user" && <InviteCard />}
     </div>
   );
 }
