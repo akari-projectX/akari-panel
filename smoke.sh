@@ -720,6 +720,7 @@ for attempt in range(40):  # the user is added by a delta: retry until admitted
         time.sleep(0.5)
 sys.exit("w11 vless round trip failed")
 PY
+NODE_TOTALS0=$(psql_q "SELECT traffic_raw_bytes || ' ' || traffic_billed_bytes FROM nodes WHERE id='$NODE_ID'")
 python3 "$LOG/w11-vless.py" "$VLESS_D" || { echo "FAIL: vless round trip for D"; exit 1; }
 for _ in $(seq 1 40); do
   [ "$(psql_q "SELECT traffic_used_bytes FROM users WHERE id='$USER_D'")" -ge 300000 ] && break; sleep 1
@@ -732,8 +733,13 @@ assert raw >= 600000, f'raw {raw}'
 assert 2 * used <= raw, f'over-billed: used {used} raw {raw}'
 assert raw - 2 * used <= 64, f'0.5x bills half: used {used} raw {raw}'
 " || { echo "FAIL: multiplier billing (raw $RAW_D, used $USED_D)"; exit 1; }
-[ "$(psql_q "SELECT traffic_billed_bytes * 2 <= traffic_raw_bytes AND traffic_raw_bytes >= $RAW_D FROM nodes WHERE id='$NODE_ID'")" = "t" ] \
-  || { echo "FAIL: node raw/billed totals"; exit 1; }
+# Node totals since the rate change: everything billed there was at 0.5x.
+NODE_TOTALS1=$(psql_q "SELECT traffic_raw_bytes || ' ' || traffic_billed_bytes FROM nodes WHERE id='$NODE_ID'")
+python3 -c "
+r0, b0 = map(int, '$NODE_TOTALS0'.split()); r1, b1 = map(int, '$NODE_TOTALS1'.split())
+assert r1 - r0 >= $RAW_D - 1, (r0, r1)
+assert 2 * (b1 - b0) <= r1 - r0, (b0, b1, r0, r1)
+" || { echo "FAIL: node raw/billed totals ($NODE_TOTALS0 -> $NODE_TOTALS1, D raw $RAW_D)"; exit 1; }
 echo "multiplier: ok (raw $RAW_D bytes, billed $USED_D at 0.5x)"
 # Subscription: display name + tags name the proxy, the override is dialed.
 curl -s --noproxy '*' -A 'clash.meta' "$BASE/sub/$SUB_D" >"$LOG/w11-sub.yaml"
