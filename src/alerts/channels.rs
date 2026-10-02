@@ -372,14 +372,15 @@ pub async fn deliver_due(state: &AppState) -> anyhow::Result<usize> {
     let mut sent = 0;
     for n in due {
         let msg = Message { payload: n.payload };
-        let mut tx = pg.begin().await?;
-        let res = if n.channel == "email" {
-            send(state, Some(&mut tx), &s, &n.channel, &msg, n.id).await
+        // Telegram/webhook: no transaction is held open across the network
+        // call. Email: the outbox row joins the settling transaction.
+        let (mut tx, res) = if n.channel == "email" {
+            let mut tx = pg.begin().await?;
+            let res = send(state, Some(&mut tx), &s, &n.channel, &msg, n.id).await;
+            (tx, res)
         } else {
-            // No transaction is held open across the network call.
-            tx.rollback().await?;
-            tx = pg.begin().await?;
-            send(state, None, &s, &n.channel, &msg, n.id).await
+            let res = send(state, None, &s, &n.channel, &msg, n.id).await;
+            (pg.begin().await?, res)
         };
         let (status, err, retry) = match &res {
             Ok(()) => ("sent", None, false),

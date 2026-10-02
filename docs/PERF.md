@@ -10,7 +10,7 @@ Targets (ROADMAP §0), measured on the data set of one panel instance serving
 |---|---|---|
 | Snapshot build, 10k-user node < 200 ms | DB read + build 33 ms; full build (read + user set + state hash + encode) 43 ms; agent side: xray rebuild with 10k users 57 ms | pass |
 | Flush of 50k traffic rows < 1 s | 0.91 s (criterion mean; 10 chunks of 5000, about 91 ms each) | pass, 9% margin |
-| Admin API p99 < 50 ms | idle, 16 clients: worst endpoint 10.2 ms (`nodes`); under 200-agent load: worst read 30.5 ms (`users_deep`) | pass |
+| Admin API p99 < 50 ms | idle, 16 clients: worst endpoint 10.2 ms (`nodes`); under 200-agent load: worst read 30.5 ms (`users_deep`); W17: the console's node list (`nodes?view=summary`) 12–26 ms under load (full list 27–43 ms) | pass |
 | Subscription p99 < 30 ms | idle 5.1 ms; under load 16.7 ms (single instance), 31 ms (`clash`) / 20 ms (`links`) through the two-instance balancer | pass (single instance); 1 ms over on the balancer run, see notes |
 | User change to agent < 2 s | single instance: p50 0.26 s, p99 0.59 s, max 0.68 s; two instances behind a balancer: p99 0.89 s, max 0.98 s (3200 agent applications each) | pass |
 | Billing exact | reported = billed to the byte in every steady-state run, single and two instances | pass |
@@ -29,6 +29,35 @@ Notes:
   waits behind flush chunks and its peers); 2 concurrent clients: p99 14 ms.
   Not an admin-rate scenario (the run was 2400 patches/s), recorded for
   completeness.
+
+## Node list summary view (W17, 2026-10-02)
+
+W14 left `GET /nodes` borderline under 200 reporting agents (p99 47–55 ms, a 480 KB body). W17
+adds `GET /nodes?view=summary` — the list's columns only: no inbounds JSON, no full latency set
+(the best agent result), the heartbeat cut to CPU/memory/connections/rates/online users, no
+per-second `lease_remaining_seconds` — with a strong ETag (`If-None-Match` → empty 304) on both
+views. The console's list, the plan editor's and the rollout form's node pickers read it; the node
+page fetches `GET /nodes/{id}`.
+
+Same machine and method as W14 (bench stack, `make bench-seed` into its own database
+`akari_bench_w17`, 系统设置 main domain set, 200 swarm agents × 10k users, heartbeats with W11
+machine metrics, `http` 16 closed-loop clients 80 s into a 150 s swarm with 40 timed changes).
+`nodes_etag` replays the browser: every request carries the last ETag (a 304 while nothing
+changed). Three loaded runs:
+
+| Scenario | idle p99 | 200 agents p99 (runs 1 / 2 / 3) | req/s under load | body under load |
+|---|---|---|---|---|
+| `nodes` (full) | 12.1 ms | 43.3 / 29.6 / 26.7 ms | 759–827 | 480 KB |
+| `nodes_summary` | 10.2 ms | 26.2 / 12.8 / 11.9 ms | 1612–1929 | 180 KB |
+| `nodes_etag` (revalidated) | 9.9 ms | 25.5 / 11.9 / 11.5 ms | 1661–2025 | 0 (304) or 180 KB |
+| `users_deep` (reference) | — | 37.4 / 16.1 / 15.7 ms | 1796–2155 | — |
+
+Verdict: the console's list now meets the admin target with a wide margin (worst loaded p99
+26 ms against 50 ms; run 1 was noisier for every scenario, `users_deep` included). Throughput
+of the list doubled (the 480 KB serialization was the ceiling). The revalidated request still
+builds the body to hash it (no server-side cache: the heartbeat data changes every 15 s), so its
+gain is the bytes on the wire and the browser's parse, not server time. Billing stayed exact and
+change-to-agent p99 0.76 s in the same runs.
 
 ## Re-verification 2026-10-02 (W14, after W5/W7/W9/W11/W12)
 
