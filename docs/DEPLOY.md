@@ -264,8 +264,9 @@ Full matrix (what each client format can carry, what is refused and why): §3d.
 "Certificate" = the node's own certificate for the domain you enter, as
 `/etc/akari-agent/tls/fullchain.pem` and `privkey.pem` (certbot, acme.sh, …; root-only files are
 fine). The installer hands that directory to the agent as systemd credentials (the agent runs as a
-dynamic user and cannot read `/etc` otherwise); after renewing it run `systemctl restart
-akari-agent`. The agent does not run ACME itself. A WS inbound behind the node's own reverse proxy
+dynamic user and cannot read `/etc` otherwise), read once at service start: after putting the
+certificate there for the first time (before saving a TLS/Hysteria 2 inbound) and after every
+renewal run `systemctl restart akari-agent`. The agent does not run ACME itself. A WS inbound behind the node's own reverse proxy
 or a CDN is not a template (subscriptions would advertise the inbound's local port): write that
 JSON by hand. **高级：直接编辑入站 JSON** shows/edits the generated JSON; both paths go through the
 same validation (the §3d matrix, no `fakedns`).
@@ -279,7 +280,9 @@ curl -fsSL 'https://panel.example.com/<prefix>/install/<token>' | sudo sh
 ```
 
 Run it as root on the node (Linux with systemd >= 250, amd64 or arm64; Debian 12/13, Ubuntu
-22.04+ are fine). It
+22.04+ are fine). Logged in as root on an image without `sudo` (many minimal Debian VPS images),
+replace `| sudo sh` with `| sh`: otherwise the pipe fails with `sudo: command not found` before
+anything runs (the link stays valid, just run it again). It
 
 1. downloads the agent from the panel (the newest complete release uploaded under **Updates**,
    §5b) and checks its SHA-256 — without an uploaded release it falls back to
@@ -585,6 +588,36 @@ two or more for availability or headroom:
 2. Upgrade every agent (replace the binary, `systemctl restart akari-agent`; the xray rebuild drops live connections once).
 3. Upgrade the panel: compose `AKARI_VERSION=x.y.z` in `.env`, `docker compose pull && docker compose up -d panel`; bare metal replace the binary, `systemctl restart akari-panel`. Migrations run automatically at start.
 4. `akari config check`, `/healthz`, check the nodes are `online`.
+
+**Compose deployments: the deploy files change too.** The checkout under `deploy/` (compose file,
+Caddyfile) is part of the release, and new versions can need new `panel.toml` sections; the
+panel refuses to start on unknown keys but cannot tell you about a missing optional section.
+Per upgrade:
+
+```bash
+cd /opt/akari-panel && git status --short       # local edits to tracked files (e.g. the Caddyfile)?
+git checkout deploy/caddy/Caddyfile             # only after saving anything you still need
+git pull --ff-only
+diff <(grep '^\[' deploy/panel.toml.compose.example) <(grep '^\[' deploy/panel.toml)   # new sections?
+cd deploy && docker compose run --rm panel config check
+docker compose up -d --force-recreate           # Caddyfile is a single-file bind mount (§A)
+```
+
+Since the 系统设置 release (R22) the compose stack needs `[tls_ask]` in panel.toml (`bind =
+"0.0.0.0:8082"`, `allow_non_loopback = true`, see `panel.toml.compose.example`) and the
+`AKARI_ASK` variable the new compose file passes to Caddy; without the section the panel never
+answers Caddy's `ask`, so domains saved in 系统设置 get no certificate (AKARI_DOMAIN itself is
+unaffected). `config check` run before the new version has started once may end with
+`# 系统设置: database not readable (… relation "panel_settings" does not exist …)`: the migrations
+have not run yet; it is harmless and gone after the first start.
+
+**Agents without a pinned release key** (protocol 1/2, and protocol 3 builds older than v0.2.0;
+`akari-agent -release-keys` prints "no release keys pinned") cannot self-update (§5b). Upload the
+release under **Updates** (every architecture you run), then on the node's page use **重装命令**
+(`POST /api/v1/nodes/{id}/install`) and run the printed command on the node: it installs the
+newest uploaded release in place and re-enrolls the node (its previous certificate is revoked
+once the new one is issued; inbounds, users and traffic stay). The panel may be upgraded first
+in this case: it serves agents down to protocol 1.
 
 Why this order: a new panel drops traffic reports without `session_id` and serves the empty state
 to agents below `MIN_AGENT_PROTOCOL`. (M1c: protocol 2 agents work with older panels — renewal
