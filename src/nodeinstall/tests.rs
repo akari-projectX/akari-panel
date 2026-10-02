@@ -633,6 +633,17 @@ async fn tls_domain_check_compares_with_the_node() {
         .execute(st.pg())
         .await
         .unwrap();
+    let nodes: Value = admin.get("/test/api/v1/nodes").await.json();
+    let n = nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == id.to_string())
+        .unwrap();
+    assert_eq!(
+        n["agent_addr"], "198.51.100.7",
+        "a bare address, no netmask"
+    );
     // RFC 6761: .invalid never resolves.
     let r = admin
         .post(

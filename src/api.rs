@@ -1255,7 +1255,7 @@ pub const NODE_VIEW_COLS: &str =
         FROM rollout_nodes rn JOIN rollouts r ON r.id = rn.rollout_id \
         WHERE rn.node_id = nodes.id ORDER BY r.created_at DESC LIMIT 1) AS update_status, \
      config_version, \
-     user_version, xray_inbounds, server_addr, region, tls_domain, agent_addr::text AS agent_addr, last_error, last_error_at, failed_config_version, \
+     user_version, xray_inbounds, server_addr, region, tls_domain, host(agent_addr) AS agent_addr, last_error, last_error_at, failed_config_version, \
      failed_user_version, agent_protocol, lease_expires_at, \
      GREATEST(0, EXTRACT(EPOCH FROM lease_expires_at - now()))::bigint AS lease_remaining_seconds, \
      traffic_max_rate_bytes_per_sec, deleting_at, last_seen_at, created_at, \

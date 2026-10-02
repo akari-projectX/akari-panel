@@ -244,7 +244,8 @@ account then logs in with its password and can set 2FA up again.
 ## 3. Add a node and install the agent
 
 **In the UI: Nodes → 新建节点.** Fill in the name, the region users see, the node's public
-address (IP or domain) and one or more inbounds from the protocol templates:
+address (IP or domain), optionally the node's **节点域名** (TLS domain: the agent then gets the
+certificate by itself, §3f) and one or more inbounds from the protocol templates:
 
 | Template | Needs on the node | Notes |
 |---|---|---|
@@ -261,12 +262,16 @@ address (IP or domain) and one or more inbounds from the protocol templates:
 
 Full matrix (what each client format can carry, what is refused and why): §3d.
 
-"Certificate" = the node's own certificate for the domain you enter, as
-`/etc/akari-agent/tls/fullchain.pem` and `privkey.pem` (certbot, acme.sh, …; root-only files are
-fine). The installer hands that directory to the agent as systemd credentials (the agent runs as a
-dynamic user and cannot read `/etc` otherwise), read once at service start: after putting the
-certificate there for the first time (before saving a TLS/Hysteria 2 inbound) and after every
-renewal run `systemctl restart akari-agent`. The agent does not run ACME itself. A WS inbound behind the node's own reverse proxy
+"Certificate" = the node's own certificate for the TLS domain. **With 节点域名 set (recommended)
+the agent obtains and renews it itself over ACME (Let's Encrypt), §3f**: no certbot, nothing to do
+on the node beyond a DNS record pointing at it and TCP 80 reachable. The TLS templates then take
+that domain as certificate domain/SNI (leave their domain field empty; another name is refused,
+the certificate covers only the node's domain). Without 节点域名 the certificate is yours to put
+on the node as `/etc/akari-agent/tls/fullchain.pem` and `privkey.pem` (certbot, acme.sh, …;
+root-only files are fine). The installer hands that directory to the agent as systemd credentials
+(the agent runs as a dynamic user and cannot read `/etc` otherwise), read once at service start:
+after putting the certificate there for the first time (before saving a TLS/Hysteria 2 inbound)
+and after every renewal run `systemctl restart akari-agent`. A WS inbound behind the node's own reverse proxy
 or a CDN is not a template (subscriptions would advertise the inbound's local port): write that
 JSON by hand. **高级：直接编辑入站 JSON** shows/edits the generated JSON; both paths go through the
 same validation (the §3d matrix, no `fakedns`).
@@ -275,14 +280,15 @@ Creating the node shows a **one-line install command**, valid for `install.token
 (default 1 h) and only until the agent has enrolled with it:
 
 ```bash
-curl -fsSL 'https://panel.example.com/<prefix>/install/<token>' | sudo sh
-# or: wget -qO- 'https://panel.example.com/<prefix>/install/<token>' | sudo sh
+curl -fsSL 'https://panel.example.com/<prefix>/install/<token>' | sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'
+# or: wget -qO- 'https://panel.example.com/<prefix>/install/<token>' | sh -c '…same…'
 ```
 
-Run it as root on the node (Linux with systemd >= 250, amd64 or arm64; Debian 12/13, Ubuntu
-22.04+ are fine). Logged in as root on an image without `sudo` (many minimal Debian VPS images),
-replace `| sudo sh` with `| sh`: otherwise the pipe fails with `sudo: command not found` before
-anything runs (the link stays valid, just run it again). It
+Run it on the node (Linux with systemd >= 250, amd64 or arm64; Debian 12/13, Ubuntu 22.04+ are
+fine), as root or as a sudo user: the tail runs the script directly as root (images without
+`sudo` work) and through `sudo` otherwise (W10; commands issued before printed `| sudo sh`, which
+needs `sudo` even as root). Without root and without `sudo` it stops at `sudo` and runs nothing.
+It
 
 1. downloads the agent from the panel (the newest complete release uploaded under **Updates**,
    §5b) and checks its SHA-256 — without an uploaded release it falls back to
@@ -291,12 +297,16 @@ anything runs (the link stays valid, just run it again). It
 2. writes `/etc/akari-agent/bootstrap.toml` (0600: panel address, gRPC server name, panel CA,
    the one-time enrollment token — no private key), the systemd unit
    (`deploy/systemd/akari-agent.service`, embedded) and a drop-in for the TLS credentials;
-3. starts the agent and waits until it has enrolled and connected (prints `SUCCESS`, or the
-   agent's log and the reason).
+3. with 节点域名 set: opens TCP 80 in an active `ufw`/`firewalld` (the CA's HTTP-01 check; a
+   cloud firewall / security group is outside the machine, the output reminds you);
+4. starts the agent and waits until it has enrolled and connected (prints `SUCCESS`, or the
+   agent's log and the reason). The certificate follows within seconds; its state is on the node
+   page.
 
 Running it again is safe (reinstall/upgrade in place). The node shows `online` within seconds.
 Uninstall: `sudo akari-agent-uninstall` on the node (written by the installer), or a fresh
-command with `| sudo sh -s -- --uninstall`; then delete the node in the panel.
+command with `| sudo sh -s -- --uninstall` (as root: `| sh -s -- --uninstall`); then delete the
+node in the panel.
 
 **Security of the link.** The token in the URL *is* the node's enrollment token (256 bit, only
 its SHA-256 stored, single use, short TTL). The panel serves the script and the binary only while
@@ -316,7 +326,7 @@ Anything else (an IP-only deployment with Caddy's internal CA) → the command *
 certificate's public key**:
 
 ```bash
-curl -fsSL --proto '=https' -k --pinnedpubkey 'sha256//<base64>' 'https://203.0.113.10/<prefix>/install/<token>' | sudo sh
+curl -fsSL --proto '=https' -k --pinnedpubkey 'sha256//<base64>' 'https://203.0.113.10/<prefix>/install/<token>' | sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'
 ```
 
 curl checks the pin during the handshake, before it sends the request, so a mismatch aborts
@@ -506,7 +516,7 @@ every connection on that node drops once), as does a removal past the tombstone 
 (max(1024, live users) per inbound; the rebuild compacts). With an older agent, every removal from a
 Shadowsocks inbound rebuilds the node. Additions are always live deltas.
 
-**Hysteria 2** uses the node certificate like the TLS templates; `hysteriaSettings.auth` must not
+**Hysteria 2** uses the node certificate like the TLS templates (automatic with 节点域名, §3f); `hysteriaSettings.auth` must not
 be set (a shared password would bypass per-user auth); bandwidth/congestion settings are left at
 xray's defaults.
 
@@ -583,6 +593,53 @@ instance (`akari_fleet{kind="nodes_reporting"|"online_users"|"connections"|"rx_b
 `akari_fleet_cpu_percent_max`; sum over instances). There are no per-node series by design:
 node ids and names would be unbounded label values; per-node history is in the panel
 (`/nodes/{id}/metrics`). Per-node alert thresholds are a follow-up.
+
+## 3f. Automatic node certificate (节点域名, W10, agent protocol 6)
+
+Set **节点域名** on a node (wizard or node page; `tls_domain` in `POST/PATCH /api/v1/nodes`) and
+every inbound reading the node certificate files gets a Let's Encrypt certificate for it, obtained
+and renewed by the agent. Only nodes with such an inbound order one (a REALITY-only node never
+does). What the admin does: an `A`/`AAAA` record for the domain pointing at the node (DNS only —
+not Cloudflare-proxied), TCP 80 open to the internet. **检查解析** in the form (and the node page
+on failures) compares what the domain resolves to with the node's public address and the address
+its agent connects from; it only warns (the node's address is unknown before the install).
+
+How the agent does it (details in akari-agent `acme.go`):
+
+| Situation on the node | Challenge |
+|---|---|
+| TCP 80 not used by an inbound and free | HTTP-01 on :80 (default; the agent listens on :80 only during an order) |
+| 80 used (inbound or another program), TCP 443 not used by an inbound and free | TLS-ALPN-01 on :443 |
+| 80 busy and 443 used by an inbound (e.g. VLESS-WS-TLS on 443) or busy | fails as "80 端口被占用": free TCP 80 |
+
+DNS-01 (wildcards, nodes without inbound 80/443) is not supported. After a connection or DNS
+failure the next order tries the other challenge when it is available.
+
+- **Storage**: the agent's state directory (`/var/lib/private/akari-agent/tls/<domain>/`
+  `fullchain.pem` + `privkey.pem`, 0600; the ACME account key in `tls/accounts/`), not
+  `/etc/akari-agent/tls`: the agent runs as a dynamic user under `ProtectSystem=strict`; systemd
+  manages the state directory's ownership. Back it up with the rest of the state directory.
+- **Until the first certificate** the TLS inbounds serve a self-signed placeholder (the other
+  inbounds start normally); the issued certificate replaces it at once, restarting only those
+  TLS inbounds.
+- **Renewal** with a third of the validity left (about day 60 of 90, with jitter; ARI `replaces`).
+  The files are replaced atomically and xray re-reads them within the hour (its own certificate
+  reload; do not set `oneTimeLoading` in hand-written JSON): no rebuild, no dropped connection.
+- **Failures** back off 5 min doubling to 6 h (at least 1 h after a rate-limit answer); one
+  challenge per attempt keeps the failed validations below Let's Encrypt's 5 per hostname per
+  hour. `systemctl restart akari-agent` retries at once (after fixing DNS, say).
+- **Status** (node page, from the agent's heartbeat): 证书有效 + expiry and renewal date, or the
+  error in plain words — 域名无法解析 / 域名未解析到本机 IP x.x.x.x / 80 端口不可达 / 80 端口被占用 /
+  频率限制 / CAA / CA unreachable — with the raw ACME error under 详细错误.
+- **Panel config** (`panel.toml`): `[acme] directory_url` (empty = Let's Encrypt production;
+  staging: `https://acme-staging-v02.api.letsencrypt.org/directory`) and `email` (optional account
+  contact). They reach nodes with their next Snapshot.
+- **Agents older than protocol 6** ignore the domain and read the files of §3 as before; the node
+  page says so (upgrade the agent, §5b). Changing 节点域名 sends the node a new configuration
+  (rebuild: its connections drop once). Subscriptions use 节点域名 as server address when the
+  node has no public address set.
+- Not supported: ZeroSSL / EAB CAs (any CA without external account binding works through
+  `directory_url`), several domains per node, DNS-01.
 
 ## 3c. Resource footprint (measured)
 
