@@ -743,10 +743,9 @@ test("W20: quota-exhausted user lands on the reset pack", async ({ browser }) =>
       async () =>
         (
           (await (await actx.request.get(`${api}/users?limit=200`)).json()) as {
-            login: string;
-            disabled_reason: string | null;
-          }[]
-        ).find((u) => u.login === QUOTA_USER)?.disabled_reason,
+            users: { login: string; disabled_reason: string | null }[];
+          }
+        ).users.find((u) => u.login === QUOTA_USER)?.disabled_reason,
       { timeout: 20_000 },
     )
     .toBe("quota");
