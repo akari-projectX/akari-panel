@@ -2,9 +2,14 @@ import * as React from "react";
 
 import { cn } from "../../lib/utils";
 
-const Table = React.forwardRef<HTMLTableElement, React.HTMLAttributes<HTMLTableElement>>(
-  ({ className, ...props }, ref) => (
-    <div className="relative w-full overflow-auto">
+// `scrollLabel` (W20): names the scroll container and makes it keyboard-focusable,
+// so a table wider than a phone can be scrolled without a pointer (WCAG 2.1.1).
+const Table = React.forwardRef<HTMLTableElement, React.HTMLAttributes<HTMLTableElement> & { scrollLabel?: string }>(
+  ({ className, scrollLabel, ...props }, ref) => (
+    <div
+      className="relative w-full overflow-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      {...(scrollLabel ? { tabIndex: 0, role: "region", "aria-label": scrollLabel } : {})}
+    >
       <table ref={ref} className={cn("w-full caption-bottom text-sm", className)} {...props} />
     </div>
   ),

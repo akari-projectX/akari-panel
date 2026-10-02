@@ -27,9 +27,8 @@ export function MyOrders({ onContinue }: { onContinue: (id: string) => void }) {
         {rows.length === 0 ? (
           <p className="text-sm text-muted-foreground">{t("billing.ordersEmpty")}</p>
         ) : (
-          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrollable table must be reachable by keyboard
-          <div className="overflow-x-auto" tabIndex={0} role="region" aria-label={t("billing.ordersTitle")}>
-            <Table>
+          <div>
+            <Table scrollLabel={t("billing.ordersTitle")}>
               <TableHeader>
                 <TableRow>
                   <TableHead>{t("billing.colCreated")}</TableHead>

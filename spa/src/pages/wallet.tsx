@@ -103,8 +103,8 @@ function BalanceCard({ canWithdraw }: { canWithdraw: boolean }) {
         {b.entries.length === 0 ? (
           <p className="text-sm text-muted-foreground">{t("wallet.ledgerEmpty")}</p>
         ) : (
-          <div className="overflow-x-auto">
-            <Table>
+          <div>
+            <Table scrollLabel={t("wallet.ledgerTitle")}>
               <TableHeader>
                 <TableRow>
                   <TableHead>{t("wallet.colTime")}</TableHead>
@@ -269,8 +269,8 @@ function Withdrawals({ withdrawable }: { withdrawable: number }) {
       {rows.length > 0 && (
         <>
           <h3 className="text-sm font-medium">{t("wallet.withdrawalsTitle")}</h3>
-          <div className="overflow-x-auto">
-            <Table>
+          <div>
+            <Table scrollLabel={t("wallet.withdrawalsTitle")}>
               <TableBody>
                 {rows.map((w) => (
                   <TableRow key={w.id}>
@@ -336,8 +336,8 @@ function InviteCard() {
         {d.commissions.length === 0 ? (
           <p className="text-sm text-muted-foreground">{t("invite.historyEmpty")}</p>
         ) : (
-          <div className="overflow-x-auto">
-            <Table>
+          <div>
+            <Table scrollLabel={t("invite.historyTitle")}>
               <TableHeader>
                 <TableRow>
                   <TableHead>{t("invite.colInvitee")}</TableHead>
