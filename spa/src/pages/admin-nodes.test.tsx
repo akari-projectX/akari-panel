@@ -124,22 +124,48 @@ describe("toSpecs", () => {
       ]),
     ).toMatch(/重复/);
     expect(toSpecs([{ ...base, template: "hysteria2", port: "443" }])).toMatch(/证书域名/);
-    expect(
-      toSpecs([{ ...base, template: "transport", port: "443", protocol: "trojan", network: "ws" }]),
-    ).toMatch(/TLS/);
+    expect(toSpecs([{ ...base, template: "transport", port: "443", protocol: "trojan", network: "ws" }])).toMatch(
+      /TLS/,
+    );
     expect(
       toSpecs([
-        { ...base, template: "transport", port: "443", protocol: "vless", network: "grpc", domain: "n.example.com", serviceName: "svc" },
+        {
+          ...base,
+          template: "transport",
+          port: "443",
+          protocol: "vless",
+          network: "grpc",
+          domain: "n.example.com",
+          serviceName: "svc",
+        },
       ]),
     ).toEqual([
-      { template: "transport", port: 443, protocol: "vless", network: "grpc", service_name: "svc", tls_domain: "n.example.com" },
+      {
+        template: "transport",
+        port: 443,
+        protocol: "vless",
+        network: "grpc",
+        service_name: "svc",
+        tls_domain: "n.example.com",
+      },
     ]);
     expect(
-      toSpecs([{ ...base, template: "transport", port: "80", protocol: "vmess", network: "httpupgrade", host: "cdn.example.com" }]),
-    ).toEqual([{ template: "transport", port: 80, protocol: "vmess", network: "httpupgrade", host: "cdn.example.com" }]);
-    expect(toSpecs([{ ...base, template: "shadowsocks_2022", port: "8388", method: "2022-blake3-aes-256-gcm" }])).toEqual([
-      { template: "shadowsocks_2022", port: 8388, method: "2022-blake3-aes-256-gcm" },
+      toSpecs([
+        {
+          ...base,
+          template: "transport",
+          port: "80",
+          protocol: "vmess",
+          network: "httpupgrade",
+          host: "cdn.example.com",
+        },
+      ]),
+    ).toEqual([
+      { template: "transport", port: 80, protocol: "vmess", network: "httpupgrade", host: "cdn.example.com" },
     ]);
+    expect(
+      toSpecs([{ ...base, template: "shadowsocks_2022", port: "8388", method: "2022-blake3-aes-256-gcm" }]),
+    ).toEqual([{ template: "shadowsocks_2022", port: 8388, method: "2022-blake3-aes-256-gcm" }]);
   });
   it("formats the lease", () => {
     expect(formatLease(null)).toBe("—");
