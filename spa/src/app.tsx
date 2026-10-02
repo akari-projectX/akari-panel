@@ -11,6 +11,7 @@ import { resetAfterLogout } from "./lib/session";
 import { Login } from "./pages/login";
 import { Portal } from "./pages/portal";
 import { Billing } from "./pages/purchase";
+import { Wallet } from "./pages/wallet";
 
 // The user portal bundle (/{prefix}/app): login (shared with admins),
 // portal, purchase and orders. It holds no admin code (R23): an admin
@@ -108,6 +109,7 @@ function App() {
             <div className="space-y-6">
               <Portal me={user} />
               <Billing />
+              <Wallet me={user} />
             </div>
           </main>
         </div>

@@ -14,6 +14,7 @@ import { errorText } from "../lib/errors";
 import {
   STATUS_KEY,
   yuan,
+  type CouponRefusal,
   type MyOrder,
   type Offer,
   type OfferAction,
@@ -29,6 +30,8 @@ import { PlanDescription } from "../components/plan-description";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
 import { MyOrders } from "./orders";
 
 const POLL_MS = 3000;
@@ -59,6 +62,19 @@ const REFUSAL_KEY = {
   no_expiry: "billing.refusalNoExpiry",
 } as const satisfies Record<OfferRefusal, MessageKey>;
 
+// W16: why a coupon does not apply (same wording as the order's error).
+export const COUPON_KEY = {
+  invalid: "errors.couponInvalid",
+  not_started: "errors.couponNotStarted",
+  expired: "errors.couponExpired",
+  used_up: "errors.couponUsedUp",
+  user_limit: "errors.couponUserLimit",
+  new_users_only: "errors.couponNewOnly",
+  plan: "errors.couponPlan",
+  period: "errors.couponPeriod",
+  below_minimum: "errors.couponMinimum",
+} as const satisfies Record<CouponRefusal, MessageKey>;
+
 const ACTION_KEY = {
   new: "billing.buy",
   renew: "billing.renew",
@@ -70,7 +86,22 @@ export function Purchase({ orderId, onOrder }: { orderId: string | null; onOrder
   const t = useT();
   const locale = useLocale();
   const queryClient = useQueryClient();
-  const shop = useQuery({ queryKey: ["shop"], queryFn: () => get<Shop>("/me/shop") });
+  // W16: the coupon entered (applied with the button) and whether to pay
+  // with the balance; the server prices every offer with both.
+  const [couponInput, setCouponInput] = useState("");
+  const [coupon, setCoupon] = useState("");
+  const [useBalance, setUseBalance] = useState(false);
+  const shop = useQuery({
+    queryKey: ["shop", coupon, useBalance],
+    queryFn: () => {
+      const q = new URLSearchParams();
+      if (coupon) q.set("coupon", coupon);
+      if (useBalance) q.set("use_balance", "true");
+      const qs = q.toString();
+      return get<Shop>(qs ? `/me/shop?${qs}` : "/me/shop");
+    },
+    placeholderData: (prev) => prev,
+  });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -92,9 +123,15 @@ export function Purchase({ orderId, onOrder }: { orderId: string | null; onOrder
     setBusy(true);
     try {
       // The server prices the order; the client never sends an amount.
-      const order = await post<MyOrder>("/me/orders", { plan_id: p.plan_id, period: o.period });
+      const order = await post<MyOrder>("/me/orders", {
+        plan_id: p.plan_id,
+        period: o.period,
+        coupon: coupon || undefined,
+        use_balance: useBalance || undefined,
+      });
       queryClient.setQueryData(["order", order.id], order);
       await queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+      await queryClient.invalidateQueries({ queryKey: ["my-balance"] });
       onOrder(order.id);
     } catch (err) {
       setError(errorText(err, t));
@@ -126,6 +163,61 @@ export function Purchase({ orderId, onOrder }: { orderId: string | null; onOrder
           </p>
         )}
         {data && !data.enabled && <p className="text-sm text-muted-foreground">{t("billing.unavailable")}</p>}
+        {data?.enabled && (
+          <div className="flex flex-wrap items-end gap-3">
+            <form
+              className="flex items-end gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                setCoupon(couponInput.trim());
+              }}
+            >
+              <div className="space-y-1">
+                <Label htmlFor="coupon-code">{t("billing.couponLabel")}</Label>
+                <Input
+                  id="coupon-code"
+                  className="w-40"
+                  value={couponInput}
+                  maxLength={32}
+                  autoComplete="off"
+                  onChange={(e) => setCouponInput(e.target.value)}
+                />
+              </div>
+              <Button type="submit" size="sm" variant="outline" disabled={!couponInput.trim()}>
+                {t("billing.couponApply")}
+              </Button>
+              {coupon && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setCoupon("");
+                    setCouponInput("");
+                  }}
+                >
+                  {t("billing.couponClear")}
+                </Button>
+              )}
+            </form>
+            {data.balance_cents > 0 && (
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={useBalance} onChange={(e) => setUseBalance(e.target.checked)} />
+                {t("billing.useBalance", { balance: yuan(data.balance_cents) })}
+              </label>
+            )}
+          </div>
+        )}
+        {data?.coupon &&
+          (data.coupon.refusal ? (
+            <p role="alert" className="text-sm text-destructive">
+              {t(COUPON_KEY[data.coupon.refusal])}
+            </p>
+          ) : (
+            <p role="status" className="text-sm text-muted-foreground">
+              {t("billing.couponApplied", { code: data.coupon.code })}
+            </p>
+          ))}
         {data?.enabled && data.plans.length === 0 && (
           <p className="text-sm text-muted-foreground">{t("billing.noPlans")}</p>
         )}
@@ -209,10 +301,17 @@ function PlanOffer({
       </fieldset>
       {sel && sel.action && sel.amount_cents != null && (
         <div className="space-y-0.5 text-sm">
+          {sel.discount_cents > 0 && (
+            <p className="text-muted-foreground">{t("billing.discount", { amount: yuan(sel.discount_cents) })}</p>
+          )}
+          {sel.coupon_refusal && <p className="text-muted-foreground">{t(COUPON_KEY[sel.coupon_refusal])}</p>}
           {sel.credit_cents > 0 && (
             <p className="text-muted-foreground">
               {t("billing.credit", { credit: yuan(sel.credit_cents), price: yuan(sel.price_cents) })}
             </p>
+          )}
+          {sel.balance_cents > 0 && (
+            <p className="text-muted-foreground">{t("billing.balancePart", { amount: yuan(sel.balance_cents) })}</p>
           )}
           {sel.forfeited_cents > 0 && (
             <p className="text-destructive">{t("billing.forfeit", { amount: yuan(sel.forfeited_cents) })}</p>
@@ -259,6 +358,11 @@ export function PaymentPanel({ id, onClose }: { id: string; onClose: () => void 
       void queryClient.invalidateQueries({ queryKey: ["my-plan"] });
       void queryClient.invalidateQueries({ queryKey: ["shop"] });
       void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+      void queryClient.invalidateQueries({ queryKey: ["my-balance"] });
+    }
+    // An order that ended unpaid gave its balance part back.
+    if (o?.status === "cancelled" || o?.status === "expired") {
+      void queryClient.invalidateQueries({ queryKey: ["my-balance"] });
     }
   }, [o?.status, queryClient]);
 
@@ -284,9 +388,19 @@ export function PaymentPanel({ id, onClose }: { id: string; onClose: () => void 
       <p className="text-sm">
         {periodLabel(t, o.period, o.period_days)} · {t("billing.amount", { price: yuan(o.amount_cents) })}
       </p>
+      {o.discount_cents > 0 && (
+        <p className="text-xs text-muted-foreground">
+          {o.coupon_code} · {t("billing.discount", { amount: yuan(o.discount_cents) })}
+        </p>
+      )}
       {o.credit_cents > 0 && (
         <p className="text-xs text-muted-foreground">
           {t("billing.credit", { credit: yuan(o.credit_cents), price: yuan(o.list_price_cents) })}
+        </p>
+      )}
+      {o.balance_cents > 0 && (
+        <p className="text-xs text-muted-foreground">
+          {t("billing.paidWithBalance", { amount: yuan(o.balance_cents) })}
         </p>
       )}
       {pending && o.qr_code && (

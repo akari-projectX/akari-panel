@@ -49,6 +49,11 @@ export function MyOrders({ onContinue }: { onContinue: (id: string) => void }) {
                     <TableCell>¥{yuan(o.amount_cents)}</TableCell>
                     <TableCell>
                       <Badge variant={o.status === "paid" ? "default" : "secondary"}>{t(STATUS_KEY[o.status])}</Badge>
+                      {o.refunded_at && (
+                        <Badge variant="secondary" className="ml-1">
+                          {t("billing.refunded")}
+                        </Badge>
+                      )}
                     </TableCell>
                     <TableCell>{fmt(o.paid_at)}</TableCell>
                     <TableCell>

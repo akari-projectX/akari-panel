@@ -8,6 +8,8 @@ import { FixedLocale, useHtmlLang } from "./i18n";
 import { ApiError, adminBase, appBase, get, logout as apiLogout, type Me, type TotpStatus } from "./lib/api";
 import { adminErrorText } from "./lib/errors";
 import { loadPage, navigate, usePath } from "./lib/router";
+import { AdminCoupons } from "./pages/admin-coupons";
+import { AdminFinance } from "./pages/admin-finance";
 import { AdminNodes } from "./pages/admin-nodes";
 import { AdminOrders } from "./pages/admin-orders";
 import { AdminPlans } from "./pages/admin-plans";
@@ -29,6 +31,8 @@ export const VIEWS = [
   { id: "users", label: "用户" },
   { id: "plans", label: "套餐" },
   { id: "orders", label: "订单" },
+  { id: "coupons", label: "优惠券" },
+  { id: "finance", label: "资金" },
   { id: "nodes", label: "节点" },
   { id: "updates", label: "更新" },
   { id: "audit", label: "审计" },
@@ -202,6 +206,10 @@ function AdminConsole({ user, onLogout, logoutError }: { user: Me; onLogout: () 
           <AdminPlans />
         ) : view === "orders" ? (
           <AdminOrders />
+        ) : view === "coupons" ? (
+          <AdminCoupons />
+        ) : view === "finance" ? (
+          <AdminFinance />
         ) : view === "nodes" ? (
           <AdminNodes />
         ) : view === "updates" ? (

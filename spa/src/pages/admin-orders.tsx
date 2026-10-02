@@ -29,6 +29,14 @@ const VIA_ZH: Record<string, string> = {
   query: "主动查询",
   manual: "人工确认",
   credit: "余值抵扣",
+  balance: "余额支付",
+  coupon: "优惠券全额抵扣",
+};
+
+const BALANCE_STATE_ZH: Record<AdminOrder["balance_state"], string> = {
+  none: "",
+  held: "已扣余额",
+  refunded: "已退回余额",
 };
 
 export function AdminOrders() {
@@ -182,12 +190,25 @@ function OrdersCard({ onSelect }: { onSelect: (id: string) => void }) {
                     {o.credit_cents > 0 && (
                       <span className="ml-1 text-xs text-muted-foreground">（抵扣 ¥{yuan(o.credit_cents)}）</span>
                     )}
+                    {o.discount_cents > 0 && (
+                      <span className="ml-1 text-xs text-muted-foreground">
+                        （券 {o.coupon_code} ¥{yuan(o.discount_cents)}）
+                      </span>
+                    )}
+                    {o.balance_cents > 0 && (
+                      <span className="ml-1 text-xs text-muted-foreground">（余额 ¥{yuan(o.balance_cents)}）</span>
+                    )}
                   </TableCell>
                   <TableCell>
                     <Badge variant={o.status === "paid" ? "default" : "secondary"}>{STATUS_ZH[o.status]}</Badge>
                     {o.status === "paid" && !o.fulfilled_at && (
                       <Badge variant="destructive" className="ml-1">
                         未开通
+                      </Badge>
+                    )}
+                    {o.refunded_at && (
+                      <Badge variant="secondary" className="ml-1">
+                        已退款
                       </Badge>
                     )}
                   </TableCell>
@@ -265,7 +286,7 @@ function OrderDetailCard({ id, onClose }: { id: string; onClose: () => void }) {
   }
 
   if (!o) return null;
-  const canFulfil = o.status !== "paid" || !o.fulfilled_at;
+  const canFulfil = !o.refunded_at && (o.status !== "paid" || !o.fulfilled_at);
   return (
     <Card>
       <CardHeader>
@@ -286,6 +307,18 @@ function OrderDetailCard({ id, onClose }: { id: string; onClose: () => void }) {
           <dd>
             ¥{yuan(o.amount_cents)}
             {o.credit_cents > 0 && `（原价 ¥${yuan(o.list_price_cents)}，换套餐抵扣 ¥${yuan(o.credit_cents)}）`}
+          </dd>
+          <dt className="text-muted-foreground">原价</dt>
+          <dd>¥{yuan(o.list_price_cents)}</dd>
+          <dt className="text-muted-foreground">优惠券</dt>
+          <dd>{o.coupon_code ? `${o.coupon_code}（-¥${yuan(o.discount_cents)}）` : "—"}</dd>
+          <dt className="text-muted-foreground">余额支付</dt>
+          <dd>{o.balance_cents > 0 ? `¥${yuan(o.balance_cents)}（${BALANCE_STATE_ZH[o.balance_state]}）` : "—"}</dd>
+          <dt className="text-muted-foreground">退款</dt>
+          <dd>
+            {o.refunded_at
+              ? `${fmt(o.refunded_at)} 退回余额 ¥${yuan(o.refund_cents ?? 0)}（${o.refund_reason ?? ""}）`
+              : "—"}
           </dd>
           <dt className="text-muted-foreground">实付</dt>
           <dd>{o.paid_amount_cents != null ? `¥${yuan(o.paid_amount_cents)}` : "—"}</dd>
@@ -332,6 +365,7 @@ function OrderDetailCard({ id, onClose }: { id: string; onClose: () => void }) {
             {error}
           </p>
         )}
+        {o.status === "paid" && !o.refunded_at && <RefundForm order={o} />}
         <div className="overflow-x-auto">
           <Table>
             <TableHeader>
@@ -363,5 +397,56 @@ function OrderDetailCard({ id, onClose }: { id: string; onClose: () => void }) {
         </Button>
       </CardContent>
     </Card>
+  );
+}
+
+// W16: refund a paid order. The balance part always returns to the
+// balance; "退到余额" also credits the Alipay amount (otherwise it was
+// refunded in the Alipay console). A pending invite commission is reversed;
+// the plan is not touched.
+function RefundForm({ order: o }: { order: AdminOrder }) {
+  const queryClient = useQueryClient();
+  const [reason, setReason] = useState("");
+  const [toBalance, setToBalance] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function refund() {
+    if (!reason.trim()) return setError("请填写退款原因（写入审计）");
+    const back = (o.balance_state === "held" ? o.balance_cents : 0) + (toBalance ? o.amount_cents : 0);
+    const how = toBalance ? "支付宝实付部分也退到用户余额" : "支付宝实付部分请在支付宝商家后台退款";
+    if (!window.confirm(`退款：订单 ${o.out_trade_no}，退回余额 ¥${yuan(back)}；${how}。套餐不会自动取消。确定吗？`))
+      return;
+    setError(null);
+    try {
+      await post(`/orders/${o.id}/refund`, { reason: reason.trim(), to_balance: toBalance });
+      setReason("");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["order-detail", o.id] }),
+        queryClient.invalidateQueries({ queryKey: ["orders"] }),
+      ]);
+    } catch (err) {
+      setError(errText(err));
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-end gap-2">
+      <div className="space-y-1">
+        <Label htmlFor="refund-reason">退款原因（必填，写入审计）</Label>
+        <Input id="refund-reason" className="w-80" value={reason} onChange={(e) => setReason(e.target.value)} />
+      </div>
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={toBalance} onChange={(e) => setToBalance(e.target.checked)} />
+        支付宝实付 ¥{yuan(o.amount_cents)} 也退到余额
+      </label>
+      <Button size="sm" variant="outline" onClick={() => void refund()}>
+        退款
+      </Button>
+      {error && (
+        <p role="alert" className="w-full text-sm text-destructive">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
