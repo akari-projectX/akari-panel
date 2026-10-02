@@ -599,6 +599,47 @@ grep -q '"msg":"applying user delta"' "$LOG/agent.log" || { echo "FAIL: no user 
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_B")" = "204" ] || { echo "FAIL: delete B"; exit 1; }
 echo "user delta: ok (no rebuild, session $SESSION_AFTER)"
 
+echo "== W9: Shadowsocks 2022 removal/re-add = UserDelta (agent protocol >= 5), Snapshot before =="
+# Agents of protocol >= 5 keep a removed SS2022 credential as a gate-refused
+# tombstone (indices never move), so the panel sends removals and re-adds
+# on a Shadowsocks node as deltas; older agents get a Snapshot (W8 rule).
+SS_PSK=$(python3 -c "import base64,os;print(base64.b64encode(os.urandom(16)).decode())")
+SS_INB="{\"inbounds\":[{\"tag\":\"in-vless\",\"listen\":\"127.0.0.1\",\"port\":11443,\"protocol\":\"vless\",\"settings\":{\"clients\":[],\"decryption\":\"none\"},\"streamSettings\":{\"network\":\"tcp\"}},{\"tag\":\"in-ss\",\"listen\":\"127.0.0.1\",\"port\":11445,\"protocol\":\"shadowsocks\",\"settings\":{\"method\":\"2022-blake3-aes-128-gcm\",\"password\":\"$SS_PSK\",\"clients\":[],\"network\":\"tcp\"}}]}"
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' -d "$SS_INB")" = "200" ] \
+  || { echo "FAIL: put shadowsocks inbounds"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+    -d '{"login":"smoke-user-ss","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create SS user"; exit 1; }
+USER_SS=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_SS/nodes/$NODE_ID" -H 'Content-Type: application/json' \
+    -d '{"inbound_tag":"in-ss","protocol":"shadowsocks"}')" = "201" ] || { echo "FAIL: assign SS user"; cat /tmp/akari-smoke/last; exit 1; }
+wait_users 2 15 "SS user added"
+for _ in $(seq 1 10); do [ "$(node_field last_error)" = "null" ] && break; sleep 1; done
+SS_PROTO=$(node_field agent_protocol)
+snaps() { grep -c '"msg":"applying config snapshot"' "$LOG/agent.log"; }
+last_via() { grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['via'])"; }
+SS_SNAPS=$(snaps)
+[ "$(patch_code "$BASE/api/v1/users/$USER_SS" '{"enabled": false}')" = "200" ] || { echo "FAIL: disable SS user"; exit 1; }
+wait_users 1 15 "SS user disabled"
+if [ "$SS_PROTO" -ge 5 ]; then
+  [ "$(snaps)" = "$SS_SNAPS" ] && [ "$(last_via)" = "delta" ] \
+    || { echo "FAIL: SS removal was not a delta on a protocol $SS_PROTO agent"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
+  grep -q 'shadowsocks credential change' "$LOG/agent.log" && { echo "FAIL: agent refused an SS delta"; exit 1; }
+  [ "$(patch_code "$BASE/api/v1/users/$USER_SS" '{"enabled": true}')" = "200" ] || { echo "FAIL: re-enable SS user"; exit 1; }
+  wait_users 2 15 "SS user re-enabled"
+  [ "$(snaps)" = "$SS_SNAPS" ] && [ "$(last_via)" = "delta" ] \
+    || { echo "FAIL: SS re-add (tombstone revival) was not a delta"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
+  echo "shadowsocks: removal and re-add applied as deltas (agent protocol $SS_PROTO, no rebuild)"
+else
+  [ "$(snaps)" -gt "$SS_SNAPS" ] || { echo "FAIL: SS removal on a protocol $SS_PROTO agent was not a Snapshot"; exit 1; }
+  echo "shadowsocks: removal is a Snapshot (agent protocol $SS_PROTO < 5)"
+fi
+[ "$(node_field last_error)" = "null" ] || { echo "FAIL: last_error after SS changes: $(node_field last_error)"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_SS")" = "204" ] || { echo "FAIL: delete SS user"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' -d "$GOOD_INB")" = "200" ] \
+  || { echo "FAIL: restore inbounds after SS"; exit 1; }
+wait_users 1 15 "after SS inbound removed"
+wait_port open 10
+
 echo "== Sprint 3a: protocol + lease surfaced on the node =="
 [ "$(node_field agent_protocol)" -ge 3 ] || { echo "FAIL: agent_protocol $(node_field agent_protocol)"; exit 1; }
 LEASE=$(node_field lease_remaining_seconds)
