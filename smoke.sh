@@ -79,9 +79,23 @@ manual_cooldown_secs = 30
 [acme]
 directory_url = "https://127.0.0.1:14000/dir"
 TOML
+# Helper servers (payment mock, latency target) must die with this script
+# on EVERY exit path, a crash or kill -9 included: they inherit the caller's
+# file descriptors, so a leftover one would keep holding `flock smoke.lock`
+# for every later run. Each one closes its inherited descriptors and exits
+# as soon as its parent (this shell) is gone; the EXIT traps kill them too.
+TIE_PY='import os, sys, threading, time
+os.closerange(3, 65536)
+_parent = os.getppid()
+def _watch():
+    while os.getppid() == _parent:
+        time.sleep(1)
+    os._exit(0)
+threading.Thread(target=_watch, daemon=True).start()
+'
 # W11: the agents' latency test target (204, like generate_204); dies with
-# the smoke run at the latest after 30 minutes.
-timeout 1800 python3 -c '
+# the smoke run.
+python3 -c "$TIE_PY"'
 import http.server
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -158,8 +172,12 @@ class H(BaseHTTPRequestHandler):
         self.answer(200, '{"%s_response":%s,"sign":"%s"}' % (m.replace(".", "_"), body, sign(body)))
 ThreadingHTTPServer(("127.0.0.1", 18089), H).serve_forever()
 PY
-pkill -f "^python3 $PAY/mock.py" 2>/dev/null || true
-python3 "$PAY/mock.py" "$PAY" >"$LOG/mock-alipay.log" 2>&1 &
+pkill -f "$PAY/mock.py $PAY\$" 2>/dev/null || true
+python3 -c "$TIE_PY"'
+import runpy, sys
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+' "$PAY/mock.py" "$PAY" >"$LOG/mock-alipay.log" 2>&1 &
 MOCK_PID=$!
 # Sign Alipay-style notify params (sorted, without sign/sign_type) with the
 # mock "Alipay" key; prints the form body.
@@ -1230,7 +1248,7 @@ if [ "${SMOKE_ACME:-1}" = 1 ]; then
   docker run -d --name akari-smoke-pebble --network host -e PEBBLE_VA_NOSLEEP=1 ghcr.io/letsencrypt/pebble:2.10.1 \
     -config test/config/pebble-config.json -dnsserver 127.0.0.1:8053 >/dev/null
   PREV_EXIT_TRAP=$(trap -p EXIT)
-  trap 'docker rm -f akari-smoke-pebble akari-smoke-dns >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
+  trap 'docker rm -f akari-smoke-pebble akari-smoke-dns >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
   mkdir -p "$LOG/acme"
   for _ in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/14000) 2>/dev/null && break; sleep 0.5; done
   docker cp akari-smoke-pebble:/test/certs/pebble.minica.pem "$LOG/acme/pebble-api.pem" >/dev/null
@@ -1673,7 +1691,7 @@ if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
   docker run -d --name akari-smoke-node --network host --privileged --cgroupns=host \
     -v /sys/fs/cgroup:/sys/fs/cgroup:rw akari-node-test:debian13 >/dev/null
   PREV_EXIT_TRAP=$(trap -p EXIT)
-  trap 'docker rm -f akari-smoke-node >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
+  trap 'docker rm -f akari-smoke-node >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
   for _ in $(seq 1 30); do docker exec akari-smoke-node systemctl is-system-running 2>/dev/null | grep -qE 'running|degraded' && break; sleep 1; done
   # Not root and no sudo (the image has none): the command stops at sudo,
   # nothing of the script runs unprivileged.
@@ -1808,7 +1826,7 @@ docker run -d --name akari-smoke-caddy --network host -e AKARI_PREFIX="$PREFIX" 
   -e AKARI_UPSTREAM=127.0.0.1:8080 -e AKARI_ASK=http://127.0.0.1:8092/ask \
   -v "$LOG/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.11-alpine >/dev/null
 PREV_EXIT_TRAP=$(trap -p EXIT)
-trap 'docker rm -f akari-smoke-caddy akari-smoke-r22 >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
+trap 'docker rm -f akari-smoke-caddy akari-smoke-r22 >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
 for _ in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/8446) 2>/dev/null && break; sleep 0.5; done
 RES=(--resolve myapp.test:8446:127.0.0.1 --resolve sub.akari.test:8446:127.0.0.1 --resolve evil.test:8446:127.0.0.1
      --resolve myapp.test:8447:127.0.0.1 --resolve evil.test:8447:127.0.0.1)
