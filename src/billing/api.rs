@@ -823,11 +823,11 @@ pub async fn my_order(
     Path((_, id)): Path<(String, Uuid)>,
 ) -> Result<Json<MyOrderView>, ApiError> {
     let view = my_order_view(&state, user.id, id).await?;
-    if view.status == "pending" {
-        if let Some(a) = state.alipay().cloned() {
-            orders::poll(&state, &a, id).await?;
-            return Ok(Json(my_order_view(&state, user.id, id).await?));
-        }
+    if view.status == "pending"
+        && let Some(a) = state.alipay().cloned()
+    {
+        orders::poll(&state, &a, id).await?;
+        return Ok(Json(my_order_view(&state, user.id, id).await?));
     }
     Ok(Json(view))
 }
@@ -884,10 +884,10 @@ pub async fn list_orders(
     Query(q): Query<ListOrdersQuery>,
 ) -> Result<Json<Vec<OrderView>>, ApiError> {
     user.require_admin()?;
-    if let Some(s) = &q.status {
-        if !matches!(s.as_str(), "pending" | "paid" | "expired" | "cancelled") {
-            return Err(bad_request!("request.status_invalid", "unknown status"));
-        }
+    if let Some(s) = &q.status
+        && !matches!(s.as_str(), "pending" | "paid" | "expired" | "cancelled")
+    {
+        return Err(bad_request!("request.status_invalid", "unknown status"));
     }
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let mut qb = sqlx::QueryBuilder::new(format!("{ORDER_SQL} WHERE true"));

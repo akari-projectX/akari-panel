@@ -45,10 +45,11 @@ fn path(raw: &str) {
         assert_eq!(red.get(1), Some(&"{prefix}"), "prefix not redacted: {out}");
         assert_eq!(red.len(), segs.len(), "segment count changed: {out}");
     }
-    if let Some(&kind) = segs.get(2) {
-        if (kind == "sub" || kind == "install") && segs.len() > 3 {
-            assert_eq!(red.get(3), Some(&"{token}"), "token not redacted: {out}");
-        }
+    if let Some(&kind) = segs.get(2)
+        && (kind == "sub" || kind == "install")
+        && segs.len() > 3
+    {
+        assert_eq!(red.get(3), Some(&"{token}"), "token not redacted: {out}");
     }
     let t = raw.trim_start_matches('/');
     let plausible = t.len() == 43

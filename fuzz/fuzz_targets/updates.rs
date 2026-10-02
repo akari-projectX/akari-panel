@@ -54,21 +54,21 @@ fuzz_target!(|data: &[u8]| {
                     assert_eq!(compare_versions(v, v), Some(Ordering::Equal), "{v}");
                 }
             }
-            if let [a, b, ..] = vs[..] {
-                if let (Some(x), Some(y)) = (compare_versions(a, b), compare_versions(b, a)) {
-                    assert_eq!(x, y.reverse(), "antisymmetry {a} {b}");
-                }
+            if let [a, b, ..] = vs[..]
+                && let (Some(x), Some(y)) = (compare_versions(a, b), compare_versions(b, a))
+            {
+                assert_eq!(x, y.reverse(), "antisymmetry {a} {b}");
             }
-            if let [a, b, c] = vs[..] {
-                if let (Some(ab), Some(bc), Some(ac)) = (
+            if let [a, b, c] = vs[..]
+                && let (Some(ab), Some(bc), Some(ac)) = (
                     compare_versions(a, b),
                     compare_versions(b, c),
                     compare_versions(a, c),
-                ) {
-                    if ab != Ordering::Greater && bc != Ordering::Greater {
-                        assert_ne!(ac, Ordering::Greater, "transitivity {a} {b} {c}");
-                    }
-                }
+                )
+                && ab != Ordering::Greater
+                && bc != Ordering::Greater
+            {
+                assert_ne!(ac, Ordering::Greater, "transitivity {a} {b} {c}");
             }
         }
         _ => {

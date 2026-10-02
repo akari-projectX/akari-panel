@@ -430,10 +430,10 @@ async fn request(ctx: &Ctx, s: Scenario, i: usize) -> bool {
     match req.send().await {
         Ok(r) => {
             if matches!(s, Scenario::NodesEtag) {
-                if let Some(t) = r.headers().get(reqwest::header::ETAG) {
-                    if let (Ok(mut slot), Ok(t)) = (ctx.etag.lock(), t.to_str()) {
-                        *slot = t.to_string();
-                    }
+                if let Some(t) = r.headers().get(reqwest::header::ETAG)
+                    && let (Ok(mut slot), Ok(t)) = (ctx.etag.lock(), t.to_str())
+                {
+                    *slot = t.to_string();
                 }
                 let ok = r.status().is_success() || r.status() == reqwest::StatusCode::NOT_MODIFIED;
                 let _ = r.bytes().await;

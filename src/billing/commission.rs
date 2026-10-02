@@ -667,10 +667,10 @@ pub async fn list_commissions(
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Vec<CommissionView>>, ApiError> {
     user.require_admin()?;
-    if let Some(s) = &q.status {
-        if !matches!(s.as_str(), "pending" | "credited" | "reversed") {
-            return Err(bad_request!("request.status_invalid", "unknown status"));
-        }
+    if let Some(s) = &q.status
+        && !matches!(s.as_str(), "pending" | "credited" | "reversed")
+    {
+        return Err(bad_request!("request.status_invalid", "unknown status"));
     }
     let rows = sqlx::query_as(
         "SELECT c.id, c.order_id, o.out_trade_no, c.inviter_id, c.inviter_login, c.invitee_id, \
@@ -695,13 +695,13 @@ pub async fn list_withdrawals(
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Vec<WithdrawalView>>, ApiError> {
     user.require_admin()?;
-    if let Some(s) = &q.status {
-        if !matches!(
+    if let Some(s) = &q.status
+        && !matches!(
             s.as_str(),
             "pending" | "approved" | "rejected" | "cancelled"
-        ) {
-            return Err(bad_request!("request.status_invalid", "unknown status"));
-        }
+        )
+    {
+        return Err(bad_request!("request.status_invalid", "unknown status"));
     }
     let rows = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{WITHDRAWAL_SQL} WHERE ($1::text IS NULL OR status = $1) \

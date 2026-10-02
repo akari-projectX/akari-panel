@@ -63,19 +63,19 @@ fuzz_target!(|data: &[u8]| {
         ) else {
             continue;
         };
-        if let Ok(text) = v.to_str() {
-            if n == "x-forwarded-for" || n == "cf-connecting-ip" {
-                // Anything an address can be parsed from in this value.
-                for hop in text.split(',') {
-                    let hop = hop.trim();
-                    let bare = hop.trim_start_matches('[');
-                    for cand in [hop, bare.split(']').next().unwrap_or("")] {
-                        if let Ok(ip) = cand.parse::<IpAddr>() {
-                            candidates.push(canonical(ip));
-                        }
-                        if let Ok(sa) = cand.parse::<std::net::SocketAddr>() {
-                            candidates.push(canonical(sa.ip()));
-                        }
+        if let Ok(text) = v.to_str()
+            && (n == "x-forwarded-for" || n == "cf-connecting-ip")
+        {
+            // Anything an address can be parsed from in this value.
+            for hop in text.split(',') {
+                let hop = hop.trim();
+                let bare = hop.trim_start_matches('[');
+                for cand in [hop, bare.split(']').next().unwrap_or("")] {
+                    if let Ok(ip) = cand.parse::<IpAddr>() {
+                        candidates.push(canonical(ip));
+                    }
+                    if let Ok(sa) = cand.parse::<std::net::SocketAddr>() {
+                        candidates.push(canonical(sa.ip()));
                     }
                 }
             }

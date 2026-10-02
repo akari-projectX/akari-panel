@@ -108,10 +108,10 @@ fuzz_target!(|data: &[u8]| {
             }
         }
         2 => {
-            if let Some((&kind, body)) = rest.split_first() {
-                if let Err(e) = signup_body(kind, body) {
-                    panic!("{e}");
-                }
+            if let Some((&kind, body)) = rest.split_first()
+                && let Err(e) = signup_body(kind, body)
+            {
+                panic!("{e}");
             }
         }
         _ => {

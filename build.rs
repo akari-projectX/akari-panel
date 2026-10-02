@@ -42,10 +42,10 @@ fn emit_git_sha() {
     // dir elsewhere, hence `--git-path`). Missing files are not listed:
     // cargo would treat them as always-changed.
     for name in ["HEAD", "logs/HEAD"] {
-        if let Some(path) = git(&["rev-parse", "--git-path", name]) {
-            if std::path::Path::new(&path).exists() {
-                println!("cargo:rerun-if-changed={path}");
-            }
+        if let Some(path) = git(&["rev-parse", "--git-path", name])
+            && std::path::Path::new(&path).exists()
+        {
+            println!("cargo:rerun-if-changed={path}");
         }
     }
     let sha = std::env::var("AKARI_GIT_SHA")

@@ -43,10 +43,10 @@ pub async fn layer(req: Request, next: Next) -> Response {
     let span =
         tracing::info_span!("http", request_id = %id, method = %req.method(), route = %route);
     let mut res = next.run(req).instrument(span).await;
-    if res.extensions().get::<crate::reject::Rejected>().is_none() {
-        if let Ok(v) = HeaderValue::from_str(&id) {
-            res.headers_mut().insert(HEADER, v);
-        }
+    if res.extensions().get::<crate::reject::Rejected>().is_none()
+        && let Ok(v) = HeaderValue::from_str(&id)
+    {
+        res.headers_mut().insert(HEADER, v);
     }
     res
 }
