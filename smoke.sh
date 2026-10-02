@@ -1772,7 +1772,7 @@ HOOK_PID=$!
 AV=$(last_json "d['version']")
 ALERT_BODY='{"version":'"$AV"',"enabled":true,"offline_secs":30,"cpu_percent":95,"cpu_minutes":5,"mem_percent":95,"mem_minutes":5,"disk_percent":95,"cert_days":7,"latency_failures":false,"last_error":false,"cooldown_minutes":0,"notify_resolved":true,"telegram_enabled":false,"webhook_enabled":true,"webhook_url":"http://127.0.0.1:18206/hook","webhook_secret":"'"$HOOK_SECRET"'","email_enabled":false,"email_to":[]}'
 [ "$(api_json "$JAR" PUT "$BASE/api/v1/alerts/settings" "$ALERT_BODY")" = "200" ] || { echo "FAIL: save alert settings"; cat /tmp/akari-smoke/last; exit 1; }
-last_json "(d['webhook_secret_set'], 'webhook_secret' in d)" | matches '^\(True, False\)$' || { echo "FAIL: alert settings view"; exit 1; }
+last_json "(d['webhook_secret_set'], 'webhook_secret' in d)" | matches -Fx '(True, False)' || { echo "FAIL: alert settings view"; exit 1; }
 [ "$(api_json "$JAR" PUT "$BASE/api/v1/alerts/settings" "$ALERT_BODY")" = "409" ] || { echo "FAIL: stale alert settings version accepted"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='alerts.settings.update' AND after::text LIKE '%$HOOK_SECRET%'")" = "0" ] \
   || { echo "FAIL: webhook secret in the audit log"; exit 1; }
