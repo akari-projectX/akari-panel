@@ -169,7 +169,7 @@ done
 # Reset AFTER startup: fresh volumes have no tables until the panel migrates,
 # and Valkey rate-limit counters would poison the next run's login test.
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE nodes CASCADE; TRUNCATE users CASCADE;" >/dev/null 2>&1 || true
-docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE revoked_certs, traffic_counters, audit_log, agent_releases, rollouts CASCADE;" >/dev/null 2>&1 || true
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE revoked_certs, traffic_counters, audit_log, agent_releases, rollouts, node_groups, plans, orders, payment_events CASCADE;" >/dev/null 2>&1 || true
 vk flushdb >/dev/null
 
 echo "== first admin (env password) =="
