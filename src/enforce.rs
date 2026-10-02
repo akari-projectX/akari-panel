@@ -112,12 +112,19 @@ pub async fn apply_expiry(conn: &mut PgConnection) -> sqlx::Result<Vec<Uuid>> {
 pub async fn run_all(state: &crate::state::AppState) -> anyhow::Result<()> {
     // Plan passes first: a due reset re-enables before the limit pass
     // would look at the old usage.
-    for pass in [Pass::PlanExpiry, Pass::Resets, Pass::Limits, Pass::Expiry] {
+    for pass in [
+        Pass::PlanExpiry,
+        Pass::Resets,
+        Pass::Limits,
+        Pass::Expiry,
+        Pass::Commissions,
+    ] {
         let name = match pass {
             Pass::PlanExpiry => "plan_expiry",
             Pass::Resets => "period_reset",
             Pass::Limits => "limits",
             Pass::Expiry => "expiry",
+            Pass::Commissions => "commissions",
         };
         let r = run_pass(state, pass).await;
         crate::metrics::enforcement_pass(name, r.is_ok());
@@ -138,6 +145,14 @@ async fn run_pass(state: &crate::state::AppState, pass: Pass) -> anyhow::Result<
         Pass::Resets => crate::plans::apply_period_resets(&mut tx)
             .await
             .map_err(|e| anyhow::anyhow!("period reset pass: {}", e.message()))?,
+        // W16: invite commissions past their hold become balance (ledger),
+        // exactly once (SKIP LOCKED + conditional on pending).
+        Pass::Commissions => {
+            crate::billing::commission::credit_due(&mut tx)
+                .await
+                .map_err(|e| anyhow::anyhow!("commission pass: {}", e.message()))?;
+            Vec::new()
+        }
     };
     tx.commit().await?;
     Ok(())
@@ -149,6 +164,7 @@ enum Pass {
     Resets,
     Limits,
     Expiry,
+    Commissions,
 }
 
 #[cfg(test)]

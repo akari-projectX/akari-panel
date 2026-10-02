@@ -415,11 +415,40 @@ pub fn decide(cur: Option<Current>, sale: &Sale, period: PeriodKind) -> Result<A
     }
 }
 
-/// What the buyer pays for a list price with an available credit: the
-/// credit applied (never above the price) and the amount. Integer cents.
-pub fn apply_credit(list_price_cents: i64, credit_cents: i64) -> (i64, i64) {
-    let applied = credit_cents.clamp(0, list_price_cents.max(0));
-    (applied, list_price_cents - applied)
+/// How a list price is covered (SQL `akari_split`, migration 0107): the
+/// coupon discount on the list price, then the switch credit, then the
+/// balance, each capped at what is left; the amount is the rest (what
+/// Alipay is asked for). Integer fen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, sqlx::FromRow)]
+pub struct Split {
+    pub discount_cents: i64,
+    pub credit_cents: i64,
+    pub balance_cents: i64,
+    pub amount_cents: i64,
+}
+
+/// One split input: (list, discount, credit, balance), all fen.
+pub type SplitIn = (i64, i64, i64, i64);
+
+/// `akari_split` for each input, in order (one statement; all money
+/// arithmetic in SQL).
+pub async fn splits(conn: &mut PgConnection, input: &[SplitIn]) -> sqlx::Result<Vec<Split>> {
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
+    let col = |f: fn(&SplitIn) -> i64| input.iter().map(f).collect::<Vec<i64>>();
+    sqlx::query_as(
+        "SELECT s.discount_cents, s.credit_cents, s.balance_cents, s.amount_cents \
+         FROM unnest($1::bigint[], $2::bigint[], $3::bigint[], $4::bigint[]) WITH ORDINALITY \
+              AS x(l, d, c, b, ord) \
+         CROSS JOIN LATERAL akari_split(x.l, x.d, x.c, x.b) s ORDER BY x.ord",
+    )
+    .bind(col(|x| x.0))
+    .bind(col(|x| x.1))
+    .bind(col(|x| x.2))
+    .bind(col(|x| x.3))
+    .fetch_all(conn)
+    .await
 }
 
 /// The credit the buyer's current subscription is worth now (switching
@@ -460,48 +489,64 @@ pub struct Offer {
     pub period: PeriodKind,
     pub days: Option<i32>,
     pub price_cents: i64,
-    /// What would be charged now (price - credit); null when refused.
+    /// What Alipay would be asked for now (price − discount − credit −
+    /// balance); null when refused.
     pub amount_cents: Option<i64>,
+    /// W16: the coupon's discount (0 without one or when it does not apply).
+    pub discount_cents: i64,
     pub credit_cents: i64,
-    /// Credit beyond the price (lost when switching to a cheaper plan).
+    /// Credit beyond what is left after the discount (lost when switching
+    /// to a cheaper plan).
     pub forfeited_cents: i64,
+    /// W16: the balance part (when the buyer chose to use the balance).
+    pub balance_cents: i64,
+    /// W16: why the entered coupon does not apply to this offer.
+    pub coupon_refusal: Option<super::coupons::Refusal>,
     pub action: Option<Action>,
     pub refusal: Option<Refusal>,
 }
 
 impl Offer {
-    pub fn of(cur: Option<Current>, sale: &Sale, price: &Price, credit_available: i64) -> Offer {
-        let period = price.period.0;
-        match decide(cur, sale, period) {
-            Ok(action) => {
-                let credit = if action == Action::Switch {
-                    credit_available
-                } else {
-                    0
-                };
-                let (applied, amount) = apply_credit(price.price_cents, credit);
-                Offer {
-                    period,
-                    days: price.days,
-                    price_cents: price.price_cents,
-                    amount_cents: Some(amount),
-                    credit_cents: applied,
-                    forfeited_cents: credit - applied,
-                    action: Some(action),
-                    refusal: None,
-                }
-            }
-            Err(r) => Offer {
-                period,
-                days: price.days,
-                price_cents: price.price_cents,
-                amount_cents: None,
-                credit_cents: 0,
-                forfeited_cents: 0,
-                action: None,
-                refusal: Some(r),
-            },
+    /// The sale decision for one price (money filled in by `priced`).
+    pub fn of(cur: Option<Current>, sale: &Sale, price: &Price) -> Offer {
+        let (action, refusal) = match decide(cur, sale, price.period.0) {
+            Ok(a) => (Some(a), None),
+            Err(r) => (None, Some(r)),
+        };
+        Offer {
+            period: price.period.0,
+            days: price.days,
+            price_cents: price.price_cents,
+            amount_cents: None,
+            discount_cents: 0,
+            credit_cents: 0,
+            forfeited_cents: 0,
+            balance_cents: 0,
+            coupon_refusal: None,
+            action,
+            refusal,
         }
+    }
+
+    /// The switch credit this offer may use (switches only).
+    pub fn credit_available(&self, credit: i64) -> i64 {
+        if self.action == Some(Action::Switch) {
+            credit
+        } else {
+            0
+        }
+    }
+
+    /// Fill in the money from the SQL split (sellable offers only).
+    pub fn priced(&mut self, s: &Split, credit_available: i64) {
+        if self.action.is_none() {
+            return;
+        }
+        self.amount_cents = Some(s.amount_cents);
+        self.discount_cents = s.discount_cents;
+        self.credit_cents = s.credit_cents;
+        self.forfeited_cents = credit_available - s.credit_cents;
+        self.balance_cents = s.balance_cents;
     }
 }
 
@@ -658,13 +703,17 @@ mod tests {
     }
 
     #[test]
-    fn credit_application() {
-        assert_eq!(apply_credit(1000, 0), (0, 1000));
-        assert_eq!(apply_credit(1000, 300), (300, 700));
-        assert_eq!(apply_credit(1000, 1000), (1000, 0));
-        // Never negative: the excess is forfeited.
-        assert_eq!(apply_credit(1000, 2500), (1000, 0));
-        assert_eq!(apply_credit(1000, -5), (0, 1000));
+    fn offers_and_the_split_mirror() {
+        use super::super::coupons::mirror::split;
+        assert_eq!(split(1000, 0, 0, 0), (0, 0, 0, 1000));
+        assert_eq!(split(1000, 0, 300, 0), (0, 300, 0, 700));
+        // Never negative: the excess credit is forfeited.
+        assert_eq!(split(1000, 0, 2500, 0), (0, 1000, 0, 0));
+        assert_eq!(split(1000, 0, -5, 0), (0, 0, 0, 1000));
+        // Coupon first, then credit, then balance.
+        assert_eq!(split(1000, 200, 300, 400), (200, 300, 400, 100));
+        assert_eq!(split(1000, 200, 900, 400), (200, 800, 0, 0));
+        assert_eq!(split(1000, 1500, 0, 0), (1000, 0, 0, 0));
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
         let price = Price {
@@ -676,23 +725,34 @@ mod tests {
             plan_id: a,
             expires: true,
         });
-        let o = Offer::of(cur, &sale(b), &price, 1500);
+        let mut o = Offer::of(cur, &sale(b), &price);
+        assert_eq!(o.credit_available(1500), 1500);
+        let (d, c, bal, amount) = split(990, 0, 1500, 0);
+        o.priced(
+            &Split {
+                discount_cents: d,
+                credit_cents: c,
+                balance_cents: bal,
+                amount_cents: amount,
+            },
+            1500,
+        );
         assert_eq!(
             (o.amount_cents, o.credit_cents, o.forfeited_cents),
             (Some(0), 990, 510)
         );
         // Renewals never use credit.
-        let o = Offer::of(cur, &sale(a), &price, 1500);
-        assert_eq!((o.amount_cents, o.credit_cents), (Some(990), 0));
-        let o = Offer::of(
+        let o = Offer::of(cur, &sale(a), &price);
+        assert_eq!(o.credit_available(1500), 0);
+        let mut o = Offer::of(
             None,
             &Sale {
                 renewal_only: true,
                 ..sale(b)
             },
             &price,
-            0,
         );
+        o.priced(&Split::default(), 0);
         assert_eq!(
             (o.amount_cents, o.refusal),
             (None, Some(Refusal::RenewalOnly))

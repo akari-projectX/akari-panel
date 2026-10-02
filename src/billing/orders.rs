@@ -54,6 +54,10 @@ pub enum Via {
     /// W7: an amount-0 order the proration credit pays in full (at
     /// creation, never sent to Alipay).
     Credit,
+    /// W16: an amount-0 order whose remainder the balance covers.
+    Balance,
+    /// W16: an amount-0 order a coupon covers (no credit, no balance).
+    Coupon,
 }
 
 impl Via {
@@ -63,6 +67,8 @@ impl Via {
             Via::Query => "query",
             Via::Manual => "manual",
             Via::Credit => "credit",
+            Via::Balance => "balance",
+            Via::Coupon => "coupon",
         }
     }
 }
@@ -87,6 +93,8 @@ pub fn order_snapshot_sql(alias: &str) -> String {
          'plan_id', {a}.plan_id, 'amount_cents', {a}.amount_cents, 'period', {a}.period, \
          'period_days', {a}.period_days, 'list_price_cents', {a}.list_price_cents, \
          'credit_cents', {a}.credit_cents, 'credit_order_id', {a}.credit_order_id, \
+         'discount_cents', {a}.discount_cents, 'coupon_code', {a}.coupon_code, \
+         'balance_cents', {a}.balance_cents, 'balance_state', {a}.balance_state, \
          'status', {a}.status, 'trade_no', {a}.trade_no, 'paid_via', {a}.paid_via)",
         a = alias
     )
@@ -162,9 +170,19 @@ pub async fn apply_mark_paid(
     let Some((before, mut after)) = row else {
         return Ok(Paid::Already);
     };
+    // W16: the coupon reservation becomes a redemption (a late payment of
+    // an ended order re-reserves it); fulfilment re-takes a returned
+    // balance part; the inviter's commission is created — all in this
+    // transaction, so exactly once like the fulfilment.
+    if let Some(c) = super::coupons::redeem(conn, order_id).await? {
+        after["coupon"] = c;
+    }
     let bought = bought(conn, order_id).await?;
     let (fulfilled, detail) = fulfil(conn, actor, order_id, &bought).await?;
     after["fulfilment"] = detail;
+    if let Some((id, cents)) = super::commission::on_paid(conn, actor, order_id).await? {
+        after["commission"] = json!({ "id": id, "amount_cents": cents });
+    }
     if let Some(r) = reason {
         after["reason"] = json!(r);
     }
@@ -201,7 +219,10 @@ async fn fulfil(
     bought: &Bought,
 ) -> Result<(bool, Value), ApiError> {
     let mut sp = conn.begin().await?;
-    let res = grant(&mut sp, actor, bought).await;
+    let res = match retake_balance(&mut sp, actor, order_id).await {
+        Ok(()) => grant(&mut sp, actor, bought).await,
+        Err(e) => Err(e),
+    };
     match res {
         Ok(detail) => {
             sp.commit().await?;
@@ -232,6 +253,159 @@ async fn fulfil(
             Ok((false, json!({ "error": msg })))
         }
     }
+}
+
+/// W16: a paid order whose balance part was returned when it ended unpaid
+/// (a late payment) takes it again before fulfilment, inside the
+/// fulfilment savepoint: when the balance no longer covers it the order
+/// stays paid with `fulfil_error` "insufficient balance" (the admin tops up
+/// and retries, or refunds), never a negative balance.
+async fn retake_balance(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    order_id: Uuid,
+) -> Result<(), ApiError> {
+    let row: Option<(Option<Uuid>, i64)> = sqlx::query_as(
+        "SELECT user_id, balance_cents FROM orders WHERE id = $1 AND balance_state = 'refunded'",
+    )
+    .bind(order_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((user, cents)) = row else {
+        return Ok(());
+    };
+    let user = user.ok_or_else(|| ApiError::conflict("the user no longer exists"))?;
+    let mut e = super::ledger::Entry::new(user, super::ledger::Kind::OrderPayment, -cents);
+    e.order_id = Some(order_id);
+    super::ledger::apply_entry(conn, actor, &e).await?;
+    sqlx::query("UPDATE orders SET balance_state = 'held' WHERE id = $1")
+        .bind(order_id)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// W16: an order ended unpaid (expired, cancelled, precreate failed): its
+/// held balance part goes back (ledger refund_to_balance) and its coupon
+/// reservation is released, in the caller's transaction (the one that
+/// ended it). Idempotent. Returns a detail for the audit row.
+pub async fn release_holds(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    order_id: Uuid,
+) -> Result<Value, ApiError> {
+    let mut detail = json!({});
+    let held: Option<(Option<Uuid>, i64)> = sqlx::query_as(
+        "UPDATE orders SET balance_state = 'refunded' WHERE id = $1 AND balance_state = 'held' \
+         RETURNING user_id, balance_cents",
+    )
+    .bind(order_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some((user, cents)) = held {
+        match user {
+            Some(user) => {
+                let mut e =
+                    super::ledger::Entry::new(user, super::ledger::Kind::RefundToBalance, cents);
+                e.order_id = Some(order_id);
+                super::ledger::apply_entry(conn, actor, &e).await?;
+                detail["balance_refunded_cents"] = json!(cents);
+            }
+            // The user is gone: nothing to return to (their balance row
+            // went with them).
+            None => detail["balance_refunded_cents"] = json!(0),
+        }
+    }
+    if super::coupons::release(conn, order_id).await? {
+        detail["coupon_released"] = json!(true);
+    }
+    Ok(detail)
+}
+
+/// (status, refunded_at, user_id, amount, balance part, balance_state).
+type RefundRow = (
+    String,
+    Option<DateTime<Utc>>,
+    Option<Uuid>,
+    i64,
+    i64,
+    String,
+);
+
+/// W16: admin refund of a paid order (support action, reason required):
+/// the held balance part always goes back to the balance; with
+/// `to_balance` the Alipay amount is credited to the balance as well
+/// (otherwise it was refunded out of band in the Alipay console). One
+/// ledger row (refund_to_balance) when anything is credited; a pending
+/// invite commission is reversed. The plan is not touched (cancel it by
+/// hand if needed). Once per order (409 afterwards). Audited
+/// `order.refund`.
+pub async fn apply_refund(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    order_id: Uuid,
+    reason: &str,
+    to_balance: bool,
+) -> Result<Value, ApiError> {
+    let row: Option<RefundRow> = sqlx::query_as(
+        "SELECT status, refunded_at, user_id, amount_cents, balance_cents, balance_state \
+             FROM orders WHERE id = $1 FOR UPDATE",
+    )
+    .bind(order_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((status, refunded_at, user, amount, balance, balance_state)) = row else {
+        return Err(ApiError::not_found());
+    };
+    if status != "paid" {
+        return Err(ApiError::conflict("only a paid order can be refunded"));
+    }
+    if refunded_at.is_some() {
+        return Err(ApiError::conflict("the order was already refunded"));
+    }
+    let balance_part = if balance_state == "held" { balance } else { 0 };
+    let cash_part = if to_balance { amount } else { 0 };
+    let credit = balance_part + cash_part;
+    if credit > 0 {
+        let user = user.ok_or_else(|| {
+            ApiError::conflict("the user no longer exists; refund out of band without to_balance")
+        })?;
+        let mut e = super::ledger::Entry::new(user, super::ledger::Kind::RefundToBalance, credit);
+        e.order_id = Some(order_id);
+        e.reason = Some(reason);
+        super::ledger::apply_entry(conn, actor, &e).await?;
+    }
+    sqlx::query(
+        "UPDATE orders SET refunded_at = now(), refund_cents = $2, refund_reason = $3, \
+         balance_state = CASE WHEN balance_state = 'held' THEN 'refunded' ELSE balance_state END \
+         WHERE id = $1",
+    )
+    .bind(order_id)
+    .bind(credit)
+    .bind(reason)
+    .execute(&mut *conn)
+    .await?;
+    let commission =
+        super::commission::reverse_for_order(conn, actor, order_id, "order refunded").await?;
+    let after = json!({
+        "refund_cents": credit,
+        "to_balance": to_balance,
+        "balance_part_cents": balance_part,
+        "cash_part_cents": cash_part,
+        "commission": commission,
+        "reason": reason,
+    });
+    crate::audit::record(
+        conn,
+        actor,
+        "order.refund",
+        "order",
+        Some(order_id.to_string()),
+        Some(json!({ "status": "paid", "refunded": false })),
+        Some(after.clone()),
+    )
+    .await?;
+    Ok(after)
 }
 
 /// The plan change itself (the caller holds `entitle::lock`):
@@ -354,15 +528,19 @@ pub async fn apply_admin_fulfil(
     reason: &str,
 ) -> Result<Paid, ApiError> {
     entitle::lock(conn).await?;
-    let row: Option<(String, Option<DateTime<Utc>>, String)> = sqlx::query_as(
-        "SELECT status, fulfilled_at, out_trade_no FROM orders WHERE id = $1 FOR UPDATE",
+    let row: Option<(String, Option<DateTime<Utc>>, String, bool)> = sqlx::query_as(
+        "SELECT status, fulfilled_at, out_trade_no, refunded_at IS NOT NULL FROM orders \
+         WHERE id = $1 FOR UPDATE",
     )
     .bind(order_id)
     .fetch_optional(&mut *conn)
     .await?;
-    let Some((status, fulfilled_at, otn)) = row else {
+    let Some((status, fulfilled_at, otn, refunded)) = row else {
         return Err(ApiError::not_found());
     };
+    if refunded {
+        return Err(ApiError::conflict("the order was refunded"));
+    }
     if status != "paid" {
         let r =
             apply_mark_paid(conn, actor, order_id, Via::Manual, None, None, Some(reason)).await?;
@@ -583,6 +761,7 @@ pub async fn end_order(
         return Ok(now.unwrap_or_default());
     };
     after["close_state"] = json!(close_state);
+    after["released"] = release_holds(&mut tx, actor, order.id).await?;
     record_event(
         &mut tx,
         Some(order.id),
