@@ -43,6 +43,19 @@ const node = (over: Partial<NodeView>): NodeView =>
     enroll_token_expires_at: null,
     heartbeat: null,
     warnings: [],
+    display_name: null,
+    sort: 0,
+    visible: true,
+    tags: [],
+    traffic_rate_permille: 1000,
+    traffic_rate: 1,
+    connect_overrides: {},
+    group_ids: [],
+    traffic_raw_bytes: 0,
+    traffic_billed_bytes: 0,
+    online: false,
+    latency: [],
+    probe_requested_at: null,
     ...over,
   }) as NodeView;
 
@@ -225,7 +238,7 @@ describe("AdminNodes", () => {
     });
     renderWithClient(<AdminNodes />);
     fireEvent.click(await screen.findByRole("button", { name: "新建节点" }));
-    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "osaka" } });
+    fireEvent.change(screen.getByLabelText("名称（内部，唯一）"), { target: { value: "osaka" } });
     fireEvent.change(screen.getByLabelText("公网地址（IP 或域名）"), {
       target: { value: "198.51.100.7" },
     });

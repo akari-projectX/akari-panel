@@ -292,6 +292,97 @@ export interface NodeView {
   heartbeat: Heartbeat | null;
   // Problems the admin must fix (stored config, certificate expiry).
   warnings: string[];
+  // W11 (xboard-style form): user-facing name (null = name), order, shown
+  // to users, tags, multiplier (permille and as a number), per-inbound
+  // client-facing host/port, node groups.
+  display_name: string | null;
+  sort: number;
+  visible: boolean;
+  tags: string[];
+  traffic_rate_permille: number;
+  traffic_rate: number;
+  connect_overrides: Record<string, ConnectOverride>;
+  group_ids: string[];
+  // W11: bytes accepted on the node (before the multiplier) and billed.
+  traffic_raw_bytes: number;
+  traffic_billed_bytes: number;
+  // W11: online by the reaper's rule; latest latency results.
+  online: boolean;
+  latency: LatencyResult[];
+  probe_requested_at: string | null;
+}
+
+export interface ConnectOverride {
+  host?: string;
+  port?: number;
+}
+
+// W11: one latency result. source "agent" = the node's url-test (target =
+// URL), "panel" = TCP connect from the panel (target = inbound tag);
+// delay_ms null = failed (error: "timeout", "refused", "udp" = n/a, ...).
+export interface LatencyResult {
+  source: "agent" | "panel";
+  target: string;
+  delay_ms: number | null;
+  error: string | null;
+  measured_at: string;
+}
+
+// W11: GET /nodes/{id}/status.
+export interface NodeStatus {
+  id: string;
+  status: string;
+  online: boolean;
+  last_seen_at: string | null;
+  heartbeat: Heartbeat | null;
+  latency: LatencyResult[];
+  traffic_raw_bytes: number;
+  traffic_billed_bytes: number;
+  traffic_rate: number;
+  probe_requested_at: string | null;
+}
+
+// W11: GET /nodes/{id}/metrics?range=… (averages per point; *_max maxima).
+export interface MetricsPoint {
+  t: string;
+  samples: number;
+  cpu: number;
+  cpu_max: number;
+  load1: number;
+  mem_used: number;
+  mem_total: number;
+  swap_used: number;
+  swap_total: number;
+  disk_used: number;
+  disk_total: number;
+  rx_bps: number;
+  tx_bps: number;
+  rx_bps_max: number;
+  tx_bps_max: number;
+  tcp: number;
+  udp: number;
+  conns: number;
+  conns_max: number;
+  users: number;
+  users_max: number;
+}
+
+export interface NodeMetricsView {
+  range: string;
+  step_secs: number;
+  points: MetricsPoint[];
+}
+
+// W11: GET /me/nodes (portal): no ids, addresses or machine metrics.
+export interface MyNodeStatus {
+  name: string;
+  region: string | null;
+  tags: string[];
+  rate: number;
+  online: boolean;
+  latency_ms: number | null;
+  latency_status: "ok" | "timeout" | "unknown";
+  latency_measured_at: string | null;
 }
 
 export interface NodeUpdateStatus {
@@ -375,6 +466,29 @@ export interface Heartbeat {
   uptime_seconds?: number;
   lease_remaining_seconds: number | null;
   ts: string;
+  // W11: machine status from agents with capability "metrics".
+  metrics?: HeartbeatMetrics;
+}
+
+export interface HeartbeatMetrics {
+  load1: number;
+  load5: number;
+  load15: number;
+  cpu_count: number;
+  swap_used_bytes: number;
+  swap_total_bytes: number;
+  disk_used_bytes: number;
+  disk_total_bytes: number;
+  net_interface: string;
+  net_rx_bytes_per_sec: number;
+  net_tx_bytes_per_sec: number;
+  net_rx_bytes_total: number;
+  net_tx_bytes_total: number;
+  tcp_sockets: number;
+  udp_sockets: number;
+  online_users: number;
+  process_rss_bytes: number;
+  xray_version: string;
 }
 
 // One-time enrollment material (POST /nodes, POST /nodes/{id}/enroll-token):

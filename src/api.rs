@@ -1094,6 +1094,27 @@ pub struct NodeView {
     /// for such agents.
     #[serde(skip)]
     unenforced_speed_limits: bool,
+    /// W11 (xboard-style form, `nodemeta.rs`): user-facing name (null =
+    /// `name`), display order, shown to users, tags, multiplier (permille
+    /// and as a number), per-inbound client-facing address/port, groups.
+    display_name: Option<String>,
+    sort: i32,
+    visible: bool,
+    tags: Vec<String>,
+    traffic_rate_permille: i32,
+    #[sqlx(skip)]
+    traffic_rate: f64,
+    connect_overrides: serde_json::Value,
+    group_ids: Vec<Uuid>,
+    /// W11: bytes accepted on this node (before the multiplier) and billed
+    /// to users (after it), since the columns exist.
+    traffic_raw_bytes: i64,
+    traffic_billed_bytes: i64,
+    /// W11 (`nodestat.rs`): online by the reaper's rule (status online,
+    /// refreshed within 90 s), latest latency results, last "立即测速".
+    online: bool,
+    latency: serde_json::Value,
+    probe_requested_at: Option<DateTime<Utc>>,
 }
 
 /// A certificate expiring within this many days is flagged (agents of
@@ -1103,6 +1124,7 @@ const CERT_WARN_DAYS: i64 = 14;
 
 impl NodeView {
     fn with_warnings(mut self) -> Self {
+        self.traffic_rate = f64::from(self.traffic_rate_permille) / 1000.0;
         self.warnings = inbound_warnings(&self.xray_inbounds);
         if let Some(w) = cert_warning(self.cert_not_after, self.agent_protocol, Utc::now()) {
             self.warnings.push(w);
@@ -1186,7 +1208,15 @@ pub const NODE_VIEW_COLS: &str =
         JOIN user_plans up ON up.user_id = nu.user_id AND up.status = 'active' \
         JOIN plans p ON p.id = up.plan_id \
         WHERE nu.node_id = nodes.id AND p.speed_limit_mbps IS NOT NULL) \
-        ELSE false END AS unenforced_speed_limits";
+        ELSE false END AS unenforced_speed_limits, \
+     display_name, sort, visible, tags, traffic_rate_permille, connect_overrides, \
+     ARRAY(SELECT m.group_id FROM node_group_members m WHERE m.node_id = nodes.id \
+        ORDER BY m.group_id) AS group_ids, traffic_raw_bytes, traffic_billed_bytes, \
+     (nodes.status = 'online' AND nodes.last_seen_at > now() - interval '90 seconds') AS online, \
+     (SELECT coalesce(jsonb_agg(jsonb_build_object('source', l.source, 'target', l.target, \
+        'delay_ms', l.delay_ms, 'error', l.error, 'measured_at', l.measured_at) \
+        ORDER BY l.source, l.ord), '[]'::jsonb) FROM node_latency l WHERE l.node_id = nodes.id) \
+        AS latency, probe_requested_at";
 
 pub async fn list_nodes(
     State(state): State<AppState>,
@@ -1194,7 +1224,7 @@ pub async fn list_nodes(
 ) -> Result<Json<Vec<NodeView>>, ApiError> {
     user.require_admin()?;
     let rows = sqlx::query_as::<_, NodeView>(sqlx::AssertSqlSafe(format!(
-        "SELECT {NODE_VIEW_COLS} FROM nodes ORDER BY created_at"
+        "SELECT {NODE_VIEW_COLS} FROM nodes ORDER BY sort, created_at"
     )))
     .fetch_all(state.pg())
     .await?;
@@ -1222,6 +1252,21 @@ pub struct CreateNodeReq {
     /// bootstrap token; same token either way.
     #[serde(default)]
     pub install: Option<crate::nodeinstall::InstallReq>,
+    /// W11 form fields (see UpdateNodeReq).
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub sort: Option<i32>,
+    #[serde(default)]
+    pub visible: Option<bool>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub traffic_rate: Option<f64>,
+    #[serde(default)]
+    pub connect_overrides: Option<serde_json::Value>,
+    #[serde(default)]
+    pub group_ids: Option<Vec<Uuid>>,
 }
 
 /// The one-time enrollment material returned by create / enroll-token: the
@@ -1295,9 +1340,9 @@ pub async fn create_node(
     };
     let actor = Actor::of(&user);
     let mut tx = state.pg().begin().await?;
-    if inbounds.is_some() {
+    if inbounds.is_some() || req.group_ids.is_some() {
         // Lock order: the entitlement lock before any row (set_inbounds
-        // takes it again; advisory xact locks nest).
+        // and set_node_groups take it again; advisory xact locks nest).
         crate::entitle::lock(&mut tx).await?;
     }
     let (ttl, link) = match &prepared {
@@ -1307,16 +1352,27 @@ pub async fn create_node(
     let endpoint = crate::settings::node_endpoint(&mut tx, state.cfg()).await?;
     let (id, token, expires) =
         crate::enroll::apply_create_node(&mut tx, &actor, &req.name, ttl, link, &endpoint).await?;
-    if req.region.is_some() || req.server_addr.is_some() {
-        let patch = UpdateNodeReq {
-            server_addr: req.server_addr.clone().map(Some),
-            region: req.region.clone().map(Some),
-            ..Default::default()
-        };
-        apply_update_node(&mut tx, &actor, id, &patch).await?;
-    }
     if let Some(i) = &inbounds {
         apply_set_inbounds(&mut tx, &actor, id, i).await?;
+    }
+    // The form fields in one update, after the inbounds (W11 connect
+    // overrides name inbound tags).
+    let w11 = UpdateNodeReq {
+        server_addr: req.server_addr.clone().map(Some),
+        region: req.region.clone().map(Some),
+        display_name: req.display_name.clone().map(Some),
+        sort: req.sort.map(Some),
+        visible: req.visible.map(Some),
+        tags: req.tags.clone().map(Some),
+        traffic_rate: req.traffic_rate.map(Some),
+        connect_overrides: req.connect_overrides.clone().map(Some),
+        ..Default::default()
+    };
+    if w11.has_node_fields() {
+        apply_update_node(&mut tx, &actor, id, &w11).await?;
+    }
+    if let Some(g) = &req.group_ids {
+        crate::nodemeta::apply_set_node_groups(&mut tx, &actor, id, g).await?;
     }
     tx.commit().await?;
     let mut view = enrollment_view(
@@ -1380,6 +1436,45 @@ pub struct UpdateNodeReq {
     /// M3: region shown to users; null (or "") clears it. <= 64 chars.
     #[serde(default, deserialize_with = "double_option")]
     pub region: Option<Option<String>>,
+    /// W11 (`nodemeta.rs`): user-facing name; null (or "") = `name`.
+    #[serde(default, deserialize_with = "double_option")]
+    pub display_name: Option<Option<String>>,
+    /// Display order (ascending).
+    #[serde(default, deserialize_with = "double_option")]
+    pub sort: Option<Option<i32>>,
+    /// Shown to users (portal, subscription); hidden nodes keep serving.
+    #[serde(default, deserialize_with = "double_option")]
+    pub visible: Option<Option<bool>>,
+    /// Labels ([] clears).
+    #[serde(default, deserialize_with = "double_option")]
+    pub tags: Option<Option<Vec<String>>>,
+    /// Traffic multiplier 0..=100, at most 3 decimals (stored as permille).
+    #[serde(default, deserialize_with = "double_option")]
+    pub traffic_rate: Option<Option<f64>>,
+    /// {"<inbound tag>": {"host", "port"}}; null or {} clears.
+    #[serde(default, deserialize_with = "double_option")]
+    pub connect_overrides: Option<Option<serde_json::Value>>,
+    /// Node groups (the complete list; [] = none). Handled by
+    /// `nodemeta::apply_set_node_groups`, not `apply_update_node`.
+    #[serde(default, deserialize_with = "double_option")]
+    pub group_ids: Option<Option<Vec<Uuid>>>,
+}
+
+impl UpdateNodeReq {
+    /// Any field `apply_update_node` writes (everything but group_ids).
+    fn has_node_fields(&self) -> bool {
+        self.enabled.is_some()
+            || self.name.is_some()
+            || self.server_addr.is_some()
+            || self.traffic_max_rate_bytes_per_sec.is_some()
+            || self.region.is_some()
+            || self.display_name.is_some()
+            || self.sort.is_some()
+            || self.visible.is_some()
+            || self.tags.is_some()
+            || self.traffic_rate.is_some()
+            || self.connect_overrides.is_some()
+    }
 }
 
 /// PATCH /nodes/{id}. Disabling AND enabling bump config_version (the
@@ -1393,14 +1488,25 @@ async fn apply_update_node(
 ) -> Result<bool, ApiError> {
     let enabled = non_null("enabled", &req.enabled)?;
     let name = non_null("name", &req.name)?;
-    if enabled.is_none()
-        && name.is_none()
-        && req.server_addr.is_none()
-        && req.traffic_max_rate_bytes_per_sec.is_none()
-        && req.region.is_none()
-    {
+    if !req.has_node_fields() {
         return Err(ApiError::bad_request("no fields to update"));
     }
+    // W11 fields (validated before any row is touched).
+    let display_name = req
+        .display_name
+        .as_ref()
+        .map(|d| crate::nodemeta::display_name(d.as_deref()))
+        .transpose()?;
+    let sort = non_null("sort", &req.sort)?
+        .map(crate::nodemeta::sort)
+        .transpose()?;
+    let visible = non_null("visible", &req.visible)?;
+    let tags = non_null("tags", &req.tags)?
+        .map(|t| crate::nodemeta::tags(&t))
+        .transpose()?;
+    let rate = non_null("traffic_rate", &req.traffic_rate)?
+        .map(crate::nodemeta::rate_permille)
+        .transpose()?;
     if let Some(Some(r)) = req.traffic_max_rate_bytes_per_sec {
         if r <= 0 {
             return Err(ApiError::bad_request(
@@ -1437,10 +1543,16 @@ async fn apply_update_node(
     });
 
     refuse_if_deleting(conn, id).await?;
-    let was_enabled: bool = sqlx::query_scalar("SELECT enabled FROM nodes WHERE id = $1")
-        .bind(id)
-        .fetch_one(&mut *conn)
-        .await?;
+    let (was_enabled, inbounds): (bool, serde_json::Value) =
+        sqlx::query_as("SELECT enabled, xray_inbounds FROM nodes WHERE id = $1")
+            .bind(id)
+            .fetch_one(&mut *conn)
+            .await?;
+    let overrides = match &req.connect_overrides {
+        None => None,
+        Some(None) => Some(json!({})),
+        Some(Some(v)) => Some(crate::nodemeta::connect_overrides(v, &inbounds)?),
+    };
     let toggles = enabled.is_some_and(|e| e != was_enabled);
 
     let mut qb = sqlx::QueryBuilder::new("UPDATE nodes SET ");
@@ -1464,6 +1576,25 @@ async fn apply_update_node(
     }
     if let Some(v) = region {
         set.push("region = ").push_bind_unseparated(v);
+    }
+    if let Some(v) = display_name {
+        set.push("display_name = ").push_bind_unseparated(v);
+    }
+    if let Some(v) = sort {
+        set.push("sort = ").push_bind_unseparated(v);
+    }
+    if let Some(v) = visible {
+        set.push("visible = ").push_bind_unseparated(v);
+    }
+    if let Some(v) = tags {
+        set.push("tags = ").push_bind_unseparated(v);
+    }
+    if let Some(v) = rate {
+        set.push("traffic_rate_permille = ")
+            .push_bind_unseparated(v);
+    }
+    if let Some(v) = overrides {
+        set.push("connect_overrides = ").push_bind_unseparated(v);
     }
     qb.push(" WHERE id = ").push_bind(id);
     qb.push(format!(
@@ -1502,8 +1633,21 @@ pub async fn update_node(
     ApiJson(req): ApiJson<UpdateNodeReq>,
 ) -> Result<Json<NodeView>, ApiError> {
     user.require_admin()?;
+    let actor = Actor::of(&user);
     let mut tx = state.pg().begin().await?;
-    apply_update_node(&mut tx, &Actor::of(&user), id, &req).await?;
+    let groups = non_null("group_ids", &req.group_ids)?;
+    if groups.is_some() {
+        // Lock order: the entitlement lock before the node row.
+        crate::entitle::lock(&mut tx).await?;
+    } else if !req.has_node_fields() {
+        return Err(ApiError::bad_request("no fields to update"));
+    }
+    if req.has_node_fields() {
+        apply_update_node(&mut tx, &actor, id, &req).await?;
+    }
+    if let Some(g) = groups {
+        crate::nodemeta::apply_set_node_groups(&mut tx, &actor, id, &g).await?;
+    }
     tx.commit().await?;
     let row = sqlx::query_as::<_, NodeView>(sqlx::AssertSqlSafe(format!(
         "SELECT {NODE_VIEW_COLS} FROM nodes WHERE id = $1"
@@ -1791,7 +1935,10 @@ async fn apply_set_inbounds(
     refuse_if_deleting(conn, id).await?;
 
     let updated: Option<(i64, serde_json::Value)> = sqlx::query_as(
-        "UPDATE nodes SET xray_inbounds = $2, config_version = config_version + 1, updated_at = now() \
+        "UPDATE nodes SET xray_inbounds = $2, config_version = config_version + 1, updated_at = now(), \
+         connect_overrides = (SELECT coalesce(jsonb_object_agg(o.key, o.value), '{}'::jsonb) \
+             FROM jsonb_each(nodes.connect_overrides) o \
+             WHERE o.key IN (SELECT i->>'tag' FROM jsonb_array_elements($2) i)) \
          WHERE id = $1 RETURNING new.config_version, old.xray_inbounds",
     )
     .bind(id)
@@ -2734,6 +2881,84 @@ mod tests {
                 plan_groups(vec![group]),
                 vec![other],
                 true,
+            ),
+            (
+                "node form: node joins a granted group (W11)",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        crate::nodemeta::apply_set_node_groups(
+                            c,
+                            &crate::audit::Actor::test(),
+                            doomed,
+                            &[group],
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                }),
+                vec![doomed],
+                true,
+            ),
+            (
+                "node form: same groups again (no-op)",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        crate::nodemeta::apply_set_node_groups(
+                            c,
+                            &crate::audit::Actor::test(),
+                            doomed,
+                            &[group],
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                }),
+                vec![doomed],
+                false,
+            ),
+            (
+                "node form: node leaves the group (W11)",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        crate::nodemeta::apply_set_node_groups(
+                            c,
+                            &crate::audit::Actor::test(),
+                            doomed,
+                            &[],
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                }),
+                vec![doomed],
+                true,
+            ),
+            (
+                "node display fields and multiplier (W11, no access change)",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        apply_update_node(
+                            c,
+                            &crate::audit::Actor::test(),
+                            n1,
+                            &UpdateNodeReq {
+                                display_name: Some(Some("香港 01".into())),
+                                sort: Some(Some(3)),
+                                visible: Some(Some(false)),
+                                tags: Some(Some(vec!["IPLC".into()])),
+                                traffic_rate: Some(Some(0.5)),
+                                connect_overrides: Some(Some(
+                                    json!({"in-vless": {"host": "relay.example.com", "port": 30443}}),
+                                )),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                }),
+                vec![n1],
+                false,
             ),
             (
                 "plan speed limit (W7: travels in every user op)",

@@ -688,8 +688,12 @@ pub const FLUSH_SQL: &str = r#"
 WITH input AS (
     SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::text[], $4::bigint[], $5::bigint[], $6::float8[])
         AS t(node_id, user_id, session_id, up, down, age_secs)
-), nf AS (
+), nf AS MATERIALIZED (
+    -- One row per node of the batch, computed once (W11: referenced by
+    -- `classified` and `charged`; explicitly MATERIALIZED because inlining
+    -- it into `classified` made the 50k-row flush ~2x slower, PERF.md).
     SELECT n.id AS node_id,
+           n.traffic_rate_permille::numeric AS mult,
            COALESCE(n.traffic_max_rate_bytes_per_sec, $11)::numeric AS rate,
            n.traffic_tat,
            CASE WHEN n.traffic_credit_until > statement_timestamp()
@@ -820,8 +824,15 @@ WITH input AS (
            CASE WHEN node_total > node_allowance THEN floor(amount * node_allowance / node_total)
                 ELSE amount END AS billed
     FROM node_cap
+), charged AS (
+    -- W11 traffic multiplier (nodes.traffic_rate_permille, the value in
+    -- effect now): users are charged floor(billed x permille / 1000) per
+    -- row, never more than billed x rate. Every cap above works on the
+    -- accepted (raw) bytes; departed allowances and the node GCRA stay raw.
+    SELECT s.node_id, s.user_id, s.billed, floor(s.billed * f.mult / 1000) AS charge
+    FROM scaled s JOIN nf f USING (node_id)
 ), per_user AS (
-    SELECT user_id, sum(billed) AS delta FROM scaled GROUP BY user_id
+    SELECT user_id, sum(charge) AS delta FROM charged GROUP BY user_id
 ), billed AS (
     UPDATE users u
     SET traffic_used_bytes = LEAST(u.traffic_used_bytes::numeric + p.delta, 9223372036854775807)::bigint
@@ -839,9 +850,12 @@ WITH input AS (
     UPDATE nodes n
     SET traffic_tat = GREATEST(
             COALESCE(n.traffic_tat, '-infinity'::timestamptz),
-            b.tat + make_interval(secs => (b.billed / b.rate)::float8))
+            b.tat + make_interval(secs => (b.billed / b.rate)::float8)),
+        traffic_raw_bytes = LEAST(n.traffic_raw_bytes::numeric + b.billed, 9223372036854775807)::bigint,
+        traffic_billed_bytes = LEAST(n.traffic_billed_bytes::numeric + c.charge, 9223372036854775807)::bigint
     FROM (SELECT node_id, min(tat) AS tat, min(rate) AS rate, sum(billed) AS billed
           FROM scaled GROUP BY node_id) b
+    JOIN (SELECT node_id, sum(charge) AS charge FROM charged GROUP BY node_id) c USING (node_id)
     WHERE n.id = b.node_id
     RETURNING 1
 )
@@ -2100,6 +2114,136 @@ mod db_tests {
             assert_eq!(db.used(u).await, 30 * 100 + i as i64 + 50, "user {i}");
         }
         eprintln!("rt2: transient errors retried: {errors}");
+        db.drop().await;
+    }
+
+    async fn set_rate(db: &TestDb, node: Uuid, permille: i32) {
+        sqlx::query("UPDATE nodes SET traffic_rate_permille = $2 WHERE id = $1")
+            .bind(node)
+            .bind(permille)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+
+    async fn node_totals(db: &TestDb, node: Uuid) -> (i64, i64) {
+        sqlx::query_as("SELECT traffic_raw_bytes, traffic_billed_bytes FROM nodes WHERE id = $1")
+            .bind(node)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+    }
+
+    /// W11 multiplier: billed = floor(raw x permille / 1000) per row (never
+    /// more), the value in effect at flush time applies to that flush's
+    /// delta, and the node keeps raw and billed totals.
+    #[tokio::test]
+    async fn multiplier_bills_scaled_never_more() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (half, u) = db.member().await;
+        let double = db.node().await;
+        db.assign(double, u).await;
+        set_rate(&db, half, 500).await;
+        set_rate(&db, double, 2000).await;
+        let b = buf(&db).await;
+        b.update(half, "s1", &report(u, 1000, 1001)); // 2001 raw -> 1000 (floor)
+        b.update(double, "s1", &report(u, 300, 0)); // 300 raw -> 600
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, 1000 + 600);
+        assert_eq!(node_totals(&db, half).await, (2001, 1000));
+        assert_eq!(node_totals(&db, double).await, (300, 600));
+
+        // The rate changes: the next delta is billed at the new rate, the
+        // earlier one is not re-billed.
+        set_rate(&db, half, 100).await;
+        b.update(half, "s1", &report(u, 2000, 2001)); // +2000 raw -> 200
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, 1600 + 200);
+        assert_eq!(node_totals(&db, half).await, (4001, 1200));
+
+        // 0x = free node: counted raw, nothing billed.
+        set_rate(&db, half, 0).await;
+        b.update(half, "s1", &report(u, 5000, 2001));
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, 1800);
+        assert_eq!(node_totals(&db, half).await, (7001, 1200));
+        db.drop().await;
+    }
+
+    /// W11: a departed user's final counters are billed at the multiplier
+    /// too, and the departed window stays in raw bytes.
+    #[tokio::test]
+    async fn multiplier_applies_to_departed_final_counters() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = db.member().await;
+        set_rate(&db, n, 500).await;
+        let b = buf(&db).await;
+        b.update(n, "s1", &report(u, 100, 0));
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, 50);
+        let mut tx = db.pool.begin().await.unwrap();
+        crate::api::apply_unassign(&mut tx, &crate::audit::Actor::test(), u, n)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        refresh_members(&db.pool, &b, n).await.unwrap();
+        b.update(n, "s1", &report(u, 300, 0)); // +200 raw after the REMOVE
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, 150, "final counters billed at 0.5x");
+        let raw: i64 = sqlx::query_scalar(
+            "SELECT billed_bytes FROM node_users_departed WHERE node_id = $1 AND user_id = $2",
+        )
+        .bind(n)
+        .bind(u)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(raw, 200, "the departed window counts raw bytes");
+        assert_eq!(node_totals(&db, n).await, (300, 150));
+        db.drop().await;
+    }
+
+    /// W11: concurrent flushers (two instances) on a 0.5x node still bill
+    /// exactly half the high-water mark (floor per delta: never more).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn multiplier_concurrent_flushers_never_overbill() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let n = db.node().await;
+        set_rate(&db, n, 500).await;
+        let mut us = vec![];
+        for _ in 0..20 {
+            let u = db.user().await;
+            db.assign(n, u).await;
+            us.push(u);
+        }
+        for round in 1..=20u64 {
+            let (a, b) = (buf(&db).await, buf(&db).await);
+            for &u in &us {
+                a.update(n, "s1", &report(u, round * 1000, 0));
+                b.update(n, "s1", &report(u, round * 1000 + 500, 0));
+            }
+            let _ = tokio::join!(
+                flush_buffer(&db.pool, &a, RATES, None),
+                flush_buffer(&db.pool, &b, RATES, None)
+            );
+            db.flush(&a).await;
+            db.flush(&b).await;
+        }
+        for &u in &us {
+            let used = db.used(u).await;
+            // Raw high-water mark 20500; every delta is a multiple of 500,
+            // so the floors are exact.
+            assert_eq!(used, 10_250, "user {u}");
+        }
+        let (raw, billed) = node_totals(&db, n).await;
+        assert_eq!(raw, 20 * 20_500);
+        assert_eq!(billed, 20 * 10_250);
         db.drop().await;
     }
 

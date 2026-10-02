@@ -59,6 +59,16 @@ pub async fn reap_loop(state: AppState) {
         }
         if tokio::time::Instant::now() >= next_retention {
             next_retention = tokio::time::Instant::now() + crate::traffic::RETENTION_EVERY;
+            // W11: node metrics hour rollup + retention (one instance).
+            match crate::nodestat::rollup_and_prune(state.pg()).await {
+                Ok(Some(r)) if r.minutes_pruned + r.hours_pruned > 0 => tracing::info!(
+                    minutes_pruned = r.minutes_pruned,
+                    hours_pruned = r.hours_pruned,
+                    "node metrics retention"
+                ),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "node metrics rollup failed"),
+            }
             match crate::traffic::retention_pass(state.pg(), crate::traffic::RETENTION_MARGIN_SECS)
                 .await
             {

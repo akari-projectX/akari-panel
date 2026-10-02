@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
@@ -79,6 +81,14 @@ pub struct NodeRow {
     pub xray_inbounds: Value,
     pub server_addr: Option<String>,
     pub credentials: Value,
+    /// W11 (`nodemeta.rs`): user-facing name and tags (proxy names), and
+    /// per-inbound client-facing host/port overrides.
+    #[sqlx(default)]
+    pub display_name: Option<String>,
+    #[sqlx(default)]
+    pub tags: Vec<String>,
+    #[sqlx(default)]
+    pub connect_overrides: Value,
 }
 
 #[derive(serde::Deserialize)]
@@ -242,11 +252,10 @@ impl Proxy {
 }
 
 fn collect_proxies(rows: &[NodeRow]) -> Vec<Proxy> {
-    let mut proxies = Vec::new();
+    let mut proxies: Vec<Proxy> = Vec::new();
+    let mut names = HashSet::new();
     for row in rows {
-        let Some(server) = row.server_addr.as_deref().filter(|s| !s.is_empty()) else {
-            continue; // admin has not set a public address yet
-        };
+        let node_server = row.server_addr.as_deref().filter(|s| !s.is_empty());
         let credentials: Vec<Credential> = match serde_json::from_value(row.credentials.clone()) {
             Ok(c) => c,
             Err(e) => {
@@ -255,6 +264,7 @@ fn collect_proxies(rows: &[NodeRow]) -> Vec<Proxy> {
                 continue;
             }
         };
+        let credentials_len = credentials.len();
         for cred in credentials {
             let Some(inbound) = row
                 .xray_inbounds
@@ -267,9 +277,18 @@ fn collect_proxies(rows: &[NodeRow]) -> Vec<Proxy> {
             else {
                 continue;
             };
-            let Some(net) = net_from_inbound(&inbound) else {
+            let Some(mut net) = net_from_inbound(&inbound) else {
                 continue;
             };
+            // W11 连接地址/连接端口: what clients dial may differ from what
+            // the inbound listens on (NAT, port forwarding, relays).
+            let ov = crate::nodemeta::connect_for(&row.connect_overrides, &cred.inbound_tag);
+            let Some(server) = ov.host.as_deref().or(node_server) else {
+                continue; // admin has not set a public address yet
+            };
+            if let Some(p) = ov.port {
+                net.port = p;
+            }
             let acc = |k: &str| cred.account.get(k).and_then(|v| v.as_str());
             let mut method = String::new();
             let id_or_password = match cred.protocol.as_str() {
@@ -309,8 +328,23 @@ fn collect_proxies(rows: &[NodeRow]) -> Vec<Proxy> {
                 }
                 _ => "",
             };
+            // W11: display name and tags when set ("香港 01 | IPLC"), the
+            // inbound tag only when the node has several; names stay unique
+            // across the subscription (clients key proxies by name).
+            let name = if row.display_name.is_none() && row.tags.is_empty() {
+                format!("{} · {}", row.name, cred.inbound_tag)
+            } else {
+                let base =
+                    crate::nodemeta::public_name(&row.name, row.display_name.as_deref(), &row.tags);
+                if credentials_len > 1 {
+                    format!("{base} · {}", cred.inbound_tag)
+                } else {
+                    base
+                }
+            };
+            let name = unique_name(&mut names, name);
             proxies.push(Proxy {
-                name: format!("{} · {}", row.name, cred.inbound_tag),
+                name,
                 protocol: cred.protocol.clone(),
                 id_or_password,
                 flow: flow.to_string(),
@@ -322,6 +356,21 @@ fn collect_proxies(rows: &[NodeRow]) -> Vec<Proxy> {
         }
     }
     proxies
+}
+
+/// `name`, or `name #2`, `name #3`, ... if already taken.
+fn unique_name(taken: &mut HashSet<String>, name: String) -> String {
+    if taken.insert(name.clone()) {
+        return name;
+    }
+    let mut i = 2;
+    loop {
+        let n = format!("{name} #{i}");
+        if taken.insert(n.clone()) {
+            return n;
+        }
+        i += 1;
+    }
 }
 
 /// Percent-encode a link fragment (node names may hold spaces/unicode).
@@ -790,11 +839,13 @@ pub async fn subscription(
         return reject::not_found();
     }
     let rows = match sqlx::query_as::<_, NodeRow>(
-        "SELECT n.name, n.xray_inbounds, n.server_addr, nu.credentials \
+        "SELECT n.name, n.xray_inbounds, n.server_addr, nu.credentials, \
+         n.display_name, n.tags, n.connect_overrides \
          FROM node_users nu \
-         JOIN nodes n ON n.id = nu.node_id AND n.enabled = true \
+         JOIN nodes n ON n.id = nu.node_id AND n.enabled = true AND n.visible \
          JOIN users u ON u.id = nu.user_id AND u.enabled = true \
-         WHERE nu.user_id = $1",
+         WHERE nu.user_id = $1 \
+         ORDER BY n.sort, coalesce(n.display_name, n.name), n.id",
     )
     .bind(user.id)
     .fetch_all(state.pg())
@@ -985,6 +1036,9 @@ mod tests {
             xray_inbounds: inbounds,
             server_addr: Some("hk.example.com".into()),
             credentials: creds,
+            display_name: None,
+            tags: vec![],
+            connect_overrides: Value::Null,
         }]
     }
 
@@ -1132,6 +1186,9 @@ rules:
             xray_inbounds: inbounds,
             server_addr: Some("n.example.com".into()),
             credentials: creds,
+            display_name: None,
+            tags: vec![],
+            connect_overrides: Value::Null,
         }]
     }
 
@@ -1234,6 +1291,73 @@ rules:
             "password": "a1b2", "tls": {"enabled": true, "server_name": "n.example.com", "alpn": ["h3"]}})
         );
         assert!(ob[5].get("flow").is_none());
+    }
+
+    /// W11: display name + tags name the proxies (the inbound tag only on
+    /// multi-inbound nodes), connect overrides set the dialed host/port in
+    /// all three formats, a node with only an override host is served, and
+    /// equal names stay unique.
+    #[test]
+    fn w11_names_and_connect_overrides() {
+        let mut rows = snapshot_rows();
+        rows[0].display_name = Some("香港 01".into());
+        rows[0].tags = vec!["IPLC".into(), "0.5x".into()];
+        rows[0].connect_overrides =
+            json!({"in-trojan": {"host": "relay.example.net", "port": 30443}});
+        let single = |name: &str, server: Option<&str>| NodeRow {
+            name: name.into(),
+            xray_inbounds: json!([{"tag": "t", "protocol": "trojan", "port": 443,
+                "streamSettings": {"network": "tcp", "security": "tls",
+                    "tlsSettings": {"serverName": "x.example.com"}}}]),
+            server_addr: server.map(String::from),
+            credentials: json!([{"inbound_tag": "t", "protocol": "trojan",
+                "account": {"password": "p"}}]),
+            display_name: Some("东京".into()),
+            tags: vec![],
+            connect_overrides: if server.is_none() {
+                json!({"t": {"host": "nat.example.org"}})
+            } else {
+                Value::Null
+            },
+        };
+        rows.push(single("jp-1", Some("jp1.example.com")));
+        rows.push(single("jp-2", None));
+        let proxies = collect_proxies(&rows);
+        let names: Vec<&str> = proxies.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "香港 01 | IPLC | 0.5x · in-vless",
+                "香港 01 | IPLC | 0.5x · in-vmess",
+                "香港 01 | IPLC | 0.5x · in-trojan",
+                "东京",
+                "东京 #2",
+            ]
+        );
+        let trojan = &proxies[2];
+        assert_eq!(
+            (trojan.server.as_str(), trojan.net.port),
+            ("relay.example.net", 30443)
+        );
+        assert_eq!(
+            (proxies[0].server.as_str(), proxies[0].net.port),
+            ("hk.example.com", 443)
+        );
+        assert_eq!(proxies[4].server, "nat.example.org");
+        assert_eq!(proxies[4].net.port, 443);
+
+        let (_, clash) = render("clash.meta", &rows);
+        assert!(
+            clash.contains("server: relay.example.net\n    port: 30443\n"),
+            "{clash}"
+        );
+        let (_, links) = render("v2rayN", &rows);
+        let links = String::from_utf8(STANDARD.decode(links.trim_end()).unwrap_or_default())
+            .unwrap_or(links);
+        assert!(links.contains("@relay.example.net:30443"), "{links}");
+        let (_, sb) = render("sing-box", &rows);
+        assert!(sb.contains("\"server\":\"relay.example.net\""), "{sb}");
+        assert!(sb.contains("\"server_port\":30443"), "{sb}");
     }
 
     #[test]

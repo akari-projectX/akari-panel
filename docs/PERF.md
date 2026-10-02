@@ -90,7 +90,7 @@ in ci.yml keeps the crate compiling against the panel library.
 | `sub_render` clash / links / sing-box, 200 nodes | 428 / 498 / 986 us |
 | `db/desired_snapshot` (REPEATABLE READ read + build) | 33.3 ms |
 | `db/snapshot_build_full` | 43.1 ms |
-| `db/flush`, 50k rows | 0.907 s |
+| `db/flush`, 50k rows | 0.907 s (M2) → **0.49 s** (W11, see below) |
 
 ## What changed to get there
 
@@ -258,11 +258,39 @@ from 4.7 ms to 7.9 ms (EXPLAIN ANALYZE, dev PG 18, 2026-10-02), about +3 ms
 on the ~43 ms snapshot build. Per-user digests hash 12 more bytes only for
 limited users.
 
+**W11 (traffic multiplier, node totals; 2026-10-02, same machine, A/B
+interleaved runs on the reseeded bench set):**
+
+| `db/flush`, 50k rows | time |
+|---|---|
+| main before W11 | 0.902 / 0.924 / 0.915 s |
+| main + `nf AS MATERIALIZED` only | 0.455 s |
+| W11 (`MATERIALIZED` + multiplier `charged` CTE + raw/billed node totals) | 0.485 / 0.494 / 0.491 s |
+
+The multiplier is one more CTE (`charged`: a hash join of the scaled rows with
+the per-node CTE `nf`, floor(billed × permille / 1000)) and two more columns in
+the per-node `UPDATE nodes` the flush already ran (`traffic_raw_bytes`,
+`traffic_billed_bytes`): about +30 ms (6%). Referencing `nf` twice made
+PostgreSQL materialize it instead of inlining it into `classified`, which
+halves the statement (the inlined form re-planned the node lookup per input
+row); it is now written `MATERIALIZED` explicitly so the plan does not depend
+on how often the CTE is referenced. Net: 0.91 s → 0.49 s, margin to the 1 s
+budget ~51%.
+
+**W11 machine-status history**: one upsert per node per heartbeat into the
+node's current minute (`node_metrics_1m`, sums + maxima, fillfactor 70 for
+HOT updates), throttled to one per node per 5 s and skipped when 8 writes are
+already in flight on the instance. At 200 nodes and the 15 s default that is
+~13 small upserts/s; the rollup into hours re-sums the last ~3 hours of minute
+rows every 10 minutes (≤ 200 × 180 rows) under an advisory try-lock, and
+retention deletes in 10k-row batches. `akari-bench swarm` agents send metrics
+in their heartbeats, so the swarm numbers include this load.
+
 ## Limits and honest caveats
 
-- Flush margin is 9%: on a slower disk or a busier PostgreSQL the 50k-row flush
-  will exceed 1 s. That does not affect correctness (chunking bounds lock hold
-  to one chunk), only how long a backlog takes to drain.
+- Flush margin (W11): 0.49 s against the 1 s budget for 50k rows; on a slower
+  disk or a busier PostgreSQL the flush still degrades gracefully (chunking
+  bounds lock hold to one chunk), only how long a backlog takes to drain.
 - If the database stalls for longer than the burst window while agents keep
   reporting, per-node caps clamp the delayed traffic (under-billing, never
   over-billing). Observed once, on this machine, when the host's disk stalled

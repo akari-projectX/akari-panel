@@ -33,4 +33,6 @@ sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18）在 `serve`、`n
 
 **保留策略须知**：任何清理任务只能删除**可证明已死**的会话行（该 agent 已换新 session 且旧 session 不可能再上报，例如节点已删除，或 `updated_at` 远早于该节点当前 session 首次出现且超过安全窗口）；不确定就不删。
 
+0085（W11）：`nodes` 新增 `display_name`（1–64 字符或 NULL）、`sort`（±1e6）、`visible`、`tags`（≤8，无 NULL 元素）、`traffic_rate_permille`（0–100000，默认 1000）、`connect_overrides`（JSON 对象 `{tag: {host?, port?}}`）、`traffic_raw_bytes`/`traffic_billed_bytes`（≥0，FLUSH_SQL 累加）。0086（W11）：`node_metrics_1m`（PK (node_id,bucket)，sum+samples+max 列，fillfactor 70，bucket 索引）与同形的 `node_metrics_1h`，`node_latency`（PK (node_id,source,target)，source agent|panel，`delay_ms` NULL=失败，`error`，`ord`，`measured_at`），`nodes.probe_requested_at`（立即测速，`run_token` 来源）、`panel_probe_next_at`（面板 TCP 测速认领）；均随节点删除级联。迁移号 0085–0089 为 W11 预留，0080–0084 为 W10。
+
 0050（W4 加固）：CHECK 约束——`users.role IN (admin,user)`、`nodes.status IN (pending,online,offline)`、`traffic_used_bytes`/`traffic_limit_bytes`/`traffic_counters.up/down_bytes`/`node_users_departed.billed_bytes` >= 0、`node_users.credentials` 为 JSON 数组。新增 role/status 取值须同时加迁移。迁移号 0050–0059 为加固批次预留；0060–0064 为 W5（系统设置）。

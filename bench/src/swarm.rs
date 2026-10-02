@@ -506,6 +506,7 @@ async fn session(
             }),
             protocol_version: 2,
             state_hash: s.hash(),
+            ..Default::default()
         }))
         .await?;
     }
@@ -547,6 +548,18 @@ async fn session(
                     connections: 100,
                     uptime_seconds: started.elapsed().as_secs(),
                     lease_remaining_seconds: None,
+                    // W11: exercises the metrics history path (one upsert
+                    // per node per heartbeat, MIN_SAMPLE_GAP-throttled).
+                    metrics: Some(akari_panel::gen::NodeMetrics {
+                        load1: 0.5,
+                        cpu_count: 2,
+                        net_interface: "eth0".into(),
+                        net_rx_bytes_per_sec: 1 << 20,
+                        net_tx_bytes_per_sec: 1 << 20,
+                        tcp_sockets: 100,
+                        online_users: 50,
+                        ..Default::default()
+                    }),
                 })).await?;
             }
             _ = stop.changed() => return Ok(()),

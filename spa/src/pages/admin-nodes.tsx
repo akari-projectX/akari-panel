@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import {
+  adminBase,
   del,
   get,
   patch,
@@ -21,6 +22,16 @@ import {
   type TemplateCatalog,
 } from "../lib/api";
 import { adminErrorText } from "../lib/errors";
+import { navigate, usePath } from "../lib/router";
+import {
+  NodeOpsCard,
+  NodeOpsFields,
+  changedFromDefaults,
+  emptyOps,
+  opsToBody,
+  type NodeOpsValue,
+} from "./admin-node-form";
+import { NodeDetail, NodeLiveCells, NodeLiveHeads } from "./admin-node-status";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
@@ -44,7 +55,12 @@ interface InstallShown {
 }
 
 export function AdminNodes() {
-  const nodes = useQuery({ queryKey: ["nodes"], queryFn: () => get<NodeView[]>("/nodes") });
+  // W11: live status columns, refreshed every 5 s.
+  const nodes = useQuery({ queryKey: ["nodes"], queryFn: () => get<NodeView[]>("/nodes"), refetchInterval: 5000 });
+  // W11: node detail = /{prefix}/admin/nodes/<id> (deep link, back button).
+  const path = usePath();
+  const detailId = path.startsWith(`${adminBase}/nodes/`) ? path.slice(`${adminBase}/nodes/`.length) : null;
+  const detail = (nodes.data ?? []).find((n) => n.id === detailId) ?? null;
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [shown, setShown] = useState<InstallShown | null>(null);
@@ -144,6 +160,7 @@ export function AdminNodes() {
           }}
         />
       ) : null}
+      {detail && <NodeDetail key={detail.id} node={detail} onClose={() => navigate(`${adminBase}/nodes`)} />}
       {shown && <InstallCard shown={shown} onClose={() => setShown(null)} />}
       {bootstrap && <BootstrapCard enrollment={bootstrap} onClose={() => setBootstrap(null)} />}
       <Card>
@@ -185,6 +202,7 @@ export function AdminNodes() {
                 <TableRow>
                   <TableHead>名称</TableHead>
                   <TableHead>状态</TableHead>
+                  <NodeLiveHeads />
                   <TableHead>地区 / 地址</TableHead>
                   <TableHead>Agent</TableHead>
                   <TableHead>租约剩余</TableHead>
@@ -196,7 +214,19 @@ export function AdminNodes() {
               <TableBody>
                 {(nodes.data ?? []).map((n) => (
                   <TableRow key={n.id}>
-                    <TableCell className="font-medium">{n.name}</TableCell>
+                    <TableCell className="font-medium">
+                      <span className="whitespace-nowrap">{n.display_name ?? n.name}</span>
+                      {n.display_name && <span className="block text-xs text-muted-foreground">{n.name}</span>}
+                      <span className="mt-0.5 flex flex-wrap gap-1">
+                        {n.traffic_rate !== 1 && <Badge variant="outline">{n.traffic_rate}x</Badge>}
+                        {!n.visible && <Badge variant="secondary">已隐藏</Badge>}
+                        {n.tags.map((t) => (
+                          <Badge key={t} variant="secondary">
+                            {t}
+                          </Badge>
+                        ))}
+                      </span>
+                    </TableCell>
                     <TableCell>
                       <StatusBadge n={n} />
                       {n.warnings.length > 0 && (
@@ -210,6 +240,7 @@ export function AdminNodes() {
                         </span>
                       )}
                     </TableCell>
+                    <NodeLiveCells n={n} />
                     <TableCell className="text-muted-foreground">
                       {n.region ?? "—"}
                       <span className="block text-xs">{n.server_addr ?? "未设置地址"}</span>
@@ -244,6 +275,9 @@ export function AdminNodes() {
                       )}
                     </TableCell>
                     <TableCell className="space-x-1 whitespace-nowrap text-right">
+                      <Button variant="outline" size="sm" onClick={() => navigate(`${adminBase}/nodes/${n.id}`)}>
+                        详情
+                      </Button>
                       <Button variant="outline" size="sm" onClick={() => setSelected(n.id === selected ? null : n.id)}>
                         {n.id === selected ? "收起" : "配置"}
                       </Button>
@@ -275,6 +309,7 @@ export function AdminNodes() {
       </Card>
       {/* key: switching nodes must never carry one node's form into another (F1). */}
       {node && <NodeEditor key={node.id} node={node} />}
+      {node && <NodeOpsCard key={`ops-${node.id}`} node={node} />}
     </div>
   );
 }
@@ -877,13 +912,21 @@ function NodeWizard({
   const [raw, setRaw] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // W11: xboard-style fields (display name, tags, multiplier, groups...).
+  const [ops, setOps] = useState<NodeOpsValue>(emptyOps);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    const opsBody = opsToBody(ops);
+    if (typeof opsBody === "string") {
+      setError(opsBody);
+      return;
+    }
     const body: Record<string, unknown> = {
       name: name.trim(),
       install: { origin: location.origin },
+      ...changedFromDefaults(opsBody),
     };
     if (region.trim()) body.region = region.trim();
     if (addr.trim()) body.server_addr = addr.trim();
@@ -947,7 +990,7 @@ function NodeWizard({
         <form className="space-y-5" onSubmit={submit}>
           <div className="flex flex-wrap items-end gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor="nn-name">名称</Label>
+              <Label htmlFor="nn-name">名称（内部，唯一）</Label>
               <Input
                 id="nn-name"
                 className="w-48"
@@ -978,6 +1021,7 @@ function NodeWizard({
               />
             </div>
           </div>
+          <NodeOpsFields value={ops} onChange={setOps} idPrefix="nn-ops" />
           {raw === null ? (
             <>
               <TemplateRows rows={rows} setRows={setRows} catalog={catalog.data} />

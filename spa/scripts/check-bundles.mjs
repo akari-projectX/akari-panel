@@ -36,6 +36,8 @@ const MARKERS = [
   ["heading 灰度更新", /灰度更新/],
   ["button 新建节点", /新建节点/],
   ["heading 系统设置", /系统设置/],
+  ["button 立即测速", /立即测速/],
+  ["heading 连接地址", /连接地址/],
   ["admin assets path", /\/admin\/assets\//],
 ];
 const files = (dir) =>

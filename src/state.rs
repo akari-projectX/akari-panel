@@ -59,6 +59,9 @@ struct Inner {
     /// R22 system settings (domains, trust Cloudflare, gRPC certificate),
     /// kept current by `settings::reload` on every instance.
     settings: crate::settings::Live,
+    /// W11: latest machine status of the nodes whose stream this instance
+    /// holds (Prometheus fleet gauges) and the history write permits.
+    nodestat: crate::nodestat::Local,
 }
 
 /// Counts a running agent session task (see `AppState::live_sessions`).
@@ -100,6 +103,7 @@ impl AppState {
             live_sessions: std::sync::atomic::AtomicUsize::new(0),
             alipay: std::sync::OnceLock::new(),
             settings,
+            nodestat: crate::nodestat::Local::default(),
         }))
     }
 
@@ -144,6 +148,9 @@ impl AppState {
         headers: &axum::http::HeaderMap,
     ) -> std::net::IpAddr {
         crate::client_ip::resolve(peer, headers, &self.0.settings.get().trust)
+    }
+    pub fn nodestat(&self) -> &crate::nodestat::Local {
+        &self.0.nodestat
     }
     pub fn traffic(&self) -> &TrafficBuffer {
         &self.0.traffic

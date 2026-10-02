@@ -10,6 +10,7 @@ import { useLocale, useT } from "../i18n";
 import { describePeriod, get, post, subscriptionUrl, type Me, type MyPlan } from "../lib/api";
 import { errorText } from "../lib/errors";
 import { copyText, humanBytes } from "../lib/utils";
+import { NodesCard } from "./portal-nodes";
 import { TwoFactorCard } from "./two-factor";
 
 // Dates in the visible locale (the admin console pins zh).
@@ -70,6 +71,7 @@ export function Portal({ me }: { me: Me }) {
         </CardContent>
       </Card>
       <PlanCard />
+      {!restricted && <NodesCard />}
       {/* Expired / quota-disabled (R21): renewal scope only; these endpoints refuse it. */}
       {!restricted && <SubscriptionCard />}
       <PasswordCard />

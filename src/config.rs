@@ -22,6 +22,45 @@ pub struct PanelConfig {
     pub payments: PaymentsConfig,
     pub auth: AuthConfig,
     pub tls_ask: TlsAskConfig,
+    pub probe: ProbeConfig,
+}
+
+/// W11 latency tests (`nodestat.rs`): the agents' url-test from their own
+/// egress (sent to agents with capability "latency") and the panel's TCP
+/// connect test to every inbound's client-facing address, both on this
+/// schedule (+-10% jitter).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProbeConfig {
+    /// Seconds between scheduled tests. Default 18000 (5 h); 600..=604800.
+    pub interval_secs: u64,
+    /// Test URLs (http/https, at most 4), primary first; later ones are
+    /// fallbacks when the earlier fail.
+    pub urls: Vec<String>,
+    /// Per-attempt timeout. Default 5000 ms; 1000..=30000.
+    pub timeout_ms: u32,
+    /// Attempts per URL / address; the result is their median. Default 3; 1..=5.
+    pub attempts: u32,
+    /// The panel also measures TCP connect time to each inbound. Default true.
+    pub panel_tcp: bool,
+    /// "立即测速" at most once per node per this many seconds. Default 30.
+    pub manual_cooldown_secs: u64,
+}
+
+impl Default for ProbeConfig {
+    fn default() -> Self {
+        Self {
+            interval_secs: 5 * 3600,
+            urls: vec![
+                "https://www.gstatic.com/generate_204".into(),
+                "https://cp.cloudflare.com/generate_204".into(),
+            ],
+            timeout_ms: 5000,
+            attempts: 3,
+            panel_tcp: true,
+            manual_cooldown_secs: 30,
+        }
+    }
 }
 
 /// Caddy on-demand TLS `ask` endpoint (R22): `GET /ask?domain=<name>`
@@ -389,6 +428,7 @@ impl Default for PanelConfig {
             payments: PaymentsConfig::default(),
             auth: AuthConfig::default(),
             tls_ask: TlsAskConfig::default(),
+            probe: ProbeConfig::default(),
         }
     }
 }

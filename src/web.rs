@@ -8,7 +8,7 @@ use serde_json::json;
 use subtle::ConstantTimeEq;
 
 use crate::{
-    account, api, audit, nodeinstall, nodetpl, plans, reject, rollout, settings, spa,
+    account, api, audit, nodeinstall, nodestat, nodetpl, plans, reject, rollout, settings, spa,
     state::AppState, sub, updates,
 };
 
@@ -132,6 +132,20 @@ pub fn router(state: AppState) -> Router {
             "/{prefix}/api/v1/nodes/{id}/install",
             post(nodeinstall::issue_install),
         )
+        // W11: machine status, history, "立即测速"; the portal node list.
+        .route(
+            "/{prefix}/api/v1/nodes/{id}/status",
+            get(nodestat::node_status),
+        )
+        .route(
+            "/{prefix}/api/v1/nodes/{id}/metrics",
+            get(nodestat::node_metrics),
+        )
+        .route(
+            "/{prefix}/api/v1/nodes/{id}/probe",
+            post(nodestat::request_probe),
+        )
+        .route("/{prefix}/api/v1/me/nodes", get(nodestat::my_nodes))
         .route("/{prefix}/api/v1/inbound-templates", get(nodetpl::catalog))
         .route(
             "/{prefix}/api/v1/inbound-templates/render",
