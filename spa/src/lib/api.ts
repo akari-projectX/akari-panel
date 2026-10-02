@@ -86,6 +86,9 @@ export interface AuthOptions {
   // Empty = any domain.
   email_domains: string[];
   reset: boolean;
+  // W24: false = register with email + password (no code; a proof of
+  // work instead). Absent (older panels) = true.
+  email_verify?: boolean;
   // W21: 系统设置 → 站点名称 (default "Akari"), for page titles.
   site_name?: string;
 }
@@ -96,11 +99,15 @@ export const registerCode = (body: { email: string; invite_code?: string; locale
   authPost<{ ok: true }>("/register/code", body);
 export const register = (body: {
   email: string;
-  code: string;
+  code?: string;
+  pow?: { challenge: string; nonce: string };
   password: string;
   invite_code?: string;
   locale?: string;
-}) => authPost<LoginResult & { trial: boolean }>("/register", body);
+}) => authPost<LoginResult & { trial: boolean; email_verified?: boolean }>("/register", body);
+/** W24: a proof-of-work challenge (registration without email verification). */
+export const registerChallenge = () =>
+  request<{ challenge: string; bits: number }>(`${authBase}/register/challenge`);
 export const requestReset = (body: { email: string }) => authPost<{ ok: true }>("/password-reset/request", body);
 export const resetPassword = (body: { token: string; password: string }) =>
   authPost<{ ok: true }>("/password-reset", body);

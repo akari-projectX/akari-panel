@@ -17,12 +17,14 @@ import { Label } from "../components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { MailSettings } from "./admin-mail-settings";
+import { PaymentSettings } from "./admin-payments";
 
 // W21 (M11): 系统设置 in tabs, each a deep link /admin/settings/<tab>.
 export const SETTINGS_TABS = [
   { id: "site", label: "站点" },
   { id: "node", label: "节点通信" },
   { id: "probe", label: "测速" },
+  { id: "payments", label: "支付" },
   { id: "signup", label: "注册" },
   { id: "mail", label: "邮件" },
   { id: "failed-mail", label: "失败邮件" },
@@ -303,6 +305,7 @@ export function AdminSettings() {
         )}
         {settings.data && tab === "probe" && <ProbeForm key={`probe-${settings.data.version}`} data={settings.data} />}
         {/* W15：注册 / 邮件 / 失败邮件（独立的设置行与版本号） */}
+        {tab === "payments" && <PaymentSettings />}
         {tab === "signup" && <MailSettings part="signup" />}
         {tab === "mail" && <MailSettings part="mail" />}
         {tab === "failed-mail" && <MailSettings part="failed" />}

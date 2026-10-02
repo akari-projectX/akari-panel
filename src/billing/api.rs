@@ -17,13 +17,15 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::alipay::{self, Alipay};
 use super::catalog::{self, Current, Offer, PeriodKind, PeriodKindText, Price, Sale};
 use super::orders::{self, payment_actor, Paid, Pending, Via};
+use super::provider::{self, NotifyCheck, PaymentProvider};
 use super::{commission, coupons, ledger};
 use crate::api::ApiJson;
 use crate::audit::Actor;
@@ -46,7 +48,8 @@ const COUPON_WINDOW_SECS: i64 = 600;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/{prefix}/pay/alipay/notify", post(notify))
+        .route("/{prefix}/pay/alipay/notify", post(legacy_notify))
+        .route("/{prefix}/pay/{method}/notify", post(method_notify))
         .route("/{prefix}/api/v1/me/shop", get(shop))
         .route(
             "/{prefix}/api/v1/me/orders",
@@ -163,6 +166,11 @@ pub struct MyOrderView {
     status: String,
     /// Only while pending.
     qr_code: Option<String>,
+    /// R40: a redirect checkout (only while pending).
+    pay_url: Option<String>,
+    /// R40: the method (and its name) the order is paid with.
+    payment_method_id: Option<Uuid>,
+    payment_method_name: Option<String>,
     created_at: DateTime<Utc>,
     expires_at: DateTime<Utc>,
     paid_at: Option<DateTime<Utc>>,
@@ -171,7 +179,10 @@ pub struct MyOrderView {
 
 const MY_ORDER_SQL: &str = "SELECT id, out_trade_no, plan_id, plan_name, amount_cents, \
      period, period_days, list_price_cents, credit_cents, discount_cents, coupon_code, \
-     balance_cents, refunded_at, status, CASE WHEN status = 'pending' THEN qr_code END AS qr_code, created_at, \
+     balance_cents, refunded_at, status, CASE WHEN status = 'pending' THEN qr_code END AS qr_code, \
+     CASE WHEN status = 'pending' THEN pay_url END AS pay_url, payment_method_id, \
+     (SELECT m.display_name FROM payment_methods m WHERE m.id = payment_method_id) \
+         AS payment_method_name, created_at, \
      expires_at, paid_at, fulfilled_at IS NOT NULL AS fulfilled FROM orders";
 
 /// An order as an admin sees it.
@@ -210,6 +221,8 @@ pub struct OrderView {
     paid_at: Option<DateTime<Utc>>,
     ended_at: Option<DateTime<Utc>>,
     close_state: Option<String>,
+    payment_method_id: Option<Uuid>,
+    payment_method_name: Option<String>,
 }
 
 const ORDER_SQL: &str = "SELECT id, out_trade_no, user_id, user_login, plan_id, plan_name, \
@@ -217,7 +230,9 @@ const ORDER_SQL: &str = "SELECT id, out_trade_no, user_id, user_login, plan_id, 
      discount_cents, coupon_id, coupon_code, balance_cents, balance_state, refunded_at, \
      refund_cents, refund_reason, status, trade_no, paid_via, paid_amount_cents, manual_reason, \
      fulfilled_at, fulfil_result, fulfil_error, created_at, expires_at, paid_at, ended_at, \
-     close_state FROM orders";
+     close_state, payment_method_id, \
+     (SELECT m.display_name FROM payment_methods m WHERE m.id = payment_method_id) \
+         AS payment_method_name FROM orders";
 
 #[derive(Serialize, sqlx::FromRow, Debug)]
 pub struct EventView {
@@ -297,7 +312,12 @@ pub async fn shop(
     ShopUser { user, .. }: ShopUser,
     Query(q): Query<ShopQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let enabled = state.alipay().is_some() && user.role == "user";
+    let live = state.payments();
+    let enabled = live.any_usable() && user.role == "user";
+    let methods: Vec<Value> = live
+        .usable()
+        .map(|m| json!({ "id": m.id, "kind": m.kind, "display_name": m.display_name, "icon": m.icon }))
+        .collect();
     let code = q.coupon.as_deref().map(str::trim).filter(|c| !c.is_empty());
     if code.is_some()
         && !within_limit(
@@ -450,6 +470,8 @@ pub async fn shop(
         .collect();
     Ok(Json(json!({
         "enabled": enabled,
+        // R40: the payment methods to choose from (in order).
+        "methods": if enabled { methods } else { Vec::new() },
         "current": current.map(|(id, name, exp)| json!({ "plan_id": id, "name": name, "expires_at": exp })),
         "credit_cents": credit,
         "balance_cents": balance,
@@ -470,6 +492,9 @@ pub struct CreateOrderReq {
     /// W16: cover what is left with the balance (as much as it holds).
     #[serde(default)]
     pub use_balance: bool,
+    /// R40: the payment method (required when more than one is enabled).
+    #[serde(default)]
+    pub method_id: Option<Uuid>,
 }
 
 async fn my_order_view(state: &AppState, user: Uuid, id: Uuid) -> Result<MyOrderView, ApiError> {
@@ -499,23 +524,46 @@ pub async fn create_order(
     ShopUser { user, .. }: ShopUser,
     ApiJson(req): ApiJson<CreateOrderReq>,
 ) -> Result<(StatusCode, Json<MyOrderView>), ApiError> {
-    let Some(alipay) = state.alipay().cloned() else {
+    let live = state.payments();
+    if !live.any_usable() {
         return Err(payments_off());
-    };
+    }
     if user.role != "user" {
         return Err(bad_request!(
             "shop.admin_cannot_buy",
             "admin accounts cannot buy plans"
         ));
     }
-    // Before any order row exists: without a notify URL Alipay could never
-    // tell us about the payment (polling would, but an order we cannot be
-    // notified about is a configuration error, not a degraded mode).
-    let Some(notify_url) = super::notify_url(&state, &alipay) else {
-        tracing::warn!(
-            "order refused: payments.alipay.notify_url is empty and no main domain is set \
-             (系统设置 or install.public_url)"
-        );
+    // R40: the payer's method (the only one when exactly one is enabled).
+    let (method_id, provider): (Uuid, Arc<dyn PaymentProvider>) = match req.method_id {
+        Some(id) => (
+            id,
+            live.provider(id).ok_or_else(|| {
+                bad_request!(
+                    "order.method_unavailable",
+                    "this payment method is not available"
+                )
+            })?,
+        ),
+        None => {
+            let mut usable = live.usable();
+            match (usable.next(), usable.next()) {
+                (Some(m), None) => (m.id, m.provider.clone().ok_or_else(payments_off)?),
+                _ => {
+                    return Err(bad_request!(
+                        "order.method_required",
+                        "choose a payment method"
+                    ))
+                }
+            }
+        }
+    };
+    // Before any order row exists: without a notify URL the provider could
+    // never tell us about the payment (polling would, but an order we
+    // cannot be notified about is a configuration error, not a degraded
+    // mode).
+    let Some(notify_url) = super::methods::notify_url(&state, method_id) else {
+        tracing::warn!("order refused: no main domain is set (系统设置 or install.public_url)");
         return Err(payments_off());
     };
     if !within_limit(
@@ -530,15 +578,16 @@ pub async fn create_order(
     }
     let actor = Actor::of(&user);
     // End the user's open order (one pending per user).
-    let open: Option<Pending> = sqlx::query_as(
-        "SELECT id, out_trade_no, amount_cents, expires_at, expires_at <= now() AS due \
-         FROM orders WHERE user_id = $1 AND status = 'pending'",
-    )
+    let open: Option<Pending> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM orders o WHERE user_id = $1 AND status = 'pending'",
+        orders::PENDING_COLS
+    )))
     .bind(user.id)
     .fetch_optional(state.pg())
     .await?;
     if let Some(o) = open {
-        let st = orders::end_order(&state, &alipay, &o, "cancelled", &actor, false).await?;
+        let p = orders::provider_of(&state, &o);
+        let st = orders::end_order(&state, p.as_deref(), &o, "cancelled", &actor, false).await?;
         if st == "pending" {
             return Err(gateway_unavailable());
         }
@@ -642,10 +691,10 @@ pub async fn create_order(
         "INSERT INTO orders (id, out_trade_no, user_id, user_login, plan_id, plan_name, \
          amount_cents, period, period_days, list_price_cents, credit_cents, credit_order_id, \
          discount_cents, coupon_id, coupon_code, balance_cents, balance_state, \
-         subject, expires_at) \
+         subject, expires_at, payment_method_id) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
                  CASE WHEN $16 > 0 THEN 'held' ELSE 'none' END, $17, \
-                 now() + make_interval(mins => $18)) \
+                 now() + make_interval(mins => $18), $19) \
          RETURNING {}",
         orders::order_snapshot_sql("orders")
     )))
@@ -666,7 +715,8 @@ pub async fn create_order(
     .bind(coupon.as_ref().and_then(|c| c.code.clone()))
     .bind(split.balance_cents)
     .bind(&subject)
-    .bind(alipay.order_timeout_minutes as i32)
+    .bind(provider.order_timeout_minutes() as i32)
+    .bind((split.amount_cents > 0).then_some(method_id))
     .fetch_one(&mut *tx)
     .await;
     let mut after = match r {
@@ -720,17 +770,27 @@ pub async fn create_order(
     }
     tx.commit().await?;
 
-    // The row exists before Alipay knows the trade: a payment can never
-    // arrive for an order we do not have.
-    match alipay
-        .precreate(&notify_url, &out_trade_no, cents, &subject)
+    // The row exists before the provider knows the trade: a payment can
+    // never arrive for an order we do not have.
+    match provider
+        .create(provider::CreateReq {
+            out_trade_no: &out_trade_no,
+            amount_cents: cents,
+            subject: &subject,
+            notify_url: &notify_url,
+        })
         .await
     {
-        Ok(qr) => {
+        Ok(checkout) => {
+            let (qr, url) = match checkout {
+                provider::Checkout::Qr(q) => (Some(q), None),
+                provider::Checkout::Redirect(u) => (None, Some(u)),
+            };
             let mut tx = state.pg().begin().await?;
-            sqlx::query("UPDATE orders SET qr_code = $2 WHERE id = $1")
+            sqlx::query("UPDATE orders SET qr_code = $2, pay_url = $3 WHERE id = $1")
                 .bind(id)
                 .bind(&qr)
+                .bind(&url)
                 .execute(&mut *tx)
                 .await?;
             orders::record_event(
@@ -748,7 +808,7 @@ pub async fn create_order(
             tx.commit().await?;
         }
         Err(e) => {
-            tracing::warn!(order = %id, error = %e, "alipay precreate failed");
+            tracing::warn!(order = %id, error = %e, "payment create failed");
             let mut tx = state.pg().begin().await?;
             let ended: Option<(Value, Value)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "UPDATE orders SET status = 'cancelled', ended_at = now(), \
@@ -823,10 +883,8 @@ pub async fn my_order(
     Path((_, id)): Path<(String, Uuid)>,
 ) -> Result<Json<MyOrderView>, ApiError> {
     let view = my_order_view(&state, user.id, id).await?;
-    if view.status == "pending"
-        && let Some(a) = state.alipay().cloned()
-    {
-        orders::poll(&state, &a, id).await?;
+    if view.status == "pending" {
+        orders::poll(&state, id).await?;
         return Ok(Json(my_order_view(&state, user.id, id).await?));
     }
     Ok(Json(view))
@@ -839,13 +897,10 @@ pub async fn cancel_order(
     ShopUser { user, .. }: ShopUser,
     Path((_, id)): Path<(String, Uuid)>,
 ) -> Result<Json<MyOrderView>, ApiError> {
-    let Some(alipay) = state.alipay().cloned() else {
-        return Err(payments_off());
-    };
-    let open: Option<Pending> = sqlx::query_as(
-        "SELECT id, out_trade_no, amount_cents, expires_at, expires_at <= now() AS due \
-         FROM orders WHERE id = $1 AND user_id = $2 AND status = 'pending'",
-    )
+    let open: Option<Pending> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM orders o WHERE id = $1 AND user_id = $2 AND status = 'pending'",
+        orders::PENDING_COLS
+    )))
     .bind(id)
     .bind(user.id)
     .fetch_optional(state.pg())
@@ -854,7 +909,11 @@ pub async fn cancel_order(
         my_order_view(&state, user.id, id).await?;
         return Err(conflict!("order.not_pending", "order is not pending"));
     };
-    let st = orders::end_order(&state, &alipay, &o, "cancelled", &Actor::of(&user), false).await?;
+    let Some(p) = orders::provider_of(&state, &o) else {
+        return Err(payments_off());
+    };
+    let st =
+        orders::end_order(&state, Some(&*p), &o, "cancelled", &Actor::of(&user), false).await?;
     if st == "pending" {
         return Err(gateway_unavailable());
     }
@@ -1012,7 +1071,7 @@ pub async fn refund_order(
 
 /// Notify params for the event log: the signature replaced by a marker,
 /// values capped.
-fn redacted_params(p: &BTreeMap<String, String>) -> Value {
+pub(crate) fn redacted_params(p: &BTreeMap<String, String>) -> Value {
     let mut m = serde_json::Map::new();
     for (k, v) in p.iter().take(MAX_NOTIFY_PARAMS) {
         let v = if k == "sign" {
@@ -1037,41 +1096,114 @@ pub(crate) fn parse_form(body: &[u8]) -> Option<BTreeMap<String, String>> {
     Some(out)
 }
 
-/// POST /{prefix}/pay/alipay/notify.
-pub async fn notify(
+async fn notify_rate_ok(state: &AppState, ip: Option<std::net::IpAddr>) -> bool {
+    match ip {
+        Some(addr) => {
+            let key = format!("akari:rl:paynotify:{}", crate::client_ip::bucket(addr));
+            within_limit(state, key, NOTIFY_RATE, NOTIFY_WINDOW_SECS).await
+        }
+        None => true,
+    }
+}
+
+fn ack(text: &'static str) -> Response {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        text,
+    )
+        .into_response()
+}
+
+/// POST /{prefix}/pay/{method}/notify (R40): the notify of one payment
+/// method. Unknown, malformed or unusable (disabled) method ids and every
+/// refusal are the canonical rejection.
+pub async fn method_notify(
     State(state): State<AppState>,
     MaybeClientIp(ip): MaybeClientIp,
+    Path((_, method)): Path<(String, String)>,
     body: Bytes,
 ) -> Response {
-    if let Some(addr) = ip {
-        let key = format!("akari:rl:paynotify:{}", crate::client_ip::bucket(addr));
-        if !within_limit(&state, key, NOTIFY_RATE, NOTIFY_WINDOW_SECS).await {
-            return crate::reject::not_found();
-        }
+    if !notify_rate_ok(&state, ip).await {
+        return crate::reject::not_found();
     }
-    let Some(alipay) = state.alipay().cloned() else {
+    let Some(id) = Uuid::try_parse(&method).ok() else {
         return crate::reject::not_found();
     };
-    match handle_notify(&state, &alipay, ip, &body).await {
-        Ok(true) => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-            "success",
-        )
-            .into_response(),
+    let Some(p) = state.payments().provider(id) else {
+        return crate::reject::not_found();
+    };
+    match handle_notify(&state, &*p, id, ip, &body).await {
+        Ok(true) => ack(p.notify_ack()),
         Ok(false) => crate::reject::not_found(),
         Err(e) => {
-            tracing::warn!(error = e.message(), "alipay notify failed");
+            tracing::warn!(error = e.message(), "payment notify failed");
             crate::reject::not_found()
         }
     }
 }
 
-/// Ok(true) = acknowledge ("success"); Ok(false) = refuse. Every outcome
-/// leaves a payment_events row.
+/// POST /{prefix}/pay/alipay/notify — the pre-R40 Alipay notify URL, still
+/// handed out by orders created before 0140 (their notify_url was fixed at
+/// precreate). The claimed out_trade_no selects the order and thus its
+/// method (an Alipay method, usable); then the same verification as the
+/// per-method route. Everything else is the canonical rejection.
+pub async fn legacy_notify(
+    State(state): State<AppState>,
+    MaybeClientIp(ip): MaybeClientIp,
+    body: Bytes,
+) -> Response {
+    if !notify_rate_ok(&state, ip).await {
+        return crate::reject::not_found();
+    }
+    if body.len() > MAX_NOTIFY_BODY {
+        return crate::reject::not_found();
+    }
+    let Some(kind) = provider::kind(super::alipay::KIND) else {
+        return crate::reject::not_found();
+    };
+    let Some(otn) = kind.peek_out_trade_no(&body) else {
+        return crate::reject::not_found();
+    };
+    let method: Option<Option<Uuid>> =
+        match sqlx::query_scalar("SELECT payment_method_id FROM orders WHERE out_trade_no = $1")
+            .bind(&otn)
+            .fetch_optional(state.pg())
+            .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(error = %e, "payment notify failed");
+                return crate::reject::not_found();
+            }
+        };
+    let Some(id) = method.flatten() else {
+        return crate::reject::not_found();
+    };
+    let Some(p) = state
+        .payments()
+        .provider(id)
+        .filter(|p| p.kind() == super::alipay::KIND)
+    else {
+        return crate::reject::not_found();
+    };
+    match handle_notify(&state, &*p, id, ip, &body).await {
+        Ok(true) => ack(p.notify_ack()),
+        Ok(false) => crate::reject::not_found(),
+        Err(e) => {
+            tracing::warn!(error = e.message(), "payment notify failed");
+            crate::reject::not_found()
+        }
+    }
+}
+
+/// Ok(true) = acknowledge; Ok(false) = refuse. Every outcome leaves a
+/// payment_events row. Only an order OF THIS METHOD can be settled (a
+/// verified notify of another method's merchant is an unknown order here).
 pub async fn handle_notify(
     state: &AppState,
-    alipay: &Alipay,
+    provider: &dyn PaymentProvider,
+    method_id: Uuid,
     ip: Option<std::net::IpAddr>,
     body: &[u8],
 ) -> Result<bool, ApiError> {
@@ -1091,55 +1223,70 @@ pub async fn handle_notify(
         .await?;
         return Ok(false);
     }
-    let Some(p) = parse_form(body) else {
-        orders::record_event(
-            &mut c,
-            None,
-            None,
-            "notify",
-            false,
-            "malformed",
-            None,
-            None,
-            ip,
-        )
-        .await?;
-        return Ok(false);
-    };
-    let otn = p.get("out_trade_no").cloned();
-    let status = p.get("trade_status").cloned();
-    let params = redacted_params(&p);
-    if !alipay::verify_notify(alipay.keys(), &p) {
-        orders::record_event(
-            &mut c,
-            None,
-            otn.as_deref(),
-            "notify",
-            false,
-            "bad_signature",
-            status.as_deref(),
-            Some(params),
-            ip,
-        )
-        .await?;
-        return Ok(false);
-    }
-    let order: Option<(Uuid, i64)> =
-        sqlx::query_as("SELECT id, amount_cents FROM orders WHERE out_trade_no = $1")
-            .bind(otn.as_deref().unwrap_or_default())
-            .fetch_optional(&mut *c)
+    let ev = match provider.verify_notify(body) {
+        NotifyCheck::Verified(ev) => ev,
+        NotifyCheck::Rejected {
+            verified,
+            reason,
+            out_trade_no,
+            status,
+            params,
+        } => {
+            // A refusal of a validly signed notify of a known order of this
+            // method is also an audit fact.
+            let order: Option<Uuid> =
+                match (&out_trade_no, verified) {
+                    (Some(otn), true) => sqlx::query_scalar(
+                        "SELECT id FROM orders WHERE out_trade_no = $1 AND payment_method_id = $2",
+                    )
+                    .bind(otn)
+                    .bind(method_id)
+                    .fetch_optional(&mut *c)
+                    .await?,
+                    _ => None,
+                };
+            let mut tx = c.begin_tx().await?;
+            orders::record_event(
+                &mut tx,
+                order,
+                out_trade_no.as_deref(),
+                "notify",
+                verified,
+                reason,
+                status.as_deref(),
+                params,
+                ip,
+            )
             .await?;
-    let problem = if p.get("app_id") != Some(&alipay.app_id) {
-        Some("app_id_mismatch")
-    } else if alipay
-        .seller_id
-        .as_ref()
-        .is_some_and(|s| p.get("seller_id") != Some(s))
-    {
-        Some("seller_id_mismatch")
-    } else if order.is_none() {
+            if let Some(id) = order {
+                crate::audit::record(
+                    &mut tx,
+                    &payment_actor(ip),
+                    "order.payment.rejected",
+                    "order",
+                    Some(id.to_string()),
+                    None,
+                    Some(json!({ "reason": reason, "source": "notify" })),
+                )
+                .await?;
+            }
+            tx.commit().await?;
+            if verified {
+                tracing::warn!(reason, "payment notify refused");
+            }
+            return Ok(false);
+        }
+    };
+    let order: Option<(Uuid, i64)> = sqlx::query_as(
+        "SELECT id, amount_cents FROM orders WHERE out_trade_no = $1 AND payment_method_id = $2",
+    )
+    .bind(&ev.out_trade_no)
+    .bind(method_id)
+    .fetch_optional(&mut *c)
+    .await?;
+    let problem = if order.is_none() {
         Some("unknown_order")
-    } else if p.get("total_amount").and_then(|a| alipay::parse_amount(a)) != order.map(|o| o.1) {
+    } else if ev.total_cents != order.map(|o| o.1) {
         Some("amount_mismatch")
     } else {
         None
@@ -1150,12 +1297,12 @@ pub async fn handle_notify(
         orders::record_event(
             &mut tx,
             order_id,
-            otn.as_deref(),
+            Some(&ev.out_trade_no),
             "notify",
             true,
             reason,
-            status.as_deref(),
-            Some(params),
+            Some(&ev.status),
+            Some(ev.params.clone()),
             ip,
         )
         .await?;
@@ -1172,21 +1319,20 @@ pub async fn handle_notify(
             .await?;
         }
         tx.commit().await?;
-        tracing::warn!(reason, "alipay notify refused");
+        tracing::warn!(reason, "payment notify refused");
         return Ok(false);
     }
     let Some((order_id, amount)) = order else {
         return Ok(false);
     };
-    let paid = matches!(status.as_deref(), Some("TRADE_SUCCESS" | "TRADE_FINISHED"));
     let mut tx = c.begin_tx().await?;
-    let outcome = if paid {
+    let outcome = if ev.paid {
         let r = orders::apply_mark_paid(
             &mut tx,
             &payment_actor(ip),
             order_id,
             Via::Notify,
-            p.get("trade_no").map(String::as_str),
+            ev.trade_no.as_deref(),
             Some(amount),
             None,
         )
@@ -1202,12 +1348,12 @@ pub async fn handle_notify(
     orders::record_event(
         &mut tx,
         Some(order_id),
-        otn.as_deref(),
+        Some(&ev.out_trade_no),
         "notify",
         true,
         outcome,
-        status.as_deref(),
-        Some(params),
+        Some(&ev.status),
+        Some(ev.params),
         ip,
     )
     .await?;

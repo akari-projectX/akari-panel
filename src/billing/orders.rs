@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
-use super::alipay::{Alipay, Close, Query};
+use super::provider::{Close, PaymentProvider, Query};
 use crate::audit::Actor;
 use crate::auth::ApiError;
 use crate::entitle;
@@ -96,7 +96,8 @@ pub fn order_snapshot_sql(alias: &str) -> String {
          'credit_cents', {a}.credit_cents, 'credit_order_id', {a}.credit_order_id, \
          'discount_cents', {a}.discount_cents, 'coupon_code', {a}.coupon_code, \
          'balance_cents', {a}.balance_cents, 'balance_state', {a}.balance_state, \
-         'status', {a}.status, 'trade_no', {a}.trade_no, 'paid_via', {a}.paid_via)",
+         'status', {a}.status, 'trade_no', {a}.trade_no, 'paid_via', {a}.paid_via, \
+         'payment_method_id', {a}.payment_method_id)",
         a = alias
     )
 }
@@ -116,7 +117,8 @@ pub async fn record_event(
 ) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO payment_events (order_id, out_trade_no, source, verified, outcome, \
-         trade_status, params, ip) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+         trade_status, params, ip, payment_method_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, \
+         (SELECT payment_method_id FROM orders WHERE id = $1))",
     )
     .bind(order_id)
     .bind(out_trade_no.map(|s| s.chars().take(64).collect::<String>()))
@@ -621,7 +623,14 @@ pub struct Pending {
     pub expires_at: DateTime<Utc>,
     /// expires_at <= now() (DB clock).
     pub due: bool,
+    /// R40: the method that may settle it (None: pre-0140 order never
+    /// assigned, or a method-less order).
+    pub payment_method_id: Option<Uuid>,
 }
+
+/// The columns of `Pending` (alias `o`).
+pub const PENDING_COLS: &str = "o.id, o.out_trade_no, o.amount_cents, o.expires_at, \
+     o.expires_at <= now() AS due, o.payment_method_id";
 
 /// Apply a trade query result: TRADE_SUCCESS/FINISHED with the right
 /// amount → paid (exactly once). Returns true when the order is paid now
@@ -634,18 +643,19 @@ pub async fn apply_query_result(
 ) -> Result<bool, ApiError> {
     let Query::Trade {
         status,
+        paid,
         trade_no,
         total_cents,
     } = q
     else {
         return Ok(false);
     };
-    if status != "TRADE_SUCCESS" && status != "TRADE_FINISHED" {
+    if !paid {
         return Ok(false);
     }
     let mut tx = state.pg().begin().await?;
     if *total_cents != Some(order.amount_cents) {
-        tracing::error!(order = %order.id, "alipay query: paid amount differs from the order");
+        tracing::error!(order = %order.id, "payment query: paid amount differs from the order");
         record_event(
             &mut tx,
             Some(order.id),
@@ -700,14 +710,14 @@ pub async fn apply_query_result(
     Ok(true)
 }
 
-/// Status polling: query Alipay for a pending order of this user, at most
+/// Status polling: query the order's method for a pending order, at most
 /// every POLL_QUERY_SECS per order across instances (claim marker).
-pub async fn poll(state: &AppState, alipay: &Alipay, order_id: Uuid) -> Result<(), ApiError> {
-    let claimed: Option<Pending> = sqlx::query_as(
-        "UPDATE orders SET last_query_at = now() WHERE id = $1 AND status = 'pending' \
+pub async fn poll(state: &AppState, order_id: Uuid) -> Result<(), ApiError> {
+    let claimed: Option<Pending> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "UPDATE orders o SET last_query_at = now() WHERE id = $1 AND status = 'pending' \
          AND (last_query_at IS NULL OR last_query_at <= now() - make_interval(secs => $2)) \
-         RETURNING id, out_trade_no, amount_cents, expires_at, expires_at <= now() AS due",
-    )
+         RETURNING {PENDING_COLS}"
+    )))
     .bind(order_id)
     .bind(POLL_QUERY_SECS as f64)
     .fetch_optional(state.pg())
@@ -715,49 +725,71 @@ pub async fn poll(state: &AppState, alipay: &Alipay, order_id: Uuid) -> Result<(
     let Some(order) = claimed else {
         return Ok(());
     };
-    match alipay.query(&order.out_trade_no).await {
+    let Some(p) = order
+        .payment_method_id
+        .and_then(|m| state.payments().provider(m))
+    else {
+        return Ok(());
+    };
+    match p.query(&order.out_trade_no).await {
         Ok(q) => {
             apply_query_result(state, &order, &q, "query").await?;
         }
-        Err(e) => tracing::warn!(order = %order.id, error = %e, "alipay query failed"),
+        Err(e) => tracing::warn!(order = %order.id, error = %e, "payment query failed"),
     }
     Ok(())
+}
+
+/// The client of an order's method on this instance (None = the method is
+/// disabled, unusable or unknown).
+pub fn provider_of(state: &AppState, order: &Pending) -> Option<Arc<dyn PaymentProvider>> {
+    order
+        .payment_method_id
+        .and_then(|m| state.payments().provider(m))
 }
 
 /// End a pending order (`expired` or `cancelled`): query first (paid →
 /// fulfil instead), then close remotely; the row is ended only when the
 /// close succeeded (or there was nothing to close), or `force` (close
-/// grace exceeded). Returns the order's status afterwards.
+/// grace exceeded). Without a usable method (disabled since) nothing can
+/// be asked remotely: the order ends only with `force`
+/// (`close_state = method_unavailable`). Returns the status afterwards.
 pub async fn end_order(
     state: &AppState,
-    alipay: &Alipay,
+    provider: Option<&dyn PaymentProvider>,
     order: &Pending,
     target: &str,
     actor: &Actor,
     force: bool,
 ) -> Result<String, ApiError> {
-    match alipay.query(&order.out_trade_no).await {
-        Ok(q) => {
-            if apply_query_result(state, order, &q, "query").await? {
-                return Ok("paid".into());
+    let close_state = match provider {
+        None if !force => return Ok("pending".into()),
+        None => "method_unavailable".to_string(),
+        Some(p) => {
+            match p.query(&order.out_trade_no).await {
+                Ok(q) => {
+                    if apply_query_result(state, order, &q, "query").await? {
+                        return Ok("paid".into());
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(order = %order.id, error = %e, "payment query failed");
+                    if !force {
+                        return Ok("pending".into());
+                    }
+                }
             }
-        }
-        Err(e) => {
-            tracing::warn!(order = %order.id, error = %e, "alipay query failed");
-            if !force {
-                return Ok("pending".into());
+            match p.close(&order.out_trade_no).await {
+                Ok(Close::Closed) => "closed".to_string(),
+                Ok(Close::NotExist) => "not_exist".to_string(),
+                Err(e) => {
+                    tracing::warn!(order = %order.id, error = %e, "payment close failed");
+                    if !force {
+                        return Ok("pending".into());
+                    }
+                    "failed".to_string()
+                }
             }
-        }
-    }
-    let close_state = match alipay.close(&order.out_trade_no).await {
-        Ok(Close::Closed) => "closed".to_string(),
-        Ok(Close::NotExist) => "not_exist".to_string(),
-        Err(e) => {
-            tracing::warn!(order = %order.id, error = %e, "alipay close failed");
-            if !force {
-                return Ok("pending".into());
-            }
-            "failed".to_string()
         }
     };
     let mut tx = state.pg().begin().await?;
@@ -818,22 +850,25 @@ pub async fn end_order(
 
 /// One reconcile tick (any instance, concurrently safe): claim a batch of
 /// pending orders not queried recently (SKIP LOCKED + claim marker), query
-/// each — paid → fulfil; past expiry → close and expire.
-pub async fn reconcile_tick(state: &AppState, alipay: &Arc<Alipay>) -> Result<usize, ApiError> {
-    let batch: Vec<Pending> = sqlx::query_as(
+/// each at ITS method — paid → fulfil; past expiry → close and expire
+/// (an order whose method is no longer usable ends after the close grace
+/// without a remote call).
+pub async fn reconcile_tick(state: &AppState) -> Result<usize, ApiError> {
+    let batch: Vec<Pending> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "UPDATE orders o SET last_query_at = now() FROM (\
            SELECT id FROM orders WHERE status = 'pending' \
            AND (last_query_at IS NULL OR last_query_at <= now() - make_interval(secs => $1)) \
            ORDER BY expires_at LIMIT $2 FOR UPDATE SKIP LOCKED) c \
          WHERE o.id = c.id \
-         RETURNING o.id, o.out_trade_no, o.amount_cents, o.expires_at, o.expires_at <= now() AS due",
-    )
+         RETURNING {PENDING_COLS}"
+    )))
     .bind(RECONCILE_QUERY_SECS as f64)
     .bind(RECONCILE_BATCH)
     .fetch_all(state.pg())
     .await?;
     let n = batch.len();
     for order in batch {
+        let provider = provider_of(state, &order);
         let res = if order.due {
             let force =
                 sqlx::query_scalar::<_, bool>("SELECT $1 <= now() - make_interval(secs => $2)")
@@ -843,7 +878,7 @@ pub async fn reconcile_tick(state: &AppState, alipay: &Arc<Alipay>) -> Result<us
                     .await?;
             end_order(
                 state,
-                alipay,
+                provider.as_deref(),
                 &order,
                 "expired",
                 &crate::audit::Actor::system(),
@@ -851,16 +886,18 @@ pub async fn reconcile_tick(state: &AppState, alipay: &Arc<Alipay>) -> Result<us
             )
             .await
             .map(|_| ())
-        } else {
-            match alipay.query(&order.out_trade_no).await {
+        } else if let Some(p) = provider {
+            match p.query(&order.out_trade_no).await {
                 Ok(q) => apply_query_result(state, &order, &q, "query")
                     .await
                     .map(|_| ()),
                 Err(e) => {
-                    tracing::warn!(order = %order.id, error = %e, "alipay query failed");
+                    tracing::warn!(order = %order.id, error = %e, "payment query failed");
                     Ok(())
                 }
             }
+        } else {
+            Ok(())
         };
         if let Err(e) = res {
             tracing::warn!(order = %order.id, error = e.message(), "order reconcile failed");

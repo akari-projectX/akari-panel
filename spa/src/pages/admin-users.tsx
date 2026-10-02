@@ -449,6 +449,25 @@ function ManageUser({
               重新生成订阅令牌
             </Button>
           )}
+          {user.email && !user.email_verified && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                run(
+                  {
+                    title: `把「${user.email}」标记为已验证？`,
+                    message: "标记后该邮箱可接收邮件、用于登录与找回密码。请确认该邮箱确实属于此用户。",
+                    confirmLabel: "标记为已验证",
+                  },
+                  () => post(`/users/${user.id}/email/verify`, {}),
+                  "邮箱已标记为已验证。",
+                )
+              }
+            >
+              标记邮箱已验证
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"

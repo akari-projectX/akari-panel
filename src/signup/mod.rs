@@ -32,6 +32,7 @@
 
 pub mod email;
 pub mod invite;
+pub mod pow;
 pub(crate) mod profile;
 pub(crate) mod register;
 pub(crate) mod reset;
@@ -90,10 +91,20 @@ pub struct SignupSettings {
     pub trial_plan_id: Option<Uuid>,
     pub trial_days: i32,
     pub reset_enabled: bool,
+    /// W24 注册需要邮箱验证: None = automatic (= SMTP sending enabled).
+    pub email_verify: Option<bool>,
+}
+
+impl SignupSettings {
+    /// Whether registration verifies the address by an emailed code (W24):
+    /// the explicit choice, else exactly when SMTP sending is enabled.
+    pub fn verification_required(&self, smtp_enabled: bool) -> bool {
+        self.email_verify.unwrap_or(smtp_enabled)
+    }
 }
 
 const SETTINGS_COLS: &str = "version, register_enabled, invite_required, invite_single_use, \
-     invite_codes_per_user, email_domains, trial_plan_id, trial_days, reset_enabled";
+     invite_codes_per_user, email_domains, trial_plan_id, trial_days, reset_enabled, email_verify";
 
 pub async fn load_settings(conn: &mut PgConnection) -> sqlx::Result<SignupSettings> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -122,6 +133,20 @@ async fn settings_or_none(state: &AppState) -> Option<SignupSettings> {
     }
 }
 
+/// The settings and whether SMTP sending is enabled, or None when they
+/// cannot be read (callers treat that as "disabled").
+pub(crate) async fn settings_with_mail(state: &AppState) -> Option<(SignupSettings, bool)> {
+    let s = settings_or_none(state).await?;
+    let mut c = state.pg().acquire().await.ok()?;
+    match crate::mail::load(&mut c).await {
+        Ok(m) => Some((s, m.enabled)),
+        Err(e) => {
+            tracing::error!(error = %e, "smtp settings unavailable");
+            None
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub struct SignupView {
     version: i64,
@@ -133,7 +158,11 @@ pub struct SignupView {
     trial_plan_id: Option<Uuid>,
     trial_days: i32,
     reset_enabled: bool,
-    /// SMTP sending is enabled (registration and reset need it).
+    /// W24: null = automatic (follows SMTP sending).
+    email_verify: Option<bool>,
+    /// W24: what registration does now.
+    email_verify_effective: bool,
+    /// SMTP sending is enabled (verified registration and reset need it).
     mail_enabled: bool,
     /// A main domain is configured (reset links need it).
     public_origin: Option<String>,
@@ -145,8 +174,21 @@ async fn view(state: &AppState, conn: &mut PgConnection) -> Result<SignupView, A
     let smtp = crate::mail::load(conn).await?;
     let origin = state.settings().get().public_origin();
     let mut warnings = Vec::new();
-    if (s.register_enabled || s.reset_enabled) && !smtp.enabled {
+    let verify = s.verification_required(smtp.enabled);
+    if (s.register_enabled && verify || s.reset_enabled) && !smtp.enabled {
         warnings.push("邮件发送未启用：验证码与重置链接无法送达".into());
+    }
+    if s.register_enabled && !verify {
+        warnings.push(
+            "注册不验证邮箱：新账户的邮箱为未验证状态（不能用于找回密码与接收邮件），\
+             防滥用依赖限速与人机校验；需要更严格时可开启「必须邀请码」"
+                .into(),
+        );
+        if s.trial_plan_id.is_some() && !s.invite_required {
+            warnings.push(
+                "不验证邮箱且赠送试用套餐：试用容易被批量注册薅取，建议开启「必须邀请码」".into(),
+            );
+        }
     }
     if s.reset_enabled && origin.is_none() {
         warnings.push("未设置主域名：找回密码的重置链接无法生成".into());
@@ -170,6 +212,8 @@ async fn view(state: &AppState, conn: &mut PgConnection) -> Result<SignupView, A
         trial_plan_id: s.trial_plan_id,
         trial_days: s.trial_days,
         reset_enabled: s.reset_enabled,
+        email_verify: s.email_verify,
+        email_verify_effective: verify,
         mail_enabled: smtp.enabled,
         public_origin: origin,
         warnings,
@@ -198,6 +242,10 @@ pub struct SignupReq {
     pub trial_plan_id: Option<Uuid>,
     pub trial_days: i32,
     pub reset_enabled: bool,
+    /// W24: null/absent = automatic (verification exactly when SMTP sending
+    /// is enabled).
+    #[serde(default)]
+    pub email_verify: Option<bool>,
 }
 
 /// Validate and normalise a settings request (domains → punycode, deduped).
@@ -260,7 +308,11 @@ pub async fn apply_update_settings(
         ));
     }
     let smtp = crate::mail::load(conn).await?;
-    if (v.register_enabled && !cur.register_enabled || v.reset_enabled && !cur.reset_enabled)
+    // Verified registration (and reset) need mail; registration without
+    // verification does not (W24).
+    let verified_before = cur.register_enabled && cur.verification_required(smtp.enabled);
+    let verified_after = v.register_enabled && v.email_verify.unwrap_or(smtp.enabled);
+    if (verified_after && !verified_before || v.reset_enabled && !cur.reset_enabled)
         && !smtp.enabled
     {
         return Err(conflict!(
@@ -290,7 +342,7 @@ pub async fn apply_update_settings(
         "UPDATE signup_settings SET version = version + 1, register_enabled = $1, \
          invite_required = $2, invite_single_use = $3, invite_codes_per_user = $4, \
          email_domains = $5, trial_plan_id = $6, trial_days = $7, reset_enabled = $8, \
-         updated_at = now() WHERE id = 1",
+         email_verify = $9, updated_at = now() WHERE id = 1",
     )
     .bind(v.register_enabled)
     .bind(v.invite_required)
@@ -300,6 +352,7 @@ pub async fn apply_update_settings(
     .bind(v.trial_plan_id)
     .bind(v.trial_days)
     .bind(v.reset_enabled)
+    .bind(v.email_verify)
     .execute(&mut *conn)
     .await?;
     let snap =
@@ -310,31 +363,41 @@ pub async fn apply_update_settings(
                 "trial_days": td, "reset_enabled": re,
             })
         };
+    let with_verify = |mut j: serde_json::Value, ev: Option<bool>| {
+        j["email_verify"] = json!(ev);
+        j
+    };
     crate::audit::record(
         conn,
         actor,
         "settings.signup.update",
         "settings",
         Some("signup".into()),
-        Some(snap(
-            cur.register_enabled,
-            cur.invite_required,
-            cur.invite_single_use,
-            cur.invite_codes_per_user,
-            &cur.email_domains,
-            cur.trial_plan_id,
-            cur.trial_days,
-            cur.reset_enabled,
+        Some(with_verify(
+            snap(
+                cur.register_enabled,
+                cur.invite_required,
+                cur.invite_single_use,
+                cur.invite_codes_per_user,
+                &cur.email_domains,
+                cur.trial_plan_id,
+                cur.trial_days,
+                cur.reset_enabled,
+            ),
+            cur.email_verify,
         )),
-        Some(snap(
-            v.register_enabled,
-            v.invite_required,
-            v.invite_single_use,
-            v.invite_codes_per_user,
-            &v.email_domains,
-            v.trial_plan_id,
-            v.trial_days,
-            v.reset_enabled,
+        Some(with_verify(
+            snap(
+                v.register_enabled,
+                v.invite_required,
+                v.invite_single_use,
+                v.invite_codes_per_user,
+                &v.email_domains,
+                v.trial_plan_id,
+                v.trial_days,
+                v.reset_enabled,
+            ),
+            v.email_verify,
         )),
     )
     .await?;
@@ -359,7 +422,7 @@ pub async fn put_signup_settings(
 
 /// GET /{prefix}/auth/options (public): what the login page offers.
 pub async fn options(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let s = settings_or_none(&state).await;
+    let s = settings_with_mail(&state).await;
     // W21: the site name for page titles (public anyway: it is in them).
     let site_name = state
         .settings()
@@ -369,15 +432,21 @@ pub async fn options(State(state): State<AppState>) -> Json<serde_json::Value> {
         .clone()
         .unwrap_or_else(|| crate::settings::DEFAULT_SITE_NAME.to_string());
     Json(match s {
-        Some(s) => json!({
-            "register": s.register_enabled,
-            "invite_required": s.register_enabled && s.invite_required,
-            "email_domains": if s.register_enabled { s.email_domains } else { Vec::new() },
-            "reset": s.reset_enabled,
-            "site_name": site_name,
-        }),
+        Some((s, mail)) => {
+            let verify = s.register_enabled && s.verification_required(mail);
+            json!({
+                "register": s.register_enabled,
+                "invite_required": s.register_enabled && s.invite_required,
+                "email_domains": if s.register_enabled { s.email_domains.clone() } else { Vec::new() },
+                // W24: false = register with email + password (no code;
+                // a proof-of-work challenge instead).
+                "email_verify": verify,
+                "reset": s.reset_enabled,
+                "site_name": site_name,
+            })
+        }
         None => {
-            json!({ "register": false, "invite_required": false, "email_domains": [], "reset": false, "site_name": site_name })
+            json!({ "register": false, "invite_required": false, "email_domains": [], "email_verify": false, "reset": false, "site_name": site_name })
         }
     })
 }
@@ -460,6 +529,61 @@ pub(crate) async fn limit_send(
     } else {
         Err(ApiError::too_many())
     }
+}
+
+/// W24 registration WITHOUT verification: attempts per client address
+/// (/64) per hour and per day, and per address per hour. Every attempt
+/// counts (success or not): each one can create an account.
+pub const REGISTER_PER_IP_HOUR: i64 = 5;
+pub const REGISTER_PER_IP_DAY: i64 = 20;
+pub const REGISTER_PER_ADDR_HOUR: i64 = 5;
+
+/// Count one unverified registration attempt; Err(429) over any limit.
+pub(crate) async fn limit_register(
+    state: &AppState,
+    client_bucket: &str,
+    email: &str,
+) -> Result<(), ApiError> {
+    let a = addr_key(email);
+    let h = crate::rate::hit(
+        state,
+        format!("akari:rl:register:ip:h:{client_bucket}"),
+        REGISTER_PER_IP_HOUR,
+        3600,
+    )
+    .await
+    .map_err(valkey_err)?;
+    let d = crate::rate::hit(
+        state,
+        format!("akari:rl:register:ip:d:{client_bucket}"),
+        REGISTER_PER_IP_DAY,
+        86_400,
+    )
+    .await
+    .map_err(valkey_err)?;
+    let t = crate::rate::hit(
+        state,
+        format!("akari:rl:register:to:{a}"),
+        REGISTER_PER_ADDR_HOUR,
+        3600,
+    )
+    .await
+    .map_err(valkey_err)?;
+    if h && d && t {
+        Ok(())
+    } else {
+        Err(ApiError::too_many())
+    }
+}
+
+/// Serializes every change of who owns an address (registration with or
+/// without verification, verification of an address): transaction-scoped.
+pub(crate) async fn lock_address(conn: &mut PgConnection, addr: &str) -> sqlx::Result<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('akari.email:' || $1, 0))")
+        .bind(addr)
+        .execute(conn)
+        .await?;
+    Ok(())
 }
 
 /// Count one completion attempt (code / token) of the client address.
@@ -603,6 +727,10 @@ pub fn routes() -> axum::Router<AppState> {
     axum::Router::new()
         .route("/{prefix}/auth/options", get(options))
         .route("/{prefix}/auth/register/code", post(register::request_code))
+        .route(
+            "/{prefix}/auth/register/challenge",
+            get(register::challenge),
+        )
         .route("/{prefix}/auth/register", post(register::register))
         .route(
             "/{prefix}/auth/password-reset/request",
@@ -619,6 +747,10 @@ pub fn routes() -> axum::Router<AppState> {
             post(verify_email_change),
         )
         .route("/{prefix}/api/v1/me/locale", put(set_locale))
+        .route(
+            "/{prefix}/api/v1/users/{id}/email/verify",
+            post(profile::admin_verify_email),
+        )
         .route(
             "/{prefix}/api/v1/me/invite-codes",
             get(invite::list_codes).post(invite::create_code),

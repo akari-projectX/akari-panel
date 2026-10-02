@@ -10,17 +10,19 @@ use axum::http::{Method, StatusCode};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use super::alipay;
 use super::alipay::tests::{alipay_side_keys, panel_keys, sign_notify, signed_response};
-use super::alipay::{self, Alipay};
 use super::orders::{self, Paid, Pending, Via};
-use crate::config::AlipayConfig;
 use crate::state::AppState;
 use crate::testdb::http::{rand_ip, Client};
 use crate::testdb::TestDb;
 
 const APP_ID: &str = "2021000000000001";
 const SELLER_ID: &str = "2088000000000001";
-const NOTIFY: &str = "https://panel.example/test/pay/alipay/notify";
+/// The main domain of the paid test panels (notify URLs derive from it).
+const ORIGIN: &str = "https://panel.example";
+/// Any notify URL (direct gateway calls in tests).
+const NOTIFY: &str = "https://panel.example/test/pay/x/notify";
 
 // ---------------------------------------------------------------------------
 // Mock gateway
@@ -83,6 +85,9 @@ impl Mock {
             .iter()
             .filter(|m| m.as_str() == method)
             .count()
+    }
+    fn notify_urls(&self) -> Vec<String> {
+        self.inner.lock().unwrap().notify_urls.clone()
     }
     fn set_down(&self, down: bool) {
         self.inner.lock().unwrap().down = down;
@@ -158,21 +163,71 @@ async fn mock_gateway(
 // Fixtures
 // ---------------------------------------------------------------------------
 
-fn alipay_cfg(gateway: &str) -> AlipayConfig {
-    AlipayConfig {
+/// The method form of an Alipay method on the mock gateway.
+fn alipay_method_req(gateway: &str, name: &str) -> super::methods::MethodReq {
+    super::methods::MethodReq {
+        kind: Some(super::alipay::KIND.into()),
+        version: None,
+        display_name: name.into(),
+        icon: None,
+        sort: 0,
         enabled: true,
-        app_id: APP_ID.into(),
-        seller_id: SELLER_ID.into(),
-        gateway_url: gateway.into(),
-        notify_url: NOTIFY.into(),
-        order_timeout_minutes: 15,
-        ..Default::default()
+        config: json!({
+            "environment": "custom",
+            "gateway_url": gateway,
+            "app_id": APP_ID,
+            "seller_id": SELLER_ID,
+            "app_private_key": super::alipay::tests::APP_KEY,
+            "alipay_public_key": super::alipay::tests::ALIPAY_PUB,
+            "order_timeout_minutes": 15,
+        }),
     }
 }
 
+/// Add an enabled Alipay method on `gateway` (DB + this instance reload).
+async fn add_method(state: &AppState, gateway: &str, name: &str) -> Uuid {
+    let mut tx = state.pg().begin().await.unwrap();
+    let row = super::methods::apply_create(
+        &mut tx,
+        state.totp(),
+        &crate::audit::Actor::test(),
+        "payment_method.create",
+        &alipay_method_req(gateway, name),
+    )
+    .await
+    .ok()
+    .unwrap();
+    tx.commit().await.unwrap();
+    crate::settings::reload(state).await.unwrap();
+    row.id
+}
+
+/// The first usable method of a panel and its client.
+fn method_of(state: &AppState) -> (Uuid, std::sync::Arc<dyn super::provider::PaymentProvider>) {
+    let live = state.payments();
+    let m = live.usable().next().expect("a usable payment method");
+    (m.id, m.provider.clone().unwrap())
+}
+
+/// Create a trade at the gateway through a provider (tests).
+async fn precreate(p: &dyn super::provider::PaymentProvider, otn: &str, cents: i64) {
+    p.create(super::provider::CreateReq {
+        out_trade_no: otn,
+        amount_cents: cents,
+        subject: "s",
+        notify_url: NOTIFY,
+    })
+    .await
+    .unwrap();
+}
+
+/// A panel with payments on (one Alipay method on the mock gateway) and
+/// the main domain ORIGIN (`install.public_url`: notify URLs derive from
+/// it).
 async fn paid_state(db: &TestDb, mock: &Mock) -> AppState {
-    let state = AppState::for_test(db.pool.clone()).await;
-    state.set_alipay(Alipay::new(&alipay_cfg(&mock.url), panel_keys()));
+    let state =
+        AppState::for_test_with(db.pool.clone(), |c| c.install.public_url = ORIGIN.into()).await;
+    add_method(&state, &mock.url, "支付宝").await;
     state
 }
 
@@ -247,9 +302,11 @@ async fn order_row(db: &TestDb, user: Uuid, plan: Uuid, cents: i64, days: i32) -
     let otn = format!("AKT{}", hex::encode(rand::random::<[u8; 12]>()));
     sqlx::query(
         "INSERT INTO orders (id, out_trade_no, user_id, user_login, plan_id, plan_name, \
-         amount_cents, list_price_cents, period, period_days, subject, expires_at) \
+         amount_cents, list_price_cents, period, period_days, subject, expires_at, \
+         payment_method_id) \
          VALUES ($1, $2, $3, 'u', $4, 'p', $5, $5, 'days', $6, 's', \
-                 now() + interval '15 minutes')",
+                 now() + interval '15 minutes', \
+                 (SELECT id FROM payment_methods ORDER BY created_at, id LIMIT 1))",
     )
     .bind(id)
     .bind(&otn)
@@ -334,9 +391,15 @@ async fn post_notify(
 ) -> crate::testdb::http::Resp {
     use axum::body::Body;
     use tower::ServiceExt;
+    // R40: the per-method route of the panel's first method (the legacy
+    // `/pay/alipay/notify` has its own tests in tests/w24.rs).
+    let uri = match state.payments().methods.first() {
+        Some(m) => format!("/test/pay/{}/notify", m.id),
+        None => "/test/pay/alipay/notify".to_string(),
+    };
     let mut req = axum::http::Request::builder()
         .method(Method::POST)
-        .uri("/test/pay/alipay/notify")
+        .uri(uri)
         .header(
             "content-type",
             "application/x-www-form-urlencoded; charset=utf-8",
@@ -660,11 +723,17 @@ async fn notify_rejections_are_canonical() {
     let user = db.user().await;
     let (oid, otn) = order_row(&db, user, plan, 500, 30).await;
     let canonical = Client::new(&state, rand_ip()).get("/").await.fingerprint();
-    let canonical2 = Client::new(&state, rand_ip())
-        .get("/test/pay/alipay/notify")
-        .await
-        .fingerprint();
-    assert_eq!(canonical, canonical2, "GET on the notify route");
+    let (method, _) = method_of(&state);
+    for path in [
+        "/test/pay/alipay/notify".to_string(),
+        format!("/test/pay/{method}/notify"),
+    ] {
+        let canonical2 = Client::new(&state, rand_ip())
+            .get(&path)
+            .await
+            .fingerprint();
+        assert_eq!(canonical, canonical2, "GET on the notify route");
+    }
 
     let good = notify_params(&otn, "5.00", "TRADE_SUCCESS");
     let mut bad_sig = good.clone();
@@ -783,7 +852,7 @@ async fn concurrent_duplicates_fulfil_once() {
             status: Some("TRADE_SUCCESS".into()),
         },
     );
-    let alipay = state.alipay().unwrap().clone();
+    let (method, alipay) = method_of(&state);
     let body = form(&notify_params(&otn, "12.00", "TRADE_SUCCESS"));
     let pending = Pending {
         id: oid,
@@ -791,6 +860,7 @@ async fn concurrent_duplicates_fulfil_once() {
         amount_cents: 1200,
         expires_at: chrono::Utc::now(),
         due: false,
+        payment_method_id: Some(method),
     };
     let mut tasks = Vec::new();
     for i in 0..12 {
@@ -805,7 +875,7 @@ async fn concurrent_duplicates_fulfil_once() {
                     .await
                     .unwrap()
             } else {
-                super::api::handle_notify(&state, &alipay, None, &body)
+                super::api::handle_notify(&state, &*alipay, method, None, &body)
                     .await
                     .unwrap()
             }
@@ -1149,7 +1219,7 @@ async fn reconcile_expires_and_catches_late_payments() {
     };
     let mock = Mock::start().await;
     let state = paid_state(&db, &mock).await;
-    let alipay = state.alipay().unwrap().clone();
+    let (_, alipay) = method_of(&state);
     let (_, plan) = priced_plan(&db, "p", 300, 30).await;
     let u1 = db.user().await;
     let u2 = db.user().await;
@@ -1158,7 +1228,7 @@ async fn reconcile_expires_and_catches_late_payments() {
     let (late, otn2) = order_row(&db, u2, plan, 300, 30).await;
     let (fresh, otn3) = order_row(&db, u3, plan, 300, 30).await;
     for otn in [&otn1, &otn2, &otn3] {
-        alipay.precreate(NOTIFY, otn, 300, "s").await.unwrap();
+        precreate(&*alipay, otn, 300).await;
     }
     mock.inner
         .lock()
@@ -1176,7 +1246,7 @@ async fn reconcile_expires_and_catches_late_payments() {
 
     // Outage: nothing changes.
     mock.set_down(true);
-    orders::reconcile_tick(&state, &alipay).await.ok().unwrap();
+    orders::reconcile_tick(&state).await.ok().unwrap();
     for id in [expiring, late, fresh] {
         assert_eq!(order_status(&db, id).await.0, "pending");
     }
@@ -1185,7 +1255,7 @@ async fn reconcile_expires_and_catches_late_payments() {
         .execute(&db.pool)
         .await
         .unwrap();
-    orders::reconcile_tick(&state, &alipay).await.ok().unwrap();
+    orders::reconcile_tick(&state).await.ok().unwrap();
     assert_eq!(order_status(&db, expiring).await.0, "expired");
     assert_eq!(mock.status(&otn1).as_deref(), Some("TRADE_CLOSED"));
     assert_eq!(order_status(&db, late).await, ("paid".into(), true, None));
@@ -1201,7 +1271,7 @@ async fn reconcile_expires_and_catches_late_payments() {
     );
     // A second tick right away: claims prevent re-querying.
     let q = mock.calls("alipay.trade.query");
-    orders::reconcile_tick(&state, &alipay).await.ok().unwrap();
+    orders::reconcile_tick(&state).await.ok().unwrap();
     assert_eq!(mock.calls("alipay.trade.query"), q);
 
     // A notify for the expired order (paid after all): still fulfilled.
@@ -1220,10 +1290,10 @@ async fn reconcile_expires_and_catches_late_payments() {
     // Amount tampering in a query answer is refused and audited.
     let u4 = db.user().await;
     let (o4, otn4) = order_row(&db, u4, plan, 300, 30).await;
-    alipay.precreate(NOTIFY, &otn4, 300, "s").await.unwrap();
+    precreate(&*alipay, &otn4, 300).await;
     mock.pay(&otn4);
     mock.inner.lock().unwrap().total_override = Some("0.01".into());
-    orders::poll(&state, &alipay, o4).await.ok().unwrap();
+    orders::poll(&state, o4).await.ok().unwrap();
     assert_eq!(order_status(&db, o4).await.0, "pending");
     assert_eq!(
         count(&db, "SELECT count(*) FROM audit_log WHERE action = 'order.payment.rejected' AND target_id = $1::text", o4).await,
@@ -1293,112 +1363,35 @@ async fn one_open_order_per_user() {
     db.drop().await;
 }
 
+/// W24: `[payments]` in panel.toml is obsolete: never an error (old files
+/// keep starting), always a warning, and never printed by `config check`.
 #[test]
-fn config_validation() {
+fn obsolete_payments_section_is_a_warning() {
     let mut c = crate::config::PanelConfig::default();
-    assert!(c.validate().errors.is_empty(), "disabled by default");
-    c.payments.alipay = AlipayConfig {
-        enabled: true,
-        app_id: APP_ID.into(),
-        app_private_key_file: "/k".into(),
-        alipay_public_key_file: "/p".into(),
-        notify_url: "https://panel.example/abc/pay/alipay/notify".into(),
-        ..Default::default()
-    };
-    assert!(c.validate().errors.is_empty(), "{:?}", c.validate().errors);
-    for (mutate, want) in [
-        (
-            Box::new(|a: &mut AlipayConfig| a.app_id = "x1".into())
-                as Box<dyn Fn(&mut AlipayConfig)>,
-            "app_id",
-        ),
-        (
-            Box::new(|a| a.gateway_url = "http://openapi.alipay.com/gateway.do".into()),
-            "gateway_url",
-        ),
-        (
-            Box::new(|a| a.notify_url = "https://h/abc/pay/alipay/notify?x=1".into()),
-            "notify_url",
-        ),
-        (
-            Box::new(|a| a.notify_url = "https://h/pay/alipay/notify".into()),
-            "notify_url",
-        ),
-        (
-            Box::new(|a| a.notify_url = "panel.example/abc/pay/alipay/notify".into()),
-            "notify_url",
-        ),
-        (
-            Box::new(|a| a.order_timeout_minutes = 1),
-            "order_timeout_minutes",
-        ),
-        (Box::new(|a| a.seller_id = "abc".into()), "seller_id"),
-        (
-            Box::new(|a| a.app_private_key_file = "".into()),
-            "app_private_key_file",
-        ),
-    ] {
-        let mut c2 = c.clone();
-        mutate(&mut c2.payments.alipay);
-        let errs = c2.validate().errors;
-        assert!(errs.iter().any(|e| e.contains(want)), "{want}: {errs:?}");
-        assert!(
-            errs.iter().all(|e| !e.contains("abc/pay")),
-            "notify_url echoed: {errs:?}"
-        );
-    }
-    let mut c2 = c.clone();
-    c2.payments.alipay.gateway_url = "http://127.0.0.1:9/gateway.do".into();
-    c2.payments.alipay.notify_url = "http://myapp.test:8080/abc/pay/alipay/notify".into();
-    let r = c2.validate();
-    assert!(r.errors.is_empty() && r.warnings.len() >= 2, "{r:?}");
-    let t = c.effective_toml().unwrap();
-    assert!(!t.contains("/abc/"), "notify_url (prefix) redacted: {t}");
-    // The prefix must match the install's.
-    assert!(super::check_notify_prefix(&c, "abc").is_ok());
-    assert!(super::check_notify_prefix(&c, "other").is_err());
-
-    // R22: empty = derived from the main domain (always the current
-    // prefix); a warning only while no main domain is configured at all.
-    let mut c3 = c.clone();
-    c3.payments.alipay.notify_url = String::new();
-    let r = c3.validate();
+    assert!(c.validate().errors.is_empty() && c.validate().warnings.is_empty());
+    let text = r#"
+[payments.alipay]
+enabled = true
+app_id = "2021000000000001"
+notify_url = "https://panel.example/abc/pay/alipay/notify"
+whatever_unknown = 1
+"#;
+    let parsed: crate::config::PanelConfig = toml::from_str(text).unwrap();
+    c.payments = parsed.payments;
+    let r = c.validate();
     assert!(r.errors.is_empty(), "{r:?}");
     assert!(
-        r.warnings.iter().any(|w| w.contains("notify_url is empty")),
+        r.warnings
+            .iter()
+            .any(|w| w.contains("[payments] is obsolete")),
         "{r:?}"
     );
-    assert!(super::check_notify_prefix(&c3, "any").is_ok());
-    assert_eq!(super::explicit_notify_host(&c3), None);
-    c3.install.public_url = "https://panel.example".into();
-    let r = c3.validate();
-    assert!(r.errors.is_empty() && r.warnings.is_empty(), "{r:?}");
-    // Explicit on another host than the main domain: a warning naming the
-    // host only (never the prefixed URL).
-    let mut c4 = c.clone();
-    c4.install.public_url = "https://main.example".into();
-    let r = c4.validate();
-    assert!(r.errors.is_empty(), "{r:?}");
-    let w: Vec<_> = r
-        .warnings
-        .iter()
-        .filter(|w| w.contains("panel.example"))
-        .collect();
-    assert_eq!(w.len(), 1, "{r:?}");
-    assert!(!w[0].contains("/abc/"), "{w:?}");
-    c4.install.public_url = "https://Panel.Example:8443".into();
-    assert!(c4.validate().warnings.is_empty(), "same host");
-    assert_eq!(
-        super::notify_host_mismatch(&c, Some("main.example")).as_deref(),
-        Some("panel.example")
-    );
-    assert_eq!(super::notify_host_mismatch(&c, Some("panel.example")), None);
-    assert_eq!(super::notify_host_mismatch(&c, None), None);
+    let t = c.effective_toml().unwrap();
+    assert!(!t.contains("payments") && !t.contains("/abc/"), "{t}");
 }
 
-/// R22: with `notify_url` empty the notify URL handed to Alipay follows
-/// the main domain of the system settings (current prefix); with neither
-/// configured, no order is created at all; an explicit `notify_url` wins.
+/// R22/W24: the notify URL handed to Alipay follows the main domain of the
+/// system settings (current prefix); without one, no order is created.
 #[tokio::test]
 async fn notify_url_follows_the_main_domain() {
     let Some(db) = TestDb::new().await else {
@@ -1408,9 +1401,7 @@ async fn notify_url_follows_the_main_domain() {
     let (_, plan) = priced_plan(&db, "nu", 500, 30).await;
 
     let derived = AppState::for_test(db.pool.clone()).await;
-    let mut cfg = alipay_cfg(&mock.url);
-    cfg.notify_url = String::new();
-    derived.set_alipay(Alipay::new(&cfg, panel_keys()));
+    let method = add_method(&derived, &mock.url, "支付宝").await;
     let user = db.user().await;
     let mut c = Client::new(&derived, rand_ip());
     c.cookie = Some(token(&derived, user).await);
@@ -1455,49 +1446,11 @@ async fn notify_url_follows_the_main_domain() {
     assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
     assert_eq!(
         mock.inner.lock().unwrap().notify_urls,
-        ["https://pay.example.com/test/pay/alipay/notify"]
+        [format!("https://pay.example.com/test/pay/{method}/notify")]
     );
 
-    // Explicit notify_url: used as configured, whatever the main domain.
-    let explicit = paid_state(&db, &mock).await;
-    let user2 = db.user().await;
-    let mut c2 = Client::new(&explicit, rand_ip());
-    c2.cookie = Some(token(&explicit, user2).await);
-    let r = c2
-        .post(
-            "/test/api/v1/me/orders",
-            json!({ "plan_id": plan, "period": "days" }),
-        )
-        .await;
-    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
-    assert_eq!(mock.inner.lock().unwrap().notify_urls[1], NOTIFY);
-    drop((derived, explicit));
+    drop(derived);
     db.drop().await;
-}
-
-#[test]
-fn key_file_mode_is_enforced() {
-    let dir = std::env::temp_dir().join(format!("akari-billing-{}", Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let key = dir.join("app.pem");
-    let public = dir.join("alipay.pem");
-    std::fs::write(&key, super::alipay::tests::APP_KEY).unwrap();
-    std::fs::write(&public, super::alipay::tests::ALIPAY_PUB).unwrap();
-    let mut cfg = alipay_cfg("https://openapi.alipay.com/gateway.do");
-    cfg.app_private_key_file = key.clone();
-    cfg.alipay_public_key_file = public;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let e = Alipay::from_config(&cfg).unwrap_err();
-        assert!(e.contains("permissions"), "{e}");
-        assert!(!e.contains("BEGIN"), "no key material in errors");
-        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
-    }
-    let a = Alipay::from_config(&cfg).unwrap();
-    assert!(!format!("{a:?}").contains("BEGIN"));
-    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -2619,7 +2572,7 @@ async fn end_order_outages_and_races() {
     };
     let mock = Mock::start().await;
     let state = paid_state(&db, &mock).await;
-    let alipay = state.alipay().unwrap().clone();
+    let (method, alipay) = method_of(&state);
     let (_, plan) = priced_plan(&db, "e", 300, 30).await;
     let actor = crate::audit::Actor::test();
     let pending = |id: Uuid, otn: &str| Pending {
@@ -2628,6 +2581,7 @@ async fn end_order_outages_and_races() {
         amount_cents: 300,
         expires_at: chrono::Utc::now(),
         due: true,
+        payment_method_id: Some(method),
     };
     let events = |id: Uuid| {
         let pool = db.pool.clone();
@@ -2642,11 +2596,11 @@ async fn end_order_outages_and_races() {
 
     // Gateway down: not forced -> still pending, nothing recorded.
     let (o1, otn1) = order_row(&db, db.user().await, plan, 300, 30).await;
-    alipay.precreate(NOTIFY, &otn1, 300, "s").await.unwrap();
+    precreate(&*alipay, &otn1, 300).await;
     mock.set_down(true);
     let st = orders::end_order(
         &state,
-        &alipay,
+        Some(&*alipay),
         &pending(o1, &otn1),
         "expired",
         &actor,
@@ -2660,7 +2614,7 @@ async fn end_order_outages_and_races() {
     // Forced (close grace exceeded): ends although the close failed.
     let st = orders::end_order(
         &state,
-        &alipay,
+        Some(&*alipay),
         &pending(o1, &otn1),
         "expired",
         &actor,
@@ -2681,7 +2635,7 @@ async fn end_order_outages_and_races() {
     // Alipay refuses the close (trade no longer closable, not paid): the
     // order stays pending for the next attempt.
     let (o2, otn2) = order_row(&db, db.user().await, plan, 300, 30).await;
-    alipay.precreate(NOTIFY, &otn2, 300, "s").await.unwrap();
+    precreate(&*alipay, &otn2, 300).await;
     mock.inner
         .lock()
         .unwrap()
@@ -2691,7 +2645,7 @@ async fn end_order_outages_and_races() {
         .status = Some("TRADE_CLOSED".into());
     let st = orders::end_order(
         &state,
-        &alipay,
+        Some(&*alipay),
         &pending(o2, &otn2),
         "cancelled",
         &actor,
@@ -2704,7 +2658,7 @@ async fn end_order_outages_and_races() {
 
     // Ended by someone else between our query/close and the UPDATE.
     let (o3, otn3) = order_row(&db, db.user().await, plan, 300, 30).await;
-    alipay.precreate(NOTIFY, &otn3, 300, "s").await.unwrap();
+    precreate(&*alipay, &otn3, 300).await;
     sqlx::query("UPDATE orders SET status = 'cancelled', ended_at = now() WHERE id = $1")
         .bind(o3)
         .execute(&db.pool)
@@ -2712,7 +2666,7 @@ async fn end_order_outages_and_races() {
         .unwrap();
     let st = orders::end_order(
         &state,
-        &alipay,
+        Some(&*alipay),
         &pending(o3, &otn3),
         "expired",
         &actor,
@@ -2820,6 +2774,7 @@ async fn period_months_mirror_sql() {
     db.drop().await;
 }
 mod w16;
+mod w24;
 
 /// W15: a paid order queues exactly one receipt (in the payment's
 /// transaction; replays and concurrent duplicates add none), only to a

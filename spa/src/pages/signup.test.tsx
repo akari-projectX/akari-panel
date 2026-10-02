@@ -241,6 +241,8 @@ describe("portal cards", () => {
 
 const signupView = (over: Partial<SignupView> = {}): SignupView => ({
   version: 3,
+  email_verify: null,
+  email_verify_effective: true,
   register_enabled: false,
   invite_required: false,
   invite_single_use: false,
