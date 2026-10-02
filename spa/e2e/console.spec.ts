@@ -713,7 +713,9 @@ test("W20: quota-exhausted user lands on the reset pack", async ({ browser }) =>
       })
     ).status(),
   ).toBe(204);
-  const users = (await (await actx.request.get(`${api}/users?limit=200`)).json()) as { id: string; login: string }[];
+  const users = (
+    (await (await actx.request.get(`${api}/users?limit=200`)).json()) as { users: { id: string; login: string }[] }
+  ).users;
   const uid = users.find((u) => u.login === QUOTA_USER)?.id;
   expect(uid).toBeTruthy();
   expect((await actx.request.put(`${api}/users/${uid}/plan`, { data: { plan_id: planId } })).status()).toBe(200);
