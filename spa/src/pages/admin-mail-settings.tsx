@@ -116,6 +116,8 @@ function Check(props: { id: string; label: string; checked: boolean; onChange: (
 export function MailSettings() {
   const signup = useQuery({ queryKey: ["settings-signup"], queryFn: () => get<SignupView>("/settings/signup") });
   const smtp = useQuery({ queryKey: ["settings-mail"], queryFn: () => get<SmtpView>("/settings/mail") });
+  // The version each form last saved (its success note shows while that is current).
+  const [savedVersion, setSavedVersion] = useState<{ signup?: number; smtp?: number }>({});
   return (
     <>
       {signup.isError && (
@@ -123,19 +125,40 @@ export function MailSettings() {
           {errText(signup.error, "加载注册设置失败")}
         </p>
       )}
-      {signup.data && <SignupForm key={`signup-${signup.data.version}`} data={signup.data} />}
+      {/* key：保存（或他人修改）后表单回到服务器的值；「已保存」提示放在这里，重新挂载后仍然显示 */}
+      {signup.data && (
+        <SignupForm
+          key={`signup-${signup.data.version}`}
+          data={signup.data}
+          saved={savedVersion.signup === signup.data.version}
+          onSaved={(v) => setSavedVersion((s) => ({ ...s, signup: v }))}
+        />
+      )}
       {smtp.isError && (
         <p role="alert" className="text-sm text-destructive">
           {errText(smtp.error, "加载邮件设置失败")}
         </p>
       )}
-      {smtp.data && <SmtpForm key={`smtp-${smtp.data.version}`} data={smtp.data} />}
+      {smtp.data && (
+        <SmtpForm
+          key={`smtp-${smtp.data.version}`}
+          data={smtp.data}
+          saved={savedVersion.smtp === smtp.data.version}
+          onSaved={(v) => setSavedVersion((s) => ({ ...s, smtp: v }))}
+        />
+      )}
       {smtp.data && <DeadLetters count={smtp.data.dead_letters} />}
     </>
   );
 }
 
-function SignupForm({ data }: { data: SignupView }) {
+interface FormProps<T> {
+  data: T;
+  saved: boolean;
+  onSaved: (version: number) => void;
+}
+
+function SignupForm({ data, saved, onSaved }: FormProps<SignupView>) {
   const qc = useQueryClient();
   const plans = useQuery({ queryKey: ["plans"], queryFn: () => get<PlanView[]>("/plans") });
   const [register, setRegister] = useState(data.register_enabled);
@@ -148,12 +171,10 @@ function SignupForm({ data }: { data: SignupView }) {
   const [reset, setReset] = useState(data.reset_enabled);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    setSaved(false);
     const n = Number(perUser);
     const days = Number(trialDays);
     if (!Number.isInteger(n) || n < 0 || n > 100) return setError("每人邀请码数量须为 0–100 的整数");
@@ -171,8 +192,8 @@ function SignupForm({ data }: { data: SignupView }) {
         trial_days: days,
         reset_enabled: reset,
       });
+      onSaved(res.version);
       qc.setQueryData(["settings-signup"], res);
-      setSaved(true);
     } catch (err) {
       setError(errText(err, "保存失败"));
     } finally {
@@ -290,7 +311,7 @@ function SignupForm({ data }: { data: SignupView }) {
 
 const SECURITY_PORT: Record<Security, number> = { starttls: 587, tls: 465, none: 25 };
 
-function SmtpForm({ data }: { data: SmtpView }) {
+function SmtpForm({ data, saved, onSaved }: FormProps<SmtpView>) {
   const qc = useQueryClient();
   const [enabled, setEnabled] = useState(data.enabled);
   const [host, setHost] = useState(data.host ?? "");
@@ -306,7 +327,6 @@ function SmtpForm({ data }: { data: SmtpView }) {
   const [quota, setQuota] = useState(data.notify_quota);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
   const [testTo, setTestTo] = useState("");
   const [testMsg, setTestMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [testing, setTesting] = useState(false);
@@ -320,7 +340,6 @@ function SmtpForm({ data }: { data: SmtpView }) {
   async function save(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    setSaved(false);
     const p = Number(port);
     const days = Number(expiryDays);
     if (!Number.isInteger(p) || p < 1 || p > 65535) return setError("端口须为 1–65535");
@@ -346,9 +365,9 @@ function SmtpForm({ data }: { data: SmtpView }) {
     setBusy(true);
     try {
       const res = await put<SmtpView>("/settings/mail", body);
+      onSaved(res.version);
       qc.setQueryData(["settings-mail"], res);
       await qc.invalidateQueries({ queryKey: ["settings-signup"] });
-      setSaved(true);
     } catch (err) {
       setError(errText(err, "保存失败"));
     } finally {

@@ -273,7 +273,10 @@ describe("admin 注册 / 邮件", () => {
       "GET /settings/mail": smtpView(),
       "GET /plans": [{ id: "p1", name: "试用", enabled: true }],
       "PUT /settings/signup": (b: unknown) => ({ status: 200, body: { ...signupView(), ...(b as object) } }),
-      "PUT /settings/mail": (b: unknown) => ({ status: 200, body: { ...smtpView(), ...(b as object) } }),
+      "PUT /settings/mail": (b: unknown) => ({
+        status: 200,
+        body: { ...smtpView(), ...(b as object), version: ((b as { version: number }).version ?? 0) + 1 },
+      }),
       "POST /settings/mail/test": () => ({ status: 502, body: { error: "send failed: 535 auth failed" } }),
       "GET /mail/outbox": [
         {
@@ -321,6 +324,8 @@ describe("admin 注册 / 邮件", () => {
     >;
     expect("password" in first).toBe(false);
     expect(first.version).toBe(7);
+    // The form remounts on the new version; the success note survives it.
+    expect(await screen.findAllByText("已保存。")).toHaveLength(2);
     fireEvent.change(screen.getByLabelText("密码"), { target: { value: "new-secret" } });
     fireEvent.click(screen.getByRole("button", { name: "保存邮件设置" }));
     await waitFor(() => expect(calls.filter((c) => c.path === "/settings/mail" && c.method === "PUT")).toHaveLength(2));

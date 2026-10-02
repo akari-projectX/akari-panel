@@ -399,7 +399,8 @@ test("W15: 系统设置 注册/邮件, sign up by email code, reset the password
   expect((await mailTo("admin@e2e.test", 1)).subject).toContain("测试邮件");
   await ap.locator("#settings-main").fill(new URL(BASE).host);
   await ap.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(ap.getByText("已保存，所有面板实例已生效。")).toBeVisible();
+  // (The domain form remounts on the new version, so wait for the effective value.)
+  await expect(ap.getByText(`当前生效：https://${new URL(BASE).host}`).first()).toBeVisible();
   await ap.reload();
   await ap.getByLabel("开放注册").check();
   await ap.getByLabel("允许通过邮件找回密码").check();
@@ -440,7 +441,7 @@ test("W15: 系统设置 注册/邮件, sign up by email code, reset the password
   await page.goto(`${BASE}/reset#token=${token}`);
   await expect(page.getByRole("heading", { name: "Choose a new password" })).toBeVisible();
   await expect.poll(() => new URL(page.url()).hash).toBe(""); // the token left the address bar
-  await page.getByLabel("New password").fill("e2e-password-2");
+  await page.getByLabel("New password", { exact: true }).fill("e2e-password-2");
   await page.getByLabel("Repeat new password").fill("e2e-password-2");
   await page.getByRole("button", { name: "Reset password" }).click();
   await expect(page.getByRole("status")).toContainText("has been reset");
