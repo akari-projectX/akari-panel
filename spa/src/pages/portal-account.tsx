@@ -273,7 +273,9 @@ export function InviteCodes() {
             <TableRow>
               <TableHead>{t("account.colCode")}</TableHead>
               <TableHead>{t("account.colUses")}</TableHead>
-              <TableHead />
+              <TableHead>
+                <span className="sr-only">{t("billing.colActions")}</span>
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
