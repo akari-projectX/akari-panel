@@ -365,10 +365,10 @@ impl UserKey {
 }
 
 /// 128-bit digest of one user's inbound credentials (tag, protocol,
-/// account_json per tag, length-prefixed, in tag order) and speed limit (a
-/// u32 0xffffffff marker + u64be, only when non-zero: it can never be
-/// mistaken for a length prefix).
-fn user_digest(tags: &BTreeMap<String, (String, String)>, limit: u64) -> [u8; 16] {
+/// account_json per tag, length-prefixed, in tag order). Speed limits are
+/// kept beside it (`SetDigest.limits`), so a limit-only change never looks
+/// like a dropped/rotated credential (remove_mode=rebuild, Shadowsocks).
+fn user_digest(tags: &BTreeMap<String, (String, String)>) -> [u8; 16] {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     for (tag, (protocol, account)) in tags {
@@ -376,10 +376,6 @@ fn user_digest(tags: &BTreeMap<String, (String, String)>, limit: u64) -> [u8; 16
             h.update((f.len() as u32).to_be_bytes());
             h.update(f);
         }
-    }
-    if limit != 0 {
-        h.update(u32::MAX.to_be_bytes());
-        h.update(limit.to_be_bytes());
     }
     let d = h.finalize();
     let mut out = [0u8; 16];
@@ -402,6 +398,8 @@ pub struct SetDigest {
     hash: String,
     inbounds: [u8; 32],
     users: BTreeMap<UserKey, [u8; 16]>,
+    /// W7: non-zero speed limits (bytes/s) of the users, by user.
+    limits: BTreeMap<UserKey, u64>,
     /// W8: the inbounds include a Shadowsocks one. The agent refuses
     /// deltas that remove/rotate users there (xray's multi-user SS2022
     /// inbound cannot safely shrink while running; akari-agent
@@ -420,10 +418,12 @@ impl SetDigest {
             users: state
                 .users
                 .iter()
-                .map(|(id, tags)| {
-                    let limit = state.limits.get(id).copied().unwrap_or(0);
-                    (UserKey::of(id), user_digest(tags, limit))
-                })
+                .map(|(id, tags)| (UserKey::of(id), user_digest(tags)))
+                .collect(),
+            limits: state
+                .limits
+                .iter()
+                .map(|(id, l)| (UserKey::of(id), *l))
                 .collect(),
         }
     }
@@ -447,7 +447,9 @@ pub fn diff_from_digest(base: &SetDigest, want: &NodeState) -> Vec<UserOp> {
     for (user, tags) in &want.users {
         let key = UserKey::of(user);
         let limit = want.limits.get(user).copied().unwrap_or(0);
-        if base.users.get(&key) != Some(&user_digest(tags, limit)) {
+        if base.users.get(&key) != Some(&user_digest(tags))
+            || base.limits.get(&key).copied().unwrap_or(0) != limit
+        {
             ops.push(add_op(user, tags, limit));
         }
         wanted.insert(key);
@@ -2564,7 +2566,9 @@ mod tests {
 
     /// W7: speed limits ride in the user ops. A limit change alone is a
     /// delta (ADD with the unchanged credentials + the new limit), never
-    /// part of the state hash; REMOVE and empty users carry no limit.
+    /// part of the state hash, never a dropped credential (so it stays a
+    /// delta on Shadowsocks nodes and in remove_mode=rebuild); REMOVE and
+    /// empty users carry no limit.
     #[test]
     fn speed_limits_in_deltas_not_in_hash() {
         let mut a = op("a", &[("t1", "{\"id\":\"a\"}")]);
@@ -2578,6 +2582,7 @@ mod tests {
         let dg = SetDigest::of(7, &base);
         let ops = diff_from_digest(&dg, &want);
         assert_eq!(ops, vec![a.clone()], "limit-only change = one ADD");
+        assert!(!drops_credential_digest(&dg, &SetDigest::of(7, &want)));
         assert_eq!(diff_user_sets(&base, &want), ops);
         assert!(diff_from_digest(&SetDigest::of(7, &want), &want).is_empty());
         // Back to unlimited is a change too.
@@ -2915,10 +2920,7 @@ mod tests {
         let t0 = Instant::now();
         let ss = r#"[{"tag":"t","protocol":"shadowsocks"}]"#;
         let with = |ops: &[UserOp]| {
-            Arc::new(NodeState {
-                inbounds: ss.into(),
-                users: user_set(ops),
-            })
+            Arc::new(NodeState::of_snapshot(ss.into(), ops))
         };
         let s1 = with(&[op("a", &[("t", "1")]), op("b", &[("t", "2")])]);
         let add = with(&[
