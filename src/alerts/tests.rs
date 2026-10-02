@@ -362,10 +362,13 @@ fn messages() {
 // Real database
 // ---------------------------------------------------------------------------
 
+/// One request a mock received: (path, headers, body).
+type Request = (String, HeaderMap, Vec<u8>);
+
 /// A mock HTTP receiver: records (path, headers, body); answers `status`.
 #[derive(Clone, Default)]
 struct Mock {
-    got: Arc<Mutex<Vec<(String, HeaderMap, Vec<u8>)>>>,
+    got: Arc<Mutex<Vec<Request>>>,
     status: Arc<Mutex<u16>>,
     body: Arc<Mutex<String>>,
 }
