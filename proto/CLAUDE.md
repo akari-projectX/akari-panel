@@ -14,7 +14,7 @@ agent 仓库的 `make sync-proto`/`check-proto` 写死 `../akari-panel`；在 wo
 语义要点（完整定义见 proto 注释）：
 - `TrafficReport.session_id` 是计费键（与计数原子读取）；Hello 的 session 仅供展示/日志。
 - `Hello.protocol_version`：当前 4（= 执行 `UserOp.speed_limit_bytes_per_sec` 每用户限速，W7；3 = 自更新；2 = 会用 `AgentChannel.Renew` 续期证书）；1 = 不续期，面板照常服务（NodeView 在证书 14 天内到期时警告）；旧 agent 不发 = 0。面板 `MIN_AGENT_PROTOCOL` 以下给空状态并标记，不拒绝连接。**先升级 agent 再升级面板**；改协议语义时加版本号并更新两侧常量。
-- `UserOp.speed_limit_bytes_per_sec`（协议 4）：每用户、上下行各自、该用户在本节点所有连接共享，0 = 不限；**不进** state hash（持有版本即带该版本的限速，应用不会单独失败），面板的每用户 digest 包含它，所以只改限速也是一次 UserDelta（ADD 原凭据 + 新限速，连接保留；从无到有会断开该用户的活连接以便限速生效）。
+- `UserOp.speed_limit_bytes_per_sec`（协议 4）：每用户、上下行各自、该用户在本节点所有连接共享，0 = 不限；**不进** state hash（持有版本即带该版本的限速，应用不会单独失败），面板会话记录每用户限速（`SetDigest.limits`），所以只改限速也是一次 UserDelta（不算掉凭据）（ADD 原凭据 + 新限速，连接保留；从无到有会断开该用户的活连接以便限速生效）。
 - `ConfigSnapshot` 是完整期望状态；`UserDelta` 带 base/target：持有 == base 才应用，持有 == target 按 no-op ack，其余 `BASE_MISMATCH`；delta 不改 config_version。`UserOp.ADD` = REPLACE（恰好列出的 inbound，旧/轮换凭据的活连接被断开）。
 - `Ack.reason`（OK / APPLY_FAILED / BASE_MISMATCH）+ `held_*`（处理后 agent 实际持有）+ `state_hash`。
 - State hash v2：SHA-256，`"akari-state-v2\n"` + u64be(config_version) + 按 (user_id, tag) 字节序的长度前缀四元组 + u32be(32)‖SHA-256(inbounds_json 原文，无实例时 "")；account_json **原样**参与（面板用 serde_json 紧凑+键排序输出，agent 不重新序列化）。向量由 `testdata/gen_vectors.py`（独立 Python 参考实现）生成，改算法先改它再重生成、同步到 agent。
