@@ -428,7 +428,8 @@ pub const SUB_TOKEN_PER_HOUR: i64 = 5;
 /// POST /api/v1/me/sub-token (full session, role=user): replace your own
 /// subscription token; the old URL stops working at once. Rate limited
 /// (SUB_TOKEN_PER_HOUR per account, Valkey, one key per account). Returns
-/// the new token exactly once. Audited.
+/// the new token (W20: it stays visible in `/me`, stored encrypted).
+/// Audited.
 pub async fn regenerate_own_sub_token(
     State(state): State<AppState>,
     user: AuthUser,
@@ -451,7 +452,7 @@ pub async fn regenerate_own_sub_token(
         return Err(ApiError::too_many());
     }
     let mut tx = state.pg().begin().await?;
-    let token = crate::sub::rotate_token(&mut tx, &Actor::of(&user), user.id)
+    let token = crate::sub::rotate_token(&mut tx, state.totp(), &Actor::of(&user), user.id)
         .await?
         .ok_or_else(ApiError::unauthorized)?;
     tx.commit().await?;

@@ -144,6 +144,10 @@ pub struct Keys {
     recovery: hmac::Key,
     /// W15: email verification codes (signup::codes).
     mail: hmac::Key,
+    /// W20: subscription tokens at rest (`users.sub_token_enc`, AAD = user
+    /// id). A key of its own: a token blob never opens as a TOTP secret or
+    /// SMTP password and vice versa.
+    sub: aead::LessSafeKey,
 }
 
 const SEAL_VERSION: u8 = 1;
@@ -158,49 +162,41 @@ impl Keys {
         let enc = hmac::sign(&root, b"akari/totp-secret-aead/v1");
         let rec = hmac::sign(&root, b"akari/recovery-code-hmac/v1");
         let mail = hmac::sign(&root, b"akari/mail-code-hmac/v1");
-        let unbound = aead::UnboundKey::new(&aead::AES_256_GCM, enc.as_ref())
-            .map_err(|_| anyhow::anyhow!("totp aead key"))?;
+        let sub = hmac::sign(&root, b"akari/sub-token-aead/v1");
+        let aead_key = |k: &[u8]| {
+            aead::UnboundKey::new(&aead::AES_256_GCM, k)
+                .map(aead::LessSafeKey::new)
+                .map_err(|_| anyhow::anyhow!("totp aead key"))
+        };
         Ok(Self {
-            aead: aead::LessSafeKey::new(unbound),
+            aead: aead_key(enc.as_ref())?,
             recovery: hmac::Key::new(hmac::HMAC_SHA256, rec.as_ref()),
             mail: hmac::Key::new(hmac::HMAC_SHA256, mail.as_ref()),
+            sub: aead_key(sub.as_ref())?,
         })
     }
 
     /// Encrypt a TOTP secret for `user` (random 96-bit nonce).
     pub fn seal(&self, user: Uuid, secret: &[u8]) -> anyhow::Result<Vec<u8>> {
-        let mut nonce = [0u8; NONCE_LEN];
-        rand::rng().fill_bytes(&mut nonce);
-        let mut buf = secret.to_vec();
-        self.aead
-            .seal_in_place_append_tag(
-                aead::Nonce::assume_unique_for_key(nonce),
-                aead::Aad::from(user.as_bytes()),
-                &mut buf,
-            )
-            .map_err(|_| anyhow::anyhow!("totp secret encryption failed"))?;
-        let mut out = Vec::with_capacity(1 + NONCE_LEN + buf.len());
-        out.push(SEAL_VERSION);
-        out.extend_from_slice(&nonce);
-        out.extend_from_slice(&buf);
-        Ok(out)
+        seal_with(&self.aead, user, secret)
     }
 
     /// Decrypt a sealed secret; `None` if it is not `user`'s or was altered
     /// (or the key file changed).
     pub fn open(&self, user: Uuid, blob: &[u8]) -> Option<Vec<u8>> {
-        let (&version, rest) = blob.split_first()?;
-        if version != SEAL_VERSION || rest.len() < NONCE_LEN {
-            return None;
-        }
-        let (nonce, ct) = rest.split_at(NONCE_LEN);
-        let nonce = aead::Nonce::try_assume_unique_for_key(nonce).ok()?;
-        let mut buf = ct.to_vec();
-        let pt = self
-            .aead
-            .open_in_place(nonce, aead::Aad::from(user.as_bytes()), &mut buf)
-            .ok()?;
-        Some(pt.to_vec())
+        open_with(&self.aead, user, blob)
+    }
+
+    /// W20: the stored form of `user`'s subscription token
+    /// (`users.sub_token_enc`; same layout as `seal`, own key).
+    pub fn seal_sub_token(&self, user: Uuid, token: &str) -> anyhow::Result<Vec<u8>> {
+        seal_with(&self.sub, user, token.as_bytes())
+    }
+
+    /// W20: `user`'s subscription token from its stored form; `None` if the
+    /// blob is not `user`'s, was altered, or data/totp.key changed.
+    pub fn open_sub_token(&self, user: Uuid, blob: &[u8]) -> Option<String> {
+        String::from_utf8(open_with(&self.sub, user, blob)?).ok()
     }
 
     /// Stored form of an email verification code (W15): HMAC over the
@@ -223,6 +219,39 @@ impl Keys {
         ctx.update(normalized.as_bytes());
         hex::encode(ctx.sign().as_ref())
     }
+}
+
+/// `0x01 ‖ nonce ‖ AES-256-GCM(plaintext)` with AAD = user id (random
+/// 96-bit nonce).
+fn seal_with(key: &aead::LessSafeKey, user: Uuid, plaintext: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let mut nonce = [0u8; NONCE_LEN];
+    rand::rng().fill_bytes(&mut nonce);
+    let mut buf = plaintext.to_vec();
+    key.seal_in_place_append_tag(
+        aead::Nonce::assume_unique_for_key(nonce),
+        aead::Aad::from(user.as_bytes()),
+        &mut buf,
+    )
+    .map_err(|_| anyhow::anyhow!("encryption failed"))?;
+    let mut out = Vec::with_capacity(1 + NONCE_LEN + buf.len());
+    out.push(SEAL_VERSION);
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&buf);
+    Ok(out)
+}
+
+fn open_with(key: &aead::LessSafeKey, user: Uuid, blob: &[u8]) -> Option<Vec<u8>> {
+    let (&version, rest) = blob.split_first()?;
+    if version != SEAL_VERSION || rest.len() < NONCE_LEN {
+        return None;
+    }
+    let (nonce, ct) = rest.split_at(NONCE_LEN);
+    let nonce = aead::Nonce::try_assume_unique_for_key(nonce).ok()?;
+    let mut buf = ct.to_vec();
+    let pt = key
+        .open_in_place(nonce, aead::Aad::from(user.as_bytes()), &mut buf)
+        .ok()?;
+    Some(pt.to_vec())
 }
 
 /// A verified second factor, still to be committed (replay-checked
@@ -365,6 +394,27 @@ mod tests {
         assert_eq!(other.open(u, &blob), None, "other key file");
         assert!(Keys::from_material(&[1u8; 16]).is_err());
         assert_ne!(keys.seal(u, &secret).unwrap(), blob, "fresh nonce");
+    }
+
+    /// W20: subscription tokens use their own derived key: user-bound,
+    /// tamper-evident, and never interchangeable with TOTP/SMTP blobs.
+    #[test]
+    fn sub_token_seal_is_separate_and_user_bound() {
+        let keys = Keys::from_material(&[7u8; 32]).unwrap();
+        let (u, v) = (Uuid::new_v4(), Uuid::new_v4());
+        let token = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ";
+        let blob = keys.seal_sub_token(u, token).unwrap();
+        assert_eq!(keys.open_sub_token(u, &blob).as_deref(), Some(token));
+        assert!(!blob.windows(token.len()).any(|w| w == token.as_bytes()));
+        assert_eq!(keys.open_sub_token(v, &blob), None, "other user's row");
+        assert_eq!(keys.open(u, &blob), None, "not a TOTP blob");
+        let totp = keys.seal(u, token.as_bytes()).unwrap();
+        assert_eq!(keys.open_sub_token(u, &totp), None, "TOTP blob is not a token");
+        let mut bad = blob.clone();
+        bad[5] ^= 1;
+        assert_eq!(keys.open_sub_token(u, &bad), None, "tampered");
+        let other = Keys::from_material(&[8u8; 32]).unwrap();
+        assert_eq!(other.open_sub_token(u, &blob), None, "other key file");
     }
 
     #[test]
