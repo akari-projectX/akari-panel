@@ -52,6 +52,11 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   admin override. Periodic traffic resets re-enable users disabled only for
   quota. Users see their plan, usage, next reset, expiry and node list
   (names/regions) in the portal and can change their password.
+- **Plan catalogue (W7)**: prices per period (month / quarter / half-year /
+  year / two / three years / custom days / one-time / traffic reset pack),
+  a Markdown-lite description, stock (max subscribers), renewal-only and
+  switch-in rules, plan switching with pro-rata credit, and a per-user
+  speed limit enforced by the agent (see docs/PAYMENTS.md).
 - `akari node add <name>` (or `POST /api/v1/nodes`, or New node in the UI)
   creates the node with a one-time enrollment token and writes a bootstrap
   file without any private key: the agent generates its key (ECDSA P-256)
@@ -179,7 +184,7 @@ separate loopback listener, never on the public port.
 | GET/PUT/PATCH/DELETE | /api/v1/users/{id}/plan | admin | active plan + history / assign or change `{plan_id, expires_at?, period_anchor?, reset_traffic?}` / `{expires_at?, period_anchor?}` / cancel |
 | GET/POST | /api/v1/node-groups | admin | list / create `{name, description?, node_ids?}` |
 | PATCH/DELETE | /api/v1/node-groups/{id} | admin | rename, describe, replace `node_ids` / delete |
-| GET/POST | /api/v1/plans | admin | list / create `{name, period, traffic_quota_bytes?, speed_limit_mbps?, device_seats?, sort?, enabled?, group_ids?}` |
+| GET/POST | /api/v1/plans | admin | list / create `{name, period, traffic_quota_bytes?, speed_limit_mbps?, device_seats?, sort?, enabled?, group_ids?, description?, capacity?, renewal_only?, allow_switch_in?}` (views include `on_sale` and `prices`) |
 | PATCH/DELETE | /api/v1/plans/{id} | admin | update (same fields; null clears nullable ones) / delete (409 while users hold it) |
 | GET/POST | /api/v1/nodes | admin | node list with live status, certificate expiry, last heartbeat, warnings / create a node `{name, region?, server_addr?, templates? \| inbounds?, install?: {origin?}}` (201: one-time enrollment token + bootstrap file + one-line install command, shown once) |
 | POST | /api/v1/nodes/{id}/install | admin | new one-line install command `{origin?}` (re-install; replaces the node's unused token) |
@@ -192,12 +197,12 @@ separate loopback listener, never on the public port.
 | POST | /api/v1/users/{id}/sub-token | admin | regenerate subscription token |
 | POST | /api/v1/users/{id}/revoke-sessions | admin | log the account out everywhere (204) |
 | DELETE | /api/v1/users/{id}/totp | admin | reset the account's 2FA, end its sessions; `{"totp": "active"\|"pending"\|"none"}` (what was removed) |
-| GET | /api/v1/me/shop | user (renewal scope*) | R18-3: purchasable plans (price in cents, days) and what buying does (`new`/`renew`/`replace`/`unavailable`) |
-| GET/POST | /api/v1/me/orders | user (renewal scope*) | own orders (last 50) / create `{plan_id}` → order + Alipay QR (the amount is the server's price) |
+| GET | /api/v1/me/shop | user (renewal scope*) | plans on sale with every priced period as the caller would buy it now (`action` new/renew/switch/reset, `credit_cents`, `amount_cents`, or `refusal`), description, stock; the caller's subscription and switch credit |
+| GET/POST | /api/v1/me/orders | user (renewal scope*) | own orders (last 50) / create `{plan_id, period}` → order + Alipay QR (the amount is the server's price minus any switch credit; fully credited orders are paid at once) |
 | GET | /api/v1/me/orders/{id} | user (renewal scope*) | order status; a pending order is actively queried at Alipay (throttled) |
 | POST | /api/v1/me/orders/{id}/cancel | user (renewal scope*) | cancel a pending order (queried + closed at Alipay first) |
-| GET | /api/v1/plan-prices | admin | every plan with its price / purchasable flag, `payments_enabled` |
-| PUT/DELETE | /api/v1/plans/{id}/price | admin | `{price_cents, period_days, purchasable}` / remove the price |
+| GET | /api/v1/plan-prices | admin | every plan with its `on_sale` flag and prices, `payments_enabled` |
+| PUT | /api/v1/plans/{id}/prices | admin | `{on_sale, prices: [{period, days?, price_cents}]}` replaces the plan's prices (W7 period kinds) |
 | GET | /api/v1/orders | admin | orders, `?status&login&out_trade_no&unfulfilled&before&limit` (keyset) |
 | GET | /api/v1/orders/{id} | admin | order + payment events |
 | POST | /api/v1/orders/{id}/fulfil | admin | `{reason}`: mark an unpaid order paid (manual) or retry a failed fulfilment (audited) |
@@ -364,9 +369,13 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   grant groups and set a traffic quota (`null` = unlimited) and a reset
   period: `monthly` (on the anchor's day of month, clamped to the month's
   end, UTC), `days-N` (every N days, 1–3650) or `none`. `speed_limit_mbps`
-  is a hint shown to users and **not enforced**; `device_seats` is stored
-  for seat binding (M5) and **not enforced**. A disabled plan is no longer
-  offered for new assignments; existing subscribers keep it.
+  is **enforced** per user by the agent (W7, agent protocol 4: each
+  direction, shared by all of the user's connections on a node, XTLS
+  splice disabled for limited users; older agents run the user unthrottled
+  and the node shows a warning); `device_seats` is stored for seat binding
+  (with the client, R25) and **not enforced**. A disabled plan is no longer
+  offered for new assignments; existing subscribers keep it. Prices, stock
+  and sale rules are in docs/PAYMENTS.md.
 - **User plans**: one active plan per user (admins cannot have one).
   Assigning replaces the active plan; while it is active the user's
   `traffic_limit_bytes` and `expires_at` are the plan's (PATCH /users

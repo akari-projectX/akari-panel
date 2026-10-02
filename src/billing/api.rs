@@ -21,6 +21,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::alipay::{self, Alipay};
+use super::catalog::{self, Current, Offer, PeriodKind, PeriodKindText, Price, Sale};
 use super::orders::{self, payment_actor, Paid, Pending, Via};
 use crate::api::ApiJson;
 use crate::audit::Actor;
@@ -48,10 +49,10 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/{prefix}/api/v1/me/orders/{id}", get(my_order))
         .route("/{prefix}/api/v1/me/orders/{id}/cancel", post(cancel_order))
-        .route("/{prefix}/api/v1/plan-prices", get(list_prices))
+        .route("/{prefix}/api/v1/plan-prices", get(catalog::list_prices))
         .route(
-            "/{prefix}/api/v1/plans/{id}/price",
-            put(set_price).delete(delete_price),
+            "/{prefix}/api/v1/plans/{id}/prices",
+            put(catalog::set_prices),
         )
         .route("/{prefix}/api/v1/orders", get(list_orders))
         .route("/{prefix}/api/v1/orders/{id}", get(get_order))
@@ -84,7 +85,12 @@ pub struct MyOrderView {
     plan_id: Option<Uuid>,
     plan_name: String,
     amount_cents: i64,
-    period_days: i32,
+    /// W7: the period kind bought (catalog::PeriodKind) and its days
+    /// (days/onetime only), the list price and the proration credit.
+    period: String,
+    period_days: Option<i32>,
+    list_price_cents: i64,
+    credit_cents: i64,
     status: String,
     /// Only while pending.
     qr_code: Option<String>,
@@ -95,7 +101,7 @@ pub struct MyOrderView {
 }
 
 const MY_ORDER_SQL: &str = "SELECT id, out_trade_no, plan_id, plan_name, amount_cents, \
-     period_days, status, CASE WHEN status = 'pending' THEN qr_code END AS qr_code, created_at, \
+     period, period_days, list_price_cents, credit_cents, status, CASE WHEN status = 'pending' THEN qr_code END AS qr_code, created_at, \
      expires_at, paid_at, fulfilled_at IS NOT NULL AS fulfilled FROM orders";
 
 /// An order as an admin sees it.
@@ -108,7 +114,11 @@ pub struct OrderView {
     plan_id: Option<Uuid>,
     plan_name: String,
     amount_cents: i64,
-    period_days: i32,
+    period: String,
+    period_days: Option<i32>,
+    list_price_cents: i64,
+    credit_cents: i64,
+    credit_order_id: Option<Uuid>,
     status: String,
     trade_no: Option<String>,
     paid_via: Option<String>,
@@ -125,7 +135,7 @@ pub struct OrderView {
 }
 
 const ORDER_SQL: &str = "SELECT id, out_trade_no, user_id, user_login, plan_id, plan_name, \
-     amount_cents, period_days, status, trade_no, paid_via, paid_amount_cents, manual_reason, \
+     amount_cents, period, period_days, list_price_cents, credit_cents, credit_order_id, status, trade_no, paid_via, paid_amount_cents, manual_reason, \
      fulfilled_at, fulfil_result, fulfil_error, created_at, expires_at, paid_at, ended_at, \
      close_state FROM orders";
 
@@ -146,19 +156,46 @@ pub struct EventView {
 // ---------------------------------------------------------------------------
 
 #[derive(sqlx::FromRow)]
-struct ShopRow {
+struct ShopPlanRow {
     plan_id: Uuid,
     name: String,
-    price_cents: i64,
-    period_days: i32,
+    description: String,
     traffic_quota_bytes: Option<i64>,
     reset_period: String,
     reset_days: Option<i32>,
     speed_limit_mbps: Option<i32>,
+    device_seats: Option<i32>,
+    capacity: Option<i32>,
+    renewal_only: bool,
+    allow_switch_in: bool,
+    active: i64,
 }
 
-/// GET /me/shop: purchasable plans with the action buying one would take
-/// for the caller ("new" | "renew" | "replace" | "unavailable").
+#[derive(sqlx::FromRow)]
+struct PriceRow {
+    plan_id: Uuid,
+    period: String,
+    days: Option<i32>,
+    price_cents: i64,
+}
+
+fn price_of(r: &PriceRow) -> Option<Price> {
+    Some(Price {
+        period: PeriodKindText(PeriodKind::parse(&r.period)?),
+        days: r.days,
+        price_cents: r.price_cents,
+    })
+}
+
+const SALE_PLAN_SQL: &str = "SELECT p.id AS plan_id, p.name, p.description, \
+     p.traffic_quota_bytes, p.reset_period, p.reset_days, p.speed_limit_mbps, p.device_seats, \
+     p.capacity, p.renewal_only, p.allow_switch_in, \
+     (SELECT count(*) FROM user_plans up WHERE up.plan_id = p.id AND up.status = 'active') \
+     AS active FROM plans p WHERE p.enabled AND p.on_sale";
+
+/// GET /me/shop: the plans on sale with every priced period as the caller
+/// would buy it now (action, credit, amount — or why not), the caller's
+/// subscription and the credit it is worth when switching.
 ///
 /// The user-side shop/order handlers take `ShopUser` (R21 renewal scope):
 /// expired and quota-disabled accounts must be able to buy and pay. They
@@ -169,49 +206,75 @@ pub async fn shop(
 ) -> Result<Json<Value>, ApiError> {
     let enabled = state.alipay().is_some() && user.role == "user";
     let mut c = state.pg().acquire().await?;
-    let current: Option<(Uuid, String, Option<DateTime<Utc>>)> = sqlx::query_as(
-        "SELECT up.plan_id, p.name, up.expires_at FROM user_plans up JOIN plans p \
-         ON p.id = up.plan_id WHERE up.user_id = $1 AND up.status = 'active'",
-    )
-    .bind(user.id)
-    .fetch_optional(&mut *c)
-    .await?;
-    let rows: Vec<ShopRow> = if enabled {
-        sqlx::query_as(
-            "SELECT p.id AS plan_id, p.name, pp.price_cents, pp.period_days, \
-             p.traffic_quota_bytes, p.reset_period, p.reset_days, p.speed_limit_mbps \
-             FROM plan_prices pp JOIN plans p ON p.id = pp.plan_id \
-             WHERE pp.purchasable AND p.enabled ORDER BY p.sort, pp.price_cents, p.name",
+    let current = catalog::current(&mut c, user.id).await?;
+    let (credit, _) = catalog::switch_credit(&mut c, user.id).await?;
+    let (rows, prices): (Vec<ShopPlanRow>, Vec<PriceRow>) = if enabled {
+        (
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "{SALE_PLAN_SQL} ORDER BY p.sort, p.name"
+            )))
+            .fetch_all(&mut *c)
+            .await?,
+            sqlx::query_as(
+                "SELECT pp.plan_id, pp.period, pp.days, pp.price_cents FROM plan_period_prices pp \
+                 JOIN plans p ON p.id = pp.plan_id WHERE p.enabled AND p.on_sale \
+                 ORDER BY array_position(ARRAY['month', 'quarter', 'half_year', 'year', \
+                 'two_year', 'three_year', 'days', 'onetime', 'reset'], pp.period)",
+            )
+            .fetch_all(&mut *c)
+            .await?,
         )
-        .fetch_all(&mut *c)
-        .await?
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
-    let plans: Vec<Value> = rows
-        .into_iter()
-        .map(|r| {
-            let action = match &current {
-                Some((p, _, None)) if *p == r.plan_id => "unavailable",
-                Some((p, _, Some(_))) if *p == r.plan_id => "renew",
-                Some(_) => "replace",
-                None => "new",
-            };
-            json!({
-                "plan_id": r.plan_id,
-                "name": r.name,
-                "price_cents": r.price_cents,
-                "period_days": r.period_days,
-                "traffic_quota_bytes": r.traffic_quota_bytes,
-                "period": crate::plans::Period::from_columns(&r.reset_period, r.reset_days).render(),
-                "speed_limit_mbps": r.speed_limit_mbps,
-                "action": action,
-            })
-        })
-        .collect();
+    let cur = current.as_ref().map(|(id, _, exp)| Current {
+        plan_id: *id,
+        expires: exp.is_some(),
+    });
+    let mut plans = Vec::new();
+    for r in rows {
+        let holder = cur.is_some_and(|c| c.plan_id == r.plan_id);
+        // Renewal-only plans are invisible to everybody but their holders.
+        if r.renewal_only && !holder {
+            continue;
+        }
+        let sale = Sale {
+            plan_id: r.plan_id,
+            for_sale: true,
+            capacity: r.capacity,
+            active: r.active,
+            renewal_only: r.renewal_only,
+            allow_switch_in: r.allow_switch_in,
+        };
+        let offers: Vec<Offer> = prices
+            .iter()
+            .filter(|p| p.plan_id == r.plan_id)
+            .filter_map(price_of)
+            .filter(|p| holder || p.period.0 != PeriodKind::Reset)
+            .map(|p| Offer::of(cur, &sale, &p, credit))
+            .collect();
+        if offers.is_empty() {
+            continue;
+        }
+        let remaining = r.capacity.map(|c| (i64::from(c) - r.active).max(0));
+        plans.push(json!({
+            "plan_id": r.plan_id,
+            "name": r.name,
+            "description": r.description,
+            "traffic_quota_bytes": r.traffic_quota_bytes,
+            "period": crate::plans::Period::from_columns(&r.reset_period, r.reset_days).render(),
+            "speed_limit_mbps": r.speed_limit_mbps,
+            "device_seats": r.device_seats,
+            "current": holder,
+            "remaining": remaining,
+            "sold_out": !holder && remaining == Some(0),
+            "offers": offers,
+        }));
+    }
     Ok(Json(json!({
         "enabled": enabled,
         "current": current.map(|(id, name, exp)| json!({ "plan_id": id, "name": name, "expires_at": exp })),
+        "credit_cents": credit,
         "plans": plans,
     })))
 }
@@ -220,6 +283,8 @@ pub async fn shop(
 #[serde(deny_unknown_fields)]
 pub struct CreateOrderReq {
     pub plan_id: Uuid,
+    /// catalog::PeriodKind ("month", ..., "reset").
+    pub period: PeriodKindText,
 }
 
 async fn my_order_view(state: &AppState, user: Uuid, id: Uuid) -> Result<MyOrderView, ApiError> {
@@ -238,9 +303,12 @@ fn new_out_trade_no() -> String {
     format!("AK{}{}", Utc::now().format("%Y%m%d"), hex::encode(r))
 }
 
-/// POST /me/orders {plan_id}: create an order at the plan's current price
-/// and precreate its QR code. A previous pending order of the user is
-/// ended first (queried: if it was paid it is fulfilled instead).
+/// POST /me/orders {plan_id, period}: create an order at the server's
+/// price for that period (minus the proration credit when switching
+/// plans, catalog.rs) and precreate its QR code. A previous pending order
+/// of the user is ended first (queried: if it was paid it is fulfilled
+/// instead). An order the credit pays in full is paid at creation (same
+/// apply_mark_paid path, paid_via 'credit') and never reaches Alipay.
 pub async fn create_order(
     State(state): State<AppState>,
     ShopUser { user, .. }: ShopUser,
@@ -290,42 +358,55 @@ pub async fn create_order(
             ));
         }
     }
+    let kind = req.period.0;
     let id = Uuid::new_v4();
     let out_trade_no = new_out_trade_no();
     let mut tx = state.pg().begin().await?;
-    #[allow(clippy::type_complexity)]
-    let price: Option<(
-        String,
-        i64,
-        i32,
-        bool,
-        Option<(Uuid, Option<DateTime<Utc>>)>,
-    )> = sqlx::query_as(
-        "SELECT p.name, pp.price_cents, pp.period_days, pp.purchasable AND p.enabled, \
-             (SELECT ROW(up.plan_id, up.expires_at) FROM user_plans up \
-              WHERE up.user_id = $2 AND up.status = 'active') \
-             FROM plan_prices pp JOIN plans p ON p.id = pp.plan_id WHERE pp.plan_id = $1",
-    )
+    let plan: Option<ShopPlanRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "{SALE_PLAN_SQL} AND p.id = $1"
+    )))
     .bind(req.plan_id)
-    .bind(user.id)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((plan_name, cents, days, purchasable, active)) = price else {
-        return Err(ApiError::bad_request("plan is not for sale"));
+    let price: Option<PriceRow> = sqlx::query_as(
+        "SELECT plan_id, period, days, price_cents FROM plan_period_prices \
+         WHERE plan_id = $1 AND period = $2",
+    )
+    .bind(req.plan_id)
+    .bind(kind.as_str())
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (Some(plan), Some(price)) = (plan, price.as_ref().and_then(price_of)) else {
+        return Err(catalog::Refusal::NotForSale.error());
     };
-    if !purchasable {
-        return Err(ApiError::bad_request("plan is not for sale"));
-    }
-    if matches!(active, Some((p, None)) if p == req.plan_id) {
-        return Err(ApiError::conflict(
-            "your current plan does not expire; nothing to renew",
-        ));
-    }
-    let subject: String = format!("Akari - {plan_name}").chars().take(128).collect();
+    let current = catalog::current(&mut tx, user.id).await?;
+    let cur = current.as_ref().map(|(id, _, exp)| Current {
+        plan_id: *id,
+        expires: exp.is_some(),
+    });
+    let sale = Sale {
+        plan_id: plan.plan_id,
+        for_sale: true,
+        capacity: plan.capacity,
+        active: plan.active,
+        renewal_only: plan.renewal_only,
+        allow_switch_in: plan.allow_switch_in,
+    };
+    let action = catalog::decide(cur, &sale, kind).map_err(|r| r.error())?;
+    let (credit, credit_order) = if action == catalog::Action::Switch {
+        catalog::switch_credit(&mut tx, user.id).await?
+    } else {
+        (0, None)
+    };
+    let (credit, cents) = catalog::apply_credit(price.price_cents, credit);
+    let credit_order = credit_order.filter(|_| credit > 0);
+    let subject: String = format!("Akari - {}", plan.name).chars().take(128).collect();
     let r = sqlx::query_scalar::<_, Value>(sqlx::AssertSqlSafe(format!(
         "INSERT INTO orders (id, out_trade_no, user_id, user_login, plan_id, plan_name, \
-         amount_cents, period_days, subject, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + make_interval(mins => $10)) \
+         amount_cents, period, period_days, list_price_cents, credit_cents, credit_order_id, \
+         subject, expires_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, \
+                 now() + make_interval(mins => $14)) \
          RETURNING {}",
         orders::order_snapshot_sql("orders")
     )))
@@ -334,19 +415,24 @@ pub async fn create_order(
     .bind(user.id)
     .bind(&user.login)
     .bind(req.plan_id)
-    .bind(&plan_name)
+    .bind(&plan.name)
     .bind(cents)
-    .bind(days)
+    .bind(kind.as_str())
+    .bind(price.days)
+    .bind(price.price_cents)
+    .bind(credit)
+    .bind(credit_order)
     .bind(&subject)
     .bind(alipay.order_timeout_minutes as i32)
     .fetch_one(&mut *tx)
     .await;
-    let after = match r {
+    let mut after = match r {
         Err(sqlx::Error::Database(d)) if d.is_unique_violation() => {
             return Err(ApiError::conflict("another order is being created"))
         }
         r => r?,
     };
+    after["action"] = json!(action.as_str());
     crate::audit::record(
         &mut tx,
         &actor,
@@ -357,6 +443,15 @@ pub async fn create_order(
         Some(after),
     )
     .await?;
+    if cents == 0 {
+        // Fully paid by the credit: the one pay path, in this transaction.
+        orders::apply_mark_paid(&mut tx, &actor, id, Via::Credit, None, Some(0), None).await?;
+        tx.commit().await?;
+        return Ok((
+            StatusCode::CREATED,
+            Json(my_order_view(&state, user.id, id).await?),
+        ));
+    }
     tx.commit().await?;
 
     // The row exists before Alipay knows the trade: a payment can never
@@ -498,149 +593,6 @@ pub async fn cancel_order(
         ));
     }
     Ok(Json(my_order_view(&state, user.id, id).await?))
-}
-
-// ---------------------------------------------------------------------------
-// Admin: prices
-// ---------------------------------------------------------------------------
-
-#[derive(Serialize, sqlx::FromRow)]
-struct PriceRow {
-    plan_id: Uuid,
-    plan_name: String,
-    plan_enabled: bool,
-    price_cents: Option<i64>,
-    period_days: Option<i32>,
-    purchasable: bool,
-    updated_at: Option<DateTime<Utc>>,
-}
-
-/// GET /plan-prices: every plan with its price (null = not priced).
-pub async fn list_prices(
-    State(state): State<AppState>,
-    user: AuthUser,
-) -> Result<Json<Value>, ApiError> {
-    user.require_admin()?;
-    let rows: Vec<PriceRow> = sqlx::query_as(
-        "SELECT p.id AS plan_id, p.name AS plan_name, p.enabled AS plan_enabled, \
-         pp.price_cents, pp.period_days, COALESCE(pp.purchasable, false) AS purchasable, \
-         pp.updated_at FROM plans p LEFT JOIN plan_prices pp ON pp.plan_id = p.id \
-         ORDER BY p.sort, p.name",
-    )
-    .fetch_all(state.pg())
-    .await?;
-    Ok(Json(json!({
-        "payments_enabled": state.alipay().is_some(),
-        "prices": rows,
-    })))
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SetPriceReq {
-    pub price_cents: i64,
-    pub period_days: i32,
-    pub purchasable: bool,
-}
-
-/// PUT /plans/{id}/price. Existing orders keep the price they were created
-/// with.
-pub async fn apply_set_price(
-    conn: &mut sqlx::PgConnection,
-    actor: &Actor,
-    plan_id: Uuid,
-    req: &SetPriceReq,
-) -> Result<(), ApiError> {
-    if !(1..=100_000_000).contains(&req.price_cents) {
-        return Err(ApiError::bad_request(
-            "price_cents must be 1..=100000000 (integer cents)",
-        ));
-    }
-    if !(1..=3650).contains(&req.period_days) {
-        return Err(ApiError::bad_request("period_days must be 1..=3650"));
-    }
-    let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM plans WHERE id = $1")
-        .bind(plan_id)
-        .fetch_optional(&mut *conn)
-        .await?;
-    if exists.is_none() {
-        return Err(ApiError::not_found());
-    }
-    let snap = "jsonb_build_object('price_cents', price_cents, 'period_days', period_days, \
-                'purchasable', purchasable)";
-    let before: Option<Value> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT {snap} FROM plan_prices WHERE plan_id = $1 FOR UPDATE"
-    )))
-    .bind(plan_id)
-    .fetch_optional(&mut *conn)
-    .await?;
-    let after: Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO plan_prices (plan_id, price_cents, period_days, purchasable) \
-         VALUES ($1, $2, $3, $4) ON CONFLICT (plan_id) DO UPDATE SET \
-         price_cents = EXCLUDED.price_cents, period_days = EXCLUDED.period_days, \
-         purchasable = EXCLUDED.purchasable, updated_at = now() RETURNING {snap}"
-    )))
-    .bind(plan_id)
-    .bind(req.price_cents)
-    .bind(req.period_days)
-    .bind(req.purchasable)
-    .fetch_one(&mut *conn)
-    .await?;
-    crate::audit::record(
-        conn,
-        actor,
-        "plan.price.set",
-        "plan",
-        Some(plan_id.to_string()),
-        before,
-        Some(after),
-    )
-    .await?;
-    Ok(())
-}
-
-pub async fn set_price(
-    State(state): State<AppState>,
-    user: AuthUser,
-    Path((_, id)): Path<(String, Uuid)>,
-    ApiJson(req): ApiJson<SetPriceReq>,
-) -> Result<StatusCode, ApiError> {
-    user.require_admin()?;
-    let mut tx = state.pg().begin().await?;
-    apply_set_price(&mut tx, &Actor::of(&user), id, &req).await?;
-    tx.commit().await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-pub async fn delete_price(
-    State(state): State<AppState>,
-    user: AuthUser,
-    Path((_, id)): Path<(String, Uuid)>,
-) -> Result<StatusCode, ApiError> {
-    user.require_admin()?;
-    let mut tx = state.pg().begin().await?;
-    let before: Option<Value> = sqlx::query_scalar(
-        "DELETE FROM plan_prices WHERE plan_id = $1 RETURNING jsonb_build_object(\
-         'price_cents', price_cents, 'period_days', period_days, 'purchasable', purchasable)",
-    )
-    .bind(id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let Some(before) = before else {
-        return Err(ApiError::not_found());
-    };
-    crate::audit::record(
-        &mut tx,
-        &Actor::of(&user),
-        "plan.price.delete",
-        "plan",
-        Some(id.to_string()),
-        Some(before),
-        None,
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 // ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { useLocale, useT } from "../i18n";
 import { get } from "../lib/api";
-import { STATUS_KEY, yuan, type MyOrder } from "../lib/billing";
+import { STATUS_KEY, periodLabel, yuan, type MyOrder } from "../lib/billing";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -33,6 +33,7 @@ export function MyOrders({ onContinue }: { onContinue: (id: string) => void }) {
                 <TableRow>
                   <TableHead>{t("billing.colCreated")}</TableHead>
                   <TableHead>{t("billing.colPlan")}</TableHead>
+                  <TableHead>{t("billing.colPeriod")}</TableHead>
                   <TableHead>{t("billing.colAmount")}</TableHead>
                   <TableHead>{t("billing.colStatus")}</TableHead>
                   <TableHead>{t("billing.colPaid")}</TableHead>
@@ -44,6 +45,7 @@ export function MyOrders({ onContinue }: { onContinue: (id: string) => void }) {
                   <TableRow key={o.id}>
                     <TableCell>{fmt(o.created_at)}</TableCell>
                     <TableCell>{o.plan_name}</TableCell>
+                    <TableCell>{periodLabel(t, o.period, o.period_days)}</TableCell>
                     <TableCell>¥{yuan(o.amount_cents)}</TableCell>
                     <TableCell>
                       <Badge variant={o.status === "paid" ? "default" : "secondary"}>{t(STATUS_KEY[o.status])}</Badge>

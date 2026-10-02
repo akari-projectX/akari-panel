@@ -215,19 +215,23 @@ async fn priced_plan(db: &TestDb, name: &str, cents: i64, days: i32) -> (Uuid, U
             sort: None,
             enabled: None,
             group_ids: Some(vec![g]),
+            ..Default::default()
         },
     )
     .await
     .ok()
     .unwrap();
-    super::api::apply_set_price(
+    super::catalog::apply_set_prices(
         &mut tx,
         &actor,
         p,
-        &super::api::SetPriceReq {
-            price_cents: cents,
-            period_days: days,
-            purchasable: true,
+        &super::catalog::SetPricesReq {
+            on_sale: true,
+            prices: vec![super::catalog::Price {
+                period: super::catalog::PeriodKindText(super::catalog::PeriodKind::Days),
+                days: Some(days),
+                price_cents: cents,
+            }],
         },
     )
     .await
@@ -243,8 +247,9 @@ async fn order_row(db: &TestDb, user: Uuid, plan: Uuid, cents: i64, days: i32) -
     let otn = format!("AKT{}", hex::encode(rand::random::<[u8; 12]>()));
     sqlx::query(
         "INSERT INTO orders (id, out_trade_no, user_id, user_login, plan_id, plan_name, \
-         amount_cents, period_days, subject, expires_at) \
-         VALUES ($1, $2, $3, 'u', $4, 'p', $5, $6, 's', now() + interval '15 minutes')",
+         amount_cents, list_price_cents, period, period_days, subject, expires_at) \
+         VALUES ($1, $2, $3, 'u', $4, 'p', $5, $5, 'days', $6, 's', \
+                 now() + interval '15 minutes')",
     )
     .bind(id)
     .bind(&otn)
@@ -383,27 +388,32 @@ async fn http_purchase_flow() {
     assert_eq!(r.status, StatusCode::OK);
     let shop = r.json();
     assert_eq!(shop["enabled"], true);
-    assert_eq!(shop["plans"][0]["price_cents"], 990);
-    assert_eq!(shop["plans"][0]["action"], "new");
+    assert_eq!(shop["plans"][0]["offers"][0]["price_cents"], 990);
+    assert_eq!(shop["plans"][0]["offers"][0]["amount_cents"], 990);
+    assert_eq!(shop["plans"][0]["offers"][0]["period"], "days");
+    assert_eq!(shop["plans"][0]["offers"][0]["action"], "new");
 
     // Client-side amounts do not exist: unknown fields are refused.
     let r = c
         .post(
             "/test/api/v1/me/orders",
-            json!({ "plan_id": plan, "amount_cents": 1 }),
+            json!({ "plan_id": plan, "period": "days", "amount_cents": 1 }),
         )
         .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
     let r = c
         .post(
             "/test/api/v1/me/orders",
-            json!({ "plan_id": Uuid::new_v4() }),
+            json!({ "plan_id": Uuid::new_v4(), "period": "days" }),
         )
         .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
 
     let r = c
-        .post("/test/api/v1/me/orders", json!({ "plan_id": plan }))
+        .post(
+            "/test/api/v1/me/orders",
+            json!({ "plan_id": plan, "period": "days" }),
+        )
         .await;
     assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
     let o = r.json();
@@ -504,7 +514,7 @@ async fn http_purchase_flow() {
     let r = c.get("/test/api/v1/me/orders").await;
     assert_eq!(r.json().as_array().unwrap().len(), 1);
     let r = c.get("/test/api/v1/me/shop").await;
-    assert_eq!(r.json()["plans"][0]["action"], "renew");
+    assert_eq!(r.json()["plans"][0]["offers"][0]["action"], "renew");
 
     // Admin views.
     let admin = db.admin().await;
@@ -525,9 +535,12 @@ async fn http_purchase_flow() {
         StatusCode::FORBIDDEN
     );
     assert_eq!(
-        a.post("/test/api/v1/me/orders", json!({ "plan_id": plan }))
-            .await
-            .status,
+        a.post(
+            "/test/api/v1/me/orders",
+            json!({ "plan_id": plan, "period": "days" })
+        )
+        .await
+        .status,
         StatusCode::BAD_REQUEST,
         "admins cannot buy"
     );
@@ -573,9 +586,12 @@ async fn renewal_scope_users_can_shop() {
         let r = c.get("/test/api/v1/me/shop").await;
         assert_eq!(r.status, StatusCode::OK, "{who}");
         assert_eq!(r.json()["enabled"], true, "{who}");
-        assert_eq!(r.json()["plans"][0]["action"], "new", "{who}");
+        assert_eq!(r.json()["plans"][0]["offers"][0]["action"], "new", "{who}");
         let r = c
-            .post("/test/api/v1/me/orders", json!({ "plan_id": plan }))
+            .post(
+                "/test/api/v1/me/orders",
+                json!({ "plan_id": plan, "period": "days" }),
+            )
             .await;
         assert_eq!(r.status, StatusCode::CREATED, "{who}: {:?}", r.json());
         let oid = r.json()["id"].as_str().unwrap().to_string();
@@ -610,9 +626,12 @@ async fn renewal_scope_users_can_shop() {
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
-        c.post("/test/api/v1/me/orders", json!({ "plan_id": plan }))
-            .await
-            .status,
+        c.post(
+            "/test/api/v1/me/orders",
+            json!({ "plan_id": plan, "period": "days" })
+        )
+        .await
+        .status,
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
@@ -1049,12 +1068,16 @@ async fn failed_fulfilment_and_admin_actions() {
     assert_eq!(active_plan(&db, u2).await.unwrap().0, plan);
 
     // Prices: validation and audit.
-    let pp = format!("/test/api/v1/plans/{plan}/price");
+    let pp = format!("/test/api/v1/plans/{plan}/prices");
     for body in [
-        json!({ "price_cents": 0, "period_days": 30, "purchasable": true }),
-        json!({ "price_cents": 100, "period_days": 0, "purchasable": true }),
-        json!({ "price_cents": 1.5, "period_days": 30, "purchasable": true }),
-        json!({ "price_cents": 100, "period_days": 30 }),
+        json!({ "on_sale": true, "prices": [{ "period": "month", "price_cents": 0 }] }),
+        json!({ "on_sale": true, "prices": [{ "period": "days", "price_cents": 100 }] }),
+        json!({ "on_sale": true, "prices": [{ "period": "month", "price_cents": 1.5 }] }),
+        json!({ "on_sale": true, "prices": [{ "period": "weekly", "price_cents": 100 }] }),
+        json!({ "on_sale": true, "prices": [{ "period": "month", "days": 3, "price_cents": 1 }] }),
+        json!({ "on_sale": true, "prices": [{ "period": "reset", "price_cents": 100 }] }),
+        json!({ "on_sale": true, "prices": [{ "period": "month", "price_cents": 1, "x": 1 }] }),
+        json!({ "prices": [] }),
     ] {
         let r = a.req(Method::PUT, &pp, Some(body.clone())).await;
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{body}");
@@ -1063,21 +1086,55 @@ async fn failed_fulfilment_and_admin_actions() {
         .req(
             Method::PUT,
             &pp,
-            Some(json!({ "price_cents": 1, "period_days": 7, "purchasable": false })),
+            Some(json!({ "on_sale": false, "prices": [
+                { "period": "year", "price_cents": 10000 },
+                { "period": "month", "price_cents": 1 },
+                { "period": "reset", "price_cents": 300 },
+            ] })),
         )
         .await;
     assert_eq!(r.status, StatusCode::NO_CONTENT);
     let r = a.get("/test/api/v1/plan-prices").await;
     assert_eq!(r.json()["payments_enabled"], true);
-    assert_eq!(r.json()["prices"][0]["price_cents"], 1);
+    let row = r.json()["plans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["plan_id"] == json!(plan))
+        .cloned()
+        .unwrap();
+    assert_eq!(row["on_sale"], false);
+    assert_eq!(row["prices"].as_array().unwrap().len(), 3);
+    let r = a.get("/test/api/v1/plans").await;
+    let pv = r.json()[0].clone();
     assert_eq!(
-        a.req(Method::DELETE, &pp, None).await.status,
-        StatusCode::NO_CONTENT
+        pv["prices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["period"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["month", "year", "reset"],
+        "period order"
     );
     assert_eq!(
-        a.req(Method::DELETE, &pp, None).await.status,
+        a.req(
+            Method::PUT,
+            "/test/api/v1/plans/00000000-0000-0000-0000-000000000000/prices",
+            Some(json!({ "on_sale": false, "prices": [] }))
+        )
+        .await
+        .status,
         StatusCode::NOT_FOUND
     );
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'plan.price.set' AND target_id = $1::text",
+    )
+    .bind(plan.to_string())
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(audits, 2, "creation + this update");
     drop(state);
     db.drop().await;
 }
@@ -1190,11 +1247,17 @@ async fn one_open_order_per_user() {
     let mut c = Client::new(&state, rand_ip());
     c.cookie = Some(token(&state, user).await);
     let r1 = c
-        .post("/test/api/v1/me/orders", json!({ "plan_id": plan }))
+        .post(
+            "/test/api/v1/me/orders",
+            json!({ "plan_id": plan, "period": "days" }),
+        )
         .await
         .json();
     let r2 = c
-        .post("/test/api/v1/me/orders", json!({ "plan_id": plan }))
+        .post(
+            "/test/api/v1/me/orders",
+            json!({ "plan_id": plan, "period": "days" }),
+        )
         .await
         .json();
     let id1: Uuid = r1["id"].as_str().unwrap().parse().unwrap();
@@ -1211,7 +1274,10 @@ async fn one_open_order_per_user() {
     assert_eq!(r.status, StatusCode::CONFLICT);
     mock.set_down(true);
     let r = c
-        .post("/test/api/v1/me/orders", json!({ "plan_id": plan }))
+        .post(
+            "/test/api/v1/me/orders",
+            json!({ "plan_id": plan, "period": "days" }),
+        )
         .await;
     assert_eq!(r.status, StatusCode::BAD_GATEWAY);
     let n: i64 = sqlx::query_scalar(
@@ -1423,4 +1489,1111 @@ fn key_file_mode_is_enforced() {
     let a = Alipay::from_config(&cfg).unwrap();
     assert!(!format!("{a:?}").contains("BEGIN"));
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// W7: plan catalogue — periods, reset packs, switching with proration,
+// capacity, renewal-only, switch rules, speed limits
+// ---------------------------------------------------------------------------
+
+use super::catalog::{PeriodKind, PeriodKindText, Price, SetPricesReq};
+
+/// A plan granting one new node, with these prices, on sale; `tweak`
+/// adjusts the creation request. Returns (node, plan).
+async fn catalog_plan(
+    db: &TestDb,
+    name: &str,
+    prices: &[(PeriodKind, Option<i32>, i64)],
+    tweak: impl FnOnce(&mut crate::plans::CreatePlanReq),
+) -> (Uuid, Uuid) {
+    let node = db.node().await;
+    let actor = crate::audit::Actor::test();
+    let mut tx = db.pool.begin().await.unwrap();
+    let g = crate::plans::apply_create_group(
+        &mut tx,
+        &actor,
+        &crate::plans::CreateGroupReq {
+            name: format!("g-{name}"),
+            description: None,
+            node_ids: Some(vec![node]),
+        },
+    )
+    .await
+    .ok()
+    .unwrap();
+    let mut req = crate::plans::CreatePlanReq {
+        name: name.into(),
+        traffic_quota_bytes: Some(1 << 30),
+        period: "monthly".into(),
+        group_ids: Some(vec![g]),
+        ..Default::default()
+    };
+    tweak(&mut req);
+    let p = crate::plans::apply_create_plan(&mut tx, &actor, &req)
+        .await
+        .ok()
+        .unwrap();
+    super::catalog::apply_set_prices(
+        &mut tx,
+        &actor,
+        p,
+        &SetPricesReq {
+            on_sale: true,
+            prices: prices
+                .iter()
+                .map(|(k, d, c)| Price {
+                    period: PeriodKindText(*k),
+                    days: *d,
+                    price_cents: *c,
+                })
+                .collect(),
+        },
+    )
+    .await
+    .ok()
+    .unwrap();
+    tx.commit().await.unwrap();
+    (node, p)
+}
+
+/// Pay an order through the one pay path (as a verified notify would).
+async fn pay(db: &TestDb, order: Uuid) -> Paid {
+    let mut tx = db.pool.begin().await.unwrap();
+    let r = orders::apply_mark_paid(
+        &mut tx,
+        &orders::payment_actor(None),
+        order,
+        Via::Notify,
+        Some("T"),
+        None,
+        None,
+    )
+    .await
+    .ok()
+    .unwrap();
+    tx.commit().await.unwrap();
+    r
+}
+
+async fn buy(c: &Client, plan: Uuid, period: &str) -> crate::testdb::http::Resp {
+    c.post(
+        "/test/api/v1/me/orders",
+        json!({ "plan_id": plan, "period": period }),
+    )
+    .await
+}
+
+fn order_id(r: &crate::testdb::http::Resp) -> Uuid {
+    r.json()["id"].as_str().unwrap().parse().unwrap()
+}
+
+async fn user_client(state: &AppState, user: Uuid) -> Client {
+    let mut c = Client::new(state, rand_ip());
+    c.cookie = Some(token(state, user).await);
+    c
+}
+
+async fn expiry(db: &TestDb, user: Uuid) -> Option<chrono::DateTime<chrono::Utc>> {
+    active_plan(db, user).await.and_then(|p| p.1)
+}
+
+/// The SQL period arithmetic and proration (the only place money and time
+/// are combined): calendar months clamp to the month's end in UTC, days are
+/// exact, permanent one-time has no end; the credit floors to the fen, is
+/// capped and never negative.
+#[tokio::test]
+async fn period_and_proration_sql() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let end = |base: &str, period: &str, days: Option<i32>| {
+        let pool = db.pool.clone();
+        let (base, period) = (base.to_string(), period.to_string());
+        async move {
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT to_char(akari_period_end($1::timestamptz, $2, $3) AT TIME ZONE 'UTC', \
+                 'YYYY-MM-DD HH24:MI:SS')",
+            )
+            .bind(base)
+            .bind(period)
+            .bind(days)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    for (base, period, days, want) in [
+        (
+            "2026-01-31T10:00:00Z",
+            "month",
+            None,
+            Some("2026-02-28 10:00:00"),
+        ),
+        (
+            "2028-01-31T10:00:00Z",
+            "month",
+            None,
+            Some("2028-02-29 10:00:00"),
+        ),
+        (
+            "2026-03-31T23:30:00Z",
+            "quarter",
+            None,
+            Some("2026-06-30 23:30:00"),
+        ),
+        (
+            "2026-08-31T00:00:00Z",
+            "half_year",
+            None,
+            Some("2027-02-28 00:00:00"),
+        ),
+        (
+            "2028-02-29T12:00:00Z",
+            "year",
+            None,
+            Some("2029-02-28 12:00:00"),
+        ),
+        (
+            "2026-10-02T08:00:00Z",
+            "two_year",
+            None,
+            Some("2028-10-02 08:00:00"),
+        ),
+        (
+            "2026-10-02T08:00:00Z",
+            "three_year",
+            None,
+            Some("2029-10-02 08:00:00"),
+        ),
+        (
+            "2026-10-02T08:00:00Z",
+            "days",
+            Some(30),
+            Some("2026-11-01 08:00:00"),
+        ),
+        (
+            "2026-10-02T08:00:00Z",
+            "onetime",
+            Some(7),
+            Some("2026-10-09 08:00:00"),
+        ),
+        ("2026-10-02T08:00:00Z", "onetime", None, None),
+    ] {
+        assert_eq!(
+            end(base, period, days).await.as_deref(),
+            want,
+            "{base} + {period} {days:?}"
+        );
+    }
+    for (period, days) in [
+        ("reset", None),
+        ("days", None),
+        ("days", Some(0)),
+        ("weekly", None),
+    ] {
+        let r = sqlx::query("SELECT akari_period_end(now(), $1, $2)")
+            .bind(period)
+            .bind(days)
+            .execute(&db.pool)
+            .await;
+        assert!(r.is_err(), "{period} {days:?} accepted");
+    }
+    let prorate = |v: Option<i64>, nd: Option<i32>, secs: Option<f64>, cap: i64| {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT akari_prorate($1, $2, $3::numeric, $4)")
+                .bind(v)
+                .bind(nd)
+                .bind(secs)
+                .bind(cap)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    let day = 86400.0;
+    // 15 of 30 days of 30.00 = 15.00; one second less floors to 14.99.
+    assert_eq!(
+        prorate(Some(3000), Some(30), Some(15.0 * day), 3000).await,
+        1500
+    );
+    assert_eq!(
+        prorate(Some(3000), Some(30), Some(15.0 * day - 1.0), 3000).await,
+        1499
+    );
+    // 1 fen per 864 s at 30.00/30d: 863 s are worth nothing yet.
+    assert_eq!(prorate(Some(3000), Some(30), Some(863.0), 3000).await, 0);
+    assert_eq!(prorate(Some(3000), Some(30), Some(864.0), 3000).await, 1);
+    // Odd prices floor: 9.99 for 7 of 30 days = 233.1 -> 233.
+    assert_eq!(
+        prorate(Some(999), Some(30), Some(7.0 * day), 999).await,
+        233
+    );
+    // Capped by what was paid (stacked/extended expiries).
+    assert_eq!(
+        prorate(Some(3000), Some(30), Some(365.0 * day), 9000).await,
+        9000
+    );
+    // Never negative, nothing for unknowns.
+    assert_eq!(
+        prorate(Some(3000), Some(30), Some(-5.0 * day), 3000).await,
+        0
+    );
+    assert_eq!(prorate(Some(3000), None, Some(day), 3000).await, 0);
+    assert_eq!(prorate(None, Some(30), Some(day), 3000).await, 0);
+    assert_eq!(prorate(Some(3000), Some(30), None, 3000).await, 0);
+    assert_eq!(prorate(Some(3000), Some(30), Some(day), 0).await, 0);
+    // Largest price, longest remaining: no overflow.
+    assert_eq!(
+        prorate(Some(100_000_000), Some(30), Some(3650.0 * day), i64::MAX).await,
+        12_166_666_666
+    );
+    let nominal: Vec<Option<i32>> = sqlx::query_scalar(
+        "SELECT akari_period_nominal_days(k, d) FROM (VALUES ('month', NULL::int), \
+         ('quarter', NULL), ('half_year', NULL), ('year', NULL), ('two_year', NULL), \
+         ('three_year', NULL), ('days', 45), ('onetime', 10), ('onetime', NULL), \
+         ('reset', NULL)) AS v(k, d)",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        nominal,
+        vec![
+            Some(30),
+            Some(90),
+            Some(180),
+            Some(365),
+            Some(730),
+            Some(1095),
+            Some(45),
+            Some(10),
+            None,
+            None
+        ]
+    );
+    db.drop().await;
+}
+
+/// Every period kind through the real order path: a new purchase, then
+/// renewals of each length stacking from the current expiry, a permanent
+/// one-time purchase, after which renewals are refused and the reset pack
+/// still works.
+#[tokio::test]
+async fn every_period_kind() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let all = [
+        (PeriodKind::Month, None, 1000),
+        (PeriodKind::Quarter, None, 2700),
+        (PeriodKind::HalfYear, None, 5000),
+        (PeriodKind::Year, None, 9000),
+        (PeriodKind::TwoYear, None, 17000),
+        (PeriodKind::ThreeYear, None, 24000),
+        (PeriodKind::Days, Some(10), 400),
+        (PeriodKind::Onetime, Some(5), 300),
+        (PeriodKind::Reset, None, 200),
+    ];
+    let (_, plan) = catalog_plan(&db, "all", &all, |_| {}).await;
+    let user = db.user().await;
+    let c = user_client(&state, user).await;
+
+    // The shop offers every period but the reset pack to a newcomer.
+    let shop = c.get("/test/api/v1/me/shop").await.json();
+    let offers: Vec<&str> = shop["plans"][0]["offers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["period"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        offers,
+        vec![
+            "month",
+            "quarter",
+            "half_year",
+            "year",
+            "two_year",
+            "three_year",
+            "days",
+            "onetime"
+        ]
+    );
+    let r = buy(&c, plan, "reset").await;
+    assert_eq!(
+        r.status,
+        StatusCode::CONFLICT,
+        "reset pack without the plan"
+    );
+
+    let r = buy(&c, plan, "month").await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+    assert_eq!(r.json()["amount_cents"], 1000);
+    assert_eq!(r.json()["period"], "month");
+    let o = order_id(&r);
+    assert_eq!(pay(&db, o).await, Paid::Now { fulfilled: true });
+    let mut exp = expiry(&db, user).await.unwrap();
+    let want: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
+        "SELECT akari_period_end(paid_at, 'month', NULL) FROM orders WHERE id = $1",
+    )
+    .bind(o)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(exp, want, "new: one calendar month from payment");
+
+    for (period, days, cents) in all.iter().skip(1).filter(|p| p.0 != PeriodKind::Reset) {
+        let r = buy(&c, plan, period.as_str()).await;
+        assert_eq!(r.status, StatusCode::CREATED, "{period:?}");
+        assert_eq!(r.json()["amount_cents"], *cents);
+        assert_eq!(r.json()["credit_cents"], 0, "renewals earn no credit");
+        assert_eq!(pay(&db, order_id(&r)).await, Paid::Now { fulfilled: true });
+        let want: Option<chrono::DateTime<chrono::Utc>> =
+            sqlx::query_scalar("SELECT akari_period_end($1, $2, $3)")
+                .bind(exp)
+                .bind(period.as_str())
+                .bind(*days)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        let now = expiry(&db, user).await.unwrap();
+        assert_eq!(
+            Some(now),
+            want,
+            "{period:?} extends from the current expiry"
+        );
+        exp = now;
+    }
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM user_plans WHERE user_id = $1",
+            user
+        )
+        .await,
+        1,
+        "renewals never replace the subscription"
+    );
+
+    // Reset pack: usage to 0, quota-disabled user served again, nothing
+    // else moves.
+    sqlx::query(
+        "UPDATE users SET traffic_used_bytes = 5000, enabled = false, disabled_reason = 'quota' \
+         WHERE id = $1",
+    )
+    .bind(user)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let marker: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "SELECT next_reset_at FROM user_plans WHERE user_id = $1 AND status = 'active'",
+    )
+    .bind(user)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    // Disabling bumped session_ver: log in again (the R21 renewal scope).
+    let c = user_client(&state, user).await;
+    let shop = c.get("/test/api/v1/me/shop").await.json();
+    let reset = shop["plans"][0]["offers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["period"] == "reset")
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        (reset["action"].clone(), reset["amount_cents"].clone()),
+        (json!("reset"), json!(200))
+    );
+    let r = buy(&c, plan, "reset").await;
+    assert_eq!(
+        r.status,
+        StatusCode::CREATED,
+        "quota-disabled users buy reset packs (R21)"
+    );
+    assert_eq!(pay(&db, order_id(&r)).await, Paid::Now { fulfilled: true });
+    let (used, enabled): (i64, bool) =
+        sqlx::query_as("SELECT traffic_used_bytes, enabled FROM users WHERE id = $1")
+            .bind(user)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!((used, enabled), (0, true));
+    assert_eq!(expiry(&db, user).await.unwrap(), exp, "no period change");
+    let marker2: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "SELECT next_reset_at FROM user_plans WHERE user_id = $1 AND status = 'active'",
+    )
+    .bind(user)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(marker, marker2, "the period reset schedule is untouched");
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM audit_log WHERE action = 'user.traffic.reset' \
+                    AND target_id = $1::text AND after->>'source' = 'reset_pack'",
+            user
+        )
+        .await,
+        1
+    );
+
+    // Permanent one-time: no expiry; renewing is then refused, the reset
+    // pack is still offered.
+    sqlx::query(
+        "UPDATE plan_period_prices SET days = NULL WHERE plan_id = $1 AND period = 'onetime'",
+    )
+    .bind(plan)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let r = buy(&c, plan, "onetime").await;
+    assert_eq!(r.json()["period_days"], Value::Null);
+    assert_eq!(pay(&db, order_id(&r)).await, Paid::Now { fulfilled: true });
+    assert_eq!(active_plan(&db, user).await.unwrap().1, None, "permanent");
+    let r = buy(&c, plan, "month").await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    assert_eq!(
+        r.json()["error"],
+        "your current plan does not expire; nothing to renew"
+    );
+    let r = buy(&c, plan, "reset").await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    // Unknown kinds and unpriced periods.
+    assert_eq!(
+        buy(&c, plan, "weekly").await.status,
+        StatusCode::BAD_REQUEST
+    );
+    sqlx::query("DELETE FROM plan_period_prices WHERE plan_id = $1 AND period = 'year'")
+        .bind(plan)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let r = buy(&c, plan, "year").await;
+    assert_eq!(
+        (r.status, r.json()["error"].clone()),
+        (StatusCode::BAD_REQUEST, json!("plan is not for sale"))
+    );
+    drop(state);
+    db.drop().await;
+}
+
+/// A reset pack paid after the user lost the plan is kept as paid with a
+/// fulfil_error (the admin resolves it), and nothing is reset.
+#[tokio::test]
+async fn reset_pack_without_the_plan_at_fulfilment() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let (_, plan) = catalog_plan(
+        &db,
+        "r",
+        &[
+            (PeriodKind::Month, None, 1000),
+            (PeriodKind::Reset, None, 200),
+        ],
+        |_| {},
+    )
+    .await;
+    let user = db.user().await;
+    let c = user_client(&state, user).await;
+    let r = buy(&c, plan, "month").await;
+    pay(&db, order_id(&r)).await;
+    let r = buy(&c, plan, "reset").await;
+    let reset = order_id(&r);
+    let mut tx = db.pool.begin().await.unwrap();
+    crate::plans::apply_cancel_user_plan(&mut tx, &crate::audit::Actor::test(), user)
+        .await
+        .ok()
+        .unwrap();
+    tx.commit().await.unwrap();
+    sqlx::query("UPDATE users SET traffic_used_bytes = 77 WHERE id = $1")
+        .bind(user)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(pay(&db, reset).await, Paid::Now { fulfilled: false });
+    let (st, fulfilled, err) = order_status(&db, reset).await;
+    assert_eq!((st.as_str(), fulfilled), ("paid", false));
+    assert!(err.unwrap().contains("reset pack"));
+    assert_eq!(db.used(user).await, 77);
+    drop(state);
+    db.drop().await;
+}
+
+/// Switching plans: full price of the new period minus the pro-rata value
+/// left on the current subscription's latest paid order; shown in the shop
+/// before buying, recomputed at order creation, recorded on the order;
+/// a credit covering the whole price pays the order at creation (amount 0,
+/// paid_via credit, never sent to Alipay) and the excess is forfeited.
+#[tokio::test]
+async fn switching_plans_with_proration() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let (_, a) = catalog_plan(&db, "a", &[(PeriodKind::Month, None, 3000)], |_| {}).await;
+    let (_, b) = catalog_plan(&db, "b", &[(PeriodKind::Month, None, 5000)], |_| {}).await;
+    let (_, cheap) = catalog_plan(&db, "c", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    let user = db.user().await;
+    let c = user_client(&state, user).await;
+    let r = buy(&c, a, "month").await;
+    let first = order_id(&r);
+    pay(&db, first).await;
+    // Half of A's month is left (+60 s of margin: 1 fen = 864 s here).
+    sqlx::query(
+        "UPDATE user_plans SET expires_at = now() + interval '15 days 60 seconds' \
+         WHERE user_id = $1 AND status = 'active'",
+    )
+    .bind(user)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE users SET expires_at = now() + interval '15 days 60 seconds' WHERE id = $1",
+    )
+    .bind(user)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+
+    let shop = c.get("/test/api/v1/me/shop").await.json();
+    assert_eq!(shop["credit_cents"], 1500);
+    let offer = |name: &str| {
+        shop["plans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == name)
+            .unwrap()["offers"][0]
+            .clone()
+    };
+    let ob = offer("b");
+    assert_eq!(
+        (
+            ob["action"].clone(),
+            ob["price_cents"].clone(),
+            ob["credit_cents"].clone(),
+            ob["amount_cents"].clone()
+        ),
+        (json!("switch"), json!(5000), json!(1500), json!(3500))
+    );
+    let oa = offer("a");
+    assert_eq!(
+        (oa["action"].clone(), oa["amount_cents"].clone()),
+        (json!("renew"), json!(3000))
+    );
+
+    let r = buy(&c, b, "month").await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let o = r.json();
+    assert_eq!(
+        (
+            o["list_price_cents"].clone(),
+            o["credit_cents"].clone(),
+            o["amount_cents"].clone()
+        ),
+        (json!(5000), json!(1500), json!(3500))
+    );
+    let ob_id = order_id(&r);
+    let src: Option<Uuid> = sqlx::query_scalar("SELECT credit_order_id FROM orders WHERE id = $1")
+        .bind(ob_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(src, Some(first));
+    // Alipay is asked for the amount after credit.
+    let otn = o["out_trade_no"].as_str().unwrap().to_string();
+    assert_eq!(mock.inner.lock().unwrap().trades[&otn].total, "35.00");
+    assert_eq!(pay(&db, ob_id).await, Paid::Now { fulfilled: true });
+    assert_eq!(active_plan(&db, user).await.unwrap().0, b);
+    let res: Value = sqlx::query_scalar("SELECT fulfil_result FROM orders WHERE id = $1")
+        .bind(ob_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(res["kind"], "switch");
+    assert_eq!(res["credit_cents"], 1500);
+    assert_eq!(res["credit_source_changed"], false);
+
+    // B's fresh month is worth its full list price (5000, credit included):
+    // downgrading to C (10.00) is paid by the credit; 40.00+ forfeited.
+    let shop = c.get("/test/api/v1/me/shop").await.json();
+    let credit = shop["credit_cents"].as_i64().unwrap();
+    assert!((4900..=5000).contains(&credit), "{credit}");
+    let oc = shop["plans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "c")
+        .unwrap()["offers"][0]
+        .clone();
+    assert_eq!(
+        (oc["amount_cents"].clone(), oc["credit_cents"].clone()),
+        (json!(0), json!(1000))
+    );
+    assert_eq!(oc["forfeited_cents"], credit - 1000);
+    let precreates = mock.calls("alipay.trade.precreate");
+    let r = buy(&c, cheap, "month").await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let o = r.json();
+    assert_eq!(
+        (
+            o["status"].clone(),
+            o["amount_cents"].clone(),
+            o["credit_cents"].clone(),
+            o["fulfilled"].clone()
+        ),
+        (json!("paid"), json!(0), json!(1000), json!(true))
+    );
+    assert_eq!(
+        mock.calls("alipay.trade.precreate"),
+        precreates,
+        "never sent to Alipay"
+    );
+    let via: String = sqlx::query_scalar("SELECT paid_via FROM orders WHERE id = $1")
+        .bind(order_id(&r))
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(via, "credit");
+    assert_eq!(active_plan(&db, user).await.unwrap().0, cheap);
+
+    // An admin-assigned subscription (no paid order) earns no credit.
+    let u2 = db.user().await;
+    let mut tx = db.pool.begin().await.unwrap();
+    crate::plans::apply_set_user_plan(
+        &mut tx,
+        &crate::audit::Actor::test(),
+        u2,
+        &crate::plans::SetUserPlanReq {
+            plan_id: a,
+            expires_at: Some(chrono::Utc::now() + chrono::Duration::days(20)),
+            period_anchor: None,
+            reset_traffic: None,
+        },
+    )
+    .await
+    .ok()
+    .unwrap();
+    tx.commit().await.unwrap();
+    let c2 = user_client(&state, u2).await;
+    let shop = c2.get("/test/api/v1/me/shop").await.json();
+    assert_eq!(shop["credit_cents"], 0);
+    let r = buy(&c2, b, "month").await;
+    assert_eq!(
+        (
+            r.json()["amount_cents"].clone(),
+            r.json()["credit_cents"].clone()
+        ),
+        (json!(5000), json!(0))
+    );
+    // Expired subscriptions are worth nothing either.
+    sqlx::query(
+        "UPDATE user_plans SET expires_at = now() - interval '1 minute' WHERE user_id = $1",
+    )
+    .bind(user)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        c.get("/test/api/v1/me/shop").await.json()["credit_cents"],
+        0
+    );
+    drop(state);
+    db.drop().await;
+}
+
+/// Capacity: two buyers race for the last slot. Both may create orders
+/// (pending orders reserve nothing) and both pay; fulfilment re-checks
+/// under entitle::lock, so exactly one gets the plan and the other stays
+/// paid with fulfil_error (money kept, admin resolves). The shop then shows
+/// the plan sold out and new orders are refused; renewals still work.
+#[tokio::test]
+async fn capacity_race_for_the_last_slot() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let (_, plan) = catalog_plan(&db, "cap", &[(PeriodKind::Month, None, 1000)], |r| {
+        r.capacity = Some(1)
+    })
+    .await;
+    let (u1, u2, u3) = (db.user().await, db.user().await, db.user().await);
+    let (c1, c2, c3) = (
+        user_client(&state, u1).await,
+        user_client(&state, u2).await,
+        user_client(&state, u3).await,
+    );
+    let shop = c1.get("/test/api/v1/me/shop").await.json();
+    assert_eq!(
+        (
+            shop["plans"][0]["remaining"].clone(),
+            shop["plans"][0]["sold_out"].clone()
+        ),
+        (json!(1), json!(false))
+    );
+    let o1 = order_id(&buy(&c1, plan, "month").await);
+    let o2 = order_id(&buy(&c2, plan, "month").await);
+    let (r1, r2) = tokio::join!(pay(&db, o1), pay(&db, o2));
+    let mut results = vec![r1, r2];
+    results.sort_by_key(|r| format!("{r:?}"));
+    assert_eq!(
+        results,
+        vec![
+            Paid::Now { fulfilled: false },
+            Paid::Now { fulfilled: true }
+        ]
+    );
+    let s1 = order_status(&db, o1).await;
+    let s2 = order_status(&db, o2).await;
+    let first_won = s1.1;
+    let (won, lost) = if first_won { (s1, s2) } else { (s2, s1) };
+    assert_eq!((won.0.as_str(), won.1), ("paid", true));
+    assert_eq!((lost.0.as_str(), lost.1), ("paid", false));
+    assert_eq!(lost.2.as_deref(), Some("plan is sold out"));
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM user_plans WHERE plan_id = $1 AND status = 'active'",
+            plan
+        )
+        .await,
+        1
+    );
+    let shop = c3.get("/test/api/v1/me/shop").await.json();
+    assert_eq!(
+        (
+            shop["plans"][0]["remaining"].clone(),
+            shop["plans"][0]["sold_out"].clone()
+        ),
+        (json!(0), json!(true))
+    );
+    assert_eq!(shop["plans"][0]["offers"][0]["refusal"], "sold_out");
+    let r = buy(&c3, plan, "month").await;
+    assert_eq!(
+        (r.status, r.json()["error"].clone()),
+        (StatusCode::CONFLICT, json!("plan is sold out"))
+    );
+    // The holder renews a full plan.
+    let holder = if first_won { &c1 } else { &c2 };
+    assert_eq!(buy(holder, plan, "month").await.status, StatusCode::CREATED);
+    // The admin resolves the loser by raising the capacity and retrying.
+    sqlx::query("UPDATE plans SET capacity = 2 WHERE id = $1")
+        .bind(plan)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let lost_id = if first_won { o2 } else { o1 };
+    let mut tx = db.pool.begin().await.unwrap();
+    let r = orders::apply_admin_fulfil(
+        &mut tx,
+        &crate::audit::Actor::test(),
+        lost_id,
+        "capacity raised",
+    )
+    .await
+    .ok()
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(r, Paid::Now { fulfilled: true });
+    drop(state);
+    db.drop().await;
+}
+
+/// Renewal-only plans are invisible and closed to newcomers but renewable
+/// by their holders; allow_switch_in=false closes a plan to holders of
+/// another plan but not to newcomers.
+#[tokio::test]
+async fn renewal_only_and_switch_rules() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let (_, legacy) = catalog_plan(&db, "legacy", &[(PeriodKind::Month, None, 1000)], |r| {
+        r.renewal_only = Some(true)
+    })
+    .await;
+    let (_, closed) = catalog_plan(&db, "closed", &[(PeriodKind::Month, None, 2000)], |r| {
+        r.allow_switch_in = Some(false)
+    })
+    .await;
+    let newcomer = db.user().await;
+    let cn = user_client(&state, newcomer).await;
+    let shop = cn.get("/test/api/v1/me/shop").await.json();
+    let names: Vec<&str> = shop["plans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["closed"],
+        "renewal-only plans are hidden from newcomers"
+    );
+    let r = buy(&cn, legacy, "month").await;
+    assert_eq!(
+        (r.status, r.json()["error"].clone()),
+        (
+            StatusCode::CONFLICT,
+            json!("plan is only available to its current subscribers")
+        )
+    );
+
+    let holder = db.user().await;
+    let mut tx = db.pool.begin().await.unwrap();
+    crate::plans::apply_set_user_plan(
+        &mut tx,
+        &crate::audit::Actor::test(),
+        holder,
+        &crate::plans::SetUserPlanReq {
+            plan_id: legacy,
+            expires_at: Some(chrono::Utc::now() + chrono::Duration::days(3)),
+            period_anchor: None,
+            reset_traffic: None,
+        },
+    )
+    .await
+    .ok()
+    .unwrap();
+    tx.commit().await.unwrap();
+    let ch = user_client(&state, holder).await;
+    let shop = ch.get("/test/api/v1/me/shop").await.json();
+    let lp = shop["plans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "legacy")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (lp["current"].clone(), lp["offers"][0]["action"].clone()),
+        (json!(true), json!("renew"))
+    );
+    let cp = shop["plans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "closed")
+        .unwrap()
+        .clone();
+    assert_eq!(cp["offers"][0]["refusal"], "no_switch");
+    let r = buy(&ch, closed, "month").await;
+    assert_eq!(
+        (r.status, r.json()["error"].clone()),
+        (
+            StatusCode::CONFLICT,
+            json!("switching to this plan from another plan is not allowed")
+        )
+    );
+    let r = buy(&ch, legacy, "month").await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    assert_eq!(pay(&db, order_id(&r)).await, Paid::Now { fulfilled: true });
+    // Newcomers may still buy the switch-closed plan.
+    assert_eq!(buy(&cn, closed, "month").await.status, StatusCode::CREATED);
+    drop(state);
+    db.drop().await;
+}
+
+/// Plan speed limits reach the agent in every user op (protocol 4) and a
+/// change of a user's effective limit bumps the user's nodes.
+#[tokio::test]
+async fn speed_limits_reach_the_desired_state() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let (node, fast) = catalog_plan(&db, "fast", &[(PeriodKind::Month, None, 100)], |r| {
+        r.speed_limit_mbps = Some(100)
+    })
+    .await;
+    let user = db.user().await;
+    let limit_of = |node: Uuid| {
+        let pool = db.pool.clone();
+        async move {
+            crate::grpc::desired_snapshot(&pool, node)
+                .await
+                .unwrap()
+                .unwrap()
+                .users
+                .iter()
+                .find(|o| o.user_id == user.to_string())
+                .map(|o| o.speed_limit_bytes_per_sec)
+        }
+    };
+    let actor = crate::audit::Actor::test();
+    let mut tx = db.pool.begin().await.unwrap();
+    crate::plans::apply_set_user_plan(
+        &mut tx,
+        &actor,
+        user,
+        &crate::plans::SetUserPlanReq {
+            plan_id: fast,
+            expires_at: None,
+            period_anchor: None,
+            reset_traffic: None,
+        },
+    )
+    .await
+    .ok()
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(limit_of(node).await, Some(12_500_000));
+    // A manual assignment elsewhere carries the user's plan limit too.
+    let other = db.node().await;
+    db.assign(other, user).await;
+    assert_eq!(limit_of(other).await, Some(12_500_000));
+
+    // Editing the plan's limit bumps every node of its users.
+    let before = (db.versions(node).await, db.versions(other).await);
+    let mut tx = db.pool.begin().await.unwrap();
+    crate::plans::apply_update_plan(
+        &mut tx,
+        &actor,
+        fast,
+        &crate::plans::UpdatePlanReq {
+            speed_limit_mbps: Some(Some(8)),
+            ..Default::default()
+        },
+    )
+    .await
+    .ok()
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_ne!(db.versions(node).await, before.0);
+    assert_ne!(db.versions(other).await, before.1);
+    assert_eq!(limit_of(node).await, Some(1_000_000));
+    // A name-only edit bumps nothing.
+    let before = db.versions(other).await;
+    let mut tx = db.pool.begin().await.unwrap();
+    crate::plans::apply_update_plan(
+        &mut tx,
+        &actor,
+        fast,
+        &crate::plans::UpdatePlanReq {
+            name: Some(Some("fast2".into())),
+            ..Default::default()
+        },
+    )
+    .await
+    .ok()
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(db.versions(other).await, before);
+
+    // Cancelling the plan: the manual node now serves the user unlimited.
+    let before = db.versions(other).await;
+    let mut tx = db.pool.begin().await.unwrap();
+    crate::plans::apply_cancel_user_plan(&mut tx, &actor, user)
+        .await
+        .ok()
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_ne!(db.versions(other).await, before, "manual node bumped");
+    assert_eq!(limit_of(other).await, Some(0));
+    assert_eq!(limit_of(node).await, None, "plan access gone");
+
+    // Switching between plans whose limits differ bumps shared nodes.
+    let (_, slow) = catalog_plan(&db, "slow", &[(PeriodKind::Month, None, 100)], |r| {
+        r.speed_limit_mbps = Some(2)
+    })
+    .await;
+    let mut tx = db.pool.begin().await.unwrap();
+    crate::plans::apply_set_user_plan(
+        &mut tx,
+        &actor,
+        user,
+        &crate::plans::SetUserPlanReq {
+            plan_id: slow,
+            expires_at: None,
+            period_anchor: None,
+            reset_traffic: None,
+        },
+    )
+    .await
+    .ok()
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(limit_of(other).await, Some(250_000));
+    db.drop().await;
+}
+
+/// Admin plan API: catalogue fields round-trip, validation, PATCH null.
+#[tokio::test]
+async fn plan_catalogue_admin_api() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let admin = db.admin().await;
+    let a = user_client(&state, admin).await;
+    let r = a
+        .post(
+            "/test/api/v1/plans",
+            json!({ "name": "Pro", "period": "monthly", "description": "Fast\n- 100 Mbps\n- 5 devices",
+                    "capacity": 10, "renewal_only": true, "allow_switch_in": false,
+                    "speed_limit_mbps": 100 }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+    let p = r.json();
+    assert_eq!(p["description"], "Fast\n- 100 Mbps\n- 5 devices");
+    assert_eq!(
+        (
+            p["capacity"].clone(),
+            p["renewal_only"].clone(),
+            p["allow_switch_in"].clone()
+        ),
+        (json!(10), json!(true), json!(false))
+    );
+    assert_eq!(
+        (p["on_sale"].clone(), p["prices"].clone()),
+        (json!(false), json!([]))
+    );
+    let id = p["id"].as_str().unwrap().to_string();
+    let r = a
+        .req(
+            Method::PATCH,
+            &format!("/test/api/v1/plans/{id}"),
+            Some(json!({ "capacity": null, "renewal_only": false, "description": "x\r\ny" })),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(
+        (
+            r.json()["capacity"].clone(),
+            r.json()["renewal_only"].clone(),
+            r.json()["description"].clone()
+        ),
+        (Value::Null, json!(false), json!("x\ny"))
+    );
+    for bad in [
+        json!({ "capacity": -1 }),
+        json!({ "renewal_only": null }),
+        json!({ "description": "bell\u{7}" }),
+        json!({ "description": "x".repeat(4001) }),
+        json!({ "speed_limit_mbps": 0 }),
+        json!({ "speed_limit_mbps": 100001 }),
+    ] {
+        let r = a
+            .req(
+                Method::PATCH,
+                &format!("/test/api/v1/plans/{id}"),
+                Some(bad.clone()),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    drop(state);
+    db.drop().await;
 }

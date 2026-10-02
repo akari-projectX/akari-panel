@@ -1,4 +1,5 @@
 import type { TFunction } from "../i18n";
+import type { PlanPrice } from "./billing";
 
 // The SPA is served under the panel's secret route prefix. Everything is
 // derived from the current location: no prefix knowledge is baked in.
@@ -171,12 +172,19 @@ export interface PlanView {
   name: string;
   traffic_quota_bytes: number | null;
   period: Period;
-  // Hint only: not enforced.
+  // Per user, both directions, enforced by the agent (protocol 4, W7).
   speed_limit_mbps: number | null;
-  // Reserved for seat binding (M5): not enforced.
+  // Reserved for seat binding (R25): not enforced until the client ships.
   device_seats: number | null;
   sort: number;
   enabled: boolean;
+  // W7 catalogue: Markdown-lite description, shop flag, stock and rules.
+  description: string;
+  on_sale: boolean;
+  capacity: number | null;
+  renewal_only: boolean;
+  allow_switch_in: boolean;
+  prices: PlanPrice[];
   group_ids: string[];
   active_users: number;
   created_at: string;

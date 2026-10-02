@@ -1,19 +1,28 @@
 # Payments: Alipay Face-to-Face (当面付)
 
 R18-3. The panel sells plans through **Alipay Face-to-Face** only
-(`alipay.trade.precreate` → QR code). Code: `src/billing/`; migration
-`0040_billing.sql`; SPA: `spa/src/pages/purchase.tsx`, `orders.tsx`,
-`admin-orders.tsx`.
+(`alipay.trade.precreate` → QR code). Code: `src/billing/` (W7 catalogue:
+`catalog.rs`); migrations `0040_billing.sql`, `0070_plan_catalog.sql`; SPA:
+`spa/src/pages/purchase.tsx`, `orders.tsx`, `admin-orders.tsx`,
+`admin-plans.tsx` (prices).
 
 ## How it works
 
-1. An admin prices a plan (`PUT /api/v1/plans/{id}/price`
-   `{price_cents, period_days, purchasable}`; SPA: 订单 → 套餐定价). Money
-   is **integer CNY cents** everywhere. A plan is for sale when it is
-   priced, `purchasable` and `plans.enabled`.
-2. A user buys (`POST /api/v1/me/orders {plan_id}`). The order row is
-   written first (the amount is copied from the price — the client never
-   sends an amount), then the panel calls `alipay.trade.precreate`
+1. An admin prices a plan per period (`PUT /api/v1/plans/{id}/prices`
+   `{on_sale, prices: [{period, days?, price_cents}]}`; SPA: 套餐 → 定价).
+   Money is **integer CNY cents** everywhere. A plan is for sale when
+   `plans.enabled`, `on_sale` and it has a price for the requested period
+   (see "Periods" below).
+2. A user buys (`POST /api/v1/me/orders {plan_id, period}`). The server
+   decides what the purchase is (new / renew / switch / reset pack, or a
+   refusal: sold out, renewal-only, switching not allowed, …), computes the
+   amount (the period's price minus any switch credit) and writes the
+   order row first with `period`, `list_price_cents`, `credit_cents`,
+   `credit_order_id` and `amount_cents` — the client never sends an
+   amount, and `GET /me/shop` shows exactly this computation beforehand.
+   An order whose credit covers the whole price is paid at once (`paid_via
+   = credit`, same `apply_mark_paid` path) and never reaches Alipay.
+   Otherwise the panel calls `alipay.trade.precreate`
    (`timeout_express` = `order_timeout_minutes`, default 15) and returns
    the QR payload. The SPA renders the QR locally (no CDN). One open order
    per user: a new order ends the previous pending one (queried and closed
@@ -33,25 +42,81 @@ R18-3. The panel sells plans through **Alipay Face-to-Face** only
    replayed notifies, concurrent notify + query and several instances
    fulfil exactly once (tests: `billing::tests::concurrent_duplicates_fulfil_once`).
 
-### Renewal / replacement semantics
+### Periods (W7)
 
-| The user's active plan | Buying plan P does |
+Each plan has at most one price per period kind (`plan_period_prices`);
+every price is optional, and `on_sale` needs at least one that is not the
+reset pack. Period arithmetic is SQL only (`akari_period_end`, DB clock):
+
+| `period` | Adds | Nominal days (proration) |
+|---|---|---|
+| `month` / `quarter` / `half_year` / `year` / `two_year` / `three_year` | 1 / 3 / 6 / 12 / 24 / 36 calendar months, UTC; the day clamps to the month's end (Jan 31 + 1 month = Feb 28/29) | 30 / 90 / 180 / 365 / 730 / 1095 |
+| `days` (`days` = N, 1–3650) | N × 86400 s (the R18-3 single price migrated to this) | N |
+| `onetime` (`days` = N or null) | N days, or **no expiry** when `days` is null | N (none when permanent) |
+| `reset` | traffic reset pack: zeroes the used traffic of the current plan; no period change, the reset schedule is untouched | — |
+
+### What a purchase does
+
+| The user's active plan | Buying plan P, period X |
 |---|---|
-| none | assigns P, expiry = now + `period_days`, usage reset (`kind: new`) |
-| P with an expiry | extends: expiry = max(expiry, now) + `period_days`; usage and reset anchor unchanged (`kind: renew`) |
-| P without expiry (admin-assigned) | refused at order creation (409); if it happens anyway, nothing changes (`note` in the result) |
-| another plan | replaces it (M3 replace semantics: status `replaced`, credentials of shared nodes kept), expiry = now + `period_days`, **usage reset** (`kind: replace`) |
+| none | `new`: P for one X from now, usage reset. Refused for `renewal_only` plans and when P is full (`capacity`). |
+| P with an expiry | `renew`: expiry = one X after max(expiry, now) (`onetime` without days makes it permanent); usage and reset anchor unchanged. Allowed when P is full or renewal-only. |
+| P without expiry | renewal refused (409 "nothing to renew"); the reset pack is still allowed. |
+| P, X = `reset` | `reset`: used traffic → 0; a user disabled for quota is re-enabled (never an admin-disabled one); audited `user.traffic.reset` with `source: reset_pack`. Only for current subscribers of P — this is what quota-exhausted users (R21 renewal scope) buy. |
+| another plan Q | `switch`: replaces Q (M3 replace semantics, **usage reset**), P for one X from now, charged P's full price **minus the switch credit**. Refused when P has `allow_switch_in = false`, is `renewal_only`, or is full. |
+
+### Switching plans: the credit
+
+The credit is the unused value of the current subscription, computed in SQL
+(`catalog::switch_credit` → `akari_prorate`) when the order is created:
+
+```
+latest  = the newest paid, fulfilled, non-reset order of the user for the
+          current plan, fulfilled since the current subscription started
+value   = latest.list_price_cents (what was paid + any credit it used)
+credit  = floor(value × remaining_seconds / (nominal_days(latest) × 86400))
+credit  = min(credit, Σ list_price_cents of all such orders)   -- never more than was paid
+credit  = 0 when there is no such order (admin-assigned), no expiry,
+          nothing remaining, or a permanent one-time purchase
+amount  = price − min(credit, price)        -- never negative
+```
+
+Example: 30.00 for a month, switched with 15 days left → 15.00 credit; a
+50.00 plan then costs 35.00. A credit larger than the new price is
+**forfeited** (no balance, no refunds) — the shop says so before buying
+(`forfeited_cents`) and the order is paid by the credit. The credit is
+fixed in the order at creation (orders expire after
+`order_timeout_minutes`); if the subscription it came from is no longer the
+one replaced at fulfilment, the payment is still honoured and
+`fulfil_result.credit_source_changed = true` flags it for review.
+
+### Stock and sale rules
+
+- `capacity` (max active subscribers, null = unlimited) is checked at order
+  creation and again, authoritatively, at fulfilment under
+  `entitle::lock`. Pending orders reserve nothing: two buyers can pay for
+  the last slot; one is fulfilled, the other stays **paid with
+  `fulfil_error` "plan is sold out"** (money kept; the admin raises the
+  capacity and retries, or refunds out of band). Admin assignment (PUT
+  /users/{id}/plan) ignores capacity and sale rules.
+- `renewal_only`: hidden from the shop for everybody except its holders;
+  holders renew and buy its reset pack.
+- `allow_switch_in = false`: holders of another plan cannot switch to it
+  (newcomers can buy it).
+- `speed_limit_mbps` is enforced by the agent (see README "Plans and node
+  groups"); `device_seats` is not enforced until the client ships (R25).
 
 Traffic resets inside the period follow the plan's `reset_period` (M3
 period pass); a renewal of a `none`-period plan extends the time, not the
-quota.
+quota (that is what the reset pack is for).
 
 ### Late payments, failures, refunds
 
 - An order that expired or was cancelled locally but is reported paid
   (notify or query) is still fulfilled: Alipay took the money.
 - If fulfilment fails for a business reason (plan deleted or disabled,
-  user deleted or now an admin) the order stays **paid** with
+  plan sold out, reset pack for a plan the user no longer holds, user
+  deleted or now an admin) the order stays **paid** with
   `fulfil_error`; Alipay still gets `success`. Admin: 订单 → 状态「已付款未开通」
   → 详情 → 重试开通 (reason required, audited `order.fulfil.retry`).
 - Manual mark-paid (support case, e.g. a payment proven out of band):

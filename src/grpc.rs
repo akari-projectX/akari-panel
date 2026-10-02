@@ -176,6 +176,10 @@ async fn node_for_serial_from(
 /// Hello/Ack are never trusted for convergence (N5). Rollout: agents first.
 pub const MIN_AGENT_PROTOCOL: u32 = 1;
 
+/// Agents from this protocol on enforce `UserOp.speed_limit_bytes_per_sec`
+/// (older ones ignore the field: NodeView warns).
+pub const SPEED_LIMIT_PROTOCOL: u32 = 4;
+
 /// A node's user set as the agent must run it: user id -> inbound tag ->
 /// (protocol, account_json). Users without any inbound are absent. Built
 /// with the proto's collapsing rules (a later InboundUser for the same tag,
@@ -203,12 +207,74 @@ pub fn user_set(ops: &[UserOp]) -> UserSet {
     set
 }
 
+/// Per-user speed limits (bytes/s, `UserOp.speed_limit_bytes_per_sec`) of
+/// the users in a `UserSet`; only non-zero limits are present.
+pub type UserLimits = BTreeMap<String, u64>;
+
+/// `user_limits` with the same collapsing rules as `user_set` (a later op
+/// for the same user replaces the earlier one; users without any inbound,
+/// and REMOVEs, have no limit).
+pub fn user_limits(ops: &[UserOp]) -> UserLimits {
+    let mut limits = UserLimits::new();
+    for op in ops {
+        if op.op == UserOpKind::Add as i32
+            && !op.inbound_users.is_empty()
+            && op.speed_limit_bytes_per_sec > 0
+        {
+            limits.insert(op.user_id.clone(), op.speed_limit_bytes_per_sec);
+        } else {
+            limits.remove(&op.user_id);
+        }
+    }
+    limits
+}
+
 /// What the agent must run: the inbounds JSON exactly as sent in the
-/// Snapshot and the user set.
+/// Snapshot, the user set and the users' speed limits. The limits are not
+/// part of the state hash (agent.proto: a held version carries its limits);
+/// they are part of the per-user digests, so a limit change is a delta.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NodeState {
     pub inbounds: String,
     pub users: UserSet,
+    pub limits: UserLimits,
+}
+
+impl NodeState {
+    /// The state a Snapshot with these inbounds and ops describes.
+    pub fn of_snapshot(inbounds: String, ops: &[UserOp]) -> Self {
+        NodeState {
+            inbounds,
+            users: user_set(ops),
+            limits: user_limits(ops),
+        }
+    }
+}
+
+/// The UserOp ADD (REPLACE: the complete list) for one user of a state.
+fn add_op(user: &str, tags: &BTreeMap<String, (String, String)>, limit: u64) -> UserOp {
+    UserOp {
+        op: UserOpKind::Add as i32,
+        user_id: user.to_string(),
+        inbound_users: tags
+            .iter()
+            .map(|(tag, (protocol, account))| InboundUser {
+                inbound_tag: tag.clone(),
+                account_json: account.clone(),
+                protocol: protocol.clone(),
+            })
+            .collect(),
+        speed_limit_bytes_per_sec: limit,
+    }
+}
+
+fn remove_op(user: String) -> UserOp {
+    UserOp {
+        op: UserOpKind::Remove as i32,
+        user_id: user,
+        inbound_users: vec![],
+        speed_limit_bytes_per_sec: 0,
+    }
 }
 
 /// agent.proto "State hash" (v2): lowercase hex SHA-256 over
@@ -249,32 +315,22 @@ pub fn drops_credential(base: &UserSet, want: &UserSet) -> bool {
 }
 
 /// UserDelta ops turning `base` into `want` (REPLACE semantics: a changed
-/// user is re-sent with its complete inbound list).
-pub fn diff_user_sets(base: &UserSet, want: &UserSet) -> Vec<UserOp> {
+/// user is re-sent with its complete inbound list and limit). Sessions use
+/// `diff_from_digest`; this full-set form is the reference it is tested
+/// against (and the benchmarks' baseline).
+pub fn diff_user_sets(base: &NodeState, want: &NodeState) -> Vec<UserOp> {
     let mut ops = Vec::new();
-    for (user, tags) in want {
-        if base.get(user) != Some(tags) {
-            ops.push(UserOp {
-                op: UserOpKind::Add as i32,
-                user_id: user.clone(),
-                inbound_users: tags
-                    .iter()
-                    .map(|(tag, (protocol, account))| InboundUser {
-                        inbound_tag: tag.clone(),
-                        account_json: account.clone(),
-                        protocol: protocol.clone(),
-                    })
-                    .collect(),
-            });
+    for (user, tags) in &want.users {
+        let limit = want.limits.get(user).copied().unwrap_or(0);
+        if base.users.get(user) != Some(tags)
+            || base.limits.get(user).copied().unwrap_or(0) != limit
+        {
+            ops.push(add_op(user, tags, limit));
         }
     }
-    for user in base.keys() {
-        if !want.contains_key(user) {
-            ops.push(UserOp {
-                op: UserOpKind::Remove as i32,
-                user_id: user.clone(),
-                inbound_users: vec![],
-            });
+    for user in base.users.keys() {
+        if !want.users.contains_key(user) {
+            ops.push(remove_op(user.clone()));
         }
     }
     ops
@@ -309,8 +365,10 @@ impl UserKey {
 }
 
 /// 128-bit digest of one user's inbound credentials (tag, protocol,
-/// account_json per tag, length-prefixed, in tag order).
-fn user_digest(tags: &BTreeMap<String, (String, String)>) -> [u8; 16] {
+/// account_json per tag, length-prefixed, in tag order) and speed limit (a
+/// u32 0xffffffff marker + u64be, only when non-zero: it can never be
+/// mistaken for a length prefix).
+fn user_digest(tags: &BTreeMap<String, (String, String)>, limit: u64) -> [u8; 16] {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     for (tag, (protocol, account)) in tags {
@@ -318,6 +376,10 @@ fn user_digest(tags: &BTreeMap<String, (String, String)>) -> [u8; 16] {
             h.update((f.len() as u32).to_be_bytes());
             h.update(f);
         }
+    }
+    if limit != 0 {
+        h.update(u32::MAX.to_be_bytes());
+        h.update(limit.to_be_bytes());
     }
     let d = h.finalize();
     let mut out = [0u8; 16];
@@ -358,7 +420,10 @@ impl SetDigest {
             users: state
                 .users
                 .iter()
-                .map(|(id, tags)| (UserKey::of(id), user_digest(tags)))
+                .map(|(id, tags)| {
+                    let limit = state.limits.get(id).copied().unwrap_or(0);
+                    (UserKey::of(id), user_digest(tags, limit))
+                })
                 .collect(),
         }
     }
@@ -375,35 +440,21 @@ impl SetDigest {
 }
 
 /// `diff_user_sets` against a remembered base: the same ops (REPLACE
-/// semantics; ADDs carry the user's complete list from `want`).
-pub fn diff_from_digest(base: &SetDigest, want: &UserSet) -> Vec<UserOp> {
+/// semantics; ADDs carry the user's complete list and limit from `want`).
+pub fn diff_from_digest(base: &SetDigest, want: &NodeState) -> Vec<UserOp> {
     let mut ops = Vec::new();
-    let mut wanted = std::collections::HashSet::with_capacity(want.len());
-    for (user, tags) in want {
+    let mut wanted = std::collections::HashSet::with_capacity(want.users.len());
+    for (user, tags) in &want.users {
         let key = UserKey::of(user);
-        if base.users.get(&key) != Some(&user_digest(tags)) {
-            ops.push(UserOp {
-                op: UserOpKind::Add as i32,
-                user_id: user.clone(),
-                inbound_users: tags
-                    .iter()
-                    .map(|(tag, (protocol, account))| InboundUser {
-                        inbound_tag: tag.clone(),
-                        account_json: account.clone(),
-                        protocol: protocol.clone(),
-                    })
-                    .collect(),
-            });
+        let limit = want.limits.get(user).copied().unwrap_or(0);
+        if base.users.get(&key) != Some(&user_digest(tags, limit)) {
+            ops.push(add_op(user, tags, limit));
         }
         wanted.insert(key);
     }
     for key in base.users.keys() {
         if !wanted.contains(key) {
-            ops.push(UserOp {
-                op: UserOpKind::Remove as i32,
-                user_id: key.id(),
-                inbound_users: vec![],
-            });
+            ops.push(remove_op(key.id()));
         }
     }
     ops
@@ -755,7 +806,7 @@ impl SyncState {
                 v,
                 &NodeState {
                     inbounds: "[]".into(),
-                    users: UserSet::new(),
+                    ..Default::default()
                 },
             )
         };
@@ -1727,6 +1778,17 @@ struct NodeRow {
 struct NodeUserRow {
     user_id: Uuid,
     credentials: serde_json::Value,
+    /// The user's active plan's speed limit (Mbps), if any.
+    speed_limit_mbps: Option<i32>,
+}
+
+/// Mbps (decimal, as plans state it) -> bytes per second; None/<=0 = 0
+/// (unlimited).
+pub fn mbps_to_bytes_per_sec(mbps: Option<i32>) -> u64 {
+    match mbps {
+        Some(m) if m > 0 => m as u64 * 125_000,
+        _ => 0,
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -1779,8 +1841,10 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
     let serve = node.enabled && !node.deleting;
     let inbounds_json = if serve {
         let rows = sqlx::query_as::<_, NodeUserRow>(sqlx::AssertSqlSafe(format!(
-            "SELECT nu.user_id, nu.credentials \
+            "SELECT nu.user_id, nu.credentials, p.speed_limit_mbps \
              FROM node_users nu JOIN users u ON u.id = nu.user_id \
+             LEFT JOIN user_plans up ON up.user_id = nu.user_id AND up.status = 'active' \
+             LEFT JOIN plans p ON p.id = up.plan_id \
              WHERE nu.node_id = $1 AND {} \
              ORDER BY nu.user_id",
             crate::enforce::SERVED
@@ -1813,6 +1877,7 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
                         protocol: c.protocol,
                     })
                     .collect(),
+                speed_limit_bytes_per_sec: mbps_to_bytes_per_sec(r.speed_limit_mbps),
             });
         }
         serde_json::to_string(&node.xray_inbounds)?
@@ -1898,10 +1963,10 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
     let now = Instant::now();
     let snap = desired.snapshot;
     let want = (snap.config_version, snap.user_version);
-    let set = Arc::new(NodeState {
-        inbounds: snap.inbounds_json.clone(),
-        users: user_set(&snap.users),
-    });
+    let set = Arc::new(NodeState::of_snapshot(
+        snap.inbounds_json.clone(),
+        &snap.users,
+    ));
     let (plan, grant, write_lease, converged) = {
         let mut st = sess.sync.lock().unwrap();
         let grant = st.hello_seen && !st.too_old();
@@ -1947,7 +2012,7 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
                 DownMsg::Snapshot(snap)
             }
             Plan::Delta { base, base_set } => {
-                let ops = diff_from_digest(&base_set, &set.users);
+                let ops = diff_from_digest(&base_set, &set);
                 tracing::info!(
                     node = %node_id,
                     base_config_version = base.0,
@@ -2273,14 +2338,21 @@ mod tests {
                     protocol: "vless".into(),
                 })
                 .collect(),
+            speed_limit_bytes_per_sec: 0,
         }
     }
 
     fn set_of(ops: &[UserOp]) -> Arc<NodeState> {
-        Arc::new(NodeState {
+        Arc::new(NodeState::of_snapshot("[]".into(), ops))
+    }
+
+    /// A state with no inbounds and no limits.
+    fn st(users: &UserSet) -> NodeState {
+        NodeState {
             inbounds: "[]".into(),
-            users: user_set(ops),
-        })
+            users: users.clone(),
+            ..Default::default()
+        }
     }
 
     /// A protocol-current Ack as the new agent sends it.
@@ -2346,15 +2418,14 @@ mod tests {
                             protocol: i.protocol,
                         })
                         .collect(),
+                    // Limits are not part of the hash (agent.proto).
+                    speed_limit_bytes_per_sec: 12_500_000,
                 })
                 .collect();
             assert_eq!(
                 state_hash(
                     c.config_version,
-                    &NodeState {
-                        inbounds: c.inbounds_json,
-                        users: user_set(&ops)
-                    }
+                    &NodeState::of_snapshot(c.inbounds_json, &ops)
                 ),
                 c.hash,
                 "{}",
@@ -2388,15 +2459,12 @@ mod tests {
             ops.sort_by(|a, b| (a.op, &a.user_id).cmp(&(b.op, &b.user_id)));
             ops
         };
-        let full = norm(diff_user_sets(&base, &want));
-        let base_state = NodeState {
-            inbounds: "[]".into(),
-            users: base.clone(),
-        };
+        let full = norm(diff_user_sets(&st(&base), &st(&want)));
+        let base_state = st(&base);
         let dg = SetDigest::of(3, &base_state);
         assert_eq!(dg.hash(), state_hash(3, &base_state));
-        assert_eq!(norm(diff_from_digest(&dg, &want)), full);
-        assert!(diff_from_digest(&dg, &base).is_empty(), "no-op");
+        assert_eq!(norm(diff_from_digest(&dg, &st(&want))), full);
+        assert!(diff_from_digest(&dg, &st(&base)).is_empty(), "no-op");
         // Removed ids come back verbatim, canonical UUID or not.
         let removed: Vec<String> = full
             .iter()
@@ -2413,29 +2481,16 @@ mod tests {
         );
         // Conservative drop check: rotation and removal count; so does a
         // pure tag gain (u5), which only costs a Snapshot in rebuild mode.
-        let want_state = NodeState {
-            inbounds: "[]".into(),
-            users: want,
-        };
+        let want_state = st(&want);
         assert!(drops_credential_digest(&dg, &SetDigest::of(3, &want_state)));
         assert!(!drops_credential_digest(&dg, &dg));
-        let only_add = NodeState {
-            inbounds: "[]".into(),
-            users: {
-                let mut b = base.clone();
-                b.extend(user_set(&[op(&u(9), &[("t1", "{}")])]));
-                b
-            },
-        };
+        let only_add = st(&{
+            let mut b = base.clone();
+            b.extend(user_set(&[op(&u(9), &[("t1", "{}")])]));
+            b
+        });
         assert!(!drops_credential_digest(&dg, &SetDigest::of(3, &only_add)));
-        assert!(SetDigest::of(
-            1,
-            &NodeState {
-                inbounds: "[]".into(),
-                users: UserSet::new()
-            }
-        )
-        .is_empty_state());
+        assert!(SetDigest::of(1, &st(&UserSet::new())).is_empty_state());
         assert!(!dg.is_empty_state());
     }
 
@@ -2487,7 +2542,7 @@ mod tests {
             op("d", &[("t2", "{\"id\":\"d\"}")]),  // added
                                                    // c removed
         ]);
-        let ops = diff_user_sets(&base, &want);
+        let ops = diff_user_sets(&st(&base), &st(&want));
         let by: BTreeMap<&str, &UserOp> = ops.iter().map(|o| (o.user_id.as_str(), o)).collect();
         assert_eq!(ops.len(), 3, "{ops:?}");
         assert!(!by.contains_key("a"), "unchanged user is not sent");
@@ -2497,7 +2552,7 @@ mod tests {
         assert_eq!(b.inbound_users[0].account_json, "{\"id\":\"b2\"}");
         assert_eq!(by["c"].op, UserOpKind::Remove as i32);
         assert_eq!(by["d"].op, UserOpKind::Add as i32);
-        assert!(diff_user_sets(&want, &want).is_empty(), "no-op");
+        assert!(diff_user_sets(&st(&want), &st(&want)).is_empty(), "no-op");
         // Applying the ops (REPLACE semantics) to base yields want.
         let mut applied = base.clone();
         for o in &ops {
@@ -2505,6 +2560,44 @@ mod tests {
             applied.extend(user_set(std::slice::from_ref(o)));
         }
         assert_eq!(applied, want);
+    }
+
+    /// W7: speed limits ride in the user ops. A limit change alone is a
+    /// delta (ADD with the unchanged credentials + the new limit), never
+    /// part of the state hash; REMOVE and empty users carry no limit.
+    #[test]
+    fn speed_limits_in_deltas_not_in_hash() {
+        let mut a = op("a", &[("t1", "{\"id\":\"a\"}")]);
+        let b = op("b", &[("t1", "{\"id\":\"b\"}")]);
+        let base = NodeState::of_snapshot("[]".into(), &[a.clone(), b.clone()]);
+        a.speed_limit_bytes_per_sec = 12_500_000;
+        let want = NodeState::of_snapshot("[]".into(), &[a.clone(), b.clone()]);
+        assert_eq!(want.limits.get("a"), Some(&12_500_000));
+        assert!(!want.limits.contains_key("b"), "0 = unlimited, not stored");
+        assert_eq!(state_hash(7, &base), state_hash(7, &want));
+        let dg = SetDigest::of(7, &base);
+        let ops = diff_from_digest(&dg, &want);
+        assert_eq!(ops, vec![a.clone()], "limit-only change = one ADD");
+        assert_eq!(diff_user_sets(&base, &want), ops);
+        assert!(diff_from_digest(&SetDigest::of(7, &want), &want).is_empty());
+        // Back to unlimited is a change too.
+        let back = diff_from_digest(&SetDigest::of(7, &want), &base);
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].speed_limit_bytes_per_sec, 0);
+        // Collapsing: a later REMOVE or ADD without inbounds drops it.
+        let gone = user_limits(&[
+            a.clone(),
+            UserOp {
+                op: UserOpKind::Remove as i32,
+                user_id: "a".into(),
+                inbound_users: vec![],
+                speed_limit_bytes_per_sec: 9,
+            },
+        ]);
+        assert!(gone.is_empty());
+        assert_eq!(mbps_to_bytes_per_sec(Some(100)), 12_500_000);
+        assert_eq!(mbps_to_bytes_per_sec(Some(0)), 0);
+        assert_eq!(mbps_to_bytes_per_sec(None), 0);
     }
 
     /// Convergence to (c,u) with set `set` acked by a v1 agent.
@@ -2898,6 +2991,7 @@ mod tests {
         let st = NodeState {
             inbounds: d.snapshot.inbounds_json.clone(),
             users: set,
+            ..Default::default()
         };
         assert_eq!(state_hash(1, &st).len(), 64);
         db.drop().await;
@@ -3117,10 +3211,7 @@ mod tests {
     fn hash_of(s: &ConfigSnapshot) -> String {
         state_hash(
             s.config_version,
-            &NodeState {
-                inbounds: s.inbounds_json.clone(),
-                users: user_set(&s.users),
-            },
+            &NodeState::of_snapshot(s.inbounds_json.clone(), &s.users),
         )
     }
 

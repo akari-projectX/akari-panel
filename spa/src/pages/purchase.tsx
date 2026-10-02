@@ -1,15 +1,31 @@
 // R18-3 user purchase flow: shop → order → Alipay QR → status polling.
+// W7: plans are sold per period (month … three years, custom days,
+// one-time, traffic reset pack); the shop shows each period as the server
+// prices it for the caller (switch credit, amount, or why not), with the
+// plan's Markdown-lite description and stock.
 // The server polls Alipay on each status request (and reconciles in the
 // background), so payment is detected even without the async notify.
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
-import { useLocale, useT, type TFunction } from "../i18n";
+import { useLocale, useT, type MessageKey, type TFunction } from "../i18n";
 import { get, post } from "../lib/api";
 import { errorText } from "../lib/errors";
-import { STATUS_KEY, yuan, type MyOrder, type Shop, type ShopPlan } from "../lib/billing";
+import {
+  STATUS_KEY,
+  yuan,
+  type MyOrder,
+  type Offer,
+  type OfferAction,
+  type OfferRefusal,
+  periodLabel,
+  type PeriodKind,
+  type Shop,
+  type ShopPlan,
+} from "../lib/billing";
 import { humanBytes } from "../lib/utils";
 import { PayQr } from "../components/pay-qr";
+import { PlanDescription } from "../components/plan-description";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
@@ -34,6 +50,22 @@ function periodText(t: TFunction, p: string): string {
   return t("billing.resetNone");
 }
 
+const REFUSAL_KEY = {
+  not_for_sale: "billing.refusalNotForSale",
+  sold_out: "billing.refusalSoldOut",
+  renewal_only: "billing.refusalRenewalOnly",
+  no_switch: "billing.refusalNoSwitch",
+  reset_needs_subscription: "billing.refusalResetNeedsPlan",
+  no_expiry: "billing.refusalNoExpiry",
+} as const satisfies Record<OfferRefusal, MessageKey>;
+
+const ACTION_KEY = {
+  new: "billing.buy",
+  renew: "billing.renew",
+  switch: "billing.switch",
+  reset: "billing.resetAction",
+} as const satisfies Record<OfferAction, MessageKey>;
+
 export function Purchase({ orderId, onOrder }: { orderId: string | null; onOrder: (id: string | null) => void }) {
   const t = useT();
   const locale = useLocale();
@@ -42,20 +74,31 @@ export function Purchase({ orderId, onOrder }: { orderId: string | null; onOrder
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function buy(p: ShopPlan) {
+  async function buy(p: ShopPlan, o: Offer) {
     const current = shop.data?.current;
-    if (p.action === "replace" && current) {
-      if (!window.confirm(t("billing.confirmReplace", { name: p.name, current: current.name }))) return;
+    if (o.action === "switch" && current) {
+      const ok = window.confirm(
+        t("billing.confirmSwitch", {
+          name: p.name,
+          current: current.name,
+          amount: yuan(o.amount_cents ?? o.price_cents),
+          credit: yuan(o.credit_cents),
+        }),
+      );
+      if (!ok) return;
     }
+    if (o.action === "reset" && !window.confirm(t("billing.confirmReset"))) return;
     setError(null);
     setBusy(true);
     try {
-      const o = await post<MyOrder>("/me/orders", { plan_id: p.plan_id });
-      queryClient.setQueryData(["order", o.id], o);
+      // The server prices the order; the client never sends an amount.
+      const order = await post<MyOrder>("/me/orders", { plan_id: p.plan_id, period: o.period });
+      queryClient.setQueryData(["order", order.id], order);
       await queryClient.invalidateQueries({ queryKey: ["my-orders"] });
-      onOrder(o.id);
+      onOrder(order.id);
     } catch (err) {
       setError(errorText(err, t));
+      await queryClient.invalidateQueries({ queryKey: ["shop"] });
     } finally {
       setBusy(false);
     }
@@ -89,35 +132,7 @@ export function Purchase({ orderId, onOrder }: { orderId: string | null; onOrder
         {data?.enabled && data.plans.length > 0 && (
           <div className="grid gap-3 sm:grid-cols-2">
             {data.plans.map((p) => (
-              <div key={p.plan_id} className="flex flex-col gap-2 rounded-lg border border-border p-4">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold">{p.name}</span>
-                  <span className="text-sm font-semibold">
-                    {t("billing.perPeriod", { price: yuan(p.price_cents), days: p.period_days })}
-                  </span>
-                </div>
-                <p className="text-sm text-muted-foreground">
-                  {p.traffic_quota_bytes != null
-                    ? t("billing.quota", { quota: humanBytes(p.traffic_quota_bytes) })
-                    : t("billing.unlimited")}
-                  {" · "}
-                  {periodText(t, p.period)}
-                  {p.speed_limit_mbps != null && ` · ${t("billing.speed", { mbps: p.speed_limit_mbps })}`}
-                </p>
-                <Button
-                  size="sm"
-                  disabled={busy || p.action === "unavailable" || orderId != null}
-                  onClick={() => buy(p)}
-                >
-                  {p.action === "renew"
-                    ? t("billing.renew")
-                    : p.action === "replace"
-                      ? t("billing.replace")
-                      : p.action === "unavailable"
-                        ? t("billing.unavailableAction")
-                        : t("billing.buy")}
-                </Button>
-              </div>
+              <PlanOffer key={p.plan_id} plan={p} disabled={busy || orderId != null} onBuy={buy} />
             ))}
           </div>
         )}
@@ -130,6 +145,86 @@ export function Purchase({ orderId, onOrder }: { orderId: string | null; onOrder
         {orderId && <PaymentPanel id={orderId} onClose={() => onOrder(null)} />}
       </CardContent>
     </Card>
+  );
+}
+
+// One plan: description, the periods it is sold in (with the server's
+// price, credit and amount for the caller) and the buy button.
+function PlanOffer({
+  plan: p,
+  disabled,
+  onBuy,
+}: {
+  plan: ShopPlan;
+  disabled: boolean;
+  onBuy: (p: ShopPlan, o: Offer) => void;
+}) {
+  const t = useT();
+  const first = p.offers.find((o) => o.action != null && o.period !== "reset") ?? p.offers[0];
+  const [period, setPeriod] = useState<PeriodKind | undefined>(first?.period);
+  const sel = p.offers.find((o) => o.period === period) ?? first;
+  const group = `periods-${p.plan_id}`;
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-border p-4">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-semibold">{p.name}</span>
+        <span className="flex gap-1">
+          {p.current && <Badge>{t("billing.yourPlan")}</Badge>}
+          {p.sold_out && <Badge variant="destructive">{t("billing.soldOut")}</Badge>}
+          {!p.sold_out && !p.current && p.remaining != null && (
+            <Badge variant="secondary">{t("billing.remaining", { count: p.remaining })}</Badge>
+          )}
+        </span>
+      </div>
+      <p className="text-sm text-muted-foreground">
+        {p.traffic_quota_bytes != null
+          ? t("billing.quota", { quota: humanBytes(p.traffic_quota_bytes) })
+          : t("billing.unlimited")}
+        {" · "}
+        {periodText(t, p.period)}
+        {p.speed_limit_mbps != null && ` · ${t("billing.speed", { mbps: p.speed_limit_mbps })}`}
+      </p>
+      <PlanDescription text={p.description} />
+      <fieldset className="space-y-1">
+        <legend className="sr-only">{t("billing.pickPeriod", { name: p.name })}</legend>
+        {p.offers.map((o) => (
+          <label
+            key={o.period}
+            className={`flex items-center justify-between gap-2 text-sm ${o.action ? "" : "text-muted-foreground"}`}
+          >
+            <span className="flex items-center gap-2">
+              <input
+                type="radio"
+                name={group}
+                value={o.period}
+                checked={sel?.period === o.period}
+                disabled={o.action == null}
+                onChange={() => setPeriod(o.period)}
+              />
+              {periodLabel(t, o.period, o.days)}
+            </span>
+            <span className="font-medium">{t("billing.price", { price: yuan(o.price_cents) })}</span>
+          </label>
+        ))}
+      </fieldset>
+      {sel && sel.action && sel.amount_cents != null && (
+        <div className="space-y-0.5 text-sm">
+          {sel.credit_cents > 0 && (
+            <p className="text-muted-foreground">
+              {t("billing.credit", { credit: yuan(sel.credit_cents), price: yuan(sel.price_cents) })}
+            </p>
+          )}
+          {sel.forfeited_cents > 0 && (
+            <p className="text-destructive">{t("billing.forfeit", { amount: yuan(sel.forfeited_cents) })}</p>
+          )}
+          <p className="font-semibold">{t("billing.toPay", { amount: yuan(sel.amount_cents) })}</p>
+        </div>
+      )}
+      {sel && sel.refusal && <p className="text-sm text-muted-foreground">{t(REFUSAL_KEY[sel.refusal])}</p>}
+      <Button size="sm" disabled={disabled || !sel?.action} onClick={() => sel && onBuy(p, sel)}>
+        {sel?.action ? t(ACTION_KEY[sel.action]) : t(REFUSAL_KEY[sel?.refusal ?? "not_for_sale"])}
+      </Button>
+    </div>
   );
 }
 
@@ -186,7 +281,14 @@ export function PaymentPanel({ id, onClose }: { id: string; onClose: () => void 
         <span className="font-semibold">{o.plan_name}</span>
         <Badge variant="secondary">{t(STATUS_KEY[o.status])}</Badge>
       </div>
-      <p className="text-sm">{t("billing.amount", { price: yuan(o.amount_cents) })}</p>
+      <p className="text-sm">
+        {periodLabel(t, o.period, o.period_days)} · {t("billing.amount", { price: yuan(o.amount_cents) })}
+      </p>
+      {o.credit_cents > 0 && (
+        <p className="text-xs text-muted-foreground">
+          {t("billing.credit", { credit: yuan(o.credit_cents), price: yuan(o.list_price_cents) })}
+        </p>
+      )}
       {pending && o.qr_code && (
         <div className="flex flex-col items-center gap-3">
           <p className="text-sm font-medium">{t("billing.scanTitle")}</p>

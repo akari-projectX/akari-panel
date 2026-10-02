@@ -20,8 +20,15 @@
 //! - Users disabled for quota (`disabled_reason = 'quota'`) are re-enabled
 //!   when a plan change leaves them within the (new) quota, and by the
 //!   period reset. Admin-disabled users never are.
-//! - `speed_limit_mbps` is a hint only (not enforced); `device_seats` is
-//!   stored for M5 and not enforced.
+//! - `speed_limit_mbps` is enforced per user by the agent (protocol 4,
+//!   `UserOp.speed_limit_bytes_per_sec`, both directions, shared by all of
+//!   the user's connections on a node). Every change of a user's effective
+//!   limit (plan edit, plan change, cancel, expiry) bumps the user's nodes
+//!   in the same transaction. `device_seats` is stored for the client's
+//!   seat binding (R25) and not enforced.
+//! - W7 catalogue fields (description, on_sale, capacity, renewal_only,
+//!   allow_switch_in) and the prices (`plan_period_prices`) are sale rules
+//!   used by `billing/`; admin assignment ignores them.
 
 use axum::extract::{Path, State};
 use axum::Json;
@@ -39,6 +46,8 @@ use crate::state::AppState;
 
 const MAX_NAME: usize = 64;
 const MAX_DESCRIPTION: usize = 500;
+/// Plan descriptions (Markdown-lite text on the purchase page).
+const MAX_PLAN_DESCRIPTION: usize = 4000;
 /// Upper bound of `days-N` periods (10 years).
 const MAX_PERIOD_DAYS: i32 = 3650;
 /// Rows handled per periodic pass (the rest next tick).
@@ -59,6 +68,24 @@ fn clean_description(d: &str) -> Result<String, ApiError> {
         return Err(ApiError::bad_request(format!(
             "description must be at most {MAX_DESCRIPTION} characters"
         )));
+    }
+    Ok(d.trim().to_string())
+}
+
+/// A plan description: Markdown-lite plain text (rendered as text nodes by
+/// the SPA, never as HTML). Control characters other than newlines/tabs are
+/// refused; CRLF is normalised.
+fn clean_plan_description(d: &str) -> Result<String, ApiError> {
+    let d = d.replace("\r\n", "\n");
+    if d.chars().count() > MAX_PLAN_DESCRIPTION {
+        return Err(ApiError::bad_request(format!(
+            "description must be at most {MAX_PLAN_DESCRIPTION} characters"
+        )));
+    }
+    if d.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+        return Err(ApiError::bad_request(
+            "description must not contain control characters",
+        ));
     }
     Ok(d.trim().to_string())
 }
@@ -460,6 +487,12 @@ struct PlanRow {
     device_seats: Option<i32>,
     sort: i32,
     enabled: bool,
+    description: String,
+    on_sale: bool,
+    capacity: Option<i32>,
+    renewal_only: bool,
+    allow_switch_in: bool,
+    prices: Value,
     group_ids: Vec<Uuid>,
     active_users: i64,
     created_at: DateTime<Utc>,
@@ -474,13 +507,25 @@ pub struct PlanView {
     traffic_quota_bytes: Option<i64>,
     /// "monthly" | "days-N" | "none".
     period: String,
-    /// Hint shown to users; NOT enforced.
+    /// Per-user limit, both directions, enforced by the agent (protocol 4).
     speed_limit_mbps: Option<i32>,
-    /// Reserved for M5 seat binding; NOT enforced.
+    /// Reserved for the client's seat binding (R25); NOT enforced.
     device_seats: Option<i32>,
     sort: i32,
     /// Offered for new assignments.
     enabled: bool,
+    /// Markdown-lite text for the purchase page.
+    description: String,
+    /// Offered in the shop (with `enabled` and at least one price).
+    on_sale: bool,
+    /// Max active subscribers (null = unlimited).
+    capacity: Option<i32>,
+    /// Only current subscribers may buy it (renewal / reset pack).
+    renewal_only: bool,
+    /// Holders of another plan may switch to it.
+    allow_switch_in: bool,
+    /// [{period, days, price_cents}] in period order.
+    prices: Value,
     group_ids: Vec<Uuid>,
     active_users: i64,
     created_at: DateTime<Utc>,
@@ -498,6 +543,12 @@ impl From<PlanRow> for PlanView {
             device_seats: r.device_seats,
             sort: r.sort,
             enabled: r.enabled,
+            description: r.description,
+            on_sale: r.on_sale,
+            capacity: r.capacity,
+            renewal_only: r.renewal_only,
+            allow_switch_in: r.allow_switch_in,
+            prices: r.prices,
             group_ids: r.group_ids,
             active_users: r.active_users,
             created_at: r.created_at,
@@ -507,7 +558,12 @@ impl From<PlanRow> for PlanView {
 }
 
 const PLAN_VIEW_SQL: &str = "SELECT p.id, p.name, p.traffic_quota_bytes, p.reset_period, \
-     p.reset_days, p.speed_limit_mbps, p.device_seats, p.sort, p.enabled, \
+     p.reset_days, p.speed_limit_mbps, p.device_seats, p.sort, p.enabled, p.description, \
+     p.on_sale, p.capacity, p.renewal_only, p.allow_switch_in, \
+     COALESCE((SELECT jsonb_agg(jsonb_build_object('period', pp.period, 'days', pp.days, \
+       'price_cents', pp.price_cents) ORDER BY array_position(ARRAY['month', 'quarter', \
+       'half_year', 'year', 'two_year', 'three_year', 'days', 'onetime', 'reset'], pp.period)) \
+       FROM plan_period_prices pp WHERE pp.plan_id = p.id), '[]'::jsonb) AS prices, \
      ARRAY(SELECT pg.group_id FROM plan_groups pg WHERE pg.plan_id = p.id ORDER BY pg.group_id) \
      AS group_ids, \
      (SELECT count(*) FROM user_plans up WHERE up.plan_id = p.id AND up.status = 'active') \
@@ -530,7 +586,9 @@ fn plan_snapshot_sql(alias: &str) -> String {
         "jsonb_build_object('name', {a}.name, 'traffic_quota_bytes', {a}.traffic_quota_bytes, \
          'reset_period', {a}.reset_period, 'reset_days', {a}.reset_days, \
          'speed_limit_mbps', {a}.speed_limit_mbps, 'device_seats', {a}.device_seats, \
-         'sort', {a}.sort, 'enabled', {a}.enabled)",
+         'sort', {a}.sort, 'enabled', {a}.enabled, 'description', {a}.description, \
+         'capacity', {a}.capacity, 'renewal_only', {a}.renewal_only, \
+         'allow_switch_in', {a}.allow_switch_in)",
         a = alias
     )
 }
@@ -548,7 +606,7 @@ pub async fn list_plans(
     Ok(Json(rows.into_iter().map(PlanView::from).collect()))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct CreatePlanReq {
     pub name: String,
@@ -559,6 +617,10 @@ pub struct CreatePlanReq {
     pub sort: Option<i32>,
     pub enabled: Option<bool>,
     pub group_ids: Option<Vec<Uuid>>,
+    pub description: Option<String>,
+    pub capacity: Option<i32>,
+    pub renewal_only: Option<bool>,
+    pub allow_switch_in: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -582,7 +644,19 @@ pub struct UpdatePlanReq {
     /// The complete set of granted groups (replaces it).
     #[serde(default, deserialize_with = "double_option")]
     pub group_ids: Option<Option<Vec<Uuid>>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub description: Option<Option<String>>,
+    /// null = unlimited.
+    #[serde(default, deserialize_with = "double_option")]
+    pub capacity: Option<Option<i32>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub renewal_only: Option<Option<bool>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub allow_switch_in: Option<Option<bool>>,
 }
+
+/// The highest accepted speed limit (100 Gbit/s).
+const MAX_SPEED_MBPS: i32 = 100_000;
 
 fn check_plan_numbers(
     quota: Option<i64>,
@@ -592,11 +666,20 @@ fn check_plan_numbers(
     if quota.is_some_and(|q| q < 0) {
         return Err(ApiError::bad_request("traffic_quota_bytes must be >= 0"));
     }
-    if speed.is_some_and(|s| s <= 0) {
-        return Err(ApiError::bad_request("speed_limit_mbps must be > 0"));
+    if speed.is_some_and(|s| !(1..=MAX_SPEED_MBPS).contains(&s)) {
+        return Err(ApiError::bad_request(format!(
+            "speed_limit_mbps must be 1..={MAX_SPEED_MBPS}"
+        )));
     }
     if seats.is_some_and(|s| s < 0) {
         return Err(ApiError::bad_request("device_seats must be >= 0"));
+    }
+    Ok(())
+}
+
+fn check_capacity(c: Option<i32>) -> Result<(), ApiError> {
+    if c.is_some_and(|c| c < 0) {
+        return Err(ApiError::bad_request("capacity must be >= 0"));
     }
     Ok(())
 }
@@ -614,6 +697,8 @@ pub async fn apply_create_plan(
         req.speed_limit_mbps,
         req.device_seats,
     )?;
+    check_capacity(req.capacity)?;
+    let description = clean_plan_description(req.description.as_deref().unwrap_or(""))?;
     let groups = id_set(req.group_ids.as_deref().unwrap_or(&[]));
     entitle::lock(conn).await?;
     require_all_exist(conn, "node_groups", "group", &groups).await?;
@@ -621,8 +706,9 @@ pub async fn apply_create_plan(
     let (kind, days) = period.columns();
     let r: Result<Value, _> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "INSERT INTO plans (id, name, traffic_quota_bytes, reset_period, reset_days, \
-         speed_limit_mbps, device_seats, sort, enabled) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING {}",
+         speed_limit_mbps, device_seats, sort, enabled, description, capacity, renewal_only, \
+         allow_switch_in) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING {}",
         plan_snapshot_sql("plans")
     )))
     .bind(id)
@@ -634,6 +720,10 @@ pub async fn apply_create_plan(
     .bind(req.device_seats)
     .bind(req.sort.unwrap_or(0))
     .bind(req.enabled.unwrap_or(true))
+    .bind(&description)
+    .bind(req.capacity)
+    .bind(req.renewal_only.unwrap_or(false))
+    .bind(req.allow_switch_in.unwrap_or(true))
     .fetch_one(&mut *conn)
     .await;
     let mut after = match r {
@@ -689,11 +779,18 @@ pub async fn apply_update_plan(
     let sort = non_null("sort", &req.sort)?;
     let enabled = non_null("enabled", &req.enabled)?;
     let groups = non_null("group_ids", &req.group_ids)?.map(|g| id_set(&g));
+    let renewal_only = non_null("renewal_only", &req.renewal_only)?;
+    let allow_switch_in = non_null("allow_switch_in", &req.allow_switch_in)?;
+    let description = match &req.description {
+        None => None,
+        Some(d) => Some(clean_plan_description(d.as_deref().unwrap_or(""))?),
+    };
     check_plan_numbers(
         req.traffic_quota_bytes.flatten(),
         req.speed_limit_mbps.flatten(),
         req.device_seats.flatten(),
     )?;
+    check_capacity(req.capacity.flatten())?;
     if name.is_none()
         && period.is_none()
         && sort.is_none()
@@ -702,6 +799,10 @@ pub async fn apply_update_plan(
         && req.traffic_quota_bytes.is_none()
         && req.speed_limit_mbps.is_none()
         && req.device_seats.is_none()
+        && description.is_none()
+        && req.capacity.is_none()
+        && renewal_only.is_none()
+        && allow_switch_in.is_none()
     {
         return Err(ApiError::bad_request("no fields to update"));
     }
@@ -748,14 +849,27 @@ pub async fn apply_update_plan(
     if let Some(e) = enabled {
         set.push("enabled = ").push_bind_unseparated(e);
     }
+    if let Some(d) = &description {
+        set.push("description = ").push_bind_unseparated(d.clone());
+    }
+    if let Some(c) = req.capacity {
+        set.push("capacity = ").push_bind_unseparated(c);
+    }
+    if let Some(r) = renewal_only {
+        set.push("renewal_only = ").push_bind_unseparated(r);
+    }
+    if let Some(a) = allow_switch_in {
+        set.push("allow_switch_in = ").push_bind_unseparated(a);
+    }
     qb.push(" WHERE id = ").push_bind(id);
     qb.push(format!(
-        " RETURNING {}, {}, old.traffic_quota_bytes IS DISTINCT FROM new.traffic_quota_bytes",
+        " RETURNING {}, {}, old.traffic_quota_bytes IS DISTINCT FROM new.traffic_quota_bytes, \
+         old.speed_limit_mbps IS DISTINCT FROM new.speed_limit_mbps",
         plan_snapshot_sql("old"),
         plan_snapshot_sql("new")
     ));
-    let (before, mut after, quota_changed) = match qb
-        .build_query_as::<(Value, Value, bool)>()
+    let (before, mut after, quota_changed, speed_changed) = match qb
+        .build_query_as::<(Value, Value, bool, bool)>()
         .fetch_one(&mut *conn)
         .await
     {
@@ -793,10 +907,17 @@ pub async fn apply_update_plan(
     .fetch_all(&mut *conn)
     .await?;
     let mut res = PlanUpdate::default();
-    if (groups_changed || quota_changed) && !users.is_empty() {
+    if (groups_changed || quota_changed || speed_changed) && !users.is_empty() {
         // Also locks every node the users have rows on (Scope::Users), so
         // the user updates and bumps below stay in lock order.
         res.outcome = entitle::apply_reconcile(conn, Scope::Users(&users)).await?;
+    }
+    if speed_changed && !users.is_empty() {
+        // The limit travels in every user op (agent protocol 4): every node
+        // serving these users must resend them.
+        let bumped = bump_nodes_of_users(conn, &users).await?;
+        after["speed_bumped_nodes"] = json!(bumped.len());
+        res.served_bumped = bumped;
     }
     if quota_changed && !users.is_empty() {
         let synced = sync_users_from_plan(conn, &users, false).await?;
@@ -805,7 +926,8 @@ pub async fn apply_update_plan(
             .filter(|s| s.serve_changed)
             .map(|s| s.user)
             .collect();
-        res.served_bumped = bump_nodes_of_users(conn, &changed).await?;
+        let bumped = bump_nodes_of_users(conn, &changed).await?;
+        res.served_bumped = id_set(&[res.served_bumped.clone(), bumped].concat());
         after["users_synced"] = json!(synced.len());
         after["users_reenabled"] = json!(changed);
     }
@@ -983,6 +1105,27 @@ async fn bump_nodes_of_users(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::R
     Ok(v)
 }
 
+/// After users lost their plan (cancel/expiry): bump the nodes they still
+/// have rows on (manual assignments) when the plan they lost had a speed
+/// limit — those nodes must resend them unlimited. Nodes are locked by the
+/// caller's Scope::Users reconcile.
+async fn bump_nodes_of_limited(
+    conn: &mut PgConnection,
+    lost: &[(Uuid, Uuid)],
+) -> sqlx::Result<Vec<Uuid>> {
+    let users: Vec<Uuid> = lost.iter().map(|l| l.0).collect();
+    let plans: Vec<Uuid> = lost.iter().map(|l| l.1).collect();
+    let limited: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT DISTINCT l.u FROM unnest($1::uuid[], $2::uuid[]) AS l(u, p) \
+         JOIN plans p ON p.id = l.p WHERE p.speed_limit_mbps IS NOT NULL ORDER BY l.u",
+    )
+    .bind(&users)
+    .bind(&plans)
+    .fetch_all(&mut *conn)
+    .await?;
+    bump_nodes_of_users(conn, &limited).await
+}
+
 #[derive(Serialize, sqlx::FromRow, Debug)]
 pub struct UserPlanView {
     id: Uuid,
@@ -1135,6 +1278,14 @@ pub async fn apply_set_user_plan(
     .bind(user_id)
     .fetch_optional(&mut *conn)
     .await?;
+    let speed_changed: bool = sqlx::query_scalar(
+        "SELECT (SELECT speed_limit_mbps FROM plans WHERE id = $1) \
+         IS DISTINCT FROM (SELECT speed_limit_mbps FROM plans WHERE id = $2)",
+    )
+    .bind(previous.map(|p| p.1))
+    .bind(req.plan_id)
+    .fetch_one(&mut *conn)
+    .await?;
     let up_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO user_plans (id, user_id, plan_id, expires_at, period_anchor, next_reset_at) \
@@ -1157,7 +1308,9 @@ pub async fn apply_set_user_plan(
     let synced = sync_users_from_plan(conn, &[user_id], reset).await?;
     let (before, mut after) = match synced.into_iter().next() {
         Some(s) => {
-            if s.serve_changed {
+            // Served state or speed limit changed: every node of the user
+            // resends it (the reconcile only bumped nodes whose rows moved).
+            if s.serve_changed || speed_changed {
                 res.served_bumped = bump_nodes_of_users(conn, &[user_id]).await?;
             }
             (s.before, s.after)
@@ -1273,10 +1426,12 @@ pub async fn apply_cancel_user_plan(
     let Some((up_id, plan_id)) = ended else {
         return Err(ApiError::not_found());
     };
-    let res = UserPlanChange {
+    let mut res = UserPlanChange {
         outcome: entitle::apply_reconcile(conn, Scope::Users(&[user_id])).await?,
         ..Default::default()
     };
+    // Rows the user keeps (manual) lose the plan's speed limit.
+    res.served_bumped = bump_nodes_of_limited(conn, &[(user_id, plan_id)]).await?;
     crate::audit::record(
         conn,
         actor,
@@ -1285,6 +1440,69 @@ pub async fn apply_cancel_user_plan(
         Some(user_id.to_string()),
         Some(json!({ "plan_id": plan_id, "user_plan_id": up_id, "status": "active" })),
         Some(json!({ "status": "cancelled", "entitlement": res.outcome.summary() })),
+    )
+    .await?;
+    Ok(res)
+}
+
+/// W7 traffic reset pack: zero the used traffic of a user whose ACTIVE
+/// plan is `plan_id` and re-enable them if (and only if) they were disabled
+/// for quota; no period change (the reset marker stays). 409 when the user
+/// no longer holds that plan. Bumps the user's nodes when they become
+/// served again; audited `user.traffic.reset` (source `reset_pack`).
+pub async fn apply_reset_traffic(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    user_id: Uuid,
+    plan_id: Uuid,
+) -> Result<UserPlanChange, ApiError> {
+    entitle::lock(conn).await?;
+    let active: Option<Uuid> = sqlx::query_scalar(
+        "SELECT plan_id FROM user_plans WHERE user_id = $1 AND status = 'active'",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if active != Some(plan_id) {
+        return Err(ApiError::conflict(
+            "a traffic reset pack needs an active subscription of its plan",
+        ));
+    }
+    // Lock order: nodes (of the user's rows) -> users.
+    sqlx::query(
+        "SELECT id FROM nodes WHERE id IN (SELECT node_id FROM node_users WHERE user_id = $1) \
+         ORDER BY id FOR UPDATE",
+    )
+    .bind(user_id)
+    .execute(&mut *conn)
+    .await?;
+    let row: Option<(i64, bool, bool, Option<String>)> = sqlx::query_as(
+        "UPDATE users u SET traffic_used_bytes = 0, \
+         enabled = u.enabled OR u.disabled_reason = 'quota' WHERE u.id = $1 \
+         RETURNING old.traffic_used_bytes, old.enabled, new.enabled, old.disabled_reason::text",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((used, was_enabled, enabled, reason)) = row else {
+        return Err(ApiError::not_found());
+    };
+    let mut res = UserPlanChange::default();
+    if !was_enabled && enabled {
+        res.served_bumped = bump_nodes_of_users(conn, &[user_id]).await?;
+    }
+    crate::audit::record(
+        conn,
+        actor,
+        "user.traffic.reset",
+        "user",
+        Some(user_id.to_string()),
+        Some(json!({ "traffic_used_bytes": used, "enabled": was_enabled,
+                     "disabled_reason": reason })),
+        Some(
+            json!({ "traffic_used_bytes": 0, "enabled": enabled, "source": "reset_pack",
+                     "plan_id": plan_id }),
+        ),
     )
     .await?;
     Ok(res)
@@ -1471,7 +1689,10 @@ pub async fn apply_plan_expiry(conn: &mut PgConnection) -> Result<Vec<Uuid>, Api
     }
     let mut users: Vec<Uuid> = ended.iter().map(|e| e.0).collect();
     users.sort();
-    let outcome = entitle::apply_reconcile(conn, Scope::Users(&users)).await?;
+    let mut outcome = entitle::apply_reconcile(conn, Scope::Users(&users)).await?;
+    let pairs: Vec<(Uuid, Uuid)> = ended.iter().map(|e| (e.0, e.2)).collect();
+    let speed = bump_nodes_of_limited(conn, &pairs).await?;
+    outcome.bumped = id_set(&[outcome.bumped, speed].concat());
     let actor = Actor::system();
     for (user, up, plan, expires) in &ended {
         crate::audit::record(
@@ -1674,6 +1895,7 @@ mod tests {
                 sort: None,
                 enabled: None,
                 group_ids: Some(groups.to_vec()),
+                ..Default::default()
             },
         )
         .await
