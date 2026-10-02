@@ -4,6 +4,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# R22 (main domain behind Caddy): the PANEL itself dials https://myapp.test
+# (install-link TLS pin probe), so the name must resolve to loopback here
+# (CI adds it to /etc/hosts; curl calls use --resolve).
+getent hosts myapp.test | grep -qE '^(127\.0\.0\.1|::1)[[:space:]]' \
+  || { echo "smoke needs 'myapp.test' -> 127.0.0.1 (echo '127.0.0.1 myapp.test' | sudo tee -a /etc/hosts)"; exit 1; }
+
 PANEL=./target/release/akari
 AGENT_DIR="${AGENT_DIR:-../akari-agent}"
 AGENT="$AGENT_DIR/agent"
