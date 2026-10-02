@@ -215,7 +215,10 @@ while time.time() < deadline:
     st, nodes = api("GET", "/api/v1/nodes")
     n = [x for x in nodes if x["id"] == NODE_ID][0]
     applied = open(AGENT_LOG).read().count('"msg":"state applied"')
-    if n["last_error"] is None and applied > applied_before and not n["warnings"]:
+    # (W18: the "run 重装命令 once" updater warning is about the agent build,
+    # not the inbounds: an agent main without the updater shows it.)
+    inbound_warnings = [w for w in n["warnings"] if "akari-agent-update" not in w]
+    if n["last_error"] is None and applied > applied_before and not inbound_warnings:
         # the last apply must have every port listening
         ok = True
         for i in rendered:
