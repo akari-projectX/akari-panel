@@ -1,0 +1,1 @@
+	{"cpu_percent": 1, "metrics": {"disk_used_bytes": 1, "disk_total_bytes": 2}, "cert": {"state": "valid", "not_after": "2026-10-20T00:00:00+00:00"}}
