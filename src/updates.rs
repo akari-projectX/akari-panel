@@ -203,10 +203,10 @@ pub fn parse_version(v: &str) -> Option<Version> {
         Some((r, b)) => (r, Some(b)),
         None => (rest, None),
     };
-    if let Some(b) = build {
-        if !b.split('.').all(ident_ok) {
-            return None;
-        }
+    if let Some(b) = build
+        && !b.split('.').all(ident_ok)
+    {
+        return None;
     }
     let (core, pre) = match rest.split_once('-') {
         Some((c, p)) => (c, Some(p)),

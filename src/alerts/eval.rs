@@ -141,16 +141,15 @@ pub fn evaluate(f: &Facts, r: &Rules, now: DateTime<Utc>) -> Verdict {
         });
     };
     let mut unknown = Vec::new();
-    if let Some(limit) = r.offline_secs {
-        if let (false, Some(age)) = (f.online, f.seen_age_secs) {
-            if age >= limit {
-                fire(
-                    "offline",
-                    format!("离线 {}", minutes_text(age)),
-                    format!("超过 {} 未收到 agent 的连接", minutes_text(limit)),
-                );
-            }
-        }
+    if let Some(limit) = r.offline_secs
+        && let (false, Some(age)) = (f.online, f.seen_age_secs)
+        && age >= limit
+    {
+        fire(
+            "offline",
+            format!("离线 {}", minutes_text(age)),
+            format!("超过 {} 未收到 agent 的连接", minutes_text(limit)),
+        );
     }
     if !f.online {
         // Live facts of an offline node are stale: keep those alerts as
@@ -223,34 +222,34 @@ pub fn evaluate(f: &Facts, r: &Rules, now: DateTime<Utc>) -> Verdict {
                 None if f.heartbeat => {}
                 None => unknown.push("cert"),
                 Some((state, not_after)) => {
-                    if let Some(at) = not_after {
-                        if *at - now < chrono::Duration::days(days) {
-                            fire(
+                    if let Some(at) = not_after
+                        && *at - now < chrono::Duration::days(days)
+                    {
+                        fire(
                                 "cert",
                                 format!("证书{}", days_left(*at, now)),
                                 format!(
                                     "节点域名 {domain} 的证书（自动申请，状态 {state}）将在 {days} 天内到期，agent 未能续期"
                                 ),
                             );
-                        }
                     }
                 }
             }
         }
     }
-    if let (Some(days), Some(at)) = (r.cert_days, f.agent_cert_not_after) {
-        if at - now < chrono::Duration::days(days) {
-            fire(
-                "agent_cert",
-                format!("Agent 证书{}", days_left(at, now)),
-                "agent 的 mTLS 证书即将到期且未续期：检查 agent 日志，或重新生成安装命令".into(),
-            );
-        }
+    if let (Some(days), Some(at)) = (r.cert_days, f.agent_cert_not_after)
+        && at - now < chrono::Duration::days(days)
+    {
+        fire(
+            "agent_cert",
+            format!("Agent 证书{}", days_left(at, now)),
+            "agent 的 mTLS 证书即将到期且未续期：检查 agent 日志，或重新生成安装命令".into(),
+        );
     }
-    if r.last_error {
-        if let Some(e) = &f.last_error {
-            fire("last_error", "配置应用失败".into(), e.clone());
-        }
+    if r.last_error
+        && let Some(e) = &f.last_error
+    {
+        fire("last_error", "配置应用失败".into(), e.clone());
     }
     v.unknown = unknown;
     v

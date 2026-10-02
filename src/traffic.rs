@@ -527,10 +527,10 @@ impl TrafficBuffer {
                 e.failures = 0;
                 if before && !e.dirty() {
                     // Still under the entry guard (entries -> index).
-                    if let Some(mut idx) = self.index.get_mut(&r.node_id) {
-                        if let Some(sess) = idx.sessions.get_mut(&r.session_id) {
-                            sess.dirty_users.remove(&r.user_id);
-                        }
+                    if let Some(mut idx) = self.index.get_mut(&r.node_id)
+                        && let Some(sess) = idx.sessions.get_mut(&r.session_id)
+                    {
+                        sess.dirty_users.remove(&r.user_id);
                     }
                 }
             }

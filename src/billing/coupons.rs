@@ -440,22 +440,22 @@ pub fn check_terms(t: &Terms) -> Result<(), ApiError> {
         }
         _ => {}
     }
-    if let Some(p) = &t.plan_ids {
-        if p.is_empty() || p.len() > MAX_SCOPE_PLANS {
-            return Err(bad_request!(
-                "coupon_admin.plans_range",
-                "plan_ids must list 1-{max_scope_plans} plans (or be null for all)",
-                max_scope_plans = MAX_SCOPE_PLANS
-            ));
-        }
+    if let Some(p) = &t.plan_ids
+        && (p.is_empty() || p.len() > MAX_SCOPE_PLANS)
+    {
+        return Err(bad_request!(
+            "coupon_admin.plans_range",
+            "plan_ids must list 1-{max_scope_plans} plans (or be null for all)",
+            max_scope_plans = MAX_SCOPE_PLANS
+        ));
     }
-    if let Some(p) = &t.periods {
-        if p.is_empty() {
-            return Err(bad_request!(
-                "coupon_admin.periods_empty",
-                "periods must list at least one period (or be null for all)"
-            ));
-        }
+    if let Some(p) = &t.periods
+        && p.is_empty()
+    {
+        return Err(bad_request!(
+            "coupon_admin.periods_empty",
+            "periods must list at least one period (or be null for all)"
+        ));
     }
     if !(0..=MAX_PRICE_CENTS).contains(&t.min_amount_cents) {
         return Err(bad_request!(
@@ -464,13 +464,13 @@ pub fn check_terms(t: &Terms) -> Result<(), ApiError> {
             max_price_cents = MAX_PRICE_CENTS
         ));
     }
-    if let (Some(s), Some(e)) = (t.starts_at, t.ends_at) {
-        if e <= s {
-            return Err(bad_request!(
-                "coupon_admin.ends_before_starts",
-                "ends_at must be after starts_at"
-            ));
-        }
+    if let (Some(s), Some(e)) = (t.starts_at, t.ends_at)
+        && e <= s
+    {
+        return Err(bad_request!(
+            "coupon_admin.ends_before_starts",
+            "ends_at must be after starts_at"
+        ));
     }
     for (field, v) in [
         ("max_uses", t.max_uses),

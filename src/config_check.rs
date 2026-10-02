@@ -232,10 +232,10 @@ impl PanelConfig {
     /// R22: panel.toml defaults of the system settings and the Caddy ask
     /// listener.
     fn validate_settings_defaults(&self, r: &mut Report) {
-        if !self.web.sub_domain.is_empty() {
-            if let Err(e) = crate::settings::Domain::parse(&self.web.sub_domain) {
-                r.err(format!("web.sub_domain {:?}: {e}", self.web.sub_domain));
-            }
+        if !self.web.sub_domain.is_empty()
+            && let Err(e) = crate::settings::Domain::parse(&self.web.sub_domain)
+        {
+            r.err(format!("web.sub_domain {:?}: {e}", self.web.sub_domain));
         }
         let a = &self.tls_ask;
         if let Some(b) = a.bind {
@@ -446,10 +446,10 @@ impl PanelConfig {
                 i.rate_window_secs
             ));
         }
-        if !i.public_url.is_empty() {
-            if let Err(e) = crate::nodeinstall::parse_origin(&i.public_url) {
-                r.err(format!("install.public_url: {e}"));
-            }
+        if !i.public_url.is_empty()
+            && let Err(e) = crate::nodeinstall::parse_origin(&i.public_url)
+        {
+            r.err(format!("install.public_url: {e}"));
         }
         if !i.tls_pin.is_empty() && !crate::nodeinstall::valid_pin(&i.tls_pin) {
             r.err("install.tls_pin must be \"sha256//<base64 of the SHA-256 of the SPKI>\"");

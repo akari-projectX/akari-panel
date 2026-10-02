@@ -476,10 +476,10 @@ pub fn compute(
     }
     // An explicit payment notify URL on its own host: Alipay must reach it
     // (certificate and host gate), whatever the main domain is.
-    if let Some(h) = crate::billing::explicit_notify_host(cfg) {
-        if h.parse::<IpAddr>().is_err() {
-            ask_hosts.insert(h);
-        }
+    if let Some(h) = crate::billing::explicit_notify_host(cfg)
+        && h.parse::<IpAddr>().is_err()
+    {
+        ask_hosts.insert(h);
     }
     let host_gate = (main_source == Source::Settings).then(|| {
         let mut allowed = ask_hosts.clone();
@@ -834,14 +834,13 @@ pub async fn apply_update(
     .bind(new.trust_cloudflare)
     .fetch_one(&mut *conn)
     .await?;
-    if new.node_domain != before.node_domain {
-        if let Some(d) = new
+    if new.node_domain != before.node_domain
+        && let Some(d) = new
             .node_domain
             .as_deref()
             .and_then(|d| Domain::parse(d).ok())
-        {
-            record_server_name(conn, &d.host, "settings").await?;
-        }
+    {
+        record_server_name(conn, &d.host, "settings").await?;
     }
     crate::audit::record(
         conn,
@@ -1495,13 +1494,13 @@ pub async fn put_settings(
     let main = norm("主域名", &req.main_domain)?;
     let sub = norm("订阅域名", &req.sub_domain)?;
     let node = norm("节点通信域名", &req.node_domain)?;
-    if let Some(d) = &node {
-        if d.host.parse::<IpAddr>().is_ok_and(|ip| ip.is_unspecified()) {
-            return Err(bad_request!(
-                "settings.node_domain_unspecified",
-                "节点通信域名：不能是 0.0.0.0 / ::"
-            ));
-        }
+    if let Some(d) = &node
+        && d.host.parse::<IpAddr>().is_ok_and(|ip| ip.is_unspecified())
+    {
+        return Err(bad_request!(
+            "settings.node_domain_unspecified",
+            "节点通信域名：不能是 0.0.0.0 / ::"
+        ));
     }
     let new = Values {
         main_domain: main.as_ref().map(Domain::authority),
@@ -1513,29 +1512,29 @@ pub async fn put_settings(
     let current = live.get();
     let mut warnings = Vec::new();
     // DNS (network I/O) before the transaction, only for changed values.
-    if let Some(d) = &node {
-        if current.stored.node_domain.as_deref() != Some(d.authority().as_str()) {
-            let c = check(Kind::Node, d, live.cloudflare()).await;
-            match c.level {
-                "block" if !req.force_node_cloudflare => {
-                    return Err(crate::auth::api_error!(
-                        UNPROCESSABLE_ENTITY,
-                        "settings.node_domain_cloudflare",
-                        "{detail}",
-                        detail = c.message
-                    ));
-                }
-                "ok" => {}
-                _ => warnings.push(c.message),
+    if let Some(d) = &node
+        && current.stored.node_domain.as_deref() != Some(d.authority().as_str())
+    {
+        let c = check(Kind::Node, d, live.cloudflare()).await;
+        match c.level {
+            "block" if !req.force_node_cloudflare => {
+                return Err(crate::auth::api_error!(
+                    UNPROCESSABLE_ENTITY,
+                    "settings.node_domain_cloudflare",
+                    "{detail}",
+                    detail = c.message
+                ));
             }
+            "ok" => {}
+            _ => warnings.push(c.message),
         }
     }
-    if let Some(d) = &sub {
-        if current.stored.sub_domain.as_deref() != Some(d.authority().as_str()) {
-            let c = check(Kind::Sub, d, live.cloudflare()).await;
-            if c.level != "ok" {
-                warnings.push(c.message);
-            }
+    if let Some(d) = &sub
+        && current.stored.sub_domain.as_deref() != Some(d.authority().as_str())
+    {
+        let c = check(Kind::Sub, d, live.cloudflare()).await;
+        if c.level != "ok" {
+            warnings.push(c.message);
         }
     }
     // Host gate: would the address this admin uses right now be refused?

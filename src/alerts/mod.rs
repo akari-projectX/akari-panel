@@ -308,32 +308,32 @@ pub fn check_put(req: &PutSettings) -> Result<(), ApiError> {
     }
     .check()?;
     range("cooldown_minutes", Some(req.cooldown_minutes), 0, 1440)?;
-    if let Some(c) = &req.telegram_chat_id {
-        if !valid_chat_id(c) {
-            return Err(bad_request!(
-                "alert.telegram_chat_invalid",
-                "telegram_chat_id must be a numeric chat id or @channel"
-            ));
-        }
+    if let Some(c) = &req.telegram_chat_id
+        && !valid_chat_id(c)
+    {
+        return Err(bad_request!(
+            "alert.telegram_chat_invalid",
+            "telegram_chat_id must be a numeric chat id or @channel"
+        ));
     }
-    if let Some(Some(t)) = &req.telegram_token {
-        if !valid_bot_token(t) {
-            return Err(bad_request!(
-                "alert.telegram_token_invalid",
-                "telegram_token must look like 123456789:AA... (from @BotFather)"
-            ));
-        }
+    if let Some(Some(t)) = &req.telegram_token
+        && !valid_bot_token(t)
+    {
+        return Err(bad_request!(
+            "alert.telegram_token_invalid",
+            "telegram_token must look like 123456789:AA... (from @BotFather)"
+        ));
     }
     if let Some(u) = &req.webhook_url {
         check_webhook_url(u)?;
     }
-    if let Some(Some(s)) = &req.webhook_secret {
-        if !valid_webhook_secret(s) {
-            return Err(bad_request!(
-                "alert.webhook_secret_invalid",
-                "webhook_secret must be 16-128 printable ASCII characters"
-            ));
-        }
+    if let Some(Some(s)) = &req.webhook_secret
+        && !valid_webhook_secret(s)
+    {
+        return Err(bad_request!(
+            "alert.webhook_secret_invalid",
+            "webhook_secret must be 16-128 printable ASCII characters"
+        ));
     }
     if req.email_to.len() > 5 {
         return Err(bad_request!(
@@ -826,18 +826,18 @@ pub async fn list_alerts(
     Query(q): Query<AlertQuery>,
 ) -> Result<Json<Value>, ApiError> {
     user.require_admin()?;
-    if let Some(s) = q.status.as_deref() {
-        if !["firing", "resolved"].contains(&s) {
-            return Err(bad_request!(
-                "alert.status_invalid",
-                "status must be firing or resolved"
-            ));
-        }
+    if let Some(s) = q.status.as_deref()
+        && !["firing", "resolved"].contains(&s)
+    {
+        return Err(bad_request!(
+            "alert.status_invalid",
+            "status must be firing or resolved"
+        ));
     }
-    if let Some(k) = q.kind.as_deref() {
-        if !KINDS.contains(&k) {
-            return Err(bad_request!("alert.kind_unknown", "unknown alert kind"));
-        }
+    if let Some(k) = q.kind.as_deref()
+        && !KINDS.contains(&k)
+    {
+        return Err(bad_request!("alert.kind_unknown", "unknown alert kind"));
     }
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let rows: Vec<AlertRow> = sqlx::query_as(

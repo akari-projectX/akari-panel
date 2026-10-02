@@ -165,10 +165,11 @@ pub fn classify_pending(target: &str, n: &PendingNode) -> Option<PendingOutcome>
     if n.deleting {
         return Some(PendingOutcome::Skipped("node being deleted".into()));
     }
-    if let Some(v) = n.agent_version {
-        if !update_due(v, target, n.rollback) && parse_version(v).is_some() {
-            return Some(PendingOutcome::Healthy(format!("already at {v}")));
-        }
+    if let Some(v) = n.agent_version
+        && !update_due(v, target, n.rollback)
+        && parse_version(v).is_some()
+    {
+        return Some(PendingOutcome::Healthy(format!("already at {v}")));
     }
     if n.online {
         if let Some(p) = n.protocol.filter(|p| *p < MIN_UPDATE_PROTOCOL as i32) {
@@ -181,10 +182,10 @@ pub fn classify_pending(target: &str, n: &PendingNode) -> Option<PendingOutcome>
                 "agent version {v:?} is not a release version (development build)"
             )));
         }
-        if let Some((os, arch)) = n.platform {
-            if !n.has_artifact {
-                return Some(PendingOutcome::Skipped(format!("no {os}/{arch} artifact")));
-            }
+        if let Some((os, arch)) = n.platform
+            && !n.has_artifact
+        {
+            return Some(PendingOutcome::Skipped(format!("no {os}/{arch} artifact")));
         }
     }
     if n.wave_timed_out && !n.online {

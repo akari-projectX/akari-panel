@@ -19,7 +19,9 @@ pub struct LbArgs {
 }
 
 pub async fn run(args: LbArgs) -> Result<()> {
-    let mut tasks = Vec::new();
+    // `()` spelled out: the accept loops never return, and edition 2024
+    // would infer `!` (clippy: the join loop "never loops").
+    let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     for m in &args.map {
         let Some((listen, backends)) = m.split_once('=') else {
             bail!("--map wants listen=backend,backend: {m:?}");

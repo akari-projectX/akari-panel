@@ -108,10 +108,10 @@ pub async fn login(
         |attempt: crate::login_limit::Attempt, account: Option<(Uuid, String)>, second: bool| {
             let n = attempt.name_count;
             attempt.fail();
-            if let Some((id, login)) = account {
-                if second || n == 1 || n == crate::login_limit::PER_LOGIN {
-                    audit_login_failure(&state, id, login, client, second, n);
-                }
+            if let Some((id, login)) = account
+                && (second || n == 1 || n == crate::login_limit::PER_LOGIN)
+            {
+                audit_login_failure(&state, id, login, client, second, n);
             }
             Err(ApiError::unauthorized())
         };
@@ -1202,29 +1202,30 @@ async fn apply_update_user(
     {
         return Err(bad_request!("request.no_fields", "no fields to update"));
     }
-    if let Some(role) = &role {
-        if role != "user" && role != "admin" {
-            return Err(bad_request!(
-                "user.role_invalid",
-                "role must be 'user' or 'admin'"
-            ));
-        }
+    if let Some(role) = &role
+        && role != "user"
+        && role != "admin"
+    {
+        return Err(bad_request!(
+            "user.role_invalid",
+            "role must be 'user' or 'admin'"
+        ));
     }
-    if let Some(pw) = &password {
-        if pw.len() < 8 {
-            return Err(bad_request!(
-                "account.password_too_short",
-                "password must be at least 8 characters"
-            ));
-        }
+    if let Some(pw) = &password
+        && pw.len() < 8
+    {
+        return Err(bad_request!(
+            "account.password_too_short",
+            "password must be at least 8 characters"
+        ));
     }
-    if let Some(Some(limit)) = req.traffic_limit_bytes {
-        if limit < 0 {
-            return Err(bad_request!(
-                "user.limit_negative",
-                "traffic_limit_bytes must be >= 0"
-            ));
-        }
+    if let Some(Some(limit)) = req.traffic_limit_bytes
+        && limit < 0
+    {
+        return Err(bad_request!(
+            "user.limit_negative",
+            "traffic_limit_bytes must be >= 0"
+        ));
     }
     // Enabled, role (expiry only applies to role=user) and expiry change
     // what nodes serve.
@@ -2338,13 +2339,13 @@ async fn apply_update_node(
             _ => None,
         }),
     };
-    if let Some(Some(r)) = req.traffic_max_rate_bytes_per_sec {
-        if r <= 0 {
-            return Err(bad_request!(
-                "node.max_rate_invalid",
-                "traffic_max_rate_bytes_per_sec must be > 0"
-            ));
-        }
+    if let Some(Some(r)) = req.traffic_max_rate_bytes_per_sec
+        && r <= 0
+    {
+        return Err(bad_request!(
+            "node.max_rate_invalid",
+            "traffic_max_rate_bytes_per_sec must be > 0"
+        ));
     }
     let name = match name {
         Some(n) if n.trim().is_empty() => {

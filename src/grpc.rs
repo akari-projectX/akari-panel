@@ -180,11 +180,11 @@ async fn node_for_serial_from(
         return Err(Status::unauthenticated("unknown certificate"));
     }
     if let Some(node) = current {
-        if has_prev == Some(true) {
-            if let Err(e) = crate::enroll::promote_on_first_sight(pg, node, serial, ip).await {
-                // The older certificate just stays accepted a bit longer.
-                tracing::warn!(node = %node, error = %e, "failed to retire the renewed-from certificate");
-            }
+        if has_prev == Some(true)
+            && let Err(e) = crate::enroll::promote_on_first_sight(pg, node, serial, ip).await
+        {
+            // The older certificate just stays accepted a bit longer.
+            tracing::warn!(node = %node, error = %e, "failed to retire the renewed-from certificate");
         }
         return Ok(AgentIdentity::Node(node));
     }
@@ -771,16 +771,17 @@ impl SyncState {
                 .get_or_insert_with(|| Arc::new(SetDigest::of(d.0, set)))
                 .clone()
         };
-        if !old && self.held == desired {
-            if let Some(h) = self.hello_hash.take() {
-                let dg = digest_of(desired);
-                if h == dg.hash {
-                    self.acked = Some((desired, dg));
-                    self.diverged = false;
-                } else {
-                    self.acked = None;
-                    self.diverged = true;
-                }
+        if !old
+            && self.held == desired
+            && let Some(h) = self.hello_hash.take()
+        {
+            let dg = digest_of(desired);
+            if h == dg.hash {
+                self.acked = Some((desired, dg));
+                self.diverged = false;
+            } else {
+                self.acked = None;
+                self.diverged = true;
             }
         }
         let force_old = old && !self.old_pushed;
@@ -871,10 +872,11 @@ impl SyncState {
                 },
             )
         };
-        if let Some((v, set)) = &self.acked {
-            if *v == self.held && set.is_empty_state() {
-                return true;
-            }
+        if let Some((v, set)) = &self.acked
+            && *v == self.held
+            && set.is_empty_state()
+        {
+            return true;
         }
         matches!(&self.hello_claim, Some((v, h)) if *v == self.held && *h == empty(v.0))
     }
@@ -1322,13 +1324,12 @@ async fn session<S>(
                 }
                 Some(UpMsg::Latency(rep)) => {
                     // W11: like traffic, nothing before the Hello.
-                    if sess.sync.lock().unwrap().hello_seen {
-                        if let Err(e) =
+                    if sess.sync.lock().unwrap().hello_seen
+                        && let Err(e) =
                             crate::nodestat::store_agent_latency(state.pg(), node_id, &rep).await
                         {
                             tracing::warn!(node = %node_id, error = %e, "failed to store latency result");
                         }
-                    }
                 }
                 Some(UpMsg::UpdateStatus(us)) => {
                     if let Err(e) = crate::rollout::on_status(state.pg(), node_id, &us).await {
@@ -2271,8 +2272,8 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
             }),
         )
         .await?;
-        if write_lease {
-            if let Err(e) = sqlx::query(
+        if write_lease
+            && let Err(e) = sqlx::query(
                 "UPDATE nodes SET lease_expires_at = now() + make_interval(secs => $2) \
                  WHERE id = $1",
             )
@@ -2280,9 +2281,8 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
             .bind(secs as f64)
             .execute(state.pg())
             .await
-            {
-                tracing::warn!(node = %node_id, error = %e, "failed to persist lease expiry");
-            }
+        {
+            tracing::warn!(node = %node_id, error = %e, "failed to persist lease expiry");
         }
     }
     let Some((sent_kind, msg)) = out else {

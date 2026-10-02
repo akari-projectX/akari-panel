@@ -53,10 +53,10 @@ impl Cidr {
                 let p: u8 = p
                     .parse()
                     .map_err(|_| format!("invalid prefix length in trusted_proxies: {s:?}"))?;
-                let p = p.checked_sub(shift).filter(|p| *p <= max).ok_or_else(|| {
+
+                p.checked_sub(shift).filter(|p| *p <= max).ok_or_else(|| {
                     format!("prefix length out of range in trusted_proxies: {s:?}")
-                })?;
-                p
+                })?
             }
         };
         if mask(net, prefix) != net {
@@ -180,10 +180,11 @@ pub fn client_ip(peer: IpAddr, headers: &HeaderMap, trusted: &[Cidr]) -> IpAddr 
 /// The client address of a request whose TCP peer is `peer`.
 pub fn resolve(peer: IpAddr, headers: &HeaderMap, trust: &Trust) -> IpAddr {
     let genuine = walk(peer, headers, trust);
-    if genuine.exhausted && trust.is_cloudflare(genuine.last) {
-        if let Some(ip) = cf_connecting_ip(headers) {
-            return ip;
-        }
+    if genuine.exhausted
+        && trust.is_cloudflare(genuine.last)
+        && let Some(ip) = cf_connecting_ip(headers)
+    {
+        return ip;
     }
     genuine.last
 }

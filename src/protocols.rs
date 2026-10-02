@@ -286,10 +286,10 @@ pub fn check_inbound(inbound: &Value) -> Result<(), String> {
     if !MANAGED.contains(&proto) {
         return Ok(());
     }
-    if let Some(p) = inbound.get("port") {
-        if p.as_u64().filter(|p| (1..=65535).contains(p)).is_none() {
-            return Err("port must be a number 1-65535 (subscriptions advertise it)".into());
-        }
+    if let Some(p) = inbound.get("port")
+        && p.as_u64().filter(|p| (1..=65535).contains(p)).is_none()
+    {
+        return Err("port must be a number 1-65535 (subscriptions advertise it)".into());
     }
     let sec = security(inbound);
     match sec.as_str() {
@@ -322,49 +322,45 @@ pub fn check_inbound(inbound: &Value) -> Result<(), String> {
         }
     }
     if let Some(ts) = transport_settings(inbound, &net) {
-        if let Some(p) = ts.get("path") {
-            if !p.as_str().is_some_and(valid_path) {
-                return Err(
-                    "transport path must start with / and hold no spaces, quotes or #".into(),
-                );
-            }
+        if let Some(p) = ts.get("path")
+            && !p.as_str().is_some_and(valid_path)
+        {
+            return Err("transport path must start with / and hold no spaces, quotes or #".into());
         }
         let host = ts
             .get("host")
             .or_else(|| ts.pointer("/headers/Host"))
             .and_then(Value::as_str);
-        if let Some(h) = host {
-            if !h.is_empty() && !valid_host(h) {
-                return Err("transport host must be a domain name".into());
-            }
+        if let Some(h) = host
+            && !h.is_empty()
+            && !valid_host(h)
+        {
+            return Err("transport host must be a domain name".into());
         }
-        if net == "xhttp" {
-            if let Some(m) = ts.get("mode") {
-                if !m
-                    .as_str()
-                    .is_some_and(|m| m.is_empty() || XHTTP_MODES.contains(&m))
-                {
-                    return Err(format!(
-                        "xhttp mode must be one of {}",
-                        XHTTP_MODES.join(", ")
-                    ));
-                }
-            }
+        if net == "xhttp"
+            && let Some(m) = ts.get("mode")
+            && !m
+                .as_str()
+                .is_some_and(|m| m.is_empty() || XHTTP_MODES.contains(&m))
+        {
+            return Err(format!(
+                "xhttp mode must be one of {}",
+                XHTTP_MODES.join(", ")
+            ));
         }
-        if net == "grpc" {
-            if let Some(s) = ts.get("serviceName") {
-                if !s.as_str().is_some_and(valid_service_name) {
-                    return Err("grpc serviceName: letters, digits and -_./ only (<= 128)".into());
-                }
-            }
+        if net == "grpc"
+            && let Some(s) = ts.get("serviceName")
+            && !s.as_str().is_some_and(valid_service_name)
+        {
+            return Err("grpc serviceName: letters, digits and -_./ only (<= 128)".into());
         }
     }
     match proto {
         "vless" => {
-            if let Some(d) = inbound.pointer("/settings/decryption") {
-                if d.as_str() != Some("none") {
-                    return Err("vless settings.decryption must be \"none\" (VLESS encryption is not in subscriptions)".into());
-                }
+            if let Some(d) = inbound.pointer("/settings/decryption")
+                && d.as_str() != Some("none")
+            {
+                return Err("vless settings.decryption must be \"none\" (VLESS encryption is not in subscriptions)".into());
             }
             match vless_flow(inbound) {
                 "" => {}

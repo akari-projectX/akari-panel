@@ -193,13 +193,13 @@ fuzz_target!(|data: &[u8]| {
             }
         }
         6 => {
-            if let Some(r) = strict::<NodeRules>(rest) {
-                if r.check().is_ok() {
-                    assert!(r
-                        .disabled
-                        .iter()
-                        .all(|k| alerts::KINDS.contains(&k.as_str())));
-                }
+            if let Some(r) = strict::<NodeRules>(rest)
+                && r.check().is_ok()
+            {
+                assert!(r
+                    .disabled
+                    .iter()
+                    .all(|k| alerts::KINDS.contains(&k.as_str())));
             }
         }
         7 => {
