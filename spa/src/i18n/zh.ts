@@ -340,6 +340,8 @@ export const zh = {
     statusCancelled: "已撤销",
     cancel: "撤销",
     confirmCancel: "撤销这笔提现申请？金额将退回余额。",
+    cancelTitle: "撤销提现申请",
+    cancelRequest: "撤销申请",
     disabledPending: "你已有一笔提现申请在处理中，处理完成后才能再次申请。",
     disabledMin: "可提现金额 {amount} 低于最低提现额 {min}，暂不能申请提现。",
     reference: "打款凭证：{ref}",

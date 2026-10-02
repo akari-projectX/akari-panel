@@ -344,6 +344,8 @@ export const en: Messages = {
     statusCancelled: "Cancelled",
     cancel: "Cancel",
     confirmCancel: "Cancel this withdrawal request? The amount returns to your balance.",
+    cancelTitle: "Cancel withdrawal request",
+    cancelRequest: "Cancel request",
     disabledPending: "A withdrawal request is being processed; you can request another one when it is done.",
     disabledMin: "Your withdrawable amount {amount} is below the minimum withdrawal {min}.",
     reference: "Payout reference: {ref}",

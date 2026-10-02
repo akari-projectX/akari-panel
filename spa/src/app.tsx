@@ -130,7 +130,7 @@ function PortalShell({ me, onLogout, logoutError }: { me: Me; onLogout: () => vo
       first.current = false;
       return;
     }
-    window.scrollTo?.(0, 0);
+    document.documentElement.scrollTop = 0;
     main.current?.querySelector<HTMLElement>("h1")?.focus();
   }, [view.id]);
 
