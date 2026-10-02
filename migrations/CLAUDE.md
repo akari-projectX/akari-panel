@@ -3,7 +3,7 @@
 sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18）在 `serve`、`node add`、`admin add` 启动时自动执行。
 
 - **只追加，不修改**已存在的迁移文件（sqlx 会校验 checksum，改了已部署环境会拒绝启动）。
-- 命名：`NNNN_<topic>.sql`，四位递增（M3 从 0020 起，0014–0019 留给 M2；R18 并行分段：0030+ 节点表单、0035+ i18n/2FA、0040+ 支付、0050+ 加固；W7 套餐目录 0070–0079；W10 节点证书 0080–0084，W11 0085–0089，W12 0090–0094；W15 注册/邮件原定 0100–0104，因 W16 先合并而改为 0110–0114；W16 优惠券/余额/返利 0105–0109；W17 工单/告警 0115–0119，0117 = `mail_outbox.kind` 增 ticket_reply/ticket_new/node_alert；W22 流量明细 0130–0134；W21 管理后台 0125–0129，0125 = 仪表盘与用户搜索索引 + 站点名称）。**不得新增编号小于 main 上已有迁移的文件**。
+- 命名：`NNNN_<topic>.sql`，四位递增（M3 从 0020 起，0014–0019 留给 M2；R18 并行分段：0030+ 节点表单、0035+ i18n/2FA、0040+ 支付、0050+ 加固；W7 套餐目录 0070–0079；W10 节点证书 0080–0084，W11 0085–0089，W12 0090–0094；W15 注册/邮件原定 0100–0104，因 W16 先合并而改为 0110–0114；W16 优惠券/余额/返利 0105–0109；W17 工单/告警 0115–0119，0117 = `mail_outbox.kind` 增 ticket_reply/ticket_new/node_alert；W22 流量明细 0130–0134；W21 管理后台 0125–0129，0125 = 仪表盘与用户搜索索引 + 站点名称；W23 0135–0139）。**不得新增编号小于 main 上已有迁移的文件**。
 - 改列名/加列后，同步检查 `src/` 中所有手写 SQL 与 `FromRow` 结构体（没有编译期 SQL 校验）。
 
 ## 当前表
@@ -45,7 +45,7 @@ sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18）在 `serve`、`n
 
 **保留策略须知**：任何清理任务只能删除**可证明已死**的会话行（该 agent 已换新 session 且旧 session 不可能再上报，例如节点已删除，或 `updated_at` 远早于该节点当前 session 首次出现且超过安全窗口）；不确定就不删。
 
-0085（W11）：`nodes` 新增 `display_name`（1–64 字符或 NULL）、`sort`（±1e6）、`visible`、`tags`（≤8，无 NULL 元素）、`traffic_rate_permille`（0–100000，默认 1000）、`connect_overrides`（JSON 对象 `{tag: {host?, port?}}`）、`traffic_raw_bytes`/`traffic_billed_bytes`（≥0，FLUSH_SQL 累加）。0086（W11）：`node_metrics_1m`（PK (node_id,bucket)，sum+samples+max 列，fillfactor 70，bucket 索引）与同形的 `node_metrics_1h`，`node_latency`（PK (node_id,source,target)，source agent|panel，`delay_ms` NULL=失败，`error`，`ord`，`measured_at`），`nodes.probe_requested_at`（立即测速，`run_token` 来源）、`panel_probe_next_at`（面板 TCP 测速认领）；均随节点删除级联。迁移号 0085–0089 为 W11 预留，0080–0084 为 W10。
+0085（W11）：`nodes` 新增 `display_name`（1–64 字符或 NULL）、`sort`（±1e6）、`visible`、`tags`（≤8，无 NULL 元素）、`traffic_rate_permille`（0–100000，默认 1000）、`connect_overrides`（JSON 对象 `{tag: {host?, port?}}`）、`traffic_raw_bytes`/`traffic_billed_bytes`（≥0，FLUSH_SQL 累加）。0086（W11）：`node_metrics_1m`（PK (node_id,bucket)，sum+samples+max 列，fillfactor 70，bucket 索引）与同形的 `node_metrics_1h`，`node_latency`（PK (node_id,source,target)，source agent|panel，`delay_ms` NULL=失败，`error`，`ord`，`measured_at`），`nodes.probe_requested_at`（立即测速，`run_token` 来源）、`panel_probe_next_at`（面板 TCP 测速认领）；均随节点删除级联。迁移号 0085–0089 为 W11 预留，0080–0084 为 W10。0135（W23）：`node_metrics_1m/_1h` 的指标列改为可空且无默认值（NULL = agent 读不到，"未知"；一分钟内有未知样本则该分钟的 sum 为 NULL，max/最新值列保留已知值；平均 = sum / 有值行的 samples，小时汇总按同样方式重新缩放 sum），`nodes.enrolled_at`（最近一次注册时间，`enroll.rs` 写入；回填自 `node_enrollments.used_at`；用于 `update_status.superseded`）。
 
 0050（W4 加固）：CHECK 约束——`users.role IN (admin,user)`、`nodes.status IN (pending,online,offline)`、`traffic_used_bytes`/`traffic_limit_bytes`/`traffic_counters.up/down_bytes`/`node_users_departed.billed_bytes` >= 0、`node_users.credentials` 为 JSON 数组。新增 role/status 取值须同时加迁移。迁移号 0050–0059 为加固批次预留；0060–0064 为 W5（系统设置）。
 

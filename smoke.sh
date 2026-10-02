@@ -956,6 +956,22 @@ assert v['traffic_rate'] == 0.5, v
     || { echo "FAIL: fleet gauge"; grep akari_fleet "$LOG/w11-metrics.txt"; exit 1; }
   echo "machine status: ok"
 fi
+if need_agent cap:metrics-presence "W23 metrics presence (every value read, none unknown)"; then
+  # An unsandboxed agent reads everything: no value is null (unknown), and
+  # the first heartbeat's rates are the only ones that may be missing.
+  for _ in $(seq 1 30); do
+    code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID/status" >/dev/null
+    python3 -c "import json,sys; m=json.load(open('/tmp/akari-smoke/last'))['heartbeat']['metrics']; sys.exit(m['net_rx_bytes_per_sec'] is None)" 2>/dev/null && break
+    sleep 1
+  done
+  python3 -c "
+import json; v = json.load(open('/tmp/akari-smoke/last')); hb = v['heartbeat']; m = hb['metrics']
+nulls = [k for k in ('cpu_percent', 'mem_used_bytes', 'mem_total_bytes') if hb[k] is None]
+nulls += [k for k, x in m.items() if x is None]
+assert not nulls, nulls
+" || { echo "FAIL: W23 unknown machine metrics from an unsandboxed agent"; cat /tmp/akari-smoke/last; exit 1; }
+  echo "metrics presence: ok"
+fi
 if need_agent cap:latency "W11 latency test"; then
   # Latency: "立即测速" -> the agent tests the (local) URL from [probe], the
   # panel TCP-tests the inbound's connect address; a second request inside
@@ -2167,8 +2183,10 @@ make -s -C "$AD" build-testkeys VERSION=v900.0.1 OUT="$UPD/v1/akari-agent" >/dev
 (cd "$AD" && CGO_ENABLED=0 go build -o "$UPD/akari-sign" ./cmd/akari-sign)
 "$UPD/agent-v900.0.0" -release-keys | matches TEST-ONLY || { echo "FAIL: smoke agent does not pin the test key"; exit 1; }
 "$AGENT" -release-keys | matches TEST-ONLY && { echo "FAIL: the regular build pins the TEST release key"; exit 1; }
-# vN+2 is broken: it exits at once (the launcher must roll it back).
-printf '#!/bin/sh\necho "broken agent build" >&2\nexit 3\n' >"$UPD/v2/akari-agent"
+# vN+2 is broken: it exits at once (the updater must roll it back). It
+# carries the installed release's units (W23: the updater reads them with
+# -print-units before installing; a release without them is refused).
+printf '#!/bin/sh\nif [ "$1" = -print-units ]; then exec /usr/local/bin/akari-agent -print-units; fi\necho "broken agent build" >&2\nexit 3\n' >"$UPD/v2/akari-agent"
 chmod 0755 "$UPD/v2/akari-agent"
 upd_sign() { # $1 binary, $2 version
   "$UPD/akari-sign" sign -key "$AD/testdata/TEST-ONLY-release.key" -binary "$1" -version "$2" \
@@ -2282,6 +2300,32 @@ assert n['update_status']['status']=='healthy' and n['agent_version']=='v900.0.1
 assert 'updater' in n['agent_capabilities'] and not any('重装命令' in w for w in n['warnings']), n" \
     || { echo "FAIL: node view update status"; exit 1; }
   echo "update to v900.0.1 (updater unit): ok"
+  if need_agent cap:metrics-presence "W23 units from the release + machine metrics under the shipped unit"; then
+    # The installer took the units from the release (-print-unit), the
+    # update kept them in step, and under them every machine metric is
+    # read (the pre-W23 ProcSubset=pid hid /proc: all 0).
+    for u in akari-agent.service akari-agent-update.service akari-agent-update.path; do
+      udx "/usr/local/bin/akari-agent -print-unit $u | cmp -s - /etc/systemd/system/$u" \
+        || { echo "FAIL: $u on the node is not the release's"; exit 1; }
+    done
+    grep -q "this agent release does not carry its systemd units" "$LOG/upd-install.out" \
+      && { echo "FAIL: installer fell back to its own unit copies"; exit 1; }
+    upd_hb() {
+      code -b "$JAR" "$BASE/api/v1/nodes/$UPD_ID/status" >/dev/null
+      python3 -c "
+import json; v = json.load(open('/tmp/akari-smoke/last')); hb = v['heartbeat'] or {}; m = hb.get('metrics') or {}
+nulls = [k for k in ('cpu_percent', 'mem_total_bytes') if hb.get(k) is None]
+nulls += [k for k in ('load1', 'cpu_count', 'swap_total_bytes', 'disk_total_bytes', 'net_rx_bytes_total',
+                      'net_rx_bytes_per_sec', 'tcp_sockets', 'process_rss_bytes') if m.get(k) is None]
+assert not nulls and hb['mem_total_bytes'] > 0 and m['cpu_count'] > 0, (nulls, hb)
+"
+    }
+    for _ in $(seq 1 60); do upd_hb 2>/dev/null && break; sleep 1; done
+    upd_hb || { echo "FAIL: machine metrics unknown under the shipped unit"; cat /tmp/akari-smoke/last; exit 1; }
+    [ "$(psql_q "SELECT 'stale-units' = ANY(agent_capabilities) FROM nodes WHERE id='$UPD_ID'")" = "f" ] \
+      || { echo "FAIL: fresh install reports stale units"; exit 1; }
+    echo "w23 units + machine metrics on a systemd node: ok"
+  fi
 
   # Broken vN+2: the binary dies on start; the updater sees the restarts,
   # puts v900.0.1 back; the agent reports ROLLED_BACK; the rollout halts.
@@ -2312,6 +2356,47 @@ assert 'updater' in n['agent_capabilities'] and not any('重装命令' in w for 
   for a in agent_release.create agent_release.upload rollout.create rollout.complete rollout.abort; do
     [ "$(psql_q "SELECT count(*) > 0 FROM audit_log WHERE action='$a'")" = "t" ] || { echo "FAIL: $a not audited"; exit 1; }
   done
+  # W23: a hand-edited unit is reported (capability "stale-units" -> the
+  # node view asks for the install command).
+  if agent_has cap:metrics-presence; then
+    udx "printf '# local edit\n' >>/etc/systemd/system/akari-agent.service && systemctl daemon-reload && systemctl restart akari-agent"
+    for _ in $(seq 1 30); do [ "$(psql_q "SELECT 'stale-units' = ANY(agent_capabilities) FROM nodes WHERE id='$UPD_ID'")" = "t" ] && break; sleep 1; done
+    code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
+    python3 -c "
+import json; n=[x for x in json.load(open('/tmp/akari-smoke/last')) if x['id']=='$UPD_ID'][0]
+assert 'stale-units' in n['agent_capabilities'] and any('systemd 单元' in w and '重装命令' in w for w in n['warnings']), n['warnings']" \
+      || { echo "FAIL: stale units not reported"; exit 1; }
+  fi
+  # W23: the reinstall (重装命令) supersedes the aborted rollout's failure:
+  # the node view shows it as history. The installer serves the newest
+  # release: drop the broken one first.
+  REL2=$(psql_q "SELECT id FROM agent_releases WHERE version='v900.0.2'")
+  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/agent-releases/$REL2")" = "204" ] \
+    || { echo "FAIL: delete broken release: $(cat /tmp/akari-smoke/last)"; exit 1; }
+  code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
+  python3 -c "
+import json; n=[x for x in json.load(open('/tmp/akari-smoke/last')) if x['id']=='$UPD_ID'][0]
+assert n['update_status']['rollout_status']=='aborted' and n['update_status']['superseded'] is False, n['update_status']" \
+    || { echo "FAIL: update status before the reinstall"; exit 1; }
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$UPD_ID/install" -H 'Content-Type: application/json' \
+      -d '{"origin":"http://127.0.0.1:8080"}')" = "200" ] || { echo "FAIL: upd-node re-install link"; exit 1; }
+  UPD_CMD2=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['command'])")
+  udx "$UPD_CMD2" >"$LOG/upd-reinstall.out" 2>&1 || { echo "FAIL: reinstall (update node)"; cat "$LOG/upd-reinstall.out"; exit 1; }
+  # As root on an image without sudo: the plain uninstall form.
+  grep -q "uninstall later with (as root): /usr/local/sbin/akari-agent-uninstall" "$LOG/upd-reinstall.out" \
+    || { echo "FAIL: uninstall hint"; cat "$LOG/upd-reinstall.out"; exit 1; }
+  grep -q "sudo /usr/local/sbin" "$LOG/upd-reinstall.out" && { echo "FAIL: sudo hint without sudo"; exit 1; }
+  code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
+  python3 -c "
+import json; n=[x for x in json.load(open('/tmp/akari-smoke/last')) if x['id']=='$UPD_ID'][0]
+assert n['update_status']['superseded'] is True, n['update_status']" \
+    || { echo "FAIL: aborted rollout not superseded by the reinstall"; exit 1; }
+  if agent_has cap:metrics-presence; then
+    for _ in $(seq 1 30); do [ "$(psql_q "SELECT 'stale-units' = ANY(agent_capabilities) FROM nodes WHERE id='$UPD_ID'")" = "f" ] && break; sleep 1; done
+    [ "$(psql_q "SELECT 'stale-units' = ANY(agent_capabilities) FROM nodes WHERE id='$UPD_ID'")" = "f" ] \
+      || { echo "FAIL: reinstall did not replace the edited unit"; exit 1; }
+  fi
+  echo "w23 reinstall: update status superseded, units current, uninstall hint: ok"
   # Uninstall removes the updater as well.
   udx 'akari-agent-uninstall' >>"$LOG/upd-install.out" 2>&1 || { echo "FAIL: uninstall (update node)"; exit 1; }
   udx 'test ! -e /etc/systemd/system/akari-agent-update.path && test ! -e /etc/systemd/system/akari-agent-update.service && test ! -e /var/lib/akari-agent-update && test ! -e /usr/local/bin/akari-agent.prev' \
@@ -2328,10 +2413,13 @@ fi
 
 echo "== R18-2 node form + one-line installer: template inbounds, install link, Debian 13 container =="
 # The newest complete release is what the installer serves: drop the broken
-# v900.0.2 of the M6 section (its rollout is over), leaving v900.0.1.
+# v900.0.2 of the M6 section (its rollout is over; the M6 section already
+# did when it ran), leaving v900.0.1.
 REL2=$(psql_q "SELECT id FROM agent_releases WHERE version='v900.0.2'")
-[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/agent-releases/$REL2")" = "204" ] \
-  || { echo "FAIL: delete broken release: $(cat /tmp/akari-smoke/last)"; exit 1; }
+if [ -n "$REL2" ]; then
+  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/agent-releases/$REL2")" = "204" ] \
+    || { echo "FAIL: delete broken release: $(cat /tmp/akari-smoke/last)"; exit 1; }
+fi
 [ "$(psql_q "SELECT count(*) FROM agent_releases WHERE version='v900.0.2'")" = "0" ] || { echo "FAIL: broken release kept"; exit 1; }
 # Templates catalog + render (REALITY keys made by the panel).
 [ "$(code -b "$JAR" "$BASE/api/v1/inbound-templates")" = "200" ] && grep -q '"www.apple.com"' /tmp/akari-smoke/last \

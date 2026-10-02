@@ -339,6 +339,88 @@ describe("node detail", () => {
     fireEvent.click(screen.getByRole("button", { name: "返回列表" }));
     expect(location.pathname).toBe("/admin/nodes");
   });
+
+  it("W23: values the agent could not read show as 未知, never 0", async () => {
+    const hb = node().heartbeat!;
+    const unknownHb = {
+      ...hb,
+      cpu_percent: null,
+      mem_used_bytes: null,
+      mem_total_bytes: null,
+      metrics: {
+        ...hb.metrics!,
+        load1: null,
+        load5: null,
+        load15: null,
+        cpu_count: null,
+        net_rx_bytes_per_sec: null,
+        net_tx_bytes_per_sec: null,
+        tcp_sockets: null,
+        udp_sockets: 3,
+      },
+    };
+    const n = node({ heartbeat: unknownHb });
+    fakeApi({
+      ...nodeRoutes([n]),
+      "GET /nodes/n1/status": { ...status, heartbeat: unknownHb },
+      "GET /nodes/n1/metrics": {
+        ...metrics,
+        points: metrics.points.map((p) => ({ ...p, cpu: null, cpu_max: null, mem_used: null, mem_total: null })),
+      },
+      "GET /nodes/n1/traffic": {
+        from: "2026-09-03",
+        to: "2026-10-02",
+        timezone: "UTC",
+        daily_since: null,
+        total: { up_bytes: 0, down_bytes: 0, billed_bytes: 0 },
+        days: [],
+        top_users: [],
+      },
+      "GET /nodes/n1/alert-rules": {
+        muted: false,
+        disabled: [],
+        offline_secs: null,
+        cpu_percent: null,
+        cpu_minutes: null,
+        mem_percent: null,
+        mem_minutes: null,
+        disk_percent: null,
+        cert_days: null,
+      },
+    });
+    window.history.pushState(null, "", "/admin/nodes");
+    renderAdmin(<AdminNodes />);
+    // The list row: CPU / memory and the rates.
+    expect((await screen.findAllByText(/未知/)).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/^0%/)).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: /详情/ }));
+    await screen.findByText(/节点详情「香港 01」/);
+    expect(await screen.findByText("负载 未知 / 未知 / 未知 · 未知")).toBeTruthy();
+    expect(screen.getByText("未知 / 3")).toBeTruthy(); // TCP unknown, UDP read
+    expect(screen.getByText(/agent 读不到该值（不是 0）/)).toBeTruthy();
+  });
+
+  it("W23: an update status from before the last reinstall is shown as history", async () => {
+    fakeApi(
+      nodeRoutes([
+        node({
+          update_status: {
+            rollout_id: "r1",
+            version: "v0.4.0",
+            rollout_status: "aborted",
+            status: "failed",
+            detail: "failed (v0.4.0): switch to v0.4.0: permission denied",
+            superseded: true,
+          },
+        }),
+      ]),
+    );
+    window.history.pushState(null, "", "/admin/nodes");
+    renderAdmin(<AdminNodes />);
+    const badge = await screen.findByText("v0.4.0: failed（重装前）");
+    expect(badge.className).not.toContain("text-destructive");
+    expect(badge.getAttribute("title")).toContain("节点已于此后重装");
+  });
 });
 
 describe("portal node list", () => {

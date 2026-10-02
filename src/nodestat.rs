@@ -81,35 +81,73 @@ pub fn valid_probe_url(s: &str) -> bool {
 // Heartbeat ingest
 // ---------------------------------------------------------------------------
 
-/// One heartbeat, sanitized (agent input: finite, bounded).
+/// One heartbeat, sanitized (agent input: finite, bounded). W23: None =
+/// the agent could not read the value (unknown, shown as "—", stored as
+/// NULL), never 0.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Sample {
-    pub cpu: f64,
-    pub load1: f64,
-    pub mem_used: i64,
-    pub mem_total: i64,
-    pub swap_used: i64,
-    pub swap_total: i64,
-    pub disk_used: i64,
-    pub disk_total: i64,
-    pub rx_bps: i64,
-    pub tx_bps: i64,
-    pub tcp: i64,
-    pub udp: i64,
+    pub cpu: Option<f64>,
+    pub load1: Option<f64>,
+    pub mem_used: Option<i64>,
+    pub mem_total: Option<i64>,
+    pub swap_used: Option<i64>,
+    pub swap_total: Option<i64>,
+    pub disk_used: Option<i64>,
+    pub disk_total: Option<i64>,
+    pub rx_bps: Option<i64>,
+    pub tx_bps: Option<i64>,
+    pub tcp: Option<i64>,
+    pub udp: Option<i64>,
     pub conns: i64,
     pub users: i64,
 }
 
-fn finite(v: f64, max: f64) -> f64 {
-    if v.is_finite() {
-        v.clamp(0.0, max)
-    } else {
-        0.0
-    }
+/// A finite value clamped to 0..=max; NaN/infinite = unknown.
+fn finite(v: Option<f64>, max: f64) -> Option<f64> {
+    v.filter(|v| v.is_finite()).map(|v| v.clamp(0.0, max))
 }
 
 fn int(v: u64) -> i64 {
     i64::try_from(v).unwrap_or(i64::MAX)
+}
+
+/// W23: agents without the "metrics-presence" capability send a value
+/// they could not read as 0 and every 0 as unset (implicit presence): for
+/// them unset means 0, as before. Applied at ingest (grpc.rs), so
+/// everything downstream reads None as "unknown".
+pub fn legacy_presence(hb: &mut Heartbeat) {
+    let z = |v: &mut Option<u64>| {
+        v.get_or_insert(0);
+    };
+    hb.cpu_percent.get_or_insert(0.0);
+    z(&mut hb.mem_used_bytes);
+    z(&mut hb.mem_total_bytes);
+    if let Some(m) = &mut hb.metrics {
+        for v in [&mut m.load1, &mut m.load5, &mut m.load15] {
+            v.get_or_insert(0.0);
+        }
+        m.cpu_count.get_or_insert(0);
+        for v in [
+            &mut m.swap_used_bytes,
+            &mut m.swap_total_bytes,
+            &mut m.disk_used_bytes,
+            &mut m.disk_total_bytes,
+            &mut m.net_rx_bytes_per_sec,
+            &mut m.net_tx_bytes_per_sec,
+            &mut m.net_rx_bytes_total,
+            &mut m.net_tx_bytes_total,
+            &mut m.process_rss_bytes,
+        ] {
+            z(v);
+        }
+        m.tcp_sockets.get_or_insert(0);
+        m.udp_sockets.get_or_insert(0);
+    }
+    // A W11 agent sent "total 0" for a total it could not read.
+    if hb.mem_total_bytes == Some(0) {
+        hb.mem_total_bytes = None;
+        hb.mem_used_bytes = None;
+    }
 }
 
 impl Sample {
@@ -118,16 +156,16 @@ impl Sample {
         Self {
             cpu: finite(hb.cpu_percent, 100.0),
             load1: finite(m.load1, 1e6),
-            mem_used: int(hb.mem_used_bytes),
-            mem_total: int(hb.mem_total_bytes),
-            swap_used: int(m.swap_used_bytes),
-            swap_total: int(m.swap_total_bytes),
-            disk_used: int(m.disk_used_bytes),
-            disk_total: int(m.disk_total_bytes),
-            rx_bps: int(m.net_rx_bytes_per_sec),
-            tx_bps: int(m.net_tx_bytes_per_sec),
-            tcp: i64::from(m.tcp_sockets),
-            udp: i64::from(m.udp_sockets),
+            mem_used: hb.mem_used_bytes.map(int),
+            mem_total: hb.mem_total_bytes.map(int),
+            swap_used: m.swap_used_bytes.map(int),
+            swap_total: m.swap_total_bytes.map(int),
+            disk_used: m.disk_used_bytes.map(int),
+            disk_total: m.disk_total_bytes.map(int),
+            rx_bps: m.net_rx_bytes_per_sec.map(int),
+            tx_bps: m.net_tx_bytes_per_sec.map(int),
+            tcp: m.tcp_sockets.map(i64::from),
+            udp: m.udp_sockets.map(i64::from),
             conns: int(hb.connections),
             users: i64::from(m.online_users),
         }
@@ -141,6 +179,7 @@ pub(crate) fn agent_text(s: &str, max: usize) -> String {
 
 /// The Valkey heartbeat blob (latest values; any instance serves it).
 pub fn heartbeat_blob(hb: &Heartbeat) -> Value {
+    // W23: null = the agent could not read it (the console shows "—").
     let mut blob = json!({
         "cpu_percent": finite(hb.cpu_percent, 100.0),
         "mem_used_bytes": hb.mem_used_bytes,
@@ -249,16 +288,20 @@ impl Local {
             f.nodes += 1;
             f.online_users = f.online_users.saturating_add(s.sample.users);
             f.connections = f.connections.saturating_add(s.sample.conns);
-            f.rx_bps = f.rx_bps.saturating_add(s.sample.rx_bps);
-            f.tx_bps = f.tx_bps.saturating_add(s.sample.tx_bps);
-            f.cpu_max = f.cpu_max.max(s.sample.cpu);
+            // Unknown values (W23) count for nothing.
+            f.rx_bps = f.rx_bps.saturating_add(s.sample.rx_bps.unwrap_or(0));
+            f.tx_bps = f.tx_bps.saturating_add(s.sample.tx_bps.unwrap_or(0));
+            f.cpu_max = f.cpu_max.max(s.sample.cpu.unwrap_or(0.0));
         }
         f
     }
 }
 
 /// Upsert one sample into the node's current minute (sums + maxima; the
-/// totals keep the latest value).
+/// totals keep the latest value). W23: unknown values are NULL; a NULL sum
+/// stays NULL for the minute (`+` propagates it: an average over partly
+/// unknown samples would be wrong), maxima keep the known values
+/// (GREATEST ignores NULL), the totals keep the latest known value.
 pub const SAMPLE_SQL: &str = "\
 INSERT INTO node_metrics_1m AS m (node_id, bucket, samples, cpu_sum, cpu_max, load1_sum, \
     mem_used_sum, mem_total, swap_used_sum, swap_total, disk_used, disk_total, rx_bps_sum, \
@@ -269,9 +312,12 @@ ON CONFLICT (node_id, bucket) DO UPDATE SET \
     samples = m.samples + 1, \
     cpu_sum = m.cpu_sum + EXCLUDED.cpu_sum, cpu_max = GREATEST(m.cpu_max, EXCLUDED.cpu_max), \
     load1_sum = m.load1_sum + EXCLUDED.load1_sum, \
-    mem_used_sum = m.mem_used_sum + EXCLUDED.mem_used_sum, mem_total = EXCLUDED.mem_total, \
-    swap_used_sum = m.swap_used_sum + EXCLUDED.swap_used_sum, swap_total = EXCLUDED.swap_total, \
-    disk_used = EXCLUDED.disk_used, disk_total = EXCLUDED.disk_total, \
+    mem_used_sum = m.mem_used_sum + EXCLUDED.mem_used_sum, \
+    mem_total = coalesce(EXCLUDED.mem_total, m.mem_total), \
+    swap_used_sum = m.swap_used_sum + EXCLUDED.swap_used_sum, \
+    swap_total = coalesce(EXCLUDED.swap_total, m.swap_total), \
+    disk_used = coalesce(EXCLUDED.disk_used, m.disk_used), \
+    disk_total = coalesce(EXCLUDED.disk_total, m.disk_total), \
     rx_bps_sum = m.rx_bps_sum + EXCLUDED.rx_bps_sum, tx_bps_sum = m.tx_bps_sum + EXCLUDED.tx_bps_sum, \
     rx_bps_max = GREATEST(m.rx_bps_max, EXCLUDED.rx_bps_max), \
     tx_bps_max = GREATEST(m.tx_bps_max, EXCLUDED.tx_bps_max), \
@@ -284,16 +330,16 @@ pub async fn write_sample(pg: &PgPool, node: Uuid, s: &Sample) -> sqlx::Result<(
         .bind(node)
         .bind(s.cpu)
         .bind(s.load1)
-        .bind(s.mem_used as f64)
+        .bind(s.mem_used.map(|v| v as f64))
         .bind(s.mem_total)
-        .bind(s.swap_used as f64)
+        .bind(s.swap_used.map(|v| v as f64))
         .bind(s.swap_total)
         .bind(s.disk_used)
         .bind(s.disk_total)
         .bind(s.rx_bps)
         .bind(s.tx_bps)
-        .bind(s.tcp as f64)
-        .bind(s.udp as f64)
+        .bind(s.tcp.map(|v| v as f64))
+        .bind(s.udp.map(|v| v as f64))
         .bind(s.conns)
         .bind(s.users)
         .execute(pg)
@@ -327,14 +373,46 @@ pub fn on_heartbeat(state: &AppState, node: Uuid, hb: &Heartbeat) {
 // Rollup and retention (reaper loop)
 // ---------------------------------------------------------------------------
 
-const ROLLUP_SQL: &str = "\
-INSERT INTO node_metrics_1h AS h (node_id, bucket, samples, cpu_sum, cpu_max, load1_sum, \
+/// The averaged (sum) columns: a sample without the value makes its
+/// minute's sum NULL (W23).
+const SUM_COLS: [&str; 9] = [
+    "cpu_sum",
+    "load1_sum",
+    "mem_used_sum",
+    "swap_used_sum",
+    "rx_bps_sum",
+    "tx_bps_sum",
+    "tcp_sum",
+    "udp_sum",
+    "conns_sum",
+];
+
+/// `sum(col) / samples of the rows that have it` (NULL when none has).
+fn avg_sql(col: &str) -> String {
+    format!("(sum({col}) / nullif(sum(samples) FILTER (WHERE {col} IS NOT NULL), 0))::float8")
+}
+
+/// The hour rows from the minute rows. A sum column is rescaled to the
+/// hour's sample count (`sum(col) * samples / samples with it`), so that
+/// `sum / samples` stays the average over the minutes that had the value
+/// (NULL when none had).
+fn rollup_sql() -> String {
+    let sums = SUM_COLS
+        .iter()
+        .map(|c| {
+            format!(
+                "sum({c}) * sum(samples) / nullif(sum(samples) FILTER (WHERE {c} IS NOT NULL), 0)"
+            )
+        })
+        .collect::<Vec<_>>();
+    format!(
+        "INSERT INTO node_metrics_1h AS h (node_id, bucket, samples, cpu_sum, cpu_max, load1_sum, \
     mem_used_sum, mem_total, swap_used_sum, swap_total, disk_used, disk_total, rx_bps_sum, \
     tx_bps_sum, rx_bps_max, tx_bps_max, tcp_sum, udp_sum, conns_sum, conns_max, users_sum, users_max) \
-SELECT node_id, date_trunc('hour', bucket), sum(samples), sum(cpu_sum), max(cpu_max), sum(load1_sum), \
-    sum(mem_used_sum), max(mem_total), sum(swap_used_sum), max(swap_total), max(disk_used), \
-    max(disk_total), sum(rx_bps_sum), sum(tx_bps_sum), max(rx_bps_max), max(tx_bps_max), \
-    sum(tcp_sum), sum(udp_sum), sum(conns_sum), max(conns_max), sum(users_sum), max(users_max) \
+SELECT node_id, date_trunc('hour', bucket), sum(samples), {cpu}, max(cpu_max), {load1}, \
+    {mem}, max(mem_total), {swap}, max(swap_total), max(disk_used), \
+    max(disk_total), {rx}, {tx}, max(rx_bps_max), max(tx_bps_max), \
+    {tcp}, {udp}, {conns}, max(conns_max), sum(users_sum), max(users_max) \
 FROM node_metrics_1m \
 WHERE bucket >= date_trunc('hour', now()) - interval '2 hours' \
 GROUP BY 1, 2 ORDER BY 1, 2 \
@@ -347,7 +425,18 @@ ON CONFLICT (node_id, bucket) DO UPDATE SET \
     tx_bps_sum = EXCLUDED.tx_bps_sum, rx_bps_max = EXCLUDED.rx_bps_max, \
     tx_bps_max = EXCLUDED.tx_bps_max, tcp_sum = EXCLUDED.tcp_sum, udp_sum = EXCLUDED.udp_sum, \
     conns_sum = EXCLUDED.conns_sum, conns_max = EXCLUDED.conns_max, \
-    users_sum = EXCLUDED.users_sum, users_max = EXCLUDED.users_max";
+    users_sum = EXCLUDED.users_sum, users_max = EXCLUDED.users_max",
+        cpu = sums[0],
+        load1 = sums[1],
+        mem = sums[2],
+        swap = sums[3],
+        rx = sums[4],
+        tx = sums[5],
+        tcp = sums[6],
+        udp = sums[7],
+        conns = sums[8],
+    )
+}
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Rollup {
@@ -370,7 +459,7 @@ pub async fn rollup_and_prune(pg: &PgPool) -> sqlx::Result<Option<Rollup>> {
         return Ok(None);
     }
     let mut r = Rollup {
-        hours_written: sqlx::query(ROLLUP_SQL)
+        hours_written: sqlx::query(sqlx::AssertSqlSafe(rollup_sql()))
             .execute(&mut *tx)
             .await?
             .rows_affected(),
@@ -891,22 +980,23 @@ pub fn range_spec(r: &str) -> Option<RangeSpec> {
 pub struct Point {
     pub t: DateTime<Utc>,
     pub samples: i64,
-    pub cpu: f64,
-    pub cpu_max: f64,
-    pub load1: f64,
-    pub mem_used: f64,
-    pub mem_total: i64,
-    pub swap_used: f64,
-    pub swap_total: i64,
-    pub disk_used: i64,
-    pub disk_total: i64,
-    pub rx_bps: f64,
-    pub tx_bps: f64,
-    pub rx_bps_max: i64,
-    pub tx_bps_max: i64,
-    pub tcp: f64,
-    pub udp: f64,
-    pub conns: f64,
+    // W23: null = unknown in that interval.
+    pub cpu: Option<f64>,
+    pub cpu_max: Option<f64>,
+    pub load1: Option<f64>,
+    pub mem_used: Option<f64>,
+    pub mem_total: Option<i64>,
+    pub swap_used: Option<f64>,
+    pub swap_total: Option<i64>,
+    pub disk_used: Option<i64>,
+    pub disk_total: Option<i64>,
+    pub rx_bps: Option<f64>,
+    pub tx_bps: Option<f64>,
+    pub rx_bps_max: Option<i64>,
+    pub tx_bps_max: Option<i64>,
+    pub tcp: Option<f64>,
+    pub udp: Option<f64>,
+    pub conns: Option<f64>,
     pub conns_max: i64,
     pub users: f64,
     pub users_max: i64,
@@ -921,18 +1011,26 @@ pub async fn history(pg: &PgPool, node: Uuid, spec: &RangeSpec) -> sqlx::Result<
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT to_timestamp(floor(extract(epoch FROM bucket) / $3) * $3) AS t, \
          sum(samples)::bigint AS samples, \
-         (sum(cpu_sum) / sum(samples))::float8 AS cpu, max(cpu_max)::float8 AS cpu_max, \
-         (sum(load1_sum) / sum(samples))::float8 AS load1, \
-         (sum(mem_used_sum) / sum(samples))::float8 AS mem_used, max(mem_total) AS mem_total, \
-         (sum(swap_used_sum) / sum(samples))::float8 AS swap_used, max(swap_total) AS swap_total, \
+         {cpu} AS cpu, max(cpu_max)::float8 AS cpu_max, {load1} AS load1, \
+         {mem} AS mem_used, max(mem_total) AS mem_total, \
+         {swap} AS swap_used, max(swap_total) AS swap_total, \
          max(disk_used) AS disk_used, max(disk_total) AS disk_total, \
-         (sum(rx_bps_sum) / sum(samples))::float8 AS rx_bps, (sum(tx_bps_sum) / sum(samples))::float8 AS tx_bps, \
+         {rx} AS rx_bps, {tx} AS tx_bps, \
          max(rx_bps_max) AS rx_bps_max, max(tx_bps_max) AS tx_bps_max, \
-         (sum(tcp_sum) / sum(samples))::float8 AS tcp, (sum(udp_sum) / sum(samples))::float8 AS udp, \
-         (sum(conns_sum) / sum(samples))::float8 AS conns, max(conns_max) AS conns_max, \
+         {tcp} AS tcp, {udp} AS udp, \
+         {conns} AS conns, max(conns_max) AS conns_max, \
          (sum(users_sum) / sum(samples))::float8 AS users, max(users_max) AS users_max \
          FROM {table} WHERE node_id = $1 AND bucket >= now() - make_interval(secs => $2) \
-         GROUP BY 1 ORDER BY 1"
+         GROUP BY 1 ORDER BY 1",
+        cpu = avg_sql("cpu_sum"),
+        load1 = avg_sql("load1_sum"),
+        mem = avg_sql("mem_used_sum"),
+        swap = avg_sql("swap_used_sum"),
+        rx = avg_sql("rx_bps_sum"),
+        tx = avg_sql("tx_bps_sum"),
+        tcp = avg_sql("tcp_sum"),
+        udp = avg_sql("udp_sum"),
+        conns = avg_sql("conns_sum"),
     )))
     .bind(node)
     .bind(spec.secs as f64)

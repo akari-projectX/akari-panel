@@ -5,7 +5,7 @@
 #
 #   install / reinstall:  curl -fsSL <link> | sh   (as root; or | sudo sh)
 #   uninstall:            curl -fsSL <link> | sh -s -- --uninstall
-#                         (or, on an installed node: sudo akari-agent-uninstall)
+#                         (or, on an installed node, as root: akari-agent-uninstall)
 #
 # What it does: downloads the agent for this machine's architecture and
 # checks its SHA-256, writes /etc/akari-agent/bootstrap.toml (0600: panel
@@ -13,8 +13,13 @@
 # key), installs the systemd units (the agent, and its privileged updater:
 # akari-agent-update.path/.service, which applies signed self-updates) and
 # starts them, then waits until the agent has enrolled and connected.
+# The units are the ones the verified agent release carries
+# (`akari-agent -print-unit NAME`); releases older than that get the copies
+# embedded in this script. Self-updates install the units of each new
+# release along with its binary (W23).
 # Running it again is safe: it is also how nodes installed before the
-# updater units existed get them (重装命令).
+# updater units existed, or whose units predate unit refresh, get the
+# current ones (重装命令).
 # The whole script is one compound command: sh reads it completely before
 # running anything, so a download cut short runs nothing.
 {
@@ -136,19 +141,32 @@ cat >"$TMP/bootstrap.toml" <<'AKARI_BOOTSTRAP_EOF'
 AKARI_BOOTSTRAP_EOF
 install -m 0600 "$TMP/bootstrap.toml" "$CONF_DIR/bootstrap.toml"
 
-cat >"$TMP/akari-agent.service" <<'AKARI_UNIT_EOF'
+# The units: those of the release being installed (the verified binary
+# prints them; the updater installs each new release's units the same way),
+# else this panel's copies (releases that predate -print-unit).
+units_from_binary=1
+for u in akari-agent.service akari-agent-update.service akari-agent-update.path; do
+	if ! "$TMP/akari-agent" -print-unit "$u" >"$TMP/$u" 2>/dev/null || [ ! -s "$TMP/$u" ]; then
+		units_from_binary=0
+		break
+	fi
+done
+if [ "$units_from_binary" = 0 ]; then
+	say "this agent release does not carry its systemd units; using the installer's copies"
+	cat >"$TMP/akari-agent.service" <<'AKARI_UNIT_EOF'
 @@UNIT@@
 AKARI_UNIT_EOF
-install -m 0644 "$TMP/akari-agent.service" "$UNIT"
-# The privileged updater: the agent's state directory is noexec, so signed
-# self-updates are installed by this root unit (it only ever runs the
-# installed binary).
-cat >"$TMP/akari-agent-update.service" <<'AKARI_UPDATE_SERVICE_EOF'
+	# The privileged updater: the agent's state directory is noexec, so
+	# signed self-updates are installed by this root unit (it only ever runs
+	# the installed binary).
+	cat >"$TMP/akari-agent-update.service" <<'AKARI_UPDATE_SERVICE_EOF'
 @@UNIT_UPDATE_SERVICE@@
 AKARI_UPDATE_SERVICE_EOF
-cat >"$TMP/akari-agent-update.path" <<'AKARI_UPDATE_PATH_EOF'
+	cat >"$TMP/akari-agent-update.path" <<'AKARI_UPDATE_PATH_EOF'
 @@UNIT_UPDATE_PATH@@
 AKARI_UPDATE_PATH_EOF
+fi
+install -m 0644 "$TMP/akari-agent.service" "$UNIT"
 install -m 0644 "$TMP/akari-agent-update.service" "$UPDATE_SERVICE"
 install -m 0644 "$TMP/akari-agent-update.path" "$UPDATE_PATH"
 install -d -m 0755 "$DROPIN_DIR"
@@ -248,7 +266,12 @@ ok)
 		say "NOTE: this node has TLS inbounds. Put the certificate in $CONF_DIR/tls/fullchain.pem and"
 		say "      $CONF_DIR/tls/privkey.pem (0600), then: systemctl restart akari-agent"
 	fi
-	say "uninstall later with: sudo $UNINSTALLER"
+	# Run through sudo: say so; as root (images without sudo): plain.
+	if [ -n "${SUDO_USER:-}" ] && command -v sudo >/dev/null 2>&1; then
+		say "uninstall later with: sudo $UNINSTALLER"
+	else
+		say "uninstall later with (as root): $UNINSTALLER"
+	fi
 	;;
 refused)
 	journalctl -u akari-agent.service --since "@$START" -o cat --no-pager -n 20 >&2 || true

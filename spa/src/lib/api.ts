@@ -423,14 +423,15 @@ export interface NodeSummary {
   heartbeat: HeartbeatSummary | null;
 }
 
+// W23: null = the agent could not read the value (shown as 未知, never 0).
 export interface HeartbeatSummary {
-  cpu_percent: number;
-  mem_used_bytes: number;
-  mem_total_bytes: number;
+  cpu_percent: number | null;
+  mem_used_bytes: number | null;
+  mem_total_bytes: number | null;
   connections: number;
   uptime_seconds?: number | null;
   ts: string;
-  metrics?: { net_rx_bytes_per_sec: number; net_tx_bytes_per_sec: number; online_users: number };
+  metrics?: { net_rx_bytes_per_sec: number | null; net_tx_bytes_per_sec: number | null; online_users: number };
 }
 
 // W17: support tickets (customer side; mirror of tickets.rs).
@@ -511,25 +512,26 @@ export interface NodeStatus {
 }
 
 // W11: GET /nodes/{id}/metrics?range=… (averages per point; *_max maxima).
+// W23: null = unknown in that interval (a gap in the chart).
 export interface MetricsPoint {
   t: string;
   samples: number;
-  cpu: number;
-  cpu_max: number;
-  load1: number;
-  mem_used: number;
-  mem_total: number;
-  swap_used: number;
-  swap_total: number;
-  disk_used: number;
-  disk_total: number;
-  rx_bps: number;
-  tx_bps: number;
-  rx_bps_max: number;
-  tx_bps_max: number;
-  tcp: number;
-  udp: number;
-  conns: number;
+  cpu: number | null;
+  cpu_max: number | null;
+  load1: number | null;
+  mem_used: number | null;
+  mem_total: number | null;
+  swap_used: number | null;
+  swap_total: number | null;
+  disk_used: number | null;
+  disk_total: number | null;
+  rx_bps: number | null;
+  tx_bps: number | null;
+  rx_bps_max: number | null;
+  tx_bps_max: number | null;
+  tcp: number | null;
+  udp: number | null;
+  conns: number | null;
   conns_max: number;
   users: number;
   users_max: number;
@@ -559,6 +561,9 @@ export interface NodeUpdateStatus {
   rollout_status: RolloutStatus;
   status: RolloutNodeStatus;
   detail: string | null;
+  // W23: the rollout is over and the node was reinstalled (enrolled again)
+  // after its last step there: history, not the node's current state.
+  superseded?: boolean;
 }
 
 // --- M6 agent self-update (mirror of src/updates.rs / src/rollout.rs) ---
@@ -626,10 +631,11 @@ export interface CreateRollout {
   max_failure_ratio?: number;
 }
 
+// W23: a null value = the agent could not read it (shown as 未知, never 0).
 export interface Heartbeat {
-  cpu_percent: number;
-  mem_used_bytes: number;
-  mem_total_bytes: number;
+  cpu_percent: number | null;
+  mem_used_bytes: number | null;
+  mem_total_bytes: number | null;
   connections: number;
   uptime_seconds?: number;
   lease_remaining_seconds: number | null;
@@ -642,23 +648,23 @@ export interface Heartbeat {
 }
 
 export interface HeartbeatMetrics {
-  load1: number;
-  load5: number;
-  load15: number;
-  cpu_count: number;
-  swap_used_bytes: number;
-  swap_total_bytes: number;
-  disk_used_bytes: number;
-  disk_total_bytes: number;
+  load1: number | null;
+  load5: number | null;
+  load15: number | null;
+  cpu_count: number | null;
+  swap_used_bytes: number | null;
+  swap_total_bytes: number | null;
+  disk_used_bytes: number | null;
+  disk_total_bytes: number | null;
   net_interface: string;
-  net_rx_bytes_per_sec: number;
-  net_tx_bytes_per_sec: number;
-  net_rx_bytes_total: number;
-  net_tx_bytes_total: number;
-  tcp_sockets: number;
-  udp_sockets: number;
+  net_rx_bytes_per_sec: number | null;
+  net_tx_bytes_per_sec: number | null;
+  net_rx_bytes_total: number | null;
+  net_tx_bytes_total: number | null;
+  tcp_sockets: number | null;
+  udp_sockets: number | null;
   online_users: number;
-  process_rss_bytes: number;
+  process_rss_bytes: number | null;
   xray_version: string;
 }
 

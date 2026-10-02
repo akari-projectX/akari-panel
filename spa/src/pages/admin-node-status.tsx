@@ -37,8 +37,17 @@ export function humanRate(bytesPerSec: number): string {
   return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
-export function pct(used: number, total: number): string {
+/** W23: what a value the agent could not read shows as (never 0). */
+export const UNKNOWN = "未知";
+
+export function pct(used: number | null, total: number | null): string {
+  if (used == null || total == null) return UNKNOWN;
   return total > 0 ? `${Math.round((used / total) * 100)}%` : "—";
+}
+
+/** A value the agent may not have been able to read (null = 未知). */
+export function known<T>(v: T | null | undefined, f: (v: T) => string): string {
+  return v == null ? UNKNOWN : f(v);
 }
 
 /** The agent's url-test result to show: the first URL that answered, else the first tried. */
@@ -75,7 +84,8 @@ export function NodeLiveCells({ n }: { n: Pick<NodeSummary, "online" | "heartbea
       <TableCell className="whitespace-nowrap tabular-nums text-muted-foreground">
         {hb ? (
           <>
-            {hb.cpu_percent.toFixed(0)}%<span className="mx-1">/</span>
+            {known(hb.cpu_percent, (v) => `${v.toFixed(0)}%`)}
+            <span className="mx-1">/</span>
             {pct(hb.mem_used_bytes, hb.mem_total_bytes)}
           </>
         ) : (
@@ -85,8 +95,8 @@ export function NodeLiveCells({ n }: { n: Pick<NodeSummary, "online" | "heartbea
       <TableCell className="whitespace-nowrap text-xs tabular-nums text-muted-foreground">
         {m ? (
           <>
-            ↑ {humanRate(m.net_tx_bytes_per_sec)}
-            <span className="block">↓ {humanRate(m.net_rx_bytes_per_sec)}</span>
+            ↑ {known(m.net_tx_bytes_per_sec, humanRate)}
+            <span className="block">↓ {known(m.net_rx_bytes_per_sec, humanRate)}</span>
           </>
         ) : (
           "—"
@@ -197,34 +207,63 @@ export function NodeDetail({ node, onClose }: { node: NodeView; onClose: () => v
         <dl className="grid grid-cols-2 gap-4 text-sm md:grid-cols-4">
           <Stat
             label="CPU"
-            value={hb ? `${hb.cpu_percent.toFixed(1)}%` : "—"}
-            sub={m && `负载 ${m.load1.toFixed(2)} / ${m.load5.toFixed(2)} / ${m.load15.toFixed(2)} · ${m.cpu_count} 核`}
+            value={hb ? known(hb.cpu_percent, (v) => `${v.toFixed(1)}%`) : "—"}
+            sub={
+              m &&
+              `负载 ${[m.load1, m.load5, m.load15].map((l) => known(l, (v) => v.toFixed(2))).join(" / ")} · ${known(m.cpu_count, (v) => `${v} 核`)}`
+            }
           />
           <Stat
             label="内存"
-            value={hb ? `${humanBytes(hb.mem_used_bytes)} / ${humanBytes(hb.mem_total_bytes)}` : "—"}
+            value={
+              hb
+                ? hb.mem_used_bytes == null || hb.mem_total_bytes == null
+                  ? UNKNOWN
+                  : `${humanBytes(hb.mem_used_bytes)} / ${humanBytes(hb.mem_total_bytes)}`
+                : "—"
+            }
             sub={
-              m && m.swap_total_bytes > 0 && `交换 ${humanBytes(m.swap_used_bytes)} / ${humanBytes(m.swap_total_bytes)}`
+              m &&
+              (m.swap_total_bytes == null
+                ? `交换 ${UNKNOWN}`
+                : m.swap_total_bytes > 0 &&
+                  `交换 ${known(m.swap_used_bytes, humanBytes)} / ${humanBytes(m.swap_total_bytes)}`)
             }
           />
           <Stat
             label="磁盘（/）"
             value={
-              m && m.disk_total_bytes > 0 ? `${humanBytes(m.disk_used_bytes)} / ${humanBytes(m.disk_total_bytes)}` : "—"
+              m
+                ? m.disk_used_bytes == null || m.disk_total_bytes == null
+                  ? UNKNOWN
+                  : m.disk_total_bytes > 0
+                    ? `${humanBytes(m.disk_used_bytes)} / ${humanBytes(m.disk_total_bytes)}`
+                    : "—"
+                : "—"
             }
-            sub={m && m.disk_total_bytes > 0 && pct(m.disk_used_bytes, m.disk_total_bytes)}
+            sub={m && !!m.disk_total_bytes && pct(m.disk_used_bytes, m.disk_total_bytes)}
           />
           <Stat
             label={`网络${m?.net_interface ? `（${m.net_interface}）` : ""}`}
-            value={m ? `↑ ${humanRate(m.net_tx_bytes_per_sec)} · ↓ ${humanRate(m.net_rx_bytes_per_sec)}` : "—"}
-            sub={m && `开机以来 ↑ ${humanBytes(m.net_tx_bytes_total)} · ↓ ${humanBytes(m.net_rx_bytes_total)}`}
+            value={
+              m ? `↑ ${known(m.net_tx_bytes_per_sec, humanRate)} · ↓ ${known(m.net_rx_bytes_per_sec, humanRate)}` : "—"
+            }
+            sub={
+              m &&
+              `开机以来 ↑ ${known(m.net_tx_bytes_total, humanBytes)} · ↓ ${known(m.net_rx_bytes_total, humanBytes)}`
+            }
           />
           <Stat label="在线用户" value={m ? m.online_users : "—"} sub={hb && `代理连接 ${hb.connections}`} />
-          <Stat label="TCP / UDP 套接字" value={m ? `${m.tcp_sockets} / ${m.udp_sockets}` : "—"} />
+          <Stat
+            label="TCP / UDP 套接字"
+            value={m ? `${known(m.tcp_sockets, String)} / ${known(m.udp_sockets, String)}` : "—"}
+          />
           <Stat
             label="Agent"
             value={node.agent_version ?? "—"}
-            sub={hb && `运行 ${uptime(hb.uptime_seconds)}${m ? ` · 内存 ${humanBytes(m.process_rss_bytes)}` : ""}`}
+            sub={
+              hb && `运行 ${uptime(hb.uptime_seconds)}${m ? ` · 内存 ${known(m.process_rss_bytes, humanBytes)}` : ""}`
+            }
           />
           <Stat label="Xray" value={m?.xray_version || node.core_version || "—"} />
           <Stat
@@ -236,6 +275,12 @@ export function NodeDetail({ node, onClose }: { node: NodeView; onClose: () => v
         {node.online && !m && (
           <p className="text-sm text-muted-foreground">
             该节点的 agent 版本较旧，未上报机器详细状态（升级 agent 后可见）。
+          </p>
+        )}
+        {hb && (hb.cpu_percent == null || hb.mem_total_bytes == null || m?.load1 == null) && m && (
+          <p className="text-sm text-muted-foreground">
+            「{UNKNOWN}」= agent 读不到该值（不是 0）。多为节点上的 systemd 单元过旧（隐藏了
+            /proc）：在节点上重新运行一次安装命令（重装命令）即可。
           </p>
         )}
 
@@ -337,7 +382,11 @@ export function NodeDetail({ node, onClose }: { node: NodeView; onClose: () => v
               series={[
                 {
                   label: "已用",
-                  values: pts.map((p) => (p.mem_total > 0 ? (p.mem_used / p.mem_total) * 100 : null)),
+                  values: pts.map((p) =>
+                    p.mem_total != null && p.mem_used != null && p.mem_total > 0
+                      ? (p.mem_used / p.mem_total) * 100
+                      : null,
+                  ),
                   stroke: "stroke-violet-500",
                   swatch: "bg-violet-500",
                 },

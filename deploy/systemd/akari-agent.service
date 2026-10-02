@@ -1,13 +1,20 @@
-# akari node agent (see docs/DEPLOY.md, "Add a node").
+# akari node agent (see akari-panel docs/DEPLOY.md, "Add a node").
 #
-# Normally installed by the panel's one-line installer (which embeds this
-# file and the updater units, and adds a drop-in:
-# LoadCredential=tls:/etc/akari-agent/tls for TLS inbounds). By hand:
+# The canonical copy of this file (and of the updater units) lives in the
+# akari-agent repository (systemd/) and is compiled into every release:
+# `akari-agent -print-unit akari-agent.service` prints exactly the unit that
+# release was built and tested with. The panel's one-line installer installs
+# the units of the release it installs (plus a drop-in:
+# LoadCredential=tls:/etc/akari-agent/tls for TLS inbounds), and every
+# self-update installs the new release's units with its binary (W23): do
+# not edit the installed files, put local changes in a drop-in
+# (/etc/systemd/system/akari-agent.service.d/*.conf). By hand:
 #
 #   install -m 0755 agent /usr/local/bin/akari-agent
 #   install -d -m 0700 /etc/akari-agent
 #   install -m 0600 <node>-bootstrap.toml /etc/akari-agent/bootstrap.toml
-#   install -m 0644 akari-agent.service akari-agent-update.service akari-agent-update.path /etc/systemd/system/
+#   for u in akari-agent.service akari-agent-update.service akari-agent-update.path; do
+#     akari-agent -print-unit $u >/etc/systemd/system/$u; done
 #   systemctl daemon-reload && systemctl enable --now akari-agent akari-agent-update.path
 #
 # The bootstrap file holds a one-time enrollment token (v1 files: the
@@ -24,9 +31,11 @@
 # download there and asks the privileged updater (akari-agent-update.path
 # + akari-agent-update.service, installed by the same installer), which
 # re-verifies it, replaces /usr/local/bin/akari-agent (keeping
-# akari-agent.prev), restarts this service and rolls back if the new binary
-# does not pass its self-check. Nodes installed before W18 lack those two
-# units: run the panel's install command (重装命令) once.
+# akari-agent.prev) and these units (from the new release), restarts this
+# service and rolls back both if the new binary does not pass its
+# self-check. Nodes installed before W18 lack the updater units, and nodes
+# whose updater unit predates W23 cannot refresh units: run the panel's
+# install command (重装命令) once (the panel says when).
 [Unit]
 Description=Akari node agent (xray-core)
 Documentation=https://github.com/akari-projectX/akari-agent
@@ -60,8 +69,10 @@ ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
+# Other users' processes stay hidden. No ProcSubset=pid: it also hides
+# /proc/stat, /proc/meminfo, /proc/loadavg and /proc/net/*, the machine
+# metrics the agent reports (W11; W23 found them all reading 0).
 ProtectProc=invisible
-ProcSubset=pid
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=yes
 RestrictRealtime=yes
