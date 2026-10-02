@@ -779,10 +779,81 @@ without public DNS, §2b, §3g) and in the compose file (Debian's compose 2.26 r
 ## 4. Observability (optional)
 
 Set `[metrics] bind = "127.0.0.1:9100"` and scrape it (`deploy/prometheus/`). Alert rules:
-`deploy/prometheus/alerts.yml`; dashboard: `deploy/grafana/akari-dashboard.json` (import in
-Grafana, pick the Prometheus data source). Metric labels never contain the route prefix.
+`deploy/prometheus/alerts.yml` (unit tests in `alerts_test.yml`; `make monitoring-check` runs
+promtool and checks that every dashboard/rule metric exists); dashboards:
+`deploy/grafana/akari-dashboard.json` (panel internals) and `deploy/grafana/akari-fleet.json`
+(W17: fleet health from the W11 heartbeats and the node alerts) — import in Grafana, pick the
+Prometheus data source. Metric labels never contain the route prefix or a node id: per-node
+detail is the console's node page and 告警中心 (§4b).
 Every response of an accepted request carries `X-Request-Id` (an incoming one is reused if it is
 short and printable); it is on the log lines of that request. Rejections never carry it.
+
+## 4b. Node alerts and notifications (告警中心, W17)
+
+The panel watches the fleet itself; Prometheus is optional. Console → **告警** shows what is
+firing (and history), the thresholds and the notification channels. Defaults: on, offline >
+300 s, CPU / memory > 90 % for 5 minutes, disk > 90 %, a certificate (the node's automatic TLS
+certificate, W10, or the agent's mTLS certificate) expiring within 14 days, every latency-test
+target of a source failing, a failed config apply. An empty threshold turns a rule off; the node
+page (告警规则) overrides thresholds per node, turns kinds off, or mutes the node (alerts are
+recorded, never notified).
+
+- **One evaluator**: every instance runs the round every `[alerts] eval_interval_secs` (default
+  30 s; 5–600) but only the one that wins a PostgreSQL advisory lock evaluates; the others skip.
+  Facts come from the database and Valkey, so any instance computes the same thing.
+- **State**: firing → resolved per (node, kind), at most one firing row (dedupe). Live kinds (CPU,
+  memory, disk, latency, node certificate) of an offline node keep their state until it reports
+  again. CPU/memory fire when each of the last N complete minutes averaged above the threshold and
+  clear as soon as the last minute is at or below it. A re-fire within `重复告警冷却` minutes of
+  the last notified one is recorded but not notified; "恢复" is notified only after a notified
+  firing (optional).
+- **Delivery**: one queued notification per channel, delivered by any instance (claim + lease),
+  retried with backoff (30 s doubling, 8 attempts), then marked failed in 通知记录 (retry button).
+  At-least-once: a receiver may see a delivery twice after a crash; dedupe on
+  `X-Akari-Delivery`.
+
+**Telegram**: create a bot with @BotFather, add it to the group/channel, enter the bot token and
+the chat id (a number, groups and channels are negative, or `@channelname`), save, then 发送测试.
+The panel only calls `sendMessage` (outbound HTTPS to api.telegram.org; nothing to open
+inbound). The token is stored encrypted with a key derived from `data/totp.key` and never shown
+again (losing `totp.key` means entering it again). For networks that block Telegram, point
+`[alerts] telegram_api_url` at a self-hosted Bot API server (https; origin only).
+
+**Webhook**: `POST <url>` (https; plain http only to localhost), JSON body:
+
+```json
+{"event": "firing", "title": "[告警] hk-1：节点离线", "text": "…",
+ "alert": {"id": 7, "node_id": "…", "node_name": "hk-1", "kind": "offline",
+           "value": "离线 6 分钟", "detail": "…", "fired_at": "…", "resolved_at": null}}
+```
+
+`event` is `firing`, `resolved` or `test` (`alert` is null for a test). Headers:
+`X-Akari-Event`, `X-Akari-Delivery` (notification id), `X-Akari-Timestamp` (unix seconds) and
+`X-Akari-Signature: sha256=<hex>` = HMAC-SHA256(secret, `<timestamp>.<raw body>`). Verify it
+before trusting the body and reject stale timestamps:
+
+```python
+import hashlib, hmac, time
+def verify(secret: bytes, headers, body: bytes) -> bool:
+    ts = headers["X-Akari-Timestamp"]
+    want = "sha256=" + hmac.new(secret, ts.encode() + b"." + body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(want, headers["X-Akari-Signature"]) and abs(time.time() - int(ts)) < 300
+```
+
+Any 2xx is success; 408/429/5xx and network errors are retried; other 4xx are final.
+
+**Email**: goes through the panel's SMTP outbox (系统设置 → 邮件, W15) to up to 5 addresses;
+the channel can be enabled once SMTP is configured.
+
+**Prometheus**: `akari_node_alerts_firing{kind}` (from the database: the same on every
+instance, aggregate with `max`), `akari_alert_notifications_total{channel,result}`,
+`akari_alert_rounds_total{result}`; rules `AkariNodeAlertsFiring`, `AkariAlertEvaluatorStalled`,
+`AkariAlertNotificationsFailing` and the fleet rules (`AkariFleet*`) in `alerts.yml`.
+
+**Support tickets (工单)**: customers open tickets in the portal (also while expired or over
+quota), staff answer in console → 工单 (filters, assign, close/reopen). A customer can open at
+most 5 tickets per hour and keep at most 5 open; replies 30 per hour. Email notices for new
+tickets and staff replies use the SMTP outbox when configured.
 
 ### Sizing
 

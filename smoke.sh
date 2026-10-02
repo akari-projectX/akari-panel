@@ -88,6 +88,10 @@ manual_cooldown_secs = 5
 # (docker, W10 section), never from Let's Encrypt.
 [acme]
 directory_url = "https://127.0.0.1:14000/dir"
+
+# W17: evaluate node alerts and deliver notifications every 5 s.
+[alerts]
+eval_interval_secs = 5
 TOML
 # Helper servers (payment mock, latency target) must die with this script
 # on EVERY exit path, a crash or kill -9 included: they inherit the caller's
@@ -227,6 +231,8 @@ docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE plans,
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "UPDATE panel_settings SET version = 0, main_domain = NULL, sub_domain = NULL, node_domain = NULL, trust_cloudflare = NULL, probe_interval_secs = NULL, probe_urls = NULL, probe_panel_tcp = NULL; TRUNCATE grpc_server_names;" >/dev/null 2>&1 || true
 # W15 settings back to the defaults (off; version 0) and an empty outbox.
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM signup_settings; INSERT INTO signup_settings (id) VALUES (1); DELETE FROM smtp_settings; INSERT INTO smtp_settings (id) VALUES (1); TRUNCATE mail_outbox;" >/dev/null 2>&1 || true
+# W17: alert settings an aborted run may leave (a webhook to a dead receiver).
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE node_alerts, alert_notifications; UPDATE alert_settings SET version = 0, enabled = true, offline_secs = 300, webhook_enabled = false, webhook_url = NULL, webhook_secret_enc = NULL, telegram_enabled = false, telegram_chat_id = NULL, telegram_token_enc = NULL, email_enabled = false, email_to = '{}';" >/dev/null 2>&1 || true
 vk flushdb >/dev/null
 
 echo "== first admin (env password) =="
@@ -1673,6 +1679,137 @@ PY
 else
   echo "old agent: SKIPPED (could not build the pinned protocol-0 agent)"; tail -3 "$LOG/old-build.log" 2>/dev/null || true
 fi
+
+echo "== W17: tickets (own only, both sides), node alerts (stopped agent -> firing -> signed webhook -> resolved), node summary + 304 =="
+psql_q() { docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -tAc "$1"; }
+last_json() { python3 -c "import json,sys; d=json.load(open('/tmp/akari-smoke/last')); print($1)"; }
+api_json() { code -b "$1" -X "$2" "$3" -H 'Content-Type: application/json' -d "$4"; }
+for who in smoke-tk-a smoke-tk-b; do
+  [ "$(api_json "$JAR" POST "$BASE/api/v1/users" "{\"login\":\"$who\",\"password\":\"$who-password-123\"}")" = "201" ] \
+    || { echo "FAIL: create $who"; cat /tmp/akari-smoke/last; exit 1; }
+  code -c "$LOG/$who-cookies" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"login\":\"$who\",\"password\":\"$who-password-123\"}" >/dev/null
+done
+TJA="$LOG/smoke-tk-a-cookies"; TJB="$LOG/smoke-tk-b-cookies"
+[ "$(api_json "$TJA" POST "$BASE/api/v1/me/tickets" '{"subject":"冒烟：连不上","category":"technical","priority":"high","message":"smoke ticket body"}')" = "201" ] \
+  || { echo "FAIL: create ticket"; cat /tmp/akari-smoke/last; exit 1; }
+TK=$(last_json "d['id']")
+# Another customer: every ticket endpoint is the canonical rejection.
+for probe in "$BASE/api/v1/me/tickets/$TK" "-X POST $BASE/api/v1/me/tickets/$TK/close" \
+    "$BASE/api/v1/me/tickets/not-a-uuid"; do
+  # shellcheck disable=SC2086
+  [ "$(fp -b "$TJB" $probe)" = "$REJ" ] || { echo "FAIL: ticket not hidden from another user: $probe"; cat /tmp/akari-smoke/fphead; exit 1; }
+done
+[ "$(code -b "$TJB" "$BASE/api/v1/me/tickets")" = "200" ] && [ "$(cat /tmp/akari-smoke/last)" = "[]" ] \
+  || { echo "FAIL: another user's ticket listed"; exit 1; }
+[ "$(code -b "$TJA" "$BASE/api/v1/tickets")" = "403" ] || { echo "FAIL: customer reached the staff queue"; exit 1; }
+# Staff: unread in the queue, reply, the customer sees "answered" + unread, no staff login.
+[ "$(code -b "$JAR" "$BASE/api/v1/tickets?unread=true&status=open")" = "200" ] \
+  && [ "$(last_json "[t['id'] for t in d['tickets']]==['$TK'] and d['unread']==1")" = "True" ] \
+  || { echo "FAIL: staff queue"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/tickets/$TK")" = "200" ] && last_json "d['thread'][0]['author_login']" | matches '^smoke-tk-a$' \
+  || { echo "FAIL: staff ticket view"; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/tickets/$TK/replies" '{"message":"smoke staff reply"}')" = "201" ] || { echo "FAIL: staff reply"; exit 1; }
+[ "$(code -b "$TJA" "$BASE/api/v1/me/tickets")" = "200" ] \
+  && [ "$(last_json "(d[0]['status'], d[0]['unread'])")" = "('answered', True)" ] || { echo "FAIL: customer list after reply"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$TJA" "$BASE/api/v1/me/tickets/$TK")" = "200" ] \
+  && [ "$(last_json "[m['staff'] and 'author_login' not in m for m in d['messages']]")" = "[False, True]" ] \
+  || { echo "FAIL: customer thread (staff identity must be hidden)"; cat /tmp/akari-smoke/last; exit 1; }
+matches -F '"root"' </tmp/akari-smoke/last && { echo "FAIL: staff login shown to a customer"; exit 1; }
+[ "$(code -b "$TJA" -X POST "$BASE/api/v1/me/tickets/$TK/close")" = "204" ] || { echo "FAIL: customer close"; exit 1; }
+[ "$(api_json "$TJA" POST "$BASE/api/v1/me/tickets/$TK/replies" '{"message":"x"}')" = "409" ] || { echo "FAIL: reply on a closed ticket"; exit 1; }
+[ "$(psql_q "SELECT string_agg(action, ',' ORDER BY id) FROM audit_log WHERE target_id='$TK'")" = "ticket.create,ticket.reply,ticket.close" ] \
+  || { echo "FAIL: ticket audit rows"; psql_q "SELECT action FROM audit_log WHERE target_id='$TK'"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE after::text LIKE '%smoke ticket body%'")" = "0" ] || { echo "FAIL: ticket text in the audit log"; exit 1; }
+echo "tickets: ok"
+
+# Node summary view: the list's columns only, ETag + 304.
+[ "$(code -D "$LOG/sum.h" -b "$JAR" "$BASE/api/v1/nodes?view=summary")" = "200" ] || { echo "FAIL: summary view"; exit 1; }
+ETAG=$(tr -d '\r' <"$LOG/sum.h" | awk -F': ' 'tolower($1)=="etag"{print $2}')
+[ -n "$ETAG" ] || { echo "FAIL: summary view without ETag"; cat "$LOG/sum.h"; exit 1; }
+tr -d '\r' <"$LOG/sum.h" | matches -i '^cache-control: private, no-cache$' || { echo "FAIL: summary cache-control"; exit 1; }
+last_json "[n for n in d if n['id']=='$NODE_ID'][0]['online']" | matches True || { echo "FAIL: node not online in the summary"; exit 1; }
+matches -F 'xray_inbounds' </tmp/akari-smoke/last && { echo "FAIL: summary carries the inbounds JSON"; exit 1; }
+SUM_BYTES=$(wc -c </tmp/akari-smoke/last)
+[ "$(code -b "$JAR" "$BASE/api/v1/nodes")" = "200" ] && [ "$(wc -c </tmp/akari-smoke/last)" -gt "$SUM_BYTES" ] \
+  || { echo "FAIL: full list"; exit 1; }
+[ "$(code -b "$JAR" -H "If-None-Match: $ETAG" "$BASE/api/v1/nodes?view=summary")" = "304" ] && [ ! -s /tmp/akari-smoke/last ] \
+  || { echo "FAIL: If-None-Match not answered with an empty 304"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID")" = "200" ] && matches -F 'xray_inbounds' </tmp/akari-smoke/last \
+  || { echo "FAIL: GET /nodes/{id}"; exit 1; }
+echo "summary view: ok ($SUM_BYTES bytes, 304 on revalidation)"
+
+# Alerts: a local webhook receiver records signed deliveries.
+HOOK_SECRET="smoke-webhook-secret-0123456789"
+python3 -c "$TIE_PY"'
+import http.server, json, sys
+out = sys.argv[1]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        rec = {"h": {k.lower(): v for k, v in self.headers.items()}, "b": body.decode()}
+        open(out, "a").write(json.dumps(rec) + "\n")
+        self.send_response(204); self.end_headers()
+    def log_message(self, *a): pass
+http.server.ThreadingHTTPServer(("127.0.0.1", 18206), H).serve_forever()
+' "$LOG/hook.jsonl" >/dev/null 2>&1 &
+HOOK_PID=$!
+: >"$LOG/hook.jsonl"
+[ "$(code -b "$JAR" "$BASE/api/v1/alerts/settings")" = "200" ] || { echo "FAIL: alert settings"; exit 1; }
+AV=$(last_json "d['version']")
+ALERT_BODY='{"version":'"$AV"',"enabled":true,"offline_secs":30,"cpu_percent":95,"cpu_minutes":5,"mem_percent":95,"mem_minutes":5,"disk_percent":95,"cert_days":7,"latency_failures":false,"last_error":false,"cooldown_minutes":0,"notify_resolved":true,"telegram_enabled":false,"webhook_enabled":true,"webhook_url":"http://127.0.0.1:18206/hook","webhook_secret":"'"$HOOK_SECRET"'","email_enabled":false,"email_to":[]}'
+[ "$(api_json "$JAR" PUT "$BASE/api/v1/alerts/settings" "$ALERT_BODY")" = "200" ] || { echo "FAIL: save alert settings"; cat /tmp/akari-smoke/last; exit 1; }
+last_json "(d['webhook_secret_set'], 'webhook_secret' in d)" | matches '^\(True, False\)$' || { echo "FAIL: alert settings view"; exit 1; }
+[ "$(api_json "$JAR" PUT "$BASE/api/v1/alerts/settings" "$ALERT_BODY")" = "409" ] || { echo "FAIL: stale alert settings version accepted"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='alerts.settings.update' AND after::text LIKE '%$HOOK_SECRET%'")" = "0" ] \
+  || { echo "FAIL: webhook secret in the audit log"; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/alerts/test" '{"channel":"webhook"}')" = "200" ] && last_json "d['ok']" | matches True \
+  || { echo "FAIL: webhook test"; cat /tmp/akari-smoke/last; exit 1; }
+# Stop the agent: the node goes offline, the alert fires (one evaluator),
+# the webhook gets a signed "firing" for this node.
+kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+cat >"$LOG/hook-check.py" <<'PY'
+import hashlib, hmac, json, sys
+path, secret, node, event = sys.argv[1:5]
+for line in open(path):
+    r = json.loads(line); h = r["h"]; b = r["b"]
+    want = "sha256=" + hmac.new(secret.encode(), (h["x-akari-timestamp"] + "." + b).encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(want, h.get("x-akari-signature", "")):
+        sys.exit("bad signature on delivery " + h.get("x-akari-delivery", "?"))
+    d = json.loads(b)
+    if h["x-akari-event"] == event and (d.get("alert") or {}).get("node_id") == node and d["alert"]["kind"] == "offline":
+        print("ok"); sys.exit(0)
+sys.exit(1)
+PY
+for _ in $(seq 1 60); do
+  python3 "$LOG/hook-check.py" "$LOG/hook.jsonl" "$HOOK_SECRET" "$NODE_ID" firing >/dev/null 2>&1 && break; sleep 2
+done
+python3 "$LOG/hook-check.py" "$LOG/hook.jsonl" "$HOOK_SECRET" "$NODE_ID" firing \
+  || { echo "FAIL: no signed firing webhook for the stopped agent"; cat "$LOG/hook.jsonl"; psql_q "SELECT * FROM node_alerts"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/alerts?status=firing&kind=offline&node=$NODE_ID")" = "200" ] \
+  && [ "$(last_json "len(d['alerts'])")" = "1" ] || { echo "FAIL: alert center lists the offline alert once"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/admin-badges")" = "200" ] && [ "$(last_json "d['alerts_firing'] >= 1")" = "True" ] || { echo "FAIL: alert badge"; exit 1; }
+curl -s --noproxy '*' http://127.0.0.1:9109/metrics | matches '^akari_node_alerts_firing{kind="offline"} [1-9]' \
+  || { echo "FAIL: akari_node_alerts_firing"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM alert_notifications WHERE status='sent' AND event='firing'")" -ge 1 ] || { echo "FAIL: firing delivery not settled"; exit 1; }
+# Agent back: resolved, and a signed "resolved" delivery.
+# shellcheck disable=SC2086
+"$AGENT" -config "$BOOT" -state-dir "$LOG/state-main" $HB_FLAG >>"$LOG/agent.log" 2>&1 &
+AGENT_PID=$!
+wait_port open 20
+for _ in $(seq 1 30); do
+  python3 "$LOG/hook-check.py" "$LOG/hook.jsonl" "$HOOK_SECRET" "$NODE_ID" resolved >/dev/null 2>&1 && break; sleep 1
+done
+python3 "$LOG/hook-check.py" "$LOG/hook.jsonl" "$HOOK_SECRET" "$NODE_ID" resolved \
+  || { echo "FAIL: no resolved webhook after the agent came back"; cat "$LOG/hook.jsonl"; exit 1; }
+[ "$(psql_q "SELECT string_agg(status, ',') FROM node_alerts WHERE node_id='$NODE_ID' AND kind='offline'")" = "resolved" ] \
+  || { echo "FAIL: offline alert not resolved exactly once"; psql_q "SELECT * FROM node_alerts"; exit 1; }
+# Later sections stop agents too: quiet channels again.
+QUIET=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); d['version']=int(sys.argv[2]); d['webhook_enabled']=False; d.pop('webhook_secret'); print(json.dumps(d))" \
+  "$ALERT_BODY" "$(psql_q "SELECT version FROM alert_settings")")
+[ "$(api_json "$JAR" PUT "$BASE/api/v1/alerts/settings" "$QUIET")" = "200" ] || { echo "FAIL: quiet alert channels"; cat /tmp/akari-smoke/last; exit 1; }
+kill "$HOOK_PID" 2>/dev/null || true
+echo "alerts: ok (fired, signed webhook, resolved)"
 
 echo "== Sprint 3b: node delete = empty state, then revoke + close; billing rows kept =="
 psql_q() { docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -tAc "$1"; }
