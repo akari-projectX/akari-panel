@@ -6,7 +6,7 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && rm -rf dist && vite build && AKARI_BUNDLE=admin vite build && node scripts/check-bundles.mjs",
     "test": "vitest run",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",

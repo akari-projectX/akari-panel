@@ -29,8 +29,6 @@ export const en: Messages = {
     server: "Something went wrong on the server. Please try again later.",
     invalidCode: "The code is wrong or was already used.",
     invalidPassword: "The current password is not correct.",
-    loginExists: "That account name is taken.",
-    lastAdmin: "The last enabled administrator cannot be removed.",
     paymentsOff: "Online purchase is not available.",
     paymentGateway: "The payment service is unavailable. Please try again.",
     notForSale: "This plan is not for sale right now.",

@@ -53,7 +53,9 @@ secrets redacted; `akari serve` runs the same validation and refuses to start on
 
 ## 1b. Domains (系统设置) and Cloudflare
 
-The admin console's **系统设置** page holds three domains and one switch. They live in the
+The admin console's **系统设置** page (`/<prefix>/admin/settings`) holds three domains and one switch.
+Once the main domain is saved, the console (`/<prefix>/admin`) answers on the main domain only
+(and on IP literals); on the subscription domain it is the uniform empty 404 (R23). They live in the
 database (table `panel_settings`): a value saved there wins over panel.toml; an empty field means
 "use panel.toml". `akari config check` prints both sides; `akari settings show` the database side;
 `akari settings unset main|sub|node|trust-cloudflare|all` clears it (audited) — e.g. after a
@@ -224,7 +226,9 @@ logs. `trusted_proxies = ["127.0.0.1/32"]` matches a same-host proxy.
 ```
 
 Omit the variable to be prompted. Open `https://panel.example.com/<prefix>/app` and log in with
-the password. Two-factor authentication (TOTP) is **optional but recommended**: the console shows a
+the password; admins are taken to the console at `https://panel.example.com/<prefix>/admin`
+(served only to an admin session — without one it is the same empty 404 as any unknown path, so
+bookmark `/app`, not `/admin`). Two-factor authentication (TOTP) is **optional but recommended**: the console shows a
 banner until you turn it on under **账户** (scan the QR code, or type the key; save or download the
 10 recovery codes). Deployments that want it mandatory for admins set
 

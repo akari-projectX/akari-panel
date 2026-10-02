@@ -6,8 +6,6 @@ import { ApiError } from "./api";
 const KNOWN: Record<string, Parameters<TFunction>[0]> = {
   "invalid code": "errors.invalidCode",
   "invalid password": "errors.invalidPassword",
-  "login already exists": "errors.loginExists",
-  "cannot remove the last enabled admin": "errors.lastAdmin",
   "payments are not enabled": "errors.paymentsOff",
   "payment gateway unavailable, try again": "errors.paymentGateway",
   "plan is not for sale": "errors.notForSale",
@@ -37,7 +35,25 @@ export function errorText(err: unknown, t: TFunction): string {
 
 const zh: TFunction = (key, vars) => translate("zh", key, vars);
 
-/** errorText for the admin console (Chinese only, R18), usable outside components. */
-export function adminErrorText(err: unknown): string {
-  return errorText(err, zh);
+// Messages only admin endpoints return. Chinese text here, not in the shared
+// dictionaries: the console is Chinese only (R18), and the user bundle must
+// carry no admin strings (R23; unused here, this map is tree-shaken out of it).
+const ADMIN_KNOWN: Record<string, string> = {
+  "login already exists": "该账号已存在",
+  "cannot remove the last enabled admin": "不能移除最后一个启用的管理员",
+};
+
+// Like zh, but an unknown server message stays bare (no "操作失败：" wrapper),
+// for callers that put their own context in front.
+const zhBare: TFunction = (key, vars) => (key === "errors.generic" ? String(vars?.message ?? "") : zh(key, vars));
+
+/**
+ * errorText for the admin console (Chinese only, R18), usable outside
+ * components. With `context` the text is "<context>：<detail>" (one prefix,
+ * not "<context>：操作失败：<detail>").
+ */
+export function adminErrorText(err: unknown, context?: string): string {
+  const known = err instanceof ApiError ? ADMIN_KNOWN[err.message] : undefined;
+  const text = known ?? errorText(err, context ? zhBare : zh);
+  return context ? `${context}：${text}` : text;
 }

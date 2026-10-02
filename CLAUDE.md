@@ -12,7 +12,7 @@ Cargo.toml 在仓库根（文档里的 `panel/` 前缀是拆仓前的旧路径�
 | `spa/` | React 19 + Vite 8 + Tailwind 4 前端 | `spa/CLAUDE.md` |
 | `migrations/` | sqlx 迁移（启动时自动执行） | `migrations/CLAUDE.md` |
 | `proto/` | **控制协议正本** `agent.proto` | `proto/CLAUDE.md` |
-| `build.rs` | protox 编译 proto；缺 `spa/dist` 时写占位 index.html | — |
+| `build.rs` | protox 编译 proto；缺前端产物时写占位 `spa/dist/app/index.html`、`spa/dist/admin/admin.html` | — |
 | `smoke.sh` | 跨仓端到端验收（需 `../akari-agent`） | — |
 | `Dockerfile` | 多阶段：spa → musl 静态二进制 → distroless nonroot 镜像（target `artifact`/`prebuilt`/`runtime`） | — |
 | `deploy/` | systemd 单元、生产 compose、Caddy/nginx、Prometheus 告警、Grafana 面板 | `docs/DEPLOY.md` |
@@ -44,6 +44,7 @@ make smoke         # 全量构建 + smoke.sh（会 TRUNCATE PG、FLUSHDB 本次 
 ## 硬性不变量
 
 - **拒绝同构**：任何"拒绝"（`/`、错前缀、裸前缀、未匹配路由、错误方法、坏 token、缺资源）都必须返回 `reject::not_found()`：404、空 body、不带安全头，除 `Date` 外字节同构（smoke 断言）；订阅失败绝不带 quota 头。没有伪装站。
+- **前后台拆分（R23）**：用户门户 `/{prefix}/app`（公开；也是共用的登录页）与管理后台 `/{prefix}/admin` 是两个独立构建（`spa/dist/app`、`spa/dist/admin`，`spa.rs` 两个 rust-embed）。**门户产物不得含任何后台代码**（构建期依赖图守卫 + `spa/scripts/check-bundles.mjs` 标记 grep，smoke 对实际下发的文件再跑一次）；**后台 index 与资源只对管理员会话下发**（`SessionUser` role=admin，含 `require_admin_2fa` 的 enroll 会话；`private, no-store`），无 cookie/用户会话/伪造或吊销会话/DB 错误一律 `reject::not_found()`（字节同构，`spa::tests` + smoke + e2e 断言）。主域名已在系统设置里配置（R22 Host 闸门开启）时，后台只在主域名与 IP 字面量上下发，订阅域名等其他名称上同样拒绝（R23-3，`spa::console_host`）。门户资源 `/{prefix}/assets/*` immutable，后台资源只在 `/{prefix}/admin/assets/*`。
 - **PostgreSQL ≥ 18**：计费依赖 `RETURNING old/new`；`db::migrate` 启动时校验版本。
 - **路由**：所有路由带 `/{prefix}` 参数，`Path` 提取器用 `(String, ...)` 元组吃掉前缀；axum 路由匹配先于中间件，不要改成"中间件剥前缀"。
 - **收敛**：面板是唯一事实源。改变节点/用户期望状态的操作都是 `apply_*(&mut PgConnection, …)`：写库 + bump 受影响节点的 `config_version`/`user_version` 在**同一事务**；版本变化由 `nodes` 上的触发器（0007）在同一事务内 `pg_notify('akari_change', <node id>)`，提交后投递到所有面板实例（没有进程内通知路径，handler 提交后什么都不用做）。全局加锁顺序：nodes（`ORDER BY id FOR UPDATE`）→ users → node_users。`api::tests::every_access_change_bumps_affected_nodes` 是这条规则的表驱动测试，新增 mutator 必须加进去。

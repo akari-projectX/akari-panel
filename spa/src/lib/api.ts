@@ -1,20 +1,19 @@
 import type { TFunction } from "../i18n";
 import type { PlanPrice } from "./billing";
 
-// The SPA is served under the panel's secret route prefix. Everything is
-// derived from the current location: no prefix knowledge is baked in.
-const APP_MARK = "/app";
-
-export const appBase: string = (() => {
-  // "/app" as a whole path segment (a prefix may itself start with "app").
-  const i = location.pathname.search(/\/app(?:\/|$)/);
-  const base = i >= 0 ? location.pathname.slice(0, i) : "";
-  return `${base}${APP_MARK}`;
+// Two bundles are served under the panel's secret route prefix (R23): the
+// user portal at /{prefix}/app and the admin console at /{prefix}/admin.
+// Everything is derived from the current location (the prefix is the first
+// path segment): no prefix knowledge is baked in.
+export const prefixBase: string = (() => {
+  const segs = location.pathname.split("/"); // ["", "<prefix>", "app", ...]
+  return segs.length >= 3 && segs[1] ? `/${segs[1]}` : "";
 })();
-
-// `/{prefix}`: the secret route prefix root. Not everything lives under
-// /api/v1 — the auth endpoints are mounted at `/{prefix}/auth/*`.
-export const prefixBase: string = appBase.replace(/\/app$/, "");
+// The user portal (and the shared login page).
+export const appBase: string = `${prefixBase}/app`;
+// The admin console. The user bundle knows it only as a redirect target for
+// admin sessions; the server answers it to admin sessions alone.
+export const adminBase: string = `${prefixBase}/admin`;
 export const apiBase: string = `${prefixBase}/api/v1`;
 export const authBase: string = `${prefixBase}/auth`;
 

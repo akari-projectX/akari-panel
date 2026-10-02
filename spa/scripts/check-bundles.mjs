@@ -1,0 +1,81 @@
+// R23 guard: the user portal bundle (dist/app) must contain no admin code.
+// Greps every emitted file of the user build for admin markers (admin API
+// paths, console-only identifiers and headings) and fails on any hit. The
+// same markers must appear in the admin build (dist/admin), so the check
+// cannot pass vacuously when a marker goes stale.
+// Runs after `vite build` (npm run build); smoke repeats it on the bundle the
+// panel actually serves. The build itself also refuses admin modules in the
+// user graph (vite.config.ts, userBundleGuard).
+// Usage: node scripts/check-bundles.mjs [userDir] [adminDir]
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+
+const userDir = process.argv[2] ?? "dist/app";
+const adminDir = process.argv[3] ?? "dist/admin";
+
+// Each marker: [label, regex]. Path markers match a string literal that
+// starts with the admin API path ("/me/orders" etc. of the portal start
+// with "/me" and do not match).
+const Q = "[`\"']";
+const MARKERS = [
+  ["admin API /users", new RegExp(`${Q}/users\\b`)],
+  ["admin API /nodes", new RegExp(`${Q}/nodes\\b`)],
+  ["admin API /node-groups", new RegExp(`${Q}/node-groups\\b`)],
+  ["admin API /plans", new RegExp(`${Q}/plans\\b`)],
+  ["admin API /plan-prices", new RegExp(`${Q}/plan-prices\\b`)],
+  ["admin API /orders", new RegExp(`${Q}/orders\\b`)],
+  ["admin API /audit", new RegExp(`${Q}/audit\\b`)],
+  ["admin API /agent-releases", /\/agent-releases/],
+  ["admin API /rollouts", new RegExp(`${Q}/rollouts\\b`)],
+  ["admin API /inbound-templates", /\/inbound-templates/],
+  ["admin API enroll-token", /enroll-token/],
+  ["admin API /settings", new RegExp(`${Q}/settings\\b`)],
+  ["rollout", /rollout/i],
+  ["console title 管理后台", /管理后台/],
+  ["heading 审计日志", /审计日志/],
+  ["heading 灰度更新", /灰度更新/],
+  ["button 新建节点", /新建节点/],
+  ["heading 系统设置", /系统设置/],
+  ["admin assets path", /\/admin\/assets\//],
+];
+const files = (dir) =>
+  readdirSync(dir).flatMap((name) => {
+    const p = join(dir, name);
+    return statSync(p).isDirectory() ? files(p) : [p];
+  });
+
+function scan(dir) {
+  let all;
+  try {
+    all = files(dir);
+  } catch (err) {
+    console.error(`FAIL: ${dir} is missing (${err.code ?? err}); build both bundles first`);
+    process.exit(1);
+  }
+  return all.map((p) => ({ path: p, text: readFileSync(p, "utf8") }));
+}
+
+const user = scan(userDir);
+const admin = scan(adminDir);
+let failed = false;
+
+if (!user.some((f) => f.path.endsWith(".js"))) {
+  console.error(`FAIL: no JavaScript in ${userDir}`);
+  failed = true;
+}
+for (const [label, re] of MARKERS) {
+  for (const f of user) {
+    const m = re.exec(f.text);
+    if (m) {
+      const at = f.text.slice(Math.max(0, m.index - 40), m.index + 40).replace(/\s+/g, " ");
+      console.error(`FAIL: user bundle carries admin marker "${label}" in ${f.path}: …${at}…`);
+      failed = true;
+    }
+  }
+  if (!admin.some((f) => re.test(f.text))) {
+    console.error(`FAIL: marker "${label}" not found in the admin bundle (${adminDir}): stale guard`);
+    failed = true;
+  }
+}
+if (failed) process.exit(1);
+console.log(`bundles: ok (${user.length} user files free of ${MARKERS.length} admin markers)`);

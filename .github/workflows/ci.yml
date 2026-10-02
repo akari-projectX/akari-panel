@@ -99,7 +99,9 @@ jobs:
       - run: node scripts/check-auth-paths.mjs
       # M3: frontend unit tests (vitest + Testing Library, jsdom).
       - run: npx vitest run
-      - run: npx vite build
+      # R23: both bundles (user portal, admin console) + the guard that the
+      # user bundle carries no admin code (scripts/check-bundles.mjs).
+      - run: npm run build
 
   deny:
     name: cargo-deny

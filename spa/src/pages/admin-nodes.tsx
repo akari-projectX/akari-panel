@@ -175,7 +175,7 @@ export function AdminNodes() {
             <p className="text-sm text-muted-foreground">加载中…</p>
           ) : nodes.isError ? (
             <p role="alert" className="text-sm text-destructive">
-              节点列表加载失败：{msg(nodes.error, "未知错误")}
+              {adminErrorText(nodes.error, "节点列表加载失败")}
             </p>
           ) : (nodes.data ?? []).length === 0 ? (
             <p className="text-sm text-muted-foreground">还没有节点。点击「新建节点」开始。</p>
@@ -521,7 +521,7 @@ function TemplateRows({
           : `不可用：${v.error ?? "未知原因"}`,
       }));
     } catch (err) {
-      setChecks((c) => ({ ...c, [r.key]: `检测失败：${msg(err, "未知错误")}` }));
+      setChecks((c) => ({ ...c, [r.key]: adminErrorText(err, "检测失败") }));
     }
   }
 

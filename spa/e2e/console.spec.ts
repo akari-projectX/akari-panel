@@ -1,8 +1,10 @@
 import { createHmac } from "node:crypto";
 
-import { expect, test, type ConsoleMessage, type Page } from "@playwright/test";
+import { expect, test, type APIRequestContext, type ConsoleMessage, type Page } from "@playwright/test";
 
-const BASE = must("E2E_BASE"); // http://host:port/<prefix>/app
+const BASE = must("E2E_BASE"); // http://host:port/<prefix>/app (user portal + shared login)
+const ADMIN_BASE = BASE.replace(/\/app$/, "/admin"); // the console (R23): admin sessions only
+const ORIGIN = new URL(BASE).origin;
 const ADMIN = must("E2E_ADMIN");
 const ADMIN_PW = must("E2E_ADMIN_PW");
 const USER = must("E2E_USER");
@@ -49,6 +51,30 @@ function watch(page: Page): string[] {
   return problems;
 }
 
+// Every URL the page requested (R23: the portal must never touch the console's files).
+function requests(page: Page): string[] {
+  const urls: string[] = [];
+  page.on("request", (r) => urls.push(r.url()));
+  return urls;
+}
+const consoleUrl = (u: string) => /\/admin(\/|$)/.test(new URL(u).pathname);
+
+// What a client observes of a response, minus Date: status, headers, body.
+async function observe(req: APIRequestContext, url: string): Promise<string> {
+  const res = await req.get(url, { maxRedirects: 0 });
+  const headers = Object.entries(res.headers())
+    .filter(([k]) => k !== "date")
+    .sort(([a], [b]) => a.localeCompare(b));
+  return JSON.stringify([res.status(), headers, (await res.body()).toString("base64")]);
+}
+
+// The panel's canonical rejection (an unknown path under the prefix).
+async function rejection(req: APIRequestContext): Promise<string> {
+  const r = await observe(req, `${ORIGIN}/definitely-not-here`);
+  expect(JSON.parse(r)[0]).toBe(404);
+  return r;
+}
+
 async function login(page: Page, user: string, pw: string, code?: string) {
   await page.locator("#login").fill(user);
   await page.locator("#password").fill(pw);
@@ -81,10 +107,11 @@ test("login page: real CSP, language switch persists, <html lang> follows", asyn
   await ctx.close();
 });
 
-test("user portal: password login, language switch", async ({ browser }) => {
+test("user portal: password login, language switch; never loads the console", async ({ browser }) => {
   const ctx = await browser.newContext({ locale: "zh-CN" });
   const page = await ctx.newPage();
   const problems = watch(page);
+  const urls = requests(page);
   await page.goto(BASE);
   await login(page, USER, USER_PW);
   await expect(page.getByRole("heading", { name: "我的账户" })).toBeVisible();
@@ -96,9 +123,27 @@ test("user portal: password login, language switch", async ({ browser }) => {
   await expect(page.getByRole("heading", { name: "Buy a plan" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "My orders" })).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  // R23: nothing of the console was requested, and with this user's session
+  // the console is the canonical rejection, byte-identical.
+  expect(urls.filter(consoleUrl)).toEqual([]);
+  expect(urls.some((u) => /\/assets\/[^/]+\.js$/.test(u))).toBe(true);
+  const reject = await rejection(ctx.request);
+  for (const p of ["", "/users", "/settings"]) expect(await observe(ctx.request, `${ADMIN_BASE}${p}`)).toBe(reject);
   await page.getByRole("button", { name: "Log out" }).click();
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
   expect(problems).toEqual([]);
+  await ctx.close();
+});
+
+test("no session: the console does not exist (canonical rejection)", async ({ browser }) => {
+  const ctx = await browser.newContext();
+  const reject = await rejection(ctx.request);
+  for (const p of ["", "/users", "/audit", "/assets/missing.js"]) {
+    expect(await observe(ctx.request, `${ADMIN_BASE}${p}`)).toBe(reject);
+  }
+  const page = await ctx.newPage();
+  const res = await page.goto(`${ADMIN_BASE}/nodes`);
+  expect(res?.status()).toBe(404);
   await ctx.close();
 });
 
@@ -106,9 +151,12 @@ test("admin: optional 2FA, styled console, routable views, enroll with QR", asyn
   const ctx = await browser.newContext({ locale: "en-US" });
   const page = await ctx.newPage();
   const problems = watch(page);
-  await page.goto(`${BASE}/audit`); // deep link survives the login
+  const urls = requests(page);
+  await page.goto(`${BASE}/audit`); // the shared login; the view survives it
   await login(page, ADMIN, ADMIN_PW);
+  await expect(page).toHaveURL(`${ADMIN_BASE}/audit`); // R23: sent to the console bundle
   await expect(page.getByRole("heading", { name: "审计日志" })).toBeVisible();
+  expect(urls.some((u) => new URL(u).pathname.includes("/admin/assets/"))).toBe(true);
   await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN"); // console: Chinese only
   // Styled by the bundled stylesheet (a CSP regression leaves it unstyled).
   const styles = await page.getByRole("link", { name: "审计" }).evaluate((el) => {
@@ -120,14 +168,14 @@ test("admin: optional 2FA, styled console, routable views, enroll with QR", asyn
   expect(styles.font).toContain("system-ui");
   // Routable views + back button.
   await page.getByRole("link", { name: "用户" }).click();
-  await expect(page).toHaveURL(/\/app\/users$/);
+  await expect(page).toHaveURL(`${ADMIN_BASE}/users`);
   await expect(page.getByRole("heading", { name: "用户", exact: true })).toBeVisible();
   await page.goBack();
-  await expect(page).toHaveURL(/\/app\/audit$/);
+  await expect(page).toHaveURL(`${ADMIN_BASE}/audit`);
   // Recommended, not forced: the banner leads to the account page.
   await expect(page.getByText("建议开启两步验证")).toBeVisible();
   await page.getByRole("link", { name: "去设置" }).click();
-  await expect(page).toHaveURL(/\/app\/account$/);
+  await expect(page).toHaveURL(`${ADMIN_BASE}/account`);
   await page.getByRole("button", { name: "开启两步验证" }).click();
   const qr = page.getByRole("img", { name: "两步验证二维码" });
   await expect(qr).toBeVisible();
@@ -142,6 +190,10 @@ test("admin: optional 2FA, styled console, routable views, enroll with QR", asyn
   await page.getByRole("button", { name: "我已保存" }).click();
   await expect(page.getByText(/已开启 · 剩余 10 个恢复码/)).toBeVisible();
   await page.getByRole("button", { name: "退出登录" }).click();
+  // Logged out: back on the portal's login page; the console is gone.
+  await expect(page).toHaveURL(BASE);
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  expect(await observe(ctx.request, ADMIN_BASE)).toBe(await rejection(ctx.request));
   expect(problems).toEqual([]);
   await ctx.close();
 });
@@ -157,17 +209,20 @@ test("admin with 2FA: password alone refused, TOTP code accepted", async ({ brow
   const next = await nextCode(secret, usedStep); // the confirm step is spent
   usedStep = next.step;
   await login(page, ADMIN, ADMIN_PW, next.code);
+  await expect(page).toHaveURL(ADMIN_BASE);
   await expect(page.getByRole("heading", { name: "用户", exact: true })).toBeVisible();
   await expect(page.getByText("建议开启两步验证")).toHaveCount(0);
-  // Deep links (a full page load of /app/<view>) for every console view.
+  // Deep links (a full page load of /admin/<view>) for every console view.
   for (const [view, label, heading] of [
     ["nodes", "节点", "节点"],
     ["orders", "订单", "订单"],
     ["updates", "更新", "灰度更新"],
     ["plans", "套餐", "套餐"],
     ["settings", "系统设置", "系统设置"],
+    ["audit", "审计", "审计日志"],
+    ["account", "账户", "两步验证"],
   ]) {
-    await page.goto(`${BASE}/${view}`);
+    await page.goto(`${ADMIN_BASE}/${view}`);
     await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: label, exact: true })).toHaveAttribute("aria-current", "page");
   }

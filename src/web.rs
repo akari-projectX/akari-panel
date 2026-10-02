@@ -23,9 +23,15 @@ pub fn router(state: AppState) -> Router {
     let routes = Router::new()
         .route("/{prefix}/healthz", get(healthz))
         .merge(crate::billing::routes())
+        // R23: two bundles. The user portal (and shared login) is public;
+        // the admin console's index and assets answer admin sessions only
+        // (everything else under /admin is the canonical rejection).
         .route("/{prefix}/app", get(spa::index))
         .route("/{prefix}/app/{*rest}", get(spa::index))
         .route("/{prefix}/assets/{*path}", get(spa::asset))
+        .route("/{prefix}/admin", get(spa::admin_index))
+        .route("/{prefix}/admin/assets/{*path}", get(spa::admin_asset))
+        .route("/{prefix}/admin/{*rest}", get(spa::admin_index))
         .route("/{prefix}/sub/{token}", get(sub::subscription))
         .route("/{prefix}/install/{token}", get(nodeinstall::script))
         .route(

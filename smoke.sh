@@ -170,6 +170,9 @@ done
 # and Valkey rate-limit counters would poison the next run's login test.
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE nodes CASCADE; TRUNCATE users CASCADE;" >/dev/null 2>&1 || true
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE revoked_certs, traffic_counters, audit_log, agent_releases, rollouts CASCADE;" >/dev/null 2>&1 || true
+# R22 settings left behind by an aborted run (e.g. a node domain the agents
+# here cannot reach): back to "use panel.toml" (the trigger reloads them).
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "UPDATE panel_settings SET version = 0, main_domain = NULL, sub_domain = NULL, node_domain = NULL, trust_cloudflare = NULL; TRUNCATE grpc_server_names;" >/dev/null 2>&1 || true
 vk flushdb >/dev/null
 
 echo "== first admin (env password) =="
@@ -216,7 +219,10 @@ for probe in \
     "-X POST $BASE/healthz" \
     "-X POST $BASE/api/v1/auth/login" \
     "$BASE/sub/not-a-real-token" \
-    "$BASE/assets/missing.js"; do
+    "$BASE/assets/missing.js" \
+    "$BASE/admin" \
+    "$BASE/admin/users" \
+    "$BASE/admin/assets/missing.js"; do
   # shellcheck disable=SC2086
   [ "$(fp $probe)" = "$REJ" ] || { echo "FAIL: rejection differs for: $probe"; cat /tmp/akari-smoke/fphead; exit 1; }
 done
@@ -1575,6 +1581,19 @@ done
 for h in myapp.test:8446 sub.akari.test 127.0.0.1:8080; do
   [ "$(code -H "Host: $h" "$BASE/healthz")" = "200" ] || { echo "FAIL: Host $h refused"; exit 1; }
 done
+# R23-3: the admin console only on the main domain (and IP literals); on the
+# subscription domain it is the canonical rejection, even for an admin.
+# (The session goes in an explicit Cookie header: curl matches jar cookies
+# against a custom Host header.)
+SID=$(awk '$6=="sid"{print $7}' "$JAR")
+[ -n "$SID" ] || { echo "FAIL: no session cookie in the jar"; exit 1; }
+for p in admin admin/users; do
+  [ "$(fp -H "Cookie: sid=$SID" -H "Host: sub.akari.test" "$BASE/$p")" = "$REJ" ] || { echo "FAIL: console on the sub domain: $p"; exit 1; }
+done
+[ "$(code -H "Host: sub.akari.test" "$BASE/app")" = "200" ] || { echo "FAIL: portal refused on the sub domain"; exit 1; }
+for h in myapp.test:8446 127.0.0.1:8080; do
+  [ "$(code -H "Cookie: sid=$SID" -H "Host: $h" "$BASE/admin")" = "200" ] || { echo "FAIL: console refused on Host $h"; exit 1; }
+done
 
 # Caddy in front: the REAL deploy/caddy/Caddyfile (site blocks verbatim),
 # with test-only global options injected (internal CA for every name,
@@ -1719,7 +1738,9 @@ grep -qE '^  [A-Z2-7]{4}(-[A-Z2-7]{1,4})+$' "$LOG/reset.out" && { echo "FAIL: re
     -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "200" ] && grep -q '"stage":"full"' /tmp/akari-smoke/last \
   || { echo "FAIL: after reset-2fa the admin logs in with the password alone"; exit 1; }
 [ "$(code -b "$UJAR" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: user session before rotate-jwt"; exit 1; }
-"$PANEL" secrets rotate-jwt | grep -q "revoked" || { echo "FAIL: CLI rotate-jwt"; exit 1; }
+# Not piped into grep -q: grep exits at the first match and the CLI's next
+# line then dies on EPIPE (pipefail turned that into a flaky FAIL).
+"$PANEL" secrets rotate-jwt >"$LOG/rotate-jwt.out" && grep -q "revoked" "$LOG/rotate-jwt.out" || { echo "FAIL: CLI rotate-jwt"; exit 1; }
 [ "$(code -b "$UJAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: session survived rotate-jwt"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE actor_login = 'cli' AND action IN ('user.totp.reset', 'secrets.rotate_jwt')")" = "2" ] \
   || { echo "FAIL: CLI secret actions not audited"; exit 1; }
@@ -1796,6 +1817,69 @@ grep -q '}/auth[`"'"'"']' /tmp/akari-smoke/app.js || { echo "FAIL: bundle lacks 
 grep -qE '[`"'"'"']/auth/(login|logout)' /tmp/akari-smoke/app.js \
   && { echo "FAIL: bundle posts a bare /auth/* path (would be joined to /api/v1)"; exit 1; }
 echo "spa: ok (asset $JS)"
+
+echo "== R23: separate admin bundle, served to admin sessions only =="
+# Fresh sessions (rotate-jwt above revoked everything); 2FA was reset, so the
+# admin signs in with the password alone.
+AJAR="$LOG/spa-admin-cookies"; SJAR="$LOG/spa-user-cookies"; RJAR="$LOG/spa-revoked-cookies"
+[ "$(code -c "$AJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "200" ] || { echo "FAIL: admin login (R23)"; exit 1; }
+[ "$(code -b "$AJAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+    -d '{"login":"smoke-spa-user","password":"spa-user-password-1"}')" = "201" ] || { echo "FAIL: create spa user"; exit 1; }
+[ "$(code -c "$SJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d '{"login":"smoke-spa-user","password":"spa-user-password-1"}')" = "200" ] || { echo "FAIL: spa user login"; exit 1; }
+# A revoked admin session: log in, keep the cookie, log out (bumps session_ver).
+code -c "$RJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+  -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}" >/dev/null
+cp "$RJAR" "$RJAR.kept"
+[ "$(code -b "$RJAR" -X POST "$BASE/auth/logout")" = "200" ] || { echo "FAIL: logout (R23 revoked session)"; exit 1; }
+# Logging out bumped root's session_ver: the console session needs a fresh login too.
+[ "$(code -c "$AJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "200" ] || { echo "FAIL: admin re-login (R23)"; exit 1; }
+
+cache_of() { curl -s --noproxy '*' -D - -o /dev/null "$@" | tr -d '\r' | awk -F': ' 'tolower($1)=="cache-control"{print $2}'; }
+[ "$(code -b "$AJAR" "$BASE/admin")" = "200" ] || { echo "FAIL: /admin not 200 for an admin"; exit 1; }
+grep -q 'id="root"' /tmp/akari-smoke/last || { echo "FAIL: console index has no root div"; exit 1; }
+AJS=$(grep -o "/$PREFIX/admin/assets/[^\"]*\.js" /tmp/akari-smoke/last | head -1)
+ACSS=$(grep -o "/$PREFIX/admin/assets/[^\"]*\.css" /tmp/akari-smoke/last | head -1)
+[ -n "$AJS" ] && [ -n "$ACSS" ] || { echo "FAIL: console index lacks prefixed /admin/assets/ script or stylesheet"; exit 1; }
+[ "$(cache_of -b "$AJAR" "$BASE/admin")" = "private, no-store" ] || { echo "FAIL: console index cacheable"; exit 1; }
+[ "$(cache_of -b "$AJAR" "http://127.0.0.1:8080$AJS")" = "private, no-store" ] || { echo "FAIL: console asset cacheable"; exit 1; }
+[ "$(cache_of "http://127.0.0.1:8080$JS")" = "public, max-age=31536000, immutable" ] || { echo "FAIL: portal asset not immutable"; exit 1; }
+CT=$(curl -s --noproxy '*' -b "$AJAR" -o /dev/null -w "%{content_type}" "http://127.0.0.1:8080$AJS")
+echo "$CT" | grep -q javascript || { echo "FAIL: console asset content-type '$CT'"; exit 1; }
+curl -s --noproxy '*' -D - -o /dev/null -b "$AJAR" "$BASE/admin" | grep -qi "^content-security-policy: default-src 'self'" \
+  || { echo "FAIL: console index without the CSP"; exit 1; }
+# Deep links: every console view loads on reload.
+for v in users plans orders nodes updates audit account settings; do
+  [ "$(code -b "$AJAR" "$BASE/admin/$v")" = "200" ] || { echo "FAIL: deep link /admin/$v"; exit 1; }
+done
+# Everyone else gets the canonical rejection, byte-identical: no cookie, a
+# user's session, a forged cookie, a revoked admin session; and the console's
+# assets do not exist under the portal's public /assets/ path.
+for who in "" "-b $SJAR" "-b sid=forged" "-b $RJAR.kept"; do
+  for p in "$BASE/admin" "$BASE/admin/users" "$BASE/admin/settings" "http://127.0.0.1:8080$AJS" "http://127.0.0.1:8080$ACSS"; do
+    # shellcheck disable=SC2086
+    [ "$(fp $who "$p")" = "$REJ" ] || { echo "FAIL: console reachable ($who): $p"; cat /tmp/akari-smoke/fphead; exit 1; }
+  done
+done
+[ "$(fp -b "$AJAR" "$BASE/admin/")" = "$REJ" ] || { echo "FAIL: /admin/ (trailing slash) not the rejection"; exit 1; }
+[ "$(fp -b "$AJAR" -X POST "$BASE/admin")" = "$REJ" ] || { echo "FAIL: POST /admin not the rejection"; exit 1; }
+[ "$(fp -b "$AJAR" "$BASE/admin/assets/missing.js")" = "$REJ" ] || { echo "FAIL: missing console asset not the rejection"; exit 1; }
+[ "$(fp -b "$AJAR" "http://127.0.0.1:8080${AJS/\/admin\/assets\//\/assets\/}")" = "$REJ" ] \
+  || { echo "FAIL: console asset served under the public /assets/ path"; exit 1; }
+# The portal never references the console's files, and the bundles as served
+# pass the build-time guard: no admin marker in anything the portal loads.
+SERVED="$LOG/served"; rm -rf "$SERVED" && mkdir -p "$SERVED/app" "$SERVED/admin"
+curl -s --noproxy '*' -b "$SJAR" "$BASE/app" >"$SERVED/app/index.html"
+grep -q '/admin/' "$SERVED/app/index.html" && { echo "FAIL: portal index references the console"; exit 1; }
+for a in $(grep -o "/$PREFIX/assets/[^\"]*\.\(js\|css\)" "$SERVED/app/index.html"); do
+  curl -s --noproxy '*' "http://127.0.0.1:8080$a" >"$SERVED/app/$(basename "$a")"
+done
+curl -s --noproxy '*' -b "$AJAR" "$BASE/admin" >"$SERVED/admin/admin.html"
+for a in "$AJS" "$ACSS"; do curl -s --noproxy '*' -b "$AJAR" "http://127.0.0.1:8080$a" >"$SERVED/admin/$(basename "$a")"; done
+node spa/scripts/check-bundles.mjs "$SERVED/app" "$SERVED/admin" || { echo "FAIL: served portal bundle carries admin code"; exit 1; }
+echo "admin bundle: ok"
 
 echo "== S4-3 SIGTERM: agent streams end, final flush, clean exit =="
 "$PANEL" node add term-node --out "$LOG/term-bootstrap.toml" >/dev/null
