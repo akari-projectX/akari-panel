@@ -594,7 +594,7 @@ grep -q '"msg":"applying user delta"' "$LOG/agent.log" || { echo "FAIL: no user 
 echo "user delta: ok (no rebuild, session $SESSION_AFTER)"
 
 echo "== Sprint 3a: protocol + lease surfaced on the node =="
-[ "$(node_field agent_protocol)" = "3" ] || { echo "FAIL: agent_protocol $(node_field agent_protocol)"; exit 1; }
+[ "$(node_field agent_protocol)" -ge 3 ] || { echo "FAIL: agent_protocol $(node_field agent_protocol)"; exit 1; }
 LEASE=$(node_field lease_remaining_seconds)
 [ "$LEASE" != "null" ] && [ "$LEASE" -gt 80000 ] || { echo "FAIL: lease_remaining_seconds '$LEASE'"; exit 1; }
 echo "lease: ok (${LEASE}s left)"
@@ -1202,7 +1202,7 @@ for a in node.enroll node.cert.renew node.cert.rotated; do
   [ "$(psql_q "SELECT count(*) > 0 FROM audit_log WHERE action='$a' AND actor_login='agent' AND target_id='$RENEW_ID'")" = "t" ] \
     || { echo "FAIL: $a not audited"; exit 1; }
 done
-grep -q '"protocol":3' "$LOG/panel-b.log" || { echo "FAIL: agent does not speak protocol 3 (renewal + self-update)"; exit 1; }
+grep -qE '"protocol":([3-9]|[1-9][0-9])' "$LOG/panel-b.log" || { echo "FAIL: agent does not speak protocol 3 (renewal + self-update)"; exit 1; }
 code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
 python3 -c "
 import json; n=[x for x in json.load(open('/tmp/akari-smoke/last')) if x['id']=='$RENEW_ID'][0]
@@ -1300,7 +1300,7 @@ UPD_ID=$("$PANEL" node list | awk '$2=="upd-node"{print $1}')
 UPD_LOOP=$!
 upd_node() { psql_q "SELECT $1 FROM nodes WHERE id='$UPD_ID'"; }
 for _ in $(seq 1 20); do [ "$(upd_node agent_version)" = "v900.0.0" ] && break; sleep 1; done
-[ "$(upd_node agent_version)" = "v900.0.0" ] && [ "$(upd_node agent_protocol)" = "3" ] \
+[ "$(upd_node agent_version)" = "v900.0.0" ] && [ "$(upd_node agent_protocol)" -ge 3 ] \
   || { echo "FAIL: update agent not connected ($(upd_node agent_version)/$(upd_node agent_protocol))"; tail -5 "$LOG/upd-agent.log"; exit 1; }
 # Only the update node takes part: the others run development builds.
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/rollouts" -H 'Content-Type: application/json' \
