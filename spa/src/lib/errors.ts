@@ -16,6 +16,20 @@ const KNOWN: Record<string, Parameters<TFunction>[0]> = {
   "plan is only available to its current subscribers": "errors.renewalOnly",
   "switching to this plan from another plan is not allowed": "errors.noSwitch",
   "a traffic reset pack needs an active subscription of its plan": "errors.resetNeedsPlan",
+  // W16
+  "invalid coupon code": "errors.couponInvalid",
+  "coupon is not valid yet": "errors.couponNotStarted",
+  "coupon has expired": "errors.couponExpired",
+  "coupon has been used up": "errors.couponUsedUp",
+  "you have already used this coupon": "errors.couponUserLimit",
+  "coupon is for new customers only": "errors.couponNewOnly",
+  "coupon does not apply to this plan": "errors.couponPlan",
+  "coupon does not apply to this period": "errors.couponPeriod",
+  "order amount is below the coupon's minimum": "errors.couponMinimum",
+  "insufficient balance": "errors.insufficientBalance",
+  "amount exceeds the withdrawable balance": "errors.withdrawExceeds",
+  "you already have an open withdrawal request": "errors.withdrawOpen",
+  "the withdrawal is no longer pending": "errors.withdrawalNotPending",
 };
 
 /** A user-presentable, localized message for a failed request. */
@@ -41,6 +55,15 @@ const zh: TFunction = (key, vars) => translate("zh", key, vars);
 const ADMIN_KNOWN: Record<string, string> = {
   "login already exists": "该账号已存在",
   "cannot remove the last enabled admin": "不能移除最后一个启用的管理员",
+  // W16
+  "a coupon with this code already exists": "已存在相同的优惠码（不区分大小写）",
+  "the coupon has been used by orders; disable it instead": "该优惠码已被订单使用，不能删除，请改为停用",
+  "only a paid order can be refunded": "只有已付款的订单可以退款",
+  "the order was already refunded": "该订单已退款",
+  "the order was refunded": "该订单已退款，不能再开通",
+  "admin accounts have no balance": "管理员账户没有余额",
+  "the user no longer exists; approve or leave the request": "该用户已删除，只能标记为已打款",
+  "plan_ids contains an unknown plan": "适用套餐中有不存在的套餐",
 };
 
 // Like zh, but an unknown server message stays bare (no "操作失败：" wrapper),

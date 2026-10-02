@@ -1121,6 +1121,16 @@ async fn balance_http_endpoints() {
         uc.get("/test/api/v1/balances").await.status,
         StatusCode::FORBIDDEN
     );
+    // A customer without a balance row is found by login (balance 0).
+    let v = db.user().await;
+    let r = admin.get(&format!("/test/api/v1/balances?login={v}")).await;
+    assert_eq!(
+        (
+            r.json()[0]["user_id"].clone(),
+            r.json()[0]["balance_cents"].clone()
+        ),
+        (json!(v), json!(0))
+    );
     let r = uc.get("/test/api/v1/me/balance").await;
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.json()["balance_cents"], 1234);

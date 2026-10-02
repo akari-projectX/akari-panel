@@ -269,8 +269,9 @@ pub struct BalanceRow {
     updated_at: DateTime<Utc>,
 }
 
-/// GET /balances: users holding a balance row (largest first), or one
-/// login. Admin.
+/// GET /balances: customers holding a balance row (largest first), or
+/// the customer with this exact login (balance 0 when they never had one,
+/// so an admin can find anyone to adjust). Admin.
 pub async fn list_balances(
     State(state): State<AppState>,
     user: AuthUser,
@@ -278,10 +279,11 @@ pub async fn list_balances(
 ) -> Result<Json<Vec<BalanceRow>>, ApiError> {
     user.require_admin()?;
     let rows = sqlx::query_as(
-        "SELECT b.user_id, u.login, b.balance_cents, b.updated_at FROM user_balances b \
-         JOIN users u ON u.id = b.user_id \
-         WHERE ($1::text IS NULL OR u.login = $1) \
-         ORDER BY b.balance_cents DESC, u.login LIMIT $2",
+        "SELECT u.id AS user_id, u.login, COALESCE(b.balance_cents, 0) AS balance_cents, \
+         COALESCE(b.updated_at, u.created_at) AS updated_at \
+         FROM users u LEFT JOIN user_balances b ON b.user_id = u.id \
+         WHERE u.role = 'user' AND (($1::text IS NULL AND b.user_id IS NOT NULL) OR u.login = $1) \
+         ORDER BY balance_cents DESC, u.login LIMIT $2",
     )
     .bind(q.login.filter(|l| !l.is_empty()))
     .bind(q.limit.unwrap_or(100).clamp(1, 500))

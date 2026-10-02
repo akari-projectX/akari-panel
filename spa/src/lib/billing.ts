@@ -33,14 +33,33 @@ export interface Offer {
   period: PeriodKind;
   days: number | null;
   price_cents: number;
-  // What would be charged now (price - credit); null when refused.
+  // What Alipay would be asked for now (price - discount - credit -
+  // balance); null when refused.
   amount_cents: number | null;
+  // W16: the entered coupon's discount (on the list price).
+  discount_cents: number;
   credit_cents: number;
-  // Credit beyond the price (lost when switching to a cheaper plan).
+  // Credit beyond what is left (lost when switching to a cheaper plan).
   forfeited_cents: number;
+  // W16: the balance part (when paying with the balance).
+  balance_cents: number;
+  // W16: why the entered coupon does not apply to this period.
+  coupon_refusal: CouponRefusal | null;
   action: OfferAction | null;
   refusal: OfferRefusal | null;
 }
+
+// W16 coupon refusals (src/billing/coupons.rs Refusal).
+export type CouponRefusal =
+  | "invalid"
+  | "not_started"
+  | "expired"
+  | "used_up"
+  | "user_limit"
+  | "new_users_only"
+  | "plan"
+  | "period"
+  | "below_minimum";
 
 export interface ShopPlan {
   plan_id: string;
@@ -65,6 +84,11 @@ export interface Shop {
   current: { plan_id: string; name: string; expires_at: string | null } | null;
   // What the caller's subscription is worth when switching plans.
   credit_cents: number;
+  // W16: the caller's balance (fen).
+  balance_cents: number;
+  // W16: the coupon entered (?coupon=), with a refusal that concerns the
+  // whole code; null without one.
+  coupon: { code: string; refusal: CouponRefusal | null } | null;
   plans: ShopPlan[];
 }
 
@@ -88,6 +112,10 @@ export interface MyOrder {
   period_days: number | null;
   list_price_cents: number;
   credit_cents: number;
+  discount_cents: number;
+  coupon_code: string | null;
+  balance_cents: number;
+  refunded_at: string | null;
   status: OrderStatus;
   // Only while pending: the Alipay QR payload (https://qr.alipay.com/...).
   qr_code: string | null;
@@ -110,9 +138,17 @@ export interface AdminOrder {
   list_price_cents: number;
   credit_cents: number;
   credit_order_id: string | null;
+  discount_cents: number;
+  coupon_id: string | null;
+  coupon_code: string | null;
+  balance_cents: number;
+  balance_state: "none" | "held" | "refunded";
+  refunded_at: string | null;
+  refund_cents: number | null;
+  refund_reason: string | null;
   status: OrderStatus;
   trade_no: string | null;
-  paid_via: "notify" | "query" | "manual" | "credit" | null;
+  paid_via: "notify" | "query" | "manual" | "credit" | "balance" | "coupon" | null;
   paid_amount_cents: number | null;
   manual_reason: string | null;
   fulfilled_at: string | null;
@@ -215,4 +251,174 @@ export function parseYuan(s: string): number | null {
   if (!m) return null;
   const cents = Number(m[1]) * 100 + Number((m[2] ?? "").padEnd(2, "0"));
   return cents > 0 ? cents : null;
+}
+
+// ---------------------------------------------------------------------------
+// W16: balance (src/billing/ledger.rs), invite commission + withdrawals
+// (commission.rs), coupons (coupons.rs).
+// ---------------------------------------------------------------------------
+
+export type LedgerKind =
+  "commission" | "admin_adjust" | "order_payment" | "refund_to_balance" | "withdrawal" | "withdrawal_reversal";
+
+export interface LedgerEntry {
+  id: number;
+  kind: LedgerKind;
+  // Signed fen.
+  amount_cents: number;
+  balance_after_cents: number;
+  order_id: string | null;
+  out_trade_no: string | null;
+  commission_id: string | null;
+  withdrawal_id: string | null;
+  reason: string | null;
+  created_at: string;
+}
+
+export interface AdminLedgerEntry extends LedgerEntry {
+  user_id: string | null;
+  user_login: string;
+  actor_login: string;
+}
+
+export interface MyBalance {
+  balance_cents: number;
+  withdrawable_cents: number;
+  entries: LedgerEntry[];
+}
+
+export interface UserBalance {
+  user_id: string;
+  login: string;
+  balance_cents: number;
+  withdrawable_cents: number;
+  entries: AdminLedgerEntry[];
+}
+
+export interface BalanceRow {
+  user_id: string;
+  login: string;
+  balance_cents: number;
+  updated_at: string;
+}
+
+export type CommissionStatus = "pending" | "credited" | "reversed";
+
+export interface MyCommission {
+  id: string;
+  invitee_login: string;
+  base_cents: number;
+  rate_percent: number;
+  amount_cents: number;
+  status: CommissionStatus;
+  available_at: string;
+  credited_at: string | null;
+  reversed_at: string | null;
+  created_at: string;
+}
+
+export interface MyInvite {
+  enabled: boolean;
+  rate_percent: number;
+  first_order_only: boolean;
+  hold_days: number;
+  min_withdrawal_cents: number;
+  // W15 (registration) provides invite codes; null until then.
+  invite_codes: string[] | null;
+  invited_count: number;
+  pending_cents: number;
+  credited_cents: number;
+  reversed_cents: number;
+  balance_cents: number;
+  withdrawable_cents: number;
+  commissions: MyCommission[];
+}
+
+export interface Commission {
+  id: string;
+  order_id: string;
+  out_trade_no: string;
+  inviter_id: string | null;
+  inviter_login: string;
+  invitee_id: string | null;
+  invitee_login: string;
+  base_cents: number;
+  rate_percent: number;
+  amount_cents: number;
+  status: CommissionStatus;
+  available_at: string;
+  credited_at: string | null;
+  reversed_at: string | null;
+  reverse_reason: string | null;
+  created_at: string;
+}
+
+export interface CommissionSettings {
+  enabled: boolean;
+  rate_percent: number;
+  first_order_only: boolean;
+  hold_days: number;
+  min_withdrawal_cents: number;
+}
+
+export type WithdrawMethod = "alipay" | "wechat" | "bank" | "other";
+export type WithdrawalStatus = "pending" | "approved" | "rejected" | "cancelled";
+
+export interface Withdrawal {
+  id: string;
+  user_id: string | null;
+  user_login: string;
+  amount_cents: number;
+  method: WithdrawMethod;
+  account: string;
+  status: WithdrawalStatus;
+  payout_reference: string | null;
+  note: string | null;
+  decided_at: string | null;
+  decided_by: string | null;
+  created_at: string;
+}
+
+export interface Coupon {
+  id: string;
+  code: string;
+  name: string;
+  kind: "percent" | "fixed";
+  // percent: 1-100; fixed: fen.
+  value: number;
+  plan_ids: string[] | null;
+  periods: PeriodKind[] | null;
+  min_amount_cents: number;
+  starts_at: string | null;
+  ends_at: string | null;
+  max_uses: number | null;
+  per_user_limit: number | null;
+  new_users_only: boolean;
+  enabled: boolean;
+  used: number;
+  redeemed: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CouponRedemption {
+  order_id: string;
+  out_trade_no: string;
+  user_id: string | null;
+  user_login: string;
+  status: "reserved" | "redeemed" | "released";
+  over_limit: boolean;
+  discount_cents: number;
+  order_status: OrderStatus;
+  created_at: string;
+}
+
+export interface CouponDetail {
+  coupon: Coupon;
+  redemptions: CouponRedemption[];
+}
+
+/** A signed fen amount: "+9.90" / "-9.90". */
+export function signedYuan(cents: number): string {
+  return `${cents < 0 ? "-" : "+"}${yuan(Math.abs(cents))}`;
 }
