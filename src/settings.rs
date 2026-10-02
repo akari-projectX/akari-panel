@@ -589,6 +589,12 @@ pub async fn init(state: &AppState) -> anyhow::Result<()> {
     reload(state).await
 }
 
+async fn reload_logged(state: &AppState) {
+    if let Err(e) = reload(state).await {
+        tracing::warn!(error = %e, "settings reload failed");
+    }
+}
+
 /// Background reload (notify path): errors are logged; the next
 /// notification or LISTEN reconnect retries.
 pub fn spawn_reload(state: &AppState) {
@@ -1181,8 +1187,9 @@ pub async fn put_settings(
     apply_update(&mut tx, &Actor::of(&user), req.version, &new).await?;
     tx.commit().await?;
     // The trigger notified every instance (this one included); reload here
-    // as well so the response shows the new state.
-    reload(&state).await?;
+    // as well so the response shows the new state. Committed either way: a
+    // failure here is retried by the notification path.
+    reload_logged(&state).await;
     Ok(Json(view(&state, warnings).await?))
 }
 
@@ -1228,7 +1235,7 @@ pub async fn remove_server_name(
     let affected =
         apply_remove_server_name(&mut tx, &Actor::of(&user), state.cfg(), &req.name).await?;
     tx.commit().await?;
-    reload(&state).await?;
+    reload_logged(&state).await;
     Ok(Json(
         json!({ "removed": req.name, "affected_nodes": affected }),
     ))
