@@ -34,6 +34,11 @@ MODULES = {
     "src/billing/coupons.rs": 90.0,
     "src/billing/ledger.rs": 90.0,
     "src/billing/commission.rs": 90.0,
+    # W17: tickets (permissions, limits) and node alerts (evaluator, delivery).
+    "src/tickets.rs": 90.0,
+    "src/alerts/mod.rs": 90.0,
+    "src/alerts/eval.rs": 90.0,
+    "src/alerts/channels.rs": 90.0,
 }
 
 TEST_MOD = re.compile(r"^(pub(\(crate\))? )?mod \w+ \{")

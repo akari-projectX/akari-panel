@@ -1085,3 +1085,108 @@ async fn email_channel_uses_the_outbox() {
     drop(state);
     db.drop().await;
 }
+
+/// Facts gathered from the database and Valkey: minute history (CPU and
+/// memory windows), latency results, the heartbeat (disk, W10 certificate),
+/// agent certificate, last_error; a changed value updates the firing alert.
+#[tokio::test]
+async fn round_gathers_every_fact_source() {
+    use fred::prelude::KeysInterface;
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let mut req = put(version(&state).await);
+    req.cpu_minutes = 2;
+    req.mem_minutes = 2;
+    save(&state, req).await.unwrap();
+    let n = offline_node(&db, 0).await;
+    sqlx::query(
+        "UPDATE nodes SET status = 'online', last_seen_at = now(), tls_domain = 'n1.example.com', \
+         cert_not_after = now() + interval '2 days', last_error = 'xray: bad inbound' WHERE id = $1",
+    )
+    .bind(n)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    for ago in 1..=3 {
+        sqlx::query(
+            "INSERT INTO node_metrics_1m (node_id, bucket, samples, cpu_sum, mem_used_sum, mem_total) \
+             VALUES ($1, date_trunc('minute', now()) - make_interval(mins => $2), 2, 190, 1900, 1000)",
+        )
+        .bind(n)
+        .bind(ago)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO node_latency (node_id, source, target, delay_ms, error, ord, measured_at) VALUES \
+         ($1, 'panel', 'in-vless', NULL, 'refused', 0, now()), ($1, 'panel', 'in-hy2', NULL, 'udp', 1, now())",
+    )
+    .bind(n)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let key = format!("akari:node:hb:{n}");
+    let blob = json!({
+        "cpu_percent": 95.0, "ts": "2026-10-02T00:00:00Z",
+        "metrics": {"disk_used_bytes": 99, "disk_total_bytes": 100},
+        "cert": {"state": "failed", "not_after": (Utc::now() + Duration::days(1)).to_rfc3339()},
+    });
+    let _: () = state
+        .valkey()
+        .set(
+            &key,
+            blob.to_string(),
+            Some(fred::types::Expiration::EX(60)),
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    let s = eval::round(&state).await.unwrap().unwrap();
+    assert_eq!(s.fired, 7, "{:?}", alerts_of(&db, n).await);
+    let kinds: Vec<String> = alerts_of(&db, n).await.into_iter().map(|a| a.0).collect();
+    for k in [
+        "cpu",
+        "memory",
+        "disk",
+        "latency",
+        "cert",
+        "agent_cert",
+        "last_error",
+    ] {
+        assert!(kinds.contains(&k.to_string()), "{k} in {kinds:?}");
+    }
+    // A new error text updates the firing alert in place.
+    sqlx::query("UPDATE nodes SET last_error = 'xray: other' WHERE id = $1")
+        .bind(n)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let s = eval::round(&state).await.unwrap().unwrap();
+    assert_eq!((s.fired, s.resolved), (0, 0));
+    let detail: String = sqlx::query_scalar(
+        "SELECT detail FROM node_alerts WHERE node_id = $1 AND kind = 'last_error'",
+    )
+    .bind(n)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(detail, "xray: other");
+    let _: i64 = state.valkey().del(&key).await.unwrap();
+    // Heartbeat gone (Valkey TTL): disk and the node certificate are
+    // undecided, so they stay firing.
+    let s = eval::round(&state).await.unwrap().unwrap();
+    assert_eq!(s.resolved, 0);
+    assert!(heartbeat_facts_parse());
+    drop(state);
+    db.drop().await;
+}
+
+fn heartbeat_facts_parse() -> bool {
+    let (d, c) = eval::heartbeat_facts("not json");
+    let (d2, c2) = eval::heartbeat_facts(r#"{"metrics":{"disk_used_bytes":1},"cert":"x"}"#);
+    d.is_none() && c.is_none() && d2.is_none() && c2.is_none()
+}
