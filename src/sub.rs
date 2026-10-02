@@ -114,8 +114,18 @@ fn reality_fingerprint(reality: Option<&Value>) -> String {
         .to_string()
 }
 
+/// Which client formats a proxy can be expressed in (W8 matrix,
+/// docs/DEPLOY.md §3c). A proxy a format cannot express is left out of that
+/// format (logged) rather than rendered as a config the client rejects.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Omit {
+    Clash,
+    SingBox,
+}
+
 struct Net {
     port: u16,
+    /// tcp | ws | httpupgrade | xhttp | grpc | hysteria (protocols::network)
     network: String,
     security: String, // none | tls | reality
     sni: String,
@@ -123,70 +133,71 @@ struct Net {
     short_id: String,
     /// uTLS client fingerprint (REALITY only; empty otherwise).
     fingerprint: String,
-    ws_path: String,
-    ws_host: String,
+    /// ws / httpupgrade / xhttp path and Host.
+    path: String,
+    host: String,
+    /// xhttp mode ("" = auto).
+    mode: String,
+    /// grpc serviceName.
+    service_name: String,
 }
 
 fn net_from_inbound(inbound: &Value) -> Option<Net> {
-    let port = inbound.get("port")?.as_u64()? as u16;
+    let port = u16::try_from(inbound.get("port")?.as_u64()?).ok()?;
     let ss = inbound.get("streamSettings");
     let get = |key: &str| ss.and_then(|s| s.get(key));
-    let network = get("network")
-        .and_then(|v| v.as_str())
-        .unwrap_or("tcp")
-        .to_string();
-    let security = get("security")
-        .and_then(|v| v.as_str())
-        .unwrap_or("none")
-        .to_string();
+    let s = |v: Option<&Value>| v.and_then(Value::as_str).unwrap_or("").to_string();
+    let network = crate::protocols::network(inbound);
+    let security = crate::protocols::security(inbound);
     let sni = match security.as_str() {
-        "tls" => get("tlsSettings")
-            .and_then(|t| t.get("serverName"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        "reality" => get("realitySettings")
+        "tls" => s(get("tlsSettings").and_then(|t| t.get("serverName"))),
+        "reality" => s(get("realitySettings")
             .and_then(|t| t.get("serverNames"))
             .and_then(|v| v.as_array())
-            .and_then(|a| a.first())
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
+            .and_then(|a| a.first())),
         _ => String::new(),
     };
     let reality = get("realitySettings");
     let (public_key, short_id, fingerprint) = if security == "reality" {
         (
-            reality
-                .and_then(|t| t.get("publicKey"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            reality
-                .and_then(|t| t.get("shortId"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+            s(reality.and_then(|t| t.get("publicKey"))),
+            s(reality.and_then(|t| t.get("shortId"))),
             reality_fingerprint(reality),
         )
     } else {
         (String::new(), String::new(), String::new())
     };
-    let ws = get("wsSettings");
-    let (ws_path, ws_host) = if network == "ws" {
-        (
-            ws.and_then(|w| w.get("path"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("/")
-                .to_string(),
-            ws.and_then(|w| w.get("headers"))
-                .and_then(|h| h.get("Host"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-        )
-    } else {
-        (String::new(), String::new())
+    let ts = match network.as_str() {
+        "ws" => get("wsSettings"),
+        "httpupgrade" => get("httpupgradeSettings"),
+        "xhttp" => get("xhttpSettings").or_else(|| get("splithttpSettings")),
+        "grpc" => get("grpcSettings"),
+        _ => None,
+    };
+    let (path, host, mode, service_name) = match network.as_str() {
+        "ws" | "httpupgrade" | "xhttp" => {
+            let p = s(ts.and_then(|w| w.get("path")));
+            (
+                if p.is_empty() { "/".into() } else { p },
+                s(ts.and_then(|w| w.get("host")).or_else(|| {
+                    ts.and_then(|w| w.get("headers"))
+                        .and_then(|h| h.get("Host"))
+                })),
+                if network == "xhttp" {
+                    s(ts.and_then(|w| w.get("mode")))
+                } else {
+                    String::new()
+                },
+                String::new(),
+            )
+        }
+        "grpc" => (
+            String::new(),
+            String::new(),
+            String::new(),
+            s(ts.and_then(|g| g.get("serviceName"))),
+        ),
+        _ => (String::new(), String::new(), String::new(), String::new()),
     };
     Some(Net {
         port,
@@ -196,18 +207,38 @@ fn net_from_inbound(inbound: &Value) -> Option<Net> {
         public_key,
         short_id,
         fingerprint,
-        ws_path,
-        ws_host,
+        path,
+        host,
+        mode,
+        service_name,
     })
 }
 
 struct Proxy {
     name: String,
     protocol: String,
-    id_or_password: String, // vless/vmess uuid, trojan password
+    /// vless/vmess uuid, trojan password, shadowsocks "server_psk:user_key",
+    /// hysteria auth.
+    id_or_password: String,
     flow: String,
+    /// shadowsocks method.
+    method: String,
+    /// shadowsocks: the inbound also serves UDP.
+    udp: bool,
     server: String,
     net: Net,
+}
+
+impl Proxy {
+    /// Why a format cannot carry this proxy, if it cannot.
+    fn omitted_from(&self, f: Omit) -> Option<&'static str> {
+        match (f, self.net.network.as_str(), self.protocol.as_str()) {
+            (Omit::SingBox, "xhttp", _) => Some("sing-box has no xhttp transport"),
+            (Omit::Clash, "xhttp", "vless") => None,
+            (Omit::Clash, "xhttp", _) => Some("mihomo supports xhttp only for vless"),
+            _ => None,
+        }
+    }
 }
 
 fn collect_proxies(rows: &[NodeRow]) -> Vec<Proxy> {
@@ -239,24 +270,52 @@ fn collect_proxies(rows: &[NodeRow]) -> Vec<Proxy> {
             let Some(net) = net_from_inbound(&inbound) else {
                 continue;
             };
+            let acc = |k: &str| cred.account.get(k).and_then(|v| v.as_str());
+            let mut method = String::new();
             let id_or_password = match cred.protocol.as_str() {
-                "vless" | "vmess" => cred.account.get("id").and_then(|v| v.as_str()),
-                "trojan" => cred.account.get("password").and_then(|v| v.as_str()),
+                "vless" | "vmess" => acc("id").map(String::from),
+                "trojan" => acc("password").map(String::from),
+                "hysteria" => acc("auth").map(String::from),
+                "shadowsocks" => {
+                    // SIP022 multi-user: "<server PSK>:<user key>".
+                    method = inbound
+                        .pointer("/settings/method")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let psk = inbound
+                        .pointer("/settings/password")
+                        .and_then(Value::as_str);
+                    match (psk, acc("password")) {
+                        (Some(psk), Some(user)) if !method.is_empty() => {
+                            Some(format!("{psk}:{user}"))
+                        }
+                        _ => None,
+                    }
+                }
                 _ => None,
             };
             let Some(id_or_password) = id_or_password else {
                 continue;
             };
+            // Vision only exists on raw TCP with TLS/REALITY; a stale flow
+            // on any other transport would make clients fail.
+            let flow = match acc("flow") {
+                Some(f)
+                    if net.network == "tcp"
+                        && matches!(net.security.as_str(), "tls" | "reality") =>
+                {
+                    f
+                }
+                _ => "",
+            };
             proxies.push(Proxy {
                 name: format!("{} · {}", row.name, cred.inbound_tag),
                 protocol: cred.protocol.clone(),
-                id_or_password: id_or_password.to_string(),
-                flow: cred
-                    .account
-                    .get("flow")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                id_or_password,
+                flow: flow.to_string(),
+                method,
+                udp: crate::protocols::l4(&inbound).1,
                 server: server.to_string(),
                 net,
             });
@@ -299,13 +358,29 @@ fn query_params(p: &Proxy, include_flow: bool) -> String {
     if !p.net.fingerprint.is_empty() {
         params.push(format!("fp={}", p.net.fingerprint));
     }
-    if p.net.network == "ws" {
-        if !p.net.ws_path.is_empty() {
-            params.push(format!("path={}", encode_fragment(&p.net.ws_path)));
+    match p.net.network.as_str() {
+        "ws" | "httpupgrade" | "xhttp" => {
+            params.push(format!("path={}", encode_fragment(&p.net.path)));
+            if !p.net.host.is_empty() {
+                params.push(format!("host={}", p.net.host));
+            }
+            if p.net.network == "xhttp" {
+                let mode = if p.net.mode.is_empty() {
+                    "auto"
+                } else {
+                    &p.net.mode
+                };
+                params.push(format!("mode={mode}"));
+            }
         }
-        if !p.net.ws_host.is_empty() {
-            params.push(format!("host={}", p.net.ws_host));
+        "grpc" => {
+            params.push(format!(
+                "serviceName={}",
+                encode_fragment(&p.net.service_name)
+            ));
+            params.push("mode=gun".into());
         }
+        _ => {}
     }
     params.join("&")
 }
@@ -332,6 +407,18 @@ fn render_links(proxies: &[Proxy]) -> String {
                 frag
             )),
             "vmess" => {
+                let (path, kind) = match p.net.network.as_str() {
+                    "grpc" => (p.net.service_name.as_str(), "gun"),
+                    "xhttp" => (
+                        p.net.path.as_str(),
+                        if p.net.mode.is_empty() {
+                            "auto"
+                        } else {
+                            p.net.mode.as_str()
+                        },
+                    ),
+                    _ => (p.net.path.as_str(), "none"),
+                };
                 let payload = json!({
                     "v": "2",
                     "ps": p.name,
@@ -341,16 +428,36 @@ fn render_links(proxies: &[Proxy]) -> String {
                     "aid": "0",
                     "scy": "auto",
                     "net": p.net.network,
-                    "type": "none",
-                    "host": p.net.ws_host,
-                    "path": p.net.ws_path,
+                    "type": kind,
+                    "host": p.net.host,
+                    "path": path,
                     "tls": if p.net.security == "tls" { "tls" } else { "" },
+                    "sni": p.net.sni,
                 });
                 lines.push(format!(
                     "vmess://{}",
                     STANDARD.encode(payload.to_string().as_bytes())
                 ));
             }
+            // SIP002 with an AEAD-2022 method: userinfo is not base64 but
+            // "method:password" percent-encoded (the password itself is
+            // "psk:key" and holds base64 '+', '/', '=').
+            "shadowsocks" => lines.push(format!(
+                "ss://{}:{}@{}:{}#{}",
+                p.method,
+                encode_fragment(&p.id_or_password),
+                p.server,
+                p.net.port,
+                frag
+            )),
+            "hysteria" => lines.push(format!(
+                "hysteria2://{}@{}:{}/?sni={}#{}",
+                encode_fragment(&p.id_or_password),
+                p.server,
+                p.net.port,
+                p.net.sni,
+                frag
+            )),
             _ => {}
         }
     }
@@ -358,15 +465,49 @@ fn render_links(proxies: &[Proxy]) -> String {
     STANDARD.encode(lines.join("\n"))
 }
 
+/// A YAML scalar: plain when it is a safe token, JSON-quoted otherwise
+/// (a JSON string is a valid YAML double-quoted scalar).
+fn yaml(s: &str) -> String {
+    const RESERVED: [&str; 11] = [
+        "true", "false", "null", "yes", "no", "on", "off", "y", "n", "nan", "inf",
+    ];
+    let safe = !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/-_.~".contains(&b))
+        && !s.starts_with(['-', '.', '~'])
+        && (s.starts_with('/')
+            || (s.bytes().any(|b| b.is_ascii_alphabetic())
+                && !RESERVED.contains(&s.to_ascii_lowercase().as_str())
+                && s.parse::<f64>().is_err()));
+    if safe {
+        s.to_string()
+    } else {
+        serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
+    }
+}
+
+fn log_omitted(p: &Proxy, format: &str, why: &str) {
+    tracing::info!(proxy = %p.name, format, reason = why, "proxy left out of subscription format");
+}
+
 fn render_clash(proxies: &[Proxy]) -> String {
     let mut out = String::from("proxies:\n");
     let mut names = Vec::new();
     for p in proxies {
+        if let Some(why) = p.omitted_from(Omit::Clash) {
+            log_omitted(p, "clash", why);
+            continue;
+        }
+        let kind = match p.protocol.as_str() {
+            "shadowsocks" => "ss",
+            "hysteria" => "hysteria2",
+            other => other,
+        };
         names.push(serde_json::to_string(&p.name).unwrap_or_else(|_| "\"proxy\"".into()));
         out.push_str("  - name: ");
         out.push_str(&serde_json::to_string(&p.name).unwrap_or_else(|_| "\"proxy\"".into()));
         out.push('\n');
-        out.push_str(&format!("    type: {}\n", p.protocol));
+        out.push_str(&format!("    type: {kind}\n"));
         out.push_str(&format!("    server: {}\n", p.server));
         out.push_str(&format!("    port: {}\n", p.net.port));
         match p.protocol.as_str() {
@@ -381,11 +522,30 @@ fn render_clash(proxies: &[Proxy]) -> String {
                 out.push_str("    alterId: 0\n    cipher: auto\n");
             }
             "trojan" => {
-                out.push_str(&format!("    password: {}\n", p.id_or_password));
+                out.push_str(&format!("    password: {}\n", yaml(&p.id_or_password)));
+            }
+            "shadowsocks" => {
+                out.push_str(&format!("    cipher: {}\n", p.method));
+                out.push_str(&format!("    password: {}\n", yaml(&p.id_or_password)));
+                out.push_str(&format!("    udp: {}\n", p.udp));
+                continue;
+            }
+            "hysteria" => {
+                out.push_str(&format!("    password: {}\n", yaml(&p.id_or_password)));
+                if !p.net.sni.is_empty() {
+                    out.push_str(&format!("    sni: {}\n", p.net.sni));
+                }
+                out.push_str("    alpn:\n      - h3\n");
+                continue;
             }
             _ => {}
         }
-        out.push_str(&format!("    network: {}\n", p.net.network));
+        // HTTPUpgrade is mihomo's websocket with v2ray-http-upgrade.
+        let network = match p.net.network.as_str() {
+            "httpupgrade" => "ws",
+            n => n,
+        };
+        out.push_str(&format!("    network: {network}\n"));
         if p.net.security == "tls" || p.net.security == "reality" {
             out.push_str("    tls: true\n");
             if !p.net.sni.is_empty() {
@@ -402,16 +562,42 @@ fn render_clash(proxies: &[Proxy]) -> String {
                 out.push_str(&format!("      short-id: {}\n", p.net.short_id));
             }
         }
-        if p.net.network == "ws" {
-            out.push_str("    ws-opts:\n");
-            out.push_str(&format!("      path: {}\n", p.net.ws_path));
-            if !p.net.ws_host.is_empty() {
-                out.push_str("      headers:\n");
-                out.push_str(&format!("        Host: {}\n", p.net.ws_host));
+        match p.net.network.as_str() {
+            "ws" | "httpupgrade" => {
+                out.push_str("    ws-opts:\n");
+                out.push_str(&format!("      path: {}\n", yaml(&p.net.path)));
+                if !p.net.host.is_empty() {
+                    out.push_str("      headers:\n");
+                    out.push_str(&format!("        Host: {}\n", p.net.host));
+                }
+                if p.net.network == "httpupgrade" {
+                    out.push_str("      v2ray-http-upgrade: true\n");
+                }
             }
+            "xhttp" => {
+                out.push_str("    xhttp-opts:\n");
+                out.push_str(&format!("      path: {}\n", yaml(&p.net.path)));
+                if !p.net.host.is_empty() {
+                    out.push_str(&format!("      host: {}\n", p.net.host));
+                }
+                if !p.net.mode.is_empty() {
+                    out.push_str(&format!("      mode: {}\n", p.net.mode));
+                }
+            }
+            "grpc" => {
+                out.push_str("    grpc-opts:\n");
+                out.push_str(&format!(
+                    "      grpc-service-name: {}\n",
+                    yaml(&p.net.service_name)
+                ));
+            }
+            _ => {}
         }
     }
     out.push_str("proxy-groups:\n  - name: PROXY\n    type: select\n    proxies:\n");
+    if names.is_empty() {
+        out.push_str("      - DIRECT\n");
+    }
     for name in &names {
         out.push_str(&format!("      - {name}\n"));
     }
@@ -422,10 +608,21 @@ fn render_clash(proxies: &[Proxy]) -> String {
 fn render_sing_box(proxies: &[Proxy]) -> Value {
     let outbounds: Vec<Value> = proxies
         .iter()
+        .filter(|p| match p.omitted_from(Omit::SingBox) {
+            Some(why) => {
+                log_omitted(p, "sing-box", why);
+                false
+            }
+            None => true,
+        })
         .map(|p| {
+            let kind = match p.protocol.as_str() {
+                "hysteria" => "hysteria2",
+                other => other,
+            };
             let mut obj = serde_json::Map::new();
             obj.insert("tag".into(), json!(p.name));
-            obj.insert("type".into(), json!(p.protocol));
+            obj.insert("type".into(), json!(kind));
             obj.insert("server".into(), json!(p.server));
             obj.insert("server_port".into(), json!(p.net.port));
             match p.protocol.as_str() {
@@ -437,6 +634,20 @@ fn render_sing_box(proxies: &[Proxy]) -> Value {
                 }
                 "trojan" => {
                     obj.insert("password".into(), json!(p.id_or_password));
+                }
+                "shadowsocks" => {
+                    obj.insert("method".into(), json!(p.method));
+                    obj.insert("password".into(), json!(p.id_or_password));
+                    return Value::Object(obj);
+                }
+                "hysteria" => {
+                    obj.insert("password".into(), json!(p.id_or_password));
+                    let mut tls = json!({"enabled": true, "alpn": ["h3"]});
+                    if !p.net.sni.is_empty() {
+                        tls["server_name"] = json!(p.net.sni);
+                    }
+                    obj.insert("tls".into(), tls);
+                    return Value::Object(obj);
                 }
                 _ => {}
             }
@@ -458,15 +669,28 @@ fn render_sing_box(proxies: &[Proxy]) -> Value {
                 }
                 obj.insert("tls".into(), tls);
             }
-            if p.net.network == "ws" {
-                let mut transport = json!({"type": "ws"});
-                if !p.net.ws_path.is_empty() {
-                    transport["path"] = json!(p.net.ws_path);
+            match p.net.network.as_str() {
+                "ws" => {
+                    let mut transport = json!({"type": "ws", "path": p.net.path});
+                    if !p.net.host.is_empty() {
+                        transport["headers"] = json!({"Host": p.net.host});
+                    }
+                    obj.insert("transport".into(), transport);
                 }
-                if !p.net.ws_host.is_empty() {
-                    transport["headers"] = json!({"Host": p.net.ws_host});
+                "httpupgrade" => {
+                    let mut transport = json!({"type": "httpupgrade", "path": p.net.path});
+                    if !p.net.host.is_empty() {
+                        transport["host"] = json!(p.net.host);
+                    }
+                    obj.insert("transport".into(), transport);
                 }
-                obj.insert("transport".into(), transport);
+                "grpc" => {
+                    obj.insert(
+                        "transport".into(),
+                        json!({"type": "grpc", "service_name": p.net.service_name}),
+                    );
+                }
+                _ => {}
             }
             Value::Object(obj)
         })
@@ -690,6 +914,8 @@ mod tests {
             protocol: "vless".into(),
             id_or_password: "u".into(),
             flow: "xtls-rprx-vision".into(),
+            method: String::new(),
+            udp: false,
             server: "s.example".into(),
             net: net_from_inbound(&inbound).unwrap(),
         }
@@ -721,6 +947,8 @@ mod tests {
             protocol: "vless".into(),
             id_or_password: "u".into(),
             flow: String::new(),
+            method: String::new(),
+            udp: false,
             server: "s".into(),
             net: net_from_inbound(&inbound).unwrap(),
         }];
@@ -788,7 +1016,7 @@ mod tests {
             vmess,
             json!({"add": "hk.example.com", "aid": "0", "host": "cdn.example.com",
                    "id": "22222222-2222-2222-2222-222222222222", "net": "ws", "path": "/ws",
-                   "port": "8443", "ps": "HK 1 · in-vmess", "scy": "auto", "tls": "",
+                   "port": "8443", "ps": "HK 1 · in-vmess", "scy": "auto", "sni": "", "tls": "",
                    "type": "none", "v": "2"})
         );
         assert_eq!(
@@ -863,6 +1091,161 @@ rules:
             serde_json::from_str::<Value>(body.trim_end()).unwrap(),
             want
         );
+    }
+
+    /// W8 matrix rows: every new protocol/transport the renderers branch on.
+    fn matrix_rows() -> Vec<NodeRow> {
+        let inbounds = json!([
+            {"tag": "rx", "protocol": "vless", "port": 443, "streamSettings": {
+                "network": "xhttp", "security": "reality", "xhttpSettings": {"path": "/xh", "mode": "stream-one"},
+                "realitySettings": {"serverNames": ["www.apple.com"], "publicKey": "PUB", "shortId": "ab"}}},
+            {"tag": "hu", "protocol": "vless", "port": 2083, "streamSettings": {
+                "network": "httpupgrade", "security": "tls", "httpupgradeSettings": {"path": "/up", "host": "n.example.com"},
+                "tlsSettings": {"serverName": "n.example.com"}}},
+            {"tag": "gr", "protocol": "trojan", "port": 2087, "streamSettings": {
+                "network": "grpc", "security": "tls", "grpcSettings": {"serviceName": "svc"},
+                "tlsSettings": {"serverName": "n.example.com"}}},
+            {"tag": "vg", "protocol": "vmess", "port": 2096, "streamSettings": {
+                "network": "grpc", "grpcSettings": {"serviceName": "vs"}}},
+            {"tag": "vx", "protocol": "vmess", "port": 8080, "streamSettings": {
+                "network": "xhttp", "xhttpSettings": {"path": "/vx"}}},
+            {"tag": "ss", "protocol": "shadowsocks", "port": 8388, "settings": {
+                "method": "2022-blake3-aes-128-gcm", "password": "+/+/+/+/+/+/+/+/+/+/+w==", "clients": [], "network": "tcp,udp"}},
+            {"tag": "hy", "protocol": "hysteria", "port": 443, "settings": {"version": 2},
+             "streamSettings": {"network": "hysteria", "security": "tls", "tlsSettings": {"serverName": "n.example.com"},
+                                "hysteriaSettings": {"version": 2}}},
+            {"tag": "ws", "protocol": "vless", "port": 8443, "streamSettings": {"network": "ws", "wsSettings": {"path": "/w"}}},
+        ]);
+        let creds = json!([
+            {"inbound_tag": "rx", "protocol": "vless", "account": {"id": "11111111-1111-1111-1111-111111111111", "flow": ""}},
+            {"inbound_tag": "hu", "protocol": "vless", "account": {"id": "22222222-2222-2222-2222-222222222222", "flow": ""}},
+            {"inbound_tag": "gr", "protocol": "trojan", "account": {"password": "tp"}},
+            {"inbound_tag": "vg", "protocol": "vmess", "account": {"id": "33333333-3333-3333-3333-333333333333"}},
+            {"inbound_tag": "vx", "protocol": "vmess", "account": {"id": "44444444-4444-4444-4444-444444444444"}},
+            {"inbound_tag": "ss", "protocol": "shadowsocks", "account": {"password": "dXNlcmtleXVzZXJrZXkxMg=="}},
+            {"inbound_tag": "hy", "protocol": "hysteria", "account": {"auth": "a1b2"}},
+            // A stale Vision flow on a ws inbound is never rendered.
+            {"inbound_tag": "ws", "protocol": "vless", "account": {"id": "55555555-5555-5555-5555-555555555555", "flow": "xtls-rprx-vision"}},
+        ]);
+        vec![NodeRow {
+            name: "N".into(),
+            xray_inbounds: inbounds,
+            server_addr: Some("n.example.com".into()),
+            credentials: creds,
+        }]
+    }
+
+    #[test]
+    fn w8_matrix_links() {
+        let (_, body) = render("v2rayN/7", &matrix_rows());
+        let links = String::from_utf8(STANDARD.decode(body.trim_end()).unwrap()).unwrap();
+        let l: Vec<&str> = links.lines().collect();
+        assert_eq!(l.len(), 8);
+        assert_eq!(l[0], "vless://11111111-1111-1111-1111-111111111111@n.example.com:443?type=xhttp&security=reality\
+            &sni=www.apple.com&pbk=PUB&sid=ab&fp=chrome&path=%2Fxh&mode=stream-one#N%20%C2%B7%20rx");
+        assert_eq!(l[1], "vless://22222222-2222-2222-2222-222222222222@n.example.com:2083?type=httpupgrade&security=tls\
+            &sni=n.example.com&path=%2Fup&host=n.example.com#N%20%C2%B7%20hu");
+        assert_eq!(
+            l[2],
+            "trojan://tp@n.example.com:2087?type=grpc&security=tls&sni=n.example.com\
+            &serviceName=svc&mode=gun#N%20%C2%B7%20gr"
+        );
+        let vm = |s: &str| -> Value {
+            serde_json::from_slice(
+                &STANDARD
+                    .decode(s.strip_prefix("vmess://").unwrap())
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let g = vm(l[3]);
+        assert_eq!(
+            (g["net"].as_str(), g["path"].as_str(), g["type"].as_str()),
+            (Some("grpc"), Some("vs"), Some("gun"))
+        );
+        let x = vm(l[4]);
+        assert_eq!(
+            (x["net"].as_str(), x["path"].as_str(), x["type"].as_str()),
+            (Some("xhttp"), Some("/vx"), Some("auto"))
+        );
+        assert_eq!(l[5], "ss://2022-blake3-aes-128-gcm:%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2Bw%3D%3D%3AdXNlcmtleXVzZXJrZXkxMg%3D%3D\
+            @n.example.com:8388#N%20%C2%B7%20ss");
+        assert_eq!(
+            l[6],
+            "hysteria2://a1b2@n.example.com:443/?sni=n.example.com#N%20%C2%B7%20hy"
+        );
+        assert_eq!(l[7], "vless://55555555-5555-5555-5555-555555555555@n.example.com:8443?type=ws&path=%2Fw#N%20%C2%B7%20ws");
+    }
+
+    #[test]
+    fn w8_matrix_clash() {
+        let (_, body) = render("mihomo/1.19", &matrix_rows());
+        let y = body.trim_end();
+        // vmess+xhttp has no mihomo equivalent: left out (and out of the group).
+        assert!(!y.contains("N · vx"), "{y}");
+        for want in [
+            "  - name: \"N · rx\"\n    type: vless\n    server: n.example.com\n    port: 443\n    uuid: 11111111-1111-1111-1111-111111111111\n    network: xhttp\n    tls: true\n    servername: www.apple.com\n    client-fingerprint: chrome\n    reality-opts:\n      public-key: PUB\n      short-id: ab\n    xhttp-opts:\n      path: /xh\n      mode: stream-one\n",
+            "    network: ws\n    tls: true\n    servername: n.example.com\n    ws-opts:\n      path: /up\n      headers:\n        Host: n.example.com\n      v2ray-http-upgrade: true\n",
+            "    type: trojan\n    server: n.example.com\n    port: 2087\n    password: tp\n    network: grpc\n    tls: true\n    servername: n.example.com\n    grpc-opts:\n      grpc-service-name: svc\n",
+            "    type: vmess\n    server: n.example.com\n    port: 2096\n    uuid: 33333333-3333-3333-3333-333333333333\n    alterId: 0\n    cipher: auto\n    network: grpc\n    grpc-opts:\n      grpc-service-name: vs\n",
+            "  - name: \"N · ss\"\n    type: ss\n    server: n.example.com\n    port: 8388\n    cipher: 2022-blake3-aes-128-gcm\n    password: \"+/+/+/+/+/+/+/+/+/+/+w==:dXNlcmtleXVzZXJrZXkxMg==\"\n    udp: true\n",
+            "  - name: \"N · hy\"\n    type: hysteria2\n    server: n.example.com\n    port: 443\n    password: a1b2\n    sni: n.example.com\n    alpn:\n      - h3\n",
+            "    uuid: 55555555-5555-5555-5555-555555555555\n    network: ws\n    ws-opts:\n      path: /w\n",
+        ] {
+            assert!(y.contains(want), "missing:\n{want}\nin:\n{y}");
+        }
+        assert!(!y.contains("flow:"), "stale vision flow rendered: {y}");
+        // 7 proxies (+ the PROXY group's own "- name:"), all in the group.
+        assert_eq!(y.matches("  - name: ").count(), 8);
+        assert_eq!(y.matches("      - \"N · ").count(), 7);
+    }
+
+    #[test]
+    fn w8_matrix_sing_box() {
+        let (_, body) = render("sing-box/1.12", &matrix_rows());
+        let v: Value = serde_json::from_str(body.trim_end()).unwrap();
+        let ob = v["outbounds"].as_array().unwrap();
+        let tags: Vec<&str> = ob.iter().filter_map(|o| o["tag"].as_str()).collect();
+        // Both xhttp proxies are left out (sing-box has no xhttp).
+        assert_eq!(
+            tags,
+            ["N · hu", "N · gr", "N · vg", "N · ss", "N · hy", "N · ws", "direct"]
+        );
+        assert_eq!(
+            ob[0]["transport"],
+            json!({"type": "httpupgrade", "path": "/up", "host": "n.example.com"})
+        );
+        assert_eq!(
+            ob[1]["transport"],
+            json!({"type": "grpc", "service_name": "svc"})
+        );
+        assert_eq!(
+            ob[2]["transport"],
+            json!({"type": "grpc", "service_name": "vs"})
+        );
+        assert_eq!(
+            ob[3],
+            json!({"tag": "N · ss", "type": "shadowsocks", "server": "n.example.com", "server_port": 8388,
+            "method": "2022-blake3-aes-128-gcm", "password": "+/+/+/+/+/+/+/+/+/+/+w==:dXNlcmtleXVzZXJrZXkxMg=="})
+        );
+        assert_eq!(
+            ob[4],
+            json!({"tag": "N · hy", "type": "hysteria2", "server": "n.example.com", "server_port": 443,
+            "password": "a1b2", "tls": {"enabled": true, "server_name": "n.example.com", "alpn": ["h3"]}})
+        );
+        assert!(ob[5].get("flow").is_none());
+    }
+
+    #[test]
+    fn yaml_scalars() {
+        assert_eq!(yaml("/ws"), "/ws");
+        assert_eq!(yaml("svc"), "svc");
+        assert_eq!(yaml("123"), "\"123\"");
+        assert_eq!(yaml("true"), "\"true\"");
+        assert_eq!(yaml("a:b"), "\"a:b\"");
+        assert_eq!(yaml("-x"), "\"-x\"");
+        assert_eq!(yaml(""), "\"\"");
+        assert_eq!(yaml("1e5"), "\"1e5\"");
     }
 
     #[test]
