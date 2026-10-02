@@ -1,0 +1,1 @@
+{"code":"ABC","kind":"percent","value":20,"plan_ids":null,"periods":["month"],"min_amount_cents":0,"starts_at":"2026-10-02T00:00:00Z","max_uses":5,"per_user_limit":1,"new_users_only":true,"enabled":true}
