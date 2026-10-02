@@ -95,7 +95,12 @@ with `allow_non_loopback = true`, bare metal `127.0.0.1:8082`; `AKARI_ASK` in Ca
 environment). The panel answers 200 only for the configured main and subscription domains
 (rate-limited, `tls_ask.rate_per_sec`), so no Caddyfile edit is needed when domains change and
 nobody can make Caddy issue certificates for arbitrary names. Only the secret prefix is forwarded
-on every domain. With nginx, add each domain's `server_name` and certificate yourself.
+on every domain, and every site block strips `Server`/`Via`, so Caddy's own 404 and the panel's
+rejection behind the prefix are byte-identical (smoke compares them on the main domain, an
+on-demand domain and the bare IP). Plain `http://` is redirected to https only for
+`AKARI_DOMAIN`; every other host (the bare IP, unknown names, and the 系统设置 domains, whose
+links are always https) gets the same empty 404 on port 80. ACME HTTP-01 challenges are still
+answered there (Caddy handles them before any site route). With nginx, add each domain's `server_name` and certificate yourself.
 
 ### Cloudflare
 
@@ -103,8 +108,8 @@ on every domain. With nginx, add each domain's `server_name` and certificate you
    **grey** (DNS only) pointing at the panel's IP. Keep 8443 reachable directly (firewall it to
    your node IPs if you like).
 2. SSL/TLS mode **Full (strict)**: Cloudflare then verifies the origin certificate Caddy obtained.
-   "Flexible" would make Cloudflare talk plain HTTP to port 80 (Caddy redirects it: a loop); "Full"
-   without strict accepts any origin certificate.
+   "Flexible" would make Cloudflare talk plain HTTP to port 80 (Caddy answers 404, or a redirect
+   loop for `AKARI_DOMAIN`); "Full" without strict accepts any origin certificate.
 3. First certificate for an orange-clouded name: Caddy uses the HTTP-01 challenge on port 80,
    which works through Cloudflare. If "Always Use HTTPS" is on and issuance fails, switch the
    record to grey until Caddy has the certificate (seconds after the first visit to

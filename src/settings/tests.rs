@@ -248,6 +248,57 @@ fn host_gate_and_ask() {
     assert!(!e.ask_allowed("203.0.113.7"));
 }
 
+/// R22 × payments: an explicit notify URL host stays reachable (host gate,
+/// Caddy ask) and is flagged when it is not the main domain; an empty one
+/// needs a main domain.
+#[test]
+fn payment_notify_host() {
+    let mut c = cfg();
+    c.payments.alipay.enabled = true;
+    c.payments.alipay.notify_url = "https://pay.example.org/abc/pay/alipay/notify".into();
+    let e = compute(
+        &c,
+        stored(Some("panel.example.com"), None, None),
+        vec![],
+        &[],
+    );
+    assert!(e.host_allowed(Some("pay.example.org")));
+    assert!(e.ask_allowed("pay.example.org"));
+    let w = e.standing_warnings(&c);
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(w[0].contains("pay.example.org") && w[0].contains("panel.example.com"));
+    assert!(!w[0].contains("/abc/"), "never the prefixed URL: {w:?}");
+    let same = compute(&c, stored(Some("pay.example.org"), None, None), vec![], &[]);
+    assert!(same.standing_warnings(&c).is_empty());
+    // Payments off: the notify host is nobody's business.
+    c.payments.alipay.enabled = false;
+    let off = compute(
+        &c,
+        stored(Some("panel.example.com"), None, None),
+        vec![],
+        &[],
+    );
+    assert!(!off.host_allowed(Some("pay.example.org")) && !off.ask_allowed("pay.example.org"));
+    assert!(off.standing_warnings(&c).is_empty());
+    // Derived notify URL without any main domain: warned.
+    c.payments.alipay.enabled = true;
+    c.payments.alipay.notify_url = String::new();
+    let none = compute(&c, Stored::default(), vec![], &[]);
+    assert_eq!(none.standing_warnings(&c).len(), 1);
+    assert_eq!(none.public_origin(), None);
+    let set = compute(
+        &c,
+        stored(Some("panel.example.com"), None, None),
+        vec![],
+        &[],
+    );
+    assert!(set.standing_warnings(&c).is_empty());
+    assert_eq!(
+        set.public_origin().as_deref(),
+        Some("https://panel.example.com")
+    );
+}
+
 /// The certificate names are a superset of config + history + current
 /// node name, for any sequence of saves: changing the node domain never
 /// drops a name (only apply_remove_server_name deletes history rows).

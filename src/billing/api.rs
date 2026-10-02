@@ -252,6 +252,16 @@ pub async fn create_order(
     if user.role != "user" {
         return Err(ApiError::bad_request("admin accounts cannot buy plans"));
     }
+    // Before any order row exists: without a notify URL Alipay could never
+    // tell us about the payment (polling would, but an order we cannot be
+    // notified about is a configuration error, not a degraded mode).
+    let Some(notify_url) = super::notify_url(&state, &alipay) else {
+        tracing::warn!(
+            "order refused: payments.alipay.notify_url is empty and no main domain is set \
+             (系统设置 or install.public_url)"
+        );
+        return Err(payments_off());
+    };
     if !within_limit(
         &state,
         format!("akari:rl:order:{}", user.id),
@@ -351,7 +361,10 @@ pub async fn create_order(
 
     // The row exists before Alipay knows the trade: a payment can never
     // arrive for an order we do not have.
-    match alipay.precreate(&out_trade_no, cents, &subject).await {
+    match alipay
+        .precreate(&notify_url, &out_trade_no, cents, &subject)
+        .await
+    {
         Ok(qr) => {
             let mut tx = state.pg().begin().await?;
             sqlx::query("UPDATE orders SET qr_code = $2 WHERE id = $1")

@@ -44,11 +44,12 @@ pub fn load(cfg: &PanelConfig) -> Result<Option<alipay::Alipay>, String> {
     alipay::Alipay::from_config(a).map(Some)
 }
 
-/// The notify URL must carry this panel's route prefix (a rotated prefix
-/// would silently break fulfilment by notify).
+/// An explicit notify URL must carry this panel's route prefix (a rotated
+/// prefix would silently break fulfilment by notify). An empty one is
+/// derived per order (`notify_url`) and always carries the current prefix.
 pub fn check_notify_prefix(cfg: &PanelConfig, prefix: &str) -> Result<(), String> {
     let a = &cfg.payments.alipay;
-    if !a.enabled {
+    if !a.enabled || a.notify_url.is_empty() {
         return Ok(());
     }
     let path = a
@@ -59,11 +60,56 @@ pub fn check_notify_prefix(cfg: &PanelConfig, prefix: &str) -> Result<(), String
     if path != format!("/{prefix}/pay/alipay/notify") {
         return Err(
             "payments.alipay.notify_url does not carry this panel's route prefix \
-             (see `akari info`; after `secrets rotate-prefix` update notify_url)"
+             (see `akari info`; after `secrets rotate-prefix` update notify_url, or \
+             leave it empty to derive it from the main domain)"
                 .into(),
         );
     }
     Ok(())
+}
+
+/// The notify URL handed to Alipay with a new order: the explicit
+/// `payments.alipay.notify_url`, else `<main domain>/<prefix>/pay/alipay/notify`
+/// from the system settings (`settings::Effective::public_origin`: 系统设置
+/// main domain, else `install.public_url`). None = neither is configured: no
+/// order may be created (Alipay could never notify it; it is refused before
+/// the order row exists). Contains the route prefix: never log it.
+pub fn notify_url(state: &AppState, alipay: &alipay::Alipay) -> Option<String> {
+    if let Some(n) = alipay.explicit_notify_url() {
+        return Some(n.to_string());
+    }
+    let origin = state.settings().get().public_origin()?;
+    Some(format!(
+        "{origin}/{}/pay/alipay/notify",
+        state.route_prefix()
+    ))
+}
+
+/// Lower-case host of an explicit `payments.alipay.notify_url` (payments
+/// enabled), for the host gate, the Caddy ask endpoint and the "differs
+/// from the main domain" warnings. Never the URL itself (route prefix).
+pub fn explicit_notify_host(cfg: &PanelConfig) -> Option<String> {
+    let a = &cfg.payments.alipay;
+    if !a.enabled || a.notify_url.is_empty() {
+        return None;
+    }
+    let uri = a.notify_url.parse::<axum::http::Uri>().ok()?;
+    let host = uri.host()?;
+    Some(
+        host.trim_start_matches('[')
+            .trim_end_matches(']')
+            .trim_end_matches('.')
+            .to_ascii_lowercase(),
+    )
+}
+
+/// Advisory: the host of an explicit notify URL when it is not the main
+/// domain's (`main_host`, lower case). Alipay then notifies that host; the
+/// panel keeps accepting it (host gate, ask), but it is easy to forget when
+/// the main domain moves.
+pub fn notify_host_mismatch(cfg: &PanelConfig, main_host: Option<&str>) -> Option<String> {
+    let notify = explicit_notify_host(cfg)?;
+    (notify != main_host?).then_some(notify)
 }
 
 /// Periodic reconcile of pending orders (every instance runs it; claims

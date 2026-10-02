@@ -260,6 +260,9 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
     // R22: database settings and the gRPC certificate covering every
     // recorded server name, before any agent can connect.
     akari_panel::settings::init(&state).await?;
+    for w in state.settings().get().standing_warnings(&cfg) {
+        tracing::warn!("{w}");
+    }
 
     // LISTEN must be in place before any agent session can start.
     let listener = notify::start(state.clone()).await;
