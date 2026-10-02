@@ -7,3 +7,4 @@ data/
 /bench/target
 spa/test-results
 spa/playwright-report
+__pycache__/

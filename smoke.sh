@@ -73,6 +73,11 @@ rate_per_token = 8
 urls = ["http://127.0.0.1:18204/generate_204"]
 timeout_ms = 2000
 manual_cooldown_secs = 30
+
+# W10: agents of nodes with a TLS domain order from the local pebble CA
+# (docker, W10 section), never from Let's Encrypt.
+[acme]
+directory_url = "https://127.0.0.1:14000/dir"
 TOML
 # W11: the agents' latency test target (204, like generate_204); dies with
 # the smoke run at the latest after 30 minutes.
@@ -1213,6 +1218,30 @@ echo "== W8 protocol matrix: every template -> agent -> three subscription forma
 BASE="$BASE" JAR="$JAR" NODE_ID="$NODE_ID" LOG="$LOG" AGENT_LOG="$LOG/agent.log" \
   python3 scripts/smoke-protocols.py || { echo "FAIL: W8 protocol matrix"; tail -20 "$LOG/agent.log"; exit 1; }
 
+echo "== W10: automatic node certificate (pebble ACME CA in docker) -> agent -> verified clients =="
+if [ "${SMOKE_ACME:-1}" = 1 ]; then
+  # pebble validates HTTP-01 on 5002 / TLS-ALPN-01 on 5001 of whatever its
+  # DNS (challtestsrv: every name -> 127.0.0.1) says; its own challenge
+  # servers and DoH (:8443 = the panel's gRPC port) are off.
+  docker rm -f akari-smoke-pebble akari-smoke-dns >/dev/null 2>&1 || true
+  docker run -d --name akari-smoke-dns --network host ghcr.io/letsencrypt/pebble-challtestsrv:2.10.1 \
+    -defaultIPv4 127.0.0.1 -defaultIPv6 "" -dnsserver 127.0.0.1:8053 -doh "" -http01 "" -https01 "" \
+    -tlsalpn01 "" -management 127.0.0.1:18055 >/dev/null
+  docker run -d --name akari-smoke-pebble --network host -e PEBBLE_VA_NOSLEEP=1 ghcr.io/letsencrypt/pebble:2.10.1 \
+    -config test/config/pebble-config.json -dnsserver 127.0.0.1:8053 >/dev/null
+  PREV_EXIT_TRAP=$(trap -p EXIT)
+  trap 'docker rm -f akari-smoke-pebble akari-smoke-dns >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
+  mkdir -p "$LOG/acme"
+  for _ in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/14000) 2>/dev/null && break; sleep 0.5; done
+  docker cp akari-smoke-pebble:/test/certs/pebble.minica.pem "$LOG/acme/pebble-api.pem" >/dev/null
+  BASE="$BASE" JAR="$JAR" LOG="$LOG" AGENT="$AGENT" PEBBLE_API_ROOT="$LOG/acme/pebble-api.pem" \
+    python3 scripts/smoke-acme.py || { echo "FAIL: W10 automatic certificate"; docker logs akari-smoke-pebble 2>&1 | tail -10; exit 1; }
+  docker rm -f akari-smoke-pebble akari-smoke-dns >/dev/null
+  eval "$PREV_EXIT_TRAP"
+else
+  echo "W10 ACME test skipped (SMOKE_ACME=0)"
+fi
+
 echo "== Sprint 3a: a protocol-0 agent gets the empty state and is flagged (N5) =="
 OLD_SRC="$LOG/old-agent-src"
 mkdir -p "$OLD_SRC"
@@ -1611,7 +1640,9 @@ INST_CMD=$(python3 -c "import json;print(json.load(open('$LOG/inst-create.json')
 python3 - "$LOG/inst-create.json" "$INST_URL" <<'PY' || { echo "FAIL: create response"; exit 1; }
 import base64, json, sys
 v = json.load(open(sys.argv[1])); i = v["install"]
-assert i["command"] == "curl -fsSL '%s' | sudo sh" % sys.argv[2], i["command"]
+as_root = "sh -c '[ \"$(id -u)\" = 0 ] || exec sudo sh; exec sh'"
+assert i["command"] == "curl -fsSL '%s' | %s" % (sys.argv[2], as_root), i["command"]
+assert i["command_wget"] == "wget -qO- '%s' | %s" % (sys.argv[2], as_root), i["command_wget"]
 assert i["pin"] is None and i["command_wget"].startswith("wget -qO- ")
 assert i["releases"]["amd64"]["version"] == "v900.0.1", i["releases"]
 assert sys.argv[2].endswith("/install/" + v["enrollment_token"])
@@ -1644,8 +1675,14 @@ if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
   PREV_EXIT_TRAP=$(trap -p EXIT)
   trap 'docker rm -f akari-smoke-node >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
   for _ in $(seq 1 30); do docker exec akari-smoke-node systemctl is-system-running 2>/dev/null | grep -qE 'running|degraded' && break; sleep 1; done
-  # Exactly what the admin copies, minus sudo (root in the container).
-  docker exec akari-smoke-node sh -c "${INST_CMD% | sudo sh} | sh" >"$LOG/install.out" 2>&1 \
+  # Not root and no sudo (the image has none): the command stops at sudo,
+  # nothing of the script runs unprivileged.
+  docker exec -u nobody akari-smoke-node sh -c "$INST_CMD" >"$LOG/install-nobody.out" 2>&1 \
+    && { echo "FAIL: install command ran without root"; cat "$LOG/install-nobody.out"; exit 1; }
+  grep -q "sudo" "$LOG/install-nobody.out" && ! grep -q "akari-install" "$LOG/install-nobody.out" \
+    || { echo "FAIL: non-root install output"; cat "$LOG/install-nobody.out"; exit 1; }
+  # Exactly what the admin copies, as root on an image without sudo.
+  docker exec akari-smoke-node sh -c "$INST_CMD" >"$LOG/install.out" 2>&1 \
     || { echo "FAIL: installer failed"; cat "$LOG/install.out"; exit 1; }
   grep -q "SUCCESS: the agent enrolled and is connected" "$LOG/install.out" || { echo "FAIL: installer output"; cat "$LOG/install.out"; exit 1; }
   for _ in $(seq 1 20); do [ "$(psql_q "SELECT status FROM nodes WHERE id='$INST_ID'")" = "online" ] && break; sleep 1; done
@@ -1799,6 +1836,10 @@ done
 # Plain HTTP: AKARI_DOMAIN is redirected; any other host gets the canonical
 # empty 404 on every path (never Caddy's default 200, never a redirect).
 [ "$(code "${RES[@]}" "http://myapp.test:8447/x")" = "308" ] || { echo "FAIL: http main domain not redirected"; exit 1; }
+# ... by our own redirect: no Server/Via (Caddy's automatic one says "Caddy").
+fp "${RES[@]}" "http://myapp.test:8447/x?y" >/dev/null
+grep -qiE '^(server|via):' /tmp/akari-smoke/fphead && { echo "FAIL: http redirect identifies the proxy"; cat /tmp/akari-smoke/fphead; exit 1; }
+grep -qiE '^location: https://myapp\.test/x\?y' /tmp/akari-smoke/fphead || { echo "FAIL: http redirect target"; cat /tmp/akari-smoke/fphead; exit 1; }
 for base in "http://127.0.0.1:8447" "http://evil.test:8447"; do
   A=$(fp "${RES[@]}" "$base/junk")
   head -1 /tmp/akari-smoke/fphead | grep -q " 404" || { echo "FAIL: plain http $base"; cat /tmp/akari-smoke/fphead; exit 1; }
