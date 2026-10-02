@@ -437,6 +437,13 @@ async fn notices_once_per_event() {
     );
     assert_eq!(kinds_to(&db, &soon_mail).await, ["expiry_soon"]);
     assert_eq!(kinds_to(&db, &gone_mail).await, ["expired"]);
+    // W20: reminders link to the shop view.
+    let text: String =
+        sqlx::query_scalar("SELECT body_text FROM mail_outbox WHERE kind = 'expiry_soon'")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert!(text.contains("https://p.example/x/app/shop"), "{text}");
     for m in [&late_mail, &old_mail, &unverified, &disabled] {
         assert!(kinds_to(&db, m).await.is_empty(), "{m}");
     }
