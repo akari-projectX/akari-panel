@@ -21,6 +21,7 @@ import {
 } from "../lib/api";
 import type { MyOrder } from "../lib/billing";
 import { errorText } from "../lib/errors";
+import { useConfirm } from "../components/confirm-dialog";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
@@ -294,6 +295,7 @@ function Thread({ id, onBack }: { id: string; onBack: () => void }) {
   const [reply, setReply] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirm, confirmDialog] = useConfirm();
   const ticket = useQuery({
     queryKey: ["my-ticket", id],
     queryFn: () => get<MyTicketView>(`/me/tickets/${id}`),
@@ -324,7 +326,13 @@ function Thread({ id, onBack }: { id: string; onBack: () => void }) {
   }
 
   async function close() {
-    if (!window.confirm(t("tickets.closeConfirm"))) return;
+    const ok = await confirm({
+      title: t("tickets.closeTitle"),
+      body: t("tickets.closeConfirm"),
+      confirmLabel: t("tickets.close"),
+      destructive: true,
+    });
+    if (!ok) return;
     setError(null);
     try {
       await post(`/me/tickets/${id}/close`, {});
@@ -413,6 +421,7 @@ function Thread({ id, onBack }: { id: string; onBack: () => void }) {
           </div>
         </form>
       )}
+      {confirmDialog}
     </div>
   );
 }

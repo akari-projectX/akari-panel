@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "./components/ui/button";
 import { Loading } from "./components/status";
@@ -19,13 +19,11 @@ import {
 import { errorText } from "./lib/errors";
 import { loadPage, navigate, usePath } from "./lib/router";
 import { resetAfterLogout } from "./lib/session";
+import { useDocumentTitle } from "./lib/title";
 import { Login } from "./pages/login";
-import { Portal } from "./pages/portal";
-import { Billing } from "./pages/purchase";
-import { Tickets } from "./pages/tickets";
-import { Wallet } from "./pages/wallet";
 import { Register } from "./pages/register";
 import { ForgotPassword, ResetPassword } from "./pages/reset";
+import { viewHref, viewOf, viewsFor, type PortalView } from "./portal-views";
 
 // The user portal bundle (/{prefix}/app): login (shared with admins),
 // portal, purchase and orders. It holds no admin code (R23): an admin
@@ -107,39 +105,110 @@ function App() {
     return <UserSurface>{() => <PublicPages />}</UserSurface>;
   }
 
-  const user = me.data;
+  return <PortalShell me={me.data} onLogout={logout} logoutError={logoutError} />;
+}
+
+/**
+ * W20 (M1): the signed-in portal — header, a nav entry per view (top on
+ * desktop, a bottom tab bar on phones) and the current view, chosen by URL
+ * (deep links and Back work).
+ */
+function PortalShell({ me, onLogout, logoutError }: { me: Me; onLogout: () => void; logoutError: string | null }) {
+  const t = useT();
+  const path = usePath();
+  const locale = useLocale();
+  useHtmlLang(locale);
+  const views = viewsFor(me);
+  const view = viewOf(path, views);
+  useDocumentTitle(t(view.label));
+  const main = useRef<HTMLElement>(null);
+  const first = useRef(true);
+  useEffect(() => {
+    // A view change starts at the top; focus goes to the new heading so
+    // screen readers announce it (not on the first render).
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    window.scrollTo?.(0, 0);
+    main.current?.querySelector<HTMLElement>("h1")?.focus();
+  }, [view.id]);
+
+  const go = (e: React.MouseEvent<HTMLAnchorElement>, v: PortalView) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+    e.preventDefault();
+    navigate(viewHref(v));
+  };
+
   return (
-    <UserSurface>
-      {(t) => (
-        <div className="min-h-screen">
-          <header className="border-b border-border bg-card">
-            <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
-              <span className="text-sm font-semibold tracking-tight">{t("common.appName")}</span>
-              <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-                <span className="max-w-[10rem] truncate text-sm text-muted-foreground">{user.login}</span>
-                <LocaleSwitch />
-                <Button variant="outline" size="sm" onClick={logout}>
-                  {t("common.logout")}
-                </Button>
-              </div>
-              {logoutError && (
-                <p role="alert" className="w-full text-sm text-destructive">
-                  {t("common.logoutFailed", { message: logoutError })}
-                </p>
-              )}
-            </div>
-          </header>
-          <main className="mx-auto max-w-4xl px-4 py-6 sm:px-6 sm:py-8">
-            <div className="space-y-6">
-              <Portal me={user} />
-              <Billing />
-              <Wallet me={user} />
-              <Tickets />
-            </div>
-          </main>
+    <div className="min-h-screen pb-20 sm:pb-0">
+      <header className="sticky top-0 z-30 border-b border-border bg-card">
+        <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-2.5 sm:px-6">
+          <span className="text-sm font-semibold tracking-tight">{t("common.appName")}</span>
+          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+            <span className="hidden max-w-[12rem] truncate text-sm text-muted-foreground sm:inline">{me.login}</span>
+            <LocaleSwitch />
+            <Button variant="outline" size="sm" onClick={onLogout}>
+              {t("common.logout")}
+            </Button>
+          </div>
         </div>
-      )}
-    </UserSurface>
+        {logoutError && (
+          <p role="alert" className="mx-auto max-w-5xl px-4 pb-2 text-sm text-destructive sm:px-6">
+            {t("common.logoutFailed", { message: logoutError })}
+          </p>
+        )}
+        <nav aria-label={t("nav.label")} className="hidden border-t border-border sm:block">
+          <ul className="mx-auto flex max-w-5xl gap-1 overflow-x-auto px-4 sm:px-6">
+            {views.map((v) => (
+              <li key={v.id}>
+                <a
+                  href={viewHref(v)}
+                  onClick={(e) => go(e, v)}
+                  aria-current={v === view ? "page" : undefined}
+                  className={`flex items-center gap-1.5 whitespace-nowrap border-b-2 px-3 py-2.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                    v === view
+                      ? "border-primary font-medium text-foreground"
+                      : "border-transparent text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {v.icon()}
+                  {t(v.label)}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      </header>
+      <main ref={main} className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
+        <h1 tabIndex={-1} className="mb-5 text-xl font-semibold tracking-tight outline-none sm:text-2xl">
+          {t(view.label)}
+        </h1>
+        <div key={view.id}>{view.render(me)}</div>
+      </main>
+      <nav
+        aria-label={t("nav.label")}
+        className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-card pb-[env(safe-area-inset-bottom)] sm:hidden"
+      >
+        <ul className="flex">
+          {views.map((v) => (
+            <li key={v.id} className="min-w-0 flex-1">
+              <a
+                href={viewHref(v)}
+                onClick={(e) => go(e, v)}
+                aria-current={v === view ? "page" : undefined}
+                className={`flex min-h-14 flex-col items-center justify-center gap-0.5 px-0.5 text-[11px] leading-tight focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${
+                  v === view ? "font-medium text-primary" : "text-muted-foreground"
+                }`}
+              >
+                {v.icon()}
+                <span className="max-w-full truncate">{t(v.short)}</span>
+              </a>
+            </li>
+          ))}
+        </ul>
+      </nav>
+    </div>
   );
 }
 

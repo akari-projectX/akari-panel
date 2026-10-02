@@ -419,6 +419,21 @@ export interface CouponDetail {
 }
 
 /** A signed fen amount: "+9.90" / "-9.90". */
+/** "¥50.00" (audit Minor 3: the currency sign before the amount). */
+export function money(cents: number): string {
+  return `${cents < 0 ? "\u2212" : ""}¥${yuan(Math.abs(cents))}`;
+}
+
+/** "+¥50.00" / "−¥10.00" (U+2212) for ledger changes; colour with `moneyTone`. */
+export function signedMoney(cents: number): string {
+  return `${cents < 0 ? "\u2212" : "+"}¥${yuan(Math.abs(cents))}`;
+}
+
+/** Text colour of a signed amount (AA contrast on white). */
+export function moneyTone(cents: number): string {
+  return cents < 0 ? "text-destructive" : cents > 0 ? "text-emerald-700" : "";
+}
+
 export function signedYuan(cents: number): string {
   return `${cents < 0 ? "-" : "+"}${yuan(Math.abs(cents))}`;
 }

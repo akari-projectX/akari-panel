@@ -55,6 +55,8 @@ const MARKERS = [
   ["admin API /mail/outbox", /\/mail\/outbox/],
   ["button 发送测试邮件", /发送测试邮件/],
   ["heading 失败邮件", /失败邮件/],
+  // W20
+  ["button 复制订阅链接", /复制订阅链接/],
 ];
 const files = (dir) =>
   readdirSync(dir).flatMap((name) => {

@@ -9,9 +9,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import { useLocale, useT, type MessageKey, type TFunction } from "../i18n";
-import { get, post } from "../lib/api";
+import { get, post, type Me } from "../lib/api";
 import { errorText } from "../lib/errors";
 import {
+  money,
   STATUS_KEY,
   yuan,
   type CouponRefusal,
@@ -25,6 +26,7 @@ import {
   type ShopPlan,
 } from "../lib/billing";
 import { humanBytes } from "../lib/utils";
+import { Dialog } from "../components/dialog";
 import { PayQr } from "../components/pay-qr";
 import { PlanDescription } from "../components/plan-description";
 import { Badge } from "../components/ui/badge";
@@ -36,15 +38,42 @@ import { MyOrders } from "./orders";
 
 const POLL_MS = 3000;
 
-// Shop + the open order's payment panel + order history.
-export function Billing() {
+/** W20 (M1): the 购买套餐 view (/app/shop). */
+export function ShopView({ me }: { me: Me }) {
+  return <Purchase me={me} />;
+}
+
+/** W20 (M1): the 订单 view (/app/orders); "continue paying" opens the payment sheet. */
+export function OrdersView() {
+  const t = useT();
   const [orderId, setOrderId] = useState<string | null>(null);
   return (
-    <div className="space-y-6">
-      <Purchase orderId={orderId} onOrder={setOrderId} />
+    <>
       <MyOrders onContinue={setOrderId} />
-    </div>
+      <Dialog open={orderId != null} onClose={() => setOrderId(null)} title={t("checkout.paymentTitle")}>
+        {orderId && <PaymentPanel id={orderId} onClose={() => setOrderId(null)} />}
+      </Dialog>
+    </>
   );
+}
+
+/**
+ * W20 (M2): the offer selected when the shop opens. A quota-exhausted
+ * holder of the plan gets the reset pack, an expired one the renewal; else
+ * the first offer that can actually be bought (period before reset pack).
+ * A refused offer is never preselected (undefined = nothing buyable).
+ */
+export function preselect(p: ShopPlan, me: Pick<Me, "expired" | "quota_exhausted">): Offer | undefined {
+  const buyable = p.offers.filter((o) => o.action != null);
+  if (p.current && me.quota_exhausted) {
+    const reset = buyable.find((o) => o.action === "reset");
+    if (reset) return reset;
+  }
+  if (p.current && me.expired) {
+    const renew = buyable.find((o) => o.action === "renew");
+    if (renew) return renew;
+  }
+  return buyable.find((o) => o.action !== "reset") ?? buyable[0];
 }
 
 function periodText(t: TFunction, p: string): string {
@@ -82,7 +111,7 @@ const ACTION_KEY = {
   reset: "billing.resetAction",
 } as const satisfies Record<OfferAction, MessageKey>;
 
-export function Purchase({ orderId, onOrder }: { orderId: string | null; onOrder: (id: string | null) => void }) {
+export function Purchase({ me }: { me: Me }) {
   const t = useT();
   const locale = useLocale();
   const queryClient = useQueryClient();
@@ -104,21 +133,11 @@ export function Purchase({ orderId, onOrder }: { orderId: string | null; onOrder
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // W20 (Minor 4/5): the in-page checkout summary, then the payment sheet.
+  const [checkout, setCheckout] = useState<{ plan: ShopPlan; offer: Offer } | null>(null);
+  const [orderId, setOrderId] = useState<string | null>(null);
 
   async function buy(p: ShopPlan, o: Offer) {
-    const current = shop.data?.current;
-    if (o.action === "switch" && current) {
-      const ok = window.confirm(
-        t("billing.confirmSwitch", {
-          name: p.name,
-          current: current.name,
-          amount: yuan(o.amount_cents ?? o.price_cents),
-          credit: yuan(o.credit_cents),
-        }),
-      );
-      if (!ok) return;
-    }
-    if (o.action === "reset" && !window.confirm(t("billing.confirmReset"))) return;
     setError(null);
     setBusy(true);
     try {
@@ -132,8 +151,9 @@ export function Purchase({ orderId, onOrder }: { orderId: string | null; onOrder
       queryClient.setQueryData(["order", order.id], order);
       await queryClient.invalidateQueries({ queryKey: ["my-orders"] });
       await queryClient.invalidateQueries({ queryKey: ["my-balance"] });
-      onOrder(order.id);
+      setOrderId(order.id);
     } catch (err) {
+      setCheckout(null);
       setError(errorText(err, t));
       await queryClient.invalidateQueries({ queryKey: ["shop"] });
     } finally {
@@ -143,6 +163,13 @@ export function Purchase({ orderId, onOrder }: { orderId: string | null; onOrder
 
   const data = shop.data;
   const current = data?.current;
+  // Renewal scope: the plan the user holds comes first.
+  const restricted = me.expired || me.quota_exhausted;
+  const plans = data ? [...data.plans].sort((a, b) => (restricted ? Number(b.current) - Number(a.current) : 0)) : [];
+  function closeSheet() {
+    setCheckout(null);
+    setOrderId(null);
+  }
   return (
     <Card>
       <CardHeader>
@@ -221,22 +248,111 @@ export function Purchase({ orderId, onOrder }: { orderId: string | null; onOrder
         {data?.enabled && data.plans.length === 0 && (
           <p className="text-sm text-muted-foreground">{t("billing.noPlans")}</p>
         )}
-        {data?.enabled && data.plans.length > 0 && (
-          <div className="grid gap-3 sm:grid-cols-2">
-            {data.plans.map((p) => (
-              <PlanOffer key={p.plan_id} plan={p} disabled={busy || orderId != null} onBuy={buy} />
-            ))}
-          </div>
-        )}
-        {busy && <p className="text-sm text-muted-foreground">{t("billing.creating")}</p>}
         {error && (
           <p role="alert" className="text-sm text-destructive">
             {error}
           </p>
         )}
-        {orderId && <PaymentPanel id={orderId} onClose={() => onOrder(null)} />}
+        {data?.enabled && plans.length > 0 && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {plans.map((p) => (
+              <PlanOffer
+                key={p.plan_id}
+                plan={p}
+                me={me}
+                disabled={busy || checkout != null}
+                onBuy={(plan, offer) => {
+                  setError(null);
+                  setCheckout({ plan, offer });
+                }}
+              />
+            ))}
+          </div>
+        )}
       </CardContent>
+      <Dialog
+        open={checkout != null}
+        onClose={closeSheet}
+        title={orderId ? t("checkout.paymentTitle") : t("checkout.title")}
+      >
+        {orderId ? (
+          <PaymentPanel id={orderId} onClose={closeSheet} />
+        ) : (
+          checkout && (
+            <CheckoutSummary
+              plan={checkout.plan}
+              offer={checkout.offer}
+              current={current?.name ?? null}
+              busy={busy}
+              onConfirm={() => void buy(checkout.plan, checkout.offer)}
+              onCancel={closeSheet}
+            />
+          )
+        )}
+      </Dialog>
     </Card>
+  );
+}
+
+/** W20 (Minor 4): what the order will cost, line by line; only non-zero parts are shown. */
+function CheckoutSummary({
+  plan: p,
+  offer: o,
+  current,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  plan: ShopPlan;
+  offer: Offer;
+  current: string | null;
+  busy: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const t = useT();
+  const amount = o.amount_cents ?? o.price_cents;
+  const row = (label: string, value: string, tone = "") => (
+    <div className="flex justify-between gap-4 py-1">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className={`text-right tabular-nums ${tone}`}>{value}</dd>
+    </div>
+  );
+  return (
+    <div className="space-y-4">
+      <dl className="divide-y divide-border text-sm">
+        {row(t("checkout.plan"), p.name)}
+        {row(t("checkout.period"), periodLabel(t, o.period, o.days))}
+        {row(t("checkout.listPrice"), money(o.price_cents))}
+        {o.discount_cents > 0 && row(t("checkout.discount"), money(-o.discount_cents), "text-emerald-700")}
+        {o.credit_cents > 0 && row(t("checkout.credit"), money(-o.credit_cents), "text-emerald-700")}
+        {o.balance_cents > 0 && row(t("checkout.balance"), money(-o.balance_cents), "text-emerald-700")}
+        <div className="flex justify-between gap-4 py-2 text-base font-semibold">
+          <dt>{t("checkout.total")}</dt>
+          <dd className="tabular-nums">{money(amount)}</dd>
+        </div>
+      </dl>
+      {o.forfeited_cents > 0 && (
+        <p className="text-sm text-destructive">{t("checkout.forfeit", { amount: money(o.forfeited_cents) })}</p>
+      )}
+      {o.action === "switch" && current && (
+        <p className="text-sm text-amber-900">{t("checkout.switchNote", { current })}</p>
+      )}
+      {o.action === "reset" && <p className="text-sm text-muted-foreground">{t("checkout.resetNote")}</p>}
+      {busy && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {t("billing.creating")}
+        </p>
+      )}
+      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <Button variant="outline" onClick={onCancel}>
+          {t("common.cancel")}
+        </Button>
+        <Button onClick={onConfirm} disabled={busy} data-autofocus>
+          {amount > 0 ? t("checkout.pay", { amount: money(amount) }) : t("checkout.confirmFree")}
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -244,20 +360,36 @@ export function Purchase({ orderId, onOrder }: { orderId: string | null; onOrder
 // price, credit and amount for the caller) and the buy button.
 function PlanOffer({
   plan: p,
+  me,
   disabled,
   onBuy,
 }: {
   plan: ShopPlan;
+  me: Me;
   disabled: boolean;
   onBuy: (p: ShopPlan, o: Offer) => void;
 }) {
   const t = useT();
-  const first = p.offers.find((o) => o.action != null && o.period !== "reset") ?? p.offers[0];
+  const first = preselect(p, me);
   const [period, setPeriod] = useState<PeriodKind | undefined>(first?.period);
-  const sel = p.offers.find((o) => o.period === period) ?? first;
+  // Only a buyable offer can be selected (refused radios are disabled).
+  const sel = p.offers.find((o) => o.period === period && o.action != null) ?? first;
   const group = `periods-${p.plan_id}`;
+  // Nothing buyable: say why once (the first offer's refusal).
+  const refusal = sel ? null : (p.offers.find((o) => o.refusal)?.refusal ?? "not_for_sale");
+  const picked =
+    p.current && first && sel === first
+      ? first.action === "reset" && me.quota_exhausted
+        ? t("billing.pickedReset")
+        : first.action === "renew" && me.expired
+          ? t("billing.pickedRenew")
+          : null
+      : null;
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-border p-4">
+    <div
+      id={`plan-${p.plan_id}`}
+      className={`flex flex-col gap-2 rounded-lg border p-4 ${p.current ? "border-primary" : "border-border"}`}
+    >
       <div className="flex items-center justify-between gap-2">
         <span className="font-semibold">{p.name}</span>
         <span className="flex gap-1">
@@ -295,7 +427,7 @@ function PlanOffer({
               />
               {periodLabel(t, o.period, o.days)}
             </span>
-            <span className="font-medium">{t("billing.price", { price: yuan(o.price_cents) })}</span>
+            <span className="font-medium tabular-nums">{money(o.price_cents)}</span>
           </label>
         ))}
       </fieldset>
@@ -319,9 +451,14 @@ function PlanOffer({
           <p className="font-semibold">{t("billing.toPay", { amount: yuan(sel.amount_cents) })}</p>
         </div>
       )}
-      {sel && sel.refusal && <p className="text-sm text-muted-foreground">{t(REFUSAL_KEY[sel.refusal])}</p>}
-      <Button size="sm" disabled={disabled || !sel?.action} onClick={() => sel && onBuy(p, sel)}>
-        {sel?.action ? t(ACTION_KEY[sel.action]) : t(REFUSAL_KEY[sel?.refusal ?? "not_for_sale"])}
+      {picked && (
+        <p role="status" className="text-sm font-medium text-amber-900">
+          {picked}
+        </p>
+      )}
+      {refusal && <p className="text-sm text-muted-foreground">{t(REFUSAL_KEY[refusal])}</p>}
+      <Button disabled={disabled || !sel?.action} onClick={() => sel && onBuy(p, sel)}>
+        {sel?.action ? t(ACTION_KEY[sel.action]) : t("billing.noOffer")}
       </Button>
     </div>
   );
