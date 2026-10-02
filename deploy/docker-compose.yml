@@ -84,6 +84,9 @@ services:
       AKARI_PREFIX: ${AKARI_PREFIX:-set-after-akari-info}
       # The panel's on-demand TLS ask endpoint (panel.toml [tls_ask]).
       AKARI_ASK: http://panel:8082/ask
+      # Extra Caddy global options, e.g. `local_certs` for a name without
+      # public DNS (internal CA; DEPLOY.md §A). Empty by default.
+      AKARI_CADDY_OPTIONS: ${AKARI_CADDY_OPTIONS:-}
     ports:
       - "80:80"
       - "443:443"
