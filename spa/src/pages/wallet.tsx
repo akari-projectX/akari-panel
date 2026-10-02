@@ -184,9 +184,11 @@ function Withdrawals({ withdrawable }: { withdrawable: number }) {
 
   async function cancel(id: string) {
     const ok = await confirm({
-      title: t("wallet.cancel"),
+      title: t("wallet.cancelTitle"),
       body: t("wallet.confirmCancel"),
-      confirmLabel: t("wallet.cancel"),
+      confirmLabel: t("wallet.cancelRequest"),
+      cancelLabel: t("common.close"),
+      destructive: true,
     });
     if (!ok) return;
     setError(null);

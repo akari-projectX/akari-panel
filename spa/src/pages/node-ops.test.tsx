@@ -359,8 +359,10 @@ describe("portal node list", () => {
   it("lists nodes with status, rate and latency in English", async () => {
     setLocale("en");
     fakeApi({ "GET /me/nodes": mine });
-    renderWithClient(<NodesCard />);
+    renderWithClient(<NodesCard me={{ probe_interval_secs: 600 }} />);
     expect(await screen.findByText("香港 01")).toBeTruthy();
+    // The effective probe interval (audit Minor 1), not a fixed "5 hours".
+    expect(screen.getByText(/updated about every 10 min\)/)).toBeTruthy();
     expect(screen.getByText("Online")).toBeTruthy();
     expect(screen.getByText("Offline")).toBeTruthy();
     expect(screen.getByText("0.5x")).toBeTruthy();
@@ -371,8 +373,9 @@ describe("portal node list", () => {
   it("Chinese labels and the empty state", async () => {
     setLocale("zh");
     fakeApi({ "GET /me/nodes": [] });
-    renderWithClient(<NodesCard />);
+    renderWithClient(<NodesCard me={{ probe_interval_secs: 18000 }} />);
     expect(await screen.findByText("暂无可用节点。")).toBeTruthy();
+    expect(screen.getByText(/约每 5 小时更新一次/)).toBeTruthy();
     expect(screen.getByRole("heading", { name: "节点状态" })).toBeTruthy();
   });
 });

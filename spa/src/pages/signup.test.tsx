@@ -40,6 +40,10 @@ const me = (over: Partial<Me> = {}): Me => ({
   email: null,
   email_verified: false,
   locale: "en",
+  sub_token: null,
+  sub_url: null,
+  sub_legacy: false,
+  probe_interval_secs: 18000,
   ...over,
 });
 

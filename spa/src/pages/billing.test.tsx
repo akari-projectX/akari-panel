@@ -6,7 +6,27 @@ import { parseYuan, yuan, type AdminOrder, type MyOrder, type Offer, type Shop }
 import { parseDescription } from "../components/plan-description";
 import { fakeApi, renderAdmin, renderWithClient } from "../test/harness";
 import { AdminOrders } from "./admin-orders";
-import { Billing } from "./purchase";
+import type { Me } from "../lib/api";
+import { OrdersView, preselect, ShopView } from "./purchase";
+
+const ME: Me = {
+  id: "u1",
+  login: "alice",
+  role: "user",
+  traffic_used_bytes: 0,
+  traffic_limit_bytes: null,
+  expires_at: null,
+  expired: false,
+  quota_exhausted: false,
+  email: null,
+  email_verified: false,
+  locale: "en",
+  sub_token: null,
+  sub_url: null,
+  sub_legacy: false,
+  probe_interval_secs: 600,
+};
+const Billing = ({ me = ME }: { me?: Me }) => <ShopView me={me} />;
 
 afterEach(() => {
   cleanup();
@@ -147,7 +167,13 @@ describe("Billing (user)", () => {
     const buy = await screen.findByRole("button", { name: "Buy" });
     expect(screen.getByText("To pay: ¥9.90")).toBeTruthy();
     fireEvent.click(buy);
+    // W20: the in-page checkout summary, then the payment sheet (a dialog).
+    const sheet = await screen.findByRole("dialog", { name: "Confirm your order" });
+    expect(sheet.textContent).toContain("¥9.90");
+    expect(calls.some((c) => c.method === "POST")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Pay ¥9.90" }));
     expect(await screen.findByRole("img", { name: "Alipay payment QR code" })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Payment" })).toBeTruthy();
     const post = calls.find((c) => c.method === "POST" && c.path === "/me/orders");
     // The client never sends an amount: plan + period only.
     expect(post?.body).toEqual({ plan_id: "p1", period: "month" });
@@ -159,8 +185,6 @@ describe("Billing (user)", () => {
 
   it("asks before switching plans, shows the credit and speaks Chinese", async () => {
     setLocale("zh");
-    const confirm = vi.fn(() => false);
-    vi.stubGlobal("confirm", confirm);
     const calls = fakeApi({
       "GET /me/shop": shop({
         current: { plan_id: "p0", name: "Old", expires_at: "2026-11-01T00:00:00Z" },
@@ -173,7 +197,15 @@ describe("Billing (user)", () => {
     fireEvent.click(await screen.findByRole("button", { name: "更换为此套餐" }));
     expect(screen.getByText("应付 ¥6.90")).toBeTruthy();
     expect(screen.getByText("已抵扣当前套餐剩余价值 ¥3.00（原价 ¥9.90）")).toBeTruthy();
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("应付 ¥6.90（已抵扣 ¥3.00）"));
+    const sheet = await screen.findByRole("dialog", { name: "确认订单" });
+    expect(sheet.textContent).toContain("当前套餐抵扣");
+    expect(sheet.textContent).toContain("−¥3.00");
+    expect(sheet.textContent).toContain("将替换当前套餐「Old」");
+    // No coupon / balance lines when they are zero (audit Minor 4).
+    expect(sheet.textContent).not.toContain("优惠券");
+    expect(sheet.textContent).not.toContain("余额支付");
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(calls.some((c) => c.method === "POST")).toBe(false);
   });
 
@@ -215,13 +247,12 @@ describe("Billing (user)", () => {
     expect(screen.getByLabelText(/^One-time \(7 days\)/)).toBeTruthy();
     // The sold-out plan cannot be bought.
     expect(screen.getAllByText("Sold out").length).toBeGreaterThan(0);
-    const soldOut = screen.getAllByRole("button", { name: "Sold out" });
-    expect((soldOut[0] as HTMLButtonElement).disabled).toBe(true);
-    vi.stubGlobal(
-      "confirm",
-      vi.fn(() => true),
-    );
+    // The refusal is said once; the button only says it cannot be bought.
+    expect(screen.getAllByText("Sold out")).toHaveLength(2); // badge + reason
+    const soldOut = screen.getByRole("button", { name: "Not available" });
+    expect((soldOut as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Switch to this plan" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm" }));
     await waitFor(() => expect(calls.some((c) => c.method === "POST")).toBe(true));
     expect(calls.find((c) => c.method === "POST")?.body).toEqual({ plan_id: "p1", period: "year" });
     expect(await screen.findByText("Payment received. Your plan is active.")).toBeTruthy();
@@ -229,8 +260,6 @@ describe("Billing (user)", () => {
 
   it("offers the reset pack to holders with a confirmation", async () => {
     setLocale("en");
-    const confirm = vi.fn(() => false);
-    vi.stubGlobal("confirm", confirm);
     fakeApi({
       "GET /me/shop": shop({
         current: { plan_id: "p1", name: "Monthly", expires_at: "2026-11-01T00:00:00Z" },
@@ -252,7 +281,41 @@ describe("Billing (user)", () => {
     expect(screen.getByText("Your plan")).toBeTruthy();
     fireEvent.click(screen.getByLabelText(/^Traffic reset pack/));
     fireEvent.click(screen.getByRole("button", { name: "Buy reset pack" }));
-    expect(confirm).toHaveBeenCalled();
+    const sheet = await screen.findByRole("dialog", { name: "Confirm your order" });
+    expect(sheet.textContent).toContain("Your used traffic goes back to zero");
+  });
+
+  // W20 (M2): a quota-exhausted holder lands on the reset pack, an expired
+  // one on the renewal; a refused offer is never preselected.
+  it("preselects the right offer for the renewal scope", async () => {
+    setLocale("en");
+    const held = shopPlan({
+      current: true,
+      offers: [
+        offer({ action: null, amount_cents: null, refusal: "not_for_sale" }),
+        offer({ period: "year", action: "renew", price_cents: 9900, amount_cents: 9900 }),
+        offer({ period: "reset", price_cents: 500, amount_cents: 500, action: "reset" }),
+      ],
+    });
+    const base = { expired: false, quota_exhausted: false };
+    expect(preselect(held, { ...base, quota_exhausted: true })?.period).toBe("reset");
+    expect(preselect(held, { ...base, expired: true })?.period).toBe("year");
+    expect(preselect(held, base)?.period).toBe("year");
+    expect(preselect(shopPlan({ offers: [offer({ action: null, refusal: "sold_out" })] }), base)).toBeUndefined();
+    fakeApi({
+      "GET /me/shop": shop({
+        current: { plan_id: "p1", name: "Monthly", expires_at: "2026-11-01T00:00:00Z" },
+        plans: [shopPlan({ plan_id: "p9", name: "Other" }), { ...held, plan_id: "p1" }],
+      }),
+      "GET /me/orders": [],
+    });
+    renderWithClient(<Billing me={{ ...ME, quota_exhausted: true }} />);
+    expect(await screen.findByRole("button", { name: "Buy reset pack" })).toBeTruthy();
+    expect(screen.getByText(/the traffic reset pack is selected/)).toBeTruthy();
+    expect((screen.getByLabelText(/^Traffic reset pack/) as HTMLInputElement).checked).toBe(true);
+    // The held plan is listed first.
+    const names = screen.getAllByText(/^(Monthly|Other)$/).map((e) => e.textContent);
+    expect(names[0]).toBe("Monthly");
   });
 
   it("shows server errors localized (errorText)", async () => {
@@ -264,9 +327,20 @@ describe("Billing (user)", () => {
     });
     renderWithClient(<Billing />);
     fireEvent.click(await screen.findByRole("button", { name: "Buy" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Pay ¥9.90" }));
     expect((await screen.findByRole("alert")).textContent).toBe(
       "The payment service is unavailable. Please try again.",
     );
+  });
+
+  it("orders view reopens a pending order in the payment sheet", async () => {
+    setLocale("en");
+    fakeApi({ "GET /me/orders": [order()], "GET /me/orders/o1": order() });
+    renderWithClient(<OrdersView />);
+    expect(await screen.findByText("¥9.90")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Continue payment" }));
+    expect(await screen.findByRole("dialog", { name: "Payment" })).toBeTruthy();
+    expect(await screen.findByRole("img", { name: "Alipay payment QR code" })).toBeTruthy();
   });
 
   it("explains when payments are off", async () => {

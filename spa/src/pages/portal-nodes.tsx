@@ -46,7 +46,7 @@ export function NodesCard({ me }: { me: Pick<Me, "probe_interval_secs"> }) {
         ) : q.data.length === 0 ? (
           <p className="text-sm text-muted-foreground">{t("nodes.empty")}</p>
         ) : (
-          {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrollable table must be reachable by keyboard */}
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrollable table must be reachable by keyboard
           <div className="overflow-x-auto" tabIndex={0} role="region" aria-label={t("nodes.title")}>
             <Table>
               <TableHeader>

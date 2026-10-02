@@ -33,6 +33,10 @@ const me = (role: string): Me => ({
   email: null,
   email_verified: false,
   locale: "en",
+  sub_token: null,
+  sub_url: null,
+  sub_legacy: false,
+  probe_interval_secs: 18000,
 });
 const totp = (over: Partial<TotpStatus>): TotpStatus => ({
   id: "admin-id",
