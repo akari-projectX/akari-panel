@@ -413,7 +413,11 @@ export function toSpecs(rows: SpecRow[]): InboundSpec[] | string {
         fingerprint: r.fingerprint || undefined,
       };
     };
-    if ((r.template === "vless_reality" || r.template === "vless_reality_xhttp") && r.dest === "custom" && !r.customDest.trim())
+    if (
+      (r.template === "vless_reality" || r.template === "vless_reality_xhttp") &&
+      r.dest === "custom" &&
+      !r.customDest.trim()
+    )
       return `第 ${n} 个入站：请填写自定义目标站点`;
     switch (r.template) {
       case "vless_reality":
@@ -680,11 +684,7 @@ function TemplateRows({
               </div>
               {r.protocol !== "trojan" && r.network !== "grpc" && (
                 <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={r.tls}
-                    onChange={(e) => update(r.key, { tls: e.target.checked })}
-                  />
+                  <input type="checkbox" checked={r.tls} onChange={(e) => update(r.key, { tls: e.target.checked })} />
                   启用 TLS
                 </label>
               )}
