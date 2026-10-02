@@ -8,12 +8,14 @@ import { FixedLocale, useHtmlLang } from "./i18n";
 import { ApiError, adminBase, appBase, get, logout as apiLogout, type Me, type TotpStatus } from "./lib/api";
 import { adminErrorText } from "./lib/errors";
 import { loadPage, navigate, usePath } from "./lib/router";
+import { AdminAlerts } from "./pages/admin-alerts";
 import { AdminCoupons } from "./pages/admin-coupons";
 import { AdminFinance } from "./pages/admin-finance";
 import { AdminNodes } from "./pages/admin-nodes";
 import { AdminOrders } from "./pages/admin-orders";
 import { AdminPlans } from "./pages/admin-plans";
 import { AdminSettings } from "./pages/admin-settings";
+import { AdminTickets } from "./pages/admin-tickets";
 import { AdminUpdates } from "./pages/admin-updates";
 import { AdminUsers } from "./pages/admin-users";
 import { AdminAudit } from "./pages/audit";
@@ -33,7 +35,9 @@ export const VIEWS = [
   { id: "orders", label: "订单" },
   { id: "coupons", label: "优惠券" },
   { id: "finance", label: "资金" },
+  { id: "tickets", label: "工单" },
   { id: "nodes", label: "节点" },
+  { id: "alerts", label: "告警" },
   { id: "updates", label: "更新" },
   { id: "audit", label: "审计" },
   { id: "settings", label: "系统设置" },
@@ -123,9 +127,23 @@ function bannerDismissed(id: string): boolean {
   }
 }
 
+// W17: navigation counters (unread tickets, firing alerts).
+interface Badges {
+  tickets_open: number;
+  tickets_unread: number;
+  alerts_firing: number;
+}
+
 function AdminConsole({ user, onLogout, logoutError }: { user: Me; onLogout: () => void; logoutError: string | null }) {
   const path = usePath();
   const view = viewOf(path);
+  const badges = useQuery({
+    queryKey: ["admin-badges"],
+    queryFn: () => get<Badges>("/admin-badges"),
+    refetchInterval: 30_000,
+  });
+  const count = (id: View) =>
+    id === "tickets" ? badges.data?.tickets_unread : id === "alerts" ? badges.data?.alerts_firing : undefined;
   const totp = useQuery({ queryKey: ["totp"], queryFn: () => get<TotpStatus>("/me/totp") });
   const [dismissed, setDismissed] = useState(() => bannerDismissed(user.id));
   const showBanner = totp.data && !totp.data.enabled && !dismissed && view !== "account";
@@ -161,6 +179,14 @@ function AdminConsole({ user, onLogout, logoutError }: { user: Me; onLogout: () 
                   }`}
                 >
                   {v.label}
+                  {(count(v.id) ?? 0) > 0 && (
+                    <span
+                      className="ml-1 rounded-full bg-destructive px-1.5 text-[10px] leading-4 text-destructive-foreground"
+                      aria-label={`${count(v.id)} 条待处理`}
+                    >
+                      {count(v.id)}
+                    </span>
+                  )}
                 </a>
               ))}
             </nav>
@@ -210,8 +236,12 @@ function AdminConsole({ user, onLogout, logoutError }: { user: Me; onLogout: () 
           <AdminCoupons />
         ) : view === "finance" ? (
           <AdminFinance />
+        ) : view === "tickets" ? (
+          <AdminTickets />
         ) : view === "nodes" ? (
           <AdminNodes />
+        ) : view === "alerts" ? (
+          <AdminAlerts />
         ) : view === "updates" ? (
           <AdminUpdates />
         ) : view === "audit" ? (

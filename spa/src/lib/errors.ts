@@ -40,6 +40,10 @@ const KNOWN: Record<string, Parameters<TFunction>[0]> = {
   "mail sending is not enabled": "errors.mailOff",
   "invite code limit reached": "errors.inviteLimit",
   "registration is closed": "errors.registrationClosed",
+  // W17
+  "ticket is closed": "errors.ticketClosed",
+  "too many open tickets (at most 5); close one first": "errors.ticketOpenLimit",
+  "ticket has 200 messages; open a new ticket": "errors.ticketFull",
 };
 
 /** A user-presentable, localized message for a failed request. */

@@ -22,6 +22,7 @@ import { resetAfterLogout } from "./lib/session";
 import { Login } from "./pages/login";
 import { Portal } from "./pages/portal";
 import { Billing } from "./pages/purchase";
+import { Tickets } from "./pages/tickets";
 import { Wallet } from "./pages/wallet";
 import { Register } from "./pages/register";
 import { ForgotPassword, ResetPassword } from "./pages/reset";
@@ -133,6 +134,7 @@ function App() {
               <Portal me={user} />
               <Billing />
               <Wallet me={user} />
+              <Tickets />
             </div>
           </main>
         </div>

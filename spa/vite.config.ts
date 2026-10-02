@@ -37,6 +37,10 @@ export default defineConfig({
     target: "es2022",
     outDir: admin ? "dist/admin" : "dist/app",
     emptyOutDir: true,
+    // One chunk per bundle on purpose (no dynamic import(): preload paths
+    // are not prefix-rewritten). The admin console passed 500 kB with W17;
+    // it is served to admins only, private and cached per release.
+    chunkSizeWarningLimit: 700,
     rollupOptions: { input: admin ? "admin.html" : "index.html" },
   },
   // Frontend unit tests (vitest + Testing Library, jsdom). Test files are

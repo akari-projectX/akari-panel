@@ -1,7 +1,17 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { del, describePeriod, get, patch, post, put, type GroupView, type NodeView, type PlanView } from "../lib/api";
+import {
+  del,
+  describePeriod,
+  get,
+  patch,
+  post,
+  put,
+  type GroupView,
+  type NodeSummary,
+  type PlanView,
+} from "../lib/api";
 import { PERIOD_KINDS, parseYuan, periodZh, yuan, type PeriodKind, type PlanPrice } from "../lib/billing";
 import { GIB, humanBytes } from "../lib/utils";
 import { ErrorText, TableNote } from "../components/status";
@@ -21,7 +31,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 export function AdminPlans() {
   const groups = useQuery({ queryKey: ["groups"], queryFn: () => get<GroupView[]>("/node-groups") });
   const plans = useQuery({ queryKey: ["plans"], queryFn: () => get<PlanView[]>("/plans") });
-  const nodes = useQuery({ queryKey: ["nodes"], queryFn: () => get<NodeView[]>("/nodes") });
+  const nodes = useQuery({ queryKey: ["nodes", "summary"], queryFn: () => get<NodeSummary[]>("/nodes?view=summary") });
   return (
     <div className="space-y-6">
       <PlansCard plans={plans.data} loading={plans.isPending} groups={groups.data ?? []} />
@@ -613,7 +623,7 @@ function PriceEditor({ plan, onDone }: { plan: PlanView; onDone: () => void }) {
   );
 }
 
-function GroupsCard({ groups = [], loading, nodes }: { groups?: GroupView[]; loading: boolean; nodes: NodeView[] }) {
+function GroupsCard({ groups = [], loading, nodes }: { groups?: GroupView[]; loading: boolean; nodes: NodeSummary[] }) {
   const t = useT();
   const invalidate = useInvalidate();
   const [name, setName] = useState("");

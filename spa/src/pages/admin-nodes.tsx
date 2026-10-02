@@ -17,6 +17,7 @@ import {
   type InstallView,
   type NodeEnrollment,
   type NodeUpdateStatus,
+  type NodeSummary,
   type NodeView,
   type RenderedInbounds,
   type TemplateCatalog,
@@ -31,6 +32,7 @@ import {
   opsToBody,
   type NodeOpsValue,
 } from "./admin-node-form";
+import { NodeAlertRulesCard } from "./admin-alerts";
 import { NodeDetail, NodeLiveCells, NodeLiveHeads } from "./admin-node-status";
 import { NodeCertStatus, TlsDomainField } from "./admin-node-cert";
 import { Button } from "../components/ui/button";
@@ -56,24 +58,31 @@ interface InstallShown {
 }
 
 export function AdminNodes() {
-  // W11: live status columns, refreshed every 5 s.
-  const nodes = useQuery({ queryKey: ["nodes"], queryFn: () => get<NodeView[]>("/nodes"), refetchInterval: 5000 });
+  // W11: live status columns, refreshed every 5 s. W17: the list reads the
+  // summary view (the list's columns only, ETag-revalidated); the node
+  // page and the editor fetch the full node.
+  const nodes = useQuery({
+    queryKey: ["nodes", "summary"],
+    queryFn: () => get<NodeSummary[]>("/nodes?view=summary"),
+    refetchInterval: 5000,
+  });
   // W11: node detail = /{prefix}/admin/nodes/<id> (deep link, back button).
   const path = usePath();
   const detailId = path.startsWith(`${adminBase}/nodes/`) ? path.slice(`${adminBase}/nodes/`.length) : null;
-  const detail = (nodes.data ?? []).find((n) => n.id === detailId) ?? null;
+  const detailQ = useFullNode(detailId, 5000);
+  const detail = detailQ.data ?? null;
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [shown, setShown] = useState<InstallShown | null>(null);
   const [bootstrap, setBootstrap] = useState<NodeEnrollment | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const node = (nodes.data ?? []).find((n) => n.id === selected) ?? null;
+  const node = useFullNode(selected).data ?? null;
 
   // Re-install: a fresh one-line command (the previous unused one stops
   // working; once the agent enrolls with it, the node's older certificate
   // is revoked).
-  async function reinstall(n: NodeView) {
+  async function reinstall(n: NodeSummary) {
     setError(null);
     if (
       n.enrolled &&
@@ -88,7 +97,7 @@ export function AdminNodes() {
         origin: location.origin,
       });
       setBootstrap(null);
-      setShown({ name: n.name, install, needsCertificate: needsCertificate(n.xray_inbounds) });
+      setShown({ name: n.name, install, needsCertificate: n.needs_certificate });
       await nodes.refetch();
     } catch (err) {
       setError(msg(err, "生成安装命令失败"));
@@ -96,7 +105,7 @@ export function AdminNodes() {
   }
 
   // Manual path (ops): a bootstrap file with a 24 h token.
-  async function newBootstrap(n: NodeView) {
+  async function newBootstrap(n: NodeSummary) {
     setError(null);
     if (n.enrolled && !window.confirm(`为「${n.name}」签发新的注册令牌？节点用它注册后，当前证书将失效。`)) {
       return;
@@ -110,7 +119,7 @@ export function AdminNodes() {
     }
   }
 
-  async function toggle(n: NodeView) {
+  async function toggle(n: NodeSummary) {
     setError(null);
     if (n.enabled && !window.confirm(`停用节点「${n.name}」？节点上的所有入站与用户连接会立即断开。`)) {
       return;
@@ -125,7 +134,7 @@ export function AdminNodes() {
 
   // Deletion revokes the node's certificate for good: the agent is pushed
   // the empty state, then the node disappears.
-  async function remove(n: NodeView) {
+  async function remove(n: NodeSummary) {
     setError(null);
     if (!window.confirm(`删除节点「${n.name}」？节点停止服务，证书永久吊销（不可恢复，重新上线需新建节点）。`)) {
       return;
@@ -162,6 +171,12 @@ export function AdminNodes() {
         />
       ) : null}
       {detail && <NodeDetail key={detail.id} node={detail} onClose={() => navigate(`${adminBase}/nodes`)} />}
+      {detail && <NodeAlertRulesCard key={`rules-${detail.id}`} nodeId={detail.id} />}
+      {detailId && detailQ.isError && (
+        <p role="alert" className="text-sm text-destructive">
+          {adminErrorText(detailQ.error, "节点加载失败")}
+        </p>
+      )}
       {shown && <InstallCard shown={shown} onClose={() => setShown(null)} />}
       {bootstrap && <BootstrapCard enrollment={bootstrap} onClose={() => setBootstrap(null)} />}
       <Card>
@@ -240,6 +255,18 @@ export function AdminNodes() {
                           配置应用失败
                         </span>
                       )}
+                      {n.alerts_firing > 0 && (
+                        <a
+                          className="ml-2 text-xs font-medium text-destructive underline"
+                          href={`${adminBase}/alerts`}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            navigate(`${adminBase}/alerts`);
+                          }}
+                        >
+                          {n.alerts_firing} 条告警
+                        </a>
+                      )}
                     </TableCell>
                     <NodeLiveCells n={n} />
                     <TableCell className="text-muted-foreground">
@@ -255,7 +282,9 @@ export function AdminNodes() {
                       )}
                       {n.update_status && <UpdateBadge s={n.update_status} />}
                     </TableCell>
-                    <TableCell className="text-muted-foreground">{formatLease(n.lease_remaining_seconds)}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {formatLease(leaseLeft(n.lease_expires_at))}
+                    </TableCell>
                     <TableCell className="text-muted-foreground">
                       {n.cert_not_after
                         ? `至 ${new Date(n.cert_not_after).toLocaleDateString()}`
@@ -315,7 +344,23 @@ export function AdminNodes() {
   );
 }
 
-function StatusBadge({ n }: { n: NodeView }) {
+/** The full node (GET /nodes/{id}), when an id is given. */
+function useFullNode(id: string | null, refetchInterval?: number) {
+  return useQuery({
+    queryKey: ["nodes", "full", id],
+    queryFn: () => get<NodeView>(`/nodes/${id}`),
+    enabled: !!id,
+    refetchInterval,
+  });
+}
+
+/** Seconds of lease left, from the expiry (the summary carries no ticking counter). */
+export function leaseLeft(expires: string | null, now: number = Date.now()): number | null {
+  if (!expires) return null;
+  return Math.floor((new Date(expires).getTime() - now) / 1000);
+}
+
+function StatusBadge({ n }: { n: Pick<NodeSummary, "deleting_at" | "enabled" | "status" | "enrolled"> }) {
   if (n.deleting_at) return <Badge variant="destructive">删除中</Badge>;
   if (!n.enabled) return <Badge variant="secondary">已停用</Badge>;
   if (n.status === "online") return <Badge variant="success">在线</Badge>;

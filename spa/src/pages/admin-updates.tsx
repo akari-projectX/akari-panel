@@ -7,7 +7,7 @@ import {
   post,
   putBinary,
   type CreateRollout,
-  type NodeView,
+  type NodeSummary,
   type ReleaseView,
   type RolloutDetail,
   type RolloutView,
@@ -204,7 +204,7 @@ function Rollouts() {
     refetchInterval: 5000,
   });
   const releases = useQuery({ queryKey: ["releases"], queryFn: () => get<ReleaseView[]>("/agent-releases") });
-  const nodes = useQuery({ queryKey: ["nodes"], queryFn: () => get<NodeView[]>("/nodes") });
+  const nodes = useQuery({ queryKey: ["nodes", "summary"], queryFn: () => get<NodeSummary[]>("/nodes?view=summary") });
   const versions = [...new Set((releases.data ?? []).filter((r) => r.complete).map((r) => r.version))];
   const [version, setVersion] = useState("");
   const [percentage, setPercentage] = useState("100");

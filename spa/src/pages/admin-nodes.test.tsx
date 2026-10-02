@@ -2,6 +2,7 @@ import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { InstallView, NodeView } from "../lib/api";
+import { nodeRoutes } from "../test/nodes";
 import { fakeApi, renderWithClient } from "../test/harness";
 import { AdminNodes, formatLease, toSpecs } from "./admin-nodes";
 
@@ -191,10 +192,10 @@ describe("toSpecs", () => {
 describe("AdminNodes", () => {
   it("keeps each node's editor separate (F1)", async () => {
     const calls = fakeApi({
-      "GET /nodes": [
+      ...nodeRoutes([
         node({ id: "a", name: "alpha", xray_inbounds: [{ tag: "in-a", protocol: "vless", port: 1 }] }),
         node({ id: "b", name: "beta", xray_inbounds: [{ tag: "in-b", protocol: "vmess", port: 2 }] }),
-      ],
+      ]),
       "GET /inbound-templates": catalog,
       "PUT /nodes/b/inbounds": { config_version: 2 },
     });
@@ -257,7 +258,7 @@ describe("AdminNodes", () => {
 
   it("shows enable/disable failures and asks before disabling (F3)", async () => {
     fakeApi({
-      "GET /nodes": [node({})],
+      ...nodeRoutes([node({})]),
       "PATCH /nodes/n1": () => ({ status: 409, body: { error: "node is being deleted" } }),
     });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
@@ -271,7 +272,7 @@ describe("AdminNodes", () => {
 
   it("re-issues an install command for an enrolled node after confirmation", async () => {
     const calls = fakeApi({
-      "GET /nodes": [node({})],
+      ...nodeRoutes([node({})]),
       "POST /nodes/n1/install": { ...install, pin: "sha256//PIN=", command_wget: null },
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
