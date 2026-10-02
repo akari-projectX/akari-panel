@@ -1,0 +1,1 @@
+{"templates": [{"template": "trojan_tls", "port": 2096, "domain": "node.example.com"}], "tls_domain": "node.example.com"}

@@ -134,7 +134,7 @@ impl Sample {
 }
 
 /// Short, display-safe text from the agent (interface name, versions).
-fn agent_text(s: &str, max: usize) -> String {
+pub(crate) fn agent_text(s: &str, max: usize) -> String {
     s.chars().filter(|c| !c.is_control()).take(max).collect()
 }
 
@@ -434,8 +434,9 @@ const MAX_AGENT_RESULTS: usize = 4;
 
 /// Store an agent's LatencyReport: replaces the node's agent results unless
 /// a newer set is already stored (a re-sent old report after a newer one).
-/// Agent input is bounded: <= 4 results, URLs <= 512 bytes, errors <= 200
-/// characters, timestamps clamped to [now - 7 d, now].
+/// Agent input is bounded: <= 4 results, URLs <= 512 bytes without control
+/// characters, errors <= 200 characters, timestamps clamped to
+/// [now - 7 d, now].
 pub async fn store_agent_latency(pg: &PgPool, node: Uuid, rep: &LatencyReport) -> sqlx::Result<()> {
     let now = Utc::now();
     let at = DateTime::<Utc>::from_timestamp(rep.measured_at_unix, 0)
@@ -445,7 +446,11 @@ pub async fn store_agent_latency(pg: &PgPool, node: Uuid, rep: &LatencyReport) -
     let mut delays: Vec<Option<i32>> = Vec::new();
     let mut errors: Vec<Option<String>> = Vec::new();
     for r in rep.results.iter().take(MAX_AGENT_RESULTS) {
-        if r.url.is_empty() || r.url.len() > 512 || targets.contains(&r.url) {
+        if r.url.is_empty()
+            || r.url.len() > 512
+            || r.url.chars().any(char::is_control)
+            || targets.contains(&r.url)
+        {
             continue;
         }
         targets.push(r.url.clone());

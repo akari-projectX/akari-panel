@@ -2277,6 +2277,40 @@ mod db_tests {
         db.drop().await;
     }
 
+    /// The flush loop's tick (`flush_once`): buffered traffic is persisted
+    /// first, so the enforcement pass of the same tick already sees it and
+    /// disables the user who just crossed the limit; the buffer is then
+    /// clean (a final flush has nothing left to write).
+    #[tokio::test]
+    async fn flush_tick_persists_then_enforces() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let state = AppState::for_test(db.pool.clone()).await;
+        let (n, u) = db.member().await;
+        sqlx::query("UPDATE users SET traffic_limit_bytes = 150 WHERE id = $1")
+            .bind(u)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        refresh_members(&db.pool, state.traffic(), n).await.unwrap();
+        state.traffic().update(n, "s1", &report(u, 100, 100));
+        let v0 = db.versions(n).await;
+        flush_once(&state).await.unwrap();
+        assert_eq!(db.used(u).await, 200);
+        let enabled: bool = sqlx::query_scalar("SELECT enabled FROM users WHERE id = $1")
+            .bind(u)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert!(!enabled, "limit enforced in the same tick");
+        assert_eq!(db.versions(n).await.1, v0.1 + 1);
+        assert_eq!(flush_all(&state).await.unwrap(), 0);
+        assert_eq!(flush_node(&state, n).await.unwrap(), 0);
+        state.traffic().check_invariants().unwrap();
+        db.drop().await;
+    }
+
     #[tokio::test]
     async fn one_bad_row_does_not_poison_the_batch() {
         let Some(db) = TestDb::new().await else {
@@ -2288,11 +2322,25 @@ mod db_tests {
         let b = buf(&db).await;
         b.update(n, "s1", &report(good, 10, 10));
         // Bypass validation to plant a row PostgreSQL rejects (NUL in TEXT).
+        // The index must know it too: `snapshot` only visits indexed dirty
+        // rows (a row planted in `entries` alone is never flushed, and this
+        // test then passed without reaching the row-by-row path).
+        let sess = "bad\0session".to_string();
         b.entries
-            .entry((n, bad, "bad\0session".into()))
+            .entry((n, bad, sess.clone()))
             .or_insert_with(|| Entry::new(Instant::now()))
             .observe(5, 5, Instant::now());
+        {
+            let mut idx = b.index.entry(n).or_default();
+            idx.entries += 1;
+            let s = idx.sessions.entry(sess).or_default();
+            s.users.insert(bad);
+            s.dirty_users.insert(bad);
+        }
+        b.check_invariants().unwrap();
+        assert_eq!(b.snapshot().len(), 2, "both rows are due");
         assert_eq!(db.flush(&b).await, 1);
+        assert_eq!(b.snapshot().len(), 1, "the bad row stays due");
         assert_eq!(db.used(good).await, 20);
         for _ in 1..MAX_ROW_FAILURES {
             db.flush(&b).await;
@@ -2301,6 +2349,7 @@ mod db_tests {
             b.snapshot().is_empty(),
             "bad row given up after MAX_ROW_FAILURES"
         );
+        b.check_invariants().unwrap();
         assert_eq!(db.used(good).await, 20);
         assert_eq!(db.used(bad).await, 0);
         db.drop().await;
@@ -3383,5 +3432,82 @@ mod db_tests {
         assert!(b.failing(), "a partial flush does not end the outage");
         assert!(db.used(u).await as f64 >= cum as f64 * 0.99);
         db.drop().await;
+    }
+}
+
+/// Introspection for tests and the fuzz targets (`fuzz/`, built with
+/// `--cfg fuzzing`); absent from release builds.
+#[cfg(any(test, fuzzing))]
+mod introspect {
+    use super::*;
+
+    /// (users, dirty users) of one session.
+    type SessionUsers = (HashSet<Uuid>, HashSet<Uuid>);
+
+    impl TrafficBuffer {
+        /// Tests and fuzzing: the per-node index must be exactly what `entries`
+        /// implies (entry counts, per-session users and dirty users), and no
+        /// buffered counter may be negative. Single-threaded callers only.
+        pub fn check_invariants(&self) -> Result<(), String> {
+            let mut want: HashMap<Uuid, (usize, HashMap<String, SessionUsers>)> = HashMap::new();
+            for e in self.entries.iter() {
+                let (node, user, session) = e.key();
+                let v = e.value();
+                if v.up < 0 || v.down < 0 {
+                    return Err(format!("negative counters {:?}", (v.up, v.down)));
+                }
+                let n = want.entry(*node).or_default();
+                n.0 += 1;
+                let s = n.1.entry(session.clone()).or_default();
+                s.0.insert(*user);
+                if v.dirty() {
+                    s.1.insert(*user);
+                }
+            }
+            if self.index.len() != want.len() {
+                return Err(format!(
+                    "index has {} nodes, entries {}",
+                    self.index.len(),
+                    want.len()
+                ));
+            }
+            for idx in self.index.iter() {
+                let Some((count, sessions)) = want.get(idx.key()) else {
+                    return Err(format!("index node {} has no entries", idx.key()));
+                };
+                if idx.entries != *count {
+                    return Err(format!(
+                        "node {}: index {} != entries {count}",
+                        idx.key(),
+                        idx.entries
+                    ));
+                }
+                if idx.sessions.len() != sessions.len() {
+                    return Err(format!("node {}: session count drift", idx.key()));
+                }
+                for (s, (users, dirty)) in sessions {
+                    let Some(i) = idx.sessions.get(s) else {
+                        return Err(format!(
+                            "node {}: session {s:?} missing from index",
+                            idx.key()
+                        ));
+                    };
+                    if &i.users != users || &i.dirty_users != dirty {
+                        return Err(format!(
+                            "node {}: session {s:?} user/dirty drift",
+                            idx.key()
+                        ));
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        /// Tests and fuzzing: the buffered (up, down) of one key.
+        pub fn peek(&self, node: Uuid, user: Uuid, session: &str) -> Option<(i64, i64)> {
+            self.entries
+                .get(&(node, user, session.to_string()))
+                .map(|e| (e.up, e.down))
+        }
     }
 }

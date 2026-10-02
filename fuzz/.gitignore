@@ -1,0 +1,6 @@
+/target
+/artifacts
+/coverage
+# Grown corpora stay local / in CI caches; curated seeds live in seeds/.
+/corpus
+/logs

@@ -97,7 +97,12 @@ impl Domain {
         if s.is_empty() {
             return Err("不能为空".into());
         }
-        if s.len() > 300 {
+        // Only a bound on the work: the ASCII form is held to 253 bytes
+        // below. The Unicode form of a valid IDN can be far longer than
+        // its punycode (a 63-byte label holds up to ~59 CJK characters,
+        // 3 bytes each), and the console sends back the Unicode `display`
+        // it shows, so it must parse (fuzz: domain).
+        if s.len() > 1024 {
             return Err("太长".into());
         }
         if s.contains("://") {

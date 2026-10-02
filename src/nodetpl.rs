@@ -736,6 +736,10 @@ pub fn render(
         ports.push((p, t, u));
         out.push(render_one(s, node_domain)?);
     }
+    // What the templates produce must be what saving accepts: an
+    // admin-chosen tag can be reserved ("_x", "akari-*", "api") or repeat
+    // another template's (fuzz: node_templates). Same 400 as the save.
+    crate::api::validate_inbounds(&Value::Array(out.clone()))?;
     Ok(out)
 }
 
@@ -1038,6 +1042,26 @@ mod tests {
     /// Templates without a node TLS domain (the pre-W10 behaviour).
     fn render(specs: &[InboundSpec], taken: &[u16]) -> Result<Vec<Value>, ApiError> {
         super::render(specs, taken, None)
+    }
+
+    /// Fuzz (node_templates) regression: a template tag the save would
+    /// refuse (reserved, or repeated across templates) is refused by the
+    /// render already, with the save's message.
+    #[test]
+    fn render_refuses_tags_the_save_would_refuse() {
+        let spec = |tag: &str, port: u16| -> InboundSpec {
+            serde_json::from_value(serde_json::json!({
+                "template": "vmess_tcp", "port": port, "tag": tag
+            }))
+            .unwrap()
+        };
+        for bad in ["_:443", "akari-x", "api"] {
+            let e = render(&[spec(bad, 443)], &[]).unwrap_err();
+            assert!(e.message().contains("reserved"), "{bad}: {}", e.message());
+        }
+        let e = render(&[spec("same", 443), spec("same", 444)], &[]).unwrap_err();
+        assert!(e.message().contains("duplicate"), "{}", e.message());
+        assert!(render(&[spec("a", 443), spec("b", 444)], &[]).is_ok());
     }
 
     #[test]

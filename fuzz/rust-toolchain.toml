@@ -1,0 +1,6 @@
+# libFuzzer instrumentation (-Zsanitizer) needs nightly. Pinned so CI and
+# local runs build the same thing; roll forward deliberately.
+[toolchain]
+channel = "nightly-2026-10-01"
+components = ["rustfmt", "clippy", "llvm-tools-preview"]
+profile = "minimal"

@@ -9,6 +9,7 @@ Cargo.toml 在仓库根（文档里的 `panel/` 前缀是拆仓前的旧路径�
 |---|---|---|
 | `src/` | 全部 Rust 代码（`lib.rs` = crate `akari_panel` 的全部模块，`main.rs` = CLI/启动入口；全局分配器 mimalloc） | `src/CLAUDE.md` |
 | `bench/` | M2 基准与压测工具 crate（独立 workspace + lockfile，**不在**面板依赖图/发布二进制里）：`akari-bench seed/explain/http/swarm/lb/retention/multi` + criterion；专用 PG/Valkey 栈 `bench/compose.yml`（端口 5433/6380，不碰开发栈） | `docs/PERF.md` |
+| `fuzz/` | cargo-fuzz 目标（独立 crate + lockfile + 钉住的 nightly，**不在**面板依赖图里）：Alipay 通知/同步响应、入站 JSON/模板/订阅、客户端 IP、域名/Host、CSR、发布 manifest/签名/版本、agent 上行消息（流量缓冲区不变量、心跳 blob）、`deny_unknown_fields` 请求体与日志脱敏；库以 `--cfg fuzzing` 编译出 `src/fuzzing.rs` 入口。种子与回归输入 `fuzz/seeds/`，CI `fuzz.yml`（PR 每目标 20s、夜间 5min） | `docs/FUZZING.md` |
 | `spa/` | React 19 + Vite 8 + Tailwind 4 前端 | `spa/CLAUDE.md` |
 | `migrations/` | sqlx 迁移（启动时自动执行） | `migrations/CLAUDE.md` |
 | `proto/` | **控制协议正本** `agent.proto` | `proto/CLAUDE.md` |
@@ -33,6 +34,9 @@ make bench-up      # 基准专用栈（bench/compose.yml：PG 5433 / Valkey 6380
 make bench-seed    # 200 节点 / 5 万用户 / 每节点 1 万（约 60s，独立库 akari_bench）
 make bench         # criterion（快照构建、订阅渲染、flush 5 万行）；其余工具见 docs/PERF.md
 make bench-lint    # bench crate 的 fmt + clippy（CI 也跑）
+make fuzz FUZZ_SECS=600   # 所有 fuzz 目标各跑 N 秒（需 cargo install cargo-fuzz；fuzz/run.sh）
+make fuzz-lint     # fuzz crate 的 fmt + clippy（CI fuzz.yml 也跑）
+make coverage      # cargo llvm-cov（含真库测试）+ 计费核心各模块行覆盖率 ≥ 90% 门（scripts/coverage-gate.py，CI job coverage）
 make smoke         # 全量构建 + smoke.sh（会 TRUNCATE PG、FLUSHDB 本次 Valkey db、删 data/）
 # 并行 checkout/worktree：SMOKE_DB=<名> 用独立 PG 库 + 独立 Valkey db 序号（cksum%15+1，可用 SMOKE_VALKEY_DB 覆盖；
 # 默认 akari→db 0）；AGENT_DIR=<agent 检出> 指向 agent；共享端口 8443/8081，须用 flock 串行化 smoke

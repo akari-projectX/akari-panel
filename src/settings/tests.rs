@@ -35,6 +35,23 @@ fn name(n: &str) -> ServerName {
 // Pure
 // ---------------------------------------------------------------------------
 
+/// Fuzz (domain) regression: a long IDN whose punycode fits 253 bytes but
+/// whose Unicode form (what the console shows and sends back) is longer
+/// than the old 300-byte input cap must round-trip through `display`.
+#[test]
+fn long_idn_display_round_trips() {
+    let label = "测".repeat(19); // 57 bytes UTF-8, short punycode
+    let unicode = [label.as_str(); 6].join(".") + ".中国";
+    assert!(unicode.len() > 300, "{}", unicode.len());
+    let d = Domain::parse(&unicode).expect("long IDN");
+    assert!(d.host.len() <= 253 && d.host.is_ascii());
+    let shown = d.display();
+    assert_eq!(Domain::parse(&shown).expect("display re-parses"), d);
+    assert_eq!(Domain::parse(&d.authority()).expect("authority"), d);
+    // The work bound still holds.
+    assert!(Domain::parse(&"a".repeat(1025)).is_err());
+}
+
 #[test]
 fn domain_parsing() {
     for (raw, host, port, authority) in [

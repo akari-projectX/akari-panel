@@ -150,3 +150,141 @@ enum Pass {
     Limits,
     Expiry,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::AppState;
+    use crate::testdb::TestDb;
+
+    async fn user_row(db: &TestDb, u: Uuid) -> (bool, Option<String>, bool) {
+        sqlx::query_as(
+            "SELECT enabled, disabled_reason::text, expiry_enforced FROM users WHERE id = $1",
+        )
+        .bind(u)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+    }
+
+    async fn set(db: &TestDb, u: Uuid, sql: &str) {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE users SET {sql} WHERE id = $1"
+        )))
+        .bind(u)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    }
+
+    /// The flush loop's enforcement tick: over-limit users are disabled
+    /// ('quota'), expired users marked enforced, admins exempt from both,
+    /// every affected node bumped exactly once per change, and a second
+    /// tick is a no-op (no bump: agents are not re-synced for nothing).
+    #[tokio::test]
+    async fn run_all_enforces_limits_and_expiry_idempotently() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let state = AppState::for_test(db.pool.clone()).await;
+        let (n_over, over) = db.member().await;
+        let (n_exp, expired) = db.member().await;
+        let (n_ok, fine) = db.member().await;
+        let admin = db.admin().await;
+        db.assign(n_ok, admin).await;
+        set(
+            &db,
+            over,
+            "traffic_limit_bytes = 100, traffic_used_bytes = 101",
+        )
+        .await;
+        // Exactly at the limit is not over it.
+        set(
+            &db,
+            fine,
+            "traffic_limit_bytes = 100, traffic_used_bytes = 100",
+        )
+        .await;
+        set(&db, expired, "expires_at = now() - interval '1 second'").await;
+        set(
+            &db,
+            admin,
+            "traffic_limit_bytes = 1, traffic_used_bytes = 5, expires_at = now() - interval '1 day'",
+        )
+        .await;
+        let before = (
+            db.versions(n_over).await,
+            db.versions(n_exp).await,
+            db.versions(n_ok).await,
+        );
+
+        run_all(&state).await.unwrap();
+
+        assert_eq!(
+            user_row(&db, over).await,
+            (false, Some("quota".into()), false)
+        );
+        assert_eq!(user_row(&db, expired).await, (true, None, true));
+        assert_eq!(user_row(&db, fine).await, (true, None, false));
+        assert_eq!(user_row(&db, admin).await, (true, None, false));
+        assert_eq!(db.versions(n_over).await.1, before.0 .1 + 1);
+        assert_eq!(db.versions(n_exp).await.1, before.1 .1 + 1);
+        assert_eq!(db.versions(n_ok).await, before.2, "untouched node bumped");
+        // Config versions never move for user-set changes.
+        assert_eq!(db.versions(n_over).await.0, before.0 .0);
+
+        let after = (db.versions(n_over).await, db.versions(n_exp).await);
+        run_all(&state).await.unwrap();
+        assert_eq!(
+            (db.versions(n_over).await, db.versions(n_exp).await),
+            after,
+            "second tick bumped again"
+        );
+        db.drop().await;
+    }
+
+    /// A pass whose candidates have no node assignments changes the users
+    /// but bumps nothing; a pass with no candidates touches nothing.
+    #[tokio::test]
+    async fn passes_without_nodes_or_candidates() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let lonely = db.user().await;
+        set(
+            &db,
+            lonely,
+            "traffic_limit_bytes = 0, traffic_used_bytes = 1",
+        )
+        .await;
+        let mut tx = db.pool.begin().await.unwrap();
+        assert!(apply_traffic_limits(&mut tx).await.unwrap().is_empty());
+        assert!(apply_expiry(&mut tx).await.unwrap().is_empty());
+        tx.commit().await.unwrap();
+        assert!(!user_row(&db, lonely).await.0);
+        let mut tx = db.pool.begin().await.unwrap();
+        assert!(apply_traffic_limits(&mut tx).await.unwrap().is_empty());
+        tx.commit().await.unwrap();
+        db.drop().await;
+    }
+
+    /// A disabled user over its limit is not a candidate again (the
+    /// predicate requires `enabled`), and re-enabling by hand while still
+    /// over the limit is undone on the next tick.
+    #[tokio::test]
+    async fn manual_reenable_over_limit_is_reverted() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let state = AppState::for_test(db.pool.clone()).await;
+        let (n, u) = db.member().await;
+        set(&db, u, "traffic_limit_bytes = 10, traffic_used_bytes = 11").await;
+        run_all(&state).await.unwrap();
+        let v1 = db.versions(n).await;
+        set(&db, u, "enabled = true, disabled_reason = NULL").await;
+        run_all(&state).await.unwrap();
+        assert_eq!(user_row(&db, u).await, (false, Some("quota".into()), false));
+        assert_eq!(db.versions(n).await.1, v1.1 + 1);
+        db.drop().await;
+    }
+}

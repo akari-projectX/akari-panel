@@ -1,0 +1,1 @@
+{"templates": [{"template": "vmess_tcp", "port": 2087}], "tls_domain": "node.example.com"}

@@ -65,3 +65,8 @@ tonic-prost-build = "0.14"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+
+# cargo-fuzz builds the library with `--cfg fuzzing` (src/fuzzing.rs: entry
+# points for fuzz/ only, absent from every other build).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }

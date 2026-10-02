@@ -222,3 +222,52 @@ jobs:
       - if: always()
         working-directory: akari-panel
         run: docker compose down -v || true
+
+  coverage:
+    # ROADMAP §0 "计费核心路径覆盖率 ≥ 90%": line coverage of the billing
+    # core (traffic, enforce, entitle, plans, billing/*) over the whole
+    # suite including the real-database tests; fails below the per-module
+    # threshold (scripts/coverage-gate.py, docs/FUZZING.md).
+    name: coverage (billing core >= 90%)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: akari
+          POSTGRES_PASSWORD: akari-dev
+          POSTGRES_DB: akari
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U akari" --health-interval 3s
+          --health-timeout 3s --health-retries 20
+      valkey:
+        image: valkey/valkey:9-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "valkey-cli ping" --health-interval 3s
+          --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install --profile minimal && rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: llvm-cov
+      - run: command -v cargo-llvm-cov || cargo install cargo-llvm-cov --locked --version 0.9.1
+      - run: cargo llvm-cov --locked --lcov --output-path target/cov.lcov
+        env:
+          AKARI_SKIP_DB_TESTS: ""
+      - name: gate
+        run: |
+          set -o pipefail
+          python3 scripts/coverage-gate.py target/cov.lcov | tee gate.txt
+      - if: always()
+        run: |
+          { echo '### Billing-core line coverage'; echo; echo '```'; cat gate.txt 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-lcov
+          path: target/cov.lcov
+          retention-days: 14

@@ -343,6 +343,18 @@ async fn agent_latency_store() {
     .await
     .unwrap();
     assert!(!future, "agent clock clamped to now");
+    // URLs with control characters are dropped, the rest kept.
+    store_agent_latency(
+        &db.pool,
+        n,
+        &rep(
+            now + 86_400,
+            vec![ok("https://x/\n\u{1b}[31m", 1), ok("https://y/", 2)],
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(rows(&db).await, vec![("https://y/".into(), Some(2), None)]);
     // A deleted node: storing is a no-op, not an error.
     sqlx::query("DELETE FROM nodes WHERE id = $1")
         .bind(n)

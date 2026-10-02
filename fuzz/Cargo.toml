@@ -1,0 +1,105 @@
+# Fuzz targets for akari-panel's parsers of untrusted input (cargo-fuzz,
+# libFuzzer). Deliberately NOT part of the panel's dependency graph: its
+# own workspace and lockfile, so libfuzzer-sys never reaches the release
+# binary, the Docker build or the panel's cargo-deny policy. The library is
+# built with `--cfg fuzzing`, which exposes `akari_panel::fuzzing` (entry
+# points for crate-private parsers). See docs/FUZZING.md.
+[package]
+name = "akari-panel-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+akari-panel = { path = ".." }
+base64 = "0.22"
+form_urlencoded = "1"
+http = "1"
+libfuzzer-sys = "0.4"
+prost = "0.14"
+rcgen = { version = "0.14", features = ["pem", "x509-parser", "ring"] }
+ring = "0.17"
+serde = "1"
+serde_json = { version = "1", features = ["raw_value"] }
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+debug = 1
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+
+[[bin]]
+name = "alipay_notify"
+path = "fuzz_targets/alipay_notify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "alipay_response"
+path = "fuzz_targets/alipay_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "inbounds"
+path = "fuzz_targets/inbounds.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "node_templates"
+path = "fuzz_targets/node_templates.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_ip"
+path = "fuzz_targets/client_ip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "domain"
+path = "fuzz_targets/domain.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "csr"
+path = "fuzz_targets/csr.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "updates"
+path = "fuzz_targets/updates.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent_messages"
+path = "fuzz_targets/agent_messages.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json_bodies"
+path = "fuzz_targets/json_bodies.rs"
+test = false
+doc = false
+bench = false

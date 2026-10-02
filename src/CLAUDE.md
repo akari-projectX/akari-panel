@@ -6,7 +6,7 @@
 
 | 模块 | 职责 | 改动须知 |
 |---|---|---|
-| `lib.rs` | 全部模块声明（`pub mod`）；`testdb` 仅 `#[cfg(test)]` | `bench/` 与集成代码通过 `akari_panel::…` 使用，改 `pub` 签名要连带 `cd bench && cargo clippy` |
+| `lib.rs` | 全部模块声明（`pub mod`）；`testdb` 仅 `#[cfg(test)]`；`fuzzing` 仅 `#[cfg(fuzzing)]`（cargo-fuzz 构建，暴露 crate 私有解析器给 `fuzz/`，见 docs/FUZZING.md） | `bench/` 与集成代码通过 `akari_panel::…` 使用，改 `pub` 签名要连带 `cd bench && cargo clippy` |
 | `main.rs` | clap CLI（serve/info/config check（R22：DB 可达时附印系统设置）/settings show|unset/node add/enroll-token/list/delete、admin add/passwd/reset-2fa、secrets rotate-prefix/rotate-jwt，`--version` = 版本+git sha）与启动装配（校验配置 → `metrics::init` → 可选 metrics 监听） | 顶部强制装 rustls ring provider，勿删；**全局分配器 mimalloc**（静态 musl 自带分配器在这个多线程大量分配的负载下串行化；勿删，`docs/PERF.md`）；SIGTERM/SIGINT → `shutdown.rs` 顺序；连接池 16 |
 | `shutdown.rs` | 优雅退出（S4-3） | 置 shutdown watch（所有会话含关闭后新连的都以 UNAVAILABLE "panel shutting down" 结束）→ 等会话任务（含清理）≤3s → abort 后台循环 → 最终 flush ≤5s → 服务器 ≤1s；总计 <10s（docker stop 默认宽限）。关停导致的在途未 ack 不记失败 |
 | `config_check.rs` | 启动配置校验（M1-3）与 `akari config check` | `validate()` 纯函数收集全部错误/警告：地址端口冲突、`grpc.advertise` 必须显式 IP:port/hostname:port、`advertised_names` 非空且覆盖 advertise 主机与 `server_name`（通配符 `*.x` 仅覆盖一级）、租约 1h–30d、burst/速率 >0、URL 格式、metrics 绑定规则；警告：`cookie_secure=false` + 非回环 + 无 trusted_proxies、公网 bind 无 trusted_proxies。`check_data_dir` 探测可写。`effective_toml` 对 URL 密码打码。新增配置项要同步校验与测试 |
@@ -58,4 +58,5 @@
 - 状态变更：`apply_*` 在调用方事务内写库 + bump；通知由触发器在同一事务内发出（见根 CLAUDE.md「收敛」）。
 - 测试里持有池连接的对象（`PgListener`、未结束的事务）必须在 `db.drop()` 前释放，否则 `pool.close()` 会永远等待。
 - 测试：`traffic`、`api`、`grpc`、`db`、`plans`（reconcile 全流程、周期重置、到期、并发、HTTP）、`entitle` 有单元测试与真库测试（`testdb.rs`）；`sub` 三格式（links/clash/sing-box）整份快照 + UA 分流/分桶测试、`web::tests::prefix_gate_rejections_are_byte_identical`（所有拒绝与规范 404 字节同构）已补；改任何客户端格式必须同时改快照。
+- **覆盖率门（W13）**：`traffic`/`enforce`/`entitle`/`plans`/`billing/{orders,catalog,api,alipay}` 的生产代码行覆盖率（真库测试计入，内联 `#[cfg(test)] mod` 之后不计）每个 ≥ 90%（CI job `coverage`，`make coverage`）；改这些模块要带测试，阈值只升不降。仅测试/fuzz 用的内省放在测试模块之后的 `#[cfg(any(test, fuzzing))]` 模块（如 `traffic::introspect::check_invariants`）。
 - advisory lock 是**全库**的：所有测试 schema 共用 `akari.entitlement`，测试里持有它的事务必须尽快结束（未结束的事务还会让 `db.drop()` 永远等待）。

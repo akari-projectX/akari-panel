@@ -1,6 +1,8 @@
 AGENT_DIR ?= ../akari-agent
 
-.PHONY: third-party bench-up bench-down dev-up dev-down spa panel agent-build check smoke e2e lint test deny ci bench bench-seed bench-lint
+FUZZ_SECS ?= 30
+
+.PHONY: fuzz fuzz-lint coverage third-party bench-up bench-down dev-up dev-down spa panel agent-build check smoke e2e lint test deny ci bench bench-seed bench-lint
 
 dev-up:
 	docker compose up -d --wait
@@ -80,3 +82,20 @@ bench:
 
 bench-lint:
 	cd bench && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings
+
+# --- Fuzzing (fuzz/, own lockfile; cargo-fuzz + pinned nightly) ------------
+# `cargo install cargo-fuzz` once. Every target FUZZ_SECS seconds on its
+# seeds + local corpus; crashes land in fuzz/artifacts/<target>/. See
+# docs/FUZZING.md. The library is built with --cfg fuzzing (src/fuzzing.rs).
+fuzz:
+	cd fuzz && ./run.sh $(FUZZ_SECS)
+
+fuzz-lint:
+	cd fuzz && cargo fmt --check && RUSTFLAGS="--cfg fuzzing" cargo clippy --all-targets --locked -- -D warnings
+
+# --- Billing-core coverage gate (CI job `coverage`) ------------------------
+# `cargo install cargo-llvm-cov` + `rustup component add llvm-tools-preview`;
+# needs `make dev-up` (real-database tests count).
+coverage:
+	cargo llvm-cov --locked --lcov --output-path target/cov.lcov
+	scripts/coverage-gate.py target/cov.lcov

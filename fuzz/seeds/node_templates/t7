@@ -1,0 +1,1 @@
+{"templates": [{"template": "transport", "port": 2053, "protocol": "vless", "network": "grpc", "service_name": "svc", "tls_domain": "node.example.com", "tls": true}], "tls_domain": "node.example.com"}

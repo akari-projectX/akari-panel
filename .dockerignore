@@ -10,3 +10,4 @@ docs
 scripts
 *.md
 !README.md
+fuzz

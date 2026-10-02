@@ -1876,8 +1876,12 @@ async fn refresh_members(state: &AppState, node_id: Uuid) {
 }
 
 /// Heartbeat.cert (agent protocol 6) as the node page reads it: enums as
-/// lowercase names, times as RFC 3339 (null when unset), the error text
-/// capped (the agent caps it at 512 bytes too).
+/// lowercase names, times as RFC 3339 (null when unset), every agent
+/// string through `nodestat::agent_text` (control characters dropped,
+/// length capped: the domain at 253, the error at 512 — the agent caps it
+/// too —, the challenge name at 32). A compromised node must not be able
+/// to park megabytes of arbitrary text in the shared Valkey blob (fuzz:
+/// agent_messages).
 pub(crate) fn cert_status_json(c: &crate::gen::CertStatus) -> serde_json::Value {
     use crate::gen::cert_status::{ErrorKind, State};
     let ts = |secs: i64| {
@@ -1903,16 +1907,18 @@ pub(crate) fn cert_status_json(c: &crate::gen::CertStatus) -> serde_json::Value 
         Ok(ErrorKind::ErrorCaUnreachable) => Some("ca_unreachable"),
         _ => Some("other"),
     };
-    let err: String = c.last_error.chars().take(512).collect();
+    let text = crate::nodestat::agent_text;
+    let err = text(&c.last_error, 512);
+    let challenge = text(&c.challenge, 32);
     serde_json::json!({
-        "domain": c.domain,
+        "domain": text(&c.domain, 253),
         "state": state,
         "not_after": ts(c.not_after),
         "next_attempt": ts(c.next_attempt),
         "last_error": (!err.is_empty()).then_some(err),
         "error_kind": kind,
         "last_error_at": ts(c.last_error_at),
-        "challenge": (!c.challenge.is_empty()).then(|| c.challenge.clone()),
+        "challenge": (!challenge.is_empty()).then_some(challenge),
         "failures": c.failures,
     })
 }
@@ -3299,6 +3305,19 @@ mod tests {
         assert_eq!(ok["state"], "valid");
         assert_eq!(ok["error_kind"], serde_json::Value::Null);
         assert_eq!(ok["last_error"], serde_json::Value::Null);
+        // Fuzz (agent_messages) regression: agent text is bounded and free
+        // of control characters in every field, not only the error.
+        let hostile = cert_status_json(&crate::gen::CertStatus {
+            domain: format!("node.e\0\0\0!le.com{}", "d".repeat(4096)),
+            last_error: "line1\nline2\u{1b}[31m".into(),
+            challenge: format!("http-01\r\n{}", "c".repeat(100)),
+            ..Default::default()
+        });
+        let domain = hostile["domain"].as_str().unwrap();
+        assert!(domain.starts_with("node.e!le.com") && domain.chars().count() == 253);
+        assert_eq!(hostile["last_error"], "line1line2[31m");
+        assert_eq!(hostile["challenge"].as_str().unwrap().len(), 32);
+        assert!(!hostile.to_string().contains("\\u0000"));
     }
 
     /// B2: corrupt credentials are logged and the user is left out of the

@@ -36,7 +36,7 @@ const TOKEN_LEN: usize = 43;
 
 /// Could this path segment be a token we issued? Anything else is
 /// rejected before any hashing or database work.
-fn plausible_token(token: &str) -> bool {
+pub(crate) fn plausible_token(token: &str) -> bool {
     token.len() == TOKEN_LEN
         && token
             .bytes()
