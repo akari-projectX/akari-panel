@@ -26,6 +26,8 @@ const user = (over: Partial<UserView>): UserView => ({
   plan_id: null,
   plan_name: null,
   next_reset_at: null,
+  email: null,
+  email_verified: false,
   ...over,
 });
 

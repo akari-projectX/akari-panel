@@ -4,14 +4,27 @@ import { useEffect, useState } from "react";
 import { Button } from "./components/ui/button";
 import { Loading } from "./components/status";
 import { LocaleSwitch, useHtmlLang, useLocale, useT } from "./i18n";
-import { ApiError, adminBase, appBase, get, logout as apiLogout, type Me, type TotpStatus } from "./lib/api";
+import {
+  ApiError,
+  adminBase,
+  appBase,
+  authOptions,
+  get,
+  logout as apiLogout,
+  put,
+  type AuthOptions,
+  type Me,
+  type TotpStatus,
+} from "./lib/api";
 import { errorText } from "./lib/errors";
-import { loadPage, navigate } from "./lib/router";
+import { loadPage, navigate, usePath } from "./lib/router";
 import { resetAfterLogout } from "./lib/session";
 import { Login } from "./pages/login";
 import { Portal } from "./pages/portal";
 import { Billing } from "./pages/purchase";
 import { Wallet } from "./pages/wallet";
+import { Register } from "./pages/register";
+import { ForgotPassword, ResetPassword } from "./pages/reset";
 
 // The user portal bundle (/{prefix}/app): login (shared with admins),
 // portal, purchase and orders. It holds no admin code (R23): an admin
@@ -44,6 +57,16 @@ function App() {
     // A full page load: the console is a different bundle.
     if (toConsole) loadPage(adminTarget(location.pathname));
   }, [toConsole]);
+
+  // W15: mails go out in the account's language; keep it in step with the
+  // language the visitor uses here (best effort, once per change).
+  const locale = useLocale();
+  const accountLocale = me.data?.role === "user" ? me.data.locale : undefined;
+  useEffect(() => {
+    if (accountLocale && accountLocale !== locale) {
+      put("/me/locale", { locale }).catch(() => undefined);
+    }
+  }, [accountLocale, locale]);
 
   async function logout() {
     setLogoutError(null);
@@ -80,7 +103,7 @@ function App() {
         </UserSurface>
       );
     }
-    return <UserSurface>{() => <Login />}</UserSurface>;
+    return <UserSurface>{() => <PublicPages />}</UserSurface>;
   }
 
   const user = me.data;
@@ -116,6 +139,22 @@ function App() {
       )}
     </UserSurface>
   );
+}
+
+/** The signed-out pages: sign in, and (W15, only when enabled) sign up / password reset. */
+export function PublicPages() {
+  const path = usePath();
+  const options = useQuery({ queryKey: ["auth-options"], queryFn: authOptions, retry: false, staleTime: 60_000 });
+  const opts: AuthOptions = options.data ?? {
+    register: false,
+    invite_required: false,
+    email_domains: [],
+    reset: false,
+  };
+  if (path === `${appBase}/reset`) return <ResetPassword />;
+  if (path === `${appBase}/forgot` && opts.reset) return <ForgotPassword />;
+  if (path === `${appBase}/register` && opts.register) return <Register options={opts} />;
+  return <Login options={opts} />;
 }
 
 // User-facing surface: the visitor's language (switchable).

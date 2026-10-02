@@ -109,3 +109,11 @@ name = "billing_input"
 path = "fuzz_targets/billing_input.rs"
 test = false
 doc = false
+bench = false
+
+[[bin]]
+name = "signup"
+path = "fuzz_targets/signup.rs"
+test = false
+doc = false
+bench = false

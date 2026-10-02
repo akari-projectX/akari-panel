@@ -285,6 +285,34 @@ from whatever address a browser happened to use, and the Host check (§1b) turns
 any other name get the empty 404. A subscription domain (for Cloudflare) and a node communication
 domain are optional (§1b).
 
+## 2c. Mail, registration and password reset (optional, W15)
+
+Everything here is off until you turn it on; nothing in panel.toml.
+
+1. **系统设置 → 邮件**: SMTP server, port and security — **STARTTLS** (587) or **SSL/TLS**
+   (465) for a mail provider; **不加密** only for a relay on the same host/private network (the
+   panel refuses credentials over it). Username/password if the provider needs them (the password
+   is sealed with `data/totp.key` like 2FA secrets: if that file is lost, enter it again), sender
+   address (the provider must allow it; set SPF/DKIM for that domain at the provider) and sender
+   name (also the site name in mails). Tick **启用邮件发送**, save, then **发送测试邮件** to
+   yourself — the provider's answer is shown when it fails.
+2. Notices (same card): order receipts, plan-expiry reminder N days before (0 = off), "plan
+   expired", traffic at 80 % and used up (once each per period). Only verified addresses get
+   mail; users add theirs in the portal (邮箱 card: current password + emailed code).
+3. **系统设置 → 注册**: **开放注册** (login page shows 注册; the address becomes the login),
+   optionally **必须使用邀请码** (users create codes/links in the portal; single-use or not;
+   per-user limit), an **邮箱域名白名单** (one per line; subdomains included) and a **试用套餐**
+   with its length in days. **允许通过邮件找回密码** needs the main domain (§2b): reset links
+   are always built from it, never from the address a request came in on.
+4. Delivery: requests only queue mail; every panel instance runs a sender (one message at a time,
+   `FOR UPDATE SKIP LOCKED` + lease, so instances never send the same message concurrently), retries
+   with backoff for about two hours, then keeps a **失败邮件** entry you can retry (codes and reset
+   links expire instead: they are useless late). Sent bodies are erased; rows are kept 30 days
+   (sent) / 90 days (failed). Metric: `akari_mail_deliveries_total{kind,result}`.
+5. Abuse limits (Valkey, all instances): 10 mails per client address per hour, 5 per destination
+   address per hour and 20 per day, 30 code/link completions per client address per 15 minutes;
+   a code burns after 5 wrong tries. Answers never reveal whether an address has an account.
+
 ## 3. Add a node and install the agent
 
 **In the UI: Nodes → 新建节点.** Fill in the name, the region users see, the node's public

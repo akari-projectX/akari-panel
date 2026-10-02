@@ -225,6 +225,8 @@ docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE plans,
 # R22 settings left behind by an aborted run (e.g. a node domain the agents
 # here cannot reach): back to "use panel.toml" (the trigger reloads them).
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "UPDATE panel_settings SET version = 0, main_domain = NULL, sub_domain = NULL, node_domain = NULL, trust_cloudflare = NULL, probe_interval_secs = NULL, probe_urls = NULL, probe_panel_tcp = NULL; TRUNCATE grpc_server_names;" >/dev/null 2>&1 || true
+# W15 settings back to the defaults (off; version 0) and an empty outbox.
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM signup_settings; INSERT INTO signup_settings (id) VALUES (1); DELETE FROM smtp_settings; INSERT INTO smtp_settings (id) VALUES (1); TRUNCATE mail_outbox;" >/dev/null 2>&1 || true
 vk flushdb >/dev/null
 
 echo "== first admin (env password) =="
@@ -1123,6 +1125,120 @@ for a in plan.create plan.delete group.create group.delete; do
 done
 echo "m3: ok (plan access, quota disable, reset re-enable, cancel)"
 
+echo "== W15 registration, password reset, SMTP outbox (Mailpit as the SMTP sink) =="
+# Mailpit (docker, host network, loopback only): SMTP 127.0.0.1:11025, API
+# 127.0.0.1:18025. The panel's outbox sender delivers to it; the steps read
+# codes and links through its API, like a user reading their mail.
+MP_API="http://127.0.0.1:18025/api/v1"
+docker rm -f akari-smoke-mailpit >/dev/null 2>&1 || true
+docker run -d --name akari-smoke-mailpit --network host -e MP_SMTP_BIND_ADDR=127.0.0.1:11025 \
+  -e MP_UI_BIND_ADDR=127.0.0.1:18025 axllent/mailpit:v1.27 >/dev/null
+trap 'docker rm -f akari-smoke-mailpit >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
+for _ in $(seq 1 40); do curl -sf --noproxy '*' "$MP_API/info" >/dev/null && break; sleep 0.5; done
+curl -sf --noproxy '*' "$MP_API/info" >/dev/null || { echo "FAIL: mailpit did not start"; docker logs akari-smoke-mailpit 2>&1 | tail -5; exit 1; }
+# mp_mail ADDR N: wait until ADDR has >= N messages; print the newest one's
+# subject (line 1) and text body.
+mp_mail() {
+  python3 - "$MP_API" "$1" "$2" <<'PY'
+import json, sys, time, urllib.parse, urllib.request
+api, to, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
+op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+for _ in range(60):
+    d = json.load(op.open(api + "/search?query=" + urllib.parse.quote("to:" + to)))
+    if len(d["messages"]) >= n:
+        m = json.load(op.open(api + "/message/" + d["messages"][0]["ID"]))
+        print(m["Subject"]); print(m["Text"]); sys.exit(0)
+    time.sleep(0.5)
+sys.exit("no message #%d to %s" % (n, to))
+PY
+}
+# Fingerprint without the per-request id (X-Request-Id) and Date.
+fpr() {
+  curl -s --noproxy '*' -D - -o /tmp/akari-smoke/fpbody "$@" | tr -d '\r' | grep -viE '^(date|x-request-id):' >/tmp/akari-smoke/fphead
+  cat /tmp/akari-smoke/fphead /tmp/akari-smoke/fpbody | sha256sum | cut -d' ' -f1
+}
+J='Content-Type: application/json'
+# Off by default: every self-service endpoint is the canonical rejection.
+for p in register/code register password-reset/request password-reset; do
+  [ "$(fp -X POST "$BASE/auth/$p" -H "$J" -d '{"email":"a@akari.test"}')" = "$REJ" ] \
+    || { echo "FAIL: disabled /auth/$p is not the canonical rejection"; cat /tmp/akari-smoke/fphead; exit 1; }
+done
+[ "$(code "$BASE/auth/options")" = "200" ] && last_json "d['register'] or d['reset']" | matches False \
+  || { echo "FAIL: auth options while disabled"; cat /tmp/akari-smoke/last; exit 1; }
+SIGNUP_ON='"register_enabled":true,"invite_required":false,"invite_single_use":false,"invite_codes_per_user":5,"email_domains":[],"trial_plan_id":null,"trial_days":3,"reset_enabled":true'
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/signup" -H "$J" -d "{\"version\":0,$SIGNUP_ON}")" = "409" ] \
+  || { echo "FAIL: registration enabled without mail"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/mail" -H "$J" -d '{"version":0,"enabled":true,"host":"127.0.0.1","port":11025,"security":"none","username":null,"from_addr":"noreply@akari.test","from_name":"Akari Smoke","notify_order_paid":true,"notify_expiry_days":3,"notify_expired":true,"notify_quota":true}')" = "200" ] \
+  || { echo "FAIL: save SMTP settings"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/mail/test" -H "$J" -d '{"to":"admin@akari.test"}')" = "200" ] \
+  || { echo "FAIL: test mail"; cat /tmp/akari-smoke/last; exit 1; }
+mp_mail admin@akari.test 1 | sed -n 1p | matches '^Akari Smoke 测试邮件$' || { echo "FAIL: test mail not delivered"; exit 1; }
+# Reset links need the main domain (never the request's Host): set it for
+# this section only (IP literal; the host gate keeps accepting 127.0.0.1).
+[ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
+VER=$(last_json "d['version']")
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings" -H "$J" \
+    -d "{\"version\":$VER,\"main_domain\":\"127.0.0.1:8080\",\"sub_domain\":null,\"node_domain\":null,\"trust_cloudflare\":null}")" = "200" ] \
+  || { echo "FAIL: set main domain"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/signup" -H "$J" -d "{\"version\":0,$SIGNUP_ON}")" = "200" ] \
+  || { echo "FAIL: enable registration + reset"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code "$BASE/auth/options")" = "200" ] && last_json "d['register'] and d['reset']" | matches True \
+  || { echo "FAIL: auth options while enabled"; exit 1; }
+# Register: code by mail -> account + session; login by the address.
+REG="smoke-reg-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')@akari.test"
+NEW="smoke-new-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')@akari.test"
+F1=$(fpr -X POST "$BASE/auth/register/code" -H "$J" -d "{\"email\":\"$REG\",\"locale\":\"en\"}")
+grep -q '^HTTP/1.1 200' /tmp/akari-smoke/fphead || { echo "FAIL: register code request"; cat /tmp/akari-smoke/fphead /tmp/akari-smoke/fpbody; exit 1; }
+REG_CODE=$(mp_mail "$REG" 1 | grep -oE '\b[0-9]{6}\b' | sed -n 1p)
+[ -n "$REG_CODE" ] || { echo "FAIL: no code in the registration mail"; exit 1; }
+RJAR="$LOG/reg-cookies"
+[ "$(code -c "$RJAR" -X POST "$BASE/auth/register" -H "$J" \
+    -d "{\"email\":\"$REG\",\"code\":\"$REG_CODE\",\"password\":\"reg-password-1\",\"locale\":\"en\"}")" = "200" ] \
+  || { echo "FAIL: register"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$RJAR" "$BASE/api/v1/me")" = "200" ] && last_json "d['email_verified'] and d['email']=='$REG' and d['role']=='user'" | matches True \
+  || { echo "FAIL: registered account"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -X POST "$BASE/auth/register" -H "$J" \
+    -d "{\"email\":\"$REG\",\"code\":\"$REG_CODE\",\"password\":\"reg-password-1\"}")" = "400" ] \
+  || { echo "FAIL: registration code reused"; exit 1; }
+[ "$(code -X POST "$BASE/auth/login" -H "$J" -d "{\"login\":\"$(echo "$REG" | tr a-z A-Z)\",\"password\":\"reg-password-1\"}")" = "200" ] \
+  || { echo "FAIL: login by (verified) email"; exit 1; }
+# No existence oracle: a registered and a fresh address get byte-identical
+# answers; the owner of the registered one gets an "already registered" mail.
+F2=$(fpr -X POST "$BASE/auth/register/code" -H "$J" -d "{\"email\":\"$REG\",\"locale\":\"en\"}")
+F3=$(fpr -X POST "$BASE/auth/register/code" -H "$J" -d "{\"email\":\"$NEW\",\"locale\":\"en\"}")
+[ "$F1" = "$F2" ] && [ "$F2" = "$F3" ] || { echo "FAIL: code request answers differ by account existence"; exit 1; }
+mp_mail "$REG" 2 | sed -n 1p | matches 'already has an account' || { echo "FAIL: no 'already registered' mail"; exit 1; }
+mp_mail "$NEW" 1 | sed -n 1p | matches 'sign-up code' || { echo "FAIL: no code for the fresh address"; exit 1; }
+# Password reset by link: every session ends, the link works once.
+R1=$(fpr -X POST "$BASE/auth/password-reset/request" -H "$J" -d "{\"email\":\"$REG\"}")
+R2=$(fpr -X POST "$BASE/auth/password-reset/request" -H "$J" -d "{\"email\":\"nobody-$NEW\"}")
+[ "$R1" = "$R2" ] || { echo "FAIL: reset answers differ by account existence"; exit 1; }
+RESET_TOKEN=$(mp_mail "$REG" 3 | grep -oE '/app/reset#token=[A-Za-z0-9_-]{43}' | sed -n 1p | sed 's/.*token=//')
+[ -n "$RESET_TOKEN" ] || { echo "FAIL: no reset link in the mail"; mp_mail "$REG" 3; exit 1; }
+mp_mail "$REG" 3 | matches 'https\?://127\.0\.0\.1:8080/' || { echo "FAIL: reset link is not on the main domain"; exit 1; }
+[ "$(code -X POST "$BASE/auth/password-reset" -H "$J" -d "{\"token\":\"$RESET_TOKEN\",\"password\":\"reg-password-2\"}")" = "200" ] \
+  || { echo "FAIL: reset password"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$RJAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: session survived the password reset"; exit 1; }
+[ "$(code -X POST "$BASE/auth/password-reset" -H "$J" -d "{\"token\":\"$RESET_TOKEN\",\"password\":\"reg-password-3\"}")" = "400" ] \
+  || { echo "FAIL: reset link reused"; exit 1; }
+[ "$(code -c "$RJAR" -X POST "$BASE/auth/login" -H "$J" -d "{\"login\":\"$REG\",\"password\":\"reg-password-2\"}")" = "200" ] \
+  || { echo "FAIL: login with the new password"; exit 1; }
+# Outbox: settled bodies cleared; codes/tokens never in the log; audited.
+for _ in $(seq 1 20); do
+  [ "$(psql_q "SELECT count(*) FROM mail_outbox WHERE status = 'pending'")" = "0" ] && break; sleep 0.5
+done
+[ "$(psql_q "SELECT count(*) FROM mail_outbox WHERE status <> 'sent' OR body_text <> '' OR body_html <> ''")" = "0" ] \
+  || { echo "FAIL: outbox not drained / bodies kept"; psql_q "SELECT id, kind, status, last_error FROM mail_outbox"; exit 1; }
+grep -qe "$RESET_TOKEN" -e "\"$REG_CODE\"" "$LOG/panel.log" && { echo "FAIL: a code or reset token in the panel log"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action IN ('user.register', 'user.password.reset', 'settings.mail.update', 'settings.signup.update', 'settings.mail.test')")" = "5" ] \
+  || { echo "FAIL: W15 audit rows"; psql_q "SELECT action FROM audit_log ORDER BY id DESC LIMIT 10"; exit 1; }
+# The admin user list shows the address and its verification.
+[ "$(code -b "$JAR" "$BASE/api/v1/users?limit=200")" = "200" ] \
+  && python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); u=[x for x in (d['users'] if isinstance(d, dict) else d) if x['login']=='$REG'][0]; assert u['email']=='$REG' and u['email_verified'], u" \
+  || { echo "FAIL: user list email"; exit 1; }
+# Back to no main domain (later sections use the browser origin).
+"$PANEL" settings unset main >/dev/null || { echo "FAIL: settings unset main"; exit 1; }
+
 echo "== R18-3 Alipay F2F: price -> order (precreate) -> signed notify -> plan + node access; replay no-op; bad notify = rejection =="
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/node-groups" -H 'Content-Type: application/json' \
     -d "{\"name\":\"paid-group\",\"node_ids\":[\"$NODE_ID\"]}")" = "201" ] || { echo "FAIL: create paid group"; exit 1; }
@@ -1160,6 +1276,16 @@ o={x['period']: x for x in p['offers']}
 assert d['enabled'] and p['description']=='Smoke\n- fast' and p['remaining']==5, d
 assert sorted(o)==['days','month'] and o['days']['price_cents']==1 and o['days']['amount_cents']==1 and o['days']['action']=='new', d
 " || { echo "FAIL: shop content"; cat /tmp/akari-smoke/last; exit 1; }
+# W15: the buyer adds an email address in the portal (current password +
+# emailed code); the payment below then mails a receipt to it.
+BUYER_MAIL="smoke-buyer@akari.test"
+[ "$(code -b "$BJAR" -X POST "$BASE/api/v1/me/email/code" -H "$J" -d "{\"email\":\"$BUYER_MAIL\",\"password\":\"wrong\"}")" = "400" ] \
+  || { echo "FAIL: email change without the password"; exit 1; }
+[ "$(code -b "$BJAR" -X POST "$BASE/api/v1/me/email/code" -H "$J" -d "{\"email\":\"$BUYER_MAIL\",\"password\":\"buyer-password-123\"}")" = "200" ] \
+  || { echo "FAIL: email change code"; cat /tmp/akari-smoke/last; exit 1; }
+BUYER_CODE=$(mp_mail "$BUYER_MAIL" 1 | grep -oE '\b[0-9]{6}\b' | sed -n 1p)
+[ "$(code -b "$BJAR" -X POST "$BASE/api/v1/me/email/verify" -H "$J" -d "{\"code\":\"$BUYER_CODE\"}")" = "200" ] \
+  || { echo "FAIL: email verify"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$BJAR" -X POST "$BASE/api/v1/me/orders" -H 'Content-Type: application/json' \
     -d "{\"plan_id\":\"$PAID_PLAN\",\"period\":\"reset\"}")" = "409" ] || { echo "FAIL: reset pack sold to a non-subscriber"; exit 1; }
 [ "$(code -b "$BJAR" -X POST "$BASE/api/v1/me/orders" -H 'Content-Type: application/json' \
@@ -1197,6 +1323,12 @@ python3 "$LOG/vless1.py" "$BUYER_VLESS" || { echo "FAIL: vless round trip for th
 [ "$(curl -s --noproxy '*' -X POST "$NOTIFY" --data-binary "$GOOD_NOTIFY")" = "success" ] || { echo "FAIL: replayed notify"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='order.paid' AND target_id='$ORDER'")" = "1" ] || { echo "FAIL: order paid twice"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM user_plans WHERE user_id='$BUYER'")" = "1" ] || { echo "FAIL: plan granted twice"; exit 1; }
+# W15: exactly one receipt (zh: admin-created account), even after the replay.
+mp_mail "$BUYER_MAIL" 2 >"$LOG/receipt.txt" || { echo "FAIL: no order receipt mail"; exit 1; }
+sed -n 1p "$LOG/receipt.txt" | matches '支付成功' && matches -F "$OTN" "$LOG/receipt.txt" \
+  || { echo "FAIL: receipt content"; cat "$LOG/receipt.txt"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM mail_outbox WHERE kind='order_paid' AND to_addr='$BUYER_MAIL'")" = "1" ] \
+  || { echo "FAIL: receipt queued more than once"; exit 1; }
 [ "$(psql_q "SELECT outcome FROM payment_events WHERE order_id='$ORDER' AND source='notify' AND verified ORDER BY id DESC LIMIT 1")" = "duplicate" ] \
   || { echo "FAIL: replay not logged as duplicate"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM payment_events WHERE params->>'sign' IS NOT NULL AND params->>'sign' <> '<redacted>'")" = "0" ] \
@@ -1360,6 +1492,10 @@ done
 [ "$(psql_q "SELECT count(*) FROM balance_ledger WHERE user_id IS NULL AND user_login IN ('smoke-w16','smoke-inviter')")" -ge 5 ] \
   || { echo "FAIL: ledger rows did not outlive the users"; exit 1; }
 echo "w16: ok (coupon reserve/redeem + last use, commission pending -> credited, withdrawal, balance full/partial/refund, ledger invariants)"
+# W15: Mailpit is no longer needed; stop sending (nothing to deliver to).
+psql_q "UPDATE smtp_settings SET enabled = false" >/dev/null
+docker rm -f akari-smoke-mailpit >/dev/null 2>&1 || true
+trap 'cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
 
 # W7: plan speed limits are enforced by the agent (protocol 4, per user,
 # both directions). A limit change alone is a UserDelta (no xray rebuild)

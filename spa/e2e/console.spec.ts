@@ -350,3 +350,105 @@ test("W16: coupon + balance purchase (paid without the gateway), console coupons
   expect(uproblems).toEqual([]);
   await ctx.close();
 });
+
+// W15: Mailpit (scripts/e2e.sh) is the SMTP sink; the test reads mail like a user.
+const MAILPIT = process.env.E2E_MAILPIT ?? "";
+const SMTP_PORT = process.env.E2E_SMTP_PORT ?? "";
+async function mailTo(to: string, n: number): Promise<{ subject: string; text: string }> {
+  for (let i = 0; i < 60; i++) {
+    const list = (await (await fetch(`${MAILPIT}/search?query=${encodeURIComponent(`to:${to}`)}`)).json()) as {
+      messages: { ID: string }[];
+    };
+    if (list.messages.length >= n) {
+      const m = (await (await fetch(`${MAILPIT}/message/${list.messages[0].ID}`)).json()) as {
+        Subject: string;
+        Text: string;
+      };
+      return { subject: m.Subject, text: m.Text };
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(`no message #${n} to ${to}`);
+}
+
+// Last: it sets the main domain (reset links need it) and opens registration.
+test("W15: 系统设置 注册/邮件, sign up by email code, reset the password by link", async ({ browser }) => {
+  test.skip(!MAILPIT || !SMTP_PORT, "needs Mailpit (scripts/e2e.sh)");
+  const actx = await browser.newContext({ locale: "zh-CN" });
+  const ap = await actx.newPage();
+  const adminProblems = watch(ap);
+  ap.on("dialog", (d) => void d.accept());
+  await ap.goto(BASE);
+  const next = await nextCode(secret, usedStep);
+  usedStep = next.step;
+  await login(ap, ADMIN, ADMIN_PW, next.code);
+  await expect(ap).toHaveURL(ADMIN_BASE);
+  await ap.goto(`${ADMIN_BASE}/settings`);
+  // 邮件 first (registration needs it), then the main domain, then 注册.
+  await ap.getByLabel("启用邮件发送").check();
+  await ap.getByLabel("SMTP 服务器").fill("127.0.0.1");
+  await ap.getByLabel("加密方式").selectOption("none");
+  await ap.getByLabel("端口", { exact: true }).fill(SMTP_PORT);
+  await ap.getByLabel("用户名").fill("");
+  await ap.getByLabel("发件地址").fill("noreply@e2e.test");
+  await ap.getByRole("button", { name: "保存邮件设置" }).click();
+  await expect(ap.getByText("已保存。").first()).toBeVisible();
+  await ap.getByLabel("发送测试邮件（使用已保存的设置）").fill("admin@e2e.test");
+  await ap.getByRole("button", { name: "发送测试邮件" }).click();
+  await expect(ap.getByText(/测试邮件已发出/)).toBeVisible();
+  expect((await mailTo("admin@e2e.test", 1)).subject).toContain("测试邮件");
+  await ap.locator("#settings-main").fill(new URL(BASE).host);
+  await ap.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(ap.getByText("已保存，所有面板实例已生效。")).toBeVisible();
+  await ap.reload();
+  await ap.getByLabel("开放注册").check();
+  await ap.getByLabel("允许通过邮件找回密码").check();
+  await ap.getByRole("button", { name: "保存注册设置" }).click();
+  await expect(ap.getByText("已保存。").first()).toBeVisible();
+  expect(adminProblems).toEqual([]);
+  await actx.close();
+
+  const ctx = await browser.newContext({ locale: "en-US" });
+  const page = await ctx.newPage();
+  const problems = watch(page);
+  const email = `e2e-${Date.now()}@e2e.test`;
+  await page.goto(BASE);
+  await page.getByRole("link", { name: "Sign up" }).click();
+  await expect(page).toHaveURL(`${BASE}/register`);
+  await page.getByLabel("Email", { exact: true }).fill(email);
+  await page.getByRole("button", { name: "Send code" }).click();
+  await expect(page.getByRole("status")).toContainText("If this address can sign up");
+  const codeMail = await mailTo(email, 1);
+  expect(codeMail.subject).toContain("sign-up code");
+  const code = /\b\d{6}\b/.exec(codeMail.text)?.[0] ?? "";
+  await page.getByLabel("Email code").fill(code);
+  await page.getByLabel("Password", { exact: true }).fill("e2e-password-1");
+  await page.getByLabel("Repeat password").fill("e2e-password-1");
+  await page.getByRole("button", { name: "Sign up" }).click();
+  await expect(page.getByRole("heading", { name: "My account" })).toBeVisible();
+  await expect(page.getByText(`${email} · verified`)).toBeVisible();
+  await page.getByRole("button", { name: "Log out" }).click();
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+
+  await page.getByRole("link", { name: "Forgot password?" }).click();
+  await page.getByLabel("Email").fill(email);
+  await page.getByRole("button", { name: "Send reset link" }).click();
+  await expect(page.getByRole("status")).toContainText("If this address belongs to an account");
+  const resetMail = await mailTo(email, 2);
+  const token = /#token=([A-Za-z0-9_-]{43})/.exec(resetMail.text)?.[1] ?? "";
+  expect(token).toHaveLength(43);
+  await page.goto(`${BASE}/reset#token=${token}`);
+  await expect(page.getByRole("heading", { name: "Choose a new password" })).toBeVisible();
+  await expect.poll(() => new URL(page.url()).hash).toBe(""); // the token left the address bar
+  await page.getByLabel("New password").fill("e2e-password-2");
+  await page.getByLabel("Repeat new password").fill("e2e-password-2");
+  await page.getByRole("button", { name: "Reset password" }).click();
+  await expect(page.getByRole("status")).toContainText("has been reset");
+  await page.getByRole("link", { name: "Back to sign in" }).click();
+  await login(page, email, "e2e-password-1");
+  await expect(page.getByRole("alert")).toBeVisible();
+  await login(page, email, "e2e-password-2");
+  await expect(page.getByRole("heading", { name: "My account" })).toBeVisible();
+  expect(problems).toEqual([]);
+  await ctx.close();
+});

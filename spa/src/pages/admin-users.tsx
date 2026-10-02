@@ -64,6 +64,7 @@ export function AdminUsers() {
             <TableHeader>
               <TableRow>
                 <TableHead>账号</TableHead>
+                <TableHead>邮箱</TableHead>
                 <TableHead>角色</TableHead>
                 <TableHead>套餐</TableHead>
                 <TableHead>流量</TableHead>
@@ -75,14 +76,26 @@ export function AdminUsers() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {users.isPending && <TableNote colSpan={9}>加载中…</TableNote>}
+              {users.isPending && <TableNote colSpan={10}>加载中…</TableNote>}
               {users.isSuccess && rows.length === 0 && (
-                <TableNote colSpan={9}>{page === 0 ? "还没有用户，在上方创建第一个。" : "这一页没有用户。"}</TableNote>
+                <TableNote colSpan={10}>{page === 0 ? "还没有用户，在上方创建第一个。" : "这一页没有用户。"}</TableNote>
               )}
               {rows.map((u) => (
                 <Fragment key={u.id}>
                   <TableRow>
                     <TableCell className="whitespace-nowrap font-medium">{u.login}</TableCell>
+                    <TableCell className="whitespace-nowrap text-xs">
+                      {u.email ? (
+                        <span title={u.email_verified ? "邮箱已验证" : "邮箱未验证：不会收到邮件，也不能用于找回密码"}>
+                          {u.email}{" "}
+                          <Badge variant={u.email_verified ? "secondary" : "outline"}>
+                            {u.email_verified ? "已验证" : "未验证"}
+                          </Badge>
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
                     <TableCell>
                       <Badge variant="secondary">{u.role === "admin" ? "管理员" : "用户"}</Badge>
                     </TableCell>
@@ -130,7 +143,7 @@ export function AdminUsers() {
                   </TableRow>
                   {open === u.id && (
                     <TableRow id={`manage-${u.id}`} className="hover:bg-transparent">
-                      <TableCell colSpan={9} className="bg-muted/30">
+                      <TableCell colSpan={10} className="bg-muted/30">
                         <ManageUser
                           user={u}
                           plans={plans.data ?? []}

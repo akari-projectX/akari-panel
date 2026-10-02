@@ -194,6 +194,11 @@ separate loopback listener, never on the public port.
 |---|---|---|---|
 | POST | /auth/login | — | `{login, password, code?}`: argon2id + TOTP/recovery code, sets session cookie |
 | POST | /auth/logout | — | clears the cookie and ends all of the account's sessions |
+| GET | /auth/options | — | W15: what the login page offers `{register, invite_required, email_domains, reset}` |
+| POST | /auth/register/code | — (registration on) | W15: `{email, invite_code?, locale?}` → `{"ok":true}` for every address (a code by mail, or an "already registered" mail); rate limited per client and address |
+| POST | /auth/register | — (registration on) | W15: `{email, code, password, invite_code?, locale?}` → account (login = address, verified) + session; wrong/expired/used code = 400 `invalid or expired code` |
+| POST | /auth/password-reset/request | — (reset on) | W15: `{email}` → `{"ok":true}` for every address; a 30-minute single-use link goes to a verified address |
+| POST | /auth/password-reset | — (reset on) | W15: `{token, password}`: new password, every session ends |
 | GET | /api/v1/me | user (renewal scope*) | profile + traffic usage; `expired` / `quota_exhausted` (R21) |
 | GET | /api/v1/me/totp | any session | session stage, 2FA state (never the secret) |
 | POST | /api/v1/me/totp/enroll | any session | new pending TOTP secret (shown once) |
@@ -202,6 +207,16 @@ separate loopback listener, never on the public port.
 | POST | /api/v1/me/sub-token | user (role=user) | regenerate own subscription token (5/hour) |
 | GET | /api/v1/me/plan | user | own active plan (or null), usage, enforced limit/expiry, node names + regions |
 | GET | /api/v1/me/nodes | user | W11: own visible nodes — display name, region, tags, multiplier, online, latency (no ids, addresses or machine metrics) |
+| POST | /api/v1/me/email/code | user (renewal scope*) | W15: `{email, password}`: code to the new address (current password required; same answer if the address is taken) |
+| POST | /api/v1/me/email/verify | user (renewal scope*) | W15: `{code}`: the address becomes the account's verified email (a registered login follows it) |
+| PUT | /api/v1/me/locale | user (renewal scope*) | W15: `{locale: zh\|en}`: language of the account's mails |
+| GET/POST | /api/v1/me/invite-codes | user (role=user) | W15: own invite codes, link base, invited count / new code (per-user limit; registration must be open) |
+| DELETE | /api/v1/me/invite-codes/{code} | user (role=user) | W15: delete an invite code |
+| GET/PUT | /api/v1/settings/signup | admin | W15 系统设置 → 注册: registration, invite rules, email domain allow-list, trial plan, password reset (optimistic `version`) |
+| GET/PUT | /api/v1/settings/mail | admin | W15 系统设置 → 邮件: SMTP host/port/security/credentials (password write-only, sealed), sender, notice switches |
+| POST | /api/v1/settings/mail/test | admin | W15: `{to}`: send a test mail now with the saved settings (502 = the server's answer) |
+| GET | /api/v1/mail/outbox | admin | W15: outbox rows `?status=dead\|pending\|sent&before&limit` (no bodies) |
+| POST | /api/v1/mail/outbox/{id}/retry | admin | W15: re-queue a dead letter (not for expired codes/links) |
 | POST | /api/v1/me/password | user/admin | `{current_password, new_password}`: change own password (wrong current = 400, counts against the login rate limit; other sessions end, this one continues) |
 | GET | /api/v1/audit | admin | audit log, `?limit&before&actor&action` (keyset, newest first) |
 | GET/POST | /api/v1/users | admin | list / create users |
@@ -461,6 +476,24 @@ fully or partly from it), invite commissions (pending for a hold period,
 then balance; reversed by a refund) and manually paid-out withdrawals.
 Setup, sandbox testing, notify URL rules and reconciliation:
 [docs/PAYMENTS.md](docs/PAYMENTS.md).
+
+## Registration, password reset and email (W15)
+
+Off by default. In **系统设置 → 邮件** configure SMTP (STARTTLS / SSL/TLS /
+plain for a local relay; the password is stored encrypted with the
+data/totp.key key and never shown again) and send a test mail; then
+**系统设置 → 注册** opens self-service registration (email + 6-digit code,
+optional invite code requirement, optional email domain allow-list,
+optional trial plan for N days) and/or password reset by emailed link
+(needs the main domain). While a feature is off its endpoints are the same
+empty 404 as any unknown path. Requests never wait for SMTP: mails go into
+an outbox that a background sender on any instance delivers with retries;
+failures show up as dead letters under 系统设置. The same outbox carries
+order receipts and, while enabled, plan-expiry reminders (N days before),
+"expired" and traffic 80% / 100% notices (once per event) — only to
+verified addresses, in the account's language (zh/en). Users add or change
+their address in the portal (current password + emailed code) and can log
+in with it. Details: docs/DEPLOY.md §2c.
 
 ## Accounts
 

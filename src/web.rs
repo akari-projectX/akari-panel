@@ -23,6 +23,9 @@ pub fn router(state: AppState) -> Router {
     let routes = Router::new()
         .route("/{prefix}/healthz", get(healthz))
         .merge(crate::billing::routes())
+        // W15: registration / reset / invites / 系统设置 → 注册, 邮件.
+        .merge(crate::signup::routes())
+        .merge(crate::mail::routes())
         // R23: two bundles. The user portal (and shared login) is public;
         // the admin console's index and assets answer admin sessions only
         // (everything else under /admin is the canonical rejection).

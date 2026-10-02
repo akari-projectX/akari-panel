@@ -46,6 +46,10 @@ const MARKERS = [
   ["button 立即测速", /立即测速/],
   ["heading 连接地址", /连接地址/],
   ["admin assets path", /\/admin\/assets\//],
+  // W15
+  ["admin API /mail/outbox", /\/mail\/outbox/],
+  ["button 发送测试邮件", /发送测试邮件/],
+  ["heading 失败邮件", /失败邮件/],
 ];
 const files = (dir) =>
   readdirSync(dir).flatMap((name) => {

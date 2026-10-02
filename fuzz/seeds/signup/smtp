@@ -1,0 +1,1 @@
+{"version":0,"enabled":true,"host":"smtp.example.com","port":587,"security":"starttls","username":"u","password":"p","from_addr":"a@b.cc","from_name":"A","notify_order_paid":true,"notify_expiry_days":3,"notify_expired":true,"notify_quota":true}

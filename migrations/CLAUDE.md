@@ -3,7 +3,7 @@
 sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18）在 `serve`、`node add`、`admin add` 启动时自动执行。
 
 - **只追加，不修改**已存在的迁移文件（sqlx 会校验 checksum，改了已部署环境会拒绝启动）。
-- 命名：`NNNN_<topic>.sql`，四位递增（M3 从 0020 起，0014–0019 留给 M2；R18 并行分段：0030+ 节点表单、0035+ i18n/2FA、0040+ 支付、0050+ 加固；W7 套餐目录 0070–0079；W10 节点证书 0080–0084，W11 0085–0089，W12 0090–0094；W15 注册/邮件 0100–0104；W16 优惠券/余额/返利 0105–0109）。
+- 命名：`NNNN_<topic>.sql`，四位递增（M3 从 0020 起，0014–0019 留给 M2；R18 并行分段：0030+ 节点表单、0035+ i18n/2FA、0040+ 支付、0050+ 加固；W7 套餐目录 0070–0079；W10 节点证书 0080–0084，W11 0085–0089，W12 0090–0094；W15 注册/邮件原定 0100–0104，因 W16 先合并而改为 0110–0114；W16 优惠券/余额/返利 0105–0109）。**不得新增编号小于 main 上已有迁移的文件**。
 - 改列名/加列后，同步检查 `src/` 中所有手写 SQL 与 `FromRow` 结构体（没有编译期 SQL 校验）。
 
 ## 当前表
@@ -43,3 +43,5 @@ sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18）在 `serve`、`n
 0085（W11）：`nodes` 新增 `display_name`（1–64 字符或 NULL）、`sort`（±1e6）、`visible`、`tags`（≤8，无 NULL 元素）、`traffic_rate_permille`（0–100000，默认 1000）、`connect_overrides`（JSON 对象 `{tag: {host?, port?}}`）、`traffic_raw_bytes`/`traffic_billed_bytes`（≥0，FLUSH_SQL 累加）。0086（W11）：`node_metrics_1m`（PK (node_id,bucket)，sum+samples+max 列，fillfactor 70，bucket 索引）与同形的 `node_metrics_1h`，`node_latency`（PK (node_id,source,target)，source agent|panel，`delay_ms` NULL=失败，`error`，`ord`，`measured_at`），`nodes.probe_requested_at`（立即测速，`run_token` 来源）、`panel_probe_next_at`（面板 TCP 测速认领）；均随节点删除级联。迁移号 0085–0089 为 W11 预留，0080–0084 为 W10。
 
 0050（W4 加固）：CHECK 约束——`users.role IN (admin,user)`、`nodes.status IN (pending,online,offline)`、`traffic_used_bytes`/`traffic_limit_bytes`/`traffic_counters.up/down_bytes`/`node_users_departed.billed_bytes` >= 0、`node_users.credentials` 为 JSON 数组。新增 role/status 取值须同时加迁移。迁移号 0050–0059 为加固批次预留；0060–0064 为 W5（系统设置）。
+
+0110（W15 注册/邮件）：`users` 新增 `email`（小写、3–254）、`email_verified_at`（非空要求有 email）、`locale`（zh/en，邮件语言，默认 zh）；`inviter_id` 由 W16 的 0105 建（自引用 SET NULL + 无自邀/无环触发器 AK002），注册事务从邀请码主人写入一次；部分唯一索引 `users_email_verified`（只有已验证地址唯一——管理员填的未验证地址不会挡住真正的主人）。`signup_settings` / `smtp_settings` 单行（id=1）+ `version`（CHECK：启用 SMTP 必须有 host 与发件地址；`security='none'` 不得有用户名）；`email_codes`（PK (purpose, subject)，purpose register|change_email，subject = 地址或用户 id，HMAC、attempts、expires_at、used_at）；`password_resets`（`token_hash` = SHA-256 32 字节 PK、user、发送时的 email、expires_at、used_at）；`invite_codes`（code `[a-z2-9]{8,32}` PK、user 级联、uses）；`mail_outbox`（IDENTITY、kind 枚举、user SET NULL、渲染好的 subject/text/html、status pending/sent/dead（`(status='pending') = (settled_at IS NULL)`）、attempts、next_attempt_at、claimed_until + claim_token（认领租约）、discard_after、last_error；索引：待发 (next_attempt_at,id) 部分索引、已结算 (status, settled_at)）；`user_notices`（PK (user, kind)，kind expiry_soon|expired|quota_80|quota_100，`key` = 到期时刻（微秒）或空串）。保留：outbox 已发 30 天、死信 90 天，验证码/重置令牌过期一天后删除（`mail::sender::maintain`）。

@@ -30,6 +30,16 @@ const KNOWN: Record<string, Parameters<TFunction>[0]> = {
   "amount exceeds the withdrawable balance": "errors.withdrawExceeds",
   "you already have an open withdrawal request": "errors.withdrawOpen",
   "the withdrawal is no longer pending": "errors.withdrawalNotPending",
+  // W15 registration / reset / email / invites
+  "invalid or expired code": "errors.invalidOrExpiredCode",
+  "invalid or expired link": "errors.invalidLink",
+  "email domain not allowed": "errors.domainNotAllowed",
+  "invite code required": "errors.inviteRequired",
+  "invalid invite code": "errors.invalidInvite",
+  "invalid email address": "errors.invalidEmail",
+  "mail sending is not enabled": "errors.mailOff",
+  "invite code limit reached": "errors.inviteLimit",
+  "registration is closed": "errors.registrationClosed",
 };
 
 /** A user-presentable, localized message for a failed request. */
