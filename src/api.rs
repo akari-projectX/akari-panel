@@ -197,7 +197,10 @@ enum Checked {
 
 /// Verify password and second factor with the same work for every kind of
 /// failure. The login name may also be the account's VERIFIED email
-/// address (W15; case-insensitive); an exact login match wins.
+/// address (W15; case-insensitive); an exact login match wins. W24: an
+/// address-shaped input also matches its lower-cased login (accounts that
+/// registered without verification log in with their address, any case),
+/// after an exact login and before a verified address.
 async fn check_credentials(state: &AppState, req: &LoginReq) -> Result<Checked, ApiError> {
     // Expiry applies to role=user only (an admin must never lock themselves
     // out by a date). TOTP state and unused recovery codes come in the same
@@ -210,8 +213,10 @@ async fn check_credentials(state: &AppState, req: &LoginReq) -> Result<Checked, 
                WHERE r.user_id = u.id AND r.used_at IS NULL ORDER BY r.code_hash) AS recovery, \
          EXTRACT(EPOCH FROM now())::bigint AS db_now \
          FROM users u LEFT JOIN user_totp t ON t.user_id = u.id AND t.enabled_at IS NOT NULL \
-         WHERE u.login = $1 OR (u.email = lower($1) AND u.email_verified_at IS NOT NULL) \
-         ORDER BY (u.login = $1) DESC LIMIT 1",
+         WHERE u.login = $1 \
+            OR (strpos($1, '@') > 0 AND u.login = lower($1)) \
+            OR (u.email = lower($1) AND u.email_verified_at IS NOT NULL) \
+         ORDER BY (u.login = $1) DESC, (u.login = lower($1)) DESC LIMIT 1",
         crate::enforce::EXPIRED
     )))
     .bind(&req.login)

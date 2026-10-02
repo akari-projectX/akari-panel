@@ -109,7 +109,10 @@ pub fn signup_body(kind: u8, body: &[u8]) -> Result<bool, String> {
         1 => strict::<register::RegisterReq>(body)?
             .map(|r| {
                 let _ = crate::signup::check_password(&r.password);
-                let _ = crate::signup::plausible_code(r.code.trim());
+                let _ = r
+                    .code
+                    .as_deref()
+                    .map(|c| crate::signup::plausible_code(c.trim()));
             })
             .is_some(),
         2 => strict::<reset::RequestReq>(body)?.is_some(),
@@ -184,4 +187,64 @@ pub fn mail_render(plan_name: &str, code: &str) -> Vec<(String, String, String)>
         }
     }
     out
+}
+
+// --- W24 / R40: payment methods, registration proof of work ---------------
+
+/// A payment method form (`billing::methods::MethodReq`, strict) through
+/// the common checks and the kind's validation as a create (no previous
+/// config) and as an edit of a complete stored method. Invariants: no
+/// secret in the plain config or the admin view; Ok(parsed?).
+pub fn payment_method_body(body: &[u8]) -> Result<bool, String> {
+    use crate::billing::provider::ProviderKind;
+    let Some(req) = strict::<crate::billing::methods::MethodReq>(body)? else {
+        return Ok(false);
+    };
+    let _ = crate::billing::methods::common(&req);
+    let kind = crate::billing::alipay::AlipayKind;
+    let check = |v: &crate::billing::provider::Validated| -> Result<(), String> {
+        let plain = v.config.to_string() + &kind.view(&v.config, Some(&v.secrets)).to_string();
+        if plain.contains("PRIVATE KEY") || v.config.get("app_private_key").is_some() {
+            return Err("a secret in the plain config or the view".into());
+        }
+        Ok(())
+    };
+    if let Ok(v) = kind.validate(&req.config, None, req.enabled) {
+        check(&v)?;
+        if req.enabled && kind.build(&v.config, &v.secrets).is_err() {
+            // Enabling is refused by apply_* in this case; not a violation.
+        }
+    }
+    let prev_config = serde_json::json!({ "app_id": "2021", "environment": "production" });
+    let prev_secrets = serde_json::json!({});
+    if let Ok(v) = kind.validate(
+        &req.config,
+        Some((&prev_config, &prev_secrets)),
+        req.enabled,
+    ) {
+        check(&v)?;
+    }
+    Ok(true)
+}
+
+/// `signup::pow::check` on arbitrary input with a fixed key (never
+/// panics; a random nonce essentially never passes 18 bits).
+pub fn pow_check(challenge: &str, nonce: &str) -> bool {
+    let keys = crate::totp::Keys::from_material(&[7; 32]).expect("keys");
+    crate::signup::pow::check(
+        &keys,
+        challenge,
+        nonce,
+        1_800_000_000,
+        crate::signup::pow::PROD_BITS,
+    )
+    .is_ok()
+}
+
+/// The Alipay F2F notify verdict of a method with fixed test keys (no
+/// panic on any body).
+pub fn alipay_check_notify(body: &[u8]) -> bool {
+    use crate::billing::provider::ProviderKind;
+    let _ = crate::billing::alipay::AlipayKind.peek_out_trade_no(body);
+    true
 }

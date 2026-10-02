@@ -66,6 +66,7 @@ const shopPlan = (over: Partial<Shop["plans"][number]> = {}): Shop["plans"][numb
 
 const shop = (over: Partial<Shop> = {}): Shop => ({
   enabled: true,
+  methods: [{ id: 'm1', kind: 'alipay_f2f', display_name: '支付宝', icon: null }],
   current: null,
   credit_cents: 0,
   balance_cents: 0,
@@ -88,6 +89,9 @@ const order = (over: Partial<MyOrder> = {}): MyOrder => ({
   coupon_code: null,
   balance_cents: 0,
   refunded_at: null,
+  pay_url: null,
+  payment_method_id: "m1",
+  payment_method_name: "支付宝",
   status: "pending",
   qr_code: "https://qr.alipay.com/bax00000000000000000000",
   created_at: "2026-10-02T00:00:00Z",

@@ -85,8 +85,18 @@ export interface ShopPlan {
   offers: Offer[];
 }
 
+/** R40: a payment method the payer can choose (in the admin's order). */
+export interface PayMethod {
+  id: string;
+  kind: string;
+  display_name: string;
+  icon: string | null;
+}
+
 export interface Shop {
   enabled: boolean;
+  // R40: the enabled payment methods; a picker is shown when > 1.
+  methods: PayMethod[];
   current: { plan_id: string; name: string; expires_at: string | null } | null;
   // What the caller's subscription is worth when switching plans.
   credit_cents: number;
@@ -125,6 +135,10 @@ export interface MyOrder {
   status: OrderStatus;
   // Only while pending: the Alipay QR payload (https://qr.alipay.com/...).
   qr_code: string | null;
+  // R40: only while pending, for redirect-style payment methods.
+  pay_url: string | null;
+  payment_method_id: string | null;
+  payment_method_name: string | null;
   created_at: string;
   expires_at: string;
   paid_at: string | null;

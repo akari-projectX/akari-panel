@@ -21,6 +21,7 @@ import {
   type OfferAction,
   type OfferRefusal,
   periodLabel,
+  type PayMethod,
   type PeriodKind,
   type Shop,
   type ShopPlan,
@@ -137,6 +138,9 @@ export function Purchase({ me }: { me: Me }) {
   const [checkout, setCheckout] = useState<{ plan: ShopPlan; offer: Offer } | null>(null);
   const [orderId, setOrderId] = useState<string | null>(null);
 
+  // R40: the chosen payment method (only asked when more than one).
+  const [methodId, setMethodId] = useState<string | null>(null);
+
   async function buy(p: ShopPlan, o: Offer) {
     setError(null);
     setBusy(true);
@@ -147,6 +151,7 @@ export function Purchase({ me }: { me: Me }) {
         period: o.period,
         coupon: coupon || undefined,
         use_balance: useBalance || undefined,
+        method_id: methodId ?? undefined,
       });
       queryClient.setQueryData(["order", order.id], order);
       await queryClient.invalidateQueries({ queryKey: ["my-orders"] });
@@ -283,6 +288,9 @@ export function Purchase({ me }: { me: Me }) {
               plan={checkout.plan}
               offer={checkout.offer}
               current={current?.name ?? null}
+              methods={data?.methods ?? []}
+              methodId={methodId}
+              onMethod={setMethodId}
               busy={busy}
               onConfirm={() => void buy(checkout.plan, checkout.offer)}
               onCancel={closeSheet}
@@ -299,6 +307,9 @@ function CheckoutSummary({
   plan: p,
   offer: o,
   current,
+  methods,
+  methodId,
+  onMethod,
   busy,
   onConfirm,
   onCancel,
@@ -306,6 +317,9 @@ function CheckoutSummary({
   plan: ShopPlan;
   offer: Offer;
   current: string | null;
+  methods: PayMethod[];
+  methodId: string | null;
+  onMethod: (id: string) => void;
   busy: boolean;
   onConfirm: () => void;
   onCancel: () => void;
@@ -339,6 +353,23 @@ function CheckoutSummary({
         <p className="text-sm text-amber-900">{t("checkout.switchNote", { current })}</p>
       )}
       {o.action === "reset" && <p className="text-sm text-muted-foreground">{t("checkout.resetNote")}</p>}
+      {amount > 0 && methods.length > 1 && (
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium">{t("checkout.method")}</legend>
+          {methods.map((m) => (
+            <label key={m.id} className="flex items-center gap-2 text-sm">
+              <input
+                type="radio"
+                name="pay-method"
+                value={m.id}
+                checked={methodId === m.id}
+                onChange={() => onMethod(m.id)}
+              />
+              {m.display_name}
+            </label>
+          ))}
+        </fieldset>
+      )}
       {busy && (
         <p role="status" className="text-sm text-muted-foreground">
           {t("billing.creating")}
@@ -348,7 +379,11 @@ function CheckoutSummary({
         <Button variant="outline" onClick={onCancel}>
           {t("common.cancel")}
         </Button>
-        <Button onClick={onConfirm} disabled={busy} data-autofocus>
+        <Button
+          onClick={onConfirm}
+          disabled={busy || (amount > 0 && methods.length > 1 && !methods.some((m) => m.id === methodId))}
+          data-autofocus
+        >
           {amount > 0 ? t("checkout.pay", { amount: money(amount) }) : t("checkout.confirmFree")}
         </Button>
       </div>
@@ -551,6 +586,19 @@ export function PaymentPanel({ id, onClose }: { id: string; onClose: () => void 
             {t("billing.waiting")} {t("billing.expiresIn", { min: Math.floor(left / 60), sec: left % 60 })}
           </p>
         </div>
+      )}
+      {pending && !o.qr_code && o.pay_url && (
+        <div className="flex flex-col items-center gap-3">
+          <a className="text-sm font-medium underline" href={o.pay_url} target="_blank" rel="noreferrer noopener">
+            {t("billing.openPayment")}
+          </a>
+          <p className="text-xs text-muted-foreground">
+            {t("billing.waiting")} {t("billing.expiresIn", { min: Math.floor(left / 60), sec: left % 60 })}
+          </p>
+        </div>
+      )}
+      {o.payment_method_name && (
+        <p className="text-xs text-muted-foreground">{t("billing.paidWith", { method: o.payment_method_name })}</p>
       )}
       {o.status === "paid" && <p className="text-sm">{o.fulfilled ? t("billing.paid") : t("billing.paidPending")}</p>}
       {o.status === "expired" && <p className="text-sm text-muted-foreground">{t("billing.expired")}</p>}

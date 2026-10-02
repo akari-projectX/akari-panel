@@ -10,7 +10,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { LocaleSwitch, useLocale, useT } from "../i18n";
-import { appBase, register, registerCode, type AuthOptions } from "../lib/api";
+import { appBase, register, registerChallenge, registerCode, type AuthOptions } from "../lib/api";
+import { solvePow } from "../lib/pow";
 import { errorText } from "../lib/errors";
 import { navigate } from "../lib/router";
 
@@ -51,6 +52,9 @@ export function AppLink({ to, children }: { to: string; children: React.ReactNod
 
 export function Register({ options }: { options: AuthOptions }) {
   const t = useT();
+  // W24: without email verification there is no code step; the browser
+  // solves a small proof of work instead (invisible to the visitor).
+  const verify = options.email_verify !== false;
   const locale = useLocale();
   const queryClient = useQueryClient();
   const [email, setEmail] = useState("");
@@ -91,12 +95,25 @@ export function Register({ options }: { options: AuthOptions }) {
     e.preventDefault();
     setError(null);
     if (!email.trim()) return setError(t("register.emailRequired"));
-    if (!/^\d{6}$/.test(code.trim())) return setError(t("register.codeRequired"));
+    if (verify && !/^\d{6}$/.test(code.trim())) return setError(t("register.codeRequired"));
     if (password.length < 8) return setError(t("register.tooShort"));
     if (password !== repeat) return setError(t("register.mismatch"));
+    if (!verify && options.invite_required && !invite.trim()) return setError(t("errors.inviteRequired"));
     setBusy("submit");
     try {
-      await register({ email: email.trim(), code: code.trim(), password, locale, ...inviteBody() });
+      if (verify) {
+        await register({ email: email.trim(), code: code.trim(), password, locale, ...inviteBody() });
+      } else {
+        const ch = await registerChallenge();
+        const nonce = await solvePow(ch.challenge, ch.bits);
+        await register({
+          email: email.trim(),
+          pow: { challenge: ch.challenge, nonce },
+          password,
+          locale,
+          ...inviteBody(),
+        });
+      }
       navigate(appBase);
       await queryClient.invalidateQueries({ queryKey: ["me"] });
     } catch (err) {
@@ -113,7 +130,7 @@ export function Register({ options }: { options: AuthOptions }) {
           <CardTitle>
             <h1>{t("register.title")}</h1>
           </CardTitle>
-          <CardDescription>{t("register.subtitle")}</CardDescription>
+          <CardDescription>{verify ? t("register.subtitle") : t("register.subtitleNoVerify")}</CardDescription>
         </CardHeader>
         <CardContent>
           <form className="space-y-4" onSubmit={submit} noValidate>
@@ -146,38 +163,40 @@ export function Register({ options }: { options: AuthOptions }) {
                 required={options.invite_required}
               />
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="reg-code">{t("register.code")}</Label>
-              <div className="flex gap-2">
-                <Input
-                  id="reg-code"
-                  value={code}
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  maxLength={6}
-                  placeholder={t("register.codePlaceholder")}
-                  onChange={(e) => setCode(e.target.value)}
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="shrink-0"
-                  disabled={busy !== null || cooldown > 0}
-                  onClick={() => void sendCode()}
-                >
-                  {busy === "code"
-                    ? t("register.sending")
-                    : cooldown > 0
-                      ? t("register.resendIn", { sec: cooldown })
-                      : t("register.sendCode")}
-                </Button>
+            {verify && (
+              <div className="space-y-1.5">
+                <Label htmlFor="reg-code">{t("register.code")}</Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="reg-code"
+                    value={code}
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={6}
+                    placeholder={t("register.codePlaceholder")}
+                    onChange={(e) => setCode(e.target.value)}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="shrink-0"
+                    disabled={busy !== null || cooldown > 0}
+                    onClick={() => void sendCode()}
+                  >
+                    {busy === "code"
+                      ? t("register.sending")
+                      : cooldown > 0
+                        ? t("register.resendIn", { sec: cooldown })
+                        : t("register.sendCode")}
+                  </Button>
+                </div>
+                {sent && (
+                  <p role="status" className="text-xs text-muted-foreground">
+                    {t("register.codeSent")}
+                  </p>
+                )}
               </div>
-              {sent && (
-                <p role="status" className="text-xs text-muted-foreground">
-                  {t("register.codeSent")}
-                </p>
-              )}
-            </div>
+            )}
             <div className="space-y-1.5">
               <Label htmlFor="reg-password">{t("register.password")}</Label>
               <Input

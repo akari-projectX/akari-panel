@@ -136,101 +136,19 @@ impl PanelConfig {
         }
     }
 
-    /// `[payments.alipay]` (R18-3). Key files are checked separately
-    /// (`billing::check_files`, startup and `config check`).
+    /// W24: `[payments]` is obsolete (系统设置 → 支付). Never an error: an
+    /// old file must keep starting.
     fn validate_payments(&self, r: &mut Report) {
-        let a = &self.payments.alipay;
-        if !a.enabled {
-            return;
-        }
-        let p = "payments.alipay";
-        if a.app_id.is_empty()
-            || a.app_id.len() > 32
-            || !a.app_id.bytes().all(|b| b.is_ascii_digit())
-        {
-            r.err(format!("{p}.app_id: required, digits only"));
-        }
-        if !a.seller_id.is_empty()
-            && (a.seller_id.len() > 32 || !a.seller_id.bytes().all(|b| b.is_ascii_digit()))
-        {
-            r.err(format!("{p}.seller_id: digits only (or empty)"));
-        }
-        if a.app_private_key_file.as_os_str().is_empty() {
-            r.err(format!("{p}.app_private_key_file: required"));
-        }
-        if a.alipay_public_key_file.as_os_str().is_empty() {
-            r.err(format!("{p}.alipay_public_key_file: required"));
-        }
-        if !(5..=120).contains(&a.order_timeout_minutes) {
-            r.err(format!("{p}.order_timeout_minutes: must be 5..=120"));
-        }
-        match url_parts(&a.gateway_url) {
-            Some((scheme, host, _)) => {
-                if scheme == "http" && crate::billing::http::is_loopback_host(&host) {
-                    r.warn(format!(
-                        "{p}.gateway_url is plain http on loopback (a mock gateway, not Alipay)"
-                    ));
-                } else if scheme != "https" {
-                    r.err(format!(
-                        "{p}.gateway_url: must be https (http only on loopback)"
-                    ));
-                }
-            }
-            None => r.err(format!("{p}.gateway_url: not a URL")),
-        }
-        // Empty: derived per order from the main domain (billing::notify_url).
-        if a.notify_url.is_empty() {
-            if self.install.public_url.is_empty() {
-                r.warn(format!(
-                    "{p}.notify_url is empty and install.public_url is not set: the notify URL \
-                     is derived from the main domain set in 系统设置; until one is set, orders \
-                     are refused"
-                ));
-            }
-            return;
-        }
-        // An explicit one on another host than install.public_url (the
-        // database main domain is compared by `config check`/系统设置).
-        let main_host = url_parts(&self.install.public_url).map(|(_, h, _)| {
-            h.trim_start_matches('[')
-                .trim_end_matches(']')
-                .to_ascii_lowercase()
-        });
-        if let Some(n) = crate::billing::notify_host_mismatch(self, main_host.as_deref()) {
-            r.warn(format!(
-                "{p}.notify_url points at {n}, not the main domain (install.public_url): Alipay \
-                 notifies go there. Leave notify_url empty to derive it from the main domain"
-            ));
-        }
-        // The message never echoes notify_url: it contains the route prefix.
-        match url_parts(&a.notify_url) {
-            Some((scheme, _, path)) => {
-                if !matches!(scheme.as_str(), "http" | "https") {
-                    r.err(format!("{p}.notify_url: must be http(s)"));
-                } else if scheme == "http" {
-                    r.warn(format!(
-                        "{p}.notify_url is plain http: Alipay delivers notifies over the \
-                         internet; use https in production"
-                    ));
-                }
-                let segs: Vec<&str> = path.split('/').collect();
-                if segs.len() != 5
-                    || !segs[0].is_empty()
-                    || segs[1].is_empty()
-                    || segs[2..] != ["pay", "alipay", "notify"]
-                {
-                    r.err(format!(
-                        "{p}.notify_url: path must be /<route prefix>/pay/alipay/notify \
-                         (no query, no extra segments)"
-                    ));
-                }
-            }
-            None => r.err(format!("{p}.notify_url: not an absolute URL")),
+        if self.payments.is_some() {
+            r.warn(
+                "[payments] is obsolete: Alipay is configured in 系统设置 → 支付 (database). \
+                 The section was imported once into an empty payment configuration and is \
+                 otherwise ignored; delete it (and the key files) from panel.toml"
+                    .to_string(),
+            );
         }
     }
 
-    /// R22: panel.toml defaults of the system settings and the Caddy ask
-    /// listener.
     fn validate_settings_defaults(&self, r: &mut Report) {
         if !self.web.sub_domain.is_empty()
             && let Err(e) = crate::settings::Domain::parse(&self.web.sub_domain)
@@ -513,23 +431,8 @@ impl PanelConfig {
         let mut c = self.clone();
         c.database_url = redact_url(&c.database_url);
         c.valkey_url = redact_url(&c.valkey_url);
-        if !c.payments.alipay.notify_url.is_empty() {
-            // Carries the secret route prefix.
-            c.payments.alipay.notify_url = "***".into();
-        }
         Ok(toml::to_string_pretty(&c)?)
     }
-}
-
-/// (scheme, host, path) of an absolute URL without query/fragment/userinfo.
-fn url_parts(u: &str) -> Option<(String, String, String)> {
-    let uri: axum::http::Uri = u.parse().ok()?;
-    let scheme = uri.scheme_str()?.to_ascii_lowercase();
-    let auth = uri.authority()?;
-    if auth.as_str().contains('@') || uri.query().is_some() || u.contains('#') {
-        return None;
-    }
-    Some((scheme, auth.host().to_string(), uri.path().to_string()))
 }
 
 /// Filesystem checks of `data_dir`: it must be (or be creatable as) a

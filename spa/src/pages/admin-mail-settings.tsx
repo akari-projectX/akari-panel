@@ -23,6 +23,9 @@ export interface SignupView {
   trial_plan_id: string | null;
   trial_days: number;
   reset_enabled: boolean;
+  // W24: null = 自动（已启用邮件发送时验证）。
+  email_verify: boolean | null;
+  email_verify_effective: boolean;
   mail_enabled: boolean;
   public_origin: string | null;
   warnings: string[];
@@ -181,6 +184,9 @@ function SignupForm({ data, saved, onSaved }: FormProps<SignupView>) {
   const [trialPlan, setTrialPlan] = useState(data.trial_plan_id ?? "");
   const [trialDays, setTrialDays] = useState(String(data.trial_days));
   const [reset, setReset] = useState(data.reset_enabled);
+  const [verify, setVerify] = useState<"auto" | "on" | "off">(
+    data.email_verify == null ? "auto" : data.email_verify ? "on" : "off",
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -203,6 +209,7 @@ function SignupForm({ data, saved, onSaved }: FormProps<SignupView>) {
         trial_plan_id: trialPlan || null,
         trial_days: days,
         reset_enabled: reset,
+        email_verify: verify === "auto" ? null : verify === "on",
       });
       onSaved(res.version);
       qc.setQueryData(["settings-signup"], res);
@@ -220,8 +227,8 @@ function SignupForm({ data, saved, onSaved }: FormProps<SignupView>) {
           <h2>注册</h2>
         </CardTitle>
         <CardDescription>
-          开放用户自助注册（邮箱 + 验证码）与通过邮件找回密码。两者默认关闭，开启前需先启用下方的邮件发送；
-          找回密码的链接使用主域名{data.public_origin ? `（${data.public_origin}）` : "（尚未设置）"}。
+          开放用户自助注册与通过邮件找回密码，两者默认关闭。未配置邮件发送时也可以开放注册（邮箱 + 密码，不验证邮箱）；
+          找回密码需要邮件发送，链接使用主域名{data.public_origin ? `（${data.public_origin}）` : "（尚未设置）"}。
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -235,6 +242,24 @@ function SignupForm({ data, saved, onSaved }: FormProps<SignupView>) {
             hint="登录页显示「注册」。新用户的账号即邮箱，注册后可直接登录。"
           />
           <div className="space-y-3 pl-6">
+            <div className="space-y-1.5">
+              <Label htmlFor="su-verify">注册需要邮箱验证</Label>
+              <select
+                id="su-verify"
+                className="h-9 rounded-lg border border-border bg-transparent px-3 text-sm"
+                value={verify}
+                onChange={(e) => setVerify(e.target.value as "auto" | "on" | "off")}
+              >
+                <option value="auto">自动（已启用邮件发送时验证）</option>
+                <option value="on">需要（发送验证码）</option>
+                <option value="off">不需要</option>
+              </select>
+              <p className="text-xs text-muted-foreground">
+                当前：{data.email_verify_effective ? "需要邮箱验证码" : "不验证邮箱"}。不验证时用户直接以邮箱 +
+                密码注册，邮箱为「未验证」状态（不能用于找回密码，配置邮件后可在账户页验证，管理员也可在用户详情中标记为已验证）；
+                防滥用由内置人机校验（浏览器自动完成，用户无感）与按 IP / 邮箱的频率限制负责。
+              </p>
+            </div>
             <Check
               id="su-invite"
               label="必须使用邀请码"

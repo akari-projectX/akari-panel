@@ -307,7 +307,7 @@ pub async fn list_prices(
     .fetch_all(state.pg())
     .await?;
     Ok(Json(json!({
-        "payments_enabled": state.alipay().is_some(),
+        "payments_enabled": state.payments().any_usable(),
         "plans": rows,
     })))
 }

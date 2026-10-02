@@ -191,10 +191,6 @@ fn validate_startup(cfg: &PanelConfig) -> Result<Vec<String>> {
     if let Err(e) = config_check::check_data_dir(&cfg.data_dir) {
         report.errors.push(e);
     }
-    // R18-3: key files (presence, mode 0600, parse) when payments are on.
-    if let Err(e) = akari_panel::billing::load(cfg) {
-        report.errors.push(e);
-    }
     report.into_result()
 }
 
@@ -241,9 +237,6 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
         "akari starting"
     );
     let install = install::ensure(&cfg)?;
-    akari_panel::billing::check_notify_prefix(&cfg, &install.route_prefix)
-        .map_err(anyhow::Error::msg)?;
-    let alipay = akari_panel::billing::load(&cfg).map_err(anyhow::Error::msg)?;
 
     let pg = sqlx::postgres::PgPoolOptions::new()
         .max_connections(16)
@@ -254,13 +247,17 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
 
     let valkey = state::connect_valkey(&cfg).await?;
     let state = state::AppState::new(cfg.clone(), install, pg, valkey);
-    if let Some(a) = alipay {
-        state.set_alipay(a);
-    }
+    // W24: an obsolete panel.toml [payments.alipay] is imported once into
+    // an empty 系统设置 → 支付 (never an error; warned either way).
+    akari_panel::billing::methods::import_legacy(&state).await;
     // R22: database settings and the gRPC certificate covering every
     // recorded server name, before any agent can connect.
     akari_panel::settings::init(&state).await?;
-    for w in state.settings().get().standing_warnings(&cfg) {
+    for w in state
+        .settings()
+        .get()
+        .standing_warnings(state.payments().any_usable())
+    {
         tracing::warn!("{w}");
     }
 

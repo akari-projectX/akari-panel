@@ -223,6 +223,7 @@ fn req(domains: &[&str]) -> SignupReq {
         trial_plan_id: None,
         trial_days: 3,
         reset_enabled: false,
+        email_verify: None,
     }
 }
 
@@ -313,12 +314,13 @@ async fn disabled_endpoints_are_the_canonical_rejection() {
         "/test/auth/password-reset",
     ];
     check_rejected(&c, &paths, &canonical).await;
+    check_rejected(&c, &["/test/auth/register/challenge"], &canonical).await;
     let o = c.get("/test/auth/options").await;
     assert_eq!(o.status, StatusCode::OK);
     assert_eq!(
         o.json(),
         json!({ "register": false, "invite_required": false, "email_domains": [], "reset": false,
-                "site_name": "Akari" })
+                "email_verify": false, "site_name": "Akari" })
     );
 
     // Enabled for one feature only: the other stays rejected.
@@ -337,6 +339,8 @@ async fn disabled_endpoints_are_the_canonical_rejection() {
         .post_raw(paths[0], "application/json", b"{not json".to_vec())
         .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST, "enabled: a real 400");
+    // W24: verified mode (mail on) → no challenge endpoint.
+    check_rejected(&c, &["/test/auth/register/challenge"], &canonical).await;
     set_signup(&db, "register_enabled = false, reset_enabled = true").await;
     for p in &paths[..2] {
         assert_eq!(
@@ -1487,5 +1491,500 @@ async fn send_rate_limits() {
             .status,
         StatusCode::TOO_MANY_REQUESTS
     );
+    db.drop().await;
+}
+
+// ---------------------------------------------------------------------------
+// W24: registration without email verification
+// ---------------------------------------------------------------------------
+
+/// A solved proof-of-work for the next unverified registration.
+async fn pow(c: &Client) -> Value {
+    let r = c.get("/test/auth/register/challenge").await;
+    assert_eq!(r.status, StatusCode::OK, "challenge");
+    assert_eq!(r.headers["cache-control"], "no-store");
+    let ch = r.json()["challenge"].as_str().unwrap().to_string();
+    assert_eq!(r.json()["bits"], pow::BITS);
+    let nonce = pow::solve(&ch, pow::BITS);
+    json!({ "challenge": ch, "nonce": nonce })
+}
+
+async fn register_unverified(
+    c: &mut Client,
+    email: &str,
+    password: &str,
+) -> crate::testdb::http::Resp {
+    let p = pow(c).await;
+    c.post(
+        "/test/auth/register",
+        json!({ "email": email, "password": password, "pow": p }),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn registration_without_verification() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = state(&db).await;
+    // No SMTP at all: registration can still be switched on (auto = off).
+    let admin = db.admin().await;
+    let ca = crate::testdb::http::client_for(&st, admin).await;
+    let mut r = req(&[]);
+    r.trial_days = 1;
+    let r = ca
+        .req(
+            Method::PUT,
+            "/test/api/v1/settings/signup",
+            Some(serde_json::to_value(SignupReqJson::from(&r)).unwrap()),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["email_verify"], Value::Null);
+    assert_eq!(r.json()["email_verify_effective"], false);
+    assert!(r.json()["warnings"].to_string().contains("注册不验证邮箱"));
+
+    let mut c = Client::new(&st, rand_ip());
+    let canonical = c.get("/test/definitely/not/here").await.fingerprint();
+    let o = c.get("/test/auth/options").await.json();
+    assert_eq!(
+        (o["register"].clone(), o["email_verify"].clone()),
+        (json!(true), json!(false))
+    );
+    // The code step does not exist in this mode.
+    check_rejected(&c, &["/test/auth/register/code"], &canonical).await;
+
+    let email = addr();
+    let upper = email.to_uppercase();
+    let r = register_unverified(&mut c, &upper, "correct horse").await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["login"], email);
+    assert_eq!(r.json()["email_verified"], false);
+    c.cookie = r.session_cookie();
+    let me = c.get("/test/api/v1/me").await.json();
+    assert_eq!(me["email"], email);
+    assert_eq!(me["email_verified"], false);
+    let id = user_id(&db, &email).await;
+    let audit: Value = sqlx::query_scalar(
+        "SELECT after FROM audit_log WHERE action = 'user.register' AND target_id = $1",
+    )
+    .bind(id.to_string())
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit["email_verified"], false);
+    assert_eq!(audit["password"], "changed");
+    assert_eq!(mail_count(&db, &email).await, 0, "nothing is mailed");
+
+    // Logs in with the address as login, any case.
+    for l in [&email, &upper] {
+        let mut c2 = Client::new(&st, rand_ip());
+        assert_eq!(
+            c2.login(l, "correct horse", None).await.status,
+            StatusCode::OK,
+            "{l}"
+        );
+    }
+
+    // The same address again (any case), another account's login or
+    // VERIFIED address: one generic answer.
+    let other = with_password(&db, "pw-of-other").await;
+    let taken_verified = addr();
+    verified(&db, other, &taken_verified).await;
+    let login_like = addr();
+    sqlx::query("UPDATE users SET login = $2 WHERE id = $1")
+        .bind(db.user().await)
+        .bind(&login_like)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    for a in [&email, &upper, &taken_verified, &login_like] {
+        let r = register_unverified(&mut Client::new(&st, rand_ip()), a, "whatever pw").await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{a}");
+        assert_eq!(r.json()["code"], "signup.unavailable", "{a}");
+        assert!(r.session_cookie().is_none());
+    }
+    // An UNVERIFIED address of another account does not block (only
+    // verified addresses are owned).
+    let squat = addr();
+    sqlx::query("UPDATE users SET email = $2, email_verified_at = NULL WHERE id = $1")
+        .bind(other)
+        .bind(&squat)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let r = register_unverified(&mut Client::new(&st, rand_ip()), &squat, "pw squat ok").await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+
+    // Proof of work: missing, wrong, replayed, forged.
+    let c3 = Client::new(&st, rand_ip());
+    let r = c3
+        .post(
+            "/test/auth/register",
+            json!({ "email": addr(), "password": "long enough" }),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "signup.challenge_invalid");
+    let p = pow(&c3).await;
+    let r = c3
+        .post(
+            "/test/auth/register",
+            json!({ "email": addr(), "password": "long enough",
+                    "pow": { "challenge": p["challenge"], "nonce": "zzzzzz" } }),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "signup.challenge_invalid");
+    let r = c3
+        .post(
+            "/test/auth/register",
+            json!({ "email": addr(), "password": "long enough", "pow": p }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let r = c3
+        .post(
+            "/test/auth/register",
+            json!({ "email": addr(), "password": "long enough", "pow": p }),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "signup.challenge_invalid", "single use");
+    let forged = crate::totp::Keys::from_material(&[9; 32]).unwrap();
+    let ch = pow::issue(&forged, chrono::Utc::now().timestamp());
+    let r = c3
+        .post(
+            "/test/auth/register",
+            json!({ "email": addr(), "password": "long enough",
+                    "pow": { "challenge": ch, "nonce": pow::solve(&ch, pow::BITS) } }),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "signup.challenge_invalid", "foreign key");
+    // Request validation (no account involved).
+    let r = register_unverified(&mut Client::new(&st, rand_ip()), "nope", "long enough").await;
+    assert_eq!(r.json()["code"], "signup.invalid_email");
+    let r = register_unverified(&mut Client::new(&st, rand_ip()), &addr(), "short").await;
+    assert_eq!(r.json()["code"], "account.password_too_short");
+
+    // Invite required + domain allow-list keep working.
+    set_signup(
+        &db,
+        "invite_required = true, email_domains = '{allowed.example}'",
+    )
+    .await;
+    let r = register_unverified(&mut Client::new(&st, rand_ip()), &addr(), "long enough").await;
+    assert_eq!(r.json()["code"], "signup.domain_not_allowed");
+    let r = register_unverified(
+        &mut Client::new(&st, rand_ip()),
+        "x1@allowed.example",
+        "long enough",
+    )
+    .await;
+    assert_eq!(r.json()["code"], "signup.invite_required");
+    sqlx::query("INSERT INTO invite_codes (code, user_id) VALUES ('w24invite', $1)")
+        .bind(id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let mut c4 = Client::new(&st, rand_ip());
+    let p = pow(&c4).await;
+    let r = c4
+        .post(
+            "/test/auth/register",
+            json!({ "email": "x2@allowed.example", "password": "long enough", "pow": p,
+                    "invite_code": "W24INVITE" }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["invited"], true);
+    c4.cookie = r.session_cookie();
+    let inviter: Option<Uuid> =
+        sqlx::query_scalar("SELECT inviter_id FROM users WHERE login = 'x2@allowed.example'")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(inviter, Some(id));
+
+    // Explicit verification ON without SMTP: refused (409 mail_off).
+    let mut v = req(&[]);
+    v.version = sqlx::query_scalar("SELECT version FROM signup_settings")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    v.email_verify = Some(true);
+    let r = ca
+        .req(
+            Method::PUT,
+            "/test/api/v1/settings/signup",
+            Some(serde_json::to_value(SignupReqJson::from(&v)).unwrap()),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "signup_admin.mail_off");
+    // With SMTP on, auto = verification: the challenge endpoint closes, the
+    // code endpoint opens.
+    enable_mail(&db).await;
+    check_rejected(&c, &["/test/auth/register/challenge"], &canonical).await;
+    assert_eq!(
+        c.get("/test/auth/options").await.json()["email_verify"],
+        true
+    );
+    // Explicitly OFF with SMTP on: back to this mode.
+    set_signup(&db, "email_verify = false").await;
+    assert_eq!(
+        c.get("/test/auth/options").await.json()["email_verify"],
+        false
+    );
+    db.drop().await;
+}
+
+/// The settings request as JSON (SignupReq is Deserialize only).
+#[derive(serde::Serialize)]
+struct SignupReqJson {
+    version: i64,
+    register_enabled: bool,
+    invite_required: bool,
+    invite_single_use: bool,
+    invite_codes_per_user: i32,
+    email_domains: Vec<String>,
+    trial_plan_id: Option<Uuid>,
+    trial_days: i32,
+    reset_enabled: bool,
+    email_verify: Option<bool>,
+}
+
+impl From<&SignupReq> for SignupReqJson {
+    fn from(r: &SignupReq) -> Self {
+        Self {
+            version: r.version,
+            register_enabled: r.register_enabled,
+            invite_required: r.invite_required,
+            invite_single_use: r.invite_single_use,
+            invite_codes_per_user: r.invite_codes_per_user,
+            email_domains: r.email_domains.clone(),
+            trial_plan_id: r.trial_plan_id,
+            trial_days: r.trial_days,
+            reset_enabled: r.reset_enabled,
+            email_verify: r.email_verify,
+        }
+    }
+}
+
+/// Concurrent unverified registrations of one address (any case): exactly
+/// one account, every other attempt the generic answer.
+#[tokio::test]
+async fn racing_unverified_registrations() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = state(&db).await;
+    set_signup(&db, "register_enabled = true").await;
+    let s = load_settings(&mut db.pool.acquire().await.unwrap())
+        .await
+        .unwrap();
+    let email = addr();
+    let hash = crate::auth::hash_password("long enough").unwrap();
+    let mut tasks = Vec::new();
+    for _ in 0..8 {
+        let (st, s, email, hash) = (st.clone(), s.clone(), email.clone(), hash.clone());
+        tasks.push(tokio::spawn(async move {
+            let mut tx = st.pg().begin().await.unwrap();
+            let r = register::apply_register_unverified(
+                &mut tx,
+                &s,
+                &register::Unverified {
+                    addr: &email,
+                    password_hash: &hash,
+                    invite_code: None,
+                    locale: Locale::Zh,
+                    ip: None,
+                },
+            )
+            .await;
+            match r {
+                Ok(_) => {
+                    tx.commit().await.unwrap();
+                    Ok(())
+                }
+                Err(e) => Err(e.code().to_string()),
+            }
+        }));
+    }
+    let mut ok = 0;
+    for t in tasks {
+        match t.await.unwrap() {
+            Ok(()) => ok += 1,
+            Err(code) => assert_eq!(code, "signup.unavailable"),
+        }
+    }
+    assert_eq!(ok, 1);
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE lower(login) = $1")
+        .bind(&email)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+    // An unverified registration racing a verification of the same address
+    // by another account: whoever is second loses (address lock).
+    let other = with_password(&db, "pw").await;
+    let addr2 = addr();
+    sqlx::query("UPDATE users SET email = $2 WHERE id = $1")
+        .bind(other)
+        .bind(&addr2)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let mut tx = st.pg().begin().await.unwrap();
+    register::apply_register_unverified(
+        &mut tx,
+        &s,
+        &register::Unverified {
+            addr: &addr2,
+            password_hash: &hash,
+            invite_code: None,
+            locale: Locale::Zh,
+            ip: None,
+        },
+    )
+    .await
+    .ok()
+    .unwrap();
+    tx.commit().await.unwrap();
+    // The admin can no longer vouch for that address on the other account
+    // (someone logs in with it).
+    let mut tx = st.pg().begin().await.unwrap();
+    let e = profile::apply_admin_verify(&mut tx, &crate::audit::Actor::test(), other)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), "user.email_exists");
+    drop(tx);
+    db.drop().await;
+}
+
+/// Per-address and per-client limits of unverified registration.
+#[tokio::test]
+async fn unverified_registration_rate_limits() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = state(&db).await;
+    set_signup(&db, "register_enabled = true").await;
+    // Per client: 5 attempts per hour, successful or not.
+    let ip = rand_ip();
+    for i in 0..REGISTER_PER_IP_HOUR {
+        let r = register_unverified(&mut Client::new(&st, ip), &addr(), "long enough").await;
+        assert_eq!(r.status, StatusCode::OK, "attempt {i}: {:?}", r.json());
+    }
+    let r = register_unverified(&mut Client::new(&st, ip), &addr(), "long enough").await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
+    // Per address: 5 attempts per hour from anywhere.
+    let a = addr();
+    let first = register_unverified(&mut Client::new(&st, rand_ip()), &a, "long enough").await;
+    assert_eq!(first.status, StatusCode::OK);
+    for _ in 1..REGISTER_PER_ADDR_HOUR {
+        let r = register_unverified(&mut Client::new(&st, rand_ip()), &a, "long enough").await;
+        assert_eq!(r.json()["code"], "signup.unavailable");
+    }
+    let r = register_unverified(&mut Client::new(&st, rand_ip()), &a, "long enough").await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
+    db.drop().await;
+}
+
+/// An account registered without verification verifies its address later
+/// (once SMTP is on) through the portal's email flow; reset needs it; an
+/// admin can also mark it verified.
+#[tokio::test]
+async fn unverified_account_verifies_later() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = state(&db).await;
+    set_signup(&db, "register_enabled = true, email_verify = false").await;
+    let email = addr();
+    let mut c = Client::new(&st, rand_ip());
+    let r = register_unverified(&mut c, &email, "correct horse").await;
+    assert_eq!(r.status, StatusCode::OK);
+    c.cookie = r.session_cookie();
+    // No mail yet: the portal's verification answers "mail off".
+    let r = c
+        .post(
+            "/test/api/v1/me/email/code",
+            json!({ "email": email, "password": "correct horse" }),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "account.mail_off");
+    // Reset is not for unverified addresses (no mail is queued).
+    enable_mail(&db).await;
+    set_signup(&db, "reset_enabled = true").await;
+    let r = c
+        .post(
+            "/test/auth/password-reset/request",
+            json!({ "email": email }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    settle().await;
+    assert_eq!(mail_count(&db, &email).await, 0);
+    // Verify the same address: code → verified, login unchanged.
+    let r = c
+        .post(
+            "/test/api/v1/me/email/code",
+            json!({ "email": email, "password": "correct horse" }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let (_, body) = wait_mail(&db, "email_code", &email).await;
+    let r = c
+        .post(
+            "/test/api/v1/me/email/verify",
+            json!({ "code": code_in(&body) }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let id = user_id(&db, &email).await;
+    assert_eq!(login_of(&db, id).await, email);
+    assert_eq!(
+        c.get("/test/api/v1/me").await.json()["email_verified"],
+        true
+    );
+    // Admin: mark another unverified account verified (idempotent, audited).
+    let email2 = addr();
+    let r = register_unverified(&mut Client::new(&st, rand_ip()), &email2, "long enough").await;
+    assert_eq!(r.status, StatusCode::OK);
+    let id2 = user_id(&db, &email2).await;
+    let admin = db.admin().await;
+    let ca = crate::testdb::http::client_for(&st, admin).await;
+    for _ in 0..2 {
+        let r = ca
+            .post(&format!("/test/api/v1/users/{id2}/email/verify"), json!({}))
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+        assert_eq!(r.json()["email_verified"], true);
+    }
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'user.email.verify' AND target_id = $1",
+    )
+    .bind(id2.to_string())
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 1);
+    let r = ca
+        .post(
+            &format!("/test/api/v1/users/{}/email/verify", db.user().await),
+            json!({}),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "user.no_email");
+    let r = ca
+        .post(
+            &format!("/test/api/v1/users/{}/email/verify", Uuid::new_v4()),
+            json!({}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    let cu = crate::testdb::http::client_for(&st, id).await;
+    let r = cu
+        .post(&format!("/test/api/v1/users/{id2}/email/verify"), json!({}))
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
     db.drop().await;
 }
