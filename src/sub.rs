@@ -598,7 +598,15 @@ fn render_clash(proxies: &[Proxy]) -> String {
         if p.net.security == "tls" || p.net.security == "reality" {
             out.push_str("    tls: true\n");
             if !p.net.sni.is_empty() {
-                out.push_str(&format!("    servername: {}\n", p.net.sni));
+                // mihomo reads the SNI of trojan from `sni` (vless/vmess:
+                // `servername`); a wrong key silently falls back to the
+                // server address, and verification fails (W10 smoke).
+                let key = if p.protocol == "trojan" {
+                    "sni"
+                } else {
+                    "servername"
+                };
+                out.push_str(&format!("    {key}: {}\n", p.net.sni));
             }
         }
         if !p.net.fingerprint.is_empty() {
@@ -1116,7 +1124,7 @@ mod tests {
     password: pw
     network: tcp
     tls: true
-    servername: t.example.com
+    sni: t.example.com
 proxy-groups:
   - name: PROXY
     type: select
@@ -1244,7 +1252,7 @@ rules:
         for want in [
             "  - name: \"N · rx\"\n    type: vless\n    server: n.example.com\n    port: 443\n    uuid: 11111111-1111-1111-1111-111111111111\n    network: xhttp\n    tls: true\n    servername: www.apple.com\n    client-fingerprint: chrome\n    reality-opts:\n      public-key: PUB\n      short-id: ab\n    xhttp-opts:\n      path: /xh\n      mode: stream-one\n",
             "    network: ws\n    tls: true\n    servername: n.example.com\n    ws-opts:\n      path: /up\n      headers:\n        Host: n.example.com\n      v2ray-http-upgrade: true\n",
-            "    type: trojan\n    server: n.example.com\n    port: 2087\n    password: tp\n    network: grpc\n    tls: true\n    servername: n.example.com\n    grpc-opts:\n      grpc-service-name: svc\n",
+            "    type: trojan\n    server: n.example.com\n    port: 2087\n    password: tp\n    network: grpc\n    tls: true\n    sni: n.example.com\n    grpc-opts:\n      grpc-service-name: svc\n",
             "    type: vmess\n    server: n.example.com\n    port: 2096\n    uuid: 33333333-3333-3333-3333-333333333333\n    alterId: 0\n    cipher: auto\n    network: grpc\n    grpc-opts:\n      grpc-service-name: vs\n",
             "  - name: \"N · ss\"\n    type: ss\n    server: n.example.com\n    port: 8388\n    cipher: 2022-blake3-aes-128-gcm\n    password: \"+/+/+/+/+/+/+/+/+/+/+w==:dXNlcmtleXVzZXJrZXkxMg==\"\n    udp: true\n",
             "  - name: \"N · hy\"\n    type: hysteria2\n    server: n.example.com\n    port: 443\n    password: a1b2\n    sni: n.example.com\n    alpn:\n      - h3\n",
