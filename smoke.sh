@@ -1739,6 +1739,7 @@ GOT304=""
 for _ in $(seq 1 10); do
   code -D "$LOG/sum.h" -b "$JAR" "$BASE/api/v1/nodes?view=summary" >/dev/null
   ETAG=$(tr -d '\r' <"$LOG/sum.h" | awk -F': ' 'tolower($1)=="etag"{print $2}')
+  : >/tmp/akari-smoke/last # curl -o leaves the file alone when there is no body
   if [ "$(code -b "$JAR" -H "If-None-Match: $ETAG" "$BASE/api/v1/nodes?view=summary")" = "304" ]; then
     [ ! -s /tmp/akari-smoke/last ] || { echo "FAIL: 304 with a body"; exit 1; }
     GOT304=1; break
