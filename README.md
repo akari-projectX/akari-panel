@@ -52,6 +52,14 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   admin override. Periodic traffic resets re-enable users disabled only for
   quota. Users see their plan, usage, next reset, expiry and node list
   (names/regions) in the portal and can change their password.
+- **Support and alerts (W17)**: customer tickets (工单: categories,
+  priorities, threaded replies, unread markers, close/reopen/assign; another
+  user's ticket is indistinguishable from an unknown path) and node alerts
+  (offline, CPU/memory over time, disk, failing latency tests, expiring
+  certificates, failed applies; one evaluator at a time, dedupe, cooldown,
+  mute; Telegram bot, HMAC-signed webhook, email via the SMTP outbox) with
+  an alert center in the console; Prometheus rules and a fleet dashboard in
+  `deploy/` (docs/DEPLOY.md §4b).
 - **Plan catalogue (W7)**: prices per period (month / quarter / half-year /
   year / two / three years / custom days / one-time / traffic reset pack),
   a Markdown-lite description, stock (max subscribers), renewal-only and
@@ -228,7 +236,9 @@ separate loopback listener, never on the public port.
 | PATCH/DELETE | /api/v1/node-groups/{id} | admin | rename, describe, replace `node_ids` / delete |
 | GET/POST | /api/v1/plans | admin | list / create `{name, period, traffic_quota_bytes?, speed_limit_mbps?, device_seats?, sort?, enabled?, group_ids?, description?, capacity?, renewal_only?, allow_switch_in?}` (views include `on_sale` and `prices`) |
 | PATCH/DELETE | /api/v1/plans/{id} | admin | update (same fields; null clears nullable ones) / delete (409 while users hold it) |
-| GET/POST | /api/v1/nodes | admin | node list with live status, certificate expiry, last heartbeat (W11: machine status, latency, multiplier, tags, groups), warnings / create a node `{name, region?, server_addr?, tls_domain?, templates? \| inbounds?, install?: {origin?}, display_name?, sort?, visible?, tags?, traffic_rate?, connect_overrides?, group_ids?}` (201: one-time enrollment token + bootstrap file + one-line install command, shown once) |
+| GET/POST | /api/v1/nodes | admin | W17: `?view=summary` = the list's columns only (no inbounds JSON, slim heartbeat, best agent latency, `alerts_firing`, `needs_certificate`), with an ETag (`If-None-Match` → 304; `?view=full`, the default, also carries one); full: node list with live status, certificate expiry, last heartbeat (W11: machine status, latency, multiplier, tags, groups), warnings / create a node `{name, region?, server_addr?, tls_domain?, templates? \| inbounds?, install?: {origin?}, display_name?, sort?, visible?, tags?, traffic_rate?, connect_overrides?, group_ids?}` (201: one-time enrollment token + bootstrap file + one-line install command, shown once) |
+| GET | /api/v1/nodes/{id} | admin | W17: one node, full view (the node page) |
+| GET/PUT | /api/v1/nodes/{id}/alert-rules | admin | W17: per-node alert overrides `{muted, disabled: [kind], offline_secs?, cpu_percent?, cpu_minutes?, mem_percent?, mem_minutes?, disk_percent?, cert_days?}` (null = the global value) |
 | POST | /api/v1/nodes/{id}/install | admin | new one-line install command `{origin?}` (re-install; replaces the node's unused token) |
 | GET | /api/v1/inbound-templates | admin | template choices (REALITY dests, fingerprints) |
 | POST | /api/v1/inbound-templates/render | admin | templates → xray inbounds JSON (fresh REALITY keys; nothing stored; `tls_domain` = the node's TLS domain, default certificate domain) |
@@ -265,6 +275,19 @@ separate loopback listener, never on the public port.
 | GET/PUT | /api/v1/commission-settings | admin | W16: `{enabled, rate_percent, first_order_only, hold_days, min_withdrawal_cents}` |
 | GET | /api/v1/withdrawals | admin | W16: withdrawal requests `?status&login&limit` |
 | POST | /api/v1/withdrawals/{id}/approve \| reject | admin | W16: `{payout_reference, note?}` after paying out by hand / `{reason}` (amount back to the balance) |
+| GET/POST | /api/v1/me/tickets | user (renewal scope*) | W17: own tickets (unread markers) / open `{subject, category, priority?, message, order_id?, node_id?}` (5/hour, at most 5 not closed) |
+| GET | /api/v1/me/tickets/{id} | user (renewal scope*) | W17: own ticket + messages (staff shown as staff, never by login); marks replies read. Anyone else's / unknown / malformed id = the canonical rejection |
+| POST | /api/v1/me/tickets/{id}/replies \| close | user (renewal scope*) | W17: `{message}` (30/hour; 409 when closed) / close |
+| GET | /api/v1/tickets | admin | W17: queue `?status=open\|answered\|closed\|active&category&priority&assignee=me\|none\|<id>&unread=true&q&page` + open/unread counters |
+| GET | /api/v1/tickets/{id} | admin | W17: ticket + thread (marks the customer's messages read) |
+| POST | /api/v1/tickets/{id}/replies \| close \| reopen | admin | W17: `{message, close?}` / close / reopen |
+| PUT | /api/v1/tickets/{id}/assignee | admin | W17: `{assignee_id}` (an enabled admin, or null) |
+| GET | /api/v1/admins, /api/v1/admin-badges | admin | W17: assignable admins; console counters (unread tickets, firing alerts) |
+| GET | /api/v1/alerts | admin | W17: alert center `?status=firing\|resolved&node&kind&before&limit` + `firing` counts by kind |
+| POST | /api/v1/alerts/{id}/ack | admin | W17: acknowledge (audited once) |
+| GET/PUT | /api/v1/alerts/settings | admin | W17: thresholds and channels (Telegram bot, signed webhook, email); secrets write-only (`*_set` flags), `version` for optimistic concurrency (409) |
+| POST | /api/v1/alerts/test | admin | W17: `{channel}` sends a test message through the saved configuration, `{ok, error?}` |
+| GET | /api/v1/alerts/notifications | admin | W17: the last 100 deliveries; `POST …/{id}/retry` requeues a dead one |
 | POST | /pay/alipay/notify | Alipay signature | Alipay async notify (RSA2); every refusal = the canonical rejection; see docs/PAYMENTS.md |
 | GET | /sub/{token} | token | subscription (UA-based format) |
 | GET | /install/{token}[/agent/{arch}] | install link | node install script / agent binary while the link is live (docs/DEPLOY.md §3) |

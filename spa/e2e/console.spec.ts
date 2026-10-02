@@ -222,6 +222,8 @@ test("admin with 2FA: password alone refused, TOTP code accepted", async ({ brow
     ["orders", "订单", "订单"],
     ["coupons", "优惠券", "优惠券"],
     ["finance", "资金", "提现审核"],
+    ["tickets", "工单", "工单管理"],
+    ["alerts", "告警", "告警中心"],
     ["updates", "更新", "灰度更新"],
     ["plans", "套餐", "套餐"],
     ["settings", "系统设置", "系统设置"],
@@ -370,6 +372,76 @@ async function mailTo(to: string, n: number): Promise<{ subject: string; text: s
   }
   throw new Error(`no message #${n} to ${to}`);
 }
+
+test("W17: ticket both sides (portal zh/en, console desk), alert center settings", async ({ browser }) => {
+  test.skip(!secret, "needs the enrollment test");
+  // User opens a ticket in the portal.
+  const uctx = await browser.newContext({ locale: "zh-CN" });
+  const user = await uctx.newPage();
+  const uproblems = watch(user);
+  const urls = requests(user);
+  await user.goto(BASE);
+  await login(user, USER, USER_PW);
+  await expect(user.getByRole("heading", { name: "工单" })).toBeVisible();
+  await user.getByRole("button", { name: "新建工单" }).click();
+  await user.getByLabel("标题").fill("e2e：节点连不上");
+  await user.getByLabel("分类").selectOption("technical");
+  await user.getByLabel("问题描述").fill("e2e 工单内容\n第二行");
+  await user.getByRole("button", { name: "提交工单" }).click();
+  await expect(user.getByRole("status").filter({ hasText: "工单已提交" })).toBeVisible();
+  await expect(user.getByText("第二行")).toBeVisible();
+
+  // Staff replies from the console.
+  const actx = await browser.newContext({ locale: "zh-CN" });
+  const admin = await actx.newPage();
+  const aproblems = watch(admin);
+  await admin.goto(`${BASE}/tickets`);
+  const next = await nextCode(secret, usedStep);
+  usedStep = next.step;
+  await login(admin, ADMIN, ADMIN_PW, next.code);
+  await expect(admin).toHaveURL(`${ADMIN_BASE}/tickets`);
+  await expect(admin.getByRole("heading", { name: "工单管理" })).toBeVisible();
+  const trow = admin.getByRole("row").filter({ hasText: "e2e：节点连不上" });
+  await expect(trow.getByText("未读")).toBeVisible();
+  await trow.getByRole("button", { name: "处理" }).click();
+  await expect(admin).toHaveURL(new RegExp(`${ADMIN_BASE}/tickets/[0-9a-f-]{36}$`));
+  await expect(admin.getByRole("heading", { name: "e2e：节点连不上" })).toBeVisible();
+  await admin.getByLabel("回复").fill("e2e 客服回复：请重启客户端");
+  await admin.getByRole("button", { name: "回复", exact: true }).click();
+  await expect(admin.getByText("e2e 客服回复：请重启客户端")).toBeVisible();
+  await expect(admin.getByText("已回复", { exact: true }).first()).toBeVisible();
+
+  // Alert center: no alerts (no agents here), settings save, a channel test.
+  await admin.goto(`${ADMIN_BASE}/alerts`);
+  await expect(admin.getByRole("heading", { name: "告警中心" })).toBeVisible();
+  await expect(admin.getByText("当前没有告警。")).toBeVisible();
+  await admin.getByLabel("重复告警冷却（分钟）").fill("45");
+  await admin.getByLabel("CPU 高于（%）").fill("");
+  await admin.getByRole("button", { name: "保存告警设置" }).click();
+  await expect(admin.getByRole("status").filter({ hasText: "已保存。" })).toBeVisible();
+  await admin.reload();
+  await expect(admin.getByLabel("重复告警冷却（分钟）")).toHaveValue("45");
+  await expect(admin.getByLabel("CPU 高于（%）")).toHaveValue("");
+  await admin.getByRole("button", { name: "发送测试" }).nth(1).click();
+  await expect(admin.getByRole("alert").filter({ hasText: "Webhook 测试失败" })).toBeVisible();
+  expect(aproblems).toEqual([]);
+  await actx.close();
+
+  // The user sees the reply (unread), as "Support" in English, and closes.
+  await user.reload();
+  await expect(user.getByText("有新回复")).toBeVisible();
+  await user.getByRole("button", { name: "English" }).click();
+  await expect(user.getByRole("heading", { name: "Support tickets" })).toBeVisible();
+  await user.getByRole("button", { name: "View" }).click();
+  await expect(user.getByText("e2e 客服回复：请重启客户端")).toBeVisible();
+  await expect(user.getByText("Support", { exact: true })).toBeVisible();
+  user.once("dialog", (d) => void d.accept());
+  await user.getByRole("button", { name: "Close ticket" }).click();
+  await expect(user.getByText("This ticket is closed.", { exact: false })).toBeVisible();
+  expect(urls.filter(consoleUrl)).toEqual([]);
+  expect(uproblems).toEqual([]);
+  await uctx.close();
+});
 
 // Last: it sets the main domain (reset links need it) and opens registration.
 test("W15: 系统设置 注册/邮件, sign up by email code, reset the password by link", async ({ browser }) => {
