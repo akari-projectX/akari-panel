@@ -29,8 +29,6 @@ export const zh = {
     server: "服务器出错了，请稍后再试",
     invalidCode: "验证码错误或已使用",
     invalidPassword: "当前密码不正确",
-    loginExists: "该账号已存在",
-    lastAdmin: "不能移除最后一个启用的管理员",
     paymentsOff: "暂不支持在线购买",
     paymentGateway: "支付服务暂时不可用，请稍后重试",
     notForSale: "该套餐当前不可购买",

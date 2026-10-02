@@ -15,3 +15,11 @@ export function navigate(to: string): void {
   history.pushState(null, "", to);
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
+
+/**
+ * A full page load of `to`, replacing the current history entry: the switch
+ * between the portal (/app) and the console (/admin), separate bundles (R23).
+ */
+export function loadPage(to: string): void {
+  location.replace(to);
+}

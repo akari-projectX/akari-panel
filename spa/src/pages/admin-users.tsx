@@ -8,9 +8,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
-import { useT } from "../i18n";
 import { del, get, patch, post, put, type PlanView, type UserNodeView, type UserView } from "../lib/api";
-import { errorText } from "../lib/errors";
+import { adminErrorText } from "../lib/errors";
 import { GIB, humanBytes } from "../lib/utils";
 
 // Admin console (Chinese only, R18).
@@ -24,7 +23,6 @@ const utcDate = (s: string | null) => (s ? s.slice(0, 10) : "");
 const DISABLED_REASON: Record<string, string> = { admin: "管理员停用", quota: "超出流量", expiry: "已到期" };
 
 export function AdminUsers() {
-  const t = useT();
   const [page, setPage] = useState(0);
   const users = useQuery({
     queryKey: ["users", page],
@@ -61,7 +59,7 @@ export function AdminUsers() {
           <CardDescription>账户、角色、套餐与流量。点「管理」编辑用户、查看节点权限或执行其他操作。</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {users.isError && <ErrorText>{errorText(users.error, t)}</ErrorText>}
+          {users.isError && <ErrorText>{adminErrorText(users.error)}</ErrorText>}
           <Table>
             <TableHeader>
               <TableRow>
@@ -183,7 +181,6 @@ function ManageUser({
   onSubToken: (token: string, url?: string | null) => void;
   onClose: () => void;
 }) {
-  const t = useT();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -197,7 +194,7 @@ function ManageUser({
       setNotice(done);
       await queryClient.invalidateQueries({ queryKey: ["users"] });
     } catch (err) {
-      setError(errorText(err, t));
+      setError(adminErrorText(err));
     }
   }
 
@@ -313,7 +310,6 @@ export function userPatch(
 const gibText = (bytes: number | null) => (bytes == null ? "" : String(Number((bytes / GIB).toFixed(3))));
 
 function EditUser({ user }: { user: UserView }) {
-  const t = useT();
   const queryClient = useQueryClient();
   const [role, setRole] = useState(user.role);
   const [enabled, setEnabled] = useState(user.enabled);
@@ -333,7 +329,7 @@ function EditUser({ user }: { user: UserView }) {
       setMsg({ ok: true, text: "已保存。" });
       await queryClient.invalidateQueries({ queryKey: ["users"] });
     } catch (err) {
-      setMsg({ ok: false, text: errorText(err, t) });
+      setMsg({ ok: false, text: adminErrorText(err) });
     }
   }
 
@@ -407,7 +403,6 @@ function EditUser({ user }: { user: UserView }) {
 // Read-only: which nodes the account can use, through which inbounds, and
 // whether each comes from the plan or a manual assignment.
 function UserNodes({ user }: { user: UserView }) {
-  const t = useT();
   const nodes = useQuery({
     queryKey: ["user-nodes", user.id],
     queryFn: () => get<UserNodeView[]>(`/users/${user.id}/nodes`),
@@ -415,7 +410,7 @@ function UserNodes({ user }: { user: UserView }) {
   return (
     <section aria-label={`${user.login} 的节点权限`} className="space-y-2">
       <h3 className="text-sm font-medium">节点权限</h3>
-      {nodes.isError && <ErrorText>{errorText(nodes.error, t)}</ErrorText>}
+      {nodes.isError && <ErrorText>{adminErrorText(nodes.error)}</ErrorText>}
       <Table>
         <TableHeader>
           <TableRow>
@@ -451,7 +446,6 @@ function UserNodes({ user }: { user: UserView }) {
 }
 
 function CreateUser({ onSubToken }: { onSubToken: (login: string, token: string, url?: string | null) => void }) {
-  const t = useT();
   const queryClient = useQueryClient();
   const [login, setLogin] = useState("");
   const [password, setPassword] = useState("");
@@ -479,7 +473,7 @@ function CreateUser({ onSubToken }: { onSubToken: (login: string, token: string,
       setRole("user");
       await queryClient.invalidateQueries({ queryKey: ["users"] });
     } catch (err) {
-      setMsg({ ok: false, text: errorText(err, t) });
+      setMsg({ ok: false, text: adminErrorText(err) });
     }
   }
 
@@ -550,7 +544,6 @@ function CreateUser({ onSubToken }: { onSubToken: (login: string, token: string,
 // Assign / change / cancel a user's plan. Assigning replaces the active
 // plan; the user's node access, quota and expiry follow the plan.
 export function UserPlanForm({ user, plans }: { user: UserView; plans: PlanView[] }) {
-  const t = useT();
   const queryClient = useQueryClient();
   const offered = plans.filter((p) => p.enabled || p.id === user.plan_id);
   const [planId, setPlanId] = useState(user.plan_id ?? offered[0]?.id ?? "");
@@ -576,7 +569,7 @@ export function UserPlanForm({ user, plans }: { user: UserView; plans: PlanView[
       await put(`/users/${user.id}/plan`, body);
       await refresh();
     } catch (err) {
-      setError(errorText(err, t));
+      setError(adminErrorText(err));
     }
   }
 
@@ -593,7 +586,7 @@ export function UserPlanForm({ user, plans }: { user: UserView; plans: PlanView[
       await del(`/users/${user.id}/plan`);
       await refresh();
     } catch (err) {
-      setError(errorText(err, t));
+      setError(adminErrorText(err));
     }
   }
 

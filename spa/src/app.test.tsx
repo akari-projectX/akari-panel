@@ -1,12 +1,21 @@
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { App, viewOf } from "./app";
+import { adminTarget, App } from "./app";
 import { setLocale } from "./i18n";
 import type { Me, TotpStatus } from "./lib/api";
+import { loadPage } from "./lib/router";
 import { fakeApi, renderWithClient } from "./test/harness";
 
-beforeEach(() => window.history.pushState(null, "", "/app/"));
+vi.mock("./lib/router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./lib/router")>()),
+  loadPage: vi.fn(),
+}));
+
+beforeEach(() => {
+  window.history.pushState(null, "", "/app");
+  vi.mocked(loadPage).mockClear();
+});
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -36,15 +45,13 @@ const totp = (over: Partial<TotpStatus>): TotpStatus => ({
   ...over,
 });
 const unauthorized = () => ({ status: 401, body: { error: "unauthorized" } });
-const consoleRoutes = { "GET /users": [], "GET /plans": [], "GET /node-groups": [], "GET /nodes": [] };
 
-describe("viewOf", () => {
-  it("maps paths to admin views", () => {
-    expect(viewOf("/app/")).toBe("users");
-    expect(viewOf("/app/audit")).toBe("audit");
-    expect(viewOf("/app/plans/extra")).toBe("plans");
-    expect(viewOf("/app/nope")).toBe("users");
-    for (const v of ["nodes", "orders", "updates", "account"]) expect(viewOf(`/app/${v}`)).toBe(v);
+describe("adminTarget", () => {
+  it("keeps the sub-path of the portal URL an admin opened", () => {
+    expect(adminTarget("/app")).toBe("/admin");
+    expect(adminTarget("/app/")).toBe("/admin");
+    expect(adminTarget("/app/nodes")).toBe("/admin/nodes");
+    expect(adminTarget("/app/plans/extra")).toBe("/admin/plans/extra");
   });
 });
 
@@ -55,11 +62,21 @@ describe("App session routing", () => {
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeTruthy();
   });
 
-  it("shows the enrollment page only for an enrollment session (require_admin_2fa)", async () => {
+  it("sends an enrollment session (require_admin_2fa) to the console, which owns the enrollment page", async () => {
+    window.history.pushState(null, "", "/app/account");
     fakeApi({ "GET /me": unauthorized, "GET /me/totp": totp({ stage: "enroll", admin_2fa_required: true }) });
     renderWithClient(<App />);
-    expect(await screen.findByRole("heading", { name: "需要开启两步验证" })).toBeTruthy();
-    expect(document.documentElement.lang).toBe("zh-CN");
+    await waitFor(() => expect(loadPage).toHaveBeenCalledWith("/admin/account"));
+    expect(screen.queryByRole("heading", { name: "Sign in" })).toBeNull();
+  });
+
+  it("sends admin sessions to the console (a separate bundle) and renders no console itself", async () => {
+    window.history.pushState(null, "", "/app/audit");
+    fakeApi({ "GET /me": me("admin"), "GET /me/totp": totp({ enabled: true }) });
+    renderWithClient(<App />);
+    await waitFor(() => expect(loadPage).toHaveBeenCalledWith("/admin/audit"));
+    expect(screen.getByRole("status")).toBeTruthy();
+    expect(screen.queryByRole("navigation")).toBeNull();
   });
 
   it("users get the portal in their language", async () => {
@@ -96,37 +113,5 @@ describe("App session routing", () => {
     renderWithClient(<App />);
     expect(await screen.findByText(/used up your traffic/)).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Subscription link" })).toBeNull();
-  });
-
-  it("admins get the Chinese console; deep links, nav and back button follow the URL", async () => {
-    window.history.pushState(null, "", "/app/audit");
-    fakeApi({
-      "GET /me": me("admin"),
-      "GET /me/totp": totp({ enabled: true }),
-      "GET /audit": { entries: [], next_before: null },
-      ...consoleRoutes,
-    });
-    renderWithClient(<App />);
-    expect(await screen.findByRole("heading", { name: "审计日志" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "审计" }).getAttribute("aria-current")).toBe("page");
-    fireEvent.click(screen.getByRole("link", { name: "套餐" }));
-    expect(window.location.pathname).toBe("/app/plans");
-    expect(await screen.findByRole("heading", { name: "套餐" })).toBeTruthy();
-    act(() => window.history.back());
-    await waitFor(() => expect(window.location.pathname).toBe("/app/audit"));
-    expect(await screen.findByRole("heading", { name: "审计日志" })).toBeTruthy();
-    expect(screen.queryByText(/建议开启两步验证/)).toBeNull();
-  });
-
-  it("recommends 2FA to an admin without it; the banner can be dismissed for good", async () => {
-    fakeApi({ "GET /me": me("admin"), "GET /me/totp": totp({}), ...consoleRoutes });
-    const view = renderWithClient(<App />);
-    expect(await screen.findByText(/建议开启两步验证/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "不再提示两步验证建议" }));
-    expect(screen.queryByText(/建议开启两步验证/)).toBeNull();
-    view.unmount();
-    renderWithClient(<App />);
-    expect(await screen.findByRole("heading", { name: "用户" })).toBeTruthy();
-    expect(screen.queryByText(/建议开启两步验证/)).toBeNull();
   });
 });

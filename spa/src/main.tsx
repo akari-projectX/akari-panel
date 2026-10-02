@@ -1,17 +1,7 @@
-import { createRoot } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-
+// User portal entry (/{prefix}/app). Must never import admin modules (R23):
+// the user build fails if any becomes reachable (vite.config.ts) and
+// scripts/check-bundles.mjs greps the emitted files for admin markers.
 import { App } from "./app";
-import "./index.css";
+import { mount } from "./mount";
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: { retry: false, refetchOnWindowFocus: false },
-  },
-});
-
-createRoot(document.getElementById("root")!).render(
-  <QueryClientProvider client={queryClient}>
-    <App />
-  </QueryClientProvider>,
-);
+mount(<App />);

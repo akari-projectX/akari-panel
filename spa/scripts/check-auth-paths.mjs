@@ -34,6 +34,29 @@ if (got !== JSON.stringify(want)) {
 }
 console.log("spa auth paths: ok");
 
+// R23: the admin console (/{prefix}/admin/...) is a separate bundle on the
+// same api.ts: it must derive the same prefix, API and auth bases, and the
+// portal base it sends ended sessions to. (A query string = a fresh module
+// instance that reads the new location.)
+globalThis.location = { pathname: "/pfx0123/admin/nodes" };
+const adminApi = await import("../src/lib/api.ts?admin");
+calls.length = 0;
+await adminApi.get("/me");
+await adminApi.logout();
+const adminWant = [
+  { url: "/pfx0123/api/v1/me", method: "GET" },
+  { url: "/pfx0123/auth/logout", method: "POST" },
+];
+const bases = [api.appBase, api.adminBase, adminApi.appBase, adminApi.adminBase];
+const basesWant = ["/pfx0123/app", "/pfx0123/admin", "/pfx0123/app", "/pfx0123/admin"];
+if (JSON.stringify(calls) !== JSON.stringify(adminWant) || JSON.stringify(bases) !== JSON.stringify(basesWant)) {
+  console.error(
+    `FAIL: console request paths/bases\n  want ${JSON.stringify(adminWant)} ${JSON.stringify(basesWant)}\n  got  ${JSON.stringify(calls)} ${JSON.stringify(bases)}`,
+  );
+  process.exit(1);
+}
+console.log("spa console paths: ok");
+
 // Logout transition: an active "me" observer must end in the error state
 // (-> <Login />) and no other cached query may survive.
 const { QueryClient, QueryObserver } = await import("@tanstack/query-core");

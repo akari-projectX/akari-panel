@@ -1,17 +1,23 @@
 use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // rust-embed requires spa/dist to exist at compile time, but it is
-    // gitignored (build artifact). Drop in a placeholder on fresh clones;
-    // `make spa` replaces it with the real bundle.
-    let dist = Path::new("spa/dist");
-    std::fs::create_dir_all(dist)?;
-    let index = dist.join("index.html");
-    if !index.exists() {
-        std::fs::write(
-            &index,
-            "<!doctype html><html><body>akari panel: frontend not built yet — run `make spa`.</body></html>",
-        )?;
+    // rust-embed requires the bundle folders to exist at compile time, but
+    // spa/dist is gitignored (build artifact). Drop in placeholders on fresh
+    // clones; `make spa` replaces them with the real bundles (R23: the user
+    // portal in spa/dist/app, the admin console in spa/dist/admin).
+    for (dir, file) in [
+        ("spa/dist/app", "index.html"),
+        ("spa/dist/admin", "admin.html"),
+    ] {
+        let dir = Path::new(dir);
+        std::fs::create_dir_all(dir)?;
+        let index = dir.join(file);
+        if !index.exists() {
+            std::fs::write(
+                &index,
+                "<!doctype html><html><body>akari panel: frontend not built yet — run `make spa`.</body></html>",
+            )?;
+        }
     }
     println!("cargo:rerun-if-changed=spa/dist");
     emit_git_sha();

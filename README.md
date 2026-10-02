@@ -106,7 +106,7 @@ src/traffic.rs         delta accounting + limit enforcement
 src/install.rs         CA, server/agent cert issuance
 src/auth.rs            argon2id passwords, JWT sessions, extractor
 src/api.rs             REST handlers (users, nodes, accounts)
-src/spa.rs             embedded frontend serving (rust-embed)
+src/spa.rs             embedded frontends (rust-embed): user portal, session-gated admin console
 src/web.rs + reject.rs prefix gate + uniform rejection
 spa/                   React 19 + Vite 8 + Tailwind 4 frontend
 migrations/            sqlx migrations (run at startup)
@@ -120,11 +120,20 @@ checked out side by side; `src/CLAUDE.md` has the per-file map.
 
 ## Frontend
 
-`spa/` is a single-page console (login, admin: users/nodes/accounts,
-user portal) built with React 19, Vite 8 (Rolldown), Tailwind 4 and
-shadcn/ui-style components; TanStack Query is the data layer. The compiled
-bundle is embedded into the binary via rust-embed and served only under the
-secret prefix (`/{prefix}/app`); Vite's `/assets/` URLs are rewritten to the
+`spa/` holds two independently built frontends (R23) on React 19, Vite 8
+(Rolldown), Tailwind 4 and shadcn/ui-style components, with TanStack Query as
+the data layer:
+
+- the **user portal** at `/{prefix}/app` — the login page (shared with
+  admins), account, subscription, purchase and orders (Chinese/English);
+- the **admin console** at `/{prefix}/admin` — users, plans, orders, nodes,
+  updates, audit, account (Chinese). Its index and assets are served only to
+  an admin session (private, no-store); to anyone else `/admin` is the
+  uniform empty 404. Admins sign in at `/{prefix}/app` and are sent there.
+
+The portal bundle contains no console code (a build-time check greps it for
+admin markers). Both bundles are embedded into the binary via rust-embed and
+served only under the secret prefix; Vite's asset URLs are rewritten to the
 prefix at serve time, so nothing about the app leaks without the prefix.
 Missing assets return the uniform empty 404, and the dev tree is never served.
 
