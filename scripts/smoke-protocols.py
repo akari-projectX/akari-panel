@@ -330,12 +330,16 @@ def mihomo_run(binary):
     # The rendered subscription, pointed at 127.0.0.1, self-signed accepted,
     # one mixed listener per proxy.
     lines = []
+    skipped = False  # one skip-cert-verify per proxy (trojan has tls + sni)
     for line in clash.splitlines():
+        if line.startswith("  - name: "):
+            skipped = False
         if line.startswith("    server: "):
             line = "    server: 127.0.0.1"
         lines.append(line)
-        if line == "    tls: true" or line.startswith("    sni: "):
+        if not skipped and (line == "    tls: true" or line.startswith("    sni: ")):
             lines.append("    skip-cert-verify: true")
+            skipped = True
     cfg = "\n".join(lines).split("proxy-groups:")[0]
     names = [json.loads(l[len("  - name: "):]) for l in cfg.splitlines() if l.startswith("  - name: ")]
     ports = {}
