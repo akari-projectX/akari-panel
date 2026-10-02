@@ -92,6 +92,55 @@ describe("toSpecs", () => {
       { template: "vmess_ws", port: 80, tls_domain: "a.example.com" },
     ]);
   });
+  it("converts the W8 protocol templates", () => {
+    const base = {
+      key: 1,
+      tag: "",
+      dest: "",
+      customDest: "",
+      serverName: "",
+      fingerprint: "chrome",
+      domain: "",
+      path: "",
+      tls: false,
+    };
+    expect(toSpecs([{ ...base, template: "vless_reality", port: "443", vision: false }])).toEqual([
+      { template: "vless_reality", port: 443, fingerprint: "chrome", vision: false },
+    ]);
+    expect(
+      toSpecs([{ ...base, template: "vless_reality_xhttp", port: "443", path: "/x", mode: "stream-one" }]),
+    ).toEqual([{ template: "vless_reality_xhttp", port: 443, fingerprint: "chrome", path: "/x", mode: "stream-one" }]);
+    // Hysteria 2 (UDP) may share the TCP port of another inbound; SS (TCP+UDP) may not.
+    expect(
+      toSpecs([
+        { ...base, template: "vless_reality", port: "443" },
+        { ...base, key: 2, template: "hysteria2", port: "443", domain: "n.example.com" },
+      ]),
+    ).toHaveLength(2);
+    expect(
+      toSpecs([
+        { ...base, template: "shadowsocks_2022", port: "8388" },
+        { ...base, key: 2, template: "hysteria2", port: "8388", domain: "n.example.com" },
+      ]),
+    ).toMatch(/重复/);
+    expect(toSpecs([{ ...base, template: "hysteria2", port: "443" }])).toMatch(/证书域名/);
+    expect(
+      toSpecs([{ ...base, template: "transport", port: "443", protocol: "trojan", network: "ws" }]),
+    ).toMatch(/TLS/);
+    expect(
+      toSpecs([
+        { ...base, template: "transport", port: "443", protocol: "vless", network: "grpc", domain: "n.example.com", serviceName: "svc" },
+      ]),
+    ).toEqual([
+      { template: "transport", port: 443, protocol: "vless", network: "grpc", service_name: "svc", tls_domain: "n.example.com" },
+    ]);
+    expect(
+      toSpecs([{ ...base, template: "transport", port: "80", protocol: "vmess", network: "httpupgrade", host: "cdn.example.com" }]),
+    ).toEqual([{ template: "transport", port: 80, protocol: "vmess", network: "httpupgrade", host: "cdn.example.com" }]);
+    expect(toSpecs([{ ...base, template: "shadowsocks_2022", port: "8388", method: "2022-blake3-aes-256-gcm" }])).toEqual([
+      { template: "shadowsocks_2022", port: 8388, method: "2022-blake3-aes-256-gcm" },
+    ]);
+  });
   it("formats the lease", () => {
     expect(formatLease(null)).toBe("—");
     expect(formatLease(0)).toBe("已到期");
