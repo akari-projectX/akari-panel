@@ -782,12 +782,23 @@ PAID_GROUP=$(last_json "d['id']")
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/plans" -H 'Content-Type: application/json' \
     -d "{\"name\":\"paid-plan\",\"period\":\"monthly\",\"group_ids\":[\"$PAID_GROUP\"]}")" = "201" ] || { echo "FAIL: create paid plan"; exit 1; }
 PAID_PLAN=$(last_json "d['id']")
-[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/plans/$PAID_PLAN/price" -H 'Content-Type: application/json' \
-    -d '{"price_cents":0,"period_days":30,"purchasable":true}')" = "400" ] || { echo "FAIL: zero price accepted"; exit 1; }
-[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/plans/$PAID_PLAN/price" -H 'Content-Type: application/json' \
-    -d '{"price_cents":1,"period_days":30,"purchasable":true}')" = "204" ] || { echo "FAIL: set price"; cat /tmp/akari-smoke/last; exit 1; }
+PRICES="$BASE/api/v1/plans/$PAID_PLAN/prices"
+[ "$(code -b "$JAR" -X PUT "$PRICES" -H 'Content-Type: application/json' \
+    -d '{"on_sale":true,"prices":[{"period":"days","days":30,"price_cents":0}]}')" = "400" ] || { echo "FAIL: zero price accepted"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$PRICES" -H 'Content-Type: application/json' \
+    -d '{"on_sale":true,"prices":[{"period":"weekly","price_cents":1}]}')" = "400" ] || { echo "FAIL: unknown period accepted"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$PRICES" -H 'Content-Type: application/json' \
+    -d '{"on_sale":true,"prices":[{"period":"reset","price_cents":1}]}')" = "400" ] || { echo "FAIL: on sale with only a reset pack"; exit 1; }
+# W7: one price per period kind; the 1-cent 30-day price drives the flow below.
+[ "$(code -b "$JAR" -X PUT "$PRICES" -H 'Content-Type: application/json' \
+    -d '{"on_sale":true,"prices":[{"period":"days","days":30,"price_cents":1},{"period":"month","price_cents":2},{"period":"reset","price_cents":3}]}')" = "204" ] \
+  || { echo "FAIL: set prices"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/plan-prices")" = "200" ] && last_json "d['payments_enabled']" | grep -q True \
   || { echo "FAIL: plan-prices / payments not enabled"; cat /tmp/akari-smoke/last; exit 1; }
+python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); p=[x for x in d['plans'] if x['plan_id']=='$PAID_PLAN'][0]; assert p['on_sale'] and len(p['prices'])==3, d" \
+  || { echo "FAIL: plan-prices content"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"description":"Smoke\n- fast","capacity":5,"allow_switch_in":true}')" = "200" ] \
+  && [ "$(last_json "d['capacity']")" = "5" ] || { echo "FAIL: plan catalogue fields"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
     -d '{"login":"smoke-buyer","password":"buyer-password-123"}')" = "201" ] || { echo "FAIL: create buyer"; exit 1; }
 BUYER=$(last_json "d['id']")
@@ -795,12 +806,22 @@ BJAR="$LOG/buyer-cookies"
 [ "$(code -c "$BJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
     -d '{"login":"smoke-buyer","password":"buyer-password-123"}')" = "200" ] || { echo "FAIL: buyer login"; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/me/shop")" = "200" ] || { echo "FAIL: shop"; exit 1; }
-python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); p=[x for x in d['plans'] if x['plan_id']=='$PAID_PLAN'][0]; assert d['enabled'] and p['price_cents']==1 and p['action']=='new', d" \
-  || { echo "FAIL: shop content"; cat /tmp/akari-smoke/last; exit 1; }
+python3 -c "
+import json; d=json.load(open('/tmp/akari-smoke/last')); p=[x for x in d['plans'] if x['plan_id']=='$PAID_PLAN'][0]
+o={x['period']: x for x in p['offers']}
+assert d['enabled'] and p['description']=='Smoke\n- fast' and p['remaining']==5, d
+assert sorted(o)==['days','month'] and o['days']['price_cents']==1 and o['days']['amount_cents']==1 and o['days']['action']=='new', d
+" || { echo "FAIL: shop content"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$BJAR" -X POST "$BASE/api/v1/me/orders" -H 'Content-Type: application/json' \
-    -d "{\"plan_id\":\"$PAID_PLAN\",\"amount_cents\":0}")" = "400" ] || { echo "FAIL: client amount accepted"; exit 1; }
+    -d "{\"plan_id\":\"$PAID_PLAN\",\"period\":\"reset\"}")" = "409" ] || { echo "FAIL: reset pack sold to a non-subscriber"; exit 1; }
 [ "$(code -b "$BJAR" -X POST "$BASE/api/v1/me/orders" -H 'Content-Type: application/json' \
-    -d "{\"plan_id\":\"$PAID_PLAN\"}")" = "201" ] || { echo "FAIL: create order"; cat /tmp/akari-smoke/last "$LOG/mock-alipay.log"; exit 1; }
+    -d "{\"plan_id\":\"$PAID_PLAN\",\"period\":\"days\",\"amount_cents\":0}")" = "400" ] || { echo "FAIL: client amount accepted"; exit 1; }
+[ "$(code -b "$BJAR" -X POST "$BASE/api/v1/me/orders" -H 'Content-Type: application/json' \
+    -d "{\"plan_id\":\"$PAID_PLAN\"}")" = "400" ] || { echo "FAIL: order without a period accepted"; exit 1; }
+[ "$(code -b "$BJAR" -X POST "$BASE/api/v1/me/orders" -H 'Content-Type: application/json' \
+    -d "{\"plan_id\":\"$PAID_PLAN\",\"period\":\"days\"}")" = "201" ] || { echo "FAIL: create order"; cat /tmp/akari-smoke/last "$LOG/mock-alipay.log"; exit 1; }
+[ "$(last_json "d['period']")/$(last_json "d['credit_cents']")/$(last_json "d['list_price_cents']")" = "days/0/1" ] \
+  || { echo "FAIL: order period/credit"; cat /tmp/akari-smoke/last; exit 1; }
 ORDER=$(last_json "d['id']"); OTN=$(last_json "d['out_trade_no']")
 last_json "d['qr_code']" | grep -q '^https://qr.alipay.com/smoke' || { echo "FAIL: no QR from precreate"; exit 1; }
 [ "$(last_json "d['status']")" = "pending" ] || { echo "FAIL: new order not pending"; exit 1; }
@@ -835,7 +856,7 @@ python3 "$LOG/vless1.py" "$BUYER_VLESS" || { echo "FAIL: vless round trip for th
 # Renewal through the active query (no notify reaches the panel): +30 days.
 EXP1=$(psql_q "SELECT extract(epoch FROM expires_at)::bigint FROM user_plans WHERE user_id='$BUYER' AND status='active'")
 [ "$(code -b "$BJAR" -X POST "$BASE/api/v1/me/orders" -H 'Content-Type: application/json' \
-    -d "{\"plan_id\":\"$PAID_PLAN\"}")" = "201" ] || { echo "FAIL: renewal order"; exit 1; }
+    -d "{\"plan_id\":\"$PAID_PLAN\",\"period\":\"days\"}")" = "201" ] || { echo "FAIL: renewal order"; exit 1; }
 ORDER2=$(last_json "d['id']"); OTN2=$(last_json "d['out_trade_no']")
 curl -s --noproxy '*' -X POST "http://127.0.0.1:18089/control/pay?otn=$OTN2" >/dev/null
 for _ in $(seq 1 10); do
@@ -846,9 +867,74 @@ done
 [ "$(psql_q "SELECT paid_via FROM orders WHERE id='$ORDER2'")" = "query" ] || { echo "FAIL: renewal not paid via query"; exit 1; }
 EXP2=$(psql_q "SELECT extract(epoch FROM expires_at)::bigint FROM user_plans WHERE user_id='$BUYER' AND status='active'")
 [ $((EXP2 - EXP1)) -eq $((30 * 86400)) ] || { echo "FAIL: renewal did not extend by 30 days ($EXP1 -> $EXP2)"; exit 1; }
+# W7: a traffic reset pack (current subscribers only): usage to zero, no
+# period change; paid through the active query like the renewal.
+psql_q "UPDATE users SET traffic_used_bytes = 1000000000000 WHERE id='$BUYER'" >/dev/null
+[ "$(code -b "$BJAR" "$BASE/api/v1/me/shop")" = "200" ] || { echo "FAIL: shop (subscriber)"; exit 1; }
+python3 -c "
+import json; d=json.load(open('/tmp/akari-smoke/last')); p=[x for x in d['plans'] if x['plan_id']=='$PAID_PLAN'][0]
+o={x['period']: x for x in p['offers']}
+assert p['current'] and o['reset']['action']=='reset' and o['reset']['amount_cents']==3 and o['days']['action']=='renew', d
+" || { echo "FAIL: subscriber shop (reset pack / renew)"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$BJAR" -X POST "$BASE/api/v1/me/orders" -H 'Content-Type: application/json' \
+    -d "{\"plan_id\":\"$PAID_PLAN\",\"period\":\"reset\"}")" = "201" ] || { echo "FAIL: reset pack order"; cat /tmp/akari-smoke/last; exit 1; }
+ORDER3=$(last_json "d['id']"); OTN3=$(last_json "d['out_trade_no']")
+curl -s --noproxy '*' -X POST "http://127.0.0.1:18089/control/pay?otn=$OTN3" >/dev/null
+for _ in $(seq 1 10); do
+  code -b "$BJAR" "$BASE/api/v1/me/orders/$ORDER3" >/dev/null
+  [ "$(last_json "d['status']")" = "paid" ] && break; sleep 1
+done
+[ "$(last_json "d['status']")/$(last_json "d['fulfilled']")" = "paid/True" ] || { echo "FAIL: reset pack not paid+fulfilled"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT traffic_used_bytes < 1000000000 FROM users WHERE id='$BUYER'")" = "t" ] || { echo "FAIL: reset pack did not zero the usage"; exit 1; }
+[ "$(psql_q "SELECT extract(epoch FROM expires_at)::bigint FROM user_plans WHERE user_id='$BUYER' AND status='active'")" = "$EXP2" ] \
+  || { echo "FAIL: reset pack changed the expiry"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='user.traffic.reset' AND target_id='$BUYER' AND after->>'source'='reset_pack'")" = "1" ] \
+  || { echo "FAIL: reset pack not audited"; exit 1; }
+
+# W7: plan speed limits are enforced by the agent (protocol 4, per user,
+# both directions). A limit change alone is a UserDelta (no xray rebuild)
+# and VLESS throughput drops to the limit; removing it restores it.
+[ "$(psql_q "SELECT agent_protocol FROM nodes WHERE id='$NODE_ID'")" -ge 4 ] || { echo "FAIL: agent does not speak protocol 4"; exit 1; }
+cat >"$LOG/vless_rate.py" <<'PY'
+import socket, struct, sys, threading, time, uuid
+n = int(sys.argv[2])
+echo = socket.socket(); echo.bind(("127.0.0.1", 0)); echo.listen(1)
+def serve():
+    c, _ = echo.accept()
+    for d in iter(lambda: c.recv(65536), b""): c.sendall(d)
+threading.Thread(target=serve, daemon=True).start()
+s = socket.create_connection(("127.0.0.1", 11443), timeout=30)
+s.sendall(b"\x00" + uuid.UUID(sys.argv[1]).bytes + b"\x00\x01" + struct.pack(">H", echo.getsockname()[1]) + b"\x01" + socket.inet_aton("127.0.0.1"))
+start = time.monotonic()
+threading.Thread(target=lambda: s.sendall(b"x" * n), daemon=True).start()
+got = 0
+while got < n + 2:
+    d = s.recv(65536)
+    if not d: sys.exit("closed")
+    got += len(d)
+print("%.3f" % (time.monotonic() - start))
+PY
+wait_uv() { # wait until the agent applied the node's current user_version; $1 = expected via
+  local uv; uv=$(psql_q "SELECT user_version FROM nodes WHERE id='$NODE_ID'")
+  for _ in $(seq 1 15); do
+    grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | grep -q "\"user_version\":$uv[,}]" && break; sleep 1
+  done
+  grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | grep -q "\"via\":\"$1\".*\"user_version\":$uv[,}]" \
+    || { echo "FAIL: agent did not apply user_version $uv via $1"; grep 'state applied' "$LOG/agent.log" | tail -3; exit 1; }
+}
+FAST=$(python3 "$LOG/vless_rate.py" "$BUYER_VLESS" 400000) || { echo "FAIL: unlimited transfer"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": 1}')" = "200" ] || { echo "FAIL: set speed limit"; exit 1; }
+wait_uv delta
+SLOW=$(python3 "$LOG/vless_rate.py" "$BUYER_VLESS" 400000) || { echo "FAIL: limited transfer"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": null}')" = "200" ] || { echo "FAIL: clear speed limit"; exit 1; }
+wait_uv delta
+AGAIN=$(python3 "$LOG/vless_rate.py" "$BUYER_VLESS" 400000) || { echo "FAIL: transfer after clearing the limit"; exit 1; }
+echo "speed limit: unlimited ${FAST}s, 1 Mbps ${SLOW}s (>= ~2.7s expected), cleared ${AGAIN}s for 400 kB each way"
+python3 -c "f,s,a=$FAST,$SLOW,$AGAIN; assert f < 1.5 and 2.0 <= s <= 15 and a < 1.5, (f,s,a)" \
+  || { echo "FAIL: speed limit not enforced as expected"; exit 1; }
 # Admin views and audit.
 [ "$(code -b "$JAR" "$BASE/api/v1/orders?login=smoke-buyer")" = "200" ] || { echo "FAIL: admin orders"; exit 1; }
-[ "$(last_json "len(d)")" = "2" ] || { echo "FAIL: admin order list"; exit 1; }
+[ "$(last_json "len(d)")" = "3" ] || { echo "FAIL: admin order list"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/orders/$ORDER")" = "200" ] || { echo "FAIL: admin order detail"; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/orders")" = "403" ] || { echo "FAIL: user reached admin orders"; exit 1; }
 for a in order.create order.paid plan.price.set user.plan.set user.plan.update; do
@@ -871,7 +957,7 @@ for who in expired quota; do
   [ "$(code -b "$RJAR" "$BASE/api/v1/me/shop")" = "200" ] && [ "$(last_json "d['enabled']")" = "True" ] \
     || { echo "FAIL: $who user cannot list the shop (R21)"; cat /tmp/akari-smoke/last; exit 1; }
   [ "$(code -b "$RJAR" -X POST "$BASE/api/v1/me/orders" -H 'Content-Type: application/json' \
-      -d "{\"plan_id\":\"$PAID_PLAN\"}")" = "201" ] || { echo "FAIL: $who user cannot order (R21)"; cat /tmp/akari-smoke/last; exit 1; }
+      -d "{\"plan_id\":\"$PAID_PLAN\",\"period\":\"days\"}")" = "201" ] || { echo "FAIL: $who user cannot order (R21)"; cat /tmp/akari-smoke/last; exit 1; }
   RO=$(last_json "d['id']")
   [ "$(code -b "$RJAR" "$BASE/api/v1/me/orders/$RO")" = "200" ] && [ "$(last_json "d['status']")" = "pending" ] \
     || { echo "FAIL: $who user cannot poll the order (R21)"; exit 1; }
@@ -886,7 +972,7 @@ done
 psql_q "UPDATE users SET disabled_reason = 'admin' WHERE id='$RU'" >/dev/null
 [ "$(code -b "$RJAR" "$BASE/api/v1/me/shop")" = "401" ] || { echo "FAIL: admin-disabled user listed the shop"; exit 1; }
 [ "$(code -b "$RJAR" -X POST "$BASE/api/v1/me/orders" -H 'Content-Type: application/json' \
-    -d "{\"plan_id\":\"$PAID_PLAN\"}")" = "401" ] || { echo "FAIL: admin-disabled user ordered"; exit 1; }
+    -d "{\"plan_id\":\"$PAID_PLAN\",\"period\":\"days\"}")" = "401" ] || { echo "FAIL: admin-disabled user ordered"; exit 1; }
 [ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
     -d '{"login":"smoke-renew-quota","password":"renew-password-123"}')" = "401" ] || { echo "FAIL: admin-disabled user logged in"; exit 1; }
 for who in expired quota; do
@@ -898,7 +984,7 @@ done
 wait_users 0 10 "buyer deleted"
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/plans/$PAID_PLAN")" = "204" ] || { echo "FAIL: delete paid plan"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/node-groups/$PAID_GROUP")" = "204" ] || { echo "FAIL: delete paid group"; exit 1; }
-[ "$(psql_q "SELECT count(*) FROM orders WHERE user_id IS NULL AND user_login='smoke-buyer' AND plan_id IS NULL")" = "2" ] \
+[ "$(psql_q "SELECT count(*) FROM orders WHERE user_id IS NULL AND user_login='smoke-buyer' AND plan_id IS NULL")" = "3" ] \
   || { echo "FAIL: orders not kept after user/plan deletion"; exit 1; }
 echo "r18-3 payments: ok"
 

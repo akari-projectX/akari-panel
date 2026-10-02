@@ -1089,6 +1089,11 @@ pub struct NodeView {
     /// stored before the check existed). Computed, not stored.
     #[sqlx(skip)]
     warnings: Vec<String>,
+    /// W7: the node serves speed-limited users but its agent predates
+    /// speed limits (protocol < 4): they run unthrottled. Only computed
+    /// for such agents.
+    #[serde(skip)]
+    unenforced_speed_limits: bool,
 }
 
 /// A certificate expiring within this many days is flagged (agents of
@@ -1101,6 +1106,13 @@ impl NodeView {
         self.warnings = inbound_warnings(&self.xray_inbounds);
         if let Some(w) = cert_warning(self.cert_not_after, self.agent_protocol, Utc::now()) {
             self.warnings.push(w);
+        }
+        if self.unenforced_speed_limits {
+            self.warnings.push(format!(
+                "the agent is too old to enforce speed limits (protocol < {}): plan speed \
+                 limits are not applied on this node until the agent is upgraded",
+                crate::grpc::SPEED_LIMIT_PROTOCOL
+            ));
         }
         self
     }
@@ -1169,7 +1181,12 @@ pub const NODE_VIEW_COLS: &str =
      traffic_max_rate_bytes_per_sec, deleting_at, last_seen_at, created_at, \
      cert_serial IS NOT NULL AS enrolled, cert_not_after, \
      (SELECT e.expires_at FROM node_enrollments e WHERE e.node_id = nodes.id \
-        AND e.used_at IS NULL AND e.expires_at > now()) AS enroll_token_expires_at";
+        AND e.used_at IS NULL AND e.expires_at > now()) AS enroll_token_expires_at, \
+     CASE WHEN agent_protocol < 4 THEN EXISTS (SELECT 1 FROM node_users nu \
+        JOIN user_plans up ON up.user_id = nu.user_id AND up.status = 'active' \
+        JOIN plans p ON p.id = up.plan_id \
+        WHERE nu.node_id = nodes.id AND p.speed_limit_mbps IS NOT NULL) \
+        ELSE false END AS unenforced_speed_limits";
 
 pub async fn list_nodes(
     State(state): State<AppState>,
@@ -2406,6 +2423,7 @@ mod tests {
                     sort: None,
                     enabled: None,
                     group_ids: Some(vec![g]),
+                    ..Default::default()
                 },
             )
             .await
@@ -2718,6 +2736,59 @@ mod tests {
                 true,
             ),
             (
+                "plan speed limit (W7: travels in every user op)",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        crate::plans::apply_update_plan(
+                            c,
+                            &crate::audit::Actor::test(),
+                            plan,
+                            &crate::plans::UpdatePlanReq {
+                                speed_limit_mbps: Some(Some(50)),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                }),
+                vec![n1, n2, other],
+                true,
+            ),
+            (
+                "plan capacity/description only",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        crate::plans::apply_update_plan(
+                            c,
+                            &crate::audit::Actor::test(),
+                            plan,
+                            &crate::plans::UpdatePlanReq {
+                                capacity: Some(Some(5)),
+                                description: Some(Some("d".into())),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                }),
+                vec![n1, n2, other],
+                false,
+            ),
+            (
+                "reset pack, user enabled (served state unchanged)",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        crate::plans::apply_reset_traffic(c, &crate::audit::Actor::test(), u, plan)
+                            .await
+                            .map(|_| ())
+                    })
+                }),
+                vec![n1, n2, other],
+                false,
+            ),
+            (
                 "user plan expiry",
                 Box::new(move |c| {
                     Box::pin(async move {
@@ -2746,7 +2817,9 @@ mod tests {
                             .map(|_| ())
                     })
                 }),
-                vec![other],
+                // W7: the plan had a speed limit; the manual nodes n1/n2
+                // now serve the user unlimited.
+                vec![n1, n2, other],
                 true,
             ),
             (

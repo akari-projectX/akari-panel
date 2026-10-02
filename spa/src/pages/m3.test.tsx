@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { GroupView, MyPlan, NodeView, PlanView } from "../lib/api";
 import { fakeApi, renderAdmin, renderWithClient } from "../test/harness";
-import { AdminPlans, periodValue, quotaBytes } from "./admin-plans";
+import { AdminPlans, optionalInt, periodValue, pricesBody, quotaBytes } from "./admin-plans";
 import { PasswordCard, PlanCard } from "./portal";
 
 afterEach(() => {
@@ -33,6 +33,12 @@ const plan = (over: Partial<PlanView>): PlanView => ({
   device_seats: null,
   sort: 0,
   enabled: true,
+  description: "",
+  on_sale: false,
+  capacity: null,
+  renewal_only: false,
+  allow_switch_in: true,
+  prices: [],
   group_ids: ["g1"],
   active_users: 2,
   created_at: "2026-10-01T00:00:00Z",
@@ -54,6 +60,40 @@ describe("plan form helpers", () => {
     expect(quotaBytes("1.5")).toBe(Math.round(1.5 * GIB));
     expect(quotaBytes("-1")).toBeUndefined();
     expect(quotaBytes("abc")).toBeUndefined();
+    expect(optionalInt("", 1, 10)).toBeNull();
+    expect(optionalInt("5", 1, 10)).toBe(5);
+    expect(optionalInt("0", 1, 10)).toBeUndefined();
+    expect(optionalInt("2.5", 1, 10)).toBeUndefined();
+  });
+
+  it("builds the price list in integer cents, validating days", () => {
+    const off = { enabled: false, price: "", days: "" };
+    const drafts = {
+      month: { enabled: true, price: "9.9", days: "" },
+      quarter: off,
+      half_year: off,
+      year: { enabled: true, price: "99", days: "" },
+      two_year: off,
+      three_year: off,
+      days: off,
+      onetime: { enabled: true, price: "0.29", days: "" },
+      reset: { enabled: true, price: "5", days: "" },
+    };
+    expect(pricesBody(drafts)).toEqual([
+      { period: "month", days: null, price_cents: 990 },
+      { period: "year", days: null, price_cents: 9900 },
+      { period: "onetime", days: null, price_cents: 29 },
+      { period: "reset", days: null, price_cents: 500 },
+    ]);
+    expect(pricesBody({ ...drafts, days: { enabled: true, price: "1", days: "" } })).toBe(
+      "自定义天数：天数须为 1–3650",
+    );
+    expect(pricesBody({ ...drafts, onetime: { enabled: true, price: "1", days: "7" } })).toContainEqual({
+      period: "onetime",
+      days: 7,
+      price_cents: 100,
+    });
+    expect(pricesBody({ ...drafts, month: { enabled: true, price: "0", days: "" } })).toBe("月付：价格无效");
   });
 });
 
@@ -75,7 +115,10 @@ describe("AdminPlans", () => {
     fireEvent.change(within(form).getByLabelText(/流量额度/), { target: { value: "50" } });
     fireEvent.change(within(form).getByLabelText("流量重置"), { target: { value: "days" } });
     fireEvent.change(within(form).getByLabelText("天数"), { target: { value: "30" } });
-    fireEvent.change(within(form).getByLabelText(/速率/), { target: { value: "100" } });
+    fireEvent.change(within(form).getByLabelText(/限速/), { target: { value: "100" } });
+    fireEvent.change(within(form).getByLabelText(/库存/), { target: { value: "50" } });
+    fireEvent.change(within(form).getByLabelText(/说明/), { target: { value: "Fast\n- 100 Mbps" } });
+    fireEvent.click(within(form).getByLabelText("仅限现有用户续费"));
     fireEvent.click(within(form).getByLabelText("eu"));
     fireEvent.click(within(form).getByRole("button", { name: "创建套餐" }));
     await waitFor(() => expect(calls.some((c) => c.method === "POST")).toBe(true));
@@ -87,7 +130,44 @@ describe("AdminPlans", () => {
       traffic_quota_bytes: 50 * GIB,
       group_ids: ["g2"],
       speed_limit_mbps: 100,
+      capacity: 50,
+      description: "Fast\n- 100 Mbps",
+      renewal_only: true,
     });
+  });
+
+  it("sets per-period prices and the sale flag with PUT /prices", async () => {
+    const calls = fakeApi({
+      "GET /node-groups": [],
+      "GET /plans": [plan({ prices: [{ period: "month", days: null, price_cents: 990 }], on_sale: true, capacity: 2 })],
+      "GET /nodes": [],
+      "PUT /plans/p1/prices": { status: 204 },
+    });
+    renderAdmin(<AdminPlans />);
+    expect(await screen.findByText("月付 ¥9.90")).toBeTruthy();
+    expect(screen.getByText("满员")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "定价" }));
+    const form = screen.getByRole("form", { name: "定价 basic" });
+    fireEvent.click(within(form).getByLabelText("年付"));
+    fireEvent.change(within(form).getByLabelText("basic 年付 价格"), { target: { value: "99.00" } });
+    fireEvent.click(within(form).getByLabelText("流量重置包"));
+    fireEvent.change(within(form).getByLabelText("basic 流量重置包 价格"), { target: { value: "5" } });
+    fireEvent.click(within(form).getByRole("button", { name: "保存定价" }));
+    await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
+    expect(calls.find((c) => c.method === "PUT")?.body).toEqual({
+      on_sale: true,
+      prices: [
+        { period: "month", days: null, price_cents: 990 },
+        { period: "year", days: null, price_cents: 9900 },
+        { period: "reset", days: null, price_cents: 500 },
+      ],
+    });
+  });
+
+  it("marks device seats as not yet enforced", async () => {
+    fakeApi({ "GET /node-groups": [], "GET /plans": [], "GET /nodes": [] });
+    renderAdmin(<AdminPlans />);
+    expect(await screen.findByLabelText("设备数（客户端上线后生效）")).toBeTruthy();
   });
 
   it("replaces a group's membership with PATCH node_ids", async () => {

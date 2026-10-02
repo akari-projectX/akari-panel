@@ -40,19 +40,23 @@ fn ops(n: usize) -> Vec<UserOp> {
                     protocol: "trojan".into(),
                 },
             ],
+            speed_limit_bytes_per_sec: 0,
         })
         .collect()
 }
 
 /// `want` = `base` with `changed` users removed and `changed` new ones.
-fn changed(base: &UserSet, changed: usize) -> UserSet {
+fn changed(base: &UserSet, changed: usize) -> NodeState {
     let mut want = base.clone();
     let drop: Vec<String> = want.keys().take(changed).cloned().collect();
     for k in drop {
         want.remove(&k);
     }
     want.extend(user_set(&ops(changed)));
-    want
+    NodeState {
+        users: want,
+        ..Default::default()
+    }
 }
 
 fn pure(c: &mut Criterion) {
@@ -63,6 +67,7 @@ fn pure(c: &mut Criterion) {
         let state = NodeState {
             inbounds: "[{\"tag\":\"in-vless\",\"protocol\":\"vless\",\"port\":443}]".repeat(4),
             users: set.clone(),
+            ..Default::default()
         };
         g.throughput(Throughput::Elements(n as u64));
         g.bench_with_input(BenchmarkId::new("user_set", n), &o, |b, o| {
@@ -71,17 +76,21 @@ fn pure(c: &mut Criterion) {
         g.bench_with_input(BenchmarkId::new("state_hash", n), &state, |b, s| {
             b.iter(|| state_hash(7, std::hint::black_box(s)))
         });
+        let base = NodeState {
+            users: set.clone(),
+            ..Default::default()
+        };
         let one = changed(&set, 1);
         g.bench_with_input(
             BenchmarkId::new("diff_user_sets/1_changed", n),
             &one,
-            |b, w| b.iter(|| diff_user_sets(std::hint::black_box(&set), w)),
+            |b, w| b.iter(|| diff_user_sets(std::hint::black_box(&base), w)),
         );
         let tenth = changed(&set, n / 10);
         g.bench_with_input(
             BenchmarkId::new("diff_user_sets/10pct_changed", n),
             &tenth,
-            |b, w| b.iter(|| diff_user_sets(std::hint::black_box(&set), w)),
+            |b, w| b.iter(|| diff_user_sets(std::hint::black_box(&base), w)),
         );
         let snap = akari_panel::gen::ConfigSnapshot {
             config_version: 3,
@@ -202,13 +211,9 @@ fn database(c: &mut Criterion) {
     g.bench_function(BenchmarkId::new("snapshot_build_full", users), |b| {
         b.to_async(&db.rt).iter(|| async {
             if let Ok(Some(s)) = akari_panel::grpc::desired_snapshot(&db.pg, node).await {
-                let set = user_set(&s.users);
                 let h = state_hash(
                     s.config_version,
-                    &NodeState {
-                        inbounds: s.inbounds_json.clone(),
-                        users: set,
-                    },
+                    &NodeState::of_snapshot(s.inbounds_json.clone(), &s.users),
                 );
                 (h, prost::Message::encode_to_vec(&s).len())
             } else {

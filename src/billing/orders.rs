@@ -51,6 +51,9 @@ pub enum Via {
     Notify,
     Query,
     Manual,
+    /// W7: an amount-0 order the proration credit pays in full (at
+    /// creation, never sent to Alipay).
+    Credit,
 }
 
 impl Via {
@@ -59,17 +62,32 @@ impl Via {
             Via::Notify => "notify",
             Via::Query => "query",
             Via::Manual => "manual",
+            Via::Credit => "credit",
         }
     }
 }
+
+/// What fulfilling an order needs (copied into the order at creation).
+#[derive(sqlx::FromRow, Debug, Clone)]
+pub struct Bought {
+    pub user_id: Option<Uuid>,
+    pub plan_id: Option<Uuid>,
+    pub period: String,
+    pub period_days: Option<i32>,
+    pub credit_cents: i64,
+    pub credit_order_id: Option<Uuid>,
+}
+
+const BOUGHT_COLS: &str = "user_id, plan_id, period, period_days, credit_cents, credit_order_id";
 
 /// SQL: the audit snapshot of an orders row under `alias`.
 pub fn order_snapshot_sql(alias: &str) -> String {
     format!(
         "jsonb_build_object('out_trade_no', {a}.out_trade_no, 'user_id', {a}.user_id, \
-         'plan_id', {a}.plan_id, 'amount_cents', {a}.amount_cents, 'period_days', \
-         {a}.period_days, 'status', {a}.status, 'trade_no', {a}.trade_no, 'paid_via', \
-         {a}.paid_via)",
+         'plan_id', {a}.plan_id, 'amount_cents', {a}.amount_cents, 'period', {a}.period, \
+         'period_days', {a}.period_days, 'list_price_cents', {a}.list_price_cents, \
+         'credit_cents', {a}.credit_cents, 'credit_order_id', {a}.credit_order_id, \
+         'status', {a}.status, 'trade_no', {a}.trade_no, 'paid_via', {a}.paid_via)",
         a = alias
     )
 }
@@ -126,27 +144,26 @@ pub async fn apply_mark_paid(
     reason: Option<&str>,
 ) -> Result<Paid, ApiError> {
     entitle::lock(conn).await?;
-    #[allow(clippy::type_complexity)]
-    let row: Option<(Value, Value, Option<Uuid>, Option<Uuid>, i32)> =
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "UPDATE orders SET status = 'paid', paid_at = now(), ended_at = NULL, \
-             paid_via = $2, trade_no = COALESCE($3, trade_no), paid_amount_cents = $4, \
-             manual_reason = $5 WHERE id = $1 AND status <> 'paid' \
-             RETURNING {}, {}, user_id, plan_id, period_days",
-            order_snapshot_sql("old"),
-            order_snapshot_sql("new"),
-        )))
-        .bind(order_id)
-        .bind(via.as_str())
-        .bind(trade_no)
-        .bind(paid_cents)
-        .bind(reason)
-        .fetch_optional(&mut *conn)
-        .await?;
-    let Some((before, mut after, user_id, plan_id, period_days)) = row else {
+    let row: Option<(Value, Value)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "UPDATE orders SET status = 'paid', paid_at = now(), ended_at = NULL, \
+         paid_via = $2, trade_no = COALESCE($3, trade_no), paid_amount_cents = $4, \
+         manual_reason = $5 WHERE id = $1 AND status <> 'paid' \
+         RETURNING {}, {}",
+        order_snapshot_sql("old"),
+        order_snapshot_sql("new"),
+    )))
+    .bind(order_id)
+    .bind(via.as_str())
+    .bind(trade_no)
+    .bind(paid_cents)
+    .bind(reason)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((before, mut after)) = row else {
         return Ok(Paid::Already);
     };
-    let (fulfilled, detail) = fulfil(conn, actor, order_id, user_id, plan_id, period_days).await?;
+    let bought = bought(conn, order_id).await?;
+    let (fulfilled, detail) = fulfil(conn, actor, order_id, &bought).await?;
     after["fulfilment"] = detail;
     if let Some(r) = reason {
         after["reason"] = json!(r);
@@ -164,19 +181,27 @@ pub async fn apply_mark_paid(
     Ok(Paid::Now { fulfilled })
 }
 
+async fn bought(conn: &mut PgConnection, order_id: Uuid) -> sqlx::Result<Bought> {
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {BOUGHT_COLS} FROM orders WHERE id = $1"
+    )))
+    .bind(order_id)
+    .fetch_one(conn)
+    .await
+}
+
 /// Grant/extend the plan of a paid order under a savepoint: a business
-/// failure (plan gone/disabled, user gone/admin) rolls back only the plan
-/// change and is stored in `fulfil_error`. Returns (fulfilled, detail).
+/// failure (plan gone/disabled/sold out, user gone/admin, reset pack
+/// without the plan) rolls back only the plan change and is stored in
+/// `fulfil_error`. Returns (fulfilled, detail).
 async fn fulfil(
     conn: &mut PgConnection,
     actor: &Actor,
     order_id: Uuid,
-    user_id: Option<Uuid>,
-    plan_id: Option<Uuid>,
-    period_days: i32,
+    bought: &Bought,
 ) -> Result<(bool, Value), ApiError> {
     let mut sp = conn.begin().await?;
-    let res = grant(&mut sp, actor, user_id, plan_id, period_days).await;
+    let res = grant(&mut sp, actor, bought).await;
     match res {
         Ok(detail) => {
             sp.commit().await?;
@@ -209,18 +234,28 @@ async fn fulfil(
     }
 }
 
-/// The plan change itself: renew (same active plan: expiry + period_days
-/// from max(expiry, now)) or new/replace (plan for period_days from now,
-/// usage reset — M3 replace semantics).
-async fn grant(
-    conn: &mut PgConnection,
-    actor: &Actor,
-    user_id: Option<Uuid>,
-    plan_id: Option<Uuid>,
-    period_days: i32,
-) -> Result<Value, ApiError> {
-    let user = user_id.ok_or_else(|| ApiError::conflict("the user no longer exists"))?;
-    let plan = plan_id.ok_or_else(|| ApiError::conflict("the plan no longer exists"))?;
+/// The plan change itself (the caller holds `entitle::lock`):
+/// - reset pack: zero the used traffic of the user's active plan, which
+///   must still be the order's plan;
+/// - same active plan: renew — expiry = one period after max(expiry, now)
+///   (SQL `akari_period_end`; a one-time purchase without days makes it
+///   permanent);
+/// - otherwise new/switch: capacity re-checked here (authoritative: under
+///   the lock, so two payments for the last slot cannot both get it), then
+///   the plan for one period from now, usage reset (M3 replace semantics).
+async fn grant(conn: &mut PgConnection, actor: &Actor, b: &Bought) -> Result<Value, ApiError> {
+    let user = b
+        .user_id
+        .ok_or_else(|| ApiError::conflict("the user no longer exists"))?;
+    let plan = b
+        .plan_id
+        .ok_or_else(|| ApiError::conflict("the plan no longer exists"))?;
+    let kind = super::catalog::PeriodKind::parse(&b.period)
+        .ok_or_else(|| anyhow::anyhow!("order has an unknown period kind"))?;
+    if kind == super::catalog::PeriodKind::Reset {
+        crate::plans::apply_reset_traffic(conn, actor, user, plan).await?;
+        return Ok(json!({ "kind": "reset" }));
+    }
     let active: Option<(Uuid, Option<DateTime<Utc>>)> = sqlx::query_as(
         "SELECT plan_id, expires_at FROM user_plans WHERE user_id = $1 AND status = 'active'",
     )
@@ -229,15 +264,17 @@ async fn grant(
     .await?;
     match active {
         Some((p, None)) if p == plan => {
-            // Unlimited already (admin-assigned); order creation refuses
-            // this, so it only happens if the plan changed meanwhile.
+            // Unlimited already (admin-assigned or a permanent purchase);
+            // order creation refuses this, so it only happens if the plan
+            // changed meanwhile.
             Ok(json!({ "kind": "renew", "expires_at": null, "note": "plan has no expiry" }))
         }
         Some((p, Some(old))) if p == plan => {
-            let new: DateTime<Utc> =
-                sqlx::query_scalar("SELECT GREATEST($1, now()) + make_interval(days => $2)")
+            let new: Option<DateTime<Utc>> =
+                sqlx::query_scalar("SELECT akari_period_end(GREATEST($1, now()), $2, $3)")
                     .bind(old)
-                    .bind(period_days)
+                    .bind(&b.period)
+                    .bind(b.period_days)
                     .fetch_one(&mut *conn)
                     .await?;
             crate::plans::apply_update_user_plan(
@@ -245,7 +282,7 @@ async fn grant(
                 actor,
                 user,
                 &crate::plans::UpdateUserPlanReq {
-                    expires_at: Some(Some(new)),
+                    expires_at: Some(new),
                     ..Default::default()
                 },
             )
@@ -253,24 +290,57 @@ async fn grant(
             Ok(json!({ "kind": "renew", "from": old, "expires_at": new }))
         }
         other => {
-            let new: DateTime<Utc> = sqlx::query_scalar("SELECT now() + make_interval(days => $1)")
-                .bind(period_days)
-                .fetch_one(&mut *conn)
-                .await?;
+            let cap: Option<(Option<i32>, i64)> = sqlx::query_as(
+                "SELECT capacity, (SELECT count(*) FROM user_plans \
+                 WHERE plan_id = $1 AND status = 'active') FROM plans WHERE id = $1",
+            )
+            .bind(plan)
+            .fetch_optional(&mut *conn)
+            .await?;
+            let Some((capacity, holders)) = cap else {
+                return Err(ApiError::conflict("the plan no longer exists"));
+            };
+            if capacity.is_some_and(|c| holders >= i64::from(c)) {
+                return Err(ApiError::conflict("plan is sold out"));
+            }
+            let new: Option<DateTime<Utc>> =
+                sqlx::query_scalar("SELECT akari_period_end(now(), $1, $2)")
+                    .bind(&b.period)
+                    .bind(b.period_days)
+                    .fetch_one(&mut *conn)
+                    .await?;
+            // The credit was computed from the subscription active at order
+            // creation; flag it for review if that is no longer what is
+            // being replaced (the payment is honoured either way).
+            let credit_source_changed = if b.credit_cents > 0 {
+                let src: Option<Option<Uuid>> =
+                    sqlx::query_scalar("SELECT plan_id FROM orders WHERE id = $1")
+                        .bind(b.credit_order_id)
+                        .fetch_optional(&mut *conn)
+                        .await?;
+                src.flatten() != other.map(|o| o.0)
+            } else {
+                false
+            };
             crate::plans::apply_set_user_plan(
                 conn,
                 actor,
                 user,
                 &crate::plans::SetUserPlanReq {
                     plan_id: plan,
-                    expires_at: Some(new),
+                    expires_at: new,
                     period_anchor: None,
                     reset_traffic: Some(true),
                 },
             )
             .await?;
-            let kind = if other.is_some() { "replace" } else { "new" };
-            Ok(json!({ "kind": kind, "expires_at": new }))
+            let kind = if other.is_some() { "switch" } else { "new" };
+            let mut detail = json!({ "kind": kind, "expires_at": new });
+            if b.credit_cents > 0 {
+                detail["credit_cents"] = json!(b.credit_cents);
+                detail["credit_source_changed"] = json!(credit_source_changed);
+            }
+            Ok(detail)
         }
     }
 }
@@ -284,22 +354,13 @@ pub async fn apply_admin_fulfil(
     reason: &str,
 ) -> Result<Paid, ApiError> {
     entitle::lock(conn).await?;
-    #[allow(clippy::type_complexity)]
-    let row: Option<(
-        String,
-        Option<DateTime<Utc>>,
-        Option<Uuid>,
-        Option<Uuid>,
-        i32,
-        String,
-    )> = sqlx::query_as(
-        "SELECT status, fulfilled_at, user_id, plan_id, period_days, out_trade_no \
-             FROM orders WHERE id = $1 FOR UPDATE",
+    let row: Option<(String, Option<DateTime<Utc>>, String)> = sqlx::query_as(
+        "SELECT status, fulfilled_at, out_trade_no FROM orders WHERE id = $1 FOR UPDATE",
     )
     .bind(order_id)
     .fetch_optional(&mut *conn)
     .await?;
-    let Some((status, fulfilled_at, user_id, plan_id, period_days, otn)) = row else {
+    let Some((status, fulfilled_at, otn)) = row else {
         return Err(ApiError::not_found());
     };
     if status != "paid" {
@@ -322,7 +383,8 @@ pub async fn apply_admin_fulfil(
     if fulfilled_at.is_some() {
         return Err(ApiError::conflict("order is already fulfilled"));
     }
-    let (fulfilled, detail) = fulfil(conn, actor, order_id, user_id, plan_id, period_days).await?;
+    let b = bought(conn, order_id).await?;
+    let (fulfilled, detail) = fulfil(conn, actor, order_id, &b).await?;
     crate::audit::record(
         conn,
         actor,

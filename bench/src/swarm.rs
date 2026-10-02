@@ -134,6 +134,7 @@ impl AgentState {
             &NodeState {
                 inbounds: self.inbounds.clone(),
                 users: self.users.clone(),
+                ..Default::default()
             },
         )
     }
@@ -334,10 +335,7 @@ pub async fn run(args: SwarmArgs) -> Result<()> {
         };
         let want_hash = state_hash(
             want.config_version,
-            &NodeState {
-                inbounds: want.inbounds_json.clone(),
-                users: user_set(&want.users),
-            },
+            &NodeState::of_snapshot(want.inbounds_json.clone(), &want.users),
         );
         if st.held != (want.config_version, want.user_version) || st.hash() != want_hash {
             diverged += 1;

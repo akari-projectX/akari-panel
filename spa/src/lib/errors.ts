@@ -14,6 +14,10 @@ const KNOWN: Record<string, Parameters<TFunction>[0]> = {
   "your current plan does not expire; nothing to renew": "errors.nothingToRenew",
   "another order is being created": "errors.orderInProgress",
   "order is not pending": "errors.orderNotPending",
+  "plan is sold out": "errors.soldOut",
+  "plan is only available to its current subscribers": "errors.renewalOnly",
+  "switching to this plan from another plan is not allowed": "errors.noSwitch",
+  "a traffic reset pack needs an active subscription of its plan": "errors.resetNeedsPlan",
 };
 
 /** A user-presentable, localized message for a failed request. */

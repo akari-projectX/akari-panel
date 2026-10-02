@@ -1,18 +1,11 @@
-// R18-3 后台（仅中文）：套餐定价、订单列表/筛选、订单详情与支付事件、
-// 人工确认收款 / 重试开通（必须填写原因，写审计）。
+// R18-3 后台（仅中文）：支付状态、订单列表/筛选、订单详情与支付事件、
+// 人工确认收款 / 重试开通（必须填写原因，写审计）。W7：定价移到「套餐」页
+// （按周期定价）；订单显示购买周期与换套餐抵扣。
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { del, get, post, put } from "../lib/api";
-import {
-  parseYuan,
-  yuan,
-  type AdminOrder,
-  type OrderDetail,
-  type OrderStatus,
-  type PriceRow,
-  type Prices,
-} from "../lib/billing";
+import { get, post } from "../lib/api";
+import { periodZh, yuan, type AdminOrder, type OrderDetail, type OrderStatus, type Prices } from "../lib/billing";
 import { adminErrorText } from "../lib/errors";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -31,146 +24,54 @@ export const STATUS_ZH: Record<OrderStatus, string> = {
   cancelled: "已取消",
 };
 
-const VIA_ZH: Record<string, string> = { notify: "异步通知", query: "主动查询", manual: "人工确认" };
+const VIA_ZH: Record<string, string> = {
+  notify: "异步通知",
+  query: "主动查询",
+  manual: "人工确认",
+  credit: "余值抵扣",
+};
 
 export function AdminOrders() {
   const [selected, setSelected] = useState<string | null>(null);
   return (
     <div className="space-y-6">
-      <PricesCard />
+      <PaymentsCard />
       <OrdersCard onSelect={setSelected} />
       {selected && <OrderDetailCard id={selected} onClose={() => setSelected(null)} />}
     </div>
   );
 }
 
-function PricesCard() {
+// Prices live with the plans (套餐 page, W7: one price per period); this
+// card only says whether customers can pay at all.
+function PaymentsCard() {
   const prices = useQuery({ queryKey: ["plan-prices"], queryFn: () => get<Prices>("/plan-prices") });
   const data = prices.data;
+  if (!data) return null;
+  const onSale = data.plans.filter((p) => p.on_sale && p.plan_enabled && p.prices.length > 0);
   return (
     <Card>
       <CardHeader>
         <CardTitle>
-          <h2>套餐定价</h2>
+          <h2>支付</h2>
         </CardTitle>
         <CardDescription>
-          价格以「元」填写（最多两位小数），每次购买获得「天数」的有效期；同一套餐再次购买为续费，购买其他套餐将替换当前套餐并清零已用流量。
-          {data && !data.payments_enabled && " 当前未启用支付宝（配置 [payments.alipay]），用户无法下单。"}
+          {data.payments_enabled
+            ? "支付宝当面付已启用。"
+            : "当前未启用支付宝（配置 [payments.alipay]），用户无法下单。"}
+          定价、库存与售卖规则在「套餐」页按周期设置。
         </CardDescription>
       </CardHeader>
-      <CardContent className="overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>套餐</TableHead>
-              <TableHead>价格（元）</TableHead>
-              <TableHead>天数</TableHead>
-              <TableHead>上架</TableHead>
-              <TableHead />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {(data?.prices ?? []).map((p) => (
-              <PriceEditor key={p.plan_id} row={p} />
-            ))}
-          </TableBody>
-        </Table>
+      <CardContent className="space-y-1 text-sm">
+        {onSale.length === 0 && <p className="text-muted-foreground">没有在售的套餐。</p>}
+        {onSale.map((p) => (
+          <p key={p.plan_id}>
+            <span className="font-medium">{p.plan_name}</span>：
+            {p.prices.map((x) => `${periodZh(x.period, x.days)} ¥${yuan(x.price_cents)}`).join("，")}
+          </p>
+        ))}
       </CardContent>
     </Card>
-  );
-}
-
-function PriceEditor({ row }: { row: PriceRow }) {
-  const queryClient = useQueryClient();
-  const [price, setPrice] = useState(row.price_cents != null ? yuan(row.price_cents) : "");
-  const [days, setDays] = useState(row.period_days != null ? String(row.period_days) : "30");
-  const [purchasable, setPurchasable] = useState(row.purchasable);
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
-
-  async function save() {
-    setError(null);
-    setSaved(false);
-    const cents = parseYuan(price);
-    const d = Number(days);
-    if (cents == null) return setError("价格无效");
-    if (!Number.isInteger(d) || d < 1 || d > 3650) return setError("天数须为 1–3650");
-    try {
-      await put(`/plans/${row.plan_id}/price`, { price_cents: cents, period_days: d, purchasable });
-      setSaved(true);
-      await queryClient.invalidateQueries({ queryKey: ["plan-prices"] });
-    } catch (err) {
-      setError(errText(err));
-    }
-  }
-
-  async function remove() {
-    if (!window.confirm(`删除「${row.plan_name}」的定价？该套餐将无法购买。`)) return;
-    setError(null);
-    try {
-      await del(`/plans/${row.plan_id}/price`);
-      setPrice("");
-      setPurchasable(false);
-      await queryClient.invalidateQueries({ queryKey: ["plan-prices"] });
-    } catch (err) {
-      setError(errText(err));
-    }
-  }
-
-  return (
-    <TableRow>
-      <TableCell>
-        {row.plan_name}
-        {!row.plan_enabled && (
-          <Badge variant="secondary" className="ml-2">
-            已停用
-          </Badge>
-        )}
-      </TableCell>
-      <TableCell>
-        <Input
-          aria-label={`${row.plan_name} 价格`}
-          className="w-28"
-          inputMode="decimal"
-          value={price}
-          onChange={(e) => setPrice(e.target.value)}
-          placeholder="9.90"
-        />
-      </TableCell>
-      <TableCell>
-        <Input
-          aria-label={`${row.plan_name} 天数`}
-          className="w-20"
-          inputMode="numeric"
-          value={days}
-          onChange={(e) => setDays(e.target.value)}
-        />
-      </TableCell>
-      <TableCell>
-        <input
-          type="checkbox"
-          aria-label={`${row.plan_name} 上架`}
-          checked={purchasable}
-          onChange={(e) => setPurchasable(e.target.checked)}
-        />
-      </TableCell>
-      <TableCell className="space-x-2 whitespace-nowrap">
-        <Button size="sm" onClick={save}>
-          保存
-        </Button>
-        {row.price_cents != null && (
-          <Button size="sm" variant="ghost" onClick={remove}>
-            删除定价
-          </Button>
-        )}
-        {saved && <span className="text-sm text-muted-foreground">已保存</span>}
-        {error && (
-          <span role="alert" className="text-sm text-destructive">
-            {error}
-          </span>
-        )}
-      </TableCell>
-    </TableRow>
   );
 }
 
@@ -262,6 +163,7 @@ function OrdersCard({ onSelect }: { onSelect: (id: string) => void }) {
                 <TableHead>下单时间</TableHead>
                 <TableHead>用户</TableHead>
                 <TableHead>套餐</TableHead>
+                <TableHead>周期</TableHead>
                 <TableHead>金额</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>付款方式</TableHead>
@@ -274,7 +176,13 @@ function OrdersCard({ onSelect }: { onSelect: (id: string) => void }) {
                   <TableCell>{fmt(o.created_at)}</TableCell>
                   <TableCell>{o.user_login}</TableCell>
                   <TableCell>{o.plan_name}</TableCell>
-                  <TableCell>¥{yuan(o.amount_cents)}</TableCell>
+                  <TableCell>{periodZh(o.period, o.period_days)}</TableCell>
+                  <TableCell>
+                    ¥{yuan(o.amount_cents)}
+                    {o.credit_cents > 0 && (
+                      <span className="ml-1 text-xs text-muted-foreground">（抵扣 ¥{yuan(o.credit_cents)}）</span>
+                    )}
+                  </TableCell>
                   <TableCell>
                     <Badge variant={o.status === "paid" ? "default" : "secondary"}>{STATUS_ZH[o.status]}</Badge>
                     {o.status === "paid" && !o.fulfilled_at && (
@@ -293,7 +201,7 @@ function OrdersCard({ onSelect }: { onSelect: (id: string) => void }) {
               ))}
               {rows.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={8} className="text-center text-sm text-muted-foreground">
                     无订单
                   </TableCell>
                 </TableRow>
@@ -372,10 +280,13 @@ function OrderDetailCard({ id, onClose }: { id: string; onClose: () => void }) {
           <dd>{o.user_login}</dd>
           <dt className="text-muted-foreground">套餐</dt>
           <dd>
-            {o.plan_name}（{o.period_days} 天）
+            {o.plan_name}（{periodZh(o.period, o.period_days)}）
           </dd>
           <dt className="text-muted-foreground">金额</dt>
-          <dd>¥{yuan(o.amount_cents)}</dd>
+          <dd>
+            ¥{yuan(o.amount_cents)}
+            {o.credit_cents > 0 && `（原价 ¥${yuan(o.list_price_cents)}，换套餐抵扣 ¥${yuan(o.credit_cents)}）`}
+          </dd>
           <dt className="text-muted-foreground">实付</dt>
           <dd>{o.paid_amount_cents != null ? `¥${yuan(o.paid_amount_cents)}` : "—"}</dd>
           <dt className="text-muted-foreground">状态</dt>

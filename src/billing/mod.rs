@@ -5,7 +5,8 @@
 //! - `orders`: order lifecycle; `apply_mark_paid` is THE paid transition
 //!   (entitle::lock → conditional UPDATE → fulfil via plans::apply_* →
 //!   audit, one transaction, exactly once).
-//! - `api`: user shop/orders, admin prices/orders, the async notify.
+//! - `catalog`: W7 period kinds, prices, sale rules, proration credit.
+//! - `api`: user shop/orders, admin orders, the async notify.
 //!
 //! Invariants (see CLAUDE.md "计费/支付"): integer cents, the amount is
 //! copied from the price at order creation and is the only amount compared
@@ -15,6 +16,7 @@
 
 pub mod alipay;
 pub mod api;
+pub mod catalog;
 pub mod http;
 pub mod orders;
 

@@ -240,6 +240,24 @@ knowing are the 57 ms rebuild (which drops every connection on the node, the
 reason deltas exist) and the state hash allocating 10 MB per Ack. No agent
 optimization was made.
 
+**W7 speed limits** (`ratelimit.go`, same benchmarks): unlimited users are
+never wrapped — their only added cost is one map lookup inside `admit`,
+under the lock it already takes; `BenchmarkGateAdmitRelease` before/after
+is within run-to-run noise (263–500 ns vs 280–398 ns parallel, 2026-10-02,
+20 threads). A limited user's dispatch pays one bucket reservation per
+buffer: `BenchmarkLimitedWrite8k` 129 ns per 8 KiB chunk including the
+buffer allocation (> 60 GB/s of headroom, 3 allocs of which 2 are the test's
+buffer). Throttling accuracy (real xray, raw VLESS): 768 KiB at 512 KiB/s
+took 1.303 s for an expected 1.300 s down and up; Vision over TLS (splice
+path) 3 MiB at 1 MiB/s took 2.809 s for 2.800 s (`ratelimit_test.go`,
+`ratelimit_canary_test.go`).
+
+**W7 panel side**: `desired_state` now LEFT JOINs each node user's active
+plan for the speed limit: the user-set query for 10k users on one node went
+from 4.7 ms to 7.9 ms (EXPLAIN ANALYZE, dev PG 18, 2026-10-02), about +3 ms
+on the ~43 ms snapshot build. Per-user digests hash 12 more bytes only for
+limited users.
+
 ## Limits and honest caveats
 
 - Flush margin is 9%: on a slower disk or a busier PostgreSQL the 50k-row flush
