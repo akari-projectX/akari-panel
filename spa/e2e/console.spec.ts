@@ -138,7 +138,11 @@ test("user portal: views with navigation and deep links, permanent subscription 
   const first = await link.inputValue();
   await page.getByRole("button", { name: "复制链接" }).click();
   await expect(page.getByRole("status").filter({ hasText: "已复制到剪贴板" })).toBeVisible();
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(first);
+  // (Over plain http the Clipboard API is absent; the copy then uses the
+  // legacy selection path, so only read back where the API exists.)
+  if (await page.evaluate(() => window.isSecureContext)) {
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(first);
+  }
   await page.getByRole("button", { name: "显示二维码" }).click();
   await expect(page.getByRole("img", { name: "订阅链接二维码" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Clash Verge / mihomo" })).toHaveAttribute(
