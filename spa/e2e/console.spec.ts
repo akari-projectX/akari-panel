@@ -220,6 +220,8 @@ test("admin with 2FA: password alone refused, TOTP code accepted", async ({ brow
   for (const [view, label, heading] of [
     ["nodes", "节点", "节点"],
     ["orders", "订单", "订单"],
+    ["coupons", "优惠券", "优惠券"],
+    ["finance", "资金", "提现审核"],
     ["updates", "更新", "灰度更新"],
     ["plans", "套餐", "套餐"],
     ["settings", "系统设置", "系统设置"],
@@ -279,5 +281,72 @@ test("W11 nodes: xboard-style form, live status, detail page, 立即测速", asy
   await expect(card.getByText("已保存")).toBeVisible();
   await expect(row.getByText("2x")).toBeVisible();
   expect(problems).toEqual([]);
+  await ctx.close();
+});
+
+test("W16: coupon + balance purchase (paid without the gateway), console coupons and balances", async ({ browser }) => {
+  test.skip(!secret, "needs the enrollment test");
+  // Admin: a priced plan (API, same session), a coupon and a balance (UI).
+  const actx = await browser.newContext({ locale: "zh-CN" });
+  const admin = await actx.newPage();
+  const problems = watch(admin);
+  await admin.goto(`${BASE}/coupons`);
+  const next = await nextCode(secret, usedStep);
+  usedStep = next.step;
+  await login(admin, ADMIN, ADMIN_PW, next.code);
+  await expect(admin).toHaveURL(`${ADMIN_BASE}/coupons`);
+  const api = `${ADMIN_BASE.replace(/\/admin$/, "")}/api/v1`;
+  const plan = await actx.request.post(`${api}/plans`, { data: { name: "e2e-w16", period: "monthly" } });
+  expect(plan.status()).toBe(201);
+  const planId = (await plan.json()).id as string;
+  const prices = await actx.request.put(`${api}/plans/${planId}/prices`, {
+    data: { on_sale: true, prices: [{ period: "month", price_cents: 2000 }] },
+  });
+  expect(prices.status()).toBe(204);
+  await admin.getByLabel("优惠码（3–32 位字母、数字、- 或 _）").fill("E2E50");
+  await admin.getByLabel("减免百分比").fill("50");
+  await admin.getByRole("button", { name: "创建优惠券" }).click();
+  await expect(admin.getByRole("status").filter({ hasText: "已创建优惠码 E2E50" })).toBeVisible();
+  await expect(admin.getByRole("cell", { name: "E2E50" })).toBeVisible();
+  await admin.getByRole("link", { name: "资金", exact: true }).click();
+  await expect(admin.getByRole("heading", { name: "提现审核" })).toBeVisible();
+  await admin.getByLabel("用户名（精确）").fill(USER);
+  await admin.getByRole("button", { name: "查找" }).click();
+  await admin.getByRole("button", { name: "明细与调整" }).click();
+  await admin.getByLabel("调整金额（元）").fill("10");
+  await admin.getByLabel("调整原因（必填）").fill("e2e 充值");
+  admin.once("dialog", (d) => void d.accept());
+  await admin.getByRole("button", { name: "调整余额" }).click();
+  await expect(admin.getByRole("status").filter({ hasText: "余额已调整" })).toBeVisible();
+  await expect(admin.getByText(`${USER}：余额 ¥10.00`)).toBeVisible();
+  expect(problems).toEqual([]);
+  await actx.close();
+
+  // User: coupon 50% off ¥20 = ¥10, the rest from the balance: paid at once.
+  const ctx = await browser.newContext({ locale: "zh-CN" });
+  const page = await ctx.newPage();
+  const uproblems = watch(page);
+  await page.goto(BASE);
+  await login(page, USER, USER_PW);
+  await expect(page.getByRole("heading", { name: "购买套餐" })).toBeVisible();
+  await expect(page.getByText("余额 ¥10.00", { exact: true })).toBeVisible();
+  await page.getByLabel("优惠码").fill("e2e50");
+  await page.getByRole("button", { name: "使用", exact: true }).click();
+  await expect(page.getByText("已使用优惠码 E2E50", { exact: true })).toBeVisible();
+  await expect(page.getByText("优惠券优惠 ¥10.00", { exact: true })).toBeVisible();
+  await page.getByRole("checkbox", { name: "使用余额支付（余额 ¥10.00）" }).check();
+  await expect(page.getByText("余额支付 ¥10.00", { exact: true })).toBeVisible();
+  await expect(page.getByText("应付 ¥0.00", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "购买", exact: true }).click();
+  await expect(page.getByText("付款成功，套餐已开通。", { exact: true })).toBeVisible();
+  await expect(page.getByText("E2E50 · 优惠券优惠 ¥10.00")).toBeVisible();
+  await expect(page.getByText("余额 ¥0.00", { exact: true })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "订单支付" })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "人工调整" })).toBeVisible();
+  // English too.
+  await page.getByRole("button", { name: "English" }).click();
+  await expect(page.getByRole("heading", { name: "Balance", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "My invitations" })).toBeVisible();
+  expect(uproblems).toEqual([]);
   await ctx.close();
 });
