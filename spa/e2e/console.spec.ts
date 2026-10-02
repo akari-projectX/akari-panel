@@ -475,7 +475,7 @@ test("W21: dashboard, user search + create dialog, plan dialog, settings tabs, c
   await dialog.getByLabel(/邮箱/).fill("w21@e2e.test");
   await dialog.getByLabel(/到期日/).fill("2099-12-31");
   await dialog.getByRole("button", { name: "创建" }).click();
-  await expect(page.getByText("的订阅令牌——只显示这一次")).toBeVisible();
+  await expect(page.getByText(/的订阅令牌（之后也可以/)).toBeVisible();
   await page.getByLabel("搜索").fill("E2E-W21");
   await expect(page.getByText("找到 1 个用户")).toBeVisible();
   const row = page.getByRole("row").filter({ hasText: "e2e-w21-user" });
