@@ -359,7 +359,7 @@ login_root() { # code -> http status; session in $JAR
 [ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
     -d '{"login":"root","password":"wrong-password"}')" = "401" ] || { echo "FAIL: wrong password not 401"; exit 1; }
 REJ401=$(cat /tmp/akari-smoke/last)
-[ "$REJ401" = '{"error":"unauthorized"}' ] || { echo "FAIL: wrong password body: $REJ401"; exit 1; }
+[ "$REJ401" = '{"code":"auth.unauthorized","error":"unauthorized","params":{}}' ] || { echo "FAIL: wrong password body: $REJ401"; exit 1; }
 CODE=$(totp)
 [ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
     -d "{\"login\":\"root\",\"password\":\"wrong-password\",\"code\":\"$CODE\"}")" = "401" ] \
