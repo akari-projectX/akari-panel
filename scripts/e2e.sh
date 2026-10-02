@@ -44,6 +44,22 @@ advertise = "127.0.0.1:$GRPC_PORT"
 TOML
 
 PREFIX=$("$PANEL" -c "$DIR/panel.toml" info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')
+# W16: payments on (throwaway keys, a gateway nobody listens on) so the
+# shop, coupons and balance can be driven; the e2e purchases are fully
+# covered by a coupon / the balance and never reach the gateway.
+( umask 077
+  openssl genrsa -out "$DIR/app-key.pem" 2048 2>/dev/null
+  openssl genrsa -out "$DIR/alipay-key.pem" 2048 2>/dev/null )
+openssl rsa -in "$DIR/alipay-key.pem" -pubout -out "$DIR/alipay-pub.pem" 2>/dev/null
+cat >>"$DIR/panel.toml" <<TOML
+[payments.alipay]
+enabled = true
+app_id = "2021000000000000"
+app_private_key_file = "$DIR/app-key.pem"
+alipay_public_key_file = "$DIR/alipay-pub.pem"
+gateway_url = "http://127.0.0.1:9/gateway.do"
+notify_url = "http://$E2E_HOST:$PORT/$PREFIX/pay/alipay/notify"
+TOML
 "$PANEL" -c "$DIR/panel.toml" serve >"$DIR/panel.log" 2>&1 &
 PANEL_PID=$!
 trap 'kill $PANEL_PID 2>/dev/null || true; wait $PANEL_PID 2>/dev/null || true' EXIT

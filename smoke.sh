@@ -1237,6 +1237,120 @@ done
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='user.traffic.reset' AND target_id='$BUYER' AND after->>'source'='reset_pack'")" = "1" ] \
   || { echo "FAIL: reset pack not audited"; exit 1; }
 
+echo "== W16 coupons, balance, invite commission, withdrawals (money: one ledger row + audit per movement) =="
+api_json() { # method url body -> http status; body in /tmp/akari-smoke/last
+  code -b "$1" -X "$2" "$3" -H 'Content-Type: application/json' -d "$4"
+}
+[ "$(api_json "$JAR" POST "$BASE/api/v1/plans" "{\"name\":\"w16-plan\",\"period\":\"monthly\",\"group_ids\":[\"$PAID_GROUP\"]}")" = "201" ] \
+  || { echo "FAIL: create w16 plan"; cat /tmp/akari-smoke/last; exit 1; }
+W16_PLAN=$(last_json "d['id']")
+[ "$(api_json "$JAR" PUT "$BASE/api/v1/plans/$W16_PLAN/prices" '{"on_sale":true,"prices":[{"period":"month","price_cents":1000}]}')" = "204" ] \
+  || { echo "FAIL: w16 prices"; exit 1; }
+[ "$(api_json "$JAR" PUT "$BASE/api/v1/commission-settings" '{"enabled":true,"rate_percent":10,"first_order_only":false,"hold_days":7,"min_withdrawal_cents":50}')" = "200" ] \
+  || { echo "FAIL: commission settings"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(api_json "$JAR" PUT "$BASE/api/v1/commission-settings" '{"enabled":true,"rate_percent":101,"first_order_only":false,"hold_days":7,"min_withdrawal_cents":50}')" = "400" ] \
+  || { echo "FAIL: bad commission settings accepted"; exit 1; }
+for who in smoke-inviter smoke-w16; do
+  [ "$(api_json "$JAR" POST "$BASE/api/v1/users" "{\"login\":\"$who\",\"password\":\"$who-password-123\"}")" = "201" ] \
+    || { echo "FAIL: create $who"; exit 1; }
+  code -c "$LOG/$who-cookies" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"login\":\"$who\",\"password\":\"$who-password-123\"}" >/dev/null
+done
+INVITER=$(psql_q "SELECT id FROM users WHERE login='smoke-inviter'")
+W16U=$(psql_q "SELECT id FROM users WHERE login='smoke-w16'")
+IJAR="$LOG/smoke-inviter-cookies"; WJAR="$LOG/smoke-w16-cookies"
+# Inviter attribution is W15's (registration with an invite code); set it directly.
+psql_q "UPDATE users SET inviter_id='$INVITER' WHERE id='$W16U'" >/dev/null
+psql_q "UPDATE users SET inviter_id='$W16U' WHERE id='$INVITER'" >/dev/null 2>&1 \
+  && { echo "FAIL: an invitation cycle was accepted"; exit 1; }
+# Coupon: 20% off, one use in total.
+[ "$(api_json "$JAR" POST "$BASE/api/v1/coupons" '{"code":"SMOKE20","kind":"percent","value":20,"max_uses":1}')" = "201" ] \
+  || { echo "FAIL: create coupon"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/coupons" '{"code":"smoke20","kind":"percent","value":5}')" = "409" ] \
+  || { echo "FAIL: duplicate coupon code (case-insensitive) accepted"; exit 1; }
+[ "$(code -b "$WJAR" "$BASE/api/v1/me/shop?coupon=smoke20")" = "200" ] || { echo "FAIL: shop with coupon"; exit 1; }
+python3 -c "
+import json; d=json.load(open('/tmp/akari-smoke/last')); p=[x for x in d['plans'] if x['plan_id']=='$W16_PLAN'][0]; o=p['offers'][0]
+assert d['coupon']=={'code':'SMOKE20','refusal':None} and o['discount_cents']==200 and o['amount_cents']==800, d
+" || { echo "FAIL: coupon preview"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(api_json "$WJAR" POST "$BASE/api/v1/me/orders" "{\"plan_id\":\"$W16_PLAN\",\"period\":\"month\",\"coupon\":\"smoke20\",\"discount_cents\":1000}")" = "400" ] \
+  || { echo "FAIL: client discount accepted"; exit 1; }
+[ "$(api_json "$WJAR" POST "$BASE/api/v1/me/orders" "{\"plan_id\":\"$W16_PLAN\",\"period\":\"month\",\"coupon\":\"smoke20\"}")" = "201" ] \
+  || { echo "FAIL: order with coupon"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(last_json "d['amount_cents']")/$(last_json "d['discount_cents']")/$(last_json "d['coupon_code']")" = "800/200/SMOKE20" ] \
+  || { echo "FAIL: coupon order amounts"; cat /tmp/akari-smoke/last; exit 1; }
+CORDER=$(last_json "d['id']"); COTN=$(last_json "d['out_trade_no']")
+# The last use is reserved: nobody else gets it.
+[ "$(api_json "$IJAR" POST "$BASE/api/v1/me/orders" "{\"plan_id\":\"$W16_PLAN\",\"period\":\"month\",\"coupon\":\"SMOKE20\"}")" = "409" ] \
+  && last_json "d['error']" | matches 'coupon has been used up' || { echo "FAIL: coupon's last use given twice"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(curl -s --noproxy '*' -X POST "$BASE/pay/alipay/notify" --data-binary "$(python3 "$PAY/notify.py" "$PAY" "$COTN" 8.00 TRADE_SUCCESS)")" = "success" ] \
+  || { echo "FAIL: coupon order notify"; exit 1; }
+[ "$(psql_q "SELECT status, fulfilled_at IS NOT NULL FROM orders WHERE id='$CORDER'")" = "paid|t" ] || { echo "FAIL: coupon order not fulfilled"; exit 1; }
+[ "$(psql_q "SELECT status || '/' || (SELECT used FROM coupons WHERE code='SMOKE20') FROM coupon_redemptions WHERE order_id='$CORDER'")" = "redeemed/1" ] \
+  || { echo "FAIL: coupon not redeemed once"; exit 1; }
+# Commission: 10% of the Alipay amount (800) pending for the inviter.
+[ "$(psql_q "SELECT amount_cents || '/' || status FROM commissions WHERE order_id='$CORDER'")" = "80/pending" ] \
+  || { echo "FAIL: commission not pending"; psql_q "SELECT * FROM commissions"; exit 1; }
+# Time travel past the hold: the enforce pass credits it (once).
+psql_q "UPDATE commissions SET available_at = now() - interval '1 second' WHERE order_id='$CORDER'" >/dev/null
+for _ in $(seq 1 30); do
+  [ "$(psql_q "SELECT status FROM commissions WHERE order_id='$CORDER'")" = "credited" ] && break; sleep 0.5
+done
+[ "$(code -b "$IJAR" "$BASE/api/v1/me/balance")" = "200" ] \
+  && [ "$(last_json "d['balance_cents']")/$(last_json "d['withdrawable_cents']")/$(last_json "d['entries'][0]['kind']")" = "80/80/commission" ] \
+  || { echo "FAIL: commission not credited"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$IJAR" "$BASE/api/v1/me/invite")" = "200" ] && [ "$(last_json "d['invited_count']")/$(last_json "d['credited_cents']")" = "1/80" ] \
+  || { echo "FAIL: /me/invite"; cat /tmp/akari-smoke/last; exit 1; }
+# Withdrawal: over the withdrawable amount refused; 60 held, approved by hand.
+[ "$(api_json "$IJAR" POST "$BASE/api/v1/me/withdrawals" '{"amount_cents":100,"method":"alipay","account":"inviter@example"}')" = "409" ] \
+  || { echo "FAIL: withdrawal over the withdrawable amount"; exit 1; }
+[ "$(api_json "$IJAR" POST "$BASE/api/v1/me/withdrawals" '{"amount_cents":60,"method":"alipay","account":"inviter@example"}')" = "201" ] \
+  || { echo "FAIL: withdrawal request"; cat /tmp/akari-smoke/last; exit 1; }
+WD=$(last_json "d['id']")
+[ "$(psql_q "SELECT balance_cents FROM user_balances WHERE user_id='$INVITER'")" = "20" ] || { echo "FAIL: withdrawal not held"; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/withdrawals/$WD/approve" '{"payout_reference":"smoke-payout-1"}')" = "204" ] \
+  || { echo "FAIL: approve withdrawal"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/withdrawals/$WD/approve" '{"payout_reference":"again"}')" = "409" ] \
+  || { echo "FAIL: withdrawal approved twice"; exit 1; }
+# Balance: fully paid order (no Alipay), then a partial one cancelled (refund to balance).
+[ "$(api_json "$JAR" POST "$BASE/api/v1/users/$W16U/balance" '{"amount_cents":1300,"reason":"smoke top-up"}')" = "200" ] \
+  || { echo "FAIL: admin balance adjust"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/users/$W16U/balance" '{"amount_cents":-99999,"reason":"too much"}')" = "409" ] \
+  || { echo "FAIL: negative balance allowed"; exit 1; }
+[ "$(api_json "$WJAR" POST "$BASE/api/v1/me/orders" "{\"plan_id\":\"$W16_PLAN\",\"period\":\"month\",\"use_balance\":true}")" = "201" ] \
+  || { echo "FAIL: balance order"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(last_json "d['status']")/$(last_json "d['amount_cents']")/$(last_json "d['balance_cents']")" = "paid/0/1000" ] \
+  || { echo "FAIL: balance order not paid by balance"; cat /tmp/akari-smoke/last; exit 1; }
+BORDER=$(last_json "d['id']")
+[ "$(psql_q "SELECT paid_via FROM orders WHERE id='$BORDER'")" = "balance" ] || { echo "FAIL: paid_via balance"; exit 1; }
+[ "$(api_json "$WJAR" POST "$BASE/api/v1/me/orders" "{\"plan_id\":\"$W16_PLAN\",\"period\":\"month\",\"use_balance\":true}")" = "201" ] \
+  || { echo "FAIL: partial balance order"; exit 1; }
+[ "$(last_json "d['status']")/$(last_json "d['amount_cents']")/$(last_json "d['balance_cents']")" = "pending/700/300" ] \
+  || { echo "FAIL: partial balance split"; cat /tmp/akari-smoke/last; exit 1; }
+PORDER=$(last_json "d['id']")
+[ "$(psql_q "SELECT balance_cents FROM user_balances WHERE user_id='$W16U'")" = "0" ] || { echo "FAIL: balance part not held"; exit 1; }
+[ "$(api_json "$WJAR" POST "$BASE/api/v1/me/orders/$PORDER/cancel" '{}')" = "200" ] && [ "$(last_json "d['status']")" = "cancelled" ] \
+  || { echo "FAIL: cancel partial order"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT balance_cents FROM user_balances WHERE user_id='$W16U'")" = "300" ] || { echo "FAIL: balance part not returned"; exit 1; }
+# Admin refund of the coupon order to the balance (the commission was already credited: kept).
+[ "$(api_json "$JAR" POST "$BASE/api/v1/orders/$CORDER/refund" '{"reason":"smoke refund","to_balance":true}')" = "200" ] \
+  && [ "$(last_json "d['refund_cents']")/$(last_json "d['commission']")" = "800/credited" ] \
+  || { echo "FAIL: refund"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT balance_cents FROM user_balances WHERE user_id='$W16U'")" = "1100" ] || { echo "FAIL: refund not on the balance"; exit 1; }
+# The money invariants, over everything above.
+[ "$(psql_q "SELECT count(*) FROM users u LEFT JOIN user_balances b ON b.user_id = u.id
+             WHERE COALESCE(b.balance_cents, 0) <> COALESCE((SELECT sum(amount_cents) FROM balance_ledger l WHERE l.user_id = u.id), 0)")" = "0" ] \
+  || { echo "FAIL: balance != sum(ledger)"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM balance_ledger")" = "$(psql_q "SELECT count(*) FROM audit_log WHERE action LIKE 'balance.%'")" ] \
+  || { echo "FAIL: a ledger row without its audit row"; exit 1; }
+psql_q "UPDATE user_balances SET balance_cents = balance_cents + 1" >/dev/null 2>&1 && { echo "FAIL: balance written outside the ledger"; exit 1; }
+psql_q "DELETE FROM balance_ledger" >/dev/null 2>&1 && { echo "FAIL: ledger is not append-only"; exit 1; }
+for a in coupon.create commission.create commission.settings.update balance.commission balance.withdrawal \
+         withdrawal.approved balance.admin_adjust balance.order_payment balance.refund_to_balance order.refund; do
+  [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='$a'")" -ge 1 ] || { echo "FAIL: audit lacks $a"; exit 1; }
+done
+echo "w16: ok (coupon reserve/redeem + last use, commission pending -> credited, withdrawal, balance full/partial/refund, ledger invariants)"
+
 # W7: plan speed limits are enforced by the agent (protocol 4, per user,
 # both directions). A limit change alone is a UserDelta (no xray rebuild)
 # and VLESS throughput drops to the limit; removing it restores it.
