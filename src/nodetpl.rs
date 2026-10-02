@@ -46,7 +46,8 @@ pub const TLS_KEY_FILE: &str = "/run/credentials/akari-agent.service/tls_privkey
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "template", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InboundSpec {
-    /// VLESS over REALITY (recommended: no certificate, no domain).
+    /// VLESS over REALITY on raw TCP (recommended: no certificate, no
+    /// domain), with the Vision flow unless `vision: false`.
     VlessReality {
         port: u16,
         #[serde(default)]
@@ -61,6 +62,34 @@ pub enum InboundSpec {
         /// uTLS fingerprint for subscriptions (sub::FINGERPRINTS); default chrome.
         #[serde(default)]
         fingerprint: Option<String>,
+        /// xtls-rprx-vision (default true).
+        #[serde(default)]
+        vision: Option<bool>,
+    },
+    /// VLESS over REALITY with the XHTTP transport (no Vision: XHTTP is
+    /// not raw TCP).
+    VlessRealityXhttp {
+        port: u16,
+        #[serde(default)]
+        tag: Option<String>,
+        #[serde(default)]
+        dest: Option<String>,
+        #[serde(default)]
+        server_name: Option<String>,
+        #[serde(default)]
+        fingerprint: Option<String>,
+        #[serde(default)]
+        path: Option<String>,
+        /// auto (default) | packet-up | stream-up | stream-one
+        #[serde(default)]
+        mode: Option<String>,
+    },
+    /// VLESS over raw TCP + TLS (node certificate) with Vision.
+    VlessTlsVision {
+        port: u16,
+        #[serde(default)]
+        tag: Option<String>,
+        domain: String,
     },
     /// VLESS over WebSocket with TLS (certificate on the node).
     VlessWsTls {
@@ -83,8 +112,55 @@ pub enum InboundSpec {
         #[serde(default)]
         tls_domain: Option<String>,
     },
+    /// VMess over raw TCP (no TLS; alterId 0, security auto).
+    VmessTcp {
+        port: u16,
+        #[serde(default)]
+        tag: Option<String>,
+    },
     /// Trojan over TLS (certificate on the node).
     TrojanTls {
+        port: u16,
+        #[serde(default)]
+        tag: Option<String>,
+        domain: String,
+    },
+    /// Any of vless/vmess/trojan over an HTTP-family transport (ws,
+    /// httpupgrade, xhttp, grpc), TLS when `tls_domain` is set (required
+    /// for trojan and for grpc).
+    Transport {
+        port: u16,
+        #[serde(default)]
+        tag: Option<String>,
+        protocol: String,
+        network: String,
+        #[serde(default)]
+        path: Option<String>,
+        /// Host header (ws/httpupgrade/xhttp) clients send; optional.
+        #[serde(default)]
+        host: Option<String>,
+        /// xhttp mode.
+        #[serde(default)]
+        mode: Option<String>,
+        /// grpc serviceName (default random).
+        #[serde(default)]
+        service_name: Option<String>,
+        #[serde(default)]
+        tls_domain: Option<String>,
+    },
+    /// Shadowsocks 2022, multi-user (server PSK generated here; one key
+    /// per user). TCP and UDP.
+    #[serde(rename = "shadowsocks_2022")]
+    Shadowsocks2022 {
+        port: u16,
+        #[serde(default)]
+        tag: Option<String>,
+        /// 2022-blake3-aes-128-gcm (default) | 2022-blake3-aes-256-gcm
+        #[serde(default)]
+        method: Option<String>,
+    },
+    /// Hysteria 2 over QUIC (UDP), node certificate.
+    Hysteria2 {
         port: u16,
         #[serde(default)]
         tag: Option<String>,
@@ -96,17 +172,40 @@ impl InboundSpec {
     fn port(&self) -> u16 {
         match self {
             InboundSpec::VlessReality { port, .. }
+            | InboundSpec::VlessRealityXhttp { port, .. }
+            | InboundSpec::VlessTlsVision { port, .. }
             | InboundSpec::VlessWsTls { port, .. }
             | InboundSpec::VmessWs { port, .. }
-            | InboundSpec::TrojanTls { port, .. } => *port,
+            | InboundSpec::VmessTcp { port, .. }
+            | InboundSpec::TrojanTls { port, .. }
+            | InboundSpec::Transport { port, .. }
+            | InboundSpec::Shadowsocks2022 { port, .. }
+            | InboundSpec::Hysteria2 { port, .. } => *port,
+        }
+    }
+
+    /// (tcp, udp) the rendered inbound listens on.
+    fn l4(&self) -> (bool, bool) {
+        match self {
+            InboundSpec::Shadowsocks2022 { .. } => (true, true),
+            InboundSpec::Hysteria2 { .. } => (false, true),
+            _ => (true, false),
         }
     }
 
     fn needs_certificate(&self) -> bool {
         match self {
-            InboundSpec::VlessReality { .. } => false,
-            InboundSpec::VmessWs { tls_domain, .. } => tls_domain.is_some(),
-            InboundSpec::VlessWsTls { .. } | InboundSpec::TrojanTls { .. } => true,
+            InboundSpec::VlessReality { .. }
+            | InboundSpec::VlessRealityXhttp { .. }
+            | InboundSpec::VmessTcp { .. }
+            | InboundSpec::Shadowsocks2022 { .. } => false,
+            InboundSpec::VmessWs { tls_domain, .. } | InboundSpec::Transport { tls_domain, .. } => {
+                tls_domain.as_deref().is_some_and(|d| !d.trim().is_empty())
+            }
+            InboundSpec::VlessTlsVision { .. }
+            | InboundSpec::VlessWsTls { .. }
+            | InboundSpec::TrojanTls { .. }
+            | InboundSpec::Hysteria2 { .. } => true,
         }
     }
 }
@@ -214,6 +313,68 @@ fn tls_settings(domain: &str, alpn: &[&str]) -> Value {
     })
 }
 
+/// REALITY settings (fresh keys + short id) for `dest`/`server_name`/
+/// `fingerprint` (shared by the REALITY templates).
+fn reality_settings(
+    dest: &Option<String>,
+    server_name: &Option<String>,
+    fingerprint: &Option<String>,
+) -> Result<Value, ApiError> {
+    let (host, dport) = parse_dest(dest.as_deref().unwrap_or(REALITY_DESTS[0]))?;
+    let sni = match server_name.as_deref().map(str::trim) {
+        Some(s) if !s.is_empty() => domain(s, "server_name")?,
+        _ => host.clone(),
+    };
+    let fp = fingerprint.as_deref().unwrap_or("chrome");
+    if !crate::sub::FINGERPRINTS.contains(&fp) {
+        return Err(ApiError::bad_request(format!(
+            "fingerprint must be one of {}",
+            crate::sub::FINGERPRINTS.join(", ")
+        )));
+    }
+    let keys = new_reality_keys();
+    let sid = new_short_id();
+    Ok(json!({
+        "dest": format!("{host}:{dport}"),
+        "serverNames": [sni],
+        "privateKey": keys.private_key,
+        "shortIds": [sid],
+        // Panel-only (subscriptions): ignored by xray.
+        "publicKey": keys.public_key,
+        "shortId": sid,
+        "fingerprint": fp,
+    }))
+}
+
+fn xhttp_mode(mode: &Option<String>) -> Result<String, ApiError> {
+    let m = mode.as_deref().map(str::trim).unwrap_or("");
+    let m = if m.is_empty() { "auto" } else { m };
+    if !crate::protocols::XHTTP_MODES.contains(&m) {
+        return Err(ApiError::bad_request(format!(
+            "mode must be one of {}",
+            crate::protocols::XHTTP_MODES.join(", ")
+        )));
+    }
+    Ok(m.to_string())
+}
+
+fn grpc_service_name(name: &Option<String>) -> Result<String, ApiError> {
+    let n = name.as_deref().map(str::trim).unwrap_or("");
+    if n.is_empty() {
+        return Ok(new_short_id());
+    }
+    if n.len() > 64
+        || !n
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+    {
+        return Err(ApiError::bad_request(
+            "service_name: letters, digits and -_. only (<= 64)",
+        ));
+    }
+    Ok(n.to_string())
+}
+
 /// Render one template into an xray inbound.
 pub fn render_one(spec: &InboundSpec) -> Result<Value, ApiError> {
     let port = spec.port();
@@ -233,40 +394,181 @@ pub fn render_one(spec: &InboundSpec) -> Result<Value, ApiError> {
             dest,
             server_name,
             fingerprint,
+            vision,
             ..
         } => {
-            let (host, dport) = parse_dest(dest.as_deref().unwrap_or(REALITY_DESTS[0]))?;
-            let sni = match server_name.as_deref().map(str::trim) {
-                Some(s) if !s.is_empty() => domain(s, "server_name")?,
-                _ => host.clone(),
+            let flow = if vision.unwrap_or(true) {
+                crate::protocols::VISION
+            } else {
+                ""
             };
-            let fp = fingerprint.as_deref().unwrap_or("chrome");
-            if !crate::sub::FINGERPRINTS.contains(&fp) {
-                return Err(ApiError::bad_request(format!(
-                    "fingerprint must be one of {}",
-                    crate::sub::FINGERPRINTS.join(", ")
-                )));
-            }
-            let keys = new_reality_keys();
-            let sid = new_short_id();
             json!({
                 "tag": tag_or(tag, format!("vless-reality-{port}")),
                 "port": port,
                 "protocol": "vless",
-                "settings": { "clients": [], "decryption": "none" },
+                "settings": { "clients": [], "decryption": "none", "flow": flow },
                 "streamSettings": {
                     "network": "tcp",
                     "security": "reality",
-                    "realitySettings": {
-                        "dest": format!("{host}:{dport}"),
-                        "serverNames": [sni],
-                        "privateKey": keys.private_key,
-                        "shortIds": [sid],
-                        // Panel-only (subscriptions): ignored by xray.
-                        "publicKey": keys.public_key,
-                        "shortId": sid,
-                        "fingerprint": fp,
-                    },
+                    "realitySettings": reality_settings(dest, server_name, fingerprint)?,
+                },
+            })
+        }
+        InboundSpec::VlessRealityXhttp {
+            tag,
+            dest,
+            server_name,
+            fingerprint,
+            path,
+            mode,
+            ..
+        } => json!({
+            "tag": tag_or(tag, format!("vless-xhttp-{port}")),
+            "port": port,
+            "protocol": "vless",
+            "settings": { "clients": [], "decryption": "none" },
+            "streamSettings": {
+                "network": "xhttp",
+                "security": "reality",
+                "xhttpSettings": { "path": ws_path(path)?, "mode": xhttp_mode(mode)? },
+                "realitySettings": reality_settings(dest, server_name, fingerprint)?,
+            },
+        }),
+        InboundSpec::VlessTlsVision { tag, domain: d, .. } => {
+            let d = domain(d, "domain")?;
+            json!({
+                "tag": tag_or(tag, format!("vless-vision-{port}")),
+                "port": port,
+                "protocol": "vless",
+                "settings": { "clients": [], "decryption": "none", "flow": crate::protocols::VISION },
+                "streamSettings": {
+                    "network": "tcp",
+                    "security": "tls",
+                    "tlsSettings": tls_settings(&d, &["h2", "http/1.1"]),
+                },
+            })
+        }
+        InboundSpec::VmessTcp { tag, .. } => json!({
+            "tag": tag_or(tag, format!("vmess-tcp-{port}")),
+            "port": port,
+            "protocol": "vmess",
+            "settings": { "clients": [] },
+            "streamSettings": { "network": "tcp" },
+        }),
+        InboundSpec::Transport {
+            tag,
+            protocol,
+            network,
+            path,
+            host,
+            mode,
+            service_name,
+            tls_domain,
+            ..
+        } => {
+            let proto = protocol.trim().to_ascii_lowercase();
+            if !["vless", "vmess", "trojan"].contains(&proto.as_str()) {
+                return Err(ApiError::bad_request(
+                    "protocol must be vless, vmess or trojan",
+                ));
+            }
+            let net = network.trim().to_ascii_lowercase();
+            let tls = match tls_domain.as_deref().map(str::trim) {
+                Some(d) if !d.is_empty() => Some(domain(d, "tls_domain")?),
+                _ => None,
+            };
+            if tls.is_none() && (proto == "trojan" || net == "grpc") {
+                return Err(ApiError::bad_request(
+                    "trojan and grpc need tls_domain (the node's certificate)",
+                ));
+            }
+            let host = match host.as_deref().map(str::trim) {
+                Some(h) if !h.is_empty() => Some(domain(h, "host")?),
+                _ => None,
+            };
+            let (settings_key, ts, alpn): (&str, Value, &[&str]) = match net.as_str() {
+                "ws" => {
+                    let mut w = json!({ "path": ws_path(path)? });
+                    if let Some(h) = &host {
+                        w["headers"] = json!({ "Host": h });
+                    }
+                    ("wsSettings", w, &["http/1.1"])
+                }
+                "httpupgrade" => {
+                    let mut w = json!({ "path": ws_path(path)? });
+                    if let Some(h) = &host {
+                        w["host"] = json!(h);
+                    }
+                    ("httpupgradeSettings", w, &["http/1.1"])
+                }
+                "xhttp" => {
+                    let mut w = json!({ "path": ws_path(path)?, "mode": xhttp_mode(mode)? });
+                    if let Some(h) = &host {
+                        w["host"] = json!(h);
+                    }
+                    ("xhttpSettings", w, &["h2", "http/1.1"])
+                }
+                "grpc" => (
+                    "grpcSettings",
+                    json!({ "serviceName": grpc_service_name(service_name)? }),
+                    &["h2"],
+                ),
+                _ => {
+                    return Err(ApiError::bad_request(
+                        "network must be ws, httpupgrade, xhttp or grpc",
+                    ))
+                }
+            };
+            let mut ss = json!({ "network": net });
+            ss[settings_key] = ts;
+            if let Some(d) = &tls {
+                ss["security"] = json!("tls");
+                ss["tlsSettings"] = tls_settings(d, alpn);
+            }
+            let settings = if proto == "vless" {
+                json!({ "clients": [], "decryption": "none" })
+            } else {
+                json!({ "clients": [] })
+            };
+            json!({
+                "tag": tag_or(tag, format!("{proto}-{net}-{port}")),
+                "port": port,
+                "protocol": proto,
+                "settings": settings,
+                "streamSettings": ss,
+            })
+        }
+        InboundSpec::Shadowsocks2022 { tag, method, .. } => {
+            let m = method
+                .as_deref()
+                .map(str::trim)
+                .filter(|m| !m.is_empty())
+                .unwrap_or(crate::protocols::SS_METHODS[0].0);
+            let psk = crate::protocols::new_ss_key(m).ok_or_else(|| {
+                ApiError::bad_request(format!(
+                    "method must be one of {}",
+                    crate::protocols::SS_METHODS.map(|(m, _)| m).join(", ")
+                ))
+            })?;
+            json!({
+                "tag": tag_or(tag, format!("ss2022-{port}")),
+                "port": port,
+                "protocol": "shadowsocks",
+                "settings": { "method": m, "password": psk, "clients": [], "network": "tcp,udp" },
+            })
+        }
+        InboundSpec::Hysteria2 { tag, domain: d, .. } => {
+            let d = domain(d, "domain")?;
+            json!({
+                "tag": tag_or(tag, format!("hysteria2-{port}")),
+                "port": port,
+                "protocol": "hysteria",
+                "settings": { "version": 2, "clients": [] },
+                "streamSettings": {
+                    "network": "hysteria",
+                    "security": "tls",
+                    "tlsSettings": tls_settings(&d, &["h3"]),
+                    "hysteriaSettings": { "version": 2 },
                 },
             })
         }
@@ -336,16 +638,22 @@ pub fn render(specs: &[InboundSpec], taken: &[u16]) -> Result<Vec<Value>, ApiErr
     if specs.len() > 16 {
         return Err(ApiError::bad_request("at most 16 templates at once"));
     }
-    let mut ports: Vec<u16> = taken.to_vec();
+    // `taken` ports are treated as TCP+UDP (their inbounds are not known
+    // here); the templates' own L4 lets a UDP Hysteria 2 share a TCP port.
+    let mut ports: Vec<(u16, bool, bool)> = taken.iter().map(|p| (*p, true, true)).collect();
     let mut out = Vec::with_capacity(specs.len());
     for s in specs {
         let p = s.port();
-        if ports.contains(&p) {
+        let (t, u) = s.l4();
+        if ports
+            .iter()
+            .any(|(q, qt, qu)| *q == p && ((t && *qt) || (u && *qu)))
+        {
             return Err(ApiError::bad_request(format!(
                 "port {p} is used by more than one inbound"
             )));
         }
-        ports.push(p);
+        ports.push((p, t, u));
         out.push(render_one(s)?);
     }
     Ok(out)
@@ -406,6 +714,8 @@ pub struct TemplateCatalog {
     reality_dests: &'static [&'static str],
     fingerprints: &'static [&'static str],
     tls_cert_dir: &'static str,
+    ss_methods: Vec<&'static str>,
+    xhttp_modes: &'static [&'static str],
 }
 
 /// GET /inbound-templates (admin): the choices the form offers.
@@ -415,6 +725,11 @@ pub async fn catalog(user: AuthUser) -> Result<Json<TemplateCatalog>, ApiError> 
         reality_dests: REALITY_DESTS,
         fingerprints: crate::sub::FINGERPRINTS,
         tls_cert_dir: "/etc/akari-agent/tls",
+        ss_methods: crate::protocols::SS_METHODS
+            .iter()
+            .map(|(m, _)| *m)
+            .collect(),
+        xhttp_modes: &crate::protocols::XHTTP_MODES,
     }))
 }
 
@@ -516,6 +831,7 @@ async fn probe_dest(host: &str, port: u16) -> Result<CheckDestView, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::engine::general_purpose::STANDARD as STANDARD_B64;
 
     #[test]
     fn x25519_rfc7748_vector() {
@@ -671,6 +987,108 @@ mod tests {
         ] {
             assert!(render(&[spec(bad.clone())], &[]).is_err(), "{bad}");
         }
+    }
+
+    /// W8: every template renders an inbound that passes the same
+    /// validation as hand-written JSON, gets credentials of the right
+    /// shape, and carries what the subscriptions need.
+    #[test]
+    fn w8_templates_render_valid_inbounds() {
+        let specs = [
+            json!({"template": "vless_reality", "port": 443}),
+            json!({"template": "vless_reality", "port": 444, "vision": false}),
+            json!({"template": "vless_reality_xhttp", "port": 445, "path": "/x", "mode": "stream-one"}),
+            json!({"template": "vless_tls_vision", "port": 446, "domain": "n.example.com"}),
+            json!({"template": "vmess_tcp", "port": 447}),
+            json!({"template": "transport", "port": 448, "protocol": "vless", "network": "httpupgrade", "host": "cdn.example.com"}),
+            json!({"template": "transport", "port": 449, "protocol": "vless", "network": "xhttp", "tls_domain": "n.example.com"}),
+            json!({"template": "transport", "port": 450, "protocol": "trojan", "network": "ws", "tls_domain": "n.example.com"}),
+            json!({"template": "transport", "port": 451, "protocol": "vless", "network": "grpc", "tls_domain": "n.example.com", "service_name": "svc"}),
+            json!({"template": "transport", "port": 452, "protocol": "vmess", "network": "xhttp"}),
+            json!({"template": "shadowsocks_2022", "port": 8388}),
+            json!({"template": "shadowsocks_2022", "port": 8389, "method": "2022-blake3-aes-256-gcm"}),
+            // UDP: may share 443/TCP with the REALITY inbound.
+            json!({"template": "hysteria2", "port": 443, "domain": "n.example.com"}),
+        ];
+        let v = render(&specs.map(spec), &[]).unwrap();
+        crate::api::validate_inbounds(&Value::Array(v.clone())).unwrap();
+        for i in &v {
+            assert!(crate::protocols::issuable(i), "{i}");
+            crate::protocols::generate_account(i).unwrap();
+        }
+        assert_eq!(v[0]["settings"]["flow"], crate::protocols::VISION);
+        assert_eq!(v[1]["settings"]["flow"], "");
+        assert_eq!(
+            v[2]["streamSettings"]["xhttpSettings"],
+            json!({"path": "/x", "mode": "stream-one"})
+        );
+        assert_eq!(v[2]["streamSettings"]["security"], "reality");
+        assert!(v[2]["settings"].get("flow").is_none());
+        assert_eq!(v[3]["settings"]["flow"], crate::protocols::VISION);
+        assert_eq!(
+            v[3]["streamSettings"]["tlsSettings"]["certificates"][0]["certificateFile"],
+            TLS_CERT_FILE
+        );
+        assert_eq!(
+            v[5]["streamSettings"]["httpupgradeSettings"]["host"],
+            "cdn.example.com"
+        );
+        assert_eq!(v[6]["streamSettings"]["xhttpSettings"]["mode"], "auto");
+        assert_eq!(
+            v[6]["streamSettings"]["tlsSettings"]["alpn"],
+            json!(["h2", "http/1.1"])
+        );
+        assert_eq!(v[8]["streamSettings"]["grpcSettings"]["serviceName"], "svc");
+        assert_eq!(v[8]["streamSettings"]["tlsSettings"]["alpn"], json!(["h2"]));
+        assert!(v[9]["streamSettings"].get("security").is_none());
+        let a = crate::protocols::generate_account(&v[11]).unwrap();
+        assert_eq!(
+            STANDARD_B64
+                .decode(a["password"].as_str().unwrap())
+                .unwrap()
+                .len(),
+            32
+        );
+        assert_eq!(
+            STANDARD_B64
+                .decode(v[11]["settings"]["password"].as_str().unwrap())
+                .unwrap()
+                .len(),
+            32
+        );
+        assert_eq!(
+            STANDARD_B64
+                .decode(v[10]["settings"]["password"].as_str().unwrap())
+                .unwrap()
+                .len(),
+            16
+        );
+        assert_eq!(
+            v[12]["streamSettings"]["tlsSettings"]["alpn"],
+            json!(["h3"])
+        );
+        assert!(needs_certificate(&Value::Array(vec![v[12].clone()])));
+        assert!(!needs_certificate(&Value::Array(vec![
+            v[10].clone(),
+            v[2].clone()
+        ])));
+        for bad in [
+            json!({"template": "transport", "port": 1, "protocol": "trojan", "network": "ws"}),
+            json!({"template": "transport", "port": 1, "protocol": "vless", "network": "grpc"}),
+            json!({"template": "transport", "port": 1, "protocol": "vless", "network": "kcp"}),
+            json!({"template": "transport", "port": 1, "protocol": "socks", "network": "ws"}),
+            json!({"template": "transport", "port": 1, "protocol": "vless", "network": "xhttp", "mode": "fast"}),
+            json!({"template": "transport", "port": 1, "protocol": "vless", "network": "ws", "host": "a b"}),
+            json!({"template": "transport", "port": 1, "protocol": "vless", "network": "grpc", "tls_domain": "x.com", "service_name": "a/b"}),
+            json!({"template": "shadowsocks_2022", "port": 1, "method": "2022-blake3-chacha20-poly1305"}),
+            json!({"template": "hysteria2", "port": 1, "domain": "1.2.3.4"}),
+        ] {
+            assert!(render(&[spec(bad.clone())], &[]).is_err(), "{bad}");
+        }
+        // SS (TCP+UDP) clashes with both TCP and UDP inbounds.
+        let ss = spec(json!({"template": "shadowsocks_2022", "port": 9000}));
+        let hy = spec(json!({"template": "hysteria2", "port": 9000, "domain": "n.example.com"}));
+        assert!(render(&[ss, hy], &[]).is_err());
     }
 
     #[test]
