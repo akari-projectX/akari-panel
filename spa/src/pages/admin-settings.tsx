@@ -1,4 +1,5 @@
-// R22 系统设置：主域名 / 订阅域名 / 节点通信域名 + 信任 Cloudflare。
+// R22 系统设置：主域名 / 订阅域名 / 节点通信域名 + 信任 Cloudflare；
+// W12：延迟测试（测速间隔、测速地址、面板 TCP 测速）。
 // 后台管理只有中文。类型手工镜像 src/settings.rs 的 SettingsView。
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -60,7 +61,64 @@ export interface SettingsView {
   host_gate: boolean;
   ask_enabled: boolean;
   cloudflare_ranges: number;
+  probe: ProbeView;
   warnings: string[];
+}
+
+export interface ProbeField<T> {
+  value: T | null;
+  effective: T;
+  config: T;
+  source: Source;
+}
+
+export interface ProbeView {
+  interval_secs: ProbeField<number>;
+  urls: ProbeField<string[]>;
+  panel_tcp: ProbeField<boolean>;
+  timeout_ms: number;
+  attempts: number;
+  manual_cooldown_secs: number;
+}
+
+/** 秒 → "5 小时" / "90 分钟" / "1 天 2 小时"。 */
+export function humanInterval(secs: number): string {
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const m = Math.round((secs % 3600) / 60);
+  const parts = [d && `${d} 天`, h && `${h} 小时`, m && `${m} 分钟`].filter(Boolean);
+  return parts.length ? parts.join(" ") : `${secs} 秒`;
+}
+
+/** 测速表单 → PUT /settings/probe 的请求体；输入不合法时返回错误文案。 */
+export function probeBody(
+  version: number,
+  minutes: string,
+  urls: string,
+  tcp: "config" | "on" | "off",
+): { body: Record<string, unknown> } | { error: string } {
+  let interval: number | null = null;
+  if (minutes.trim() !== "") {
+    const m = Number(minutes);
+    if (!Number.isFinite(m) || m < 10 || m > 10080) return { error: "测速间隔须在 10 分钟到 7 天（10080 分钟）之间" };
+    interval = Math.round(m * 60);
+  }
+  const list = urls
+    .split("\n")
+    .map((u) => u.trim())
+    .filter((u) => u !== "");
+  if (list.length > 4) return { error: "测速地址最多 4 个" };
+  const bad = list.find((u) => !/^https?:\/\/[^\s/?#@]+([/?#]\S*)?$/i.test(u));
+  if (bad) return { error: `测速地址 ${bad} 不是有效的 http(s) 地址` };
+  if (new Set(list).size !== list.length) return { error: "测速地址不能重复" };
+  return {
+    body: {
+      version,
+      interval_secs: interval,
+      urls: list.length ? list : null,
+      panel_tcp: tcp === "config" ? null : tcp === "on",
+    },
+  };
 }
 
 export interface DnsCheck {
@@ -198,6 +256,7 @@ export function AdminSettings() {
     <div className="space-y-6">
       {/* key: 重新加载（保存/他人修改）后表单回到服务器的值 */}
       <SettingsForm key={settings.data.version} data={settings.data} />
+      <ProbeForm key={`probe-${settings.data.version}`} data={settings.data} />
       <ServerNames data={settings.data} />
     </div>
   );
@@ -417,6 +476,130 @@ function SettingsForm({ data }: { data: SettingsView }) {
           )}
           <Button type="submit" disabled={busy || (hostAtRisk && !confirmHost)}>
             {busy ? "保存中…" : "保存"}
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ProbeForm({ data }: { data: SettingsView }) {
+  const qc = useQueryClient();
+  const p = data.probe;
+  const [minutes, setMinutes] = useState(p.interval_secs.value === null ? "" : String(p.interval_secs.value / 60));
+  const [urls, setUrls] = useState((p.urls.value ?? []).join("\n"));
+  const [tcp, setTcp] = useState<"config" | "on" | "off">(
+    p.panel_tcp.value === null ? "config" : p.panel_tcp.value ? "on" : "off",
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setSaved(false);
+    const req = probeBody(data.version, minutes, urls, tcp);
+    if ("error" in req) {
+      setError(req.error);
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await put<SettingsView>("/settings/probe", req.body);
+      qc.setQueryData(["settings"], res);
+      setSaved(true);
+    } catch (err) {
+      setError(errText(err, "保存失败"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>
+          <h2>延迟测试</h2>
+        </CardTitle>
+        <CardDescription>
+          节点 agent 按间隔从节点本机访问测速地址（与 Clash 的 url-test 相同，每次测 {p.attempts} 次取中位数，单次超时{" "}
+          {p.timeout_ms / 1000} 秒），面板同时测量到各入站端口的 TCP 连接时间；用户门户显示 agent 的结果。留空 =
+          使用配置文件 panel.toml 的 [probe]。保存后立即下发到所有在线节点，无需重启。
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {/* noValidate：范围错误用下面的中文提示，而不是浏览器自带的气泡 */}
+        <form className="space-y-6" onSubmit={save} noValidate>
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Label htmlFor="probe-interval">测速间隔（分钟）</Label>
+              <SourceBadge source={p.interval_secs.source} />
+            </div>
+            <Input
+              id="probe-interval"
+              type="number"
+              min={10}
+              max={10080}
+              step="any"
+              value={minutes}
+              placeholder={`留空 = 配置文件（${humanInterval(p.interval_secs.config)}）`}
+              onChange={(e) => setMinutes(e.target.value)}
+            />
+            <div className="text-xs text-muted-foreground">
+              10 分钟到 7 天。间隔越短，节点访问测速地址越频繁。缩短间隔时，面板的 TCP 测速会在新间隔内重新安排。
+            </div>
+            <div className="text-xs">当前生效：{humanInterval(p.interval_secs.effective)}</div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Label htmlFor="probe-urls">测速地址</Label>
+              <SourceBadge source={p.urls.source} />
+            </div>
+            <textarea
+              id="probe-urls"
+              className="min-h-20 w-full rounded-lg border border-border bg-transparent px-3 py-2 font-mono text-sm"
+              value={urls}
+              placeholder={p.urls.config.join("\n")}
+              onChange={(e) => setUrls(e.target.value)}
+              spellCheck={false}
+            />
+            <div className="text-xs text-muted-foreground">
+              每行一个 http(s) 地址，最多 4 个；第一个为主地址，前一个没有响应时才依次尝试后面的。建议使用返回 204
+              的地址（如 generate_204）。
+            </div>
+            <div className="break-all text-xs">当前生效：{p.urls.effective.join("、")}</div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Label htmlFor="probe-tcp">面板 TCP 测速</Label>
+              <SourceBadge source={p.panel_tcp.source} />
+            </div>
+            <select
+              id="probe-tcp"
+              className="h-9 rounded-lg border border-border bg-transparent px-3 text-sm"
+              value={tcp}
+              onChange={(e) => setTcp(e.target.value as "config" | "on" | "off")}
+            >
+              <option value="config">跟随配置文件（当前：{p.panel_tcp.config ? "开启" : "关闭"}）</option>
+              <option value="on">开启</option>
+              <option value="off">关闭</option>
+            </select>
+            <p className="text-xs text-muted-foreground">
+              面板按同样的间隔测量到每个入站对外地址的 TCP 连接时间（UDP 入站除外），显示在节点详情页。
+            </p>
+          </div>
+
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          {saved && <p className="text-sm text-emerald-700">已保存，已通知所有在线节点。</p>}
+          <Button type="submit" disabled={busy}>
+            {busy ? "保存中…" : "保存测速设置"}
           </Button>
         </form>
       </CardContent>

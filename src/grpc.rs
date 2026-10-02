@@ -1006,11 +1006,11 @@ struct Session {
     /// Hello / ack of the empty state, while retiring.
     hello: Notify,
     retire_ack: Notify,
-    /// W11: the agent listed the "latency" capability in its Hello, and
-    /// the LatencyProbeConfig run token last sent on this stream (None =
-    /// none sent yet).
+    /// W11: the agent listed the "latency" capability in its Hello.
     latency_capable: AtomicBool,
-    probe_sent: Mutex<Option<u64>>,
+    /// The LatencyProbeConfig last sent on this stream (None = none sent
+    /// yet; re-sent when the token or, W12, the 系统设置 values change).
+    probe_sent: Mutex<Option<crate::gen::LatencyProbeConfig>>,
 }
 
 impl Session {
@@ -1698,7 +1698,8 @@ async fn maybe_offer_update(sess: &Session) {
 
 /// W11: send the latency test settings (and the latest "立即测速" token)
 /// to an agent with the "latency" capability: once per stream, and again
-/// whenever the token changed. Read on every wake/tick (one indexed row).
+/// whenever the token or the effective settings (W12: 系统设置, reload
+/// wakes every session) changed. Read on every wake/tick (one indexed row).
 async fn maybe_send_probe(sess: &Session) {
     if !sess.latency_capable.load(Ordering::SeqCst) || sess.retiring() || sess.terminated() {
         return;
@@ -1710,19 +1711,33 @@ async fn maybe_send_probe(sess: &Session) {
             return;
         }
     };
-    let cfg = crate::nodestat::probe_config(&sess.state.cfg().probe, requested);
-    let token = cfg.run_token;
-    if *lock_or_recover(&sess.probe_sent) == Some(token) {
+    let cfg = crate::nodestat::probe_config(&sess.state.settings().get().probe, requested);
+    if lock_or_recover(&sess.probe_sent).as_ref() == Some(&cfg) {
         return;
     }
     let Some(guard) = sess.lock().await else {
         return;
     };
-    match sess.send(&guard, DownMsg::LatencyProbe(cfg)).await {
-        Ok(true) => *lock_or_recover(&sess.probe_sent) = Some(token),
+    match sess.send(&guard, DownMsg::LatencyProbe(cfg.clone())).await {
+        Ok(true) => *lock_or_recover(&sess.probe_sent) = Some(cfg),
         Ok(false) => {}
         Err(e) => tracing::warn!(node = %sess.node_id, error = %e, "latency config send failed"),
     }
+}
+
+/// W12: the capabilities to record from a Hello (agent input: at most 16
+/// names of at most 32 characters, sorted, deduplicated).
+fn hello_capabilities(hello: &crate::gen::Hello) -> Vec<String> {
+    let mut caps: Vec<String> = hello
+        .capabilities
+        .iter()
+        .filter(|c| !c.is_empty() && c.len() <= 32)
+        .take(16)
+        .cloned()
+        .collect();
+    caps.sort();
+    caps.dedup();
+    caps
 }
 
 async fn mark_online(
@@ -1744,12 +1759,14 @@ async fn mark_online(
     .await
     .is_ok();
     if let Err(e) = sqlx::query(
-        "UPDATE nodes SET agent_protocol = $2, agent_os = $3, agent_arch = $4 WHERE id = $1",
+        "UPDATE nodes SET agent_protocol = $2, agent_os = $3, agent_arch = $4, \
+             agent_capabilities = $5 WHERE id = $1",
     )
     .bind(node_id)
     .bind(hello.protocol_version as i32)
     .bind(info.map(|i| i.os.as_str()).filter(|s| !s.is_empty()))
     .bind(info.map(|i| i.arch.as_str()).filter(|s| !s.is_empty()))
+    .bind(hello_capabilities(hello))
     .execute(state.pg())
     .await
     {

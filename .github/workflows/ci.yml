@@ -9,7 +9,12 @@ on:
   workflow_dispatch:
     inputs:
       agent_ref:
-        description: akari-agent ref for the smoke job
+        # Panel-first merge order (CLAUDE.md): a panel PR whose feature
+        # needs an unmerged agent change is verified by dispatching this
+        # workflow on the panel branch with the agent branch here. Dispatch
+        # runs are strict: smoke fails instead of skipping any
+        # agent-dependent section (SMOKE_REQUIRE_AGENT=1).
+        description: akari-agent ref for the smoke job (dispatch runs forbid smoke skips)
         default: main
 
 permissions:
@@ -204,8 +209,13 @@ jobs:
       - run: sudo systemctl stop postgresql || true
       # R22: the panel dials its main domain (install-link pin probe).
       - run: echo '127.0.0.1 myapp.test' | sudo tee -a /etc/hosts
+      # Sections needing an agent feature the agent ref lacks are skipped
+      # loudly (log line, warning annotation, job summary) on PR/push/
+      # nightly runs; a dispatch (agent_ref) run fails on any skip.
       - run: make smoke AGENT_DIR=../akari-agent
         working-directory: akari-panel
+        env:
+          SMOKE_REQUIRE_AGENT: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
       - if: failure()
         run: |
           tail -n 80 /tmp/akari-smoke/*.log || true

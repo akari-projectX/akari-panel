@@ -2,7 +2,7 @@ import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { fakeApi, renderWithClient } from "../test/harness";
-import { AdminSettings, hostOf, hostStillAllowed, type SettingsView } from "./admin-settings";
+import { AdminSettings, hostOf, hostStillAllowed, humanInterval, probeBody, type SettingsView } from "./admin-settings";
 
 afterEach(() => {
   cleanup();
@@ -51,6 +51,19 @@ const view = (over: Partial<SettingsView> = {}): SettingsView => ({
   host_gate: false,
   ask_enabled: true,
   cloudflare_ranges: 22,
+  probe: {
+    interval_secs: { value: null, effective: 18000, config: 18000, source: "config" },
+    urls: {
+      value: null,
+      effective: ["https://www.gstatic.com/generate_204", "https://cp.cloudflare.com/generate_204"],
+      config: ["https://www.gstatic.com/generate_204", "https://cp.cloudflare.com/generate_204"],
+      source: "config",
+    },
+    panel_tcp: { value: null, effective: true, config: true, source: "config" },
+    timeout_ms: 5000,
+    attempts: 3,
+    manual_cooldown_secs: 30,
+  },
   warnings: [],
   ...over,
 });
@@ -145,5 +158,58 @@ describe("AdminSettings", () => {
       name: "old.example.com",
       confirm: true,
     });
+  });
+});
+
+describe("latency test settings (W12)", () => {
+  it("formats intervals", () => {
+    expect(humanInterval(18000)).toBe("5 小时");
+    expect(humanInterval(600)).toBe("10 分钟");
+    expect(humanInterval(90000)).toBe("1 天 1 小时");
+  });
+
+  it("validates the form like the backend", () => {
+    expect(probeBody(1, "", "", "config")).toEqual({
+      body: { version: 1, interval_secs: null, urls: null, panel_tcp: null },
+    });
+    expect(probeBody(1, "15", " http://a.example/204 \n\nhttps://b.example/x ", "off")).toEqual({
+      body: { version: 1, interval_secs: 900, urls: ["http://a.example/204", "https://b.example/x"], panel_tcp: false },
+    });
+    expect(probeBody(1, "5", "", "config")).toHaveProperty("error");
+    expect(probeBody(1, "20000", "", "config")).toHaveProperty("error");
+    expect(probeBody(1, "", "ftp://a.example/", "config")).toHaveProperty("error");
+    expect(probeBody(1, "", "https://user@a.example/", "config")).toHaveProperty("error");
+    expect(probeBody(1, "", "http://a/1\nhttp://a/1", "config")).toHaveProperty("error");
+    expect(probeBody(1, "", "http://a/1\nhttp://a/2\nhttp://a/3\nhttp://a/4\nhttp://a/5", "config")).toHaveProperty(
+      "error",
+    );
+  });
+
+  it("saves interval, URLs and the panel TCP switch", async () => {
+    const calls = fakeApi({
+      "GET /settings": view(),
+      "PUT /settings/probe": () => ({ status: 200, body: view({ version: 4 }) }),
+    });
+    renderWithClient(<AdminSettings />);
+    fireEvent.change(await screen.findByLabelText("测速间隔（分钟）"), { target: { value: "30" } });
+    fireEvent.change(screen.getByLabelText("测速地址"), { target: { value: "http://probe.example/generate_204" } });
+    fireEvent.change(screen.getByLabelText("面板 TCP 测速"), { target: { value: "off" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存测速设置" }));
+    await screen.findByText("已保存，已通知所有在线节点。");
+    expect(calls.find((c) => c.method === "PUT")?.body).toEqual({
+      version: 3,
+      interval_secs: 1800,
+      urls: ["http://probe.example/generate_204"],
+      panel_tcp: false,
+    });
+  });
+
+  it("refuses an out-of-range interval without calling the API", async () => {
+    const calls = fakeApi({ "GET /settings": view() });
+    renderWithClient(<AdminSettings />);
+    fireEvent.change(await screen.findByLabelText("测速间隔（分钟）"), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存测速设置" }));
+    await screen.findByText(/测速间隔须在 10 分钟到 7 天/);
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
   });
 });

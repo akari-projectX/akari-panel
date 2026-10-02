@@ -1,6 +1,6 @@
 AGENT_DIR ?= ../akari-agent
 
-.PHONY: bench-up bench-down dev-up dev-down spa panel agent-build check smoke e2e lint test deny ci bench bench-seed bench-lint
+.PHONY: third-party bench-up bench-down dev-up dev-down spa panel agent-build check smoke e2e lint test deny ci bench bench-seed bench-lint
 
 dev-up:
 	docker compose up -d --wait
@@ -50,6 +50,14 @@ deny:
 	cargo deny check
 
 ci: lint test deny check
+
+# Third-party licences of the binary (Rust crates linked + npm packages
+# bundled into the embedded SPA, with their licence texts), the notice that
+# ships with releases: target/THIRD_PARTY_LICENSES.txt. Needs `cargo fetch`
+# (crate sources) and, for npm licence texts, `npm ci` in spa/.
+third-party:
+	cargo fetch --locked
+	python3 scripts/third-party.py
 
 # --- M2 benchmarks and load tooling (bench/, docs/PERF.md) ----------------
 # Own crate and lockfile: nothing here reaches the release binary. DB

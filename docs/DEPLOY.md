@@ -580,6 +580,14 @@ panel_tcp = true
 manual_cooldown_secs = 30
 ```
 
+`interval_secs`, `urls` and `panel_tcp` can also be set in the admin console (系统设置 →
+延迟测试; `PUT /api/v1/settings/probe`): database values win over `[probe]`, every change is
+versioned and audited (`settings.probe.update`), every panel instance applies it at once and
+re-sends the new settings to connected agents (no restart; agents reschedule on an interval
+change); a shorter interval also pulls already scheduled panel TCP tests forward.
+`akari settings unset probe` goes back to `[probe]`. `timeout_ms`, `attempts` and
+`manual_cooldown_secs` stay file-only.
+
 **Traffic multiplier (倍率).** Billed bytes = floor(accepted bytes × rate) per counter row,
 computed only inside the flush SQL (never in panel memory); the rate in effect when a report is
 flushed applies to that report's increase (changing it never re-bills the past). Departed users'

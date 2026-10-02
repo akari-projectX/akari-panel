@@ -1004,3 +1004,266 @@ async fn ask_endpoint() {
     );
     db.drop().await;
 }
+
+// ---------------------------------------------------------------------------
+// W12: latency-test settings
+// ---------------------------------------------------------------------------
+
+#[test]
+fn probe_precedence_and_bounds() {
+    let c = cfg();
+    let e = compute(&c, Stored::default(), vec![], &[]);
+    assert_eq!(e.probe.interval_secs, 18_000);
+    assert_eq!(e.probe.urls, c.probe.urls);
+    assert!(e.probe.panel_tcp);
+    assert_eq!(
+        e.probe_sources,
+        ProbeSources {
+            interval_secs: Source::Config,
+            urls: Source::Config,
+            panel_tcp: Source::Config
+        }
+    );
+    let s = Stored {
+        probe_interval_secs: Some(900),
+        probe_urls: Some(vec!["http://probe.example/204".into()]),
+        probe_panel_tcp: Some(false),
+        ..Stored::default()
+    };
+    let e = compute(&c, s, vec![], &[]);
+    assert_eq!(e.probe.interval_secs, 900);
+    assert_eq!(e.probe.urls, vec!["http://probe.example/204".to_string()]);
+    assert!(!e.probe.panel_tcp);
+    assert_eq!(e.probe_sources.interval_secs, Source::Settings);
+    assert_eq!(e.probe_sources.urls, Source::Settings);
+    assert_eq!(e.probe_sources.panel_tcp, Source::Settings);
+    // Values the API and the CHECKs refuse are ignored, never applied.
+    let s = Stored {
+        probe_interval_secs: Some(5),
+        probe_urls: Some(vec!["ftp://x".into()]),
+        ..Stored::default()
+    };
+    let e = compute(&c, s, vec![], &[]);
+    assert_eq!(e.probe.interval_secs, 18_000);
+    assert_eq!(e.probe.urls, c.probe.urls);
+    assert_eq!(e.probe_sources.interval_secs, Source::Config);
+}
+
+#[test]
+fn probe_form_validation() {
+    let req = |iv: Option<u64>, urls: Option<Vec<&str>>| ProbeReq {
+        version: 0,
+        interval_secs: iv,
+        urls: urls.map(|u| u.into_iter().map(String::from).collect()),
+        panel_tcp: Some(true),
+    };
+    let ok = probe_values(&req(
+        Some(600),
+        Some(vec![
+            " https://a.example/generate_204 ",
+            "http://b.example:8080/x",
+        ]),
+    ))
+    .unwrap();
+    assert_eq!(ok.interval_secs, Some(600));
+    assert_eq!(
+        ok.urls.unwrap(),
+        vec!["https://a.example/generate_204", "http://b.example:8080/x"],
+        "trimmed"
+    );
+    assert_eq!(probe_values(&req(None, Some(vec![]))).unwrap().urls, None);
+    for bad in [
+        req(Some(599), None),
+        req(Some(604_801), None),
+        req(None, Some(vec!["ftp://a.example/"])),
+        req(None, Some(vec!["https://user@a.example/"])),
+        req(None, Some(vec!["https://a.example/ x"])),
+        req(None, Some(vec!["https://a.example/", "https://a.example/"])),
+        req(
+            None,
+            Some(vec![
+                "http://a/1",
+                "http://a/2",
+                "http://a/3",
+                "http://a/4",
+                "http://a/5",
+            ]),
+        ),
+    ] {
+        let e = probe_values(&bad).unwrap_err();
+        assert_eq!(e.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+/// The probe form: versioned with the domains (one row), audited as
+/// settings.probe.update, unset = panel.toml, a shorter interval pulls far
+/// scheduled panel tests forward, and the domains form leaves it alone.
+#[tokio::test]
+async fn probe_settings_api() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let mut admin = admin_client(&state, &db).await;
+    admin.headers = vec![("host".into(), "203.0.113.5".into())];
+    let v = admin.get("/test/api/v1/settings").await.json();
+    assert_eq!(v["probe"]["interval_secs"]["effective"], 18_000);
+    assert_eq!(v["probe"]["interval_secs"]["source"], "config");
+    assert_eq!(v["probe"]["urls"]["value"], Value::Null);
+    assert_eq!(v["probe"]["panel_tcp"]["config"], true);
+
+    let (n, _) = db.member().await;
+    sqlx::query("UPDATE nodes SET panel_probe_next_at = now() + interval '4 hours' WHERE id = $1")
+        .bind(n)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let put = |body: Value| {
+        let admin = &admin;
+        async move {
+            admin
+                .req(
+                    axum::http::Method::PUT,
+                    "/test/api/v1/settings/probe",
+                    Some(body),
+                )
+                .await
+        }
+    };
+    let r = put(json!({"version": 0, "interval_secs": 60, "urls": null, "panel_tcp": null})).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let r = put(json!({"version": 0, "interval_secs": 600, "unknown": 1})).await;
+    assert!(r.status.is_client_error(), "unknown field refused");
+    let r = put(json!({"version": 0, "interval_secs": 600,
+        "urls": ["http://127.0.0.1:9/generate_204"], "panel_tcp": false}))
+    .await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let v = r.json();
+    assert_eq!(v["version"], 1);
+    assert_eq!(v["probe"]["interval_secs"]["effective"], 600);
+    assert_eq!(v["probe"]["interval_secs"]["source"], "settings");
+    assert_eq!(
+        v["probe"]["urls"]["effective"][0],
+        "http://127.0.0.1:9/generate_204"
+    );
+    assert_eq!(v["probe"]["panel_tcp"]["effective"], false);
+    assert_eq!(
+        state.settings().get().probe.interval_secs,
+        600,
+        "this instance reloaded"
+    );
+    let next_in: f64 = sqlx::query_scalar(
+        "SELECT EXTRACT(EPOCH FROM panel_probe_next_at - now())::float8 FROM nodes WHERE id = $1",
+    )
+    .bind(n)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert!(next_in <= 601.0, "panel test pulled forward: {next_in}");
+    // Stale form.
+    let r =
+        put(json!({"version": 0, "interval_secs": null, "urls": null, "panel_tcp": null})).await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    // The domains form keeps the probe values (and bumps the shared version).
+    let r = admin
+        .req(
+            axum::http::Method::PUT,
+            "/test/api/v1/settings",
+            Some(
+                json!({"version": 1, "main_domain": null, "sub_domain": null,
+                        "node_domain": null, "trust_cloudflare": true}),
+            ),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json()["probe"]["interval_secs"]["value"], 600);
+    // Unset: panel.toml again.
+    let r = put(json!({"version": 2, "interval_secs": null, "urls": [], "panel_tcp": null})).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let v = r.json();
+    assert_eq!(v["probe"]["interval_secs"]["source"], "config");
+    assert_eq!(v["probe"]["urls"]["value"], Value::Null);
+    let rows = audit_rows(&db, "settings.probe.update").await;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].1.as_ref().unwrap()["probe_interval_secs"], 600);
+    assert_eq!(
+        rows[1].1.as_ref().unwrap()["probe_interval_secs"],
+        Value::Null
+    );
+    db.drop().await;
+}
+
+/// A probe settings change reaches a connected latency-capable agent (the
+/// reload wakes its session, which re-sends LatencyProbeConfig), and the
+/// agent's Hello capabilities are recorded on the node.
+#[tokio::test]
+async fn probe_change_reaches_connected_agents() {
+    use crate::gen::panel_down::Msg as DownMsg;
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let (n, _u) = db.member().await;
+    let panel = PanelHarness::start(&db).await;
+    let creds = panel.register(&db, n).await;
+    let mut agent = panel.connect(&creds).await.unwrap();
+    agent
+        .hello_caps((0, 0), String::new(), &["metrics", "latency", "latency"])
+        .await;
+    let mut first = None;
+    while first.is_none() {
+        match agent.next().await {
+            Some(Ok(DownMsg::LatencyProbe(c))) => first = Some(c),
+            Some(Ok(_)) => {}
+            other => panic!("{other:?}"),
+        }
+    }
+    assert_eq!(first.unwrap().interval_seconds, 18_000);
+    let caps: Option<Vec<String>> =
+        sqlx::query_scalar("SELECT agent_capabilities FROM nodes WHERE id = $1")
+            .bind(n)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        caps.unwrap(),
+        vec!["latency", "metrics"],
+        "sorted, deduplicated"
+    );
+
+    let mut tx = db.pool.begin().await.unwrap();
+    apply_update_probe(
+        &mut tx,
+        &Actor::test(),
+        panel.state.cfg(),
+        0,
+        &ProbeValues {
+            interval_secs: Some(1200),
+            urls: Some(vec!["http://probe.example/204".into()]),
+            panel_tcp: None,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    // The harness runs no LISTEN task: reload as the notification would.
+    reload(&panel.state).await.unwrap();
+    let got = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match agent.next().await {
+                Some(Ok(DownMsg::LatencyProbe(c))) => break c,
+                Some(Ok(_)) => {}
+                other => panic!("{other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("new probe config sent");
+    assert_eq!(got.interval_seconds, 1200);
+    assert_eq!(got.urls, vec!["http://probe.example/204".to_string()]);
+    db.drop().await;
+}

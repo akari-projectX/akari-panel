@@ -83,12 +83,20 @@ def api(method, path, body=None, ua=None, raw=False):
         return e.code, e.read().decode(errors="replace")
 
 
-def free_port():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    p = s.getsockname()[1]
-    s.close()
-    return p
+_handed_out = set()
+
+
+def free_port(exclude=()):
+    # The kernel may hand the same ephemeral port out twice (each probe
+    # socket is closed at once): never return a port twice per run.
+    while True:
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        if p not in _handed_out and p not in exclude:
+            _handed_out.add(p)
+            return p
 
 
 # --- local helpers -------------------------------------------------------------
@@ -156,7 +164,7 @@ T = [  # (expected protocol, template spec without port)
 ]
 specs = []
 for _, spec in T:
-    specs.append(dict(spec, port=free_port()))
+    specs.append(dict(spec, port=free_port(exclude=taken)))
 rendered = []
 for k in range(0, len(specs), 9):  # the API renders at most 16 at once
     st, r = api("POST", "/api/v1/inbound-templates/render",

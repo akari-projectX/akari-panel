@@ -106,10 +106,24 @@ jobs:
           output-file: akari-panel-${{ github.ref_name }}.cdx.json
           upload-artifact: false
           upload-release-assets: false
+      # Third-party licence notice of the binary (scripts/third-party.py):
+      # linked crates + npm packages bundled into the SPA, with their texts.
+      - run: rustup toolchain install --profile minimal
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: spa/package-lock.json
+      - run: cd spa && npm ci --ignore-scripts
+      - run: |
+          cargo fetch --locked
+          python3 scripts/third-party.py -o THIRD_PARTY_LICENSES.txt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom
-          path: akari-panel-${{ github.ref_name }}.cdx.json
+          path: |
+            akari-panel-${{ github.ref_name }}.cdx.json
+            THIRD_PARTY_LICENSES.txt
           if-no-files-found: error
 
   image:
@@ -200,10 +214,10 @@ jobs:
         working-directory: release
         run: |
           chmod 0755 akari-linux-*
-          sha256sum akari-linux-amd64 akari-linux-arm64 "akari-panel-${GITHUB_REF_NAME}.cdx.json" > SHA256SUMS
+          sha256sum akari-linux-amd64 akari-linux-arm64 "akari-panel-${GITHUB_REF_NAME}.cdx.json" THIRD_PARTY_LICENSES.txt > SHA256SUMS
           # Keyless: the certificate binds the signature to this workflow
           # run (identity = this workflow at this tag, issuer = GitHub OIDC).
-          for f in akari-linux-amd64 akari-linux-arm64 "akari-panel-${GITHUB_REF_NAME}.cdx.json" SHA256SUMS; do
+          for f in akari-linux-amd64 akari-linux-arm64 "akari-panel-${GITHUB_REF_NAME}.cdx.json" THIRD_PARTY_LICENSES.txt SHA256SUMS; do
             cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
           done
           ls -l

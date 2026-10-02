@@ -28,7 +28,7 @@ pub async fn settings_show(cfg: PanelConfig) -> Result<()> {
 /// cli), e.g. a mistyped main domain that the host gate now refuses.
 pub async fn settings_unset(cfg: PanelConfig, field: String) -> Result<()> {
     let pg = connect(&cfg).await?;
-    crate::settings::cli_unset(&pg, &field).await
+    crate::settings::cli_unset(&cfg, &pg, &field).await
 }
 
 /// Creates the first admin (or any) account. Reads the password from

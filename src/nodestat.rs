@@ -13,7 +13,8 @@
 //!   via an advisory try-lock). Retention: minutes 48 h, hours 90 days.
 //!   Sized for 200 nodes: <= 576k minute rows and 432k hour rows.
 //! - **Latency**: the agents' url-test (`LatencyReport`, capability
-//!   "latency"; the panel sends `LatencyProbeConfig` from `[probe]`) and the
+//!   "latency"; the panel sends `LatencyProbeConfig` from `[probe]` with the
+//!   系统设置 overrides applied, W12 `settings::Effective::probe`) and the
 //!   panel's own TCP connect test to every inbound's client-facing
 //!   address (`panel_probe_loop`, any instance, rows claimed with a
 //!   conditional UPDATE). Results replace the previous set per (node,
@@ -685,15 +686,16 @@ struct Due {
 /// +-10%, set in the claiming UPDATE, so instances never test the same node
 /// twice) and test their inbounds concurrently.
 pub async fn panel_probe_loop(state: AppState) {
-    let cfg = state.cfg().probe.clone();
-    if !cfg.panel_tcp {
-        return;
-    }
-    let timeout = Duration::from_millis(u64::from(cfg.timeout_ms));
     let mut tick = tokio::time::interval(PANEL_PROBE_TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
+        // W12: the effective settings (系统设置 over panel.toml), per round.
+        let cfg = state.settings().get().probe.clone();
+        if !cfg.panel_tcp {
+            continue;
+        }
+        let timeout = Duration::from_millis(u64::from(cfg.timeout_ms));
         if let Err(e) =
             panel_probe_round(state.pg(), cfg.interval_secs, cfg.attempts, timeout).await
         {

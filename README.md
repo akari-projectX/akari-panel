@@ -526,6 +526,20 @@ version they failed to apply; an old agent against a new panel is not
 billed and can look converged when it is not. Migrations run automatically
 on `akari serve` (PostgreSQL >= 18 is required and checked at startup).
 
+## Licence
+
+The panel is MIT licensed (`LICENSE`). The `akari` binary statically links
+Rust crates and embeds the web console built from npm packages; their
+licences are checked in CI by `cargo deny check` (`deny.toml`: permissive
+licences only — no copyleft reaches the panel binary) and listed, with
+their licence texts, in `THIRD_PARTY_LICENSES.txt`, which every release
+ships as an asset (`make third-party` writes it to `target/`;
+`scripts/third-party.py`). The node agent is a separate program with its
+own licensing: its source is MIT, but its released binaries are
+GPL-3.0-or-later combined works (xray-core links GPL modules) — see the
+akari-agent README ("Licence"). The panel only relays agent binaries for
+self-update and one-line installs; it does not link them.
+
 ## Roadmap
 
 The authoritative plan lives in `PLAN.md` (three-repo end state:

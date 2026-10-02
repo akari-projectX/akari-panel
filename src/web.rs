@@ -163,6 +163,7 @@ pub fn router(state: AppState) -> Router {
             "/{prefix}/api/v1/settings",
             get(settings::get_settings).put(settings::put_settings),
         )
+        .route("/{prefix}/api/v1/settings/probe", put(settings::put_probe))
         .route(
             "/{prefix}/api/v1/settings/dns-check",
             post(settings::dns_check),
