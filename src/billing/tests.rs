@@ -20,6 +20,7 @@ use crate::testdb::TestDb;
 
 const APP_ID: &str = "2021000000000001";
 const SELLER_ID: &str = "2088000000000001";
+const NOTIFY: &str = "https://panel.example/test/pay/alipay/notify";
 
 // ---------------------------------------------------------------------------
 // Mock gateway
@@ -36,6 +37,8 @@ struct Trade {
 struct MockInner {
     trades: HashMap<String, Trade>,
     calls: Vec<String>,
+    /// notify_url of every precreate.
+    notify_urls: Vec<String>,
     /// Answer every call with HTTP 503.
     down: bool,
     /// Report this total instead of the order's (tampering).
@@ -109,7 +112,7 @@ async fn mock_gateway(
     let not_exist = json!({"code":"40004","msg":"Business Failed","sub_code":"ACQ.TRADE_NOT_EXIST","sub_msg":"交易不存在","out_trade_no": otn});
     let obj = match method.as_str() {
         "alipay.trade.precreate" => {
-            assert!(p.contains_key("notify_url"));
+            g.notify_urls.push(p["notify_url"].clone());
             g.trades.insert(
                 otn.clone(),
                 Trade {
@@ -161,7 +164,7 @@ fn alipay_cfg(gateway: &str) -> AlipayConfig {
         app_id: APP_ID.into(),
         seller_id: SELLER_ID.into(),
         gateway_url: gateway.into(),
-        notify_url: "https://panel.example/test/pay/alipay/notify".into(),
+        notify_url: NOTIFY.into(),
         order_timeout_minutes: 15,
         ..Default::default()
     }
@@ -1098,7 +1101,7 @@ async fn reconcile_expires_and_catches_late_payments() {
     let (late, otn2) = order_row(&db, u2, plan, 300, 30).await;
     let (fresh, otn3) = order_row(&db, u3, plan, 300, 30).await;
     for otn in [&otn1, &otn2, &otn3] {
-        alipay.precreate(otn, 300, "s").await.unwrap();
+        alipay.precreate(NOTIFY, otn, 300, "s").await.unwrap();
     }
     mock.inner
         .lock()
@@ -1160,7 +1163,7 @@ async fn reconcile_expires_and_catches_late_payments() {
     // Amount tampering in a query answer is refused and audited.
     let u4 = db.user().await;
     let (o4, otn4) = order_row(&db, u4, plan, 300, 30).await;
-    alipay.precreate(&otn4, 300, "s").await.unwrap();
+    alipay.precreate(NOTIFY, &otn4, 300, "s").await.unwrap();
     mock.pay(&otn4);
     mock.inner.lock().unwrap().total_override = Some("0.01".into());
     orders::poll(&state, &alipay, o4).await.ok().unwrap();
@@ -1255,7 +1258,10 @@ fn config_validation() {
             Box::new(|a| a.notify_url = "https://h/pay/alipay/notify".into()),
             "notify_url",
         ),
-        (Box::new(|a| a.notify_url = String::new()), "notify_url"),
+        (
+            Box::new(|a| a.notify_url = "panel.example/abc/pay/alipay/notify".into()),
+            "notify_url",
+        ),
         (
             Box::new(|a| a.order_timeout_minutes = 1),
             "order_timeout_minutes",
@@ -1285,6 +1291,113 @@ fn config_validation() {
     // The prefix must match the install's.
     assert!(super::check_notify_prefix(&c, "abc").is_ok());
     assert!(super::check_notify_prefix(&c, "other").is_err());
+
+    // R22: empty = derived from the main domain (always the current
+    // prefix); a warning only while no main domain is configured at all.
+    let mut c3 = c.clone();
+    c3.payments.alipay.notify_url = String::new();
+    let r = c3.validate();
+    assert!(r.errors.is_empty(), "{r:?}");
+    assert!(
+        r.warnings.iter().any(|w| w.contains("notify_url is empty")),
+        "{r:?}"
+    );
+    assert!(super::check_notify_prefix(&c3, "any").is_ok());
+    assert_eq!(super::explicit_notify_host(&c3), None);
+    c3.install.public_url = "https://panel.example".into();
+    let r = c3.validate();
+    assert!(r.errors.is_empty() && r.warnings.is_empty(), "{r:?}");
+    // Explicit on another host than the main domain: a warning naming the
+    // host only (never the prefixed URL).
+    let mut c4 = c.clone();
+    c4.install.public_url = "https://main.example".into();
+    let r = c4.validate();
+    assert!(r.errors.is_empty(), "{r:?}");
+    let w: Vec<_> = r
+        .warnings
+        .iter()
+        .filter(|w| w.contains("panel.example"))
+        .collect();
+    assert_eq!(w.len(), 1, "{r:?}");
+    assert!(!w[0].contains("/abc/"), "{w:?}");
+    c4.install.public_url = "https://Panel.Example:8443".into();
+    assert!(c4.validate().warnings.is_empty(), "same host");
+    assert_eq!(
+        super::notify_host_mismatch(&c, Some("main.example")).as_deref(),
+        Some("panel.example")
+    );
+    assert_eq!(super::notify_host_mismatch(&c, Some("panel.example")), None);
+    assert_eq!(super::notify_host_mismatch(&c, None), None);
+}
+
+/// R22: with `notify_url` empty the notify URL handed to Alipay follows
+/// the main domain of the system settings (current prefix); with neither
+/// configured, no order is created at all; an explicit `notify_url` wins.
+#[tokio::test]
+async fn notify_url_follows_the_main_domain() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let (_, plan) = priced_plan(&db, "nu", 500, 30).await;
+
+    let derived = AppState::for_test(db.pool.clone()).await;
+    let mut cfg = alipay_cfg(&mock.url);
+    cfg.notify_url = String::new();
+    derived.set_alipay(Alipay::new(&cfg, panel_keys()));
+    let user = db.user().await;
+    let mut c = Client::new(&derived, rand_ip());
+    c.cookie = Some(token(&derived, user).await);
+    let r = c
+        .post("/test/api/v1/me/orders", json!({ "plan_id": plan }))
+        .await;
+    assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE, "{:?}", r.json());
+    assert_eq!(r.json()["error"], "payments are not enabled");
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM orders WHERE user_id = $1")
+        .bind(user)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0, "no order without a notify URL");
+    assert_eq!(mock.calls("alipay.trade.precreate"), 0);
+
+    let mut tx = db.pool.begin().await.unwrap();
+    crate::settings::apply_update(
+        &mut tx,
+        &crate::audit::Actor::test(),
+        0,
+        &crate::settings::Values {
+            main_domain: Some("pay.example.com".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    crate::settings::reload(&derived).await.unwrap();
+    // The host gate is on now: address the main domain.
+    c.headers = vec![("host".into(), "pay.example.com".into())];
+    let r = c
+        .post("/test/api/v1/me/orders", json!({ "plan_id": plan }))
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+    assert_eq!(
+        mock.inner.lock().unwrap().notify_urls,
+        ["https://pay.example.com/test/pay/alipay/notify"]
+    );
+
+    // Explicit notify_url: used as configured, whatever the main domain.
+    let explicit = paid_state(&db, &mock).await;
+    let user2 = db.user().await;
+    let mut c2 = Client::new(&explicit, rand_ip());
+    c2.cookie = Some(token(&explicit, user2).await);
+    let r = c2
+        .post("/test/api/v1/me/orders", json!({ "plan_id": plan }))
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+    assert_eq!(mock.inner.lock().unwrap().notify_urls[1], NOTIFY);
+    drop((derived, explicit));
+    db.drop().await;
 }
 
 #[test]

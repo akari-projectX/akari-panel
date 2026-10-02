@@ -106,6 +106,30 @@ impl PanelConfig {
             }
             None => r.err(format!("{p}.gateway_url: not a URL")),
         }
+        // Empty: derived per order from the main domain (billing::notify_url).
+        if a.notify_url.is_empty() {
+            if self.install.public_url.is_empty() {
+                r.warn(format!(
+                    "{p}.notify_url is empty and install.public_url is not set: the notify URL \
+                     is derived from the main domain set in 系统设置; until one is set, orders \
+                     are refused"
+                ));
+            }
+            return;
+        }
+        // An explicit one on another host than install.public_url (the
+        // database main domain is compared by `config check`/系统设置).
+        let main_host = url_parts(&self.install.public_url).map(|(_, h, _)| {
+            h.trim_start_matches('[')
+                .trim_end_matches(']')
+                .to_ascii_lowercase()
+        });
+        if let Some(n) = crate::billing::notify_host_mismatch(self, main_host.as_deref()) {
+            r.warn(format!(
+                "{p}.notify_url points at {n}, not the main domain (install.public_url): Alipay \
+                 notifies go there. Leave notify_url empty to derive it from the main domain"
+            ));
+        }
         // The message never echoes notify_url: it contains the route prefix.
         match url_parts(&a.notify_url) {
             Some((scheme, _, path)) => {
@@ -129,7 +153,7 @@ impl PanelConfig {
                     ));
                 }
             }
-            None => r.err(format!("{p}.notify_url: required, absolute URL")),
+            None => r.err(format!("{p}.notify_url: not an absolute URL")),
         }
     }
 

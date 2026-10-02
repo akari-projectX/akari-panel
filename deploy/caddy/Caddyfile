@@ -74,9 +74,24 @@
 
 # Any other name: certificate on demand, only for domains the panel
 # confirms through the ask endpoint (unknown names fail the TLS handshake).
+# A request without SNI (https://<ip>) gets AKARI_DOMAIN's certificate
+# (default_sni) and lands here: the same empty 404, and the panel refuses
+# unknown Host names behind the prefix (host gate) with that same 404.
 https:// {
 	tls {
 		on_demand
 	}
 	import akari
+}
+
+# Plain HTTP: AKARI_DOMAIN is redirected to https by Caddy itself; every
+# other host (the bare IP, unknown names, the 系统设置 domains, whose links
+# are always https) gets the same empty 404 instead of a redirect or
+# Caddy's default empty 200. ACME HTTP challenges are still answered.
+http:// {
+	header {
+		-Server
+		-Via
+	}
+	respond 404
 }

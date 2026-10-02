@@ -75,7 +75,7 @@ seller_id = "2088000000000000"       # optional; when set, notifies must carry i
 app_private_key_file = "/etc/akari/alipay-app-private.pem"   # mode 0600 (checked)
 alipay_public_key_file = "/etc/akari/alipay-public.pem"      # Alipay's key, NOT the app public key
 gateway_url = "https://openapi.alipay.com/gateway.do"        # default
-notify_url = "https://panel.example.com/<route prefix>/pay/alipay/notify"
+# notify_url = ""                   # default: derived from the main domain (系统设置)
 order_timeout_minutes = 15           # 5..=120
 ```
 
@@ -85,8 +85,18 @@ order_timeout_minutes = 15           # 5..=120
   Keys are loaded and checked at startup and by `akari config check`
   (errors never contain key material). Never commit keys; keep them outside
   the repository and the data dir backups you share.
-- `notify_url` **must** be `<public base>/<route prefix>/pay/alipay/notify`
-  (no query). It contains the secret prefix: `config check` prints it as
+- `notify_url` empty (default, R22): every order is created with
+  `<main domain>/<route prefix>/pay/alipay/notify`, the main domain being
+  系统设置's (else `install.public_url`). It follows a domain change and
+  `rotate-prefix` by itself. With no main domain configured at all, orders
+  are refused (503 "payments are not enabled", no order row) and startup,
+  `config check` and 系统设置 warn. Orders created before a main domain change
+  carry the old URL; the host gate then refuses notifies to the old name,
+  and polling/the reconcile fulfil those orders.
+- An explicit `notify_url` **must** be `<public base>/<route prefix>/pay/alipay/notify`
+  (no query). Its host stays accepted by the host gate and the Caddy ask
+  endpoint; when it is not the main domain, `config check`, startup and
+  系统设置 warn. It contains the secret prefix: `config check` prints it as
   `***` and it is never logged. The panel refuses to start when its path
   does not carry the current prefix — after `akari secrets rotate-prefix`
   update `notify_url` (and nothing else is needed at Alipay: the URL is

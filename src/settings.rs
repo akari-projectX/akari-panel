@@ -392,6 +392,13 @@ pub fn compute(
             ask_hosts.insert(h);
         }
     }
+    // An explicit payment notify URL on its own host: Alipay must reach it
+    // (certificate and host gate), whatever the main domain is.
+    if let Some(h) = crate::billing::explicit_notify_host(cfg) {
+        if h.parse::<IpAddr>().is_err() {
+            ask_hosts.insert(h);
+        }
+    }
     let host_gate = (main_source == Source::Settings).then(|| {
         let mut allowed = ask_hosts.clone();
         if let Some(o) = &config_main {
@@ -465,6 +472,35 @@ impl Effective {
     /// not configured (callers fall back to their own configuration).
     pub fn public_origin(&self) -> Option<String> {
         self.install_origin()
+    }
+
+    /// Lower-case host of the main domain (None = browser origin).
+    pub fn main_host(&self) -> Option<String> {
+        self.main.as_ref().map(origin_host)
+    }
+
+    /// Advisory notes that hold while the configuration stays as it is
+    /// (shown by 系统设置 and `config check`).
+    pub fn standing_warnings(&self, cfg: &PanelConfig) -> Vec<String> {
+        let mut w = Vec::new();
+        let main = self.main_host();
+        if let Some(n) = crate::billing::notify_host_mismatch(cfg, main.as_deref()) {
+            w.push(format!(
+                "支付宝通知地址（payments.alipay.notify_url）指向 {n}，不是主域名 {}：支付宝的异步通知发往 {n}（面板继续接受该域名）。\
+                 留空 notify_url 即随主域名生成",
+                main.as_deref().unwrap_or_default()
+            ));
+        }
+        if cfg.payments.alipay.enabled
+            && cfg.payments.alipay.notify_url.is_empty()
+            && self.main.is_none()
+        {
+            w.push(
+                "支付已启用但没有主域名：支付宝异步通知地址由主域名生成，设置主域名之前无法创建订单"
+                    .into(),
+            );
+        }
+        w
     }
 
     /// Subscription URL for a token (subscription domain, else the main
@@ -1017,12 +1053,13 @@ fn display_of(v: &Option<String>) -> Option<String> {
     })
 }
 
-pub async fn view(state: &AppState, warnings: Vec<String>) -> Result<SettingsView, ApiError> {
+pub async fn view(state: &AppState, mut warnings: Vec<String>) -> Result<SettingsView, ApiError> {
     let cfg = state.cfg();
     let mut conn = state.pg().acquire().await?;
     let (stored, names) = load(&mut conn).await?;
     let live = state.settings();
     let eff = compute(cfg, stored, names, live.cloudflare());
+    warnings.extend(eff.standing_warnings(cfg));
     let mut server_names = Vec::new();
     for n in &eff.server_names {
         server_names.push(ServerNameView {
@@ -1333,6 +1370,9 @@ pub async fn cli_show(cfg: &PanelConfig, pg: &sqlx::PgPool) -> anyhow::Result<()
     );
     println!("host gate:        {}", eff.host_gate_on());
     println!("gRPC certificate names: {}", eff.sans.join(", "));
+    for w in eff.standing_warnings(cfg) {
+        println!("warning: {w}");
+    }
     Ok(())
 }
 
@@ -1373,7 +1413,11 @@ pub async fn describe_db(cfg: &PanelConfig) -> String {
                 s.trust_cloudflare.map(|b| b.to_string()).unwrap_or_else(|| "(not set)".into()),
                 e.trust_cloudflare,
                 e.trust_source,
-            )
+            ) + &e
+                .standing_warnings(cfg)
+                .iter()
+                .map(|w| format!("# WARNING: {w}\n"))
+                .collect::<String>()
         }
         Ok(Err(e)) => format!(
             "\n# 系统设置: database not readable ({e}); database values, once set, win over the values above\n"

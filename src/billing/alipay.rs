@@ -278,7 +278,9 @@ pub struct Alipay {
     pub app_id: String,
     pub seller_id: Option<String>,
     gateway: String,
-    notify_url: String,
+    /// `payments.alipay.notify_url` when set explicitly; None = derived per
+    /// order from the main domain (`billing::notify_url`).
+    notify_url: Option<String>,
     pub order_timeout_minutes: u32,
     keys: Keys,
 }
@@ -337,7 +339,7 @@ impl Alipay {
             app_id: cfg.app_id.clone(),
             seller_id: (!cfg.seller_id.is_empty()).then(|| cfg.seller_id.clone()),
             gateway: cfg.gateway_url.clone(),
-            notify_url: cfg.notify_url.clone(),
+            notify_url: (!cfg.notify_url.is_empty()).then(|| cfg.notify_url.clone()),
             order_timeout_minutes: cfg.order_timeout_minutes,
             keys,
         }
@@ -347,12 +349,18 @@ impl Alipay {
         &self.keys
     }
 
+    /// The explicitly configured notify URL (contains the route prefix:
+    /// never log it).
+    pub fn explicit_notify_url(&self) -> Option<&str> {
+        self.notify_url.as_deref()
+    }
+
     /// The signed form body of one call.
     pub fn request_body(
         &self,
         method: &str,
         biz: &Value,
-        with_notify: bool,
+        notify_url: Option<&str>,
         now: DateTime<Utc>,
     ) -> Result<String, String> {
         let beijing = FixedOffset::east_opt(8 * 3600).ok_or("offset")?;
@@ -369,8 +377,8 @@ impl Alipay {
                 .to_string(),
         );
         p.insert("version".to_string(), "1.0".to_string());
-        if with_notify {
-            p.insert("notify_url".to_string(), self.notify_url.clone());
+        if let Some(n) = notify_url {
+            p.insert("notify_url".to_string(), n.to_string());
         }
         p.insert("biz_content".to_string(), biz.to_string());
         let sign = self.keys.sign(&request_sign_content(&p))?;
@@ -384,7 +392,12 @@ impl Alipay {
 
     /// One signed call; returns the verified `<method>_response` object
     /// with code 10000. A success without a valid signature is an error.
-    async fn call(&self, method: &str, biz: Value, with_notify: bool) -> Result<Value, CallError> {
+    async fn call(
+        &self,
+        method: &str,
+        biz: Value,
+        notify_url: Option<&str>,
+    ) -> Result<Value, CallError> {
         // All three calls are idempotent per out_trade_no (a repeated
         // precreate returns the same QR), so a transport failure or a
         // non-200 answer is retried once: the sandbox gateway answers a
@@ -392,7 +405,7 @@ impl Alipay {
         let mut attempt = 0;
         loop {
             attempt += 1;
-            match self.call_once(method, &biz, with_notify).await {
+            match self.call_once(method, &biz, notify_url).await {
                 Err(CallError::Transport(_) | CallError::Status(_)) if attempt < CALL_ATTEMPTS => {
                     tokio::time::sleep(RETRY_DELAY).await;
                 }
@@ -405,10 +418,10 @@ impl Alipay {
         &self,
         method: &str,
         biz: &Value,
-        with_notify: bool,
+        notify_url: Option<&str>,
     ) -> Result<Value, CallError> {
         let body = self
-            .request_body(method, biz, with_notify, Utc::now())
+            .request_body(method, biz, notify_url, Utc::now())
             .map_err(|_| CallError::Malformed("could not sign the request"))?;
         let (status, bytes) = super::http::post_form(&self.gateway, body, CALL_TIMEOUT)
             .await
@@ -419,9 +432,11 @@ impl Alipay {
         parse_response(&self.keys, method, &bytes)
     }
 
-    /// alipay.trade.precreate → the QR payload.
+    /// alipay.trade.precreate → the QR payload. `notify_url`: see
+    /// `billing::notify_url`.
     pub async fn precreate(
         &self,
+        notify_url: &str,
         out_trade_no: &str,
         amount_cents: i64,
         subject: &str,
@@ -432,7 +447,9 @@ impl Alipay {
             "subject": subject,
             "timeout_express": format!("{}m", self.order_timeout_minutes),
         });
-        let r = self.call("alipay.trade.precreate", biz, true).await?;
+        let r = self
+            .call("alipay.trade.precreate", biz, Some(notify_url))
+            .await?;
         if r.get("out_trade_no").and_then(Value::as_str) != Some(out_trade_no) {
             return Err(CallError::Malformed("precreate answered another order"));
         }
@@ -446,7 +463,7 @@ impl Alipay {
     /// alipay.trade.query by out_trade_no.
     pub async fn query(&self, out_trade_no: &str) -> Result<Query, CallError> {
         let biz = serde_json::json!({ "out_trade_no": out_trade_no });
-        match self.call("alipay.trade.query", biz, false).await {
+        match self.call("alipay.trade.query", biz, None).await {
             Ok(r) => {
                 if r.get("out_trade_no").and_then(Value::as_str) != Some(out_trade_no) {
                     return Err(CallError::Malformed("query answered another order"));
@@ -478,7 +495,7 @@ impl Alipay {
     /// alipay.trade.close by out_trade_no (best effort by the caller).
     pub async fn close(&self, out_trade_no: &str) -> Result<Close, CallError> {
         let biz = serde_json::json!({ "out_trade_no": out_trade_no });
-        match self.call("alipay.trade.close", biz, false).await {
+        match self.call("alipay.trade.close", biz, None).await {
             Ok(_) => Ok(Close::Closed),
             Err(CallError::Business { sub_code, .. }) if sub_code == "ACQ.TRADE_NOT_EXIST" => {
                 Ok(Close::NotExist)
@@ -775,7 +792,7 @@ pub(crate) mod tests {
             .request_body(
                 "alipay.trade.precreate",
                 &serde_json::json!({"out_trade_no":"AK1","total_amount":"1.00","subject":"中文 & x"}),
-                true,
+                Some(cfg.notify_url.as_str()),
                 now,
             )
             .unwrap();
@@ -789,7 +806,7 @@ pub(crate) mod tests {
         assert!(p["biz_content"].contains("中文 & x"));
         assert!(alipay_side_keys().verify(request_sign_content(&p).as_bytes(), &p["sign"]));
         let a2 = a
-            .request_body("alipay.trade.query", &serde_json::json!({}), false, now)
+            .request_body("alipay.trade.query", &serde_json::json!({}), None, now)
             .unwrap();
         assert!(!a2.contains("notify_url"));
     }
@@ -832,7 +849,9 @@ mod live {
         };
         let a = Alipay::from_config(&cfg).expect("sandbox keys load");
         let otn = format!("AKLIVE{}", hex::encode(rand::random::<[u8; 8]>()));
-        let qr = a.precreate(&otn, 1, "Akari sandbox check").await;
+        let qr = a
+            .precreate(&cfg.notify_url, &otn, 1, "Akari sandbox check")
+            .await;
         println!(
             "precreate: {:?}",
             qr.as_ref()

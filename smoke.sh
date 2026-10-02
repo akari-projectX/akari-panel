@@ -1433,42 +1433,52 @@ for h in myapp.test:8446 sub.akari.test 127.0.0.1:8080; do
   [ "$(code -H "Host: $h" "$BASE/healthz")" = "200" ] || { echo "FAIL: Host $h refused"; exit 1; }
 done
 
-# Caddy in front (host network, internal CA, on demand via the ask endpoint):
-# only the prefix is forwarded, unknown names get no certificate.
+# Caddy in front: the REAL deploy/caddy/Caddyfile (site blocks verbatim),
+# with test-only global options injected (internal CA for every name,
+# ports 8446/8447, no admin API). AKARI_DOMAIN is the main domain's host;
+# sub.akari.test gets its certificate on demand via the ask endpoint.
 docker rm -f akari-smoke-caddy >/dev/null 2>&1 || true
-cat >"$LOG/Caddyfile" <<'CADDY'
-{
-	admin off
-	auto_https disable_redirects
-	http_port 8447
-	https_port 8446
-	skip_install_trust
-	on_demand_tls {
-		ask http://127.0.0.1:8092/ask
-	}
-}
-https:// {
-	tls internal {
-		on_demand
-	}
-	handle /{$AKARI_PREFIX}/* {
-		reverse_proxy 127.0.0.1:8080
-	}
-	handle {
-		respond 404
-	}
-}
-CADDY
-docker run -d --name akari-smoke-caddy --network host -e AKARI_PREFIX="$PREFIX" \
-  -v "$LOG/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine >/dev/null
+sed '0,/^{$/s//{\n\tadmin off\n\tlocal_certs\n\tskip_install_trust\n\thttp_port 8447\n\thttps_port 8446/' \
+  deploy/caddy/Caddyfile >"$LOG/Caddyfile"
+grep -q '^	https_port 8446$' "$LOG/Caddyfile" || { echo "FAIL: Caddyfile global block not found"; exit 1; }
+docker run -d --name akari-smoke-caddy --network host -e AKARI_PREFIX="$PREFIX" -e AKARI_DOMAIN=myapp.test \
+  -e AKARI_UPSTREAM=127.0.0.1:8080 -e AKARI_ASK=http://127.0.0.1:8092/ask \
+  -v "$LOG/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.11-alpine >/dev/null
 PREV_EXIT_TRAP=$(trap -p EXIT)
 trap 'docker rm -f akari-smoke-caddy akari-smoke-r22 >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
 for _ in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/8446) 2>/dev/null && break; sleep 0.5; done
+RES=(--resolve myapp.test:8446:127.0.0.1 --resolve sub.akari.test:8446:127.0.0.1 --resolve evil.test:8446:127.0.0.1
+     --resolve myapp.test:8447:127.0.0.1 --resolve evil.test:8447:127.0.0.1)
 MAIN_URL="https://$R22_MAIN/$PREFIX"
-[ "$(code -k "$MAIN_URL/healthz")" = "200" ] || { echo "FAIL: main domain through Caddy"; docker logs akari-smoke-caddy 2>&1 | tail -5; exit 1; }
-[ "$(code -k "https://$R22_MAIN/")" = "404" ] || { echo "FAIL: Caddy forwards outside the prefix"; exit 1; }
-curl -sk --noproxy '*' --resolve evil.test:8446:127.0.0.1 -o /dev/null "https://evil.test:8446/$PREFIX/healthz" \
+[ "$(code -k "${RES[@]}" "$MAIN_URL/healthz")" = "200" ] || { echo "FAIL: main domain through Caddy"; docker logs akari-smoke-caddy 2>&1 | tail -5; exit 1; }
+[ "$(code -k "${RES[@]}" "https://sub.akari.test:8446/$PREFIX/healthz")" = "200" ] || { echo "FAIL: sub domain through Caddy (on demand)"; docker logs akari-smoke-caddy 2>&1 | tail -5; exit 1; }
+[ "$(code -k "${RES[@]}" "https://$R22_MAIN/")" = "404" ] || { echo "FAIL: Caddy forwards outside the prefix"; exit 1; }
+curl -sk --noproxy '*' "${RES[@]}" -o /dev/null "https://evil.test:8446/$PREFIX/healthz" \
   && { echo "FAIL: Caddy served a certificate for an unconfigured name"; exit 1; }
+# No prefix oracle through Caddy: Caddy's own 404 and the panel's rejection
+# behind the prefix are byte-identical (headers minus Date, body), on the
+# main domain, the on-demand subscription domain and the bare IP (no SNI),
+# with and without compression negotiated. Server/Via are stripped.
+for base in "https://myapp.test:8446" "https://sub.akari.test:8446" "https://127.0.0.1:8446"; do
+  for enc in identity "gzip, zstd"; do
+    A=$(fp -k "${RES[@]}" -H "Accept-Encoding: $enc" "$base/junk")
+    grep -qiE '^(server|via):' /tmp/akari-smoke/fphead && { echo "FAIL: Server/Via through Caddy ($base)"; cat /tmp/akari-smoke/fphead; exit 1; }
+    head -1 /tmp/akari-smoke/fphead | grep -q " 404" || { echo "FAIL: Caddy 404 ($base)"; cat /tmp/akari-smoke/fphead; exit 1; }
+    for p in "$PREFIX/nope" "$PREFIX/api/v1/nope" "$PREFIX"; do
+      [ "$(fp -k "${RES[@]}" -H "Accept-Encoding: $enc" "$base/$p")" = "$A" ] \
+        || { echo "FAIL: prefix oracle through Caddy: $base/<prefix>${p#"$PREFIX"} ($enc)"; cat /tmp/akari-smoke/fphead; exit 1; }
+    done
+  done
+done
+# Plain HTTP: AKARI_DOMAIN is redirected; any other host gets the canonical
+# empty 404 on every path (never Caddy's default 200, never a redirect).
+[ "$(code "${RES[@]}" "http://myapp.test:8447/x")" = "308" ] || { echo "FAIL: http main domain not redirected"; exit 1; }
+for base in "http://127.0.0.1:8447" "http://evil.test:8447"; do
+  A=$(fp "${RES[@]}" "$base/junk")
+  head -1 /tmp/akari-smoke/fphead | grep -q " 404" || { echo "FAIL: plain http $base"; cat /tmp/akari-smoke/fphead; exit 1; }
+  grep -qiE '^(server|via|location):' /tmp/akari-smoke/fphead && { echo "FAIL: plain http headers ($base)"; cat /tmp/akari-smoke/fphead; exit 1; }
+  [ "$(fp "${RES[@]}" "$base/$PREFIX/healthz")" = "$A" ] || { echo "FAIL: plain http prefix oracle ($base)"; exit 1; }
+done
 
 # Subscription URLs on the subscription domain (API create response).
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
@@ -1488,7 +1498,7 @@ case "$R22_URL" in "$MAIN_URL/install/"*) ;; *) echo "FAIL: install URL not on t
 [ -n "$R22_PIN" ] || { echo "FAIL: no pin for Caddy's internal certificate"; exit 1; }
 python3 -c "import json;b=json.load(open('$LOG/r22-create.json'))['bootstrap'];assert 'panel_addr = \"grpc.akari.test:8443\"' in b and 'server_name = \"grpc.akari.test\"' in b, b" \
   || { echo "FAIL: bootstrap lacks the node domain"; exit 1; }
-curl -fsS --noproxy '*' --proto '=https' -k --pinnedpubkey "$R22_PIN" "$R22_URL" >"$LOG/r22-install.sh" \
+curl -fsS --noproxy '*' --proto '=https' -k "${RES[@]}" --pinnedpubkey "$R22_PIN" "$R22_URL" >"$LOG/r22-install.sh" \
   || { echo "FAIL: install script through Caddy with the pin"; exit 1; }
 grep -q '^panel_addr = "grpc.akari.test:8443"$' "$LOG/r22-install.sh" && grep -q '^server_name = "grpc.akari.test"$' "$LOG/r22-install.sh" \
   || { echo "FAIL: install script lacks the node domain"; exit 1; }
