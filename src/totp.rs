@@ -409,7 +409,11 @@ mod tests {
         assert_eq!(keys.open_sub_token(v, &blob), None, "other user's row");
         assert_eq!(keys.open(u, &blob), None, "not a TOTP blob");
         let totp = keys.seal(u, token.as_bytes()).unwrap();
-        assert_eq!(keys.open_sub_token(u, &totp), None, "TOTP blob is not a token");
+        assert_eq!(
+            keys.open_sub_token(u, &totp),
+            None,
+            "TOTP blob is not a token"
+        );
         let mut bad = blob.clone();
         bad[5] ^= 1;
         assert_eq!(keys.open_sub_token(u, &bad), None, "tampered");

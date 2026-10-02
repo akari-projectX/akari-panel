@@ -1519,11 +1519,31 @@ rules:
         let rows = snapshot_rows();
         for (q, ua, ct) in [
             (Some("format=clash"), "curl/8", "text/yaml; charset=utf-8"),
-            (Some("format=sing-box"), "clash.meta", "application/json; charset=utf-8"),
-            (Some("format=singbox"), "", "application/json; charset=utf-8"),
-            (Some("x=1&format=links"), "mihomo", "text/plain; charset=utf-8"),
-            (Some("format=base64"), "sing-box", "text/plain; charset=utf-8"),
-            (Some("format=CLASH"), "sing-box", "application/json; charset=utf-8"),
+            (
+                Some("format=sing-box"),
+                "clash.meta",
+                "application/json; charset=utf-8",
+            ),
+            (
+                Some("format=singbox"),
+                "",
+                "application/json; charset=utf-8",
+            ),
+            (
+                Some("x=1&format=links"),
+                "mihomo",
+                "text/plain; charset=utf-8",
+            ),
+            (
+                Some("format=base64"),
+                "sing-box",
+                "text/plain; charset=utf-8",
+            ),
+            (
+                Some("format=CLASH"),
+                "sing-box",
+                "application/json; charset=utf-8",
+            ),
             (Some("format=yaml"), "", "text/plain; charset=utf-8"),
             (Some(""), "mihomo", "text/yaml; charset=utf-8"),
             (None, "mihomo", "text/yaml; charset=utf-8"),

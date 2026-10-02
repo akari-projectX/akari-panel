@@ -91,7 +91,9 @@ pub async fn pass(
     portal: Option<&str>,
 ) -> sqlx::Result<usize> {
     let mut n = 0;
-    let portal_url = portal.map(String::from);
+    // W20 (M1): reminders link straight to the shop view (/app/shop), where
+    // the right offer (renewal / reset pack) is preselected.
+    let portal_url = portal.map(|p| format!("{p}/shop"));
     if smtp.notify_expiry_days > 0 {
         let pred = format!(
             "u.expires_at > now() AND u.expires_at <= now() + make_interval(days => {})",

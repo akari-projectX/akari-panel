@@ -110,13 +110,22 @@ fn require_user(user: &AuthUser) -> Result<(), ApiError> {
 }
 
 /// GET /api/v1/me/invite-codes
+///
+/// W20 (Minor 6): while registration is open, an account's first code is
+/// created here automatically — once per account (`users.invite_autocreated`,
+/// 0120, flipped in the same transaction; audited `invite.create` like a
+/// manual one). An account that already has codes only gets the flag set;
+/// one that deleted its codes does not get them back.
 pub async fn list_codes(
     State(state): State<AppState>,
     user: AuthUser,
 ) -> Result<Json<CodesView>, ApiError> {
     require_user(&user)?;
-    let mut c = state.pg().acquire().await?;
+    let mut c = state.pg().begin().await?;
     let s = super::load_settings(&mut c).await?;
+    if s.register_enabled && s.invite_codes_per_user > 0 {
+        ensure_first(&mut c, &Actor::of(&user), user.id, s.invite_codes_per_user).await?;
+    }
     let codes = sqlx::query_as::<_, CodeView>(
         "SELECT code, uses, created_at FROM invite_codes WHERE user_id = $1 \
          ORDER BY created_at, code",
@@ -128,6 +137,7 @@ pub async fn list_codes(
         .bind(user.id)
         .fetch_one(&mut *c)
         .await?;
+    c.commit().await?;
     Ok(Json(CodesView {
         codes,
         limit: s.invite_codes_per_user,
@@ -137,6 +147,36 @@ pub async fn list_codes(
         invited,
         link_base: crate::mail::portal_url(&state).map(|p| format!("{p}/register?invite=")),
     }))
+}
+
+/// W20: the once-per-account automatic first code (see `list_codes`).
+async fn ensure_first(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    user: Uuid,
+    limit: i32,
+) -> Result<(), ApiError> {
+    let done: Option<bool> =
+        sqlx::query_scalar("SELECT invite_autocreated FROM users WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(user)
+            .fetch_optional(&mut *conn)
+            .await?;
+    if done != Some(false) {
+        return Ok(());
+    }
+    let has: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM invite_codes WHERE user_id = $1)")
+            .bind(user)
+            .fetch_one(&mut *conn)
+            .await?;
+    if !has {
+        apply_create(conn, actor, user, limit).await?;
+    }
+    sqlx::query("UPDATE users SET invite_autocreated = true WHERE id = $1")
+        .bind(user)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
 }
 
 /// Create a code for `user` in the caller's transaction (limit per user).
