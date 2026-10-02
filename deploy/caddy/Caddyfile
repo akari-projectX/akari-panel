@@ -17,6 +17,11 @@
 # panel.toml then needs trusted_proxies = ["127.0.0.1/32"] and
 # [tls_ask] bind = "127.0.0.1:8082".
 {
+	# Extra global options from the environment (compose: .env
+	# AKARI_CADDY_OPTIONS), empty by default. `local_certs` = every
+	# certificate from Caddy's internal CA: a test or LAN name without public
+	# DNS (myapp.test), where Let's Encrypt cannot issue (DEPLOY.md §A).
+	{$AKARI_CADDY_OPTIONS}
 	# An IP-only site address makes clients send no SNI, and the handshake
 	# fails; default_sni makes Caddy pick the certificate anyway. Harmless
 	# with a domain.
