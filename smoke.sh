@@ -894,7 +894,7 @@ done
 # W7: plan speed limits are enforced by the agent (protocol 4, per user,
 # both directions). A limit change alone is a UserDelta (no xray rebuild)
 # and VLESS throughput drops to the limit; removing it restores it.
-[ "$(psql_q "SELECT agent_protocol FROM nodes WHERE id='$NODE_ID'")" -ge 4 ] || { echo "FAIL: agent does not speak protocol 4"; exit 1; }
+AGENT_PROTO=$(psql_q "SELECT agent_protocol FROM nodes WHERE id='$NODE_ID'")
 cat >"$LOG/vless_rate.py" <<'PY'
 import socket, struct, sys, threading, time, uuid
 n = int(sys.argv[2])
@@ -922,16 +922,26 @@ wait_uv() { # wait until the agent applied the node's current user_version; $1 =
   grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | grep -q "\"via\":\"$1\".*\"user_version\":$uv[,}]" \
     || { echo "FAIL: agent did not apply user_version $uv via $1"; grep 'state applied' "$LOG/agent.log" | tail -3; exit 1; }
 }
-FAST=$(python3 "$LOG/vless_rate.py" "$BUYER_VLESS" 400000) || { echo "FAIL: unlimited transfer"; exit 1; }
-[ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": 1}')" = "200" ] || { echo "FAIL: set speed limit"; exit 1; }
-wait_uv delta
-SLOW=$(python3 "$LOG/vless_rate.py" "$BUYER_VLESS" 400000) || { echo "FAIL: limited transfer"; exit 1; }
-[ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": null}')" = "200" ] || { echo "FAIL: clear speed limit"; exit 1; }
-wait_uv delta
-AGAIN=$(python3 "$LOG/vless_rate.py" "$BUYER_VLESS" 400000) || { echo "FAIL: transfer after clearing the limit"; exit 1; }
-echo "speed limit: unlimited ${FAST}s, 1 Mbps ${SLOW}s (>= ~2.7s expected), cleared ${AGAIN}s for 400 kB each way"
-python3 -c "f,s,a=$FAST,$SLOW,$AGAIN; assert f < 1.5 and 2.0 <= s <= 15 and a < 1.5, (f,s,a)" \
-  || { echo "FAIL: speed limit not enforced as expected"; exit 1; }
+if [ "$AGENT_PROTO" -ge 4 ]; then
+  FAST=$(python3 "$LOG/vless_rate.py" "$BUYER_VLESS" 400000) || { echo "FAIL: unlimited transfer"; exit 1; }
+  [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": 1}')" = "200" ] || { echo "FAIL: set speed limit"; exit 1; }
+  wait_uv delta
+  SLOW=$(python3 "$LOG/vless_rate.py" "$BUYER_VLESS" 400000) || { echo "FAIL: limited transfer"; exit 1; }
+  [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": null}')" = "200" ] || { echo "FAIL: clear speed limit"; exit 1; }
+  wait_uv delta
+  AGAIN=$(python3 "$LOG/vless_rate.py" "$BUYER_VLESS" 400000) || { echo "FAIL: transfer after clearing the limit"; exit 1; }
+  echo "speed limit: unlimited ${FAST}s, 1 Mbps ${SLOW}s (>= ~2.7s expected), cleared ${AGAIN}s for 400 kB each way"
+  python3 -c "f,s,a=$FAST,$SLOW,$AGAIN; assert f < 1.5 and 2.0 <= s <= 15 and a < 1.5, (f,s,a)" \
+    || { echo "FAIL: speed limit not enforced as expected"; exit 1; }
+else
+  # An agent older than protocol 4 (the panel CI runs agent main until the
+  # agent PR lands) ignores the field: the node must say so.
+  [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": 1}')" = "200" ] || { echo "FAIL: set speed limit"; exit 1; }
+  [ "$(code -b "$JAR" "$BASE/api/v1/nodes")" = "200" ] && grep -q "too old to enforce speed limits" /tmp/akari-smoke/last \
+    || { echo "FAIL: no warning for an agent that cannot enforce speed limits"; cat /tmp/akari-smoke/last; exit 1; }
+  [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": null}')" = "200" ] || { echo "FAIL: clear speed limit"; exit 1; }
+  echo "speed limit: SKIPPED throughput check (agent protocol $AGENT_PROTO < 4); NodeView warning present"
+fi
 # Admin views and audit.
 [ "$(code -b "$JAR" "$BASE/api/v1/orders?login=smoke-buyer")" = "200" ] || { echo "FAIL: admin orders"; exit 1; }
 [ "$(last_json "len(d)")" = "3" ] || { echo "FAIL: admin order list"; exit 1; }
