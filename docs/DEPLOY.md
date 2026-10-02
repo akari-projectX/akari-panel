@@ -707,7 +707,7 @@ two or more for availability or headroom:
 
 1. Read the release notes for protocol changes. Take a backup (docs/BACKUP.md).
 2. Upgrade every agent (replace the binary, `systemctl restart akari-agent`; the xray rebuild drops live connections once).
-3. Upgrade the panel: compose `AKARI_VERSION=x.y.z` in `.env`, `docker compose pull && docker compose up -d panel`; bare metal replace the binary, `systemctl restart akari-panel`. Migrations run automatically at start.
+3. Upgrade the panel: compose: verify the new release and set its `AKARI_IMAGE=ghcr.io/akari-projectx/akari-panel:X.Y.Z@sha256:…` line in `.env` ("Verify a release" step 3), then `docker compose pull panel && docker compose up -d panel` (a `.env` from before 0.2 with only `AKARI_VERSION=` still works, unpinned: replace it with `AKARI_IMAGE`); bare metal replace the binary, `systemctl restart akari-panel`. Migrations run automatically at start.
 4. `akari config check`, `/healthz`, check the nodes are `online`.
 
 **Compose deployments: the deploy files change too.** The checkout under `deploy/` (compose file,
@@ -825,18 +825,58 @@ same route prefix and agent certificates.
 
 ## Verify a release
 
-Releases are signed keylessly (GitHub OIDC, Sigstore). Needs `cosign` >= 2.
+Releases are signed keylessly (GitHub OIDC, Sigstore; there is no project key to lose): each
+signature's certificate names the workflow file **and the tag** that produced it, so verify against
+that exact identity. Needs **cosign >= 3** (`cosign version`; 2.4.x works for blobs only with
+`--new-bundle-format`, older 2.x cannot read the bundles). The release workflow runs these same
+commands against what it has just signed before it publishes.
+
 ```bash
-cosign verify-blob --bundle akari-linux-amd64.sigstore.json \
-  --certificate-identity-regexp '^https://github.com/akari-projectX/akari-panel/\.github/workflows/release\.yml@refs/tags/v' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com akari-linux-amd64
-sha256sum -c --ignore-missing SHA256SUMS
-cosign verify ghcr.io/akari-projectx/akari-panel:X.Y.Z \
-  --certificate-identity-regexp '^https://github.com/akari-projectX/akari-panel/\.github/workflows/release\.yml@refs/tags/v' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+TAG=v0.2.0
+ID="https://github.com/akari-projectX/akari-panel/.github/workflows/release.yml@refs/tags/$TAG"
+ISS=https://token.actions.githubusercontent.com
+REL="https://github.com/akari-projectX/akari-panel/releases/download/$TAG"
+
+# 1. the release assets (binaries, SBOM, licence notice, image reference)
+for f in SHA256SUMS akari-panel-image.txt akari-linux-amd64; do
+  curl -fsSLO "$REL/$f" && curl -fsSLO "$REL/$f.sigstore.json"
+  cosign verify-blob --bundle "$f.sigstore.json" --certificate-identity "$ID" \
+    --certificate-oidc-issuer "$ISS" "$f"                     # "Verified OK"
+done
+sha256sum -c --ignore-missing SHA256SUMS                       # every downloaded file: OK
+
+# 2. the image, by digest (akari-panel-image.txt = ghcr.io/akari-projectx/akari-panel:X.Y.Z@sha256:...)
+IMAGE_REF="$(cat akari-panel-image.txt)"
+DIGEST="${IMAGE_REF#*@}"
+cosign verify "ghcr.io/akari-projectx/akari-panel@$DIGEST" \
+  --certificate-identity "$ID" --certificate-oidc-issuer "$ISS" >/dev/null && echo "image signature OK"
+cosign verify-attestation --type cyclonedx "ghcr.io/akari-projectx/akari-panel@$DIGEST" \
+  --certificate-identity "$ID" --certificate-oidc-issuer "$ISS" >/dev/null && echo "SBOM attestation OK"
+
+# 3. pin it (compose pulls by digest: a moved tag cannot change what runs)
+sed -i "s|^AKARI_IMAGE=.*|AKARI_IMAGE=$IMAGE_REF|" deploy/.env    # from the checkout root
 ```
-(agent: replace `akari-panel` by `akari-agent` in the identity and use its binaries.) The SBOM
-(CycloneDX) is a release asset and an attestation on the image.
+
+The same reference is at the top of the GitHub release notes. `docker compose pull` then fetches
+exactly that digest for your architecture (the image is a multi-arch index: linux/amd64 and
+linux/arm64). Agent releases: replace `akari-panel` by `akari-agent` in `ID`/`REL` and use its
+`akari-agent-linux-<arch>` files (it publishes binaries only). The SBOM (CycloneDX) is a release
+asset and an attestation on the image; `THIRD_PARTY_LICENSES.txt` lists every bundled crate and
+npm package with its licence text.
+
+### Build the image yourself (fallback)
+
+Without access to ghcr.io, or to run an unreleased commit, build the same image from the checkout
+(about 10 minutes on 4 cores; Docker with BuildKit, nothing else needed) and point compose at it:
+
+```bash
+cd /opt/akari-panel && git checkout v0.2.0                  # the release you want
+docker build -t akari-panel:local --build-arg AKARI_GIT_SHA="$(git rev-parse --short=12 HEAD)" .
+sed -i 's|^AKARI_IMAGE=.*|AKARI_IMAGE=akari-panel:local|' deploy/.env
+cd deploy && docker compose up -d                           # skip `docker compose pull` for a local image
+```
+
+Upgrading such a deployment = check out the new tag, rebuild, `docker compose up -d`.
 
 ## Build notes
 

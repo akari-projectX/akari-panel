@@ -640,7 +640,8 @@ struct DbFailure {
 
 /// An unacked snapshot older than this is treated as a failed apply.
 const PENDING_TIMEOUT: Duration = Duration::from_secs(120);
-/// Reconcile tick: self-heals missed notifies and transient DB errors.
+/// Reconcile tick: self-heals missed notifies and transient DB errors
+/// (per session, phase randomised so sessions do not tick together).
 const RECONCILE_EVERY: Duration = Duration::from_secs(60);
 /// How many sent sets a session remembers (for Acks that arrive late).
 const SENT_MEMORY: usize = 16;
@@ -1174,9 +1175,17 @@ async fn session<S>(
             retire(&sess, "certificate revoked").await;
             return;
         }
-        let mut tick = tokio::time::interval(RECONCILE_EVERY);
+        // The first tick at a random point of the period (Hello covers the
+        // start): agents that connect together (every agent after a panel
+        // restart) would otherwise reconcile in lockstep, ~200 full reads
+        // queued on the read permits once a minute, and a user change landing
+        // in that burst waited behind them (W14: change-to-agent max 2.0 s).
+        let first = rand::random_range(0..RECONCILE_EVERY.as_millis() as u64);
+        let mut tick = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_millis(first),
+            RECONCILE_EVERY,
+        );
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        tick.tick().await; // the first tick is immediate; Hello covers it
         let mut seen = *wake_rx.borrow_and_update();
         loop {
             tokio::select! {

@@ -65,7 +65,9 @@ directory off the host (the files are ciphertext).
 
 ## Restore drill (run it quarterly and after changing the procedure)
 
-`scripts/restore-drill.sh` automates it on the dev stack (destroys the dev database):
+`scripts/restore-drill.sh` automates it on the dev stack, in its own database (`DRILL_DB`,
+default `akari_drill`, dropped and recreated) and Valkey db index (`DRILL_VALKEY_DB`, default
+14); it binds the panel's default ports, so serialise it with smoke:
 install -> admin + user + node with a live agent -> backup -> stop panel, wipe database and
 data dir -> restore -> start panel -> assert same prefix, same login, user present, the
 unchanged agent reconnects and the node is online.
@@ -76,6 +78,15 @@ Result, 2026-10-01 (WSL2 dev stack, PostgreSQL 18.6, age 1.2.1, dump via `docker
 DRILL PASS: prefix kept, logins and users restored, agent reconnected in 1 s (panel start to online)
 ```
 
-Backup size for the drill data: 404 KiB (db 390 KiB, data 10 KiB). A first run of the drill
+Re-run 2026-10-02 (W14) on the current schema (migrations through 0091, PostgreSQL 18, age 1.2.1):
+
+```
+DRILL PASS: prefix kept, logins (with TOTP) and users restored, agent reconnected in 9 s (panel start to online)
+```
+
+The 9 s (1 s in the first run) is the agent's reconnect backoff after the panel was down for
+the restore, not restore time. Backup 108 KiB (db 86 KiB, data 10 KiB).
+
+Backup size for the first drill's data: 404 KiB (db 390 KiB, data 10 KiB). A first run of the drill
 found a bug in the drill script itself (the "stopped" panel was an orphan process), not in
 backup/restore; the pass above is the run after that fix.

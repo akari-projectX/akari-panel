@@ -4,13 +4,27 @@ name: release
 #   build static linux amd64/arm64 binaries and a distroless image,
 #   SBOM (CycloneDX), cosign keyless signatures (GitHub OIDC), SHA256SUMS,
 #   GitHub Release, image pushed to ghcr.io/akari-projectx/akari-panel.
-# Verification recipe: docs/DEPLOY.md ("Verify a release").
+# Verification recipe: docs/DEPLOY.md ("Verify a release"); the image job
+# and the release job run that recipe against what they just signed.
+#
+# Dry run (W14): a pull request touching the release inputs runs the whole
+# pipeline without publishing: same builds, SBOM and licence file, the image
+# goes to a throwaway registry on the runner (localhost:5000) instead of
+# ghcr.io, and every signature is made keylessly with the PR's identity and
+# verified with the same commands; no GitHub Release is created.
 #
 # Third-party actions are pinned to commit SHAs (comment = tag).
 
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - Dockerfile
+      - .dockerignore
+      - scripts/third-party.py
+      - Cargo.toml
 
 permissions:
   contents: read
@@ -26,23 +40,35 @@ jobs:
     timeout-minutes: 5
     outputs:
       version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
       short_sha: ${{ steps.v.outputs.short_sha }}
       epoch: ${{ steps.v.outputs.epoch }}
+      # Dry run: "true" on pull requests (nothing is published).
+      dry_run: ${{ steps.v.outputs.dry_run }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - id: v
         run: |
-          version="${GITHUB_REF_NAME#v}"
           cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-          if [ "$version" != "$cargo_version" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_version"
-            exit 1
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            dry_run=false
+            version="${GITHUB_REF_NAME#v}"
+            if [ "$version" != "$cargo_version" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_version"
+              exit 1
+            fi
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+              || { echo "::error::tag commit is not on main"; exit 1; }
+          else
+            # Dry run: the release the current Cargo.toml would produce.
+            dry_run=true
+            version="$cargo_version"
           fi
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
-            || { echo "::error::tag commit is not on main"; exit 1; }
+          echo "dry_run=$dry_run" >>"$GITHUB_OUTPUT"
           echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "tag=v$version" >>"$GITHUB_OUTPUT"
           echo "short_sha=$(git rev-parse --short=12 "$GITHUB_SHA")" >>"$GITHUB_OUTPUT"
           echo "epoch=$(git log -1 --format=%ct "$GITHUB_SHA")" >>"$GITHUB_OUTPUT"
 
@@ -103,7 +129,7 @@ jobs:
         with:
           path: .
           format: cyclonedx-json
-          output-file: akari-panel-${{ github.ref_name }}.cdx.json
+          output-file: akari-panel-${{ needs.verify-tag.outputs.tag }}.cdx.json
           upload-artifact: false
           upload-release-assets: false
       # Third-party licence notice of the binary (scripts/third-party.py):
@@ -122,7 +148,7 @@ jobs:
         with:
           name: sbom
           path: |
-            akari-panel-${{ github.ref_name }}.cdx.json
+            akari-panel-${{ needs.verify-tag.outputs.tag }}.cdx.json
             THIRD_PARTY_LICENSES.txt
           if-no-files-found: error
 
@@ -135,6 +161,11 @@ jobs:
       contents: read
       packages: write
       id-token: write # cosign keyless
+    outputs:
+      ref: ${{ steps.name.outputs.image }}:${{ needs.verify-tag.outputs.version }}@${{ steps.push.outputs.digest }}
+    env:
+      DRY_RUN: ${{ needs.verify-tag.outputs.dry_run }}
+      TAG: ${{ needs.verify-tag.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -147,9 +178,22 @@ jobs:
           name: sbom
           path: sbom
       - id: name
-        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/akari-panel" >>"$GITHUB_OUTPUT"
+        run: |
+          if [ "$DRY_RUN" = true ]; then
+            # Throwaway registry on the runner: the dry run publishes nothing.
+            docker run -d --name registry -p 5000:5000 registry:3
+            echo "image=localhost:5000/akari-panel" >>"$GITHUB_OUTPUT"
+            echo "cosign_flags=--allow-http-registry" >>"$GITHUB_OUTPUT"
+          else
+            echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/akari-panel" >>"$GITHUB_OUTPUT"
+            echo "cosign_flags=" >>"$GITHUB_OUTPUT"
+          fi
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          # The dry run's registry is localhost:5000 on the runner.
+          driver-opts: network=host
+      - if: needs.verify-tag.outputs.dry_run != 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -158,9 +202,12 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ steps.name.outputs.image }}
+          # value= makes the dry run (no tag ref) tag like the real release.
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
+            type=semver,pattern={{version}},value=${{ needs.verify-tag.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.verify-tag.outputs.tag }},enable=${{ !contains(needs.verify-tag.outputs.tag, '-') }}
+          flavor: |
+            latest=false
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
       # The image carries exactly the released binaries (target `prebuilt`:
@@ -184,10 +231,32 @@ jobs:
         env:
           IMAGE: ${{ steps.name.outputs.image }}
           DIGEST: ${{ steps.push.outputs.digest }}
+          FLAGS: ${{ steps.name.outputs.cosign_flags }}
         run: |
-          cosign sign --yes "${IMAGE}@${DIGEST}"
-          cosign attest --yes --type cyclonedx \
-            --predicate "sbom/akari-panel-${GITHUB_REF_NAME}.cdx.json" "${IMAGE}@${DIGEST}"
+          # shellcheck disable=SC2086 # FLAGS is empty or one flag
+          cosign sign --yes $FLAGS "${IMAGE}@${DIGEST}"
+          # shellcheck disable=SC2086
+          cosign attest --yes $FLAGS --type cyclonedx \
+            --predicate "sbom/akari-panel-${TAG}.cdx.json" "${IMAGE}@${DIGEST}"
+      # docs/DEPLOY.md "Verify a release", with this run's identity (the
+      # tag's workflow ref; refs/pull/N/merge on a dry run).
+      - name: verify signature and SBOM attestation (DEPLOY.md recipe)
+        env:
+          IMAGE: ${{ steps.name.outputs.image }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          FLAGS: ${{ steps.name.outputs.cosign_flags }}
+          IDENTITY: ${{ github.server_url }}/${{ github.workflow_ref }}
+        run: |
+          # shellcheck disable=SC2086
+          cosign verify $FLAGS "${IMAGE}@${DIGEST}" \
+            --certificate-identity "$IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null
+          # shellcheck disable=SC2086
+          cosign verify-attestation $FLAGS --type cyclonedx "${IMAGE}@${DIGEST}" \
+            --certificate-identity "$IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null
+          docker buildx imagetools inspect "${IMAGE}@${DIGEST}"
+          echo "verified: ${IMAGE}:${TAG#v}@${DIGEST}"
 
   release:
     name: GitHub Release
@@ -197,6 +266,11 @@ jobs:
     permissions:
       contents: write # create the release
       id-token: write # cosign keyless
+    env:
+      DRY_RUN: ${{ needs.verify-tag.outputs.dry_run }}
+      TAG: ${{ needs.verify-tag.outputs.tag }}
+      # ghcr.io/akari-projectx/akari-panel:X.Y.Z@sha256:… (what compose pins)
+      IMAGE_REF: ${{ needs.image.outputs.ref }}
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -214,19 +288,38 @@ jobs:
         working-directory: release
         run: |
           chmod 0755 akari-linux-*
-          sha256sum akari-linux-amd64 akari-linux-arm64 "akari-panel-${GITHUB_REF_NAME}.cdx.json" THIRD_PARTY_LICENSES.txt > SHA256SUMS
+          # The image reference with its digest, signed with the rest: what
+          # deploy/.env's AKARI_IMAGE is set to.
+          printf '%s\n' "$IMAGE_REF" > akari-panel-image.txt
+          files="akari-linux-amd64 akari-linux-arm64 akari-panel-${TAG}.cdx.json THIRD_PARTY_LICENSES.txt akari-panel-image.txt"
+          # shellcheck disable=SC2086
+          sha256sum $files > SHA256SUMS
           # Keyless: the certificate binds the signature to this workflow
           # run (identity = this workflow at this tag, issuer = GitHub OIDC).
-          for f in akari-linux-amd64 akari-linux-arm64 "akari-panel-${GITHUB_REF_NAME}.cdx.json" THIRD_PARTY_LICENSES.txt SHA256SUMS; do
+          for f in $files SHA256SUMS; do
             cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
           done
           ls -l
+      # docs/DEPLOY.md "Verify a release", with this run's identity.
+      - name: verify (DEPLOY.md recipe)
+        working-directory: release
+        env:
+          IDENTITY: ${{ github.server_url }}/${{ github.workflow_ref }}
+        run: |
+          for f in akari-linux-amd64 akari-linux-arm64 akari-panel-image.txt SHA256SUMS; do
+            cosign verify-blob --bundle "$f.sigstore.json" \
+              --certificate-identity "$IDENTITY" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com "$f"
+          done
+          sha256sum -c SHA256SUMS
       - name: publish
+        if: needs.verify-tag.outputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           prerelease=""
-          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" release/* \
+          case "$TAG" in *-*) prerelease="--prerelease" ;; esac
+          notes="$(printf 'Image (deploy/.env `AKARI_IMAGE`):\n\n```\n%s\n```\n\nVerify before use: docs/DEPLOY.md "Verify a release".\n' "$IMAGE_REF")"
+          gh release create "$TAG" release/* \
             --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes $prerelease \
-            --title "$GITHUB_REF_NAME"
+            --title "$TAG" --notes "$notes"

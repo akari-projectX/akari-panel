@@ -4,7 +4,9 @@
 //! subscription formats (`sub::render`).
 //!
 //! Invariants: no panic; every inbound of an accepted array passes
-//! `check_inbound` and has no port clash; a freshly generated account
+//! `check_inbound`, has no port clash and no object (at any depth) with two
+//! keys equal under Go's case folding (xray decodes keys
+//! case-insensitively, W14); a freshly generated account
 //! needs no refit; subscriptions render, the sing-box one is valid JSON,
 //! and validation is deterministic (re-validating the re-serialized
 //! value gives the same verdict).
@@ -40,6 +42,11 @@ fuzz_target!(|data: &[u8]| {
     let mut creds = Vec::new();
     for i in items {
         protocols::check_inbound(i).expect("accepted inbound re-checks");
+        assert_eq!(
+            protocols::case_fold_duplicate(i),
+            None,
+            "accepted inbound has keys that alias in xray"
+        );
         if !protocols::issuable(i) {
             continue;
         }
