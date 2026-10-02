@@ -32,7 +32,7 @@ pub fn enroll_plausible_token(token: &str) -> bool {
 }
 
 /// `grpc::cert_status_json` (Heartbeat.cert from the agent).
-pub fn cert_status_json(c: &crate::gen::CertStatus) -> Value {
+pub fn cert_status_json(c: &crate::pb::CertStatus) -> Value {
     crate::grpc::cert_status_json(c)
 }
 

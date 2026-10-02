@@ -39,9 +39,9 @@ use x509_parser::prelude::{FromDer, X509Certificate};
 
 use crate::audit::Actor;
 use crate::auth::ApiError;
-use crate::gen::agent_enrollment_server::AgentEnrollment;
-use crate::gen::{EnrollRequest, IssuedCertificate, RenewRequest};
 use crate::install::{self, CsrError};
+use crate::pb::agent_enrollment_server::AgentEnrollment;
+use crate::pb::{EnrollRequest, IssuedCertificate, RenewRequest};
 use crate::state::AppState;
 
 /// The one answer to every token problem (no oracle).

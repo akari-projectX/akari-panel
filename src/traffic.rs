@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use uuid::Uuid;
 
-use crate::gen::TrafficReport;
+use crate::pb::TrafficReport;
 use crate::state::AppState;
 
 /// Clean (fully persisted) entries idle this long are evicted. Evicting is
@@ -1570,7 +1570,7 @@ async fn flush_once(state: &AppState) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gen::UserTraffic;
+    use crate::pb::UserTraffic;
 
     fn report(users: &[(Uuid, u64, u64)]) -> TrafficReport {
         TrafficReport {
@@ -1742,7 +1742,7 @@ mod tests {
 #[cfg(test)]
 mod db_tests {
     use super::*;
-    use crate::gen::UserTraffic;
+    use crate::pb::UserTraffic;
     use crate::testdb::TestDb;
 
     /// A buffer whose membership cache holds every current assignment.

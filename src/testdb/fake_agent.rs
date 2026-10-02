@@ -19,15 +19,15 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 use tonic::{Status, Streaming};
 use uuid::Uuid;
 
-use crate::gen::agent_channel_client::AgentChannelClient;
-use crate::gen::agent_enrollment_client::AgentEnrollmentClient;
-use crate::gen::agent_up::Msg as UpMsg;
-use crate::gen::panel_down::Msg as DownMsg;
-use crate::gen::{
+use crate::grpc::{state_hash, NodeState, MIN_AGENT_PROTOCOL};
+use crate::pb::agent_channel_client::AgentChannelClient;
+use crate::pb::agent_enrollment_client::AgentEnrollmentClient;
+use crate::pb::agent_up::Msg as UpMsg;
+use crate::pb::panel_down::Msg as DownMsg;
+use crate::pb::{
     ack, Ack, AgentUp, ConfigSnapshot, EnrollRequest, Hello, PanelDown, RenewRequest,
     TrafficReport, UserTraffic,
 };
-use crate::grpc::{state_hash, NodeState, MIN_AGENT_PROTOCOL};
 use crate::state::AppState;
 use crate::testdb::TestDb;
 
@@ -246,7 +246,7 @@ impl PanelHarness {
     ) -> Result<Vec<u8>, Status> {
         let mut client = AgentChannelClient::new(self.channel(creds).await?);
         let mut stream = client
-            .fetch_artifact(crate::gen::FetchArtifactRequest {
+            .fetch_artifact(crate::pb::FetchArtifactRequest {
                 sha256: sha256.into(),
                 offset,
             })
@@ -320,7 +320,7 @@ impl WireAgent {
             user_version: held.1,
             protocol_version: protocol,
             state_hash: hash,
-            info: Some(crate::gen::AgentInfo {
+            info: Some(crate::pb::AgentInfo {
                 agent_version: version.into(),
                 core_version: "test".into(),
                 os: "linux".into(),
@@ -350,7 +350,7 @@ impl WireAgent {
         self.send(m).await;
     }
 
-    pub async fn update_status(&self, s: crate::gen::UpdateStatus) {
+    pub async fn update_status(&self, s: crate::pb::UpdateStatus) {
         self.send(UpMsg::UpdateStatus(s)).await;
     }
 

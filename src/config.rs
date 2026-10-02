@@ -357,10 +357,10 @@ pub enum RemoveMode {
 }
 
 impl RemoveMode {
-    pub fn proto(self) -> crate::gen::RemoveMode {
+    pub fn proto(self) -> crate::pb::RemoveMode {
         match self {
-            RemoveMode::Gate => crate::gen::RemoveMode::Gate,
-            RemoveMode::Rebuild => crate::gen::RemoveMode::Rebuild,
+            RemoveMode::Gate => crate::pb::RemoveMode::Gate,
+            RemoveMode::Rebuild => crate::pb::RemoveMode::Rebuild,
         }
     }
 }

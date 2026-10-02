@@ -20,9 +20,9 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use akari_panel::fuzzing::{cert_status_json, traffic_check, traffic_peek};
-use akari_panel::gen::agent_up::Msg;
-use akari_panel::gen::AgentUp;
 use akari_panel::nodestat::{heartbeat_blob, Sample};
+use akari_panel::pb::agent_up::Msg;
+use akari_panel::pb::AgentUp;
 use akari_panel::traffic::TrafficBuffer;
 use akari_panel_fuzz::strings;
 use libfuzzer_sys::fuzz_target;
@@ -37,7 +37,7 @@ fn users() -> [Uuid; 4] {
     [1u128, 2, 3, 4].map(Uuid::from_u128)
 }
 
-fn check_heartbeat(hb: &akari_panel::gen::Heartbeat) {
+fn check_heartbeat(hb: &akari_panel::pb::Heartbeat) {
     let mut blob = heartbeat_blob(hb);
     if let Some(c) = &hb.cert {
         blob["cert"] = cert_status_json(c);
@@ -170,8 +170,8 @@ fuzz_target!(|data: &[u8]| {
     }
     // A node without loaded membership never buffers anything.
     let stranger = Uuid::from_u128(0xB);
-    let r = akari_panel::gen::TrafficReport {
-        users: vec![akari_panel::gen::UserTraffic {
+    let r = akari_panel::pb::TrafficReport {
+        users: vec![akari_panel::pb::UserTraffic {
             user_id: users()[0].to_string(),
             up_bytes: 1,
             down_bytes: 1,

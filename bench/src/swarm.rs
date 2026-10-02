@@ -31,15 +31,15 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 use uuid::Uuid;
 
-use akari_panel::gen::agent_channel_client::AgentChannelClient;
-use akari_panel::gen::agent_enrollment_client::AgentEnrollmentClient;
-use akari_panel::gen::agent_up::Msg as UpMsg;
-use akari_panel::gen::panel_down::Msg as DownMsg;
-use akari_panel::gen::{
+use akari_panel::grpc::{state_hash, user_set, NodeState, UserSet};
+use akari_panel::pb::agent_channel_client::AgentChannelClient;
+use akari_panel::pb::agent_enrollment_client::AgentEnrollmentClient;
+use akari_panel::pb::agent_up::Msg as UpMsg;
+use akari_panel::pb::panel_down::Msg as DownMsg;
+use akari_panel::pb::{
     ack, user_op, Ack, AgentInfo, AgentUp, ConfigSnapshot, EnrollRequest, Heartbeat, Hello,
     TrafficReport, UserDelta, UserTraffic,
 };
-use akari_panel::grpc::{state_hash, user_set, NodeState, UserSet};
 
 use crate::common;
 
@@ -550,7 +550,7 @@ async fn session(
                     lease_remaining_seconds: None,
                     // W11: exercises the metrics history path (one upsert
                     // per node per heartbeat, MIN_SAMPLE_GAP-throttled).
-                    metrics: Some(akari_panel::gen::NodeMetrics {
+                    metrics: Some(akari_panel::pb::NodeMetrics {
                         load1: Some(0.5),
                         cpu_count: Some(2),
                         net_interface: "eth0".into(),

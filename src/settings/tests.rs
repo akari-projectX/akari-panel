@@ -921,7 +921,7 @@ async fn node_domain_hot_swaps_the_grpc_certificate() {
             .await
             .unwrap();
     tx.commit().await.unwrap();
-    let mut client = crate::gen::agent_enrollment_client::AgentEnrollmentClient::new(
+    let mut client = crate::pb::agent_enrollment_client::AgentEnrollmentClient::new(
         panel.channel_named(None, "grpc.akari.test").await.unwrap(),
     );
     let key = rcgen::KeyPair::generate().unwrap();
@@ -929,7 +929,7 @@ async fn node_domain_hot_swaps_the_grpc_certificate() {
         .serialize_request(&key)
         .unwrap();
     let issued = client
-        .enroll(crate::gen::EnrollRequest {
+        .enroll(crate::pb::EnrollRequest {
             token: t,
             csr_der: csr.der().to_vec(),
         })
@@ -1220,7 +1220,7 @@ async fn probe_settings_api() {
 /// agent's Hello capabilities are recorded on the node.
 #[tokio::test]
 async fn probe_change_reaches_connected_agents() {
-    use crate::gen::panel_down::Msg as DownMsg;
+    use crate::pb::panel_down::Msg as DownMsg;
     let Some(db) = TestDb::new().await else {
         return;
     };

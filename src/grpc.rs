@@ -10,11 +10,11 @@ use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tonic::{Request, Response, Status, Streaming};
 use uuid::Uuid;
 
-use crate::gen::agent_channel_server::{AgentChannel, AgentChannelServer};
-use crate::gen::agent_enrollment_server::AgentEnrollmentServer;
-use crate::gen::panel_down::Msg as DownMsg;
-use crate::gen::user_op::Op as UserOpKind;
-use crate::gen::{
+use crate::pb::agent_channel_server::{AgentChannel, AgentChannelServer};
+use crate::pb::agent_enrollment_server::AgentEnrollmentServer;
+use crate::pb::panel_down::Msg as DownMsg;
+use crate::pb::user_op::Op as UserOpKind;
+use crate::pb::{
     AgentUp, ConfigSnapshot, Heartbeat, InboundUser, LeaseGrant, PanelDown, UserDelta, UserOp,
 };
 use crate::state::AppState;
@@ -33,7 +33,7 @@ impl AgentChannel for AgentChannelService {
 
     async fn fetch_artifact(
         &self,
-        request: Request<crate::gen::FetchArtifactRequest>,
+        request: Request<crate::pb::FetchArtifactRequest>,
     ) -> Result<Response<Self::FetchArtifactStream>, Status> {
         // Same identity rules as the channel: a verified certificate of a
         // live node (a deleted node's tombstoned one gets nothing).
@@ -77,8 +77,8 @@ impl AgentChannel for AgentChannelService {
 
     async fn renew(
         &self,
-        request: Request<crate::gen::RenewRequest>,
-    ) -> Result<Response<crate::gen::IssuedCertificate>, Status> {
+        request: Request<crate::pb::RenewRequest>,
+    ) -> Result<Response<crate::pb::IssuedCertificate>, Status> {
         // Identity from the verified client certificate only (enroll.rs).
         crate::enroll::renew(&self.state, request)
             .await
@@ -879,8 +879,8 @@ impl SyncState {
         matches!(&self.hello_claim, Some((v, h)) if *v == self.held && *h == empty(v.0))
     }
 
-    fn on_ack(&mut self, ack: &crate::gen::Ack, now: Instant) -> AckOutcome {
-        use crate::gen::ack::Reason;
+    fn on_ack(&mut self, ack: &crate::pb::Ack, now: Instant) -> AckOutcome {
+        use crate::pb::ack::Reason;
         let versions = (ack.config_version, ack.user_version);
         let old = self.too_old();
         let reason = match Reason::try_from(ack.reason).unwrap_or(Reason::Unspecified) {
@@ -1014,7 +1014,7 @@ struct Session {
     metrics_presence: AtomicBool,
     /// The LatencyProbeConfig last sent on this stream (None = none sent
     /// yet; re-sent when the token or, W12, the 系统设置 values change).
-    probe_sent: Mutex<Option<crate::gen::LatencyProbeConfig>>,
+    probe_sent: Mutex<Option<crate::pb::LatencyProbeConfig>>,
 }
 
 impl Session {
@@ -1134,7 +1134,7 @@ async fn session<S>(
 ) where
     S: Stream<Item = Result<AgentUp, Status>> + Unpin + Send + 'static,
 {
-    use crate::gen::agent_up::Msg as UpMsg;
+    use crate::pb::agent_up::Msg as UpMsg;
 
     let _live = state.session_started();
     let (node_id, revoked) = match identity {
@@ -1146,11 +1146,11 @@ async fn session<S>(
     // desired state, so no committed change can fall between them.
     let mut wake_rx = state.wakeups().subscribe(node_id);
     let sess = Session::new(state.clone(), node_id, tx, revoked);
-    let gen = state.next_gen();
+    let generation = state.next_generation();
     if !revoked {
         // One live stream per node on this instance: the newest wins.
         let entry = crate::state::AgentEntry {
-            gen,
+            generation,
             online_session: sess.online_session,
             close: {
                 let weak = Arc::downgrade(&sess);
@@ -1236,7 +1236,7 @@ async fn session<S>(
     // A Hello whose online row write failed (DB blip): retried on each
     // heartbeat until it lands (B1), so the node is never left 'offline'
     // with a stale online_session for the whole stream.
-    let mut online_retry: Option<crate::gen::Hello> = None;
+    let mut online_retry: Option<crate::pb::Hello> = None;
     let result: Result<(), Status> = async {
         loop {
             let msg = tokio::select! {
@@ -1363,8 +1363,8 @@ async fn session<S>(
                 }
                 Some(UpMsg::Ack(ack)) => {
                     crate::metrics::ack(
-                        crate::gen::ack::Reason::try_from(ack.reason)
-                            .unwrap_or(crate::gen::ack::Reason::Unspecified),
+                        crate::pb::ack::Reason::try_from(ack.reason)
+                            .unwrap_or(crate::pb::ack::Reason::Unspecified),
                     );
                     tracing::debug!(
                         node = %node_id,
@@ -1416,7 +1416,9 @@ async fn session<S>(
     let retired = sess.retiring();
     let superseded = !retired && sess.terminated();
     if !revoked {
-        state.agents().remove_if(&node_id, |_, e| e.gen == gen);
+        state
+            .agents()
+            .remove_if(&node_id, |_, e| e.generation == generation);
     }
     // A snapshot still unacked when the stream dies counts as a failed
     // apply, so a crash-looping agent gets backoff instead of resends.
@@ -1641,7 +1643,7 @@ fn lock_or_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// M6: after a Hello: remember the agent's version/platform, move a node
 /// that came back with a rollout's target version to `updating` (its next
 /// ok Ack makes it healthy), and offer an update if one is due.
-async fn on_hello_update(sess: &Session, hello: &crate::gen::Hello) {
+async fn on_hello_update(sess: &Session, hello: &crate::pb::Hello) {
     let info = hello.info.clone().unwrap_or_default();
     *lock_or_recover(&sess.agent) = HelloInfo {
         version: info.agent_version.clone(),
@@ -1747,7 +1749,7 @@ async fn maybe_send_probe(sess: &Session) {
 
 /// W12: the capabilities to record from a Hello (agent input: at most 16
 /// names of at most 32 characters, sorted, deduplicated).
-fn hello_capabilities(hello: &crate::gen::Hello) -> Vec<String> {
+fn hello_capabilities(hello: &crate::pb::Hello) -> Vec<String> {
     let mut caps: Vec<String> = hello
         .capabilities
         .iter()
@@ -1764,7 +1766,7 @@ async fn mark_online(
     state: &AppState,
     node_id: Uuid,
     online_session: Uuid,
-    hello: &crate::gen::Hello,
+    hello: &crate::pb::Hello,
 ) -> bool {
     valkey_util::set_online(state, node_id).await;
     let info = hello.info.as_ref();
@@ -1902,8 +1904,8 @@ async fn refresh_members(state: &AppState, node_id: Uuid) {
 /// too —, the challenge name at 32). A compromised node must not be able
 /// to park megabytes of arbitrary text in the shared Valkey blob (fuzz:
 /// agent_messages).
-pub(crate) fn cert_status_json(c: &crate::gen::CertStatus) -> serde_json::Value {
-    use crate::gen::cert_status::{ErrorKind, State};
+pub(crate) fn cert_status_json(c: &crate::pb::CertStatus) -> serde_json::Value {
+    use crate::pb::cert_status::{ErrorKind, State};
     let ts = |secs: i64| {
         (secs > 0)
             .then(|| chrono::DateTime::from_timestamp(secs, 0))
@@ -2096,7 +2098,7 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
     let acme = node
         .tls_domain
         .filter(|_| serve && crate::nodetpl::needs_certificate(&node.xray_inbounds))
-        .map(|domain| crate::gen::AcmeConfig {
+        .map(|domain| crate::pb::AcmeConfig {
             domain,
             ..Default::default()
         });
@@ -2385,7 +2387,7 @@ mod tests {
     /// A protocol-0 style Ack (no reason / held fields).
     fn ack(s: &mut SyncState, ok: bool, v: (u64, u64), now: Instant) -> AckOutcome {
         s.on_ack(
-            &crate::gen::Ack {
+            &crate::pb::Ack {
                 config_version: v.0,
                 user_version: v.1,
                 ok,
@@ -2579,14 +2581,14 @@ mod tests {
     /// A protocol-current Ack as the new agent sends it.
     fn ack_v1(
         v: (u64, u64),
-        reason: crate::gen::ack::Reason,
+        reason: crate::pb::ack::Reason,
         held: (u64, u64),
         hash: String,
-    ) -> crate::gen::Ack {
-        crate::gen::Ack {
+    ) -> crate::pb::Ack {
+        crate::pb::Ack {
             config_version: v.0,
             user_version: v.1,
-            ok: reason == crate::gen::ack::Reason::Ok,
+            ok: reason == crate::pb::ack::Reason::Ok,
             reason: reason as i32,
             held_config_version: held.0,
             held_user_version: held.1,
@@ -2734,11 +2736,11 @@ mod tests {
         }
         assert_eq!(s.sent.len(), 5);
         let v = (4u64, 1u64);
-        let ack = crate::gen::Ack {
+        let ack = crate::pb::Ack {
             config_version: v.0,
             user_version: v.1,
             ok: true,
-            reason: crate::gen::ack::Reason::Ok as i32,
+            reason: crate::pb::ack::Reason::Ok as i32,
             held_config_version: v.0,
             held_user_version: v.1,
             state_hash: state_hash(v.0, &sets[3]),
@@ -2833,7 +2835,7 @@ mod tests {
         ));
         let h = state_hash(v.0, set);
         assert_eq!(
-            s.on_ack(&ack_v1(v, crate::gen::ack::Reason::Ok, v, h), t),
+            s.on_ack(&ack_v1(v, crate::pb::ack::Reason::Ok, v, h), t),
             AckOutcome::Converged
         );
     }
@@ -2861,7 +2863,7 @@ mod tests {
         }
         let h = state_hash(2, &s2);
         assert_eq!(
-            s.on_ack(&ack_v1((2, 6), crate::gen::ack::Reason::Ok, (2, 6), h), t0),
+            s.on_ack(&ack_v1((2, 6), crate::pb::ack::Reason::Ok, (2, 6), h), t0),
             AckOutcome::Converged
         );
         // Inbound change: snapshot.
@@ -2923,7 +2925,7 @@ mod tests {
 
     #[test]
     fn base_mismatch_resnapshots_without_backoff() {
-        use crate::gen::ack::Reason;
+        use crate::pb::ack::Reason;
         let t0 = Instant::now();
         let s1 = set_of(&[op("a", &[("t", "1")])]);
         let s2 = set_of(&[op("b", &[("t", "2")])]);
@@ -2953,7 +2955,7 @@ mod tests {
 
     #[test]
     fn failed_delta_falls_back_to_snapshot_under_backoff() {
-        use crate::gen::ack::Reason;
+        use crate::pb::ack::Reason;
         let t0 = Instant::now();
         let s1 = set_of(&[op("a", &[("t", "1")])]);
         let s2 = set_of(&[op("b", &[("t", "2")])]);
@@ -2981,7 +2983,7 @@ mod tests {
 
     #[test]
     fn hash_mismatch_triggers_snapshot_and_repeated_mismatch_backs_off() {
-        use crate::gen::ack::Reason;
+        use crate::pb::ack::Reason;
         let t0 = Instant::now();
         let s1 = set_of(&[op("a", &[("t", "1")])]);
         let s2 = set_of(&[op("b", &[("t", "2")])]);
@@ -3300,8 +3302,8 @@ mod tests {
 
     #[test]
     fn cert_status_json_names() {
-        use crate::gen::cert_status::{ErrorKind, State};
-        let v = cert_status_json(&crate::gen::CertStatus {
+        use crate::pb::cert_status::{ErrorKind, State};
+        let v = cert_status_json(&crate::pb::CertStatus {
             domain: "n1.example.com".into(),
             state: State::Failed as i32,
             not_after: 1_800_000_000,
@@ -3318,7 +3320,7 @@ mod tests {
         assert_eq!(v["not_after"], "2027-01-15T08:00:00+00:00");
         assert_eq!(v["last_error"].as_str().unwrap().len(), 512);
         assert_eq!(v["failures"], 3);
-        let ok = cert_status_json(&crate::gen::CertStatus {
+        let ok = cert_status_json(&crate::pb::CertStatus {
             state: State::Valid as i32,
             ..Default::default()
         });
@@ -3327,7 +3329,7 @@ mod tests {
         assert_eq!(ok["last_error"], serde_json::Value::Null);
         // Fuzz (agent_messages) regression: agent text is bounded and free
         // of control characters in every field, not only the error.
-        let hostile = cert_status_json(&crate::gen::CertStatus {
+        let hostile = cert_status_json(&crate::pb::CertStatus {
             domain: format!("node.e\0\0\0!le.com{}", "d".repeat(4096)),
             last_error: "line1\nline2\u{1b}[31m".into(),
             challenge: format!("http-01\r\n{}", "c".repeat(100)),
@@ -3467,7 +3469,7 @@ mod tests {
     // Whole-session tests with a fake agent stream (real DB, real listener).
     // ---------------------------------------------------------------------
 
-    use crate::gen::agent_up::Msg as UpMsg;
+    use crate::pb::agent_up::Msg as UpMsg;
 
     struct FakeAgent {
         up: mpsc::Sender<Result<AgentUp, Status>>,
@@ -3492,7 +3494,7 @@ mod tests {
             self.up.send(Ok(AgentUp { msg: Some(m) })).await.unwrap();
         }
         async fn hello(&self, held: (u64, u64), hash: String) {
-            self.send(UpMsg::Hello(crate::gen::Hello {
+            self.send(UpMsg::Hello(crate::pb::Hello {
                 session_id: "s1".into(),
                 config_version: held.0,
                 user_version: held.1,
@@ -3503,12 +3505,12 @@ mod tests {
             .await;
         }
         async fn ack(&self, v: (u64, u64), hash: String) {
-            self.send(UpMsg::Ack(ack_v1(v, crate::gen::ack::Reason::Ok, v, hash)))
+            self.send(UpMsg::Ack(ack_v1(v, crate::pb::ack::Reason::Ok, v, hash)))
                 .await;
         }
         async fn traffic(&self, user: Uuid, up: u64) {
-            self.send(UpMsg::Traffic(crate::gen::TrafficReport {
-                users: vec![crate::gen::UserTraffic {
+            self.send(UpMsg::Traffic(crate::pb::TrafficReport {
+                users: vec![crate::pb::UserTraffic {
                     user_id: user.to_string(),
                     up_bytes: up,
                     down_bytes: 0,

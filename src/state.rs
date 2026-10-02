@@ -15,7 +15,7 @@ pub struct AppState(Arc<Inner>);
 /// A live agent session on this instance.
 #[derive(Clone)]
 pub struct AgentEntry {
-    pub gen: u64,
+    pub generation: u64,
     pub online_session: Uuid,
     /// Ends this session with the given status (a newer stream of the node
     /// replaced it, or the panel shuts down).
@@ -41,7 +41,7 @@ struct Inner {
     read_permits: tokio::sync::Semaphore,
     /// Bounds concurrent artifact downloads (M6, `updates::fetch_artifact`).
     fetch_permits: Arc<tokio::sync::Semaphore>,
-    gen: AtomicU64,
+    generation: AtomicU64,
     /// Per-node wakeups for this instance's agent sessions, fed by the
     /// PostgreSQL LISTEN task (`crate::notify`). There is no in-process
     /// shortcut: every committed change reaches every instance the same way.
@@ -96,7 +96,7 @@ impl AppState {
             agents: DashMap::new(),
             read_permits: tokio::sync::Semaphore::new(READ_PERMITS),
             fetch_permits: Arc::new(tokio::sync::Semaphore::new(fetch_permits)),
-            gen: AtomicU64::new(1),
+            generation: AtomicU64::new(1),
             wakeups: crate::notify::Wakeups::default(),
             traffic,
             shutdown: tokio::sync::watch::channel(false).0,
@@ -155,8 +155,8 @@ impl AppState {
     pub fn traffic(&self) -> &TrafficBuffer {
         &self.0.traffic
     }
-    pub fn next_gen(&self) -> u64 {
-        self.0.gen.fetch_add(1, Ordering::Relaxed)
+    pub fn next_generation(&self) -> u64 {
+        self.0.generation.fetch_add(1, Ordering::Relaxed)
     }
     /// The Alipay client (None = payments disabled).
     pub fn alipay(&self) -> Option<&Arc<crate::billing::alipay::Alipay>> {

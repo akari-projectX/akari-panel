@@ -585,14 +585,14 @@ pub async fn delete_release(
 // ---------------------------------------------------------------------------
 
 /// The UpdateOffer for a release (manifest bytes and signatures verbatim).
-pub fn offer(rollout_id: Uuid, manifest: Vec<u8>, sigs: &[Signature]) -> crate::gen::UpdateOffer {
-    crate::gen::UpdateOffer {
+pub fn offer(rollout_id: Uuid, manifest: Vec<u8>, sigs: &[Signature]) -> crate::pb::UpdateOffer {
+    crate::pb::UpdateOffer {
         rollout_id: rollout_id.to_string(),
         manifest,
         signatures: sigs
             .iter()
             .filter_map(|s| {
-                s.bytes().map(|b| crate::gen::ManifestSignature {
+                s.bytes().map(|b| crate::pb::ManifestSignature {
                     key_id: s.key_id.clone(),
                     signature: b,
                 })
@@ -603,7 +603,7 @@ pub fn offer(rollout_id: Uuid, manifest: Vec<u8>, sigs: &[Signature]) -> crate::
 }
 
 pub type ChunkStream = std::pin::Pin<
-    Box<dyn tokio_stream::Stream<Item = Result<crate::gen::ArtifactChunk, tonic::Status>> + Send>,
+    Box<dyn tokio_stream::Stream<Item = Result<crate::pb::ArtifactChunk, tonic::Status>> + Send>,
 >;
 
 /// AgentChannel.FetchArtifact for an identified (non-revoked) node: the
@@ -612,7 +612,7 @@ pub type ChunkStream = std::pin::Pin<
 pub async fn fetch_artifact(
     state: &AppState,
     node: Uuid,
-    req: crate::gen::FetchArtifactRequest,
+    req: crate::pb::FetchArtifactRequest,
 ) -> Result<ChunkStream, tonic::Status> {
     use tonic::Status;
     if req.sha256.len() != 64 || !req.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -665,7 +665,7 @@ pub async fn fetch_artifact(
                         d
                     };
                     skip = 0;
-                    Ok(crate::gen::ArtifactChunk { data })
+                    Ok(crate::pb::ArtifactChunk { data })
                 }
                 Err(e) => {
                     tracing::warn!(release = %id, idx, error = %e, "artifact chunk read failed");

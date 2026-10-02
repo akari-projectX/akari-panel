@@ -1,6 +1,6 @@
 # akari-panel
 
-Rust 单二进制 `akari`（axum 0.8 web + tonic 0.14 gRPC）+ PostgreSQL 18（事实源）+ Valkey 9（热状态）+ 内嵌 React SPA。
+Rust 单二进制 `akari`（axum 0.8 web + tonic 0.14 gRPC）+ PostgreSQL 18（事实源）+ Valkey 9（热状态）+ 内嵌 React SPA。Rust edition 2024（主 crate、`bench/`、`fuzz/`；`rustfmt.toml` 固定 `style_edition = "2021"`）；proto 生成代码在 `crate::pb`。
 Cargo.toml 在仓库根（文档里的 `panel/` 前缀是拆仓前的旧路径，已不存在）。
 
 ## 目录

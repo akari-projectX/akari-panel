@@ -378,10 +378,14 @@ mod tests {
             .and_then(|a| a.get_env().map(|e| e.to_os_string()));
         assert_eq!(arg_env.as_deref(), Some("AKARI_CONFIG".as_ref()));
 
-        std::env::set_var("AKARI_CONFIG", "/etc/akari/panel.toml");
+        // SAFETY (edition 2024: env mutation is unsafe): this is the only
+        // test in the binary's test harness, so no other thread reads or
+        // writes the environment concurrently. Keep it the only one.
+        unsafe { std::env::set_var("AKARI_CONFIG", "/etc/akari/panel.toml") };
         let from_env = Cli::try_parse_from(["akari", "info"]).map(|c| c.config);
         let explicit = Cli::try_parse_from(["akari", "-c", "/x.toml", "info"]).map(|c| c.config);
-        std::env::remove_var("AKARI_CONFIG");
+        // SAFETY: as above.
+        unsafe { std::env::remove_var("AKARI_CONFIG") };
         assert_eq!(
             from_env.ok().flatten(),
             Some(PathBuf::from("/etc/akari/panel.toml"))

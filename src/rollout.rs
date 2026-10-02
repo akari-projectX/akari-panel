@@ -807,7 +807,7 @@ pub async fn offer_for(
     protocol: u32,
     agent_version: &str,
     platform: (&str, &str),
-) -> sqlx::Result<Option<crate::gen::UpdateOffer>> {
+) -> sqlx::Result<Option<crate::pb::UpdateOffer>> {
     if protocol < MIN_UPDATE_PROTOCOL {
         return Ok(None);
     }
@@ -881,9 +881,9 @@ pub async fn on_converged(pg: &sqlx::PgPool, node: Uuid, version: &str) -> sqlx:
 pub async fn on_status(
     pg: &sqlx::PgPool,
     node: Uuid,
-    s: &crate::gen::UpdateStatus,
+    s: &crate::pb::UpdateStatus,
 ) -> sqlx::Result<()> {
-    use crate::gen::update_status::State;
+    use crate::pb::update_status::State;
     let Ok(rollout) = Uuid::parse_str(&s.rollout_id) else {
         return Ok(());
     };
@@ -1115,7 +1115,7 @@ mod tests {
 #[cfg(test)]
 mod db_tests {
     use super::*;
-    use crate::gen::update_status::State as UState;
+    use crate::pb::update_status::State as UState;
     use crate::state::AppState;
     use crate::testdb::http::{rand_ip, Client};
     use crate::testdb::TestDb;
@@ -1228,8 +1228,8 @@ mod db_tests {
             .unwrap()
     }
 
-    fn ustatus(rollout: Uuid, version: &str, s: UState) -> crate::gen::UpdateStatus {
-        crate::gen::UpdateStatus {
+    fn ustatus(rollout: Uuid, version: &str, s: UState) -> crate::pb::UpdateStatus {
+        crate::pb::UpdateStatus {
             rollout_id: rollout.to_string(),
             version: version.into(),
             state: s as i32,
@@ -1530,7 +1530,7 @@ mod db_tests {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         let id = create(&db, req("v1.1.0")).await.unwrap();
         let offer = match a.next().await {
-            Some(Ok(crate::gen::panel_down::Msg::UpdateOffer(o))) => o,
+            Some(Ok(crate::pb::panel_down::Msg::UpdateOffer(o))) => o,
             other => panic!("expected an update offer, got {other:?}"),
         };
         assert_eq!(offer.rollout_id, id.to_string());
