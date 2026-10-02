@@ -60,7 +60,7 @@ const MARKERS = [
   ["button 复制订阅链接", /复制订阅链接/],
   // W21
   ["admin API /dashboard", new RegExp(`${Q}/dashboard\\b`)],
-  ["heading 仪表盘", /仪表盘/],
+  ["dashboard 营收（支付宝实收）", /营收（支付宝实收）/],
   ["admin API /settings/site", /\/settings\/site/],
   ["console error texts (ADMIN_CODES)", /plan\.speed_limit_range/],
 ];
