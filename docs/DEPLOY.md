@@ -922,8 +922,10 @@ Since the 系统设置 release (R22) the compose stack needs `[tls_ask]` in pane
 `AKARI_ASK` variable the new compose file passes to Caddy; without the section the panel never
 answers Caddy's `ask`, so domains saved in 系统设置 get no certificate (AKARI_DOMAIN itself is
 unaffected). `config check` run before the new version has started once may end with
-`# 系统设置: database not readable (… relation "panel_settings" does not exist …)`: the migrations
-have not run yet; it is harmless and gone after the first start.
+`# 系统设置: database not readable (… relation "panel_settings" does not exist …)` or, on an
+upgrade, `(… column "<name>" does not exist …)` (0.2 → 0.3: `probe_interval_secs`): the
+migrations have not run yet; it is harmless and gone after the first start. The verdict line
+above it (`configuration OK (0 warnings)`) is what counts.
 
 **Nodes installed before the updater units (W18; agents up to v0.4.0) — once, by hand.** The
 self-update of those agents executes the new binary from its StateDirectory, which systemd ≥ 256
