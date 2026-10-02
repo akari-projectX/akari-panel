@@ -611,6 +611,53 @@ test("W20: quota-exhausted user lands on the reset pack", async ({ browser }) =>
   await ctx.close();
 });
 
+test("W22: traffic history in the portal (zh/en) and on the console's user page", async ({ browser }) => {
+  test.skip(!secret, "needs the enrollment test");
+  const uctx = await browser.newContext({ locale: "zh-CN" });
+  const user = await uctx.newPage();
+  const uproblems = watch(user);
+  const urls = requests(user);
+  await user.goto(BASE);
+  await login(user, USER, USER_PW);
+  // Seeded by e2e.sh: 1 GiB + 2 GiB over two UTC days on a deleted node.
+  // W20 nav: its own view at /app/traffic.
+  await user.getByRole("navigation", { name: "主导航" }).first().getByRole("link", { name: "流量明细" }).click();
+  await expect(user).toHaveURL(`${BASE}/traffic`);
+  await expect(user.getByRole("heading", { level: 1, name: "流量明细" })).toBeVisible();
+  await expect(user.getByRole("heading", { level: 2, name: "流量记录" })).toBeVisible();
+  await expect(user.getByText("其他节点")).toBeVisible();
+  await expect(user.getByRole("img", { name: /共 3\.0 GiB/ })).toBeVisible();
+  await user.getByRole("button", { name: "近 7 天" }).click();
+  await expect(user.getByRole("button", { name: "近 7 天" })).toHaveAttribute("aria-pressed", "true");
+  await expect(user.getByRole("img", { name: /共 3\.0 GiB/ })).toBeVisible();
+  await user.getByRole("button", { name: "English" }).click();
+  await expect(user.getByRole("heading", { level: 1, name: "Traffic", exact: true })).toBeVisible();
+  await expect(user.getByRole("heading", { level: 2, name: "Usage history" })).toBeVisible();
+  await expect(user.getByText("Other nodes")).toBeVisible();
+  expect(urls.filter(consoleUrl)).toEqual([]);
+  expect(uproblems).toEqual([]);
+  await uctx.close();
+
+  const actx = await browser.newContext({ locale: "zh-CN" });
+  const admin = await actx.newPage();
+  const aproblems = watch(admin);
+  await admin.goto(`${BASE}/users`);
+  const next = await nextCode(secret, usedStep);
+  usedStep = next.step;
+  await login(admin, ADMIN, ADMIN_PW, next.code);
+  await expect(admin).toHaveURL(`${ADMIN_BASE}/users`);
+  await admin
+    .getByRole("row")
+    .filter({ has: admin.getByRole("cell", { name: USER, exact: true }) })
+    .getByRole("button", { name: "管理" })
+    .click();
+  const section = admin.getByRole("region", { name: `${USER} 的流量明细` });
+  await expect(section.getByText("已删除的节点")).toBeVisible();
+  await expect(section.getByText(/合计：上传 1\.5 GiB · 下载 1\.5 GiB · 计费 1\.5 GiB/)).toBeVisible();
+  expect(aproblems).toEqual([]);
+  await actx.close();
+});
+
 // Last: it sets the main domain (reset links need it) and opens registration.
 test("W15: 系统设置 注册/邮件, sign up by email code, reset the password by link", async ({ browser }) => {
   test.skip(!MAILPIT || !SMTP_PORT, "needs Mailpit (scripts/e2e.sh)");

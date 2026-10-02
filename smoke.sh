@@ -880,6 +880,58 @@ grep -q '冒烟' "$LOG/w11-sub-hidden.yaml" && { echo "FAIL: hidden node in subs
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"visible":true}')" = "200" ] || { echo "FAIL: show node"; exit 1; }
 echo "portal + subscription: ok"
 
+# W22: traffic history. D's transfer above lands (after compaction, ~30 s)
+# on today's UTC day and the 0.5x node: the user's /me/traffic (names only,
+# no ids) and the admin views show exactly what was settled.
+TODAY_UTC=$(psql_q "SELECT (now() AT TIME ZONE 'UTC')::date")
+for _ in $(seq 1 75); do
+  # Settled values now (a late final report may still have added a little).
+  USED_D=$(psql_q "SELECT traffic_used_bytes FROM users WHERE id='$USER_D'")
+  RAW_D=$(psql_q "SELECT coalesce(sum(up_bytes + down_bytes), 0) FROM traffic_counters WHERE node_id='$NODE_ID' AND user_id='$USER_D'")
+  code -b "$DJAR" "$BASE/api/v1/me/traffic" >/dev/null
+  python3 -c "import json,sys; v=json.load(open('/tmp/akari-smoke/last')); sys.exit(0 if v['total']['billed_bytes'] == $USED_D else 1)" 2>/dev/null && break
+  sleep 1
+done
+[ "$(code -b "$DJAR" "$BASE/api/v1/me/traffic")" = "200" ] || { echo "FAIL: /me/traffic"; exit 1; }
+python3 -c "
+import json; v = json.load(open('/tmp/akari-smoke/last')); t = v['total']
+assert v['timezone'] == 'UTC' and v['to'] == '$TODAY_UTC', v
+assert t['billed_bytes'] == $USED_D, ('billed', t, $USED_D)
+assert t['up_bytes'] + t['down_bytes'] == $RAW_D, ('raw', t, $RAW_D)
+assert t['up_bytes'] > 0 and t['down_bytes'] > 0, t
+assert [d['day'] for d in v['days']] == ['$TODAY_UTC'], v['days']
+assert [n['name'] for n in v['nodes']] == ['冒烟 01'], v['nodes']
+assert 'node_id' not in json.dumps(v) and '$NODE_ID' not in json.dumps(v), v
+" || { echo "FAIL: /me/traffic content"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$DJAR" "$BASE/api/v1/me/traffic?group=node")" = "400" ] || { echo "FAIL: /me/traffic accepted group"; exit 1; }
+for p in "users/$USER_D/traffic" "nodes/$NODE_ID/traffic" "traffic/summary"; do
+  [ "$(code -b "$DJAR" "$BASE/api/v1/$p")" = "403" ] || { echo "FAIL: user reads admin $p"; exit 1; }
+  [ "$(code "$BASE/api/v1/$p")" = "401" ] || { echo "FAIL: anonymous reads $p"; exit 1; }
+done
+[ "$(code -b "$JAR" "$BASE/api/v1/users/$USER_D/traffic?group=node")" = "200" ] || { echo "FAIL: admin user traffic"; exit 1; }
+python3 -c "
+import json; v = json.load(open('/tmp/akari-smoke/last')); r = v['rows']
+assert len(r) == 1 and r[0]['node_id'] == '$NODE_ID' and r[0]['name'] == '冒烟 01', r
+assert r[0]['billed_bytes'] == $USED_D, r
+" || { echo "FAIL: admin user traffic content"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID/traffic")" = "200" ] || { echo "FAIL: admin node traffic"; exit 1; }
+python3 -c "
+import json; v = json.load(open('/tmp/akari-smoke/last'))
+d = [x for x in v['days'] if x['day'] == '$TODAY_UTC']
+assert d and d[0]['users'] >= 1 and d[0]['billed_bytes'] >= $USED_D, v['days']
+u = [x for x in v['top_users'] if x['user_id'] == '$USER_D']
+assert u and u[0]['login'] == 'smoke-user-d' and u[0]['billed_bytes'] == $USED_D, v['top_users']
+" || { echo "FAIL: admin node traffic content"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/traffic/summary")" = "200" ] || { echo "FAIL: traffic summary"; exit 1; }
+python3 -c "
+import json; v = json.load(open('/tmp/akari-smoke/last'))
+d = [x for x in v['days'] if x['day'] == '$TODAY_UTC']
+assert d and d[0]['billed_bytes'] >= $USED_D, v
+assert any(n['node_id'] == '$NODE_ID' for n in v['top_nodes']), v
+" || { echo "FAIL: traffic summary content"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/traffic/summary?from=2026-13-01")" = "400" ] || { echo "FAIL: bad date accepted"; exit 1; }
+echo "traffic history: ok (D billed $USED_D on $TODAY_UTC)"
+
 if need_agent cap:metrics "W11 machine status"; then
   # Machine status: the heartbeat blob carries metrics; history and
   # Prometheus fleet gauges follow.

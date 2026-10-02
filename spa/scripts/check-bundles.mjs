@@ -42,6 +42,7 @@ const MARKERS = [
   ["heading 告警中心", /告警中心/],
   ["heading 提现审核", /提现审核/],
   ["heading 新建优惠券", /新建优惠券/],
+  ["heading 用量最高的用户 (W22)", /用量最高的用户/],
   ["rollout", /rollout/i],
   ["console title 管理后台", /管理后台/],
   ["heading 审计日志", /审计日志/],

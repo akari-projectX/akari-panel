@@ -384,6 +384,10 @@ pub struct TrafficConfig {
     /// How long after an unassignment the user's final counters from that
     /// node are still billed (node_users_departed). Default 15 min.
     pub departed_grace_secs: u64,
+    /// W22: days of per-day traffic history (traffic_daily) kept before the
+    /// retention pass rolls them up into months (traffic_monthly). 0 = keep
+    /// days forever. Default 400; otherwise at least 32.
+    pub daily_retention_days: u32,
 }
 
 pub const DEFAULT_NODE_BURST_SECS: u64 = 120;
@@ -395,6 +399,7 @@ impl Default for TrafficConfig {
             node_max_rate_bytes_per_sec: 1_250_000_000,
             node_burst_secs: DEFAULT_NODE_BURST_SECS,
             departed_grace_secs: crate::traffic::DEFAULT_DEPARTED_GRACE_SECS,
+            daily_retention_days: crate::traffic::DEFAULT_DAILY_RETENTION_DAYS,
         }
     }
 }

@@ -400,6 +400,23 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
             .bind(traffic::DEPARTED_SLACK_SECS),
     )
     .await?;
+    // W22: fold what the two flushes above staged into the daily tables,
+    // then the retention rollup (nothing that old in a fresh seed: the
+    // plan, not the volume).
+    explain(
+        &mut tx,
+        p,
+        &format!("traffic::COMPACT_SQL ({} staged rows)", 2 * n),
+        q!(traffic::COMPACT_SQL).bind(50_000i64),
+    )
+    .await?;
+    explain(
+        &mut tx,
+        p,
+        "traffic::ROLLUP_SQL",
+        q!(traffic::ROLLUP_SQL).bind(400i32).bind(10_000i64),
+    )
+    .await?;
     tx.rollback().await?;
     Ok(())
 }

@@ -295,6 +295,15 @@ describe("node detail", () => {
       ...nodeRoutes([node()]),
       "GET /nodes/n1/status": status,
       "GET /nodes/n1/metrics": metrics,
+      "GET /nodes/n1/traffic": {
+        from: "2026-09-03",
+        to: "2026-10-02",
+        timezone: "UTC",
+        daily_since: null,
+        total: { up_bytes: 0, down_bytes: 0, billed_bytes: 0 },
+        days: [],
+        top_users: [],
+      },
       "GET /nodes/n1/alert-rules": {
         muted: false,
         disabled: [],
@@ -319,7 +328,7 @@ describe("node detail", () => {
     expect(await screen.findByText("1.0 GiB / 512.0 MiB")).toBeTruthy(); // raw / billed
     expect(screen.getByText("https://b/")).toBeTruthy();
     expect(screen.getByText(/UDP 协议/)).toBeTruthy();
-    expect(screen.getAllByRole("img").length).toBe(4); // four charts
+    expect(screen.getAllByRole("img").length).toBe(5); // four machine charts + W22 daily traffic
     expect(calls.some((c) => c.path === "/nodes/n1/metrics" && c.search === "?range=24h")).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "7 天" }));
     await waitFor(() => expect(calls.some((c) => c.search === "?range=7d")).toBe(true));

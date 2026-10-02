@@ -19,6 +19,7 @@ import {
   type NodeView,
 } from "../lib/api";
 import { adminErrorText } from "../lib/errors";
+import { NodeTraffic } from "./admin-traffic";
 import { humanBytes } from "../lib/utils";
 
 /** Bytes per second, decimal bits like speed tests ("12.3 Mbps"). */
@@ -373,6 +374,7 @@ export function NodeDetail({ node, onClose }: { node: NodeView; onClose: () => v
             />
           </div>
         </div>
+        <NodeTraffic nodeId={node.id} />
       </CardContent>
     </Card>
   );

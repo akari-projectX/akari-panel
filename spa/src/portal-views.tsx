@@ -13,6 +13,7 @@ import {
   OrdersIcon,
   ShopIcon,
   TicketsIcon,
+  TrafficIcon,
   WalletIcon,
 } from "./components/nav-icons";
 import type { MessageKey } from "./i18n";
@@ -20,6 +21,7 @@ import { appBase, type Me } from "./lib/api";
 import { Dashboard } from "./pages/dashboard";
 import { AccountSettings } from "./pages/portal";
 import { NodesCard } from "./pages/portal-nodes";
+import { TrafficCard } from "./pages/portal-traffic";
 import { OrdersView, ShopView } from "./pages/purchase";
 import { Tickets } from "./pages/tickets";
 import { Wallet } from "./pages/wallet";
@@ -61,6 +63,15 @@ export const PORTAL_VIEWS: PortalView[] = [
     icon: NodesIcon,
     restricted: false,
     render: (me) => <NodesCard me={me} />,
+  },
+  {
+    // W22: /me/traffic refuses the renewal scope (AuthUser).
+    id: "traffic",
+    label: "nav.traffic",
+    short: "nav.trafficShort",
+    icon: TrafficIcon,
+    restricted: false,
+    render: () => <TrafficCard />,
   },
   {
     id: "orders",
