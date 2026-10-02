@@ -601,9 +601,13 @@ struct SyncState {
     /// Nothing is sent before the agent's Hello (its protocol is unknown).
     hello_seen: bool,
     protocol: u32,
-    /// Hello's state hash, verified against the desired set once the held
-    /// versions equal the desired ones (then the set becomes `acked`).
-    hello_hash: Option<String>,
+    /// Hello's state hash with the versions it describes, verified against
+    /// the desired set once the held versions equal the desired ones (then
+    /// the set becomes `acked`). Any Ack supersedes it: the agent has moved
+    /// on (or reports its state itself), and a hash kept past that would be
+    /// compared with a newer set and read as divergence (a spurious
+    /// Snapshot that drops every connection).
+    hello_hash: Option<((u64, u64), String)>,
     /// The last Hello's claim (versions, hash), kept for `runs_empty`.
     hello_claim: Option<((u64, u64), String)>,
     /// The user set the agent verifiably runs at `held` in THIS session
@@ -773,7 +777,8 @@ impl SyncState {
         };
         if !old
             && self.held == desired
-            && let Some(h) = self.hello_hash.take()
+            && let Some((hv, h)) = self.hello_hash.take()
+            && hv == desired
         {
             let dg = digest_of(desired);
             if h == dg.hash {
@@ -851,7 +856,7 @@ impl SyncState {
         // torn down on lease expiry, or rebuilt.
         self.acked = None;
         self.diverged = false;
-        self.hello_hash = (!self.too_old() && !hash.is_empty()).then(|| hash.to_string());
+        self.hello_hash = (!self.too_old() && !hash.is_empty()).then(|| (held, hash.to_string()));
         self.hello_claim = (!self.too_old()).then(|| (held, hash.to_string()));
     }
 
@@ -904,6 +909,10 @@ impl SyncState {
         if let Some(pos) = self.sent.iter().position(|(v, _)| *v == versions) {
             self.sent.drain(..pos);
         }
+        // The Hello's claim is history once anything was applied or
+        // refused after it: an ok Ack is verified against the sent set
+        // below; anything else leaves nothing verified.
+        self.hello_hash = None;
         let reports_held = !old && ack.reason != Reason::Unspecified as i32;
         self.held = if reports_held {
             (ack.held_config_version, ack.held_user_version)
@@ -3042,6 +3051,61 @@ mod tests {
         }
     }
 
+    /// CI smoke (PR #47): the Hello an agent sends after a Rebuild claims the
+    /// snapshot's versions with its state hash. If the desired state moved
+    /// on before that Hello was verified (a change committed between the
+    /// snapshot read and the Hello's read), the hash was never consumed and
+    /// survived the following acks; the first read once the agent caught up
+    /// compared that stale hash with the newer user set, called it
+    /// divergence and rebuilt xray (every connection dropped) for a state
+    /// the agent already held.
+    #[test]
+    fn stale_hello_hash_never_marks_a_converged_agent_diverged() {
+        use crate::pb::ack::Reason;
+        let t0 = Instant::now();
+        let s1 = set_of(&[op("a", &[("t", "1")])]);
+        let s2 = set_of(&[op("a", &[("t", "1")]), op("b", &[("t", "2")])]);
+        let mut s = SyncState::default();
+        s.on_hello((0, 0), MIN_AGENT_PROTOCOL, "");
+        assert!(matches!(
+            d_set(&mut s, (9, 5), &s1),
+            Some(Plan::Snapshot { empty: false })
+        ));
+        // Rebuilt: Hello (held = the snapshot's versions) before the Ack.
+        s.on_hello((9, 5), MIN_AGENT_PROTOCOL, &state_hash(9, &s1));
+        // A user-only change landed before the Hello's read: chained delta.
+        assert!(matches!(
+            d_set(&mut s, (9, 6), &s1),
+            Some(Plan::Delta { base: (9, 5), .. })
+        ));
+        let h1 = state_hash(9, &s1);
+        assert_eq!(
+            s.on_ack(&ack_v1((9, 5), Reason::Ok, (9, 5), h1.clone()), t0),
+            AckOutcome::Converged
+        );
+        assert_eq!(
+            s.on_ack(&ack_v1((9, 6), Reason::Ok, (9, 6), h1), t0),
+            AckOutcome::Converged
+        );
+        // User B added: a delta, acked with the right hash.
+        assert!(matches!(
+            d_set(&mut s, (9, 7), &s2),
+            Some(Plan::Delta { base: (9, 6), .. })
+        ));
+        assert_eq!(
+            s.on_ack(&ack_v1((9, 7), Reason::Ok, (9, 7), state_hash(9, &s2)), t0),
+            AckOutcome::Converged
+        );
+        // Any later read (tick, notify) at the held versions: nothing to send.
+        assert!(d_set(&mut s, (9, 7), &s2).is_none(), "spurious snapshot");
+        assert!(!s.diverged);
+        // And the next user change is still a delta.
+        assert!(matches!(
+            d_set(&mut s, (9, 8), &s1),
+            Some(Plan::Delta { base: (9, 7), .. })
+        ));
+    }
+
     /// N5: a protocol-0 agent gets the empty state once per session whatever
     /// it claims, its acks are ignored, and it never gets deltas.
     #[test]
@@ -3876,6 +3940,79 @@ mod tests {
         until("post-Hello report buffered", || !st.traffic().is_empty()).await;
         crate::traffic::flush_for_test(&db.pool, state.traffic()).await;
         assert_eq!(db.used(u).await, 100);
+        drop(a);
+        drop(state);
+        db.drop().await;
+    }
+
+    /// The CI smoke failure end to end (real DB, real session loop, wakeups
+    /// delivered by hand so the interleaving is exact): a user change
+    /// commits between the Snapshot and the agent's post-Rebuild Hello, so
+    /// that Hello's hash is never checked. Once the agent has caught up via
+    /// deltas, a later wakeup (tick, notify) must not answer with a
+    /// Snapshot of the state the agent already runs (a Rebuild drops every
+    /// connection on the node).
+    #[tokio::test]
+    async fn no_snapshot_after_catching_up_past_an_unverified_hello() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, _u) = db.member().await;
+        let state = AppState::for_test(db.pool.clone()).await; // no listener
+        let bump = || async {
+            sqlx::query("UPDATE nodes SET user_version = user_version + 1 WHERE id = $1")
+                .bind(n)
+                .execute(&db.pool)
+                .await
+                .unwrap();
+        };
+        let mut a = spawn_agent(&state, AgentIdentity::Node(n));
+        a.hello((0, 0), String::new()).await;
+        let s1 = a.snapshot().await;
+        let v1 = (s1.config_version, s1.user_version);
+
+        // A user-only change lands before the agent's Hello is read: the
+        // panel chains a delta on the in-flight snapshot.
+        bump().await;
+        state.wakeups().wake(n);
+        let v2 = match a.next().await {
+            Some(Ok(DownMsg::Delta(d))) => {
+                assert_eq!((d.base_config_version, d.base_user_version), v1);
+                (d.config_version, d.user_version)
+            }
+            other => panic!("expected a delta, got {other:?}"),
+        };
+        // The agent's Rebuild Hello (snapshot versions + hash), its Ack,
+        // then the delta's Ack (same user set).
+        a.hello(v1, hash_of(&s1)).await;
+        a.ack(v1, hash_of(&s1)).await;
+        a.ack(v2, hash_of(&s1)).await;
+
+        // User B: another delta, acked with the new set's hash.
+        let b = db.user().await;
+        db.assign(n, b).await;
+        bump().await;
+        state.wakeups().wake(n);
+        let v3 = match a.next().await {
+            Some(Ok(DownMsg::Delta(d))) => {
+                assert_eq!((d.base_config_version, d.base_user_version), v2);
+                assert_eq!(d.ops.len(), 1);
+                (d.config_version, d.user_version)
+            }
+            other => panic!("expected a delta, got {other:?}"),
+        };
+        let s3 = desired_snapshot(&db.pool, n).await.unwrap().unwrap();
+        assert_eq!((s3.config_version, s3.user_version), v3);
+        a.ack(v3, hash_of(&s3)).await;
+
+        // Converged. Later wakeups find nothing to send.
+        for _ in 0..3 {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            state.wakeups().wake(n);
+            if let Ok(m) = tokio::time::timeout(Duration::from_millis(500), a.next()).await {
+                panic!("converged agent was sent {m:?}");
+            }
+        }
         drop(a);
         drop(state);
         db.drop().await;
