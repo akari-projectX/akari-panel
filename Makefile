@@ -2,7 +2,7 @@ AGENT_DIR ?= ../akari-agent
 
 FUZZ_SECS ?= 30
 
-.PHONY: fuzz fuzz-lint coverage third-party bench-up bench-down dev-up dev-down spa panel agent-build check smoke e2e lint test deny ci bench bench-seed bench-lint
+.PHONY: monitoring-check fuzz fuzz-lint coverage third-party bench-up bench-down dev-up dev-down spa panel agent-build check smoke e2e lint test deny ci bench bench-seed bench-lint
 
 dev-up:
 	docker compose up -d --wait
@@ -99,3 +99,8 @@ fuzz-lint:
 coverage:
 	cargo llvm-cov --locked --lcov --output-path target/cov.lcov
 	scripts/coverage-gate.py target/cov.lcov
+
+# W17: Prometheus rules (promtool check + unit tests) and Grafana dashboards
+# reference only exported metrics (docker; CI docker job runs it).
+monitoring-check:
+	./scripts/monitoring-check.sh
