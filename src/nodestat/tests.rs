@@ -86,30 +86,74 @@ fn targets_use_overrides_and_flag_udp() {
 #[test]
 fn heartbeat_sanitized() {
     let hb = Heartbeat {
-        cpu_percent: f64::NAN,
-        mem_used_bytes: u64::MAX,
+        cpu_percent: Some(f64::NAN),
+        mem_used_bytes: Some(u64::MAX),
         connections: 3,
         metrics: Some(NodeMetrics {
-            load1: -1.0,
+            load1: Some(-1.0),
             online_users: 2,
-            net_rx_bytes_per_sec: 10,
+            net_rx_bytes_per_sec: Some(10),
             net_interface: "eth0\u{7}\u{0}".into(),
             ..Default::default()
         }),
         ..Default::default()
     };
     let s = Sample::from_heartbeat(&hb);
-    assert_eq!(s.cpu, 0.0);
-    assert_eq!(s.load1, 0.0);
-    assert_eq!(s.mem_used, i64::MAX);
-    assert_eq!((s.conns, s.users, s.rx_bps), (3, 2, 10));
+    assert_eq!(s.cpu, None, "NaN is no reading");
+    assert_eq!(s.load1, Some(0.0));
+    assert_eq!(s.mem_used, Some(i64::MAX));
+    assert_eq!((s.conns, s.users, s.rx_bps), (3, 2, Some(10)));
+    assert_eq!((s.tcp, s.disk_total), (None, None), "unset = unknown");
     let blob = heartbeat_blob(&hb);
     assert_eq!(blob["metrics"]["net_interface"], "eth0");
-    assert_eq!(blob["cpu_percent"], 0.0);
+    assert_eq!(blob["cpu_percent"], Value::Null);
+    assert_eq!(blob["metrics"]["load1"], 0.0);
+    assert_eq!(blob["metrics"]["tcp_sockets"], Value::Null);
+    assert_eq!(blob["metrics"]["net_rx_bytes_per_sec"], 10);
     // An old agent: no metrics object.
     assert!(heartbeat_blob(&Heartbeat::default())
         .get("metrics")
         .is_none());
+}
+
+/// W23: agents without "metrics-presence" send unread values as 0 and
+/// every 0 unset: for them unset is 0 (a zero memory total = unknown, as in
+/// W11). Agents with it keep unset = unknown.
+#[test]
+fn legacy_presence_means_zero() {
+    let mut hb = Heartbeat {
+        mem_total_bytes: Some(4096),
+        metrics: Some(NodeMetrics {
+            load5: Some(0.5),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    legacy_presence(&mut hb);
+    let m = hb.metrics.as_ref().unwrap();
+    assert_eq!(
+        (hb.cpu_percent, hb.mem_used_bytes, hb.mem_total_bytes),
+        (Some(0.0), Some(0), Some(4096))
+    );
+    assert_eq!(
+        (m.load1, m.load5, m.tcp_sockets),
+        (Some(0.0), Some(0.5), Some(0))
+    );
+    assert_eq!(
+        (m.disk_total_bytes, m.process_rss_bytes),
+        (Some(0), Some(0))
+    );
+    let s = Sample::from_heartbeat(&hb);
+    assert_eq!((s.cpu, s.rx_bps), (Some(0.0), Some(0)));
+
+    let mut old = Heartbeat::default();
+    legacy_presence(&mut old);
+    assert_eq!(
+        (old.mem_used_bytes, old.mem_total_bytes),
+        (None, None),
+        "total 0 = unknown"
+    );
+    assert!(old.metrics.is_none());
 }
 
 #[test]
@@ -119,9 +163,9 @@ fn local_throttles_writes_and_sums_the_fleet() {
     let t0 = Instant::now();
     let s = |users, cpu| Sample {
         users,
-        cpu,
+        cpu: Some(cpu),
         conns: 5,
-        rx_bps: 100,
+        rx_bps: Some(100),
         ..Default::default()
     };
     assert!(l.observe(a, s(2, 10.0), t0));
@@ -176,6 +220,69 @@ async fn user_client(state: &AppState, user: Uuid) -> Client {
     c
 }
 
+/// W23: unknown values are stored as NULL and stay unknown: a minute with
+/// an unknown sample has no average for that metric (its maximum keeps the
+/// known values); averages only count minutes that have the value, in the
+/// minute view and after the hour rollup alike.
+#[tokio::test]
+async fn history_unknown_values() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let n = db.node().await;
+    let known = Sample {
+        cpu: Some(40.0),
+        load1: Some(1.0),
+        users: 1,
+        ..Default::default()
+    };
+    write_sample(&db.pool, n, &known).await.unwrap();
+    let unknown = Sample {
+        load1: Some(3.0),
+        users: 1,
+        ..Default::default()
+    };
+    write_sample(&db.pool, n, &unknown).await.unwrap();
+    let pts = history(&db.pool, n, &range_spec("1h").unwrap())
+        .await
+        .unwrap();
+    let p = &pts[0];
+    assert_eq!((p.samples, p.cpu, p.cpu_max), (2, None, Some(40.0)));
+    assert_eq!((p.load1, p.mem_used, p.mem_total), (Some(2.0), None, None));
+
+    // Hour rollup over a known and an unknown minute: the average is that
+    // of the known minute.
+    sqlx::query("DELETE FROM node_metrics_1m WHERE node_id = $1")
+        .bind(n)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO node_metrics_1m (node_id, bucket, samples, cpu_sum, mem_used_sum, mem_total) \
+         VALUES ($1, date_trunc('hour', now()), 2, 20, NULL, NULL), \
+                ($1, date_trunc('hour', now()) + interval '1 minute', 3, NULL, 300, 1000)",
+    )
+    .bind(n)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    rollup_and_prune(&db.pool).await.unwrap();
+    let pts = history(&db.pool, n, &range_spec("7d").unwrap())
+        .await
+        .unwrap();
+    assert_eq!(pts.len(), 1);
+    let p = &pts[0];
+    assert_eq!(p.samples, 5);
+    assert!((p.cpu.unwrap() - 10.0).abs() < 1e-9, "{:?}", p.cpu);
+    assert!(
+        (p.mem_used.unwrap() - 100.0).abs() < 1e-9,
+        "{:?}",
+        p.mem_used
+    );
+    assert_eq!((p.mem_total, p.swap_used, p.tcp), (Some(1000), None, None));
+    db.drop().await;
+}
+
 /// History: samples of one minute merge exactly (sums), the API averages
 /// them; the rollup builds hour rows and retention drops expired rows.
 #[tokio::test]
@@ -185,10 +292,10 @@ async fn history_merge_rollup_and_retention() {
     };
     let n = db.node().await;
     let s = |cpu, users| Sample {
-        cpu,
-        mem_used: 1000,
-        mem_total: 4000,
-        rx_bps: 100,
+        cpu: Some(cpu),
+        mem_used: Some(1000),
+        mem_total: Some(4000),
+        rx_bps: Some(100),
         users,
         conns: users * 2,
         ..Default::default()
@@ -201,9 +308,13 @@ async fn history_merge_rollup_and_retention() {
     assert_eq!(pts.len(), 1);
     let p = &pts[0];
     assert_eq!(p.samples, 2);
-    assert!((p.cpu - 20.0).abs() < 1e-9 && (p.cpu_max - 30.0).abs() < 1e-6);
+    assert!((p.cpu.unwrap() - 20.0).abs() < 1e-9 && (p.cpu_max.unwrap() - 30.0).abs() < 1e-6);
     assert_eq!((p.users, p.users_max, p.conns_max), (6.0, 8, 16));
-    assert_eq!((p.mem_used, p.mem_total, p.rx_bps), (1000.0, 4000, 100.0));
+    assert_eq!(
+        (p.mem_used, p.mem_total, p.rx_bps),
+        (Some(1000.0), Some(4000), Some(100.0))
+    );
+    assert_eq!((p.tcp, p.disk_total), (None, None), "never reported");
 
     // Expired rows on both resolutions, and an old-but-kept hour.
     sqlx::query(
@@ -494,7 +605,7 @@ async fn api_status_metrics_probe_and_portal_visibility() {
         &db.pool,
         shown,
         &Sample {
-            cpu: 12.0,
+            cpu: Some(12.0),
             ..Default::default()
         },
     )
@@ -687,7 +798,7 @@ async fn session_probe_config_report_and_heartbeat() {
         .await;
     agent
         .send_up(UpMsg::Heartbeat(Heartbeat {
-            cpu_percent: 33.0,
+            cpu_percent: Some(33.0),
             connections: 4,
             metrics: Some(NodeMetrics {
                 online_users: 2,
@@ -724,7 +835,71 @@ async fn session_probe_config_report_and_heartbeat() {
         .await
         .expect("heartbeat blob in valkey");
     assert_eq!(hb["metrics"]["online_users"], 2);
+    // W23: no "metrics-presence": unset values are 0, as before.
+    assert_eq!(hb["cpu_percent"], 33.0);
+    assert_eq!(hb["metrics"]["tcp_sockets"], 0);
     assert_eq!(panel.state.nodestat().fleet().online_users, 2);
+    panel.stop().await;
+    db.drop().await;
+}
+
+/// W23 over the real gRPC server: an agent with "metrics-presence" leaves
+/// what it could not read unset, and the node page gets null (shown as
+/// "—"), not 0; the history stores NULL.
+#[tokio::test]
+async fn session_heartbeat_unknown_values() {
+    use crate::testdb::fake_agent::PanelHarness;
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let (n, _u) = db.member().await;
+    let panel = PanelHarness::start(&db).await;
+    let creds = panel.register(&db, n).await;
+    let mut agent = panel.connect(&creds).await.unwrap();
+    agent
+        .hello_caps((0, 0), String::new(), &["metrics", "metrics-presence"])
+        .await;
+    loop {
+        match agent.next().await {
+            Some(Ok(DownMsg::Snapshot(_))) => break,
+            Some(Ok(_)) => {}
+            other => panic!("{other:?}"),
+        }
+    }
+    agent
+        .send_up(UpMsg::Heartbeat(Heartbeat {
+            connections: 1,
+            metrics: Some(NodeMetrics {
+                disk_used_bytes: Some(10),
+                disk_total_bytes: Some(100),
+                tcp_sockets: Some(0),
+                online_users: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }))
+        .await;
+    let mut blob = None;
+    for _ in 0..100 {
+        let have: Option<Option<f64>> =
+            sqlx::query_scalar("SELECT cpu_sum FROM node_metrics_1m WHERE node_id = $1")
+                .bind(n)
+                .fetch_optional(&db.pool)
+                .await
+                .unwrap();
+        if let (Some(cpu), Some(hb)) = (have, heartbeat(&panel.state, n).await) {
+            assert_eq!(cpu, None, "unknown CPU stored as NULL");
+            blob = Some(hb);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let hb = blob.expect("heartbeat stored");
+    assert_eq!(hb["cpu_percent"], Value::Null);
+    assert_eq!(hb["mem_total_bytes"], Value::Null);
+    assert_eq!(hb["metrics"]["load1"], Value::Null);
+    assert_eq!(hb["metrics"]["tcp_sockets"], 0, "a read 0 stays 0");
+    assert_eq!(hb["metrics"]["disk_total_bytes"], 100);
     panel.stop().await;
     db.drop().await;
 }

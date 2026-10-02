@@ -480,7 +480,9 @@ pub async fn gather(
         .max()
         .unwrap_or(0);
     if longest > 0 {
-        let points: Vec<(Uuid, i64, f64, Option<f64>)> = sqlx::query_as(
+        // W23: NULL sums = unknown minutes (no point: the window is then
+        // undecided, as for a missing minute).
+        let points: Vec<(Uuid, i64, Option<f64>, Option<f64>)> = sqlx::query_as(
             "SELECT node_id, \
                (EXTRACT(EPOCH FROM date_trunc('minute', now()) - bucket) / 60)::bigint AS ago, \
                cpu_sum / samples, \
@@ -495,7 +497,9 @@ pub async fn gather(
         .await?;
         for (node, ago, cpu, mem) in points {
             if let Some(&i) = index.get(&node) {
-                out[i].facts.cpu.push((ago, cpu));
+                if let Some(c) = cpu {
+                    out[i].facts.cpu.push((ago, c));
+                }
                 if let Some(m) = mem {
                     out[i].facts.mem.push((ago, m));
                 }

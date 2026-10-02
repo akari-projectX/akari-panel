@@ -368,9 +368,16 @@ It
    release's `SHA256SUMS`); with neither it stops with a clear error before changing anything;
 2. writes `/etc/akari-agent/bootstrap.toml` (0600: panel address, gRPC server name, panel CA,
    the one-time enrollment token — no private key), the systemd units
-   (`deploy/systemd/akari-agent.service` and the agent's privileged updater
-   `akari-agent-update.service` + `akari-agent-update.path`, embedded; the path unit is enabled,
-   §5b) and a drop-in for the TLS credentials;
+   (`akari-agent.service` and the agent's privileged updater `akari-agent-update.service` +
+   `akari-agent-update.path`; the path unit is enabled, §5b) and a drop-in for the TLS
+   credentials. **The units are the ones the downloaded release carries** (W23: the verified
+   binary prints them, `akari-agent -print-unit <name>`; their canonical copy is the agent
+   repository's `systemd/`). Only releases older than that get the copies embedded in the script
+   (`deploy/systemd/` of the panel, kept byte-identical by the agent's CI); the output then says
+   `does not carry its systemd units`. Self-updates install each new release's units with its
+   binary (§5b), so do not edit the installed unit files: local changes go into a drop-in
+   (`/etc/systemd/system/akari-agent.service.d/*.conf`; an edited unit is reported on the node
+   page and replaced by the next update or reinstall);
 3. with 节点域名 set: opens TCP 80 in an active `ufw`/`firewalld` (the CA's HTTP-01 check; a
    cloud firewall / security group is outside the machine, the output reminds you);
 4. starts the agent and waits until it has enrolled and connected (prints `SUCCESS`, or the
@@ -378,9 +385,12 @@ It
    page.
 
 Running it again is safe (reinstall/upgrade in place). The node shows `online` within seconds.
-Uninstall: `sudo akari-agent-uninstall` on the node (written by the installer), or a fresh
-command with `| sudo sh -s -- --uninstall` (as root: `| sh -s -- --uninstall`); then delete the
-node in the panel.
+A reinstall also turns the node's entry in a finished (aborted/completed) rollout into history:
+the node list shows it greyed as `…（重装前）` instead of as the node's current update state.
+Uninstall: `akari-agent-uninstall` on the node as root (`sudo akari-agent-uninstall` for a sudo
+user; the installer prints the form that fits how it ran), or a fresh command with
+`| sudo sh -s -- --uninstall` (as root: `| sh -s -- --uninstall`); then delete the node in the
+panel.
 
 **Security of the link.** The token in the URL *is* the node's enrollment token (256 bit, only
 its SHA-256 stored, single use, short TTL). The panel serves the script and the binary only while
@@ -442,8 +452,10 @@ install -m 0755 akari-agent-linux-amd64 /usr/local/bin/akari-agent   # arm64: ak
 akari-agent -version
 install -d -m 0700 /etc/akari-agent
 install -m 0600 tokyo-1-bootstrap.toml /etc/akari-agent/bootstrap.toml && shred -u tokyo-1-bootstrap.toml
-install -m 0644 akari-agent.service /etc/systemd/system/             # deploy/systemd/ in the panel repo
-systemctl daemon-reload && systemctl enable --now akari-agent
+for u in akari-agent.service akari-agent-update.service akari-agent-update.path; do
+  akari-agent -print-unit $u >/etc/systemd/system/$u                 # the units this release carries
+done
+systemctl daemon-reload && systemctl enable --now akari-agent akari-agent-update.path
 journalctl -u akari-agent -f                                         # "enrolled", then "channel established"
 ```
 
@@ -455,7 +467,11 @@ certificate next to the key. The private key never leaves the node. The panel de
 certificate (CN `agent-<node id>`, client-auth only, `agent.cert_validity_secs`, default 90 days).
 
 The unit grants only `CAP_NET_BIND_SERVICE` (inbounds on 443) and reads the bootstrap file as a
-systemd credential (systemd >= 250).
+systemd credential (systemd >= 250). It hides other users' processes (`ProtectProc=invisible`)
+but not the machine-wide `/proc` files the node status reads (`/proc/stat`, `meminfo`,
+`loadavg`, `net/*`): units from before W23 had `ProcSubset=pid`, under which every machine
+metric read 0 — the agent now reports what it cannot read as **未知** (unknown), never as 0, and
+the node page says why (§3e).
 
 **Token expired / agent state lost / certificate expired** (agent offline longer than its
 validity): **重装命令** (or `akari node enroll-token <node id>` for a bootstrap file). The agent
@@ -646,6 +662,15 @@ Valkey (any instance serves them) and history in PostgreSQL: one row per node an
 minute rows and ~432k hour rows, one small upsert per node per heartbeat (throttled to one per
 5 s). A node counts as offline exactly as before (no fresh session for 90 s). Older agents keep
 working: their nodes simply show CPU/memory/connections only.
+
+**Unknown is not 0 (W23).** A value the agent cannot read (its source file missing or hidden by
+the sandbox; a rate on the first heartbeat or after a counter reset) is shown as **未知** — in the
+node list, on the node page and as a gap in the history charts — never as 0, and the CPU/memory
+alert rules treat such minutes as undecided. Agents with the capability `metrics-presence`
+(agent releases from W23 on) leave such values unset; for older agents unset still means 0.
+Nodes installed with the pre-W23 unit (`ProcSubset=pid`) show CPU, memory, load, network and
+sockets as 未知 together with a hint and, from the first W23 agent on, a "systemd 单元" warning:
+run **重装命令** once (§5b "Units").
 
 **Latency (Clash Verge url-test semantics).** Every `[probe].interval_secs` (default 5 h, ±10 %
 jitter) and on "立即测速" (admin node detail; at most once per `manual_cooldown_secs`, default
@@ -934,9 +959,21 @@ self-update of those agents executes the new binary from its StateDirectory, whi
 for every agent without the `updater` capability). Run the node's **重装命令** once (upload the
 current release under **Updates** first): it installs the current agent and the updater units
 (`akari-agent-update.path/.service`) in place, keeping inbounds, users and traffic; from then on
-updates go through the panel. Agents installed by hand need the two unit files too (comments in
-`deploy/systemd/akari-agent-update.path`); without them a current agent refuses offers with
-"updater unit missing".
+updates go through the panel. Agents installed by hand need the two unit files too
+(`akari-agent -print-unit akari-agent-update.path` / `akari-agent-update.service`, §3 manual
+path); without them a current agent refuses offers with "updater unit missing".
+
+**Nodes whose units predate W23 (agents up to v0.4.x) — once, by hand.** Unit files used to
+change only with a reinstall; from W23 on every update installs the new release's units (§5b
+"Units"). The updater that does this is the node's *installed* updater unit, and the pre-W23
+`akari-agent-update.service` has `/etc/systemd/system` read-only: an update to a W23 release
+still goes through (binary yes, units no — `systemd units NOT refreshed` in
+`journalctl -u akari-agent-update`), and the new agent then reports the stale units (node
+warning "systemd 单元…重装命令"; until then its machine status shows 未知 for CPU, memory, load
+and network, §3e). Run the node's **重装命令** once (after uploading the release under
+**Updates**); from then on units follow the releases with no manual step. There is no way around
+this one step: the old updater unit's own sandbox is what forbids the write, and nothing the new
+release ships runs outside it before that reinstall.
 
 **Agents without a pinned release key** (protocol 1/2, and protocol 3 builds older than v0.2.0;
 `akari-agent -release-keys` prints "no release keys pinned") cannot self-update (§5b). Upload the
@@ -1017,20 +1054,32 @@ through a separate root unit that only ever runs the **installed** binary:
   any restart), persists its final traffic counters (`update/finals.json`, resent by the next
   process), sends `RESTARTING` and writes `update/apply-request.json`;
 - `akari-agent-update.path` starts `akari-agent-update.service` (root, no network,
-  `ProtectSystem=strict` with only `/usr/local/bin` and the agent's state writable), which runs
+  `ProtectSystem=strict` with only `/usr/local/bin`, `/etc/systemd/system` (W23) and the agent's
+  state writable), which runs
   `/usr/local/bin/akari-agent -apply-update /var/lib/private/akari-agent`. It treats the agent's
   directory as untrusted (no symlink is followed; only regular, single-link files owned by the
   agent), copies the staged binary into a root-only file next to `/usr/local/bin/akari-agent`,
   verifies **that copy** with the release keys compiled into **itself** (signature, platform,
   newer version or signed rollback, never a version this node rolled back from — its own record
   in `/var/lib/akari-agent-update`), keeps the running binary as `akari-agent.prev`, renames the
-  new one into place and restarts `akari-agent`. A refusal goes back to the agent, which reports
-  it (`FAILED`) and keeps running;
+  new one into place, installs the new release's units (below) and restarts `akari-agent`. A
+  refusal goes back to the agent, which reports it (`FAILED`) and keeps running;
 - the new binary is on probation: it must connect and get an apply acknowledged within
   `-update-self-check` (default 5 min); the updater watches it and puts `akari-agent.prev` back
   (and restarts the agent) when it crashes `-update-max-boots` times (default 3) or does not
-  pass in time. The version is then marked failed on that node and reported (`ROLLED_BACK`),
-  which fails the node in the rollout;
+  pass in time (together with the previous units). The version is then marked failed on that
+  node and reported (`ROLLED_BACK`), which fails the node in the rollout;
+- **Units (W23).** Each release carries its systemd units (compiled in; `akari-agent -print-unit
+  <name>`). After verifying the copy, the updater runs it with `-print-units` (no network, empty
+  environment, 30 s, bounded output — the binary it is about to install anyway, never anything
+  from the agent's directory) and replaces `akari-agent.service`, `akari-agent-update.service`
+  and `akari-agent-update.path` in `/etc/systemd/system` — only those names, only where they
+  exist, only when they differ — atomically (root, 0644), keeping the replaced ones in
+  `/var/lib/akari-agent-update/units.prev/`, then `systemctl daemon-reload`. A rollback puts
+  them back (and reloads). Drop-ins (`akari-agent.service.d/`, e.g. the installer's TLS
+  credential drop-in) are never touched: put local changes there. A release whose units cannot
+  be read is refused. An updater unit from before W23 cannot write the directory: see §5
+  "Nodes whose units predate W23";
 - `journalctl -u akari-agent-update` shows what the updater did; installing a newer agent by
   hand (or 重装命令) wins over everything the updater recorded;
 - `akari-agent -release-keys` prints the pinned keys ("no release keys pinned" = self-update off).

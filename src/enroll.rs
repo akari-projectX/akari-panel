@@ -459,7 +459,8 @@ async fn burn_and_issue(
     }
     sqlx::query(
         "UPDATE nodes SET cert_serial = $2, prev_cert_serial = NULL, cert_not_after = $3, \
-             server_name = (SELECT server_name FROM node_enrollments WHERE node_id = $1) \
+             server_name = (SELECT server_name FROM node_enrollments WHERE node_id = $1), \
+             enrolled_at = now() \
          WHERE id = $1",
     )
     .bind(node)
@@ -762,6 +763,14 @@ mod tests {
         let creds = panel.enroll(&token).await.expect("enroll");
         let serial = serial_of(&creds);
         assert_eq!(serials(&db, node).await, (Some(serial.clone()), None));
+        let enrolled: bool = sqlx::query_scalar(
+            "SELECT enrolled_at > now() - interval '1 minute' FROM nodes WHERE id = $1",
+        )
+        .bind(node)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert!(enrolled, "W23: the enrollment time is recorded");
         let not_after: Option<chrono::DateTime<Utc>> =
             sqlx::query_scalar("SELECT cert_not_after FROM nodes WHERE id = $1")
                 .bind(node)

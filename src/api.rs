@@ -1430,7 +1430,9 @@ pub struct NodeView {
     agent_version: Option<String>,
     core_version: Option<String>,
     /// M6: platform of the connected agent and its latest rollout entry
-    /// ({rollout_id, version, rollout_status, status, detail}).
+    /// ({rollout_id, version, rollout_status, status, detail, superseded};
+    /// W23: superseded = the rollout is over and the node enrolled again
+    /// after its last step there (a reinstall): history, not its state).
     agent_os: Option<String>,
     agent_arch: Option<String>,
     update_status: Option<serde_json::Value>,
@@ -1552,6 +1554,9 @@ fn node_warnings(
     if let Some(u) = updater_warning(agent_protocol, agent_capabilities) {
         w.push(u);
     }
+    if let Some(u) = stale_units_warning(agent_capabilities) {
+        w.push(u);
+    }
     if unenforced_speed_limits {
         w.push(format!(
             "agent 版本过旧，不支持限速（协议 < {}）：升级 agent 之前，套餐限速在此节点不生效",
@@ -1621,9 +1626,13 @@ pub struct NodeSummary {
 /// The heartbeat fields the list shows.
 #[derive(Deserialize, Serialize, Debug, PartialEq)]
 pub struct HeartbeatSummary {
-    cpu_percent: f64,
-    mem_used_bytes: u64,
-    mem_total_bytes: u64,
+    // W23: null = the agent could not read it.
+    #[serde(default)]
+    cpu_percent: Option<f64>,
+    #[serde(default)]
+    mem_used_bytes: Option<u64>,
+    #[serde(default)]
+    mem_total_bytes: Option<u64>,
     connections: u64,
     #[serde(default)]
     uptime_seconds: Option<u64>,
@@ -1634,8 +1643,10 @@ pub struct HeartbeatSummary {
 
 #[derive(Deserialize, Serialize, Debug, PartialEq)]
 pub struct HeartbeatMetricsSummary {
-    net_rx_bytes_per_sec: u64,
-    net_tx_bytes_per_sec: u64,
+    #[serde(default)]
+    net_rx_bytes_per_sec: Option<u64>,
+    #[serde(default)]
+    net_tx_bytes_per_sec: Option<u64>,
     online_users: u64,
 }
 
@@ -1664,8 +1675,12 @@ pub const NODE_SUMMARY_FROM: &str = "FROM nodes \
         GROUP BY node_id) al ON al.node_id = nodes.id \
      LEFT JOIN (SELECT DISTINCT ON (rn.node_id) rn.node_id, jsonb_build_object( \
         'rollout_id', r.id, 'version', r.version, 'rollout_status', r.status, \
-        'status', rn.status, 'detail', rn.detail) AS update_status \
+        'status', rn.status, 'detail', rn.detail, \
+        'superseded', r.status NOT IN ('running','paused','halted') \
+            AND coalesce(en.enrolled_at > greatest(r.created_at, rn.offered_at, \
+                rn.finished_at), false)) AS update_status \
         FROM rollout_nodes rn JOIN rollouts r ON r.id = rn.rollout_id \
+        JOIN nodes en ON en.id = rn.node_id \
         ORDER BY rn.node_id, r.created_at DESC) ro ON ro.node_id = nodes.id";
 
 impl NodeSummary {
@@ -1769,6 +1784,21 @@ fn updater_warning(protocol: Option<i32>, caps: Option<&[String]>) -> Option<Str
          akari-agent-update 并升级 agent"
             .to_string(),
     )
+}
+
+/// W23: the agent reports ("stale-units") that the node's installed
+/// systemd units are not the ones its release carries: they were installed
+/// by an installer or updater that predates unit refresh (or edited by
+/// hand). Updates refresh them only once the updater's own unit allows it,
+/// i.e. after one reinstall.
+fn stale_units_warning(caps: Option<&[String]>) -> Option<String> {
+    caps?.iter().any(|c| c == "stale-units").then(|| {
+        "节点上的 systemd 单元文件（akari-agent.service / akari-agent-update.*）不是当前 agent \
+         版本自带的版本（由旧版安装命令或旧版更新服务安装，或被手工修改），例如机器状态可能读不到。\
+         请在节点上重新运行一次安装命令（重装命令），之后的自更新会一并更新单元文件；\
+         自定义设置请用 drop-in（/etc/systemd/system/akari-agent.service.d/）"
+            .to_string()
+    })
 }
 
 /// W18: a node certificate the agent must obtain itself (节点域名 + an
@@ -1943,8 +1973,12 @@ pub const NODE_VIEW_FROM: &str = "FROM nodes \
         FROM node_latency l GROUP BY node_id) lat ON lat.node_id = nodes.id \
      LEFT JOIN (SELECT DISTINCT ON (rn.node_id) rn.node_id, jsonb_build_object( \
         'rollout_id', r.id, 'version', r.version, 'rollout_status', r.status, \
-        'status', rn.status, 'detail', rn.detail) AS update_status \
+        'status', rn.status, 'detail', rn.detail, \
+        'superseded', r.status NOT IN ('running','paused','halted') \
+            AND coalesce(en.enrolled_at > greatest(r.created_at, rn.offered_at, \
+                rn.finished_at), false)) AS update_status \
         FROM rollout_nodes rn JOIN rollouts r ON r.id = rn.rollout_id \
+        JOIN nodes en ON en.id = rn.node_id \
         ORDER BY rn.node_id, r.created_at DESC) ro ON ro.node_id = nodes.id";
 
 #[derive(Deserialize, Debug, Default)]
@@ -3352,6 +3386,25 @@ mod tests {
             "never offered updates"
         );
         assert!(updater_warning(None, None).is_none(), "not connected yet");
+    }
+
+    /// W23: the agent says its node's systemd units are not its own.
+    #[test]
+    fn stale_units_warning_names_the_reinstall() {
+        let caps = |c: &[&str]| c.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let w = stale_units_warning(Some(&caps(&["metrics", "stale-units"]))).unwrap();
+        assert!(w.contains("重装命令") && w.contains("drop-in"), "{w}");
+        assert!(stale_units_warning(Some(&caps(&["metrics", "updater"]))).is_none());
+        assert!(stale_units_warning(None).is_none());
+        let all = node_warnings(
+            &serde_json::json!([]),
+            None,
+            Some(6),
+            None,
+            false,
+            Some(&caps(&["updater", "stale-units"])),
+        );
+        assert_eq!(all.len(), 1, "{all:?}");
     }
 
     #[test]

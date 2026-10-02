@@ -1009,6 +1009,9 @@ struct Session {
     retire_ack: Notify,
     /// W11: the agent listed the "latency" capability in its Hello.
     latency_capable: AtomicBool,
+    /// W23: the agent listed "metrics-presence": an unset heartbeat value
+    /// means unknown (else it means 0, `nodestat::legacy_presence`).
+    metrics_presence: AtomicBool,
     /// The LatencyProbeConfig last sent on this stream (None = none sent
     /// yet; re-sent when the token or, W12, the 系统设置 values change).
     probe_sent: Mutex<Option<crate::gen::LatencyProbeConfig>>,
@@ -1040,6 +1043,7 @@ impl Session {
             hello: Notify::new(),
             retire_ack: Notify::new(),
             latency_capable: AtomicBool::new(false),
+            metrics_presence: AtomicBool::new(false),
             probe_sent: Mutex::new(None),
             state,
         });
@@ -1305,6 +1309,10 @@ async fn session<S>(
                         "failed to sync after hello",
                     );
                     on_hello_update(&sess, &hello).await;
+                    sess.metrics_presence.store(
+                        hello.capabilities.iter().any(|c| c == "metrics-presence"),
+                        Ordering::SeqCst,
+                    );
                     // W11: latency tests for agents that support them.
                     let capable = hello.capabilities.iter().any(|c| c == "latency");
                     if sess.latency_capable.swap(capable, Ordering::SeqCst) != capable || !capable {
@@ -1327,7 +1335,10 @@ async fn session<S>(
                         tracing::warn!(node = %node_id, error = %e, "failed to record update status");
                     }
                 }
-                Some(UpMsg::Heartbeat(hb)) => {
+                Some(UpMsg::Heartbeat(mut hb)) => {
+                    if !sess.metrics_presence.load(Ordering::SeqCst) {
+                        crate::nodestat::legacy_presence(&mut hb);
+                    }
                     store_heartbeat(&state, node_id, &hb).await;
                     if let Some(h) = online_retry.take() {
                         if mark_online(&state, node_id, sess.online_session, &h).await {

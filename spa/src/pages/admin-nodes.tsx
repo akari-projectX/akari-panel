@@ -1739,6 +1739,18 @@ function NodeEditor({ node }: { node: NodeView }) {
 
 // M6: the node's latest rollout entry (Updates view has the details).
 function UpdateBadge({ s }: { s: NodeUpdateStatus }) {
+  // W23: the entry of a finished rollout from before the node's last
+  // reinstall is history, not its current state.
+  if (s.superseded) {
+    return (
+      <div
+        className="text-xs text-muted-foreground"
+        title={`节点已于此后重装，此为历史记录${s.detail ? `：${s.detail}` : ""}`}
+      >
+        {s.version}: {s.status}（重装前）
+      </div>
+    );
+  }
   const tone =
     s.status === "failed" ? "text-destructive" : s.status === "healthy" ? "text-muted-foreground" : "text-primary";
   return (

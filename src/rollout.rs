@@ -1373,6 +1373,88 @@ mod db_tests {
         db.drop().await;
     }
 
+    /// W23: after a reinstall (a new enrollment), the node's entry in a
+    /// finished rollout is history (`superseded`), not its current state;
+    /// an open rollout's entry never is.
+    #[tokio::test]
+    async fn update_status_superseded_by_reinstall() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let state = AppState::for_test(db.pool.clone()).await;
+        let c = admin_client(&state, &db).await;
+        let n = agent_node(&db, "v1.0.0", 6).await;
+        let r = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO rollouts (id, version, status, waves, percentage, explicit_nodes, \
+               health_timeout_secs, max_failure_ratio, seed, created_by, created_at) \
+             VALUES ($1, 'v1.1.0', 'halted', '{100}', 100, false, 600, 0, 1, 'test', \
+               now() - interval '2 hours')",
+        )
+        .bind(r)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO rollout_nodes (rollout_id, node_id, wave, position, status, offered_at, \
+               finished_at, detail) \
+             VALUES ($1, $2, 0, 0, 'failed', now() - interval '2 hours', \
+               now() - interval '2 hours', 'failed (v1.1.0): switch to v1.1.0: permission denied')",
+        )
+        .bind(r)
+        .bind(n)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        async fn view(c: &Client, n: Uuid) -> serde_json::Value {
+            let pick = |all: serde_json::Value| {
+                all.as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|x| x["id"] == n.to_string())
+                    .unwrap()["update_status"]
+                    .clone()
+            };
+            let full = pick(c.get("/test/api/v1/nodes").await.json());
+            let summary = pick(c.get("/test/api/v1/nodes?view=summary").await.json());
+            assert_eq!(full, summary);
+            full
+        }
+        let v = view(&c, n).await;
+        assert_eq!(
+            (v["status"].as_str(), v["superseded"].as_bool()),
+            (Some("failed"), Some(false))
+        );
+        // Reinstalled while the rollout is still open: still its state.
+        sqlx::query("UPDATE nodes SET enrolled_at = now() - interval '1 hour' WHERE id = $1")
+            .bind(n)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(view(&c, n).await["superseded"], false);
+        // The rollout is aborted: the failure predates the reinstall.
+        sqlx::query("UPDATE rollouts SET status = 'aborted', finished_at = now() WHERE id = $1")
+            .bind(r)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let v = view(&c, n).await;
+        assert_eq!(
+            (v["status"].as_str(), v["superseded"].as_bool()),
+            (Some("failed"), Some(true))
+        );
+        // An entry newer than the enrollment is the node's state.
+        sqlx::query(
+            "UPDATE rollout_nodes SET finished_at = now() - interval '1 minute' WHERE node_id = $1",
+        )
+        .bind(n)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(view(&c, n).await["superseded"], false);
+        db.drop().await;
+    }
+
     /// The download RPC over real mTLS: whole, resumed, wrong digest, no
     /// certificate.
     #[tokio::test]

@@ -194,6 +194,11 @@ async fn install_link_lifecycle() {
         assert!(s.contains("PathExists=/var/lib/private/akari-agent/update/apply-request.json"));
         assert!(s.contains("systemctl enable --now akari-agent-update.path"));
         assert!(s.contains("rm -f \"$UNIT\" \"$UPDATE_SERVICE\" \"$UPDATE_PATH\""));
+        // W23: the release's own units first (fallback: the copies above).
+        assert!(s.contains("\"$TMP/akari-agent\" -print-unit \"$u\" >\"$TMP/$u\""));
+        // The uninstall hint fits how the script ran (sudo or plain root).
+        assert!(s.contains("say \"uninstall later with: sudo $UNINSTALLER\""));
+        assert!(s.contains("say \"uninstall later with (as root): $UNINSTALLER\""));
     }
     // No release: the binary endpoint has nothing (canonical reject).
     let r = c
@@ -568,6 +573,8 @@ fn updater_units_fit_the_agent_unit() {
         "NoNewPrivileges=yes",
         "ProtectSystem=strict",
         "ReadWritePaths=/usr/local/bin -/var/lib/private/akari-agent",
+        // W23: replaces the three units on an update.
+        "ReadWritePaths=/etc/systemd/system",
         "PrivateNetwork=yes",
         "RestrictAddressFamilies=AF_UNIX",
     ] {
@@ -586,6 +593,10 @@ fn updater_units_fit_the_agent_unit() {
             "no exec exceptions for the state directory"
         );
     }
+    // W23: ProcSubset=pid hid /proc/stat, meminfo, loadavg, net/*: every
+    // machine metric read 0.
+    assert!(agent.contains(&"ProtectProc=invisible"));
+    assert!(!agent.iter().any(|l| l.starts_with("ProcSubset")));
     // The updater never gets the network or the agent's capabilities.
     assert!(!svc
         .iter()
