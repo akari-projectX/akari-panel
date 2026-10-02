@@ -25,6 +25,7 @@
 //! `tick` runs in the reaper loop on every instance; the advisory lock
 //! `akari.rollout` serializes it with the admin actions.
 
+use crate::auth::{bad_request, conflict};
 use std::cmp::Ordering;
 
 use axum::extract::{Path, State};
@@ -311,23 +312,36 @@ pub async fn apply_create_rollout(
     req: &CreateRolloutReq,
 ) -> Result<Uuid, ApiError> {
     if crate::updates::parse_version(&req.version).is_none() {
-        return Err(ApiError::bad_request("version: vMAJOR.MINOR.PATCH[-pre]"));
+        return Err(bad_request!(
+            "rollout.version_invalid",
+            "version: vMAJOR.MINOR.PATCH[-pre]"
+        ));
     }
     let percentage = req.percentage.unwrap_or(100);
     if !(1..=100).contains(&percentage) {
-        return Err(ApiError::bad_request("percentage: 1..=100"));
+        return Err(bad_request!(
+            "rollout.percentage_range",
+            "percentage: 1..=100"
+        ));
     }
     let waves = req.waves.clone().unwrap_or_else(|| vec![100]);
-    check_waves(&waves).map_err(ApiError::bad_request)?;
+    check_waves(&waves)
+        .map_err(|e| bad_request!("rollout.waves_invalid", "{detail}", detail = e))?;
     let timeout = req
         .health_timeout_secs
         .unwrap_or(DEFAULT_HEALTH_TIMEOUT_SECS);
     if !(30..=86400).contains(&timeout) {
-        return Err(ApiError::bad_request("health_timeout_secs: 30..=86400"));
+        return Err(bad_request!(
+            "rollout.timeout_range",
+            "health_timeout_secs: 30..=86400"
+        ));
     }
     let ratio = req.max_failure_ratio.unwrap_or(DEFAULT_MAX_FAILURE_RATIO);
     if !(0.0..=1.0).contains(&ratio) {
-        return Err(ApiError::bad_request("max_failure_ratio: 0..=1"));
+        return Err(bad_request!(
+            "rollout.failure_ratio_range",
+            "max_failure_ratio: 0..=1"
+        ));
     }
     lock(conn).await?;
     let have: i64 = sqlx::query_scalar(
@@ -337,8 +351,9 @@ pub async fn apply_create_rollout(
     .fetch_one(&mut *conn)
     .await?;
     if have == 0 {
-        return Err(ApiError::bad_request(
-            "no uploaded release with this version (POST /agent-releases, then PUT its binary)",
+        return Err(bad_request!(
+            "rollout.no_release",
+            "no uploaded release with this version (POST /agent-releases, then PUT its binary)"
         ));
     }
     let open: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
@@ -347,8 +362,9 @@ pub async fn apply_create_rollout(
     .fetch_one(&mut *conn)
     .await?;
     if open {
-        return Err(ApiError::conflict(
-            "another rollout is open: finish or abort it first",
+        return Err(conflict!(
+            "rollout.another_open",
+            "another rollout is open: finish or abort it first"
         ));
     }
     let eligible: Vec<Uuid> = match &req.node_ids {
@@ -364,8 +380,9 @@ pub async fn apply_create_rollout(
             .fetch_all(&mut *conn)
             .await?;
             if found.len() != ids.len() {
-                return Err(ApiError::bad_request(
-                    "node_ids: unknown, unenrolled or deleting node",
+                return Err(bad_request!(
+                    "rollout.bad_node",
+                    "node_ids: unknown, unenrolled or deleting node"
                 ));
             }
             found
@@ -380,7 +397,10 @@ pub async fn apply_create_rollout(
         }
     };
     if eligible.is_empty() {
-        return Err(ApiError::bad_request("no enrolled node to update"));
+        return Err(bad_request!(
+            "rollout.no_nodes",
+            "no enrolled node to update"
+        ));
     }
     let id = Uuid::new_v4();
     let seed: i64 = rand::random();
@@ -504,10 +524,12 @@ pub async fn apply_action(
         (Action::Resume, "paused") => "running",
         (Action::Abort, "running" | "paused" | "halted") => "aborted",
         _ => {
-            return Err(ApiError::conflict(format!(
-                "cannot {} a {status} rollout",
-                action.name()
-            )))
+            return Err(conflict!(
+                "rollout.bad_transition",
+                "cannot {action} a {status} rollout",
+                action = action.name(),
+                status = status.clone()
+            ))
         }
     };
     sqlx::query(

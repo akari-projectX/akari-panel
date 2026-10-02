@@ -1,3 +1,4 @@
+use crate::auth::{bad_request, conflict};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 
@@ -75,10 +76,13 @@ pub async fn login(
     ApiJson(req): ApiJson<LoginReq>,
 ) -> Result<Response, ApiError> {
     if req.login.is_empty() || req.password.is_empty() {
-        return Err(ApiError::bad_request("login and password are required"));
+        return Err(bad_request!(
+            "auth.credentials_required",
+            "login and password are required"
+        ));
     }
     if req.code.as_deref().is_some_and(|c| c.len() > MAX_CODE_LEN) {
-        return Err(ApiError::bad_request("code is too long"));
+        return Err(bad_request!("auth.code_too_long", "code is too long"));
     }
     let client = state.client_ip(addr.ip(), &headers);
     // W15: an address logs in case-insensitively, so its per-name bucket
@@ -653,7 +657,12 @@ pub async fn user_subscription(
     match role.as_deref() {
         None => return Err(ApiError::not_found()),
         Some("user") => {}
-        Some(_) => return Err(ApiError::bad_request("admin accounts have no subscription")),
+        Some(_) => {
+            return Err(bad_request!(
+                "user.admin_no_subscription",
+                "admin accounts have no subscription"
+            ))
+        }
     }
     let actor = Actor::of(&admin);
     let stored = crate::sub::ensure_token(&mut tx, state.totp(), &actor, id)
@@ -724,32 +733,195 @@ pub const USER_VIEW_COLS: &str =
       WHERE up.user_id = users.id AND up.status = 'active') AS next_reset_at, \
      email, email_verified_at IS NOT NULL AS email_verified";
 
-#[derive(Deserialize)]
-pub struct Pagination {
-    limit: Option<i64>,
-    offset: Option<i64>,
+/// `GET /users` query (W21, M3): page, search, filters and order.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct UserListQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+    /// Prefix of the login or email (case-insensitive), or of the id.
+    pub q: Option<String>,
+    /// A plan id, or `none` (no active plan).
+    pub plan_id: Option<String>,
+    /// Derived status (the console's badge): active | expired | quota | disabled.
+    pub status: Option<String>,
+    /// user | admin.
+    pub role: Option<String>,
+    /// created (default) | -created | login | -traffic | expires.
+    pub sort: Option<String>,
+}
+
+/// One page of users and the number matching the filters.
+#[derive(Serialize)]
+pub struct UserPage {
+    pub users: Vec<UserView>,
+    pub total: i64,
+}
+
+/// The longest accepted search text.
+const MAX_USER_QUERY: usize = 64;
+
+/// SQL predicates (over alias `u`) of the derived statuses; mutually
+/// exclusive, in the badge's precedence: disabled (any reason but quota) >
+/// over quota > expired (users only, `enforce::EXPIRED`) > active.
+pub const STATUS_DISABLED: &str = "(NOT u.enabled AND u.disabled_reason IS DISTINCT FROM 'quota')";
+pub const STATUS_QUOTA: &str = "(NOT u.enabled AND u.disabled_reason = 'quota')";
+pub const STATUS_EXPIRED: &str =
+    "(u.enabled AND u.role = 'user' AND u.expires_at IS NOT NULL AND u.expires_at <= now())";
+pub const STATUS_ACTIVE: &str = "(u.enabled AND NOT (u.role = 'user' AND u.expires_at IS NOT NULL \
+     AND u.expires_at <= now()))";
+
+/// `s` with LIKE metacharacters escaped (backslash is the default escape).
+fn like_prefix(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 1);
+    for c in s.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('%');
+    out
+}
+
+fn push_user_filters(
+    qb: &mut sqlx::QueryBuilder<sqlx::Postgres>,
+    q: &UserListQuery,
+) -> Result<(), ApiError> {
+    qb.push(" WHERE true");
+    if let Some(text) = q.q.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        if text.chars().count() > MAX_USER_QUERY {
+            return Err(bad_request!(
+                "user.query_too_long",
+                "q is longer than {max} characters",
+                max = MAX_USER_QUERY
+            ));
+        }
+        let pat = like_prefix(&text.to_lowercase());
+        qb.push(" AND (lower(u.login) LIKE ")
+            .push_bind(pat.clone())
+            .push(" OR u.email LIKE ")
+            .push_bind(pat.clone());
+        // Ids only for a hex-ish prefix (no index on id::text: keep the
+        // scan out of the common login/email search).
+        if text.len() >= 4 && text.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+            qb.push(" OR u.id::text LIKE ").push_bind(pat);
+        }
+        qb.push(")");
+    }
+    match q.plan_id.as_deref() {
+        None | Some("") => {}
+        Some("none") => {
+            qb.push(
+                " AND NOT EXISTS (SELECT 1 FROM user_plans up WHERE up.user_id = u.id \
+                 AND up.status = 'active')",
+            );
+        }
+        Some(id) => {
+            let id = Uuid::parse_str(id).map_err(|_| {
+                bad_request!(
+                    "user.plan_filter_invalid",
+                    "plan_id must be a plan id or none"
+                )
+            })?;
+            qb.push(
+                " AND EXISTS (SELECT 1 FROM user_plans up WHERE up.user_id = u.id \
+                 AND up.status = 'active' AND up.plan_id = ",
+            )
+            .push_bind(id)
+            .push(")");
+        }
+    }
+    match q.status.as_deref() {
+        None | Some("") => {}
+        Some("active") => {
+            qb.push(" AND ").push(STATUS_ACTIVE);
+        }
+        Some("expired") => {
+            qb.push(" AND ").push(STATUS_EXPIRED);
+        }
+        Some("quota") => {
+            qb.push(" AND ").push(STATUS_QUOTA);
+        }
+        Some("disabled") => {
+            qb.push(" AND ").push(STATUS_DISABLED);
+        }
+        Some(_) => {
+            return Err(bad_request!(
+                "user.status_filter_invalid",
+                "status must be active, expired, quota or disabled"
+            ))
+        }
+    }
+    match q.role.as_deref() {
+        None | Some("") => {}
+        Some(r @ ("user" | "admin")) => {
+            qb.push(" AND u.role = ").push_bind(r.to_string());
+        }
+        Some(_) => {
+            return Err(bad_request!(
+                "user.role_invalid",
+                "role must be 'user' or 'admin'"
+            ))
+        }
+    }
+    Ok(())
+}
+
+/// ORDER BY of a sort key (every order ends in the id: a total order, so
+/// pages neither repeat nor skip rows).
+fn user_order(sort: Option<&str>) -> Result<&'static str, ApiError> {
+    Ok(match sort.unwrap_or("created") {
+        "" | "created" => "u.created_at, u.id",
+        "-created" => "u.created_at DESC, u.id DESC",
+        "login" => "lower(u.login), u.id",
+        "-traffic" => "u.traffic_used_bytes DESC, u.id",
+        "expires" => "u.expires_at NULLS LAST, u.id",
+        _ => {
+            return Err(bad_request!(
+                "user.sort_invalid",
+                "sort must be created, -created, login, -traffic or expires"
+            ))
+        }
+    })
 }
 
 pub async fn list_users(
     State(state): State<AppState>,
     user: AuthUser,
-    Query(p): Query<Pagination>,
-) -> Result<Json<Vec<UserView>>, ApiError> {
+    Query(q): Query<UserListQuery>,
+) -> Result<Json<UserPage>, ApiError> {
     user.require_admin()?;
-    let limit = p.limit.unwrap_or(50).clamp(1, 200);
-    let offset = p.offset.unwrap_or(0).max(0);
-    let rows = sqlx::query_as::<_, UserView>(sqlx::AssertSqlSafe(format!(
-        // Deferred join (M2-2): the offset walks the (created_at, id)
-        // index only; the view columns (and their subquery) are computed
-        // for the page's rows alone.
-        "SELECT {USER_VIEW_COLS} FROM users WHERE id IN (SELECT id FROM users \
-         ORDER BY created_at, id LIMIT $1 OFFSET $2) ORDER BY created_at, id"
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let offset = q.offset.unwrap_or(0).max(0);
+    let order = user_order(q.sort.as_deref())?;
+    // Deferred join (M2-2): the offset walks ids only; the view columns
+    // (and their subqueries) are computed for the page's rows alone.
+    let mut page = sqlx::QueryBuilder::new("SELECT id FROM users u");
+    push_user_filters(&mut page, &q)?;
+    page.push(format!(" ORDER BY {order} LIMIT "))
+        .push_bind(limit)
+        .push(" OFFSET ")
+        .push_bind(offset);
+    let mut tx = state.pg().begin().await?;
+    // One snapshot for the page and the count.
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        .execute(&mut *tx)
+        .await?;
+    let ids: Vec<Uuid> = page.build_query_scalar().fetch_all(&mut *tx).await?;
+    let mut users = sqlx::query_as::<_, UserView>(sqlx::AssertSqlSafe(format!(
+        "SELECT {USER_VIEW_COLS} FROM users WHERE id = ANY($1)"
     )))
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(state.pg())
+    .bind(&ids)
+    .fetch_all(&mut *tx)
     .await?;
-    Ok(Json(rows))
+    let rank: HashMap<Uuid, usize> = ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+    users.sort_by_key(|u| rank.get(&u.id).copied().unwrap_or(usize::MAX));
+    let mut count = sqlx::QueryBuilder::new("SELECT count(*) FROM users u");
+    push_user_filters(&mut count, &q)?;
+    let total: i64 = count.build_query_scalar().fetch_one(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(Json(UserPage { users, total }))
 }
 
 #[derive(Deserialize)]
@@ -760,6 +932,9 @@ pub struct CreateUserReq {
     pub role: Option<String>,
     pub traffic_limit_bytes: Option<i64>,
     pub expires_at: Option<DateTime<Utc>>,
+    /// W21: the account's email address, set as verified (the admin vouches
+    /// for it: the user gets mail and can reset the password with it).
+    pub email: Option<String>,
 }
 
 fn valid_login(login: &str) -> bool {
@@ -776,22 +951,42 @@ pub async fn create_user(
 ) -> Result<(axum::http::StatusCode, Json<CreatedUser>), ApiError> {
     user.require_admin()?;
     if req.traffic_limit_bytes.is_some_and(|l| l < 0) {
-        return Err(ApiError::bad_request("traffic_limit_bytes must be >= 0"));
+        return Err(bad_request!(
+            "user.limit_negative",
+            "traffic_limit_bytes must be >= 0"
+        ));
     }
     if !valid_login(&req.login) {
-        return Err(ApiError::bad_request(
-            "login must be 3-64 chars of [a-zA-Z0-9_.-]",
+        return Err(bad_request!(
+            "user.login_invalid",
+            "login must be 3-64 chars of [a-zA-Z0-9_.-]"
         ));
     }
     if req.password.len() < 8 {
-        return Err(ApiError::bad_request(
-            "password must be at least 8 characters",
+        return Err(bad_request!(
+            "account.password_too_short",
+            "password must be at least 8 characters"
         ));
     }
     let role = req.role.as_deref().unwrap_or("user");
     if role != "user" && role != "admin" {
-        return Err(ApiError::bad_request("role must be 'user' or 'admin'"));
+        return Err(bad_request!(
+            "user.role_invalid",
+            "role must be 'user' or 'admin'"
+        ));
     }
+    let email = match req
+        .email
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+    {
+        None => None,
+        Some(e) => Some(
+            crate::signup::email::parse(e)
+                .ok_or_else(|| bad_request!("signup.invalid_email", "invalid email address"))?,
+        ),
+    };
     let hash = auth::hash_password(&req.password)?;
     let id = Uuid::new_v4();
     // Mint the subscription token now (W20: stored encrypted as well, so
@@ -801,12 +996,12 @@ pub async fn create_user(
     let mut tx = state.pg().begin().await?;
     match sqlx::query_as::<_, UserView>(
         "INSERT INTO users (id, login, password_hash, role, traffic_limit_bytes, expires_at, \
-         sub_token_hash, sub_token_enc) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+         sub_token_hash, sub_token_enc, email, email_verified_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CASE WHEN $9::text IS NULL THEN NULL ELSE now() END) \
          RETURNING id, login, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, \
          created_at, false AS totp_enabled, disabled_reason::text AS disabled_reason, \
          NULL::uuid AS plan_id, NULL::text AS plan_name, NULL::timestamptz AS next_reset_at, \
-         email, false AS email_verified",
+         email, email_verified_at IS NOT NULL AS email_verified",
     )
     .bind(id)
     .bind(&req.login)
@@ -816,6 +1011,7 @@ pub async fn create_user(
     .bind(req.expires_at)
     .bind(crate::sub::hash_token(&sub_token))
     .bind(&sub_enc)
+    .bind(&email)
     .fetch_one(&mut *tx)
     .await
     {
@@ -823,6 +1019,7 @@ pub async fn create_user(
             let after = json!({
                 "login": view.login, "role": view.role, "enabled": view.enabled,
                 "traffic_limit_bytes": view.traffic_limit_bytes, "expires_at": view.expires_at,
+                "email": view.email,
                 "password": crate::audit::CHANGED, "sub_token": crate::audit::CHANGED,
             });
             crate::audit::record(
@@ -849,7 +1046,14 @@ pub async fn create_user(
             ))
         }
         Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
-            Err(ApiError::conflict("login already exists"))
+            if db.constraint() == Some("users_email_verified") {
+                Err(conflict!(
+                    "user.email_exists",
+                    "another account already uses this email address"
+                ))
+            } else {
+                Err(conflict!("user.login_exists", "login already exists"))
+            }
         }
         Err(e) => {
             tracing::error!(error = %e, "create user failed");
@@ -895,7 +1099,11 @@ where
     async fn from_request(req: axum::extract::Request, state: &S) -> Result<Self, ApiError> {
         match Json::<T>::from_request(req, state).await {
             Ok(Json(v)) => Ok(ApiJson(v)),
-            Err(e) => Err(ApiError::bad_request(e.body_text())),
+            Err(e) => Err(bad_request!(
+                "request.invalid_body",
+                "{detail}",
+                detail = e.body_text()
+            )),
         }
     }
 }
@@ -916,7 +1124,11 @@ pub(crate) fn non_null<T: Clone>(
 ) -> Result<Option<T>, ApiError> {
     match v {
         None => Ok(None),
-        Some(None) => Err(ApiError::bad_request(format!("{field} cannot be null"))),
+        Some(None) => Err(bad_request!(
+            "request.field_not_null",
+            "{field} cannot be null",
+            field = field
+        )),
         Some(Some(v)) => Ok(Some(v.clone())),
     }
 }
@@ -988,23 +1200,30 @@ async fn apply_update_user(
         && req.traffic_limit_bytes.is_none()
         && req.expires_at.is_none()
     {
-        return Err(ApiError::bad_request("no fields to update"));
+        return Err(bad_request!("request.no_fields", "no fields to update"));
     }
     if let Some(role) = &role {
         if role != "user" && role != "admin" {
-            return Err(ApiError::bad_request("role must be 'user' or 'admin'"));
+            return Err(bad_request!(
+                "user.role_invalid",
+                "role must be 'user' or 'admin'"
+            ));
         }
     }
     if let Some(pw) = &password {
         if pw.len() < 8 {
-            return Err(ApiError::bad_request(
-                "password must be at least 8 characters",
+            return Err(bad_request!(
+                "account.password_too_short",
+                "password must be at least 8 characters"
             ));
         }
     }
     if let Some(Some(limit)) = req.traffic_limit_bytes {
         if limit < 0 {
-            return Err(ApiError::bad_request("traffic_limit_bytes must be >= 0"));
+            return Err(bad_request!(
+                "user.limit_negative",
+                "traffic_limit_bytes must be >= 0"
+            ));
         }
     }
     // Enabled, role (expiry only applies to role=user) and expiry change
@@ -1025,14 +1244,16 @@ async fn apply_update_user(
         .fetch_one(&mut *conn)
         .await?;
         if has_plan && plan_managed {
-            return Err(ApiError::conflict(
+            return Err(conflict!(
+                "user.plan_managed",
                 "traffic_limit_bytes and expires_at are managed by the user's plan; \
-                 change the plan (PUT/PATCH /users/{id}/plan) or cancel it first",
+                 change the plan (PUT/PATCH /users/{{id}}/plan) or cancel it first"
             ));
         }
         if has_plan {
-            return Err(ApiError::conflict(
-                "the user has an active plan; cancel it before making the account an admin",
+            return Err(conflict!(
+                "user.has_plan",
+                "the user has an active plan; cancel it before making the account an admin"
             ));
         }
     }
@@ -1333,8 +1554,7 @@ fn node_warnings(
     }
     if unenforced_speed_limits {
         w.push(format!(
-            "the agent is too old to enforce speed limits (protocol < {}): plan speed \
-             limits are not applied on this node until the agent is upgraded",
+            "agent 版本过旧，不支持限速（协议 < {}）：升级 agent 之前，套餐限速在此节点不生效",
             crate::grpc::SPEED_LIMIT_PROTOCOL
         ));
     }
@@ -1574,12 +1794,14 @@ async fn refuse_acme_for_old_agent(conn: &mut PgConnection, id: Uuid) -> Result<
         return Ok(());
     };
     if let Some(p) = acme_needs_newer_agent(domain.as_deref(), &inbounds, protocol) {
-        return Err(ApiError::bad_request(format!(
-            "该节点的 agent 版本过旧（协议 {p} < {}），不支持节点域名自动证书：它会忽略节点域名，并因缺少证书文件\
+        return Err(bad_request!(
+            "node.acme_agent_too_old",
+            "该节点的 agent 版本过旧（协议 {p} < {need}），不支持节点域名自动证书：它会忽略节点域名，并因缺少证书文件\
              导致整份配置下发失败。请先升级 agent（升级发布，或在节点上重新运行一次安装命令），\
              或清空节点域名并手动放置证书",
-            crate::grpc::ACME_PROTOCOL
-        )));
+            p = p,
+            need = crate::grpc::ACME_PROTOCOL
+        ));
     }
     Ok(())
 }
@@ -1619,8 +1841,7 @@ fn tls_domain_warnings(
             .and_then(serde_json::Value::as_str);
         if uses_node_cert && sni.is_some_and(|s| !s.eq_ignore_ascii_case(domain)) {
             out.push(format!(
-                "inbound {:?}: serverName {:?} is not the node's TLS domain {domain}; the \
-                 automatic certificate only covers {domain}",
+                "入站 {:?}：serverName {:?} 不是节点域名 {domain}，自动证书只覆盖 {domain}",
                 i.get("tag")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("?"),
@@ -1629,6 +1850,15 @@ fn tls_domain_warnings(
         }
     }
     out
+}
+
+/// `YYYY-MM-DD HH:MM` in Beijing time (UTC+8, no DST): the console's
+/// time zone (W21, M7), for server-written Chinese texts.
+pub(crate) fn beijing_time(t: DateTime<Utc>) -> String {
+    match chrono::FixedOffset::east_opt(8 * 3600) {
+        Some(tz) => t.with_timezone(&tz).format("%Y-%m-%d %H:%M").to_string(),
+        None => t.to_rfc3339(),
+    }
 }
 
 fn cert_warning(
@@ -1641,21 +1871,17 @@ fn cert_warning(
         return None;
     }
     let why = if protocol.unwrap_or(0) < 2 {
-        "the agent is too old to renew it (protocol < 2): upgrade the agent, or issue a new \
-         enrollment token"
+        "agent 版本过旧，不能续期（协议 < 2）：请升级 agent，或重新生成安装命令"
     } else {
-        "the agent has not renewed it: check its logs"
+        "agent 没有按时续期：请查看节点上的 agent 日志"
     };
+    let at = beijing_time(not_after?);
     Some(if left <= chrono::Duration::zero() {
-        format!(
-            "agent certificate expired at {}; {why}",
-            not_after?.to_rfc3339()
-        )
+        format!("agent 证书已于 {at}（北京时间）过期；{why}")
     } else {
         format!(
-            "agent certificate expires in {} days ({}); {why}",
-            left.num_days(),
-            not_after?.to_rfc3339()
+            "agent 证书将在 {} 天后（{at}，北京时间）过期；{why}",
+            left.num_days()
         )
     })
 }
@@ -1748,7 +1974,12 @@ pub async fn list_nodes(
             serde_json::to_vec(&with_heartbeats(&state, views).await)?
         }
         Some("summary") => serde_json::to_vec(&node_summaries(&state).await?)?,
-        Some(_) => return Err(ApiError::bad_request("view must be summary or full")),
+        Some(_) => {
+            return Err(bad_request!(
+                "node.view_invalid",
+                "view must be summary or full"
+            ))
+        }
     };
     Ok(json_with_etag(&headers, body))
 }
@@ -1870,8 +2101,9 @@ pub async fn create_node(
     };
     let inbounds = match (&req.templates, &req.inbounds) {
         (Some(_), Some(_)) => {
-            return Err(ApiError::bad_request(
-                "give either templates or inbounds, not both",
+            return Err(bad_request!(
+                "node.templates_and_inbounds",
+                "give either templates or inbounds, not both"
             ))
         }
         (Some(t), None) => Some(serde_json::Value::Array(crate::nodetpl::render(
@@ -2047,7 +2279,7 @@ async fn apply_update_node(
     let enabled = non_null("enabled", &req.enabled)?;
     let name = non_null("name", &req.name)?;
     if !req.has_node_fields() {
-        return Err(ApiError::bad_request("no fields to update"));
+        return Err(bad_request!("request.no_fields", "no fields to update"));
     }
     // W11 fields (validated before any row is touched).
     let display_name = req
@@ -2074,14 +2306,15 @@ async fn apply_update_node(
     };
     if let Some(Some(r)) = req.traffic_max_rate_bytes_per_sec {
         if r <= 0 {
-            return Err(ApiError::bad_request(
-                "traffic_max_rate_bytes_per_sec must be > 0",
+            return Err(bad_request!(
+                "node.max_rate_invalid",
+                "traffic_max_rate_bytes_per_sec must be > 0"
             ));
         }
     }
     let name = match name {
         Some(n) if n.trim().is_empty() => {
-            return Err(ApiError::bad_request("name must not be empty"))
+            return Err(bad_request!("node.name_empty", "name must not be empty"))
         }
         n => n.map(|n| n.trim().to_string()),
     };
@@ -2095,8 +2328,9 @@ async fn apply_update_node(
         .as_ref()
         .is_some_and(|r| r.as_ref().is_some_and(|r| r.chars().count() > 64))
     {
-        return Err(ApiError::bad_request(
-            "region must be at most 64 characters",
+        return Err(bad_request!(
+            "node.region_long",
+            "region must be at most 64 characters"
         ));
     }
     // "" and whitespace normalize to null (cleared).
@@ -2179,7 +2413,7 @@ async fn apply_update_node(
     {
         Ok(r) => r,
         Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
-            return Err(ApiError::conflict("node name already exists"))
+            return Err(conflict!("node.name_exists", "node name already exists"))
         }
         Err(e) => return Err(e.into()),
     };
@@ -2213,7 +2447,7 @@ pub async fn update_node(
         // Lock order: the entitlement lock before the node row.
         crate::entitle::lock(&mut tx).await?;
     } else if !req.has_node_fields() {
-        return Err(ApiError::bad_request("no fields to update"));
+        return Err(bad_request!("request.no_fields", "no fields to update"));
     }
     if req.has_node_fields() {
         apply_update_node(&mut tx, &actor, id, &req).await?;
@@ -2287,7 +2521,7 @@ async fn refuse_if_deleting(conn: &mut PgConnection, id: Uuid) -> Result<(), Api
             .await?;
     match deleting {
         None => Err(ApiError::not_found()),
-        Some(true) => Err(ApiError::conflict("node is being deleted")),
+        Some(true) => Err(conflict!("node.deleting", "node is being deleted")),
         Some(false) => Ok(()),
     }
 }
@@ -2345,47 +2579,68 @@ fn reserved_tag(tag: &str) -> bool {
 /// Every inbound needs a unique, non-reserved, non-empty tag and a protocol.
 pub(crate) fn validate_inbounds(inbounds: &serde_json::Value) -> Result<(), ApiError> {
     let Some(items) = inbounds.as_array() else {
-        return Err(ApiError::bad_request("inbounds must be an array"));
+        return Err(bad_request!(
+            "inbound.not_array",
+            "inbounds must be an array"
+        ));
     };
     let mut seen = HashSet::new();
     for item in items {
         let tag = match item.get("tag").and_then(|t| t.as_str()) {
             Some(tag) if !tag.is_empty() => tag,
-            _ => return Err(ApiError::bad_request("every inbound needs a non-empty tag")),
+            _ => {
+                return Err(bad_request!(
+                    "inbound.tag_missing",
+                    "every inbound needs a non-empty tag"
+                ))
+            }
         };
         if reserved_tag(tag) {
-            return Err(ApiError::bad_request(format!(
-                "inbound tag {tag:?} is reserved (api, akari-*, _*)"
-            )));
+            return Err(bad_request!(
+                "inbound.tag_reserved",
+                "inbound tag {tag:?} is reserved (api, akari-*, _*)",
+                tag = tag
+            ));
         }
         if !seen.insert(tag) {
-            return Err(ApiError::bad_request(format!(
-                "duplicate inbound tag {tag:?}"
-            )));
+            return Err(bad_request!(
+                "inbound.tag_duplicate",
+                "duplicate inbound tag {tag:?}",
+                tag = tag
+            ));
         }
         match item.get("protocol").and_then(|p| p.as_str()) {
             Some(p) if !p.is_empty() => {}
             _ => {
-                return Err(ApiError::bad_request(format!(
-                    "inbound {tag:?} needs a protocol"
-                )))
+                return Err(bad_request!(
+                    "inbound.protocol_missing",
+                    "inbound {tag:?} needs a protocol",
+                    tag = tag
+                ))
             }
         }
         // The agent's gate dispatcher wraps a DefaultDispatcher without a
         // FakeDNS engine (R10 F4): fakedns sniffing would silently misroute.
         if mentions_fakedns(item) {
-            return Err(ApiError::bad_request(format!(
-                "inbound {tag:?}: fakedns is not supported by the agent"
-            )));
+            return Err(bad_request!(
+                "inbound.fakedns",
+                "inbound {tag:?}: fakedns is not supported by the agent",
+                tag = tag
+            ));
         }
         // W8: protocol/transport matrix (protocols.rs). gRPC is allowed
         // again since R26 (agent grpc-go pinned past GO-2026-6443).
         if let Err(e) = crate::protocols::check_inbound(item) {
-            return Err(ApiError::bad_request(format!("inbound {tag:?}: {e}")));
+            return Err(bad_request!(
+                "inbound.invalid",
+                "inbound {tag:?}: {e}",
+                tag = tag,
+                e = e
+            ));
         }
     }
     if let Some(e) = crate::protocols::port_clash(items) {
-        return Err(ApiError::bad_request(e));
+        return Err(bad_request!("inbound.port_clash", "{detail}", detail = e));
     }
     Ok(())
 }
@@ -2449,7 +2704,7 @@ fn inbound_warnings(inbounds: &serde_json::Value) -> Vec<String> {
             let tag = i.get("tag").and_then(|t| t.as_str()).unwrap_or("?");
             crate::protocols::check_inbound(i)
                 .err()
-                .map(|e| format!("inbound {tag:?}: {e}"))
+                .map(|e| format!("入站 {tag:?}：{e}"))
         })
         .collect();
     out.extend(crate::protocols::port_clash(items));
@@ -2623,7 +2878,8 @@ pub(crate) struct Credential {
 /// A new account for `inbound` (protocols.rs: the inbound's protocol and
 /// settings decide its shape).
 pub(crate) fn generate_account(inbound: &serde_json::Value) -> Result<serde_json::Value, ApiError> {
-    crate::protocols::generate_account(inbound).map_err(ApiError::bad_request)
+    crate::protocols::generate_account(inbound)
+        .map_err(|e| bad_request!("inbound.account_invalid", "{detail}", detail = e))
 }
 
 /// The inbound of `inbounds` tagged `tag`.
@@ -2656,11 +2912,12 @@ async fn apply_assign(
     req: &AssignReq,
 ) -> Result<serde_json::Value, ApiError> {
     if !crate::protocols::MANAGED.contains(&req.protocol.as_str()) {
-        return Err(ApiError::bad_request(format!(
-            "unsupported protocol {:?} ({})",
-            req.protocol,
-            crate::protocols::MANAGED.join(", ")
-        )));
+        return Err(bad_request!(
+            "user.assign_protocol_invalid",
+            "unsupported protocol {protocol:?} ({allowed})",
+            protocol = req.protocol.clone(),
+            allowed = crate::protocols::MANAGED.join(", ")
+        ));
     }
     // M3: assignments take the entitlement lock like every node_users
     // writer that interacts with the reconcile (entitle.rs), before rows.
@@ -2684,23 +2941,28 @@ async fn apply_assign(
         None => return Err(ApiError::not_found()),
         Some("user") => {}
         Some(_) => {
-            return Err(ApiError::bad_request(
-                "admin accounts are not proxy users and cannot be assigned to nodes",
+            return Err(bad_request!(
+                "user.admin_not_assignable",
+                "admin accounts are not proxy users and cannot be assigned to nodes"
             ))
         }
     }
     match inbound_protocols(&inbounds).get(&req.inbound_tag) {
         None => {
-            return Err(ApiError::bad_request(format!(
-                "inbound {:?} does not exist on this node",
-                req.inbound_tag
-            )))
+            return Err(bad_request!(
+                "user.assign_inbound_missing",
+                "inbound {tag:?} does not exist on this node",
+                tag = req.inbound_tag.clone()
+            ))
         }
         Some(p) if *p != req.protocol => {
-            return Err(ApiError::bad_request(format!(
-                "inbound {:?} is {p}, not {}",
-                req.inbound_tag, req.protocol
-            )))
+            return Err(bad_request!(
+                "user.assign_protocol_mismatch",
+                "inbound {tag:?} is {actual}, not {protocol}",
+                tag = req.inbound_tag.clone(),
+                actual = p.clone(),
+                protocol = req.protocol.clone()
+            ))
         }
         Some(_) => {}
     }
@@ -2816,8 +3078,9 @@ pub(crate) async fn apply_unassign(
     match manual {
         None => return Err(ApiError::not_found()),
         Some(false) => {
-            return Err(ApiError::conflict(
-                "this access is granted by the user's plan; change the plan or its node groups",
+            return Err(conflict!(
+                "user.access_from_plan",
+                "this access is granted by the user's plan; change the plan or its node groups"
             ))
         }
         Some(true) => {}
@@ -3015,14 +3278,14 @@ mod tests {
         assert_eq!(cert_warning(Some(now + d(15)), Some(1), now), None);
         let w = cert_warning(Some(now + d(10)), Some(1), now).unwrap();
         assert!(
-            w.contains("expires in 9 days") || w.contains("expires in 10 days"),
+            w.contains("将在 9 天后") || w.contains("将在 10 天后"),
             "{w}"
         );
-        assert!(w.contains("too old to renew"), "{w}");
+        assert!(w.contains("不能续期"), "{w}");
         let w = cert_warning(Some(now + d(3)), Some(2), now).unwrap();
-        assert!(w.contains("has not renewed"), "{w}");
+        assert!(w.contains("没有按时续期"), "{w}");
         let w = cert_warning(Some(now - d(1)), None, now).unwrap();
-        assert!(w.contains("expired at"), "{w}");
+        assert!(w.contains("已于") && w.contains("过期"), "{w}");
     }
 
     /// W10: an old agent or an inbound naming another SNI keeps the
@@ -5347,6 +5610,7 @@ mod tests {
                 role: None,
                 traffic_limit_bytes: None,
                 expires_at: None,
+                email: None,
             }),
         )
         .await

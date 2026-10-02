@@ -22,7 +22,10 @@ import {
   type RenderedInbounds,
   type TemplateCatalog,
 } from "../lib/api";
-import { adminErrorText } from "../lib/errors";
+import { adminErrorText } from "../lib/admin-errors";
+import { fmtDate, fmtDateTime, fmtDuration } from "../lib/datetime";
+import { useAdminConfirm as useConfirm } from "../admin-confirm";
+import { RowMenu } from "../components/row-menu";
 import { navigate, usePath } from "../lib/router";
 import {
   NodeOpsCard,
@@ -78,6 +81,7 @@ export function AdminNodes() {
   const [error, setError] = useState<string | null>(null);
 
   const node = useFullNode(selected).data ?? null;
+  const confirm = useConfirm();
 
   // Re-install: a fresh one-line command (the previous unused one stops
   // working; once the agent enrolls with it, the node's older certificate
@@ -86,9 +90,11 @@ export function AdminNodes() {
     setError(null);
     if (
       n.enrolled &&
-      !window.confirm(
-        `为「${n.name}」生成新的安装命令？节点用它重新注册后，当前证书将失效（正在运行的 agent 需要用新命令重装）。`,
-      )
+      !(await confirm({
+        title: `为「${n.name}」生成新的安装命令？`,
+        message: "节点用它重新注册后，当前证书将失效（正在运行的 agent 需要用新命令重装）。",
+        confirmLabel: "生成",
+      }))
     ) {
       return;
     }
@@ -104,10 +110,17 @@ export function AdminNodes() {
     }
   }
 
-  // Manual path (ops): a bootstrap file with a 24 h token.
+  // Manual path (ops): a bootstrap file (手动引导文件) with a 24 h token.
   async function newBootstrap(n: NodeSummary) {
     setError(null);
-    if (n.enrolled && !window.confirm(`为「${n.name}」签发新的注册令牌？节点用它注册后，当前证书将失效。`)) {
+    if (
+      n.enrolled &&
+      !(await confirm({
+        title: `为「${n.name}」生成新的手动引导文件？`,
+        message: "文件里的注册令牌单次有效；节点用它注册后，当前证书将失效。",
+        confirmLabel: "生成",
+      }))
+    ) {
       return;
     }
     try {
@@ -121,7 +134,15 @@ export function AdminNodes() {
 
   async function toggle(n: NodeSummary) {
     setError(null);
-    if (n.enabled && !window.confirm(`停用节点「${n.name}」？节点上的所有入站与用户连接会立即断开。`)) {
+    if (
+      n.enabled &&
+      !(await confirm({
+        title: `停用节点「${n.name}」？`,
+        message: "节点上的所有入站与用户连接会立即断开，可随时重新启用。",
+        confirmLabel: "停用",
+        destructive: true,
+      }))
+    ) {
       return;
     }
     try {
@@ -136,7 +157,14 @@ export function AdminNodes() {
   // the empty state, then the node disappears.
   async function remove(n: NodeSummary) {
     setError(null);
-    if (!window.confirm(`删除节点「${n.name}」？节点停止服务，证书永久吊销（不可恢复，重新上线需新建节点）。`)) {
+    if (
+      !(await confirm({
+        title: `删除节点「${n.name}」？`,
+        message: "节点停止服务，证书永久吊销（不可恢复，重新上线需新建节点）。",
+        confirmLabel: "删除",
+        destructive: true,
+      }))
+    ) {
       return;
     }
     try {
@@ -213,24 +241,23 @@ export function AdminNodes() {
           ) : (nodes.data ?? []).length === 0 ? (
             <p className="text-sm text-muted-foreground">还没有节点。点击「新建节点」开始。</p>
           ) : (
-            <Table>
+            <Table label="节点列表">
               <TableHeader>
                 <TableRow>
-                  <TableHead>名称</TableHead>
+                  <TableHead className="sticky left-0 z-[1] bg-card">名称</TableHead>
                   <TableHead>状态</TableHead>
                   <NodeLiveHeads />
                   <TableHead>地区 / 地址</TableHead>
                   <TableHead>Agent</TableHead>
-                  <TableHead>租约剩余</TableHead>
-                  <TableHead>证书</TableHead>
-                  <TableHead>最后在线</TableHead>
-                  <TableHead className="text-right">操作</TableHead>
+                  <TableHead className="sticky right-0 z-[1] bg-card text-right">
+                    <span className="sr-only">操作</span>
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {(nodes.data ?? []).map((n) => (
                   <TableRow key={n.id}>
-                    <TableCell className="font-medium">
+                    <TableCell className="sticky left-0 z-[1] bg-card font-medium">
                       <span className="whitespace-nowrap">{n.display_name ?? n.name}</span>
                       {n.display_name && <span className="block text-xs text-muted-foreground">{n.name}</span>}
                       <span className="mt-0.5 flex flex-wrap gap-1">
@@ -244,91 +271,63 @@ export function AdminNodes() {
                       </span>
                     </TableCell>
                     <TableCell>
-                      <StatusBadge n={n} />
-                      {n.warnings.length > 0 && (
-                        <span className="ml-2 text-xs font-medium text-amber-600" title={n.warnings.join("\n")}>
-                          {n.warnings.length} 条警告
-                        </span>
-                      )}
-                      {n.last_error && (
-                        <span className="ml-2 text-xs font-medium text-destructive" title={n.last_error}>
-                          配置应用失败
-                        </span>
-                      )}
-                      {n.alerts_firing > 0 && (
-                        <a
-                          className="ml-2 text-xs font-medium text-destructive underline"
-                          href={`${adminBase}/alerts`}
-                          onClick={(e) => {
-                            e.preventDefault();
-                            navigate(`${adminBase}/alerts`);
-                          }}
-                        >
-                          {n.alerts_firing} 条告警
-                        </a>
-                      )}
+                      <NodeStatusCell n={n} />
                     </TableCell>
                     <NodeLiveCells n={n} />
-                    <TableCell className="text-muted-foreground">
+                    <TableCell className="whitespace-nowrap text-muted-foreground">
                       {n.region ?? "—"}
                       <span className="block text-xs">{n.server_addr ?? "未设置地址"}</span>
                     </TableCell>
-                    <TableCell className="text-muted-foreground">
+                    <TableCell className="whitespace-nowrap text-muted-foreground">
                       {n.agent_version ?? "—"}
                       {n.agent_os && n.agent_arch && (
-                        <span className="ml-1 text-xs">
+                        <span className="block text-xs">
                           {n.agent_os}/{n.agent_arch}
                         </span>
                       )}
                       {n.update_status && <UpdateBadge s={n.update_status} />}
                     </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {formatLease(leaseLeft(n.lease_expires_at))}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {n.cert_not_after
-                        ? `至 ${new Date(n.cert_not_after).toLocaleDateString()}`
-                        : n.enroll_token_expires_at
-                          ? `安装链接 ${new Date(n.enroll_token_expires_at).toLocaleString()} 过期`
-                          : n.enrolled
-                            ? "—"
-                            : "安装链接已过期"}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {n.last_seen_at ? new Date(n.last_seen_at).toLocaleString() : "—"}
-                      {n.heartbeat && (
-                        <span className="block text-xs">
-                          {n.heartbeat.connections} 连接
-                          {n.heartbeat.uptime_seconds != null &&
-                            ` · 运行 ${Math.floor(n.heartbeat.uptime_seconds / 3600)} 小时`}
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell className="space-x-1 whitespace-nowrap text-right">
-                      <Button variant="outline" size="sm" onClick={() => navigate(`${adminBase}/nodes/${n.id}`)}>
-                        详情
-                      </Button>
-                      <Button variant="outline" size="sm" onClick={() => setSelected(n.id === selected ? null : n.id)}>
-                        {n.id === selected ? "收起" : "配置"}
-                      </Button>
-                      <Button variant="ghost" size="sm" disabled={!!n.deleting_at} onClick={() => reinstall(n)}>
-                        {n.enrolled ? "重装命令" : "安装命令"}
-                      </Button>
-                      <Button variant="ghost" size="sm" disabled={!!n.deleting_at} onClick={() => toggle(n)}>
-                        {n.enabled ? "停用" : "启用"}
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        disabled={!!n.deleting_at}
-                        title="手动安装用：下载 bootstrap 文件（24 小时有效）"
-                        onClick={() => newBootstrap(n)}
-                      >
-                        bootstrap
-                      </Button>
-                      <Button variant="destructive" size="sm" disabled={!!n.deleting_at} onClick={() => remove(n)}>
-                        删除
-                      </Button>
+                    <TableCell className="sticky right-0 z-[1] bg-card text-right">
+                      <span className="inline-flex items-center gap-1">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          aria-label={`${n.name} 详情`}
+                          onClick={() => navigate(`${adminBase}/nodes/${n.id}`)}
+                        >
+                          详情
+                        </Button>
+                        <RowMenu
+                          label={`${n.name} 的更多操作`}
+                          items={[
+                            {
+                              label: n.id === selected ? "收起配置" : "配置",
+                              onSelect: () => setSelected(n.id === selected ? null : n.id),
+                            },
+                            {
+                              label: n.enrolled ? "重装命令" : "安装命令",
+                              disabled: !!n.deleting_at,
+                              onSelect: () => void reinstall(n),
+                            },
+                            {
+                              label: "手动引导文件",
+                              disabled: !!n.deleting_at,
+                              onSelect: () => void newBootstrap(n),
+                            },
+                            {
+                              label: n.enabled ? "停用" : "启用",
+                              disabled: !!n.deleting_at,
+                              onSelect: () => void toggle(n),
+                            },
+                            {
+                              label: "删除",
+                              destructive: true,
+                              disabled: !!n.deleting_at,
+                              onSelect: () => void remove(n),
+                            },
+                          ]}
+                        />
+                      </span>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -369,12 +368,63 @@ function StatusBadge({ n }: { n: Pick<NodeSummary, "deleting_at" | "enabled" | "
 }
 
 export function formatLease(secs: number | null): string {
-  if (secs == null) return "—";
-  if (secs <= 0) return "已到期";
-  const h = Math.floor(secs / 3600);
-  if (h >= 24) return `${Math.floor(h / 24)} 天 ${h % 24} 小时`;
-  if (h >= 1) return `${h} 小时 ${Math.floor((secs % 3600) / 60)} 分`;
-  return `${Math.max(1, Math.floor(secs / 60))} 分钟`;
+  return fmtDuration(secs);
+}
+
+/**
+ * The status cell (W21, audit M4/Minor 7): the badge, then what matters for
+ * this state — a node waiting for its install shows the install link's
+ * expiry (not a lease); an enrolled one carries its lease and certificate
+ * in the tooltip; warnings, apply failures and firing alerts follow.
+ */
+export function NodeStatusCell({ n }: { n: NodeSummary }) {
+  const lease = leaseLeft(n.lease_expires_at);
+  const tip = n.enrolled
+    ? [
+        `失联租约剩余 ${formatLease(lease)}`,
+        n.cert_not_after && `agent 证书有效期至 ${fmtDate(n.cert_not_after)}`,
+        n.last_seen_at && `最后在线 ${fmtDateTime(n.last_seen_at)}`,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : undefined;
+  return (
+    <div className="space-y-0.5" title={tip}>
+      <StatusBadge n={n} />
+      {!n.enrolled && !n.deleting_at && (
+        <span className="block whitespace-nowrap text-xs text-muted-foreground">
+          {n.enroll_token_expires_at
+            ? `安装链接 ${fmtDateTime(n.enroll_token_expires_at)} 过期`
+            : "安装链接已过期，请重新生成"}
+        </span>
+      )}
+      {n.enrolled && lease != null && lease <= 0 && n.status !== "online" && (
+        <span className="block whitespace-nowrap text-xs text-destructive">失联租约已到期</span>
+      )}
+      {n.warnings.length > 0 && (
+        <span className="block whitespace-nowrap text-xs font-medium text-amber-700" title={n.warnings.join("\n")}>
+          {n.warnings.length} 条警告
+        </span>
+      )}
+      {n.last_error && (
+        <span className="block whitespace-nowrap text-xs font-medium text-destructive" title={n.last_error}>
+          配置应用失败
+        </span>
+      )}
+      {n.alerts_firing > 0 && (
+        <a
+          className="block whitespace-nowrap text-xs font-medium text-destructive underline"
+          href={`${adminBase}/alerts`}
+          onClick={(e) => {
+            e.preventDefault();
+            navigate(`${adminBase}/alerts`);
+          }}
+        >
+          {n.alerts_firing} 条告警
+        </a>
+      )}
+    </div>
+  );
 }
 
 // --- inbound templates -------------------------------------------------------
@@ -1200,11 +1250,13 @@ function InstallCard({ shown, onClose }: { shown: InstallShown; onClose: () => v
           </p>
         )}
         {install.warnings.length > 0 && (
-          <ul role="alert" className="list-disc space-y-1 pl-5 text-sm text-amber-600">
-            {install.warnings.map((w) => (
-              <li key={w}>{w}</li>
-            ))}
-          </ul>
+          <div role="alert">
+            <ul className="list-disc space-y-1 pl-5 text-sm text-amber-700">
+              {install.warnings.map((w) => (
+                <li key={w}>{w}</li>
+              ))}
+            </ul>
+          </div>
         )}
         {shown.needsCertificate && (
           <p className="text-sm text-amber-600">
@@ -1218,7 +1270,7 @@ function InstallCard({ shown, onClose }: { shown: InstallShown; onClose: () => v
         {shown.bootstrap && (
           <div>
             <Button type="button" variant="ghost" size="sm" onClick={() => setManual(!manual)}>
-              {manual ? "隐藏手动安装" : "手动安装（bootstrap 文件）"}
+              {manual ? "隐藏手动安装" : "手动安装（手动引导文件）"}
             </Button>
             {manual && <BootstrapBody name={shown.name} bootstrap={shown.bootstrap} />}
           </div>
@@ -1260,10 +1312,11 @@ function BootstrapCard({ enrollment, onClose }: { enrollment: NodeEnrollment; on
     <Card>
       <CardHeader>
         <CardTitle>
-          <h2>「{enrollment.name}」的 bootstrap 文件</h2>
+          <h2>「{enrollment.name}」的手动引导文件</h2>
         </CardTitle>
         <CardDescription>
-          只显示这一次。注册令牌单次有效，{new Date(enrollment.expires_at).toLocaleString()} 过期。
+          只显示这一次。注册令牌单次有效，{fmtDateTime(enrollment.expires_at)}（北京时间）过期。保存为节点上的
+          /etc/akari-agent/bootstrap.toml。
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -1288,6 +1341,7 @@ function describeInbound(i: Inbound): string {
 
 function NodeEditor({ node }: { node: NodeView }) {
   const queryClient = useQueryClient();
+  const confirm = useConfirm();
   const catalog = useQuery({
     queryKey: ["inbound-templates"],
     queryFn: () => get<TemplateCatalog>("/inbound-templates"),
@@ -1317,7 +1371,15 @@ function NodeEditor({ node }: { node: NodeView }) {
     e.preventDefault();
     setBasicsMsg(null);
     const domainChanges = (tlsDomain.trim().toLowerCase() || null) !== (node.tls_domain ?? null);
-    if (domainChanges && !window.confirm("更改节点域名会向节点下发新配置（重建 xray，断开现有连接）。继续？")) return;
+    if (
+      domainChanges &&
+      !(await confirm({
+        title: "更改节点域名？",
+        message: "会向节点下发新配置（重建 xray，断开现有连接）。",
+        confirmLabel: "继续",
+      }))
+    )
+      return;
     try {
       await patch(`/nodes/${node.id}`, {
         name: name.trim(),
@@ -1370,11 +1432,15 @@ function NodeEditor({ node }: { node: NodeView }) {
     const before = new Set(node.xray_inbounds.map((i) => i.tag));
     const removed = [...before].filter((t) => !list.some((i) => i.tag === t));
     if (
-      !window.confirm(
-        removed.length > 0
-          ? `保存入站？将移除 ${removed.join("、")}，这些入站上的用户凭据会被删除；节点会重建配置并断开现有连接。`
-          : "保存入站？节点会重建配置并断开现有连接。",
-      )
+      !(await confirm({
+        title: "保存入站？",
+        message:
+          removed.length > 0
+            ? `将移除 ${removed.join("、")}，这些入站上的用户凭据会被删除；节点会重建配置并断开现有连接。`
+            : "节点会重建配置并断开现有连接。",
+        confirmLabel: "保存并下发",
+        destructive: removed.length > 0,
+      }))
     ) {
       return;
     }
@@ -1410,7 +1476,15 @@ function NodeEditor({ node }: { node: NodeView }) {
       setAssignError("请填写用户 ID");
       return;
     }
-    if (!window.confirm("把该用户从此节点移除？其在此节点上的连接会被断开。")) return;
+    if (
+      !(await confirm({
+        title: "把该用户从此节点移除？",
+        message: "其在此节点上的连接会被断开。",
+        confirmLabel: "移除",
+        destructive: true,
+      }))
+    )
+      return;
     try {
       await del(`/users/${userId.trim()}/nodes/${node.id}`);
     } catch (err) {
@@ -1432,15 +1506,17 @@ function NodeEditor({ node }: { node: NodeView }) {
             最近一次应用失败
             {node.failed_config_version !== null &&
               `（cfg ${node.failed_config_version} · usr ${node.failed_user_version}）`}
-            {node.last_error_at && ` 于 ${new Date(node.last_error_at).toLocaleString()}`}：{node.last_error}
+            {node.last_error_at && ` 于 ${fmtDateTime(node.last_error_at)}`}：{node.last_error}
           </p>
         )}
         {node.warnings.length > 0 && (
-          <ul role="alert" className="mt-2 list-disc pl-5 text-sm text-amber-600">
-            {node.warnings.map((w) => (
-              <li key={w}>{w}</li>
-            ))}
-          </ul>
+          <div role="alert">
+            <ul className="mt-2 list-disc pl-5 text-sm text-amber-700">
+              {node.warnings.map((w) => (
+                <li key={w}>{w}</li>
+              ))}
+            </ul>
+          </div>
         )}
         <NodeCertStatus node={node} />
       </CardHeader>
@@ -1490,7 +1566,7 @@ function NodeEditor({ node }: { node: NodeView }) {
           {basicsMsg && (
             <span
               role={basicsMsg.ok ? "status" : "alert"}
-              className={`text-sm ${basicsMsg.ok ? "text-emerald-600" : "text-destructive"}`}
+              className={`text-sm ${basicsMsg.ok ? "text-emerald-700" : "text-destructive"}`}
             >
               {basicsMsg.text}
             </span>
@@ -1504,7 +1580,7 @@ function NodeEditor({ node }: { node: NodeView }) {
               {pending.length === 0 ? (
                 <p className="text-sm text-muted-foreground">没有入站。</p>
               ) : (
-                <Table>
+                <Table label="入站列表">
                   <TableHeader>
                     <TableRow>
                       <TableHead>标签</TableHead>
@@ -1593,7 +1669,7 @@ function NodeEditor({ node }: { node: NodeView }) {
             {inboundMsg && (
               <span
                 role={inboundMsg.ok ? "status" : "alert"}
-                className={`text-sm ${inboundMsg.ok ? "text-emerald-600" : "text-destructive"}`}
+                className={`text-sm ${inboundMsg.ok ? "text-emerald-700" : "text-destructive"}`}
               >
                 {inboundMsg.text}
               </span>

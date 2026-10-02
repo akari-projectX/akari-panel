@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { GroupView, MyPlan, NodeView, PlanView } from "../lib/api";
 import { fakeApi, renderAdmin, renderWithClient } from "../test/harness";
-import { AdminPlans, optionalInt, periodValue, pricesBody, quotaBytes } from "./admin-plans";
+import { AdminPlans, optionalInt, periodValue, planBody, planForm, pricesBody, quotaBytes } from "./admin-plans";
 import { PasswordCard, PlanCard } from "./portal";
 
 afterEach(() => {
@@ -98,7 +98,7 @@ describe("plan form helpers", () => {
 });
 
 describe("AdminPlans", () => {
-  it("lists plans and groups, and creates a plan with the right body", async () => {
+  it("lists plans and groups, and creates a plan with its prices in one request", async () => {
     const calls = fakeApi({
       "GET /node-groups": [group({ node_ids: ["n1"], plan_ids: ["p1"] }), group({ id: "g2", name: "eu" })],
       "GET /plans": [plan({})],
@@ -106,11 +106,14 @@ describe("AdminPlans", () => {
       "POST /plans": () => ({ status: 201, body: plan({ id: "p2", name: "pro" }) }),
     });
     renderAdmin(<AdminPlans />);
-    expect(await screen.findByText("basic")).toBeTruthy();
+    expect(await screen.findByRole("cell", { name: "basic" })).toBeTruthy();
     expect(screen.getByText("100.0 GiB")).toBeTruthy();
     expect(screen.getByText("jp-1")).toBeTruthy();
 
-    const form = screen.getByRole("form", { name: "新建套餐" });
+    fireEvent.click(screen.getByRole("button", { name: "新建套餐" }));
+    const form = await screen.findByRole("form", { name: "新建套餐" });
+    // Device seats are reserved for the client (R25): not shown.
+    expect(within(form).queryByLabelText(/设备数/)).toBeNull();
     fireEvent.change(within(form).getByLabelText("名称"), { target: { value: "pro" } });
     fireEvent.change(within(form).getByLabelText(/流量额度/), { target: { value: "50" } });
     fireEvent.change(within(form).getByLabelText("流量重置"), { target: { value: "days" } });
@@ -120,8 +123,12 @@ describe("AdminPlans", () => {
     fireEvent.change(within(form).getByLabelText(/说明/), { target: { value: "Fast\n- 100 Mbps" } });
     fireEvent.click(within(form).getByLabelText("仅限现有用户续费"));
     fireEvent.click(within(form).getByLabelText("eu"));
+    fireEvent.click(within(form).getByLabelText("月付"));
+    fireEvent.change(within(form).getByLabelText("月付 价格"), { target: { value: "9.9" } });
+    fireEvent.click(within(form).getByLabelText(/上架/));
     fireEvent.click(within(form).getByRole("button", { name: "创建套餐" }));
     await waitFor(() => expect(calls.some((c) => c.method === "POST")).toBe(true));
+    expect(calls.filter((c) => c.method !== "GET")).toHaveLength(1);
     const created = calls.find((c) => c.method === "POST");
     expect(created?.path).toBe("/plans");
     expect(created?.body).toEqual({
@@ -133,41 +140,80 @@ describe("AdminPlans", () => {
       capacity: 50,
       description: "Fast\n- 100 Mbps",
       renewal_only: true,
+      pricing: { on_sale: true, prices: [{ period: "month", days: null, price_cents: 990 }] },
     });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
-  it("sets per-period prices and the sale flag with PUT /prices", async () => {
+  it("edits fields and prices with one PATCH; prices are listed in catalogue order", async () => {
     const calls = fakeApi({
       "GET /node-groups": [],
-      "GET /plans": [plan({ prices: [{ period: "month", days: null, price_cents: 990 }], on_sale: true, capacity: 2 })],
+      "GET /plans": [
+        plan({
+          prices: [
+            { period: "reset", days: null, price_cents: 500 },
+            { period: "month", days: null, price_cents: 990 },
+          ],
+          on_sale: true,
+          capacity: 2,
+        }),
+      ],
       "GET /nodes": [],
-      "PUT /plans/p1/prices": { status: 204 },
+      "PATCH /plans/p1": plan({}),
     });
     renderAdmin(<AdminPlans />);
-    expect(await screen.findByText("月付 ¥9.90")).toBeTruthy();
+    const month = await screen.findByText("月付 ¥9.90");
+    const reset = screen.getByText(/流量重置包 ¥5.00/);
+    expect(month.compareDocumentPosition(reset) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByText("满员")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "定价" }));
-    const form = screen.getByRole("form", { name: "定价 basic" });
+    fireEvent.click(screen.getByRole("button", { name: "编辑 basic" }));
+    const form = await screen.findByRole("form", { name: "编辑 basic" });
     fireEvent.click(within(form).getByLabelText("年付"));
-    fireEvent.change(within(form).getByLabelText("basic 年付 价格"), { target: { value: "99.00" } });
-    fireEvent.click(within(form).getByLabelText("流量重置包"));
-    fireEvent.change(within(form).getByLabelText("basic 流量重置包 价格"), { target: { value: "5" } });
-    fireEvent.click(within(form).getByRole("button", { name: "保存定价" }));
-    await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
-    expect(calls.find((c) => c.method === "PUT")?.body).toEqual({
-      on_sale: true,
-      prices: [
-        { period: "month", days: null, price_cents: 990 },
-        { period: "year", days: null, price_cents: 9900 },
-        { period: "reset", days: null, price_cents: 500 },
-      ],
+    fireEvent.change(within(form).getByLabelText("年付 价格"), { target: { value: "99.00" } });
+    fireEvent.change(within(form).getByLabelText(/限速/), { target: { value: "50" } });
+    fireEvent.click(within(form).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(calls.some((c) => c.method === "PATCH")).toBe(true));
+    expect(calls.filter((c) => c.method !== "GET")).toHaveLength(1);
+    expect(calls.find((c) => c.method === "PATCH")?.body).toEqual({
+      speed_limit_mbps: 50,
+      pricing: {
+        on_sale: true,
+        prices: [
+          { period: "month", days: null, price_cents: 990 },
+          { period: "year", days: null, price_cents: 9900 },
+          { period: "reset", days: null, price_cents: 500 },
+        ],
+      },
     });
   });
 
-  it("marks device seats as not yet enforced", async () => {
-    fakeApi({ "GET /node-groups": [], "GET /plans": [], "GET /nodes": [] });
+  it("validates the dialog before sending", () => {
+    const f = planForm(null);
+    expect(planBody({ ...f, name: "" }, null)).toBe("请填写名称");
+    expect(planBody({ ...f, name: "x", onSale: true }, null)).toBe("上架前至少设置一个流量重置包以外的价格");
+    expect(planBody({ ...f, name: "x", speed: "0" }, null)).toBe("限速须为 1–100000 的整数（Mbps）");
+    // Unchanged edit: only the pricing (the server applies it alone).
+    const p = plan({});
+    expect(planBody(planForm(p), p)).toEqual({ pricing: { on_sale: false, prices: [] } });
+  });
+
+  it("asks before disabling a plan", async () => {
+    const calls = fakeApi({
+      "GET /node-groups": [],
+      "GET /plans": [plan({})],
+      "GET /nodes": [],
+      "PATCH /plans/p1": plan({ enabled: false }),
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     renderAdmin(<AdminPlans />);
-    expect(await screen.findByLabelText("设备数（客户端上线后生效）")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "basic 的更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "停用" }));
+    await waitFor(() => expect(confirm).toHaveBeenCalled());
+    expect(calls.filter((c) => c.method === "PATCH")).toEqual([]);
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "basic 的更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "停用" }));
+    await waitFor(() => expect(calls.find((c) => c.method === "PATCH")?.body).toEqual({ enabled: false }));
   });
 
   it("replaces a group's membership with PATCH node_ids", async () => {
@@ -190,12 +236,16 @@ describe("AdminPlans", () => {
       "GET /node-groups": [],
       "GET /plans": [plan({})],
       "GET /nodes": [],
-      "DELETE /plans/p1": () => ({ status: 409, body: { error: "2 user(s) hold this plan" } }),
+      "DELETE /plans/p1": () => ({
+        status: 409,
+        body: { error: "2 user(s) hold this plan", code: "plan.in_use", params: { active: 2 } },
+      }),
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
     renderAdmin(<AdminPlans />);
-    fireEvent.click(await screen.findByRole("button", { name: "删除" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("hold this plan");
+    fireEvent.click(await screen.findByRole("button", { name: "basic 的更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "删除" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("有 2 个用户正在使用此套餐");
   });
 });
 
@@ -243,7 +293,10 @@ describe("Portal", () => {
   it("changes the password, and reports mismatches and server errors", async () => {
     let status = 400;
     const calls = fakeApi({
-      "POST /me/password": () => (status === 204 ? { status: 204 } : { status, body: { error: "invalid password" } }),
+      "POST /me/password": () =>
+        status === 204
+          ? { status: 204 }
+          : { status, body: { error: "invalid password", code: "account.invalid_password" } },
     });
     renderWithClient(<PasswordCard />);
     const fill = (cur: string, next: string, rep: string) => {

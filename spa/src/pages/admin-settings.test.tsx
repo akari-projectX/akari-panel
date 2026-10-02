@@ -4,7 +4,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fakeApi, renderWithClient } from "../test/harness";
 import { AdminSettings, hostOf, hostStillAllowed, humanInterval, probeBody, type SettingsView } from "./admin-settings";
 
+const tab = (t: string) => window.history.pushState(null, "", `/admin/settings/${t}`);
+
 afterEach(() => {
+  window.history.pushState(null, "", "/");
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -13,6 +16,7 @@ afterEach(() => {
 const view = (over: Partial<SettingsView> = {}): SettingsView => ({
   version: 3,
   updated_at: null,
+  site_name: null,
   main: { value: null, display: null, effective: null, source: "browser", config: null },
   sub: { value: null, display: null, effective: null, source: "browser", config: null },
   node: {
@@ -122,6 +126,7 @@ describe("AdminSettings", () => {
       },
       "PUT /settings": () => ({ status: 200, body: view({ version: 4 }) }),
     });
+    tab("node");
     renderWithClient(<AdminSettings />);
     fireEvent.change(await screen.findByLabelText("节点通信域名"), { target: { value: "node.example.com" } });
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
@@ -150,6 +155,7 @@ describe("AdminSettings", () => {
       "GET /settings": view(),
       "POST /settings/server-names/remove": { removed: "old.example.com", affected_nodes: [] },
     });
+    tab("node");
     renderWithClient(<AdminSettings />);
     fireEvent.click(await screen.findByRole("button", { name: "移除" }));
     await waitFor(() => expect(calls.some((c) => c.path === "/settings/server-names/remove")).toBe(true));
@@ -158,6 +164,31 @@ describe("AdminSettings", () => {
       name: "old.example.com",
       confirm: true,
     });
+  });
+});
+
+describe("tabs and the site name (W21)", () => {
+  it("switches tabs by URL and saves the site name", async () => {
+    const calls = fakeApi({
+      "GET /settings": view(),
+      "PUT /settings/site": () => ({ status: 200, body: view({ version: 4, site_name: "星云" }) }),
+      "GET /settings/mail": { version: 1, dead_letters: 0 },
+      "GET /mail/outbox": [],
+    });
+    renderWithClient(<AdminSettings />);
+    expect(screen.getByRole("tab", { name: "站点" }).getAttribute("aria-selected")).toBe("true");
+    fireEvent.change(await screen.findByLabelText("站点名称"), { target: { value: " 星云 " } });
+    fireEvent.click(screen.getByRole("button", { name: "保存站点名称" }));
+    await screen.findByText("已保存。");
+    expect(calls.find((c) => c.path === "/settings/site")?.body).toEqual({ version: 3, site_name: "星云" });
+    // The node domain is on its own tab; arrow keys move between tabs.
+    expect(screen.queryByLabelText("节点通信域名")).toBeNull();
+    fireEvent.keyDown(screen.getByRole("tab", { name: "站点" }), { key: "ArrowRight" });
+    expect(window.location.pathname).toBe("/admin/settings/node");
+    expect(await screen.findByLabelText("节点通信域名")).toBeTruthy();
+    expect(screen.queryByLabelText("主域名")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "失败邮件" }));
+    expect(await screen.findByRole("heading", { name: /失败邮件/ })).toBeTruthy();
   });
 });
 
@@ -190,6 +221,7 @@ describe("latency test settings (W12)", () => {
       "GET /settings": view(),
       "PUT /settings/probe": () => ({ status: 200, body: view({ version: 4 }) }),
     });
+    tab("probe");
     renderWithClient(<AdminSettings />);
     fireEvent.change(await screen.findByLabelText("测速间隔（分钟）"), { target: { value: "30" } });
     fireEvent.change(screen.getByLabelText("测速地址"), { target: { value: "http://probe.example/generate_204" } });
@@ -206,6 +238,7 @@ describe("latency test settings (W12)", () => {
 
   it("refuses an out-of-range interval without calling the API", async () => {
     const calls = fakeApi({ "GET /settings": view() });
+    tab("probe");
     renderWithClient(<AdminSettings />);
     fireEvent.change(await screen.findByLabelText("测速间隔（分钟）"), { target: { value: "1" } });
     fireEvent.click(screen.getByRole("button", { name: "保存测速设置" }));

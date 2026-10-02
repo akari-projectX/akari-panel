@@ -10,7 +10,8 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { ApiError, get, post, put, type PlanView } from "../lib/api";
-import { adminErrorText } from "../lib/errors";
+import { adminErrorText } from "../lib/admin-errors";
+import { fmtDateTime } from "../lib/datetime";
 
 export interface SignupView {
   version: number;
@@ -116,20 +117,28 @@ function Check(props: { id: string; label: string; checked: boolean; onChange: (
   );
 }
 
-export function MailSettings() {
-  const signup = useQuery({ queryKey: ["settings-signup"], queryFn: () => get<SignupView>("/settings/signup") });
+/** 系统设置 → 注册 / 邮件 / 失败邮件 (W21: one tab each; all three without `part`). */
+export function MailSettings({ part }: { part?: "signup" | "mail" | "failed" }) {
+  const showSignup = part == null || part === "signup";
+  const showSmtp = part == null || part === "mail";
+  const showFailed = part == null || part === "failed";
+  const signup = useQuery({
+    queryKey: ["settings-signup"],
+    queryFn: () => get<SignupView>("/settings/signup"),
+    enabled: showSignup,
+  });
   const smtp = useQuery({ queryKey: ["settings-mail"], queryFn: () => get<SmtpView>("/settings/mail") });
   // The version each form last saved (its success note shows while that is current).
   const [savedVersion, setSavedVersion] = useState<{ signup?: number; smtp?: number }>({});
   return (
     <>
-      {signup.isError && (
+      {showSignup && signup.isError && (
         <p role="alert" className="text-sm text-destructive">
           {errText(signup.error, "加载注册设置失败")}
         </p>
       )}
       {/* key：保存（或他人修改）后表单回到服务器的值；「已保存」提示放在这里，重新挂载后仍然显示 */}
-      {signup.data && (
+      {showSignup && signup.data && (
         <SignupForm
           key={`signup-${signup.data.version}`}
           data={signup.data}
@@ -142,7 +151,7 @@ export function MailSettings() {
           {errText(smtp.error, "加载邮件设置失败")}
         </p>
       )}
-      {smtp.data && (
+      {showSmtp && smtp.data && (
         <SmtpForm
           key={`smtp-${smtp.data.version}`}
           data={smtp.data}
@@ -150,7 +159,7 @@ export function MailSettings() {
           onSaved={(v) => setSavedVersion((s) => ({ ...s, smtp: v }))}
         />
       )}
-      {smtp.data && <DeadLetters count={smtp.data.dead_letters} />}
+      {showFailed && smtp.data && <DeadLetters count={smtp.data.dead_letters} />}
     </>
   );
 }
@@ -597,7 +606,7 @@ function DeadLetters({ count }: { count: number }) {
         ) : rows.data.length === 0 ? (
           <p className="text-sm text-muted-foreground">没有失败的邮件。</p>
         ) : (
-          <Table>
+          <Table label="失败邮件列表">
             <TableHeader>
               <TableRow>
                 <TableHead>时间</TableHead>
@@ -605,14 +614,16 @@ function DeadLetters({ count }: { count: number }) {
                 <TableHead>收件人</TableHead>
                 <TableHead>次数</TableHead>
                 <TableHead>原因</TableHead>
-                <TableHead />
+                <TableHead>
+                  <span className="sr-only">操作</span>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {rows.data.map((r) => (
                 <TableRow key={r.id}>
                   <TableCell className="whitespace-nowrap text-xs">
-                    {new Date(r.settled_at ?? r.created_at).toLocaleString("zh-CN")}
+                    {fmtDateTime(r.settled_at ?? r.created_at)}
                   </TableCell>
                   <TableCell className="whitespace-nowrap">{KIND_LABEL[r.kind] ?? r.kind}</TableCell>
                   <TableCell className="text-xs">{r.to_addr}</TableCell>

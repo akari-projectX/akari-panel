@@ -1116,7 +1116,7 @@ python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); r=[x for x 
   || { echo "FAIL: user nodes view content"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/users/00000000-0000-0000-0000-000000000000/nodes")" = "404" ] || { echo "FAIL: user nodes of no user not 404"; exit 1; }
 code -b "$JAR" "$BASE/api/v1/users" >/dev/null
-python3 -c "import json; u=[x for x in json.load(open('/tmp/akari-smoke/last')) if x['id']=='$PU'][0]; assert u['plan_name']=='smoke-plan' and u['next_reset_at']" \
+python3 -c "import json; u=[x for x in json.load(open('/tmp/akari-smoke/last'))['users'] if x['id']=='$PU'][0]; assert u['plan_name']=='smoke-plan' and u['next_reset_at']" \
   || { echo "FAIL: users list lacks plan/reset"; exit 1; }
 PJAR="$LOG/plan-user-cookies"
 [ "$(code -c "$PJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
@@ -1627,7 +1627,7 @@ else
   # An agent older than protocol 4 (the panel CI runs agent main until the
   # agent PR lands) ignores the field: the node must say so.
   [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": 1}')" = "200" ] || { echo "FAIL: set speed limit"; exit 1; }
-  [ "$(code -b "$JAR" "$BASE/api/v1/nodes")" = "200" ] && grep -q "too old to enforce speed limits" /tmp/akari-smoke/last \
+  [ "$(code -b "$JAR" "$BASE/api/v1/nodes")" = "200" ] && grep -q "不支持限速" /tmp/akari-smoke/last \
     || { echo "FAIL: no warning for an agent that cannot enforce speed limits"; cat /tmp/akari-smoke/last; exit 1; }
   [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": null}')" = "200" ] || { echo "FAIL: clear speed limit"; exit 1; }
   echo "speed limit: NodeView warning for the protocol $AGENT_PROTO agent present (throughput check skipped above)"
@@ -1640,6 +1640,42 @@ fi
 for a in order.create order.paid plan.price.set user.plan.set user.plan.update; do
   [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='$a'")" -ge 1 ] || { echo "FAIL: audit lacks $a"; exit 1; }
 done
+
+echo "== W21: dashboard, user search + total, coded errors, plan + prices in one request, site name =="
+[ "$(code -b "$JAR" "$BASE/api/v1/dashboard")" = "200" ] \
+  && [ "$(last_json "d['d30']['orders'] >= 1 and d['users_total'] >= 1 and d['nodes']['total'] >= 1 and isinstance(d['latest_orders'], list)")" = "True" ] \
+  || { echo "FAIL: dashboard"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$BJAR" "$BASE/api/v1/dashboard")" = "403" ] || { echo "FAIL: user reached the dashboard"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/users?q=SMOKE-BUY&role=user")" = "200" ] \
+  && [ "$(last_json "d['total'] == 1 and d['users'][0]['login'] == 'smoke-buyer'")" = "True" ] \
+  || { echo "FAIL: user search"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/users?status=bogus")" = "400" ] \
+  && [ "$(last_json "d['code'] + ' ' + str(sorted(d))")" = "user.status_filter_invalid ['code', 'error', 'params']" ] \
+  || { echo "FAIL: coded error body"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/plans" -H 'Content-Type: application/json' \
+    -d '{"name":"smoke-w21","period":"monthly","pricing":{"on_sale":true,"prices":[{"period":"month","price_cents":990}]}}')" = "201" ] \
+  && [ "$(last_json "d['on_sale'] and d['prices'][0]['price_cents'] == 990")" = "True" ] \
+  || { echo "FAIL: plan + prices in one request"; cat /tmp/akari-smoke/last; exit 1; }
+W21_PLAN=$(last_json "d['id']")
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/plans" -H 'Content-Type: application/json' \
+    -d '{"name":"smoke-w21-bad","period":"monthly","pricing":{"on_sale":true,"prices":[]}}')" = "400" ] \
+  && [ "$(last_json "d['code']")" = "plan.on_sale_needs_price" ] \
+  && [ "$(psql_q "SELECT count(*) FROM plans WHERE name='smoke-w21-bad'")" = "0" ] \
+  || { echo "FAIL: rejected pricing created a plan"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/plans/$W21_PLAN")" = "204" ] || { echo "FAIL: delete smoke-w21 plan"; exit 1; }
+code -b "$JAR" "$BASE/api/v1/settings" >/dev/null
+SV=$(last_json "d['version']")
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/site" -H 'Content-Type: application/json' \
+    -d "{\"version\":$SV,\"site_name\":\"Smoke 站点\"}")" = "200" ] || { echo "FAIL: set site name"; cat /tmp/akari-smoke/last; exit 1; }
+SV=$(last_json "d['version']")
+ok=0; for _ in $(seq 1 20); do
+  code "$BASE/auth/options" >/dev/null
+  [ "$(last_json "d['site_name']")" = "Smoke 站点" ] && { ok=1; break; }
+  sleep 0.25
+done
+[ "$ok" = 1 ] || { echo "FAIL: site name not in /auth/options"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/site" -H 'Content-Type: application/json' \
+    -d "{\"version\":$SV,\"site_name\":null}")" = "200" ] || { echo "FAIL: clear site name"; exit 1; }
 # R21: expired and quota-disabled users (renewal scope) can shop, order,
 # poll and cancel; an admin-disabled user cannot.
 for who in expired quota; do
@@ -2079,7 +2115,7 @@ code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
 python3 -c "
 import json; n=[x for x in json.load(open('/tmp/akari-smoke/last')) if x['id']=='$RENEW_ID'][0]
 assert n['enrolled'] and n['cert_not_after'] and n['enroll_token_expires_at'] is None, n
-assert any('agent certificate expires' in w for w in n['warnings']), n['warnings']
+assert any('agent 证书将在' in w for w in n['warnings']), n['warnings']
 assert n['heartbeat'] is None or 'uptime_seconds' in n['heartbeat'], n['heartbeat']" \
   || { echo "FAIL: enrolled node view"; exit 1; }
 # Files 0600; directories (M6: update/, update/bin/) 0700.
@@ -2100,9 +2136,12 @@ echo "== M1-7 audit log: admin view lists the actions, no secrets =="
 for a in user.create node.create node.set_inbounds node.update node.assign user.update user.delete \
          user.totp.enable auth.login auth.login_failed user.sub_token.rotate node.delete \
          node.enroll_token node.enroll node.cert.renew node.cert.rotated; do
-  grep -q "\"action\":\"$a\"" /tmp/akari-smoke/last || { echo "FAIL: audit lacks $a"; exit 1; }
+  # (By database: the API's 200 newest rows no longer reach back to the
+  # first actions since later sections (W21 …) audit more.)
+  [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='$a'")" -ge 1 ] || { echo "FAIL: audit lacks $a"; exit 1; }
 done
-grep -q '"actor_login":"cli"' /tmp/akari-smoke/last || { echo "FAIL: CLI actions not audited as cli"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE actor_login='cli'")" -ge 1 ] || { echo "FAIL: CLI actions not audited as cli"; exit 1; }
+grep -q '"actor_login":' /tmp/akari-smoke/last || { echo "FAIL: CLI actions not audited as cli"; exit 1; }
 for secret in "$ADMIN_PW" "$TOTP_SECRET" "$NEW_TOKEN" "$VLESS_A" "user-password-123" '$argon2' \
               "$TOKEN" "$API_TOKEN" "$API_TOKEN2"; do
   grep -qF -- "$secret" /tmp/akari-smoke/last && { echo "FAIL: audit log contains a secret"; exit 1; }

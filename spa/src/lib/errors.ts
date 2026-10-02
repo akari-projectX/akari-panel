@@ -1,50 +1,111 @@
-import { translate, type TFunction } from "../i18n";
-import { ApiError } from "./api";
+import { translate, type MessageKey, type TFunction, type Vars } from "../i18n";
+import { ApiError, type ErrorParams } from "./api";
 
-// Server messages with a translation; anything else is shown as-is inside
-// "errors.generic" (the panel's messages are short English sentences).
-const KNOWN: Record<string, Parameters<TFunction>[0]> = {
-  "invalid code": "errors.invalidCode",
-  "invalid password": "errors.invalidPassword",
-  "payments are not enabled": "errors.paymentsOff",
-  "payment gateway unavailable, try again": "errors.paymentGateway",
-  "plan is not for sale": "errors.notForSale",
-  "your current plan does not expire; nothing to renew": "errors.nothingToRenew",
-  "another order is being created": "errors.orderInProgress",
-  "order is not pending": "errors.orderNotPending",
-  "plan is sold out": "errors.soldOut",
-  "plan is only available to its current subscribers": "errors.renewalOnly",
-  "switching to this plan from another plan is not allowed": "errors.noSwitch",
-  "a traffic reset pack needs an active subscription of its plan": "errors.resetNeedsPlan",
-  // W16
-  "invalid coupon code": "errors.couponInvalid",
-  "coupon is not valid yet": "errors.couponNotStarted",
-  "coupon has expired": "errors.couponExpired",
-  "coupon has been used up": "errors.couponUsedUp",
-  "you have already used this coupon": "errors.couponUserLimit",
-  "coupon is for new customers only": "errors.couponNewOnly",
-  "coupon does not apply to this plan": "errors.couponPlan",
-  "coupon does not apply to this period": "errors.couponPeriod",
-  "order amount is below the coupon's minimum": "errors.couponMinimum",
-  "insufficient balance": "errors.insufficientBalance",
-  "amount exceeds the withdrawable balance": "errors.withdrawExceeds",
-  "you already have an open withdrawal request": "errors.withdrawOpen",
-  "the withdrawal is no longer pending": "errors.withdrawalNotPending",
-  // W15 registration / reset / email / invites
-  "invalid or expired code": "errors.invalidOrExpiredCode",
-  "invalid or expired link": "errors.invalidLink",
-  "email domain not allowed": "errors.domainNotAllowed",
-  "invite code required": "errors.inviteRequired",
-  "invalid invite code": "errors.invalidInvite",
-  "invalid email address": "errors.invalidEmail",
-  "mail sending is not enabled": "errors.mailOff",
-  "invite code limit reached": "errors.inviteLimit",
-  "registration is closed": "errors.registrationClosed",
-  // W17
-  "ticket is closed": "errors.ticketClosed",
-  "too many open tickets (at most 5); close one first": "errors.ticketOpenLimit",
-  "ticket has 200 messages; open a new ticket": "errors.ticketFull",
+// Server errors (W21, M6): every API error body carries a stable `code` and
+// its `params` ({"error": "...", "code": "plan.speed_limit_range",
+// "params": {"max_speed_mbps": 100000}}). The portal maps the codes the
+// user can meet to dictionary keys (zh + en, `errors` namespace); the
+// console maps its own in lib/admin-errors.ts (Chinese, admin bundle only).
+// `spa/scripts/check-error-codes.mjs` (make check, CI) fails when a code in
+// src/error_codes.txt has no mapping here or there.
+
+/**
+ * Portal-reachable codes (namespaces auth, account, signup, shop, order,
+ * coupon, balance, withdrawal, invite, ticket, request) -> dictionary key.
+ * Placeholders in the messages are the error's params, plus `<p>_yuan` for
+ * every `<p>_cents`.
+ */
+export const CODE_KEYS: Record<string, MessageKey> = {
+  "account.invalid_code": "errors.invalidCode",
+  "account.invalid_password": "errors.invalidPassword",
+  "account.locale_invalid": "errors.localeInvalid",
+  "account.mail_off": "errors.mailOff",
+  "account.password_too_long": "errors.passwordTooLong",
+  "account.password_too_short": "errors.passwordTooShort",
+  "account.totp_enabled": "errors.totpAlreadyEnabled",
+  "account.totp_enrollment_stale": "errors.totpEnrollmentStale",
+  "account.totp_no_enrollment": "errors.totpNoEnrollment",
+  "account.totp_not_enabled": "errors.totpNotEnabled",
+  "auth.code_too_long": "errors.codeTooLong",
+  "auth.credentials_required": "errors.credentialsRequired",
+  "auth.forbidden": "errors.forbidden",
+  "auth.unauthorized": "errors.unauthorized",
+  "balance.admin_none": "errors.adminNoBalance",
+  "balance.insufficient": "errors.insufficientBalance",
+  "coupon.below_minimum": "errors.couponMinimum",
+  "coupon.expired": "errors.couponExpired",
+  "coupon.invalid": "errors.couponInvalid",
+  "coupon.new_users_only": "errors.couponNewOnly",
+  "coupon.not_started": "errors.couponNotStarted",
+  "coupon.period": "errors.couponPeriod",
+  "coupon.plan": "errors.couponPlan",
+  "coupon.used_up": "errors.couponUsedUp",
+  "coupon.user_limit": "errors.couponUserLimit",
+  "invite.invalid_inviter": "errors.invalidInviter",
+  "invite.limit": "errors.inviteLimit",
+  "invite.registration_closed": "errors.registrationClosed",
+  "order.gateway_unavailable": "errors.paymentGateway",
+  "order.in_progress": "errors.orderInProgress",
+  "order.not_pending": "errors.orderNotPending",
+  "order.payments_off": "errors.paymentsOff",
+  "request.body_too_large": "errors.bodyTooLarge",
+  "request.field_not_null": "errors.fieldNotNull",
+  "request.field_required": "errors.fieldRequired",
+  "request.field_too_long": "errors.fieldTooLong",
+  "request.internal": "errors.server",
+  "request.invalid_body": "errors.invalidBody",
+  "request.no_fields": "errors.noChanges",
+  "request.not_found": "errors.notFound",
+  "request.port_range": "errors.portRange",
+  "request.rate_limited": "errors.tooMany",
+  "request.reason_length": "errors.reasonLength",
+  "request.status_invalid": "errors.statusInvalid",
+  "request.traffic_query_invalid": "errors.trafficQueryInvalid",
+  "shop.admin_cannot_buy": "errors.adminCannotBuy",
+  "shop.no_switch": "errors.noSwitch",
+  "shop.not_for_sale": "errors.notForSale",
+  "shop.nothing_to_renew": "errors.nothingToRenew",
+  "shop.renewal_only": "errors.renewalOnly",
+  "shop.reset_needs_plan": "errors.resetNeedsPlan",
+  "shop.sold_out": "errors.soldOut",
+  "signup.domain_not_allowed": "errors.domainNotAllowed",
+  "signup.invalid_code": "errors.invalidOrExpiredCode",
+  "signup.invalid_email": "errors.invalidEmail",
+  "signup.invalid_invite": "errors.invalidInvite",
+  "signup.invalid_link": "errors.invalidLink",
+  "signup.invite_required": "errors.inviteRequired",
+  "ticket.choice_invalid": "errors.ticketChoice",
+  "ticket.closed": "errors.ticketClosed",
+  "ticket.full": "errors.ticketFull",
+  "ticket.message_long": "errors.ticketMessageLong",
+  "ticket.message_required": "errors.ticketMessageRequired",
+  "ticket.open_limit": "errors.ticketOpenLimit",
+  "ticket.subject_long": "errors.ticketSubjectLong",
+  "ticket.subject_multiline": "errors.ticketSubjectMultiline",
+  "ticket.subject_required": "errors.ticketSubjectRequired",
+  "ticket.unknown_node": "errors.ticketUnknownNode",
+  "ticket.unknown_order": "errors.ticketUnknownOrder",
+  "withdrawal.account_length": "errors.withdrawAccountLength",
+  "withdrawal.amount_range": "errors.withdrawAmountRange",
+  "withdrawal.below_minimum": "errors.withdrawBelowMinimum",
+  "withdrawal.exceeds": "errors.withdrawExceeds",
+  "withdrawal.not_pending": "errors.withdrawalNotPending",
+  "withdrawal.open": "errors.withdrawOpen",
 };
+
+/** Message variables of an error: its params as text, plus `<p>_yuan` for each `<p>_cents`. */
+export function errorVars(params: ErrorParams, message: string): Vars {
+  const vars: Vars = { message };
+  for (const [k, v] of Object.entries(params)) {
+    if (v == null) continue;
+    vars[k] = typeof v === "number" ? v : String(v);
+    if (k.endsWith("_cents") && typeof v === "number") {
+      vars[`${k.slice(0, -"_cents".length)}_yuan`] = (v / 100).toFixed(2);
+      vars[`${k}_yuan`] = (v / 100).toFixed(2);
+    }
+  }
+  return vars;
+}
 
 /** A user-presentable, localized message for a failed request. */
 export function errorText(err: unknown, t: TFunction): string {
@@ -52,8 +113,8 @@ export function errorText(err: unknown, t: TFunction): string {
     // fetch() rejects with a TypeError when the server is unreachable.
     return err instanceof TypeError ? t("errors.network") : t("errors.generic", { message: String(err) });
   }
-  const known = KNOWN[err.message];
-  if (known) return t(known);
+  const key = CODE_KEYS[err.code];
+  if (key) return t(key, errorVars(err.params, err.message));
   if (err.status === 401) return t("errors.unauthorized");
   if (err.status === 403) return t("errors.forbidden");
   if (err.status === 429) return t("errors.tooMany");
@@ -61,36 +122,5 @@ export function errorText(err: unknown, t: TFunction): string {
   return t("errors.generic", { message: err.message });
 }
 
-const zh: TFunction = (key, vars) => translate("zh", key, vars);
-
-// Messages only admin endpoints return. Chinese text here, not in the shared
-// dictionaries: the console is Chinese only (R18), and the user bundle must
-// carry no admin strings (R23; unused here, this map is tree-shaken out of it).
-const ADMIN_KNOWN: Record<string, string> = {
-  "login already exists": "该账号已存在",
-  "cannot remove the last enabled admin": "不能移除最后一个启用的管理员",
-  // W16
-  "a coupon with this code already exists": "已存在相同的优惠码（不区分大小写）",
-  "the coupon has been used by orders; disable it instead": "该优惠码已被订单使用，不能删除，请改为停用",
-  "only a paid order can be refunded": "只有已付款的订单可以退款",
-  "the order was already refunded": "该订单已退款",
-  "the order was refunded": "该订单已退款，不能再开通",
-  "admin accounts have no balance": "管理员账户没有余额",
-  "the user no longer exists; approve or leave the request": "该用户已删除，只能标记为已打款",
-  "plan_ids contains an unknown plan": "适用套餐中有不存在的套餐",
-};
-
-// Like zh, but an unknown server message stays bare (no "操作失败：" wrapper),
-// for callers that put their own context in front.
-const zhBare: TFunction = (key, vars) => (key === "errors.generic" ? String(vars?.message ?? "") : zh(key, vars));
-
-/**
- * errorText for the admin console (Chinese only, R18), usable outside
- * components. With `context` the text is "<context>：<detail>" (one prefix,
- * not "<context>：操作失败：<detail>").
- */
-export function adminErrorText(err: unknown, context?: string): string {
-  const known = err instanceof ApiError ? ADMIN_KNOWN[err.message] : undefined;
-  const text = known ?? errorText(err, context ? zhBare : zh);
-  return context ? `${context}：${text}` : text;
-}
+/** errorText pinned to Chinese (the console's shared fallback). */
+export const zh: TFunction = (key, vars) => translate("zh", key, vars);

@@ -8,8 +8,8 @@ use serde_json::json;
 use subtle::ConstantTimeEq;
 
 use crate::{
-    account, alerts, api, audit, nodeinstall, nodestat, nodetpl, plans, reject, rollout, settings,
-    spa, state::AppState, sub, tickets, updates,
+    account, alerts, api, audit, dashboard, nodeinstall, nodestat, nodetpl, plans, reject, rollout,
+    settings, spa, state::AppState, sub, tickets, updates,
 };
 
 pub fn router(state: AppState) -> Router {
@@ -196,6 +196,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/{prefix}/api/v1/admins", get(tickets::list_admins))
         .route("/{prefix}/api/v1/admin-badges", get(tickets::badges))
+        .route("/{prefix}/api/v1/dashboard", get(dashboard::get_dashboard))
         // W17: node alerts (alert center, settings, channels).
         .route("/{prefix}/api/v1/alerts", get(alerts::list_alerts))
         .route(
@@ -230,6 +231,7 @@ pub fn router(state: AppState) -> Router {
             get(settings::get_settings).put(settings::put_settings),
         )
         .route("/{prefix}/api/v1/settings/probe", put(settings::put_probe))
+        .route("/{prefix}/api/v1/settings/site", put(settings::put_site))
         .route(
             "/{prefix}/api/v1/settings/dns-check",
             post(settings::dns_check),

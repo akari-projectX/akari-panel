@@ -22,6 +22,7 @@
 //!   pending. Withdrawable = min(balance, credited commissions − withdrawals
 //!   not rejected/cancelled).
 
+use crate::auth::{bad_request, conflict};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
@@ -63,17 +64,24 @@ const SETTINGS_COLS: &str =
 
 pub fn check_settings(s: &Settings) -> Result<(), ApiError> {
     if !(0..=100).contains(&s.rate_percent) {
-        return Err(ApiError::bad_request("rate_percent must be 0-100"));
+        return Err(bad_request!(
+            "finance.rate_percent_range",
+            "rate_percent must be 0-100"
+        ));
     }
     if !(0..=MAX_HOLD_DAYS).contains(&s.hold_days) {
-        return Err(ApiError::bad_request(format!(
-            "hold_days must be 0-{MAX_HOLD_DAYS}"
-        )));
+        return Err(bad_request!(
+            "finance.hold_days_range",
+            "hold_days must be 0-{max_hold_days}",
+            max_hold_days = MAX_HOLD_DAYS
+        ));
     }
     if !(1..=MAX_PRICE_CENTS).contains(&s.min_withdrawal_cents) {
-        return Err(ApiError::bad_request(format!(
-            "min_withdrawal_cents must be 1..={MAX_PRICE_CENTS} (integer fen)"
-        )));
+        return Err(bad_request!(
+            "finance.min_withdrawal_range",
+            "min_withdrawal_cents must be 1..={max_price_cents} (integer fen)",
+            max_price_cents = MAX_PRICE_CENTS
+        ));
     }
     Ok(())
 }
@@ -346,27 +354,33 @@ pub async fn apply_request(
 ) -> Result<Uuid, ApiError> {
     let account = req.account.trim();
     if account.is_empty() || account.chars().count() > MAX_ACCOUNT {
-        return Err(ApiError::bad_request(format!(
-            "account must be 1-{MAX_ACCOUNT} characters"
-        )));
+        return Err(bad_request!(
+            "withdrawal.account_length",
+            "account must be 1-{max_account} characters",
+            max_account = MAX_ACCOUNT
+        ));
     }
     if !(1..=MAX_PRICE_CENTS).contains(&req.amount_cents) {
-        return Err(ApiError::bad_request(format!(
-            "amount_cents must be 1..={MAX_PRICE_CENTS} (integer fen)"
-        )));
+        return Err(bad_request!(
+            "withdrawal.amount_range",
+            "amount_cents must be 1..={max_price_cents} (integer fen)",
+            max_price_cents = MAX_PRICE_CENTS
+        ));
     }
     let s = settings(conn).await?;
     if req.amount_cents < s.min_withdrawal_cents {
-        return Err(ApiError::bad_request(format!(
-            "the minimum withdrawal is {} fen",
-            s.min_withdrawal_cents
-        )));
+        return Err(bad_request!(
+            "withdrawal.below_minimum",
+            "the minimum withdrawal is {min_cents} fen",
+            min_cents = s.min_withdrawal_cents
+        ));
     }
     ledger::lock_balance(conn, user_id).await?;
     let withdrawable = ledger::withdrawable(conn, user_id).await?;
     if req.amount_cents > withdrawable {
-        return Err(ApiError::conflict(
-            "amount exceeds the withdrawable balance",
+        return Err(conflict!(
+            "withdrawal.exceeds",
+            "amount exceeds the withdrawable balance"
         ));
     }
     let id = Uuid::new_v4();
@@ -383,8 +397,9 @@ pub async fn apply_request(
     .await;
     match r {
         Err(sqlx::Error::Database(d)) if d.is_unique_violation() => {
-            return Err(ApiError::conflict(
-                "you already have an open withdrawal request",
+            return Err(conflict!(
+                "withdrawal.open",
+                "you already have an open withdrawal request"
             ));
         }
         r => r?,
@@ -430,12 +445,16 @@ pub async fn apply_decide(
         return Err(ApiError::not_found());
     }
     if cur_status != "pending" {
-        return Err(ApiError::conflict("the withdrawal is no longer pending"));
+        return Err(conflict!(
+            "withdrawal.not_pending",
+            "the withdrawal is no longer pending"
+        ));
     }
     if status != "approved" {
         let Some(user) = user else {
-            return Err(ApiError::conflict(
-                "the user no longer exists; approve or leave the request",
+            return Err(conflict!(
+                "finance.withdrawal_user_gone",
+                "the user no longer exists; approve or leave the request"
             ));
         };
         let mut e = Entry::new(user, Kind::WithdrawalReversal, amount);
@@ -475,10 +494,17 @@ fn check_text(
 ) -> Result<Option<String>, ApiError> {
     let v = v.map(str::trim).filter(|s| !s.is_empty());
     match v {
-        None if required => Err(ApiError::bad_request(format!("{field} is required"))),
-        Some(s) if s.chars().count() > max => Err(ApiError::bad_request(format!(
-            "{field} must be at most {max} characters"
-        ))),
+        None if required => Err(bad_request!(
+            "request.field_required",
+            "{field} is required",
+            field = field
+        )),
+        Some(s) if s.chars().count() > max => Err(bad_request!(
+            "request.field_too_long",
+            "{field} must be at most {max} characters",
+            field = field,
+            max = max
+        )),
         v => Ok(v.map(str::to_string)),
     }
 }
@@ -573,7 +599,10 @@ pub async fn request_withdrawal(
     ApiJson(req): ApiJson<WithdrawReq>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     if user.role != "user" {
-        return Err(ApiError::bad_request("admin accounts have no balance"));
+        return Err(bad_request!(
+            "balance.admin_none",
+            "admin accounts have no balance"
+        ));
     }
     let mut tx = state.pg().begin().await?;
     let id = apply_request(&mut tx, &Actor::of(&user), user.id, &req).await?;
@@ -640,7 +669,7 @@ pub async fn list_commissions(
     user.require_admin()?;
     if let Some(s) = &q.status {
         if !matches!(s.as_str(), "pending" | "credited" | "reversed") {
-            return Err(ApiError::bad_request("unknown status"));
+            return Err(bad_request!("request.status_invalid", "unknown status"));
         }
     }
     let rows = sqlx::query_as(
@@ -671,7 +700,7 @@ pub async fn list_withdrawals(
             s.as_str(),
             "pending" | "approved" | "rejected" | "cancelled"
         ) {
-            return Err(ApiError::bad_request("unknown status"));
+            return Err(bad_request!("request.status_invalid", "unknown status"));
         }
     }
     let rows = sqlx::query_as(sqlx::AssertSqlSafe(format!(

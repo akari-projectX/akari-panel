@@ -13,6 +13,7 @@
 //! creation start with entitle::lock): orders → coupons → commissions →
 //! user_balances → withdrawals.
 
+use crate::auth::{bad_request, conflict};
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use chrono::{DateTime, Utc};
@@ -107,7 +108,10 @@ pub async fn apply_entry(
     .fetch_optional(&mut *conn)
     .await?;
     let Some((id, after)) = row else {
-        return Err(ApiError::conflict("the user no longer exists"));
+        return Err(conflict!(
+            "order_admin.user_gone",
+            "the user no longer exists"
+        ));
     };
     crate::audit::record(
         conn,
@@ -331,15 +335,19 @@ pub struct AdjustReq {
 /// Validate an adjustment request; returns the trimmed reason.
 pub fn check_adjust(req: &AdjustReq) -> Result<&str, ApiError> {
     if req.amount_cents == 0 || req.amount_cents.unsigned_abs() > MAX_ADJUST_CENTS as u64 {
-        return Err(ApiError::bad_request(format!(
-            "amount_cents must be non-zero and within ±{MAX_ADJUST_CENTS} (integer fen)"
-        )));
+        return Err(bad_request!(
+            "finance.adjust_range",
+            "amount_cents must be non-zero and within ±{max_adjust_cents} (integer fen)",
+            max_adjust_cents = MAX_ADJUST_CENTS
+        ));
     }
     let reason = req.reason.trim();
     if reason.is_empty() || reason.chars().count() > MAX_REASON {
-        return Err(ApiError::bad_request(format!(
-            "reason must be 1-{MAX_REASON} characters"
-        )));
+        return Err(bad_request!(
+            "request.reason_length",
+            "reason must be 1-{max_reason} characters",
+            max_reason = MAX_REASON
+        ));
     }
     Ok(reason)
 }
@@ -360,7 +368,12 @@ pub async fn apply_adjust(
     match role.as_deref() {
         None => return Err(ApiError::not_found()),
         Some("user") => {}
-        Some(_) => return Err(ApiError::bad_request("admin accounts have no balance")),
+        Some(_) => {
+            return Err(bad_request!(
+                "balance.admin_none",
+                "admin accounts have no balance"
+            ))
+        }
     }
     let mut e = Entry::new(user_id, Kind::AdminAdjust, req.amount_cents);
     e.reason = Some(reason);

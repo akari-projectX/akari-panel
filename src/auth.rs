@@ -21,13 +21,87 @@ pub const COOKIE_TTL_SECS: i64 = 12 * 3600;
 
 // ---------------------------------------------------------------------------
 // API error type: every failure is a small JSON body, never a stack trace.
+//
+// W21 (M6): every error carries a stable machine code and its parameters:
+//   {"error": "<English message>", "code": "plan.speed_limit_range", "params": {"max": 100000}}
+// The SPA maps the code to Chinese (admin) / zh+en (portal) and falls back to
+// the message. Codes are API: never rename or reuse one (the SPA mapping and
+// `scripts/check-error-codes.mjs` key on them). Build errors with the
+// `bad_request!` / `conflict!` / `api_error!` macros below: the format
+// string's named arguments are both interpolated into the message and sent
+// as `params`, so the two cannot drift.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub struct ApiError {
     status: StatusCode,
     message: String,
+    code: &'static str,
+    params: serde_json::Map<String, serde_json::Value>,
 }
+
+/// Whether `code` is a valid error code: two or more dot-separated
+/// segments of `[a-z0-9_]` (checked at compile time by the macros).
+pub const fn valid_code(code: &str) -> bool {
+    let b = code.as_bytes();
+    if b.is_empty() || b[0] == b'.' || b[b.len() - 1] == b'.' {
+        return false;
+    }
+    let mut dots = 0;
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'.' {
+            if b[i - 1] == b'.' {
+                return false;
+            }
+            dots += 1;
+        } else if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_') {
+            return false;
+        }
+        i += 1;
+    }
+    dots >= 1
+}
+
+/// `api_error!(STATUS, "ns.code", "message {name}", name = expr, ...)`:
+/// an `ApiError` whose message interpolates the named arguments and whose
+/// `params` carry them (JSON).
+macro_rules! api_error {
+    ($status:ident, $code:literal, $fmt:literal $(, $k:ident = $v:expr)* $(,)?) => {{
+        const _: () = assert!($crate::auth::valid_code($code), "invalid error code");
+        $( #[allow(clippy::redundant_locals)] let $k = $v; )*
+        #[allow(unused_mut)]
+        let mut params = ::serde_json::Map::new();
+        $( params.insert(
+            stringify!($k).to_string(),
+            ::serde_json::to_value(&$k).unwrap_or(::serde_json::Value::Null),
+        ); )*
+        $crate::auth::ApiError::coded(
+            ::axum::http::StatusCode::$status,
+            $code,
+            format!($fmt),
+            params,
+        )
+    }};
+}
+pub(crate) use api_error;
+
+/// 400 with a code (see `api_error!`).
+macro_rules! bad_request {
+    ($code:literal, $fmt:literal $(, $k:ident = $v:expr)* $(,)?) => {
+        $crate::auth::api_error!(BAD_REQUEST, $code, $fmt $(, $k = $v)*)
+    };
+}
+pub(crate) use bad_request;
+
+/// 409 with a code (see `api_error!`).
+macro_rules! conflict {
+    ($code:literal, $fmt:literal $(, $k:ident = $v:expr)* $(,)?) => {
+        $crate::auth::api_error!(CONFLICT, $code, $fmt $(, $k = $v)*)
+    };
+}
+pub(crate) use conflict;
 
 impl ApiError {
     #[cfg(test)]
@@ -37,38 +111,72 @@ impl ApiError {
     pub fn message(&self) -> &str {
         &self.message
     }
-    pub fn new(status: StatusCode, message: impl Into<String>) -> Self {
+    /// The stable machine code (`"plan.name_exists"`).
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+    #[cfg(test)]
+    pub fn params(&self) -> &serde_json::Map<String, serde_json::Value> {
+        &self.params
+    }
+    /// Use the macros; this is their target.
+    pub fn coded(
+        status: StatusCode,
+        code: &'static str,
+        message: String,
+        params: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
         Self {
             status,
-            message: message.into(),
+            message,
+            code,
+            params,
         }
     }
+    fn plain(status: StatusCode, code: &'static str, message: &str) -> Self {
+        Self::coded(status, code, message.to_string(), serde_json::Map::new())
+    }
     pub fn unauthorized() -> Self {
-        Self::new(StatusCode::UNAUTHORIZED, "unauthorized")
+        Self::plain(
+            StatusCode::UNAUTHORIZED,
+            "auth.unauthorized",
+            "unauthorized",
+        )
     }
     pub fn forbidden() -> Self {
-        Self::new(StatusCode::FORBIDDEN, "forbidden")
-    }
-    pub fn bad_request(msg: impl Into<String>) -> Self {
-        Self::new(StatusCode::BAD_REQUEST, msg)
+        Self::plain(StatusCode::FORBIDDEN, "auth.forbidden", "forbidden")
     }
     pub fn not_found() -> Self {
-        Self::new(StatusCode::NOT_FOUND, "not found")
-    }
-    pub fn conflict(msg: impl Into<String>) -> Self {
-        Self::new(StatusCode::CONFLICT, msg)
+        Self::plain(StatusCode::NOT_FOUND, "request.not_found", "not found")
     }
     pub fn too_many() -> Self {
-        Self::new(StatusCode::TOO_MANY_REQUESTS, "too many requests")
+        Self::plain(
+            StatusCode::TOO_MANY_REQUESTS,
+            "request.rate_limited",
+            "too many requests",
+        )
     }
     pub fn internal() -> Self {
-        Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        Self::plain(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "request.internal",
+            "internal error",
+        )
+    }
+    /// The same error with another status (rare: 422/502/503 answers).
+    pub fn with_status(mut self, status: StatusCode) -> Self {
+        self.status = status;
+        self
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.status, Json(json!({ "error": self.message }))).into_response()
+        (
+            self.status,
+            Json(json!({ "error": self.message, "code": self.code, "params": self.params })),
+        )
+            .into_response()
     }
 }
 
@@ -91,13 +199,16 @@ impl From<sqlx::Error> for ApiError {
     fn from(e: sqlx::Error) -> Self {
         if let sqlx::Error::Database(d) = &e {
             if d.code().as_deref() == Some(LAST_ADMIN_SQLSTATE) {
-                return ApiError::conflict("cannot remove the last enabled admin");
+                return conflict!("user.last_admin", "cannot remove the last enabled admin");
             }
             if d.code().as_deref() == Some(INVITER_SQLSTATE) {
-                return ApiError::conflict("invalid inviter (self-referral or a cycle)");
+                return conflict!(
+                    "invite.invalid_inviter",
+                    "invalid inviter (self-referral or a cycle)"
+                );
             }
             if d.code().as_deref() == Some(BALANCE_SQLSTATE) {
-                return ApiError::conflict("insufficient balance");
+                return conflict!("balance.insufficient", "insufficient balance");
             }
         }
         tracing::error!(error = %e, "api db error");
@@ -463,5 +574,134 @@ impl FromRequestParts<AppState> for MaybeClientIp {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         Ok(MaybeClientIp(request_ip(parts, state)))
+    }
+}
+
+#[cfg(test)]
+mod error_code_tests {
+    use super::*;
+
+    /// Codes used in the source: the literal after `bad_request!(`,
+    /// `conflict!(`, `api_error!(STATUS,` and `Self::plain(STATUS,`.
+    fn source_codes() -> std::collections::BTreeSet<String> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        let mut codes = std::collections::BTreeSet::new();
+        for f in files {
+            let s = std::fs::read_to_string(&f).unwrap();
+            for marker in ["bad_request!(", "conflict!(", "api_error!(", "Self::plain("] {
+                for (i, _) in s.match_indices(marker) {
+                    let mut rest = s[i + marker.len()..].trim_start();
+                    // Optional status argument.
+                    if let Some(comma) = rest.find(',') {
+                        let head = rest[..comma].trim();
+                        if !head.starts_with('"')
+                            && head
+                                .trim_start_matches("StatusCode::")
+                                .chars()
+                                .all(|c| c.is_ascii_uppercase() || c == '_')
+                        {
+                            rest = rest[comma + 1..].trim_start();
+                        }
+                    }
+                    let Some(lit) = rest.strip_prefix('"') else {
+                        continue; // the macro definitions themselves
+                    };
+                    let code = &lit[..lit.find('"').unwrap()];
+                    // The macros reject an invalid code at compile time,
+                    // so anything else is not a code (e.g. this test).
+                    if code != "ns.code" && valid_code(code) {
+                        codes.insert(code.to_string());
+                    }
+                }
+            }
+        }
+        codes
+    }
+
+    #[test]
+    fn error_codes_are_registered() {
+        let registry: std::collections::BTreeSet<String> = include_str!("error_codes.txt")
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(str::to_string)
+            .collect();
+        let used = source_codes();
+        let missing: Vec<_> = used.difference(&registry).collect();
+        let gone: Vec<_> = registry.difference(&used).collect();
+        assert!(
+            missing.is_empty(),
+            "codes not in src/error_codes.txt (add them, and a SPA mapping): {missing:?}"
+        );
+        assert!(
+            gone.is_empty(),
+            "registered codes no longer used (codes are API: keep them stable): {gone:?}"
+        );
+        for c in &registry {
+            assert!(valid_code(c), "{c}");
+        }
+    }
+
+    #[test]
+    fn code_syntax() {
+        for ok in ["a.b", "plan.speed_limit_range", "x1.y_2.z"] {
+            assert!(valid_code(ok), "{ok}");
+        }
+        for bad in ["", "a", ".a", "a.", "a..b", "A.b", "a.b-c", "a b.c"] {
+            assert!(!valid_code(bad), "{bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn body_carries_message_code_and_params() {
+        let e = bad_request!(
+            "plan.speed_limit_range",
+            "speed_limit_mbps must be 1..={max}",
+            max = 100_000
+        );
+        assert_eq!(e.message(), "speed_limit_mbps must be 1..=100000");
+        assert_eq!(e.code(), "plan.speed_limit_range");
+        let resp = e.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            v,
+            json!({
+                "error": "speed_limit_mbps must be 1..=100000",
+                "code": "plan.speed_limit_range",
+                "params": { "max": 100_000 },
+            })
+        );
+        let v = ApiError::unauthorized();
+        assert_eq!(
+            (v.code(), v.message()),
+            ("auth.unauthorized", "unauthorized")
+        );
+        assert!(v.params().is_empty());
+        // Debug formatting of a parameter stays in the message only.
+        let tag = "x\"y".to_string();
+        let e = bad_request!(
+            "inbound.tag_duplicate",
+            "duplicate inbound tag {tag:?}",
+            tag = tag
+        );
+        assert_eq!(e.message(), r#"duplicate inbound tag "x\"y""#);
+        assert_eq!(e.params()["tag"], json!("x\"y"));
     }
 }

@@ -8,7 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { get, patch, type ConnectOverride, type GroupView, type Inbound, type NodeView } from "../lib/api";
-import { adminErrorText } from "../lib/errors";
+import { adminErrorText } from "../lib/admin-errors";
 import { humanBytes } from "../lib/utils";
 
 export interface NodeOpsValue {
@@ -282,7 +282,7 @@ export function NodeOpsCard({ node }: { node: NodeView }) {
             {msg && (
               <span
                 role={msg.ok ? "status" : "alert"}
-                className={`text-sm ${msg.ok ? "text-emerald-600" : "text-destructive"}`}
+                className={`text-sm ${msg.ok ? "text-emerald-700" : "text-destructive"}`}
               >
                 {msg.text}
               </span>

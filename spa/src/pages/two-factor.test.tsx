@@ -83,7 +83,10 @@ describe("TwoFactorCard", () => {
   it("renders in Chinese on the admin console and localizes a wrong code", async () => {
     fakeApi({
       "GET /me/totp": status({ role: "admin", enabled: true, recovery_codes_left: 9 }),
-      "POST /me/totp/recovery-codes": () => ({ status: 400, body: { error: "invalid code" } }),
+      "POST /me/totp/recovery-codes": () => ({
+        status: 400,
+        body: { error: "invalid code", code: "account.invalid_code" },
+      }),
     });
     renderAdmin(<TwoFactorCard />);
     expect(await screen.findByText("已开启 · 剩余 9 个恢复码")).toBeTruthy();

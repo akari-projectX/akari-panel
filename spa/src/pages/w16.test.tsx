@@ -372,7 +372,7 @@ describe("console: coupons", () => {
       "PATCH /coupons/k1": () => ({ status: 204 }),
       "DELETE /coupons/k2": () => ({
         status: 409,
-        body: { error: "the coupon has been used by orders; disable it instead" },
+        body: { error: "the coupon has been used by orders; disable it instead", code: "coupon_admin.in_use" },
       }),
       "GET /coupons/k1": {
         coupon: coupon(),

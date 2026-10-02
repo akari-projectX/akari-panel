@@ -1,0 +1,258 @@
+// Server error texts of the admin console (W21, M6). Chinese only (R18),
+// and admin-bundle only (R23: vite's userBundleGuard rejects this module in
+// the portal build). Codes the portal can meet too are mapped in
+// lib/errors.ts (CODE_KEYS, zh + en) and used here as the fallback.
+// `{name}` placeholders are the error's params (plus `<p>_yuan` for each
+// `<p>_cents`). scripts/check-error-codes.mjs fails when a server code
+// (src/error_codes.txt) is mapped nowhere.
+import { ApiError } from "./api";
+import { CODE_KEYS, errorText, errorVars, zh } from "./errors";
+
+export const ADMIN_CODES: Record<string, string> = {
+  // 告警
+  "alert.channel_invalid": "通知通道只能是 Telegram、Webhook 或邮件",
+  "alert.email_invalid": "邮件收件人地址无效：{e}",
+  "alert.email_needs_recipient": "邮件通知至少需要一个收件人",
+  "alert.email_unavailable": "邮件发送尚未配置，请先在「系统设置 → 邮件」配置 SMTP",
+  "alert.field_range": "{field} 须在 {lo}–{hi} 之间",
+  "alert.kind_unknown": "未知的告警类型：{k}",
+  "alert.retry_not_failed": "只有发送失败的通知可以重试",
+  "alert.status_invalid": "状态只能是「告警中」或「已恢复」",
+  "alert.telegram_chat_invalid": "Telegram 聊天 ID 须为数字 ID 或 @频道名",
+  "alert.telegram_chat_missing": "Telegram 通知需要填写聊天 ID",
+  "alert.telegram_token_invalid": "Telegram Bot Token 格式不正确（形如 123456789:AA…，从 @BotFather 获取）",
+  "alert.telegram_token_missing": "Telegram 通知需要 Bot Token",
+  "alert.too_many_kinds": "关闭的告警类型过多",
+  "alert.too_many_recipients": "邮件收件人最多 5 个",
+  "alert.webhook_secret_invalid": "Webhook 签名密钥须为 16–128 个可打印 ASCII 字符",
+  "alert.webhook_secret_missing": "Webhook 需要签名密钥",
+  "alert.webhook_url_invalid": "Webhook 地址无效：{m}",
+  "alert.webhook_url_missing": "Webhook 需要填写地址",
+  // 优惠券
+  "coupon_admin.code_exists": "已存在相同的优惠码（不区分大小写）",
+  "coupon_admin.code_invalid": "优惠码须为 {min_code}–{max_code} 个字符（字母、数字、_ 或 -）",
+  "coupon_admin.ends_before_starts": "失效时间必须晚于生效时间",
+  "coupon_admin.fixed_range": "固定金额须在 0.01–{max_price_yuan} 元之间",
+  "coupon_admin.in_use": "该优惠码已被订单使用，不能删除，请改为停用",
+  "coupon_admin.limit_range": "使用次数上限须为 1–{max_limit}（留空不限）",
+  "coupon_admin.max_uses_below_used": "总次数上限不能低于已使用的 {used} 次",
+  "coupon_admin.min_amount_range": "最低消费须在 0–{max_price_yuan} 元之间",
+  "coupon_admin.name_long": "名称最多 {max_name} 个字符",
+  "coupon_admin.percent_range": "折扣百分比须为 1–100",
+  "coupon_admin.periods_empty": "适用时长至少选一个（不限请留空）",
+  "coupon_admin.plans_range": "适用套餐须为 1–{max_scope_plans} 个（不限请留空）",
+  "coupon_admin.unknown_plan": "适用套餐中有不存在的套餐",
+  // 资金
+  "finance.adjust_range": "调整金额不能为 0，且绝对值不超过 {max_adjust_yuan} 元",
+  "finance.hold_days_range": "冻结天数须为 0–{max_hold_days}",
+  "finance.min_withdrawal_range": "最低提现金额须在 0.01–{max_price_yuan} 元之间",
+  "finance.rate_percent_range": "返利比例须为 0–100",
+  "finance.withdrawal_user_gone": "该用户已删除，只能标记为已打款",
+  // 节点组
+  "group.description_long": "说明最多 {max_description} 个字符",
+  "group.name_exists": "已存在同名的节点组",
+  "group.unknown": "节点组不存在（可能已被删除）",
+  // 入站
+  "inbound.account_invalid": "入站无法生成用户凭据：{detail}",
+  "inbound.fakedns": "入站「{tag}」：agent 不支持 fakedns",
+  "inbound.invalid": "入站「{tag}」无效：{e}",
+  "inbound.not_array": "入站配置必须是 JSON 数组",
+  "inbound.port_clash": "端口冲突：{detail}",
+  "inbound.protocol_missing": "入站「{tag}」缺少协议（protocol）",
+  "inbound.tag_duplicate": "入站标签「{tag}」重复",
+  "inbound.tag_missing": "每个入站都需要非空的标签（tag）",
+  "inbound.tag_reserved": "入站标签「{tag}」是保留名（api、akari-*、_*）",
+  // 安装
+  "install.origin_invalid": "面板地址无效：{e}",
+  "install.origin_required": "缺少面板地址：请先在「系统设置」填写主域名",
+  // 邮件
+  "mail.credentials_need_tls": "为保护密码，SMTP 账号只能通过 TLS 发送（加密方式选 STARTTLS 或 TLS）",
+  "mail.enable_needs_host": "启用发信前请填写 SMTP 服务器与发件地址",
+  "mail.expiry_days_range": "到期提醒天数须为 0–30",
+  "mail.from_invalid": "发件地址不是有效的邮箱地址",
+  "mail.from_name_long": "发件人名称最多 64 个字符",
+  "mail.host_invalid": "SMTP 服务器须为主机名或 IP 地址",
+  "mail.password_invalid": "SMTP 密码无效",
+  "mail.retry_not_dead": "只能重试尚未过期的失败邮件",
+  "mail.security_invalid": "加密方式只能是 STARTTLS、TLS 或无",
+  "mail.status_invalid": "状态只能是失败、待发送或已发送",
+  "mail.test_failed": "测试邮件发送失败：{detail}",
+  "mail.test_needs_host": "请先保存 SMTP 服务器和发件地址",
+  "mail.to_invalid": "收件地址不是有效的邮箱地址",
+  "mail.username_invalid": "SMTP 用户名无效",
+  // 节点
+  "node.acme_agent_too_old":
+    "该节点的 agent 版本过旧（协议 {p} < {need}），不支持节点域名自动证书：请先升级 agent（升级发布，或在节点上重新运行一次安装命令），或清空节点域名并手动放置证书",
+  "node.connect_override_invalid": "连接地址覆盖无效：{m}",
+  "node.deleting": "节点正在删除，不能修改",
+  "node.display_name_invalid": "显示名称最多 {max_display_chars} 个可打印字符",
+  "node.max_rate_invalid": "计费速率上限必须大于 0",
+  "node.name_empty": "节点名称不能为空",
+  "node.name_exists": "已存在同名的节点",
+  "node.name_invalid": "节点名称须为 1–64 个字符，不能含控制字符",
+  "node.probe_cooldown": "刚刚已经请求过测速，请稍后再试",
+  "node.range_invalid": "时间范围只能是 1h、6h、24h、48h、7d、30d、90d",
+  "node.rate_invalid": "流量倍率须在 0–100 之间，最多 3 位小数",
+  "node.region_long": "地区最多 64 个字符",
+  "node.sort_range": "排序值须在 -{sort_limit} 到 {sort_limit} 之间",
+  "node.tag_invalid": "每个标签最多 {max_tag_chars} 个可打印字符，且不能含「|」",
+  "node.templates_and_inbounds": "模板与入站 JSON 只能二选一",
+  "node.tls_domain_invalid": "节点域名须为形如 node1.example.com 的域名（不能是 IP 或通配符）",
+  "node.too_many_tags": "标签最多 {max_tags} 个",
+  "node.view_invalid": "视图参数只能是 summary 或 full",
+  // 订单（后台）
+  "order_admin.already_fulfilled": "该订单已开通",
+  "order_admin.already_refunded": "该订单已退款",
+  "order_admin.plan_gone": "套餐已不存在",
+  "order_admin.refund_not_paid": "只有已付款的订单可以退款",
+  "order_admin.refund_user_gone": "用户已删除：请线下退款，不要选择「退回余额」",
+  "order_admin.refunded": "该订单已退款，不能再开通",
+  "order_admin.user_gone": "用户已不存在",
+  // 套餐
+  "plan.capacity_negative": "库存不能为负数",
+  "plan.description_control": "说明不能包含控制字符",
+  "plan.description_long": "说明最多 {max_plan_description} 个字符",
+  "plan.disabled": "该套餐已停用，不能分配",
+  "plan.in_use": "有 {active} 个用户正在使用此套餐：请先为他们更换或取消套餐（或改为停用此套餐）",
+  "plan.name_exists": "已存在同名的套餐",
+  "plan.name_length": "名称须为 1–{max_name} 个字符",
+  "plan.on_sale_needs_price": "上架的套餐至少需要一个流量重置包以外的价格",
+  "plan.period_invalid": "流量重置周期无效（每月 / 不重置 / 每 1–{max_period_days} 天）",
+  "plan.price_days_missing": "「自定义天数」需要填写天数",
+  "plan.price_days_range": "天数须为 1–{max_period_days}",
+  "plan.price_days_unexpected": "该周期（{period}）不需要填写天数",
+  "plan.price_duplicate": "同一周期（{period}）只能有一个价格",
+  "plan.price_range": "价格须在 0.01–{max_price_yuan} 元之间",
+  "plan.quota_negative": "流量额度不能为负数",
+  "plan.seats_negative": "设备数不能为负数",
+  "plan.speed_limit_range": "限速须为 1–{max_speed_mbps} Mbps",
+  "plan.unknown": "套餐不存在（可能已被删除）",
+  "plan.unknown_ref": "选择的{what}不存在（可能已被删除）",
+  // 发布与灰度更新
+  "release.binary_exists": "该发布的程序文件已上传",
+  "release.binary_mismatch": "程序文件与签名清单不符（{total} 字节，sha256 {sha}）",
+  "release.binary_too_large": "程序文件超过清单声明的 {size} 字节",
+  "release.exists": "相同版本/平台或相同摘要的发布已存在",
+  "release.manifest_invalid": "发布清单无效：{detail}",
+  "release.no_keys": "面板未配置发布公钥（updates.release_keys），自动更新已关闭",
+  "release.panel_too_old": "该版本需要面板协议 {needed}（当前面板为 {have}），请先升级面板",
+  "release.rollout_open": "有未结束的灰度更新使用此版本，请先中止",
+  "release.signature_invalid": "签名校验失败：{detail}",
+  "release.upload_interrupted": "上传中断，请重试",
+  "rollout.another_open": "已有一个未结束的灰度更新，请先完成或中止它",
+  "rollout.bad_node": "所选节点中有不存在、未注册或正在删除的节点",
+  "rollout.bad_transition": "当前状态（{status}）不能执行此操作",
+  "rollout.failure_ratio_range": "失败比例须在 0–1 之间",
+  "rollout.no_nodes": "没有可更新的已注册节点",
+  "rollout.no_release": "还没有上传该版本（先上传清单、签名与程序文件）",
+  "rollout.percentage_range": "百分比须为 1–100",
+  "rollout.timeout_range": "健康检查超时须为 30–86400 秒",
+  "rollout.version_invalid": "版本号格式应为 vMAJOR.MINOR.PATCH[-pre]",
+  "rollout.waves_invalid": "分批设置无效：{detail}",
+  // 系统设置
+  "settings.confirm_required": "需要确认后才能执行",
+  "settings.domain_invalid": "{field}：{e}",
+  "settings.host_gate":
+    "保存后面板只接受主域名/订阅域名（以及 IP 地址）的访问，当前访问地址 {host} 将被拒绝。请确认主域名已解析并能打开，再勾选确认后保存。",
+  "settings.node_domain_cloudflare": "{detail}",
+  "settings.node_domain_unspecified": "节点通信域名：不能是 0.0.0.0 / ::",
+  "settings.probe_interval_range": "测速间隔：须在 600 秒（10 分钟）到 604800 秒（7 天）之间",
+  "settings.probe_url_duplicate": "测速地址：不能重复",
+  "settings.probe_url_invalid": "测速地址：{bad} 不是有效的 http(s) 地址（不能含空白或用户名）",
+  "settings.probe_urls_too_many": "测速地址：最多 4 个",
+  "settings.server_name_locked": "{detail}",
+  "settings.site_name_invalid": "站点名称须为 1–{max} 个字符，不能含控制字符",
+  "settings.version_conflict": "设置已被修改（可能是其他管理员），请刷新后重试",
+  "signup_admin.domain_invalid": "邮箱域名无效：{d}",
+  "signup_admin.invites_range": "每人邀请码数量须为 0–100",
+  "signup_admin.mail_off": "请先在「系统设置 → 邮件」启用发信",
+  "signup_admin.needs_main_domain": "请先设置主域名：找回密码链接需要它",
+  "signup_admin.too_many_domains": "邮箱域名最多 100 个",
+  "signup_admin.trial_days_range": "试用天数须为 1–3650",
+  "signup_admin.unknown_trial_plan": "试用套餐不存在",
+  // 入站模板
+  "template.dest_invalid": "目标站点须为域名（可带 :端口）",
+  "template.dest_port": "目标端口须为 1–65535",
+  "template.domain_invalid": "{what} 须为节点证书的域名",
+  "template.domain_mismatch": "{what} {d} 与节点域名 {n} 不同：自动证书只覆盖 {n}（留空即使用节点域名）",
+  "template.domain_missing": "{what}：请设置节点域名，或为此入站填写域名",
+  "template.fingerprint_invalid": "指纹只能是：{allowed}",
+  "template.method_invalid": "加密方式只能是：{allowed}",
+  "template.mode_invalid": "XHTTP 模式只能是：{allowed}",
+  "template.needs_tls": "Trojan 与 gRPC 需要 TLS（开启 TLS 并设置节点域名，或填写证书域名）",
+  "template.network_invalid": "传输方式只能是 WebSocket、HTTPUpgrade、XHTTP 或 gRPC",
+  "template.path_invalid": "路径须以 / 开头，只含字母、数字和 /-_.~（不超过 128 个字符）",
+  "template.port_clash": "端口 {p} 被多个入站使用",
+  "template.protocol_invalid": "协议只能是 VLESS、VMess 或 Trojan",
+  "template.service_name_invalid": "gRPC 服务名只能含字母、数字和 -_.（不超过 64 个字符）",
+  "template.tls_domain_without_tls": "未开启 TLS 却填写了证书域名",
+  "template.too_many": "一次最多添加 16 个模板",
+  // 工单（客服）
+  "ticket_admin.assignee_filter": "负责人筛选只能是「我」「未分配」或某个管理员",
+  "ticket_admin.assignee_invalid": "负责人必须是已启用的管理员",
+  "ticket_admin.not_closed": "工单未关闭",
+  "ticket_admin.search_long": "搜索内容最多 64 个字符",
+  "ticket_admin.status_invalid": "状态筛选无效",
+  // 用户
+  "user.access_from_plan": "此节点权限来自用户的套餐：请更换套餐或修改套餐的节点组",
+  "user.admin_no_subscription": "管理员账户没有订阅链接",
+  "user.admin_no_plan": "管理员账户不是代理用户，不能分配套餐",
+  "user.admin_not_assignable": "管理员账户不是代理用户，不能分配节点",
+  "user.assign_inbound_missing": "该节点上没有入站「{tag}」",
+  "user.assign_protocol_invalid": "不支持的协议「{protocol}」",
+  "user.assign_protocol_mismatch": "入站「{tag}」的协议是 {actual}，不是 {protocol}",
+  "user.email_exists": "已有其他账户使用这个邮箱",
+  "user.has_plan": "该用户有生效中的套餐：请先取消套餐，再设为管理员",
+  "user.last_admin": "不能停用、降级或删除最后一个启用的管理员",
+  "user.limit_negative": "流量上限不能为负数",
+  "user.login_exists": "该账号已存在",
+  "user.login_invalid": "账号须为 3–64 个字符（字母、数字、_ . -）",
+  "user.plan_filter_invalid": "套餐筛选无效",
+  "user.plan_managed": "流量上限与到期时间由用户的套餐管理：请更换套餐，或先取消套餐",
+  "user.query_too_long": "搜索内容最多 {max} 个字符",
+  "user.role_invalid": "角色只能是用户或管理员",
+  "user.sort_invalid": "排序方式无效",
+  "user.status_filter_invalid": "状态筛选无效",
+  "user_plan.anchor_future": "{field} 不能晚于现在",
+  "user_plan.expiry_past": "{field} 必须晚于现在",
+};
+
+// Stored server messages without a code (orders' fulfil_error, rows
+// written before W21) the console still shows: English -> Chinese.
+const ADMIN_MESSAGES: Record<string, string> = {
+  "the plan no longer exists": "套餐已不存在",
+  "plan is sold out": "套餐已售罄",
+  "plan is disabled (not offered)": "套餐已停用",
+  "the user no longer exists": "用户已不存在",
+  "insufficient balance": "余额不足",
+  "admin accounts are not proxy users and cannot have a plan": "管理员账户不能持有套餐",
+};
+
+function fill(template: string, vars: Record<string, string | number>): string {
+  return template.replace(/\{(\w+)\}/g, (m, name: string) => (name in vars ? String(vars[name]) : m));
+}
+
+/** Chinese text of a stored server message (fulfil_error etc.); itself when unknown. */
+export function adminMessageText(message: string): string {
+  return ADMIN_MESSAGES[message] ?? message;
+}
+
+// Like zh, but an unknown server message stays bare (no "操作失败：" wrapper),
+// for callers that put their own context in front.
+const zhBare: typeof zh = (key, vars) => (key === "errors.generic" ? String(vars?.message ?? "") : zh(key, vars));
+
+/**
+ * errorText for the admin console (Chinese only, R18), usable outside
+ * components. With `context` the text is "<context>：<detail>" (one prefix,
+ * not "<context>：操作失败：<detail>").
+ */
+export function adminErrorText(err: unknown, context?: string): string {
+  let text: string | undefined;
+  if (err instanceof ApiError) {
+    const own = ADMIN_CODES[err.code];
+    if (own) text = fill(own, errorVars(err.params, err.message));
+    else if (!CODE_KEYS[err.code] && ADMIN_MESSAGES[err.message]) text = ADMIN_MESSAGES[err.message];
+  }
+  text ??= errorText(err, context ? zhBare : zh);
+  return context ? `${context}：${text}` : text;
+}

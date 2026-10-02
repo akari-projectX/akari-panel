@@ -12,7 +12,8 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { adminBase, get, post, put } from "../lib/api";
-import { adminErrorText } from "../lib/errors";
+import { adminErrorText } from "../lib/admin-errors";
+import { fmtDateTime } from "../lib/datetime";
 import { navigate } from "../lib/router";
 
 export type AlertKind = "offline" | "cpu" | "memory" | "disk" | "latency" | "cert" | "agent_cert" | "last_error";
@@ -105,7 +106,7 @@ export interface NodeAlertRules {
 const CHANNEL_ZH = { telegram: "Telegram", webhook: "Webhook", email: "邮件" } as const;
 
 function fmt(s: string | null) {
-  return s ? new Date(s).toLocaleString("zh-CN") : "—";
+  return fmtDateTime(s);
 }
 
 /** "" -> null (rule off / inherit); otherwise an integer (NaN -> error). */
@@ -128,7 +129,21 @@ export function AdminAlerts() {
   return (
     <div className="space-y-6">
       <AlertCenter />
-      <AlertSettingsCard />
+      <p className="text-sm text-muted-foreground">
+        阈值与通知通道在{" "}
+        <a
+          className="font-medium text-foreground underline"
+          href={`${adminBase}/settings/alerts`}
+          onClick={(e) => {
+            if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+            e.preventDefault();
+            navigate(`${adminBase}/settings/alerts`);
+          }}
+        >
+          系统设置 → 告警
+        </a>
+        。
+      </p>
       <DeliveryLog />
     </div>
   );
@@ -235,7 +250,7 @@ function AlertCenter() {
         ) : rows.length === 0 ? (
           <p className="text-sm text-muted-foreground">没有告警记录。</p>
         ) : (
-          <Table>
+          <Table label="告警列表">
             <TableHeader>
               <TableRow>
                 <TableHead>状态</TableHead>
@@ -438,7 +453,7 @@ function Num({
   );
 }
 
-function AlertSettingsCard() {
+export function AlertSettingsCard() {
   const queryClient = useQueryClient();
   const settings = useQuery({ queryKey: ["alert-settings"], queryFn: () => get<AlertSettings>("/alerts/settings") });
   const [form, setForm] = useState<Form | null>(null);
@@ -746,7 +761,7 @@ function DeliveryLog() {
         ) : list.data.length === 0 ? (
           <p className="text-sm text-muted-foreground">还没有发出过通知。</p>
         ) : (
-          <Table>
+          <Table label="通知记录">
             <TableHeader>
               <TableRow>
                 <TableHead>时间</TableHead>

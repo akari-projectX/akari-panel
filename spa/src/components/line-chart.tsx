@@ -1,6 +1,7 @@
 // W11: a small dependency-free SVG line chart (CSP-safe: no inline script,
 // no CDN; only React event handlers). Values may be null (gaps).
 import { useId, useState } from "react";
+import { fmtDate, fmtDateTime, fmtTime } from "../lib/datetime";
 
 export interface Series {
   label: string;
@@ -66,12 +67,9 @@ export function LineChart({
   const all = series.flatMap((s) => s.values.filter((v): v is number => v != null));
   const top = max ?? niceMax(all);
   const n = times.length;
-  const fmtTime = (t: string) => {
-    const d = new Date(t);
-    return n > 0 && Date.parse(times[n - 1]) - Date.parse(times[0]) > 2 * 86_400_000
-      ? d.toLocaleDateString()
-      : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  };
+  // Axis labels in Beijing time (W21, M7): "10-02" over days, else "14:05".
+  const axisLabel = (t: string): string =>
+    n > 0 && Date.parse(times[n - 1]) - Date.parse(times[0]) > 2 * 86_400_000 ? fmtDate(t).slice(5) : fmtTime(t);
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
     if (n === 0) return;
     const r = e.currentTarget.getBoundingClientRect();
@@ -140,9 +138,9 @@ export function LineChart({
           </svg>
           <span className="absolute left-1 top-0.5 text-[10px] text-muted-foreground">{format(top)}</span>
           <div className="flex justify-between text-[10px] text-muted-foreground">
-            <span>{fmtTime(times[0])}</span>
-            {hover != null && <span>{new Date(times[hover]).toLocaleString()}</span>}
-            <span>{fmtTime(times[n - 1])}</span>
+            <span>{axisLabel(times[0])}</span>
+            {hover != null && <span>{fmtDateTime(times[hover])}</span>}
+            <span>{axisLabel(times[n - 1])}</span>
           </div>
         </div>
       )}

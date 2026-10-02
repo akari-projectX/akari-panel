@@ -18,7 +18,8 @@ import {
   type NodeSummary,
   type NodeView,
 } from "../lib/api";
-import { adminErrorText } from "../lib/errors";
+import { adminErrorText } from "../lib/admin-errors";
+import { fmtDateTime, fmtTime } from "../lib/datetime";
 import { NodeTraffic } from "./admin-traffic";
 import { humanBytes } from "../lib/utils";
 
@@ -47,7 +48,7 @@ export function agentLatency(results: LatencyResult[]): LatencyResult | null {
 }
 
 function latencyTitle(r: LatencyResult): string {
-  const when = new Date(r.measured_at).toLocaleString();
+  const when = fmtDateTime(r.measured_at);
   return `${r.source === "agent" ? "节点出口测速" : "面板 TCP 连接"} ${r.target}（${when}）${r.error ? `：${r.error}` : ""}`;
 }
 
@@ -179,8 +180,8 @@ export function NodeDetail({ node, onClose }: { node: NodeView; onClose: () => v
           </CardTitle>
           <CardDescription>
             {s ? (s.online ? "在线" : "离线") : "加载中…"}
-            {s?.last_seen_at && ` · 最后在线 ${new Date(s.last_seen_at).toLocaleString()}`}
-            {hb && ` · 心跳 ${new Date(hb.ts).toLocaleTimeString()}`}
+            {s?.last_seen_at && ` · 最后在线 ${fmtDateTime(s.last_seen_at)}`}
+            {hb && ` · 心跳 ${fmtTime(hb.ts, true)}`}
           </CardDescription>
         </div>
         <Button variant="outline" size="sm" onClick={onClose}>
@@ -247,7 +248,7 @@ export function NodeDetail({ node, onClose }: { node: NodeView; onClose: () => v
             {probeMsg && (
               <span
                 role={probeMsg.ok ? "status" : "alert"}
-                className={`text-sm ${probeMsg.ok ? "text-emerald-600" : "text-destructive"}`}
+                className={`text-sm ${probeMsg.ok ? "text-emerald-700" : "text-destructive"}`}
               >
                 {probeMsg.text}
               </span>
@@ -266,9 +267,7 @@ export function NodeDetail({ node, onClose }: { node: NodeView; onClose: () => v
                       <span className="break-all text-muted-foreground">{r.target}</span>
                     </li>
                   ))}
-                  <li className="text-xs text-muted-foreground">
-                    测于 {new Date(agent[0].measured_at).toLocaleString()}
-                  </li>
+                  <li className="text-xs text-muted-foreground">测于 {fmtDateTime(agent[0].measured_at)}</li>
                 </ul>
               )}
             </div>

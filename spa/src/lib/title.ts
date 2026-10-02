@@ -1,13 +1,18 @@
+import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
 
 import { useT } from "../i18n";
+import { authOptions } from "./api";
 
 /**
- * The site name shown in titles. W21 makes it a setting; until then the
- * product name (one hook, so only this function changes).
+ * The site name shown in titles: 系统设置 → 站点名称 (W21), published by
+ * the public `/auth/options`; the product name until it loads or when the
+ * panel is older. Same query key as the login page's options (one request).
  */
 export function useSiteName(): string {
-  return useT()("common.appName");
+  const fallback = useT()("common.appName");
+  const options = useQuery({ queryKey: ["auth-options"], queryFn: authOptions, retry: false, staleTime: 60_000 });
+  return options.data?.site_name || fallback;
 }
 
 /** `document.title` = "<view> · <site>" while the calling view is shown (audit Minor 12). */

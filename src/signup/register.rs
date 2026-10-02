@@ -2,6 +2,7 @@
 //! for every address) and `POST /auth/register` (code + password → account
 //! + session). Both are the canonical rejection while registration is off.
 
+use crate::auth::bad_request;
 use std::net::SocketAddr;
 
 use axum::body::Body;
@@ -23,7 +24,13 @@ use crate::state::AppState;
 
 pub const PURPOSE: &str = "register";
 /// The one answer to a wrong, expired, used or raced code.
+#[cfg(test)]
 pub const INVALID_CODE: &str = "invalid or expired code";
+
+/// The one answer to every failed code check (no oracle).
+pub fn invalid_code() -> crate::auth::ApiError {
+    crate::auth::bad_request!("signup.invalid_code", "invalid or expired code")
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -55,22 +62,30 @@ async fn admit(
     raw_email: &str,
     invite_code: Option<&str>,
 ) -> Result<(String, Option<String>), ApiError> {
-    let addr =
-        email::parse(raw_email).ok_or_else(|| ApiError::bad_request("invalid email address"))?;
+    let addr = email::parse(raw_email)
+        .ok_or_else(|| bad_request!("signup.invalid_email", "invalid email address"))?;
     if !email::domain_allowed(&addr, &s.email_domains) {
-        return Err(ApiError::bad_request("email domain not allowed"));
+        return Err(bad_request!(
+            "signup.domain_not_allowed",
+            "email domain not allowed"
+        ));
     }
     let invite = invite_code
         .map(str::trim)
         .filter(|c| !c.is_empty())
         .map(str::to_ascii_lowercase);
     match &invite {
-        None if s.invite_required => return Err(ApiError::bad_request("invite code required")),
+        None if s.invite_required => {
+            return Err(bad_request!(
+                "signup.invite_required",
+                "invite code required"
+            ))
+        }
         None => {}
         Some(c) => {
             let mut conn = state.pg().acquire().await?;
             if !invite::usable(&mut conn, c, s.invite_single_use).await? {
-                return Err(ApiError::bad_request("invalid invite code"));
+                return Err(bad_request!("signup.invalid_invite", "invalid invite code"));
             }
         }
     }
@@ -219,7 +234,7 @@ pub async fn apply_register(
         Some(c) => Some(
             invite::consume(conn, c, s.invite_single_use)
                 .await?
-                .ok_or_else(|| ApiError::bad_request("invalid invite code"))?,
+                .ok_or_else(|| bad_request!("signup.invalid_invite", "invalid invite code"))?,
         ),
     };
     let id = Uuid::new_v4();
@@ -244,7 +259,7 @@ pub async fn apply_register(
         // was sent: the same answer as a wrong code.
         Err(sqlx::Error::Database(d)) if d.is_unique_violation() => {
             sp.rollback().await?;
-            return Err(ApiError::bad_request(INVALID_CODE));
+            return Err(invalid_code());
         }
         Err(e) => return Err(e.into()),
     };
@@ -359,7 +374,7 @@ pub async fn register(
     let Some(r) = done else {
         // Keep the counted attempt.
         tx.commit().await?;
-        return Err(ApiError::bad_request(INVALID_CODE));
+        return Err(invalid_code());
     };
     tx.commit().await?;
     let token = auth::issue_token(&state, r.id, "user", r.session_ver, auth::Stage::Full)?;

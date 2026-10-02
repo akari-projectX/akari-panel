@@ -26,6 +26,8 @@ describe("Login", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string, init?: RequestInit) => {
+        // The page title's site name (W21 useSiteName): not a login request.
+        if (url.endsWith("/auth/options")) return json(200, { site_name: "Akari" });
         urls.push(url);
         const body = init?.body ? JSON.parse(String(init.body)) : undefined;
         bodies.push(body);

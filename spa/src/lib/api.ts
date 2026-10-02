@@ -17,14 +17,25 @@ export const adminBase: string = `${prefixBase}/admin`;
 export const apiBase: string = `${prefixBase}/api/v1`;
 export const authBase: string = `${prefixBase}/auth`;
 
+/** Parameters of a coded server error (W21): numbers and strings. */
+export type ErrorParams = Record<string, string | number | boolean | null>;
+
 export class ApiError extends Error {
   status: number;
   /** The parsed JSON error body (e.g. login's `totp_required`). */
   body: Record<string, unknown>;
+  /** Stable machine code of the server error ("plan.speed_limit_range"); "" if none (W21). */
+  code: string;
+  params: ErrorParams;
   constructor(status: number, message: string, body: Record<string, unknown> = {}) {
     super(message);
     this.status = status;
     this.body = body;
+    this.code = typeof body.code === "string" ? body.code : "";
+    this.params =
+      typeof body.params === "object" && body.params !== null && !Array.isArray(body.params)
+        ? (body.params as ErrorParams)
+        : {};
   }
 }
 
@@ -75,6 +86,8 @@ export interface AuthOptions {
   // Empty = any domain.
   email_domains: string[];
   reset: boolean;
+  // W21: 系统设置 → 站点名称 (default "Akari"), for page titles.
+  site_name?: string;
 }
 export const authOptions = () => request<AuthOptions>(`${authBase}/options`);
 const authPost = <T>(path: string, body: unknown) =>
@@ -201,6 +214,12 @@ export interface UserView {
   // W15
   email: string | null;
   email_verified: boolean;
+}
+
+/** W21: GET /users — one page and the number of users matching the filters. */
+export interface UserPage {
+  users: UserView[];
+  total: number;
 }
 
 // --- M3: node groups, plans, user plans (mirror of src/plans.rs) ---

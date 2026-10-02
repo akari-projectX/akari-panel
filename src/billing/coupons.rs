@@ -24,6 +24,7 @@
 //!   — if the coupon is used up by then, the payment is honoured anyway
 //!   (Alipay took the discounted amount): redeemed with `over_limit`.
 
+use crate::auth::{bad_request, conflict};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
@@ -88,16 +89,23 @@ impl Refusal {
 
     pub fn error(self) -> ApiError {
         match self {
-            Refusal::Invalid => ApiError::bad_request("invalid coupon code"),
-            Refusal::NotStarted => ApiError::conflict("coupon is not valid yet"),
-            Refusal::Expired => ApiError::conflict("coupon has expired"),
-            Refusal::UsedUp => ApiError::conflict("coupon has been used up"),
-            Refusal::UserLimit => ApiError::conflict("you have already used this coupon"),
-            Refusal::NewUsersOnly => ApiError::conflict("coupon is for new customers only"),
-            Refusal::Plan => ApiError::conflict("coupon does not apply to this plan"),
-            Refusal::Period => ApiError::conflict("coupon does not apply to this period"),
+            Refusal::Invalid => bad_request!("coupon.invalid", "invalid coupon code"),
+            Refusal::NotStarted => conflict!("coupon.not_started", "coupon is not valid yet"),
+            Refusal::Expired => conflict!("coupon.expired", "coupon has expired"),
+            Refusal::UsedUp => conflict!("coupon.used_up", "coupon has been used up"),
+            Refusal::UserLimit => {
+                conflict!("coupon.user_limit", "you have already used this coupon")
+            }
+            Refusal::NewUsersOnly => {
+                conflict!("coupon.new_users_only", "coupon is for new customers only")
+            }
+            Refusal::Plan => conflict!("coupon.plan", "coupon does not apply to this plan"),
+            Refusal::Period => conflict!("coupon.period", "coupon does not apply to this period"),
             Refusal::BelowMinimum => {
-                ApiError::conflict("order amount is below the coupon's minimum")
+                conflict!(
+                    "coupon.below_minimum",
+                    "order amount is below the coupon's minimum"
+                )
             }
         }
     }
@@ -410,45 +418,58 @@ pub struct Terms {
 /// Validate complete terms (pure).
 pub fn check_terms(t: &Terms) -> Result<(), ApiError> {
     if t.name.chars().count() > MAX_NAME {
-        return Err(ApiError::bad_request(format!(
-            "name must be at most {MAX_NAME} characters"
-        )));
+        return Err(bad_request!(
+            "coupon_admin.name_long",
+            "name must be at most {max_name} characters",
+            max_name = MAX_NAME
+        ));
     }
     match t.kind {
         Kind::Percent if !(1..=100).contains(&t.value) => {
-            return Err(ApiError::bad_request(
-                "a percent coupon's value must be 1-100",
+            return Err(bad_request!(
+                "coupon_admin.percent_range",
+                "a percent coupon's value must be 1-100"
             ));
         }
         Kind::Fixed if !(1..=MAX_PRICE_CENTS).contains(&t.value) => {
-            return Err(ApiError::bad_request(format!(
-                "a fixed coupon's value must be 1..={MAX_PRICE_CENTS} (integer fen)"
-            )));
+            return Err(bad_request!(
+                "coupon_admin.fixed_range",
+                "a fixed coupon's value must be 1..={max_price_cents} (integer fen)",
+                max_price_cents = MAX_PRICE_CENTS
+            ));
         }
         _ => {}
     }
     if let Some(p) = &t.plan_ids {
         if p.is_empty() || p.len() > MAX_SCOPE_PLANS {
-            return Err(ApiError::bad_request(format!(
-                "plan_ids must list 1-{MAX_SCOPE_PLANS} plans (or be null for all)"
-            )));
+            return Err(bad_request!(
+                "coupon_admin.plans_range",
+                "plan_ids must list 1-{max_scope_plans} plans (or be null for all)",
+                max_scope_plans = MAX_SCOPE_PLANS
+            ));
         }
     }
     if let Some(p) = &t.periods {
         if p.is_empty() {
-            return Err(ApiError::bad_request(
-                "periods must list at least one period (or be null for all)",
+            return Err(bad_request!(
+                "coupon_admin.periods_empty",
+                "periods must list at least one period (or be null for all)"
             ));
         }
     }
     if !(0..=MAX_PRICE_CENTS).contains(&t.min_amount_cents) {
-        return Err(ApiError::bad_request(format!(
-            "min_amount_cents must be 0..={MAX_PRICE_CENTS}"
-        )));
+        return Err(bad_request!(
+            "coupon_admin.min_amount_range",
+            "min_amount_cents must be 0..={max_price_cents}",
+            max_price_cents = MAX_PRICE_CENTS
+        ));
     }
     if let (Some(s), Some(e)) = (t.starts_at, t.ends_at) {
         if e <= s {
-            return Err(ApiError::bad_request("ends_at must be after starts_at"));
+            return Err(bad_request!(
+                "coupon_admin.ends_before_starts",
+                "ends_at must be after starts_at"
+            ));
         }
     }
     for (field, v) in [
@@ -456,9 +477,12 @@ pub fn check_terms(t: &Terms) -> Result<(), ApiError> {
         ("per_user_limit", t.per_user_limit),
     ] {
         if v.is_some_and(|v| !(1..=MAX_LIMIT).contains(&v)) {
-            return Err(ApiError::bad_request(format!(
-                "{field} must be 1..={MAX_LIMIT} (or null for unlimited)"
-            )));
+            return Err(bad_request!(
+                "coupon_admin.limit_range",
+                "{field} must be 1..={max_limit} (or null for unlimited)",
+                field = field,
+                max_limit = MAX_LIMIT
+            ));
         }
     }
     Ok(())
@@ -492,7 +516,10 @@ async fn check_plans_exist(
             .fetch_one(conn)
             .await?;
         if n != p.len() as i64 {
-            return Err(ApiError::bad_request("plan_ids contains an unknown plan"));
+            return Err(bad_request!(
+                "coupon_admin.unknown_plan",
+                "plan_ids contains an unknown plan"
+            ));
         }
     }
     Ok(())
@@ -539,9 +566,12 @@ pub async fn apply_create(
     req: &CreateCouponReq,
 ) -> Result<Uuid, ApiError> {
     let code = normalize_code(&req.code).ok_or_else(|| {
-        ApiError::bad_request(format!(
-            "code must be {MIN_CODE}-{MAX_CODE} characters of A-Z a-z 0-9 _ -"
-        ))
+        bad_request!(
+            "coupon_admin.code_invalid",
+            "code must be {min_code}-{max_code} characters of A-Z a-z 0-9 _ -",
+            min_code = MIN_CODE,
+            max_code = MAX_CODE
+        )
     })?;
     let t = Terms {
         name: req.name.clone().unwrap_or_default().trim().to_string(),
@@ -569,7 +599,10 @@ pub async fn apply_create(
         .await;
     match r {
         Err(sqlx::Error::Database(d)) if d.is_unique_violation() => {
-            return Err(ApiError::conflict("a coupon with this code already exists"));
+            return Err(conflict!(
+                "coupon_admin.code_exists",
+                "a coupon with this code already exists"
+            ));
         }
         r => r?,
     };
@@ -655,10 +688,11 @@ pub async fn apply_update(
     };
     check_terms(&t)?;
     if t.max_uses.is_some_and(|m| m < cur.used) {
-        return Err(ApiError::conflict(format!(
-            "max_uses cannot be below the {} uses already counted",
-            cur.used
-        )));
+        return Err(conflict!(
+            "coupon_admin.max_uses_below_used",
+            "max_uses cannot be below the {used} uses already counted",
+            used = cur.used
+        ));
     }
     if req.plan_ids.is_some() {
         check_plans_exist(conn, &t.plan_ids).await?;
@@ -702,8 +736,9 @@ pub async fn apply_delete(
     .fetch_one(&mut *conn)
     .await?;
     if used {
-        return Err(ApiError::conflict(
-            "the coupon has been used by orders; disable it instead",
+        return Err(conflict!(
+            "coupon_admin.in_use",
+            "the coupon has been used by orders; disable it instead"
         ));
     }
     sqlx::query("DELETE FROM coupons WHERE id = $1")

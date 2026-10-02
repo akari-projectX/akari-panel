@@ -177,3 +177,17 @@ pub fn rand_ip() -> IpAddr {
     let x: u32 = rand::random();
     IpAddr::V4(std::net::Ipv4Addr::from(0x2e00_0000 | (x & 0x00ff_ffff)))
 }
+
+/// A client with a full session cookie of account `id` (any role).
+pub async fn client_for(state: &AppState, id: uuid::Uuid) -> Client {
+    let (role, sv): (String, i64) =
+        sqlx::query_as("SELECT role, session_ver FROM users WHERE id = $1")
+            .bind(id)
+            .fetch_one(state.pg())
+            .await
+            .unwrap();
+    let mut c = Client::new(state, rand_ip());
+    c.cookie =
+        Some(crate::auth::issue_token(state, id, &role, sv, crate::auth::Stage::Full).unwrap());
+    c
+}

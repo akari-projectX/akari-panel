@@ -14,7 +14,7 @@ export function latencyLevel(ms: number | null | undefined, failed: boolean): La
 }
 
 const CLS: Record<LatencyLevel, string> = {
-  good: "bg-emerald-600 text-white",
+  good: "bg-emerald-700 text-white",
   fair: "bg-amber-500 text-white",
   bad: "bg-red-600 text-white",
   timeout: "bg-muted text-muted-foreground",

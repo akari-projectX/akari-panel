@@ -155,7 +155,7 @@ pub fn smtp_transport(smtp: &Smtp, keys: &crate::totp::Keys) -> Result<Box<dyn T
         builder = builder.credentials(Credentials::new(user.clone(), password));
     }
     let from = Mailbox::new(
-        Some(smtp.site().to_string()),
+        Some(smtp.sender_name().to_string()),
         from_addr
             .parse()
             .map_err(|_| "the sender address is invalid")?,

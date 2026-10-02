@@ -21,6 +21,7 @@ pub mod notices;
 pub mod sender;
 pub mod templates;
 
+use crate::auth::{bad_request, conflict};
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -57,17 +58,30 @@ pub struct Smtp {
     pub notify_expiry_days: i32,
     pub notify_expired: bool,
     pub notify_quota: bool,
+    /// W21: 系统设置 → 站点名称 (panel_settings.site_name).
+    pub site_name: Option<String>,
 }
 
 const SMTP_COLS: &str = "version, enabled, host, port, security, username, password_enc, \
-     from_addr, from_name, notify_order_paid, notify_expiry_days, notify_expired, notify_quota";
+     from_addr, from_name, notify_order_paid, notify_expiry_days, notify_expired, notify_quota, \
+     (SELECT site_name FROM panel_settings WHERE id = 1) AS site_name";
+
+fn non_empty(s: &Option<String>) -> Option<&str> {
+    s.as_deref().filter(|s| !s.is_empty())
+}
 
 impl Smtp {
-    /// Name used as the mail sender and in templates.
+    /// The site's name in templates (subjects, headers, footers): the
+    /// site name setting, else the sender name, else "Akari".
     pub fn site(&self) -> &str {
-        self.from_name
-            .as_deref()
-            .filter(|s| !s.is_empty())
+        non_empty(&self.site_name)
+            .or(non_empty(&self.from_name))
+            .unwrap_or(DEFAULT_SITE)
+    }
+    /// The sender's display name: the sender name, else the site name.
+    pub fn sender_name(&self) -> &str {
+        non_empty(&self.from_name)
+            .or(non_empty(&self.site_name))
             .unwrap_or(DEFAULT_SITE)
     }
     /// Host and sender present (the enabled row is always complete).
@@ -267,17 +281,20 @@ fn blank(v: &Option<String>) -> Option<String> {
 pub fn smtp_values(req: &SmtpReq) -> Result<SmtpValues, ApiError> {
     let host = match blank(&req.host) {
         None => None,
-        Some(h) => Some(
-            valid_host(&h)
-                .ok_or_else(|| ApiError::bad_request("host must be a host name or IP address"))?,
-        ),
+        Some(h) => Some(valid_host(&h).ok_or_else(|| {
+            bad_request!(
+                "mail.host_invalid",
+                "host must be a host name or IP address"
+            )
+        })?),
     };
     if !(1..=65535).contains(&req.port) {
-        return Err(ApiError::bad_request("port must be 1-65535"));
+        return Err(bad_request!("request.port_range", "port must be 1-65535"));
     }
     if !["starttls", "tls", "none"].contains(&req.security.as_str()) {
-        return Err(ApiError::bad_request(
-            "security must be starttls, tls or none",
+        return Err(bad_request!(
+            "mail.security_invalid",
+            "security must be starttls, tls or none"
         ));
     }
     let username = blank(&req.username);
@@ -285,7 +302,7 @@ pub fn smtp_values(req: &SmtpReq) -> Result<SmtpValues, ApiError> {
         .as_deref()
         .is_some_and(|u| u.len() > 256 || !printable(u))
     {
-        return Err(ApiError::bad_request("username is invalid"));
+        return Err(bad_request!("mail.username_invalid", "username is invalid"));
     }
     let password = match &req.password {
         None => None,
@@ -293,38 +310,46 @@ pub fn smtp_values(req: &SmtpReq) -> Result<SmtpValues, ApiError> {
         Some(Some(p)) if p.is_empty() => Some(None),
         Some(Some(p)) => {
             if p.len() > 256 || !printable(p) {
-                return Err(ApiError::bad_request("password is invalid"));
+                return Err(bad_request!("mail.password_invalid", "password is invalid"));
             }
             Some(Some(p.clone()))
         }
     };
     if req.security == "none" && username.is_some() {
-        return Err(ApiError::bad_request(
-            "credentials are only sent over TLS (security starttls or tls)",
+        return Err(bad_request!(
+            "mail.credentials_need_tls",
+            "credentials are only sent over TLS (security starttls or tls)"
         ));
     }
     let from_addr = match blank(&req.from_addr) {
         None => None,
-        Some(a) => Some(
-            crate::signup::email::parse(&a)
-                .ok_or_else(|| ApiError::bad_request("from_addr is not a valid email address"))?,
-        ),
+        Some(a) => Some(crate::signup::email::parse(&a).ok_or_else(|| {
+            bad_request!(
+                "mail.from_invalid",
+                "from_addr is not a valid email address"
+            )
+        })?),
     };
     let from_name = blank(&req.from_name);
     if from_name
         .as_deref()
         .is_some_and(|n| n.chars().count() > 64 || !printable(n))
     {
-        return Err(ApiError::bad_request(
-            "from_name must be at most 64 characters",
+        return Err(bad_request!(
+            "mail.from_name_long",
+            "from_name must be at most 64 characters"
         ));
     }
     if !(0..=30).contains(&req.notify_expiry_days) {
-        return Err(ApiError::bad_request("notify_expiry_days must be 0-30"));
+        return Err(bad_request!(
+            "mail.expiry_days_range",
+            "notify_expiry_days must be 0-30"
+        ));
     }
     if req.enabled && (host.is_none() || from_addr.is_none()) {
-        return Err(ApiError::bad_request(
-            "host and from_addr are required to enable sending",
+        return Err(bad_request!(
+            "mail.enable_needs_host",
+            "host and from_addr are required to enable sending"
         ));
     }
     Ok(SmtpValues {
@@ -363,8 +388,9 @@ pub async fn apply_update_smtp(
     .fetch_one(&mut *conn)
     .await?;
     if cur.version != version {
-        return Err(ApiError::conflict(
-            "settings changed meanwhile; reload and retry",
+        return Err(conflict!(
+            "settings.version_conflict",
+            "settings changed meanwhile; reload and retry"
         ));
     }
     let sealed: Option<Vec<u8>> = match &v.password {
@@ -453,18 +479,20 @@ pub async fn send_test(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     user.require_admin()?;
     let to = crate::signup::email::parse(&req.to)
-        .ok_or_else(|| ApiError::bad_request("to is not a valid email address"))?;
+        .ok_or_else(|| bad_request!("mail.to_invalid", "to is not a valid email address"))?;
     let smtp = {
         let mut c = state.pg().acquire().await?;
         load(&mut c).await?
     };
     if !smtp.complete() {
-        return Err(ApiError::bad_request(
-            "save the SMTP host and sender address first",
+        return Err(bad_request!(
+            "mail.test_needs_host",
+            "save the SMTP host and sender address first"
         ));
     }
-    let transport = sender::smtp_transport(&smtp, state.totp())
-        .map_err(|e| ApiError::new(axum::http::StatusCode::BAD_GATEWAY, e))?;
+    let transport = sender::smtp_transport(&smtp, state.totp()).map_err(|e| {
+        crate::auth::api_error!(BAD_GATEWAY, "mail.test_failed", "{detail}", detail = e)
+    })?;
     let r = templates::render(&Template::Test, Locale::Zh, smtp.site());
     let msg = sender::OutMsg {
         to: to.clone(),
@@ -493,9 +521,11 @@ pub async fn send_test(
     }
     match res {
         Ok(Ok(())) => Ok(Json(json!({ "ok": true }))),
-        _ => Err(ApiError::new(
-            axum::http::StatusCode::BAD_GATEWAY,
-            format!("send failed: {outcome}"),
+        _ => Err(crate::auth::api_error!(
+            BAD_GATEWAY,
+            "mail.test_failed",
+            "send failed: {detail}",
+            detail = outcome
         )),
     }
 }
@@ -537,8 +567,9 @@ pub async fn list_outbox(
     user.require_admin()?;
     let status = q.status.as_deref().unwrap_or("dead");
     if !["dead", "pending", "sent"].contains(&status) {
-        return Err(ApiError::bad_request(
-            "status must be dead, pending or sent",
+        return Err(bad_request!(
+            "mail.status_invalid",
+            "status must be dead, pending or sent"
         ));
     }
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
@@ -577,8 +608,9 @@ pub async fn retry_outbox(
     .await?
     .rows_affected();
     if n == 0 {
-        return Err(ApiError::conflict(
-            "only a dead letter that has not expired can be retried",
+        return Err(conflict!(
+            "mail.retry_not_dead",
+            "only a dead letter that has not expired can be retried"
         ));
     }
     crate::audit::record(

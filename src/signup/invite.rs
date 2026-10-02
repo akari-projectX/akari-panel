@@ -13,6 +13,7 @@
 //! have codes. Multi-use unless `invite_single_use` (then a code admits one
 //! registration: `uses = 0` checked in the consuming UPDATE, race-safe).
 
+use crate::auth::conflict;
 use axum::extract::{Path, State};
 use axum::Json;
 use chrono::{DateTime, Utc};
@@ -195,7 +196,7 @@ pub async fn apply_create(
         .fetch_one(&mut *conn)
         .await?;
     if n >= i64::from(limit) {
-        return Err(ApiError::conflict("invite code limit reached"));
+        return Err(conflict!("invite.limit", "invite code limit reached"));
     }
     let mut code = new_code();
     // ~50-bit codes: a collision is astronomically rare; retry anyway.
@@ -235,7 +236,10 @@ pub async fn create_code(
     let mut tx = state.pg().begin().await?;
     let s = super::load_settings(&mut tx).await?;
     if !s.register_enabled {
-        return Err(ApiError::conflict("registration is closed"));
+        return Err(conflict!(
+            "invite.registration_closed",
+            "registration is closed"
+        ));
     }
     let code = apply_create(&mut tx, &Actor::of(&user), user.id, s.invite_codes_per_user).await?;
     tx.commit().await?;

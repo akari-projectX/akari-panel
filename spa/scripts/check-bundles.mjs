@@ -58,6 +58,11 @@ const MARKERS = [
   ["heading 失败邮件", /失败邮件/],
   // W20
   ["button 复制订阅链接", /复制订阅链接/],
+  // W21
+  ["admin API /dashboard", new RegExp(`${Q}/dashboard\\b`)],
+  ["heading 仪表盘", /仪表盘/],
+  ["admin API /settings/site", /\/settings\/site/],
+  ["console error texts (ADMIN_CODES)", /plan\.speed_limit_range/],
 ];
 const files = (dir) =>
   readdirSync(dir).flatMap((name) => {
@@ -95,6 +100,24 @@ for (const [label, re] of MARKERS) {
   }
   if (!admin.some((f) => re.test(f.text))) {
     console.error(`FAIL: marker "${label}" not found in the admin bundle (${adminDir}): stale guard`);
+    failed = true;
+  }
+}
+// W21: the console is code-split; chunks must load each other through
+// relative imports only. Vite wraps each dynamic import in its preload
+// helper with the chunk's dependencies, which it would fetch by absolute
+// "/admin/assets/…" URLs that miss the secret prefix; vite.config.ts
+// (modulePreload false, one CSS file) keeps every dependency list empty.
+for (const f of [...user, ...admin]) {
+  if (!f.path.endsWith(".js")) continue;
+  for (const m of f.text.matchAll(/\(\)=>import\(`([^`]+)`\),(\[[^\]]*\])/g)) {
+    if (m[2] !== "[]") {
+      console.error(`FAIL: ${f.path}: dynamic import ${m[1]} preloads ${m[2]} by absolute URL (misses the prefix)`);
+      failed = true;
+    }
+  }
+  if (/import\((["'`])\/(?!\/)/.test(f.text)) {
+    console.error(`FAIL: ${f.path}: absolute dynamic import (misses the prefix)`);
     failed = true;
   }
 }

@@ -26,6 +26,7 @@
 //!   copied into the audit log). Email notifications go through
 //!   `mailhook` (the W15 SMTP outbox, verified addresses only).
 
+use crate::auth::{bad_request, conflict};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -95,15 +96,23 @@ pub struct AssignReq {
 pub fn clean_subject(s: &str) -> Result<String, ApiError> {
     let s = s.trim();
     if s.is_empty() {
-        return Err(ApiError::bad_request("subject is required"));
+        return Err(bad_request!(
+            "ticket.subject_required",
+            "subject is required"
+        ));
     }
     if s.chars().any(char::is_control) {
-        return Err(ApiError::bad_request("subject must be a single line"));
+        return Err(bad_request!(
+            "ticket.subject_multiline",
+            "subject must be a single line"
+        ));
     }
     if s.chars().count() > MAX_SUBJECT {
-        return Err(ApiError::bad_request(format!(
-            "subject is longer than {MAX_SUBJECT} characters"
-        )));
+        return Err(bad_request!(
+            "ticket.subject_long",
+            "subject is longer than {max_subject} characters",
+            max_subject = MAX_SUBJECT
+        ));
     }
     Ok(s.to_string())
 }
@@ -118,12 +127,17 @@ pub fn clean_body(s: &str) -> Result<String, ApiError> {
         .collect();
     let s = s.trim();
     if s.is_empty() {
-        return Err(ApiError::bad_request("message is required"));
+        return Err(bad_request!(
+            "ticket.message_required",
+            "message is required"
+        ));
     }
     if s.chars().count() > MAX_BODY {
-        return Err(ApiError::bad_request(format!(
-            "message is longer than {MAX_BODY} characters"
-        )));
+        return Err(bad_request!(
+            "ticket.message_long",
+            "message is longer than {max_body} characters",
+            max_body = MAX_BODY
+        ));
     }
     Ok(s.to_string())
 }
@@ -132,10 +146,12 @@ fn check_choice(field: &str, v: &str, allowed: &[&str]) -> Result<(), ApiError> 
     if allowed.contains(&v) {
         Ok(())
     } else {
-        Err(ApiError::bad_request(format!(
-            "{field} must be one of: {}",
-            allowed.join(", ")
-        )))
+        Err(bad_request!(
+            "ticket.choice_invalid",
+            "{field} must be one of: {allowed}",
+            field = field,
+            allowed = allowed.join(", ")
+        ))
     }
 }
 
@@ -192,7 +208,7 @@ pub async fn apply_create(
         .fetch_one(&mut *conn)
         .await?;
         if !mine {
-            return Err(ApiError::bad_request("unknown order"));
+            return Err(bad_request!("ticket.unknown_order", "unknown order"));
         }
     }
     if let Some(n) = req.node_id {
@@ -204,7 +220,7 @@ pub async fn apply_create(
         .fetch_one(&mut *conn)
         .await?;
         if !mine {
-            return Err(ApiError::bad_request("unknown node"));
+            return Err(bad_request!("ticket.unknown_node", "unknown node"));
         }
     }
     lock_user_tickets(conn, user.id).await?;
@@ -215,9 +231,11 @@ pub async fn apply_create(
     .fetch_one(&mut *conn)
     .await?;
     if open >= MAX_OPEN_PER_USER {
-        return Err(ApiError::conflict(format!(
-            "too many open tickets (at most {MAX_OPEN_PER_USER}); close one first"
-        )));
+        return Err(conflict!(
+            "ticket.open_limit",
+            "too many open tickets (at most {max_open_per_user}); close one first",
+            max_open_per_user = MAX_OPEN_PER_USER
+        ));
     }
     let id = Uuid::new_v4();
     sqlx::query(
@@ -309,12 +327,14 @@ pub async fn apply_reply(
         return Ok(Found::No);
     };
     if t.status == "closed" {
-        return Err(ApiError::conflict("ticket is closed"));
+        return Err(conflict!("ticket.closed", "ticket is closed"));
     }
     if t.messages >= MAX_MESSAGES {
-        return Err(ApiError::conflict(format!(
-            "ticket has {MAX_MESSAGES} messages; open a new ticket"
-        )));
+        return Err(conflict!(
+            "ticket.full",
+            "ticket has {max_messages} messages; open a new ticket",
+            max_messages = MAX_MESSAGES
+        ));
     }
     let msg: i64 = sqlx::query_scalar(
         "INSERT INTO ticket_messages (ticket_id, author_id, author_login, staff, body) \
@@ -418,7 +438,7 @@ pub async fn apply_reopen(
         return Ok(Found::No);
     };
     if t.status != "closed" {
-        return Err(ApiError::conflict("ticket is not closed"));
+        return Err(conflict!("ticket_admin.not_closed", "ticket is not closed"));
     }
     sqlx::query(
         "UPDATE tickets SET status = 'open', closed_at = NULL, closed_by = NULL, updated_at = now() \
@@ -458,7 +478,10 @@ pub async fn apply_assign(
         .fetch_one(&mut *conn)
         .await?;
         if !ok {
-            return Err(ApiError::bad_request("assignee must be an enabled admin"));
+            return Err(bad_request!(
+                "ticket_admin.assignee_invalid",
+                "assignee must be an enabled admin"
+            ));
         }
     }
     let before: Option<Uuid> = sqlx::query_scalar(
@@ -878,8 +901,9 @@ pub fn list_filter(q: &ListQuery, me: Uuid) -> Result<(String, Vec<String>), Api
             clauses.push(format!("t.status = {p}"));
         }
         Some(_) => {
-            return Err(ApiError::bad_request(
-                "status must be open, answered, closed or active",
+            return Err(bad_request!(
+                "ticket_admin.status_invalid",
+                "status must be open, answered, closed or active"
             ))
         }
     }
@@ -900,8 +924,12 @@ pub fn list_filter(q: &ListQuery, me: Uuid) -> Result<(String, Vec<String>), Api
             let id = if a == "me" {
                 me
             } else {
-                Uuid::parse_str(a)
-                    .map_err(|_| ApiError::bad_request("assignee must be me, none or an id"))?
+                Uuid::parse_str(a).map_err(|_| {
+                    bad_request!(
+                        "ticket_admin.assignee_filter",
+                        "assignee must be me, none or an id"
+                    )
+                })?
             };
             let p = bind(id.to_string(), &mut binds);
             clauses.push(format!("t.assignee_id = {p}::uuid"));
@@ -912,8 +940,9 @@ pub fn list_filter(q: &ListQuery, me: Uuid) -> Result<(String, Vec<String>), Api
     }
     if let Some(s) = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         if s.chars().count() > 64 {
-            return Err(ApiError::bad_request(
-                "search text is longer than 64 characters",
+            return Err(bad_request!(
+                "ticket_admin.search_long",
+                "search text is longer than 64 characters"
             ));
         }
         let escaped = s
