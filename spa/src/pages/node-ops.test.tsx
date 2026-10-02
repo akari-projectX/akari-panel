@@ -7,6 +7,7 @@ import { LatencyBadge, latencyLevel } from "../components/latency-badge";
 import { niceMax, pathOf } from "../components/line-chart";
 import { FixedLocale, setLocale } from "../i18n";
 import type { MyNodeStatus, NodeStatus, NodeView } from "../lib/api";
+import { nodeRoutes } from "../test/nodes";
 import { fakeApi, renderAdmin, renderWithClient } from "../test/harness";
 import { changedFromDefaults, emptyOps, opsToBody, overridesToBody, parseTags } from "./admin-node-form";
 import { agentLatency, humanRate } from "./admin-node-status";
@@ -164,7 +165,7 @@ describe("helpers", () => {
 
 describe("admin node list and form", () => {
   it("shows live columns: CPU/mem, rates, online users, latency, multiplier and tags", async () => {
-    fakeApi({ "GET /nodes": [node()] });
+    fakeApi({ ...nodeRoutes([node()]) });
     renderAdmin(<AdminNodes />);
     const row = (await screen.findByText("香港 01")).closest("tr") as HTMLElement;
     expect(within(row).getByText("hk-1")).toBeTruthy();
@@ -179,7 +180,7 @@ describe("admin node list and form", () => {
   });
 
   it("an offline node shows no stale metrics", async () => {
-    fakeApi({ "GET /nodes": [node({ online: false, status: "offline", latency: [] })] });
+    fakeApi({ ...nodeRoutes([node({ online: false, status: "offline", latency: [] })]) });
     renderAdmin(<AdminNodes />);
     const row = (await screen.findByText("香港 01")).closest("tr") as HTMLElement;
     expect(row.textContent).not.toContain("37%");
@@ -219,7 +220,7 @@ describe("admin node list and form", () => {
 
   it("saves display/billing fields and connect overrides with one PATCH", async () => {
     const calls = fakeApi({
-      "GET /nodes": [node()],
+      ...nodeRoutes([node()]),
       "GET /node-groups": [],
       "GET /inbound-templates": { reality_dests: [], fingerprints: [] },
       "PATCH /nodes/n1": node(),
@@ -291,9 +292,20 @@ describe("node detail", () => {
   it("opens from the list (deep link), shows status, charts and latency; 立即测速 with cooldown", async () => {
     let probes = 0;
     const calls = fakeApi({
-      "GET /nodes": [node()],
+      ...nodeRoutes([node()]),
       "GET /nodes/n1/status": status,
       "GET /nodes/n1/metrics": metrics,
+      "GET /nodes/n1/alert-rules": {
+        muted: false,
+        disabled: [],
+        offline_secs: null,
+        cpu_percent: null,
+        cpu_minutes: null,
+        mem_percent: null,
+        mem_minutes: null,
+        disk_percent: null,
+        cert_days: null,
+      },
       "POST /nodes/n1/probe": () =>
         ++probes === 1
           ? { status: 202, body: { requested_at: "2026-10-02T00:00:00Z" } }

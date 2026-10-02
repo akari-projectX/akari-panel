@@ -351,6 +351,98 @@ export interface NodeView {
   probe_requested_at: string | null;
 }
 
+// W17: one row of GET /nodes?view=summary (the node list): only the list's
+// columns, a slim heartbeat, the best agent latency result. The node page
+// fetches GET /nodes/{id} (NodeView). Mirror of api.rs NodeSummary.
+export interface NodeSummary {
+  id: string;
+  name: string;
+  display_name: string | null;
+  enabled: boolean;
+  status: string;
+  online: boolean;
+  deleting_at: string | null;
+  region: string | null;
+  server_addr: string | null;
+  agent_version: string | null;
+  agent_os: string | null;
+  agent_arch: string | null;
+  agent_protocol: number | null;
+  update_status: NodeUpdateStatus | null;
+  lease_expires_at: string | null;
+  enrolled: boolean;
+  cert_not_after: string | null;
+  enroll_token_expires_at: string | null;
+  last_seen_at: string | null;
+  last_error: string | null;
+  sort: number;
+  visible: boolean;
+  tags: string[];
+  traffic_rate: number;
+  latency: LatencyResult | null;
+  alerts_firing: number;
+  warnings: string[];
+  needs_certificate: boolean;
+  heartbeat: HeartbeatSummary | null;
+}
+
+export interface HeartbeatSummary {
+  cpu_percent: number;
+  mem_used_bytes: number;
+  mem_total_bytes: number;
+  connections: number;
+  uptime_seconds?: number | null;
+  ts: string;
+  metrics?: { net_rx_bytes_per_sec: number; net_tx_bytes_per_sec: number; online_users: number };
+}
+
+// W17: support tickets (customer side; mirror of tickets.rs).
+export type TicketCategory = "general" | "billing" | "technical" | "account" | "other";
+export type TicketPriority = "low" | "normal" | "high" | "urgent";
+export type TicketStatus = "open" | "answered" | "closed";
+export const TICKET_CATEGORIES: TicketCategory[] = ["general", "billing", "technical", "account", "other"];
+export const TICKET_PRIORITIES: TicketPriority[] = ["low", "normal", "high", "urgent"];
+export const TICKET_MAX_SUBJECT = 120;
+export const TICKET_MAX_BODY = 5000;
+
+export interface MyTicketRow {
+  id: string;
+  subject: string;
+  category: TicketCategory;
+  priority: TicketPriority;
+  status: TicketStatus;
+  messages: number;
+  created_at: string;
+  updated_at: string;
+  unread: boolean;
+}
+
+export interface TicketMessage {
+  id: number;
+  staff: boolean;
+  // Staff view only (customers never see admin logins).
+  author_login?: string;
+  body: string;
+  created_at: string;
+}
+
+export interface MyTicketView {
+  id: string;
+  subject: string;
+  category: TicketCategory;
+  priority: TicketPriority;
+  status: TicketStatus;
+  order_id: string | null;
+  order_no: string | null;
+  node_id: string | null;
+  node_name: string | null;
+  created_at: string;
+  updated_at: string;
+  closed_at: string | null;
+  closed_by: "user" | "staff" | null;
+  messages: TicketMessage[];
+}
+
 export interface ConnectOverride {
   host?: string;
   port?: number;

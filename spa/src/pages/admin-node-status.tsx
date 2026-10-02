@@ -15,6 +15,7 @@ import {
   type LatencyResult,
   type NodeMetricsView,
   type NodeStatus,
+  type NodeSummary,
   type NodeView,
 } from "../lib/api";
 import { adminErrorText } from "../lib/errors";
@@ -62,10 +63,11 @@ export function NodeLiveHeads() {
 }
 
 /** The live cells of one node (heartbeat ~15 s, list refreshed every 5 s). */
-export function NodeLiveCells({ n }: { n: NodeView }) {
+/** Live columns of one list row (W17: the summary view carries the best agent result). */
+export function NodeLiveCells({ n }: { n: Pick<NodeSummary, "online" | "heartbeat" | "latency"> }) {
   const hb = n.online ? n.heartbeat : null;
   const m = hb?.metrics;
-  const lat = agentLatency(n.latency);
+  const lat = n.latency;
   return (
     <>
       <TableCell className="whitespace-nowrap tabular-nums text-muted-foreground">
