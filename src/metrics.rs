@@ -45,6 +45,8 @@ struct Metrics {
     enrollments: IntCounterVec,
     http_seconds: HistogramVec,
     retention: IntCounterVec,
+    fleet: IntGaugeVec,
+    fleet_cpu_max: prometheus::Gauge,
 }
 
 static METRICS: OnceLock<Metrics> = OnceLock::new();
@@ -139,6 +141,22 @@ impl Metrics {
                  deleted by reason (kind=rows_retired_session, rows_deleted_node)",
                 &["kind"],
             )?,
+            // W11: fleet aggregates over the nodes whose stream this
+            // instance holds (sum the series over instances); no per-node
+            // labels (node ids/names would be unbounded label values).
+            fleet: IntGaugeVec::new(
+                Opts::new(
+                    "akari_fleet",
+                    "W11 heartbeat aggregates over nodes connected to this instance (fresh within \
+                     60 s): kind=nodes_reporting, online_users, connections, rx_bytes_per_second, \
+                     tx_bytes_per_second",
+                ),
+                &["kind"],
+            )?,
+            fleet_cpu_max: prometheus::Gauge::with_opts(Opts::new(
+                "akari_fleet_cpu_percent_max",
+                "W11 highest CPU % among nodes connected to this instance",
+            ))?,
             registry,
         };
         let build = IntGaugeVec::new(
@@ -163,6 +181,11 @@ impl Metrics {
         m.registry.register(Box::new(m.enrollments.clone()))?;
         m.registry.register(Box::new(m.http_seconds.clone()))?;
         m.registry.register(Box::new(m.retention.clone()))?;
+        m.registry.register(Box::new(m.fleet.clone()))?;
+        m.registry.register(Box::new(m.fleet_cpu_max.clone()))?;
+        for k in FLEET_KINDS {
+            m.fleet.with_label_values(&[k]);
+        }
         // Series that should read 0, not "absent", before the first event.
         for k in ["snapshot", "delta", "empty_snapshot"] {
             m.syncs_sent.with_label_values(&[k]);
@@ -192,6 +215,14 @@ pub fn init() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+const FLEET_KINDS: [&str; 5] = [
+    "nodes_reporting",
+    "online_users",
+    "connections",
+    "rx_bytes_per_second",
+    "tx_bytes_per_second",
+];
 
 fn m() -> Option<&'static Metrics> {
     METRICS.get()
@@ -338,6 +369,15 @@ async fn scrape(State(state): State<AppState>) -> Response {
         .set((live - active).max(0));
     m.listener_connected
         .set(i64::from(state.wakeups().connected()));
+    let f = state.nodestat().fleet();
+    for (k, v) in
+        FLEET_KINDS
+            .iter()
+            .zip([f.nodes, f.online_users, f.connections, f.rx_bps, f.tx_bps])
+    {
+        m.fleet.with_label_values(&[k]).set(v);
+    }
+    m.fleet_cpu_max.set(f.cpu_max);
     let mut buf = Vec::new();
     if let Err(e) = TextEncoder::new().encode(&m.registry.gather(), &mut buf) {
         tracing::error!(error = %e, "metrics encoding failed");
@@ -387,6 +427,8 @@ mod tests {
             "akari_notify_listener_connects_total",
             "akari_notify_queue_usage_ratio",
             "akari_login_attempts_total",
+            "akari_fleet",
+            "akari_fleet_cpu_percent_max",
         ] {
             assert!(text.contains(name), "missing {name}\n{text}");
         }

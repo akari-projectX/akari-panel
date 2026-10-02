@@ -61,7 +61,35 @@ impl PanelConfig {
         self.validate_updates(&mut r);
         self.validate_payments(&mut r);
         self.validate_settings_defaults(&mut r);
+        self.validate_probe(&mut r);
         r
+    }
+
+    /// `[probe]` (W11 latency tests).
+    fn validate_probe(&self, r: &mut Report) {
+        let p = &self.probe;
+        if !(600..=604_800).contains(&p.interval_secs) {
+            r.err("probe.interval_secs: must be 600..=604800 (10 min .. 7 days)");
+        }
+        if !(1000..=30_000).contains(&p.timeout_ms) {
+            r.err("probe.timeout_ms: must be 1000..=30000");
+        }
+        if !(1..=5).contains(&p.attempts) {
+            r.err("probe.attempts: must be 1..=5");
+        }
+        if p.urls.is_empty() || p.urls.len() > 4 {
+            r.err("probe.urls: 1 to 4 URLs");
+        }
+        for u in &p.urls {
+            if !crate::nodestat::valid_probe_url(u) {
+                r.err(format!(
+                    "probe.urls: {u:?} is not an absolute http(s) URL without credentials (<= 512 bytes)"
+                ));
+            }
+        }
+        if p.manual_cooldown_secs > 86_400 {
+            r.err("probe.manual_cooldown_secs: at most 86400");
+        }
     }
 
     /// `[payments.alipay]` (R18-3). Key files are checked separately

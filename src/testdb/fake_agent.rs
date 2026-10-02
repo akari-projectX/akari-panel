@@ -326,8 +326,28 @@ impl WireAgent {
                 os: "linux".into(),
                 arch: "amd64".into(),
             }),
+            ..Default::default()
         }))
         .await;
+    }
+
+    /// W11: Hello advertising capabilities ("metrics", "latency").
+    pub async fn hello_caps(&self, held: (u64, u64), hash: String, caps: &[&str]) {
+        self.send(UpMsg::Hello(Hello {
+            session_id: self.session_id.clone(),
+            config_version: held.0,
+            user_version: held.1,
+            protocol_version: MIN_AGENT_PROTOCOL,
+            state_hash: hash,
+            capabilities: caps.iter().map(|c| c.to_string()).collect(),
+            ..Default::default()
+        }))
+        .await;
+    }
+
+    /// W11: send any upstream message (heartbeat, latency report).
+    pub async fn send_up(&self, m: UpMsg) {
+        self.send(m).await;
     }
 
     pub async fn update_status(&self, s: crate::gen::UpdateStatus) {

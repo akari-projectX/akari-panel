@@ -528,6 +528,62 @@ keeps `govulncheck` clean without an allow-list.)
 **Not supported by the embedded core:** TUIC (xray-core has no TUIC). No other core is added.
 Hysteria 2 is supported because xray-core v26.3.27 implements it as a multi-user inbound.
 
+## 3e. Node status, latency tests and the traffic multiplier (W11)
+
+**Machine status.** Agents with the `metrics` capability (W11 agents) add a machine-status block
+to every heartbeat (15 s; `akari-agent -heartbeat-interval` changes it, 1 s – 5 min): CPU %,
+load 1/5/15, memory and swap, disk of `/`, the default-route interface (rates since the previous
+heartbeat and totals since boot), TCP/UDP sockets in use, proxied connections, online users
+(distinct users with a live connection), agent RSS, uptime and xray version — all from
+`/proc` and `statfs`, no extra packages or privileges. The panel keeps the latest values in
+Valkey (any instance serves them) and history in PostgreSQL: one row per node and minute
+(48 h) rolled up into hours (90 days) by the reaper loop; at 200 nodes that is at most ~576k
+minute rows and ~432k hour rows, one small upsert per node per heartbeat (throttled to one per
+5 s). A node counts as offline exactly as before (no fresh session for 90 s). Older agents keep
+working: their nodes simply show CPU/memory/connections only.
+
+**Latency (Clash Verge url-test semantics).** Every `[probe].interval_secs` (default 5 h, ±10 %
+jitter) and on "立即测速" (admin node detail; at most once per `manual_cooldown_secs`, default
+30 s, per node):
+
+- the agent (capability `latency`) sends `GET` to the first test URL from its **own egress**
+  (never through xray, never via `HTTP(S)_PROXY`) — delay = request start → response headers
+  (DNS + TCP + TLS + first byte, a fresh connection each attempt), median of `attempts`
+  (default 3, a failed attempt counts as the timeout, default 5 s); when every attempt fails
+  it tries the next URL (default `https://www.gstatic.com/generate_204`, then
+  `https://cp.cloudflare.com/generate_204`). Nodes need outbound HTTPS to them;
+- the panel (any instance, rows claimed in the database) measures TCP connect time to each
+  inbound's client-facing address (连接地址/连接端口 override, else the node address and the
+  inbound port). UDP-only inbounds (Hysteria 2) show "n/a". Set `panel_tcp = false` when the
+  panel host must not dial nodes.
+
+Badges: < 200 ms green, < 500 ms amber, else red, timeout grey. Users see the agent result
+(online, multiplier, tags) of their visible nodes in the portal; never addresses or machine data.
+
+```toml
+[probe]
+interval_secs = 18000          # 600 .. 604800
+urls = ["https://www.gstatic.com/generate_204", "https://cp.cloudflare.com/generate_204"]
+timeout_ms = 5000              # per attempt, 1000 .. 30000
+attempts = 3                   # 1 .. 5, median
+panel_tcp = true
+manual_cooldown_secs = 30
+```
+
+**Traffic multiplier (倍率).** Billed bytes = floor(accepted bytes × rate) per counter row,
+computed only inside the flush SQL (never in panel memory); the rate in effect when a report is
+flushed applies to that report's increase (changing it never re-bills the past). Departed users'
+final counters are billed the same way; every plausibility cap works on the accepted (raw)
+bytes. The node list and detail page show both totals (`traffic_raw_bytes`,
+`traffic_billed_bytes`). 0 = free node. Hidden nodes (`visible = false`) keep serving the users
+they are assigned to; they are only left out of the portal and the subscription.
+
+**Prometheus.** The metrics listener adds fleet aggregates over the nodes connected to that
+instance (`akari_fleet{kind="nodes_reporting"|"online_users"|"connections"|"rx_bytes_per_second"|"tx_bytes_per_second"}`,
+`akari_fleet_cpu_percent_max`; sum over instances). There are no per-node series by design:
+node ids and names would be unbounded label values; per-node history is in the panel
+(`/nodes/{id}/metrics`). Per-node alert thresholds are a follow-up.
+
 ## 3c. Resource footprint (measured)
 
 One real deployment on a 1 vCPU-class VPS with 920 MB RAM (Debian 13, compose, IP-only), resident
@@ -618,6 +674,10 @@ release under **Updates** (every architecture you run), then on the node's page 
 newest uploaded release in place and re-enrolls the node (its previous certificate is revoked
 once the new one is issued; inbounds, users and traffic stay). The panel may be upgraded first
 in this case: it serves agents down to protocol 1.
+
+W11 (node status, latency, multiplier) needs no protocol bump: features are negotiated through
+`Hello.capabilities`, older agents are served as before (no machine status, no agent latency
+test), so either order works; agents first is still the rule.
 
 Why this order: a new panel drops traffic reports without `session_id` and serves the empty state
 to agents below `MIN_AGENT_PROTOCOL`. (M1c: protocol 2 agents work with older panels — renewal

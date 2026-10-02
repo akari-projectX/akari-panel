@@ -979,6 +979,11 @@ struct Session {
     /// Hello / ack of the empty state, while retiring.
     hello: Notify,
     retire_ack: Notify,
+    /// W11: the agent listed the "latency" capability in its Hello, and
+    /// the LatencyProbeConfig run token last sent on this stream (None =
+    /// none sent yet).
+    latency_capable: AtomicBool,
+    probe_sent: Mutex<Option<u64>>,
 }
 
 impl Session {
@@ -1006,6 +1011,8 @@ impl Session {
             closed: tokio::sync::watch::channel(false).0,
             hello: Notify::new(),
             retire_ack: Notify::new(),
+            latency_capable: AtomicBool::new(false),
+            probe_sent: Mutex::new(None),
             state,
         });
         sess.sync.lock().unwrap().remove_rebuild =
@@ -1169,7 +1176,10 @@ async fn session<S>(
             }
             refresh_members(&sess.state, node_id).await;
             match sync_if_stale(&sess).await {
-                Ok(Synced::Current) => maybe_offer_update(&sess).await,
+                Ok(Synced::Current) => {
+                    maybe_offer_update(&sess).await;
+                    maybe_send_probe(&sess).await;
+                }
                 Ok(Synced::Gone) => {
                     retire(&sess, "node deleted").await;
                     break;
@@ -1259,6 +1269,22 @@ async fn session<S>(
                         "failed to sync after hello",
                     );
                     on_hello_update(&sess, &hello).await;
+                    // W11: latency tests for agents that support them.
+                    let capable = hello.capabilities.iter().any(|c| c == "latency");
+                    if sess.latency_capable.swap(capable, Ordering::SeqCst) != capable || !capable {
+                        *lock_or_recover(&sess.probe_sent) = None;
+                    }
+                    maybe_send_probe(&sess).await;
+                }
+                Some(UpMsg::Latency(rep)) => {
+                    // W11: like traffic, nothing before the Hello.
+                    if sess.sync.lock().unwrap().hello_seen {
+                        if let Err(e) =
+                            crate::nodestat::store_agent_latency(state.pg(), node_id, &rep).await
+                        {
+                            tracing::warn!(node = %node_id, error = %e, "failed to store latency result");
+                        }
+                    }
                 }
                 Some(UpMsg::UpdateStatus(us)) => {
                     if let Err(e) = crate::rollout::on_status(state.pg(), node_id, &us).await {
@@ -1361,6 +1387,10 @@ async fn session<S>(
     };
     if let Some(f) = lost {
         record_failure(state.pg(), node_id, f, "no ack before the stream closed").await;
+    }
+    if !state.agents().contains_key(&node_id) {
+        // W11: no local stream for the node any more (fleet gauges).
+        state.nodestat().forget(node_id);
     }
     if retired {
         if !revoked {
@@ -1638,6 +1668,35 @@ async fn maybe_offer_update(sess: &Session) {
     }
 }
 
+/// W11: send the latency test settings (and the latest "立即测速" token)
+/// to an agent with the "latency" capability: once per stream, and again
+/// whenever the token changed. Read on every wake/tick (one indexed row).
+async fn maybe_send_probe(sess: &Session) {
+    if !sess.latency_capable.load(Ordering::SeqCst) || sess.retiring() || sess.terminated() {
+        return;
+    }
+    let requested = match crate::nodestat::requested_at(sess.state.pg(), sess.node_id).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(node = %sess.node_id, error = %e, "probe request lookup failed");
+            return;
+        }
+    };
+    let cfg = crate::nodestat::probe_config(&sess.state.cfg().probe, requested);
+    let token = cfg.run_token;
+    if *lock_or_recover(&sess.probe_sent) == Some(token) {
+        return;
+    }
+    let Some(guard) = sess.lock().await else {
+        return;
+    };
+    match sess.send(&guard, DownMsg::LatencyProbe(cfg)).await {
+        Ok(true) => *lock_or_recover(&sess.probe_sent) = Some(token),
+        Ok(false) => {}
+        Err(e) => tracing::warn!(node = %sess.node_id, error = %e, "latency config send failed"),
+    }
+}
+
 async fn mark_online(
     state: &AppState,
     node_id: Uuid,
@@ -1772,15 +1831,10 @@ async fn refresh_members(state: &AppState, node_id: Uuid) {
 }
 
 async fn store_heartbeat(state: &AppState, node_id: Uuid, hb: &Heartbeat) {
-    let blob = serde_json::json!({
-        "cpu_percent": hb.cpu_percent,
-        "mem_used_bytes": hb.mem_used_bytes,
-        "mem_total_bytes": hb.mem_total_bytes,
-        "connections": hb.connections,
-        "uptime_seconds": hb.uptime_seconds,
-        "lease_remaining_seconds": hb.lease_remaining_seconds,
-        "ts": chrono::Utc::now().to_rfc3339(),
-    });
+    // W11: the blob carries the machine status too (nodestat.rs), and the
+    // sample feeds the history and the fleet gauges.
+    let blob = crate::nodestat::heartbeat_blob(hb);
+    crate::nodestat::on_heartbeat(state, node_id, hb);
     valkey_util::set_with_ttl(
         state,
         format!("akari:node:hb:{node_id}"),

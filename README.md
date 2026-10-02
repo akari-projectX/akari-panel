@@ -84,6 +84,23 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
 - Heartbeats (15s) land in Valkey; traffic counters (10s polls) flow to the
   panel where deltas are applied idempotently against a session-scoped
   baseline.
+- **Node operations (W11, docs/DEPLOY.md §3e)**: xboard-style node form —
+  display name (user-facing; `name` stays the unique internal name), sort,
+  shown to users or hidden, tags (shown in the portal and in subscription
+  names "香港 01 | IPLC"), traffic multiplier 倍率 (0–100x, exact permille;
+  billed = floor(raw × rate) inside the flush SQL only, the rate in effect at
+  flush time applies; the node keeps raw and billed totals), per-inbound
+  连接地址/连接端口 (NAT / port forwarding / relays; all three subscription
+  formats and the panel's TCP test use them) and node-group membership.
+  Agents report machine status with every heartbeat (CPU, load, memory/swap,
+  disk, default-route interface rates and totals, TCP/UDP sockets, proxied
+  connections, online users, RSS, uptime, xray version): latest values in
+  Valkey, 1-minute history for 48 h and 1-hour history for 90 days in
+  PostgreSQL; the admin node list refreshes every 5 s and each node has a
+  detail page with charts. Latency like Clash Verge's url-test (every 5 h,
+  configurable, plus "立即测速"): the agent's HTTP test from its own egress,
+  and the panel's TCP connect test to every inbound; users see online state,
+  multiplier, tags and latency of their visible nodes.
 - Users over `traffic_limit_bytes` are auto-disabled; affected nodes get a
   version bump and connected agents converge immediately.
 - Subscription endpoint: `/{prefix}/sub/{token}` with a 256-bit per-user
@@ -184,6 +201,7 @@ separate loopback listener, never on the public port.
 | POST | /api/v1/me/totp/recovery-codes | user | `{code}`: replace recovery codes |
 | POST | /api/v1/me/sub-token | user (role=user) | regenerate own subscription token (5/hour) |
 | GET | /api/v1/me/plan | user | own active plan (or null), usage, enforced limit/expiry, node names + regions |
+| GET | /api/v1/me/nodes | user | W11: own visible nodes — display name, region, tags, multiplier, online, latency (no ids, addresses or machine metrics) |
 | POST | /api/v1/me/password | user/admin | `{current_password, new_password}`: change own password (wrong current = 400, counts against the login rate limit; other sessions end, this one continues) |
 | GET | /api/v1/audit | admin | audit log, `?limit&before&actor&action` (keyset, newest first) |
 | GET/POST | /api/v1/users | admin | list / create users |
@@ -195,13 +213,16 @@ separate loopback listener, never on the public port.
 | PATCH/DELETE | /api/v1/node-groups/{id} | admin | rename, describe, replace `node_ids` / delete |
 | GET/POST | /api/v1/plans | admin | list / create `{name, period, traffic_quota_bytes?, speed_limit_mbps?, device_seats?, sort?, enabled?, group_ids?, description?, capacity?, renewal_only?, allow_switch_in?}` (views include `on_sale` and `prices`) |
 | PATCH/DELETE | /api/v1/plans/{id} | admin | update (same fields; null clears nullable ones) / delete (409 while users hold it) |
-| GET/POST | /api/v1/nodes | admin | node list with live status, certificate expiry, last heartbeat, warnings / create a node `{name, region?, server_addr?, templates? \| inbounds?, install?: {origin?}}` (201: one-time enrollment token + bootstrap file + one-line install command, shown once) |
+| GET/POST | /api/v1/nodes | admin | node list with live status, certificate expiry, last heartbeat (W11: machine status, latency, multiplier, tags, groups), warnings / create a node `{name, region?, server_addr?, templates? \| inbounds?, install?: {origin?}, display_name?, sort?, visible?, tags?, traffic_rate?, connect_overrides?, group_ids?}` (201: one-time enrollment token + bootstrap file + one-line install command, shown once) |
 | POST | /api/v1/nodes/{id}/install | admin | new one-line install command `{origin?}` (re-install; replaces the node's unused token) |
 | GET | /api/v1/inbound-templates | admin | template choices (REALITY dests, fingerprints) |
 | POST | /api/v1/inbound-templates/render | admin | templates → xray inbounds JSON (fresh REALITY keys; nothing stored) |
 | POST | /api/v1/inbound-templates/check-dest | admin | TLS 1.3 + h2 check of a REALITY dest from the panel |
 | POST | /api/v1/nodes/{id}/enroll-token | admin | new one-time enrollment token + bootstrap file (re-enrollment) |
-| PATCH/DELETE | /api/v1/nodes/{id} | admin | enable / rename / billing cap override; delete (202, revokes the certificate) |
+| PATCH/DELETE | /api/v1/nodes/{id} | admin | enable / rename / billing cap override / W11 `display_name`, `sort`, `visible`, `tags`, `traffic_rate`, `connect_overrides`, `group_ids`; delete (202, revokes the certificate) |
+| GET | /api/v1/nodes/{id}/status | admin | W11: latest heartbeat + machine status, online, latency results, raw/billed traffic |
+| GET | /api/v1/nodes/{id}/metrics | admin | W11: history `?range=1h\|6h\|24h\|48h\|7d\|30d\|90d` (averages and maxima per point, ≤ 360 points) |
+| POST | /api/v1/nodes/{id}/probe | admin | W11: "立即测速" (202; 429 within `[probe].manual_cooldown_secs`) |
 | PUT | /api/v1/nodes/{id}/inbounds | admin | replace xray inbounds (bumps config_version) |
 | POST | /api/v1/users/{id}/sub-token | admin | regenerate subscription token |
 | POST | /api/v1/users/{id}/revoke-sessions | admin | log the account out everywhere (204) |

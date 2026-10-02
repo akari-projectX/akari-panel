@@ -1627,8 +1627,10 @@ pub async fn my_plan(
     .fetch_optional(&mut *c)
     .await?;
     let nodes = sqlx::query_as::<_, MyNode>(
-        "SELECT n.name, n.region FROM node_users nu JOIN nodes n ON n.id = nu.node_id \
-         WHERE nu.user_id = $1 AND n.enabled AND n.deleting_at IS NULL ORDER BY n.name",
+        "SELECT coalesce(n.display_name, n.name) AS name, n.region FROM node_users nu \
+         JOIN nodes n ON n.id = nu.node_id \
+         WHERE nu.user_id = $1 AND n.enabled AND n.visible AND n.deleting_at IS NULL \
+         ORDER BY n.sort, coalesce(n.display_name, n.name)",
     )
     .bind(user.id)
     .fetch_all(&mut *c)

@@ -127,6 +127,9 @@ fn sub_rows(nodes: usize) -> Vec<akari_panel::sub::NodeRow> {
                 {"inbound_tag": "in-trojan", "protocol": "trojan",
                  "account": {"password": Uuid::new_v4().simple().to_string()}}
             ]),
+            display_name: None,
+            tags: vec![],
+            connect_overrides: serde_json::Value::Null,
         })
         .collect()
 }

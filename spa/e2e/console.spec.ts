@@ -118,7 +118,11 @@ test("user portal: password login, language switch; never loads the console", as
   // Purchase and orders (R18-3) speak the portal's language too.
   await expect(page.getByRole("heading", { name: "购买套餐" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "我的订单" })).toBeVisible();
+  // W11: the user's node list (none assigned here).
+  await expect(page.getByRole("heading", { name: "节点状态" })).toBeVisible();
+  await expect(page.getByText("暂无可用节点。")).toBeVisible();
   await page.getByRole("button", { name: "English" }).click();
+  await expect(page.getByRole("heading", { name: "Nodes", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "My account" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Buy a plan" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "My orders" })).toBeVisible();
@@ -226,6 +230,54 @@ test("admin with 2FA: password alone refused, TOTP code accepted", async ({ brow
     await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: label, exact: true })).toHaveAttribute("aria-current", "page");
   }
+  expect(problems).toEqual([]);
+  await ctx.close();
+});
+
+test("W11 nodes: xboard-style form, live status, detail page, 立即测速", async ({ browser }) => {
+  test.skip(!secret, "needs the enrollment test");
+  const ctx = await browser.newContext({ locale: "zh-CN" });
+  const page = await ctx.newPage();
+  const problems = watch(page);
+  await page.goto(`${BASE}/nodes`);
+  const next = await nextCode(secret, usedStep);
+  usedStep = next.step;
+  await login(page, ADMIN, ADMIN_PW, next.code);
+  await expect(page).toHaveURL(`${ADMIN_BASE}/nodes`);
+  await page.getByRole("button", { name: "新建节点" }).click();
+  await page.getByLabel("名称（内部，唯一）").fill("e2e-w11");
+  await page.getByLabel("公网地址（IP 或域名）").fill("198.51.100.20");
+  await page.getByLabel("显示名称（用户可见）").fill("东京 01");
+  await page.getByLabel("标签（逗号分隔）").fill("日本, IPLC");
+  await page.getByLabel("倍率").fill("0.5");
+  await page.getByRole("button", { name: "创建并生成安装命令" }).click();
+  await expect(page.getByText(/curl .*install/).first()).toBeVisible();
+  const row = page.getByRole("row").filter({ hasText: "东京 01" });
+  await expect(row).toBeVisible();
+  await expect(row.getByText("0.5x")).toBeVisible();
+  await expect(row.getByText("IPLC")).toBeVisible();
+  await expect(row.getByText("未测")).toBeVisible();
+  // Detail page (deep link) with its charts and the latency test button.
+  await row.getByRole("button", { name: "详情" }).click();
+  await expect(page).toHaveURL(new RegExp(`${ADMIN_BASE}/nodes/[0-9a-f-]{36}$`));
+  await expect(page.getByRole("heading", { name: "节点详情「东京 01」" })).toBeVisible();
+  await expect(page.getByText("暂无数据").first()).toBeVisible();
+  await page.getByRole("button", { name: "立即测速" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "已发起测速" })).toBeVisible();
+  await page.getByRole("button", { name: "立即测速" }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "刚刚测过" })).toBeVisible();
+  await page.reload(); // the deep link survives a full load
+  await expect(page.getByRole("heading", { name: "节点详情「东京 01」" })).toBeVisible();
+  await page.getByRole("button", { name: "返回列表" }).click();
+  await expect(page).toHaveURL(`${ADMIN_BASE}/nodes`);
+  // 展示与计费: connect port override + multiplier, saved without a rebuild.
+  await row.getByRole("button", { name: "配置" }).click();
+  const card = page.locator("div.rounded-lg").filter({ has: page.getByRole("heading", { name: /展示与计费/ }) });
+  await card.getByLabel("连接端口").first().fill("30443");
+  await card.getByLabel("倍率").fill("2");
+  await card.getByRole("button", { name: "保存" }).click();
+  await expect(card.getByText("已保存")).toBeVisible();
+  await expect(row.getByText("2x")).toBeVisible();
   expect(problems).toEqual([]);
   await ctx.close();
 });

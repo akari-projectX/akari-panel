@@ -67,7 +67,24 @@ bind = "127.0.0.1:8092"
 
 [sub]
 rate_per_token = 8
+
+# W11 latency tests: a local test URL (the 204 server below), short cooldown.
+[probe]
+urls = ["http://127.0.0.1:18204/generate_204"]
+timeout_ms = 2000
+manual_cooldown_secs = 30
 TOML
+# W11: the agents' latency test target (204, like generate_204); dies with
+# the smoke run at the latest after 30 minutes.
+timeout 1800 python3 -c '
+import http.server
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(204); self.end_headers()
+    def log_message(self, *a): pass
+http.server.ThreadingHTTPServer(("127.0.0.1", 18204), H).serve_forever()
+' >/dev/null 2>&1 &
+W11_PROBE_PID=$!
 # M6: the agent's TEST release key (testdata/, public on purpose) is the
 # panel's trusted key here; production configures the real one.
 TEST_RELEASE_PUB=$(cut -d' ' -f1 "$AGENT_DIR/testdata/TEST-ONLY-release.pub")
@@ -157,7 +174,7 @@ print(urllib.parse.urlencode(p), end="")
 PY
 "$PANEL" -c "$LOG/panel.toml" serve >"$LOG/panel.log" 2>&1 &
 PANEL_PID=$!
-trap 'cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} $MOCK_PID 2>/dev/null || true' EXIT
+trap 'cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
 # Poll instead of a fixed sleep: migrations run before the listener binds.
 for _ in $(seq 1 100); do
   (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null && break
@@ -420,7 +437,11 @@ done
 echo "sub token + rate limit: ok"
 
 echo "== start agent: initial snapshot =="
-"$AGENT" -config "$BOOT" -state-dir "$LOG/state-main" >"$LOG/agent.log" 2>&1 &
+# W11: frequent heartbeats here (production default 15 s) when supported.
+HB_FLAG=""
+"$AGENT" -h 2>&1 | grep -q heartbeat-interval && HB_FLAG="-heartbeat-interval 2s"
+# shellcheck disable=SC2086
+"$AGENT" -config "$BOOT" -state-dir "$LOG/state-main" $HB_FLAG >"$LOG/agent.log" 2>&1 &
 AGENT_PID=$!
 for _ in $(seq 1 60); do grep -q "channel established" "$LOG/agent.log" && break; sleep 0.5; done
 grep -q '"msg":"enrolled"' "$LOG/agent.log" || { echo "FAIL: agent did not enroll"; cat "$LOG/agent.log"; exit 1; }
@@ -651,6 +672,140 @@ STATUS=$(docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -tAc "SELE
 [ "$STATUS" = "online" ] || { echo "FAIL: node status '$STATUS'"; exit 1; }
 vk exists "akari:node:online:$NODE_ID" | grep -q 1 \
   || { echo "FAIL: online key missing"; exit 1; }
+
+echo "== W11: node form fields, multiplier billing, machine status, latency =="
+psql_q() { docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -tAc "$1"; }
+# The agent checkout has the W11 features (metrics + latency capabilities)
+# iff its source says so; an older agent (CI before the agent PR merges)
+# skips only the agent-side assertions, never the panel-side ones.
+W11_AGENT=0
+grep -q '"metrics", "latency"' "$AGENT_DIR/agent.go" 2>/dev/null && W11_AGENT=1
+# xboard-style fields: display name, tags, multiplier, connect override.
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" \
+    '{"display_name":"冒烟 01","tags":["IPLC","0.5x"],"traffic_rate":0.5,"sort":1,"connect_overrides":{"in-vless":{"host":"127.0.0.1","port":11443}}}')" = "200" ] \
+  || { echo "FAIL: W11 node fields"; cat /tmp/akari-smoke/last; exit 1; }
+grep -q '"traffic_rate_permille":500' /tmp/akari-smoke/last || { echo "FAIL: multiplier not stored"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"traffic_rate":0.0001}')" = "400" ] || { echo "FAIL: bad multiplier accepted"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"connect_overrides":{"nope":{"port":1}}}')" = "400" ] \
+  || { echo "FAIL: override for an unknown inbound accepted"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='node.update' AND target_id='$NODE_ID' AND after->>'traffic_rate_permille' = '500'")" -ge 1 ] \
+  || { echo "FAIL: W11 node update not audited"; exit 1; }
+# Multiplier on a real transfer: user D on the 0.5x node bills half the
+# bytes the node accepted for D (floor per row: never more).
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+    -d '{"login":"smoke-user-d","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create user D"; exit 1; }
+USER_D=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
+SUB_D=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['sub_token'])")
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_D/nodes/$NODE_ID" -H 'Content-Type: application/json' \
+    -d '{"inbound_tag":"in-vless","protocol":"vless"}')" = "201" ] || { echo "FAIL: assign D"; exit 1; }
+VLESS_D=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['account']['id'])")
+cat >"$LOG/w11-vless.py" <<'PY'
+import socket, struct, sys, threading, time, uuid
+echo = socket.socket(); echo.bind(("127.0.0.1", 0)); echo.listen(1)
+def serve():
+    c, _ = echo.accept()
+    for d in iter(lambda: c.recv(65536), b""): c.sendall(d)
+threading.Thread(target=serve, daemon=True).start()
+for attempt in range(40):  # the user is added by a delta: retry until admitted
+    try:
+        s = socket.create_connection(("127.0.0.1", 11443), timeout=5)
+        s.sendall(b"\x00" + uuid.UUID(sys.argv[1]).bytes + b"\x00\x01" + struct.pack(">H", echo.getsockname()[1]) + b"\x01" + socket.inet_aton("127.0.0.1"))
+        msg = b"w" * 300000; s.sendall(msg); got = b""
+        while len(got) < len(msg) + 2:
+            d = s.recv(65536)
+            if not d: raise EOFError
+            got += d
+        print("w11 vless round trip ok"); sys.exit(0)
+    except (OSError, EOFError):
+        time.sleep(0.5)
+sys.exit("w11 vless round trip failed")
+PY
+python3 "$LOG/w11-vless.py" "$VLESS_D" || { echo "FAIL: vless round trip for D"; exit 1; }
+for _ in $(seq 1 40); do
+  [ "$(psql_q "SELECT traffic_used_bytes FROM users WHERE id='$USER_D'")" -ge 300000 ] && break; sleep 1
+done
+RAW_D=$(psql_q "SELECT coalesce(sum(up_bytes + down_bytes), 0) FROM traffic_counters WHERE node_id='$NODE_ID' AND user_id='$USER_D'")
+USED_D=$(psql_q "SELECT traffic_used_bytes FROM users WHERE id='$USER_D'")
+python3 -c "
+raw, used = $RAW_D, $USED_D
+assert raw >= 600000, f'raw {raw}'
+assert 2 * used <= raw, f'over-billed: used {used} raw {raw}'
+assert raw - 2 * used <= 64, f'0.5x bills half: used {used} raw {raw}'
+" || { echo "FAIL: multiplier billing (raw $RAW_D, used $USED_D)"; exit 1; }
+[ "$(psql_q "SELECT traffic_billed_bytes * 2 <= traffic_raw_bytes AND traffic_raw_bytes >= $RAW_D FROM nodes WHERE id='$NODE_ID'")" = "t" ] \
+  || { echo "FAIL: node raw/billed totals"; exit 1; }
+echo "multiplier: ok (raw $RAW_D bytes, billed $USED_D at 0.5x)"
+# Subscription: display name + tags name the proxy, the override is dialed.
+curl -s --noproxy '*' -A 'clash.meta' "$BASE/sub/$SUB_D" >"$LOG/w11-sub.yaml"
+grep -q '"冒烟 01 | IPLC | 0.5x"' "$LOG/w11-sub.yaml" || { echo "FAIL: subscription name"; head -20 "$LOG/w11-sub.yaml"; exit 1; }
+grep -q 'server: 127.0.0.1' "$LOG/w11-sub.yaml" || { echo "FAIL: connect override not in subscription"; exit 1; }
+# Portal: the user's node list (no ids/addresses).
+DJAR="$LOG/w11-d.jar"
+[ "$(code -c "$DJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d '{"login":"smoke-user-d","password":"user-password-123"}')" = "200" ] || { echo "FAIL: user D login"; exit 1; }
+[ "$(code -b "$DJAR" "$BASE/api/v1/me/nodes")" = "200" ] || { echo "FAIL: /me/nodes"; exit 1; }
+python3 -c "
+import json; v = json.load(open('/tmp/akari-smoke/last'))
+assert len(v) == 1 and v[0]['name'] == '冒烟 01' and v[0]['rate'] == 0.5 and v[0]['online'] is True, v
+assert 'id' not in v[0] and 'server_addr' not in v[0], v
+" || { echo "FAIL: /me/nodes content"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$DJAR" "$BASE/api/v1/nodes/$NODE_ID/status")" = "403" ] || { echo "FAIL: user reads node status"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"visible":false}')" = "200" ] || { echo "FAIL: hide node"; exit 1; }
+code -b "$DJAR" "$BASE/api/v1/me/nodes" >/dev/null
+[ "$(cat /tmp/akari-smoke/last)" = "[]" ] || { echo "FAIL: hidden node listed to the user"; exit 1; }
+curl -s --noproxy '*' -A 'clash.meta' "$BASE/sub/$SUB_D" | grep -q '冒烟' && { echo "FAIL: hidden node in subscription"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"visible":true}')" = "200" ] || { echo "FAIL: show node"; exit 1; }
+echo "portal + subscription: ok"
+
+if [ "$W11_AGENT" = 1 ]; then
+  # Machine status: the heartbeat blob carries metrics; history and
+  # Prometheus fleet gauges follow.
+  for _ in $(seq 1 30); do
+    vk get "akari:node:hb:$NODE_ID" | grep -q '"online_users"' && break; sleep 1
+  done
+  vk get "akari:node:hb:$NODE_ID" | grep -q '"xray_version"' || { echo "FAIL: heartbeat lacks machine status"; vk get "akari:node:hb:$NODE_ID"; exit 1; }
+  [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID/status")" = "200" ] || { echo "FAIL: node status API"; exit 1; }
+  python3 -c "
+import json; v = json.load(open('/tmp/akari-smoke/last')); m = v['heartbeat']['metrics']
+assert v['online'] is True and v['heartbeat']['mem_total_bytes'] > 0, v
+assert m['cpu_count'] >= 1 and m['disk_total_bytes'] > 0 and m['xray_version'], m
+assert v['traffic_rate'] == 0.5, v
+" || { echo "FAIL: node status content"; cat /tmp/akari-smoke/last; exit 1; }
+  for _ in $(seq 1 15); do [ "$(psql_q "SELECT count(*) FROM node_metrics_1m WHERE node_id='$NODE_ID'")" -ge 1 ] && break; sleep 1; done
+  [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID/metrics?range=1h")" = "200" ] || { echo "FAIL: metrics API"; exit 1; }
+  python3 -c "import json; v = json.load(open('/tmp/akari-smoke/last')); assert v['points'] and v['points'][0]['mem_total'] > 0, v" \
+    || { echo "FAIL: no metrics history"; cat /tmp/akari-smoke/last; exit 1; }
+  curl -s --noproxy '*' http://127.0.0.1:9109/metrics | grep -q '^akari_fleet{kind="nodes_reporting"} 1$' \
+    || { echo "FAIL: fleet gauge"; curl -s --noproxy '*' http://127.0.0.1:9109/metrics | grep akari_fleet; exit 1; }
+  echo "machine status: ok"
+  # Latency: "立即测速" -> the agent tests the (local) URL from [probe], the
+  # panel TCP-tests the inbound's connect address; a second request inside
+  # the cooldown is refused.
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$NODE_ID/probe")" = "202" ] || { echo "FAIL: probe request"; cat /tmp/akari-smoke/last; exit 1; }
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$NODE_ID/probe")" = "429" ] || { echo "FAIL: probe cooldown"; exit 1; }
+  for _ in $(seq 1 40); do
+    [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='agent' AND delay_ms IS NOT NULL AND target='http://127.0.0.1:18204/generate_204' AND measured_at > now() - interval '1 minute'")" = "1" ] \
+      && [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='panel' AND target='in-vless' AND delay_ms IS NOT NULL")" = "1" ] && break
+    sleep 1
+  done
+  [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='agent' AND delay_ms IS NOT NULL")" -ge 1 ] \
+    || { echo "FAIL: no agent latency result"; psql_q "SELECT * FROM node_latency"; grep latency "$LOG/agent.log" | tail -3; exit 1; }
+  [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='panel' AND delay_ms IS NOT NULL")" -ge 1 ] \
+    || { echo "FAIL: no panel TCP latency"; psql_q "SELECT * FROM node_latency"; exit 1; }
+  code -b "$DJAR" "$BASE/api/v1/me/nodes" >/dev/null
+  python3 -c "import json; v = json.load(open('/tmp/akari-smoke/last')); assert v[0]['latency_status'] == 'ok' and v[0]['latency_ms'] >= 1, v" \
+    || { echo "FAIL: portal latency"; cat /tmp/akari-smoke/last; exit 1; }
+  echo "latency: ok ($(psql_q "SELECT source || ' ' || target || ' ' || delay_ms || 'ms' FROM node_latency WHERE node_id='$NODE_ID' ORDER BY source" | tr '\n' ';'))"
+else
+  echo "SKIP: agent checkout predates W11 (no metrics/latency capability): agent-side assertions skipped"
+fi
+# Back to the defaults the rest of the smoke expects.
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"display_name":null,"tags":[],"traffic_rate":1,"sort":0,"connect_overrides":null}')" = "200" ] \
+  || { echo "FAIL: reset W11 fields"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_D")" = "204" ] || { echo "FAIL: delete D"; exit 1; }
+# The test-URL server is done (background helpers inherit the caller's
+# flock descriptor: never leave one running).
+kill "$W11_PROBE_PID" 2>/dev/null || true
 
 echo "== S4-1 login rate limit: failures only, per client; XFF only from trusted proxies =="
 login_code() { # extra curl args..., then login, password (last two)
@@ -1210,7 +1365,7 @@ require_admin_2fa = true
 TOML
 "$PANEL" -c "$LOG/panel-b.toml" serve >"$LOG/panel-b.log" 2>&1 &
 PANEL_B=$!
-trap 'cleanup_upd; kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} $MOCK_PID 2>/dev/null || true' EXIT
+trap 'cleanup_upd; kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
 for _ in $(seq 1 20); do [ "$(code "http://127.0.0.1:8081/$PREFIX/healthz")" = "200" ] && break; sleep 0.5; done
 # R18 opt-in policy on instance B (auth.require_admin_2fa): an admin without
 # 2FA only gets an enrollment-only session there, a full one on A.
@@ -1607,7 +1762,7 @@ docker run -d --name akari-smoke-caddy --network host -e AKARI_PREFIX="$PREFIX" 
   -e AKARI_UPSTREAM=127.0.0.1:8080 -e AKARI_ASK=http://127.0.0.1:8092/ask \
   -v "$LOG/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.11-alpine >/dev/null
 PREV_EXIT_TRAP=$(trap -p EXIT)
-trap 'docker rm -f akari-smoke-caddy akari-smoke-r22 >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} 2>/dev/null || true' EXIT
+trap 'docker rm -f akari-smoke-caddy akari-smoke-r22 >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
 for _ in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/8446) 2>/dev/null && break; sleep 0.5; done
 RES=(--resolve myapp.test:8446:127.0.0.1 --resolve sub.akari.test:8446:127.0.0.1 --resolve evil.test:8446:127.0.0.1
      --resolve myapp.test:8447:127.0.0.1 --resolve evil.test:8447:127.0.0.1)
