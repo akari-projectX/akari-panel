@@ -485,8 +485,8 @@ fn check_text(
 
 // ----- user endpoints -------------------------------------------------------
 
-/// GET /me/invite: programme terms, invite codes (W15; null until it
-/// lands), invited users, commission totals and history, withdrawable.
+/// GET /me/invite: programme terms, invite codes (W15), invited users,
+/// commission totals and history, withdrawable.
 pub async fn my_invite(
     State(state): State<AppState>,
     user: AuthUser,
@@ -513,6 +513,13 @@ pub async fn my_invite(
     .bind(user.id)
     .fetch_all(&mut *c)
     .await?;
+    // W15: the account's invite codes (managed at /me/invite-codes).
+    let invite_codes: Vec<String> = sqlx::query_scalar(
+        "SELECT code FROM invite_codes WHERE user_id = $1 ORDER BY created_at, code",
+    )
+    .bind(user.id)
+    .fetch_all(&mut *c)
+    .await?;
     let withdrawable = ledger::withdrawable(&mut c, user.id).await?;
     let balance = ledger::balance(&mut c, user.id).await?;
     Ok(Json(json!({
@@ -521,8 +528,8 @@ pub async fn my_invite(
         "first_order_only": s.first_order_only,
         "hold_days": s.hold_days,
         "min_withdrawal_cents": s.min_withdrawal_cents,
-        // Invite codes are W15's (registration); null until it lands.
-        "invite_codes": Value::Null,
+        // W15's per-user codes (registration invite links).
+        "invite_codes": invite_codes,
         "invited_count": invited,
         "pending_cents": pending,
         "credited_cents": credited,

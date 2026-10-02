@@ -1487,6 +1487,12 @@ async fn commission_lifecycle() {
             .await
             .unwrap();
     assert_eq!((amount, status.as_str()), (100, "pending"));
+    // W15's invite codes appear in the programme view.
+    sqlx::query("INSERT INTO invite_codes (code, user_id) VALUES ('wsixcode22', $1)")
+        .bind(inviter)
+        .execute(&db.pool)
+        .await
+        .unwrap();
     let inv = ic.get("/test/api/v1/me/invite").await.json();
     assert_eq!(
         (
@@ -1495,7 +1501,7 @@ async fn commission_lifecycle() {
             inv["credited_cents"].clone(),
             inv["invite_codes"].clone()
         ),
-        (json!(1), json!(100), json!(0), Value::Null)
+        (json!(1), json!(100), json!(0), json!(["wsixcode22"]))
     );
     // Not before the hold.
     let mut c = db.pool.acquire().await.unwrap();

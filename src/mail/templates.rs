@@ -55,7 +55,10 @@ pub enum Template {
     OrderPaid {
         order_no: String,
         plan_name: String,
-        amount_cents: i64,
+        /// The order's money split (W16): list price, coupon discount,
+        /// plan-switch credit, balance used, and the rest paid at the
+        /// gateway (`orders.amount_cents`).
+        money: OrderMoney,
         paid_at: DateTime<Utc>,
         expires_at: Option<DateTime<Utc>>,
     },
@@ -91,6 +94,16 @@ impl Template {
             Template::Test => "test",
         }
     }
+}
+
+/// How a paid order's list price was covered (all integer fen).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OrderMoney {
+    pub list_cents: i64,
+    pub discount_cents: i64,
+    pub credit_cents: i64,
+    pub balance_cents: i64,
+    pub paid_cents: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -340,7 +353,7 @@ pub fn render(t: &Template, locale: Locale, site: &str) -> Rendered {
         Template::OrderPaid {
             order_no,
             plan_name,
-            amount_cents,
+            money,
             paid_at,
             expires_at,
         } => {
@@ -361,16 +374,34 @@ pub fn render(t: &Template, locale: Locale, site: &str) -> Rendered {
                     format!("Plan: {plan_name}")
                 }),
                 P(if zh {
-                    format!("金额：¥{}", yuan(*amount_cents))
+                    format!("价格：¥{}", yuan(money.list_cents))
                 } else {
-                    format!("Amount: CNY {}", yuan(*amount_cents))
-                }),
-                P(if zh {
-                    format!("支付时间：{}", when(paid_at))
-                } else {
-                    format!("Paid at: {}", when(paid_at))
+                    format!("Price: CNY {}", yuan(money.list_cents))
                 }),
             ];
+            for (cents, zh_label, en_label) in [
+                (money.discount_cents, "优惠券", "Coupon"),
+                (money.credit_cents, "原套餐抵扣", "Plan switch credit"),
+                (money.balance_cents, "余额支付", "Paid from balance"),
+            ] {
+                if cents > 0 {
+                    parts.push(P(if zh {
+                        format!("{zh_label}：-¥{}", yuan(cents))
+                    } else {
+                        format!("{en_label}: -CNY {}", yuan(cents))
+                    }));
+                }
+            }
+            parts.push(P(if zh {
+                format!("实付：¥{}", yuan(money.paid_cents))
+            } else {
+                format!("Paid: CNY {}", yuan(money.paid_cents))
+            }));
+            parts.push(P(if zh {
+                format!("支付时间：{}", when(paid_at))
+            } else {
+                format!("Paid at: {}", when(paid_at))
+            }));
             if let Some(e) = expires_at {
                 parts.push(P(if zh {
                     format!("套餐到期：{}", when(e))
@@ -526,7 +557,13 @@ mod tests {
             Template::OrderPaid {
                 order_no: "AK20261002x".into(),
                 plan_name: "<b>Pro</b>".into(),
-                amount_cents: 1234,
+                money: OrderMoney {
+                    list_cents: 2000,
+                    discount_cents: 500,
+                    credit_cents: 0,
+                    balance_cents: 266,
+                    paid_cents: 1234,
+                },
                 paid_at: t,
                 expires_at: Some(t),
             },
@@ -594,7 +631,9 @@ mod tests {
         let r = render(&all("1")[5], Locale::Zh, "Akari");
         assert!(r.html.contains("&lt;b&gt;Pro&lt;/b&gt;"));
         assert!(r.text.contains("<b>Pro</b>"), "plain text is not escaped");
-        assert!(r.text.contains("¥12.34"));
+        assert!(r.text.contains("实付：¥12.34"));
+        assert!(r.text.contains("价格：¥20.00") && r.text.contains("优惠券：-¥5.00"));
+        assert!(r.text.contains("余额支付：-¥2.66") && !r.text.contains("原套餐抵扣"));
         assert!(r.text.contains("2026-10-02 08:30 UTC"));
         let r = render(&all("1")[4], Locale::En, "Akari");
         assert!(r

@@ -9,7 +9,7 @@ import type { AuthOptions, Me } from "../lib/api";
 import { fakeApi, renderAdmin, renderWithClient } from "../test/harness";
 import { MailSettings, parseDomains, type SignupView, type SmtpView } from "./admin-mail-settings";
 import { Login } from "./login";
-import { EmailCard, InviteCard, inviteLink } from "./portal-account";
+import { EmailCard, InviteCodes, inviteLink } from "./portal-account";
 import { Register, inviteFromLocation } from "./register";
 import { ForgotPassword, ResetPassword, tokenFromHash } from "./reset";
 
@@ -175,7 +175,7 @@ describe("portal cards", () => {
     expect(calls.map((c) => c.body)).toEqual([{ email: "new@example.com", password: "pw" }, { code: "654321" }]);
   });
 
-  it("invites: hidden while registration is closed; lists, links, creates", async () => {
+  it("invite codes: a note while registration is closed; lists, links, creates", async () => {
     fakeApi({
       "GET /me/invite-codes": {
         codes: [],
@@ -187,8 +187,8 @@ describe("portal cards", () => {
         link_base: null,
       },
     });
-    const { container } = renderWithClient(<InviteCard />);
-    await waitFor(() => expect(container.textContent).toBe(""));
+    renderWithClient(<InviteCodes />);
+    expect(await screen.findByText(/Registration is closed/)).toBeTruthy();
     cleanup();
     let codes = [{ code: "abcdefgh23", uses: 2, created_at: "2026-10-01T00:00:00Z" }];
     const calls = fakeApi({
@@ -209,9 +209,9 @@ describe("portal cards", () => {
         return { status: 201, body: { code: "zzzzzzzz22" } };
       },
     });
-    renderWithClient(<InviteCard />);
+    renderWithClient(<InviteCodes />);
     expect(await screen.findByText("abcdefgh23")).toBeTruthy();
-    expect(screen.getByText(/2 invited/)).toBeTruthy();
+    expect(screen.getByText(/Each invite code works once/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "New invite code" }));
     expect(await screen.findByText("zzzzzzzz22")).toBeTruthy();
     await waitFor(() =>

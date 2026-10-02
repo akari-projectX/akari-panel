@@ -75,14 +75,17 @@ pub async fn login(
     } else {
         req.login.clone()
     };
-    let attempt =
-        crate::login_limit::Attempt::reserve(&state, &crate::client_ip::bucket(client), &limit_name)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "login rate limit unavailable");
-                ApiError::internal()
-            })?
-            .ok_or_else(ApiError::too_many)?;
+    let attempt = crate::login_limit::Attempt::reserve(
+        &state,
+        &crate::client_ip::bucket(client),
+        &limit_name,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "login rate limit unavailable");
+        ApiError::internal()
+    })?
+    .ok_or_else(ApiError::too_many)?;
 
     let failed =
         |attempt: crate::login_limit::Attempt, account: Option<(Uuid, String)>, second: bool| {

@@ -210,6 +210,10 @@ struct Receipt {
     locale: String,
     out_trade_no: String,
     plan_name: Option<String>,
+    list_price_cents: i64,
+    discount_cents: i64,
+    credit_cents: i64,
+    balance_cents: i64,
     amount_cents: i64,
     paid_at: DateTime<Utc>,
     expires_at: Option<DateTime<Utc>>,
@@ -221,7 +225,8 @@ async fn enqueue_receipt(conn: &mut PgConnection, order_id: Uuid) -> sqlx::Resul
         return Ok(false);
     }
     let r: Option<Receipt> = sqlx::query_as(
-        "SELECT u.id AS user_id, u.email, u.locale, o.out_trade_no, o.plan_name, o.amount_cents, \
+        "SELECT u.id AS user_id, u.email, u.locale, o.out_trade_no, o.plan_name, o.list_price_cents, o.discount_cents, \
+         o.credit_cents, o.balance_cents, o.amount_cents, \
          o.paid_at, (SELECT up.expires_at FROM user_plans up WHERE up.user_id = u.id \
            AND up.status = 'active') AS expires_at \
          FROM orders o JOIN users u ON u.id = o.user_id \
@@ -234,7 +239,13 @@ async fn enqueue_receipt(conn: &mut PgConnection, order_id: Uuid) -> sqlx::Resul
     let t = Template::OrderPaid {
         order_no: r.out_trade_no,
         plan_name: r.plan_name.unwrap_or_default(),
-        amount_cents: r.amount_cents,
+        money: super::templates::OrderMoney {
+            list_cents: r.list_price_cents,
+            discount_cents: r.discount_cents,
+            credit_cents: r.credit_cents,
+            balance_cents: r.balance_cents,
+            paid_cents: r.amount_cents,
+        },
         paid_at: r.paid_at,
         expires_at: r.expires_at,
     };
