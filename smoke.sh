@@ -2140,6 +2140,9 @@ if need_agent "cap:updater" "M6 self-update through the updater unit (systemd co
   for m in "update offer accepted" "agent update verified and staged" "switching to the new agent" "agent update passed its self-check"; do
     grep -q "$m" "$LOG/upd-agent.log" || { echo "FAIL: agent log lacks '$m'"; tail -20 "$LOG/upd-agent.log"; exit 1; }
   done
+  # The panel's health gate can pass before the updater's next poll (1 s)
+  # sees the agent's confirmation: wait for its verdict.
+  for _ in $(seq 1 15); do grep -q "agent update passed its self-check" "$LOG/upd-updater.log" && break; sleep 1; upd_logs; done
   for m in "agent update installed; restarting the agent" "agent update passed its self-check"; do
     grep -q "$m" "$LOG/upd-updater.log" || { echo "FAIL: updater log lacks '$m'"; cat "$LOG/upd-updater.log"; exit 1; }
   done
@@ -2150,8 +2153,9 @@ if need_agent "cap:updater" "M6 self-update through the updater unit (systemd co
   udx '/usr/local/bin/akari-agent.prev -version' | matches "akari-agent v900.0.0 " || { echo "FAIL: previous binary not kept"; exit 1; }
   [ "$(udx 'stat -c "%a %U" /usr/local/bin/akari-agent')" = "755 root" ] || { echo "FAIL: installed binary mode/owner"; exit 1; }
   [ -z "$(udx 'find /var/lib/private/akari-agent -type f -perm /111')" ] || { echo "FAIL: executable file in the agent state dir"; exit 1; }
-  udx 'cat /var/lib/akari-agent-update/updater.json' | python3 -c "import json,sys; s=json.load(sys.stdin); assert 'trial' not in s, s" \
-    || { echo "FAIL: updater probation not closed"; exit 1; }
+  upd_closed() { udx 'cat /var/lib/akari-agent-update/updater.json' | python3 -c "import json,sys; s=json.load(sys.stdin); assert 'trial' not in s, s"; }
+  for _ in $(seq 1 10); do upd_closed 2>/dev/null && break; sleep 1; done
+  upd_closed || { echo "FAIL: updater probation not closed"; exit 1; }
   code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
   python3 -c "
 import json; n=[x for x in json.load(open('/tmp/akari-smoke/last')) if x['id']=='$UPD_ID'][0]
