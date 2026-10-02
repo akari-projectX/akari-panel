@@ -309,12 +309,12 @@ echo "== configure node + user via API =="
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' \
     -d '{"inbounds":[{"tag":"in-vless","listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"sniffing":{"enabled":true,"destOverride":["fakedns"]}}]}')" = "400" ] \
   || { echo "FAIL: fakedns inbound not rejected"; exit 1; }
-# GO-2026-6443: xray's grpc transport (grpc-go < 1.85 panics on a request
-# without :authority) is refused until the agent ships the fix.
+# W8: the protocol matrix is validated (Vision only on raw TCP + TLS/REALITY).
+# gRPC is accepted again since R26 (exercised in the W8 section below).
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' \
-    -d '{"inbounds":[{"tag":"in-vless","listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"Gun"}}]}')" = "400" ] \
-  || { echo "FAIL: grpc/gun transport not rejected"; exit 1; }
-grep -q 'GO-2026-6443' /tmp/akari-smoke/last || { echo "FAIL: grpc rejection does not name the advisory"; exit 1; }
+    -d '{"inbounds":[{"tag":"in-vless","listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":"xtls-rprx-vision"},"streamSettings":{"network":"ws"}}]}')" = "400" ] \
+  || { echo "FAIL: vision over ws not rejected"; exit 1; }
+grep -q 'xtls-rprx-vision needs' /tmp/akari-smoke/last || { echo "FAIL: vision rejection lacks the reason"; exit 1; }
 code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
 grep -q '"warnings":\[\]' /tmp/akari-smoke/last || { echo "FAIL: node view lacks empty warnings"; exit 1; }
 
@@ -893,6 +893,10 @@ wait_users 0 10 "buyer deleted"
 [ "$(psql_q "SELECT count(*) FROM orders WHERE user_id IS NULL AND user_login='smoke-buyer' AND plan_id IS NULL")" = "2" ] \
   || { echo "FAIL: orders not kept after user/plan deletion"; exit 1; }
 echo "r18-3 payments: ok"
+
+echo "== W8 protocol matrix: every template -> agent -> three subscription formats -> real clients =="
+BASE="$BASE" JAR="$JAR" NODE_ID="$NODE_ID" LOG="$LOG" AGENT_LOG="$LOG/agent.log" \
+  python3 scripts/smoke-protocols.py || { echo "FAIL: W8 protocol matrix"; tail -20 "$LOG/agent.log"; exit 1; }
 
 echo "== Sprint 3a: a protocol-0 agent gets the empty state and is flagged (N5) =="
 OLD_SRC="$LOG/old-agent-src"

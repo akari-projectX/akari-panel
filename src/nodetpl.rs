@@ -1,4 +1,5 @@
-//! Inbound templates for the node form (R18-2).
+//! Inbound templates for the node form (R18-2; W8 protocol matrix, see
+//! protocols.rs and docs/DEPLOY.md §3d).
 //!
 //! The admin picks protocol templates and ports; the panel renders the
 //! xray inbounds JSON server-side (REALITY key pairs and short ids are
