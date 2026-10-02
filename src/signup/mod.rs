@@ -36,6 +36,7 @@ pub(crate) mod profile;
 pub(crate) mod register;
 pub(crate) mod reset;
 
+use crate::auth::{bad_request, conflict};
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -202,18 +203,32 @@ pub struct SignupReq {
 /// Validate and normalise a settings request (domains → punycode, deduped).
 pub fn signup_values(req: &SignupReq) -> Result<SignupReq, ApiError> {
     if !(0..=100).contains(&req.invite_codes_per_user) {
-        return Err(ApiError::bad_request("invite_codes_per_user must be 0-100"));
+        return Err(bad_request!(
+            "signup_admin.invites_range",
+            "invite_codes_per_user must be 0-100"
+        ));
     }
     if !(1..=3650).contains(&req.trial_days) {
-        return Err(ApiError::bad_request("trial_days must be 1-3650"));
+        return Err(bad_request!(
+            "signup_admin.trial_days_range",
+            "trial_days must be 1-3650"
+        ));
     }
     if req.email_domains.len() > 100 {
-        return Err(ApiError::bad_request("at most 100 email domains"));
+        return Err(bad_request!(
+            "signup_admin.too_many_domains",
+            "at most 100 email domains"
+        ));
     }
     let mut domains: Vec<String> = Vec::new();
     for d in &req.email_domains {
-        let n = email::parse_domain(d.trim_start_matches('@'))
-            .ok_or_else(|| ApiError::bad_request(format!("invalid email domain: {d}")))?;
+        let n = email::parse_domain(d.trim_start_matches('@')).ok_or_else(|| {
+            bad_request!(
+                "signup_admin.domain_invalid",
+                "invalid email domain: {d}",
+                d = d
+            )
+        })?;
         if !domains.contains(&n) {
             domains.push(n);
         }
@@ -239,21 +254,24 @@ pub async fn apply_update_settings(
     .fetch_one(&mut *conn)
     .await?;
     if cur.version != v.version {
-        return Err(ApiError::conflict(
-            "settings changed meanwhile; reload and retry",
+        return Err(conflict!(
+            "settings.version_conflict",
+            "settings changed meanwhile; reload and retry"
         ));
     }
     let smtp = crate::mail::load(conn).await?;
     if (v.register_enabled && !cur.register_enabled || v.reset_enabled && !cur.reset_enabled)
         && !smtp.enabled
     {
-        return Err(ApiError::conflict(
-            "enable mail sending (系统设置 → 邮件) first",
+        return Err(conflict!(
+            "signup_admin.mail_off",
+            "enable mail sending (系统设置 → 邮件) first"
         ));
     }
     if v.reset_enabled && !cur.reset_enabled && !has_origin {
-        return Err(ApiError::conflict(
-            "set the main domain first: reset links need it",
+        return Err(conflict!(
+            "signup_admin.needs_main_domain",
+            "set the main domain first: reset links need it"
         ));
     }
     if let Some(p) = v.trial_plan_id {
@@ -262,7 +280,10 @@ pub async fn apply_update_settings(
             .fetch_optional(&mut *conn)
             .await?;
         if exists.is_none() {
-            return Err(ApiError::bad_request("unknown trial plan"));
+            return Err(bad_request!(
+                "signup_admin.unknown_trial_plan",
+                "unknown trial plan"
+            ));
         }
     }
     sqlx::query(
@@ -339,15 +360,24 @@ pub async fn put_signup_settings(
 /// GET /{prefix}/auth/options (public): what the login page offers.
 pub async fn options(State(state): State<AppState>) -> Json<serde_json::Value> {
     let s = settings_or_none(&state).await;
+    // W21: the site name for page titles (public anyway: it is in them).
+    let site_name = state
+        .settings()
+        .get()
+        .stored
+        .site_name
+        .clone()
+        .unwrap_or_else(|| crate::settings::DEFAULT_SITE_NAME.to_string());
     Json(match s {
         Some(s) => json!({
             "register": s.register_enabled,
             "invite_required": s.register_enabled && s.invite_required,
             "email_domains": if s.register_enabled { s.email_domains } else { Vec::new() },
             "reset": s.reset_enabled,
+            "site_name": site_name,
         }),
         None => {
-            json!({ "register": false, "invite_required": false, "email_domains": [], "reset": false })
+            json!({ "register": false, "invite_required": false, "email_domains": [], "reset": false, "site_name": site_name })
         }
     })
 }
@@ -363,18 +393,23 @@ pub(crate) async fn read_json<T: serde::de::DeserializeOwned>(
 ) -> Result<T, ApiError> {
     let bytes = axum::body::to_bytes(body, MAX_BODY)
         .await
-        .map_err(|_| ApiError::bad_request("request body too large"))?;
-    serde_json::from_slice(&bytes).map_err(|e| ApiError::bad_request(e.to_string()))
+        .map_err(|_| bad_request!("request.body_too_large", "request body too large"))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|e| bad_request!("request.invalid_body", "{detail}", detail = e.to_string()))
 }
 
 pub(crate) fn check_password(p: &str) -> Result<(), ApiError> {
     if p.len() < PASSWORD_MIN {
-        return Err(ApiError::bad_request(
-            "password must be at least 8 characters",
+        return Err(bad_request!(
+            "account.password_too_short",
+            "password must be at least 8 characters"
         ));
     }
     if p.len() > PASSWORD_MAX {
-        return Err(ApiError::bad_request("password is too long"));
+        return Err(bad_request!(
+            "account.password_too_long",
+            "password is too long"
+        ));
     }
     Ok(())
 }

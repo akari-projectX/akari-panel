@@ -9,13 +9,15 @@ import { del, get, patch, post, type PlanView } from "../lib/api";
 import {
   PERIOD_KINDS,
   parseYuan,
-  periodZh,
+  periodKindZh,
   yuan,
   type Coupon,
   type CouponDetail,
   type PeriodKind,
 } from "../lib/billing";
-import { adminErrorText } from "../lib/errors";
+import { adminErrorText } from "../lib/admin-errors";
+import { datetimeInputIso, fmtDateTime, TZ_LABEL } from "../lib/datetime";
+import { useAdminConfirm as useConfirm } from "../admin-confirm";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
@@ -23,7 +25,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
-const fmt = (s: string | null) => (s ? new Date(s).toLocaleString("zh-CN") : "—");
+const fmt = (s: string | null) => fmtDateTime(s);
 const errText = (err: unknown) => (err instanceof Error ? adminErrorText(err) : "失败");
 
 const REDEMPTION_ZH = { reserved: "已预占（待付款）", redeemed: "已使用", released: "已释放" } as const;
@@ -33,12 +35,8 @@ export function couponValue(c: Pick<Coupon, "kind" | "value">): string {
   return c.kind === "percent" ? `减 ${c.value}%` : `减 ¥${yuan(c.value)}`;
 }
 
-// datetime-local value (local time) -> RFC 3339, "" -> null.
-function toIso(v: string): string | null {
-  if (!v) return null;
-  const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
-}
+// datetime-local value, read as Beijing time (W21, M7) -> RFC 3339; "" -> null.
+const toIso = datetimeInputIso;
 
 export function AdminCoupons() {
   const [selected, setSelected] = useState<string | null>(null);
@@ -56,6 +54,7 @@ function CouponList({ onSelect }: { onSelect: (id: string) => void }) {
   const coupons = useQuery({ queryKey: ["coupons"], queryFn: () => get<Coupon[]>("/coupons") });
   const plans = useQuery({ queryKey: ["plans"], queryFn: () => get<PlanView[]>("/plans") });
   const [error, setError] = useState<string | null>(null);
+  const confirm = useConfirm();
   const planName = (id: string) => plans.data?.find((p) => p.id === id)?.name ?? id.slice(0, 8);
 
   async function act(f: () => Promise<unknown>) {
@@ -86,8 +85,8 @@ function CouponList({ onSelect }: { onSelect: (id: string) => void }) {
             {error}
           </p>
         )}
-        <div className="overflow-x-auto">
-          <Table>
+        <div>
+          <Table label="优惠券列表">
             <TableHeader>
               <TableRow>
                 <TableHead>优惠码</TableHead>
@@ -96,7 +95,9 @@ function CouponList({ onSelect }: { onSelect: (id: string) => void }) {
                 <TableHead>有效期</TableHead>
                 <TableHead>次数（已用/总数）</TableHead>
                 <TableHead>状态</TableHead>
-                <TableHead />
+                <TableHead>
+                  <span className="sr-only">操作</span>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -115,7 +116,7 @@ function CouponList({ onSelect }: { onSelect: (id: string) => void }) {
                   <TableCell className="text-xs">
                     {c.plan_ids ? c.plan_ids.map(planName).join("、") : "全部套餐"}
                     {" · "}
-                    {c.periods ? c.periods.map((p) => periodZh(p, null)).join("、") : "全部周期"}
+                    {c.periods ? c.periods.map((p) => periodKindZh(p)).join("、") : "全部周期"}
                     {c.new_users_only && " · 仅新用户"}
                     {c.per_user_limit != null && ` · 每人 ${c.per_user_limit} 次`}
                   </TableCell>
@@ -135,15 +136,34 @@ function CouponList({ onSelect }: { onSelect: (id: string) => void }) {
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => void act(() => patch(`/coupons/${c.id}`, { enabled: !c.enabled }))}
+                      onClick={async () => {
+                        if (
+                          c.enabled &&
+                          !(await confirm({
+                            title: `停用优惠码 ${c.code}？`,
+                            message: "停用后不能再使用（已预占的待付款订单不受影响），可随时重新启用。",
+                            confirmLabel: "停用",
+                            destructive: true,
+                          }))
+                        )
+                          return;
+                        void act(() => patch(`/coupons/${c.id}`, { enabled: !c.enabled }));
+                      }}
                     >
                       {c.enabled ? "停用" : "启用"}
                     </Button>
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() => {
-                        if (window.confirm(`删除优惠码 ${c.code}？只能删除从未被订单使用过的优惠码。`))
+                      onClick={async () => {
+                        if (
+                          await confirm({
+                            title: `删除优惠码 ${c.code}？`,
+                            message: "只能删除从未被订单使用过的优惠码。",
+                            confirmLabel: "删除",
+                            destructive: true,
+                          })
+                        )
                           void act(() => del(`/coupons/${c.id}`));
                       }}
                     >
@@ -274,11 +294,11 @@ function CreateCoupon() {
           </div>
           <div className="flex flex-wrap items-end gap-3">
             <div className="space-y-1">
-              <Label htmlFor="c-starts">生效时间</Label>
+              <Label htmlFor="c-starts">生效时间（{TZ_LABEL}）</Label>
               <Input id="c-starts" type="datetime-local" value={starts} onChange={(e) => setStarts(e.target.value)} />
             </div>
             <div className="space-y-1">
-              <Label htmlFor="c-ends">失效时间</Label>
+              <Label htmlFor="c-ends">失效时间（{TZ_LABEL}）</Label>
               <Input id="c-ends" type="datetime-local" value={ends} onChange={(e) => setEnds(e.target.value)} />
             </div>
             <div className="space-y-1">
@@ -319,7 +339,7 @@ function CreateCoupon() {
                     checked={periods.includes(k)}
                     onChange={() => setPeriods(toggle(periods, k))}
                   />
-                  {periodZh(k, null)}
+                  {periodKindZh(k)}
                 </label>
               ))}
             </div>
@@ -395,7 +415,7 @@ function CouponDetailCard({ id, onClose }: { id: string; onClose: () => void }) 
             <Input id="d-max" className="w-28" value={maxUses} onChange={(e) => setMaxUses(e.target.value)} />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="d-ends">修改失效时间</Label>
+            <Label htmlFor="d-ends">修改失效时间（{TZ_LABEL}）</Label>
             <Input id="d-ends" type="datetime-local" value={ends} onChange={(e) => setEnds(e.target.value)} />
           </div>
           <Button size="sm" onClick={() => void save()}>
@@ -412,8 +432,8 @@ function CouponDetailCard({ id, onClose }: { id: string; onClose: () => void }) 
             {error}
           </p>
         )}
-        <div className="overflow-x-auto">
-          <Table>
+        <div>
+          <Table label="使用记录">
             <TableHeader>
               <TableRow>
                 <TableHead>时间</TableHead>

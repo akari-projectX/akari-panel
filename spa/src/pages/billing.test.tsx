@@ -323,7 +323,10 @@ describe("Billing (user)", () => {
     fakeApi({
       "GET /me/shop": shop(),
       "GET /me/orders": [],
-      "POST /me/orders": () => ({ status: 502, body: { error: "payment gateway unavailable, try again" } }),
+      "POST /me/orders": () => ({
+        status: 502,
+        body: { error: "payment gateway unavailable, try again", code: "order.gateway_unavailable" },
+      }),
     });
     renderWithClient(<Billing />);
     fireEvent.click(await screen.findByRole("button", { name: "Buy" }));

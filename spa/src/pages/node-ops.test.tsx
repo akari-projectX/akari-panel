@@ -8,7 +8,7 @@ import { niceMax, pathOf } from "../components/line-chart";
 import { FixedLocale, setLocale } from "../i18n";
 import type { MyNodeStatus, NodeStatus, NodeView } from "../lib/api";
 import { nodeRoutes } from "../test/nodes";
-import { fakeApi, renderAdmin, renderWithClient } from "../test/harness";
+import { fakeApi, pickMenu, renderAdmin, renderWithClient } from "../test/harness";
 import { changedFromDefaults, emptyOps, opsToBody, overridesToBody, parseTags } from "./admin-node-form";
 import { agentLatency, humanRate } from "./admin-node-status";
 import { AdminNodes } from "./admin-nodes";
@@ -226,7 +226,7 @@ describe("admin node list and form", () => {
       "PATCH /nodes/n1": node(),
     });
     renderAdmin(<AdminNodes />);
-    fireEvent.click(await screen.findByRole("button", { name: "配置" }));
+    await pickMenu("hk-1", "配置");
     const card = (await screen.findByText(/展示与计费/)).closest("div.rounded-lg") as HTMLElement;
     fireEvent.change(within(card).getByLabelText("倍率"), { target: { value: "2" } });
     fireEvent.click(within(card).getByLabelText("对用户显示"));
@@ -322,7 +322,7 @@ describe("node detail", () => {
     });
     window.history.pushState(null, "", "/admin/nodes");
     renderAdmin(<AdminNodes />);
-    fireEvent.click(await screen.findByRole("button", { name: "详情" }));
+    fireEvent.click(await screen.findByRole("button", { name: /详情/ }));
     expect(location.pathname).toBe("/admin/nodes/n1");
     await screen.findByText(/节点详情「香港 01」/);
     expect(await screen.findByText("1.0 GiB / 512.0 MiB")).toBeTruthy(); // raw / billed

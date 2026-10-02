@@ -12,6 +12,7 @@ pub mod client_ip;
 pub mod cloudflare;
 pub mod config;
 pub mod config_check;
+pub mod dashboard;
 pub mod db;
 pub mod enforce;
 pub mod enroll;
@@ -56,4 +57,6 @@ pub mod updates;
 pub mod valkey_util;
 #[cfg(test)]
 mod w20_tests;
+#[cfg(test)]
+mod w21_tests;
 pub mod web;

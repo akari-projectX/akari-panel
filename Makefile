@@ -21,7 +21,7 @@ agent-build:
 
 check:
 	cargo fmt --check && cargo clippy -- -D warnings
-	cd spa && npx tsc --noEmit && npm run lint && node scripts/check-auth-paths.mjs && npx vitest run
+	cd spa && npx tsc --noEmit && npm run lint && node scripts/check-auth-paths.mjs && node scripts/check-error-codes.mjs && npx vitest run
 
 # Playwright end-to-end against a real panel (release build, real CSP) on its
 # own database / Valkey index / data dir / port 8090 (does not touch smoke's).

@@ -102,6 +102,8 @@ jobs:
       # ESLint (typescript-eslint, react-hooks, jsx-a11y) + Prettier check.
       - run: npm run lint
       - run: node scripts/check-auth-paths.mjs
+      # W21: every server error code (src/error_codes.txt) has SPA text.
+      - run: node scripts/check-error-codes.mjs
       # M3: frontend unit tests (vitest + Testing Library, jsdom).
       - run: npx vitest run
       # R23: both bundles (user portal, admin console) + the guard that the

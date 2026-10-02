@@ -24,6 +24,7 @@
 //!   labels: node ids/names are unbounded label values (src/CLAUDE.md
 //!   metrics rule); per-node history is the API's job.
 
+use crate::auth::bad_request;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -545,9 +546,10 @@ pub async fn apply_request_probe(
         .fetch_one(&mut *conn)
         .await?;
         return Err(if exists {
-            ApiError::new(
-                axum::http::StatusCode::TOO_MANY_REQUESTS,
-                "a latency test was requested moments ago",
+            crate::auth::api_error!(
+                TOO_MANY_REQUESTS,
+                "node.probe_cooldown",
+                "a latency test was requested moments ago"
             )
         } else {
             ApiError::not_found()
@@ -950,7 +952,10 @@ pub async fn node_metrics(
     user.require_admin()?;
     let range = q.range.unwrap_or_else(|| "24h".into());
     let spec = range_spec(&range).ok_or_else(|| {
-        ApiError::bad_request("range must be one of 1h, 6h, 24h, 48h, 7d, 30d, 90d")
+        bad_request!(
+            "node.range_invalid",
+            "range must be one of 1h, 6h, 24h, 48h, 7d, 30d, 90d"
+        )
     })?;
     let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM nodes WHERE id = $1)")
         .bind(id)

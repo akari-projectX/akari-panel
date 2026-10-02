@@ -15,7 +15,12 @@ const admin = process.env.AKARI_BUNDLE === "admin";
 // Modules that only the console may load. The user build fails if any of
 // them becomes reachable from src/main.tsx; scripts/check-bundles.mjs then
 // greps the emitted files for admin markers as a second, independent check.
-const ADMIN_ONLY = [/\/src\/admin-[^/]+$/, /\/src\/pages\/admin-[^/]+$/, /\/src\/pages\/audit\.tsx$/];
+const ADMIN_ONLY = [
+  /\/src\/admin-[^/]+$/,
+  /\/src\/pages\/admin-[^/]+$/,
+  /\/src\/pages\/audit\.tsx$/,
+  /\/src\/lib\/admin-[^/]+$/,
+];
 
 function userBundleGuard(): Plugin {
   return {
@@ -37,10 +42,17 @@ export default defineConfig({
     target: "es2022",
     outDir: admin ? "dist/admin" : "dist/app",
     emptyOutDir: true,
-    // One chunk per bundle on purpose (no dynamic import(): preload paths
-    // are not prefix-rewritten). The admin console passed 500 kB with W17;
-    // it is served to admins only, private and cached per release.
-    chunkSizeWarningLimit: 700,
+    // W21: the console is code-split per view (React.lazy in admin-app.tsx;
+    // it had passed 500 kB in one file). Chunks import each other with
+    // relative specifiers, which resolve against the importing chunk's URL
+    // and so keep the secret prefix. What must NOT appear is Vite's preload
+    // helper: it builds absolute `base`-relative URLs ("/admin/assets/…")
+    // that bypass the prefix rewrite of src/spa.rs. Hence no module
+    // preloading and one CSS file (no per-chunk CSS for the helper to
+    // load); scripts/check-bundles.mjs fails if the helper appears. The
+    // portal stays one chunk (no dynamic import there).
+    modulePreload: false,
+    cssCodeSplit: false,
     rollupOptions: { input: admin ? "admin.html" : "index.html" },
   },
   // Frontend unit tests (vitest + Testing Library, jsdom). Test files are

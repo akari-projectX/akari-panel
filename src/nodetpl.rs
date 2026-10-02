@@ -21,6 +21,7 @@
 //! inbound behind the node's own reverse proxy needs hand-written JSON
 //! (subscriptions would otherwise advertise the inbound's local port).
 
+use crate::auth::bad_request;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
@@ -241,8 +242,9 @@ pub fn node_tls_domain(d: &str) -> Result<String, ApiError> {
     let d = d.trim().trim_end_matches('.').to_ascii_lowercase();
     if !valid_hostname(&d) || !d.contains('.') || d.bytes().all(|b| b.is_ascii_digit() || b == b'.')
     {
-        return Err(ApiError::bad_request(
-            "tls_domain must be a domain name like node1.example.com (no IP, no wildcard)",
+        return Err(bad_request!(
+            "node.tls_domain_invalid",
+            "tls_domain must be a domain name like node1.example.com (no IP, no wildcard)"
         ));
     }
     Ok(d)
@@ -260,17 +262,23 @@ fn cert_domain(
         Some(d) => {
             let d = domain(d, what)?;
             if let Some(n) = node.filter(|n| *n != d) {
-                return Err(ApiError::bad_request(format!(
+                return Err(bad_request!(
+                    "template.domain_mismatch",
                     "{what} {d} differs from the node's TLS domain {n}: the automatic certificate \
-                     covers only {n} (leave {what} empty to use it)"
-                )));
+                     covers only {n} (leave {what} empty to use it)",
+                    what = what,
+                    d = d,
+                    n = n
+                ));
             }
             Ok(d)
         }
         None => node.map(str::to_string).ok_or_else(|| {
-            ApiError::bad_request(format!(
-                "{what}: set the node's TLS domain (节点域名) or a domain for this inbound"
-            ))
+            bad_request!(
+                "template.domain_missing",
+                "{what}: set the node's TLS domain (节点域名) or a domain for this inbound",
+                what = what
+            )
         }),
     }
 }
@@ -329,13 +337,14 @@ pub fn parse_dest(dest: &str) -> Result<(String, u16), ApiError> {
             p.parse::<u16>()
                 .ok()
                 .filter(|p| *p > 0)
-                .ok_or_else(|| ApiError::bad_request("dest port must be 1-65535"))?,
+                .ok_or_else(|| bad_request!("template.dest_port", "dest port must be 1-65535"))?,
         ),
         None => (dest.clone(), 443),
     };
     if !valid_hostname(&host) {
-        return Err(ApiError::bad_request(
-            "dest must be a domain name (optionally :port)",
+        return Err(bad_request!(
+            "template.dest_invalid",
+            "dest must be a domain name (optionally :port)"
         ));
     }
     Ok((host, port))
@@ -353,8 +362,9 @@ fn ws_path(path: &Option<String>) -> Result<String, ApiError> {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"/-_.~".contains(&b))
     {
-        return Err(ApiError::bad_request(
-            "path must start with / and use only letters, digits and /-_.~ (<= 128)",
+        return Err(bad_request!(
+            "template.path_invalid",
+            "path must start with / and use only letters, digits and /-_.~ (<= 128)"
         ));
     }
     Ok(p.to_string())
@@ -363,9 +373,11 @@ fn ws_path(path: &Option<String>) -> Result<String, ApiError> {
 fn domain(d: &str, what: &str) -> Result<String, ApiError> {
     let d = d.trim().to_ascii_lowercase();
     if !valid_hostname(&d) {
-        return Err(ApiError::bad_request(format!(
-            "{what} must be the domain name of the node's certificate"
-        )));
+        return Err(bad_request!(
+            "template.domain_invalid",
+            "{what} must be the domain name of the node's certificate",
+            what = what
+        ));
     }
     Ok(d)
 }
@@ -392,10 +404,11 @@ fn reality_settings(
     };
     let fp = fingerprint.as_deref().unwrap_or("chrome");
     if !crate::sub::FINGERPRINTS.contains(&fp) {
-        return Err(ApiError::bad_request(format!(
-            "fingerprint must be one of {}",
-            crate::sub::FINGERPRINTS.join(", ")
-        )));
+        return Err(bad_request!(
+            "template.fingerprint_invalid",
+            "fingerprint must be one of {allowed}",
+            allowed = crate::sub::FINGERPRINTS.join(", ")
+        ));
     }
     let keys = new_reality_keys();
     let sid = new_short_id();
@@ -415,10 +428,11 @@ fn xhttp_mode(mode: &Option<String>) -> Result<String, ApiError> {
     let m = mode.as_deref().map(str::trim).unwrap_or("");
     let m = if m.is_empty() { "auto" } else { m };
     if !crate::protocols::XHTTP_MODES.contains(&m) {
-        return Err(ApiError::bad_request(format!(
-            "mode must be one of {}",
-            crate::protocols::XHTTP_MODES.join(", ")
-        )));
+        return Err(bad_request!(
+            "template.mode_invalid",
+            "mode must be one of {allowed}",
+            allowed = crate::protocols::XHTTP_MODES.join(", ")
+        ));
     }
     Ok(m.to_string())
 }
@@ -433,8 +447,9 @@ fn grpc_service_name(name: &Option<String>) -> Result<String, ApiError> {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
     {
-        return Err(ApiError::bad_request(
-            "service_name: letters, digits and -_. only (<= 64)",
+        return Err(bad_request!(
+            "template.service_name_invalid",
+            "service_name: letters, digits and -_. only (<= 64)"
         ));
     }
     Ok(n.to_string())
@@ -445,7 +460,7 @@ fn grpc_service_name(name: &Option<String>) -> Result<String, ApiError> {
 pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value, ApiError> {
     let port = spec.port();
     if port == 0 {
-        return Err(ApiError::bad_request("port must be 1-65535"));
+        return Err(bad_request!("request.port_range", "port must be 1-65535"));
     }
     let tag_or = |tag: &Option<String>, default: String| -> String {
         tag.as_deref()
@@ -535,13 +550,17 @@ pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value
         } => {
             let proto = protocol.trim().to_ascii_lowercase();
             if !["vless", "vmess", "trojan"].contains(&proto.as_str()) {
-                return Err(ApiError::bad_request(
-                    "protocol must be vless, vmess or trojan",
+                return Err(bad_request!(
+                    "template.protocol_invalid",
+                    "protocol must be vless, vmess or trojan"
                 ));
             }
             let net = network.trim().to_ascii_lowercase();
             if *tls == Some(false) && wants_tls(tls_domain, None) {
-                return Err(ApiError::bad_request("tls is false but tls_domain is set"));
+                return Err(bad_request!(
+                    "template.tls_domain_without_tls",
+                    "tls is false but tls_domain is set"
+                ));
             }
             let tls = if wants_tls(tls_domain, *tls) {
                 Some(cert_domain(tls_domain, node_domain, "tls_domain")?)
@@ -549,9 +568,7 @@ pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value
                 None
             };
             if tls.is_none() && (proto == "trojan" || net == "grpc") {
-                return Err(ApiError::bad_request(
-                    "trojan and grpc need TLS (tls: true with the node's TLS domain, or tls_domain)",
-                ));
+                return Err(bad_request!("template.needs_tls", "trojan and grpc need TLS (tls: true with the node's TLS domain, or tls_domain)"));
             }
             let host = match host.as_deref().map(str::trim) {
                 Some(h) if !h.is_empty() => Some(domain(h, "host")?),
@@ -585,8 +602,9 @@ pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value
                     &["h2"],
                 ),
                 _ => {
-                    return Err(ApiError::bad_request(
-                        "network must be ws, httpupgrade, xhttp or grpc",
+                    return Err(bad_request!(
+                        "template.network_invalid",
+                        "network must be ws, httpupgrade, xhttp or grpc"
                     ))
                 }
             };
@@ -616,10 +634,11 @@ pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value
                 .filter(|m| !m.is_empty())
                 .unwrap_or(crate::protocols::SS_METHODS[0].0);
             let psk = crate::protocols::new_ss_key(m).ok_or_else(|| {
-                ApiError::bad_request(format!(
-                    "method must be one of {}",
-                    crate::protocols::SS_METHODS.map(|(m, _)| m).join(", ")
-                ))
+                bad_request!(
+                    "template.method_invalid",
+                    "method must be one of {allowed}",
+                    allowed = crate::protocols::SS_METHODS.map(|(m, _)| m).join(", ")
+                )
             })?;
             json!({
                 "tag": tag_or(tag, format!("ss2022-{port}")),
@@ -675,7 +694,10 @@ pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value
                 "wsSettings": { "path": ws_path(path)? },
             });
             if *tls == Some(false) && wants_tls(tls_domain, None) {
-                return Err(ApiError::bad_request("tls is false but tls_domain is set"));
+                return Err(bad_request!(
+                    "template.tls_domain_without_tls",
+                    "tls is false but tls_domain is set"
+                ));
             }
             if wants_tls(tls_domain, *tls) {
                 let d = cert_domain(tls_domain, node_domain, "tls_domain")?;
@@ -716,7 +738,10 @@ pub fn render(
     node_domain: Option<&str>,
 ) -> Result<Vec<Value>, ApiError> {
     if specs.len() > 16 {
-        return Err(ApiError::bad_request("at most 16 templates at once"));
+        return Err(bad_request!(
+            "template.too_many",
+            "at most 16 templates at once"
+        ));
     }
     // `taken` ports are treated as TCP+UDP (their inbounds are not known
     // here); the templates' own L4 lets a UDP Hysteria 2 share a TCP port.
@@ -729,9 +754,11 @@ pub fn render(
             .iter()
             .any(|(q, qt, qu)| *q == p && ((t && *qt) || (u && *qu)))
         {
-            return Err(ApiError::bad_request(format!(
-                "port {p} is used by more than one inbound"
-            )));
+            return Err(bad_request!(
+                "template.port_clash",
+                "port {p} is used by more than one inbound",
+                p = p
+            ));
         }
         ports.push((p, t, u));
         out.push(render_one(s, node_domain)?);

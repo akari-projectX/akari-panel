@@ -288,10 +288,12 @@ test("admin with 2FA: password alone refused, TOTP code accepted", async ({ brow
   await page.locator("#code").fill(next.code);
   await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(ADMIN_BASE);
-  await expect(page.getByRole("heading", { name: "用户", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "仪表盘", exact: true })).toBeVisible(); // W21 landing view
   await expect(page.getByText("建议开启两步验证")).toHaveCount(0);
   // Deep links (a full page load of /admin/<view>) for every console view.
   for (const [view, label, heading] of [
+    ["dashboard", "仪表盘", "仪表盘"],
+    ["users", "用户", "用户"],
     ["nodes", "节点", "节点"],
     ["orders", "订单", "订单"],
     ["coupons", "优惠券", "优惠券"],
@@ -336,7 +338,7 @@ test("W11 nodes: xboard-style form, live status, detail page, 立即测速", asy
   await expect(row.getByText("IPLC")).toBeVisible();
   await expect(row.getByText("未测")).toBeVisible();
   // Detail page (deep link) with its charts and the latency test button.
-  await row.getByRole("button", { name: "详情" }).click();
+  await row.getByRole("button", { name: /详情/ }).click();
   await expect(page).toHaveURL(new RegExp(`${ADMIN_BASE}/nodes/[0-9a-f-]{36}$`));
   await expect(page.getByRole("heading", { name: "节点详情「东京 01」" })).toBeVisible();
   await expect(page.getByText("暂无数据").first()).toBeVisible();
@@ -349,7 +351,8 @@ test("W11 nodes: xboard-style form, live status, detail page, 立即测速", asy
   await page.getByRole("button", { name: "返回列表" }).click();
   await expect(page).toHaveURL(`${ADMIN_BASE}/nodes`);
   // 展示与计费: connect port override + multiplier, saved without a rebuild.
-  await row.getByRole("button", { name: "配置" }).click();
+  await row.getByRole("button", { name: /更多操作/ }).click();
+  await page.getByRole("menuitem", { name: "配置" }).click();
   const card = page.locator("div.rounded-lg").filter({ has: page.getByRole("heading", { name: /展示与计费/ }) });
   await card.getByLabel("连接端口").first().fill("30443");
   await card.getByLabel("倍率").fill("2");
@@ -391,8 +394,8 @@ test("W16: coupon + balance purchase (paid without the gateway), console coupons
   await admin.getByRole("button", { name: "明细与调整" }).click();
   await admin.getByLabel("调整金额（元）").fill("10");
   await admin.getByLabel("调整原因（必填）").fill("e2e 充值");
-  admin.once("dialog", (d) => void d.accept());
   await admin.getByRole("button", { name: "调整余额" }).click();
+  await admin.getByRole("alertdialog").getByRole("button", { name: "确认调整" }).click(); // W21 ConfirmDialog
   await expect(admin.getByRole("status").filter({ hasText: "余额已调整" })).toBeVisible();
   await expect(admin.getByText(`${USER}：余额 ¥10.00`)).toBeVisible();
   expect(problems).toEqual([]);
@@ -432,6 +435,140 @@ test("W16: coupon + balance purchase (paid without the gateway), console coupons
   await expect(page.getByRole("heading", { name: "Balance", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "My invitations" })).toBeVisible();
   expect(uproblems).toEqual([]);
+  await ctx.close();
+});
+
+test("W21: dashboard, user search + create dialog, plan dialog, settings tabs, confirm dialog, phone layout", async ({
+  browser,
+}) => {
+  test.skip(!secret, "needs the enrollment test");
+  const ctx = await browser.newContext({ locale: "en-US" }); // the console stays Chinese
+  const page = await ctx.newPage();
+  const problems = watch(page);
+  const urls = requests(page);
+  const failed: string[] = [];
+  page.on("response", (r) => {
+    if (r.status() >= 400 && consoleUrl(r.url())) failed.push(`${r.status()} ${r.url()}`);
+  });
+  await page.goto(BASE);
+  const next = await nextCode(secret, usedStep);
+  usedStep = next.step;
+  await login(page, ADMIN, ADMIN_PW, next.code);
+  await expect(page).toHaveURL(ADMIN_BASE);
+
+  // Dashboard (landing view), its own lazily loaded chunk under the prefix.
+  await expect(page.getByRole("heading", { name: "仪表盘", exact: true })).toBeVisible();
+  await expect(page.getByText("营收（支付宝实收）")).toBeVisible();
+  await expect(page.getByText("近 30 天")).toBeVisible();
+  await expect(page.getByRole("link", { name: /待回复工单/ })).toBeVisible();
+  await expect(page).toHaveTitle("仪表盘 · Akari 管理后台");
+  const chunks = urls.filter((u) => /\/admin\/assets\/[^/]+\.js$/.test(new URL(u).pathname));
+  expect(chunks.length).toBeGreaterThan(1); // code-split: the shell + the view
+  expect(chunks.every((u) => new URL(u).pathname.startsWith(new URL(ADMIN_BASE).pathname))).toBe(true);
+
+  // Users: create in a dialog (email set), find by search, status chip.
+  await page.getByRole("link", { name: "用户", exact: true }).click();
+  await page.getByRole("button", { name: "新建用户" }).click();
+  const dialog = page.getByRole("dialog", { name: "新建用户" });
+  await dialog.getByLabel("账号", { exact: true }).fill("e2e-w21-user");
+  await dialog.getByLabel("密码", { exact: true }).fill("e2e-w21-password");
+  await dialog.getByLabel(/邮箱/).fill("w21@e2e.test");
+  await dialog.getByLabel(/到期日/).fill("2099-12-31");
+  await dialog.getByRole("button", { name: "创建" }).click();
+  await expect(page.getByText("的订阅令牌——只显示这一次")).toBeVisible();
+  await page.getByLabel("搜索").fill("E2E-W21");
+  await expect(page.getByText("找到 1 个用户")).toBeVisible();
+  const row = page.getByRole("row").filter({ hasText: "e2e-w21-user" });
+  await expect(row.getByText("w21@e2e.test")).toBeVisible();
+  await expect(row.getByText("2099-12-31")).toBeVisible(); // a Beijing day, not shifted by UTC
+  await expect(row.getByText("正常")).toBeVisible();
+  await page.getByRole("button", { name: "已停用" }).click();
+  await expect(page.getByText("没有符合条件的用户。")).toBeVisible();
+  await page.getByRole("button", { name: "全部" }).click();
+  // A server error comes back in Chinese (coded error, W21 M6).
+  await page.getByRole("button", { name: "新建用户" }).click();
+  await dialog.getByLabel("账号", { exact: true }).fill("e2e-w21-user");
+  await dialog.getByLabel("密码", { exact: true }).fill("e2e-w21-password");
+  await dialog.getByRole("button", { name: "创建" }).click();
+  await expect(dialog.getByRole("alert")).toHaveText("该账号已存在");
+  await dialog.getByRole("button", { name: "取消" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+
+  // Plans: fields + prices + on sale in one dialog, one request.
+  await page.getByRole("link", { name: "套餐", exact: true }).click();
+  await page.getByRole("button", { name: "新建套餐" }).click();
+  const pd = page.getByRole("dialog", { name: "新建套餐" });
+  await expect(pd.getByLabel(/设备数/)).toHaveCount(0); // R25: hidden
+  await pd.getByLabel("名称", { exact: true }).fill("e2e-w21-plan");
+  await pd.getByLabel(/流量额度/).fill("100");
+  await pd.getByLabel("季付", { exact: true }).check();
+  await pd.getByLabel("季付 价格", { exact: true }).fill("30");
+  await pd.getByLabel("月付", { exact: true }).check();
+  await pd.getByLabel("月付 价格", { exact: true }).fill("12.5");
+  await pd.getByLabel(/上架/).check();
+  const writes: string[] = [];
+  page.on("request", (r) => {
+    if (r.method() !== "GET" && r.url().includes("/api/v1/plans")) writes.push(`${r.method()} ${r.url()}`);
+  });
+  await pd.getByRole("button", { name: "创建套餐" }).click();
+  await expect(pd).toHaveCount(0);
+  const prow = page.getByRole("row").filter({ hasText: "e2e-w21-plan" });
+  await expect(prow.getByText("月付 ¥12.50")).toBeVisible();
+  await expect(prow.getByText("季付 ¥30.00")).toBeVisible();
+  await expect(prow.getByText("在售")).toBeVisible();
+  expect(writes).toHaveLength(1);
+  // 停用 asks first (ConfirmDialog, not window.confirm): cancel, then confirm.
+  await prow.getByRole("button", { name: /更多操作/ }).click();
+  await page.getByRole("menuitem", { name: "停用" }).click();
+  const ask = page.getByRole("alertdialog", { name: "停用套餐「e2e-w21-plan」？" });
+  await expect(ask).toBeVisible();
+  await ask.getByRole("button", { name: "取消" }).click();
+  await expect(prow.getByText("在售")).toBeVisible();
+  await prow.getByRole("button", { name: /更多操作/ }).click();
+  await page.getByRole("menuitem", { name: "停用" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "停用" }).click();
+  await expect(prow.getByText("已停用")).toBeVisible();
+
+  // Settings: tabs as deep links; the site name feeds the titles.
+  await page.goto(`${ADMIN_BASE}/settings/probe`);
+  await expect(page.getByRole("tab", { name: "测速" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByLabel("测速间隔（分钟）")).toBeVisible();
+  await page.getByRole("tab", { name: "站点" }).click();
+  await expect(page).toHaveURL(`${ADMIN_BASE}/settings/site`);
+  await page.getByLabel("站点名称", { exact: true }).fill("星云 e2e");
+  await page.getByRole("button", { name: "保存站点名称" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "已保存。" })).toBeVisible();
+  await expect(page).toHaveTitle("系统设置 · 星云 e2e 管理后台");
+  await page.getByLabel("站点名称", { exact: true }).fill("");
+  await page.getByRole("button", { name: "保存站点名称" }).click();
+  await expect(page).toHaveTitle("系统设置 · Akari 管理后台");
+
+  // Audit: Chinese action names and a field diff.
+  await page.getByRole("link", { name: "审计", exact: true }).click();
+  await expect(page.getByRole("cell", { name: /^修改站点名称/ }).first()).toBeVisible();
+
+  // Phone (390 px): no page-level horizontal scroll; tables scroll inside
+  // named regions; the row menu still works.
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const view of ["dashboard", "users", "plans", "nodes", "orders", "settings", "audit"]) {
+    await page.goto(`${ADMIN_BASE}/${view}`);
+    await expect(page.getByRole("navigation", { name: "主导航" })).toBeVisible();
+    await page.waitForLoadState("networkidle");
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    expect(overflow, view).toBeLessThanOrEqual(0);
+  }
+  await page.goto(`${ADMIN_BASE}/plans`);
+  const region = page.getByRole("region", { name: "套餐列表" });
+  await expect(region).toBeVisible();
+  await page
+    .getByRole("row")
+    .filter({ hasText: "e2e-w21-plan" })
+    .getByRole("button", { name: /更多操作/ })
+    .click();
+  await expect(page.getByRole("menuitem", { name: "启用" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  expect(problems).toEqual([]);
+  expect(failed).toEqual([]);
   await ctx.close();
 });
 
@@ -494,10 +631,13 @@ test("W17: ticket both sides (portal zh/en, console desk), alert center settings
   await expect(admin.getByText("e2e 客服回复：请重启客户端")).toBeVisible();
   await expect(admin.getByText("已回复", { exact: true }).first()).toBeVisible();
 
-  // Alert center: no alerts (no agents here), settings save, a channel test.
+  // Alert center: no alerts (no agents here); its settings (W21: 系统设置 →
+  // 告警) save, a channel test.
   await admin.goto(`${ADMIN_BASE}/alerts`);
   await expect(admin.getByRole("heading", { name: "告警中心" })).toBeVisible();
   await expect(admin.getByText("当前没有告警。")).toBeVisible();
+  await admin.getByRole("link", { name: "系统设置 → 告警" }).click();
+  await expect(admin).toHaveURL(`${ADMIN_BASE}/settings/alerts`);
   await admin.getByLabel("重复告警冷却（分钟）").fill("45");
   await admin.getByLabel("CPU 高于（%）").fill("");
   await admin.getByRole("button", { name: "保存告警设置" }).click();
@@ -670,7 +810,7 @@ test("W15: 系统设置 注册/邮件, sign up by email code, reset the password
   usedStep = next.step;
   await login(ap, ADMIN, ADMIN_PW, next.code);
   await expect(ap).toHaveURL(ADMIN_BASE);
-  await ap.goto(`${ADMIN_BASE}/settings`);
+  await ap.goto(`${ADMIN_BASE}/settings/mail`);
   // 邮件 first (registration needs it), then the main domain, then 注册.
   await ap.getByLabel("启用邮件发送").check();
   await ap.getByLabel("SMTP 服务器").fill("127.0.0.1");
@@ -684,10 +824,12 @@ test("W15: 系统设置 注册/邮件, sign up by email code, reset the password
   await ap.getByRole("button", { name: "发送测试邮件" }).click();
   await expect(ap.getByText(/测试邮件已发出/)).toBeVisible();
   expect((await mailTo("admin@e2e.test", 1)).subject).toContain("测试邮件");
+  await ap.getByRole("tab", { name: "站点" }).click();
   await ap.locator("#settings-main").fill(new URL(BASE).host);
   await ap.getByRole("button", { name: "保存", exact: true }).click();
   // (The domain form remounts on the new version, so wait for the effective value.)
   await expect(ap.getByText(`当前生效：https://${new URL(BASE).host}`).first()).toBeVisible();
+  await ap.getByRole("tab", { name: "注册" }).click();
   await ap.reload();
   await ap.getByLabel("开放注册").check();
   await ap.getByLabel("允许通过邮件找回密码").check();

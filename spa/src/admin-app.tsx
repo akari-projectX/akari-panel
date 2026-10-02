@@ -1,26 +1,39 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState, type ComponentType, type LazyExoticComponent } from "react";
 
+import { AdminConfirmProvider } from "./admin-confirm";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
+import { ScrollFade } from "./components/ui/table";
 import { ErrorText, Loading } from "./components/status";
 import { FixedLocale, useHtmlLang } from "./i18n";
 import { ApiError, adminBase, appBase, get, logout as apiLogout, type Me, type TotpStatus } from "./lib/api";
-import { adminErrorText } from "./lib/errors";
+import { adminErrorText } from "./lib/admin-errors";
 import { loadPage, navigate, usePath } from "./lib/router";
-import { AdminAlerts } from "./pages/admin-alerts";
-import { AdminCoupons } from "./pages/admin-coupons";
-import { AdminFinance } from "./pages/admin-finance";
-import { AdminNodes } from "./pages/admin-nodes";
-import { AdminOrders } from "./pages/admin-orders";
-import { AdminPlans } from "./pages/admin-plans";
-import { AdminSettings } from "./pages/admin-settings";
-import { AdminTickets } from "./pages/admin-tickets";
-import { AdminUpdates } from "./pages/admin-updates";
-import { AdminUsers } from "./pages/admin-users";
-import { AdminAudit } from "./pages/audit";
+import { useSiteName } from "./lib/title";
 import { PasswordCard } from "./pages/portal";
 import { EnrollPage, TwoFactorCard } from "./pages/two-factor";
+
+// W21: every view is its own chunk (the console passed 500 kB in one
+// file). CSP-safe: chunks are same-origin modules imported with relative
+// specifiers, resolved against the importing chunk's URL under the secret
+// prefix (vite.config.ts: no module-preload helper, one CSS file).
+const view = <K extends string>(
+  load: () => Promise<Record<K, ComponentType>>,
+  name: K,
+): LazyExoticComponent<ComponentType> => lazy(() => load().then((m) => ({ default: m[name] })));
+const AdminDashboard = view(() => import("./pages/admin-dashboard"), "AdminDashboard");
+const AdminUsers = view(() => import("./pages/admin-users"), "AdminUsers");
+const AdminPlans = view(() => import("./pages/admin-plans"), "AdminPlans");
+const AdminOrders = view(() => import("./pages/admin-orders"), "AdminOrders");
+const AdminCoupons = view(() => import("./pages/admin-coupons"), "AdminCoupons");
+const AdminFinance = view(() => import("./pages/admin-finance"), "AdminFinance");
+const AdminTickets = view(() => import("./pages/admin-tickets"), "AdminTickets");
+const AdminNodes = view(() => import("./pages/admin-nodes"), "AdminNodes");
+const AdminAlerts = view(() => import("./pages/admin-alerts"), "AdminAlerts");
+const AdminUpdates = view(() => import("./pages/admin-updates"), "AdminUpdates");
+const AdminAudit = view(() => import("./pages/audit"), "AdminAudit");
+const AdminSettings = view(() => import("./pages/admin-settings"), "AdminSettings");
 
 // The admin console bundle (/{prefix}/admin, R23): built separately from
 // the user portal and served only to admin sessions (src/spa.rs). Chinese
@@ -30,6 +43,7 @@ import { EnrollPage, TwoFactorCard } from "./pages/two-factor";
 // Console views; each is a URL under /{prefix}/admin (deep links and the
 // back button work; the server serves the console for every /admin/* path).
 export const VIEWS = [
+  { id: "dashboard", label: "仪表盘" },
   { id: "users", label: "用户" },
   { id: "plans", label: "套餐" },
   { id: "orders", label: "订单" },
@@ -45,11 +59,16 @@ export const VIEWS = [
 ] as const;
 export type View = (typeof VIEWS)[number]["id"];
 
-/** The view named by the path ("/{prefix}/admin/<view>[/...]"); users by default. */
+/** The view named by the path ("/{prefix}/admin/<view>[/...]"); the dashboard by default. */
 export function viewOf(path: string): View {
   const rest = path.startsWith(adminBase) ? path.slice(adminBase.length) : "";
   const seg = rest.split("/").filter(Boolean)[0];
-  return VIEWS.find((v) => v.id === seg)?.id ?? "users";
+  return VIEWS.find((v) => v.id === seg)?.id ?? "dashboard";
+}
+
+/** The browser title of a view (W21, audit Minor 12). */
+export function titleOf(v: View, site: string): string {
+  return `${VIEWS.find((x) => x.id === v)?.label ?? ""} · ${site} 管理后台`;
 }
 
 /** The sign-in URL for a console path whose session ended: /admin/<view> -> /app/<view> (the login sends it back). */
@@ -62,7 +81,9 @@ function AdminApp() {
   useHtmlLang("zh");
   return (
     <FixedLocale locale="zh">
-      <AdminRoot />
+      <AdminConfirmProvider>
+        <AdminRoot />
+      </AdminConfirmProvider>
     </FixedLocale>
   );
 }
@@ -145,6 +166,11 @@ function AdminConsole({ user, onLogout, logoutError }: { user: Me; onLogout: () 
   const count = (id: View) =>
     id === "tickets" ? badges.data?.tickets_unread : id === "alerts" ? badges.data?.alerts_firing : undefined;
   const totp = useQuery({ queryKey: ["totp"], queryFn: () => get<TotpStatus>("/me/totp") });
+  // 站点名称 (系统设置 → 站点) for the header and the browser title.
+  const site = useSiteName();
+  useEffect(() => {
+    document.title = titleOf(view, site);
+  }, [view, site]);
   const [dismissed, setDismissed] = useState(() => bannerDismissed(user.id));
   const showBanner = totp.data && !totp.data.enabled && !dismissed && view !== "account";
 
@@ -160,36 +186,38 @@ function AdminConsole({ user, onLogout, logoutError }: { user: Me; onLogout: () 
   return (
     <div className="min-h-screen">
       <header className="border-b border-border bg-card">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3 sm:px-6">
-          <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
-            <span className="text-sm font-semibold tracking-tight">Akari 管理后台</span>
-            <nav aria-label="主导航" className="-mx-1 flex max-w-full gap-1 overflow-x-auto px-1">
-              {VIEWS.map((v) => (
-                <a
-                  key={v.id}
-                  href={`${adminBase}/${v.id}`}
-                  aria-current={view === v.id ? "page" : undefined}
-                  onClick={(e) => {
-                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
-                    e.preventDefault();
-                    navigate(`${adminBase}/${v.id}`);
-                  }}
-                  className={`inline-flex h-8 shrink-0 items-center rounded-lg px-3 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                    view === v.id ? "bg-primary text-primary-foreground" : "hover:bg-muted"
-                  }`}
-                >
-                  {v.label}
-                  {(count(v.id) ?? 0) > 0 && (
-                    <span
-                      className="ml-1 rounded-full bg-destructive px-1.5 text-[10px] leading-4 text-destructive-foreground"
-                      aria-label={`${count(v.id)} 条待处理`}
-                    >
-                      {count(v.id)}
-                    </span>
-                  )}
-                </a>
-              ))}
-            </nav>
+        <div className="mx-auto flex w-full max-w-screen-2xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3 sm:px-6">
+          <div className="flex w-full min-w-0 flex-wrap items-center gap-x-4 gap-y-2 lg:w-auto lg:flex-1">
+            <span className="shrink-0 text-sm font-semibold tracking-tight">{site} 管理后台</span>
+            <ScrollFade className="min-w-0 flex-1">
+              <nav aria-label="主导航" className="flex w-max gap-1 px-1 py-0.5">
+                {VIEWS.map((v) => (
+                  <a
+                    key={v.id}
+                    href={`${adminBase}/${v.id}`}
+                    aria-current={view === v.id ? "page" : undefined}
+                    onClick={(e) => {
+                      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+                      e.preventDefault();
+                      navigate(`${adminBase}/${v.id}`);
+                    }}
+                    className={`inline-flex h-9 shrink-0 items-center rounded-lg px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                      view === v.id ? "bg-primary text-primary-foreground" : "hover:bg-muted"
+                    }`}
+                  >
+                    {v.label}
+                    {(count(v.id) ?? 0) > 0 && (
+                      <span
+                        className="ml-1 rounded-full bg-destructive px-1.5 text-[10px] leading-4 text-destructive-foreground"
+                        aria-label={`${count(v.id)} 条待处理`}
+                      >
+                        {count(v.id)}
+                      </span>
+                    )}
+                  </a>
+                ))}
+              </nav>
+            </ScrollFade>
           </div>
           <div className="flex items-center gap-2 sm:gap-3">
             <Badge variant="secondary">管理员</Badge>
@@ -207,7 +235,7 @@ function AdminConsole({ user, onLogout, logoutError }: { user: Me; onLogout: () 
       </header>
       {showBanner && (
         <div role="region" aria-label="安全建议" className="border-b border-amber-300 bg-amber-50 text-amber-900">
-          <div className="mx-auto flex max-w-6xl items-center justify-between gap-2 px-4 py-1.5 text-xs sm:px-6 sm:py-2 sm:text-sm">
+          <div className="mx-auto flex w-full max-w-screen-2xl items-center justify-between gap-2 px-4 py-1.5 text-xs sm:px-6 sm:py-2 sm:text-sm">
             <p className="min-w-0">
               建议开启两步验证<span className="hidden sm:inline">：管理员账户一旦密码泄露，影响整个面板</span>。
               <a
@@ -230,35 +258,40 @@ function AdminConsole({ user, onLogout, logoutError }: { user: Me; onLogout: () 
           </div>
         </div>
       )}
-      <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
-        {view === "plans" ? (
-          <AdminPlans />
-        ) : view === "orders" ? (
-          <AdminOrders />
-        ) : view === "coupons" ? (
-          <AdminCoupons />
-        ) : view === "finance" ? (
-          <AdminFinance />
-        ) : view === "tickets" ? (
-          <AdminTickets />
-        ) : view === "nodes" ? (
-          <AdminNodes />
-        ) : view === "alerts" ? (
-          <AdminAlerts />
-        ) : view === "updates" ? (
-          <AdminUpdates />
-        ) : view === "audit" ? (
-          <AdminAudit />
-        ) : view === "settings" ? (
-          <AdminSettings />
-        ) : view === "account" ? (
-          <div className="space-y-6">
-            <PasswordCard />
-            <TwoFactorCard />
-          </div>
-        ) : (
-          <AdminUsers />
-        )}
+      <main className="mx-auto w-full max-w-screen-2xl px-4 py-6 sm:px-6 sm:py-8">
+        <Suspense fallback={<Loading label="加载中…" />}>
+          {view === "users" ? (
+            <AdminUsers />
+          ) : view === "plans" ? (
+            <AdminPlans />
+          ) : view === "orders" ? (
+            <AdminOrders />
+          ) : view === "coupons" ? (
+            <AdminCoupons />
+          ) : view === "finance" ? (
+            <AdminFinance />
+          ) : view === "tickets" ? (
+            <AdminTickets />
+          ) : view === "nodes" ? (
+            <AdminNodes />
+          ) : view === "alerts" ? (
+            <AdminAlerts />
+          ) : view === "updates" ? (
+            <AdminUpdates />
+          ) : view === "audit" ? (
+            <AdminAudit />
+          ) : view === "settings" ? (
+            <AdminSettings />
+          ) : view === "account" ? (
+            <div className="mx-auto max-w-3xl space-y-6">
+              <h1 className="text-xl font-semibold tracking-tight">账户</h1>
+              <PasswordCard />
+              <TwoFactorCard />
+            </div>
+          ) : (
+            <AdminDashboard />
+          )}
+        </Suspense>
       </main>
     </div>
   );

@@ -36,6 +36,7 @@
 //! the request, so -k never runs unpinned); `install.tls_pin` overrides the
 //! probe. The pin is stored with the link and reused by the script.
 
+use crate::auth::bad_request;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -403,10 +404,14 @@ pub async fn prepare(state: &AppState, req: &InstallReq) -> Result<Prepared, Api
     let raw = match state.settings().get().install_origin() {
         Some(o) => o,
         None => req.origin.clone().ok_or_else(|| {
-            ApiError::bad_request("origin is required (or set the main domain in 系统设置)")
+            bad_request!(
+                "install.origin_required",
+                "origin is required (or set the main domain in 系统设置)"
+            )
         })?,
     };
-    let origin = parse_origin(&raw).map_err(|e| ApiError::bad_request(format!("origin: {e}")))?;
+    let origin = parse_origin(&raw)
+        .map_err(|e| bad_request!("install.origin_invalid", "origin: {e}", e = e))?;
     let mut warnings = Vec::new();
     let pin = if !cfg.tls_pin.is_empty() {
         Some(cfg.tls_pin.clone())
@@ -415,8 +420,8 @@ pub async fn prepare(state: &AppState, req: &InstallReq) -> Result<Prepared, Api
             Ok(p) => p,
             Err(e) => {
                 warnings.push(format!(
-                    "could not check the TLS certificate of {} ({e}); the command assumes a \
-                     publicly trusted certificate (set install.tls_pin for a self-signed one)",
+                    "无法检查 {} 的 TLS 证书（{e}）；安装命令按公共 CA 签发的证书生成。\
+                     如果面板使用自签名证书，请在 panel.toml 设置 install.tls_pin",
                     origin.as_string()
                 ));
                 None
@@ -489,7 +494,7 @@ pub async fn view(
     for a in ARCHES {
         if !releases.contains_key(a) && fallback.is_none() {
             warnings.push(format!(
-                "no agent binary for linux/{a}: upload a release (Updates) or set \
+                "没有 linux/{a} 的 agent 程序：请在「更新」页上传发布，或在 panel.toml 设置 \
                  install.fallback_binary_url"
             ));
         }

@@ -394,7 +394,10 @@ async fn login_two_step_without_oracle() {
     let ip = rand_ip();
     let uniform = |r: &crate::testdb::http::Resp| {
         assert_eq!(r.status, StatusCode::UNAUTHORIZED);
-        assert_eq!(r.json(), json!({"error": "unauthorized"}));
+        assert_eq!(
+            r.json(),
+            json!({"error": "unauthorized", "code": "auth.unauthorized", "params": {}})
+        );
     };
     let mut a = Client::new(&state, ip);
     // Password right, no code (absent / blank): totp_required.

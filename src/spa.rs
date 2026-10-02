@@ -191,9 +191,15 @@ mod tests {
 
     /// A built console asset, if `make spa` ran (debug builds read
     /// spa/dist from disk; a fresh clone only has the placeholder index).
+    /// An asset the console's index references (W21: the console is
+    /// code-split, so not every asset is in the index; the view chunks are
+    /// imported relatively by the entry).
     fn admin_asset_path() -> Option<String> {
+        let index = AdminAssets::get("admin.html")?;
+        let index = String::from_utf8_lossy(&index.data).to_string();
         AdminAssets::iter()
-            .find(|k| k.starts_with("assets/"))
+            .filter(|k| k.starts_with("assets/"))
+            .find(|k| index.contains(k.as_ref()))
             .map(|k| format!("/test/admin/{k}"))
     }
 

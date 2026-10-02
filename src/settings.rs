@@ -48,6 +48,7 @@
 //! serialized per instance and always read fresh, so an older read never
 //! overwrites a newer one; every (re)established LISTEN reloads too.
 
+use crate::auth::{bad_request, conflict};
 use std::collections::{BTreeSet, HashSet};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -248,17 +249,19 @@ pub struct Stored {
     pub probe_interval_secs: Option<i32>,
     pub probe_urls: Option<Vec<String>>,
     pub probe_panel_tcp: Option<bool>,
+    /// W21: 站点名称 (browser titles, mail headers; NULL = "Akari").
+    pub site_name: Option<String>,
     #[serde(skip)]
     pub updated_at: Option<DateTime<Utc>>,
 }
 
 const STORED_COLS: &str = "version, main_domain, sub_domain, node_domain, trust_cloudflare, \
-     probe_interval_secs, probe_urls, probe_panel_tcp, updated_at";
+     probe_interval_secs, probe_urls, probe_panel_tcp, site_name, updated_at";
 const SELECT_STORED: &str = "SELECT version, main_domain, sub_domain, node_domain, \
-     trust_cloudflare, probe_interval_secs, probe_urls, probe_panel_tcp, updated_at \
+     trust_cloudflare, probe_interval_secs, probe_urls, probe_panel_tcp, site_name, updated_at \
      FROM panel_settings WHERE id = 1";
 const LOCK_STORED: &str = "SELECT version, main_domain, sub_domain, node_domain, \
-     trust_cloudflare, probe_interval_secs, probe_urls, probe_panel_tcp, updated_at \
+     trust_cloudflare, probe_interval_secs, probe_urls, probe_panel_tcp, site_name, updated_at \
      FROM panel_settings WHERE id = 1 FOR UPDATE";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
@@ -809,8 +812,9 @@ pub async fn apply_update(
 ) -> Result<Stored, ApiError> {
     let cur: Stored = sqlx::query_as(LOCK_STORED).fetch_one(&mut *conn).await?;
     if cur.version != expected_version {
-        return Err(ApiError::conflict(
-            "设置已被修改（可能是其他管理员），请刷新后重试",
+        return Err(conflict!(
+            "settings.version_conflict",
+            "设置已被修改（可能是其他管理员），请刷新后重试"
         ));
     }
     let before = Values::of(&cur);
@@ -822,7 +826,7 @@ pub async fn apply_update(
              trust_cloudflare = $4, version = version + 1, updated_at = now() \
          WHERE id = 1 \
          RETURNING version, main_domain, sub_domain, node_domain, trust_cloudflare, \
-             probe_interval_secs, probe_urls, probe_panel_tcp, updated_at",
+             probe_interval_secs, probe_urls, probe_panel_tcp, site_name, updated_at",
     )
     .bind(&new.main_domain)
     .bind(&new.sub_domain)
@@ -891,8 +895,9 @@ pub async fn apply_update_probe(
 ) -> Result<Stored, ApiError> {
     let cur: Stored = sqlx::query_as(LOCK_STORED).fetch_one(&mut *conn).await?;
     if cur.version != expected_version {
-        return Err(ApiError::conflict(
-            "设置已被修改（可能是其他管理员），请刷新后重试",
+        return Err(conflict!(
+            "settings.version_conflict",
+            "设置已被修改（可能是其他管理员），请刷新后重试"
         ));
     }
     let before = ProbeValues::of(&cur);
@@ -931,6 +936,89 @@ pub async fn apply_update_probe(
     )
     .await?;
     Ok(row)
+}
+
+/// The longest site name (characters).
+pub const MAX_SITE_NAME: usize = 64;
+
+/// The default site name.
+pub const DEFAULT_SITE_NAME: &str = "Akari";
+
+/// W21: a site name from the form: trimmed; empty = unset (default);
+/// 1–64 characters without control characters.
+pub fn site_name_value(raw: Option<&str>) -> Result<Option<String>, ApiError> {
+    let Some(v) = raw.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(None);
+    };
+    if v.chars().count() > MAX_SITE_NAME || v.chars().any(char::is_control) {
+        return Err(bad_request!(
+            "settings.site_name_invalid",
+            "site name must be 1-{max} characters without control characters",
+            max = MAX_SITE_NAME
+        ));
+    }
+    Ok(Some(v.to_string()))
+}
+
+/// W21: write the site name (same row and `version` as the domains: 409 on
+/// a stale form). Audited as `settings.site.update`.
+pub async fn apply_update_site(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    expected_version: i64,
+    site_name: Option<String>,
+) -> Result<Stored, ApiError> {
+    let cur: Stored = sqlx::query_as(LOCK_STORED).fetch_one(&mut *conn).await?;
+    if cur.version != expected_version {
+        return Err(conflict!(
+            "settings.version_conflict",
+            "设置已被修改（可能是其他管理员），请刷新后重试"
+        ));
+    }
+    if cur.site_name == site_name {
+        return Ok(cur);
+    }
+    let row: Stored = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "UPDATE panel_settings SET site_name = $1, version = version + 1, updated_at = now() \
+         WHERE id = 1 RETURNING {STORED_COLS}"
+    )))
+    .bind(&site_name)
+    .fetch_one(&mut *conn)
+    .await?;
+    crate::audit::record(
+        conn,
+        actor,
+        "settings.site.update",
+        "settings",
+        None,
+        Some(json!({ "site_name": cur.site_name })),
+        Some(json!({ "site_name": site_name })),
+    )
+    .await?;
+    Ok(row)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SiteReq {
+    pub version: i64,
+    /// null or "" = the default ("Akari").
+    pub site_name: Option<String>,
+}
+
+/// PUT /api/v1/settings/site (admin): 站点名称.
+pub async fn put_site(
+    State(state): State<AppState>,
+    user: AuthUser,
+    ApiJson(req): ApiJson<SiteReq>,
+) -> Result<Json<SettingsView>, ApiError> {
+    user.require_admin()?;
+    let name = site_name_value(req.site_name.as_deref())?;
+    let mut tx = state.pg().begin().await?;
+    apply_update_site(&mut tx, &Actor::of(&user), req.version, name).await?;
+    tx.commit().await?;
+    reload_logged(&state).await;
+    Ok(Json(view(&state, Vec::new()).await?))
 }
 
 /// A node that may still verify a server name.
@@ -1001,7 +1089,11 @@ pub async fn apply_remove_server_name(
     let cur: Stored = sqlx::query_as(LOCK_STORED).fetch_one(&mut *conn).await?;
     let eff = compute(cfg, cur, Vec::new(), &[]);
     if let Some(why) = removal_blocker(cfg, &eff.node, name) {
-        return Err(ApiError::bad_request(why));
+        return Err(bad_request!(
+            "settings.server_name_locked",
+            "{detail}",
+            detail = why
+        ));
     }
     let source: Option<String> =
         sqlx::query_scalar("DELETE FROM grpc_server_names WHERE name = $1 RETURNING source")
@@ -1220,6 +1312,8 @@ pub struct SettingsView {
     pub cloudflare_ranges: usize,
     /// W12: latency tests (agents' url-test + the panel's TCP test).
     pub probe: ProbeView,
+    /// W21: 站点名称 (null = default "Akari").
+    pub site_name: Option<String>,
     /// Advisory notes from the last save (DNS checks).
     pub warnings: Vec<String>,
 }
@@ -1304,6 +1398,7 @@ pub async fn view(state: &AppState, mut warnings: Vec<String>) -> Result<Setting
     let probe = probe_view(cfg, &eff);
     let s = &eff.stored;
     Ok(SettingsView {
+        site_name: s.site_name.clone(),
         version: s.version,
         updated_at: s.updated_at,
         main: DomainView {
@@ -1377,9 +1472,14 @@ pub struct UpdateReq {
 fn norm(field: &str, v: &Option<String>) -> Result<Option<Domain>, ApiError> {
     match v.as_deref().map(str::trim) {
         None | Some("") => Ok(None),
-        Some(s) => Domain::parse(s)
-            .map(Some)
-            .map_err(|e| ApiError::bad_request(format!("{field}：{e}"))),
+        Some(s) => Domain::parse(s).map(Some).map_err(|e| {
+            bad_request!(
+                "settings.domain_invalid",
+                "{field}：{e}",
+                field = field,
+                e = e
+            )
+        }),
     }
 }
 
@@ -1397,7 +1497,10 @@ pub async fn put_settings(
     let node = norm("节点通信域名", &req.node_domain)?;
     if let Some(d) = &node {
         if d.host.parse::<IpAddr>().is_ok_and(|ip| ip.is_unspecified()) {
-            return Err(ApiError::bad_request("节点通信域名：不能是 0.0.0.0 / ::"));
+            return Err(bad_request!(
+                "settings.node_domain_unspecified",
+                "节点通信域名：不能是 0.0.0.0 / ::"
+            ));
         }
     }
     let new = Values {
@@ -1415,7 +1518,12 @@ pub async fn put_settings(
             let c = check(Kind::Node, d, live.cloudflare()).await;
             match c.level {
                 "block" if !req.force_node_cloudflare => {
-                    return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, c.message));
+                    return Err(crate::auth::api_error!(
+                        UNPROCESSABLE_ENTITY,
+                        "settings.node_domain_cloudflare",
+                        "{detail}",
+                        detail = c.message
+                    ));
                 }
                 "ok" => {}
                 _ => warnings.push(c.message),
@@ -1440,13 +1548,12 @@ pub async fn put_settings(
         let next = compute(state.cfg(), stored, Vec::new(), &[]);
         let host = host_of(&headers, &uri);
         if !next.host_allowed(host.as_deref()) {
-            return Err(ApiError::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                format!(
-                    "保存后面板只接受主域名/订阅域名（以及 IP 地址）的访问，当前访问地址 {} 将被拒绝。\
-                     请确认主域名已解析并能打开，再勾选确认后保存。",
-                    host.unwrap_or_default()
-                ),
+            return Err(crate::auth::api_error!(
+                UNPROCESSABLE_ENTITY,
+                "settings.host_gate",
+                "保存后面板只接受主域名/订阅域名（以及 IP 地址）的访问，当前访问地址 {host} 将被拒绝。\
+                 请确认主域名已解析并能打开，再勾选确认后保存。",
+                host = host.unwrap_or_default()
             ));
         }
     }
@@ -1478,8 +1585,9 @@ pub fn probe_values(req: &ProbeReq) -> Result<ProbeValues, ApiError> {
         None => None,
         Some(v) if PROBE_INTERVAL_SECS.contains(&v) => Some(v as i32),
         Some(_) => {
-            return Err(ApiError::bad_request(
-                "测速间隔：须在 600 秒（10 分钟）到 604800 秒（7 天）之间",
+            return Err(bad_request!(
+                "settings.probe_interval_range",
+                "测速间隔：须在 600 秒（10 分钟）到 604800 秒（7 天）之间"
             ))
         }
     };
@@ -1488,15 +1596,23 @@ pub fn probe_values(req: &ProbeReq) -> Result<ProbeValues, ApiError> {
         Some(list) => {
             let list: Vec<String> = list.iter().map(|u| u.trim().to_string()).collect();
             if list.len() > PROBE_MAX_URLS {
-                return Err(ApiError::bad_request("测速地址：最多 4 个"));
+                return Err(bad_request!(
+                    "settings.probe_urls_too_many",
+                    "测速地址：最多 4 个"
+                ));
             }
             if let Some(bad) = list.iter().find(|u| !crate::nodestat::valid_probe_url(u)) {
-                return Err(ApiError::bad_request(format!(
-                    "测速地址：{bad:?} 不是有效的 http(s) 地址（不能含空白或用户名）"
-                )));
+                return Err(bad_request!(
+                    "settings.probe_url_invalid",
+                    "测速地址：{bad:?} 不是有效的 http(s) 地址（不能含空白或用户名）",
+                    bad = bad
+                ));
             }
             if !valid_probe_urls(&list) {
-                return Err(ApiError::bad_request("测速地址：不能重复"));
+                return Err(bad_request!(
+                    "settings.probe_url_duplicate",
+                    "测速地址：不能重复"
+                ));
             }
             Some(list)
         }
@@ -1537,7 +1653,14 @@ pub async fn dns_check(
     ApiJson(req): ApiJson<DnsReq>,
 ) -> Result<Json<DnsCheck>, ApiError> {
     user.require_admin()?;
-    let d = Domain::parse(&req.domain).map_err(ApiError::bad_request)?;
+    let d = Domain::parse(&req.domain).map_err(|e| {
+        bad_request!(
+            "settings.domain_invalid",
+            "{field}：{e}",
+            field = "域名",
+            e = e
+        )
+    })?;
     Ok(Json(
         check(req.kind, &d, state.settings().cloudflare()).await,
     ))
@@ -1559,7 +1682,10 @@ pub async fn remove_server_name(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     user.require_admin()?;
     if !req.confirm {
-        return Err(ApiError::bad_request("需要确认（confirm: true）"));
+        return Err(bad_request!(
+            "settings.confirm_required",
+            "需要确认（confirm: true）"
+        ));
     }
     let mut tx = state.pg().begin().await?;
     let affected =

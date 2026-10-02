@@ -10,6 +10,7 @@
 //! and several instances therefore fulfil once. A late payment of an
 //! expired/cancelled order is still fulfilled (Alipay took the money).
 
+use crate::auth::conflict;
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -277,7 +278,8 @@ async fn retake_balance(
     let Some((user, cents)) = row else {
         return Ok(());
     };
-    let user = user.ok_or_else(|| ApiError::conflict("the user no longer exists"))?;
+    let user =
+        user.ok_or_else(|| conflict!("order_admin.user_gone", "the user no longer exists"))?;
     let mut e = super::ledger::Entry::new(user, super::ledger::Kind::OrderPayment, -cents);
     e.order_id = Some(order_id);
     super::ledger::apply_entry(conn, actor, &e).await?;
@@ -361,17 +363,26 @@ pub async fn apply_refund(
         return Err(ApiError::not_found());
     };
     if status != "paid" {
-        return Err(ApiError::conflict("only a paid order can be refunded"));
+        return Err(conflict!(
+            "order_admin.refund_not_paid",
+            "only a paid order can be refunded"
+        ));
     }
     if refunded_at.is_some() {
-        return Err(ApiError::conflict("the order was already refunded"));
+        return Err(conflict!(
+            "order_admin.already_refunded",
+            "the order was already refunded"
+        ));
     }
     let balance_part = if balance_state == "held" { balance } else { 0 };
     let cash_part = if to_balance { amount } else { 0 };
     let credit = balance_part + cash_part;
     if credit > 0 {
         let user = user.ok_or_else(|| {
-            ApiError::conflict("the user no longer exists; refund out of band without to_balance")
+            conflict!(
+                "order_admin.refund_user_gone",
+                "the user no longer exists; refund out of band without to_balance"
+            )
         })?;
         let mut e = super::ledger::Entry::new(user, super::ledger::Kind::RefundToBalance, credit);
         e.order_id = Some(order_id);
@@ -423,10 +434,10 @@ pub async fn apply_refund(
 async fn grant(conn: &mut PgConnection, actor: &Actor, b: &Bought) -> Result<Value, ApiError> {
     let user = b
         .user_id
-        .ok_or_else(|| ApiError::conflict("the user no longer exists"))?;
+        .ok_or_else(|| conflict!("order_admin.user_gone", "the user no longer exists"))?;
     let plan = b
         .plan_id
-        .ok_or_else(|| ApiError::conflict("the plan no longer exists"))?;
+        .ok_or_else(|| conflict!("order_admin.plan_gone", "the plan no longer exists"))?;
     let kind = super::catalog::PeriodKind::parse(&b.period)
         .ok_or_else(|| anyhow::anyhow!("order has an unknown period kind"))?;
     if kind == super::catalog::PeriodKind::Reset {
@@ -475,10 +486,13 @@ async fn grant(conn: &mut PgConnection, actor: &Actor, b: &Bought) -> Result<Val
             .fetch_optional(&mut *conn)
             .await?;
             let Some((capacity, holders)) = cap else {
-                return Err(ApiError::conflict("the plan no longer exists"));
+                return Err(conflict!(
+                    "order_admin.plan_gone",
+                    "the plan no longer exists"
+                ));
             };
             if capacity.is_some_and(|c| holders >= i64::from(c)) {
-                return Err(ApiError::conflict("plan is sold out"));
+                return Err(conflict!("shop.sold_out", "plan is sold out"));
             }
             let new: Option<DateTime<Utc>> =
                 sqlx::query_scalar("SELECT akari_period_end(now(), $1, $2)")
@@ -542,7 +556,7 @@ pub async fn apply_admin_fulfil(
         return Err(ApiError::not_found());
     };
     if refunded {
-        return Err(ApiError::conflict("the order was refunded"));
+        return Err(conflict!("order_admin.refunded", "the order was refunded"));
     }
     if status != "paid" {
         let r =
@@ -562,7 +576,10 @@ pub async fn apply_admin_fulfil(
         return Ok(r);
     }
     if fulfilled_at.is_some() {
-        return Err(ApiError::conflict("order is already fulfilled"));
+        return Err(conflict!(
+            "order_admin.already_fulfilled",
+            "order is already fulfilled"
+        ));
     }
     let b = bought(conn, order_id).await?;
     let (fulfilled, detail) = fulfil(conn, actor, order_id, &b).await?;

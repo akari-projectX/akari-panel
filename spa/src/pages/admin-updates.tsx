@@ -1,3 +1,4 @@
+import { useAdminConfirm as useConfirm } from "../admin-confirm";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
@@ -14,8 +15,8 @@ import {
 } from "../lib/api";
 import { humanBytes } from "../lib/utils";
 import { ErrorText, TableNote } from "../components/status";
-import { useT } from "../i18n";
-import { errorText } from "../lib/errors";
+import { adminErrorText } from "../lib/admin-errors";
+import { fmtDateTime } from "../lib/datetime";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -66,8 +67,8 @@ export function AdminUpdates() {
 }
 
 function Releases() {
-  const t = useT();
   const qc = useQueryClient();
+  const confirm = useConfirm();
   const releases = useQuery({ queryKey: ["releases"], queryFn: () => get<ReleaseView[]>("/agent-releases") });
   const [manifest, setManifest] = useState<File | null>(null);
   const [sig, setSig] = useState<File | null>(null);
@@ -89,7 +90,7 @@ function Releases() {
       setSig(null);
       setBinary(null);
     } catch (err) {
-      setError(errorText(err, t));
+      setError(adminErrorText(err));
     } finally {
       setBusy(false);
       await qc.invalidateQueries({ queryKey: ["releases"] });
@@ -97,13 +98,20 @@ function Releases() {
   }
 
   async function remove(r: ReleaseView) {
-    if (!window.confirm(`删除发布 ${r.version}（${r.os}/${r.arch}）？`)) return;
+    if (
+      !(await confirm({
+        title: `删除发布 ${r.version}（${r.os}/${r.arch}）？`,
+        confirmLabel: "删除",
+        destructive: true,
+      }))
+    )
+      return;
     const id = r.id;
     setError(null);
     try {
       await del(`/agent-releases/${id}`);
     } catch (err) {
-      setError(errorText(err, t));
+      setError(adminErrorText(err));
     }
     await qc.invalidateQueries({ queryKey: ["releases"] });
   }
@@ -145,7 +153,7 @@ function Releases() {
           </div>
         </div>
         <ErrorText>{error}</ErrorText>
-        <Table>
+        <Table label="发布列表">
           <TableHeader>
             <TableRow>
               <TableHead>版本</TableHead>
@@ -196,8 +204,8 @@ function Releases() {
 }
 
 function Rollouts() {
-  const t = useT();
   const qc = useQueryClient();
+  const confirm = useConfirm();
   const rollouts = useQuery({
     queryKey: ["rollouts"],
     queryFn: () => get<RolloutView[]>("/rollouts"),
@@ -234,18 +242,27 @@ function Rollouts() {
       await post<RolloutView>("/rollouts", body);
       setSelected([]);
     } catch (err) {
-      setError(errorText(err, t));
+      setError(adminErrorText(err));
     }
     await qc.invalidateQueries({ queryKey: ["rollouts"] });
   }
 
   async function act(id: string, action: "pause" | "resume" | "abort") {
-    if (action === "abort" && !window.confirm("中止这次灰度更新？未更新的节点将保持当前版本。")) return;
+    if (
+      action === "abort" &&
+      !(await confirm({
+        title: "中止这次灰度更新？",
+        message: "未更新的节点将保持当前版本。",
+        confirmLabel: "中止",
+        destructive: true,
+      }))
+    )
+      return;
     setError(null);
     try {
       await post<RolloutView>(`/rollouts/${id}/${action}`, {});
     } catch (err) {
-      setError(errorText(err, t));
+      setError(adminErrorText(err));
     }
     await qc.invalidateQueries({ queryKey: ["rollouts"] });
     await qc.invalidateQueries({ queryKey: ["rollout", id] });
@@ -323,7 +340,7 @@ function Rollouts() {
           </div>
         </details>
         <ErrorText>{error}</ErrorText>
-        <Table>
+        <Table label="灰度更新列表">
           <TableHeader>
             <TableRow>
               <TableHead>版本</TableHead>
@@ -398,7 +415,7 @@ function RolloutRow({
         </TableCell>
         <TableCell className="text-sm">{counts || "—"}</TableCell>
         <TableCell className="text-sm text-muted-foreground">
-          {new Date(r.created_at).toLocaleString("zh-CN")} · {r.created_by}
+          {fmtDateTime(r.created_at)} · {r.created_by}
         </TableCell>
         <TableCell className="space-x-1 text-right">
           {r.status === "running" && (
@@ -421,7 +438,7 @@ function RolloutRow({
       {open && (
         <TableRow>
           <TableCell colSpan={6}>
-            <Table>
+            <Table label="节点更新状态">
               <TableHeader>
                 <TableRow>
                   <TableHead>节点</TableHead>

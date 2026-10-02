@@ -7,6 +7,7 @@
 //! after the password step); everything else in the API requires `AuthUser`
 //! (a full session).
 
+use crate::auth::{bad_request, conflict};
 use axum::extract::State;
 use axum::Json;
 use axum_extra::extract::cookie::CookieJar;
@@ -72,8 +73,9 @@ pub async fn totp_enroll(
     .await?
     .rows_affected();
     if n == 0 {
-        return Err(ApiError::conflict(
-            "two-factor authentication is already enabled",
+        return Err(conflict!(
+            "account.totp_enabled",
+            "two-factor authentication is already enabled"
         ));
     }
     Ok(Json(json!({
@@ -164,7 +166,7 @@ pub async fn totp_confirm(
         }
         Ok(None) => {
             attempt.fail();
-            Err(ApiError::bad_request("invalid code"))
+            Err(bad_request!("account.invalid_code", "invalid code"))
         }
         Err(e) => {
             attempt.release(&state).await;
@@ -197,17 +199,22 @@ async fn confirm_inner(
     .fetch_optional(&mut *tx)
     .await?;
     let Some((sealed, enabled, now)) = pending else {
-        return Err(ApiError::conflict("no enrollment in progress"));
+        return Err(conflict!(
+            "account.totp_no_enrollment",
+            "no enrollment in progress"
+        ));
     };
     if enabled {
-        return Err(ApiError::conflict(
-            "two-factor authentication is already enabled",
+        return Err(conflict!(
+            "account.totp_enabled",
+            "two-factor authentication is already enabled"
         ));
     }
     let Some(secret) = state.totp().open(user.id, &sealed) else {
         tracing::error!(user = %user.id, "pending TOTP secret cannot be decrypted");
-        return Err(ApiError::conflict(
-            "enrollment is no longer valid; start again",
+        return Err(conflict!(
+            "account.totp_enrollment_stale",
+            "enrollment is no longer valid; start again"
         ));
     };
     let step = totp::verify(&secret, req.code.trim(), totp::step_of(now), None);
@@ -267,7 +274,7 @@ pub async fn regenerate_recovery_codes(
         }
         Ok(None) => {
             attempt.fail();
-            Err(ApiError::bad_request("invalid code"))
+            Err(bad_request!("account.invalid_code", "invalid code"))
         }
         Err(e) => {
             attempt.release(&state).await;
@@ -297,8 +304,9 @@ async fn regenerate_inner(
     .fetch_optional(&mut *tx)
     .await?;
     let Some((sealed, last, now)) = active else {
-        return Err(ApiError::conflict(
-            "two-factor authentication is not enabled",
+        return Err(conflict!(
+            "account.totp_not_enabled",
+            "two-factor authentication is not enabled"
         ));
     };
     let secret = state.totp().open(user.id, &sealed);
@@ -347,8 +355,9 @@ pub async fn change_own_password(
     ApiJson(req): ApiJson<ChangePasswordReq>,
 ) -> Result<(CookieJar, axum::http::StatusCode), ApiError> {
     if req.new_password.len() < 8 {
-        return Err(ApiError::bad_request(
-            "password must be at least 8 characters",
+        return Err(bad_request!(
+            "account.password_too_short",
+            "password must be at least 8 characters"
         ));
     }
     let bucket = user
@@ -373,7 +382,7 @@ pub async fn change_own_password(
         }
         Ok(None) => {
             attempt.fail();
-            Err(ApiError::bad_request("invalid password"))
+            Err(bad_request!("account.invalid_password", "invalid password"))
         }
         Err(e) => {
             attempt.release(&state).await;
@@ -667,7 +676,10 @@ mod tests {
         let mut c2 = Client::new(&state, rand_ip());
         let unauthorized = |r: crate::testdb::http::Resp| {
             assert_eq!(r.status, StatusCode::UNAUTHORIZED);
-            assert_eq!(r.json(), json!({"error": "unauthorized"}));
+            assert_eq!(
+                r.json(),
+                json!({"error": "unauthorized", "code": "auth.unauthorized", "params": {}})
+            );
             assert!(r.session_cookie().is_none());
         };
         let r = c2.login(&login, PW, None).await;

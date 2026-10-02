@@ -5,7 +5,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { post, type CertStatus, type CheckDomainView, type NodeView } from "../lib/api";
-import { adminErrorText } from "../lib/errors";
+import { adminErrorText } from "../lib/admin-errors";
+import { fmtDate, fmtDateTime } from "../lib/datetime";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
@@ -20,11 +21,11 @@ function readsNodeCert(inbounds: NodeView["xray_inbounds"]): boolean {
 }
 
 function fmt(ts: string | null): string {
-  return ts ? new Date(ts).toLocaleString() : "—";
+  return fmtDateTime(ts);
 }
 
-function fmtDate(ts: string | null): string {
-  return ts ? new Date(ts).toLocaleDateString() : "—";
+function fmtDay(ts: string | null): string {
+  return fmtDate(ts);
 }
 
 /** One line about a DNS pre-flight result (warn only). */
@@ -113,7 +114,7 @@ export function TlsDomainField({
       {check && (
         <p
           role={check.ok ? "status" : "alert"}
-          className={`text-xs ${check.ok ? "text-emerald-600" : "text-amber-600"}`}
+          className={`text-xs ${check.ok ? "text-emerald-700" : "text-amber-600"}`}
         >
           {check.text}
         </p>
@@ -171,14 +172,14 @@ export function NodeCertStatus({ node }: { node: NodeView }) {
   } else if (!cert) {
     text = node.status === "online" ? "等待 agent 上报证书状态…" : "节点上线后自动申请证书";
   } else if (cert.state === "valid") {
-    tone = "text-emerald-600";
-    text = `证书有效，到期 ${fmtDate(cert.not_after)}，将于 ${fmtDate(cert.next_attempt)} 前后自动续期`;
+    tone = "text-emerald-700";
+    text = `证书有效，到期 ${fmtDay(cert.not_after)}，将于 ${fmtDay(cert.next_attempt)} 前后自动续期`;
   } else if (cert.state === "pending") {
     text = "正在申请证书…";
   } else {
     tone = "text-destructive";
     text = certErrorText(cert, node.agent_addr);
-    if (cert.not_after) text += `（当前证书仍有效至 ${fmtDate(cert.not_after)}）`;
+    if (cert.not_after) text += `（当前证书仍有效至 ${fmtDay(cert.not_after)}）`;
   }
   const dnsLine = failed && dns.data ? describeCheck(dns.data) : null;
   return (

@@ -48,6 +48,9 @@ enum Scenario {
     UsersFirstPage,
     UsersDeepPage,
     UserPatch,
+    UsersSearch,
+    UsersFiltered,
+    Dashboard,
     Nodes,
     NodesSummary,
     NodesEtag,
@@ -66,12 +69,15 @@ enum Scenario {
 }
 
 impl Scenario {
-    const ALL: [Scenario; 19] = [
+    const ALL: [Scenario; 22] = [
         Scenario::Healthz,
         Scenario::Me,
         Scenario::UsersFirstPage,
         Scenario::UsersDeepPage,
         Scenario::UserPatch,
+        Scenario::UsersSearch,
+        Scenario::UsersFiltered,
+        Scenario::Dashboard,
         Scenario::Nodes,
         Scenario::NodesSummary,
         Scenario::NodesEtag,
@@ -95,6 +101,11 @@ impl Scenario {
             Scenario::UsersFirstPage => "users_page1",
             Scenario::UsersDeepPage => "users_deep",
             Scenario::UserPatch => "user_patch",
+            // W21: the console's search (login/email prefix + total), a
+            // status filter with a sort, and the dashboard aggregate.
+            Scenario::UsersSearch => "users_search",
+            Scenario::UsersFiltered => "users_filtered",
+            Scenario::Dashboard => "dashboard",
             Scenario::Nodes => "nodes",
             // W17: the console's list (summary view), cold and revalidated
             // (If-None-Match with the last ETag, as the browser does).
@@ -335,6 +346,17 @@ async fn request(ctx: &Ctx, s: Scenario, i: usize) -> bool {
                         "traffic_limit_bytes": rng.random_range(1i64 << 40..1i64 << 41)
                     }))
             }
+            Scenario::UsersSearch => admin(format!(
+                "users?limit=50&q={}",
+                common::user_login(rng.random_range(0..ctx.users.max(1)))
+                    .chars()
+                    .take(14)
+                    .collect::<String>()
+            )),
+            Scenario::UsersFiltered => {
+                admin("users?limit=50&status=active&role=user&sort=-traffic".into())
+            }
+            Scenario::Dashboard => admin("dashboard".into()),
             Scenario::Nodes => admin("nodes".into()),
             Scenario::NodesSummary => admin("nodes?view=summary".into()),
             Scenario::NodesEtag => {

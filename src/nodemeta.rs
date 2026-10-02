@@ -7,6 +7,7 @@
 //! membership does change access and goes through
 //! `entitle::apply_reconcile` (bumps exactly the affected node).
 
+use crate::auth::{bad_request, conflict};
 use serde_json::{json, Map, Value};
 use sqlx::PgConnection;
 use uuid::Uuid;
@@ -33,18 +34,22 @@ pub fn display_name(v: Option<&str>) -> Result<Option<String>, ApiError> {
         return Ok(None);
     };
     if v.chars().count() > MAX_DISPLAY_CHARS || !printable(v) {
-        return Err(ApiError::bad_request(format!(
-            "display_name must be at most {MAX_DISPLAY_CHARS} printable characters"
-        )));
+        return Err(bad_request!(
+            "node.display_name_invalid",
+            "display_name must be at most {max_display_chars} printable characters",
+            max_display_chars = MAX_DISPLAY_CHARS
+        ));
     }
     Ok(Some(v.to_string()))
 }
 
 pub fn sort(v: i32) -> Result<i32, ApiError> {
     if !(-SORT_LIMIT..=SORT_LIMIT).contains(&v) {
-        return Err(ApiError::bad_request(format!(
-            "sort must be between -{SORT_LIMIT} and {SORT_LIMIT}"
-        )));
+        return Err(bad_request!(
+            "node.sort_range",
+            "sort must be between -{sort_limit} and {sort_limit}",
+            sort_limit = SORT_LIMIT
+        ));
     }
     Ok(v)
 }
@@ -58,16 +63,22 @@ pub fn tags(v: &[String]) -> Result<Vec<String>, ApiError> {
             continue;
         }
         if t.chars().count() > MAX_TAG_CHARS || !printable(t) || t.contains('|') {
-            return Err(ApiError::bad_request(format!(
-                "each tag must be at most {MAX_TAG_CHARS} printable characters without '|'"
-            )));
+            return Err(bad_request!(
+                "node.tag_invalid",
+                "each tag must be at most {max_tag_chars} printable characters without '|'",
+                max_tag_chars = MAX_TAG_CHARS
+            ));
         }
         if !out.iter().any(|o| o == t) {
             out.push(t.to_string());
         }
     }
     if out.len() > MAX_TAGS {
-        return Err(ApiError::bad_request(format!("at most {MAX_TAGS} tags")));
+        return Err(bad_request!(
+            "node.too_many_tags",
+            "at most {max_tags} tags",
+            max_tags = MAX_TAGS
+        ));
     }
     Ok(out)
 }
@@ -76,7 +87,12 @@ pub fn tags(v: &[String]) -> Result<Vec<String>, ApiError> {
 /// decimals (0.5 -> 500, 1.25 -> 1250); anything finer is refused rather
 /// than rounded.
 pub fn rate_permille(x: f64) -> Result<i32, ApiError> {
-    let bad = || ApiError::bad_request("traffic_rate must be 0..=100 with at most 3 decimals");
+    let bad = || {
+        bad_request!(
+            "node.rate_invalid",
+            "traffic_rate must be 0..=100 with at most 3 decimals"
+        )
+    };
     if !x.is_finite() || !(0.0..=MAX_RATE).contains(&x) {
         return Err(bad());
     }
@@ -136,7 +152,13 @@ fn valid_host(h: &str) -> bool {
 /// inbound of the node, each entry needs a host or a port, empty strings /
 /// nulls drop the key, an entry with neither is dropped.
 pub fn connect_overrides(v: &Value, inbounds: &Value) -> Result<Value, ApiError> {
-    let bad = |m: String| ApiError::bad_request(format!("connect_overrides: {m}"));
+    let bad = |m: String| {
+        bad_request!(
+            "node.connect_override_invalid",
+            "connect_overrides: {m}",
+            m = m
+        )
+    };
     let Some(obj) = v.as_object() else {
         return Err(bad("must be an object keyed by inbound tag".into()));
     };
@@ -215,7 +237,7 @@ pub async fn apply_set_node_groups(
             .await?;
     match deleting {
         None => return Err(ApiError::not_found()),
-        Some(true) => return Err(ApiError::conflict("node is being deleted")),
+        Some(true) => return Err(conflict!("node.deleting", "node is being deleted")),
         Some(false) => {}
     }
     let found: i64 = sqlx::query_scalar("SELECT count(*) FROM node_groups WHERE id = ANY($1)")
@@ -223,7 +245,7 @@ pub async fn apply_set_node_groups(
         .fetch_one(&mut *conn)
         .await?;
     if found != groups.len() as i64 {
-        return Err(ApiError::bad_request("unknown group id"));
+        return Err(bad_request!("group.unknown", "unknown group id"));
     }
     let old: Vec<Uuid> = sqlx::query_scalar(
         "SELECT group_id FROM node_group_members WHERE node_id = $1 ORDER BY group_id",

@@ -1,6 +1,7 @@
 // W17 admin console: 工单管理 (Chinese only, R18). Queue with filters,
 // thread view at /{prefix}/admin/tickets/<id> (deep link), reply (and
 // close), close / reopen, assign to an admin. Types mirror src/tickets.rs.
+import { useAdminConfirm as useConfirm } from "../admin-confirm";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 
@@ -22,7 +23,8 @@ import {
   type TicketPriority,
   type TicketStatus,
 } from "../lib/api";
-import { adminErrorText } from "../lib/errors";
+import { adminErrorText } from "../lib/admin-errors";
+import { fmtDateTime } from "../lib/datetime";
 import { navigate, usePath } from "../lib/router";
 
 export interface AdminTicketRow {
@@ -75,7 +77,7 @@ export const STATUS_ZH: Record<TicketStatus, string> = { open: "待回复", answ
 const SELECT = "h-9 rounded-lg border border-border bg-background px-2 text-sm";
 
 function fmt(s: string | null) {
-  return s ? new Date(s).toLocaleString("zh-CN") : "—";
+  return fmtDateTime(s);
 }
 
 function TicketStatusBadge({ s }: { s: TicketStatus }) {
@@ -231,7 +233,7 @@ function TicketQueue() {
         ) : list.data.tickets.length === 0 ? (
           <p className="text-sm text-muted-foreground">没有符合条件的工单。</p>
         ) : (
-          <Table>
+          <Table label="工单列表">
             <TableHeader>
               <TableRow>
                 <TableHead>标题</TableHead>
@@ -295,6 +297,7 @@ function TicketQueue() {
 
 function TicketDetail({ id, onBack }: { id: string; onBack: () => void }) {
   const queryClient = useQueryClient();
+  const confirm = useConfirm();
   const [reply, setReply] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -406,8 +409,14 @@ function TicketDetail({ id, onBack }: { id: string; onBack: () => void }) {
             <Button
               variant="outline"
               disabled={busy}
-              onClick={() => {
-                if (window.confirm("关闭这个工单？用户将不能再回复，除非你重新打开。"))
+              onClick={async () => {
+                if (
+                  await confirm({
+                    title: "关闭这个工单？",
+                    message: "用户将不能再回复，除非你重新打开。",
+                    confirmLabel: "关闭工单",
+                  })
+                )
                   void act("关闭失败", () => post(`/tickets/${id}/close`, {}));
               }}
             >

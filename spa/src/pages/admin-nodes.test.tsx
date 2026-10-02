@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { InstallView, NodeView } from "../lib/api";
 import { nodeRoutes } from "../test/nodes";
-import { fakeApi, renderWithClient } from "../test/harness";
+import { fakeApi, pickMenu, renderWithClient } from "../test/harness";
 import { AdminNodes, formatLease, toSpecs } from "./admin-nodes";
 
 afterEach(() => {
@@ -69,7 +69,7 @@ const install: InstallView = {
   pin: null,
   releases: {},
   fallback_binary_url: null,
-  warnings: ["no agent binary for linux/arm64"],
+  warnings: ["没有 linux/arm64 的 agent 程序"],
 };
 
 const catalog = {
@@ -201,13 +201,12 @@ describe("AdminNodes", () => {
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
     renderWithClient(<AdminNodes />);
-    const configure = await screen.findAllByRole("button", { name: "配置" });
-    fireEvent.click(configure[0]);
+    await pickMenu("alpha", "配置");
     await screen.findByText("配置「alpha」");
     fireEvent.click(screen.getByRole("button", { name: "高级：编辑 JSON" }));
     // Switch to beta: its own state, not alpha's.
-    fireEvent.click(screen.getByRole("button", { name: "收起" }));
-    fireEvent.click((await screen.findAllByRole("button", { name: "配置" }))[1]);
+    await pickMenu("alpha", "收起配置");
+    await pickMenu("beta", "配置");
     await screen.findByText("配置「beta」");
     expect(screen.queryByLabelText("Xray 入站 JSON（数组）")).toBeNull();
     expect(screen.getAllByText("in-b").length).toBeGreaterThan(0);
@@ -253,7 +252,7 @@ describe("AdminNodes", () => {
       install: { origin: location.origin },
     });
     expect(screen.getByText(install.command_wget as string)).toBeTruthy();
-    expect(screen.getByText("no agent binary for linux/arm64")).toBeTruthy();
+    expect(screen.getByText("没有 linux/arm64 的 agent 程序")).toBeTruthy();
   });
 
   it("shows enable/disable failures and asks before disabling (F3)", async () => {
@@ -263,10 +262,10 @@ describe("AdminNodes", () => {
     });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     renderWithClient(<AdminNodes />);
-    fireEvent.click(await screen.findByRole("button", { name: "停用" }));
-    expect(confirm).toHaveBeenCalled();
+    await pickMenu("tokyo", "停用");
+    await waitFor(() => expect(confirm).toHaveBeenCalled());
     confirm.mockReturnValue(true);
-    fireEvent.click(screen.getByRole("button", { name: "停用" }));
+    await pickMenu("tokyo", "停用");
     expect((await screen.findByRole("alert")).textContent).toContain("node is being deleted");
   });
 
@@ -277,7 +276,7 @@ describe("AdminNodes", () => {
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
     renderWithClient(<AdminNodes />);
-    fireEvent.click(await screen.findByRole("button", { name: "重装命令" }));
+    await pickMenu("tokyo", "重装命令");
     await screen.findByText(install.command);
     expect(calls.find((c) => c.path === "/nodes/n1/install")?.body).toEqual({
       origin: location.origin,

@@ -29,6 +29,7 @@
 //!   nothing, so two buyers can pay for the last slot — one is fulfilled,
 //!   the other stays paid with `fulfil_error` for an admin to resolve.
 
+use crate::auth::{bad_request, conflict};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
@@ -152,37 +153,47 @@ pub fn check_prices(prices: &[Price], on_sale: bool) -> Result<(), ApiError> {
     for p in prices {
         let kind = p.period.0;
         if !seen.insert(kind) {
-            return Err(ApiError::bad_request(format!(
-                "duplicate price for period {}",
-                kind.as_str()
-            )));
+            return Err(bad_request!(
+                "plan.price_duplicate",
+                "duplicate price for period {period}",
+                period = kind.as_str()
+            ));
         }
         if !(1..=MAX_PRICE_CENTS).contains(&p.price_cents) {
-            return Err(ApiError::bad_request(format!(
-                "price_cents must be 1..={MAX_PRICE_CENTS} (integer cents)"
-            )));
+            return Err(bad_request!(
+                "plan.price_range",
+                "price_cents must be 1..={max_price_cents} (integer cents)",
+                max_price_cents = MAX_PRICE_CENTS
+            ));
         }
         match (kind.days_rule(), p.days) {
             (Some(true), None) => {
-                return Err(ApiError::bad_request("period \"days\" needs days"));
+                return Err(bad_request!(
+                    "plan.price_days_missing",
+                    "period \"days\" needs days"
+                ));
             }
             (Some(false), Some(_)) => {
-                return Err(ApiError::bad_request(format!(
-                    "period {} takes no days",
-                    kind.as_str()
-                )));
+                return Err(bad_request!(
+                    "plan.price_days_unexpected",
+                    "period {period} takes no days",
+                    period = kind.as_str()
+                ));
             }
             (_, Some(d)) if !(1..=MAX_PERIOD_DAYS).contains(&d) => {
-                return Err(ApiError::bad_request(format!(
-                    "days must be 1..={MAX_PERIOD_DAYS}"
-                )));
+                return Err(bad_request!(
+                    "plan.price_days_range",
+                    "days must be 1..={max_period_days}",
+                    max_period_days = MAX_PERIOD_DAYS
+                ));
             }
             _ => {}
         }
     }
     if on_sale && !prices.iter().any(|p| p.period.0 != PeriodKind::Reset) {
-        return Err(ApiError::bad_request(
-            "a plan on sale needs at least one price other than the reset pack",
+        return Err(bad_request!(
+            "plan.on_sale_needs_price",
+            "a plan on sale needs at least one price other than the reset pack"
         ));
     }
     Ok(())
@@ -341,19 +352,31 @@ pub enum Refusal {
 impl Refusal {
     pub fn error(self) -> ApiError {
         match self {
-            Refusal::NotForSale => ApiError::bad_request("plan is not for sale"),
-            Refusal::SoldOut => ApiError::conflict("plan is sold out"),
+            Refusal::NotForSale => bad_request!("shop.not_for_sale", "plan is not for sale"),
+            Refusal::SoldOut => conflict!("shop.sold_out", "plan is sold out"),
             Refusal::RenewalOnly => {
-                ApiError::conflict("plan is only available to its current subscribers")
+                conflict!(
+                    "shop.renewal_only",
+                    "plan is only available to its current subscribers"
+                )
             }
             Refusal::NoSwitch => {
-                ApiError::conflict("switching to this plan from another plan is not allowed")
+                conflict!(
+                    "shop.no_switch",
+                    "switching to this plan from another plan is not allowed"
+                )
             }
             Refusal::ResetNeedsSubscription => {
-                ApiError::conflict("a traffic reset pack needs an active subscription of its plan")
+                conflict!(
+                    "shop.reset_needs_plan",
+                    "a traffic reset pack needs an active subscription of its plan"
+                )
             }
             Refusal::NoExpiry => {
-                ApiError::conflict("your current plan does not expire; nothing to renew")
+                conflict!(
+                    "shop.nothing_to_renew",
+                    "your current plan does not expire; nothing to renew"
+                )
             }
         }
     }

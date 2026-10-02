@@ -36,6 +36,7 @@
 pub mod channels;
 pub mod eval;
 
+use crate::auth::{bad_request, conflict};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
@@ -159,9 +160,13 @@ pub struct Thresholds {
 
 fn range(field: &str, v: Option<i32>, lo: i32, hi: i32) -> Result<(), ApiError> {
     match v {
-        Some(x) if !(lo..=hi).contains(&x) => {
-            Err(ApiError::bad_request(format!("{field} must be {lo}-{hi}")))
-        }
+        Some(x) if !(lo..=hi).contains(&x) => Err(bad_request!(
+            "alert.field_range",
+            "{field} must be {lo}-{hi}",
+            field = field,
+            lo = lo,
+            hi = hi
+        )),
         _ => Ok(()),
     }
 }
@@ -243,7 +248,13 @@ pub fn valid_bot_token(s: &str) -> bool {
 /// Webhook URL: https (http only to loopback, like every outbound client
 /// of the panel), no credentials, no whitespace, <= 512 bytes.
 pub fn check_webhook_url(s: &str) -> Result<(), ApiError> {
-    let bad = |m: &str| Err(ApiError::bad_request(format!("webhook_url: {m}")));
+    let bad = |m: &str| {
+        Err(bad_request!(
+            "alert.webhook_url_invalid",
+            "webhook_url: {m}",
+            m = m
+        ))
+    };
     if s.is_empty() || s.len() > 512 || s.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return bad("must be an absolute URL of at most 512 characters");
     }
@@ -299,15 +310,17 @@ pub fn check_put(req: &PutSettings) -> Result<(), ApiError> {
     range("cooldown_minutes", Some(req.cooldown_minutes), 0, 1440)?;
     if let Some(c) = &req.telegram_chat_id {
         if !valid_chat_id(c) {
-            return Err(ApiError::bad_request(
-                "telegram_chat_id must be a numeric chat id or @channel",
+            return Err(bad_request!(
+                "alert.telegram_chat_invalid",
+                "telegram_chat_id must be a numeric chat id or @channel"
             ));
         }
     }
     if let Some(Some(t)) = &req.telegram_token {
         if !valid_bot_token(t) {
-            return Err(ApiError::bad_request(
-                "telegram_token must look like 123456789:AA... (from @BotFather)",
+            return Err(bad_request!(
+                "alert.telegram_token_invalid",
+                "telegram_token must look like 123456789:AA... (from @BotFather)"
             ));
         }
     }
@@ -316,29 +329,44 @@ pub fn check_put(req: &PutSettings) -> Result<(), ApiError> {
     }
     if let Some(Some(s)) = &req.webhook_secret {
         if !valid_webhook_secret(s) {
-            return Err(ApiError::bad_request(
-                "webhook_secret must be 16-128 printable ASCII characters",
+            return Err(bad_request!(
+                "alert.webhook_secret_invalid",
+                "webhook_secret must be 16-128 printable ASCII characters"
             ));
         }
     }
     if req.email_to.len() > 5 {
-        return Err(ApiError::bad_request("at most 5 email recipients"));
+        return Err(bad_request!(
+            "alert.too_many_recipients",
+            "at most 5 email recipients"
+        ));
     }
     for e in &req.email_to {
         if !valid_email(e) {
-            return Err(ApiError::bad_request(format!(
-                "invalid email address {e:?}"
-            )));
+            return Err(bad_request!(
+                "alert.email_invalid",
+                "invalid email address {e:?}",
+                e = e
+            ));
         }
     }
     if req.telegram_enabled && req.telegram_chat_id.is_none() {
-        return Err(ApiError::bad_request("telegram needs a chat id"));
+        return Err(bad_request!(
+            "alert.telegram_chat_missing",
+            "telegram needs a chat id"
+        ));
     }
     if req.webhook_enabled && req.webhook_url.is_none() {
-        return Err(ApiError::bad_request("the webhook needs a URL"));
+        return Err(bad_request!(
+            "alert.webhook_url_missing",
+            "the webhook needs a URL"
+        ));
     }
     if req.email_enabled && req.email_to.is_empty() {
-        return Err(ApiError::bad_request("email needs at least one recipient"));
+        return Err(bad_request!(
+            "alert.email_needs_recipient",
+            "email needs at least one recipient"
+        ));
     }
     Ok(())
 }
@@ -426,13 +454,15 @@ pub async fn apply_update_settings(
     .fetch_one(&mut *conn)
     .await?;
     if before.version != req.version {
-        return Err(ApiError::conflict(
-            "the alert settings were changed meanwhile; reload and try again",
+        return Err(conflict!(
+            "settings.version_conflict",
+            "the alert settings were changed meanwhile; reload and try again"
         ));
     }
     if req.email_enabled && !before.email_enabled && !crate::mailhook::available(conn).await? {
-        return Err(ApiError::bad_request(
-            "email delivery is not available yet (configure SMTP first)",
+        return Err(bad_request!(
+            "alert.email_unavailable",
+            "email delivery is not available yet (configure SMTP first)"
         ));
     }
     let seal = |aad: Uuid, v: &str| keys.seal(aad, v.as_bytes()).map_err(ApiError::from);
@@ -447,10 +477,16 @@ pub async fn apply_update_settings(
         Some(Some(s)) => Some(seal(WEBHOOK_AAD, s)?),
     };
     if req.telegram_enabled && token_enc.is_none() {
-        return Err(ApiError::bad_request("telegram needs a bot token"));
+        return Err(bad_request!(
+            "alert.telegram_token_missing",
+            "telegram needs a bot token"
+        ));
     }
     if req.webhook_enabled && secret_enc.is_none() {
-        return Err(ApiError::bad_request("the webhook needs a signing secret"));
+        return Err(bad_request!(
+            "alert.webhook_secret_missing",
+            "the webhook needs a signing secret"
+        ));
     }
     let after: Settings = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "UPDATE alert_settings SET version = version + 1, enabled = $1, offline_secs = $2, \
@@ -544,8 +580,9 @@ pub async fn test_channel(
 ) -> Result<Json<Value>, ApiError> {
     user.require_admin()?;
     if !["telegram", "webhook", "email"].contains(&req.channel.as_str()) {
-        return Err(ApiError::bad_request(
-            "channel must be telegram, webhook or email",
+        return Err(bad_request!(
+            "alert.channel_invalid",
+            "channel must be telegram, webhook or email"
         ));
     }
     let mut tx = state.pg().begin().await?;
@@ -612,14 +649,19 @@ impl NodeRules {
         }
         .check()?;
         if self.disabled.len() > KINDS.len() {
-            return Err(ApiError::bad_request("too many disabled kinds"));
+            return Err(bad_request!(
+                "alert.too_many_kinds",
+                "too many disabled kinds"
+            ));
         }
         for k in &self.disabled {
             if !KINDS.contains(&k.as_str()) {
-                return Err(ApiError::bad_request(format!(
-                    "unknown alert kind {k:?} (one of: {})",
-                    KINDS.join(", ")
-                )));
+                return Err(bad_request!(
+                    "alert.kind_unknown",
+                    "unknown alert kind {k:?} (one of: {allowed})",
+                    k = k,
+                    allowed = KINDS.join(", ")
+                ));
             }
         }
         Ok(())
@@ -786,12 +828,15 @@ pub async fn list_alerts(
     user.require_admin()?;
     if let Some(s) = q.status.as_deref() {
         if !["firing", "resolved"].contains(&s) {
-            return Err(ApiError::bad_request("status must be firing or resolved"));
+            return Err(bad_request!(
+                "alert.status_invalid",
+                "status must be firing or resolved"
+            ));
         }
     }
     if let Some(k) = q.kind.as_deref() {
         if !KINDS.contains(&k) {
-            return Err(ApiError::bad_request("unknown alert kind"));
+            return Err(bad_request!("alert.kind_unknown", "unknown alert kind"));
         }
     }
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
@@ -908,7 +953,10 @@ pub async fn retry_notification(
     let refusal = match status.as_deref() {
         None => Some(ApiError::not_found()),
         Some("dead") => None,
-        Some(_) => Some(ApiError::conflict("only failed deliveries can be retried")),
+        Some(_) => Some(conflict!(
+            "alert.retry_not_failed",
+            "only failed deliveries can be retried"
+        )),
     };
     if let Some(e) = refusal {
         // Release the row lock now. A dropped sqlx transaction rolls back

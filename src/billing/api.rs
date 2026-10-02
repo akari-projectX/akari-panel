@@ -7,6 +7,7 @@
 //! mismatch) is the canonical `reject::not_found()` and leaves an event
 //! row. Only a verified notify for our order is answered `success`.
 
+use crate::auth::{bad_request, conflict};
 use std::collections::BTreeMap;
 
 use axum::body::Bytes;
@@ -110,8 +111,20 @@ pub fn routes() -> Router<AppState> {
         )
 }
 
+fn gateway_unavailable() -> ApiError {
+    crate::auth::api_error!(
+        BAD_GATEWAY,
+        "order.gateway_unavailable",
+        "payment gateway unavailable, try again"
+    )
+}
+
 fn payments_off() -> ApiError {
-    ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "payments are not enabled")
+    crate::auth::api_error!(
+        SERVICE_UNAVAILABLE,
+        "order.payments_off",
+        "payments are not enabled"
+    )
 }
 
 async fn within_limit(state: &AppState, key: String, limit: i64, window: i64) -> bool {
@@ -490,7 +503,10 @@ pub async fn create_order(
         return Err(payments_off());
     };
     if user.role != "user" {
-        return Err(ApiError::bad_request("admin accounts cannot buy plans"));
+        return Err(bad_request!(
+            "shop.admin_cannot_buy",
+            "admin accounts cannot buy plans"
+        ));
     }
     // Before any order row exists: without a notify URL Alipay could never
     // tell us about the payment (polling would, but an order we cannot be
@@ -524,10 +540,7 @@ pub async fn create_order(
     if let Some(o) = open {
         let st = orders::end_order(&state, &alipay, &o, "cancelled", &actor, false).await?;
         if st == "pending" {
-            return Err(ApiError::new(
-                StatusCode::BAD_GATEWAY,
-                "payment gateway unavailable, try again",
-            ));
+            return Err(gateway_unavailable());
         }
     }
     let kind = req.period.0;
@@ -658,7 +671,10 @@ pub async fn create_order(
     .await;
     let mut after = match r {
         Err(sqlx::Error::Database(d)) if d.is_unique_violation() => {
-            return Err(ApiError::conflict("another order is being created"))
+            return Err(conflict!(
+                "order.in_progress",
+                "another order is being created"
+            ))
         }
         r => r?,
     };
@@ -775,10 +791,7 @@ pub async fn create_order(
                 .await?;
             }
             tx.commit().await?;
-            return Err(ApiError::new(
-                StatusCode::BAD_GATEWAY,
-                "payment gateway unavailable, try again",
-            ));
+            return Err(gateway_unavailable());
         }
     }
     Ok((
@@ -839,14 +852,11 @@ pub async fn cancel_order(
     .await?;
     let Some(o) = open else {
         my_order_view(&state, user.id, id).await?;
-        return Err(ApiError::conflict("order is not pending"));
+        return Err(conflict!("order.not_pending", "order is not pending"));
     };
     let st = orders::end_order(&state, &alipay, &o, "cancelled", &Actor::of(&user), false).await?;
     if st == "pending" {
-        return Err(ApiError::new(
-            StatusCode::BAD_GATEWAY,
-            "payment gateway unavailable, try again",
-        ));
+        return Err(gateway_unavailable());
     }
     Ok(Json(my_order_view(&state, user.id, id).await?))
 }
@@ -876,7 +886,7 @@ pub async fn list_orders(
     user.require_admin()?;
     if let Some(s) = &q.status {
         if !matches!(s.as_str(), "pending" | "paid" | "expired" | "cancelled") {
-            return Err(ApiError::bad_request("unknown status"));
+            return Err(bad_request!("request.status_invalid", "unknown status"));
         }
     }
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
@@ -950,9 +960,11 @@ pub async fn fulfil_order(
     user.require_admin()?;
     let reason = req.reason.trim();
     if reason.is_empty() || reason.chars().count() > MAX_REASON {
-        return Err(ApiError::bad_request(format!(
-            "reason must be 1-{MAX_REASON} characters"
-        )));
+        return Err(bad_request!(
+            "request.reason_length",
+            "reason must be 1-{max_reason} characters",
+            max_reason = MAX_REASON
+        ));
     }
     let mut tx = state.pg().begin().await?;
     let r = orders::apply_admin_fulfil(&mut tx, &Actor::of(&user), id, reason).await?;
@@ -982,9 +994,11 @@ pub async fn refund_order(
     user.require_admin()?;
     let reason = req.reason.trim();
     if reason.is_empty() || reason.chars().count() > MAX_REASON {
-        return Err(ApiError::bad_request(format!(
-            "reason must be 1-{MAX_REASON} characters"
-        )));
+        return Err(bad_request!(
+            "request.reason_length",
+            "reason must be 1-{max_reason} characters",
+            max_reason = MAX_REASON
+        ));
     }
     let mut tx = state.pg().begin().await?;
     let r = orders::apply_refund(&mut tx, &Actor::of(&user), id, reason, req.to_balance).await?;

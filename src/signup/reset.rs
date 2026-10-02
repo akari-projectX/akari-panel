@@ -13,6 +13,7 @@
 //! (an address change in between kills it); a new request replaces the
 //! account's older links.
 
+use crate::auth::bad_request;
 use std::net::SocketAddr;
 
 use axum::body::Body;
@@ -34,7 +35,13 @@ use crate::auth::{self, ApiError};
 use crate::mail::{Locale, Template};
 use crate::state::AppState;
 
+#[cfg(test)]
 pub const INVALID_LINK: &str = "invalid or expired link";
+
+/// The one answer to every failed reset link (no oracle).
+pub fn invalid_link() -> crate::auth::ApiError {
+    crate::auth::bad_request!("signup.invalid_link", "invalid or expired link")
+}
 const TOKEN_LEN: usize = 43;
 
 #[derive(Deserialize)]
@@ -80,8 +87,8 @@ pub async fn request_reset(
         return Ok(crate::reject::not_found());
     }
     let req: RequestReq = read_json(body).await?;
-    let addr =
-        email::parse(&req.email).ok_or_else(|| ApiError::bad_request("invalid email address"))?;
+    let addr = email::parse(&req.email)
+        .ok_or_else(|| bad_request!("signup.invalid_email", "invalid email address"))?;
     let client = state.client_ip(peer.ip(), &headers);
     super::limit_send(&state, &crate::client_ip::bucket(client), &addr).await?;
     let st = state.clone();
@@ -226,7 +233,7 @@ pub async fn reset_password(
     let client = state.client_ip(peer.ip(), &headers);
     super::limit_complete(&state, &crate::client_ip::bucket(client)).await?;
     if !plausible_token(&req.token) {
-        return Err(ApiError::bad_request(INVALID_LINK));
+        return Err(invalid_link());
     }
     let hash = auth::hash_password(&req.password)?;
     let mut tx = state.pg().begin().await?;
@@ -234,7 +241,7 @@ pub async fn reset_password(
         .await?
         .is_none()
     {
-        return Err(ApiError::bad_request(INVALID_LINK));
+        return Err(invalid_link());
     }
     tx.commit().await?;
     Ok(super::ok_json(json!({ "ok": true })))

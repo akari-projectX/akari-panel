@@ -11,6 +11,7 @@
 //! account whose login was its old address (registered accounts) moves its
 //! login along. Both use the renewal scope (`ShopUser`, like `/me/password`).
 
+use crate::auth::{bad_request, conflict};
 use axum::extract::State;
 use axum::Json;
 use serde::Deserialize;
@@ -52,12 +53,12 @@ pub async fn request_email_change(
     ShopUser { user, .. }: ShopUser,
     ApiJson(req): ApiJson<EmailCodeReq>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let addr =
-        email::parse(&req.email).ok_or_else(|| ApiError::bad_request("invalid email address"))?;
+    let addr = email::parse(&req.email)
+        .ok_or_else(|| bad_request!("signup.invalid_email", "invalid email address"))?;
     {
         let mut c = state.pg().acquire().await?;
         if !crate::mail::load(&mut c).await?.enabled {
-            return Err(ApiError::conflict("mail sending is not enabled"));
+            return Err(conflict!("account.mail_off", "mail sending is not enabled"));
         }
     }
     let bucket = user
@@ -89,7 +90,7 @@ pub async fn request_email_change(
     };
     if !auth::verify_password(&req.password, hash.as_deref().unwrap_or_default()) {
         attempt.fail();
-        return Err(ApiError::bad_request("invalid password"));
+        return Err(bad_request!("account.invalid_password", "invalid password"));
     }
     attempt.release(&state).await;
     super::limit_send(&state, &bucket, &addr).await?;
@@ -189,7 +190,7 @@ pub async fn apply_verify(
         Ok(_) => sp.commit().await?,
         Err(sqlx::Error::Database(d)) if d.is_unique_violation() => {
             sp.rollback().await?;
-            return Err(ApiError::bad_request(super::register::INVALID_CODE));
+            return Err(super::register::invalid_code());
         }
         Err(e) => return Err(e.into()),
     }
@@ -233,7 +234,7 @@ pub async fn verify_email_change(
     tx.commit().await?;
     match done {
         Some(addr) => Ok(Json(json!({ "email": addr, "email_verified": true }))),
-        None => Err(ApiError::bad_request(super::register::INVALID_CODE)),
+        None => Err(super::register::invalid_code()),
     }
 }
 
@@ -245,7 +246,10 @@ pub async fn set_locale(
     ApiJson(req): ApiJson<LocaleReq>,
 ) -> Result<axum::http::StatusCode, ApiError> {
     if req.locale != "zh" && req.locale != "en" {
-        return Err(ApiError::bad_request("locale must be zh or en"));
+        return Err(bad_request!(
+            "account.locale_invalid",
+            "locale must be zh or en"
+        ));
     }
     sqlx::query("UPDATE users SET locale = $2 WHERE id = $1 AND locale <> $2")
         .bind(user.id)

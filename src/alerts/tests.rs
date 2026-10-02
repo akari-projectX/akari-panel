@@ -1198,3 +1198,137 @@ fn heartbeat_facts_parse() -> bool {
     let (d2, c2) = eval::heartbeat_facts(r#"{"metrics":{"disk_used_bytes":1},"cert":"x"}"#);
     d.is_none() && c.is_none() && d2.is_none() && c2.is_none()
 }
+
+/// W21: every refusal of the settings form carries its stable code.
+#[test]
+fn settings_refusals_carry_codes() {
+    let base = || put(1);
+    let cases: Vec<(PutSettings, &str)> = vec![
+        (
+            PutSettings {
+                telegram_chat_id: Some("nope!".into()),
+                ..base()
+            },
+            "alert.telegram_chat_invalid",
+        ),
+        (
+            PutSettings {
+                telegram_token: Some(Some("x".into())),
+                ..base()
+            },
+            "alert.telegram_token_invalid",
+        ),
+        (
+            PutSettings {
+                webhook_url: Some("ftp://x".into()),
+                ..base()
+            },
+            "alert.webhook_url_invalid",
+        ),
+        (
+            PutSettings {
+                webhook_secret: Some(Some("short".into())),
+                ..base()
+            },
+            "alert.webhook_secret_invalid",
+        ),
+        (
+            PutSettings {
+                email_to: (0..6).map(|i| format!("a{i}@example.com")).collect(),
+                ..base()
+            },
+            "alert.too_many_recipients",
+        ),
+        (
+            PutSettings {
+                email_to: vec!["not an address".into()],
+                ..base()
+            },
+            "alert.email_invalid",
+        ),
+        (
+            PutSettings {
+                telegram_enabled: true,
+                ..base()
+            },
+            "alert.telegram_chat_missing",
+        ),
+        (
+            PutSettings {
+                webhook_enabled: true,
+                ..base()
+            },
+            "alert.webhook_url_missing",
+        ),
+        (
+            PutSettings {
+                email_enabled: true,
+                ..base()
+            },
+            "alert.email_needs_recipient",
+        ),
+        (
+            PutSettings {
+                cooldown_minutes: 99999,
+                ..base()
+            },
+            "alert.field_range",
+        ),
+    ];
+    for (req, code) in cases {
+        let e = check_put(&req).expect_err(code);
+        assert_eq!(e.code(), code, "{}", e.message());
+        assert_eq!(e.status(), StatusCode::BAD_REQUEST);
+    }
+    assert!(check_put(&base()).is_ok());
+    let too_many = NodeRules {
+        disabled: (0..=KINDS.len()).map(|i| format!("k{i}")).collect(),
+        ..NodeRules::default()
+    };
+    assert_eq!(too_many.check().unwrap_err().code(), "alert.too_many_kinds");
+    let unknown = NodeRules {
+        disabled: vec!["nope".into()],
+        ..NodeRules::default()
+    };
+    let e = unknown.check().unwrap_err();
+    assert_eq!(e.code(), "alert.kind_unknown");
+    assert_eq!(e.params()["k"], json!("nope"));
+}
+
+#[tokio::test]
+async fn settings_missing_secrets_and_list_filter_codes() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let v = version(&state).await;
+    let e = save(
+        &state,
+        PutSettings {
+            telegram_enabled: true,
+            telegram_chat_id: Some("-100123".into()),
+            ..put(v)
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e.code(), "alert.telegram_token_missing");
+    let e = save(
+        &state,
+        PutSettings {
+            webhook_enabled: true,
+            webhook_url: Some("https://hooks.example.com/x".into()),
+            ..put(v)
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e.code(), "alert.webhook_secret_missing");
+    let admin = db.admin().await;
+    let c = crate::testdb::http::client_for(&state, admin).await;
+    let r = c.get("/test/api/v1/alerts?status=bogus").await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert_eq!(r.json()["code"], "alert.status_invalid");
+    drop(c);
+    db.drop().await;
+}

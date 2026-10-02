@@ -1,6 +1,7 @@
 // W16 后台（仅中文）：资金。邀请返利设置、提现审核（人工打款后填写打款凭证
 // 通过，或填写原因拒绝——金额退回余额）、返利记录、用户余额与余额明细、
 // 人工调整余额（必须填写原因，写审计）。所有金额为整数分，界面换算为元。
+import { useAdminConfirm as useConfirm } from "../admin-confirm";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
@@ -19,7 +20,8 @@ import {
   type WithdrawalStatus,
   type WithdrawMethod,
 } from "../lib/billing";
-import { adminErrorText } from "../lib/errors";
+import { adminErrorText } from "../lib/admin-errors";
+import { fmtDateTime } from "../lib/datetime";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
@@ -27,7 +29,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
-const fmt = (s: string | null) => (s ? new Date(s).toLocaleString("zh-CN") : "—");
+const fmt = (s: string | null) => fmtDateTime(s);
 const errText = (err: unknown) => (err instanceof Error ? adminErrorText(err) : "失败");
 
 export const LEDGER_ZH: Record<LedgerKind, string> = {
@@ -181,6 +183,7 @@ function SettingsCard() {
 
 function WithdrawalsCard() {
   const queryClient = useQueryClient();
+  const confirm = useConfirm();
   const [status, setStatus] = useState<"" | WithdrawalStatus>("pending");
   const list = useQuery({
     queryKey: ["withdrawals", status],
@@ -197,7 +200,7 @@ function WithdrawalsCard() {
     const what = approve
       ? `确认已向 ${w.user_login} 打款 ¥${yuan(w.amount_cents)}？`
       : `拒绝并退回 ¥${yuan(w.amount_cents)} 到余额？`;
-    if (!window.confirm(what)) return;
+    if (!(await confirm({ title: what, confirmLabel: approve ? "确认已打款" : "拒绝", destructive: !approve }))) return;
     try {
       if (approve) await post(`/withdrawals/${w.id}/approve`, { payout_reference: text });
       else await post(`/withdrawals/${w.id}/reject`, { reason: text });
@@ -244,7 +247,7 @@ function WithdrawalsCard() {
           </p>
         )}
         <div className="overflow-x-auto">
-          <Table>
+          <Table label="提现申请">
             <TableHeader>
               <TableRow>
                 <TableHead>申请时间</TableHead>
@@ -341,13 +344,15 @@ function BalancesCard() {
           </Button>
         </form>
         <div className="overflow-x-auto">
-          <Table>
+          <Table label="用户余额">
             <TableHeader>
               <TableRow>
                 <TableHead>用户</TableHead>
                 <TableHead>余额</TableHead>
                 <TableHead>最近变动</TableHead>
-                <TableHead />
+                <TableHead>
+                  <span className="sr-only">操作</span>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -381,6 +386,7 @@ function BalancesCard() {
 
 function LedgerPanel({ id, onClose }: { id: string; onClose: () => void }) {
   const queryClient = useQueryClient();
+  const confirm = useConfirm();
   const data = useQuery({ queryKey: ["user-balance", id], queryFn: () => get<UserBalance>(`/users/${id}/balance`) });
   const [sign, setSign] = useState<"+" | "-">("+");
   const [amount, setAmount] = useState("");
@@ -397,7 +403,13 @@ function LedgerPanel({ id, onClose }: { id: string; onClose: () => void }) {
     if (cents == null) return setError("金额无效（元，最多两位小数）");
     if (!reason.trim()) return setError("请填写原因（写入审计）");
     const signed = sign === "+" ? cents : -cents;
-    if (!window.confirm(`${b?.login} 余额 ${signedYuan(signed)} 元，原因：${reason.trim()}。确定吗？`)) return;
+    if (
+      !(await confirm({
+        title: `${b?.login} 余额 ${signedYuan(signed)} 元，原因：${reason.trim()}。确定吗？`,
+        confirmLabel: "确认调整",
+      }))
+    )
+      return;
     setError(null);
     try {
       await post(`/users/${id}/balance`, { amount_cents: signed, reason: reason.trim() });
@@ -454,7 +466,7 @@ function LedgerPanel({ id, onClose }: { id: string; onClose: () => void }) {
         </p>
       )}
       <div className="overflow-x-auto">
-        <Table>
+        <Table label="余额明细">
           <TableHeader>
             <TableRow>
               <TableHead>时间</TableHead>
@@ -520,7 +532,7 @@ function CommissionsCard() {
           </select>
         </div>
         <div className="overflow-x-auto">
-          <Table>
+          <Table label="返利记录">
             <TableHeader>
               <TableRow>
                 <TableHead>时间</TableHead>

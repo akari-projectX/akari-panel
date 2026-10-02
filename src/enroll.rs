@@ -23,6 +23,7 @@
 //! - Every issuance, token burn and promotion is audited in its own
 //!   transaction (actor `agent`, the source address).
 
+use crate::auth::{bad_request, conflict};
 use std::net::IpAddr;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -103,7 +104,7 @@ pub async fn apply_issue_token(
             .await?;
     match deleting {
         None => return Err(ApiError::not_found()),
-        Some(true) => return Err(ApiError::conflict("node is being deleted")),
+        Some(true) => return Err(conflict!("node.deleting", "node is being deleted")),
         Some(false) => {}
     }
     let token = generate_token();
@@ -158,8 +159,9 @@ pub async fn apply_create_node(
 ) -> Result<(Uuid, String, DateTime<Utc>), ApiError> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
-        return Err(ApiError::bad_request(
-            "name must be 1-64 characters without control characters",
+        return Err(bad_request!(
+            "node.name_invalid",
+            "name must be 1-64 characters without control characters"
         ));
     }
     let id = Uuid::new_v4();
@@ -173,7 +175,10 @@ pub async fn apply_create_node(
     .await?
     .rows_affected();
     if inserted == 0 {
-        return Err(ApiError::conflict("a node with this name exists"));
+        return Err(conflict!(
+            "node.name_exists",
+            "a node with this name exists"
+        ));
     }
     crate::audit::record(
         conn,

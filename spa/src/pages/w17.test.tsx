@@ -9,6 +9,7 @@ import { fakeApi, renderAdmin, renderWithClient } from "../test/harness";
 import { nodeRoutes } from "../test/nodes";
 import {
   AdminAlerts,
+  AlertSettingsCard,
   NodeAlertRulesCard,
   numOrNull,
   randomSecret,
@@ -144,7 +145,10 @@ describe("portal tickets", () => {
     fakeApi({
       "GET /me/tickets": [row()],
       "GET /me/tickets/t1": thread(),
-      "POST /me/tickets/t1/replies": () => ({ status: 409, body: { error: "ticket is closed" } }),
+      "POST /me/tickets/t1/replies": () => ({
+        status: 409,
+        body: { error: "ticket is closed", code: "ticket.closed" },
+      }),
     });
     renderWithClient(<Tickets />);
     fireEvent.click(await screen.findByRole("button", { name: "View" }));
@@ -321,8 +325,15 @@ describe("console alert center", () => {
       ],
       "POST /alerts/notifications/1/retry": () => ({ status: 204 }),
     });
-    renderAdmin(<AdminAlerts />);
+    renderAdmin(
+      <>
+        <AdminAlerts />
+        <AlertSettingsCard />
+      </>,
+    );
     expect(await screen.findByRole("heading", { name: "告警中心" })).toBeTruthy();
+    // W21: the settings live in 系统设置 → 告警; the center links there.
+    expect(screen.getByRole("link", { name: "系统设置 → 告警" }).getAttribute("href")).toBe("/admin/settings/alerts");
     expect(await screen.findByText("1 条告警正在触发。")).toBeTruthy();
     expect(screen.getByText("离线 6 分钟")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "确认" }));

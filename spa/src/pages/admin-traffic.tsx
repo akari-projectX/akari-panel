@@ -9,7 +9,7 @@ import { ErrorText, TableNote } from "../components/status";
 import { Button } from "../components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { get } from "../lib/api";
-import { adminErrorText } from "../lib/errors";
+import { adminErrorText } from "../lib/admin-errors";
 import { fillDays, lastDays, type NodeTrafficView, type TrafficDay, type UserTrafficView } from "../lib/traffic";
 import { humanBytes } from "../lib/utils";
 

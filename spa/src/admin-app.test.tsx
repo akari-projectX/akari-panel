@@ -50,15 +50,49 @@ const totp = (over: Partial<TotpStatus>): TotpStatus => ({
   ...over,
 });
 const unauthorized = () => ({ status: 401, body: { error: "unauthorized" } });
-const consoleRoutes = { "GET /users": [], "GET /plans": [], "GET /node-groups": [], "GET /nodes": [] };
+const dashboard = {
+  at: "2026-10-02T06:00:00Z",
+  today_start: "2026-10-01T16:00:00Z",
+  today: { revenue_cents: 1990, orders: 2, refunds_cents: 0, signups: 3 },
+  d7: { revenue_cents: 9900, orders: 10, refunds_cents: 100, signups: 12 },
+  d30: { revenue_cents: 39900, orders: 40, refunds_cents: 100, signups: 50 },
+  users_total: 120,
+  subscribers: 80,
+  online_users: 33,
+  nodes: { total: 4, online: 3, offline: 1, disabled: 0, pending: 0, alerting: 1 },
+  pending: { tickets_open: 2, withdrawals: 0, mail_failed: 1, orders_unfulfilled: 0, alerts_firing: 1 },
+  traffic_days: [{ day: "2026-10-01", up_bytes: 1024, down_bytes: 4096, billed_bytes: 5120, users: 3 }],
+  traffic_top_nodes: [{ node_id: "n1", name: "香港 01", up_bytes: 1024, down_bytes: 4096, billed_bytes: 5120 }],
+  latest_orders: [
+    {
+      id: "o1",
+      out_trade_no: "AK1",
+      user_login: "alice",
+      plan_name: "basic",
+      amount_cents: 990,
+      status: "paid",
+      created_at: "2026-10-02T05:00:00Z",
+      paid_at: "2026-10-02T05:01:00Z",
+    },
+  ],
+};
+const consoleRoutes = {
+  "GET /users": { users: [], total: 0 },
+  "GET /plans": [],
+  "GET /node-groups": [],
+  "GET /nodes": [],
+  "GET /dashboard": dashboard,
+  "GET /auth/options": { register: false, invite_required: false, email_domains: [], reset: false, site_name: "星云" },
+};
 
 describe("viewOf / loginTarget", () => {
   it("maps console paths to views", () => {
-    expect(viewOf("/admin")).toBe("users");
+    expect(viewOf("/admin")).toBe("dashboard");
     expect(viewOf("/admin/audit")).toBe("audit");
     expect(viewOf("/admin/plans/extra")).toBe("plans");
-    expect(viewOf("/admin/nope")).toBe("users");
-    expect(viewOf("/app/audit")).toBe("users");
+    expect(viewOf("/admin/nope")).toBe("dashboard");
+    expect(viewOf("/app/audit")).toBe("dashboard");
+    expect(viewOf("/admin/users")).toBe("users");
     for (const v of ["nodes", "orders", "updates", "settings", "account"]) expect(viewOf(`/admin/${v}`)).toBe(v);
   });
   it("sends an ended session to the login page, keeping the view", () => {
@@ -100,8 +134,24 @@ describe("AdminApp", () => {
     expect(screen.queryByText(/建议开启两步验证/)).toBeNull();
     view.unmount();
     renderWithClient(<AdminApp />);
-    expect(await screen.findByRole("heading", { name: "用户" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "仪表盘" })).toBeTruthy();
     expect(screen.queryByText(/建议开启两步验证/)).toBeNull();
+  });
+
+  it("lands on the dashboard: figures, pending work, latest orders and the title", async () => {
+    fakeApi({ "GET /me": me("admin"), "GET /me/totp": totp({ enabled: true }), ...consoleRoutes });
+    renderWithClient(<AdminApp />);
+    expect(await screen.findByRole("heading", { name: "仪表盘" })).toBeTruthy();
+    expect(await screen.findByText("¥19.90")).toBeTruthy();
+    expect(screen.getByText("3 / 4")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "香港 01" }).getAttribute("href")).toBe("/admin/nodes/n1");
+    expect(screen.getByRole("link", { name: /待回复工单\s*2/ }).getAttribute("href")).toBe("/admin/tickets");
+    expect(screen.getByRole("link", { name: /发送失败的邮件\s*1/ }).getAttribute("href")).toBe(
+      "/admin/settings/failed-mail",
+    );
+    expect(screen.getByText("2026-10-02 13:00")).toBeTruthy(); // Beijing time
+    await waitFor(() => expect(document.title).toBe("仪表盘 · 星云 管理后台"));
+    expect(screen.getByText("星云 管理后台")).toBeTruthy();
   });
 
   it("shows the enrollment page for an enrollment session (require_admin_2fa)", async () => {

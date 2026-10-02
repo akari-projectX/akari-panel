@@ -454,7 +454,9 @@ fn today() -> NaiveDate {
 }
 
 fn parse(raw: Option<String>, params: Params) -> Result<Range, ApiError> {
-    parse_query(raw.as_deref(), today(), params).map_err(ApiError::bad_request)
+    parse_query(raw.as_deref(), today(), params).map_err(|e| {
+        crate::auth::bad_request!("request.traffic_query_invalid", "{detail}", detail = e)
+    })
 }
 
 /// First day still kept per day (older days are monthly only); None =

@@ -317,7 +317,8 @@ async fn disabled_endpoints_are_the_canonical_rejection() {
     assert_eq!(o.status, StatusCode::OK);
     assert_eq!(
         o.json(),
-        json!({ "register": false, "invite_required": false, "email_domains": [], "reset": false })
+        json!({ "register": false, "invite_required": false, "email_domains": [], "reset": false,
+                "site_name": "Akari" })
     );
 
     // Enabled for one feature only: the other stays rejected.

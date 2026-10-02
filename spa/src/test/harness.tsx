@@ -26,8 +26,23 @@ export function fakeApi(routes: Routes): Call[] {
       const parsed = new URL(url, "http://localhost");
       const path = parsed.pathname.replace(/^.*\/api\/v1/, "");
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
-      calls.push({ method, path, search: parsed.search, body });
       const route = routes[`${method} ${path}`];
+      // W21: useSiteName() reads the public /auth/options on every page;
+      // unless a test routes it, answer the defaults and keep it out of
+      // the recorded calls.
+      if (route === undefined && method === "GET" && path === "/auth/options") {
+        return new Response(
+          JSON.stringify({
+            register: false,
+            invite_required: false,
+            email_domains: [],
+            reset: false,
+            site_name: "Akari",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      calls.push({ method, path, search: parsed.search, body });
       if (route === undefined) {
         return new Response(JSON.stringify({ error: `no route ${method} ${path}` }), { status: 404 });
       }
@@ -50,4 +65,12 @@ export function renderWithClient(ui: ReactElement) {
 /** Render an admin-console component the way the app does (Chinese pinned). */
 export function renderAdmin(ui: ReactElement) {
   return renderWithClient(<FixedLocale locale="zh">{ui}</FixedLocale>);
+}
+
+/** Open the "⋯" row menu labelled "<name> 的更多操作" and pick an item (W21). */
+export async function pickMenu(name: string, item: string, index = 0) {
+  const { fireEvent, screen } = await import("@testing-library/react");
+  const buttons = await screen.findAllByRole("button", { name: `${name} 的更多操作` });
+  fireEvent.click(buttons[index]);
+  fireEvent.click(await screen.findByRole("menuitem", { name: item }));
 }

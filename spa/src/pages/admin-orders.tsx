@@ -1,12 +1,22 @@
 // R18-3 后台（仅中文）：支付状态、订单列表/筛选、订单详情与支付事件、
 // 人工确认收款 / 重试开通（必须填写原因，写审计）。W7：定价移到「套餐」页
 // （按周期定价）；订单显示购买周期与换套餐抵扣。
+import { useAdminConfirm as useConfirm } from "../admin-confirm";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { get, post } from "../lib/api";
-import { periodZh, yuan, type AdminOrder, type OrderDetail, type OrderStatus, type Prices } from "../lib/billing";
-import { adminErrorText } from "../lib/errors";
+import {
+  periodZh,
+  sortPrices,
+  yuan,
+  type AdminOrder,
+  type OrderDetail,
+  type OrderStatus,
+  type Prices,
+} from "../lib/billing";
+import { adminErrorText, adminMessageText } from "../lib/admin-errors";
+import { fmtDateTime } from "../lib/datetime";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
@@ -15,7 +25,7 @@ import { Label } from "../components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
 const errText = (err: unknown) => (err instanceof Error ? adminErrorText(err) : "失败");
-const fmt = (s: string | null) => (s ? new Date(s).toLocaleString("zh-CN") : "—");
+const fmt = (s: string | null) => fmtDateTime(s);
 
 export const STATUS_ZH: Record<OrderStatus, string> = {
   pending: "待付款",
@@ -75,7 +85,9 @@ function PaymentsCard() {
         {onSale.map((p) => (
           <p key={p.plan_id}>
             <span className="font-medium">{p.plan_name}</span>：
-            {p.prices.map((x) => `${periodZh(x.period, x.days)} ¥${yuan(x.price_cents)}`).join("，")}
+            {sortPrices(p.prices)
+              .map((x) => `${periodZh(x.period, x.days)} ¥${yuan(x.price_cents)}`)
+              .join("，")}
           </p>
         ))}
       </CardContent>
@@ -165,7 +177,7 @@ function OrdersCard({ onSelect }: { onSelect: (id: string) => void }) {
           </p>
         )}
         <div className="overflow-x-auto">
-          <Table>
+          <Table label="订单列表">
             <TableHeader>
               <TableRow>
                 <TableHead>下单时间</TableHead>
@@ -175,7 +187,9 @@ function OrdersCard({ onSelect }: { onSelect: (id: string) => void }) {
                 <TableHead>金额</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>付款方式</TableHead>
-                <TableHead />
+                <TableHead>
+                  <span className="sr-only">操作</span>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -255,6 +269,7 @@ function OrdersCard({ onSelect }: { onSelect: (id: string) => void }) {
 
 function OrderDetailCard({ id, onClose }: { id: string; onClose: () => void }) {
   const queryClient = useQueryClient();
+  const confirm = useConfirm();
   const detail = useQuery({ queryKey: ["order-detail", id], queryFn: () => get<OrderDetail>(`/orders/${id}`) });
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -265,7 +280,12 @@ function OrderDetailCard({ id, onClose }: { id: string; onClose: () => void }) {
     if (!o) return;
     const what = o.status === "paid" ? "重试开通套餐" : "人工确认收款并开通套餐";
     if (!reason.trim()) return setError("请填写原因（写入审计）");
-    if (!window.confirm(`${what}：订单 ${o.out_trade_no}，用户 ${o.user_login}，¥${yuan(o.amount_cents)}。确定吗？`))
+    if (
+      !(await confirm({
+        title: `${what}：订单 ${o.out_trade_no}，用户 ${o.user_login}，¥${yuan(o.amount_cents)}。确定吗？`,
+        confirmLabel: what,
+      }))
+    )
       return;
     setError(null);
     setBusy(true);
@@ -343,7 +363,7 @@ function OrderDetailCard({ id, onClose }: { id: string; onClose: () => void }) {
         </dl>
         {o.fulfil_error && (
           <p role="alert" className="text-sm text-destructive">
-            开通错误：{o.fulfil_error}
+            开通错误：{adminMessageText(o.fulfil_error)}
           </p>
         )}
         {o.fulfil_result && (
@@ -367,7 +387,7 @@ function OrderDetailCard({ id, onClose }: { id: string; onClose: () => void }) {
         )}
         {o.status === "paid" && !o.refunded_at && <RefundForm order={o} />}
         <div className="overflow-x-auto">
-          <Table>
+          <Table label="支付事件">
             <TableHeader>
               <TableRow>
                 <TableHead>时间</TableHead>
@@ -406,6 +426,7 @@ function OrderDetailCard({ id, onClose }: { id: string; onClose: () => void }) {
 // the plan is not touched.
 function RefundForm({ order: o }: { order: AdminOrder }) {
   const queryClient = useQueryClient();
+  const confirm = useConfirm();
   const [reason, setReason] = useState("");
   const [toBalance, setToBalance] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -414,7 +435,13 @@ function RefundForm({ order: o }: { order: AdminOrder }) {
     if (!reason.trim()) return setError("请填写退款原因（写入审计）");
     const back = (o.balance_state === "held" ? o.balance_cents : 0) + (toBalance ? o.amount_cents : 0);
     const how = toBalance ? "支付宝实付部分也退到用户余额" : "支付宝实付部分请在支付宝商家后台退款";
-    if (!window.confirm(`退款：订单 ${o.out_trade_no}，退回余额 ¥${yuan(back)}；${how}。套餐不会自动取消。确定吗？`))
+    if (
+      !(await confirm({
+        title: `退款：订单 ${o.out_trade_no}，退回余额 ¥${yuan(back)}；${how}。套餐不会自动取消。确定吗？`,
+        confirmLabel: "退款",
+        destructive: true,
+      }))
+    )
       return;
     setError(null);
     try {

@@ -10,6 +10,7 @@ const badgeVariants = cva(
       variant: {
         default: "border-transparent bg-primary text-primary-foreground",
         secondary: "border-transparent bg-muted text-muted-foreground",
+        // emerald-700: white text at 5.5:1 (W21 a11y; 600 was 3.65:1).
         success: "border-transparent bg-emerald-700 text-white",
         destructive: "border-transparent bg-destructive text-destructive-foreground",
         outline: "text-foreground",

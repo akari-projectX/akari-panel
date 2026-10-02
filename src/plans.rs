@@ -30,6 +30,7 @@
 //!   allow_switch_in) and the prices (`plan_period_prices`) are sale rules
 //!   used by `billing/`; admin assignment ignores them.
 
+use crate::auth::{bad_request, conflict};
 use axum::extract::{Path, State};
 use axum::Json;
 use chrono::{DateTime, Utc};
@@ -56,18 +57,23 @@ const PASS_BATCH: i64 = 500;
 fn clean_name(field: &str, name: &str) -> Result<String, ApiError> {
     let n = name.trim();
     if n.is_empty() || n.chars().count() > MAX_NAME {
-        return Err(ApiError::bad_request(format!(
-            "{field} must be 1-{MAX_NAME} characters"
-        )));
+        return Err(bad_request!(
+            "plan.name_length",
+            "{field} must be 1-{max_name} characters",
+            field = field,
+            max_name = MAX_NAME
+        ));
     }
     Ok(n.to_string())
 }
 
 fn clean_description(d: &str) -> Result<String, ApiError> {
     if d.chars().count() > MAX_DESCRIPTION {
-        return Err(ApiError::bad_request(format!(
-            "description must be at most {MAX_DESCRIPTION} characters"
-        )));
+        return Err(bad_request!(
+            "group.description_long",
+            "description must be at most {max_description} characters",
+            max_description = MAX_DESCRIPTION
+        ));
     }
     Ok(d.trim().to_string())
 }
@@ -78,13 +84,16 @@ fn clean_description(d: &str) -> Result<String, ApiError> {
 fn clean_plan_description(d: &str) -> Result<String, ApiError> {
     let d = d.replace("\r\n", "\n");
     if d.chars().count() > MAX_PLAN_DESCRIPTION {
-        return Err(ApiError::bad_request(format!(
-            "description must be at most {MAX_PLAN_DESCRIPTION} characters"
-        )));
+        return Err(bad_request!(
+            "plan.description_long",
+            "description must be at most {max_plan_description} characters",
+            max_plan_description = MAX_PLAN_DESCRIPTION
+        ));
     }
     if d.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
-        return Err(ApiError::bad_request(
-            "description must not contain control characters",
+        return Err(bad_request!(
+            "plan.description_control",
+            "description must not contain control characters"
         ));
     }
     Ok(d.trim().to_string())
@@ -116,7 +125,11 @@ async fn require_all_exist(
     .fetch_one(conn)
     .await?;
     if found != ids.len() as i64 {
-        return Err(ApiError::bad_request(format!("unknown {what} id")));
+        return Err(bad_request!(
+            "plan.unknown_ref",
+            "unknown {what} id",
+            what = what
+        ));
     }
     Ok(())
 }
@@ -177,9 +190,11 @@ impl Period {
 
 fn parse_period(s: &str) -> Result<Period, ApiError> {
     Period::parse(s).ok_or_else(|| {
-        ApiError::bad_request(format!(
-            "period must be \"monthly\", \"none\" or \"days-N\" (N = 1..{MAX_PERIOD_DAYS})"
-        ))
+        bad_request!(
+            "plan.period_invalid",
+            "period must be \"monthly\", \"none\" or \"days-N\" (N = 1..{max_period_days})",
+            max_period_days = MAX_PERIOD_DAYS
+        )
     })
 }
 
@@ -286,7 +301,7 @@ pub async fn apply_create_group(
         .await;
     match r {
         Err(e) if is_unique_violation(&e) => {
-            return Err(ApiError::conflict("group name already exists"))
+            return Err(conflict!("group.name_exists", "group name already exists"))
         }
         r => r?,
     };
@@ -325,7 +340,7 @@ pub async fn apply_update_group(
     };
     let nodes = non_null("node_ids", &req.node_ids)?.map(|n| id_set(&n));
     if name.is_none() && description.is_none() && nodes.is_none() {
-        return Err(ApiError::bad_request("no fields to update"));
+        return Err(bad_request!("request.no_fields", "no fields to update"));
     }
     entitle::lock(conn).await?;
     let before: Option<(String, String)> =
@@ -376,7 +391,7 @@ pub async fn apply_update_group(
     .await;
     match r {
         Err(e) if is_unique_violation(&e) => {
-            return Err(ApiError::conflict("group name already exists"))
+            return Err(conflict!("group.name_exists", "group name already exists"))
         }
         r => r?,
     };
@@ -621,6 +636,9 @@ pub struct CreatePlanReq {
     pub capacity: Option<i32>,
     pub renewal_only: Option<bool>,
     pub allow_switch_in: Option<bool>,
+    /// W21 (M11): the plan's prices and on-sale flag, set in the same
+    /// transaction (one dialog, one save). Absent = no prices.
+    pub pricing: Option<crate::billing::catalog::SetPricesReq>,
 }
 
 #[derive(Deserialize, Default)]
@@ -653,6 +671,28 @@ pub struct UpdatePlanReq {
     pub renewal_only: Option<Option<bool>>,
     #[serde(default, deserialize_with = "double_option")]
     pub allow_switch_in: Option<Option<bool>>,
+    /// W21 (M11): replace the prices and on-sale flag in the same
+    /// transaction as the field changes (absent = unchanged).
+    #[serde(default)]
+    pub pricing: Option<crate::billing::catalog::SetPricesReq>,
+}
+
+impl UpdatePlanReq {
+    /// Whether any plan field (not the pricing) is present.
+    fn has_plan_fields(&self) -> bool {
+        self.name.is_some()
+            || self.traffic_quota_bytes.is_some()
+            || self.period.is_some()
+            || self.speed_limit_mbps.is_some()
+            || self.device_seats.is_some()
+            || self.sort.is_some()
+            || self.enabled.is_some()
+            || self.group_ids.is_some()
+            || self.description.is_some()
+            || self.capacity.is_some()
+            || self.renewal_only.is_some()
+            || self.allow_switch_in.is_some()
+    }
 }
 
 /// The highest accepted speed limit (100 Gbit/s).
@@ -664,22 +704,33 @@ fn check_plan_numbers(
     seats: Option<i32>,
 ) -> Result<(), ApiError> {
     if quota.is_some_and(|q| q < 0) {
-        return Err(ApiError::bad_request("traffic_quota_bytes must be >= 0"));
+        return Err(bad_request!(
+            "plan.quota_negative",
+            "traffic_quota_bytes must be >= 0"
+        ));
     }
     if speed.is_some_and(|s| !(1..=MAX_SPEED_MBPS).contains(&s)) {
-        return Err(ApiError::bad_request(format!(
-            "speed_limit_mbps must be 1..={MAX_SPEED_MBPS}"
-        )));
+        return Err(bad_request!(
+            "plan.speed_limit_range",
+            "speed_limit_mbps must be 1..={max_speed_mbps}",
+            max_speed_mbps = MAX_SPEED_MBPS
+        ));
     }
     if seats.is_some_and(|s| s < 0) {
-        return Err(ApiError::bad_request("device_seats must be >= 0"));
+        return Err(bad_request!(
+            "plan.seats_negative",
+            "device_seats must be >= 0"
+        ));
     }
     Ok(())
 }
 
 fn check_capacity(c: Option<i32>) -> Result<(), ApiError> {
     if c.is_some_and(|c| c < 0) {
-        return Err(ApiError::bad_request("capacity must be >= 0"));
+        return Err(bad_request!(
+            "plan.capacity_negative",
+            "capacity must be >= 0"
+        ));
     }
     Ok(())
 }
@@ -728,7 +779,7 @@ pub async fn apply_create_plan(
     .await;
     let mut after = match r {
         Err(e) if is_unique_violation(&e) => {
-            return Err(ApiError::conflict("plan name already exists"))
+            return Err(conflict!("plan.name_exists", "plan name already exists"))
         }
         r => r?,
     };
@@ -804,7 +855,7 @@ pub async fn apply_update_plan(
         && renewal_only.is_none()
         && allow_switch_in.is_none()
     {
-        return Err(ApiError::bad_request("no fields to update"));
+        return Err(bad_request!("request.no_fields", "no fields to update"));
     }
     entitle::lock(conn).await?;
     let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM plans WHERE id = $1 FOR UPDATE")
@@ -874,7 +925,7 @@ pub async fn apply_update_plan(
         .await
     {
         Err(e) if is_unique_violation(&e) => {
-            return Err(ApiError::conflict("plan name already exists"))
+            return Err(conflict!("plan.name_exists", "plan name already exists"))
         }
         r => r?,
     };
@@ -974,10 +1025,12 @@ pub async fn apply_delete_plan(
     .fetch_one(&mut *conn)
     .await?;
     if active > 0 {
-        return Err(ApiError::conflict(format!(
+        return Err(conflict!(
+            "plan.in_use",
             "{active} user(s) hold this plan; change or cancel their plans first \
-             (or disable the plan to stop offering it)"
-        )));
+             (or disable the plan to stop offering it)",
+            active = active
+        ));
     }
     sqlx::query("DELETE FROM plans WHERE id = $1")
         .bind(id)
@@ -1002,8 +1055,15 @@ pub async fn create_plan(
     ApiJson(req): ApiJson<CreatePlanReq>,
 ) -> Result<(axum::http::StatusCode, Json<PlanView>), ApiError> {
     user.require_admin()?;
+    if let Some(p) = &req.pricing {
+        crate::billing::catalog::check_prices(&p.prices, p.on_sale)?;
+    }
+    let actor = Actor::of(&user);
     let mut tx = state.pg().begin().await?;
-    let id = apply_create_plan(&mut tx, &Actor::of(&user), &req).await?;
+    let id = apply_create_plan(&mut tx, &actor, &req).await?;
+    if let Some(p) = &req.pricing {
+        crate::billing::catalog::apply_set_prices(&mut tx, &actor, id, p).await?;
+    }
     let view = plan_view(&mut tx, id).await?;
     tx.commit().await?;
     Ok((axum::http::StatusCode::CREATED, Json(view)))
@@ -1016,8 +1076,18 @@ pub async fn update_plan(
     ApiJson(req): ApiJson<UpdatePlanReq>,
 ) -> Result<Json<PlanView>, ApiError> {
     user.require_admin()?;
+    if let Some(p) = &req.pricing {
+        crate::billing::catalog::check_prices(&p.prices, p.on_sale)?;
+    }
+    let actor = Actor::of(&user);
     let mut tx = state.pg().begin().await?;
-    apply_update_plan(&mut tx, &Actor::of(&user), id, &req).await?;
+    // Fields and prices in one transaction (W21): both apply or neither.
+    if req.has_plan_fields() || req.pricing.is_none() {
+        apply_update_plan(&mut tx, &actor, id, &req).await?;
+    }
+    if let Some(p) = &req.pricing {
+        crate::billing::catalog::apply_set_prices(&mut tx, &actor, id, p).await?;
+    }
     let view = plan_view(&mut tx, id).await?;
     tx.commit().await?;
     Ok(Json(view))
@@ -1199,9 +1269,11 @@ async fn require_future(
         .fetch_one(conn)
         .await?;
     if !ok {
-        return Err(ApiError::bad_request(format!(
-            "{field} must be in the future"
-        )));
+        return Err(bad_request!(
+            "user_plan.expiry_past",
+            "{field} must be in the future",
+            field = field
+        ));
     }
     Ok(())
 }
@@ -1216,9 +1288,11 @@ async fn require_not_future(
         .fetch_one(conn)
         .await?;
     if !ok {
-        return Err(ApiError::bad_request(format!(
-            "{field} must not be in the future"
-        )));
+        return Err(bad_request!(
+            "user_plan.anchor_future",
+            "{field} must not be in the future",
+            field = field
+        ));
     }
     Ok(())
 }
@@ -1240,8 +1314,9 @@ pub async fn apply_set_user_plan(
         None => return Err(ApiError::not_found()),
         Some("user") => {}
         Some(_) => {
-            return Err(ApiError::bad_request(
-                "admin accounts are not proxy users and cannot have a plan",
+            return Err(bad_request!(
+                "user.admin_no_plan",
+                "admin accounts are not proxy users and cannot have a plan"
             ))
         }
     }
@@ -1250,8 +1325,8 @@ pub async fn apply_set_user_plan(
         .fetch_optional(&mut *conn)
         .await?;
     match plan {
-        None => return Err(ApiError::bad_request("unknown plan id")),
-        Some(false) => return Err(ApiError::conflict("plan is disabled (not offered)")),
+        None => return Err(bad_request!("plan.unknown", "unknown plan id")),
+        Some(false) => return Err(conflict!("plan.disabled", "plan is disabled (not offered)")),
         Some(true) => {}
     }
     if let Some(t) = req.expires_at {
@@ -1346,7 +1421,7 @@ pub async fn apply_update_user_plan(
 ) -> Result<UserPlanChange, ApiError> {
     let anchor = non_null("period_anchor", &req.period_anchor)?;
     if req.expires_at.is_none() && anchor.is_none() {
-        return Err(ApiError::bad_request("no fields to update"));
+        return Err(bad_request!("request.no_fields", "no fields to update"));
     }
     entitle::lock(conn).await?;
     if let Some(Some(t)) = req.expires_at {
@@ -1464,8 +1539,9 @@ pub async fn apply_reset_traffic(
     .fetch_optional(&mut *conn)
     .await?;
     if active != Some(plan_id) {
-        return Err(ApiError::conflict(
-            "a traffic reset pack needs an active subscription of its plan",
+        return Err(conflict!(
+            "shop.reset_needs_plan",
+            "a traffic reset pack needs an active subscription of its plan"
         ));
     }
     // Lock order: nodes (of the user's rows) -> users.
@@ -3072,8 +3148,7 @@ mod tests {
             .await;
         assert_eq!(r.status, StatusCode::CONFLICT);
         let r = c.get("/test/api/v1/users").await;
-        let me_row = r
-            .json()
+        let me_row = r.json()["users"]
             .as_array()
             .unwrap()
             .iter()

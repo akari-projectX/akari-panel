@@ -17,6 +17,12 @@ export const PERIOD_KINDS = [
 ] as const;
 export type PeriodKind = (typeof PERIOD_KINDS)[number];
 
+/** Prices in catalogue order (month … three years, days, one-time, reset; then by days). */
+export function sortPrices<T extends { period: PeriodKind; days: number | null }>(prices: readonly T[]): T[] {
+  const rank = (p: T) => PERIOD_KINDS.indexOf(p.period);
+  return [...prices].sort((a, b) => rank(a) - rank(b) || (a.days ?? 0) - (b.days ?? 0));
+}
+
 /** One price of a plan (days: "days" required, "onetime" optional, else null). */
 export interface PlanPrice {
   period: PeriodKind;
@@ -230,12 +236,17 @@ export function periodZh(kind: PeriodKind, days: number | null): string {
     case "three_year":
       return "三年付";
     case "days":
-      return `${days ?? "?"} 天`;
+      return days != null ? `${days} 天` : "自定义天数";
     case "onetime":
       return days != null ? `一次性（${days} 天）` : "一次性（永久）";
     case "reset":
       return "流量重置包";
   }
+}
+
+/** The name of a period kind, without days (coupon scopes, filters). */
+export function periodKindZh(kind: PeriodKind): string {
+  return kind === "days" ? "自定义天数" : kind === "onetime" ? "一次性" : periodZh(kind, null);
 }
 
 // 990 -> "9.90" (integer arithmetic, no float rounding).

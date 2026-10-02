@@ -103,7 +103,12 @@ describe("Register", () => {
 
   it("validates locally and maps server errors (zh)", async () => {
     act(() => setLocale("zh"));
-    fakeApi({ "POST /auth/register": () => ({ status: 400, body: { error: "invalid or expired code" } }) });
+    fakeApi({
+      "POST /auth/register": () => ({
+        status: 400,
+        body: { error: "invalid or expired code", code: "signup.invalid_code" },
+      }),
+    });
     renderWithClient(<Register options={opts()} />);
     fireEvent.click(screen.getByRole("button", { name: "注册" }));
     expect((await screen.findByRole("alert")).textContent).toBe("请先填写邮箱");
@@ -151,7 +156,12 @@ describe("password reset", () => {
     expect(screen.getByRole("alert").textContent).toMatch(/incomplete/);
     cleanup();
     history.replaceState(null, "", `/app/reset#token=${"B".repeat(43)}`);
-    fakeApi({ "POST /auth/password-reset": () => ({ status: 400, body: { error: "invalid or expired link" } }) });
+    fakeApi({
+      "POST /auth/password-reset": () => ({
+        status: 400,
+        body: { error: "invalid or expired link", code: "signup.invalid_link" },
+      }),
+    });
     renderWithClient(<ResetPassword />);
     fireEvent.change(screen.getByLabelText("New password"), { target: { value: "new password" } });
     fireEvent.change(screen.getByLabelText("Repeat new password"), { target: { value: "new password" } });

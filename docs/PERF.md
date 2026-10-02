@@ -10,7 +10,7 @@ Targets (ROADMAP §0), measured on the data set of one panel instance serving
 |---|---|---|
 | Snapshot build, 10k-user node < 200 ms | DB read + build 33 ms; full build (read + user set + state hash + encode) 43 ms; agent side: xray rebuild with 10k users 57 ms | pass |
 | Flush of 50k traffic rows < 1 s | 0.91 s (criterion mean; 10 chunks of 5000, about 91 ms each); W11 0.49 s; W22 (with the traffic history) 0.58 s, see "W22" | pass, ~40% margin |
-| Admin API p99 < 50 ms | idle, 16 clients: worst endpoint 10.2 ms (`nodes`); under 200-agent load: worst read 30.5 ms (`users_deep`); W17: the console's node list (`nodes?view=summary`) 12–26 ms under load (full list 27–43 ms) | pass |
+| Admin API p99 < 50 ms | W21: `dashboard` 16–21 ms, `users_search` 7–31 ms, `users_filtered` 18–22 ms (one noisy run 55 ms); idle, 16 clients: worst endpoint 10.2 ms (`nodes`); under 200-agent load: worst read 30.5 ms (`users_deep`); W17: the console's node list (`nodes?view=summary`) 12–26 ms under load (full list 27–43 ms) | pass |
 | Subscription p99 < 30 ms | idle 5.1 ms; under load 16.7 ms (single instance), 31 ms (`clash`) / 20 ms (`links`) through the two-instance balancer | pass (single instance); 1 ms over on the balancer run, see notes |
 | User change to agent < 2 s | single instance: p50 0.26 s, p99 0.59 s, max 0.68 s; two instances behind a balancer: p99 0.89 s, max 0.98 s (3200 agent applications each) | pass |
 | Billing exact | reported = billed to the byte in every steady-state run, single and two instances | pass |
@@ -78,6 +78,36 @@ Reproduce: `make bench-seed` (now also seeds `--history-days 30
 --history-nodes-per-user 2`), `make bench`, then the panel on the bench set
 and `akari-bench http --only traffic_user,traffic_user_nodes,traffic_node,traffic_summary,traffic_me`;
 `akari-bench explain` includes `COMPACT_SQL` and `ROLLUP_SQL`.
+
+## Admin dashboard and user search (W21, 2026-10-03)
+
+`GET /dashboard` (src/dashboard.rs) is one aggregate read in a REPEATABLE READ snapshot; `GET
+/users` gained search (`q`, login/email prefix), filters (`status`, `plan_id`, `role`), sorts and a
+`total`. Measured on the bench stack (own database `akari_bench_w21`: `make bench-seed` = 200 nodes,
+50k users, 2M node_users, 200k audit rows; plus 200k paid orders spread over a year (2 % refunded)
+and 10k expired ones, inserted with SQL), `akari-bench http` 16 closed-loop clients × 10 s, idle
+panel (no agents), three runs, while another worker's e2e ran on the same machine:
+
+| Scenario | p50 | p99 (runs 1 / 2 / 3) | req/s |
+|---|---|---|---|
+| `dashboard` | 10.8–11.8 ms | 20.6 / 16.8 / 15.7 ms | 1286–1439 |
+| `users_search` (`q=bench-user-123`, ~100 matches + total) | 4.6–5.0 ms | 30.8 / 6.6 / 8.2 ms | 2413–3413 |
+| `users_filtered` (`status=active&role=user&sort=-traffic`) | 12.7–14.1 ms | 22.3 / 55.2 / 18.4 ms | 935–1219 |
+| `users_page1` (reference) | 6.0–6.5 ms | 11.6 / 9.7 / 9.5 ms | 2336–2561 |
+
+The first dashboard version took p99 45–139 ms: two separate scans of users (the sign-up windows
+and the total) and heap fetches for 16.5k revenue rows. Now users are counted in one pass and the
+revenue/refund windows are index-only scans (`orders_paid_at` / `orders_refunded_at` INCLUDE the
+amounts, 0125). The users-table pass (~5–10 ms at 50k) is the floor of the endpoint;
+`users_filtered` sorts all matching users by traffic (`traffic_used_bytes` must stay unindexed:
+billing updates are HOT, 0012) and its one noisy run is the concurrent e2e. Reproduce:
+
+```bash
+BENCH_DATABASE_URL=postgres://akari:akari-dev@localhost:5433/akari_bench_w21 make bench-seed
+# orders: see the W21 PR (INSERT … generate_series(1, 200000), then VACUUM ANALYZE orders)
+akari -c <panel.toml on akari_bench_w21> serve &
+akari-bench http --data-dir <its data dir> --url <its url> --only dashboard,users_search,users_filtered,users_page1
+```
 
 ## Node list summary view (W17, 2026-10-02)
 

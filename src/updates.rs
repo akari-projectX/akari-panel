@@ -13,6 +13,7 @@
 //! Storage: manifest bytes verbatim + the binary in 1 MiB rows
 //! (`agent_release_chunks`), so every panel instance can serve it.
 
+use crate::auth::{bad_request, conflict};
 use std::cmp::Ordering;
 
 use axum::body::Body;
@@ -339,18 +340,23 @@ pub async fn apply_create_release(
     req: &CreateReleaseReq,
 ) -> Result<Uuid, ApiError> {
     let raw = req.manifest.as_bytes();
-    let m = parse_manifest(raw).map_err(ApiError::bad_request)?;
+    let m = parse_manifest(raw)
+        .map_err(|e| bad_request!("release.manifest_invalid", "{detail}", detail = e))?;
     if keys.is_empty() {
-        return Err(ApiError::conflict(
-            "no release keys configured (updates.release_keys): self-update is off",
+        return Err(conflict!(
+            "release.no_keys",
+            "no release keys configured (updates.release_keys): self-update is off"
         ));
     }
-    let key = verify(raw, &req.sig.signatures, keys).map_err(ApiError::bad_request)?;
+    let key = verify(raw, &req.sig.signatures, keys)
+        .map_err(|e| bad_request!("release.signature_invalid", "{detail}", detail = e))?;
     if m.min_panel_protocol > PANEL_PROTOCOL {
-        return Err(ApiError::bad_request(format!(
-            "release needs panel protocol {} (this panel speaks {PANEL_PROTOCOL}): upgrade the panel first",
-            m.min_panel_protocol
-        )));
+        return Err(bad_request!(
+            "release.panel_too_old",
+            "release needs panel protocol {needed} (this panel speaks {have}): upgrade the panel first",
+            needed = m.min_panel_protocol,
+            have = PANEL_PROTOCOL
+        ));
     }
     let id = Uuid::new_v4();
     let r = sqlx::query(
@@ -372,8 +378,9 @@ pub async fn apply_create_release(
     .await;
     match r {
         Err(sqlx::Error::Database(d)) if d.is_unique_violation() => {
-            return Err(ApiError::conflict(
-                "a release with this version/platform or digest already exists",
+            return Err(conflict!(
+                "release.exists",
+                "a release with this version/platform or digest already exists"
             ))
         }
         r => r?,
@@ -443,7 +450,10 @@ pub async fn upload_binary(
         return Err(ApiError::not_found());
     };
     if complete {
-        return Err(ApiError::conflict("binary already uploaded"));
+        return Err(conflict!(
+            "release.binary_exists",
+            "binary already uploaded"
+        ));
     }
     let mut stream = body.into_data_stream();
     let mut h = Sha256::new();
@@ -451,12 +461,15 @@ pub async fn upload_binary(
     let mut total: i64 = 0;
     let mut idx: i32 = 0;
     while let Some(frame) = stream.next().await {
-        let frame = frame.map_err(|_| ApiError::bad_request("upload interrupted"))?;
+        let frame =
+            frame.map_err(|_| bad_request!("release.upload_interrupted", "upload interrupted"))?;
         total += frame.len() as i64;
         if total > size {
-            return Err(ApiError::bad_request(format!(
-                "binary larger than the manifest's {size} bytes"
-            )));
+            return Err(bad_request!(
+                "release.binary_too_large",
+                "binary larger than the manifest's {size} bytes",
+                size = size
+            ));
         }
         h.update(&frame);
         let mut rest: &[u8] = &frame;
@@ -476,9 +489,12 @@ pub async fn upload_binary(
     }
     let sha = hex::encode(h.finalize());
     if total != size || sha != want_sha {
-        return Err(ApiError::bad_request(format!(
-            "binary does not match the signed manifest (got {total} bytes, sha256 {sha})"
-        )));
+        return Err(bad_request!(
+            "release.binary_mismatch",
+            "binary does not match the signed manifest (got {total} bytes, sha256 {sha})",
+            total = total,
+            sha = sha
+        ));
     }
     sqlx::query("UPDATE agent_releases SET complete_at = now() WHERE id = $1")
         .bind(id)
@@ -541,8 +557,9 @@ pub async fn delete_release(
     .fetch_one(&mut *tx)
     .await?;
     if open {
-        return Err(ApiError::conflict(
-            "an open rollout targets this version: abort it first",
+        return Err(conflict!(
+            "release.rollout_open",
+            "an open rollout targets this version: abort it first"
         ));
     }
     sqlx::query("DELETE FROM agent_releases WHERE id = $1")
