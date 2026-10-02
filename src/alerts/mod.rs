@@ -905,10 +905,18 @@ pub async fn retry_notification(
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?;
-    match status.as_deref() {
-        None => return Err(ApiError::not_found()),
-        Some("dead") => {}
-        Some(_) => return Err(ApiError::conflict("only failed deliveries can be retried")),
+    let refusal = match status.as_deref() {
+        None => Some(ApiError::not_found()),
+        Some("dead") => None,
+        Some(_) => Some(ApiError::conflict("only failed deliveries can be retried")),
+    };
+    if let Some(e) = refusal {
+        // Release the row lock now. A dropped sqlx transaction rolls back
+        // lazily (when its connection is next used or returned to the pool),
+        // and until then `FOR UPDATE SKIP LOCKED` in `deliver_due` skips the
+        // row: a refused retry must not delay deliveries.
+        tx.rollback().await?;
+        return Err(e);
     }
     sqlx::query(
         "UPDATE alert_notifications SET status = 'pending', attempts = 0, next_attempt_at = now(), \
