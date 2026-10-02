@@ -220,6 +220,8 @@ done
 # and Valkey rate-limit counters would poison the next run's login test.
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE nodes CASCADE; TRUNCATE users CASCADE;" >/dev/null 2>&1 || true
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE revoked_certs, traffic_counters, audit_log, agent_releases, rollouts CASCADE;" >/dev/null 2>&1 || true
+# Catalogue rows a run aborted midway leaves behind (names are unique).
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE plans, node_groups, coupons CASCADE;" >/dev/null 2>&1 || true
 # R22 settings left behind by an aborted run (e.g. a node domain the agents
 # here cannot reach): back to "use panel.toml" (the trigger reloads them).
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "UPDATE panel_settings SET version = 0, main_domain = NULL, sub_domain = NULL, node_domain = NULL, trust_cloudflare = NULL, probe_interval_secs = NULL, probe_urls = NULL, probe_panel_tcp = NULL; TRUNCATE grpc_server_names;" >/dev/null 2>&1 || true
@@ -1349,6 +1351,14 @@ for a in coupon.create commission.create commission.settings.update balance.comm
          withdrawal.approved balance.admin_adjust balance.order_payment balance.refund_to_balance order.refund; do
   [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='$a'")" -ge 1 ] || { echo "FAIL: audit lacks $a"; exit 1; }
 done
+# Clean up: the W16 buyer holds w16-plan (the paid group's node); later
+# sections expect the node to serve only the R18-3 buyer. The ledger,
+# commission and withdrawal rows outlive the users (user_id -> NULL).
+for u in "$W16U" "$INVITER"; do
+  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$u")" = "204" ] || { echo "FAIL: delete W16 user"; exit 1; }
+done
+[ "$(psql_q "SELECT count(*) FROM balance_ledger WHERE user_id IS NULL AND user_login IN ('smoke-w16','smoke-inviter')")" -ge 5 ] \
+  || { echo "FAIL: ledger rows did not outlive the users"; exit 1; }
 echo "w16: ok (coupon reserve/redeem + last use, commission pending -> credited, withdrawal, balance full/partial/refund, ledger invariants)"
 
 # W7: plan speed limits are enforced by the agent (protocol 4, per user,
