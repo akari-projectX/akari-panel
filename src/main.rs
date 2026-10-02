@@ -275,6 +275,7 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
         tokio::spawn(akari_panel::billing::reconcile_loop(state.clone())),
         tokio::spawn(akari_panel::nodestat::panel_probe_loop(state.clone())),
         tokio::spawn(akari_panel::mail::sender::run(state.clone())),
+        tokio::spawn(akari_panel::alerts::run(state.clone())),
     ];
 
     // Metrics have their own listener (never the public web port). Bound
