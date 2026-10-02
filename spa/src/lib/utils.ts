@@ -39,6 +39,28 @@ export async function copyText(text: string): Promise<boolean> {
     await navigator.clipboard.writeText(text);
     return true;
   } catch {
-    return false;
+    // No Clipboard API (plain-http origins, older browsers) or denied:
+    // the legacy selection copy still works from a click handler.
+    return legacyCopy(text);
   }
+}
+
+function legacyCopy(text: string): boolean {
+  const before = document.activeElement as HTMLElement | null;
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  let ok = false;
+  try {
+    ok = typeof document.execCommand === "function" && document.execCommand("copy");
+  } catch {
+    ok = false;
+  }
+  area.remove();
+  before?.focus?.();
+  return ok;
 }

@@ -252,6 +252,7 @@ grep -qE '^enrollment_token = "[A-Za-z0-9_-]{43}"$' "$BOOT" || { echo "FAIL: boo
 PREFIX=$("$PANEL" info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')
 BASE="http://127.0.0.1:8080/$PREFIX"
 code() { curl -s --noproxy '*' -o /tmp/akari-smoke/last -w "%{http_code}" "$@"; }
+last_json() { python3 -c "import json,sys; d=json.load(open('/tmp/akari-smoke/last')); print($1)"; }
 
 echo "== rejections: one identical empty 404 (SEC-1) =="
 # Fingerprint = status line + headers (minus Date) + body.
@@ -348,9 +349,17 @@ login_root() { # code -> http status; session in $JAR
   code -c "$JAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
     -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\",\"code\":\"$1\"}"
 }
+# W20 (M9) two-step: the right password without a code is a distinct 401
+# (totp_required, no cookie); a wrong password stays the uniform 401.
+[ "$(code -D "$LOG/totp-req.h" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "401" ] \
+  && last_json "d.get('totp_required')" | matches '^True$' \
+  && ! tr -d '\r' <"$LOG/totp-req.h" | matches -i '^set-cookie:' \
+  || { echo "FAIL: password-only login of a 2FA admin is not the totp_required 401"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
-    -d "{\"login\":\"root\",\"password\":\"$ADMIN_PW\"}")" = "401" ] || { echo "FAIL: password-only login of a 2FA admin"; exit 1; }
+    -d '{"login":"root","password":"wrong-password"}')" = "401" ] || { echo "FAIL: wrong password not 401"; exit 1; }
 REJ401=$(cat /tmp/akari-smoke/last)
+[ "$REJ401" = '{"error":"unauthorized"}' ] || { echo "FAIL: wrong password body: $REJ401"; exit 1; }
 CODE=$(totp)
 [ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
     -d "{\"login\":\"root\",\"password\":\"wrong-password\",\"code\":\"$CODE\"}")" = "401" ] \
@@ -470,8 +479,27 @@ UJAR="$LOG/user-cookies"
 NEW_TOKEN=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['sub_token'])")
 [ "$(fp "$SUB")" = "$REJ" ] || { echo "FAIL: old subscription URL still answers differently"; exit 1; }
 SUB="$BASE/sub/$NEW_TOKEN"
-# rate_per_token = 8 per window (smoke panel.toml): 5 fetches above + 3 here.
-for i in 1 2 3; do
+# W20 (B1): the link stays retrievable — /me returns it (no-store), and an
+# admin can read it (audited, no token material in the audit row).
+[ "$(code -D "$LOG/me.h" -b "$UJAR" "$BASE/api/v1/me")" = "200" ] \
+  && last_json "d['sub_token']" | matches "^$NEW_TOKEN\$" \
+  && last_json "d['sub_legacy']" | matches '^False$' \
+  && tr -d '\r' <"$LOG/me.h" | matches -i '^cache-control: no-store$' \
+  || { echo "FAIL: /me does not return the stored subscription link"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/users/$USER_ID/subscription")" = "200" ] \
+  && last_json "d['sub_token']" | matches "^$NEW_TOKEN\$" \
+  || { echo "FAIL: admin subscription read"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/audit?action=user.sub_token.read")" = "200" ] \
+  && last_json "len(d['entries'])" | matches '^[1-9]' \
+  && ! matches "$NEW_TOKEN" </tmp/akari-smoke/last \
+  || { echo "FAIL: admin subscription read not audited (or leaks the token)"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$UJAR" "$BASE/api/v1/users/$USER_ID/subscription")" = "403" ] \
+  || { echo "FAIL: a user can read the admin subscription endpoint"; exit 1; }
+# rate_per_token = 8 per window (smoke panel.toml): 5 fetches above + 3 here
+# (W20: the first one picks the format with ?format=, not the User-Agent).
+curl -s --noproxy '*' -A "curl/8" -D "$LOG/fmt.h" -o /dev/null "$SUB?format=clash"
+tr -d '\r' <"$LOG/fmt.h" | matches -i '^content-type: text/yaml' || { echo "FAIL: ?format=clash"; cat "$LOG/fmt.h"; exit 1; }
+for i in 2 3; do
   [ "$(code -A "clash-meta/1.19" "$SUB")" = "200" ] || { echo "FAIL: new subscription URL fetch $i"; exit 1; }
 done
 [ "$(fp "$SUB")" = "$REJ" ] || { echo "FAIL: over-limit subscription is not the canonical rejection"; cat /tmp/akari-smoke/fphead; exit 1; }

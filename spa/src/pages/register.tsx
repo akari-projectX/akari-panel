@@ -38,7 +38,7 @@ export function AppLink({ to, children }: { to: string; children: React.ReactNod
   return (
     <a
       href={to}
-      className="text-primary underline-offset-4 hover:underline"
+      className="inline-block py-1.5 font-medium text-primary underline underline-offset-4 hover:decoration-2"
       onClick={(e) => {
         e.preventDefault();
         navigate(to);

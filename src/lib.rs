@@ -53,4 +53,6 @@ pub mod totp;
 pub mod traffic;
 pub mod updates;
 pub mod valkey_util;
+#[cfg(test)]
+mod w20_tests;
 pub mod web;

@@ -42,9 +42,22 @@ const MAX_CODE_LEN: usize = 64;
 /// computations), so the response says nothing about which part was wrong
 /// or whether the account has 2FA.
 ///
-/// Password and code arrive in the same request (no second step): there
-/// is no half-authenticated state or step token to store, bind, expire or
-/// replay, and the rate limit sees one attempt per guess of the pair.
+/// Password and code arrive in the same request: there is no
+/// half-authenticated state or step token to store, bind, expire or replay.
+/// W20 (M9) two-step UI on top of that: a request WITHOUT a code (absent or
+/// blank) whose password is right for an account with active 2FA gets a
+/// distinct 401 `{"error": "totp required", "totp_required": true}`; the
+/// form then shows the code field and re-sends password + code. That answer
+/// exists only after the password verified (same query, same argon2, same
+/// TOTP computation as every other outcome), so a wrong password, an
+/// unknown account and a disabled one still get the uniform 401 after the
+/// same work. It does reveal "this password is right and the account has
+/// 2FA" — the second factor is what protects such accounts — and it does
+/// not speed up password guessing: every wrong password still consumes a
+/// login-limit slot exactly as before; only the totp-required answer
+/// releases its slot (it is not a credential failure, and a correct
+/// password cannot be "guessed" twice). Wrong/replayed codes count as
+/// failures as before.
 ///
 /// 2FA is optional (R18): an account without active TOTP logs in with the
 /// password alone. Only with `auth.require_admin_2fa` does an admin without
@@ -60,7 +73,7 @@ pub async fn login(
     headers: HeaderMap,
     jar: CookieJar,
     ApiJson(req): ApiJson<LoginReq>,
-) -> Result<(CookieJar, Json<serde_json::Value>), ApiError> {
+) -> Result<Response, ApiError> {
     if req.login.is_empty() || req.password.is_empty() {
         return Err(ApiError::bad_request("login and password are required"));
     }
@@ -113,7 +126,8 @@ pub async fn login(
                             "stage": stage.as_str(), "expired": row.expired,
                             "quota_exhausted": row.quota_disabled,
                         })),
-                    ))
+                    )
+                        .into_response())
                 }
                 // Lost a race for the same TOTP step / recovery code.
                 Ok(false) => failed(attempt, Some((row.id, row.login)), true),
@@ -124,6 +138,16 @@ pub async fn login(
             }
         }
         Ok(Checked::Failed { account, second }) => failed(attempt, account, second),
+        Ok(Checked::TotpRequired) => {
+            // Right password, no code yet (W20 two-step form): not a
+            // credential failure, so the reservation is released.
+            attempt.release(&state).await;
+            Ok((
+                axum::http::StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "totp required", "totp_required": true })),
+            )
+                .into_response())
+        }
         Err(e) => {
             // Not a credential failure (e.g. the database is down).
             attempt.release(&state).await;
@@ -162,6 +186,9 @@ enum Checked {
         account: Option<(Uuid, String)>,
         second: bool,
     },
+    /// W20: the password is right, the account has active 2FA and the
+    /// request carried no code (absent or blank).
+    TotpRequired,
 }
 
 /// Verify password and second factor with the same work for every kind of
@@ -224,6 +251,9 @@ async fn check_credentials(state: &AppState, req: &LoginReq) -> Result<Checked, 
         });
     }
     if let Some(secret) = row.totp_secret.as_deref() {
+        if proof.is_none() && code.trim().is_empty() {
+            return Ok(Checked::TotpRequired);
+        }
         if proof.is_none() {
             if state.totp().open(row.id, secret).is_none() {
                 tracing::error!(user = %row.id,
@@ -518,9 +548,26 @@ pub struct MeView {
     email_verified: bool,
     /// W15: language of the account's mails.
     locale: String,
+    /// W20 (B1): the subscription token and URL (the URL is null when no
+    /// subscription/main domain is configured: the portal builds it from
+    /// its own origin). Both null for admins, for the renewal scope (the
+    /// subscription refuses those accounts), and for `sub_legacy`.
+    sub_token: Option<String>,
+    sub_url: Option<String>,
+    /// W20: a link from before 0120 works but cannot be shown (hash only);
+    /// resetting it gives a showable one. Never rotated implicitly.
+    sub_legacy: bool,
+    /// W20 (Minor 1): the effective latency-test interval (系统设置 >
+    /// panel.toml), for the portal's node list.
+    probe_interval_secs: u64,
 }
 
 /// GET /api/v1/me (renewal scope: also for expired users, R21).
+///
+/// W20: carries the subscription link for role=user accounts in good
+/// standing (`sub::ensure_token`: decrypted from `users.sub_token_enc`; an
+/// account without any token gets one here, audited `user.sub_token.issue`).
+/// The response holds a credential: `Cache-Control: no-store`.
 pub async fn me(
     State(state): State<AppState>,
     ShopUser {
@@ -528,16 +575,32 @@ pub async fn me(
         expired,
         quota_exhausted,
     }: ShopUser,
-) -> Result<Json<MeView>, ApiError> {
+) -> Result<Response, ApiError> {
+    let mut tx = state.pg().begin().await?;
     let row = sqlx::query_as::<_, MeRow>(
         "SELECT traffic_used_bytes, traffic_limit_bytes, expires_at, email, \
          email_verified_at IS NOT NULL AS email_verified, locale FROM users WHERE id = $1",
     )
     .bind(user.id)
-    .fetch_optional(state.pg())
+    .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(ApiError::unauthorized)?;
-    Ok(Json(MeView {
+    let stored = if user.role == "user" && !expired && !quota_exhausted {
+        crate::sub::ensure_token(&mut tx, state.totp(), &Actor::of(&user), user.id).await?
+    } else {
+        None
+    };
+    tx.commit().await?;
+    let (sub_token, sub_legacy) = match stored {
+        Some(crate::sub::Stored::Ready(t)) => (Some(t), false),
+        Some(crate::sub::Stored::Legacy) => (None, true),
+        None => (None, false),
+    };
+    let settings = state.settings().get();
+    let sub_url = sub_token
+        .as_deref()
+        .and_then(|t| settings.sub_url(state.route_prefix(), t));
+    let view = MeView {
         id: user.id,
         login: user.login,
         role: user.role,
@@ -549,7 +612,76 @@ pub async fn me(
         email: row.email,
         email_verified: row.email_verified,
         locale: row.locale,
-    }))
+        sub_token,
+        sub_url,
+        sub_legacy,
+        probe_interval_secs: settings.probe.interval_secs,
+    };
+    Ok(no_store(Json(view)))
+}
+
+/// A response that carries a credential (subscription link): never cached.
+pub fn no_store(body: impl IntoResponse) -> Response {
+    (
+        [(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-store"),
+        )],
+        body,
+    )
+        .into_response()
+}
+
+/// GET /api/v1/users/{id}/subscription (admin; W20 "复制订阅链接"): the
+/// user's subscription token and URL. Reading another account's credential
+/// is audited (`user.sub_token.read`, no token material) in the same
+/// transaction; an account without any token gets one first (audited
+/// `user.sub_token.issue`). `legacy: true` = a pre-0120 link that works but
+/// cannot be shown (regenerate to get a showable one). Admin accounts have
+/// no subscription (400).
+pub async fn user_subscription(
+    State(state): State<AppState>,
+    admin: AuthUser,
+    Path((_, id)): Path<(String, Uuid)>,
+) -> Result<Response, ApiError> {
+    admin.require_admin()?;
+    let mut tx = state.pg().begin().await?;
+    let role: Option<String> = sqlx::query_scalar("SELECT role FROM users WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    match role.as_deref() {
+        None => return Err(ApiError::not_found()),
+        Some("user") => {}
+        Some(_) => return Err(ApiError::bad_request("admin accounts have no subscription")),
+    }
+    let actor = Actor::of(&admin);
+    let stored = crate::sub::ensure_token(&mut tx, state.totp(), &actor, id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let token = match stored {
+        crate::sub::Stored::Ready(t) => Some(t),
+        crate::sub::Stored::Legacy => None,
+    };
+    crate::audit::record(
+        &mut tx,
+        &actor,
+        "user.sub_token.read",
+        "user",
+        Some(id.to_string()),
+        None,
+        Some(json!({ "legacy": token.is_none() })),
+    )
+    .await?;
+    tx.commit().await?;
+    let sub_url = token
+        .as_deref()
+        .and_then(|t| state.settings().get().sub_url(state.route_prefix(), t));
+    Ok(no_store(Json(json!({
+        "legacy": token.is_none(),
+        "sub_token": token,
+        "sub_url": sub_url,
+    }))))
 }
 
 // ---------------------------------------------------------------------------
@@ -662,12 +794,15 @@ pub async fn create_user(
     }
     let hash = auth::hash_password(&req.password)?;
     let id = Uuid::new_v4();
-    // Mint the subscription token now; its plaintext is returned exactly once.
+    // Mint the subscription token now (W20: stored encrypted as well, so
+    // the user and admins can see the link again).
     let sub_token = crate::sub::generate_token();
+    let sub_enc = state.totp().seal_sub_token(id, &sub_token)?;
     let mut tx = state.pg().begin().await?;
     match sqlx::query_as::<_, UserView>(
-        "INSERT INTO users (id, login, password_hash, role, traffic_limit_bytes, expires_at, sub_token_hash) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+        "INSERT INTO users (id, login, password_hash, role, traffic_limit_bytes, expires_at, \
+         sub_token_hash, sub_token_enc) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
          RETURNING id, login, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, \
          created_at, false AS totp_enabled, disabled_reason::text AS disabled_reason, \
          NULL::uuid AS plan_id, NULL::text AS plan_name, NULL::timestamptz AS next_reset_at, \
@@ -680,6 +815,7 @@ pub async fn create_user(
     .bind(req.traffic_limit_bytes)
     .bind(req.expires_at)
     .bind(crate::sub::hash_token(&sub_token))
+    .bind(&sub_enc)
     .fetch_one(&mut *tx)
     .await
     {
@@ -726,7 +862,7 @@ pub async fn create_user(
 pub struct CreatedUser {
     #[serde(flatten)]
     user: UserView,
-    /// Only ever visible in this create response (and after regeneration).
+    /// Also readable later (W20: `GET /users/{id}/subscription`, audited).
     sub_token: String,
     /// R22: the subscription URL on the subscription domain (null = not
     /// configured: the client builds it from its own origin).
@@ -2454,7 +2590,7 @@ pub async fn set_inbounds(
 // ---------------------------------------------------------------------------
 
 /// Regenerates a user's subscription token, invalidating the old one.
-/// Plaintext is shown exactly once.
+/// W20: stored encrypted as well (readable again via `GET /users/{id}/subscription`).
 pub async fn regenerate_sub_token(
     State(state): State<AppState>,
     user: AuthUser,
@@ -2462,7 +2598,7 @@ pub async fn regenerate_sub_token(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    let token = crate::sub::rotate_token(&mut tx, &Actor::of(&user), id)
+    let token = crate::sub::rotate_token(&mut tx, state.totp(), &Actor::of(&user), id)
         .await?
         .ok_or_else(ApiError::not_found)?;
     tx.commit().await?;
@@ -5259,7 +5395,7 @@ mod tests {
         .await
         .unwrap();
         secrets.push("second-password-456".into());
-        let token = crate::sub::rotate_token(&mut tx, &Actor::of(&admin), u)
+        let token = crate::sub::rotate_token(&mut tx, state.totp(), &Actor::of(&admin), u)
             .await
             .unwrap()
             .unwrap();
@@ -5273,6 +5409,13 @@ mod tests {
             .unwrap();
         secrets.push(hash);
         secrets.push("$argon2".into());
+        // W20: the stored ciphertext never reaches the audit log either.
+        let enc: Vec<u8> = sqlx::query_scalar("SELECT sub_token_enc FROM users WHERE id = $1")
+            .bind(u)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        secrets.push(hex::encode(&enc));
         let text: String = sqlx::query_scalar(
             "SELECT string_agg(concat_ws(' ', actor_login, action, target_id, before::text, after::text), ' ') \
              FROM audit_log",

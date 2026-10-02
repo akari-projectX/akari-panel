@@ -8,9 +8,19 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
-import { del, get, patch, post, put, type PlanView, type UserNodeView, type UserView } from "../lib/api";
+import {
+  del,
+  get,
+  patch,
+  post,
+  put,
+  subscriptionUrl,
+  type PlanView,
+  type UserNodeView,
+  type UserView,
+} from "../lib/api";
 import { adminErrorText } from "../lib/errors";
-import { GIB, humanBytes } from "../lib/utils";
+import { copyText, GIB, humanBytes } from "../lib/utils";
 
 // Admin console (Chinese only, R18).
 
@@ -43,8 +53,8 @@ export function AdminUsers() {
         <Card>
           <CardContent className="pt-6">
             <p className="text-sm text-muted-foreground">
-              <span className="font-medium text-foreground">{subToken.login}</span>{" "}
-              的订阅令牌——只显示这一次，请立即保存：
+              <span className="font-medium text-foreground">{subToken.login}</span> 的订阅令牌（之后也可以在「管理 →
+              复制订阅链接」再次取得）：
             </p>
             <pre className="mt-2 overflow-auto rounded-lg bg-muted p-3 text-xs">{subToken.token}</pre>
             {subToken.url && <pre className="mt-2 overflow-auto rounded-lg bg-muted p-3 text-xs">{subToken.url}</pre>}
@@ -198,6 +208,25 @@ function ManageUser({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  // W20 (B1): the user's link (stored encrypted on the server; each read is audited).
+  async function copySubscription() {
+    setError(null);
+    setNotice(null);
+    try {
+      const r = await get<{ legacy: boolean; sub_token: string | null; sub_url: string | null }>(
+        `/users/${user.id}/subscription`,
+      );
+      if (r.legacy || !r.sub_token) {
+        setNotice("该用户的订阅链接是旧版本生成的，无法显示；重新生成订阅令牌后即可复制（旧链接会失效）。");
+        return;
+      }
+      const url = r.sub_url ?? subscriptionUrl(r.sub_token);
+      setNotice((await copyText(url)) ? `已复制「${user.login}」的订阅链接。` : `复制失败，请手动复制：${url}`);
+    } catch (err) {
+      setError(adminErrorText(err));
+    }
+  }
+
   async function run(confirmText: string, action: () => Promise<void>, done: string) {
     if (!window.confirm(confirmText)) return;
     setError(null);
@@ -219,6 +248,11 @@ function ManageUser({
       <section aria-label={`${user.login} 的其他操作`} className="space-y-2">
         <h3 className="text-sm font-medium">其他操作</h3>
         <div className="flex flex-wrap gap-2">
+          {user.role === "user" && (
+            <Button variant="outline" size="sm" onClick={() => void copySubscription()}>
+              复制订阅链接
+            </Button>
+          )}
           {user.role === "user" && (
             <Button
               variant="outline"

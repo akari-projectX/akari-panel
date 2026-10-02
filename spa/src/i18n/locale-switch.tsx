@@ -20,7 +20,7 @@ export function LocaleSwitch() {
           lang={l === "zh" ? "zh-CN" : "en"}
           aria-pressed={locale === l}
           onClick={() => setLocale(l)}
-          className={`rounded-md px-2 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+          className={`rounded-md px-2.5 py-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
             locale === l ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
           }`}
         >

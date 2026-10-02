@@ -150,7 +150,12 @@ checked out side by side; `src/CLAUDE.md` has the per-file map.
 the data layer:
 
 - the **user portal** at `/{prefix}/app` — the login page (shared with
-  admins), account, subscription, purchase and orders (Chinese/English);
+  admins) and one view per URL (W20; top nav on desktop, bottom tab bar on
+  phones): dashboard `/app` (plan, days and traffic left, the permanent
+  subscription link with copy/QR/format/one-click import, announcements),
+  `/app/shop`, `/app/nodes`, `/app/orders`, `/app/wallet` (invites and
+  balance), `/app/tickets`, `/app/account` (email, password, 2FA, language)
+  — Chinese/English;
 - the **admin console** at `/{prefix}/admin` — users, plans, orders, nodes,
   updates, audit, account (Chinese). Its index and assets are served only to
   an admin session (private, no-store); to anyone else `/admin` is the
@@ -200,19 +205,19 @@ separate loopback listener, never on the public port.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| POST | /auth/login | — | `{login, password, code?}`: argon2id + TOTP/recovery code, sets session cookie |
+| POST | /auth/login | — | `{login, password, code?}`: argon2id + TOTP/recovery code, sets session cookie. W20: the right password of a 2FA account **without** a code → 401 `{"error":"totp required","totp_required":true}` (the form then asks for the code); every other failure is the uniform 401 |
 | POST | /auth/logout | — | clears the cookie and ends all of the account's sessions |
 | GET | /auth/options | — | W15: what the login page offers `{register, invite_required, email_domains, reset}` |
 | POST | /auth/register/code | — (registration on) | W15: `{email, invite_code?, locale?}` → `{"ok":true}` for every address (a code by mail, or an "already registered" mail); rate limited per client and address |
 | POST | /auth/register | — (registration on) | W15: `{email, code, password, invite_code?, locale?}` → account (login = address, verified) + session; wrong/expired/used code = 400 `invalid or expired code` |
 | POST | /auth/password-reset/request | — (reset on) | W15: `{email}` → `{"ok":true}` for every address; a 30-minute single-use link goes to a verified address |
 | POST | /auth/password-reset | — (reset on) | W15: `{token, password}`: new password, every session ends |
-| GET | /api/v1/me | user (renewal scope*) | profile + traffic usage; `expired` / `quota_exhausted` (R21) |
+| GET | /api/v1/me | user (renewal scope*) | profile + traffic usage; `expired` / `quota_exhausted` (R21); W20: `sub_token` + `sub_url` (the subscription link, `Cache-Control: no-store`; null for admins and the renewal scope; an account without a token gets one here), `sub_legacy` (pre-W20 link: works, cannot be shown until reset), `probe_interval_secs` |
 | GET | /api/v1/me/totp | any session | session stage, 2FA state (never the secret) |
 | POST | /api/v1/me/totp/enroll | any session | new pending TOTP secret (shown once) |
 | POST | /api/v1/me/totp/confirm | any session | `{code}`: activate 2FA, returns 10 recovery codes once |
 | POST | /api/v1/me/totp/recovery-codes | user | `{code}`: replace recovery codes |
-| POST | /api/v1/me/sub-token | user (role=user) | regenerate own subscription token (5/hour) |
+| POST | /api/v1/me/sub-token | user (role=user) | reset own subscription link (5/hour); the old link stops working |
 | GET | /api/v1/me/plan | user | own active plan (or null), usage, enforced limit/expiry, node names + regions |
 | GET | /api/v1/me/nodes | user | W11: own visible nodes — display name, region, tags, multiplier, online, latency (no ids, addresses or machine metrics) |
 | POST | /api/v1/me/email/code | user (renewal scope*) | W15: `{email, password}`: code to the new address (current password required; same answer if the address is taken) |
@@ -251,6 +256,7 @@ separate loopback listener, never on the public port.
 | POST | /api/v1/nodes/{id}/probe | admin | W11: "立即测速" (202; 429 within `[probe].manual_cooldown_secs`) |
 | PUT | /api/v1/nodes/{id}/inbounds | admin | replace xray inbounds (bumps config_version) |
 | POST | /api/v1/users/{id}/sub-token | admin | regenerate subscription token |
+| GET | /api/v1/users/{id}/subscription | admin | W20: the user's subscription link `{sub_token, sub_url, legacy}` (every read is audited as `user.sub_token.read`, without the token; `no-store`) |
 | POST | /api/v1/users/{id}/revoke-sessions | admin | log the account out everywhere (204) |
 | DELETE | /api/v1/users/{id}/totp | admin | reset the account's 2FA, end its sessions; `{"totp": "active"\|"pending"\|"none"}` (what was removed) |
 | GET | /api/v1/me/shop | user (renewal scope*) | plans on sale with every priced period as the caller would buy it now (`action` new/renew/switch/reset, `discount_cents`, `credit_cents`, `balance_cents`, `amount_cents`, or `refusal`), description, stock; the caller's subscription, switch credit and balance. W16: `?coupon=CODE` (rate-limited) prices with a coupon (`coupon.refusal` / per-offer `coupon_refusal`), `?use_balance=true` with the balance |
@@ -289,7 +295,7 @@ separate loopback listener, never on the public port.
 | POST | /api/v1/alerts/test | admin | W17: `{channel}` sends a test message through the saved configuration, `{ok, error?}` |
 | GET | /api/v1/alerts/notifications | admin | W17: the last 100 deliveries; `POST …/{id}/retry` requeues a dead one |
 | POST | /pay/alipay/notify | Alipay signature | Alipay async notify (RSA2); every refusal = the canonical rejection; see docs/PAYMENTS.md |
-| GET | /sub/{token} | token | subscription (UA-based format) |
+| GET | /sub/{token} | token | subscription (UA-based format; W20: `?format=clash\|sing-box\|links` picks it explicitly) |
 | GET | /install/{token}[/agent/{arch}] | install link | node install script / agent binary while the link is live (docs/DEPLOY.md §3) |
 | GET | /healthz | — | panel liveness |
 
@@ -539,8 +545,14 @@ base32 key and the `otpauth://` URI) and activates only after a valid code;
 activation issues 10 single-use recovery codes (shown once; copy or
 download as .txt) and ends the account's other sessions. Login sends password and code in **one** request (`code` = TOTP
 code or recovery code); every failure — unknown account, wrong password,
-missing/wrong/replayed code — is the same 401 after the same work, and
-counts toward the login rate limit. A code (and any older one) is accepted
+wrong/replayed code — is the same 401 after the same work, and counts
+toward the login rate limit. W20 two-step form: a request **without** a
+code whose password is right for a 2FA account gets a distinct 401
+(`totp_required`), so the portal shows the code field only then. That
+answer exists only after the password verified (same work as any other
+outcome) and does not consume a rate-limit slot; wrong passwords still do,
+so it never speeds up password guessing (it does confirm a correct
+password of a 2FA account — the second factor is what protects it). A code (and any older one) is accepted
 once per account across all instances (DB-recorded time step); the DB clock
 is used. Secrets are stored AES-256-GCM-encrypted with a key derived from
 `data/totp.key` (0600, created on first start — **back it up with the rest
@@ -568,10 +580,18 @@ forever), pruned hourly.
 - `akari secrets rotate-prefix`: new route prefix in `data/state.json`,
   effective when the panel (every instance) restarts; the old prefix then
   becomes the plain rejection. **Every subscription URL contains the prefix
-  and changes with it**: users get a new link from the portal ("New
-  subscription link") and must be told the new console address.
-- Users regenerate their own subscription link in the portal
-  (`POST /api/v1/me/sub-token`, 5 per hour); admins can do it per user.
+  and changes with it**: the portal shows the new link at once (the token
+  itself is unchanged) and users must re-import it; tell them the new
+  console address.
+- Subscription links (W20): the token is stored hashed (lookup) **and**
+  AES-256-GCM-encrypted (AAD = user id, key derived from `data/totp.key`),
+  so the portal shows the link permanently and admins can copy it (each
+  read audited). Losing `data/totp.key` keeps the links working but no
+  longer viewable (users reset them). Accounts from before W20 keep their
+  working link; the portal offers a reset to make it viewable — it is never
+  rotated implicitly. Users reset their own link in the portal
+  (`POST /api/v1/me/sub-token`, 5 per hour, confirmed); admins can do it per
+  user.
 
 Run the CLI as the panel's service user, against the same `data/`
 directory (and database) the panel uses.

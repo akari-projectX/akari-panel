@@ -19,9 +19,12 @@ export const authBase: string = `${prefixBase}/auth`;
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** The parsed JSON error body (e.g. login's `totp_required`). */
+  body: Record<string, unknown>;
+  constructor(status: number, message: string, body: Record<string, unknown> = {}) {
     super(message);
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -32,8 +35,8 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}) as { error?: string });
-    throw new ApiError(res.status, body.error ?? res.statusText);
+    const body = (await res.json().catch(() => ({}))) as { error?: string } & Record<string, unknown>;
+    throw new ApiError(res.status, body.error ?? res.statusText, body);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -108,6 +111,21 @@ export interface Me {
   email: string | null;
   email_verified: boolean;
   locale: "zh" | "en";
+  // W20 (B1): the subscription link, always retrievable (stored encrypted).
+  // `sub_url` is null when no subscription/main domain is set (use
+  // subscriptionUrl(sub_token)); both null for admins and the renewal scope.
+  sub_token: string | null;
+  sub_url: string | null;
+  // A pre-W20 link: still works, cannot be shown until it is reset.
+  sub_legacy: boolean;
+  // Effective latency-test interval (seconds), for the node list text.
+  probe_interval_secs: number;
+}
+
+/** The subscription URL of `me`, or null (none to show). */
+export function mySubUrl(me: Pick<Me, "sub_token" | "sub_url">): string | null {
+  if (me.sub_url) return me.sub_url;
+  return me.sub_token ? subscriptionUrl(me.sub_token) : null;
 }
 
 // "enroll": only with auth.require_admin_2fa, an admin without 2FA; only the

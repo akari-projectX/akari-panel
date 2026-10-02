@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHmac } from "node:crypto";
 
 import { expect, test, type APIRequestContext, type ConsoleMessage, type Page } from "@playwright/test";
@@ -9,6 +10,9 @@ const ADMIN = must("E2E_ADMIN");
 const ADMIN_PW = must("E2E_ADMIN_PW");
 const USER = must("E2E_USER");
 const USER_PW = must("E2E_USER_PW");
+// W20: a user that ends up quota-exhausted (its own account: no interference).
+const QUOTA_USER = process.env.E2E_QUOTA_USER ?? "";
+const E2E_DB = process.env.E2E_DB ?? "";
 
 function must(name: string): string {
   const v = process.env[name];
@@ -75,11 +79,16 @@ async function rejection(req: APIRequestContext): Promise<string> {
   return r;
 }
 
+// W20 (M9): password first; the code field appears only when the server
+// answers `totp_required` (accounts with 2FA).
 async function login(page: Page, user: string, pw: string, code?: string) {
   await page.locator("#login").fill(user);
   await page.locator("#password").fill(pw);
-  await page.locator("#code").fill(code ?? "");
   await page.locator("form button[type=submit]").click();
+  if (code !== undefined) {
+    await page.locator("#code").fill(code);
+    await page.locator("form button[type=submit]").click();
+  }
 }
 
 test.describe.configure({ mode: "serial" });
@@ -100,33 +109,92 @@ test("login page: real CSP, language switch persists, <html lang> follows", asyn
   await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
   await page.reload();
   await expect(page.getByRole("heading", { name: "登录" })).toBeVisible();
-  // Uniform, localized credential error.
+  // Uniform, localized credential error; no code field for a wrong password.
+  await expect(page.getByLabel("邮箱或账号")).toBeVisible();
+  await expect(page.locator("#code")).toHaveCount(0);
   await login(page, USER, "wrong-password");
-  await expect(page.getByRole("alert")).toHaveText("账号、密码或验证码错误");
+  await expect(page.getByRole("alert")).toHaveText("账号或密码错误");
+  await expect(page.locator("#code")).toHaveCount(0);
+  await expect(page).toHaveTitle("登录 · Akari");
   expect(problems).toEqual([]);
   await ctx.close();
 });
 
-test("user portal: password login, language switch; never loads the console", async ({ browser }) => {
-  const ctx = await browser.newContext({ locale: "zh-CN" });
+test("user portal: views with navigation and deep links, permanent subscription link; never loads the console", async ({
+  browser,
+}) => {
+  const ctx = await browser.newContext({ locale: "zh-CN", permissions: ["clipboard-read", "clipboard-write"] });
   const page = await ctx.newPage();
   const problems = watch(page);
   const urls = requests(page);
   await page.goto(BASE);
   await login(page, USER, USER_PW);
-  await expect(page.getByRole("heading", { name: "我的账户" })).toBeVisible();
-  // Purchase and orders (R18-3) speak the portal's language too.
-  await expect(page.getByRole("heading", { name: "购买套餐" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "我的订单" })).toBeVisible();
-  // W11: the user's node list (none assigned here).
+  await expect(page.getByRole("heading", { level: 1, name: "仪表盘" })).toBeVisible();
+  await expect(page).toHaveTitle("仪表盘 · Akari");
+  // W20 (B1): the subscription link is always shown (issued on first view,
+  // stored encrypted, the same on every load) and it works.
+  const link = page.getByLabel("订阅链接", { exact: true });
+  await expect(link).toHaveValue(/\/sub\/[A-Za-z0-9_-]{43}$/);
+  const first = await link.inputValue();
+  await page.getByRole("button", { name: "复制链接" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "已复制到剪贴板" })).toBeVisible();
+  // (Over plain http the Clipboard API is absent; the copy then uses the
+  // legacy selection path, so only read back where the API exists.)
+  if (await page.evaluate(() => window.isSecureContext)) {
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(first);
+  }
+  await page.getByRole("button", { name: "显示二维码" }).click();
+  await expect(page.getByRole("img", { name: "订阅链接二维码" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Clash Verge / mihomo" })).toHaveAttribute(
+    "href",
+    /^clash:\/\/install-config\?url=/,
+  );
+  await expect(page.getByRole("link", { name: "Shadowrocket" })).toHaveAttribute(
+    "href",
+    /^shadowrocket:\/\/add\/sub:\/\//,
+  );
+  await expect(page.getByRole("link", { name: "sing-box" })).toHaveAttribute(
+    "href",
+    /^sing-box:\/\/import-remote-profile\?url=/,
+  );
+  expect((await ctx.request.get(first)).status()).toBe(200);
+  await page.reload();
+  await expect(page.getByLabel("订阅链接", { exact: true })).toHaveValue(first);
+  // M1: one view per nav entry, real URLs, Back works.
+  const nav = page.getByRole("navigation", { name: "主导航" }).first();
+  await nav.getByRole("link", { name: "购买套餐" }).click();
+  await expect(page).toHaveURL(`${BASE}/shop`);
+  await expect(page.getByRole("heading", { level: 1, name: "购买套餐" })).toBeVisible();
+  await nav.getByRole("link", { name: "节点" }).click();
+  await expect(page).toHaveURL(`${BASE}/nodes`);
   await expect(page.getByRole("heading", { name: "节点状态" })).toBeVisible();
   await expect(page.getByText("暂无可用节点。")).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(`${BASE}/shop`);
+  for (const [view, h1, h2] of [
+    ["orders", "订单", "我的订单"],
+    ["wallet", "邀请与钱包", "余额"],
+    ["tickets", "工单", "工单"],
+    ["account", "账户设置", "修改密码"],
+    ["shop", "购买套餐", "购买套餐"],
+  ]) {
+    await page.goto(`${BASE}/${view}`);
+    await expect(page.getByRole("heading", { level: 1, name: h1 })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: h2, exact: true }).first()).toBeVisible();
+    await expect(nav.getByRole("link", { name: h1, exact: true })).toHaveAttribute("aria-current", "page");
+  }
   await page.getByRole("button", { name: "English" }).click();
-  await expect(page.getByRole("heading", { name: "Nodes", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "My account" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Buy a plan" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "My orders" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Buy a plan" })).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  // Phone: a bottom tab bar instead of the top nav.
+  await page.setViewportSize({ width: 390, height: 844 });
+  const tabs = page.getByRole("navigation", { name: "Main navigation" }).last();
+  await expect(tabs).toBeVisible();
+  // Only one navigation is exposed at this width (the top nav is display:none).
+  await expect(page.getByRole("navigation", { name: "Main navigation" })).toHaveCount(1);
+  await tabs.getByRole("link", { name: "Orders" }).click();
+  await expect(page).toHaveURL(`${BASE}/orders`);
+  await expect(page.getByRole("heading", { level: 1, name: "Orders" })).toBeVisible();
   // R23: nothing of the console was requested, and with this user's session
   // the console is the canonical rejection, byte-identical.
   expect(urls.filter(consoleUrl)).toEqual([]);
@@ -208,11 +276,17 @@ test("admin with 2FA: password alone refused, TOTP code accepted", async ({ brow
   const page = await ctx.newPage();
   const problems = watch(page);
   await page.goto(BASE);
+  // W20 two-step: the password alone only reveals the code field.
   await login(page, ADMIN, ADMIN_PW);
-  await expect(page.getByRole("alert")).toHaveText("账号、密码或验证码错误");
+  await expect(page.getByLabel("两步验证码")).toBeVisible();
+  await expect(page.getByText("该账户已开启两步验证")).toBeVisible();
+  await page.locator("#code").fill("000000");
+  await page.locator("form button[type=submit]").click();
+  await expect(page.getByRole("alert")).toHaveText("验证码错误或已使用，请输入新的验证码");
   const next = await nextCode(secret, usedStep); // the confirm step is spent
   usedStep = next.step;
-  await login(page, ADMIN, ADMIN_PW, next.code);
+  await page.locator("#code").fill(next.code);
+  await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(ADMIN_BASE);
   await expect(page.getByRole("heading", { name: "用户", exact: true })).toBeVisible();
   await expect(page.getByText("建议开启两步验证")).toHaveCount(0);
@@ -328,10 +402,9 @@ test("W16: coupon + balance purchase (paid without the gateway), console coupons
   const ctx = await browser.newContext({ locale: "zh-CN" });
   const page = await ctx.newPage();
   const uproblems = watch(page);
-  await page.goto(BASE);
+  await page.goto(`${BASE}/shop`);
   await login(page, USER, USER_PW);
-  await expect(page.getByRole("heading", { name: "购买套餐" })).toBeVisible();
-  await expect(page.getByText("余额 ¥10.00", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "购买套餐" })).toBeVisible();
   await page.getByLabel("优惠码").fill("e2e50");
   await page.getByRole("button", { name: "使用", exact: true }).click();
   await expect(page.getByText("已使用优惠码 E2E50", { exact: true })).toBeVisible();
@@ -340,8 +413,17 @@ test("W16: coupon + balance purchase (paid without the gateway), console coupons
   await expect(page.getByText("余额支付 ¥10.00", { exact: true })).toBeVisible();
   await expect(page.getByText("应付 ¥0.00", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "购买", exact: true }).click();
-  await expect(page.getByText("付款成功，套餐已开通。", { exact: true })).toBeVisible();
-  await expect(page.getByText("E2E50 · 优惠券优惠 ¥10.00")).toBeVisible();
+  // W20: the checkout summary (only the parts that apply), then pay.
+  const sheet = page.getByRole("dialog", { name: "确认订单" });
+  await expect(sheet).toContainText("优惠券");
+  await expect(sheet).toContainText("余额支付");
+  await expect(sheet).not.toContainText("当前套餐抵扣");
+  await sheet.getByRole("button", { name: "确认开通" }).click();
+  const pay = page.getByRole("dialog", { name: "付款" });
+  await expect(pay.getByText("付款成功，套餐已开通。", { exact: true })).toBeVisible();
+  await expect(pay.getByText("E2E50 · 优惠券优惠 ¥10.00")).toBeVisible();
+  await pay.getByRole("button", { name: "关闭" }).click();
+  await page.getByRole("navigation", { name: "主导航" }).first().getByRole("link", { name: "邀请与钱包" }).click();
   await expect(page.getByText("余额 ¥0.00", { exact: true })).toBeVisible();
   await expect(page.getByRole("cell", { name: "订单支付" })).toBeVisible();
   await expect(page.getByRole("cell", { name: "人工调整" })).toBeVisible();
@@ -382,7 +464,8 @@ test("W17: ticket both sides (portal zh/en, console desk), alert center settings
   const urls = requests(user);
   await user.goto(BASE);
   await login(user, USER, USER_PW);
-  await expect(user.getByRole("heading", { name: "工单" })).toBeVisible();
+  await user.getByRole("navigation", { name: "主导航" }).first().getByRole("link", { name: "工单" }).click();
+  await expect(user.getByRole("heading", { level: 2, name: "工单" })).toBeVisible();
   await user.getByRole("button", { name: "新建工单" }).click();
   await user.getByLabel("标题").fill("e2e：节点连不上");
   await user.getByLabel("分类").selectOption("technical");
@@ -435,12 +518,97 @@ test("W17: ticket both sides (portal zh/en, console desk), alert center settings
   await user.getByRole("button", { name: "View" }).click();
   await expect(user.getByText("e2e 客服回复：请重启客户端")).toBeVisible();
   await expect(user.getByText("Support", { exact: true })).toBeVisible();
-  user.once("dialog", (d) => void d.accept());
   await user.getByRole("button", { name: "Close ticket" }).click();
+  // W20: an in-page confirmation (not the browser's English-only confirm()).
+  await user.getByRole("alertdialog").getByRole("button", { name: "Close ticket" }).click();
   await expect(user.getByText("This ticket is closed.", { exact: false })).toBeVisible();
   expect(urls.filter(consoleUrl)).toEqual([]);
   expect(uproblems).toEqual([]);
   await uctx.close();
+});
+
+// W20 (M2): a quota-exhausted user is led to the traffic reset pack.
+test("W20: quota-exhausted user lands on the reset pack", async ({ browser }) => {
+  test.skip(!secret || !QUOTA_USER || !E2E_DB, "needs the enrollment test and scripts/e2e.sh");
+  const actx = await browser.newContext({ locale: "zh-CN" });
+  const admin = await actx.newPage();
+  await admin.goto(BASE);
+  const next = await nextCode(secret, usedStep);
+  usedStep = next.step;
+  await login(admin, ADMIN, ADMIN_PW, next.code);
+  await expect(admin).toHaveURL(ADMIN_BASE);
+  const api = `${ADMIN_BASE.replace(/\/admin$/, "")}/api/v1`;
+  const plan = await actx.request.post(`${api}/plans`, {
+    data: { name: "e2e-w20", period: "monthly", traffic_quota_bytes: 1048576 },
+  });
+  expect(plan.status()).toBe(201);
+  const planId = (await plan.json()).id as string;
+  expect(
+    (
+      await actx.request.put(`${api}/plans/${planId}/prices`, {
+        data: {
+          on_sale: true,
+          prices: [
+            { period: "month", price_cents: 1000 },
+            { period: "reset", price_cents: 300 },
+          ],
+        },
+      })
+    ).status(),
+  ).toBe(204);
+  const users = (await (await actx.request.get(`${api}/users?limit=200`)).json()) as { id: string; login: string }[];
+  const uid = users.find((u) => u.login === QUOTA_USER)?.id;
+  expect(uid).toBeTruthy();
+  expect((await actx.request.put(`${api}/users/${uid}/plan`, { data: { plan_id: planId } })).status()).toBe(200);
+  // Traffic only comes from agents; here the counter is set directly and the
+  // enforcement pass (5 s) disables the account for quota.
+  execFileSync(
+    "docker",
+    [
+      "compose",
+      "exec",
+      "-T",
+      "postgres",
+      "psql",
+      "-U",
+      "akari",
+      "-d",
+      E2E_DB,
+      "-qc",
+      `UPDATE users SET traffic_used_bytes = 2097152 WHERE login = '${QUOTA_USER}'`,
+    ],
+    { cwd: "..", stdio: "ignore" },
+  );
+  await expect
+    .poll(
+      async () =>
+        (
+          (await (await actx.request.get(`${api}/users?limit=200`)).json()) as {
+            login: string;
+            disabled_reason: string | null;
+          }[]
+        ).find((u) => u.login === QUOTA_USER)?.disabled_reason,
+      { timeout: 20_000 },
+    )
+    .toBe("quota");
+  await actx.close();
+
+  const ctx = await browser.newContext({ locale: "zh-CN" });
+  const page = await ctx.newPage();
+  const problems = watch(page);
+  await page.goto(BASE);
+  await login(page, QUOTA_USER, USER_PW);
+  await expect(page.getByRole("alert").filter({ hasText: "你的流量已用完" })).toBeVisible();
+  await expect(page.getByLabel("订阅链接", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "购买流量重置包" }).click();
+  await expect(page).toHaveURL(`${BASE}/shop`);
+  await expect(page.getByText("流量已用完：已为你选好流量重置包。")).toBeVisible();
+  await expect(page.getByLabel(/^流量重置包/)).toBeChecked();
+  await page.getByRole("button", { name: "购买重置包" }).click();
+  await expect(page.getByRole("dialog", { name: "确认订单" })).toContainText("已用流量清零");
+  await expect(page.getByRole("button", { name: "去支付 ¥3.00" })).toBeVisible();
+  expect(problems).toEqual([]);
+  await ctx.close();
 });
 
 // Last: it sets the main domain (reset links need it) and opens registration.
@@ -498,8 +666,12 @@ test("W15: 系统设置 注册/邮件, sign up by email code, reset the password
   await page.getByLabel("Password", { exact: true }).fill("e2e-password-1");
   await page.getByLabel("Repeat password").fill("e2e-password-1");
   await page.getByRole("button", { name: "Sign up" }).click();
-  await expect(page.getByRole("heading", { name: "My account" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Dashboard" })).toBeVisible();
+  await page.goto(`${BASE}/account`);
   await expect(page.getByText(`${email} · verified`)).toBeVisible();
+  // W20 (Minor 6): registration is open, so the first invite code exists already.
+  await page.goto(`${BASE}/wallet`);
+  await expect(page.getByLabel("Your invite link")).toHaveValue(/\/app\/register\?invite=[a-z2-9]{10}$/);
   await page.getByRole("button", { name: "Log out" }).click();
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
 
@@ -521,7 +693,7 @@ test("W15: 系统设置 注册/邮件, sign up by email code, reset the password
   await login(page, email, "e2e-password-1");
   await expect(page.getByRole("alert")).toBeVisible();
   await login(page, email, "e2e-password-2");
-  await expect(page.getByRole("heading", { name: "My account" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Dashboard" })).toBeVisible();
   expect(problems).toEqual([]);
   await ctx.close();
 });

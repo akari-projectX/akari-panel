@@ -428,7 +428,8 @@ pub const SUB_TOKEN_PER_HOUR: i64 = 5;
 /// POST /api/v1/me/sub-token (full session, role=user): replace your own
 /// subscription token; the old URL stops working at once. Rate limited
 /// (SUB_TOKEN_PER_HOUR per account, Valkey, one key per account). Returns
-/// the new token exactly once. Audited.
+/// the new token (W20: it stays visible in `/me`, stored encrypted).
+/// Audited.
 pub async fn regenerate_own_sub_token(
     State(state): State<AppState>,
     user: AuthUser,
@@ -451,7 +452,7 @@ pub async fn regenerate_own_sub_token(
         return Err(ApiError::too_many());
     }
     let mut tx = state.pg().begin().await?;
-    let token = crate::sub::rotate_token(&mut tx, &Actor::of(&user), user.id)
+    let token = crate::sub::rotate_token(&mut tx, state.totp(), &Actor::of(&user), user.id)
         .await?
         .ok_or_else(ApiError::unauthorized)?;
     tx.commit().await?;
@@ -661,13 +662,18 @@ mod tests {
         );
 
         // Login now needs the second factor; every failure is the same 401.
+        // W20: the right password without any code is the distinct
+        // two-step answer (only after the password verified).
         let mut c2 = Client::new(&state, rand_ip());
         let unauthorized = |r: crate::testdb::http::Resp| {
             assert_eq!(r.status, StatusCode::UNAUTHORIZED);
             assert_eq!(r.json(), json!({"error": "unauthorized"}));
             assert!(r.session_cookie().is_none());
         };
-        unauthorized(c2.login(&login, PW, None).await);
+        let r = c2.login(&login, PW, None).await;
+        assert_eq!(r.json()["totp_required"], true);
+        assert!(r.session_cookie().is_none());
+        unauthorized(c2.login(&login, "wrong-password", None).await);
         unauthorized(c2.login(&login, PW, Some(other_code(&good))).await);
         unauthorized(c2.login(&login, PW, Some(&good)).await); // used by confirm
         unauthorized(c2.login(&login, "wrong-password", Some(&good)).await);
@@ -704,7 +710,8 @@ mod tests {
 
         // Wrong second factors count toward the login limit (name bucket:
         // 1 failed confirm on c (the unknown-field body is a parse error
-        // before the limiter) + 4 on c2 + 1 on c3 + 1 on c4; the unknown
+        // before the limiter) + 4 on c2 (W20: the totp-required answer is
+        // released, the extra wrong password counts) + 1 on c3 + 1 on c4; the unknown
         // account has its own).
         let name_key = crate::login_limit::keys("x", &login)[1].clone();
         let n: i64 = state.valkey().get(&name_key).await.unwrap();
@@ -1021,7 +1028,11 @@ mod tests {
             assert_eq!(r.json()["stage"], "full");
         }
         assert_eq!(c.get("/test/api/v1/me").await.status, StatusCode::OK);
-        let logins = audit_of(&db, id, 1).await;
+        let logins: Vec<_> = audit_of(&db, id, 1)
+            .await
+            .into_iter()
+            .filter(|(a, _)| a == "auth.login")
+            .collect();
         assert_eq!(logins.len(), 1, "throttled: {logins:?}");
         // Opt in.
         let e = c.post("/test/api/v1/me/totp/enroll", json!({})).await;

@@ -19,7 +19,7 @@ import { fakeApi, renderAdmin, renderWithClient } from "../test/harness";
 import { AdminCoupons } from "./admin-coupons";
 import { AdminFinance } from "./admin-finance";
 import { AdminOrders } from "./admin-orders";
-import { Billing } from "./purchase";
+import { ShopView } from "./purchase";
 import { Wallet } from "./wallet";
 
 afterEach(() => {
@@ -102,7 +102,7 @@ describe("purchase with coupon and balance", () => {
       "POST /me/orders": () => ({ status: 201, body: paidOrder }),
       "GET /me/orders/o1": paidOrder,
     });
-    renderWithClient(<Billing />);
+    renderWithClient(<ShopView me={me()} />);
     fireEvent.change(await screen.findByLabelText("Coupon code"), { target: { value: " save20 " } });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() => expect(calls.some((c) => c.search.includes("coupon=save20"))).toBe(true));
@@ -111,6 +111,9 @@ describe("purchase with coupon and balance", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: /Pay with my balance \(¥9.00 available\)/ }));
     await waitFor(() => expect(calls.some((c) => c.search.includes("use_balance=true"))).toBe(true));
     fireEvent.click(screen.getByRole("button", { name: "Buy" }));
+    const sheet = await screen.findByRole("dialog", { name: "Confirm your order" });
+    expect(sheet.textContent).toContain("Coupon−¥2.00");
+    fireEvent.click(await screen.findByRole("button", { name: /^(Pay ¥|Confirm$)/ }));
     await waitFor(() => expect(calls.some((c) => c.method === "POST")).toBe(true));
     expect(calls.find((c) => c.method === "POST")?.body).toEqual({
       plan_id: "p1",
@@ -128,14 +131,14 @@ describe("purchase with coupon and balance", () => {
       "GET /me/shop": shop({ coupon: { code: "OLD", refusal: "expired" } }),
       "GET /me/orders": [],
     });
-    renderWithClient(<Billing />);
+    renderWithClient(<ShopView me={me()} />);
     expect(await screen.findByText("优惠码已过期")).toBeTruthy();
     cleanup();
     fakeApi({
       "GET /me/shop": shop({ coupon: { code: "A", refusal: null } }, { coupon_refusal: "plan" }),
       "GET /me/orders": [],
     });
-    renderWithClient(<Billing />);
+    renderWithClient(<ShopView me={me()} />);
     expect(await screen.findByText("该优惠码不适用于此套餐")).toBeTruthy();
     // No balance: no checkbox.
     expect(screen.queryByRole("checkbox")).toBeNull();
@@ -258,7 +261,8 @@ describe("portal wallet and invitations", () => {
     expect(await screen.findByText("Balance ¥120.00")).toBeTruthy();
     expect(screen.getByText("Withdrawable ¥100.00")).toBeTruthy();
     expect(screen.getAllByText("Invite commission").length).toBeGreaterThan(0);
-    expect(screen.getByText("¥+100.00")).toBeTruthy();
+    const plus = screen.getByText("+¥100.00");
+    expect(plus.className).toContain("text-emerald-700");
     expect(screen.getByText("补偿")).toBeTruthy();
     // Invitations: W15 codes need open registration.
     expect(await screen.findByText("Registration is closed, so invite codes are not available.")).toBeTruthy();
@@ -280,6 +284,9 @@ describe("portal wallet and invitations", () => {
     });
     expect(await screen.findByText("Withdrawal requested; an admin will process it.")).toBeTruthy();
     fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    // W20: an in-page confirmation (not window.confirm).
+    expect(await screen.findByRole("alertdialog", { name: "Cancel withdrawal request" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel request" }));
     await waitFor(() => expect(calls.some((c) => c.path === "/me/withdrawals/w1/cancel")).toBe(true));
   });
 
@@ -306,8 +313,16 @@ describe("portal wallet and invitations", () => {
     expect(await screen.findByText("abcdefgh23")).toBeTruthy();
     expect(screen.getByText("暂无返利。")).toBeTruthy();
     expect(await screen.findByText("打款凭证：T1")).toBeTruthy();
-    // Nothing withdrawable, no open request: no form.
-    expect(screen.queryByText("申请提现")).toBeNull();
+    // Nothing withdrawable: the form stays, disabled with the reason (W20, audit Minor 2).
+    expect(screen.getByText("申请提现")).toBeTruthy();
+    expect(screen.getByText("可提现金额 ¥0.00 低于最低提现额 ¥50.00，暂不能申请提现。")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "提交申请" }) as HTMLButtonElement).disabled).toBe(true);
+    // The first invite code is offered as a link with copy and QR (Minor 6).
+    expect((screen.getByLabelText("你的邀请链接") as HTMLInputElement).value).toContain(
+      "/app/register?invite=abcdefgh23",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "显示二维码" }));
+    expect(screen.getByRole("img", { name: "邀请链接二维码" })).toBeTruthy();
   });
 });
 

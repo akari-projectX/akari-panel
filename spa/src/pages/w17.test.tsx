@@ -121,7 +121,6 @@ describe("portal tickets", () => {
         return { status: 204 };
       },
     });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     renderWithClient(<Tickets />);
     fireEvent.click(await screen.findByRole("button", { name: "查看" }));
     const list = await screen.findByRole("list", { name: "连不上香港节点" });
@@ -133,6 +132,9 @@ describe("portal tickets", () => {
     await waitFor(() => expect(calls.some((c) => c.path === "/me/tickets/t1/replies")).toBe(true));
     expect(calls.find((c) => c.path === "/me/tickets/t1/replies")?.body).toEqual({ message: "还是不行" });
     fireEvent.click(screen.getByRole("button", { name: "关闭工单" }));
+    // W20: an in-page confirmation dialog instead of window.confirm.
+    const dialog = await screen.findByRole("alertdialog", { name: "关闭工单" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "关闭工单" }));
     expect(await screen.findByText("工单已关闭。如有新问题请新建工单。")).toBeTruthy();
     expect(screen.queryByLabelText("回复")).toBeNull();
   });
