@@ -80,12 +80,15 @@ ADMIN_PW="e2e-admin-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 USER_PW="e2e-user-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" -c "$DIR/panel.toml" admin add e2e-admin >/dev/null
 AKARI_ADMIN_PASSWORD="$USER_PW" "$PANEL" -c "$DIR/panel.toml" admin add e2e-user --role user >/dev/null
+# W20: a second user that the spec drives into quota exhaustion.
+AKARI_ADMIN_PASSWORD="$USER_PW" "$PANEL" -c "$DIR/panel.toml" admin add e2e-quota --role user >/dev/null
 
 echo "e2e: http://$E2E_HOST:$PORT/$PREFIX/app"
 cd spa
 E2E_BASE="http://$E2E_HOST:$PORT/$PREFIX/app" \
   E2E_ADMIN=e2e-admin E2E_ADMIN_PW="$ADMIN_PW" \
   E2E_USER=e2e-user E2E_USER_PW="$USER_PW" \
+  E2E_QUOTA_USER=e2e-quota E2E_DB="$E2E_DB" \
   E2E_MAILPIT=http://127.0.0.1:18026/api/v1 E2E_SMTP_PORT=11026 \
   NO_PROXY='*' no_proxy='*' \
   npx playwright test "$@"
