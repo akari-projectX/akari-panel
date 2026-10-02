@@ -20,7 +20,7 @@
 # remapped build paths, SOURCE_DATE_EPOCH from the commit (build arg).
 
 ARG NODE_IMAGE=node:24-alpine
-ARG RUST_IMAGE=rust:1.98-alpine
+ARG RUST_IMAGE=rust:1.99-alpine
 ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian13:nonroot
 
 FROM ${NODE_IMAGE} AS spa

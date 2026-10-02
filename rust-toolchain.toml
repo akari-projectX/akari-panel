@@ -1,6 +1,6 @@
-# Pinned compiler: keep in step with ARG RUST_IMAGE in Dockerfile (rust:1.98-alpine).
+# Pinned compiler: keep in step with ARG RUST_IMAGE in Dockerfile (rust:1.99-alpine).
 # Rolling forward = change both and let CI prove it.
 [toolchain]
-channel = "1.98"
+channel = "1.99"
 components = ["rustfmt", "clippy"]
 profile = "minimal"
