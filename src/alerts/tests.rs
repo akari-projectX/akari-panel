@@ -800,24 +800,14 @@ async fn delivery_telegram_retry_dead_exclusive() {
         .await;
     assert_eq!(r.status, StatusCode::CONFLICT);
     tg.set(200, r#"{"ok":true}"#);
-    // Deliver until the retried row is settled (bounded): on a loaded CI
-    // runner the first claim pass has been seen to miss it (W17 flake).
-    let mut row: (String, i32, Option<String>) = (String::new(), 0, None);
-    for _ in 0..50 {
-        channels::deliver_due(&state).await.unwrap();
-        row = sqlx::query_as(
-            "SELECT status, attempts, last_error FROM alert_notifications WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-        if row.0 == "sent" {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    let (status, attempts, err) = row;
+    channels::deliver_due(&state).await.unwrap();
+    let (status, attempts, err): (String, i32, Option<String>) = sqlx::query_as(
+        "SELECT status, attempts, last_error FROM alert_notifications WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
     assert_eq!(status, "sent", "attempts {attempts}, last error {err:?}");
     let list = admin.get("/test/api/v1/alerts/notifications").await.json();
     assert_eq!(list.as_array().unwrap().len(), 12);
