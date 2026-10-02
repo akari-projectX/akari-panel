@@ -228,11 +228,56 @@ pub fn l4(inbound: &Value) -> (bool, bool) {
     }
 }
 
+/// Go encoding/json's key folding: ASCII case-insensitive, plus the two
+/// non-ASCII runes that fold onto ASCII letters (U+017F long s, U+212A
+/// Kelvin sign), so no key can alias another one in xray's eyes.
+pub fn fold_json_key(key: &str) -> String {
+    key.chars()
+        .map(|c| match c {
+            '\u{17f}' => 's',
+            '\u{212a}' => 'k',
+            c => c.to_ascii_lowercase(),
+        })
+        .collect()
+}
+
+/// The first key (as written) of an object anywhere in `v` that collides
+/// with another key of the same object under `fold_json_key`. Iterative,
+/// so hostile nesting depth cannot overflow the stack.
+pub fn case_fold_duplicate(v: &Value) -> Option<String> {
+    let mut stack = vec![v];
+    while let Some(v) = stack.pop() {
+        match v {
+            Value::Object(map) => {
+                let mut seen = std::collections::HashSet::with_capacity(map.len());
+                for (k, child) in map {
+                    if !seen.insert(fold_json_key(k)) {
+                        return Some(k.clone());
+                    }
+                    stack.push(child);
+                }
+            }
+            Value::Array(items) => stack.extend(items),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Protocol/transport rules for one inbound (Err = the admin-facing
 /// reason, without the tag). Only panel-managed protocols are checked
 /// beyond the transport-independent rules in `api::validate_inbounds`;
 /// absent optional fields are left to xray's defaults.
 pub fn check_inbound(inbound: &Value) -> Result<(), String> {
+    // W14: xray decodes JSON keys case-insensitively (Go encoding/json),
+    // so `tag` and `TAG` in one object are one field to xray but two to
+    // the panel's literal-key checks: whichever xray picks could bypass
+    // them (W13 found an SS2022 downgrade that way on the agent side).
+    if let Some(key) = case_fold_duplicate(inbound) {
+        return Err(format!(
+            "duplicate key {key:?} (keys differing only in letter case are one key to xray)"
+        ));
+    }
     let proto = protocol(inbound);
     let net = network(inbound);
     if net == "hysteria" && proto != "hysteria" {
@@ -438,6 +483,53 @@ pub fn port_clash(inbounds: &[Value]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// W14: keys equal under Go's case folding alias each other in xray,
+    /// at any depth (the SS2022 `method`/`METHOD` downgrade W13 found on
+    /// the agent side, a second `tag`, a shadow `security`).
+    #[test]
+    fn case_folded_duplicate_keys_are_refused_at_any_depth() {
+        let ss = |settings: Value| json!({"tag": "ss", "port": 8388, "protocol": "shadowsocks", "settings": settings});
+        let base = json!({"method": "2022-blake3-aes-128-gcm",
+                          "password": "AAAAAAAAAAAAAAAAAAAAAA==", "clients": []});
+        assert_eq!(check_inbound(&ss(base.clone())), Ok(()));
+        let mut downgraded = base.clone();
+        downgraded["METHOD"] = json!("aes-128-gcm");
+        assert!(check_inbound(&ss(downgraded))
+            .unwrap_err()
+            .contains("duplicate key"));
+        let refused = [
+            json!({"tag": "a", "TAG": "b", "protocol": "vless"}),
+            json!({"tag": "a", "protocol": "vless", "Protocol": "dokodemo-door"}),
+            json!({"tag": "a", "protocol": "vless",
+                   "streamSettings": {"security": "reality", "Security": "none"}}),
+            // deep inside an array
+            json!({"tag": "a", "protocol": "trojan",
+                   "streamSettings": {"tlsSettings": {"certificates": [
+                       {"certificateFile": "/a", "CERTIFICATEFILE": "/b"}]}}}),
+            // non-ASCII runes Go folds onto ASCII: U+017F (s), U+212A (k)
+            json!({"tag": "a", "protocol": "vless", "\u{17f}ettings": {}, "settings": {}}),
+            json!({"tag": "a", "protocol": "vless",
+                   "streamSettings": {"\u{212a}cpSettings": {}, "kcpSettings": {}}}),
+            // unmanaged protocols too (the rule is about xray's decoder)
+            json!({"tag": "a", "protocol": "dokodemo-door", "Settings": {}, "settings": {}}),
+        ];
+        for v in refused {
+            let e = check_inbound(&v).unwrap_err();
+            assert!(e.contains("duplicate key"), "{v}: {e}");
+        }
+        // Same name in different objects, and distinct keys, are fine.
+        assert_eq!(
+            case_fold_duplicate(&json!({"host": "a", "headers": {"Host": "a"}, "Hosts": 1})),
+            None
+        );
+        // Found below deep nesting (iterative walk).
+        let mut deep = json!({"x": 1, "X": 2});
+        for _ in 0..300 {
+            deep = json!([{ "k": deep }]);
+        }
+        assert!(case_fold_duplicate(&deep).is_some());
+    }
 
     #[test]
     fn accounts_follow_the_inbound() {

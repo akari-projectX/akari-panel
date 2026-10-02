@@ -1091,8 +1091,10 @@ pub struct NodeView {
     enroll_token_expires_at: Option<DateTime<Utc>>,
     /// Last heartbeat (Valkey, ~15 s cadence, 10 min TTL): cpu/mem,
     /// connections, uptime_seconds, lease_remaining_seconds, ts.
+    /// Passed through as stored (validated JSON, not re-parsed into a
+    /// `Value`: 200 blobs per node-list request, W14).
     #[sqlx(skip)]
-    heartbeat: Option<serde_json::Value>,
+    heartbeat: Option<Box<serde_json::value::RawValue>>,
     /// Problems with the stored configuration the admin must fix (e.g. an
     /// inbound using a transport the agent refuses for security reasons,
     /// stored before the check existed). Computed, not stored.
@@ -1243,7 +1245,7 @@ async fn with_heartbeats(state: &AppState, mut views: Vec<NodeView>) -> Vec<Node
     match state.valkey().mget::<Vec<Option<String>>, _>(keys).await {
         Ok(blobs) => {
             for (v, b) in views.iter_mut().zip(blobs) {
-                v.heartbeat = b.and_then(|b| serde_json::from_str(&b).ok());
+                v.heartbeat = b.and_then(|b| serde_json::value::RawValue::from_string(b).ok());
             }
         }
         Err(e) => tracing::warn!(error = %e, "heartbeat lookup failed"),
@@ -1251,33 +1253,45 @@ async fn with_heartbeats(state: &AppState, mut views: Vec<NodeView>) -> Vec<Node
     views
 }
 
+/// `SELECT {NODE_VIEW_COLS} {NODE_VIEW_FROM} ...`: the per-node extras
+/// (enrollment, groups, latency, rollout) are joined from aggregates, not
+/// correlated subqueries: for the 200-node list that is one pass over each
+/// table instead of 200 probes per table (W14: 4.4 -> 2.6 ms, the list was
+/// the slowest admin read under agent load).
 pub const NODE_VIEW_COLS: &str =
-    "id, name, enabled, status, agent_version, core_version, agent_os, agent_arch, \
-     (SELECT jsonb_build_object('rollout_id', r.id, 'version', r.version, \
-        'rollout_status', r.status, 'status', rn.status, 'detail', rn.detail) \
-        FROM rollout_nodes rn JOIN rollouts r ON r.id = rn.rollout_id \
-        WHERE rn.node_id = nodes.id ORDER BY r.created_at DESC LIMIT 1) AS update_status, \
-     config_version, \
+    "nodes.id, name, enabled, status, agent_version, core_version, agent_os, agent_arch, \
+     ro.update_status, config_version, \
      user_version, xray_inbounds, server_addr, region, tls_domain, host(agent_addr) AS agent_addr, last_error, last_error_at, failed_config_version, \
      failed_user_version, agent_protocol, agent_capabilities, lease_expires_at, \
      GREATEST(0, EXTRACT(EPOCH FROM lease_expires_at - now()))::bigint AS lease_remaining_seconds, \
-     traffic_max_rate_bytes_per_sec, deleting_at, last_seen_at, created_at, \
+     traffic_max_rate_bytes_per_sec, deleting_at, last_seen_at, nodes.created_at, \
      cert_serial IS NOT NULL AS enrolled, cert_not_after, \
-     (SELECT e.expires_at FROM node_enrollments e WHERE e.node_id = nodes.id \
-        AND e.used_at IS NULL AND e.expires_at > now()) AS enroll_token_expires_at, \
+     enr.expires_at AS enroll_token_expires_at, \
      CASE WHEN agent_protocol < 4 THEN EXISTS (SELECT 1 FROM node_users nu \
         JOIN user_plans up ON up.user_id = nu.user_id AND up.status = 'active' \
         JOIN plans p ON p.id = up.plan_id \
         WHERE nu.node_id = nodes.id AND p.speed_limit_mbps IS NOT NULL) \
         ELSE false END AS unenforced_speed_limits, \
      display_name, sort, visible, tags, traffic_rate_permille, connect_overrides, \
-     ARRAY(SELECT m.group_id FROM node_group_members m WHERE m.node_id = nodes.id \
-        ORDER BY m.group_id) AS group_ids, traffic_raw_bytes, traffic_billed_bytes, \
+     coalesce(grp.group_ids, '{}') AS group_ids, traffic_raw_bytes, traffic_billed_bytes, \
      (nodes.status = 'online' AND nodes.last_seen_at > now() - interval '90 seconds') AS online, \
-     (SELECT coalesce(jsonb_agg(jsonb_build_object('source', l.source, 'target', l.target, \
-        'delay_ms', l.delay_ms, 'error', l.error, 'measured_at', l.measured_at) \
-        ORDER BY l.source, l.ord), '[]'::jsonb) FROM node_latency l WHERE l.node_id = nodes.id) \
-        AS latency, probe_requested_at";
+     coalesce(lat.latency, '[]'::jsonb) AS latency, probe_requested_at";
+
+/// The FROM clause that goes with `NODE_VIEW_COLS` (filters on `nodes.`).
+pub const NODE_VIEW_FROM: &str = "FROM nodes \
+     LEFT JOIN node_enrollments enr ON enr.node_id = nodes.id \
+        AND enr.used_at IS NULL AND enr.expires_at > now() \
+     LEFT JOIN (SELECT node_id, array_agg(group_id ORDER BY group_id) AS group_ids \
+        FROM node_group_members GROUP BY node_id) grp ON grp.node_id = nodes.id \
+     LEFT JOIN (SELECT node_id, jsonb_agg(jsonb_build_object('source', l.source, \
+        'target', l.target, 'delay_ms', l.delay_ms, 'error', l.error, \
+        'measured_at', l.measured_at) ORDER BY l.source, l.ord) AS latency \
+        FROM node_latency l GROUP BY node_id) lat ON lat.node_id = nodes.id \
+     LEFT JOIN (SELECT DISTINCT ON (rn.node_id) rn.node_id, jsonb_build_object( \
+        'rollout_id', r.id, 'version', r.version, 'rollout_status', r.status, \
+        'status', rn.status, 'detail', rn.detail) AS update_status \
+        FROM rollout_nodes rn JOIN rollouts r ON r.id = rn.rollout_id \
+        ORDER BY rn.node_id, r.created_at DESC) ro ON ro.node_id = nodes.id";
 
 pub async fn list_nodes(
     State(state): State<AppState>,
@@ -1285,7 +1299,7 @@ pub async fn list_nodes(
 ) -> Result<Json<Vec<NodeView>>, ApiError> {
     user.require_admin()?;
     let rows = sqlx::query_as::<_, NodeView>(sqlx::AssertSqlSafe(format!(
-        "SELECT {NODE_VIEW_COLS} FROM nodes ORDER BY sort, created_at"
+        "SELECT {NODE_VIEW_COLS} {NODE_VIEW_FROM} ORDER BY sort, nodes.created_at, nodes.id"
     )))
     .fetch_all(state.pg())
     .await?;
@@ -1742,7 +1756,7 @@ pub async fn update_node(
     }
     tx.commit().await?;
     let row = sqlx::query_as::<_, NodeView>(sqlx::AssertSqlSafe(format!(
-        "SELECT {NODE_VIEW_COLS} FROM nodes WHERE id = $1"
+        "SELECT {NODE_VIEW_COLS} {NODE_VIEW_FROM} WHERE nodes.id = $1"
     )))
     .bind(id)
     .fetch_optional(state.pg())
@@ -1913,12 +1927,7 @@ pub(crate) fn validate_inbounds(inbounds: &serde_json::Value) -> Result<(), ApiE
 /// with it): case-insensitive, including the two non-ASCII runes that fold
 /// onto ASCII letters (U+017F long s, U+212A Kelvin sign).
 fn json_key_eq(key: &str, want: &str) -> bool {
-    let fold = |c: char| match c {
-        '\u{17f}' => 's',
-        '\u{212a}' => 'k',
-        c => c.to_ascii_lowercase(),
-    };
-    key.chars().map(fold).eq(want.chars())
+    crate::protocols::fold_json_key(key) == want
 }
 
 /// Values of `obj`'s keys matching `name` the Go-json way (every duplicate

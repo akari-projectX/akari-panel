@@ -201,8 +201,9 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         p,
         "api::list_nodes",
         q!(format!(
-            "SELECT {} FROM nodes ORDER BY created_at",
-            api::NODE_VIEW_COLS
+            "SELECT {} {} ORDER BY sort, nodes.created_at, nodes.id",
+            api::NODE_VIEW_COLS,
+            api::NODE_VIEW_FROM
         )),
     )
     .await?;

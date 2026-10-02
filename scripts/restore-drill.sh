@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Backup/restore drill against the DEV stack (docs/BACKUP.md).
 #
-#   DESTROYS the dev database and flushes the dev Valkey. Development
-#   machines only. Needs: make dev-up, a release build (make panel), the
+#   Uses its own database on the dev PostgreSQL (DRILL_DB, default
+#   akari_drill: DESTROYED and recreated) and its own Valkey db index
+#   (DRILL_VALKEY_DB, default 14: FLUSHDB), so other databases on the dev
+#   stack are untouched. Binds 8080/8443/8081: serialise with smoke (flock).
+#   Development machines only. Needs: make dev-up, a release build (make panel), the
 #   agent binary (../akari-agent/agent), age + age-keygen, jq, curl,
 #   python3 (TOTP codes: admins must use two-factor authentication).
 #
@@ -35,14 +38,22 @@ cleanup() {
 trap cleanup EXIT
 fail() { echo "DRILL FAIL: $*" >&2; tail -n 20 "$W"/*.log 2>/dev/null >&2 || true; exit 1; }
 
-psql_dev() { docker compose exec -T postgres psql -U akari -d akari -v ON_ERROR_STOP=1 -q "$@"; }
+unset DATABASE_URL VALKEY_URL  # panel.toml below names the drill database
+DRILL_DB="${DRILL_DB:-akari_drill}"
+DRILL_VALKEY_DB="${DRILL_VALKEY_DB:-14}"
+case "$DRILL_DB" in akari|*[!a-z0-9_]*) fail "DRILL_DB must be [a-z0-9_] and not the dev database";; esac
+psql_dev() { docker compose exec -T postgres psql -U akari -d "$DRILL_DB" -v ON_ERROR_STOP=1 -q "$@"; }
+docker compose exec -T postgres psql -U akari -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$DRILL_DB'" | matches 1 \
+  || docker compose exec -T postgres psql -U akari -d postgres -qc "CREATE DATABASE \"$DRILL_DB\"" >/dev/null
 wipe_db() {
   psql_dev -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;' >/dev/null
-  docker compose exec -T valkey valkey-cli flushall >/dev/null
+  docker compose exec -T valkey valkey-cli -n "$DRILL_VALKEY_DB" flushdb >/dev/null
 }
 
 cat >"$W/panel.toml" <<TOML
 data_dir = "$W/data"
+database_url = "postgres://akari:akari-dev@localhost:5432/$DRILL_DB"
+valkey_url = "redis://127.0.0.1:6379/$DRILL_VALKEY_DB"
 [web]
 cookie_secure = false
 TOML
@@ -118,7 +129,7 @@ echo "== 2. backup =="
 age-keygen -o "$W/age.key" 2>"$W/age.pub.txt"
 RECIP="$(awk '/Public key:/{print $3}' "$W/age.pub.txt")"
 AGE_RECIPIENT="$RECIP" AKARI_DATA_DIR="$W/data" AKARI_BACKUP_DIR="$W/backups" \
-  AKARI_PG_DUMP_CMD='docker compose exec -T postgres pg_dump -U akari -Fc akari' \
+  AKARI_PG_DUMP_CMD="docker compose exec -T postgres pg_dump -U akari -Fc $DRILL_DB" \
   scripts/backup.sh
 BACKUP="$(find "$W/backups" -maxdepth 1 -name 'akari-*' -type d | sed -n 1p)"
 ls -l "$BACKUP"
@@ -136,7 +147,7 @@ wipe_db
 
 echo "== 4. restore =="
 AGE_IDENTITY_FILE="$W/age.key" AKARI_DATA_DIR="$W/data" \
-  AKARI_PG_RESTORE_CMD='docker compose exec -T postgres pg_restore -U akari -d akari --clean --if-exists --no-owner --single-transaction' \
+  AKARI_PG_RESTORE_CMD="docker compose exec -T postgres pg_restore -U akari -d $DRILL_DB --clean --if-exists --no-owner --single-transaction" \
   scripts/restore.sh "$BACKUP"
 
 echo "== 5. verify: same prefix, logins, users; agent reconnects =="

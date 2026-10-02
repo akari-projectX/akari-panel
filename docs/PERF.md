@@ -30,6 +30,54 @@ Notes:
   Not an admin-rate scenario (the run was 2400 patches/s), recorded for
   completeness.
 
+## Re-verification 2026-10-02 (W14, after W5/W7/W9/W11/W12)
+
+Same machine and method as below (bench stack, `make bench-seed`, 200 swarm agents x 10k users,
+`http` 16 closed-loop clients, the loaded `http` run starting 80 s into a 150 s swarm with 40 timed
+changes). New in the load since M2: the 系统设置 Host gate is active (main domain set in
+`panel_settings`), every swarm heartbeat carries W11 machine metrics (the `node_metrics_1m`
+upserts), the user-set read LEFT JOINs the plan speed limit (W7), the node list carries
+heartbeat/latency/group/rollout fields. Host caveat: 15 GiB shared with other work, swap full
+during the swarm runs, so every loaded number is an upper bound.
+
+| §0 target | M2 (PERF below) | W14 first run | W14 after fixes | Verdict |
+|---|---|---|---|---|
+| Snapshot build, 10k users < 200 ms | 33 / 43 ms | `db/desired_snapshot` 42.6 ms, `db/snapshot_build_full` 52.6 ms | (unchanged) | pass (W7 join + newer fields: +10 ms) |
+| Flush 50k rows < 1 s | 0.91 s (M2), 0.49 s (W11) | 0.477 s | (unchanged) | pass, 52% margin |
+| Admin API p99 < 50 ms, idle | worst read 10.2 ms (`nodes`) | `nodes` 20.1 ms; worst write `user_patch` 24.5 ms | `nodes` 12.6 ms; `user_patch` 23.3 ms | pass |
+| Admin API p99 < 50 ms, 200 agents | worst read 30.5 ms (`users_deep`) | `nodes` 58.2 / 61.3 ms | `nodes` 47–55 ms (4 runs: 49.9, 54.6, 47.5, 49.3), `users_deep` 35.8 ms | **borderline** (`nodes`, see below) |
+| Subscription p99 < 30 ms | 5.1 idle / 16.7 load / 31 balancer | 5.5 / 15.4 | 5.3 idle / 16.4–17.0 load / 28.0 (`clash`), 11.2 (`links`) balancer | pass |
+| User change → agent < 2 s | p99 0.59 s, max 0.68 s | **p99 1.86 s, max 2.01 s** | p99 0.75 s, max 0.96 s (balancer: p99 0.55 s, max 0.79 s) | pass after fix |
+| Billing exact | exact | exact | exact (every run, single and two instances) | pass |
+| `akari-bench multi` | all pass | — | all pass | pass |
+
+**Fix 1 — change-to-agent tail (grpc.rs).** Every session re-read its node's full desired state
+on a 60 s reconcile tick whose phase was the session start, so agents that connected together (all
+of them after a panel restart, and the swarm) reconciled in lockstep: ~200 reads of 10k users
+queued on the 8 read permits once a minute, and a change landing in that burst waited behind
+them (max 1.36 s without HTTP load, 2.01 s with it). The tick's phase is now random per
+session; the period, the lease renewal and the notification path are unchanged.
+
+**Fix 2 — node list query (api.rs).** `NODE_VIEW_COLS` ran five correlated subqueries per node
+(enrollment, groups, latency, rollout, speed-limit check); four are now joins against
+per-table aggregates (`NODE_VIEW_FROM`): 4.4 → 2.6 ms for 200 nodes in PostgreSQL (single node
+0.65 → 0.85 ms), and the heartbeat blobs are passed through as validated raw JSON instead of
+being parsed into `Value`s and re-serialized. Idle `nodes` p99 20.1 → 12.6 ms (1157 → 1865 req/s).
+
+**Remaining: `GET /nodes` under 200 reporting agents.** With the swarm connected the list is
+480 KB (per node: inbounds JSON, latency, and the whole W11 heartbeat with machine metrics), and
+16 clients fetching it back to back saturate at ~670 req/s; the p99 lands at 47–55 ms around
+the 50 ms line. It is a throughput ceiling of a closed loop, not a slow query: at 4 clients the
+same load gives p99 34 ms, and a single admin console polls it every few seconds. The real
+fix is a slimmer list (machine metrics and inbound JSON only on the node page, or paging),
+a UI change left for a follow-up. Writes under saturation (`user_patch`, 16 clients at
+~530/s) stay what M2 recorded: not an admin-rate scenario (p99 130–200 ms, each patch locks the
+user's ~40 nodes behind flush chunks).
+
+Criterion (same run): `user_set` 3.34 ms, `state_hash` 1.12 ms, `diff_user_sets` 1.50 / 1.67 ms,
+`snapshot_encode` 0.40 ms, `sub_render` 200 nodes clash/links/sing-box 0.60 / 0.63 / 1.26 ms,
+`buffer/snapshot` 22 ms, `buffer/prune_idle` 33 ms, `buffer/prune_full` 0.60 s.
+
 ## Machine and stack
 
 - Intel Core Ultra 7 265K (20 threads), 15 GiB RAM, WSL2 (Linux 6.18).
