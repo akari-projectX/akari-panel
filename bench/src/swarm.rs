@@ -560,6 +560,7 @@ async fn session(
                         online_users: 50,
                         ..Default::default()
                     }),
+                    ..Default::default()
                 })).await?;
             }
             _ = stop.changed() => return Ok(()),
