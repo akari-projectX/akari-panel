@@ -1,0 +1,1 @@
+{"templates": [{"template": "vless_tls_vision", "port": 9443, "domain": "node.example.com"}], "tls_domain": "node.example.com"}

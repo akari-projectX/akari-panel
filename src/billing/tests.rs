@@ -2606,3 +2606,216 @@ async fn plan_catalogue_admin_api() {
     drop(state);
     db.drop().await;
 }
+
+/// `end_order` (cancel / expiry) under gateway trouble: an unreachable
+/// gateway leaves the order pending unless the close grace is exceeded
+/// (force), where it ends with close_state "failed"; a close Alipay
+/// refuses is retried later (not forced); an order another instance ended
+/// meanwhile is reported as it is now, without a second event.
+#[tokio::test]
+async fn end_order_outages_and_races() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let alipay = state.alipay().unwrap().clone();
+    let (_, plan) = priced_plan(&db, "e", 300, 30).await;
+    let actor = crate::audit::Actor::test();
+    let pending = |id: Uuid, otn: &str| Pending {
+        id,
+        out_trade_no: otn.to_string(),
+        amount_cents: 300,
+        expires_at: chrono::Utc::now(),
+        due: true,
+    };
+    let events = |id: Uuid| {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM payment_events WHERE order_id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+
+    // Gateway down: not forced -> still pending, nothing recorded.
+    let (o1, otn1) = order_row(&db, db.user().await, plan, 300, 30).await;
+    alipay.precreate(NOTIFY, &otn1, 300, "s").await.unwrap();
+    mock.set_down(true);
+    let st = orders::end_order(
+        &state,
+        &alipay,
+        &pending(o1, &otn1),
+        "expired",
+        &actor,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(st, "pending");
+    assert_eq!(order_status(&db, o1).await.0, "pending");
+    assert_eq!(events(o1).await, 0);
+    // Forced (close grace exceeded): ends although the close failed.
+    let st = orders::end_order(
+        &state,
+        &alipay,
+        &pending(o1, &otn1),
+        "expired",
+        &actor,
+        true,
+    )
+    .await
+    .unwrap();
+    assert_eq!(st, "expired");
+    let cs: Option<String> = sqlx::query_scalar("SELECT close_state FROM orders WHERE id = $1")
+        .bind(o1)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(cs.as_deref(), Some("failed"));
+    assert_eq!(events(o1).await, 1);
+    mock.set_down(false);
+
+    // Alipay refuses the close (trade no longer closable, not paid): the
+    // order stays pending for the next attempt.
+    let (o2, otn2) = order_row(&db, db.user().await, plan, 300, 30).await;
+    alipay.precreate(NOTIFY, &otn2, 300, "s").await.unwrap();
+    mock.inner
+        .lock()
+        .unwrap()
+        .trades
+        .get_mut(&otn2)
+        .unwrap()
+        .status = Some("TRADE_CLOSED".into());
+    let st = orders::end_order(
+        &state,
+        &alipay,
+        &pending(o2, &otn2),
+        "cancelled",
+        &actor,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(st, "pending");
+    assert_eq!(order_status(&db, o2).await.0, "pending");
+
+    // Ended by someone else between our query/close and the UPDATE.
+    let (o3, otn3) = order_row(&db, db.user().await, plan, 300, 30).await;
+    alipay.precreate(NOTIFY, &otn3, 300, "s").await.unwrap();
+    sqlx::query("UPDATE orders SET status = 'cancelled', ended_at = now() WHERE id = $1")
+        .bind(o3)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let st = orders::end_order(
+        &state,
+        &alipay,
+        &pending(o3, &otn3),
+        "expired",
+        &actor,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(st, "cancelled");
+    assert_eq!(events(o3).await, 0, "no event for an order we did not end");
+    db.drop().await;
+}
+
+/// Junk notify events (unverified) older than the audit retention are
+/// pruned; verified events are money records and stay; retention 0 keeps
+/// everything.
+#[tokio::test]
+async fn prune_events_keeps_money_records() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let mut c = db.pool.acquire().await.unwrap();
+    for (verified, outcome) in [(false, "old_junk"), (true, "old_paid"), (false, "new_junk")] {
+        orders::record_event(
+            &mut c,
+            None,
+            Some("x"),
+            "notify",
+            verified,
+            outcome,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        "UPDATE payment_events SET created_at = now() - interval '400 days' \
+         WHERE outcome IN ('old_junk', 'old_paid')",
+    )
+    .execute(&mut *c)
+    .await
+    .unwrap();
+    drop(c);
+    let keep = AppState::for_test_with(db.pool.clone(), |c| c.audit.retention_days = 0).await;
+    assert_eq!(orders::prune_events(&keep).await.unwrap(), 0);
+    assert_eq!(orders::prune_events(&state).await.unwrap(), 1);
+    let left: Vec<String> =
+        sqlx::query_scalar("SELECT outcome FROM payment_events ORDER BY outcome")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(left, vec!["new_junk".to_string(), "old_paid".to_string()]);
+    db.drop().await;
+}
+
+/// `PeriodKind::months` mirrors SQL `akari_period_end` (UTC calendar
+/// months, month end clamped) for every calendar kind; days/onetime are
+/// N x 24 h; the reset pack has no period end; a period kind outside the
+/// catalog read back from TEXT is an error, not a default.
+#[tokio::test]
+async fn period_months_mirror_sql() {
+    use super::catalog::{PeriodKind, PeriodKindText};
+    use chrono::{DateTime, Months, TimeZone, Utc};
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let base = Utc.with_ymd_and_hms(2026, 1, 31, 12, 0, 0).unwrap();
+    for k in PeriodKind::ALL {
+        let days = (k.months().is_none() && k != PeriodKind::Reset).then_some(30);
+        let end: Result<Option<DateTime<Utc>>, _> =
+            sqlx::query_scalar("SELECT akari_period_end($1, $2, $3)")
+                .bind(base)
+                .bind(k.as_str())
+                .bind(days)
+                .fetch_one(&db.pool)
+                .await;
+        match (k, k.months()) {
+            (_, Some(m)) => assert_eq!(
+                end.unwrap(),
+                base.checked_add_months(Months::new(m as u32)),
+                "{k:?}"
+            ),
+            (PeriodKind::Reset, None) => assert!(end.is_err(), "reset has no period end"),
+            (_, None) => assert_eq!(
+                end.unwrap(),
+                Some(base + chrono::Duration::days(30)),
+                "{k:?}"
+            ),
+        }
+        assert_eq!(PeriodKind::parse(k.as_str()), Some(k));
+    }
+    // 31 Jan + 1 month clamps to 28 Feb (2026 is not a leap year).
+    assert_eq!(
+        base.checked_add_months(Months::new(1)).unwrap(),
+        Utc.with_ymd_and_hms(2026, 2, 28, 12, 0, 0).unwrap()
+    );
+    let e = PeriodKindText::try_from("fortnight".to_string()).unwrap_err();
+    assert!(e.contains("fortnight"), "{e}");
+    assert_eq!(
+        PeriodKindText::try_from("year".to_string()).unwrap(),
+        PeriodKindText(PeriodKind::Year)
+    );
+    db.drop().await;
+}

@@ -1,0 +1,1 @@
+{"templates": [{"template": "transport", "port": 2052, "protocol": "trojan", "network": "httpupgrade", "path": "/h", "host": "cdn.example.com", "tls": true}], "tls_domain": "node.example.com"}

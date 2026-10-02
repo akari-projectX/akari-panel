@@ -1,0 +1,1 @@
+[{"tag": "v", "port": 443, "protocol": "vless", "settings": {"clients": [], "decryption": "none", "flow": "xtls-rprx-vision"}, "streamSettings": {"network": "tcp", "security": "reality", "realitySettings": {"dest": "www.apple.com:443", "serverNames": ["www.apple.com"], "privateKey": "aGVsbG8", "shortIds": ["ab"]}}}]

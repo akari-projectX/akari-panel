@@ -1,0 +1,1 @@
+[{"tag": "s", "port": 8388, "protocol": "shadowsocks", "settings": {"method": "2022-blake3-aes-128-gcm", "password": "AAAAAAAAAAAAAAAAAAAAAA==", "clients": [], "network": "tcp,udp"}}, {"tag": "h", "port": 443, "protocol": "hysteria", "settings": {"version": 2, "clients": []}, "streamSettings": {"network": "hysteria", "security": "tls", "hysteriaSettings": {"version": 2}}}]

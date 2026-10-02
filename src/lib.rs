@@ -15,6 +15,9 @@ pub mod db;
 pub mod enforce;
 pub mod enroll;
 pub mod entitle;
+#[cfg(fuzzing)]
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod gen;
 pub mod grpc;
 pub mod install;

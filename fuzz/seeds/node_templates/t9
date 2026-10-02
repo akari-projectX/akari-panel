@@ -1,0 +1,1 @@
+{"templates": [{"template": "shadowsocks_2022", "port": 8388, "method": "2022-blake3-aes-256-gcm"}], "tls_domain": "node.example.com"}

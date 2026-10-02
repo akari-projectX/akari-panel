@@ -1,0 +1,67 @@
+name: fuzz
+
+# cargo-fuzz over the parsers of untrusted input (fuzz/, docs/FUZZING.md).
+# PRs/pushes: every target briefly against the committed seeds and the
+# cached corpus (regressions); nightly: 5 min per target, growing the
+# cached corpus.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "47 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: seconds per target
+        default: "300"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  fuzz:
+    name: fuzz (cargo-fuzz)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: fuzz
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # fuzz/rust-toolchain.toml pins the nightly (libFuzzer needs -Z flags).
+      - run: rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: fuzz -> target
+      - run: command -v cargo-fuzz || cargo install cargo-fuzz --locked --version 0.13.2
+      - name: fmt + clippy (fuzz crate)
+        run: cargo fmt --check && RUSTFLAGS="--cfg fuzzing" cargo clippy --all-targets --locked -- -D warnings
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+      - name: fuzz every target
+        run: |
+          secs=20
+          if [ "${{ github.event_name }}" = schedule ]; then secs=300; fi
+          if [ -n "${{ inputs.seconds }}" ]; then secs="${{ inputs.seconds }}"; fi
+          ./run.sh "$secs"
+      - if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crashes
+          path: |
+            fuzz/artifacts
+            fuzz/logs
+          retention-days: 30

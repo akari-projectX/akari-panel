@@ -1,0 +1,1 @@
+{"templates": [{"template": "vless_reality", "port": 443, "tag": "r", "dest": "dl.google.com:443", "server_name": "dl.google.com", "fingerprint": "chrome", "vision": true}], "tls_domain": "node.example.com"}

@@ -30,7 +30,7 @@ use crate::state::AppState;
 
 /// Notify body cap (Alipay's are ~1-2 KiB).
 const MAX_NOTIFY_BODY: usize = 16 * 1024;
-const MAX_NOTIFY_PARAMS: usize = 64;
+pub(crate) const MAX_NOTIFY_PARAMS: usize = 64;
 /// Notifies per source address (/64) per window.
 const NOTIFY_RATE: i64 = 120;
 const NOTIFY_WINDOW_SECS: i64 = 60;
@@ -725,7 +725,7 @@ fn redacted_params(p: &BTreeMap<String, String>) -> Value {
 }
 
 /// Decode a form body; None on duplicates, too many params or non-UTF-8.
-fn parse_form(body: &[u8]) -> Option<BTreeMap<String, String>> {
+pub(crate) fn parse_form(body: &[u8]) -> Option<BTreeMap<String, String>> {
     std::str::from_utf8(body).ok()?;
     let mut out = BTreeMap::new();
     for (k, v) in form_urlencoded::parse(body) {
