@@ -510,7 +510,7 @@ async fn limits() {
         };
         set.spawn(async move {
             let mut tx = pool.begin().await.unwrap();
-            match apply_create(&mut tx, &Actor::test(), &me, &req).await {
+            match apply_create(&mut tx, &Actor::test(), &me, &req, None).await {
                 Ok(_) => {
                     tx.commit().await.unwrap();
                     true
@@ -550,6 +550,7 @@ async fn limits() {
             message: "x".into(),
             close: false,
         },
+        None,
     )
     .await
     .unwrap_err();
@@ -588,6 +589,106 @@ async fn limits() {
         third.post("/test/api/v1/me/tickets", b).await.status,
         StatusCode::BAD_REQUEST
     );
+    drop(state);
+    db.drop().await;
+}
+
+async fn enable_smtp(db: &TestDb) {
+    sqlx::query(
+        "UPDATE smtp_settings SET enabled = true, host = 'smtp.example.com', \
+         from_addr = 'noreply@example.com'",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+}
+
+async fn set_email(db: &TestDb, user: Uuid, email: &str, verified: bool, locale: &str) {
+    sqlx::query(
+        "UPDATE users SET email = $2, locale = $4, \
+         email_verified_at = CASE WHEN $3 THEN now() END WHERE id = $1",
+    )
+    .bind(user)
+    .bind(email)
+    .bind(verified)
+    .bind(locale)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+}
+
+async fn outbox(db: &TestDb) -> Vec<(String, String, String)> {
+    sqlx::query_as("SELECT kind, to_addr, subject FROM mail_outbox ORDER BY id")
+        .fetch_all(&db.pool)
+        .await
+        .unwrap()
+}
+
+/// Ticket mail goes through the W15 outbox, to verified addresses only, in
+/// the recipient's language; nothing without SMTP.
+#[tokio::test]
+async fn ticket_mail_uses_the_outbox() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let user = db.user().await;
+    let admin = db.admin().await;
+    let other_admin = db.admin().await;
+    set_email(&db, user, "user@example.com", true, "en").await;
+    set_email(&db, admin, "ops@example.com", true, "zh").await;
+    set_email(&db, other_admin, "unverified@example.com", false, "zh").await;
+    let cu = client(&state, user).await;
+    let ca = client(&state, admin).await;
+    // SMTP off: nothing is queued.
+    let t = create(&cu, "无邮件").await;
+    assert!(outbox(&db).await.is_empty());
+    enable_smtp(&db).await;
+    let t2 = create(&cu, "有邮件").await;
+    assert_eq!(
+        outbox(&db).await,
+        vec![(
+            "ticket_new".into(),
+            "ops@example.com".into(),
+            "Akari：新工单".into()
+        )]
+    );
+    for id in [t, t2] {
+        let r = ca
+            .post(
+                &format!("/test/api/v1/tickets/{id}/replies"),
+                json!({"message": "已处理"}),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::CREATED);
+    }
+    let mails = outbox(&db).await;
+    assert_eq!(mails.len(), 3);
+    assert_eq!(
+        mails[1],
+        (
+            "ticket_reply".into(),
+            "user@example.com".into(),
+            "Akari: new reply to your ticket".into()
+        )
+    );
+    // A customer reply mails nobody; an unverified owner gets nothing.
+    let r = cu
+        .post(
+            &format!("/test/api/v1/me/tickets/{t2}/replies"),
+            json!({"message": "谢谢"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    set_email(&db, user, "user@example.com", false, "en").await;
+    let r = ca
+        .post(
+            &format!("/test/api/v1/tickets/{t2}/replies"),
+            json!({"message": "再见"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    assert_eq!(outbox(&db).await.len(), 3);
     drop(state);
     db.drop().await;
 }

@@ -26,8 +26,8 @@
 //!   and a claim token; at-least-once; exponential backoff; dead after
 //!   `MAX_ATTEMPTS` or a permanent refusal). Channels: Telegram bot
 //!   (outbound `sendMessage` only), a generic webhook (HMAC-SHA256 signed
-//!   JSON), email through the W15 outbox (`mailhook`, hook until W15
-//!   lands). The bot token and the webhook key are sealed in the database
+//!   JSON), email through the W15 outbox (`mailhook`;
+//!   SMTP off = a permanent failure). The bot token and the webhook key are sealed in the database
 //!   (`totp::Keys::seal`) and never returned, logged or audited in clear.
 //! - **Prometheus**: `akari_node_alerts_firing{kind}` (bounded: the kinds),
 //!   `akari_alert_notifications_total{channel,result}`,

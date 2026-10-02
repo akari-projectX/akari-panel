@@ -577,3 +577,23 @@ async fn test_mail_endpoint_reports_failures() {
     assert_eq!(n, 1);
     db.drop().await;
 }
+
+/// W17: SMTP error text in the warning log never carries an address.
+#[test]
+fn smtp_errors_are_logged_without_addresses() {
+    use super::sender::redact_addresses as r;
+    assert_eq!(
+        r("permanent error (550): 5.1.1 <Alice.B+x@Mail.Example.COM>: Recipient address rejected"),
+        "permanent error (550): 5.1.1 <address>: Recipient address rejected"
+    );
+    assert_eq!(
+        r("to bob@example.org, cc c@d.io."),
+        "to <address>, cc <address>."
+    );
+    assert_eq!(
+        r("no address @ here, user@localhost, a@b"),
+        "no address @ here, user@localhost, a@b"
+    );
+    assert_eq!(r("用户 张三@例子.中国 不存在"), "用户 <address> 不存在");
+    assert_eq!(r(""), "");
+}

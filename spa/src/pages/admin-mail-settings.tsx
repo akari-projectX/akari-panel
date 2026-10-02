@@ -73,6 +73,9 @@ export const KIND_LABEL: Record<string, string> = {
   quota_80: "流量 80%",
   quota_100: "流量用完",
   test: "测试邮件",
+  ticket_reply: "工单回复",
+  ticket_new: "新工单",
+  node_alert: "节点告警",
 };
 
 /** One domain per line or comma; "@" prefixes allowed (the server normalises). */

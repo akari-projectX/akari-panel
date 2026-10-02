@@ -24,7 +24,7 @@
 //! - Every mutation is an `apply_*` in the caller's transaction with its
 //!   audit row (`ticket.create/reply/close/reopen/assign`; bodies are not
 //!   copied into the audit log). Email notifications go through
-//!   `mailhook` (W15 outbox hook).
+//!   `mailhook` (the W15 SMTP outbox, verified addresses only).
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -177,6 +177,7 @@ pub async fn apply_create(
     actor: &Actor,
     user: &Author,
     req: &CreateReq,
+    links: Option<&crate::mailhook::Links>,
 ) -> Result<Uuid, ApiError> {
     let subject = clean_subject(&req.subject)?;
     let body = clean_body(&req.message)?;
@@ -256,7 +257,7 @@ pub async fn apply_create(
         })),
     )
     .await?;
-    crate::mailhook::ticket_created(conn, id).await?;
+    crate::mailhook::ticket_created(conn, id, links).await?;
     Ok(id)
 }
 
@@ -300,6 +301,7 @@ pub async fn apply_reply(
     author: &Author,
     ticket: Uuid,
     req: &ReplyReq,
+    links: Option<&crate::mailhook::Links>,
 ) -> Result<Found<i64>, ApiError> {
     let body = clean_body(&req.message)?;
     let owner = (!author.staff).then_some(author.id);
@@ -365,7 +367,7 @@ pub async fn apply_reply(
     )
     .await?;
     if author.staff {
-        crate::mailhook::ticket_replied(conn, ticket).await?;
+        crate::mailhook::ticket_replied(conn, ticket, links).await?;
     }
     Ok(Found::Yes(msg))
 }
@@ -685,10 +687,9 @@ pub async fn read_ticket_staff(
     }))
 }
 
-/// The users' email column once W15 adds it (W15 HOOK: `users.email`);
-/// NULL until then.
+/// The customer's address (W15 `users.email`, verified or not: staff see it).
 fn email_column() -> &'static str {
-    "NULL::text"
+    "email"
 }
 
 // ---------------------------------------------------------------------------
@@ -751,7 +752,8 @@ pub async fn create_my_ticket(
         return Err(ApiError::too_many());
     }
     let mut tx = state.pg().begin().await?;
-    let id = apply_create(&mut tx, &Actor::of(&u.user), &me, &req).await?;
+    let links = crate::mailhook::Links::of(&state);
+    let id = apply_create(&mut tx, &Actor::of(&u.user), &me, &req, Some(&links)).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(json!({ "id": id }))))
 }
@@ -792,7 +794,7 @@ pub async fn reply_my_ticket(
         return Err(ApiError::too_many());
     }
     let mut tx = state.pg().begin().await?;
-    match apply_reply(&mut tx, &Actor::of(&u.user), &me, id, &req).await? {
+    match apply_reply(&mut tx, &Actor::of(&u.user), &me, id, &req, None).await? {
         Found::Yes(msg) => {
             tx.commit().await?;
             Ok((StatusCode::CREATED, Json(json!({ "message_id": msg }))).into_response())
@@ -1001,7 +1003,18 @@ pub async fn reply_ticket(
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    let msg = found(apply_reply(&mut tx, &Actor::of(&user), &Author::of(&user), id, &req).await?)?;
+    let links = crate::mailhook::Links::of(&state);
+    let msg = found(
+        apply_reply(
+            &mut tx,
+            &Actor::of(&user),
+            &Author::of(&user),
+            id,
+            &req,
+            Some(&links),
+        )
+        .await?,
+    )?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(json!({ "message_id": msg }))))
 }

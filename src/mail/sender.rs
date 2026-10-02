@@ -245,6 +245,42 @@ async fn settle(
     Ok(())
 }
 
+/// `s` with every email-address-like token (`local@domain.tld`, with or
+/// without angle brackets) replaced by `<address>`.
+pub fn redact_addresses(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let local = |c: char| c.is_alphanumeric() || "._%+-'!#$&*/=?^`{|}~".contains(c);
+    let domain = |c: char| c.is_alphanumeric() || c == '.' || c == '-';
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '@' {
+            let mut start = out.chars().count();
+            let prefix: Vec<char> = out.chars().collect();
+            while start > 0 && local(prefix[start - 1]) {
+                start -= 1;
+            }
+            let mut end = i + 1;
+            while end < chars.len() && domain(chars[end]) {
+                end += 1;
+            }
+            while end > i + 1 && matches!(chars[end - 1], '.' | '-') {
+                end -= 1;
+            }
+            let dom: String = chars[i + 1..end].iter().collect();
+            if start < prefix.len() && dom.trim_matches('.').contains('.') {
+                out = prefix[..start].iter().collect();
+                out.push_str("<address>");
+                i = end;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out.replace("<<address>>", "<address>")
+}
+
 /// Deliver up to `max` due messages through `t`. Returns how many were
 /// claimed (sent or not).
 pub async fn deliver_due(pg: &PgPool, t: &dyn Transport, max: usize) -> sqlx::Result<usize> {
@@ -270,8 +306,12 @@ pub async fn deliver_due(pg: &PgPool, t: &dyn Transport, max: usize) -> sqlx::Re
         };
         match &res {
             Ok(()) => tracing::debug!(id = row.id, kind = %row.kind, "mail sent"),
+            // SMTP replies often quote the recipient ("550 <x@y>: no such
+            // user"): addresses never go to the log (the outbox row keeps
+            // the reply for the admin).
             Err(e) => tracing::warn!(id = row.id, kind = %row.kind, attempt = row.attempts,
-                permanent = e.permanent, error = %e.message, "mail delivery failed"),
+                permanent = e.permanent, error = %redact_addresses(&e.message),
+                "mail delivery failed"),
         }
         crate::metrics::mail_sent(&row.kind, res.is_ok());
         settle(pg, &row, token, &res).await?;

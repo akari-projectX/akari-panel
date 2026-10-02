@@ -321,9 +321,7 @@ pub async fn send(
             }
             let conn =
                 conn.ok_or_else(|| SendError::Retry("email: no database connection".into()))?;
-            crate::mailhook::alert(conn, &s.email_to, msg.title(), msg.text())
-                .await
-                .map_err(SendError::Permanent)
+            crate::mailhook::alert(conn, &s.email_to, msg.title(), msg.text()).await
         }
         other => Err(SendError::Permanent(format!("unknown channel {other}"))),
     }
