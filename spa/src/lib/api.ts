@@ -396,24 +396,41 @@ export interface InstallView {
   warnings: string[];
 }
 
-// R18-2 inbound templates (mirror of src/nodetpl.rs InboundSpec).
+// R18-2 / W8 inbound templates (mirror of src/nodetpl.rs InboundSpec).
+interface RealityOpts {
+  dest?: string;
+  server_name?: string;
+  fingerprint?: string;
+}
 export type InboundSpec =
-  | {
-      template: "vless_reality";
-      port: number;
-      tag?: string;
-      dest?: string;
-      server_name?: string;
-      fingerprint?: string;
-    }
+  | ({ template: "vless_reality"; port: number; tag?: string; vision?: boolean } & RealityOpts)
+  | ({ template: "vless_reality_xhttp"; port: number; tag?: string; path?: string; mode?: string } & RealityOpts)
+  | { template: "vless_tls_vision"; port: number; tag?: string; domain: string }
   | { template: "vless_ws_tls"; port: number; tag?: string; domain: string; path?: string }
   | { template: "vmess_ws"; port: number; tag?: string; path?: string; tls_domain?: string }
-  | { template: "trojan_tls"; port: number; tag?: string; domain: string };
+  | { template: "vmess_tcp"; port: number; tag?: string }
+  | { template: "trojan_tls"; port: number; tag?: string; domain: string }
+  | {
+      template: "transport";
+      port: number;
+      tag?: string;
+      protocol: "vless" | "vmess" | "trojan";
+      network: "ws" | "httpupgrade" | "xhttp" | "grpc";
+      path?: string;
+      host?: string;
+      mode?: string;
+      service_name?: string;
+      tls_domain?: string;
+    }
+  | { template: "shadowsocks_2022"; port: number; tag?: string; method?: string }
+  | { template: "hysteria2"; port: number; tag?: string; domain: string };
 
 export interface TemplateCatalog {
   reality_dests: string[];
   fingerprints: string[];
   tls_cert_dir: string;
+  ss_methods?: string[];
+  xhttp_modes?: string[];
 }
 
 export interface RenderedInbounds {

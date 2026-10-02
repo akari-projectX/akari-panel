@@ -301,11 +301,40 @@ export function formatLease(secs: number | null): string {
 type TemplateKind = InboundSpec["template"];
 
 const TEMPLATE_LABELS: Record<TemplateKind, string> = {
-  vless_reality: "VLESS + REALITY（推荐，无需证书与域名）",
+  vless_reality: "VLESS + REALITY + Vision（推荐，无需证书与域名）",
+  vless_reality_xhttp: "VLESS + REALITY + XHTTP（无需证书）",
+  vless_tls_vision: "VLESS + TCP + TLS + Vision（需节点证书）",
   vless_ws_tls: "VLESS + WebSocket + TLS（需节点证书）",
   vmess_ws: "VMess + WebSocket（可选 TLS）",
+  vmess_tcp: "VMess + TCP（无 TLS）",
   trojan_tls: "Trojan + TLS（需节点证书）",
+  transport: "VLESS/VMess/Trojan + WS / HTTPUpgrade / XHTTP / gRPC（自选传输）",
+  shadowsocks_2022: "Shadowsocks 2022（多用户，TCP+UDP）",
+  hysteria2: "Hysteria 2（QUIC/UDP，需节点证书）",
 };
+
+const NETWORK_LABELS: Record<string, string> = {
+  ws: "WebSocket",
+  httpupgrade: "HTTPUpgrade",
+  xhttp: "XHTTP（sing-box 不支持；Clash 仅 VLESS）",
+  grpc: "gRPC（需 TLS）",
+};
+
+// Templates that read the node's TLS certificate.
+export function specNeedsCertificate(s: InboundSpec): boolean {
+  switch (s.template) {
+    case "vless_tls_vision":
+    case "vless_ws_tls":
+    case "trojan_tls":
+    case "hysteria2":
+      return true;
+    case "vmess_ws":
+    case "transport":
+      return !!s.tls_domain;
+    default:
+      return false;
+  }
+}
 
 // One row of the form; strings while editing, converted on submit.
 interface SpecRow {
@@ -320,6 +349,14 @@ interface SpecRow {
   domain: string;
   path: string;
   tls: boolean;
+  // W8 (optional so older callers/tests keep working).
+  vision?: boolean;
+  protocol?: "vless" | "vmess" | "trojan";
+  network?: "ws" | "httpupgrade" | "xhttp" | "grpc";
+  host?: string;
+  mode?: string;
+  serviceName?: string;
+  method?: string;
 }
 
 let rowSeq = 0;
@@ -337,47 +374,78 @@ function newRow(template: TemplateKind = "vless_reality", port = "443"): SpecRow
     domain: "",
     path: "",
     tls: false,
+    vision: true,
+    protocol: "vless",
+    network: "ws",
+    host: "",
+    mode: "auto",
+    serviceName: "",
+    method: "",
   };
+}
+
+// Which L4 a template listens on (Hysteria 2 is UDP only, Shadowsocks both).
+function rowL4(t: TemplateKind): ("tcp" | "udp")[] {
+  if (t === "hysteria2") return ["udp"];
+  if (t === "shadowsocks_2022") return ["tcp", "udp"];
+  return ["tcp"];
 }
 
 // Form rows → API specs; an error string for the first invalid row.
 export function toSpecs(rows: SpecRow[]): InboundSpec[] | string {
   const out: InboundSpec[] = [];
-  const ports = new Set<number>();
+  const ports = new Set<string>();
   for (const [i, r] of rows.entries()) {
     const n = i + 1;
     const port = Number(r.port);
     if (!Number.isInteger(port) || port < 1 || port > 65535) return `第 ${n} 个入站：端口须为 1–65535`;
-    if (ports.has(port)) return `第 ${n} 个入站：端口 ${port} 重复`;
-    ports.add(port);
+    for (const l4 of rowL4(r.template)) {
+      if (ports.has(`${port}/${l4}`)) return `第 ${n} 个入站：端口 ${port} 重复`;
+    }
+    for (const l4 of rowL4(r.template)) ports.add(`${port}/${l4}`);
     const tag = r.tag.trim() || undefined;
+    const domain = r.domain.trim();
+    const reality = () => {
+      const dest = r.dest === "custom" ? r.customDest.trim() : r.dest;
+      return {
+        dest: dest || undefined,
+        server_name: r.serverName.trim() || undefined,
+        fingerprint: r.fingerprint || undefined,
+      };
+    };
+    if ((r.template === "vless_reality" || r.template === "vless_reality_xhttp") && r.dest === "custom" && !r.customDest.trim())
+      return `第 ${n} 个入站：请填写自定义目标站点`;
     switch (r.template) {
-      case "vless_reality": {
-        const dest = r.dest === "custom" ? r.customDest.trim() : r.dest;
-        if (r.dest === "custom" && !dest) return `第 ${n} 个入站：请填写自定义目标站点`;
+      case "vless_reality":
         out.push({
           template: "vless_reality",
           port,
           tag,
-          dest: dest || undefined,
-          server_name: r.serverName.trim() || undefined,
-          fingerprint: r.fingerprint || undefined,
+          ...reality(),
+          vision: r.vision === false ? false : undefined,
         });
         break;
-      }
+      case "vless_reality_xhttp":
+        out.push({
+          template: "vless_reality_xhttp",
+          port,
+          tag,
+          ...reality(),
+          path: r.path.trim() || undefined,
+          mode: r.mode && r.mode !== "auto" ? r.mode : undefined,
+        });
+        break;
       case "vless_ws_tls":
-      case "trojan_tls": {
-        const domain = r.domain.trim();
+      case "trojan_tls":
+      case "vless_tls_vision":
+      case "hysteria2": {
         if (!domain) return `第 ${n} 个入站：请填写证书域名`;
-        out.push(
-          r.template === "trojan_tls"
-            ? { template: "trojan_tls", port, tag, domain }
-            : { template: "vless_ws_tls", port, tag, domain, path: r.path.trim() || undefined },
-        );
+        if (r.template === "vless_ws_tls")
+          out.push({ template: "vless_ws_tls", port, tag, domain, path: r.path.trim() || undefined });
+        else out.push({ template: r.template, port, tag, domain });
         break;
       }
       case "vmess_ws": {
-        const domain = r.domain.trim();
         if (r.tls && !domain) return `第 ${n} 个入站：启用 TLS 时请填写证书域名`;
         out.push({
           template: "vmess_ws",
@@ -388,6 +456,31 @@ export function toSpecs(rows: SpecRow[]): InboundSpec[] | string {
         });
         break;
       }
+      case "vmess_tcp":
+        out.push({ template: "vmess_tcp", port, tag });
+        break;
+      case "transport": {
+        const protocol = r.protocol ?? "vless";
+        const network = r.network ?? "ws";
+        const tls = r.tls || protocol === "trojan" || network === "grpc";
+        if (tls && !domain) return `第 ${n} 个入站：Trojan 与 gRPC 必须启用 TLS，请填写证书域名`;
+        out.push({
+          template: "transport",
+          port,
+          tag,
+          protocol,
+          network,
+          path: network !== "grpc" ? r.path.trim() || undefined : undefined,
+          host: network !== "grpc" ? r.host?.trim() || undefined : undefined,
+          mode: network === "xhttp" && r.mode && r.mode !== "auto" ? r.mode : undefined,
+          service_name: network === "grpc" ? r.serviceName?.trim() || undefined : undefined,
+          tls_domain: tls ? domain : undefined,
+        });
+        break;
+      }
+      case "shadowsocks_2022":
+        out.push({ template: "shadowsocks_2022", port, tag, method: r.method || undefined });
+        break;
     }
   }
   return out;
@@ -479,7 +572,7 @@ function TemplateRows({
               </Button>
             )}
           </div>
-          {r.template === "vless_reality" && (
+          {(r.template === "vless_reality" || r.template === "vless_reality_xhttp") && (
             <div className="flex flex-wrap items-end gap-3">
               <div className="space-y-1.5">
                 <Label htmlFor={`dest-${r.key}`}>目标站点（dest）</Label>
@@ -545,6 +638,171 @@ function TemplateRows({
               )}
             </div>
           )}
+          {r.template === "vless_reality" && (
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={r.vision !== false}
+                onChange={(e) => update(r.key, { vision: e.target.checked })}
+              />
+              Vision 流控（xtls-rprx-vision，推荐）
+            </label>
+          )}
+          {r.template === "transport" && (
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor={`proto-${r.key}`}>代理协议</Label>
+                <select
+                  id={`proto-${r.key}`}
+                  className={selectCls}
+                  value={r.protocol ?? "vless"}
+                  onChange={(e) => update(r.key, { protocol: e.target.value as SpecRow["protocol"] })}
+                >
+                  <option value="vless">VLESS</option>
+                  <option value="vmess">VMess</option>
+                  <option value="trojan">Trojan（需 TLS）</option>
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor={`net-${r.key}`}>传输方式</Label>
+                <select
+                  id={`net-${r.key}`}
+                  className={selectCls}
+                  value={r.network ?? "ws"}
+                  onChange={(e) => update(r.key, { network: e.target.value as SpecRow["network"] })}
+                >
+                  {Object.entries(NETWORK_LABELS).map(([k, v]) => (
+                    <option key={k} value={k}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {r.protocol !== "trojan" && r.network !== "grpc" && (
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={r.tls}
+                    onChange={(e) => update(r.key, { tls: e.target.checked })}
+                  />
+                  启用 TLS
+                </label>
+              )}
+              {(r.tls || r.protocol === "trojan" || r.network === "grpc") && (
+                <div className="space-y-1.5">
+                  <Label htmlFor={`tdom-${r.key}`}>证书域名</Label>
+                  <Input
+                    id={`tdom-${r.key}`}
+                    className="w-56"
+                    value={r.domain}
+                    placeholder="node1.example.com"
+                    onChange={(e) => update(r.key, { domain: e.target.value })}
+                  />
+                </div>
+              )}
+              {r.network === "grpc" ? (
+                <div className="space-y-1.5">
+                  <Label htmlFor={`svc-${r.key}`}>gRPC 服务名（可选）</Label>
+                  <Input
+                    id={`svc-${r.key}`}
+                    className="w-40"
+                    value={r.serviceName ?? ""}
+                    placeholder="随机生成"
+                    onChange={(e) => update(r.key, { serviceName: e.target.value })}
+                  />
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-1.5">
+                    <Label htmlFor={`tpath-${r.key}`}>路径（可选）</Label>
+                    <Input
+                      id={`tpath-${r.key}`}
+                      className="w-40"
+                      value={r.path}
+                      placeholder="随机生成"
+                      onChange={(e) => update(r.key, { path: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor={`host-${r.key}`}>Host（可选）</Label>
+                    <Input
+                      id={`host-${r.key}`}
+                      className="w-48"
+                      value={r.host ?? ""}
+                      placeholder="不设置"
+                      onChange={(e) => update(r.key, { host: e.target.value })}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          {(r.template === "vless_reality_xhttp" || (r.template === "transport" && r.network === "xhttp")) && (
+            <div className="flex flex-wrap items-end gap-3">
+              {r.template === "vless_reality_xhttp" && (
+                <div className="space-y-1.5">
+                  <Label htmlFor={`xpath-${r.key}`}>XHTTP 路径（可选）</Label>
+                  <Input
+                    id={`xpath-${r.key}`}
+                    className="w-40"
+                    value={r.path}
+                    placeholder="随机生成"
+                    onChange={(e) => update(r.key, { path: e.target.value })}
+                  />
+                </div>
+              )}
+              <div className="space-y-1.5">
+                <Label htmlFor={`mode-${r.key}`}>XHTTP 模式</Label>
+                <select
+                  id={`mode-${r.key}`}
+                  className={selectCls}
+                  value={r.mode ?? "auto"}
+                  onChange={(e) => update(r.key, { mode: e.target.value })}
+                >
+                  {(catalog?.xhttp_modes ?? ["auto", "packet-up", "stream-up", "stream-one"]).map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
+          {r.template === "shadowsocks_2022" && (
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor={`method-${r.key}`}>加密方式</Label>
+                <select
+                  id={`method-${r.key}`}
+                  className={selectCls}
+                  value={r.method ?? ""}
+                  onChange={(e) => update(r.key, { method: e.target.value })}
+                >
+                  {(catalog?.ss_methods ?? ["2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm"]).map((m, idx) => (
+                    <option key={m} value={idx === 0 ? "" : m}>
+                      {m}
+                      {idx === 0 ? "（默认）" : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                服务端密钥自动生成；每个用户一把独立密钥。移除用户会整体重建节点（断开该节点所有连接）。
+              </p>
+            </div>
+          )}
+          {(r.template === "vless_tls_vision" || r.template === "hysteria2") && (
+            <div className="space-y-1.5">
+              <Label htmlFor={`vdom-${r.key}`}>证书域名</Label>
+              <Input
+                id={`vdom-${r.key}`}
+                className="w-56"
+                value={r.domain}
+                placeholder="node1.example.com"
+                onChange={(e) => update(r.key, { domain: e.target.value })}
+              />
+            </div>
+          )}
           {(r.template === "vless_ws_tls" || r.template === "trojan_tls" || r.template === "vmess_ws") && (
             <div className="flex flex-wrap items-end gap-3">
               {r.template === "vmess_ws" && (
@@ -579,7 +837,12 @@ function TemplateRows({
               )}
             </div>
           )}
-          {(r.template === "vless_ws_tls" || r.template === "trojan_tls" || (r.template === "vmess_ws" && r.tls)) && (
+          {(r.template === "vless_ws_tls" ||
+            r.template === "trojan_tls" ||
+            r.template === "vless_tls_vision" ||
+            r.template === "hysteria2" ||
+            ((r.template === "vmess_ws" || r.template === "transport") &&
+              (r.tls || (r.template === "transport" && (r.protocol === "trojan" || r.network === "grpc"))))) && (
             <p className="text-xs text-muted-foreground">
               证书放在节点的 {catalog?.tls_cert_dir ?? "/etc/akari-agent/tls"}/fullchain.pem 与 privkey.pem（如 certbot
               / acme.sh 签发），放好后执行 systemctl restart akari-agent。
@@ -641,10 +904,7 @@ function NodeWizard({
         return;
       }
       body.templates = specs;
-      needsCert = specs.some(
-        (s) =>
-          s.template === "vless_ws_tls" || s.template === "trojan_tls" || (s.template === "vmess_ws" && !!s.tls_domain),
-      );
+      needsCert = specs.some(specNeedsCertificate);
     }
     setBusy(true);
     try {
