@@ -57,7 +57,7 @@
 | `alerts/` | W17 节点告警：`mod.rs`（`Settings`/`PutSettings`/`check_put`/`apply_update_settings`（秘密 seal、乐观并发、审计）、`NodeRules`/`apply_set_node_rules`、API、`run` 循环）、`eval.rs`（`gather` 事实 → 纯函数 `evaluate`/`plan` → `round`：advisory try-lock、写状态、入队通知、保留期清理）、`channels.rs`（`Message`、`enqueue`、`send`（Telegram/webhook/邮件）、`signature`/`verify_signature`、`deliver_due` 认领投递） | 见根 CLAUDE.md「节点告警」；新告警种类要同时改迁移 CHECK、`KINDS`、`LIVE_KINDS`（若依赖实时数据）、SPA `KIND_ZH`；测试 `alerts/tests.rs`（含两实例选主、mock Telegram/webhook） |
 | `mailhook.rs` | W17 工单/告警邮件经 W15 发件箱：`Links::of`（主域名下的门户/后台链接）、`available`（SMTP 启用且完整）、`ticket_replied`（给工单主人，已验证地址、其语言）、`ticket_created`（给 ≤5 个有已验证邮箱的管理员，中文）、`alert`（告警邮件通道，每个收件人一行；SMTP 关闭 = 永久失败） | 只在调用方事务内 `mail::enqueue`，从不直连 SMTP；只发已验证地址 |
 | `valkey_util.rs` | 带 TTL 的 set；失败只记日志 | 键名空间 `akari:*` |
-| `gen.rs` | `tonic::include_proto!("akari.v1")` | 由 build.rs 生成 |
+| `pb.rs` | `tonic::include_proto!("akari.v1")`（模块名 `pb`：2024 版次 `gen` 是保留字） | 由 build.rs 生成 |
 
 ## 约定
 

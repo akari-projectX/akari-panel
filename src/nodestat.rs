@@ -39,7 +39,7 @@ use uuid::Uuid;
 
 use crate::audit::Actor;
 use crate::auth::{ApiError, AuthUser};
-use crate::gen::{Heartbeat, LatencyProbeConfig, LatencyReport};
+use crate::pb::{Heartbeat, LatencyProbeConfig, LatencyReport};
 use crate::state::AppState;
 
 /// SQL predicate over node alias `a`: the node is online — the same rule

@@ -20,11 +20,11 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 use tonic::Streaming;
 
-use akari_panel::gen::agent_channel_client::AgentChannelClient;
-use akari_panel::gen::agent_up::Msg as UpMsg;
-use akari_panel::gen::panel_down::Msg as DownMsg;
-use akari_panel::gen::{ack, Ack, AgentUp, ConfigSnapshot, Hello, PanelDown};
 use akari_panel::grpc::{state_hash, NodeState};
+use akari_panel::pb::agent_channel_client::AgentChannelClient;
+use akari_panel::pb::agent_up::Msg as UpMsg;
+use akari_panel::pb::panel_down::Msg as DownMsg;
+use akari_panel::pb::{ack, Ack, AgentUp, ConfigSnapshot, Hello, PanelDown};
 
 use crate::common;
 

@@ -20,7 +20,6 @@ pub mod entitle;
 #[cfg(fuzzing)]
 #[doc(hidden)]
 pub mod fuzzing;
-pub mod gen;
 pub mod grpc;
 pub mod install;
 pub mod login_limit;
@@ -33,6 +32,7 @@ pub mod nodeops;
 pub mod nodestat;
 pub mod nodetpl;
 pub mod notify;
+pub mod pb;
 pub mod plans;
 pub mod protocols;
 pub mod rate;

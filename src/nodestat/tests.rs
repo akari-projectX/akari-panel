@@ -5,9 +5,9 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::*;
-use crate::gen::agent_up::Msg as UpMsg;
-use crate::gen::panel_down::Msg as DownMsg;
-use crate::gen::{NodeMetrics, UrlLatency};
+use crate::pb::agent_up::Msg as UpMsg;
+use crate::pb::panel_down::Msg as DownMsg;
+use crate::pb::{NodeMetrics, UrlLatency};
 use crate::testdb::http::{rand_ip, Client};
 use crate::testdb::TestDb;
 

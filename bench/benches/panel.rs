@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use uuid::Uuid;
 
-use akari_panel::gen::{user_op, InboundUser, TrafficReport, UserOp, UserTraffic};
 use akari_panel::grpc::{diff_user_sets, state_hash, user_set, NodeState, UserSet};
+use akari_panel::pb::{user_op, InboundUser, TrafficReport, UserOp, UserTraffic};
 
 const DEFAULT_DB: &str = "postgres://akari:akari-dev@localhost:5433/akari_bench";
 
@@ -92,7 +92,7 @@ fn pure(c: &mut Criterion) {
             &tenth,
             |b, w| b.iter(|| diff_user_sets(std::hint::black_box(&base), w)),
         );
-        let snap = akari_panel::gen::ConfigSnapshot {
+        let snap = akari_panel::pb::ConfigSnapshot {
             config_version: 3,
             inbounds_json: state.inbounds.clone(),
             user_version: 9,

@@ -597,8 +597,8 @@ mod tests {
         b.update(
             n,
             "s1",
-            &crate::gen::TrafficReport {
-                users: vec![crate::gen::UserTraffic {
+            &crate::pb::TrafficReport {
+                users: vec![crate::pb::UserTraffic {
                     user_id: u.to_string(),
                     up_bytes: 5,
                     down_bytes: 5,

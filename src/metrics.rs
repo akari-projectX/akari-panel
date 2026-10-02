@@ -292,8 +292,8 @@ pub fn enroll(result: &'static str) {
 }
 
 /// An agent ack arrived (`ack.reason` is the proto enum value).
-pub fn ack(reason: crate::gen::ack::Reason) {
-    use crate::gen::ack::Reason;
+pub fn ack(reason: crate::pb::ack::Reason) {
+    use crate::pb::ack::Reason;
     let label = match reason {
         Reason::Ok => "ok",
         Reason::BaseMismatch => "base_mismatch",
@@ -527,7 +527,7 @@ mod tests {
     fn hooks_are_noops_before_init() {
         // Must not panic whether or not another test initialised METRICS.
         sync_sent("snapshot");
-        ack(crate::gen::ack::Reason::Ok);
+        ack(crate::pb::ack::Reason::Ok);
         flush_done(Duration::from_millis(1), false);
         billed(-5);
         enforcement_pass("limits", true);
