@@ -10,8 +10,11 @@
 # What it does: downloads the agent for this machine's architecture and
 # checks its SHA-256, writes /etc/akari-agent/bootstrap.toml (0600: panel
 # address, server name, panel CA, one-time enrollment token; no private
-# key), installs the systemd unit and starts it, then waits until the agent
-# has enrolled and connected. Running it again is safe.
+# key), installs the systemd units (the agent, and its privileged updater:
+# akari-agent-update.path/.service, which applies signed self-updates) and
+# starts them, then waits until the agent has enrolled and connected.
+# Running it again is safe: it is also how nodes installed before the
+# updater units existed get them (重装命令).
 # The whole script is one compound command: sh reads it completely before
 # running anything, so a download cut short runs nothing.
 {
@@ -137,6 +140,17 @@ cat >"$TMP/akari-agent.service" <<'AKARI_UNIT_EOF'
 @@UNIT@@
 AKARI_UNIT_EOF
 install -m 0644 "$TMP/akari-agent.service" "$UNIT"
+# The privileged updater: the agent's state directory is noexec, so signed
+# self-updates are installed by this root unit (it only ever runs the
+# installed binary).
+cat >"$TMP/akari-agent-update.service" <<'AKARI_UPDATE_SERVICE_EOF'
+@@UNIT_UPDATE_SERVICE@@
+AKARI_UPDATE_SERVICE_EOF
+cat >"$TMP/akari-agent-update.path" <<'AKARI_UPDATE_PATH_EOF'
+@@UNIT_UPDATE_PATH@@
+AKARI_UPDATE_PATH_EOF
+install -m 0644 "$TMP/akari-agent-update.service" "$UPDATE_SERVICE"
+install -m 0644 "$TMP/akari-agent-update.path" "$UPDATE_PATH"
 install -d -m 0755 "$DROPIN_DIR"
 cat >"$TMP/10-install.conf" <<'AKARI_DROPIN_EOF'
 # Written by the Akari installer: TLS inbounds read the node's certificate
@@ -159,8 +173,11 @@ AKARI_UNINSTALL_EOF
 install -m 0755 "$TMP/uninstall" "$UNINSTALLER"
 
 # The binary last: a reinstall over a running agent swaps it atomically.
+# (A hand-installed binary wins over the updater's records: a stale
+# probation is dropped because the installed version differs.)
 install -m 0755 "$TMP/akari-agent" "$BIN.new"
 mv -f "$BIN.new" "$BIN"
+rm -f "$BIN.prev"
 
 # --- firewall (automatic certificate) -----------------------------------------
 # The CA validates over TCP 80 (HTTP-01). Open it in an active host firewall;
@@ -186,6 +203,7 @@ fi
 START=$(date +%s)
 systemctl daemon-reload
 systemctl enable akari-agent.service >/dev/null 2>&1
+systemctl enable --now akari-agent-update.path >/dev/null 2>&1 || die "cannot enable akari-agent-update.path"
 systemctl restart akari-agent.service
 restarts0=$(systemctl show -p NRestarts --value akari-agent.service 2>/dev/null || echo 0)
 say "agent started; waiting for it to enroll and connect"

@@ -367,8 +367,10 @@ It
    `install.fallback_binary_url` (default: the latest GitHub release asset, checked against the
    release's `SHA256SUMS`); with neither it stops with a clear error before changing anything;
 2. writes `/etc/akari-agent/bootstrap.toml` (0600: panel address, gRPC server name, panel CA,
-   the one-time enrollment token — no private key), the systemd unit
-   (`deploy/systemd/akari-agent.service`, embedded) and a drop-in for the TLS credentials;
+   the one-time enrollment token — no private key), the systemd units
+   (`deploy/systemd/akari-agent.service` and the agent's privileged updater
+   `akari-agent-update.service` + `akari-agent-update.path`, embedded; the path unit is enabled,
+   §5b) and a drop-in for the TLS credentials;
 3. with 节点域名 set: opens TCP 80 in an active `ufw`/`firewalld` (the CA's HTTP-01 check; a
    cloud firewall / security group is outside the machine, the output reminds you);
 4. starts the agent and waits until it has enrolled and connected (prints `SUCCESS`, or the
@@ -923,6 +925,17 @@ unaffected). `config check` run before the new version has started once may end 
 `# 系统设置: database not readable (… relation "panel_settings" does not exist …)`: the migrations
 have not run yet; it is harmless and gone after the first start.
 
+**Nodes installed before the updater units (W18; agents up to v0.4.0) — once, by hand.** The
+self-update of those agents executes the new binary from its StateDirectory, which systemd ≥ 256
+(Debian 13 ships 257) mounts `noexec` for `DynamicUser` services: the update fails with
+`switch to vX: permission denied` (the rollout shows the reason and the fix; the node view warns
+for every agent without the `updater` capability). Run the node's **重装命令** once (upload the
+current release under **Updates** first): it installs the current agent and the updater units
+(`akari-agent-update.path/.service`) in place, keeping inbounds, users and traffic; from then on
+updates go through the panel. Agents installed by hand need the two unit files too (comments in
+`deploy/systemd/akari-agent-update.path`); without them a current agent refuses offers with
+"updater unit missing".
+
 **Agents without a pinned release key** (protocol 1/2, and protocol 3 builds older than v0.2.0;
 `akari-agent -release-keys` prints "no release keys pinned") cannot self-update (§5b). Upload the
 release under **Updates** (every architecture you run), then on the node's page use **重装命令**
@@ -993,18 +1006,31 @@ failed / (healthy + failed) > `max_failure_ratio`; a halted rollout can only be 
 stops new offers (in-flight updates finish). Every action and every automatic transition is in
 the audit log (`agent_release.*`, `rollout.*`; automatic ones with actor `system`).
 
-**On the node** (no unit change needed; the installed binary stays the launcher):
-- the agent downloads into `$STATE_DIRECTORY/update/bin/`, checks size, SHA-256, signature and
-  version policy, stops xray (live connections drop once, as with any restart), persists its
-  final traffic counters (`update/finals.json`, resent by the next process), then **replaces
-  its process image** with the new binary (same PID; systemd sees no restart);
+**On the node** (W18; the installer sets this up, §3 — nodes installed earlier: run their
+**重装命令** once, §5). The agent runs as a throw-away user and its StateDirectory is mounted
+`noexec` by systemd; that stays so (nothing the agent can write is ever executed). Updates go
+through a separate root unit that only ever runs the **installed** binary:
+- the agent downloads into `$STATE_DIRECTORY/update/staged` (0600, never executable), checks
+  size, SHA-256, signature and version policy, stops xray (live connections drop once, as with
+  any restart), persists its final traffic counters (`update/finals.json`, resent by the next
+  process), sends `RESTARTING` and writes `update/apply-request.json`;
+- `akari-agent-update.path` starts `akari-agent-update.service` (root, no network,
+  `ProtectSystem=strict` with only `/usr/local/bin` and the agent's state writable), which runs
+  `/usr/local/bin/akari-agent -apply-update /var/lib/private/akari-agent`. It treats the agent's
+  directory as untrusted (no symlink is followed; only regular, single-link files owned by the
+  agent), copies the staged binary into a root-only file next to `/usr/local/bin/akari-agent`,
+  verifies **that copy** with the release keys compiled into **itself** (signature, platform,
+  newer version or signed rollback, never a version this node rolled back from — its own record
+  in `/var/lib/akari-agent-update`), keeps the running binary as `akari-agent.prev`, renames the
+  new one into place and restarts `akari-agent`. A refusal goes back to the agent, which reports
+  it (`FAILED`) and keeps running;
 - the new binary is on probation: it must connect and get an apply acknowledged within
-  `-update-self-check` (default 5 min), or it execs the previous binary again;
-- if it crashes instead, systemd (`Restart=always`) starts the installed binary, which execs the
-  staged one again and counts boots; after `-update-max-boots` (default 3) it goes back to the
-  previous binary. Either way the version is marked failed on that node and reported
-  (`ROLLED_BACK`), which fails the node in the rollout;
-- installing a newer agent package by hand wins over staged binaries (they are dropped).
+  `-update-self-check` (default 5 min); the updater watches it and puts `akari-agent.prev` back
+  (and restarts the agent) when it crashes `-update-max-boots` times (default 3) or does not
+  pass in time. The version is then marked failed on that node and reported (`ROLLED_BACK`),
+  which fails the node in the rollout;
+- `journalctl -u akari-agent-update` shows what the updater did; installing a newer agent by
+  hand (or 重装命令) wins over everything the updater recorded;
 - `akari-agent -release-keys` prints the pinned keys ("no release keys pinned" = self-update off).
 
 ## 6. Rollback

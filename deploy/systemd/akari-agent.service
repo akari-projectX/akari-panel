@@ -1,14 +1,14 @@
 # akari node agent (see docs/DEPLOY.md, "Add a node").
 #
 # Normally installed by the panel's one-line installer (which embeds this
-# file and adds a drop-in: LoadCredential=tls:/etc/akari-agent/tls for TLS
-# inbounds). By hand:
+# file and the updater units, and adds a drop-in:
+# LoadCredential=tls:/etc/akari-agent/tls for TLS inbounds). By hand:
 #
 #   install -m 0755 agent /usr/local/bin/akari-agent
 #   install -d -m 0700 /etc/akari-agent
 #   install -m 0600 <node>-bootstrap.toml /etc/akari-agent/bootstrap.toml
-#   install -m 0644 akari-agent.service /etc/systemd/system/
-#   systemctl daemon-reload && systemctl enable --now akari-agent
+#   install -m 0644 akari-agent.service akari-agent-update.service akari-agent-update.path /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now akari-agent akari-agent-update.path
 #
 # The bootstrap file holds a one-time enrollment token (v1 files: the
 # node's private key): it stays root-only (0600) and is handed to the
@@ -18,12 +18,15 @@
 # akari-agent, 0700, files 0600; $STATE_DIRECTORY): back it up or the node
 # must re-enroll with a new token (`akari node enroll-token`).
 #
-# Self-update (M6, docs/DEPLOY.md "Agent updates"): the binary above stays
-# the launcher. Verified updates are staged in the StateDirectory (update/)
-# and the agent replaces its own process image (same PID). A staged binary
-# that crashes is restarted by Restart=always through the launcher, which
-# counts the boots and falls back to the previous binary. Nothing here needs
-# to change; the StateDirectory must not be mounted noexec.
+# Self-update (M6, docs/DEPLOY.md "Agent updates"): the agent never runs
+# anything from its StateDirectory (systemd mounts it noexec for
+# DynamicUser services, and that is intended). It stages a verified
+# download there and asks the privileged updater (akari-agent-update.path
+# + akari-agent-update.service, installed by the same installer), which
+# re-verifies it, replaces /usr/local/bin/akari-agent (keeping
+# akari-agent.prev), restarts this service and rolls back if the new binary
+# does not pass its self-check. Nodes installed before W18 lack those two
+# units: run the panel's install command (重装命令) once.
 [Unit]
 Description=Akari node agent (xray-core)
 Documentation=https://github.com/akari-projectX/akari-agent

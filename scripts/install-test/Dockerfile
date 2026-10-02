@@ -1,6 +1,9 @@
-# Throw-away "node" for the one-line installer test (smoke.sh, R18-2):
-# Debian 13 with systemd as PID 1 and curl. Run it privileged with
-# --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw. Test use only.
+# Throw-away "node" for the one-line installer and self-update tests
+# (smoke.sh, R18-2 / M6 + W18): Debian 13 with systemd as PID 1 and curl.
+# Run it privileged with --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw
+# and --tmpfs /var/lib/private:mode=0700 (the container's overlayfs cannot
+# be idmapped, so without it systemd would NOT mount the agent's
+# StateDirectory noexec,idmapped as it does on a real VPS). Test use only.
 FROM debian:13
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
