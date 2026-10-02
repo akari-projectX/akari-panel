@@ -8,8 +8,10 @@ import { useState } from "react";
 import { useLocale, useT, type MessageKey } from "../i18n";
 import { get, post, type Me } from "../lib/api";
 import {
+  money,
+  moneyTone,
   parseYuan,
-  signedYuan,
+  signedMoney,
   yuan,
   type CommissionStatus,
   type LedgerKind,
@@ -26,6 +28,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { useConfirm } from "../components/confirm-dialog";
 import { InviteCodes } from "./portal-account";
 
 export const KIND_KEY = {
@@ -116,10 +119,10 @@ function BalanceCard({ canWithdraw }: { canWithdraw: boolean }) {
                   <TableRow key={e.id}>
                     <TableCell>{fmt(e.created_at)}</TableCell>
                     <TableCell>{t(KIND_KEY[e.kind])}</TableCell>
-                    <TableCell className={e.amount_cents < 0 ? "text-destructive" : ""}>
-                      ¥{signedYuan(e.amount_cents)}
+                    <TableCell className={`tabular-nums ${moneyTone(e.amount_cents)}`}>
+                      {signedMoney(e.amount_cents)}
                     </TableCell>
-                    <TableCell>¥{yuan(e.balance_after_cents)}</TableCell>
+                    <TableCell className="tabular-nums">{money(e.balance_after_cents)}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{e.out_trade_no ?? e.reason ?? ""}</TableCell>
                   </TableRow>
                 ))}
@@ -144,9 +147,16 @@ function Withdrawals({ withdrawable }: { withdrawable: number }) {
   const [account, setAccount] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const [confirm, confirmDialog] = useConfirm();
   const min = invite.data?.min_withdrawal_cents ?? 0;
   const rows = list.data ?? [];
   const open = rows.some((w) => w.status === "pending");
+  // Audit Minor 2: the form stays visible but disabled, with the reason.
+  const blocked = open
+    ? t("wallet.disabledPending")
+    : withdrawable < Math.max(min, 1)
+      ? t("wallet.disabledMin", { amount: money(withdrawable), min: money(Math.max(min, 1)) })
+      : null;
 
   async function refresh() {
     await Promise.all([
@@ -173,7 +183,12 @@ function Withdrawals({ withdrawable }: { withdrawable: number }) {
   }
 
   async function cancel(id: string) {
-    if (!window.confirm(t("wallet.confirmCancel"))) return;
+    const ok = await confirm({
+      title: t("wallet.cancel"),
+      body: t("wallet.confirmCancel"),
+      confirmLabel: t("wallet.cancel"),
+    });
+    if (!ok) return;
     setError(null);
     try {
       await post(`/me/withdrawals/${id}/cancel`, {});
@@ -185,52 +200,59 @@ function Withdrawals({ withdrawable }: { withdrawable: number }) {
 
   return (
     <div className="space-y-3">
-      {(withdrawable > 0 || open) && (
-        <form className="space-y-2" onSubmit={submit}>
-          <h3 className="text-sm font-medium">{t("wallet.withdrawTitle")}</h3>
-          <p className="text-xs text-muted-foreground">{t("wallet.withdrawHint", { min: yuan(min) })}</p>
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="space-y-1">
-              <Label htmlFor="w-amount">{t("wallet.amountLabel")}</Label>
-              <Input
-                id="w-amount"
-                className="w-32"
-                inputMode="decimal"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="w-method">{t("wallet.methodLabel")}</Label>
-              <select
-                id="w-method"
-                className="h-9 rounded-lg border border-border bg-background px-2 text-sm"
-                value={method}
-                onChange={(e) => setMethod(e.target.value as WithdrawMethod)}
-              >
-                {(Object.keys(METHOD_KEY) as WithdrawMethod[]).map((m) => (
-                  <option key={m} value={m}>
-                    {t(METHOD_KEY[m])}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="w-account">{t("wallet.accountLabel")}</Label>
-              <Input
-                id="w-account"
-                className="w-64"
-                maxLength={200}
-                value={account}
-                onChange={(e) => setAccount(e.target.value)}
-              />
-            </div>
-            <Button type="submit" size="sm" disabled={open || !amount || !account.trim()}>
-              {t("wallet.submit")}
-            </Button>
+      <form className="space-y-2" onSubmit={submit}>
+        <h3 className="text-sm font-medium">{t("wallet.withdrawTitle")}</h3>
+        <p className="text-xs text-muted-foreground">{t("wallet.withdrawHint", { min: yuan(min) })}</p>
+        {blocked && (
+          <p id="w-blocked" className="rounded-lg bg-muted p-2 text-sm">
+            {blocked}
+          </p>
+        )}
+        <fieldset
+          disabled={blocked != null}
+          aria-describedby={blocked ? "w-blocked" : undefined}
+          className="flex flex-wrap items-end gap-3 disabled:opacity-60"
+        >
+          <div className="space-y-1">
+            <Label htmlFor="w-amount">{t("wallet.amountLabel")}</Label>
+            <Input
+              id="w-amount"
+              className="w-32"
+              inputMode="decimal"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+            />
           </div>
-        </form>
-      )}
+          <div className="space-y-1">
+            <Label htmlFor="w-method">{t("wallet.methodLabel")}</Label>
+            <select
+              id="w-method"
+              className="h-9 rounded-lg border border-border bg-background px-2 text-sm"
+              value={method}
+              onChange={(e) => setMethod(e.target.value as WithdrawMethod)}
+            >
+              {(Object.keys(METHOD_KEY) as WithdrawMethod[]).map((m) => (
+                <option key={m} value={m}>
+                  {t(METHOD_KEY[m])}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="w-account">{t("wallet.accountLabel")}</Label>
+            <Input
+              id="w-account"
+              className="w-64"
+              maxLength={200}
+              value={account}
+              onChange={(e) => setAccount(e.target.value)}
+            />
+          </div>
+          <Button type="submit" disabled={blocked != null || !amount || !account.trim()}>
+            {t("wallet.submit")}
+          </Button>
+        </fieldset>
+      </form>
       {done && (
         <p role="status" className="text-sm text-muted-foreground">
           {t("wallet.submitted")}
@@ -241,6 +263,7 @@ function Withdrawals({ withdrawable }: { withdrawable: number }) {
           {error}
         </p>
       )}
+      {confirmDialog}
       {rows.length > 0 && (
         <>
           <h3 className="text-sm font-medium">{t("wallet.withdrawalsTitle")}</h3>
@@ -250,7 +273,7 @@ function Withdrawals({ withdrawable }: { withdrawable: number }) {
                 {rows.map((w) => (
                   <TableRow key={w.id}>
                     <TableCell>{fmt(w.created_at)}</TableCell>
-                    <TableCell>¥{yuan(w.amount_cents)}</TableCell>
+                    <TableCell className="tabular-nums">{money(w.amount_cents)}</TableCell>
                     <TableCell>{t(METHOD_KEY[w.method])}</TableCell>
                     <TableCell>
                       <Badge variant={w.status === "approved" ? "default" : "secondary"}>
@@ -326,9 +349,9 @@ function InviteCard() {
                 {d.commissions.map((c) => (
                   <TableRow key={c.id}>
                     <TableCell>{c.invitee_login}</TableCell>
-                    <TableCell>¥{yuan(c.base_cents)}</TableCell>
-                    <TableCell>
-                      ¥{yuan(c.amount_cents)} ({c.rate_percent}%)
+                    <TableCell className="tabular-nums">{money(c.base_cents)}</TableCell>
+                    <TableCell className="tabular-nums">
+                      {money(c.amount_cents)} ({c.rate_percent}%)
                     </TableCell>
                     <TableCell>
                       <Badge variant={c.status === "credited" ? "default" : "secondary"}>

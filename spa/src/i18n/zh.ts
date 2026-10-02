@@ -287,6 +287,7 @@ export const zh = {
     colAmount: "金额",
     colStatus: "状态",
     colPaid: "付款时间",
+    colActions: "操作",
     continuePay: "继续付款",
     statusPending: "待付款",
     statusPaid: "已付款",

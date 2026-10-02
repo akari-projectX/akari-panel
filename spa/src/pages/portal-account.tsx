@@ -4,6 +4,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
+import { useConfirm } from "../components/confirm-dialog";
+import { QrCode } from "../components/qr-code";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
@@ -144,7 +146,7 @@ export function EmailCard({ me }: { me: Me }) {
         {msg && (
           <p
             role={msg.ok ? "status" : "alert"}
-            className={`text-sm ${msg.ok ? "text-emerald-600" : "text-destructive"}`}
+            className={`text-sm ${msg.ok ? "text-emerald-700" : "text-destructive"}`}
           >
             {msg.text}
           </p>
@@ -181,6 +183,8 @@ export function InviteCodes() {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [qr, setQr] = useState(false);
+  const [confirm, confirmDialog] = useConfirm();
 
   if (!q.data) return null;
   const data = q.data;
@@ -205,7 +209,13 @@ export function InviteCodes() {
   }
 
   async function remove(code: string) {
-    if (!confirm(t("account.deleteConfirm", { code }))) return;
+    const ok = await confirm({
+      title: t("account.deleteTitle"),
+      body: t("account.deleteConfirm", { code }),
+      confirmLabel: t("account.delete"),
+      destructive: true,
+    });
+    if (!ok) return;
     setError(null);
     try {
       await del(`/me/invite-codes/${encodeURIComponent(code)}`);
@@ -220,11 +230,41 @@ export function InviteCodes() {
     setCopied(code);
   }
 
+  // W20 (Minor 6): the first code (created automatically by the server)
+  // as a ready-to-share link with copy and QR.
+  const primary = data.codes[0];
+  const primaryLink = primary ? inviteLink(primary.code, data.link_base) : null;
+
   return (
     <div className="space-y-3">
       <p className="text-muted-foreground">
         {t("account.inviteDesc")} {data.single_use ? t("account.inviteSingle") : ""}
       </p>
+      {primary && primaryLink && (
+        <div className="space-y-2">
+          <Label htmlFor="invite-link">{t("account.linkTitle")}</Label>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              id="invite-link"
+              readOnly
+              value={primaryLink}
+              onFocus={(e) => e.currentTarget.select()}
+              className="h-10 min-w-0 flex-1 rounded-lg border border-border bg-muted px-3 font-mono text-xs"
+            />
+            <Button className="h-10" onClick={() => void copy(primary.code)}>
+              {copied === primary.code ? t("common.copied") : t("account.copyLink")}
+            </Button>
+            <Button variant="outline" className="h-10" aria-expanded={qr} onClick={() => setQr((v) => !v)}>
+              {qr ? t("account.hideQr") : t("account.showQr")}
+            </Button>
+          </div>
+          {qr && (
+            <div className="flex justify-center">
+              <QrCode text={primaryLink} label={t("account.qrLabel")} size={192} />
+            </div>
+          )}
+        </div>
+      )}
       {data.codes.length === 0 ? (
         <p className="text-muted-foreground">{t("account.inviteEmpty")}</p>
       ) : (
@@ -265,6 +305,7 @@ export function InviteCodes() {
           {error}
         </p>
       )}
+      {confirmDialog}
     </div>
   );
 }

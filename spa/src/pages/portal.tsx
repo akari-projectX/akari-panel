@@ -6,12 +6,11 @@ import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
-import { useLocale, useT } from "../i18n";
-import { describePeriod, get, post, subscriptionUrl, type Me, type MyPlan } from "../lib/api";
+import { LocaleSwitch, useLocale, useT } from "../i18n";
+import { describePeriod, get, post, type Me, type MyPlan } from "../lib/api";
 import { errorText } from "../lib/errors";
-import { copyText, humanBytes } from "../lib/utils";
+import { humanBytes } from "../lib/utils";
 import { EmailCard } from "./portal-account";
-import { NodesCard } from "./portal-nodes";
 import { TwoFactorCard } from "./two-factor";
 
 // Dates in the visible locale (the admin console pins zh).
@@ -21,120 +20,28 @@ function useDate() {
   return (s: string | null | undefined) => (s ? new Date(s).toLocaleDateString(tag) : "—");
 }
 
-export function Portal({ me }: { me: Me }) {
+/** W20 (M1): the 账户设置 view — email, password, 2FA, language. */
+export function AccountSettings({ me }: { me: Me }) {
   const t = useT();
-  const date = useDate();
-  const limit = me.traffic_limit_bytes;
-  const used = me.traffic_used_bytes;
-  const pct = limit != null && limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
+  // Renewal scope (R21): the 2FA endpoints refuse expired / quota-disabled accounts.
   const restricted = me.expired || me.quota_exhausted;
-
   return (
     <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            <h1>{t("portal.title")}</h1>
-          </CardTitle>
-          <CardDescription>{t("portal.usage")}</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {restricted && (
-            <p role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
-              {me.expired ? t("portal.expiredBanner") : t("portal.quotaBanner")}
-            </p>
-          )}
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <div>
-              <p className="text-muted-foreground">{t("portal.trafficUsed")}</p>
-              <p className="text-lg font-semibold">{humanBytes(used)}</p>
-            </div>
-            <div>
-              <p className="text-muted-foreground">{t("portal.trafficLimit")}</p>
-              <p className="text-lg font-semibold">{limit != null ? humanBytes(limit) : t("common.unlimited")}</p>
-            </div>
-          </div>
-          {limit != null && limit > 0 && (
-            <div
-              className="h-2 w-full overflow-hidden rounded-full bg-muted"
-              role="progressbar"
-              aria-label={t("portal.trafficUsed")}
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={Math.round(pct)}
-            >
-              <div className="h-full bg-primary" style={{ width: `${pct}%` }} />
-            </div>
-          )}
-          <p className="text-sm text-muted-foreground">
-            {me.expires_at ? t("portal.expires", { date: date(me.expires_at) }) : t("portal.noExpiry")}
-          </p>
-        </CardContent>
-      </Card>
-      <PlanCard />
-      {!restricted && <NodesCard />}
-      {/* Expired / quota-disabled (R21): renewal scope only; these endpoints refuse it. */}
-      {!restricted && <SubscriptionCard />}
       <EmailCard me={me} />
       <PasswordCard />
       {!restricted && <TwoFactorCard />}
+      <Card>
+        <CardHeader>
+          <CardTitle>
+            <h2>{t("account.languageTitle")}</h2>
+          </CardTitle>
+          <CardDescription>{t("account.languageDesc")}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <LocaleSwitch />
+        </CardContent>
+      </Card>
     </div>
-  );
-}
-
-// The server keeps only a hash of the subscription token, so the link can
-// only be shown when a new one is made (which also retires the old link).
-function SubscriptionCard() {
-  const t = useT();
-  const [url, setUrl] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  async function regenerate() {
-    if (!window.confirm(t("portal.subConfirm"))) return;
-    setError(null);
-    setCopied(false);
-    setBusy(true);
-    try {
-      const res = await post<{ sub_token: string; sub_url?: string | null }>("/me/sub-token", {});
-      // R22: the panel builds it on the subscription domain when one is set.
-      setUrl(res.sub_url ?? subscriptionUrl(res.sub_token));
-    } catch (err) {
-      setError(errorText(err, t));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>
-          <h2>{t("portal.subTitle")}</h2>
-        </CardTitle>
-        <CardDescription>{t("portal.subDescription")}</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {url && (
-          <div className="space-y-2">
-            <p className="text-sm text-muted-foreground">{t("portal.subShownOnce")}</p>
-            <pre className="overflow-auto rounded-lg bg-muted p-3 text-xs">{url}</pre>
-            <Button variant="outline" size="sm" onClick={async () => setCopied(await copyText(url))}>
-              {copied ? t("common.copied") : t("common.copy")}
-            </Button>
-          </div>
-        )}
-        <Button variant="outline" onClick={regenerate} disabled={busy}>
-          {t("portal.subNew")}
-        </Button>
-        {error && (
-          <p role="alert" className="text-sm text-destructive">
-            {error}
-          </p>
-        )}
-      </CardContent>
-    </Card>
   );
 }
 
@@ -302,7 +209,7 @@ export function PasswordCard() {
         {msg && (
           <p
             role={msg.ok ? "status" : "alert"}
-            className={`mt-3 text-sm ${msg.ok ? "text-emerald-600" : "text-destructive"}`}
+            className={`mt-3 text-sm ${msg.ok ? "text-emerald-700" : "text-destructive"}`}
           >
             {msg.text}
           </p>

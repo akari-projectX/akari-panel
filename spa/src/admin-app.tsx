@@ -207,9 +207,9 @@ function AdminConsole({ user, onLogout, logoutError }: { user: Me; onLogout: () 
       </header>
       {showBanner && (
         <div role="region" aria-label="安全建议" className="border-b border-amber-300 bg-amber-50 text-amber-900">
-          <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-2 px-4 py-2 text-sm sm:px-6">
-            <p>
-              建议开启两步验证：管理员账户一旦密码泄露，影响整个面板。
+          <div className="mx-auto flex max-w-6xl items-center justify-between gap-2 px-4 py-1.5 text-xs sm:px-6 sm:py-2 sm:text-sm">
+            <p className="min-w-0">
+              建议开启两步验证<span className="hidden sm:inline">：管理员账户一旦密码泄露，影响整个面板</span>。
               <a
                 className="ml-1 font-medium underline"
                 href={`${adminBase}/account`}
@@ -221,8 +221,11 @@ function AdminConsole({ user, onLogout, logoutError }: { user: Me; onLogout: () 
                 去设置
               </a>
             </p>
-            <Button variant="ghost" size="sm" onClick={dismiss} aria-label="不再提示两步验证建议">
-              不再提示
+            <Button variant="ghost" size="sm" className="shrink-0" onClick={dismiss} aria-label="不再提示两步验证建议">
+              <span aria-hidden="true" className="sm:hidden">
+                ✕
+              </span>
+              <span className="hidden sm:inline">不再提示</span>
             </Button>
           </div>
         </div>

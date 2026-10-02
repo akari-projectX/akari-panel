@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { useLocale, useT } from "../i18n";
 import { get } from "../lib/api";
-import { STATUS_KEY, periodLabel, yuan, type MyOrder } from "../lib/billing";
+import { money, STATUS_KEY, periodLabel, type MyOrder } from "../lib/billing";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -27,7 +27,8 @@ export function MyOrders({ onContinue }: { onContinue: (id: string) => void }) {
         {rows.length === 0 ? (
           <p className="text-sm text-muted-foreground">{t("billing.ordersEmpty")}</p>
         ) : (
-          <div className="overflow-x-auto">
+          {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrollable table must be reachable by keyboard */}
+          <div className="overflow-x-auto" tabIndex={0} role="region" aria-label={t("billing.ordersTitle")}>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -37,7 +38,9 @@ export function MyOrders({ onContinue }: { onContinue: (id: string) => void }) {
                   <TableHead>{t("billing.colAmount")}</TableHead>
                   <TableHead>{t("billing.colStatus")}</TableHead>
                   <TableHead>{t("billing.colPaid")}</TableHead>
-                  <TableHead />
+                  <TableHead>
+                    <span className="sr-only">{t("billing.colActions")}</span>
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -46,7 +49,7 @@ export function MyOrders({ onContinue }: { onContinue: (id: string) => void }) {
                     <TableCell>{fmt(o.created_at)}</TableCell>
                     <TableCell>{o.plan_name}</TableCell>
                     <TableCell>{periodLabel(t, o.period, o.period_days)}</TableCell>
-                    <TableCell>¥{yuan(o.amount_cents)}</TableCell>
+                    <TableCell className="tabular-nums">{money(o.amount_cents)}</TableCell>
                     <TableCell>
                       <Badge variant={o.status === "paid" ? "default" : "secondary"}>{t(STATUS_KEY[o.status])}</Badge>
                       {o.refunded_at && (
