@@ -1415,7 +1415,10 @@ async fn notify_url_follows_the_main_domain() {
     let mut c = Client::new(&derived, rand_ip());
     c.cookie = Some(token(&derived, user).await);
     let r = c
-        .post("/test/api/v1/me/orders", json!({ "plan_id": plan }))
+        .post(
+            "/test/api/v1/me/orders",
+            json!({ "plan_id": plan, "period": "days" }),
+        )
         .await;
     assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE, "{:?}", r.json());
     assert_eq!(r.json()["error"], "payments are not enabled");
@@ -1444,7 +1447,10 @@ async fn notify_url_follows_the_main_domain() {
     // The host gate is on now: address the main domain.
     c.headers = vec![("host".into(), "pay.example.com".into())];
     let r = c
-        .post("/test/api/v1/me/orders", json!({ "plan_id": plan }))
+        .post(
+            "/test/api/v1/me/orders",
+            json!({ "plan_id": plan, "period": "days" }),
+        )
         .await;
     assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
     assert_eq!(
@@ -1458,7 +1464,10 @@ async fn notify_url_follows_the_main_domain() {
     let mut c2 = Client::new(&explicit, rand_ip());
     c2.cookie = Some(token(&explicit, user2).await);
     let r = c2
-        .post("/test/api/v1/me/orders", json!({ "plan_id": plan }))
+        .post(
+            "/test/api/v1/me/orders",
+            json!({ "plan_id": plan, "period": "days" }),
+        )
         .await;
     assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
     assert_eq!(mock.inner.lock().unwrap().notify_urls[1], NOTIFY);
