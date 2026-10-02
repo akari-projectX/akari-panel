@@ -228,8 +228,12 @@ separate loopback listener, never on the public port.
 | POST | /api/v1/users/{id}/sub-token | admin | regenerate subscription token |
 | POST | /api/v1/users/{id}/revoke-sessions | admin | log the account out everywhere (204) |
 | DELETE | /api/v1/users/{id}/totp | admin | reset the account's 2FA, end its sessions; `{"totp": "active"\|"pending"\|"none"}` (what was removed) |
-| GET | /api/v1/me/shop | user (renewal scope*) | plans on sale with every priced period as the caller would buy it now (`action` new/renew/switch/reset, `credit_cents`, `amount_cents`, or `refusal`), description, stock; the caller's subscription and switch credit |
-| GET/POST | /api/v1/me/orders | user (renewal scope*) | own orders (last 50) / create `{plan_id, period}` → order + Alipay QR (the amount is the server's price minus any switch credit; fully credited orders are paid at once) |
+| GET | /api/v1/me/shop | user (renewal scope*) | plans on sale with every priced period as the caller would buy it now (`action` new/renew/switch/reset, `discount_cents`, `credit_cents`, `balance_cents`, `amount_cents`, or `refusal`), description, stock; the caller's subscription, switch credit and balance. W16: `?coupon=CODE` (rate-limited) prices with a coupon (`coupon.refusal` / per-offer `coupon_refusal`), `?use_balance=true` with the balance |
+| GET/POST | /api/v1/me/orders | user (renewal scope*) | own orders (last 50) / create `{plan_id, period, coupon?, use_balance?}` → order + Alipay QR (the amount is the server's price minus coupon, switch credit and balance, computed in SQL; fully covered orders are paid at once) |
+| GET | /api/v1/me/balance | user (renewal scope*) | W16: balance, withdrawable amount, ledger (`?before&limit`) |
+| GET | /api/v1/me/invite | user | W16: invite programme terms, invited count, commission totals and history (invite codes: W15) |
+| GET/POST | /api/v1/me/withdrawals | user | W16: own withdrawals / request `{amount_cents, method, account}` (debited at once; ≤ withdrawable) |
+| POST | /api/v1/me/withdrawals/{id}/cancel | user | W16: cancel a pending withdrawal (amount back to the balance) |
 | GET | /api/v1/me/orders/{id} | user (renewal scope*) | order status; a pending order is actively queried at Alipay (throttled) |
 | POST | /api/v1/me/orders/{id}/cancel | user (renewal scope*) | cancel a pending order (queried + closed at Alipay first) |
 | GET | /api/v1/plan-prices | admin | every plan with its `on_sale` flag and prices, `payments_enabled` |
@@ -237,6 +241,15 @@ separate loopback listener, never on the public port.
 | GET | /api/v1/orders | admin | orders, `?status&login&out_trade_no&unfulfilled&before&limit` (keyset) |
 | GET | /api/v1/orders/{id} | admin | order + payment events |
 | POST | /api/v1/orders/{id}/fulfil | admin | `{reason}`: mark an unpaid order paid (manual) or retry a failed fulfilment (audited) |
+| POST | /api/v1/orders/{id}/refund | admin | W16 `{reason, to_balance}`: refund a paid order once (balance part back; with `to_balance` the Alipay amount too); reverses a pending commission |
+| GET/POST | /api/v1/coupons | admin | W16: coupons / create `{code, kind percent\|fixed, value, plan_ids?, periods?, min_amount_cents?, starts_at?, ends_at?, max_uses?, per_user_limit?, new_users_only?, enabled?}` |
+| GET/PATCH/DELETE | /api/v1/coupons/{id} | admin | W16: coupon + redemptions / update (code immutable) / delete (never used only) |
+| GET | /api/v1/balances | admin | W16: customers with a balance, `?login` finds anyone |
+| GET/POST | /api/v1/users/{id}/balance | admin | W16: balance + ledger / adjust `{amount_cents (signed), reason}` (never below 0) |
+| GET | /api/v1/commissions | admin | W16: commissions `?status&login&limit` |
+| GET/PUT | /api/v1/commission-settings | admin | W16: `{enabled, rate_percent, first_order_only, hold_days, min_withdrawal_cents}` |
+| GET | /api/v1/withdrawals | admin | W16: withdrawal requests `?status&login&limit` |
+| POST | /api/v1/withdrawals/{id}/approve \| reject | admin | W16: `{payout_reference, note?}` after paying out by hand / `{reason}` (amount back to the balance) |
 | POST | /pay/alipay/notify | Alipay signature | Alipay async notify (RSA2); every refusal = the canonical rejection; see docs/PAYMENTS.md |
 | GET | /sub/{token} | token | subscription (UA-based format) |
 | GET | /install/{token}[/agent/{arch}] | install link | node install script / agent binary while the link is live (docs/DEPLOY.md §3) |
@@ -442,6 +455,10 @@ paid order grants or extends the plan in one transaction, exactly once,
 whether the payment is learned from the async notify, from status polling
 or from the background reconcile. Buying the active plan again extends it
 by its period; buying another plan replaces the active one (usage reset).
+W16 (M7): coupons (percent/fixed, scoped, limited, race-free reservation),
+a per-user balance (余额) with an append-only ledger (orders can be paid
+fully or partly from it), invite commissions (pending for a hold period,
+then balance; reversed by a refund) and manually paid-out withdrawals.
 Setup, sandbox testing, notify URL rules and reconciliation:
 [docs/PAYMENTS.md](docs/PAYMENTS.md).
 
