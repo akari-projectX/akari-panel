@@ -1,0 +1,614 @@
+//! Outgoing email (W15): SMTP settings (系统设置 → 邮件), the outbox, the
+//! background sender, templates and the periodic notices.
+//!
+//! **Requests never talk to SMTP.** Every mail is rendered at request time
+//! and INSERTed into `mail_outbox` inside the caller's transaction
+//! (`enqueue`): a rolled-back request sends nothing, a committed one is
+//! delivered by `sender::run` on any panel instance (claim with `FOR UPDATE
+//! SKIP LOCKED` + lease + claim token, so two instances never send the same
+//! row while its lease holds; delivery is at-least-once only across a crash
+//! between the SMTP acceptance and the settle UPDATE). Retries back off
+//! exponentially; permanent failures and exhausted retries become dead
+//! letters the admin can see (`GET /mail/outbox?status=dead`) and retry.
+//! Bodies are cleared once a row is settled for anything that carries a
+//! secret (codes, reset links), and on success for every kind; neither
+//! bodies nor codes are ever logged.
+//!
+//! The only synchronous SMTP use is the admin's "发送测试邮件"
+//! (`POST /settings/mail/test`), which reports the server's answer.
+
+pub mod notices;
+pub mod sender;
+pub mod templates;
+
+use axum::extract::{Path, Query, State};
+use axum::Json;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::PgConnection;
+use uuid::Uuid;
+
+use crate::api::{double_option, ApiJson};
+use crate::audit::{Actor, CHANGED};
+use crate::auth::{ApiError, AuthUser};
+use crate::state::AppState;
+pub use templates::{Locale, Template};
+
+/// AAD of the sealed SMTP password (`totp::Keys::seal`, like TOTP secrets
+/// but bound to this fixed id instead of a user).
+pub const SMTP_AAD: Uuid = Uuid::from_u128(0x616b_6172_692d_736d_7470_2d70_6173_7377);
+
+/// Sender name when none is configured.
+pub const DEFAULT_SITE: &str = "Akari";
+
+/// The `smtp_settings` row.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct Smtp {
+    pub version: i64,
+    pub enabled: bool,
+    pub host: Option<String>,
+    pub port: i32,
+    pub security: String,
+    pub username: Option<String>,
+    pub password_enc: Option<Vec<u8>>,
+    pub from_addr: Option<String>,
+    pub from_name: Option<String>,
+    pub notify_order_paid: bool,
+    pub notify_expiry_days: i32,
+    pub notify_expired: bool,
+    pub notify_quota: bool,
+}
+
+const SMTP_COLS: &str = "version, enabled, host, port, security, username, password_enc, \
+     from_addr, from_name, notify_order_paid, notify_expiry_days, notify_expired, notify_quota";
+
+impl Smtp {
+    /// Name used as the mail sender and in templates.
+    pub fn site(&self) -> &str {
+        self.from_name
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(DEFAULT_SITE)
+    }
+    /// Host and sender present (the enabled row is always complete).
+    pub fn complete(&self) -> bool {
+        self.host.is_some() && self.from_addr.is_some()
+    }
+}
+
+pub async fn load(conn: &mut PgConnection) -> sqlx::Result<Smtp> {
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {SMTP_COLS} FROM smtp_settings WHERE id = 1"
+    )))
+    .fetch_one(conn)
+    .await
+}
+
+/// Render `tpl` and add it to the outbox in the caller's transaction.
+/// `discard_after_secs`: the mail is pointless after that long (codes,
+/// reset links) — the sender drops it instead of delivering it late.
+pub async fn enqueue(
+    conn: &mut PgConnection,
+    smtp: &Smtp,
+    tpl: &Template,
+    locale: Locale,
+    to: &str,
+    user_id: Option<Uuid>,
+    discard_after_secs: Option<i64>,
+) -> sqlx::Result<i64> {
+    let r = templates::render(tpl, locale, smtp.site());
+    sqlx::query_scalar(
+        "INSERT INTO mail_outbox (kind, user_id, to_addr, subject, body_text, body_html, \
+         discard_after) VALUES ($1, $2, $3, $4, $5, $6, \
+         CASE WHEN $7::bigint IS NULL THEN NULL ELSE now() + make_interval(secs => $7::bigint::double precision) END) \
+         RETURNING id",
+    )
+    .bind(tpl.outbox_kind())
+    .bind(user_id)
+    .bind(to)
+    .bind(&r.subject)
+    .bind(&r.text)
+    .bind(&r.html)
+    .bind(discard_after_secs)
+    .fetch_one(conn)
+    .await
+}
+
+/// `<public origin>/<prefix>/app` (the portal), if a main domain is
+/// configured. Links in mail never derive from a request's Host header.
+pub fn portal_url(state: &AppState) -> Option<String> {
+    state
+        .settings()
+        .get()
+        .public_origin()
+        .map(|o| format!("{o}/{}/app", state.route_prefix()))
+}
+
+// ---------------------------------------------------------------------------
+// 系统设置 → 邮件 (admin)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct SmtpView {
+    version: i64,
+    enabled: bool,
+    host: Option<String>,
+    port: i32,
+    security: String,
+    username: Option<String>,
+    /// Whether a password is stored (never the password).
+    password_set: bool,
+    from_addr: Option<String>,
+    from_name: Option<String>,
+    notify_order_paid: bool,
+    notify_expiry_days: i32,
+    notify_expired: bool,
+    notify_quota: bool,
+    /// Dead letters (for the card's badge).
+    dead_letters: i64,
+    pending: i64,
+    warnings: Vec<String>,
+}
+
+async fn view(conn: &mut PgConnection) -> Result<SmtpView, ApiError> {
+    let s = load(conn).await?;
+    let (dead, pending): (i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE status = 'dead'), count(*) FILTER (WHERE status = 'pending') \
+         FROM mail_outbox",
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let signup = crate::signup::load_settings(conn).await?;
+    let mut warnings = Vec::new();
+    if !s.enabled && (signup.register_enabled || signup.reset_enabled) {
+        warnings.push("注册或找回密码已开启，但邮件发送未启用：验证码与重置链接无法送达".into());
+    }
+    if s.security == "none" {
+        warnings.push("未加密连接只适用于本机或内网的中继/测试收件服务".into());
+    }
+    Ok(SmtpView {
+        version: s.version,
+        enabled: s.enabled,
+        host: s.host,
+        port: s.port,
+        security: s.security,
+        username: s.username,
+        password_set: s.password_enc.is_some(),
+        from_addr: s.from_addr,
+        from_name: s.from_name,
+        notify_order_paid: s.notify_order_paid,
+        notify_expiry_days: s.notify_expiry_days,
+        notify_expired: s.notify_expired,
+        notify_quota: s.notify_quota,
+        dead_letters: dead,
+        pending,
+        warnings,
+    })
+}
+
+/// GET /api/v1/settings/mail (admin).
+pub async fn get_mail_settings(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<SmtpView>, ApiError> {
+    user.require_admin()?;
+    let mut c = state.pg().acquire().await?;
+    Ok(Json(view(&mut c).await?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SmtpReq {
+    pub version: i64,
+    pub enabled: bool,
+    pub host: Option<String>,
+    pub port: i32,
+    pub security: String,
+    pub username: Option<String>,
+    /// Absent = keep the stored password, null or "" = remove it,
+    /// a string = replace it.
+    #[serde(default, deserialize_with = "double_option")]
+    pub password: Option<Option<String>>,
+    pub from_addr: Option<String>,
+    pub from_name: Option<String>,
+    pub notify_order_paid: bool,
+    pub notify_expiry_days: i32,
+    pub notify_expired: bool,
+    pub notify_quota: bool,
+}
+
+/// Validated values of a `SmtpReq` (password: None = keep).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmtpValues {
+    pub enabled: bool,
+    pub host: Option<String>,
+    pub port: i32,
+    pub security: String,
+    pub username: Option<String>,
+    pub password: Option<Option<String>>,
+    pub from_addr: Option<String>,
+    pub from_name: Option<String>,
+    pub notify_order_paid: bool,
+    pub notify_expiry_days: i32,
+    pub notify_expired: bool,
+    pub notify_quota: bool,
+}
+
+fn printable(s: &str) -> bool {
+    !s.chars().any(char::is_control)
+}
+
+/// SMTP host: a DNS name (any case, IDN ok) or an IP literal.
+fn valid_host(h: &str) -> Option<String> {
+    if h.parse::<std::net::IpAddr>().is_ok() {
+        return Some(h.to_string());
+    }
+    let ascii = idna::domain_to_ascii(h.trim_end_matches('.')).ok()?;
+    let ok = !ascii.is_empty()
+        && ascii.len() <= 253
+        && ascii.split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+        });
+    ok.then(|| ascii.to_ascii_lowercase())
+}
+
+fn blank(v: &Option<String>) -> Option<String> {
+    v.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+pub fn smtp_values(req: &SmtpReq) -> Result<SmtpValues, ApiError> {
+    let host = match blank(&req.host) {
+        None => None,
+        Some(h) => Some(
+            valid_host(&h)
+                .ok_or_else(|| ApiError::bad_request("host must be a host name or IP address"))?,
+        ),
+    };
+    if !(1..=65535).contains(&req.port) {
+        return Err(ApiError::bad_request("port must be 1-65535"));
+    }
+    if !["starttls", "tls", "none"].contains(&req.security.as_str()) {
+        return Err(ApiError::bad_request(
+            "security must be starttls, tls or none",
+        ));
+    }
+    let username = blank(&req.username);
+    if username
+        .as_deref()
+        .is_some_and(|u| u.len() > 256 || !printable(u))
+    {
+        return Err(ApiError::bad_request("username is invalid"));
+    }
+    let password = match &req.password {
+        None => None,
+        Some(None) => Some(None),
+        Some(Some(p)) if p.is_empty() => Some(None),
+        Some(Some(p)) => {
+            if p.len() > 256 || !printable(p) {
+                return Err(ApiError::bad_request("password is invalid"));
+            }
+            Some(Some(p.clone()))
+        }
+    };
+    if req.security == "none" && username.is_some() {
+        return Err(ApiError::bad_request(
+            "credentials are only sent over TLS (security starttls or tls)",
+        ));
+    }
+    let from_addr = match blank(&req.from_addr) {
+        None => None,
+        Some(a) => Some(
+            crate::signup::email::parse(&a)
+                .ok_or_else(|| ApiError::bad_request("from_addr is not a valid email address"))?,
+        ),
+    };
+    let from_name = blank(&req.from_name);
+    if from_name
+        .as_deref()
+        .is_some_and(|n| n.chars().count() > 64 || !printable(n))
+    {
+        return Err(ApiError::bad_request(
+            "from_name must be at most 64 characters",
+        ));
+    }
+    if !(0..=30).contains(&req.notify_expiry_days) {
+        return Err(ApiError::bad_request("notify_expiry_days must be 0-30"));
+    }
+    if req.enabled && (host.is_none() || from_addr.is_none()) {
+        return Err(ApiError::bad_request(
+            "host and from_addr are required to enable sending",
+        ));
+    }
+    Ok(SmtpValues {
+        enabled: req.enabled,
+        host,
+        port: req.port,
+        security: req.security.clone(),
+        password: if username.is_none() {
+            Some(None)
+        } else {
+            password
+        },
+        username,
+        from_addr,
+        from_name,
+        notify_order_paid: req.notify_order_paid,
+        notify_expiry_days: req.notify_expiry_days,
+        notify_expired: req.notify_expired,
+        notify_quota: req.notify_quota,
+    })
+}
+
+/// Write the SMTP settings (optimistic concurrency on `version`) with the
+/// audit row, in the caller's transaction. The password is sealed with the
+/// key of data/totp.key and audited only as "changed".
+pub async fn apply_update_smtp(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    keys: &crate::totp::Keys,
+    version: i64,
+    v: &SmtpValues,
+) -> Result<(), ApiError> {
+    let cur: Smtp = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {SMTP_COLS} FROM smtp_settings WHERE id = 1 FOR UPDATE"
+    )))
+    .fetch_one(&mut *conn)
+    .await?;
+    if cur.version != version {
+        return Err(ApiError::conflict(
+            "settings changed meanwhile; reload and retry",
+        ));
+    }
+    let sealed: Option<Vec<u8>> = match &v.password {
+        None => cur.password_enc.clone(),
+        Some(None) => None,
+        Some(Some(p)) => Some(keys.seal(SMTP_AAD, p.as_bytes())?),
+    };
+    let snap = |s: &SmtpValues, pw: bool| {
+        json!({
+            "enabled": s.enabled, "host": s.host, "port": s.port, "security": s.security,
+            "username": s.username, "password": if pw { CHANGED } else { "" },
+            "from_addr": s.from_addr, "from_name": s.from_name,
+            "notify_order_paid": s.notify_order_paid, "notify_expiry_days": s.notify_expiry_days,
+            "notify_expired": s.notify_expired, "notify_quota": s.notify_quota,
+        })
+    };
+    let before = json!({
+        "enabled": cur.enabled, "host": cur.host, "port": cur.port, "security": cur.security,
+        "username": cur.username, "from_addr": cur.from_addr, "from_name": cur.from_name,
+        "notify_order_paid": cur.notify_order_paid, "notify_expiry_days": cur.notify_expiry_days,
+        "notify_expired": cur.notify_expired, "notify_quota": cur.notify_quota,
+    });
+    sqlx::query(
+        "UPDATE smtp_settings SET version = version + 1, enabled = $1, host = $2, port = $3, \
+         security = $4, username = $5, password_enc = $6, from_addr = $7, from_name = $8, \
+         notify_order_paid = $9, notify_expiry_days = $10, notify_expired = $11, \
+         notify_quota = $12, updated_at = now() WHERE id = 1",
+    )
+    .bind(v.enabled)
+    .bind(&v.host)
+    .bind(v.port)
+    .bind(&v.security)
+    .bind(&v.username)
+    .bind(&sealed)
+    .bind(&v.from_addr)
+    .bind(&v.from_name)
+    .bind(v.notify_order_paid)
+    .bind(v.notify_expiry_days)
+    .bind(v.notify_expired)
+    .bind(v.notify_quota)
+    .execute(&mut *conn)
+    .await?;
+    crate::audit::record(
+        conn,
+        actor,
+        "settings.mail.update",
+        "settings",
+        Some("mail".into()),
+        Some(before),
+        Some(snap(v, v.password.is_some())),
+    )
+    .await?;
+    Ok(())
+}
+
+/// PUT /api/v1/settings/mail (admin).
+pub async fn put_mail_settings(
+    State(state): State<AppState>,
+    user: AuthUser,
+    ApiJson(req): ApiJson<SmtpReq>,
+) -> Result<Json<SmtpView>, ApiError> {
+    user.require_admin()?;
+    let v = smtp_values(&req)?;
+    let mut tx = state.pg().begin().await?;
+    apply_update_smtp(&mut tx, &Actor::of(&user), state.totp(), req.version, &v).await?;
+    let out = view(&mut tx).await?;
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestReq {
+    pub to: String,
+}
+
+/// Longest wait for the test mail (connect + TLS + AUTH + DATA).
+const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// POST /api/v1/settings/mail/test (admin): send a test message right now
+/// with the SAVED settings (enabled or not) and report the server's answer.
+pub async fn send_test(
+    State(state): State<AppState>,
+    user: AuthUser,
+    ApiJson(req): ApiJson<TestReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    user.require_admin()?;
+    let to = crate::signup::email::parse(&req.to)
+        .ok_or_else(|| ApiError::bad_request("to is not a valid email address"))?;
+    let smtp = {
+        let mut c = state.pg().acquire().await?;
+        load(&mut c).await?
+    };
+    if !smtp.complete() {
+        return Err(ApiError::bad_request(
+            "save the SMTP host and sender address first",
+        ));
+    }
+    let transport = sender::smtp_transport(&smtp, state.totp())
+        .map_err(|e| ApiError::new(axum::http::StatusCode::BAD_GATEWAY, e))?;
+    let r = templates::render(&Template::Test, Locale::Zh, smtp.site());
+    let msg = sender::OutMsg {
+        to: to.clone(),
+        subject: r.subject,
+        text: r.text,
+        html: r.html,
+    };
+    let res = tokio::time::timeout(TEST_TIMEOUT, transport.send(&msg)).await;
+    let outcome = match &res {
+        Ok(Ok(())) => "sent".to_string(),
+        Ok(Err(e)) => e.message.clone(),
+        Err(_) => "timed out".to_string(),
+    };
+    {
+        let mut c = state.pg().acquire().await?;
+        crate::audit::record(
+            &mut c,
+            &Actor::of(&user),
+            "settings.mail.test",
+            "settings",
+            Some("mail".into()),
+            None,
+            Some(json!({ "to": to, "outcome": outcome })),
+        )
+        .await?;
+    }
+    match res {
+        Ok(Ok(())) => Ok(Json(json!({ "ok": true }))),
+        _ => Err(ApiError::new(
+            axum::http::StatusCode::BAD_GATEWAY,
+            format!("send failed: {outcome}"),
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Outbox (admin): dead letters and retry
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, sqlx::FromRow)]
+pub struct OutboxRow {
+    id: i64,
+    kind: String,
+    to_addr: String,
+    subject: String,
+    status: String,
+    attempts: i32,
+    last_error: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    next_attempt_at: chrono::DateTime<chrono::Utc>,
+    settled_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// A dead letter that can still be re-queued (body kept, not expired).
+    retryable: bool,
+}
+
+#[derive(Deserialize)]
+pub struct OutboxQuery {
+    pub status: Option<String>,
+    pub before: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+/// GET /api/v1/mail/outbox?status=dead|pending|sent&before=<id>&limit=
+/// (admin): newest first; never the bodies.
+pub async fn list_outbox(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Query(q): Query<OutboxQuery>,
+) -> Result<Json<Vec<OutboxRow>>, ApiError> {
+    user.require_admin()?;
+    let status = q.status.as_deref().unwrap_or("dead");
+    if !["dead", "pending", "sent"].contains(&status) {
+        return Err(ApiError::bad_request(
+            "status must be dead, pending or sent",
+        ));
+    }
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let rows = sqlx::query_as::<_, OutboxRow>(
+        "SELECT id, kind, to_addr, subject, status, attempts, last_error, created_at, \
+         next_attempt_at, settled_at, \
+         (status = 'dead' AND body_text <> '' AND (discard_after IS NULL OR discard_after > now())) \
+         AS retryable \
+         FROM mail_outbox WHERE status = $1 AND ($2::bigint IS NULL OR id < $2) \
+         ORDER BY id DESC LIMIT $3",
+    )
+    .bind(status)
+    .bind(q.before)
+    .bind(limit)
+    .fetch_all(state.pg())
+    .await?;
+    Ok(Json(rows))
+}
+
+/// POST /api/v1/mail/outbox/{id}/retry (admin): re-queue a dead letter.
+pub async fn retry_outbox(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((_, id)): Path<(String, i64)>,
+) -> Result<axum::http::StatusCode, ApiError> {
+    user.require_admin()?;
+    let mut tx = state.pg().begin().await?;
+    let n = sqlx::query(
+        "UPDATE mail_outbox SET status = 'pending', settled_at = NULL, attempts = 0, \
+         next_attempt_at = now(), claimed_until = NULL, claim_token = NULL \
+         WHERE id = $1 AND status = 'dead' AND body_text <> '' \
+         AND (discard_after IS NULL OR discard_after > now())",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if n == 0 {
+        return Err(ApiError::conflict(
+            "only a dead letter that has not expired can be retried",
+        ));
+    }
+    crate::audit::record(
+        &mut tx,
+        &Actor::of(&user),
+        "mail.retry",
+        "mail",
+        Some(id.to_string()),
+        None,
+        None,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+pub fn routes() -> axum::Router<AppState> {
+    use axum::routing::{get, post};
+    axum::Router::new()
+        .route(
+            "/{prefix}/api/v1/settings/mail",
+            get(get_mail_settings).put(put_mail_settings),
+        )
+        .route("/{prefix}/api/v1/settings/mail/test", post(send_test))
+        .route("/{prefix}/api/v1/mail/outbox", get(list_outbox))
+        .route(
+            "/{prefix}/api/v1/mail/outbox/{id}/retry",
+            post(retry_outbox),
+        )
+}
+
+#[cfg(test)]
+mod tests;

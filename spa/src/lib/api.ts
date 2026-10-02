@@ -63,6 +63,32 @@ export const login = (body: { login: string; password: string; code?: string }) 
   request<LoginResult>(`${authBase}/login`, { method: "POST", body: JSON.stringify(body) });
 export const logout = () => request<void>(`${authBase}/logout`, { method: "POST" });
 
+// W15 self-service (public, /{prefix}/auth/*). While registration or reset
+// is disabled the panel answers those endpoints with its canonical 404;
+// the login page only offers them when `authOptions()` says so.
+export interface AuthOptions {
+  register: boolean;
+  invite_required: boolean;
+  // Empty = any domain.
+  email_domains: string[];
+  reset: boolean;
+}
+export const authOptions = () => request<AuthOptions>(`${authBase}/options`);
+const authPost = <T>(path: string, body: unknown) =>
+  request<T>(`${authBase}${path}`, { method: "POST", body: JSON.stringify(body) });
+export const registerCode = (body: { email: string; invite_code?: string; locale?: string }) =>
+  authPost<{ ok: true }>("/register/code", body);
+export const register = (body: {
+  email: string;
+  code: string;
+  password: string;
+  invite_code?: string;
+  locale?: string;
+}) => authPost<LoginResult & { trial: boolean }>("/register", body);
+export const requestReset = (body: { email: string }) => authPost<{ ok: true }>("/password-reset/request", body);
+export const resetPassword = (body: { token: string; password: string }) =>
+  authPost<{ ok: true }>("/password-reset", body);
+
 // --- API shapes (mirror of panel/src/api.rs views) ---
 
 export interface Me {
@@ -77,6 +103,11 @@ export interface Me {
   expired: boolean;
   // R21: disabled for exceeding the traffic limit: same renewal scope.
   quota_exhausted: boolean;
+  // W15: the account's email address and whether it is verified (only a
+  // verified one gets mail and resets the password); language of the mails.
+  email: string | null;
+  email_verified: boolean;
+  locale: "zh" | "en";
 }
 
 // "enroll": only with auth.require_admin_2fa, an admin without 2FA; only the
@@ -149,6 +180,9 @@ export interface UserView {
   plan_id: string | null;
   plan_name: string | null;
   next_reset_at: string | null;
+  // W15
+  email: string | null;
+  email_verified: boolean;
 }
 
 // --- M3: node groups, plans, user plans (mirror of src/plans.rs) ---

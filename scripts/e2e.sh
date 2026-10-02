@@ -43,6 +43,13 @@ bind = "127.0.0.1:$GRPC_PORT"
 advertise = "127.0.0.1:$GRPC_PORT"
 TOML
 
+# W15: Mailpit as the SMTP sink (loopback; SMTP 11026, API 18026 — not
+# smoke's ports). The registration/reset test reads codes and links from it.
+MAILPIT=akari-e2e-mailpit
+docker rm -f "$MAILPIT" >/dev/null 2>&1 || true
+docker run -d --name "$MAILPIT" --network host -e MP_SMTP_BIND_ADDR=127.0.0.1:11026 \
+  -e MP_UI_BIND_ADDR=127.0.0.1:18026 axllent/mailpit:v1.27 >/dev/null
+
 PREFIX=$("$PANEL" -c "$DIR/panel.toml" info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')
 # W16: payments on (throwaway keys, a gateway nobody listens on) so the
 # shop, coupons and balance can be driven; the e2e purchases are fully
@@ -62,7 +69,7 @@ notify_url = "http://$E2E_HOST:$PORT/$PREFIX/pay/alipay/notify"
 TOML
 "$PANEL" -c "$DIR/panel.toml" serve >"$DIR/panel.log" 2>&1 &
 PANEL_PID=$!
-trap 'kill $PANEL_PID 2>/dev/null || true; wait $PANEL_PID 2>/dev/null || true' EXIT
+trap 'kill $PANEL_PID 2>/dev/null || true; wait $PANEL_PID 2>/dev/null || true; docker rm -f "$MAILPIT" >/dev/null 2>&1 || true' EXIT
 for _ in $(seq 1 60); do
   [ "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/$PREFIX/healthz")" = "200" ] && break
   kill -0 $PANEL_PID 2>/dev/null || { echo "FAIL: panel exited"; cat "$DIR/panel.log"; exit 1; }
@@ -79,5 +86,6 @@ cd spa
 E2E_BASE="http://$E2E_HOST:$PORT/$PREFIX/app" \
   E2E_ADMIN=e2e-admin E2E_ADMIN_PW="$ADMIN_PW" \
   E2E_USER=e2e-user E2E_USER_PW="$USER_PW" \
+  E2E_MAILPIT=http://127.0.0.1:18026/api/v1 E2E_SMTP_PORT=11026 \
   NO_PROXY='*' no_proxy='*' \
   npx playwright test "$@"

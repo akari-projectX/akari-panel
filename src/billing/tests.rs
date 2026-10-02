@@ -2820,3 +2820,105 @@ async fn period_months_mirror_sql() {
     db.drop().await;
 }
 mod w16;
+
+/// W15: a paid order queues exactly one receipt (in the payment's
+/// transaction; replays and concurrent duplicates add none), only to a
+/// verified address and only while mail sending + receipts are enabled.
+#[tokio::test]
+async fn paid_order_queues_one_receipt() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let (_, plan) = priced_plan(&db, "receipt", 990, 30).await;
+    let user = db.user().await;
+    let email = format!("r{}@example.com", &user.simple().to_string()[..10]);
+    sqlx::query(
+        "UPDATE users SET email = $2, email_verified_at = now(), locale = 'en' WHERE id = $1",
+    )
+    .bind(user)
+    .bind(&email)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let receipts = |db: &TestDb| {
+        let pool = db.pool.clone();
+        let email = email.clone();
+        async move {
+            sqlx::query_as::<_, (String, String)>(
+                "SELECT subject, body_text FROM mail_outbox WHERE kind = 'order_paid' AND to_addr = $1",
+            )
+            .bind(&email)
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    // Mail off: paid, no receipt.
+    let (o1, _) = order_row(&db, user, plan, 990, 30).await;
+    assert!(matches!(pay(&db, o1).await, Paid::Now { fulfilled: true }));
+    assert!(receipts(&db).await.is_empty());
+
+    sqlx::query(
+        "UPDATE smtp_settings SET enabled = true, host = '127.0.0.1', security = 'none', \
+         from_addr = 'noreply@example.com'",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let (o2, otn2) = order_row(&db, user, plan, 990, 30).await;
+    let mut tasks = Vec::new();
+    for _ in 0..4 {
+        let pool = db.pool.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut tx = pool.begin().await.unwrap();
+            let r = orders::apply_mark_paid(
+                &mut tx,
+                &orders::payment_actor(None),
+                o2,
+                Via::Notify,
+                Some("T"),
+                None,
+                None,
+            )
+            .await
+            .ok()
+            .unwrap();
+            tx.commit().await.unwrap();
+            matches!(r, Paid::Now { .. })
+        }));
+    }
+    let mut now = 0;
+    for t in tasks {
+        now += t.await.unwrap() as i32;
+    }
+    assert_eq!(now, 1);
+    let r = receipts(&db).await;
+    assert_eq!(r.len(), 1, "exactly one receipt");
+    assert!(r[0].0.contains("payment received"), "{:?}", r[0]);
+    assert!(
+        r[0].1.contains(&otn2) && r[0].1.contains("CNY 9.90"),
+        "{}",
+        r[0].1
+    );
+
+    // Receipts toggled off, or an unverified address: none.
+    sqlx::query("UPDATE smtp_settings SET notify_order_paid = false")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let (o3, _) = order_row(&db, user, plan, 990, 30).await;
+    pay(&db, o3).await;
+    sqlx::query("UPDATE smtp_settings SET notify_order_paid = true")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE users SET email_verified_at = NULL WHERE id = $1")
+        .bind(user)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let (o4, _) = order_row(&db, user, plan, 990, 30).await;
+    assert!(matches!(pay(&db, o4).await, Paid::Now { .. }));
+    assert_eq!(receipts(&db).await.len(), 1);
+    db.drop().await;
+}

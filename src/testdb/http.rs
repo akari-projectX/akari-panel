@@ -97,6 +97,32 @@ impl Client {
         }
     }
 
+    /// A POST with a raw body and content type (malformed/oversized JSON).
+    pub async fn post_raw(&self, path: &str, content_type: &str, body: Vec<u8>) -> Resp {
+        let mut b = Request::builder()
+            .method(Method::POST)
+            .uri(path)
+            .header(header::CONTENT_TYPE, content_type);
+        if let Some(c) = &self.cookie {
+            b = b.header(header::COOKIE, format!("{}={c}", crate::auth::COOKIE_NAME));
+        }
+        let mut req = b.body(Body::from(body)).unwrap();
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::new(self.ip, 40000)));
+        let res = self.router.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let headers = res.headers().clone();
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap()
+            .to_vec();
+        Resp {
+            status,
+            headers,
+            body,
+        }
+    }
+
     /// A raw (octet-stream) request body.
     pub async fn put_raw(&self, path: &str, body: Vec<u8>) -> Resp {
         let mut b = Request::builder()

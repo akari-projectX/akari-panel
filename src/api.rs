@@ -68,8 +68,15 @@ pub async fn login(
         return Err(ApiError::bad_request("code is too long"));
     }
     let client = state.client_ip(addr.ip(), &headers);
+    // W15: an address logs in case-insensitively, so its per-name bucket
+    // must not split by case (admin-made logins never contain '@').
+    let limit_name = if req.login.contains('@') {
+        req.login.to_lowercase()
+    } else {
+        req.login.clone()
+    };
     let attempt =
-        crate::login_limit::Attempt::reserve(&state, &crate::client_ip::bucket(client), &req.login)
+        crate::login_limit::Attempt::reserve(&state, &crate::client_ip::bucket(client), &limit_name)
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, "login rate limit unavailable");
@@ -155,7 +162,8 @@ enum Checked {
 }
 
 /// Verify password and second factor with the same work for every kind of
-/// failure.
+/// failure. The login name may also be the account's VERIFIED email
+/// address (W15; case-insensitive); an exact login match wins.
 async fn check_credentials(state: &AppState, req: &LoginReq) -> Result<Checked, ApiError> {
     // Expiry applies to role=user only (an admin must never lock themselves
     // out by a date). TOTP state and unused recovery codes come in the same
@@ -168,7 +176,8 @@ async fn check_credentials(state: &AppState, req: &LoginReq) -> Result<Checked, 
                WHERE r.user_id = u.id AND r.used_at IS NULL ORDER BY r.code_hash) AS recovery, \
          EXTRACT(EPOCH FROM now())::bigint AS db_now \
          FROM users u LEFT JOIN user_totp t ON t.user_id = u.id AND t.enabled_at IS NOT NULL \
-         WHERE u.login = $1",
+         WHERE u.login = $1 OR (u.email = lower($1) AND u.email_verified_at IS NOT NULL) \
+         ORDER BY (u.login = $1) DESC LIMIT 1",
         crate::enforce::EXPIRED
     )))
     .bind(&req.login)
@@ -483,6 +492,9 @@ struct MeRow {
     traffic_used_bytes: i64,
     traffic_limit_bytes: Option<i64>,
     expires_at: Option<DateTime<Utc>>,
+    email: Option<String>,
+    email_verified: bool,
+    locale: String,
 }
 
 #[derive(Serialize)]
@@ -497,6 +509,12 @@ pub struct MeView {
     expired: bool,
     /// R21: disabled for exceeding the traffic limit: renewal scope only.
     quota_exhausted: bool,
+    /// W15: the account's address (null = none) and whether it is verified
+    /// (only a verified address gets mail and resets the password).
+    email: Option<String>,
+    email_verified: bool,
+    /// W15: language of the account's mails.
+    locale: String,
 }
 
 /// GET /api/v1/me (renewal scope: also for expired users, R21).
@@ -509,7 +527,8 @@ pub async fn me(
     }: ShopUser,
 ) -> Result<Json<MeView>, ApiError> {
     let row = sqlx::query_as::<_, MeRow>(
-        "SELECT traffic_used_bytes, traffic_limit_bytes, expires_at FROM users WHERE id = $1",
+        "SELECT traffic_used_bytes, traffic_limit_bytes, expires_at, email, \
+         email_verified_at IS NOT NULL AS email_verified, locale FROM users WHERE id = $1",
     )
     .bind(user.id)
     .fetch_optional(state.pg())
@@ -524,6 +543,9 @@ pub async fn me(
         expires_at: row.expires_at,
         expired,
         quota_exhausted,
+        email: row.email,
+        email_verified: row.email_verified,
+        locale: row.locale,
     }))
 }
 
@@ -549,6 +571,9 @@ pub struct UserView {
     plan_id: Option<Uuid>,
     plan_name: Option<String>,
     next_reset_at: Option<DateTime<Utc>>,
+    /// W15: the account's address and whether it is verified.
+    email: Option<String>,
+    email_verified: bool,
 }
 
 /// UserView columns (alias `users` table as itself).
@@ -561,7 +586,8 @@ pub const USER_VIEW_COLS: &str =
      (SELECT p.name FROM user_plans up JOIN plans p ON p.id = up.plan_id \
       WHERE up.user_id = users.id AND up.status = 'active') AS plan_name, \
      (SELECT up.next_reset_at FROM user_plans up \
-      WHERE up.user_id = users.id AND up.status = 'active') AS next_reset_at";
+      WHERE up.user_id = users.id AND up.status = 'active') AS next_reset_at, \
+     email, email_verified_at IS NOT NULL AS email_verified";
 
 #[derive(Deserialize)]
 pub struct Pagination {
@@ -641,7 +667,8 @@ pub async fn create_user(
          VALUES ($1, $2, $3, $4, $5, $6, $7) \
          RETURNING id, login, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, \
          created_at, false AS totp_enabled, disabled_reason::text AS disabled_reason, \
-         NULL::uuid AS plan_id, NULL::text AS plan_name, NULL::timestamptz AS next_reset_at",
+         NULL::uuid AS plan_id, NULL::text AS plan_name, NULL::timestamptz AS next_reset_at, \
+         email, false AS email_verified",
     )
     .bind(id)
     .bind(&req.login)

@@ -42,6 +42,7 @@ struct Metrics {
     listener_connected: IntGauge,
     queue_usage: prometheus::Gauge,
     login_attempts: IntCounterVec,
+    mail: IntCounterVec,
     enrollments: IntCounterVec,
     http_seconds: HistogramVec,
     retention: IntCounterVec,
@@ -119,6 +120,11 @@ impl Metrics {
                 "Login attempts by rate-limit outcome (allowed, limited)",
                 &["result"],
             )?,
+            mail: cv(
+                "akari_mail_deliveries_total",
+                "Outbox delivery attempts by mail kind and result (sent, failed)",
+                &["kind", "result"],
+            )?,
             enrollments: cv(
                 "akari_agent_enrollments_total",
                 "Agent enrollment / renewal RPC outcomes (ok, refused, bad_csr, rate_limited, \
@@ -178,6 +184,7 @@ impl Metrics {
             .register(Box::new(m.listener_connected.clone()))?;
         m.registry.register(Box::new(m.queue_usage.clone()))?;
         m.registry.register(Box::new(m.login_attempts.clone()))?;
+        m.registry.register(Box::new(m.mail.clone()))?;
         m.registry.register(Box::new(m.enrollments.clone()))?;
         m.registry.register(Box::new(m.http_seconds.clone()))?;
         m.registry.register(Box::new(m.retention.clone()))?;
@@ -306,6 +313,16 @@ pub fn login_attempt(allowed: bool) {
     if let Some(m) = m() {
         m.login_attempts
             .with_label_values(&[if allowed { "allowed" } else { "limited" }])
+            .inc();
+    }
+}
+
+/// W15: one outbox delivery attempt (`kind` is the fixed mail_outbox.kind
+/// enum).
+pub fn mail_sent(kind: &str, ok: bool) {
+    if let Some(m) = m() {
+        m.mail
+            .with_label_values(&[kind, if ok { "sent" } else { "failed" }])
             .inc();
     }
 }

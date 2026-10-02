@@ -6,10 +6,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { LocaleSwitch, useT } from "../i18n";
-import { ApiError, login as apiLogin } from "../lib/api";
+import { ApiError, appBase, login as apiLogin, type AuthOptions } from "../lib/api";
 import { errorText } from "../lib/errors";
+import { AppLink } from "./register";
 
-export function Login() {
+export function Login({ options }: { options?: AuthOptions } = {}) {
   const queryClient = useQueryClient();
   const t = useT();
   const [login, setLogin] = useState("");
@@ -99,6 +100,16 @@ export function Login() {
             <Button className="w-full" type="submit" disabled={busy}>
               {busy ? t("login.submitting") : t("login.submit")}
             </Button>
+            {(options?.register || options?.reset) && (
+              <div className="flex flex-wrap justify-between gap-2 text-sm">
+                {options.reset ? <AppLink to={`${appBase}/forgot`}>{t("login.forgotLink")}</AppLink> : <span />}
+                {options.register && (
+                  <span className="text-muted-foreground">
+                    {t("login.noAccount")} <AppLink to={`${appBase}/register`}>{t("login.registerLink")}</AppLink>
+                  </span>
+                )}
+              </div>
+            )}
           </form>
         </CardContent>
       </Card>

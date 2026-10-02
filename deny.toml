@@ -42,6 +42,10 @@ allow = [
     "Unicode-3.0",
     "CC0-1.0",
     "CDLA-Permissive-2.0", # webpki-roots
+    # W15: quoted_printable (via lettre, mail bodies). Zero-clause BSD grants
+    # use without any condition (not even attribution): strictly more
+    # permissive than MIT/ISC above, no obligation for a closed binary.
+    "0BSD",
 ]
 
 # The panel itself is proprietary and unpublished: not subject to the policy.

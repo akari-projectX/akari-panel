@@ -142,6 +142,8 @@ pub fn normalize_recovery(input: &str) -> Option<String> {
 pub struct Keys {
     aead: aead::LessSafeKey,
     recovery: hmac::Key,
+    /// W15: email verification codes (signup::codes).
+    mail: hmac::Key,
 }
 
 const SEAL_VERSION: u8 = 1;
@@ -155,11 +157,13 @@ impl Keys {
         let root = hmac::Key::new(hmac::HMAC_SHA256, material);
         let enc = hmac::sign(&root, b"akari/totp-secret-aead/v1");
         let rec = hmac::sign(&root, b"akari/recovery-code-hmac/v1");
+        let mail = hmac::sign(&root, b"akari/mail-code-hmac/v1");
         let unbound = aead::UnboundKey::new(&aead::AES_256_GCM, enc.as_ref())
             .map_err(|_| anyhow::anyhow!("totp aead key"))?;
         Ok(Self {
             aead: aead::LessSafeKey::new(unbound),
             recovery: hmac::Key::new(hmac::HMAC_SHA256, rec.as_ref()),
+            mail: hmac::Key::new(hmac::HMAC_SHA256, mail.as_ref()),
         })
     }
 
@@ -197,6 +201,19 @@ impl Keys {
             .open_in_place(nonce, aead::Aad::from(user.as_bytes()), &mut buf)
             .ok()?;
         Some(pt.to_vec())
+    }
+
+    /// Stored form of an email verification code (W15): HMAC over the
+    /// purpose, subject and address it was issued for, so a database dump
+    /// does not reveal codes (a 6-digit space is trivial to search without
+    /// the key) and a code cannot be moved between purposes or addresses.
+    pub fn mail_code_hash(&self, purpose: &str, subject: &str, email: &str, code: &str) -> String {
+        let mut ctx = hmac::Context::with_key(&self.mail);
+        for part in [purpose, subject, email, code] {
+            ctx.update(&(part.len() as u64).to_be_bytes());
+            ctx.update(part.as_bytes());
+        }
+        hex::encode(ctx.sign().as_ref())
     }
 
     /// Stored form of a (normalized) recovery code.

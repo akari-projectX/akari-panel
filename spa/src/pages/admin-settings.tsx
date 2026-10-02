@@ -12,6 +12,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { MailSettings } from "./admin-mail-settings";
 
 export type Source = "settings" | "config" | "main" | "browser";
 
@@ -258,6 +259,8 @@ export function AdminSettings() {
       <SettingsForm key={settings.data.version} data={settings.data} />
       <ProbeForm key={`probe-${settings.data.version}`} data={settings.data} />
       <ServerNames data={settings.data} />
+      {/* W15：注册 / 邮件（独立的设置行与版本号） */}
+      <MailSettings />
     </div>
   );
 }

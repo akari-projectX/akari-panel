@@ -196,6 +196,9 @@ pub async fn apply_mark_paid(
         Some(after),
     )
     .await?;
+    // W15: the receipt mail commits with the payment (savepoint: a mail
+    // failure never rolls back money; a replay never gets here).
+    crate::mail::notices::order_paid(conn, order_id).await?;
     Ok(Paid::Now { fulfilled })
 }
 

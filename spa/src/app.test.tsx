@@ -32,6 +32,9 @@ const me = (role: string): Me => ({
   expires_at: null,
   expired: false,
   quota_exhausted: false,
+  email: null,
+  email_verified: false,
+  locale: "en",
 });
 const totp = (over: Partial<TotpStatus>): TotpStatus => ({
   id: "admin-id",

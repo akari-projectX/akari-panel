@@ -21,11 +21,22 @@ const api = await import("../src/lib/api.ts");
 await api.login({ login: "a", password: "b" });
 await api.logout();
 await api.get("/me");
+// W15 public self-service endpoints are /auth/* too.
+await api.authOptions();
+await api.registerCode({ email: "a@b.cc" });
+await api.register({ email: "a@b.cc", code: "123456", password: "password" });
+await api.requestReset({ email: "a@b.cc" });
+await api.resetPassword({ token: "t", password: "password" });
 
 const want = [
   { url: "/pfx0123/auth/login", method: "POST" },
   { url: "/pfx0123/auth/logout", method: "POST" },
   { url: "/pfx0123/api/v1/me", method: "GET" },
+  { url: "/pfx0123/auth/options", method: "GET" },
+  { url: "/pfx0123/auth/register/code", method: "POST" },
+  { url: "/pfx0123/auth/register", method: "POST" },
+  { url: "/pfx0123/auth/password-reset/request", method: "POST" },
+  { url: "/pfx0123/auth/password-reset", method: "POST" },
 ];
 const got = JSON.stringify(calls);
 if (got !== JSON.stringify(want)) {
