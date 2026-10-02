@@ -7,6 +7,13 @@
 //!   audit, one transaction, exactly once).
 //! - `catalog`: W7 period kinds, prices, sale rules, proration credit.
 //! - `api`: user shop/orders, admin orders, the async notify.
+//! - `coupons` (W16): coupon CRUD, eligibility (shop + order creation),
+//!   race-free reservation, release on unpaid end, redemption when paid.
+//! - `ledger` (W16): the balance (余额) and its append-only ledger; every
+//!   movement = one ledger row + one `balance.<kind>` audit row.
+//! - `commission` (W16): invite commissions (created in apply_mark_paid,
+//!   credited after the hold by an enforce pass, reversed by a refund) and
+//!   withdrawals.
 //!
 //! Invariants (see CLAUDE.md "计费/支付"): integer cents, the amount is
 //! copied from the price at order creation and is the only amount compared
@@ -17,7 +24,10 @@
 pub mod alipay;
 pub mod api;
 pub mod catalog;
+pub mod commission;
+pub mod coupons;
 pub mod http;
+pub mod ledger;
 pub mod orders;
 
 #[cfg(test)]

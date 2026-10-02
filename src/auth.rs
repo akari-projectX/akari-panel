@@ -81,12 +81,23 @@ impl From<anyhow::Error> for ApiError {
 
 /// SQLSTATE raised by the last-admin guard (migration 0009).
 pub const LAST_ADMIN_SQLSTATE: &str = "AK001";
+/// SQLSTATE of the inviter guard (migration 0105): self-referral or cycle.
+pub const INVITER_SQLSTATE: &str = "AK002";
+/// SQLSTATE of the balance ledger (migration 0106): the entry would make
+/// the balance negative.
+pub const BALANCE_SQLSTATE: &str = "AK003";
 
 impl From<sqlx::Error> for ApiError {
     fn from(e: sqlx::Error) -> Self {
         if let sqlx::Error::Database(d) = &e {
             if d.code().as_deref() == Some(LAST_ADMIN_SQLSTATE) {
                 return ApiError::conflict("cannot remove the last enabled admin");
+            }
+            if d.code().as_deref() == Some(INVITER_SQLSTATE) {
+                return ApiError::conflict("invalid inviter (self-referral or a cycle)");
+            }
+            if d.code().as_deref() == Some(BALANCE_SQLSTATE) {
+                return ApiError::conflict("insufficient balance");
             }
         }
         tracing::error!(error = %e, "api db error");

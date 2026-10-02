@@ -3241,6 +3241,29 @@ mod tests {
                 false,
             ),
             (
+                // W16: money moves, access does not (one ledger row, one
+                // audit row, no bump); the user's deletion below then
+                // keeps the ledger row (user_id -> NULL).
+                "balance adjustment",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        crate::billing::ledger::apply_adjust(
+                            c,
+                            &crate::audit::Actor::test(),
+                            u,
+                            &crate::billing::ledger::AdjustReq {
+                                amount_cents: 100,
+                                reason: "goodwill".into(),
+                            },
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                }),
+                vec![n1, n2, other],
+                false,
+            ),
+            (
                 "delete user",
                 Box::new(move |c| {
                     Box::pin(async move {

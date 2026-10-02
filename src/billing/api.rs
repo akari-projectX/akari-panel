@@ -23,6 +23,7 @@ use uuid::Uuid;
 use super::alipay::{self, Alipay};
 use super::catalog::{self, Current, Offer, PeriodKind, PeriodKindText, Price, Sale};
 use super::orders::{self, payment_actor, Paid, Pending, Via};
+use super::{commission, coupons, ledger};
 use crate::api::ApiJson;
 use crate::audit::Actor;
 use crate::auth::{ApiError, AuthUser, MaybeClientIp, ShopUser};
@@ -38,6 +39,9 @@ const NOTIFY_WINDOW_SECS: i64 = 60;
 const ORDER_RATE: i64 = 20;
 const ORDER_WINDOW_SECS: i64 = 3600;
 const MAX_REASON: usize = 500;
+/// Shop previews with a coupon code per user per window (code guessing).
+const COUPON_RATE: i64 = 30;
+const COUPON_WINDOW_SECS: i64 = 600;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -57,6 +61,53 @@ pub fn routes() -> Router<AppState> {
         .route("/{prefix}/api/v1/orders", get(list_orders))
         .route("/{prefix}/api/v1/orders/{id}", get(get_order))
         .route("/{prefix}/api/v1/orders/{id}/fulfil", post(fulfil_order))
+        .route("/{prefix}/api/v1/orders/{id}/refund", post(refund_order))
+        // W16: balance, coupons, invite commission, withdrawals.
+        .route("/{prefix}/api/v1/me/balance", get(ledger::my_balance))
+        .route("/{prefix}/api/v1/me/invite", get(commission::my_invite))
+        .route(
+            "/{prefix}/api/v1/me/withdrawals",
+            get(commission::my_withdrawals).post(commission::request_withdrawal),
+        )
+        .route(
+            "/{prefix}/api/v1/me/withdrawals/{id}/cancel",
+            post(commission::cancel_withdrawal),
+        )
+        .route(
+            "/{prefix}/api/v1/coupons",
+            get(coupons::list).post(coupons::create),
+        )
+        .route(
+            "/{prefix}/api/v1/coupons/{id}",
+            get(coupons::get)
+                .patch(coupons::update)
+                .delete(coupons::delete),
+        )
+        .route("/{prefix}/api/v1/balances", get(ledger::list_balances))
+        .route(
+            "/{prefix}/api/v1/users/{id}/balance",
+            get(ledger::user_balance).post(ledger::adjust),
+        )
+        .route(
+            "/{prefix}/api/v1/commissions",
+            get(commission::list_commissions),
+        )
+        .route(
+            "/{prefix}/api/v1/commission-settings",
+            get(commission::get_settings).put(commission::put_settings),
+        )
+        .route(
+            "/{prefix}/api/v1/withdrawals",
+            get(commission::list_withdrawals),
+        )
+        .route(
+            "/{prefix}/api/v1/withdrawals/{id}/approve",
+            post(commission::approve_withdrawal),
+        )
+        .route(
+            "/{prefix}/api/v1/withdrawals/{id}/reject",
+            post(commission::reject_withdrawal),
+        )
 }
 
 fn payments_off() -> ApiError {
@@ -91,6 +142,11 @@ pub struct MyOrderView {
     period_days: Option<i32>,
     list_price_cents: i64,
     credit_cents: i64,
+    /// W16: coupon discount (and its code), balance part, refund.
+    discount_cents: i64,
+    coupon_code: Option<String>,
+    balance_cents: i64,
+    refunded_at: Option<DateTime<Utc>>,
     status: String,
     /// Only while pending.
     qr_code: Option<String>,
@@ -101,7 +157,8 @@ pub struct MyOrderView {
 }
 
 const MY_ORDER_SQL: &str = "SELECT id, out_trade_no, plan_id, plan_name, amount_cents, \
-     period, period_days, list_price_cents, credit_cents, status, CASE WHEN status = 'pending' THEN qr_code END AS qr_code, created_at, \
+     period, period_days, list_price_cents, credit_cents, discount_cents, coupon_code, \
+     balance_cents, refunded_at, status, CASE WHEN status = 'pending' THEN qr_code END AS qr_code, created_at, \
      expires_at, paid_at, fulfilled_at IS NOT NULL AS fulfilled FROM orders";
 
 /// An order as an admin sees it.
@@ -119,6 +176,14 @@ pub struct OrderView {
     list_price_cents: i64,
     credit_cents: i64,
     credit_order_id: Option<Uuid>,
+    discount_cents: i64,
+    coupon_id: Option<Uuid>,
+    coupon_code: Option<String>,
+    balance_cents: i64,
+    balance_state: String,
+    refunded_at: Option<DateTime<Utc>>,
+    refund_cents: Option<i64>,
+    refund_reason: Option<String>,
     status: String,
     trade_no: Option<String>,
     paid_via: Option<String>,
@@ -135,7 +200,9 @@ pub struct OrderView {
 }
 
 const ORDER_SQL: &str = "SELECT id, out_trade_no, user_id, user_login, plan_id, plan_name, \
-     amount_cents, period, period_days, list_price_cents, credit_cents, credit_order_id, status, trade_no, paid_via, paid_amount_cents, manual_reason, \
+     amount_cents, period, period_days, list_price_cents, credit_cents, credit_order_id, \
+     discount_cents, coupon_id, coupon_code, balance_cents, balance_state, refunded_at, \
+     refund_cents, refund_reason, status, trade_no, paid_via, paid_amount_cents, manual_reason, \
      fulfilled_at, fulfil_result, fulfil_error, created_at, expires_at, paid_at, ended_at, \
      close_state FROM orders";
 
@@ -193,9 +260,21 @@ const SALE_PLAN_SQL: &str = "SELECT p.id AS plan_id, p.name, p.description, \
      (SELECT count(*) FROM user_plans up WHERE up.plan_id = p.id AND up.status = 'active') \
      AS active FROM plans p WHERE p.enabled AND p.on_sale";
 
-/// GET /me/shop: the plans on sale with every priced period as the caller
-/// would buy it now (action, credit, amount — or why not), the caller's
-/// subscription and the credit it is worth when switching.
+#[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ShopQuery {
+    /// W16: price every offer with this coupon code.
+    pub coupon: Option<String>,
+    /// W16: show the balance part as if paying with the balance.
+    pub use_balance: Option<bool>,
+}
+
+/// GET /me/shop[?coupon=CODE&use_balance=true]: the plans on sale with
+/// every priced period as the caller would buy it now (action, coupon
+/// discount, credit, balance part, amount — or why not), the caller's
+/// subscription, the credit it is worth when switching, and the balance.
+/// The money split is computed in SQL (`akari_split`), the same as at
+/// order creation.
 ///
 /// The user-side shop/order handlers take `ShopUser` (R21 renewal scope):
 /// expired and quota-disabled accounts must be able to buy and pay. They
@@ -203,11 +282,25 @@ const SALE_PLAN_SQL: &str = "SELECT p.id AS plan_id, p.name, p.description, \
 pub async fn shop(
     State(state): State<AppState>,
     ShopUser { user, .. }: ShopUser,
+    Query(q): Query<ShopQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let enabled = state.alipay().is_some() && user.role == "user";
+    let code = q.coupon.as_deref().map(str::trim).filter(|c| !c.is_empty());
+    if code.is_some()
+        && !within_limit(
+            &state,
+            format!("akari:rl:coupon:{}", user.id),
+            COUPON_RATE,
+            COUPON_WINDOW_SECS,
+        )
+        .await
+    {
+        return Err(ApiError::too_many());
+    }
     let mut c = state.pg().acquire().await?;
     let current = catalog::current(&mut c, user.id).await?;
     let (credit, _) = catalog::switch_credit(&mut c, user.id).await?;
+    let balance = ledger::balance(&mut c, user.id).await?;
     let (rows, prices): (Vec<ShopPlanRow>, Vec<PriceRow>) = if enabled {
         (
             sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -231,7 +324,7 @@ pub async fn shop(
         plan_id: *id,
         expires: exp.is_some(),
     });
-    let mut plans = Vec::new();
+    let mut plans: Vec<(ShopPlanRow, Vec<Offer>)> = Vec::new();
     for r in rows {
         let holder = cur.is_some_and(|c| c.plan_id == r.plan_id);
         // Renewal-only plans are invisible to everybody but their holders.
@@ -251,30 +344,103 @@ pub async fn shop(
             .filter(|p| p.plan_id == r.plan_id)
             .filter_map(price_of)
             .filter(|p| holder || p.period.0 != PeriodKind::Reset)
-            .map(|p| Offer::of(cur, &sale, &p, credit))
+            .map(|p| Offer::of(cur, &sale, &p))
             .collect();
-        if offers.is_empty() {
-            continue;
+        if !offers.is_empty() {
+            plans.push((r, offers));
         }
-        let remaining = r.capacity.map(|c| (i64::from(c) - r.active).max(0));
-        plans.push(json!({
-            "plan_id": r.plan_id,
-            "name": r.name,
-            "description": r.description,
-            "traffic_quota_bytes": r.traffic_quota_bytes,
-            "period": crate::plans::Period::from_columns(&r.reset_period, r.reset_days).render(),
-            "speed_limit_mbps": r.speed_limit_mbps,
-            "device_seats": r.device_seats,
-            "current": holder,
-            "remaining": remaining,
-            "sold_out": !holder && remaining == Some(0),
-            "offers": offers,
-        }));
     }
+    // The coupon against every sellable offer, then the split, both in SQL.
+    let sellable: Vec<(usize, usize)> = plans
+        .iter()
+        .enumerate()
+        .flat_map(|(i, (_, o))| {
+            o.iter()
+                .enumerate()
+                .filter(|(_, x)| x.action.is_some())
+                .map(move |(j, _)| (i, j))
+        })
+        .collect();
+    let mut coupon_view = Value::Null;
+    let mut checked: Vec<Option<coupons::Checked>> = vec![None; sellable.len()];
+    if let Some(raw) = code {
+        match coupons::normalize_code(raw) {
+            None => {
+                coupon_view = json!({ "code": raw.chars().take(64).collect::<String>(),
+                                      "refusal": coupons::Refusal::Invalid });
+            }
+            Some(code) => {
+                let items: Vec<coupons::Item> = sellable
+                    .iter()
+                    .map(|&(i, j)| coupons::Item {
+                        plan_id: plans[i].0.plan_id,
+                        period: plans[i].1[j].period.as_str(),
+                        list_cents: plans[i].1[j].price_cents,
+                    })
+                    .collect();
+                let res = coupons::check(&mut c, user.id, &code, &items).await?;
+                // Refusals that are not about one offer apply to the code.
+                let global = res.first().and_then(|r| r.refusal).filter(|r| {
+                    !matches!(
+                        r,
+                        coupons::Refusal::Plan
+                            | coupons::Refusal::Period
+                            | coupons::Refusal::BelowMinimum
+                    )
+                });
+                let stored = res.first().and_then(|r| r.code.clone()).unwrap_or(code);
+                coupon_view = json!({ "code": stored, "refusal": global });
+                checked = res.into_iter().map(Some).collect();
+            }
+        }
+    }
+    let use_balance = q.use_balance.unwrap_or(false);
+    let input: Vec<catalog::SplitIn> = sellable
+        .iter()
+        .zip(&checked)
+        .map(|(&(i, j), ch)| {
+            let o = &plans[i].1[j];
+            (
+                o.price_cents,
+                ch.as_ref().map_or(0, |c| c.discount_cents),
+                o.credit_available(credit),
+                if use_balance { balance } else { 0 },
+            )
+        })
+        .collect();
+    let split = catalog::splits(&mut c, &input).await?;
+    for ((&(i, j), ch), s) in sellable.iter().zip(&checked).zip(&split) {
+        let o = &mut plans[i].1[j];
+        let avail = o.credit_available(credit);
+        o.priced(s, avail);
+        o.coupon_refusal = ch.as_ref().and_then(|c| c.refusal);
+    }
+    let plans: Vec<Value> = plans
+        .into_iter()
+        .map(|(r, offers)| {
+            let holder = cur.is_some_and(|c| c.plan_id == r.plan_id);
+            let remaining = r.capacity.map(|c| (i64::from(c) - r.active).max(0));
+            json!({
+                "plan_id": r.plan_id,
+                "name": r.name,
+                "description": r.description,
+                "traffic_quota_bytes": r.traffic_quota_bytes,
+                "period": crate::plans::Period::from_columns(&r.reset_period, r.reset_days).render(),
+                "speed_limit_mbps": r.speed_limit_mbps,
+                "device_seats": r.device_seats,
+                "current": holder,
+                "remaining": remaining,
+                "sold_out": !holder && remaining == Some(0),
+                "offers": offers,
+            })
+        })
+        .collect();
     Ok(Json(json!({
         "enabled": enabled,
         "current": current.map(|(id, name, exp)| json!({ "plan_id": id, "name": name, "expires_at": exp })),
         "credit_cents": credit,
+        "balance_cents": balance,
+        "coupon": coupon_view,
         "plans": plans,
     })))
 }
@@ -285,6 +451,12 @@ pub struct CreateOrderReq {
     pub plan_id: Uuid,
     /// catalog::PeriodKind ("month", ..., "reset").
     pub period: PeriodKindText,
+    /// W16: a coupon code (any case).
+    #[serde(default)]
+    pub coupon: Option<String>,
+    /// W16: cover what is left with the balance (as much as it holds).
+    #[serde(default)]
+    pub use_balance: bool,
 }
 
 async fn my_order_view(state: &AppState, user: Uuid, id: Uuid) -> Result<MyOrderView, ApiError> {
@@ -362,6 +534,10 @@ pub async fn create_order(
     let id = Uuid::new_v4();
     let out_trade_no = new_out_trade_no();
     let mut tx = state.pg().begin().await?;
+    // W16 lock order: entitle::lock first (apply_mark_paid, which a fully
+    // covered order calls below, starts with it), then the coupon row,
+    // then the balance row.
+    crate::entitle::lock(&mut tx).await?;
     let plan: Option<ShopPlanRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{SALE_PLAN_SQL} AND p.id = $1"
     )))
@@ -398,15 +574,65 @@ pub async fn create_order(
     } else {
         (0, None)
     };
-    let (credit, cents) = catalog::apply_credit(price.price_cents, credit);
-    let credit_order = credit_order.filter(|_| credit > 0);
+    // The coupon: locked, then every rule re-checked under the lock (the
+    // reservation below cannot then lose a race).
+    let coupon = match req
+        .coupon
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    {
+        None => None,
+        Some(raw) => {
+            let code =
+                coupons::normalize_code(raw).ok_or_else(|| coupons::Refusal::Invalid.error())?;
+            coupons::lock(&mut tx, &code)
+                .await?
+                .ok_or_else(|| coupons::Refusal::Invalid.error())?;
+            let item = coupons::Item {
+                plan_id: plan.plan_id,
+                period: kind.as_str(),
+                list_cents: price.price_cents,
+            };
+            let ch = coupons::check(&mut tx, user.id, &code, &[item])
+                .await?
+                .pop()
+                .ok_or_else(|| anyhow::anyhow!("coupon check returned no row"))?;
+            if let Some(r) = ch.refusal {
+                return Err(r.error());
+            }
+            Some(ch)
+        }
+    };
+    let available = if req.use_balance {
+        ledger::lock_balance(&mut tx, user.id).await?
+    } else {
+        0
+    };
+    let split = catalog::splits(
+        &mut tx,
+        &[(
+            price.price_cents,
+            coupon.as_ref().map_or(0, |c| c.discount_cents),
+            credit,
+            available,
+        )],
+    )
+    .await?
+    .pop()
+    .ok_or_else(|| anyhow::anyhow!("akari_split returned no row"))?;
+    let credit_order = credit_order.filter(|_| split.credit_cents > 0);
+    // A coupon that discounts nothing here (1% of a few fen) is not used.
+    let coupon = coupon.filter(|_| split.discount_cents > 0);
     let subject: String = format!("Akari - {}", plan.name).chars().take(128).collect();
     let r = sqlx::query_scalar::<_, Value>(sqlx::AssertSqlSafe(format!(
         "INSERT INTO orders (id, out_trade_no, user_id, user_login, plan_id, plan_name, \
          amount_cents, period, period_days, list_price_cents, credit_cents, credit_order_id, \
+         discount_cents, coupon_id, coupon_code, balance_cents, balance_state, \
          subject, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, \
-                 now() + make_interval(mins => $14)) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
+                 CASE WHEN $16 > 0 THEN 'held' ELSE 'none' END, $17, \
+                 now() + make_interval(mins => $18)) \
          RETURNING {}",
         orders::order_snapshot_sql("orders")
     )))
@@ -416,12 +642,16 @@ pub async fn create_order(
     .bind(&user.login)
     .bind(req.plan_id)
     .bind(&plan.name)
-    .bind(cents)
+    .bind(split.amount_cents)
     .bind(kind.as_str())
     .bind(price.days)
     .bind(price.price_cents)
-    .bind(credit)
+    .bind(split.credit_cents)
     .bind(credit_order)
+    .bind(split.discount_cents)
+    .bind(coupon.as_ref().and_then(|c| c.coupon_id))
+    .bind(coupon.as_ref().and_then(|c| c.code.clone()))
+    .bind(split.balance_cents)
     .bind(&subject)
     .bind(alipay.order_timeout_minutes as i32)
     .fetch_one(&mut *tx)
@@ -432,6 +662,17 @@ pub async fn create_order(
         }
         r => r?,
     };
+    if let Some(c) = &coupon {
+        let cid = c
+            .coupon_id
+            .ok_or_else(|| anyhow::anyhow!("checked coupon without id"))?;
+        coupons::reserve(&mut tx, cid, id, user.id, split.discount_cents).await?;
+    }
+    if split.balance_cents > 0 {
+        let mut e = ledger::Entry::new(user.id, ledger::Kind::OrderPayment, -split.balance_cents);
+        e.order_id = Some(id);
+        ledger::apply_entry(&mut tx, &actor, &e).await?;
+    }
     after["action"] = json!(action.as_str());
     crate::audit::record(
         &mut tx,
@@ -443,9 +684,18 @@ pub async fn create_order(
         Some(after),
     )
     .await?;
+    let cents = split.amount_cents;
     if cents == 0 {
-        // Fully paid by the credit: the one pay path, in this transaction.
-        orders::apply_mark_paid(&mut tx, &actor, id, Via::Credit, None, Some(0), None).await?;
+        // Fully covered (balance, credit or coupon): the one pay path, in
+        // this transaction; never sent to Alipay.
+        let via = if split.balance_cents > 0 {
+            Via::Balance
+        } else if split.credit_cents > 0 {
+            Via::Credit
+        } else {
+            Via::Coupon
+        };
+        orders::apply_mark_paid(&mut tx, &actor, id, via, None, Some(0), None).await?;
         tx.commit().await?;
         return Ok((
             StatusCode::CREATED,
@@ -494,6 +744,11 @@ pub async fn create_order(
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?;
+            let released = if ended.is_some() {
+                orders::release_holds(&mut tx, &actor, id).await?
+            } else {
+                Value::Null
+            };
             orders::record_event(
                 &mut tx,
                 Some(id),
@@ -506,7 +761,8 @@ pub async fn create_order(
                 None,
             )
             .await?;
-            if let Some((before, after)) = ended {
+            if let Some((before, mut after)) = ended {
+                after["released"] = released;
                 crate::audit::record(
                     &mut tx,
                     &actor,
@@ -703,6 +959,37 @@ pub async fn fulfil_order(
     tx.commit().await?;
     let fulfilled = matches!(r, Paid::Now { fulfilled: true });
     Ok(Json(json!({ "fulfilled": fulfilled })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RefundReq {
+    pub reason: String,
+    /// Credit the Alipay amount to the balance too (else it was refunded
+    /// in the Alipay console). The balance part always goes back.
+    #[serde(default)]
+    pub to_balance: bool,
+}
+
+/// POST /orders/{id}/refund {reason, to_balance}: W16 support action on a
+/// paid order (orders::apply_refund). Audited `order.refund`.
+pub async fn refund_order(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((_, id)): Path<(String, Uuid)>,
+    ApiJson(req): ApiJson<RefundReq>,
+) -> Result<Json<Value>, ApiError> {
+    user.require_admin()?;
+    let reason = req.reason.trim();
+    if reason.is_empty() || reason.chars().count() > MAX_REASON {
+        return Err(ApiError::bad_request(format!(
+            "reason must be 1-{MAX_REASON} characters"
+        )));
+    }
+    let mut tx = state.pg().begin().await?;
+    let r = orders::apply_refund(&mut tx, &Actor::of(&user), id, reason, req.to_balance).await?;
+    tx.commit().await?;
+    Ok(Json(r))
 }
 
 // ---------------------------------------------------------------------------

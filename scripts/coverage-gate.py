@@ -30,6 +30,10 @@ MODULES = {
     "src/billing/catalog.rs": 90.0,
     "src/billing/api.rs": 90.0,
     "src/billing/alipay.rs": 90.0,
+    # W16: coupons, balance ledger, invite commission + withdrawals.
+    "src/billing/coupons.rs": 90.0,
+    "src/billing/ledger.rs": 90.0,
+    "src/billing/commission.rs": 90.0,
 }
 
 TEST_MOD = re.compile(r"^(pub(\(crate\))? )?mod \w+ \{")
