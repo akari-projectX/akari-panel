@@ -137,6 +137,8 @@ jobs:
           [ "$(docker image inspect akari-panel:ci --format '{{.Config.User}}')" = "65532" ]
           docker run --rm akari-panel:ci --version
           docker run --rm --entrypoint /akari akari-panel:ci config check >/dev/null
+      - name: monitoring config (Prometheus rules + tests, Grafana dashboards)
+        run: make monitoring-check
 
   e2e:
     # Browser end-to-end (Playwright, Chromium) against a real panel serving

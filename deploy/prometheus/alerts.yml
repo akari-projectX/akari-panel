@@ -106,3 +106,73 @@ groups:
         annotations:
           summary: "More than 5% of web requests fail with 5xx"
           description: "{{ $labels.instance }}: check the panel log (request_id field) and PostgreSQL/Valkey."
+
+  # W17: fleet-level node health from the W11 heartbeat aggregates and the
+  # in-app node alerts. Bounded cardinality: the fleet gauges are summed
+  # over instances (each instance reports the nodes whose stream it holds);
+  # akari_node_alerts_firing is read from the database by every instance
+  # (the same value everywhere: aggregate with max). Per-node detail is the
+  # panel's alert center (告警中心), never a Prometheus label.
+  - name: akari-fleet
+    rules:
+      - alert: AkariFleetNodesReportingDropped
+        expr: |
+          sum(akari_fleet{kind="nodes_reporting"})
+            < 0.8 * max_over_time(sum(akari_fleet{kind="nodes_reporting"})[1h:1m])
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "More than 20% of the nodes stopped reporting heartbeats"
+          description: "{{ $value }} nodes report machine status, well below the last hour's peak. See 告警中心 for which nodes are offline."
+
+      - alert: AkariFleetCpuHigh
+        expr: max(akari_fleet_cpu_percent_max) > 90
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "A node has been above 90% CPU for 15 minutes"
+          description: "Highest node CPU {{ $value | humanize }}%. The alert center names the node (CPU rule)."
+
+      - alert: AkariFleetNoTraffic
+        expr: |
+          sum(akari_fleet{kind="nodes_reporting"}) > 0
+            and (sum(akari_fleet{kind="rx_bytes_per_second"}) + sum(akari_fleet{kind="tx_bytes_per_second"})) == 0
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Nodes report but carry no traffic"
+          description: "Every reporting node shows 0 B/s for 15 minutes: blocked ports, a broken inbound or an upstream outage (expected only on an idle fleet)."
+
+      - alert: AkariFleetOnlineUsersDropped
+        expr: |
+          sum(akari_fleet{kind="online_users"})
+            < 0.5 * max_over_time(sum(akari_fleet{kind="online_users"})[1h:1m])
+          and max_over_time(sum(akari_fleet{kind="online_users"})[1h:1m]) > 20
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Online users halved within the hour"
+          description: "{{ $value }} users online across the fleet. Users cannot connect, or a region is down."
+
+      - alert: AkariNodeAlertsFiring
+        expr: max by (kind) (akari_node_alerts_firing) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Node alerts firing: {{ $labels.kind }}"
+          description: "{{ $value }} node(s) in state {{ $labels.kind }} (panel 告警中心 lists them; its own Telegram/webhook/email channels notify too)."
+
+      - alert: AkariAlertEvaluatorStalled
+        expr: sum(increase(akari_alert_rounds_total{result="leader"}[10m])) == 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "No panel instance evaluated node alerts for 10 minutes"
+          description: "Node alerts are not being evaluated (database errors? see akari_alert_rounds_total{result=\"error\"} and the panel log)."
+
+      - alert: AkariAlertNotificationsFailing
+        expr: sum by (channel) (increase(akari_alert_notifications_total{result="dead"}[30m])) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "Alert notifications via {{ $labels.channel }} are failing"
+          description: "Notifications were given up after retries (wrong bot token/chat id, webhook down). 告警中心 → 通知记录 shows the error and can retry."

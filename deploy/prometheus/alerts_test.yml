@@ -1,0 +1,57 @@
+# promtool unit tests for alerts.yml (W17 rules): `make monitoring-check`.
+rule_files:
+  - alerts.yml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      # Two instances report the same database count; max, not sum.
+      - series: 'akari_node_alerts_firing{kind="offline", instance="a"}'
+        values: '0 1x20'
+      - series: 'akari_node_alerts_firing{kind="offline", instance="b"}'
+        values: '0 1x20'
+      - series: 'akari_node_alerts_firing{kind="cpu", instance="a"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: AkariNodeAlertsFiring
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: AkariNodeAlertsFiring
+        exp_alerts:
+          - exp_labels: { severity: warning, kind: offline }
+            exp_annotations:
+              summary: "Node alerts firing: offline"
+              description: "1 node(s) in state offline (panel 告警中心 lists them; its own Telegram/webhook/email channels notify too)."
+
+  - interval: 1m
+    input_series:
+      - series: 'akari_fleet{kind="nodes_reporting", instance="a"}'
+        values: '3x40'
+      - series: 'akari_fleet{kind="rx_bytes_per_second", instance="a"}'
+        values: '100 0x40'
+      - series: 'akari_fleet{kind="tx_bytes_per_second", instance="a"}'
+        values: '100 0x40'
+      - series: 'akari_alert_rounds_total{result="leader", instance="a"}'
+        values: '0+1x10 10x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AkariFleetNoTraffic
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: AkariFleetNoTraffic
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Nodes report but carry no traffic"
+              description: "Every reporting node shows 0 B/s for 15 minutes: blocked ports, a broken inbound or an upstream outage (expected only on an idle fleet)."
+      - eval_time: 12m
+        alertname: AkariAlertEvaluatorStalled
+        exp_alerts: []
+      - eval_time: 35m
+        alertname: AkariAlertEvaluatorStalled
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "No panel instance evaluated node alerts for 10 minutes"
+              description: "Node alerts are not being evaluated (database errors? see akari_alert_rounds_total{result=\"error\"} and the panel log)."
