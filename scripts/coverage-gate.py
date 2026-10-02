@@ -39,6 +39,8 @@ MODULES = {
     "src/alerts/mod.rs": 90.0,
     "src/alerts/eval.rs": 90.0,
     "src/alerts/channels.rs": 90.0,
+    # W22: traffic history (query parser, the four endpoints).
+    "src/trafficlog.rs": 90.0,
 }
 
 TEST_MOD = re.compile(r"^(pub(\(crate\))? )?mod \w+ \{")

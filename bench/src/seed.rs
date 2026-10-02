@@ -33,6 +33,13 @@ pub struct SeedArgs {
     /// baseline a long-running install accumulates).
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub counters: bool,
+    /// W22: days of per-day traffic history (traffic_daily, ending today
+    /// UTC) to seed; 0 = none.
+    #[arg(long, default_value_t = 30)]
+    pub history_days: u32,
+    /// W22: nodes each user had traffic on per day (of its per-group nodes).
+    #[arg(long, default_value_t = 2)]
+    pub history_nodes_per_user: u32,
     /// Drop and recreate the bench database first.
     #[arg(long)]
     pub reset: bool,
@@ -168,6 +175,9 @@ pub async fn run(args: SeedArgs) -> Result<()> {
         .rows_affected();
         println!("traffic_counters: {n} rows in {:.1?}", t.elapsed());
     }
+    if args.history_days > 0 && args.history_nodes_per_user > 0 {
+        seed_history(&pg, &args, groups).await?;
+    }
     if args.audit > 0 {
         let t = Instant::now();
         let n = sqlx::query(
@@ -191,6 +201,37 @@ pub async fn run(args: SeedArgs) -> Result<()> {
         args.users,
         args.per_node,
         t0.elapsed()
+    );
+    Ok(())
+}
+
+/// W22: traffic history at scale: every user has traffic on
+/// `history_nodes_per_user` distinct nodes of its group every day for
+/// `history_days` days (deterministic per user and day), plus the matching
+/// per-node daily rows.
+async fn seed_history(pg: &PgPool, args: &SeedArgs, groups: i64) -> Result<()> {
+    let per_group = (args.nodes as i64 / groups).max(1);
+    let k = (args.history_nodes_per_user as i64).min(per_group);
+    let t = Instant::now();
+    let n = sqlx::query(
+        "WITH n AS (SELECT id, (row_number() OVER (ORDER BY name) - 1) % $1 AS g,                            (row_number() OVER (ORDER BY name) - 1) / $1 AS r FROM nodes),               u AS (SELECT id, (row_number() OVER (ORDER BY login) - 1) % $1 AS g FROM users                     WHERE login LIKE 'bench-user-%'),               p AS (SELECT u.id AS user_id, u.g,                            (now() AT TIME ZONE 'UTC')::date - d AS day,                            abs(hashtextextended(u.id::text, d)) AS h                     FROM u CROSS JOIN generate_series(0, $3 - 1) d)          INSERT INTO traffic_daily (user_id, day, node_id, up_bytes, down_bytes, billed_bytes)          SELECT p.user_id, p.day, n.id, p.h % 50000000, (p.h % 50000000) * 4, (p.h % 50000000) * 5          FROM p CROSS JOIN LATERAL generate_series(0, $4 - 1) i          JOIN n ON n.g = p.g AND n.r = (p.h + i) % $2",
+    )
+    .bind(groups)
+    .bind(per_group)
+    .bind(args.history_days as i32)
+    .bind(k)
+    .execute(pg)
+    .await?
+    .rows_affected();
+    let m = sqlx::query(
+        "INSERT INTO traffic_node_daily (node_id, day, up_bytes, down_bytes, billed_bytes, users)          SELECT node_id, day, sum(up_bytes), sum(down_bytes), sum(billed_bytes), count(*)          FROM traffic_daily GROUP BY 1, 2",
+    )
+    .execute(pg)
+    .await?
+    .rows_affected();
+    println!(
+        "traffic history: {n} daily rows, {m} node-day rows in {:.1?}",
+        t.elapsed()
     );
     Ok(())
 }

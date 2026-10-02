@@ -57,10 +57,16 @@ enum Scenario {
     SubClash,
     SubLinks,
     Login,
+    // W22 traffic history (30 days by default).
+    TrafficUser,
+    TrafficUserNodes,
+    TrafficNode,
+    TrafficSummary,
+    TrafficMe,
 }
 
 impl Scenario {
-    const ALL: [Scenario; 14] = [
+    const ALL: [Scenario; 19] = [
         Scenario::Healthz,
         Scenario::Me,
         Scenario::UsersFirstPage,
@@ -75,6 +81,11 @@ impl Scenario {
         Scenario::SubClash,
         Scenario::SubLinks,
         Scenario::Login,
+        Scenario::TrafficUser,
+        Scenario::TrafficUserNodes,
+        Scenario::TrafficNode,
+        Scenario::TrafficSummary,
+        Scenario::TrafficMe,
     ];
 
     fn name(self) -> &'static str {
@@ -95,6 +106,11 @@ impl Scenario {
             Scenario::SubClash => "sub_clash",
             Scenario::SubLinks => "sub_links",
             Scenario::Login => "login",
+            Scenario::TrafficUser => "traffic_user",
+            Scenario::TrafficUserNodes => "traffic_user_nodes",
+            Scenario::TrafficNode => "traffic_node",
+            Scenario::TrafficSummary => "traffic_summary",
+            Scenario::TrafficMe => "traffic_me",
         }
     }
 }
@@ -109,6 +125,9 @@ struct Ctx {
     max_audit_id: i64,
     /// W17: the last ETag of the summary list (nodes_etag).
     etag: std::sync::Mutex<String>,
+    /// W22: node ids and user session cookies (traffic_node / traffic_me).
+    node_ids: Vec<Uuid>,
+    user_cookies: Vec<String>,
 }
 
 impl Ctx {
@@ -127,10 +146,15 @@ pub async fn admin_cookie(pg: &sqlx::PgPool, data_dir: &std::path::Path) -> Resu
             .fetch_one(pg)
             .await
             .context("seeded admin missing (akari-bench seed)")?;
+    session_cookie(&secret, id, "admin", sv)
+}
+
+/// A full-stage session cookie for any account, signed with jwt.key.
+pub fn session_cookie(secret: &str, id: Uuid, role: &str, sv: i64) -> Result<String> {
     let now = chrono::Utc::now().timestamp() as u64;
     let claims = akari_panel::auth::Claims {
         sub: id,
-        role: "admin".into(),
+        role: role.into(),
         sv,
         st: akari_panel::auth::Stage::Full,
         iat: now,
@@ -166,6 +190,20 @@ pub async fn run(args: HttpArgs) -> Result<()> {
     let max_audit_id: i64 = sqlx::query_scalar("SELECT coalesce(max(id), 0) FROM audit_log")
         .fetch_one(&pg)
         .await?;
+    let node_ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM nodes")
+        .fetch_all(&pg)
+        .await?;
+    let secret = std::fs::read_to_string(args.data_dir.join("jwt.key"))
+        .with_context(|| format!("read {}/jwt.key", args.data_dir.display()))?;
+    let sessions: Vec<(Uuid, i64)> = sqlx::query_as(
+        "SELECT id, session_ver FROM users WHERE login LIKE 'bench-user-%' ORDER BY random() LIMIT 500",
+    )
+    .fetch_all(&pg)
+    .await?;
+    let user_cookies = sessions
+        .into_iter()
+        .map(|(id, sv)| session_cookie(&secret, id, "user", sv))
+        .collect::<Result<Vec<_>>>()?;
     let ctx = Arc::new(Ctx {
         client: reqwest::Client::builder()
             .no_proxy()
@@ -179,6 +217,8 @@ pub async fn run(args: HttpArgs) -> Result<()> {
         user_ids,
         max_audit_id,
         etag: std::sync::Mutex::new(String::new()),
+        node_ids,
+        user_cookies,
     });
     pg.close().await;
     let selected: Vec<Scenario> = if args.only.is_empty() {
@@ -319,6 +359,41 @@ async fn request(ctx: &Ctx, s: Scenario, i: usize) -> bool {
                         common::sub_token(rng.random_range(0..ctx.users.max(1)))
                     ))
                     .header(reqwest::header::USER_AGENT, ua)
+            }
+            Scenario::TrafficUser | Scenario::TrafficUserNodes => {
+                let Some(id) = ctx
+                    .user_ids
+                    .get(rng.random_range(0..ctx.user_ids.len().max(1)))
+                else {
+                    return false;
+                };
+                let group = if matches!(s, Scenario::TrafficUser) {
+                    "day"
+                } else {
+                    "node"
+                };
+                admin(format!("users/{id}/traffic?group={group}"))
+            }
+            Scenario::TrafficNode => {
+                let Some(id) = ctx
+                    .node_ids
+                    .get(rng.random_range(0..ctx.node_ids.len().max(1)))
+                else {
+                    return false;
+                };
+                admin(format!("nodes/{id}/traffic"))
+            }
+            Scenario::TrafficSummary => admin("traffic/summary".into()),
+            Scenario::TrafficMe => {
+                let Some(c) = ctx
+                    .user_cookies
+                    .get(rng.random_range(0..ctx.user_cookies.len().max(1)))
+                else {
+                    return false;
+                };
+                ctx.client
+                    .get(format!("{base}/api/v1/me/traffic"))
+                    .header(reqwest::header::COOKIE, c)
             }
             Scenario::Login => {
                 ctx.client

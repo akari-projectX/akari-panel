@@ -21,6 +21,7 @@ import {
 } from "../lib/api";
 import { adminErrorText } from "../lib/errors";
 import { copyText, GIB, humanBytes } from "../lib/utils";
+import { UserTraffic } from "./admin-traffic";
 
 // Admin console (Chinese only, R18).
 
@@ -245,6 +246,7 @@ function ManageUser({
       <EditUser user={user} />
       {user.role === "user" && <UserPlanForm user={user} plans={plans} />}
       {user.role === "user" && <UserNodes user={user} />}
+      {user.role === "user" && <UserTraffic userId={user.id} login={user.login} />}
       <section aria-label={`${user.login} 的其他操作`} className="space-y-2">
         <h3 className="text-sm font-medium">其他操作</h3>
         <div className="flex flex-wrap gap-2">

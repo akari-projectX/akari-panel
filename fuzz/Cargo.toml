@@ -125,3 +125,10 @@ path = "fuzz_targets/support_input.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "traffic_query"
+path = "fuzz_targets/traffic_query.rs"
+test = false
+doc = false
+bench = false

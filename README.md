@@ -374,6 +374,12 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   its credentials via `PUT inbounds`) records `node_users_departed`; the
   agent's final counters, which arrive after the removal, are still billed
   for `traffic.departed_grace_secs` (default 15 min).
+- **Traffic history (W22)**: every flush also records what it settled per
+  user, node and UTC day (`traffic_daily`, folded from a staging table every
+  ~30 s); `traffic.daily_retention_days` (default 400, `0` = forever) days
+  are kept, older ones are rolled up into months (`traffic_monthly`). Admin
+  `GET /api/v1/users/{id}/traffic`, `/nodes/{id}/traffic`,
+  `/traffic/summary`; users `GET /api/v1/me/traffic` (node names only).
 - **Removal mode**: `agent.remove_mode = "gate"` (default) removes/rotates
   users in place; `"rebuild"` sends every removal/rotation as a full
   snapshot (fallback if the agent's gate is ever in doubt). User-less

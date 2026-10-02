@@ -388,6 +388,9 @@ impl PanelConfig {
         if t.departed_grace_secs == 0 {
             r.err("traffic.departed_grace_secs must be > 0");
         }
+        if t.daily_retention_days != 0 && !(32..=36_500).contains(&t.daily_retention_days) {
+            r.err("traffic.daily_retention_days must be 0 (keep forever) or 32..=36500");
+        }
         let sub = &self.sub;
         if sub.rate_per_ip <= 0 || sub.rate_per_token <= 0 {
             r.err("sub.rate_per_ip and sub.rate_per_token must be > 0");
@@ -798,14 +801,21 @@ mod tests {
         c.traffic.max_rate_bytes_per_sec = 0;
         c.traffic.node_max_rate_bytes_per_sec = -5;
         c.traffic.departed_grace_secs = 0;
+        c.traffic.daily_retention_days = 31;
         let e = errors(&c);
         for k in [
             "node_burst_secs",
             "max_rate_bytes",
             "node_max_rate",
             "departed_grace",
+            "daily_retention_days",
         ] {
             assert!(has(&e, k), "{k}: {e:?}");
+        }
+        for ok in [0, 32, 400, 36_500] {
+            let mut c = PanelConfig::default();
+            c.traffic.daily_retention_days = ok;
+            assert!(!has(&errors(&c), "daily_retention_days"), "{ok}");
         }
         let mut c = PanelConfig::default();
         c.traffic.node_burst_secs = c.grpc.lease_seconds + 1;

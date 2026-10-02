@@ -282,6 +282,55 @@ fn database(c: &mut Criterion) {
                 if let Err(e) = r {
                     eprintln!("flush failed: {e:#}");
                 }
+                // W22: fold the staged history like the panel does every
+                // 30 s (untimed here; timed in db/compact below), so the
+                // staging table stays the size it has in production.
+                if let Err(e) = db.rt.block_on(akari_panel::traffic::compact_pass(&db.pg)) {
+                    eprintln!("compact failed: {e:#}");
+                }
+            }
+            total
+        })
+    });
+    // W22: one flush's staged history (50k rows) folded into the daily
+    // tables: what the reaper's compaction does every 30 s, off the flush
+    // path. The flush itself is untimed here.
+    g.bench_function(BenchmarkId::new("compact", pairs.len()), |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::ZERO;
+            for _ in 0..iters {
+                step += 1;
+                let buf = akari_panel::traffic::TrafficBuffer::new();
+                for (node, users) in &by_node {
+                    buf.set_members(*node, users.iter().copied().collect::<HashSet<_>>());
+                    buf.update(
+                        *node,
+                        &session,
+                        &TrafficReport {
+                            users: users
+                                .iter()
+                                .map(|u| UserTraffic {
+                                    user_id: u.to_string(),
+                                    up_bytes: 1000 * step,
+                                    down_bytes: 5000 * step,
+                                })
+                                .collect(),
+                            monotonic_ms: 0,
+                            session_id: session.clone(),
+                        },
+                    );
+                }
+                if let Err(e) = db.rt.block_on(akari_panel::traffic::flush_buffer(
+                    &db.pg, &buf, rates, None,
+                )) {
+                    eprintln!("flush failed: {e:#}");
+                }
+                let t = Instant::now();
+                let r = db.rt.block_on(akari_panel::traffic::compact_pass(&db.pg));
+                total += t.elapsed();
+                if let Err(e) = r {
+                    eprintln!("compact failed: {e:#}");
+                }
             }
             total
         })

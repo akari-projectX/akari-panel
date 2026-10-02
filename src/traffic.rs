@@ -770,6 +770,7 @@ WITH input AS (
 ), rows AS (
     SELECT u.node_id, u.user_id, u.old_at, u.age_secs, u.departed_at, u.departed_billed,
            u.rate, u.traffic_tat, u.floor,
+           GREATEST(u.new_up - COALESCE(u.old_up, 0), 0)::numeric AS up_raw,
            GREATEST(u.new_up - COALESCE(u.old_up, 0), 0)::numeric
          + GREATEST(u.new_down - COALESCE(u.old_down, 0), 0)::numeric AS raw,
            GREATEST(COALESCE(GREATEST(u.old_at, u.old_first),
@@ -777,7 +778,7 @@ WITH input AS (
                     u.floor) AS start
     FROM upsert u
 ), per_row AS (
-    SELECT node_id, user_id, departed_at, departed_billed, rate, traffic_tat, floor, start, raw,
+    SELECT node_id, user_id, departed_at, departed_billed, rate, traffic_tat, floor, start, raw, up_raw,
            CASE WHEN departed_at IS NULL THEN
                $7::numeric * COALESCE(
                    GREATEST(extract(epoch FROM statement_timestamp() - GREATEST(old_at, floor)), 0)
@@ -807,7 +808,7 @@ WITH input AS (
         GROUP BY node_id, user_id
     ) p USING (node_id, user_id)
 ), row2 AS (
-    SELECT node_id, user_id, departed_at IS NOT NULL AS departed, rate, floor,
+    SELECT node_id, user_id, departed_at IS NOT NULL AS departed, rate, floor, raw, up_raw,
            GREATEST(COALESCE(traffic_tat, statement_timestamp() - interval '60 seconds'), floor) AS tat,
            CASE WHEN departed_at IS NOT NULL AND pair_total > pair_allowance
                 THEN floor(amount * pair_allowance / pair_total)
@@ -819,7 +820,7 @@ WITH input AS (
            rate * GREATEST(extract(epoch FROM statement_timestamp() - tat), 0) AS node_allowance
     FROM row2
 ), scaled AS (
-    SELECT node_id, user_id, departed, rate, tat,
+    SELECT node_id, user_id, departed, rate, tat, raw, up_raw,
            node_total > node_allowance AS node_clamped,
            CASE WHEN node_total > node_allowance THEN floor(amount * node_allowance / node_total)
                 ELSE amount END AS billed
@@ -829,8 +830,25 @@ WITH input AS (
     -- effect now): users are charged floor(billed x permille / 1000) per
     -- row, never more than billed x rate. Every cap above works on the
     -- accepted (raw) bytes; departed allowances and the node GCRA stay raw.
-    SELECT s.node_id, s.user_id, s.billed, floor(s.billed * f.mult / 1000) AS charge
+    -- W22: the accepted (raw) bytes split into up/down in proportion to
+    -- the row's raw deltas (up floored, down = the rest: up + down =
+    -- billed exactly).
+    SELECT s.node_id, s.user_id, s.billed, floor(s.billed * f.mult / 1000) AS charge,
+           CASE WHEN s.raw > 0 THEN floor(s.billed * s.up_raw / s.raw) ELSE 0 END AS up_acc
     FROM scaled s JOIN nf f USING (node_id)
+), staged AS (
+    -- W22: the same accepted deltas, appended to the history's staging
+    -- table (no index, no conflict: the cheapest write) in this statement,
+    -- so the history is exactly as idempotent as the settlement.
+    -- `traffic::compact_pass` folds them into traffic_daily /
+    -- traffic_node_daily off the flush path.
+    INSERT INTO traffic_daily_pending (day, user_id, node_id, up_bytes, down_bytes, billed_bytes)
+    SELECT (statement_timestamp() AT TIME ZONE 'UTC')::date, user_id, node_id,
+           LEAST(up_acc, 9223372036854775807)::bigint,
+           LEAST(billed - up_acc, 9223372036854775807)::bigint,
+           LEAST(charge, 9223372036854775807)::bigint
+    FROM charged WHERE billed > 0
+    RETURNING 1
 ), per_user AS (
     SELECT user_id, sum(charge) AS delta FROM charged GROUP BY user_id
 ), billed AS (
@@ -1326,6 +1344,168 @@ pub async fn retention_pass(pg: &sqlx::PgPool, margin_secs: u64) -> anyhow::Resu
     Ok(done)
 }
 
+/// W22: how often `compact_pass` runs (reaper loop): the history lags
+/// the settlement by about this much.
+pub const COMPACT_EVERY: Duration = Duration::from_secs(30);
+/// Staged rows folded per compaction statement.
+const COMPACT_BATCH: i64 = 50_000;
+/// One history writer at a time (compaction, rollup): an advisory
+/// transaction try-lock, per schema (tests). Correctness does not depend
+/// on it (each statement is exact on its own); it avoids two instances
+/// deadlocking on the same history rows.
+const HISTORY_LOCK_SQL: &str =
+    "SELECT pg_try_advisory_xact_lock(hashtextextended('akari.traffic_history.' || current_schema(), 0))";
+
+/// W22: fold up to $1 staged rows (traffic_daily_pending, appended by
+/// FLUSH_SQL) into traffic_daily and traffic_node_daily in ONE statement:
+/// the DELETE ... RETURNING feeds the additive upserts, so a staged row is
+/// counted exactly once (a failed statement moves nothing; a concurrent
+/// statement blocks on the row lock, then skips the deleted row). Existing
+/// day rows are plain UPDATEs (ON CONFLICT only arbitrates new ones); a
+/// node-day's `users` grows by the user-days this inserts. Returns the
+/// staged rows folded.
+pub const COMPACT_SQL: &str = r#"
+WITH moved AS (
+    DELETE FROM traffic_daily_pending WHERE ctid = ANY(ARRAY(
+        SELECT ctid FROM traffic_daily_pending LIMIT $1))
+    RETURNING day, user_id, node_id, up_bytes, down_bytes, billed_bytes
+), agg AS (
+    SELECT user_id, day, node_id,
+           sum(up_bytes) AS up, sum(down_bytes) AS down, sum(billed_bytes) AS billed
+    FROM moved GROUP BY user_id, day, node_id
+), upd AS (
+    UPDATE traffic_daily t
+    SET up_bytes = LEAST(t.up_bytes::numeric + a.up, 9223372036854775807)::bigint,
+        down_bytes = LEAST(t.down_bytes::numeric + a.down, 9223372036854775807)::bigint,
+        billed_bytes = LEAST(t.billed_bytes::numeric + a.billed, 9223372036854775807)::bigint
+    FROM agg a
+    WHERE t.user_id = a.user_id AND t.day = a.day AND t.node_id = a.node_id
+    RETURNING t.user_id, t.day, t.node_id
+), ins AS (
+    INSERT INTO traffic_daily AS t (user_id, day, node_id, up_bytes, down_bytes, billed_bytes)
+    SELECT user_id, day, node_id, LEAST(up, 9223372036854775807)::bigint,
+           LEAST(down, 9223372036854775807)::bigint, LEAST(billed, 9223372036854775807)::bigint
+    FROM agg a
+    WHERE NOT EXISTS (SELECT 1 FROM upd u
+                      WHERE u.user_id = a.user_id AND u.day = a.day AND u.node_id = a.node_id)
+    ORDER BY user_id, day, node_id
+    ON CONFLICT (user_id, day, node_id) DO UPDATE
+    SET up_bytes = LEAST(t.up_bytes::numeric + EXCLUDED.up_bytes, 9223372036854775807)::bigint,
+        down_bytes = LEAST(t.down_bytes::numeric + EXCLUDED.down_bytes, 9223372036854775807)::bigint,
+        billed_bytes = LEAST(t.billed_bytes::numeric + EXCLUDED.billed_bytes, 9223372036854775807)::bigint
+    RETURNING new.node_id, new.day, old.user_id IS NULL AS fresh
+), node_day AS (
+    INSERT INTO traffic_node_daily AS t (node_id, day, up_bytes, down_bytes, billed_bytes, users)
+    SELECT a.node_id, a.day, LEAST(a.up, 9223372036854775807)::bigint,
+           LEAST(a.down, 9223372036854775807)::bigint, LEAST(a.billed, 9223372036854775807)::bigint,
+           COALESCE(f.fresh, 0)
+    FROM (SELECT node_id, day, sum(up) AS up, sum(down) AS down, sum(billed) AS billed
+          FROM agg GROUP BY node_id, day) a
+    LEFT JOIN (SELECT node_id, day, count(*) FILTER (WHERE fresh)::int AS fresh
+               FROM ins GROUP BY node_id, day) f USING (node_id, day)
+    ORDER BY a.node_id, a.day
+    ON CONFLICT (node_id, day) DO UPDATE
+    SET up_bytes = LEAST(t.up_bytes::numeric + EXCLUDED.up_bytes, 9223372036854775807)::bigint,
+        down_bytes = LEAST(t.down_bytes::numeric + EXCLUDED.down_bytes, 9223372036854775807)::bigint,
+        billed_bytes = LEAST(t.billed_bytes::numeric + EXCLUDED.billed_bytes, 9223372036854775807)::bigint,
+        users = t.users + EXCLUDED.users
+    RETURNING 1
+)
+SELECT count(*) FROM moved
+"#;
+
+/// W22: fold the staged history rows (every instance's flushes) into the
+/// daily tables, COMPACT_BATCH per transaction, until none are left.
+/// Skipped while another instance holds the history lock.
+pub async fn compact_pass(pg: &sqlx::PgPool) -> anyhow::Result<u64> {
+    let mut moved = 0u64;
+    loop {
+        let mut tx = pg.begin().await?;
+        let got: bool = sqlx::query_scalar(HISTORY_LOCK_SQL)
+            .fetch_one(&mut *tx)
+            .await?;
+        if !got {
+            break;
+        }
+        let n: i64 = sqlx::query_scalar(COMPACT_SQL)
+            .bind(COMPACT_BATCH)
+            .fetch_one(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        moved += n as u64;
+        if n < COMPACT_BATCH {
+            break;
+        }
+    }
+    Ok(moved)
+}
+
+/// W22: default `traffic.daily_retention_days`.
+pub const DEFAULT_DAILY_RETENTION_DAYS: u32 = 400;
+/// traffic_daily rows moved per rollup statement.
+const ROLLUP_BATCH: i64 = 10_000;
+
+/// W22: move up to $2 traffic_daily rows older than $1 days (UTC) into
+/// traffic_monthly in ONE statement: the DELETE ... RETURNING feeds the
+/// additive upsert, so a row is counted in a month exactly once (a
+/// concurrent pass blocks on the row lock, then skips the deleted row; a
+/// failed statement moves nothing). The flush only writes today's rows, so
+/// it never touches a row this moves; a day row compacted after its day was
+/// rolled up (a compaction stalled for weeks) is rolled up by the next
+/// pass, additively. Returns the rows moved.
+pub const ROLLUP_SQL: &str = "\
+WITH moved AS (
+    DELETE FROM traffic_daily WHERE ctid = ANY(ARRAY(
+        SELECT ctid FROM traffic_daily
+        WHERE day < (statement_timestamp() AT TIME ZONE 'UTC')::date - $1::int LIMIT $2))
+    RETURNING user_id, day, node_id, up_bytes, down_bytes, billed_bytes
+), rolled AS (
+    INSERT INTO traffic_monthly AS t (user_id, month, node_id, up_bytes, down_bytes, billed_bytes)
+    SELECT user_id, date_trunc('month', day)::date, node_id,
+           LEAST(sum(up_bytes), 9223372036854775807)::bigint,
+           LEAST(sum(down_bytes), 9223372036854775807)::bigint,
+           LEAST(sum(billed_bytes), 9223372036854775807)::bigint
+    FROM moved GROUP BY 1, 2, 3 ORDER BY 1, 2, 3
+    ON CONFLICT (user_id, month, node_id) DO UPDATE
+    SET up_bytes = LEAST(t.up_bytes::numeric + EXCLUDED.up_bytes, 9223372036854775807)::bigint,
+        down_bytes = LEAST(t.down_bytes::numeric + EXCLUDED.down_bytes, 9223372036854775807)::bigint,
+        billed_bytes = LEAST(t.billed_bytes::numeric + EXCLUDED.billed_bytes, 9223372036854775807)::bigint
+    RETURNING 1
+)
+SELECT count(*) FROM moved";
+
+/// W22: the traffic_daily retention (reaper loop, every RETENTION_EVERY):
+/// rows older than `keep_days` (0 = keep forever) are rolled up into
+/// traffic_monthly, ROLLUP_BATCH rows per transaction (under the history
+/// lock, like compaction).
+pub async fn rollup_pass(pg: &sqlx::PgPool, keep_days: u32) -> anyhow::Result<u64> {
+    if keep_days == 0 {
+        return Ok(0);
+    }
+    let mut moved = 0u64;
+    loop {
+        let mut tx = pg.begin().await?;
+        let got: bool = sqlx::query_scalar(HISTORY_LOCK_SQL)
+            .fetch_one(&mut *tx)
+            .await?;
+        if !got {
+            break;
+        }
+        let n: i64 = sqlx::query_scalar(ROLLUP_SQL)
+            .bind(keep_days as i32)
+            .bind(ROLLUP_BATCH)
+            .fetch_one(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        moved += n as u64;
+        if n < ROLLUP_BATCH {
+            break;
+        }
+    }
+    crate::metrics::retention("daily_rolled_up", moved);
+    Ok(moved)
+}
+
 pub async fn flush_loop(state: AppState) {
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -1578,6 +1758,362 @@ mod db_tests {
         b
     }
 
+    /// W22: after compaction, the history holds exactly what was settled:
+    /// per user Σ billed_bytes = users.traffic_used_bytes; per node Σ
+    /// (up + down) = nodes.traffic_raw_bytes and Σ billed_bytes =
+    /// nodes.traffic_billed_bytes; traffic_node_daily = traffic_daily
+    /// summed per (node, day), `users` = its row count; nothing staged.
+    pub(crate) async fn assert_history(db: &TestDb) {
+        compact_pass(&db.pool).await.unwrap();
+        let (pending, bad_users, bad_nodes, bad_days): (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM traffic_daily_pending), \
+             (SELECT count(*) FROM users u WHERE u.traffic_used_bytes <> COALESCE( \
+                 (SELECT sum(billed_bytes) FROM traffic_daily d WHERE d.user_id = u.id), 0)), \
+             (SELECT count(*) FROM nodes n WHERE n.traffic_raw_bytes <> COALESCE( \
+                 (SELECT sum(up_bytes + down_bytes) FROM traffic_daily d WHERE d.node_id = n.id), 0) \
+               OR n.traffic_billed_bytes <> COALESCE( \
+                 (SELECT sum(billed_bytes) FROM traffic_daily d WHERE d.node_id = n.id), 0)), \
+             (SELECT count(*) FROM (SELECT node_id, day, sum(up_bytes) AS u, sum(down_bytes) AS d, \
+                     sum(billed_bytes) AS b, count(*) AS c FROM traffic_daily GROUP BY 1, 2) x \
+                 FULL JOIN traffic_node_daily y USING (node_id, day) \
+                 WHERE x.u IS DISTINCT FROM y.up_bytes OR x.d IS DISTINCT FROM y.down_bytes \
+                    OR x.b IS DISTINCT FROM y.billed_bytes OR x.c IS DISTINCT FROM y.users)",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            (pending, bad_users, bad_nodes, bad_days),
+            (0, 0, 0, 0),
+            "history != settlement"
+        );
+    }
+
+    async fn history_rows(db: &TestDb, u: Uuid) -> Vec<(chrono::NaiveDate, i64, i64, i64)> {
+        sqlx::query_as(
+            "SELECT day, up_bytes, down_bytes, billed_bytes FROM traffic_daily \
+             WHERE user_id = $1 ORDER BY day, node_id",
+        )
+        .bind(u)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap()
+    }
+
+    async fn count(db: &TestDb, sql: &'static str) -> i64 {
+        sqlx::query_scalar(sql).fetch_one(&db.pool).await.unwrap()
+    }
+
+    /// W22: a report's history row: raw up/down as accepted, billed = the
+    /// multiplier charge, the UTC day whatever the session time zone;
+    /// staged until compaction; a new day starts a new row and leaves the
+    /// old one alone; a replay (fresh buffer = panel restart) adds nothing;
+    /// a departed user's final counters land in the history too.
+    #[tokio::test]
+    async fn history_split_multiplier_utc_day_boundary_replay_departed() {
+        // A session time zone whose date differs from UTC's right now
+        // (UTC+14 from 10:00 UTC, UTC-12 before 12:00 UTC).
+        let tz = if chrono::Timelike::hour(&chrono::Utc::now()) >= 11 {
+            "Pacific/Kiritimati"
+        } else {
+            "Etc/GMT+12"
+        };
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        // sqlx pins TimeZone=UTC at connect: set the zone after it.
+        let url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://akari:akari-dev@localhost:5432/akari".into());
+        let opts = <sqlx::postgres::PgConnectOptions as std::str::FromStr>::from_str(&url)
+            .unwrap()
+            .options([("search_path", db.schema.as_str())]);
+        let tz_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .after_connect(move |conn, _| {
+                Box::pin(async move {
+                    sqlx::query(sqlx::AssertSqlSafe(format!("SET TIME ZONE '{tz}'")))
+                        .execute(conn)
+                        .await
+                        .map(|_| ())
+                })
+            })
+            .connect_with(opts)
+            .await
+            .unwrap();
+        let (n, u) = db.member().await;
+        set_rate(&db, n, 500).await;
+        let b = buf(&db).await;
+        b.update(n, "s1", &report(u, 1000, 3000));
+        flush_buffer(&tz_pool, &b, RATES, None).await.unwrap();
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM traffic_daily_pending").await,
+            1
+        );
+        assert_eq!(count(&db, "SELECT count(*) FROM traffic_daily").await, 0);
+        assert_eq!(compact_pass(&db.pool).await.unwrap(), 1);
+        let today: chrono::NaiveDate =
+            sqlx::query_scalar("SELECT (now() AT TIME ZONE 'UTC')::date")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        let local: chrono::NaiveDate = sqlx::query_scalar("SELECT now()::date")
+            .fetch_one(&tz_pool)
+            .await
+            .unwrap();
+        tz_pool.close().await;
+        assert_ne!(
+            today, local,
+            "the session date is not UTC's: days must still be UTC"
+        );
+        assert_eq!(history_rows(&db, u).await, vec![(today, 1000, 3000, 2000)]);
+        assert_eq!(db.used(u).await, 2000);
+        // Day boundary: yesterday's rows stay; today's delta is a new row.
+        let yday = today - chrono::Duration::days(1);
+        for t in ["traffic_daily", "traffic_node_daily"] {
+            sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE {t} SET day = day - 1")))
+                .execute(&db.pool)
+                .await
+                .unwrap();
+        }
+        b.update(n, "s1", &report(u, 1500, 3000));
+        db.flush(&b).await;
+        compact_pass(&db.pool).await.unwrap();
+        let expect = vec![(yday, 1000, 3000, 2000), (today, 500, 0, 250)];
+        assert_eq!(history_rows(&db, u).await, expect);
+        let users: Vec<(chrono::NaiveDate, i32)> = sqlx::query_as(
+            "SELECT day, users FROM traffic_node_daily WHERE node_id = $1 ORDER BY day",
+        )
+        .bind(n)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(users, vec![(yday, 1), (today, 1)]);
+        // Replays: a fresh buffer (restart) and an ambiguous commit.
+        let fresh = buf(&db).await;
+        fresh.update(n, "s1", &report(u, 1500, 3000));
+        db.flush(&fresh).await;
+        let rows = fresh.snapshot();
+        write_rows(&db.pool, &rows, RATES, DEFAULT_DEPARTED_GRACE_SECS, None)
+            .await
+            .unwrap();
+        compact_pass(&db.pool).await.unwrap();
+        assert_eq!(history_rows(&db, u).await, expect);
+        // Departed: final counters after the REMOVE are billed and logged.
+        unassign(&db, n, u, 1.0).await;
+        let d = buf(&db).await;
+        d.update(n, "s1", &report(u, 1500, 3100));
+        db.flush(&d).await;
+        compact_pass(&db.pool).await.unwrap();
+        assert_eq!(
+            history_rows(&db, u).await,
+            vec![(yday, 1000, 3000, 2000), (today, 500, 100, 300)]
+        );
+        assert_eq!(db.used(u).await, 2300);
+        assert_eq!(users_on(&db, n, today).await, 1);
+        // Yesterday's day rows were moved by hand, the node totals were not:
+        // compare per user only.
+        db.drop().await;
+    }
+
+    async fn users_on(db: &TestDb, n: Uuid, day: chrono::NaiveDate) -> i32 {
+        sqlx::query_scalar("SELECT users FROM traffic_node_daily WHERE node_id = $1 AND day = $2")
+            .bind(n)
+            .bind(day)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+    }
+
+    /// W22: two flushing instances and two compactors at once, over two
+    /// nodes sharing users: the history equals the settlement exactly.
+    #[tokio::test]
+    async fn history_concurrent_flushers_and_compactors_are_exact() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n1, n2) = (db.node().await, db.node().await);
+        set_rate(&db, n2, 1500).await;
+        let mut us = vec![];
+        for _ in 0..12 {
+            let u = db.user().await;
+            db.assign(n1, u).await;
+            db.assign(n2, u).await;
+            us.push(u);
+        }
+        for round in 1..=12u64 {
+            let (a, b) = (buf(&db).await, buf(&db).await);
+            for &u in &us {
+                for n in [n1, n2] {
+                    a.update(n, "s1", &report(u, round * 1000, round * 10));
+                    b.update(n, "s1", &report(u, round * 1000 + 500, round * 10));
+                }
+            }
+            let (ra, rb, c1, c2) = tokio::join!(
+                flush_buffer(&db.pool, &a, RATES, None),
+                flush_buffer(&db.pool, &b, RATES, None),
+                compact_pass(&db.pool),
+                compact_pass(&db.pool)
+            );
+            let _ = (ra, rb);
+            c1.unwrap();
+            c2.unwrap();
+            db.flush(&a).await;
+            db.flush(&b).await;
+        }
+        for &u in &us {
+            // n1 at 1x: 12500 + 120; n2 at 1.5x: floor per row, deltas are
+            // multiples of 2 except... every delta is even: exact.
+            assert_eq!(db.used(u).await, 12_620 + 12_620 * 3 / 2, "user {u}");
+            let r = history_rows(&db, u).await;
+            assert!(r.is_empty() || r.iter().all(|x| x.0 == r[0].0));
+        }
+        assert_history(&db).await;
+        assert_eq!(
+            users_on(&db, n1, history_rows(&db, us[0]).await[0].0).await,
+            12
+        );
+        db.drop().await;
+    }
+
+    /// W22: compaction folds many staged rows of one key into one day row,
+    /// in batches; a held history lock makes it skip (rows stay staged).
+    #[tokio::test]
+    async fn compaction_batches_and_lock() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = (Uuid::new_v4(), Uuid::new_v4());
+        sqlx::query(
+            "INSERT INTO traffic_daily_pending (day, user_id, node_id, up_bytes, down_bytes, billed_bytes) \
+             SELECT DATE '2026-01-01' + (g % 2), $1, $2, 1, 2, 3 FROM generate_series(1, $3::int) g",
+        )
+        .bind(u)
+        .bind(n)
+        .bind(COMPACT_BATCH + 7)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        // Another instance holds the history lock: nothing happens.
+        let mut other = db.pool.begin().await.unwrap();
+        let got: bool = sqlx::query_scalar(HISTORY_LOCK_SQL)
+            .fetch_one(&mut *other)
+            .await
+            .unwrap();
+        assert!(got);
+        assert_eq!(compact_pass(&db.pool).await.unwrap(), 0);
+        assert_eq!(rollup_pass(&db.pool, 32).await.unwrap(), 0);
+        other.rollback().await.unwrap();
+        assert_eq!(
+            compact_pass(&db.pool).await.unwrap(),
+            COMPACT_BATCH as u64 + 7
+        );
+        let rows = history_rows(&db, u).await;
+        let half = (COMPACT_BATCH + 7) / 2;
+        let d0 = chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let d1 = d0 + chrono::Duration::days(1);
+        let other_half = COMPACT_BATCH + 7 - half;
+        assert_eq!(
+            rows,
+            vec![
+                (d0, half, 2 * half, 3 * half),
+                (d1, other_half, 2 * other_half, 3 * other_half)
+            ]
+        );
+        assert_eq!(users_on(&db, n, d0).await, 1);
+        assert_eq!(compact_pass(&db.pool).await.unwrap(), 0);
+        db.drop().await;
+    }
+
+    /// W22: retention rolls days older than N into months exactly once
+    /// (two passes at once, batches, an existing month row is added to);
+    /// younger days stay; 0 = keep forever.
+    #[tokio::test]
+    async fn rollup_moves_old_days_into_months_exactly() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = (Uuid::new_v4(), Uuid::new_v4());
+        // Many users' old days (more than one batch), and u's rows at
+        // 500..300 days ago.
+        sqlx::query(
+            "INSERT INTO traffic_daily (user_id, day, node_id, up_bytes, down_bytes, billed_bytes) \
+             SELECT gen_random_uuid(), (now() AT TIME ZONE 'UTC')::date - 450 - (g % 40), $1, g, 1, 2 \
+             FROM generate_series(1, $2::int) g",
+        )
+        .bind(n)
+        .bind(ROLLUP_BATCH + 123)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO traffic_daily (user_id, day, node_id, up_bytes, down_bytes, billed_bytes) \
+             SELECT $1, (now() AT TIME ZONE 'UTC')::date - g, $2, g, 2 * g, 3 * g \
+             FROM generate_series(300, 500) g",
+        )
+        .bind(u)
+        .bind(n)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        // An already rolled-up month of u (an earlier pass).
+        let first_month: chrono::NaiveDate = sqlx::query_scalar(
+            "SELECT date_trunc('month', (now() AT TIME ZONE 'UTC')::date - 500)::date",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO traffic_monthly (user_id, month, node_id, up_bytes, down_bytes, billed_bytes) \
+             VALUES ($1, $2, $3, 7, 7, 7)",
+        )
+        .bind(u)
+        .bind(first_month)
+        .bind(n)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let totals = "SELECT (SELECT coalesce(sum(up_bytes + down_bytes + billed_bytes), 0) \
+                      FROM traffic_daily)::bigint + \
+                      (SELECT coalesce(sum(up_bytes + down_bytes + billed_bytes), 0) \
+                      FROM traffic_monthly)::bigint";
+        let before = count(&db, totals).await;
+        let expect: Vec<(chrono::NaiveDate, i64, i64, i64)> = sqlx::query_as(
+            "SELECT m, sum(u)::bigint, sum(d)::bigint, sum(b)::bigint FROM ( \
+               SELECT date_trunc('month', day)::date AS m, up_bytes AS u, down_bytes AS d, \
+                      billed_bytes AS b FROM traffic_daily \
+               WHERE user_id = $1 AND day < (now() AT TIME ZONE 'UTC')::date - 400 \
+               UNION ALL SELECT month, up_bytes, down_bytes, billed_bytes FROM traffic_monthly \
+               WHERE user_id = $1) x GROUP BY m ORDER BY m",
+        )
+        .bind(u)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(rollup_pass(&db.pool, 0).await.unwrap(), 0);
+        let (a, b) = tokio::join!(rollup_pass(&db.pool, 400), rollup_pass(&db.pool, 400));
+        let moved = a.unwrap() + b.unwrap();
+        let more = rollup_pass(&db.pool, 400).await.unwrap();
+        assert_eq!(
+            moved + more,
+            ROLLUP_BATCH as u64 + 123 + 100,
+            "every old day moved exactly once"
+        );
+        assert_eq!(rollup_pass(&db.pool, 400).await.unwrap(), 0);
+        assert_eq!(count(&db, totals).await, before, "nothing lost or doubled");
+        let months: Vec<(chrono::NaiveDate, i64, i64, i64)> = sqlx::query_as(
+            "SELECT month, up_bytes, down_bytes, billed_bytes FROM traffic_monthly \
+             WHERE user_id = $1 ORDER BY month",
+        )
+        .bind(u)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(months, expect);
+        let left = history_rows(&db, u).await;
+        assert_eq!(left.len(), 101, "days 300..=400 ago stay");
+        db.drop().await;
+    }
+
     /// Default plausibility cap (10 Gbit/s).
     const RATE: i64 = 1_250_000_000;
     /// Default rates (per key and per node) and burst window.
@@ -1700,6 +2236,7 @@ mod db_tests {
         .await
         .unwrap();
         assert_eq!(retention_pass(&db.pool, 60).await.unwrap(), none);
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -1838,6 +2375,7 @@ mod db_tests {
         fresh.update(b, "s", &rep(3));
         db.flush(&fresh).await;
         assert_eq!(total(&db).await, (2 * n * 3300) as i64);
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -1898,6 +2436,7 @@ mod db_tests {
             .await
             .unwrap();
         assert_eq!(left, 0, "expired departed rows are pruned");
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -1918,6 +2457,7 @@ mod db_tests {
         after.update(n, "s1", &report(u, 1300, 6000));
         db.flush(&after).await;
         assert_eq!(db.used(u).await, 1300 + 6000);
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -1940,6 +2480,7 @@ mod db_tests {
             .await
             .unwrap();
         assert_eq!(db.used(u).await, 300);
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -1960,6 +2501,7 @@ mod db_tests {
         fresh.update(n, "s1", &report(u, 450, 150));
         db.flush(&fresh).await;
         assert_eq!(db.used(u).await, 450 + 150);
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -1979,6 +2521,7 @@ mod db_tests {
             db.flush(&b).await;
         }
         assert_eq!(db.used(u).await, 500 + 50);
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -1999,6 +2542,7 @@ mod db_tests {
         other.update(n, "s1", &report(u, 150, 0));
         db.flush(&other).await;
         assert_eq!(db.used(u).await, 300);
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -2035,6 +2579,7 @@ mod db_tests {
         feed(&panel, "s1", rep("s2", 40)); // new instance, Hello not yet seen
         db.flush(&panel).await;
         assert_eq!(db.used(u).await, 1700 + 40);
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -2058,6 +2603,7 @@ mod db_tests {
         b.update(n, "s1", &report(u, truth, 0));
         db.flush(&b).await;
         assert_eq!(db.used(u).await, truth as i64);
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -2075,6 +2621,7 @@ mod db_tests {
             db.flush(&b).await;
         }
         assert_eq!(db.used(u).await, 3000);
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -2114,6 +2661,7 @@ mod db_tests {
             assert_eq!(db.used(u).await, 30 * 100 + i as i64 + 50, "user {i}");
         }
         eprintln!("rt2: transient errors retried: {errors}");
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -2169,6 +2717,7 @@ mod db_tests {
         db.flush(&b).await;
         assert_eq!(db.used(u).await, 1800);
         assert_eq!(node_totals(&db, half).await, (7001, 1200));
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -2204,6 +2753,7 @@ mod db_tests {
         .unwrap();
         assert_eq!(raw, 200, "the departed window counts raw bytes");
         assert_eq!(node_totals(&db, n).await, (300, 150));
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -2244,6 +2794,7 @@ mod db_tests {
         let (raw, billed) = node_totals(&db, n).await;
         assert_eq!(raw, 20 * 20_500);
         assert_eq!(billed, 20 * 10_250);
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -2274,6 +2825,7 @@ mod db_tests {
         tx.rollback().await.unwrap();
         db.flush(&b).await;
         assert_eq!(db.used(u).await, 1500);
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -2352,6 +2904,7 @@ mod db_tests {
         b.check_invariants().unwrap();
         assert_eq!(db.used(good).await, 20);
         assert_eq!(db.used(bad).await, 0);
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -2446,6 +2999,7 @@ mod db_tests {
             billed <= MAX_DIRTY_SESSIONS_PER_NODE as i128 * (cap + RATE as i128),
             "{billed}"
         );
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -2468,6 +3022,7 @@ mod db_tests {
         }
         db.flush(&b).await;
         assert_eq!(db.used(u).await, 60 * 1000);
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -2765,6 +3320,7 @@ mod db_tests {
         assert!(b.entries.is_empty());
         assert_eq!(b.node_entry_count(n), 0);
         assert!(!b.session_known(n, "s1"));
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -2819,6 +3375,7 @@ mod db_tests {
         .await
         .unwrap();
         assert_eq!(stored, big as i64);
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -2952,6 +3509,7 @@ mod db_tests {
         assert!((d[1] - 2 * d[0]).abs() <= 2, "{d:?}");
         assert!((d[2] - 3 * d[0]).abs() <= 3, "{d:?}");
         assert!(d.iter().sum::<i64>() <= RATE * 11);
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -2986,6 +3544,7 @@ mod db_tests {
         write(&db, &rows).await;
         let extra = db.used(u).await - first;
         assert!(extra <= RATE, "restart granted {extra} bytes");
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -3015,6 +3574,7 @@ mod db_tests {
         seed(&db, n3, u3, "s2", 9, 30.0).await;
         write(&db, &[row(n3, u3, "s1", 7, 1.0), row(n3, u3, "s2", 9, 1.0)]).await;
         assert_eq!(db.used(u3).await, 0);
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -3040,6 +3600,7 @@ mod db_tests {
         y.unwrap();
         let total = db.used(u).await + db.used(u2).await;
         assert!(total <= RATE * 11, "two instances billed {total}");
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -3079,6 +3640,7 @@ mod db_tests {
             billed as f64 / sent as f64
         );
         assert!(billed <= sent);
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -3158,6 +3720,7 @@ mod db_tests {
         write(&db, &rows).await;
         let many = db.used(u3).await;
         assert!(many <= window(81), "16 sessions billed {many}");
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -3186,6 +3749,7 @@ mod db_tests {
             many <= RATE * 81,
             "16 sessions across 16 flushes billed {many}"
         );
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -3224,6 +3788,7 @@ mod db_tests {
             "one flush billed {} s worth",
             dumped / RATE
         );
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -3269,6 +3834,7 @@ mod db_tests {
         write(&db, &[row(n, u, "s1", 2 * TB, 1.0)]).await;
         let more = db.used(u).await - billed;
         assert!(more <= RATE, "reconnects minted {more}");
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -3343,6 +3909,7 @@ mod db_tests {
         .unwrap();
         assert!((3590.0..3700.0).contains(&floor_age), "floor {floor_age}");
         assert!(until_left <= RATES.burst_secs as f64, "until {until_left}");
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -3379,6 +3946,7 @@ mod db_tests {
         b.update(n, "s1", &report(stranger, 1 << 40, 0));
         flush_buffer(&db.pool, &b, RATES, None).await.unwrap();
         assert!(!b.failing());
+        assert_history(&db).await;
         db.drop().await;
     }
 
@@ -3413,6 +3981,7 @@ mod db_tests {
         let lease = R * RATES.lease_secs;
         assert!(billed <= lease + R, "beyond the lease: {billed} > {lease}");
         assert!(billed >= lease - R, "lease credited: {billed}");
+        assert_history(&db).await;
         db.drop().await;
     }
 

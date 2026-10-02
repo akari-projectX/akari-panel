@@ -9,7 +9,7 @@ Targets (ROADMAP §0), measured on the data set of one panel instance serving
 | Target | Measured | Verdict |
 |---|---|---|
 | Snapshot build, 10k-user node < 200 ms | DB read + build 33 ms; full build (read + user set + state hash + encode) 43 ms; agent side: xray rebuild with 10k users 57 ms | pass |
-| Flush of 50k traffic rows < 1 s | 0.91 s (criterion mean; 10 chunks of 5000, about 91 ms each) | pass, 9% margin |
+| Flush of 50k traffic rows < 1 s | 0.91 s (criterion mean; 10 chunks of 5000, about 91 ms each); W11 0.49 s; W22 (with the traffic history) 0.58 s, see "W22" | pass, ~40% margin |
 | Admin API p99 < 50 ms | idle, 16 clients: worst endpoint 10.2 ms (`nodes`); under 200-agent load: worst read 30.5 ms (`users_deep`); W17: the console's node list (`nodes?view=summary`) 12–26 ms under load (full list 27–43 ms) | pass |
 | Subscription p99 < 30 ms | idle 5.1 ms; under load 16.7 ms (single instance), 31 ms (`clash`) / 20 ms (`links`) through the two-instance balancer | pass (single instance); 1 ms over on the balancer run, see notes |
 | User change to agent < 2 s | single instance: p50 0.26 s, p99 0.59 s, max 0.68 s; two instances behind a balancer: p99 0.89 s, max 0.98 s (3200 agent applications each) | pass |
@@ -29,6 +29,55 @@ Notes:
   waits behind flush chunks and its peers); 2 concurrent clients: p99 14 ms.
   Not an admin-rate scenario (the run was 2400 patches/s), recorded for
   completeness.
+
+## W22: traffic history (2026-10-03)
+
+The flush now also records what it settled per user, node and UTC day.
+Design driven by the flush budget:
+
+| `db/flush`, 50k rows (bench set + 30 days of history: 3M `traffic_daily` rows) | time |
+|---|---|
+| main before W22 (same run, same database) | 0.490 s (fresh seed); A/B interleaved: 0.515 / 0.547 / 0.635 s |
+| first cut: `FLUSH_SQL` upserts `traffic_daily` + `traffic_node_daily` directly (`ON CONFLICT`) | 1.29 s (fails the budget) |
+| same, existing day rows as plain `UPDATE`s (`ON CONFLICT` only for new ones, like `traffic_counters`) | 0.81 s |
+| **shipped**: `FLUSH_SQL` appends to an index-less staging table (`traffic_daily_pending`), the reaper folds it every 30 s | A/B interleaved: 0.576 / 0.581 / 0.630 s |
+
+So the history costs the flush ~+10–15% (one extra heap insert per billed
+row, no index, no conflict check), and every row is written in the same
+statement as the settlement (exactly as idempotent). A direct day-row update
+costs as much as the `traffic_counters` update itself (~27 ms per 5000-row
+chunk, `akari-bench explain`), which is why it is off the flush path.
+
+Compaction (`traffic::COMPACT_SQL`, one statement per 50k staged rows:
+`DELETE ... RETURNING` → aggregate → `UPDATE` existing day rows → `INSERT`
+new ones → per-node-day upsert): `db/compact/50000` = 0.25–0.29 s for one
+flush's worth (50k distinct user-node pairs). At the 30 s cadence a busy
+panel stages ~6 flushes per pass but folds them into the same 50k day rows,
+so a pass is well under a second every 30 s, under an advisory try-lock (one
+instance at a time), holding no node or user locks.
+
+Read side (`akari-bench http`, panel on the bench set + 30 days of history at
+2 nodes per user per day = 3M daily rows, ~7.9k distinct users per node per
+30 days; default 30-day range):
+
+| Scenario | 4 clients p99 | 8 clients p99 | 16 clients p99 |
+|---|---|---|---|
+| `traffic_user` (`/users/{id}/traffic`, per day) | 2.1 ms | 5.6 ms | 15.0 ms |
+| `traffic_user_nodes` (`group=node`) | — | — | 14.4 ms |
+| `traffic_node` (`/nodes/{id}/traffic`, per day + top 20 users) | 10.4 ms | 11.0 ms | 55.4 ms |
+| `traffic_summary` (`/traffic/summary`) | 3.5 ms | 8.8 ms | 20.3 ms |
+| `traffic_me` (`/me/traffic`) | 2.3 ms | 7.9 ms | 5.2 ms |
+
+`traffic_node` aggregates ~15k day rows per request (10 ms of CPU each): at
+16 concurrent clients it saturates the machine's cores (770 req/s) and the
+p99 is queueing, not the query; 8 concurrent admin node pages stay at 11 ms.
+Node and fleet charts read `traffic_node_daily` (one row per node per day);
+only the top-users list touches `traffic_daily` (index `(node_id, day)`).
+
+Reproduce: `make bench-seed` (now also seeds `--history-days 30
+--history-nodes-per-user 2`), `make bench`, then the panel on the bench set
+and `akari-bench http --only traffic_user,traffic_user_nodes,traffic_node,traffic_summary,traffic_me`;
+`akari-bench explain` includes `COMPACT_SQL` and `ROLLUP_SQL`.
 
 ## Node list summary view (W17, 2026-10-02)
 
@@ -167,7 +216,8 @@ in ci.yml keeps the crate compiling against the panel library.
 | `sub_render` clash / links / sing-box, 200 nodes | 428 / 498 / 986 us |
 | `db/desired_snapshot` (REPEATABLE READ read + build) | 33.3 ms |
 | `db/snapshot_build_full` | 43.1 ms |
-| `db/flush`, 50k rows | 0.907 s (M2) → **0.49 s** (W11, see below) |
+| `db/flush`, 50k rows | 0.907 s (M2) → **0.49 s** (W11, see below) → 0.58 s (W22, traffic history staged; see "W22") |
+| `db/compact`, 50k staged rows (W22, off the flush path) | 0.25–0.29 s |
 
 ## What changed to get there
 
@@ -365,7 +415,7 @@ in their heartbeats, so the swarm numbers include this load.
 
 ## Limits and honest caveats
 
-- Flush margin (W11): 0.49 s against the 1 s budget for 50k rows; on a slower
+- Flush margin (W22): 0.58 s against the 1 s budget (W11: 0.49 s) for 50k rows; on a slower
   disk or a busier PostgreSQL the flush still degrades gracefully (chunking
   bounds lock hold to one chunk), only how long a backlog takes to drain.
 - If the database stalls for longer than the burst window while agents keep

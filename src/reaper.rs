@@ -48,6 +48,8 @@ pub async fn reap_loop(state: AppState) {
     let mut next_prune = tokio::time::Instant::now();
     // traffic_counters retention (M2-5) too: every 10 min, any instance.
     let mut next_retention = tokio::time::Instant::now() + crate::traffic::RETENTION_EVERY;
+    // W22: staged traffic history -> daily tables (one instance at a time).
+    let mut next_compact = tokio::time::Instant::now() + crate::traffic::COMPACT_EVERY;
     loop {
         tick.tick().await;
         if let Err(e) = reap_once(&state).await {
@@ -56,6 +58,12 @@ pub async fn reap_loop(state: AppState) {
         // M6 rollouts: timeouts, settling, halt, waves (any instance).
         if let Err(e) = crate::rollout::tick(state.pg()).await {
             tracing::warn!(error = %e, "rollout tick failed");
+        }
+        if tokio::time::Instant::now() >= next_compact {
+            next_compact = tokio::time::Instant::now() + crate::traffic::COMPACT_EVERY;
+            if let Err(e) = crate::traffic::compact_pass(state.pg()).await {
+                tracing::warn!(error = %e, "traffic history compaction failed");
+            }
         }
         if tokio::time::Instant::now() >= next_retention {
             next_retention = tokio::time::Instant::now() + crate::traffic::RETENTION_EVERY;
@@ -80,6 +88,14 @@ pub async fn reap_loop(state: AppState) {
                     "traffic counters retention"
                 ),
                 Err(e) => tracing::warn!(error = %e, "traffic counters retention failed"),
+            }
+            // W22: per-day history older than the retention -> months.
+            match crate::traffic::rollup_pass(state.pg(), state.cfg().traffic.daily_retention_days)
+                .await
+            {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(rows = n, "traffic daily history rolled up"),
+                Err(e) => tracing::warn!(error = %e, "traffic daily rollup failed"),
             }
         }
         if tokio::time::Instant::now() >= next_prune {

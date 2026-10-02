@@ -73,3 +73,12 @@ export const AccountIcon = () => (
     <path d="M4 21c0-4 3.6-7 8-7s8 3 8 7" />
   </Icon>
 );
+
+export const TrafficIcon = () => (
+  <Icon>
+    <path d="M4 20V10" />
+    <path d="M10 20V4" />
+    <path d="M16 20v-7" />
+    <path d="M21 20H3" />
+  </Icon>
+);
