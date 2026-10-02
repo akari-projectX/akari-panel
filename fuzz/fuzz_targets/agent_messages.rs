@@ -44,8 +44,11 @@ fn check_heartbeat(hb: &akari_panel::gen::Heartbeat) {
     }
     let text = blob.to_string();
     serde_json::from_str::<serde_json::Value>(&text).expect("blob is JSON");
-    let cpu = blob["cpu_percent"].as_f64().expect("cpu");
-    assert!((0.0..=100.0).contains(&cpu));
+    // W23: null = unknown (unset or non-finite), else 0..=100.
+    match &blob["cpu_percent"] {
+        serde_json::Value::Null => {}
+        v => assert!((0.0..=100.0).contains(&v.as_f64().expect("cpu"))),
+    }
     let mut all = Vec::new();
     strings(&blob, &mut all);
     for s in all {
@@ -59,16 +62,21 @@ fn check_heartbeat(hb: &akari_panel::gen::Heartbeat) {
         );
     }
     let s = Sample::from_heartbeat(hb);
-    assert!(s.cpu.is_finite() && (0.0..=100.0).contains(&s.cpu));
-    assert!(s.load1.is_finite() && s.load1 >= 0.0);
+    assert!(s
+        .cpu
+        .is_none_or(|c| c.is_finite() && (0.0..=100.0).contains(&c)));
+    assert!(s.load1.is_none_or(|l| l.is_finite() && l >= 0.0));
     for v in [
         s.mem_used,
         s.mem_total,
         s.swap_used,
         s.disk_used,
         s.rx_bps,
-        s.conns,
-    ] {
+        Some(s.conns),
+    ]
+    .into_iter()
+    .flatten()
+    {
         assert!(v >= 0);
     }
 }
