@@ -2800,6 +2800,22 @@ for a in $(grep -o "/$PREFIX/assets/[^\"]*\.\(js\|css\)" "$SERVED/app/index.html
 done
 curl -s --noproxy '*' -b "$AJAR" "$BASE/admin" >"$SERVED/admin/admin.html"
 for a in "$AJS" "$ACSS"; do curl -s --noproxy '*' -b "$AJAR" "http://127.0.0.1:8080$a" >"$SERVED/admin/$(basename "$a")"; done
+# W21: the console is code-split; every chunk the entry imports (relative
+# "./x.js" specifiers) is served under the prefix to the admin session.
+todo="$SERVED/admin/$(basename "$AJS")"
+while [ -n "$todo" ]; do
+  next=""
+  for c in $(cat $todo | grep -o '"\./[A-Za-z0-9_-]*\.js"\|`\./[A-Za-z0-9_-]*\.js`' | tr -d '"`' | sort -u); do
+    f="$SERVED/admin/${c#./}"
+    [ -e "$f" ] && continue
+    url="http://127.0.0.1:8080$(dirname "$AJS")/${c#./}"
+    [ "$(curl -s --noproxy '*' -b "$AJAR" -o "$f" -w '%{http_code}' "$url")" = "200" ] \
+      || { echo "FAIL: console chunk $c not served under the prefix"; exit 1; }
+    next="$next $f"
+  done
+  todo="$next"
+done
+[ "$(ls "$SERVED/admin"/*.js | wc -l)" -gt 3 ] || { echo "FAIL: console chunks not found in the entry"; exit 1; }
 node spa/scripts/check-bundles.mjs "$SERVED/app" "$SERVED/admin" || { echo "FAIL: served portal bundle carries admin code"; exit 1; }
 echo "admin bundle: ok"
 
