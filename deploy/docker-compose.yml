@@ -22,7 +22,10 @@ services:
     # `docker compose up -d`. AKARI_VERSION (tag only) is the pre-0.2 form,
     # still honoured when AKARI_IMAGE is unset. Locally built image: set
     # AKARI_IMAGE=akari-panel:local (DEPLOY.md "Build the image yourself").
-    image: ${AKARI_IMAGE:-ghcr.io/akari-projectx/akari-panel:${AKARI_VERSION:?set AKARI_IMAGE in .env}}
+    # (No `:?` inside the default: compose 2.26, Debian 13's, evaluates it
+    # even when AKARI_IMAGE is set. Neither set = a pull of the tag
+    # "set-AKARI_IMAGE-in-.env", which fails and names the fix.)
+    image: ${AKARI_IMAGE:-ghcr.io/akari-projectx/akari-panel:${AKARI_VERSION:-set-AKARI_IMAGE-in-.env}}
     restart: unless-stopped
     stop_grace_period: 20s
     read_only: true
