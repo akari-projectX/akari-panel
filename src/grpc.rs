@@ -2919,9 +2919,7 @@ mod tests {
     fn shadowsocks_node_shrinks_by_snapshot() {
         let t0 = Instant::now();
         let ss = r#"[{"tag":"t","protocol":"shadowsocks"}]"#;
-        let with = |ops: &[UserOp]| {
-            Arc::new(NodeState::of_snapshot(ss.into(), ops))
-        };
+        let with = |ops: &[UserOp]| Arc::new(NodeState::of_snapshot(ss.into(), ops));
         let s1 = with(&[op("a", &[("t", "1")]), op("b", &[("t", "2")])]);
         let add = with(&[
             op("a", &[("t", "1")]),
