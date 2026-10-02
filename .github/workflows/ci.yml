@@ -200,6 +200,8 @@ jobs:
           cache-dependency-path: akari-panel/spa/package-lock.json
       # The runner's own Postgres/Valkey would collide with compose's ports.
       - run: sudo systemctl stop postgresql || true
+      # R22: the panel dials its main domain (install-link pin probe).
+      - run: echo '127.0.0.1 myapp.test' | sudo tee -a /etc/hosts
       - run: make smoke AGENT_DIR=../akari-agent
         working-directory: akari-panel
       - if: failure()
