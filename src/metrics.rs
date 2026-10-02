@@ -48,6 +48,9 @@ struct Metrics {
     retention: IntCounterVec,
     fleet: IntGaugeVec,
     fleet_cpu_max: prometheus::Gauge,
+    alerts_firing: IntGaugeVec,
+    alert_notifications: IntCounterVec,
+    alert_rounds: IntCounterVec,
 }
 
 static METRICS: OnceLock<Metrics> = OnceLock::new();
@@ -163,6 +166,25 @@ impl Metrics {
                 "akari_fleet_cpu_percent_max",
                 "W11 highest CPU % among nodes connected to this instance",
             ))?,
+            // W17: node alerts (bounded labels: kinds, channels, results).
+            alerts_firing: IntGaugeVec::new(
+                Opts::new(
+                    "akari_node_alerts_firing",
+                    "W17 node alerts firing now, by kind (read from the database at scrape: \
+                     every instance reports the same value; aggregate with max)",
+                ),
+                &["kind"],
+            )?,
+            alert_notifications: cv(
+                "akari_alert_notifications_total",
+                "W17 alert notification deliveries by this instance (result=sent|retry|dead)",
+                &["channel", "result"],
+            )?,
+            alert_rounds: cv(
+                "akari_alert_rounds_total",
+                "W17 alert evaluation rounds on this instance (result=leader|skipped|error)",
+                &["result"],
+            )?,
             registry,
         };
         let build = IntGaugeVec::new(
@@ -190,6 +212,21 @@ impl Metrics {
         m.registry.register(Box::new(m.retention.clone()))?;
         m.registry.register(Box::new(m.fleet.clone()))?;
         m.registry.register(Box::new(m.fleet_cpu_max.clone()))?;
+        m.registry.register(Box::new(m.alerts_firing.clone()))?;
+        m.registry
+            .register(Box::new(m.alert_notifications.clone()))?;
+        m.registry.register(Box::new(m.alert_rounds.clone()))?;
+        for k in crate::alerts::KINDS {
+            m.alerts_firing.with_label_values(&[k]);
+        }
+        for c in ["telegram", "webhook", "email"] {
+            for r in ["sent", "retry", "dead"] {
+                m.alert_notifications.with_label_values(&[c, r]);
+            }
+        }
+        for r in ["leader", "skipped", "error"] {
+            m.alert_rounds.with_label_values(&[r]);
+        }
         for k in FLEET_KINDS {
             m.fleet.with_label_values(&[k]);
         }
@@ -309,6 +346,27 @@ pub fn queue_usage(ratio: f64) {
     }
 }
 
+/// W17: one alert evaluation round (`leader` | `skipped` | `error`).
+pub fn alert_round(result: &'static str) {
+    if let Some(m) = m() {
+        m.alert_rounds.with_label_values(&[result]).inc();
+    }
+}
+
+/// W17: one alert notification settled (`sent` | `retry` | `dead`).
+pub fn alert_notification(channel: &str, result: &'static str) {
+    let channel = match channel {
+        "telegram" => "telegram",
+        "webhook" => "webhook",
+        _ => "email",
+    };
+    if let Some(m) = m() {
+        m.alert_notifications
+            .with_label_values(&[channel, result])
+            .inc();
+    }
+}
+
 pub fn login_attempt(allowed: bool) {
     if let Some(m) = m() {
         m.login_attempts
@@ -395,6 +453,19 @@ async fn scrape(State(state): State<AppState>) -> Response {
         m.fleet.with_label_values(&[k]).set(v);
     }
     m.fleet_cpu_max.set(f.cpu_max);
+    // W17: firing alerts from the database (shared state: the same value on
+    // every instance). Bounded wait; on failure the last value stays.
+    if let Ok(Ok(rows)) = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        crate::alerts::firing_counts(state.pg()),
+    )
+    .await
+    {
+        for k in crate::alerts::KINDS {
+            let n = rows.iter().find(|r| r.0 == k).map_or(0, |r| r.1);
+            m.alerts_firing.with_label_values(&[k]).set(n);
+        }
+    }
     let mut buf = Vec::new();
     if let Err(e) = TextEncoder::new().encode(&m.registry.gather(), &mut buf) {
         tracing::error!(error = %e, "metrics encoding failed");

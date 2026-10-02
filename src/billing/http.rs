@@ -1,4 +1,5 @@
-//! Minimal HTTPS client for the Alipay gateway: one form POST per
+//! Minimal HTTPS client for the Alipay gateway (and, W17, alert
+//! notifications): one POST per
 //! connection over rustls (ring provider, webpki roots) and hyper http1.
 //! `http://` is accepted only for loopback hosts (tests, local mock
 //! gateways; config_check enforces it). No proxy support: the panel
@@ -43,18 +44,44 @@ pub fn is_loopback_host(host: &str) -> bool {
 /// POST `body` (application/x-www-form-urlencoded, UTF-8) to `url`.
 /// Returns (status, body). Errors carry no request content.
 pub async fn post_form(url: &str, body: String, timeout: Duration) -> Result<(u16, Bytes), String> {
-    tokio::time::timeout(timeout, post_inner(url, body))
+    post(
+        url,
+        "application/x-www-form-urlencoded;charset=utf-8",
+        &[],
+        body.into_bytes(),
+        timeout,
+    )
+    .await
+}
+
+/// POST `body` with `content_type` and extra headers (W17: alert
+/// notifications — Telegram Bot API, signed webhooks). Same rules as
+/// `post_form`: https, or http to loopback only; errors carry no request
+/// content (the URL of a Telegram call holds the bot token).
+pub async fn post(
+    url: &str,
+    content_type: &str,
+    headers: &[(&str, String)],
+    body: Vec<u8>,
+    timeout: Duration,
+) -> Result<(u16, Bytes), String> {
+    tokio::time::timeout(timeout, post_inner(url, content_type, headers, body))
         .await
         .map_err(|_| "timed out".to_string())?
 }
 
-async fn post_inner(url: &str, body: String) -> Result<(u16, Bytes), String> {
-    let uri: hyper::Uri = url.parse().map_err(|_| "bad gateway url".to_string())?;
-    let host = uri.host().ok_or("gateway url without host")?.to_string();
+async fn post_inner(
+    url: &str,
+    content_type: &str,
+    headers: &[(&str, String)],
+    body: Vec<u8>,
+) -> Result<(u16, Bytes), String> {
+    let uri: hyper::Uri = url.parse().map_err(|_| "bad url".to_string())?;
+    let host = uri.host().ok_or("url without host")?.to_string();
     let tls = match uri.scheme_str() {
         Some("https") => true,
         Some("http") if is_loopback_host(&host) => false,
-        _ => return Err("gateway url must be https".into()),
+        _ => return Err("url must be https".into()),
     };
     let port = uri.port_u16().unwrap_or(if tls { 443 } else { 80 });
     let path = uri
@@ -73,20 +100,21 @@ async fn post_inner(url: &str, body: String) -> Result<(u16, Bytes), String> {
         Some(p) => format!("{host}:{p}"),
         None => host.clone(),
     };
-    let req = hyper::Request::post(path)
+    let mut req = hyper::Request::post(path)
         .header(header::HOST, authority)
-        .header(
-            header::CONTENT_TYPE,
-            "application/x-www-form-urlencoded;charset=utf-8",
-        )
+        .header(header::CONTENT_TYPE, content_type)
         .header(header::CONTENT_LENGTH, body.len())
         .header(header::ACCEPT, "application/json")
-        .header(header::USER_AGENT, "akari-panel")
+        .header(header::USER_AGENT, "akari-panel");
+    for (k, v) in headers {
+        req = req.header(*k, v.as_str());
+    }
+    let req = req
         .body(Full::new(Bytes::from(body)))
         .map_err(|_| "bad request".to_string())?;
     if tls {
         let name = rustls::pki_types::ServerName::try_from(connect_host)
-            .map_err(|_| "bad gateway host name".to_string())?;
+            .map_err(|_| "bad host name".to_string())?;
         let stream = tokio_rustls::TlsConnector::from(tls_config()?)
             .connect(name, tcp)
             .await

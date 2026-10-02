@@ -3,6 +3,7 @@
 //! benchmark and load tooling (`bench/`) can drive the real code paths.
 
 pub mod account;
+pub mod alerts;
 pub mod api;
 pub mod audit;
 pub mod auth;
@@ -23,6 +24,7 @@ pub mod grpc;
 pub mod install;
 pub mod login_limit;
 pub mod mail;
+pub mod mailhook;
 pub mod metrics;
 pub mod nodeinstall;
 pub mod nodemeta;
@@ -45,6 +47,7 @@ pub mod state;
 pub mod sub;
 #[cfg(test)]
 pub mod testdb;
+pub mod tickets;
 pub mod tlsserver;
 pub mod totp;
 pub mod traffic;

@@ -62,8 +62,31 @@ impl PanelConfig {
         self.validate_payments(&mut r);
         self.validate_settings_defaults(&mut r);
         self.validate_probe(&mut r);
+        self.validate_alerts(&mut r);
         self.validate_acme(&mut r);
         r
+    }
+
+    /// `[alerts]` (W17).
+    fn validate_alerts(&self, r: &mut Report) {
+        let a = &self.alerts;
+        if !(5..=600).contains(&a.eval_interval_secs) {
+            r.err("alerts.eval_interval_secs: must be 5..=600");
+        }
+        let ok = a
+            .telegram_api_url
+            .parse::<axum::http::Uri>()
+            .ok()
+            .filter(|u| u.path() == "/" || u.path().is_empty())
+            .and_then(|u| match (u.scheme_str(), u.host()) {
+                (Some("https"), Some(_)) => Some(()),
+                (Some("http"), Some(h)) if crate::billing::http::is_loopback_host(h) => Some(()),
+                _ => None,
+            })
+            .is_some();
+        if !ok || a.telegram_api_url.contains('@') {
+            r.err("alerts.telegram_api_url: must be an https origin (http only to localhost), without a path or credentials");
+        }
     }
 
     /// `[probe]` (W11 latency tests).
@@ -657,6 +680,25 @@ mod tests {
 
     fn has(v: &[String], needle: &str) -> bool {
         v.iter().any(|e| e.contains(needle))
+    }
+
+    #[test]
+    fn alerts_section() {
+        let mut c = PanelConfig::default();
+        c.alerts.eval_interval_secs = 4;
+        assert!(has(&errors(&c), "alerts.eval_interval_secs"));
+        c.alerts.eval_interval_secs = 5;
+        for (url, ok) in [
+            ("https://api.telegram.org", true),
+            ("http://127.0.0.1:18999", true),
+            ("http://api.telegram.org", false),
+            ("https://api.telegram.org/bot123", false),
+            ("https://user@api.telegram.org", false),
+            ("not a url", false),
+        ] {
+            c.alerts.telegram_api_url = url.into();
+            assert_eq!(!has(&errors(&c), "alerts.telegram_api_url"), ok, "{url}");
+        }
     }
 
     #[test]

@@ -24,6 +24,30 @@ pub struct PanelConfig {
     pub tls_ask: TlsAskConfig,
     pub probe: ProbeConfig,
     pub acme: AcmeConfig,
+    pub alerts: AlertsConfig,
+}
+
+/// W17 node alerts (`alerts/`): the evaluator/delivery cadence and the
+/// Telegram Bot API base. Thresholds and channels are 告警设置 in the
+/// database (`alert_settings`), not here.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AlertsConfig {
+    /// Seconds between evaluation rounds (one instance at a time) and
+    /// notification deliveries (every instance). Default 30; 5..=600.
+    pub eval_interval_secs: u64,
+    /// Telegram Bot API base URL (https; http only to loopback, tests).
+    /// Default "https://api.telegram.org".
+    pub telegram_api_url: String,
+}
+
+impl Default for AlertsConfig {
+    fn default() -> Self {
+        Self {
+            eval_interval_secs: 30,
+            telegram_api_url: "https://api.telegram.org".into(),
+        }
+    }
 }
 
 /// Automatic node certificates (W10, agent protocol 6): what the panel
@@ -446,6 +470,7 @@ impl Default for PanelConfig {
             tls_ask: TlsAskConfig::default(),
             probe: ProbeConfig::default(),
             acme: AcmeConfig::default(),
+            alerts: AlertsConfig::default(),
         }
     }
 }

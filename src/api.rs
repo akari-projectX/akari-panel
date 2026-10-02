@@ -1166,24 +1166,226 @@ const CERT_WARN_DAYS: i64 = 14;
 impl NodeView {
     fn with_warnings(mut self) -> Self {
         self.traffic_rate = f64::from(self.traffic_rate_permille) / 1000.0;
-        self.warnings = inbound_warnings(&self.xray_inbounds);
-        self.warnings.extend(tls_domain_warnings(
-            self.tls_domain.as_deref(),
+        self.warnings = node_warnings(
             &self.xray_inbounds,
+            self.tls_domain.as_deref(),
             self.agent_protocol,
-        ));
-        if let Some(w) = cert_warning(self.cert_not_after, self.agent_protocol, Utc::now()) {
-            self.warnings.push(w);
-        }
-        if self.unenforced_speed_limits {
-            self.warnings.push(format!(
-                "the agent is too old to enforce speed limits (protocol < {}): plan speed \
-                 limits are not applied on this node until the agent is upgraded",
-                crate::grpc::SPEED_LIMIT_PROTOCOL
-            ));
-        }
+            self.cert_not_after,
+            self.unenforced_speed_limits,
+        );
         self
     }
+}
+
+/// The node's `warnings` (full view and summary alike).
+fn node_warnings(
+    inbounds: &serde_json::Value,
+    tls_domain: Option<&str>,
+    agent_protocol: Option<i32>,
+    cert_not_after: Option<DateTime<Utc>>,
+    unenforced_speed_limits: bool,
+) -> Vec<String> {
+    let mut w = inbound_warnings(inbounds);
+    w.extend(tls_domain_warnings(tls_domain, inbounds, agent_protocol));
+    if let Some(c) = cert_warning(cert_not_after, agent_protocol, Utc::now()) {
+        w.push(c);
+    }
+    if unenforced_speed_limits {
+        w.push(format!(
+            "the agent is too old to enforce speed limits (protocol < {}): plan speed \
+             limits are not applied on this node until the agent is upgraded",
+            crate::grpc::SPEED_LIMIT_PROTOCOL
+        ));
+    }
+    w
+}
+
+/// W17: one row of `GET /nodes?view=summary` — only what the node list
+/// shows: no inbounds JSON, no full latency set, a slim heartbeat (the W14
+/// list was 480 KB for 200 nodes). Fields that tick every second (lease
+/// remaining) are left to the client (`lease_expires_at`), so the ETag
+/// stays put between heartbeats.
+#[derive(sqlx::FromRow, Serialize)]
+pub struct NodeSummary {
+    id: Uuid,
+    name: String,
+    display_name: Option<String>,
+    enabled: bool,
+    status: String,
+    online: bool,
+    deleting_at: Option<DateTime<Utc>>,
+    region: Option<String>,
+    server_addr: Option<String>,
+    agent_version: Option<String>,
+    agent_os: Option<String>,
+    agent_arch: Option<String>,
+    agent_protocol: Option<i32>,
+    update_status: Option<serde_json::Value>,
+    lease_expires_at: Option<DateTime<Utc>>,
+    enrolled: bool,
+    cert_not_after: Option<DateTime<Utc>>,
+    enroll_token_expires_at: Option<DateTime<Utc>>,
+    last_seen_at: Option<DateTime<Utc>>,
+    last_error: Option<String>,
+    sort: i32,
+    visible: bool,
+    tags: Vec<String>,
+    #[serde(skip)]
+    traffic_rate_permille: i32,
+    #[sqlx(skip)]
+    traffic_rate: f64,
+    /// The agent's best url-test result (first success in order, else the
+    /// first result), as the list's latency badge shows it.
+    latency: Option<serde_json::Value>,
+    /// W17: alerts firing on this node.
+    alerts_firing: i64,
+    #[sqlx(skip)]
+    warnings: Vec<String>,
+    /// Some inbound needs the node's TLS certificate (install card hint).
+    #[sqlx(skip)]
+    needs_certificate: bool,
+    #[sqlx(skip)]
+    heartbeat: Option<HeartbeatSummary>,
+    #[serde(skip)]
+    xray_inbounds: serde_json::Value,
+    #[serde(skip)]
+    tls_domain: Option<String>,
+    #[serde(skip)]
+    unenforced_speed_limits: bool,
+}
+
+/// The heartbeat fields the list shows.
+#[derive(Deserialize, Serialize, Debug, PartialEq)]
+pub struct HeartbeatSummary {
+    cpu_percent: f64,
+    mem_used_bytes: u64,
+    mem_total_bytes: u64,
+    connections: u64,
+    #[serde(default)]
+    uptime_seconds: Option<u64>,
+    ts: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metrics: Option<HeartbeatMetricsSummary>,
+}
+
+#[derive(Deserialize, Serialize, Debug, PartialEq)]
+pub struct HeartbeatMetricsSummary {
+    net_rx_bytes_per_sec: u64,
+    net_tx_bytes_per_sec: u64,
+    online_users: u64,
+}
+
+const NODE_SUMMARY_COLS: &str = "nodes.id, name, display_name, enabled, status, \
+     (nodes.status = 'online' AND nodes.last_seen_at > now() - interval '90 seconds') AS online, \
+     deleting_at, region, server_addr, agent_version, agent_os, agent_arch, agent_protocol, \
+     ro.update_status, lease_expires_at, cert_serial IS NOT NULL AS enrolled, cert_not_after, \
+     enr.expires_at AS enroll_token_expires_at, last_seen_at, last_error, sort, visible, tags, \
+     traffic_rate_permille, lb.latency, coalesce(al.n, 0) AS alerts_firing, xray_inbounds, \
+     tls_domain, \
+     CASE WHEN agent_protocol < 4 THEN EXISTS (SELECT 1 FROM node_users nu \
+        JOIN user_plans up ON up.user_id = nu.user_id AND up.status = 'active' \
+        JOIN plans p ON p.id = up.plan_id \
+        WHERE nu.node_id = nodes.id AND p.speed_limit_mbps IS NOT NULL) \
+        ELSE false END AS unenforced_speed_limits";
+
+const NODE_SUMMARY_FROM: &str = "FROM nodes \
+     LEFT JOIN node_enrollments enr ON enr.node_id = nodes.id \
+        AND enr.used_at IS NULL AND enr.expires_at > now() \
+     LEFT JOIN (SELECT DISTINCT ON (l.node_id) l.node_id, jsonb_build_object('source', l.source, \
+        'target', l.target, 'delay_ms', l.delay_ms, 'error', l.error, \
+        'measured_at', l.measured_at) AS latency \
+        FROM node_latency l WHERE l.source = 'agent' \
+        ORDER BY l.node_id, (l.delay_ms IS NULL), l.ord) lb ON lb.node_id = nodes.id \
+     LEFT JOIN (SELECT node_id, count(*) AS n FROM node_alerts WHERE status = 'firing' \
+        GROUP BY node_id) al ON al.node_id = nodes.id \
+     LEFT JOIN (SELECT DISTINCT ON (rn.node_id) rn.node_id, jsonb_build_object( \
+        'rollout_id', r.id, 'version', r.version, 'rollout_status', r.status, \
+        'status', rn.status, 'detail', rn.detail) AS update_status \
+        FROM rollout_nodes rn JOIN rollouts r ON r.id = rn.rollout_id \
+        ORDER BY rn.node_id, r.created_at DESC) ro ON ro.node_id = nodes.id";
+
+impl NodeSummary {
+    fn finish(mut self, blob: Option<String>) -> Self {
+        self.traffic_rate = f64::from(self.traffic_rate_permille) / 1000.0;
+        self.warnings = node_warnings(
+            &self.xray_inbounds,
+            self.tls_domain.as_deref(),
+            self.agent_protocol,
+            self.cert_not_after,
+            self.unenforced_speed_limits,
+        );
+        self.needs_certificate = crate::nodetpl::needs_certificate(&self.xray_inbounds);
+        self.heartbeat = blob.and_then(|b| serde_json::from_str(&b).ok());
+        self
+    }
+}
+
+/// The summary rows with their slim heartbeats (one MGET; best effort).
+pub async fn node_summaries(state: &AppState) -> Result<Vec<NodeSummary>, ApiError> {
+    use fred::prelude::KeysInterface;
+    let rows = sqlx::query_as::<_, NodeSummary>(sqlx::AssertSqlSafe(format!(
+        "SELECT {NODE_SUMMARY_COLS} {NODE_SUMMARY_FROM} ORDER BY sort, nodes.created_at, nodes.id"
+    )))
+    .fetch_all(state.pg())
+    .await?;
+    if rows.is_empty() {
+        return Ok(rows);
+    }
+    let keys: Vec<String> = rows
+        .iter()
+        .map(|v| format!("akari:node:hb:{}", v.id))
+        .collect();
+    let blobs = match state.valkey().mget::<Vec<Option<String>>, _>(keys).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(error = %e, "heartbeat lookup failed");
+            Vec::new()
+        }
+    };
+    let mut blobs = blobs.into_iter();
+    Ok(rows
+        .into_iter()
+        .map(|r| r.finish(blobs.next().flatten()))
+        .collect())
+}
+
+/// A JSON body with a strong ETag (SHA-256 of the bytes, 128 bits): a
+/// matching `If-None-Match` gets 304 without a body. `private, no-cache`:
+/// the browser keeps the copy and revalidates every time (the console's
+/// 5 s polling then costs a 304 while nothing changed).
+pub fn json_with_etag(req: &HeaderMap, body: Vec<u8>) -> Response {
+    use axum::http::{header, HeaderValue, StatusCode};
+    use sha2::Digest;
+    let tag = format!("\"{}\"", hex::encode(&sha2::Sha256::digest(&body)[..16]));
+    let matched = req
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(str::trim)
+        .any(|t| t == "*" || t.strip_prefix("W/").unwrap_or(t) == tag);
+    let mut res = if matched {
+        StatusCode::NOT_MODIFIED.into_response()
+    } else {
+        (
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            )],
+            body,
+        )
+            .into_response()
+    };
+    let h = res.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&tag) {
+        h.insert(header::ETAG, v);
+    }
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-cache"),
+    );
+    h.insert(header::VARY, HeaderValue::from_static("Cookie"));
+    res
 }
 
 /// W10: what keeps the automatic certificate from working.
@@ -1323,18 +1525,54 @@ pub const NODE_VIEW_FROM: &str = "FROM nodes \
         FROM rollout_nodes rn JOIN rollouts r ON r.id = rn.rollout_id \
         ORDER BY rn.node_id, r.created_at DESC) ro ON ro.node_id = nodes.id";
 
+#[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct NodeListQuery {
+    /// `summary` (W17: the list's columns only) or `full` (default).
+    #[serde(default)]
+    pub view: Option<String>,
+}
+
+/// GET /nodes[?view=summary|full] (admin), with an ETag (304 on a match).
 pub async fn list_nodes(
     State(state): State<AppState>,
     user: AuthUser,
-) -> Result<Json<Vec<NodeView>>, ApiError> {
+    Query(q): Query<NodeListQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
     user.require_admin()?;
-    let rows = sqlx::query_as::<_, NodeView>(sqlx::AssertSqlSafe(format!(
-        "SELECT {NODE_VIEW_COLS} {NODE_VIEW_FROM} ORDER BY sort, nodes.created_at, nodes.id"
+    let body = match q.view.as_deref() {
+        None | Some("full") => {
+            let rows = sqlx::query_as::<_, NodeView>(sqlx::AssertSqlSafe(format!(
+                "SELECT {NODE_VIEW_COLS} {NODE_VIEW_FROM} ORDER BY sort, nodes.created_at, nodes.id"
+            )))
+            .fetch_all(state.pg())
+            .await?;
+            let views = rows.into_iter().map(NodeView::with_warnings).collect();
+            serde_json::to_vec(&with_heartbeats(&state, views).await)?
+        }
+        Some("summary") => serde_json::to_vec(&node_summaries(&state).await?)?,
+        Some(_) => return Err(ApiError::bad_request("view must be summary or full")),
+    };
+    Ok(json_with_etag(&headers, body))
+}
+
+/// GET /nodes/{id} (admin): one node, full view (the node page).
+pub async fn get_node(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((_, id)): Path<(String, Uuid)>,
+) -> Result<Json<NodeView>, ApiError> {
+    user.require_admin()?;
+    let row = sqlx::query_as::<_, NodeView>(sqlx::AssertSqlSafe(format!(
+        "SELECT {NODE_VIEW_COLS} {NODE_VIEW_FROM} WHERE nodes.id = $1"
     )))
-    .fetch_all(state.pg())
-    .await?;
-    let views = rows.into_iter().map(NodeView::with_warnings).collect();
-    Ok(Json(with_heartbeats(&state, views).await))
+    .bind(id)
+    .fetch_optional(state.pg())
+    .await?
+    .ok_or_else(ApiError::not_found)?;
+    let mut views = with_heartbeats(&state, vec![row.with_warnings()]).await;
+    views.pop().map(Json).ok_or_else(ApiError::not_found)
 }
 
 #[derive(Deserialize)]
@@ -3178,6 +3416,26 @@ mod tests {
                 false,
             ),
             (
+                "node alert rules (W17, nothing the agent runs)",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        crate::alerts::apply_set_node_rules(
+                            c,
+                            &crate::audit::Actor::test(),
+                            n1,
+                            &crate::alerts::NodeRules {
+                                muted: true,
+                                cpu_percent: Some(95),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                    })
+                }),
+                vec![n1],
+                false,
+            ),
+            (
                 "plan speed limit (W7: travels in every user op)",
                 Box::new(move |c| {
                     Box::pin(async move {
@@ -4939,6 +5197,172 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(marker["password"], "changed");
+        drop(state);
+        db.drop().await;
+    }
+
+    /// W17: `GET /nodes?view=summary` carries only the list's columns (no
+    /// inbounds JSON, a slim heartbeat, the best agent latency), answers
+    /// `If-None-Match` with 304, and the full view and `GET /nodes/{id}`
+    /// still carry everything.
+    #[tokio::test]
+    async fn node_summary_view_and_etag() {
+        use crate::testdb::http::{rand_ip, Client};
+        use axum::http::header;
+        use fred::prelude::KeysInterface;
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let state = AppState::for_test(db.pool.clone()).await;
+        let admin = db.admin().await;
+        let sv: i64 = sqlx::query_scalar("SELECT session_ver FROM users WHERE id = $1")
+            .bind(admin)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        let mut c = Client::new(&state, rand_ip());
+        c.cookie = Some(auth::issue_token(&state, admin, "admin", sv, auth::Stage::Full).unwrap());
+        let n1 = db.node().await;
+        let n2 = db.node().await;
+        sqlx::query(
+            "INSERT INTO node_latency (node_id, source, target, delay_ms, error, ord, measured_at) \
+             VALUES ($1, 'agent', 'https://a/204', NULL, 'timeout', 0, now()), \
+                    ($1, 'agent', 'https://b/204', 87, NULL, 1, now()), \
+                    ($1, 'panel', 'in-vless', 12, NULL, 0, now())",
+        )
+        .bind(n1)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let blob = json!({
+            "cpu_percent": 12.5, "mem_used_bytes": 100, "mem_total_bytes": 400,
+            "connections": 7, "uptime_seconds": 3600, "lease_remaining_seconds": 86000,
+            "ts": "2026-10-02T12:00:00Z",
+            "metrics": {"load1": 0.5, "net_rx_bytes_per_sec": 10, "net_tx_bytes_per_sec": 20,
+                        "online_users": 3, "disk_used_bytes": 1, "xray_version": "26.1"},
+            "cert": {"state": "valid"},
+        });
+        let key = format!("akari:node:hb:{n1}");
+        let _: () = state
+            .valkey()
+            .set(
+                &key,
+                blob.to_string(),
+                Some(fred::types::Expiration::EX(60)),
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+
+        let r = c.get("/test/api/v1/nodes?view=summary").await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(r.headers[header::CACHE_CONTROL], "private, no-cache");
+        let etag = r.headers[header::ETAG].to_str().unwrap().to_string();
+        assert!(etag.starts_with('"') && etag.len() == 34, "{etag}");
+        let v = r.json();
+        let row = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["id"] == n1.to_string())
+            .unwrap();
+        for absent in [
+            "xray_inbounds",
+            "connect_overrides",
+            "lease_remaining_seconds",
+            "group_ids",
+        ] {
+            assert!(row.get(absent).is_none(), "{absent}");
+        }
+        assert_eq!(row["latency"]["delay_ms"], 87);
+        assert_eq!(row["alerts_firing"], 0);
+        assert_eq!(row["needs_certificate"], false);
+        assert_eq!(row["traffic_rate"], 1.0);
+        assert_eq!(
+            row["heartbeat"],
+            json!({"cpu_percent": 12.5, "mem_used_bytes": 100, "mem_total_bytes": 400,
+                   "connections": 7, "uptime_seconds": 3600, "ts": "2026-10-02T12:00:00Z",
+                   "metrics": {"net_rx_bytes_per_sec": 10, "net_tx_bytes_per_sec": 20,
+                               "online_users": 3}})
+        );
+        let other = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["id"] == n2.to_string())
+            .unwrap();
+        assert_eq!(other["heartbeat"], serde_json::Value::Null);
+        assert_eq!(other["latency"], serde_json::Value::Null);
+
+        // Revalidation: 304 with the same tag, no body; weak form too.
+        for inm in [
+            etag.clone(),
+            format!("W/{etag}"),
+            format!("\"x\", {etag}"),
+            "*".into(),
+        ] {
+            c.headers = vec![("if-none-match".into(), inm.clone())];
+            let r = c.get("/test/api/v1/nodes?view=summary").await;
+            assert_eq!(r.status, StatusCode::NOT_MODIFIED, "{inm}");
+            assert!(r.body.is_empty());
+            assert_eq!(r.headers[header::ETAG], etag.as_str());
+        }
+        c.headers = vec![("if-none-match".into(), "\"stale\"".into())];
+        assert_eq!(
+            c.get("/test/api/v1/nodes?view=summary").await.status,
+            StatusCode::OK
+        );
+        // A change -> a new tag.
+        c.headers.clear();
+        let r = c
+            .req(
+                axum::http::Method::PATCH,
+                &format!("/test/api/v1/nodes/{n2}"),
+                Some(json!({"display_name": "新名字"})),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK);
+        let r = c.get("/test/api/v1/nodes?view=summary").await;
+        assert_ne!(r.headers[header::ETAG].to_str().unwrap(), etag);
+
+        // The full list (default) and one node keep every field.
+        let full = c.get("/test/api/v1/nodes").await;
+        assert!(full.headers.contains_key(header::ETAG));
+        assert!(full.json()[0].get("xray_inbounds").is_some());
+        assert!(full.body.len() > r.body.len());
+        let one = c.get(&format!("/test/api/v1/nodes/{n1}")).await;
+        assert_eq!(one.status, StatusCode::OK);
+        let one = one.json();
+        assert_eq!(one["heartbeat"]["metrics"]["xray_version"], "26.1");
+        assert_eq!(one["latency"].as_array().unwrap().len(), 3);
+        assert!(one.get("xray_inbounds").is_some());
+        assert_eq!(
+            c.get(&format!("/test/api/v1/nodes/{}", Uuid::new_v4()))
+                .await
+                .status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            c.get("/test/api/v1/nodes?view=x").await.status,
+            StatusCode::BAD_REQUEST
+        );
+        // Customers: not theirs.
+        let u = db.user().await;
+        let mut cu = Client::new(&state, rand_ip());
+        cu.cookie = Some({
+            let sv: i64 = sqlx::query_scalar("SELECT session_ver FROM users WHERE id = $1")
+                .bind(u)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+            auth::issue_token(&state, u, "user", sv, auth::Stage::Full).unwrap()
+        });
+        assert_eq!(
+            cu.get("/test/api/v1/nodes?view=summary").await.status,
+            StatusCode::FORBIDDEN
+        );
+        let _: i64 = state.valkey().del(&key).await.unwrap();
         drop(state);
         db.drop().await;
     }

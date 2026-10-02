@@ -8,8 +8,8 @@ use serde_json::json;
 use subtle::ConstantTimeEq;
 
 use crate::{
-    account, api, audit, nodeinstall, nodestat, nodetpl, plans, reject, rollout, settings, spa,
-    state::AppState, sub, updates,
+    account, alerts, api, audit, nodeinstall, nodestat, nodetpl, plans, reject, rollout, settings,
+    spa, state::AppState, sub, tickets, updates,
 };
 
 pub fn router(state: AppState) -> Router {
@@ -125,7 +125,14 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/{prefix}/api/v1/nodes/{id}",
-            axum::routing::patch(api::update_node).delete(api::delete_node),
+            get(api::get_node)
+                .patch(api::update_node)
+                .delete(api::delete_node),
+        )
+        // W17: per-node alert overrides.
+        .route(
+            "/{prefix}/api/v1/nodes/{id}/alert-rules",
+            get(alerts::get_node_rules).put(alerts::put_node_rules),
         )
         .route(
             "/{prefix}/api/v1/nodes/{id}/inbounds",
@@ -149,6 +156,56 @@ pub fn router(state: AppState) -> Router {
             post(nodestat::request_probe),
         )
         .route("/{prefix}/api/v1/me/nodes", get(nodestat::my_nodes))
+        // W17: support tickets (customers: own tickets only; staff: all).
+        .route(
+            "/{prefix}/api/v1/me/tickets",
+            get(tickets::my_tickets).post(tickets::create_my_ticket),
+        )
+        .route("/{prefix}/api/v1/me/tickets/{id}", get(tickets::my_ticket))
+        .route(
+            "/{prefix}/api/v1/me/tickets/{id}/replies",
+            post(tickets::reply_my_ticket),
+        )
+        .route(
+            "/{prefix}/api/v1/me/tickets/{id}/close",
+            post(tickets::close_my_ticket),
+        )
+        .route("/{prefix}/api/v1/tickets", get(tickets::list_tickets))
+        .route("/{prefix}/api/v1/tickets/{id}", get(tickets::get_ticket))
+        .route(
+            "/{prefix}/api/v1/tickets/{id}/replies",
+            post(tickets::reply_ticket),
+        )
+        .route(
+            "/{prefix}/api/v1/tickets/{id}/close",
+            post(tickets::close_ticket),
+        )
+        .route(
+            "/{prefix}/api/v1/tickets/{id}/reopen",
+            post(tickets::reopen_ticket),
+        )
+        .route(
+            "/{prefix}/api/v1/tickets/{id}/assignee",
+            put(tickets::assign_ticket),
+        )
+        .route("/{prefix}/api/v1/admins", get(tickets::list_admins))
+        .route("/{prefix}/api/v1/admin-badges", get(tickets::badges))
+        // W17: node alerts (alert center, settings, channels).
+        .route("/{prefix}/api/v1/alerts", get(alerts::list_alerts))
+        .route(
+            "/{prefix}/api/v1/alerts/settings",
+            get(alerts::get_settings).put(alerts::put_settings),
+        )
+        .route("/{prefix}/api/v1/alerts/test", post(alerts::test_channel))
+        .route(
+            "/{prefix}/api/v1/alerts/notifications",
+            get(alerts::list_notifications),
+        )
+        .route(
+            "/{prefix}/api/v1/alerts/notifications/{id}/retry",
+            post(alerts::retry_notification),
+        )
+        .route("/{prefix}/api/v1/alerts/{id}/ack", post(alerts::ack_alert))
         .route("/{prefix}/api/v1/inbound-templates", get(nodetpl::catalog))
         .route(
             "/{prefix}/api/v1/inbound-templates/render",
