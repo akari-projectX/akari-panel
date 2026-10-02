@@ -72,6 +72,18 @@
 	import akari
 }
 
+# Plain HTTP for AKARI_DOMAIN: the redirect to https is ours, not Caddy's
+# automatic one (that one answers with "Server: Caddy", identifying the
+# proxy). ACME HTTP-01 challenges are answered before any site route
+# (Caddy 2.11), so certificates keep being issued and renewed.
+http://{$AKARI_DOMAIN} {
+	header {
+		-Server
+		-Via
+	}
+	redir https://{host}{uri} 308
+}
+
 # Any other name: certificate on demand, only for domains the panel
 # confirms through the ask endpoint (unknown names fail the TLS handshake).
 # A request without SNI (https://<ip>) gets AKARI_DOMAIN's certificate
@@ -84,7 +96,7 @@ https:// {
 	import akari
 }
 
-# Plain HTTP: AKARI_DOMAIN is redirected to https by Caddy itself; every
+# Plain HTTP: AKARI_DOMAIN is redirected to https (block above); every
 # other host (the bare IP, unknown names, the 系统设置 domains, whose links
 # are always https) gets the same empty 404 instead of a redirect or
 # Caddy's default empty 200. ACME HTTP challenges are still answered.
