@@ -77,6 +77,25 @@ pub enum Template {
         portal_url: Option<String>,
     },
     Test,
+    /// W17: staff answered the customer's ticket. `subject` is the
+    /// customer's own text: body only, never the mail subject.
+    TicketReply {
+        subject: String,
+        portal_url: Option<String>,
+    },
+    /// W17: a customer opened a ticket (to admins; Chinese console).
+    TicketNew {
+        subject: String,
+        user_login: String,
+        category: String,
+        console_url: Option<String>,
+    },
+    /// W17: a node alert (to the alert recipients; text rendered by
+    /// `alerts::channels::Message`, Chinese like the console).
+    NodeAlert {
+        title: String,
+        text: String,
+    },
 }
 
 impl Template {
@@ -92,6 +111,9 @@ impl Template {
             Template::Quota { percent, .. } if *percent >= 100 => "quota_100",
             Template::Quota { .. } => "quota_80",
             Template::Test => "test",
+            Template::TicketReply { .. } => "ticket_reply",
+            Template::TicketNew { .. } => "ticket_new",
+            Template::NodeAlert { .. } => "node_alert",
         }
     }
 }
@@ -521,6 +543,68 @@ pub fn render(t: &Template, locale: Locale, site: &str) -> Rendered {
                 "This is a test message: the panel's SMTP settings work.".into()
             })],
         ),
+        Template::TicketReply {
+            subject,
+            portal_url,
+        } => {
+            let mut parts = vec![
+                P(if zh {
+                    "客服回复了你的工单：".into()
+                } else {
+                    "Support replied to your ticket:".into()
+                }),
+                P(subject.clone()),
+                P(if zh {
+                    "请登录用户门户查看回复并继续沟通。".into()
+                } else {
+                    "Sign in to the portal to read the reply and answer.".into()
+                }),
+            ];
+            if let Some(u) = portal_url {
+                parts.push(Link(
+                    if zh { "查看工单" } else { "View ticket" }.into(),
+                    u.clone(),
+                ));
+            }
+            (
+                if zh {
+                    format!("{site}：工单有新回复")
+                } else {
+                    format!("{site}: new reply to your ticket")
+                },
+                parts,
+            )
+        }
+        Template::TicketNew {
+            subject,
+            user_login,
+            category,
+            console_url,
+        } => {
+            let mut parts = vec![
+                P(format!("用户 {user_login} 提交了新工单（{category}）：")),
+                P(subject.clone()),
+            ];
+            if let Some(u) = console_url {
+                parts.push(Link("前往工单管理".into(), u.clone()));
+            }
+            (format!("{site}：新工单"), parts)
+        }
+        // Node names are admin-controlled (not customer text); control
+        // characters are dropped all the same.
+        Template::NodeAlert { title, text } => (
+            format!(
+                "{site}：{}",
+                title
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .collect::<String>()
+            ),
+            text.lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| P(l.to_string()))
+                .collect(),
+        ),
     };
     assemble(site, locale, subject, parts)
 }
@@ -588,6 +672,10 @@ mod tests {
                 portal_url: None,
             },
             Template::Test,
+            Template::TicketReply {
+                subject: "<b>no connection</b>".into(),
+                portal_url: Some("https://p.example/x/app".into()),
+            },
         ]
     }
 
@@ -663,7 +751,8 @@ mod tests {
                 "expired",
                 "quota_80",
                 "quota_100",
-                "test"
+                "test",
+                "ticket_reply"
             ]
         );
         assert_eq!(Locale::parse("en"), Locale::En);
@@ -679,6 +768,49 @@ mod tests {
         assert_eq!(
             esc("<a href='x'>&\"</a>"),
             "&lt;a href=&#39;x&#39;&gt;&amp;&quot;&lt;/a&gt;"
+        );
+    }
+
+    /// W17: the customer's ticket subject is in the body only (escaped);
+    /// the console-facing mails are Chinese and keep subjects one line.
+    #[test]
+    fn w17_templates() {
+        let r = render(&all("1")[11], Locale::En, "Akari");
+        assert_eq!(r.subject, "Akari: new reply to your ticket");
+        assert!(
+            r.html.contains("&lt;b&gt;no connection&lt;/b&gt;")
+                && r.text.contains("<b>no connection</b>")
+        );
+        assert!(r.text.contains("https://p.example/x/app"));
+        let r = render(
+            &Template::TicketNew {
+                subject: "<i>x</i>".into(),
+                user_login: "alice".into(),
+                category: "technical".into(),
+                console_url: None,
+            },
+            Locale::Zh,
+            "Akari",
+        );
+        assert_eq!(r.subject, "Akari：新工单");
+        assert!(r.html.contains("&lt;i&gt;x&lt;/i&gt;") && r.text.contains("alice"));
+        let r = render(
+            &Template::NodeAlert {
+                title: "[告警] hk-1\r\nBcc: x：节点离线".into(),
+                text: "[告警] hk-1：节点离线\n节点：hk-1\n\n情况：离线 6 分钟".into(),
+            },
+            Locale::Zh,
+            "Akari",
+        );
+        assert!(!r.subject.contains('\n') && !r.subject.contains('\r'));
+        assert!(r.text.contains("情况：离线 6 分钟"));
+        assert_eq!(
+            Template::NodeAlert {
+                title: String::new(),
+                text: String::new()
+            }
+            .outbox_kind(),
+            "node_alert"
         );
     }
 }

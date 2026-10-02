@@ -1019,3 +1019,69 @@ async fn settings_and_alert_center_api() {
     drop(state);
     db.drop().await;
 }
+
+/// The email channel queues one outbox row per recipient (W15 outbox,
+/// Chinese), and is a permanent failure while SMTP is off.
+#[tokio::test]
+async fn email_channel_uses_the_outbox() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    // Off: the setting cannot be enabled.
+    let mut req = put(version(&state).await);
+    req.email_enabled = true;
+    req.email_to = vec!["ops@example.com".into(), "oncall@example.com".into()];
+    assert_eq!(
+        save(&state, PutSettings { ..req })
+            .await
+            .unwrap_err()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    sqlx::query(
+        "UPDATE smtp_settings SET enabled = true, host = 'smtp.example.com', \
+         from_addr = 'noreply@example.com'",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let mut req = put(version(&state).await);
+    req.email_enabled = true;
+    req.email_to = vec!["ops@example.com".into(), "oncall@example.com".into()];
+    save(&state, req).await.unwrap();
+    offline_node(&db, 600).await;
+    eval::round(&state).await.unwrap().unwrap();
+    assert_eq!(channels::deliver_due(&state).await.unwrap(), 1);
+    let mails: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT kind, to_addr, subject FROM mail_outbox ORDER BY id")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(mails.len(), 2);
+    assert!(mails
+        .iter()
+        .all(|m| m.0 == "node_alert" && m.2.contains("节点离线")));
+    assert_eq!(mails[1].1, "oncall@example.com");
+    // SMTP switched off meanwhile: the notification dies, nothing queued.
+    sqlx::query("UPDATE smtp_settings SET enabled = false")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE nodes SET status = 'online', last_seen_at = now()")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    eval::round(&state).await.unwrap().unwrap();
+    channels::deliver_due(&state).await.unwrap();
+    let (status, err): (String, Option<String>) = sqlx::query_as(
+        "SELECT status, last_error FROM alert_notifications WHERE event = 'resolved'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(status, "dead");
+    assert!(err.unwrap().contains("email is not configured"));
+    drop(state);
+    db.drop().await;
+}
