@@ -46,7 +46,7 @@ const offer = (over: Partial<Offer> = {}): Offer => ({
 
 const shop = (over: Partial<Shop> = {}, o: Partial<Offer> = {}): Shop => ({
   enabled: true,
-  methods: [{ id: 'm1', kind: 'alipay_f2f', display_name: '支付宝', icon: null }],
+  methods: [{ id: "m1", kind: "alipay_f2f", display_name: "支付宝", icon: null }],
   current: null,
   credit_cents: 0,
   balance_cents: 0,

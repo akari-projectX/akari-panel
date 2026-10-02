@@ -106,8 +106,7 @@ export const register = (body: {
   locale?: string;
 }) => authPost<LoginResult & { trial: boolean; email_verified?: boolean }>("/register", body);
 /** W24: a proof-of-work challenge (registration without email verification). */
-export const registerChallenge = () =>
-  request<{ challenge: string; bits: number }>(`${authBase}/register/challenge`);
+export const registerChallenge = () => request<{ challenge: string; bits: number }>(`${authBase}/register/challenge`);
 export const requestReset = (body: { email: string }) => authPost<{ ok: true }>("/password-reset/request", body);
 export const resetPassword = (body: { token: string; password: string }) =>
   authPost<{ ok: true }>("/password-reset", body);

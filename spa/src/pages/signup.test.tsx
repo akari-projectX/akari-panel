@@ -329,6 +329,7 @@ describe("admin 注册 / 邮件", () => {
       trial_plan_id: "p1",
       trial_days: 3,
       reset_enabled: false,
+      email_verify: null,
     });
 
     expect((screen.getByLabelText("密码") as HTMLInputElement).placeholder).toBe("已保存，留空不修改");

@@ -122,26 +122,16 @@ W11_PROBE_PID=$!
 TEST_RELEASE_PUB=$(cut -d' ' -f1 "$AGENT_DIR/testdata/TEST-ONLY-release.pub")
 printf '\n[updates]\nrelease_keys = ["%s TEST-ONLY"]\n' "$TEST_RELEASE_PUB" >>"$LOG/panel.toml"
 # R18-3: Alipay Face-to-Face against a local mock gateway, with throwaway
-# RSA keys made here (never real credentials). The notify URL must carry
-# the route prefix, so the data dir (prefix) is created first.
+# RSA keys made here (never real credentials).
 PAY="$LOG/pay"; mkdir -p "$PAY"
 for k in app alipay; do
   openssl genrsa -out "$PAY/$k-key.pem" 2048 2>/dev/null
   openssl rsa -in "$PAY/$k-key.pem" -pubout -out "$PAY/$k-pub.pem" 2>/dev/null
 done
 chmod 600 "$PAY"/*.pem
-PAY_PREFIX=$("$PANEL" info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')
-cat >>"$LOG/panel.toml" <<TOML
-
-[payments.alipay]
-enabled = true
-app_id = "2021000000000001"
-seller_id = "2088000000000001"
-app_private_key_file = "$PAY/app-key.pem"
-alipay_public_key_file = "$PAY/alipay-pub.pem"
-gateway_url = "http://127.0.0.1:18089/gateway.do"
-notify_url = "http://127.0.0.1:8080/$PAY_PREFIX/pay/alipay/notify"
-TOML
+# W24/R40: payments are configured ONLY in the database (系统设置 → 支付);
+# the R18-3 section below adds the mock gateway as an Alipay payment method
+# through the admin API (custom gateway, these throwaway keys).
 # The mock gateway: verifies the panel's request signature (app public
 # key), answers signed with the "Alipay" key; POST /control/pay?otn=X
 # marks a trade paid (TRADE_SUCCESS) for the query path.
@@ -224,7 +214,7 @@ done
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE nodes CASCADE; TRUNCATE users CASCADE;" >/dev/null 2>&1 || true
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE revoked_certs, traffic_counters, audit_log, agent_releases, rollouts CASCADE;" >/dev/null 2>&1 || true
 # Catalogue rows a run aborted midway leaves behind (names are unique).
-docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE plans, node_groups, coupons CASCADE;" >/dev/null 2>&1 || true
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE plans, node_groups, coupons, payment_methods CASCADE;" >/dev/null 2>&1 || true
 # R22 settings left behind by an aborted run (e.g. a node domain the agents
 # here cannot reach): back to "use panel.toml" (the trigger reloads them).
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "UPDATE panel_settings SET version = 0, main_domain = NULL, sub_domain = NULL, node_domain = NULL, trust_cloudflare = NULL, probe_interval_secs = NULL, probe_urls = NULL, probe_panel_tcp = NULL; TRUNCATE grpc_server_names;" >/dev/null 2>&1 || true
@@ -1337,10 +1327,84 @@ grep -qe "$RESET_TOKEN" -e "\"$REG_CODE\"" "$LOG/panel.log" && { echo "FAIL: a c
 [ "$(code -b "$JAR" "$BASE/api/v1/users?limit=200")" = "200" ] \
   && python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); u=[x for x in (d['users'] if isinstance(d, dict) else d) if x['login']=='$REG'][0]; assert u['email']=='$REG' and u['email_verified'], u" \
   || { echo "FAIL: user list email"; exit 1; }
-# Back to no main domain (later sections use the browser origin).
-"$PANEL" settings unset main >/dev/null || { echo "FAIL: settings unset main"; exit 1; }
+
+echo "== W24: registration without email verification (no SMTP): proof of work, generic refusal, unverified login, admin verify =="
+# No SMTP (sending off): the automatic setting registers without a code.
+psql_q "UPDATE smtp_settings SET enabled = false" >/dev/null
+[ "$(code "$BASE/auth/options")" = "200" ] && last_json "d['register'] and not d['email_verify']" | matches True \
+  || { echo "FAIL: options say verification while SMTP is off"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(fp -X POST "$BASE/auth/register/code" -H "$J" -d '{"email":"x@akari.test"}')" = "$REJ" ] \
+  || { echo "FAIL: code endpoint not the canonical rejection without verification"; exit 1; }
+w24_register() { # email password -> HTTP code (body in /tmp/akari-smoke/last)
+  [ "$(code "$BASE/auth/register/challenge")" = "200" ] || { echo "FAIL: challenge"; cat /tmp/akari-smoke/last; exit 1; }
+  python3 - "$1" "$2" >/tmp/akari-smoke/w24-body <<'PY'
+import hashlib, json, sys
+d = json.load(open("/tmp/akari-smoke/last")); c = d["challenge"]; bits = d["bits"]; i = 0
+while True:
+    h = int.from_bytes(hashlib.sha256(f"{c}:{i}".encode()).digest(), "big")
+    if h >> (256 - bits) == 0: break
+    i += 1
+print(json.dumps({"email": sys.argv[1], "password": sys.argv[2], "pow": {"challenge": c, "nonce": str(i)}}), end="")
+PY
+  code -c "$LOG/w24-cookies" -X POST "$BASE/auth/register" -H "$J" --data-binary @/tmp/akari-smoke/w24-body
+}
+W24="smoke-nov-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')@akari.test"
+[ "$(w24_register "$W24" w24-password-1)" = "200" ] && last_json "d['email_verified']" | matches False \
+  || { echo "FAIL: register without verification"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$LOG/w24-cookies" "$BASE/api/v1/me")" = "200" ] && last_json "d['email']=='$W24' and not d['email_verified']" | matches True \
+  || { echo "FAIL: unverified account"; cat /tmp/akari-smoke/last; exit 1; }
+# The same address again, or another account's verified address: one generic answer.
+for a in "$W24" "$REG"; do
+  [ "$(w24_register "$a" other-password-1)" = "400" ] && last_json "d['code']" | matches '^signup.unavailable$' \
+    || { echo "FAIL: duplicate not the generic refusal ($a)"; cat /tmp/akari-smoke/last; exit 1; }
+done
+# A replayed or missing proof of work is refused.
+[ "$(code -X POST "$BASE/auth/register" -H "$J" --data-binary @/tmp/akari-smoke/w24-body)" = "400" ] \
+  && last_json "d['code']" | matches '^signup.challenge_invalid$' || { echo "FAIL: proof of work replayed"; exit 1; }
+[ "$(code -X POST "$BASE/auth/register" -H "$J" -d "{\"email\":\"n$W24\",\"password\":\"w24-password-1\"}")" = "400" ] \
+  || { echo "FAIL: registration without proof of work"; exit 1; }
+# Login with the address (any case) works; the admin can vouch for it.
+[ "$(code -X POST "$BASE/auth/login" -H "$J" -d "{\"login\":\"$(echo "$W24" | tr a-z A-Z)\",\"password\":\"w24-password-1\"}")" = "200" ] \
+  || { echo "FAIL: login of the unverified account by its address"; exit 1; }
+W24_ID=$(psql_q "SELECT id FROM users WHERE login = '$W24'")
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$W24_ID/email/verify" -H "$J" -d '{}')" = "200" ] \
+  && [ "$(psql_q "SELECT email_verified_at IS NOT NULL FROM users WHERE id = '$W24_ID'")" = "t" ] \
+  || { echo "FAIL: admin marks the address verified"; cat /tmp/akari-smoke/last; exit 1; }
+psql_q "UPDATE smtp_settings SET enabled = true" >/dev/null
+[ "$(code "$BASE/auth/options")" = "200" ] && last_json "d['email_verify']" | matches True \
+  || { echo "FAIL: verification back with SMTP"; exit 1; }
+echo "W24 registration without verification: ok"
 
 echo "== R18-3 Alipay F2F: price -> order (precreate) -> signed notify -> plan + node access; replay no-op; bad notify = rejection =="
+# W24/R40: the mock gateway as an Alipay payment method, configured through
+# the admin API (database only). Notify URLs derive from the main domain
+# (still 127.0.0.1:8080 from the W15 section).
+pay_body() { # enabled public-key-file -> JSON
+  python3 - "$1" "$2" <<PY
+import json, sys
+print(json.dumps({"kind": "alipay_f2f", "display_name": "支付宝", "enabled": sys.argv[1] == "true",
+  "config": {"environment": "custom", "gateway_url": "http://127.0.0.1:18089/gateway.do",
+             "app_id": "2021000000000001", "seller_id": "2088000000000001",
+             "app_private_key": open("$PAY/app-key.pem").read(), "alipay_public_key": open(sys.argv[2]).read(),
+             "order_timeout_minutes": 15}}), end="")
+PY
+}
+pay_body true "$PAY/app-pub.pem" >"$LOG/pay-bad.json"
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/payments" -H "$J" --data-binary @"$LOG/pay-bad.json")" = "400" ] \
+  && last_json "d['code']" | matches '^payments.public_key_is_app_key$' || { echo "FAIL: app key as Alipay key accepted"; exit 1; }
+pay_body true "$PAY/alipay-pub.pem" >"$LOG/pay.json"
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/payments" -H "$J" --data-binary @"$LOG/pay.json")" = "201" ] \
+  || { echo "FAIL: add payment method"; cat /tmp/akari-smoke/last; exit 1; }
+METHOD=$(last_json "d['id']")
+grep -q 'PRIVATE' /tmp/akari-smoke/last && { echo "FAIL: private key in the method view"; exit 1; }
+last_json "d['active'] and d['config']['app_private_key_set'] and d['notify_url'].endswith('/pay/$METHOD/notify')" | matches True \
+  || { echo "FAIL: method view"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/payments/$METHOD/test" -H "$J" -d '{}')" = "200" ] \
+  && last_json "d['ok'] and d['result']=='keys_ok'" | matches True || { echo "FAIL: 测试连接"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'payment_method.create' AND after::text LIKE '%changed%' AND after::text NOT LIKE '%PRIVATE%'")" = "1" ] \
+  || { echo "FAIL: payment method audit"; exit 1; }
+[ "$(psql_q "SELECT position('PRIVATE' in convert_from(secrets_enc, 'SQL_ASCII')) FROM payment_methods WHERE id = '$METHOD'")" = "0" ] \
+  || { echo "FAIL: payment secrets not sealed"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/node-groups" -H 'Content-Type: application/json' \
     -d "{\"name\":\"paid-group\",\"node_ids\":[\"$NODE_ID\"]}")" = "201" ] || { echo "FAIL: create paid group"; exit 1; }
 PAID_GROUP=$(last_json "d['id']")
@@ -1400,7 +1464,7 @@ BUYER_CODE=$(mp_mail "$BUYER_MAIL" 1 | grep -oE '\b[0-9]{6}\b' | sed -n 1p)
 ORDER=$(last_json "d['id']"); OTN=$(last_json "d['out_trade_no']")
 last_json "d['qr_code']" | matches '^https://qr.alipay.com/smoke' || { echo "FAIL: no QR from precreate"; exit 1; }
 [ "$(last_json "d['status']")" = "pending" ] || { echo "FAIL: new order not pending"; exit 1; }
-NOTIFY="$BASE/pay/alipay/notify"
+NOTIFY="$BASE/pay/$METHOD/notify"
 # Tampered amount (signature no longer matches) / wrong amount (validly
 # signed): both the canonical rejection; nothing fulfilled.
 [ "$(fp -X POST "$NOTIFY" --data-binary "$(python3 "$PAY/notify.py" "$PAY" "$OTN" 0.01 TRADE_SUCCESS 0.02)")" = "$REJ" ] \
@@ -1518,6 +1582,7 @@ CORDER=$(last_json "d['id']"); COTN=$(last_json "d['out_trade_no']")
 # The last use is reserved: nobody else gets it.
 [ "$(api_json "$IJAR" POST "$BASE/api/v1/me/orders" "{\"plan_id\":\"$W16_PLAN\",\"period\":\"month\",\"coupon\":\"SMOKE20\"}")" = "409" ] \
   && last_json "d['error']" | matches 'coupon has been used up' || { echo "FAIL: coupon's last use given twice"; cat /tmp/akari-smoke/last; exit 1; }
+# (The pre-R40 notify path still settles an order through its own method.)
 [ "$(curl -s --noproxy '*' -X POST "$BASE/pay/alipay/notify" --data-binary "$(python3 "$PAY/notify.py" "$PAY" "$COTN" 8.00 TRADE_SUCCESS)")" = "success" ] \
   || { echo "FAIL: coupon order notify"; exit 1; }
 [ "$(psql_q "SELECT status, fulfilled_at IS NOT NULL FROM orders WHERE id='$CORDER'")" = "paid|t" ] || { echo "FAIL: coupon order not fulfilled"; exit 1; }
@@ -1656,6 +1721,9 @@ fi
 for a in order.create order.paid plan.price.set user.plan.set user.plan.update; do
   [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='$a'")" -ge 1 ] || { echo "FAIL: audit lacks $a"; exit 1; }
 done
+
+# Back to no main domain (later sections use the browser origin).
+"$PANEL" settings unset main >/dev/null || { echo "FAIL: settings unset main"; exit 1; }
 
 echo "== W21: dashboard, user search + total, coded errors, plan + prices in one request, site name =="
 [ "$(code -b "$JAR" "$BASE/api/v1/dashboard")" = "200" ] \
@@ -2765,6 +2833,10 @@ echo "== M1-3/M1-4: config check, version, metrics listener, request id =="
 "$PANEL" -c "$LOG/panel.toml" config check >"$LOG/config-check.out" 2>&1 \
   || { echo "FAIL: config check on the smoke config"; cat "$LOG/config-check.out"; exit 1; }
 grep -q 'configuration OK' "$LOG/config-check.out" || { echo "FAIL: config check output"; exit 1; }
+# W24: the database payment methods are described, secrets redacted.
+grep -qE '^# payment method .* kind=alipay_f2f enabled=true .*secrets=<redacted, set>' "$LOG/config-check.out" \
+  || { echo "FAIL: config check lacks the payment methods"; cat "$LOG/config-check.out"; exit 1; }
+grep -q 'PRIVATE' "$LOG/config-check.out" && { echo "FAIL: a key in config check"; exit 1; }
 printf '[grpc]\nlease_seconds = 5\n' >"$LOG/bad.toml"
 "$PANEL" -c "$LOG/bad.toml" config check >"$LOG/bad.out" 2>&1 \
   && { echo "FAIL: invalid config accepted"; exit 1; }
@@ -2934,12 +3006,6 @@ OLD_BASE="$BASE"
 PREFIX=$("$PANEL" info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')
 BASE="http://127.0.0.1:8080/$PREFIX"
 [ "$BASE" != "$OLD_BASE" ] || { echo "FAIL: prefix unchanged"; exit 1; }
-# R18-3: notify_url still carries the old prefix: the panel refuses to start.
-"$PANEL" -c "$LOG/panel.toml" serve >"$LOG/panel-stale.log" 2>&1 \
-  && { echo "FAIL: started with a stale payments.alipay.notify_url"; exit 1; }
-grep -q 'notify_url does not carry' "$LOG/panel-stale.log" || { echo "FAIL: stale notify_url error"; cat "$LOG/panel-stale.log"; exit 1; }
-grep -qF "${OLD_BASE##*/}" "$LOG/panel-stale.log" && { echo "FAIL: the old prefix appears in the startup error"; exit 1; }
-sed -i "s|^notify_url = .*|notify_url = \"http://127.0.0.1:8080/$PREFIX/pay/alipay/notify\"|" "$LOG/panel.toml"
 "$PANEL" -c "$LOG/panel.toml" serve >"$LOG/panel2.log" 2>&1 &
 PANEL_PID=$!
 for _ in $(seq 1 20); do [ "$(code "$BASE/healthz")" = "200" ] && break; sleep 0.5; done

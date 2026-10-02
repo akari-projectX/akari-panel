@@ -558,14 +558,12 @@ pub async fn create_order(
             }
         }
     };
-    // Before any order row exists: without a notify URL the provider could
-    // never tell us about the payment (polling would, but an order we
-    // cannot be notified about is a configuration error, not a degraded
-    // mode).
-    let Some(notify_url) = super::methods::notify_url(&state, method_id) else {
-        tracing::warn!("order refused: no main domain is set (系统设置 or install.public_url)");
-        return Err(payments_off());
-    };
+    // Without a notify URL the provider could never tell us about a
+    // payment (polling would, but an order we cannot be notified about is a
+    // configuration error, not a degraded mode): an order that needs the
+    // provider is refused before its row exists (checked below, once the
+    // amount is known; fully covered orders never reach the provider).
+    let notify_url = super::methods::notify_url(&state, method_id);
     if !within_limit(
         &state,
         format!("akari:rl:order:{}", user.id),
@@ -683,6 +681,10 @@ pub async fn create_order(
     .await?
     .pop()
     .ok_or_else(|| anyhow::anyhow!("akari_split returned no row"))?;
+    if split.amount_cents > 0 && notify_url.is_none() {
+        tracing::warn!("order refused: no main domain is set (系统设置 or install.public_url)");
+        return Err(payments_off());
+    }
     let credit_order = credit_order.filter(|_| split.credit_cents > 0);
     // A coupon that discounts nothing here (1% of a few fen) is not used.
     let coupon = coupon.filter(|_| split.discount_cents > 0);
@@ -777,7 +779,7 @@ pub async fn create_order(
             out_trade_no: &out_trade_no,
             amount_cents: cents,
             subject: &subject,
-            notify_url: &notify_url,
+            notify_url: notify_url.as_deref().unwrap_or_default(),
         })
         .await
     {
