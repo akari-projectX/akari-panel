@@ -15,7 +15,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 

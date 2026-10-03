@@ -12,16 +12,16 @@
 //! row, the audit carries lengths only). The preview and the test mail
 //! render the kind's sample values (`Template::sample`).
 
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgConnection;
 
-use super::templates::{self, Locale, Placeholder, Rendered, Template, COMMON, KINDS};
+use super::templates::{self, COMMON, KINDS, Locale, Placeholder, Rendered, Template};
 use crate::api::ApiJson;
 use crate::audit::Actor;
-use crate::auth::{bad_request, conflict, ApiError, AuthUser};
+use crate::auth::{ApiError, AuthUser, bad_request, conflict};
 use crate::state::AppState;
 
 /// A stored override.

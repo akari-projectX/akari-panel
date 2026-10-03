@@ -7,7 +7,7 @@
 
 use std::time::Instant;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Executor, PgPool};
 use uuid::Uuid;

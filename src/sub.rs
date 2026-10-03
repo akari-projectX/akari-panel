@@ -1,13 +1,13 @@
 use std::collections::HashSet;
 
 use axum::extract::{Path, RawQuery, State};
-use axum::http::{header, HeaderMap, HeaderValue};
+use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
-use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use rand::RngCore;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -1075,8 +1075,8 @@ pub async fn ensure_token(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testdb::http::{rand_ip, Client};
     use crate::testdb::TestDb;
+    use crate::testdb::http::{Client, rand_ip};
     use axum::http::StatusCode;
     use fred::prelude::KeysInterface;
 
@@ -1331,10 +1331,16 @@ rules:
         let links = String::from_utf8(STANDARD.decode(body.trim_end()).unwrap()).unwrap();
         let l: Vec<&str> = links.lines().collect();
         assert_eq!(l.len(), 8);
-        assert_eq!(l[0], "vless://11111111-1111-1111-1111-111111111111@n.example.com:443?type=xhttp&security=reality\
-            &sni=www.apple.com&pbk=PUB&sid=ab&fp=chrome&path=%2Fxh&mode=stream-one#N%20%C2%B7%20rx");
-        assert_eq!(l[1], "vless://22222222-2222-2222-2222-222222222222@n.example.com:2083?type=httpupgrade&security=tls\
-            &sni=n.example.com&path=%2Fup&host=n.example.com#N%20%C2%B7%20hu");
+        assert_eq!(
+            l[0],
+            "vless://11111111-1111-1111-1111-111111111111@n.example.com:443?type=xhttp&security=reality\
+            &sni=www.apple.com&pbk=PUB&sid=ab&fp=chrome&path=%2Fxh&mode=stream-one#N%20%C2%B7%20rx"
+        );
+        assert_eq!(
+            l[1],
+            "vless://22222222-2222-2222-2222-222222222222@n.example.com:2083?type=httpupgrade&security=tls\
+            &sni=n.example.com&path=%2Fup&host=n.example.com#N%20%C2%B7%20hu"
+        );
         assert_eq!(
             l[2],
             "trojan://tp@n.example.com:2087?type=grpc&security=tls&sni=n.example.com\
@@ -1358,13 +1364,19 @@ rules:
             (x["net"].as_str(), x["path"].as_str(), x["type"].as_str()),
             (Some("xhttp"), Some("/vx"), Some("auto"))
         );
-        assert_eq!(l[5], "ss://2022-blake3-aes-128-gcm:%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2Bw%3D%3D%3AdXNlcmtleXVzZXJrZXkxMg%3D%3D\
-            @n.example.com:8388#N%20%C2%B7%20ss");
+        assert_eq!(
+            l[5],
+            "ss://2022-blake3-aes-128-gcm:%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2Bw%3D%3D%3AdXNlcmtleXVzZXJrZXkxMg%3D%3D\
+            @n.example.com:8388#N%20%C2%B7%20ss"
+        );
         assert_eq!(
             l[6],
             "hysteria2://a1b2@n.example.com:443/?sni=n.example.com#N%20%C2%B7%20hy"
         );
-        assert_eq!(l[7], "vless://55555555-5555-5555-5555-555555555555@n.example.com:8443?type=ws&path=%2Fw#N%20%C2%B7%20ws");
+        assert_eq!(
+            l[7],
+            "vless://55555555-5555-5555-5555-555555555555@n.example.com:8443?type=ws&path=%2Fw#N%20%C2%B7%20ws"
+        );
     }
 
     #[test]
@@ -1399,7 +1411,9 @@ rules:
         // Both xhttp proxies are left out (sing-box has no xhttp).
         assert_eq!(
             tags,
-            ["N · hu", "N · gr", "N · vg", "N · ss", "N · hy", "N · ws", "direct"]
+            [
+                "N · hu", "N · gr", "N · vg", "N · ss", "N · hy", "N · ws", "direct"
+            ]
         );
         assert_eq!(
             ob[0]["transport"],

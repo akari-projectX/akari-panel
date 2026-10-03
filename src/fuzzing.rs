@@ -159,7 +159,7 @@ pub fn signup_body(kind: u8, body: &[u8]) -> Result<bool, String> {
 /// Render the order receipt with an arbitrary plan name and the code mail
 /// with an arbitrary code: (text, html) of each, both locales.
 pub fn mail_render(plan_name: &str, code: &str) -> Vec<(String, String, String)> {
-    use crate::mail::templates::{render, Locale, Template};
+    use crate::mail::templates::{Locale, Template, render};
     let at = chrono::DateTime::<chrono::Utc>::from_timestamp(1_790_000_000, 0).unwrap_or_default();
     let mut out = Vec::new();
     for t in [
@@ -267,7 +267,7 @@ pub fn markdown_urls(url: &str) -> (Option<bool>, bool) {
 /// `mail::templates::validate` then `render_custom` with the kind's sample
 /// values: Ok(rendered (subject, text, html)) when the template is accepted.
 pub fn mail_template(kind: &str, subject: &str, body: &str) -> Option<(String, String, String)> {
-    use crate::mail::templates::{render_custom, validate, Locale, Template};
+    use crate::mail::templates::{Locale, Template, render_custom, validate};
     validate(kind, subject, body).ok()?;
     let sample = Template::sample(kind)?;
     let r = render_custom(

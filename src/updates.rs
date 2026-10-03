@@ -18,10 +18,10 @@
 use crate::auth::{bad_request, conflict};
 use std::cmp::Ordering;
 
+use axum::Json;
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -406,7 +406,7 @@ pub async fn apply_create_release(
             return Err(conflict!(
                 "release.exists",
                 "a release with this version/platform or digest already exists"
-            ))
+            ));
         }
         r => r?,
     };
@@ -851,28 +851,34 @@ mod tests {
             .as_deref(),
             Ok(k.id.as_str())
         );
-        assert!(verify(
-            M.as_bytes(),
-            std::slice::from_ref(&s),
-            std::slice::from_ref(&k2)
-        )
-        .is_err());
+        assert!(
+            verify(
+                M.as_bytes(),
+                std::slice::from_ref(&s),
+                std::slice::from_ref(&k2)
+            )
+            .is_err()
+        );
         let tampered = M.replace("v1.2.3", "v1.2.4");
-        assert!(verify(
-            tampered.as_bytes(),
-            std::slice::from_ref(&s),
-            std::slice::from_ref(&k)
-        )
-        .is_err());
+        assert!(
+            verify(
+                tampered.as_bytes(),
+                std::slice::from_ref(&s),
+                std::slice::from_ref(&k)
+            )
+            .is_err()
+        );
         assert!(verify(M.as_bytes(), std::slice::from_ref(&s), &[]).is_err());
         // Rotation: dual-signed verifies under either key.
         let s2 = sign(&kp2, &k2.id, M.as_bytes());
-        assert!(verify(
-            M.as_bytes(),
-            &[s.clone(), s2.clone()],
-            std::slice::from_ref(&k2)
-        )
-        .is_ok());
+        assert!(
+            verify(
+                M.as_bytes(),
+                &[s.clone(), s2.clone()],
+                std::slice::from_ref(&k2)
+            )
+            .is_ok()
+        );
         // No context prefix = not a release signature.
         let bare = Signature {
             key_id: k.id.clone(),

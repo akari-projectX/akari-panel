@@ -25,18 +25,18 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
 use super::provider::{self, PaymentProvider, ProviderKind};
 use crate::api::ApiJson;
 use crate::audit::Actor;
-use crate::auth::{bad_request, conflict, ApiError, AuthUser};
+use crate::auth::{ApiError, AuthUser, bad_request, conflict};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -689,7 +689,7 @@ pub struct LegacyAlipay {
 
 /// The method form of the legacy section (reads the two key files).
 pub fn legacy_request(l: &LegacyAlipay) -> Result<MethodReq, String> {
-    use super::alipay::{gateway_ok, GATEWAY_PRODUCTION, GATEWAY_SANDBOX};
+    use super::alipay::{GATEWAY_PRODUCTION, GATEWAY_SANDBOX, gateway_ok};
     let (environment, gateway_url) = match l.gateway_url.trim() {
         "" | GATEWAY_PRODUCTION => ("production", None),
         GATEWAY_SANDBOX => ("sandbox", None),

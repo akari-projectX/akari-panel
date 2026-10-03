@@ -26,8 +26,8 @@
 use crate::auth::{bad_request, conflict};
 use std::net::IpAddr;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use rand::RngCore;
 use serde_json::json;
@@ -627,8 +627,8 @@ async fn renew_in_tx(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testdb::fake_agent::{AgentCreds, PanelHarness};
     use crate::testdb::TestDb;
+    use crate::testdb::fake_agent::{AgentCreds, PanelHarness};
     use tonic::Code;
 
     /// The default config's node endpoint.
@@ -1054,10 +1054,12 @@ mod tests {
             .await
             .unwrap();
         let mut tx = db.pool.begin().await.unwrap();
-        assert!(crate::reaper::finalize_delete(&mut tx, node)
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            crate::reaper::finalize_delete(&mut tx, node)
+                .await
+                .unwrap()
+                .is_some()
+        );
         tx.commit().await.unwrap();
         for x in [&a, &b, &c, &d] {
             assert_eq!(

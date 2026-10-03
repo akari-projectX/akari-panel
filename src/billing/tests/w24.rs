@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use axum::http::{Method, StatusCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::super::alipay::tests::{ALIPAY_KEY, ALIPAY_PUB, APP_KEY, APP_PUB, SHORT_KEY, SHORT_PUB};
 use super::super::alipay::{self as ali, AlipayKind};

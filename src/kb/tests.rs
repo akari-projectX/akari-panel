@@ -3,12 +3,12 @@
 //! rejection) and the admin CRUD with audit rows.
 
 use axum::http::{Method, StatusCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::*;
-use crate::testdb::http::{client_for, Client};
 use crate::testdb::TestDb;
+use crate::testdb::http::{Client, client_for};
 
 async fn created(r: crate::testdb::http::Resp) -> Uuid {
     assert_eq!(
@@ -179,10 +179,12 @@ async fn users_see_published_only() {
     assert_eq!(r.status, StatusCode::OK);
     let v = r.json();
     assert_eq!(v["category_zh"], "入门");
-    assert!(v["html_zh"]
-        .as_str()
-        .unwrap()
-        .contains("<strong>正文</strong>"));
+    assert!(
+        v["html_zh"]
+            .as_str()
+            .unwrap()
+            .contains("<strong>正文</strong>")
+    );
     assert!(v["html_en"].as_str().unwrap().contains("<em>client</em>"));
     let canonical = user.get("/test/no-such-path").await.fingerprint();
     for id in [draft.to_string(), Uuid::new_v4().to_string(), "nope".into()] {

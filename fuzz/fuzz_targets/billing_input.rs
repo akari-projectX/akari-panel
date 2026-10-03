@@ -38,9 +38,10 @@ fn code(raw: &str) {
     if let Some(c) = normalize_code(raw) {
         assert_eq!(c, raw.trim());
         assert!((3..=32).contains(&c.len()), "{c:?}");
-        assert!(c
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
+        assert!(
+            c.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        );
         assert_eq!(normalize_code(&c).as_deref(), Some(c.as_str()));
     }
 }

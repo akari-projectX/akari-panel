@@ -38,22 +38,22 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::Json;
 use chrono::{DateTime, Utc};
 use http_body_util::{BodyExt, Empty, Limited};
 use hyper::body::{Bytes, Incoming};
 use hyper::header;
 use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Postgres, Transaction};
 
 use crate::api::ApiJson;
 use crate::audit::Actor;
-use crate::auth::{api_error, bad_request, conflict, ApiError, AuthUser};
+use crate::auth::{ApiError, AuthUser, api_error, bad_request, conflict};
 use crate::state::AppState;
 use crate::updates::{self, CreateReleaseReq, SigFile};
 
@@ -604,7 +604,7 @@ async fn fetch_and_store(
                 return Err(conflict!(
                     "release.exists",
                     "a release with this version/platform or digest already exists"
-                ))
+                ));
             }
             None => {
                 let manifest = String::from_utf8(man_bytes.to_vec()).map_err(|_| {

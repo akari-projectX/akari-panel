@@ -26,11 +26,11 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use axum::Json;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::api::ApiJson;
 use crate::auth::{ApiError, AuthUser};
@@ -568,7 +568,10 @@ pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value
                 None
             };
             if tls.is_none() && (proto == "trojan" || net == "grpc") {
-                return Err(bad_request!("template.needs_tls", "trojan and grpc need TLS (tls: true with the node's TLS domain, or tls_domain)"));
+                return Err(bad_request!(
+                    "template.needs_tls",
+                    "trojan and grpc need TLS (tls: true with the node's TLS domain, or tls_domain)"
+                ));
             }
             let host = match host.as_deref().map(str::trim) {
                 Some(h) if !h.is_empty() => Some(domain(h, "host")?),
@@ -605,7 +608,7 @@ pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value
                     return Err(bad_request!(
                         "template.network_invalid",
                         "network must be ws, httpupgrade, xhttp or grpc"
-                    ))
+                    ));
                 }
             };
             let mut ss = json!({ "network": net });
@@ -1277,10 +1280,12 @@ mod tests {
             assert!(render(&[spec(bad.clone())], &[]).is_err(), "{bad}");
         }
         // Unknown fields and templates are refused.
-        assert!(serde_json::from_value::<InboundSpec>(
-            json!({"template": "vless_reality", "port": 1, "junk": 1})
-        )
-        .is_err());
+        assert!(
+            serde_json::from_value::<InboundSpec>(
+                json!({"template": "vless_reality", "port": 1, "junk": 1})
+            )
+            .is_err()
+        );
         assert!(
             serde_json::from_value::<InboundSpec>(json!({"template": "grpc", "port": 1})).is_err()
         );

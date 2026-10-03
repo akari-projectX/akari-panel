@@ -6,12 +6,12 @@
 //! the outbox with a fail-closed rate limit, cancel, and the HTTP surface.
 
 use axum::http::{Method, StatusCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::*;
-use crate::testdb::http::client_for;
 use crate::testdb::TestDb;
+use crate::testdb::http::client_for;
 
 async fn setup() -> Option<(TestDb, AppState)> {
     let db = TestDb::new().await?;
@@ -148,16 +148,20 @@ fn action_validation() {
     assert!(check_action(&Action::ExtendExpiry { days: 0 }).is_err());
     assert!(check_action(&Action::ExtendExpiry { days: 3651 }).is_err());
     assert!(check_action(&Action::ExtendExpiry { days: 30 }).is_ok());
-    assert!(check_action(&Action::AddBalance {
-        amount_cents: 0,
-        reason: "x".into()
-    })
-    .is_err());
-    assert!(check_action(&Action::AddBalance {
-        amount_cents: 100,
-        reason: " ".into()
-    })
-    .is_err());
+    assert!(
+        check_action(&Action::AddBalance {
+            amount_cents: 0,
+            reason: "x".into()
+        })
+        .is_err()
+    );
+    assert!(
+        check_action(&Action::AddBalance {
+            amount_cents: 100,
+            reason: " ".into()
+        })
+        .is_err()
+    );
     let e = check_action(&Action::SendEmail {
         subject: "a\r\nBcc: x".into(),
         body: "b".into(),
@@ -190,14 +194,18 @@ fn action_validation() {
         assert_eq!(Action::from_row(a.kind(), &a.params()).unwrap(), a);
     }
     // Unknown members anywhere are refused.
-    assert!(serde_json::from_value::<CreateReq>(json!({
-        "selection": {"ids": []}, "action": {"kind": "enable", "x": 1}
-    }))
-    .is_err());
-    assert!(serde_json::from_value::<CreateReq>(json!({
-        "selection": {"ids": [], "y": 1}, "action": {"kind": "enable"}
-    }))
-    .is_err());
+    assert!(
+        serde_json::from_value::<CreateReq>(json!({
+            "selection": {"ids": []}, "action": {"kind": "enable", "x": 1}
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<CreateReq>(json!({
+            "selection": {"ids": [], "y": 1}, "action": {"kind": "enable"}
+        }))
+        .is_err()
+    );
     // Mail bodies never reach the audit log.
     assert_eq!(
         redact_params(&json!({"subject": "s", "body": "secret text"}))["body"],
@@ -882,9 +890,10 @@ async fn send_email_through_outbox_with_rate_limit() {
             .await
             .unwrap();
     assert_eq!(rows.len(), 2);
-    assert!(rows
-        .iter()
-        .all(|r| r.0 == "admin_notice" && r.2.contains("今晚 23:00 维护。")));
+    assert!(
+        rows.iter()
+            .all(|r| r.0 == "admin_notice" && r.2.contains("今晚 23:00 维护。"))
+    );
     assert_eq!(audits(&db, "user.mail.send").await, 2);
     let leaked: i64 = scalar(
         &db,

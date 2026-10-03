@@ -14,10 +14,10 @@ use chrono::{Duration, TimeZone};
 use serde_json::json;
 
 use super::channels::{self, Message};
-use super::eval::{self, evaluate, plan, Facts, Firing, Observed, Rules, Step, Verdict};
+use super::eval::{self, Facts, Firing, Observed, Rules, Step, Verdict, evaluate, plan};
 use super::*;
-use crate::testdb::http::{rand_ip, Client};
 use crate::testdb::TestDb;
+use crate::testdb::http::{Client, rand_ip};
 
 fn now() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 10, 2, 12, 0, 0).unwrap()
@@ -1064,9 +1064,11 @@ async fn email_channel_uses_the_outbox() {
             .await
             .unwrap();
     assert_eq!(mails.len(), 2);
-    assert!(mails
-        .iter()
-        .all(|m| m.0 == "node_alert" && m.2.contains("节点离线")));
+    assert!(
+        mails
+            .iter()
+            .all(|m| m.0 == "node_alert" && m.2.contains("节点离线"))
+    );
     assert_eq!(mails[1].1, "oncall@example.com");
     // SMTP switched off meanwhile: the notification dies, nothing queued.
     sqlx::query("UPDATE smtp_settings SET enabled = false")

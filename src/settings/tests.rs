@@ -2,13 +2,13 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::*;
-use crate::testdb::fake_agent::PanelHarness;
-use crate::testdb::http::{rand_ip, Client};
 use crate::testdb::TestDb;
+use crate::testdb::fake_agent::PanelHarness;
+use crate::testdb::http::{Client, rand_ip};
 
 fn cfg() -> PanelConfig {
     PanelConfig::default()
@@ -464,9 +464,11 @@ async fn update_is_versioned_and_audited() {
     );
     // A failed update leaves neither a row change nor an audit row.
     let mut tx = db.pool.begin().await.unwrap();
-    assert!(apply_update(&mut tx, &Actor::test(), 7, &Values::default())
-        .await
-        .is_err());
+    assert!(
+        apply_update(&mut tx, &Actor::test(), 7, &Values::default())
+            .await
+            .is_err()
+    );
     drop(tx);
     assert_eq!(audit_rows(&db, "settings.update").await.len(), 1);
     db.drop().await;
@@ -900,11 +902,12 @@ async fn node_domain_hot_swaps_the_grpc_certificate() {
     .await
     .unwrap();
     reload(st).await.unwrap();
-    assert!(st
-        .settings()
-        .certs()
-        .names()
-        .contains(&"grpc.akari.test".to_string()));
+    assert!(
+        st.settings()
+            .certs()
+            .names()
+            .contains(&"grpc.akari.test".to_string())
+    );
 
     // A new node's bootstrap carries the new endpoint; it enrolls and
     // connects verifying it.
@@ -944,10 +947,12 @@ async fn node_domain_hot_swaps_the_grpc_certificate() {
         .await
         .unwrap();
     assert_eq!(sn.as_deref(), Some("grpc.akari.test"));
-    assert!(panel
-        .connect_named(&new_creds, "grpc.akari.test")
-        .await
-        .is_ok());
+    assert!(
+        panel
+            .connect_named(&new_creds, "grpc.akari.test")
+            .await
+            .is_ok()
+    );
     // The old agent (server name localhost) still handshakes.
     assert!(panel.connect(&old_creds).await.is_ok());
 
@@ -967,10 +972,12 @@ async fn node_domain_hot_swaps_the_grpc_certificate() {
     for n in ["localhost", "grpc.akari.test", "grpc2.akari.test"] {
         assert!(names.contains(&n.to_string()), "{n} in {names:?}");
     }
-    assert!(panel
-        .connect_named(&new_creds, "grpc.akari.test")
-        .await
-        .is_ok());
+    assert!(
+        panel
+            .connect_named(&new_creds, "grpc.akari.test")
+            .await
+            .is_ok()
+    );
     assert!(panel.connect(&old_creds).await.is_ok());
     db.drop().await;
 }
@@ -1415,11 +1422,12 @@ async fn obsolete_keys_are_imported_once() {
     assert!(e.trust_cloudflare && e.cloudflare_source == Source::Settings);
     assert_eq!(e.cloudflare.len(), 1);
     assert_eq!(e.install_fallback_url, None, "\"\" = no fallback, imported");
-    assert!(e
-        .install_tls_pin
-        .as_deref()
-        .unwrap()
-        .starts_with("sha256//"));
+    assert!(
+        e.install_tls_pin
+            .as_deref()
+            .unwrap()
+            .starts_with("sha256//")
+    );
     assert_eq!(
         (e.probe.interval_secs, e.probe.urls.len(), e.probe.panel_tcp),
         (1200, 1, false)

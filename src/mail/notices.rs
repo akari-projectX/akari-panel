@@ -23,7 +23,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
-use super::{enqueue, Locale, Smtp, Template};
+use super::{Locale, Smtp, Template, enqueue};
 use crate::state::AppState;
 
 /// Candidates per notice kind per pass.

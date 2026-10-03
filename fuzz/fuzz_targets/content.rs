@@ -177,10 +177,12 @@ fuzz_target!(|data: &[u8]| {
             }
             // The URL is judged (and used) trimmed.
             if link.is_some() {
-                assert!(!text
-                    .trim()
-                    .chars()
-                    .any(|c| c.is_control() || c.is_whitespace() || c == '"' || c == '<'));
+                assert!(
+                    !text
+                        .trim()
+                        .chars()
+                        .any(|c| c.is_control() || c.is_whitespace() || c == '"' || c == '<')
+                );
             }
         }
         3 => template(rest),

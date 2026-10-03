@@ -6,7 +6,7 @@
 //! the CSV export.
 
 use axum::http::StatusCode;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::super::catalog::PeriodKind;
@@ -150,10 +150,11 @@ async fn manual_order_paid_once_and_flagged() {
         ),
         (3000, 3000, 3000, 2)
     );
-    assert!(d
-        .latest_orders
-        .iter()
-        .all(|o| o.paid_via.as_deref() == Some("manual")));
+    assert!(
+        d.latest_orders
+            .iter()
+            .all(|o| o.paid_via.as_deref() == Some("manual"))
+    );
     // A reset pack for the current holder works; the receipt is queued
     // like any payment (no SMTP here: nothing).
     manual(&db, &req(u, plan, PeriodKind::Reset, true))
@@ -382,10 +383,12 @@ fn draw_and_shape() {
     }))
     .unwrap();
     assert_eq!(cb::terms(&r).max_uses, None);
-    assert!(serde_json::from_value::<cb::CreateBatchReq>(json!({
-        "count": 1, "kind": "fixed", "value": 100, "code": "X"
-    }))
-    .is_err());
+    assert!(
+        serde_json::from_value::<cb::CreateBatchReq>(json!({
+            "count": 1, "kind": "fixed", "value": 100, "code": "X"
+        }))
+        .is_err()
+    );
 }
 
 /// N unique codes, enforced by the database: an existing code (any case)

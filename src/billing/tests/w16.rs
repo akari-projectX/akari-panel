@@ -6,7 +6,7 @@
 //! money movement writes exactly one ledger row + one audit row.
 
 use axum::http::{Method, StatusCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::super::catalog::PeriodKind;
@@ -240,21 +240,25 @@ async fn money_sql_matches_the_mirrors() {
         }
     }
     let mut c = db.pool.acquire().await.unwrap();
-    assert!(super::super::catalog::splits(&mut c, &[])
-        .await
-        .unwrap()
-        .is_empty());
-    assert!(sqlx::query("SELECT * FROM akari_split(0, 0, 0, 0)")
-        .execute(&mut *c)
-        .await
-        .is_err());
+    assert!(
+        super::super::catalog::splits(&mut c, &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        sqlx::query("SELECT * FROM akari_split(0, 0, 0, 0)")
+            .execute(&mut *c)
+            .await
+            .is_err()
+    );
     drop(c);
     db.drop().await;
 }
 
 #[test]
 fn coupon_codes() {
-    use super::super::coupons::{normalize_code, Refusal};
+    use super::super::coupons::{Refusal, normalize_code};
     assert_eq!(normalize_code(" Save-20_x "), Some("Save-20_x".into()));
     for bad in ["", "ab", "a b c", "abc!", "ünï", &"x".repeat(33)] {
         assert_eq!(normalize_code(bad), None, "{bad:?}");

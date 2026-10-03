@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use hdrhistogram::Histogram;
 use rand::Rng;
 use sqlx::postgres::PgPoolOptions;

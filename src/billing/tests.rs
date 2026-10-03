@@ -7,15 +7,15 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use axum::http::{Method, StatusCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::alipay;
 use super::alipay::tests::{alipay_side_keys, panel_keys, sign_notify, signed_response};
 use super::orders::{self, Paid, Pending, Via};
 use crate::state::AppState;
-use crate::testdb::http::{rand_ip, Client};
 use crate::testdb::TestDb;
+use crate::testdb::http::{Client, rand_ip};
 
 const APP_ID: &str = "2021000000000001";
 const SELLER_ID: &str = "2088000000000001";
@@ -492,10 +492,12 @@ async fn http_purchase_flow() {
     let otn = o["out_trade_no"].as_str().unwrap().to_string();
     assert_eq!(o["amount_cents"], 990);
     assert_eq!(o["status"], "pending");
-    assert!(o["qr_code"]
-        .as_str()
-        .unwrap()
-        .starts_with("https://qr.alipay.com/"));
+    assert!(
+        o["qr_code"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://qr.alipay.com/")
+    );
     assert!(otn.starts_with("AK") && otn.len() == 34, "{otn}");
 
     // Pending: polling queries (TRADE_NOT_EXIST) and stays pending.
@@ -597,9 +599,11 @@ async fn http_purchase_flow() {
     let r = a.get(&format!("/test/api/v1/orders/{oid}")).await;
     let events = r.json()["events"].as_array().unwrap().clone();
     assert!(events.iter().any(|e| e["source"] == "precreate"));
-    assert!(events
-        .iter()
-        .all(|e| e["params"]["sign"].is_null() || e["params"]["sign"] == "<redacted>"));
+    assert!(
+        events
+            .iter()
+            .all(|e| e["params"]["sign"].is_null() || e["params"]["sign"] == "<redacted>")
+    );
     // Users cannot reach admin endpoints.
     assert_eq!(
         c.get("/test/api/v1/orders").await.status,

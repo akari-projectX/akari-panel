@@ -266,11 +266,7 @@ fn blocks(text: &str, out: &mut String, depth: usize) {
             flush(&mut para, out);
             let ordered = numbered(line).is_some();
             fn item(ordered: bool, l: &str) -> Option<&str> {
-                if ordered {
-                    numbered(l)
-                } else {
-                    bullet(l)
-                }
+                if ordered { numbered(l) } else { bullet(l) }
             }
             out.push_str(if ordered { "<ol>" } else { "<ul>" });
             while i < lines.len() {

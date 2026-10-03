@@ -2,8 +2,8 @@ use axum::http::StatusCode;
 use serde_json::json;
 
 use super::*;
-use crate::testdb::http::{rand_ip, Client};
 use crate::testdb::TestDb;
+use crate::testdb::http::{Client, rand_ip};
 
 fn d(s: &str) -> NaiveDate {
     NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()

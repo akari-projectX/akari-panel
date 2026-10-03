@@ -29,7 +29,7 @@ pub const SERVER_DRAIN: Duration = Duration::from_secs(1);
 pub async fn signal() {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut term = signal(SignalKind::terminate()).expect("install SIGTERM handler");
         tokio::select! {
             _ = term.recv() => tracing::info!("SIGTERM received"),

@@ -14,17 +14,17 @@
 
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 use tonic::Streaming;
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
-use akari_panel::grpc::{state_hash, NodeState};
+use akari_panel::grpc::{NodeState, state_hash};
 use akari_panel::pb::agent_channel_client::AgentChannelClient;
 use akari_panel::pb::agent_up::Msg as UpMsg;
 use akari_panel::pb::panel_down::Msg as DownMsg;
-use akari_panel::pb::{ack, Ack, AgentUp, ConfigSnapshot, Hello, PanelDown};
+use akari_panel::pb::{Ack, AgentUp, ConfigSnapshot, Hello, PanelDown, ack};
 
 use crate::common;
 

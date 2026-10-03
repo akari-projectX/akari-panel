@@ -10,14 +10,14 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use uuid::Uuid;
 
 use akari_panel::grpc::{
-    diff_from_digest, diff_user_sets, state_hash, user_set, NodeState, SetDigest, UserSet,
+    NodeState, SetDigest, UserSet, diff_from_digest, diff_user_sets, state_hash, user_set,
 };
 
-use akari_panel::pb::{user_op, InboundUser, TrafficReport, UserOp, UserTraffic};
+use akari_panel::pb::{InboundUser, TrafficReport, UserOp, UserTraffic, user_op};
 
 const DEFAULT_DB: &str = "postgres://akari:akari-dev@localhost:5433/akari_bench";
 

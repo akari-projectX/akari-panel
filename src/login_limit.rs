@@ -151,10 +151,12 @@ mod tests {
         }
         assert!(Attempt::reserve(&st, &ip, &login).await.unwrap().is_none());
         let other_login = format!("login-{}", uniq());
-        assert!(Attempt::reserve(&st, &ip, &other_login)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            Attempt::reserve(&st, &ip, &other_login)
+                .await
+                .unwrap()
+                .is_none()
+        );
         // ... refusals are not counted (still exactly PER_IP) ...
         let n: i64 = st.valkey().get(&keys(&ip, &login)[0]).await.unwrap();
         assert_eq!(n, PER_IP);
@@ -197,10 +199,12 @@ mod tests {
             ips.push(ip);
         }
         let fresh = format!("ip-{}", uniq());
-        assert!(Attempt::reserve(&st, &fresh, &login)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            Attempt::reserve(&st, &fresh, &login)
+                .await
+                .unwrap()
+                .is_none()
+        );
         let other = format!("bystander-{}", uniq());
         let a = Attempt::reserve(&st, &fresh, &other)
             .await

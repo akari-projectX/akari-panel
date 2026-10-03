@@ -13,7 +13,7 @@
 
 use std::net::IpAddr;
 
-use akari_panel::client_ip::{bucket, canonical, resolve, Cidr, Trust};
+use akari_panel::client_ip::{Cidr, Trust, bucket, canonical, resolve};
 use akari_panel_fuzz::fields;
 use http::{HeaderMap, HeaderName, HeaderValue};
 use libfuzzer_sys::fuzz_target;

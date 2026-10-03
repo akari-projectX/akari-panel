@@ -22,7 +22,7 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::auth::{bad_request, ApiError};
+use crate::auth::{ApiError, bad_request};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Locale {
@@ -451,14 +451,16 @@ impl Template {
     pub fn values(&self, locale: Locale) -> Vec<Value> {
         let zh = locale == Locale::Zh;
         match self {
-            Template::RegisterCode { code, minutes } | Template::EmailCode { code, minutes } => vec![
-                Value {
-                    name: "code",
-                    text: code.clone(),
-                    style: Style::Code,
-                },
-                text("minutes", minutes.to_string()),
-            ],
+            Template::RegisterCode { code, minutes } | Template::EmailCode { code, minutes } => {
+                vec![
+                    Value {
+                        name: "code",
+                        text: code.clone(),
+                        style: Style::Code,
+                    },
+                    text("minutes", minutes.to_string()),
+                ]
+            }
             Template::RegisterExists {
                 reset_enabled,
                 login_url,
@@ -638,7 +640,11 @@ impl Template {
                 link(
                     "portal_url",
                     portal_url.as_ref(),
-                    if zh { "打开用户门户" } else { "Open the portal" },
+                    if zh {
+                        "打开用户门户"
+                    } else {
+                        "Open the portal"
+                    },
                 ),
             ],
         }
@@ -747,14 +753,8 @@ pub fn defaults(kind: &str, locale: Locale) -> Option<(&'static str, &'static st
         ),
         ("node_alert", _) => ("{site}：{title}", "{text}"),
         ("admin_notice", _) => ("{subject}", "{body}"),
-        ("announcement", true) => (
-            "{site}：{title}",
-            "{title}\n\n{body}\n\n{portal_url}",
-        ),
-        ("announcement", false) => (
-            "{site}: {title}",
-            "{title}\n\n{body}\n\n{portal_url}",
-        ),
+        ("announcement", true) => ("{site}：{title}", "{title}\n\n{body}\n\n{portal_url}"),
+        ("announcement", false) => ("{site}: {title}", "{title}\n\n{body}\n\n{portal_url}"),
         _ => return None,
     })
 }
@@ -1158,12 +1158,14 @@ mod tests {
         assert!(r.text.contains("2026-10-02 08:30 UTC"));
         assert!(r.text.contains("套餐到期："));
         let r = render(&all("1")[4], Locale::En, "Akari");
-        assert!(r
-            .html
-            .contains("href=\"https://p.example/x/app/reset#token=abc&amp;x=&lt;y&gt;\""));
-        assert!(r
-            .text
-            .contains("https://p.example/x/app/reset#token=abc&x=<y>"));
+        assert!(
+            r.html
+                .contains("href=\"https://p.example/x/app/reset#token=abc&amp;x=&lt;y&gt;\"")
+        );
+        assert!(
+            r.text
+                .contains("https://p.example/x/app/reset#token=abc&x=<y>")
+        );
         let r = render(&all("1")[8], Locale::En, "Akari");
         assert!(r.subject.contains("80%"));
         assert!(r.text.contains("80.00 GiB / 100.00 GiB"));
@@ -1304,9 +1306,10 @@ mod tests {
             "{}",
             r.text
         );
-        assert!(r
-            .html
-            .contains("今晚 23:00 维护。<br><br>&lt;i&gt;谢谢&lt;/i&gt;。"));
+        assert!(
+            r.html
+                .contains("今晚 23:00 维护。<br><br>&lt;i&gt;谢谢&lt;/i&gt;。")
+        );
         assert!(!r.html.contains("<i>"));
         assert!(validate("admin_notice", "{site}：{subject}", "{body}").is_ok());
         assert_eq!(
@@ -1381,9 +1384,10 @@ mod tests {
         assert!(r.html.contains("Your code is 9&lt;9 (5 min)."));
         assert!(r.html.contains("letter-spacing:6px"));
         assert!(r.html.contains("{ not a placeholder } {unknown}"));
-        assert!(r
-            .html
-            .contains("<h1 style=\"font-size:18px;margin:0 0 16px\">A&amp;B</h1>"));
+        assert!(
+            r.html
+                .contains("<h1 style=\"font-size:18px;margin:0 0 16px\">A&amp;B</h1>")
+        );
         // An inline link placeholder is a plain link; a lone one a button.
         let v = Template::PasswordReset {
             link: "https://x/y?a=1&b=2".into(),
@@ -1391,9 +1395,11 @@ mod tests {
         }
         .values(Locale::Zh);
         let r = render_custom("s", "打开 {link} 即可", &v, Locale::Zh, "S");
-        assert!(r
-            .html
-            .contains("打开 <a href=\"https://x/y?a=1&amp;b=2\">https://x/y?a=1&amp;b=2</a> 即可"));
+        assert!(
+            r.html.contains(
+                "打开 <a href=\"https://x/y?a=1&amp;b=2\">https://x/y?a=1&amp;b=2</a> 即可"
+            )
+        );
         assert!(r.text.contains("打开 https://x/y?a=1&b=2 即可"));
         let r = render_custom("s", "{link}", &v, Locale::Zh, "S");
         assert!(

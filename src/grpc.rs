@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use tokio::sync::{mpsc, Notify};
-use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
+use tokio::sync::{Notify, mpsc};
+use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::{Request, Response, Status, Streaming};
 use uuid::Uuid;
 
@@ -42,7 +42,7 @@ impl AgentChannel for AgentChannelService {
         let node = match node_for_serial_from(self.state.pg(), &serial, ip).await? {
             AgentIdentity::Node(n) => n,
             AgentIdentity::Revoked(_) => {
-                return Err(Status::unauthenticated("certificate revoked"))
+                return Err(Status::unauthenticated("certificate revoked"));
             }
         };
         crate::updates::fetch_artifact(&self.state, node, request.into_inner())
@@ -2242,9 +2242,9 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
         return Ok(Synced::Current);
     }
     let ticket = lock_or_recover(&sess.sync).ticket(); // BEFORE the read
-                                                       // The permit bounds concurrent reads AND the full in-memory sets built
-                                                       // from them (~1.3 KB per user): it is held until the message is built
-                                                       // (M2: 200 sessions waking at once must not hold 200 full sets).
+    // The permit bounds concurrent reads AND the full in-memory sets built
+    // from them (~1.3 KB per user): it is held until the message is built
+    // (M2: 200 sessions waking at once must not hold 200 full sets).
     let permit = state.read_permits().acquire().await?;
     let desired = desired_state(state.pg(), node_id).await?;
     let Some(mut desired) = desired else {
@@ -2618,9 +2618,10 @@ mod tests {
         hello(&mut s, (4, 4));
         let hello_ticket = s.ticket(); // Hello path reads (5,5) ...
         let watch_ticket = s.ticket(); // ... watcher reads (6,6) later
-        assert!(s
-            .decide(watch_ticket, (6, 6), &empty(), false, None, t0)
-            .is_some());
+        assert!(
+            s.decide(watch_ticket, (6, 6), &empty(), false, None, t0)
+                .is_some()
+        );
         assert!(
             s.decide(hello_ticket, (5, 5), &empty(), false, None, t0)
                 .is_none(),
@@ -2831,9 +2832,10 @@ mod tests {
         for (i, set) in sets.iter().enumerate() {
             let tk = s.ticket();
             // Config changes each time: every one is a Snapshot in flight.
-            assert!(s
-                .decide(tk, (i as u64 + 1, 1), set, true, None, t0)
-                .is_some());
+            assert!(
+                s.decide(tk, (i as u64 + 1, 1), set, true, None, t0)
+                    .is_some()
+            );
         }
         assert_eq!(s.sent.len(), 5);
         let v = (4u64, 1u64);
@@ -3116,9 +3118,10 @@ mod tests {
         ));
         assert!(d_set(&mut s, (2, 6), &s2).is_none());
         let tk = s.ticket();
-        assert!(s
-            .decide(tk, (2, 6), &s2, true, None, t0 + retry_backoff(0))
-            .is_some());
+        assert!(
+            s.decide(tk, (2, 6), &s2, true, None, t0 + retry_backoff(0))
+                .is_some()
+        );
     }
 
     /// Chained deltas: a change while a delta is in flight builds on it.
@@ -3615,10 +3618,12 @@ mod tests {
         let d = desired_state(&db.pool, n).await.unwrap().unwrap();
         assert_eq!(d.snapshot.inbounds_json, "[]");
         assert!(d.snapshot.users.is_empty());
-        assert!(desired_state(&db.pool, Uuid::new_v4())
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            desired_state(&db.pool, Uuid::new_v4())
+                .await
+                .unwrap()
+                .is_none()
+        );
         db.drop().await;
     }
 

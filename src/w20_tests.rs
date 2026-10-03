@@ -12,9 +12,9 @@ use uuid::Uuid;
 
 use crate::auth;
 use crate::state::AppState;
-use crate::sub::{hash_token, Stored};
-use crate::testdb::http::{rand_ip, Client};
+use crate::sub::{Stored, hash_token};
 use crate::testdb::TestDb;
+use crate::testdb::http::{Client, rand_ip};
 use crate::totp;
 
 const PW: &str = "w20-password-123";

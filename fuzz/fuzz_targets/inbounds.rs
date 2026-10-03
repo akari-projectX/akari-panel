@@ -14,9 +14,9 @@
 
 use akari_panel::fuzzing::validate_inbounds;
 use akari_panel::protocols;
-use akari_panel::sub::{render, NodeRow};
+use akari_panel::sub::{NodeRow, render};
 use libfuzzer_sys::fuzz_target;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fuzz_target!(|data: &[u8]| {
     let Ok(v) = serde_json::from_slice::<Value>(data) else {

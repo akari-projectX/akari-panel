@@ -8,11 +8,11 @@
 //! (a full session).
 
 use crate::auth::{bad_request, conflict};
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -474,8 +474,8 @@ pub async fn regenerate_own_sub_token(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testdb::http::{rand_ip, Client};
     use crate::testdb::TestDb;
+    use crate::testdb::http::{Client, rand_ip};
     use axum::http::StatusCode;
     use data_encoding::BASE32_NOPAD;
     use fred::prelude::KeysInterface;
@@ -549,11 +549,7 @@ mod tests {
     }
 
     fn other_code(good: &str) -> &'static str {
-        if good == "000000" {
-            "111111"
-        } else {
-            "000000"
-        }
+        if good == "000000" { "111111" } else { "000000" }
     }
 
     /// M1-6 / R18 end to end through the router: 2FA is optional, so an
@@ -743,9 +739,10 @@ mod tests {
             methods,
             ["password", "totp", "recovery_code", "recovery_code"]
         );
-        assert!(rows
-            .iter()
-            .any(|(a, v)| a == "auth.login_failed" && v["reason"] == "second_factor"));
+        assert!(
+            rows.iter()
+                .any(|(a, v)| a == "auth.login_failed" && v["reason"] == "second_factor")
+        );
         let text = all_audit_text(&db).await;
         assert!(!text.contains(&b32) && !text.contains(&codes[2]) && !text.contains(&good));
 
@@ -1141,10 +1138,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(n, 2, "the spent code and the old recovery code");
-        assert!(audit_of(&db, id, 3)
-            .await
-            .iter()
-            .any(|(a, _)| a == "user.totp.recovery_codes"));
+        assert!(
+            audit_of(&db, id, 3)
+                .await
+                .iter()
+                .any(|(a, _)| a == "user.totp.recovery_codes")
+        );
         clear_limits(&state, &[c.ip, c2.ip], &login).await;
         drop(state);
         db.drop().await;

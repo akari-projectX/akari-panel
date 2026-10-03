@@ -24,8 +24,8 @@ use base64::Engine as _;
 use chrono::{DateTime, FixedOffset, Utc};
 use ring::rand::SystemRandom;
 use ring::signature::{self, RsaKeyPair};
-use serde_json::value::RawValue;
 use serde_json::Value;
+use serde_json::value::RawValue;
 use sha2::Digest as _;
 
 /// The Alipay "success" result code.
@@ -1089,13 +1089,13 @@ impl super::provider::ProviderKind for AlipayKind {
                 return Err(bad_request!(
                     "payments.gateway_invalid",
                     "custom gateway must be an https URL (http only on loopback)"
-                ))
+                ));
             }
             (Some(_), _) => {
                 return Err(bad_request!(
                     "payments.gateway_unexpected",
                     "gateway_url is only for the custom environment"
-                ))
+                ));
             }
             _ => {}
         }

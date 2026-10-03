@@ -28,9 +28,9 @@
 use crate::auth::{bad_request, conflict};
 use std::cmp::Ordering;
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -42,7 +42,7 @@ use crate::api::ApiJson;
 use crate::audit::Actor;
 use crate::auth::{ApiError, AuthUser};
 use crate::state::AppState;
-use crate::updates::{compare_versions, parse_version, MIN_UPDATE_PROTOCOL};
+use crate::updates::{MIN_UPDATE_PROTOCOL, compare_versions, parse_version};
 
 pub const DEFAULT_HEALTH_TIMEOUT_SECS: i32 = 600;
 pub const DEFAULT_MAX_FAILURE_RATIO: f64 = 0.2;
@@ -530,7 +530,7 @@ pub async fn apply_action(
                 "cannot {action} a {status} rollout",
                 action = action.name(),
                 status = status.clone()
-            ))
+            ));
         }
     };
     sqlx::query(
@@ -987,9 +987,10 @@ mod tests {
         let per_wave = |w: i32| a.iter().filter(|x| x.1 == w).count();
         assert_eq!((per_wave(0), per_wave(1), per_wave(2)), (10, 40, 50));
         // Waves are prefixes of the order.
-        assert!(a
-            .windows(2)
-            .all(|p| p[0].1 <= p[1].1 && p[0].2 + 1 == p[1].2));
+        assert!(
+            a.windows(2)
+                .all(|p| p[0].1 <= p[1].1 && p[0].2 + 1 == p[1].2)
+        );
         // Percentage: a prefix of the same order.
         let p30 = assign_waves(42, &nodes, 30, &[100]);
         assert_eq!(p30.len(), 30);
@@ -1118,8 +1119,8 @@ mod db_tests {
     use super::*;
     use crate::pb::update_status::State as UState;
     use crate::state::AppState;
-    use crate::testdb::http::{rand_ip, Client};
     use crate::testdb::TestDb;
+    use crate::testdb::http::{Client, rand_ip};
     use crate::updates::testkit::Signer;
 
     async fn admin_client(state: &AppState, db: &TestDb) -> Client {
@@ -1253,7 +1254,7 @@ mod db_tests {
             .await;
         let c = admin_client(&state, &db).await;
         let bin = vec![7u8; crate::updates::CHUNK + 100]; // two chunks
-                                                          // Unsigned / wrongly signed / mismatching binary refused.
+        // Unsigned / wrongly signed / mismatching binary refused.
         let other = Signer::new();
         let bad = other.release("v1.1.0", &bin);
         let r = c
@@ -1324,15 +1325,19 @@ mod db_tests {
         assert_eq!(r.status, StatusCode::CONFLICT);
 
         // protocol 2: never offered, skipped by the tick.
-        assert!(offer_for(&db.pool, n2, 2, "v1.0.0", ("linux", "amd64"))
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            offer_for(&db.pool, n2, 2, "v1.0.0", ("linux", "amd64"))
+                .await
+                .unwrap()
+                .is_none()
+        );
         // Wrong platform: no artifact, no offer.
-        assert!(offer_for(&db.pool, n3, 3, "v1.0.0", ("linux", "arm64"))
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            offer_for(&db.pool, n3, 3, "v1.0.0", ("linux", "arm64"))
+                .await
+                .unwrap()
+                .is_none()
+        );
         let o = offer_for(&db.pool, n3, 3, "v1.0.0", ("linux", "amd64"))
             .await
             .unwrap()
@@ -1356,10 +1361,12 @@ mod db_tests {
         assert_eq!(audits(&db, "rollout.create").await, 1);
         assert_eq!(audits(&db, "rollout.complete").await, 1);
         // Completed: no more offers; the node view shows the outcome.
-        assert!(offer_for(&db.pool, n3, 3, "v1.0.0", ("linux", "amd64"))
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            offer_for(&db.pool, n3, 3, "v1.0.0", ("linux", "amd64"))
+                .await
+                .unwrap()
+                .is_none()
+        );
         let nodes = c.get("/test/api/v1/nodes").await.json();
         let v = nodes
             .as_array()
@@ -1661,10 +1668,12 @@ mod db_tests {
         assert_eq!(audits(&db, "rollout.wave").await, 1);
         // Wave 1: one times out, one rolls back -> 2 failed / 3 > 0.5: halt.
         for n in &rest {
-            assert!(offer_for(&db.pool, *n, 3, "v1.0.0", ("linux", "amd64"))
-                .await
-                .unwrap()
-                .is_some());
+            assert!(
+                offer_for(&db.pool, *n, 3, "v1.0.0", ("linux", "amd64"))
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
         }
         on_status(
             &db.pool,

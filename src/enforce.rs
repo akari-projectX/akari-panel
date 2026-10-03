@@ -15,8 +15,7 @@ pub const EXPIRED: &str =
 
 /// Users over their traffic limit. Admins are not proxy users and are never
 /// disabled by it.
-pub const OVER_LIMIT: &str =
-    "(u.role = 'user' AND u.enabled AND u.traffic_limit_bytes IS NOT NULL \
+pub const OVER_LIMIT: &str = "(u.role = 'user' AND u.enabled AND u.traffic_limit_bytes IS NOT NULL \
      AND u.traffic_used_bytes > u.traffic_limit_bytes)";
 
 /// Users a node serves: role=user, enabled, not expired (alias `u`).
@@ -243,11 +242,11 @@ mod tests {
         assert_eq!(user_row(&db, expired).await, (true, None, true));
         assert_eq!(user_row(&db, fine).await, (true, None, false));
         assert_eq!(user_row(&db, admin).await, (true, None, false));
-        assert_eq!(db.versions(n_over).await.1, before.0 .1 + 1);
-        assert_eq!(db.versions(n_exp).await.1, before.1 .1 + 1);
+        assert_eq!(db.versions(n_over).await.1, before.0.1 + 1);
+        assert_eq!(db.versions(n_exp).await.1, before.1.1 + 1);
         assert_eq!(db.versions(n_ok).await, before.2, "untouched node bumped");
         // Config versions never move for user-set changes.
-        assert_eq!(db.versions(n_over).await.0, before.0 .0);
+        assert_eq!(db.versions(n_over).await.0, before.0.0);
 
         let after = (db.versions(n_over).await, db.versions(n_exp).await);
         run_all(&state).await.unwrap();

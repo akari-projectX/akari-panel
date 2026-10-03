@@ -3,12 +3,12 @@
 //! rejection), the admin CRUD with audit rows, and the mailing in batches.
 
 use axum::http::{Method, StatusCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::*;
-use crate::testdb::http::{client_for, rand_ip, Client};
 use crate::testdb::TestDb;
+use crate::testdb::http::{Client, client_for, rand_ip};
 
 fn body(title: &str, extra: Value) -> Value {
     let mut v = json!({ "title_zh": title, "body_zh": "**正文** <script>x</script>" });
@@ -167,14 +167,18 @@ async fn users_see_only_visible_ones() {
     assert_eq!(v["unread"], 3);
     let first = &v["announcements"][2];
     assert_eq!(first["title_en"], "A everyone");
-    assert!(first["html_zh"]
-        .as_str()
-        .unwrap()
-        .contains("<strong>正文</strong>"));
-    assert!(first["html_zh"]
-        .as_str()
-        .unwrap()
-        .contains("&lt;script&gt;"));
+    assert!(
+        first["html_zh"]
+            .as_str()
+            .unwrap()
+            .contains("<strong>正文</strong>")
+    );
+    assert!(
+        first["html_zh"]
+            .as_str()
+            .unwrap()
+            .contains("&lt;script&gt;")
+    );
     assert!(!first["html_zh"].as_str().unwrap().contains("<script"));
     assert!(first["html_en"].as_str().unwrap().contains("<em>body</em>"));
     assert_eq!(first["read"], false);

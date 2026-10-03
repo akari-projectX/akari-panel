@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use rand::Rng;
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::mpsc;
@@ -31,14 +31,14 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 use uuid::Uuid;
 
-use akari_panel::grpc::{state_hash, user_set, NodeState, UserSet};
+use akari_panel::grpc::{NodeState, UserSet, state_hash, user_set};
 use akari_panel::pb::agent_channel_client::AgentChannelClient;
 use akari_panel::pb::agent_enrollment_client::AgentEnrollmentClient;
 use akari_panel::pb::agent_up::Msg as UpMsg;
 use akari_panel::pb::panel_down::Msg as DownMsg;
 use akari_panel::pb::{
-    ack, user_op, Ack, AgentInfo, AgentUp, ConfigSnapshot, EnrollRequest, Heartbeat, Hello,
-    TrafficReport, UserDelta, UserTraffic,
+    Ack, AgentInfo, AgentUp, ConfigSnapshot, EnrollRequest, Heartbeat, Hello, TrafficReport,
+    UserDelta, UserTraffic, ack, user_op,
 };
 
 use crate::common;

@@ -15,7 +15,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -374,8 +374,7 @@ pub const PROBE_ATTEMPTS: u32 = 3;
 pub const PROBE_MANUAL_COOLDOWN_SECS: u64 = 30;
 /// Where the install script downloads the agent when no complete signed
 /// release was uploaded (系统设置 → 节点通信 → 备用下载地址 overrides it).
-pub const DEFAULT_FALLBACK_BINARY_URL: &str =
-    "https://github.com/akari-projectX/akari-agent/releases/latest/download/akari-agent-linux-{arch}";
+pub const DEFAULT_FALLBACK_BINARY_URL: &str = "https://github.com/akari-projectX/akari-agent/releases/latest/download/akari-agent-linux-{arch}";
 
 /// Environment variable of the TEST-ONLY timer overrides (smoke/e2e):
 /// "name=value,name=value" over `Limits::TEST_TUNABLE`. Logged at startup;

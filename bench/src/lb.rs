@@ -4,10 +4,10 @@
 //! identity reaches the panel exactly as without it). A reference for the
 //! topology only — production uses a real L4 balancer (docs/DEPLOY.md).
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use tokio::net::{TcpListener, TcpStream};
 
 #[derive(clap::Args, Debug)]

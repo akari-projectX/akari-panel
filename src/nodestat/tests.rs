@@ -8,8 +8,8 @@ use super::*;
 use crate::pb::agent_up::Msg as UpMsg;
 use crate::pb::panel_down::Msg as DownMsg;
 use crate::pb::{NodeMetrics, UrlLatency};
-use crate::testdb::http::{rand_ip, Client};
 use crate::testdb::TestDb;
+use crate::testdb::http::{Client, rand_ip};
 
 #[test]
 fn probe_urls() {
@@ -111,9 +111,11 @@ fn heartbeat_sanitized() {
     assert_eq!(blob["metrics"]["tcp_sockets"], Value::Null);
     assert_eq!(blob["metrics"]["net_rx_bytes_per_sec"], 10);
     // An old agent: no metrics object.
-    assert!(heartbeat_blob(&Heartbeat::default())
-        .get("metrics")
-        .is_none());
+    assert!(
+        heartbeat_blob(&Heartbeat::default())
+            .get("metrics")
+            .is_none()
+    );
 }
 
 /// W23: agents without "metrics-presence" send unread values as 0 and

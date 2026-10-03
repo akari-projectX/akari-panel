@@ -23,14 +23,14 @@ pub mod sender;
 pub mod templates;
 
 use crate::auth::{bad_request, conflict};
-use axum::extract::{Path, Query, State};
 use axum::Json;
+use axum::extract::{Path, Query, State};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::api::{double_option, ApiJson};
+use crate::api::{ApiJson, double_option};
 use crate::audit::{Actor, CHANGED};
 use crate::auth::{ApiError, AuthUser};
 use crate::state::AppState;

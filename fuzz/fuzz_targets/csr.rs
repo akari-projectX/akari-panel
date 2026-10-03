@@ -14,7 +14,7 @@
 
 use std::sync::OnceLock;
 
-use akari_panel::install::{check_csr, MAX_CSR_LEN};
+use akari_panel::install::{MAX_CSR_LEN, check_csr};
 use libfuzzer_sys::fuzz_target;
 use rcgen::PublicKeyData;
 

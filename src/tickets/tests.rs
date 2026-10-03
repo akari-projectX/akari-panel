@@ -5,11 +5,11 @@
 //! cap), audit rows, and the staff list filters.
 
 use axum::http::{Method, StatusCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::*;
-use crate::testdb::http::{rand_ip, Client};
 use crate::testdb::TestDb;
+use crate::testdb::http::{Client, rand_ip};
 
 async fn token(state: &AppState, id: Uuid) -> String {
     let (role, sv): (String, i64) =
@@ -366,11 +366,13 @@ async fn lifecycle_both_sides() {
     let v = ca.get(&format!("/test/api/v1/tickets/{t}")).await.json();
     assert_eq!(v["assignee_login"], admin_id.to_string());
     let admins = ca.get("/test/api/v1/admins").await.json();
-    assert!(admins
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|a| a["id"] == admin_id.to_string()));
+    assert!(
+        admins
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["id"] == admin_id.to_string())
+    );
     let r = ca
         .req(
             Method::PUT,
