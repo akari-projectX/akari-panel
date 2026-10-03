@@ -2,7 +2,9 @@
 //! committed; `generated_artifacts_are_current` fails when one is stale and
 //! `make gen-protocols` (`AKARI_REGEN=1`) rewrites them.
 //!
-//! - docs/DEPLOY.md §3d: the support matrix (between the GENERATED markers).
+//! - docs/DEPLOY.md §3d: the support matrix (between the GENERATED markers);
+//! - spa/src/lib/admin-protocols.gen.ts: the schema the admin node form is
+//!   built from (`admin-protocol-form.ts`; admin bundle only).
 
 use std::collections::BTreeMap;
 
@@ -16,11 +18,18 @@ pub struct Artifact {
     pub render: fn(&Manifest) -> String,
 }
 
-pub const ARTIFACTS: &[Artifact] = &[Artifact {
-    path: "docs/DEPLOY.md",
-    marker: Some("protocols-matrix"),
-    render: deploy_matrix,
-}];
+pub const ARTIFACTS: &[Artifact] = &[
+    Artifact {
+        path: "docs/DEPLOY.md",
+        marker: Some("protocols-matrix"),
+        render: deploy_matrix,
+    },
+    Artifact {
+        path: "spa/src/lib/admin-protocols.gen.ts",
+        marker: None,
+        render: spa_schema,
+    },
+];
 
 /// `doc` with the marked section replaced by `body` (None: markers missing).
 pub fn splice(doc: &str, marker: &str, body: &str) -> Option<String> {
@@ -236,6 +245,91 @@ pub fn deploy_matrix(m: &Manifest) -> String {
     );
     out.push_str(".\n");
     out
+}
+
+fn field_json(f: &super::manifest::Field) -> serde_json::Value {
+    serde_json::json!({
+        "name": f.name,
+        "label_zh": f.label_zh,
+        "type": f.kind,
+        "values": f.values,
+        "value_labels_zh": f.value_labels_zh,
+        "default": f.default,
+        "required": f.required,
+        "help_zh": f.help_zh,
+    })
+}
+
+/// spa/src/lib/admin-protocols.gen.ts: protocols, transports, security
+/// layers (with their form fields), rules and format support, as data the
+/// admin form renders from.
+pub fn spa_schema(m: &Manifest) -> String {
+    use serde_json::json;
+    let layer = |id: &str, label: &str, label_zh: &str, fields: &[super::manifest::Field]| {
+        json!({
+            "id": id,
+            "label": label,
+            "label_zh": label_zh,
+            "fields": fields.iter().map(field_json).collect::<Vec<_>>(),
+        })
+    };
+    let data = json!({
+        "kernel_version": m.kernel.iter().find(|k| k.id == "xray").map(|k| k.version.clone()),
+        "protocols": m.protocol.iter().map(|p| json!({
+            "id": p.id,
+            "wire": p.wire,
+            "label": p.label,
+            "label_zh": p.label_zh,
+            "transports": p.transports,
+            "security": p.security,
+            "l4": p.l4,
+            "template_requires_tls": p.template_requires_tls,
+            "options": p.option.iter().map(field_json).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "transports": m.transport.iter()
+            .map(|t| layer(&t.id, &t.label, &t.label_zh, &t.field))
+            .collect::<Vec<_>>(),
+        "securities": m.security.iter()
+            .map(|s| layer(&s.id, &s.label, &s.label_zh, &s.field))
+            .collect::<Vec<_>>(),
+        "rules": m.rule.iter().map(|r| json!({
+            "id": r.id,
+            "template_only": r.template_only,
+            "when": r.when,
+            "require": r.require,
+            "doc": r.doc,
+        })).collect::<Vec<_>>(),
+        "formats": m.format.iter().map(|f| json!({
+            "id": f.id,
+            "label": f.label,
+            "unsupported": f.unsupported.iter().map(|u| json!({
+                "protocol": u.protocol,
+                "protocol_not": u.protocol_not,
+                "transport": u.transport,
+                "security": u.security,
+                "reason": u.reason,
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+    });
+    let body = serde_json::to_string_pretty(&data).unwrap_or_default();
+    format!(
+        "// @generated from proto/protocols.toml by `make gen-protocols` (W26). Do not edit.\n\
+         // The admin node form (admin-protocol-form.ts) reads the protocol layer from here.\n\
+         \n\
+         export interface ManifestField {{\n  name: string;\n  label_zh: string;\n  type: string;\n  values: string[];\n  \
+         value_labels_zh: string[];\n  default: string | null;\n  required: boolean;\n  help_zh: string | null;\n}}\n\n\
+         export interface ManifestProtocol {{\n  id: string;\n  wire: string;\n  label: string;\n  label_zh: string;\n  \
+         transports: string[];\n  security: string[];\n  l4: string;\n  template_requires_tls: boolean;\n  options: ManifestField[];\n}}\n\n\
+         export interface ManifestLayer {{\n  id: string;\n  label: string;\n  label_zh: string;\n  fields: ManifestField[];\n}}\n\n\
+         export interface ManifestRule {{\n  id: string;\n  template_only: boolean;\n  when: Record<string, string[]>;\n  \
+         require: Record<string, string[]>;\n  doc: string;\n}}\n\n\
+         export interface ManifestUnsupported {{\n  protocol: string[];\n  protocol_not: string[];\n  transport: string[];\n  \
+         security: string[];\n  reason: string;\n}}\n\n\
+         export interface ManifestFormat {{\n  id: string;\n  label: string;\n  unsupported: ManifestUnsupported[];\n}}\n\n\
+         export interface ProtocolManifest {{\n  kernel_version: string | null;\n  protocols: ManifestProtocol[];\n  \
+         transports: ManifestLayer[];\n  securities: ManifestLayer[];\n  rules: ManifestRule[];\n  formats: ManifestFormat[];\n}}\n\n\
+         export const MANIFEST: ProtocolManifest = {body};\n"
+    )
 }
 
 #[cfg(test)]

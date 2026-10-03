@@ -22,6 +22,18 @@ import {
   type RenderedInbounds,
   type TemplateCatalog,
 } from "../lib/api";
+import {
+  enumValues,
+  fieldDefault,
+  networkOptionLabel,
+  protocolL4,
+  protocolOptionLabel,
+  templateRequiresTls,
+  transportFields,
+  transportLabel,
+  transportTemplateNetworks,
+  transportTemplateProtocols,
+} from "../lib/admin-protocol-form";
 import { adminErrorText } from "../lib/admin-errors";
 import { UpdateAvailableBadge } from "./admin-update-check";
 import { fmtDate, fmtDateTime, fmtDuration } from "../lib/datetime";
@@ -446,11 +458,28 @@ const TEMPLATE_LABELS: Record<TemplateKind, string> = {
   hysteria2: "Hysteria 2（QUIC/UDP，需节点证书）",
 };
 
-const NETWORK_LABELS: Record<string, string> = {
-  ws: "WebSocket",
-  httpupgrade: "HTTPUpgrade",
-  xhttp: "XHTTP（sing-box 不支持；Clash 仅 VLESS）",
-  grpc: "gRPC（需 TLS）",
+// W26: the manifest protocol each template is (L4, choices); the template
+// rows below are per-template UI overrides, the free "transport" row is
+// generated from the manifest (admin-protocol-form.ts).
+const TEMPLATE_PROTOCOL: Record<TemplateKind, string> = {
+  vless_reality: "vless",
+  vless_reality_xhttp: "vless",
+  vless_tls_vision: "vless",
+  vless_ws_tls: "vless",
+  vmess_ws: "vmess",
+  vmess_tcp: "vmess",
+  trojan_tls: "trojan",
+  transport: "vless",
+  shadowsocks_2022: "ss2022",
+  hysteria2: "hysteria2",
+};
+
+// Form row keys of the manifest's transport fields.
+const FIELD_KEYS: Record<string, "path" | "host" | "mode" | "serviceName"> = {
+  path: "path",
+  host: "host",
+  mode: "mode",
+  service_name: "serviceName",
 };
 
 // Templates that read the node's TLS certificate.
@@ -484,8 +513,8 @@ interface SpecRow {
   tls: boolean;
   // W8 (optional so older callers/tests keep working).
   vision?: boolean;
-  protocol?: "vless" | "vmess" | "trojan";
-  network?: "ws" | "httpupgrade" | "xhttp" | "grpc";
+  protocol?: string;
+  network?: string;
   host?: string;
   mode?: string;
   serviceName?: string;
@@ -503,7 +532,7 @@ function newRow(template: TemplateKind = "vless_reality", port = "443"): SpecRow
     dest: "",
     customDest: "",
     serverName: "",
-    fingerprint: "chrome",
+    fingerprint: fieldDefault("security", "reality", "fingerprint"),
     domain: "",
     path: "",
     tls: false,
@@ -511,17 +540,16 @@ function newRow(template: TemplateKind = "vless_reality", port = "443"): SpecRow
     protocol: "vless",
     network: "ws",
     host: "",
-    mode: "auto",
+    mode: fieldDefault("transport", "xhttp", "mode"),
     serviceName: "",
     method: "",
   };
 }
 
-// Which L4 a template listens on (Hysteria 2 is UDP only, Shadowsocks both).
+// Which L4 a template listens on (manifest: Hysteria 2 is UDP only,
+// Shadowsocks both).
 function rowL4(t: TemplateKind): ("tcp" | "udp")[] {
-  if (t === "hysteria2") return ["udp"];
-  if (t === "shadowsocks_2022") return ["tcp", "udp"];
-  return ["tcp"];
+  return protocolL4(TEMPLATE_PROTOCOL[t]);
 }
 
 // Form rows → API specs; an error string for the first invalid row.
@@ -609,19 +637,26 @@ export function toSpecs(rows: SpecRow[], nodeDomain = ""): InboundSpec[] | strin
       case "transport": {
         const protocol = r.protocol ?? "vless";
         const network = r.network ?? "ws";
-        const tls = r.tls || protocol === "trojan" || network === "grpc";
+        const tls = r.tls || templateRequiresTls(protocol, network);
         if (tls && !domain && !hasNodeDomain)
           return `第 ${n} 个入站：Trojan 与 gRPC 必须启用 TLS，请填写证书域名（或填写节点域名）`;
+        // The transport's manifest fields: set values only (enum fields
+        // only when they differ from the default).
+        const fields: Record<string, string | undefined> = {};
+        for (const f of transportFields(network)) {
+          const v = (r[FIELD_KEYS[f.name]] ?? "").trim();
+          fields[f.name] = v && (f.type !== "enum" || v !== (f.default ?? "")) ? v : undefined;
+        }
         out.push({
           template: "transport",
           port,
           tag,
-          protocol,
-          network,
-          path: network !== "grpc" ? r.path.trim() || undefined : undefined,
-          host: network !== "grpc" ? r.host?.trim() || undefined : undefined,
-          mode: network === "xhttp" && r.mode && r.mode !== "auto" ? r.mode : undefined,
-          service_name: network === "grpc" ? r.serviceName?.trim() || undefined : undefined,
+          protocol: protocol as "vless" | "vmess" | "trojan",
+          network: network as "ws" | "httpupgrade" | "xhttp" | "grpc",
+          path: fields.path,
+          host: fields.host,
+          mode: fields.mode,
+          service_name: fields.service_name,
           tls_domain: tls ? domain || undefined : undefined,
           tls: tls && !domain ? true : undefined,
         });
@@ -773,7 +808,7 @@ function TemplateRows({
                   value={r.fingerprint}
                   onChange={(e) => update(r.key, { fingerprint: e.target.value })}
                 >
-                  {(catalog?.fingerprints ?? ["chrome"]).map((f) => (
+                  {enumValues("security", "reality", "fingerprint").map((f) => (
                     <option key={f} value={f}>
                       {f}
                     </option>
@@ -800,92 +835,8 @@ function TemplateRows({
               Vision 流控（xtls-rprx-vision，推荐）
             </label>
           )}
-          {r.template === "transport" && (
-            <div className="flex flex-wrap items-end gap-3">
-              <div className="space-y-1.5">
-                <Label htmlFor={`proto-${r.key}`}>代理协议</Label>
-                <select
-                  id={`proto-${r.key}`}
-                  className={selectCls}
-                  value={r.protocol ?? "vless"}
-                  onChange={(e) => update(r.key, { protocol: e.target.value as SpecRow["protocol"] })}
-                >
-                  <option value="vless">VLESS</option>
-                  <option value="vmess">VMess</option>
-                  <option value="trojan">Trojan（需 TLS）</option>
-                </select>
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor={`net-${r.key}`}>传输方式</Label>
-                <select
-                  id={`net-${r.key}`}
-                  className={selectCls}
-                  value={r.network ?? "ws"}
-                  onChange={(e) => update(r.key, { network: e.target.value as SpecRow["network"] })}
-                >
-                  {Object.entries(NETWORK_LABELS).map(([k, v]) => (
-                    <option key={k} value={k}>
-                      {v}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {r.protocol !== "trojan" && r.network !== "grpc" && (
-                <label className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={r.tls} onChange={(e) => update(r.key, { tls: e.target.checked })} />
-                  启用 TLS
-                </label>
-              )}
-              {(r.tls || r.protocol === "trojan" || r.network === "grpc") && (
-                <div className="space-y-1.5">
-                  <Label htmlFor={`tdom-${r.key}`}>证书域名</Label>
-                  <Input
-                    id={`tdom-${r.key}`}
-                    className="w-56"
-                    value={r.domain}
-                    placeholder={domainHint}
-                    onChange={(e) => update(r.key, { domain: e.target.value })}
-                  />
-                </div>
-              )}
-              {r.network === "grpc" ? (
-                <div className="space-y-1.5">
-                  <Label htmlFor={`svc-${r.key}`}>gRPC 服务名（可选）</Label>
-                  <Input
-                    id={`svc-${r.key}`}
-                    className="w-40"
-                    value={r.serviceName ?? ""}
-                    placeholder="随机生成"
-                    onChange={(e) => update(r.key, { serviceName: e.target.value })}
-                  />
-                </div>
-              ) : (
-                <>
-                  <div className="space-y-1.5">
-                    <Label htmlFor={`tpath-${r.key}`}>路径（可选）</Label>
-                    <Input
-                      id={`tpath-${r.key}`}
-                      className="w-40"
-                      value={r.path}
-                      placeholder="随机生成"
-                      onChange={(e) => update(r.key, { path: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor={`host-${r.key}`}>Host（可选）</Label>
-                    <Input
-                      id={`host-${r.key}`}
-                      className="w-48"
-                      value={r.host ?? ""}
-                      placeholder="不设置"
-                      onChange={(e) => update(r.key, { host: e.target.value })}
-                    />
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-          {(r.template === "vless_reality_xhttp" || (r.template === "transport" && r.network === "xhttp")) && (
+          {r.template === "transport" && <TransportTemplateFields r={r} update={update} domainHint={domainHint} />}
+          {r.template === "vless_reality_xhttp" && (
             <div className="flex flex-wrap items-end gap-3">
               {r.template === "vless_reality_xhttp" && (
                 <div className="space-y-1.5">
@@ -907,7 +858,7 @@ function TemplateRows({
                   value={r.mode ?? "auto"}
                   onChange={(e) => update(r.key, { mode: e.target.value })}
                 >
-                  {(catalog?.xhttp_modes ?? ["auto", "packet-up", "stream-up", "stream-one"]).map((m) => (
+                  {enumValues("transport", "xhttp", "mode").map((m) => (
                     <option key={m} value={m}>
                       {m}
                     </option>
@@ -926,7 +877,7 @@ function TemplateRows({
                   value={r.method ?? ""}
                   onChange={(e) => update(r.key, { method: e.target.value })}
                 >
-                  {(catalog?.ss_methods ?? ["2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm"]).map((m, idx) => (
+                  {enumValues("protocol", "ss2022", "method").map((m, idx) => (
                     <option key={m} value={idx === 0 ? "" : m}>
                       {m}
                       {idx === 0 ? "（默认）" : ""}
@@ -990,7 +941,8 @@ function TemplateRows({
             r.template === "vless_tls_vision" ||
             r.template === "hysteria2" ||
             ((r.template === "vmess_ws" || r.template === "transport") &&
-              (r.tls || (r.template === "transport" && (r.protocol === "trojan" || r.network === "grpc"))))) && (
+              (r.tls ||
+                (r.template === "transport" && templateRequiresTls(r.protocol ?? "vless", r.network ?? "ws"))))) && (
             <p className="text-xs text-muted-foreground">
               {nodeDomain.trim() ? (
                 <>证书由 agent 为节点域名 {nodeDomain.trim()} 自动申请与续期，无需手工操作。</>
@@ -1008,6 +960,113 @@ function TemplateRows({
       <Button type="button" variant="outline" size="sm" onClick={() => setRows([...rows, newRow("vless_reality", "")])}>
         添加入站
       </Button>
+    </div>
+  );
+}
+
+// The free "transport" template row, generated from the manifest:
+// protocols that stack on a transport, their transports (with what each
+// subscription format leaves out), TLS when the templates require it, and
+// the transport's own fields (label, help, choices).
+function TransportTemplateFields({
+  r,
+  update,
+  domainHint,
+}: {
+  r: SpecRow;
+  update: (key: number, p: Partial<SpecRow>) => void;
+  domainHint: string;
+}) {
+  const protocol = r.protocol ?? "vless";
+  const networks = transportTemplateNetworks(protocol);
+  const network = networks.includes(r.network ?? "") ? (r.network as string) : (networks[0] ?? "ws");
+  const tlsRequired = templateRequiresTls(protocol, network);
+  return (
+    <div className="flex flex-wrap items-end gap-3">
+      <div className="space-y-1.5">
+        <Label htmlFor={`proto-${r.key}`}>代理协议</Label>
+        <select
+          id={`proto-${r.key}`}
+          className={selectCls}
+          value={protocol}
+          onChange={(e) => update(r.key, { protocol: e.target.value })}
+        >
+          {transportTemplateProtocols().map((p) => (
+            <option key={p.id} value={p.id}>
+              {protocolOptionLabel(p)}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor={`net-${r.key}`}>传输方式</Label>
+        <select
+          id={`net-${r.key}`}
+          className={selectCls}
+          value={network}
+          onChange={(e) => update(r.key, { network: e.target.value })}
+        >
+          {networks.map((t) => (
+            <option key={t} value={t}>
+              {networkOptionLabel(protocol, t)}
+            </option>
+          ))}
+        </select>
+      </div>
+      {!tlsRequired && (
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={r.tls} onChange={(e) => update(r.key, { tls: e.target.checked })} />
+          启用 TLS
+        </label>
+      )}
+      {(r.tls || tlsRequired) && (
+        <div className="space-y-1.5">
+          <Label htmlFor={`tdom-${r.key}`}>证书域名</Label>
+          <Input
+            id={`tdom-${r.key}`}
+            className="w-56"
+            value={r.domain}
+            placeholder={domainHint}
+            onChange={(e) => update(r.key, { domain: e.target.value })}
+          />
+        </div>
+      )}
+      {transportFields(network).map((f) => {
+        const key = FIELD_KEYS[f.name];
+        if (!key) return null;
+        const id = `tf-${f.name}-${r.key}`;
+        const value = r[key] ?? "";
+        return (
+          <div key={f.name} className="space-y-1.5">
+            <Label htmlFor={id}>
+              {transportLabel(network)} {f.label_zh}
+              {f.required || f.type === "enum" ? "" : "（可选）"}
+            </Label>
+            {f.type === "enum" ? (
+              <select
+                id={id}
+                className={selectCls}
+                value={value || (f.default ?? "")}
+                onChange={(e) => update(r.key, { [key]: e.target.value })}
+              >
+                {f.values.map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <Input
+                id={id}
+                className="w-48"
+                value={value}
+                placeholder={f.help_zh ?? ""}
+                onChange={(e) => update(r.key, { [key]: e.target.value })}
+              />
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

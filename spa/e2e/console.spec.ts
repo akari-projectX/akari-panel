@@ -363,6 +363,59 @@ test("W11 nodes: xboard-style form, live status, detail page, 立即测速", asy
   await ctx.close();
 });
 
+// W26: the template form is generated from proto/protocols.toml (via
+// admin-protocols.gen.ts): protocols, transports with format notes, the
+// TLS rule and the transport fields; what it sends renders server-side.
+test("W26: node template form generated from the protocol manifest", async ({ browser }) => {
+  test.skip(!secret, "needs the enrollment test");
+  const ctx = await browser.newContext({ locale: "zh-CN" });
+  const page = await ctx.newPage();
+  const problems = watch(page);
+  await page.goto(`${BASE}/nodes`);
+  const next = await nextCode(secret, usedStep);
+  usedStep = next.step;
+  await login(page, ADMIN, ADMIN_PW, next.code);
+  await expect(page).toHaveURL(`${ADMIN_BASE}/nodes`);
+  await page.getByRole("button", { name: "新建节点" }).click();
+  await page.getByLabel("名称（内部，唯一）").fill("e2e-w26");
+  await page.getByLabel("公网地址（IP 或域名）").fill("198.51.100.26");
+  await page.getByLabel("入站 1 协议").selectOption("transport");
+  await expect(page.getByLabel("代理协议").locator("option")).toHaveText(["VLESS", "VMess", "Trojan（需 TLS）"]);
+  await page.getByLabel("代理协议").selectOption("vmess");
+  await expect(page.getByLabel("传输方式").locator("option")).toHaveText([
+    "WebSocket",
+    "HTTPUpgrade",
+    "XHTTP（Clash (mihomo) 不支持；sing-box 不支持）",
+    "gRPC（需 TLS）",
+  ]);
+  // gRPC: TLS is required (no checkbox, a certificate domain instead).
+  await page.getByLabel("传输方式").selectOption("grpc");
+  await expect(page.getByLabel("启用 TLS")).toHaveCount(0);
+  await expect(page.getByLabel("证书域名")).toBeVisible();
+  await expect(page.getByLabel("gRPC serviceName（可选）")).toBeVisible();
+  await page.getByLabel("传输方式").selectOption("xhttp");
+  await expect(page.getByLabel("启用 TLS")).toBeVisible();
+  await page.getByLabel("XHTTP 路径（可选）").fill("/w26");
+  await page.getByLabel("XHTTP 模式").selectOption("stream-up");
+  await page.screenshot({ path: test.info().outputPath("w26-template-form.png"), fullPage: true });
+  await page.getByRole("button", { name: "创建并生成安装命令" }).click();
+  await expect(page.getByText(/curl .*install/).first()).toBeVisible();
+  const api = BASE.replace(/\/app$/, "/api/v1");
+  const nodes = (await (await page.request.get(`${api}/nodes`)).json()) as {
+    name: string;
+    xray_inbounds: {
+      protocol: string;
+      streamSettings?: { network?: string; xhttpSettings?: Record<string, string> };
+    }[];
+  }[];
+  const ib = nodes.find((n) => n.name === "e2e-w26")?.xray_inbounds[0];
+  expect(ib?.protocol).toBe("vmess");
+  expect(ib?.streamSettings?.network).toBe("xhttp");
+  expect(ib?.streamSettings?.xhttpSettings).toEqual({ path: "/w26", mode: "stream-up" });
+  expect(problems).toEqual([]);
+  await ctx.close();
+});
+
 test("W16: coupon + balance purchase (paid without the gateway), console coupons and balances", async ({ browser }) => {
   test.skip(!secret, "needs the enrollment test");
   // Admin: a priced plan (API, same session), a coupon and a balance (UI).

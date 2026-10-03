@@ -255,6 +255,71 @@ describe("AdminNodes", () => {
     expect(screen.getByText("没有 linux/arm64 的 agent 程序")).toBeTruthy();
   });
 
+  // W26: the free transport row is generated from the manifest: its
+  // protocols, transports (with format notes), TLS rule and fields.
+  it("builds a transport template row from the manifest form", async () => {
+    const calls = fakeApi({
+      "GET /nodes": [],
+      "GET /inbound-templates": catalog,
+      "POST /nodes": () => ({
+        status: 201,
+        body: {
+          id: "n9",
+          name: "osaka",
+          enrollment_token: "TOKEN",
+          expires_at: install.expires_at,
+          bootstrap: 'panel_addr = "x"',
+          install,
+        },
+      }),
+    });
+    renderWithClient(<AdminNodes />);
+    fireEvent.click(await screen.findByRole("button", { name: "新建节点" }));
+    fireEvent.change(screen.getByLabelText("名称（内部，唯一）"), { target: { value: "osaka" } });
+    fireEvent.change(screen.getByLabelText("入站 1 协议"), { target: { value: "transport" } });
+    const proto = screen.getByLabelText("代理协议") as HTMLSelectElement;
+    expect([...proto.options].map((o) => o.text)).toEqual(["VLESS", "VMess", "Trojan（需 TLS）"]);
+    fireEvent.change(proto, { target: { value: "vmess" } });
+    const net = screen.getByLabelText("传输方式") as HTMLSelectElement;
+    expect([...net.options].map((o) => o.text)).toEqual([
+      "WebSocket",
+      "HTTPUpgrade",
+      "XHTTP（Clash (mihomo) 不支持；sing-box 不支持）",
+      "gRPC（需 TLS）",
+    ]);
+    fireEvent.change(net, { target: { value: "xhttp" } });
+    expect(screen.getByLabelText("启用 TLS")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("XHTTP 路径（可选）"), { target: { value: "/xh" } });
+    fireEvent.change(screen.getByLabelText("XHTTP Host（可选）"), { target: { value: "cdn.example.com" } });
+    fireEvent.change(screen.getByLabelText("XHTTP 模式"), { target: { value: "stream-up" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建并生成安装命令" }));
+    await screen.findByText(install.command);
+    const create = calls.find((c) => c.method === "POST" && c.path === "/nodes");
+    expect((create?.body as { templates: unknown[] }).templates).toEqual([
+      {
+        template: "transport",
+        port: 443,
+        protocol: "vmess",
+        network: "xhttp",
+        path: "/xh",
+        host: "cdn.example.com",
+        mode: "stream-up",
+      },
+    ]);
+  });
+
+  it("asks for TLS where the manifest requires it (gRPC)", async () => {
+    fakeApi({ "GET /nodes": [], "GET /inbound-templates": catalog });
+    renderWithClient(<AdminNodes />);
+    fireEvent.click(await screen.findByRole("button", { name: "新建节点" }));
+    fireEvent.change(screen.getByLabelText("入站 1 协议"), { target: { value: "transport" } });
+    fireEvent.change(screen.getByLabelText("传输方式"), { target: { value: "grpc" } });
+    expect(screen.queryByLabelText("启用 TLS")).toBeNull();
+    expect(screen.getByLabelText("证书域名")).toBeTruthy();
+    expect(screen.getByLabelText("gRPC serviceName（可选）")).toBeTruthy();
+    expect(screen.queryByLabelText("gRPC 路径（可选）")).toBeNull();
+  });
+
   it("shows enable/disable failures and asks before disabling (F3)", async () => {
     fakeApi({
       ...nodeRoutes([node({})]),
