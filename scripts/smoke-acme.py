@@ -2,7 +2,8 @@
 """W10 automatic node certificate smoke (called by smoke.sh).
 
 A pebble ACME CA (+ pebble-challtestsrv as its DNS, every name -> 127.0.0.1)
-runs in docker; the panel's [acme] directory_url points at it. Here:
+runs in docker; the panel's ACME directory (系统设置 → 节点通信, imported
+from smoke's obsolete [acme] directory_url) points at it. Here:
   - a node is created with a TLS domain and three certificate templates
     (VLESS-WS-TLS, Trojan-TLS, Hysteria 2) that default to that domain,
   - an agent is started for it (answers HTTP-01 on 5002, pebble's port),

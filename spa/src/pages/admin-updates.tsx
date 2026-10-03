@@ -124,7 +124,8 @@ function Releases() {
         </CardTitle>
         <CardDescription>
           从 agent 的 GitHub Release 上传三个文件：二进制、<code>.manifest.json</code> 与 <code>.manifest.sig</code>。
-          面板先用 <code>updates.release_keys</code> 校验签名，agent 再用编译进自身的公钥校验一次。
+          面板先用内置的官方发布公钥（以及「系统设置 → 安全」里额外信任的公钥）校验签名，agent
+          再用编译进自身的公钥校验一次。
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

@@ -121,6 +121,29 @@ jobs:
           command: check
           # rust-version: the action's bundled cargo-deny needs no toolchain.
 
+  release-keys:
+    # W25: the panel compiles in the official release keys (early refusal of
+    # wrong uploads); src/release-keys.txt must stay a byte-identical copy of
+    # akari-agent's release-keys.txt (the agents' trust root) on its main.
+    name: release keys match akari-agent main
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: akari-panel
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: akari-projectX/akari-agent
+          ref: main
+          path: akari-agent
+      - run: |
+          cmp akari-panel/src/release-keys.txt akari-agent/release-keys.txt || {
+            echo "::error file=src/release-keys.txt::differs from akari-agent main release-keys.txt; copy it verbatim"
+            diff akari-agent/release-keys.txt akari-panel/src/release-keys.txt
+            exit 1
+          }
+
   docker:
     # The release Dockerfile must keep building (no push): static binary,
     # non-root distroless runtime, version stamped.

@@ -61,6 +61,13 @@ impl TestDb {
             .await
             .unwrap();
         sqlx::migrate!("./migrations").run(&migrator).await.unwrap();
+        // W25: a node domain, like the grpc.advertise every test relied on
+        // before it moved to 系统设置 (tokens need one). Tests of the unset
+        // case clear it.
+        sqlx::query("UPDATE panel_settings SET node_domain = '127.0.0.1:8443'")
+            .execute(&migrator)
+            .await
+            .unwrap();
         migrator.close().await;
         let pool = PgPoolOptions::new()
             .max_connections(8)
@@ -72,6 +79,18 @@ impl TestDb {
             pool,
             schema,
         })
+    }
+
+    /// W25: write 系统设置 columns directly (`assignments` is SQL such as
+    /// "main_domain = 'x.example'") and reload `state`'s view of them.
+    pub async fn settings(&self, state: &crate::state::AppState, assignments: &str) {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE panel_settings SET {assignments}, version = version + 1 WHERE id = 1"
+        )))
+        .execute(&self.pool)
+        .await
+        .unwrap();
+        crate::settings::reload(state).await.unwrap();
     }
 
     /// A plain enabled role=user account.

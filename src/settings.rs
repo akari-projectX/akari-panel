@@ -1,5 +1,7 @@
-//! System settings (R22, admin "系统设置"): the three domains and "trust
-//! Cloudflare".
+//! System settings (R22, admin "系统设置"): the three domains, "trust
+//! Cloudflare" and (W25/R39) everything else an operator changes: latency
+//! tests, Cloudflare ranges, install-command pin and download fallback,
+//! ACME, retention, admin 2FA policy, remove mode, extra release keys.
 //!
 //! * **Main domain** (`main_domain`): admin console, user portal, install
 //!   links (`nodeinstall::prepare`) and the base of payment notify URLs
@@ -12,9 +14,10 @@
 //!   behind Cloudflare. Falls back to the main domain.
 //! * **Node communication domain** (`node_domain`, grey cloud): panel_addr
 //!   and server_name written into NEW bootstrap files / install scripts
-//!   (fixed per token in `node_enrollments.panel_addr/server_name`). The
-//!   gRPC server certificate covers every name in `grpc_server_names` (plus
-//!   `web.advertised_names`): saving a node domain adds it, issuing any
+//!   (fixed per token in `node_enrollments.panel_addr/server_name`). Unset
+//!   = no token can be issued (`settings.node_domain_unset`). The gRPC
+//!   server certificate covers every name in `grpc_server_names` (plus
+//!   `BOOT_NAMES`): saving a node domain adds it, issuing any
 //!   token adds the name written into that bootstrap, and only
 //!   `apply_remove_server_name` (explicit admin action, shows the nodes
 //!   still using it) removes one. Enrolled agents keep their bootstrap's
@@ -31,12 +34,13 @@
 //!   shorter interval pulls far-off scheduled panel tests forward in the
 //!   saving transaction (`apply_update_probe`).
 //!
-//! Precedence: a database value (non-NULL column) wins; NULL = panel.toml
-//! (`install.public_url`, `web.sub_domain`, `grpc.advertise` /
-//! `grpc.server_name`, `web.trust_cloudflare`, `[probe] interval_secs` /
-//! `urls` / `panel_tcp`). `akari config check` shows
-//! both; `akari settings show|unset` reads/clears the database side (e.g.
-//! after a mistyped main domain).
+//! W25 (R39): the database is the ONLY source. NULL = the built-in default
+//! (`Effective`), never a panel.toml value. Keys of older panel.toml files
+//! are imported once (`import_legacy`, actor `system`, audited
+//! `settings.import`) and then ignored with a warning.
+//! `akari settings show|set|unset` reads/changes the row from the CLI (e.g.
+//! after a mistyped main domain, or to set the node domain before the first
+//! login).
 //!
 //! Writes: `apply_update` / `apply_remove_server_name` in the caller's
 //! transaction, audited in the same transaction, `version` bumped. The 0060
@@ -69,7 +73,7 @@ use crate::api::ApiJson;
 use crate::audit::Actor;
 use crate::auth::{ApiError, AuthUser};
 use crate::client_ip::{Cidr, Trust};
-use crate::config::{PanelConfig, ProbeConfig};
+use crate::config::{PanelConfig, ProbeConfig, RemoveMode};
 use crate::install::Install;
 use crate::nodeinstall::Origin;
 use crate::state::AppState;
@@ -245,24 +249,50 @@ pub struct Stored {
     pub sub_domain: Option<String>,
     pub node_domain: Option<String>,
     pub trust_cloudflare: Option<bool>,
-    /// W12: latency tests (NULL = panel.toml `[probe]`).
+    /// W12: latency tests (NULL = built-in default).
     pub probe_interval_secs: Option<i32>,
     pub probe_urls: Option<Vec<String>>,
     pub probe_panel_tcp: Option<bool>,
     /// W21: 站点名称 (browser titles, mail headers; NULL = "Akari").
     pub site_name: Option<String>,
+    /// W25: Cloudflare edge ranges (NULL = the shipped list).
+    pub cloudflare_ranges: Option<Vec<String>>,
+    /// W25: install command pin (NULL = probed) and agent download
+    /// fallback (NULL = the official release; "" = none).
+    pub install_tls_pin: Option<String>,
+    pub install_fallback_url: Option<String>,
+    /// W25: ACME directory (NULL = Let's Encrypt) and contact e-mail.
+    pub acme_directory_url: Option<String>,
+    pub acme_email: Option<String>,
+    /// W25: retention (NULL = 365 / 400 days).
+    pub audit_retention_days: Option<i32>,
+    pub traffic_daily_retention_days: Option<i32>,
+    /// W25: admins must use 2FA (NULL = false).
+    pub require_admin_2fa: Option<bool>,
+    /// W25: "gate" | "rebuild" (NULL = gate).
+    pub remove_mode: Option<String>,
+    /// W25: release keys trusted besides the official ones.
+    pub extra_release_keys: Option<Vec<String>>,
     #[serde(skip)]
     pub updated_at: Option<DateTime<Utc>>,
 }
 
 const STORED_COLS: &str = "version, main_domain, sub_domain, node_domain, trust_cloudflare, \
-     probe_interval_secs, probe_urls, probe_panel_tcp, site_name, updated_at";
-const SELECT_STORED: &str = "SELECT version, main_domain, sub_domain, node_domain, \
-     trust_cloudflare, probe_interval_secs, probe_urls, probe_panel_tcp, site_name, updated_at \
-     FROM panel_settings WHERE id = 1";
-const LOCK_STORED: &str = "SELECT version, main_domain, sub_domain, node_domain, \
-     trust_cloudflare, probe_interval_secs, probe_urls, probe_panel_tcp, site_name, updated_at \
-     FROM panel_settings WHERE id = 1 FOR UPDATE";
+     probe_interval_secs, probe_urls, probe_panel_tcp, site_name, cloudflare_ranges, \
+     install_tls_pin, install_fallback_url, acme_directory_url, acme_email, \
+     audit_retention_days, traffic_daily_retention_days, require_admin_2fa, remove_mode, \
+     extra_release_keys, updated_at";
+
+fn select_stored(lock: bool) -> sqlx::AssertSqlSafe<String> {
+    sqlx::AssertSqlSafe(format!(
+        "SELECT {STORED_COLS} FROM panel_settings WHERE id = 1{}",
+        if lock { " FOR UPDATE" } else { "" }
+    ))
+}
+
+async fn read_stored(conn: &mut PgConnection, lock: bool) -> sqlx::Result<Stored> {
+    sqlx::query_as(select_stored(lock)).fetch_one(conn).await
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
 pub struct ServerName {
@@ -277,12 +307,15 @@ pub struct ServerName {
 pub enum Source {
     /// The database (admin "系统设置").
     Settings,
-    /// panel.toml.
-    Config,
+    /// Not set: the built-in default.
+    Default,
     /// The subscription domain follows the main domain.
     Main,
     /// Nothing configured: the admin's browser origin is used.
     Browser,
+    /// Not set and no default: the feature is unavailable (node domain:
+    /// no enrollment token can be issued).
+    Unset,
 }
 
 /// What a bootstrap file / install script tells an agent.
@@ -294,6 +327,13 @@ pub struct NodeEndpoint {
     pub server_name: String,
 }
 
+/// Names the gRPC server certificate always covers (the boot certificate
+/// before the database is read; loopback agents in development).
+pub const BOOT_NAMES: &[&str] = &["127.0.0.1", "localhost"];
+
+/// W25: built-in defaults of the database settings.
+pub const DEFAULT_AUDIT_RETENTION_DAYS: u32 = 365;
+
 #[derive(Debug, Clone)]
 pub struct Effective {
     pub stored: Stored,
@@ -302,15 +342,35 @@ pub struct Effective {
     pub main_source: Source,
     pub sub: Option<Origin>,
     pub sub_source: Source,
-    pub node: NodeEndpoint,
+    /// None = no node domain set: tokens cannot be issued.
+    pub node: Option<NodeEndpoint>,
     pub node_source: Source,
     pub trust_cloudflare: bool,
     pub trust_source: Source,
     pub trust: Trust,
-    /// W12: the effective latency-test settings (`[probe]` with the stored
-    /// interval / URLs / panel TCP switch applied) and where each comes from.
+    /// The Cloudflare edge ranges (stored override, else shipped).
+    pub cloudflare: Vec<Cidr>,
+    pub cloudflare_source: Source,
+    /// W12: the effective latency-test settings (stored interval / URLs /
+    /// panel TCP switch over the built-in defaults) and where each comes
+    /// from.
     pub probe: ProbeConfig,
     pub probe_sources: ProbeSources,
+    /// W25: install command pin (None = probe when issuing).
+    pub install_tls_pin: Option<String>,
+    /// W25: agent download fallback (None = none).
+    pub install_fallback_url: Option<String>,
+    /// W25: ACME directory ("" = Let's Encrypt) and contact e-mail.
+    pub acme_directory_url: String,
+    pub acme_email: String,
+    /// W25: days (0 = forever).
+    pub audit_retention_days: u32,
+    pub traffic_daily_retention_days: u32,
+    pub require_admin_2fa: bool,
+    pub remove_mode: RemoveMode,
+    /// W25: every trusted release key: the official ones compiled in, then
+    /// the extra ones from the settings.
+    pub release_keys: Vec<crate::updates::ReleaseKey>,
     /// Some = the host gate is on (main domain set in the database): DNS
     /// names allowed as Host.
     host_gate: Option<HashSet<String>>,
@@ -328,19 +388,25 @@ pub struct ProbeSources {
     pub panel_tcp: Source,
 }
 
-/// Bounds of the editable latency-test values (= `config_check`'s).
+/// Bounds of the editable latency-test values.
 pub const PROBE_INTERVAL_SECS: std::ops::RangeInclusive<u64> = 600..=604_800;
 pub const PROBE_MAX_URLS: usize = 4;
 
-/// Pure: `[probe]` with the stored values applied. A stored value outside
-/// the bounds (impossible through the API and the 0091 CHECKs) is ignored
-/// with an error log.
+/// Pure: the built-in latency-test settings with the stored values
+/// applied. A stored value outside the bounds (impossible through the API
+/// and the 0091 CHECKs) is ignored with an error log.
 fn effective_probe(cfg: &PanelConfig, stored: &Stored) -> (ProbeConfig, ProbeSources) {
-    let mut p = cfg.probe.clone();
+    let l = &cfg.limits;
+    let mut p = ProbeConfig {
+        timeout_ms: l.probe_timeout_ms,
+        attempts: l.probe_attempts,
+        manual_cooldown_secs: l.probe_manual_cooldown_secs,
+        ..ProbeConfig::default()
+    };
     let mut src = ProbeSources {
-        interval_secs: Source::Config,
-        urls: Source::Config,
-        panel_tcp: Source::Config,
+        interval_secs: Source::Default,
+        urls: Source::Default,
+        panel_tcp: Source::Default,
     };
     if let Some(v) = stored.probe_interval_secs {
         match u64::try_from(v) {
@@ -380,24 +446,45 @@ fn origin_host(o: &Origin) -> String {
         .to_ascii_lowercase()
 }
 
-/// Port of `grpc.advertise` (validated at startup; 8443 if unparsable).
-fn advertise_port(cfg: &PanelConfig) -> u16 {
-    cfg.grpc
-        .advertise
-        .rsplit_once(':')
-        .and_then(|(_, p)| p.parse().ok())
-        .unwrap_or(8443)
+/// Pure: the Cloudflare ranges (stored override, else shipped).
+fn effective_cloudflare(stored: &Stored) -> (Vec<Cidr>, Source) {
+    if let Some(list) = &stored.cloudflare_ranges {
+        match list
+            .iter()
+            .map(|c| Cidr::parse(c))
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(v) if !v.is_empty() => return (v, Source::Settings),
+            _ => tracing::error!("stored Cloudflare ranges invalid; the shipped list applies"),
+        }
+    }
+    (crate::cloudflare::shipped_or_empty(), Source::Default)
 }
 
-/// Pure: the effective settings from panel.toml, the stored row and the
-/// name history. A stored value that no longer parses (cannot happen
-/// through the API) is ignored with an error log, as if unset.
-pub fn compute(
-    cfg: &PanelConfig,
-    stored: Stored,
-    server_names: Vec<ServerName>,
-    cloudflare: &[Cidr],
-) -> Effective {
+/// Pure: the official release keys plus the stored extra ones (a stored
+/// list that does not parse is ignored with an error log).
+fn effective_release_keys(stored: &Stored) -> Vec<crate::updates::ReleaseKey> {
+    let mut keys = crate::updates::official_release_keys();
+    if let Some(extra) = &stored.extra_release_keys {
+        match crate::updates::parse_release_keys(extra) {
+            Ok(v) => {
+                for k in v {
+                    if !keys.iter().any(|o| o.id == k.id) {
+                        keys.push(k);
+                    }
+                }
+            }
+            Err(e) => tracing::error!(error = %e, "stored extra release keys invalid; ignored"),
+        }
+    }
+    keys
+}
+
+/// Pure: the effective settings from the stored row and the name history
+/// (`cfg` only supplies the listeners, trusted proxies and constants). A
+/// stored value that no longer parses (cannot happen through the API) is
+/// ignored with an error log, as if unset.
+pub fn compute(cfg: &PanelConfig, stored: Stored, server_names: Vec<ServerName>) -> Effective {
     let parsed = |field: &str, v: &Option<String>| -> Option<Domain> {
         let v = v.as_deref()?;
         match Domain::parse(v) {
@@ -408,61 +495,44 @@ pub fn compute(
             }
         }
     };
-    let config_main = Some(cfg.install.public_url.as_str())
-        .filter(|u| !u.is_empty())
-        .and_then(|u| crate::nodeinstall::parse_origin(u).ok());
     let (main, main_source) = match parsed("main_domain", &stored.main_domain) {
         Some(d) => (Some(d.https_origin()), Source::Settings),
-        None => match &config_main {
-            Some(o) => (Some(o.clone()), Source::Config),
-            None => (None, Source::Browser),
-        },
+        None => (None, Source::Browser),
     };
-    let config_sub = Some(cfg.web.sub_domain.as_str())
-        .filter(|s| !s.is_empty())
-        .and_then(|s| Domain::parse(s).ok());
     let (sub, sub_source) = match parsed("sub_domain", &stored.sub_domain) {
         Some(d) => (Some(d.https_origin()), Source::Settings),
-        None => match config_sub {
-            Some(d) => (Some(d.https_origin()), Source::Config),
-            None => (
-                main.clone(),
-                if main.is_some() {
-                    Source::Main
-                } else {
-                    Source::Browser
-                },
-            ),
-        },
+        None => (
+            main.clone(),
+            if main.is_some() {
+                Source::Main
+            } else {
+                Source::Browser
+            },
+        ),
     };
     let (node, node_source) = match parsed("node_domain", &stored.node_domain) {
         Some(d) => (
-            NodeEndpoint {
+            Some(NodeEndpoint {
                 panel_addr: Domain {
                     host: d.host.clone(),
-                    port: Some(d.port.unwrap_or_else(|| advertise_port(cfg))),
+                    port: Some(d.port.unwrap_or(cfg.grpc.bind.port())),
                 }
                 .authority(),
                 server_name: d.host,
-            },
+            }),
             Source::Settings,
         ),
-        None => (
-            NodeEndpoint {
-                panel_addr: cfg.grpc.advertise.clone(),
-                server_name: cfg.grpc.server_name.clone(),
-            },
-            Source::Config,
-        ),
+        None => (None, Source::Unset),
     };
     let (trust_cloudflare, trust_source) = match stored.trust_cloudflare {
         Some(v) => (v, Source::Settings),
-        None => (cfg.web.trust_cloudflare, Source::Config),
+        None => (false, Source::Default),
     };
+    let (cloudflare, cloudflare_source) = effective_cloudflare(&stored);
     let trust = Trust {
         proxies: cfg.web.trusted_proxies.clone(),
         cloudflare: if trust_cloudflare {
-            cloudflare.to_vec()
+            cloudflare.clone()
         } else {
             Vec::new()
         },
@@ -474,18 +544,38 @@ pub fn compute(
             ask_hosts.insert(h);
         }
     }
-    let host_gate = (main_source == Source::Settings).then(|| {
-        let mut allowed = ask_hosts.clone();
-        if let Some(o) = &config_main {
-            allowed.insert(origin_host(o));
-        }
-        allowed
-    });
-    let sans = sans(cfg, &server_names, &node.server_name);
+    let host_gate = (main_source == Source::Settings).then(|| ask_hosts.clone());
+    let sans = sans(
+        &server_names,
+        node.as_ref().map(|n| n.server_name.as_str()).unwrap_or(""),
+    );
     let (probe, probe_sources) = effective_probe(cfg, &stored);
+    let days =
+        |v: Option<i32>, default: u32| v.and_then(|v| u32::try_from(v).ok()).unwrap_or(default);
+    let fallback = match stored.install_fallback_url.as_deref() {
+        None => Some(crate::config::DEFAULT_FALLBACK_BINARY_URL.to_string()),
+        Some("") => None,
+        Some(u) => Some(u.to_string()),
+    };
     Effective {
         probe,
         probe_sources,
+        install_tls_pin: stored.install_tls_pin.clone(),
+        install_fallback_url: fallback,
+        acme_directory_url: stored.acme_directory_url.clone().unwrap_or_default(),
+        acme_email: stored.acme_email.clone().unwrap_or_default(),
+        audit_retention_days: days(stored.audit_retention_days, DEFAULT_AUDIT_RETENTION_DAYS),
+        traffic_daily_retention_days: days(
+            stored.traffic_daily_retention_days,
+            crate::traffic::DEFAULT_DAILY_RETENTION_DAYS,
+        ),
+        require_admin_2fa: stored.require_admin_2fa.unwrap_or(false),
+        remove_mode: stored
+            .remove_mode
+            .as_deref()
+            .and_then(RemoveMode::parse)
+            .unwrap_or_default(),
+        release_keys: effective_release_keys(&stored),
         stored,
         server_names,
         main,
@@ -497,17 +587,19 @@ pub fn compute(
         trust_cloudflare,
         trust_source,
         trust,
+        cloudflare,
+        cloudflare_source,
         host_gate,
         ask_hosts,
         sans,
     }
 }
 
-/// The gRPC server certificate's names: panel.toml's advertised_names, every
-/// recorded server name, and the current node server name. Grows with the
-/// history; nothing here can drop a recorded name.
-pub fn sans(cfg: &PanelConfig, history: &[ServerName], node_server_name: &str) -> Vec<String> {
-    let mut set: BTreeSet<String> = cfg.web.advertised_names.iter().cloned().collect();
+/// The gRPC server certificate's names: `BOOT_NAMES`, every recorded
+/// server name, and the current node server name. Grows with the history;
+/// nothing here can drop a recorded name.
+pub fn sans(history: &[ServerName], node_server_name: &str) -> Vec<String> {
+    let mut set: BTreeSet<String> = BOOT_NAMES.iter().map(|n| n.to_string()).collect();
     set.extend(history.iter().map(|n| n.name.clone()));
     if !node_server_name.is_empty() {
         set.insert(node_server_name.to_string());
@@ -589,27 +681,18 @@ pub struct Live {
     current: ArcSwap<Effective>,
     certs: Arc<CertResolver>,
     reload_lock: tokio::sync::Mutex<()>,
-    cloudflare: Vec<Cidr>,
     /// Ask endpoint CPU guard: (window start, answered in window).
     ask_window: Mutex<(Instant, u32)>,
 }
 
 impl Live {
-    /// From panel.toml alone (the database is read by `init`). Serves the
-    /// boot certificate of `install` (web.advertised_names) until then.
+    /// Built-in defaults only (the database is read by `init`). Serves the
+    /// boot certificate of `install` (`BOOT_NAMES`) until then.
     pub fn new(cfg: &PanelConfig, install: &Install) -> Self {
-        let cloudflare = crate::cloudflare::ranges(cfg);
-        let eff = compute(cfg, Stored::default(), Vec::new(), &cloudflare);
+        let eff = compute(cfg, Stored::default(), Vec::new());
         let certs = Arc::new(CertResolver::default());
         if !install.server_cert_pem.is_empty() {
-            let names: Vec<String> = cfg
-                .web
-                .advertised_names
-                .iter()
-                .cloned()
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
+            let names: Vec<String> = sans(&[], "");
             if let Err(e) = certs.set(&install.server_cert_pem, &install.server_key_pem, names) {
                 tracing::error!(error = %e, "boot server certificate unusable");
             }
@@ -618,7 +701,6 @@ impl Live {
             current: ArcSwap::from_pointee(eff),
             certs,
             reload_lock: tokio::sync::Mutex::new(()),
-            cloudflare,
             ask_window: Mutex::new((Instant::now(), 0)),
         }
     }
@@ -629,10 +711,6 @@ impl Live {
 
     pub fn certs(&self) -> &Arc<CertResolver> {
         &self.certs
-    }
-
-    pub fn cloudflare(&self) -> &[Cidr] {
-        &self.cloudflare
     }
 
     /// Fixed one-second window; true = answer this ask request.
@@ -651,7 +729,7 @@ impl Live {
 }
 
 async fn load(conn: &mut PgConnection) -> sqlx::Result<(Stored, Vec<ServerName>)> {
-    let stored: Stored = sqlx::query_as(SELECT_STORED).fetch_one(&mut *conn).await?;
+    let stored = read_stored(&mut *conn, false).await?;
     let names: Vec<ServerName> = sqlx::query_as(
         "SELECT name, source, first_used_at FROM grpc_server_names ORDER BY first_used_at, name",
     )
@@ -672,7 +750,7 @@ pub async fn reload(state: &AppState) -> anyhow::Result<()> {
         .await?;
     let (stored, names) = load(&mut tx).await?;
     tx.commit().await?;
-    let eff = compute(state.cfg(), stored, names, live.cloudflare());
+    let eff = compute(state.cfg(), stored, names);
     let inst = state.install();
     if eff.sans != live.certs.names() && !inst.ca_pem.is_empty() {
         let (cert, key) =
@@ -680,15 +758,23 @@ pub async fn reload(state: &AppState) -> anyhow::Result<()> {
         live.certs.set(&cert, &key, eff.sans.clone())?;
         tracing::info!(names = ?eff.sans, "gRPC server certificate re-issued");
     }
-    let probe_changed = probe_wire(&live.get().probe) != probe_wire(&eff.probe);
+    let prev = live.get();
+    let probe_changed = probe_wire(&prev.probe) != probe_wire(&eff.probe);
+    // LeaseGrant carries the remove mode and Snapshots the ACME settings:
+    // sessions re-read and re-send when these change.
+    let agents_changed = probe_changed
+        || prev.remove_mode != eff.remove_mode
+        || prev.acme_directory_url != eff.acme_directory_url
+        || prev.acme_email != eff.acme_email;
     live.current.store(Arc::new(eff));
     // W24: 系统设置 → 支付 shares the notification and this serialization.
     crate::billing::methods::reload(state).await?;
-    if probe_changed {
-        // Every local session re-reads and re-sends LatencyProbeConfig when
-        // it differs from what it sent (jittered wake-all; settings changes
-        // are rare admin actions).
-        tracing::info!("latency test settings changed; waking agent sessions");
+    if agents_changed {
+        // Every local session re-reads (jittered wake-all; settings changes
+        // are rare admin actions): it re-sends LatencyProbeConfig when it
+        // differs from what it sent, grants the lease with the current
+        // remove mode.
+        tracing::info!("agent-facing settings changed; waking agent sessions");
         state.wakeups().wake_all();
     }
     Ok(())
@@ -699,12 +785,9 @@ fn probe_wire(p: &ProbeConfig) -> (u64, &[String], u32, u32) {
     (p.interval_secs, &p.urls, p.timeout_ms, p.attempts)
 }
 
-/// Startup: record panel.toml's grpc.server_name (agents enrolled before
-/// 0060 verify it), then load.
+/// Startup: load the settings (obsolete panel.toml keys were imported by
+/// `import_legacy` before).
 pub async fn init(state: &AppState) -> anyhow::Result<()> {
-    let mut conn = state.pg().acquire().await?;
-    record_server_name(&mut conn, &state.cfg().grpc.server_name, "config").await?;
-    drop(conn);
     reload(state).await
 }
 
@@ -745,20 +828,26 @@ pub async fn record_server_name(
 }
 
 /// The endpoint for a bootstrap issued in the caller's transaction (read
-/// from the database, not this instance's cache).
+/// from the database, not this instance's cache). Unset node domain = a
+/// coded 400 (`settings.node_domain_unset`): no token without an address.
 pub async fn node_endpoint(
     conn: &mut PgConnection,
     cfg: &PanelConfig,
-) -> sqlx::Result<NodeEndpoint> {
-    let stored: Stored = sqlx::query_as(SELECT_STORED).fetch_one(&mut *conn).await?;
-    Ok(compute(cfg, stored, Vec::new(), &[]).node)
+) -> Result<NodeEndpoint, ApiError> {
+    let stored = read_stored(conn, false).await?;
+    compute(cfg, stored, Vec::new()).node.ok_or_else(|| {
+        bad_request!(
+            "settings.node_domain_unset",
+            "节点通信域名未设置：请先在 系统设置 → 节点通信 中填写节点连接面板所用的域名或 IP（agent 用它连接 gRPC 端口）"
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------
 // Mutations
 // ---------------------------------------------------------------------------
 
-/// New values (already validated/normalized; None = unset → panel.toml).
+/// New values (already validated/normalized; None = unset).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Values {
     pub main_domain: Option<String>,
@@ -795,7 +884,7 @@ pub async fn apply_update(
     expected_version: i64,
     new: &Values,
 ) -> Result<Stored, ApiError> {
-    let cur: Stored = sqlx::query_as(LOCK_STORED).fetch_one(&mut *conn).await?;
+    let cur = read_stored(&mut *conn, true).await?;
     if cur.version != expected_version {
         return Err(conflict!(
             "settings.version_conflict",
@@ -806,13 +895,11 @@ pub async fn apply_update(
     if &before == new {
         return Ok(cur);
     }
-    let row: Stored = sqlx::query_as(
+    let row: Stored = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "UPDATE panel_settings SET main_domain = $1, sub_domain = $2, node_domain = $3, \
              trust_cloudflare = $4, version = version + 1, updated_at = now() \
-         WHERE id = 1 \
-         RETURNING version, main_domain, sub_domain, node_domain, trust_cloudflare, \
-             probe_interval_secs, probe_urls, probe_panel_tcp, site_name, updated_at",
-    )
+         WHERE id = 1 RETURNING {STORED_COLS}"
+    )))
     .bind(&new.main_domain)
     .bind(&new.sub_domain)
     .bind(&new.node_domain)
@@ -840,7 +927,7 @@ pub async fn apply_update(
     Ok(row)
 }
 
-/// W12: new latency-test values (validated; None = unset → panel.toml).
+/// W12: new latency-test values (validated; None = unset → default).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProbeValues {
     pub interval_secs: Option<i32>,
@@ -877,7 +964,7 @@ pub async fn apply_update_probe(
     expected_version: i64,
     new: &ProbeValues,
 ) -> Result<Stored, ApiError> {
-    let cur: Stored = sqlx::query_as(LOCK_STORED).fetch_one(&mut *conn).await?;
+    let cur = read_stored(&mut *conn, true).await?;
     if cur.version != expected_version {
         return Err(conflict!(
             "settings.version_conflict",
@@ -952,7 +1039,7 @@ pub async fn apply_update_site(
     expected_version: i64,
     site_name: Option<String>,
 ) -> Result<Stored, ApiError> {
-    let cur: Stored = sqlx::query_as(LOCK_STORED).fetch_one(&mut *conn).await?;
+    let cur = read_stored(&mut *conn, true).await?;
     if cur.version != expected_version {
         return Err(conflict!(
             "settings.version_conflict",
@@ -1005,6 +1092,396 @@ pub async fn put_site(
     Ok(Json(view(&state, Vec::new()).await?))
 }
 
+// ---------------------------------------------------------------------------
+// W25: node-facing settings (节点通信) and security/retention (安全)
+// ---------------------------------------------------------------------------
+
+/// 节点通信 extras (validated; None = built-in default).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NodeOpsValues {
+    pub install_tls_pin: Option<String>,
+    /// Some("") = no download fallback.
+    pub install_fallback_url: Option<String>,
+    pub acme_directory_url: Option<String>,
+    pub acme_email: Option<String>,
+    pub remove_mode: Option<String>,
+}
+
+impl NodeOpsValues {
+    fn of(s: &Stored) -> Self {
+        Self {
+            install_tls_pin: s.install_tls_pin.clone(),
+            install_fallback_url: s.install_fallback_url.clone(),
+            acme_directory_url: s.acme_directory_url.clone(),
+            acme_email: s.acme_email.clone(),
+            remove_mode: s.remove_mode.clone(),
+        }
+    }
+    fn audit(&self) -> serde_json::Value {
+        json!({
+            "install_tls_pin": self.install_tls_pin,
+            "install_fallback_url": self.install_fallback_url,
+            "acme_directory_url": self.acme_directory_url,
+            "acme_email": self.acme_email,
+            "remove_mode": self.remove_mode,
+        })
+    }
+}
+
+/// 安全 (validated; None = built-in default).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SecurityValues {
+    pub require_admin_2fa: Option<bool>,
+    pub audit_retention_days: Option<i32>,
+    pub traffic_daily_retention_days: Option<i32>,
+    pub cloudflare_ranges: Option<Vec<String>>,
+    pub extra_release_keys: Option<Vec<String>>,
+}
+
+impl SecurityValues {
+    fn of(s: &Stored) -> Self {
+        Self {
+            require_admin_2fa: s.require_admin_2fa,
+            audit_retention_days: s.audit_retention_days,
+            traffic_daily_retention_days: s.traffic_daily_retention_days,
+            cloudflare_ranges: s.cloudflare_ranges.clone(),
+            extra_release_keys: s.extra_release_keys.clone(),
+        }
+    }
+    fn audit(&self) -> serde_json::Value {
+        json!({
+            "require_admin_2fa": self.require_admin_2fa,
+            "audit_retention_days": self.audit_retention_days,
+            "traffic_daily_retention_days": self.traffic_daily_retention_days,
+            "cloudflare_ranges": self.cloudflare_ranges.as_ref().map(Vec::len),
+            "extra_release_keys": self.extra_release_keys,
+        })
+    }
+}
+
+fn check_version(cur: &Stored, expected: i64) -> Result<(), ApiError> {
+    if cur.version != expected {
+        return Err(conflict!(
+            "settings.version_conflict",
+            "设置已被修改（可能是其他管理员），请刷新后重试"
+        ));
+    }
+    Ok(())
+}
+
+/// Write the 节点通信 extras (same row and `version`: 409 on a stale
+/// form). Audited as `settings.nodes.update`. Agents follow through the
+/// reload (remove mode on the next LeaseGrant, ACME on the next Snapshot).
+pub async fn apply_update_node_ops(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    expected_version: i64,
+    new: &NodeOpsValues,
+) -> Result<Stored, ApiError> {
+    let cur = read_stored(&mut *conn, true).await?;
+    check_version(&cur, expected_version)?;
+    let before = NodeOpsValues::of(&cur);
+    if &before == new {
+        return Ok(cur);
+    }
+    let row: Stored = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "UPDATE panel_settings SET install_tls_pin = $1, install_fallback_url = $2, \
+             acme_directory_url = $3, acme_email = $4, remove_mode = $5, \
+             version = version + 1, updated_at = now() \
+         WHERE id = 1 RETURNING {STORED_COLS}"
+    )))
+    .bind(&new.install_tls_pin)
+    .bind(&new.install_fallback_url)
+    .bind(&new.acme_directory_url)
+    .bind(&new.acme_email)
+    .bind(&new.remove_mode)
+    .fetch_one(&mut *conn)
+    .await?;
+    crate::audit::record(
+        conn,
+        actor,
+        "settings.nodes.update",
+        "settings",
+        None,
+        Some(before.audit()),
+        Some(new.audit()),
+    )
+    .await?;
+    Ok(row)
+}
+
+/// Write the 安全 settings (same row and `version`). Audited as
+/// `settings.security.update` (the Cloudflare list as its length).
+pub async fn apply_update_security(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    expected_version: i64,
+    new: &SecurityValues,
+) -> Result<Stored, ApiError> {
+    let cur = read_stored(&mut *conn, true).await?;
+    check_version(&cur, expected_version)?;
+    let before = SecurityValues::of(&cur);
+    if &before == new {
+        return Ok(cur);
+    }
+    let row: Stored = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "UPDATE panel_settings SET require_admin_2fa = $1, audit_retention_days = $2, \
+             traffic_daily_retention_days = $3, cloudflare_ranges = $4, \
+             extra_release_keys = $5, version = version + 1, updated_at = now() \
+         WHERE id = 1 RETURNING {STORED_COLS}"
+    )))
+    .bind(new.require_admin_2fa)
+    .bind(new.audit_retention_days)
+    .bind(new.traffic_daily_retention_days)
+    .bind(&new.cloudflare_ranges)
+    .bind(&new.extra_release_keys)
+    .fetch_one(&mut *conn)
+    .await?;
+    crate::audit::record(
+        conn,
+        actor,
+        "settings.security.update",
+        "settings",
+        None,
+        Some(before.audit()),
+        Some(new.audit()),
+    )
+    .await?;
+    Ok(row)
+}
+
+/// Blank / missing = None.
+fn opt_trim(v: &Option<String>) -> Option<String> {
+    v.as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeOpsReq {
+    pub version: i64,
+    /// null/"" = probe when a command is issued.
+    pub install_tls_pin: Option<String>,
+    /// null = the official release; "" with `install_fallback_disabled`
+    /// would be ambiguous, so "no fallback" is its own switch.
+    pub install_fallback_url: Option<String>,
+    #[serde(default)]
+    pub install_fallback_disabled: bool,
+    /// null/"" = Let's Encrypt.
+    pub acme_directory_url: Option<String>,
+    pub acme_email: Option<String>,
+    /// "gate" | "rebuild"; null = gate.
+    pub remove_mode: Option<RemoveMode>,
+}
+
+/// Validate a 节点通信 form (pure; Chinese messages for the console).
+pub fn node_ops_values(req: &NodeOpsReq) -> Result<NodeOpsValues, ApiError> {
+    let pin = opt_trim(&req.install_tls_pin);
+    if let Some(p) = &pin
+        && !crate::nodeinstall::valid_pin(p)
+    {
+        return Err(bad_request!(
+            "settings.tls_pin_invalid",
+            "安装命令公钥钉扎：格式应为 sha256//<SPKI 的 SHA-256 的 base64>（留空 = 自动探测）"
+        ));
+    }
+    let fallback = if req.install_fallback_disabled {
+        Some(String::new())
+    } else {
+        let u = opt_trim(&req.install_fallback_url);
+        if let Some(u) = &u
+            && !crate::nodeinstall::fallback_url_ok(u)
+        {
+            return Err(bad_request!(
+                "settings.fallback_url_invalid",
+                "备用下载地址：必须是含 {{arch}} 的 https:// 地址，不能有引号、空格或 shell 特殊字符"
+            ));
+        }
+        u.filter(|u| u != crate::config::DEFAULT_FALLBACK_BINARY_URL)
+    };
+    let dir = opt_trim(&req.acme_directory_url);
+    if let Some(d) = &dir
+        && !acme_url_ok(d)
+    {
+        return Err(bad_request!(
+            "settings.acme_url_invalid",
+            "ACME 目录：必须是 https:// 地址（留空 = Let's Encrypt）"
+        ));
+    }
+    let email = opt_trim(&req.acme_email);
+    if let Some(e) = &email
+        && !acme_email_ok(e)
+    {
+        return Err(bad_request!(
+            "settings.acme_email_invalid",
+            "ACME 邮箱：不是有效的邮箱地址（可留空）"
+        ));
+    }
+    Ok(NodeOpsValues {
+        install_tls_pin: pin,
+        install_fallback_url: fallback,
+        acme_directory_url: dir,
+        acme_email: email,
+        remove_mode: req
+            .remove_mode
+            .filter(|m| *m != RemoveMode::Gate)
+            .map(|m| m.as_str().to_string()),
+    })
+}
+
+/// An https URL with a host (no credentials), at most 2048 bytes.
+pub fn acme_url_ok(u: &str) -> bool {
+    u.len() <= 2048
+        && !u.contains('@')
+        && !u.chars().any(|c| c.is_whitespace() || c.is_control())
+        && u.parse::<axum::http::Uri>().is_ok_and(|u| {
+            u.scheme_str() == Some("https") && u.host().is_some_and(|h| !h.is_empty())
+        })
+}
+
+pub fn acme_email_ok(e: &str) -> bool {
+    e.len() <= 254
+        && !e.chars().any(|c| c.is_whitespace() || c.is_control())
+        && e.split_once('@')
+            .is_some_and(|(l, d)| !l.is_empty() && d.contains('.') && !d.starts_with('.'))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecurityReq {
+    pub version: i64,
+    pub require_admin_2fa: Option<bool>,
+    /// null = 365; 0 = keep forever.
+    pub audit_retention_days: Option<u32>,
+    /// null = 400; 0 = keep forever; else 32..=36500.
+    pub traffic_daily_retention_days: Option<u32>,
+    /// null or [] = the shipped list.
+    pub cloudflare_ranges: Option<Vec<String>>,
+    /// null or [] = none ("<base64> [label]" each).
+    pub extra_release_keys: Option<Vec<String>>,
+}
+
+pub const MAX_CLOUDFLARE_RANGES: usize = 256;
+pub const MAX_EXTRA_RELEASE_KEYS: usize = 16;
+
+/// Validate a 安全 form (pure).
+pub fn security_values(req: &SecurityReq) -> Result<SecurityValues, ApiError> {
+    if let Some(d) = req.audit_retention_days
+        && d > 36_500
+    {
+        return Err(bad_request!(
+            "settings.audit_retention_invalid",
+            "审计日志保留天数：0（永久）到 36500"
+        ));
+    }
+    if let Some(d) = req.traffic_daily_retention_days
+        && d != 0
+        && !(32..=36_500).contains(&d)
+    {
+        return Err(bad_request!(
+            "settings.traffic_retention_invalid",
+            "流量明细保留天数：0（永久）或 32 到 36500"
+        ));
+    }
+    let ranges = match req.cloudflare_ranges.as_deref() {
+        None | Some([]) => None,
+        Some(list) => {
+            if list.len() > MAX_CLOUDFLARE_RANGES {
+                return Err(bad_request!(
+                    "settings.cloudflare_ranges_too_many",
+                    "Cloudflare 网段：最多 {max} 条",
+                    max = MAX_CLOUDFLARE_RANGES
+                ));
+            }
+            let mut out = Vec::new();
+            for c in list.iter().map(|c| c.trim()).filter(|c| !c.is_empty()) {
+                let parsed = Cidr::parse(c).map_err(|_| {
+                    bad_request!(
+                        "settings.cloudflare_range_invalid",
+                        "Cloudflare 网段：{range:?} 不是有效的 CIDR",
+                        range = c
+                    )
+                })?;
+                let canon = parsed.to_string();
+                if !out.contains(&canon) {
+                    out.push(canon);
+                }
+            }
+            Some(out).filter(|v| !v.is_empty())
+        }
+    };
+    let keys = match req.extra_release_keys.as_deref() {
+        None | Some([]) => None,
+        Some(list) => {
+            let list: Vec<String> = list
+                .iter()
+                .map(|k| k.split_whitespace().collect::<Vec<_>>().join(" "))
+                .filter(|k| !k.is_empty())
+                .collect();
+            if list.len() > MAX_EXTRA_RELEASE_KEYS {
+                return Err(bad_request!(
+                    "settings.release_keys_too_many",
+                    "额外信任的发布公钥：最多 {max} 个",
+                    max = MAX_EXTRA_RELEASE_KEYS
+                ));
+            }
+            if let Err(e) = crate::updates::parse_release_keys(&list) {
+                return Err(bad_request!(
+                    "settings.release_key_invalid",
+                    "额外信任的发布公钥：{detail}（每行一个 \"<base64 公钥> [标签]\"）",
+                    detail = e
+                ));
+            }
+            Some(list).filter(|v| !v.is_empty())
+        }
+    };
+    Ok(SecurityValues {
+        require_admin_2fa: req.require_admin_2fa.filter(|b| *b),
+        audit_retention_days: req
+            .audit_retention_days
+            .filter(|d| *d != DEFAULT_AUDIT_RETENTION_DAYS)
+            .map(|d| d as i32),
+        traffic_daily_retention_days: req
+            .traffic_daily_retention_days
+            .filter(|d| *d != crate::traffic::DEFAULT_DAILY_RETENTION_DAYS)
+            .map(|d| d as i32),
+        cloudflare_ranges: ranges,
+        extra_release_keys: keys,
+    })
+}
+
+/// PUT /api/v1/settings/nodes (admin): 节点通信 extras.
+pub async fn put_node_ops(
+    State(state): State<AppState>,
+    user: AuthUser,
+    ApiJson(req): ApiJson<NodeOpsReq>,
+) -> Result<Json<SettingsView>, ApiError> {
+    user.require_admin()?;
+    let new = node_ops_values(&req)?;
+    let mut tx = state.pg().begin().await?;
+    apply_update_node_ops(&mut tx, &Actor::of(&user), req.version, &new).await?;
+    tx.commit().await?;
+    reload_logged(&state).await;
+    Ok(Json(view(&state, Vec::new()).await?))
+}
+
+/// PUT /api/v1/settings/security (admin): 安全.
+pub async fn put_security(
+    State(state): State<AppState>,
+    user: AuthUser,
+    ApiJson(req): ApiJson<SecurityReq>,
+) -> Result<Json<SettingsView>, ApiError> {
+    user.require_admin()?;
+    let new = security_values(&req)?;
+    let mut tx = state.pg().begin().await?;
+    apply_update_security(&mut tx, &Actor::of(&user), req.version, &new).await?;
+    tx.commit().await?;
+    reload_logged(&state).await;
+    Ok(Json(view(&state, Vec::new()).await?))
+}
+
 /// A node that may still verify a server name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
 pub struct AffectedNode {
@@ -1045,18 +1522,25 @@ pub async fn legacy_nodes(conn: &mut PgConnection) -> sqlx::Result<Vec<AffectedN
 }
 
 /// Why a recorded name cannot be removed (None = removable).
-fn removal_blocker(cfg: &PanelConfig, eff_node: &NodeEndpoint, name: &str) -> Option<&'static str> {
-    if eff_node.server_name.eq_ignore_ascii_case(name) {
+/// `legacy_nodes`: nodes enrolled before 0060 exist (their server name is
+/// unknown: most likely one that came from panel.toml).
+fn removal_blocker(
+    eff_node: Option<&NodeEndpoint>,
+    source: &str,
+    name: &str,
+    legacy_nodes: bool,
+) -> Option<&'static str> {
+    if eff_node.is_some_and(|n| n.server_name.eq_ignore_ascii_case(name)) {
         return Some("这是当前的节点通信域名，不能移除");
     }
-    if cfg.grpc.server_name.eq_ignore_ascii_case(name)
-        || cfg
-            .web
-            .advertised_names
-            .iter()
-            .any(|n| n.eq_ignore_ascii_case(name))
-    {
-        return Some("这个名称来自 panel.toml（grpc.server_name / web.advertised_names），请在配置文件中修改");
+    if BOOT_NAMES.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+        return Some("这是内置的本机名称，证书始终包含它");
+    }
+    if source == "config" && legacy_nodes {
+        return Some(
+            "这个名称来自旧版 panel.toml，而仍有在记录服务器名称之前注册的节点（可能在用它）：\
+             先为这些节点重新签发注册令牌再移除",
+        );
     }
     None
 }
@@ -1070,9 +1554,20 @@ pub async fn apply_remove_server_name(
     cfg: &PanelConfig,
     name: &str,
 ) -> Result<Vec<AffectedNode>, ApiError> {
-    let cur: Stored = sqlx::query_as(LOCK_STORED).fetch_one(&mut *conn).await?;
-    let eff = compute(cfg, cur, Vec::new(), &[]);
-    if let Some(why) = removal_blocker(cfg, &eff.node, name) {
+    let cur = read_stored(&mut *conn, true).await?;
+    let eff = compute(cfg, cur, Vec::new());
+    let source: Option<String> =
+        sqlx::query_scalar("SELECT source FROM grpc_server_names WHERE name = $1")
+            .bind(name)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let legacy = !legacy_nodes(conn).await?.is_empty();
+    if let Some(why) = removal_blocker(
+        eff.node.as_ref(),
+        source.as_deref().unwrap_or(""),
+        name,
+        legacy,
+    ) {
         return Err(bad_request!(
             "settings.server_name_locked",
             "{detail}",
@@ -1238,19 +1733,18 @@ pub struct DomainView {
     /// Effective origin ("https://host[:port]"), None = browser origin.
     pub effective: Option<String>,
     pub source: Source,
-    /// The panel.toml value (for comparison).
-    pub config: Option<String>,
 }
 
 #[derive(Serialize)]
 pub struct NodeDomainView {
     pub value: Option<String>,
     pub display: Option<String>,
-    pub panel_addr: String,
-    pub server_name: String,
+    /// None = not set: no enrollment token can be issued.
+    pub panel_addr: Option<String>,
+    pub server_name: Option<String>,
     pub source: Source,
-    pub config_addr: String,
-    pub config_server_name: String,
+    /// The port a node domain without one gets (grpc.bind).
+    pub default_port: u16,
 }
 
 #[derive(Serialize)]
@@ -1258,7 +1752,6 @@ pub struct TrustView {
     pub value: Option<bool>,
     pub effective: bool,
     pub source: Source,
-    pub config: bool,
 }
 
 #[derive(Serialize)]
@@ -1284,7 +1777,7 @@ pub struct SettingsView {
     pub trust_cloudflare: TrustView,
     pub server_names: Vec<ServerNameView>,
     /// Enrolled before server names were recorded (they most likely use
-    /// panel.toml's grpc.server_name).
+    /// an old panel.toml grpc.server_name).
     pub legacy_nodes: Vec<AffectedNode>,
     /// Names the gRPC certificate served by THIS instance covers.
     pub certificate_names: Vec<String>,
@@ -1296,58 +1789,147 @@ pub struct SettingsView {
     pub cloudflare_ranges: usize,
     /// W12: latency tests (agents' url-test + the panel's TCP test).
     pub probe: ProbeView,
+    /// W25: 节点通信 extras.
+    pub node_ops: NodeOpsView,
+    /// W25: 安全.
+    pub security: SecurityView,
     /// W21: 站点名称 (null = default "Akari").
     pub site_name: Option<String>,
+    /// W25: obsolete keys in THIS instance's panel.toml (delete them).
+    pub obsolete_config_keys: Vec<String>,
     /// Advisory notes from the last save (DNS checks).
     pub warnings: Vec<String>,
 }
 
-/// One editable latency-test value: stored (null = panel.toml), effective,
-/// panel.toml's, and where the effective one comes from.
+/// One editable value: stored (null = not set), effective, the built-in
+/// default, and where the effective one comes from.
 #[derive(Serialize)]
-pub struct ProbeField<T> {
+pub struct Field<T> {
     pub value: Option<T>,
     pub effective: T,
-    pub config: T,
+    pub default: T,
     pub source: Source,
+}
+
+impl<T: Clone> Field<T> {
+    fn of(value: Option<T>, default: T) -> Self {
+        Self {
+            effective: value.clone().unwrap_or_else(|| default.clone()),
+            source: if value.is_some() {
+                Source::Settings
+            } else {
+                Source::Default
+            },
+            value,
+            default,
+        }
+    }
 }
 
 #[derive(Serialize)]
 pub struct ProbeView {
-    pub interval_secs: ProbeField<u64>,
-    pub urls: ProbeField<Vec<String>>,
-    pub panel_tcp: ProbeField<bool>,
-    /// panel.toml only (not editable here).
+    pub interval_secs: Field<u64>,
+    pub urls: Field<Vec<String>>,
+    pub panel_tcp: Field<bool>,
+    /// Built in (not editable).
     pub timeout_ms: u32,
     pub attempts: u32,
     pub manual_cooldown_secs: u64,
 }
 
-fn probe_view(cfg: &PanelConfig, eff: &Effective) -> ProbeView {
+#[derive(Serialize)]
+pub struct NodeOpsView {
+    /// null = probed when a command is issued.
+    pub install_tls_pin: Option<String>,
+    /// Stored value: null = official release, "" = no fallback.
+    pub install_fallback_url: Option<String>,
+    pub install_fallback_effective: Option<String>,
+    pub install_fallback_default: &'static str,
+    pub acme_directory_url: Option<String>,
+    pub acme_email: Option<String>,
+    pub remove_mode: Field<RemoveMode>,
+}
+
+#[derive(Serialize)]
+pub struct ReleaseKeyView {
+    pub id: String,
+    pub label: String,
+    /// Compiled into this panel (not editable).
+    pub official: bool,
+}
+
+#[derive(Serialize)]
+pub struct SecurityView {
+    pub require_admin_2fa: Field<bool>,
+    pub audit_retention_days: Field<u32>,
+    pub traffic_daily_retention_days: Field<u32>,
+    /// Stored override (null = the shipped list).
+    pub cloudflare_ranges: Option<Vec<String>>,
+    pub cloudflare_ranges_shipped: usize,
+    pub extra_release_keys: Option<Vec<String>>,
+    /// Every trusted key (official first).
+    pub release_keys: Vec<ReleaseKeyView>,
+}
+
+fn probe_view(eff: &Effective) -> ProbeView {
     let s = &eff.stored;
-    let (p, src, c) = (&eff.probe, &eff.probe_sources, &cfg.probe);
+    let p = &eff.probe;
+    let d = ProbeConfig::default();
     ProbeView {
-        interval_secs: ProbeField {
-            value: s.probe_interval_secs.and_then(|v| u64::try_from(v).ok()),
-            effective: p.interval_secs,
-            config: c.interval_secs,
-            source: src.interval_secs,
-        },
-        urls: ProbeField {
-            value: s.probe_urls.clone(),
-            effective: p.urls.clone(),
-            config: c.urls.clone(),
-            source: src.urls,
-        },
-        panel_tcp: ProbeField {
-            value: s.probe_panel_tcp,
-            effective: p.panel_tcp,
-            config: c.panel_tcp,
-            source: src.panel_tcp,
-        },
+        interval_secs: Field::of(
+            s.probe_interval_secs.and_then(|v| u64::try_from(v).ok()),
+            d.interval_secs,
+        ),
+        urls: Field::of(s.probe_urls.clone(), d.urls),
+        panel_tcp: Field::of(s.probe_panel_tcp, d.panel_tcp),
         timeout_ms: p.timeout_ms,
         attempts: p.attempts,
         manual_cooldown_secs: p.manual_cooldown_secs,
+    }
+}
+
+fn node_ops_view(eff: &Effective) -> NodeOpsView {
+    let s = &eff.stored;
+    NodeOpsView {
+        install_tls_pin: s.install_tls_pin.clone(),
+        install_fallback_url: s.install_fallback_url.clone(),
+        install_fallback_effective: eff.install_fallback_url.clone(),
+        install_fallback_default: crate::config::DEFAULT_FALLBACK_BINARY_URL,
+        acme_directory_url: s.acme_directory_url.clone(),
+        acme_email: s.acme_email.clone(),
+        remove_mode: Field::of(
+            s.remove_mode.as_deref().and_then(RemoveMode::parse),
+            RemoveMode::Gate,
+        ),
+    }
+}
+
+fn security_view(eff: &Effective) -> SecurityView {
+    let s = &eff.stored;
+    let official = crate::updates::official_release_keys();
+    SecurityView {
+        require_admin_2fa: Field::of(s.require_admin_2fa, false),
+        audit_retention_days: Field::of(
+            s.audit_retention_days.and_then(|v| u32::try_from(v).ok()),
+            DEFAULT_AUDIT_RETENTION_DAYS,
+        ),
+        traffic_daily_retention_days: Field::of(
+            s.traffic_daily_retention_days
+                .and_then(|v| u32::try_from(v).ok()),
+            crate::traffic::DEFAULT_DAILY_RETENTION_DAYS,
+        ),
+        cloudflare_ranges: s.cloudflare_ranges.clone(),
+        cloudflare_ranges_shipped: crate::cloudflare::shipped_or_empty().len(),
+        extra_release_keys: s.extra_release_keys.clone(),
+        release_keys: eff
+            .release_keys
+            .iter()
+            .map(|k| ReleaseKeyView {
+                id: k.id.clone(),
+                label: k.label.clone(),
+                official: official.iter().any(|o| o.id == k.id),
+            })
+            .collect(),
     }
 }
 
@@ -1364,8 +1946,9 @@ pub async fn view(state: &AppState, mut warnings: Vec<String>) -> Result<Setting
     let mut conn = state.pg().acquire().await?;
     let (stored, names) = load(&mut conn).await?;
     let live = state.settings();
-    let eff = compute(cfg, stored, names, live.cloudflare());
+    let eff = compute(cfg, stored, names);
     warnings.extend(eff.standing_warnings(state.payments().any_usable()));
+    let legacy = legacy_nodes(&mut conn).await?;
     let mut server_names = Vec::new();
     for n in &eff.server_names {
         server_names.push(ServerNameView {
@@ -1373,13 +1956,14 @@ pub async fn view(state: &AppState, mut warnings: Vec<String>) -> Result<Setting
             name: n.name.clone(),
             source: n.source.clone(),
             first_used_at: n.first_used_at,
-            current: eff.node.server_name.eq_ignore_ascii_case(&n.name),
-            locked: removal_blocker(cfg, &eff.node, &n.name),
+            current: eff
+                .node
+                .as_ref()
+                .is_some_and(|e| e.server_name.eq_ignore_ascii_case(&n.name)),
+            locked: removal_blocker(eff.node.as_ref(), &n.source, &n.name, !legacy.is_empty()),
             nodes: nodes_using(&mut conn, &n.name).await?,
         });
     }
-    let legacy = legacy_nodes(&mut conn).await?;
-    let probe = probe_view(cfg, &eff);
     let s = &eff.stored;
     Ok(SettingsView {
         site_name: s.site_name.clone(),
@@ -1390,29 +1974,25 @@ pub async fn view(state: &AppState, mut warnings: Vec<String>) -> Result<Setting
             display: display_of(&s.main_domain),
             effective: eff.main.as_ref().map(Origin::as_string),
             source: eff.main_source,
-            config: Some(cfg.install.public_url.clone()).filter(|u| !u.is_empty()),
         },
         sub: DomainView {
             value: s.sub_domain.clone(),
             display: display_of(&s.sub_domain),
             effective: eff.sub.as_ref().map(Origin::as_string),
             source: eff.sub_source,
-            config: Some(cfg.web.sub_domain.clone()).filter(|u| !u.is_empty()),
         },
         node: NodeDomainView {
             value: s.node_domain.clone(),
             display: display_of(&s.node_domain),
-            panel_addr: eff.node.panel_addr.clone(),
-            server_name: eff.node.server_name.clone(),
+            panel_addr: eff.node.as_ref().map(|n| n.panel_addr.clone()),
+            server_name: eff.node.as_ref().map(|n| n.server_name.clone()),
             source: eff.node_source,
-            config_addr: cfg.grpc.advertise.clone(),
-            config_server_name: cfg.grpc.server_name.clone(),
+            default_port: cfg.grpc.bind.port(),
         },
         trust_cloudflare: TrustView {
             value: s.trust_cloudflare,
             effective: eff.trust_cloudflare,
             source: eff.trust_source,
-            config: cfg.web.trust_cloudflare,
         },
         server_names,
         legacy_nodes: legacy,
@@ -1420,8 +2000,11 @@ pub async fn view(state: &AppState, mut warnings: Vec<String>) -> Result<Setting
         hot_reload: true,
         host_gate: eff.host_gate_on(),
         ask_enabled: cfg.tls_ask.bind.is_some(),
-        cloudflare_ranges: live.cloudflare().len(),
-        probe,
+        cloudflare_ranges: eff.cloudflare.len(),
+        probe: probe_view(&eff),
+        node_ops: node_ops_view(&eff),
+        security: security_view(&eff),
+        obsolete_config_keys: cfg.legacy.names().map(str::to_string).collect(),
         warnings,
     })
 }
@@ -1440,7 +2023,7 @@ pub async fn get_settings(
 pub struct UpdateReq {
     /// The version the form was loaded at (409 if someone saved since).
     pub version: i64,
-    /// PUT replaces all four: null or "" = not set (panel.toml applies).
+    /// PUT replaces all four: null or "" = not set (built-in behaviour).
     pub main_domain: Option<String>,
     pub sub_domain: Option<String>,
     pub node_domain: Option<String>,
@@ -1500,7 +2083,7 @@ pub async fn put_settings(
     if let Some(d) = &node
         && current.stored.node_domain.as_deref() != Some(d.authority().as_str())
     {
-        let c = check(Kind::Node, d, live.cloudflare()).await;
+        let c = check(Kind::Node, d, &current.cloudflare).await;
         match c.level {
             "block" if !req.force_node_cloudflare => {
                 return Err(crate::auth::api_error!(
@@ -1517,7 +2100,7 @@ pub async fn put_settings(
     if let Some(d) = &sub
         && current.stored.sub_domain.as_deref() != Some(d.authority().as_str())
     {
-        let c = check(Kind::Sub, d, live.cloudflare()).await;
+        let c = check(Kind::Sub, d, &current.cloudflare).await;
         if c.level != "ok" {
             warnings.push(c.message);
         }
@@ -1529,7 +2112,7 @@ pub async fn put_settings(
             sub_domain: new.sub_domain.clone(),
             ..Stored::default()
         };
-        let next = compute(state.cfg(), stored, Vec::new(), &[]);
+        let next = compute(state.cfg(), stored, Vec::new());
         let host = host_of(&headers, &uri);
         if !next.host_allowed(host.as_deref()) {
             return Err(crate::auth::api_error!(
@@ -1556,9 +2139,9 @@ pub async fn put_settings(
 pub struct ProbeReq {
     /// The version the form was loaded at (409 if someone saved since).
     pub version: i64,
-    /// PUT replaces all three: null = not set (panel.toml `[probe]` applies).
+    /// PUT replaces all three: null = not set (built-in default).
     pub interval_secs: Option<u64>,
-    /// 1..=4 http(s) URLs, primary first; null or [] = panel.toml.
+    /// 1..=4 http(s) URLs, primary first; null or [] = built-in default.
     pub urls: Option<Vec<String>>,
     pub panel_tcp: Option<bool>,
 }
@@ -1646,7 +2229,7 @@ pub async fn dns_check(
         )
     })?;
     Ok(Json(
-        check(req.kind, &d, state.settings().cloudflare()).await,
+        check(req.kind, &d, &state.settings().get().cloudflare).await,
     ))
 }
 
@@ -1693,7 +2276,7 @@ pub struct AskQuery {
 async fn ask(State(state): State<AppState>, Query(q): Query<AskQuery>) -> Response {
     if !state
         .settings()
-        .ask_permit(state.cfg().tls_ask.rate_per_sec.max(1))
+        .ask_permit(state.cfg().limits.tls_ask_rate_per_sec.max(1))
     {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
@@ -1728,79 +2311,117 @@ pub async fn serve_ask(
 }
 
 // ---------------------------------------------------------------------------
-// CLI: `akari settings show|unset`
+// CLI: `akari settings show|set|unset`
 // ---------------------------------------------------------------------------
+
+/// The settings as text lines (`settings show`, and as TOML comments in
+/// `config check`).
+fn describe_lines(eff: &Effective) -> Vec<String> {
+    let s = &eff.stored;
+    let show = |v: &Option<String>| v.clone().unwrap_or_else(|| "(not set)".into());
+    let origin = |o: &Option<Origin>| {
+        o.as_ref()
+            .map(Origin::as_string)
+            .unwrap_or_else(|| "(browser origin)".into())
+    };
+    let mut l = vec![
+        format!("settings version: {}", s.version),
+        format!(
+            "main domain:      {}  -> {} [{:?}]",
+            show(&s.main_domain),
+            origin(&eff.main),
+            eff.main_source
+        ),
+        format!(
+            "sub domain:       {}  -> {} [{:?}]",
+            show(&s.sub_domain),
+            origin(&eff.sub),
+            eff.sub_source
+        ),
+        match &eff.node {
+            Some(n) => format!(
+                "node domain:      {}  -> {} / {} [{:?}]",
+                show(&s.node_domain),
+                n.panel_addr,
+                n.server_name,
+                eff.node_source
+            ),
+            None => "node domain:      (not set)  -> no enrollment tokens until it is set \
+                     (akari settings set node <host[:port]>)"
+                .into(),
+        },
+        format!(
+            "trust cloudflare: {} [{:?}]; {} ranges [{:?}]",
+            eff.trust_cloudflare,
+            eff.trust_source,
+            eff.cloudflare.len(),
+            eff.cloudflare_source
+        ),
+        format!(
+            "probe interval:   {}s [{:?}]",
+            eff.probe.interval_secs, eff.probe_sources.interval_secs
+        ),
+        format!(
+            "probe urls:       {} [{:?}]",
+            eff.probe.urls.join(" "),
+            eff.probe_sources.urls
+        ),
+        format!(
+            "probe panel tcp:  {} [{:?}]",
+            eff.probe.panel_tcp, eff.probe_sources.panel_tcp
+        ),
+        format!(
+            "install pin:      {}",
+            s.install_tls_pin.as_deref().unwrap_or("(probed)")
+        ),
+        format!(
+            "install fallback: {}",
+            eff.install_fallback_url.as_deref().unwrap_or("(none)")
+        ),
+        format!(
+            "acme:             {} {}",
+            if eff.acme_directory_url.is_empty() {
+                "(Let's Encrypt)"
+            } else {
+                &eff.acme_directory_url
+            },
+            eff.acme_email
+        ),
+        format!(
+            "retention:        audit {} days, traffic history {} days (0 = forever)",
+            eff.audit_retention_days, eff.traffic_daily_retention_days
+        ),
+        format!(
+            "admin 2FA:        {}",
+            if eff.require_admin_2fa {
+                "required"
+            } else {
+                "optional"
+            }
+        ),
+        format!("remove mode:      {}", eff.remove_mode.as_str()),
+        format!(
+            "release keys:     {}",
+            eff.release_keys
+                .iter()
+                .map(|k| k.id.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        format!("host gate:        {}", eff.host_gate_on()),
+        format!("gRPC certificate names: {}", eff.sans.join(", ")),
+    ];
+    l.retain(|x| !x.is_empty());
+    l
+}
 
 pub async fn cli_show(cfg: &PanelConfig, pg: &sqlx::PgPool) -> anyhow::Result<()> {
     let mut conn = pg.acquire().await?;
     let (stored, names) = load(&mut conn).await?;
-    let eff = compute(cfg, stored.clone(), names, &crate::cloudflare::ranges(cfg));
-    let show = |v: &Option<String>| v.clone().unwrap_or_else(|| "(not set)".into());
-    println!("settings version: {}", stored.version);
-    println!(
-        "main domain:      {}  -> {} [{:?}]",
-        show(&stored.main_domain),
-        eff.main
-            .as_ref()
-            .map(Origin::as_string)
-            .unwrap_or_else(|| "(browser origin)".into()),
-        eff.main_source
-    );
-    println!(
-        "sub domain:       {}  -> {} [{:?}]",
-        show(&stored.sub_domain),
-        eff.sub
-            .as_ref()
-            .map(Origin::as_string)
-            .unwrap_or_else(|| "(browser origin)".into()),
-        eff.sub_source
-    );
-    println!(
-        "node domain:      {}  -> {} / {} [{:?}]",
-        show(&stored.node_domain),
-        eff.node.panel_addr,
-        eff.node.server_name,
-        eff.node_source
-    );
-    println!(
-        "trust cloudflare: {}  -> {} [{:?}]",
-        stored
-            .trust_cloudflare
-            .map(|b| b.to_string())
-            .unwrap_or_else(|| "(not set)".into()),
-        eff.trust_cloudflare,
-        eff.trust_source
-    );
-    println!(
-        "probe interval:   {}  -> {}s [{:?}]",
-        stored
-            .probe_interval_secs
-            .map(|v| format!("{v}s"))
-            .unwrap_or_else(|| "(not set)".into()),
-        eff.probe.interval_secs,
-        eff.probe_sources.interval_secs
-    );
-    println!(
-        "probe urls:       {}  -> {} [{:?}]",
-        stored
-            .probe_urls
-            .as_ref()
-            .map(|u| u.join(" "))
-            .unwrap_or_else(|| "(not set)".into()),
-        eff.probe.urls.join(" "),
-        eff.probe_sources.urls
-    );
-    println!(
-        "probe panel tcp:  {}  -> {} [{:?}]",
-        stored
-            .probe_panel_tcp
-            .map(|b| b.to_string())
-            .unwrap_or_else(|| "(not set)".into()),
-        eff.probe.panel_tcp,
-        eff.probe_sources.panel_tcp
-    );
-    println!("host gate:        {}", eff.host_gate_on());
-    println!("gRPC certificate names: {}", eff.sans.join(", "));
+    let eff = compute(cfg, stored, names);
+    for line in describe_lines(&eff) {
+        println!("{line}");
+    }
     let payments: bool =
         sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM payment_methods WHERE enabled)")
             .fetch_one(&mut *conn)
@@ -1822,65 +2443,37 @@ pub async fn describe_db(cfg: &PanelConfig) -> String {
             .connect(&cfg.database_url)
             .await?;
         let mut conn = pg.acquire().await?;
-        let stored: Stored = sqlx::query_as(SELECT_STORED).fetch_one(&mut *conn).await?;
+        let (stored, names) = load(&mut conn).await?;
         let pay = crate::billing::methods::describe(&mut conn).await?;
-        Ok::<_, sqlx::Error>((stored, pay))
+        Ok::<_, sqlx::Error>((stored, names, pay))
     };
     match tokio::time::timeout(Duration::from_secs(5), attempt).await {
-        Ok(Ok((s, pay))) => {
-            let e = compute(cfg, s.clone(), Vec::new(), &[]);
-            let show = |v: &Option<String>| v.clone().unwrap_or_else(|| "(not set)".into());
-            format!(
-                "\n# --- 系统设置 in the database (they WIN over the values above) ---\n\
-                 # main_domain      = {}  -> {} [{:?}]\n\
-                 # sub_domain       = {}  -> {} [{:?}]\n\
-                 # node_domain      = {}  -> {} / {} [{:?}]\n\
-                 # trust_cloudflare = {}  -> {} [{:?}]\n\
-                 # probe.interval_secs = {}  -> {} [{:?}]\n\
-                 # probe.urls          = {}  -> {} [{:?}]\n\
-                 # probe.panel_tcp     = {}  -> {} [{:?}]\n",
-                show(&s.main_domain),
-                e.main.as_ref().map(Origin::as_string).unwrap_or_else(|| "(browser origin)".into()),
-                e.main_source,
-                show(&s.sub_domain),
-                e.sub.as_ref().map(Origin::as_string).unwrap_or_else(|| "(browser origin)".into()),
-                e.sub_source,
-                show(&s.node_domain),
-                e.node.panel_addr,
-                e.node.server_name,
-                e.node_source,
-                s.trust_cloudflare.map(|b| b.to_string()).unwrap_or_else(|| "(not set)".into()),
-                e.trust_cloudflare,
-                e.trust_source,
-                s.probe_interval_secs.map(|v| v.to_string()).unwrap_or_else(|| "(not set)".into()),
-                e.probe.interval_secs,
-                e.probe_sources.interval_secs,
-                s.probe_urls.as_ref().map(|u| u.join(" ")).unwrap_or_else(|| "(not set)".into()),
-                e.probe.urls.join(" "),
-                e.probe_sources.urls,
-                s.probe_panel_tcp.map(|b| b.to_string()).unwrap_or_else(|| "(not set)".into()),
-                e.probe.panel_tcp,
-                e.probe_sources.panel_tcp,
-            ) + &pay.text
-                + &e
-                .standing_warnings(pay.enabled)
-                .iter()
-                .map(|w| format!("# WARNING: {w}\n"))
-                .collect::<String>()
+        Ok(Ok((s, names, pay))) => {
+            let e = compute(cfg, s, names);
+            let mut out =
+                String::from("\n# --- 系统设置 (database; the only source of these values) ---\n");
+            for line in describe_lines(&e) {
+                out.push_str(&format!("# {line}\n"));
+            }
+            out + &pay.text
+                + &e.standing_warnings(pay.enabled)
+                    .iter()
+                    .map(|w| format!("# WARNING: {w}\n"))
+                    .collect::<String>()
         }
-        Ok(Err(e)) => format!(
-            "\n# 系统设置: database not readable ({e}); database values, once set, win over the values above\n"
-        ),
-        Err(_) => "\n# 系统设置: database not reachable; database values, once set, win over the values above\n".into(),
+        Ok(Err(e)) => format!("\n# 系统设置: database not readable ({e})\n"),
+        Err(_) => "\n# 系统设置: database not reachable\n".into(),
     }
 }
 
-/// `akari settings unset <field>`: back to panel.toml (audited, actor cli).
+/// `akari settings unset <field>`: back to the built-in default (audited,
+/// actor cli).
 pub async fn cli_unset(cfg: &PanelConfig, pg: &sqlx::PgPool, field: &str) -> anyhow::Result<()> {
+    let msg = |e: ApiError| anyhow::anyhow!("{}", e.message());
     let mut tx = pg.begin().await?;
-    let cur: Stored = sqlx::query_as(SELECT_STORED).fetch_one(&mut *tx).await?;
     if field == "probe" || field == "all" {
         // W12: the latency-test values (own audit action).
+        let cur = read_stored(&mut tx, false).await?;
         apply_update_probe(
             &mut tx,
             &Actor::cli(),
@@ -1889,29 +2482,560 @@ pub async fn cli_unset(cfg: &PanelConfig, pg: &sqlx::PgPool, field: &str) -> any
             &ProbeValues::default(),
         )
         .await
-        .map_err(|e| anyhow::anyhow!("{}", e.message()))?;
-        if field == "probe" {
-            tx.commit().await?;
-            println!("probe: unset (panel.toml applies); running panels pick it up at once");
-            return Ok(());
-        }
+        .map_err(msg)?;
     }
-    let cur: Stored = sqlx::query_as(SELECT_STORED).fetch_one(&mut *tx).await?;
+    if field == "all" {
+        let cur = read_stored(&mut tx, false).await?;
+        apply_update_node_ops(
+            &mut tx,
+            &Actor::cli(),
+            cur.version,
+            &NodeOpsValues::default(),
+        )
+        .await
+        .map_err(msg)?;
+        let cur = read_stored(&mut tx, false).await?;
+        apply_update_security(
+            &mut tx,
+            &Actor::cli(),
+            cur.version,
+            &SecurityValues::default(),
+        )
+        .await
+        .map_err(msg)?;
+    }
+    if field != "probe" {
+        let cur = read_stored(&mut tx, false).await?;
+        let mut new = Values::of(&cur);
+        match field {
+            "main" => new.main_domain = None,
+            "sub" => new.sub_domain = None,
+            "node" => new.node_domain = None,
+            "trust-cloudflare" => new.trust_cloudflare = None,
+            "all" => new = Values::default(),
+            _ => anyhow::bail!("field must be main, sub, node, trust-cloudflare, probe or all"),
+        }
+        apply_update(&mut tx, &Actor::cli(), cur.version, &new)
+            .await
+            .map_err(msg)?;
+    }
+    tx.commit().await?;
+    println!("{field}: unset (built-in default); running panels pick it up at once");
+    Ok(())
+}
+
+/// `akari settings set <main|sub|node|trust-cloudflare> <value>` (audited,
+/// actor cli): headless setup, e.g. the node domain before the first
+/// login. No DNS check here (the console does it).
+pub async fn cli_set(
+    _cfg: &PanelConfig,
+    pg: &sqlx::PgPool,
+    field: &str,
+    value: &str,
+) -> anyhow::Result<()> {
+    let mut tx = pg.begin().await?;
+    let cur = read_stored(&mut tx, false).await?;
     let mut new = Values::of(&cur);
+    let domain = || {
+        Domain::parse(value)
+            .map(|d| d.authority())
+            .map_err(|e| anyhow::anyhow!("{field}: {e}"))
+    };
     match field {
-        "main" => new.main_domain = None,
-        "sub" => new.sub_domain = None,
-        "node" => new.node_domain = None,
-        "trust-cloudflare" => new.trust_cloudflare = None,
-        "all" => new = Values::default(),
-        _ => anyhow::bail!("field must be main, sub, node, trust-cloudflare, probe or all"),
+        "main" => new.main_domain = Some(domain()?),
+        "sub" => new.sub_domain = Some(domain()?),
+        "node" => {
+            let d = Domain::parse(value).map_err(|e| anyhow::anyhow!("node: {e}"))?;
+            if d.host.parse::<IpAddr>().is_ok_and(|ip| ip.is_unspecified()) {
+                anyhow::bail!("node: 0.0.0.0 / :: is not an address agents can dial");
+            }
+            new.node_domain = Some(d.authority());
+        }
+        "trust-cloudflare" => {
+            new.trust_cloudflare = Some(
+                value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("trust-cloudflare: true or false"))?,
+            )
+        }
+        _ => anyhow::bail!("field must be main, sub, node or trust-cloudflare"),
     }
     apply_update(&mut tx, &Actor::cli(), cur.version, &new)
         .await
         .map_err(|e| anyhow::anyhow!("{}", e.message()))?;
     tx.commit().await?;
-    println!("{field}: unset (panel.toml applies); running panels pick it up at once");
+    println!("{field}: set; running panels pick it up at once");
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// W25: one-time import of obsolete panel.toml keys
+// ---------------------------------------------------------------------------
+
+/// What happened to one obsolete key on this start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Imported {
+    /// Written into the database now.
+    Now,
+    /// The database already had a value; the file value was not used.
+    Kept,
+    /// Handled on an earlier start: ignored.
+    Before,
+    /// Unreadable or invalid: ignored (reason).
+    Unusable(String),
+    /// A built-in constant now: ignored.
+    Constant,
+}
+
+/// The one-time import's report (logged at startup; tests read it).
+#[derive(Debug, Default)]
+pub struct ImportReport {
+    pub keys: Vec<(String, Imported)>,
+    /// The import turned the host gate on (main domain from the file).
+    pub host_gate_on: bool,
+}
+
+impl ImportReport {
+    pub fn get(&self, key: &str) -> Option<&Imported> {
+        self.keys.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+    }
+}
+
+/// The new value of one setting from an obsolete key (Err = unusable).
+fn legacy_value(
+    legacy: &crate::config::Legacy,
+    key: &str,
+    new: &mut Stored,
+    names: &mut Vec<String>,
+) -> Result<bool, String> {
+    // Returns Ok(true) when the database had no value (written), Ok(false)
+    // when it had one (kept).
+    macro_rules! get {
+        ($t:ty) => {
+            match legacy.get::<$t>(key) {
+                Some(Ok(v)) => v,
+                Some(Err(e)) => return Err(e),
+                None => return Err("missing".into()),
+            }
+        };
+    }
+    fn put<T>(slot: &mut Option<T>, v: T) -> bool {
+        if slot.is_some() {
+            return false;
+        }
+        *slot = Some(v);
+        true
+    }
+    let domain = |v: &str| Domain::parse(v).map(|d| d.authority());
+    Ok(match key {
+        "web.sub_domain" => put(&mut new.sub_domain, domain(&get!(String))?),
+        "web.trust_cloudflare" => put(&mut new.trust_cloudflare, get!(bool)),
+        "web.cloudflare_ranges" => {
+            let list: Vec<String> = get!(Vec<String>);
+            let req = SecurityReq {
+                version: 0,
+                require_admin_2fa: None,
+                audit_retention_days: None,
+                traffic_daily_retention_days: None,
+                cloudflare_ranges: Some(list),
+                extra_release_keys: None,
+            };
+            match security_values(&req)
+                .map_err(|e| e.message().to_string())?
+                .cloudflare_ranges
+            {
+                Some(v) => put(&mut new.cloudflare_ranges, v),
+                None => return Err("empty (the shipped list applies)".into()),
+            }
+        }
+        "web.advertised_names" | "grpc.server_name" => {
+            let list: Vec<String> = if key == "grpc.server_name" {
+                vec![get!(String)]
+            } else {
+                get!(Vec<String>)
+            };
+            let list: Vec<String> = list
+                .into_iter()
+                .map(|n| n.trim().trim_end_matches('.').to_ascii_lowercase())
+                .filter(|n| {
+                    !n.is_empty() && !n.chars().any(|c| c.is_whitespace() || c.is_control())
+                })
+                .collect();
+            if list.is_empty() {
+                return Err("empty".into());
+            }
+            names.extend(list);
+            true
+        }
+        "grpc.advertise" => {
+            let v = domain(&get!(String))?;
+            if Domain::parse(&v)
+                .ok()
+                .and_then(|d| d.host.parse::<IpAddr>().ok())
+                .is_some_and(|ip| ip.is_unspecified())
+            {
+                return Err("0.0.0.0 / :: is not an address agents can dial".into());
+            }
+            put(&mut new.node_domain, v)
+        }
+        "install.public_url" => {
+            let o = crate::nodeinstall::parse_origin(&get!(String))?;
+            if !o.https {
+                return Err("not an https origin".into());
+            }
+            let auth = match o.port {
+                Some(p) if p != 443 => format!("{}:{p}", o.host),
+                _ => o.host.clone(),
+            };
+            put(&mut new.main_domain, domain(&auth)?)
+        }
+        "install.tls_pin" => {
+            let v = get!(String);
+            if v.trim().is_empty() {
+                return Err("empty (probed)".into());
+            }
+            if !crate::nodeinstall::valid_pin(v.trim()) {
+                return Err("not a sha256// pin".into());
+            }
+            put(&mut new.install_tls_pin, v.trim().to_string())
+        }
+        "install.fallback_binary_url" => {
+            let v = get!(String);
+            let v = v.trim();
+            if !v.is_empty() && !crate::nodeinstall::fallback_url_ok(v) {
+                return Err("not an https URL with {arch}".into());
+            }
+            if v == crate::config::DEFAULT_FALLBACK_BINARY_URL {
+                return Err("the built-in default".into());
+            }
+            put(&mut new.install_fallback_url, v.to_string())
+        }
+        "probe.interval_secs" => {
+            let v: u64 = get!(u64);
+            if !PROBE_INTERVAL_SECS.contains(&v) {
+                return Err("outside 600..=604800".into());
+            }
+            put(&mut new.probe_interval_secs, v as i32)
+        }
+        "probe.urls" => {
+            let v: Vec<String> = get!(Vec<String>);
+            if !valid_probe_urls(&v) {
+                return Err("1-4 distinct http(s) URLs required".into());
+            }
+            put(&mut new.probe_urls, v)
+        }
+        "probe.panel_tcp" => put(&mut new.probe_panel_tcp, get!(bool)),
+        "acme.directory_url" => {
+            let v = get!(String);
+            if v.trim().is_empty() {
+                return Err("empty (Let's Encrypt)".into());
+            }
+            if !acme_url_ok(v.trim()) {
+                return Err("not an https URL".into());
+            }
+            put(&mut new.acme_directory_url, v.trim().to_string())
+        }
+        "acme.email" => {
+            let v = get!(String);
+            if v.trim().is_empty() {
+                return Err("empty".into());
+            }
+            if !acme_email_ok(v.trim()) {
+                return Err("not an e-mail address".into());
+            }
+            put(&mut new.acme_email, v.trim().to_string())
+        }
+        "audit.retention_days" => {
+            let v: u32 = get!(u32);
+            if v > 36_500 {
+                return Err("above 36500".into());
+            }
+            put(&mut new.audit_retention_days, v as i32)
+        }
+        "traffic.daily_retention_days" => {
+            let v: u32 = get!(u32);
+            if v != 0 && !(32..=36_500).contains(&v) {
+                return Err("must be 0 or 32..=36500".into());
+            }
+            put(&mut new.traffic_daily_retention_days, v as i32)
+        }
+        "auth.require_admin_2fa" => put(&mut new.require_admin_2fa, get!(bool)),
+        "agent.remove_mode" => {
+            let v = get!(String);
+            let m = RemoveMode::parse(v.trim()).ok_or("must be gate or rebuild")?;
+            put(&mut new.remove_mode, m.as_str().to_string())
+        }
+        "updates.release_keys" => {
+            let v: Vec<String> = get!(Vec<String>);
+            let keys = crate::updates::parse_release_keys(&v)?;
+            let official = crate::updates::official_release_keys();
+            let extra: Vec<String> = v
+                .iter()
+                .zip(&keys)
+                .filter(|(_, k)| !official.iter().any(|o| o.id == k.id))
+                .map(|(line, _)| line.split_whitespace().collect::<Vec<_>>().join(" "))
+                .collect();
+            if extra.is_empty() {
+                return Err("only official keys (built in)".into());
+            }
+            if extra.len() > MAX_EXTRA_RELEASE_KEYS {
+                return Err("more than 16 keys".into());
+            }
+            put(&mut new.extra_release_keys, extra)
+        }
+        _ => return Err("not importable".into()),
+    })
+}
+
+/// `alerts.telegram_api_url` → `alert_settings.telegram_api_url` (告警 →
+/// Telegram API 地址). The built-in origin itself is not imported.
+fn legacy_telegram(
+    legacy: &crate::config::Legacy,
+    cur: &Option<String>,
+    new: &mut Option<String>,
+) -> Result<bool, String> {
+    let key = "alerts.telegram_api_url";
+    let v: String = match legacy.get::<String>(key) {
+        Some(Ok(v)) => v,
+        Some(Err(e)) => return Err(e),
+        None => return Err("missing".into()),
+    };
+    let v = v.trim().trim_end_matches('/').to_string();
+    if !crate::alerts::valid_telegram_api_url(&v) {
+        return Err("not an https origin".into());
+    }
+    if v == crate::config::TELEGRAM_API_URL {
+        return Err("the built-in origin".into());
+    }
+    if cur.is_some() {
+        return Ok(false);
+    }
+    *new = Some(v);
+    Ok(true)
+}
+
+/// Startup (before `init`): obsolete keys of an older panel.toml. Each key
+/// that moved to 系统设置 is imported ONCE — when the database has no
+/// value and no earlier start handled the key — in one transaction under
+/// the settings row lock (concurrent instances import once), audited
+/// `settings.import` as actor `system`; server names (`web.advertised_names`,
+/// `grpc.server_name`) join `grpc_server_names` (source `config`) so the
+/// gRPC certificate keeps covering them. Every key is then ignored with a
+/// warning; keys that became built-in constants are only warned about.
+/// `[payments]` is W24's (`billing::methods::import_legacy`). Never fails
+/// the start.
+pub async fn import_legacy(state: &AppState) -> ImportReport {
+    let legacy = &state.cfg().legacy;
+    let mut report = ImportReport::default();
+    if legacy.is_empty() {
+        return report;
+    }
+    match import_tx(state.pg(), legacy).await {
+        Ok(r) => report = r,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "obsolete panel.toml keys could not be imported; they are ignored: set them in \
+                 系统设置 and delete them from panel.toml"
+            );
+            return report;
+        }
+    }
+    for (key, what) in &report.keys {
+        let place = match crate::config::fate(key) {
+            Some(crate::config::Fate::Moved(p)) => p,
+            _ => "",
+        };
+        match what {
+            Imported::Now => tracing::warn!(
+                key,
+                "panel.toml {key} imported into 系统设置 → {place}; it is obsolete and now \
+                 ignored: delete it from panel.toml"
+            ),
+            Imported::Kept => tracing::warn!(
+                key,
+                "panel.toml {key} is obsolete and ignored (系统设置 → {place} already has a \
+                 value): delete it from panel.toml"
+            ),
+            Imported::Before => tracing::warn!(
+                key,
+                "panel.toml {key} is obsolete and ignored (系统设置 → {place} is the only \
+                 source): delete it from panel.toml"
+            ),
+            Imported::Unusable(why) => tracing::warn!(
+                key,
+                reason = %why,
+                "panel.toml {key} is obsolete and was not imported ({why}): set 系统设置 → \
+                 {place} if needed, then delete it from panel.toml"
+            ),
+            Imported::Constant => tracing::warn!(
+                key,
+                "panel.toml {key} is obsolete: the value is built in now; delete it from \
+                 panel.toml"
+            ),
+        }
+    }
+    if report.host_gate_on {
+        tracing::warn!(
+            "install.public_url became the main domain: the host gate is on (requests for other \
+             DNS names are refused; IP addresses stay allowed). Check 系统设置 → 站点; \
+             `akari settings unset main` turns it off"
+        );
+    }
+    report
+}
+
+async fn import_tx(
+    pg: &sqlx::PgPool,
+    legacy: &crate::config::Legacy,
+) -> anyhow::Result<ImportReport> {
+    let mut tx = pg.begin().await?;
+    let cur = read_stored(&mut tx, true).await?;
+    let handled: Vec<String> = sqlx::query_scalar("SELECT key FROM legacy_config_imports")
+        .fetch_all(&mut *tx)
+        .await?;
+    let mut new = cur.clone();
+    let cur_tg: Option<String> =
+        sqlx::query_scalar("SELECT telegram_api_url FROM alert_settings WHERE id = 1 FOR UPDATE")
+            .fetch_one(&mut *tx)
+            .await?;
+    let mut new_tg = cur_tg.clone();
+    let mut names: Vec<String> = Vec::new();
+    let mut report = ImportReport::default();
+    let mut marks: Vec<(String, &'static str)> = Vec::new();
+    for key in legacy.names() {
+        match crate::config::fate(key) {
+            None => continue,
+            Some(crate::config::Fate::Constant) => {
+                report.keys.push((key.to_string(), Imported::Constant));
+                continue;
+            }
+            Some(crate::config::Fate::Moved(_)) if key == "payments.*" => continue,
+            Some(crate::config::Fate::Moved(_)) => {}
+        }
+        if handled.iter().any(|h| h == key) {
+            report.keys.push((key.to_string(), Imported::Before));
+            continue;
+        }
+        let res = if key == "alerts.telegram_api_url" {
+            legacy_telegram(legacy, &cur_tg, &mut new_tg)
+        } else {
+            legacy_value(legacy, key, &mut new, &mut names)
+        };
+        let outcome = match res {
+            Ok(true) => Imported::Now,
+            Ok(false) => Imported::Kept,
+            Err(why) => Imported::Unusable(why),
+        };
+        marks.push((
+            key.to_string(),
+            match outcome {
+                Imported::Now => "imported",
+                Imported::Kept => "kept",
+                _ => "unusable",
+            },
+        ));
+        report.keys.push((key.to_string(), outcome));
+    }
+    for n in &names {
+        record_server_name(&mut tx, n, "config").await?;
+    }
+    if new != cur {
+        report.host_gate_on = cur.main_domain.is_none() && new.main_domain.is_some();
+        sqlx::query(
+            "UPDATE panel_settings SET main_domain = $1, sub_domain = $2, node_domain = $3, \
+                 trust_cloudflare = $4, probe_interval_secs = $5, probe_urls = $6, \
+                 probe_panel_tcp = $7, cloudflare_ranges = $8, install_tls_pin = $9, \
+                 install_fallback_url = $10, acme_directory_url = $11, acme_email = $12, \
+                 audit_retention_days = $13, traffic_daily_retention_days = $14, \
+                 require_admin_2fa = $15, remove_mode = $16, extra_release_keys = $17, \
+                 version = version + 1, updated_at = now() \
+             WHERE id = 1",
+        )
+        .bind(&new.main_domain)
+        .bind(&new.sub_domain)
+        .bind(&new.node_domain)
+        .bind(new.trust_cloudflare)
+        .bind(new.probe_interval_secs)
+        .bind(&new.probe_urls)
+        .bind(new.probe_panel_tcp)
+        .bind(&new.cloudflare_ranges)
+        .bind(&new.install_tls_pin)
+        .bind(&new.install_fallback_url)
+        .bind(&new.acme_directory_url)
+        .bind(&new.acme_email)
+        .bind(new.audit_retention_days)
+        .bind(new.traffic_daily_retention_days)
+        .bind(new.require_admin_2fa)
+        .bind(&new.remove_mode)
+        .bind(&new.extra_release_keys)
+        .execute(&mut *tx)
+        .await?;
+    }
+    if new_tg != cur_tg {
+        sqlx::query(
+            "UPDATE alert_settings SET telegram_api_url = $1, version = version + 1, \
+                 updated_at = now() WHERE id = 1",
+        )
+        .bind(&new_tg)
+        .execute(&mut *tx)
+        .await?;
+    }
+    if !marks.is_empty() {
+        let (keys, outcomes): (Vec<String>, Vec<&str>) = marks.into_iter().unzip();
+        sqlx::query(
+            "INSERT INTO legacy_config_imports (key, outcome) \
+             SELECT * FROM unnest($1::text[], $2::text[]) ON CONFLICT (key) DO NOTHING",
+        )
+        .bind(&keys)
+        .bind(&outcomes)
+        .execute(&mut *tx)
+        .await?;
+        let imported: Vec<&str> = report
+            .keys
+            .iter()
+            .filter(|(_, o)| *o == Imported::Now)
+            .map(|(k, _)| k.as_str())
+            .collect();
+        if !imported.is_empty() {
+            let diff = |s: &Stored, tg: &Option<String>| {
+                let mut v = serde_json::to_value(s).unwrap_or_default();
+                if let Some(o) = v.as_object_mut() {
+                    o.remove("version");
+                    o.retain(|k, _| legacy_column_changed(k, &cur, &new));
+                    if new_tg != cur_tg {
+                        o.insert("alerts.telegram_api_url".into(), json!(tg));
+                    }
+                }
+                v
+            };
+            crate::audit::record(
+                &mut tx,
+                &Actor::system(),
+                "settings.import",
+                "settings",
+                None,
+                Some(diff(&cur, &cur_tg)),
+                Some(json!({
+                    "values": diff(&new, &new_tg),
+                    "keys": imported,
+                    "server_names": names,
+                })),
+            )
+            .await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(report)
+}
+
+/// Did the import change this `Stored` column?
+fn legacy_column_changed(col: &str, a: &Stored, b: &Stored) -> bool {
+    let (a, b) = (serde_json::to_value(a), serde_json::to_value(b));
+    match (a, b) {
+        (Ok(a), Ok(b)) => a.get(col) != b.get(col),
+        _ => true,
+    }
 }
 
 #[cfg(test)]

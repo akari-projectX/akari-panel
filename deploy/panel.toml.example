@@ -2,7 +2,11 @@
 # the database password). Validate before (re)starting:
 #   sudo -u akari akari -c /etc/akari/panel.toml config check
 #
-# Replace panel.example.com / 203.0.113.10 with the host agents will dial.
+# Only what the process needs to start (R39). Everything else — domains,
+# Cloudflare, latency tests, ACME, retention, 2FA policy, extra release
+# keys — is set in the admin console (系统设置) and stored in the database.
+# Keys of older releases are obsolete: imported into 系统设置 once on the
+# first start, then ignored (docs/DEPLOY.md "Upgrading: obsolete keys").
 
 data_dir = "/var/lib/akari"
 database_url = "postgres://akari:CHANGE-ME@127.0.0.1:5432/akari"
@@ -15,24 +19,12 @@ cookie_secure = true
 # The proxy's address AS THE PANEL SEES IT. X-Forwarded-For is honoured only
 # from these peers (login rate limit, per-client addressing).
 trusted_proxies = ["127.0.0.1/32"]
-# Names/IPs the gRPC server certificate is valid for. Must include the host
-# part of grpc.advertise AND grpc.server_name. (The node communication
-# domain set in 系统设置, and every name a bootstrap file was issued for, are
-# added automatically: docs/DEPLOY.md "Domains".)
-advertised_names = ["panel.example.com"]
-# Defaults for 系统设置 (the database value wins once saved there):
-# sub_domain = "sub.example.com"     # subscription links ("" = main domain)
-# trust_cloudflare = false           # CF-Connecting-IP behind Cloudflare edges
-# cloudflare_ranges = []             # [] = the list shipped in the binary
 
 [grpc]
 # Agents dial this directly with mTLS: public, NOT behind an HTTP proxy.
+# The address they dial is 系统设置 → 节点通信 → 节点通信域名 (a domain
+# without a port uses this port).
 bind = "0.0.0.0:8443"
-advertise = "panel.example.com:8443"
-server_name = "panel.example.com"
-# Fail-closed lease: an agent that hears nothing for this long stops xray.
-# 1 hour .. 30 days.
-lease_seconds = 86400
 
 [metrics]
 # Prometheus endpoint on its own listener (never the web port). Unset =
@@ -41,17 +33,5 @@ bind = "127.0.0.1:9100"
 
 [tls_ask]
 # Caddy on-demand TLS ask endpoint (deploy/caddy/Caddyfile, AKARI_ASK):
-# certificates for the domains set in the admin "系统设置". Loopback only.
+# certificates for the domains set in 系统设置. Loopback only.
 bind = "127.0.0.1:8082"
-
-[install]
-# One-line node installer (docs/DEPLOY.md §3). Origin nodes download from;
-# default "" = the origin of the admin's browser.
-# public_url = "https://panel.example.com"
-# Install links (enrollment tokens) live 1 h by default.
-# token_ttl_secs = 3600
-
-[updates]
-# M6 agent self-update (docs/DEPLOY.md §5b): the akari-agent release-keys.txt
-# lines. Empty = uploads of agent releases are refused.
-release_keys = ["ciJILGk6W1TnPr56Dncgv0mVQFBzqOrawiOaH0/d5Pg= key-f2ad18a8bb718a1a"]

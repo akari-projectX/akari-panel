@@ -35,10 +35,10 @@ pub fn ensure(cfg: &PanelConfig) -> Result<Install> {
     let jwt_secret = ensure_jwt_key(&cfg.data_dir)?;
     let totp = crate::totp::Keys::from_material(&ensure_totp_key(&cfg.data_dir)?)?;
     let (ca_pem, ca_key_pem) = ensure_ca(&cfg.data_dir)?;
-    // The server cert is ephemeral: regenerated at every boot so SAN changes
-    // in config take effect without any certificate management.
+    // The server cert is ephemeral: the boot one covers the built-in names;
+    // `settings::reload` re-issues it for every recorded server name.
     let (server_cert_pem, server_key_pem) =
-        issue_server_cert(&ca_pem, &ca_key_pem, &cfg.web.advertised_names)?;
+        issue_server_cert(&ca_pem, &ca_key_pem, &crate::settings::sans(&[], ""))?;
     Ok(Install {
         route_prefix,
         ca_pem,

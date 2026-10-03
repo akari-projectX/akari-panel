@@ -46,7 +46,7 @@ pub async fn totp_status(
         "pending": pending,
         // The console recommends 2FA to admins without it; with this set it
         // is mandatory for them.
-        "admin_2fa_required": state.cfg().auth.require_admin_2fa,
+        "admin_2fa_required": state.settings().get().require_admin_2fa,
         "recovery_codes_left": left,
     })))
 }
@@ -785,8 +785,10 @@ mod tests {
             return;
         };
         let lax = AppState::for_test(db.pool.clone()).await;
-        let strict =
-            AppState::for_test_with(db.pool.clone(), |c| c.auth.require_admin_2fa = true).await;
+        // Same database, another instance that has seen the setting (the
+        // lax one keeps its earlier view: no notification in tests).
+        let strict = AppState::for_test(db.pool.clone()).await;
+        db.settings(&strict, "require_admin_2fa = true").await;
         let (_, login) = account(&db, "admin").await;
         let (_, ulogin) = account(&db, "user").await;
 

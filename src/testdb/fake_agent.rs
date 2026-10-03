@@ -62,8 +62,8 @@ impl PanelHarness {
             data_dir: data_dir.clone(),
             ..Default::default()
         };
-        cfg.agent.enroll_rate_per_ip = 1_000_000;
-        cfg.agent.enroll_rate_global = 1_000_000;
+        cfg.limits.enroll_rate_per_ip = 1_000_000;
+        cfg.limits.enroll_rate_global = 1_000_000;
         tweak(&mut cfg);
         let install = crate::install::ensure(&cfg).expect("issue CA + server cert");
         let (ca_pem, ca_key_pem) = (install.ca_pem.clone(), install.ca_key_pem.clone());

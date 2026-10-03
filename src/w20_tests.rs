@@ -94,10 +94,8 @@ async fn subscription_link_is_stored_encrypted_and_retrievable() {
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    let state = AppState::for_test_with(db.pool.clone(), |c| {
-        c.web.sub_domain = "sub.example".into();
-    })
-    .await;
+    let state = AppState::for_test(db.pool.clone()).await;
+    db.settings(&state, "sub_domain = 'sub.example'").await;
     let (id, login) = user_with_password(&db).await;
     let c = signed_in(&state, &login).await;
     assert_eq!(stored(&db, id).await, (None, None));

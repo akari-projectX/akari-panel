@@ -929,19 +929,19 @@ pub struct Rates {
     /// traffic.node_max_rate_bytes_per_sec (per node, unless overridden).
     pub node: i64,
     /// Burst window: the longest period any cap credits, except for a
-    /// recorded reconnect gap or flush outage (traffic.node_burst_secs).
+    /// recorded reconnect gap or flush outage (built in: `config::DEFAULT_NODE_BURST_SECS`).
     pub burst_secs: i64,
-    /// Upper bound of any credit (grpc.lease_seconds, clamped).
+    /// Upper bound of any credit (the lease, `config::LEASE_SECONDS`).
     pub lease_secs: i64,
 }
 
 impl Rates {
     pub fn from_cfg(cfg: &crate::config::PanelConfig) -> Self {
         Self {
-            key: cfg.traffic.max_rate_bytes_per_sec.max(1),
-            node: cfg.traffic.node_max_rate_bytes_per_sec.max(1),
-            burst_secs: cfg.traffic.node_burst_secs.max(1) as i64,
-            lease_secs: cfg.grpc.lease_seconds() as i64,
+            key: cfg.limits.traffic_max_rate_bytes_per_sec.max(1),
+            node: cfg.limits.traffic_node_max_rate_bytes_per_sec.max(1),
+            burst_secs: cfg.limits.traffic_node_burst_secs.max(1) as i64,
+            lease_secs: cfg.limits.lease_seconds() as i64,
         }
     }
 }

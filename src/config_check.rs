@@ -6,15 +6,11 @@
 //! operator fixes the file once instead of once per restart. Errors stop
 //! `serve`; warnings are logged and printed but never stop it.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::Path;
 use std::str::FromStr;
 
-use crate::config::PanelConfig;
-
-/// Lease bounds (seconds): agents clamp to >= 1 h, the panel to <= 30 d.
-const LEASE_MIN: u64 = 3600;
-const LEASE_MAX: u64 = 30 * 86400;
+use crate::config::{Fate, PanelConfig};
 
 #[derive(Debug, Default)]
 pub struct Report {
@@ -54,107 +50,48 @@ impl PanelConfig {
     pub fn validate(&self) -> Report {
         let mut r = Report::default();
         self.validate_addresses(&mut r);
-        self.validate_names(&mut r);
-        self.validate_numbers(&mut r);
+        self.validate_ask(&mut r);
         self.validate_urls(&mut r);
         self.validate_proxy_consistency(&mut r);
-        self.validate_updates(&mut r);
-        self.validate_payments(&mut r);
-        self.validate_settings_defaults(&mut r);
-        self.validate_probe(&mut r);
-        self.validate_alerts(&mut r);
-        self.validate_acme(&mut r);
+        if !self.limits.test_overrides.is_empty() {
+            r.warn(format!(
+                "{} is set ({}): TEST timers, never in production",
+                crate::config::TEST_LIMITS_ENV,
+                self.limits.test_overrides.join(", ")
+            ));
+        }
         r
     }
 
-    /// `[alerts]` (W17).
-    fn validate_alerts(&self, r: &mut Report) {
-        let a = &self.alerts;
-        if !(5..=600).contains(&a.eval_interval_secs) {
-            r.err("alerts.eval_interval_secs: must be 5..=600");
-        }
-        let ok = a
-            .telegram_api_url
-            .parse::<axum::http::Uri>()
-            .ok()
-            .filter(|u| u.path() == "/" || u.path().is_empty())
-            .and_then(|u| match (u.scheme_str(), u.host()) {
-                (Some("https"), Some(_)) => Some(()),
-                (Some("http"), Some(h)) if crate::billing::http::is_loopback_host(h) => Some(()),
-                _ => None,
-            })
-            .is_some();
-        if !ok || a.telegram_api_url.contains('@') {
-            r.err("alerts.telegram_api_url: must be an https origin (http only to localhost), without a path or credentials");
-        }
-    }
-
-    /// `[probe]` (W11 latency tests).
-    fn validate_probe(&self, r: &mut Report) {
-        let p = &self.probe;
-        if !(600..=604_800).contains(&p.interval_secs) {
-            r.err("probe.interval_secs: must be 600..=604800 (10 min .. 7 days)");
-        }
-        if !(1000..=30_000).contains(&p.timeout_ms) {
-            r.err("probe.timeout_ms: must be 1000..=30000");
-        }
-        if !(1..=5).contains(&p.attempts) {
-            r.err("probe.attempts: must be 1..=5");
-        }
-        if p.urls.is_empty() || p.urls.len() > 4 {
-            r.err("probe.urls: 1 to 4 URLs");
-        }
-        for u in &p.urls {
-            if !crate::nodestat::valid_probe_url(u) {
-                r.err(format!(
-                    "probe.urls: {u:?} is not an absolute http(s) URL without credentials (<= 512 bytes)"
-                ));
+    /// W24/W25 (R39): keys of older releases (`config check`; `serve` logs
+    /// what the import did with each instead). Never an error (an old file
+    /// keeps starting): moved settings are imported once into 系统设置 on
+    /// the first start that sees them (when the database has no value),
+    /// then ignored; built-in constants are ignored.
+    pub fn obsolete_warnings(&self) -> Vec<String> {
+        let mut r = Report::default();
+        for key in self.legacy.names() {
+            let shown = key
+                .strip_suffix(".*")
+                .map_or(key.to_string(), |s| format!("[{s}]"));
+            match crate::config::fate(key) {
+                Some(Fate::Moved(place)) => r.warn(format!(
+                    "{shown} is obsolete: it is set in 系统设置 → {place} (database). The first \
+                     start imports it once if that setting is empty; afterwards it is ignored. \
+                     Delete it from panel.toml"
+                )),
+                Some(Fate::Constant) => r.warn(format!(
+                    "{shown} is obsolete: the value is built in now and the key is ignored. \
+                     Delete it from panel.toml"
+                )),
+                None => {}
             }
         }
-        if p.manual_cooldown_secs > 86_400 {
-            r.err("probe.manual_cooldown_secs: at most 86400");
-        }
+        r.warnings
     }
 
-    /// `[acme]` (W10): what agents are told; they validate again.
-    fn validate_acme(&self, r: &mut Report) {
-        let a = &self.acme;
-        if !a.directory_url.is_empty() {
-            match a.directory_url.parse::<axum::http::Uri>() {
-                Ok(u) if u.scheme_str() == Some("https") && u.authority().is_some() => {}
-                _ => r.err("acme.directory_url must be an https URL (or empty for Let's Encrypt)"),
-            }
-        }
-        let e = &a.email;
-        if !e.is_empty()
-            && (e.len() > 254
-                || e.chars().any(|c| c.is_whitespace() || c.is_control())
-                || e.split_once('@')
-                    .is_none_or(|(l, d)| l.is_empty() || !d.contains('.')))
-        {
-            r.err("acme.email must be an e-mail address (or empty)");
-        }
-    }
-
-    /// W24: `[payments]` is obsolete (系统设置 → 支付). Never an error: an
-    /// old file must keep starting.
-    fn validate_payments(&self, r: &mut Report) {
-        if self.payments.is_some() {
-            r.warn(
-                "[payments] is obsolete: Alipay is configured in 系统设置 → 支付 (database). \
-                 The section was imported once into an empty payment configuration and is \
-                 otherwise ignored; delete it (and the key files) from panel.toml"
-                    .to_string(),
-            );
-        }
-    }
-
-    fn validate_settings_defaults(&self, r: &mut Report) {
-        if !self.web.sub_domain.is_empty()
-            && let Err(e) = crate::settings::Domain::parse(&self.web.sub_domain)
-        {
-            r.err(format!("web.sub_domain {:?}: {e}", self.web.sub_domain));
-        }
+    /// `[tls_ask]` listener (R22).
+    fn validate_ask(&self, r: &mut Report) {
         let a = &self.tls_ask;
         if let Some(b) = a.bind {
             if b.port() == 0 {
@@ -174,28 +111,8 @@ impl PanelConfig {
                      private network (compose) and never publish the port"
                 ));
             }
-            if a.rate_per_sec == 0 {
-                r.err("tls_ask.rate_per_sec must be > 0");
-            }
         } else if a.allow_non_loopback {
             r.warn("tls_ask.allow_non_loopback is set but tls_ask.bind is not: ask is disabled");
-        }
-        if self.web.trust_cloudflare && self.web.trusted_proxies.is_empty() {
-            r.warn(
-                "web.trust_cloudflare = true without web.trusted_proxies: only requests whose \
-                 TCP peer is a Cloudflare edge are attributed to CF-Connecting-IP (correct when \
-                 Cloudflare connects to the panel directly; behind Caddy list Caddy's address)",
-            );
-        }
-    }
-
-    fn validate_updates(&self, r: &mut Report) {
-        let u = &self.updates;
-        if let Err(e) = crate::updates::parse_release_keys(&u.release_keys) {
-            r.err(format!("updates.release_keys: {e}"));
-        }
-        if !(1..=256).contains(&u.max_concurrent_downloads) {
-            r.err("updates.max_concurrent_downloads: must be 1..=256");
         }
     }
 
@@ -233,160 +150,6 @@ impl PanelConfig {
             r.warn(
                 "metrics.allow_non_loopback is set but metrics.bind is not: metrics are disabled",
             );
-        }
-    }
-
-    fn validate_names(&self, r: &mut Report) {
-        let names = &self.web.advertised_names;
-        if names.is_empty() {
-            r.err(
-                "web.advertised_names is empty: the gRPC server certificate would have no \
-                 SAN and every agent handshake would fail. List the host agents dial",
-            );
-        }
-        for n in names {
-            if let Err(e) = check_name(n, true) {
-                r.err(format!("web.advertised_names entry {n:?}: {e}"));
-            }
-        }
-
-        let adv = &self.grpc.advertise;
-        match split_host_port(adv) {
-            Err(e) => r.err(format!(
-                "grpc.advertise {adv:?}: {e} (write an explicit IP:port, e.g. \
-                 \"203.0.113.10:8443\", or hostname:port)"
-            )),
-            Ok((host, _port)) => {
-                if !names.is_empty() && !covered(names, &host) {
-                    r.err(format!(
-                        "grpc.advertise host {host:?} is not covered by web.advertised_names \
-                         {names:?}: add it so the certificate is valid for it"
-                    ));
-                }
-            }
-        }
-
-        let sn = &self.grpc.server_name;
-        match check_name(sn, false) {
-            Err(e) => r.err(format!("grpc.server_name {sn:?}: {e}")),
-            Ok(()) => {
-                if !names.is_empty() && !covered(names, sn) {
-                    r.err(format!(
-                        "grpc.server_name {sn:?} is not covered by web.advertised_names \
-                         {names:?}: agents verify the certificate against this name"
-                    ));
-                }
-            }
-        }
-    }
-
-    fn validate_numbers(&self, r: &mut Report) {
-        let g = &self.grpc;
-        if !(LEASE_MIN..=LEASE_MAX).contains(&g.lease_seconds) {
-            r.err(format!(
-                "grpc.lease_seconds = {} is outside {LEASE_MIN}..={LEASE_MAX} (1 hour to 30 days)",
-                g.lease_seconds
-            ));
-        }
-        let t = &self.traffic;
-        if t.node_burst_secs == 0 {
-            r.err("traffic.node_burst_secs must be > 0");
-        } else if g.lease_seconds >= LEASE_MIN && t.node_burst_secs > g.lease_seconds {
-            r.err(format!(
-                "traffic.node_burst_secs = {} exceeds grpc.lease_seconds = {}",
-                t.node_burst_secs, g.lease_seconds
-            ));
-        }
-        if t.max_rate_bytes_per_sec <= 0 {
-            r.err("traffic.max_rate_bytes_per_sec must be > 0");
-        }
-        if t.node_max_rate_bytes_per_sec <= 0 {
-            r.err("traffic.node_max_rate_bytes_per_sec must be > 0");
-        }
-        if t.departed_grace_secs == 0 {
-            r.err("traffic.departed_grace_secs must be > 0");
-        }
-        if t.daily_retention_days != 0 && !(32..=36_500).contains(&t.daily_retention_days) {
-            r.err("traffic.daily_retention_days must be 0 (keep forever) or 32..=36500");
-        }
-        let sub = &self.sub;
-        if sub.rate_per_ip <= 0 || sub.rate_per_token <= 0 {
-            r.err("sub.rate_per_ip and sub.rate_per_token must be > 0");
-        }
-        if !(1..=86_400).contains(&sub.rate_window_secs) {
-            r.err(format!(
-                "sub.rate_window_secs = {} is outside 1..=86400",
-                sub.rate_window_secs
-            ));
-        }
-        let a = &self.agent;
-        if !(60..=825 * 86400).contains(&a.cert_validity_secs) {
-            r.err(format!(
-                "agent.cert_validity_secs = {} is outside 60..={} (1 minute to 825 days)",
-                a.cert_validity_secs,
-                825 * 86400
-            ));
-        } else if a.cert_validity_secs < 86400 {
-            r.warn(format!(
-                "agent.cert_validity_secs = {}: agent certificates live less than a day \
-                 (testing only; an agent offline longer than that must re-enroll)",
-                a.cert_validity_secs
-            ));
-        }
-        if !(300..=7 * 86400).contains(&a.enroll_token_ttl_secs) {
-            r.err(format!(
-                "agent.enroll_token_ttl_secs = {} is outside 300..=604800 (5 minutes to 7 days)",
-                a.enroll_token_ttl_secs
-            ));
-        }
-        if a.enroll_rate_per_ip <= 0 || a.enroll_rate_global <= 0 {
-            r.err("agent.enroll_rate_per_ip and agent.enroll_rate_global must be > 0");
-        }
-        if !(1..=86_400).contains(&a.enroll_rate_window_secs) {
-            r.err(format!(
-                "agent.enroll_rate_window_secs = {} is outside 1..=86400",
-                a.enroll_rate_window_secs
-            ));
-        }
-        let i = &self.install;
-        if !(300..=7 * 86400).contains(&i.token_ttl_secs) {
-            r.err(format!(
-                "install.token_ttl_secs = {} is outside 300..=604800 (5 minutes to 7 days)",
-                i.token_ttl_secs
-            ));
-        }
-        if i.rate_per_ip <= 0 {
-            r.err("install.rate_per_ip must be > 0");
-        }
-        if !(1..=86_400).contains(&i.rate_window_secs) {
-            r.err(format!(
-                "install.rate_window_secs = {} is outside 1..=86400",
-                i.rate_window_secs
-            ));
-        }
-        if !i.public_url.is_empty()
-            && let Err(e) = crate::nodeinstall::parse_origin(&i.public_url)
-        {
-            r.err(format!("install.public_url: {e}"));
-        }
-        if !i.tls_pin.is_empty() && !crate::nodeinstall::valid_pin(&i.tls_pin) {
-            r.err("install.tls_pin must be \"sha256//<base64 of the SHA-256 of the SPKI>\"");
-        }
-        if !i.fallback_binary_url.is_empty()
-            && !crate::nodeinstall::fallback_url_ok(&i.fallback_binary_url)
-        {
-            r.err(
-                "install.fallback_binary_url must be an https:// URL containing {arch}, \
-                 without quotes, spaces or shell metacharacters",
-            );
-        }
-        if self.audit.retention_days == 0 {
-            r.warn("audit.retention_days = 0: the audit log is never pruned");
-        } else if self.audit.retention_days < 30 {
-            r.warn(format!(
-                "audit.retention_days = {} keeps less than a month of audit history",
-                self.audit.retention_days
-            ));
         }
     }
 
@@ -478,85 +241,6 @@ fn conflicts(a: SocketAddr, b: SocketAddr) -> bool {
     a.port() == b.port() && (a.ip() == b.ip() || a.ip().is_unspecified() || b.ip().is_unspecified())
 }
 
-/// `host:port` with an explicit port; IPv6 hosts in brackets.
-fn split_host_port(s: &str) -> Result<(String, u16), String> {
-    if let Ok(sa) = SocketAddr::from_str(s) {
-        if sa.port() == 0 {
-            return Err("port 0 is not allowed".into());
-        }
-        return Ok((sa.ip().to_string(), sa.port()));
-    }
-    let (host, port) = s.rsplit_once(':').ok_or("missing :port")?;
-    let port: u16 = port.parse().map_err(|_| format!("invalid port {port:?}"))?;
-    if port == 0 {
-        return Err("port 0 is not allowed".into());
-    }
-    if host.contains(':') || host.starts_with('[') {
-        return Err("malformed IPv6 address (use [addr]:port)".into());
-    }
-    if host.parse::<IpAddr>().is_ok() {
-        // An IPv4 literal would have parsed as a SocketAddr above.
-        return Err("invalid address".into());
-    }
-    check_name(host, false)?;
-    Ok((host.to_string(), port))
-}
-
-/// An IP literal or an RFC 1123 hostname (with `wildcard`, also `*.example`).
-fn check_name(n: &str, wildcard: bool) -> Result<(), String> {
-    if n.is_empty() {
-        return Err("empty".into());
-    }
-    if n.parse::<IpAddr>().is_ok() {
-        return Ok(());
-    }
-    let rest = match n.strip_prefix("*.") {
-        Some(rest) if wildcard => rest,
-        Some(_) => return Err("wildcards are only allowed in advertised_names".into()),
-        None => n,
-    };
-    if rest.len() > 253 {
-        return Err("longer than 253 characters".into());
-    }
-    for label in rest.trim_end_matches('.').split('.') {
-        let ok = !label.is_empty()
-            && label.len() <= 63
-            && !label.starts_with('-')
-            && !label.ends_with('-')
-            && label
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-');
-        if !ok {
-            return Err(
-                "not an IP address or a valid hostname (letters, digits, '-', dot-separated)"
-                    .into(),
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Is `host` (IP literal or name) covered by an entry of `names`? Names match
-/// case-insensitively; `*.x` covers exactly one extra label.
-fn covered(names: &[String], host: &str) -> bool {
-    let ip = host.parse::<IpAddr>().ok();
-    names.iter().any(|n| {
-        if let (Some(a), Ok(b)) = (ip, n.parse::<IpAddr>()) {
-            return a == b;
-        }
-        if ip.is_some() {
-            return false;
-        }
-        let (n, h) = (n.trim_end_matches('.'), host.trim_end_matches('.'));
-        match n.strip_prefix("*.") {
-            Some(suffix) => h.split_once('.').is_some_and(|(label, rest)| {
-                !label.is_empty() && rest.eq_ignore_ascii_case(suffix)
-            }),
-            None => n.eq_ignore_ascii_case(h),
-        }
-    })
-}
-
 /// Replace the password of `scheme://user:pass@host/...` with `***`.
 fn redact_url(u: &str) -> String {
     let Some((scheme, rest)) = u.split_once("://") else {
@@ -576,10 +260,6 @@ fn redact_url(u: &str) -> String {
 mod tests {
     use super::*;
 
-    fn cfg(toml_s: &str) -> PanelConfig {
-        toml::from_str(toml_s).expect("test config parses")
-    }
-
     fn errors(c: &PanelConfig) -> Vec<String> {
         c.validate().errors
     }
@@ -588,233 +268,69 @@ mod tests {
         v.iter().any(|e| e.contains(needle))
     }
 
+    /// W25: obsolete keys are warnings (never errors), one per key, naming
+    /// where the value lives now.
     #[test]
-    fn alerts_section() {
-        let mut c = PanelConfig::default();
-        c.alerts.eval_interval_secs = 4;
-        assert!(has(&errors(&c), "alerts.eval_interval_secs"));
-        c.alerts.eval_interval_secs = 5;
-        for (url, ok) in [
-            ("https://api.telegram.org", true),
-            ("http://127.0.0.1:18999", true),
-            ("http://api.telegram.org", false),
-            ("https://api.telegram.org/bot123", false),
-            ("https://user@api.telegram.org", false),
-            ("not a url", false),
-        ] {
-            c.alerts.telegram_api_url = url.into();
-            assert_eq!(!has(&errors(&c), "alerts.telegram_api_url"), ok, "{url}");
-        }
-    }
-
-    #[test]
-    fn defaults_are_valid() {
-        let r = PanelConfig::default().validate();
-        assert!(r.errors.is_empty(), "{:?}", r.errors);
-        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
-    }
-
-    #[test]
-    fn production_shape_is_valid() {
-        let c = cfg(r#"
-            [web]
-            bind = "127.0.0.1:8080"
-            trusted_proxies = ["127.0.0.1/32"]
-            advertised_names = ["panel.example.com"]
-            [grpc]
-            bind = "0.0.0.0:8443"
-            advertise = "panel.example.com:8443"
-            server_name = "panel.example.com"
-        "#);
-        let r = c.validate();
-        assert!(r.errors.is_empty(), "{:?}", r.errors);
-        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
-    }
-
-    #[test]
-    fn unknown_keys_and_bad_addresses_are_parse_errors() {
-        assert!(toml::from_str::<PanelConfig>("[web]\nbnd = \"127.0.0.1:1\"").is_err());
-        assert!(toml::from_str::<PanelConfig>("[web]\nbind = \"not-an-addr\"").is_err());
-        assert!(toml::from_str::<PanelConfig>("[web]\nbind = \"127.0.0.1\"").is_err());
-    }
-
-    #[test]
-    fn advertise_must_be_explicit_host_port() {
-        for bad in [
-            "panel.example.com",
-            "127.0.0.1",
-            "127.0.0.1:0",
-            "bad_name:8443",
-            ":8443",
-            "[::1]",
-            "a:b:8443",
-        ] {
-            let mut c = PanelConfig::default();
-            c.grpc.advertise = bad.into();
-            c.web.advertised_names.push("panel.example.com".into());
-            assert!(has(&errors(&c), "grpc.advertise"), "{bad}");
-        }
-        for ok in ["127.0.0.1:8443", "[::1]:8443", "localhost:8443"] {
-            let mut c = PanelConfig::default();
-            c.web.advertised_names = vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
-            c.grpc.advertise = ok.into();
-            assert!(errors(&c).is_empty(), "{ok}: {:?}", errors(&c));
-        }
-    }
-
-    #[test]
-    fn advertised_names_must_exist_and_cover_advertise_and_server_name() {
-        let mut c = PanelConfig::default();
-        c.web.advertised_names.clear();
-        assert!(has(&errors(&c), "advertised_names is empty"));
-
-        let mut c = PanelConfig::default();
-        c.grpc.advertise = "203.0.113.9:8443".into();
-        assert!(has(&errors(&c), "not covered"), "IP missing from SAN");
-        c.web.advertised_names.push("203.0.113.9".into());
-        assert!(errors(&c).is_empty());
-
-        let mut c = PanelConfig::default();
-        c.grpc.server_name = "panel.example.com".into();
-        assert!(has(&errors(&c), "server_name"));
-        c.web.advertised_names = vec!["*.example.com".into(), "127.0.0.1".into()];
-        assert!(errors(&c).is_empty(), "{:?}", errors(&c));
-        c.grpc.server_name = "a.b.example.com".into();
-        assert!(has(&errors(&c), "server_name"), "wildcard covers one label");
-
-        let mut c = PanelConfig::default();
-        c.web.advertised_names.push("bad name".into());
-        assert!(has(&errors(&c), "advertised_names entry"));
-    }
-
-    #[test]
-    fn numeric_ranges() {
-        let mut c = PanelConfig::default();
-        c.grpc.lease_seconds = 3599;
-        assert!(has(&errors(&c), "lease_seconds"));
-        c.grpc.lease_seconds = 30 * 86400 + 1;
-        assert!(has(&errors(&c), "lease_seconds"));
-        c.grpc.lease_seconds = 3600;
-        assert!(errors(&c).is_empty());
-        c.grpc.lease_seconds = 30 * 86400;
-        assert!(errors(&c).is_empty());
-
-        let mut c = PanelConfig::default();
-        c.traffic.node_burst_secs = 0;
-        c.traffic.max_rate_bytes_per_sec = 0;
-        c.traffic.node_max_rate_bytes_per_sec = -5;
-        c.traffic.departed_grace_secs = 0;
-        c.traffic.daily_retention_days = 31;
-        let e = errors(&c);
-        for k in [
-            "node_burst_secs",
-            "max_rate_bytes",
-            "node_max_rate",
-            "departed_grace",
-            "daily_retention_days",
-        ] {
-            assert!(has(&e, k), "{k}: {e:?}");
-        }
-        for ok in [0, 32, 400, 36_500] {
-            let mut c = PanelConfig::default();
-            c.traffic.daily_retention_days = ok;
-            assert!(!has(&errors(&c), "daily_retention_days"), "{ok}");
-        }
-        let mut c = PanelConfig::default();
-        c.traffic.node_burst_secs = c.grpc.lease_seconds + 1;
-        assert!(has(&errors(&c), "exceeds grpc.lease_seconds"));
-
-        // R18-2 installer settings.
-        for (f, field) in [
-            (
-                (|c: &mut PanelConfig| c.install.token_ttl_secs = 299) as fn(&mut PanelConfig),
-                "install.token_ttl_secs",
-            ),
-            (|c| c.install.rate_per_ip = 0, "install.rate_per_ip"),
-            (
-                |c| c.install.rate_window_secs = 0,
-                "install.rate_window_secs",
-            ),
-            (
-                |c| c.install.public_url = "http://panel.example.com".into(),
-                "install.public_url",
-            ),
-            (
-                |c| c.install.public_url = "https://panel.example.com/x".into(),
-                "install.public_url",
-            ),
-            (
-                |c| c.install.tls_pin = "sha256//nope".into(),
-                "install.tls_pin",
-            ),
-            (
-                |c| c.install.fallback_binary_url = "https://x.com/agent".into(),
-                "install.fallback_binary_url",
-            ),
-        ] {
-            let mut c = PanelConfig::default();
-            f(&mut c);
-            assert!(has(&errors(&c), field), "{field}");
-        }
-        let mut c = PanelConfig::default();
-        c.install.public_url = "https://203.0.113.7:8443".into();
-        c.install.fallback_binary_url = String::new();
-        assert!(!errors(&c).iter().any(|e| e.contains("install.")));
-
-        let mut c = PanelConfig::default();
-        c.sub.rate_per_ip = 0;
-        assert!(has(&errors(&c), "sub.rate_per_ip"));
-        let mut c = PanelConfig::default();
-        c.sub.rate_window_secs = 0;
-        assert!(has(&errors(&c), "sub.rate_window_secs"));
-        // M1-8 enrollment / certificate settings.
-        for (f, field) in [
-            (
-                (|c: &mut PanelConfig| c.agent.cert_validity_secs = 59) as fn(&mut PanelConfig),
-                "cert_validity_secs",
-            ),
-            (
-                |c| c.agent.cert_validity_secs = 826 * 86400,
-                "cert_validity_secs",
-            ),
-            (
-                |c| c.agent.enroll_token_ttl_secs = 299,
-                "enroll_token_ttl_secs",
-            ),
-            (
-                |c| c.agent.enroll_token_ttl_secs = 8 * 86400,
-                "enroll_token_ttl_secs",
-            ),
-            (|c| c.agent.enroll_rate_per_ip = 0, "enroll_rate_per_ip"),
-            (|c| c.agent.enroll_rate_global = -1, "enroll_rate_global"),
-            (
-                |c| c.agent.enroll_rate_window_secs = 0,
-                "enroll_rate_window_secs",
-            ),
-        ] {
-            let mut c = PanelConfig::default();
-            f(&mut c);
-            assert!(has(&errors(&c), field), "{field}");
-        }
-        let mut c = PanelConfig::default();
-        c.agent.cert_validity_secs = 120;
-        assert!(errors(&c).is_empty(), "short validity is a warning only");
-        assert!(c
-            .validate()
-            .warnings
-            .iter()
-            .any(|w| w.contains("cert_validity_secs")));
-        let mut c = PanelConfig::default();
-        c.audit.retention_days = 0;
+    fn obsolete_keys_are_warnings() {
+        let c = PanelConfig::parse(
+            "[web]\nsub_domain = \"s.example.com\"\n[grpc]\nlease_seconds = 5\n\
+             [payments.alipay]\napp_id = \"1\"\n[alerts]\neval_interval_secs = 5\n",
+        )
+        .unwrap();
+        let rep = c.validate();
+        assert!(rep.errors.is_empty(), "{:?}", rep.errors);
         assert!(
-            errors(&c).is_empty(),
-            "0 = keep forever is valid (warning only)"
+            rep.warnings.is_empty(),
+            "serve logs the import outcome instead"
         );
-        assert!(c
-            .validate()
-            .warnings
-            .iter()
-            .any(|w| w.contains("never pruned")));
+        let w = c.obsolete_warnings();
+        assert!(
+            has(
+                &w,
+                "web.sub_domain is obsolete: it is set in 系统设置 → 站点 → 订阅域名"
+            ),
+            "{w:?}"
+        );
+        assert!(
+            has(
+                &w,
+                "grpc.lease_seconds is obsolete: the value is built in now"
+            ),
+            "{w:?}"
+        );
+        assert!(has(&w, "alerts.eval_interval_secs is obsolete"), "{w:?}");
+        assert!(
+            has(&w, "[payments] is obsolete: it is set in 系统设置 → 支付"),
+            "{w:?}"
+        );
+        assert_eq!(w.len(), 4, "{w:?}");
+        // The minimal file has nothing obsolete and nothing to warn about.
+        assert!(PanelConfig::default().validate().warnings.is_empty());
+        assert!(PanelConfig::default().obsolete_warnings().is_empty());
+    }
+
+    #[test]
+    fn test_limits_are_announced() {
+        let mut c = PanelConfig::default();
+        c.limits
+            .apply_test_overrides("cert_validity_secs=60")
+            .unwrap();
+        assert!(has(&c.validate().warnings, "TEST timers"));
+    }
+
+    #[test]
+    fn ask_listener_rules() {
+        let mut c = PanelConfig::default();
+        c.tls_ask.bind = Some("127.0.0.1:8082".parse().unwrap());
+        assert!(errors(&c).is_empty());
+        c.tls_ask.bind = Some("127.0.0.1:8080".parse().unwrap());
+        assert!(has(&errors(&c), "collides"));
+        c.tls_ask.bind = Some("10.0.0.5:8082".parse().unwrap());
+        assert!(has(&errors(&c), "not a loopback"));
+        c.tls_ask.allow_non_loopback = true;
+        assert!(errors(&c).is_empty());
+        c.tls_ask.bind = None;
+        assert!(has(&c.validate().warnings, "ask is disabled"));
     }
 
     #[test]
@@ -862,20 +378,6 @@ mod tests {
     }
 
     #[test]
-    fn acme_section_is_checked() {
-        assert!(!has(&errors(&cfg("")), "acme."));
-        let ok = cfg("[acme]\ndirectory_url = \"https://acme-staging-v02.api.letsencrypt.org/directory\"\nemail = \"ops@example.com\"\n");
-        assert!(!has(&errors(&ok), "acme."), "{:?}", errors(&ok));
-        let bad = cfg("[acme]\ndirectory_url = \"http://ca.example/dir\"\nemail = \"nobody\"\n");
-        let e = errors(&bad);
-        assert!(
-            has(&e, "acme.directory_url") && has(&e, "acme.email"),
-            "{e:?}"
-        );
-        assert!(toml::from_str::<PanelConfig>("[acme]\nstaging = true\n").is_err());
-    }
-
-    #[test]
     fn urls_are_checked_without_leaking_secrets() {
         let c = PanelConfig {
             database_url: "mysql://u:hunter2@h/db".into(),
@@ -905,8 +407,10 @@ mod tests {
         assert!(!t.contains("s3cr3t") && !t.contains("valkeypw"), "{t}");
         assert!(t.contains("postgres://akari:***@db:5432/akari"), "{t}");
         assert!(t.contains("10.0.0.0/8"), "{t}");
-        // The printed form is itself a loadable config.
-        assert!(toml::from_str::<PanelConfig>(&t).is_ok(), "{t}");
+        // The printed form is itself a loadable config, with nothing
+        // obsolete in it.
+        let back = PanelConfig::parse(&t).unwrap();
+        assert!(back.legacy.is_empty(), "{t}");
     }
 
     #[test]

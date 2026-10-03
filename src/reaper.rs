@@ -90,8 +90,11 @@ pub async fn reap_loop(state: AppState) {
                 Err(e) => tracing::warn!(error = %e, "traffic counters retention failed"),
             }
             // W22: per-day history older than the retention -> months.
-            match crate::traffic::rollup_pass(state.pg(), state.cfg().traffic.daily_retention_days)
-                .await
+            match crate::traffic::rollup_pass(
+                state.pg(),
+                state.settings().get().traffic_daily_retention_days,
+            )
+            .await
             {
                 Ok(0) => {}
                 Ok(n) => tracing::info!(rows = n, "traffic daily history rolled up"),
@@ -100,7 +103,8 @@ pub async fn reap_loop(state: AppState) {
         }
         if tokio::time::Instant::now() >= next_prune {
             next_prune = tokio::time::Instant::now() + crate::audit::PRUNE_EVERY;
-            match crate::audit::prune(state.pg(), state.cfg().audit.retention_days).await {
+            match crate::audit::prune(state.pg(), state.settings().get().audit_retention_days).await
+            {
                 Ok(0) => {}
                 Ok(n) => tracing::info!(rows = n, "audit log pruned"),
                 Err(e) => tracing::warn!(error = %e, "audit log prune failed"),

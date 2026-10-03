@@ -83,9 +83,9 @@ impl AppState {
     ) -> Self {
         let route_prefix = install.route_prefix.clone();
         let jwt_secret = install.jwt_secret.clone();
-        let fetch_permits = cfg.updates.max_concurrent_downloads.max(1);
+        let fetch_permits = cfg.limits.max_concurrent_downloads.max(1);
         let traffic = TrafficBuffer::new();
-        traffic.set_departed_grace(cfg.traffic.departed_grace_secs);
+        traffic.set_departed_grace(cfg.limits.traffic_departed_grace_secs);
         let settings = crate::settings::Live::new(&cfg, &install);
         Self(Arc::new(Inner {
             cfg,

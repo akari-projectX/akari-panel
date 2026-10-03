@@ -55,6 +55,10 @@ pub struct Client {
     pub headers: Vec<(String, String)>,
 }
 
+/// The Host of every request unless `headers` sets one: an IP literal,
+/// which the R22 host gate always allows (real requests carry a Host).
+pub const DEFAULT_HOST: &str = "127.0.0.1";
+
 impl Client {
     pub fn new(state: &AppState, ip: IpAddr) -> Self {
         Self {
@@ -69,6 +73,13 @@ impl Client {
         let mut b = Request::builder().method(method).uri(path);
         for (k, v) in &self.headers {
             b = b.header(k.as_str(), v.as_str());
+        }
+        if !self
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("host"))
+        {
+            b = b.header(header::HOST, DEFAULT_HOST);
         }
         if let Some(c) = &self.cookie {
             b = b.header(header::COOKIE, format!("{}={c}", crate::auth::COOKIE_NAME));
@@ -102,6 +113,7 @@ impl Client {
         let mut b = Request::builder()
             .method(Method::POST)
             .uri(path)
+            .header(header::HOST, DEFAULT_HOST)
             .header(header::CONTENT_TYPE, content_type);
         if let Some(c) = &self.cookie {
             b = b.header(header::COOKIE, format!("{}={c}", crate::auth::COOKIE_NAME));
@@ -128,6 +140,7 @@ impl Client {
         let mut b = Request::builder()
             .method(Method::PUT)
             .uri(path)
+            .header(header::HOST, DEFAULT_HOST)
             .header(header::CONTENT_TYPE, "application/octet-stream");
         if let Some(c) = &self.cookie {
             b = b.header(header::COOKIE, format!("{}={c}", crate::auth::COOKIE_NAME));

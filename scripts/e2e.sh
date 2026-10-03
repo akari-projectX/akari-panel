@@ -32,6 +32,10 @@ psql_admin "CREATE DATABASE \"$E2E_DB\""
 docker compose exec -T valkey valkey-cli -n "$E2E_VALKEY_DB" flushdb >/dev/null
 
 rm -rf "$DIR" && mkdir -p "$DIR"
+# W25 (R39): web.advertised_names, grpc.advertise and [audit] are OBSOLETE —
+# kept here on purpose (like [payments.alipay] below): the first start
+# imports them once into 系统设置 (node domain, certificate names, audit
+# retention), which the W25 test then sees in the console.
 cat >"$DIR/panel.toml" <<TOML
 data_dir = "$DIR/data"
 [web]
@@ -41,6 +45,8 @@ cookie_secure = false
 [grpc]
 bind = "127.0.0.1:$GRPC_PORT"
 advertise = "127.0.0.1:$GRPC_PORT"
+[audit]
+retention_days = 180
 TOML
 
 # W15: Mailpit as the SMTP sink (loopback; SMTP 11026, API 18026 — not

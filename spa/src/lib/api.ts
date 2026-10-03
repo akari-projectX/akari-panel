@@ -147,7 +147,7 @@ export function mySubUrl(me: Pick<Me, "sub_token" | "sub_url">): string | null {
   return me.sub_token ? subscriptionUrl(me.sub_token) : null;
 }
 
-// "enroll": only with auth.require_admin_2fa, an admin without 2FA; only the
+// "enroll": only with 系统设置 → 安全 → 管理员必须两步验证, an admin without 2FA; only the
 // /me/totp endpoints accept it.
 export type Stage = "full" | "enroll";
 
@@ -166,7 +166,7 @@ export interface TotpStatus {
   enabled: boolean;
   pending: boolean;
   recovery_codes_left: number;
-  // auth.require_admin_2fa: admins without 2FA only get an enrollment
+  // 系统设置 → 安全 → 管理员必须两步验证: admins without 2FA only get an enrollment
   // session. Off by default (2FA is optional, recommended to admins).
   admin_2fa_required: boolean;
 }

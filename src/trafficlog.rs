@@ -462,7 +462,7 @@ fn parse(raw: Option<String>, params: Params) -> Result<Range, ApiError> {
 /// First day still kept per day (older days are monthly only); None =
 /// days are kept forever.
 fn daily_since(state: &AppState) -> Option<NaiveDate> {
-    match state.cfg().traffic.daily_retention_days {
+    match state.settings().get().traffic_daily_retention_days {
         0 => None,
         n => Some(today() - Duration::days(n as i64)),
     }

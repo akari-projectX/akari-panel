@@ -11,7 +11,7 @@
 //!   exponentially; permanent refusals (4xx other than 408/429, missing or
 //!   unreadable secrets, disabled channel) and `MAX_ATTEMPTS` make it dead
 //!   (`/alerts/notifications`, retry by hand).
-//! - **Telegram**: `POST {telegram_api_url}/bot<token>/sendMessage`
+//! - **Telegram**: `POST {Telegram API 地址}/bot<token>/sendMessage`
 //!   (outbound only; no webhook, no polling). The URL holds the token: it is
 //!   never logged, and errors carry no request content.
 //! - **Webhook**: `POST <url>` with the JSON payload; headers
@@ -248,7 +248,11 @@ pub async fn send(
                 .telegram_chat_id
                 .as_deref()
                 .ok_or_else(|| SendError::Permanent("no telegram chat id".into()))?;
-            let base = state.cfg().alerts.telegram_api_url.trim_end_matches('/');
+            let base = s
+                .telegram_api_url
+                .as_deref()
+                .unwrap_or(crate::config::TELEGRAM_API_URL)
+                .trim_end_matches('/');
             let url = format!("{base}/bot{token}/sendMessage");
             let text: String = msg.text().chars().take(MAX_TELEGRAM_TEXT).collect();
             let body = json!({ "chat_id": chat, "text": text, "disable_web_page_preview": true });

@@ -343,7 +343,7 @@ pub async fn enroll(
     ip: Option<IpAddr>,
     req: EnrollRequest,
 ) -> Result<IssuedCertificate, Status> {
-    let cfg = &state.cfg().agent;
+    let cfg = &state.cfg().limits;
     let bucket = ip
         .map(crate::client_ip::bucket)
         .unwrap_or_else(|| "unknown".into());
@@ -446,7 +446,7 @@ async fn burn_and_issue(
         &inst.ca_key_pem,
         &node.to_string(),
         key,
-        state.cfg().agent.cert_validity_secs,
+        state.cfg().limits.cert_validity_secs,
     )?;
     // Re-enrollment of a node that had certificates: they are superseded.
     for s in [&old_serial, &old_prev].into_iter().flatten() {
@@ -581,7 +581,7 @@ async fn renew_in_tx(
         &inst.ca_key_pem,
         &node.to_string(),
         key,
-        state.cfg().agent.cert_validity_secs,
+        state.cfg().limits.cert_validity_secs,
     )?;
     // The caller's certificate stays accepted (prev) until the new one is
     // seen. Whatever else was pending is superseded:
@@ -945,7 +945,7 @@ mod tests {
         let Some(db) = TestDb::new().await else {
             return;
         };
-        let panel = PanelHarness::start_with(&db, |c| c.agent.enroll_rate_per_ip = 3).await;
+        let panel = PanelHarness::start_with(&db, |c| c.limits.enroll_rate_per_ip = 3).await;
         let ip = crate::testdb::http::rand_ip();
         let req = || EnrollRequest {
             token: generate_token(),

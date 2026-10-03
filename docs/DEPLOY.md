@@ -40,34 +40,75 @@ rules): publish only what the table above lists. The Compose file does.
 
 ## 1. Choose the config values
 
+`panel.toml` holds only what the process needs to start (R39): `data_dir`, `database_url`,
+`valkey_url` (both can come from the environment), the listeners (`web.bind`, `grpc.bind`,
+`metrics.*`, `tls_ask.*`), `web.trusted_proxies` (the proxy's address as the panel sees it) and
+`web.cookie_secure`. See `deploy/panel.toml.example` / `panel.toml.compose.example`; nothing else
+is read from it.
+
+Everything an operator changes at runtime is set in the console under **系统设置** and stored in
+the database — there is no file fallback and no precedence between the two:
+
 ```
-host agents dial   = panel.example.com        (or an IP)
-web.advertised_names = ["panel.example.com"]  (must cover the host of grpc.advertise AND grpc.server_name)
-grpc.advertise     = "panel.example.com:8443" (explicit IP:port or hostname:port)
-grpc.server_name   = "panel.example.com"
-web.trusted_proxies = the proxy's address as the panel sees it
+主域名 / 订阅域名 / 信任 Cloudflare     系统设置 → 站点
+节点通信域名 (host agents dial)          系统设置 → 节点通信   (required before the first node)
+install pin, download fallback, ACME, remove mode   系统设置 → 节点通信
+2FA policy, retention, Cloudflare ranges, extra release keys   系统设置 → 安全
+latency tests                           系统设置 → 测速
+Telegram API origin (alert channel)     系统设置 → 告警
 ```
 
-`akari config check` validates everything and prints the effective config with
-secrets redacted; `akari serve` runs the same validation and refuses to start on errors.
+Before the first login (or headless) the node domain can also be set from the CLI:
+`akari settings set node panel.example.com` (a domain without a port uses `grpc.bind`'s port).
+Without a node domain no install command or bootstrap file can be issued
+(`settings.node_domain_unset`).
+
+Internal tuning knobs (rate limits, token lifetimes, the fail-closed lease, billing plausibility
+caps, alert cadence, agent certificate validity…) are built-in constants (`src/CLAUDE.md`
+"Built-in constants").
+
+`akari config check` validates the file, prints the effective config with secrets redacted, lists
+obsolete keys (warnings) and, when the database is reachable, the 系统设置 values; `akari serve`
+runs the same validation and refuses to start on errors.
+
+### Upgrading: obsolete keys
+
+Keys of older releases (`web.advertised_names`, `web.sub_domain`, `web.trust_cloudflare`,
+`web.cloudflare_ranges`, `grpc.advertise`, `grpc.server_name`, `install.*`, `[probe]`, `[acme]`,
+`[audit]`, `[traffic]`, `[auth]`, `[agent]`, `[sub]`, `[updates]`, `[alerts]`,
+`tls_ask.rate_per_sec`, `grpc.lease_seconds`, W24's `[payments]`) never stop the panel:
+
+- Each key that moved to 系统设置 is **imported once** on the first start that sees it, when the
+  database has no value for it yet (one transaction, audited `settings.import` as actor `system`;
+  every instance reloads at once). `web.advertised_names` and `grpc.server_name` join the gRPC
+  certificate's name list (`grpc_server_names`, source `config`) so enrolled agents keep
+  connecting; `install.public_url` becomes the main domain (which turns the host check on — see
+  below); `updates.release_keys` keeps only keys that are not the official one compiled in.
+- From then on the key is **ignored** with a startup warning — also after you change or clear the
+  value in the console (the file never brings it back; `legacy_config_imports` remembers what was
+  handled).
+- Keys that became constants are ignored with a warning.
+
+So: upgrade, start once, check 系统设置 (and the `config check` warnings), then **delete the
+obsolete keys from panel.toml**.
 
 ## 1b. Domains (系统设置) and Cloudflare
 
 The admin console's **系统设置** page (`/<prefix>/admin/settings`) holds three domains and one switch.
 Once the main domain is saved, the console (`/<prefix>/admin`) answers on the main domain only
 (and on IP literals); on the subscription domain it is the uniform empty 404 (R23). They live in the
-database (table `panel_settings`): a value saved there wins over panel.toml; an empty field means
-"use panel.toml". `akari config check` prints both sides; `akari settings show` the database side;
-`akari settings unset main|sub|node|trust-cloudflare|all` clears it (audited) — e.g. after a
-mistyped main domain. Changes take effect on every panel instance within a second (database
+database only (table `panel_settings`; an empty field = the built-in behaviour in the table below).
+`akari settings show` prints them; `akari settings set main|sub|node <host[:port]>` /
+`set trust-cloudflare true|false` and `akari settings unset main|sub|node|trust-cloudflare|probe|all`
+change them from the CLI (audited) — e.g. after a mistyped main domain. Changes take effect on every panel instance within a second (database
 notification), **no restart** — including the gRPC certificate.
 
-| Field | Used for | Cloudflare | panel.toml default |
+| Field | Used for | Cloudflare | When empty |
 |---|---|---|---|
-| 主域名 (main) | admin console, user portal, install links, payment notify URLs | orange or grey | `install.public_url` |
-| 订阅域名 (subscription) | every subscription URL the panel hands out (portal, admin, API `sub_url`) | **orange** recommended (hides the server IP) | `web.sub_domain`, else the main domain |
-| 节点通信域名 (node) | `panel_addr`/`server_name` of NEW install commands and bootstrap files | **grey only** | `grpc.advertise` / `grpc.server_name` |
-| 信任 Cloudflare | real client IP behind Cloudflare (`CF-Connecting-IP`) | — | `web.trust_cloudflare` |
+| 主域名 (main) | admin console, user portal, install links, payment notify URLs | orange or grey | the admin's browser origin; no host check |
+| 订阅域名 (subscription) | every subscription URL the panel hands out (portal, admin, API `sub_url`) | **orange** recommended (hides the server IP) | the main domain |
+| 节点通信域名 (node) | `panel_addr`/`server_name` of NEW install commands and bootstrap files | **grey only** | **no tokens can be issued** |
+| 信任 Cloudflare | real client IP behind Cloudflare (`CF-Connecting-IP`) | — | off |
 
 Values are host names (IDN is stored as punycode) or IP addresses, optionally with `:port`; no
 scheme or path. The **DNS 检测** buttons resolve the name from the panel: the subscription domain
@@ -77,25 +118,25 @@ directly to port 8443, and an orange-clouded record makes Cloudflare terminate T
 proxy arbitrary ports), so agents cannot connect.
 
 **Host check.** Once a main domain is saved, the panel answers only requests whose Host is the
-main or subscription domain (or `install.public_url`'s host) or an IP address; any other domain
+main or subscription domain or an IP address; any other domain
 name gets the same empty 404 as every other rejection. Saving asks for confirmation when the
 address you are using would stop working.
 
 **Node domain and existing nodes.** An enrolled agent keeps the server name of its bootstrap
 file forever. The panel therefore records every server name it ever wrote into a bootstrap
-(`grpc_server_names`) and its gRPC certificate covers all of them plus `web.advertised_names`:
+(`grpc_server_names`) and its gRPC certificate covers all of them plus `localhost`/`127.0.0.1`:
 changing the node domain only affects new installs, existing nodes keep connecting. A name leaves
 the certificate only through **移除** in the "节点通信证书域名" table, which lists the nodes still
 using it (they must be re-installed afterwards). Nodes enrolled before this release have no
-recorded name and are listed separately (they use the panel.toml `grpc.server_name`, which is
-always covered).
+recorded name and are listed separately (they use the old panel.toml `grpc.server_name`, imported
+into the list with source `config`; it cannot be removed while such nodes exist).
 
 **Reverse proxy certificates.** `deploy/caddy/Caddyfile` serves `AKARI_DOMAIN` as before and any
 other name **on demand**: at the first handshake for a new name Caddy asks the panel's
 `ask` endpoint (`[tls_ask] bind`, its own listener: compose `0.0.0.0:8082` on the private network
 with `allow_non_loopback = true`, bare metal `127.0.0.1:8082`; `AKARI_ASK` in Caddy's
 environment). The panel answers 200 only for the configured main and subscription domains
-(rate-limited, `tls_ask.rate_per_sec`), so no Caddyfile edit is needed when domains change and
+(rate-limited per instance, built in), so no Caddyfile edit is needed when domains change and
 nobody can make Caddy issue certificates for arbitrary names. Only the secret prefix is forwarded
 on every domain, and every site block strips `Server`/`Via`, so Caddy's own 404 and the panel's
 rejection behind the prefix are byte-identical (smoke compares them on the main domain, an
@@ -129,13 +170,11 @@ answered there (Caddy handles them before any site route). With nginx, add each 
 
 **Updating the Cloudflare ranges.** The list ships in the binary (`src/cloudflare_ips.txt`, from
 https://www.cloudflare.com/ips-v4 and /ips-v6). If Cloudflare announces new ranges before a panel
-release picks them up, set them in panel.toml without rebuilding:
+release picks them up, paste the full list into 系统设置 → 安全 → **Cloudflare 网段** (one CIDR
+per line; it replaces the shipped list on every instance at once, no restart; empty = shipped):
 
 ```bash
-curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # review the list
-# panel.toml, [web]:
-#   cloudflare_ranges = ["173.245.48.0/20", ..., "2c0f:f248::/32"]
-akari config check && systemctl restart akari-panel      # compose: docker compose up -d panel
+curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # review, paste
 ```
 
 A stale list fails safe: traffic from an unknown edge range is simply attributed to the edge.
@@ -166,8 +205,8 @@ sed -i "s/CHANGE-ME-valkey/$VKPW/" env/panel.env env/valkey.env
 
 # 3. your domain, and the image: the tag@digest line from the release notes, verified first
 #    ("Verify a release" below)
-cp panel.toml.compose.example panel.toml
-sed -i 's/panel.example.com/panel.yourdomain.com/g' panel.toml .env
+cp panel.toml.compose.example panel.toml            # no names in it: domains are set in 系统设置
+sed -i 's/panel.example.com/panel.yourdomain.com/g' .env
 sed -i 's|^AKARI_IMAGE=.*|AKARI_IMAGE=ghcr.io/akari-projectx/akari-panel:0.3.1@sha256:<digest>|' .env
 
 # 4. check, start, read the route prefix
@@ -182,8 +221,8 @@ curl -s -o /dev/null -w '%{http_code}\n' https://panel.yourdomain.com/<prefix>/h
 The compose file sets `AKARI_CONFIG=/etc/akari/panel.toml` on the panel service, so every
 `/akari ...` you run through `docker compose run` or `exec` reads your `panel.toml` (these
 commands replace the service's `command:`, which is why the path is an environment variable and
-not a `-c` flag). `config check` prints the effective values (confirm they are yours: your
-`grpc.advertise`, not `127.0.0.1`) and then `configuration OK`. On a fresh install its output also
+not a `-c` flag). `config check` prints the effective values (listeners, redacted URLs) and then
+`configuration OK`. On a fresh install its output also
 ends with `# 系统设置: database not readable (... relation "panel_settings" does not exist ...)`:
 the database is still empty; that line disappears once the panel has started. The image itself
 sets no default `AKARI_CONFIG`: a bare `docker run` of it uses built-in defaults. Outside compose
@@ -210,17 +249,15 @@ ACME. The Caddyfile sets `default_sni` to `AKARI_DOMAIN` because clients send no
 address. The agent's gRPC channel is unaffected: it pins the panel CA, not the web certificate,
 and the one-line node installer pins the web certificate's key (§3).
 
-**Moving an IP-only deployment to a domain** (verified 2026-10-02): add the A record (no
-proxying CDN; ports 80/443 open), set `AKARI_DOMAIN` in `.env`, and in `panel.toml` keep the IP
-**and** add the name: `web.advertised_names = ["panel.example.com", "203.0.113.10"]`. Agents
-enrolled earlier keep dialing the IP with the IP as gRPC server name (their bootstrap file says
-so), and the panel's gRPC certificate is regenerated at every start from `advertised_names`:
-dropping the IP strands them. `grpc.advertise`/`grpc.server_name` can then move to the name (only
-new bootstrap files and install links use them), and `[install] public_url =
-"https://panel.example.com"` makes install commands plain `curl` (no pin). `config check`,
+**Moving an IP-only deployment to a domain** (verified 2026-10-02; W25: no panel.toml change):
+add the A record (no proxying CDN; ports 80/443 open), set `AKARI_DOMAIN` in `.env`,
 `docker compose up -d` (Caddy obtains the certificate within seconds; `docker compose logs caddy`
-shows "certificate obtained successfully"), then restart one agent to confirm it reconnects. Any
-other host name, including the bare IP, now gets the same empty 404.
+shows "certificate obtained successfully"), then in 系统设置 set **主域名** to the name (install
+commands become plain `curl`, no pin) and, if agents should dial the name from now on, **节点通信域名**.
+Agents enrolled earlier keep dialing the IP with the IP as gRPC server name (their bootstrap file
+says so): the IP stays in the certificate's name list (节点通信证书域名) until you remove it there,
+so nothing strands them. Restart one agent to confirm it reconnects. Any other host name now gets
+the same empty 404.
 
 The Caddyfile is bind-mounted as a single file: `git pull`/`git checkout` replace the file (new
 inode) and the running container keeps the old one, so `caddy reload` changes nothing. After
@@ -266,14 +303,9 @@ the password; admins are taken to the console at `https://panel.example.com/<pre
 (served only to an admin session — without one it is the same empty 404 as any unknown path, so
 bookmark `/app`, not `/admin`). Two-factor authentication (TOTP) is **optional but recommended**: the console shows a
 banner until you turn it on under **账户** (scan the QR code, or type the key; save or download the
-10 recovery codes). Deployments that want it mandatory for admins set
-
-```toml
-[auth]
-require_admin_2fa = true   # default false
-```
-
-— an admin without 2FA then only gets a 15-minute setup session at login. Lost authenticator and
+10 recovery codes). Deployments that want it mandatory for admins tick 系统设置 → 安全 →
+**管理员必须两步验证** (default off) — an admin without 2FA then only gets a 15-minute setup
+session at login (on every instance at once). Lost authenticator and
 recovery codes: `akari admin reset-2fa <login>` (or another admin: 用户 → 管理 → 重置两步验证); the
 account then logs in with its password and can set 2FA up again.
 
@@ -371,8 +403,9 @@ or a CDN is not a template (subscriptions would advertise the inbound's local po
 JSON by hand. **高级：直接编辑入站 JSON** shows/edits the generated JSON; both paths go through the
 same validation (the §3d matrix, no `fakedns`).
 
-Creating the node shows a **one-line install command**, valid for `install.token_ttl_secs`
-(default 1 h) and only until the agent has enrolled with it:
+Creating the node shows a **one-line install command**, valid for 1 hour (built in) and only
+until the agent has enrolled with it. It needs 系统设置 → 节点通信 → **节点通信域名** (the address
+agents dial; without it the panel refuses to issue the command):
 
 ```bash
 curl -fsSL 'https://panel.example.com/<prefix>/install/<token>' | sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'
@@ -387,8 +420,9 @@ It
 
 1. downloads the agent from the panel (the newest complete release uploaded under **Updates**,
    §5b) and checks its SHA-256 — without an uploaded release it falls back to
-   `install.fallback_binary_url` (default: the latest GitHub release asset, checked against the
-   release's `SHA256SUMS`); with neither it stops with a clear error before changing anything;
+   系统设置 → 节点通信 → **备用下载地址** (default: the latest GitHub release asset, checked
+   against the release's `SHA256SUMS`; can be set to a mirror or turned off); with neither it
+   stops with a clear error before changing anything;
 2. writes `/etc/akari-agent/bootstrap.toml` (0600: panel address, gRPC server name, panel CA,
    the one-time enrollment token — no private key), the systemd units
    (`akari-agent.service` and the agent's privileged updater `akari-agent-update.service` +
@@ -419,15 +453,14 @@ panel.
 its SHA-256 stored, single use, short TTL). The panel serves the script and the binary only while
 it is live; once the agent enrolls (or the link expires, or a newer link/token is issued for the
 node, or the node is being deleted) every request is the panel's uniform empty 404, as are wrong
-tokens and sources over the rate limit (`install.rate_per_ip` per `install.rate_window_secs`,
-default 20 / 10 min per address). Whoever runs the command first gets the node, exactly as with
+tokens and sources over the rate limit (20 per 10 min per address, built in). Whoever runs the command first gets the node, exactly as with
 a bootstrap file: copy it over a trusted channel. The script passes the token to no command
 line (downloads read their URL from stdin) and the panel never logs it (`/{prefix}/install/{token}`
 in logs). **重装命令** in the node list issues a new link for an existing node; when the agent
 enrolls with it, the node's previous certificate is revoked.
 
-**Where the link points.** `install.public_url` (e.g. `https://panel.example.com`, no prefix)
-if set; otherwise the address the admin's browser uses for the panel. When the panel issues a
+**Where the link points.** The main domain (系统设置 → 站点 → 主域名) if set; otherwise the
+address the admin's browser uses for the panel. When the panel issues a
 command it connects to that origin: a certificate a public CA vouches for → plain `curl`/`wget`.
 Anything else (an IP-only deployment with Caddy's internal CA) → the command **pins the served
 certificate's public key**:
@@ -440,18 +473,9 @@ curl checks the pin during the handshake, before it sends the request, so a mism
 without revealing the token; `-k` only skips the CA check a self-signed panel cannot pass and is
 never emitted without a pin (there is no wget variant: wget cannot pin). The script uses the
 same pin for the binary download. Caddy's internal certificates are short-lived (about 12 h): if
-the command fails with "public key does not match", generate a new one. Set `install.tls_pin`
-to pin a fixed key instead of probing (e.g. when the panel cannot reach its own public address).
-
-```toml
-[install]
-public_url = "https://panel.example.com"   # default "": the browser's origin
-tls_pin = ""                                # "sha256//<base64>"; default: probe
-token_ttl_secs = 3600                       # 5 min .. 7 days
-rate_per_ip = 20
-rate_window_secs = 600
-fallback_binary_url = "https://github.com/akari-projectX/akari-agent/releases/latest/download/akari-agent-linux-{arch}"
-```
+the command fails with "public key does not match", generate a new one. Set 系统设置 → 节点通信 →
+**安装命令公钥钉扎** (`sha256//<base64>`) to pin a fixed key instead of probing (e.g. when the panel
+cannot reach its own public address).
 
 **Manual path (CLI / no outbound HTTPS on the node).** The bootstrap file still works (and is
 shown under the install command after a create; **bootstrap** in the node list issues a new one):
@@ -467,7 +491,7 @@ chmod 600 vps-1-bootstrap.toml
 ```
 
 `node enroll-token <id> --out -` works the same way. The bootstrap token is single use and
-expires after `agent.enroll_token_ttl_secs` (default 24 h). Treat the file as a credential until
+expires after 24 h (built in). Treat the file as a credential until
 the agent has enrolled (copy it over SSH, delete the copy). On the node:
 
 ```bash
@@ -487,7 +511,8 @@ On its first start the agent generates its key (ECDSA P-256) in its state direct
 systemd: `-state-dir`, default the config file's directory), sends a CSR with the token to the
 panel's gRPC port (the one call that works without a client certificate) and stores the issued
 certificate next to the key. The private key never leaves the node. The panel decides the whole
-certificate (CN `agent-<node id>`, client-auth only, `agent.cert_validity_secs`, default 90 days).
+certificate (CN `agent-<node id>`, client-auth only, valid 90 days — built in; agents renew at a
+third left).
 
 The unit grants only `CAP_NET_BIND_SERVICE` (inbounds on 443) and reads the bootstrap file as a
 systemd credential (systemd >= 250). It hides other users' processes (`ProtectProc=invisible`)
@@ -502,8 +527,7 @@ re-enrolls once when the bootstrap file carries a token it has not used yet; aft
 older certificates are refused. A used, unknown or expired token is refused with one uniform error
 ("enrollment refused"), and the agent exits.
 
-Enrollment is rate limited per source address and globally (`agent.enroll_rate_per_ip`,
-`agent.enroll_rate_global`, `agent.enroll_rate_window_secs`; defaults 10 / 60 per 10 min).
+Enrollment is rate limited per source address and globally (10 / 60 per 10 min, built in).
 
 ### Certificate renewal
 
@@ -695,41 +719,30 @@ Nodes installed with the pre-W23 unit (`ProcSubset=pid`) show CPU, memory, load,
 sockets as 未知 together with a hint and, from the first W23 agent on, a "systemd 单元" warning:
 run **重装命令** once (§5b "Units").
 
-**Latency (Clash Verge url-test semantics).** Every `[probe].interval_secs` (default 5 h, ±10 %
-jitter) and on "立即测速" (admin node detail; at most once per `manual_cooldown_secs`, default
-30 s, per node):
+**Latency (Clash Verge url-test semantics).** Every 测速间隔 (系统设置 → 测速, default 5 h,
+±10 % jitter) and on "立即测速" (admin node detail; at most once per 30 s per node, built in):
 
 - the agent (capability `latency`) sends `GET` to the first test URL from its **own egress**
   (never through xray, never via `HTTP(S)_PROXY`) — delay = request start → response headers
   (DNS + TCP + TLS + first byte, a fresh connection each attempt), median of `attempts`
-  (default 3, a failed attempt counts as the timeout, default 5 s); when every attempt fails
+  (3, a failed attempt counts as the 5 s timeout; both built in); when every attempt fails
   it tries the next URL (default `https://www.gstatic.com/generate_204`, then
   `https://cp.cloudflare.com/generate_204`). Nodes need outbound HTTPS to them;
 - the panel (any instance, rows claimed in the database) measures TCP connect time to each
   inbound's client-facing address (连接地址/连接端口 override, else the node address and the
-  inbound port). UDP-only inbounds (Hysteria 2) show "n/a". Set `panel_tcp = false` when the
+  inbound port). UDP-only inbounds (Hysteria 2) show "n/a". Turn 面板 TCP 测速 off when the
   panel host must not dial nodes.
 
 Badges: < 200 ms green, < 500 ms amber, else red, timeout grey. Users see the agent result
 (online, multiplier, tags) of their visible nodes in the portal; never addresses or machine data.
 
-```toml
-[probe]
-interval_secs = 18000          # 600 .. 604800
-urls = ["https://www.gstatic.com/generate_204", "https://cp.cloudflare.com/generate_204"]
-timeout_ms = 5000              # per attempt, 1000 .. 30000
-attempts = 3                   # 1 .. 5, median
-panel_tcp = true
-manual_cooldown_secs = 30
-```
-
-`interval_secs`, `urls` and `panel_tcp` can also be set in the admin console (系统设置 →
-延迟测试; `PUT /api/v1/settings/probe`): database values win over `[probe]`, every change is
-versioned and audited (`settings.probe.update`), every panel instance applies it at once and
-re-sends the new settings to connected agents (no restart; agents reschedule on an interval
-change); a shorter interval also pulls already scheduled panel TCP tests forward.
-`akari settings unset probe` goes back to `[probe]`. `timeout_ms`, `attempts` and
-`manual_cooldown_secs` stay file-only.
+The interval (600 s – 7 d), the test URLs and 面板 TCP 测速 are set in the admin console only
+(系统设置 → 测速; `PUT /api/v1/settings/probe`; W25: no `[probe]` in panel.toml any more, an
+old section is imported once, see §1 "Upgrading"). Every change is versioned and audited
+(`settings.probe.update`), every panel instance applies it at once and re-sends the new settings
+to connected agents (no restart; agents reschedule on an interval change); a shorter interval
+also pulls already scheduled panel TCP tests forward. `akari settings unset probe` goes back to
+the defaults above.
 
 **Traffic multiplier (倍率).** Billed bytes = floor(accepted bytes × rate) per counter row,
 computed only inside the flush SQL (never in panel memory); the rate in effect when a report is
@@ -782,9 +795,10 @@ failure the next order tries the other challenge when it is available.
 - **Status** (node page, from the agent's heartbeat): 证书有效 + expiry and renewal date, or the
   error in plain words — 域名无法解析 / 域名未解析到本机 IP x.x.x.x / 80 端口不可达 / 80 端口被占用 /
   频率限制 / CAA / CA unreachable — with the raw ACME error under 详细错误.
-- **Panel config** (`panel.toml`): `[acme] directory_url` (empty = Let's Encrypt production;
-  staging: `https://acme-staging-v02.api.letsencrypt.org/directory`) and `email` (optional account
-  contact). They reach nodes with their next Snapshot.
+- **Panel settings** (系统设置 → 节点通信): ACME 目录 (empty = Let's Encrypt
+  production; staging: `https://acme-staging-v02.api.letsencrypt.org/directory`) and ACME 邮箱
+  (optional account contact). A change reaches every connected node at once (a new Snapshot for
+  nodes that use a node certificate). W25: `[acme]` in panel.toml is imported once, then ignored.
 - **Agents older than protocol 6** ignore the domain and read the files of §3 as before; the node
   page says so (upgrade the agent, §5b). Changing 节点域名 sends the node a new configuration
   (rebuild: its connections drop once). Subscriptions use 节点域名 as server address when the
@@ -848,8 +862,7 @@ target of a source failing, a failed config apply. An empty threshold turns a ru
 page (告警规则) overrides thresholds per node, turns kinds off, or mutes the node (alerts are
 recorded, never notified).
 
-- **One evaluator**: every instance runs the round every `[alerts] eval_interval_secs` (default
-  30 s; 5–600) but only the one that wins a PostgreSQL advisory lock evaluates; the others skip.
+- **One evaluator**: every instance runs the round every 30 s (built in) but only the one that wins a PostgreSQL advisory lock evaluates; the others skip.
   Facts come from the database and Valkey, so any instance computes the same thing.
 - **State**: firing → resolved per (node, kind), at most one firing row (dedupe). Live kinds (CPU,
   memory, disk, latency, node certificate) of an offline node keep their state until it reports
@@ -866,8 +879,9 @@ recorded, never notified).
 the chat id (a number, groups and channels are negative, or `@channelname`), save, then 发送测试.
 The panel only calls `sendMessage` (outbound HTTPS to api.telegram.org; nothing to open
 inbound). The token is stored encrypted with a key derived from `data/totp.key` and never shown
-again (losing `totp.key` means entering it again). For networks that block Telegram, point
-`[alerts] telegram_api_url` at a self-hosted Bot API server (https; origin only).
+again (losing `totp.key` means entering it again). For networks that block Telegram, set
+**Telegram API 地址** (系统设置 → 告警) to a self-hosted Bot API server (https; origin only; empty =
+`https://api.telegram.org`). W25: the old `[alerts] telegram_api_url` is imported there once.
 
 **Webhook**: `POST <url>` (https; plain http only to localhost), JSON body:
 
@@ -952,16 +966,16 @@ two or more for availability or headroom:
 4. `akari config check`, `/healthz`, check the nodes are `online`.
 
 **Compose deployments: the deploy files change too.** The checkout under `deploy/` (compose file,
-Caddyfile) is part of the release, and new versions can need new `panel.toml` sections; the
-panel refuses to start on unknown keys but cannot tell you about a missing optional section.
+Caddyfile) is part of the release. panel.toml keeps only the start-up keys (W25); everything
+else lives in 系统设置, so a new release never needs a new panel.toml section, and obsolete keys
+are imported once and then only warned about (§1 "Upgrading: obsolete keys").
 Per upgrade:
 
 ```bash
 cd /opt/akari-panel && git status --short       # local edits to tracked files (e.g. the Caddyfile)?
 git checkout deploy/caddy/Caddyfile             # only after saving anything you still need
 git pull --ff-only
-diff <(grep '^\[' deploy/panel.toml.compose.example) <(grep '^\[' deploy/panel.toml)   # new sections?
-cd deploy && docker compose run --rm panel config check
+cd deploy && docker compose run --rm panel config check   # lists obsolete keys to delete
 docker compose up -d --force-recreate           # Caddyfile is a single-file bind mount (§A)
 ```
 
@@ -1038,12 +1052,13 @@ new key set on every node.
 The project's production key is `key-f2ad18a8bb718a1a` (pinned in agents since v0.2.0; custody
 and rotation: akari-agent README "Release signing keys").
 
-**Panel config.** Trust the same keys (early refusal of wrong uploads; agents check again):
-```toml
-[updates]
-release_keys = ["ciJILGk6W1TnPr56Dncgv0mVQFBzqOrawiOaH0/d5Pg= key-f2ad18a8bb718a1a"]   # the lines of release-keys.txt
-max_concurrent_downloads = 8                           # FetchArtifact streams per instance
-```
+**Panel side.** The official keys of `release-keys.txt` are compiled into the panel too (a copy
+in `src/release-keys.txt`; CI fails when it differs from akari-agent main), so uploads are checked
+early with no configuration. Keys you sign your own builds with go to 系统设置 → 安全 → 额外信任的
+发布公钥 (one `<base64> [label]` line each, at most 16) — agents still only run what their own
+compiled keys accept. W25: `[updates] release_keys` is imported once into that list when it
+differs from the official set; `max_concurrent_downloads` is built in (8 FetchArtifact streams
+per instance).
 
 **Publish a release** (Updates view, or the API): upload `akari-agent-linux-<arch>` with its
 `.manifest.json` and `.manifest.sig` from the GitHub release (verify it first, see "Verify a

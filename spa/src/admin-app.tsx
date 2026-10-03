@@ -91,7 +91,7 @@ function AdminApp() {
 function AdminRoot() {
   const queryClient = useQueryClient();
   const me = useQuery({ queryKey: ["me"], queryFn: () => get<Me>("/me") });
-  // With auth.require_admin_2fa an admin without 2FA has an
+  // With 系统设置 → 安全 → 管理员必须两步验证 an admin without 2FA has an
   // enrollment-only session: /me is 401 but /me/totp says stage "enroll".
   const unauthorized = me.isError && me.error instanceof ApiError && me.error.status === 401;
   const totp = useQuery({

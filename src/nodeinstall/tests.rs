@@ -343,7 +343,7 @@ async fn install_downloads_are_rate_limited_per_source() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let st = AppState::for_test_with(db.pool.clone(), |c| c.install.rate_per_ip = 3).await;
+    let st = AppState::for_test_with(db.pool.clone(), |c| c.limits.install_rate_per_ip = 3).await;
     let admin = admin_client(&st, &db).await;
     let t = token_of(&create(&admin, "rl").await);
     let c = Client::new(&st, rand_ip());
@@ -514,11 +514,11 @@ async fn configured_public_url_and_pin_win() {
         return;
     };
     let pin = format!("sha256//{}", STANDARD.encode([9u8; 32]));
-    let p2 = pin.clone();
-    let st = AppState::for_test_with(db.pool.clone(), move |c| {
-        c.install.public_url = "https://203.0.113.7".into();
-        c.install.tls_pin = p2;
-    })
+    let st = AppState::for_test(db.pool.clone()).await;
+    db.settings(
+        &st,
+        &format!("main_domain = '203.0.113.7', install_tls_pin = '{pin}'"),
+    )
     .await;
     let admin = admin_client(&st, &db).await;
     let r = admin

@@ -113,12 +113,14 @@ pub struct Settings {
     pub webhook_secret_enc: Option<Vec<u8>>,
     pub email_enabled: bool,
     pub email_to: Vec<String>,
+    /// W25: Bot API origin (None = `config::TELEGRAM_API_URL`).
+    pub telegram_api_url: Option<String>,
 }
 
 const SETTINGS_COLS: &str = "version, enabled, offline_secs, cpu_percent, cpu_minutes, \
      mem_percent, mem_minutes, disk_percent, cert_days, latency_failures, last_error, \
      cooldown_minutes, notify_resolved, telegram_enabled, telegram_chat_id, telegram_token_enc, \
-     webhook_enabled, webhook_url, webhook_secret_enc, email_enabled, email_to";
+     webhook_enabled, webhook_url, webhook_secret_enc, email_enabled, email_to, telegram_api_url";
 
 pub async fn load(conn: &mut PgConnection) -> sqlx::Result<Settings> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -219,6 +221,9 @@ pub struct PutSettings {
     pub email_enabled: bool,
     #[serde(default)]
     pub email_to: Vec<String>,
+    /// W25: Bot API origin; absent/null = api.telegram.org.
+    #[serde(default)]
+    pub telegram_api_url: Option<String>,
 }
 
 /// Telegram chat id: a numeric id (groups/channels negative) or @username.
@@ -230,6 +235,26 @@ pub fn valid_chat_id(s: &str) -> bool {
     } else {
         digits(s.strip_prefix('-').unwrap_or(s))
     }
+}
+
+/// Telegram Bot API origin (a self-hosted Bot API server): https, or http
+/// on a loopback host; scheme + host (+ port) only.
+pub fn valid_telegram_api_url(s: &str) -> bool {
+    let Ok(u) = s.parse::<axum::http::Uri>() else {
+        return false;
+    };
+    let Some(host) = u.host() else {
+        return false;
+    };
+    let scheme_ok = match u.scheme_str() {
+        Some("https") => true,
+        Some("http") => matches!(host, "127.0.0.1" | "localhost" | "[::1]"),
+        _ => false,
+    };
+    scheme_ok
+        && (9..=2048).contains(&s.len())
+        && u.path_and_query().is_none_or(|p| p.as_str() == "/")
+        && !s.contains('@')
 }
 
 /// Telegram bot token: `<bot id>:<secret>` (BotFather format).
@@ -327,6 +352,14 @@ pub fn check_put(req: &PutSettings) -> Result<(), ApiError> {
     if let Some(u) = &req.webhook_url {
         check_webhook_url(u)?;
     }
+    if let Some(u) = &req.telegram_api_url
+        && !valid_telegram_api_url(u)
+    {
+        return Err(bad_request!(
+            "alert.telegram_api_url_invalid",
+            "telegram_api_url must be an https origin such as https://tg.example.com"
+        ));
+    }
     if let Some(Some(s)) = &req.webhook_secret
         && !valid_webhook_secret(s)
     {
@@ -390,6 +423,8 @@ pub struct SettingsView {
     telegram_enabled: bool,
     telegram_chat_id: Option<String>,
     telegram_token_set: bool,
+    telegram_api_url: Option<String>,
+    telegram_api_default: &'static str,
     webhook_enabled: bool,
     webhook_url: Option<String>,
     webhook_secret_set: bool,
@@ -418,6 +453,8 @@ fn view(s: &Settings, email_available: bool, eval_interval_secs: u64) -> Setting
         telegram_enabled: s.telegram_enabled,
         telegram_chat_id: s.telegram_chat_id.clone(),
         telegram_token_set: s.telegram_token_enc.is_some(),
+        telegram_api_url: s.telegram_api_url.clone(),
+        telegram_api_default: crate::config::TELEGRAM_API_URL,
         webhook_enabled: s.webhook_enabled,
         webhook_url: s.webhook_url.clone(),
         webhook_secret_set: s.webhook_secret_enc.is_some(),
@@ -434,6 +471,7 @@ fn audit_snapshot(s: &Settings) -> Value {
     if let Some(o) = v.as_object_mut() {
         o.remove("email_available");
         o.remove("eval_interval_secs");
+        o.remove("telegram_api_default");
     }
     v
 }
@@ -495,7 +533,7 @@ pub async fn apply_update_settings(
            cooldown_minutes = $11, notify_resolved = $12, telegram_enabled = $13, \
            telegram_chat_id = $14, telegram_token_enc = $15, webhook_enabled = $16, \
            webhook_url = $17, webhook_secret_enc = $18, email_enabled = $19, email_to = $20, \
-           updated_at = now() \
+           telegram_api_url = $21, updated_at = now() \
          WHERE id = 1 RETURNING {SETTINGS_COLS}"
     )))
     .bind(req.enabled)
@@ -518,6 +556,11 @@ pub async fn apply_update_settings(
     .bind(&secret_enc)
     .bind(req.email_enabled)
     .bind(&req.email_to)
+    .bind(
+        req.telegram_api_url
+            .as_deref()
+            .map(|u| u.trim_end_matches('/')),
+    )
     .fetch_one(&mut *conn)
     .await?;
     let mut after_json = audit_snapshot(&after);
@@ -548,7 +591,11 @@ pub async fn get_settings(
     let mut c = state.pg().acquire().await?;
     let s = load(&mut c).await?;
     let mail = crate::mailhook::available(&mut c).await?;
-    Ok(Json(view(&s, mail, state.cfg().alerts.eval_interval_secs)))
+    Ok(Json(view(
+        &s,
+        mail,
+        state.cfg().limits.alerts_eval_interval_secs,
+    )))
 }
 
 pub async fn put_settings(
@@ -561,7 +608,11 @@ pub async fn put_settings(
     let s = apply_update_settings(&mut tx, &Actor::of(&user), state.totp(), &req).await?;
     let mail = crate::mailhook::available(&mut tx).await?;
     tx.commit().await?;
-    Ok(Json(view(&s, mail, state.cfg().alerts.eval_interval_secs)))
+    Ok(Json(view(
+        &s,
+        mail,
+        state.cfg().limits.alerts_eval_interval_secs,
+    )))
 }
 
 #[derive(Debug, Deserialize)]
@@ -997,7 +1048,7 @@ pub async fn firing_counts(pg: &sqlx::PgPool) -> sqlx::Result<Vec<(String, i64)>
 /// Every instance: evaluate (when it wins the round's lock) and deliver
 /// due notifications, every `[alerts].eval_interval_secs`.
 pub async fn run(state: AppState) {
-    let every = std::time::Duration::from_secs(state.cfg().alerts.eval_interval_secs.max(1));
+    let every = std::time::Duration::from_secs(state.cfg().limits.alerts_eval_interval_secs.max(1));
     let mut tick = tokio::time::interval(every);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {

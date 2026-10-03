@@ -130,7 +130,7 @@ export function TotpEnroll({ login, onDone }: { login: string; onDone: () => voi
   );
 }
 
-// Shown instead of the console only with auth.require_admin_2fa, to an
+// Shown instead of the console only with 系统设置 → 安全 → 管理员必须两步验证, to an
 // admin without 2FA (enrollment-only session). Admin surface: Chinese.
 export function EnrollPage({ status, onLogout }: { status: TotpStatus; onLogout: () => void }) {
   const queryClient = useQueryClient();

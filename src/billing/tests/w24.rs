@@ -23,9 +23,9 @@ const BASE: &str = "/test/api/v1/settings/payments";
 
 /// A panel WITHOUT methods, main domain ORIGIN.
 async fn db_state(db: &TestDb) -> AppState {
-    let st =
-        AppState::for_test_with(db.pool.clone(), |c| c.install.public_url = ORIGIN.into()).await;
-    crate::settings::init(&st).await.unwrap();
+    let st = AppState::for_test(db.pool.clone()).await;
+    let host = ORIGIN.trim_start_matches("https://");
+    db.settings(&st, &format!("main_domain = '{host}'")).await;
     st
 }
 
@@ -719,17 +719,14 @@ async fn legacy_section_is_imported_once() {
         key.display(),
         public.display()
     );
-    let parsed: crate::config::PanelConfig = toml::from_str(&text).unwrap();
+    let parsed = crate::config::PanelConfig::parse(&text).unwrap();
     // A pre-0140 order (no method).
     let (_, plan) = priced_plan(&db, "legacy", 500, 30).await;
     let (old, _) = order_row(&db, db.user().await, plan, 500, 30).await;
-    let st = AppState::for_test_with(db.pool.clone(), |c| {
-        c.payments = parsed.payments.clone();
-        c.install.public_url = ORIGIN.into();
-    })
-    .await;
+    let st = AppState::for_test_with(db.pool.clone(), |c| c.legacy = parsed.legacy.clone()).await;
     pm::import_legacy(&st).await;
-    crate::settings::init(&st).await.unwrap();
+    let host = ORIGIN.trim_start_matches("https://");
+    db.settings(&st, &format!("main_domain = '{host}'")).await;
     let mut c = db.pool.acquire().await.unwrap();
     let rows = pm::load_all(&mut c).await.unwrap();
     assert_eq!(rows.len(), 1);
@@ -767,8 +764,7 @@ async fn legacy_section_is_imported_once() {
     // Unreadable key files: warned, nothing written.
     let db2 = TestDb::new().await.unwrap();
     std::fs::remove_file(&key).unwrap();
-    let st2 =
-        AppState::for_test_with(db2.pool.clone(), |c| c.payments = parsed.payments.clone()).await;
+    let st2 = AppState::for_test_with(db2.pool.clone(), |c| c.legacy = parsed.legacy.clone()).await;
     pm::import_legacy(&st2).await;
     let mut c2 = db2.pool.acquire().await.unwrap();
     assert!(pm::load_all(&mut c2).await.unwrap().is_empty());

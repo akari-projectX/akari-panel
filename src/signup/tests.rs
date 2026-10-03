@@ -16,7 +16,10 @@ use crate::testdb::TestDb;
 const ORIGIN: &str = "https://panel.example";
 
 async fn state(db: &TestDb) -> AppState {
-    AppState::for_test_with(db.pool.clone(), |c| c.install.public_url = ORIGIN.into()).await
+    let st = AppState::for_test(db.pool.clone()).await;
+    let host = ORIGIN.trim_start_matches("https://");
+    db.settings(&st, &format!("main_domain = '{host}'")).await;
+    st
 }
 
 async fn enable_mail(db: &TestDb) {

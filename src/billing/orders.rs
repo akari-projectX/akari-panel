@@ -909,7 +909,7 @@ pub async fn reconcile_tick(state: &AppState) -> Result<usize, ApiError> {
 /// Prune unverified payment events (junk notifies) older than the audit
 /// retention. Verified events are money records and are kept.
 pub async fn prune_events(state: &AppState) -> sqlx::Result<u64> {
-    let days = state.cfg().audit.retention_days;
+    let days = state.settings().get().audit_retention_days;
     if days == 0 {
         return Ok(0);
     }

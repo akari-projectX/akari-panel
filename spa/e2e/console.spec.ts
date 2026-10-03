@@ -984,3 +984,48 @@ test("W24: 系统设置 → 支付 (imported + added method, 测试连接), sign
   expect(problems).toEqual([]);
   await ctx.close();
 });
+
+test("W25: settings imported from an old panel.toml, 节点通信 and 安全 forms", async ({ browser }) => {
+  test.skip(!secret, "needs the enrollment test");
+  const ctx = await browser.newContext({ locale: "zh-CN" });
+  const page = await ctx.newPage();
+  const problems = watch(page);
+  await page.goto(BASE);
+  const next = await nextCode(secret, usedStep);
+  usedStep = next.step;
+  await login(page, ADMIN, ADMIN_PW, next.code);
+  await expect(page).toHaveURL(ADMIN_BASE);
+  // The obsolete keys of scripts/e2e.sh's panel.toml were imported once
+  // (node domain from grpc.advertise, names, audit retention) and are named
+  // in a banner asking to delete them.
+  await page.goto(`${ADMIN_BASE}/settings/node`);
+  await expect(page.getByText(/panel\.toml 中还有已废弃的配置项/)).toBeVisible();
+  await expect(page.getByText(/grpc\.advertise/).first()).toBeVisible();
+  await expect(page.locator("#settings-node")).toHaveValue(/^127\.0\.0\.1:\d+$/);
+  await expect(page.getByRole("cell", { name: "myapp.test" })).toBeVisible();
+  // 节点通信: ACME staging + no download fallback, then back to defaults.
+  await page.getByLabel("ACME 目录").fill("https://acme-staging-v02.api.letsencrypt.org/directory");
+  await page.getByLabel("备用下载地址").selectOption("none");
+  await page.getByRole("button", { name: "保存安装与证书设置" }).click();
+  await expect(page.getByText("已保存，所有面板实例已生效。")).toBeVisible();
+  await expect(page.getByText(/当前生效：不使用/)).toBeVisible();
+  await page.getByLabel("ACME 目录").fill("");
+  await page.getByLabel("备用下载地址").selectOption("default");
+  await page.getByRole("button", { name: "保存安装与证书设置" }).click();
+  await expect(page.getByText(/当前生效：https:\/\/github\.com/)).toBeVisible();
+  // 安全: the imported retention, a bad CIDR refused in Chinese, then saved.
+  await page.getByRole("tab", { name: "安全" }).click();
+  await expect(page).toHaveURL(`${ADMIN_BASE}/settings/security`);
+  await expect(page.getByLabel("审计日志保留天数")).toHaveValue("180");
+  await expect(page.getByText(/key-f2ad18a8bb718a1a\s*（官方，内置）/)).toBeVisible();
+  await page.getByLabel("Cloudflare 网段").fill("not-a-range");
+  await page.getByRole("button", { name: "保存安全设置" }).click();
+  await expect(page.getByRole("alert")).toContainText("不是有效的 CIDR");
+  await page.getByLabel("Cloudflare 网段").fill("");
+  await page.getByLabel("流量明细保留天数").fill("90");
+  await page.getByRole("button", { name: "保存安全设置" }).click();
+  await expect(page.getByText("已保存，所有面板实例已生效。")).toBeVisible();
+  await expect(page.getByText(/当前生效：\s*90 天/)).toBeVisible();
+  expect(problems).toEqual([]);
+  await ctx.close();
+});
