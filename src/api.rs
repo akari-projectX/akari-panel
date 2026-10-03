@@ -239,16 +239,18 @@ async fn check_credentials(state: &AppState, req: &LoginReq) -> Result<Checked, 
     // Accounts disabled for any other reason do not.
     let Some(row) = row.filter(|r| (r.enabled || r.quota_disabled) && r.password_hash.is_some())
     else {
-        auth::scrub_password(&req.password);
+        auth::scrub_password_async(&req.password).await;
         return Ok(Checked::Failed {
             account,
             second: false,
         });
     };
-    if !auth::verify_password(
+    if !auth::verify_password_async(
         &req.password,
         row.password_hash.as_deref().unwrap_or_default(),
-    ) {
+    )
+    .await
+    {
         return Ok(Checked::Failed {
             account,
             second: false,
@@ -987,7 +989,7 @@ pub async fn create_user(
                 .ok_or_else(|| bad_request!("signup.invalid_email", "invalid email address"))?,
         ),
     };
-    let hash = auth::hash_password(&req.password)?;
+    let hash = auth::hash_password_async(&req.password).await?;
     let id = Uuid::new_v4();
     // Mint the subscription token now (W20: stored encrypted as well, so
     // the user and admins can see the link again).
@@ -1227,6 +1229,11 @@ async fn apply_update_user(
             "traffic_limit_bytes must be >= 0"
         ));
     }
+    // Hashed before any lock is taken (and off the async workers).
+    let password_hash = match &password {
+        Some(v) => Some(auth::hash_password_async(v).await?),
+        None => None,
+    };
     // Enabled, role (expiry only applies to role=user) and expiry change
     // what nodes serve.
     let affects_nodes = enabled.is_some() || role.is_some() || req.expires_at.is_some();
@@ -1272,9 +1279,8 @@ async fn apply_update_user(
             set.push("disabled_reason = 'admin'");
         }
     }
-    if let Some(v) = &password {
-        set.push("password_hash = ")
-            .push_bind_unseparated(auth::hash_password(v)?);
+    if let Some(v) = password_hash {
+        set.push("password_hash = ").push_bind_unseparated(v);
     }
     if let Some(v) = role {
         set.push("role = ").push_bind_unseparated(v);

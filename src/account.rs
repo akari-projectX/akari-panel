@@ -406,10 +406,12 @@ async fn change_password_inner(
     let Some(hash) = hash else {
         return Err(ApiError::unauthorized());
     };
-    if !auth::verify_password(&req.current_password, hash.as_deref().unwrap_or_default()) {
+    if !auth::verify_password_async(&req.current_password, hash.as_deref().unwrap_or_default())
+        .await
+    {
         return Ok(None);
     }
-    let new_hash = auth::hash_password(&req.new_password)?;
+    let new_hash = auth::hash_password_async(&req.new_password).await?;
     let (role, sv): (String, i64) = sqlx::query_as(
         "UPDATE users SET password_hash = $2 WHERE id = $1 RETURNING role, session_ver",
     )

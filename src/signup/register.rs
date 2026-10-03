@@ -354,7 +354,7 @@ pub async fn register(
     super::limit_complete(&state, &crate::client_ip::bucket(client)).await?;
     let (addr, invite) = admit(&state, &s, &req.email, req.invite_code.as_deref()).await?;
     let code = req.code.trim();
-    let hash = auth::hash_password(&req.password)?;
+    let hash = auth::hash_password_async(&req.password).await?;
     let locale = Locale::parse(req.locale.as_deref().unwrap_or("zh"));
     let mut tx = state.pg().begin().await?;
     let done = apply_register(
