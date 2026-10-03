@@ -4,3 +4,5 @@ playwright-report/
 test-results/
 package-lock.json
 *.md
+# W26: generated from proto/protocols.toml (make gen-protocols)
+src/lib/admin-protocols.gen.ts

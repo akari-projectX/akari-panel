@@ -11,7 +11,7 @@
 agent 仓库的 `make sync-proto`/`check-proto` 写死 `../akari-panel`；在 worktree 里要手工 `cp` + `buf generate proto` + `diff`。
 `state_hash_vectors.json` 与 `update_vector.json` 也要同步到 agent 的 `proto/`（两边测试都读本地副本）。
 
-**协议能力清单 `protocols.toml`（W26，R41）**：协议/传输/安全层、字段、合法组合（规则）、每用户凭据形状、各订阅格式支持、端到端场景的**唯一数据源**；名称内核无关（内核专有字段名只在适配器里），`wire` = 契约里的协议名（冻结）。面板：build.rs 解析并校验（坏清单 = 编译失败，`src/protocols/manifest_def.rs` 与 crate 共用），生成 `protocols::manifest`（构造代码 + const 表）；`make gen-protocols` 重写生成物（DEPLOY §3d 矩阵），`make check-generated`/`cargo test` 在过期时失败。agent：`make sync-proto` 一并拷贝，`check-proto` 逐字节比对（与 agent.proto 同样面板先行）。改清单 = 改行为：先跑 `src/protocols/manifest_tests.rs`（清单与面板校验/订阅逐组合一致）。
+**协议能力清单 `protocols.toml`（W26，R41）**：协议/传输/安全层、字段、合法组合（规则）、每用户凭据形状、各订阅格式支持、端到端场景的**唯一数据源**；名称内核无关（内核专有字段名只在适配器里），`wire` = 契约里的协议名（冻结）。面板：build.rs 解析并校验（坏清单 = 编译失败，`src/protocols/manifest_def.rs` 与 crate 共用），生成 `protocols::manifest`（构造代码 + const 表）；`make gen-protocols` 重写生成物（DEPLOY §3d 矩阵、后台表单 schema `spa/src/lib/admin-protocols.gen.ts`），`make check-generated`/`cargo test` 在过期时失败。agent：`make sync-proto` 一并拷贝，`check-proto` 逐字节比对（与 agent.proto 同样面板先行）。改清单 = 改行为：先跑 `src/protocols/manifest_tests.rs`（清单与面板校验/订阅逐组合一致）。
 
 语义要点（完整定义见 proto 注释）：
 - `TrafficReport.session_id` 是计费键（与计数原子读取）；Hello 的 session 仅供展示/日志。
