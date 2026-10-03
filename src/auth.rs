@@ -11,6 +11,7 @@ use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, OnceLock};
 use uuid::Uuid;
 
 use crate::state::AppState;
@@ -247,6 +248,68 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
 /// does not reveal whether an account exists.
 pub fn scrub_password(password: &str) {
     let _ = Argon2::default().hash_password(password.as_bytes());
+}
+
+// Request paths never call the three functions above directly (review
+// 2026-10-02 C1): one argon2 run is ~19 MiB and 40-80 ms of CPU, and the web
+// server, the agent gRPC sessions, the traffic flush and LISTEN share one
+// Tokio runtime. On a worker thread a login flood starves everything else
+// (agents miss their keepalive PINGs and the whole fleet drops at once). The
+// async wrappers run the hash on the blocking pool, and at most
+// `argon2_permits()` at a time: the blocking pool alone is no bound (512
+// threads x 19 MiB). Excess requests queue for a permit instead of failing.
+// Verify, hash and scrub take the same path (same queue, same work), so the
+// login's equal-work property (no account-existence oracle) is unchanged.
+
+/// Concurrent argon2 runs per process: half the CPUs, at least 2. Leaves
+/// the other half of the machine to the runtime workers while still letting
+/// logins proceed in parallel.
+pub fn argon2_permits() -> usize {
+    let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+    (cores / 2).max(2)
+}
+
+fn argon2_gate() -> &'static Arc<tokio::sync::Semaphore> {
+    static GATE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+    GATE.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(argon2_permits())))
+}
+
+/// Runs `f` on the blocking pool under an argon2 permit. The permit moves
+/// into the blocking closure: a request that is cancelled while hashing (the
+/// client went away) still holds its permit until the CPU work ends, so
+/// cancellations cannot exceed the bound. `None` only if the task panicked.
+async fn argon2_blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    // The semaphore is never closed; acquire cannot fail.
+    let permit = argon2_gate().clone().acquire_owned().await.ok()?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        f()
+    })
+    .await
+    .ok()
+}
+
+/// `hash_password` off the async workers (see above).
+pub async fn hash_password_async(password: &str) -> anyhow::Result<String> {
+    let password = password.to_owned();
+    argon2_blocking(move || hash_password(&password))
+        .await
+        .unwrap_or_else(|| Err(anyhow::anyhow!("password hashing task failed")))
+}
+
+/// `verify_password` off the async workers (see above).
+pub async fn verify_password_async(password: &str, hash: &str) -> bool {
+    let (password, hash) = (password.to_owned(), hash.to_owned());
+    argon2_blocking(move || verify_password(&password, &hash))
+        .await
+        .unwrap_or(false)
+}
+
+/// `scrub_password` off the async workers (see above): the same queue and
+/// the same work as a real verification.
+pub async fn scrub_password_async(password: &str) {
+    let password = password.to_owned();
+    argon2_blocking(move || scrub_password(&password)).await;
 }
 
 /// What a session may do (M1-6). Required claim: tokens issued before it
@@ -703,5 +766,97 @@ mod error_code_tests {
         );
         assert_eq!(e.message(), r#"duplicate inbound tag "x\"y""#);
         assert_eq!(e.params()["tag"], json!("x\"y"));
+    }
+}
+
+#[cfg(test)]
+mod argon2_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// Review 2026-10-02 C1: a burst of logins must not starve the runtime.
+    /// Two workers, many password checks in flight: a ticker on the same
+    /// runtime keeps firing on time (with argon2 on the workers it stalled
+    /// for whole hash durations), and every check still answers correctly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn runtime_stays_responsive_during_a_login_burst() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let hash = hash_password("correct horse").unwrap();
+        let burst = argon2_permits() * 4;
+        let done = Arc::new(AtomicBool::new(false));
+        let ticker = tokio::spawn({
+            let done = done.clone();
+            async move {
+                let (mut worst, mut ticks) = (Duration::ZERO, 0u32);
+                let mut last = Instant::now();
+                while !done.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    let now = Instant::now();
+                    worst = worst.max(now - last);
+                    last = now;
+                    ticks += 1;
+                }
+                (worst, ticks)
+            }
+        });
+        let mut checks = tokio::task::JoinSet::new();
+        for i in 0..burst {
+            let hash = hash.clone();
+            checks.spawn(async move {
+                match i % 3 {
+                    0 => verify_password_async("correct horse", &hash).await,
+                    1 => !verify_password_async("wrong horse", &hash).await,
+                    _ => {
+                        scrub_password_async("unknown account").await;
+                        true
+                    }
+                }
+            });
+        }
+        while let Some(ok) = checks.join_next().await {
+            assert!(ok.unwrap(), "a password check answered wrongly");
+        }
+        done.store(true, Ordering::SeqCst);
+        let (worst, ticks) = ticker.await.unwrap();
+        // The burst outlasted many ticks (each argon2 run is tens of ms or
+        // more), and none of them was late by more than scheduling noise.
+        assert!(
+            worst < Duration::from_millis(250),
+            "runtime stalled for {worst:?} while {burst} argon2 runs were in flight"
+        );
+        assert!(
+            ticks >= 10,
+            "burst finished too fast to measure ({ticks} ticks)"
+        );
+    }
+
+    /// The permit bound holds, including for cancelled requests: at most
+    /// `argon2_permits()` hashes ever run at once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_runs_never_exceed_the_permits() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static RUNNING: AtomicUsize = AtomicUsize::new(0);
+        static PEAK: AtomicUsize = AtomicUsize::new(0);
+        let mut tasks = Vec::new();
+        for _ in 0..argon2_permits() * 4 {
+            tasks.push(tokio::spawn(argon2_blocking(|| {
+                let now = RUNNING.fetch_add(1, Ordering::SeqCst) + 1;
+                PEAK.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(20));
+                RUNNING.fetch_sub(1, Ordering::SeqCst);
+            })));
+        }
+        // Cancel half of them mid-flight: their work still holds a permit.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        for t in tasks.iter().step_by(2) {
+            t.abort();
+        }
+        for t in tasks {
+            let _ = t.await;
+        }
+        while RUNNING.load(Ordering::SeqCst) > 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(PEAK.load(Ordering::SeqCst) <= argon2_permits());
     }
 }

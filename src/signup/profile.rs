@@ -90,7 +90,7 @@ pub async fn request_email_change(
         attempt.release(&state).await;
         return Err(ApiError::unauthorized());
     };
-    if !auth::verify_password(&req.password, hash.as_deref().unwrap_or_default()) {
+    if !auth::verify_password_async(&req.password, hash.as_deref().unwrap_or_default()).await {
         attempt.fail();
         return Err(bad_request!("account.invalid_password", "invalid password"));
     }

@@ -552,7 +552,7 @@ pub async fn register(
         super::limit_complete(&state, &bucket).await?;
         let (addr, invite) = admit(&state, &s, &req.email, req.invite_code.as_deref()).await?;
         let code = req.code.as_deref().unwrap_or_default().trim().to_string();
-        let hash = auth::hash_password(&req.password)?;
+        let hash = auth::hash_password_async(&req.password).await?;
         let mut tx = state.pg().begin().await?;
         let done = apply_register(
             &mut tx,
@@ -596,7 +596,7 @@ pub async fn register(
             return Err(bad_pow());
         }
         let (addr, invite) = admit(&state, &s, &addr, req.invite_code.as_deref()).await?;
-        let hash = auth::hash_password(&req.password)?;
+        let hash = auth::hash_password_async(&req.password).await?;
         let mut tx = state.pg().begin().await?;
         let r = apply_register_unverified(
             &mut tx,

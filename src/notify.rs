@@ -211,7 +211,9 @@ async fn connect(state: &AppState) -> sqlx::Result<PgListener> {
     .await?;
     // LISTEN last: it stays the backend's reported query.
     l.listen(CHANNEL).await?;
-    *w.listener_backend.lock().unwrap() = Some(ListenerBackend {
+    *w.listener_backend
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ListenerBackend {
         pid,
         started,
         app_name,
@@ -296,7 +298,9 @@ async fn supervise(state: AppState, first: PgListener) {
         let err = run(&state, listener).await;
         w.connected.store(false, Ordering::SeqCst);
         w.listener_pid.store(0, Ordering::SeqCst);
-        *w.listener_backend.lock().unwrap() = None;
+        *w.listener_backend
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         tracing::warn!(error = %err, "change listener: disconnected; reconnecting");
         tokio::time::sleep(RECONNECT_MIN).await;
     }
@@ -307,7 +311,12 @@ async fn supervise(state: AppState, first: PgListener) {
 /// is aborted — dropping the connection — when the connection is judged
 /// dead.
 async fn run(state: &AppState, mut listener: PgListener) -> String {
-    let backend = state.wakeups().listener_backend.lock().unwrap().clone();
+    let backend = state
+        .wakeups()
+        .listener_backend
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<Result<Event, String>>();
     let reader = tokio::spawn(async move {
         loop {

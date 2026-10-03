@@ -224,7 +224,10 @@ impl PanelHarness {
     }
 
     async fn open(&self, channel: Channel) -> Result<WireAgent, Status> {
-        let mut client = AgentChannelClient::new(channel);
+        // As the agent does (review 2026-10-02 C3): the panel's limit.
+        let mut client = AgentChannelClient::new(channel)
+            .max_decoding_message_size(crate::grpc::MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(crate::grpc::MAX_MESSAGE_BYTES);
         let (up, up_rx) = mpsc::channel(64);
         let down = client
             .open_channel(ReceiverStream::new(up_rx))
@@ -452,6 +455,56 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         assert_eq!(billed, 150);
+        panel.stop().await;
+        db.drop().await;
+    }
+
+    /// Review 2026-10-02 C3: messages past tonic's 4 MiB default cross the
+    /// AgentChannel in both directions (a large agent message is decoded; a
+    /// large Snapshot is encoded and delivered, then acked).
+    #[tokio::test]
+    async fn messages_over_four_mib_cross_the_channel() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = db.member().await;
+        // ~6 MiB of inbounds JSON (written directly: the size is the point).
+        let pad = "x".repeat(6 << 20);
+        let inbounds = serde_json::json!([{
+            "tag": "big", "protocol": "dokodemo-door", "port": 1,
+            "settings": {"address": "127.0.0.1", "network": "tcp", "pad": pad},
+        }]);
+        sqlx::query(
+            "UPDATE nodes SET xray_inbounds = $2, config_version = config_version + 1 \
+             WHERE id = $1",
+        )
+        .bind(n)
+        .bind(&inbounds)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let panel = PanelHarness::start(&db).await;
+        let creds = panel.register(&db, n).await;
+        let mut agent = panel.connect(&creds).await.expect("mTLS handshake");
+        // A 5 MiB Hello (garbage state hash: just mismatches).
+        agent.hello((0, 0), "0".repeat(5 << 20)).await;
+        let snap = agent.snapshot().await;
+        assert!(prost::Message::encoded_len(&snap) > 6 << 20);
+        assert_eq!(snap.users.len(), 1);
+        assert_eq!(snap.users[0].user_id, u.to_string());
+        agent.ack_snapshot(&snap).await;
+        // The stream is still healthy after both: traffic is billed.
+        agent.traffic(u, 10, 5).await;
+        let mut billed = 0;
+        for _ in 0..100 {
+            crate::traffic::flush_node(&panel.state, n).await.unwrap();
+            billed = db.used(u).await;
+            if billed > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(billed, 15);
         panel.stop().await;
         db.drop().await;
     }

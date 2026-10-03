@@ -30,6 +30,26 @@ Notes:
   Not an admin-rate scenario (the run was 2400 patches/s), recorded for
   completeness.
 
+## Review 2026-10-02 panel fixes (W3/W4/W5, 2026-10-03)
+
+Criterion, `make bench` groups `pure`/`db`/`buffer`, before vs after on the
+same machine (4 vCPU cloud container, bench stack in Docker; noise on
+unchanged code was up to ±15% at 1k users, so only large moves count):
+
+| bench | before | after | |
+|---|---|---|---|
+| `pure/digest_and_diff/1_changed/10000` (want digest + delta diff, what a session does per delta) | 9.20 ms | 5.36 ms | −42% (W4: diff reuses the want digest; merge over two digests, no per-user SHA-256) |
+| `pure/digest_and_diff/10pct_changed/10000` | 10.04 ms | 6.04 ms | −40% |
+| `pure/set_digest_ss/1000` (Shadowsocks node, 40 KB inbounds) | 967 µs | 884 µs | −10% (W5: no lowercase copy, no tree clone) |
+| `pure/set_digest_ss/10000` | 5.72 ms | 5.70 ms | ±0 (user digests dominate) |
+| `buffer/update/10k_rows` (ingest into a 2M-entry buffer) | 4.67 ms | 4.64 ms | ±0 (W3: 2 heap allocations per row → 0; time is DashMap + UUID parsing) |
+| `db/snapshot_build_full/10000`, `db/flush/50000` | 82.4 ms, 1.07 s | 82.8 ms, 1.09 s | unchanged (not touched) |
+
+W4's second half (a borrowed `UserSet` instead of the per-read copy) was not
+done: `UserSet`/`NodeState` are public API that `bench/src/swarm.rs` keeps
+long-lived and ~35 session tests build directly. `akari_sync_message_bytes`
+(C3) now shows the encoded Snapshot/UserDelta sizes in production.
+
 ## W22: traffic history (2026-10-03)
 
 The flush now also records what it settled per user, node and UTC day.

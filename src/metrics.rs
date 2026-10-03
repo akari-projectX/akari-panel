@@ -51,6 +51,9 @@ struct Metrics {
     alerts_firing: IntGaugeVec,
     alert_notifications: IntCounterVec,
     alert_rounds: IntCounterVec,
+    sync_bytes: HistogramVec,
+    handshakes_dropped: IntCounter,
+    local_limits: IntCounterVec,
 }
 
 static METRICS: OnceLock<Metrics> = OnceLock::new();
@@ -185,6 +188,31 @@ impl Metrics {
                 "W17 alert evaluation rounds on this instance (result=leader|skipped|error)",
                 &["result"],
             )?,
+            // Review 2026-10-02 C3: encoded size of desired-state messages
+            // against the gRPC message limit (grpc::MAX_MESSAGE_BYTES).
+            sync_bytes: HistogramVec::new(
+                HistogramOpts::new(
+                    "akari_sync_message_bytes",
+                    "Encoded size of desired-state messages sent to agents by kind (snapshot, \
+                     delta); the gRPC message limit is 64 MiB",
+                )
+                .buckets(prometheus::exponential_buckets(1024.0, 4.0, 10)?),
+                &["kind"],
+            )?,
+            // C4: TCP connections dropped because MAX_HANDSHAKES were in progress.
+            handshakes_dropped: c(
+                "akari_grpc_handshakes_dropped_total",
+                "gRPC connections dropped before the TLS handshake because the in-progress \
+                 handshake limit was reached",
+            )?,
+            // W9: decisions made by the in-process fallback limiter while
+            // Valkey was unreachable (limiter=enroll|sub, result=allowed|limited).
+            local_limits: cv(
+                "akari_rate_limit_local_fallback_total",
+                "Rate-limit decisions taken by the in-process fallback while Valkey was \
+                 unavailable, by limiter (enroll, sub) and result (allowed, limited)",
+                &["limiter", "result"],
+            )?,
             registry,
         };
         let build = IntGaugeVec::new(
@@ -216,6 +244,15 @@ impl Metrics {
         m.registry
             .register(Box::new(m.alert_notifications.clone()))?;
         m.registry.register(Box::new(m.alert_rounds.clone()))?;
+        m.registry.register(Box::new(m.sync_bytes.clone()))?;
+        m.registry
+            .register(Box::new(m.handshakes_dropped.clone()))?;
+        m.registry.register(Box::new(m.local_limits.clone()))?;
+        for l in ["enroll", "sub"] {
+            for r in ["allowed", "limited"] {
+                m.local_limits.with_label_values(&[l, r]);
+            }
+        }
         for k in crate::alerts::KINDS {
             m.alerts_firing.with_label_values(&[k]);
         }
@@ -278,6 +315,31 @@ fn m() -> Option<&'static Metrics> {
 pub fn sync_sent(kind: &'static str) {
     if let Some(m) = m() {
         m.syncs_sent.with_label_values(&[kind]).inc();
+    }
+}
+
+/// Encoded size of a desired-state message (`kind`: snapshot | delta).
+pub fn sync_bytes(kind: &'static str, bytes: usize) {
+    if let Some(m) = m() {
+        m.sync_bytes
+            .with_label_values(&[kind])
+            .observe(bytes as f64);
+    }
+}
+
+/// A gRPC connection was dropped at the in-progress handshake limit.
+pub fn handshake_dropped() {
+    if let Some(m) = m() {
+        m.handshakes_dropped.inc();
+    }
+}
+
+/// The in-process fallback limiter decided (Valkey unavailable).
+/// `limiter`: enroll | sub.
+pub fn local_limit(limiter: &'static str, allowed: bool) {
+    if let Some(m) = m() {
+        let r = if allowed { "allowed" } else { "limited" };
+        m.local_limits.with_label_values(&[limiter, r]).inc();
     }
 }
 
@@ -517,6 +579,8 @@ mod tests {
             "akari_login_attempts_total",
             "akari_fleet",
             "akari_fleet_cpu_percent_max",
+            "akari_grpc_handshakes_dropped_total",
+            "akari_rate_limit_local_fallback_total",
         ] {
             assert!(text.contains(name), "missing {name}\n{text}");
         }

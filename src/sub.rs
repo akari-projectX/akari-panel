@@ -932,13 +932,9 @@ pub async fn subscription(
 }
 
 async fn within_limit(state: &AppState, key: String, limit: i64, window: i64) -> bool {
-    match crate::rate::hit(state, key, limit, window).await {
-        Ok(ok) => ok,
-        Err(e) => {
-            tracing::warn!(error = %e, "subscription rate limit unavailable (failing open)");
-            true
-        }
-    }
+    // Valkey unavailable: fail open, bounded by the in-process fallback
+    // (W9). Tokens are 256-bit: the limit protects CPU/DB, not secrecy.
+    crate::rate::hit_or_local(state, "sub", key, limit, window).await
 }
 
 /// Mint a new subscription token for a user (the old one stops working at

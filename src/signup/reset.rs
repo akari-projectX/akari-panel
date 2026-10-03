@@ -235,7 +235,7 @@ pub async fn reset_password(
     if !plausible_token(&req.token) {
         return Err(invalid_link());
     }
-    let hash = auth::hash_password(&req.password)?;
+    let hash = auth::hash_password_async(&req.password).await?;
     let mut tx = state.pg().begin().await?;
     if apply_reset(&mut tx, &req.token, &hash, Some(client))
         .await?
