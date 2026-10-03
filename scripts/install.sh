@@ -931,9 +931,13 @@ docker_prefix() {
 	dc run --rm --no-deps -T panel info 2>/dev/null | sed -n 's|^route prefix: *\/||p'
 }
 
+# Over TCP, not the Unix socket: on a fresh volume the image's entrypoint runs
+# initdb behind a temporary server that listens only on the socket, then
+# restarts it; a socket probe passes during that window and the restore that
+# follows hits "the database system is starting up".
 wait_docker_pg() {
 	i=0
-	until dc exec -T postgres pg_isready -q -U akari -d akari >/dev/null 2>&1; do
+	until dc exec -T postgres pg_isready -q -h 127.0.0.1 -U akari -d akari >/dev/null 2>&1; do
 		i=$((i + 1))
 		[ "$i" -lt 60 ] || die 'PostgreSQL 容器未就绪' 'the PostgreSQL container is not ready'
 		sleep 1
