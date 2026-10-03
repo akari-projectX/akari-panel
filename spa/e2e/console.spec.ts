@@ -909,6 +909,7 @@ test("W24: 系统设置 → 支付 (imported + added method, 测试连接), sign
   browser,
 }) => {
   test.skip(!secret, "needs the enrollment test");
+  test.setTimeout(180_000);
   const payDir = process.env.E2E_PAY_DIR ?? "";
   test.skip(!payDir, "needs scripts/e2e.sh");
   const { readFileSync } = await import("node:fs");
@@ -928,7 +929,8 @@ test("W24: 系统设置 → 支付 (imported + added method, 测试连接), sign
   await expect(ap.getByText(/panel.toml 中仍有已废弃的 \[payments\] 段/)).toBeVisible();
   // 测试连接 reports the (unreachable) gateway in Chinese.
   await imported.getByRole("button", { name: "测试连接" }).click();
-  await expect(imported.getByRole("alert")).toContainText("无法连接支付宝网关");
+  // (3 attempts; the closed port may time out instead of refusing.)
+  await expect(imported.getByRole("alert")).toContainText("无法连接支付宝网关", { timeout: 60_000 });
   // Add a second method through the form (keys pasted; never shown back).
   await ap.getByLabel("添加支付方式").selectOption("alipay_f2f");
   await ap.getByRole("button", { name: "添加", exact: true }).click();
