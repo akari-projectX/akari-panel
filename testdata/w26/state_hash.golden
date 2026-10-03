@@ -1,0 +1,66 @@
+== inbounds_json
+[{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":"xtls-rprx-vision"},"streamSettings":{"network":"tcp","realitySettings":{"dest":"www.apple.com:443","fingerprint":"chrome","privateKey":"YBgw02QaaPlKaQ3MJdH0sNrJSDJawY9t0yVkNxc182w","publicKey":"5Jb27oX8W738ZxUIXkYUhgRdCa094FSJXhP9YvUkUjU","serverNames":["www.apple.com"],"shortId":"54743dc5e24d2a41","shortIds":["54743dc5e24d2a41"]},"security":"reality"},"tag":"vless-reality-443"},{"port":444,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":""},"streamSettings":{"network":"tcp","realitySettings":{"dest":"www.apple.com:443","fingerprint":"ios","privateKey":"OBWVhMEibfbsz8TKqM17Y8fLVv9mzWC1prOzHBw_NUU","publicKey":"vQV2yDqkaV19psaYsR47O9PZ7m5wVh_XTJzv3SNmcSw","serverNames":["www.apple.com"],"shortId":"ea88e527a819b062","shortIds":["ea88e527a819b062"]},"security":"reality"},"tag":"reality-plain"},{"port":445,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"xhttp","realitySettings":{"dest":"www.apple.com:443","fingerprint":"chrome","privateKey":"2MRWaWWJ7w_xNUfPWGGE76Oa_80ClchuCUC9JCXWvHE","publicKey":"ZMwwtuvc8ViVNcfmBvOTOMI9ZvCxOx3sMGEHy_mskUE","serverNames":["www.apple.com"],"shortId":"6e54105d35de6024","shortIds":["6e54105d35de6024"]},"security":"reality","xhttpSettings":{"mode":"stream-one","path":"/c680488a0d74b233"}},"tag":"vless-xhttp-445"},{"port":446,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":"xtls-rprx-vision"},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"alpn":["h2","http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"vless-vision-446"},{"port":447,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"},"wsSettings":{"path":"/vl"}},"tag":"vless-ws-447"},{"port":448,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"ws","wsSettings":{"path":"/c9769a35fb136de4"}},"tag":"vmess-ws-448"},{"port":449,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"},"wsSettings":{"path":"/a4f4557f17fef863"}},"tag":"vmess-ws-449"},{"port":450,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"tcp"},"tag":"vmess-tcp-450"},{"port":451,"protocol":"trojan","settings":{"clients":[]},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"alpn":["h2","http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"trojan-451"},{"port":452,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"httpupgradeSettings":{"host":"cdn.example.com","path":"/a232f14ed878c8e1"},"network":"httpupgrade","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"vless-httpupgrade-452"},{"port":453,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"xhttp","xhttpSettings":{"mode":"auto","path":"/d9d87054ed4c000b"}},"tag":"vmess-xhttp-453"},{"port":454,"protocol":"trojan","settings":{"clients":[]},"streamSettings":{"grpcSettings":{"serviceName":"081f5b7d6c24c39b"},"network":"grpc","security":"tls","tlsSettings":{"alpn":["h2"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"trojan-grpc-454"},{"port":455,"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-128-gcm","network":"tcp,udp","password":"D4SCUD+QykMDrsw++ZuN8g=="},"tag":"ss2022-455"},{"port":456,"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-256-gcm","network":"tcp,udp","password":"ToH1n8izc5aaDQX0Zz71ob9Biwvc7tQfagD2Xx5TNUM="},"tag":"ss2022-456"},{"port":443,"protocol":"hysteria","settings":{"clients":[],"version":2},"streamSettings":{"hysteriaSettings":{"version":2},"network":"hysteria","security":"tls","tlsSettings":{"alpn":["h3"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"hysteria2-443"},{"port":457,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"grpcSettings":{"serviceName":"grpc-svc"},"network":"grpc","security":"tls","tlsSettings":{"alpn":["h2"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"vless-grpc-457"},{"port":9000,"protocol":"dokodemo-door","settings":{"network":"tcp,udp"},"tag":"dokodemo"},{"port":9001,"protocol":"shadowsocks","settings":{"method":"aes-128-gcm","password":"x"},"tag":"ss-legacy"},{"port":9002,"protocol":"vless","streamSettings":{"network":"kcp"},"tag":"vless-kcp"},{"port":9003,"protocol":"hysteria","settings":{"version":1},"tag":"hy-bad"},{"port":9004,"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-128-gcm","network":"tcp","password":"AAAAAAAAAAAAAAAAAAAAAA=="},"tag":"ss-tcp"},{"port":9005,"protocol":"vless","settings":{"flow":"xtls-rprx-vision"},"streamSettings":{"network":"splithttp","splithttpSettings":{"path":"/s"}},"tag":"vless-split"}]
+== users (user_id inbound_tag protocol account_json)
+00000001-0000-4000-8000-000000000001 vless-reality-443 vless {"flow":"xtls-rprx-vision","id":"6ec49bd3-33c0-48ae-9341-972e7ec7907a"}
+00000001-0000-4000-8000-000000000001 reality-plain vless {"flow":"","id":"19510f1c-2317-499e-88f9-de4ba7c9de23"}
+00000001-0000-4000-8000-000000000001 vless-xhttp-445 vless {"flow":"","id":"9fc5e0cb-6285-4e5e-91bb-453df4efed35"}
+00000001-0000-4000-8000-000000000001 vless-vision-446 vless {"flow":"xtls-rprx-vision","id":"0e300dc6-a276-4d18-ae60-f4c0d8cae46b"}
+00000001-0000-4000-8000-000000000001 vless-ws-447 vless {"flow":"","id":"cd9fe072-8907-4ef0-9be3-61ea4b2864d2"}
+00000001-0000-4000-8000-000000000001 vmess-ws-448 vmess {"id":"639e4e86-c81c-4f57-ac4d-eea4a02ee159"}
+00000001-0000-4000-8000-000000000001 vmess-ws-449 vmess {"id":"c834fe96-83b6-4ac5-aa3c-418e6ee87c4c"}
+00000001-0000-4000-8000-000000000001 vmess-tcp-450 vmess {"id":"99a30bd0-1ec6-45ee-b407-25eb87c005bd"}
+00000001-0000-4000-8000-000000000001 trojan-451 trojan {"password":"d770f7cf496f7fca357a5e0d287ad93e1f30d38cc28ea4d4a56ac81082c0eec1"}
+00000001-0000-4000-8000-000000000001 vless-httpupgrade-452 vless {"flow":"","id":"1b777d6a-cf96-4f89-9e59-7d889fe4235a"}
+00000001-0000-4000-8000-000000000001 vmess-xhttp-453 vmess {"id":"8b8853fb-3547-4ca5-b7f3-d8736f2b8b3f"}
+00000001-0000-4000-8000-000000000001 trojan-grpc-454 trojan {"password":"cbbc6cfae4be8acdee3561a8df10aef63e25a8dbc3378aeafef351e2a793deec"}
+00000001-0000-4000-8000-000000000001 ss2022-455 shadowsocks {"password":"VpMbq1DuxbJ4K7+2OZjLRA=="}
+00000001-0000-4000-8000-000000000001 ss2022-456 shadowsocks {"password":"YMEFSB8ZlmWBrEeUAjjV8PnmNBzVO0/23vvDfFDywFE="}
+00000001-0000-4000-8000-000000000001 hysteria2-443 hysteria {"auth":"a06a4623c47ef6fe84a19107d4f4a1ea321c80d6cd97e152b707229aae790131"}
+00000001-0000-4000-8000-000000000001 vless-grpc-457 vless {"flow":"","id":"bed6a9eb-78e2-405b-941a-f173a1818db6"}
+00000001-0000-4000-8000-000000000001 vless-kcp vless {"flow":"","id":"c4a57424-7065-4ff5-91ea-f8209906ba4b"}
+00000001-0000-4000-8000-000000000001 ss-tcp shadowsocks {"password":"4blVDvXrbBABiSMfkVTDqA=="}
+00000001-0000-4000-8000-000000000001 vless-split vless {"flow":"xtls-rprx-vision","id":"d01dbffb-44dc-468e-974c-3da0e05d0bc5"}
+00000002-0000-4000-8000-000000000002 vless-reality-443 vless {"flow":"xtls-rprx-vision","id":"0b145e40-d0be-4aa4-b7af-a5ca10a02e09"}
+00000002-0000-4000-8000-000000000002 reality-plain vless {"flow":"","id":"427ec84d-a77b-4194-9f11-9e62c153cada"}
+00000002-0000-4000-8000-000000000002 vless-xhttp-445 vless {"flow":"","id":"856dba5a-b252-49c2-81ca-5c85f4da49f0"}
+00000002-0000-4000-8000-000000000002 vless-vision-446 vless {"flow":"xtls-rprx-vision","id":"c090e6f4-8999-45a4-8a44-81b072af785b"}
+00000002-0000-4000-8000-000000000002 vless-ws-447 vless {"flow":"","id":"0e37b873-edfd-4d99-87df-738bebb63973"}
+00000002-0000-4000-8000-000000000002 vmess-ws-448 vmess {"id":"d89a6888-5602-408e-8ef5-7a6bda736b12"}
+00000002-0000-4000-8000-000000000002 vmess-ws-449 vmess {"id":"1e7addbc-e2c8-45ed-8e87-427891f5f44a"}
+00000002-0000-4000-8000-000000000002 vmess-tcp-450 vmess {"id":"11cd488c-abce-4869-837d-c684af10989d"}
+00000002-0000-4000-8000-000000000002 trojan-451 trojan {"password":"cabdf8835b24a4295c53177dc3e4787837a4380d1e7d55bc541268f9a969e59c"}
+00000002-0000-4000-8000-000000000002 vless-httpupgrade-452 vless {"flow":"","id":"a775d916-5b44-4a57-909a-70c3e5c36df5"}
+00000002-0000-4000-8000-000000000002 vmess-xhttp-453 vmess {"id":"1d638dba-e629-46a7-ab02-0a01659b8c6c"}
+00000002-0000-4000-8000-000000000002 trojan-grpc-454 trojan {"password":"2f7c9df71745e253ae2b18210db378c6ea2ac04971eb90406d134e7070dfd8d0"}
+00000002-0000-4000-8000-000000000002 ss2022-455 shadowsocks {"password":"eQZH+P+o9XSi3pwZVZDEwQ=="}
+00000002-0000-4000-8000-000000000002 ss2022-456 shadowsocks {"password":"NOOR2NBEAXb0yWkd6uLF7ox64asmlmBO2hh7ScjyY8c="}
+00000002-0000-4000-8000-000000000002 hysteria2-443 hysteria {"auth":"dd6805f674d5979edb4a09417e2b96de738245d78944924fff6e60a82b24618a"}
+00000002-0000-4000-8000-000000000002 vless-grpc-457 vless {"flow":"","id":"6849ee31-fc90-4bd2-9f04-6c74a886c17c"}
+00000002-0000-4000-8000-000000000002 vless-kcp vless {"flow":"","id":"ab25af19-fc33-4efd-9a1c-b68e343045cf"}
+00000002-0000-4000-8000-000000000002 ss-tcp shadowsocks {"password":"gABMhhafFAmZgRk2e4sMDQ=="}
+00000002-0000-4000-8000-000000000002 vless-split vless {"flow":"xtls-rprx-vision","id":"e420d205-288b-4fee-aac7-1c49b251d686"}
+00000003-0000-4000-8000-000000000003 vless-reality-443 vless {"flow":"xtls-rprx-vision","id":"ddf2e645-bae0-4a4d-ac9c-cbdb3618304e"}
+00000003-0000-4000-8000-000000000003 reality-plain vless {"flow":"","id":"15d0ef28-2e49-48fd-b4d0-ebc35506565e"}
+00000003-0000-4000-8000-000000000003 vless-xhttp-445 vless {"flow":"","id":"b478387b-da94-4c93-af2c-30366438ce0b"}
+00000003-0000-4000-8000-000000000003 vless-vision-446 vless {"flow":"xtls-rprx-vision","id":"b2e7c4f4-fa69-47e3-a794-8b744bf1eecb"}
+00000003-0000-4000-8000-000000000003 vless-ws-447 vless {"flow":"","id":"a97a442c-fe45-4ae0-bebe-5ccbf85a8ab3"}
+00000003-0000-4000-8000-000000000003 vmess-ws-448 vmess {"id":"970c6400-c707-4ebd-8012-481419653e48"}
+00000003-0000-4000-8000-000000000003 vmess-ws-449 vmess {"id":"03929883-9983-4244-8a83-a0fd32cd8dba"}
+00000003-0000-4000-8000-000000000003 vmess-tcp-450 vmess {"id":"eb428bca-8ad8-417a-9be3-deb4cdb068f9"}
+00000003-0000-4000-8000-000000000003 trojan-451 trojan {"password":"7945f6b6657689589c2b5cd34658acb22df362bafb51bcdfd6f144c07c436294"}
+00000003-0000-4000-8000-000000000003 vless-httpupgrade-452 vless {"flow":"","id":"a02d4061-fa08-47ce-b42f-7eaf46c172f3"}
+00000003-0000-4000-8000-000000000003 vmess-xhttp-453 vmess {"id":"6cee1e5c-9332-45bd-a4e9-ce653123b711"}
+00000003-0000-4000-8000-000000000003 trojan-grpc-454 trojan {"password":"538a966660ec46159ca04f5794e616b866e15d82a9a4004fd975837fb4e8ef4a"}
+00000003-0000-4000-8000-000000000003 ss2022-455 shadowsocks {"password":"54GBhKc1m8u3g4/5uPXuIQ=="}
+00000003-0000-4000-8000-000000000003 ss2022-456 shadowsocks {"password":"2q57nOSCwwJu1A0bH7wVaGGO1/kEck5EjM4+oAGuFtM="}
+00000003-0000-4000-8000-000000000003 hysteria2-443 hysteria {"auth":"47aabedfd409493528b3c94259f4ccc39cd88cc57c23b10a7079b339b3d464d2"}
+00000003-0000-4000-8000-000000000003 vless-grpc-457 vless {"flow":"","id":"291f8204-115a-4e05-b0f9-2edb30011392"}
+00000003-0000-4000-8000-000000000003 vless-kcp vless {"flow":"","id":"e8b0fea6-4382-4bac-979e-8bd2dca3e925"}
+00000003-0000-4000-8000-000000000003 ss-tcp shadowsocks {"password":"dzrBYnnKqBfYe50E0GDHOw=="}
+00000003-0000-4000-8000-000000000003 vless-split vless {"flow":"xtls-rprx-vision","id":"bb0aa9f1-92d4-4127-9327-f810ff4205c0"}
+== state_hash
+v0 368448a947bee38b998668b15c93de1529f42908c363b67f9b8c62d29d00c7b4
+v1 d76ef9884cf54f18b36759dac241b14f5f3e463f393d406d5c4be88f3c0ce186
+v7 9c03095821781f8d687471d6f6db740169c07e6950a0e2389abb22fde1692045
+v18446744073709551615 639cedbfc1877750fcd014d702676b05ec28705dc048a17b7edb07e037e08f0f
+empty v0 7bc763999089c423d738f66a37562220afc4d06044f01f83a4179749c9c21184

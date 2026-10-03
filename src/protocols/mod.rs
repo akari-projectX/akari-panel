@@ -22,9 +22,7 @@
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use rand::RngCore;
 use serde_json::{Value, json};
-use uuid::Uuid;
 
 /// Protocols the panel issues credentials for.
 pub const MANAGED: [&str; 5] = ["vless", "vmess", "trojan", "shadowsocks", "hysteria"];
@@ -50,9 +48,7 @@ pub fn ss_key_len(method: &str) -> Option<usize> {
 }
 
 fn random_bytes(n: usize) -> Vec<u8> {
-    let mut b = vec![0u8; n];
-    rand::rng().fill_bytes(&mut b);
-    b
+    crate::entropy::bytes(n)
 }
 
 /// A fresh Shadowsocks 2022 key for `method` (standard base64).
@@ -114,8 +110,10 @@ pub fn issuable(inbound: &Value) -> bool {
 /// A new account for `inbound` (its protocol and settings decide the shape).
 pub fn generate_account(inbound: &Value) -> Result<Value, String> {
     match protocol(inbound) {
-        "vless" => Ok(json!({ "id": Uuid::new_v4().to_string(), "flow": vless_flow(inbound) })),
-        "vmess" => Ok(json!({ "id": Uuid::new_v4().to_string() })),
+        "vless" => {
+            Ok(json!({ "id": crate::entropy::uuid_v4().to_string(), "flow": vless_flow(inbound) }))
+        }
+        "vmess" => Ok(json!({ "id": crate::entropy::uuid_v4().to_string() })),
         "trojan" => Ok(json!({ "password": hex::encode(random_bytes(32)) })),
         "shadowsocks" => {
             let method = str_at(inbound, "/settings/method").unwrap_or("");

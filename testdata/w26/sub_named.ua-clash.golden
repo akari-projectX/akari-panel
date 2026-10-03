@@ -1,0 +1,2072 @@
+content-type: text/yaml; charset=utf-8
+proxies:
+  - name: "东京 01 | IPLC | 0.5x · vless-reality-443"
+    type: vless
+    server: relay.example.net
+    port: 30443
+    uuid: 6ec49bd3-33c0-48ae-9341-972e7ec7907a
+    flow: xtls-rprx-vision
+    network: tcp
+    tls: true
+    servername: www.apple.com
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: 5Jb27oX8W738ZxUIXkYUhgRdCa094FSJXhP9YvUkUjU
+      short-id: 54743dc5e24d2a41
+  - name: "东京 01 | IPLC | 0.5x · reality-plain"
+    type: vless
+    server: 203.0.113.7
+    port: 444
+    uuid: 19510f1c-2317-499e-88f9-de4ba7c9de23
+    network: tcp
+    tls: true
+    servername: www.apple.com
+    client-fingerprint: ios
+    reality-opts:
+      public-key: vQV2yDqkaV19psaYsR47O9PZ7m5wVh_XTJzv3SNmcSw
+      short-id: ea88e527a819b062
+  - name: "东京 01 | IPLC | 0.5x · vless-xhttp-445"
+    type: vless
+    server: 203.0.113.7
+    port: 445
+    uuid: 9fc5e0cb-6285-4e5e-91bb-453df4efed35
+    network: xhttp
+    tls: true
+    servername: www.apple.com
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: ZMwwtuvc8ViVNcfmBvOTOMI9ZvCxOx3sMGEHy_mskUE
+      short-id: 6e54105d35de6024
+    xhttp-opts:
+      path: /c680488a0d74b233
+      mode: stream-one
+  - name: "东京 01 | IPLC | 0.5x · vless-vision-446"
+    type: vless
+    server: 203.0.113.7
+    port: 446
+    uuid: 0e300dc6-a276-4d18-ae60-f4c0d8cae46b
+    flow: xtls-rprx-vision
+    network: tcp
+    tls: true
+    servername: node.example.com
+  - name: "东京 01 | IPLC | 0.5x · vless-ws-447"
+    type: vless
+    server: 203.0.113.7
+    port: 447
+    uuid: cd9fe072-8907-4ef0-9be3-61ea4b2864d2
+    network: ws
+    tls: true
+    servername: node.example.com
+    ws-opts:
+      path: /vl
+  - name: "东京 01 | IPLC | 0.5x · vmess-ws-448"
+    type: vmess
+    server: 203.0.113.7
+    port: 448
+    uuid: 639e4e86-c81c-4f57-ac4d-eea4a02ee159
+    alterId: 0
+    cipher: auto
+    network: ws
+    ws-opts:
+      path: /c9769a35fb136de4
+  - name: "东京 01 | IPLC | 0.5x · vmess-ws-449"
+    type: vmess
+    server: 203.0.113.7
+    port: 449
+    uuid: c834fe96-83b6-4ac5-aa3c-418e6ee87c4c
+    alterId: 0
+    cipher: auto
+    network: ws
+    tls: true
+    servername: node.example.com
+    ws-opts:
+      path: /a4f4557f17fef863
+  - name: "东京 01 | IPLC | 0.5x · vmess-tcp-450"
+    type: vmess
+    server: 203.0.113.7
+    port: 450
+    uuid: 99a30bd0-1ec6-45ee-b407-25eb87c005bd
+    alterId: 0
+    cipher: auto
+    network: tcp
+  - name: "东京 01 | IPLC | 0.5x · trojan-451"
+    type: trojan
+    server: 203.0.113.7
+    port: 451
+    password: d770f7cf496f7fca357a5e0d287ad93e1f30d38cc28ea4d4a56ac81082c0eec1
+    network: tcp
+    tls: true
+    sni: node.example.com
+  - name: "东京 01 | IPLC | 0.5x · vless-httpupgrade-452"
+    type: vless
+    server: 203.0.113.7
+    port: 452
+    uuid: 1b777d6a-cf96-4f89-9e59-7d889fe4235a
+    network: ws
+    tls: true
+    servername: node.example.com
+    ws-opts:
+      path: /a232f14ed878c8e1
+      headers:
+        Host: cdn.example.com
+      v2ray-http-upgrade: true
+  - name: "东京 01 | IPLC | 0.5x · trojan-grpc-454"
+    type: trojan
+    server: 203.0.113.7
+    port: 454
+    password: cbbc6cfae4be8acdee3561a8df10aef63e25a8dbc3378aeafef351e2a793deec
+    network: grpc
+    tls: true
+    sni: node.example.com
+    grpc-opts:
+      grpc-service-name: 081f5b7d6c24c39b
+  - name: "东京 01 | IPLC | 0.5x · ss2022-455"
+    type: ss
+    server: 203.0.113.7
+    port: 18388
+    cipher: 2022-blake3-aes-128-gcm
+    password: "D4SCUD+QykMDrsw++ZuN8g==:VpMbq1DuxbJ4K7+2OZjLRA=="
+    udp: true
+  - name: "东京 01 | IPLC | 0.5x · ss2022-456"
+    type: ss
+    server: 203.0.113.7
+    port: 456
+    cipher: 2022-blake3-aes-256-gcm
+    password: "ToH1n8izc5aaDQX0Zz71ob9Biwvc7tQfagD2Xx5TNUM=:YMEFSB8ZlmWBrEeUAjjV8PnmNBzVO0/23vvDfFDywFE="
+    udp: true
+  - name: "东京 01 | IPLC | 0.5x · hysteria2-443"
+    type: hysteria2
+    server: 203.0.113.7
+    port: 443
+    password: a06a4623c47ef6fe84a19107d4f4a1ea321c80d6cd97e152b707229aae790131
+    sni: node.example.com
+    alpn:
+      - h3
+  - name: "东京 01 | IPLC | 0.5x · vless-grpc-457"
+    type: vless
+    server: 203.0.113.7
+    port: 457
+    uuid: bed6a9eb-78e2-405b-941a-f173a1818db6
+    network: grpc
+    tls: true
+    servername: node.example.com
+    grpc-opts:
+      grpc-service-name: grpc-svc
+  - name: "东京 01 | IPLC | 0.5x · vless-kcp"
+    type: vless
+    server: 203.0.113.7
+    port: 9002
+    uuid: c4a57424-7065-4ff5-91ea-f8209906ba4b
+    network: kcp
+  - name: "东京 01 | IPLC | 0.5x · ss-tcp"
+    type: ss
+    server: 203.0.113.7
+    port: 9004
+    cipher: 2022-blake3-aes-128-gcm
+    password: "AAAAAAAAAAAAAAAAAAAAAA==:4blVDvXrbBABiSMfkVTDqA=="
+    udp: false
+  - name: "东京 01 | IPLC | 0.5x · vless-split"
+    type: vless
+    server: 203.0.113.7
+    port: 9005
+    uuid: d01dbffb-44dc-468e-974c-3da0e05d0bc5
+    network: xhttp
+    xhttp-opts:
+      path: /s
+  - name: "Same"
+    type: trojan
+    server: a.example.com
+    port: 451
+    password: d770f7cf496f7fca357a5e0d287ad93e1f30d38cc28ea4d4a56ac81082c0eec1
+    network: tcp
+    tls: true
+    sni: node.example.com
+  - name: "Same #2"
+    type: trojan
+    server: nat.example.org
+    port: 451
+    password: d770f7cf496f7fca357a5e0d287ad93e1f30d38cc28ea4d4a56ac81082c0eec1
+    network: tcp
+    tls: true
+    sni: node.example.com
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - "东京 01 | IPLC | 0.5x · vless-reality-443"
+      - "东京 01 | IPLC | 0.5x · reality-plain"
+      - "东京 01 | IPLC | 0.5x · vless-xhttp-445"
+      - "东京 01 | IPLC | 0.5x · vless-vision-446"
+      - "东京 01 | IPLC | 0.5x · vless-ws-447"
+      - "东京 01 | IPLC | 0.5x · vmess-ws-448"
+      - "东京 01 | IPLC | 0.5x · vmess-ws-449"
+      - "东京 01 | IPLC | 0.5x · vmess-tcp-450"
+      - "东京 01 | IPLC | 0.5x · trojan-451"
+      - "东京 01 | IPLC | 0.5x · vless-httpupgrade-452"
+      - "东京 01 | IPLC | 0.5x · trojan-grpc-454"
+      - "东京 01 | IPLC | 0.5x · ss2022-455"
+      - "东京 01 | IPLC | 0.5x · ss2022-456"
+      - "东京 01 | IPLC | 0.5x · hysteria2-443"
+      - "东京 01 | IPLC | 0.5x · vless-grpc-457"
+      - "东京 01 | IPLC | 0.5x · vless-kcp"
+      - "东京 01 | IPLC | 0.5x · ss-tcp"
+      - "东京 01 | IPLC | 0.5x · vless-split"
+      - "Same"
+      - "Same #2"
+rules:
+  - MATCH,PROXY
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

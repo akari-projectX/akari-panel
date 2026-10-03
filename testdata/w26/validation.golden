@@ -1,0 +1,272 @@
+== check_inbound / issuable / l4
+{"protocol":"vless"}
+  -> ok | issuable=true l4=(true,false)
+{"port":443,"protocol":"vless","settings":{"decryption":"none","flow":"xtls-rprx-vision"},"streamSettings":{"network":"raw","security":"reality"}}
+  -> ok | issuable=true l4=(true,false)
+{"protocol":"vless","settings":{"flow":"xtls-rprx-vision"},"streamSettings":{"network":"tcp","security":"tls"}}
+  -> ok | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"network":"xhttp","security":"reality","xhttpSettings":{"mode":"stream-one","path":"/x"}}}
+  -> ok | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"grpcSettings":{"serviceName":"svc"},"network":"grpc","security":"reality"}}
+  -> ok | issuable=true l4=(true,false)
+{"protocol":"vmess","streamSettings":{"httpupgradeSettings":{"host":"cdn.example.com","path":"/u?ed=2048"},"network":"httpupgrade"}}
+  -> ok | issuable=true l4=(true,false)
+{"protocol":"trojan","streamSettings":{"network":"ws","security":"tls","wsSettings":{"headers":{"Host":"a.example.com"},"path":"/t"}}}
+  -> ok | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"network":"splithttp","splithttpSettings":{"path":"/s"}}}
+  -> ok | issuable=true l4=(true,false)
+{"port":8388,"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-128-gcm","network":"tcp,udp","password":"AQEBAQEBAQEBAQEBAQEBAQ=="},"tag":"s"}
+  -> ok | issuable=true l4=(true,true)
+{"port":8388,"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-256-gcm","network":"tcp,udp","password":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="},"tag":"s"}
+  -> ok | issuable=true l4=(true,true)
+{"port":443,"protocol":"hysteria","settings":{"clients":[],"version":2},"streamSettings":{"hysteriaSettings":{"version":2},"network":"hysteria","security":"tls"},"tag":"h"}
+  -> ok | issuable=true l4=(false,true)
+{"port":443,"protocol":"hysteria","settings":{"clients":[],"version":2},"streamSettings":{"hysteriaSettings":{"auth":"","version":2},"network":"hysteria","security":"tls"},"tag":"h"}
+  -> ok | issuable=true l4=(false,true)
+{"protocol":"dokodemo-door","streamSettings":{"network":"kcp"}}
+  -> ok | issuable=false l4=(true,false)
+{"port":0,"protocol":"vless"}
+  -> ERR port must be a number 1-65535 (subscriptions advertise it) | issuable=true l4=(true,false)
+{"port":"443","protocol":"vless"}
+  -> ERR port must be a number 1-65535 (subscriptions advertise it) | issuable=true l4=(true,false)
+{"port":70000,"protocol":"vless"}
+  -> ERR port must be a number 1-65535 (subscriptions advertise it) | issuable=true l4=(true,false)
+{"port":-1,"protocol":"vless"}
+  -> ERR port must be a number 1-65535 (subscriptions advertise it) | issuable=true l4=(true,false)
+{"port":1.5,"protocol":"vless"}
+  -> ERR port must be a number 1-65535 (subscriptions advertise it) | issuable=true l4=(true,false)
+{"protocol":"vless","settings":{"flow":"xtls-rprx-vision"},"streamSettings":{"network":"ws","security":"tls"}}
+  -> ERR flow xtls-rprx-vision needs streamSettings.network tcp/raw with tls or reality | issuable=true l4=(true,false)
+{"protocol":"vless","settings":{"flow":"xtls-rprx-vision"}}
+  -> ERR flow xtls-rprx-vision needs streamSettings.network tcp/raw with tls or reality | issuable=true l4=(true,false)
+{"protocol":"vless","settings":{"flow":"xtls-rprx-direct"}}
+  -> ERR vless flow "xtls-rprx-direct" is not supported ("" or xtls-rprx-vision) | issuable=true l4=(true,false)
+{"protocol":"vless","settings":{"decryption":"mlkem768x25519plus.native.0rtt.x"}}
+  -> ERR vless settings.decryption must be "none" (VLESS encryption is not in subscriptions) | issuable=true l4=(true,false)
+{"protocol":"vless","settings":{"decryption":null}}
+  -> ERR vless settings.decryption must be "none" (VLESS encryption is not in subscriptions) | issuable=true l4=(true,false)
+{"protocol":"vmess","streamSettings":{"security":"reality"}}
+  -> ERR REALITY is only supported with vless | issuable=true l4=(true,false)
+{"protocol":"trojan","streamSettings":{"security":"reality"}}
+  -> ERR REALITY is only supported with vless | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"network":"ws","security":"reality"}}
+  -> ERR REALITY works with tcp/raw, xhttp or grpc | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"network":"httpupgrade","security":"reality"}}
+  -> ERR REALITY works with tcp/raw, xhttp or grpc | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"network":"kcp"}}
+  -> ERR transport "kcp" is not supported (tcp/raw, ws, httpupgrade, xhttp, grpc) | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"network":"quic"}}
+  -> ERR transport "quic" is not supported (tcp/raw, ws, httpupgrade, xhttp, grpc) | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"security":"xtls"}}
+  -> ERR security "xtls" is not supported (none, tls, reality) | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"security":" TLS "}}
+  -> ok | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"security":""}}
+  -> ok | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"network":" WebSocket "}}
+  -> ok | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"network":"ws","wsSettings":{"path":"ws"}}}
+  -> ERR transport path must start with / and hold no spaces, quotes or # | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"network":"ws","wsSettings":{"path":"/a b"}}}
+  -> ERR transport path must start with / and hold no spaces, quotes or # | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"network":"ws","wsSettings":{"path":5}}}
+  -> ERR transport path must start with / and hold no spaces, quotes or # | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"network":"ws","wsSettings":{"path":"/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}
+  -> ERR transport path must start with / and hold no spaces, quotes or # | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"network":"ws","wsSettings":{"headers":{"Host":"a b"}}}}
+  -> ERR transport host must be a domain name | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"network":"ws","wsSettings":{"host":""}}}
+  -> ok | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"network":"xhttp","xhttpSettings":{"mode":"fast"}}}
+  -> ERR xhttp mode must be one of auto, packet-up, stream-up, stream-one | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"network":"xhttp","xhttpSettings":{"mode":""}}}
+  -> ok | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"network":"xhttp","xhttpSettings":{"mode":1}}}
+  -> ERR xhttp mode must be one of auto, packet-up, stream-up, stream-one | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"network":"splithttp","splithttpSettings":{"mode":"x"}}}
+  -> ERR xhttp mode must be one of auto, packet-up, stream-up, stream-one | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"grpcSettings":{"serviceName":"a b"},"network":"grpc"}}
+  -> ERR grpc serviceName: letters, digits and -_./ only (<= 128) | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"grpcSettings":{"serviceName":"a/b.c-d_e"},"network":"grpc"}}
+  -> ok | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"httpupgradeSettings":{"host":"a b"},"network":"httpupgrade"}}
+  -> ERR transport host must be a domain name | issuable=true l4=(true,false)
+{"protocol":"vless","streamSettings":{"network":"hysteria"}}
+  -> ERR the hysteria transport is only for the hysteria protocol | issuable=true l4=(true,false)
+{"protocol":"vmess","streamSettings":{"network":"hysteria"}}
+  -> ERR the hysteria transport is only for the hysteria protocol | issuable=true l4=(true,false)
+{"port":8388,"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-chacha20-poly1305","network":"tcp,udp","password":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="},"tag":"s"}
+  -> ERR shadowsocks method must be a multi-user 2022 method: 2022-blake3-aes-128-gcm, 2022-blake3-aes-256-gcm (2022-blake3-chacha20-poly1305 has no multi-user server in xray; legacy methods have no per-user keys) | issuable=false l4=(true,true)
+{"port":8388,"protocol":"shadowsocks","settings":{"clients":[],"method":"aes-128-gcm","network":"tcp,udp","password":"pw"},"tag":"s"}
+  -> ERR shadowsocks method must be a multi-user 2022 method: 2022-blake3-aes-128-gcm, 2022-blake3-aes-256-gcm (2022-blake3-chacha20-poly1305 has no multi-user server in xray; legacy methods have no per-user keys) | issuable=false l4=(true,true)
+{"port":8388,"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-128-gcm","network":"tcp,udp","password":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="},"tag":"s"}
+  -> ERR shadowsocks settings.password must be a base64 16-byte key for 2022-blake3-aes-128-gcm | issuable=false l4=(true,true)
+{"port":8388,"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-256-gcm","network":"tcp,udp","password":"%%%"},"tag":"s"}
+  -> ERR shadowsocks settings.password must be a base64 32-byte key for 2022-blake3-aes-256-gcm | issuable=false l4=(true,true)
+{"protocol":"shadowsocks","settings":{"method":"2022-blake3-aes-128-gcm","password":"AQEBAQEBAQEBAQEBAQEBAQ=="}}
+  -> ERR shadowsocks settings.clients must be [] (users are managed by the panel) | issuable=false l4=(true,true)
+{"protocol":"shadowsocks","settings":{"clients":[{"password":"AQEBAQEBAQEBAQEBAQEBAQ=="}],"method":"2022-blake3-aes-128-gcm","password":"AQEBAQEBAQEBAQEBAQEBAQ=="}}
+  -> ERR shadowsocks settings.clients must be [] (users are managed by the panel) | issuable=false l4=(true,true)
+{"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-128-gcm","network":"quic","password":"AQEBAQEBAQEBAQEBAQEBAQ=="}}
+  -> ERR shadowsocks settings.network must be tcp, udp or tcp,udp | issuable=false l4=(false,false)
+{"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-128-gcm","network":" ","password":"AQEBAQEBAQEBAQEBAQEBAQ=="}}
+  -> ERR shadowsocks settings.network must be tcp, udp or tcp,udp | issuable=false l4=(false,false)
+{"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-128-gcm","network":"UDP","password":"AQEBAQEBAQEBAQEBAQEBAQ=="}}
+  -> ok | issuable=true l4=(false,true)
+{"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-128-gcm","password":"AQEBAQEBAQEBAQEBAQEBAQ=="},"streamSettings":{"network":"ws"}}
+  -> ERR shadowsocks runs on its own transport (no streamSettings.network) | issuable=false l4=(true,true)
+{"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-128-gcm","password":"AQEBAQEBAQEBAQEBAQEBAQ=="},"streamSettings":{"security":"tls"}}
+  -> ERR shadowsocks takes no tls/reality | issuable=false l4=(true,true)
+{"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-128-gcm","password":"AQEBAQEBAQEBAQEBAQEBAQ=="},"streamSettings":{"security":"reality"}}
+  -> ERR REALITY is only supported with vless | issuable=false l4=(true,true)
+{"port":443,"protocol":"hysteria","settings":{"clients":[],"version":2},"streamSettings":{"hysteriaSettings":{"auth":"shared-secret","version":2},"network":"hysteria","security":"tls"},"tag":"h"}
+  -> ERR hysteriaSettings.auth must not be set (per-user auth is managed by the panel) | issuable=false l4=(false,true)
+{"port":443,"protocol":"hysteria","settings":{"clients":[],"version":2},"streamSettings":{"hysteriaSettings":{"version":1},"network":"hysteria","security":"tls"},"tag":"h"}
+  -> ERR streamSettings.hysteriaSettings.version must be 2 | issuable=false l4=(false,true)
+{"protocol":"hysteria","settings":{"version":2},"streamSettings":{"hysteriaSettings":{"version":2},"network":"hysteria"}}
+  -> ERR hysteria needs security "tls" (the node's certificate) | issuable=false l4=(false,true)
+{"protocol":"hysteria","settings":{"version":2},"streamSettings":{"network":"tcp","security":"tls"}}
+  -> ERR hysteria needs streamSettings.network "hysteria" | issuable=false l4=(false,true)
+{"protocol":"hysteria","settings":{"version":1},"streamSettings":{"network":"hysteria","security":"tls"}}
+  -> ERR hysteria settings.version must be 2 | issuable=false l4=(false,true)
+{"protocol":"hysteria","settings":{"version":2},"streamSettings":{"network":"hysteria","security":"reality"}}
+  -> ERR REALITY is only supported with vless | issuable=false l4=(false,true)
+{"protocol":"hysteria","settings":{"version":2},"streamSettings":{"network":"hysteria","security":"tls"}}
+  -> ERR streamSettings.hysteriaSettings.version must be 2 | issuable=false l4=(false,true)
+{"TAG":"b","protocol":"vless","tag":"a"}
+  -> ERR duplicate key "tag" (keys differing only in letter case are one key to xray) | issuable=true l4=(true,false)
+{"protocol":"vless","settings":{},"tag":"a","ſettings":{}}
+  -> ERR duplicate key "ſettings" (keys differing only in letter case are one key to xray) | issuable=true l4=(true,false)
+{"protocol":"VLESS","streamSettings":{"network":"kcp"}}
+  -> ok | issuable=false l4=(true,false)
+{"port":0,"protocol":"vless","streamSettings":{"network":"kcp"}}
+  -> ERR port must be a number 1-65535 (subscriptions advertise it) | issuable=true l4=(true,false)
+{"protocol":"vless","settings":{"flow":"x"},"streamSettings":{"network":"ws","wsSettings":{"path":"bad"}}}
+  -> ERR transport path must start with / and hold no spaces, quotes or # | issuable=true l4=(true,false)
+{"protocol":"vless","settings":{"decryption":"x","flow":"y"}}
+  -> ERR vless settings.decryption must be "none" (VLESS encryption is not in subscriptions) | issuable=true l4=(true,false)
+{"protocol":"vmess","streamSettings":{"network":"kcp","security":"reality"}}
+  -> ERR transport "kcp" is not supported (tcp/raw, ws, httpupgrade, xhttp, grpc) | issuable=true l4=(true,false)
+{"protocol":"shadowsocks","settings":{"clients":[1],"method":"x"},"streamSettings":{"security":"tls"}}
+  -> ERR shadowsocks method must be a multi-user 2022 method: 2022-blake3-aes-128-gcm, 2022-blake3-aes-256-gcm (2022-blake3-chacha20-poly1305 has no multi-user server in xray; legacy methods have no per-user keys) | issuable=false l4=(true,true)
+{"protocol":"hysteria","settings":{"version":1},"streamSettings":{"hysteriaSettings":{"auth":"x"},"network":"hysteria","security":"none"}}
+  -> ERR hysteria settings.version must be 2 | issuable=false l4=(false,true)
+{"protocol":"vless","streamSettings":{"grpcSettings":{"serviceName":"a b"},"network":"grpc","security":"reality"}}
+  -> ERR grpc serviceName: letters, digits and -_./ only (<= 128) | issuable=true l4=(true,false)
+{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":"xtls-rprx-vision"},"streamSettings":{"network":"tcp","realitySettings":{"dest":"www.apple.com:443","fingerprint":"chrome","privateKey":"YBgw02QaaPlKaQ3MJdH0sNrJSDJawY9t0yVkNxc182w","publicKey":"5Jb27oX8W738ZxUIXkYUhgRdCa094FSJXhP9YvUkUjU","serverNames":["www.apple.com"],"shortId":"54743dc5e24d2a41","shortIds":["54743dc5e24d2a41"]},"security":"reality"},"tag":"vless-reality-443"}
+  -> ok | issuable=true l4=(true,false)
+{"port":444,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":""},"streamSettings":{"network":"tcp","realitySettings":{"dest":"www.apple.com:443","fingerprint":"ios","privateKey":"OBWVhMEibfbsz8TKqM17Y8fLVv9mzWC1prOzHBw_NUU","publicKey":"vQV2yDqkaV19psaYsR47O9PZ7m5wVh_XTJzv3SNmcSw","serverNames":["www.apple.com"],"shortId":"ea88e527a819b062","shortIds":["ea88e527a819b062"]},"security":"reality"},"tag":"reality-plain"}
+  -> ok | issuable=true l4=(true,false)
+{"port":445,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"xhttp","realitySettings":{"dest":"www.apple.com:443","fingerprint":"chrome","privateKey":"2MRWaWWJ7w_xNUfPWGGE76Oa_80ClchuCUC9JCXWvHE","publicKey":"ZMwwtuvc8ViVNcfmBvOTOMI9ZvCxOx3sMGEHy_mskUE","serverNames":["www.apple.com"],"shortId":"6e54105d35de6024","shortIds":["6e54105d35de6024"]},"security":"reality","xhttpSettings":{"mode":"stream-one","path":"/c680488a0d74b233"}},"tag":"vless-xhttp-445"}
+  -> ok | issuable=true l4=(true,false)
+{"port":446,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":"xtls-rprx-vision"},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"alpn":["h2","http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"vless-vision-446"}
+  -> ok | issuable=true l4=(true,false)
+{"port":447,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"},"wsSettings":{"path":"/vl"}},"tag":"vless-ws-447"}
+  -> ok | issuable=true l4=(true,false)
+{"port":448,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"ws","wsSettings":{"path":"/c9769a35fb136de4"}},"tag":"vmess-ws-448"}
+  -> ok | issuable=true l4=(true,false)
+{"port":449,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"},"wsSettings":{"path":"/a4f4557f17fef863"}},"tag":"vmess-ws-449"}
+  -> ok | issuable=true l4=(true,false)
+{"port":450,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"tcp"},"tag":"vmess-tcp-450"}
+  -> ok | issuable=true l4=(true,false)
+{"port":451,"protocol":"trojan","settings":{"clients":[]},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"alpn":["h2","http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"trojan-451"}
+  -> ok | issuable=true l4=(true,false)
+{"port":452,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"httpupgradeSettings":{"host":"cdn.example.com","path":"/a232f14ed878c8e1"},"network":"httpupgrade","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"vless-httpupgrade-452"}
+  -> ok | issuable=true l4=(true,false)
+{"port":453,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"xhttp","xhttpSettings":{"mode":"auto","path":"/d9d87054ed4c000b"}},"tag":"vmess-xhttp-453"}
+  -> ok | issuable=true l4=(true,false)
+{"port":454,"protocol":"trojan","settings":{"clients":[]},"streamSettings":{"grpcSettings":{"serviceName":"081f5b7d6c24c39b"},"network":"grpc","security":"tls","tlsSettings":{"alpn":["h2"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"trojan-grpc-454"}
+  -> ok | issuable=true l4=(true,false)
+{"port":455,"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-128-gcm","network":"tcp,udp","password":"D4SCUD+QykMDrsw++ZuN8g=="},"tag":"ss2022-455"}
+  -> ok | issuable=true l4=(true,true)
+{"port":456,"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-256-gcm","network":"tcp,udp","password":"ToH1n8izc5aaDQX0Zz71ob9Biwvc7tQfagD2Xx5TNUM="},"tag":"ss2022-456"}
+  -> ok | issuable=true l4=(true,true)
+{"port":443,"protocol":"hysteria","settings":{"clients":[],"version":2},"streamSettings":{"hysteriaSettings":{"version":2},"network":"hysteria","security":"tls","tlsSettings":{"alpn":["h3"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"hysteria2-443"}
+  -> ok | issuable=true l4=(false,true)
+{"port":457,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"grpcSettings":{"serviceName":"grpc-svc"},"network":"grpc","security":"tls","tlsSettings":{"alpn":["h2"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"vless-grpc-457"}
+  -> ok | issuable=true l4=(true,false)
+{"port":9000,"protocol":"dokodemo-door","settings":{"network":"tcp,udp"},"tag":"dokodemo"}
+  -> ok | issuable=false l4=(true,true)
+{"port":9001,"protocol":"shadowsocks","settings":{"method":"aes-128-gcm","password":"x"},"tag":"ss-legacy"}
+  -> ERR shadowsocks method must be a multi-user 2022 method: 2022-blake3-aes-128-gcm, 2022-blake3-aes-256-gcm (2022-blake3-chacha20-poly1305 has no multi-user server in xray; legacy methods have no per-user keys) | issuable=false l4=(true,true)
+{"port":9002,"protocol":"vless","streamSettings":{"network":"kcp"},"tag":"vless-kcp"}
+  -> ERR transport "kcp" is not supported (tcp/raw, ws, httpupgrade, xhttp, grpc) | issuable=true l4=(true,false)
+{"port":9003,"protocol":"hysteria","settings":{"version":1},"tag":"hy-bad"}
+  -> ERR hysteria needs streamSettings.network "hysteria" | issuable=false l4=(false,true)
+{"port":9004,"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-128-gcm","network":"tcp","password":"AAAAAAAAAAAAAAAAAAAAAA=="},"tag":"ss-tcp"}
+  -> ok | issuable=true l4=(true,false)
+{"port":9005,"protocol":"vless","settings":{"flow":"xtls-rprx-vision"},"streamSettings":{"network":"splithttp","splithttpSettings":{"path":"/s"}},"tag":"vless-split"}
+  -> ERR flow xtls-rprx-vision needs streamSettings.network tcp/raw with tls or reality | issuable=true l4=(true,false)
+== validate_inbounds
+{"not":"an array"}
+  -> ERR 400 inbound.not_array: inbounds must be an array {}
+[]
+  -> ok
+[{"protocol":"vless"}]
+  -> ERR 400 inbound.tag_missing: every inbound needs a non-empty tag {}
+[{"protocol":"vless","tag":""}]
+  -> ERR 400 inbound.tag_missing: every inbound needs a non-empty tag {}
+[{"protocol":"vless","tag":"api"}]
+  -> ERR 400 inbound.tag_reserved: inbound tag "api" is reserved (api, akari-*, _*) {"tag":"api"}
+[{"protocol":"vless","tag":"akari-x"}]
+  -> ERR 400 inbound.tag_reserved: inbound tag "akari-x" is reserved (api, akari-*, _*) {"tag":"akari-x"}
+[{"protocol":"vless","tag":"_x"}]
+  -> ERR 400 inbound.tag_reserved: inbound tag "_x" is reserved (api, akari-*, _*) {"tag":"_x"}
+[{"protocol":"vless","tag":"a"},{"protocol":"vmess","tag":"a"}]
+  -> ERR 400 inbound.tag_duplicate: duplicate inbound tag "a" {"tag":"a"}
+[{"tag":"a"}]
+  -> ERR 400 inbound.protocol_missing: inbound "a" needs a protocol {"tag":"a"}
+[{"protocol":"","tag":"a"}]
+  -> ERR 400 inbound.protocol_missing: inbound "a" needs a protocol {"tag":"a"}
+[{"protocol":"fakedns","tag":"a"}]
+  -> ERR 400 inbound.fakedns: inbound "a": fakedns is not supported by the agent {"tag":"a"}
+[{"protocol":"vless","sniffing":{"destOverride":["http","FakeDNS"]},"tag":"a"}]
+  -> ERR 400 inbound.fakedns: inbound "a": fakedns is not supported by the agent {"tag":"a"}
+[{"Sniffing":{"DESTOVERRIDE":"tls, fakedns+others"},"protocol":"vless","tag":"a"}]
+  -> ERR 400 inbound.fakedns: inbound "a": fakedns is not supported by the agent {"tag":"a"}
+[{"protocol":"vless","sniffing":{"destOverride":["http"]},"tag":"fakedns-tag"}]
+  -> ok
+[{"protocol":"vless","streamSettings":{"network":"kcp"},"tag":"a"}]
+  -> ERR 400 inbound.invalid: inbound "a": transport "kcp" is not supported (tcp/raw, ws, httpupgrade, xhttp, grpc) {"e":"transport \"kcp\" is not supported (tcp/raw, ws, httpupgrade, xhttp, grpc)","tag":"a"}
+[{"port":443,"protocol":"vless","tag":"a"},{"port":443,"protocol":"trojan","tag":"b"}]
+  -> ERR 400 inbound.port_clash: port 443 is used by more than one inbound {"detail":"port 443 is used by more than one inbound"}
+[{"port":443,"protocol":"vless","tag":"a"},{"port":443,"protocol":"hysteria","settings":{"version":2},"streamSettings":{"hysteriaSettings":{"version":2},"network":"hysteria","security":"tls"},"tag":"b"}]
+  -> ok
+[{"listen":"127.0.0.1","port":1,"protocol":"vless","tag":"a"},{"listen":"127.0.0.2","port":1,"protocol":"vless","tag":"b"}]
+  -> ok
+[{"listen":"0.0.0.0","port":1,"protocol":"vless","tag":"a"},{"listen":"127.0.0.2","port":1,"protocol":"vless","tag":"b"}]
+  -> ERR 400 inbound.port_clash: port 1 is used by more than one inbound {"detail":"port 1 is used by more than one inbound"}
+[{"port":1,"protocol":"dokodemo-door","settings":{"network":"udp"},"tag":"a"},{"port":1,"protocol":"shadowsocks","settings":{"network":"tcp"},"tag":"b"}]
+  -> ERR 400 inbound.invalid: inbound "b": shadowsocks method must be a multi-user 2022 method: 2022-blake3-aes-128-gcm, 2022-blake3-aes-256-gcm (2022-blake3-chacha20-poly1305 has no multi-user server in xray; legacy methods have no per-user keys) {"e":"shadowsocks method must be a multi-user 2022 method: 2022-blake3-aes-128-gcm, 2022-blake3-aes-256-gcm (2022-blake3-chacha20-poly1305 has no multi-user server in xray; legacy methods have no per-user keys)","tag":"b"}
+[{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":"xtls-rprx-vision"},"streamSettings":{"network":"tcp","realitySettings":{"dest":"www.apple.com:443","fingerprint":"chrome","privateKey":"YBgw02QaaPlKaQ3MJdH0sNrJSDJawY9t0yVkNxc182w","publicKey":"5Jb27oX8W738ZxUIXkYUhgRdCa094FSJXhP9YvUkUjU","serverNames":["www.apple.com"],"shortId":"54743dc5e24d2a41","shortIds":["54743dc5e24d2a41"]},"security":"reality"},"tag":"vless-reality-443"},{"port":444,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":""},"streamSettings":{"network":"tcp","realitySettings":{"dest":"www.apple.com:443","fingerprint":"ios","privateKey":"OBWVhMEibfbsz8TKqM17Y8fLVv9mzWC1prOzHBw_NUU","publicKey":"vQV2yDqkaV19psaYsR47O9PZ7m5wVh_XTJzv3SNmcSw","serverNames":["www.apple.com"],"shortId":"ea88e527a819b062","shortIds":["ea88e527a819b062"]},"security":"reality"},"tag":"reality-plain"},{"port":445,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"xhttp","realitySettings":{"dest":"www.apple.com:443","fingerprint":"chrome","privateKey":"2MRWaWWJ7w_xNUfPWGGE76Oa_80ClchuCUC9JCXWvHE","publicKey":"ZMwwtuvc8ViVNcfmBvOTOMI9ZvCxOx3sMGEHy_mskUE","serverNames":["www.apple.com"],"shortId":"6e54105d35de6024","shortIds":["6e54105d35de6024"]},"security":"reality","xhttpSettings":{"mode":"stream-one","path":"/c680488a0d74b233"}},"tag":"vless-xhttp-445"},{"port":446,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":"xtls-rprx-vision"},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"alpn":["h2","http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"vless-vision-446"},{"port":447,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"},"wsSettings":{"path":"/vl"}},"tag":"vless-ws-447"},{"port":448,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"ws","wsSettings":{"path":"/c9769a35fb136de4"}},"tag":"vmess-ws-448"},{"port":449,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"},"wsSettings":{"path":"/a4f4557f17fef863"}},"tag":"vmess-ws-449"},{"port":450,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"tcp"},"tag":"vmess-tcp-450"},{"port":451,"protocol":"trojan","settings":{"clients":[]},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"alpn":["h2","http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"trojan-451"},{"port":452,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"httpupgradeSettings":{"host":"cdn.example.com","path":"/a232f14ed878c8e1"},"network":"httpupgrade","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"vless-httpupgrade-452"},{"port":453,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"xhttp","xhttpSettings":{"mode":"auto","path":"/d9d87054ed4c000b"}},"tag":"vmess-xhttp-453"},{"port":454,"protocol":"trojan","settings":{"clients":[]},"streamSettings":{"grpcSettings":{"serviceName":"081f5b7d6c24c39b"},"network":"grpc","security":"tls","tlsSettings":{"alpn":["h2"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"trojan-grpc-454"},{"port":455,"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-128-gcm","network":"tcp,udp","password":"D4SCUD+QykMDrsw++ZuN8g=="},"tag":"ss2022-455"},{"port":456,"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-256-gcm","network":"tcp,udp","password":"ToH1n8izc5aaDQX0Zz71ob9Biwvc7tQfagD2Xx5TNUM="},"tag":"ss2022-456"},{"port":443,"protocol":"hysteria","settings":{"clients":[],"version":2},"streamSettings":{"hysteriaSettings":{"version":2},"network":"hysteria","security":"tls","tlsSettings":{"alpn":["h3"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"hysteria2-443"},{"port":457,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"grpcSettings":{"serviceName":"grpc-svc"},"network":"grpc","security":"tls","tlsSettings":{"alpn":["h2"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"vless-grpc-457"}]
+  -> ok
+== inbound_warnings
+入站 "ss-legacy"：shadowsocks method must be a multi-user 2022 method: 2022-blake3-aes-128-gcm, 2022-blake3-aes-256-gcm (2022-blake3-chacha20-poly1305 has no multi-user server in xray; legacy methods have no per-user keys)
+入站 "vless-kcp"：transport "kcp" is not supported (tcp/raw, ws, httpupgrade, xhttp, grpc)
+入站 "hy-bad"：hysteria needs streamSettings.network "hysteria"
+入站 "vless-split"：flow xtls-rprx-vision needs streamSettings.network tcp/raw with tls or reality
+入站 "c13"：port must be a number 1-65535 (subscriptions advertise it)
+入站 "c14"：port must be a number 1-65535 (subscriptions advertise it)
+入站 "c15"：port must be a number 1-65535 (subscriptions advertise it)
+入站 "c16"：port must be a number 1-65535 (subscriptions advertise it)
+入站 "c17"：port must be a number 1-65535 (subscriptions advertise it)
+入站 "c18"：flow xtls-rprx-vision needs streamSettings.network tcp/raw with tls or reality
+入站 "c19"：flow xtls-rprx-vision needs streamSettings.network tcp/raw with tls or reality
+入站 "c20"：vless flow "xtls-rprx-direct" is not supported ("" or xtls-rprx-vision)
+入站 "c21"：vless settings.decryption must be "none" (VLESS encryption is not in subscriptions)
+入站 "c22"：vless settings.decryption must be "none" (VLESS encryption is not in subscriptions)
+入站 "c23"：REALITY is only supported with vless
+入站 "c24"：REALITY is only supported with vless
+入站 "c25"：REALITY works with tcp/raw, xhttp or grpc
+入站 "c26"：REALITY works with tcp/raw, xhttp or grpc
+入站 "c27"：transport "kcp" is not supported (tcp/raw, ws, httpupgrade, xhttp, grpc)
+入站 "c28"：transport "quic" is not supported (tcp/raw, ws, httpupgrade, xhttp, grpc)
+入站 "c29"：security "xtls" is not supported (none, tls, reality)
+port 9000 is used by more than one inbound
+== port_clash
+[{"port":443,"protocol":"vless"},{"port":443,"protocol":"hysteria"}] -> None
+[{"port":443,"protocol":"shadowsocks"},{"port":443,"protocol":"hysteria"}] -> Some("port 443 is used by more than one inbound")
+[{"port":443,"protocol":"shadowsocks","settings":{"network":"tcp"}},{"port":443,"protocol":"hysteria"}] -> None
+[{"port":443,"protocol":"tunnel","settings":{"network":"udp"}},{"port":443,"protocol":"vless"}] -> None
+[{"listen":"::","port":443,"protocol":"vless"},{"listen":"1.1.1.1","port":443,"protocol":"vless"}] -> Some("port 443 is used by more than one inbound")
+[{"port":"443","protocol":"vless"},{"port":"443","protocol":"vless"}] -> None
