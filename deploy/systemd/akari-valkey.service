@@ -1,0 +1,53 @@
+# Valkey for a bare-metal Akari panel (written by scripts/install.sh; see
+# docs/DEPLOY.md). Hot state only (liveness keys, rate-limit counters): no
+# persistence, loopback only, password in /etc/akari/valkey.conf (root,
+# 0600), handed to the service as a credential.
+#
+# The binary is the upstream release build pinned by scripts/install.sh
+# (/opt/akari-valkey/current -> valkey-<version>): distributions ship < 9.
+[Unit]
+Description=Valkey for the Akari panel
+Documentation=https://github.com/akari-projectX/akari-panel
+After=network.target
+Before=akari-panel.service
+
+[Service]
+Type=simple
+ExecStart=/opt/akari-valkey/current/bin/valkey-server ${CREDENTIALS_DIRECTORY}/valkey.conf --daemonize no
+LoadCredential=valkey.conf:/etc/akari/valkey.conf
+DynamicUser=yes
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=65536
+UMask=0077
+WorkingDirectory=/
+
+# --- hardening --------------------------------------------------------------
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# setrlimit (maxclients) is in @resources, so only @privileged is denied.
+SystemCallFilter=~@privileged
+
+[Install]
+WantedBy=multi-user.target
