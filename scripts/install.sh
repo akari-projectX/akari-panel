@@ -198,9 +198,13 @@ rand_pw() {
 }
 
 have() { command -v "$1" >/dev/null 2>&1; }
+# Pattern test on a command's output that reads ALL of it (grep -q exits at
+# the first match and the writer can die of SIGPIPE); same helper as
+# smoke.sh, whose self-check rejects `| grep -q` and `| sed -n 1p` here too.
+matches() { grep "$@" >/dev/null; }
 
 port_busy() {
-	ss -Hltn "sport = :$1" 2>/dev/null | grep -q .
+	ss -Hltn "sport = :$1" 2>/dev/null | matches .
 }
 
 # kv_get FILE KEY: value of KEY=... in a shell-style env file (no eval).
@@ -363,7 +367,7 @@ ensure_cosign() {
 latest_tag() {
 	fetch "$RELEASES_URL/latest/download/akari-panel-image.txt" "$TMP/latest-image.txt" ||
 		die '无法获取最新版本号' 'cannot determine the latest release'
-	v=$(sed -n 's/.*:\([0-9][0-9A-Za-z.+-]*\)@sha256:.*/\1/p' "$TMP/latest-image.txt" | head -n 1)
+	v=$(sed -n 's/.*:\([0-9][0-9A-Za-z.+-]*\)@sha256:.*/\1/p' "$TMP/latest-image.txt" | sed -n 1p)
 	[ -n "$v" ] || die '无法解析最新版本号' 'cannot parse the latest release version'
 	printf 'v%s' "$v"
 }
@@ -850,7 +854,7 @@ dc() {
 }
 
 docker_panel_ip() {
-	id=$(dc ps -q panel 2>/dev/null | head -n 1)
+	id=$(dc ps -q panel 2>/dev/null | sed -n 1p)
 	[ -n "$id" ] || return 0
 	docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{if eq $k "akari_frontend"}}{{$v.IPAddress}}{{end}}{{end}}' "$id" 2>/dev/null
 }
@@ -917,7 +921,7 @@ pull_images() {
 pull_infra() {
 	for svc in postgres valkey caddy; do
 		run dc pull "$svc" && continue
-		img=$(dc config --images "$svc" 2>/dev/null | head -n 1)
+		img=$(dc config --images "$svc" 2>/dev/null | sed -n 1p)
 		docker image inspect "$img" >/dev/null 2>&1 || die "拉取 $img 失败（见日志）" "cannot pull $img (see the log)"
 		warn "拉取 $img 失败，使用本机已有的副本" "could not pull $img; using the local copy"
 	done
@@ -1065,7 +1069,7 @@ create_admin() {
 
 # apply_settings: main domain and node address on a fresh database.
 apply_settings() {
-	if ! panel_cli settings --help 2>/dev/null | grep -q '^ *set '; then
+	if ! panel_cli settings --help 2>/dev/null | matches '^ *set '; then
 		note '该版本没有 settings 命令：请在 系统设置 中设置主域名与节点通信域名' \
 			'this release has no settings command: set the main domain and node address in 系统设置'
 		return
@@ -1096,7 +1100,7 @@ gather_input() {
 	fi
 	case "$MODE" in bare | docker) ;; *) die "--mode 只能是 bare 或 docker" "--mode must be bare or docker" ;; esac
 
-	[ -n "$PUBLIC_IP" ] || PUBLIC_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1)
+	[ -n "$PUBLIC_IP" ] || PUBLIC_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | sed -n 1p)
 	if [ -z "${DOMAIN_GIVEN:-}" ]; then
 		ask DOMAIN '主域名（DNS 已指向本机；留空 = 仅用 IP 访问）' 'main domain (DNS pointing here; empty = IP only)' "$DOMAIN"
 	fi
@@ -1128,12 +1132,12 @@ gather_input() {
 		[ "$p" -ge 1 ] && [ "$p" -le 65535 ] || die "端口无效：$p" "invalid port: $p"
 	done
 	# These end up in config files: plain names only.
-	[ -z "$DOMAIN" ] || printf '%s' "$DOMAIN" | grep -Eq '^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]*[a-z0-9])?$' ||
+	[ -z "$DOMAIN" ] || printf '%s' "$DOMAIN" | matches -E '^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]*[a-z0-9])?$' ||
 		die "域名无效：$DOMAIN" "invalid domain: $DOMAIN"
-	[ -z "$PUBLIC_IP" ] || printf '%s' "$PUBLIC_IP" | grep -Eq '^[0-9A-Fa-f.:]*$' || die "IP 无效：$PUBLIC_IP" "invalid IP: $PUBLIC_IP"
-	[ -z "$EMAIL" ] || printf '%s' "$EMAIL" | grep -Eq '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$' || die "邮箱无效：$EMAIL" "invalid e-mail: $EMAIL"
-	printf '%s' "$ADMIN" | grep -Eq '^[A-Za-z0-9._@-]{1,64}$' || die "登录名无效：$ADMIN" "invalid login: $ADMIN"
-	[ -z "$NODE_ADDR" ] || printf '%s' "$NODE_ADDR" | grep -Eq '^[A-Za-z0-9.:\[\]-]*$' || die "节点地址无效：$NODE_ADDR" "invalid node address: $NODE_ADDR"
+	[ -z "$PUBLIC_IP" ] || printf '%s' "$PUBLIC_IP" | matches -E '^[0-9A-Fa-f.:]*$' || die "IP 无效：$PUBLIC_IP" "invalid IP: $PUBLIC_IP"
+	[ -z "$EMAIL" ] || printf '%s' "$EMAIL" | matches -E '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$' || die "邮箱无效：$EMAIL" "invalid e-mail: $EMAIL"
+	printf '%s' "$ADMIN" | matches -E '^[A-Za-z0-9._@-]{1,64}$' || die "登录名无效：$ADMIN" "invalid login: $ADMIN"
+	[ -z "$NODE_ADDR" ] || printf '%s' "$NODE_ADDR" | matches -E '^[A-Za-z0-9.:\[\]-]*$' || die "节点地址无效：$NODE_ADDR" "invalid node address: $NODE_ADDR"
 	if [ "$MODE" = docker ] && [ -z "$DOCKER_DIR" ]; then DOCKER_DIR=$DEFAULT_DOCKER_DIR; fi
 	VALKEY_PORT=${VALKEY_PORT:-6379}
 
@@ -1261,7 +1265,7 @@ install_docker_mode() {
 }
 
 open_firewall() {
-	if have ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
+	if have ufw && ufw status 2>/dev/null | matches '^Status: active'; then
 		for p in "$HTTP_PORT/tcp" "$HTTPS_PORT/tcp" "$GRPC_PORT/tcp"; do
 			run ufw allow "$p" || true
 		done
