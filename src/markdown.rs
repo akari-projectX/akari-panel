@@ -413,7 +413,13 @@ fn inline(s: &str, out: &mut String, depth: usize) {
                     out.push_str("\" loading=\"lazy\">");
                     i += 1 + used;
                 }
-                _ => {
+                // Image syntax with a refused source: the whole span is
+                // text (it must not degrade into a link to the same URL).
+                Some((_, _, used)) => {
+                    push_esc(out, &rest[..1 + used]);
+                    i += 1 + used;
+                }
+                None => {
                     out.push('!');
                     i += 1;
                 }
@@ -523,7 +529,12 @@ mod tests {
             render("![a](/brand/logo)"),
             "<p><img src=\"/brand/logo\" alt=\"a\" loading=\"lazy\"></p>"
         );
-        assert!(!render("![a](http://x.example/i.png)").contains("<img"));
+        // A refused image is text, never an image and never a link.
+        assert_eq!(
+            render("![a](http://x.example/i.png)"),
+            "<p>![a](http://x.example/i.png)</p>"
+        );
+        assert_eq!(render("![a](javascript:x)"), "<p>![a](javascript:x)</p>");
         // Linked images are not supported: never an image inside a link.
         let h = render("[![a](https://x/i.png)](https://y)");
         assert!(!h.contains("<a "), "{h}");
