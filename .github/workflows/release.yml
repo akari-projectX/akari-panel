@@ -2,8 +2,11 @@ name: release
 
 # Tag `vX.Y.Z` (must equal Cargo.toml's version, commit must be on main):
 #   build static linux amd64/arm64 binaries and a distroless image,
-#   SBOM (CycloneDX), cosign keyless signatures (GitHub OIDC), SHA256SUMS,
-#   GitHub Release, image pushed to ghcr.io/akari-projectx/akari-panel.
+#   SBOM (CycloneDX), the installer (install.sh) + deploy bundle
+#   (akari-deploy.tar.gz), cosign keyless signatures (GitHub OIDC),
+#   SHA256SUMS, GitHub Release, image pushed to ghcr.io/akari-projectx/akari-panel.
+#   The installer verifies SHA256SUMS against this workflow's identity at the
+#   tag (scripts/install.sh COSIGN_IDENTITY_PREFIX): keep the file name.
 # Verification recipe: docs/DEPLOY.md ("Verify a release"); the image job
 # and the release job run that recipe against what they just signed.
 #
@@ -24,6 +27,7 @@ on:
       - Dockerfile
       - .dockerignore
       - scripts/third-party.py
+      - scripts/release-bundle.sh
       - Cargo.toml
 
 permissions:
@@ -272,6 +276,17 @@ jobs:
       # ghcr.io/akari-projectx/akari-panel:X.Y.Z@sha256:… (what compose pins)
       IMAGE_REF: ${{ needs.image.outputs.ref }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: src
+          fetch-depth: 1
+      # The panel installer (scripts/install.sh, stamped with this tag: the
+      # one-line `releases/latest/download/install.sh | sh`) and the deploy
+      # bundle it installs (compose file, Caddyfile, units, backup scripts).
+      - name: installer and deploy bundle
+        env:
+          SOURCE_DATE_EPOCH: ${{ needs.verify-tag.outputs.epoch }}
+        run: src/scripts/release-bundle.sh "$TAG" release
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: akari-linux-*
@@ -291,7 +306,7 @@ jobs:
           # The image reference with its digest, signed with the rest: what
           # deploy/.env's AKARI_IMAGE is set to.
           printf '%s\n' "$IMAGE_REF" > akari-panel-image.txt
-          files="akari-linux-amd64 akari-linux-arm64 akari-panel-${TAG}.cdx.json THIRD_PARTY_LICENSES.txt akari-panel-image.txt"
+          files="akari-linux-amd64 akari-linux-arm64 akari-panel-${TAG}.cdx.json THIRD_PARTY_LICENSES.txt akari-panel-image.txt install.sh akari-deploy.tar.gz"
           # shellcheck disable=SC2086
           sha256sum $files > SHA256SUMS
           # Keyless: the certificate binds the signature to this workflow
@@ -306,7 +321,7 @@ jobs:
         env:
           IDENTITY: ${{ github.server_url }}/${{ github.workflow_ref }}
         run: |
-          for f in akari-linux-amd64 akari-linux-arm64 akari-panel-image.txt SHA256SUMS; do
+          for f in akari-linux-amd64 akari-linux-arm64 akari-panel-image.txt install.sh akari-deploy.tar.gz SHA256SUMS; do
             cosign verify-blob --bundle "$f.sigstore.json" \
               --certificate-identity "$IDENTITY" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com "$f"
@@ -319,7 +334,7 @@ jobs:
         run: |
           prerelease=""
           case "$TAG" in *-*) prerelease="--prerelease" ;; esac
-          notes="$(printf 'Image (deploy/.env `AKARI_IMAGE`):\n\n```\n%s\n```\n\nVerify before use: docs/DEPLOY.md "Verify a release".\n' "$IMAGE_REF")"
+          notes="$(printf 'Install (Debian 12/13, Ubuntu 22.04/24.04; docs/DEPLOY.md):\n\n```\ncurl -fsSL https://github.com/%s/releases/download/%s/install.sh | sh\n```\n\nUpgrade an installation: `akari-ctl upgrade --version %s`.\n\nImage (deploy/.env `AKARI_IMAGE`):\n\n```\n%s\n```\n\nVerify before use: docs/DEPLOY.md "Verify a release".\n' "$GITHUB_REPOSITORY" "$TAG" "$TAG" "$IMAGE_REF")"
           gh release create "$TAG" release/* \
             --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes $prerelease \
             --title "$TAG" --notes "$notes"

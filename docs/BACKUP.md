@@ -6,7 +6,36 @@ What must be backed up:
 |---|---|---|
 | PostgreSQL | `database_url` | the source of truth: users, nodes, traffic ledger, tombstones |
 | `data_dir` | `/var/lib/akari`, compose volume `akari-data` | **route prefix, the CA private key (`ca.key`), `jwt.key` and `totp.key`** |
+| configuration | `panel.toml`; compose `.env`, `env/*.env`; `/etc/akari/install.env` | optional (`AKARI_CONFIG_FILES`): passwords, for reference — a restore generates its own |
 | Valkey | -- | hot state only (liveness, rate-limit counters); not backed up |
+
+## With the installer (`akari-ctl`)
+
+```bash
+age-keygen -o akari-backup.key        # once; keep the key OFFLINE, note the "public key: age1..."
+echo 'AGE_RECIPIENT=age1...' >>/etc/akari/install.env     # every backup from now on is encrypted
+akari-ctl backup                      # -> /var/backups/akari/akari-<UTC>/ (--out DIR elsewhere)
+```
+
+`akari-ctl backup` runs `scripts/backup.sh` (installed as `/usr/local/lib/akari/backup.sh`) with the
+right dump command for the installation (bare metal: `pg_dump` of the local PostgreSQL 18 as
+`postgres`; Docker: `docker compose exec -T postgres pg_dump`), the data dir (Docker: the
+`akari_akari-data` volume) and the configuration files. `akari-ctl upgrade` takes the same backup
+before every upgrade and `akari-ctl migrate` before every move. Without `AGE_RECIPIENT` the backup
+is **plain** (`db.dump`, `data.tar`, `config.tar`; directory 0700, files 0600) and both commands
+print a warning: fine as an on-host safety net, never to be copied off the host as is. Retention:
+14 days, at least the 3 newest (`AKARI_KEEP_DAYS` / `AKARI_KEEP_MIN`). Schedule it, e.g.
+`/etc/cron.d/akari-backup`: `17 3 * * * root /usr/local/sbin/akari-ctl backup --yes >/dev/null`, and
+copy the encrypted directories off the host.
+
+Restore = a fresh install from the backup (also the host-to-host move, docs/DEPLOY.md §8):
+
+```bash
+curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/download/install.sh \
+  | sh -s -- --restore /path/akari-<UTC> --age-identity akari-backup.key   # plain backups: no key
+```
+
+The sections below are the same tooling by hand.
 
 > **WARNING: `data/` holds the CA private key, `jwt.key` and `totp.key`.** Whoever has them can
 > mint agent certificates (impersonate any node, receive its users' credentials) and forge admin
@@ -30,7 +59,11 @@ the panel backup.
 [age](https://github.com/FiloSottile/age) to **public** recipients: the backup host holds no key
 that can read its own backups (gpg would need a keyring on the host; age is one static binary).
 Nothing sensitive touches disk unencrypted. Output per backup:
-`akari-<UTC>/{db.dump.age,data.tar.age,MANIFEST,SHA256SUMS}`.
+`akari-<UTC>/{db.dump.age,data.tar.age,[config.tar.age,]MANIFEST,SHA256SUMS}` (`config.tar.age`
+when `AKARI_CONFIG_FILES` names files). Plain mode (`AKARI_BACKUP_PLAINTEXT=1`, explicit; the
+installer's fallback without a recipient) writes `db.dump`, `data.tar`, `config.tar` instead, 0600 in
+a 0700 directory, with a warning; `restore.sh` reads both kinds (an `AGE_IDENTITY_FILE` only for
+`.age`).
 
 ```bash
 age-keygen -o akari-backup.key          # keep this file OFFLINE (password manager, safe)

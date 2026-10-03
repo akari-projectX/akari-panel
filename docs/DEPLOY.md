@@ -1,12 +1,133 @@
-# Deploying Akari on a fresh VPS (target: 30 minutes)
+# Deploying Akari
 
-Two supported layouts: **A. Docker Compose** (panel + PostgreSQL 18 + Valkey 9 + Caddy)
-and **B. bare metal** (systemd + your own PostgreSQL/Valkey + Caddy or nginx).
-Nodes (agents) are always a single static binary under systemd.
+## 快速开始（一键安装，中文）
 
-Requirements: a Linux VPS for the panel (1 vCPU / 1 GB is enough to start), a DNS
-name pointing at it (`panel.example.com` below), ports 80/443 (TLS proxy) and
-8443 (agent gRPC) reachable.
+在一台全新的 **Debian 12/13 或 Ubuntu 22.04/24.04**（amd64 / arm64，≥ 1 GB 内存）上，以 root
+或有 sudo 权限的用户执行**一条命令**：
+
+```bash
+curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/download/install.sh | sh
+```
+
+安装器按系统语言显示中文或英文提示，每一项都有默认值，直接回车即可：
+
+| 提示 | 默认 | 说明 |
+|---|---|---|
+| 安装方式 | `1` Docker Compose | `2` = 裸机（systemd：PostgreSQL 18 + Valkey 9 + Caddy） |
+| 主域名 | 留空 = 仅 IP | 填域名前先把 DNS A 记录指向本机，并放行 80/443 |
+| 证书通知邮箱 | 留空 | 仅用于 Let's Encrypt 通知 |
+| 管理员登录名 / 密码 | `admin` / 自动生成 | 自动生成的密码**只在结束时显示一次** |
+| 自定义端口 | 否（80/443/8443） | 8443 是节点 agent 连接面板的 gRPC 端口 |
+
+结束时会打印管理后台与用户门户的完整地址（含**机密路由前缀**——没有前缀，面板对外只返回空 404）
+以及管理员密码。接下来：登录后台 → **系统设置** 确认主域名/订阅域名/节点通信域名 → **节点** →
+添加节点 → 在节点上执行一键安装命令（§3）。
+
+常用运维命令（安装后可用，以 root 或 `sudo` 执行）：
+
+```bash
+akari-ctl status                    # 服务状态 + 健康检查
+akari-ctl info                      # 再次显示后台/门户地址（含前缀）
+akari-ctl upgrade                   # 升级到最新版本：先备份 → 校验签名 → 切换 → 健康检查，失败自动回滚
+akari-ctl backup                    # 备份数据库 + 数据目录（CA 私钥、jwt.key、totp.key）+ 配置
+akari-ctl migrate --to docker       # 同一台机器上 裸机 → Docker（或 --to bare），保留前缀、密钥与数据
+akari-ctl uninstall                 # 卸载服务，保留数据与配置；--purge 彻底删除（需输入 purge 确认）
+```
+
+- **备份加密**：在 `/etc/akari/install.env` 设置 `AGE_RECIPIENT=age1…`（`age-keygen` 生成，私钥离线保存），
+  之后的备份（含升级前自动备份）都用 age 加密；未设置时为 0600 明文文件并给出警告（docs/BACKUP.md）。
+- **换服务器**：旧机 `akari-ctl backup` → 把备份目录复制到新机 →
+  新机 `curl … | sh -s -- --restore <目录>`（加密备份加 `--age-identity <私钥>`）→ 改 DNS。
+  路由前缀、CA 与密钥不变，已注册的节点与订阅链接继续可用（§8）。
+- **全自动安装**（脚本/批量）：`… | sh -s -- --yes --mode bare --domain panel.example.com --email you@example.com`，
+  密码用环境变量 `AKARI_ADMIN_PASSWORD` 或 `--admin-password-file` 传入（`install.sh --help` 列出全部选项）。
+- 安装日志：`/var/log/akari-install.log`（0600，不含密码与前缀）。
+
+不想用安装器、或在其他发行版上部署：按附录 A（Docker Compose）/ 附录 B（裸机）手动部署。
+
+---
+
+The rest of this document is in English.
+
+Two supported layouts: **Docker Compose** (panel + PostgreSQL 18 + Valkey 9 + Caddy) and **bare
+metal** (systemd + PostgreSQL 18 + Valkey 9 + Caddy). The installer below sets up either in one
+command; Appendix A / B are the same layouts by hand (other distributions, nginx, an existing
+database). Nodes (agents) are always a single static binary under systemd (§3).
+
+Requirements: a Linux VPS for the panel (1 vCPU / 1 GB is enough to start), a DNS name pointing at
+it (`panel.example.com` below; an IP works to try it out), ports 80/443 (TLS proxy) and 8443
+(agent gRPC) reachable.
+
+## Quick start: the installer
+
+```bash
+curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/download/install.sh | sh
+```
+
+As root, or as a user with sudo (the script re-runs itself through `sudo`, also when piped).
+Supported: Debian 12/13, Ubuntu 22.04/24.04, amd64/arm64, systemd; anything else is refused with
+a pointer to the appendix. Interactive by default (Chinese or English by locale, `--lang zh|en`),
+every prompt with a default; `--yes` takes the defaults and the flags/environment for everything:
+
+| Option | Environment | Default |
+|---|---|---|
+| `--mode bare\|docker` | `AKARI_MODE` | `docker` |
+| `--domain NAME` | `AKARI_DOMAIN` | empty = IP only (Caddy's internal CA; browsers warn) |
+| `--ip ADDR` | `AKARI_PUBLIC_IP` | the source address of the default route |
+| `--email ADDR` | `AKARI_EMAIL` | none (ACME account e-mail) |
+| `--admin LOGIN` | `AKARI_ADMIN` | `admin` |
+| `--admin-password-file F` | `AKARI_ADMIN_PASSWORD` | generated (20 characters), printed once |
+| `--node-address HOST[:PORT]` | `AKARI_NODE_ADDRESS` | the domain (or IP): 系统设置 → 节点通信域名 |
+| `--http-port/--https-port/--grpc-port` | | 80 / 443 / 8443 |
+| `--version vX.Y.Z` | `AKARI_VERSION` | the installer's own release (`latest/download` = newest) |
+| `--dir DIR` (docker) | `AKARI_DOCKER_DIR` | `/opt/akari` |
+| `--local-certs` | | Caddy's internal CA for every name (test/LAN names such as `myapp.test`) |
+| `--restore DIR` / `--age-identity F` | | install from a backup (§8 host move) |
+
+Checks before anything is changed: OS and architecture, root, systemd (bare metal), RAM (≥ 512
+MiB, warning below 1 GiB), free ports (80/443/8443; bare metal also 8080/8082/6379 on loopback),
+an existing installation (→ offers `upgrade` instead; an interrupted install is resumed: every
+step is idempotent). Then:
+
+- **Docker** (`/opt/akari`): Docker Engine + compose v2 from Docker's apt repository when missing
+  (key fingerprint pinned); the release's compose file, Caddyfile and `panel.toml`; random
+  database/Valkey passwords in `env/*.env` (0600); `.env` (0600) pins `AKARI_IMAGE` to the release's
+  `tag@digest`; `docker compose up -d`.
+- **Bare metal**: PostgreSQL 18 from the PGDG repository (an existing cluster on 5432 is left
+  alone: the 18 cluster takes the next port), Valkey 9 (`akari-valkey.service`, loopback, password,
+  no persistence; see below), Caddy from its repository with the repository's Caddyfile
+  (`/etc/caddy/Caddyfile`; the environment with the secret prefix in `/etc/akari/caddy.env`, 0600,
+  via a drop-in that drops `--environ` and the admin API so neither the journal nor local users
+  see the prefix); the `akari` system user (sysusers), `/var/lib/akari` 0700, `/etc/akari/panel.toml`
+  0640 root:akari with only the R39 start-up keys, the hardened `akari-panel.service`; ufw is
+  opened for 80/443/8443 when active.
+- Both: wait for `/<prefix>/healthz`, set 主域名 and 节点通信域名 (`akari settings set`), create the
+  admin (the password reaches the CLI through the environment only), check `https://<domain>/<prefix>/healthz`
+  through Caddy, print the URLs and the password once. `akari-ctl` (= this installer) and the backup
+  scripts land in `/usr/local/sbin` and `/usr/local/lib/akari`; `/etc/akari/install.env` records
+  mode, version, ports (no secrets).
+
+**Supply chain.** The installer downloads the release's `SHA256SUMS` and its Sigstore bundle and
+verifies it with **cosign** against this repository's release workflow at that tag
+(`…/.github/workflows/release.yml@refs/tags/vX.Y.Z`, issuer GitHub Actions; cosign itself is
+fetched with a SHA-256 pinned in the script), then checks every file it uses — the binary, the
+image reference (`akari-panel-image.txt`, so Docker pulls by that digest), the deploy bundle
+(`akari-deploy.tar.gz`) — against those sums. The PGDG, Caddy and Docker apt keys are pinned by
+fingerprint. **Valkey**: Debian/Ubuntu ship < 9 (Debian 13: 8.1; Ubuntu 24.04: 7.2) and Valkey has
+no apt repository, so the installer uses the upstream release build (`download.valkey.io`; the
+`jammy` build for Debian 12/Ubuntu 22.04, `noble` for Debian 13/Ubuntu 24.04), pinned by version
+and SHA-256 in the script, installed under `/opt/akari-valkey` and run as a `DynamicUser` with the
+config as a systemd credential. Upgrading Valkey = a new installer release (bump `VALKEY_VERSION`
+and the four checksums). The script itself is what `curl | sh` runs: read it first if your policy
+requires (`curl -fsSLO …/install.sh`; `akari-ctl` is that file).
+
+**Secrets.** Generated passwords never appear on a command line or in the log
+(`/var/log/akari-install.log`, 0600); the admin password and the URLs with the secret prefix are
+printed once to the terminal (`akari-ctl info` prints the URLs again).
+
+Private mirrors / tests: `AKARI_RELEASES_URL` (a release base with the GitHub layout, `file://`
+works) and `AKARI_COSIGN_KEY` (verify with a cosign public key instead of the keyless identity —
+still a signature check, never skipped; it prints a warning).
 
 ## 0. Network model (read once)
 
@@ -181,117 +302,10 @@ A stale list fails safe: traffic from an unknown edge range is simply attributed
 Release maintainers refresh `src/cloudflare_ips.txt` from the same URLs (the unit test
 `cloudflare::tests` checks it parses).
 
-## A. Docker Compose
-
-Commands run as root on the panel host. This section, §2, §2b, §3 and §3g take a clean Debian 13
-machine to a user's proxied connection through a new node (timed drill: §3c).
-
-```bash
-# 0. Docker Engine + compose v2 (Debian 13 packages; Docker's own apt repository works the same)
-apt-get update && apt-get install -y docker.io docker-compose git
-docker compose version                                 # v2.x
-
-# 1. the deploy files of the release you install (the tag matches the image in step 3)
-git clone -b v0.3.1 https://github.com/akari-projectX/akari-panel /opt/akari-panel
-cd /opt/akari-panel/deploy
-cp .env.example .env
-for f in env/*.example; do cp "$f" "${f%.example}"; done
-chmod 600 env/*.env
-
-# 2. passwords (database, Valkey): random, the same value in panel.env and the service's file
-DBPW=$(tr -dc a-z0-9 </dev/urandom | head -c 32); VKPW=$(tr -dc a-z0-9 </dev/urandom | head -c 32)
-sed -i "s/CHANGE-ME-db/$DBPW/" env/panel.env env/postgres.env
-sed -i "s/CHANGE-ME-valkey/$VKPW/" env/panel.env env/valkey.env
-
-# 3. your domain, and the image: the tag@digest line from the release notes, verified first
-#    ("Verify a release" below)
-cp panel.toml.compose.example panel.toml            # no names in it: domains are set in 系统设置
-sed -i 's/panel.example.com/panel.yourdomain.com/g' .env
-sed -i 's|^AKARI_IMAGE=.*|AKARI_IMAGE=ghcr.io/akari-projectx/akari-panel:0.3.1@sha256:<digest>|' .env
-
-# 4. check, start, read the route prefix
-docker compose run --rm panel config check             # last line: "configuration OK (0 warnings)"
-docker compose up -d postgres valkey panel
-docker compose exec panel /akari info                  # route prefix: /<prefix>
-sed -i "s|^AKARI_PREFIX=.*|AKARI_PREFIX=<prefix without the slash>|" .env
-docker compose up -d                                   # Caddy: certificate, forwards /<prefix>/* only
-curl -s -o /dev/null -w '%{http_code}\n' https://panel.yourdomain.com/<prefix>/healthz   # 200
-```
-
-The compose file sets `AKARI_CONFIG=/etc/akari/panel.toml` on the panel service, so every
-`/akari ...` you run through `docker compose run` or `exec` reads your `panel.toml` (these
-commands replace the service's `command:`, which is why the path is an environment variable and
-not a `-c` flag). `config check` prints the effective values (listeners, redacted URLs) and then
-`configuration OK`. On a fresh install its output also
-ends with `# 系统设置: database not readable (... relation "panel_settings" does not exist ...)`:
-the database is still empty; that line disappears once the panel has started. The image itself
-sets no default `AKARI_CONFIG`: a bare `docker run` of it uses built-in defaults. Outside compose
-use `-c <file>` or export `AKARI_CONFIG`.
-
-Caddy obtains the certificate for `AKARI_DOMAIN` at its first start (`docker compose logs caddy`:
-"certificate obtained successfully"; the DNS record must already point at the host and ports
-80/443 must be open); domains added later in 系统设置 get theirs on demand (§1b).
-
-**A name without public DNS** (a test or LAN name such as `myapp.test`): Let's Encrypt cannot
-issue for it (`rejectedIdentifier` in Caddy's log). Set `AKARI_CADDY_OPTIONS=local_certs` in `.env`
-and `docker compose up -d --force-recreate caddy`: every certificate then comes from Caddy's
-internal CA (as for an IP, below). The node installer pins that certificate (§3): the panel
-probes its own address for it, so the panel container must resolve the name too (your LAN DNS,
-or a `docker-compose.override.yml` with `services: {panel: {extra_hosts: ["myapp.test:<host IP>"]}}`);
-when it cannot, the install command comes with the warning "could not check the TLS certificate"
-and fails on the node with a certificate error.
-
-**IP-only deployments (no domain).** With `AKARI_DOMAIN` set to an IP address, Caddy issues the
-certificate from its own internal CA, which no browser or client trusts. That is fine to try the
-admin UI (accept the browser warning once), but subscription clients and browsers will refuse it:
-use a real domain (an A record to the VPS, ports 80/443 open) so Caddy obtains a certificate by
-ACME. The Caddyfile sets `default_sni` to `AKARI_DOMAIN` because clients send no SNI for an IP
-address. The agent's gRPC channel is unaffected: it pins the panel CA, not the web certificate,
-and the one-line node installer pins the web certificate's key (§3).
-
-**Moving an IP-only deployment to a domain** (verified 2026-10-02; W25: no panel.toml change):
-add the A record (no proxying CDN; ports 80/443 open), set `AKARI_DOMAIN` in `.env`,
-`docker compose up -d` (Caddy obtains the certificate within seconds; `docker compose logs caddy`
-shows "certificate obtained successfully"), then in 系统设置 set **主域名** to the name (install
-commands become plain `curl`, no pin) and, if agents should dial the name from now on, **节点通信域名**.
-Agents enrolled earlier keep dialing the IP with the IP as gRPC server name (their bootstrap file
-says so): the IP stays in the certificate's name list (节点通信证书域名) until you remove it there,
-so nothing strands them. Restart one agent to confirm it reconnects. Any other host name now gets
-the same empty 404.
-
-The Caddyfile is bind-mounted as a single file: `git pull`/`git checkout` replace the file (new
-inode) and the running container keeps the old one, so `caddy reload` changes nothing. After
-updating the checkout run `docker compose up -d --force-recreate caddy`.
-
-Notes: the image is distroless (no shell; `exec panel /akari ...` works because it runs the
-binary directly), runs as UID 65532, state lives in the `akari-data` volume (`/data`).
-There is no container HEALTHCHECK; probe `https://panel.example.com/<prefix>/healthz`
-from your monitoring. The compose `frontend` subnet is fixed (172.28.0.0/24) so that
-`web.trusted_proxies` can name it.
-
-## B. Bare metal
-
-```bash
-# binary (verify it first, see "Verify a release")
-install -m 0755 akari-linux-amd64 /usr/local/bin/akari
-# PostgreSQL >= 18 and Valkey >= 9 (or Redis-compatible): create db/user, set a Valkey password
-# service account, config, unit
-install -m 0644 deploy/systemd/akari.sysusers /usr/lib/sysusers.d/akari.conf && systemd-sysusers
-install -d -m 0750 -o root -g akari /etc/akari
-install -m 0640 -o root -g akari deploy/panel.toml.example /etc/akari/panel.toml   # edit
-sudo -u akari akari -c /etc/akari/panel.toml config check
-install -m 0644 deploy/systemd/akari-panel.service /etc/systemd/system/
-systemctl daemon-reload && systemctl enable --now akari-panel
-sudo -u akari akari -c /etc/akari/panel.toml info      # route prefix
-```
-
-Then the proxy: **Caddy** (`deploy/caddy/Caddyfile`, set `AKARI_DOMAIN`/`AKARI_PREFIX` in its
-environment, upstream `127.0.0.1:8080`) or **nginx** (`deploy/nginx/akari.conf`, replace
-`SECRETPREFIX`, domain, certificate paths). Both return an empty 404 for everything outside the
-prefix, append to `X-Forwarded-For`, and keep the URI (prefix, subscription tokens) out of access
-logs. `trusted_proxies = ["127.0.0.1/32"]` matches a same-host proxy.
-
 ## 2. First admin
+
+The installer creates it (and sets 主域名 / 节点通信域名, §2b); by hand, or another one later
+(`akari-ctl` installations: compose directory `/opt/akari`):
 
 ```bash
 # compose:  docker compose exec -e AKARI_ADMIN_PASSWORD='...' panel /akari admin add root
@@ -311,7 +325,8 @@ account then logs in with its password and can set 2FA up again.
 
 ## 2b. 系统设置 (main domain)
 
-In the console, **系统设置**: set **主域名** to the name you deployed with (`panel.yourdomain.com`)
+(Installer: already set to `--domain`, and 节点通信域名 to the same name, or the IP for an IP-only
+install; check them.) In the console, **系统设置**: set **主域名** to the name you deployed with (`panel.yourdomain.com`)
 and save. Install links, subscription URLs and payment callbacks are then built from it instead of
 from whatever address a browser happened to use, and the Host check (§1b) turns on: requests for
 any other name get the empty 404. A subscription domain (for Cloudflare) and a node communication
@@ -986,6 +1001,35 @@ two or more for availability or headroom:
 
 ## 5. Upgrade (agents BEFORE the panel)
 
+**With the installer** (any installation made by it, or a §A compose checkout under
+`/opt/akari-panel/deploy` or `/opt/akari`, which it adopts):
+
+```bash
+akari-ctl upgrade                    # the newest release; --version vX.Y.Z for a given one
+```
+
+It runs the target release's own installer (newer upgrade logic), verifies the release exactly as
+an install does (cosign + SHA256SUMS), then:
+
+1. **backup** (`/var/backups/akari/akari-<UTC>/`: database dump, data dir, configuration;
+   age-encrypted when `AGE_RECIPIENT` is set in `/etc/akari/install.env`, otherwise plain 0600
+   files with a warning — docs/BACKUP.md);
+2. bare metal: the new binary must pass `config check` against the live configuration before
+   anything is switched; the old one is kept as `/usr/local/bin/akari.prev`, the new one moved in
+   atomically, units and Caddyfile refreshed from the release's bundle, `systemctl restart`;
+   Docker: compose file/Caddyfile refreshed, `AKARI_IMAGE` set to the new `tag@digest`,
+   `docker compose pull panel` + `up -d` (PostgreSQL/Valkey/Caddy follow their major tags);
+3. **health check**: `/<prefix>/healthz` within 2 minutes (3 with Docker). Migrations run at start,
+   before the panel listens, so a healthy panel is a migrated one;
+4. failure → **automatic rollback** to the previous binary / image (and compose files), health
+   checked again. `akari-ctl`/backup scripts are replaced only after a successful upgrade.
+
+Migrations are forward-only: when the failed release already migrated the database, the old
+release refuses the newer schema and the rollback cannot become healthy; the installer says so and
+names the pre-upgrade backup to restore (§6). Agents first (below) is still the rule.
+
+**By hand** (Appendix A/B installations):
+
 1. Read the release notes for protocol changes. Take a backup (docs/BACKUP.md).
 2. Upgrade every agent (replace the binary, `systemctl restart akari-agent`; the xray rebuild drops live connections once).
 3. Upgrade the panel: compose: verify the new release and set its `AKARI_IMAGE=ghcr.io/akari-projectx/akari-panel:X.Y.Z@sha256:…` line in `.env` ("Verify a release" step 3), then `docker compose pull panel && docker compose up -d panel` (a `.env` from before 0.2 with only `AKARI_VERSION=` still works, unpinned: replace it with `AKARI_IMAGE`); bare metal replace the binary, `systemctl restart akari-panel`. Migrations run automatically at start.
@@ -1175,10 +1219,108 @@ through a separate root unit that only ever runs the **installed** binary:
 
 ## 6. Rollback
 
-Agents are backward-tolerant, so roll back the **panel** first: previous image tag / binary, restart.
-Migrations are forward-only: if the new version ran a migration, restore the pre-upgrade backup
-(docs/BACKUP.md) together with the old binary. A restored database with the old `data/` keeps the
-same route prefix and agent certificates.
+Agents are backward-tolerant, so roll back the **panel** first. `akari-ctl upgrade` does this by
+itself when the new release fails its health check (§5). By hand, or after a "successful" upgrade
+you want to undo:
+
+- **No migration ran** (same schema): bare metal `mv /usr/local/bin/akari.prev /usr/local/bin/akari
+  && systemctl restart akari-panel`; Docker: put the previous `AKARI_IMAGE` line back in `.env`,
+  `docker compose up -d panel` (or `akari-ctl upgrade --version <previous> --force`).
+- **A migration ran**: migrations are forward-only, the old binary refuses the newer schema.
+  Restore the pre-upgrade backup together with the old binary/image: stop the panel, restore
+  (docs/BACKUP.md "Restore"; `AKARI_PG_RESTORE_CMD`/`AKARI_DATA_DIR` as in the installer: bare
+  metal `runuser -u postgres -- pg_restore -p <port> -d akari --clean --if-exists --no-owner
+  --role=akari --single-transaction`, data dir `/var/lib/akari`; Docker `docker compose exec -T
+  postgres pg_restore -U akari -d akari --clean --if-exists --no-owner --single-transaction`, data
+  dir = the `akari_akari-data` volume's mountpoint), start the old release. Traffic counted since
+  the backup is lost; everything else is as of the backup.
+
+A restored database with the old `data/` keeps the same route prefix and agent certificates.
+
+## 7. Uninstall
+
+```bash
+akari-ctl uninstall                  # services/units/containers go; data and configuration stay
+akari-ctl uninstall --purge          # also database, data dir, configuration: type "purge" to confirm
+                                     # (non-interactive: --yes --purge --confirm purge)
+```
+
+Plain uninstall keeps: bare metal `/var/lib/akari` (prefix, CA key, jwt.key, totp.key),
+`/etc/akari/panel.toml`, the PostgreSQL database `akari`; Docker `/opt/akari` and the `akari_*`
+volumes. Running the installer again picks them up (same prefix, same accounts). Caddy is stopped
+when the installer installed it, and given back its previous configuration when it was there
+before. `--purge` drops the database and role, the data dir, `/etc/akari`, Valkey and (Docker) the
+volumes; packages (postgresql-18, caddy, Docker) stay installed (`apt purge` them if wanted), and
+**backups in `/var/backups/akari` are never deleted**. After a purge every node needs a new
+enrollment (the CA is gone) unless you restore a backup.
+
+## 8. Migration
+
+### Same host: bare metal ⇄ Docker
+
+```bash
+akari-ctl migrate --to docker        # or --to bare
+```
+
+Takes a safety backup (kept, encrypted if configured) and a plain dump for the move (in a 0700
+temporary directory, deleted afterwards), stops the current services, installs the other mode with
+**restore** (database via `pg_restore --single-transaction`, the data dir — route prefix, CA,
+`jwt.key`, `totp.key` — copied with its ownership), waits for health, then retires the old services
+(their data stays until you delete it: bare metal `/var/lib/akari`, database `akari`; Docker the
+`akari_*` volumes). New database/Valkey passwords are generated; 系统设置 (domains, payment
+methods…) live in the database and move with it. Any failure brings the old mode back. The panel is
+down for the move (a minute or two; agents keep serving users and reconnect by themselves).
+
+### Host to host
+
+```bash
+# old host
+akari-ctl backup --out /root/move                           # age: --age-recipient age1... (recommended)
+scp -r /root/move/akari-<UTC> new-host:/root/
+# new host (fresh Debian/Ubuntu)
+curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/download/install.sh \
+  | sh -s -- --restore /root/akari-<UTC> [--age-identity backup.key] [--mode docker|bare] [--domain …]
+```
+
+The new host gets the same route prefix, CA and keys, so **existing agents and subscription links
+keep working** once their names point at the new host:
+
+1. Lower the DNS TTL of the main/subscription/node domains a day before (60–300 s).
+2. Stop the old panel right before the final backup (`systemctl stop akari-panel` /
+   `docker compose stop panel`), so no traffic is counted after it (agents keep their counters
+   and report them to the new panel).
+3. Restore on the new host, then switch the A/AAAA records of 主域名, 订阅域名 and 节点通信域名.
+   Agents dial the node domain: they reconnect to the new host as soon as their resolver sees the
+   new address (the node's own certificate pin is the panel CA, which moved with the data dir).
+   Agents enrolled against an **IP address** keep dialing that IP: re-enroll them (重装命令) or keep
+   the old address routed to the new host.
+4. Verify on the new host: `akari-ctl status` (healthz), log in, the nodes turn **online**, fetch
+   a subscription link.
+5. Decommission the old host only then (`akari-ctl uninstall --purge`).
+
+Caddy obtains new certificates on the new host (the main domain at start, the others on demand).
+
+## Installer tests (CI)
+
+`.github/workflows/ci.yml`, jobs `installer-*`, scripts in `scripts/installer-test/`:
+
+- `installer (build)`: the PR's static binary and image, made like a release, versioned
+  `<version>-ci.<run>`; `make-release.sh` turns them into a local release (GitHub layout, signed
+  with a throwaway cosign key; plus a deliberately broken release `v9.9.9`).
+- `installer (bare, debian:13 / ubuntu:24.04)` — `bare-e2e.sh` in a fresh systemd container: the
+  latest published release installed from GitHub (real keyless verification) → healthz through
+  Caddy (`myapp.test` with `local_certs`, resp. IP-only), admin login over the API, a user and its
+  subscription → upgrade to the PR build → the broken release rolls back → uninstall keeps data,
+  reinstall keeps prefix/password/subscription → age-encrypted backup → `--purge` → install
+  `--restore` from that backup (host move).
+- `installer (host, docker + migration)` — `host-e2e.sh` on the runner: Docker install of the latest
+  release (ghcr image) → upgrade to the PR image (local registry, pinned by digest) → purge; bare
+  install of the PR build, a real agent (`../akari-agent`) enrolled, `migrate --to docker` and back
+  `--to bare`: same prefix, the agent reconnects without re-enrolling, the subscription still answers.
+- `shellcheck` — `make shellcheck` (also part of `make check`).
+
+Locally: `scripts/installer-test/bare-e2e.sh debian:13 <releases> <tag> v9.9.9 [<previous>]` needs
+Docker with privileged containers (`EXTRA_CA=<bundle>` behind a TLS-intercepting proxy).
 
 ## Verify a release
 
@@ -1241,3 +1383,123 @@ The binary is a static musl build (`rust:alpine`; ring/rustls/sqlx need no syste
 it runs on any Linux kernel, in distroless/scratch, and needs no glibc on the VPS. musl's own
 allocator serializes this allocation-heavy multi-threaded workload, so the binary uses mimalloc
 (M2). `akari --version` prints version and git sha.
+
+## Appendix A. Docker Compose by hand
+
+What the installer does in Docker mode, step by step (another distribution, an existing Docker
+host, or to see every step).
+
+
+Commands run as root on the panel host. This section, §2, §2b, §3 and §3g take a clean Debian 13
+machine to a user's proxied connection through a new node (timed drill: §3c).
+
+```bash
+# 0. Docker Engine + compose v2 (Debian 13 packages; Docker's own apt repository works the same)
+apt-get update && apt-get install -y docker.io docker-compose git
+docker compose version                                 # v2.x
+
+# 1. the deploy files of the release you install (the tag matches the image in step 3)
+git clone -b v0.3.1 https://github.com/akari-projectX/akari-panel /opt/akari-panel
+cd /opt/akari-panel/deploy
+cp .env.example .env
+for f in env/*.example; do cp "$f" "${f%.example}"; done
+chmod 600 env/*.env
+
+# 2. passwords (database, Valkey): random, the same value in panel.env and the service's file
+DBPW=$(tr -dc a-z0-9 </dev/urandom | head -c 32); VKPW=$(tr -dc a-z0-9 </dev/urandom | head -c 32)
+sed -i "s/CHANGE-ME-db/$DBPW/" env/panel.env env/postgres.env
+sed -i "s/CHANGE-ME-valkey/$VKPW/" env/panel.env env/valkey.env
+
+# 3. your domain, and the image: the tag@digest line from the release notes, verified first
+#    ("Verify a release" below)
+cp panel.toml.compose.example panel.toml            # no names in it: domains are set in 系统设置
+sed -i 's/panel.example.com/panel.yourdomain.com/g' .env
+sed -i 's|^AKARI_IMAGE=.*|AKARI_IMAGE=ghcr.io/akari-projectx/akari-panel:0.3.1@sha256:<digest>|' .env
+
+# 4. check, start, read the route prefix
+docker compose run --rm panel config check             # last line: "configuration OK (0 warnings)"
+docker compose up -d postgres valkey panel
+docker compose exec panel /akari info                  # route prefix: /<prefix>
+sed -i "s|^AKARI_PREFIX=.*|AKARI_PREFIX=<prefix without the slash>|" .env
+docker compose up -d                                   # Caddy: certificate, forwards /<prefix>/* only
+curl -s -o /dev/null -w '%{http_code}\n' https://panel.yourdomain.com/<prefix>/healthz   # 200
+```
+
+The compose file sets `AKARI_CONFIG=/etc/akari/panel.toml` on the panel service, so every
+`/akari ...` you run through `docker compose run` or `exec` reads your `panel.toml` (these
+commands replace the service's `command:`, which is why the path is an environment variable and
+not a `-c` flag). `config check` prints the effective values (listeners, redacted URLs) and then
+`configuration OK`. On a fresh install its output also
+ends with `# 系统设置: database not readable (... relation "panel_settings" does not exist ...)`:
+the database is still empty; that line disappears once the panel has started. The image itself
+sets no default `AKARI_CONFIG`: a bare `docker run` of it uses built-in defaults. Outside compose
+use `-c <file>` or export `AKARI_CONFIG`.
+
+Caddy obtains the certificate for `AKARI_DOMAIN` at its first start (`docker compose logs caddy`:
+"certificate obtained successfully"; the DNS record must already point at the host and ports
+80/443 must be open); domains added later in 系统设置 get theirs on demand (§1b).
+
+**A name without public DNS** (a test or LAN name such as `myapp.test`): Let's Encrypt cannot
+issue for it (`rejectedIdentifier` in Caddy's log). Set `AKARI_CADDY_OPTIONS=local_certs` in `.env`
+and `docker compose up -d --force-recreate caddy`: every certificate then comes from Caddy's
+internal CA (as for an IP, below). The node installer pins that certificate (§3): the panel
+probes its own address for it, so the panel container must resolve the name too (your LAN DNS,
+or a `docker-compose.override.yml` with `services: {panel: {extra_hosts: ["myapp.test:<host IP>"]}}`);
+when it cannot, the install command comes with the warning "could not check the TLS certificate"
+and fails on the node with a certificate error.
+
+**IP-only deployments (no domain).** With `AKARI_DOMAIN` set to an IP address, Caddy issues the
+certificate from its own internal CA, which no browser or client trusts. That is fine to try the
+admin UI (accept the browser warning once), but subscription clients and browsers will refuse it:
+use a real domain (an A record to the VPS, ports 80/443 open) so Caddy obtains a certificate by
+ACME. The Caddyfile sets `default_sni` to `AKARI_DOMAIN` because clients send no SNI for an IP
+address. The agent's gRPC channel is unaffected: it pins the panel CA, not the web certificate,
+and the one-line node installer pins the web certificate's key (§3).
+
+**Moving an IP-only deployment to a domain** (verified 2026-10-02; W25: no panel.toml change):
+add the A record (no proxying CDN; ports 80/443 open), set `AKARI_DOMAIN` in `.env`,
+`docker compose up -d` (Caddy obtains the certificate within seconds; `docker compose logs caddy`
+shows "certificate obtained successfully"), then in 系统设置 set **主域名** to the name (install
+commands become plain `curl`, no pin) and, if agents should dial the name from now on, **节点通信域名**.
+Agents enrolled earlier keep dialing the IP with the IP as gRPC server name (their bootstrap file
+says so): the IP stays in the certificate's name list (节点通信证书域名) until you remove it there,
+so nothing strands them. Restart one agent to confirm it reconnects. Any other host name now gets
+the same empty 404.
+
+The Caddyfile is bind-mounted as a single file: `git pull`/`git checkout` replace the file (new
+inode) and the running container keeps the old one, so `caddy reload` changes nothing. After
+updating the checkout run `docker compose up -d --force-recreate caddy`.
+
+Notes: the image is distroless (no shell; `exec panel /akari ...` works because it runs the
+binary directly), runs as UID 65532, state lives in the `akari-data` volume (`/data`).
+There is no container HEALTHCHECK; probe `https://panel.example.com/<prefix>/healthz`
+from your monitoring. The compose `frontend` subnet is fixed (172.28.0.0/24) so that
+`web.trusted_proxies` can name it.
+
+## Appendix B. Bare metal by hand
+
+What the installer does in bare-metal mode, by hand (another distribution, an existing PostgreSQL
+≥ 18 / Valkey ≥ 9, nginx instead of Caddy). The installer's choices are a reference: PostgreSQL 18
+from PGDG, Valkey from `deploy/systemd/akari-valkey.service` (upstream build, loopback, password in
+a credential file), Caddy with `/etc/akari/caddy.env` as `EnvironmentFile` and no `--environ`.
+
+
+```bash
+# binary (verify it first, see "Verify a release")
+install -m 0755 akari-linux-amd64 /usr/local/bin/akari
+# PostgreSQL >= 18 and Valkey >= 9 (or Redis-compatible): create db/user, set a Valkey password
+# service account, config, unit
+install -m 0644 deploy/systemd/akari.sysusers /usr/lib/sysusers.d/akari.conf && systemd-sysusers
+install -d -m 0750 -o root -g akari /etc/akari
+install -m 0640 -o root -g akari deploy/panel.toml.example /etc/akari/panel.toml   # edit
+sudo -u akari akari -c /etc/akari/panel.toml config check
+install -m 0644 deploy/systemd/akari-panel.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now akari-panel
+sudo -u akari akari -c /etc/akari/panel.toml info      # route prefix
+```
+
+Then the proxy: **Caddy** (`deploy/caddy/Caddyfile`, set `AKARI_DOMAIN`/`AKARI_PREFIX` in its
+environment, upstream `127.0.0.1:8080`) or **nginx** (`deploy/nginx/akari.conf`, replace
+`SECRETPREFIX`, domain, certificate paths). Both return an empty 404 for everything outside the
+prefix, append to `X-Forwarded-For`, and keep the URI (prefix, subscription tokens) out of access
+logs. `trusted_proxies = ["127.0.0.1/32"]` matches a same-host proxy.
