@@ -938,15 +938,15 @@ test("W24: 系统设置 → 支付 (imported + added method, 测试连接), sign
   await ap.getByLabel("环境").selectOption("custom");
   await ap.getByLabel("网关地址（仅自定义）").fill("http://127.0.0.1:9/gateway.do");
   await ap.getByLabel("APPID").fill("2021000000000002");
-  await ap.getByLabel("应用私钥").fill(readFileSync(`${payDir}/app-key.pem`, "utf8"));
-  await ap.getByLabel("支付宝公钥").fill(readFileSync(`${payDir}/alipay-pub.pem`, "utf8"));
+  await ap.getByLabel("应用私钥", { exact: true }).fill(readFileSync(`${payDir}/app-key.pem`, "utf8"));
+  await ap.getByLabel("支付宝公钥", { exact: true }).fill(readFileSync(`${payDir}/alipay-pub.pem`, "utf8"));
   await ap.getByLabel("启用（用户下单时可选）").check();
   await ap.getByRole("button", { name: "保存", exact: true }).click();
   const added = ap.locator("li", { hasText: "支付宝 B" });
   await expect(added).toContainText("已启用");
   await added.getByRole("button", { name: "编辑" }).click();
   await expect(ap.getByText(/已设置（公钥指纹/)).toBeVisible();
-  await expect(ap.getByLabel("应用私钥")).toHaveValue("");
+  await expect(ap.getByLabel("应用私钥", { exact: true })).toHaveValue("");
   await expect(ap.getByLabel("异步通知地址")).toHaveValue(/\/pay\/[0-9a-f-]{36}\/notify$/);
   await ap.getByRole("button", { name: "取消" }).click();
   // 注册: no email verification.
