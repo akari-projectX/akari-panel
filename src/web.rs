@@ -29,6 +29,8 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::mail::routes())
         // W22: traffic history (admin + /me/traffic).
         .merge(crate::trafficlog::routes())
+        .merge(crate::batch::routes())
+        .merge(crate::export::routes())
         // R23: two bundles. The user portal (and shared login) is public;
         // the admin console's index and assets answer admin sessions only
         // (everything else under /admin is the canonical rejection).

@@ -331,7 +331,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Kind::Percent => "percent",
             Kind::Fixed => "fixed",
@@ -488,7 +488,7 @@ pub fn check_terms(t: &Terms) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn periods_of(p: &Option<Vec<PeriodKindText>>) -> Option<Vec<String>> {
+pub(crate) fn periods_of(p: &Option<Vec<PeriodKindText>>) -> Option<Vec<String>> {
     p.as_ref().map(|v| {
         let mut out: Vec<String> = v.iter().map(|k| k.0.as_str().to_string()).collect();
         out.sort();
@@ -497,7 +497,7 @@ fn periods_of(p: &Option<Vec<PeriodKindText>>) -> Option<Vec<String>> {
     })
 }
 
-fn dedup_plans(p: &Option<Vec<Uuid>>) -> Option<Vec<Uuid>> {
+pub(crate) fn dedup_plans(p: &Option<Vec<Uuid>>) -> Option<Vec<Uuid>> {
     p.as_ref().map(|v| {
         let mut out = v.clone();
         out.sort();
@@ -506,7 +506,7 @@ fn dedup_plans(p: &Option<Vec<Uuid>>) -> Option<Vec<Uuid>> {
     })
 }
 
-async fn check_plans_exist(
+pub(crate) async fn check_plans_exist(
     conn: &mut PgConnection,
     plans: &Option<Vec<Uuid>>,
 ) -> Result<(), ApiError> {
@@ -764,7 +764,7 @@ pub async fn list(
 ) -> Result<Json<Vec<CouponView>>, ApiError> {
     user.require_admin()?;
     let rows = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "{COUPON_SQL} ORDER BY c.created_at DESC, c.id LIMIT 1000"
+        "{COUPON_SQL} WHERE c.batch_id IS NULL ORDER BY c.created_at DESC, c.id LIMIT 1000"
     )))
     .fetch_all(state.pg())
     .await?;

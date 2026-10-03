@@ -272,7 +272,17 @@ separate loopback listener, never on the public port.
 | POST | /api/v1/me/orders/{id}/cancel | user (renewal scope*) | cancel a pending order (queried + closed at Alipay first) |
 | GET | /api/v1/plan-prices | admin | every plan with its `on_sale` flag and prices, `payments_enabled` |
 | PUT | /api/v1/plans/{id}/prices | admin | `{on_sale, prices: [{period, days?, price_cents}]}` replaces the plan's prices (W7 period kinds) |
-| GET | /api/v1/orders | admin | orders, `?status&login&out_trade_no&unfulfilled&before&limit` (keyset) |
+| GET | /api/v1/orders | admin | orders, `?status&login&out_trade_no&unfulfilled&via&before&limit` (keyset; `via=manual` = admin-created/confirmed) |
+| POST | /api/v1/orders/manual | admin | Ops: `{user_id, plan_id, period, gift?, reason}` → a paid order through the one pay path (`paid_via` manual; amount = the period's price from SQL, 0 for a gift, never from the client; fulfilment failure = 409 and nothing kept) |
+| GET | /api/v1/orders/export.csv | admin | Ops: orders CSV `?from&to&status&via` (UTC days, ≤366, default last 30; audited) |
+| GET | /api/v1/users/export.csv | admin | Ops: users CSV with the list filters `?q&plan_id&status&role&sort` (streamed, UTF-8 BOM, formula-safe; audited) |
+| GET | /api/v1/traffic/export.csv | admin | Ops: fleet traffic history CSV `?from&to&group=day\|node` (audited) |
+| POST | /api/v1/users/batch/preview | admin | Ops: `{selection: {ids} \| {filter}}` → `{total, admins, sample}` |
+| GET/POST | /api/v1/users/batch | admin | Ops: recent jobs / create `{selection, action: {kind: extend_expiry\|reset_traffic\|enable\|disable\|set_plan\|cancel_plan\|add_balance\|send_email, …}}` → 202 + job (runs in the background, each user once through the existing `apply_*`, audited per user) |
+| GET | /api/v1/users/batch/{id} | admin | Ops: job progress + items (failed/skipped first) ; `POST …/cancel` skips what is still pending |
+| GET/POST | /api/v1/coupon-batches | admin | Ops: batches / generate `{name?, prefix?, count ≤5000, length?, kind, value, …coupon terms, max_uses (per code, default 1)}` |
+| POST | /api/v1/coupon-batches/{id}/revoke | admin | Ops: disable every code of the batch (once) |
+| GET | /api/v1/coupon-batches/{id}/export.csv | admin | Ops: the batch's codes as CSV (audited) |
 | GET | /api/v1/orders/{id} | admin | order + payment events |
 | POST | /api/v1/orders/{id}/fulfil | admin | `{reason}`: mark an unpaid order paid (manual) or retry a failed fulfilment (audited) |
 | POST | /api/v1/orders/{id}/refund | admin | W16 `{reason, to_balance}`: refund a paid order once (balance part back; with `to_balance` the Alipay amount too); reverses a pending commission |

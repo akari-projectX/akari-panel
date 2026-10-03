@@ -96,6 +96,7 @@ pub fn order_snapshot_sql(alias: &str) -> String {
          'credit_cents', {a}.credit_cents, 'credit_order_id', {a}.credit_order_id, \
          'discount_cents', {a}.discount_cents, 'coupon_code', {a}.coupon_code, \
          'balance_cents', {a}.balance_cents, 'balance_state', {a}.balance_state, \
+         'gift_cents', {a}.gift_cents, \
          'status', {a}.status, 'trade_no', {a}.trade_no, 'paid_via', {a}.paid_via, \
          'payment_method_id', {a}.payment_method_id)",
         a = alias

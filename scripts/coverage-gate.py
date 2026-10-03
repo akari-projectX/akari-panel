@@ -42,6 +42,12 @@ MODULES = {
     "src/alerts/channels.rs": 90.0,
     # W22: traffic history (query parser, the four endpoints).
     "src/trafficlog.rs": 90.0,
+    # Ops: batch user actions, CSV exports, manual orders, batch coupons.
+    "src/batch.rs": 90.0,
+    "src/export.rs": 90.0,
+    "src/csvx.rs": 90.0,
+    "src/billing/manual.rs": 90.0,
+    "src/billing/coupon_batches.rs": 90.0,
 }
 
 TEST_MOD = re.compile(r"^(pub(\(crate\))? )?mod \w+ \{")

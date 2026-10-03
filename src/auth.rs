@@ -105,7 +105,6 @@ macro_rules! conflict {
 pub(crate) use conflict;
 
 impl ApiError {
-    #[cfg(test)]
     pub fn status(&self) -> StatusCode {
         self.status
     }

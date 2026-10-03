@@ -24,6 +24,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { CouponBatchesCard } from "./admin-ops";
 
 const fmt = (s: string | null) => fmtDateTime(s);
 const errText = (err: unknown) => (err instanceof Error ? adminErrorText(err) : "失败");
@@ -44,6 +45,7 @@ export function AdminCoupons() {
     <div className="space-y-6">
       <CouponList onSelect={setSelected} />
       <CreateCoupon />
+      <CouponBatchesCard />
       {selected && <CouponDetailCard id={selected} onClose={() => setSelected(null)} />}
     </div>
   );

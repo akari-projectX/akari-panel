@@ -19,6 +19,10 @@ import { humanBytes } from "../lib/utils";
 
 export interface DashboardWindow {
   revenue_cents: number;
+  /** Ops: part of the revenue recorded by admins (人工订单). */
+  manual_cents: number;
+  /** Ops: price forgiven by gift orders (not revenue). */
+  gift_cents: number;
   orders: number;
   refunds_cents: number;
   signups: number;
@@ -213,7 +217,9 @@ export function AdminDashboard() {
                   sub={
                     <>
                       {w.orders} 笔订单
-                      {w.refunds_cents > 0 && ` · 退款 ${money(w.refunds_cents)}`} · 新注册 {w.signups}
+                      {w.refunds_cents > 0 && ` · 退款 ${money(w.refunds_cents)}`}
+                      {w.manual_cents > 0 && ` · 其中人工 ${money(w.manual_cents)}`}
+                      {w.gift_cents > 0 && ` · 赠送 ${money(w.gift_cents)}（不计）`} · 新注册 {w.signups}
                     </>
                   }
                 />

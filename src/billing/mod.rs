@@ -16,6 +16,9 @@
 //!   race-free reservation, release on unpaid end, redemption when paid.
 //! - `ledger` (W16): the balance (余额) and its append-only ledger; every
 //!   movement = one ledger row + one `balance.<kind>` audit row.
+//! - `manual` (Ops): admin-created paid orders (gift or offline sale),
+//!   paid through `orders::apply_mark_paid` (paid_via 'manual').
+//! - `coupon_batches` (Ops): N random codes from one coupon template.
 //! - `commission` (W16): invite commissions (created in apply_mark_paid,
 //!   credited after the hold by an enforce pass, reversed by a refund) and
 //!   withdrawals.
@@ -30,9 +33,11 @@ pub mod alipay;
 pub mod api;
 pub mod catalog;
 pub mod commission;
+pub mod coupon_batches;
 pub mod coupons;
 pub mod http;
 pub mod ledger;
+pub mod manual;
 pub mod methods;
 pub mod orders;
 pub mod provider;
