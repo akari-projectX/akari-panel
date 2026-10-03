@@ -2,7 +2,7 @@ AGENT_DIR ?= ../akari-agent
 
 FUZZ_SECS ?= 30
 
-.PHONY: gen-protocols check-generated monitoring-check fuzz fuzz-lint coverage third-party bench-up bench-down dev-up dev-down spa panel agent-build check smoke e2e lint test deny ci bench bench-seed bench-lint
+.PHONY: shellcheck gen-protocols check-generated monitoring-check fuzz fuzz-lint coverage third-party bench-up bench-down dev-up dev-down spa panel agent-build check smoke e2e lint test deny ci bench bench-seed bench-lint
 
 dev-up:
 	docker compose up -d --wait
@@ -19,9 +19,19 @@ panel:
 agent-build:
 	$(MAKE) -C $(AGENT_DIR) build
 
-check: check-generated
+check: check-generated shellcheck
 	cargo fmt --check && cargo clippy -- -D warnings
 	cd spa && npx tsc --noEmit && npm run lint && node scripts/check-auth-paths.mjs && node scripts/check-error-codes.mjs && npx vitest run
+
+# Every shell script (installer, backup/restore, smoke, test drivers, the
+# node installer templates). smoke.sh predates the gate: warnings and
+# errors only there; everything else at full strictness. CI job shellcheck.
+SHELL_SCRIPTS = scripts/*.sh scripts/installer-test/*.sh fuzz/run.sh src/nodeinstall.sh
+shellcheck:
+	@command -v shellcheck >/dev/null || { echo "shellcheck not installed (apt install shellcheck)"; exit 1; }
+	shellcheck $(SHELL_SCRIPTS)
+	shellcheck -s sh src/nodeinstall-uninstall.sh
+	shellcheck -S warning smoke.sh
 
 # W26: artifacts generated from proto/protocols.toml (docs/DEPLOY.md §3d
 # matrix, the admin form schema). `gen-protocols` rewrites them after a

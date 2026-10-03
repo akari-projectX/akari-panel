@@ -20,6 +20,22 @@ identifies the software to unauthenticated probes.
 └────────────────────────────────────────────────────┘
 ```
 
+## Quick start / 快速开始
+
+On a fresh Debian 12/13 or Ubuntu 22.04/24.04 server (root or sudo) — 在全新的 Debian 12/13 或
+Ubuntu 22.04/24.04 服务器上执行：
+
+```bash
+curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/download/install.sh | sh
+```
+
+Interactive (Chinese/English), every prompt has a default: Docker Compose or bare metal
+(PostgreSQL 18 + Valkey 9 + Caddy under systemd), domain or IP only, admin login (password
+generated and printed once). The release is verified (cosign-signed SHA256SUMS) before anything is
+installed. Afterwards: `akari-ctl status | info | upgrade | backup | migrate --to docker|bare |
+uninstall [--purge]`. Non-interactive: `… | sh -s -- --yes --mode bare --domain panel.example.com`.
+Details, manual installation, upgrade/rollback/migration: `docs/DEPLOY.md`.
+
 ## Status / what works
 
 End-to-end verified by `./smoke.sh` (fully API-driven):
@@ -195,8 +211,11 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 
 ### Production deployment
 
-`docs/DEPLOY.md` (fresh VPS in ~30 minutes: Docker Compose or systemd, Caddy/nginx, firewall,
-first admin, node install, upgrade order, rollback, release verification), `docs/BACKUP.md`
+`scripts/install.sh` (the one-command installer above, installed as `akari-ctl`: install, upgrade
+with backup + health check + automatic rollback, uninstall, bare metal ⇄ Docker migration, host
+moves via `--restore`), `docs/DEPLOY.md` (installer, then by hand: Docker Compose or systemd,
+Caddy/nginx, firewall, first admin, node install, upgrade order, rollback, uninstall, migration,
+release verification), `docs/BACKUP.md`
 (age-encrypted backup/restore and the restore drill), `deploy/` (units, compose, proxy examples,
 Prometheus alerts, Grafana dashboard). Release artifacts (static linux amd64/arm64 binaries,
 distroless image `ghcr.io/akari-projectx/akari-panel`, SBOM, cosign signatures) come from the
@@ -634,6 +653,9 @@ reset will ever re-enable them).
 existing session is invalid after the upgrade (everyone logs in again), and
 every admin must enroll TOTP at the next login. A new `data/totp.key` is
 created on first start: include it in backups.
+
+Installations made by `scripts/install.sh`: `akari-ctl upgrade` (backup, signature check,
+switch, health check, automatic rollback; docs/DEPLOY.md §5).
 
 Upgrade **agents before the panel**. The panel drops traffic reports that
 lack `TrafficReport.session_id` and relies on agents never claiming a

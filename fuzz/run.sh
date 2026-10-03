@@ -7,7 +7,7 @@
 #   ./run.sh 600              # all targets, 10 min each
 #   ./run.sh 60 csr domain    # some targets
 set -uo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 secs=${1:-30}
 shift || true
 targets=("$@")

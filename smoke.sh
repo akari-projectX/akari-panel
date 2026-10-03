@@ -1108,7 +1108,7 @@ kill "$W11_PROBE_PID" 2>/dev/null || true
 
 echo "== S4-1 login rate limit: failures only, per client; XFF only from trusted proxies =="
 login_code() { # extra curl args..., then login, password (last two)
-  local n=$#; local pw="${!n}"; local lg="${@:$((n-1)):1}"
+  local n=$#; local pw="${!n}"; local lg="${*:$((n-1)):1}"
   code "${@:1:$((n-2))}" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
     -d "{\"login\":\"$lg\",\"password\":\"$pw\"}"
 }
@@ -1881,9 +1881,9 @@ PY
 wait_uv() { # wait until the agent applied the node's current user_version; $1 = expected via
   local uv; uv=$(psql_q "SELECT user_version FROM nodes WHERE id='$NODE_ID'")
   for _ in $(seq 1 15); do
-    grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | matches "\"user_version\":$uv[,}]" && break; sleep 1
+    grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | matches "\"user_version\":${uv}[,}]" && break; sleep 1
   done
-  grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | matches "\"via\":\"$1\".*\"user_version\":$uv[,}]" \
+  grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | matches "\"via\":\"$1\".*\"user_version\":${uv}[,}]" \
     || { echo "FAIL: agent did not apply user_version $uv via $1"; grep 'state applied' "$LOG/agent.log" | tail -3; exit 1; }
 }
 if need_agent "protocol>=4" "W7 speed limit throughput"; then
@@ -2005,6 +2005,7 @@ echo "== W8 protocol matrix: every template -> agent -> three subscription forma
 # The agent's W8 matrix (SS2022, Hysteria 2, XHTTP, HTTPUpgrade, gRPC) came
 # before protocol 4 bumped; protocol >= 4 implies it.
 if need_agent "protocol>=4" "W8 protocol matrix"; then
+  # shellcheck disable=SC2097,SC2098 # $LOG is the same value on both sides
   BASE="$BASE" JAR="$JAR" NODE_ID="$NODE_ID" LOG="$LOG" AGENT_LOG="$LOG/agent.log" \
     python3 scripts/smoke-protocols.py || { echo "FAIL: W8 protocol matrix"; tail -20 "$LOG/agent.log"; exit 1; }
 fi
@@ -2027,6 +2028,7 @@ elif need_agent "protocol>=6" "W10 automatic node certificate"; then
   mkdir -p "$LOG/acme"
   for _ in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/14000) 2>/dev/null && break; sleep 0.5; done
   docker cp akari-smoke-pebble:/test/certs/pebble.minica.pem "$LOG/acme/pebble-api.pem" >/dev/null
+  # shellcheck disable=SC2097,SC2098 # $LOG is the same value on both sides
   BASE="$BASE" JAR="$JAR" LOG="$LOG" AGENT="$AGENT" PEBBLE_API_ROOT="$LOG/acme/pebble-api.pem" \
     python3 scripts/smoke-acme.py || { echo "FAIL: W10 automatic certificate"; docker logs akari-smoke-pebble 2>&1 | tail -10; exit 1; }
   docker rm -f akari-smoke-pebble akari-smoke-dns >/dev/null
@@ -3176,7 +3178,7 @@ matches '节点通信域名未设置' <"$LOG/r22-none.out" || { echo "FAIL: unse
 "$PANEL" settings unset node >/dev/null || { echo "FAIL: settings unset node"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.update' AND actor_login = 'cli'")" = "$((R22_CLI0 + 3))" ] \
   || { echo "FAIL: CLI set/unset not audited"; exit 1; }
-for p in "$PREFIX"; do grep -qF "$p" "$LOG/panel.log" && { echo "FAIL: prefix in the panel log"; exit 1; }; done
+grep -qF "$PREFIX" "$LOG/panel.log" && { echo "FAIL: prefix in the panel log"; exit 1; }
 echo "r22 settings: ok"
 
 echo "== S4-2 sessions: revoke-sessions, last admin, logout kills copies of the cookie =="

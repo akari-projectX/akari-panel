@@ -302,6 +302,10 @@ apt_install() {
 		die "apt-get install $* 失败（见日志）" "apt-get install $* failed (see the log)"
 }
 
+apt_has() {
+	apt-cache show "$1" >/dev/null 2>&1
+}
+
 APT_UPDATED=0
 apt_update() {
 	run env DEBIAN_FRONTEND=noninteractive apt-get update || die 'apt-get update 失败' 'apt-get update failed'
@@ -544,8 +548,12 @@ save_state() {
 # manual docs/DEPLOY.md §A compose checkout that can be adopted.
 detect_existing() {
 	if load_state; then return 0; fi
+	# A compose directory counts when its panel container exists (a plain
+	# `akari-ctl uninstall` removes the containers and keeps the directory
+	# and volumes: installing again then reuses them).
 	for d in /opt/akari-panel/deploy /opt/akari; do
-		if [ -f "$d/docker-compose.yml" ] && [ -f "$d/.env" ] && grep -q '^AKARI_IMAGE=' "$d/.env" 2>/dev/null; then
+		if [ -f "$d/docker-compose.yml" ] && [ -f "$d/.env" ] && grep -q '^AKARI_IMAGE=' "$d/.env" 2>/dev/null &&
+			have docker && [ -n "$(cd "$d" && docker compose ps -a -q panel 2>/dev/null)" ]; then
 			ADOPT_DIR=$d
 			return 0
 		fi
@@ -580,9 +588,13 @@ PG_PORT=
 install_postgres() {
 	step '安装 PostgreSQL 18（PGDG 官方源）' 'installing PostgreSQL 18 (PGDG repository)'
 	if ! dpkg -s postgresql-18 >/dev/null 2>&1; then
-		add_apt_key https://www.postgresql.org/media/keys/ACCC4CF8.asc "$PGDG_KEY_FPR" pgdg
-		printf 'deb [signed-by=/etc/apt/keyrings/pgdg.asc] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' "$OS_CODENAME" \
-			>/etc/apt/sources.list.d/pgdg.list
+		# A host that already has the PGDG repository (another file, its
+		# own key) keeps it: a second entry would make apt refuse both.
+		if ! apt_has postgresql-18 && ! grep -rqs 'apt.postgresql.org' /etc/apt/sources.list /etc/apt/sources.list.d; then
+			add_apt_key https://www.postgresql.org/media/keys/ACCC4CF8.asc "$PGDG_KEY_FPR" pgdg
+			printf 'deb [signed-by=/etc/apt/keyrings/pgdg.asc] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' "$OS_CODENAME" \
+				>/etc/apt/sources.list.d/pgdg.list
+		fi
 		apt_update
 		apt_install postgresql-18 postgresql-client-18
 	fi
@@ -662,9 +674,11 @@ write_valkey_conf() {
 install_caddy() {
 	step '安装 Caddy（官方源）' 'installing Caddy (its apt repository)'
 	if ! have caddy; then
-		add_apt_key https://dl.cloudsmith.io/public/caddy/stable/gpg.key "$CADDY_KEY_FPR" caddy
-		printf 'deb [signed-by=/etc/apt/keyrings/caddy.asc] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main\n' \
-			>/etc/apt/sources.list.d/caddy-stable.list
+		if ! grep -rqs 'dl.cloudsmith.io/public/caddy' /etc/apt/sources.list /etc/apt/sources.list.d; then
+			add_apt_key https://dl.cloudsmith.io/public/caddy/stable/gpg.key "$CADDY_KEY_FPR" caddy
+			printf 'deb [signed-by=/etc/apt/keyrings/caddy.asc] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main\n' \
+				>/etc/apt/sources.list.d/caddy-stable.list
+		fi
 		apt_update
 		apt_install caddy
 		# Remembered beside Caddy's config (install.env goes with a plain
@@ -848,9 +862,11 @@ install_docker() {
 	fi
 	step '安装 Docker Engine + compose v2（Docker 官方源）' 'installing Docker Engine + compose v2 (Docker apt repository)'
 	if ! docker compose version >/dev/null 2>&1; then
-		add_apt_key "https://download.docker.com/linux/$OS_ID/gpg" "$DOCKER_KEY_FPR" docker
-		printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/%s %s stable\n' \
-			"$ARCH" "$OS_ID" "$OS_CODENAME" >/etc/apt/sources.list.d/docker.list
+		if ! grep -rqs 'download.docker.com' /etc/apt/sources.list /etc/apt/sources.list.d; then
+			add_apt_key "https://download.docker.com/linux/$OS_ID/gpg" "$DOCKER_KEY_FPR" docker
+			printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/%s %s stable\n' \
+				"$ARCH" "$OS_ID" "$OS_CODENAME" >/etc/apt/sources.list.d/docker.list
+		fi
 		apt_update
 		apt_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 	fi
@@ -1109,17 +1125,26 @@ gather_input() {
 	fi
 	for p in "$HTTP_PORT" "$HTTPS_PORT" "$GRPC_PORT"; do
 		case "$p" in '' | *[!0-9]*) die "端口无效：$p" "invalid port: $p" ;; esac
+		[ "$p" -ge 1 ] && [ "$p" -le 65535 ] || die "端口无效：$p" "invalid port: $p"
 	done
+	# These end up in config files: plain names only.
+	[ -z "$DOMAIN" ] || printf '%s' "$DOMAIN" | grep -Eq '^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]*[a-z0-9])?$' ||
+		die "域名无效：$DOMAIN" "invalid domain: $DOMAIN"
+	[ -z "$PUBLIC_IP" ] || printf '%s' "$PUBLIC_IP" | grep -Eq '^[0-9A-Fa-f.:]*$' || die "IP 无效：$PUBLIC_IP" "invalid IP: $PUBLIC_IP"
+	[ -z "$EMAIL" ] || printf '%s' "$EMAIL" | grep -Eq '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$' || die "邮箱无效：$EMAIL" "invalid e-mail: $EMAIL"
+	printf '%s' "$ADMIN" | grep -Eq '^[A-Za-z0-9._@-]{1,64}$' || die "登录名无效：$ADMIN" "invalid login: $ADMIN"
+	[ -z "$NODE_ADDR" ] || printf '%s' "$NODE_ADDR" | grep -Eq '^[A-Za-z0-9.:\[\]-]*$' || die "节点地址无效：$NODE_ADDR" "invalid node address: $NODE_ADDR"
 	if [ "$MODE" = docker ] && [ -z "$DOCKER_DIR" ]; then DOCKER_DIR=$DEFAULT_DOCKER_DIR; fi
 	VALKEY_PORT=${VALKEY_PORT:-6379}
 
+	if [ "$MODE" = bare ]; then m=$(msg '裸机（systemd）' 'bare metal (systemd)'); else m='Docker Compose'; fi
 	printf '\n%s\n' "$(msg '即将安装：' 'About to install:')"
-	printf '  %-14s %s\n' "$(msg '方式' 'mode')" "$MODE"
-	printf '  %-14s %s\n' "$(msg '版本' 'version')" "$TAG"
-	printf '  %-14s %s\n' "$(msg '地址' 'address')" "${DOMAIN:-$PUBLIC_IP $(msg '（仅 IP，自签证书）' '(IP only, self-signed certificate)')}"
-	printf '  %-14s %s\n' "$(msg '管理员' 'admin')" "$ADMIN"
-	printf '  %-14s %s/%s/%s\n' "$(msg '端口' 'ports')" "$HTTP_PORT" "$HTTPS_PORT" "$GRPC_PORT"
-	[ -z "$RESTORE_DIR" ] || printf '  %-14s %s\n' "$(msg '恢复自' 'restore from')" "$RESTORE_DIR"
+	printf '  %s %s\n' "$(msg '方式：  ' 'mode:        ')" "$m"
+	printf '  %s %s\n' "$(msg '版本：  ' 'version:     ')" "$TAG"
+	printf '  %s %s\n' "$(msg '地址：  ' 'address:     ')" "${DOMAIN:-$PUBLIC_IP $(msg '（仅 IP，自签证书）' '(IP only, self-signed certificate)')}"
+	printf '  %s %s\n' "$(msg '管理员：' 'admin:       ')" "$ADMIN"
+	printf '  %s %s/%s/%s\n' "$(msg '端口：  ' 'ports:       ')" "$HTTP_PORT" "$HTTPS_PORT" "$GRPC_PORT"
+	[ -z "$RESTORE_DIR" ] || printf '  %s %s\n' "$(msg '恢复自：' 'restore from:')" "$RESTORE_DIR"
 	if ! confirm '继续？' 'continue?' y; then
 		die '已取消' 'cancelled'
 	fi
@@ -1275,7 +1300,9 @@ finish() {
 	printf '\n%s\n' "$(msg '下一步：' 'Next steps:')"
 	printf '  1. %s\n' "$(msg '登录后台 → 系统设置：确认主域名、订阅域名、节点通信域名' 'log in → 系统设置 (settings): check the main, subscription and node domains')"
 	printf '  2. %s\n' "$(msg '节点 → 添加节点 → 复制一键安装命令到节点执行' 'nodes → add a node → run its one-line install command on the node')"
-	printf '  3. %s\n' "$(msg "备份：akari-ctl backup（在 $STATE_ENV 设置 AGE_RECIPIENT 以加密），升级：akari-ctl upgrade" "backups: akari-ctl backup (set AGE_RECIPIENT in $STATE_ENV to encrypt); upgrades: akari-ctl upgrade")"
+	ctl=akari-ctl
+	[ -z "${SUDO_USER:-}" ] || ctl="sudo akari-ctl"
+	printf '  3. %s\n' "$(msg "备份：$ctl backup（在 $STATE_ENV 设置 AGE_RECIPIENT 以加密）；升级：$ctl upgrade；状态：$ctl status" "backups: $ctl backup (set AGE_RECIPIENT in $STATE_ENV to encrypt); upgrades: $ctl upgrade; health: $ctl status")"
 	printf '  %s %s\n\n' "$(msg '安装日志（不含机密）：' 'install log (no secrets):')" "$LOG"
 	log "install finished: mode=$MODE version=$CUR_VERSION"
 }
@@ -1831,11 +1858,11 @@ main() {
 	set_lang
 	parse_args "$@"
 	set_lang
+	become_root "$@"
 	# Child tools (perl's pg_lsclusters, apt) in the plain C locale: the
-	# messages above are ours, whatever locales the machine has.
+	# messages are ours, whatever locales the machine has.
 	LC_ALL=C
 	export LC_ALL
-	become_root "$@"
 	if [ "$YES" != 1 ] && tty_ok; then INTERACTIVE=1; fi
 
 	install -d -m 0755 "$(dirname "$LOG")"
