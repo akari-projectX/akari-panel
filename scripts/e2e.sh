@@ -76,14 +76,58 @@ alipay_public_key_file = "$DIR/alipay-pub.pem"
 gateway_url = "http://127.0.0.1:9/gateway.do"
 notify_url = "http://$E2E_HOST:$PORT/$PREFIX/pay/alipay/notify"
 TOML
+# One-click agent update check: a throwaway Ed25519 release key (trusted by
+# this panel only: 系统设置 → 安全's extra keys, set in the database below) and a signed two-platform release behind a local stand-in
+# for the GitHub API (plain http is accepted for loopback only).
+REL_PORT=${E2E_RELEASE_PORT:-18097}
+REL="$DIR/release"
+mkdir -p "$REL/www/dl" "$REL/www/repos/akari-projectX/akari-agent/releases"
+openssl genpkey -algorithm ed25519 -out "$REL/key.pem" 2>/dev/null
+openssl pkey -in "$REL/key.pem" -pubout -outform DER 2>/dev/null | tail -c 32 >"$REL/pub.raw"
+python3 - "$REL" "$REL_PORT" <<'PY'
+import base64, hashlib, json, os, subprocess, sys
+rel, port, ver = sys.argv[1], sys.argv[2], "v0.9.0"
+dl = os.path.join(rel, "www", "dl")
+key_id = hashlib.sha256(open(os.path.join(rel, "pub.raw"), "rb").read()).hexdigest()[:16]
+for arch in ("amd64", "arm64"):
+    name = "akari-agent-linux-" + arch
+    binary = os.urandom(200_000)
+    open(os.path.join(dl, name), "wb").write(binary)
+    manifest = json.dumps({"schema": 1, "version": ver, "os": "linux", "arch": arch,
+                           "sha256": hashlib.sha256(binary).hexdigest(), "size": len(binary),
+                           "min_panel_protocol": 3, "created_at": "2026-10-03T00:00:00Z",
+                           "rollback": False}, separators=(",", ":")).encode()
+    open(os.path.join(dl, name + ".manifest.json"), "wb").write(manifest)
+    msg = os.path.join(rel, name + ".msg")  # Ed25519 -rawin reads a file, not stdin (OpenSSL 3.0)
+    open(msg, "wb").write(b"akari-agent-manifest-v1\n" + manifest)
+    sig = subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", os.path.join(rel, "key.pem"), "-rawin", "-in", msg],
+                         capture_output=True, check=True).stdout
+    json.dump({"signatures": [{"key_id": key_id, "sig": base64.b64encode(sig).decode()}]},
+              open(os.path.join(dl, name + ".manifest.sig"), "w"))
+names = sorted(os.listdir(dl))
+with open(os.path.join(dl, "SHA256SUMS"), "w") as f:
+    for n in names:
+        f.write("%s  %s\n" % (hashlib.sha256(open(os.path.join(dl, n), "rb").read()).hexdigest(), n))
+assets = [{"name": n, "size": os.path.getsize(os.path.join(dl, n)),
+           "browser_download_url": "http://127.0.0.1:%s/dl/%s" % (port, n)} for n in sorted(os.listdir(dl))]
+json.dump({"tag_name": ver, "name": ver, "draft": False, "prerelease": False, "assets": assets},
+          open(os.path.join(rel, "www/repos/akari-projectX/akari-agent/releases/latest"), "w"))
+PY
+python3 -m http.server --bind 127.0.0.1 --directory "$REL/www" "$REL_PORT" >"$REL/server.log" 2>&1 &
+REL_PID=$!
 "$PANEL" -c "$DIR/panel.toml" serve >"$DIR/panel.log" 2>&1 &
 PANEL_PID=$!
-trap 'kill $PANEL_PID 2>/dev/null || true; wait $PANEL_PID 2>/dev/null || true; docker rm -f "$MAILPIT" >/dev/null 2>&1 || true' EXIT
+trap 'kill $PANEL_PID $REL_PID 2>/dev/null || true; wait $PANEL_PID 2>/dev/null || true; docker rm -f "$MAILPIT" >/dev/null 2>&1 || true' EXIT
 for _ in $(seq 1 60); do
   [ "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/$PREFIX/healthz")" = "200" ] && break
   kill -0 $PANEL_PID 2>/dev/null || { echo "FAIL: panel exited"; cat "$DIR/panel.log"; exit 1; }
   sleep 0.5
 done
+
+# The throwaway release key as an extra trusted key (W25: in the database,
+# not panel.toml; the settings trigger reloads the running panel).
+docker compose exec -T postgres psql -U akari -d "$E2E_DB" -qc \
+  "UPDATE panel_settings SET extra_release_keys = ARRAY['$(base64 -w0 "$REL/pub.raw") e2e'], version = version + 1" >/dev/null
 
 ADMIN_PW="e2e-admin-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 USER_PW="e2e-user-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
@@ -108,5 +152,6 @@ E2E_BASE="http://$E2E_HOST:$PORT/$PREFIX/app" \
   E2E_USER=e2e-user E2E_USER_PW="$USER_PW" \
   E2E_QUOTA_USER=e2e-quota E2E_DB="$E2E_DB" E2E_PAY_DIR="$DIR" \
   E2E_MAILPIT=http://127.0.0.1:18026/api/v1 E2E_SMTP_PORT=11026 \
+  E2E_RELEASE_SOURCE="http://127.0.0.1:$REL_PORT/repos/akari-projectX/akari-agent/releases/latest" \
   NO_PROXY='*' no_proxy='*' \
   npx playwright test "$@"

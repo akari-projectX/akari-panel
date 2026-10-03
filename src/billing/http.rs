@@ -15,7 +15,7 @@ use hyper_util::rt::TokioIo;
 
 const MAX_RESPONSE: usize = 256 * 1024;
 
-fn tls_config() -> Result<Arc<rustls::ClientConfig>, String> {
+pub(crate) fn tls_config() -> Result<Arc<rustls::ClientConfig>, String> {
     static CFG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
     if let Some(c) = CFG.get() {
         return Ok(c.clone());

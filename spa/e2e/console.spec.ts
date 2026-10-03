@@ -1029,3 +1029,59 @@ test("W25: settings imported from an old panel.toml, 节点通信 and 安全 for
   expect(problems).toEqual([]);
   await ctx.close();
 });
+
+test("agent update check: 检查更新 fetches the signed release, 有新版本 badge on the node list", async ({
+  browser,
+}) => {
+  test.skip(!secret, "needs the enrollment test");
+  const source = process.env.E2E_RELEASE_SOURCE ?? "";
+  test.skip(!source || !E2E_DB, "needs scripts/e2e.sh");
+  const ctx = await browser.newContext({ locale: "zh-CN" });
+  const page = await ctx.newPage();
+  const problems = watch(page);
+  await page.goto(`${BASE}/updates`);
+  const next = await nextCode(secret, usedStep);
+  usedStep = next.step;
+  await login(page, ADMIN, ADMIN_PW, next.code);
+  await expect(page).toHaveURL(`${ADMIN_BASE}/updates`);
+  await expect(page.getByRole("heading", { name: "检查更新" })).toBeVisible();
+  // The local stand-in for GitHub (e2e.sh), saved through the form.
+  await page.getByLabel("发布源（GitHub 最新发布 API）").fill(source);
+  await page.getByRole("button", { name: "保存" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "已保存" })).toBeVisible();
+  await page.getByRole("button", { name: "检查更新" }).click();
+  await expect(page.getByText(/检查：已保存 v0\.9\.0（linux\/amd64、linux\/arm64）/)).toBeVisible({ timeout: 30_000 });
+  const releases = page.getByRole("region", { name: "发布列表" });
+  await expect(releases.getByRole("row").filter({ hasText: "linux/amd64" })).toContainText("就绪");
+  await expect(releases.getByRole("row").filter({ hasText: "linux/arm64" })).toContainText("就绪");
+  // A second check: nothing new.
+  await page.getByRole("button", { name: "检查更新" }).click();
+  await expect(page.getByText(/检查：已是最新（v0\.9\.0）/)).toBeVisible({ timeout: 30_000 });
+  // A node on an older agent (W11's node, as if it had connected).
+  execFileSync(
+    "docker",
+    [
+      "compose",
+      "exec",
+      "-T",
+      "postgres",
+      "psql",
+      "-U",
+      "akari",
+      "-d",
+      E2E_DB,
+      "-qc",
+      "UPDATE nodes SET agent_version = 'v0.1.0', agent_os = 'linux', agent_arch = 'amd64', agent_protocol = 3",
+    ],
+    { cwd: "..", stdio: "ignore" },
+  );
+  await page.goto(`${ADMIN_BASE}/nodes`);
+  const badge = page.getByRole("link", { name: "有新版本 v0.9.0" });
+  await expect(badge).toBeVisible();
+  await badge.click();
+  await expect(page).toHaveURL(`${ADMIN_BASE}/updates`);
+  // The rollout form now offers the fetched version.
+  await expect(page.getByLabel("版本", { exact: true })).toContainText("v0.9.0");
+  expect(problems).toEqual([]);
+  await ctx.close();
+});

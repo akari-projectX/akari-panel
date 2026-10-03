@@ -589,6 +589,33 @@ export interface ReleaseView {
   complete_at: string | null;
 }
 
+/** One-click update check (mirror of src/updatecheck.rs StatusView). */
+export interface AgentUpdateStatus {
+  version: number;
+  /** The stored source (null = default_source_url). */
+  source_url: string | null;
+  default_source_url: string;
+  auto_check: boolean;
+  next_auto_check_at: string | null;
+  checking: boolean;
+  keys_configured: boolean;
+  last_check: {
+    at: string;
+    ok: boolean;
+    result: "stored" | "up_to_date" | "failed";
+    version: string | null;
+    code: string | null;
+    params: Record<string, unknown> | null;
+    message: string | null;
+    stored: string[];
+  } | null;
+  /** The newest complete (non-rollback) stored release. */
+  latest: { version: string; platforms: string[] } | null;
+  outdated_nodes: number;
+  /** latest.version when nodes run something older ("有新版本" badge). */
+  update_available: string | null;
+}
+
 export type RolloutStatus = "running" | "paused" | "halted" | "aborted" | "completed";
 export type RolloutNodeStatus = "pending" | "offered" | "updating" | "healthy" | "failed" | "skipped";
 

@@ -10,7 +10,7 @@ Targets (ROADMAP §0), measured on the data set of one panel instance serving
 |---|---|---|
 | Snapshot build, 10k-user node < 200 ms | DB read + build 33 ms; full build (read + user set + state hash + encode) 43 ms; agent side: xray rebuild with 10k users 57 ms | pass |
 | Flush of 50k traffic rows < 1 s | 0.91 s (criterion mean; 10 chunks of 5000, about 91 ms each); W11 0.49 s; W22 (with the traffic history) 0.58 s, see "W22" | pass, ~40% margin |
-| Admin API p99 < 50 ms | W21: `dashboard` 16–21 ms, `users_search` 7–31 ms, `users_filtered` 18–22 ms (one noisy run 55 ms); idle, 16 clients: worst endpoint 10.2 ms (`nodes`); under 200-agent load: worst read 30.5 ms (`users_deep`); W17: the console's node list (`nodes?view=summary`) 12–26 ms under load (full list 27–43 ms) | pass |
+| Admin API p99 < 50 ms | node top users (`traffic_node`) query 36–48 → ~10 ms with the 0151 covering index, see "Node top users"; W21: `dashboard` 16–21 ms, `users_search` 7–31 ms, `users_filtered` 18–22 ms (one noisy run 55 ms); idle, 16 clients: worst endpoint 10.2 ms (`nodes`); under 200-agent load: worst read 30.5 ms (`users_deep`); W17: the console's node list (`nodes?view=summary`) 12–26 ms under load (full list 27–43 ms) | pass |
 | Subscription p99 < 30 ms | idle 5.1 ms; under load 16.7 ms (single instance), 31 ms (`clash`) / 20 ms (`links`) through the two-instance balancer | pass (single instance); 1 ms over on the balancer run, see notes |
 | User change to agent < 2 s | single instance: p50 0.26 s, p99 0.59 s, max 0.68 s; two instances behind a balancer: p99 0.89 s, max 0.98 s (3200 agent applications each) | pass |
 | Billing exact | reported = billed to the byte in every steady-state run, single and two instances | pass |
@@ -92,12 +92,50 @@ Read side (`akari-bench http`, panel on the bench set + 30 days of history at
 16 concurrent clients it saturates the machine's cores (770 req/s) and the
 p99 is queueing, not the query; 8 concurrent admin node pages stay at 11 ms.
 Node and fleet charts read `traffic_node_daily` (one row per node per day);
-only the top-users list touches `traffic_daily` (index `(node_id, day)`).
+only the top-users list touches `traffic_daily` (index `(node_id, day)`; since 0151 a covering index, see "Node top users").
 
 Reproduce: `make bench-seed` (now also seeds `--history-days 30
 --history-nodes-per-user 2`), `make bench`, then the panel on the bench set
 and `akari-bench http --only traffic_user,traffic_user_nodes,traffic_node,traffic_summary,traffic_me`;
 `akari-bench explain` includes `COMPACT_SQL` and `ROLLUP_SQL`.
+
+## Node top users (2026-10-03)
+
+`GET /nodes/{id}/traffic` (admin node page: per day + top 20 users) was the slowest W22 read
+(`traffic_node`, p99 55.4 ms at 16 clients). `EXPLAIN (ANALYZE, BUFFERS)` of
+`trafficlog::node_top_users` on the bench set (30 days of history, busiest node, 30-day range):
+15.5k `traffic_daily` rows of ~8k users come from a bitmap heap scan over **8.8k heap pages**
+(the table is clustered by its primary key, user first), then a hash aggregate: 36–48 ms per
+query. Migration 0151 replaces `traffic_daily_node (node_id, day)` with
+`traffic_daily_node_cov (node_id, day) INCLUDE (user_id, up_bytes, down_bytes, billed_bytes)`:
+an index-only scan of 226 buffers, 0 heap fetches, **~10 ms** per query (the hash aggregate is
+now most of it). The query text is unchanged.
+
+Measured on this run's machine (4 vCPU cloud container; bench stack in Docker; load generator,
+panel and PostgreSQL on the same cores), `akari-bench http --only traffic_node`, 10 s per run:
+
+| | 4 clients p99 | 8 clients p99 | 16 clients p99 (3 runs) | req/s at 16 |
+|---|---|---|---|---|
+| before (main) | 52.8 ms | 98.3 ms | 247 / 178 / 172 ms | 142–149 |
+| after (0151) | 32.2 ms | 56.4 ms | 122 / 115 / 104 ms | 265–281 |
+
+Throughput per core almost doubles. This machine saturates its 4 cores at 16 closed-loop
+clients (one client: p50 13 ms), so its 16-client p99 is queueing; the W22 figure (55.4 ms at
+770 req/s) came from a ~5× faster machine, where the same per-request cost cut should put the
+16-client p99 well under 50 ms — **not re-measured there** (re-run the command above on the
+reference machine before relying on it). A two-step variant (rank with a `float8` sum, exact
+`numeric` sums only for the top 20) saved another ~18 % of query time and was not worth the
+extra query.
+
+Cost: the counters are now indexed, so compaction's additive day-row `UPDATE`s are no longer HOT
+(each also writes the primary key and the covering index). `make bench`, same machine:
+`db/compact/50000` (50k distinct user-node pairs folded) **0.43 s → 0.94 s**, every 30 s under
+the history try-lock, off the billing path; `db/flush/50000` 1.01 s (unchanged: the flush
+only appends to the staging table; the earlier run on this machine recorded 1.07–1.09 s).
+
+Reproduce: `make bench-seed`, panel on the bench set (`akari -c bench/panel-bench-1.toml serve`,
+migrations apply 0151), `akari-bench http --only traffic_node --concurrency 16 --seconds 10`;
+`CARGO_TARGET_DIR=target cargo bench --manifest-path bench/Cargo.toml --bench panel -- db/compact`.
 
 ## Admin dashboard and user search (W21, 2026-10-03)
 

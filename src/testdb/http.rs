@@ -170,6 +170,10 @@ impl Client {
         self.req(Method::POST, path, Some(body)).await
     }
 
+    pub async fn put(&self, path: &str, body: Value) -> Resp {
+        self.req(Method::PUT, path, Some(body)).await
+    }
+
     /// POST /test/auth/login; keeps the session cookie on success.
     pub async fn login(&mut self, login: &str, password: &str, code: Option<&str>) -> Resp {
         let mut body = serde_json::json!({ "login": login, "password": password });

@@ -116,7 +116,6 @@ impl ApiError {
     pub fn code(&self) -> &'static str {
         self.code
     }
-    #[cfg(test)]
     pub fn params(&self) -> &serde_json::Map<String, serde_json::Value> {
         &self.params
     }

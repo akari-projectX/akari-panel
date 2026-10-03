@@ -23,6 +23,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { UpdateCheck } from "./admin-update-check";
 
 // Admin console (Chinese only).
 const ROLLOUT_STATUS: Record<string, string> = {
@@ -61,6 +62,7 @@ export function AdminUpdates() {
   return (
     <div className="space-y-6">
       <Rollouts />
+      <UpdateCheck />
       <Releases />
     </div>
   );
@@ -123,9 +125,9 @@ function Releases() {
           <h2>Agent 发布</h2>
         </CardTitle>
         <CardDescription>
-          从 agent 的 GitHub Release 上传三个文件：二进制、<code>.manifest.json</code> 与 <code>.manifest.sig</code>。
-          面板先用内置的官方发布公钥（以及「系统设置 → 安全」里额外信任的公钥）校验签名，agent
-          再用编译进自身的公钥校验一次。
+          通常用上方的「检查更新」即可；手动上传（高级）：从 agent 的 GitHub Release 下载三个文件——二进制、
+          <code>.manifest.json</code> 与 <code>.manifest.sig</code>。面板先用内置的官方发布公钥（以及「系统设置 →
+          安全」里额外信任的公钥）校验签名，agent 再用编译进自身的公钥校验一次。
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

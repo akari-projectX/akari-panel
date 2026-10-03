@@ -1060,7 +1060,32 @@ compiled keys accept. W25: `[updates] release_keys` is imported once into that l
 differs from the official set; `max_concurrent_downloads` is built in (8 FetchArtifact streams
 per instance).
 
-**Publish a release** (Updates view, or the API): upload `akari-agent-linux-<arch>` with its
+**Check for updates (one click).** Updates view → 「检查更新」: the panel fetches the latest
+release of `akari-projectX/akari-agent` from the GitHub API, downloads for **each linux platform
+(amd64, arm64)** the binary, its `.manifest.json` and `.manifest.sig`, plus `SHA256SUMS`, and checks
+the manifest signature under the trusted keys (official + extra), every file against `SHA256SUMS`, the platform,
+version = tag, size, and that it is not a rollback manifest. Then it stores the release exactly as a
+manual upload does (same code, manifest bytes verbatim, `agent_release.create`/`.upload` audit
+rows), all platforms in one transaction: any failure stores nothing and the reason (a coded error,
+shown in Chinese) is kept as "上次检查". It never starts a rollout; use the rollout form below.
+- **Source** (发布源): default `https://api.github.com/repos/akari-projectX/akari-agent/releases/latest`;
+  a compatible mirror can be set in the same card (stored in the database, no panel.toml key). The
+  panel contacts only that host (for api.github.com also GitHub's download hosts `github.com`,
+  `objects.githubusercontent.com`, `release-assets.githubusercontent.com`, where asset downloads
+  redirect), over HTTPS (plain http only for loopback), directly (no HTTP proxy support): allow
+  outbound 443 to them. Responses are size-capped and time out; the whole check is bounded at 15 min.
+- **No downgrade:** if the source's latest version is older than the newest release the panel already
+  holds, the check refuses (`agent_update.downgrade`). A signed rollback stays a manual upload.
+- **自动检查** (off by default): every 6 h one panel instance checks the same way (audit actor
+  `system`). Only one check runs at a time across instances (advisory lock): a second click gets
+  "已有更新检查在进行中".
+- The node list and the dashboard show **「有新版本 vX」** when the newest complete release is newer
+  than what some updatable node (protocol ≥ 3, platform covered) runs.
+- API: `GET /api/v1/agent-updates` (settings, last check, newest release, outdated node count),
+  `PUT /api/v1/agent-updates/settings {version, source_url|null, auto_check}`,
+  `POST /api/v1/agent-updates/check` (202; poll the GET for `last_check`).
+
+**Publish a release by hand** (advanced; Updates view, or the API): upload `akari-agent-linux-<arch>` with its
 `.manifest.json` and `.manifest.sig` from the GitHub release (verify it first, see "Verify a
 release"). The binary is stored in PostgreSQL (1 MiB rows, every panel instance can serve it;
 mind the backup size) and agents download it over their existing mTLS gRPC connection

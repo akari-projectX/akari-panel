@@ -11,6 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { adminBase, get } from "../lib/api";
 import { adminErrorText } from "../lib/admin-errors";
+import { UpdateAvailableBadge } from "./admin-update-check";
 import { yuan } from "../lib/billing";
 import { fmtDateTime, fmtTime, TZ_LABEL } from "../lib/datetime";
 import { navigate } from "../lib/router";
@@ -179,7 +180,10 @@ export function AdminDashboard() {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h1 className="text-xl font-semibold tracking-tight">仪表盘</h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="text-xl font-semibold tracking-tight">仪表盘</h1>
+          <UpdateAvailableBadge />
+        </div>
         {d && (
           <p className="text-xs text-muted-foreground">
             更新于 {fmtTime(d.at, true)}（{TZ_LABEL}；「今日」从 00:00 起算，每 30 秒刷新）
