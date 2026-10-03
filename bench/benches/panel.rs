@@ -13,7 +13,10 @@ use std::time::{Duration, Instant};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use uuid::Uuid;
 
-use akari_panel::grpc::{diff_user_sets, state_hash, user_set, NodeState, UserSet};
+use akari_panel::grpc::{
+    diff_from_digest, diff_user_sets, state_hash, user_set, NodeState, SetDigest, UserSet,
+};
+
 use akari_panel::pb::{user_op, InboundUser, TrafficReport, UserOp, UserTraffic};
 
 const DEFAULT_DB: &str = "postgres://akari:akari-dev@localhost:5433/akari_bench";
@@ -92,6 +95,36 @@ fn pure(c: &mut Criterion) {
             &tenth,
             |b, w| b.iter(|| diff_user_sets(std::hint::black_box(&base), w)),
         );
+        // What a session does per delta: the want digest (decide) plus the
+        // diff against the remembered base digest.
+        let base_dg = SetDigest::of(7, &base);
+        for (label, w) in [("1_changed", &one), ("10pct_changed", &tenth)] {
+            g.bench_with_input(
+                BenchmarkId::new(format!("digest_and_diff/{label}"), n),
+                w,
+                |b, w| {
+                    b.iter(|| {
+                        let want_dg = SetDigest::of(7, std::hint::black_box(w));
+                        diff_from_digest(&base_dg, &want_dg, w)
+                    })
+                },
+            );
+        }
+        // SetDigest of a Shadowsocks node (has_shadowsocks parses the
+        // inbounds) with a ~40 KB inbounds JSON.
+        let ss = NodeState {
+            inbounds: format!(
+                "[{}{{\"tag\":\"ss\",\"protocol\":\"shadowsocks\",\"port\":8388}}]",
+                "{\"tag\":\"in-vless\",\"protocol\":\"vless\",\"port\":443,\
+                 \"settings\":{\"pad\":\"0123456789abcdef0123456789abcdef\"}},"
+                    .repeat(400)
+            ),
+            users: set.clone(),
+            ..Default::default()
+        };
+        g.bench_with_input(BenchmarkId::new("set_digest_ss", n), &ss, |b, s| {
+            b.iter(|| SetDigest::of(7, std::hint::black_box(s)))
+        });
         let snap = akari_panel::pb::ConfigSnapshot {
             config_version: 3,
             inbounds_json: state.inbounds.clone(),
@@ -380,6 +413,20 @@ fn buffer(c: &mut Criterion) {
     });
     g.bench_function("prune_full/2M_entries", |b| {
         b.iter(|| buf.prune(Instant::now()))
+    });
+    // Ingest of one node's 10k-row report into the populated buffer (the
+    // per-row key work of `update_at`, review 2026-10-02 W3).
+    let (node0, users0) = &all[0];
+    let mut step = 10u64;
+    g.bench_function("update/10k_rows", |b| {
+        b.iter_batched(
+            || {
+                step += 1;
+                report(users0, step)
+            },
+            |r| buf.update(*node0, &session, &r),
+            criterion::BatchSize::LargeInput,
+        )
     });
     g.finish();
 }

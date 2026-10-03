@@ -478,34 +478,74 @@ impl SetDigest {
 
 /// `diff_user_sets` against a remembered base: the same ops (REPLACE
 /// semantics; ADDs carry the user's complete list and limit from `want`).
-pub fn diff_from_digest(base: &SetDigest, want: &NodeState) -> Vec<UserOp> {
-    let mut ops = Vec::new();
-    let mut wanted = std::collections::HashSet::with_capacity(want.users.len());
-    for (user, tags) in &want.users {
-        let key = UserKey::of(user);
-        let limit = want.limits.get(user).copied().unwrap_or(0);
-        if base.users.get(&key) != Some(&user_digest(tags))
-            || base.limits.get(&key).copied().unwrap_or(0) != limit
-        {
-            ops.push(add_op(user, tags, limit));
+/// `want_digest` is `SetDigest::of(_, want)`, already built for the
+/// decision (review 2026-10-02 W4): the two digests are merged in key order
+/// (no per-user SHA-256, no id set), and only changed users touch the full
+/// `want` set.
+pub fn diff_from_digest(
+    base: &SetDigest,
+    want_digest: &SetDigest,
+    want: &NodeState,
+) -> Vec<UserOp> {
+    use std::cmp::Ordering as O;
+    let limit = |dg: &SetDigest, k: &UserKey| dg.limits.get(k).copied().unwrap_or(0);
+    let (mut adds, mut removes) = (Vec::new(), Vec::new());
+    let mut add = |key: &UserKey| {
+        let id = key.id();
+        if let Some(tags) = want.users.get(&id) {
+            adds.push(add_op(&id, tags, limit(want_digest, key)));
         }
-        wanted.insert(key);
-    }
-    for key in base.users.keys() {
-        if !wanted.contains(key) {
-            ops.push(remove_op(key.id()));
+    };
+    let (mut b, mut w) = (
+        base.users.iter().peekable(),
+        want_digest.users.iter().peekable(),
+    );
+    loop {
+        match (b.peek(), w.peek()) {
+            (None, None) => break,
+            (Some((bk, _)), None) => {
+                removes.push(remove_op(bk.id()));
+                b.next();
+            }
+            (None, Some((wk, _))) => {
+                add(wk);
+                w.next();
+            }
+            (Some((bk, bd)), Some((wk, wd))) => match bk.cmp(wk) {
+                O::Less => {
+                    removes.push(remove_op(bk.id()));
+                    b.next();
+                }
+                O::Greater => {
+                    add(wk);
+                    w.next();
+                }
+                O::Equal => {
+                    if bd != wd || limit(base, bk) != limit(want_digest, wk) {
+                        add(wk);
+                    }
+                    b.next();
+                    w.next();
+                }
+            },
         }
     }
-    ops
+    adds.append(&mut removes);
+    adds
 }
 
 /// Does this inbounds JSON hold a shadowsocks inbound? Cheap substring
-/// test first (the digest is computed for every desired-state read).
+/// test first (the digest is computed for every desired-state read); no
+/// copies of the JSON or of the parsed tree (review 2026-10-02 W5).
 fn has_shadowsocks(inbounds: &str) -> bool {
-    inbounds.to_ascii_lowercase().contains("shadowsocks")
+    inbounds
+        .as_bytes()
+        .windows(b"shadowsocks".len())
+        .any(|w| w.eq_ignore_ascii_case(b"shadowsocks"))
         && serde_json::from_str::<serde_json::Value>(inbounds)
             .ok()
-            .and_then(|v| v.as_array().cloned())
+            .as_ref()
+            .and_then(|v| v.as_array())
             .is_some_and(|a| {
                 a.iter().any(|i| {
                     i.get("protocol")
@@ -676,6 +716,15 @@ impl SyncState {
             .rev()
             .find(|(sv, _)| *sv == v)
             .map(|(_, s)| s.clone())
+    }
+
+    /// The digest remembered for versions `v` (sent this session).
+    fn sent_digest(&self, v: (u64, u64)) -> Option<Arc<SetDigest>> {
+        self.sent
+            .iter()
+            .rev()
+            .find(|(sv, _)| *sv == v)
+            .map(|(_, d)| d.clone())
     }
 
     fn remember(&mut self, v: (u64, u64), set: Arc<SetDigest>) {
@@ -1049,7 +1098,7 @@ impl Session {
             probe_sent: Mutex::new(None),
             state,
         });
-        sess.sync.lock().unwrap().remove_rebuild =
+        lock_or_recover(&sess.sync).remove_rebuild =
             sess.state.cfg().agent.remove_mode == crate::config::RemoveMode::Rebuild;
         sess
     }
@@ -1259,7 +1308,7 @@ async fn session<S>(
                 // matter; traffic is never accepted (R12 D2).
                 match &msg.msg {
                     Some(UpMsg::Hello(h)) => {
-                        sess.sync.lock().unwrap().on_hello(
+                        lock_or_recover(&sess.sync).on_hello(
                             (h.config_version, h.user_version),
                             h.protocol_version,
                             &h.state_hash,
@@ -1284,7 +1333,7 @@ async fn session<S>(
                         "agent hello"
                     );
                     let held = (hello.config_version, hello.user_version);
-                    sess.sync.lock().unwrap().on_hello(
+                    lock_or_recover(&sess.sync).on_hello(
                         held,
                         hello.protocol_version,
                         &hello.state_hash,
@@ -1324,7 +1373,7 @@ async fn session<S>(
                 }
                 Some(UpMsg::Latency(rep)) => {
                     // W11: like traffic, nothing before the Hello.
-                    if sess.sync.lock().unwrap().hello_seen
+                    if lock_or_recover(&sess.sync).hello_seen
                         && let Err(e) =
                             crate::nodestat::store_agent_latency(state.pg(), node_id, &rep).await
                         {
@@ -1352,7 +1401,7 @@ async fn session<S>(
                 Some(UpMsg::Traffic(report)) => {
                     // R14 N3: nothing is accepted from a stream before its
                     // Hello (the agent always says Hello first).
-                    if !sess.sync.lock().unwrap().hello_seen {
+                    if !lock_or_recover(&sess.sync).hello_seen {
                         if !sess.pre_hello_warned.swap(true, Ordering::Relaxed) {
                             tracing::warn!(node = %node_id, "traffic report before hello dropped");
                         }
@@ -1377,7 +1426,7 @@ async fn session<S>(
                         "agent ack"
                     );
                     let (held_before, outcome) = {
-                        let mut st = sess.sync.lock().unwrap();
+                        let mut st = lock_or_recover(&sess.sync);
                         let held = st.held;
                         (held, st.on_ack(&ack, Instant::now()))
                     };
@@ -1424,7 +1473,7 @@ async fn session<S>(
     // A snapshot still unacked when the stream dies counts as a failed
     // apply, so a crash-looping agent gets backoff instead of resends.
     let lost = {
-        let st = sess.sync.lock().unwrap();
+        let st = lock_or_recover(&sess.sync);
         // A too-old agent's answers are not trusted either way; a retired
         // or superseded session's in-flight state is moot.
         st.pending
@@ -1487,14 +1536,14 @@ async fn retire(sess: &Session, why: &'static str) {
     }
     let node_id = sess.node_id;
     tracing::info!(node = %node_id, why, "retiring agent session");
-    let hello_seen = sess.sync.lock().unwrap().hello_seen;
+    let hello_seen = lock_or_recover(&sess.sync).hello_seen;
     if !hello_seen {
         tokio::select! {
             _ = tokio::time::timeout(RETIRE_WAIT, sess.hello.notified()) => {}
             _ = sess.cancelled() => return,
         }
     }
-    let empty_already = sess.sync.lock().unwrap().runs_empty();
+    let empty_already = lock_or_recover(&sess.sync).runs_empty();
     if !empty_already {
         let empty = DownMsg::Snapshot(ConfigSnapshot {
             config_version: RETIRED_VERSIONS.0,
@@ -1637,6 +1686,10 @@ struct HelloInfo {
     arch: String,
 }
 
+/// Every std mutex in a session is taken through this (review 2026-10-02
+/// W9: one poisoning policy). The guarded state stays usable after a panic
+/// elsewhere: `SyncState` is re-verified against the agent's state hash
+/// (any inconsistency ends in a repairing Snapshot), the rest is advisory.
 fn lock_or_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
@@ -1955,15 +2008,9 @@ async fn store_heartbeat(state: &AppState, node_id: Uuid, hb: &Heartbeat) {
         blob["cert"] = cert_status_json(c);
     }
     crate::nodestat::on_heartbeat(state, node_id, hb);
-    valkey_util::set_with_ttl(
-        state,
-        format!("akari:node:hb:{node_id}"),
-        blob.to_string(),
-        600,
-    )
-    .await;
-    // Keep the liveness key fresh for the whole duration of the connection.
-    valkey_util::set_online(state, node_id).await;
+    // The blob, and the liveness key kept fresh for the whole duration of
+    // the connection, in one round trip.
+    valkey_util::store_heartbeat(state, node_id, blob.to_string()).await;
 }
 
 #[derive(sqlx::FromRow)]
@@ -2185,10 +2232,10 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
     if sess.retiring() {
         return Ok(Synced::Current);
     }
-    let ticket = sess.sync.lock().unwrap().ticket(); // BEFORE the read
-                                                     // The permit bounds concurrent reads AND the full in-memory sets built
-                                                     // from them (~1.3 KB per user): it is held until the message is built
-                                                     // (M2: 200 sessions waking at once must not hold 200 full sets).
+    let ticket = lock_or_recover(&sess.sync).ticket(); // BEFORE the read
+                                                       // The permit bounds concurrent reads AND the full in-memory sets built
+                                                       // from them (~1.3 KB per user): it is held until the message is built
+                                                       // (M2: 200 sessions waking at once must not hold 200 full sets).
     let permit = state.read_permits().acquire().await?;
     let desired = desired_state(state.pg(), node_id).await?;
     let Some(mut desired) = desired else {
@@ -2216,8 +2263,8 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
         snap.inbounds_json.clone(),
         &snap.users,
     ));
-    let (plan, grant, write_lease, converged) = {
-        let mut st = sess.sync.lock().unwrap();
+    let (plan, grant, write_lease, converged, want_digest) = {
+        let mut st = lock_or_recover(&sess.sync);
         let grant = st.hello_seen && !st.too_old();
         let write_lease = grant
             && st
@@ -2229,7 +2276,13 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
         let plan = st.decide(ticket, want, &set, desired.enabled, desired.failed, now);
         let converged =
             plan.is_none() && st.held == want && st.acked.as_ref().is_some_and(|(v, _)| *v == want);
-        (plan, grant, write_lease, converged)
+        // The digest `decide` just built (and remembered) for `want`: a
+        // delta is diffed against it, not recomputed (W4).
+        let want_digest = match plan {
+            Some(Plan::Delta { .. }) => st.sent_digest(want),
+            _ => None,
+        };
+        (plan, grant, write_lease, converged, want_digest)
     };
     // Build the message while the permit is held, then drop the full set
     // and the permit before any send (a slow agent must not pin them).
@@ -2263,7 +2316,9 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
                 DownMsg::Snapshot(snap)
             }
             Plan::Delta { base, base_set } => {
-                let ops = diff_from_digest(&base_set, &set);
+                let want_digest =
+                    want_digest.unwrap_or_else(|| Arc::new(SetDigest::of(want.0, &set)));
+                let ops = diff_from_digest(&base_set, &want_digest, &set);
                 tracing::info!(
                     node = %node_id,
                     base_config_version = base.0,
@@ -2323,11 +2378,11 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
             Ok(Synced::Current)
         }
         Ok(false) => {
-            sess.sync.lock().unwrap().pending = None;
+            lock_or_recover(&sess.sync).pending = None;
             Ok(Synced::Current)
         }
         Err(e) => {
-            sess.sync.lock().unwrap().pending = None;
+            lock_or_recover(&sess.sync).pending = None;
             Err(e)
         }
     }
@@ -2712,6 +2767,7 @@ mod tests {
             op(&u(4), &[("t2", "{\"id\":\"4\"}")]),        // added
             op("not-a-uuid", &[("t1", "{\"id\":\"x\"}")]), // unchanged
             op(&u(5), &[("t1", "{\"id\":\"5\"}"), ("t2", "{\"id\":\"5\"}")]), // gained t2
+            op("a-new-non-uuid", &[("t1", "{}")]),         // added, non-UUID key
         ]);
         let norm = |mut ops: Vec<UserOp>| {
             ops.sort_by(|a, b| (a.op, &a.user_id).cmp(&(b.op, &b.user_id)));
@@ -2721,8 +2777,9 @@ mod tests {
         let base_state = st(&base);
         let dg = SetDigest::of(3, &base_state);
         assert_eq!(dg.hash(), state_hash(3, &base_state));
-        assert_eq!(norm(diff_from_digest(&dg, &st(&want))), full);
-        assert!(diff_from_digest(&dg, &st(&base)).is_empty(), "no-op");
+        let diff = |dg: &SetDigest, w: &NodeState| diff_from_digest(dg, &SetDigest::of(3, w), w);
+        assert_eq!(norm(diff(&dg, &st(&want))), full);
+        assert!(diff(&dg, &st(&base)).is_empty(), "no-op");
         // Removed ids come back verbatim, canonical UUID or not.
         let removed: Vec<String> = full
             .iter()
@@ -2836,13 +2893,14 @@ mod tests {
         assert!(!want.limits.contains_key("b"), "0 = unlimited, not stored");
         assert_eq!(state_hash(7, &base), state_hash(7, &want));
         let dg = SetDigest::of(7, &base);
-        let ops = diff_from_digest(&dg, &want);
+        let diff = |dg: &SetDigest, w: &NodeState| diff_from_digest(dg, &SetDigest::of(7, w), w);
+        let ops = diff(&dg, &want);
         assert_eq!(ops, vec![a.clone()], "limit-only change = one ADD");
         assert!(!drops_credential_digest(&dg, &SetDigest::of(7, &want)));
         assert_eq!(diff_user_sets(&base, &want), ops);
-        assert!(diff_from_digest(&SetDigest::of(7, &want), &want).is_empty());
+        assert!(diff(&SetDigest::of(7, &want), &want).is_empty());
         // Back to unlimited is a change too.
-        let back = diff_from_digest(&SetDigest::of(7, &want), &base);
+        let back = diff(&SetDigest::of(7, &want), &base);
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].speed_limit_bytes_per_sec, 0);
         // Collapsing: a later REMOVE or ADD without inbounds drops it.

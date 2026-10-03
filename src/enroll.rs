@@ -316,14 +316,9 @@ fn db_unavailable(what: &str, e: impl std::fmt::Display) -> Status {
 }
 
 async fn within(state: &AppState, key: String, limit: i64, window: i64) -> bool {
-    match crate::rate::hit(state, key, limit, window).await {
-        Ok(ok) => ok,
-        Err(e) => {
-            // Tokens are 256-bit: the limit protects CPU/DB, not secrecy.
-            tracing::warn!(error = %e, "enrollment rate limit unavailable (failing open)");
-            true
-        }
-    }
+    // Valkey unavailable: fail open, bounded by the in-process fallback
+    // (W9). Tokens are 256-bit: the limit protects CPU/DB, not secrecy.
+    crate::rate::hit_or_local(state, "enroll", key, limit, window).await
 }
 
 pub struct AgentEnrollmentService {

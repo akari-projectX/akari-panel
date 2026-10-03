@@ -71,8 +71,13 @@ pub const MIN_PLAUSIBLE_SECS: i64 = 60;
 /// have been persisted up to a flush interval after the agent read it.
 pub const PLAUSIBLE_SLACK_SECS: i64 = 15;
 
-/// (node, user, agent session id)
-type Key = (Uuid, Uuid, String);
+/// (node, user, agent session id). The session id is shared (`Arc<str>`,
+/// interned per node in `NodeIndex.sessions`): building a key on the report
+/// path is a reference-count bump, not a heap allocation (review 2026-10-02
+/// W3). Not a `Uuid`: the protocol and the acceptance rule
+/// (`valid_session_id`) allow any short string, and the raw text is what
+/// `nodes.agent_session` / `traffic_sessions` compare against.
+type Key = (Uuid, Uuid, Arc<str>);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Entry {
@@ -120,7 +125,7 @@ fn valid_session_id(s: &str) -> bool {
 #[derive(Default, Debug)]
 struct NodeIndex {
     entries: usize,
-    sessions: HashMap<String, SessionIndex>,
+    sessions: HashMap<Arc<str>, SessionIndex>,
 }
 
 #[derive(Default, Debug)]
@@ -187,7 +192,7 @@ pub const DEFAULT_DEPARTED_GRACE_SECS: u64 = 900;
 struct FlushRow {
     node_id: Uuid,
     user_id: Uuid,
-    session_id: String,
+    session_id: Arc<str>,
     up: i64,
     down: i64,
     /// Seconds since this key was first seen (plausibility cap when the DB
@@ -224,7 +229,10 @@ impl TrafficBuffer {
     /// Seconds since the last successful full flush, if the last full
     /// flush failed (this instance's own outage), else None.
     fn outage_secs(&self) -> Option<f64> {
-        let h = self.health.lock().unwrap();
+        let h = self
+            .health
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         #[cfg(test)]
         let elapsed = h.last_ok.elapsed() + h.backdate;
         #[cfg(not(test))]
@@ -233,7 +241,10 @@ impl TrafficBuffer {
     }
 
     fn flush_succeeded(&self, snapshot_at: Instant) {
-        let mut h = self.health.lock().unwrap();
+        let mut h = self
+            .health
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         h.failing = false;
         h.last_ok = snapshot_at;
         #[cfg(test)]
@@ -243,21 +254,30 @@ impl TrafficBuffer {
     }
 
     fn flush_failed(&self) {
-        self.health.lock().unwrap().failing = true;
+        self.health
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .failing = true;
     }
 
     /// Tests: pretend the last successful flush was `ago` ago (does NOT
     /// mark the instance failing; only a failed flush does).
     #[cfg(test)]
     pub fn backdate_last_ok(&self, ago: Duration) {
-        let mut h = self.health.lock().unwrap();
+        let mut h = self
+            .health
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         h.last_ok = Instant::now();
         h.backdate = ago;
     }
 
     #[cfg(test)]
     pub fn failing(&self) -> bool {
-        self.health.lock().unwrap().failing
+        self.health
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .failing
     }
 
     /// Record a report whose counters belong to `session_id`.
@@ -285,7 +305,7 @@ impl TrafficBuffer {
         // Hard bound on memory per node: every assigned user in every
         // admissible session.
         let max_entries = members.len().max(1) * MAX_DIRTY_SESSIONS_PER_NODE;
-        let session = session_id.to_string();
+        let session = self.session_key(node_id, session_id);
         for u in &report.users {
             let Ok(user_id) = Uuid::parse_str(&u.user_id) else {
                 tracing::warn!(node = %node_id, user = %u.user_id, "traffic report for unparseable user id");
@@ -409,7 +429,7 @@ impl TrafficBuffer {
             };
             idx.sessions
                 .iter()
-                .filter(|(s, i)| i.dirty_users.is_empty() && s.as_str() != keep)
+                .filter(|(s, i)| i.dirty_users.is_empty() && &***s != keep)
                 .min_by_key(|(_, i)| i.touched)
                 .map(|(s, i)| (s.clone(), i.users.iter().copied().collect::<Vec<_>>()))
         };
@@ -430,6 +450,16 @@ impl TrafficBuffer {
             freed |= removed.is_some();
         }
         freed
+    }
+
+    /// The node's interned key for `session_id` (a new one for a session
+    /// the index does not know yet): one allocation per new session, not
+    /// two per row.
+    fn session_key(&self, node_id: Uuid, session_id: &str) -> Arc<str> {
+        self.index
+            .get(&node_id)
+            .and_then(|i| i.sessions.get_key_value(session_id).map(|(k, _)| k.clone()))
+            .unwrap_or_else(|| Arc::from(session_id))
     }
 
     fn session_known(&self, node_id: Uuid, session_id: &str) -> bool {
@@ -950,7 +980,7 @@ async fn write_rows(
 ) -> Result<Vec<Key>, sqlx::Error> {
     let nodes: Vec<Uuid> = rows.iter().map(|r| r.node_id).collect();
     let users: Vec<Uuid> = rows.iter().map(|r| r.user_id).collect();
-    let sessions: Vec<&str> = rows.iter().map(|r| r.session_id.as_str()).collect();
+    let sessions: Vec<&str> = rows.iter().map(|r| &*r.session_id).collect();
     let ups: Vec<i64> = rows.iter().map(|r| r.up).collect();
     let downs: Vec<i64> = rows.iter().map(|r| r.down).collect();
     let ages: Vec<f64> = rows.iter().map(|r| r.age_secs).collect();
@@ -1036,7 +1066,7 @@ async fn write_rows(
         .into_iter()
         .zip(du)
         .zip(ds)
-        .map(|((n, u), s)| (n, u, s))
+        .map(|((n, u), s)| (n, u, Arc::from(s)))
         .collect())
 }
 
@@ -1596,7 +1626,7 @@ mod tests {
         let mut v: Vec<_> = b
             .snapshot()
             .into_iter()
-            .map(|r| (r.session_id, r.up, r.down))
+            .map(|r| (r.session_id.to_string(), r.up, r.down))
             .collect();
         v.sort();
         v
@@ -2877,7 +2907,7 @@ mod db_tests {
         // The index must know it too: `snapshot` only visits indexed dirty
         // rows (a row planted in `entries` alone is never flushed, and this
         // test then passed without reaching the row-by-row path).
-        let sess = "bad\0session".to_string();
+        let sess: Arc<str> = Arc::from("bad\0session");
         b.entries
             .entry((n, bad, sess.clone()))
             .or_insert_with(|| Entry::new(Instant::now()))
@@ -4027,7 +4057,7 @@ mod introspect {
                 }
                 let n = want.entry(*node).or_default();
                 n.0 += 1;
-                let s = n.1.entry(session.clone()).or_default();
+                let s = n.1.entry(session.to_string()).or_default();
                 s.0.insert(*user);
                 if v.dirty() {
                     s.1.insert(*user);
@@ -4055,7 +4085,7 @@ mod introspect {
                     return Err(format!("node {}: session count drift", idx.key()));
                 }
                 for (s, (users, dirty)) in sessions {
-                    let Some(i) = idx.sessions.get(s) else {
+                    let Some(i) = idx.sessions.get(s.as_str()) else {
                         return Err(format!(
                             "node {}: session {s:?} missing from index",
                             idx.key()
@@ -4075,7 +4105,7 @@ mod introspect {
         /// Tests and fuzzing: the buffered (up, down) of one key.
         pub fn peek(&self, node: Uuid, user: Uuid, session: &str) -> Option<(i64, i64)> {
             self.entries
-                .get(&(node, user, session.to_string()))
+                .get(&(node, user, Arc::from(session)))
                 .map(|e| (e.up, e.down))
         }
     }

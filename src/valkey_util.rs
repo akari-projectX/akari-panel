@@ -31,9 +31,75 @@ pub async fn set_online(state: &AppState, node_id: uuid::Uuid) {
     .await;
 }
 
+/// A node heartbeat: the status blob (600 s) and the liveness key (60 s)
+/// in one pipelined round trip (review 2026-10-02 W9: the stream read loop
+/// awaits this, so two sequential round trips delayed the agent's next
+/// message, e.g. a TrafficReport, twice as long). Order is kept: the read
+/// loop still awaits it, so a later delete (`grpc::forget_node`) cannot be
+/// overtaken by an earlier heartbeat.
+pub async fn store_heartbeat(state: &AppState, node_id: uuid::Uuid, blob: String) {
+    let pipeline = state.valkey().next().pipeline();
+    let queued: Result<(), Error> = async {
+        let () = pipeline
+            .set(
+                format!("akari:node:hb:{node_id}"),
+                blob,
+                Some(Expiration::EX(600)),
+                None,
+                false,
+            )
+            .await?;
+        let () = pipeline
+            .set(
+                format!("akari:node:online:{node_id}"),
+                "1",
+                Some(Expiration::EX(60)),
+                None,
+                false,
+            )
+            .await?;
+        pipeline.all::<()>().await
+    }
+    .await;
+    if let Err(e) = queued {
+        tracing::warn!(error = %e, "valkey heartbeat write failed");
+    }
+}
+
 /// Delete keys (best effort; they carry TTLs anyway).
 pub async fn del(state: &AppState, keys: Vec<String>) {
     if let Err(e) = state.valkey().del::<(), _>(keys).await {
         tracing::warn!(error = %e, "valkey del failed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// W9: one pipelined round trip writes both heartbeat keys, each with
+    /// its own TTL.
+    #[tokio::test]
+    async fn heartbeat_writes_blob_and_liveness() {
+        let Some(db) = crate::testdb::TestDb::new().await else {
+            return;
+        };
+        let st = AppState::for_test(db.pool.clone()).await;
+        let node = uuid::Uuid::new_v4();
+        store_heartbeat(&st, node, "{\"cpu\":1}".into()).await;
+        let (hb, on) = (
+            format!("akari:node:hb:{node}"),
+            format!("akari:node:online:{node}"),
+        );
+        let blob: Option<String> = st.valkey().get(&hb).await.unwrap();
+        let live: Option<String> = st.valkey().get(&on).await.unwrap();
+        assert_eq!(blob.as_deref(), Some("{\"cpu\":1}"));
+        assert_eq!(live.as_deref(), Some("1"));
+        let hb_ttl: i64 = st.valkey().ttl(&hb).await.unwrap();
+        let on_ttl: i64 = st.valkey().ttl(&on).await.unwrap();
+        assert!((590..=600).contains(&hb_ttl), "{hb_ttl}");
+        assert!((50..=60).contains(&on_ttl), "{on_ttl}");
+        del(&st, vec![hb, on]).await;
+        db.drop().await;
     }
 }
