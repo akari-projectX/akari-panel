@@ -4,9 +4,11 @@
 //! Trust model: agents run only binaries described by a manifest signed
 //! with an Ed25519 release key PINNED IN THE AGENT (akari-agent
 //! `release-keys.txt`); the panel is a relay and cannot add trust. The
-//! panel verifies the same signatures under `updates.release_keys` before
-//! it stores or offers a release (an early, friendly refusal — not the
-//! security boundary). Manifest format and signature: see "Agent
+//! panel verifies the same signatures before it stores or offers a release
+//! (an early, friendly refusal — not the security boundary) under the
+//! official keys compiled into it (`src/release-keys.txt`, a byte-identical
+//! copy of akari-agent's, CI-checked) plus 系统设置 → 安全 → 额外信任的发布
+//! 公钥 (W25; e.g. the public TEST key in smoke). Manifest format and signature: see "Agent
 //! self-update" in proto/agent.proto; the Go reference is
 //! akari-agent/release (cross-checked by `proto/update_vector.json`).
 //!
@@ -62,7 +64,30 @@ pub fn key_id(pubkey: &[u8]) -> String {
     hex::encode(&Sha256::digest(pubkey)[..8])
 }
 
-/// Parses `updates.release_keys` ("<base64 32-byte key> [label]").
+/// The official release keys: akari-agent's release-keys.txt, copied
+/// verbatim (CI compares it with akari-agent main).
+const OFFICIAL_RELEASE_KEYS: &str = include_str!("release-keys.txt");
+
+/// The official keys ('#' comment lines and blank lines skipped). A copy
+/// that does not parse (unit-tested: impossible for a release) yields no
+/// keys with an error log, never a panic.
+pub fn official_release_keys() -> Vec<ReleaseKey> {
+    let lines: Vec<String> = OFFICIAL_RELEASE_KEYS
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_string)
+        .collect();
+    match parse_release_keys(&lines) {
+        Ok(k) => k,
+        Err(e) => {
+            tracing::error!(error = %e, "compiled-in release keys do not parse");
+            Vec::new()
+        }
+    }
+}
+
+/// Parses release key lines ("<base64 32-byte key> [label]").
 pub fn parse_release_keys(lines: &[String]) -> Result<Vec<ReleaseKey>, String> {
     let mut out: Vec<ReleaseKey> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
@@ -163,7 +188,7 @@ impl Signature {
 /// The id of a configured key with a valid signature over the manifest.
 pub fn verify(manifest: &[u8], sigs: &[Signature], keys: &[ReleaseKey]) -> Result<String, String> {
     if keys.is_empty() {
-        return Err("no release keys configured (updates.release_keys)".into());
+        return Err("no release keys trusted".into());
     }
     let mut msg = SIG_CONTEXT.to_vec();
     msg.extend_from_slice(manifest);
@@ -345,7 +370,7 @@ pub async fn apply_create_release(
     if keys.is_empty() {
         return Err(conflict!(
             "release.no_keys",
-            "no release keys configured (updates.release_keys): self-update is off"
+            "no release keys trusted (系统设置 → 安全): self-update is off"
         ));
     }
     let key = verify(raw, &req.sig.signatures, keys)
@@ -417,10 +442,7 @@ pub async fn create_release(
     ApiJson(req): ApiJson<CreateReleaseReq>,
 ) -> Result<(StatusCode, Json<ReleaseView>), ApiError> {
     user.require_admin()?;
-    let keys = parse_release_keys(&state.cfg().updates.release_keys).map_err(|e| {
-        tracing::error!(error = %e, "updates.release_keys invalid");
-        ApiError::internal()
-    })?;
+    let keys = state.settings().get().release_keys.clone();
     let mut tx = state.pg().begin().await?;
     let id = apply_create_release(&mut tx, &Actor::of(&user), &keys, &req).await?;
     let view = release_view(&mut tx, id).await?;

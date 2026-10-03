@@ -222,13 +222,18 @@ async fn precreate(p: &dyn super::provider::PaymentProvider, otn: &str, cents: i
 }
 
 /// A panel with payments on (one Alipay method on the mock gateway) and
-/// the main domain ORIGIN (`install.public_url`: notify URLs derive from
-/// it).
+/// the main domain ORIGIN (系统设置: notify URLs derive from it).
 async fn paid_state(db: &TestDb, mock: &Mock) -> AppState {
-    let state =
-        AppState::for_test_with(db.pool.clone(), |c| c.install.public_url = ORIGIN.into()).await;
+    let state = AppState::for_test(db.pool.clone()).await;
+    main_domain(db, &state).await;
     add_method(&state, &mock.url, "支付宝").await;
     state
+}
+
+/// 系统设置 main domain = ORIGIN's host, reloaded into `state`.
+pub(crate) async fn main_domain(db: &TestDb, state: &AppState) {
+    let host = ORIGIN.trim_start_matches("https://");
+    db.settings(state, &format!("main_domain = '{host}'")).await;
 }
 
 async fn token(state: &AppState, id: Uuid) -> String {
@@ -400,6 +405,9 @@ async fn post_notify(
     let mut req = axum::http::Request::builder()
         .method(Method::POST)
         .uri(uri)
+        // Alipay posts to the main domain (W25: set in 系统设置, so the
+        // host gate is on).
+        .header("host", ORIGIN.trim_start_matches("https://"))
         .header(
             "content-type",
             "application/x-www-form-urlencoded; charset=utf-8",
@@ -1367,7 +1375,7 @@ async fn one_open_order_per_user() {
 /// keep starting), always a warning, and never printed by `config check`.
 #[test]
 fn obsolete_payments_section_is_a_warning() {
-    let mut c = crate::config::PanelConfig::default();
+    let c = crate::config::PanelConfig::default();
     assert!(c.validate().errors.is_empty() && c.validate().warnings.is_empty());
     let text = r#"
 [payments.alipay]
@@ -1376,15 +1384,13 @@ app_id = "2021000000000001"
 notify_url = "https://panel.example/abc/pay/alipay/notify"
 whatever_unknown = 1
 "#;
-    let parsed: crate::config::PanelConfig = toml::from_str(text).unwrap();
-    c.payments = parsed.payments;
+    let c = crate::config::PanelConfig::parse(text).unwrap();
     let r = c.validate();
     assert!(r.errors.is_empty(), "{r:?}");
+    let w = c.obsolete_warnings();
     assert!(
-        r.warnings
-            .iter()
-            .any(|w| w.contains("[payments] is obsolete")),
-        "{r:?}"
+        w.iter().any(|w| w.contains("[payments] is obsolete")),
+        "{w:?}"
     );
     let t = c.effective_toml().unwrap();
     assert!(!t.contains("payments") && !t.contains("/abc/"), "{t}");
@@ -2712,7 +2718,10 @@ async fn prune_events_keeps_money_records() {
     .await
     .unwrap();
     drop(c);
-    let keep = AppState::for_test_with(db.pool.clone(), |c| c.audit.retention_days = 0).await;
+    // A second instance with "keep forever" (only its own view reloads).
+    let keep = AppState::for_test(db.pool.clone()).await;
+    db.settings(&keep, "audit_retention_days = 0").await;
+    db.settings(&state, "audit_retention_days = NULL").await;
     assert_eq!(orders::prune_events(&keep).await.unwrap(), 0);
     assert_eq!(orders::prune_events(&state).await.unwrap(), 1);
     let left: Vec<String> =

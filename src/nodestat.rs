@@ -1084,7 +1084,7 @@ pub async fn request_probe(
         &mut tx,
         &Actor::of(&user),
         id,
-        state.cfg().probe.manual_cooldown_secs,
+        state.settings().get().probe.manual_cooldown_secs,
     )
     .await?;
     tx.commit().await?;

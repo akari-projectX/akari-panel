@@ -6,8 +6,8 @@
 //! these ranges).
 //!
 //! The list ships in the binary (`cloudflare_ips.txt`, from
-//! https://www.cloudflare.com/ips-v4 and /ips-v6). `web.cloudflare_ranges`
-//! in panel.toml replaces it without a rebuild; the update procedure is in
+//! https://www.cloudflare.com/ips-v4 and /ips-v6). 系统设置 → 安全 →
+//! Cloudflare 网段 replaces it without a rebuild; the update procedure is in
 //! docs/DEPLOY.md ("Cloudflare"). Cloudflare announces range changes well
 //! in advance and has changed them rarely; a stale list fails safe for
 //! client addresses (a new edge range is treated as an untrusted peer: the
@@ -33,11 +33,9 @@ pub fn parse_list(text: &str) -> Result<Vec<Cidr>, String> {
         .collect()
 }
 
-/// The effective ranges: `web.cloudflare_ranges` when set, else shipped.
-pub fn ranges(cfg: &crate::config::PanelConfig) -> Vec<Cidr> {
-    if !cfg.web.cloudflare_ranges.is_empty() {
-        return cfg.web.cloudflare_ranges.clone();
-    }
+/// The shipped ranges (系统设置 → 安全 may override them, see
+/// `settings::Effective::cloudflare`).
+pub fn shipped_or_empty() -> Vec<Cidr> {
     match shipped() {
         Ok(v) => v,
         Err(e) => {

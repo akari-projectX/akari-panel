@@ -1,17 +1,16 @@
 # Mounted by docker-compose.yml as /etc/akari/panel.toml (no secrets here:
-# database_url / valkey_url come from env/panel.env).
+# database_url / valkey_url come from env/panel.env). Only what the process
+# needs to start (R39); everything else is set in 系统设置 (database).
 data_dir = "/data"
 
 [web]
 bind = "0.0.0.0:8080"              # private `frontend` network only, never published
 cookie_secure = true
 trusted_proxies = ["172.28.0.0/24"] # the compose `frontend` subnet (Caddy lives there)
-advertised_names = ["panel.example.com"]
 
 [grpc]
+# Published for agents (mTLS); they dial 系统设置 → 节点通信域名.
 bind = "0.0.0.0:8443"
-advertise = "panel.example.com:8443"
-server_name = "panel.example.com"
 
 [metrics]
 # Scrape from another container on the backend network, never published.
@@ -20,17 +19,7 @@ allow_non_loopback = true
 
 [tls_ask]
 # Caddy on-demand TLS: certificates for the main/subscription domains set in
-# the admin "系统设置" (deploy/caddy/Caddyfile asks here). Private frontend
-# network only, never published.
+# 系统设置 (deploy/caddy/Caddyfile asks here). Private frontend network only,
+# never published.
 bind = "0.0.0.0:8082"
 allow_non_loopback = true
-
-[install]
-# One-line node installer (docs/DEPLOY.md §3); default = the browser's origin.
-# The admin "系统设置" main domain overrides it once set.
-# public_url = "https://panel.example.com"
-
-[updates]
-# M6 agent self-update (docs/DEPLOY.md §5b): the akari-agent release-keys.txt
-# lines. Empty = uploads of agent releases are refused.
-release_keys = ["ciJILGk6W1TnPr56Dncgv0mVQFBzqOrawiOaH0/d5Pg= key-f2ad18a8bb718a1a"]

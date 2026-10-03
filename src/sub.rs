@@ -836,10 +836,17 @@ pub async fn subscription(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    let limits = &state.cfg().sub;
+    let limits = &state.cfg().limits;
     if let Some(ip) = client {
         let key = format!("akari:rl:sub:ip:{}", crate::client_ip::bucket(ip));
-        if !within_limit(&state, key, limits.rate_per_ip, limits.rate_window_secs).await {
+        if !within_limit(
+            &state,
+            key,
+            limits.sub_rate_per_ip,
+            limits.sub_rate_window_secs,
+        )
+        .await
+        {
             return reject::not_found();
         }
     }
@@ -868,7 +875,14 @@ pub async fn subscription(
     // Keyed by user id (bounded by the number of users; a rotated token
     // does not reset the user's window).
     let key = format!("akari:rl:sub:user:{}", user.id);
-    if !within_limit(&state, key, limits.rate_per_token, limits.rate_window_secs).await {
+    if !within_limit(
+        &state,
+        key,
+        limits.sub_rate_per_token,
+        limits.sub_rate_window_secs,
+    )
+    .await
+    {
         return reject::not_found();
     }
     let rows = match sqlx::query_as::<_, NodeRow>(
@@ -1573,8 +1587,8 @@ rules:
             return;
         };
         let state = AppState::for_test_with(db.pool.clone(), |c| {
-            c.sub.rate_per_token = 3;
-            c.sub.rate_per_ip = 5;
+            c.limits.sub_rate_per_token = 3;
+            c.limits.sub_rate_per_ip = 5;
         })
         .await;
         let (u, token) = user_with_token(&db).await;

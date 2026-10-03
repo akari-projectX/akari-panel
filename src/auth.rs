@@ -529,7 +529,7 @@ impl SessionRow {
 /// admin without active TOTP while `auth.require_admin_2fa` is on (R18:
 /// otherwise 2FA is optional for everyone).
 pub fn needs_enrollment(state: &AppState, role: &str, totp_active: bool) -> bool {
-    state.cfg().auth.require_admin_2fa && role == "admin" && !totp_active
+    state.settings().get().require_admin_2fa && role == "admin" && !totp_active
 }
 
 impl FromRequestParts<AppState> for AuthUser {

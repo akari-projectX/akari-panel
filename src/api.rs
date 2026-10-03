@@ -2175,8 +2175,8 @@ pub async fn create_node(
         crate::entitle::lock(&mut tx).await?;
     }
     let (ttl, link) = match &prepared {
-        Some(p) => (state.cfg().install.token_ttl_secs, Some(p.link())),
-        None => (state.cfg().agent.enroll_token_ttl_secs, None),
+        Some(p) => (state.cfg().limits.install_token_ttl_secs, Some(p.link())),
+        None => (state.cfg().limits.enroll_token_ttl_secs, None),
     };
     let endpoint = crate::settings::node_endpoint(&mut tx, state.cfg()).await?;
     let (id, token, expires) =
@@ -2234,7 +2234,7 @@ pub async fn issue_enroll_token(
         &mut tx,
         &Actor::of(&user),
         id,
-        state.cfg().agent.enroll_token_ttl_secs,
+        state.cfg().limits.enroll_token_ttl_secs,
         None,
         &endpoint,
     )

@@ -24,6 +24,13 @@ pub async fn settings_show(cfg: PanelConfig) -> Result<()> {
     crate::settings::cli_show(&cfg, &pg).await
 }
 
+/// `akari settings set <field> <value>`: a domain / trust switch from the
+/// CLI (audited as cli), e.g. the node domain before the first login.
+pub async fn settings_set(cfg: PanelConfig, field: String, value: String) -> Result<()> {
+    let pg = connect(&cfg).await?;
+    crate::settings::cli_set(&cfg, &pg, &field, &value).await
+}
+
 /// `akari settings unset <field>`: clear a database setting (audited as
 /// cli), e.g. a mistyped main domain that the host gate now refuses.
 pub async fn settings_unset(cfg: PanelConfig, field: String) -> Result<()> {
@@ -65,7 +72,12 @@ pub async fn admin_add(cfg: PanelConfig, login: String, role: String) -> Result<
     tx.commit().await?;
     println!("created {role} account: {login} ({id})");
     if role == "admin" {
-        print_2fa_hint(&cfg);
+        let required: Option<bool> =
+            sqlx::query_scalar("SELECT require_admin_2fa FROM panel_settings WHERE id = 1")
+                .fetch_optional(&pg)
+                .await?
+                .flatten();
+        print_2fa_hint(required.unwrap_or(false));
     }
     Ok(())
 }
@@ -119,12 +131,14 @@ pub async fn node_add(cfg: PanelConfig, name: String, out: Option<PathBuf>) -> R
     let inst = install::ensure(&cfg)?;
     let pg = connect(&cfg).await?;
     let mut tx = pg.begin().await?;
-    let endpoint = crate::settings::node_endpoint(&mut tx, &cfg).await?;
+    let endpoint = crate::settings::node_endpoint(&mut tx, &cfg)
+        .await
+        .map_err(|e| anyhow::anyhow!("{} (akari settings set node <host[:port]>)", e.message()))?;
     let (id, token, expires) = crate::enroll::apply_create_node(
         &mut tx,
         &Actor::cli(),
         &name,
-        cfg.agent.enroll_token_ttl_secs,
+        cfg.limits.enroll_token_ttl_secs,
         None,
         &endpoint,
     )
@@ -168,12 +182,14 @@ pub async fn node_enroll_token(
     let Some(name) = name else {
         bail!("no such node: {id}");
     };
-    let endpoint = crate::settings::node_endpoint(&mut tx, &cfg).await?;
+    let endpoint = crate::settings::node_endpoint(&mut tx, &cfg)
+        .await
+        .map_err(|e| anyhow::anyhow!("{} (akari settings set node <host[:port]>)", e.message()))?;
     let (token, expires) = crate::enroll::apply_issue_token(
         &mut tx,
         &Actor::cli(),
         id,
-        cfg.agent.enroll_token_ttl_secs,
+        cfg.limits.enroll_token_ttl_secs,
         None,
         &endpoint,
     )
@@ -302,9 +318,9 @@ pub async fn node_list(cfg: PanelConfig) -> Result<()> {
     Ok(())
 }
 
-fn print_2fa_hint(cfg: &PanelConfig) {
-    if cfg.auth.require_admin_2fa {
-        println!("two-factor authentication is required (auth.require_admin_2fa): set up an");
+fn print_2fa_hint(required: bool) {
+    if required {
+        println!("two-factor authentication is required (系统设置 → 安全): set up an");
         println!("authenticator app at the first login.");
     } else {
         println!("two-factor authentication is recommended: set it up in the console");
@@ -425,8 +441,8 @@ mod tests {
         let inst = install::ensure(&cfg).unwrap();
         let expires = chrono::Utc::now();
         let ep = crate::settings::NodeEndpoint {
-            panel_addr: cfg.grpc.advertise.clone(),
-            server_name: cfg.grpc.server_name.clone(),
+            panel_addr: "127.0.0.1:8443".into(),
+            server_name: "localhost".into(),
         };
 
         let mut buf = Vec::new();

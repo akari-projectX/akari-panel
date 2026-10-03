@@ -309,8 +309,8 @@ mod tests {
         let Some(db) = TestDb::new().await else {
             return;
         };
-        let state =
-            AppState::for_test_with(db.pool.clone(), |c| c.auth.require_admin_2fa = true).await;
+        let state = AppState::for_test(db.pool.clone()).await;
+        db.settings(&state, "require_admin_2fa = true").await;
         let canonical = Client::new(&state, rand_ip())
             .get("/definitely/not/here")
             .await

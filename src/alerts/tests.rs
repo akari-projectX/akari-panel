@@ -445,6 +445,7 @@ fn put(version: i64) -> PutSettings {
         webhook_secret: None,
         email_enabled: false,
         email_to: vec![],
+        telegram_api_url: None,
     }
 }
 
@@ -706,15 +707,10 @@ async fn delivery_telegram_retry_dead_exclusive() {
         return;
     };
     let (tg, tg_base) = Mock::start(200, r#"{"ok":true,"result":{}}"#).await;
-    let state = AppState::for_test_with(db.pool.clone(), |c| {
-        c.alerts.telegram_api_url = tg_base.clone();
-    })
-    .await;
-    let other = AppState::for_test_with(db.pool.clone(), |c| {
-        c.alerts.telegram_api_url = tg_base.clone();
-    })
-    .await;
+    let state = AppState::for_test(db.pool.clone()).await;
+    let other = AppState::for_test(db.pool.clone()).await;
     let mut req = put(version(&state).await);
+    req.telegram_api_url = Some(format!("{tg_base}/"));
     req.telegram_enabled = true;
     req.telegram_chat_id = Some("@akari_ops".into());
     req.telegram_token = Some(Some(BOT.into()));
@@ -839,6 +835,7 @@ async fn settings_and_alert_center_api() {
         "webhook_secret_set",
         "email_available",
         "eval_interval_secs",
+        "telegram_api_default",
     ] {
         body.as_object_mut().unwrap().remove(k);
     }
@@ -1199,6 +1196,29 @@ fn heartbeat_facts_parse() -> bool {
     d.is_none() && c.is_none() && d2.is_none() && c2.is_none()
 }
 
+/// W25: 告警 → Telegram API 地址 accepts an https origin (or loopback http).
+#[test]
+fn telegram_api_url_shapes() {
+    for ok in [
+        "https://api.telegram.org",
+        "https://tg.example.com:8443/",
+        "http://127.0.0.1:8081",
+    ] {
+        assert!(super::valid_telegram_api_url(ok), "{ok}");
+    }
+    for bad in [
+        "",
+        "api.telegram.org",
+        "http://tg.example.com",
+        "https://tg.example.com/x",
+        "https://tg.example.com/?a=1",
+        "https://u@tg.example.com",
+        "ftp://tg.example.com",
+    ] {
+        assert!(!super::valid_telegram_api_url(bad), "{bad}");
+    }
+}
+
 /// W21: every refusal of the settings form carries its stable code.
 #[test]
 fn settings_refusals_carry_codes() {
@@ -1231,6 +1251,20 @@ fn settings_refusals_carry_codes() {
                 ..base()
             },
             "alert.webhook_secret_invalid",
+        ),
+        (
+            PutSettings {
+                telegram_api_url: Some("http://tg.example.com".into()),
+                ..base()
+            },
+            "alert.telegram_api_url_invalid",
+        ),
+        (
+            PutSettings {
+                telegram_api_url: Some("https://tg.example.com/bot".into()),
+                ..base()
+            },
+            "alert.telegram_api_url_invalid",
         ),
         (
             PutSettings {

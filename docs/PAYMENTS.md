@@ -370,7 +370,8 @@ Rules (`billing::methods`, `provider::ProviderKind::validate`):
   mismatch → refused); polling/reconcile query with the new APPID. Prefer
   adding a new method for a new merchant.
 - **Notify URL** (shown read-only): `<main domain>/<route prefix>/pay/<method id>/notify`,
-  the main domain being 系统设置's (else `install.public_url`). It is sent
+  the main domain of 系统设置 → 站点 (W25: the only source; an old
+  `install.public_url` is imported there once). It is sent
   with every precreate, so nothing is configured at Alipay, and it follows
   a domain change and `rotate-prefix` by itself. With no main domain
   configured, orders that need the provider are refused (503 "payments are
@@ -439,7 +440,7 @@ leaves a `payment_events` row (outcome `bad_signature`, `app_id_mismatch`,
 `oversized`, `paid`, `paid_unfulfilled`, `duplicate`, `ignored`); the
 `sign` value is stored only as `<redacted>`. Verified-but-wrong notifies
 for a real order are also audited (`order.payment.rejected`). Unverified
-events are pruned after `audit.retention_days`; verified ones are kept.
+events are pruned after the audit retention (系统设置 → 安全); verified ones are kept.
 
 Sync responses (precreate/query/close) are verified too: the signature
 covers the raw `<method>_response` JSON bytes as received; an unsigned or

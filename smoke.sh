@@ -10,6 +10,7 @@ cd "$(dirname "$0")"
 # `cmd | matches [grep flags] PATTERN`, never `cmd | grep -q`, and
 # `| sed -n 1p` instead of `| head -1`.
 matches() { grep "$@" >/dev/null; }
+psql_q() { docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -tAc "$1"; }
 if grep -nE '^[^#]*[^|]\| *(grep -[a-zA-Z]*q|head -(n *)?1([^0-9]|$))' smoke.sh scripts/*.sh; then
   echo "FAIL: early-exiting pipe consumer above (use matches / sed -n 1p)"; exit 1
 fi
@@ -65,6 +66,11 @@ echo "== start panel (runs migrations) =="
 # Plain-HTTP development: the session cookie must not be Secure. 127.0.0.2
 # plays a trusted reverse proxy (curl --interface 127.0.0.2); requests from
 # 127.0.0.1 are direct clients whose X-Forwarded-For must be ignored.
+# W25 (R39): panel.toml keeps only what the process needs to start. The
+# sections after the first block are OBSOLETE on purpose (an upgraded
+# install's file): the first start imports the moved ones into 系统设置 once
+# (node domain from grpc.advertise, latency test URL, ACME directory, the
+# TEST release key), constants are ignored — both with a warning.
 cat >"$LOG/panel.toml" <<'TOML'
 [web]
 cookie_secure = false
@@ -74,24 +80,32 @@ bind = "127.0.0.1:9109"
 [tls_ask]
 bind = "127.0.0.1:8092"
 
-[sub]
-rate_per_token = 8
+# --- obsolete (W25) ---
+[grpc]
+advertise = "127.0.0.1:8443"
+server_name = "localhost"
+lease_seconds = 86400
 
-# W11 latency tests: a local test URL (the 204 server below), short cooldown.
+# W11 latency tests: a local test URL (the 204 server below).
 [probe]
 urls = ["http://127.0.0.1:18204/generate_204"]
 timeout_ms = 2000
-manual_cooldown_secs = 5
 
 # W10: agents of nodes with a TLS domain order from the local pebble CA
 # (docker, W10 section), never from Let's Encrypt.
 [acme]
 directory_url = "https://127.0.0.1:14000/dir"
 
-# W17: evaluate node alerts and deliver notifications every 5 s.
+[sub]
+rate_per_token = 8
+
 [alerts]
-eval_interval_secs = 5
+telegram_api_url = "https://tg.example.com"
 TOML
+# W25: the timers smoke shortens are built-in constants now; this TEST-ONLY
+# variable (logged at startup) shortens them: 8 subscription fetches per
+# token and window, a 5 s "立即测速" cooldown, node alerts every 5 s.
+SMOKE_LIMITS="sub_rate_per_token=8,probe_manual_cooldown_secs=5,alerts_eval_interval_secs=5"
 # Helper servers (payment mock, latency target) must die with this script
 # on EVERY exit path, a crash or kill -9 included: they inherit the caller's
 # file descriptors, so a leftover one would keep holding `flock smoke.lock`
@@ -117,8 +131,9 @@ class H(http.server.BaseHTTPRequestHandler):
 http.server.ThreadingHTTPServer(("127.0.0.1", 18204), H).serve_forever()
 ' >/dev/null 2>&1 &
 W11_PROBE_PID=$!
-# M6: the agent's TEST release key (testdata/, public on purpose) is the
-# panel's trusted key here; production configures the real one.
+# M6: the agent's TEST release key (testdata/, public on purpose) is
+# trusted here IN ADDITION to the official key compiled into the panel (W25:
+# obsolete [updates] release_keys, imported once into 系统设置 → 安全).
 TEST_RELEASE_PUB=$(cut -d' ' -f1 "$AGENT_DIR/testdata/TEST-ONLY-release.pub")
 printf '\n[updates]\nrelease_keys = ["%s TEST-ONLY"]\n' "$TEST_RELEASE_PUB" >>"$LOG/panel.toml"
 # R18-3: Alipay Face-to-Face against a local mock gateway, with throwaway
@@ -198,16 +213,19 @@ p["sign_type"] = "RSA2"; p["sign"] = base64.b64encode(sig).decode()
 if len(sys.argv) > 5: p["total_amount"] = sys.argv[5]  # tamper after signing
 print(urllib.parse.urlencode(p), end="")
 PY
-"$PANEL" -c "$LOG/panel.toml" serve >"$LOG/panel.log" 2>&1 &
-PANEL_PID=$!
+start_panel() {  # $1 = log file
+  AKARI_TEST_LIMITS="$SMOKE_LIMITS" "$PANEL" -c "$LOG/panel.toml" serve >"$1" 2>&1 &
+  PANEL_PID=$!
+  # Poll instead of a fixed sleep: migrations run before the listener binds.
+  for _ in $(seq 1 100); do
+    (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null && break
+    kill -0 "$PANEL_PID" 2>/dev/null || { echo "FAIL: panel exited during startup"; cat "$1"; exit 1; }
+    sleep 0.3
+  done
+  (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null || { echo "FAIL: panel not listening"; cat "$1"; exit 1; }
+}
+start_panel "$LOG/panel-first.log"
 trap 'cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
-# Poll instead of a fixed sleep: migrations run before the listener binds.
-for _ in $(seq 1 100); do
-  (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null && break
-  kill -0 "$PANEL_PID" 2>/dev/null || { echo "FAIL: panel exited during startup"; cat "$LOG/panel.log"; exit 1; }
-  sleep 0.3
-done
-(exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null || { echo "FAIL: panel not listening"; cat "$LOG/panel.log"; exit 1; }
 
 # Reset AFTER startup: fresh volumes have no tables until the panel migrates,
 # and Valkey rate-limit counters would poison the next run's login test.
@@ -217,12 +235,37 @@ docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE revoke
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE plans, node_groups, coupons, payment_methods CASCADE;" >/dev/null 2>&1 || true
 # R22 settings left behind by an aborted run (e.g. a node domain the agents
 # here cannot reach): back to "use panel.toml" (the trigger reloads them).
-docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "UPDATE panel_settings SET version = 0, main_domain = NULL, sub_domain = NULL, node_domain = NULL, trust_cloudflare = NULL, probe_interval_secs = NULL, probe_urls = NULL, probe_panel_tcp = NULL; TRUNCATE grpc_server_names;" >/dev/null 2>&1 || true
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "UPDATE panel_settings SET version = 0, main_domain = NULL, sub_domain = NULL, node_domain = NULL, trust_cloudflare = NULL, probe_interval_secs = NULL, probe_urls = NULL, probe_panel_tcp = NULL, site_name = NULL, cloudflare_ranges = NULL, install_tls_pin = NULL, install_fallback_url = NULL, acme_directory_url = NULL, acme_email = NULL, audit_retention_days = NULL, traffic_daily_retention_days = NULL, require_admin_2fa = NULL, remove_mode = NULL, extra_release_keys = NULL; TRUNCATE grpc_server_names, legacy_config_imports;" >/dev/null 2>&1 || true
 # W15 settings back to the defaults (off; version 0) and an empty outbox.
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM signup_settings; INSERT INTO signup_settings (id) VALUES (1); DELETE FROM smtp_settings; INSERT INTO smtp_settings (id) VALUES (1); TRUNCATE mail_outbox;" >/dev/null 2>&1 || true
 # W17: alert settings an aborted run may leave (a webhook to a dead receiver).
-docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE node_alerts, alert_notifications; UPDATE alert_settings SET version = 0, enabled = true, offline_secs = 300, webhook_enabled = false, webhook_url = NULL, webhook_secret_enc = NULL, telegram_enabled = false, telegram_chat_id = NULL, telegram_token_enc = NULL, email_enabled = false, email_to = '{}';" >/dev/null 2>&1 || true
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE node_alerts, alert_notifications; UPDATE alert_settings SET version = 0, enabled = true, offline_secs = 300, webhook_enabled = false, webhook_url = NULL, webhook_secret_enc = NULL, telegram_enabled = false, telegram_chat_id = NULL, telegram_token_enc = NULL, telegram_api_url = NULL, email_enabled = false, email_to = '{}';" >/dev/null 2>&1 || true
 vk flushdb >/dev/null
+
+echo "== W25: an old panel.toml on a clean database: obsolete keys imported once, constants ignored =="
+# The reset above cleared what the first start imported: start again so the
+# import runs against the clean database (what an upgrade does once).
+kill "$PANEL_PID" 2>/dev/null; wait "$PANEL_PID" 2>/dev/null || true
+start_panel "$LOG/panel.log"
+for k in grpc.advertise grpc.server_name probe.urls acme.directory_url updates.release_keys alerts.telegram_api_url; do
+  matches "panel.toml $k imported into 系统设置" <"$LOG/panel.log" || { echo "FAIL: $k not imported"; grep -i obsolete "$LOG/panel.log"; exit 1; }
+done
+for k in grpc.lease_seconds probe.timeout_ms sub.rate_per_token; do
+  matches "panel.toml $k is obsolete: the value is built in now" <"$LOG/panel.log" || { echo "FAIL: constant $k not warned about"; exit 1; }
+done
+matches "AKARI_TEST_LIMITS is set" <"$LOG/panel.log" || { echo "FAIL: test limits not announced"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.import' AND actor_login = 'system'")" = "1" ] \
+  || { echo "FAIL: import not audited once (actor system)"; exit 1; }
+[ "$(psql_q "SELECT node_domain || ' ' || array_to_string(probe_urls, ',') || ' ' || acme_directory_url FROM panel_settings")" \
+    = "127.0.0.1:8443 http://127.0.0.1:18204/generate_204 https://127.0.0.1:14000/dir" ] \
+  || { echo "FAIL: imported values: $(psql_q "SELECT * FROM panel_settings")"; exit 1; }
+[ "$(psql_q "SELECT extra_release_keys[1] FROM panel_settings")" = "$TEST_RELEASE_PUB TEST-ONLY" ] \
+  || { echo "FAIL: TEST release key not imported as an extra key"; exit 1; }
+[ "$(psql_q "SELECT telegram_api_url FROM alert_settings")" = "https://tg.example.com" ] \
+  || { echo "FAIL: alerts.telegram_api_url not imported into 告警"; exit 1; }
+[ "$(psql_q "SELECT string_agg(name || ':' || source, ',' ORDER BY name) FROM grpc_server_names")" = "localhost:config" ] \
+  || { echo "FAIL: grpc.server_name not recorded as a certificate name"; psql_q "SELECT * FROM grpc_server_names"; exit 1; }
+echo "w25 import: ok"
 
 echo "== first admin (env password) =="
 AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" admin add root | tee "$LOG/admin-add.out"
@@ -361,6 +404,21 @@ grep -q '"stage":"full"' /tmp/akari-smoke/last || { echo "FAIL: login with code 
   && [ "$(cat /tmp/akari-smoke/last)" = "$REJ401" ] || { echo "FAIL: TOTP code replay accepted"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/users")" = "200" ] || { echo "FAIL: admin API after TOTP login"; exit 1; }
 echo "2fa: ok (enrolled, code login, replay refused)"
+
+echo "-- W25: the imported settings through the API (database only; obsolete keys listed) --"
+[ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
+python3 - "$TEST_RELEASE_PUB" <<'PY' || { echo "FAIL: W25 settings view"; cat /tmp/akari-smoke/last; exit 1; }
+import json, sys
+v = json.load(open("/tmp/akari-smoke/last"))
+assert v["node"]["panel_addr"] == "127.0.0.1:8443" and v["node"]["source"] == "settings", v["node"]
+assert v["probe"]["urls"]["source"] == "settings", v["probe"]
+assert v["node_ops"]["acme_directory_url"] == "https://127.0.0.1:14000/dir", v["node_ops"]
+assert v["security"]["extra_release_keys"] == [sys.argv[1] + " TEST-ONLY"], v["security"]
+assert [k["official"] for k in v["security"]["release_keys"]] == [True, False], v["security"]
+for k in ("grpc.advertise", "acme.directory_url", "sub.rate_per_token", "updates.release_keys"):
+    assert k in v["obsolete_config_keys"], v["obsolete_config_keys"]
+PY
+echo "w25 settings api: ok"
 
 echo "== auth lives at /{prefix}/auth, not /api/v1/auth (REVIEW P0 #1) =="
 # Nothing may depend on the wrong path: it must stay a rejection.
@@ -987,7 +1045,7 @@ put_probe() { code -b "$JAR" -X PUT "$BASE/api/v1/settings/probe" -H 'Content-Ty
 [ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
 SV=$(python3 -c "
 import json; v = json.load(open('/tmp/akari-smoke/last')); p = v['probe']
-assert p['urls']['source'] == 'config' and p['urls']['effective'] == ['http://127.0.0.1:18204/generate_204'], p
+assert p['urls']['source'] == 'settings' and p['urls']['effective'] == ['http://127.0.0.1:18204/generate_204'], p
 assert p['interval_secs']['effective'] == 18000 and p['panel_tcp']['effective'] is True, p
 print(v['version'])") || { echo "FAIL: probe settings view"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(put_probe "{\"version\":$SV,\"interval_secs\":60,\"urls\":null,\"panel_tcp\":null}")" = "400" ] \
@@ -1023,18 +1081,18 @@ if need_agent cap:latency "W12 probe settings reach the agent"; then
     || { echo "FAIL: the agent did not test the URL from 系统设置"; psql_q "SELECT * FROM node_latency WHERE source='agent'"; exit 1; }
   echo "probe settings reached the agent: ok"
 fi
-# Back to panel.toml's [probe] through the CLI (audited as cli; the running
-# panel reloads through the notification).
+# Back to the built-in defaults through the CLI (audited as cli; the
+# running panel reloads through the notification).
 "$PANEL" settings unset probe >"$LOG/unset-probe.out" || { echo "FAIL: settings unset probe"; cat "$LOG/unset-probe.out"; exit 1; }
 "$PANEL" settings show >"$LOG/settings-show.out"
-matches 'probe interval: *(not set) *-> 18000s \[Config\]' <"$LOG/settings-show.out" \
+matches 'probe interval: *18000s \[Default\]' <"$LOG/settings-show.out" \
   || { echo "FAIL: settings show (probe)"; cat "$LOG/settings-show.out"; exit 1; }
 for _ in $(seq 1 20); do
   code -b "$JAR" "$BASE/api/v1/settings" >/dev/null
-  python3 -c "import json; p = json.load(open('/tmp/akari-smoke/last'))['probe']; assert p['urls']['source'] == 'config'" 2>/dev/null && break
+  python3 -c "import json; p = json.load(open('/tmp/akari-smoke/last'))['probe']; assert p['urls']['source'] == 'default'" 2>/dev/null && break
   sleep 0.5
 done
-python3 -c "import json; p = json.load(open('/tmp/akari-smoke/last'))['probe']; assert p['urls']['source'] == 'config' and p['interval_secs']['effective'] == 18000, p" \
+python3 -c "import json; p = json.load(open('/tmp/akari-smoke/last'))['probe']; assert p['urls']['source'] == 'default' and p['interval_secs']['effective'] == 18000, p" \
   || { echo "FAIL: running panel did not reload the unset probe settings"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='settings.probe.update' AND actor_login='cli'")" = "1" ] \
   || { echo "FAIL: CLI probe unset not audited"; exit 1; }
@@ -1269,7 +1327,7 @@ mp_mail admin@akari.test 1 | sed -n 1p | matches '^Akari Smoke 测试邮件$' ||
 [ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
 VER=$(last_json "d['version']")
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings" -H "$J" \
-    -d "{\"version\":$VER,\"main_domain\":\"127.0.0.1:8080\",\"sub_domain\":null,\"node_domain\":null,\"trust_cloudflare\":null}")" = "200" ] \
+    -d "{\"version\":$VER,\"main_domain\":\"127.0.0.1:8080\",\"sub_domain\":null,\"node_domain\":\"127.0.0.1:8443\",\"trust_cloudflare\":null}")" = "200" ] \
   || { echo "FAIL: set main domain"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/signup" -H "$J" -d "{\"version\":0,$SIGNUP_ON}")" = "200" ] \
   || { echo "FAIL: enable registration + reset"; cat /tmp/akari-smoke/last; exit 1; }
@@ -2137,33 +2195,48 @@ bind = "127.0.0.1:8081"
 cookie_secure = false
 [grpc]
 bind = "127.0.0.1:8444"
-advertise = "127.0.0.1:8444"
-[agent]
-cert_validity_secs = 60
-[auth]
-require_admin_2fa = true
 TOML
-"$PANEL" -c "$LOG/panel-b.toml" serve >"$LOG/panel-b.log" 2>&1 &
+# W25: certificate validity is a built-in constant (90 days); this
+# instance shortens it with the TEST-ONLY limits variable.
+AKARI_TEST_LIMITS="cert_validity_secs=60" "$PANEL" -c "$LOG/panel-b.toml" serve >"$LOG/panel-b.log" 2>&1 &
 PANEL_B=$!
 trap 'cleanup_upd; kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
 for _ in $(seq 1 20); do [ "$(code "http://127.0.0.1:8081/$PREFIX/healthz")" = "200" ] && break; sleep 0.5; done
-# R18 opt-in policy on instance B (auth.require_admin_2fa): an admin without
-# 2FA only gets an enrollment-only session there, a full one on A.
+# R18 opt-in policy (W25: 系统设置 → 安全, database): an admin without 2FA
+# gets a full session while it is off; saved on instance A, it confines the
+# admin on instance B as well (notify → reload on every instance).
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
     -d '{"login":"admin-no2fa","password":"admin-no2fa-pw","role":"admin"}')" = "201" ] || { echo "FAIL: create 2nd admin"; exit 1; }
 ADMIN2=$(python3 -c "import json;d=json.load(open('/tmp/akari-smoke/last'));assert 'totp_enrollment_code' not in d;print(d['id'])") \
   || { echo "FAIL: create admin still returns an enrollment code"; exit 1; }
-A2JAR="$LOG/admin2-cookies"
-[ "$(code -c "$A2JAR" -X POST "http://127.0.0.1:8081/$PREFIX/auth/login" -H 'Content-Type: application/json' \
-    -d '{"login":"admin-no2fa","password":"admin-no2fa-pw"}')" = "200" ] && grep -q '"stage":"enroll"' /tmp/akari-smoke/last \
-  || { echo "FAIL: require_admin_2fa did not confine the admin"; exit 1; }
-[ "$(code -b "$A2JAR" "http://127.0.0.1:8081/$PREFIX/api/v1/users")" = "401" ] || { echo "FAIL: enrollment-only session listed users"; exit 1; }
 [ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
     -d '{"login":"admin-no2fa","password":"admin-no2fa-pw"}')" = "200" ] && grep -q '"stage":"full"' /tmp/akari-smoke/last \
-  || { echo "FAIL: optional-2FA instance confined the admin"; exit 1; }
+  || { echo "FAIL: optional 2FA confined the admin"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
+SV=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['version'])")
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/security" -H 'Content-Type: application/json' \
+    -d "{\"version\":$SV,\"require_admin_2fa\":true,\"extra_release_keys\":[\"$TEST_RELEASE_PUB TEST-ONLY\"]}")" = "200" ] \
+  || { echo "FAIL: require admin 2FA: $(cat /tmp/akari-smoke/last)"; exit 1; }
+A2JAR="$LOG/admin2-cookies"
+for _ in $(seq 1 20); do
+  [ "$(code -c "$A2JAR" -X POST "http://127.0.0.1:8081/$PREFIX/auth/login" -H 'Content-Type: application/json' \
+      -d '{"login":"admin-no2fa","password":"admin-no2fa-pw"}')" = "200" ] && grep -q '"stage":"enroll"' /tmp/akari-smoke/last && break
+  sleep 0.25
+done
+grep -q '"stage":"enroll"' /tmp/akari-smoke/last || { echo "FAIL: require_admin_2fa (saved on A) did not confine the admin on B"; exit 1; }
+[ "$(code -b "$A2JAR" "http://127.0.0.1:8081/$PREFIX/api/v1/users")" = "401" ] || { echo "FAIL: enrollment-only session listed users"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.security.update'")" = "1" ] || { echo "FAIL: security settings not audited"; exit 1; }
+SV=$(psql_q "SELECT version FROM panel_settings")
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/security" -H 'Content-Type: application/json' \
+    -d "{\"version\":$SV,\"require_admin_2fa\":false,\"extra_release_keys\":[\"$TEST_RELEASE_PUB TEST-ONLY\"]}")" = "200" ] \
+  || { echo "FAIL: optional admin 2FA again: $(cat /tmp/akari-smoke/last)"; exit 1; }
 # Keep root the last admin (S4-2 assertions below).
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$ADMIN2")" = "204" ] || { echo "FAIL: delete 2nd admin"; exit 1; }
 "$PANEL" -c "$LOG/panel-b.toml" node add renew-node --out "$LOG/renew-bootstrap.toml" >/dev/null
+# The node domain is one database setting (instance A's port): this agent
+# dials instance B (60 s certificates) under the same certificate name.
+sed -i 's/^panel_addr = "127.0.0.1:8443"$/panel_addr = "127.0.0.1:8444"/' "$LOG/renew-bootstrap.toml"
+grep -q '^panel_addr = "127.0.0.1:8444"$' "$LOG/renew-bootstrap.toml" || { echo "FAIL: renew bootstrap panel_addr"; cat "$LOG/renew-bootstrap.toml"; exit 1; }
 RENEW_ID=$("$PANEL" node list | awk '$2=="renew-node"{print $1}')
 "$AGENT" -config "$LOG/renew-bootstrap.toml" -state-dir "$LOG/state-renew" >"$LOG/renew-agent.log" 2>&1 &
 AGENT_PID=$!
@@ -2596,17 +2669,18 @@ echo "== R22 系统设置: domains, Caddy on-demand ask, host gate, node domain 
 # Earlier sections (W15) may have audited settings changes of their own.
 R22_AUDIT0=$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.update'")
 R22_CLI0=$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.update' AND actor_login = 'cli'")
-# An agent enrolled BEFORE the change (bootstrap server_name = panel.toml's
-# grpc.server_name, "localhost"): it must keep connecting afterwards.
+# An agent enrolled BEFORE the change (bootstrap server_name = the node
+# domain imported from the old grpc.advertise, "127.0.0.1"): it must keep
+# connecting afterwards.
 "$PANEL" node add r22-old --out "$LOG/r22-old.toml" >/dev/null
-grep -q '^server_name = "localhost"$' "$LOG/r22-old.toml" || { echo "FAIL: CLI bootstrap server_name"; exit 1; }
+grep -q '^server_name = "127.0.0.1"$' "$LOG/r22-old.toml" || { echo "FAIL: CLI bootstrap server_name"; exit 1; }
 "$AGENT" -config "$LOG/r22-old.toml" -state-dir "$LOG/state-r22-old" >"$LOG/r22-old-agent.log" 2>&1 &
 AGENT_PID=$!
 for _ in $(seq 1 30); do grep -q "channel established" "$LOG/r22-old-agent.log" && break; sleep 0.5; done
 grep -q "channel established" "$LOG/r22-old-agent.log" || { echo "FAIL: r22-old agent never connected"; exit 1; }
 kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
 AGENT_PID=""
-[ "$(psql_q "SELECT server_name FROM nodes WHERE name='r22-old'")" = "localhost" ] || { echo "FAIL: enrolled server name not recorded"; exit 1; }
+[ "$(psql_q "SELECT server_name FROM nodes WHERE name='r22-old'")" = "127.0.0.1" ] || { echo "FAIL: enrolled server name not recorded"; exit 1; }
 
 [ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
 VER=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['version'])")
@@ -2757,14 +2831,14 @@ for _ in $(seq 1 40); do [ "$(psql_q "SELECT status FROM nodes WHERE id='$R22_ID
   || { echo "FAIL: agent with the new server name did not connect"; docker logs akari-smoke-r22 2>&1 | tail -8; exit 1; }
 [ "$(psql_q "SELECT server_name FROM nodes WHERE id='$R22_ID'")" = "grpc.akari.test" ] || { echo "FAIL: new server name not recorded"; exit 1; }
 docker rm -f akari-smoke-r22 >/dev/null
-# The agent enrolled before the change (server name localhost) still connects.
+# The agent enrolled before the change (server name 127.0.0.1) still connects.
 "$AGENT" -config "$LOG/r22-old.toml" -state-dir "$LOG/state-r22-old" >"$LOG/r22-old-agent2.log" 2>&1 &
 AGENT_PID=$!
 for _ in $(seq 1 30); do grep -q "channel established" "$LOG/r22-old-agent2.log" && break; sleep 0.5; done
 grep -q "channel established" "$LOG/r22-old-agent2.log" || { echo "FAIL: old-server-name agent lost after the change"; tail -5 "$LOG/r22-old-agent2.log"; exit 1; }
 kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
 AGENT_PID=""
-# The current node name cannot be removed; the panel.toml one neither.
+# The current node name cannot be removed; the built-in one neither.
 for n in grpc.akari.test localhost; do
   [ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/server-names/remove" -H 'Content-Type: application/json' \
       -d "{\"name\":\"$n\",\"confirm\":true}")" = "400" ] || { echo "FAIL: locked server name $n removable"; exit 1; }
@@ -2779,6 +2853,17 @@ for _ in $(seq 1 20); do [ "$(code "$ASK?domain=myapp.test")" = "404" ] && break
 [ "$(code "$ASK?domain=myapp.test")" = "404" ] || { echo "FAIL: running panel did not pick up the CLI change"; exit 1; }
 [ "$(code -H 'Host: evil.test' "$BASE/healthz")" = "200" ] || { echo "FAIL: host gate still on after unset"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM grpc_server_names WHERE name = 'grpc.akari.test'")" = "1" ] || { echo "FAIL: server name dropped implicitly"; exit 1; }
+# W25: no node domain = no tokens (no fallback); `settings set` (headless
+# setup) fixes that, audited as cli.
+"$PANEL" node add r22-none --out "$LOG/r22-none.toml" >"$LOG/r22-none.out" 2>&1 \
+  && { echo "FAIL: a token without a node domain"; exit 1; }
+matches '节点通信域名未设置' <"$LOG/r22-none.out" || { echo "FAIL: unset node domain error"; cat "$LOG/r22-none.out"; exit 1; }
+"$PANEL" settings set node 203.0.113.9 >/dev/null || { echo "FAIL: settings set node"; exit 1; }
+"$PANEL" settings show | matches 'node domain: *203.0.113.9 *-> 203.0.113.9:8443 / 203.0.113.9' \
+  || { echo "FAIL: settings show after set"; "$PANEL" settings show; exit 1; }
+"$PANEL" settings unset node >/dev/null || { echo "FAIL: settings unset node"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.update' AND actor_login = 'cli'")" = "$((R22_CLI0 + 3))" ] \
+  || { echo "FAIL: CLI set/unset not audited"; exit 1; }
 for p in "$PREFIX"; do grep -qF "$p" "$LOG/panel.log" && { echo "FAIL: prefix in the panel log"; exit 1; }; done
 echo "r22 settings: ok"
 
@@ -2837,14 +2922,28 @@ grep -q 'configuration OK' "$LOG/config-check.out" || { echo "FAIL: config check
 grep -qE '^# payment method .* kind=alipay_f2f enabled=true .*secrets=<redacted, set>' "$LOG/config-check.out" \
   || { echo "FAIL: config check lacks the payment methods"; cat "$LOG/config-check.out"; exit 1; }
 grep -q 'PRIVATE' "$LOG/config-check.out" && { echo "FAIL: a key in config check"; exit 1; }
-printf '[grpc]\nlease_seconds = 5\n' >"$LOG/bad.toml"
+# W25: obsolete keys are warnings (never errors) naming where they went; the
+# printed effective config holds none of them; the database side is listed.
+matches 'warning: grpc.advertise is obsolete: it is set in 系统设置 → 节点通信' <"$LOG/config-check.out" \
+  || { echo "FAIL: config check does not list the obsolete keys"; cat "$LOG/config-check.out"; exit 1; }
+matches 'warning: grpc.lease_seconds is obsolete: the value is built in now' <"$LOG/config-check.out" \
+  || { echo "FAIL: config check does not list the obsolete constants"; exit 1; }
+matches -E '^(advertise|lease_seconds|release_keys|directory_url) *=' <"$LOG/config-check.out" \
+  && { echo "FAIL: config check prints an obsolete key as configuration"; exit 1; }
+matches -F '# --- 系统设置 (database; the only source of these values) ---' <"$LOG/config-check.out" \
+  || { echo "FAIL: config check lacks the database settings"; exit 1; }
+printf '[web]\nbind = "127.0.0.1:0"\n[grpc]\nlease_seconds = 5\n' >"$LOG/bad.toml"
 "$PANEL" -c "$LOG/bad.toml" config check >"$LOG/bad.out" 2>&1 \
   && { echo "FAIL: invalid config accepted"; exit 1; }
-grep -q 'lease_seconds' "$LOG/bad.out" || { echo "FAIL: invalid config error not readable"; cat "$LOG/bad.out"; exit 1; }
+grep -q 'web.bind: port 0' "$LOG/bad.out" || { echo "FAIL: invalid config error not readable"; cat "$LOG/bad.out"; exit 1; }
+printf '[web]\nbnd = "127.0.0.1:1"\n' >"$LOG/typo.toml"
+"$PANEL" -c "$LOG/typo.toml" config check >"$LOG/typo.out" 2>&1 \
+  && { echo "FAIL: a typo in a kept section accepted"; exit 1; }
+grep -q 'unknown field' "$LOG/typo.out" || { echo "FAIL: typo error not readable"; cat "$LOG/typo.out"; exit 1; }
 # AKARI_CONFIG replaces -c (compose run/exec drop the service command).
 AKARI_CONFIG="$LOG/bad.toml" "$PANEL" config check >"$LOG/bad-env.out" 2>&1 \
   && { echo "FAIL: AKARI_CONFIG ignored (invalid config accepted)"; exit 1; }
-grep -q 'lease_seconds' "$LOG/bad-env.out" || { echo "FAIL: AKARI_CONFIG not honored"; cat "$LOG/bad-env.out"; exit 1; }
+grep -q 'web.bind: port 0' "$LOG/bad-env.out" || { echo "FAIL: AKARI_CONFIG not honored"; cat "$LOG/bad-env.out"; exit 1; }
 "$PANEL" --version | matches -E '^akari [0-9]+\.[0-9]+\.[0-9]+ \(([0-9a-f]+|unknown)\)' \
   || { echo "FAIL: akari --version"; exit 1; }
 # Metrics live on their own listener only; the public port has no /metrics.
@@ -2980,6 +3079,8 @@ node spa/scripts/check-bundles.mjs "$SERVED/app" "$SERVED/admin" || { echo "FAIL
 echo "admin bundle: ok"
 
 echo "== S4-3 SIGTERM: agent streams end, final flush, clean exit =="
+# R22 left no node domain (W25: no tokens without one): set it for this node.
+"$PANEL" settings set node 127.0.0.1:8443 >/dev/null || { echo "FAIL: settings set node (S4-3)"; exit 1; }
 "$PANEL" node add term-node --out "$LOG/term-bootstrap.toml" >/dev/null
 "$AGENT" -config "$LOG/term-bootstrap.toml" -state-dir "$LOG/state-term" >"$LOG/term-agent.log" 2>&1 &
 AGENT_PID=$!
@@ -2998,6 +3099,8 @@ done
 grep -q 'panel shutting down' "$LOG/term-agent.log" || { echo "FAIL: agent stream not ended with 'panel shutting down'"; grep 'channel closed' "$LOG/term-agent.log" | tail -2; exit 1; }
 kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
 AGENT_PID=""
+# Back to no node domain: the restart below must not bring grpc.advertise back.
+"$PANEL" settings unset node >/dev/null || { echo "FAIL: settings unset node (S4-3)"; exit 1; }
 echo "sigterm: ok"
 
 echo "== M1-9 rotate-prefix: the old prefix is a rejection after restart =="
@@ -3006,10 +3109,16 @@ OLD_BASE="$BASE"
 PREFIX=$("$PANEL" info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')
 BASE="http://127.0.0.1:8080/$PREFIX"
 [ "$BASE" != "$OLD_BASE" ] || { echo "FAIL: prefix unchanged"; exit 1; }
-"$PANEL" -c "$LOG/panel.toml" serve >"$LOG/panel2.log" 2>&1 &
-PANEL_PID=$!
+start_panel "$LOG/panel2.log"
 for _ in $(seq 1 20); do [ "$(code "$BASE/healthz")" = "200" ] && break; sleep 0.5; done
 [ "$(code "$BASE/healthz")" = "200" ] || { echo "FAIL: new prefix not served"; exit 1; }
+# W25: a later start never imports again (even though `settings unset all`
+# cleared the imported values meanwhile): the old keys are only warned about.
+matches "panel.toml grpc.advertise is obsolete and ignored" <"$LOG/panel2.log" \
+  || { echo "FAIL: second start does not warn about the obsolete keys"; grep -i obsolete "$LOG/panel2.log"; exit 1; }
+matches "imported into 系统设置" <"$LOG/panel2.log" && { echo "FAIL: obsolete keys imported twice"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.import'")" = "1" ] || { echo "FAIL: a second import was audited"; exit 1; }
+[ "$(psql_q "SELECT coalesce(node_domain, '-') FROM panel_settings")" = "-" ] || { echo "FAIL: unset node domain came back from panel.toml"; exit 1; }
 [ "$(fp "$OLD_BASE/healthz")" = "$REJ" ] || { echo "FAIL: old prefix still answers"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'secrets.rotate_prefix'")" = "1" ] || { echo "FAIL: rotate-prefix not audited"; exit 1; }
 for p in "$PREFIX" "${OLD_BASE##*/}"; do

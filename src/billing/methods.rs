@@ -542,7 +542,7 @@ pub async fn list(State(state): State<AppState>, user: AuthUser) -> Result<Json<
     let mut c = state.pg().acquire().await?;
     let rows = load_all(&mut c).await?;
     let mut warnings = Vec::new();
-    if state.cfg().payments.is_some() {
+    if state.cfg().legacy.keys.contains_key("payments.*") {
         warnings.push(
             "panel.toml 中仍有已废弃的 [payments] 段：支付配置只以本页为准，请删除该段与密钥文件"
                 .to_string(),
@@ -727,7 +727,7 @@ pub fn legacy_request(l: &LegacyAlipay) -> Result<MethodReq, String> {
 /// it cannot be imported) the section is ignored with a warning. Never
 /// fails the start.
 pub async fn import_legacy(state: &AppState) {
-    let Some(raw) = state.cfg().payments.clone() else {
+    let Some(raw) = state.cfg().legacy.keys.get("payments.*").cloned() else {
         return;
     };
     let legacy: LegacyPayments = match raw.try_into() {

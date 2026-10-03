@@ -1108,7 +1108,7 @@ impl Session {
             state,
         });
         lock_or_recover(&sess.sync).remove_rebuild =
-            sess.state.cfg().agent.remove_mode == crate::config::RemoveMode::Rebuild;
+            sess.state.settings().get().remove_mode == crate::config::RemoveMode::Rebuild;
         sess
     }
 
@@ -1932,8 +1932,8 @@ pub(crate) struct CreditWindow {
 impl CreditWindow {
     pub(crate) fn from_cfg(cfg: &crate::config::PanelConfig) -> Self {
         Self {
-            lease_secs: cfg.grpc.lease_seconds(),
-            burst_secs: cfg.traffic.node_burst_secs.max(1),
+            lease_secs: cfg.limits.lease_seconds(),
+            burst_secs: cfg.limits.traffic_node_burst_secs.max(1),
         }
     }
 }
@@ -2254,8 +2254,8 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
     };
     sess.deleting.store(desired.deleting, Ordering::SeqCst);
     if let Some(a) = desired.snapshot.acme.as_mut() {
-        a.directory_url = state.cfg().acme.directory_url.clone();
-        a.email = state.cfg().acme.email.clone();
+        a.directory_url = state.settings().get().acme_directory_url.clone();
+        a.email = state.settings().get().acme_email.clone();
     }
     if sess.marked_online.load(Ordering::SeqCst)
         && desired
@@ -2356,12 +2356,12 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
         mark_delete_acked(state.pg(), node_id, want).await;
     }
     if grant {
-        let secs = state.cfg().grpc.lease_seconds();
+        let secs = state.cfg().limits.lease_seconds();
         sess.send(
             &guard,
             DownMsg::Lease(LeaseGrant {
                 duration_seconds: secs,
-                remove_mode: state.cfg().agent.remove_mode.proto() as i32,
+                remove_mode: state.settings().get().remove_mode.proto() as i32,
             }),
         )
         .await?;

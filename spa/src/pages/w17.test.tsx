@@ -261,6 +261,8 @@ const settings = (over: Partial<AlertSettings> = {}): AlertSettings => ({
   telegram_enabled: false,
   telegram_chat_id: null,
   telegram_token_set: true,
+  telegram_api_url: null,
+  telegram_api_default: "https://api.telegram.org",
   webhook_enabled: false,
   webhook_url: null,
   webhook_secret_set: false,
@@ -344,6 +346,11 @@ describe("console alert center", () => {
     fireEvent.change(cpu, { target: { value: "" } });
     fireEvent.click(screen.getByLabelText("通过 Telegram 通知"));
     fireEvent.change(screen.getByLabelText("Chat ID"), { target: { value: "-100123" } });
+    // W25: the Bot API origin (was panel.toml [alerts] telegram_api_url).
+    expect(screen.getByLabelText("Telegram API 地址").getAttribute("placeholder")).toBe(
+      "留空 = https://api.telegram.org",
+    );
+    fireEvent.change(screen.getByLabelText("Telegram API 地址"), { target: { value: " https://tg.example.com " } });
     fireEvent.click(screen.getByRole("button", { name: "随机生成" }));
     fireEvent.change(screen.getByLabelText("URL"), { target: { value: "https://hooks.example.com/a" } });
     fireEvent.click(screen.getByRole("button", { name: "保存告警设置" }));
@@ -353,6 +360,7 @@ describe("console alert center", () => {
     expect(body.cpu_percent).toBeNull();
     expect(body.telegram_enabled).toBe(true);
     expect(body.telegram_chat_id).toBe("-100123");
+    expect(body.telegram_api_url).toBe("https://tg.example.com");
     expect("telegram_token" in body).toBe(false);
     expect(body.webhook_secret).toMatch(/^[0-9a-f]{32}$/);
     expect(body.email_to).toEqual([]);
@@ -382,6 +390,7 @@ describe("console alert center", () => {
       telegram_chat_id: "",
       telegram_token: "",
       telegram_clear: true,
+      telegram_api_url: "",
       webhook_enabled: false,
       webhook_url: "",
       webhook_secret: "",
@@ -391,6 +400,7 @@ describe("console alert center", () => {
     expect(toBody(form, 1)).toBe("离线判定必须是整数（留空表示关闭）");
     const ok = toBody({ ...form, offline_secs: "60" }, 1) as Record<string, unknown>;
     expect(ok.telegram_token).toBeNull();
+    expect(ok.telegram_api_url).toBeNull();
     expect(ok.email_to).toEqual(["a@example.com", "b@example.com"]);
     expect(toBody({ ...form, offline_secs: "60", cpu_minutes: "" }, 1)).toBe("CPU 持续分钟必须是整数");
   });

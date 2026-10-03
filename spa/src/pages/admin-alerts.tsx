@@ -68,6 +68,8 @@ export interface AlertSettings {
   telegram_enabled: boolean;
   telegram_chat_id: string | null;
   telegram_token_set: boolean;
+  telegram_api_url: string | null;
+  telegram_api_default: string;
   webhook_enabled: boolean;
   webhook_url: string | null;
   webhook_secret_set: boolean;
@@ -340,6 +342,7 @@ interface Form {
   telegram_chat_id: string;
   telegram_token: string;
   telegram_clear: boolean;
+  telegram_api_url: string;
   webhook_enabled: boolean;
   webhook_url: string;
   webhook_secret: string;
@@ -365,6 +368,7 @@ function toForm(s: AlertSettings): Form {
     telegram_chat_id: s.telegram_chat_id ?? "",
     telegram_token: "",
     telegram_clear: false,
+    telegram_api_url: s.telegram_api_url ?? "",
     webhook_enabled: s.webhook_enabled,
     webhook_url: s.webhook_url ?? "",
     webhook_secret: "",
@@ -398,6 +402,7 @@ export function toBody(f: Form, version: number): Record<string, unknown> | stri
     notify_resolved: f.notify_resolved,
     telegram_enabled: f.telegram_enabled,
     telegram_chat_id: f.telegram_chat_id.trim() || null,
+    telegram_api_url: f.telegram_api_url.trim() || null,
     webhook_enabled: f.webhook_enabled,
     webhook_url: f.webhook_url.trim() || null,
     email_enabled: f.email_enabled,
@@ -629,6 +634,18 @@ export function AlertSettingsCard() {
                   />
                 )}
               </div>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="as-tg-api">Telegram API 地址</Label>
+              <Input
+                id="as-tg-api"
+                value={form.telegram_api_url}
+                placeholder={`留空 = ${s.telegram_api_default}`}
+                onChange={(e) => set("telegram_api_url")(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                面板所在网络无法访问 Telegram 时，填写自建 Bot API 服务器的 https 地址（只含域名与端口）。
+              </p>
             </div>
             <p className="text-xs text-muted-foreground">
               面板只主动调用 Telegram sendMessage，不接收消息。Token 加密保存，不会再次显示。

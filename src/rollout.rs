@@ -1248,8 +1248,9 @@ mod db_tests {
         };
         let signer = Signer::new();
         let line = signer.config_line();
-        let state =
-            AppState::for_test_with(db.pool.clone(), |c| c.updates.release_keys = vec![line]).await;
+        let state = AppState::for_test(db.pool.clone()).await;
+        db.settings(&state, &format!("extra_release_keys = ARRAY['{line}']"))
+            .await;
         let c = admin_client(&state, &db).await;
         let bin = vec![7u8; crate::updates::CHUNK + 100]; // two chunks
                                                           // Unsigned / wrongly signed / mismatching binary refused.
@@ -1465,10 +1466,9 @@ mod db_tests {
         };
         let signer = Signer::new();
         let line = signer.config_line();
-        let h = crate::testdb::fake_agent::PanelHarness::start_with(&db, |c| {
-            c.updates.release_keys = vec![line]
-        })
-        .await;
+        let h = crate::testdb::fake_agent::PanelHarness::start(&db).await;
+        db.settings(&h.state, &format!("extra_release_keys = ARRAY['{line}']"))
+            .await;
         let c = admin_client(&h.state, &db).await;
         let bin: Vec<u8> = (0..(2 * crate::updates::CHUNK + 17))
             .map(|i| (i % 251) as u8)
@@ -1513,10 +1513,9 @@ mod db_tests {
         };
         let signer = Signer::new();
         let line = signer.config_line();
-        let h = crate::testdb::fake_agent::PanelHarness::start_with(&db, |c| {
-            c.updates.release_keys = vec![line]
-        })
-        .await;
+        let h = crate::testdb::fake_agent::PanelHarness::start(&db).await;
+        db.settings(&h.state, &format!("extra_release_keys = ARRAY['{line}']"))
+            .await;
         let listener = crate::notify::start(h.state.clone()).await;
         let c = admin_client(&h.state, &db).await;
         upload(&c, h.state.route_prefix(), &signer, "v1.1.0", b"new agent").await;
@@ -1574,8 +1573,9 @@ mod db_tests {
         };
         let signer = Signer::new();
         let line = signer.config_line();
-        let state =
-            AppState::for_test_with(db.pool.clone(), |c| c.updates.release_keys = vec![line]).await;
+        let state = AppState::for_test(db.pool.clone()).await;
+        db.settings(&state, &format!("extra_release_keys = ARRAY['{line}']"))
+            .await;
         let c = admin_client(&state, &db).await;
         upload(&c, "test", &signer, "v1.1.0", b"agent").await;
         let mut nodes = Vec::new();

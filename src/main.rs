@@ -69,7 +69,10 @@ enum Cmd {
 enum SettingsCmd {
     /// Show the stored settings and the effective values
     Show,
-    /// Clear a stored setting so panel.toml applies again (audited):
+    /// Set a domain or the Cloudflare switch (audited): main | sub | node
+    /// <host[:port]>, trust-cloudflare <true|false>
+    Set { field: String, value: String },
+    /// Clear a stored setting back to the built-in default (audited):
     /// main | sub | node | trust-cloudflare | probe | all
     Unset { field: String },
 }
@@ -179,6 +182,7 @@ async fn main() -> Result<()> {
         },
         Cmd::Settings { action } => match action {
             SettingsCmd::Show => nodeops::settings_show(cfg).await,
+            SettingsCmd::Set { field, value } => nodeops::settings_set(cfg, field, value).await,
             SettingsCmd::Unset { field } => nodeops::settings_unset(cfg, field).await,
         },
     }
@@ -195,7 +199,8 @@ fn validate_startup(cfg: &PanelConfig) -> Result<Vec<String>> {
 }
 
 fn config_check(cfg: &PanelConfig) -> Result<()> {
-    let warnings = validate_startup(cfg)?;
+    let mut warnings = validate_startup(cfg)?;
+    warnings.extend(cfg.obsolete_warnings());
     print!("{}", cfg.effective_toml()?);
     for w in &warnings {
         eprintln!("warning: {w}");
@@ -213,7 +218,6 @@ fn info(cfg: PanelConfig) -> Result<()> {
     println!("data dir:       {}", cfg.data_dir.display());
     println!("web bind:       {}", cfg.web.bind);
     println!("grpc bind:      {}", cfg.grpc.bind);
-    println!("grpc advertise: {}", cfg.grpc.advertise);
     println!("route prefix:   /{}", install.route_prefix);
     Ok(())
 }
@@ -247,9 +251,11 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
 
     let valkey = state::connect_valkey(&cfg).await?;
     let state = state::AppState::new(cfg.clone(), install, pg, valkey);
-    // W24: an obsolete panel.toml [payments.alipay] is imported once into
-    // an empty 系统设置 → 支付 (never an error; warned either way).
+    // W24/W25 (R39): obsolete panel.toml keys are imported once into
+    // 系统设置 ([payments.alipay] into an empty 支付) and then ignored with a
+    // warning; never an error.
     akari_panel::billing::methods::import_legacy(&state).await;
+    akari_panel::settings::import_legacy(&state).await;
     // R22: database settings and the gRPC certificate covering every
     // recorded server name, before any agent can connect.
     akari_panel::settings::init(&state).await?;

@@ -398,9 +398,8 @@ pub struct Prepared {
 }
 
 pub async fn prepare(state: &AppState, req: &InstallReq) -> Result<Prepared, ApiError> {
-    let cfg = &state.cfg().install;
-    // R22: the main domain (system settings, else install.public_url),
-    // else the admin's browser origin.
+    let settings = state.settings().get();
+    // R22: the main domain (系统设置), else the admin's browser origin.
     let raw = match state.settings().get().install_origin() {
         Some(o) => o,
         None => req.origin.clone().ok_or_else(|| {
@@ -413,15 +412,15 @@ pub async fn prepare(state: &AppState, req: &InstallReq) -> Result<Prepared, Api
     let origin = parse_origin(&raw)
         .map_err(|e| bad_request!("install.origin_invalid", "origin: {e}", e = e))?;
     let mut warnings = Vec::new();
-    let pin = if !cfg.tls_pin.is_empty() {
-        Some(cfg.tls_pin.clone())
+    let pin = if let Some(pin) = &settings.install_tls_pin {
+        Some(pin.clone())
     } else {
         match probe_origin(&origin).await {
             Ok(p) => p,
             Err(e) => {
                 warnings.push(format!(
                     "无法检查 {} 的 TLS 证书（{e}）；安装命令按公共 CA 签发的证书生成。\
-                     如果面板使用自签名证书，请在 panel.toml 设置 install.tls_pin",
+                     如果面板使用自签名证书，请在 系统设置 → 节点通信 填写安装命令公钥钉扎",
                     origin.as_string()
                 ));
                 None
@@ -458,7 +457,7 @@ pub async fn apply_issue(
         conn,
         actor,
         node,
-        state.cfg().install.token_ttl_secs,
+        state.cfg().limits.install_token_ttl_secs,
         Some(p.link()),
         &endpoint,
     )
@@ -489,13 +488,13 @@ pub async fn view(
         ),
     };
     let releases = latest_releases(state.pg()).await?;
-    let fallback = Some(state.cfg().install.fallback_binary_url.clone()).filter(|u| !u.is_empty());
+    let fallback = state.settings().get().install_fallback_url.clone();
     let mut warnings = p.warnings;
     for a in ARCHES {
         if !releases.contains_key(a) && fallback.is_none() {
             warnings.push(format!(
-                "没有 linux/{a} 的 agent 程序：请在「更新」页上传发布，或在 panel.toml 设置 \
-                 install.fallback_binary_url"
+                "没有 linux/{a} 的 agent 程序：请在「更新」页上传发布，或在 系统设置 → 节点通信 \
+                 设置备用下载地址"
             ));
         }
     }
@@ -551,15 +550,15 @@ struct Link {
 /// Rate limit, token shape, then one lookup that only matches a live
 /// install link of a node that is not being deleted. None = reject.
 async fn live_link(state: &AppState, ip: Option<IpAddr>, token: &str) -> Option<Link> {
-    let cfg = &state.cfg().install;
+    let cfg = &state.cfg().limits;
     let bucket = ip
         .map(crate::client_ip::bucket)
         .unwrap_or_else(|| "unknown".into());
     match crate::rate::hit(
         state,
         format!("akari:rl:install:ip:{bucket}"),
-        cfg.rate_per_ip,
-        cfg.rate_window_secs,
+        cfg.install_rate_per_ip,
+        cfg.install_rate_window_secs,
     )
     .await
     {
@@ -661,15 +660,13 @@ fn render_script(
     token: &str,
     releases: &HashMap<String, ReleaseRef>,
 ) -> anyhow::Result<String> {
+    // Links issued before 0060 carry no endpoint: the current one.
     let current = state.settings().get();
-    let panel_addr = link
-        .panel_addr
-        .as_deref()
-        .unwrap_or(&current.node.panel_addr);
-    let server_name = link
-        .server_name
-        .as_deref()
-        .unwrap_or(&current.node.server_name);
+    let (panel_addr, server_name) = match (&link.panel_addr, &link.server_name, &current.node) {
+        (Some(a), Some(n), _) => (a.as_str(), n.as_str()),
+        (_, _, Some(e)) => (e.panel_addr.as_str(), e.server_name.as_str()),
+        _ => anyhow::bail!("no node communication domain set"),
+    };
     let bootstrap = crate::enroll::bootstrap_toml(
         &tame(&link.name),
         sq(panel_addr)?,
@@ -691,7 +688,13 @@ fn render_script(
     let rel = |arch: &str, f: fn(&ReleaseRef) -> &str| {
         releases.get(arch).map(f).unwrap_or("").to_string()
     };
-    let fallback = &state.cfg().install.fallback_binary_url;
+    let fallback = state
+        .settings()
+        .get()
+        .install_fallback_url
+        .clone()
+        .unwrap_or_default();
+    let fallback = &fallback;
     let needs_cert = crate::nodetpl::needs_certificate(&link.inbounds);
     // W10: the agent obtains the certificate itself (only where an inbound
     // needs one, like ConfigSnapshot.acme).

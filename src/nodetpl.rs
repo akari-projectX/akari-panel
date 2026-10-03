@@ -954,7 +954,7 @@ pub async fn check_domain(
     match resolve(&domain).await {
         Ok(ips) if ips.is_empty() => view.error = Some("the domain has no A/AAAA record".into()),
         Ok(ips) => {
-            let cf = crate::cloudflare::ranges(state.cfg());
+            let cf = state.settings().get().cloudflare.clone();
             view.cloudflare = ips.iter().any(|ip| crate::cloudflare::contains(&cf, *ip));
             if !expected.is_empty() {
                 view.matches = Some(ips.iter().any(|ip| expected.contains(ip)));

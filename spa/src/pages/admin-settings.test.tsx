@@ -2,7 +2,16 @@ import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { fakeApi, renderWithClient } from "../test/harness";
-import { AdminSettings, hostOf, hostStillAllowed, humanInterval, probeBody, type SettingsView } from "./admin-settings";
+import {
+  AdminSettings,
+  hostOf,
+  hostStillAllowed,
+  humanInterval,
+  nodeOpsBody,
+  probeBody,
+  securityBody,
+  type SettingsView,
+} from "./admin-settings";
 
 const tab = (t: string) => window.history.pushState(null, "", `/admin/settings/${t}`);
 
@@ -17,26 +26,25 @@ const view = (over: Partial<SettingsView> = {}): SettingsView => ({
   version: 3,
   updated_at: null,
   site_name: null,
-  main: { value: null, display: null, effective: null, source: "browser", config: null },
-  sub: { value: null, display: null, effective: null, source: "browser", config: null },
+  main: { value: null, display: null, effective: null, source: "browser" },
+  sub: { value: null, display: null, effective: null, source: "browser" },
   node: {
-    value: null,
-    display: null,
+    value: "127.0.0.1",
+    display: "127.0.0.1",
     panel_addr: "127.0.0.1:8443",
-    server_name: "localhost",
-    source: "config",
-    config_addr: "127.0.0.1:8443",
-    config_server_name: "localhost",
+    server_name: "127.0.0.1",
+    source: "settings",
+    default_port: 8443,
   },
-  trust_cloudflare: { value: null, effective: false, source: "config", config: false },
+  trust_cloudflare: { value: null, effective: false, source: "default" },
   server_names: [
     {
-      name: "localhost",
-      display: "localhost",
+      name: "panel.example.com",
+      display: "panel.example.com",
       source: "config",
       first_used_at: "",
-      current: true,
-      locked: "配置文件",
+      current: false,
+      locked: "旧版配置文件",
       nodes: [],
     },
     {
@@ -56,18 +64,37 @@ const view = (over: Partial<SettingsView> = {}): SettingsView => ({
   ask_enabled: true,
   cloudflare_ranges: 22,
   probe: {
-    interval_secs: { value: null, effective: 18000, config: 18000, source: "config" },
+    interval_secs: { value: null, effective: 18000, default: 18000, source: "default" },
     urls: {
       value: null,
       effective: ["https://www.gstatic.com/generate_204", "https://cp.cloudflare.com/generate_204"],
-      config: ["https://www.gstatic.com/generate_204", "https://cp.cloudflare.com/generate_204"],
-      source: "config",
+      default: ["https://www.gstatic.com/generate_204", "https://cp.cloudflare.com/generate_204"],
+      source: "default",
     },
-    panel_tcp: { value: null, effective: true, config: true, source: "config" },
+    panel_tcp: { value: null, effective: true, default: true, source: "default" },
     timeout_ms: 5000,
     attempts: 3,
     manual_cooldown_secs: 30,
   },
+  node_ops: {
+    install_tls_pin: null,
+    install_fallback_url: null,
+    install_fallback_effective: "https://github.com/x/releases/latest/download/akari-agent-linux-{arch}",
+    install_fallback_default: "https://github.com/x/releases/latest/download/akari-agent-linux-{arch}",
+    acme_directory_url: null,
+    acme_email: null,
+    remove_mode: { value: null, effective: "gate", default: "gate", source: "default" },
+  },
+  security: {
+    require_admin_2fa: { value: null, effective: false, default: false, source: "default" },
+    audit_retention_days: { value: null, effective: 365, default: 365, source: "default" },
+    traffic_daily_retention_days: { value: null, effective: 400, default: 400, source: "default" },
+    cloudflare_ranges: null,
+    cloudflare_ranges_shipped: 22,
+    extra_release_keys: null,
+    release_keys: [{ id: "f2ad18a8bb718a1a", label: "key-f2ad18a8bb718a1a", official: true }],
+  },
+  obsolete_config_keys: [],
   warnings: [],
   ...over,
 });
@@ -107,7 +134,7 @@ describe("AdminSettings", () => {
       version: 3,
       main_domain: null,
       sub_domain: "sub.example.com",
-      node_domain: null,
+      node_domain: "127.0.0.1",
       trust_cloudflare: true,
       force_node_cloudflare: false,
       confirm_host_change: false,
@@ -200,18 +227,18 @@ describe("latency test settings (W12)", () => {
   });
 
   it("validates the form like the backend", () => {
-    expect(probeBody(1, "", "", "config")).toEqual({
+    expect(probeBody(1, "", "", "default")).toEqual({
       body: { version: 1, interval_secs: null, urls: null, panel_tcp: null },
     });
     expect(probeBody(1, "15", " http://a.example/204 \n\nhttps://b.example/x ", "off")).toEqual({
       body: { version: 1, interval_secs: 900, urls: ["http://a.example/204", "https://b.example/x"], panel_tcp: false },
     });
-    expect(probeBody(1, "5", "", "config")).toHaveProperty("error");
-    expect(probeBody(1, "20000", "", "config")).toHaveProperty("error");
-    expect(probeBody(1, "", "ftp://a.example/", "config")).toHaveProperty("error");
-    expect(probeBody(1, "", "https://user@a.example/", "config")).toHaveProperty("error");
-    expect(probeBody(1, "", "http://a/1\nhttp://a/1", "config")).toHaveProperty("error");
-    expect(probeBody(1, "", "http://a/1\nhttp://a/2\nhttp://a/3\nhttp://a/4\nhttp://a/5", "config")).toHaveProperty(
+    expect(probeBody(1, "5", "", "default")).toHaveProperty("error");
+    expect(probeBody(1, "20000", "", "default")).toHaveProperty("error");
+    expect(probeBody(1, "", "ftp://a.example/", "default")).toHaveProperty("error");
+    expect(probeBody(1, "", "https://user@a.example/", "default")).toHaveProperty("error");
+    expect(probeBody(1, "", "http://a/1\nhttp://a/1", "default")).toHaveProperty("error");
+    expect(probeBody(1, "", "http://a/1\nhttp://a/2\nhttp://a/3\nhttp://a/4\nhttp://a/5", "default")).toHaveProperty(
       "error",
     );
   });
@@ -244,5 +271,154 @@ describe("latency test settings (W12)", () => {
     fireEvent.click(screen.getByRole("button", { name: "保存测速设置" }));
     await screen.findByText(/测速间隔须在 10 分钟到 7 天/);
     expect(calls.some((c) => c.method === "PUT")).toBe(false);
+  });
+});
+
+const KEY = "ciJILGk6W1TnPr56Dncgv0mVQFBzqOrawiOaH0/d5Pg=";
+
+describe("W25: settings that left panel.toml", () => {
+  it("builds the 节点通信 body like the backend validates", () => {
+    const base = {
+      pin: "",
+      fallback: "default" as const,
+      fallbackUrl: "",
+      acmeUrl: "",
+      acmeEmail: "",
+      removeMode: "gate" as const,
+    };
+    expect(nodeOpsBody(2, base)).toEqual({
+      body: {
+        version: 2,
+        install_tls_pin: null,
+        install_fallback_url: null,
+        install_fallback_disabled: false,
+        acme_directory_url: null,
+        acme_email: null,
+        remove_mode: "gate",
+      },
+    });
+    expect(nodeOpsBody(2, { ...base, fallback: "none" })).toMatchObject({
+      body: { install_fallback_url: null, install_fallback_disabled: true },
+    });
+    expect(
+      nodeOpsBody(2, { ...base, fallback: "custom", fallbackUrl: "https://dl.example/agent-{arch}" }),
+    ).toMatchObject({ body: { install_fallback_url: "https://dl.example/agent-{arch}" } });
+    expect(nodeOpsBody(2, { ...base, pin: "sha256//nope" })).toHaveProperty("error");
+    expect(nodeOpsBody(2, { ...base, fallback: "custom", fallbackUrl: "https://dl.example/agent" })).toHaveProperty(
+      "error",
+    );
+    expect(nodeOpsBody(2, { ...base, acmeUrl: "http://ca.example/dir" })).toHaveProperty("error");
+    expect(nodeOpsBody(2, { ...base, acmeEmail: "nobody" })).toHaveProperty("error");
+  });
+
+  it("builds the 安全 body", () => {
+    const base = { twoFactor: false, auditDays: "", trafficDays: "", ranges: "", keys: "" };
+    expect(securityBody(5, base)).toEqual({
+      body: {
+        version: 5,
+        require_admin_2fa: false,
+        audit_retention_days: null,
+        traffic_daily_retention_days: null,
+        cloudflare_ranges: null,
+        extra_release_keys: null,
+      },
+    });
+    expect(
+      securityBody(5, {
+        twoFactor: true,
+        auditDays: "0",
+        trafficDays: "40",
+        ranges: "198.51.100.0/24\n# comment\n2001:db8::/32\n",
+        keys: `${KEY} extra\n`,
+      }),
+    ).toEqual({
+      body: {
+        version: 5,
+        require_admin_2fa: true,
+        audit_retention_days: 0,
+        traffic_daily_retention_days: 40,
+        cloudflare_ranges: ["198.51.100.0/24", "2001:db8::/32"],
+        extra_release_keys: [`${KEY} extra`],
+      },
+    });
+    expect(securityBody(5, { ...base, trafficDays: "10" })).toHaveProperty("error");
+    expect(securityBody(5, { ...base, auditDays: "-1" })).toHaveProperty("error");
+    expect(securityBody(5, { ...base, ranges: "not a cidr" })).toHaveProperty("error");
+    expect(securityBody(5, { ...base, keys: "nope" })).toHaveProperty("error");
+  });
+
+  it("shows an unset node domain and the obsolete panel.toml keys", async () => {
+    fakeApi({
+      "GET /settings": view({
+        node: { value: null, display: null, panel_addr: null, server_name: null, source: "unset", default_port: 9443 },
+        obsolete_config_keys: ["grpc.advertise", "payments.*"],
+      }),
+    });
+    tab("node");
+    renderWithClient(<AdminSettings />);
+    expect(await screen.findByText(/未设置：设置之前无法生成安装命令/)).toBeTruthy();
+    expect(screen.getByText(/gRPC 监听端口 9443/)).toBeTruthy();
+    expect(screen.getByText("grpc.advertise、payments")).toBeTruthy();
+  });
+
+  it("saves the 节点通信 extras, confirming the rebuild remove mode", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const calls = fakeApi({
+      "GET /settings": view(),
+      "PUT /settings/nodes": () => ({ status: 200, body: view({ version: 4 }) }),
+    });
+    tab("node");
+    renderWithClient(<AdminSettings />);
+    fireEvent.change(await screen.findByLabelText("ACME 目录"), {
+      target: { value: "https://acme-staging-v02.api.letsencrypt.org/directory" },
+    });
+    fireEvent.change(screen.getByLabelText("备用下载地址"), { target: { value: "none" } });
+    fireEvent.change(screen.getByLabelText("撤权方式"), { target: { value: "rebuild" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存安装与证书设置" }));
+    await waitFor(() => expect(calls.some((c) => c.path === "/settings/nodes")).toBe(true));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("所有连接都会断开"));
+    expect(calls.find((c) => c.path === "/settings/nodes")?.body).toEqual({
+      version: 3,
+      install_tls_pin: null,
+      install_fallback_url: null,
+      install_fallback_disabled: true,
+      acme_directory_url: "https://acme-staging-v02.api.letsencrypt.org/directory",
+      acme_email: null,
+      remove_mode: "rebuild",
+    });
+    // The new version remounts the form with the server's values; the saved
+    // note survives that (it lives above the keyed forms).
+    expect(await screen.findByText("已保存，所有面板实例已生效。")).toBeTruthy();
+  });
+
+  it("saves the 安全 tab and shows server errors in Chinese", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const calls = fakeApi({
+      "GET /settings": view(),
+      "PUT /settings/security": () => ({
+        status: 400,
+        body: {
+          error: "x",
+          code: "settings.cloudflare_range_invalid",
+          params: { range: "1.2.3.4/40" },
+        },
+      }),
+    });
+    tab("security");
+    renderWithClient(<AdminSettings />);
+    expect(await screen.findByText(/key-f2ad18a8bb718a1a\s*（官方，内置）/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.change(screen.getByLabelText("审计日志保留天数"), { target: { value: "90" } });
+    fireEvent.change(screen.getByLabelText("Cloudflare 网段"), { target: { value: "1.2.3.4/32" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存安全设置" }));
+    await screen.findByText("Cloudflare 网段：1.2.3.4/40 不是有效的 CIDR");
+    expect(calls.find((c) => c.path === "/settings/security")?.body).toEqual({
+      version: 3,
+      require_admin_2fa: true,
+      audit_retention_days: 90,
+      traffic_daily_retention_days: null,
+      cloudflare_ranges: ["1.2.3.4/32"],
+      extra_release_keys: null,
+    });
   });
 });

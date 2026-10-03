@@ -39,7 +39,7 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   account (logout = log out everywhere; a copied cookie dies with it). The
   last enabled admin cannot be disabled, demoted or deleted (409; enforced
   by a DB trigger, race-free). TOTP two-factor authentication is optional
-  (recommended; `[auth] require_admin_2fa = true` makes it mandatory for
+  (recommended; 系统设置 → 安全 → 管理员必须两步验证 makes it mandatory for
   admins); every administrative change is in the audit log (see "Security"
   below).
 - Admin API: user CRUD, node listing/enable, per-node xray `inbounds`
@@ -86,7 +86,7 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   the agent's xray instance and drops every live connection on the node:
   inbound changes, an agent whose state is unknown or diverged
   (Hello/Ack state hash), a failed delta, a new session after a restart or
-  lease expiry, and `agent.remove_mode = "rebuild"` all take that path.
+  lease expiry, and 撤权方式 = 重建 (系统设置 → 节点通信) all take that path.
   Disabling a user via the API propagates to connected agents within a
   second.
 - Heartbeats (15s) land in Valkey; traffic counters (10s polls) flow to the
@@ -118,7 +118,7 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   `subscription-userinfo` and other quota headers are sent only on success;
   bad tokens get the same empty 404 as every other rejection. Bodies are padded to 8 KiB
   buckets so size does not reveal node counts. Rate limited per client
-  address and per user (`[sub]`); over the limit is the same empty 404.
+  address and per user (built-in limits); over the limit is the same empty 404.
 
 - Payments (W24/R40): pluggable payment methods configured in 系统设置 → 支付
   (database only; Alipay Face-to-Face is the first kind, several methods
@@ -256,7 +256,7 @@ separate loopback listener, never on the public port.
 | PATCH/DELETE | /api/v1/nodes/{id} | admin | enable / rename / billing cap override / W11 `display_name`, `sort`, `visible`, `tags`, `traffic_rate`, `connect_overrides`, `group_ids`; delete (202, revokes the certificate); `tls_domain` = 节点域名: the agent obtains its certificate itself (change bumps config_version, DEPLOY §3f) |
 | GET | /api/v1/nodes/{id}/status | admin | W11: latest heartbeat + machine status, online, latency results, raw/billed traffic |
 | GET | /api/v1/nodes/{id}/metrics | admin | W11: history `?range=1h\|6h\|24h\|48h\|7d\|30d\|90d` (averages and maxima per point, ≤ 360 points) |
-| POST | /api/v1/nodes/{id}/probe | admin | W11: "立即测速" (202; 429 within `[probe].manual_cooldown_secs`) |
+| POST | /api/v1/nodes/{id}/probe | admin | W11: "立即测速" (202; 429 within the built-in 30 s cooldown) |
 | PUT | /api/v1/nodes/{id}/inbounds | admin | replace xray inbounds (bumps config_version) |
 | POST | /api/v1/users/{id}/sub-token | admin | regenerate subscription token |
 | GET | /api/v1/users/{id}/subscription | admin | W20: the user's subscription link `{sub_token, sub_url, legacy}` (every read is audited as `user.sub_token.read`, without the token; `no-store`) |
@@ -305,7 +305,9 @@ separate loopback listener, never on the public port.
 \* Renewal scope (R21): also reachable by an expired or quota-disabled `role=user` account (login answers `expired` / `quota_exhausted`), together with `/me/plan` and `/me/password`; everything that serves or reveals proxy access (subscription, sub-token, 2FA) stays refused. Accounts disabled for any other reason cannot log in.
 
 Defaults bind web on `127.0.0.1:8080` and gRPC on `127.0.0.1:8443`; override
-via `panel.toml` (see `src/config.rs`) or `DATABASE_URL`/`VALKEY_URL`.
+via `panel.toml` (start-up keys only, see `deploy/panel.toml.example`) or
+`DATABASE_URL`/`VALKEY_URL`. Everything else is set in the console under
+系统设置 (database; W25/R39) or is a built-in constant.
 `akari admin passwd <login>` resets a password (and ends its sessions).
 `akari admin reset-2fa <login>` removes an account's 2FA (lockout recovery);
 the account then logs in with its password. `akari node enroll-token <id>`
@@ -379,12 +381,12 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   for `traffic.departed_grace_secs` (default 15 min).
 - **Traffic history (W22)**: every flush also records what it settled per
   user, node and UTC day (`traffic_daily`, folded from a staging table every
-  ~30 s); `traffic.daily_retention_days` (default 400, `0` = forever) days
+  ~30 s); 流量明细保留天数 (系统设置 → 安全, default 400, `0` = forever) days
   are kept, older ones are rolled up into months (`traffic_monthly`). Admin
   `GET /api/v1/users/{id}/traffic`, `/nodes/{id}/traffic`,
   `/traffic/summary`; users `GET /api/v1/me/traffic` (node names only).
-- **Removal mode**: `agent.remove_mode = "gate"` (default) removes/rotates
-  users in place; `"rebuild"` sends every removal/rotation as a full
+- **Removal mode** (系统设置 → 节点通信 → 撤权方式): gate (default) removes/rotates
+  users in place; rebuild sends every removal/rotation as a full
   snapshot (fallback if the agent's gate is ever in doubt). User-less
   inbounds (dokodemo/socks/http without clients) are neither gated nor
   billed; FakeDNS sniffing (`sniffing.destOverride` containing `fakedns` /
@@ -397,7 +399,7 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   `agent_protocol`. **Rollout: upgrade agents before the panel.**
 - **Fail-closed lease**: after every successful read of a node's desired
   state (initial sync, every 60 s reconcile) the panel grants the agent a
-  lease (`grpc.lease_seconds`, default 24 h). An agent that gets no grant for
+  lease (24 h, built in). An agent that gets no grant for
   that long (panel unreachable, or panel up but its database down) stops
   xray, forgets its versions and reports the final counters after it
   reconnects. The agent measures the lease on CLOCK_BOOTTIME (suspend does
@@ -545,7 +547,7 @@ it. Raising a traffic limit does not re-enable a user the limit disabled.
 
 **Two-factor (TOTP, RFC 6238: SHA-1, 6 digits, 30 s, ±1 step).** Optional
 for every account and recommended (the admin console shows a banner until
-it is on). With `[auth] require_admin_2fa = true` it is mandatory for
+it is on). With 系统设置 → 安全 → 管理员必须两步验证 it is mandatory for
 admins: an admin without active TOTP who logs in with the right password
 gets a 15-minute *enrollment-only* session that reaches nothing but
 `/api/v1/me/totp*` (the SPA shows the setup screen). Enrollment shows the
@@ -580,8 +582,8 @@ tag/protocol/port summary plus a digest). Failed logins are recorded only
 for existing accounts (first failure per rate-limit window, the one that
 fills it, every second-factor failure); successful logins of regular users
 at most once per 10 minutes per account. Admins: Audit view, or `GET
-/api/v1/audit`. Retention: `[audit] retention_days` (default 365, 0 =
-forever), pruned hourly.
+/api/v1/audit`. Retention: 系统设置 → 安全 → 审计日志保留天数 (default 365,
+0 = forever), pruned hourly.
 
 **Secret rotation.**
 - `akari secrets rotate-jwt`: new `data/jwt.key`; every session ends at once
@@ -610,7 +612,8 @@ directory (and database) the panel uses.
 **R18 (optional 2FA) upgrade:** migration 0035 drops the unused
 `totp_enroll_codes` table (the one-time admin enrollment code is gone).
 Admins without 2FA now log in with their password (full session) unless
-`[auth] require_admin_2fa = true`. Existing 2FA setups are unchanged.
+the 2FA policy requires it (then `[auth] require_admin_2fa`, since W25
+系统设置 → 安全). Existing 2FA setups are unchanged.
 
 **M3 (plans) upgrade:** migration 0020 adds node groups, plans and user
 plans. Existing node assignments become manual overrides and keep working
