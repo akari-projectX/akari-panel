@@ -1,7 +1,8 @@
 //! W8: the protocol/transport matrix of panel-managed inbounds — what the
 //! panel issues credentials for, how an account is generated for (and kept
-//! fitting) its inbound, and the per-inbound validation rules. The support
-//! matrix (templates, subscriptions, clients) is in docs/DEPLOY.md §3c.
+//! fitting) its inbound, and the per-inbound validation rules. W26: the
+//! matrix itself is `proto/protocols.toml` (`manifest`); the support matrix
+//! in docs/DEPLOY.md §3d is generated from it (`generate`).
 //!
 //! Accounts (`node_users.credentials[].account`, sent verbatim to the agent
 //! as `account_json`, which decodes them strictly — akari-agent
@@ -20,25 +21,28 @@
 //! rule); these checks give the admin the error early and keep
 //! subscriptions renderable.
 
+pub mod generate;
+pub mod manifest;
+pub mod manifest_def;
+#[cfg(test)]
+mod manifest_tests;
+
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 
-/// Protocols the panel issues credentials for.
-pub const MANAGED: [&str; 5] = ["vless", "vmess", "trojan", "shadowsocks", "hysteria"];
+/// Protocols the panel issues credentials for (wire names, manifest order).
+pub const MANAGED: [&str; 5] = manifest::WIRE;
 
 /// The only VLESS flow (besides none) xray v26 supports.
 pub const VISION: &str = "xtls-rprx-vision";
 
 /// Multi-user Shadowsocks 2022 methods of the agent's xray and their key
 /// length. xray's multi-user server only implements the AES methods.
-pub const SS_METHODS: [(&str, usize); 2] = [
-    ("2022-blake3-aes-128-gcm", 16),
-    ("2022-blake3-aes-256-gcm", 32),
-];
+pub const SS_METHODS: [(&str, usize); 2] = manifest::PROTOCOL_SS2022_METHOD_KEY_LEN;
 
 /// XHTTP modes (xray `xhttpSettings.mode`).
-pub const XHTTP_MODES: [&str; 4] = ["auto", "packet-up", "stream-up", "stream-one"];
+pub const XHTTP_MODES: [&str; 4] = manifest::TRANSPORT_XHTTP_MODE;
 
 pub fn ss_key_len(method: &str) -> Option<usize> {
     SS_METHODS

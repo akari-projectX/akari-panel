@@ -641,20 +641,46 @@ agent apply (gate revocation) → subscription in all three formats → a real c
 traffic (`smoke.sh` W8 section: mihomo 1.19 and sing-box 1.12+ when available; the agent's
 `TestRT_ProtocolMatrix` canary with xray's own client, including billing and revocation).
 
-| Protocol | Transport | Security | Flow | Links (v2rayN/Shadowrocket) | Clash (mihomo) | sing-box |
+<!-- BEGIN GENERATED protocols-matrix: from proto/protocols.toml by `make gen-protocols`; CI fails when stale -->
+Generated from `proto/protocols.toml` (manifest schema 1, kernel xray-core v26.3.27); edit the manifest, then `make gen-protocols`.
+
+| Protocol | Transport | Security | Options | Links (v2rayN/Shadowrocket) | Clash (mihomo) | sing-box |
 |---|---|---|---|---|---|---|
-| VLESS | raw TCP | REALITY | `xtls-rprx-vision` (default) or none | ✓ `flow=` | ✓ `flow:` | ✓ `flow` |
-| VLESS | raw TCP | TLS | `xtls-rprx-vision` or none | ✓ | ✓ | ✓ |
-| VLESS | XHTTP | REALITY / TLS / none | — | ✓ `type=xhttp&path&host&mode` | ✓ `network: xhttp` + `xhttp-opts` | ✗ left out (sing-box has no XHTTP) |
-| VLESS | gRPC | REALITY / TLS | — | ✓ `type=grpc&serviceName&mode=gun` | ✓ `grpc-opts` | ✓ `transport: grpc` |
-| VLESS | WebSocket | TLS / none | — | ✓ | ✓ | ✓ |
-| VLESS | HTTPUpgrade | TLS / none | — | ✓ `type=httpupgrade` | ✓ `ws-opts.v2ray-http-upgrade: true` | ✓ `transport: httpupgrade` |
-| VMess | raw TCP / WS / HTTPUpgrade / gRPC | TLS / none (gRPC: TLS) | — | ✓ (`aid 0`, `scy auto`) | ✓ (`alterId: 0`, `cipher: auto`) | ✓ |
-| VMess | XHTTP | TLS / none | — | ✓ | ✗ left out (mihomo: XHTTP is VLESS-only) | ✗ left out |
-| Trojan | raw TCP / WS / HTTPUpgrade / gRPC | TLS (required) | — | ✓ | ✓ | ✓ |
-| Trojan | XHTTP | TLS | — | ✓ | ✗ left out | ✗ left out |
-| Shadowsocks 2022 | (own, TCP+UDP) | — | — | ✓ `ss://method:psk%3Akey@` (SIP002, AEAD-2022 form) | ✓ `type: ss`, `cipher`, `password: "psk:key"` | ✓ `shadowsocks`, `method`, `password` |
-| Hysteria 2 | QUIC (UDP) | TLS (node certificate) | — | ✓ `hysteria2://auth@host:port/?sni=` | ✓ `type: hysteria2` | ✓ `hysteria2` |
+| VLESS | raw TCP | none / TLS / REALITY | flow: none, `xtls-rprx-vision` (TLS / REALITY) | ✓ `vless://`, `flow=` | ✓ `type: vless`, `flow:` | ✓ `vless`, `flow` |
+| VLESS | WebSocket | none / TLS | — | ✓ `vless://`, `flow=` | ✓ `type: vless`, `flow:` | ✓ `vless`, `flow` |
+| VLESS | HTTPUpgrade | none / TLS | — | ✓ `vless://`, `flow=` | ✓ `type: vless`, `flow:` | ✓ `vless`, `flow` |
+| VLESS | XHTTP | none / TLS / REALITY | — | ✓ `vless://`, `flow=` | ✓ `type: vless`, `flow:` | ✗ left out (sing-box has no xhttp transport) |
+| VLESS | gRPC | TLS / REALITY (none: hand-written JSON only) | — | ✓ `vless://`, `flow=` | ✓ `type: vless`, `flow:` | ✓ `vless`, `flow` |
+| VMess | raw TCP | none / TLS | — | ✓ `vmess://` (`aid 0`, `scy auto`) | ✓ `alterId: 0`, `cipher: auto` | ✓ `vmess` |
+| VMess | WebSocket | none / TLS | — | ✓ `vmess://` (`aid 0`, `scy auto`) | ✓ `alterId: 0`, `cipher: auto` | ✓ `vmess` |
+| VMess | HTTPUpgrade | none / TLS | — | ✓ `vmess://` (`aid 0`, `scy auto`) | ✓ `alterId: 0`, `cipher: auto` | ✓ `vmess` |
+| VMess | XHTTP | none / TLS | — | ✓ `vmess://` (`aid 0`, `scy auto`) | ✗ left out (mihomo supports xhttp only for vless) | ✗ left out (sing-box has no xhttp transport) |
+| VMess | gRPC | TLS (none: hand-written JSON only) | — | ✓ `vmess://` (`aid 0`, `scy auto`) | ✓ `alterId: 0`, `cipher: auto` | ✓ `vmess` |
+| Trojan | raw TCP | TLS (none: hand-written JSON only) | — | ✓ `trojan://` | ✓ `type: trojan` | ✓ `trojan` |
+| Trojan | WebSocket | TLS (none: hand-written JSON only) | — | ✓ `trojan://` | ✓ `type: trojan` | ✓ `trojan` |
+| Trojan | HTTPUpgrade | TLS (none: hand-written JSON only) | — | ✓ `trojan://` | ✓ `type: trojan` | ✓ `trojan` |
+| Trojan | XHTTP | TLS (none: hand-written JSON only) | — | ✓ `trojan://` | ✗ left out (mihomo supports xhttp only for vless) | ✗ left out (sing-box has no xhttp transport) |
+| Trojan | gRPC | TLS (none: hand-written JSON only) | — | ✓ `trojan://` | ✓ `type: trojan` | ✓ `trojan` |
+| Shadowsocks 2022 | (own) | none | method: `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm` | ✓ `ss://method:psk%3Akey@` (SIP002, AEAD-2022 form) | ✓ `type: ss`, `cipher`, `password: "psk:key"` | ✓ `shadowsocks`, `method`, `password` |
+| Hysteria 2 | (own) | TLS | — | ✓ `hysteria2://auth@host:port/?sni=` | ✓ `type: hysteria2` | ✓ `hysteria2` |
+
+Combination rules (checked in this order, beyond each protocol's transports and security):
+
+- `reality_protocol`: REALITY only with VLESS
+- `reality_transport`: REALITY only over raw TCP, XHTTP or gRPC
+- `vision`: Vision (xtls-rprx-vision) only on raw TCP with TLS or REALITY
+- `grpc_tls`: the templates put gRPC behind TLS (templates only)
+
+Per-user credentials (`account_json`, keys sorted):
+
+- VLESS (agent protocol name `vless`): `flow` (= the inbound's `flow`), `id` (UUID)
+- VMess (agent protocol name `vmess`): `id` (UUID)
+- Trojan (agent protocol name `trojan`): `password` (32 random bytes, hex)
+- Shadowsocks 2022 (agent protocol name `shadowsocks`): `password` (base64 key, length by `method`); removed users stay as gate-refused tombstones (removal = delta, rotation = rebuild)
+- Hysteria 2 (agent protocol name `hysteria`): `auth` (32 random bytes, hex)
+
+End-to-end scenarios (agent `TestRT_ProtocolMatrix`: real client, billing, speed limit, revocation, re-add): VLESS-REALITY-Vision, VLESS-TLS-Vision, VLESS-REALITY-XHTTP, VLESS-XHTTP, VLESS-XHTTP-TLS, VLESS-HTTPUpgrade, VLESS-HTTPUpgrade-TLS, VLESS-WS-TLS, VLESS-gRPC-TLS, VLESS-REALITY-gRPC, VMess-TCP, VMess-WS, Trojan-WS-TLS, Trojan-gRPC-TLS, SS2022-AES128, SS2022-AES256, Hysteria2.
+<!-- END GENERATED protocols-matrix -->
 
 A proxy a format cannot express is left out of that format (logged at info with the reason)
 instead of being rendered as a config the client rejects.
