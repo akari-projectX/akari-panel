@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use sqlx::PgPool;
 
 /// Billing (`traffic.rs`) relies on `INSERT ... ON CONFLICT ... RETURNING

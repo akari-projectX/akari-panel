@@ -15,7 +15,7 @@
 //! values and never decides a kind both firing and unknown.
 #![no_main]
 
-use akari_panel::alerts::eval::{evaluate, heartbeat_facts, Facts, Rules};
+use akari_panel::alerts::eval::{Facts, Rules, evaluate, heartbeat_facts};
 use akari_panel::alerts::{self, NodeRules, PutSettings, TestReq};
 use akari_panel::tickets::{self, AssignReq, CreateReq, ReplyReq};
 use chrono::{TimeZone, Utc};
@@ -52,9 +52,10 @@ fn body(s: &str) {
         let n = c.chars().count();
         assert!((1..=tickets::MAX_BODY).contains(&n), "{n}");
         assert!(!c.contains('\r') && !c.contains('\0'));
-        assert!(c
-            .chars()
-            .all(|ch| !ch.is_control() || ch == '\n' || ch == '\t'));
+        assert!(
+            c.chars()
+                .all(|ch| !ch.is_control() || ch == '\n' || ch == '\t')
+        );
         assert_eq!(tickets::clean_body(&c).ok().as_deref(), Some(c.as_str()));
     }
 }
@@ -196,10 +197,11 @@ fuzz_target!(|data: &[u8]| {
             if let Some(r) = strict::<NodeRules>(rest)
                 && r.check().is_ok()
             {
-                assert!(r
-                    .disabled
-                    .iter()
-                    .all(|k| alerts::KINDS.contains(&k.as_str())));
+                assert!(
+                    r.disabled
+                        .iter()
+                        .all(|k| alerts::KINDS.contains(&k.as_str()))
+                );
             }
         }
         7 => {

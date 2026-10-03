@@ -17,13 +17,13 @@
 //! disables every code (`coupon.batch.revoke`); orders that already
 //! reserved or redeemed one keep it (as with disabling a single coupon).
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Response;
-use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -31,7 +31,7 @@ use super::catalog::PeriodKindText;
 use super::coupons::{self, Kind, Terms};
 use crate::api::ApiJson;
 use crate::audit::Actor;
-use crate::auth::{bad_request, conflict, ApiError, AuthUser};
+use crate::auth::{ApiError, AuthUser, bad_request, conflict};
 use crate::csvx::{self, Cell};
 use crate::state::AppState;
 
@@ -296,7 +296,7 @@ pub async fn apply_revoke(
             return Err(conflict!(
                 "coupon_batch.revoked",
                 "the batch is already revoked"
-            ))
+            ));
         }
         Some(None) => {}
     }

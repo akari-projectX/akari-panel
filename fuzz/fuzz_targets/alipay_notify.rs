@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 
 use akari_panel::billing::alipay::{notify_sign_content, verify_notify};
-use akari_panel::fuzzing::{alipay_parse_form, ALIPAY_MAX_NOTIFY_PARAMS};
+use akari_panel::fuzzing::{ALIPAY_MAX_NOTIFY_PARAMS, alipay_parse_form};
 use akari_panel_fuzz::{alipay_keys, panel_keys};
 use libfuzzer_sys::fuzz_target;
 

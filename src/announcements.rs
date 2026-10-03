@@ -23,10 +23,10 @@
 //!   in the recipient's language, with the (possibly edited)
 //!   `announcement` template.
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -35,7 +35,7 @@ use uuid::Uuid;
 
 use crate::api::ApiJson;
 use crate::audit::Actor;
-use crate::auth::{bad_request, conflict, ApiError, AuthUser, ShopUser};
+use crate::auth::{ApiError, AuthUser, ShopUser, bad_request, conflict};
 use crate::state::AppState;
 
 pub const AUDIENCES: [&str; 3] = ["all", "with_plan", "without_plan"];
@@ -409,8 +409,7 @@ pub async fn apply_mark_read(conn: &mut PgConnection, user: Uuid, id: Uuid) -> s
 /// Recipients of an announcement's mailing (alias `u`, `$1` = the
 /// announcement's audience): customers with a verified address, enabled
 /// or only quota-disabled, matching the audience.
-const RECIPIENT: &str =
-    "u.role = 'user' AND u.email IS NOT NULL AND u.email_verified_at IS NOT NULL \
+const RECIPIENT: &str = "u.role = 'user' AND u.email IS NOT NULL AND u.email_verified_at IS NOT NULL \
      AND (u.enabled OR u.disabled_reason = 'quota') \
      AND ($1 = 'all' OR ($1 = 'with_plan') = EXISTS (SELECT 1 FROM user_plans p \
          WHERE p.user_id = u.id AND p.status = 'active'))";
@@ -525,8 +524,7 @@ pub struct Row {
     pub mail_done_at: Option<DateTime<Utc>>,
 }
 
-const ADMIN_SELECT: &str =
-    "SELECT a.id, a.title_zh, a.title_en, a.body_zh, a.body_en, a.pinned, a.enabled, \
+const ADMIN_SELECT: &str = "SELECT a.id, a.title_zh, a.title_en, a.body_zh, a.body_en, a.pinned, a.enabled, \
        a.visible_from, a.visible_until, a.audience, a.created_at, a.updated_at, \
        (a.enabled AND (a.visible_from IS NULL OR a.visible_from <= now()) \
          AND (a.visible_until IS NULL OR a.visible_until > now())) AS active, \

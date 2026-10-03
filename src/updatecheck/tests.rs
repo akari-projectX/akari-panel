@@ -7,13 +7,13 @@ use std::sync::{Arc, Mutex};
 use axum::body::Body;
 use axum::http::{StatusCode, Uri};
 use axum::response::Response;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::*;
-use crate::testdb::http::client_for;
 use crate::testdb::TestDb;
+use crate::testdb::http::client_for;
 use crate::updates::testkit::Signer;
 
 #[derive(Clone)]

@@ -7,7 +7,7 @@
 //! text parsed; changing the signed text breaks the signature.
 #![no_main]
 
-use akari_panel::billing::alipay::{parse_response, CallError};
+use akari_panel::billing::alipay::{CallError, parse_response};
 use akari_panel_fuzz::{alipay_keys, panel_keys};
 use libfuzzer_sys::fuzz_target;
 use serde_json::Value;

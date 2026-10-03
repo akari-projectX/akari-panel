@@ -12,10 +12,10 @@
 //!   (`markdown.rs`). An unpublished, unknown or malformed article id is
 //!   the canonical rejection (`reject::not_found()`).
 
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -25,7 +25,7 @@ use uuid::Uuid;
 use crate::announcements::{clean_markdown, clean_title};
 use crate::api::ApiJson;
 use crate::audit::Actor;
-use crate::auth::{bad_request, ApiError, AuthUser, ShopUser};
+use crate::auth::{ApiError, AuthUser, ShopUser, bad_request};
 use crate::state::AppState;
 
 pub const MAX_NAME: usize = 64;
@@ -440,8 +440,7 @@ pub struct ArticleRow {
     pub updated_at: DateTime<Utc>,
 }
 
-const ARTICLE_SELECT: &str =
-    "SELECT a.id, a.category_id, c.name_zh AS category_name, a.title_zh, a.title_en, \
+const ARTICLE_SELECT: &str = "SELECT a.id, a.category_id, c.name_zh AS category_name, a.title_zh, a.title_en, \
        a.body_zh, a.body_en, a.sort, a.published, a.created_at, a.updated_at \
      FROM kb_articles a LEFT JOIN kb_categories c ON c.id = a.category_id";
 

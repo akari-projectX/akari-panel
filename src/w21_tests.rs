@@ -3,12 +3,12 @@
 //! codes on real endpoints.
 
 use axum::http::{Method, StatusCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::state::AppState;
-use crate::testdb::http::{client_for, Client};
 use crate::testdb::TestDb;
+use crate::testdb::http::{Client, client_for};
 
 async fn setup() -> Option<(TestDb, AppState, Client)> {
     let db = TestDb::new().await?;

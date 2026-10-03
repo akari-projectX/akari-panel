@@ -10,8 +10,8 @@ use uuid::Uuid;
 
 use super::sender::{self, OutMsg, SendError, SendFuture, Transport};
 use super::*;
-use crate::testdb::http::{rand_ip, Client};
 use crate::testdb::TestDb;
+use crate::testdb::http::{Client, rand_ip};
 
 /// Counts deliveries per recipient; optionally fails by recipient.
 #[derive(Default, Clone)]
@@ -565,10 +565,12 @@ async fn test_mail_endpoint_reports_failures() {
         )
         .await;
     assert_eq!(r.status, StatusCode::BAD_GATEWAY, "{:?}", r.json());
-    assert!(r.json()["error"]
-        .as_str()
-        .unwrap()
-        .starts_with("send failed"));
+    assert!(
+        r.json()["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("send failed")
+    );
     let r = c
         .post(
             "/test/api/v1/settings/mail/test",

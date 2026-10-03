@@ -31,15 +31,15 @@
 //!   used by `billing/`; admin assignment ignores them.
 
 use crate::auth::{bad_request, conflict};
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::api::{double_option, non_null, ApiJson};
+use crate::api::{ApiJson, double_option, non_null};
 use crate::audit::Actor;
 use crate::auth::{ApiError, AuthUser};
 use crate::entitle::{self, Outcome, Scope};
@@ -301,7 +301,7 @@ pub async fn apply_create_group(
         .await;
     match r {
         Err(e) if is_unique_violation(&e) => {
-            return Err(conflict!("group.name_exists", "group name already exists"))
+            return Err(conflict!("group.name_exists", "group name already exists"));
         }
         r => r?,
     };
@@ -391,7 +391,7 @@ pub async fn apply_update_group(
     .await;
     match r {
         Err(e) if is_unique_violation(&e) => {
-            return Err(conflict!("group.name_exists", "group name already exists"))
+            return Err(conflict!("group.name_exists", "group name already exists"));
         }
         r => r?,
     };
@@ -779,7 +779,7 @@ pub async fn apply_create_plan(
     .await;
     let mut after = match r {
         Err(e) if is_unique_violation(&e) => {
-            return Err(conflict!("plan.name_exists", "plan name already exists"))
+            return Err(conflict!("plan.name_exists", "plan name already exists"));
         }
         r => r?,
     };
@@ -925,7 +925,7 @@ pub async fn apply_update_plan(
         .await
     {
         Err(e) if is_unique_violation(&e) => {
-            return Err(conflict!("plan.name_exists", "plan name already exists"))
+            return Err(conflict!("plan.name_exists", "plan name already exists"));
         }
         r => r?,
     };
@@ -1317,7 +1317,7 @@ pub async fn apply_set_user_plan(
             return Err(bad_request!(
                 "user.admin_no_plan",
                 "admin accounts are not proxy users and cannot have a plan"
-            ))
+            ));
         }
     }
     let plan: Option<bool> = sqlx::query_scalar("SELECT enabled FROM plans WHERE id = $1")
@@ -1915,8 +1915,8 @@ pub async fn apply_period_resets(conn: &mut PgConnection) -> Result<Vec<Uuid>, A
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testdb::http::{rand_ip, Client};
     use crate::testdb::TestDb;
+    use crate::testdb::http::{Client, rand_ip};
     use axum::http::StatusCode;
 
     #[test]
@@ -2389,9 +2389,10 @@ mod tests {
         assert_eq!(give(&db, u, p1, None).await, sorted(vec![na, nb]));
         let r = rows(&db, u).await;
         assert_eq!(r.len(), 2);
-        assert!(r
-            .iter()
-            .all(|(_, c, m)| !m && c.as_array().unwrap().len() == 1));
+        assert!(
+            r.iter()
+                .all(|(_, c, m)| !m && c.as_array().unwrap().len() == 1)
+        );
         let limit: Option<i64> =
             sqlx::query_scalar("SELECT traffic_limit_bytes FROM users WHERE id = $1")
                 .bind(u)

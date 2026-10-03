@@ -9,7 +9,7 @@
 #![no_main]
 
 use akari_panel::cloudflare::parse_list;
-use akari_panel::settings::{request_host, Domain};
+use akari_panel::settings::{Domain, request_host};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

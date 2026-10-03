@@ -8,7 +8,7 @@
 //! `entitle::apply_reconcile` (bumps exactly the affected node).
 
 use crate::auth::{bad_request, conflict};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -382,8 +382,8 @@ mod tests {
     async fn node_form_fields_over_http() {
         use axum::http::{Method, StatusCode};
 
-        use crate::testdb::http::{rand_ip, Client};
         use crate::testdb::TestDb;
+        use crate::testdb::http::{Client, rand_ip};
         let Some(db) = TestDb::new().await else {
             return;
         };

@@ -29,11 +29,11 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use axum::extract::{Path, Query, State};
 use axum::Json;
+use axum::extract::{Path, Query, State};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
@@ -547,11 +547,7 @@ pub async fn store_agent_latency(pg: &PgPool, node: Uuid, rep: &LatencyReport) -
         delays.push(r.ok.then(|| i32::try_from(r.delay_ms).unwrap_or(i32::MAX)));
         errors.push((!r.ok).then(|| {
             let e = agent_text(&r.error, 200);
-            if e.is_empty() {
-                "failed".into()
-            } else {
-                e
-            }
+            if e.is_empty() { "failed".into() } else { e }
         }));
     }
     replace_latency(pg, node, "agent", at, &targets, &delays, &errors).await

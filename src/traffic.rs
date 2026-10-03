@@ -1383,8 +1383,7 @@ const COMPACT_BATCH: i64 = 50_000;
 /// transaction try-lock, per schema (tests). Correctness does not depend
 /// on it (each statement is exact on its own); it avoids two instances
 /// deadlocking on the same history rows.
-const HISTORY_LOCK_SQL: &str =
-    "SELECT pg_try_advisory_xact_lock(hashtextextended('akari.traffic_history.' || current_schema(), 0))";
+const HISTORY_LOCK_SQL: &str = "SELECT pg_try_advisory_xact_lock(hashtextextended('akari.traffic_history.' || current_schema(), 0))";
 
 /// W22: fold up to $1 staged rows (traffic_daily_pending, appended by
 /// FLUSH_SQL) into traffic_daily and traffic_node_daily in ONE statement:
@@ -2525,8 +2524,8 @@ mod db_tests {
         db.flush(&b).await;
         b.update(n, "s1", &report(u, 400, 100));
         let _lost = b.snapshot(); // transaction failed
-                                  // Even if memory were wiped (eviction/restart), the next cumulative
-                                  // report carries the missed delta.
+        // Even if memory were wiped (eviction/restart), the next cumulative
+        // report carries the missed delta.
         let fresh = buf(&db).await;
         fresh.update(n, "s1", &report(u, 450, 150));
         db.flush(&fresh).await;

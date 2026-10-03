@@ -59,10 +59,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
-use axum::extract::{Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
 use axum::Json;
+use axum::extract::{Query, State};
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -1674,11 +1674,17 @@ pub fn judge(kind: Kind, domain: &Domain, addrs: &[IpAddr], cloudflare: &[Cidr])
         ),
         Kind::Node => (
             "ok",
-            format!("{} 解析到 {list}，未经过 Cloudflare 代理（灰色云朵），可以用于节点通信。", domain.display()),
+            format!(
+                "{} 解析到 {list}，未经过 Cloudflare 代理（灰色云朵），可以用于节点通信。",
+                domain.display()
+            ),
         ),
         Kind::Sub if all_cf => (
             "ok",
-            format!("{} 解析到 Cloudflare（{list}），已经过橙色云朵代理。", domain.display()),
+            format!(
+                "{} 解析到 Cloudflare（{list}），已经过橙色云朵代理。",
+                domain.display()
+            ),
         ),
         Kind::Sub => (
             "warn",
@@ -1693,7 +1699,11 @@ pub fn judge(kind: Kind, domain: &Domain, addrs: &[IpAddr], cloudflare: &[Cidr])
             format!(
                 "{} 解析到 {list}{}。",
                 domain.display(),
-                if any_cf { "（经过 Cloudflare 代理）" } else { "" }
+                if any_cf {
+                    "（经过 Cloudflare 代理）"
+                } else {
+                    ""
+                }
             ),
         ),
     };
@@ -2155,7 +2165,7 @@ pub fn probe_values(req: &ProbeReq) -> Result<ProbeValues, ApiError> {
             return Err(bad_request!(
                 "settings.probe_interval_range",
                 "测速间隔：须在 600 秒（10 分钟）到 604800 秒（7 天）之间"
-            ))
+            ));
         }
     };
     let urls = match req.urls.as_deref() {

@@ -1,11 +1,11 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::*;
-use crate::testdb::fake_agent::PanelHarness;
-use crate::testdb::http::{rand_ip, Client, Fingerprint};
 use crate::testdb::TestDb;
+use crate::testdb::fake_agent::PanelHarness;
+use crate::testdb::http::{Client, Fingerprint, rand_ip};
 
 const ORIGIN: &str = "http://127.0.0.1:8080";
 
@@ -141,10 +141,12 @@ async fn install_link_lifecycle() {
         AS_ROOT, r#"sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'"#,
         "root runs it directly (no sudo needed), others through sudo"
     );
-    assert!(inst["command_wget"]
-        .as_str()
-        .unwrap()
-        .starts_with("wget -qO- "));
+    assert!(
+        inst["command_wget"]
+            .as_str()
+            .unwrap()
+            .starts_with("wget -qO- ")
+    );
     assert!(inst["pin"].is_null());
     // The form landed in the same transaction.
     let (region, addr, inbounds): (Option<String>, Option<String>, Value) =
@@ -598,9 +600,10 @@ fn updater_units_fit_the_agent_unit() {
     assert!(agent.contains(&"ProtectProc=invisible"));
     assert!(!agent.iter().any(|l| l.starts_with("ProcSubset")));
     // The updater never gets the network or the agent's capabilities.
-    assert!(!svc
-        .iter()
-        .any(|l| l.contains("CAP_NET") || l.starts_with("DynamicUser")));
+    assert!(
+        !svc.iter()
+            .any(|l| l.contains("CAP_NET") || l.starts_with("DynamicUser"))
+    );
 }
 
 /// W10: a node with a TLS domain: TLS templates take it, the script knows

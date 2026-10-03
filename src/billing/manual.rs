@@ -17,11 +17,11 @@
 //! answered 409 with the reason: nothing was paid through the panel, so
 //! there is nothing to keep. No coupon, credit or balance applies.
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::Json;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -30,7 +30,7 @@ use super::catalog::PeriodKindText;
 use super::orders::{self, Paid, Via};
 use crate::api::ApiJson;
 use crate::audit::Actor;
-use crate::auth::{bad_request, conflict, ApiError, AuthUser};
+use crate::auth::{ApiError, AuthUser, bad_request, conflict};
 use crate::state::AppState;
 
 /// Longest reason (same as other admin money actions).
@@ -129,7 +129,7 @@ pub async fn apply_create(
             return Err(conflict!(
                 "order_admin.user_has_pending",
                 "the user has a pending order; cancel it or wait for it to end"
-            ))
+            ));
         }
         r => r?,
     };

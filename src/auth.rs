@@ -1,13 +1,13 @@
 use argon2::{
-    password_hash::{phc::PasswordHash, PasswordHasher, PasswordVerifier},
     Argon2,
+    password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash},
 };
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
-use axum::{http::StatusCode, Json};
+use axum::{Json, http::StatusCode};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::net::{IpAddr, SocketAddr};

@@ -24,7 +24,7 @@
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgConnection;
 use uuid::Uuid;
 

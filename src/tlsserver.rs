@@ -29,8 +29,8 @@ use rustls::server::{ClientHello, ResolvesServerCert, WebPkiClientVerifier};
 use rustls::sign::CertifiedKey;
 use rustls::{RootCertStore, ServerConfig};
 use tokio::net::{TcpListener, TcpStream};
-use tokio_rustls::server::TlsStream;
 use tokio_rustls::TlsAcceptor;
+use tokio_rustls::server::TlsStream;
 use tokio_stream::wrappers::ReceiverStream;
 
 /// A handshake that has not completed after this long is dropped (a

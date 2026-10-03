@@ -20,11 +20,11 @@
 //! Dates are `YYYY-MM-DD` UTC days, `to` inclusive; default the last 30
 //! days; at most 366 days (month grouping: 3660, widened to whole months).
 
-use axum::extract::{Path, RawQuery, State};
 use axum::Json;
+use axum::extract::{Path, RawQuery, State};
 use chrono::{Duration, NaiveDate, Utc};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::auth::{ApiError, AuthUser};

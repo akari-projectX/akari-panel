@@ -10,7 +10,7 @@ use serde_json::Value;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use super::{kind_label, Settings, LIVE_KINDS};
+use super::{LIVE_KINDS, Settings, kind_label};
 use crate::state::AppState;
 
 /// Resolved alerts are kept this long, settled notifications this long.
@@ -226,12 +226,12 @@ pub fn evaluate(f: &Facts, r: &Rules, now: DateTime<Utc>) -> Verdict {
                         && *at - now < chrono::Duration::days(days)
                     {
                         fire(
-                                "cert",
-                                format!("证书{}", days_left(*at, now)),
-                                format!(
-                                    "节点域名 {domain} 的证书（自动申请，状态 {state}）将在 {days} 天内到期，agent 未能续期"
-                                ),
-                            );
+                            "cert",
+                            format!("证书{}", days_left(*at, now)),
+                            format!(
+                                "节点域名 {domain} 的证书（自动申请，状态 {state}）将在 {days} 天内到期，agent 未能续期"
+                            ),
+                        );
                     }
                 }
             }

@@ -27,10 +27,10 @@
 //!   `mailhook` (the W15 SMTP outbox, verified addresses only).
 
 use crate::auth::{bad_request, conflict};
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -509,10 +509,8 @@ pub async fn apply_assign(
 // Views
 // ---------------------------------------------------------------------------
 
-const UNREAD_USER: &str =
-    "(t.last_staff_at IS NOT NULL AND (t.user_read_at IS NULL OR t.last_staff_at > t.user_read_at))";
-const UNREAD_STAFF: &str =
-    "(t.last_user_at IS NOT NULL AND (t.staff_read_at IS NULL OR t.last_user_at > t.staff_read_at))";
+const UNREAD_USER: &str = "(t.last_staff_at IS NOT NULL AND (t.user_read_at IS NULL OR t.last_staff_at > t.user_read_at))";
+const UNREAD_STAFF: &str = "(t.last_user_at IS NOT NULL AND (t.staff_read_at IS NULL OR t.last_user_at > t.staff_read_at))";
 
 #[derive(Serialize, sqlx::FromRow)]
 pub struct MyTicketRow {
@@ -904,7 +902,7 @@ pub fn list_filter(q: &ListQuery, me: Uuid) -> Result<(String, Vec<String>), Api
             return Err(bad_request!(
                 "ticket_admin.status_invalid",
                 "status must be open, answered, closed or active"
-            ))
+            ));
         }
     }
     if let Some(c) = q.category.as_deref().filter(|s| !s.is_empty()) {

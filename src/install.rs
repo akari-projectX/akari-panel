@@ -433,7 +433,7 @@ pub(crate) fn write_secret(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use x509_parser::prelude::{parse_x509_pem, FromDer, X509Certificate};
+    use x509_parser::prelude::{FromDer, X509Certificate, parse_x509_pem};
 
     fn test_ca() -> (String, String) {
         let key = KeyPair::generate().unwrap();

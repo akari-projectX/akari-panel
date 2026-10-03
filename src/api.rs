@@ -2,10 +2,10 @@ use crate::auth::{bad_request, conflict};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 
+use axum::Json;
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use axum_extra::extract::cookie::CookieJar;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -14,7 +14,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::audit::Actor;
-use crate::auth::{self, ApiError, AuthUser, ShopUser, COOKIE_NAME};
+use crate::auth::{self, ApiError, AuthUser, COOKIE_NAME, ShopUser};
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -668,7 +668,7 @@ pub async fn user_subscription(
             return Err(bad_request!(
                 "user.admin_no_subscription",
                 "admin accounts have no subscription"
-            ))
+            ));
         }
     }
     let actor = Actor::of(&admin);
@@ -728,8 +728,7 @@ pub struct UserView {
 }
 
 /// UserView columns (alias `users` table as itself).
-pub const USER_VIEW_COLS: &str =
-    "id, login, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, \
+pub const USER_VIEW_COLS: &str = "id, login, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, \
      EXISTS (SELECT 1 FROM user_totp t WHERE t.user_id = users.id AND t.enabled_at IS NOT NULL) \
      AS totp_enabled, disabled_reason::text AS disabled_reason, \
      (SELECT up.plan_id FROM user_plans up WHERE up.user_id = users.id AND up.status = 'active') \
@@ -857,7 +856,7 @@ pub(crate) fn push_user_filters(
             return Err(bad_request!(
                 "user.status_filter_invalid",
                 "status must be active, expired, quota or disabled"
-            ))
+            ));
         }
     }
     match q.role.as_deref() {
@@ -869,7 +868,7 @@ pub(crate) fn push_user_filters(
             return Err(bad_request!(
                 "user.role_invalid",
                 "role must be 'user' or 'admin'"
-            ))
+            ));
         }
     }
     Ok(())
@@ -888,7 +887,7 @@ pub(crate) fn user_order(sort: Option<&str>) -> Result<&'static str, ApiError> {
             return Err(bad_request!(
                 "user.sort_invalid",
                 "sort must be created, -created, login, -traffic or expires"
-            ))
+            ));
         }
     })
 }
@@ -1746,7 +1745,7 @@ pub async fn node_summaries(state: &AppState) -> Result<Vec<NodeSummary>, ApiErr
 /// the browser keeps the copy and revalidates every time (the console's
 /// 5 s polling then costs a 304 while nothing changed).
 pub fn json_with_etag(req: &HeaderMap, body: Vec<u8>) -> Response {
-    use axum::http::{header, HeaderValue, StatusCode};
+    use axum::http::{HeaderValue, StatusCode, header};
     use sha2::Digest;
     let tag = format!("\"{}\"", hex::encode(&sha2::Sha256::digest(&body)[..16]));
     let matched = req
@@ -1954,8 +1953,7 @@ async fn with_heartbeats(state: &AppState, mut views: Vec<NodeView>) -> Vec<Node
 /// correlated subqueries: for the 200-node list that is one pass over each
 /// table instead of 200 probes per table (W14: 4.4 -> 2.6 ms, the list was
 /// the slowest admin read under agent load).
-pub const NODE_VIEW_COLS: &str =
-    "nodes.id, name, enabled, status, agent_version, core_version, agent_os, agent_arch, \
+pub const NODE_VIEW_COLS: &str = "nodes.id, name, enabled, status, agent_version, core_version, agent_os, agent_arch, \
      ro.update_status, config_version, \
      user_version, xray_inbounds, server_addr, region, tls_domain, host(agent_addr) AS agent_addr, last_error, last_error_at, failed_config_version, \
      failed_user_version, agent_protocol, agent_capabilities, lease_expires_at, \
@@ -2024,7 +2022,7 @@ pub async fn list_nodes(
             return Err(bad_request!(
                 "node.view_invalid",
                 "view must be summary or full"
-            ))
+            ));
         }
     };
     Ok(json_with_etag(&headers, body))
@@ -2150,7 +2148,7 @@ pub async fn create_node(
             return Err(bad_request!(
                 "node.templates_and_inbounds",
                 "give either templates or inbounds, not both"
-            ))
+            ));
         }
         (Some(t), None) => Some(serde_json::Value::Array(crate::nodetpl::render(
             t,
@@ -2360,7 +2358,7 @@ async fn apply_update_node(
     }
     let name = match name {
         Some(n) if n.trim().is_empty() => {
-            return Err(bad_request!("node.name_empty", "name must not be empty"))
+            return Err(bad_request!("node.name_empty", "name must not be empty"));
         }
         n => n.map(|n| n.trim().to_string()),
     };
@@ -2459,7 +2457,7 @@ async fn apply_update_node(
     {
         Ok(r) => r,
         Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
-            return Err(conflict!("node.name_exists", "node name already exists"))
+            return Err(conflict!("node.name_exists", "node name already exists"));
         }
         Err(e) => return Err(e.into()),
     };
@@ -2638,7 +2636,7 @@ pub(crate) fn validate_inbounds(inbounds: &serde_json::Value) -> Result<(), ApiE
                 return Err(bad_request!(
                     "inbound.tag_missing",
                     "every inbound needs a non-empty tag"
-                ))
+                ));
             }
         };
         if reserved_tag(tag) {
@@ -2662,7 +2660,7 @@ pub(crate) fn validate_inbounds(inbounds: &serde_json::Value) -> Result<(), ApiE
                     "inbound.protocol_missing",
                     "inbound {tag:?} needs a protocol",
                     tag = tag
-                ))
+                ));
             }
         }
         // The agent's gate dispatcher wraps a DefaultDispatcher without a
@@ -2990,7 +2988,7 @@ async fn apply_assign(
             return Err(bad_request!(
                 "user.admin_not_assignable",
                 "admin accounts are not proxy users and cannot be assigned to nodes"
-            ))
+            ));
         }
     }
     match inbound_protocols(&inbounds).get(&req.inbound_tag) {
@@ -2999,7 +2997,7 @@ async fn apply_assign(
                 "user.assign_inbound_missing",
                 "inbound {tag:?} does not exist on this node",
                 tag = req.inbound_tag.clone()
-            ))
+            ));
         }
         Some(p) if *p != req.protocol => {
             return Err(bad_request!(
@@ -3008,7 +3006,7 @@ async fn apply_assign(
                 tag = req.inbound_tag.clone(),
                 actual = p.clone(),
                 protocol = req.protocol.clone()
-            ))
+            ));
         }
         Some(_) => {}
     }
@@ -3127,7 +3125,7 @@ pub(crate) async fn apply_unassign(
             return Err(conflict!(
                 "user.access_from_plan",
                 "this access is granted by the user's plan; change the plan or its node groups"
-            ))
+            ));
         }
         Some(true) => {}
     }
@@ -4244,10 +4242,12 @@ mod tests {
             .unwrap();
         crate::testdb::drain(&mut listener, std::time::Duration::from_millis(20)).await;
         let mut tx = db.pool.begin().await.unwrap();
-        assert!(crate::reaper::finalize_delete(&mut tx, doomed)
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            crate::reaper::finalize_delete(&mut tx, doomed)
+                .await
+                .unwrap()
+                .is_some()
+        );
         tx.commit().await.unwrap();
         assert_eq!(
             ours_notified(crate::testdb::drain(&mut listener, quiet).await),
@@ -5818,7 +5818,7 @@ mod tests {
     /// still carry everything.
     #[tokio::test]
     async fn node_summary_view_and_etag() {
-        use crate::testdb::http::{rand_ip, Client};
+        use crate::testdb::http::{Client, rand_ip};
         use axum::http::header;
         use fred::prelude::KeysInterface;
         let Some(db) = TestDb::new().await else {

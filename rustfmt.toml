@@ -1,3 +1,4 @@
-# Edition 2024 code, 2021 formatting style: the 2024 style edition reflows
-# ~500 lines (import sort order, etc.). Switch deliberately, in its own PR.
-style_edition = "2021"
+# Edition 2024 code, 2024 formatting style (explicit, so a bare `rustfmt`
+# without Cargo's edition formats the same way). Also governs bench/ and
+# fuzz/ (rustfmt looks up the directory tree).
+style_edition = "2024"

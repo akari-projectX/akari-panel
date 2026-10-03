@@ -1,5 +1,5 @@
 use axum::extract::{Request, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
@@ -411,8 +411,8 @@ async fn rejected() -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testdb::http::{rand_ip, Client};
     use crate::testdb::TestDb;
+    use crate::testdb::http::{Client, rand_ip};
     use axum::http::Method;
 
     /// A10: every rejection the gate (or a fallback) produces is

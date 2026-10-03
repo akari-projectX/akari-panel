@@ -19,14 +19,14 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 use tonic::{Status, Streaming};
 use uuid::Uuid;
 
-use crate::grpc::{state_hash, NodeState, MIN_AGENT_PROTOCOL};
+use crate::grpc::{MIN_AGENT_PROTOCOL, NodeState, state_hash};
 use crate::pb::agent_channel_client::AgentChannelClient;
 use crate::pb::agent_enrollment_client::AgentEnrollmentClient;
 use crate::pb::agent_up::Msg as UpMsg;
 use crate::pb::panel_down::Msg as DownMsg;
 use crate::pb::{
-    ack, Ack, AgentUp, ConfigSnapshot, EnrollRequest, Hello, PanelDown, RenewRequest,
-    TrafficReport, UserTraffic,
+    Ack, AgentUp, ConfigSnapshot, EnrollRequest, Hello, PanelDown, RenewRequest, TrafficReport,
+    UserTraffic, ack,
 };
 use crate::state::AppState;
 use crate::testdb::TestDb;

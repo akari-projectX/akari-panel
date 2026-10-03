@@ -421,9 +421,11 @@ mod tests {
         assert!(check_data_dir(&base.join("new/sub")).is_ok(), "creatable");
         let file = base.join("f");
         std::fs::write(&file, b"x").unwrap();
-        assert!(check_data_dir(&file)
-            .unwrap_err()
-            .contains("not a directory"));
+        assert!(
+            check_data_dir(&file)
+                .unwrap_err()
+                .contains("not a directory")
+        );
         assert!(check_data_dir(&file.join("sub")).is_err());
         let _ = std::fs::remove_dir_all(&base);
     }

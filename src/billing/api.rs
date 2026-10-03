@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
@@ -20,11 +20,11 @@ use chrono::{DateTime, Utc};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::catalog::{self, Current, Offer, PeriodKind, PeriodKindText, Price, Sale};
-use super::orders::{self, payment_actor, Paid, Pending, Via};
+use super::orders::{self, Paid, Pending, Via, payment_actor};
 use super::provider::{self, NotifyCheck, PaymentProvider};
 use super::{commission, coupons, ledger};
 use crate::api::ApiJson;
@@ -560,7 +560,7 @@ pub async fn create_order(
                     return Err(bad_request!(
                         "order.method_required",
                         "choose a payment method"
-                    ))
+                    ));
                 }
             }
         }
@@ -733,7 +733,7 @@ pub async fn create_order(
             return Err(conflict!(
                 "order.in_progress",
                 "another order is being created"
-            ))
+            ));
         }
         r => r?,
     };

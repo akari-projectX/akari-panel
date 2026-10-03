@@ -16,17 +16,17 @@
 
 use axum::body::{Body, Bytes};
 use axum::extract::{Query, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::api::{self, UserListQuery};
 use crate::audit::Actor;
-use crate::auth::{bad_request, ApiError, AuthUser};
+use crate::auth::{ApiError, AuthUser, bad_request};
 use crate::csvx::{self, Cell};
 use crate::state::AppState;
 use crate::trafficlog;
@@ -588,7 +588,7 @@ pub async fn traffic(
             return Err(bad_request!(
                 "export.group_invalid",
                 "group must be day or node"
-            ))
+            ));
         }
     };
     let (from, to) = date_range(q.from, q.to)?;

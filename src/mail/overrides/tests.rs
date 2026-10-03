@@ -6,8 +6,8 @@ use axum::http::{Method, StatusCode};
 use serde_json::json;
 
 use super::*;
-use crate::testdb::http::client_for;
 use crate::testdb::TestDb;
+use crate::testdb::http::client_for;
 
 async fn outbox_subjects(db: &TestDb) -> Vec<String> {
     sqlx::query_scalar("SELECT subject FROM mail_outbox ORDER BY id")
@@ -202,10 +202,12 @@ async fn edited_template_is_used_by_enqueue() {
     assert_eq!(row["custom"], true);
     assert_eq!(row["version"], 2);
     assert_eq!(row["subject"], "s2 {site}");
-    assert!(row["default_subject"]
-        .as_str()
-        .unwrap()
-        .contains("注册验证码"));
+    assert!(
+        row["default_subject"]
+            .as_str()
+            .unwrap()
+            .contains("注册验证码")
+    );
 
     // Preview with sample values (validated).
     let r = admin.post("/test/api/v1/settings/mail-templates/preview", json!({ "kind": "password_reset", "locale": "en", "subject": "Reset {site}", "body": "Open:\n\n{link}" })).await;

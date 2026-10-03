@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use dashmap::DashMap;
 use sqlx::PgPool;
@@ -70,7 +70,7 @@ pub struct LiveSession(AppState);
 
 impl Drop for LiveSession {
     fn drop(&mut self) {
-        self.0 .0.live_sessions.fetch_sub(1, Ordering::SeqCst);
+        self.0.0.live_sessions.fetch_sub(1, Ordering::SeqCst);
     }
 }
 

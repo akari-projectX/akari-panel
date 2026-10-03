@@ -7,8 +7,8 @@ use axum::http::StatusCode;
 use uuid::Uuid;
 
 use super::*;
-use crate::testdb::http::client_for;
 use crate::testdb::TestDb;
+use crate::testdb::http::client_for;
 
 async fn setup() -> Option<(TestDb, AppState, crate::testdb::http::Client)> {
     let db = TestDb::new().await?;
@@ -64,10 +64,12 @@ async fn users_export_follows_filters_and_escapes() {
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.headers["content-type"], "text/csv; charset=utf-8");
     assert_eq!(r.headers["cache-control"], "no-store");
-    assert!(r.headers["content-disposition"]
-        .to_str()
-        .unwrap()
-        .starts_with("attachment; filename=\"akari-users-"));
+    assert!(
+        r.headers["content-disposition"]
+            .to_str()
+            .unwrap()
+            .starts_with("attachment; filename=\"akari-users-")
+    );
     let all = rows(&r.body);
     assert_eq!(all[0][0], "id");
     assert_eq!(

@@ -1,7 +1,7 @@
 use std::io::Write as _;
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::audit::Actor;
 use crate::config::PanelConfig;

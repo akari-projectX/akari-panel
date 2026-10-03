@@ -20,9 +20,9 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use akari_panel::fuzzing::{cert_status_json, traffic_check, traffic_peek};
-use akari_panel::nodestat::{heartbeat_blob, Sample};
-use akari_panel::pb::agent_up::Msg;
+use akari_panel::nodestat::{Sample, heartbeat_blob};
 use akari_panel::pb::AgentUp;
+use akari_panel::pb::agent_up::Msg;
 use akari_panel::traffic::TrafficBuffer;
 use akari_panel_fuzz::strings;
 use libfuzzer_sys::fuzz_target;
@@ -62,9 +62,10 @@ fn check_heartbeat(hb: &akari_panel::pb::Heartbeat) {
         );
     }
     let s = Sample::from_heartbeat(hb);
-    assert!(s
-        .cpu
-        .is_none_or(|c| c.is_finite() && (0.0..=100.0).contains(&c)));
+    assert!(
+        s.cpu
+            .is_none_or(|c| c.is_finite() && (0.0..=100.0).contains(&c))
+    );
     assert!(s.load1.is_none_or(|l| l.is_finite() && l >= 0.0));
     for v in [
         s.mem_used,

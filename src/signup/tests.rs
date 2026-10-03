@@ -4,14 +4,14 @@
 use std::time::{Duration, Instant};
 
 use axum::http::{Method, StatusCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::*;
 use crate::mail::Locale;
 use crate::state::AppState;
-use crate::testdb::http::{rand_ip, Client};
 use crate::testdb::TestDb;
+use crate::testdb::http::{Client, rand_ip};
 
 const ORIGIN: &str = "https://panel.example";
 
@@ -518,7 +518,7 @@ async fn code_request_has_no_existence_oracle() {
         strip(&prints[3].1),
         "reset: identical responses"
     );
-    assert_eq!(prints[0].1 .2, br#"{"ok":true}"#.to_vec());
+    assert_eq!(prints[0].1.2, br#"{"ok":true}"#.to_vec());
     // Same time class: no request waits for a lookup/insert/mail.
     for t in &times {
         assert!(*t < Duration::from_millis(1500), "{times:?}");
@@ -1115,9 +1115,11 @@ async fn reset_flow_invalidates_sessions() {
         .await
         .unwrap();
     let bare = AppState::for_test(db.pool.clone()).await;
-    assert!(!reset::apply_send_link(&mut tx, &bare, &moved)
-        .await
-        .unwrap());
+    assert!(
+        !reset::apply_send_link(&mut tx, &bare, &moved)
+            .await
+            .unwrap()
+    );
     assert!(reset::apply_send_link(&mut tx, &st, &moved).await.unwrap());
     tx.rollback().await.unwrap();
     db.drop().await;

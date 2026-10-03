@@ -38,9 +38,9 @@ pub(crate) mod register;
 pub(crate) mod reset;
 
 use crate::auth::{bad_request, conflict};
+use axum::Json;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

@@ -17,18 +17,18 @@
 use crate::auth::bad_request;
 use std::net::SocketAddr;
 
+use axum::Json;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use serde_json::json;
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
-use super::{email, invite, read_json, CodeCheck, SignupSettings};
+use super::{CodeCheck, SignupSettings, email, invite, read_json};
 use crate::audit::Actor;
 use crate::auth::{self, ApiError};
 use crate::mail::{Locale, Template};
@@ -104,7 +104,7 @@ async fn admit(
             return Err(bad_request!(
                 "signup.invite_required",
                 "invite code required"
-            ))
+            ));
         }
         None => {}
         Some(c) => {

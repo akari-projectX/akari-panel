@@ -7,7 +7,7 @@
 #![no_main]
 
 use akari_panel::fuzzing::validate_inbounds;
-use akari_panel::nodetpl::{needs_certificate, node_tls_domain, render, RenderReq};
+use akari_panel::nodetpl::{RenderReq, needs_certificate, node_tls_domain, render};
 use akari_panel::protocols;
 use libfuzzer_sys::fuzz_target;
 use serde_json::Value;

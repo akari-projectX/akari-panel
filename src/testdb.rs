@@ -4,8 +4,8 @@
 
 use std::str::FromStr;
 
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::PgPool;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use uuid::Uuid;
 
 pub mod fake_agent;

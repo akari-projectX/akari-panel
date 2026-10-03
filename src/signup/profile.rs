@@ -14,14 +14,14 @@
 //! (request a code for that address). Both use the renewal scope (`ShopUser`, like `/me/password`).
 
 use crate::auth::{bad_request, conflict};
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use serde::Deserialize;
 use serde_json::json;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use super::{email, CodeCheck};
+use super::{CodeCheck, email};
 use crate::api::ApiJson;
 use crate::audit::Actor;
 use crate::auth::{self, ApiError, ShopUser};

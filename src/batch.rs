@@ -26,18 +26,18 @@
 
 use std::time::Duration;
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
 use crate::api::{self, UserListQuery};
 use crate::audit::Actor;
-use crate::auth::{bad_request, conflict, ApiError, AuthUser};
+use crate::auth::{ApiError, AuthUser, bad_request, conflict};
 use crate::billing::ledger;
 use crate::mail::templates::{Locale, Template};
 use crate::plans;
@@ -362,7 +362,7 @@ pub async fn apply_create(
             match enabled {
                 None => return Err(bad_request!("plan.unknown", "unknown plan id")),
                 Some(false) => {
-                    return Err(conflict!("plan.disabled", "plan is disabled (not offered)"))
+                    return Err(conflict!("plan.disabled", "plan is disabled (not offered)"));
                 }
                 Some(true) => {}
             }
@@ -687,7 +687,7 @@ async fn chunk(
         let step = match apply_one(&mut sp, actor, action, *user).await {
             Ok(step) => step,
             Err(e) if e.status().is_server_error() => {
-                return Err(anyhow::anyhow!(e.message().to_string()))
+                return Err(anyhow::anyhow!(e.message().to_string()));
             }
             Err(e) => Step::Failed(e),
         };

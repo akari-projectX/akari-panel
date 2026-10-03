@@ -14,11 +14,11 @@
 //! user_balances → withdrawals.
 
 use crate::auth::{bad_request, conflict};
-use axum::extract::{Path, Query, State};
 use axum::Json;
+use axum::extract::{Path, Query, State};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -372,7 +372,7 @@ pub async fn apply_adjust(
             return Err(bad_request!(
                 "balance.admin_none",
                 "admin accounts have no balance"
-            ))
+            ));
         }
     }
     let mut e = Entry::new(user_id, Kind::AdminAdjust, req.amount_cents);

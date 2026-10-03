@@ -3,8 +3,8 @@
 
 use std::time::Duration;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hdrhistogram::Histogram;
 use sha2::{Digest, Sha256};
 

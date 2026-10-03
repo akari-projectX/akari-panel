@@ -14,8 +14,8 @@
 //! registration: `uses = 0` checked in the consuming UPDATE, race-safe).
 
 use crate::auth::conflict;
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 use chrono::{DateTime, Utc};
 use rand::Rng;
 use serde::Serialize;

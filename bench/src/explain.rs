@@ -218,8 +218,7 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         )),
     )
     .await?;
-    let audit =
-        "SELECT id, at, actor_id, actor_login, ip, action, target_type, target_id, before, after \
+    let audit = "SELECT id, at, actor_id, actor_login, ip, action, target_type, target_id, before, after \
                  FROM audit_log WHERE true";
     explain(
         &mut tx,

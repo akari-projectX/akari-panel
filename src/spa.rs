@@ -7,7 +7,7 @@
 use std::net::IpAddr;
 
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap, HeaderValue, Uri};
+use axum::http::{HeaderMap, HeaderValue, Uri, header};
 use axum::response::{IntoResponse, Response};
 use rust_embed::RustEmbed;
 
@@ -170,9 +170,9 @@ fn file_response(key: &str, data: Vec<u8>, cache: &'static str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::{issue_token, Stage};
-    use crate::testdb::http::{rand_ip, Client};
+    use crate::auth::{Stage, issue_token};
     use crate::testdb::TestDb;
+    use crate::testdb::http::{Client, rand_ip};
     use axum::http::{Method, StatusCode};
     use uuid::Uuid;
 

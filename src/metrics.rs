@@ -12,12 +12,12 @@
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use axum::Router;
 use axum::extract::{MatchedPath, Request, State};
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::Router;
 use prometheus::{
     Encoder, Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge,
     IntGaugeVec, Opts, Registry, TextEncoder,

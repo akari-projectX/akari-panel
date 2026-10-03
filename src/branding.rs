@@ -17,11 +17,11 @@
 //! - The public view (`/auth/options` → `branding`) carries the text
 //!   fields and the image URLs (prefix-relative, never the bytes).
 
+use axum::Json;
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -30,8 +30,8 @@ use sqlx::PgConnection;
 
 use crate::api::ApiJson;
 use crate::audit::Actor;
-use crate::auth::{bad_request, conflict, ApiError, AuthUser};
-use crate::markdown::{safe_link, UrlKind};
+use crate::auth::{ApiError, AuthUser, bad_request, conflict};
+use crate::markdown::{UrlKind, safe_link};
 use crate::state::AppState;
 
 pub const LOGO_MAX: usize = 256 * 1024;
@@ -287,8 +287,7 @@ pub struct Stored {
     pub updated_at: DateTime<Utc>,
 }
 
-const COLS: &str =
-    "version, logo_sha256, favicon_sha256, footer_text, footer_links, tos_url, privacy_url, \
+const COLS: &str = "version, logo_sha256, favicon_sha256, footer_text, footer_links, tos_url, privacy_url, \
      client_downloads, updated_at";
 
 pub async fn load(conn: &mut PgConnection) -> sqlx::Result<Stored> {

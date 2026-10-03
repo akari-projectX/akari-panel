@@ -14,8 +14,8 @@
 use std::cmp::Ordering;
 
 use akari_panel::updates::{
-    compare_versions, key_id, parse_manifest, parse_release_keys, parse_version, verify,
-    ReleaseKey, Signature,
+    ReleaseKey, Signature, compare_versions, key_id, parse_manifest, parse_release_keys,
+    parse_version, verify,
 };
 use akari_panel_fuzz::fields;
 use base64::Engine as _;

@@ -6,8 +6,8 @@ use axum::http::{Method, StatusCode};
 use serde_json::json;
 
 use super::*;
-use crate::testdb::http::{client_for, rand_ip, Client};
 use crate::testdb::TestDb;
+use crate::testdb::http::{Client, client_for, rand_ip};
 
 /// A minimal PNG prefix (signature + IHDR) of the given size; the rest of
 /// the file is padding (the panel reads the header only).
@@ -370,10 +370,12 @@ async fn upload_serve_and_audit() {
         .put_raw("/test/api/v1/settings/branding/favicon", png(32, 32, 300))
         .await;
     assert_eq!(r.status, StatusCode::OK);
-    assert!(r.json()["favicon_url"]
-        .as_str()
-        .unwrap()
-        .starts_with("brand/favicon?v="));
+    assert!(
+        r.json()["favicon_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("brand/favicon?v=")
+    );
     assert_eq!(anon.get("/test/brand/favicon").await.status, StatusCode::OK);
     assert_eq!(
         admin

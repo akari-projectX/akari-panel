@@ -20,10 +20,10 @@
 //! rule); these checks give the admin the error early and keep
 //! subscriptions renderable.
 
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use rand::RngCore;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 /// Protocols the panel issues credentials for.
@@ -89,11 +89,7 @@ pub fn security(inbound: &Value) -> String {
         .unwrap_or("none")
         .trim()
         .to_ascii_lowercase();
-    if s.is_empty() {
-        "none".into()
-    } else {
-        s
-    }
+    if s.is_empty() { "none".into() } else { s }
 }
 
 /// The VLESS flow the inbound's users get: `settings.flow` ("" = none).
@@ -297,20 +293,20 @@ pub fn check_inbound(inbound: &Value) -> Result<(), String> {
         other => {
             return Err(format!(
                 "security {other:?} is not supported (none, tls, reality)"
-            ))
+            ));
         }
     }
     match (proto, net.as_str()) {
         ("shadowsocks", "tcp") | ("hysteria", "hysteria") => {}
         ("shadowsocks", _) => {
-            return Err("shadowsocks runs on its own transport (no streamSettings.network)".into())
+            return Err("shadowsocks runs on its own transport (no streamSettings.network)".into());
         }
         ("hysteria", _) => return Err("hysteria needs streamSettings.network \"hysteria\"".into()),
         (_, "tcp" | "ws" | "httpupgrade" | "xhttp" | "grpc") => {}
         (_, other) => {
             return Err(format!(
                 "transport {other:?} is not supported (tcp/raw, ws, httpupgrade, xhttp, grpc)"
-            ))
+            ));
         }
     }
     if sec == "reality" {
@@ -374,7 +370,7 @@ pub fn check_inbound(inbound: &Value) -> Result<(), String> {
                 other => {
                     return Err(format!(
                         "vless flow {other:?} is not supported (\"\" or {VISION})"
-                    ))
+                    ));
                 }
             }
         }
@@ -491,9 +487,11 @@ mod tests {
         assert_eq!(check_inbound(&ss(base.clone())), Ok(()));
         let mut downgraded = base.clone();
         downgraded["METHOD"] = json!("aes-128-gcm");
-        assert!(check_inbound(&ss(downgraded))
-            .unwrap_err()
-            .contains("duplicate key"));
+        assert!(
+            check_inbound(&ss(downgraded))
+                .unwrap_err()
+                .contains("duplicate key")
+        );
         let refused = [
             json!({"tag": "a", "TAG": "b", "protocol": "vless"}),
             json!({"tag": "a", "protocol": "vless", "Protocol": "dokodemo-door"}),
@@ -547,10 +545,12 @@ mod tests {
                 n
             );
         }
-        assert!(generate_account(
-            &json!({"protocol": "shadowsocks", "settings": {"method": "aes-128-gcm"}})
-        )
-        .is_err());
+        assert!(
+            generate_account(
+                &json!({"protocol": "shadowsocks", "settings": {"method": "aes-128-gcm"}})
+            )
+            .is_err()
+        );
         assert_eq!(
             generate_account(&json!({"protocol": "hysteria"})).unwrap()["auth"]
                 .as_str()
