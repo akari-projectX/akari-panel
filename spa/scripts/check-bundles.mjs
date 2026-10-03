@@ -70,6 +70,14 @@ const MARKERS = [
   ["dashboard 营收（支付宝实收）", /营收（支付宝实收）/],
   ["admin API /settings/site", /\/settings\/site/],
   ["console error texts (ADMIN_CODES)", /plan\.speed_limit_range/],
+  // Ops
+  ["admin API /announcements", new RegExp(`${Q}/announcements\\b`)],
+  ["admin API /kb/", /\/kb\/(articles|categories)/],
+  ["admin API /content/preview", /\/content\/preview/],
+  ["admin API /settings/branding", /\/settings\/branding/],
+  ["admin API /settings/mail-templates", /\/settings\/mail-templates/],
+  ["heading 邮件模板", /邮件模板/],
+  ["heading 内容管理", /内容管理/],
 ];
 const files = (dir) =>
   readdirSync(dir).flatMap((name) => {

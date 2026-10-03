@@ -1,3 +1,4 @@
+import { SiteFooter, SiteMark, useFavicon } from "../components/branding";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
@@ -19,6 +20,7 @@ export function Login({ options }: { options?: AuthOptions } = {}) {
   const queryClient = useQueryClient();
   const t = useT();
   useDocumentTitle(t("login.title"));
+  useFavicon();
   const [login, setLogin] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
@@ -69,7 +71,8 @@ export function Login({ options }: { options?: AuthOptions } = {}) {
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center gap-4 px-4">
-      <div className="flex w-full max-w-sm justify-end">
+      <div className="flex w-full max-w-sm items-center justify-between gap-2">
+        <SiteMark />
         <LocaleSwitch />
       </div>
       <Card className="w-full max-w-sm">
@@ -151,6 +154,7 @@ export function Login({ options }: { options?: AuthOptions } = {}) {
           </form>
         </CardContent>
       </Card>
+      <SiteFooter className="w-full max-w-sm border-t-0" />
     </main>
   );
 }

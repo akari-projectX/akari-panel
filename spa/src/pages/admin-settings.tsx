@@ -18,7 +18,9 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { BrandingSettings } from "./admin-branding";
 import { MailSettings } from "./admin-mail-settings";
+import { MailTemplates } from "./admin-mail-templates";
 import { PaymentSettings } from "./admin-payments";
 
 // W21 (M11): 系统设置 in tabs, each a deep link /admin/settings/<tab>.
@@ -30,6 +32,7 @@ export const SETTINGS_TABS = [
   { id: "payments", label: "支付" },
   { id: "signup", label: "注册" },
   { id: "mail", label: "邮件" },
+  { id: "mail-templates", label: "邮件模板" },
   { id: "failed-mail", label: "失败邮件" },
   { id: "alerts", label: "告警" },
 ] as const;
@@ -342,6 +345,7 @@ export function AdminSettings() {
           {settings.data && tab === "site" && (
             <div className="space-y-6">
               <SiteForm data={settings.data} />
+              <BrandingSettings />
               <SettingsForm key={`domains-${settings.data.version}`} data={settings.data} mode="site" />
             </div>
           )}
@@ -362,6 +366,7 @@ export function AdminSettings() {
           {tab === "payments" && <PaymentSettings />}
           {tab === "signup" && <MailSettings part="signup" />}
           {tab === "mail" && <MailSettings part="mail" />}
+          {tab === "mail-templates" && <MailTemplates />}
           {tab === "failed-mail" && <MailSettings part="failed" />}
           {tab === "alerts" && <AlertSettingsCard />}
         </Tabs>

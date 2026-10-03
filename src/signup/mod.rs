@@ -431,6 +431,9 @@ pub async fn options(State(state): State<AppState>) -> Json<serde_json::Value> {
         .site_name
         .clone()
         .unwrap_or_else(|| crate::settings::DEFAULT_SITE_NAME.to_string());
+    // Ops: site branding (logo/favicon URLs, footer, links) for both
+    // bundles; null when the database is unavailable.
+    let branding = crate::branding::public_view(&state).await;
     Json(match s {
         Some((s, mail)) => {
             let verify = s.register_enabled && s.verification_required(mail);
@@ -443,10 +446,11 @@ pub async fn options(State(state): State<AppState>) -> Json<serde_json::Value> {
                 "email_verify": verify,
                 "reset": s.reset_enabled,
                 "site_name": site_name,
+                "branding": branding,
             })
         }
         None => {
-            json!({ "register": false, "invite_required": false, "email_domains": [], "email_verify": false, "reset": false, "site_name": site_name })
+            json!({ "register": false, "invite_required": false, "email_domains": [], "email_verify": false, "reset": false, "site_name": site_name, "branding": branding })
         }
     })
 }

@@ -31,6 +31,11 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::trafficlog::routes())
         .merge(crate::batch::routes())
         .merge(crate::export::routes())
+        // Ops: announcements, knowledge base, branding (logo/favicon served
+        // publicly under the prefix with cache headers).
+        .merge(crate::announcements::routes())
+        .merge(crate::kb::routes())
+        .merge(crate::branding::routes())
         // R23: two bundles. The user portal (and shared login) is public;
         // the admin console's index and assets answer admin sessions only
         // (everything else under /admin is the canonical rejection).

@@ -348,6 +348,7 @@ pub async fn run(state: AppState) {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last_notices = tokio::time::Instant::now();
     let mut last_maintain: Option<tokio::time::Instant> = None;
+    let mut last_announce: Option<tokio::time::Instant> = None;
     loop {
         tick.tick().await;
         if last_maintain.is_none_or(|t| t.elapsed() >= MAINTAIN_EVERY) {
@@ -376,6 +377,16 @@ pub async fn run(state: AppState) {
             last_notices = tokio::time::Instant::now();
             if let Err(e) = super::notices::run(&state, &smtp).await {
                 tracing::warn!(error = %e, "mail notices pass failed");
+            }
+        }
+        // Ops: one batch of a requested announcement mailing (rate-limited
+        // by MAIL_EVERY × MAIL_BATCH; any instance, row claimed).
+        if last_announce.is_none_or(|t| t.elapsed() >= crate::announcements::MAIL_EVERY) {
+            last_announce = Some(tokio::time::Instant::now());
+            match crate::announcements::mail_pass(&state, &smtp).await {
+                Ok(n) if n > 0 => tracing::info!(queued = n, "announcement mail batch queued"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "announcement mail pass failed"),
             }
         }
         let transport = match smtp_transport(&smtp, state.totp()) {

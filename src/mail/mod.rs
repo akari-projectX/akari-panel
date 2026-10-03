@@ -18,6 +18,7 @@
 //! (`POST /settings/mail/test`), which reports the server's answer.
 
 pub mod notices;
+pub mod overrides;
 pub mod sender;
 pub mod templates;
 
@@ -110,7 +111,9 @@ pub async fn enqueue(
     user_id: Option<Uuid>,
     discard_after_secs: Option<i64>,
 ) -> sqlx::Result<i64> {
-    let r = templates::render(tpl, locale, smtp.site());
+    // Ops: the admin's edited template, when one is stored (same
+    // transaction: a committed edit is what the next mail uses).
+    let r = overrides::render_for(conn, tpl, locale, smtp.site()).await?;
     sqlx::query_scalar(
         "INSERT INTO mail_outbox (kind, user_id, to_addr, subject, body_text, body_html, \
          discard_after) VALUES ($1, $2, $3, $4, $5, $6, \
@@ -472,33 +475,50 @@ const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// POST /api/v1/settings/mail/test (admin): send a test message right now
 /// with the SAVED settings (enabled or not) and report the server's answer.
+/// Uses the (possibly edited) `test` template.
 pub async fn send_test(
     State(state): State<AppState>,
     user: AuthUser,
     ApiJson(req): ApiJson<TestReq>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     user.require_admin()?;
-    let to = crate::signup::email::parse(&req.to)
-        .ok_or_else(|| bad_request!("mail.to_invalid", "to is not a valid email address"))?;
-    let smtp = {
+    let (smtp, rendered) = {
         let mut c = state.pg().acquire().await?;
-        load(&mut c).await?
+        let smtp = load(&mut c).await?;
+        let r = overrides::render_for(&mut c, &Template::Test, Locale::Zh, smtp.site()).await?;
+        (smtp, r)
     };
+    send_now(&state, &user, &smtp, &req.to, rendered, None).await
+}
+
+/// Send one rendered message synchronously over the saved SMTP settings
+/// (the admin's test mails), audit the outcome (`settings.mail.test`,
+/// `template` = the kind when testing a template) and report the server's
+/// answer (502 with the detail on failure).
+pub(crate) async fn send_now(
+    state: &AppState,
+    user: &AuthUser,
+    smtp: &Smtp,
+    to: &str,
+    rendered: templates::Rendered,
+    template: Option<&str>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let to = crate::signup::email::parse(to)
+        .ok_or_else(|| bad_request!("mail.to_invalid", "to is not a valid email address"))?;
     if !smtp.complete() {
         return Err(bad_request!(
             "mail.test_needs_host",
             "save the SMTP host and sender address first"
         ));
     }
-    let transport = sender::smtp_transport(&smtp, state.totp()).map_err(|e| {
+    let transport = sender::smtp_transport(smtp, state.totp()).map_err(|e| {
         crate::auth::api_error!(BAD_GATEWAY, "mail.test_failed", "{detail}", detail = e)
     })?;
-    let r = templates::render(&Template::Test, Locale::Zh, smtp.site());
     let msg = sender::OutMsg {
         to: to.clone(),
-        subject: r.subject,
-        text: r.text,
-        html: r.html,
+        subject: rendered.subject,
+        text: rendered.text,
+        html: rendered.html,
     };
     let res = tokio::time::timeout(TEST_TIMEOUT, transport.send(&msg)).await;
     let outcome = match &res {
@@ -510,12 +530,12 @@ pub async fn send_test(
         let mut c = state.pg().acquire().await?;
         crate::audit::record(
             &mut c,
-            &Actor::of(&user),
+            &Actor::of(user),
             "settings.mail.test",
             "settings",
             Some("mail".into()),
             None,
-            Some(json!({ "to": to, "outcome": outcome })),
+            Some(json!({ "to": to, "outcome": outcome, "template": template })),
         )
         .await?;
     }
@@ -635,6 +655,23 @@ pub fn routes() -> axum::Router<AppState> {
             get(get_mail_settings).put(put_mail_settings),
         )
         .route("/{prefix}/api/v1/settings/mail/test", post(send_test))
+        // Ops: editable templates.
+        .route(
+            "/{prefix}/api/v1/settings/mail-templates",
+            get(overrides::list),
+        )
+        .route(
+            "/{prefix}/api/v1/settings/mail-templates/preview",
+            post(overrides::preview),
+        )
+        .route(
+            "/{prefix}/api/v1/settings/mail-templates/{kind}/{locale}",
+            axum::routing::put(overrides::put).delete(overrides::reset),
+        )
+        .route(
+            "/{prefix}/api/v1/settings/mail-templates/{kind}/{locale}/test",
+            post(overrides::send_test),
+        )
         .route("/{prefix}/api/v1/mail/outbox", get(list_outbox))
         .route(
             "/{prefix}/api/v1/mail/outbox/{id}/retry",

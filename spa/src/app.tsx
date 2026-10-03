@@ -1,3 +1,4 @@
+import { SiteFooter, SiteMark, useFavicon } from "./components/branding";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
@@ -121,6 +122,7 @@ function PortalShell({ me, onLogout, logoutError }: { me: Me; onLogout: () => vo
   const views = viewsFor(me);
   const view = viewOf(path, views);
   useDocumentTitle(t(view.label));
+  useFavicon();
   const main = useRef<HTMLElement>(null);
   const first = useRef(true);
   useEffect(() => {
@@ -144,7 +146,7 @@ function PortalShell({ me, onLogout, logoutError }: { me: Me; onLogout: () => vo
     <div className="min-h-screen pb-20 sm:pb-0">
       <header className="sticky top-0 z-30 border-b border-border bg-card">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-2.5 sm:px-6">
-          <span className="text-sm font-semibold tracking-tight">{t("common.appName")}</span>
+          <SiteMark />
           <div className="flex min-w-0 items-center gap-2 sm:gap-3">
             <span className="hidden max-w-[12rem] truncate text-sm text-muted-foreground sm:inline">{me.login}</span>
             <LocaleSwitch />
@@ -186,6 +188,7 @@ function PortalShell({ me, onLogout, logoutError }: { me: Me; onLogout: () => vo
         </h1>
         <div key={view.id}>{view.render(me)}</div>
       </main>
+      <SiteFooter />
       <nav
         aria-label={t("nav.label")}
         className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-card pb-[env(safe-area-inset-bottom)] sm:hidden"

@@ -320,8 +320,12 @@ async fn disabled_endpoints_are_the_canonical_rejection() {
     check_rejected(&c, &["/test/auth/register/challenge"], &canonical).await;
     let o = c.get("/test/auth/options").await;
     assert_eq!(o.status, StatusCode::OK);
+    let mut v = o.json();
+    // Ops: the public branding (no image set: no URLs).
+    let branding = v.as_object_mut().unwrap().remove("branding").unwrap();
+    assert!(branding["logo_url"].is_null() && branding["footer_links"] == json!([]));
     assert_eq!(
-        o.json(),
+        v,
         json!({ "register": false, "invite_required": false, "email_domains": [], "reset": false,
                 "email_verify": false, "site_name": "Akari" })
     );

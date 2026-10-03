@@ -1178,3 +1178,103 @@ test("Ops: batch balance on selected users, users CSV, gift order, coupon batch 
   expect(problems).toEqual([]);
   await ctx.close();
 });
+
+// Ops: announcements on the portal dashboard, the help center, branding,
+// and an edited mail template that the test mail (Mailpit) carries.
+test("Ops: announcement + help article in the portal; edited mail template in a test mail", async ({ browser }) => {
+  test.skip(!secret || !MAILPIT || !SMTP_PORT, "needs the enrollment test and Mailpit (scripts/e2e.sh)");
+  const actx = await browser.newContext({ locale: "zh-CN" });
+  const ap = await actx.newPage();
+  const aproblems = watch(ap);
+  await ap.goto(BASE);
+  const next = await nextCode(secret, usedStep);
+  usedStep = next.step;
+  await login(ap, ADMIN, ADMIN_PW, next.code);
+  await expect(ap).toHaveURL(ADMIN_BASE);
+
+  // Announcement through the console editor (live server preview).
+  await ap.goto(`${ADMIN_BASE}/content/announcements`);
+  await expect(ap.getByRole("heading", { name: "内容管理" })).toBeVisible();
+  await ap.getByRole("button", { name: "新建公告" }).click();
+  await ap.getByLabel("标题（中文）").fill("e2e 维护公告");
+  await ap.getByLabel("标题（英文，可选）").fill("e2e maintenance");
+  await ap.getByLabel("正文（中文）").fill("本周六 **凌晨** 维护 <script>alert(1)</script>");
+  await expect(ap.getByRole("region", { name: "正文（中文）预览" }).locator("strong")).toHaveText("凌晨");
+  await ap.getByLabel("置顶").check();
+  await ap.getByRole("button", { name: "发布公告" }).click();
+  await expect(ap.getByRole("status").filter({ hasText: "已发布公告。" })).toBeVisible();
+  await expect(ap.getByRole("row").filter({ hasText: "e2e 维护公告" }).getByText("显示中")).toBeVisible();
+
+  // A published help article (API, same admin session).
+  const cat = await ap.request.post(`${ORIGIN}${new URL(BASE).pathname.replace(/\/app$/, "")}/api/v1/kb/categories`, {
+    data: { name_zh: "e2e 入门", name_en: "e2e basics", sort: 1 },
+  });
+  expect(cat.status()).toBe(201);
+  const catId = ((await cat.json()) as { id: string }).id;
+  const art = await ap.request.post(`${ORIGIN}${new URL(BASE).pathname.replace(/\/app$/, "")}/api/v1/kb/articles`, {
+    data: {
+      category_id: catId,
+      title_zh: "e2e 如何导入订阅",
+      title_en: "e2e import the subscription",
+      body_zh: "打开客户端，选择 *从剪贴板导入*。",
+      published: true,
+    },
+  });
+  expect(art.status()).toBe(201);
+
+  // Edit the test mail template and send it to Mailpit.
+  await ap.goto(`${ADMIN_BASE}/settings/mail-templates`);
+  await expect(ap.getByRole("heading", { name: "邮件模板" })).toBeVisible();
+  await ap.getByLabel("邮件种类").selectOption("test");
+  await ap.getByLabel("邮件主题").fill("e2e 模板主题 {site}");
+  await ap.getByLabel("邮件正文").fill("e2e 自定义正文 {nope}");
+  await expect(ap.getByText("未知占位符：{nope}")).toBeVisible();
+  await expect(ap.getByRole("button", { name: "保存模板" })).toBeDisabled();
+  await ap.getByLabel("邮件正文").fill("e2e 自定义正文");
+  await expect(ap.getByTestId("tpl-preview-subject")).toHaveText(/^e2e 模板主题 /);
+  await ap.getByRole("button", { name: "保存模板" }).click();
+  await expect(ap.getByRole("status").filter({ hasText: "已保存模板。" })).toBeVisible();
+  const to = `tpl-${Date.now()}@e2e.test`;
+  await ap.getByLabel(/测试收件地址/).fill(to);
+  await ap.getByRole("button", { name: "发送模板测试邮件" }).click();
+  await expect(ap.getByRole("status").filter({ hasText: "测试邮件已发出" })).toBeVisible();
+  const m = await mailTo(to, 1);
+  expect(m.subject).toMatch(/^e2e 模板主题 /);
+  expect(m.text).toContain("e2e 自定义正文");
+  // 恢复默认 (confirmation dialog).
+  await ap.getByRole("button", { name: "恢复默认" }).click();
+  await ap.getByRole("alertdialog").getByRole("button", { name: "恢复默认" }).click();
+  await expect(ap.getByRole("status").filter({ hasText: "已恢复默认。" })).toBeVisible();
+  expect(aproblems).toEqual([]);
+  await actx.close();
+
+  // The user: the announcement on the dashboard (sanitized), then help.
+  const uctx = await browser.newContext({ locale: "zh-CN" });
+  const user = await uctx.newPage();
+  const uproblems = watch(user);
+  const urls = requests(user);
+  await user.goto(BASE);
+  await login(user, USER, USER_PW);
+  await expect(user.getByRole("heading", { level: 1, name: "仪表盘" })).toBeVisible();
+  const ann = user.locator("article").filter({ hasText: "e2e 维护公告" });
+  await expect(ann.locator("strong")).toHaveText("凌晨");
+  await expect(ann.getByText("<script>alert(1)</script>", { exact: false })).toBeVisible();
+  await expect(ann.getByText("置顶")).toBeVisible();
+  await user.getByRole("navigation", { name: "主导航" }).first().getByRole("link", { name: "帮助" }).click();
+  await expect(user).toHaveURL(`${BASE}/help`);
+  await user.getByLabel("搜索帮助文章").fill("剪贴板");
+  await expect(user.getByText("找到 1 篇文章")).toBeVisible();
+  await user.getByRole("link", { name: "e2e 如何导入订阅" }).click();
+  await expect(user).toHaveURL(new RegExp(`${BASE}/help/[0-9a-f-]{36}$`));
+  await expect(user.getByRole("heading", { level: 2, name: "e2e 如何导入订阅" })).toBeVisible();
+  await expect(user.locator(".md em")).toHaveText("从剪贴板导入");
+  // English UI: the English title, the dashboard announcement too.
+  await user.getByRole("button", { name: "English" }).click();
+  await expect(user.getByRole("heading", { level: 2, name: "e2e import the subscription" })).toBeVisible();
+  await user.goBack();
+  await user.getByRole("link", { name: "Dashboard" }).first().click();
+  await expect(user.getByRole("heading", { name: "e2e maintenance" })).toBeVisible();
+  expect(urls.filter(consoleUrl)).toEqual([]);
+  expect(uproblems).toEqual([]);
+  await uctx.close();
+});

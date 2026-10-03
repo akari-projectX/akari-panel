@@ -1,14 +1,15 @@
 // W20 (M1): the portal's dashboard view — plan, days and traffic left, the
 // renewal call to action for the R21 renewal scope, the subscription link,
-// and an announcements placeholder (announcements are a later feature).
+// and the announcements (Ops).
 import { useQuery } from "@tanstack/react-query";
 
 import { Button } from "../components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { Card, CardContent } from "../components/ui/card";
 import { useLocale, useT } from "../i18n";
 import { appBase, get, type Me, type MyPlan } from "../lib/api";
 import { navigate } from "../lib/router";
 import { humanBytes } from "../lib/utils";
+import { AnnouncementsCard } from "./announcements";
 import { PlanCard } from "./portal";
 import { SubscriptionCard } from "./subscription";
 
@@ -104,16 +105,7 @@ export function Dashboard({ me }: { me: Me }) {
       {/* Renewal scope (R21): the subscription refuses these accounts. */}
       {!restricted && <SubscriptionCard me={me} />}
       <PlanCard />
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            <h2>{t("dash.announcements")}</h2>
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground">{t("dash.noAnnouncements")}</p>
-        </CardContent>
-      </Card>
+      <AnnouncementsCard />
     </div>
   );
 }
