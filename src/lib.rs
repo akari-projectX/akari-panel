@@ -53,6 +53,7 @@ pub mod tlsserver;
 pub mod totp;
 pub mod traffic;
 pub mod trafficlog;
+pub mod updatecheck;
 pub mod updates;
 pub mod valkey_util;
 #[cfg(test)]

@@ -43,7 +43,7 @@ pub const MIN_UPDATE_PROTOCOL: u32 = 3;
 /// Rows of agent_release_chunks / FetchArtifact chunks.
 pub const CHUNK: usize = 1 << 20;
 pub const MAX_ARTIFACT: i64 = 256 << 20;
-const MAX_MANIFEST: usize = 4096;
+pub const MAX_MANIFEST: usize = 4096;
 /// A download whose reader takes no chunk for this long is dropped.
 const SEND_STALL: std::time::Duration = std::time::Duration::from_secs(60);
 const SIG_CONTEXT: &[u8] = b"akari-agent-manifest-v1\n";
@@ -461,6 +461,37 @@ pub async fn upload_binary(
 ) -> Result<Json<ReleaseView>, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
+    apply_store_binary(
+        &mut tx,
+        &Actor::of(&user),
+        id,
+        body.into_data_stream(),
+        None,
+        || bad_request!("release.upload_interrupted", "upload interrupted"),
+    )
+    .await?;
+    let view = release_view(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok(Json(view))
+}
+
+/// Stores the binary of release `id` (the manual upload and the update
+/// check share it): 1 MiB rows, size and SHA-256 checked against the signed
+/// manifest, `complete_at` and the `agent_release.upload` audit row in the
+/// caller's transaction (any error = the caller rolls everything back).
+/// `stall`: give up when no frame arrives for this long; `interrupted`:
+/// the error for a broken or stalled stream.
+pub async fn apply_store_binary<S, E>(
+    tx: &mut sqlx::PgConnection,
+    actor: &Actor,
+    id: Uuid,
+    mut stream: S,
+    stall: Option<std::time::Duration>,
+    interrupted: impl Fn() -> ApiError,
+) -> Result<(), ApiError>
+where
+    S: tokio_stream::Stream<Item = Result<axum::body::Bytes, E>> + Unpin,
+{
     let row: Option<(i64, String, bool, String)> = sqlx::query_as(
         "SELECT size, sha256, complete_at IS NOT NULL, version FROM agent_releases \
          WHERE id = $1 FOR UPDATE",
@@ -477,14 +508,19 @@ pub async fn upload_binary(
             "binary already uploaded"
         ));
     }
-    let mut stream = body.into_data_stream();
     let mut h = Sha256::new();
     let mut buf: Vec<u8> = Vec::with_capacity(CHUNK);
     let mut total: i64 = 0;
     let mut idx: i32 = 0;
-    while let Some(frame) = stream.next().await {
-        let frame =
-            frame.map_err(|_| bad_request!("release.upload_interrupted", "upload interrupted"))?;
+    loop {
+        let next = match stall {
+            Some(d) => tokio::time::timeout(d, stream.next())
+                .await
+                .map_err(|_| interrupted())?,
+            None => stream.next().await,
+        };
+        let Some(frame) = next else { break };
+        let frame = frame.map_err(|_| interrupted())?;
         total += frame.len() as i64;
         if total > size {
             return Err(bad_request!(
@@ -500,14 +536,14 @@ pub async fn upload_binary(
             buf.extend_from_slice(&rest[..take]);
             rest = &rest[take..];
             if buf.len() == CHUNK {
-                insert_chunk(&mut tx, id, idx, &buf).await?;
+                insert_chunk(tx, id, idx, &buf).await?;
                 idx += 1;
                 buf.clear();
             }
         }
     }
     if !buf.is_empty() {
-        insert_chunk(&mut tx, id, idx, &buf).await?;
+        insert_chunk(tx, id, idx, &buf).await?;
     }
     let sha = hex::encode(h.finalize());
     if total != size || sha != want_sha {
@@ -523,8 +559,8 @@ pub async fn upload_binary(
         .execute(&mut *tx)
         .await?;
     crate::audit::record(
-        &mut tx,
-        &Actor::of(&user),
+        tx,
+        actor,
         "agent_release.upload",
         "agent_release",
         Some(id.to_string()),
@@ -532,9 +568,7 @@ pub async fn upload_binary(
         Some(json!({ "version": version, "sha256": sha, "size": total })),
     )
     .await?;
-    let view = release_view(&mut tx, id).await?;
-    tx.commit().await?;
-    Ok(Json(view))
+    Ok(())
 }
 
 async fn insert_chunk(
@@ -734,16 +768,27 @@ pub(crate) mod testkit {
 
         /// A signed linux/amd64 release of `bin`.
         pub fn release(&self, version: &str, bin: &[u8]) -> CreateReleaseReq {
+            self.release_for(version, "amd64", bin, false)
+        }
+
+        /// A signed linux/`arch` release of `bin`.
+        pub fn release_for(
+            &self,
+            version: &str,
+            arch: &str,
+            bin: &[u8],
+            rollback: bool,
+        ) -> CreateReleaseReq {
             let m = Manifest {
                 schema: 1,
                 version: version.into(),
                 os: "linux".into(),
-                arch: "amd64".into(),
+                arch: arch.into(),
                 sha256: hex::encode(Sha256::digest(bin)),
                 size: bin.len() as i64,
                 min_panel_protocol: 3,
                 created_at: "2026-10-02T00:00:00Z".into(),
-                rollback: false,
+                rollback,
             };
             let manifest = serde_json::to_string(&m).unwrap_or_default();
             let sig = tests::sign(&self.kp, &self.key.id, manifest.as_bytes());

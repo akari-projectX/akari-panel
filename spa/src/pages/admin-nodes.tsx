@@ -23,6 +23,7 @@ import {
   type TemplateCatalog,
 } from "../lib/api";
 import { adminErrorText } from "../lib/admin-errors";
+import { UpdateAvailableBadge } from "./admin-update-check";
 import { fmtDate, fmtDateTime, fmtDuration } from "../lib/datetime";
 import { useAdminConfirm as useConfirm } from "../admin-confirm";
 import { RowMenu } from "../components/row-menu";
@@ -210,8 +211,9 @@ export function AdminNodes() {
       <Card>
         <CardHeader className="flex flex-row items-start justify-between gap-4">
           <div>
-            <CardTitle>
+            <CardTitle className="flex flex-wrap items-center gap-2">
               <h1>节点</h1>
+              <UpdateAvailableBadge />
             </CardTitle>
             <CardDescription>agent 主动连接面板；新建后在节点服务器上执行一行安装命令即可上线。</CardDescription>
           </div>

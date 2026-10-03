@@ -9,6 +9,25 @@ import { ApiError } from "./api";
 import { CODE_KEYS, errorText, errorVars, zh } from "./errors";
 
 export const ADMIN_CODES: Record<string, string> = {
+  // Agent 更新检查
+  "agent_update.asset_missing": "发布 {version} 缺少文件 {name}（发布未签名或不完整）",
+  "agent_update.check_running": "已有更新检查在进行中，请稍候",
+  "agent_update.checksum_mismatch": "{name} 与 SHA256SUMS 不符，已拒绝",
+  "agent_update.checksum_missing": "SHA256SUMS 中没有 {name}",
+  "agent_update.checksums_invalid": "SHA256SUMS 格式无效：{detail}",
+  "agent_update.downgrade": "发布源的最新版本 {latest} 低于面板已有的 {have}，拒绝降级",
+  "agent_update.fetch_failed": "下载 {what} 失败：{detail}",
+  "agent_update.host_not_allowed": "{what} 位于发布源之外的主机 {host}，已拒绝",
+  "agent_update.http_status": "下载 {what} 失败：HTTP {status}",
+  "agent_update.platform_mismatch": "{name} 的平台是 {os}/{arch}，与文件名不符",
+  "agent_update.prerelease": "发布源的最新发布 {version} 是草稿或预发布版本，未保存",
+  "agent_update.release_invalid": "发布源返回的发布信息无效：{detail}",
+  "agent_update.rollback_refused": "{name} 是回滚清单，不会自动保存；如确需回滚请手动上传",
+  "agent_update.size_mismatch": "{name} 大小为 {got} 字节，与清单声明的 {want} 字节不符",
+  "agent_update.source_invalid": "发布源地址无效：{detail}（须为 HTTPS）",
+  "agent_update.timed_out": "更新检查超时，请稍后重试",
+  "agent_update.too_large": "{what} 超过 {max} 字节上限",
+  "agent_update.version_mismatch": "{name} 的版本是 {got}，与发布 {version} 不符",
   // 告警
   "alert.channel_invalid": "通知通道只能是 Telegram、Webhook 或邮件",
   "alert.email_invalid": "邮件收件人地址无效：{e}",

@@ -65,10 +65,26 @@ describe("parseWaves", () => {
   });
 });
 
+// The 检查更新 card (admin-update-check.tsx; its own tests: update-check.test.tsx).
+const updateStatus = {
+  version: 1,
+  source_url: null,
+  default_source_url: "https://api.github.com/repos/akari-projectX/akari-agent/releases/latest",
+  auto_check: false,
+  next_auto_check_at: null,
+  checking: false,
+  keys_configured: true,
+  last_check: null,
+  latest: null,
+  outdated_nodes: 0,
+  update_available: null,
+};
+
 describe("AdminUpdates", () => {
   it("starts a rollout with the chosen waves and node selection", async () => {
     const calls = fakeApi({
       "GET /agent-releases": [release],
+      "GET /agent-updates": updateStatus,
       "GET /rollouts": [],
       "GET /nodes": [node],
       "POST /rollouts": () => ({ status: 201, body: rollout({}) }),
@@ -76,7 +92,7 @@ describe("AdminUpdates", () => {
     renderAdmin(<AdminUpdates />);
     await screen.findByText("就绪");
     fireEvent.change(screen.getByLabelText("分批（waves）"), { target: { value: "25, 100" } });
-    fireEvent.click(await screen.findByRole("checkbox"));
+    fireEvent.click(await screen.findByRole("checkbox", { name: /tokyo/ }));
     fireEvent.click(screen.getByRole("button", { name: "开始更新" }));
     await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.path === "/rollouts")).toBe(true));
     const body = calls.find((c) => c.method === "POST" && c.path === "/rollouts")?.body;
@@ -91,7 +107,12 @@ describe("AdminUpdates", () => {
   });
 
   it("refuses malformed waves without calling the API", async () => {
-    const calls = fakeApi({ "GET /agent-releases": [release], "GET /rollouts": [], "GET /nodes": [] });
+    const calls = fakeApi({
+      "GET /agent-releases": [release],
+      "GET /agent-updates": updateStatus,
+      "GET /rollouts": [],
+      "GET /nodes": [],
+    });
     renderAdmin(<AdminUpdates />);
     await screen.findByText("就绪");
     fireEvent.change(screen.getByLabelText("分批（waves）"), { target: { value: "50" } });
@@ -103,6 +124,7 @@ describe("AdminUpdates", () => {
   it("offers only the valid actions per state and shows the halt reason", async () => {
     const calls = fakeApi({
       "GET /agent-releases": [release],
+      "GET /agent-updates": updateStatus,
       "GET /nodes": [],
       "GET /rollouts": [
         rollout({ id: "a", status: "halted", halted_reason: "2 failed / 3 finished > max_failure_ratio 0.2" }),
@@ -121,6 +143,7 @@ describe("AdminUpdates", () => {
   it("asks before deleting a release and shows rollout states in Chinese", async () => {
     const calls = fakeApi({
       "GET /agent-releases": [release],
+      "GET /agent-updates": updateStatus,
       "GET /nodes": [],
       "GET /rollouts": [rollout({ status: "paused" })],
       "DELETE /agent-releases/rel1": () => ({ status: 204 }),

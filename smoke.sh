@@ -2665,6 +2665,96 @@ fi
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$INST_ID")" = "202" ] || { echo "FAIL: delete inst-node"; exit 1; }
 echo "r18-2 node install: ok"
 
+echo "== One-click agent update check: fake GitHub release server -> verified -> stored like an upload; refusals store nothing =="
+# A local stand-in for api.github.com (plain http is accepted for loopback
+# only): the latest-release document plus the release files, signed with the
+# agent's TEST key (trusted by this panel) or, first, with another key.
+UC="$LOG/updcheck"; UC_PORT=18207; UC_VER=v900.1.0
+rm -rf "$UC"; mkdir -p "$UC/www/repos/akari-projectX/akari-agent/releases" "$UC/www/dl"
+python3 -c "$TIE_PY"'
+import functools, http.server, sys
+class H(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *a): pass
+http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])),
+    functools.partial(H, directory=sys.argv[2])).serve_forever()
+' "$UC_PORT" "$UC/www" >/dev/null 2>&1 &
+UC_PID=$!
+uc_publish() { # $1 version, $2 signing key
+  rm -f "$UC/www/dl/"*
+  for a in amd64 arm64; do
+    head -c $((1048576 + 4096)) /dev/urandom >"$UC/www/dl/akari-agent-linux-$a"
+    "$UPD/akari-sign" sign -key "$2" -binary "$UC/www/dl/akari-agent-linux-$a" -version "$1" -os linux -arch "$a" >/dev/null
+  done
+  (cd "$UC/www/dl" && sha256sum akari-agent-linux-* >SHA256SUMS)
+  python3 - "$UC/www" "$UC_PORT" "$1" <<'PY'
+import json, os, sys
+www, port, ver = sys.argv[1], sys.argv[2], sys.argv[3]
+assets = [{"name": n, "size": os.path.getsize(os.path.join(www, "dl", n)),
+           "browser_download_url": "http://127.0.0.1:%s/dl/%s" % (port, n)}
+          for n in sorted(os.listdir(os.path.join(www, "dl")))]
+json.dump({"tag_name": ver, "name": ver, "draft": False, "prerelease": False, "assets": assets},
+          open(os.path.join(www, "repos/akari-projectX/akari-agent/releases/latest"), "w"))
+PY
+}
+uc_check() { # -> the finished status in /tmp/akari-smoke/last
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/agent-updates/check")" = "202" ] \
+    || { echo "FAIL: start update check: $(cat /tmp/akari-smoke/last)"; exit 1; }
+  for _ in $(seq 1 60); do
+    code -b "$JAR" "$BASE/api/v1/agent-updates" >/dev/null
+    python3 -c "import json,sys; sys.exit(0 if json.load(open('/tmp/akari-smoke/last'))['checking'] is False else 1)" && return 0
+    sleep 1
+  done
+  echo "FAIL: update check did not finish"; exit 1
+}
+uc_last() { python3 -c "import json; l=json.load(open('/tmp/akari-smoke/last'))['last_check']; print(l['result'], l['code'] or '-', l['version'] or '-', ','.join(l['stored']))"; }
+code -b "$JAR" "$BASE/api/v1/agent-updates" >/dev/null
+UC_V=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['version'])")
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/agent-updates/settings" -H 'Content-Type: application/json' \
+    -d "{\"version\":$UC_V,\"source_url\":\"http://example.com/latest\",\"auto_check\":false}")" = "400" ] \
+  && matches -F '"agent_update.source_invalid"' /tmp/akari-smoke/last || { echo "FAIL: non-https source accepted"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/agent-updates/settings" -H 'Content-Type: application/json' \
+    -d "{\"version\":$UC_V,\"source_url\":\"http://127.0.0.1:$UC_PORT/repos/akari-projectX/akari-agent/releases/latest\",\"auto_check\":false}")" = "200" ] \
+  || { echo "FAIL: update source: $(cat /tmp/akari-smoke/last)"; exit 1; }
+# Signed by a key the panel does not trust: refused, nothing stored.
+uc_publish "$UC_VER" "$UPD/other.key"
+uc_check
+[ "$(uc_last)" = "failed release.signature_invalid - " ] || { echo "FAIL: untrusted release: $(uc_last)"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM agent_releases WHERE version='$UC_VER'")" = "0" ] || { echo "FAIL: refused release stored"; exit 1; }
+# The release as published: both platforms stored, manifest bytes verbatim,
+# binary = the file, audited like a manual upload.
+uc_publish "$UC_VER" "$AD/testdata/TEST-ONLY-release.key"
+uc_check
+[ "$(uc_last)" = "stored - $UC_VER linux/amd64,linux/arm64" ] || { echo "FAIL: update check: $(uc_last)"; exit 1; }
+for a in amd64 arm64; do
+  f="$UC/www/dl/akari-agent-linux-$a"
+  [ "$(psql_q "SELECT encode(manifest, 'hex') FROM agent_releases WHERE version='$UC_VER' AND arch='$a'")" = "$(od -An -v -tx1 "$f.manifest.json" | tr -d ' \n')" ] \
+    || { echo "FAIL: $a manifest not stored verbatim"; exit 1; }
+  [ "$(psql_q "SELECT encode(sha256(string_agg(c.data, ''::bytea ORDER BY c.idx)), 'hex') FROM agent_release_chunks c JOIN agent_releases r ON r.id = c.release_id WHERE r.version='$UC_VER' AND r.arch='$a'")" = "$(sha256sum "$f" | cut -d' ' -f1)" ] \
+    || { echo "FAIL: $a binary differs"; exit 1; }
+done
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action IN ('agent_release.create','agent_release.upload') AND after->>'version' = '$UC_VER'")" = "4" ] \
+  && [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'agent_update.check'")" = "2" ] || { echo "FAIL: update check audit"; exit 1; }
+python3 -c "import json; s=json.load(open('/tmp/akari-smoke/last')); assert s['latest']['version']=='$UC_VER' and s['latest']['platforms']==['linux/amd64','linux/arm64'], s" \
+  || { echo "FAIL: latest release not reported"; exit 1; }
+uc_check
+[ "$(uc_last)" = "up_to_date - $UC_VER " ] || { echo "FAIL: second check: $(uc_last)"; exit 1; }
+# No downgrade.
+uc_publish v900.0.5 "$AD/testdata/TEST-ONLY-release.key"
+uc_check
+[ "$(uc_last)" = "failed agent_update.downgrade - " ] || { echo "FAIL: downgrade: $(uc_last)"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM agent_releases WHERE version='v900.0.5'")" = "0" ] || { echo "FAIL: downgrade stored"; exit 1; }
+# Back to the defaults; the checked releases go (later sections expect the
+# M6 set).
+code -b "$JAR" "$BASE/api/v1/agent-updates" >/dev/null
+UC_V=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['version'])")
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/agent-updates/settings" -H 'Content-Type: application/json' \
+    -d "{\"version\":$UC_V,\"source_url\":null,\"auto_check\":false}")" = "200" ] || { echo "FAIL: reset update source"; exit 1; }
+for id in $(psql_q "SELECT id FROM agent_releases WHERE version='$UC_VER'"); do
+  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/agent-releases/$id")" = "204" ] || { echo "FAIL: delete checked release"; exit 1; }
+done
+kill "$UC_PID" 2>/dev/null || true
+echo "agent update check: ok (untrusted key refused, both platforms stored verbatim, up to date, no downgrade)"
+
 echo "== R22 系统设置: domains, Caddy on-demand ask, host gate, node domain + hot-swapped gRPC certificate =="
 # Earlier sections (W15) may have audited settings changes of their own.
 R22_AUDIT0=$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.update'")

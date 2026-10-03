@@ -262,6 +262,18 @@ pub fn router(state: AppState) -> Router {
             put(updates::upload_binary),
         )
         .route(
+            "/{prefix}/api/v1/agent-updates",
+            get(crate::updatecheck::get_status),
+        )
+        .route(
+            "/{prefix}/api/v1/agent-updates/settings",
+            put(crate::updatecheck::put_settings),
+        )
+        .route(
+            "/{prefix}/api/v1/agent-updates/check",
+            post(crate::updatecheck::post_check),
+        )
+        .route(
             "/{prefix}/api/v1/rollouts",
             get(rollout::list_rollouts).post(rollout::create_rollout),
         )
