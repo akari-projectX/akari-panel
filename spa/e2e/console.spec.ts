@@ -1118,7 +1118,7 @@ test("Ops: batch balance on selected users, users CSV, gift order, coupon batch 
   await admin.getByRole("button", { name: "批量操作（已选 1）" }).click();
   const dialog = admin.getByRole("dialog", { name: "批量操作" });
   await expect(dialog.getByText(/将作用于 1 个账户/)).toBeVisible();
-  await dialog.getByLabel("操作").selectOption("add_balance");
+  await dialog.getByLabel("操作", { exact: true }).selectOption("add_balance");
   await dialog.getByLabel("每人金额（元）").fill("5");
   await dialog.getByLabel("原因（写入每条明细）").fill("e2e 批量补偿");
   await dialog.getByRole("button", { name: "预览并执行" }).click();
@@ -1146,8 +1146,8 @@ test("Ops: batch balance on selected users, users CSV, gift order, coupon batch 
   await mo.getByLabel("用户（账号或邮箱）").fill("e2e-ops-1");
   await mo.getByRole("button", { name: "查找" }).click();
   await expect(mo.getByText("用户：e2e-ops-1")).toBeVisible();
-  await mo.getByLabel("套餐").selectOption({ label: "e2e-ops" });
-  await mo.getByLabel("周期").selectOption("month");
+  await mo.getByLabel("套餐", { exact: true }).selectOption({ label: "e2e-ops" });
+  await mo.getByLabel("周期", { exact: true }).selectOption("month");
   await mo.getByLabel("赠送（金额 ¥0，不计入营收）").check();
   await mo.getByLabel("原因（必填，写入订单与审计）").fill("e2e 活动奖品");
   await mo.getByRole("button", { name: "创建并开通" }).click();
