@@ -843,7 +843,6 @@ vk exists "akari:node:online:$NODE_ID" | matches 1 \
   || { echo "FAIL: online key missing"; exit 1; }
 
 echo "== W11: node form fields, multiplier billing, machine status, latency =="
-psql_q() { docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -tAc "$1"; }
 # Agent-side assertions need the agent capabilities "metrics" / "latency"
 # (W12 gates); the panel-side ones always run.
 # xboard-style fields: display name, tags, multiplier, connect override.
@@ -1150,7 +1149,6 @@ wait_users 0 10 "delete user"
 echo "delete user: ok"
 
 echo "== M3 operations model: group + plan -> automatic access; quota; period reset; cancel =="
-psql_q() { docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -tAc "$1"; }
 last_json() { python3 -c "import json,sys; d=json.load(open('/tmp/akari-smoke/last')); print($1)"; }
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"region": "Smokeland"}')" = "200" ] || { echo "FAIL: set region"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/node-groups" -H 'Content-Type: application/json' \
@@ -2075,7 +2073,6 @@ else
 fi
 
 echo "== W17: tickets (own only, both sides), node alerts (stopped agent -> firing -> signed webhook -> resolved), node summary + 304 =="
-psql_q() { docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -tAc "$1"; }
 last_json() { python3 -c "import json,sys; d=json.load(open('/tmp/akari-smoke/last')); print($1)"; }
 api_json() { code -b "$1" -X "$2" "$3" -H 'Content-Type: application/json' -d "$4"; }
 for who in smoke-tk-a smoke-tk-b; do
@@ -2306,7 +2303,6 @@ kill "$HOOK_PID" 2>/dev/null || true
 echo "alerts: ok (fired, signed webhook, resolved)"
 
 echo "== Sprint 3b: node delete = empty state, then revoke + close; billing rows kept =="
-psql_q() { docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -tAc "$1"; }
 # Some billed traffic on the node first (a user C with one VLESS round trip).
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
     -d '{"login":"smoke-user-c","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create user C"; exit 1; }
