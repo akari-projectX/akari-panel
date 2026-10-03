@@ -96,6 +96,13 @@ pub enum Template {
         title: String,
         text: String,
     },
+    /// Ops: a notice an admin sends to users in bulk (batch action
+    /// `send_email`). The admin's text, paragraphs by blank line; same in
+    /// both locales (the admin writes the language they want).
+    AdminNotice {
+        subject: String,
+        body: String,
+    },
 }
 
 impl Template {
@@ -114,6 +121,7 @@ impl Template {
             Template::TicketReply { .. } => "ticket_reply",
             Template::TicketNew { .. } => "ticket_new",
             Template::NodeAlert { .. } => "node_alert",
+            Template::AdminNotice { .. } => "admin_notice",
         }
     }
 }
@@ -592,6 +600,17 @@ pub fn render(t: &Template, locale: Locale, site: &str) -> Rendered {
         }
         // Node names are admin-controlled (not customer text); control
         // characters are dropped all the same.
+        Template::AdminNotice { subject, body } => (
+            subject
+                .chars()
+                .filter(|c| !c.is_control())
+                .collect::<String>(),
+            body.split("\n\n")
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(|l| P(l.to_string()))
+                .collect(),
+        ),
         Template::NodeAlert { title, text } => (
             format!(
                 "{site}：{}",

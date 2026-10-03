@@ -31,6 +31,11 @@ use crate::state::AppState;
 #[derive(Serialize, Debug, Default, PartialEq, sqlx::FromRow)]
 pub struct Window {
     pub revenue_cents: i64,
+    /// Ops: the part of `revenue_cents` recorded by admins (paid_via
+    /// 'manual': offline sales and confirmed payments).
+    pub manual_cents: i64,
+    /// Ops: list price forgiven by admin gift orders (not revenue).
+    pub gift_cents: i64,
     pub orders: i64,
     pub refunds_cents: i64,
     pub signups: i64,
@@ -69,6 +74,8 @@ pub struct LatestOrder {
     pub plan_name: String,
     pub amount_cents: i64,
     pub status: String,
+    /// Ops: how it was paid (`manual` flagged in the console).
+    pub paid_via: Option<String>,
     pub created_at: DateTime<Utc>,
     pub paid_at: Option<DateTime<Utc>>,
 }
@@ -116,6 +123,15 @@ const WINDOWS_SQL: &str = "SELECT \
      count(*) FILTER (WHERE o.paid_at >= $2), \
      coalesce(sum(o.amount_cents), 0)::bigint, count(*) \
      FROM orders o WHERE o.status = 'paid' AND o.paid_at >= $3";
+
+/// Ops: admin-recorded revenue and gifts per window (orders_paid_via_paid_at).
+const MANUAL_SQL: &str = "SELECT \
+     coalesce(sum(amount_cents) FILTER (WHERE paid_at >= $1), 0)::bigint, \
+     coalesce(sum(gift_cents) FILTER (WHERE paid_at >= $1), 0)::bigint, \
+     coalesce(sum(amount_cents) FILTER (WHERE paid_at >= $2), 0)::bigint, \
+     coalesce(sum(gift_cents) FILTER (WHERE paid_at >= $2), 0)::bigint, \
+     coalesce(sum(amount_cents), 0)::bigint, coalesce(sum(gift_cents), 0)::bigint \
+     FROM orders WHERE status = 'paid' AND paid_via = 'manual' AND paid_at >= $3";
 
 const REFUNDS_SQL: &str = "SELECT \
      coalesce(sum(refund_cents) FILTER (WHERE refunded_at >= $1), 0)::bigint, \
@@ -167,6 +183,13 @@ pub async fn read(pool: &sqlx::PgPool) -> Result<(Dashboard, Vec<Uuid>), ApiErro
         .bind(d30)
         .fetch_one(&mut *tx)
         .await?;
+    type Manual = (i64, i64, i64, i64, i64, i64);
+    let (m1, g1, m7, g7, m30, g30): Manual = sqlx::query_as(MANUAL_SQL)
+        .bind(d1)
+        .bind(d7)
+        .bind(d30)
+        .fetch_one(&mut *tx)
+        .await?;
     let (f1, f7, f30): (i64, i64, i64) = sqlx::query_as(REFUNDS_SQL)
         .bind(d1)
         .bind(d7)
@@ -193,8 +216,8 @@ pub async fn read(pool: &sqlx::PgPool) -> Result<(Dashboard, Vec<Uuid>), ApiErro
     .fetch_all(&mut *tx)
     .await?;
     let latest: Vec<LatestOrder> = sqlx::query_as(
-        "SELECT id, out_trade_no, user_login, plan_name, amount_cents, status, created_at, \
-         paid_at FROM orders ORDER BY created_at DESC, id DESC LIMIT $1",
+        "SELECT id, out_trade_no, user_login, plan_name, amount_cents, status, paid_via, \
+         created_at, paid_at FROM orders ORDER BY created_at DESC, id DESC LIMIT $1",
     )
     .bind(LATEST_ORDERS)
     .fetch_all(&mut *tx)
@@ -219,19 +242,22 @@ pub async fn read(pool: &sqlx::PgPool) -> Result<(Dashboard, Vec<Uuid>), ApiErro
             nodes.offline += 1;
         }
     }
-    let window = |revenue_cents, orders, refunds_cents, signups| Window {
-        revenue_cents,
-        orders,
-        refunds_cents,
-        signups,
-    };
+    let window =
+        |(revenue_cents, manual_cents, gift_cents), orders, refunds_cents, signups| Window {
+            revenue_cents,
+            manual_cents,
+            gift_cents,
+            orders,
+            refunds_cents,
+            signups,
+        };
     Ok((
         Dashboard {
             at,
             today_start: d1,
-            today: window(r1, n1, f1, s1),
-            d7: window(r7, n7, f7, s7),
-            d30: window(r30, n30, f30, s30),
+            today: window((r1, m1, g1), n1, f1, s1),
+            d7: window((r7, m7, g7), n7, f7, s7),
+            d30: window((r30, m30, g30), n30, f30, s30),
             users_total,
             subscribers,
             online_users: 0,

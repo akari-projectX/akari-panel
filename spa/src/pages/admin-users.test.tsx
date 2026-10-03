@@ -101,24 +101,25 @@ describe("AdminUsers", () => {
     });
     renderAdmin(<AdminUsers />);
     expect(await screen.findByRole("cell", { name: /^user-0$/ })).toBeTruthy();
-    expect(calls[0].search).toBe(`?limit=${PAGE_SIZE}&offset=0`);
+    const lists = () => calls.filter((c) => c.path === "/users");
+    expect(lists()[0].search).toBe(`?limit=${PAGE_SIZE}&offset=0`);
     expect(screen.getByText(`共 ${PAGE_SIZE + 1} 个用户`)).toBeTruthy();
     const prev = screen.getByRole("button", { name: "上一页" }) as HTMLButtonElement;
     expect(prev.disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "下一页" }));
     expect(await screen.findByRole("cell", { name: /^last-user$/ })).toBeTruthy();
-    expect(calls.some((c) => c.search === `?limit=${PAGE_SIZE}&offset=${PAGE_SIZE}`)).toBe(true);
+    expect(lists().some((c) => c.search === `?limit=${PAGE_SIZE}&offset=${PAGE_SIZE}`)).toBe(true);
     expect((screen.getByRole("button", { name: "下一页" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/第 2 \/ 2 页/)).toBeTruthy();
     // A filter chip starts at page 1 again.
     fireEvent.click(screen.getByRole("button", { name: "已到期" }));
-    await waitFor(() => expect(calls.at(-1)?.search).toBe(`?limit=${PAGE_SIZE}&offset=0&status=expired`));
+    await waitFor(() => expect(lists().at(-1)?.search).toBe(`?limit=${PAGE_SIZE}&offset=0&status=expired`));
     expect(screen.getByRole("button", { name: "已到期" }).getAttribute("aria-pressed")).toBe("true");
     fireEvent.change(screen.getByLabelText("套餐"), { target: { value: "p1" } });
     fireEvent.change(screen.getByLabelText("排序"), { target: { value: "-traffic" } });
     fireEvent.change(screen.getByLabelText("搜索"), { target: { value: "ali" } });
     await waitFor(() =>
-      expect(calls.at(-1)?.search).toBe(`?limit=${PAGE_SIZE}&offset=0&q=ali&status=expired&plan_id=p1&sort=-traffic`),
+      expect(lists().at(-1)?.search).toBe(`?limit=${PAGE_SIZE}&offset=0&q=ali&status=expired&plan_id=p1&sort=-traffic`),
     );
     expect(await screen.findByText(`找到 ${PAGE_SIZE + 1} 个用户`)).toBeTruthy();
   });

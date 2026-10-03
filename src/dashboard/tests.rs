@@ -102,7 +102,8 @@ async fn aggregates_every_source() {
             revenue_cents: 100,
             orders: 1,
             refunds_cents: 50,
-            signups: 1
+            signups: 1,
+            ..Default::default()
         }
     );
     assert_eq!(
@@ -111,7 +112,8 @@ async fn aggregates_every_source() {
             revenue_cents: 1900,
             orders: 3,
             refunds_cents: 50,
-            signups: 1
+            signups: 1,
+            ..Default::default()
         }
     );
     assert_eq!(
@@ -120,7 +122,8 @@ async fn aggregates_every_source() {
             revenue_cents: 2300,
             orders: 4,
             refunds_cents: 50,
-            signups: 1
+            signups: 1,
+            ..Default::default()
         }
     );
     assert_eq!(d.users_total, 2, "role=user only");

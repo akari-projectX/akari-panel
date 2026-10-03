@@ -308,6 +308,42 @@ merchant console. A pending commission is reversed. The plan is **not**
 touched (cancel it in 用户 if needed); a refunded order cannot be fulfilled
 again. Audited `order.refund`.
 
+### Manual orders (Ops)
+
+`POST /orders/manual {user_id, plan_id, period, gift?, reason}` (console:
+订单 → 新建人工订单) records a sale made outside the gateway, or a gift.
+It is **not a new pay path**: the order row is created like a customer's
+(the period's price is read from `plan_period_prices` in SQL and copied
+into `list_price_cents`; the request carries no amount and an
+`amount_cents` member is a 400) and is then paid in the same transaction
+by `orders::apply_mark_paid(…, Via::Manual, …, reason)` — `entitle::lock`,
+the conditional flip (exactly once), fulfilment under its savepoint,
+`order.paid` audit. A gift sets `gift_cents` = the list price (migration
+0166; the amount identity becomes `amount = list − credit − discount −
+balance − gift`), so `amount_cents` = 0 and revenue (the sum of
+`amount_cents`) is unchanged. A paid manual order is revenue flagged
+`paid_via = 'manual'`: the dashboard reports `manual_cents` and
+`gift_cents` per window, the orders list filters `?via=manual`, the CSV
+has a `manual` column. Unlike a gateway payment, a manual order whose
+fulfilment fails (plan gone, sold out, reset pack without the plan) is
+rolled back whole (409 `order_admin.manual_not_fulfilled`); a user with a
+pending order gets 409 `order_admin.user_has_pending`. An invite
+commission applies to a paid (non-gift) manual order as to any payment.
+
+### Batch coupons (Ops)
+
+`POST /coupon-batches` generates N (≤5000) codes sharing one template:
+`prefix` (0–16 of `A-Za-z0-9_-`) + `length` (6–16, default 10) characters
+from the OS CSPRNG over `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` (no 0/O/1/I; 32
+symbols, 5 bits each, no modulo bias). Every code is an ordinary
+`coupons` row with `batch_id` (migration 0167), so eligibility, the
+race-safe reservation at order creation, release and redemption are the
+W16 path unchanged; uniqueness is the `coupons_code` unique index
+(`ON CONFLICT DO NOTHING`, collisions re-drawn, bounded rounds). Per-code
+uses default to 1. The single-coupon list hides batch codes; the batch
+list shows codes/used/redeemed, exports the codes as CSV, and revoking
+disables every code (reservations already made stand).
+
 ### Lock order
 
 `entitle::lock` (order creation and `apply_mark_paid`) → `orders` row →
@@ -447,6 +483,15 @@ covers the raw `<method>_response` JSON bytes as received; an unsigned or
 badly signed success is an error.
 
 ## Audit actions
+
+Ops additions: `order.create` + `order.paid` (manual orders, `after.manual`,
+`reason`), `coupon.batch.create` (template + count, never the codes),
+`coupon.batch.revoke`, `export.orders` / `export.users` / `export.traffic`
+/ `export.coupon_batch` (the filters), `user.batch.create` /
+`user.batch.cancel`, and per user the action's own rows
+(`balance.admin_adjust`, `user.update`, `user.plan.*`, `user.traffic.reset`,
+`user.mail.send` (subject only)).
+
 
 `plan.price.set`, `plan.price.delete`, `order.create`, `order.cancel`,
 `order.expire`, `order.paid` (actor `alipay` for notify/query, the admin

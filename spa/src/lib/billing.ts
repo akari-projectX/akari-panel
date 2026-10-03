@@ -163,6 +163,8 @@ export interface AdminOrder {
   coupon_code: string | null;
   balance_cents: number;
   balance_state: "none" | "held" | "refunded";
+  /** Ops: the price an admin gift order forgave (0 otherwise). */
+  gift_cents: number;
   refunded_at: string | null;
   refund_cents: number | null;
   refund_reason: string | null;

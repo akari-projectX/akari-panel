@@ -48,6 +48,7 @@ const COUPON_WINDOW_SECS: i64 = 600;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .merge(super::coupon_batches::routes())
         .route("/{prefix}/pay/alipay/notify", post(legacy_notify))
         .route("/{prefix}/pay/{method}/notify", post(method_notify))
         .route("/{prefix}/api/v1/me/shop", get(shop))
@@ -63,6 +64,10 @@ pub fn routes() -> Router<AppState> {
             put(catalog::set_prices),
         )
         .route("/{prefix}/api/v1/orders", get(list_orders))
+        .route(
+            "/{prefix}/api/v1/orders/manual",
+            post(super::manual::create),
+        )
         .route("/{prefix}/api/v1/orders/{id}", get(get_order))
         .route("/{prefix}/api/v1/orders/{id}/fulfil", post(fulfil_order))
         .route("/{prefix}/api/v1/orders/{id}/refund", post(refund_order))
@@ -205,6 +210,8 @@ pub struct OrderView {
     coupon_code: Option<String>,
     balance_cents: i64,
     balance_state: String,
+    /// Ops: the forgiven part of an admin gift order (manual, 0 otherwise).
+    gift_cents: i64,
     refunded_at: Option<DateTime<Utc>>,
     refund_cents: Option<i64>,
     refund_reason: Option<String>,
@@ -227,8 +234,8 @@ pub struct OrderView {
 
 const ORDER_SQL: &str = "SELECT id, out_trade_no, user_id, user_login, plan_id, plan_name, \
      amount_cents, period, period_days, list_price_cents, credit_cents, credit_order_id, \
-     discount_cents, coupon_id, coupon_code, balance_cents, balance_state, refunded_at, \
-     refund_cents, refund_reason, status, trade_no, paid_via, paid_amount_cents, manual_reason, \
+     discount_cents, coupon_id, coupon_code, balance_cents, balance_state, gift_cents, \
+     refunded_at, refund_cents, refund_reason, status, trade_no, paid_via, paid_amount_cents, manual_reason, \
      fulfilled_at, fulfil_result, fulfil_error, created_at, expires_at, paid_at, ended_at, \
      close_state, payment_method_id, \
      (SELECT m.display_name FROM payment_methods m WHERE m.id = payment_method_id) \
@@ -508,7 +515,7 @@ async fn my_order_view(state: &AppState, user: Uuid, id: Uuid) -> Result<MyOrder
     .ok_or_else(ApiError::not_found)
 }
 
-fn new_out_trade_no() -> String {
+pub(crate) fn new_out_trade_no() -> String {
     let r: [u8; 12] = rand::random();
     format!("AK{}{}", Utc::now().format("%Y%m%d"), hex::encode(r))
 }
@@ -937,6 +944,8 @@ pub struct ListOrdersQuery {
     pub limit: Option<i64>,
     /// true = paid but not fulfilled (needs attention).
     pub unfulfilled: Option<bool>,
+    /// Ops: paid_via (`manual` = admin-created or admin-confirmed).
+    pub via: Option<String>,
 }
 
 pub async fn list_orders(
@@ -967,6 +976,15 @@ pub async fn list_orders(
     }
     if q.unfulfilled == Some(true) {
         qb.push(" AND status = 'paid' AND fulfilled_at IS NULL");
+    }
+    if let Some(v) = q.via.as_deref().filter(|v| !v.is_empty()) {
+        if !matches!(
+            v,
+            "notify" | "query" | "manual" | "credit" | "balance" | "coupon"
+        ) {
+            return Err(bad_request!("export.via_invalid", "unknown paid_via"));
+        }
+        qb.push(" AND paid_via = ").push_bind(v.to_string());
     }
     if let Some(b) = q.before {
         qb.push(" AND (created_at, id) < (SELECT created_at, id FROM orders WHERE id = ")

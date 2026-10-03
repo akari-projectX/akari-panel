@@ -48,6 +48,27 @@ export const ADMIN_CODES: Record<string, string> = {
   "alert.webhook_secret_missing": "Webhook 需要签名密钥",
   "alert.webhook_url_invalid": "Webhook 地址无效：{m}",
   "alert.webhook_url_missing": "Webhook 需要填写地址",
+  // 批量操作（运营）
+  "batch.body_length": "邮件正文须为 1–{max_body} 个字符",
+  "batch.days_range": "延长天数须为 1–{max_days}",
+  "batch.empty": "没有选中任何用户",
+  "batch.expires_past": "到期日必须晚于现在",
+  "batch.finished": "该任务已经结束，不能取消",
+  "batch.mail_unavailable": "邮件发送尚未配置或已关闭，请先在「系统设置 → 邮件」配置 SMTP",
+  "batch.selection_invalid": "请选择用户，或使用当前筛选条件（二选一）",
+  "batch.subject_invalid": "邮件标题须为 1–{max_subject} 个字符，且不能含换行",
+  "batch.too_many_ids": "按勾选批量操作最多 {max_ids} 个用户，更多请使用筛选条件",
+  // 批量优惠码
+  "coupon_batch.code_space": "优惠码重复过多，请加长随机部分或更换前缀",
+  "coupon_batch.count_range": "数量须为 1–{max_count}",
+  "coupon_batch.length_range": "随机部分长度须为 {min_len}–{max_len}",
+  "coupon_batch.prefix_invalid": "前缀最多 {max_prefix} 个字符（字母、数字、- 或 _）",
+  "coupon_batch.revoked": "该批次已作废",
+  // 导出
+  "export.group_invalid": "分组只能是按日或按节点",
+  "export.range_invalid": "开始日期不能晚于结束日期",
+  "export.range_too_long": "日期范围不能超过 {max_range_days} 天",
+  "export.via_invalid": "未知的付款方式",
   // 优惠券
   "coupon_admin.code_exists": "已存在相同的优惠码（不区分大小写）",
   "coupon_admin.code_invalid": "优惠码须为 {min_code}–{max_code} 个字符（字母、数字、_ 或 -）",
@@ -123,11 +144,14 @@ export const ADMIN_CODES: Record<string, string> = {
   // 订单（后台）
   "order_admin.already_fulfilled": "该订单已开通",
   "order_admin.already_refunded": "该订单已退款",
+  "order_admin.manual_not_fulfilled": "套餐无法开通，人工订单未创建：{error}",
+  "order_admin.no_price": "该套餐没有这个周期的价格，请先在「套餐」页定价",
   "order_admin.plan_gone": "套餐已不存在",
   "order_admin.refund_not_paid": "只有已付款的订单可以退款",
   "order_admin.refund_user_gone": "用户已删除：请线下退款，不要选择「退回余额」",
   "order_admin.refunded": "该订单已退款，不能再开通",
   "order_admin.user_gone": "用户已不存在",
+  "order_admin.user_has_pending": "该用户有待付款订单，请先取消或等待其结束",
   // 套餐
   "plan.capacity_negative": "库存不能为负数",
   "plan.description_control": "说明不能包含控制字符",

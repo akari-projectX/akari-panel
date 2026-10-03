@@ -1716,6 +1716,137 @@ done
 [ "$(psql_q "SELECT count(*) FROM balance_ledger WHERE user_id IS NULL AND user_login IN ('smoke-w16','smoke-inviter')")" -ge 5 ] \
   || { echo "FAIL: ledger rows did not outlive the users"; exit 1; }
 echo "w16: ok (coupon reserve/redeem + last use, commission pending -> credited, withdrawal, balance full/partial/refund, ledger invariants)"
+echo "== Ops: batch user actions (job, resumable, audited), CSV exports, manual orders, batch coupons =="
+OPSJ='Content-Type: application/json'
+# A plan with a month price and no node groups (grants nothing: later
+# sections keep their node users). Its name starts like a formula.
+[ "$(api_json "$JAR" POST "$BASE/api/v1/plans" '{"name":"=ops-plan","period":"monthly","pricing":{"on_sale":true,"prices":[{"period":"month","price_cents":1500}]}}')" = "201" ] \
+  || { echo "FAIL: create ops plan"; cat /tmp/akari-smoke/last; exit 1; }
+OPS_PLAN=$(last_json "d['id']")
+for i in 1 2 3; do
+  [ "$(api_json "$JAR" POST "$BASE/api/v1/users" "{\"login\":\"smoke-ops-$i\",\"password\":\"ops-password-$i\",\"email\":\"ops$i@akari.test\"}")" = "201" ] \
+    || { echo "FAIL: create ops user $i"; cat /tmp/akari-smoke/last; exit 1; }
+done
+OPS1=$(psql_q "SELECT id FROM users WHERE login='smoke-ops-1'")
+OPS2=$(psql_q "SELECT id FROM users WHERE login='smoke-ops-2'")
+OPSF='{"filter":{"q":"smoke-ops-","role":"user"}}'
+# wait_batch ID: until the job is done; prints done/failed/skipped.
+wait_batch() {
+  for _ in $(seq 1 60); do
+    code -b "$JAR" "$BASE/api/v1/users/batch/$1" >/dev/null
+    [ "$(last_json "d['job']['status']")" = "done" ] && { last_json "'%d/%d/%d' % (d['job']['done'], d['job']['failed'], d['job']['skipped'])"; return 0; }
+    sleep 0.5
+  done
+  echo "FAIL: batch $1 not done"; cat /tmp/akari-smoke/last; exit 1
+}
+[ "$(api_json "$JAR" POST "$BASE/api/v1/users/batch/preview" "{\"selection\":$OPSF}")" = "200" ] \
+  && [ "$(last_json "d['total'], d['admins']")" = "(3, 0)" ] || { echo "FAIL: batch preview"; cat /tmp/akari-smoke/last; exit 1; }
+# Not for customers; coded refusals.
+code -c "$LOG/ops-cookies" -X POST "$BASE/auth/login" -H "$OPSJ" -d '{"login":"smoke-ops-1","password":"ops-password-1"}' >/dev/null
+[ "$(api_json "$LOG/ops-cookies" POST "$BASE/api/v1/users/batch/preview" "{\"selection\":$OPSF}")" = "403" ] \
+  || { echo "FAIL: customer reached batch preview"; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/users/batch" "{\"selection\":$OPSF,\"action\":{\"kind\":\"extend_expiry\",\"days\":0}}")" = "400" ] \
+  && [ "$(last_json "d['code']")" = "batch.days_range" ] || { echo "FAIL: batch validation"; exit 1; }
+# Balance: one ledger row + one audit row per user, exactly once.
+LEDGER0=$(psql_q "SELECT count(*) FROM balance_ledger WHERE reason = 'ops-smoke'")
+[ "$(api_json "$JAR" POST "$BASE/api/v1/users/batch" "{\"selection\":$OPSF,\"action\":{\"kind\":\"add_balance\",\"amount_cents\":250,\"reason\":\"ops-smoke\"}}")" = "202" ] \
+  || { echo "FAIL: create balance batch"; cat /tmp/akari-smoke/last; exit 1; }
+JOB=$(last_json "d['id']")
+[ "$(wait_batch "$JOB")" = "3/0/0" ] || { echo "FAIL: balance batch result"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM balance_ledger WHERE reason = 'ops-smoke'")" = "$((LEDGER0 + 3))" ] \
+  && [ "$(psql_q "SELECT balance_cents FROM user_balances WHERE user_id = '$OPS1'")" = "250" ] \
+  && [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'balance.admin_adjust' AND after->>'reason' = 'ops-smoke'")" = "3" ] \
+  && [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'user.batch.create' AND target_id = '$JOB'")" = "1" ] \
+  || { echo "FAIL: balance batch ledger/audit"; exit 1; }
+# Mail to the verified addresses through the outbox (Mailpit receives it).
+[ "$(api_json "$JAR" POST "$BASE/api/v1/users/batch" "{\"selection\":{\"ids\":[\"$OPS1\",\"$OPS2\"]},\"action\":{\"kind\":\"send_email\",\"subject\":\"Ops smoke notice\",\"body\":\"Maintenance tonight.\"}}")" = "202" ] \
+  || { echo "FAIL: create mail batch"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(wait_batch "$(last_json "d['id']")")" = "2/0/0" ] || { echo "FAIL: mail batch result"; exit 1; }
+mp_mail "ops2@akari.test" 1 | sed -n 1p | matches 'Ops smoke notice' || { echo "FAIL: batch mail not delivered"; exit 1; }
+psql_q "SELECT count(*) FROM audit_log WHERE action = 'user.mail.send' AND after::text LIKE '%Maintenance%'" | matches '^0$' \
+  || { echo "FAIL: mail body in the audit log"; exit 1; }
+# Plan for everyone, then disable one: node bumps come from the mutators.
+[ "$(api_json "$JAR" POST "$BASE/api/v1/users/batch" "{\"selection\":$OPSF,\"action\":{\"kind\":\"set_plan\",\"plan_id\":\"$OPS_PLAN\"}}")" = "202" ] \
+  || { echo "FAIL: create plan batch"; exit 1; }
+[ "$(wait_batch "$(last_json "d['id']")")" = "3/0/0" ] || { echo "FAIL: plan batch"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM user_plans WHERE plan_id = '$OPS_PLAN' AND status = 'active'")" = "3" ] || { echo "FAIL: plans not set"; exit 1; }
+# Users export (current filter): BOM, header + 3 rows, formula-safe plan name.
+curl -s --noproxy '*' -b "$JAR" -D "$LOG/ops-users.h" -o "$LOG/ops-users.csv" "$BASE/api/v1/users/export.csv?q=smoke-ops-"
+tr -d '\r' <"$LOG/ops-users.h" | matches -i '^content-disposition: attachment; filename="akari-users-' || { echo "FAIL: users export headers"; exit 1; }
+python3 - "$LOG/ops-users.csv" <<'PY' || { echo "FAIL: users export body"; exit 1; }
+import csv, io, sys
+raw = open(sys.argv[1], "rb").read()
+assert raw.startswith(b"\xef\xbb\xbf"), "BOM"
+rows = list(csv.reader(io.StringIO(raw[3:].decode())))
+assert len(rows) == 4 and rows[0][1] == "login", rows
+assert all(r[8] == "'=ops-plan" for r in rows[1:]), [r[8] for r in rows]
+assert all(r[14] == "250" for r in rows[1:]), [r[14] for r in rows]
+PY
+[ "$(code -b "$LOG/ops-cookies" "$BASE/api/v1/users/export.csv")" = "403" ] || { echo "FAIL: customer exported users"; exit 1; }
+# Manual orders: through apply_mark_paid (paid_via manual); a gift is not revenue.
+REV0=$(code -b "$JAR" "$BASE/api/v1/dashboard" >/dev/null; last_json "d['today']['manual_cents']")
+GIFT0=$(last_json "d['today']['gift_cents']")
+[ "$(api_json "$JAR" POST "$BASE/api/v1/orders/manual" "{\"user_id\":\"$OPS1\",\"plan_id\":\"$OPS_PLAN\",\"period\":\"month\",\"reason\":\"bank transfer\",\"amount_cents\":1}")" = "400" ] \
+  || { echo "FAIL: manual order accepted an amount"; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/orders/manual" "{\"user_id\":\"$OPS1\",\"plan_id\":\"$OPS_PLAN\",\"period\":\"month\",\"reason\":\"bank transfer\"}")" = "201" ] \
+  || { echo "FAIL: manual order"; cat /tmp/akari-smoke/last; exit 1; }
+MO=$(last_json "d['id']")
+[ "$(api_json "$JAR" POST "$BASE/api/v1/orders/manual" "{\"user_id\":\"$OPS2\",\"plan_id\":\"$OPS_PLAN\",\"period\":\"month\",\"gift\":true,\"reason\":\"prize\"}")" = "201" ] \
+  || { echo "FAIL: gift order"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT status || '/' || paid_via || '/' || amount_cents || '/' || (fulfilled_at IS NOT NULL) FROM orders WHERE id = '$MO'")" = "paid/manual/1500/true" ] \
+  || { echo "FAIL: manual order row"; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/orders/$MO/fulfil" '{"reason":"again"}')" = "409" ] || { echo "FAIL: manual order fulfilled twice"; exit 1; }
+code -b "$JAR" "$BASE/api/v1/dashboard" >/dev/null
+[ "$(last_json "d['today']['manual_cents'] - $REV0, d['today']['gift_cents'] - $GIFT0")" = "(1500, 1500)" ] \
+  || { echo "FAIL: dashboard manual/gift flags"; cat /tmp/akari-smoke/last; exit 1; }
+curl -s --noproxy '*' -b "$JAR" -o "$LOG/ops-orders.csv" "$BASE/api/v1/orders/export.csv?via=manual"
+python3 - "$LOG/ops-orders.csv" <<'PY' || { echo "FAIL: orders export"; exit 1; }
+import csv, io, sys
+rows = list(csv.reader(io.StringIO(open(sys.argv[1], "rb").read()[3:].decode())))
+h = rows[0]
+ours = [r for r in rows[1:] if r[h.index("plan_name")] == "'=ops-plan"]
+assert len(ours) == 2, rows
+assert sorted(r[h.index("gift_cents")] for r in ours) == ["0", "1500"], ours
+assert all(r[h.index("manual")] == "true" for r in ours)
+PY
+[ "$(code -b "$JAR" "$BASE/api/v1/orders/export.csv?from=2020-01-01&to=2026-01-01")" = "400" ] \
+  && [ "$(last_json "d['code']")" = "export.range_too_long" ] || { echo "FAIL: orders export range"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/traffic/export.csv?group=node")" = "200" ] || { echo "FAIL: traffic export"; exit 1; }
+# Batch coupons: N unique codes, export, the W16 reservation, revoke.
+[ "$(api_json "$JAR" POST "$BASE/api/v1/coupon-batches" '{"name":"ops","prefix":"OPS-","count":20,"kind":"fixed","value":100}')" = "201" ] \
+  && [ "$(last_json "d['count']")" = "20" ] || { echo "FAIL: coupon batch"; cat /tmp/akari-smoke/last; exit 1; }
+CB=$(last_json "d['id']")
+curl -s --noproxy '*' -b "$JAR" -o "$LOG/ops-coupons.csv" "$BASE/api/v1/coupon-batches/$CB/export.csv"
+OPS_CODE=$(python3 - "$LOG/ops-coupons.csv" <<'PY'
+import csv, io, re, sys
+rows = list(csv.reader(io.StringIO(open(sys.argv[1], "rb").read()[3:].decode())))
+codes = [r[0] for r in rows[1:]]
+assert len(codes) == 20 and len(set(c.lower() for c in codes)) == 20, codes
+assert all(re.fullmatch(r"OPS-[A-HJ-NP-Z2-9]{10}", c) for c in codes), codes
+print(codes[0])
+PY
+) || { echo "FAIL: coupon batch export"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM coupons WHERE batch_id = '$CB' AND max_uses = 1")" = "20" ] || { echo "FAIL: batch codes"; exit 1; }
+[ "$(code -b "$LOG/ops-cookies" "$BASE/api/v1/me/shop?coupon=$(echo "$OPS_CODE" | tr A-Z a-z)")" = "200" ] || { echo "FAIL: shop with batch code"; exit 1; }
+python3 -c "
+import json; d=json.load(open('/tmp/akari-smoke/last')); p=[x for x in d['plans'] if x['plan_id']=='$OPS_PLAN'][0]; o=p['offers'][0]
+assert d['coupon']=={'code':'$OPS_CODE','refusal':None} and o['discount_cents']==100, d
+" || { echo "FAIL: batch code preview"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/coupon-batches/$CB/revoke" '{}')" = "200" ] && [ "$(last_json "d['disabled']")" = "20" ] \
+  || { echo "FAIL: revoke batch"; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/coupon-batches/$CB/revoke" '{}')" = "409" ] || { echo "FAIL: revoke twice"; exit 1; }
+for a in export.users export.orders export.coupon_batch coupon.batch.create coupon.batch.revoke; do
+  [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='$a'")" -ge 1 ] || { echo "FAIL: audit lacks $a"; exit 1; }
+done
+# Clean up: cancel the plans by batch (departed rows, audit), delete users + plan.
+[ "$(api_json "$JAR" POST "$BASE/api/v1/users/batch" "{\"selection\":$OPSF,\"action\":{\"kind\":\"cancel_plan\"}}")" = "202" ] \
+  || { echo "FAIL: cancel batch"; exit 1; }
+[ "$(wait_batch "$(last_json "d['id']")")" = "3/0/0" ] || { echo "FAIL: cancel batch result"; exit 1; }
+for u in $(psql_q "SELECT id FROM users WHERE login LIKE 'smoke-ops-%'"); do
+  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$u")" = "204" ] || { echo "FAIL: delete ops user"; exit 1; }
+done
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/plans/$OPS_PLAN")" = "204" ] || { echo "FAIL: delete ops plan"; exit 1; }
+echo "ops: ok (batch balance/mail/plan exactly once + audited, users/orders/traffic CSV, manual + gift orders, coupon batch)"
 # W15: Mailpit is no longer needed; stop sending (nothing to deliver to).
 psql_q "UPDATE smtp_settings SET enabled = false" >/dev/null
 docker rm -f akari-smoke-mailpit >/dev/null 2>&1 || true

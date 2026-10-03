@@ -49,6 +49,13 @@ A crash leaves its input in `fuzz/artifacts/<target>/`; reproduce with
 `cd fuzz && cargo fuzz run <target> artifacts/<target>/<file>`. Fix it,
 add a unit test at the bug, and move the input to `seeds/<target>/regress-*`.
 
+- `ops_input` (Ops): the batch request (`CreateReq`/`PreviewReq`, also
+  inside `action`/`selection`), manual order and coupon batch bodies are
+  `deny_unknown_fields`, a manual order never carries an amount, the batch
+  action validator never panics; the CSV writer's output always parses
+  back to the same cells and a text cell can never start a spreadsheet
+  formula (`= + - @`, tab, CR → apostrophe-prefixed).
+
 ### CI (`.github/workflows/fuzz.yml`)
 
 - pull requests and pushes: every target 20 s (about 4 min of fuzzing plus
@@ -73,6 +80,9 @@ refactor (its planted row was invisible to `snapshot`); it now plants the
 index entry too and asserts the path.
 
 ## Billing-core coverage gate (`scripts/coverage-gate.py`)
+
+Ops adds `src/batch.rs`, `src/export.rs`, `src/csvx.rs`,
+`src/billing/manual.rs`, `src/billing/coupon_batches.rs` (≥ 90% each).
 
 `cargo llvm-cov` over the full test suite **including the real-database
 tests** (CI's `coverage` job has the same PostgreSQL/Valkey services as the

@@ -25,6 +25,7 @@ import {
 import { adminErrorText } from "../lib/admin-errors";
 import { dateInputValue, endOfDayIso, fmtDate, TZ_LABEL } from "../lib/datetime";
 import { copyText, GIB, humanBytes } from "../lib/utils";
+import { BatchDialog, BatchJobsCard, ExportLink, exportHref, type BatchSelection } from "./admin-ops";
 import { UserTraffic } from "./admin-traffic";
 
 // Admin console (Chinese only, R18). W21: search, status/plan filters,
@@ -114,15 +115,53 @@ export function AdminUsers() {
   const [open, setOpen] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [subToken, setSubToken] = useState<{ login: string; token: string; url?: string | null } | null>(null);
+  // Ops: batch selection (ids across pages) and the batch dialog.
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [batch, setBatch] = useState<{ selection: BatchSelection; label: string } | null>(null);
 
   const rows = users.data?.users ?? [];
   const total = users.data?.total ?? 0;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const filtered = filters.q.trim() !== "" || filters.status !== "" || filters.plan !== "";
   const page = filters.page;
+  const listFilter = {
+    q: filters.q.trim() || undefined,
+    plan_id: filters.plan || undefined,
+    status: filters.status || undefined,
+  };
+  const pageIds = rows.map((u) => u.id);
+  const allOnPage = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
+  const toggleOne = (id: string) =>
+    setSelected((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  const togglePage = () =>
+    setSelected((s) => {
+      const n = new Set(s);
+      for (const id of pageIds) {
+        if (allOnPage) n.delete(id);
+        else n.add(id);
+      }
+      return n;
+    });
 
   return (
     <div className="space-y-6">
+      {batch && (
+        <BatchDialog
+          selection={batch.selection}
+          selectionLabel={batch.label}
+          plans={plans.data ?? []}
+          onClose={() => setBatch(null)}
+          onCreated={() => {
+            setBatch(null);
+            setSelected(new Set());
+          }}
+        />
+      )}
       {creating && (
         <CreateUserDialog
           onClose={() => setCreating(false)}
@@ -224,10 +263,55 @@ export function AdminUsers() {
               {users.isSuccess && (filtered ? `找到 ${total} 个用户` : `共 ${total} 个用户`)}
             </p>
           </div>
+          <div role="toolbar" aria-label="批量操作与导出" className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={selected.size === 0}
+              onClick={() => setBatch({ selection: { ids: [...selected] }, label: `已选中的 ${selected.size} 个用户` })}
+            >
+              批量操作（已选 {selected.size}）
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!users.isSuccess || total === 0}
+              onClick={() =>
+                setBatch({
+                  selection: { filter: listFilter },
+                  label: filtered ? `当前筛选条件下的全部用户（创建任务时为 ${total} 个）` : `全部 ${total} 个用户`,
+                })
+              }
+            >
+              {filtered ? `对筛选结果批量操作（${total}）` : `对全部用户批量操作（${total}）`}
+            </Button>
+            {selected.size > 0 && (
+              <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+                清除选择
+              </Button>
+            )}
+            <ExportLink
+              href={exportHref("/users/export.csv", {
+                ...listFilter,
+                sort: filters.sort === "created" ? undefined : filters.sort,
+              })}
+            >
+              导出 CSV
+            </ExportLink>
+          </div>
           {users.isError && <ErrorText>{adminErrorText(users.error)}</ErrorText>}
           <Table label="用户列表">
             <TableHeader>
               <TableRow>
+                <TableHead className="w-8">
+                  <input
+                    type="checkbox"
+                    aria-label="选择本页全部用户"
+                    checked={allOnPage}
+                    onChange={togglePage}
+                    disabled={pageIds.length === 0}
+                  />
+                </TableHead>
                 <TableHead className="sticky left-0 z-[1] bg-card">账号</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>套餐</TableHead>
@@ -240,9 +324,9 @@ export function AdminUsers() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {users.isPending && <TableNote colSpan={7}>加载中…</TableNote>}
+              {users.isPending && <TableNote colSpan={8}>加载中…</TableNote>}
               {users.isSuccess && rows.length === 0 && (
-                <TableNote colSpan={7}>
+                <TableNote colSpan={8}>
                   {filtered
                     ? "没有符合条件的用户。"
                     : page === 0
@@ -255,6 +339,14 @@ export function AdminUsers() {
                 return (
                   <Fragment key={u.id}>
                     <TableRow>
+                      <TableCell className="w-8">
+                        <input
+                          type="checkbox"
+                          aria-label={`选择 ${u.login}`}
+                          checked={selected.has(u.id)}
+                          onChange={() => toggleOne(u.id)}
+                        />
+                      </TableCell>
                       <TableCell className="sticky left-0 z-[1] bg-card">
                         <span className="flex max-w-[45vw] items-center gap-1.5 truncate whitespace-nowrap font-medium sm:max-w-none">
                           {u.login}
@@ -310,7 +402,7 @@ export function AdminUsers() {
                     </TableRow>
                     {open === u.id && (
                       <TableRow id={`manage-${u.id}`} className="hover:bg-transparent">
-                        <TableCell colSpan={7} className="bg-muted/30">
+                        <TableCell colSpan={8} className="bg-muted/30">
                           <ManageUser
                             user={u}
                             plans={plans.data ?? []}
@@ -351,6 +443,7 @@ export function AdminUsers() {
           </nav>
         </CardContent>
       </Card>
+      <BatchJobsCard />
     </div>
   );
 }

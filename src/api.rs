@@ -791,7 +791,7 @@ fn like_prefix(s: &str) -> String {
     out
 }
 
-fn push_user_filters(
+pub(crate) fn push_user_filters(
     qb: &mut sqlx::QueryBuilder<sqlx::Postgres>,
     q: &UserListQuery,
 ) -> Result<(), ApiError> {
@@ -877,7 +877,7 @@ fn push_user_filters(
 
 /// ORDER BY of a sort key (every order ends in the id: a total order, so
 /// pages neither repeat nor skip rows).
-fn user_order(sort: Option<&str>) -> Result<&'static str, ApiError> {
+pub(crate) fn user_order(sort: Option<&str>) -> Result<&'static str, ApiError> {
     Ok(match sort.unwrap_or("created") {
         "" | "created" => "u.created_at, u.id",
         "-created" => "u.created_at DESC, u.id DESC",
@@ -1192,7 +1192,7 @@ pub struct UpdateUserReq {
 
 /// PATCH /users/{id}. Returns the nodes whose versions were bumped.
 /// Audited ("user.update", exact before/after via RETURNING old/new).
-async fn apply_update_user(
+pub(crate) async fn apply_update_user(
     conn: &mut PgConnection,
     actor: &Actor,
     id: Uuid,
@@ -4055,6 +4055,41 @@ mod tests {
                 }),
                 vec![n1, n2, other],
                 false,
+            ),
+            (
+                // Ops batch "重置已用流量": an enabled user's usage is
+                // zeroed; what the nodes serve does not change.
+                "admin traffic reset, user enabled (no access change)",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        crate::plans::apply_admin_reset_traffic(c, &crate::audit::Actor::test(), u)
+                            .await
+                            .map(|_| ())
+                    })
+                }),
+                vec![n1, n2, other],
+                false,
+            ),
+            (
+                // ...a quota-disabled one comes back into service: every
+                // node of the user resends it.
+                "admin traffic reset re-enables a quota-disabled user",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        sqlx::query(
+                            "UPDATE users SET enabled = false, disabled_reason = 'quota' \
+                             WHERE id = $1",
+                        )
+                        .bind(u)
+                        .execute(&mut *c)
+                        .await?;
+                        crate::plans::apply_admin_reset_traffic(c, &crate::audit::Actor::test(), u)
+                            .await
+                            .map(|_| ())
+                    })
+                }),
+                vec![n1, n2, other],
+                true,
             ),
             (
                 "user plan expiry",

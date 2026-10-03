@@ -23,6 +23,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { ManualOrderDialog, OrdersExport } from "./admin-ops";
 
 const errText = (err: unknown) => (err instanceof Error ? adminErrorText(err) : "失败");
 const fmt = (s: string | null) => fmtDateTime(s);
@@ -37,7 +38,7 @@ export const STATUS_ZH: Record<OrderStatus, string> = {
 const VIA_ZH: Record<string, string> = {
   notify: "异步通知",
   query: "主动查询",
-  manual: "人工确认",
+  manual: "人工",
   credit: "余值抵扣",
   balance: "余额支付",
   coupon: "优惠券全额抵扣",
@@ -51,9 +52,33 @@ const BALANCE_STATE_ZH: Record<AdminOrder["balance_state"], string> = {
 
 export function AdminOrders() {
   const [selected, setSelected] = useState<string | null>(null);
+  const [manual, setManual] = useState(false);
   return (
     <div className="space-y-6">
+      {manual && (
+        <ManualOrderDialog
+          onClose={() => setManual(false)}
+          onCreated={(id) => {
+            setManual(false);
+            setSelected(id);
+          }}
+        />
+      )}
       <PaymentsCard />
+      <Card>
+        <CardHeader>
+          <CardTitle>
+            <h2>人工订单与导出</h2>
+          </CardTitle>
+          <CardDescription>
+            人工订单用于赠送或记录线下收款：金额按套餐当前价格由服务端计算，经同一付款路径开通，在营收中标记为「人工」（赠送不计营收）。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <Button onClick={() => setManual(true)}>新建人工订单</Button>
+          <OrdersExport />
+        </CardContent>
+      </Card>
       <OrdersCard onSelect={setSelected} />
       {selected && <OrderDetailCard id={selected} onClose={() => setSelected(null)} />}
     </div>
@@ -96,13 +121,14 @@ function PaymentsCard() {
 }
 
 function OrdersCard({ onSelect }: { onSelect: (id: string) => void }) {
-  const [status, setStatus] = useState<"" | OrderStatus | "unfulfilled">("");
+  const [status, setStatus] = useState<"" | OrderStatus | "unfulfilled" | "manual">("");
   const [login, setLogin] = useState("");
   const [tradeNo, setTradeNo] = useState("");
   const [cursor, setCursor] = useState<string[]>([]);
   const before = cursor[cursor.length - 1];
   const params = new URLSearchParams();
   if (status === "unfulfilled") params.set("unfulfilled", "true");
+  else if (status === "manual") params.set("via", "manual");
   else if (status) params.set("status", status);
   if (login.trim()) params.set("login", login.trim());
   if (tradeNo.trim()) params.set("out_trade_no", tradeNo.trim());
@@ -144,6 +170,7 @@ function OrdersCard({ onSelect }: { onSelect: (id: string) => void }) {
               <option value="pending">待付款</option>
               <option value="paid">已付款</option>
               <option value="unfulfilled">已付款未开通</option>
+              <option value="manual">人工订单</option>
               <option value="expired">已过期</option>
               <option value="cancelled">已取消</option>
             </select>
@@ -212,6 +239,9 @@ function OrdersCard({ onSelect }: { onSelect: (id: string) => void }) {
                     {o.balance_cents > 0 && (
                       <span className="ml-1 text-xs text-muted-foreground">（余额 ¥{yuan(o.balance_cents)}）</span>
                     )}
+                    {o.gift_cents > 0 && (
+                      <span className="ml-1 text-xs text-muted-foreground">（赠送 ¥{yuan(o.gift_cents)}）</span>
+                    )}
                   </TableCell>
                   <TableCell>
                     <Badge variant={o.status === "paid" ? "default" : "secondary"}>{STATUS_ZH[o.status]}</Badge>
@@ -226,7 +256,15 @@ function OrdersCard({ onSelect }: { onSelect: (id: string) => void }) {
                       </Badge>
                     )}
                   </TableCell>
-                  <TableCell>{o.paid_via ? VIA_ZH[o.paid_via] : "—"}</TableCell>
+                  <TableCell>
+                    {o.paid_via === "manual" ? (
+                      <Badge variant="outline">{o.gift_cents > 0 ? "人工 · 赠送" : "人工"}</Badge>
+                    ) : o.paid_via ? (
+                      VIA_ZH[o.paid_via]
+                    ) : (
+                      "—"
+                    )}
+                  </TableCell>
                   <TableCell>
                     <Button size="sm" variant="outline" onClick={() => onSelect(o.id)}>
                       详情

@@ -1085,3 +1085,96 @@ test("agent update check: 检查更新 fetches the signed release, 有新版本 
   expect(problems).toEqual([]);
   await ctx.close();
 });
+
+test("Ops: batch balance on selected users, users CSV, gift order, coupon batch + CSV", async ({ browser }) => {
+  test.skip(!secret, "needs the enrollment test");
+  const { readFileSync } = await import("node:fs");
+  const ctx = await browser.newContext({ locale: "zh-CN", acceptDownloads: true });
+  const admin = await ctx.newPage();
+  const problems = watch(admin);
+  await admin.goto(`${BASE}/users`);
+  const next = await nextCode(secret, usedStep);
+  usedStep = next.step;
+  await login(admin, ADMIN, ADMIN_PW, next.code);
+  await expect(admin).toHaveURL(`${ADMIN_BASE}/users`);
+  const api = `${ADMIN_BASE.replace(/\/admin$/, "")}/api/v1`;
+  const plan = await ctx.request.post(`${api}/plans`, {
+    data: {
+      name: "e2e-ops",
+      period: "monthly",
+      pricing: { on_sale: true, prices: [{ period: "month", price_cents: 1800 }] },
+    },
+  });
+  expect(plan.status()).toBe(201);
+  const created = await ctx.request.post(`${api}/users`, {
+    data: { login: "e2e-ops-1", password: "e2e-ops-password" },
+  });
+  expect(created.status()).toBe(201);
+
+  // Batch: select one user, credit ¥5 with a reason, confirm, watch it finish.
+  await admin.getByLabel("搜索").fill("e2e-ops");
+  await expect(admin.getByText("找到 1 个用户")).toBeVisible();
+  await admin.getByLabel("选择 e2e-ops-1").check();
+  await admin.getByRole("button", { name: "批量操作（已选 1）" }).click();
+  const dialog = admin.getByRole("dialog", { name: "批量操作" });
+  await expect(dialog.getByText(/将作用于 1 个账户/)).toBeVisible();
+  await dialog.getByLabel("操作").selectOption("add_balance");
+  await dialog.getByLabel("每人金额（元）").fill("5");
+  await dialog.getByLabel("原因（写入每条明细）").fill("e2e 批量补偿");
+  await dialog.getByRole("button", { name: "预览并执行" }).click();
+  await admin.getByRole("alertdialog").getByRole("button", { name: "开始执行" }).click();
+  await expect(admin.getByRole("heading", { name: "批量任务" })).toBeVisible();
+  await expect(admin.getByText("1/1：成功 1，失败 0，跳过 0")).toBeVisible({ timeout: 15_000 });
+
+  // CSV of the current filter: BOM, header, the user.
+  const [download] = await Promise.all([
+    admin.waitForEvent("download"),
+    admin.getByRole("link", { name: "导出 CSV" }).click(),
+  ]);
+  expect(download.suggestedFilename()).toMatch(/^akari-users-\d{8}\.csv$/);
+  const csv = readFileSync(await download.path());
+  expect(csv.subarray(0, 3)).toEqual(Buffer.from([0xef, 0xbb, 0xbf]));
+  const lines = csv.subarray(3).toString("utf8").trim().split("\r\n");
+  expect(lines).toHaveLength(2);
+  expect(lines[1]).toContain("e2e-ops-1");
+  expect(lines[1]).toContain(",500,"); // balance_cents
+
+  // A gift order through the console (no amount sent; ¥0, flagged manual).
+  await admin.getByRole("link", { name: "订单", exact: true }).click();
+  await admin.getByRole("button", { name: "新建人工订单" }).click();
+  const mo = admin.getByRole("dialog", { name: "新建人工订单" });
+  await mo.getByLabel("用户（账号或邮箱）").fill("e2e-ops-1");
+  await mo.getByRole("button", { name: "查找" }).click();
+  await expect(mo.getByText("用户：e2e-ops-1")).toBeVisible();
+  await mo.getByLabel("套餐").selectOption({ label: "e2e-ops" });
+  await mo.getByLabel("周期").selectOption("month");
+  await mo.getByLabel("赠送（金额 ¥0，不计入营收）").check();
+  await mo.getByLabel("原因（必填，写入订单与审计）").fill("e2e 活动奖品");
+  await mo.getByRole("button", { name: "创建并开通" }).click();
+  await admin.getByRole("alertdialog").getByRole("button", { name: "赠送" }).click();
+  await expect(admin.getByRole("cell", { name: "人工 · 赠送" }).first()).toBeVisible();
+
+  // Coupon batch: generate 5 codes, export them.
+  await admin.getByRole("link", { name: "优惠券", exact: true }).click();
+  await admin.getByRole("button", { name: "批量生成优惠码" }).click();
+  const cb = admin.getByRole("dialog", { name: "批量生成优惠码" });
+  await cb.getByLabel("批次名称").fill("e2e 批次");
+  await cb.getByLabel("前缀（可选）").fill("E2E-");
+  await cb.getByLabel("数量（1–5000）").fill("5");
+  await cb.getByLabel("减免百分比").fill("10");
+  await cb.getByRole("button", { name: "生成" }).click();
+  await expect(admin.getByRole("status").filter({ hasText: "已生成 5 个优惠码" })).toBeVisible();
+  const [codes] = await Promise.all([
+    admin.waitForEvent("download"),
+    admin.getByRole("region", { name: "优惠码批次" }).getByRole("link", { name: "导出 CSV" }).first().click(),
+  ]);
+  const rows = readFileSync(await codes.path())
+    .subarray(3)
+    .toString("utf8")
+    .trim()
+    .split("\r\n");
+  expect(rows).toHaveLength(6);
+  for (const r of rows.slice(1)) expect(r).toMatch(/^E2E-[A-HJ-NP-Z2-9]{10},true,0,1,0$/);
+  expect(problems).toEqual([]);
+  await ctx.close();
+});

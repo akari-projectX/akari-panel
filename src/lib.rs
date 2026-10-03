@@ -7,16 +7,19 @@ pub mod alerts;
 pub mod api;
 pub mod audit;
 pub mod auth;
+pub mod batch;
 pub mod billing;
 pub mod client_ip;
 pub mod cloudflare;
 pub mod config;
 pub mod config_check;
+pub mod csvx;
 pub mod dashboard;
 pub mod db;
 pub mod enforce;
 pub mod enroll;
 pub mod entitle;
+pub mod export;
 #[cfg(fuzzing)]
 #[doc(hidden)]
 pub mod fuzzing;

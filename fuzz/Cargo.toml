@@ -139,3 +139,10 @@ path = "fuzz_targets/payment_methods.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ops_input"
+path = "fuzz_targets/ops_input.rs"
+test = false
+doc = false
+bench = false

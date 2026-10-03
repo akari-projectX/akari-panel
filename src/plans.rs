@@ -1544,6 +1544,35 @@ pub async fn apply_reset_traffic(
             "a traffic reset pack needs an active subscription of its plan"
         ));
     }
+    reset_traffic_locked(
+        conn,
+        actor,
+        user_id,
+        json!({ "source": "reset_pack", "plan_id": plan_id }),
+    )
+    .await
+}
+
+/// Ops (admin batch "重置已用流量"): zero the user's used traffic whether or
+/// not they hold a plan; a quota-disabled account is re-enabled (never an
+/// admin-disabled one). Audited `user.traffic.reset` (source `admin`).
+pub async fn apply_admin_reset_traffic(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    user_id: Uuid,
+) -> Result<UserPlanChange, ApiError> {
+    entitle::lock(conn).await?;
+    reset_traffic_locked(conn, actor, user_id, json!({ "source": "admin" })).await
+}
+
+/// The reset itself (caller holds `entitle::lock`): nodes -> users lock
+/// order, bump only when the account comes back into service.
+async fn reset_traffic_locked(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    user_id: Uuid,
+    source: Value,
+) -> Result<UserPlanChange, ApiError> {
     // Lock order: nodes (of the user's rows) -> users.
     sqlx::query(
         "SELECT id FROM nodes WHERE id IN (SELECT node_id FROM node_users WHERE user_id = $1) \
@@ -1567,6 +1596,10 @@ pub async fn apply_reset_traffic(
     if !was_enabled && enabled {
         res.served_bumped = bump_nodes_of_users(conn, &[user_id]).await?;
     }
+    let mut after = json!({ "traffic_used_bytes": 0, "enabled": enabled });
+    if let (Value::Object(a), Value::Object(s)) = (&mut after, source) {
+        a.extend(s);
+    }
     crate::audit::record(
         conn,
         actor,
@@ -1575,10 +1608,7 @@ pub async fn apply_reset_traffic(
         Some(user_id.to_string()),
         Some(json!({ "traffic_used_bytes": used, "enabled": was_enabled,
                      "disabled_reason": reason })),
-        Some(
-            json!({ "traffic_used_bytes": 0, "enabled": enabled, "source": "reset_pack",
-                     "plan_id": plan_id }),
-        ),
+        Some(after),
     )
     .await?;
     Ok(res)
