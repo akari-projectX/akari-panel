@@ -501,6 +501,36 @@ rows every 10 minutes (≤ 200 × 180 rows) under an advisory try-lock, and
 retention deletes in 10k-row batches. `akari-bench swarm` agents send metrics
 in their heartbeats, so the swarm numbers include this load.
 
+## W26: protocol-layer modularization (subscription render, snapshot build)
+
+W26 put the subscription renderers on the kernel-neutral model (each
+credential's inbound is parsed by the xray adapter, `protocols::xray::parse_as`,
+instead of cloning and walking the stored JSON) and moved the protocol rules
+into the manifest. The Snapshot path (`desired_state`) only reads stored JSON
+and is unchanged. Gate: no regression above 5%. Measured with criterion,
+`make bench` filtered to `sub_render|db/desired_snapshot|db/snapshot_build_full`,
+`main` (f2a4c9d) saved as a baseline from a worktree with the same target dir
+and the bench database of `make bench-seed` (200 nodes, 2M node_users), on the
+same 4-vCPU cloud container:
+
+| bench | main | W26 | change (criterion) |
+|---|---:|---:|---:|
+| sub_render/clash/1 | 14.08 µs | 13.03 µs | −6.6% |
+| sub_render/links/1 | 14.90 µs | 13.75 µs | −6.1% |
+| sub_render/sing-box/1 | 22.75 µs | 21.80 µs | −6.5% (first run +8.0%, noise: main against itself −1.5%) |
+| sub_render/clash/40 | 310.4 µs | 273.9 µs | −14.1% |
+| sub_render/links/40 | 330.0 µs | 313.8 µs | −6.4% |
+| sub_render/sing-box/40 | 583.8 µs | 565.3 µs | −2.9% |
+| sub_render/clash/200 | 1.476 ms | 1.373 ms | −7.6% |
+| sub_render/links/200 | 1.591 ms | 1.478 ms | −8.4% |
+| sub_render/sing-box/200 | 2.974 ms | 2.784 ms | −6.4% |
+| db/desired_snapshot/10000 | 85.5 ms | 83.2 ms | −0.7% (n.s.) |
+| db/snapshot_build_full/10000 | 100.7 ms | 102.0 ms | +1.3% (within run-to-run noise: main −7.1% against its own baseline) |
+
+The first W26 run of the two `db/*` benches read +21%/+8%: the bench Postgres
+had just finished WAL recovery. Re-runs alternating main and W26 within
+minutes gave the rows above. The Snapshot path has no W26 code.
+
 ## Limits and honest caveats
 
 - Flush margin (W22): 0.58 s against the 1 s budget (W11: 0.49 s) for 50k rows; on a slower
