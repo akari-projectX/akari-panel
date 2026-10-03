@@ -364,6 +364,40 @@ const tpl = (over: Partial<MailTemplate> = {}): MailTemplate => ({
   ...over,
 });
 
+describe("status lines survive the remount after a save", () => {
+  it("template saved: the refetch bumps the version", async () => {
+    let version = 0;
+    fakeApi({
+      "GET /settings/mail-templates": () => ({ status: 200, body: [tpl({ version, custom: version > 0 })] }),
+      "POST /settings/mail-templates/preview": { subject: "s", text: "t", html: "<p>h</p>" },
+      "PUT /settings/mail-templates/register_code/zh": () => {
+        version = 1;
+        return { status: 200, body: { version: 1, custom: true } };
+      },
+    });
+    renderAdmin(<MailTemplates />);
+    fireEvent.click(await screen.findByRole("button", { name: "保存模板" }));
+    // The editor remounts on version 1 (badge flips), the status stays.
+    expect(await screen.findByText("已自定义")).toBeTruthy();
+    expect(screen.getByText("已保存模板。")).toBeTruthy();
+  });
+
+  it("branding saved: the new version remounts the form", async () => {
+    let current = branding;
+    fakeApi({
+      "GET /settings/branding": () => ({ status: 200, body: current }),
+      "PUT /settings/branding": () => {
+        current = { ...branding, version: 4, footer_text: "新页脚" };
+        return { status: 200, body: current };
+      },
+    });
+    renderAdmin(<BrandingSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "保存页脚与链接" }));
+    await waitFor(() => expect((screen.getByLabelText("页脚文字") as HTMLTextAreaElement).value).toBe("新页脚"));
+    expect(screen.getByText("已保存。")).toBeTruthy();
+  });
+});
+
 describe("mail template editor", () => {
   it("flags unknown and missing placeholders before saving", async () => {
     expect(unknownPlaceholders("{a} {site} {B} {b_1}", ["site"])).toEqual(["a", "b_1"]);

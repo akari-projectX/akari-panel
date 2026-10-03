@@ -37,6 +37,8 @@ export const PLATFORM_ZH: Record<Platform, string> = {
 
 export function BrandingSettings() {
   const branding = useQuery({ queryKey: ["branding"], queryFn: () => get<Branding>("/settings/branding") });
+  // Lives here: a save bumps the version, which remounts the form.
+  const [saved, setSaved] = useState(false);
   if (branding.isPending) return <p className="text-sm text-muted-foreground">加载中…</p>;
   if (branding.isError)
     return (
@@ -47,7 +49,7 @@ export function BrandingSettings() {
   return (
     <div className="space-y-6">
       <ImagesCard data={branding.data} />
-      <BrandingForm key={branding.data.version} data={branding.data} />
+      <BrandingForm key={branding.data.version} data={branding.data} saved={saved} setSaved={setSaved} />
     </div>
   );
 }
@@ -161,7 +163,7 @@ export function brandingBody(
   };
 }
 
-function BrandingForm({ data }: { data: Branding }) {
+function BrandingForm({ data, saved, setSaved }: { data: Branding; saved: boolean; setSaved: (v: boolean) => void }) {
   const refresh = useRefresh();
   const [footer, setFooter] = useState(data.footer_text ?? "");
   const [tos, setTos] = useState(data.tos_url ?? "");
@@ -169,7 +171,6 @@ function BrandingForm({ data }: { data: Branding }) {
   const [links, setLinks] = useState<FooterLink[]>(data.footer_links);
   const [downloads, setDownloads] = useState<ClientDownload[]>(data.client_downloads);
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
 
   async function save(e: React.FormEvent) {
