@@ -1851,6 +1851,10 @@ main() {
 	set -eu
 	umask 077
 	export LC_NUMERIC=C
+	# The panel binary lets DATABASE_URL / VALKEY_URL override panel.toml;
+	# a caller's (CI job, a developer shell) must never redirect the CLI
+	# calls below away from the installed database (pool timeouts).
+	unset DATABASE_URL VALKEY_URL
 	case "$0" in
 	*install.sh | *akari-ctl)
 		if [ -f "$0" ]; then
