@@ -1196,9 +1196,9 @@ test("Ops: announcement + help article in the portal; edited mail template in a 
   await ap.goto(`${ADMIN_BASE}/content/announcements`);
   await expect(ap.getByRole("heading", { name: "内容管理" })).toBeVisible();
   await ap.getByRole("button", { name: "新建公告" }).click();
-  await ap.getByLabel("标题（中文）").fill("e2e 维护公告");
+  await ap.getByLabel("标题（中文）", { exact: true }).fill("e2e 维护公告");
   await ap.getByLabel("标题（英文，可选）").fill("e2e maintenance");
-  await ap.getByLabel("正文（中文）").fill("本周六 **凌晨** 维护 <script>alert(1)</script>");
+  await ap.getByLabel("正文（中文）", { exact: true }).fill("本周六 **凌晨** 维护 <script>alert(1)</script>");
   await expect(ap.getByRole("region", { name: "正文（中文）预览" }).locator("strong")).toHaveText("凌晨");
   await ap.getByLabel("置顶").check();
   await ap.getByRole("button", { name: "发布公告" }).click();

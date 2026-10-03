@@ -19,11 +19,28 @@ use akari_panel::fuzzing;
 use libfuzzer_sys::fuzz_target;
 
 const TAGS: [&str; 17] = [
-    "p", "br", "h3", "h4", "h5", "h6", "strong", "em", "code", "pre", "ul", "ol", "li",
-    "blockquote", "hr", "a", "img",
+    "p",
+    "br",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "strong",
+    "em",
+    "code",
+    "pre",
+    "ul",
+    "ol",
+    "li",
+    "blockquote",
+    "hr",
+    "a",
+    "img",
 ];
 const ATTRS: [&str; 6] = ["href", "target", "rel", "src", "alt", "loading"];
-const MAIL_TAGS: [&str; 9] = ["!doctype", "html", "head", "meta", "title", "body", "div", "h1", "a"];
+const MAIL_TAGS: [&str; 9] = [
+    "!doctype", "html", "head", "meta", "title", "body", "div", "h1", "a",
+];
 
 fn unescape(v: &str) -> String {
     v.replace("&quot;", "\"")
@@ -48,6 +65,10 @@ fn tags(html: &str) -> Vec<(String, Vec<(String, String)>)> {
             None => (inner, ""),
         };
         let mut attrs = Vec::new();
+        if name.eq_ignore_ascii_case("!doctype") {
+            assert_eq!(attrs_src, "html", "doctype");
+            attrs_src = "";
+        }
         while !attrs_src.trim().is_empty() {
             let s = attrs_src.trim_start();
             let eq = s.find("=\"").expect("attribute without a quoted value");
@@ -107,15 +128,29 @@ fn template(data: &[u8]) {
         return;
     };
     let kinds = [
-        "register_code", "register_exists", "email_code", "password_reset", "order_paid",
-        "expiry_soon", "expired", "quota_80", "quota_100", "test", "ticket_reply", "ticket_new",
-        "node_alert", "announcement",
+        "register_code",
+        "register_exists",
+        "email_code",
+        "password_reset",
+        "order_paid",
+        "expiry_soon",
+        "expired",
+        "quota_80",
+        "quota_100",
+        "test",
+        "ticket_reply",
+        "ticket_new",
+        "node_alert",
+        "announcement",
     ];
     let kind = kinds[usize::from(k) % kinds.len()];
     let text = String::from_utf8_lossy(rest);
     let (subject, body) = text.split_once('\0').unwrap_or((&text, ""));
     if let Some((s, _t, html)) = fuzzing::mail_template(kind, subject, body) {
-        assert!(!s.chars().any(char::is_control), "control character in subject");
+        assert!(
+            !s.chars().any(char::is_control),
+            "control character in subject"
+        );
         for (name, _) in tags(&html) {
             assert!(
                 TAGS.contains(&name.as_str()) || MAIL_TAGS.contains(&name.as_str()) || name == "hr",
@@ -140,8 +175,12 @@ fuzz_target!(|data: &[u8]| {
                 let t = text.trim().to_ascii_lowercase();
                 assert!(t.starts_with("https://") || t.starts_with('/') || t.starts_with('#'));
             }
+            // The URL is judged (and used) trimmed.
             if link.is_some() {
-                assert!(!text.chars().any(|c| c.is_control() || c == '"' || c == '<'));
+                assert!(!text
+                    .trim()
+                    .chars()
+                    .any(|c| c.is_control() || c.is_whitespace() || c == '"' || c == '<'));
             }
         }
         3 => template(rest),
@@ -150,15 +189,32 @@ fuzz_target!(|data: &[u8]| {
                 assert!(w > 0 && h > 0);
             }
             if let Ok(Some(f)) = fuzzing::branding_body(rest) {
-                for l in &f.footer_links {
-                    assert!(l.url.starts_with("https://") || l.url.starts_with("http://") || l.url.starts_with('/'));
+                for u in f
+                    .footer_links
+                    .iter()
+                    .map(|l| &l.url)
+                    .chain(f.client_downloads.iter().map(|d| &d.url))
+                    .chain(f.tos_url.iter())
+                    .chain(f.privacy_url.iter())
+                {
+                    // Schemes are case-insensitive.
+                    let lower = u.to_ascii_lowercase();
+                    assert!(
+                        lower.starts_with("https://")
+                            || lower.starts_with("http://")
+                            || (u.starts_with('/') && !u.starts_with("//")),
+                        "{u}"
+                    );
                 }
             } else if let Err(e) = fuzzing::branding_body(rest) {
                 panic!("{e}");
             }
         }
         _ => {
-            if let Err(e) = fuzzing::content_bodies(rest.first().copied().unwrap_or(0), rest.get(1..).unwrap_or(&[])) {
+            if let Err(e) = fuzzing::content_bodies(
+                rest.first().copied().unwrap_or(0),
+                rest.get(1..).unwrap_or(&[]),
+            ) {
                 panic!("{e}");
             }
         }
