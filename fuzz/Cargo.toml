@@ -153,3 +153,9 @@ path = "fuzz_targets/content.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "protocols_manifest"
+path = "fuzz_targets/protocols_manifest.rs"
+test = false
+doc = false

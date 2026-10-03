@@ -11,6 +11,8 @@
 agent 仓库的 `make sync-proto`/`check-proto` 写死 `../akari-panel`；在 worktree 里要手工 `cp` + `buf generate proto` + `diff`。
 `state_hash_vectors.json` 与 `update_vector.json` 也要同步到 agent 的 `proto/`（两边测试都读本地副本）。
 
+**协议能力清单 `protocols.toml`（W26，R41）**：协议/传输/安全层、字段、合法组合（规则）、每用户凭据形状、各订阅格式支持、端到端场景的**唯一数据源**；名称内核无关（内核专有字段名只在适配器里），`wire` = 契约里的协议名（冻结）。面板：build.rs 解析并校验（坏清单 = 编译失败，`src/protocols/manifest_def.rs` 与 crate 共用），生成 `protocols::manifest`（构造代码 + const 表）；`make gen-protocols` 重写生成物（DEPLOY §3d 矩阵），`make check-generated`/`cargo test` 在过期时失败。agent：`make sync-proto` 一并拷贝，`check-proto` 逐字节比对（与 agent.proto 同样面板先行）。改清单 = 改行为：先跑 `src/protocols/manifest_tests.rs`（清单与面板校验/订阅逐组合一致）。
+
 语义要点（完整定义见 proto 注释）：
 - `TrafficReport.session_id` 是计费键（与计数原子读取）；Hello 的 session 仅供展示/日志。
 - `Hello.protocol_version`：当前 6（= agent 自己用 ACME 申请/续期节点证书：`ConfigSnapshot.acme`（AcmeConfig：domain、directory_url（空 = Let's Encrypt）、email），`Heartbeat.cert`（CertStatus：state PENDING/VALID/FAILED、not_after、next_attempt、last_error ≤512 字节、error_kind DNS/CONNECTION/RATE_LIMITED/PORT_BUSY/CAA/REJECTED/CA_UNREACHABLE、challenge、failures），W10；acme 不进 state hash（改域名 bump config_version → Snapshot）；**字段号分段**：W10 用既有消息的 10–19，W11 用 20–49）；5 = SS2022 墓碑删除；4 = 执行 `UserOp.speed_limit_bytes_per_sec` 每用户限速，W7；3 = 自更新；2 = 会用 `AgentChannel.Renew` 续期证书）；1 = 不续期，面板照常服务（NodeView 在证书 14 天内到期时警告）；旧 agent 不发 = 0。面板 `MIN_AGENT_PROTOCOL` 以下给空状态并标记，不拒绝连接。**先升级 agent 再升级面板**；改协议语义时加版本号并更新两侧常量。

@@ -2,7 +2,7 @@ AGENT_DIR ?= ../akari-agent
 
 FUZZ_SECS ?= 30
 
-.PHONY: monitoring-check fuzz fuzz-lint coverage third-party bench-up bench-down dev-up dev-down spa panel agent-build check smoke e2e lint test deny ci bench bench-seed bench-lint
+.PHONY: gen-protocols check-generated monitoring-check fuzz fuzz-lint coverage third-party bench-up bench-down dev-up dev-down spa panel agent-build check smoke e2e lint test deny ci bench bench-seed bench-lint
 
 dev-up:
 	docker compose up -d --wait
@@ -19,9 +19,21 @@ panel:
 agent-build:
 	$(MAKE) -C $(AGENT_DIR) build
 
-check:
+check: check-generated
 	cargo fmt --check && cargo clippy -- -D warnings
 	cd spa && npx tsc --noEmit && npm run lint && node scripts/check-auth-paths.mjs && node scripts/check-error-codes.mjs && npx vitest run
+
+# W26: artifacts generated from proto/protocols.toml (docs/DEPLOY.md §3d
+# matrix, the admin form schema). `gen-protocols` rewrites them after a
+# manifest edit; `check-generated` (part of `make check`, and of
+# `cargo test` in CI) fails when one is stale. Then sync the agent:
+# `make -C ../akari-agent sync-proto`.
+GEN_TEST = protocols::generate::tests::generated_artifacts_are_current
+gen-protocols:
+	AKARI_REGEN=1 cargo test --lib -q $(GEN_TEST) -- --exact
+
+check-generated:
+	cargo test --lib -q $(GEN_TEST) -- --exact
 
 # Playwright end-to-end against a real panel (release build, real CSP) on its
 # own database / Valkey index / data dir / port 8090 (does not touch smoke's).

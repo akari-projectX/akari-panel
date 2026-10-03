@@ -113,18 +113,7 @@ struct Credential {
 }
 
 /// uTLS fingerprints a client library accepts for REALITY.
-pub(crate) const FINGERPRINTS: &[&str] = &[
-    "chrome",
-    "firefox",
-    "safari",
-    "ios",
-    "android",
-    "edge",
-    "360",
-    "qq",
-    "random",
-    "randomized",
-];
+pub(crate) const FINGERPRINTS: &[&str] = &crate::protocols::manifest::SECURITY_REALITY_FINGERPRINT;
 const DEFAULT_FINGERPRINT: &str = "chrome";
 
 /// The admin's `realitySettings.fingerprint` hint when it is on the
