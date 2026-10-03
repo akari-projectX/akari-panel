@@ -1722,9 +1722,6 @@ for a in order.create order.paid plan.price.set user.plan.set user.plan.update; 
   [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='$a'")" -ge 1 ] || { echo "FAIL: audit lacks $a"; exit 1; }
 done
 
-# Back to no main domain (later sections use the browser origin).
-"$PANEL" settings unset main >/dev/null || { echo "FAIL: settings unset main"; exit 1; }
-
 echo "== W21: dashboard, user search + total, coded errors, plan + prices in one request, site name =="
 [ "$(code -b "$JAR" "$BASE/api/v1/dashboard")" = "200" ] \
   && [ "$(last_json "d['d30']['orders'] >= 1 and d['users_total'] >= 1 and d['nodes']['total'] >= 1 and isinstance(d['latest_orders'], list)")" = "True" ] \
@@ -1807,6 +1804,9 @@ wait_users 0 10 "buyer deleted"
 [ "$(psql_q "SELECT count(*) FROM orders WHERE user_id IS NULL AND user_login='smoke-buyer' AND plan_id IS NULL")" = "3" ] \
   || { echo "FAIL: orders not kept after user/plan deletion"; exit 1; }
 echo "r18-3 payments: ok"
+# Back to no main domain (later sections use the browser origin; orders
+# that need the payment provider needed it until here).
+"$PANEL" settings unset main >/dev/null || { echo "FAIL: settings unset main"; exit 1; }
 
 echo "== W8 protocol matrix: every template -> agent -> three subscription formats -> real clients =="
 # The agent's W8 matrix (SS2022, Hysteria 2, XHTTP, HTTPUpgrade, gRPC) came
