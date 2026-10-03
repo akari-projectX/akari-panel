@@ -251,12 +251,10 @@ fn validators() {
     for bad in ["", "-", "12a", "@abc", "@bad-name", &"9".repeat(21)] {
         assert!(!valid_chat_id(bad), "{bad}");
     }
-    assert!(valid_bot_token(
-        "123456789:AAH-abcdefghijklmnopqrstuvwxyz_0123"
-    ));
+    assert!(valid_bot_token(BOT));
     for bad in [
         "123:short",
-        "abc:AAHabcdefghijklmnopqrstuvwxyz01234",
+        "abc:TEST_not-a-real-bot-token_0123456789",
         "123456789",
     ] {
         assert!(!valid_bot_token(bad), "{bad}");
@@ -420,7 +418,9 @@ async fn token(state: &AppState, id: Uuid) -> String {
 }
 
 const SECRET: &str = "webhook-secret-0123456789";
-const BOT: &str = "123456789:AAH-abcdefghijklmnopqrstuvwxyz_0123";
+// Obviously fake and shaped so secret scanners (Telegram: `<8-10 digits>:AA…`)
+// do not flag it; valid_bot_token accepts it.
+const BOT: &str = "1234:TEST_not-a-real-bot-token_0123456789";
 
 fn put(version: i64) -> PutSettings {
     PutSettings {
