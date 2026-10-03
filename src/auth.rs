@@ -824,7 +824,10 @@ mod argon2_tests {
             worst < Duration::from_millis(250),
             "runtime stalled for {worst:?} while {burst} argon2 runs were in flight"
         );
-        assert!(ticks >= 10, "burst finished too fast to measure ({ticks} ticks)");
+        assert!(
+            ticks >= 10,
+            "burst finished too fast to measure ({ticks} ticks)"
+        );
     }
 
     /// The permit bound holds, including for cancelled requests: at most

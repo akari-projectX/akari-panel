@@ -2142,6 +2142,32 @@ pub async fn desired_snapshot(
 /// every 30 s per session.
 const LEASE_WRITE_EVERY: Duration = Duration::from_secs(30);
 
+/// gRPC message limit on AgentChannel, both directions (review 2026-10-02
+/// C3). tonic's default 4 MiB decode limit (and grpc-go's 4 MiB receive
+/// limit in the agent) silently caps a node at ~18k users: the Snapshot is
+/// never delivered and the agent reconnects forever. 64 MiB is ~280k users.
+/// The agent must raise its receive limit to match (agent side of C3).
+pub const MAX_MESSAGE_BYTES: usize = 64 << 20;
+
+/// AgentEnrollment is unauthenticated and only carries a token and a small
+/// CSR: keep its decode limit small.
+const MAX_ENROLL_MESSAGE_BYTES: usize = 64 << 10;
+
+/// Record a desired-state message's encoded size; WARN past half the limit
+/// (the snapshot must be paged before a node grows that far).
+fn note_message_size(node_id: Uuid, kind: &'static str, bytes: usize) {
+    crate::metrics::sync_bytes(kind, bytes);
+    if bytes > MAX_MESSAGE_BYTES / 2 {
+        tracing::warn!(
+            node = %node_id,
+            kind,
+            bytes,
+            limit = MAX_MESSAGE_BYTES,
+            "desired-state message is over half the gRPC message limit"
+        );
+    }
+}
+
 /// Brings the agent to the desired state if it does not run it (either
 /// direction, to survive panel rollbacks): a UserDelta when only the user
 /// set changed since a state the agent verifiably runs, otherwise a full
@@ -2233,6 +2259,7 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
                     inbounds_json_len = snap.inbounds_json.len(),
                     "sending snapshot"
                 );
+                note_message_size(node_id, "snapshot", prost::Message::encoded_len(&snap));
                 DownMsg::Snapshot(snap)
             }
             Plan::Delta { base, base_set } => {
@@ -2245,13 +2272,15 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
                     ops = ops.len(),
                     "sending user delta"
                 );
-                DownMsg::Delta(UserDelta {
+                let delta = UserDelta {
                     user_version: want.1,
                     ops,
                     base_config_version: base.0,
                     base_user_version: base.1,
                     config_version: want.0,
-                })
+                };
+                note_message_size(node_id, "delta", prost::Message::encoded_len(&delta));
+                DownMsg::Delta(delta)
             }
         };
         (sent_kind, msg)
@@ -2338,12 +2367,18 @@ pub async fn serve_on(
     let result = Server::builder()
         .http2_keepalive_interval(Some(std::time::Duration::from_secs(30)))
         .http2_keepalive_timeout(Some(std::time::Duration::from_secs(60)))
-        .add_service(AgentChannelServer::new(AgentChannelService {
-            state: state.clone(),
-        }))
-        .add_service(AgentEnrollmentServer::new(
-            crate::enroll::AgentEnrollmentService { state },
-        ))
+        .add_service(
+            AgentChannelServer::new(AgentChannelService {
+                state: state.clone(),
+            })
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES),
+        )
+        .add_service(
+            AgentEnrollmentServer::new(crate::enroll::AgentEnrollmentService { state })
+                .max_decoding_message_size(MAX_ENROLL_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_MESSAGE_BYTES),
+        )
         .serve_with_incoming_shutdown(incoming, shutdown)
         .await;
     accept_task.abort();

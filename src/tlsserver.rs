@@ -38,6 +38,14 @@ use tokio_stream::wrappers::ReceiverStream;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Completed handshakes waiting for the gRPC server to pick them up.
 const BACKLOG: usize = 128;
+/// Handshakes in progress at once (review 2026-10-02 C4). The gRPC port is
+/// public and each pending handshake holds a task, the socket and rustls
+/// buffers (~40 KiB) for up to HANDSHAKE_TIMEOUT: without a bound a flood of
+/// silent connections costs gigabytes. Past the bound a new TCP connection
+/// is closed at once (counted in `akari_grpc_handshakes_dropped_total`);
+/// agents retry with backoff. 1024 x ~40 KiB = ~40 MiB worst case, far above
+/// a fleet's reconnect burst (200 nodes).
+pub const MAX_HANDSHAKES: usize = 1024;
 
 /// The current server certificate and the names it covers.
 #[derive(Debug, Default)]
@@ -120,8 +128,21 @@ pub fn incoming(
     ReceiverStream<std::io::Result<TlsStream<TcpStream>>>,
     tokio::task::JoinHandle<()>,
 ) {
+    incoming_limited(listener, cfg, MAX_HANDSHAKES)
+}
+
+/// `incoming` with an explicit in-progress handshake bound (tests).
+fn incoming_limited(
+    listener: TcpListener,
+    cfg: Arc<ServerConfig>,
+    max_handshakes: usize,
+) -> (
+    ReceiverStream<std::io::Result<TlsStream<TcpStream>>>,
+    tokio::task::JoinHandle<()>,
+) {
     let (tx, rx) = tokio::sync::mpsc::channel(BACKLOG);
     let acceptor = TlsAcceptor::from(cfg);
+    let gate = Arc::new(tokio::sync::Semaphore::new(max_handshakes));
     let task = tokio::spawn(async move {
         loop {
             let (tcp, peer) = match listener.accept().await {
@@ -136,9 +157,18 @@ pub fn incoming(
             if tx.is_closed() {
                 return;
             }
+            // Taken before spawning; held until the stream is handed over
+            // (a handshake waiting on a full backlog still holds memory).
+            let Ok(permit) = gate.clone().try_acquire_owned() else {
+                crate::metrics::handshake_dropped();
+                tracing::debug!(peer = %peer, "grpc handshake limit reached; connection dropped");
+                drop(tcp);
+                continue;
+            };
             let _ = tcp.set_nodelay(true);
             let (acceptor, tx) = (acceptor.clone(), tx.clone());
             tokio::spawn(async move {
+                let _permit = permit;
                 match tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await {
                     Ok(Ok(tls)) => {
                         let _ = tx.send(Ok(tls)).await;
@@ -188,6 +218,53 @@ mod tests {
         assert_eq!(r.names(), vec!["a".to_string(), "b.example".to_string()]);
         assert!(r.set("garbage", &k2, vec![]).is_err());
         assert!(server_config(&inst.ca_pem, Arc::new(r)).is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// C4: past the in-progress handshake bound new connections are closed
+    /// at once; a finished (here: abandoned) handshake frees its slot.
+    #[tokio::test]
+    async fn handshakes_in_progress_are_bounded() {
+        use tokio::io::AsyncReadExt;
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let dir = std::env::temp_dir().join(format!("akari-tls-{}", uuid::Uuid::new_v4()));
+        let cfg = crate::config::PanelConfig {
+            data_dir: dir.clone(),
+            ..Default::default()
+        };
+        let inst = crate::install::ensure(&cfg).unwrap();
+        let r = Arc::new(CertResolver::default());
+        r.set(
+            &inst.server_cert_pem,
+            &inst.server_key_pem,
+            vec!["a".into()],
+        )
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (_rx, task) = incoming_limited(listener, server_config(&inst.ca_pem, r).unwrap(), 2);
+
+        // Is the connection still open after a short wait? A silent client
+        // whose handshake is in progress gets nothing back (timeout); a
+        // dropped one reads EOF (or a reset) at once.
+        async fn held(c: &mut TcpStream) -> bool {
+            let mut b = [0u8; 1];
+            tokio::time::timeout(Duration::from_millis(300), c.read(&mut b))
+                .await
+                .is_err()
+        }
+        let mut a = TcpStream::connect(addr).await.unwrap();
+        let mut b = TcpStream::connect(addr).await.unwrap();
+        assert!(held(&mut a).await && held(&mut b).await);
+        let mut c = TcpStream::connect(addr).await.unwrap();
+        assert!(!held(&mut c).await, "third handshake must be dropped");
+        // A slot frees when a pending handshake ends (client went away).
+        drop(a);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut d = TcpStream::connect(addr).await.unwrap();
+        assert!(held(&mut d).await, "freed slot must admit a new handshake");
+        assert!(held(&mut b).await);
+        task.abort();
         let _ = std::fs::remove_dir_all(dir);
     }
 }
