@@ -29,6 +29,7 @@ const AdminOrders = view(() => import("./pages/admin-orders"), "AdminOrders");
 const AdminCoupons = view(() => import("./pages/admin-coupons"), "AdminCoupons");
 const AdminFinance = view(() => import("./pages/admin-finance"), "AdminFinance");
 const AdminTickets = view(() => import("./pages/admin-tickets"), "AdminTickets");
+const AdminContent = view(() => import("./pages/admin-content"), "AdminContent");
 const AdminNodes = view(() => import("./pages/admin-nodes"), "AdminNodes");
 const AdminAlerts = view(() => import("./pages/admin-alerts"), "AdminAlerts");
 const AdminUpdates = view(() => import("./pages/admin-updates"), "AdminUpdates");
@@ -50,6 +51,7 @@ export const VIEWS = [
   { id: "coupons", label: "优惠券" },
   { id: "finance", label: "资金" },
   { id: "tickets", label: "工单" },
+  { id: "content", label: "内容" },
   { id: "nodes", label: "节点" },
   { id: "alerts", label: "告警" },
   { id: "updates", label: "更新" },
@@ -272,6 +274,8 @@ function AdminConsole({ user, onLogout, logoutError }: { user: Me; onLogout: () 
             <AdminFinance />
           ) : view === "tickets" ? (
             <AdminTickets />
+          ) : view === "content" ? (
+            <AdminContent />
           ) : view === "nodes" ? (
             <AdminNodes />
           ) : view === "alerts" ? (

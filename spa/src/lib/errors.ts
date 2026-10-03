@@ -42,6 +42,7 @@ export const CODE_KEYS: Record<string, MessageKey> = {
   "coupon.used_up": "errors.couponUsedUp",
   "coupon.user_limit": "errors.couponUserLimit",
   "invite.invalid_inviter": "errors.invalidInviter",
+  "kb.query_long": "errors.kbQueryLong",
   "invite.limit": "errors.inviteLimit",
   "invite.registration_closed": "errors.registrationClosed",
   "order.gateway_unavailable": "errors.paymentGateway",

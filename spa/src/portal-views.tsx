@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 
 import {
   AccountIcon,
+  HelpIcon,
   HomeIcon,
   NodesIcon,
   OrdersIcon,
@@ -19,6 +20,7 @@ import {
 import type { MessageKey } from "./i18n";
 import { appBase, type Me } from "./lib/api";
 import { Dashboard } from "./pages/dashboard";
+import { Help } from "./pages/help";
 import { AccountSettings } from "./pages/portal";
 import { NodesCard } from "./pages/portal-nodes";
 import { TrafficCard } from "./pages/portal-traffic";
@@ -96,6 +98,15 @@ export const PORTAL_VIEWS: PortalView[] = [
     icon: TicketsIcon,
     restricted: true,
     render: () => <Tickets />,
+  },
+  {
+    // Ops: knowledge base; everyone with an account (renewal scope too).
+    id: "help",
+    label: "nav.help",
+    short: "nav.helpShort",
+    icon: HelpIcon,
+    restricted: true,
+    render: () => <Help />,
   },
   {
     id: "account",

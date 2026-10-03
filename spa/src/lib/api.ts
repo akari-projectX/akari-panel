@@ -91,6 +91,82 @@ export interface AuthOptions {
   email_verify?: boolean;
   // W21: 系统设置 → 站点名称 (default "Akari"), for page titles.
   site_name?: string;
+  // Ops: 系统设置 → 站点 branding (null when unavailable; absent on older panels).
+  branding?: Branding | null;
+}
+
+// --- Ops: branding, announcements, knowledge base ---
+
+export const PLATFORMS = ["windows", "macos", "linux", "android", "ios", "harmony", "other"] as const;
+export type Platform = (typeof PLATFORMS)[number];
+
+export interface FooterLink {
+  label: string;
+  url: string;
+}
+export interface ClientDownload {
+  platform: Platform;
+  label: string | null;
+  url: string;
+}
+export interface Branding {
+  version: number;
+  /** Prefix-relative ("brand/logo?v=…"); resolve with `brandUrl`. */
+  logo_url: string | null;
+  favicon_url: string | null;
+  footer_text: string | null;
+  footer_links: FooterLink[];
+  tos_url: string | null;
+  privacy_url: string | null;
+  client_downloads: ClientDownload[];
+  updated_at: string;
+}
+/** A branding image URL under the secret prefix. */
+export const brandUrl = (rel: string): string => `${prefixBase}/${rel}`;
+
+export interface MyAnnouncement {
+  id: string;
+  title_zh: string;
+  title_en: string | null;
+  /** Sanitized HTML rendered by the panel (src/markdown.rs). */
+  html_zh: string;
+  html_en: string | null;
+  pinned: boolean;
+  created_at: string;
+  read: boolean;
+}
+export interface MyAnnouncements {
+  announcements: MyAnnouncement[];
+  unread: number;
+}
+
+export interface HelpItem {
+  id: string;
+  category_id: string | null;
+  title_zh: string;
+  title_en: string | null;
+  updated_at: string;
+}
+export interface HelpList {
+  categories: { id: string; name_zh: string; name_en: string | null; articles: HelpItem[] }[];
+  uncategorized: HelpItem[];
+  total: number;
+}
+export interface HelpArticle {
+  id: string;
+  category_id: string | null;
+  category_zh: string | null;
+  category_en: string | null;
+  title_zh: string;
+  title_en: string | null;
+  html_zh: string;
+  html_en: string | null;
+  updated_at: string;
+}
+
+/** The variant for the UI language: English when present, else Chinese. */
+export function pick<T>(locale: "zh" | "en", zh: T, en: T | null | undefined): T {
+  return locale === "en" && en != null && en !== "" ? en : zh;
 }
 export const authOptions = () => request<AuthOptions>(`${authBase}/options`);
 const authPost = <T>(path: string, body: unknown) =>

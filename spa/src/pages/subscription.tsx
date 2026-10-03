@@ -5,13 +5,14 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
+import { useBranding } from "../components/branding";
 import { useConfirm } from "../components/confirm-dialog";
 import { QrCode } from "../components/qr-code";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Label } from "../components/ui/label";
 import { useT, type MessageKey } from "../i18n";
-import { mySubUrl, post, type Me } from "../lib/api";
+import { mySubUrl, post, type Me, type Platform } from "../lib/api";
 import { errorText } from "../lib/errors";
 import { importLinks, SUB_FORMATS, withFormat, type SubFormat } from "../lib/sub-links";
 import { useSiteName } from "../lib/title";
@@ -152,6 +153,7 @@ export function SubscriptionCard({ me }: { me: Me }) {
               </div>
               <p className="text-xs text-muted-foreground">{t("sub.importHint")}</p>
             </section>
+            <ClientDownloads />
             <div className="border-t border-border pt-4">
               <Button variant="ghost" className="text-destructive" onClick={() => void reset()} disabled={busy}>
                 {t("sub.reset")}
@@ -170,5 +172,45 @@ export function SubscriptionCard({ me }: { me: Me }) {
       </CardContent>
       {confirmDialog}
     </Card>
+  );
+}
+
+const PLATFORM_KEY = {
+  windows: "brand.platformWindows",
+  macos: "brand.platformMacos",
+  linux: "brand.platformLinux",
+  android: "brand.platformAndroid",
+  ios: "brand.platformIos",
+  harmony: "brand.platformHarmony",
+  other: "brand.platformOther",
+} as const satisfies Record<Platform, MessageKey>;
+
+/** Ops: client download links per platform (系统设置 → 站点). */
+export function ClientDownloads() {
+  const t = useT();
+  const downloads = useBranding()?.client_downloads ?? [];
+  if (downloads.length === 0) return null;
+  return (
+    <section aria-labelledby="sub-downloads" className="space-y-2">
+      <h3 id="sub-downloads" className="text-sm font-medium">
+        {t("brand.downloads")}
+      </h3>
+      <p className="text-xs text-muted-foreground">{t("brand.downloadsHint")}</p>
+      <ul className="flex flex-wrap gap-2">
+        {downloads.map((d, i) => (
+          <li key={`${i}-${d.url}`}>
+            <a
+              href={d.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex min-h-10 items-center gap-1 rounded-lg border border-border px-3 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <span>{t(PLATFORM_KEY[d.platform])}</span>
+              {d.label && <span className="text-muted-foreground">· {d.label}</span>}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

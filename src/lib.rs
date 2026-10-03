@@ -4,11 +4,13 @@
 
 pub mod account;
 pub mod alerts;
+pub mod announcements;
 pub mod api;
 pub mod audit;
 pub mod auth;
 pub mod batch;
 pub mod billing;
+pub mod branding;
 pub mod client_ip;
 pub mod cloudflare;
 pub mod config;
@@ -25,9 +27,11 @@ pub mod export;
 pub mod fuzzing;
 pub mod grpc;
 pub mod install;
+pub mod kb;
 pub mod login_limit;
 pub mod mail;
 pub mod mailhook;
+pub mod markdown;
 pub mod metrics;
 pub mod nodeinstall;
 pub mod nodemeta;

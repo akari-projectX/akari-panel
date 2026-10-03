@@ -146,3 +146,10 @@ path = "fuzz_targets/ops_input.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "content"
+path = "fuzz_targets/content.rs"
+test = false
+doc = false
+bench = false

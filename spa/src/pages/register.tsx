@@ -2,6 +2,7 @@
 // → password → signed in. The server answers the code request the same way
 // for every address (no account-existence oracle), so the page always says
 // "if this address can sign up, a code was sent".
+import { SiteFooter, SiteMark, useFavicon } from "../components/branding";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
@@ -24,12 +25,15 @@ export function inviteFromLocation(search: string = location.search): string {
 }
 
 export function PublicShell({ children }: { children: React.ReactNode }) {
+  useFavicon();
   return (
     <main className="flex min-h-screen flex-col items-center justify-center gap-4 px-4 py-8">
-      <div className="flex w-full max-w-sm justify-end">
+      <div className="flex w-full max-w-sm items-center justify-between gap-2">
+        <SiteMark />
         <LocaleSwitch />
       </div>
       {children}
+      <SiteFooter className="w-full max-w-sm border-t-0" />
     </main>
   );
 }

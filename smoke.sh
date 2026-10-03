@@ -2113,6 +2113,93 @@ matches -F '"root"' </tmp/akari-smoke/last && { echo "FAIL: staff login shown to
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE after::text LIKE '%smoke ticket body%'")" = "0" ] || { echo "FAIL: ticket text in the audit log"; exit 1; }
 echo "tickets: ok"
 
+echo "== Ops: announcements, knowledge base, branding, editable mail templates =="
+# Announcements: visible one listed (sanitized HTML), a disabled one is the
+# canonical rejection for the user; read state; customers refused on the admin API.
+[ "$(api_json "$JAR" POST "$BASE/api/v1/announcements" '{"title_zh":"冒烟公告","body_zh":"**粗体** <script>x</script>","pinned":true}')" = "201" ] \
+  || { echo "FAIL: create announcement"; cat /tmp/akari-smoke/last; exit 1; }
+ANN=$(last_json "d['id']")
+[ "$(api_json "$JAR" POST "$BASE/api/v1/announcements" '{"title_zh":"冒烟停用","body_zh":"x","enabled":false}')" = "201" ] || { echo "FAIL: create disabled announcement"; exit 1; }
+ANN_OFF=$(last_json "d['id']")
+[ "$(code -b "$TJA" "$BASE/api/v1/me/announcements")" = "200" ] \
+  && [ "$(last_json "[(a['id'], a['read']) for a in d['announcements']] == [('$ANN', False)] and d['unread'] == 1")" = "True" ] \
+  || { echo "FAIL: user announcement list"; cat /tmp/akari-smoke/last; exit 1; }
+last_json "d['announcements'][0]['html_zh']" | matches -F '<strong>粗体</strong> &lt;script&gt;' || { echo "FAIL: announcement not sanitized"; cat /tmp/akari-smoke/last; exit 1; }
+matches -F '<script>' </tmp/akari-smoke/last && { echo "FAIL: raw HTML in an announcement"; exit 1; }
+[ "$(code -b "$TJA" -X POST "$BASE/api/v1/me/announcements/$ANN/read")" = "204" ] || { echo "FAIL: mark announcement read"; exit 1; }
+[ "$(code -b "$TJA" "$BASE/api/v1/me/announcements")" = "200" ] && last_json "d['unread']" | matches -x 0 || { echo "FAIL: read state"; exit 1; }
+for probe in "-X POST $BASE/api/v1/me/announcements/$ANN_OFF/read" "-X POST $BASE/api/v1/me/announcements/not-a-uuid/read"; do
+  # shellcheck disable=SC2086
+  [ "$(fp -b "$TJA" $probe)" = "$REJ" ] || { echo "FAIL: hidden announcement not the canonical rejection: $probe"; cat /tmp/akari-smoke/fphead; exit 1; }
+done
+[ "$(code -b "$TJA" "$BASE/api/v1/announcements")" = "403" ] || { echo "FAIL: customer reached the announcement admin"; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/announcements/$ANN/mail" '{}')" = "409" ] && last_json "d['code']" | matches -x 'announcement.mail_unavailable' \
+  || { echo "FAIL: mailing without SMTP"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/content/preview" '{"markdown":"[x](javascript:alert(1)) ![i](http://e/i.png)"}')" = "200" ] \
+  && ! matches -F '<a ' </tmp/akari-smoke/last && ! matches -F '<img' </tmp/akari-smoke/last \
+  || { echo "FAIL: preview let an unsafe link/image through"; cat /tmp/akari-smoke/last; exit 1; }
+echo "announcements: ok"
+
+# Knowledge base: published article searchable and readable; a draft is
+# neither listed nor readable (canonical rejection).
+[ "$(api_json "$JAR" POST "$BASE/api/v1/kb/categories" '{"name_zh":"冒烟分类","sort":1}')" = "201" ] || { echo "FAIL: create kb category"; exit 1; }
+KBC=$(last_json "d['id']")
+[ "$(api_json "$JAR" POST "$BASE/api/v1/kb/articles" '{"category_id":"'"$KBC"'","title_zh":"冒烟帮助","body_zh":"导入 *订阅* 的方法","published":true}')" = "201" ] || { echo "FAIL: create article"; exit 1; }
+KBA=$(last_json "d['id']")
+[ "$(api_json "$JAR" POST "$BASE/api/v1/kb/articles" '{"title_zh":"冒烟草稿","body_zh":"草稿","published":false}')" = "201" ] || { echo "FAIL: create draft"; exit 1; }
+KBD=$(last_json "d['id']")
+[ "$(code -b "$TJA" "$BASE/api/v1/me/help?q=%E8%AE%A2%E9%98%85")" = "200" ] \
+  && [ "$(last_json "d['total']==1 and d['categories'][0]['articles'][0]['id']=='$KBA'")" = "True" ] \
+  || { echo "FAIL: help search"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$TJA" "$BASE/api/v1/me/help")" = "200" ] && ! matches -F "$KBD" </tmp/akari-smoke/last || { echo "FAIL: draft listed"; exit 1; }
+[ "$(code -b "$TJA" "$BASE/api/v1/me/help/$KBA")" = "200" ] && last_json "d['html_zh']" | matches -F '<em>订阅</em>' || { echo "FAIL: help article"; exit 1; }
+[ "$(fp -b "$TJA" "$BASE/api/v1/me/help/$KBD")" = "$REJ" ] || { echo "FAIL: draft article not the canonical rejection"; cat /tmp/akari-smoke/fphead; exit 1; }
+[ "$(code -b "$TJA" "$BASE/api/v1/kb/articles")" = "403" ] || { echo "FAIL: customer reached the kb admin"; exit 1; }
+[ "$(psql_q "SELECT string_agg(action, ',' ORDER BY id) FROM audit_log WHERE target_id='$KBA'")" = "kb.article.create" ] || { echo "FAIL: kb audit"; exit 1; }
+echo "knowledge base: ok"
+
+# Branding: PNG only; served under the prefix with cache headers + ETag
+# (304 on match); none stored = canonical rejection; public options carry it.
+[ "$(fp "$BASE/brand/favicon")" = "$REJ" ] || { echo "FAIL: missing favicon is not the canonical rejection"; exit 1; }
+python3 -c "import struct,sys; sys.stdout.buffer.write(b'\x89PNG\r\n\x1a\n'+struct.pack('>I',13)+b'IHDR'+struct.pack('>II',64,32)+bytes(9)+b'IEND'+bytes(64))" >"$LOG/logo.png"
+[ "$(code -b "$JAR" -X PUT --data-binary 'GIF89a' -H 'Content-Type: application/octet-stream' "$BASE/api/v1/settings/branding/logo")" = "400" ] \
+  && last_json "d['code']" | matches -x 'branding.image_not_png' || { echo "FAIL: non-PNG logo accepted"; exit 1; }
+[ "$(code -b "$JAR" -X PUT --data-binary "@$LOG/logo.png" -H 'Content-Type: image/png' "$BASE/api/v1/settings/branding/logo")" = "200" ] \
+  || { echo "FAIL: upload logo"; cat /tmp/akari-smoke/last; exit 1; }
+BV=$(last_json "d['version']")
+[ "$(code -D "$LOG/logo.h" "$BASE/brand/logo")" = "200" ] && cmp -s /tmp/akari-smoke/last "$LOG/logo.png" || { echo "FAIL: serve logo"; exit 1; }
+tr -d '\r' <"$LOG/logo.h" | matches -ix 'cache-control: public, max-age=86400' || { echo "FAIL: logo cache headers"; cat "$LOG/logo.h"; exit 1; }
+tr -d '\r' <"$LOG/logo.h" | matches -ix 'content-type: image/png' || { echo "FAIL: logo content type"; exit 1; }
+LETAG=$(tr -d '\r' <"$LOG/logo.h" | awk -F': ' 'tolower($1)=="etag"{print $2}')
+[ "$(code -H "If-None-Match: $LETAG" "$BASE/brand/logo")" = "304" ] || { echo "FAIL: logo 304"; exit 1; }
+[ "$(api_json "$JAR" PUT "$BASE/api/v1/settings/branding" '{"version":'"$BV"',"footer_text":"冒烟页脚","tos_url":"javascript:x"}')" = "400" ] || { echo "FAIL: unsafe ToS link accepted"; exit 1; }
+[ "$(api_json "$JAR" PUT "$BASE/api/v1/settings/branding" '{"version":'"$BV"',"footer_text":"冒烟页脚","tos_url":"https://example.com/tos","client_downloads":[{"platform":"android","url":"https://example.com/a.apk"}]}')" = "200" ] \
+  || { echo "FAIL: save branding"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(api_json "$JAR" PUT "$BASE/api/v1/settings/branding" '{"version":'"$BV"'}')" = "409" ] || { echo "FAIL: stale branding version accepted"; exit 1; }
+[ "$(code "$BASE/auth/options")" = "200" ] \
+  && [ "$(last_json "(d['branding']['footer_text'], d['branding']['logo_url'].startswith('brand/logo?v='), d['branding']['client_downloads'][0]['platform'])")" = "('冒烟页脚', True, 'android')" ] \
+  || { echo "FAIL: public branding"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$TJA" -X PUT --data-binary "@$LOG/logo.png" "$BASE/api/v1/settings/branding/logo")" = "403" ] || { echo "FAIL: customer uploaded a logo"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='settings.branding.logo' AND after ? 'bytes' AND length(after::text) < 400")" -ge 1 ] || { echo "FAIL: logo audit"; exit 1; }
+echo "branding: ok"
+
+# Editable mail templates: whitelist enforced, stored version used by the
+# outbox (the registration code mail rendered for the next enqueue).
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/mail-templates")" = "200" ] && last_json "len(d)" | matches -x 30 || { echo "FAIL: template list"; exit 1; }
+[ "$(api_json "$JAR" PUT "$BASE/api/v1/settings/mail-templates/password_reset/zh" '{"version":0,"subject":"x","body":"no link {nope}"}')" = "400" ] \
+  && last_json "d['code']" | matches -x 'mail_template.placeholder_unknown' || { echo "FAIL: unknown placeholder accepted"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(api_json "$JAR" PUT "$BASE/api/v1/settings/mail-templates/password_reset/zh" '{"version":0,"subject":"x","body":"没有链接"}')" = "400" ] \
+  && last_json "d['code']" | matches -x 'mail_template.placeholder_missing' || { echo "FAIL: template without {link} accepted"; exit 1; }
+[ "$(api_json "$JAR" PUT "$BASE/api/v1/settings/mail-templates/test/zh" '{"version":0,"subject":"冒烟模板 {site}","body":"冒烟自定义正文"}')" = "200" ] \
+  || { echo "FAIL: save template"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/settings/mail-templates/preview" '{"kind":"test","locale":"zh","subject":"冒烟模板 {site}","body":"冒烟自定义正文"}')" = "200" ] \
+  && last_json "d['text']" | matches -F '冒烟自定义正文' || { echo "FAIL: template preview"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/settings/mail-templates/test/zh")" = "200" ] && last_json "d['reset']" | matches True || { echo "FAIL: restore default"; exit 1; }
+[ "$(psql_q "SELECT string_agg(action, ',' ORDER BY id) FROM audit_log WHERE target_id='test/zh'")" = "settings.mail_template.update,settings.mail_template.reset" ] \
+  || { echo "FAIL: template audit"; exit 1; }
+[ "$(code -b "$TJA" "$BASE/api/v1/settings/mail-templates")" = "403" ] || { echo "FAIL: customer reached the templates"; exit 1; }
+echo "mail templates: ok"
+
 # Node summary view: the list's columns only, ETag + 304.
 [ "$(code -D "$LOG/sum.h" -b "$JAR" "$BASE/api/v1/nodes?view=summary")" = "200" ] || { echo "FAIL: summary view"; exit 1; }
 ETAG=$(tr -d '\r' <"$LOG/sum.h" | awk -F': ' 'tolower($1)=="etag"{print $2}')

@@ -248,3 +248,68 @@ pub fn alipay_check_notify(body: &[u8]) -> bool {
     let _ = crate::billing::alipay::AlipayKind.peek_out_trade_no(body);
     true
 }
+
+// --- Ops: content (announcements, knowledge base, branding, templates) ---
+
+/// `markdown::render` (announcement / help bodies, the announcement mail).
+pub fn markdown_render(md: &str) -> String {
+    crate::markdown::render(md)
+}
+
+/// `markdown::safe_link` / `safe_image`: (link ok, absolute?), image ok.
+pub fn markdown_urls(url: &str) -> (Option<bool>, bool) {
+    (
+        crate::markdown::safe_link(url).map(|k| k == crate::markdown::UrlKind::Absolute),
+        crate::markdown::safe_image(url).is_some(),
+    )
+}
+
+/// `mail::templates::validate` then `render_custom` with the kind's sample
+/// values: Ok(rendered (subject, text, html)) when the template is accepted.
+pub fn mail_template(kind: &str, subject: &str, body: &str) -> Option<(String, String, String)> {
+    use crate::mail::templates::{render_custom, validate, Locale, Template};
+    validate(kind, subject, body).ok()?;
+    let sample = Template::sample(kind)?;
+    let r = render_custom(
+        subject,
+        body,
+        &sample.values(Locale::En),
+        Locale::En,
+        "Site & <Co>",
+    );
+    Some((r.subject, r.text, r.html))
+}
+
+/// `branding::png_dimensions` and `branding::check` on a strict body.
+pub fn branding_png(bytes: &[u8]) -> Option<(u32, u32)> {
+    crate::branding::png_dimensions(bytes)
+}
+
+pub fn branding_body(body: &[u8]) -> Result<Option<crate::branding::Fields>, String> {
+    let Some(req) = strict::<crate::branding::BrandingReq>(body)? else {
+        return Ok(None);
+    };
+    Ok(crate::branding::check(&req).ok())
+}
+
+/// Announcement / help request bodies (strict), cleaned.
+pub fn content_bodies(sel: u8, body: &[u8]) -> Result<(), String> {
+    match sel % 3 {
+        0 => {
+            if let Some(r) = strict::<crate::announcements::AnnouncementReq>(body)? {
+                let _ = crate::announcements::check(&r);
+            }
+        }
+        1 => {
+            if let Some(r) = strict::<crate::kb::ArticleReq>(body)? {
+                let _ = crate::kb::check_article(&r);
+            }
+        }
+        _ => {
+            if let Some(r) = strict::<crate::kb::CategoryReq>(body)? {
+                let _ = crate::kb::check_category(&r);
+            }
+        }
+    }
+    Ok(())
+}
