@@ -808,7 +808,6 @@ async fn coupon_release_on_expiry_and_late_payment() {
     };
     let mock = Mock::start().await;
     let state = paid_state(&db, &mock).await;
-    let alipay = state.alipay().unwrap().clone();
     let (_, plan) = catalog_plan(&db, "late", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
     let admin = admin_client(&state, &db).await;
     create_coupon(
@@ -825,7 +824,7 @@ async fn coupon_release_on_expiry_and_late_payment() {
         .execute(&db.pool)
         .await
         .unwrap();
-    orders::reconcile_tick(&state, &alipay).await.ok().unwrap();
+    orders::reconcile_tick(&state).await.ok().unwrap();
     assert_eq!(order_status(&db, o1).await.0, "expired");
     assert_eq!(coupon_used(&db, "ONE").await, 0);
     let r = buy_with(&u2, plan, "month", json!({"coupon": "ONE"})).await;
@@ -1159,7 +1158,6 @@ async fn balance_payments_partial_and_late() {
     };
     let mock = Mock::start().await;
     let state = paid_state(&db, &mock).await;
-    let alipay = state.alipay().unwrap().clone();
     let (_, plan) = catalog_plan(&db, "bal", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
 
     // Full: paid at creation, never at Alipay.
@@ -1249,7 +1247,7 @@ async fn balance_payments_partial_and_late() {
         .execute(&db.pool)
         .await
         .unwrap();
-    orders::reconcile_tick(&state, &alipay).await.ok().unwrap();
+    orders::reconcile_tick(&state).await.ok().unwrap();
     assert_eq!(order_status(&db, o3).await.0, "expired");
     assert_eq!(balance(&db, u3).await, 300);
     let r = post_notify(
@@ -1769,7 +1767,7 @@ async fn commission_exactly_once_under_duplicates() {
             status: Some("TRADE_SUCCESS".into()),
         },
     );
-    let alipay = state.alipay().unwrap().clone();
+    let (method, alipay) = method_of(&state);
     let body = form(&notify_params(&otn, "12.00", "TRADE_SUCCESS"));
     let pending = Pending {
         id: oid,
@@ -1777,6 +1775,7 @@ async fn commission_exactly_once_under_duplicates() {
         amount_cents: 1200,
         expires_at: chrono::Utc::now(),
         due: false,
+        payment_method_id: Some(method),
     };
     let mut tasks = Vec::new();
     for i in 0..12 {
@@ -1791,7 +1790,7 @@ async fn commission_exactly_once_under_duplicates() {
                     .await
                     .unwrap()
             } else {
-                super::super::api::handle_notify(&state, &alipay, None, &body)
+                super::super::api::handle_notify(&state, &*alipay, method, None, &body)
                     .await
                     .unwrap()
             }

@@ -59,6 +59,10 @@ export const en: Messages = {
     invalidLink: "This link is invalid or has expired. Request a new reset.",
     domainNotAllowed: "This email domain is not accepted.",
     inviteRequired: "An invite code is required to sign up.",
+    methodRequired: "Choose a payment method.",
+    methodUnavailable: "This payment method is not available right now; choose another one.",
+    challengeInvalid: "The anti-bot check failed or expired; please try again.",
+    signupUnavailable: "This email address cannot be registered. If it is yours, log in or reset your password.",
     invalidInvite: "The invite code is invalid or has been used.",
     invalidEmail: "Enter a valid email address.",
     mailOff: "Email is not available. Contact the administrator.",
@@ -126,6 +130,8 @@ export const en: Messages = {
     forgotLink: "Forgot password?",
   },
   register: {
+    subtitleNoVerify:
+      "Sign up with your email and a password, then log in with that email. The address is not verified yet: verify it later under Account to use it for password resets.",
     title: "Sign up",
     subtitle: "Create an account with your email address; you can then sign in with it.",
     email: "Email",
@@ -176,7 +182,8 @@ export const en: Messages = {
     emailNone:
       "No email address yet. Add one to receive expiry reminders and receipts, and to reset your password by email.",
     emailVerified: "{email} · verified",
-    emailUnverified: "{email} · not verified (no mail until verified)",
+    emailUnverified:
+      "{email} · not verified: no mail and no password reset. Once the site sends mail, send a code to this address below to verify it.",
     bind: "Add email",
     change: "Change email",
     newEmail: "Email address",
@@ -261,6 +268,8 @@ export const en: Messages = {
     regenerate: "New recovery codes",
   },
   billing: {
+    openPayment: "Open the payment page",
+    paidWith: "Payment method: {method}",
     title: "Buy a plan",
     subtitle: "Pay by scanning the QR code with Alipay; the plan activates automatically.",
     unavailable: "Online purchase is not available. Please contact the administrator.",
@@ -489,6 +498,7 @@ export const en: Messages = {
     legacyReset: "Make a new, viewable link",
   },
   checkout: {
+    method: "Payment method",
     title: "Confirm your order",
     plan: "Plan",
     period: "Period",

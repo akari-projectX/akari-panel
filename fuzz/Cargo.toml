@@ -132,3 +132,10 @@ path = "fuzz_targets/traffic_query.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "payment_methods"
+path = "fuzz_targets/payment_methods.rs"
+test = false
+doc = false
+bench = false

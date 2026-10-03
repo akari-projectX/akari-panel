@@ -299,8 +299,19 @@ Everything here is off until you turn it on; nothing in panel.toml.
 2. Notices (same card): order receipts, plan-expiry reminder N days before (0 = off), "plan
    expired", traffic at 80 % and used up (once each per period). Only verified addresses get
    mail; users add theirs in the portal (邮箱 card: current password + emailed code).
-3. **系统设置 → 注册**: **开放注册** (login page shows 注册; the address becomes the login),
-   optionally **必须使用邀请码** (users create codes/links in the portal; single-use or not;
+3. **系统设置 → 注册**: **开放注册** (login page shows 注册; the address becomes the login).
+   **注册需要邮箱验证** (W24): 自动 (default — a code is mailed exactly when 邮件发送 is enabled),
+   需要, or 不需要. Registration can be opened **without SMTP**: people then sign up with email +
+   password only; the address is stored **unverified** (no mail to it, no password reset, not
+   unique, not usable for the email form of the login — the login name is the address, any case,
+   so they log in with it). Users verify it later under 账户 once mail works; an admin can mark
+   it verified (用户 → 管理 → 标记邮箱已验证). Anti-abuse without verification: a built-in
+   proof of work the browser solves invisibly (~2^18 SHA-256, no third-party captcha), 5
+   registrations per client address per hour / 20 per day and 5 attempts per address per hour,
+   plus the optional invite code and domain allow-list. Residual oracle: a registration attempt
+   reveals whether an address is taken (one generic "cannot be registered" answer, bounded by
+   those limits) — inherent to sign-up without verification. Optionally
+   **必须使用邀请码** (users create codes/links in the portal; single-use or not;
    per-user limit), an **邮箱域名白名单** (one per line; subdomains included) and a **试用套餐**
    with its length in days. **允许通过邮件找回密码** needs the main domain (§2b): reset links
    are always built from it, never from the address a request came in on.
@@ -311,7 +322,19 @@ Everything here is off until you turn it on; nothing in panel.toml.
    (sent) / 90 days (failed). Metric: `akari_mail_deliveries_total{kind,result}`.
 5. Abuse limits (Valkey, all instances): 10 mails per client address per hour, 5 per destination
    address per hour and 20 per day, 30 code/link completions per client address per 15 minutes;
-   a code burns after 5 wrong tries. Answers never reveal whether an address has an account.
+   a code burns after 5 wrong tries. With verification, answers never reveal whether an address
+   has an account.
+
+## 2d. Payments (系统设置 → 支付, W24)
+
+Payment methods are configured only in the console (database; no panel.toml, every instance at
+once): **系统设置 → 支付 → 添加支付方式 → 支付宝当面付**, environment (正式/沙箱), APPID, optional
+商户 PID, paste the app private key (sealed with `data/totp.key`, never shown again) and Alipay's
+public key, upload the shown **应用公钥** at the Alipay open platform, enable, then **测试连接**.
+The notify URL is derived from the main domain (§2b) per method — nothing to configure at Alipay.
+Several methods are possible (payers choose at checkout). Details, key rotation and the legacy
+upgrade: docs/PAYMENTS.md. An old panel.toml `[payments.alipay]` is imported once into an empty
+database configuration and then ignored with a warning: delete the section and its key files.
 
 ## 3. Add a node and install the agent
 

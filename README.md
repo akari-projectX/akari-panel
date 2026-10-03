@@ -120,7 +120,10 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   buckets so size does not reveal node counts. Rate limited per client
   address and per user (`[sub]`); over the limit is the same empty 404.
 
-Not yet: payments/orders, agent CSR enrollment and auto-update, akari-client.
+- Payments (W24/R40): pluggable payment methods configured in 系统设置 → 支付
+  (database only; Alipay Face-to-Face is the first kind, several methods
+  allowed, secrets sealed, 测试连接); see docs/PAYMENTS.md. Self-service
+  registration with or without email verification (系统设置 → 注册).
 
 ## Layout
 

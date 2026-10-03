@@ -148,6 +148,11 @@ pub struct Keys {
     /// id). A key of its own: a token blob never opens as a TOTP secret or
     /// SMTP password and vice versa.
     sub: aead::LessSafeKey,
+    /// W24/R40: payment method secrets at rest (`payment_methods.secrets_enc`,
+    /// AAD = method id). A key of its own label.
+    pay: aead::LessSafeKey,
+    /// W24: registration proof-of-work challenges (stateless, HMAC-bound).
+    pow: hmac::Key,
 }
 
 const SEAL_VERSION: u8 = 1;
@@ -163,6 +168,8 @@ impl Keys {
         let rec = hmac::sign(&root, b"akari/recovery-code-hmac/v1");
         let mail = hmac::sign(&root, b"akari/mail-code-hmac/v1");
         let sub = hmac::sign(&root, b"akari/sub-token-aead/v1");
+        let pay = hmac::sign(&root, b"akari/payment-secrets-aead/v1");
+        let pow = hmac::sign(&root, b"akari/signup-pow-hmac/v1");
         let aead_key = |k: &[u8]| {
             aead::UnboundKey::new(&aead::AES_256_GCM, k)
                 .map(aead::LessSafeKey::new)
@@ -173,6 +180,8 @@ impl Keys {
             recovery: hmac::Key::new(hmac::HMAC_SHA256, rec.as_ref()),
             mail: hmac::Key::new(hmac::HMAC_SHA256, mail.as_ref()),
             sub: aead_key(sub.as_ref())?,
+            pay: aead_key(pay.as_ref())?,
+            pow: hmac::Key::new(hmac::HMAC_SHA256, pow.as_ref()),
         })
     }
 
@@ -197,6 +206,26 @@ impl Keys {
     /// blob is not `user`'s, was altered, or data/totp.key changed.
     pub fn open_sub_token(&self, user: Uuid, blob: &[u8]) -> Option<String> {
         String::from_utf8(open_with(&self.sub, user, blob)?).ok()
+    }
+
+    /// R40: the stored form of a payment method's secrets (same layout as
+    /// `seal`, own key, AAD = method id).
+    pub fn seal_payment_secrets(&self, method: Uuid, plain: &[u8]) -> anyhow::Result<Vec<u8>> {
+        seal_with(&self.pay, method, plain)
+    }
+
+    /// R40: a payment method's secrets; `None` if the blob is not this
+    /// method's, was altered, or data/totp.key changed.
+    pub fn open_payment_secrets(&self, method: Uuid, blob: &[u8]) -> Option<Vec<u8>> {
+        open_with(&self.pay, method, blob)
+    }
+
+    /// W24: MAC of a registration proof-of-work challenge.
+    pub fn pow_mac(&self, challenge: &[u8]) -> [u8; 32] {
+        let tag = hmac::sign(&self.pow, challenge);
+        let mut out = [0u8; 32];
+        out.copy_from_slice(tag.as_ref());
+        out
     }
 
     /// Stored form of an email verification code (W15): HMAC over the

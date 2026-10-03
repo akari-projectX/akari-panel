@@ -265,53 +265,26 @@ fn host_gate_and_ask() {
     assert!(!e.ask_allowed("203.0.113.7"));
 }
 
-/// R22 × payments: an explicit notify URL host stays reachable (host gate,
-/// Caddy ask) and is flagged when it is not the main domain; an empty one
-/// needs a main domain.
+/// W24 × payments: the notify URL is always derived from the main domain
+/// (no explicit notify URL any more): payments on without any main domain
+/// is warned; the notify host is no special case of the host gate.
 #[test]
 fn payment_notify_host() {
-    let mut c = cfg();
-    c.payments.alipay.enabled = true;
-    c.payments.alipay.notify_url = "https://pay.example.org/abc/pay/alipay/notify".into();
+    let c = cfg();
     let e = compute(
         &c,
         stored(Some("panel.example.com"), None, None),
         vec![],
         &[],
     );
-    assert!(e.host_allowed(Some("pay.example.org")));
-    assert!(e.ask_allowed("pay.example.org"));
-    let w = e.standing_warnings(&c);
-    assert_eq!(w.len(), 1, "{w:?}");
-    assert!(w[0].contains("pay.example.org") && w[0].contains("panel.example.com"));
-    assert!(!w[0].contains("/abc/"), "never the prefixed URL: {w:?}");
-    let same = compute(&c, stored(Some("pay.example.org"), None, None), vec![], &[]);
-    assert!(same.standing_warnings(&c).is_empty());
-    // Payments off: the notify host is nobody's business.
-    c.payments.alipay.enabled = false;
-    let off = compute(
-        &c,
-        stored(Some("panel.example.com"), None, None),
-        vec![],
-        &[],
-    );
-    assert!(!off.host_allowed(Some("pay.example.org")) && !off.ask_allowed("pay.example.org"));
-    assert!(off.standing_warnings(&c).is_empty());
-    // Derived notify URL without any main domain: warned.
-    c.payments.alipay.enabled = true;
-    c.payments.alipay.notify_url = String::new();
+    assert!(!e.host_allowed(Some("pay.example.org")) && !e.ask_allowed("pay.example.org"));
+    assert!(e.standing_warnings(true).is_empty());
     let none = compute(&c, Stored::default(), vec![], &[]);
-    assert_eq!(none.standing_warnings(&c).len(), 1);
+    assert_eq!(none.standing_warnings(true).len(), 1);
+    assert!(none.standing_warnings(false).is_empty());
     assert_eq!(none.public_origin(), None);
-    let set = compute(
-        &c,
-        stored(Some("panel.example.com"), None, None),
-        vec![],
-        &[],
-    );
-    assert!(set.standing_warnings(&c).is_empty());
     assert_eq!(
-        set.public_origin().as_deref(),
+        e.public_origin().as_deref(),
         Some("https://panel.example.com")
     );
 }

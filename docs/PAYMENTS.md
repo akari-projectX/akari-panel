@@ -1,10 +1,16 @@
-# Payments: Alipay Face-to-Face (当面付)
+# Payments: payment methods (Alipay Face-to-Face first)
 
-R18-3. The panel sells plans through **Alipay Face-to-Face** only
-(`alipay.trade.precreate` → QR code). Code: `src/billing/` (W7 catalogue:
-`catalog.rs`); migrations `0040_billing.sql`, `0070_plan_catalog.sql`; SPA:
+R18-3 / W24 (R40). The panel sells plans through **payment methods**
+configured in 系统设置 → 支付 (database only, no panel.toml). A method is a
+configured instance of a **provider kind**; the first and for now only kind
+is **Alipay Face-to-Face** (`alipay_f2f`: `alipay.trade.precreate` → QR
+code). Several methods of one kind are allowed (two Alipay merchants).
+Code: `src/billing/` (`provider.rs` traits + registry, `methods.rs`
+methods/API/reload/legacy import, `alipay.rs` the Alipay kind; W7
+catalogue: `catalog.rs`); migrations `0040_billing.sql`,
+`0070_plan_catalog.sql`, `0140_payment_methods.sql`; SPA:
 `spa/src/pages/purchase.tsx`, `orders.tsx`, `admin-orders.tsx`,
-`admin-plans.tsx` (prices).
+`admin-plans.tsx` (prices), `admin-payments.tsx` (系统设置 → 支付).
 
 ## How it works
 
@@ -22,19 +28,27 @@ R18-3. The panel sells plans through **Alipay Face-to-Face** only
    amount, and `GET /me/shop` shows exactly this computation beforehand.
    An order whose credit covers the whole price is paid at once (`paid_via
    = credit`, same `apply_mark_paid` path) and never reaches Alipay.
-   Otherwise the panel calls `alipay.trade.precreate`
+   Otherwise the order is bound to a **payment method** (`method_id` in the
+   request; may be omitted when exactly one method is enabled — the portal
+   then skips the picker; `order.method_required` /
+   `order.method_unavailable` otherwise), stored as
+   `orders.payment_method_id`, and the panel calls `alipay.trade.precreate`
    (`timeout_express` = `order_timeout_minutes`, default 15) and returns
    the QR payload. The SPA renders the QR locally (no CDN). One open order
    per user: a new order ends the previous pending one (queried and closed
    at Alipay first).
 3. The payment becomes known by any of:
-   - the **async notify** (`POST /{prefix}/pay/alipay/notify`),
-   - **status polling** (`GET /api/v1/me/orders/{id}` queries
-     `alipay.trade.query` for a pending order, at most every 3 s per order
-     across all instances),
+   - the **async notify** (`POST /{prefix}/pay/{method_id}/notify`; the
+     pre-R40 `/{prefix}/pay/alipay/notify` stays for older orders),
+   - **status polling** (`GET /api/v1/me/orders/{id}` queries the order's
+     method (`alipay.trade.query`) for a pending order, at most every 3 s
+     per order across all instances),
    - the **reconcile** (every instance, every 10 s: pending orders not
-     queried in the last 20 s are queried; `FOR UPDATE SKIP LOCKED` + a
-     claim timestamp keep instances from duplicating work).
+     queried in the last 20 s are queried, each at its own method;
+     `FOR UPDATE SKIP LOCKED` + a claim timestamp keep instances from
+     duplicating work). An order whose method is disabled (or unusable) is
+     not queried; once past its expiry + the close grace it ends with
+     `close_state = method_unavailable` (no remote call).
 4. Every path ends in `orders::apply_mark_paid`: `entitle::lock` →
    conditional `UPDATE orders SET status='paid' ... WHERE status <> 'paid'`
    → fulfilment via the M3 `plans::apply_*` functions → audit, **one
@@ -301,58 +315,118 @@ again. Audited `order.refund`.
 `withdrawals`. The commission pass and withdrawals never take an earlier
 lock after a later one.
 
-## Configuration
+## Configuration (系统设置 → 支付)
 
-```toml
-[payments.alipay]
-enabled = true
-app_id = "2021000000000000"          # APPID
-seller_id = "2088000000000000"       # optional; when set, notifies must carry it
-app_private_key_file = "/etc/akari/alipay-app-private.pem"   # mode 0600 (checked)
-alipay_public_key_file = "/etc/akari/alipay-public.pem"      # Alipay's key, NOT the app public key
-gateway_url = "https://openapi.alipay.com/gateway.do"        # default
-# notify_url = ""                   # default: derived from the main domain (系统设置)
-order_timeout_minutes = 15           # 5..=120
-```
+**UI setup is the only path** (database, all instances at once; no restart):
 
+1. 系统设置 → 支付 → 添加支付方式 → 支付宝当面付.
+2. 名称 (shown to payers when more than one method is enabled), 排序.
+3. 环境: 正式 (`https://openapi.alipay.com/gateway.do`), 沙箱
+   (`https://openapi-sandbox.dl.alipaydev.com/gateway.do`) or 自定义网关
+   (https; http only to loopback — test mocks).
+4. APPID, 商户 PID (optional; when set, notifies must carry it), 订单有效期
+   (5–120 minutes).
+5. 应用私钥: paste (PEM or the bare base64 Alipay's key tool writes,
+   PKCS#8 or PKCS#1) or load the file in the browser. It is validated (RSA,
+   ≥ 2048 bits), then stored sealed (AES-256-GCM, key derived from
+   `data/totp.key` with the label `akari/payment-secrets-aead/v1`, AAD = the
+   method id) and **never returned**: the page shows 已设置 + the app public
+   key's SHA-256 fingerprint and the derived **应用公钥** (SPKI base64) to
+   upload to the Alipay open platform. Leave it empty when editing to keep it.
+6. 支付宝公钥: paste Alipay's public key (not the app's: pasting the app
+   public key or any private key is refused with a coded error).
+7. 启用, 保存, then **测试连接**: one `alipay.trade.query` of a random
+   `out_trade_no`. Alipay answers `ACQ.TRADE_NOT_EXIST` only after checking
+   the APPID and our signature (= the app private key matches the 应用公钥
+   registered at Alipay) and signs that answer with its key (= the
+   configured 支付宝公钥 is right): `keys_ok`. Other outcomes, in Chinese:
+   APPID invalid / wrong environment, request signature rejected (upload
+   the shown 应用公钥), response signature invalid (wrong 支付宝公钥),
+   gateway unreachable / HTTP error. Tested against the real sandbox
+   2026-10-03: `keys_ok`.
+
+Rules (`billing::methods`, `provider::ProviderKind::validate`):
+
+- Every change is versioned (`version`, stale form → 409
+  `settings.version_conflict`) and audited (`payment_method.create` /
+  `.update` / `.delete` / `.import`; secret fields only as `"changed"`, the
+  non-secret config — public keys, APPID — in clear). The 0060 trigger
+  function notifies every instance, which rebuilds the changed method's
+  client and swaps the whole set atomically; a call in flight keeps the
+  client it took. Enabling requires a configuration that builds.
+- A method used by any order cannot be deleted (409
+  `payments.method_in_use`): disable it. Disabling stops new orders, the
+  notify route (canonical rejection) and the reconcile for its pending
+  orders; paid orders are unaffected.
+- **Key rotation.** Orders never store keys, so in-flight orders keep
+  working across a key change. A new 应用私钥 takes effect at once (upload
+  the new 应用公钥 at Alipay first, or requests fail until you do). A
+  replaced **支付宝公钥** stays valid for verification (notifies and
+  gateway responses) for 48 hours (`PREV_KEY_GRACE_HOURS`; Alipay retries a
+  notify for ~25 h), so a notify signed with the old key just before the
+  rotation still settles its order; after the grace it is refused like any
+  bad signature (polling/the reconcile then use the new key). Changing the
+  APPID of a method strands its pending orders' notifies (`app_id`
+  mismatch → refused); polling/reconcile query with the new APPID. Prefer
+  adding a new method for a new merchant.
+- **Notify URL** (shown read-only): `<main domain>/<route prefix>/pay/<method id>/notify`,
+  the main domain being 系统设置's (else `install.public_url`). It is sent
+  with every precreate, so nothing is configured at Alipay, and it follows
+  a domain change and `rotate-prefix` by itself. With no main domain
+  configured, orders that need the provider are refused (503 "payments are
+  not enabled", no order row; fully covered orders still work) and 系统设置
+  / startup warn. Orders created before a main domain change carry the old
+  URL; the host gate then refuses notifies to the old name, and
+  polling/the reconcile fulfil those orders. It contains the secret prefix:
+  never logged.
 - Public-key mode, **RSA2** only (certificate mode is not supported).
-- Key files: PKCS#8 or PKCS#1, PEM or the bare base64 that Alipay's key
-  tool writes. The private key file must not be group/other readable.
-  Keys are loaded and checked at startup and by `akari config check`
-  (errors never contain key material). Never commit keys; keep them outside
-  the repository and the data dir backups you share.
-- `notify_url` empty (default, R22): every order is created with
-  `<main domain>/<route prefix>/pay/alipay/notify`, the main domain being
-  系统设置's (else `install.public_url`). It follows a domain change and
-  `rotate-prefix` by itself. With no main domain configured at all, orders
-  are refused (503 "payments are not enabled", no order row) and startup,
-  `config check` and 系统设置 warn. Orders created before a main domain change
-  carry the old URL; the host gate then refuses notifies to the old name,
-  and polling/the reconcile fulfil those orders.
-- An explicit `notify_url` **must** be `<public base>/<route prefix>/pay/alipay/notify`
-  (no query). Its host stays accepted by the host gate and the Caddy ask
-  endpoint; when it is not the main domain, `config check`, startup and
-  系统设置 warn. It contains the secret prefix: `config check` prints it as
-  `***` and it is never logged. The panel refuses to start when its path
-  does not carry the current prefix — after `akari secrets rotate-prefix`
-  update `notify_url` (and nothing else is needed at Alipay: the URL is
-  sent with every precreate).
-- Alipay must reach `notify_url` over the internet (HTTPS through your
+- Alipay must reach the notify URL over the internet (HTTPS through your
   reverse proxy; only the prefix is forwarded, see DEPLOY.md). If it
   cannot (development, firewalls), payments are still detected through
   polling and the reconcile — notify only makes it faster.
-- `gateway_url` must be https; plain http is accepted only for loopback
-  hosts (a local mock, with a warning). The panel connects directly (no
-  HTTP proxy support) with the webpki root store.
+- The panel connects to the gateway directly (no HTTP proxy support) with
+  the webpki root store.
+
+**Upgrading from panel.toml (obsolete `[payments.alipay]`).** The section is
+no longer part of the configuration. An old file still starts: on the
+first start with **no payment method** in the database the section (and
+its two key files) is imported once into an Alipay method named 支付宝
+(audit `payment_method.import`, actor `system`, key sealed as above), and
+every pre-0140 order (`payment_method_id` NULL, amount > 0) is assigned to
+it; the log says to delete the section. Afterwards it is ignored with a
+startup warning, `config check` reports it as obsolete, and 系统设置 → 支付
+shows a warning while it is present. If the key files cannot be read the
+import is skipped (warning) and the start goes on: configure the method in
+the UI. The old explicit `notify_url` is gone; orders created before the
+upgrade keep their old URL `/{prefix}/pay/alipay/notify`, which is still
+accepted (below).
+
+### Adding a provider kind (developers)
+
+Implement `provider::PaymentProvider` (create → QR or redirect URL, query,
+close, verify_notify, notify_ack, optional refund, test_connection) and
+`provider::ProviderKind` (id, Chinese label, form schema, validate with
+secret fields kept when absent, build, view without secrets,
+peek_out_trade_no), add it to `provider::KINDS`, widen the
+`payment_methods.kind` CHECK in a new migration, and extend the SPA's
+error mappings if the kind adds error codes. The money rules stay in
+`orders.rs`/`api.rs` and do not change per kind.
 
 ## Notify endpoint rules
 
-`POST /{prefix}/pay/alipay/notify` (form-encoded, ≤16 KiB, ≤64 params, no
-duplicate keys), rate-limited per source address (/64) at 120/min in
-Valkey (fails open). Checks in order: RSA2 signature (all params except
+`POST /{prefix}/pay/{method_id}/notify` (per method; unknown, malformed or
+disabled method ids are the canonical rejection) and the legacy
+`POST /{prefix}/pay/alipay/notify` (pre-R40 orders: the claimed
+`out_trade_no` selects the order and thus its method, which must be a
+usable Alipay method). Form-encoded, ≤16 KiB, ≤64 params, no duplicate
+keys, rate-limited per source address (/64) at 120/min in Valkey (fails
+open). Checks in order: RSA2 signature (all params except
 `sign`/`sign_type`, URL-decoded, sorted; empty values kept, or dropped as
-some Alipay SDKs do — both are under Alipay's signature), `app_id`,
-`seller_id` (if configured), known `out_trade_no`, `total_amount` = the
+some Alipay SDKs do — both are under Alipay's signature; the current
+支付宝公钥 or the previous one within its grace), the method's `app_id`,
+`seller_id` (if configured), an `out_trade_no` **of this method**
+(`orders.payment_method_id` — a validly signed notify routed to method A
+never settles an order of method B: `unknown_order`), `total_amount` = the
 order's amount (strict decimal parse to cents). `TRADE_SUCCESS` /
 `TRADE_FINISHED` → paid; other statuses are acknowledged without effect.
 
@@ -382,6 +456,8 @@ for manual; includes the fulfilment result), `order.fulfil.retry`,
 `commission.reverse`, `commission.settings.update`,
 `withdrawal.approved` / `withdrawal.rejected` / `withdrawal.cancelled`, and
 one `balance.<kind>` row per ledger row (kind as in the ledger table).
+W24: `payment_method.create` / `.update` / `.delete` / `.import`.
+`payment_events.payment_method_id` records the order's method.
 
 ## Reconciliation (operator)
 
@@ -407,17 +483,24 @@ ORDER BY paid_at;
   logged in as the sandbox **buyer** account.
 - A local panel (e.g. `http://myapp.test:8080/<prefix>/app`) cannot receive
   notifies from the sandbox; status polling and the reconcile detect the
-  payment through `alipay.trade.query` (same exactly-once path). Use any
-  `notify_url` with the right prefix (http is accepted with a warning).
-- Live check (ignored test; reads credentials from paths you give, prints
-  outcomes only):
+  payment through `alipay.trade.query` (same exactly-once path).
+- In 系统设置 → 支付 choose 环境 = 沙箱 and paste the sandbox APPID and keys.
+- Live checks (ignored tests; read the credential files by path —
+  `~/secrets/alipay-sandbox{.env,-app-private.pem,-alipay-public.pem}` by
+  default, `AKARI_ALIPAY_LIVE_{ENV,KEY,PUB}` override — skip when they are
+  absent, print outcomes only, never run in CI). `live_sandbox` drives the
+  client directly; `live_sandbox_db_configured` configures a method
+  **through the admin API** (database, sealed key), runs 测试连接 and a
+  precreate with that client:
 
 ```bash
-AKARI_ALIPAY_LIVE_ENV=~/secrets/alipay-sandbox.env \
-AKARI_ALIPAY_LIVE_KEY=~/secrets/alipay-sandbox-app-private.pem \
-AKARI_ALIPAY_LIVE_PUB=~/secrets/alipay-sandbox-alipay-public.pem \
 cargo test --lib live_sandbox -- --ignored --nocapture
 ```
+
+**Results 2026-10-03 (W24)**: both live tests passed against the real
+sandbox: 测试连接 `keys_ok` (signed `ACQ.TRADE_NOT_EXIST` verified with the
+sandbox 支付宝公钥), precreate 0.01 CNY → QR, query → not paid, close, and
+the wrong Alipay public key → `BadSignature`.
 
 **Results 2026-10-02** (this dev machine, real sandbox gateway, keys from
 `~/secrets`, nothing committed): `alipay.trade.precreate` 0.01 CNY →
@@ -439,8 +522,19 @@ gateway tests and smoke.
 ## Tests
 
 - `billing::alipay::tests`: amounts, canonical strings, an openssl-made
-  signature vector, PKCS#1/PKCS#8/bare-base64 keys, notify and response
-  verification (raw-bytes, `\/` escapes, tampering, unsigned success).
+  signature vector, PKCS#1/PKCS#8/bare-base64 keys, key errors (too short,
+  private key as public key, app key as Alipay key), the previous Alipay
+  key's grace window, 测试连接 outcomes, notify and response verification
+  (raw-bytes, `\/` escapes, tampering, unsigned success, signed business
+  errors). `billing::provider::mock`: the trait objects with a mock
+  provider.
+- `billing::tests::w24` (real DB + mock gateways): the methods API (coded
+  validation errors, sealed secrets with AAD = id, never returned or
+  audited, optimistic concurrency, 测试连接, rotation grace, disable =
+  canonical rejection, delete only when unused), two methods (picker
+  errors, cross-method notify isolation, legacy notify path, reconcile per
+  method), unreadable secrets, reload on another instance (LISTEN/NOTIFY,
+  atomic swap), the legacy panel.toml import.
 - `billing::tests` (real DB + a local mock gateway that verifies the
   panel's request signatures): HTTP purchase flow with poll-based
   fulfilment, canonical notify rejections, concurrent duplicate
@@ -469,5 +563,11 @@ gateway tests and smoke.
 - `smoke.sh` "R18-3": throwaway keys made with openssl, a Python mock
   gateway, price → order → tampered / wrong-amount notify = canonical
   rejection → signed notify → plan active → VLESS round trip through the
-  node → replay no-op → renewal through polling (+30 days); restart with a
-  stale `notify_url` after `rotate-prefix` is refused.
+  node → replay no-op → renewal through polling (+30 days). W24: the mock
+  gateway is added as a payment method through the admin API (app key as
+  Alipay key refused, secrets sealed and never in the view/audit,
+  测试连接 `keys_ok`), notifies go to the per-method route, the W16 order
+  is settled through the legacy path, `config check` lists the methods
+  with secrets redacted. e2e "W24": the method imported from the obsolete
+  panel.toml section, 测试连接 against an unreachable gateway, adding a
+  second method in the form, the checkout picker.

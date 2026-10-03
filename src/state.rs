@@ -53,9 +53,10 @@ struct Inner {
     /// Agent session tasks still running on this instance (including
     /// revoked/retiring ones and their cleanup).
     live_sessions: std::sync::atomic::AtomicUsize,
-    /// R18-3: the Alipay client when `[payments.alipay]` is enabled (set
-    /// once at startup after the key files were checked).
-    alipay: std::sync::OnceLock<Arc<crate::billing::alipay::Alipay>>,
+    /// R40 (W24): the payment methods (系统设置 → 支付) and their clients,
+    /// swapped atomically by `billing::methods::reload` on every instance
+    /// (settings notification); a call in flight keeps the client it took.
+    payments: arc_swap::ArcSwap<crate::billing::methods::Live>,
     /// R22 system settings (domains, trust Cloudflare, gRPC certificate),
     /// kept current by `settings::reload` on every instance.
     settings: crate::settings::Live,
@@ -101,7 +102,7 @@ impl AppState {
             traffic,
             shutdown: tokio::sync::watch::channel(false).0,
             live_sessions: std::sync::atomic::AtomicUsize::new(0),
-            alipay: std::sync::OnceLock::new(),
+            payments: arc_swap::ArcSwap::from_pointee(Default::default()),
             settings,
             nodestat: crate::nodestat::Local::default(),
         }))
@@ -158,13 +159,13 @@ impl AppState {
     pub fn next_generation(&self) -> u64 {
         self.0.generation.fetch_add(1, Ordering::Relaxed)
     }
-    /// The Alipay client (None = payments disabled).
-    pub fn alipay(&self) -> Option<&Arc<crate::billing::alipay::Alipay>> {
-        self.0.alipay.get()
+    /// The payment methods of this instance.
+    pub fn payments(&self) -> Arc<crate::billing::methods::Live> {
+        self.0.payments.load_full()
     }
-    /// Install the Alipay client (once; later calls are ignored).
-    pub fn set_alipay(&self, a: crate::billing::alipay::Alipay) {
-        let _ = self.0.alipay.set(Arc::new(a));
+    /// Swap in a new set of methods (reload only).
+    pub(crate) fn swap_payments(&self, live: crate::billing::methods::Live) {
+        self.0.payments.store(Arc::new(live));
     }
     pub fn wakeups(&self) -> &crate::notify::Wakeups {
         &self.0.wakeups

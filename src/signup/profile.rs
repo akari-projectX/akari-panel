@@ -8,8 +8,10 @@
 //! whether or not the address belongs to another account (the code mail is
 //! only queued when it does not, after the response).
 //! `POST /me/email/verify {code}`: sets `email` + `email_verified_at`; an
-//! account whose login was its old address (registered accounts) moves its
-//! login along. Both use the renewal scope (`ShopUser`, like `/me/password`).
+//! account whose login was its old address (registered accounts, verified
+//! or not — W24) moves its login along. Verifying the CURRENT unverified
+//! address of an account registered without verification is the same flow
+//! (request a code for that address). Both use the renewal scope (`ShopUser`, like `/me/password`).
 
 use crate::auth::{bad_request, conflict};
 use axum::extract::State;
@@ -171,6 +173,18 @@ pub async fn apply_verify(
     else {
         return Ok(None);
     };
+    // W24: no other account may log in with this address (a registration
+    // without verification may have taken it as its login meanwhile).
+    super::lock_address(conn, &addr).await?;
+    let login_taken: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE id <> $1 AND login = $2)")
+            .bind(user)
+            .bind(&addr)
+            .fetch_one(&mut *conn)
+            .await?;
+    if login_taken {
+        return Err(super::register::invalid_code());
+    }
     let before: Option<String> = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
         .bind(user)
         .fetch_optional(&mut *conn)
@@ -179,7 +193,7 @@ pub async fn apply_verify(
     let mut sp = sqlx::Connection::begin(&mut *conn).await?;
     let r = sqlx::query(
         "UPDATE users SET email = $2, email_verified_at = now(), \
-         login = CASE WHEN login = email AND email_verified_at IS NOT NULL THEN $2 ELSE login END \
+         login = CASE WHEN login = email THEN $2 ELSE login END \
          WHERE id = $1",
     )
     .bind(user)
@@ -257,4 +271,89 @@ pub async fn set_locale(
         .execute(state.pg())
         .await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+/// W24: an admin marks the account's current address verified (the admin
+/// vouches for it, like `POST /users` with `email`). In the caller's
+/// transaction: address lock → no OTHER account may log in with the
+/// address (409) → conditional UPDATE (a verified duplicate = 409
+/// `user.email_exists`) → audit `user.email.verify`. Idempotent.
+pub async fn apply_admin_verify(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    user: Uuid,
+) -> Result<String, ApiError> {
+    let email: Option<Option<String>> = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_optional(&mut *conn)
+        .await?;
+    let Some(email) = email else {
+        return Err(ApiError::not_found());
+    };
+    let Some(addr) = email else {
+        return Err(conflict!(
+            "user.no_email",
+            "the account has no email address"
+        ));
+    };
+    super::lock_address(conn, &addr).await?;
+    let login_taken: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE id <> $1 AND login = $2)")
+            .bind(user)
+            .bind(&addr)
+            .fetch_one(&mut *conn)
+            .await?;
+    if login_taken {
+        return Err(conflict!(
+            "user.email_exists",
+            "another account already uses this email address"
+        ));
+    }
+    let mut sp = sqlx::Connection::begin(&mut *conn).await?;
+    let r = sqlx::query(
+        "UPDATE users SET email_verified_at = now() WHERE id = $1 AND email_verified_at IS NULL",
+    )
+    .bind(user)
+    .execute(&mut *sp)
+    .await;
+    let changed = match r {
+        Ok(r) => {
+            sp.commit().await?;
+            r.rows_affected() == 1
+        }
+        Err(sqlx::Error::Database(d)) if d.is_unique_violation() => {
+            sp.rollback().await?;
+            return Err(conflict!(
+                "user.email_exists",
+                "another account already uses this email address"
+            ));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if changed {
+        crate::audit::record(
+            conn,
+            actor,
+            "user.email.verify",
+            "user",
+            Some(user.to_string()),
+            Some(json!({ "email": addr, "verified": false })),
+            Some(json!({ "email": addr, "verified": true })),
+        )
+        .await?;
+    }
+    Ok(addr)
+}
+
+/// POST /api/v1/users/{id}/email/verify (admin): mark the address verified.
+pub async fn admin_verify_email(
+    State(state): State<AppState>,
+    user: crate::auth::AuthUser,
+    axum::extract::Path((_, id)): axum::extract::Path<(String, Uuid)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    user.require_admin()?;
+    let mut tx = state.pg().begin().await?;
+    let addr = apply_admin_verify(&mut tx, &Actor::of(&user), id).await?;
+    tx.commit().await?;
+    Ok(Json(json!({ "email": addr, "email_verified": true })))
 }
