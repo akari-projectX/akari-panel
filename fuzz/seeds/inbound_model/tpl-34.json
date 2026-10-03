@@ -1,0 +1,1 @@
+{"port":2004,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"xhttp","xhttpSettings":{"host":"cdn.example.com","mode":"auto","path":"/b0d792623a4cfa86"}},"tag":"vless-xhttp-2004"}

@@ -1,0 +1,1 @@
+{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"xhttp","xhttpSettings":{"mode":"packet-up","path":"/p"}},"tag":"vless-xhttp-443"}

@@ -1,0 +1,1 @@
+{"port":8388,"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-chacha20-poly1305","network":"tcp,udp","password":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="},"tag":"s"}

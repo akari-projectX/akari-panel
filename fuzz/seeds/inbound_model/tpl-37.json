@@ -1,0 +1,1 @@
+{"port":2008,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"ws","wsSettings":{"headers":{"Host":"cdn.example.com"},"path":"/e3d6ba1fcb11124c"}},"tag":"vmess-ws-2008"}

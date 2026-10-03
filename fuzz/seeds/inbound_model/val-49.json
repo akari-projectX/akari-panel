@@ -1,0 +1,1 @@
+{"port":8388,"protocol":"shadowsocks","settings":{"clients":[],"method":"aes-128-gcm","network":"tcp,udp","password":"pw"},"tag":"s"}

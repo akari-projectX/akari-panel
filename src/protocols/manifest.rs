@@ -95,6 +95,17 @@ impl Manifest {
     }
 }
 
+impl Rule {
+    /// Does the rule select on a protocol option (`option.<name>`)? Such
+    /// rules are the protocol module's to check.
+    pub fn has_option_key(&self) -> bool {
+        self.when
+            .keys()
+            .chain(self.require.keys())
+            .any(|k| k.starts_with("option."))
+    }
+}
+
 impl Protocol {
     pub fn option(&self, name: &str) -> Option<&Field> {
         self.option.iter().find(|o| o.name == name)
