@@ -1,0 +1,213 @@
+== vless_reality default (seed 1000)
+{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":"xtls-rprx-vision"},"streamSettings":{"network":"tcp","realitySettings":{"dest":"www.apple.com:443","fingerprint":"chrome","privateKey":"oGmJ_z8UkjVK19_ItbXPvUB41wdXHk7FzqzDSAb7fEc","publicKey":"0y67rsKjYmKzhFafNciNYnVKb2vQje3psFy1Z372VnU","serverNames":["www.apple.com"],"shortId":"4dc2d1e53ddd9ac0","shortIds":["4dc2d1e53ddd9ac0"]},"security":"reality"},"tag":"vless-reality-443"}
+needs_certificate=false spec_needs_certificate=false
+== vless_reality no vision (seed 1001)
+{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":""},"streamSettings":{"network":"tcp","realitySettings":{"dest":"www.apple.com:443","fingerprint":"chrome","privateKey":"cLYWqTuLDboMKrL6h7Mau_FyJtGffoeF1N9UQAybWUk","publicKey":"xvfq3daLbaZ-hG7Um7DPuibZbzfuubdi46fqwzydSgU","serverNames":["www.apple.com"],"shortId":"dc6c22c7bb5d7a55","shortIds":["dc6c22c7bb5d7a55"]},"security":"reality"},"tag":"vless-reality-443"}
+needs_certificate=false spec_needs_certificate=false
+== vless_reality vision explicit (seed 1002)
+{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":"xtls-rprx-vision"},"streamSettings":{"network":"tcp","realitySettings":{"dest":"www.apple.com:443","fingerprint":"chrome","privateKey":"GKDnlCY2TIufup5O4Sk0vk7IpKtaANyn5DzLeCx51EE","publicKey":"KLUPOfCuBTawGJY81OF-7TBdWAdtSGZVSTBWhDgG6Rg","serverNames":["www.apple.com"],"shortId":"4fe95f5688380fc7","shortIds":["4fe95f5688380fc7"]},"security":"reality"},"tag":"vless-reality-443"}
+needs_certificate=false spec_needs_certificate=false
+== vless_reality custom dest/sni/fp/tag (seed 1003)
+{"port":8443,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":"xtls-rprx-vision"},"streamSettings":{"network":"tcp","realitySettings":{"dest":"dl.google.com:8443","fingerprint":"firefox","privateKey":"KIWYDxqF2_ZkzI5tSoZmHpa-pQ1vzt8KWREulI1Xy2M","publicKey":"aDbA3XA-hVpcZK1m5I_u9qn5yY3FXkDJ0oSWQX3L6ww","serverNames":["www.example.com"],"shortId":"c5308f19d1ec3dcf","shortIds":["c5308f19d1ec3dcf"]},"security":"reality"},"tag":"my-tag"}
+needs_certificate=false spec_needs_certificate=false
+== vless_reality dest default port (seed 1004)
+{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":"xtls-rprx-vision"},"streamSettings":{"network":"tcp","realitySettings":{"dest":"www.cloudflare.com:443","fingerprint":"chrome","privateKey":"CL07R24XttvUk_-8nFDaqEBibwuMXFDEbFG9qdEE7XI","publicKey":"yIYKp6abU7N4zVghUl8yEVYoWb-_n1g6vQQj6Bb8JBA","serverNames":["www.cloudflare.com"],"shortId":"17c15a9ce7f98618","shortIds":["17c15a9ce7f98618"]},"security":"reality"},"tag":"vless-reality-443"}
+needs_certificate=false spec_needs_certificate=false
+== vless_reality empty server_name/tag (seed 1005)
+{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":"xtls-rprx-vision"},"streamSettings":{"network":"tcp","realitySettings":{"dest":"www.apple.com:443","fingerprint":"chrome","privateKey":"-ClUVRa-PccKoV_l8TchNLxug8KkpmIiOCbE-aUCEFI","publicKey":"rqyzKEuFBQMgcbeWrQ27oE9I-isC2dSSQKoRkTUWEhc","serverNames":["www.apple.com"],"shortId":"30365f146a475163","shortIds":["30365f146a475163"]},"security":"reality"},"tag":"vless-reality-443"}
+needs_certificate=false spec_needs_certificate=false
+== vless_reality bad fingerprint (seed 1006)
+ERR 400 template.fingerprint_invalid: fingerprint must be one of chrome, firefox, safari, ios, android, edge, 360, qq, random, randomized {"allowed":"chrome, firefox, safari, ios, android, edge, 360, qq, random, randomized"}
+== vless_reality bad dest (seed 1007)
+ERR 400 template.dest_invalid: dest must be a domain name (optionally :port) {}
+== vless_reality bad dest port (seed 1008)
+ERR 400 template.dest_port: dest port must be 1-65535 {}
+== vless_reality bad server_name (seed 1009)
+ERR 400 template.domain_invalid: server_name must be the domain name of the node's certificate {"what":"server_name"}
+== vless_reality port 0 (seed 1010)
+ERR 400 request.port_range: port must be 1-65535 {}
+== vless_reality reserved tag (seed 1011)
+ERR 400 inbound.tag_reserved: inbound tag "_x" is reserved (api, akari-*, _*) {"tag":"_x"}
+== vless_reality_xhttp default (seed 1012)
+{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"xhttp","realitySettings":{"dest":"www.apple.com:443","fingerprint":"chrome","privateKey":"0HBrrN-Bi6ZVBQdSG-OluOv_HxaH1DReyFOteLoOeGM","publicKey":"xRa6ZjhOwGhzhCntY4F5ZT_FBQe180RmKjzBougGSmE","serverNames":["www.apple.com"],"shortId":"a7eb6416e901d81c","shortIds":["a7eb6416e901d81c"]},"security":"reality","xhttpSettings":{"mode":"auto","path":"/3e1136ea034823ae"}},"tag":"vless-xhttp-443"}
+needs_certificate=false spec_needs_certificate=false
+== vless_reality_xhttp path + fp (seed 1013)
+{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"xhttp","realitySettings":{"dest":"www.apple.com:443","fingerprint":"safari","privateKey":"EOlLWo54jvjbX4m8Ya4uHNgTB9EwrbUAG8oCdCyNGVg","publicKey":"E76eoiuhYlKr9TW_kcLLVcmzvlOT-3lRS4xGsPqB1m4","serverNames":["www.apple.com"],"shortId":"119129dee12e45be","shortIds":["119129dee12e45be"]},"security":"reality","xhttpSettings":{"mode":"auto","path":"/x-h_t.t~p"}},"tag":"vless-xhttp-443"}
+needs_certificate=false spec_needs_certificate=false
+== vless_reality_xhttp bad mode (seed 1014)
+ERR 400 template.mode_invalid: mode must be one of auto, packet-up, stream-up, stream-one {"allowed":"auto, packet-up, stream-up, stream-one"}
+== vless_reality_xhttp bad path (seed 1015)
+ERR 400 template.path_invalid: path must start with / and use only letters, digits and /-_.~ (<= 128) {}
+== vless_tls_vision node domain (seed 1016)
+{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":"xtls-rprx-vision"},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"alpn":["h2","http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"vless-vision-443"}
+needs_certificate=true spec_needs_certificate=true
+== vless_tls_vision explicit domain (seed 1017)
+{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":"xtls-rprx-vision"},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"alpn":["h2","http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"a.example.com"}},"tag":"vless-vision-443"}
+needs_certificate=true spec_needs_certificate=true
+== vless_tls_vision same as node (seed 1018)
+{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":"xtls-rprx-vision"},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"alpn":["h2","http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"vless-vision-443"}
+needs_certificate=true spec_needs_certificate=true
+== vless_tls_vision mismatch (seed 1019)
+ERR 400 template.domain_mismatch: domain other.example.com differs from the node's TLS domain node.example.com: the automatic certificate covers only node.example.com (leave domain empty to use it) {"d":"other.example.com","n":"node.example.com","what":"domain"}
+== vless_tls_vision missing domain (seed 1020)
+ERR 400 template.domain_missing: domain: set the node's TLS domain (节点域名) or a domain for this inbound {"what":"domain"}
+== vless_tls_vision bad domain (seed 1021)
+ERR 400 template.domain_invalid: domain must be the domain name of the node's certificate {"what":"domain"}
+== vless_ws_tls (seed 1022)
+{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"},"wsSettings":{"path":"/ws"}},"tag":"vless-ws-443"}
+needs_certificate=true spec_needs_certificate=true
+== vless_ws_tls default path (seed 1023)
+{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"w.example.com"},"wsSettings":{"path":"/9751729a5b53ed98"}},"tag":"vless-ws-443"}
+needs_certificate=true spec_needs_certificate=true
+== vmess_ws plain (seed 1024)
+{"port":8080,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"ws","wsSettings":{"path":"/e2526756d077d0d4"}},"tag":"vmess-ws-8080"}
+needs_certificate=false spec_needs_certificate=false
+== vmess_ws tls node (seed 1025)
+{"port":8443,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"},"wsSettings":{"path":"/vm"}},"tag":"vmess-ws-8443"}
+needs_certificate=true spec_needs_certificate=true
+== vmess_ws tls_domain (seed 1026)
+{"port":8443,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"v.example.com"},"wsSettings":{"path":"/45d68edc9751423b"}},"tag":"vmess-ws-8443"}
+needs_certificate=true spec_needs_certificate=true
+== vmess_ws tls false + domain (seed 1027)
+ERR 400 template.tls_domain_without_tls: tls is false but tls_domain is set {}
+== vmess_ws tls missing domain (seed 1028)
+ERR 400 template.domain_missing: tls_domain: set the node's TLS domain (节点域名) or a domain for this inbound {"what":"tls_domain"}
+== vmess_tcp (seed 1029)
+{"port":10086,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"tcp"},"tag":"vm"}
+needs_certificate=false spec_needs_certificate=false
+== trojan_tls (seed 1030)
+{"port":443,"protocol":"trojan","settings":{"clients":[]},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"alpn":["h2","http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"trojan-443"}
+needs_certificate=true spec_needs_certificate=true
+== trojan_tls explicit (seed 1031)
+{"port":443,"protocol":"trojan","settings":{"clients":[]},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"alpn":["h2","http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"t.example.com"}},"tag":"trojan-443"}
+needs_certificate=true spec_needs_certificate=true
+== ss2022 default (seed 1032)
+{"port":8388,"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-128-gcm","network":"tcp,udp","password":"uoa0QHl5aqYABQ2cOiAD3A=="},"tag":"ss2022-8388"}
+needs_certificate=false spec_needs_certificate=false
+== ss2022 aes-256 (seed 1033)
+{"port":8388,"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-256-gcm","network":"tcp,udp","password":"/7n7ExwcY8oJ4VZ/xeqmCXQLyuu7e20fd99DBjBv02w="},"tag":"ss2022-8388"}
+needs_certificate=false spec_needs_certificate=false
+== ss2022 blank method (seed 1034)
+{"port":8388,"protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-128-gcm","network":"tcp,udp","password":"tzPl8eyhzfKOxcFv1ZeaiQ=="},"tag":"ss2022-8388"}
+needs_certificate=false spec_needs_certificate=false
+== ss2022 chacha refused (seed 1035)
+ERR 400 template.method_invalid: method must be one of 2022-blake3-aes-128-gcm, 2022-blake3-aes-256-gcm {"allowed":"2022-blake3-aes-128-gcm, 2022-blake3-aes-256-gcm"}
+== hysteria2 (seed 1036)
+{"port":443,"protocol":"hysteria","settings":{"clients":[],"version":2},"streamSettings":{"hysteriaSettings":{"version":2},"network":"hysteria","security":"tls","tlsSettings":{"alpn":["h3"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"hysteria2-443"}
+needs_certificate=true spec_needs_certificate=true
+== hysteria2 explicit (seed 1037)
+{"port":8443,"protocol":"hysteria","settings":{"clients":[],"version":2},"streamSettings":{"hysteriaSettings":{"version":2},"network":"hysteria","security":"tls","tlsSettings":{"alpn":["h3"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"h.example.com"}},"tag":"hysteria2-8443"}
+needs_certificate=true spec_needs_certificate=true
+== hysteria2 shares tcp 443 (seed 1038)
+{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":"xtls-rprx-vision"},"streamSettings":{"network":"tcp","realitySettings":{"dest":"www.apple.com:443","fingerprint":"chrome","privateKey":"IIxAuu1Bt6oZjoffybwx1lhK2eae7iP8fVZ_G4qQ0ms","publicKey":"sNEN_FjkpnxPiem7D7xHKArzpBbKDf_S0l9h_HHdIis","serverNames":["www.apple.com"],"shortId":"052b24ee1a77347c","shortIds":["052b24ee1a77347c"]},"security":"reality"},"tag":"vless-reality-443"}
+{"port":443,"protocol":"hysteria","settings":{"clients":[],"version":2},"streamSettings":{"hysteriaSettings":{"version":2},"network":"hysteria","security":"tls","tlsSettings":{"alpn":["h3"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"hysteria2-443"}
+needs_certificate=true spec_needs_certificate=true
+== ss2022 clashes with hysteria2 (seed 1039)
+ERR 400 template.port_clash: port 443 is used by more than one inbound {"p":443}
+== two tcp on one port (seed 1040)
+ERR 400 template.port_clash: port 443 is used by more than one inbound {"p":443}
+== taken port (seed 1041)
+ERR 400 template.port_clash: port 443 is used by more than one inbound {"p":443}
+== taken port udp too (seed 1042)
+ERR 400 template.port_clash: port 443 is used by more than one inbound {"p":443}
+== duplicate tag (seed 1043)
+ERR 400 inbound.tag_duplicate: duplicate inbound tag "a" {"tag":"a"}
+== too many (seed 1044)
+ERR 400 template.too_many: at most 16 templates at once {}
+== transport bad protocol (seed 1045)
+ERR 400 template.protocol_invalid: protocol must be vless, vmess or trojan {}
+== transport bad network (seed 1046)
+ERR 400 template.network_invalid: network must be ws, httpupgrade, xhttp or grpc {}
+== transport trojan no tls (seed 1047)
+ERR 400 template.needs_tls: trojan and grpc need TLS (tls: true with the node's TLS domain, or tls_domain) {}
+== transport grpc no tls (seed 1048)
+ERR 400 template.needs_tls: trojan and grpc need TLS (tls: true with the node's TLS domain, or tls_domain) {}
+== transport tls false + domain (seed 1049)
+ERR 400 template.tls_domain_without_tls: tls is false but tls_domain is set {}
+== transport bad host (seed 1050)
+ERR 400 template.domain_invalid: host must be the domain name of the node's certificate {"what":"host"}
+== transport bad service name (seed 1051)
+ERR 400 template.service_name_invalid: service_name: letters, digits and -_. only (<= 64) {}
+== transport grpc long service name (seed 1052)
+ERR 400 template.service_name_invalid: service_name: letters, digits and -_. only (<= 64) {}
+== transport upper-case protocol/network (seed 1053)
+{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"ws","wsSettings":{"path":"/fb8746f52a7fa65d"}},"tag":"vless-ws-443"}
+needs_certificate=false spec_needs_certificate=false
+== transport xhttp mode packet-up (seed 1054)
+{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"xhttp","xhttpSettings":{"mode":"packet-up","path":"/p"}},"tag":"vless-xhttp-443"}
+needs_certificate=false spec_needs_certificate=false
+== transport xhttp mode stream-up (seed 1055)
+{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"xhttp","xhttpSettings":{"mode":"stream-up","path":"/10840969df180d6a"}},"tag":"vless-xhttp-443"}
+needs_certificate=false spec_needs_certificate=false
+== transport xhttp mode stream-one (seed 1056)
+{"port":443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"xhttp","xhttpSettings":{"mode":"stream-one","path":"/ad1f2f668d415979"}},"tag":"vless-xhttp-443"}
+needs_certificate=false spec_needs_certificate=false
+== transport vless ws (seed 1057)
+{"port":2000,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"ws","wsSettings":{"headers":{"Host":"cdn.example.com"},"path":"/eb57ed61678de536"}},"tag":"vless-ws-2000"}
+needs_certificate=false spec_needs_certificate=false
+== transport vless ws tls (seed 1058)
+{"port":2001,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"},"wsSettings":{"headers":{"Host":"cdn.example.com"},"path":"/8c10cf46337bd64f"}},"tag":"vless-ws-2001"}
+needs_certificate=true spec_needs_certificate=true
+== transport vless httpupgrade (seed 1059)
+{"port":2002,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"httpupgradeSettings":{"host":"cdn.example.com","path":"/3379995a55a7c0e0"},"network":"httpupgrade"},"tag":"vless-httpupgrade-2002"}
+needs_certificate=false spec_needs_certificate=false
+== transport vless httpupgrade tls (seed 1060)
+{"port":2003,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"httpupgradeSettings":{"host":"cdn.example.com","path":"/6ae75a3ad6f160e0"},"network":"httpupgrade","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"vless-httpupgrade-2003"}
+needs_certificate=true spec_needs_certificate=true
+== transport vless xhttp (seed 1061)
+{"port":2004,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"xhttp","xhttpSettings":{"host":"cdn.example.com","mode":"auto","path":"/b0d792623a4cfa86"}},"tag":"vless-xhttp-2004"}
+needs_certificate=false spec_needs_certificate=false
+== transport vless xhttp tls (seed 1062)
+{"port":2005,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"xhttp","security":"tls","tlsSettings":{"alpn":["h2","http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"},"xhttpSettings":{"host":"cdn.example.com","mode":"auto","path":"/3f21c6fc300bb88a"}},"tag":"vless-xhttp-2005"}
+needs_certificate=true spec_needs_certificate=true
+== transport vless grpc (seed 1063)
+ERR 400 template.needs_tls: trojan and grpc need TLS (tls: true with the node's TLS domain, or tls_domain) {}
+== transport vless grpc tls (seed 1064)
+{"port":2007,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"grpcSettings":{"serviceName":"7459a43dae191233"},"network":"grpc","security":"tls","tlsSettings":{"alpn":["h2"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"vless-grpc-2007"}
+needs_certificate=true spec_needs_certificate=true
+== transport vmess ws (seed 1065)
+{"port":2008,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"ws","wsSettings":{"headers":{"Host":"cdn.example.com"},"path":"/e3d6ba1fcb11124c"}},"tag":"vmess-ws-2008"}
+needs_certificate=false spec_needs_certificate=false
+== transport vmess ws tls (seed 1066)
+{"port":2009,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"},"wsSettings":{"headers":{"Host":"cdn.example.com"},"path":"/b2a985de1716a4ce"}},"tag":"vmess-ws-2009"}
+needs_certificate=true spec_needs_certificate=true
+== transport vmess httpupgrade (seed 1067)
+{"port":2010,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"httpupgradeSettings":{"host":"cdn.example.com","path":"/a0c62f420fcf7bb7"},"network":"httpupgrade"},"tag":"vmess-httpupgrade-2010"}
+needs_certificate=false spec_needs_certificate=false
+== transport vmess httpupgrade tls (seed 1068)
+{"port":2011,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"httpupgradeSettings":{"host":"cdn.example.com","path":"/097e502195ef7d43"},"network":"httpupgrade","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"vmess-httpupgrade-2011"}
+needs_certificate=true spec_needs_certificate=true
+== transport vmess xhttp (seed 1069)
+{"port":2012,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"xhttp","xhttpSettings":{"host":"cdn.example.com","mode":"auto","path":"/2a26979564978bd9"}},"tag":"vmess-xhttp-2012"}
+needs_certificate=false spec_needs_certificate=false
+== transport vmess xhttp tls (seed 1070)
+{"port":2013,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"network":"xhttp","security":"tls","tlsSettings":{"alpn":["h2","http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"},"xhttpSettings":{"host":"cdn.example.com","mode":"auto","path":"/42c71d64f17dfe3c"}},"tag":"vmess-xhttp-2013"}
+needs_certificate=true spec_needs_certificate=true
+== transport vmess grpc (seed 1071)
+ERR 400 template.needs_tls: trojan and grpc need TLS (tls: true with the node's TLS domain, or tls_domain) {}
+== transport vmess grpc tls (seed 1072)
+{"port":2015,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"grpcSettings":{"serviceName":"480e440c3df9e498"},"network":"grpc","security":"tls","tlsSettings":{"alpn":["h2"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"vmess-grpc-2015"}
+needs_certificate=true spec_needs_certificate=true
+== transport trojan ws (seed 1073)
+ERR 400 template.needs_tls: trojan and grpc need TLS (tls: true with the node's TLS domain, or tls_domain) {}
+== transport trojan ws tls (seed 1074)
+{"port":2017,"protocol":"trojan","settings":{"clients":[]},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"},"wsSettings":{"headers":{"Host":"cdn.example.com"},"path":"/5d6c34e962205fa1"}},"tag":"trojan-ws-2017"}
+needs_certificate=true spec_needs_certificate=true
+== transport trojan httpupgrade (seed 1075)
+ERR 400 template.needs_tls: trojan and grpc need TLS (tls: true with the node's TLS domain, or tls_domain) {}
+== transport trojan httpupgrade tls (seed 1076)
+{"port":2019,"protocol":"trojan","settings":{"clients":[]},"streamSettings":{"httpupgradeSettings":{"host":"cdn.example.com","path":"/a7dc1eb2c92ae888"},"network":"httpupgrade","security":"tls","tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"trojan-httpupgrade-2019"}
+needs_certificate=true spec_needs_certificate=true
+== transport trojan xhttp (seed 1077)
+ERR 400 template.needs_tls: trojan and grpc need TLS (tls: true with the node's TLS domain, or tls_domain) {}
+== transport trojan xhttp tls (seed 1078)
+{"port":2021,"protocol":"trojan","settings":{"clients":[]},"streamSettings":{"network":"xhttp","security":"tls","tlsSettings":{"alpn":["h2","http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"},"xhttpSettings":{"host":"cdn.example.com","mode":"auto","path":"/ae7f3a3068461a84"}},"tag":"trojan-xhttp-2021"}
+needs_certificate=true spec_needs_certificate=true
+== transport trojan grpc (seed 1079)
+ERR 400 template.needs_tls: trojan and grpc need TLS (tls: true with the node's TLS domain, or tls_domain) {}
+== transport trojan grpc tls (seed 1080)
+{"port":2023,"protocol":"trojan","settings":{"clients":[]},"streamSettings":{"grpcSettings":{"serviceName":"5e029dd743b30841"},"network":"grpc","security":"tls","tlsSettings":{"alpn":["h2"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"trojan-grpc-2023"}
+needs_certificate=true spec_needs_certificate=true
+== transport explicit everything (seed 1081)
+{"port":443,"protocol":"trojan","settings":{"clients":[]},"streamSettings":{"grpcSettings":{"serviceName":"svc.name-1_x"},"network":"grpc","security":"tls","tlsSettings":{"alpn":["h2"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"node.example.com"}},"tag":"t1"}
+needs_certificate=true spec_needs_certificate=true

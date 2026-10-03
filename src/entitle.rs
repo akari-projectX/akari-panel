@@ -128,7 +128,7 @@ pub fn eligible_inbounds(inbounds: &Value) -> Vec<(String, String)> {
 /// eligible (tag, protocol) kept in their order (accounts refit to their
 /// inbound, see protocols::refit_account), then new ones for the rest in
 /// inbound order. `None` = unchanged.
-fn merge_credentials(
+pub(crate) fn merge_credentials(
     existing: &[Credential],
     eligible: &[(String, String)],
     inbounds: &Value,

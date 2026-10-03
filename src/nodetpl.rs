@@ -28,7 +28,6 @@ use std::time::Duration;
 use axum::Json;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -211,7 +210,7 @@ impl InboundSpec {
         }
     }
 
-    fn needs_certificate(&self) -> bool {
+    pub(crate) fn needs_certificate(&self) -> bool {
         match self {
             InboundSpec::VlessReality { .. }
             | InboundSpec::VlessRealityXhttp { .. }
@@ -304,14 +303,12 @@ pub fn reality_keys_from(mut secret: [u8; 32]) -> RealityKeys {
 
 pub fn new_reality_keys() -> RealityKeys {
     let mut secret = [0u8; 32];
-    rand::rng().fill_bytes(&mut secret);
+    crate::entropy::fill(&mut secret);
     reality_keys_from(secret)
 }
 
 fn new_short_id() -> String {
-    let mut b = [0u8; 8];
-    rand::rng().fill_bytes(&mut b);
-    hex::encode(b)
+    hex::encode(crate::entropy::bytes(8))
 }
 
 /// A DNS name (no IP literal, no port): letters, digits, '-', '.', 1..=253.

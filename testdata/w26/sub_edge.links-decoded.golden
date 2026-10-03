@@ -1,0 +1,20 @@
+vless://a1@edge.example.com:65535?type=kcp#Edge%3A%20%22quoted%22%20-%20true%20%C2%B7%20kcp
+vless://a2@edge.example.com:2?type=xhttp&path=%2Fs%20p%23%3F&host=h.example.com&mode=auto#Edge%3A%20%22quoted%22%20-%20true%20%C2%B7%20split
+vless://a3@edge.example.com:3?type=ws&path=%2F&host=hdr.example.com#Edge%3A%20%22quoted%22%20-%20true%20%C2%B7%20ws-hdr
+vmess://eyJhZGQiOiJlZGdlLmV4YW1wbGUuY29tIiwiYWlkIjoiMCIsImhvc3QiOiJob3N0LmV4YW1wbGUuY29tIiwiaWQiOiJhNCIsIm5ldCI6IndzIiwicGF0aCI6Ii93P2VkPTIwNDgiLCJwb3J0IjoiNCIsInBzIjoiRWRnZTogXCJxdW90ZWRcIiAtIHRydWUgwrcgd3MtYm90aCIsInNjeSI6ImF1dG8iLCJzbmkiOiIiLCJ0bHMiOiIiLCJ0eXBlIjoibm9uZSIsInYiOiIyIn0=
+trojan://p@ss word@edge.example.com:5?type=httpupgrade&security=tls&path=%2F#Edge%3A%20%22quoted%22%20-%20true%20%C2%B7%20hu
+vmess://eyJhZGQiOiJlZGdlLmV4YW1wbGUuY29tIiwiYWlkIjoiMCIsImhvc3QiOiJ4LmV4YW1wbGUuY29tIiwiaWQiOiJhNSIsIm5ldCI6InhodHRwIiwicGF0aCI6Ii92eCIsInBvcnQiOiI2IiwicHMiOiJFZGdlOiBcInF1b3RlZFwiIC0gdHJ1ZSDCtyB2bXgiLCJzY3kiOiJhdXRvIiwic25pIjoiIiwidGxzIjoiIiwidHlwZSI6InBhY2tldC11cCIsInYiOiIyIn0=
+vmess://eyJhZGQiOiJlZGdlLmV4YW1wbGUuY29tIiwiYWlkIjoiMCIsImhvc3QiOiIiLCJpZCI6ImE2IiwibmV0IjoiZ3JwYyIsInBhdGgiOiJhIGIvYyIsInBvcnQiOiI3IiwicHMiOiJFZGdlOiBcInF1b3RlZFwiIC0gdHJ1ZSDCtyB2bWciLCJzY3kiOiJhdXRvIiwic25pIjoiZy5leGFtcGxlLmNvbSIsInRscyI6InRscyIsInR5cGUiOiJndW4iLCJ2IjoiMiJ9
+vless://a7@edge.example.com:8?type=tcp&security=reality&flow=xtls-rprx-vision&pbk=PK&fp=chrome#Edge%3A%20%22quoted%22%20-%20true%20%C2%B7%20rx-nofp
+vless://a8@edge.example.com:9?type=tcp&security=tls&flow=xtls-rprx-vision&sni=v.example.com#Edge%3A%20%22quoted%22%20-%20true%20%C2%B7%20tls-vision
+vless://a9@edge.example.com:10?type=tcp#Edge%3A%20%22quoted%22%20-%20true%20%C2%B7%20plain-vision
+ss://2022-blake3-aes-128-gcm:AAAAAAAAAAAAAAAAAAAAAA%3D%3D%3AAQEBAQEBAQEBAQEBAQEBAQ%3D%3D@edge.example.com:14#Edge%3A%20%22quoted%22%20-%20true%20%C2%B7%20ss-tcp
+ss://2022-blake3-aes-256-gcm:pw%3Au@edge.example.com:15#Edge%3A%20%22quoted%22%20-%20true%20%C2%B7%20ss-udp-only
+hysteria2://a%3Ab%20c@edge.example.com:16/?sni=#Edge%3A%20%22quoted%22%20-%20true%20%C2%B7%20hy-nosni
+vless://b4@edge.example.com:17?type=tcp&security=xtls#Edge%3A%20%22quoted%22%20-%20true%20%C2%B7%20sec-weird
+trojan://123@edge.example.com:18?type=tcp#Edge%3A%20%22quoted%22%20-%20true%20%C2%B7%20tro-123
+trojan://true@edge.example.com:19?type=tcp#Edge%3A%20%22quoted%22%20-%20true%20%C2%B7%20tro-colon
+vmess://eyJhZGQiOiJlZGdlLmV4YW1wbGUuY29tIiwiYWlkIjoiMCIsImhvc3QiOiIiLCJpZCI6ImI2IiwibmV0IjoidGNwIiwicGF0aCI6IiIsInBvcnQiOiIyMSIsInBzIjoiRWRnZTogXCJxdW90ZWRcIiAtIHRydWUgwrcgZHVwIiwic2N5IjoiYXV0byIsInNuaSI6IiIsInRscyI6IiIsInR5cGUiOiJub25lIiwidiI6IjIifQ==
+vmess://eyJhZGQiOiJlZGdlLmV4YW1wbGUuY29tIiwiYWlkIjoiMCIsImhvc3QiOiIiLCJpZCI6ImI3IiwibmV0IjoidGNwIiwicGF0aCI6IiIsInBvcnQiOiIyMSIsInBzIjoiRWRnZTogXCJxdW90ZWRcIiAtIHRydWUgwrcgZHVwICMyIiwic2N5IjoiYXV0byIsInNuaSI6IiIsInRscyI6IiIsInR5cGUiOiJub25lIiwidiI6IjIifQ==
+vless://b8@edge.example.com:22?type=grpc&serviceName=&mode=gun#Edge%3A%20%22quoted%22%20-%20true%20%C2%B7%20grpc-empty
+vless://b9@edge.example.com:23?type=xhttp&security=reality&sni=r.example.com&pbk=P&fp=chrome&path=%2Fx&mode=auto#Edge%3A%20%22quoted%22%20-%20true%20%C2%B7%20xh-nomode

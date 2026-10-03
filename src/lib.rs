@@ -21,6 +21,7 @@ pub mod db;
 pub mod enforce;
 pub mod enroll;
 pub mod entitle;
+pub mod entropy;
 pub mod export;
 #[cfg(fuzzing)]
 #[doc(hidden)]
@@ -67,4 +68,6 @@ pub mod valkey_util;
 mod w20_tests;
 #[cfg(test)]
 mod w21_tests;
+#[cfg(test)]
+mod w26_golden_tests;
 pub mod web;

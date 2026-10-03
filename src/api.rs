@@ -2738,7 +2738,7 @@ fn mentions_fakedns(inbound: &serde_json::Value) -> bool {
 /// Warnings for stored inbounds (NodeView): configurations accepted before
 /// a check existed stay as they are until an admin changes them; each
 /// inbound that would now be refused is listed with the reason.
-fn inbound_warnings(inbounds: &serde_json::Value) -> Vec<String> {
+pub(crate) fn inbound_warnings(inbounds: &serde_json::Value) -> Vec<String> {
     let Some(items) = inbounds.as_array() else {
         return Vec::new();
     };
