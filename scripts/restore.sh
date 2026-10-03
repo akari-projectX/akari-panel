@@ -8,8 +8,12 @@
 # in the dump are dropped and recreated) and a non-empty data dir is
 # replaced (the old one is moved aside to <data dir>.pre-restore-<ts>).
 #
+# Plain backups (backup.sh AKARI_BACKUP_PLAINTEXT=1: db.dump, data.tar) need
+# no key. config.tar(.age), when present, is not restored (the target's
+# configuration is its own; the installer generates it).
+#
 # Configuration (environment):
-#   AGE_IDENTITY_FILE      age private key able to decrypt the backup   [required]
+#   AGE_IDENTITY_FILE      age private key able to decrypt the backup   [.age backups]
 #   DATABASE_URL           target PostgreSQL URL                         [required*]
 #   AKARI_PG_RESTORE_CMD   alternative command reading a custom-format dump
 #                          on stdin, e.g.
@@ -26,9 +30,19 @@ force=0
 if [ "${1:-}" = "--force" ]; then force=1; shift; fi
 src="${1:-}"
 [ -n "$src" ] && [ -d "$src" ] || die "usage: restore.sh [--force] <backup dir>"
-: "${AGE_IDENTITY_FILE:?set AGE_IDENTITY_FILE}"
 : "${AKARI_DATA_DIR:?set AKARI_DATA_DIR}"
-need age; need tar; need sha256sum
+need tar; need sha256sum
+if [ -f "$src/db.dump.age" ]; then
+  ext=.age
+  : "${AGE_IDENTITY_FILE:?set AGE_IDENTITY_FILE (the backup is age-encrypted)}"
+  need age
+  open() { age -d -i "$AGE_IDENTITY_FILE" "$1"; }
+elif [ -f "$src/db.dump" ]; then
+  ext=
+  open() { cat "$1"; }
+else
+  die "$src holds no db.dump(.age): not a backup.sh directory"
+fi
 
 echo "restore: checking checksums"
 (cd "$src" && sha256sum --check --quiet SHA256SUMS) || die "checksum mismatch: the backup is damaged or tampered with"
@@ -51,10 +65,10 @@ fi
 echo "restore: data dir -> $AKARI_DATA_DIR"
 mkdir -p "$AKARI_DATA_DIR"
 chmod 700 "$AKARI_DATA_DIR"
-age -d -i "$AGE_IDENTITY_FILE" "$src/data.tar.age" | tar -C "$AKARI_DATA_DIR" -xpf -
+open "$src/data.tar$ext" | tar -C "$AKARI_DATA_DIR" -xpf -
 [ -z "${AKARI_OWNER:-}" ] || chown -R "$AKARI_OWNER" "$AKARI_DATA_DIR"
 
 echo "restore: database"
-age -d -i "$AGE_IDENTITY_FILE" "$src/db.dump.age" | load
+open "$src/db.dump$ext" | load
 
 echo "restore: done. Start the panel and check 'akari info' shows the same route prefix."

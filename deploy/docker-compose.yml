@@ -1,5 +1,6 @@
 # Production stack: panel + PostgreSQL 18 + Valkey 9 + Caddy (TLS).
-# See docs/DEPLOY.md. Quick start:
+# See docs/DEPLOY.md. The installer (scripts/install.sh, --mode docker)
+# writes .env and env/*.env and runs all of the below; by hand:
 #
 #   cp .env.example .env; for f in env/*.example; do cp $f ${f%.example}; done
 #   cp panel.toml.compose.example panel.toml        # then edit names/domain
@@ -42,7 +43,7 @@ services:
       - akari-data:/data              # route prefix, CA key, jwt.key, totp.key: BACK UP (docs/BACKUP.md)
       - ./panel.toml:/etc/akari/panel.toml:ro   # from panel.toml.compose.example
     ports:
-      - "8443:8443"                   # gRPC, agents dial this directly (mTLS)
+      - "${AKARI_GRPC_PORT:-8443}:8443"   # gRPC, agents dial this directly (mTLS)
     networks: [backend, frontend]
     depends_on:
       postgres: { condition: service_healthy }
@@ -88,8 +89,8 @@ services:
       # public DNS (internal CA; DEPLOY.md §A). Empty by default.
       AKARI_CADDY_OPTIONS: ${AKARI_CADDY_OPTIONS:-}
     ports:
-      - "80:80"
-      - "443:443"
+      - "${AKARI_HTTP_PORT:-80}:80"
+      - "${AKARI_HTTPS_PORT:-443}:443"
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data              # certificates
