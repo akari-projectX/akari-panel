@@ -115,6 +115,25 @@ async fn plan_with(db: &TestDb, node: Uuid) -> Uuid {
     p
 }
 
+/// Wait until job `id` has ended (the create handler may already be
+/// running it on its own task: help, then poll its status).
+async fn wait_ended(db: &TestDb, st: &AppState, id: Uuid) {
+    for _ in 0..400 {
+        let _ = run_one(st).await.unwrap();
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM admin_batch_jobs WHERE id = $1")
+                .bind(id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        if matches!(status.as_str(), "done" | "cancelled" | "failed") {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("job {id} did not end");
+}
+
 async fn finish(st: &AppState) {
     for _ in 0..200 {
         if run_one(st).await.unwrap() == Ran::Nothing {
@@ -949,7 +968,7 @@ async fn http_surface() {
         .await;
     assert_eq!(r.status, StatusCode::ACCEPTED);
     let id = r.json()["id"].as_str().unwrap().to_string();
-    finish(&st).await;
+    wait_ended(&db, &st, id.parse().unwrap()).await;
     let r = c.get(&format!("/test/api/v1/users/batch/{id}")).await;
     assert_eq!(r.status, StatusCode::OK);
     let v: Value = r.json();
