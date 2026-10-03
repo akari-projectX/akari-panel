@@ -1058,7 +1058,7 @@ function TransportTemplateFields({
             ) : (
               <Input
                 id={id}
-                className="w-48"
+                className="w-60"
                 value={value}
                 placeholder={f.help_zh ?? ""}
                 onChange={(e) => update(r.key, { [key]: e.target.value })}
