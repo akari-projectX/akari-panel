@@ -17,6 +17,9 @@
 # myapp.test must resolve to 127.0.0.1 (/etc/hosts); Caddy uses local_certs.
 # PARTS=docker|migrate|all (default all) runs a part only.
 set -euo pipefail
+# The CI job exports the dev stack's DATABASE_URL/VALKEY_URL for every step;
+# the panel CLI would let them override /etc/akari/panel.toml.
+unset DATABASE_URL VALKEY_URL
 
 rel=$(cd "${1:?usage: host-e2e.sh RELEASES_DIR NEW_TAG AGENT_BIN [PREV_TAG]}" && pwd)
 new=${2:?}
