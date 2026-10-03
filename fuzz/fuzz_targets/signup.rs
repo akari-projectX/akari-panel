@@ -81,7 +81,10 @@ fn templates(s: &str) {
     let (name, code) = s.split_once('\n').unwrap_or((s, ""));
     // Escaping: the inputs add no markup — the number of '<' in each HTML
     // part is the template's own, whatever the plan name, site or code.
-    let base = mail_render("", "");
+    // The baseline uses inert text of the same emptiness: a paragraph that
+    // is only an empty (or blank) placeholder is dropped by design.
+    let inert = |v: &str| if v.trim().is_empty() { "" } else { "x" };
+    let base = mail_render(inert(name), inert(code));
     for ((subject, _text, html), (_, _, html0)) in mail_render(name, code).into_iter().zip(base) {
         assert_eq!(
             html.matches('<').count(),

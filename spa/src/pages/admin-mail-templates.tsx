@@ -53,6 +53,7 @@ export function MailTemplates() {
   });
   const [kind, setKind] = useState("register_code");
   const [locale, setLocale] = useState<"zh" | "en">("zh");
+  const [note, setNote] = useState<string | null>(null);
   const kinds = useMemo(() => {
     const seen = new Map<string, { label: string; custom: boolean }>();
     for (const t of list.data ?? []) {
@@ -87,7 +88,10 @@ export function MailTemplates() {
               id="tpl-kind"
               className="h-10 rounded-lg border border-border bg-card px-3 text-sm"
               value={kind}
-              onChange={(e) => setKind(e.target.value)}
+              onChange={(e) => {
+                setKind(e.target.value);
+                setNote(null);
+              }}
             >
               {kinds.map(([k, v]) => (
                 <option key={k} value={k}>
@@ -103,20 +107,40 @@ export function MailTemplates() {
               id="tpl-locale"
               className="h-10 rounded-lg border border-border bg-card px-3 text-sm"
               value={locale}
-              onChange={(e) => setLocale(e.target.value as "zh" | "en")}
+              onChange={(e) => {
+                setLocale(e.target.value as "zh" | "en");
+                setNote(null);
+              }}
             >
               <option value="zh">中文</option>
               <option value="en">英文</option>
             </select>
           </div>
         </div>
-        {current && <TemplateEditor key={`${current.kind}/${current.locale}/${current.version}`} t={current} />}
+        {/* key: a save / restore bumps the version and remounts the editor
+            with the server's text; the status line lives here so it survives. */}
+        {current && (
+          <TemplateEditor
+            key={`${current.kind}/${current.locale}/${current.version}`}
+            t={current}
+            note={note}
+            setNote={setNote}
+          />
+        )}
       </CardContent>
     </Card>
   );
 }
 
-function TemplateEditor({ t }: { t: MailTemplate }) {
+function TemplateEditor({
+  t,
+  note,
+  setNote,
+}: {
+  t: MailTemplate;
+  note: string | null;
+  setNote: (n: string | null) => void;
+}) {
   const qc = useQueryClient();
   const confirm = useConfirm();
   const [subject, setSubject] = useState(t.subject);
@@ -124,7 +148,6 @@ function TemplateEditor({ t }: { t: MailTemplate }) {
   const [preview, setPreview] = useState<Rendered | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [to, setTo] = useState("");
   const allowed = t.placeholders.map((p) => p.name);
