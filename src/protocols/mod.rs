@@ -1,19 +1,32 @@
 //! W8: the protocol/transport matrix of panel-managed inbounds — what the
 //! panel issues credentials for, how an account is generated for (and kept
-//! fitting) its inbound, and the per-inbound validation rules. W26: the
-//! matrix itself is `proto/protocols.toml` (`manifest`); the support matrix
-//! in docs/DEPLOY.md §3d is generated from it (`generate`).
+//! fitting) its inbound, and the per-inbound validation rules.
+//!
+//! W26 (R41): the matrix is `proto/protocols.toml` (`manifest`); the code
+//! is layered:
+//!
+//! - `model`: the kernel-neutral inbound (no kernel field names);
+//! - `protocol/` (one module per protocol), `transport`, `security`:
+//!   compose a model (templates), check one (`validate`), issue/refit
+//!   per-user accounts from the manifest's credential spec;
+//! - `xray`: the xray kernel adapter (render the model as xray inbound
+//!   JSON, parse stored JSON into the model, explain faults, xray-decoder
+//!   rules). Subscriptions (`sub/`) render from the model.
+//!
+//! This file is the stable API the rest of the panel calls (stored
+//! inbounds are xray JSON). The support matrix in docs/DEPLOY.md §3d is
+//! generated from the manifest (`generate`).
 //!
 //! Accounts (`node_users.credentials[].account`, sent verbatim to the agent
 //! as `account_json`, which decodes them strictly — akari-agent
-//! `protocols.go`):
+//! `proto_*.go`):
 //!
 //! | protocol    | account                       | from the inbound            |
 //! |-------------|-------------------------------|-----------------------------|
-//! | vless       | `{"id","flow"}`               | flow = `settings.flow`      |
+//! | vless       | `{"id","flow"}`               | flow = the inbound's flow   |
 //! | vmess       | `{"id"}`                      |                             |
 //! | trojan      | `{"password"}` (64 hex)       |                             |
-//! | shadowsocks | `{"password"}` (base64 key)   | key length by `settings.method` |
+//! | shadowsocks | `{"password"}` (base64 key)   | key length by the method    |
 //! | hysteria    | `{"auth"}` (64 hex)           |                             |
 //!
 //! The agent re-checks everything that matters for safety after xray's own
@@ -26,10 +39,19 @@ pub mod manifest;
 pub mod manifest_def;
 #[cfg(test)]
 mod manifest_tests;
+pub mod model;
+pub mod protocol;
+pub mod security;
+pub mod transport;
+pub mod validate;
+pub mod xray;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use serde_json::{Value, json};
+use serde_json::Value;
+
+pub use transport::{XHTTP_MODES, valid_path};
+pub use xray::{case_fold_duplicate, fold_json_key, l4, network, port_clash, protocol, security};
 
 /// Protocols the panel issues credentials for (wire names, manifest order).
 pub const MANAGED: [&str; 5] = manifest::WIRE;
@@ -41,9 +63,6 @@ pub const VISION: &str = "xtls-rprx-vision";
 /// length. xray's multi-user server only implements the AES methods.
 pub const SS_METHODS: [(&str, usize); 2] = manifest::PROTOCOL_SS2022_METHOD_KEY_LEN;
 
-/// XHTTP modes (xray `xhttpSettings.mode`).
-pub const XHTTP_MODES: [&str; 4] = manifest::TRANSPORT_XHTTP_MODE;
-
 pub fn ss_key_len(method: &str) -> Option<usize> {
     SS_METHODS
         .iter()
@@ -51,50 +70,17 @@ pub fn ss_key_len(method: &str) -> Option<usize> {
         .map(|(_, n)| *n)
 }
 
-fn random_bytes(n: usize) -> Vec<u8> {
-    crate::entropy::bytes(n)
-}
-
 /// A fresh Shadowsocks 2022 key for `method` (standard base64).
 pub fn new_ss_key(method: &str) -> Option<String> {
-    ss_key_len(method).map(|n| STANDARD.encode(random_bytes(n)))
-}
-
-fn str_at<'a>(v: &'a Value, ptr: &str) -> Option<&'a str> {
-    v.pointer(ptr).and_then(Value::as_str)
-}
-
-pub fn protocol(inbound: &Value) -> &str {
-    str_at(inbound, "/protocol").unwrap_or("")
-}
-
-/// `streamSettings.network` normalized ("tcp" default; raw = tcp,
-/// splithttp = xhttp).
-pub fn network(inbound: &Value) -> String {
-    let n = str_at(inbound, "/streamSettings/network")
-        .unwrap_or("tcp")
-        .trim()
-        .to_ascii_lowercase();
-    match n.as_str() {
-        "" | "raw" => "tcp".into(),
-        "splithttp" => "xhttp".into(),
-        "websocket" => "ws".into(),
-        _ => n,
-    }
-}
-
-/// `streamSettings.security` ("none" default).
-pub fn security(inbound: &Value) -> String {
-    let s = str_at(inbound, "/streamSettings/security")
-        .unwrap_or("none")
-        .trim()
-        .to_ascii_lowercase();
-    if s.is_empty() { "none".into() } else { s }
+    ss_key_len(method).map(|n| STANDARD.encode(crate::entropy::bytes(n)))
 }
 
 /// The VLESS flow the inbound's users get: `settings.flow` ("" = none).
 pub fn vless_flow(inbound: &Value) -> &str {
-    str_at(inbound, "/settings/flow").unwrap_or("")
+    inbound
+        .pointer("/settings/flow")
+        .and_then(Value::as_str)
+        .unwrap_or("")
 }
 
 /// Does the panel issue credentials for this inbound? vless/vmess/trojan
@@ -104,162 +90,35 @@ pub fn vless_flow(inbound: &Value) -> &str {
 /// Hysteria 2 inbound), so a legacy hand-written shadowsocks inbound is
 /// not suddenly given users the agent would refuse.
 pub fn issuable(inbound: &Value) -> bool {
-    match protocol(inbound) {
-        "vless" | "vmess" | "trojan" => true,
-        "shadowsocks" | "hysteria" => check_inbound(inbound).is_ok(),
-        _ => false,
+    let ib = xray::parse(inbound);
+    match protocol::module_for(&ib.protocol) {
+        Some(m) if m.issue_only_when_valid() => check_inbound(inbound).is_ok(),
+        Some(_) => true,
+        None => false,
     }
 }
 
 /// A new account for `inbound` (its protocol and settings decide the shape).
 pub fn generate_account(inbound: &Value) -> Result<Value, String> {
-    match protocol(inbound) {
-        "vless" => {
-            Ok(json!({ "id": crate::entropy::uuid_v4().to_string(), "flow": vless_flow(inbound) }))
-        }
-        "vmess" => Ok(json!({ "id": crate::entropy::uuid_v4().to_string() })),
-        "trojan" => Ok(json!({ "password": hex::encode(random_bytes(32)) })),
-        "shadowsocks" => {
-            let method = str_at(inbound, "/settings/method").unwrap_or("");
-            new_ss_key(method)
-                .map(|k| json!({ "password": k }))
-                .ok_or_else(|| {
-                    format!("shadowsocks method {method:?} is not a multi-user 2022 method")
-                })
-        }
-        "hysteria" => Ok(json!({ "auth": hex::encode(random_bytes(32)) })),
-        other => Err(format!(
-            "unsupported protocol {other:?} ({})",
+    let ib = xray::parse(inbound);
+    match protocol::module_for(&ib.protocol) {
+        Some(m) => m.generate_account(&ib),
+        None => Err(format!(
+            "unsupported protocol {:?} ({})",
+            ib.protocol.id(),
             MANAGED.join(", ")
         )),
     }
 }
 
 /// The account adjusted to the inbound it is for, or None if it already
-/// fits: a VLESS flow follows `settings.flow` (the id is kept); a
-/// Shadowsocks key of the wrong length for the method is replaced (the
-/// user must refresh the subscription). Used when inbounds change, so a
-/// kept credential never makes the agent's apply fail.
+/// fits: a VLESS flow follows the inbound (the id is kept); a Shadowsocks
+/// key of the wrong length for the method is replaced (the user must
+/// refresh the subscription). Used when inbounds change, so a kept
+/// credential never makes the agent's apply fail.
 pub fn refit_account(inbound: &Value, account: &Value) -> Option<Value> {
-    match protocol(inbound) {
-        "vless" => {
-            let want = vless_flow(inbound);
-            let have = account.get("flow").and_then(Value::as_str).unwrap_or("");
-            (have != want).then(|| {
-                let mut a = account.clone();
-                a["flow"] = json!(want);
-                a
-            })
-        }
-        "shadowsocks" => {
-            let method = str_at(inbound, "/settings/method").unwrap_or("");
-            let n = ss_key_len(method)?;
-            let fits = account
-                .get("password")
-                .and_then(Value::as_str)
-                .and_then(|k| STANDARD.decode(k).ok())
-                .is_some_and(|k| k.len() == n);
-            if fits {
-                None
-            } else {
-                new_ss_key(method).map(|k| json!({ "password": k }))
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Paths of HTTP-based transports: start with '/', printable ASCII without
-/// space, quotes, backslash or '#' (subscriptions embed them in URLs/YAML).
-pub fn valid_path(p: &str) -> bool {
-    p.starts_with('/')
-        && p.len() <= 256
-        && p.bytes()
-            .all(|b| b.is_ascii_graphic() && !b"\"'\\#`<>{}|^".contains(&b))
-}
-
-/// Host header values: a DNS-ish name (optionally :port).
-fn valid_host(h: &str) -> bool {
-    !h.is_empty()
-        && h.len() <= 253
-        && h.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-.:[]".contains(&b))
-}
-
-/// gRPC service names: xray serviceName (may hold '/' for custom paths).
-fn valid_service_name(s: &str) -> bool {
-    s.len() <= 128
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-_./".contains(&b))
-}
-
-/// Settings object of a transport (the xhttp settings have two key names).
-fn transport_settings<'a>(inbound: &'a Value, net: &str) -> Option<&'a Value> {
-    let ss = inbound.get("streamSettings")?;
-    match net {
-        "ws" => ss.get("wsSettings"),
-        "httpupgrade" => ss.get("httpupgradeSettings"),
-        "xhttp" => ss
-            .get("xhttpSettings")
-            .or_else(|| ss.get("splithttpSettings")),
-        "grpc" => ss.get("grpcSettings"),
-        "hysteria" => ss.get("hysteriaSettings"),
-        _ => None,
-    }
-}
-
-/// Which L4 protocols the inbound listens on: (tcp, udp).
-pub fn l4(inbound: &Value) -> (bool, bool) {
-    match protocol(inbound) {
-        "hysteria" => (false, true),
-        "shadowsocks" => {
-            let n = str_at(inbound, "/settings/network").unwrap_or("tcp,udp");
-            let has = |x: &str| n.split(',').any(|p| p.trim().eq_ignore_ascii_case(x));
-            (has("tcp"), has("udp"))
-        }
-        "dokodemo-door" | "tunnel" => {
-            let n = str_at(inbound, "/settings/network").unwrap_or("tcp");
-            let has = |x: &str| n.split(',').any(|p| p.trim().eq_ignore_ascii_case(x));
-            (has("tcp"), has("udp"))
-        }
-        _ => (true, false),
-    }
-}
-
-/// Go encoding/json's key folding: ASCII case-insensitive, plus the two
-/// non-ASCII runes that fold onto ASCII letters (U+017F long s, U+212A
-/// Kelvin sign), so no key can alias another one in xray's eyes.
-pub fn fold_json_key(key: &str) -> String {
-    key.chars()
-        .map(|c| match c {
-            '\u{17f}' => 's',
-            '\u{212a}' => 'k',
-            c => c.to_ascii_lowercase(),
-        })
-        .collect()
-}
-
-/// The first key (as written) of an object anywhere in `v` that collides
-/// with another key of the same object under `fold_json_key`. Iterative,
-/// so hostile nesting depth cannot overflow the stack.
-pub fn case_fold_duplicate(v: &Value) -> Option<String> {
-    let mut stack = vec![v];
-    while let Some(v) = stack.pop() {
-        match v {
-            Value::Object(map) => {
-                let mut seen = std::collections::HashSet::with_capacity(map.len());
-                for (k, child) in map {
-                    if !seen.insert(fold_json_key(k)) {
-                        return Some(k.clone());
-                    }
-                    stack.push(child);
-                }
-            }
-            Value::Array(items) => stack.extend(items),
-            _ => {}
-        }
-    }
-    None
+    let ib = xray::parse(inbound);
+    protocol::module_for(&ib.protocol)?.refit_account(&ib, account)
 }
 
 /// Protocol/transport rules for one inbound (Err = the admin-facing
@@ -267,216 +126,13 @@ pub fn case_fold_duplicate(v: &Value) -> Option<String> {
 /// beyond the transport-independent rules in `api::validate_inbounds`;
 /// absent optional fields are left to xray's defaults.
 pub fn check_inbound(inbound: &Value) -> Result<(), String> {
-    // W14: xray decodes JSON keys case-insensitively (Go encoding/json),
-    // so `tag` and `TAG` in one object are one field to xray but two to
-    // the panel's literal-key checks: whichever xray picks could bypass
-    // them (W13 found an SS2022 downgrade that way on the agent side).
-    if let Some(key) = case_fold_duplicate(inbound) {
-        return Err(format!(
-            "duplicate key {key:?} (keys differing only in letter case are one key to xray)"
-        ));
-    }
-    let proto = protocol(inbound);
-    let net = network(inbound);
-    if net == "hysteria" && proto != "hysteria" {
-        return Err("the hysteria transport is only for the hysteria protocol".into());
-    }
-    if !MANAGED.contains(&proto) {
-        return Ok(());
-    }
-    if let Some(p) = inbound.get("port")
-        && p.as_u64().filter(|p| (1..=65535).contains(p)).is_none()
-    {
-        return Err("port must be a number 1-65535 (subscriptions advertise it)".into());
-    }
-    let sec = security(inbound);
-    match sec.as_str() {
-        "none" | "tls" | "reality" => {}
-        other => {
-            return Err(format!(
-                "security {other:?} is not supported (none, tls, reality)"
-            ));
-        }
-    }
-    match (proto, net.as_str()) {
-        ("shadowsocks", "tcp") | ("hysteria", "hysteria") => {}
-        ("shadowsocks", _) => {
-            return Err("shadowsocks runs on its own transport (no streamSettings.network)".into());
-        }
-        ("hysteria", _) => return Err("hysteria needs streamSettings.network \"hysteria\"".into()),
-        (_, "tcp" | "ws" | "httpupgrade" | "xhttp" | "grpc") => {}
-        (_, other) => {
-            return Err(format!(
-                "transport {other:?} is not supported (tcp/raw, ws, httpupgrade, xhttp, grpc)"
-            ));
-        }
-    }
-    if sec == "reality" {
-        if proto != "vless" {
-            return Err("REALITY is only supported with vless".into());
-        }
-        if !matches!(net.as_str(), "tcp" | "xhttp" | "grpc") {
-            return Err("REALITY works with tcp/raw, xhttp or grpc".into());
-        }
-    }
-    if let Some(ts) = transport_settings(inbound, &net) {
-        if let Some(p) = ts.get("path")
-            && !p.as_str().is_some_and(valid_path)
-        {
-            return Err("transport path must start with / and hold no spaces, quotes or #".into());
-        }
-        let host = ts
-            .get("host")
-            .or_else(|| ts.pointer("/headers/Host"))
-            .and_then(Value::as_str);
-        if let Some(h) = host
-            && !h.is_empty()
-            && !valid_host(h)
-        {
-            return Err("transport host must be a domain name".into());
-        }
-        if net == "xhttp"
-            && let Some(m) = ts.get("mode")
-            && !m
-                .as_str()
-                .is_some_and(|m| m.is_empty() || XHTTP_MODES.contains(&m))
-        {
-            return Err(format!(
-                "xhttp mode must be one of {}",
-                XHTTP_MODES.join(", ")
-            ));
-        }
-        if net == "grpc"
-            && let Some(s) = ts.get("serviceName")
-            && !s.as_str().is_some_and(valid_service_name)
-        {
-            return Err("grpc serviceName: letters, digits and -_./ only (<= 128)".into());
-        }
-    }
-    match proto {
-        "vless" => {
-            if let Some(d) = inbound.pointer("/settings/decryption")
-                && d.as_str() != Some("none")
-            {
-                return Err("vless settings.decryption must be \"none\" (VLESS encryption is not in subscriptions)".into());
-            }
-            match vless_flow(inbound) {
-                "" => {}
-                VISION => {
-                    if net != "tcp" || !matches!(sec.as_str(), "tls" | "reality") {
-                        return Err(format!(
-                            "flow {VISION} needs streamSettings.network tcp/raw with tls or reality"
-                        ));
-                    }
-                }
-                other => {
-                    return Err(format!(
-                        "vless flow {other:?} is not supported (\"\" or {VISION})"
-                    ));
-                }
-            }
-        }
-        "shadowsocks" => {
-            let method = str_at(inbound, "/settings/method").unwrap_or("");
-            let Some(n) = ss_key_len(method) else {
-                return Err(format!(
-                    "shadowsocks method must be a multi-user 2022 method: {} (2022-blake3-chacha20-poly1305 \
-                     has no multi-user server in xray; legacy methods have no per-user keys)",
-                    SS_METHODS.map(|(m, _)| m).join(", ")
-                ));
-            };
-            let psk_ok = str_at(inbound, "/settings/password")
-                .and_then(|k| STANDARD.decode(k).ok())
-                .is_some_and(|k| k.len() == n);
-            if !psk_ok {
-                return Err(format!(
-                    "shadowsocks settings.password must be a base64 {n}-byte key for {method}"
-                ));
-            }
-            if !inbound
-                .pointer("/settings/clients")
-                .and_then(Value::as_array)
-                .is_some_and(Vec::is_empty)
-            {
-                return Err(
-                    "shadowsocks settings.clients must be [] (users are managed by the panel)"
-                        .into(),
-                );
-            }
-            if let Some(nw) = inbound.pointer("/settings/network") {
-                let ok = nw.as_str().is_some_and(|s| {
-                    !s.trim().is_empty()
-                        && s.split(',').all(|p| {
-                            matches!(p.trim().to_ascii_lowercase().as_str(), "tcp" | "udp")
-                        })
-                });
-                if !ok {
-                    return Err("shadowsocks settings.network must be tcp, udp or tcp,udp".into());
-                }
-            }
-            if sec != "none" {
-                return Err("shadowsocks takes no tls/reality".into());
-            }
-        }
-        "hysteria" => {
-            if inbound.pointer("/settings/version").and_then(Value::as_i64) != Some(2) {
-                return Err("hysteria settings.version must be 2".into());
-            }
-            if sec != "tls" {
-                return Err("hysteria needs security \"tls\" (the node's certificate)".into());
-            }
-            let hs = transport_settings(inbound, "hysteria");
-            if hs.and_then(|h| h.get("version")).and_then(Value::as_i64) != Some(2) {
-                return Err("streamSettings.hysteriaSettings.version must be 2".into());
-            }
-            if hs
-                .and_then(|h| h.get("auth"))
-                .and_then(Value::as_str)
-                .is_some_and(|a| !a.is_empty())
-            {
-                return Err(
-                    "hysteriaSettings.auth must not be set (per-user auth is managed by the panel)"
-                        .into(),
-                );
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-/// Port clashes among inbounds (same port, overlapping L4, overlapping
-/// listen address): xray would fail to bind and the whole apply fails.
-pub fn port_clash(inbounds: &[Value]) -> Option<String> {
-    let listen = |i: &Value| -> String {
-        let l = str_at(i, "/listen").unwrap_or("").trim().to_string();
-        if l == "0.0.0.0" || l == "::" {
-            String::new()
-        } else {
-            l
-        }
-    };
-    for (a_i, a) in inbounds.iter().enumerate() {
-        let Some(pa) = a.get("port").and_then(Value::as_u64) else {
-            continue;
-        };
-        for b in &inbounds[a_i + 1..] {
-            if b.get("port").and_then(Value::as_u64) != Some(pa) {
-                continue;
-            }
-            let ((at, au), (bt, bu)) = (l4(a), l4(b));
-            let (la, lb) = (listen(a), listen(b));
-            if ((at && bt) || (au && bu)) && (la.is_empty() || lb.is_empty() || la == lb) {
-                return Some(format!("port {pa} is used by more than one inbound"));
-            }
-        }
-    }
-    None
+    xray::check(inbound).map_err(|f| xray::explain(&f))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     /// W14: keys equal under Go's case folding alias each other in xray,
     /// at any depth (the SS2022 `method`/`METHOD` downgrade W13 found on
@@ -525,6 +181,23 @@ mod tests {
             deep = json!([{ "k": deep }]);
         }
         assert!(case_fold_duplicate(&deep).is_some());
+    }
+
+    /// W26 (fuzz `inbound_model`): an unmanaged kernel protocol whose name
+    /// spells a manifest id is still unmanaged: no credentials, kept name.
+    #[test]
+    fn unmanaged_names_never_match_manifest_ids() {
+        for name in ["ss2022", "hysteria2"] {
+            let ib = json!({"tag": "x", "protocol": name, "port": 1});
+            assert!(!issuable(&ib), "{name}");
+            assert_eq!(
+                generate_account(&ib).unwrap_err(),
+                format!("unsupported protocol {name:?} ({})", MANAGED.join(", "))
+            );
+            assert_eq!(refit_account(&ib, &json!({"password": "x"})), None);
+            assert_eq!(check_inbound(&ib), Ok(()));
+            assert_eq!(xray::render(&xray::parse(&ib))["protocol"], name);
+        }
     }
 
     #[test]

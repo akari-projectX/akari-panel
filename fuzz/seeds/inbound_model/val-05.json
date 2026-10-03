@@ -1,0 +1,1 @@
+{"protocol":"vmess","streamSettings":{"httpupgradeSettings":{"host":"cdn.example.com","path":"/u?ed=2048"},"network":"httpupgrade"}}

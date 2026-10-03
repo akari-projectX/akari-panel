@@ -1,0 +1,1 @@
+{"port":2000,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"ws","wsSettings":{"headers":{"Host":"cdn.example.com"},"path":"/eb57ed61678de536"}},"tag":"vless-ws-2000"}

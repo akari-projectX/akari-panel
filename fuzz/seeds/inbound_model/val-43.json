@@ -1,0 +1,1 @@
+{"protocol":"vless","streamSettings":{"grpcSettings":{"serviceName":"a b"},"network":"grpc"}}

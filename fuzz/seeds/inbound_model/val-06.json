@@ -1,0 +1,1 @@
+{"protocol":"trojan","streamSettings":{"network":"ws","security":"tls","wsSettings":{"headers":{"Host":"a.example.com"},"path":"/t"}}}

@@ -159,3 +159,9 @@ name = "protocols_manifest"
 path = "fuzz_targets/protocols_manifest.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "inbound_model"
+path = "fuzz_targets/inbound_model.rs"
+test = false
+doc = false

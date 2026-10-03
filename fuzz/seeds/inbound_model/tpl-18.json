@@ -1,0 +1,1 @@
+{"port":443,"protocol":"trojan","settings":{"clients":[]},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"alpn":["h2","http/1.1"],"certificates":[{"certificateFile":"/run/credentials/akari-agent.service/tls_fullchain.pem","keyFile":"/run/credentials/akari-agent.service/tls_privkey.pem"}],"serverName":"t.example.com"}},"tag":"trojan-443"}

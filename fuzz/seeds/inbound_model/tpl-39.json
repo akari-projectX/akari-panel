@@ -1,0 +1,1 @@
+{"port":2010,"protocol":"vmess","settings":{"clients":[]},"streamSettings":{"httpupgradeSettings":{"host":"cdn.example.com","path":"/a0c62f420fcf7bb7"},"network":"httpupgrade"},"tag":"vmess-httpupgrade-2010"}

@@ -29,10 +29,15 @@ use axum::Json;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::api::ApiJson;
 use crate::auth::{ApiError, AuthUser};
+use crate::protocols::model::{Inbound, Protocol, Security, Transport, TransportKind, Users};
+use crate::protocols::{security, transport};
+
+/// Hysteria 2's declared protocol/transport version.
+const HYSTERIA_VERSION: i64 = 2;
 
 /// REALITY targets known to work with the agent's xray (v26.3.27),
 /// checked 2026-10-01 (docs/DEPLOY.md §3b). The first is the default.
@@ -45,8 +50,7 @@ pub const REALITY_DESTS: &[&str] = &[
 ];
 
 /// Where the agent finds the node's TLS certificate (see module doc).
-pub const TLS_CERT_FILE: &str = "/run/credentials/akari-agent.service/tls_fullchain.pem";
-pub const TLS_KEY_FILE: &str = "/run/credentials/akari-agent.service/tls_privkey.pem";
+pub use crate::protocols::xray::{TLS_CERT_FILE, TLS_KEY_FILE};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "template", rename_all = "snake_case", deny_unknown_fields)]
@@ -379,46 +383,38 @@ fn domain(d: &str, what: &str) -> Result<String, ApiError> {
     Ok(d)
 }
 
-fn tls_settings(domain: &str, alpn: &[&str]) -> Value {
-    json!({
-        "serverName": domain,
-        "alpn": alpn,
-        "certificates": [{ "certificateFile": TLS_CERT_FILE, "keyFile": TLS_KEY_FILE }],
-    })
-}
-
-/// REALITY settings (fresh keys + short id) for `dest`/`server_name`/
-/// `fingerprint` (shared by the REALITY templates).
+/// REALITY (fresh keys + short id) for `dest`/`server_name`/`fingerprint`
+/// (shared by the REALITY templates).
 fn reality_settings(
     dest: &Option<String>,
     server_name: &Option<String>,
     fingerprint: &Option<String>,
-) -> Result<Value, ApiError> {
+) -> Result<Security, ApiError> {
     let (host, dport) = parse_dest(dest.as_deref().unwrap_or(REALITY_DESTS[0]))?;
     let sni = match server_name.as_deref().map(str::trim) {
         Some(s) if !s.is_empty() => domain(s, "server_name")?,
         _ => host.clone(),
     };
-    let fp = fingerprint.as_deref().unwrap_or("chrome");
-    if !crate::sub::FINGERPRINTS.contains(&fp) {
+    let fp = fingerprint
+        .as_deref()
+        .unwrap_or_else(|| security::default_fingerprint());
+    if !security::FINGERPRINTS.contains(&fp) {
         return Err(bad_request!(
             "template.fingerprint_invalid",
             "fingerprint must be one of {allowed}",
-            allowed = crate::sub::FINGERPRINTS.join(", ")
+            allowed = security::FINGERPRINTS.join(", ")
         ));
     }
     let keys = new_reality_keys();
     let sid = new_short_id();
-    Ok(json!({
-        "dest": format!("{host}:{dport}"),
-        "serverNames": [sni],
-        "privateKey": keys.private_key,
-        "shortIds": [sid],
-        // Panel-only (subscriptions): ignored by xray.
-        "publicKey": keys.public_key,
-        "shortId": sid,
-        "fingerprint": fp,
-    }))
+    Ok(security::reality(
+        format!("{host}:{dport}"),
+        sni,
+        keys.private_key,
+        keys.public_key,
+        sid,
+        fp,
+    ))
 }
 
 fn xhttp_mode(mode: &Option<String>) -> Result<String, ApiError> {
@@ -452,9 +448,11 @@ fn grpc_service_name(name: &Option<String>) -> Result<String, ApiError> {
     Ok(n.to_string())
 }
 
-/// Render one template into an xray inbound. `node_domain`: the node's
-/// TLS domain (W10), the default certificate domain.
-pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value, ApiError> {
+/// The kernel-neutral inbound of one template (protocol, transport and
+/// security modules composed). `node_domain`: the node's TLS domain (W10),
+/// the default certificate domain. The order of checks and random draws is
+/// part of the output (W26 golden snapshots).
+pub fn build_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Inbound, ApiError> {
     let port = spec.port();
     if port == 0 {
         return Err(bad_request!("request.port_range", "port must be 1-65535"));
@@ -465,6 +463,21 @@ pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value
             .filter(|t| !t.is_empty())
             .map(String::from)
             .unwrap_or(default)
+    };
+    let tls = |domain: &str, transport: &TransportKind| -> Security {
+        security::tls(domain, transport::alpn(transport))
+    };
+    let inbound =
+        |tag: String, protocol: Protocol, transport: Transport, security: Security| Inbound {
+            tag: Some(tag),
+            port: Some(Some(u64::from(port))),
+            protocol,
+            transport,
+            security,
+        };
+    let vless = |flow: Option<&str>| Protocol::Vless {
+        flow: flow.map(String::from),
+        encryption: Some(Some("none".into())),
     };
     Ok(match spec {
         InboundSpec::VlessReality {
@@ -480,17 +493,9 @@ pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value
             } else {
                 ""
             };
-            json!({
-                "tag": tag_or(tag, format!("vless-reality-{port}")),
-                "port": port,
-                "protocol": "vless",
-                "settings": { "clients": [], "decryption": "none", "flow": flow },
-                "streamSettings": {
-                    "network": "tcp",
-                    "security": "reality",
-                    "realitySettings": reality_settings(dest, server_name, fingerprint)?,
-                },
-            })
+            let tag = tag_or(tag, format!("vless-reality-{port}"));
+            let reality = reality_settings(dest, server_name, fingerprint)?;
+            inbound(tag, vless(Some(flow)), transport::tcp(), reality)
         }
         InboundSpec::VlessRealityXhttp {
             tag,
@@ -500,39 +505,29 @@ pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value
             path,
             mode,
             ..
-        } => json!({
-            "tag": tag_or(tag, format!("vless-xhttp-{port}")),
-            "port": port,
-            "protocol": "vless",
-            "settings": { "clients": [], "decryption": "none" },
-            "streamSettings": {
-                "network": "xhttp",
-                "security": "reality",
-                "xhttpSettings": { "path": ws_path(path)?, "mode": xhttp_mode(mode)? },
-                "realitySettings": reality_settings(dest, server_name, fingerprint)?,
-            },
-        }),
+        } => {
+            let tag = tag_or(tag, format!("vless-xhttp-{port}"));
+            let xhttp = transport::xhttp(&ws_path(path)?, &xhttp_mode(mode)?, None);
+            let reality = reality_settings(dest, server_name, fingerprint)?;
+            inbound(tag, vless(None), xhttp, reality)
+        }
         InboundSpec::VlessTlsVision { tag, domain: d, .. } => {
             let d = cert_domain(d, node_domain, "domain")?;
-            json!({
-                "tag": tag_or(tag, format!("vless-vision-{port}")),
-                "port": port,
-                "protocol": "vless",
-                "settings": { "clients": [], "decryption": "none", "flow": crate::protocols::VISION },
-                "streamSettings": {
-                    "network": "tcp",
-                    "security": "tls",
-                    "tlsSettings": tls_settings(&d, &["h2", "http/1.1"]),
-                },
-            })
+            let tcp = transport::tcp();
+            let sec = tls(&d, &tcp.kind);
+            inbound(
+                tag_or(tag, format!("vless-vision-{port}")),
+                vless(Some(crate::protocols::VISION)),
+                tcp,
+                sec,
+            )
         }
-        InboundSpec::VmessTcp { tag, .. } => json!({
-            "tag": tag_or(tag, format!("vmess-tcp-{port}")),
-            "port": port,
-            "protocol": "vmess",
-            "settings": { "clients": [] },
-            "streamSettings": { "network": "tcp" },
-        }),
+        InboundSpec::VmessTcp { tag, .. } => inbound(
+            tag_or(tag, format!("vmess-tcp-{port}")),
+            Protocol::Vmess,
+            transport::tcp(),
+            Security::None,
+        ),
         InboundSpec::Transport {
             tag,
             protocol,
@@ -542,7 +537,7 @@ pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value
             mode,
             service_name,
             tls_domain,
-            tls,
+            tls: want_tls,
             ..
         } => {
             let proto = protocol.trim().to_ascii_lowercase();
@@ -553,18 +548,22 @@ pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value
                 ));
             }
             let net = network.trim().to_ascii_lowercase();
-            if *tls == Some(false) && wants_tls(tls_domain, None) {
+            if *want_tls == Some(false) && wants_tls(tls_domain, None) {
                 return Err(bad_request!(
                     "template.tls_domain_without_tls",
                     "tls is false but tls_domain is set"
                 ));
             }
-            let tls = if wants_tls(tls_domain, *tls) {
+            let tls_name = if wants_tls(tls_domain, *want_tls) {
                 Some(cert_domain(tls_domain, node_domain, "tls_domain")?)
             } else {
                 None
             };
-            if tls.is_none() && (proto == "trojan" || net == "grpc") {
+            let m = crate::protocols::manifest::get();
+            let requires_tls = m.protocol(&proto).is_some_and(|p| p.template_requires_tls)
+                || m.violated_template_rule(&proto, &net, "none", &Default::default())
+                    .is_some();
+            if tls_name.is_none() && requires_tls {
                 return Err(bad_request!(
                     "template.needs_tls",
                     "trojan and grpc need TLS (tls: true with the node's TLS domain, or tls_domain)"
@@ -574,33 +573,11 @@ pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value
                 Some(h) if !h.is_empty() => Some(domain(h, "host")?),
                 _ => None,
             };
-            let (settings_key, ts, alpn): (&str, Value, &[&str]) = match net.as_str() {
-                "ws" => {
-                    let mut w = json!({ "path": ws_path(path)? });
-                    if let Some(h) = &host {
-                        w["headers"] = json!({ "Host": h });
-                    }
-                    ("wsSettings", w, &["http/1.1"])
-                }
-                "httpupgrade" => {
-                    let mut w = json!({ "path": ws_path(path)? });
-                    if let Some(h) = &host {
-                        w["host"] = json!(h);
-                    }
-                    ("httpupgradeSettings", w, &["http/1.1"])
-                }
-                "xhttp" => {
-                    let mut w = json!({ "path": ws_path(path)?, "mode": xhttp_mode(mode)? });
-                    if let Some(h) = &host {
-                        w["host"] = json!(h);
-                    }
-                    ("xhttpSettings", w, &["h2", "http/1.1"])
-                }
-                "grpc" => (
-                    "grpcSettings",
-                    json!({ "serviceName": grpc_service_name(service_name)? }),
-                    &["h2"],
-                ),
+            let t = match net.as_str() {
+                "ws" => transport::ws(&ws_path(path)?, host.as_deref()),
+                "httpupgrade" => transport::httpupgrade(&ws_path(path)?, host.as_deref()),
+                "xhttp" => transport::xhttp(&ws_path(path)?, &xhttp_mode(mode)?, host.as_deref()),
+                "grpc" => transport::grpc(&grpc_service_name(service_name)?),
                 _ => {
                     return Err(bad_request!(
                         "template.network_invalid",
@@ -608,26 +585,19 @@ pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value
                     ));
                 }
             };
-            let mut ss = json!({ "network": net });
-            ss[settings_key] = ts;
-            if let Some(d) = &tls {
-                ss["security"] = json!("tls");
-                ss["tlsSettings"] = tls_settings(d, alpn);
-            }
-            let settings = if proto == "vless" {
-                json!({ "clients": [], "decryption": "none" })
-            } else {
-                json!({ "clients": [] })
+            let sec = match &tls_name {
+                Some(d) => tls(d, &t.kind),
+                None => Security::None,
             };
-            json!({
-                "tag": tag_or(tag, format!("{proto}-{net}-{port}")),
-                "port": port,
-                "protocol": proto,
-                "settings": settings,
-                "streamSettings": ss,
-            })
+            let p = match proto.as_str() {
+                "vless" => vless(None),
+                "vmess" => Protocol::Vmess,
+                _ => Protocol::Trojan,
+            };
+            inbound(tag_or(tag, format!("{proto}-{net}-{port}")), p, t, sec)
         }
         InboundSpec::Shadowsocks2022 { tag, method, .. } => {
+            let tag = tag_or(tag, format!("ss2022-{port}"));
             let m = method
                 .as_deref()
                 .map(str::trim)
@@ -640,27 +610,32 @@ pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value
                     allowed = crate::protocols::SS_METHODS.map(|(m, _)| m).join(", ")
                 )
             })?;
-            json!({
-                "tag": tag_or(tag, format!("ss2022-{port}")),
-                "port": port,
-                "protocol": "shadowsocks",
-                "settings": { "method": m, "password": psk, "clients": [], "network": "tcp,udp" },
-            })
+            inbound(
+                tag,
+                Protocol::Ss2022 {
+                    method: Some(m.to_string()),
+                    psk: Some(psk),
+                    l4: Some(Some("tcp,udp".into())),
+                    users: Users::Empty,
+                },
+                transport::native(None),
+                Security::None,
+            )
         }
         InboundSpec::Hysteria2 { tag, domain: d, .. } => {
             let d = cert_domain(d, node_domain, "domain")?;
-            json!({
-                "tag": tag_or(tag, format!("hysteria2-{port}")),
-                "port": port,
-                "protocol": "hysteria",
-                "settings": { "version": 2, "clients": [] },
-                "streamSettings": {
-                    "network": "hysteria",
-                    "security": "tls",
-                    "tlsSettings": tls_settings(&d, &["h3"]),
-                    "hysteriaSettings": { "version": 2 },
+            let alpn = crate::protocols::manifest::get()
+                .protocol("hysteria2")
+                .map(|p| p.alpn.clone())
+                .unwrap_or_default();
+            inbound(
+                tag_or(tag, format!("hysteria2-{port}")),
+                Protocol::Hysteria2 {
+                    version: Some(HYSTERIA_VERSION),
                 },
-            })
+                transport::native(Some(HYSTERIA_VERSION)),
+                security::tls(&d, alpn),
+            )
         }
         InboundSpec::VlessWsTls {
             tag,
@@ -668,65 +643,56 @@ pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value
             path,
             ..
         } => {
+            let tag = tag_or(tag, format!("vless-ws-{port}"));
             let d = cert_domain(d, node_domain, "domain")?;
-            json!({
-                "tag": tag_or(tag, format!("vless-ws-{port}")),
-                "port": port,
-                "protocol": "vless",
-                "settings": { "clients": [], "decryption": "none" },
-                "streamSettings": {
-                    "network": "ws",
-                    "security": "tls",
-                    "tlsSettings": tls_settings(&d, &["http/1.1"]),
-                    "wsSettings": { "path": ws_path(path)? },
-                },
-            })
+            let ws = transport::ws(&ws_path(path)?, None);
+            let sec = tls(&d, &ws.kind);
+            inbound(tag, vless(None), ws, sec)
         }
         InboundSpec::VmessWs {
             tag,
             path,
             tls_domain,
-            tls,
+            tls: want_tls,
             ..
         } => {
-            let mut ss = json!({
-                "network": "ws",
-                "wsSettings": { "path": ws_path(path)? },
-            });
-            if *tls == Some(false) && wants_tls(tls_domain, None) {
+            let tag = tag_or(tag, format!("vmess-ws-{port}"));
+            let ws = transport::ws(&ws_path(path)?, None);
+            if *want_tls == Some(false) && wants_tls(tls_domain, None) {
                 return Err(bad_request!(
                     "template.tls_domain_without_tls",
                     "tls is false but tls_domain is set"
                 ));
             }
-            if wants_tls(tls_domain, *tls) {
+            let sec = if wants_tls(tls_domain, *want_tls) {
                 let d = cert_domain(tls_domain, node_domain, "tls_domain")?;
-                ss["security"] = json!("tls");
-                ss["tlsSettings"] = tls_settings(&d, &["http/1.1"]);
-            }
-            json!({
-                "tag": tag_or(tag, format!("vmess-ws-{port}")),
-                "port": port,
-                "protocol": "vmess",
-                "settings": { "clients": [] },
-                "streamSettings": ss,
-            })
+                tls(&d, &ws.kind)
+            } else {
+                Security::None
+            };
+            inbound(tag, Protocol::Vmess, ws, sec)
         }
         InboundSpec::TrojanTls { tag, domain: d, .. } => {
             let d = cert_domain(d, node_domain, "domain")?;
-            json!({
-                "tag": tag_or(tag, format!("trojan-{port}")),
-                "port": port,
-                "protocol": "trojan",
-                "settings": { "clients": [] },
-                "streamSettings": {
-                    "network": "tcp",
-                    "security": "tls",
-                    "tlsSettings": tls_settings(&d, &["h2", "http/1.1"]),
-                },
-            })
+            let tcp = transport::tcp();
+            let sec = tls(&d, &tcp.kind);
+            inbound(
+                tag_or(tag, format!("trojan-{port}")),
+                Protocol::Trojan,
+                tcp,
+                sec,
+            )
         }
     })
+}
+
+/// Render one template into an xray inbound (`build_one` + the xray
+/// adapter).
+pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value, ApiError> {
+    Ok(crate::protocols::xray::render(&build_one(
+        spec,
+        node_domain,
+    )?))
 }
 
 /// Render a list of templates, refusing duplicate ports (also against
@@ -771,19 +737,7 @@ pub fn render(
 }
 
 /// Does any inbound read the node's TLS certificate files?
-pub fn needs_certificate(inbounds: &Value) -> bool {
-    inbounds.as_array().is_some_and(|a| {
-        a.iter().any(|i| {
-            i.pointer("/streamSettings/tlsSettings/certificates")
-                .and_then(Value::as_array)
-                .is_some_and(|c| {
-                    c.iter().any(|c| {
-                        c.get("certificateFile").and_then(Value::as_str) == Some(TLS_CERT_FILE)
-                    })
-                })
-        })
-    })
-}
+pub use crate::protocols::xray::needs_certificate;
 
 // ---------------------------------------------------------------------------
 // API
@@ -842,7 +796,7 @@ pub async fn catalog(user: AuthUser) -> Result<Json<TemplateCatalog>, ApiError> 
     user.require_admin()?;
     Ok(Json(TemplateCatalog {
         reality_dests: REALITY_DESTS,
-        fingerprints: crate::sub::FINGERPRINTS,
+        fingerprints: &security::FINGERPRINTS,
         tls_cert_dir: "/etc/akari-agent/tls",
         ss_methods: crate::protocols::SS_METHODS
             .iter()
@@ -1065,6 +1019,7 @@ async fn probe_dest(host: &str, port: u16) -> Result<CheckDestView, String> {
 mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD as STANDARD_B64;
+    use serde_json::json;
 
     /// Templates without a node TLS domain (the pre-W10 behaviour).
     fn render(specs: &[InboundSpec], taken: &[u16]) -> Result<Vec<Value>, ApiError> {
