@@ -1302,7 +1302,10 @@ Caddy obtains new certificates on the new host (the main domain at start, the ot
 
 ## Installer tests (CI)
 
-`.github/workflows/ci.yml`, jobs `installer-*`, scripts in `scripts/installer-test/`:
+`.github/workflows/ci.yml`, jobs `installer-*`, scripts in `scripts/installer-test/`. On pull
+requests they run when the installer, the deploy bundle, backup/restore or the Dockerfile change
+(`scripts/ci-changes.sh` group `installer`) or with the `full-ci` label; always on main, nightly
+and before a release.
 
 - `installer (build)`: the PR's static binary and image, made like a release, versioned
   `<version>-ci.<run>`; `make-release.sh` turns them into a local release (GitHub layout, signed

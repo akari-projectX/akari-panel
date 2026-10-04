@@ -9,7 +9,7 @@ Cargo.toml 在仓库根（文档里的 `panel/` 前缀是拆仓前的旧路径�
 |---|---|---|
 | `src/` | 全部 Rust 代码（`lib.rs` = crate `akari_panel` 的全部模块，`main.rs` = CLI/启动入口；全局分配器 mimalloc） | `src/CLAUDE.md` |
 | `bench/` | M2 基准与压测工具 crate（独立 workspace + lockfile，**不在**面板依赖图/发布二进制里）：`akari-bench seed/explain/http/swarm/lb/retention/multi` + criterion；专用 PG/Valkey 栈 `bench/compose.yml`（端口 5433/6380，不碰开发栈） | `docs/PERF.md` |
-| `fuzz/` | cargo-fuzz 目标（独立 crate + lockfile + 钉住的 nightly，**不在**面板依赖图里）：Alipay 通知/同步响应、入站 JSON/模板/订阅、客户端 IP、域名/Host、CSR、发布 manifest/签名/版本、agent 上行消息（流量缓冲区不变量、心跳 blob）、`deny_unknown_fields` 请求体与日志脱敏、W15 邮箱地址/注册与重置请求体/邮件模板转义；库以 `--cfg fuzzing` 编译出 `src/fuzzing.rs` 入口。种子与回归输入 `fuzz/seeds/`，CI `fuzz.yml`（PR 每目标 20s、夜间 5min） | `docs/FUZZING.md` |
+| `fuzz/` | cargo-fuzz 目标（独立 crate + lockfile + 钉住的 nightly，**不在**面板依赖图里）：Alipay 通知/同步响应、入站 JSON/模板/订阅、客户端 IP、域名/Host、CSR、发布 manifest/签名/版本、agent 上行消息（流量缓冲区不变量、心跳 blob）、`deny_unknown_fields` 请求体与日志脱敏、W15 邮箱地址/注册与重置请求体/邮件模板转义；库以 `--cfg fuzzing` 编译出 `src/fuzzing.rs` 入口。种子与回归输入 `fuzz/seeds/`，CI `fuzz.yml`（每目标 20s：main、发版前、改了 fuzz 编译范围或带 `full-ci` 的 PR；夜间 5min） | `docs/FUZZING.md` |
 | `spa/` | React 19 + Vite 8 + Tailwind 4 前端 | `spa/CLAUDE.md` |
 | `migrations/` | sqlx 迁移（启动时自动执行） | `migrations/CLAUDE.md` |
 | `proto/` | **控制协议正本** `agent.proto`；W26 协议能力清单 `protocols.toml`（同样同步给 agent） | `proto/CLAUDE.md` |
@@ -19,7 +19,7 @@ Cargo.toml 在仓库根（文档里的 `panel/` 前缀是拆仓前的旧路径�
 | `deploy/` | systemd 单元、生产 compose、Caddy/nginx、Prometheus 告警、Grafana 面板 | `docs/DEPLOY.md` |
 | `docs/PAYMENTS.md` | 支付宝当面付：配置、沙箱、通知 URL、对账、实测记录 | — |
 | `scripts/` | `install.sh`（面板一键安装器 = 装好后的 `akari-ctl`：裸机/Docker 安装、升级、卸载、迁移、备份；POSIX sh）、`release-bundle.sh`（发布资产 install.sh + akari-deploy.tar.gz）、`installer-test/`（安装器 e2e：systemd 容器 + 本机，CI `installer-*`）、`backup.sh`/`restore.sh`（age 加密或显式明文）、`restore-drill.sh`（开发栈恢复演练）、`third-party.py`（二进制的第三方许可清单，`make third-party`） | `docs/DEPLOY.md`、`docs/BACKUP.md` |
-| `.github/workflows/` | `ci.yml`（含 docker build、`bench-tooling` fmt/clippy）、`bench.yml`（手动：种子数据 + criterion，工件 `target/criterion`；噪声大，只看趋势）、`release.yml`（tag `v*`：构建、SBOM、cosign 无密钥签名、GitHub Release、ghcr 镜像） | — |
+| `.github/workflows/` | `ci.yml`（含 docker build、`bench-tooling` fmt/clippy；**W37 分级**见下文「CI 分级」）、`bench.yml`（手动：种子数据 + criterion，工件 `target/criterion`；噪声大，只看趋势）、`release.yml`（tag `v*`：先以 workflow_call 跑全套 ci.yml + fuzz.yml，通过后才推镜像/建 Release；构建、SBOM、cosign 无密钥签名、GitHub Release、ghcr 镜像） | — |
 | `data/` | 运行时生成：route prefix、CA、jwt.key、totp.key（gitignored，机密；totp.key 丢失 = 所有 2FA 账户需 `admin reset-2fa`；CA 丢失 = 所有节点需 `node enroll-token` 重新注册） | — |
 
 ## 命令
@@ -46,6 +46,13 @@ make smoke         # 全量构建 + smoke.sh（会 TRUNCATE PG、FLUSHDB 本次 
 ./target/release/akari --version      # 版本 + git sha（build.rs，Docker 构建用 AKARI_GIT_SHA）
 make third-party   # target/THIRD_PARTY_LICENSES.txt：链接的 crate + SPA 打包的 npm 包及其许可原文（发布资产；需 cargo fetch、spa npm ci）
 ```
+
+## CI 分级（W37）
+
+- **每个 PR 都跑（快速）**：`rust (fmt, clippy, test)`（含真库测试）、`spa`、`cargo-deny`、`release keys`、`shellcheck`。
+- **按改动范围**：`changes` job 跑 `scripts/ci-changes.sh`（PR 合并提交 `HEAD^1..HEAD` 的文件列表 → 分组），重型 job 用 job 级 `if:` 决定真跑或跳过（跳过 = 成功，必需检查不会卡在 waiting；`changes` 失败时一律真跑）。分组：`rust`（coverage ≥90% 门、bench tooling）、`smoke`（src/migrations/proto/Cargo/smoke.sh/Makefile/compose/deploy/systemd）、`e2e`（spa/、`src/spa.rs`、`src/web.rs`、e2e.sh）、`installer`（install.sh、installer-test、deploy/、backup/restore、Dockerfile）、`docker`（Dockerfile、Cargo.lock/toml、spa 锁文件、toolchain、监控配置）、`fuzz`（fuzz.yml）。改 `.github/` 或该脚本 = 全部分组。新增重型 job 或新目录时同步更新脚本里的映射。
+- **全套**：push 到 main、每晚、`workflow_dispatch`、发版前（release.yml 调用）、以及带 **`full-ci` 标签**的 PR（涉及资金、认证、协议、并发的 PR 必须加）。
+- worker 本地只跑快速检查（`make check`、`cargo test`）；smoke/e2e/installer 只在 Actions 上跑。
 
 ## 跨仓 smoke 与合并顺序（W12）
 
