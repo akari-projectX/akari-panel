@@ -7,16 +7,19 @@
 #   BASE_IMAGE    debian:13 | ubuntu:24.04 (| debian:12 | ubuntu:22.04)
 #   RELEASES_DIR  local releases (make-release.sh): NEW_TAG = the build
 #                 under test, BROKEN_TAG = a deliberately broken release
-#   PREV_TAG      a published release installed first from GitHub (real
-#                 keyless cosign verification), then upgraded to NEW_TAG;
-#                 empty = install NEW_TAG directly
+#   PREV_TAG      a published v0.3.x release installed first from GitHub
+#                 (real keyless cosign verification); the upgrade to
+#                 NEW_TAG must be refused untouched (v0.4 baseline), then
+#                 it is purged and NEW_TAG installed fresh; empty = install
+#                 NEW_TAG directly
 #
 # Environment: ADDRESS=domain|ip (default domain: myapp.test with Caddy
 # local_certs; ip = IP-only), KEEP=1 keeps the container, EXTRA_CA = a CA
 # bundle to trust inside the container (TLS-intercepting proxies).
 #
-# Flow: install -> healthz through Caddy, admin login (API), user +
-# subscription -> upgrade (backup, switch, health) -> broken upgrade rolls
+# Flow: [PREV_TAG install -> refused upgrade -> purge] -> install ->
+# healthz through Caddy, admin login (API), user + subscription -> broken
+# upgrade (backup, switch, failed health) rolls
 # back -> uninstall keeps data -> reinstall: same prefix, same password,
 # same subscription -> age-encrypted backup -> uninstall --purge removes
 # everything but backups -> fresh install --restore from the encrypted
@@ -105,20 +108,29 @@ check_panel() {
 }
 
 if [ -n "$prev" ]; then
+	# v0.4 squashed the v0.3.x migrations (1000_baseline): upgrading a v0.3.x
+	# install must be refused before anything changes; then purge and
+	# install fresh.
 	log "install $prev from GitHub (keyless cosign) — bare, $address"
 	inst "$c" sh /src/scripts/install.sh --yes --mode bare --version "$prev" "${addr_args[@]}" || fail "install $prev"
 	check_panel "$prev"
-	PREFIX=$(prefix)
-	log "upgrade $prev -> $new"
-	inst "${local_rel[@]}" "$c" akari-ctl upgrade --yes --version "$new" || fail "upgrade to $new"
-else
-	log "install $new — bare, $address"
-	inst "${local_rel[@]}" "$c" sh /src/scripts/install.sh --yes --mode bare --version "$new" "${addr_args[@]}" || fail "install $new"
-	PREFIX=$(prefix)
+	log "upgrade $prev -> $new must be refused"
+	if inst "${local_rel[@]}" "$c" akari-ctl upgrade --yes --version "$new" >/tmp/akari-refused.log 2>&1; then
+		cat /tmp/akari-refused.log
+		fail "the upgrade from $prev was not refused"
+	fi
+	cat /tmp/akari-refused.log
+	grep -q 'fresh install required; see docs/DEPLOY.md' /tmp/akari-refused.log || fail "no clear refusal message"
+	cx sh -c 'ls -d /var/backups/akari/akari-* >/dev/null 2>&1' && fail "the refused upgrade made a backup"
+	cx grep -q "^VERSION=$prev\$" /etc/akari/install.env || fail "install.env changed by the refused upgrade"
+	check_panel "$prev"
+	echo "ok: upgrade from $prev refused cleanly"
+	inst "$c" sh /src/scripts/install.sh uninstall --yes --purge --confirm purge || fail "purge $prev"
 fi
+log "install $new — bare, $address"
+inst "${local_rel[@]}" "$c" sh /src/scripts/install.sh --yes --mode bare --version "$new" "${addr_args[@]}" || fail "install $new"
+PREFIX=$(prefix)
 check_panel "$new"
-[ "$(prefix)" = "$PREFIX" ] || fail "the prefix changed"
-cx sh -c 'ls /var/backups/akari/akari-*/db.dump >/dev/null 2>&1' || [ -z "$prev" ] || fail "no pre-upgrade backup"
 cx stat -c '%a %U' /var/lib/akari | grep -qx '700 akari' || fail "data dir is not 0700 akari"
 cx stat -c '%a %U:%G' /etc/akari/panel.toml | grep -qx '640 root:akari' || fail "panel.toml is not 0640 root:akari"
 for f in /etc/akari/valkey.conf /etc/akari/caddy.env /etc/akari/install.env /var/log/akari-install.log; do

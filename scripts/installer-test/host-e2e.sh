@@ -4,9 +4,10 @@
 #
 #   host-e2e.sh RELEASES_DIR NEW_TAG AGENT_BIN [PREV_TAG]
 #
-# 1. Docker mode: install PREV_TAG from GitHub (keyless cosign, ghcr image)
-#    -> login -> upgrade to NEW_TAG (local release, image in a local
-#    registry) -> login, same prefix -> uninstall --purge.
+# 1. Docker mode: install PREV_TAG (v0.3.x) from GitHub (keyless cosign,
+#    ghcr image) -> login -> the upgrade to NEW_TAG is refused untouched
+#    (v0.4 baseline: fresh install only) -> purge -> install NEW_TAG (local
+#    release, image in a local registry) -> login -> uninstall --purge.
 #    Without PREV_TAG: install NEW_TAG directly.
 # 2. Bare metal -> Docker -> bare metal on the same host: install NEW_TAG
 #    bare, enroll a real agent (AGENT_BIN), create a user; `akari-ctl
@@ -87,33 +88,44 @@ PY
 
 parts=${PARTS:-all}
 
-# --- 1. Docker mode: install, upgrade --------------------------------------------
+# --- 1. Docker mode: refused v0.3 upgrade, install --------------------------------------------
 if [ "$parts" = migrate ]; then
 	:
-elif [ -n "$prev" ]; then
-	log "docker: install $prev from GitHub"
-	sh "$root/scripts/install.sh" --yes --mode docker --version "$prev" --domain myapp.test --local-certs || fail "docker install $prev"
-	check_panel
-	P0=$(prefix)
-	log "docker: upgrade $prev -> $new"
-	local_rel akari-ctl upgrade --yes --version "$new" || fail "docker upgrade"
 else
+	if [ -n "$prev" ]; then
+		# v0.4 squashed the v0.3.x migrations (1000_baseline): the upgrade
+		# must be refused before anything changes; then purge.
+		log "docker: install $prev from GitHub"
+		sh "$root/scripts/install.sh" --yes --mode docker --version "$prev" --domain myapp.test --local-certs || fail "docker install $prev"
+		check_panel
+		img_before=$(grep '^AKARI_IMAGE=' /opt/akari/.env)
+		log "docker: upgrade $prev -> $new must be refused"
+		if local_rel akari-ctl upgrade --yes --version "$new" >"$work/refused.log" 2>&1; then
+			cat "$work/refused.log"
+			fail "the docker upgrade from $prev was not refused"
+		fi
+		cat "$work/refused.log"
+		grep -q 'fresh install required; see docs/DEPLOY.md' "$work/refused.log" || fail "no clear refusal message"
+		ls -d /var/backups/akari/akari-* >/dev/null 2>&1 && fail "the refused upgrade made a backup"
+		[ "$(grep '^AKARI_IMAGE=' /opt/akari/.env)" = "$img_before" ] || fail ".env changed by the refused upgrade"
+		check_panel
+		echo "ok: docker upgrade from $prev refused cleanly"
+		akari-ctl uninstall --yes --purge --confirm purge || fail "docker purge $prev"
+	fi
 	log "docker: install $new"
 	local_rel sh "$root/scripts/install.sh" --yes --mode docker --version "$new" --domain myapp.test --local-certs || fail "docker install $new"
 	P0=$(prefix)
 fi
 if [ "$parts" != migrate ]; then
 check_panel
-[ "$(prefix)" = "$P0" ] || fail "prefix changed by the upgrade"
 grep -q "^AKARI_IMAGE=.*:${new#v}@sha256:" /opt/akari/.env || fail ".env does not pin the new image by digest"
 [ "$(stat -c %a /opt/akari/.env)" = 600 ] || fail ".env is not 0600"
 [ "$(stat -c %a /opt/akari/env/panel.env)" = 600 ] || fail "env/panel.env is not 0600"
 grep -qF -e "$pw" -e "$P0" /var/log/akari-install.log && fail "a secret is in the install log"
-ls -d /var/backups/akari/akari-* >/dev/null 2>&1 || [ -z "$prev" ] || fail "no pre-upgrade backup"
 log "docker: uninstall --purge"
 akari-ctl uninstall --yes --purge --confirm purge || fail "docker purge"
 docker volume ls -q | grep -q '^akari_' && fail "volumes left after purge"
-echo "ok: docker install/upgrade/purge"
+echo "ok: docker install/purge"
 fi
 [ "$parts" != docker ] || { log "PASS: docker part"; exit 0; }
 
@@ -161,4 +173,4 @@ done
 log "cleanup"
 akari-ctl uninstall --yes --purge --confirm purge || fail "purge"
 (cd /opt/akari 2>/dev/null && docker compose down -v) >/dev/null 2>&1 || true
-log "PASS: host installer e2e (docker install/upgrade, bare <-> docker migration with a live agent)"
+log "PASS: host installer e2e (docker install + refused v0.3 upgrade, bare <-> docker migration with a live agent)"
