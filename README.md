@@ -693,3 +693,4 @@ Done: control plane, auth/REST API, embedded SPA, transitional subscription
 (REALITY/TLS/WS mapping, padding, hashed tokens — WS+gRPC transport mapping
 is partial). Next: repo split → akari-client MVP (mihomo embed) → seat
 binding (+ subscription retirement) → agent CSR/auto-update → payments.
+
