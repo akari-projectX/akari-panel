@@ -81,6 +81,11 @@ directory off the host (the files are ciphertext).
 
 ## Restore
 
+**Backups made by v0.3.x cannot be restored into v0.4**: v0.4 squashed the migrations into a new
+baseline (`migrations/1000_baseline.sql`) and the panel refuses a database whose history predates
+it (`database from v0.3.x — fresh install required`; docs/DEPLOY.md §5). Restore such a backup
+only with a v0.3.x binary.
+
 1. Stop the panel (`systemctl stop akari-panel` / `docker compose stop panel`). Agents keep
    running and reconnect by themselves.
 2. Provide an empty database (`createdb`) and a PostgreSQL >= 18 server.

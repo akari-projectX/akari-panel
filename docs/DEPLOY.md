@@ -36,6 +36,9 @@ akari-ctl uninstall                 # 卸载服务，保留数据与配置；--p
 
 - **备份加密**：在 `/etc/akari/install.env` 设置 `AGE_RECIPIENT=age1…`（`age-keygen` 生成，私钥离线保存），
   之后的备份（含升级前自动备份）都用 age 加密；未设置时为 0600 明文文件并给出警告（docs/BACKUP.md）。
+- **v0.3.x → v0.4 不能升级，只能全新安装**：v0.4 把迁移 0001–0168 压缩为新基线 `1000_baseline.sql`。
+  `akari-ctl upgrade` 在改动任何东西之前拒绝（`database from v0.3.x — fresh install required`），面板启动时也会拒绝
+  v0.3.x 的数据库；v0.3.x 的备份**不能**恢复到 v0.4。做法：`akari-ctl uninstall --purge --confirm purge` 后重新安装（见 §5）。
 - **换服务器**：旧机 `akari-ctl backup` → 把备份目录复制到新机 →
   新机 `curl … | sh -s -- --restore <目录>`（加密备份加 `--age-identity <私钥>`）→ 改 DNS。
   路由前缀、CA 与密钥不变，已注册的节点与订阅链接继续可用（§8）。
@@ -1001,6 +1004,24 @@ two or more for availability or headroom:
 
 ## 5. Upgrade (agents BEFORE the panel)
 
+### v0.3.x → v0.4: fresh install only
+
+v0.4 squashed migrations 0001–0168 into a single baseline, `migrations/1000_baseline.sql`
+(same schema; research/db-schema-review.md §7). A database created by v0.3.x cannot be upgraded in
+place:
+
+- `akari-ctl upgrade` from a v0.3.x installation stops **before anything is changed** (no backup,
+  no switch) with `database from v0.3.x — fresh install required; see docs/DEPLOY.md`;
+- the panel itself refuses to start on such a database (`db::migrate`: any `_sqlx_migrations`
+  version below 1000) with the same message — this also covers a hand-made deployment, a kept
+  data volume and a restored backup;
+- **backups made by v0.3.x cannot be restored into v0.4** (`install --restore` stops with the same
+  message after loading one).
+
+So: write down what you need (settings, plans, users), `akari-ctl uninstall --purge --confirm
+purge` (backups under `/var/backups/akari` are kept, but are v0.3-only), install v0.4 fresh, and
+re-enroll the nodes (重装命令). Upgrades between v0.4 releases work as below.
+
 **With the installer** (any installation made by it, or a §A compose checkout under
 `/opt/akari-panel/deploy` or `/opt/akari`, which it adopts):
 
@@ -1311,13 +1332,15 @@ and before a release.
   `<version>-ci.<run>`; `make-release.sh` turns them into a local release (GitHub layout, signed
   with a throwaway cosign key; plus a deliberately broken release `v9.9.9`).
 - `installer (bare, debian:13 / ubuntu:24.04)` — `bare-e2e.sh` in a fresh systemd container: the
-  latest published release installed from GitHub (real keyless verification) → healthz through
-  Caddy (`myapp.test` with `local_certs`, resp. IP-only), admin login over the API, a user and its
-  subscription → upgrade to the PR build → the broken release rolls back → uninstall keeps data,
+  latest published release (v0.3.x) installed from GitHub (real keyless verification), its
+  upgrade to the PR build is refused untouched (v0.4 baseline) → purge → fresh
+  install of the PR build → healthz through Caddy (`myapp.test` with `local_certs`, resp. IP-only),
+  admin login over the API, a user and its subscription → the broken release rolls back → uninstall keeps data,
   reinstall keeps prefix/password/subscription → age-encrypted backup → `--purge` → install
   `--restore` from that backup (host move).
 - `installer (host, docker + migration)` — `host-e2e.sh` on the runner: Docker install of the latest
-  release (ghcr image) → upgrade to the PR image (local registry, pinned by digest) → purge; bare
+  release (ghcr image) → its upgrade to the PR image refused untouched → purge → Docker install of
+  the PR image (local registry, pinned by digest) → purge; bare
   install of the PR build, a real agent (`../akari-agent`) enrolled, `migrate --to docker` and back
   `--to bare`: same prefix, the agent reconnects without re-enrolling, the subscription still answers.
 - `shellcheck` — `make shellcheck` (also part of `make check`).

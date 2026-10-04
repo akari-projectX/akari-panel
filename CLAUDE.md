@@ -11,7 +11,7 @@ Cargo.toml 在仓库根（文档里的 `panel/` 前缀是拆仓前的旧路径�
 | `bench/` | M2 基准与压测工具 crate（独立 workspace + lockfile，**不在**面板依赖图/发布二进制里）：`akari-bench seed/explain/http/swarm/lb/retention/multi` + criterion；专用 PG/Valkey 栈 `bench/compose.yml`（端口 5433/6380，不碰开发栈） | `docs/PERF.md` |
 | `fuzz/` | cargo-fuzz 目标（独立 crate + lockfile + 钉住的 nightly，**不在**面板依赖图里）：Alipay 通知/同步响应、入站 JSON/模板/订阅、客户端 IP、域名/Host、CSR、发布 manifest/签名/版本、agent 上行消息（流量缓冲区不变量、心跳 blob）、`deny_unknown_fields` 请求体与日志脱敏、W15 邮箱地址/注册与重置请求体/邮件模板转义；库以 `--cfg fuzzing` 编译出 `src/fuzzing.rs` 入口。种子与回归输入 `fuzz/seeds/`，CI `fuzz.yml`（每目标 20s：main、发版前、改了 fuzz 编译范围或带 `full-ci` 的 PR；夜间 5min） | `docs/FUZZING.md` |
 | `spa/` | React 19 + Vite 8 + Tailwind 4 前端 | `spa/CLAUDE.md` |
-| `migrations/` | sqlx 迁移（启动时自动执行） | `migrations/CLAUDE.md` |
+| `migrations/` | sqlx 迁移（启动时自动执行；v0.4 基线 `1000_baseline.sql`） | `migrations/CLAUDE.md` |
 | `proto/` | **控制协议正本** `agent.proto`；W26 协议能力清单 `protocols.toml`（同样同步给 agent） | `proto/CLAUDE.md` |
 | `build.rs` | protox 编译 proto；缺前端产物时写占位 `spa/dist/app/index.html`、`spa/dist/admin/admin.html` | — |
 | `smoke.sh` | 跨仓端到端验收（需 `../akari-agent`） | — |
@@ -65,6 +65,7 @@ make third-party   # target/THIRD_PARTY_LICENSES.txt：链接的 crate + SPA 打
 - **拒绝同构**：任何"拒绝"（`/`、错前缀、裸前缀、未匹配路由、错误方法、坏 token、缺资源）都必须返回 `reject::not_found()`：404、空 body、不带安全头，除 `Date` 外字节同构（smoke 断言）；订阅失败绝不带 quota 头。没有伪装站。
 - **前后台拆分（R23）**：用户门户 `/{prefix}/app`（公开；也是共用的登录页）与管理后台 `/{prefix}/admin` 是两个独立构建（`spa/dist/app`、`spa/dist/admin`，`spa.rs` 两个 rust-embed）。**门户产物不得含任何后台代码**（构建期依赖图守卫 + `spa/scripts/check-bundles.mjs` 标记 grep，smoke 对实际下发的文件再跑一次）；**后台 index 与资源只对管理员会话下发**（`SessionUser` role=admin，含 `require_admin_2fa` 的 enroll 会话；`private, no-store`），无 cookie/用户会话/伪造或吊销会话/DB 错误一律 `reject::not_found()`（字节同构，`spa::tests` + smoke + e2e 断言）。主域名已在系统设置里配置（R22 Host 闸门开启）时，后台只在主域名与 IP 字面量上下发，订阅域名等其他名称上同样拒绝（R23-3，`spa::console_host`）。门户资源 `/{prefix}/assets/*` immutable，后台资源只在 `/{prefix}/admin/assets/*`。
 - **PostgreSQL ≥ 18**：计费依赖 `RETURNING old/new`；`db::migrate` 启动时校验版本。
+- **迁移基线 1000（v0.4）**：0001–0168 已压缩为 `migrations/1000_baseline.sql`；`db::migrate` 遇到任何 version < 1000 的 `_sqlx_migrations` 行即拒绝启动（v0.3.x 的库只能全新安装，`akari-ctl upgrade` 也在改动前拒绝；docs/DEPLOY.md §5）。新迁移只能落在本任务的编号区间内（W27 1010–1029、W28 1030–1059、W29 1060–1064、W30 1065–1069、W31 1070–1074、W32 1075–1079、W33 1080–1084、W36 1085–1089、阶段 C–E 修复 1090–1099），v0.4 期间"在自己的区间内递增"即可；细则见 `migrations/CLAUDE.md`。
 - **路由**：所有路由带 `/{prefix}` 参数，`Path` 提取器用 `(String, ...)` 元组吃掉前缀；axum 路由匹配先于中间件，不要改成"中间件剥前缀"。
 - **收敛**：面板是唯一事实源。改变节点/用户期望状态的操作都是 `apply_*(&mut PgConnection, …)`：写库 + bump 受影响节点的 `config_version`/`user_version` 在**同一事务**；版本变化由 `nodes` 上的触发器（0007）在同一事务内 `pg_notify('akari_change', <node id>)`，提交后投递到所有面板实例（没有进程内通知路径，handler 提交后什么都不用做）。全局加锁顺序：nodes（`ORDER BY id FOR UPDATE`）→ users → node_users。`api::tests::every_access_change_bumps_affected_nodes` 是这条规则的表驱动测试，新增 mutator 必须加进去。
 - **禁用即停用**：禁用节点的期望状态 = 无 inbound、无用户（不拒绝连接）；启用/禁用都 bump `config_version`。用户期望集 = `enforce::SERVED`：role=user、enabled、未过期（DB 时钟）。**管理员账户不是代理用户**：不下发到节点、订阅返回拒绝、不能被分配（400）、不受流量上限禁用；user→admin 会移除其节点访问，admin→user 恢复。每个会话另有 60s 对账 tick。

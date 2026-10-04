@@ -415,9 +415,11 @@ jobs:
 
   installer-bare:
     # scripts/installer-test/bare-e2e.sh in a fresh systemd container: the
-    # latest published release installed by the PR's installer from GitHub
-    # (keyless cosign) -> upgrade to the PR build (local release, signed with
-    # a throwaway cosign key) -> a deliberately broken release rolls back ->
+    # latest published release (v0.3.x) installed by the PR's installer from
+    # GitHub (keyless cosign) -> its upgrade to the PR build is refused
+    # untouched (v0.4 baseline: fresh install only) -> purge -> fresh install
+    # of the PR build (local release, signed with a throwaway cosign key) ->
+    # a deliberately broken release rolls back ->
     # uninstall keeps data / reinstall -> age-encrypted backup -> purge ->
     # install --restore (host move).
     name: installer (bare, ${{ matrix.base }}, ${{ matrix.address }})
@@ -456,8 +458,9 @@ jobs:
 
   installer-host:
     # scripts/installer-test/host-e2e.sh on the runner itself (systemd,
-    # Docker): Docker mode = the latest published release (ghcr image) ->
-    # upgrade to the PR build (image in a local registry, pinned by digest);
+    # Docker): Docker mode = the latest published release (ghcr image), its
+    # upgrade to the PR build refused untouched (v0.4 baseline) -> purge ->
+    # fresh install of the PR build (image in a local registry, by digest);
     # then bare metal with a real agent (../akari-agent) -> `akari-ctl
     # migrate --to docker` -> `--to bare`: same prefix, the agent reconnects
     # without re-enrolling, the subscription link keeps working.

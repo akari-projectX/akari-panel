@@ -1026,6 +1026,27 @@ migration_version() {
 	fi
 }
 
+# migration_min_version: the oldest applied migration (0 = none / unreadable).
+migration_min_version() {
+	if [ "$MODE" = bare ]; then
+		psql_pg -At -d akari -c 'SELECT coalesce(min(version), 0) FROM _sqlx_migrations' 2>/dev/null || echo 0
+	else
+		dc exec -T postgres psql -X -At -U akari -d akari -c 'SELECT coalesce(min(version), 0) FROM _sqlx_migrations' 2>/dev/null || echo 0
+	fi
+}
+
+# refuse_pre_baseline: v0.4 squashed migrations 0001-0168 into 1000_baseline;
+# a database created by v0.3.x cannot be upgraded in place (the panel would
+# refuse it at start too, db::migrate). Checked before anything is changed.
+refuse_pre_baseline() {
+	v=$(migration_min_version | tr -dc 0-9)
+	if [ -n "$v" ] && [ "$v" -ge 1 ] && [ "$v" -lt 1000 ]; then
+		die "数据库来自 v0.3.x：需要全新安装，见 docs/DEPLOY.md（未做任何改动）" \
+			"database from v0.3.x — fresh install required; see docs/DEPLOY.md (nothing was changed)"
+	fi
+	return 0
+}
+
 admin_count() {
 	if [ "$MODE" = bare ]; then
 		psql_pg -At -d akari -c "SELECT count(*) FROM users WHERE role = 'admin'" 2>/dev/null || echo 0
@@ -1222,6 +1243,8 @@ install_bare() {
 	if [ -n "$RESTORE_DIR" ]; then
 		restore_into
 	fi
+	# A database kept from a v0.3.x install, or a v0.3.x backup just restored.
+	refuse_pre_baseline
 	run akari_cli config check || die '配置校验失败（akari config check，见日志）' 'configuration check failed (akari config check, see the log)'
 	prefix=$(prefix_bare)
 	[ -n "$prefix" ] || die '无法读取路由前缀' 'cannot read the route prefix'
@@ -1255,6 +1278,7 @@ install_docker_mode() {
 		run dc up -d postgres valkey
 		wait_docker_pg
 		restore_into
+		refuse_pre_baseline
 	fi
 	prefix=$(docker_prefix)
 	[ -n "$prefix" ] || die '无法读取路由前缀' 'cannot read the route prefix'
@@ -1342,6 +1366,7 @@ cmd_upgrade() {
 		[ -n "$MODE" ] || adopt
 	fi
 	[ "$MODE" != bare ] || check_systemd
+	refuse_pre_baseline
 	base_packages
 	TAG=$(resolve_tag "$VERSION_REQ")
 	if [ "$TAG" = "$CUR_VERSION" ] && [ "$FORCE" != 1 ]; then
