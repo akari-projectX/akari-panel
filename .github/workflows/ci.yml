@@ -1,11 +1,26 @@
 name: ci
 
+# W37 tiered CI. Fast checks (rust, spa, cargo-deny, release keys,
+# shellcheck) run on every PR. Heavy jobs (coverage, bench tooling, smoke,
+# e2e, docker, installer) run only when the `changes` job finds a path they
+# cover (scripts/ci-changes.sh); otherwise they are skipped by their
+# job-level `if:`, which reports success, so the required checks never wait.
+# Everything runs on pushes to main, nightly, on dispatch, from release.yml
+# (workflow_call, before anything is published), and on PRs labelled
+# `full-ci`.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
   schedule:
     - cron: "17 3 * * *" # nightly: advisories appear without code changes; smoke drift
+  workflow_call:
+    inputs:
+      agent_ref:
+        description: akari-agent ref for the smoke job
+        type: string
+        default: main
   workflow_dispatch:
     inputs:
       agent_ref:
@@ -32,6 +47,31 @@ env:
   VALKEY_URL: redis://127.0.0.1:6379
 
 jobs:
+  changes:
+    # Which heavy job groups this run needs (scripts/ci-changes.sh). A PR
+    # checkout is GitHub's merge commit: its first parent is the base
+    # branch head, so `HEAD^1 HEAD` is exactly what merging would change.
+    # Fail-safe: when this job fails, the gated jobs run (their `if:` only
+    # skips on an explicit "false").
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.c.outputs.rust }}
+      smoke: ${{ steps.c.outputs.smoke }}
+      e2e: ${{ steps.c.outputs.e2e }}
+      installer: ${{ steps.c.outputs.installer }}
+      docker: ${{ steps.c.outputs.docker }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+      - id: c
+        env:
+          FULL: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+        run: |
+          if [ "$FULL" = true ]; then scripts/ci-changes.sh full; else scripts/ci-changes.sh HEAD^1 HEAD; fi
+
   rust:
     name: rust (fmt, clippy, test)
     runs-on: ubuntu-latest
@@ -70,6 +110,8 @@ jobs:
     # The M2 benchmark/load crate (bench/, own lockfile) must keep building
     # against the panel library; running the benchmarks is bench.yml.
     name: bench tooling (fmt, clippy)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -148,6 +190,8 @@ jobs:
     # The release Dockerfile must keep building (no push): static binary,
     # non-root distroless runtime, version stamped.
     name: docker build (no push)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docker != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -169,8 +213,10 @@ jobs:
     # Browser end-to-end (Playwright, Chromium) against a real panel serving
     # the embedded SPA with its real CSP (no bypass): login with and without
     # 2FA, language switch, styled admin pages, no CSP violations.
-    # Non-required while it settles (OPUS-GUIDE A17).
+    # Required check; W37: runs when the SPA (or what serves it) changes.
     name: e2e (playwright, real CSP)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -201,9 +247,11 @@ jobs:
   smoke:
     # Cross-repo end-to-end (smoke.sh). Needs the sibling layout
     # ../akari-agent, so both repos are checked out under the workspace dir.
-    # Runs on PRs, pushes and nightly; promote to a required check once it
-    # has been green for ~10 consecutive runs (see ROADMAP S4-4).
+    # Required check; W37: runs when the backend, migrations or the
+    # contract change (agent changes: akari-agent's own smoke job).
     name: smoke (panel + agent e2e)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.smoke != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -256,6 +304,8 @@ jobs:
     # suite including the real-database tests; fails below the per-module
     # threshold (scripts/coverage-gate.py, docs/FUZZING.md).
     name: coverage (billing core >= 90%)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     services:
@@ -314,6 +364,8 @@ jobs:
     # (`prebuilt`), versioned <Cargo version>-ci.<run> so that the
     # installer sees an upgrade from the latest published release.
     name: installer (build)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.installer != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:

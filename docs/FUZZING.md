@@ -61,8 +61,13 @@ add a unit test at the bug, and move the input to `seeds/<target>/regress-*`.
 
 ### CI (`.github/workflows/fuzz.yml`)
 
-- pull requests and pushes: every target 20 s (about 4 min of fuzzing plus
-  the build) — catches regressions against the seeds and the cached corpus;
+- pushes to main, and pull requests that change what the targets compile
+  (`src/`, `fuzz/`, `Cargo.*`, the toolchain; `scripts/ci-changes.sh` group
+  `fuzz`) or carry the `full-ci` label: every target 20 s (about 4 min of
+  fuzzing plus the build) — catches regressions against the seeds and the
+  cached corpus; other PRs skip the job (W37);
+- before a release: `release.yml` runs the same 20 s pass on the tagged
+  commit and publishes nothing unless it passes;
 - nightly (03:47 UTC): every target 5 min (50 min);
 - manual (`workflow_dispatch`): choose the seconds per target.
 
