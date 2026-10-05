@@ -227,14 +227,14 @@ separate loopback listener, never on the public port.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| POST | /auth/login | — | `{login, password, code?}`: argon2id + TOTP/recovery code, sets session cookie. W20: the right password of a 2FA account **without** a code → 401 `{"error":"totp required","totp_required":true}` (the form then asks for the code); every other failure is the uniform 401 |
+| POST | /auth/login | — | `{login, password, code?}`: argon2id + TOTP/recovery code, sets session cookie; the body carries `expired`, `quota_exhausted` (R21) and `banned` (W28-c: a banned role=user account signs in to the portal scope*). W20: the right password of a 2FA account **without** a code → 401 `{"error":"totp required","totp_required":true}` (the form then asks for the code); every other failure is the uniform 401 |
 | POST | /auth/logout | — | clears the cookie and ends all of the account's sessions |
 | GET | /auth/options | — | W15: what the login page offers `{register, invite_required, email_domains, reset}` |
 | POST | /auth/register/code | — (registration on) | W15: `{email, invite_code?, locale?}` → `{"ok":true}` for every address (a code by mail, or an "already registered" mail); rate limited per client and address |
 | POST | /auth/register | — (registration on) | W15: `{email, code, password, invite_code?, locale?}` → account (login = address, verified) + session; wrong/expired/used code = 400 `invalid or expired code` |
 | POST | /auth/password-reset/request | — (reset on) | W15: `{email}` → `{"ok":true}` for every address; a 30-minute single-use link goes to a verified address |
 | POST | /auth/password-reset | — (reset on) | W15: `{token, password}`: new password, every session ends |
-| GET | /api/v1/me | user (renewal scope*) | profile + traffic usage; `expired` / `quota_exhausted` (R21); W20: `sub_token` + `sub_url` (the subscription link, `Cache-Control: no-store`; null for admins and the renewal scope; an account without a token gets one here), `sub_legacy` (pre-W20 link: works, cannot be shown until reset), `probe_interval_secs` |
+| GET | /api/v1/me | user (portal scope*) | profile + traffic usage; `expired` / `quota_exhausted` (R21); W28-c `banned`, `ban_reason` (written by the admin for the user), `banned_at`; W20: `sub_token` + `sub_url` (the subscription link, `Cache-Control: no-store`; null for admins and the renewal scope; an account without a token gets one here), `sub_legacy` (pre-W20 link: works, cannot be shown until reset), `probe_interval_secs` |
 | GET | /api/v1/me/totp | any session | session stage, 2FA state (never the secret) |
 | POST | /api/v1/me/totp/enroll | any session | new pending TOTP secret (shown once) |
 | POST | /api/v1/me/totp/confirm | any session | `{code}`: activate 2FA, returns 10 recovery codes once |
@@ -256,11 +256,14 @@ separate loopback listener, never on the public port.
 | POST | /api/v1/mail/outbox/{id}/retry | admin | W15: re-queue a dead letter (not for expired codes/links) |
 | POST | /api/v1/me/password | user/admin | `{current_password, new_password}`: change own password (wrong current = 400, counts against the login rate limit; other sessions end, this one continues) |
 | GET | /api/v1/audit | admin | audit log, `?limit&before&actor&action` (keyset, newest first) |
-| GET/POST | /api/v1/users | admin | list / create users |
-| PATCH/DELETE | /api/v1/users/{id} | admin | update / delete user |
-| GET | /api/v1/users/{id}/nodes | admin | the account's node access: node, region, state, inbound tags/protocols, plan-granted or manual (no credentials) |
+| GET/POST | /api/v1/users | admin | list (`?q&plan_id&status=active\|expired\|quota\|banned&role&sort&limit&offset`) / create `{login, password, role?, email?, plan?: {plan_id, period, days?}}` (D12: the plan and its term, assigned in the same transaction; never a traffic limit or expiry) |
+| GET | /api/v1/users/{id} | admin | D12/W28-c detail: the list row + `subscription` (null without a plan: `{user_plan_id, plan_id, plan_name, period, period_days, starts_at, expires_at, traffic_used_bytes, traffic_total_bytes, reset_period, last_reset_at, next_reset_at, speed_limit_mbps, status: active\|expired\|over_quota\|banned}`) + `ban` (null unless banned: `{reason, banned_at, banned_by_id, banned_by_email}`) |
+| PATCH/DELETE | /api/v1/users/{id} | admin | update `{password?, role?}` (D12: no `traffic_limit_bytes`/`expires_at`; W28-c: no `enabled` — ban instead; unknown fields 400) / delete user |
+| POST | /api/v1/users/{id}/ban | admin | W28-c `{reason}` (1–500 characters, shown to the user): disable (`disabled_reason = admin`), every node drops the user at once (live connections cut), every session ends, the subscription is the canonical rejection; banning again replaces the reason; not yourself (400 `user.ban_self`), not the last enabled admin (409); audited `user.ban`; returns the detail |
+| POST | /api/v1/users/{id}/unban | admin | W28-c: lift a ban (409 `user.not_banned` otherwise); audited `user.unban`; returns the detail |
 | POST/DELETE | /api/v1/users/{id}/nodes/{node_id} | admin | manual override: assign (generates account, pins the pair) / remove (hands a plan-granted pair back to the plan; 409 on plan-managed rows) |
-| GET/PUT/PATCH/DELETE | /api/v1/users/{id}/plan | admin | active plan + history / assign or change `{plan_id, expires_at?, period_anchor?, reset_traffic?}` / `{expires_at?, period_anchor?}` / cancel |
+| GET/PUT/PATCH/DELETE | /api/v1/users/{id}/plan | admin | active plan + history (with `period`/`period_days`) / D12 assign or change `{plan_id, period, days?}` (period = month…three_year, `days` (needs days), `onetime` (days optional = permanent); not `reset`; from now, usage zeroed) / renew `{period, days?}` (one more term) or `{extend_days}` (1–3650; not for `onetime` purchases: 409 `user_plan.extend_onetime`), both from max(expiry, now) (no expiry: 409 `user_plan.no_expiry`) / cancel (no plan: 409 `user_plan.none`) |
+| POST | /api/v1/users/{id}/plan/reset-traffic | admin | D12 `{confirm: true}`: zero the plan traffic (reset schedule unchanged, a quota-disabled account re-enabled, never a banned one); audited `user.traffic.reset`; returns `{subscription}` |
 | GET/POST | /api/v1/node-groups | admin | list / create `{name, description?, node_ids?}` |
 | PATCH/DELETE | /api/v1/node-groups/{id} | admin | rename, describe, replace `node_ids` / delete |
 | GET/POST | /api/v1/plans | admin | list / create `{name, period, traffic_quota_bytes?, speed_limit_mbps?, device_seats?, sort?, enabled?, group_ids?, description?, capacity?, renewal_only?, allow_switch_in?}` (views include `on_sale` and `prices`) |
@@ -299,7 +302,7 @@ separate loopback listener, never on the public port.
 | GET | /api/v1/users/export.csv | admin | Ops: users CSV with the list filters `?q&plan_id&status&role&sort` (streamed, UTF-8 BOM, formula-safe; audited) |
 | GET | /api/v1/traffic/export.csv | admin | Ops: fleet traffic history CSV `?from&to&group=day\|node` (audited) |
 | POST | /api/v1/users/batch/preview | admin | Ops: `{selection: {ids} \| {filter}}` → `{total, admins, sample}` |
-| GET/POST | /api/v1/users/batch | admin | Ops: recent jobs / create `{selection, action: {kind: extend_expiry\|reset_traffic\|enable\|disable\|set_plan\|cancel_plan\|add_balance\|send_email, …}}` → 202 + job (runs in the background, each user once through the existing `apply_*`, audited per user) |
+| GET/POST | /api/v1/users/batch | admin | Ops: recent jobs / create `{selection, action: {kind: extend_expiry {days} (periodic subscriptions only)\|reset_traffic\|ban {reason}\|unban\|set_plan {plan_id, period, days?}\|cancel_plan\|add_balance\|send_email, …}}` → 202 + job (runs in the background, each user once through the existing `apply_*`, audited per user) |
 | GET | /api/v1/users/batch/{id} | admin | Ops: job progress + items (failed/skipped first) ; `POST …/cancel` skips what is still pending |
 | GET/POST | /api/v1/coupon-batches | admin | Ops: batches / generate `{name?, prefix?, count ≤5000, length?, kind, value, …coupon terms, max_uses (per code, default 1)}` |
 | POST | /api/v1/coupon-batches/{id}/revoke | admin | Ops: disable every code of the batch (once) |
@@ -315,9 +318,9 @@ separate loopback listener, never on the public port.
 | GET/PUT | /api/v1/commission-settings | admin | W16: `{enabled, rate_percent, first_order_only, hold_days, min_withdrawal_cents}` |
 | GET | /api/v1/withdrawals | admin | W16: withdrawal requests `?status&login&limit` |
 | POST | /api/v1/withdrawals/{id}/approve \| reject | admin | W16: `{payout_reference, note?}` after paying out by hand / `{reason}` (amount back to the balance) |
-| GET/POST | /api/v1/me/tickets | user (renewal scope*) | W17: own tickets (unread markers) / open `{subject, category, priority?, message, order_id?, node_id?}` (5/hour, at most 5 not closed) |
-| GET | /api/v1/me/tickets/{id} | user (renewal scope*) | W17: own ticket + messages (staff shown as staff, never by login); marks replies read. Anyone else's / unknown / malformed id = the canonical rejection |
-| POST | /api/v1/me/tickets/{id}/replies \| close | user (renewal scope*) | W17: `{message}` (30/hour; 409 when closed) / close |
+| GET/POST | /api/v1/me/tickets | user (portal scope*) | W17: own tickets (unread markers) / open `{subject, category, priority?, message, order_id?, node_id?}` (5/hour, at most 5 not closed) |
+| GET | /api/v1/me/tickets/{id} | user (portal scope*) | W17: own ticket + messages (staff shown as staff, never by login); marks replies read. Anyone else's / unknown / malformed id = the canonical rejection |
+| POST | /api/v1/me/tickets/{id}/replies \| close | user (portal scope*) | W17: `{message}` (30/hour; 409 when closed) / close |
 | GET | /api/v1/tickets | admin | W17: queue `?status=open\|answered\|closed\|active&category&priority&assignee=me\|none\|<id>&unread=true&q&page` + open/unread counters |
 | GET | /api/v1/tickets/{id} | admin | W17: ticket + thread (marks the customer's messages read) |
 | POST | /api/v1/tickets/{id}/replies \| close \| reopen | admin | W17: `{message, close?}` / close / reopen |
@@ -333,7 +336,7 @@ separate loopback listener, never on the public port.
 | GET | /install/{token}[/agent/{arch}] | install link | node install script / agent binary while the link is live (docs/DEPLOY.md §3) |
 | GET | /healthz | — | panel liveness |
 
-\* Renewal scope (R21): also reachable by an expired or quota-disabled `role=user` account (login answers `expired` / `quota_exhausted`), together with `/me/plan` and `/me/password`; everything that serves or reveals proxy access (subscription, sub-token, 2FA) stays refused. Accounts disabled for any other reason cannot log in.
+\* Renewal scope (R21): also reachable by an expired or quota-disabled `role=user` account (login answers `expired` / `quota_exhausted`), together with `/me/plan` and `/me/password`; everything that serves or reveals proxy access (subscription, sub-token, 2FA) stays refused. Portal scope (W28-c): the renewal scope's `GET /me` and tickets are also reachable by a **banned** `role=user` account (login answers `banned`); every other endpoint answers it 403 `account.banned`. A disabled admin account cannot log in.
 
 Defaults bind web on `127.0.0.1:8080` and gRPC on `127.0.0.1:8443`; override
 via `panel.toml` (start-up keys only, see `deploy/panel.toml.example`) or
@@ -506,12 +509,20 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   (with the client, R25) and **not enforced**. A disabled plan is no longer
   offered for new assignments; existing subscribers keep it. Prices, stock
   and sale rules are in docs/PAYMENTS.md.
-- **User plans**: one active plan per user (admins cannot have one).
-  Assigning replaces the active plan; while it is active the user's
-  `traffic_limit_bytes` and `expires_at` are the plan's (PATCH /users
-  refuses to edit them, 409; renew with PATCH /users/{id}/plan). Cancel or
-  expiry ends the plan and removes plan access; the enforced limit/expiry
-  stay as they were.
+- **User plans (D12)**: one active plan per user (admins cannot have one).
+  Users are managed only through plans: an assignment is a plan + term
+  (`month` … `three_year`, `days` + N, `onetime` with or without N days),
+  the expiry is computed in SQL and the usage starts at zero; renewals add
+  one term or N days (periodic subscriptions only) from max(expiry, now).
+  `traffic_limit_bytes` and `expires_at` are always the plan's (no API
+  writes them directly). Cancel or expiry ends the plan and removes plan
+  access; the enforced limit/expiry stay as a record.
+- **Ban (W28-c)**: `disabled_reason = admin` with a reason the user sees.
+  The user is dropped from every node in the same transaction (the usual
+  bump/revocation path), all sessions end; a banned user may sign in again
+  but reaches only `GET /me` (with the reason) and tickets — subscription,
+  nodes, shop and orders refuse it (403 `account.banned`). Traffic resets
+  and plan changes never lift a ban.
 - **Entitlement**: the user's nodes = the members of their active plan's
   groups. Every change to groups, memberships, plans, user plans or a node's
   inbounds reconciles `node_users` in the same transaction: one credential

@@ -683,7 +683,8 @@ async fn renewal_scope_users_can_shop() {
         assert_eq!(r.json()["status"], "cancelled", "{who}");
     }
 
-    // Disabled by an admin: no renewal scope.
+    // Banned by an admin (W28-c): the portal scope only, no shop/orders
+    // (403 account.banned).
     let banned = db.user().await;
     sqlx::query("UPDATE users SET enabled = false, disabled_reason = 'admin' WHERE id = $1")
         .bind(banned)
@@ -694,11 +695,11 @@ async fn renewal_scope_users_can_shop() {
     c.cookie = Some(token(&state, banned).await);
     assert_eq!(
         c.get("/test/api/v1/me/shop").await.status,
-        StatusCode::UNAUTHORIZED
+        StatusCode::FORBIDDEN
     );
     assert_eq!(
         c.get("/test/api/v1/me/orders").await.status,
-        StatusCode::UNAUTHORIZED
+        StatusCode::FORBIDDEN
     );
     assert_eq!(
         c.post(
@@ -707,7 +708,7 @@ async fn renewal_scope_users_can_shop() {
         )
         .await
         .status,
-        StatusCode::UNAUTHORIZED
+        StatusCode::FORBIDDEN
     );
     assert_eq!(
         count(
@@ -2148,9 +2149,10 @@ async fn switching_plans_with_proration() {
         u2,
         &crate::plans::SetUserPlanReq {
             plan_id: a,
-            expires_at: Some(chrono::Utc::now() + chrono::Duration::days(20)),
-            period_anchor: None,
-            reset_traffic: None,
+            term: crate::plans::Term {
+                kind: crate::billing::catalog::PeriodKind::Days,
+                days: Some(20),
+            },
         },
     )
     .await
@@ -2331,9 +2333,10 @@ async fn renewal_only_and_switch_rules() {
         holder,
         &crate::plans::SetUserPlanReq {
             plan_id: legacy,
-            expires_at: Some(chrono::Utc::now() + chrono::Duration::days(3)),
-            period_anchor: None,
-            reset_traffic: None,
+            term: crate::plans::Term {
+                kind: crate::billing::catalog::PeriodKind::Days,
+                days: Some(3),
+            },
         },
     )
     .await
@@ -2411,9 +2414,10 @@ async fn speed_limits_reach_the_desired_state() {
         user,
         &crate::plans::SetUserPlanReq {
             plan_id: fast,
-            expires_at: None,
-            period_anchor: None,
-            reset_traffic: None,
+            term: crate::plans::Term {
+                kind: crate::billing::catalog::PeriodKind::Onetime,
+                days: None,
+            },
         },
     )
     .await
@@ -2487,9 +2491,10 @@ async fn speed_limits_reach_the_desired_state() {
         user,
         &crate::plans::SetUserPlanReq {
             plan_id: slow,
-            expires_at: None,
-            period_anchor: None,
-            reset_traffic: None,
+            term: crate::plans::Term {
+                kind: crate::billing::catalog::PeriodKind::Onetime,
+                days: None,
+            },
         },
     )
     .await

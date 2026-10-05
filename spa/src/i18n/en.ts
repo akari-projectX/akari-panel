@@ -32,6 +32,7 @@ export const en: Messages = {
     tooMany: "Too many attempts. Please try again later.",
     server: "Something went wrong on the server. Please try again later.",
     invalidCode: "The code is wrong or was already used.",
+    accountBanned: "This account is banned.",
     invalidPassword: "The current password is not correct.",
     paymentsOff: "Online purchase is not available.",
     paymentGateway: "The payment service is unavailable. Please try again.",
@@ -220,6 +221,8 @@ export const en: Messages = {
     quotaBanner:
       "You have used up your traffic: nodes and the subscription are paused. Buy or renew a plan to continue.",
     expiredBanner: "Your account has expired: nodes and the subscription are paused. Renew or buy a plan to continue.",
+    bannedBanner: "Your account is banned: nodes, the subscription and purchases are disabled. Reason: {reason}",
+    bannedHelp: "If you have questions, contact support under Tickets.",
     usage: "Your usage overview.",
     trafficUsed: "Traffic used",
     trafficLimit: "Traffic limit",

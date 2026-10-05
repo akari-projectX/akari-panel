@@ -984,21 +984,28 @@ mod tests {
             junk
         );
 
-        // Disabled by an admin: no login, no session.
-        sqlx::query("UPDATE users SET disabled_reason = 'admin' WHERE id = $1")
-            .bind(id)
-            .execute(&db.pool)
-            .await
-            .unwrap();
+        // Banned by an admin (W28-c): the portal scope only — the account
+        // with the ban reason, nothing of the renewal scope.
+        sqlx::query(
+            "UPDATE users SET disabled_reason = 'admin', disabled_note = 'abuse' WHERE id = $1",
+        )
+        .bind(id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let me = q.get("/test/api/v1/me").await;
+        assert_eq!(me.status, StatusCode::OK);
         assert_eq!(
-            q.get("/test/api/v1/me").await.status,
-            StatusCode::UNAUTHORIZED
+            (me.json()["banned"].clone(), me.json()["ban_reason"].clone()),
+            (json!(true), json!("abuse"))
         );
+        let plan = q.get("/test/api/v1/me/plan").await;
+        assert_eq!(plan.status, StatusCode::FORBIDDEN);
+        assert_eq!(plan.json()["code"], "account.banned");
         let mut d = Client::new(&state, rand_ip());
-        assert_eq!(
-            d.login(&login, "renewed-password-1", None).await.status,
-            StatusCode::UNAUTHORIZED
-        );
+        let r = d.login(&login, "renewed-password-1", None).await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(r.json()["banned"], true);
 
         let _: i64 = state
             .valkey()

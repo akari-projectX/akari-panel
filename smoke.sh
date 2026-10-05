@@ -455,7 +455,7 @@ grep -q '"warnings":\[\]' /tmp/akari-smoke/last || { echo "FAIL: node view lacks
   || { echo "FAIL: set server_addr failed"; exit 1; }
 
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
-    -d '{"login":"smoke-user","password":"user-password-123","traffic_limit_bytes":107374182400}')" = "201" ] \
+    -d '{"login":"smoke-user","password":"user-password-123"}')" = "201" ] \
   || { echo "FAIL: create user failed"; cat /tmp/akari-smoke/last; exit 1; }
 USER_ID=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
 SUB_TOKEN=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['sub_token'])")
@@ -477,7 +477,7 @@ curl -s --noproxy '*' -A "sing-box/1.12.0" "$SUB" \
 curl -s --noproxy '*' -A "clash-meta/1.19" "$SUB" | matches "^    type: vless" \
   || { echo "FAIL: clash format"; exit 1; }
 INFO=$(curl -s --noproxy '*' -D - -o /dev/null "$SUB" | grep -i "^subscription-userinfo:")
-echo "$INFO" | matches "download=0" && echo "$INFO" | matches "total=107374182400" \
+echo "$INFO" | matches "download=0" && echo "$INFO" | matches "total=0" \
   || { echo "FAIL: subscription-userinfo header: $INFO"; exit 1; }
 SIZE=$(curl -s --noproxy '*' -o /tmp/akari-smoke/subbody "$SUB" && wc -c < /tmp/akari-smoke/subbody)
 [ "$SIZE" -ge 8192 ] || { echo "FAIL: body not padded ($SIZE bytes)"; exit 1; }
@@ -575,11 +575,30 @@ grep -qF "$TOKEN" "$LOG/agent.log" "$LOG/panel.log" && { echo "FAIL: enrollment 
 grep -q 'PRIVATE KEY' "$LOG/agent.log" "$LOG/panel.log" && { echo "FAIL: key material in a log"; exit 1; }
 grep -q '"users":1' "$LOG/agent.log" || { echo "FAIL: initial snapshot without 1 user"; cat "$LOG/agent.log"; exit 1; }
 
-echo "== disable user: expect instant push =="
+echo "== W28-c: ban (reason required) = instant push, portal scope only =="
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_ID/ban" -H 'Content-Type: application/json' \
+    -d '{"reason": "  "}')" = "400" ] && last_json "d['code']" | matches '^user.ban_reason_required$' \
+  || { echo "FAIL: ban without a reason not refused"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" -X PATCH "$BASE/api/v1/users/$USER_ID" -H 'Content-Type: application/json' \
-    -d '{"enabled": false}')" = "200" ] || { echo "FAIL: disable user failed"; exit 1; }
+    -d '{"enabled": false}')" = "400" ] || { echo "FAIL: PATCH enabled (removed) not 400"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_ID/ban" -H 'Content-Type: application/json' \
+    -d '{"reason": "smoke: shared account"}')" = "200" ] \
+  && last_json "d['ban']['reason']" | matches '^smoke: shared account$' \
+  || { echo "FAIL: ban user failed"; cat /tmp/akari-smoke/last; exit 1; }
 for _ in $(seq 1 30); do grep -q '"users":0' "$LOG/agent.log" && break; sleep 0.5; done
 grep -q '"users":0' "$LOG/agent.log" || { echo "FAIL: agent did not converge to empty user set"; cat "$LOG/agent.log"; exit 1; }
+BJAR="$LOG/banned-cookies"
+[ "$(code -c "$BJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d '{"login":"smoke-user","password":"user-password-123"}')" = "200" ] && last_json "d['banned']" | matches '^True$' \
+  || { echo "FAIL: banned user cannot sign in to the portal scope"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$BJAR" "$BASE/api/v1/me")" = "200" ] && last_json "d['ban_reason']" | matches '^smoke: shared account$' \
+  && last_json "d['sub_token']" | matches '^None$' \
+  || { echo "FAIL: banned user's /me"; cat /tmp/akari-smoke/last; exit 1; }
+for p in me/plan me/shop me/nodes; do
+  [ "$(code -b "$BJAR" "$BASE/api/v1/$p")" = "403" ] && last_json "d['code']" | matches '^account.banned$' \
+    || { echo "FAIL: banned user reached /$p"; exit 1; }
+done
+[ "$(code -b "$BJAR" "$BASE/api/v1/me/tickets")" = "200" ] || { echo "FAIL: banned user cannot reach tickets"; exit 1; }
 
 # --- Sprint 2: "disable means disabled" -----------------------------------
 # The user count the agent last applied (snapshot or delta) must reach $1
@@ -601,16 +620,24 @@ wait_port() { # open|closed timeout
 }
 patch_code() { code -b "$JAR" -X PATCH "$1" -H 'Content-Type: application/json' -d "$2"; }
 
-echo "== re-enable user =="
-[ "$(patch_code "$BASE/api/v1/users/$USER_ID" '{"enabled": true}')" = "200" ] || { echo "FAIL: enable user"; exit 1; }
-wait_users 1 10 "re-enable"
+echo "== unban user =="
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_ID/unban" -H 'Content-Type: application/json' -d '{}')" = "200" ] \
+  && last_json "d['ban']" | matches '^None$' || { echo "FAIL: unban user"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_ID/unban" -H 'Content-Type: application/json' -d '{}')" = "409" ] \
+  || { echo "FAIL: unban of a user that is not banned not 409"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/audit?action=user.ban")" = "200" ] && last_json "len(d['entries'])" | matches '^1$' \
+  || { echo "FAIL: ban not audited"; exit 1; }
+wait_users 1 10 "unban"
 wait_port open 10
 
 echo "== PATCH semantics =="
 [ "$(patch_code "$BASE/api/v1/users/$USER_ID" '{}')" = "400" ] || { echo "FAIL: PATCH user {} not 400"; exit 1; }
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{}')" = "400" ] || { echo "FAIL: PATCH node {} not 400"; exit 1; }
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"enabled": null}')" = "400" ] || { echo "FAIL: enabled null not 400"; exit 1; }
-[ "$(patch_code "$BASE/api/v1/users/$USER_ID" '{"expires_at": "2030-01-01"}')" = "400" ] || { echo "FAIL: date-only not 400"; exit 1; }
+# D12: the limit and expiry come from the plan only (unknown fields).
+for f in '{"expires_at": null}' '{"traffic_limit_bytes": 1}'; do
+  [ "$(patch_code "$BASE/api/v1/users/$USER_ID" "$f")" = "400" ] || { echo "FAIL: PATCH user $f not 400"; exit 1; }
+done
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"server_addr": null}')" = "200" ] || { echo "FAIL: clear server_addr not 200"; exit 1; }
 grep -q '"server_addr":null' /tmp/akari-smoke/last || { echo "FAIL: server_addr not cleared"; exit 1; }
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"server_addr": "node1.example.test"}')" = "200" ] || { echo "FAIL: restore server_addr"; exit 1; }
@@ -695,8 +722,10 @@ wait_port open 10
 echo "node disable/enable: ok"
 
 echo "== expiry removes the user from the node =="
-EXP=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(seconds=3)).isoformat())")
-[ "$(patch_code "$BASE/api/v1/users/$USER_ID" "{\"expires_at\": \"$EXP\"}")" = "200" ] || { echo "FAIL: set expiry"; cat /tmp/akari-smoke/last; exit 1; }
+# D12: only a plan writes the enforced expiry; this fixture user has a
+# manual assignment and no plan, so the expiry is written directly (what a
+# plan renewal writes: the expiry with a reset marker).
+psql_q "UPDATE users SET expires_at = now() + interval '3 seconds', expiry_enforced = false WHERE id='$USER_ID'" >/dev/null
 wait_users 0 20 "expiry"
 # R21: an expired user still logs in, with the renewal scope only.
 EJAR="$LOG/expired-cookies"
@@ -708,7 +737,8 @@ EJAR="$LOG/expired-cookies"
 [ "$(code -b "$EJAR" "$BASE/api/v1/me/plan")" = "200" ] || { echo "FAIL: expired user /me/plan"; exit 1; }
 [ "$(code -b "$EJAR" -X POST "$BASE/api/v1/me/sub-token" -H 'Content-Type: application/json' -d '{}')" = "401" ] \
   || { echo "FAIL: expired user regenerated the subscription token"; exit 1; }
-[ "$(patch_code "$BASE/api/v1/users/$USER_ID" '{"expires_at": null}')" = "200" ] || { echo "FAIL: clear expiry"; exit 1; }
+psql_q "UPDATE users SET expires_at = NULL, expiry_enforced = false WHERE id='$USER_ID'" >/dev/null
+psql_q "UPDATE nodes SET user_version = user_version + 1 WHERE id='$NODE_ID'" >/dev/null
 wait_users 1 10 "expiry cleared"
 echo "expiry: ok"
 
@@ -775,14 +805,15 @@ python3 "$LOG/vless.py" hold "$VLESS_A" "$VLESS_B" "$LOG/vless.ready" "$LOG/vles
 VLESS_PID=$!
 for _ in $(seq 1 50); do [ -e "$LOG/vless.ready" ] && break; sleep 0.2; done
 [ -e "$LOG/vless.ready" ] || { echo "FAIL: vless client could not connect"; cat "$LOG/vless.out"; exit 1; }
-[ "$(patch_code "$BASE/api/v1/users/$USER_B" '{"enabled": false}')" = "200" ] || { echo "FAIL: disable B"; exit 1; }
-wait_users 1 10 "user B disabled"
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_B/ban" -H 'Content-Type: application/json' \
+    -d '{"reason": "smoke"}')" = "200" ] || { echo "FAIL: ban B"; exit 1; }
+wait_users 1 10 "user B banned"
 touch "$LOG/vless.go"
 wait $VLESS_PID || { echo "FAIL: live-connection check"; cat "$LOG/vless.out"; exit 1; }
 cat "$LOG/vless.out"
 SNAPS_AFTER=$(grep -c '"msg":"applying config snapshot"' "$LOG/agent.log")
 SESSION_AFTER=$(grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['session'])")
-[ "$SNAPS_BEFORE" = "$SNAPS_AFTER" ] || { echo "FAIL: disabling a user rebuilt xray ($SNAPS_BEFORE -> $SNAPS_AFTER snapshots)"; exit 1; }
+[ "$SNAPS_BEFORE" = "$SNAPS_AFTER" ] || { echo "FAIL: banning a user rebuilt xray ($SNAPS_BEFORE -> $SNAPS_AFTER snapshots)"; exit 1; }
 [ "$SESSION_BEFORE" = "$SESSION_AFTER" ] || { echo "FAIL: xray session changed ($SESSION_BEFORE -> $SESSION_AFTER)"; exit 1; }
 grep -q '"msg":"applying user delta"' "$LOG/agent.log" || { echo "FAIL: no user delta in agent log"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_B")" = "204" ] || { echo "FAIL: delete B"; exit 1; }
@@ -809,14 +840,16 @@ if need_agent "protocol>=4" "W9 Shadowsocks 2022 delta/snapshot"; then
   snaps() { grep -c '"msg":"applying config snapshot"' "$LOG/agent.log"; }
   last_via() { grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['via'])"; }
   SS_SNAPS=$(snaps)
-  [ "$(patch_code "$BASE/api/v1/users/$USER_SS" '{"enabled": false}')" = "200" ] || { echo "FAIL: disable SS user"; exit 1; }
-  wait_users 1 15 "SS user disabled"
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_SS/ban" -H 'Content-Type: application/json' \
+      -d '{"reason": "smoke"}')" = "200" ] || { echo "FAIL: ban SS user"; exit 1; }
+  wait_users 1 15 "SS user banned"
   if [ "$SS_PROTO" -ge 5 ]; then
     [ "$(snaps)" = "$SS_SNAPS" ] && [ "$(last_via)" = "delta" ] \
       || { echo "FAIL: SS removal was not a delta on a protocol $SS_PROTO agent"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
     grep -q 'shadowsocks credential change' "$LOG/agent.log" && { echo "FAIL: agent refused an SS delta"; exit 1; }
-    [ "$(patch_code "$BASE/api/v1/users/$USER_SS" '{"enabled": true}')" = "200" ] || { echo "FAIL: re-enable SS user"; exit 1; }
-    wait_users 2 15 "SS user re-enabled"
+    [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_SS/unban" -H 'Content-Type: application/json' -d '{}')" = "200" ] \
+      || { echo "FAIL: unban SS user"; exit 1; }
+    wait_users 2 15 "SS user unbanned"
     [ "$(snaps)" = "$SS_SNAPS" ] && [ "$(last_via)" = "delta" ] \
       || { echo "FAIL: SS re-add (tombstone revival) was not a delta"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
     echo "shadowsocks: removal and re-add applied as deltas (agent protocol $SS_PROTO, no rebuild)"
@@ -1168,19 +1201,36 @@ PLAN_ID=$(last_json "d['id']")
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
     -d '{"login":"smoke-plan-user","password":"plan-password-123"}')" = "201" ] || { echo "FAIL: create plan user"; exit 1; }
 PU=$(last_json "d['id']")
+# D12: an assignment is plan + term (no expiry sent); the reset pack is no term.
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/users/$PU/plan" -H 'Content-Type: application/json' \
-    -d "{\"plan_id\":\"$PLAN_ID\"}")" = "200" ] || { echo "FAIL: assign plan"; cat /tmp/akari-smoke/last; exit 1; }
+    -d "{\"plan_id\":\"$PLAN_ID\",\"period\":\"reset\"}")" = "400" ] && last_json "d['code']" | matches '^user_plan.term_reset$' \
+  || { echo "FAIL: reset pack accepted as a term"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/users/$PU/plan" -H 'Content-Type: application/json' \
+    -d "{\"plan_id\":\"$PLAN_ID\",\"period\":\"days\",\"days\":30}")" = "200" ] || { echo "FAIL: assign plan"; cat /tmp/akari-smoke/last; exit 1; }
 wait_users 1 10 "plan grants the node (no manual assignment)"
 [ "$(psql_q "SELECT manual FROM node_users WHERE user_id='$PU' AND node_id='$NODE_ID'")" = "f" ] \
   || { echo "FAIL: plan row not plan-managed"; exit 1; }
 [ "$(psql_q "SELECT traffic_limit_bytes FROM users WHERE id='$PU'")" = "150000" ] || { echo "FAIL: limit not derived from the plan"; exit 1; }
-[ "$(patch_code "$BASE/api/v1/users/$PU" '{"traffic_limit_bytes": 1}')" = "409" ] || { echo "FAIL: plan-managed limit editable"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/users/$PU" '{"traffic_limit_bytes": 1}')" = "400" ] || { echo "FAIL: limit editable (D12)"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$PU/nodes/$NODE_ID")" = "409" ] || { echo "FAIL: plan row unassignable"; exit 1; }
-# R18: per-user node access view (no credentials in it).
-[ "$(code -b "$JAR" "$BASE/api/v1/users/$PU/nodes")" = "200" ] || { echo "FAIL: user nodes view"; exit 1; }
-python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); r=[x for x in d if x['node_id']=='$NODE_ID'][0]; assert r['manual'] is False and r['inbounds'] and 'account' not in json.dumps(d), d" \
-  || { echo "FAIL: user nodes view content"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(code -b "$JAR" "$BASE/api/v1/users/00000000-0000-0000-0000-000000000000/nodes")" = "404" ] || { echo "FAIL: user nodes of no user not 404"; exit 1; }
+# D12: the user detail carries the current subscription (the node-access
+# view GET /users/{id}/nodes is gone: canonical rejection).
+[ "$(code -b "$JAR" "$BASE/api/v1/users/$PU")" = "200" ] || { echo "FAIL: user detail"; cat /tmp/akari-smoke/last; exit 1; }
+python3 -c "import json; s=json.load(open('/tmp/akari-smoke/last'))['subscription']; assert s['plan_name']=='smoke-plan' and s['period']=='days' and s['period_days']==30 and s['traffic_total_bytes']==150000 and s['reset_period']=='monthly' and s['next_reset_at'] and s['expires_at'] and s['status']=='active', s" \
+  || { echo "FAIL: user detail subscription"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/users/00000000-0000-0000-0000-000000000000")" = "404" ] || { echo "FAIL: detail of no user not 404"; exit 1; }
+[ "$(fp -b "$JAR" "$BASE/api/v1/users/$PU/nodes")" = "$REJ" ] || { echo "FAIL: /users/{id}/nodes still answers"; exit 1; }
+# Renew one term / extend N days (from max(expiry, now)); one-time purchases
+# are never extended by days.
+EXP0=$(psql_q "SELECT extract(epoch FROM expires_at)::bigint FROM user_plans WHERE user_id='$PU' AND status='active'")
+[ "$(patch_code "$BASE/api/v1/users/$PU/plan" '{"extend_days": 2}')" = "200" ] || { echo "FAIL: extend plan"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT extract(epoch FROM expires_at)::bigint - $EXP0 FROM user_plans WHERE user_id='$PU' AND status='active'")" = "172800" ] \
+  || { echo "FAIL: extend by 2 days"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/users/$PU/plan" '{"period": "month", "extend_days": 2}')" = "400" ] || { echo "FAIL: two renewal modes not 400"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/users/$PU/plan" '{"period": "month"}')" = "200" ] || { echo "FAIL: renew one month"; exit 1; }
+[ "$(psql_q "SELECT term_kind FROM user_plans WHERE user_id='$PU' AND status='active'")" = "month" ] || { echo "FAIL: renewal term not recorded"; exit 1; }
+[ "$(psql_q "SELECT u.expires_at = up.expires_at FROM users u JOIN user_plans up ON up.user_id = u.id AND up.status='active' WHERE u.id='$PU'")" = "t" ] \
+  || { echo "FAIL: enforced expiry not synced from the plan"; exit 1; }
 code -b "$JAR" "$BASE/api/v1/users" >/dev/null
 python3 -c "import json; u=[x for x in json.load(open('/tmp/akari-smoke/last'))['users'] if x['id']=='$PU'][0]; assert u['plan_name']=='smoke-plan' and u['next_reset_at']" \
   || { echo "FAIL: users list lacks plan/reset"; exit 1; }
@@ -1247,26 +1297,38 @@ done
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='user.traffic.reset' AND actor_login='system' AND target_id='$PU'")" = "1" ] \
   || { echo "FAIL: reset not audited once as system"; exit 1; }
 wait_users 1 10 "period reset re-enabled"
-# Admin-disabled users are never re-enabled by a reset.
-[ "$(patch_code "$BASE/api/v1/users/$PU" '{"enabled": false}')" = "200" ] || { echo "FAIL: admin disable"; exit 1; }
-wait_users 0 10 "admin disabled"
+# Banned users are never re-enabled by a reset.
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$PU/ban" -H 'Content-Type: application/json' \
+    -d '{"reason": "smoke"}')" = "200" ] || { echo "FAIL: ban"; exit 1; }
+wait_users 0 10 "banned"
 psql_q "UPDATE user_plans SET next_reset_at = now() - interval '1 second' WHERE user_id='$PU' AND status='active'" >/dev/null
 for _ in $(seq 1 20); do
   [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='user.traffic.reset' AND target_id='$PU'")" = "2" ] && break; sleep 1
 done
 [ "$(psql_q "SELECT enabled::text || '/' || disabled_reason FROM users WHERE id='$PU'")" = "false/admin" ] \
-  || { echo "FAIL: reset re-enabled an admin-disabled user"; exit 1; }
-[ "$(patch_code "$BASE/api/v1/users/$PU" '{"enabled": true}')" = "200" ] || { echo "FAIL: admin enable"; exit 1; }
-wait_users 1 10 "admin re-enabled"
+  || { echo "FAIL: reset re-enabled a banned user"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$PU/unban" -H 'Content-Type: application/json' -d '{}')" = "200" ] \
+  || { echo "FAIL: unban"; exit 1; }
+wait_users 1 10 "unbanned"
+# D12 "重置套餐流量": needs confirm: true; zeroes the usage, audited.
+psql_q "UPDATE users SET traffic_used_bytes = 1234 WHERE id='$PU'" >/dev/null
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$PU/plan/reset-traffic" -H 'Content-Type: application/json' \
+    -d '{"confirm": false}')" = "400" ] && last_json "d['code']" | matches '^user_plan.confirm_required$' \
+  || { echo "FAIL: unconfirmed traffic reset"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$PU/plan/reset-traffic" -H 'Content-Type: application/json' \
+    -d '{"confirm": true}')" = "200" ] && last_json "d['subscription']['traffic_used_bytes']" | matches '^0$' \
+  || { echo "FAIL: traffic reset"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='user.traffic.reset' AND actor_login <> 'system' AND target_id='$PU'")" = "1" ] \
+  || { echo "FAIL: admin traffic reset not audited"; exit 1; }
 # Cancel: plan access removed (departed row for the final counters).
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/plans/$PLAN_ID")" = "409" ] || { echo "FAIL: plan with a subscriber deleted"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$PU/plan")" = "204" ] || { echo "FAIL: cancel plan"; exit 1; }
 wait_users 0 10 "plan cancelled"
 [ "$(psql_q "SELECT count(*) FROM node_users_departed WHERE user_id='$PU' AND node_id='$NODE_ID'")" = "1" ] \
   || { echo "FAIL: no departed row after cancel"; exit 1; }
-[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$PU/plan")" = "404" ] || { echo "FAIL: second cancel not 404"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$PU/plan")" = "409" ] || { echo "FAIL: second cancel not 409"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/audit?action=user.plan.&limit=10")" = "200" ] || { echo "FAIL: audit user.plan."; exit 1; }
-for a in user.plan.set user.plan.cancel; do
+for a in user.plan.set user.plan.renew user.plan.cancel; do
   grep -q "\"action\":\"$a\"" /tmp/akari-smoke/last || { echo "FAIL: audit lacks $a"; exit 1; }
 done
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/plans/$PLAN_ID")" = "204" ] || { echo "FAIL: delete plan"; exit 1; }
@@ -1758,7 +1820,7 @@ code -c "$LOG/ops-cookies" -X POST "$BASE/auth/login" -H "$OPSJ" -d '{"login":"s
 [ "$(api_json "$LOG/ops-cookies" POST "$BASE/api/v1/users/batch/preview" "{\"selection\":$OPSF}")" = "403" ] \
   || { echo "FAIL: customer reached batch preview"; exit 1; }
 [ "$(api_json "$JAR" POST "$BASE/api/v1/users/batch" "{\"selection\":$OPSF,\"action\":{\"kind\":\"extend_expiry\",\"days\":0}}")" = "400" ] \
-  && [ "$(last_json "d['code']")" = "batch.days_range" ] || { echo "FAIL: batch validation"; exit 1; }
+  && [ "$(last_json "d['code']")" = "user_plan.extend_days_range" ] || { echo "FAIL: batch validation"; exit 1; }
 # Balance: one ledger row + one audit row per user, exactly once.
 LEDGER0=$(psql_q "SELECT count(*) FROM balance_ledger WHERE reason = 'ops-smoke'")
 [ "$(api_json "$JAR" POST "$BASE/api/v1/users/batch" "{\"selection\":$OPSF,\"action\":{\"kind\":\"add_balance\",\"amount_cents\":250,\"reason\":\"ops-smoke\"}}")" = "202" ] \
@@ -1778,7 +1840,7 @@ mp_mail "ops2@akari.test" 1 | sed -n 1p | matches 'Ops smoke notice' || { echo "
 psql_q "SELECT count(*) FROM audit_log WHERE action = 'user.mail.send' AND after::text LIKE '%Maintenance%'" | matches '^0$' \
   || { echo "FAIL: mail body in the audit log"; exit 1; }
 # Plan for everyone, then disable one: node bumps come from the mutators.
-[ "$(api_json "$JAR" POST "$BASE/api/v1/users/batch" "{\"selection\":$OPSF,\"action\":{\"kind\":\"set_plan\",\"plan_id\":\"$OPS_PLAN\"}}")" = "202" ] \
+[ "$(api_json "$JAR" POST "$BASE/api/v1/users/batch" "{\"selection\":$OPSF,\"action\":{\"kind\":\"set_plan\",\"plan_id\":\"$OPS_PLAN\",\"period\":\"month\"}}")" = "202" ] \
   || { echo "FAIL: create plan batch"; exit 1; }
 [ "$(wait_batch "$(last_json "d['id']")")" = "3/0/0" ] || { echo "FAIL: plan batch"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM user_plans WHERE plan_id = '$OPS_PLAN' AND status = 'active'")" = "3" ] || { echo "FAIL: plans not set"; exit 1; }
@@ -1967,7 +2029,7 @@ done
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/site" -H 'Content-Type: application/json' \
     -d "{\"version\":$SV,\"site_name\":null}")" = "200" ] || { echo "FAIL: clear site name"; exit 1; }
 # R21: expired and quota-disabled users (renewal scope) can shop, order,
-# poll and cancel; an admin-disabled user cannot.
+# poll and cancel; a banned user cannot (portal scope: 403 account.banned).
 for who in expired quota; do
   [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
       -d "{\"login\":\"smoke-renew-$who\",\"password\":\"renew-password-123\"}")" = "201" ] || { echo "FAIL: create $who user"; exit 1; }
@@ -1993,14 +2055,15 @@ for who in expired quota; do
   [ "$(code -b "$RJAR" -X POST "$BASE/api/v1/me/sub-token" -H 'Content-Type: application/json' -d '{}')" = "401" ] \
     || { echo "FAIL: $who user regenerated the subscription token"; exit 1; }
 done
-# Disabled by an admin (the quota user's session stays signed with the same
-# session_ver: the reason alone must end the renewal scope).
-psql_q "UPDATE users SET disabled_reason = 'admin' WHERE id='$RU'" >/dev/null
-[ "$(code -b "$RJAR" "$BASE/api/v1/me/shop")" = "401" ] || { echo "FAIL: admin-disabled user listed the shop"; exit 1; }
+# Banned (the quota user's session stays signed with the same session_ver:
+# the reason alone must end the renewal scope).
+psql_q "UPDATE users SET disabled_reason = 'admin', disabled_note = 'smoke' WHERE id='$RU'" >/dev/null
+[ "$(code -b "$RJAR" "$BASE/api/v1/me/shop")" = "403" ] || { echo "FAIL: banned user listed the shop"; exit 1; }
 [ "$(code -b "$RJAR" -X POST "$BASE/api/v1/me/orders" -H 'Content-Type: application/json' \
-    -d "{\"plan_id\":\"$PAID_PLAN\",\"period\":\"days\"}")" = "401" ] || { echo "FAIL: admin-disabled user ordered"; exit 1; }
+    -d "{\"plan_id\":\"$PAID_PLAN\",\"period\":\"days\"}")" = "403" ] || { echo "FAIL: banned user ordered"; exit 1; }
 [ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
-    -d '{"login":"smoke-renew-quota","password":"renew-password-123"}')" = "401" ] || { echo "FAIL: admin-disabled user logged in"; exit 1; }
+    -d '{"login":"smoke-renew-quota","password":"renew-password-123"}')" = "200" ] && last_json "d['banned']" | matches '^True$' \
+  || { echo "FAIL: banned user not signed in to the portal scope"; exit 1; }
 for who in expired quota; do
   RU=$(psql_q "SELECT id FROM users WHERE login='smoke-renew-$who'")
   [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$RU")" = "204" ] || { echo "FAIL: delete $who user"; exit 1; }
@@ -3319,7 +3382,9 @@ echo "r22 settings: ok"
 echo "== S4-2 sessions: revoke-sessions, last admin, logout kills copies of the cookie =="
 [ "$(code -b "$JAR" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: me failed"; exit 1; }
 ROOT_ID=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
-[ "$(patch_code "$BASE/api/v1/users/$ROOT_ID" '{"enabled": false}')" = "409" ] || { echo "FAIL: last admin disable not 409"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$ROOT_ID/ban" -H 'Content-Type: application/json' \
+    -d '{"reason": "x"}')" = "400" ] && last_json "d['code']" | matches '^user.ban_self$' \
+  || { echo "FAIL: self-ban not refused"; exit 1; }
 [ "$(patch_code "$BASE/api/v1/users/$ROOT_ID" '{"role": "user"}')" = "409" ] || { echo "FAIL: last admin demote not 409"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$ROOT_ID")" = "409" ] || { echo "FAIL: last admin delete not 409"; exit 1; }
 JAR2="$LOG/cookies2"

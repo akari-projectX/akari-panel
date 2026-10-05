@@ -447,6 +447,7 @@ async fn grant(conn: &mut PgConnection, actor: &Actor, b: &Bought) -> Result<Val
         crate::plans::apply_reset_traffic(conn, actor, user, plan).await?;
         return Ok(json!({ "kind": "reset" }));
     }
+    let term = crate::plans::Term::new(kind, b.period_days)?;
     let active: Option<(Uuid, Option<DateTime<Utc>>)> = sqlx::query_as(
         "SELECT plan_id, expires_at FROM user_plans WHERE user_id = $1 AND status = 'active'",
     )
@@ -461,22 +462,18 @@ async fn grant(conn: &mut PgConnection, actor: &Actor, b: &Bought) -> Result<Val
             Ok(json!({ "kind": "renew", "expires_at": null, "note": "plan has no expiry" }))
         }
         Some((p, Some(old))) if p == plan => {
-            let new: Option<DateTime<Utc>> =
-                sqlx::query_scalar("SELECT akari_period_end(GREATEST($1, now()), $2, $3)")
-                    .bind(old)
-                    .bind(&b.period)
-                    .bind(b.period_days)
-                    .fetch_one(&mut *conn)
-                    .await?;
-            crate::plans::apply_update_user_plan(
+            crate::plans::apply_renew_user_plan(
                 conn,
                 actor,
                 user,
-                &crate::plans::UpdateUserPlanReq {
-                    expires_at: Some(new),
-                    ..Default::default()
-                },
+                crate::plans::Renewal::Term(term),
             )
+            .await?;
+            let new: Option<DateTime<Utc>> = sqlx::query_scalar(
+                "SELECT expires_at FROM user_plans WHERE user_id = $1 AND status = 'active'",
+            )
+            .bind(user)
+            .fetch_one(&mut *conn)
             .await?;
             Ok(json!({ "kind": "renew", "from": old, "expires_at": new }))
         }
@@ -497,12 +494,6 @@ async fn grant(conn: &mut PgConnection, actor: &Actor, b: &Bought) -> Result<Val
             if capacity.is_some_and(|c| holders >= i64::from(c)) {
                 return Err(conflict!("shop.sold_out", "plan is sold out"));
             }
-            let new: Option<DateTime<Utc>> =
-                sqlx::query_scalar("SELECT akari_period_end(now(), $1, $2)")
-                    .bind(&b.period)
-                    .bind(b.period_days)
-                    .fetch_one(&mut *conn)
-                    .await?;
             // The credit was computed from the subscription active at order
             // creation; flag it for review if that is no longer what is
             // being replaced (the payment is honoured either way).
@@ -522,11 +513,15 @@ async fn grant(conn: &mut PgConnection, actor: &Actor, b: &Bought) -> Result<Val
                 user,
                 &crate::plans::SetUserPlanReq {
                     plan_id: plan,
-                    expires_at: new,
-                    period_anchor: None,
-                    reset_traffic: Some(true),
+                    term,
                 },
             )
+            .await?;
+            let new: Option<DateTime<Utc>> = sqlx::query_scalar(
+                "SELECT expires_at FROM user_plans WHERE user_id = $1 AND status = 'active'",
+            )
+            .bind(user)
+            .fetch_one(&mut *conn)
             .await?;
             let kind = if other.is_some() { "switch" } else { "new" };
             let mut detail = json!({ "kind": kind, "expires_at": new });

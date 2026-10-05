@@ -335,16 +335,9 @@ async fn grant_trial(
     days: i32,
 ) -> Result<Option<Uuid>, ApiError> {
     let mut sp = conn.begin().await?;
-    let expires_at: chrono::DateTime<chrono::Utc> =
-        sqlx::query_scalar("SELECT now() + make_interval(days => $1)")
-            .bind(days)
-            .fetch_one(&mut *sp)
-            .await?;
     let req = crate::plans::SetUserPlanReq {
         plan_id,
-        expires_at: Some(expires_at),
-        period_anchor: None,
-        reset_traffic: None,
+        term: crate::plans::Term::new(crate::billing::catalog::PeriodKind::Days, Some(days))?,
     };
     match crate::plans::apply_set_user_plan(&mut sp, actor, user, &req).await {
         Ok(_) => {

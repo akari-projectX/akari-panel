@@ -84,7 +84,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/{prefix}/api/v1/users/{id}",
-            axum::routing::patch(api::update_user).delete(api::delete_user),
+            get(api::user_detail)
+                .patch(api::update_user)
+                .delete(api::delete_user),
         )
         .route(
             "/{prefix}/api/v1/users/{id}/revoke-sessions",
@@ -102,7 +104,6 @@ pub fn router(state: AppState) -> Router {
             "/{prefix}/api/v1/users/{id}/totp",
             axum::routing::delete(api::reset_totp),
         )
-        .route("/{prefix}/api/v1/users/{id}/nodes", get(api::user_nodes))
         .route(
             "/{prefix}/api/v1/users/{id}/nodes/{node_id}",
             post(api::assign_user).delete(api::unassign_user),
@@ -111,9 +112,15 @@ pub fn router(state: AppState) -> Router {
             "/{prefix}/api/v1/users/{id}/plan",
             get(plans::get_user_plan)
                 .put(plans::set_user_plan)
-                .patch(plans::update_user_plan)
+                .patch(plans::renew_user_plan)
                 .delete(plans::cancel_user_plan),
         )
+        .route(
+            "/{prefix}/api/v1/users/{id}/plan/reset-traffic",
+            post(plans::reset_user_traffic),
+        )
+        .route("/{prefix}/api/v1/users/{id}/ban", post(api::ban_user))
+        .route("/{prefix}/api/v1/users/{id}/unban", post(api::unban_user))
         .route(
             "/{prefix}/api/v1/node-groups",
             get(plans::list_groups).post(plans::create_group),
