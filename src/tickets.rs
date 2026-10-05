@@ -1,7 +1,7 @@
 //! W17 support tickets (工单, xboard parity).
 //!
-//! - **Customers** (`/me/tickets*`, `auth::ShopUser`: expired and
-//!   quota-disabled accounts need support too, R21) open tickets (subject,
+//! - **Customers** (`/me/tickets*`, `auth::PortalUser`: expired, banned and
+//!   quota-disabled accounts need support too, R21/W28-c) open tickets (subject,
 //!   category, priority, first message, optionally one of their own orders
 //!   or a node they use), reply and close them. Only their own: any other
 //!   ticket id — another user's, unknown, malformed — is the canonical
@@ -39,7 +39,7 @@ use uuid::Uuid;
 
 use crate::api::ApiJson;
 use crate::audit::Actor;
-use crate::auth::{ApiError, AuthUser, ShopUser};
+use crate::auth::{ApiError, AuthUser, PortalUser};
 use crate::state::AppState;
 
 pub const CATEGORIES: [&str; 5] = ["general", "billing", "technical", "account", "other"];
@@ -712,7 +712,7 @@ pub async fn read_ticket_staff(
 // ---------------------------------------------------------------------------
 
 /// Customers only (staff use /tickets).
-fn customer(u: &ShopUser) -> Result<Author, ApiError> {
+fn customer(u: &PortalUser) -> Result<Author, ApiError> {
     if u.user.role != "user" {
         return Err(ApiError::forbidden());
     }
@@ -739,7 +739,7 @@ async fn within_rate(state: &AppState, what: &str, user: Uuid, limit: i64) -> bo
 /// GET /me/tickets: the caller's tickets, newest activity first.
 pub async fn my_tickets(
     State(state): State<AppState>,
-    u: ShopUser,
+    u: PortalUser,
 ) -> Result<Json<Vec<MyTicketRow>>, ApiError> {
     let me = customer(&u)?;
     let rows = sqlx::query_as::<_, MyTicketRow>(sqlx::AssertSqlSafe(format!(
@@ -756,7 +756,7 @@ pub async fn my_tickets(
 /// POST /me/tickets → 201 {id}.
 pub async fn create_my_ticket(
     State(state): State<AppState>,
-    u: ShopUser,
+    u: PortalUser,
     ApiJson(req): ApiJson<CreateReq>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let me = customer(&u)?;
@@ -777,7 +777,7 @@ pub async fn create_my_ticket(
 /// read). Anything else is the canonical rejection.
 pub async fn my_ticket(
     State(state): State<AppState>,
-    u: ShopUser,
+    u: PortalUser,
     Path((_, raw)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
     let me = customer(&u)?;
@@ -796,7 +796,7 @@ pub async fn my_ticket(
 /// POST /me/tickets/{id}/replies {message, close?}.
 pub async fn reply_my_ticket(
     State(state): State<AppState>,
-    u: ShopUser,
+    u: PortalUser,
     Path((_, raw)): Path<(String, String)>,
     ApiJson(req): ApiJson<ReplyReq>,
 ) -> Result<Response, ApiError> {
@@ -821,7 +821,7 @@ pub async fn reply_my_ticket(
 /// POST /me/tickets/{id}/close.
 pub async fn close_my_ticket(
     State(state): State<AppState>,
-    u: ShopUser,
+    u: PortalUser,
     Path((_, raw)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
     let me = customer(&u)?;

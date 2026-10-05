@@ -63,13 +63,22 @@ add a unit test at the bug, and move the input to `seeds/<target>/regress-*`.
 
 - pushes to main, and pull requests that change what the targets compile
   (`src/`, `fuzz/`, `Cargo.*`, the toolchain; `scripts/ci-changes.sh` group
-  `fuzz`) or carry the `full-ci` label: every target 20 s (about 4 min of
-  fuzzing plus the build) — catches regressions against the seeds and the
+  `fuzz`) or carry the `full-ci` label: every target 20 s (19 targets: about
+  6 min of fuzzing plus the build) — catches regressions against the seeds and the
   cached corpus; other PRs skip the job (W37);
 - before a release: `release.yml` runs the same 20 s pass on the tagged
   commit and publishes nothing unless it passes;
-- nightly (03:47 UTC): every target 5 min (50 min);
-- manual (`workflow_dispatch`): choose the seconds per target.
+- nightly (03:47 UTC): every target 4 min (19 targets: 76 min of fuzzing,
+  about 86 min with the build);
+- manual (`workflow_dispatch`): choose the seconds per target (default 240).
+
+Time budget: the job's `timeout-minutes` is 150; fuzzing time for all
+targets together is capped at `FUZZ_BUDGET_MIN` (120 min) — if
+targets × seconds exceeds it, the step lowers the seconds per target and
+emits a warning instead of overrunning. A timed-out (cancelled) job also
+skips the corpus cache save, so the nightly would stop growing the corpus.
+When adding targets, keep targets × nightly seconds well under the budget
+(at 240 s that is up to 30 targets).
 
 The corpus is restored from and saved to the Actions cache, so nightly runs
 build on each other. A crash fails the job and uploads `fuzz/artifacts/`.

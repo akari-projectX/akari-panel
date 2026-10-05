@@ -628,8 +628,7 @@ fn smtp_errors_are_logged_without_addresses() {
 async fn admin_client(state: &crate::state::AppState, db: &TestDb) -> Client {
     let admin = db.admin().await;
     let mut c = Client::new(state, rand_ip());
-    c.cookie =
-        Some(crate::auth::issue_token(state, admin, "admin", 0).unwrap());
+    c.cookie = Some(crate::auth::issue_token(state, admin, "admin", 0).unwrap());
     c
 }
 
@@ -866,8 +865,7 @@ async fn diagnose_endpoint_reports_steps() {
     // Admins only.
     let user = db.user().await;
     let mut u = Client::new(&state, rand_ip());
-    u.cookie =
-        Some(crate::auth::issue_token(&state, user, "user", 0).unwrap());
+    u.cookie = Some(crate::auth::issue_token(&state, user, "user", 0).unwrap());
     let r = u
         .post(
             "/test/api/v1/settings/mail/diagnose",

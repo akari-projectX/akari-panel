@@ -955,6 +955,37 @@ failure the next order tries the other challenge when it is available.
 - Not supported: ZeroSSL / EAB CAs (any CA without external account binding works through
   `directory_url`), several domains per node, DNS-01.
 
+## 3h. 审计规则（节点拦截，W29，agent 能力 `block-rules`）
+
+后台「审计规则」在节点上拦截指定流量（xray 路由 + `blackhole` 出站，被拦截的连接直接关闭）。规则在**面板**里编译好，agent 只把结果写进 xray 路由。
+
+**规则**（全站共用，`GET/POST /api/v1/block-rules`、`PATCH/DELETE /api/v1/block-rules/{id}`，均需管理员，写入审计 `block_rule.*`）：
+
+| 规则 | 内容 | 默认 |
+|---|---|---|
+| BitTorrent 协议识别（内置） | 按流量特征识别 BitTorrent / uTP | 开 |
+| BT Tracker 域名（内置） | v2fly `category-public-tracker` | 开 |
+| 迅雷 / PT 站域名（内置） | v2fly `xunlei` + `category-pt` | 关 |
+| 自定义：域名 | 每行一条：`example.com`（含子域）、`full:a.example.com`（精确）、`keyword:torrent`（包含） | — |
+| 自定义：IP | 每行一条：`192.0.2.0/24`、`2001:db8::/32`、单个地址 | — |
+| 自定义：协议 | `bittorrent`、`http`、`tls`、`quic`（`tls` 等于拦截几乎所有 HTTPS，慎用） | — |
+
+- 内置规则集只能开关、排序（不能改内容或删除，数据库触发器兜底）；自定义规则最多 32 条、每条最多 1000 行，不支持正则与 geosite（避免性能与依赖问题）。
+- 内置列表随面板发布（`src/blockrules/lists/`，来源 [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community)，MIT，版本见 `VERSION`）；更新 = 开发者运行 `scripts/update-block-lists.py [commit]` 后随新版面板发布。
+- 域名规则匹配客户端请求的域名，以及嗅探出的域名（TLS SNI、HTTP Host、QUIC）；IP 规则只匹配以 IP 形式请求的目标（不为域名请求做 DNS 解析）。
+
+**按节点开关**（`PUT /api/v1/nodes/{id}/block-rules {"enabled": true|false}`，默认关，审计 `node.block_rules.set`）：
+
+- **关闭时**节点上没有任何额外开销：xray 配置与没有本功能时逐字节相同，不开嗅探，没有拦截出站。
+- **开启时**该节点的入站开启嗅探（`routeOnly`：嗅探结果只用于路由，不改变连接目标；入站 JSON 里已经自己配置了 `sniffing` 的保持原样）。嗅探会等待客户端的第一个数据包（xray 默认最多约 300 ms），服务器先发数据的协议（如 SSH、SMTP）首包延迟会增加。
+- **开关时会断开哪些连接**：只重建这个节点的入站监听（不重建 xray，其他节点不受影响，用户与计费不变）。以下是 agent 金丝雀测试（`rt_block_canary_test.go`，真实 xray 客户端逐个协议组合）实测结果：
+  - **保留**：raw TCP / TLS / REALITY（含 Vision）、WebSocket、HTTPUpgrade、VMess TCP、Shadowsocks 2022、以及 TLS/REALITY 上的 XHTTP（一条长 HTTP/2 请求）。
+  - **断开一次、客户端自动重连**：gRPC（流属于监听端的 HTTP/2 服务）、明文 HTTP 上的 XHTTP（客户端 packet-up 模式，每次上传都是新请求）、Hysteria 2（QUIC 连接属于监听端）。
+- **修改规则内容**（增删改规则、开关某个规则集）**不断开任何连接**：agent 原子替换整套路由规则，不重建入站、不重建 xray。规则只作用于新建立的连接（路由在每次分发时决定）：已经建立的连接即使命中新规则也继续转发，直到客户端重连。
+- agent 版本过旧（没有 `block-rules` 能力）时开关无效，`GET /api/v1/nodes/{id}/block-rules` 的 `agent_supported` 为 false。
+
+**统计**：`GET /api/v1/nodes/{id}/block-rules?days=7`（1–90）返回开关状态、agent 是否支持、当前生效的规则版本是否与面板一致（`in_sync`、`error`）、以及最近 N 天（UTC）每条规则的拦截次数；规则列表里的 `hits_7d` 是全部节点近 7 天合计。**只记录每个节点每条规则的拦截次数，不记录任何用户或访问目标。**日数据保留 90 天。
+
 ## 3c. Resource footprint (measured)
 
 One real deployment on a 1 vCPU-class VPS with 920 MB RAM (Debian 13, compose, IP-only), resident

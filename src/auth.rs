@@ -425,6 +425,9 @@ struct SessionRow {
     /// role=user disabled by the traffic-limit pass (disabled_reason
     /// 'quota'): renewal scope only (R21).
     quota_disabled: bool,
+    /// role=user banned by an admin (disabled_reason 'admin'): the portal
+    /// scope only (`PortalUser`: the account, the ban reason, tickets).
+    banned: bool,
     session_ver: i64,
 }
 
@@ -440,12 +443,15 @@ async fn session(parts: &mut Parts, state: &AppState) -> Result<SessionRow, ApiE
     let claims = decode_token(state, token).ok_or_else(ApiError::unauthorized)?;
 
     // Disabled accounts lose existing sessions (quota-disabled users keep
-    // the renewal scope); so does every token issued before the last
-    // session_ver bump. Expired or quota-disabled role=user accounts keep
-    // only the renewal scope (`ShopUser`, R21): `restricted()` callers refuse.
+    // the renewal scope, banned users the portal scope); so does every
+    // token issued before the last session_ver bump (a ban bumps it: the
+    // banned user logs in again into the portal scope). Expired or
+    // quota-disabled role=user accounts keep only the renewal scope
+    // (`ShopUser`, R21): `restricted()` callers refuse.
     let row = sqlx::query_as::<_, SessionRow>(sqlx::AssertSqlSafe(format!(
         "SELECT u.id, u.email, u.role, u.enabled, {} AS expired, \
          (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'quota') AS quota_disabled, \
+         (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'admin') AS banned, \
          u.session_ver FROM users u WHERE u.id = $1",
         crate::enforce::EXPIRED
     )))
@@ -458,7 +464,7 @@ async fn session(parts: &mut Parts, state: &AppState) -> Result<SessionRow, ApiE
     })?
     .ok_or_else(ApiError::unauthorized)?;
 
-    if (!row.enabled && !row.quota_disabled) || row.session_ver != claims.sv {
+    if (!row.enabled && !row.quota_disabled && !row.banned) || row.session_ver != claims.sv {
         return Err(ApiError::unauthorized());
     }
     Ok(row)
@@ -468,6 +474,19 @@ impl SessionRow {
     /// Renewal scope only (R21): `AuthUser` refuses it.
     fn restricted(&self) -> bool {
         self.expired || !self.enabled
+    }
+
+    /// W28-c: a banned account's session reaches only `PortalUser`
+    /// endpoints; everything else answers this (the portal shows the ban).
+    fn refuse_banned(&self) -> Result<(), ApiError> {
+        if self.banned {
+            return Err(api_error!(
+                FORBIDDEN,
+                "account.banned",
+                "the account is banned"
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -479,6 +498,7 @@ impl FromRequestParts<AppState> for AuthUser {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let row = session(parts, state).await?;
+        row.refuse_banned()?;
         if row.restricted() {
             return Err(ApiError::unauthorized());
         }
@@ -496,9 +516,10 @@ impl FromRequestParts<AppState> for AuthUser {
 /// account, so it can still see its account and plan, change its password
 /// and buy/renew (shop, orders). Everything that serves or reveals proxy
 /// access (subscription, sub-token, nodes) keeps `AuthUser`, which
-/// refuses both. Accounts disabled for any other reason are refused here
-/// exactly as in `AuthUser`; admins are never expired or quota-disabled
-/// (role=user only) and get the same checks.
+/// refuses both. A banned account (W28-c) gets 403 `account.banned` (it
+/// only reaches `PortalUser`); accounts disabled for any other reason are
+/// refused exactly as in `AuthUser`; admins are never expired, banned into
+/// the portal scope or quota-disabled (role=user only).
 pub struct ShopUser {
     pub user: AuthUser,
     /// The account is past its expiry (role=user).
@@ -514,10 +535,46 @@ impl FromRequestParts<AppState> for ShopUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let row = session(parts, state).await?;
+        let p = PortalUser::from_request_parts(parts, state).await?;
+        if p.banned {
+            return Err(api_error!(
+                FORBIDDEN,
+                "account.banned",
+                "the account is banned"
+            ));
+        }
         Ok(ShopUser {
+            user: p.user,
+            expired: p.expired,
+            quota_exhausted: p.quota_exhausted,
+        })
+    }
+}
+
+/// The portal scope (W28-c, user ruling 2026-10-05): the renewal scope plus
+/// accounts BANNED by an admin (role=user, disabled_reason 'admin'), which
+/// may still sign in to read the ban reason (`GET /me`) and use tickets —
+/// nothing else (subscription, nodes, shop and orders refuse them
+/// server-side). Only those endpoints take it.
+pub struct PortalUser {
+    pub user: AuthUser,
+    pub expired: bool,
+    pub quota_exhausted: bool,
+    pub banned: bool,
+}
+
+impl FromRequestParts<AppState> for PortalUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let row = session(parts, state).await?;
+        Ok(PortalUser {
             expired: row.expired,
             quota_exhausted: row.quota_disabled,
+            banned: row.banned,
             user: AuthUser {
                 id: row.id,
                 email: row.email,

@@ -432,8 +432,8 @@ async fn lifecycle_both_sides() {
     db.drop().await;
 }
 
-/// Expired and quota-disabled customers keep support (renewal scope, R21);
-/// admin-disabled ones do not.
+/// Expired and quota-disabled customers keep support (renewal scope, R21),
+/// and so do banned ones (portal scope, W28-c).
 #[tokio::test]
 async fn renewal_scope_users_can_open_tickets() {
     let Some(db) = TestDb::new().await else {
@@ -481,8 +481,10 @@ async fn renewal_scope_users_can_open_tickets() {
             .await;
         assert_eq!(r.status, StatusCode::CREATED);
     }
+    // W28-c: a banned user may still ask (portal scope: ban reason and
+    // tickets).
     let r = cb.post("/test/api/v1/me/tickets", new_ticket("x")).await;
-    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(r.status, StatusCode::CREATED);
     drop(state);
     db.drop().await;
 }

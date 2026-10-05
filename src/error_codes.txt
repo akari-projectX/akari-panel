@@ -2,6 +2,7 @@
 # src/auth.rs test `error_codes_are_registered` keeps this list equal to the
 # codes in the source; spa/scripts/check-error-codes.mjs requires a SPA
 # mapping for each.
+account.banned
 account.invalid_password
 account.locale_invalid
 account.mail_off
@@ -65,14 +66,24 @@ auth_admin.turnstile_secret_invalid
 balance.admin_none
 balance.insufficient
 batch.body_length
-batch.days_range
 batch.empty
-batch.expires_past
 batch.finished
 batch.mail_unavailable
 batch.selection_invalid
 batch.subject_invalid
 batch.too_many_ids
+block_rule.builtin_fixed
+block_rule.days_range
+block_rule.entries_required
+block_rule.entry_invalid
+block_rule.kind_invalid
+block_rule.name_long
+block_rule.name_multiline
+block_rule.name_required
+block_rule.pattern_long
+block_rule.sort_range
+block_rule.too_many_entries
+block_rule.too_many_rules
 branding.footer_invalid
 branding.image_dimensions
 branding.image_not_png
@@ -361,18 +372,28 @@ user.admin_not_assignable
 user.assign_inbound_missing
 user.assign_protocol_invalid
 user.assign_protocol_mismatch
+user.ban_reason_required
+user.ban_reason_too_long
+user.ban_self
 user.email_exists
 user.has_plan
 user.last_admin
-user.limit_negative
+user.not_banned
 user.plan_filter_invalid
-user.plan_managed
 user.query_too_long
 user.role_invalid
 user.sort_invalid
 user.status_filter_invalid
-user_plan.anchor_future
-user_plan.expiry_past
+user_plan.confirm_required
+user_plan.extend_days_range
+user_plan.extend_onetime
+user_plan.no_expiry
+user_plan.none
+user_plan.renew_mode
+user_plan.term_days_missing
+user_plan.term_days_range
+user_plan.term_days_unexpected
+user_plan.term_reset
 withdrawal.account_length
 withdrawal.amount_range
 withdrawal.below_minimum

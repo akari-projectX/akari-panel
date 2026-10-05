@@ -331,7 +331,9 @@ async fn request(ctx: &Ctx, s: Scenario, i: usize) -> bool {
                 rng.random_range(0..ctx.users.max(1))
             )),
             Scenario::UserPatch => {
-                // A write: apply_update_user + audit row in one transaction.
+                // A write: apply_update_user + audit row in one transaction
+                // (D12: the role is the only plain field left; an unchanged
+                // role still writes the row, the audit and the node bumps).
                 let Some(id) = ctx
                     .user_ids
                     .get(rng.random_range(0..ctx.user_ids.len().max(1)))
@@ -341,9 +343,7 @@ async fn request(ctx: &Ctx, s: Scenario, i: usize) -> bool {
                 ctx.client
                     .patch(format!("{base}/api/v1/users/{id}"))
                     .header(reqwest::header::COOKIE, &ctx.cookie)
-                    .json(&serde_json::json!({
-                        "traffic_limit_bytes": rng.random_range(1i64 << 40..1i64 << 41)
-                    }))
+                    .json(&serde_json::json!({ "role": "user" }))
             }
             Scenario::UsersSearch => admin(format!(
                 "users?limit=50&q={}",

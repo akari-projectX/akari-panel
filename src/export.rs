@@ -219,8 +219,8 @@ struct UserRow {
 fn user_select() -> String {
     format!(
         "SELECT u.id, u.email, u.email_verified_at IS NOT NULL AS email_verified, u.role, \
-         CASE WHEN {} THEN 'disabled' WHEN {} THEN 'quota' WHEN {} THEN 'expired' ELSE 'active' END \
-         AS status, u.enabled, u.disabled_reason::text AS disabled_reason, \
+         CASE WHEN {} THEN 'banned' WHEN {} THEN 'quota' WHEN {} THEN 'expired' ELSE 'active' END \
+         AS status, u.enabled, u.disabled_reason, \
          (SELECT p.name FROM user_plans up JOIN plans p ON p.id = up.plan_id \
           WHERE up.user_id = u.id AND up.status = 'active') AS plan_name, \
          (SELECT up.expires_at FROM user_plans up WHERE up.user_id = u.id AND up.status = 'active') \
@@ -231,7 +231,7 @@ fn user_select() -> String {
          u.expires_at, \
          COALESCE((SELECT b.balance_cents FROM user_balances b WHERE b.user_id = u.id), 0) \
           AS balance_cents, u.created_at FROM users u",
-        api::STATUS_DISABLED,
+        api::STATUS_BANNED,
         api::STATUS_QUOTA,
         api::STATUS_EXPIRED
     )

@@ -148,6 +148,38 @@ fn action_validation() {
     assert!(check_action(&Action::ExtendExpiry { days: 0 }).is_err());
     assert!(check_action(&Action::ExtendExpiry { days: 3651 }).is_err());
     assert!(check_action(&Action::ExtendExpiry { days: 30 }).is_ok());
+    // W28-c: a ban needs a reason; D12: a set_plan needs a valid term.
+    assert_eq!(
+        check_action(&Action::Ban { reason: " ".into() })
+            .unwrap_err()
+            .code(),
+        "user.ban_reason_required"
+    );
+    assert!(
+        check_action(&Action::Ban {
+            reason: "abuse".into()
+        })
+        .is_ok()
+    );
+    let set = |period: &str, days: Option<i32>| Action::SetPlan {
+        plan_id: Uuid::nil(),
+        period: serde_json::from_value(json!(period)).unwrap(),
+        days,
+    };
+    assert_eq!(
+        check_action(&set("reset", None)).unwrap_err().code(),
+        "user_plan.term_reset"
+    );
+    assert_eq!(
+        check_action(&set("days", None)).unwrap_err().code(),
+        "user_plan.term_days_missing"
+    );
+    assert_eq!(
+        check_action(&set("month", Some(3))).unwrap_err().code(),
+        "user_plan.term_days_unexpected"
+    );
+    assert!(check_action(&set("days", Some(30))).is_ok());
+    assert!(check_action(&set("onetime", None)).is_ok());
     assert!(
         check_action(&Action::AddBalance {
             amount_cents: 0,
@@ -183,9 +215,13 @@ fn action_validation() {
         Action::ResetTraffic {},
         Action::SetPlan {
             plan_id: Uuid::nil(),
-            expires_at: None,
-            reset_traffic: Some(true),
+            period: serde_json::from_value(json!("days")).unwrap(),
+            days: Some(7),
         },
+        Action::Ban {
+            reason: "共享账号".into(),
+        },
+        Action::Unban {},
         Action::AddBalance {
             amount_cents: -5,
             reason: "r".into(),
@@ -196,13 +232,13 @@ fn action_validation() {
     // Unknown members anywhere are refused.
     assert!(
         serde_json::from_value::<CreateReq>(json!({
-            "selection": {"ids": []}, "action": {"kind": "enable", "x": 1}
+            "selection": {"ids": []}, "action": {"kind": "unban", "x": 1}
         }))
         .is_err()
     );
     assert!(
         serde_json::from_value::<CreateReq>(json!({
-            "selection": {"ids": [], "y": 1}, "action": {"kind": "enable"}
+            "selection": {"ids": [], "y": 1}, "action": {"kind": "unban"}
         }))
         .is_err()
     );
@@ -276,7 +312,7 @@ async fn preview_and_selection() {
         }),
     };
     assert_eq!(
-        create(&db, none, Action::Enable {})
+        create(&db, none, Action::Unban {})
             .await
             .unwrap_err()
             .code(),
@@ -287,7 +323,7 @@ async fn preview_and_selection() {
         0
     );
     // The filter is snapshotted: users created after the job are not in it.
-    let j = create(&db, f, Action::Disable {}).await.unwrap();
+    let j = create(&db, f, Action::Unban {}).await.unwrap();
     assert_eq!(j.total, 1);
     db.drop().await;
 }
@@ -503,14 +539,44 @@ async fn bumps_only_real_access_changes() {
             out
         }
     };
-    // Enabling enabled users: skipped, nothing bumped, no user.update.
-    let before = v(&db).await;
-    create(&db, ids(&[u1, u2]), Action::Enable {})
+    // Both hold a plan without nodes or expiry (D12: traffic resets are
+    // per subscription); assigning it changes nothing the nodes serve.
+    let empty = {
+        let mut tx = db.pool.begin().await.unwrap();
+        let p = plans::apply_create_plan(
+            &mut tx,
+            &Actor::test(),
+            &plans::CreatePlanReq {
+                name: "empty".into(),
+                period: "monthly".into(),
+                ..Default::default()
+            },
+        )
         .await
+        .ok()
         .unwrap();
+        tx.commit().await.unwrap();
+        p
+    };
+    let before = v(&db).await;
+    create(
+        &db,
+        ids(&[u1, u2]),
+        Action::SetPlan {
+            plan_id: empty,
+            period: serde_json::from_value(json!("onetime")).unwrap(),
+            days: None,
+        },
+    )
+    .await
+    .unwrap();
     finish(&st).await;
     assert_eq!(v(&db).await, before);
-    assert_eq!(audits(&db, "user.update").await, 0);
+    // Unbanning users that are not banned: skipped, nothing bumped.
+    create(&db, ids(&[u1, u2]), Action::Unban {}).await.unwrap();
+    finish(&st).await;
+    assert_eq!(v(&db).await, before);
+    assert_eq!(audits(&db, "user.unban").await, 0);
     // Resetting usage of enabled users: no access change.
     sqlx::query("UPDATE users SET traffic_used_bytes = 1000")
         .execute(&db.pool)
@@ -523,22 +589,32 @@ async fn bumps_only_real_access_changes() {
     assert_eq!(v(&db).await, before);
     assert_eq!(db.used(u1).await, 0);
     assert_eq!(audits(&db, "user.traffic.reset").await, 2);
-    // Disabling: both nodes bumped, one audit row per user.
-    create(&db, ids(&[u1, u2]), Action::Disable {})
-        .await
-        .unwrap();
+    // Banning: both nodes bumped, one audit row per user, the reason kept.
+    create(
+        &db,
+        ids(&[u1, u2]),
+        Action::Ban {
+            reason: "共享账号".into(),
+        },
+    )
+    .await
+    .unwrap();
     finish(&st).await;
     let after = v(&db).await;
     assert!(after[0].1 > before[0].1 && after[1].1 > before[1].1);
-    assert_eq!(audits(&db, "user.update").await, 2);
-    let reasons: Vec<Option<String>> =
-        sqlx::query_scalar("SELECT disabled_reason::text FROM users ORDER BY id")
+    assert_eq!(audits(&db, "user.ban").await, 2);
+    let reasons: Vec<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT disabled_reason, disabled_note FROM users ORDER BY id")
             .fetch_all(&db.pool)
             .await
             .unwrap();
-    assert!(reasons.iter().all(|r| r.as_deref() == Some("admin")));
-    // A quota-disabled user comes back with a traffic reset (bump); an
-    // admin-disabled one stays disabled.
+    assert!(
+        reasons
+            .iter()
+            .all(|r| r.0.as_deref() == Some("admin") && r.1.as_deref() == Some("共享账号"))
+    );
+    // A quota-disabled user comes back with a traffic reset (bump); a
+    // banned one stays banned.
     sqlx::query("UPDATE users SET disabled_reason = 'quota' WHERE id = $1")
         .bind(u1)
         .execute(&db.pool)
@@ -551,12 +627,18 @@ async fn bumps_only_real_access_changes() {
     finish(&st).await;
     let after = v(&db).await;
     assert!(after[0].1 > before[0].1, "u1 back in service");
-    assert_eq!(after[1], before[1], "u2 stays disabled");
+    assert_eq!(after[1], before[1], "u2 stays banned");
+    // Unbanning the banned one: bump + audit.
+    create(&db, ids(&[u1, u2]), Action::Unban {}).await.unwrap();
+    finish(&st).await;
+    assert!(v(&db).await[1].1 > after[1].1);
+    assert_eq!(audits(&db, "user.unban").await, 1);
     db.drop().await;
 }
 
-/// extend_expiry: plan holders through the plan, others through the user
-/// row, users without an expiry skipped; from max(expiry, now).
+/// extend_expiry (D12 "延长 N 天"): periodic subscriptions only, from
+/// max(expiry, now); users without a plan, with a one-time purchase
+/// (ruling ④) or without an expiry are skipped.
 #[tokio::test]
 async fn extend_expiry_paths() {
     let Some((db, st)) = setup().await else {
@@ -564,36 +646,55 @@ async fn extend_expiry_paths() {
     };
     let node = db.node().await;
     let plan = plan_with(&db, node).await;
-    let us = users(&db, 3).await;
-    // us[0]: plan with expiry in 10 days; us[1]: expired 5 days ago (no
-    // plan); us[2]: no expiry.
+    let us = users(&db, 5).await;
+    // us[0]: 10 days; us[1]: 10 days, already past its expiry (the pass
+    // has not run); us[2]: no plan; us[3]: one-time purchase of 30 days;
+    // us[4]: permanent one-time purchase.
+    let term = |kind: &str, days: Option<i32>| {
+        plans::Term::new(
+            serde_json::from_value::<crate::billing::catalog::PeriodKindText>(json!(kind))
+                .unwrap()
+                .0,
+            days,
+        )
+        .ok()
+        .unwrap()
+    };
     let mut tx = db.pool.begin().await.unwrap();
-    plans::apply_set_user_plan(
-        &mut tx,
-        &Actor::test(),
-        us[0],
-        &plans::SetUserPlanReq {
-            plan_id: plan,
-            expires_at: Some(Utc::now() + chrono::Duration::days(10)),
-            period_anchor: None,
-            reset_traffic: None,
-        },
-    )
-    .await
-    .ok()
-    .unwrap();
-    tx.commit().await.unwrap();
-    sqlx::query("UPDATE users SET expires_at = now() - interval '5 days' WHERE id = $1")
-        .bind(us[1])
-        .execute(&db.pool)
+    for (u, t) in [
+        (us[0], term("days", Some(10))),
+        (us[1], term("days", Some(10))),
+        (us[3], term("onetime", Some(30))),
+        (us[4], term("onetime", None)),
+    ] {
+        plans::apply_set_user_plan(
+            &mut tx,
+            &Actor::test(),
+            u,
+            &plans::SetUserPlanReq {
+                plan_id: plan,
+                term: t,
+            },
+        )
         .await
+        .ok()
         .unwrap();
+    }
+    tx.commit().await.unwrap();
+    sqlx::query(
+        "UPDATE user_plans SET expires_at = now() - interval '5 days' \
+         WHERE user_id = $1 AND status = 'active'",
+    )
+    .bind(us[1])
+    .execute(&db.pool)
+    .await
+    .unwrap();
     let j = create(&db, ids(&us), Action::ExtendExpiry { days: 30 })
         .await
         .unwrap();
     finish(&st).await;
     let j = job(&db, j.id).await;
-    assert_eq!((j.done, j.skipped), (2, 1));
+    assert_eq!((j.done, j.skipped, j.failed), (2, 3, 0));
     let days = |u: Uuid| {
         let pool = db.pool.clone();
         async move {
@@ -615,15 +716,27 @@ async fn extend_expiry_paths() {
         (days(us[1]).await - 30.0).abs() < 0.01,
         "from now, not the past"
     );
-    let up: Option<chrono::DateTime<Utc>> = sqlx::query_scalar(
-        "SELECT expires_at FROM user_plans WHERE user_id = $1 AND status = 'active'",
+    assert!(
+        (days(us[3]).await - 30.0).abs() < 0.01,
+        "one-time purchase untouched"
+    );
+    let details: Vec<String> = sqlx::query_scalar(
+        "SELECT detail FROM admin_batch_items WHERE job_id = $1 AND status = 'skipped' \
+         ORDER BY detail",
     )
-    .bind(us[0])
-    .fetch_one(&db.pool)
+    .bind(j.id)
+    .fetch_all(&db.pool)
     .await
     .unwrap();
-    assert!(up.is_some());
-    assert_eq!(audits(&db, "user.plan.update").await, 1);
+    assert_eq!(
+        details,
+        vec![
+            "一次性套餐不能延长天数",
+            "一次性套餐不能延长天数",
+            "无生效套餐"
+        ]
+    );
+    assert_eq!(audits(&db, "user.plan.renew").await, 2);
     db.drop().await;
 }
 
@@ -643,8 +756,8 @@ async fn plan_actions() {
         ids(&us),
         Action::SetPlan {
             plan_id: plan,
-            expires_at: None,
-            reset_traffic: Some(true),
+            period: serde_json::from_value(json!("month")).unwrap(),
+            days: None,
         },
     )
     .await
@@ -680,8 +793,8 @@ async fn plan_actions() {
         ids(&us),
         Action::SetPlan {
             plan_id: plan,
-            expires_at: None,
-            reset_traffic: None,
+            period: serde_json::from_value(json!("month")).unwrap(),
+            days: None,
         },
     )
     .await
@@ -692,8 +805,8 @@ async fn plan_actions() {
         ids(&us),
         Action::SetPlan {
             plan_id: Uuid::new_v4(),
-            expires_at: None,
-            reset_traffic: None,
+            period: serde_json::from_value(json!("month")).unwrap(),
+            days: None,
         },
     )
     .await
@@ -718,8 +831,8 @@ async fn concurrent_batch_vs_user_edits() {
         ids(&us),
         Action::SetPlan {
             plan_id: plan,
-            expires_at: None,
-            reset_traffic: None,
+            period: serde_json::from_value(json!("month")).unwrap(),
+            days: None,
         },
     )
     .await
@@ -742,17 +855,7 @@ async fn concurrent_batch_vs_user_edits() {
                 let mut tx = pool.begin().await.unwrap();
                 let a = Actor::test();
                 let r = match i % 3 {
-                    0 => api::apply_update_user(
-                        &mut tx,
-                        &a,
-                        *u,
-                        &api::UpdateUserReq {
-                            enabled: Some(Some(false)),
-                            ..Default::default()
-                        },
-                    )
-                    .await
-                    .map(|_| ()),
+                    0 => api::apply_ban_user(&mut tx, &a, *u, "r").await.map(|_| ()),
                     1 => plans::apply_cancel_user_plan(&mut tx, &a, *u)
                         .await
                         .map(|_| ()),
@@ -771,7 +874,7 @@ async fn concurrent_batch_vs_user_edits() {
                 match r {
                     Ok(()) => tx.commit().await.unwrap(),
                     // Cancel before the batch reached the user: no plan.
-                    Err(e) if e.status() == StatusCode::NOT_FOUND => {}
+                    Err(e) if e.code() == "user_plan.none" => {}
                     Err(e) => panic!("edit failed: {} {}", e.code(), e.message()),
                 }
             }
@@ -911,7 +1014,9 @@ async fn cancel_job() {
         return;
     };
     let us = users(&db, 3).await;
-    let j = create(&db, ids(&us), Action::Disable {}).await.unwrap();
+    let j = create(&db, ids(&us), Action::Ban { reason: "r".into() })
+        .await
+        .unwrap();
     let mut tx = db.pool.begin().await.unwrap();
     let c = apply_cancel(&mut tx, &Actor::test(), j.id).await.unwrap();
     tx.commit().await.unwrap();
@@ -968,11 +1073,18 @@ async fn http_surface() {
         )
         .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
-    assert_eq!(r.json()["code"], "batch.days_range");
+    assert_eq!(r.json()["code"], "user_plan.extend_days_range");
     let r = c
         .post(
             "/test/api/v1/users/batch",
-            json!({"selection": {"ids": us}, "action": {"kind": "disable"}}),
+            json!({"selection": {"ids": us}, "action": {"kind": "ban", "reason": ""}}),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "user.ban_reason_required");
+    let r = c
+        .post(
+            "/test/api/v1/users/batch",
+            json!({"selection": {"ids": us}, "action": {"kind": "ban", "reason": "abuse"}}),
         )
         .await;
     assert_eq!(r.status, StatusCode::ACCEPTED);

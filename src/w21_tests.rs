@@ -73,8 +73,8 @@ async fn users_search_filters_sort_and_total() {
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO user_plans (id, user_id, plan_id, status, period_anchor) \
-         VALUES ($1, $2, $3, 'active', now())",
+        "INSERT INTO user_plans (id, user_id, plan_id, status, period_anchor, term_kind) \
+         VALUES ($1, $2, $3, 'active', now(), 'onetime')",
     )
     .bind(Uuid::new_v4())
     .bind(erin)
@@ -108,7 +108,7 @@ async fn users_search_filters_sort_and_total() {
     // Derived status (mutually exclusive) and role.
     assert_eq!(ids(&get("?status=expired".into()).await), ["bob"]);
     assert_eq!(ids(&get("?status=quota".into()).await), ["carol"]);
-    assert_eq!(ids(&get("?status=disabled".into()).await), ["dave"]);
+    assert_eq!(ids(&get("?status=banned".into()).await), ["dave"]);
     let active = get("?status=active&role=user&sort=email".into()).await;
     assert_eq!(ids(&active), ["albert", "alice", "zed"]);
     // Plan filter.
@@ -422,7 +422,7 @@ async fn error_bodies_carry_codes() {
         .req(
             Method::PATCH,
             &format!("/test/api/v1/users/{me}"),
-            Some(json!({ "enabled": false })),
+            Some(json!({ "role": "user" })),
         )
         .await;
     assert_eq!(r.status, StatusCode::CONFLICT);

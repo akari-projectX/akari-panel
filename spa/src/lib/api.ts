@@ -246,6 +246,12 @@ export interface Me {
   expired: boolean;
   // R21: disabled for exceeding the traffic limit: same renewal scope.
   quota_exhausted: boolean;
+  // W28-c: banned by an admin: only this account view (with the reason,
+  // written for the user) and tickets; everything else is 403
+  // `account.banned`.
+  banned: boolean;
+  ban_reason: string | null;
+  banned_at: string | null;
   // D1: the account's email address (its login name) and whether it is
   // verified (only a verified one gets mail and resets the password);
   // language of the mails.
@@ -309,9 +315,10 @@ export interface UserView {
   traffic_used_bytes: number;
   expires_at: string | null;
   created_at: string;
-  // Why the account is disabled (null while enabled). Only "quota" is ever
-  // re-enabled automatically (period reset, plan change).
-  disabled_reason: "admin" | "quota" | "expiry" | null;
+  // Why the account is disabled (null while enabled): "admin" = banned
+  // (W28-c). Only "quota" is ever re-enabled automatically (period reset,
+  // plan change, traffic reset).
+  disabled_reason: "admin" | "quota" | null;
   // M3: the active plan (null = none) and its next traffic reset.
   plan_id: string | null;
   plan_name: string | null;
@@ -411,16 +418,38 @@ export function describePeriod(p: Period, t: TFunction): string {
 }
 
 // GET /users/{id}/nodes: an account's node access (no credentials).
-export interface UserNodeView {
-  node_id: string;
-  name: string;
-  region: string | null;
-  enabled: boolean;
-  status: string;
-  deleting: boolean;
-  // true = admin assignment, false = granted by the plan.
-  manual: boolean;
-  inbounds: { tag: string; protocol: string }[];
+/** D12: a user's current subscription (GET /users/{id}). */
+export interface SubscriptionView {
+  user_plan_id: string;
+  plan_id: string;
+  plan_name: string;
+  /** The term it was assigned/bought or last renewed with (period kind) and its days. */
+  period: "month" | "quarter" | "half_year" | "year" | "two_year" | "three_year" | "days" | "onetime";
+  period_days: number | null;
+  starts_at: string;
+  expires_at: string | null;
+  traffic_used_bytes: number;
+  traffic_total_bytes: number | null;
+  /** The plan's traffic reset period: "monthly", "days-N" or "none". */
+  reset_period: string;
+  last_reset_at: string | null;
+  next_reset_at: string | null;
+  speed_limit_mbps: number | null;
+  status: "banned" | "over_quota" | "expired" | "active";
+}
+
+/** W28-c: the ban of a banned account. */
+export interface BanView {
+  reason: string | null;
+  banned_at: string | null;
+  banned_by_id: string | null;
+  banned_by_email: string | null;
+}
+
+/** GET /users/{id}: the list row, the current subscription and the ban. */
+export interface UserDetail extends UserView {
+  subscription: SubscriptionView | null;
+  ban: BanView | null;
 }
 
 export interface Inbound {

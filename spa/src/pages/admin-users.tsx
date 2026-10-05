@@ -18,13 +18,15 @@ import {
   put,
   subscriptionUrl,
   type PlanView,
-  type UserNodeView,
+  type UserDetail,
   type UserPage,
   type UserView,
 } from "../lib/api";
 import { adminErrorText } from "../lib/admin-errors";
-import { dateInputValue, endOfDayIso, fmtDate, TZ_LABEL } from "../lib/datetime";
-import { copyText, GIB, humanBytes } from "../lib/utils";
+import { extendDays, TERM_KINDS, termBody, termDays, termKindZh, type TermKind } from "../lib/admin-terms";
+import { periodZh } from "../lib/billing";
+import { fmtDate, fmtDateTime, TZ_LABEL } from "../lib/datetime";
+import { copyText, humanBytes } from "../lib/utils";
 import { BatchDialog, BatchJobsCard, ExportLink, exportHref, type BatchSelection } from "./admin-ops";
 import { UserTraffic } from "./admin-traffic";
 
@@ -38,7 +40,7 @@ export const PAGE_SIZE = 50;
 const selectCls =
   "h-9 rounded-lg border border-border bg-card px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
-export type StatusFilter = "" | "active" | "expired" | "quota" | "disabled";
+export type StatusFilter = "" | "active" | "expired" | "quota" | "banned";
 export type SortKey = "created" | "-created" | "email" | "-traffic" | "expires";
 
 const STATUS_CHIPS: { id: StatusFilter; label: string }[] = [
@@ -46,7 +48,7 @@ const STATUS_CHIPS: { id: StatusFilter; label: string }[] = [
   { id: "active", label: "正常" },
   { id: "expired", label: "已到期" },
   { id: "quota", label: "超出流量" },
-  { id: "disabled", label: "已停用" },
+  { id: "banned", label: "已封禁" },
 ];
 
 const SORTS: { id: SortKey; label: string }[] = [
@@ -75,19 +77,16 @@ export function usersQuery(f: UserFilters): string {
   return `?${p.toString()}`;
 }
 
-const DISABLED_REASON: Record<string, string> = { admin: "管理员停用", expiry: "到期停用" };
-
 /**
  * The status badge (W21, audit M8), the same precedence as the server's
- * status filter: disabled (reason) > over quota > expired > active.
+ * status filter: banned (W28-c) > over quota > expired > active.
  */
 export function userStatus(
   u: Pick<UserView, "enabled" | "disabled_reason" | "expires_at" | "role">,
   now: number = Date.now(),
 ): { label: string; variant: "success" | "destructive" | "secondary" | "outline"; filter: StatusFilter } {
   if (!u.enabled && u.disabled_reason !== "quota") {
-    const why = u.disabled_reason ? DISABLED_REASON[u.disabled_reason] : null;
-    return { label: why ? `已停用（${why}）` : "已停用", variant: "secondary", filter: "disabled" };
+    return { label: "已封禁", variant: "secondary", filter: "banned" };
   }
   if (!u.enabled) return { label: "超出流量", variant: "destructive", filter: "quota" };
   if (u.role === "user" && u.expires_at && Date.parse(u.expires_at) <= now) {
@@ -164,6 +163,7 @@ export function AdminUsers() {
       )}
       {creating && (
         <CreateUserDialog
+          plans={plans.data ?? []}
           onClose={() => setCreating(false)}
           onCreated={(u) => {
             setCreating(false);
@@ -192,7 +192,9 @@ export function AdminUsers() {
             <CardTitle>
               <h1>用户</h1>
             </CardTitle>
-            <CardDescription>账户、角色、套餐与流量。点「管理」编辑用户、查看节点权限或执行其他操作。</CardDescription>
+            <CardDescription>
+              账户、角色、套餐与流量。点「管理」查看当前订阅、分配或续期套餐、封禁或执行其他操作。
+            </CardDescription>
           </div>
           <Button onClick={() => setCreating(true)}>新建用户</Button>
         </CardHeader>
@@ -312,7 +314,7 @@ export function AdminUsers() {
                     disabled={pageIds.length === 0}
                   />
                 </TableHead>
-                <TableHead className="sticky left-0 z-[1] bg-card">邮箱</TableHead>
+                <TableHead className="sticky left-0 z-[1] bg-card">账号</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>套餐</TableHead>
                 <TableHead>流量</TableHead>
@@ -393,7 +395,7 @@ export function AdminUsers() {
                     </TableRow>
                     {open === u.id && (
                       <TableRow id={`manage-${u.id}`} className="hover:bg-transparent">
-                        <TableCell colSpan={8} className="bg-muted/30">
+                        <TableCell colSpan={7} className="bg-muted/30">
                           <ManageUser
                             user={u}
                             plans={plans.data ?? []}
@@ -439,8 +441,8 @@ export function AdminUsers() {
   );
 }
 
-// Everything about one account: edit, plan, node access, sessions,
-// subscription token, delete.
+// Everything about one account: role, current subscription and plan
+// actions (D12), ban (W28-c), sessions, subscription token, delete.
 function ManageUser({
   user,
   plans,
@@ -497,7 +499,7 @@ function ManageUser({
     <div className="space-y-6 py-2 text-left">
       <EditUser user={user} />
       {user.role === "user" && <UserPlanForm user={user} plans={plans} />}
-      {user.role === "user" && <UserNodes user={user} />}
+      <UserBan user={user} />
       {user.role === "user" && <UserTraffic userId={user.id} email={user.email} />}
       <section aria-label={`${user.email} 的其他操作`} className="space-y-2">
         <h2 className="text-sm font-medium">其他操作</h2>
@@ -533,7 +535,7 @@ function ManageUser({
               重新生成订阅令牌
             </Button>
           )}
-          {!user.email_verified && (
+          {user.email && !user.email_verified && (
             <Button
               variant="outline"
               size="sm"
@@ -541,7 +543,7 @@ function ManageUser({
                 run(
                   {
                     title: `把「${user.email}」标记为已验证？`,
-                    message: "标记后该邮箱可接收邮件、用于找回密码。请确认该邮箱确实属于此用户。",
+                    message: "标记后该邮箱可接收邮件、用于登录与找回密码。请确认该邮箱确实属于此用户。",
                     confirmLabel: "标记为已验证",
                   },
                   () => post(`/users/${user.id}/email/verify`, {}),
@@ -603,44 +605,21 @@ function ManageUser({
 }
 
 /** PATCH body with only the fields that changed; null when nothing did. */
-export function userPatch(
-  user: UserView,
-  form: { role: string; enabled: boolean; limitGib: string; expires: string },
-): Record<string, unknown> | null | "bad-limit" {
-  const body: Record<string, unknown> = {};
-  if (form.role !== user.role) body.role = form.role;
-  if (form.enabled !== user.enabled) body.enabled = form.enabled;
-  if (user.plan_id == null) {
-    const text = form.limitGib.trim();
-    let limit: number | null = null;
-    if (text !== "") {
-      const n = Number(text);
-      if (!Number.isFinite(n) || n < 0) return "bad-limit";
-      limit = Math.round(n * GIB);
-    }
-    if (limit !== user.traffic_limit_bytes) body.traffic_limit_bytes = limit;
-    // A picked day is a Beijing day; the account lasts through 23:59:59.
-    if (form.expires !== dateInputValue(user.expires_at)) body.expires_at = endOfDayIso(form.expires);
-  }
-  return Object.keys(body).length === 0 ? null : body;
+export function userPatch(user: UserView, form: { role: string }): Record<string, unknown> | null {
+  return form.role !== user.role ? { role: form.role } : null;
 }
 
-const gibText = (bytes: number | null) => (bytes == null ? "" : String(Number((bytes / GIB).toFixed(3))));
-
+// D12: the traffic limit and expiry come from the plan (see 套餐 below);
+// only the role is edited here.
 function EditUser({ user }: { user: UserView }) {
   const queryClient = useQueryClient();
   const [role, setRole] = useState(user.role);
-  const [enabled, setEnabled] = useState(user.enabled);
-  const [limitGib, setLimitGib] = useState(gibText(user.traffic_limit_bytes));
-  const [expires, setExpires] = useState(dateInputValue(user.expires_at));
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const planManaged = user.plan_id != null;
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
     setMsg(null);
-    const body = userPatch(user, { role, enabled, limitGib, expires });
-    if (body === "bad-limit") return setMsg({ ok: false, text: "流量上限须为不小于 0 的数字（GiB），留空表示不限。" });
+    const body = userPatch(user, { role });
     if (body == null) return setMsg({ ok: true, text: "没有改动。" });
     try {
       await patch(`/users/${user.id}`, body);
@@ -667,49 +646,10 @@ function EditUser({ user }: { user: UserView }) {
             <option value="admin">管理员</option>
           </select>
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor={`eu-limit-${user.id}`}>流量上限（GiB，留空不限）</Label>
-          <Input
-            id={`eu-limit-${user.id}`}
-            type="number"
-            min="0"
-            step="any"
-            className="w-40"
-            value={limitGib}
-            disabled={planManaged}
-            onChange={(e) => setLimitGib(e.target.value)}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor={`eu-exp-${user.id}`}>到期日（{TZ_LABEL}，留空不过期）</Label>
-          <Input
-            id={`eu-exp-${user.id}`}
-            type="date"
-            className="w-44"
-            value={expires}
-            disabled={planManaged}
-            onChange={(e) => setExpires(e.target.value)}
-          />
-        </div>
-        <label className="flex h-9 items-center gap-1.5 text-sm">
-          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-          启用
-        </label>
         <Button type="submit" size="sm">
           保存
         </Button>
       </div>
-      <p className="text-xs text-muted-foreground">到期日当天 23:59:59（{TZ_LABEL}）到期。</p>
-      {planManaged && (
-        <p className="text-xs text-muted-foreground">
-          流量上限与到期时间由套餐「{user.plan_name}」管理；要修改请更换套餐，或取消套餐后再编辑。
-        </p>
-      )}
-      {!user.enabled && user.disabled_reason === "quota" && (
-        <p className="text-xs text-muted-foreground">
-          提高上限不会自动启用因超出流量而停用的用户，请同时勾选「启用」。
-        </p>
-      )}
       {msg && (
         <p role={msg.ok ? "status" : "alert"} className={`text-sm ${msg.ok ? "text-emerald-700" : "text-destructive"}`}>
           {msg.text}
@@ -719,48 +659,85 @@ function EditUser({ user }: { user: UserView }) {
   );
 }
 
-// Read-only: which nodes the account can use, through which inbounds, and
-// whether each comes from the plan or a manual assignment.
-function UserNodes({ user }: { user: UserView }) {
-  const nodes = useQuery({
-    queryKey: ["user-nodes", user.id],
-    queryFn: () => get<UserNodeView[]>(`/users/${user.id}/nodes`),
+// W28-c: ban with a reason the user sees in the portal (kicks the user off
+// every node at once, the subscription stops); unban.
+function UserBan({ user }: { user: UserView }) {
+  const queryClient = useQueryClient();
+  const confirm = useConfirm();
+  const banned = !user.enabled && user.disabled_reason === "admin";
+  const detail = useQuery({
+    queryKey: ["user", user.id],
+    queryFn: () => get<UserDetail>(`/users/${user.id}`),
+    enabled: banned,
   });
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  async function act(e?: React.FormEvent) {
+    e?.preventDefault();
+    setError(null);
+    if (!banned && !reason.trim()) return setError("请填写封禁原因（会显示给用户）。");
+    const ok = await confirm(
+      banned
+        ? {
+            title: `解除「${user.email}」的封禁？`,
+            message: "账户恢复使用，节点立即重新下发。",
+            confirmLabel: "解除封禁",
+          }
+        : {
+            title: `封禁「${user.email}」？`,
+            message: "立即踢下线（所有节点）、订阅停止；用户仍可登录门户查看原因并提交工单。写入审计。",
+            confirmLabel: "封禁",
+            destructive: true,
+          },
+    );
+    if (!ok) return;
+    try {
+      await post(`/users/${user.id}/${banned ? "unban" : "ban"}`, banned ? {} : { reason: reason.trim() });
+      setReason("");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["users"] }),
+        queryClient.invalidateQueries({ queryKey: ["user", user.id] }),
+      ]);
+    } catch (err) {
+      setError(adminErrorText(err));
+    }
+  }
+
   return (
-    <section aria-label={`${user.email} 的节点权限`} className="space-y-2">
-      <h2 className="text-sm font-medium">节点权限</h2>
-      {nodes.isError && <ErrorText>{adminErrorText(nodes.error)}</ErrorText>}
-      <Table label="节点权限">
-        <TableHeader>
-          <TableRow>
-            <TableHead>节点</TableHead>
-            <TableHead>地区</TableHead>
-            <TableHead>状态</TableHead>
-            <TableHead>入站</TableHead>
-            <TableHead>来源</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {nodes.isPending && <TableNote colSpan={5}>加载中…</TableNote>}
-          {nodes.isSuccess && nodes.data.length === 0 && <TableNote colSpan={5}>该用户目前没有可用节点。</TableNote>}
-          {(nodes.data ?? []).map((n) => (
-            <TableRow key={n.node_id}>
-              <TableCell className="whitespace-nowrap font-medium">{n.name}</TableCell>
-              <TableCell>{n.region ?? "—"}</TableCell>
-              <TableCell className="whitespace-nowrap">
-                {n.deleting ? "删除中" : !n.enabled ? "已停用" : n.status === "online" ? "在线" : "离线"}
-              </TableCell>
-              <TableCell className="text-xs">
-                {n.inbounds.map((i) => `${i.tag}（${i.protocol}）`).join("、") || "—"}
-              </TableCell>
-              <TableCell>
-                <Badge variant="secondary">{n.manual ? "手动分配" : "套餐"}</Badge>
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </section>
+    <form className="space-y-2" onSubmit={act} aria-label={`封禁 ${user.email}`}>
+      <h2 className="text-sm font-medium">封禁</h2>
+      {banned ? (
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <span>
+            已封禁
+            {detail.data?.ban?.banned_at && `（${fmtDateTime(detail.data.ban.banned_at)}`}
+            {detail.data?.ban?.banned_by_email && `，操作人 ${detail.data.ban.banned_by_email}`}
+            {detail.data?.ban?.banned_at && "）"}：{detail.data?.ban?.reason ?? "—"}
+          </span>
+          <Button type="submit" size="sm" variant="outline">
+            解除封禁
+          </Button>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="space-y-1.5">
+            <Label htmlFor={`ban-${user.id}`}>原因（门户中对用户可见，最多 500 字）</Label>
+            <Input
+              id={`ban-${user.id}`}
+              className="w-80"
+              maxLength={500}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+          </div>
+          <Button type="submit" size="sm" variant="destructive">
+            封禁用户
+          </Button>
+        </div>
+      )}
+      <ErrorText>{error}</ErrorText>
+    </form>
   );
 }
 
@@ -771,25 +748,80 @@ export function createUserBody(f: {
   password: string;
   email: string;
   role: string;
-  limitGib: string;
-  expires: string;
+  planId: string;
+  term: TermKind;
+  days: string;
 }): Record<string, unknown> | string {
-  if (!f.email.trim()) return "请填写邮箱（登录名）。";
   const body: Record<string, unknown> = { email: f.email.trim(), password: f.password };
   if (f.role !== "user") body.role = f.role;
-  const text = f.limitGib.trim();
-  if (text !== "") {
-    const gb = Number(text);
-    if (!Number.isFinite(gb) || gb < 0) return "流量上限须为不小于 0 的数字（GiB）。";
-    if (gb > 0) body.traffic_limit_bytes = Math.round(gb * GIB);
+  if (f.role === "user" && f.planId) {
+    const term = termBody(f.term, f.days);
+    if (typeof term === "string") return term;
+    body.plan = { plan_id: f.planId, ...term };
   }
-  if (f.expires) body.expires_at = endOfDayIso(f.expires);
   return body;
 }
 
-function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (u: Created) => void }) {
+/** Plan + term inputs (D12: an assignment is a plan and a duration). */
+function TermFields({
+  idPrefix,
+  term,
+  days,
+  onTerm,
+  onDays,
+}: {
+  idPrefix: string;
+  term: TermKind;
+  days: string;
+  onTerm: (t: TermKind) => void;
+  onDays: (d: string) => void;
+}) {
+  const rule = termDays(term);
+  return (
+    <>
+      <div className="space-y-1.5">
+        <Label htmlFor={`${idPrefix}-term`}>时长</Label>
+        <select
+          id={`${idPrefix}-term`}
+          className={selectCls}
+          value={term}
+          onChange={(e) => onTerm(e.target.value as TermKind)}
+        >
+          {TERM_KINDS.map((k) => (
+            <option key={k} value={k}>
+              {termKindZh(k)}
+            </option>
+          ))}
+        </select>
+      </div>
+      {rule !== "none" && (
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-days`}>天数{rule === "optional" ? "（可选）" : ""}</Label>
+          <Input
+            id={`${idPrefix}-days`}
+            className="w-28"
+            inputMode="numeric"
+            value={days}
+            onChange={(e) => onDays(e.target.value)}
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
+function CreateUserDialog({
+  plans,
+  onClose,
+  onCreated,
+}: {
+  plans: PlanView[];
+  onClose: () => void;
+  onCreated: (u: Created) => void;
+}) {
   const queryClient = useQueryClient();
-  const [form, setForm] = useState({ password: "", email: "", role: "user", limitGib: "", expires: "" });
+  const [form, setForm] = useState({ password: "", email: "", role: "user", planId: "", days: "" });
+  const [term, setTerm] = useState<TermKind>("month");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const field = (k: keyof typeof form) => ({
@@ -801,7 +833,7 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    const body = createUserBody(form);
+    const body = createUserBody({ ...form, term });
     if (typeof body === "string") return setError(body);
     setBusy(true);
     try {
@@ -819,7 +851,7 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
     <Dialog
       open
       title="新建用户"
-      description="邮箱即登录名（视为已验证：可收邮件、找回密码），密码至少 8 位。"
+      description="邮箱即登录名（视为已验证：可收邮件、找回密码），密码至少 8 位。流量与到期时间由套餐决定。"
       onClose={onClose}
       className="sm:max-w-lg"
     >
@@ -840,14 +872,32 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
               <option value="admin">管理员</option>
             </select>
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="nu-limit">流量上限（GiB，留空不限）</Label>
-            <Input id="nu-limit" type="number" min="0" step="any" {...field("limitGib")} />
-          </div>
-          <div className="space-y-1.5 sm:col-span-2">
-            <Label htmlFor="nu-expires">到期日（{TZ_LABEL}，当天 23:59:59 到期；留空不过期）</Label>
-            <Input id="nu-expires" type="date" {...field("expires")} />
-          </div>
+          {form.role === "user" && (
+            <div className="space-y-1.5">
+              <Label htmlFor="nu-plan">套餐</Label>
+              <select id="nu-plan" className={`${selectCls} w-full`} {...field("planId")}>
+                <option value="">暂不分配</option>
+                {plans
+                  .filter((p) => p.enabled)
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+              </select>
+            </div>
+          )}
+          {form.role === "user" && form.planId && (
+            <div className="flex flex-wrap items-end gap-3 sm:col-span-2">
+              <TermFields
+                idPrefix="nu"
+                term={term}
+                days={form.days}
+                onTerm={setTerm}
+                onDays={(d) => setForm((f) => ({ ...f, days: d }))}
+              />
+            </div>
+          )}
         </div>
         <ErrorText>{error}</ErrorText>
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
@@ -863,60 +913,133 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
   );
 }
 
-// Assign / change / cancel a user's plan. Assigning replaces the active
-// plan; the user's node access, quota and expiry follow the plan.
+const SUB_STATUS_ZH: Record<string, string> = {
+  active: "正常",
+  expired: "已到期",
+  over_quota: "超出流量",
+  banned: "已封禁",
+};
+
+/** "monthly" / "days-N" / "none" in Chinese. */
+function resetZh(r: string): string {
+  if (r === "monthly") return "每月";
+  if (r.startsWith("days-")) return `每 ${r.slice(5)} 天`;
+  return "不重置";
+}
+
+// D12: the current subscription and its actions — assign / change (plan +
+// term), renew one term or extend N days, reset the plan traffic (confirmed),
+// cancel. No limit or expiry inputs: both come from the plan.
 export function UserPlanForm({ user, plans }: { user: UserView; plans: PlanView[] }) {
   const queryClient = useQueryClient();
   const confirm = useConfirm();
+  const detail = useQuery({ queryKey: ["user", user.id], queryFn: () => get<UserDetail>(`/users/${user.id}`) });
+  const sub = detail.data?.subscription ?? null;
   const offered = plans.filter((p) => p.enabled || p.id === user.plan_id);
   const [planId, setPlanId] = useState(user.plan_id ?? offered[0]?.id ?? "");
-  const [expires, setExpires] = useState("");
-  const [resetTraffic, setResetTraffic] = useState(false);
+  const [term, setTerm] = useState<TermKind>("month");
+  const [days, setDays] = useState("");
+  const [extend, setExtend] = useState("30");
   const [error, setError] = useState<string | null>(null);
 
   async function refresh() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["users"] }),
       queryClient.invalidateQueries({ queryKey: ["plans"] }),
-      queryClient.invalidateQueries({ queryKey: ["user-nodes", user.id] }),
+      queryClient.invalidateQueries({ queryKey: ["user", user.id] }),
     ]);
   }
 
-  async function assign(e: React.FormEvent) {
-    e.preventDefault();
+  async function act(fn: () => Promise<unknown>) {
     setError(null);
-    const body: Record<string, unknown> = { plan_id: planId };
-    if (expires) body.expires_at = endOfDayIso(expires);
-    if (resetTraffic) body.reset_traffic = true;
     try {
-      await put(`/users/${user.id}/plan`, body);
+      await fn();
       await refresh();
     } catch (err) {
       setError(adminErrorText(err));
     }
+  }
+
+  async function assign(e: React.FormEvent) {
+    e.preventDefault();
+    const t = termBody(term, days);
+    if (typeof t === "string") return setError(t);
+    if (
+      user.plan_id &&
+      !(await confirm({
+        title: `为「${user.email}」更换 / 重新分配套餐？`,
+        message: "从现在起按新的时长计算，已用流量清零，并按新套餐的节点组重新授权。不产生订单。",
+        confirmLabel: "确定",
+        destructive: true,
+      }))
+    )
+      return;
+    await act(() => put(`/users/${user.id}/plan`, { plan_id: planId, ...t }));
+  }
+
+  async function renew(how: "term" | "days") {
+    let body: Record<string, unknown>;
+    if (how === "days") {
+      const n = extendDays(extend);
+      if (typeof n === "string") return setError(n);
+      body = { extend_days: n };
+    } else {
+      const t = termBody(term, days);
+      if (typeof t === "string") return setError(t);
+      body = t;
+    }
+    await act(() => patch(`/users/${user.id}/plan`, body));
+  }
+
+  async function resetTraffic() {
+    const ok = await confirm({
+      title: `重置「${user.email}」的套餐流量？`,
+      message: "已用流量清零；因超出流量被停用的账户会自动恢复（封禁的不会）。重置周期不变，写入审计。",
+      confirmLabel: "重置流量",
+      destructive: true,
+    });
+    if (ok) await act(() => post(`/users/${user.id}/plan/reset-traffic`, { confirm: true }));
   }
 
   async function cancel() {
     const ok = await confirm({
       title: `取消「${user.email}」的套餐？`,
-      message: "套餐授予的节点会被移除；流量上限与到期时间沿用上一个套餐的设置（之后可手动修改）。",
+      message: "套餐授予的节点会被移除；流量上限与到期时间保留为记录，之后只能通过分配套餐改变。",
       confirmLabel: "取消套餐",
       cancelLabel: "保留",
       destructive: true,
     });
-    if (!ok) return;
-    setError(null);
-    try {
-      await del(`/users/${user.id}/plan`);
-      await refresh();
-    } catch (err) {
-      setError(adminErrorText(err));
-    }
+    if (ok) await act(() => del(`/users/${user.id}/plan`));
   }
 
   return (
     <form className="space-y-3" onSubmit={assign} aria-label={`${user.email} 的套餐`}>
-      <h2 className="text-sm font-medium">套餐</h2>
+      <h2 className="text-sm font-medium">当前订阅</h2>
+      {detail.isError && <ErrorText>{adminErrorText(detail.error)}</ErrorText>}
+      {sub ? (
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
+          <dt className="text-muted-foreground">套餐</dt>
+          <dd>{sub.plan_name}</dd>
+          <dt className="text-muted-foreground">时长</dt>
+          <dd>{periodZh(sub.period, sub.period_days)}</dd>
+          <dt className="text-muted-foreground">到期</dt>
+          <dd>{sub.expires_at ? fmtDateTime(sub.expires_at) : "永久"}</dd>
+          <dt className="text-muted-foreground">流量</dt>
+          <dd>
+            {humanBytes(sub.traffic_used_bytes)} /{" "}
+            {sub.traffic_total_bytes == null ? "不限" : humanBytes(sub.traffic_total_bytes)}
+          </dd>
+          <dt className="text-muted-foreground">重置</dt>
+          <dd>
+            {resetZh(sub.reset_period)}
+            {sub.next_reset_at && `，下次 ${fmtDateTime(sub.next_reset_at)}`}
+          </dd>
+          <dt className="text-muted-foreground">状态</dt>
+          <dd>{SUB_STATUS_ZH[sub.status] ?? sub.status}</dd>
+        </dl>
+      ) : (
+        detail.isSuccess && <p className="text-sm text-muted-foreground">没有生效的套餐。</p>
+      )}
       {offered.length === 0 ? (
         <p className="text-sm text-muted-foreground">还没有可分配的套餐，请先在「套餐」页创建。</p>
       ) : (
@@ -936,32 +1059,43 @@ export function UserPlanForm({ user, plans }: { user: UserView; plans: PlanView[
               ))}
             </select>
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor={`up-exp-${user.id}`}>套餐到期日（{TZ_LABEL}，可选）</Label>
-            <Input
-              id={`up-exp-${user.id}`}
-              type="date"
-              className="w-44"
-              value={expires}
-              onChange={(e) => setExpires(e.target.value)}
-            />
-          </div>
-          <label className="flex h-9 items-center gap-1.5 text-sm">
-            <input type="checkbox" checked={resetTraffic} onChange={(e) => setResetTraffic(e.target.checked)} />
-            清零已用流量
-          </label>
+          <TermFields idPrefix={`up-${user.id}`} term={term} days={days} onTerm={setTerm} onDays={setDays} />
           <Button type="submit" size="sm" disabled={!planId}>
             {user.plan_id ? "更换套餐" : "分配套餐"}
           </Button>
-          {user.plan_id && (
-            <Button type="button" variant="destructive" size="sm" onClick={cancel}>
-              取消套餐
+          {sub && sub.expires_at && (
+            <Button type="button" size="sm" variant="outline" onClick={() => void renew("term")}>
+              续期一个时长
             </Button>
           )}
         </div>
       )}
-      {user.plan_id && (
-        <p className="text-xs text-muted-foreground">取消套餐后，流量上限与到期时间沿用上一个套餐的设置。</p>
+      {sub && (
+        <div className="flex flex-wrap items-end gap-3">
+          {sub.expires_at && sub.period !== "onetime" && (
+            <>
+              <div className="space-y-1.5">
+                <Label htmlFor={`up-extend-${user.id}`}>延长天数</Label>
+                <Input
+                  id={`up-extend-${user.id}`}
+                  className="w-24"
+                  inputMode="numeric"
+                  value={extend}
+                  onChange={(e) => setExtend(e.target.value)}
+                />
+              </div>
+              <Button type="button" size="sm" variant="outline" onClick={() => void renew("days")}>
+                延长
+              </Button>
+            </>
+          )}
+          <Button type="button" size="sm" variant="outline" onClick={() => void resetTraffic()}>
+            重置流量
+          </Button>
+          <Button type="button" variant="destructive" size="sm" onClick={() => void cancel()}>
+            取消套餐
+          </Button>
+        </div>
       )}
       <ErrorText>{error}</ErrorText>
     </form>

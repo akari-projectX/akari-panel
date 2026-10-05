@@ -2,7 +2,7 @@ name: fuzz
 
 # cargo-fuzz over the parsers of untrusted input (fuzz/, docs/FUZZING.md).
 # PRs/pushes: every target briefly against the committed seeds and the
-# cached corpus (regressions); nightly: 5 min per target, growing the
+# cached corpus (regressions); nightly: 4 min per target, growing the
 # cached corpus. W37: on PRs only when what the targets compile changes
 # (scripts/ci-changes.sh group `fuzz`) or with the `full-ci` label; always
 # on main, nightly, dispatch and from release.yml (workflow_call).
@@ -24,7 +24,7 @@ on:
     inputs:
       seconds:
         description: seconds per target
-        default: "300"
+        default: "240"
 
 permissions:
   contents: read
@@ -59,7 +59,11 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.fuzz != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # Budget: targets x seconds + ~10 min (setup, cold `cargo fuzz build`,
+    # per-target start-up). Nightly 19 x 240 s = 76 min -> ~86 min. A
+    # cancelled job also skips the corpus cache save, so the step below caps
+    # the per-target seconds to fit FUZZ_BUDGET_MIN instead of overrunning.
+    timeout-minutes: 150
     defaults:
       run:
         working-directory: fuzz
@@ -79,10 +83,20 @@ jobs:
           key: fuzz-corpus-${{ github.run_id }}
           restore-keys: fuzz-corpus-
       - name: fuzz every target
+        env:
+          # Fuzzing time for all targets together; keep it at least ~20 min
+          # under timeout-minutes (build + per-target overhead).
+          FUZZ_BUDGET_MIN: "120"
         run: |
           secs=20
-          if [ "${{ github.event_name }}" = schedule ]; then secs=300; fi
+          if [ "${{ github.event_name }}" = schedule ]; then secs=240; fi
           if [ -n "${{ inputs.seconds }}" ]; then secs="${{ inputs.seconds }}"; fi
+          n=$(cargo fuzz list | wc -l)
+          cap=$(( FUZZ_BUDGET_MIN * 60 / n ))
+          if [ "$secs" -gt "$cap" ]; then
+            echo "::warning::$n targets x ${secs}s exceeds the ${FUZZ_BUDGET_MIN}-min budget; running ${cap}s per target"
+            secs=$cap
+          fi
           ./run.sh "$secs"
       - if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

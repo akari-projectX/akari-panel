@@ -81,15 +81,26 @@ describe("pure helpers", () => {
     expect(batchAction({ ...EMPTY_BATCH, kind: "add_balance", amount: "1.234", reason: "x" })).toBe(
       "金额无效（元，最多两位小数）",
     );
-    expect(batchAction({ ...EMPTY_BATCH, kind: "set_plan", planId: "p1", expires: "2026-10-31" })).toEqual({
+    expect(batchAction({ ...EMPTY_BATCH, kind: "set_plan", planId: "p1" })).toEqual({
       kind: "set_plan",
       plan_id: "p1",
-      expires_at: "2026-10-31T15:59:59.000Z",
+      period: "month",
+    });
+    expect(batchAction({ ...EMPTY_BATCH, kind: "set_plan", planId: "p1", term: "days", termDays: "" })).toBe(
+      "天数须为 1–3650 的整数",
+    );
+    expect(batchAction({ ...EMPTY_BATCH, kind: "set_plan", planId: "p1", term: "days", termDays: "45" })).toEqual({
+      kind: "set_plan",
+      plan_id: "p1",
+      period: "days",
+      days: 45,
     });
     expect(batchAction({ ...EMPTY_BATCH, kind: "send_email", subject: "s" })).toBe("请填写邮件正文");
-    expect(batchAction({ ...EMPTY_BATCH, kind: "disable" })).toEqual({ kind: "disable" });
+    expect(batchAction({ ...EMPTY_BATCH, kind: "unban" })).toEqual({ kind: "unban" });
+    expect(batchAction({ ...EMPTY_BATCH, kind: "ban", reason: " " })).toBe("请填写封禁原因（会显示给用户）");
+    expect(batchAction({ ...EMPTY_BATCH, kind: "ban", reason: " 滥用 " })).toEqual({ kind: "ban", reason: "滥用" });
     expect(batchSummary({ kind: "add_balance", amount_cents: -200 }, [])).toContain("扣减余额 ¥2.00");
-    expect(batchSummary({ kind: "set_plan", plan_id: "p1" }, [plan])).toContain("「basic」");
+    expect(batchSummary({ kind: "set_plan", plan_id: "p1", period: "year" }, [plan])).toContain("「basic」，时长 年付");
   });
 
   it("never puts an amount in a manual order", () => {
@@ -195,7 +206,7 @@ describe("users: batch selection", () => {
     fireEvent.click(await screen.findByRole("button", { name: "对全部用户批量操作（120）" }));
     const dialog = await screen.findByRole("dialog", { name: "批量操作" });
     expect(await within(dialog).findByText(/其中 1 个管理员会被跳过/)).toBeTruthy();
-    fireEvent.change(within(dialog).getByLabelText("操作"), { target: { value: "disable" } });
+    fireEvent.change(within(dialog).getByLabelText("操作"), { target: { value: "unban" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "预览并执行" }));
     await waitFor(() => expect(window.confirm).toHaveBeenCalled());
     expect(calls.find((c) => c.path === "/users/batch/preview")?.body).toEqual({ selection: { filter: {} } });
