@@ -2,16 +2,11 @@
 # src/auth.rs test `error_codes_are_registered` keeps this list equal to the
 # codes in the source; spa/scripts/check-error-codes.mjs requires a SPA
 # mapping for each.
-account.invalid_code
 account.invalid_password
 account.locale_invalid
 account.mail_off
 account.password_too_long
 account.password_too_short
-account.totp_enabled
-account.totp_enrollment_stale
-account.totp_no_enrollment
-account.totp_not_enabled
 agent_update.asset_missing
 agent_update.check_running
 agent_update.checksum_mismatch
@@ -58,7 +53,6 @@ announcement.title_long
 announcement.title_multiline
 announcement.title_required
 announcement.window_invalid
-auth.code_too_long
 auth.credentials_required
 auth.forbidden
 auth.unauthorized
@@ -365,9 +359,6 @@ user.email_exists
 user.has_plan
 user.last_admin
 user.limit_negative
-user.login_exists
-user.login_invalid
-user.no_email
 user.plan_filter_invalid
 user.plan_managed
 user.query_too_long

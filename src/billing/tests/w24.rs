@@ -749,7 +749,7 @@ async fn legacy_section_is_imported_once() {
         "pre-0140 orders belong to the imported method"
     );
     let audit: Vec<(String, String)> = sqlx::query_as(
-        "SELECT action, actor_login FROM audit_log WHERE action LIKE 'payment_method.%'",
+        "SELECT action, actor_label FROM audit_log WHERE action LIKE 'payment_method.%'",
     )
     .fetch_all(&mut *c)
     .await

@@ -86,7 +86,6 @@ const view = (over: Partial<SettingsView> = {}): SettingsView => ({
     remove_mode: { value: null, effective: "gate", default: "gate", source: "default" },
   },
   security: {
-    require_admin_2fa: { value: null, effective: false, default: false, source: "default" },
     audit_retention_days: { value: null, effective: 365, default: 365, source: "default" },
     traffic_daily_retention_days: { value: null, effective: 400, default: 400, source: "default" },
     cloudflare_ranges: null,
@@ -312,11 +311,10 @@ describe("W25: settings that left panel.toml", () => {
   });
 
   it("builds the 安全 body", () => {
-    const base = { twoFactor: false, auditDays: "", trafficDays: "", ranges: "", keys: "" };
+    const base = { auditDays: "", trafficDays: "", ranges: "", keys: "" };
     expect(securityBody(5, base)).toEqual({
       body: {
         version: 5,
-        require_admin_2fa: false,
         audit_retention_days: null,
         traffic_daily_retention_days: null,
         cloudflare_ranges: null,
@@ -325,7 +323,6 @@ describe("W25: settings that left panel.toml", () => {
     });
     expect(
       securityBody(5, {
-        twoFactor: true,
         auditDays: "0",
         trafficDays: "40",
         ranges: "198.51.100.0/24\n# comment\n2001:db8::/32\n",
@@ -334,7 +331,6 @@ describe("W25: settings that left panel.toml", () => {
     ).toEqual({
       body: {
         version: 5,
-        require_admin_2fa: true,
         audit_retention_days: 0,
         traffic_daily_retention_days: 40,
         cloudflare_ranges: ["198.51.100.0/24", "2001:db8::/32"],
@@ -407,14 +403,12 @@ describe("W25: settings that left panel.toml", () => {
     tab("security");
     renderWithClient(<AdminSettings />);
     expect(await screen.findByText(/key-f2ad18a8bb718a1a\s*（官方，内置）/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.change(screen.getByLabelText("审计日志保留天数"), { target: { value: "90" } });
     fireEvent.change(screen.getByLabelText("Cloudflare 网段"), { target: { value: "1.2.3.4/32" } });
     fireEvent.click(screen.getByRole("button", { name: "保存安全设置" }));
     await screen.findByText("Cloudflare 网段：1.2.3.4/40 不是有效的 CIDR");
     expect(calls.find((c) => c.path === "/settings/security")?.body).toEqual({
       version: 3,
-      require_admin_2fa: true,
       audit_retention_days: 90,
       traffic_daily_retention_days: null,
       cloudflare_ranges: ["1.2.3.4/32"],

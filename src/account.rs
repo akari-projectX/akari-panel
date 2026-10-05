@@ -1,338 +1,17 @@
-//! Self-service account endpoints: TOTP enrollment and recovery codes
-//! (M1-6), subscription token regeneration (M1-9).
-//!
-//! 2FA is optional for every account (R18). Enrollment endpoints take
-//! `SessionUser`, the only extractor that also accepts an enrollment-only
-//! session (with `auth.require_admin_2fa`: an admin without active TOTP
-//! after the password step); everything else in the API requires `AuthUser`
-//! (a full session).
+//! Self-service account endpoints: own password, subscription token
+//! regeneration (M1-9).
 
-use crate::auth::{bad_request, conflict};
+use crate::auth::bad_request;
 use axum::Json;
 use axum::extract::State;
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sqlx::PgConnection;
-use uuid::Uuid;
 
 use crate::api::ApiJson;
 use crate::audit::Actor;
-use crate::auth::{self, ApiError, AuthUser, SessionUser, Stage};
+use crate::auth::{self, ApiError, AuthUser};
 use crate::state::AppState;
-use crate::totp;
-
-/// GET /api/v1/me/totp (any session, including enrollment-only): the
-/// session's stage and the account's 2FA state. Never returns the secret.
-pub async fn totp_status(
-    State(state): State<AppState>,
-    user: SessionUser,
-) -> Result<Json<Value>, ApiError> {
-    let (enabled, pending, left): (bool, bool, i64) = sqlx::query_as(
-        "SELECT COALESCE(bool_or(t.enabled_at IS NOT NULL), false), \
-                COALESCE(bool_or(t.enabled_at IS NULL), false), \
-                (SELECT count(*) FROM user_recovery_codes r WHERE r.user_id = $1 AND r.used_at IS NULL) \
-         FROM user_totp t WHERE t.user_id = $1",
-    )
-    .bind(user.id)
-    .fetch_one(state.pg())
-    .await?;
-    Ok(Json(json!({
-        "id": user.id,
-        "login": user.login,
-        "role": user.role,
-        "stage": user.stage.as_str(),
-        "enabled": enabled,
-        "pending": pending,
-        // The console recommends 2FA to admins without it; with this set it
-        // is mandatory for them.
-        "admin_2fa_required": state.settings().get().require_admin_2fa,
-        "recovery_codes_left": left,
-    })))
-}
-
-/// POST /api/v1/me/totp/enroll (any session): start (or restart) an
-/// enrollment. A fresh secret is stored encrypted as pending — replacing
-/// any earlier pending one — and returned exactly this once, as base32 and
-/// as an otpauth URI. 409 if 2FA is already active.
-pub async fn totp_enroll(
-    State(state): State<AppState>,
-    user: SessionUser,
-) -> Result<Json<Value>, ApiError> {
-    let secret = totp::generate_secret();
-    let sealed = state.totp().seal(user.id, &secret)?;
-    let n = sqlx::query(
-        "INSERT INTO user_totp (user_id, secret_enc) VALUES ($1, $2) \
-         ON CONFLICT (user_id) DO UPDATE \
-         SET secret_enc = EXCLUDED.secret_enc, created_at = now(), last_step = NULL \
-         WHERE user_totp.enabled_at IS NULL",
-    )
-    .bind(user.id)
-    .bind(&sealed)
-    .execute(state.pg())
-    .await?
-    .rows_affected();
-    if n == 0 {
-        return Err(conflict!(
-            "account.totp_enabled",
-            "two-factor authentication is already enabled"
-        ));
-    }
-    Ok(Json(json!({
-        "secret": totp::base32(&secret),
-        "otpauth_uri": totp::otpauth_uri(&user.login, &secret),
-        "digits": 6,
-        "period": totp::STEP_SECS,
-        "algorithm": "SHA1",
-    })))
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CodeReq {
-    pub code: String,
-}
-
-/// Replace the account's recovery codes with ten fresh ones; returns the
-/// plaintexts (shown once).
-async fn new_recovery_codes(
-    conn: &mut PgConnection,
-    state: &AppState,
-    user: Uuid,
-) -> Result<Vec<String>, ApiError> {
-    let codes = totp::generate_recovery_codes();
-    let hashes: Vec<String> = codes
-        .iter()
-        .filter_map(|c| totp::normalize_recovery(c))
-        .map(|n| state.totp().recovery_hash(user, &n))
-        .collect();
-    if hashes.len() != codes.len() {
-        return Err(anyhow::anyhow!("generated recovery code failed to normalize").into());
-    }
-    sqlx::query("DELETE FROM user_recovery_codes WHERE user_id = $1")
-        .bind(user)
-        .execute(&mut *conn)
-        .await?;
-    sqlx::query(
-        "INSERT INTO user_recovery_codes (user_id, code_hash) SELECT $1, unnest($2::text[])",
-    )
-    .bind(user)
-    .bind(&hashes)
-    .execute(&mut *conn)
-    .await?;
-    Ok(codes)
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfirmReq {
-    pub code: String,
-}
-
-/// POST /api/v1/me/totp/confirm {code} (any session): activate the pending
-/// secret with a valid current code. (R18 removed the admins' one-time
-/// enrollment code, M1c.) In one transaction: activate (the code's step is
-/// recorded, so it cannot be replayed at login), issue ten recovery codes, bump
-/// session_ver (every other session of the account, e.g. another
-/// enrollment-only one, ends), audit. This session continues with a fresh
-/// full cookie. Returns the recovery codes (shown once). Wrong codes are
-/// one 400 "invalid code" and count against the login rate limit of the
-/// account and the client address.
-pub async fn totp_confirm(
-    State(state): State<AppState>,
-    user: SessionUser,
-    jar: CookieJar,
-    ApiJson(req): ApiJson<ConfirmReq>,
-) -> Result<(CookieJar, Json<Value>), ApiError> {
-    let bucket = user
-        .ip
-        .map(crate::client_ip::bucket)
-        .unwrap_or_else(|| "unknown".into());
-    let attempt = crate::login_limit::Attempt::reserve(&state, &bucket, &user.login)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "login rate limit unavailable");
-            ApiError::internal()
-        })?
-        .ok_or_else(ApiError::too_many)?;
-    match confirm_inner(&state, &user, &req).await {
-        Ok(Some((role, sv, codes))) => {
-            attempt.release(&state).await;
-            let token = auth::issue_token(&state, user.id, &role, sv, Stage::Full)?;
-            Ok((
-                jar.add(auth::session_cookie(&state, token, Stage::Full)),
-                Json(json!({ "recovery_codes": codes, "stage": Stage::Full.as_str() })),
-            ))
-        }
-        Ok(None) => {
-            attempt.fail();
-            Err(bad_request!("account.invalid_code", "invalid code"))
-        }
-        Err(e) => {
-            attempt.release(&state).await;
-            Err(e)
-        }
-    }
-}
-
-/// None = a wrong code.
-async fn confirm_inner(
-    state: &AppState,
-    user: &SessionUser,
-    req: &ConfirmReq,
-) -> Result<Option<(String, i64, Vec<String>)>, ApiError> {
-    let mut tx = state.pg().begin().await?;
-    // Lock order: users, then the account's 2FA rows.
-    let role: Option<String> =
-        sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR UPDATE")
-            .bind(user.id)
-            .fetch_optional(&mut *tx)
-            .await?;
-    if role.is_none() {
-        return Err(ApiError::unauthorized());
-    }
-    let pending: Option<(Vec<u8>, bool, i64)> = sqlx::query_as(
-        "SELECT secret_enc, enabled_at IS NOT NULL, EXTRACT(EPOCH FROM now())::bigint \
-         FROM user_totp WHERE user_id = $1 FOR UPDATE",
-    )
-    .bind(user.id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let Some((sealed, enabled, now)) = pending else {
-        return Err(conflict!(
-            "account.totp_no_enrollment",
-            "no enrollment in progress"
-        ));
-    };
-    if enabled {
-        return Err(conflict!(
-            "account.totp_enabled",
-            "two-factor authentication is already enabled"
-        ));
-    }
-    let Some(secret) = state.totp().open(user.id, &sealed) else {
-        tracing::error!(user = %user.id, "pending TOTP secret cannot be decrypted");
-        return Err(conflict!(
-            "account.totp_enrollment_stale",
-            "enrollment is no longer valid; start again"
-        ));
-    };
-    let step = totp::verify(&secret, req.code.trim(), totp::step_of(now), None);
-    let Some(step) = step else {
-        return Ok(None);
-    };
-    sqlx::query("UPDATE user_totp SET enabled_at = now(), last_step = $2 WHERE user_id = $1")
-        .bind(user.id)
-        .bind(step)
-        .execute(&mut *tx)
-        .await?;
-    let codes = new_recovery_codes(&mut tx, state, user.id).await?;
-    let (role, sv): (String, i64) = sqlx::query_as(
-        "UPDATE users SET session_ver = session_ver + 1 WHERE id = $1 RETURNING role, session_ver",
-    )
-    .bind(user.id)
-    .fetch_one(&mut *tx)
-    .await?;
-    crate::audit::record(
-        &mut tx,
-        &Actor::account(user.id, &user.login, user.ip),
-        "user.totp.enable",
-        "user",
-        Some(user.id.to_string()),
-        Some(json!({ "totp": "none" })),
-        Some(json!({ "totp": "active", "recovery_codes": codes.len() })),
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(Some((role, sv, codes)))
-}
-
-/// POST /api/v1/me/totp/recovery-codes {code} (full session): replace the
-/// recovery codes after proving possession of the authenticator (a current
-/// TOTP code, replay-checked). Wrong codes count against the login rate
-/// limit of the account and the client address.
-pub async fn regenerate_recovery_codes(
-    State(state): State<AppState>,
-    user: AuthUser,
-    ApiJson(req): ApiJson<CodeReq>,
-) -> Result<Json<Value>, ApiError> {
-    let bucket = user
-        .ip
-        .map(crate::client_ip::bucket)
-        .unwrap_or_else(|| "unknown".into());
-    let attempt = crate::login_limit::Attempt::reserve(&state, &bucket, &user.login)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "login rate limit unavailable");
-            ApiError::internal()
-        })?
-        .ok_or_else(ApiError::too_many)?;
-    match regenerate_inner(&state, &user, &req.code).await {
-        Ok(Some(codes)) => {
-            attempt.release(&state).await;
-            Ok(Json(json!({ "recovery_codes": codes })))
-        }
-        Ok(None) => {
-            attempt.fail();
-            Err(bad_request!("account.invalid_code", "invalid code"))
-        }
-        Err(e) => {
-            attempt.release(&state).await;
-            Err(e)
-        }
-    }
-}
-
-async fn regenerate_inner(
-    state: &AppState,
-    user: &AuthUser,
-    code: &str,
-) -> Result<Option<Vec<String>>, ApiError> {
-    let mut tx = state.pg().begin().await?;
-    let locked: Option<i32> = sqlx::query_scalar("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
-        .bind(user.id)
-        .fetch_optional(&mut *tx)
-        .await?;
-    if locked.is_none() {
-        return Err(ApiError::unauthorized());
-    }
-    let active: Option<(Vec<u8>, Option<i64>, i64)> = sqlx::query_as(
-        "SELECT secret_enc, last_step, EXTRACT(EPOCH FROM now())::bigint FROM user_totp \
-         WHERE user_id = $1 AND enabled_at IS NOT NULL FOR UPDATE",
-    )
-    .bind(user.id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let Some((sealed, last, now)) = active else {
-        return Err(conflict!(
-            "account.totp_not_enabled",
-            "two-factor authentication is not enabled"
-        ));
-    };
-    let secret = state.totp().open(user.id, &sealed);
-    let Some(step) = secret.and_then(|s| totp::verify(&s, code.trim(), totp::step_of(now), last))
-    else {
-        return Ok(None);
-    };
-    sqlx::query("UPDATE user_totp SET last_step = $2 WHERE user_id = $1")
-        .bind(user.id)
-        .bind(step)
-        .execute(&mut *tx)
-        .await?;
-    let codes = new_recovery_codes(&mut tx, state, user.id).await?;
-    crate::audit::record(
-        &mut tx,
-        &Actor::of(user),
-        "user.totp.recovery_codes",
-        "user",
-        Some(user.id.to_string()),
-        None,
-        Some(json!({ "recovery_codes": codes.len() })),
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(Some(codes))
-}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -364,7 +43,7 @@ pub async fn change_own_password(
         .ip
         .map(crate::client_ip::bucket)
         .unwrap_or_else(|| "unknown".into());
-    let attempt = crate::login_limit::Attempt::reserve(&state, &bucket, &user.login)
+    let attempt = crate::login_limit::Attempt::reserve(&state, &bucket, &user.email)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "login rate limit unavailable");
@@ -374,9 +53,9 @@ pub async fn change_own_password(
     match change_password_inner(&state, &user, &req).await {
         Ok(Some((role, sv))) => {
             attempt.release(&state).await;
-            let token = auth::issue_token(&state, user.id, &role, sv, Stage::Full)?;
+            let token = auth::issue_token(&state, user.id, &role, sv)?;
             Ok((
-                jar.add(auth::session_cookie(&state, token, Stage::Full)),
+                jar.add(auth::session_cookie(&state, token)),
                 axum::http::StatusCode::NO_CONTENT,
             ))
         }
@@ -477,32 +156,25 @@ mod tests {
     use crate::testdb::TestDb;
     use crate::testdb::http::{Client, rand_ip};
     use axum::http::StatusCode;
-    use data_encoding::BASE32_NOPAD;
     use fred::prelude::KeysInterface;
     use serde_json::Value;
+    use uuid::Uuid;
 
     const PW: &str = "correct-horse-battery";
 
+    /// An account with password PW; returns (id, email).
     async fn account(db: &TestDb, role: &str) -> (Uuid, String) {
         let id = Uuid::new_v4();
-        let login = format!("acct-{}", id.simple());
-        sqlx::query("INSERT INTO users (id, login, password_hash, role) VALUES ($1, $2, $3, $4)")
+        let email = format!("acct-{}@example.com", id.simple());
+        sqlx::query("INSERT INTO users (id, email, password_hash, role) VALUES ($1, $2, $3, $4)")
             .bind(id)
-            .bind(&login)
+            .bind(&email)
             .bind(auth::hash_password(PW).unwrap())
             .bind(role)
             .execute(&db.pool)
             .await
             .unwrap();
-        (id, login)
-    }
-
-    async fn db_step(db: &TestDb) -> i64 {
-        let now: i64 = sqlx::query_scalar("SELECT EXTRACT(EPOCH FROM now())::bigint")
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
-        totp::step_of(now)
+        (id, email)
     }
 
     /// (action, after) of the account's audit rows, oldest first; waits a
@@ -537,40 +209,37 @@ mod tests {
         .unwrap()
     }
 
-    async fn clear_limits(state: &AppState, ips: &[std::net::IpAddr], login: &str) {
+    async fn clear_limits(state: &AppState, ips: &[std::net::IpAddr], email: &str) {
         let mut keys = Vec::new();
         for ip in ips {
             keys.extend(crate::login_limit::keys(
                 &crate::client_ip::bucket(*ip),
-                login,
+                email,
             ));
         }
         let _: i64 = state.valkey().del(keys).await.unwrap();
     }
 
-    fn other_code(good: &str) -> &'static str {
-        if good == "000000" { "111111" } else { "000000" }
-    }
-
-    /// M1-6 / R18 end to end through the router: 2FA is optional, so an
-    /// admin without TOTP logs in with the password alone (full session);
-    /// enrolling needs only a valid current code (no enrollment code since
-    /// R18); afterwards login needs password + code in one request, codes
-    /// are single-use (replay), recovery codes work once, and wrong second
-    /// factors are uniform 401s that count toward the login limit.
+    /// D1/D7 end to end through the router: everyone logs in with the email
+    /// address (any case) and the password alone; every failure (unknown
+    /// address, wrong password, disabled account) is the same 401 without a
+    /// cookie and counts toward the address's login limit; the session is a
+    /// 12-hour cookie; successful logins are audited (admins always,
+    /// regular users throttled) under the account's non-personal label.
     #[tokio::test]
-    async fn admin_totp_optional_enrollment_login_replay_and_recovery() {
+    async fn email_login_uniform_failures_and_audit() {
         let Some(db) = TestDb::new().await else {
             return;
         };
         let state = AppState::for_test(db.pool.clone()).await;
-        let (id, login) = account(&db, "admin").await;
+        let (aid, admin) = account(&db, "admin").await;
+        let (uid, user) = account(&db, "user").await;
         let mut c = Client::new(&state, rand_ip());
 
-        // A stray code is ignored for an account without 2FA.
-        let r = c.login(&login, PW, Some("123456")).await;
-        assert_eq!(r.status, StatusCode::OK);
-        assert_eq!(r.json()["stage"], "full", "admin 2FA is optional");
+        let r = c.login(&admin.to_uppercase(), PW).await;
+        assert_eq!(r.status, StatusCode::OK, "case-insensitive address");
+        assert_eq!(r.json()["email"], admin);
+        assert_eq!(r.json()["role"], "admin");
         let cookie = r
             .headers
             .get("set-cookie")
@@ -583,95 +252,10 @@ mod tests {
             "{cookie}"
         );
         assert_eq!(c.get("/test/api/v1/users").await.status, StatusCode::OK);
-        let st = c.get("/test/api/v1/me/totp").await;
-        assert_eq!(st.status, StatusCode::OK);
-        assert_eq!(
-            (
-                st.json()["stage"].clone(),
-                st.json()["enabled"].clone(),
-                st.json()["admin_2fa_required"].clone()
-            ),
-            (json!("full"), json!(false), json!(false))
-        );
-        assert!(st.json().get("enroll_code_required").is_none());
-        assert_eq!(
-            c.post("/test/api/v1/me/totp/confirm", json!({"code": "123456"}))
-                .await
-                .status,
-            StatusCode::CONFLICT,
-            "nothing pending"
-        );
+        let me = c.get("/test/api/v1/me").await.json();
+        assert_eq!(me["email"], admin);
+        assert!(me.get("login").is_none(), "D1: no login name");
 
-        // Enroll twice: the second secret replaces the first.
-        c.post("/test/api/v1/me/totp/enroll", json!({})).await;
-        let e = c.post("/test/api/v1/me/totp/enroll", json!({})).await;
-        assert_eq!(e.status, StatusCode::OK);
-        let b32 = e.json()["secret"].as_str().unwrap().to_string();
-        let secret = BASE32_NOPAD.decode(b32.as_bytes()).unwrap();
-        assert_eq!(secret.len(), totp::SECRET_BYTES);
-        assert!(e.json()["otpauth_uri"].as_str().unwrap().contains(&b32));
-        let stored: Vec<u8> =
-            sqlx::query_scalar("SELECT secret_enc FROM user_totp WHERE user_id = $1")
-                .bind(id)
-                .fetch_one(&db.pool)
-                .await
-                .unwrap();
-        assert!(
-            !stored.windows(secret.len()).any(|w| w == secret.as_slice()),
-            "encrypted at rest"
-        );
-
-        let good = totp::code_at(&secret, db_step(&db).await);
-        let r = c
-            .post(
-                "/test/api/v1/me/totp/confirm",
-                json!({"code": other_code(&good)}),
-            )
-            .await;
-        assert_eq!(r.status, StatusCode::BAD_REQUEST);
-        // The removed M1c field is an unknown field now.
-        assert_eq!(
-            c.post(
-                "/test/api/v1/me/totp/confirm",
-                json!({"code": good, "enrollment_code": "AAAA-BBBB"})
-            )
-            .await
-            .status,
-            StatusCode::BAD_REQUEST
-        );
-        let before_cookie = c.cookie.clone();
-        let r = c
-            .post("/test/api/v1/me/totp/confirm", json!({"code": good}))
-            .await;
-        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
-        let codes: Vec<String> =
-            serde_json::from_value(r.json()["recovery_codes"].clone()).unwrap();
-        assert_eq!(codes.len(), 10);
-        c.cookie = r.session_cookie();
-        assert_eq!(c.get("/test/api/v1/users").await.status, StatusCode::OK);
-        let mut stale = Client::new(&state, rand_ip());
-        stale.cookie = before_cookie;
-        assert_eq!(
-            stale.get("/test/api/v1/me/totp").await.status,
-            StatusCode::UNAUTHORIZED,
-            "activation ends the other sessions"
-        );
-        let st = c.get("/test/api/v1/me/totp").await;
-        assert_eq!(st.json()["enabled"], true);
-        assert_eq!(st.json()["recovery_codes_left"], 10);
-        assert!(!String::from_utf8_lossy(&st.body).contains(&b32));
-        assert_eq!(
-            c.post("/test/api/v1/me/totp/enroll", json!({}))
-                .await
-                .status,
-            StatusCode::CONFLICT,
-            "the secret is never shown again"
-        );
-
-        // Login now needs the second factor; every failure is the same 401.
-        // W20: the right password without any code is the distinct
-        // two-step answer (only after the password verified).
-        let mut c2 = Client::new(&state, rand_ip());
         let unauthorized = |r: crate::testdb::http::Resp| {
             assert_eq!(r.status, StatusCode::UNAUTHORIZED);
             assert_eq!(
@@ -680,183 +264,125 @@ mod tests {
             );
             assert!(r.session_cookie().is_none());
         };
-        let r = c2.login(&login, PW, None).await;
-        assert_eq!(r.json()["totp_required"], true);
-        assert!(r.session_cookie().is_none());
-        unauthorized(c2.login(&login, "wrong-password", None).await);
-        unauthorized(c2.login(&login, PW, Some(other_code(&good))).await);
-        unauthorized(c2.login(&login, PW, Some(&good)).await); // used by confirm
-        unauthorized(c2.login(&login, "wrong-password", Some(&good)).await);
-        unauthorized(c2.login("no-such-account", PW, Some(&good)).await);
-
-        // A fresh step: rewind the replay marker instead of waiting 30 s.
-        sqlx::query("UPDATE user_totp SET last_step = last_step - 3 WHERE user_id = $1")
-            .bind(id)
+        let mut c2 = Client::new(&state, rand_ip());
+        unauthorized(c2.login(&user, "wrong-password").await);
+        unauthorized(c2.login("no-such-account@example.com", PW).await);
+        sqlx::query("UPDATE users SET enabled = false WHERE id = $1")
+            .bind(uid)
             .execute(&db.pool)
             .await
             .unwrap();
-        let code = totp::code_at(&secret, db_step(&db).await);
-        let r = c2.login(&login, PW, Some(&code)).await;
-        assert_eq!(r.status, StatusCode::OK);
-        assert_eq!(r.json()["stage"], "full");
-        assert_eq!(c2.get("/test/api/v1/users").await.status, StatusCode::OK);
-        let mut c3 = Client::new(&state, rand_ip());
-        unauthorized(c3.login(&login, PW, Some(&code)).await); // replay
-
-        // Recovery codes: single use, typed loosely.
-        assert_eq!(
-            c3.login(&login, PW, Some(&codes[0])).await.status,
-            StatusCode::OK
-        );
-        let mut c4 = Client::new(&state, rand_ip());
-        unauthorized(c4.login(&login, PW, Some(&codes[0])).await);
-        let loose = codes[1].to_uppercase().replace('-', " ");
-        assert_eq!(
-            c4.login(&login, PW, Some(&loose)).await.status,
-            StatusCode::OK
-        );
-        let st = c4.get("/test/api/v1/me/totp").await;
-        assert_eq!(st.json()["recovery_codes_left"], 8);
-
-        // Wrong second factors count toward the login limit (name bucket:
-        // 1 failed confirm on c (the unknown-field body is a parse error
-        // before the limiter) + 4 on c2 (W20: the totp-required answer is
-        // released, the extra wrong password counts) + 1 on c3 + 1 on c4; the unknown
-        // account has its own).
-        let name_key = crate::login_limit::keys("x", &login)[1].clone();
-        let n: i64 = state.valkey().get(&name_key).await.unwrap();
-        assert_eq!(n, 7);
-
-        let rows = audit_of(&db, id, 7).await;
-        let actions: Vec<&str> = rows.iter().map(|(a, _)| a.as_str()).collect();
-        assert!(actions.contains(&"user.totp.enable"), "{actions:?}");
-        let methods: Vec<&str> = rows
-            .iter()
+        unauthorized(c2.login(&user, PW).await);
+        let n: i64 = state
+            .valkey()
+            .get(&crate::login_limit::keys("x", &user)[1])
+            .await
+            .unwrap();
+        assert_eq!(n, 2, "wrong password + disabled account");
+        sqlx::query("UPDATE users SET enabled = true WHERE id = $1")
+            .bind(uid)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            assert_eq!(c2.login(&user, PW).await.status, StatusCode::OK);
+        }
+        assert_eq!(c2.get("/test/api/v1/me").await.status, StatusCode::OK);
+        let user_logins = audit_of(&db, uid, 1)
+            .await
+            .into_iter()
             .filter(|(a, _)| a == "auth.login")
-            .filter_map(|(_, v)| v["method"].as_str())
-            .collect();
-        assert_eq!(
-            methods,
-            ["password", "totp", "recovery_code", "recovery_code"]
-        );
+            .count();
+        assert_eq!(user_logins, 1, "regular users' logins are throttled");
+        let admin_rows = audit_of(&db, aid, 1).await;
+        assert_eq!(admin_rows[0].0, "auth.login");
+        assert_eq!(admin_rows[0].1, json!({"method": "password"}));
+        let (label, actor): (String, Option<Uuid>) = sqlx::query_as(
+            "SELECT actor_label, actor_id FROM audit_log WHERE target_id = $1 \
+             AND action = 'auth.login'",
+        )
+        .bind(aid.to_string())
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(label, crate::audit::user_label(aid));
+        assert_eq!(actor, Some(aid));
+        assert!(!label.contains('@'), "Q4: no address in the label");
+        let failed: Vec<(String, Option<Uuid>)> = sqlx::query_as(
+            "SELECT actor_label, actor_id FROM audit_log WHERE target_id = $1 \
+             AND action = 'auth.login_failed'",
+        )
+        .bind(uid.to_string())
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
         assert!(
-            rows.iter()
-                .any(|(a, v)| a == "auth.login_failed" && v["reason"] == "second_factor")
+            failed
+                .iter()
+                .all(|(l, id)| l == "anonymous" && id.is_none()),
+            "{failed:?}"
         );
-        let text = all_audit_text(&db).await;
-        assert!(!text.contains(&b32) && !text.contains(&codes[2]) && !text.contains(&good));
+        let _: i64 = state
+            .valkey()
+            .del(vec![
+                format!("akari:audit:login_ok:{uid}"),
+                format!("akari:audit:login_ok:{aid}"),
+            ])
+            .await
+            .unwrap();
+        clear_limits(&state, &[c.ip, c2.ip], &admin).await;
+        clear_limits(&state, &[c2.ip], &user).await;
+        clear_limits(&state, &[c2.ip], "no-such-account@example.com").await;
+        drop(state);
+        db.drop().await;
+    }
 
-        // Admin reset (here: by itself) ends the sessions; the next login
-        // is password-only again.
-        let r = c2
+    /// D7: the TOTP endpoints and the login `code` field are gone.
+    #[tokio::test]
+    async fn totp_is_gone() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let state = AppState::for_test(db.pool.clone()).await;
+        let (id, email) = account(&db, "admin").await;
+        let mut c = Client::new(&state, rand_ip());
+        let r = c
+            .post(
+                "/test/auth/login",
+                json!({"email": email, "password": PW, "code": "123456"}),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "unknown field");
+        assert_eq!(c.login(&email, PW).await.status, StatusCode::OK);
+        let canonical = c.get("/test/definitely-not-here").await.fingerprint();
+        for path in [
+            "/test/api/v1/me/totp",
+            "/test/api/v1/me/totp/enroll",
+            "/test/api/v1/me/totp/confirm",
+            "/test/api/v1/me/totp/recovery-codes",
+        ] {
+            assert_eq!(c.get(path).await.fingerprint(), canonical, "{path}");
+            assert_eq!(
+                c.post(path, json!({})).await.fingerprint(),
+                canonical,
+                "{path}"
+            );
+        }
+        let r = c
             .req(
                 axum::http::Method::DELETE,
                 &format!("/test/api/v1/users/{id}/totp"),
                 None,
             )
             .await;
-        assert_eq!(r.status, StatusCode::OK);
-        assert_eq!(r.json(), json!({"totp": "active"}));
-        assert_eq!(
-            c4.get("/test/api/v1/users").await.status,
-            StatusCode::UNAUTHORIZED
-        );
-        let mut c5 = Client::new(&state, rand_ip());
-        let r = c5.login(&login, PW, None).await;
-        assert_eq!(r.json()["stage"], "full");
-        clear_limits(&state, &[c.ip, c2.ip, c3.ip, c4.ip, c5.ip], &login).await;
-        clear_limits(&state, &[c2.ip], "no-such-account").await;
-        drop(state);
-        db.drop().await;
-    }
-
-    /// `auth.require_admin_2fa = true` (opt-in, the pre-R18 policy minus
-    /// the enrollment code): an admin without TOTP only gets a 15-minute
-    /// enrollment session that reaches nothing else; a full session issued
-    /// before the option was turned on stops working and reports as an
-    /// enrollment session; activation yields a full session. Regular users
-    /// are unaffected.
-    #[tokio::test]
-    async fn require_admin_2fa_confines_admins_without_totp() {
-        let Some(db) = TestDb::new().await else {
-            return;
-        };
-        let lax = AppState::for_test(db.pool.clone()).await;
-        // Same database, another instance that has seen the setting (the
-        // lax one keeps its earlier view: no notification in tests).
-        let strict = AppState::for_test(db.pool.clone()).await;
-        db.settings(&strict, "require_admin_2fa = true").await;
-        let (_, login) = account(&db, "admin").await;
-        let (_, ulogin) = account(&db, "user").await;
-
-        // Full session issued while 2FA was optional...
-        let mut old = Client::new(&lax, rand_ip());
-        assert_eq!(old.login(&login, PW, None).await.json()["stage"], "full");
-        // ...is refused once the option is on (same JWT key, same DB).
-        let mut old_strict = Client::new(&strict, old.ip);
-        old_strict.cookie = old.cookie.clone();
-        assert_eq!(
-            old_strict.get("/test/api/v1/users").await.status,
-            StatusCode::UNAUTHORIZED
-        );
-        let st = old_strict.get("/test/api/v1/me/totp").await;
-        assert_eq!(st.status, StatusCode::OK);
-        assert_eq!(st.json()["stage"], "enroll");
-        assert_eq!(st.json()["admin_2fa_required"], true);
-
-        let mut c = Client::new(&strict, rand_ip());
-        let r = c.login(&login, PW, None).await;
-        assert_eq!(r.status, StatusCode::OK);
-        assert_eq!(r.json()["stage"], "enroll");
-        let cookie = r
-            .headers
-            .get("set-cookie")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
-        assert!(cookie.contains("Max-Age=900"), "{cookie}");
-        for path in [
-            "/test/api/v1/users",
-            "/test/api/v1/me",
-            "/test/api/v1/nodes",
-            "/test/api/v1/audit",
-        ] {
-            assert_eq!(c.get(path).await.status, StatusCode::UNAUTHORIZED, "{path}");
-        }
-        let e = c.post("/test/api/v1/me/totp/enroll", json!({})).await;
-        assert_eq!(e.status, StatusCode::OK);
-        let secret = BASE32_NOPAD
-            .decode(e.json()["secret"].as_str().unwrap().as_bytes())
-            .unwrap();
-        let good = totp::code_at(&secret, db_step(&db).await);
-        let r = c
-            .post("/test/api/v1/me/totp/confirm", json!({"code": good}))
-            .await;
-        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
-        assert_eq!(r.json()["stage"], "full");
-        c.cookie = r.session_cookie();
-        assert_eq!(c.get("/test/api/v1/users").await.status, StatusCode::OK);
-
-        // Users never need 2FA.
-        let mut u = Client::new(&strict, rand_ip());
-        assert_eq!(u.login(&ulogin, PW, None).await.json()["stage"], "full");
-        assert_eq!(u.get("/test/api/v1/me").await.status, StatusCode::OK);
-
-        clear_limits(&strict, &[old.ip, c.ip, u.ip], &login).await;
-        clear_limits(&strict, &[u.ip], &ulogin).await;
-        let uid: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE login = $1")
-            .bind(&ulogin)
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
-        let _: i64 = strict
+        assert_eq!(r.fingerprint(), canonical);
+        let _: i64 = state
             .valkey()
-            .del(format!("akari:audit:login_ok:{uid}"))
+            .del(format!("akari:audit:login_ok:{id}"))
             .await
             .unwrap();
-        drop(lax);
-        drop(strict);
+        clear_limits(&state, &[c.ip], &email).await;
+        drop(state);
         db.drop().await;
     }
 
@@ -872,9 +398,10 @@ mod tests {
         let (_, login) = account(&db, "user").await;
         let c = Client::new(&state, rand_ip());
         for body in [
-            json!({"login": login, "password": PW, "extra": 1}),
-            json!({"login": login, "password": 5}),
-            json!({"login": login}),
+            json!({"email": login, "password": PW, "extra": 1}),
+            json!({"email": login, "password": 5}),
+            json!({"email": login}),
+            json!({"login": login, "password": PW}),
             json!([]),
         ] {
             let r = c.post("/test/auth/login", body.clone()).await;
@@ -894,7 +421,7 @@ mod tests {
 
     /// R21: an expired or quota-disabled user logs in with the renewal scope only (account,
     /// plan, own password; shop/orders use the same extractor); proxy
-    /// access stays blocked (subscription, sub-token, 2FA endpoints). A
+    /// access stays blocked (subscription, sub-token). A
     /// disabled user cannot log in at all; admins are unaffected.
     #[tokio::test]
     async fn expired_user_gets_the_renewal_scope_only() {
@@ -904,7 +431,7 @@ mod tests {
         let state = AppState::for_test(db.pool.clone()).await;
         let (id, login) = account(&db, "user").await;
         let mut c = Client::new(&state, rand_ip());
-        assert_eq!(c.login(&login, PW, None).await.status, StatusCode::OK);
+        assert_eq!(c.login(&login, PW).await.status, StatusCode::OK);
         let token = c.post("/test/api/v1/me/sub-token", json!({})).await.json()["sub_token"]
             .as_str()
             .unwrap()
@@ -920,7 +447,7 @@ mod tests {
             .unwrap();
 
         let mut e = Client::new(&state, rand_ip());
-        let r = e.login(&login, PW, None).await;
+        let r = e.login(&login, PW).await;
         assert_eq!(r.status, StatusCode::OK, "expired users can log in");
         assert_eq!(r.json()["expired"], true);
         let me = e.get("/test/api/v1/me").await;
@@ -930,10 +457,6 @@ mod tests {
         // Blocked: anything that serves or reveals proxy access.
         assert_eq!(
             e.post("/test/api/v1/me/sub-token", json!({})).await.status,
-            StatusCode::UNAUTHORIZED
-        );
-        assert_eq!(
-            e.get("/test/api/v1/me/totp").await.status,
             StatusCode::UNAUTHORIZED
         );
         let junk = e.get("/test/definitely-not-here").await.fingerprint();
@@ -962,7 +485,7 @@ mod tests {
         .await
         .unwrap();
         let mut q = Client::new(&state, rand_ip());
-        let r = q.login(&login, "renewed-password-1", None).await;
+        let r = q.login(&login, "renewed-password-1").await;
         assert_eq!(r.status, StatusCode::OK, "quota-disabled users can log in");
         assert_eq!(
             (
@@ -996,7 +519,7 @@ mod tests {
         );
         let mut d = Client::new(&state, rand_ip());
         assert_eq!(
-            d.login(&login, "renewed-password-1", None).await.status,
+            d.login(&login, "renewed-password-1").await.status,
             StatusCode::UNAUTHORIZED
         );
 
@@ -1024,131 +547,6 @@ mod tests {
         db.drop().await;
     }
 
-    /// Regular users: no 2FA = password only (a stray code is ignored, it
-    /// must not reveal the 2FA state); optional TOTP works like the admin's;
-    /// successful-login audit rows are throttled per account.
-    #[tokio::test]
-    async fn user_login_with_optional_totp_and_throttled_audit() {
-        let Some(db) = TestDb::new().await else {
-            return;
-        };
-        let state = AppState::for_test(db.pool.clone()).await;
-        let (id, login) = account(&db, "user").await;
-        let mut c = Client::new(&state, rand_ip());
-        for code in [None, Some("999999"), Some("garbage")] {
-            let r = c.login(&login, PW, code).await;
-            assert_eq!(r.status, StatusCode::OK);
-            assert_eq!(r.json()["stage"], "full");
-        }
-        assert_eq!(c.get("/test/api/v1/me").await.status, StatusCode::OK);
-        let logins: Vec<_> = audit_of(&db, id, 1)
-            .await
-            .into_iter()
-            .filter(|(a, _)| a == "auth.login")
-            .collect();
-        assert_eq!(logins.len(), 1, "throttled: {logins:?}");
-        // Opt in.
-        let e = c.post("/test/api/v1/me/totp/enroll", json!({})).await;
-        let secret = BASE32_NOPAD
-            .decode(e.json()["secret"].as_str().unwrap().as_bytes())
-            .unwrap();
-        let good = totp::code_at(&secret, db_step(&db).await);
-        let r = c
-            .post("/test/api/v1/me/totp/confirm", json!({"code": good}))
-            .await;
-        assert_eq!(r.status, StatusCode::OK);
-        let mut c2 = Client::new(&state, rand_ip());
-        assert_eq!(
-            c2.login(&login, PW, None).await.status,
-            StatusCode::UNAUTHORIZED
-        );
-        let _: i64 = state
-            .valkey()
-            .del(format!("akari:audit:login_ok:{id}"))
-            .await
-            .unwrap();
-        clear_limits(&state, &[c.ip, c2.ip], &login).await;
-        drop(state);
-        db.drop().await;
-    }
-
-    /// Recovery-code regeneration needs a current, unused TOTP code; wrong
-    /// codes count toward the login limit.
-    #[tokio::test]
-    async fn recovery_codes_regeneration_requires_a_fresh_code() {
-        let Some(db) = TestDb::new().await else {
-            return;
-        };
-        let state = AppState::for_test(db.pool.clone()).await;
-        let (id, login) = account(&db, "user").await;
-        let mut c = Client::new(&state, rand_ip());
-        c.login(&login, PW, None).await;
-        assert_eq!(
-            c.post(
-                "/test/api/v1/me/totp/recovery-codes",
-                json!({"code": "123456"})
-            )
-            .await
-            .status,
-            StatusCode::CONFLICT,
-            "2FA not enabled"
-        );
-        let e = c.post("/test/api/v1/me/totp/enroll", json!({})).await;
-        let secret = BASE32_NOPAD
-            .decode(e.json()["secret"].as_str().unwrap().as_bytes())
-            .unwrap();
-        let good = totp::code_at(&secret, db_step(&db).await);
-        let r = c
-            .post("/test/api/v1/me/totp/confirm", json!({"code": good}))
-            .await;
-        c.cookie = r.session_cookie();
-        let first: Vec<String> =
-            serde_json::from_value(r.json()["recovery_codes"].clone()).unwrap();
-        // The confirm code is spent.
-        let r = c
-            .post("/test/api/v1/me/totp/recovery-codes", json!({"code": good}))
-            .await;
-        assert_eq!(r.status, StatusCode::BAD_REQUEST);
-        sqlx::query("UPDATE user_totp SET last_step = last_step - 3 WHERE user_id = $1")
-            .bind(id)
-            .execute(&db.pool)
-            .await
-            .unwrap();
-        let code = totp::code_at(&secret, db_step(&db).await);
-        let r = c
-            .post("/test/api/v1/me/totp/recovery-codes", json!({"code": code}))
-            .await;
-        assert_eq!(r.status, StatusCode::OK);
-        let second: Vec<String> =
-            serde_json::from_value(r.json()["recovery_codes"].clone()).unwrap();
-        assert_eq!(second.len(), 10);
-        // Old codes are gone, new ones work.
-        let mut c2 = Client::new(&state, rand_ip());
-        assert_eq!(
-            c2.login(&login, PW, Some(&first[0])).await.status,
-            StatusCode::UNAUTHORIZED
-        );
-        assert_eq!(
-            c2.login(&login, PW, Some(&second[0])).await.status,
-            StatusCode::OK
-        );
-        let n: i64 = state
-            .valkey()
-            .get(&crate::login_limit::keys("x", &login)[1])
-            .await
-            .unwrap();
-        assert_eq!(n, 2, "the spent code and the old recovery code");
-        assert!(
-            audit_of(&db, id, 3)
-                .await
-                .iter()
-                .any(|(a, _)| a == "user.totp.recovery_codes")
-        );
-        clear_limits(&state, &[c.ip, c2.ip], &login).await;
-        drop(state);
-        db.drop().await;
-    }
-
     /// M1-9: a user regenerates their own subscription token: the old URL
     /// becomes the canonical rejection, the new one works; rate limited;
     /// admins have no subscription.
@@ -1160,7 +558,7 @@ mod tests {
         let state = AppState::for_test(db.pool.clone()).await;
         let (id, login) = account(&db, "user").await;
         let mut c = Client::new(&state, rand_ip());
-        c.login(&login, PW, None).await;
+        c.login(&login, PW).await;
         let r = c.post("/test/api/v1/me/sub-token", json!({})).await;
         assert_eq!(r.status, StatusCode::OK);
         let t1 = r.json()["sub_token"].as_str().unwrap().to_string();
@@ -1197,7 +595,7 @@ mod tests {
         assert!(!text.contains(&t1) && !text.contains(&crate::sub::hash_token(&t1)));
         // Admins are not proxy users.
         let a = db.admin().await;
-        let token = crate::auth::issue_token(&state, a, "admin", 0, Stage::Full).unwrap();
+        let token = crate::auth::issue_token(&state, a, "admin", 0).unwrap();
         let mut ac = Client::new(&state, rand_ip());
         ac.cookie = Some(token);
         assert_eq!(

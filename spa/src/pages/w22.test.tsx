@@ -123,8 +123,8 @@ describe("admin traffic views", () => {
         },
       }),
     });
-    renderAdmin(<UserTraffic userId="u1" login="alice" />);
-    const section = await screen.findByRole("region", { name: "alice 的流量明细" });
+    renderAdmin(<UserTraffic userId="u1" email="alice@example.com" />);
+    const section = await screen.findByRole("region", { name: "alice@example.com 的流量明细" });
     expect(await within(section).findByText("东京")).toBeTruthy();
     expect(within(section).getByText("已删除的节点")).toBeTruthy();
     expect(await within(section).findByText(/合计：上传 1\.0 GiB/)).toBeTruthy();
@@ -145,13 +145,13 @@ describe("admin traffic views", () => {
         total: b(GIB, GIB, GIB),
         days: [{ day: to, users: 2, ...b(GIB, GIB, GIB) }],
         top_users: [
-          { user_id: "u1", login: "alice", ...b(GIB, 0, GIB) },
-          { user_id: "u2", login: null, ...b(0, GIB, 0) },
+          { user_id: "u1", email: "alice@example.com", ...b(GIB, 0, GIB) },
+          { user_id: "u2", email: null, ...b(0, GIB, 0) },
         ],
       },
     });
     renderAdmin(<NodeTraffic nodeId="n1" />);
-    expect(await screen.findByText("alice")).toBeTruthy();
+    expect(await screen.findByText("alice@example.com")).toBeTruthy();
     expect(screen.getByText("已删除的用户")).toBeTruthy();
     cleanup();
     vi.unstubAllGlobals();

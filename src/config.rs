@@ -162,6 +162,8 @@ pub enum Fate {
     Moved(&'static str),
     /// A built-in constant now: ignored.
     Constant,
+    /// The feature itself is gone (why, shown to the operator): ignored.
+    Removed(&'static str),
 }
 
 /// Every key earlier releases read from panel.toml and this one does not,
@@ -214,7 +216,7 @@ pub const OBSOLETE: &[(&str, Fate)] = &[
     ("traffic.departed_grace_secs", Fate::Constant),
     (
         "auth.require_admin_2fa",
-        Fate::Moved("安全 → 管理员必须两步验证"),
+        Fate::Removed("two-factor authentication (TOTP) was removed in v0.4; use passkeys"),
     ),
     ("agent.remove_mode", Fate::Moved("节点通信 → 撤权方式")),
     ("agent.cert_validity_secs", Fate::Constant),

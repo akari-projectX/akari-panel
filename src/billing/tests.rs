@@ -243,7 +243,7 @@ async fn token(state: &AppState, id: Uuid) -> String {
             .fetch_one(state.pg())
             .await
             .unwrap();
-    crate::auth::issue_token(state, id, &role, sv, crate::auth::Stage::Full).unwrap()
+    crate::auth::issue_token(state, id, &role, sv).unwrap()
 }
 
 /// A group with one node, a plan granting it, priced; returns (node, plan).
@@ -306,7 +306,7 @@ async fn order_row(db: &TestDb, user: Uuid, plan: Uuid, cents: i64, days: i32) -
     let id = Uuid::new_v4();
     let otn = format!("AKT{}", hex::encode(rand::random::<[u8; 12]>()));
     sqlx::query(
-        "INSERT INTO orders (id, out_trade_no, user_id, user_login, plan_id, plan_name, \
+        "INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_id, plan_name, \
          amount_cents, list_price_cents, period, period_days, subject, expires_at, \
          payment_method_id) \
          VALUES ($1, $2, $3, 'u', $4, 'p', $5, $5, 'days', $6, 's', \

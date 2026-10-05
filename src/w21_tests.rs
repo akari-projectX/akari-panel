@@ -23,18 +23,22 @@ fn ids(v: &Value) -> Vec<String> {
         .as_array()
         .unwrap()
         .iter()
-        .map(|u| u["login"].as_str().unwrap().to_string())
+        .map(|u| {
+            let e = u["email"].as_str().unwrap();
+            e.split('@').next().unwrap().to_string()
+        })
         .collect()
 }
 
-async fn user(db: &TestDb, login: &str, extra: &str) -> Uuid {
+/// An account `<local>@example.com`.
+async fn user(db: &TestDb, local: &str, extra: &str) -> Uuid {
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO users (id, login, created_at) VALUES ($1, $2, now() - interval '1 hour' * \
+        "INSERT INTO users (id, email, created_at) VALUES ($1, $2, now() - interval '1 hour' * \
          (SELECT count(*) FROM users))",
     )
     .bind(id)
-    .bind(login)
+    .bind(format!("{local}@example.com"))
     .execute(&db.pool)
     .await
     .unwrap();
@@ -55,13 +59,8 @@ async fn users_search_filters_sort_and_total() {
     let Some((db, _state, c)) = setup().await else {
         return;
     };
-    user(
-        &db,
-        "alice",
-        "email = 'alice@example.com', email_verified_at = now()",
-    )
-    .await;
-    user(&db, "Albert", "traffic_used_bytes = 500").await;
+    user(&db, "alice", "email_verified_at = now()").await;
+    user(&db, "albert", "traffic_used_bytes = 500").await;
     user(&db, "bob", "expires_at = now() - interval '1 day'").await;
     user(&db, "carol", "enabled = false, disabled_reason = 'quota'").await;
     user(&db, "dave", "enabled = false, disabled_reason = 'admin'").await;
@@ -95,35 +94,35 @@ async fn users_search_filters_sort_and_total() {
     // Everyone (the admin included), oldest first by default.
     let all = get(String::new()).await;
     assert_eq!(all["total"], 7);
-    // Case-insensitive login prefix; email prefix.
-    let v = get("?q=AL&sort=login".into()).await;
-    assert_eq!(ids(&v), ["Albert", "alice"]);
+    // Case-insensitive address prefix.
+    let v = get("?q=AL&sort=email".into()).await;
+    assert_eq!(ids(&v), ["albert", "alice"]);
     assert_eq!(v["total"], 2);
-    assert_eq!(ids(&get("?q=zed@".into()).await), ["erin"]);
+    assert_eq!(ids(&get("?q=zed@".into()).await), ["zed"]);
     // LIKE metacharacters are literal.
     assert_eq!(get("?q=%25".into()).await["total"], 0);
     assert_eq!(get("?q=_".into()).await["total"], 0);
     // Id prefix.
     let prefix = &erin.to_string()[..8];
-    assert_eq!(ids(&get(format!("?q={prefix}")).await), ["erin"]);
+    assert_eq!(ids(&get(format!("?q={prefix}")).await), ["zed"]);
     // Derived status (mutually exclusive) and role.
     assert_eq!(ids(&get("?status=expired".into()).await), ["bob"]);
     assert_eq!(ids(&get("?status=quota".into()).await), ["carol"]);
     assert_eq!(ids(&get("?status=disabled".into()).await), ["dave"]);
-    let active = get("?status=active&role=user&sort=login".into()).await;
-    assert_eq!(ids(&active), ["Albert", "alice", "erin"]);
+    let active = get("?status=active&role=user&sort=email".into()).await;
+    assert_eq!(ids(&active), ["albert", "alice", "zed"]);
     // Plan filter.
-    assert_eq!(ids(&get(format!("?plan_id={plan}")).await), ["erin"]);
+    assert_eq!(ids(&get(format!("?plan_id={plan}")).await), ["zed"]);
     assert_eq!(get("?plan_id=none&role=user".into()).await["total"], 5);
     // Sorts.
-    assert_eq!(ids(&get("?sort=-traffic&limit=1".into()).await), ["Albert"]);
+    assert_eq!(ids(&get("?sort=-traffic&limit=1".into()).await), ["albert"]);
     let newest = get("?sort=-created&role=user".into()).await;
     let oldest = get("?sort=created&role=user".into()).await;
     let mut rev = ids(&oldest);
     rev.reverse();
     assert_eq!(ids(&newest), rev);
     // Paging keeps the total.
-    let p = get("?role=user&limit=2&offset=2&sort=login".into()).await;
+    let p = get("?role=user&limit=2&offset=2&sort=email".into()).await;
     assert_eq!(ids(&p), ["bob", "carol"]);
     assert_eq!(p["total"], 6);
     // Bad input: coded 400s.
@@ -152,7 +151,7 @@ async fn create_user_with_email() {
     let r = c
         .post(
             "/test/api/v1/users",
-            json!({ "login": "mailed", "password": "password-123", "email": " Mail@Example.COM " }),
+            json!({ "password": "password-123", "email": " Mail@Example.COM " }),
         )
         .await;
     assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
@@ -162,22 +161,23 @@ async fn create_user_with_email() {
     let r = c
         .post(
             "/test/api/v1/users",
-            json!({ "login": "other", "password": "password-123", "email": "mail@example.com" }),
+            json!({ "password": "password-123", "email": "MAIL@example.com" }),
         )
         .await;
     assert_eq!(r.status, StatusCode::CONFLICT);
     assert_eq!(r.json()["code"], "user.email_exists");
     let r = c
-        .post(
-            "/test/api/v1/users",
-            json!({ "login": "mailed", "password": "password-123" }),
-        )
+        .post("/test/api/v1/users", json!({ "password": "password-123" }))
         .await;
-    assert_eq!(r.json()["code"], "user.login_exists");
+    assert_eq!(
+        r.status,
+        StatusCode::BAD_REQUEST,
+        "D1: the address is required"
+    );
     let r = c
         .post(
             "/test/api/v1/users",
-            json!({ "login": "xx3", "password": "password-123", "email": "not-an-address" }),
+            json!({ "password": "password-123", "email": "not-an-address" }),
         )
         .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
@@ -185,7 +185,7 @@ async fn create_user_with_email() {
     let r = c
         .post(
             "/test/api/v1/users",
-            json!({ "login": "xx4", "password": "short" }),
+            json!({ "email": "xx4@example.com", "password": "short" }),
         )
         .await;
     assert_eq!(

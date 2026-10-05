@@ -1,5 +1,6 @@
 //! Login rate limit (S4-1): FAILED attempts only, counted per client
-//! address (IPv6 per /64, see `client_ip::bucket`) and per login name, in
+//! address (IPv6 per /64, see `client_ip::bucket`) and per login name (the
+//! lower-cased email address, D1), in
 //! Valkey (shared by every panel instance), fixed 15-minute windows.
 //!
 //! An attempt first reserves a slot in both buckets atomically (a Lua
@@ -15,9 +16,8 @@
 //! key has a TTL set in the same script (EXPIRE NX), and the name bucket is
 //! a fixed-size hash of the login.
 //!
-//! M1-6: a wrong or replayed second factor (TOTP / recovery code) is a
-//! credential failure like a wrong password and keeps its slot; the 2FA
-//! recovery-code regeneration endpoint reserves here too.
+//! The current-password checks of `/me/password` and `/me/email/code`
+//! reserve here too (a wrong current password is a credential failure).
 
 use fred::prelude::*;
 use sha2::{Digest, Sha256};

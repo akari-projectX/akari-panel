@@ -692,7 +692,7 @@ mod tests {
     }
 
     async fn actions(db: &TestDb, node: Uuid) -> Vec<(String, String)> {
-        sqlx::query_as("SELECT actor_login, action FROM audit_log WHERE target_id = $1 ORDER BY id")
+        sqlx::query_as("SELECT actor_label, action FROM audit_log WHERE target_id = $1 ORDER BY id")
             .bind(node.to_string())
             .fetch_all(&db.pool)
             .await

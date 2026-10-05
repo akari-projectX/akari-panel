@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AdminApp, loginTarget, viewOf } from "./admin-app";
-import type { Me, TotpStatus } from "./lib/api";
+import type { Me } from "./lib/api";
 import { loadPage } from "./lib/router";
 import { fakeApi, renderWithClient } from "./test/harness";
 
@@ -23,31 +23,19 @@ afterEach(() => {
 
 const me = (role: string): Me => ({
   id: `${role}-id`,
-  login: role === "admin" ? "root" : "alice",
   role,
   traffic_used_bytes: 0,
   traffic_limit_bytes: null,
   expires_at: null,
   expired: false,
   quota_exhausted: false,
-  email: null,
+  email: role === "admin" ? "root@example.com" : "alice@example.com",
   email_verified: false,
   locale: "en",
   sub_token: null,
   sub_url: null,
   sub_legacy: false,
   probe_interval_secs: 18000,
-});
-const totp = (over: Partial<TotpStatus>): TotpStatus => ({
-  id: "admin-id",
-  login: "root",
-  role: "admin",
-  stage: "full",
-  enabled: false,
-  pending: false,
-  recovery_codes_left: 0,
-  admin_2fa_required: false,
-  ...over,
 });
 const unauthorized = () => ({ status: 401, body: { error: "unauthorized" } });
 const dashboard = {
@@ -67,7 +55,8 @@ const dashboard = {
     {
       id: "o1",
       out_trade_no: "AK1",
-      user_login: "alice",
+      user_label: "u-12345678",
+      user_email: "alice@example.com",
       plan_name: "basic",
       amount_cents: 990,
       status: "paid",
@@ -106,7 +95,6 @@ describe("AdminApp", () => {
     window.history.pushState(null, "", "/admin/audit");
     fakeApi({
       "GET /me": me("admin"),
-      "GET /me/totp": totp({ enabled: true }),
       "GET /audit": { entries: [], next_before: null },
       ...consoleRoutes,
     });
@@ -121,25 +109,11 @@ describe("AdminApp", () => {
     act(() => window.history.back());
     await waitFor(() => expect(window.location.pathname).toBe("/admin/audit"));
     expect(await screen.findByRole("heading", { name: "审计日志" })).toBeTruthy();
-    expect(screen.queryByText(/建议开启两步验证/)).toBeNull();
     expect(loadPage).not.toHaveBeenCalled();
   });
 
-  it("recommends 2FA to an admin without it; the banner can be dismissed for good", async () => {
-    fakeApi({ "GET /me": me("admin"), "GET /me/totp": totp({}), ...consoleRoutes });
-    const view = renderWithClient(<AdminApp />);
-    expect(await screen.findByText(/建议开启两步验证/)).toBeTruthy();
-    expect(screen.getByRole("link", { name: "去设置" }).getAttribute("href")).toBe("/admin/account");
-    fireEvent.click(screen.getByRole("button", { name: "不再提示两步验证建议" }));
-    expect(screen.queryByText(/建议开启两步验证/)).toBeNull();
-    view.unmount();
-    renderWithClient(<AdminApp />);
-    expect(await screen.findByRole("heading", { name: "仪表盘" })).toBeTruthy();
-    expect(screen.queryByText(/建议开启两步验证/)).toBeNull();
-  });
-
   it("lands on the dashboard: figures, pending work, latest orders and the title", async () => {
-    fakeApi({ "GET /me": me("admin"), "GET /me/totp": totp({ enabled: true }), ...consoleRoutes });
+    fakeApi({ "GET /me": me("admin"), ...consoleRoutes });
     renderWithClient(<AdminApp />);
     expect(await screen.findByRole("heading", { name: "仪表盘" })).toBeTruthy();
     expect(await screen.findByText("¥19.90")).toBeTruthy();
@@ -154,17 +128,9 @@ describe("AdminApp", () => {
     expect(screen.getByText("星云 管理后台")).toBeTruthy();
   });
 
-  it("shows the enrollment page for an enrollment session (require_admin_2fa)", async () => {
-    fakeApi({ "GET /me": unauthorized, "GET /me/totp": totp({ stage: "enroll", admin_2fa_required: true }) });
-    renderWithClient(<AdminApp />);
-    expect(await screen.findByRole("heading", { name: "需要开启两步验证" })).toBeTruthy();
-    expect(screen.queryByRole("navigation")).toBeNull();
-    expect(loadPage).not.toHaveBeenCalled();
-  });
-
   it("an ended session goes back to the login page with the view kept", async () => {
     window.history.pushState(null, "", "/admin/nodes");
-    fakeApi({ "GET /me": unauthorized, "GET /me/totp": unauthorized });
+    fakeApi({ "GET /me": unauthorized });
     renderWithClient(<AdminApp />);
     await waitFor(() => expect(loadPage).toHaveBeenCalledWith("/app/nodes"));
     expect(screen.queryByRole("navigation")).toBeNull();
@@ -180,7 +146,6 @@ describe("AdminApp", () => {
   it("logs out into the portal's login page", async () => {
     const calls = fakeApi({
       "GET /me": me("admin"),
-      "GET /me/totp": totp({ enabled: true }),
       "POST /auth/logout": () => ({ status: 204 }),
       ...consoleRoutes,
     });

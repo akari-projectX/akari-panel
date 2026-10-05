@@ -45,7 +45,7 @@ describe("i18n", () => {
 
   it("interpolates variables and leaves unknown ones", () => {
     expect(translate("en", "portal.expires", { date: "1/2/2027" })).toBe("Expires 1/2/2027");
-    expect(translate("zh", "twofa.enabledStatus", { count: 3 })).toBe("已开启 · 剩余 3 个恢复码");
+    expect(translate("zh", "billing.paidWith", { method: "支付宝" })).toBe("支付方式：支付宝");
     expect(translate("en", "portal.expires")).toBe("Expires {date}");
   });
 

@@ -349,9 +349,7 @@ async fn failures_retry_dead_letter_and_expire() {
     let state = crate::state::AppState::for_test(db.pool.clone()).await;
     let admin = db.admin().await;
     let mut c = Client::new(&state, rand_ip());
-    c.cookie = Some(
-        crate::auth::issue_token(&state, admin, "admin", 0, crate::auth::Stage::Full).unwrap(),
-    );
+    c.cookie = Some(crate::auth::issue_token(&state, admin, "admin", 0).unwrap());
     let list = c.get("/test/api/v1/mail/outbox?status=dead").await;
     assert_eq!(list.status, StatusCode::OK);
     let list = list.json();
@@ -557,9 +555,7 @@ async fn test_mail_endpoint_reports_failures() {
     let state = crate::state::AppState::for_test(db.pool.clone()).await;
     let admin = db.admin().await;
     let mut c = Client::new(&state, rand_ip());
-    c.cookie = Some(
-        crate::auth::issue_token(&state, admin, "admin", 0, crate::auth::Stage::Full).unwrap(),
-    );
+    c.cookie = Some(crate::auth::issue_token(&state, admin, "admin", 0).unwrap());
     let r = c
         .post(
             "/test/api/v1/settings/mail/test",

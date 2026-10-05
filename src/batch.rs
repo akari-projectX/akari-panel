@@ -281,7 +281,7 @@ pub struct Preview {
     pub total: i64,
     /// Admin accounts in the selection (always skipped).
     pub admins: i64,
-    /// Up to 10 logins.
+    /// Up to 10 email addresses.
     pub sample: Vec<String>,
 }
 
@@ -294,7 +294,7 @@ pub async fn preview_selection(
     );
     push_selection(&mut qb, sel)?;
     let (total, admins): (i64, i64) = qb.build_query_as().fetch_one(&mut *conn).await?;
-    let mut qb = sqlx::QueryBuilder::new("SELECT u.login FROM users u");
+    let mut qb = sqlx::QueryBuilder::new("SELECT u.email FROM users u");
     push_selection(&mut qb, sel)?;
     qb.push(" ORDER BY u.created_at, u.id LIMIT 10");
     let sample: Vec<String> = qb.build_query_scalar().fetch_all(conn).await?;
@@ -312,7 +312,7 @@ pub async fn preview_selection(
 #[derive(Serialize, sqlx::FromRow, Debug, Clone)]
 pub struct JobView {
     pub id: Uuid,
-    pub actor_login: String,
+    pub actor_label: String,
     pub action: String,
     pub params: Value,
     pub selection: String,
@@ -328,13 +328,16 @@ pub struct JobView {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
-const JOB_COLS: &str = "id, actor_login, action, params, selection, filter, status, total, done, \
+const JOB_COLS: &str = "id, actor_label, action, params, selection, filter, status, total, done, \
      failed, skipped, last_error, created_at, started_at, finished_at";
 
 #[derive(Serialize, sqlx::FromRow, Debug)]
 pub struct ItemView {
     pub user_id: Uuid,
-    pub user_login: String,
+    /// Q4: snapshot label; `user_email` = the current address (null once
+    /// the account is gone).
+    pub user_label: String,
+    pub user_email: Option<String>,
     pub status: String,
     pub detail: Option<String>,
     pub updated_at: DateTime<Utc>,
@@ -389,19 +392,22 @@ pub async fn apply_create(
     }
     let id = Uuid::new_v4();
     let mut qb = sqlx::QueryBuilder::new(
-        "INSERT INTO admin_batch_items (job_id, user_id, user_login) SELECT ",
+        "INSERT INTO admin_batch_items (job_id, user_id, user_label) SELECT ",
     );
-    qb.push_bind(id).push(", u.id, u.login FROM users u");
+    qb.push_bind(id)
+        .push(", u.id, ")
+        .push(crate::audit::user_label_sql("u.id"))
+        .push(" FROM users u");
     let selection = push_selection(&mut qb, &req.selection)?;
     // The job row first (the items reference it); the total is the number
     // of snapshotted items.
     sqlx::query(
-        "INSERT INTO admin_batch_jobs (id, actor_id, actor_login, action, params, selection, \
+        "INSERT INTO admin_batch_jobs (id, actor_id, actor_label, action, params, selection, \
          filter, total) VALUES ($1, $2, $3, $4, $5, $6, $7, 0)",
     )
     .bind(id)
     .bind(actor.id)
-    .bind(&actor.login)
+    .bind(&actor.label)
     .bind(req.action.kind())
     .bind(req.action.params())
     .bind(selection)
@@ -546,7 +552,7 @@ pub enum Ran {
 struct Claimed {
     id: Uuid,
     actor_id: Option<Uuid>,
-    actor_login: String,
+    actor_label: String,
     action: String,
     params: Value,
     claim_token: Uuid,
@@ -560,7 +566,7 @@ pub async fn run_one(state: &AppState) -> anyhow::Result<Ran> {
          WHERE id = (SELECT id FROM admin_batch_jobs WHERE status IN ('pending', 'running') \
                      AND (claimed_until IS NULL OR claimed_until < now()) \
                      ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED) \
-         RETURNING id, actor_id, actor_login, action, params, claim_token",
+         RETURNING id, actor_id, actor_label, action, params, claim_token",
     )
     .bind(LEASE_SECS as f64)
     .fetch_optional(state.pg())
@@ -572,7 +578,7 @@ pub async fn run_one(state: &AppState) -> anyhow::Result<Ran> {
         .map_err(|e| anyhow::anyhow!(e.message().to_string()))?;
     let actor = Actor {
         id: job.actor_id,
-        login: job.actor_login.clone(),
+        label: job.actor_label.clone(),
         ip: None,
     };
     loop {
@@ -657,8 +663,8 @@ async fn chunk(
         }
         None => return Ok(Chunk::Paused),
     }
-    let items: Vec<(Uuid, String)> = sqlx::query_as(
-        "SELECT user_id, user_login FROM admin_batch_items WHERE job_id = $1 \
+    let items: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT user_id FROM admin_batch_items WHERE job_id = $1 \
          AND status = 'pending' ORDER BY user_id LIMIT $2 FOR UPDATE",
     )
     .bind(job.id)
@@ -678,7 +684,7 @@ async fn chunk(
     }
     let (mut done, mut failed, mut skipped) = (0i32, 0i32, 0i32);
     let mut paused = false;
-    for (user, _login) in &items {
+    for user in &items {
         if matches!(action, Action::SendEmail { .. }) && !mail_slot(state, &mut tx).await {
             paused = true;
             break;
@@ -982,8 +988,9 @@ pub async fn get(
     .await?
     .ok_or_else(ApiError::not_found)?;
     let items: Vec<ItemView> = sqlx::query_as(
-        "SELECT user_id, user_login, status, detail, updated_at FROM admin_batch_items \
-         WHERE job_id = $1 ORDER BY (status IN ('failed', 'skipped')) DESC, status, user_login \
+        "SELECT i.user_id, i.user_label, u.email AS user_email, i.status, i.detail, i.updated_at \
+         FROM admin_batch_items i LEFT JOIN users u ON u.id = i.user_id \
+         WHERE i.job_id = $1 ORDER BY (i.status IN ('failed', 'skipped')) DESC, i.status, i.user_label \
          LIMIT $2",
     )
     .bind(id)

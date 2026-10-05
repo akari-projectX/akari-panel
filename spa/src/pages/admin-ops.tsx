@@ -170,7 +170,7 @@ interface Preview {
 
 export interface BatchJob {
   id: string;
-  actor_login: string;
+  actor_label: string;
   action: BatchKind;
   params: Record<string, unknown>;
   selection: "ids" | "filter";
@@ -186,7 +186,8 @@ export interface BatchJob {
 
 interface BatchItem {
   user_id: string;
-  user_login: string;
+  user_label: string;
+  user_email: string | null;
   status: "pending" | "done" | "failed" | "skipped";
   detail: string | null;
 }
@@ -464,7 +465,7 @@ export function BatchJobsCard() {
                 <TableRow key={j.id}>
                   <TableCell className="whitespace-nowrap">{fmtDateTime(j.created_at)}</TableCell>
                   <TableCell>{BATCH_ZH[j.action] ?? j.action}</TableCell>
-                  <TableCell>{j.actor_login}</TableCell>
+                  <TableCell>{j.actor_label}</TableCell>
                   <TableCell className="min-w-48">
                     <div
                       role="progressbar"
@@ -506,7 +507,7 @@ export function BatchJobsCard() {
             <ul className="max-h-64 space-y-0.5 overflow-auto text-sm">
               {detail.data.items.map((i) => (
                 <li key={i.user_id}>
-                  <span className="font-medium">{i.user_login}</span>：{ITEM_ZH[i.status]}
+                  <span className="font-medium">{i.user_email ?? i.user_label}</span>：{ITEM_ZH[i.status]}
                   {i.detail && <span className="text-muted-foreground">（{adminDetail(i.detail)}）</span>}
                 </li>
               ))}
@@ -551,8 +552,8 @@ export function ManualOrderDialog({ onClose, onCreated }: { onClose: () => void;
   const confirm = useConfirm();
   const queryClient = useQueryClient();
   const prices = useQuery({ queryKey: ["plan-prices"], queryFn: () => get<Prices>("/plan-prices") });
-  const [login, setLogin] = useState("");
-  const [found, setFound] = useState<{ id: string; login: string } | null>(null);
+  const [email, setEmail] = useState("");
+  const [found, setFound] = useState<{ id: string; email: string } | null>(null);
   const [f, setF] = useState<ManualForm>({ userId: "", planId: "", period: "", gift: false, reason: "" });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -564,12 +565,10 @@ export function ManualOrderDialog({ onClose, onCreated }: { onClose: () => void;
     setError(null);
     setFound(null);
     try {
-      const page = await get<UserPage>(`/users?q=${encodeURIComponent(login.trim())}&role=user&limit=5`);
-      const exact = page.users.find(
-        (u) => u.login.toLowerCase() === login.trim().toLowerCase() || u.email === login.trim().toLowerCase(),
-      );
-      if (!exact) return setError("没有找到这个用户（只支持普通用户的账号或邮箱）");
-      setFound({ id: exact.id, login: exact.login });
+      const page = await get<UserPage>(`/users?q=${encodeURIComponent(email.trim())}&role=user&limit=5`);
+      const exact = page.users.find((u) => u.email === email.trim().toLowerCase());
+      if (!exact) return setError("没有找到这个用户（只支持普通用户的邮箱）");
+      setFound({ id: exact.id, email: exact.email });
       setF((x) => ({ ...x, userId: exact.id }));
     } catch (err) {
       setError(adminErrorText(err));
@@ -583,7 +582,7 @@ export function ManualOrderDialog({ onClose, onCreated }: { onClose: () => void;
     if (typeof body === "string") return setError(body);
     const cents = price?.price_cents ?? 0;
     const ok = await confirm({
-      title: f.gift ? `赠送「${plan?.plan_name}」给 ${found?.login}？` : `为 ${found?.login} 记录一笔人工收款？`,
+      title: f.gift ? `赠送「${plan?.plan_name}」给 ${found?.email}？` : `为 ${found?.email} 记录一笔人工收款？`,
       message: f.gift
         ? `订单金额 ¥0（原价 ¥${yuan(cents)}，不计入营收），立即开通。`
         : `订单金额按当前价格 ¥${yuan(cents)} 计，标记为「人工」并计入营收，立即开通。请确认已线下收款。`,
@@ -613,14 +612,14 @@ export function ManualOrderDialog({ onClose, onCreated }: { onClose: () => void;
       <form className="space-y-4" onSubmit={submit} aria-label="新建人工订单">
         <div className="flex items-end gap-2">
           <div className="flex-1 space-y-1.5">
-            <Label htmlFor="mo-login">用户（账号或邮箱）</Label>
-            <Input id="mo-login" value={login} onChange={(e) => setLogin(e.target.value)} />
+            <Label htmlFor="mo-email">用户邮箱</Label>
+            <Input id="mo-email" value={email} onChange={(e) => setEmail(e.target.value)} />
           </div>
-          <Button type="button" variant="outline" onClick={() => void lookup()} disabled={!login.trim()}>
+          <Button type="button" variant="outline" onClick={() => void lookup()} disabled={!email.trim()}>
             查找
           </Button>
         </div>
-        {found && <p className="text-sm">用户：{found.login}</p>}
+        {found && <p className="text-sm">用户：{found.email}</p>}
         <div className="flex flex-wrap items-end gap-3">
           <div className="space-y-1.5">
             <Label htmlFor="mo-plan">套餐</Label>
@@ -705,7 +704,7 @@ export interface CouponBatch {
     max_uses: number | null;
     ends_at: string | null;
   };
-  actor_login: string;
+  actor_label: string;
   created_at: string;
   revoked_at: string | null;
   codes: number;

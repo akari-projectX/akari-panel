@@ -122,7 +122,7 @@ function PaymentsCard() {
 
 function OrdersCard({ onSelect }: { onSelect: (id: string) => void }) {
   const [status, setStatus] = useState<"" | OrderStatus | "unfulfilled" | "manual">("");
-  const [login, setLogin] = useState("");
+  const [email, setEmail] = useState("");
   const [tradeNo, setTradeNo] = useState("");
   const [cursor, setCursor] = useState<string[]>([]);
   const before = cursor[cursor.length - 1];
@@ -130,7 +130,7 @@ function OrdersCard({ onSelect }: { onSelect: (id: string) => void }) {
   if (status === "unfulfilled") params.set("unfulfilled", "true");
   else if (status === "manual") params.set("via", "manual");
   else if (status) params.set("status", status);
-  if (login.trim()) params.set("login", login.trim());
+  if (email.trim()) params.set("email", email.trim());
   if (tradeNo.trim()) params.set("out_trade_no", tradeNo.trim());
   if (before) params.set("before", before);
   params.set("limit", "50");
@@ -176,12 +176,12 @@ function OrdersCard({ onSelect }: { onSelect: (id: string) => void }) {
             </select>
           </div>
           <div className="space-y-1">
-            <Label htmlFor="order-login">用户名</Label>
+            <Label htmlFor="order-email">用户邮箱</Label>
             <Input
-              id="order-login"
-              value={login}
+              id="order-email"
+              value={email}
               onChange={(e) => {
-                setLogin(e.target.value);
+                setEmail(e.target.value);
                 resetPage();
               }}
             />
@@ -223,7 +223,7 @@ function OrdersCard({ onSelect }: { onSelect: (id: string) => void }) {
               {rows.map((o) => (
                 <TableRow key={o.id}>
                   <TableCell>{fmt(o.created_at)}</TableCell>
-                  <TableCell>{o.user_login}</TableCell>
+                  <TableCell>{o.user_email ?? o.user_label}</TableCell>
                   <TableCell>{o.plan_name}</TableCell>
                   <TableCell>{periodZh(o.period, o.period_days)}</TableCell>
                   <TableCell>
@@ -320,7 +320,7 @@ function OrderDetailCard({ id, onClose }: { id: string; onClose: () => void }) {
     if (!reason.trim()) return setError("请填写原因（写入审计）");
     if (
       !(await confirm({
-        title: `${what}：订单 ${o.out_trade_no}，用户 ${o.user_login}，¥${yuan(o.amount_cents)}。确定吗？`,
+        title: `${what}：订单 ${o.out_trade_no}，用户 ${o.user_email ?? o.user_label}，¥${yuan(o.amount_cents)}。确定吗？`,
         confirmLabel: what,
       }))
     )
@@ -356,7 +356,7 @@ function OrderDetailCard({ id, onClose }: { id: string; onClose: () => void }) {
       <CardContent className="space-y-4">
         <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
           <dt className="text-muted-foreground">用户</dt>
-          <dd>{o.user_login}</dd>
+          <dd>{o.user_email ?? o.user_label}</dd>
           <dt className="text-muted-foreground">套餐</dt>
           <dd>
             {o.plan_name}（{periodZh(o.period, o.period_days)}）

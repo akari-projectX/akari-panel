@@ -251,11 +251,11 @@ pub struct NodeDayRow {
     pub users: i64,
 }
 
-/// A top user of a node (login null = deleted user).
+/// A top user of a node (email null = deleted user).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
 pub struct UserRow {
     pub user_id: Uuid,
-    pub login: Option<String>,
+    pub email: Option<String>,
     #[sqlx(flatten)]
     #[serde(flatten)]
     pub bytes: Bytes,
@@ -366,7 +366,7 @@ pub async fn node_top_users(
     limit: i64,
 ) -> sqlx::Result<Vec<UserRow>> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT t.user_id, u.login, t.up_bytes, t.down_bytes, t.billed_bytes \
+        "SELECT t.user_id, u.email, t.up_bytes, t.down_bytes, t.billed_bytes \
          FROM (SELECT user_id, {SUMS} FROM traffic_daily \
                WHERE node_id = $1 AND day BETWEEN $2 AND $3 GROUP BY user_id \
                ORDER BY sum(up_bytes) + sum(down_bytes) DESC, user_id LIMIT $4) t \

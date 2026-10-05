@@ -6,7 +6,7 @@
 //!   or a node they use), reply and close them. Only their own: any other
 //!   ticket id — another user's, unknown, malformed — is the canonical
 //!   rejection (`reject::not_found()`, byte-identical to an unknown path),
-//!   so ticket ids are not an oracle. Staff never appear by login (the user
+//!   so ticket ids are not an oracle. Staff never appear by name (the user
 //!   view only says `staff: true`).
 //! - **Staff** (`/tickets*`, admin) list with filters, read, reply (and
 //!   optionally close in the same step), close, reopen, assign to an admin.
@@ -159,7 +159,6 @@ fn check_choice(field: &str, v: &str, allowed: &[&str]) -> Result<(), ApiError> 
 #[derive(Debug, Clone)]
 pub struct Author {
     pub id: Uuid,
-    pub login: String,
     pub staff: bool,
 }
 
@@ -167,7 +166,6 @@ impl Author {
     pub fn of(user: &AuthUser) -> Self {
         Self {
             id: user.id,
-            login: user.login.clone(),
             staff: user.role == "admin",
         }
     }
@@ -253,12 +251,12 @@ pub async fn apply_create(
     .execute(&mut *conn)
     .await?;
     sqlx::query(
-        "INSERT INTO ticket_messages (ticket_id, author_id, author_login, staff, body) \
+        "INSERT INTO ticket_messages (ticket_id, author_id, author_label, staff, body) \
          VALUES ($1, $2, $3, false, $4)",
     )
     .bind(id)
     .bind(user.id)
-    .bind(&user.login)
+    .bind(crate::audit::user_label(user.id))
     .bind(&body)
     .execute(&mut *conn)
     .await?;
@@ -337,12 +335,12 @@ pub async fn apply_reply(
         ));
     }
     let msg: i64 = sqlx::query_scalar(
-        "INSERT INTO ticket_messages (ticket_id, author_id, author_login, staff, body) \
+        "INSERT INTO ticket_messages (ticket_id, author_id, author_label, staff, body) \
          VALUES ($1, $2, $3, $4, $5) RETURNING id",
     )
     .bind(ticket)
     .bind(author.id)
-    .bind(&author.login)
+    .bind(crate::audit::user_label(author.id))
     .bind(author.staff)
     .bind(&body)
     .fetch_one(&mut *conn)
@@ -529,7 +527,7 @@ pub struct MyTicketRow {
 pub struct TicketRow {
     id: Uuid,
     user_id: Uuid,
-    user_login: String,
+    user_email: String,
     subject: String,
     category: String,
     priority: String,
@@ -540,7 +538,7 @@ pub struct TicketRow {
     node_id: Option<Uuid>,
     node_name: Option<String>,
     assignee_id: Option<Uuid>,
-    assignee_login: Option<String>,
+    assignee_email: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     closed_at: Option<DateTime<Utc>>,
@@ -554,9 +552,9 @@ pub struct TicketRow {
 
 fn ticket_select(unread: &str) -> String {
     format!(
-        "SELECT t.id, t.user_id, u.login AS user_login, t.subject, t.category, t.priority, \
+        "SELECT t.id, t.user_id, u.email AS user_email, t.subject, t.category, t.priority, \
            t.status, t.messages, t.order_id, o.out_trade_no AS order_no, t.node_id, \
-           coalesce(n.display_name, n.name) AS node_name, t.assignee_id, a.login AS assignee_login, \
+           coalesce(n.display_name, n.name) AS node_name, t.assignee_id, a.email AS assignee_email, \
            t.created_at, t.updated_at, t.closed_at, t.closed_by, {unread} AS unread, \
            t.last_user_at, t.last_staff_at \
          FROM tickets t JOIN users u ON u.id = t.user_id \
@@ -569,9 +567,13 @@ fn ticket_select(unread: &str) -> String {
 pub struct MessageRow {
     id: i64,
     staff: bool,
-    /// Staff view only (customers never learn admin logins).
+    /// Staff view only (customers never learn who on the staff wrote):
+    /// the snapshot label and the author's current address (null once the
+    /// account is gone).
     #[serde(skip_serializing_if = "Option::is_none")]
-    author_login: Option<String>,
+    author_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    author_email: Option<String>,
     body: String,
     created_at: DateTime<Utc>,
 }
@@ -582,8 +584,10 @@ async fn messages(
     staff_view: bool,
 ) -> sqlx::Result<Vec<MessageRow>> {
     sqlx::query_as(
-        "SELECT id, staff, CASE WHEN $2 OR NOT staff THEN author_login END AS author_login, body, \
-           created_at FROM ticket_messages WHERE ticket_id = $1 ORDER BY id",
+        "SELECT m.id, m.staff, CASE WHEN $2 THEN m.author_label END AS author_label, \
+           CASE WHEN $2 THEN u.email END AS author_email, m.body, m.created_at \
+           FROM ticket_messages m LEFT JOIN users u ON u.id = m.author_id \
+           WHERE m.ticket_id = $1 ORDER BY m.id",
     )
     .bind(ticket)
     .bind(staff_view)
@@ -615,7 +619,6 @@ pub struct MyTicketView {
 pub struct TicketView {
     #[serde(flatten)]
     ticket: TicketRow,
-    user_email: Option<String>,
     user_enabled: bool,
     thread: Vec<MessageRow>,
 }
@@ -693,24 +696,15 @@ pub async fn read_ticket_staff(
         .execute(&mut *conn)
         .await?;
     }
-    let (email, enabled): (Option<String>, bool) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT {} AS email, enabled FROM users WHERE id = $1",
-        email_column()
-    )))
-    .bind(t.user_id)
-    .fetch_one(&mut *conn)
-    .await?;
+    let enabled: bool = sqlx::query_scalar("SELECT enabled FROM users WHERE id = $1")
+        .bind(t.user_id)
+        .fetch_one(&mut *conn)
+        .await?;
     Ok(Some(TicketView {
         ticket: t,
-        user_email: email,
         user_enabled: enabled,
         thread,
     }))
-}
-
-/// The customer's address (W15 `users.email`, verified or not: staff see it).
-fn email_column() -> &'static str {
-    "email"
 }
 
 // ---------------------------------------------------------------------------
@@ -864,7 +858,7 @@ pub struct ListQuery {
     /// Only tickets with unread customer messages.
     #[serde(default)]
     pub unread: Option<bool>,
-    /// Substring of the subject or the customer's login.
+    /// Substring of the subject or the customer's email address.
     #[serde(default)]
     pub q: Option<String>,
     #[serde(default)]
@@ -948,7 +942,7 @@ pub fn list_filter(q: &ListQuery, me: Uuid) -> Result<(String, Vec<String>), Api
             .replace('%', "\\%")
             .replace('_', "\\_");
         let p = bind(format!("%{escaped}%"), &mut binds);
-        clauses.push(format!("(t.subject ILIKE {p} OR u.login ILIKE {p})"));
+        clauses.push(format!("(t.subject ILIKE {p} OR u.email ILIKE {p})"));
     }
     let wh = if clauses.is_empty() {
         String::new()
@@ -1093,13 +1087,13 @@ pub async fn list_admins(
 ) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
     user.require_admin()?;
     let rows: Vec<(Uuid, String)> = sqlx::query_as(
-        "SELECT id, login FROM users WHERE role = 'admin' AND enabled ORDER BY login LIMIT 200",
+        "SELECT id, email FROM users WHERE role = 'admin' AND enabled ORDER BY email LIMIT 200",
     )
     .fetch_all(state.pg())
     .await?;
     Ok(Json(
         rows.into_iter()
-            .map(|(id, login)| json!({ "id": id, "login": login }))
+            .map(|(id, email)| json!({ "id": id, "email": email }))
             .collect(),
     ))
 }

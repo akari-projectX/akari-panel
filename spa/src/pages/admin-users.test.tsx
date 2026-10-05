@@ -14,19 +14,17 @@ const GIB = 1024 ** 3;
 
 const user = (over: Partial<UserView>): UserView => ({
   id: "u1",
-  login: "alice",
   role: "user",
   enabled: true,
   traffic_limit_bytes: 100 * GIB,
   traffic_used_bytes: 5 * GIB,
   expires_at: null,
   created_at: "2026-10-01T00:00:00Z",
-  totp_enabled: false,
   disabled_reason: null,
   plan_id: null,
   plan_name: null,
   next_reset_at: null,
-  email: null,
+  email: "alice@example.com",
   email_verified: false,
   ...over,
 });
@@ -53,8 +51,8 @@ const plan = (over: Partial<PlanView>): PlanView => ({
   ...over,
 });
 
-async function manage(login: string) {
-  const row = (await screen.findByRole("cell", { name: new RegExp(`^${login}`) })).closest("tr") as HTMLElement;
+async function manage(email: string) {
+  const row = (await screen.findByRole("cell", { name: new RegExp(`^${email}`) })).closest("tr") as HTMLElement;
   fireEvent.click(within(row).getByRole("button", { name: /管理/ }));
 }
 
@@ -88,26 +86,26 @@ describe("userPatch", () => {
 
 describe("AdminUsers", () => {
   it("pages with the total and sends filters, search and sort", async () => {
-    const full = Array.from({ length: PAGE_SIZE }, (_, i) => user({ id: `u${i}`, login: `user-${i}` }));
+    const full = Array.from({ length: PAGE_SIZE }, (_, i) => user({ id: `u${i}`, email: `user-${i}@example.com` }));
     const calls = fakeApi({
       "GET /users": () => {
         const offset = Number(new URLSearchParams(calls.at(-1)?.search).get("offset"));
         return {
           status: 200,
-          body: page(offset === 0 ? full : [user({ id: "last", login: "last-user" })], PAGE_SIZE + 1),
+          body: page(offset === 0 ? full : [user({ id: "last", email: "last-user@example.com" })], PAGE_SIZE + 1),
         };
       },
       "GET /plans": [plan({})],
     });
     renderAdmin(<AdminUsers />);
-    expect(await screen.findByRole("cell", { name: /^user-0$/ })).toBeTruthy();
+    expect(await screen.findByRole("cell", { name: /^user-0@example\.com/ })).toBeTruthy();
     const lists = () => calls.filter((c) => c.path === "/users");
     expect(lists()[0].search).toBe(`?limit=${PAGE_SIZE}&offset=0`);
     expect(screen.getByText(`共 ${PAGE_SIZE + 1} 个用户`)).toBeTruthy();
     const prev = screen.getByRole("button", { name: "上一页" }) as HTMLButtonElement;
     expect(prev.disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "下一页" }));
-    expect(await screen.findByRole("cell", { name: /^last-user$/ })).toBeTruthy();
+    expect(await screen.findByRole("cell", { name: /^last-user@example\.com/ })).toBeTruthy();
     expect(lists().some((c) => c.search === `?limit=${PAGE_SIZE}&offset=${PAGE_SIZE}`)).toBe(true);
     expect((screen.getByRole("button", { name: "下一页" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/第 2 \/ 2 页/)).toBeTruthy();
@@ -134,22 +132,20 @@ describe("AdminUsers", () => {
     const calls = fakeApi({
       "GET /users": page([]),
       "GET /plans": [],
-      "POST /users": { ...user({ login: "bob", email: "bob@example.com" }), sub_token: "tok-1", sub_url: null },
+      "POST /users": { ...user({ email: "bob@example.com" }), sub_token: "tok-1", sub_url: null },
     });
     renderAdmin(<AdminUsers />);
     fireEvent.click(await screen.findByRole("button", { name: "新建用户" }));
     const dialog = await screen.findByRole("dialog", { name: "新建用户" });
-    fireEvent.change(within(dialog).getByLabelText("账号"), { target: { value: "bob" } });
+    fireEvent.change(within(dialog).getByLabelText("邮箱"), { target: { value: "bob@example.com" } });
     fireEvent.change(within(dialog).getByLabelText("密码"), { target: { value: "password-1" } });
-    fireEvent.change(within(dialog).getByLabelText(/邮箱/), { target: { value: "bob@example.com" } });
     fireEvent.change(within(dialog).getByLabelText(/到期日/), { target: { value: "2027-03-01" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "创建" }));
     expect(await screen.findByText("tok-1")).toBeTruthy();
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(calls.find((c) => c.method === "POST")?.body).toEqual({
-      login: "bob",
-      password: "password-1",
       email: "bob@example.com",
+      password: "password-1",
       expires_at: "2027-03-01T15:59:59.000Z",
     });
   });
@@ -163,8 +159,8 @@ describe("AdminUsers", () => {
     });
     renderAdmin(<AdminUsers />);
     expect(await screen.findByText("超出流量")).toBeTruthy();
-    await manage("alice");
-    const form = await screen.findByRole("form", { name: "编辑 alice" });
+    await manage("alice@example.com");
+    const form = await screen.findByRole("form", { name: "编辑 alice@example.com" });
     fireEvent.change(within(form).getByLabelText(/流量上限/), { target: { value: "200" } });
     fireEvent.change(within(form).getByLabelText(/到期日/), { target: { value: "2027-01-31" } });
     fireEvent.click(within(form).getByLabelText("启用"));
@@ -185,8 +181,8 @@ describe("AdminUsers", () => {
       "GET /users/u1/nodes": [],
     });
     renderAdmin(<AdminUsers />);
-    await manage("alice");
-    const form = await screen.findByRole("form", { name: "编辑 alice" });
+    await manage("alice@example.com");
+    const form = await screen.findByRole("form", { name: "编辑 alice@example.com" });
     expect((within(form).getByLabelText(/流量上限/) as HTMLInputElement).disabled).toBe(true);
     expect(screen.getAllByText(/沿用上一个套餐/).length).toBeGreaterThan(0);
   });
@@ -206,8 +202,8 @@ describe("AdminUsers", () => {
     ];
     fakeApi({ "GET /users": page([user({})]), "GET /plans": [], "GET /users/u1/nodes": nodes });
     renderAdmin(<AdminUsers />);
-    await manage("alice");
-    const section = await screen.findByRole("region", { name: "alice 的节点权限" });
+    await manage("alice@example.com");
+    const section = await screen.findByRole("region", { name: "alice@example.com 的节点权限" });
     expect(await within(section).findByText("tokyo-1")).toBeTruthy();
     expect(within(section).getByText("在线")).toBeTruthy();
     expect(within(section).getByText("in-vless（vless）")).toBeTruthy();
@@ -225,7 +221,7 @@ describe("AdminUsers", () => {
     });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     renderAdmin(<AdminUsers />);
-    await manage("alice");
+    await manage("alice@example.com");
     for (const name of ["删除用户", "吊销会话", "重新生成订阅令牌"]) {
       fireEvent.click(await screen.findByRole("button", { name }));
     }
@@ -241,21 +237,20 @@ describe("AdminUsers", () => {
     await waitFor(() => expect(calls.some((c) => c.method === "DELETE" && c.path === "/users/u1")).toBe(true));
   });
 
-  it("resets 2FA of an account that has it, with a localized server error", async () => {
+  it("an admin account has no plan and no node access; server errors are localized", async () => {
     fakeApi({
-      "GET /users": page([user({ role: "admin", totp_enabled: true })]),
+      "GET /users": page([user({ role: "admin" })]),
       "GET /plans": [],
-      "DELETE /users/u1/totp": () => ({
+      "DELETE /users/u1": () => ({
         status: 409,
         body: { error: "cannot remove the last enabled admin", code: "user.last_admin" },
       }),
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
     renderAdmin(<AdminUsers />);
-    await manage("alice");
-    // Admins have no plan and no node access.
-    expect(screen.queryByRole("region", { name: "alice 的节点权限" })).toBeNull();
-    fireEvent.click(await screen.findByRole("button", { name: "重置两步验证" }));
+    await manage("alice@example.com");
+    expect(screen.queryByRole("region", { name: "alice@example.com 的节点权限" })).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "删除用户" }));
     expect((await screen.findByRole("alert")).textContent).toBe("不能停用、降级或删除最后一个启用的管理员");
   });
 
@@ -267,8 +262,8 @@ describe("AdminUsers", () => {
       "PUT /users/u1/plan": { active: null, history: [] },
     });
     renderAdmin(<AdminUsers />);
-    await manage("alice");
-    const form = await screen.findByRole("form", { name: "alice 的套餐" });
+    await manage("alice@example.com");
+    const form = await screen.findByRole("form", { name: "alice@example.com 的套餐" });
     expect(
       within(form)
         .getAllByRole("option")
@@ -298,11 +293,12 @@ describe("userStatus / usersQuery / createUserBody", () => {
     );
   });
   it("validates the dialog", () => {
-    const f = { login: "x", password: "p", email: "", role: "user", limitGib: "", expires: "" };
-    expect(createUserBody(f)).toEqual({ login: "x", password: "p" });
+    const f = { password: "p", email: "x@example.com", role: "user", limitGib: "", expires: "" };
+    expect(createUserBody(f)).toEqual({ email: "x@example.com", password: "p" });
+    expect(createUserBody({ ...f, email: " " })).toBe("请填写邮箱（登录名）。");
     expect(createUserBody({ ...f, limitGib: "-1" })).toBe("流量上限须为不小于 0 的数字（GiB）。");
     expect(createUserBody({ ...f, role: "admin", limitGib: "2" })).toEqual({
-      login: "x",
+      email: "x@example.com",
       password: "p",
       role: "admin",
       traffic_limit_bytes: 2 * GIB,

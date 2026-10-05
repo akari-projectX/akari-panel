@@ -25,7 +25,7 @@ use crate::auth::ApiError;
 use crate::entitle;
 use crate::state::AppState;
 
-/// actor_login of payment-driven changes (notify, query, reconcile).
+/// actor_label of payment-driven changes (notify, query, reconcile).
 pub const PAYMENT_ACTOR: &str = "alipay";
 
 /// Polling may query one order at most this often (any instance).
@@ -41,7 +41,7 @@ const CLOSE_GRACE_SECS: i64 = 3600;
 pub fn payment_actor(ip: Option<IpAddr>) -> Actor {
     Actor {
         id: None,
-        login: PAYMENT_ACTOR.into(),
+        label: PAYMENT_ACTOR.into(),
         ip,
     }
 }
@@ -572,7 +572,7 @@ pub async fn apply_admin_fulfil(
             true,
             "marked_paid",
             None,
-            Some(json!({ "reason": reason, "by": actor.login })),
+            Some(json!({ "reason": reason, "by": actor.label })),
             actor.ip,
         )
         .await?;
@@ -608,7 +608,7 @@ pub async fn apply_admin_fulfil(
             "fulfil_failed"
         },
         None,
-        Some(json!({ "reason": reason, "by": actor.login })),
+        Some(json!({ "reason": reason, "by": actor.label })),
         actor.ip,
     )
     .await?;

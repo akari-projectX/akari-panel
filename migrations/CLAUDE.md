@@ -7,6 +7,7 @@ sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18，再拒绝 v0.3.x
 - 下文「当前表」里形如「0085（W11）」的编号指**压缩前**的旧迁移（历史，见 git 中 v0.3.2 及之前），这些对象现在都在 `1000_baseline.sql` 里。
 - **只追加，不修改**已合并的迁移文件（sqlx 会校验 checksum，改了已部署环境会拒绝启动）。
 - 命名：`NNNN_<topic>.sql`。v0.4 编号区间：基线 1000；基线评审修正 1001–1009；W27 1010–1029；W28 1030–1059；W29 1060–1064；W30 1065–1069；W31 1070–1074；W32 1075–1079；W33 1080–1084；W36 1085–1089；阶段 C–E 修复 1090–1099；v0.4.0 之后从 1100 起。**v0.4 开发期间（没有需要保留的部署库）只要求"在本任务的区间内递增"**：并行任务可能出现 1030 先合并、1012 后合并，sqlx 照常执行未执行过的低编号迁移（CI 每次从空库开始）；后合并的一方若依赖先合并的迁移（例如都改 `users`），由它 rebase 并核对。v0.4.0 发布后恢复"不得新增编号小于 main 上已有迁移的文件"。
+- **1010（W27，D1/D7/Q4）**：删 `users.login`（及 `users_login_key`/`users_login_prefix`）；`users.email` NOT NULL + 全量唯一约束 `users_email_key`（代码唯一按名分支的约束，`api::USERS_EMAIL_KEY`），`users_email_prefix` 改为非部分索引；删 `user_totp`、`user_recovery_codes`、`panel_settings.require_admin_2fa`；快照列改名为不含个人信息的标签（`audit::user_label` = `u-` + id 前 8 位十六进制，或 cli/system/agent/anonymous）：`orders/withdrawals/balance_ledger/admin_batch_items.user_label`、`balance_ledger/admin_batch_jobs/coupon_batches/audit_log.actor_label`（索引 `audit_log_actor_label`）、`commissions.inviter_label/invitee_label`、`ticket_messages.author_label`；展示时按 id JOIN `users` 取当前邮箱。下文「当前表」中 `user_totp`/`user_recovery_codes`/`*_login`/`require_admin_2fa` 的描述为历史。
 - 改列名/加列后，同步检查 `src/` 中所有手写 SQL 与 `FromRow` 结构体（没有编译期 SQL 校验）。
 
 ## 当前表

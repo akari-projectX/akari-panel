@@ -181,16 +181,16 @@ pub async fn apply_reset(
     if !plausible_token(token) {
         return Ok(None);
     }
-    let row: Option<(Uuid, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    let row: Option<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "UPDATE password_resets r SET used_at = now() FROM users u \
          WHERE r.token_hash = $1 AND r.used_at IS NULL AND r.expires_at > now() \
          AND u.id = r.user_id AND u.email = r.email AND {MAY_RESET} \
-         RETURNING r.user_id, u.login"
+         RETURNING r.user_id"
     )))
     .bind(token_hash(token))
     .fetch_optional(&mut *conn)
     .await?;
-    let Some((user, login)) = row else {
+    let Some(user) = row else {
         return Ok(None);
     };
     sqlx::query("UPDATE users SET password_hash = $2 WHERE id = $1")
@@ -204,7 +204,7 @@ pub async fn apply_reset(
         .await?;
     crate::audit::record(
         conn,
-        &Actor::account(user, &login, ip),
+        &Actor::account(user, ip),
         "user.password.reset",
         "user",
         Some(user.to_string()),

@@ -2069,7 +2069,7 @@ mod tests {
                 .fetch_one(state.pg())
                 .await
                 .unwrap();
-        crate::auth::issue_token(state, id, &role, sv, crate::auth::Stage::Full).unwrap()
+        crate::auth::issue_token(state, id, &role, sv).unwrap()
     }
 
     /// (node, credentials, manual) of a user's rows, by node.
@@ -2157,7 +2157,7 @@ mod tests {
 
     async fn audit_rows(db: &TestDb, action: &str) -> Vec<(String, Option<String>, Option<Value>)> {
         sqlx::query_as(
-            "SELECT actor_login, target_id, after FROM audit_log WHERE action = $1 ORDER BY id",
+            "SELECT actor_label, target_id, after FROM audit_log WHERE action = $1 ORDER BY id",
         )
         .bind(action)
         .fetch_all(&db.pool)
@@ -3147,12 +3147,14 @@ mod tests {
 
         // A user with a password, given the plan.
         let u = Uuid::new_v4();
-        sqlx::query("INSERT INTO users (id, login, password_hash) VALUES ($1, 'm3user', $2)")
-            .bind(u)
-            .bind(crate::auth::hash_password("old-password-1").unwrap())
-            .execute(&db.pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO users (id, email, password_hash) VALUES ($1, 'm3user@example.com', $2)",
+        )
+        .bind(u)
+        .bind(crate::auth::hash_password("old-password-1").unwrap())
+        .execute(&db.pool)
+        .await
+        .unwrap();
         let r = c
             .req(
                 Method::PUT,
@@ -3207,7 +3209,7 @@ mod tests {
 
         // Self-service.
         let mut me = Client::new(&state, rand_ip());
-        let r = me.login("m3user", "old-password-1", None).await;
+        let r = me.login("m3user@example.com", "old-password-1").await;
         assert_eq!(r.status, StatusCode::OK);
         let r = me.get("/test/api/v1/me/plan").await;
         assert_eq!(r.status, StatusCode::OK);
@@ -3261,7 +3263,10 @@ mod tests {
         assert_eq!(me.get("/test/api/v1/me").await.status, StatusCode::OK);
         let mut again = Client::new(&state, rand_ip());
         assert_eq!(
-            again.login("m3user", "new-password-2", None).await.status,
+            again
+                .login("m3user@example.com", "new-password-2")
+                .await
+                .status,
             StatusCode::OK
         );
         assert_eq!(audit_rows(&db, "user.password.change").await.len(), 1);

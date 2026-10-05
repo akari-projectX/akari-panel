@@ -170,7 +170,6 @@ fn database_only_no_file_fallback() {
     assert!(!e.cloudflare.is_empty(), "the shipped list");
     assert_eq!(e.audit_retention_days, 365);
     assert_eq!(e.traffic_daily_retention_days, 400);
-    assert!(!e.require_admin_2fa);
     assert_eq!(e.remove_mode, RemoveMode::Gate);
     assert_eq!(e.acme_directory_url, "");
     assert_eq!(
@@ -198,7 +197,6 @@ fn database_only_no_file_fallback() {
     s.cloudflare_ranges = Some(vec!["198.51.100.0/24".into()]);
     s.audit_retention_days = Some(0);
     s.traffic_daily_retention_days = Some(40);
-    s.require_admin_2fa = Some(true);
     s.remove_mode = Some("rebuild".into());
     s.install_fallback_url = Some(String::new());
     s.acme_directory_url = Some("https://ca.example/dir".into());
@@ -225,7 +223,6 @@ fn database_only_no_file_fallback() {
         (e.audit_retention_days, e.traffic_daily_retention_days),
         (0, 40)
     );
-    assert!(e.require_admin_2fa);
     assert_eq!(e.remove_mode, RemoveMode::Rebuild);
     assert_eq!(e.install_fallback_url, None, "\"\" = no fallback");
     assert_eq!(e.acme_directory_url, "https://ca.example/dir");
@@ -405,8 +402,7 @@ async fn admin_client(state: &AppState, db: &TestDb) -> Client {
             .await
             .unwrap();
     let mut c = Client::new(state, rand_ip());
-    c.cookie =
-        Some(crate::auth::issue_token(state, id, &role, sv, crate::auth::Stage::Full).unwrap());
+    c.cookie = Some(crate::auth::issue_token(state, id, &role, sv).unwrap());
     c
 }
 
@@ -744,8 +740,7 @@ async fn settings_api() {
             .fetch_one(&db.pool)
             .await
             .unwrap();
-    u.cookie =
-        Some(crate::auth::issue_token(&state, user, &role, sv, crate::auth::Stage::Full).unwrap());
+    u.cookie = Some(crate::auth::issue_token(&state, user, &role, sv).unwrap());
     u.headers = vec![("host".into(), "new.example.com".into())];
     assert_eq!(
         u.get("/test/api/v1/settings").await.status,
@@ -759,7 +754,7 @@ async fn settings_api() {
 async fn login(c: &Client, n: usize) -> StatusCode {
     c.post(
         "/test/auth/login",
-        json!({"login": format!("nobody-{}-{n}", uuid::Uuid::new_v4()), "password": "x"}),
+        json!({"email": format!("nobody-{}-{n}@example.com", uuid::Uuid::new_v4()), "password": "x"}),
     )
     .await
     .status
@@ -1375,7 +1370,6 @@ async fn obsolete_keys_are_imported_once() {
         "acme.directory_url",
         "audit.retention_days",
         "traffic.daily_retention_days",
-        "auth.require_admin_2fa",
         "agent.remove_mode",
         "updates.release_keys",
         "alerts.telegram_api_url",
@@ -1398,6 +1392,11 @@ async fn obsolete_keys_are_imported_once() {
     ] {
         assert_eq!(got(k), Some(Imported::Constant), "{k}");
     }
+    assert_eq!(
+        got("auth.require_admin_2fa"),
+        Some(Imported::Removed),
+        "2FA is gone (v0.4 D7)"
+    );
     assert!(report.host_gate_on, "public_url became the main domain");
     // The committed import notified (every instance reloads).
     let n = tokio::time::timeout(Duration::from_secs(5), listener.recv())
@@ -1438,7 +1437,6 @@ async fn obsolete_keys_are_imported_once() {
         (e.audit_retention_days, e.traffic_daily_retention_days),
         (30, 60)
     );
-    assert!(e.require_admin_2fa);
     assert_eq!(e.remove_mode, RemoveMode::Rebuild);
     assert_eq!(
         e.stored.extra_release_keys.as_deref(),
@@ -1458,7 +1456,7 @@ async fn obsolete_keys_are_imported_once() {
     }
     // One audit row, actor system, listing the imported keys.
     let rows: Vec<(String, Option<Value>)> =
-        sqlx::query_as("SELECT actor_login, after FROM audit_log WHERE action = 'settings.import'")
+        sqlx::query_as("SELECT actor_label, after FROM audit_log WHERE action = 'settings.import'")
             .fetch_all(&db.pool)
             .await
             .unwrap();
@@ -1472,7 +1470,7 @@ async fn obsolete_keys_are_imported_once() {
         .fetch_one(&db.pool)
         .await
         .unwrap();
-    assert_eq!(marks, 20, "every moved key handled once");
+    assert_eq!(marks, 19, "every moved key handled once");
     // 告警 → Telegram API 地址 (alert_settings, same transaction and audit row).
     let tg: Option<String> =
         sqlx::query_scalar("SELECT telegram_api_url FROM alert_settings WHERE id = 1")
@@ -1493,11 +1491,15 @@ async fn obsolete_keys_are_imported_once() {
         .unwrap();
     tx.commit().await.unwrap();
     let again = import_legacy(&old_state(&db, OLD_TOML).await).await;
-    assert_eq!(again.get("auth.require_admin_2fa"), Some(&Imported::Before));
+    assert_eq!(again.get("audit.retention_days"), Some(&Imported::Before));
     assert_eq!(again.get("grpc.lease_seconds"), Some(&Imported::Constant));
     assert!(!again.host_gate_on);
     reload(&st).await.unwrap();
-    assert!(!st.settings().get().require_admin_2fa, "stays cleared");
+    assert_eq!(
+        st.settings().get().audit_retention_days,
+        365,
+        "stays cleared"
+    );
     let rows: i64 =
         sqlx::query_scalar("SELECT count(*) FROM audit_log WHERE action = 'settings.import'")
             .fetch_one(&db.pool)
@@ -1705,7 +1707,7 @@ async fn node_ops_and_security_api() {
     let signer = crate::updates::testkit::Signer::new().config_line();
     let r = put(
         "security",
-        json!({"version": version, "require_admin_2fa": true, "audit_retention_days": 0,
+        json!({"version": version, "audit_retention_days": 0,
                "traffic_daily_retention_days": 0, "cloudflare_ranges": ["198.51.100.0/24", " 2001:db8::/32 "],
                "extra_release_keys": [signer]}),
     )
@@ -1717,7 +1719,7 @@ async fn node_ops_and_security_api() {
         String::from_utf8_lossy(&r.body)
     );
     let v = r.json();
-    assert_eq!(v["security"]["require_admin_2fa"]["effective"], true);
+    assert!(v["security"].get("require_admin_2fa").is_none());
     assert_eq!(v["security"]["audit_retention_days"]["effective"], 0);
     assert_eq!(
         v["security"]["cloudflare_ranges"],
@@ -1726,7 +1728,7 @@ async fn node_ops_and_security_api() {
     assert_eq!(v["cloudflare_ranges"], 2);
     assert_eq!(v["security"]["release_keys"].as_array().unwrap().len(), 2);
     let e = st.settings().get();
-    assert!(e.require_admin_2fa && e.audit_retention_days == 0);
+    assert_eq!(e.audit_retention_days, 0);
     assert_eq!(e.traffic_daily_retention_days, 0);
     // The Cloudflare list is audited by size, never verbatim.
     let rows = audit_rows(&db, "settings.security.update").await;
@@ -1736,7 +1738,7 @@ async fn node_ops_and_security_api() {
     let version = v["version"].as_i64().unwrap();
     let r = put(
         "security",
-        json!({"version": version, "require_admin_2fa": false, "audit_retention_days": 365,
+        json!({"version": version, "audit_retention_days": 365,
                "cloudflare_ranges": [], "extra_release_keys": null}),
     )
     .await;
@@ -1744,12 +1746,11 @@ async fn node_ops_and_security_api() {
     let s = st.settings().get().stored.clone();
     assert_eq!(
         (
-            s.require_admin_2fa,
             s.audit_retention_days,
             s.cloudflare_ranges,
             s.extra_release_keys
         ),
-        (None, None, None, None),
+        (None, None, None),
         "defaults are stored as NULL"
     );
     db.drop().await;

@@ -101,7 +101,7 @@ impl Scenario {
             Scenario::UsersFirstPage => "users_page1",
             Scenario::UsersDeepPage => "users_deep",
             Scenario::UserPatch => "user_patch",
-            // W21: the console's search (login/email prefix + total), a
+            // W21: the console's search (email prefix + total), a
             // status filter with a sort, and the dashboard aggregate.
             Scenario::UsersSearch => "users_search",
             Scenario::UsersFiltered => "users_filtered",
@@ -147,27 +147,26 @@ impl Ctx {
     }
 }
 
-/// A full-stage session cookie for the seeded admin, signed with jwt.key.
+/// A session cookie for the seeded admin, signed with jwt.key.
 pub async fn admin_cookie(pg: &sqlx::PgPool, data_dir: &std::path::Path) -> Result<String> {
     let secret = std::fs::read_to_string(data_dir.join("jwt.key"))
         .with_context(|| format!("read {}/jwt.key (start the panel once)", data_dir.display()))?;
     let (id, sv): (Uuid, i64) =
-        sqlx::query_as("SELECT id, session_ver FROM users WHERE login = $1")
-            .bind(common::ADMIN_LOGIN)
+        sqlx::query_as("SELECT id, session_ver FROM users WHERE email = $1")
+            .bind(common::ADMIN_EMAIL)
             .fetch_one(pg)
             .await
             .context("seeded admin missing (akari-bench seed)")?;
     session_cookie(&secret, id, "admin", sv)
 }
 
-/// A full-stage session cookie for any account, signed with jwt.key.
+/// A session cookie for any account, signed with jwt.key.
 pub fn session_cookie(secret: &str, id: Uuid, role: &str, sv: i64) -> Result<String> {
     let now = chrono::Utc::now().timestamp() as u64;
     let claims = akari_panel::auth::Claims {
         sub: id,
         role: role.into(),
         sv,
-        st: akari_panel::auth::Stage::Full,
         iat: now,
         exp: now + 3600,
     };
@@ -195,7 +194,7 @@ pub async fn run(args: HttpArgs) -> Result<()> {
         .connect(&args.database_url)
         .await?;
     let user_ids: Vec<Uuid> =
-        sqlx::query_scalar("SELECT id FROM users WHERE login LIKE 'bench-user-%' LIMIT 5000")
+        sqlx::query_scalar("SELECT id FROM users WHERE email LIKE 'bench-user-%' LIMIT 5000")
             .fetch_all(&pg)
             .await?;
     let max_audit_id: i64 = sqlx::query_scalar("SELECT coalesce(max(id), 0) FROM audit_log")
@@ -207,7 +206,7 @@ pub async fn run(args: HttpArgs) -> Result<()> {
     let secret = std::fs::read_to_string(args.data_dir.join("jwt.key"))
         .with_context(|| format!("read {}/jwt.key", args.data_dir.display()))?;
     let sessions: Vec<(Uuid, i64)> = sqlx::query_as(
-        "SELECT id, session_ver FROM users WHERE login LIKE 'bench-user-%' ORDER BY random() LIMIT 500",
+        "SELECT id, session_ver FROM users WHERE email LIKE 'bench-user-%' ORDER BY random() LIMIT 500",
     )
     .fetch_all(&pg)
     .await?;
@@ -348,7 +347,7 @@ async fn request(ctx: &Ctx, s: Scenario, i: usize) -> bool {
             }
             Scenario::UsersSearch => admin(format!(
                 "users?limit=50&q={}",
-                common::user_login(rng.random_range(0..ctx.users.max(1)))
+                common::user_email(rng.random_range(0..ctx.users.max(1)))
                     .chars()
                     .take(14)
                     .collect::<String>()
@@ -421,7 +420,7 @@ async fn request(ctx: &Ctx, s: Scenario, i: usize) -> bool {
                 ctx.client
                     .post(format!("{base}/auth/login"))
                     .json(&serde_json::json!({
-                        "login": common::LOGIN_USER,
+                        "email": common::LOGIN_USER,
                         "password": common::LOGIN_PASSWORD,
                     }))
             }

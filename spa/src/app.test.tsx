@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { adminTarget, App } from "./app";
 import { setLocale } from "./i18n";
-import type { Me, TotpStatus } from "./lib/api";
+import type { Me } from "./lib/api";
 import { loadPage } from "./lib/router";
 import { fakeApi, renderWithClient } from "./test/harness";
 
@@ -25,31 +25,19 @@ afterEach(() => {
 
 const me = (role: string): Me => ({
   id: `${role}-id`,
-  login: role === "admin" ? "root" : "alice",
   role,
   traffic_used_bytes: 0,
   traffic_limit_bytes: null,
   expires_at: null,
   expired: false,
   quota_exhausted: false,
-  email: null,
+  email: role === "admin" ? "root@example.com" : "alice@example.com",
   email_verified: false,
   locale: "en",
   sub_token: null,
   sub_url: null,
   sub_legacy: false,
   probe_interval_secs: 18000,
-});
-const totp = (over: Partial<TotpStatus>): TotpStatus => ({
-  id: "admin-id",
-  login: "root",
-  role: "admin",
-  stage: "full",
-  enabled: false,
-  pending: false,
-  recovery_codes_left: 0,
-  admin_2fa_required: false,
-  ...over,
 });
 const unauthorized = () => ({ status: 401, body: { error: "unauthorized" } });
 
@@ -64,22 +52,14 @@ describe("adminTarget", () => {
 
 describe("App session routing", () => {
   it("shows the login page when there is no session", async () => {
-    fakeApi({ "GET /me": unauthorized, "GET /me/totp": unauthorized });
+    fakeApi({ "GET /me": unauthorized });
     renderWithClient(<App />);
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeTruthy();
   });
 
-  it("sends an enrollment session (require_admin_2fa) to the console, which owns the enrollment page", async () => {
-    window.history.pushState(null, "", "/app/account");
-    fakeApi({ "GET /me": unauthorized, "GET /me/totp": totp({ stage: "enroll", admin_2fa_required: true }) });
-    renderWithClient(<App />);
-    await waitFor(() => expect(loadPage).toHaveBeenCalledWith("/admin/account"));
-    expect(screen.queryByRole("heading", { name: "Sign in" })).toBeNull();
-  });
-
   it("sends admin sessions to the console (a separate bundle) and renders no console itself", async () => {
     window.history.pushState(null, "", "/app/audit");
-    fakeApi({ "GET /me": me("admin"), "GET /me/totp": totp({ enabled: true }) });
+    fakeApi({ "GET /me": me("admin") });
     renderWithClient(<App />);
     await waitFor(() => expect(loadPage).toHaveBeenCalledWith("/admin/audit"));
     expect(screen.getByRole("status")).toBeTruthy();
@@ -90,7 +70,6 @@ describe("App session routing", () => {
     fakeApi({
       "GET /me": me("user"),
       "GET /me/plan": { plan: null, nodes: [] },
-      "GET /me/totp": totp({ role: "user" }),
     });
     renderWithClient(<App />);
     expect(await screen.findByRole("heading", { level: 1, name: "Dashboard" })).toBeTruthy();
@@ -101,8 +80,8 @@ describe("App session routing", () => {
     expect(document.title).toBe("仪表盘 · Akari");
   });
 
-  it("expired users (R21) see the renewal notice with a call to action, not the subscription or 2FA", async () => {
-    const calls = fakeApi({
+  it("expired users (R21) see the renewal notice with a call to action, not the subscription", async () => {
+    fakeApi({
       "GET /me": { ...me("user"), expires_at: "2026-01-01T00:00:00Z", expired: true },
       "GET /me/plan": { plan: null, nodes: [] },
       "GET /me/shop": { enabled: false, current: null, credit_cents: 0, balance_cents: 0, coupon: null, plans: [] },
@@ -115,11 +94,9 @@ describe("App session routing", () => {
     fireEvent.click(screen.getByRole("button", { name: "Renew now" }));
     expect(location.pathname).toBe("/app/shop");
     expect(await screen.findByRole("heading", { level: 1, name: "Buy a plan" })).toBeTruthy();
-    // Account settings: password yes, 2FA no.
+    // Account settings: the password can be changed.
     fireEvent.click(screen.getAllByRole("link", { name: "Account settings" })[0]);
     expect(await screen.findByRole("heading", { name: "Password" })).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Two-factor authentication" })).toBeNull();
-    expect(calls.some((c) => c.path === "/me/totp")).toBe(false);
   });
 
   it("quota-disabled users (R21) get the same renewal scope and a reset-pack call to action", async () => {

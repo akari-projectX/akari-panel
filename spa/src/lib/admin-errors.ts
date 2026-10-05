@@ -252,7 +252,7 @@ export const ADMIN_CODES: Record<string, string> = {
   "payments.public_key_too_short": "支付宝公钥太短：RSA2 需要至少 2048 位",
   "payments.seller_id_invalid": "商户 PID 须为数字（2088 开头）",
   "payments.sort_range": "排序值须在 ±1000000 之内",
-  "payments.stored_key_unreadable": "已保存的密钥无法解密（data/totp.key 已更换？）：请重新粘贴",
+  "payments.stored_key_unreadable": "已保存的密钥无法解密（data/master.key 已更换？）：请重新粘贴",
   "payments.timeout_range": "订单有效期须为 5–120 分钟",
   // 系统设置
   "settings.acme_email_invalid": "ACME 邮箱：不是有效的邮箱地址（可留空）",
@@ -310,7 +310,6 @@ export const ADMIN_CODES: Record<string, string> = {
   "ticket_admin.search_long": "搜索内容最多 64 个字符",
   "ticket_admin.status_invalid": "状态筛选无效",
   // 用户
-  "user.no_email": "该账户没有邮箱",
   "user.access_from_plan": "此节点权限来自用户的套餐：请更换套餐或修改套餐的节点组",
   "user.admin_no_subscription": "管理员账户没有订阅链接",
   "user.admin_no_plan": "管理员账户不是代理用户，不能分配套餐",
@@ -322,8 +321,6 @@ export const ADMIN_CODES: Record<string, string> = {
   "user.has_plan": "该用户有生效中的套餐：请先取消套餐，再设为管理员",
   "user.last_admin": "不能停用、降级或删除最后一个启用的管理员",
   "user.limit_negative": "流量上限不能为负数",
-  "user.login_exists": "该账号已存在",
-  "user.login_invalid": "账号须为 3–64 个字符（字母、数字、_ . -）",
   "user.plan_filter_invalid": "套餐筛选无效",
   "user.plan_managed": "流量上限与到期时间由用户的套餐管理：请更换套餐，或先取消套餐",
   "user.query_too_long": "搜索内容最多 {max} 个字符",

@@ -70,7 +70,9 @@ pub struct Pending {
 pub struct LatestOrder {
     pub id: Uuid,
     pub out_trade_no: String,
-    pub user_login: String,
+    /// Q4: snapshot label; `user_email` = the buyer's current address.
+    pub user_label: String,
+    pub user_email: Option<String>,
     pub plan_name: String,
     pub amount_cents: i64,
     pub status: String,
@@ -216,7 +218,9 @@ pub async fn read(pool: &sqlx::PgPool) -> Result<(Dashboard, Vec<Uuid>), ApiErro
     .fetch_all(&mut *tx)
     .await?;
     let latest: Vec<LatestOrder> = sqlx::query_as(
-        "SELECT id, out_trade_no, user_login, plan_name, amount_cents, status, paid_via, \
+        "SELECT id, out_trade_no, user_label, \
+         (SELECT u.email FROM users u WHERE u.id = orders.user_id) AS user_email, \
+         plan_name, amount_cents, status, paid_via, \
          created_at, paid_at FROM orders ORDER BY created_at DESC, id DESC LIMIT $1",
     )
     .bind(LATEST_ORDERS)

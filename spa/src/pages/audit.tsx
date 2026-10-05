@@ -26,9 +26,6 @@ export const ACTION_ZH: Record<string, string> = {
   "user.password.reset": "找回密码",
   "user.email.change": "更换邮箱",
   "user.sub_token.rotate": "重新生成订阅令牌",
-  "user.totp.enable": "开启两步验证",
-  "user.totp.reset": "重置两步验证",
-  "user.totp.recovery_codes": "重新生成恢复码",
   "user.plan.set": "分配套餐",
   "user.plan.update": "修改用户套餐",
   "user.plan.cancel": "取消套餐",
@@ -160,7 +157,6 @@ const TARGET_ZH: Record<string, string> = {
 
 /** Field names in the diff (unknown fields show their key). */
 const FIELD_ZH: Record<string, string> = {
-  login: "账号",
   role: "角色",
   enabled: "启用",
   email: "邮箱",
@@ -365,7 +361,9 @@ export function AdminAudit() {
                 <TableCell className="whitespace-nowrap align-top text-muted-foreground">
                   {fmtDateTime(e.at, true)}
                 </TableCell>
-                <TableCell className="whitespace-nowrap align-top font-medium">{e.actor_login}</TableCell>
+                <TableCell className="whitespace-nowrap align-top font-medium">
+                  {e.actor_email ?? e.actor_label}
+                </TableCell>
                 <TableCell className="whitespace-nowrap align-top text-muted-foreground">{e.ip ?? "—"}</TableCell>
                 <TableCell className="whitespace-nowrap align-top">
                   {ACTION_ZH[e.action] ?? e.action}

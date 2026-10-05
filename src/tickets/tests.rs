@@ -18,7 +18,7 @@ async fn token(state: &AppState, id: Uuid) -> String {
             .fetch_one(state.pg())
             .await
             .unwrap();
-    crate::auth::issue_token(state, id, &role, sv, crate::auth::Stage::Full).unwrap()
+    crate::auth::issue_token(state, id, &role, sv).unwrap()
 }
 
 async fn client(state: &AppState, id: Uuid) -> Client {
@@ -120,8 +120,8 @@ fn list_filters() {
 
 /// User A's ticket is invisible to user B: every customer endpoint answers
 /// B exactly like an unknown path (the canonical rejection), so ticket ids
-/// are no oracle; malformed ids too. Staff see author logins, customers
-/// never see staff logins.
+/// are no oracle; malformed ids too. Staff see who wrote, customers
+/// never see who on the staff did.
 #[tokio::test]
 async fn another_users_ticket_is_the_canonical_rejection() {
     let Some(db) = TestDb::new().await else {
@@ -235,11 +235,21 @@ async fn lifecycle_both_sides() {
     assert_eq!(l["total"], 1);
     assert_eq!(l["open"], 1);
     assert_eq!(l["unread"], 1);
-    assert_eq!(l["tickets"][0]["user_login"], user.to_string());
+    assert_eq!(
+        l["tickets"][0]["user_email"],
+        crate::testdb::test_email(user)
+    );
     assert_eq!(l["tickets"][0]["node_id"], node.to_string());
     let v = ca.get(&format!("/test/api/v1/tickets/{t}")).await.json();
     assert_eq!(v["thread"][0]["body"], "节点连不上\n第二行");
-    assert_eq!(v["thread"][0]["author_login"], user.to_string());
+    assert_eq!(
+        v["thread"][0]["author_label"],
+        crate::audit::user_label(user)
+    );
+    assert_eq!(
+        v["thread"][0]["author_email"],
+        crate::testdb::test_email(user)
+    );
     assert_eq!(v["thread"][0]["staff"], false);
     let l = ca.get("/test/api/v1/tickets?unread=true").await.json();
     assert_eq!(l["total"], 0);
@@ -249,7 +259,7 @@ async fn lifecycle_both_sides() {
     );
 
     // Staff reply -> answered; the customer sees it unread, without the
-    // staff login.
+    // staff author.
     let r = ca
         .post(
             &format!("/test/api/v1/tickets/{t}/replies"),
@@ -265,7 +275,8 @@ async fn lifecycle_both_sides() {
     let v = v.json();
     assert_eq!(v["messages"].as_array().unwrap().len(), 2);
     assert_eq!(v["messages"][1]["staff"], true);
-    assert!(v["messages"][1].get("author_login").is_none());
+    assert!(v["messages"][1].get("author_label").is_none());
+    assert!(v["messages"][1].get("author_email").is_none());
     assert!(!v.to_string().contains(&admin_id.to_string()));
     assert_eq!(
         cu.get("/test/api/v1/me/tickets").await.json()[0]["unread"],
@@ -364,7 +375,7 @@ async fn lifecycle_both_sides() {
         0
     );
     let v = ca.get(&format!("/test/api/v1/tickets/{t}")).await.json();
-    assert_eq!(v["assignee_login"], admin_id.to_string());
+    assert_eq!(v["assignee_email"], crate::testdb::test_email(admin_id));
     let admins = ca.get("/test/api/v1/admins").await.json();
     assert!(
         admins
@@ -488,7 +499,6 @@ async fn limits() {
     let user = db.user().await;
     let me = Author {
         id: user,
-        login: user.to_string(),
         staff: false,
     };
     let req = CreateReq {

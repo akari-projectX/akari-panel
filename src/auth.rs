@@ -310,50 +310,15 @@ pub async fn scrub_password_async(password: &str) {
     argon2_blocking(move || scrub_password(&password)).await;
 }
 
-/// What a session may do (M1-6). Required claim: tokens issued before it
-/// existed fail to decode (everyone logs in again after the upgrade).
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Stage {
-    /// Fully authenticated (password, plus the second factor when the
-    /// account has one).
-    Full,
-    /// Only with `auth.require_admin_2fa`: an admin that passed the
-    /// password but has no active TOTP yet. Only the enrollment endpoints
-    /// accept it (`SessionUser`), never `AuthUser`.
-    Enroll,
-}
-
-impl Stage {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Stage::Full => "full",
-            Stage::Enroll => "enroll",
-        }
-    }
-    /// Session (JWT exp and cookie Max-Age) lifetime.
-    pub fn ttl_secs(self) -> i64 {
-        match self {
-            Stage::Full => COOKIE_TTL_SECS,
-            Stage::Enroll => ENROLL_TTL_SECS,
-        }
-    }
-}
-
-/// Lifetime of an enrollment-only session.
-pub const ENROLL_TTL_SECS: i64 = 15 * 60;
-
 #[derive(Serialize, Deserialize)]
 pub struct Claims {
     pub sub: Uuid,
     pub role: String,
     /// users.session_ver at issue time (S4-2). A token whose sv differs
     /// from the row is dead: password change, disable, role change, expiry
-    /// enforcement, logout, "revoke sessions", 2FA activation/reset and JWT
-    /// key rotation all bump it. Required: pre-0009 tokens (no sv) fail to
-    /// decode.
+    /// enforcement, logout, "revoke sessions" and JWT key rotation all bump
+    /// it. Required: pre-0009 tokens (no sv) fail to decode.
     pub sv: i64,
-    pub st: Stage,
     pub iat: u64,
     pub exp: u64,
 }
@@ -363,16 +328,14 @@ pub fn issue_token(
     user_id: Uuid,
     role: &str,
     session_ver: i64,
-    stage: Stage,
 ) -> anyhow::Result<String> {
     let now = chrono::Utc::now().timestamp() as u64;
     let claims = Claims {
         sub: user_id,
         role: role.to_owned(),
         sv: session_ver,
-        st: stage,
         iat: now,
-        exp: now + stage.ttl_secs() as u64,
+        exp: now + COOKIE_TTL_SECS as u64,
     };
     Ok(encode(
         &Header::new(Algorithm::HS256),
@@ -394,13 +357,13 @@ pub fn decode_token(state: &AppState, token: &str) -> Option<Claims> {
 }
 
 /// The session cookie carrying `token` (web.cookie_secure decides Secure).
-pub fn session_cookie(state: &AppState, token: String, stage: Stage) -> Cookie<'static> {
+pub fn session_cookie(state: &AppState, token: String) -> Cookie<'static> {
     Cookie::build((COOKIE_NAME, token))
         .http_only(true)
         .same_site(SameSite::Strict)
         .path("/")
         .secure(state.cfg().web.cookie_secure)
-        .max_age(time::Duration::seconds(stage.ttl_secs()))
+        .max_age(time::Duration::seconds(COOKIE_TTL_SECS))
         .build()
 }
 
@@ -420,14 +383,12 @@ pub fn cleared_cookie(state: &AppState) -> Cookie<'static> {
 // request (no stale-role or stale-enabled states from old tokens).
 // ---------------------------------------------------------------------------
 
-/// A fully authenticated session (stage Full). With
-/// `auth.require_admin_2fa` an admin session is only accepted while the
-/// admin has an active TOTP (defense in depth: every path that removes it
-/// also bumps session_ver; turning the option on ends the full sessions of
-/// admins without 2FA at their next request).
+/// A live session of an enabled account in good standing (not expired, not
+/// quota-disabled: those get the renewal scope `ShopUser` only).
 pub struct AuthUser {
     pub id: Uuid,
-    pub login: String,
+    /// The account's email address (D1: the login name).
+    pub email: String,
     pub role: String,
     /// Client address (behind trusted proxies: the forwarded client);
     /// None only where no connection info exists (tests).
@@ -444,16 +405,6 @@ impl AuthUser {
     }
 }
 
-/// Any live session, including an enrollment-only one. Only the 2FA
-/// enrollment endpoints take this.
-pub struct SessionUser {
-    pub id: Uuid,
-    pub login: String,
-    pub role: String,
-    pub stage: Stage,
-    pub ip: Option<IpAddr>,
-}
-
 /// The request's client address (see client_ip.rs), if the connection info
 /// is present.
 pub fn request_ip(parts: &Parts, state: &AppState) -> Option<IpAddr> {
@@ -466,7 +417,7 @@ pub fn request_ip(parts: &Parts, state: &AppState) -> Option<IpAddr> {
 #[derive(sqlx::FromRow)]
 struct SessionRow {
     id: Uuid,
-    login: String,
+    email: String,
     role: String,
     enabled: bool,
     /// role=user past expires_at (DB clock; `enforce::EXPIRED`).
@@ -475,10 +426,9 @@ struct SessionRow {
     /// 'quota'): renewal scope only (R21).
     quota_disabled: bool,
     session_ver: i64,
-    totp_active: bool,
 }
 
-async fn session(parts: &mut Parts, state: &AppState) -> Result<(Claims, SessionRow), ApiError> {
+async fn session(parts: &mut Parts, state: &AppState) -> Result<SessionRow, ApiError> {
     let jar = CookieJar::from_request_parts(parts, state)
         .await
         .unwrap_or_default();
@@ -494,11 +444,9 @@ async fn session(parts: &mut Parts, state: &AppState) -> Result<(Claims, Session
     // session_ver bump. Expired or quota-disabled role=user accounts keep
     // only the renewal scope (`ShopUser`, R21): `restricted()` callers refuse.
     let row = sqlx::query_as::<_, SessionRow>(sqlx::AssertSqlSafe(format!(
-        "SELECT u.id, u.login, u.role, u.enabled, {} AS expired, \
+        "SELECT u.id, u.email, u.role, u.enabled, {} AS expired, \
          (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'quota') AS quota_disabled, \
-         u.session_ver, \
-         EXISTS (SELECT 1 FROM user_totp t WHERE t.user_id = u.id AND t.enabled_at IS NOT NULL) \
-         AS totp_active FROM users u WHERE u.id = $1",
+         u.session_ver FROM users u WHERE u.id = $1",
         crate::enforce::EXPIRED
     )))
     .bind(claims.sub)
@@ -513,21 +461,14 @@ async fn session(parts: &mut Parts, state: &AppState) -> Result<(Claims, Session
     if (!row.enabled && !row.quota_disabled) || row.session_ver != claims.sv {
         return Err(ApiError::unauthorized());
     }
-    Ok((claims, row))
+    Ok(row)
 }
 
 impl SessionRow {
-    /// Renewal scope only (R21): `AuthUser`/`SessionUser` refuse it.
+    /// Renewal scope only (R21): `AuthUser` refuses it.
     fn restricted(&self) -> bool {
         self.expired || !self.enabled
     }
-}
-
-/// Whether this account may only hold an enrollment-only session: an
-/// admin without active TOTP while `auth.require_admin_2fa` is on (R18:
-/// otherwise 2FA is optional for everyone).
-pub fn needs_enrollment(state: &AppState, role: &str, totp_active: bool) -> bool {
-    state.settings().get().require_admin_2fa && role == "admin" && !totp_active
 }
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -537,46 +478,14 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let (claims, row) = session(parts, state).await?;
-        if row.restricted()
-            || claims.st != Stage::Full
-            || needs_enrollment(state, &row.role, row.totp_active)
-        {
+        let row = session(parts, state).await?;
+        if row.restricted() {
             return Err(ApiError::unauthorized());
         }
         Ok(AuthUser {
             id: row.id,
-            login: row.login,
+            email: row.email,
             role: row.role,
-            ip: request_ip(parts, state),
-        })
-    }
-}
-
-impl FromRequestParts<AppState> for SessionUser {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        let (claims, row) = session(parts, state).await?;
-        if row.restricted() {
-            return Err(ApiError::unauthorized());
-        }
-        // A full token of an admin the policy now confines to enrollment
-        // (the option was turned on later) reports as an enrollment
-        // session, so the console shows the enrollment page.
-        let stage = if needs_enrollment(state, &row.role, row.totp_active) {
-            Stage::Enroll
-        } else {
-            claims.st
-        };
-        Ok(SessionUser {
-            id: row.id,
-            login: row.login,
-            role: row.role,
-            stage,
             ip: request_ip(parts, state),
         })
     }
@@ -586,7 +495,7 @@ impl FromRequestParts<AppState> for SessionUser {
 /// belong to an EXPIRED or QUOTA-DISABLED (disabled_reason 'quota') role=user
 /// account, so it can still see its account and plan, change its password
 /// and buy/renew (shop, orders). Everything that serves or reveals proxy
-/// access (subscription, sub-token, nodes, 2FA) keeps `AuthUser`, which
+/// access (subscription, sub-token, nodes) keeps `AuthUser`, which
 /// refuses both. Accounts disabled for any other reason are refused here
 /// exactly as in `AuthUser`; admins are never expired or quota-disabled
 /// (role=user only) and get the same checks.
@@ -605,16 +514,13 @@ impl FromRequestParts<AppState> for ShopUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let (claims, row) = session(parts, state).await?;
-        if claims.st != Stage::Full || needs_enrollment(state, &row.role, row.totp_active) {
-            return Err(ApiError::unauthorized());
-        }
+        let row = session(parts, state).await?;
         Ok(ShopUser {
             expired: row.expired,
             quota_exhausted: row.quota_disabled,
             user: AuthUser {
                 id: row.id,
-                login: row.login,
+                email: row.email,
                 role: row.role,
                 ip: request_ip(parts, state),
             },

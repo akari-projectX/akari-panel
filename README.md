@@ -30,8 +30,8 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
 ```
 
 Interactive (Chinese/English), every prompt has a default: Docker Compose or bare metal
-(PostgreSQL 18 + Valkey 9 + Caddy under systemd), domain or IP only, admin login (password
-generated and printed once). The release is verified (cosign-signed SHA256SUMS) before anything is
+(PostgreSQL 18 + Valkey 9 + Caddy under systemd), domain or IP only, the admin's e-mail address
+(its login name; password generated and printed once). The release is verified (cosign-signed SHA256SUMS) before anything is
 installed. Afterwards: `akari-ctl status | info | upgrade | backup | migrate --to docker|bare |
 uninstall [--purge]`. Non-interactive: `… | sh -s -- --yes --mode bare --domain panel.example.com`.
 Details, manual installation, upgrade/rollback/migration: `docs/DEPLOY.md`.
@@ -40,24 +40,25 @@ Details, manual installation, upgrade/rollback/migration: `docs/DEPLOY.md`.
 
 End-to-end verified by `./smoke.sh` (fully API-driven):
 
-- `akari admin add <login>` creates the first account (password via
+- `akari admin add <email>` creates the first account (v0.4 D1: everyone,
+  admins too, logs in with the e-mail address; password via
   `AKARI_ADMIN_PASSWORD` env or hidden prompt; argon2id hashing).
 - All panel API lives under a per-install random route prefix. Anything that
   guesses wrong — including the bare prefix and `/` — gets one identical
   empty 404 (no body, none of the panel's security headers).
-- `POST /{prefix}/auth/login` verifies argon2id hashes (timing-equalized for
-  unknown users; failed attempts rate limited per client address — IPv6 per
-  /64 — at 20/15min and per login name at 50/15min, in Valkey) and issues
+- `POST /{prefix}/auth/login` (`{email, password}`) verifies argon2id hashes
+  (timing-equalized for unknown addresses; failed attempts rate limited per
+  client address — IPv6 per /64 — at 20/15min and per address at 50/15min,
+  in Valkey) and issues
   an HS256 JWT in an `HttpOnly` `SameSite=Strict` cookie (12h; `Secure`
   unless `web.cookie_secure = false`). The token carries the account's
   `session_ver`: a password change, disable, role change, expiry, logout or
   `POST /api/v1/users/{id}/revoke-sessions` ends every session of the
   account (logout = log out everywhere; a copied cookie dies with it). The
   last enabled admin cannot be disabled, demoted or deleted (409; enforced
-  by a DB trigger, race-free). TOTP two-factor authentication is optional
-  (recommended; 系统设置 → 安全 → 管理员必须两步验证 makes it mandatory for
-  admins); every administrative change is in the audit log (see "Security"
-  below).
+  by a DB trigger, race-free). Every administrative change is in the audit
+  log (see "Security" below). (TOTP two-factor authentication was removed in
+  v0.4: passkeys replace it.)
 - Admin API: user CRUD, node listing/enable, per-node xray `inbounds`
   editing, account generation + assignment (VLESS/VMess/Trojan credentials
   are panel-generated, one per inbound).
@@ -173,7 +174,7 @@ the data layer:
   phones): dashboard `/app` (plan, days and traffic left, the permanent
   subscription link with copy/QR/format/one-click import, announcements),
   `/app/shop`, `/app/nodes`, `/app/orders`, `/app/wallet` (invites and
-  balance), `/app/tickets`, `/app/account` (email, password, 2FA, language)
+  balance), `/app/tickets`, `/app/account` (email, password, language)
   — Chinese/English;
 - the **admin console** at `/{prefix}/admin` — users, plans, orders, nodes,
   updates, audit, account (Chinese). Its index and assets are served only to
@@ -227,23 +228,19 @@ separate loopback listener, never on the public port.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| POST | /auth/login | — | `{login, password, code?}`: argon2id + TOTP/recovery code, sets session cookie. W20: the right password of a 2FA account **without** a code → 401 `{"error":"totp required","totp_required":true}` (the form then asks for the code); every other failure is the uniform 401 |
+| POST | /auth/login | — | `{email, password}` (D1: the address, any case, verified or not): argon2id, sets the session cookie; → `{id, email, role, expired, quota_exhausted}`. Every failure is the uniform 401 |
 | POST | /auth/logout | — | clears the cookie and ends all of the account's sessions |
 | GET | /auth/options | — | W15: what the login page offers `{register, invite_required, email_domains, reset}` |
 | POST | /auth/register/code | — (registration on) | W15: `{email, invite_code?, locale?}` → `{"ok":true}` for every address (a code by mail, or an "already registered" mail); rate limited per client and address |
-| POST | /auth/register | — (registration on) | W15: `{email, code, password, invite_code?, locale?}` → account (login = address, verified) + session; wrong/expired/used code = 400 `invalid or expired code` |
+| POST | /auth/register | — (registration on) | W15: `{email, code, password, invite_code?, locale?}` → account (address verified) + session `{id, email, role, …}`; wrong/expired/used code = 400 `invalid or expired code` |
 | POST | /auth/password-reset/request | — (reset on) | W15: `{email}` → `{"ok":true}` for every address; a 30-minute single-use link goes to a verified address |
 | POST | /auth/password-reset | — (reset on) | W15: `{token, password}`: new password, every session ends |
-| GET | /api/v1/me | user (renewal scope*) | profile + traffic usage; `expired` / `quota_exhausted` (R21); W20: `sub_token` + `sub_url` (the subscription link, `Cache-Control: no-store`; null for admins and the renewal scope; an account without a token gets one here), `sub_legacy` (pre-W20 link: works, cannot be shown until reset), `probe_interval_secs` |
-| GET | /api/v1/me/totp | any session | session stage, 2FA state (never the secret) |
-| POST | /api/v1/me/totp/enroll | any session | new pending TOTP secret (shown once) |
-| POST | /api/v1/me/totp/confirm | any session | `{code}`: activate 2FA, returns 10 recovery codes once |
-| POST | /api/v1/me/totp/recovery-codes | user | `{code}`: replace recovery codes |
+| GET | /api/v1/me | user (renewal scope*) | profile (`email` = the login name, `email_verified`) + traffic usage; `expired` / `quota_exhausted` (R21); W20: `sub_token` + `sub_url` (the subscription link, `Cache-Control: no-store`; null for admins and the renewal scope; an account without a token gets one here), `sub_legacy` (pre-W20 link: works, cannot be shown until reset), `probe_interval_secs` |
 | POST | /api/v1/me/sub-token | user (role=user) | reset own subscription link (5/hour); the old link stops working |
 | GET | /api/v1/me/plan | user | own active plan (or null), usage, enforced limit/expiry, node names + regions |
 | GET | /api/v1/me/nodes | user | W11: own visible nodes — display name, region, tags, multiplier, online, latency (no ids, addresses or machine metrics) |
 | POST | /api/v1/me/email/code | user (renewal scope*) | W15: `{email, password}`: code to the new address (current password required; same answer if the address is taken) |
-| POST | /api/v1/me/email/verify | user (renewal scope*) | W15: `{code}`: the address becomes the account's verified email (a registered login follows it) |
+| POST | /api/v1/me/email/verify | user (renewal scope*) | W15: `{code}`: the address becomes the account's verified email and its login name (D1) |
 | PUT | /api/v1/me/locale | user (renewal scope*) | W15: `{locale: zh\|en}`: language of the account's mails |
 | GET/POST | /api/v1/me/invite-codes | user (role=user) | W15: own invite codes, link base, invited count / new code (per-user limit; registration must be open) |
 | DELETE | /api/v1/me/invite-codes/{code} | user (role=user) | W15: delete an invite code |
@@ -255,8 +252,8 @@ separate loopback listener, never on the public port.
 | GET | /api/v1/mail/outbox | admin | W15: outbox rows `?status=dead\|pending\|sent&before&limit` (no bodies) |
 | POST | /api/v1/mail/outbox/{id}/retry | admin | W15: re-queue a dead letter (not for expired codes/links) |
 | POST | /api/v1/me/password | user/admin | `{current_password, new_password}`: change own password (wrong current = 400, counts against the login rate limit; other sessions end, this one continues) |
-| GET | /api/v1/audit | admin | audit log, `?limit&before&actor&action` (keyset, newest first) |
-| GET/POST | /api/v1/users | admin | list / create users |
+| GET | /api/v1/audit | admin | audit log, `?limit&before&actor&action` (keyset, newest first; `actor` = an exact `actor_label`). Entries: `actor_id`, `actor_label` (Q4: non-personal — `u-<8 hex of the id>`, `cli`, `system`, `agent`, `anonymous`), `actor_email` (the account's current address, null when not an account or deleted) |
+| GET/POST | /api/v1/users | admin | list `?q&plan_id&status&role&sort&limit&offset` (`q` = address prefix or id prefix; `sort` created\|-created\|email\|-traffic\|expires) / create `{email, password, role?, traffic_limit_bytes?, expires_at?}` (the address is required and counts as verified; taken = 409 `user.email_exists`) |
 | PATCH/DELETE | /api/v1/users/{id} | admin | update / delete user |
 | GET | /api/v1/users/{id}/nodes | admin | the account's node access: node, region, state, inbound tags/protocols, plan-granted or manual (no credentials) |
 | POST/DELETE | /api/v1/users/{id}/nodes/{node_id} | admin | manual override: assign (generates account, pins the pair) / remove (hands a plan-granted pair back to the plan; 409 on plan-managed rows) |
@@ -282,7 +279,6 @@ separate loopback listener, never on the public port.
 | POST | /api/v1/users/{id}/sub-token | admin | regenerate subscription token |
 | GET | /api/v1/users/{id}/subscription | admin | W20: the user's subscription link `{sub_token, sub_url, legacy}` (every read is audited as `user.sub_token.read`, without the token; `no-store`) |
 | POST | /api/v1/users/{id}/revoke-sessions | admin | log the account out everywhere (204) |
-| DELETE | /api/v1/users/{id}/totp | admin | reset the account's 2FA, end its sessions; `{"totp": "active"\|"pending"\|"none"}` (what was removed) |
 | GET | /api/v1/me/shop | user (renewal scope*) | plans on sale with every priced period as the caller would buy it now (`action` new/renew/switch/reset, `discount_cents`, `credit_cents`, `balance_cents`, `amount_cents`, or `refusal`), description, stock; the caller's subscription, switch credit and balance. W16: `?coupon=CODE` (rate-limited) prices with a coupon (`coupon.refusal` / per-offer `coupon_refusal`), `?use_balance=true` with the balance |
 | GET/POST | /api/v1/me/orders | user (renewal scope*) | own orders (last 50) / create `{plan_id, period, coupon?, use_balance?}` → order + Alipay QR (the amount is the server's price minus coupon, switch credit and balance, computed in SQL; fully covered orders are paid at once) |
 | GET | /api/v1/me/balance | user (renewal scope*) | W16: balance, withdrawable amount, ledger (`?before&limit`) |
@@ -293,7 +289,7 @@ separate loopback listener, never on the public port.
 | POST | /api/v1/me/orders/{id}/cancel | user (renewal scope*) | cancel a pending order (queried + closed at Alipay first) |
 | GET | /api/v1/plan-prices | admin | every plan with its `on_sale` flag and prices, `payments_enabled` |
 | PUT | /api/v1/plans/{id}/prices | admin | `{on_sale, prices: [{period, days?, price_cents}]}` replaces the plan's prices (W7 period kinds) |
-| GET | /api/v1/orders | admin | orders, `?status&login&out_trade_no&unfulfilled&via&before&limit` (keyset; `via=manual` = admin-created/confirmed) |
+| GET | /api/v1/orders | admin | orders, `?status&email&out_trade_no&unfulfilled&via&before&limit` (keyset; `via=manual` = admin-created/confirmed; `email` = the buyer's current address). Rows carry `user_label` (Q4 snapshot) and `user_email` (current address, null once deleted) |
 | POST | /api/v1/orders/manual | admin | Ops: `{user_id, plan_id, period, gift?, reason}` → a paid order through the one pay path (`paid_via` manual; amount = the period's price from SQL, 0 for a gift, never from the client; fulfilment failure = 409 and nothing kept) |
 | GET | /api/v1/orders/export.csv | admin | Ops: orders CSV `?from&to&status&via` (UTC days, ≤366, default last 30; audited) |
 | GET | /api/v1/users/export.csv | admin | Ops: users CSV with the list filters `?q&plan_id&status&role&sort` (streamed, UTF-8 BOM, formula-safe; audited) |
@@ -309,17 +305,17 @@ separate loopback listener, never on the public port.
 | POST | /api/v1/orders/{id}/refund | admin | W16 `{reason, to_balance}`: refund a paid order once (balance part back; with `to_balance` the Alipay amount too); reverses a pending commission |
 | GET/POST | /api/v1/coupons | admin | W16: coupons / create `{code, kind percent\|fixed, value, plan_ids?, periods?, min_amount_cents?, starts_at?, ends_at?, max_uses?, per_user_limit?, new_users_only?, enabled?}` |
 | GET/PATCH/DELETE | /api/v1/coupons/{id} | admin | W16: coupon + redemptions / update (code immutable) / delete (never used only) |
-| GET | /api/v1/balances | admin | W16: customers with a balance, `?login` finds anyone |
+| GET | /api/v1/balances | admin | W16: customers with a balance (`{user_id, email, …}`), `?email` finds anyone |
 | GET/POST | /api/v1/users/{id}/balance | admin | W16: balance + ledger / adjust `{amount_cents (signed), reason}` (never below 0) |
-| GET | /api/v1/commissions | admin | W16: commissions `?status&login&limit` |
+| GET | /api/v1/commissions | admin | W16: commissions `?status&email&limit` (`email` = the inviter's); rows: `inviter_label`/`inviter_email`, `invitee_label`/`invitee_email` |
 | GET/PUT | /api/v1/commission-settings | admin | W16: `{enabled, rate_percent, first_order_only, hold_days, min_withdrawal_cents}` |
-| GET | /api/v1/withdrawals | admin | W16: withdrawal requests `?status&login&limit` |
+| GET | /api/v1/withdrawals | admin | W16: withdrawal requests `?status&email&limit`; rows: `user_label`, `user_email` |
 | POST | /api/v1/withdrawals/{id}/approve \| reject | admin | W16: `{payout_reference, note?}` after paying out by hand / `{reason}` (amount back to the balance) |
 | GET/POST | /api/v1/me/tickets | user (renewal scope*) | W17: own tickets (unread markers) / open `{subject, category, priority?, message, order_id?, node_id?}` (5/hour, at most 5 not closed) |
-| GET | /api/v1/me/tickets/{id} | user (renewal scope*) | W17: own ticket + messages (staff shown as staff, never by login); marks replies read. Anyone else's / unknown / malformed id = the canonical rejection |
+| GET | /api/v1/me/tickets/{id} | user (renewal scope*) | W17: own ticket + messages (staff shown as staff, never by name); marks replies read. Anyone else's / unknown / malformed id = the canonical rejection |
 | POST | /api/v1/me/tickets/{id}/replies \| close | user (renewal scope*) | W17: `{message}` (30/hour; 409 when closed) / close |
 | GET | /api/v1/tickets | admin | W17: queue `?status=open\|answered\|closed\|active&category&priority&assignee=me\|none\|<id>&unread=true&q&page` + open/unread counters |
-| GET | /api/v1/tickets/{id} | admin | W17: ticket + thread (marks the customer's messages read) |
+| GET | /api/v1/tickets/{id} | admin | W17: ticket (`user_email`, `assignee_email`) + thread (`author_label`, `author_email`; marks the customer's messages read) |
 | POST | /api/v1/tickets/{id}/replies \| close \| reopen | admin | W17: `{message, close?}` / close / reopen |
 | PUT | /api/v1/tickets/{id}/assignee | admin | W17: `{assignee_id}` (an enabled admin, or null) |
 | GET | /api/v1/admins, /api/v1/admin-badges | admin | W17: assignable admins; console counters (unread tickets, firing alerts) |
@@ -333,15 +329,14 @@ separate loopback listener, never on the public port.
 | GET | /install/{token}[/agent/{arch}] | install link | node install script / agent binary while the link is live (docs/DEPLOY.md §3) |
 | GET | /healthz | — | panel liveness |
 
-\* Renewal scope (R21): also reachable by an expired or quota-disabled `role=user` account (login answers `expired` / `quota_exhausted`), together with `/me/plan` and `/me/password`; everything that serves or reveals proxy access (subscription, sub-token, 2FA) stays refused. Accounts disabled for any other reason cannot log in.
+\* Renewal scope (R21): also reachable by an expired or quota-disabled `role=user` account (login answers `expired` / `quota_exhausted`), together with `/me/plan` and `/me/password`; everything that serves or reveals proxy access (subscription, sub-token) stays refused. Accounts disabled for any other reason cannot log in.
 
 Defaults bind web on `127.0.0.1:8080` and gRPC on `127.0.0.1:8443`; override
 via `panel.toml` (start-up keys only, see `deploy/panel.toml.example`) or
 `DATABASE_URL`/`VALKEY_URL`. Everything else is set in the console under
 系统设置 (database; W25/R39) or is a built-in constant.
-`akari admin passwd <login>` resets a password (and ends its sessions).
-`akari admin reset-2fa <login>` removes an account's 2FA (lockout recovery);
-the account then logs in with its password. `akari node enroll-token <id>`
+`akari admin passwd <email>` resets a password (and ends its sessions).
+`akari node enroll-token <id>`
 issues a new one-time node enrollment token.
 `akari secrets rotate-prefix` / `akari secrets rotate-jwt` rotate secrets
 (see "Security").
@@ -551,8 +546,8 @@ Setup, sandbox testing, notify URL rules and reconciliation:
 ## Registration, password reset and email (W15)
 
 Off by default. In **系统设置 → 邮件** configure SMTP (STARTTLS / SSL/TLS /
-plain for a local relay; the password is stored encrypted with the
-data/totp.key key and never shown again) and send a test mail; then
+plain for a local relay; the password is stored encrypted with a key
+derived from data/master.key and never shown again) and send a test mail; then
 **系统设置 → 注册** opens self-service registration (email + 6-digit code,
 optional invite code requirement, optional email domain allow-list,
 optional trial plan for N days) and/or password reset by emailed link
@@ -563,8 +558,8 @@ failures show up as dead letters under 系统设置. The same outbox carries
 order receipts and, while enabled, plan-expiry reminders (N days before),
 "expired" and traffic 80% / 100% notices (once per event) — only to
 verified addresses, in the account's language (zh/en). Users add or change
-their address in the portal (current password + emailed code) and can log
-in with it. Details: docs/DEPLOY.md §2c.
+their address in the portal (current password + emailed code); the
+verified new address is their login name from then on. Details: docs/DEPLOY.md §2c.
 
 ## Accounts
 
@@ -574,44 +569,29 @@ subscription URLs and are exempt from traffic-limit disabling and expiry.
 Changing a user to admin removes their node access; changing back restores
 it. Raising a traffic limit does not re-enable a user the limit disabled.
 
-## Security: two-factor, audit log, secret rotation
+## Security: master key, audit log, secret rotation
 
-**Two-factor (TOTP, RFC 6238: SHA-1, 6 digits, 30 s, ±1 step).** Optional
-for every account and recommended (the admin console shows a banner until
-it is on). With 系统设置 → 安全 → 管理员必须两步验证 it is mandatory for
-admins: an admin without active TOTP who logs in with the right password
-gets a 15-minute *enrollment-only* session that reaches nothing but
-`/api/v1/me/totp*` (the SPA shows the setup screen). Enrollment shows the
-secret once (a QR code drawn in the browser — nothing is fetched — plus the
-base32 key and the `otpauth://` URI) and activates only after a valid code;
-activation issues 10 single-use recovery codes (shown once; copy or
-download as .txt) and ends the account's other sessions. Login sends password and code in **one** request (`code` = TOTP
-code or recovery code); every failure — unknown account, wrong password,
-wrong/replayed code — is the same 401 after the same work, and counts
-toward the login rate limit. W20 two-step form: a request **without** a
-code whose password is right for a 2FA account gets a distinct 401
-(`totp_required`), so the portal shows the code field only then. That
-answer exists only after the password verified (same work as any other
-outcome) and does not consume a rate-limit slot; wrong passwords still do,
-so it never speeds up password guessing (it does confirm a correct
-password of a 2FA account — the second factor is what protects it). A code (and any older one) is accepted
-once per account across all instances (DB-recorded time step); the DB clock
-is used. Secrets are stored AES-256-GCM-encrypted with a key derived from
-`data/totp.key` (0600, created on first start — **back it up with the rest
-of `data/`**: without it every enrolled account needs a reset); recovery
-codes as keyed HMAC-SHA-256. Lost authenticator: `akari admin reset-2fa
-<login>` (or another admin: 用户 → 管理 → 重置两步验证); the account's
-sessions end and it logs in with its password again.
+**Master key.** `data/master.key` (32 random bytes, hex, 0600, created on
+first start; `data/totp.key` before v0.4 — an install that has only the old
+file gets it renamed once, and two different copies refuse to start) is the
+root of every key the panel derives (HMAC-SHA-256 with fixed labels): the
+AES-256-GCM keys of the subscription links, the SMTP password, the payment
+method and alert channel secrets, and the MAC keys of mail codes and
+registration proofs of work. **Back it up with the rest of `data/`**:
+without it those sealed secrets cannot be opened (paste them again; users
+reset their links).
 
 **Audit log.** Every administrative change (API and CLI — CLI actions are
-recorded as actor `cli`), 2FA change, secret rotation and login is recorded
+recorded as actor `cli`), secret rotation and login is recorded
 with time (transaction start), actor, client address, action, target and
 redacted before/after snapshots — in the same transaction as the change.
-Passwords, hashes, tokens, TOTP secrets, recovery codes, proxy credentials
+The actor is stored as a non-personal label (`u-` + the first 8 hex digits
+of the account id; the console shows the account's current address next
+to it). Passwords, hashes, tokens, proxy credentials
 and inbound keys are never recorded (only that they changed; inbounds as a
 tag/protocol/port summary plus a digest). Failed logins are recorded only
-for existing accounts (first failure per rate-limit window, the one that
-fills it, every second-factor failure); successful logins of regular users
+for existing accounts (first failure per rate-limit window and the one that
+fills it; actor `anonymous`); successful logins of regular users
 at most once per 10 minutes per account. Admins: Audit view, or `GET
 /api/v1/audit`. Retention: 系统设置 → 安全 → 审计日志保留天数 (default 365,
 0 = forever), pruned hourly.
@@ -626,9 +606,9 @@ at most once per 10 minutes per account. Admins: Audit view, or `GET
   itself is unchanged) and users must re-import it; tell them the new
   console address.
 - Subscription links (W20): the token is stored hashed (lookup) **and**
-  AES-256-GCM-encrypted (AAD = user id, key derived from `data/totp.key`),
+  AES-256-GCM-encrypted (AAD = user id, key derived from `data/master.key`),
   so the portal shows the link permanently and admins can copy it (each
-  read audited). Losing `data/totp.key` keeps the links working but no
+  read audited). Losing `data/master.key` keeps the links working but no
   longer viewable (users reset them). Accounts from before W20 keep their
   working link; the portal offers a reset to make it viewable — it is never
   rotated implicitly. Users reset their own link in the portal
@@ -640,21 +620,10 @@ directory (and database) the panel uses.
 
 ## Upgrading
 
-**R18 (optional 2FA) upgrade:** migration 0035 drops the unused
-`totp_enroll_codes` table (the one-time admin enrollment code is gone).
-Admins without 2FA now log in with their password (full session) unless
-the 2FA policy requires it (then `[auth] require_admin_2fa`, since W25
-系统设置 → 安全). Existing 2FA setups are unchanged.
-
 **M3 (plans) upgrade:** migration 0020 adds node groups, plans and user
 plans. Existing node assignments become manual overrides and keep working
 unchanged; existing disabled users get `disabled_reason = admin` (so no
 reset will ever re-enable them).
-
-**M1b (2FA) upgrade:** session tokens now carry a stage claim; every
-existing session is invalid after the upgrade (everyone logs in again), and
-every admin must enroll TOTP at the next login. A new `data/totp.key` is
-created on first start: include it in backups.
 
 Installations made by `scripts/install.sh`: `akari-ctl upgrade` (backup, signature check,
 switch, health check, automatic rollback; docs/DEPLOY.md §5).

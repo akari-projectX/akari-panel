@@ -24,46 +24,22 @@ use crate::state::AppState;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoginReq {
-    pub login: String,
+    /// D1: the account's email address (any case; stored lower-case).
+    pub email: String,
     pub password: String,
-    /// Second factor (M1-6): a 6-digit TOTP code or an unused recovery
-    /// code. Required by accounts with active 2FA, ignored by others.
-    #[serde(default)]
-    pub code: Option<String>,
 }
 
-/// Longest accepted `code` (a recovery code with separators is 14).
-const MAX_CODE_LEN: usize = 64;
-
-/// POST /auth/login. Failed attempts are rate limited per client address
-/// (behind trusted proxies: the X-Forwarded-For client, see client_ip.rs)
-/// and per login name (login_limit.rs). Every credential failure — unknown
-/// account, wrong password, missing/wrong/replayed second factor — is the
-/// same 401 after the same work (one query, one argon2, the TOTP/recovery
-/// computations), so the response says nothing about which part was wrong
-/// or whether the account has 2FA.
+/// POST /auth/login {email, password}. Failed attempts are rate limited per
+/// client address (behind trusted proxies: the X-Forwarded-For client, see
+/// client_ip.rs) and per address (login_limit.rs). Every credential failure
+/// — unknown account, wrong password, disabled account — is the same 401
+/// after the same work (one query, one argon2), so the response says
+/// nothing about which part was wrong or whether the account exists.
 ///
-/// Password and code arrive in the same request: there is no
-/// half-authenticated state or step token to store, bind, expire or replay.
-/// W20 (M9) two-step UI on top of that: a request WITHOUT a code (absent or
-/// blank) whose password is right for an account with active 2FA gets a
-/// distinct 401 `{"error": "totp required", "totp_required": true}`; the
-/// form then shows the code field and re-sends password + code. That answer
-/// exists only after the password verified (same query, same argon2, same
-/// TOTP computation as every other outcome), so a wrong password, an
-/// unknown account and a disabled one still get the uniform 401 after the
-/// same work. It does reveal "this password is right and the account has
-/// 2FA" — the second factor is what protects such accounts — and it does
-/// not speed up password guessing: every wrong password still consumes a
-/// login-limit slot exactly as before; only the totp-required answer
-/// releases its slot (it is not a credential failure, and a correct
-/// password cannot be "guessed" twice). Wrong/replayed codes count as
-/// failures as before.
-///
-/// 2FA is optional (R18): an account without active TOTP logs in with the
-/// password alone. Only with `auth.require_admin_2fa` does an admin without
-/// TOTP get an enrollment-only session (stage "enroll", 15 min) that
-/// reaches nothing but the enrollment endpoints.
+/// D1: everyone (admins too) logs in with the email address, verified or
+/// not (with "registration requires email verification" off, the address a
+/// user registered with is still their login; only a verified address gets
+/// mail). D7: no second factor (TOTP was removed; passkeys replace it).
 ///
 /// The body goes through `ApiJson` like every other endpoint: malformed
 /// JSON, a wrong type or an unknown field is a 400 with the parser's
@@ -75,82 +51,52 @@ pub async fn login(
     jar: CookieJar,
     ApiJson(req): ApiJson<LoginReq>,
 ) -> Result<Response, ApiError> {
-    if req.login.is_empty() || req.password.is_empty() {
+    if req.email.is_empty() || req.password.is_empty() {
         return Err(bad_request!(
             "auth.credentials_required",
-            "login and password are required"
+            "email and password are required"
         ));
     }
-    if req.code.as_deref().is_some_and(|c| c.len() > MAX_CODE_LEN) {
-        return Err(bad_request!("auth.code_too_long", "code is too long"));
-    }
     let client = state.client_ip(addr.ip(), &headers);
-    // W15: an address logs in case-insensitively, so its per-name bucket
-    // must not split by case (admin-made logins never contain '@').
-    let limit_name = if req.login.contains('@') {
-        req.login.to_lowercase()
-    } else {
-        req.login.clone()
-    };
-    let attempt = crate::login_limit::Attempt::reserve(
-        &state,
-        &crate::client_ip::bucket(client),
-        &limit_name,
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "login rate limit unavailable");
-        ApiError::internal()
-    })?
-    .ok_or_else(ApiError::too_many)?;
+    // Addresses are case-insensitive: one rate-limit bucket per address.
+    let email = req.email.trim().to_lowercase();
+    let attempt =
+        crate::login_limit::Attempt::reserve(&state, &crate::client_ip::bucket(client), &email)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "login rate limit unavailable");
+                ApiError::internal()
+            })?
+            .ok_or_else(ApiError::too_many)?;
 
-    let failed =
-        |attempt: crate::login_limit::Attempt, account: Option<(Uuid, String)>, second: bool| {
+    match check_credentials(&state, &email, &req.password).await {
+        Ok(Checked::Ok(row)) => match finish_login(&state, &row, client).await {
+            Ok(()) => {
+                attempt.release(&state).await;
+                let token = auth::issue_token(&state, row.id, &row.role, row.session_ver)?;
+                Ok((
+                    jar.add(auth::session_cookie(&state, token)),
+                    Json(json!({
+                        "id": row.id, "email": row.email, "role": row.role,
+                        "expired": row.expired, "quota_exhausted": row.quota_disabled,
+                    })),
+                )
+                    .into_response())
+            }
+            Err(e) => {
+                attempt.release(&state).await;
+                Err(e)
+            }
+        },
+        Ok(Checked::Failed(account)) => {
             let n = attempt.name_count;
             attempt.fail();
-            if let Some((id, login)) = account
-                && (second || n == 1 || n == crate::login_limit::PER_LOGIN)
+            if let Some(id) = account
+                && (n == 1 || n == crate::login_limit::PER_LOGIN)
             {
-                audit_login_failure(&state, id, login, client, second, n);
+                audit_login_failure(&state, id, client, n);
             }
             Err(ApiError::unauthorized())
-        };
-
-    match check_credentials(&state, &req).await {
-        Ok(Checked::Ok { row, stage, proof }) => {
-            match finish_login(&state, &row, stage, proof.as_ref(), client).await {
-                Ok(true) => {
-                    attempt.release(&state).await;
-                    let token =
-                        auth::issue_token(&state, row.id, &row.role, row.session_ver, stage)?;
-                    Ok((
-                        jar.add(auth::session_cookie(&state, token, stage)),
-                        Json(json!({
-                            "id": row.id, "login": row.login, "role": row.role,
-                            "stage": stage.as_str(), "expired": row.expired,
-                            "quota_exhausted": row.quota_disabled,
-                        })),
-                    )
-                        .into_response())
-                }
-                // Lost a race for the same TOTP step / recovery code.
-                Ok(false) => failed(attempt, Some((row.id, row.login)), true),
-                Err(e) => {
-                    attempt.release(&state).await;
-                    Err(e)
-                }
-            }
-        }
-        Ok(Checked::Failed { account, second }) => failed(attempt, account, second),
-        Ok(Checked::TotpRequired) => {
-            // Right password, no code yet (W20 two-step form): not a
-            // credential failure, so the reservation is released.
-            attempt.release(&state).await;
-            Ok((
-                axum::http::StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": "totp required", "totp_required": true })),
-            )
-                .into_response())
         }
         Err(e) => {
             // Not a credential failure (e.g. the database is down).
@@ -163,7 +109,7 @@ pub async fn login(
 #[derive(sqlx::FromRow)]
 struct LoginRow {
     id: Uuid,
-    login: String,
+    email: String,
     role: String,
     enabled: bool,
     expired: bool,
@@ -171,190 +117,75 @@ struct LoginRow {
     quota_disabled: bool,
     password_hash: Option<String>,
     session_ver: i64,
-    /// Active TOTP only (enabled_at set); pending enrollments do not count.
-    totp_secret: Option<Vec<u8>>,
-    totp_last_step: Option<i64>,
-    recovery: Vec<String>,
-    db_now: i64,
 }
 
 enum Checked {
-    Ok {
-        row: LoginRow,
-        stage: auth::Stage,
-        proof: Option<crate::totp::Proof>,
-    },
-    /// `account`: the existing account the attempt named (for the audit
-    /// log only); `second`: the password was right, the second factor not.
-    Failed {
-        account: Option<(Uuid, String)>,
-        second: bool,
-    },
-    /// W20: the password is right, the account has active 2FA and the
-    /// request carried no code (absent or blank).
-    TotpRequired,
+    Ok(LoginRow),
+    /// The existing account the attempt named, if any (for the audit log
+    /// only).
+    Failed(Option<Uuid>),
 }
 
-/// Verify password and second factor with the same work for every kind of
-/// failure. The login name may also be the account's VERIFIED email
-/// address (W15; case-insensitive); an exact login match wins. W24: an
-/// address-shaped input also matches its lower-cased login (accounts that
-/// registered without verification log in with their address, any case),
-/// after an exact login and before a verified address.
-async fn check_credentials(state: &AppState, req: &LoginReq) -> Result<Checked, ApiError> {
+/// Verify the password with the same work for every kind of failure.
+/// `email` is already lower-cased (addresses are stored lower-case).
+async fn check_credentials(
+    state: &AppState,
+    email: &str,
+    password: &str,
+) -> Result<Checked, ApiError> {
     // Expiry applies to role=user only (an admin must never lock themselves
-    // out by a date). TOTP state and unused recovery codes come in the same
-    // query, so failures cost the same whatever the account's 2FA state.
+    // out by a date).
     let row = sqlx::query_as::<_, LoginRow>(sqlx::AssertSqlSafe(format!(
-        "SELECT u.id, u.login, u.role, u.enabled, u.password_hash, u.session_ver, {} AS expired, \
-         (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'quota') AS quota_disabled, \
-         t.secret_enc AS totp_secret, t.last_step AS totp_last_step, \
-         ARRAY(SELECT r.code_hash FROM user_recovery_codes r \
-               WHERE r.user_id = u.id AND r.used_at IS NULL ORDER BY r.code_hash) AS recovery, \
-         EXTRACT(EPOCH FROM now())::bigint AS db_now \
-         FROM users u LEFT JOIN user_totp t ON t.user_id = u.id AND t.enabled_at IS NOT NULL \
-         WHERE u.login = $1 \
-            OR (strpos($1, '@') > 0 AND u.login = lower($1)) \
-            OR (u.email = lower($1) AND u.email_verified_at IS NOT NULL) \
-         ORDER BY (u.login = $1) DESC, (u.login = lower($1)) DESC LIMIT 1",
+        "SELECT u.id, u.email, u.role, u.enabled, u.password_hash, u.session_ver, {} AS expired, \
+         (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'quota') AS quota_disabled \
+         FROM users u WHERE u.email = $1",
         crate::enforce::EXPIRED
     )))
-    .bind(&req.login)
+    .bind(email)
     .fetch_optional(state.pg())
     .await?;
-
-    let code = req.code.as_deref().unwrap_or("");
-    let account = row.as_ref().map(|r| (r.id, r.login.clone()));
-    // Always run the second-factor computation (dummy key without a row).
-    let proof = match &row {
-        Some(r) => crate::totp::check(
-            state.totp(),
-            r.id,
-            r.totp_secret.as_deref(),
-            r.totp_last_step,
-            &r.recovery,
-            code,
-            crate::totp::step_of(r.db_now),
-        ),
-        None => crate::totp::check(state.totp(), Uuid::nil(), None, None, &[], code, 0),
-    };
+    let account = row.as_ref().map(|r| r.id);
 
     // R21: an expired or quota-disabled (role=user) account still logs in —
     // its sessions only reach the renewal scope (`auth::ShopUser`).
     // Accounts disabled for any other reason do not.
     let Some(row) = row.filter(|r| (r.enabled || r.quota_disabled) && r.password_hash.is_some())
     else {
-        auth::scrub_password_async(&req.password).await;
-        return Ok(Checked::Failed {
-            account,
-            second: false,
-        });
+        auth::scrub_password_async(password).await;
+        return Ok(Checked::Failed(account));
     };
-    if !auth::verify_password_async(
-        &req.password,
-        row.password_hash.as_deref().unwrap_or_default(),
-    )
-    .await
+    if !auth::verify_password_async(password, row.password_hash.as_deref().unwrap_or_default())
+        .await
     {
-        return Ok(Checked::Failed {
-            account,
-            second: false,
-        });
+        return Ok(Checked::Failed(account));
     }
-    if let Some(secret) = row.totp_secret.as_deref() {
-        if proof.is_none() && code.trim().is_empty() {
-            return Ok(Checked::TotpRequired);
-        }
-        if proof.is_none() {
-            if state.totp().open(row.id, secret).is_none() {
-                tracing::error!(user = %row.id,
-                    "TOTP secret cannot be decrypted (data/totp.key changed?); \
-                     recover the account with `akari admin reset-2fa`");
-            }
-            return Ok(Checked::Failed {
-                account,
-                second: true,
-            });
-        }
-        return Ok(Checked::Ok {
-            row,
-            stage: auth::Stage::Full,
-            proof,
-        });
-    }
-    let stage = if auth::needs_enrollment(state, &row.role, false) {
-        auth::Stage::Enroll
-    } else {
-        auth::Stage::Full
-    };
-    Ok(Checked::Ok {
-        row,
-        stage,
-        proof: None,
-    })
+    Ok(Checked::Ok(row))
 }
 
 /// Seconds between recorded successful logins of one regular user (admins:
 /// every login).
 const LOGIN_OK_THROTTLE_SECS: i64 = 600;
 
-/// Commit a successful login: consume the second factor (replay-checked,
-/// multi-instance safe) and write the audit row, in one transaction.
-/// `Ok(false)`: the TOTP step or recovery code was used concurrently.
+/// Record a successful login (audit row; regular users throttled).
 async fn finish_login(
     state: &AppState,
     row: &LoginRow,
-    stage: auth::Stage,
-    proof: Option<&crate::totp::Proof>,
     ip: std::net::IpAddr,
-) -> Result<bool, ApiError> {
-    use crate::totp::Proof;
-    let mut tx = state.pg().begin().await?;
-    let consumed = match proof {
-        Some(Proof::Totp(step)) => sqlx::query(
-            "UPDATE user_totp SET last_step = $2 WHERE user_id = $1 \
-             AND enabled_at IS NOT NULL AND (last_step IS NULL OR last_step < $2)",
-        )
-        .bind(row.id)
-        .bind(step)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected(),
-        Some(Proof::Recovery(hash)) => sqlx::query(
-            "UPDATE user_recovery_codes SET used_at = now() \
-             WHERE user_id = $1 AND code_hash = $2 AND used_at IS NULL",
-        )
-        .bind(row.id)
-        .bind(hash)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected(),
-        None => 1,
-    };
-    if consumed != 1 {
-        return Ok(false);
-    }
+) -> Result<(), ApiError> {
     if row.role == "admin" || login_ok_due(state, row.id).await {
-        let mut after = json!({
-            "stage": stage.as_str(),
-            "method": proof.map_or("password", |p| p.method()),
-        });
-        if let Some(Proof::Recovery(_)) = proof {
-            after["recovery_codes_left"] = json!(row.recovery.len().saturating_sub(1));
-        }
+        let mut c = state.pg().acquire().await?;
         crate::audit::record(
-            &mut tx,
-            &Actor::account(row.id, &row.login, Some(ip)),
+            &mut c,
+            &Actor::account(row.id, Some(ip)),
             "auth.login",
             "user",
             Some(row.id.to_string()),
             None,
-            Some(after),
+            Some(json!({ "method": "password" })),
         )
         .await?;
     }
-    tx.commit().await?;
-    Ok(true)
+    Ok(())
 }
 
 /// Throttle for regular users' login audit rows (one per account per
@@ -382,31 +213,20 @@ async fn login_ok_due(state: &AppState, user: Uuid) -> bool {
 
 /// Record a failed login of an existing account, off the request path (its
 /// cost must not tell an attacker that the account exists).
-fn audit_login_failure(
-    state: &AppState,
-    id: Uuid,
-    login: String,
-    ip: std::net::IpAddr,
-    second_factor: bool,
-    failures_in_window: i64,
-) {
+fn audit_login_failure(state: &AppState, id: Uuid, ip: std::net::IpAddr, failures_in_window: i64) {
     let state = state.clone();
     tokio::spawn(async move {
         let r = async {
             let mut c = state.pg().acquire().await?;
             crate::audit::record(
                 &mut c,
-                &Actor {
-                    id: None,
-                    login,
-                    ip: Some(ip),
-                },
+                &Actor::anonymous(Some(ip)),
                 "auth.login_failed",
                 "user",
                 Some(id.to_string()),
                 None,
                 Some(json!({
-                    "reason": if second_factor { "second_factor" } else { "credentials" },
+                    "reason": "credentials",
                     "failures_in_window": failures_in_window,
                     "window_limit": crate::login_limit::PER_LOGIN,
                 })),
@@ -536,7 +356,7 @@ struct MeRow {
     traffic_used_bytes: i64,
     traffic_limit_bytes: Option<i64>,
     expires_at: Option<DateTime<Utc>>,
-    email: Option<String>,
+    email: String,
     email_verified: bool,
     locale: String,
 }
@@ -544,7 +364,6 @@ struct MeRow {
 #[derive(Serialize)]
 pub struct MeView {
     id: Uuid,
-    login: String,
     role: String,
     traffic_used_bytes: i64,
     traffic_limit_bytes: Option<i64>,
@@ -553,9 +372,9 @@ pub struct MeView {
     expired: bool,
     /// R21: disabled for exceeding the traffic limit: renewal scope only.
     quota_exhausted: bool,
-    /// W15: the account's address (null = none) and whether it is verified
-    /// (only a verified address gets mail and resets the password).
-    email: Option<String>,
+    /// D1: the account's address (its login name) and whether it is
+    /// verified (only a verified address gets mail and resets the password).
+    email: String,
     email_verified: bool,
     /// W15: language of the account's mails.
     locale: String,
@@ -613,7 +432,6 @@ pub async fn me(
         .and_then(|t| settings.sub_url(state.route_prefix(), t));
     let view = MeView {
         id: user.id,
-        login: user.login,
         role: user.role,
         traffic_used_bytes: row.traffic_used_bytes,
         traffic_limit_bytes: row.traffic_limit_bytes,
@@ -707,30 +525,27 @@ pub async fn user_subscription(
 #[derive(sqlx::FromRow, Serialize)]
 pub struct UserView {
     id: Uuid,
-    login: String,
     role: String,
     enabled: bool,
     traffic_limit_bytes: Option<i64>,
     traffic_used_bytes: i64,
     expires_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
-    /// Active TOTP second factor (mandatory for admins).
-    totp_enabled: bool,
     /// Why the account is disabled: admin | quota | expiry (null = enabled).
     disabled_reason: Option<String>,
     /// M3: the active plan (null = none) and the next traffic reset.
     plan_id: Option<Uuid>,
     plan_name: Option<String>,
     next_reset_at: Option<DateTime<Utc>>,
-    /// W15: the account's address and whether it is verified.
-    email: Option<String>,
+    /// D1: the account's address (its login name) and whether it is
+    /// verified.
+    email: String,
     email_verified: bool,
 }
 
 /// UserView columns (alias `users` table as itself).
-pub const USER_VIEW_COLS: &str = "id, login, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, \
-     EXISTS (SELECT 1 FROM user_totp t WHERE t.user_id = users.id AND t.enabled_at IS NOT NULL) \
-     AS totp_enabled, disabled_reason::text AS disabled_reason, \
+pub const USER_VIEW_COLS: &str = "id, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, \
+     disabled_reason::text AS disabled_reason, \
      (SELECT up.plan_id FROM user_plans up WHERE up.user_id = users.id AND up.status = 'active') \
      AS plan_id, \
      (SELECT p.name FROM user_plans up JOIN plans p ON p.id = up.plan_id \
@@ -745,7 +560,7 @@ pub const USER_VIEW_COLS: &str = "id, login, role, enabled, traffic_limit_bytes,
 pub struct UserListQuery {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
-    /// Prefix of the login or email (case-insensitive), or of the id.
+    /// Prefix of the email address (case-insensitive), or of the id.
     pub q: Option<String>,
     /// A plan id, or `none` (no active plan).
     pub plan_id: Option<String>,
@@ -753,7 +568,7 @@ pub struct UserListQuery {
     pub status: Option<String>,
     /// user | admin.
     pub role: Option<String>,
-    /// created (default) | -created | login | -traffic | expires.
+    /// created (default) | -created | email | -traffic | expires.
     pub sort: Option<String>,
 }
 
@@ -804,12 +619,9 @@ pub(crate) fn push_user_filters(
             ));
         }
         let pat = like_prefix(&text.to_lowercase());
-        qb.push(" AND (lower(u.login) LIKE ")
-            .push_bind(pat.clone())
-            .push(" OR u.email LIKE ")
-            .push_bind(pat.clone());
+        qb.push(" AND (u.email LIKE ").push_bind(pat.clone());
         // Ids only for a hex-ish prefix (no index on id::text: keep the
-        // scan out of the common login/email search).
+        // scan out of the common email search).
         if text.len() >= 4 && text.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
             qb.push(" OR u.id::text LIKE ").push_bind(pat);
         }
@@ -880,13 +692,13 @@ pub(crate) fn user_order(sort: Option<&str>) -> Result<&'static str, ApiError> {
     Ok(match sort.unwrap_or("created") {
         "" | "created" => "u.created_at, u.id",
         "-created" => "u.created_at DESC, u.id DESC",
-        "login" => "lower(u.login), u.id",
+        "email" => "u.email, u.id",
         "-traffic" => "u.traffic_used_bytes DESC, u.id",
         "expires" => "u.expires_at NULLS LAST, u.id",
         _ => {
             return Err(bad_request!(
                 "user.sort_invalid",
-                "sort must be created, -created, login, -traffic or expires"
+                "sort must be created, -created, email, -traffic or expires"
             ));
         }
     })
@@ -933,21 +745,13 @@ pub async fn list_users(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateUserReq {
-    pub login: String,
+    /// D1: the login name. Set as verified (the admin vouches for it: the
+    /// user gets mail and can reset the password with it).
+    pub email: String,
     pub password: String,
     pub role: Option<String>,
     pub traffic_limit_bytes: Option<i64>,
     pub expires_at: Option<DateTime<Utc>>,
-    /// W21: the account's email address, set as verified (the admin vouches
-    /// for it: the user gets mail and can reset the password with it).
-    pub email: Option<String>,
-}
-
-fn valid_login(login: &str) -> bool {
-    (3..=64).contains(&login.len())
-        && login
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
 }
 
 pub async fn create_user(
@@ -962,12 +766,8 @@ pub async fn create_user(
             "traffic_limit_bytes must be >= 0"
         ));
     }
-    if !valid_login(&req.login) {
-        return Err(bad_request!(
-            "user.login_invalid",
-            "login must be 3-64 chars of [a-zA-Z0-9_.-]"
-        ));
-    }
+    let email = crate::signup::email::parse(req.email.trim())
+        .ok_or_else(|| bad_request!("signup.invalid_email", "invalid email address"))?;
     if req.password.len() < 8 {
         return Err(bad_request!(
             "account.password_too_short",
@@ -981,18 +781,6 @@ pub async fn create_user(
             "role must be 'user' or 'admin'"
         ));
     }
-    let email = match req
-        .email
-        .as_deref()
-        .map(str::trim)
-        .filter(|e| !e.is_empty())
-    {
-        None => None,
-        Some(e) => Some(
-            crate::signup::email::parse(e)
-                .ok_or_else(|| bad_request!("signup.invalid_email", "invalid email address"))?,
-        ),
-    };
     let hash = auth::hash_password_async(&req.password).await?;
     let id = Uuid::new_v4();
     // Mint the subscription token now (W20: stored encrypted as well, so
@@ -1001,29 +789,28 @@ pub async fn create_user(
     let sub_enc = state.totp().seal_sub_token(id, &sub_token)?;
     let mut tx = state.pg().begin().await?;
     match sqlx::query_as::<_, UserView>(
-        "INSERT INTO users (id, login, password_hash, role, traffic_limit_bytes, expires_at, \
-         sub_token_hash, sub_token_enc, email, email_verified_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CASE WHEN $9::text IS NULL THEN NULL ELSE now() END) \
-         RETURNING id, login, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, \
-         created_at, false AS totp_enabled, disabled_reason::text AS disabled_reason, \
+        "INSERT INTO users (id, email, email_verified_at, password_hash, role, \
+         traffic_limit_bytes, expires_at, sub_token_hash, sub_token_enc) \
+         VALUES ($1, $2, now(), $3, $4, $5, $6, $7, $8) \
+         RETURNING id, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, \
+         created_at, disabled_reason::text AS disabled_reason, \
          NULL::uuid AS plan_id, NULL::text AS plan_name, NULL::timestamptz AS next_reset_at, \
          email, email_verified_at IS NOT NULL AS email_verified",
     )
     .bind(id)
-    .bind(&req.login)
+    .bind(&email)
     .bind(&hash)
     .bind(role)
     .bind(req.traffic_limit_bytes)
     .bind(req.expires_at)
     .bind(crate::sub::hash_token(&sub_token))
     .bind(&sub_enc)
-    .bind(&email)
     .fetch_one(&mut *tx)
     .await
     {
         Ok(view) => {
             let after = json!({
-                "login": view.login, "role": view.role, "enabled": view.enabled,
+                "role": view.role, "enabled": view.enabled,
                 "traffic_limit_bytes": view.traffic_limit_bytes, "expires_at": view.expires_at,
                 "email": view.email,
                 "password": crate::audit::CHANGED, "sub_token": crate::audit::CHANGED,
@@ -1051,15 +838,13 @@ pub async fn create_user(
                 }),
             ))
         }
-        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
-            if db.constraint() == Some("users_email_verified") {
-                Err(conflict!(
-                    "user.email_exists",
-                    "another account already uses this email address"
-                ))
-            } else {
-                Err(conflict!("user.login_exists", "login already exists"))
-            }
+        Err(sqlx::Error::Database(db))
+            if db.is_unique_violation() && db.constraint() == Some(USERS_EMAIL_KEY) =>
+        {
+            Err(conflict!(
+                "user.email_exists",
+                "another account already uses this email address"
+            ))
         }
         Err(e) => {
             tracing::error!(error = %e, "create user failed");
@@ -1067,6 +852,10 @@ pub async fn create_user(
         }
     }
 }
+
+/// The unique constraint on `users.email` (D1, migration 1010): the one
+/// constraint name the code branches on.
+pub const USERS_EMAIL_KEY: &str = "users_email_key";
 
 #[derive(Serialize)]
 pub struct CreatedUser {
@@ -1353,8 +1142,7 @@ pub async fn update_user(
     let jar = match own {
         Some((role, true, sv)) => jar.add(auth::session_cookie(
             &state,
-            auth::issue_token(&state, id, &role, sv, auth::Stage::Full)?,
-            auth::Stage::Full,
+            auth::issue_token(&state, id, &role, sv)?,
         )),
         _ => jar,
     };
@@ -3201,76 +2989,6 @@ pub async fn unassign_user(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
-// ---------------------------------------------------------------------------
-// Second factor: admin reset (also `akari admin reset-2fa`).
-// ---------------------------------------------------------------------------
-
-/// Remove an account's TOTP (active or pending) and recovery codes and end
-/// all its sessions, in the caller's transaction; audited
-/// ("user.totp.reset"). The account then logs in with the password alone
-/// (R18; with `auth.require_admin_2fa` an admin gets an enrollment-only
-/// session). Returns what was removed ("active", "pending", "none").
-pub(crate) async fn apply_reset_totp(
-    conn: &mut PgConnection,
-    actor: &Actor,
-    user_id: Uuid,
-) -> Result<&'static str, ApiError> {
-    let found: Option<i32> = sqlx::query_scalar("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
-        .bind(user_id)
-        .fetch_optional(&mut *conn)
-        .await?;
-    if found.is_none() {
-        return Err(ApiError::not_found());
-    }
-    let removed: Option<bool> = sqlx::query_scalar(
-        "DELETE FROM user_totp WHERE user_id = $1 RETURNING enabled_at IS NOT NULL",
-    )
-    .bind(user_id)
-    .fetch_optional(&mut *conn)
-    .await?;
-    let codes = sqlx::query("DELETE FROM user_recovery_codes WHERE user_id = $1")
-        .bind(user_id)
-        .execute(&mut *conn)
-        .await?
-        .rows_affected();
-    sqlx::query("UPDATE users SET session_ver = session_ver + 1 WHERE id = $1")
-        .bind(user_id)
-        .execute(&mut *conn)
-        .await?;
-    let was = match removed {
-        Some(true) => "active",
-        Some(false) => "pending",
-        None => "none",
-    };
-    let after = json!({ "totp": "none", "recovery_codes": 0 });
-    crate::audit::record(
-        conn,
-        actor,
-        "user.totp.reset",
-        "user",
-        Some(user_id.to_string()),
-        Some(json!({ "totp": was, "recovery_codes": codes })),
-        Some(after),
-    )
-    .await?;
-    Ok(was)
-}
-
-/// DELETE /api/v1/users/{id}/totp (admin): reset the account's 2FA and end
-/// its sessions (resetting your own ends this session too). 200 with
-/// `{"totp": <what was removed: "active" | "pending" | "none">}`.
-pub async fn reset_totp(
-    State(state): State<AppState>,
-    user: AuthUser,
-    Path((_, id)): Path<(String, Uuid)>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    user.require_admin()?;
-    let mut tx = state.pg().begin().await?;
-    let was = apply_reset_totp(&mut tx, &Actor::of(&user), id).await?;
-    tx.commit().await?;
-    Ok(Json(json!({ "totp": was })))
-}
-
 /// Test hooks for other modules' tests (plans.rs).
 #[cfg(test)]
 pub(crate) async fn apply_assign_for_test(conn: &mut PgConnection, user: Uuid, node: Uuid) {
@@ -4801,7 +4519,7 @@ mod tests {
                 .fetch_one(state.pg())
                 .await
                 .unwrap();
-        auth::issue_token(state, id, &role, sv, auth::Stage::Full).unwrap()
+        auth::issue_token(state, id, &role, sv).unwrap()
     }
 
     /// Does the extractor accept this session token?
@@ -4826,7 +4544,7 @@ mod tests {
     fn admin_user(id: Uuid) -> AuthUser {
         AuthUser {
             id,
-            login: "a".into(),
+            email: "a@example.com".into(),
             role: "admin".into(),
             ip: None,
         }
@@ -4835,7 +4553,7 @@ mod tests {
     fn plain_user(id: Uuid) -> AuthUser {
         AuthUser {
             id,
-            login: "u".into(),
+            email: "u@example.com".into(),
             role: "user".into(),
             ip: None,
         }
@@ -4850,8 +4568,6 @@ mod tests {
         };
         let admin = db.admin().await;
         let u = db.user().await;
-        // u is promoted below: an admin's full session needs active 2FA.
-        db.totp_active(u).await;
         let state = AppState::for_test(db.pool.clone()).await;
         type Step<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'a>>;
         let sql = |q: &'static str| -> Step<'_> {
@@ -5031,7 +4747,7 @@ mod tests {
             State(state.clone()),
             AuthUser {
                 id: u,
-                login: "u".into(),
+                email: "u@example.com".into(),
                 role: "user".into(),
                 ip: None,
             },
@@ -5399,8 +5115,8 @@ mod tests {
     // ----- S4-1: login rate limit behind proxies ----------------------
 
     async fn account(db: &TestDb, password: &str) -> String {
-        let login = format!("acct-{}", Uuid::new_v4().simple());
-        sqlx::query("INSERT INTO users (id, login, password_hash) VALUES ($1, $2, $3)")
+        let login = format!("acct-{}@example.com", Uuid::new_v4().simple());
+        sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
             .bind(Uuid::new_v4())
             .bind(&login)
             .bind(auth::hash_password(password).unwrap())
@@ -5434,9 +5150,8 @@ mod tests {
             headers,
             CookieJar::new(),
             ApiJson(LoginReq {
-                login: login.into(),
+                email: login.into(),
                 password: password.into(),
-                code: None,
             }),
         )
         .await;
@@ -5609,7 +5324,7 @@ mod tests {
         let (n, u) = db.member().await;
         let actor = Actor {
             id: Some(Uuid::new_v4()),
-            login: "boss".into(),
+            label: "boss".into(),
             ip: Some("2001:db8::7".parse().unwrap()),
         };
         let mut tx = db.pool.begin().await.unwrap();
@@ -5675,7 +5390,7 @@ mod tests {
             serde_json::Value,
             serde_json::Value,
         ) = sqlx::query_as(
-            "SELECT actor_id, actor_login, ip, action, target_id, before, after FROM audit_log \
+            "SELECT actor_id, actor_label, ip, action, target_id, before, after FROM audit_log \
                  WHERE action = 'user.update'",
         )
         .fetch_one(&db.pool)
@@ -5705,12 +5420,11 @@ mod tests {
             State(state.clone()),
             admin_user(a),
             ApiJson(CreateUserReq {
-                login: "redact-me".into(),
+                email: "redact-me@example.com".into(),
                 password: "first-password-123".into(),
                 role: None,
                 traffic_limit_bytes: None,
                 expires_at: None,
-                email: None,
             }),
         )
         .await
@@ -5781,7 +5495,7 @@ mod tests {
             .unwrap();
         secrets.push(hex::encode(&enc));
         let text: String = sqlx::query_scalar(
-            "SELECT string_agg(concat_ws(' ', actor_login, action, target_id, before::text, after::text), ' ') \
+            "SELECT string_agg(concat_ws(' ', actor_label, action, target_id, before::text, after::text), ' ') \
              FROM audit_log",
         )
         .fetch_one(&db.pool)
@@ -5832,7 +5546,7 @@ mod tests {
             .await
             .unwrap();
         let mut c = Client::new(&state, rand_ip());
-        c.cookie = Some(auth::issue_token(&state, admin, "admin", sv, auth::Stage::Full).unwrap());
+        c.cookie = Some(auth::issue_token(&state, admin, "admin", sv).unwrap());
         let n1 = db.node().await;
         let n2 = db.node().await;
         sqlx::query(
@@ -5967,7 +5681,7 @@ mod tests {
                 .fetch_one(&db.pool)
                 .await
                 .unwrap();
-            auth::issue_token(&state, u, "user", sv, auth::Stage::Full).unwrap()
+            auth::issue_token(&state, u, "user", sv).unwrap()
         });
         assert_eq!(
             cu.get("/test/api/v1/nodes?view=summary").await.status,

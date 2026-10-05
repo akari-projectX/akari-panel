@@ -32,7 +32,7 @@
 #     (/var/log/akari-install.log, 0600); the admin password is printed once
 #     to the terminal, and the secret route prefix only in the final summary
 #     (and by `akari-ctl info`);
-#   * data dir 0700 (route prefix, CA key, jwt.key, totp.key), panel.toml
+#   * data dir 0700 (route prefix, CA key, jwt.key, master.key), panel.toml
 #     0640 root:akari, env files 0600.
 #
 # The whole script is a set of functions and a last line that calls main:
@@ -1047,6 +1047,17 @@ refuse_pre_baseline() {
 	return 0
 }
 
+# default_admin: the admin's e-mail when none is given: the certificate
+# e-mail if any, else admin@<main domain> (IP-only installs: a reserved
+# .invalid address; change it in the console after logging in).
+default_admin() {
+	if [ -n "$EMAIL" ]; then
+		printf '%s' "$EMAIL"
+	else
+		printf 'admin@%s' "${DOMAIN:-akari.invalid}"
+	fi
+}
+
 admin_count() {
 	if [ "$MODE" = bare ]; then
 		psql_pg -At -d akari -c "SELECT count(*) FROM users WHERE role = 'admin'" 2>/dev/null || echo 0
@@ -1137,9 +1148,9 @@ gather_input() {
 		ask EMAIL '证书通知邮箱（可留空）' 'e-mail for certificate notices (optional)' "$EMAIL"
 	fi
 	if [ -z "${ADMIN_GIVEN:-}" ]; then
-		ask ADMIN '管理员登录名' 'admin login' "${ADMIN:-admin}"
+		ask ADMIN '管理员邮箱（登录名）' 'admin e-mail (the login name)' "${ADMIN:-$(default_admin)}"
 	fi
-	ADMIN=${ADMIN:-admin}
+	ADMIN=$(printf '%s' "${ADMIN:-$(default_admin)}" | tr '[:upper:]' '[:lower:]')
 	if [ -z "$ADMIN_PW" ]; then
 		ask_secret ADMIN_PW '管理员密码（留空 = 自动生成）' 'admin password (empty = generate one)'
 	fi
@@ -1161,7 +1172,8 @@ gather_input() {
 		die "域名无效：$DOMAIN" "invalid domain: $DOMAIN"
 	[ -z "$PUBLIC_IP" ] || printf '%s' "$PUBLIC_IP" | matches -E '^[0-9A-Fa-f.:]*$' || die "IP 无效：$PUBLIC_IP" "invalid IP: $PUBLIC_IP"
 	[ -z "$EMAIL" ] || printf '%s' "$EMAIL" | matches -E '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$' || die "邮箱无效：$EMAIL" "invalid e-mail: $EMAIL"
-	printf '%s' "$ADMIN" | matches -E '^[A-Za-z0-9._@-]{1,64}$' || die "登录名无效：$ADMIN" "invalid login: $ADMIN"
+	printf '%s' "$ADMIN" | matches -E '^[a-z0-9._%+-]{1,64}@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$' ||
+		die "管理员邮箱无效：$ADMIN" "invalid admin e-mail: $ADMIN"
 	[ -z "$NODE_ADDR" ] || printf '%s' "$NODE_ADDR" | matches -E '^[A-Za-z0-9.:\[\]-]*$' || die "节点地址无效：$NODE_ADDR" "invalid node address: $NODE_ADDR"
 	if [ "$MODE" = docker ] && [ -z "$DOCKER_DIR" ]; then DOCKER_DIR=$DEFAULT_DOCKER_DIR; fi
 	VALKEY_PORT=${VALKEY_PORT:-6379}
@@ -1322,7 +1334,7 @@ finish() {
 	if [ "$ADMIN_CREATED" = 1 ]; then
 		printf '  %s %s\n' "$(msg '管理员：  ' 'admin login:   ')" "$ADMIN"
 		printf '  %s %s\n' "$(msg '密码：    ' 'password:      ')" "$ADMIN_PW"
-		printf '  %s\n' "$(msg '（密码只显示这一次，请立即保存；登录后建议开启两步验证）' '(shown only this once: save it now; enabling two-factor authentication is recommended)')"
+		printf '  %s\n' "$(msg '（密码只显示这一次，请立即保存）' '(shown only this once: save it now)')"
 	fi
 	printf '\n  %s\n' "$(msg '路由前缀是机密：只有知道它的人才能访问面板。' 'The route prefix is secret: the panel is reachable only with it.')"
 	[ "$proxy_ok" = 1 ] || warn "经 Caddy 的 HTTPS 检查未通过：确认 DNS 已指向本机、端口 $HTTP_PORT/$HTTPS_PORT 已放行（云防火墙/安全组），证书签发可能需要几分钟" \
@@ -1519,8 +1531,8 @@ cmd_uninstall() {
 	detect_existing || die '没有找到安装' 'no installation found'
 	[ -n "$MODE" ] || adopt
 	if [ "$PURGE" = 1 ]; then
-		warn '--purge 会永久删除数据库、数据目录（路由前缀、CA 私钥、jwt.key、totp.key）与配置。所有节点都需要重新注册。备份目录保留。' \
-			'--purge permanently deletes the database, the data dir (route prefix, CA key, jwt.key, totp.key) and the configuration. Every node would need re-enrolling. Backups are kept.'
+		warn '--purge 会永久删除数据库、数据目录（路由前缀、CA 私钥、jwt.key、master.key）与配置。所有节点都需要重新注册。备份目录保留。' \
+			'--purge permanently deletes the database, the data dir (route prefix, CA key, jwt.key, master.key) and the configuration. Every node would need re-enrolling. Backups are kept.'
 		if [ "$INTERACTIVE" = 1 ] && [ -z "$CONFIRM_PURGE" ]; then
 			printf '%s ' "$(msg '输入 purge 确认：' 'type purge to confirm:')" >/dev/tty
 			IFS= read -r CONFIRM_PURGE </dev/tty || true
@@ -1640,7 +1652,7 @@ cmd_migrate() {
 	[ "$MODE" != docker ] || DOCKER_DIR=${DOCKER_DIR:-$DEFAULT_DOCKER_DIR}
 	[ -n "$DOCKER_DIR" ] || DOCKER_DIR=$DEFAULT_DOCKER_DIR
 	HTTP_PORT=${HTTP_PORT:-80} HTTPS_PORT=${HTTPS_PORT:-443} GRPC_PORT=${GRPC_PORT:-8443} VALKEY_PORT=${VALKEY_PORT:-6379}
-	ADMIN=${ADMIN:-admin}
+	ADMIN=${ADMIN:-$(default_admin)}
 	OLD_DOCKER_DIR=$DOCKER_DIR
 	set +e
 	(
@@ -1762,7 +1774,7 @@ Options (environment variable in brackets):
   --domain NAME             [AKARI_DOMAIN]     main domain; empty = IP only
   --ip ADDRESS              [AKARI_PUBLIC_IP]  public address (IP-only installs)
   --email ADDRESS           [AKARI_EMAIL]      ACME account e-mail (optional)
-  --admin LOGIN             [AKARI_ADMIN]      default admin
+  --admin EMAIL             [AKARI_ADMIN]      admin login (default: --email, else admin@<domain>)
   --admin-password-file F   [AKARI_ADMIN_PASSWORD] default: generated, printed once
   --node-address HOST[:P]   [AKARI_NODE_ADDRESS] address agents dial (default: domain / IP)
   --http-port N --https-port N --grpc-port N   default 80 / 443 / 8443
