@@ -1334,8 +1334,11 @@ if [ -n "$SF_ROOT" ]; then
 fi
 [ "$(patch_code "$BASE/api/v1/plans/$ACCESS_PLAN" "{\"group_ids\":[\"$ACCESS_GROUP\"]}")" = "200" ] || { echo "FAIL: restore access plan"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/node-groups/$RELAY_GROUP")" = "204" ] || { echo "FAIL: delete relay group"; exit 1; }
-[ "$(psql_q "SELECT count(*) FROM audit_log WHERE target_id='$RELAY_ID' AND action IN ('entrance.create','entrance.update','entrance.delete')")" = "3" ] \
-  || { echo "FAIL: relay entrance not audited"; exit 1; }
+# create; update x3 (dead port, port back, leaves its group); delete.
+RELAY_AUDIT=$(psql_q "SELECT string_agg(action || '=' || n, ',' ORDER BY action) FROM (SELECT action, count(*) n FROM audit_log
+  WHERE target_id='$RELAY_ID' AND action IN ('entrance.create','entrance.update','entrance.delete') GROUP BY action) a")
+[ "$RELAY_AUDIT" = "entrance.create=1,entrance.delete=1,entrance.update=3" ] \
+  || { echo "FAIL: relay entrance not audited: $RELAY_AUDIT"; exit 1; }
 echo "relay entrance: ok (relay raw $RELAY_RAW billed at 2x, removal isolated)"
 
 if need_agent cap:metrics "W11 machine status"; then
