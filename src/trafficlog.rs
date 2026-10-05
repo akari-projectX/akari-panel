@@ -20,8 +20,9 @@
 //!   no node ids; hidden or deleted nodes merged into one unnamed row)
 //!
 //! Dates are `YYYY-MM-DD` days in the site time zone (Q3,
-//! `panel_settings.timezone`, default Asia/Shanghai), `to` inclusive; default the last 30
-//! days; at most 366 days (month grouping: 3660, widened to whole months).
+//! `panel_settings.timezone`, default Asia/Shanghai), `to` inclusive;
+//! default the last 30 days; at most 366 days (month grouping: 3660,
+//! widened to whole months).
 
 use axum::Json;
 use axum::extract::{Path, RawQuery, State};

@@ -391,10 +391,10 @@ pub fn clean_stats(s: &BlockStats) -> Option<(String, Vec<i64>, Vec<i64>)> {
 }
 
 /// Raise the node's per-epoch baselines and add the increase to today's
-/// (site time zone, Q3) daily counts, in one statement: a replayed or reordered report
-/// adds nothing (the baseline only grows), counts for unknown rules are
-/// dropped, and a node cannot hold baselines for more than
-/// MAX_EPOCHS_PER_NODE agent processes.
+/// (site time zone, Q3) daily counts, in one statement: a replayed or
+/// reordered report adds nothing (the baseline only grows), counts for
+/// unknown rules are dropped, and a node cannot hold baselines for more
+/// than MAX_EPOCHS_PER_NODE agent processes.
 pub const INGEST_SQL: &str = "\
 WITH input AS (
     SELECT t.rule_id, t.hits FROM unnest($3::bigint[], $4::bigint[]) AS t(rule_id, hits)
