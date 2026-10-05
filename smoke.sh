@@ -1388,7 +1388,8 @@ done
 [ "$(psql_q "SELECT count(*) FROM mail_outbox WHERE status <> 'sent' OR body_text <> '' OR body_html <> ''")" = "0" ] \
   || { echo "FAIL: outbox not drained / bodies kept"; psql_q "SELECT id, kind, status, last_error FROM mail_outbox"; exit 1; }
 grep -qe "$RESET_TOKEN" -e "\"$REG_CODE\"" "$LOG/panel.log" && { echo "FAIL: a code or reset token in the panel log"; exit 1; }
-[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action IN ('user.register', 'user.password.reset', 'settings.mail.update', 'settings.signup.update', 'settings.mail.test')")" = "5" ] \
+# settings.mail.test twice: the test mail and the W31 diagnostic.
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action IN ('user.register', 'user.password.reset', 'settings.mail.update', 'settings.signup.update', 'settings.mail.test')")" = "6" ] \
   || { echo "FAIL: W15 audit rows"; psql_q "SELECT action FROM audit_log ORDER BY id DESC LIMIT 10"; exit 1; }
 # The admin user list shows the address and its verification.
 [ "$(code -b "$JAR" "$BASE/api/v1/users?limit=200")" = "200" ] \
