@@ -443,7 +443,7 @@ test("W21: dashboard, user search + create dialog, plan dialog, settings tabs, c
   await page.getByLabel("搜索").fill("E2E-W21");
   await expect(page.getByText("找到 1 个用户")).toBeVisible();
   const row = page.getByRole("row").filter({ hasText: "e2e-w21-user" });
-  await expect(row.getByText("e2e-w21-user@e2e.test")).toBeVisible();
+  await expect(row.getByText("e2e-w21-user@e2e.test").first()).toBeVisible();
   await expect(row.getByText("正常")).toBeVisible();
   await page.getByRole("button", { name: "已封禁" }).click();
   await expect(page.getByText("没有符合条件的用户。")).toBeVisible();
