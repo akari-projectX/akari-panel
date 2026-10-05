@@ -1226,6 +1226,8 @@ sf_status() { vk get "akari:node:hb:$NODE_ID" | python3 -c "import json,sys; pri
 # R44: the agent has no CAP_NET_ADMIN; it hands the allowlist to its root
 # updater (akari-agent-update), played here once per request with sudo.
 sf_updater() {
+  # The log is ours (the redirect is meant to run unprivileged).
+  # shellcheck disable=SC2024
   sudo -n "$AGENT" -apply-update "$LOG/state-main" -updater-state "$SF_ROOT/state" >>"$LOG/sf-updater.log" 2>&1 \
     || { echo "FAIL: the root updater run"; tail -5 "$LOG/sf-updater.log"; exit 1; }
 }
