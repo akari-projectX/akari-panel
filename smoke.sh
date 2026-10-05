@@ -2543,7 +2543,7 @@ echo "enrollment + renewal: ok"
 
 echo "== M1-7 audit log: admin view lists the actions, no secrets =="
 [ "$(code -b "$JAR" "$BASE/api/v1/audit?limit=200")" = "200" ] || { echo "FAIL: audit list"; exit 1; }
-for a in user.create node.create node.set_inbounds node.update node.assign user.update user.delete \
+for a in user.create node.create node.set_inbound node.update entrance.update user.plan.set user.update user.delete \
          user.totp.enable auth.login auth.login_failed user.sub_token.rotate node.delete \
          node.enroll_token node.enroll node.cert.renew node.cert.rotated; do
   # (By database: the API's 200 newest rows no longer reach back to the
