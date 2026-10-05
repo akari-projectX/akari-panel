@@ -803,3 +803,41 @@ async fn tls_domain_check_compares_with_the_node() {
     }
     db.drop().await;
 }
+
+/// W32: the script's OpenRC path and BBR + fq switch, and what the
+/// uninstaller undoes (the smoke runs both on real containers).
+#[test]
+fn openrc_and_bbr_in_the_script() {
+    for l in [
+        // OpenRC: the release's scripts, never a copy of ours.
+        r#""$TMP/akari-agent" -print-unit "$u" >"$TMP/rc.$u""#,
+        "for u in akari-agent akari-agent-update; do",
+        "has no OpenRC support",
+        r#"rc-update add akari-agent default"#,
+        r#"rc-update add akari-agent-update default"#,
+        // BBR + fq: opt-out, own drop-in, previous values recorded.
+        "BBR=${AKARI_BBR:-1}",
+        "--no-bbr) BBR=0 ;;",
+        "# akari-previous: net.core.default_qdisc=$qd net.ipv4.tcp_congestion_control=$cc",
+        "net.ipv4.tcp_congestion_control = bbr",
+        "net.core.default_qdisc = fq",
+        "bbr_remove",
+    ] {
+        assert!(SCRIPT.contains(l), "script lacks {l}");
+    }
+    for l in [
+        "BBR_CONF=/etc/sysctl.d/90-akari-bbr.conf",
+        "BBR_MOD=/etc/modules-load.d/akari-bbr.conf",
+        "RC_AGENT=/etc/init.d/akari-agent",
+        "RC_UPDATE=/etc/init.d/akari-agent-update",
+        r#"umount "$RC_STATE""#,
+        "deluser akari-agent",
+    ] {
+        assert!(UNINSTALL_FN.contains(l), "uninstall lacks {l}");
+    }
+    // The uninstaller restores only the two settings we change, and only
+    // plain values (the drop-in is root's, but still).
+    assert!(UNINSTALL_FN.contains("net.core.default_qdisc) ours=fq ;;"));
+    assert!(UNINSTALL_FN.contains("net.ipv4.tcp_congestion_control) ours=bbr ;;"));
+    assert!(UNINSTALL_FN.contains("'' | *[!a-z0-9_]*) continue ;;"));
+}
