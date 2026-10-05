@@ -147,8 +147,8 @@ pub async fn run(args: SeedArgs) -> Result<()> {
     // name order), one vless + one trojan credential per pair.
     let assigned = sqlx::query(
         "WITH n AS (SELECT id, (row_number() OVER (ORDER BY name) - 1) % $1 AS g FROM nodes), \
-              u AS (SELECT id, (row_number() OVER (ORDER BY login) - 1) % $1 AS g FROM users \
-                    WHERE login LIKE 'bench-user-%') \
+              u AS (SELECT id, (row_number() OVER (ORDER BY email) - 1) % $1 AS g FROM users \
+                    WHERE email LIKE 'bench-user-%') \
          INSERT INTO node_users (node_id, user_id, credentials) \
          SELECT n.id, u.id, jsonb_build_array( \
              jsonb_build_object('inbound_tag', 'in-vless', 'protocol', 'vless', \
@@ -181,7 +181,7 @@ pub async fn run(args: SeedArgs) -> Result<()> {
     if args.audit > 0 {
         let t = Instant::now();
         let n = sqlx::query(
-            "INSERT INTO audit_log (at, actor_login, ip, action, target_type, target_id, before, after) \
+            "INSERT INTO audit_log (at, actor_label, ip, action, target_type, target_id, before, after) \
              SELECT now() - make_interval(secs => ($1 - g)), \
                     CASE WHEN g % 10 = 0 THEN 'cli' ELSE 'bench-admin' END, '127.0.0.1', \
                     (ARRAY['user.update','user.create','node.update','user.assign','auth.login_failed'])[1 + g % 5], \
@@ -214,7 +214,7 @@ async fn seed_history(pg: &PgPool, args: &SeedArgs, groups: i64) -> Result<()> {
     let k = (args.history_nodes_per_user as i64).min(per_group);
     let t = Instant::now();
     let n = sqlx::query(
-        "WITH n AS (SELECT id, (row_number() OVER (ORDER BY name) - 1) % $1 AS g,                            (row_number() OVER (ORDER BY name) - 1) / $1 AS r FROM nodes),               u AS (SELECT id, (row_number() OVER (ORDER BY login) - 1) % $1 AS g FROM users                     WHERE login LIKE 'bench-user-%'),               p AS (SELECT u.id AS user_id, u.g,                            (now() AT TIME ZONE 'UTC')::date - d AS day,                            abs(hashtextextended(u.id::text, d)) AS h                     FROM u CROSS JOIN generate_series(0, $3 - 1) d)          INSERT INTO traffic_daily (user_id, day, node_id, up_bytes, down_bytes, billed_bytes)          SELECT p.user_id, p.day, n.id, p.h % 50000000, (p.h % 50000000) * 4, (p.h % 50000000) * 5          FROM p CROSS JOIN LATERAL generate_series(0, $4 - 1) i          JOIN n ON n.g = p.g AND n.r = (p.h + i) % $2",
+        "WITH n AS (SELECT id, (row_number() OVER (ORDER BY name) - 1) % $1 AS g,                            (row_number() OVER (ORDER BY name) - 1) / $1 AS r FROM nodes),               u AS (SELECT id, (row_number() OVER (ORDER BY email) - 1) % $1 AS g FROM users                     WHERE email LIKE 'bench-user-%'),               p AS (SELECT u.id AS user_id, u.g,                            (now() AT TIME ZONE 'UTC')::date - d AS day,                            abs(hashtextextended(u.id::text, d)) AS h                     FROM u CROSS JOIN generate_series(0, $3 - 1) d)          INSERT INTO traffic_daily (user_id, day, node_id, up_bytes, down_bytes, billed_bytes)          SELECT p.user_id, p.day, n.id, p.h % 50000000, (p.h % 50000000) * 4, (p.h % 50000000) * 5          FROM p CROSS JOIN LATERAL generate_series(0, $4 - 1) i          JOIN n ON n.g = p.g AND n.r = (p.h + i) % $2",
     )
     .bind(groups)
     .bind(per_group)
@@ -272,7 +272,7 @@ async fn seed_nodes(pg: &PgPool, count: usize) -> Result<()> {
 async fn seed_users(pg: &PgPool, count: usize) -> Result<()> {
     let t = Instant::now();
     let ids: Vec<Uuid> = (0..count).map(|_| Uuid::new_v4()).collect();
-    let logins: Vec<String> = (0..count).map(common::user_login).collect();
+    let emails: Vec<String> = (0..count).map(common::user_email).collect();
     let hashes: Vec<String> = (0..count)
         .map(|i| akari_panel::sub::hash_token(&common::sub_token(i)))
         .collect();
@@ -285,13 +285,13 @@ async fn seed_users(pg: &PgPool, count: usize) -> Result<()> {
         .map(|i| (i % 5 == 2).then(|| chrono::Utc::now() + chrono::Duration::days(30)))
         .collect();
     sqlx::query(
-        "INSERT INTO users (id, login, sub_token_hash, traffic_limit_bytes, expires_at, created_at) \
-         SELECT id, login, h, l, e, now() - make_interval(secs => ord) \
+        "INSERT INTO users (id, email, sub_token_hash, traffic_limit_bytes, expires_at, created_at) \
+         SELECT id, email, h, l, e, now() - make_interval(secs => ord) \
          FROM unnest($1::uuid[], $2::text[], $3::text[], $4::bigint[], $5::timestamptz[]) \
-              WITH ORDINALITY AS t(id, login, h, l, e, ord)",
+              WITH ORDINALITY AS t(id, email, h, l, e, ord)",
     )
     .bind(&ids)
-    .bind(&logins)
+    .bind(&emails)
     .bind(&hashes)
     .bind(&limits)
     .bind(&expiry)
@@ -301,23 +301,16 @@ async fn seed_users(pg: &PgPool, count: usize) -> Result<()> {
     Ok(())
 }
 
-/// The admin the load tool acts as (active placeholder TOTP, so its full
-/// sessions are accepted) and the user that exercises the login path.
+/// The admin the load tool acts as and the user that exercises the login
+/// path.
 async fn seed_accounts(pg: &PgPool) -> Result<()> {
-    let admin = Uuid::new_v4();
-    sqlx::query("INSERT INTO users (id, login, role) VALUES ($1, $2, 'admin')")
-        .bind(admin)
-        .bind(common::ADMIN_LOGIN)
+    sqlx::query("INSERT INTO users (id, email, role) VALUES ($1, $2, 'admin')")
+        .bind(Uuid::new_v4())
+        .bind(common::ADMIN_EMAIL)
         .execute(pg)
         .await?;
-    sqlx::query(
-        "INSERT INTO user_totp (user_id, secret_enc, enabled_at) VALUES ($1, '\\x00', now())",
-    )
-    .bind(admin)
-    .execute(pg)
-    .await?;
     let hash = akari_panel::auth::hash_password(common::LOGIN_PASSWORD)?;
-    sqlx::query("INSERT INTO users (id, login, password_hash) VALUES ($1, $2, $3)")
+    sqlx::query("INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)")
         .bind(Uuid::new_v4())
         .bind(common::LOGIN_USER)
         .bind(hash)

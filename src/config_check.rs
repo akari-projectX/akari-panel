@@ -84,6 +84,9 @@ impl PanelConfig {
                     "{shown} is obsolete: the value is built in now and the key is ignored. \
                      Delete it from panel.toml"
                 )),
+                Some(Fate::Removed(why)) => r.warn(format!(
+                    "{shown} is obsolete: {why}; the key is ignored. Delete it from panel.toml"
+                )),
                 None => {}
             }
         }
@@ -230,7 +233,7 @@ pub fn check_data_dir(dir: &Path) -> Result<(), String> {
         }
         Err(e) => Err(format!(
             "data_dir {} is not writable ({}: {e}). The panel stores the route prefix, CA, \
-             jwt.key and totp.key there; fix ownership/permissions (see docs/DEPLOY.md)",
+             jwt.key and master.key there; fix ownership/permissions (see docs/DEPLOY.md)",
             dir.display(),
             probe_dir.display()
         )),

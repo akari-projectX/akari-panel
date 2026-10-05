@@ -149,7 +149,10 @@ export interface AdminOrder {
   id: string;
   out_trade_no: string;
   user_id: string | null;
-  user_login: string;
+  // Q4: non-personal snapshot label; the current address (null once the
+  // account is gone).
+  user_label: string;
+  user_email: string | null;
   plan_id: string | null;
   plan_name: string;
   amount_cents: number;
@@ -304,8 +307,9 @@ export interface LedgerEntry {
 
 export interface AdminLedgerEntry extends LedgerEntry {
   user_id: string | null;
-  user_login: string;
-  actor_login: string;
+  // Q4: non-personal snapshot labels ("u-1a2b3c4d", "cli", "system").
+  user_label: string;
+  actor_label: string;
 }
 
 export interface MyBalance {
@@ -316,7 +320,7 @@ export interface MyBalance {
 
 export interface UserBalance {
   user_id: string;
-  login: string;
+  email: string;
   balance_cents: number;
   withdrawable_cents: number;
   entries: AdminLedgerEntry[];
@@ -324,7 +328,7 @@ export interface UserBalance {
 
 export interface BalanceRow {
   user_id: string;
-  login: string;
+  email: string;
   balance_cents: number;
   updated_at: string;
 }
@@ -333,7 +337,8 @@ export type CommissionStatus = "pending" | "credited" | "reversed";
 
 export interface MyCommission {
   id: string;
-  invitee_login: string;
+  // Q4: the invitee's non-personal label (never their address).
+  invitee_label: string;
   base_cents: number;
   rate_percent: number;
   amount_cents: number;
@@ -366,9 +371,12 @@ export interface Commission {
   order_id: string;
   out_trade_no: string;
   inviter_id: string | null;
-  inviter_login: string;
+  // Q4: snapshot labels and the current addresses.
+  inviter_label: string;
+  inviter_email: string | null;
   invitee_id: string | null;
-  invitee_login: string;
+  invitee_label: string;
+  invitee_email: string | null;
   base_cents: number;
   rate_percent: number;
   amount_cents: number;
@@ -394,7 +402,10 @@ export type WithdrawalStatus = "pending" | "approved" | "rejected" | "cancelled"
 export interface Withdrawal {
   id: string;
   user_id: string | null;
-  user_login: string;
+  // Q4: non-personal snapshot label; the current address (null once the
+  // account is gone).
+  user_label: string;
+  user_email: string | null;
   amount_cents: number;
   method: WithdrawMethod;
   account: string;
@@ -432,7 +443,10 @@ export interface CouponRedemption {
   order_id: string;
   out_trade_no: string;
   user_id: string | null;
-  user_login: string;
+  // Q4: non-personal snapshot label; the current address (null once the
+  // account is gone).
+  user_label: string;
+  user_email: string | null;
   status: "reserved" | "redeemed" | "released";
   over_limit: boolean;
   discount_cents: number;

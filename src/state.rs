@@ -123,8 +123,10 @@ impl AppState {
     pub fn install(&self) -> &Install {
         &self.0.install
     }
+    /// The master-key derived keys (data/master.key; totp.rs). The name is
+    /// historical (see totp.rs).
     pub fn totp(&self) -> &crate::totp::Keys {
-        &self.0.install.totp
+        &self.0.install.keys
     }
     pub fn pg(&self) -> &PgPool {
         &self.0.pg
@@ -272,7 +274,7 @@ impl AppState {
             server_cert_pem: String::new(),
             server_key_pem: String::new(),
             jwt_secret: "test".into(),
-            totp: crate::totp::Keys::from_material(&[0x42; 32]).expect("test totp keys"),
+            keys: crate::totp::Keys::from_material(&[0x42; 32]).expect("test master keys"),
         };
         Self::new(cfg, install, pg, valkey)
     }

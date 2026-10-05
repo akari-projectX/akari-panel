@@ -3,7 +3,7 @@
 //! migration 0140; no panel.toml).
 //!
 //! - **Secrets** (e.g. the Alipay app private key) are one JSON object
-//!   sealed with AES-256-GCM under a key derived from data/totp.key (label
+//!   sealed with AES-256-GCM under a key derived from data/master.key (label
 //!   `akari/payment-secrets-aead/v1`), AAD = the method id
 //!   (`totp::Keys::seal_payment_secrets`). The API never returns them (the
 //!   kind's `view` shows `<field>_set` and fingerprints); the audit log
@@ -72,7 +72,7 @@ async fn load_one(conn: &mut PgConnection, id: Uuid, lock: bool) -> sqlx::Result
     .await
 }
 
-/// Stored secrets that cannot be opened (data/totp.key changed, or the
+/// Stored secrets that cannot be opened (data/master.key changed, or the
 /// blob was moved/altered).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Unreadable;
@@ -102,7 +102,7 @@ fn kind_of(id: &str) -> Result<&'static dyn ProviderKind, ApiError> {
 pub fn build(keys: &crate::totp::Keys, row: &Row) -> Result<Arc<dyn PaymentProvider>, String> {
     let kind = provider::kind(&row.kind).ok_or("unknown kind")?;
     let secrets = open_secrets(keys, row)
-        .map_err(|_| "the stored secrets cannot be opened (data/totp.key changed?)".to_string())?
+        .map_err(|_| "the stored secrets cannot be opened (data/master.key changed?)".to_string())?
         .ok_or("no secrets stored")?;
     kind.build(&row.config, &secrets)
 }
@@ -501,7 +501,8 @@ pub fn method_view(state: &AppState, row: &Row) -> MethodView {
     let secrets = open_secrets(state.totp(), row);
     let mut warnings = Vec::new();
     if secrets.is_err() {
-        warnings.push("已保存的密钥无法解密（data/totp.key 已更换？）：请重新粘贴密钥".to_string());
+        warnings
+            .push("已保存的密钥无法解密（data/master.key 已更换？）：请重新粘贴密钥".to_string());
     }
     let notify_url = notify_url(state, row.id);
     if row.enabled && notify_url.is_none() {
@@ -640,7 +641,7 @@ pub async fn test(
     if open_secrets(state.totp(), &row).is_err() {
         return Err(conflict!(
             "payments.stored_key_unreadable",
-            "the stored secrets cannot be opened (data/totp.key changed); paste them again"
+            "the stored secrets cannot be opened (data/master.key changed); paste them again"
         ));
     }
     let client = build(state.totp(), &row).map_err(|_| {

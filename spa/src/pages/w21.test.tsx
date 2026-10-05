@@ -182,10 +182,10 @@ describe("Tabs", () => {
 describe("audit view", () => {
   it("diffs fields of an update and lists those of a create", () => {
     expect(
-      auditDiff({ role: "user", enabled: true, login: "a" }, { role: "admin", enabled: true, login: "a" }),
+      auditDiff({ role: "user", enabled: true, email: "a@x.cc" }, { role: "admin", enabled: true, email: "a@x.cc" }),
     ).toEqual([{ field: "role", label: "角色", before: "user", after: "admin" }]);
-    expect(auditDiff(null, { login: "a", password: "changed" })).toEqual([
-      { field: "login", label: "账号", before: "—", after: "a" },
+    expect(auditDiff(null, { email: "a@x.cc", password: "changed" })).toEqual([
+      { field: "email", label: "邮箱", before: "—", after: "a@x.cc" },
       { field: "password", label: "密码", before: "—", after: "（已更改）" },
     ]);
     expect(auditDiff({ enabled: true }, { enabled: false })[0]).toMatchObject({ before: "是", after: "否" });
@@ -199,8 +199,9 @@ describe("audit view", () => {
           {
             id: 7,
             at: "2026-10-02T04:00:00Z",
-            actor_id: null,
-            actor_login: "root",
+            actor_id: "a1",
+            actor_label: "u-a1a1a1a1",
+            actor_email: "root@example.com",
             ip: "203.0.113.9",
             action: "user.update",
             target_type: "user",
@@ -212,7 +213,8 @@ describe("audit view", () => {
             id: 6,
             at: "2026-10-02T03:00:00Z",
             actor_id: null,
-            actor_login: "system",
+            actor_label: "system",
+            actor_email: null,
             ip: null,
             action: "brand.new_action",
             target_type: null,

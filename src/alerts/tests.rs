@@ -414,7 +414,7 @@ async fn token(state: &AppState, id: Uuid) -> String {
             .fetch_one(state.pg())
             .await
             .unwrap();
-    crate::auth::issue_token(state, id, &role, sv, crate::auth::Stage::Full).unwrap()
+    crate::auth::issue_token(state, id, &role, sv).unwrap()
 }
 
 const SECRET: &str = "webhook-secret-0123456789";

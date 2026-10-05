@@ -30,7 +30,6 @@ const opts = (over: Partial<AuthOptions> = {}): AuthOptions => ({
 
 const me = (over: Partial<Me> = {}): Me => ({
   id: "u1",
-  login: "alice@example.com",
   role: "user",
   traffic_used_bytes: 0,
   traffic_limit_bytes: null,
@@ -40,7 +39,7 @@ const me = (over: Partial<Me> = {}): Me => ({
   banned: false,
   ban_reason: null,
   banned_at: null,
-  email: null,
+  email: "alice@example.com",
   email_verified: false,
   locale: "en",
   sub_token: null,

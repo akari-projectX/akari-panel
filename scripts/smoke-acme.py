@@ -209,7 +209,7 @@ try:
     print("TLS handshakes verify against the CA root for the node domain")
 
     # --- a real client trusting only that root ------------------------------------
-    st, u = api("POST", "/api/v1/users", {"login": "acme-user", "password": "user-password-123"})
+    st, u = api("POST", "/api/v1/users", {"email": "acme-user@smoke.test", "password": "user-password-123"})
     if st != 201:
         fail(f"create acme user: {st} {u}")
     USER, SUB = u["id"], u["sub_token"]

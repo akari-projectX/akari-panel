@@ -17,17 +17,11 @@ import { ApiError, type ErrorParams } from "./api";
  */
 export const CODE_KEYS: Record<string, MessageKey> = {
   "account.banned": "errors.accountBanned",
-  "account.invalid_code": "errors.invalidCode",
   "account.invalid_password": "errors.invalidPassword",
   "account.locale_invalid": "errors.localeInvalid",
   "account.mail_off": "errors.mailOff",
   "account.password_too_long": "errors.passwordTooLong",
   "account.password_too_short": "errors.passwordTooShort",
-  "account.totp_enabled": "errors.totpAlreadyEnabled",
-  "account.totp_enrollment_stale": "errors.totpEnrollmentStale",
-  "account.totp_no_enrollment": "errors.totpNoEnrollment",
-  "account.totp_not_enabled": "errors.totpNotEnabled",
-  "auth.code_too_long": "errors.codeTooLong",
   "auth.credentials_required": "errors.credentialsRequired",
   "auth.forbidden": "errors.forbidden",
   "auth.unauthorized": "errors.unauthorized",

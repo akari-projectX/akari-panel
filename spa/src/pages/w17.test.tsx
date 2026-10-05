@@ -58,7 +58,7 @@ const thread = (over: Partial<MyTicketView> = {}): MyTicketView => ({
   closed_at: null,
   closed_by: null,
   messages: [
-    { id: 1, staff: false, author_login: "alice", body: "节点连不上\n第二行", created_at: "2026-10-02T00:00:00Z" },
+    { id: 1, staff: false, body: "节点连不上\n第二行", created_at: "2026-10-02T00:00:00Z" },
     { id: 2, staff: true, body: "请重启客户端", created_at: "2026-10-02T01:00:00Z" },
   ],
   ...over,
@@ -162,7 +162,7 @@ describe("portal tickets", () => {
 const adminRow = {
   id: "t1",
   user_id: "u1",
-  user_login: "alice",
+  user_email: "alice@example.com",
   subject: "连不上香港节点",
   category: "technical" as const,
   priority: "urgent" as const,
@@ -173,7 +173,7 @@ const adminRow = {
   node_id: null,
   node_name: null,
   assignee_id: null,
-  assignee_login: null,
+  assignee_email: null,
   created_at: "2026-10-02T00:00:00Z",
   updated_at: "2026-10-02T00:00:00Z",
   closed_at: null,
@@ -211,13 +211,21 @@ describe("console tickets", () => {
       status,
       closed_at: status === "closed" ? "2026-10-02T02:00:00Z" : null,
       closed_by: status === "closed" ? "staff" : null,
-      user_email: null,
       user_enabled: true,
-      thread: [{ id: 1, staff: false, author_login: "alice", body: "节点连不上", created_at: "2026-10-02T00:00:00Z" }],
+      thread: [
+        {
+          id: 1,
+          staff: false,
+          author_label: "u-12345678",
+          author_email: "alice@example.com",
+          body: "节点连不上",
+          created_at: "2026-10-02T00:00:00Z",
+        },
+      ],
     });
     const calls = fakeApi({
       "GET /tickets/t1": () => ({ status: 200, body: view() }),
-      "GET /admins": [{ id: "a1", login: "root" }],
+      "GET /admins": [{ id: "a1", email: "root@example.com" }],
       "POST /tickets/t1/replies": (b: unknown) => {
         if ((b as { close: boolean }).close) status = "closed";
         return { status: 201, body: { message_id: 2 } };
@@ -231,8 +239,8 @@ describe("console tickets", () => {
     window.history.pushState(null, "", "/admin/tickets/t1");
     renderAdmin(<AdminTickets />);
     expect(await screen.findByRole("heading", { name: "连不上香港节点" })).toBeTruthy();
-    expect(screen.getByText("alice")).toBeTruthy();
-    await screen.findByRole("option", { name: "root" });
+    expect(screen.getByText("alice@example.com")).toBeTruthy();
+    await screen.findByRole("option", { name: "root@example.com" });
     fireEvent.change(screen.getByLabelText("负责人"), { target: { value: "a1" } });
     await waitFor(() => expect(calls.find((c) => c.method === "PUT")?.body).toEqual({ assignee_id: "a1" }));
     fireEvent.change(screen.getByLabelText("回复"), { target: { value: "已修复" } });

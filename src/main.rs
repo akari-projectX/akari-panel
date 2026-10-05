@@ -128,21 +128,16 @@ enum NodeCmd {
 
 #[derive(Subcommand)]
 enum AdminCmd {
-    /// Create an admin/user account (prompts for a password unless
-    /// AKARI_ADMIN_PASSWORD is set)
+    /// Create an admin/user account with this email address (its login
+    /// name; prompts for a password unless AKARI_ADMIN_PASSWORD is set)
     Add {
-        login: String,
+        email: String,
         #[arg(long, default_value = "admin")]
         role: String,
     },
     /// Set an account's password (prompts unless AKARI_ADMIN_PASSWORD is
     /// set). Ends all of the account's sessions.
-    Passwd { login: String },
-    /// Remove an account's two-factor authentication (lost authenticator
-    /// and recovery codes) and end its sessions; the account then logs in
-    /// with its password (and may set 2FA up again).
-    #[command(name = "reset-2fa")]
-    Reset2fa { login: String },
+    Passwd { email: String },
 }
 
 #[tokio::main]
@@ -172,9 +167,8 @@ async fn main() -> Result<()> {
             NodeCmd::Delete { id } => nodeops::node_delete(cfg, id).await,
         },
         Cmd::Admin { action } => match action {
-            AdminCmd::Add { login, role } => nodeops::admin_add(cfg, login, role).await,
-            AdminCmd::Passwd { login } => nodeops::admin_passwd(cfg, login).await,
-            AdminCmd::Reset2fa { login } => nodeops::admin_reset_2fa(cfg, login).await,
+            AdminCmd::Add { email, role } => nodeops::admin_add(cfg, email, role).await,
+            AdminCmd::Passwd { email } => nodeops::admin_passwd(cfg, email).await,
         },
         Cmd::Secrets { action } => match action {
             SecretsCmd::RotatePrefix => nodeops::secrets_rotate_prefix(cfg).await,

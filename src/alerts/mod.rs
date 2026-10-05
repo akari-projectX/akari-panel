@@ -638,7 +638,7 @@ pub async fn test_channel(
     }
     let mut tx = state.pg().begin().await?;
     let s = load(&mut tx).await?;
-    let msg = channels::Message::test(&user.login);
+    let msg = channels::Message::test(&user.email);
     let res = channels::send(&state, Some(&mut tx), &s, &req.channel, &msg, 0).await;
     crate::audit::record(
         &mut tx,
@@ -938,7 +938,7 @@ pub async fn ack_alert(
     if acked.is_none() {
         sqlx::query("UPDATE node_alerts SET acked_at = now(), acked_by = $2 WHERE id = $1")
             .bind(id)
-            .bind(&user.login)
+            .bind(&user.email)
             .execute(&mut *tx)
             .await?;
         crate::audit::record(

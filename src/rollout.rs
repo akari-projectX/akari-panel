@@ -419,7 +419,7 @@ pub async fn apply_create_rollout(
     .bind(timeout)
     .bind(ratio)
     .bind(seed)
-    .bind(&actor.login)
+    .bind(&actor.label)
     .execute(&mut *conn)
     .await?;
     let (nodes, wv, pos): (Vec<Uuid>, Vec<i32>, Vec<i32>) = plan.iter().fold(
@@ -1132,8 +1132,7 @@ mod db_tests {
                 .await
                 .unwrap();
         let mut c = Client::new(state, rand_ip());
-        c.cookie =
-            Some(crate::auth::issue_token(state, id, &role, sv, crate::auth::Stage::Full).unwrap());
+        c.cookie = Some(crate::auth::issue_token(state, id, &role, sv).unwrap());
         c
     }
 
@@ -1700,7 +1699,7 @@ mod db_tests {
         assert_eq!(node_status(&db, id, rest[1]).await, "failed");
         assert_eq!(status(&db, id).await, "halted");
         let actor: String =
-            sqlx::query_scalar("SELECT actor_login FROM audit_log WHERE action = 'rollout.halt'")
+            sqlx::query_scalar("SELECT actor_label FROM audit_log WHERE action = 'rollout.halt'")
                 .fetch_one(&db.pool)
                 .await
                 .unwrap();

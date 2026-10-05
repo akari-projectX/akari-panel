@@ -218,7 +218,7 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         )),
     )
     .await?;
-    let audit = "SELECT id, at, actor_id, actor_login, ip, action, target_type, target_id, before, after \
+    let audit = "SELECT id, at, actor_id, actor_label, ip, action, target_type, target_id, before, after \
                  FROM audit_log WHERE true";
     explain(
         &mut tx,
@@ -263,8 +263,8 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         p,
         "audit::list actor",
         q!(format!(
-            "{audit} AND actor_login >= $1 AND actor_login <= $1 \
-             ORDER BY actor_login DESC, id DESC LIMIT $2"
+            "{audit} AND actor_label >= $1 AND actor_label <= $1 \
+             ORDER BY actor_label DESC, id DESC LIMIT $2"
         ))
         .bind("cli")
         .bind(51i64),
@@ -301,13 +301,9 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         p,
         "api::login",
         q!(format!(
-            "SELECT u.id, u.login, u.role, u.enabled, u.password_hash, u.session_ver, {} AS expired, \
-             t.secret_enc, t.last_step, \
-             ARRAY(SELECT r.code_hash FROM user_recovery_codes r \
-                   WHERE r.user_id = u.id AND r.used_at IS NULL ORDER BY r.code_hash) AS recovery, \
-             EXTRACT(EPOCH FROM now())::bigint AS db_now \
-             FROM users u LEFT JOIN user_totp t ON t.user_id = u.id AND t.enabled_at IS NOT NULL \
-             WHERE u.login = $1",
+            "SELECT u.id, u.email, u.role, u.enabled, u.password_hash, u.session_ver, {} AS expired, \
+             (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'quota') AS quota_disabled \
+             FROM users u WHERE u.email = $1",
             enforce::EXPIRED
         ))
         .bind(common::LOGIN_USER),
@@ -318,9 +314,9 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         p,
         "auth::session (AuthUser)",
         q!(format!(
-            "SELECT u.id, u.login, u.role, (u.enabled AND NOT {}) AS enabled, u.session_ver, \
-             EXISTS (SELECT 1 FROM user_totp t WHERE t.user_id = u.id AND t.enabled_at IS NOT NULL) \
-             AS totp_active FROM users u WHERE u.id = $1",
+            "SELECT u.id, u.email, u.role, u.enabled, {} AS expired, \
+             (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'quota') AS quota_disabled, \
+             u.session_ver FROM users u WHERE u.id = $1",
             enforce::EXPIRED
         ))
         .bind(ids.user),
