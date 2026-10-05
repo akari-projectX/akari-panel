@@ -386,7 +386,7 @@ impl TrafficBuffer {
             .map(|m| (**m).clone())
             .unwrap_or_default();
         for &(e, u) in pairs {
-            map.insert(crate::grpc::stat_key(u), (e, u));
+            map.insert(crate::grpc::stat_key(u, 0), (e, u));
         }
         self.set_members(node_id, map);
     }
@@ -1232,10 +1232,10 @@ pub async fn refresh_members(
     buf: &TrafficBuffer,
     node_id: Uuid,
 ) -> sqlx::Result<()> {
-    let pairs: Vec<Member> = sqlx::query_as(
-        "SELECT eu.entrance_id, eu.user_id FROM entrance_users eu \
+    let pairs: Vec<(Uuid, Uuid, i32)> = sqlx::query_as(
+        "SELECT eu.entrance_id, eu.user_id, e.wire_no FROM entrance_users eu \
          JOIN entrances e ON e.id = eu.entrance_id WHERE e.node_id = $1 \
-         UNION SELECT d.entrance_id, d.user_id FROM entrance_users_departed d \
+         UNION SELECT d.entrance_id, d.user_id, e.wire_no FROM entrance_users_departed d \
          JOIN entrances e ON e.id = d.entrance_id \
          WHERE e.node_id = $1 AND d.departed_at > now() - make_interval(secs => $2)",
     )
@@ -1247,7 +1247,7 @@ pub async fn refresh_members(
         node_id,
         pairs
             .into_iter()
-            .map(|(e, u)| (crate::grpc::stat_key(u), (e, u)))
+            .map(|(e, u, wire)| (crate::grpc::stat_key(u, wire), (e, u)))
             .collect(),
     );
     Ok(())
@@ -1837,7 +1837,7 @@ mod db_tests {
     fn members(n: Uuid, users: &[Uuid]) -> HashMap<String, Member> {
         users
             .iter()
-            .map(|&u| (crate::grpc::stat_key(u), (n, u)))
+            .map(|&u| (crate::grpc::stat_key(u, 0), (n, u)))
             .collect()
     }
 
@@ -2857,6 +2857,122 @@ mod db_tests {
         .unwrap();
         assert_eq!(raw, 200, "the departed window counts raw bytes");
         assert_eq!(node_totals(&db, n).await, (300, 150));
+        assert_history(&db).await;
+        db.drop().await;
+    }
+
+    /// W28-a (R43): the same user on two entrances of one node — the direct
+    /// one and a relay (agent keys "<user>" and "<user>#1") — is settled
+    /// per entrance with each entrance's multiplier, recorded per entrance,
+    /// and removing the user from the relay leaves the direct entrance's
+    /// billing untouched (the relay's final counters are billed within the
+    /// departed grace only).
+    #[tokio::test]
+    async fn same_user_on_two_entrances_is_settled_separately() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = db.member().await;
+        let direct = db.direct(n).await;
+        set_rate(&db, n, 500).await;
+        let relay = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO entrances (id, node_id, kind, name, connect_host, connect_port, \
+             rate_permille, wire_no, listen_port, source_cidrs) VALUES ($1, $2, 'relay', 'IPLC', \
+             'relay.example.net', 30443, 2000, 1, 20443, '{203.0.113.7/32}')",
+        )
+        .bind(relay)
+        .bind(n)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO entrance_users (entrance_id, user_id, protocol, account) \
+             VALUES ($1, $2, 'vless', '{\"id\":\"y\"}')",
+        )
+        .bind(relay)
+        .bind(u)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let both = |d: u64, r: u64| TrafficReport {
+            users: vec![
+                UserTraffic {
+                    user_id: crate::grpc::stat_key(u, 0),
+                    up_bytes: d,
+                    down_bytes: 0,
+                },
+                UserTraffic {
+                    user_id: crate::grpc::stat_key(u, 1),
+                    up_bytes: r,
+                    down_bytes: 0,
+                },
+            ],
+            ..Default::default()
+        };
+        let counters = || async {
+            sqlx::query_as::<_, (Uuid, i64)>(
+                "SELECT entrance_id, up_bytes FROM traffic_counters WHERE user_id = $1 \
+                 ORDER BY entrance_id = $2 DESC",
+            )
+            .bind(u)
+            .bind(direct)
+            .fetch_all(&db.pool)
+            .await
+            .unwrap()
+        };
+        let b = buf(&db).await;
+        b.update(n, "s1", &both(100, 300));
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, 50 + 600, "0.5x direct + 2x relay");
+        assert_eq!(counters().await, vec![(direct, 100), (relay, 300)]);
+        assert_eq!(node_totals(&db, n).await, (400, 650));
+
+        // Removed from the relay only (plan change, group, ...).
+        let mut tx = db.pool.begin().await.unwrap();
+        sqlx::query("DELETE FROM entrance_users WHERE entrance_id = $1 AND user_id = $2")
+            .bind(relay)
+            .bind(u)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        crate::entitle::record_departed(&mut tx, &[relay], &[u])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        refresh_members(&db.pool, &b, n).await.unwrap();
+        b.update(n, "s1", &both(200, 350));
+        db.flush(&b).await;
+        assert_eq!(
+            db.used(u).await,
+            650 + 50 + 100,
+            "direct as before; the relay's final counters within the grace"
+        );
+        // Past the grace the relay bills nothing more; the direct entrance
+        // keeps billing exactly as before.
+        sqlx::query(
+            "UPDATE entrance_users_departed SET departed_at = now() - interval '20 minutes'",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        refresh_members(&db.pool, &b, n).await.unwrap();
+        b.update(n, "s1", &both(300, 900));
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, 800 + 50);
+        assert_eq!(counters().await, vec![(direct, 300), (relay, 350)]);
+        // History: per entrance.
+        compact_pass(&db.pool).await.unwrap();
+        let days: Vec<(Uuid, i64, i64)> = sqlx::query_as(
+            "SELECT entrance_id, up_bytes, billed_bytes FROM traffic_daily WHERE user_id = $1 \
+             ORDER BY entrance_id = $2 DESC",
+        )
+        .bind(u)
+        .bind(direct)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(days, vec![(direct, 300, 150), (relay, 350, 700)]);
         assert_history(&db).await;
         db.drop().await;
     }

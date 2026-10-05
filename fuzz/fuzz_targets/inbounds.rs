@@ -57,6 +57,7 @@ fuzz_target!(|data: &[u8]| {
         display_name: None,
         tags: vec!["t".into()],
         entrance: "直连".into(),
+        rate_permille: 1000,
         protocol: protocols::protocol(&ib).to_string(),
         inbound: ib,
         server: Some("node.example.com".into()),
