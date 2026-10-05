@@ -35,6 +35,14 @@
 //! (`curl -k --pinnedpubkey sha256//…`: curl checks the pin before it sends
 //! the request, so -k never runs unpinned); `install.tls_pin` overrides the
 //! probe. The pin is stored with the link and reused by the script.
+//!
+//! W32: the script installs under systemd or, on Alpine, under OpenRC (the
+//! release's `/etc/init.d/akari-agent` + `akari-agent-update`, a system
+//! user; releases without them are refused there), and turns on TCP BBR +
+//! fq where the kernel and the machine allow it (its own sysctl drop-in,
+//! removed by the uninstaller with the previous values put back; skipped by
+//! `sh -s -- --no-bbr` or `AKARI_BBR=0`). The agent never changes kernel
+//! settings itself.
 
 use crate::auth::bad_request;
 use std::collections::HashMap;

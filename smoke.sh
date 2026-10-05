@@ -667,6 +667,8 @@ agent_has() {
   case "$1" in
     protocol\>=*) [ "$AGENT_PROTO" -ge "${1#protocol>=}" ] ;;
     cap:*) [[ ",$AGENT_CAPS," == *",${1#cap:},"* ]] ;;
+    # W32: the agent release carries this service file (-print-unit).
+    unit:*) "$AGENT" -print-unit "${1#unit:}" >/dev/null 2>&1 ;;
     *) echo "FAIL: bad agent requirement '$1'"; exit 1 ;;
   esac
 }
@@ -2844,7 +2846,31 @@ fi
 for p in "$INST_URL/agent/amd64" "$INST_URL/agent/$(printf "%064d" 0)" "${INST_URL%?}x" "$BASE/install/short"; do
   [ "$(fp "$p")" = "$REJ" ] || { echo "FAIL: install rejection differs for $p"; exit 1; }
 done
+# W32: the installer turns on TCP BBR + fq where it can. The test nodes
+# share the host's network namespace (--network host, privileged): what the
+# installer sets is the host's, and the uninstaller must put it back. On
+# GitHub's runners tcp_bbr is a module nobody loaded (containers cannot
+# load modules): load it, as on a VPS whose kernel has BBR.
+if [ -n "${GITHUB_ACTIONS:-}" ]; then sudo modprobe tcp_bbr 2>/dev/null || true; fi
+host_cc() { echo "$(cat /proc/sys/net/core/default_qdisc 2>/dev/null) $(cat /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null)"; }
+# bbr_installed CONTAINER OUTPUT: what the installer said matches the node
+# and the host; prints "enabled" or "skipped".
+bbr_installed() {
+  if grep -q "BBR + fq: enabled (was " "$2"; then
+    docker exec "$1" sh -c 'grep -q "^# akari-previous: net.core.default_qdisc=" /etc/sysctl.d/90-akari-bbr.conf &&
+      grep -q "^net.ipv4.tcp_congestion_control = bbr$" /etc/sysctl.d/90-akari-bbr.conf &&
+      grep -q "^tcp_bbr$" /etc/modules-load.d/akari-bbr.conf' || { echo "FAIL: BBR drop-in on $1" >&2; return 1; }
+    [ "$(host_cc)" = "fq bbr" ] || { echo "FAIL: BBR + fq not in effect: $(host_cc)" >&2; return 1; }
+    echo enabled
+  elif matches -E "BBR \+ fq: (skipped|already enabled)" "$2"; then
+    docker exec "$1" test ! -e /etc/sysctl.d/90-akari-bbr.conf || { echo "FAIL: BBR drop-in although skipped" >&2; return 1; }
+    echo skipped
+  else
+    echo "FAIL: the installer said nothing about BBR" >&2; return 1
+  fi
+}
 if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
+  BBR_BEFORE=$(host_cc)
   docker build -q -t akari-node-test:debian13 scripts/install-test >/dev/null
   docker rm -f akari-smoke-node >/dev/null 2>&1 || true
   # Host network: the node reaches the panel on 127.0.0.1 (web 8080, gRPC 8443).
@@ -2864,6 +2890,7 @@ if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
   docker exec akari-smoke-node sh -c "$INST_CMD" >"$LOG/install.out" 2>&1 \
     || { echo "FAIL: installer failed"; cat "$LOG/install.out"; exit 1; }
   grep -q "SUCCESS: the agent enrolled and is connected" "$LOG/install.out" || { echo "FAIL: installer output"; cat "$LOG/install.out"; exit 1; }
+  BBR_STATE=$(bbr_installed akari-smoke-node "$LOG/install.out") || { cat "$LOG/install.out"; exit 1; }
   for _ in $(seq 1 20); do [ "$(psql_q "SELECT status FROM nodes WHERE id='$INST_ID'")" = "online" ] && break; sleep 1; done
   [ "$(psql_q "SELECT status FROM nodes WHERE id='$INST_ID'")" = "online" ] || { echo "FAIL: installed node not online"; exit 1; }
   for _ in $(seq 1 20); do [ "$(psql_q "SELECT agent_version FROM nodes WHERE id='$INST_ID'")" = "v900.0.1" ] && break; sleep 1; done
@@ -2888,18 +2915,104 @@ if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
     || { echo "FAIL: uninstall"; tail -5 "$LOG/install.out"; exit 1; }
   docker exec akari-smoke-node sh -c 'test ! -e /usr/local/bin/akari-agent && test ! -e /etc/akari-agent && ! systemctl is-active -q akari-agent' \
     || { echo "FAIL: uninstall left files or a running agent"; exit 1; }
-  docker exec akari-smoke-node sh -c "curl -fsSL '$INST_URL2' | sh" >>"$LOG/install.out" 2>&1 \
-    || { echo "FAIL: reinstall"; tail -20 "$LOG/install.out"; exit 1; }
+  # W32: the uninstaller removed the BBR drop-in and put the previous
+  # settings back.
+  docker exec akari-smoke-node sh -c 'test ! -e /etc/sysctl.d/90-akari-bbr.conf && test ! -e /etc/modules-load.d/akari-bbr.conf' \
+    || { echo "FAIL: uninstall left the BBR drop-in"; exit 1; }
+  [ "$(host_cc)" = "$BBR_BEFORE" ] || { echo "FAIL: uninstall did not restore '$BBR_BEFORE' ($(host_cc), BBR $BBR_STATE)"; exit 1; }
+  # The reinstall without BBR (--no-bbr): nothing changed.
+  docker exec akari-smoke-node sh -c "curl -fsSL '$INST_URL2' | sh -s -- --no-bbr" >"$LOG/install-nobbr.out" 2>&1 \
+    || { echo "FAIL: reinstall"; tail -20 "$LOG/install-nobbr.out"; exit 1; }
+  grep -q "BBR + fq: not changed (--no-bbr)" "$LOG/install-nobbr.out" || { echo "FAIL: --no-bbr"; cat "$LOG/install-nobbr.out"; exit 1; }
+  docker exec akari-smoke-node test ! -e /etc/sysctl.d/90-akari-bbr.conf || { echo "FAIL: --no-bbr wrote the drop-in"; exit 1; }
+  [ "$(host_cc)" = "$BBR_BEFORE" ] || { echo "FAIL: --no-bbr changed $(host_cc)"; exit 1; }
+  cat "$LOG/install-nobbr.out" >>"$LOG/install.out"
   [ "$(fp "$INST_URL2")" = "$REJ" ] || { echo "FAIL: second link not burned"; exit 1; }
   docker exec akari-smoke-node akari-agent-uninstall >>"$LOG/install.out" 2>&1 || { echo "FAIL: uninstall helper"; exit 1; }
   docker rm -f akari-smoke-node >/dev/null
   eval "$PREV_EXIT_TRAP"
-  echo "installer (container): ok"
+  echo "installer (container): ok (BBR + fq $BBR_STATE, restored by the uninstaller)"
 else
   echo "installer container test skipped (SMOKE_INSTALL_CONTAINER=0)"
 fi
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$INST_ID")" = "202" ] || { echo "FAIL: delete inst-node"; exit 1; }
 echo "r18-2 node install: ok"
+
+echo "== W32 Alpine node: one-line installer under OpenRC, BBR + fq, reinstall without BBR, uninstall =="
+# The same installer on Alpine: OpenRC scripts from the release
+# (-print-unit), a system user, the state directory noexec, the updater
+# service; the self-update path under OpenRC is akari-agent's openrc-test.
+if need_agent "unit:akari-agent" "W32 Alpine install (OpenRC)" \
+   && { [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ] || { echo "Alpine container test skipped (SMOKE_INSTALL_CONTAINER=0)"; false; }; }; then
+  ALP_PORT=26443
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' \
+      -d "{\"name\":\"alp-node\",\"server_addr\":\"127.0.0.1\",\"templates\":[{\"template\":\"vless_reality\",\"port\":$ALP_PORT}],
+           \"install\":{\"origin\":\"http://127.0.0.1:8080\"}}")" = "201" ] \
+    || { echo "FAIL: create alp-node: $(cat /tmp/akari-smoke/last)"; exit 1; }
+  ALP_ID=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
+  ALP_CMD=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['install']['command'])")
+  BBR_BEFORE=$(host_cc)
+  docker build -q -t akari-node-test:alpine3.22 scripts/install-test-alpine >/dev/null
+  docker rm -f akari-smoke-alp >/dev/null 2>&1 || true
+  docker run -d --init --name akari-smoke-alp --network host --privileged akari-node-test:alpine3.22 >/dev/null
+  PREV_EXIT_TRAP=$(trap -p EXIT)
+  trap 'docker rm -f akari-smoke-alp >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
+  ax() { docker exec akari-smoke-alp sh -c "$1"; }
+  for _ in $(seq 1 30); do ax 'test -e /run/openrc/softlevel && rc-status >/dev/null 2>&1' && break; sleep 0.5; done
+  ax "$ALP_CMD" >"$LOG/alp-install.out" 2>&1 || { echo "FAIL: installer (Alpine)"; cat "$LOG/alp-install.out"; exit 1; }
+  grep -q "SUCCESS: the agent enrolled and is connected" "$LOG/alp-install.out" || { echo "FAIL: Alpine installer output"; cat "$LOG/alp-install.out"; exit 1; }
+  grep -q "uninstall later with (as root): /usr/local/sbin/akari-agent-uninstall" "$LOG/alp-install.out" \
+    || { echo "FAIL: Alpine uninstall hint"; cat "$LOG/alp-install.out"; exit 1; }
+  ALP_BBR=$(bbr_installed akari-smoke-alp "$LOG/alp-install.out") || { cat "$LOG/alp-install.out"; exit 1; }
+  for _ in $(seq 1 20); do [ "$(psql_q "SELECT status || ' ' || coalesce(agent_version, '-') FROM nodes WHERE id='$ALP_ID'")" = "online v900.0.1" ] && break; sleep 1; done
+  [ "$(psql_q "SELECT status || ' ' || coalesce(agent_version, '-') || ' ' || coalesce(last_error, 'ok') FROM nodes WHERE id='$ALP_ID'")" = "online v900.0.1 ok" ] \
+    || { echo "FAIL: Alpine node: $(psql_q "SELECT status, agent_version, last_error FROM nodes WHERE id='$ALP_ID'")"; exit 1; }
+  for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/$ALP_PORT) 2>/dev/null && break; sleep 1; done
+  (exec 3<>/dev/tcp/127.0.0.1/$ALP_PORT) 2>/dev/null || { echo "FAIL: Alpine REALITY inbound not listening"; exit 1; }
+  # The release's scripts, both services in the default runlevel, the agent
+  # as its own user, its state dir noexec, the updater detected.
+  for u in akari-agent akari-agent-update; do
+    ax "/usr/local/bin/akari-agent -print-unit $u | cmp -s - /etc/init.d/$u && test -x /etc/init.d/$u" \
+      || { echo "FAIL: /etc/init.d/$u is not the release's"; exit 1; }
+    ax "rc-update show default" | matches -E "^ *$u \|" || { echo "FAIL: $u not in the default runlevel"; exit 1; }
+  done
+  ax 'rc-service akari-agent status && rc-service akari-agent-update status' >/dev/null 2>&1 || { echo "FAIL: Alpine services not started"; exit 1; }
+  ALP_PID=$(ax 'pgrep -P "$(cat /var/run/supervise-akari-agent.pid)" | sed -n 1p')
+  [ -n "$ALP_PID" ] && [ "$(ax "stat -c %U /proc/$ALP_PID")" = akari-agent ] || { echo "FAIL: Alpine agent user"; exit 1; }
+  ax "awk '\$5 == \"/var/lib/akari-agent\" { print \$6 }' /proc/$ALP_PID/mountinfo" | matches noexec || { echo "FAIL: Alpine state dir not noexec"; exit 1; }
+  [ "$(ax 'stat -c "%a %U" /etc/akari-agent/bootstrap.toml')" = "600 root" ] || { echo "FAIL: Alpine bootstrap.toml mode"; exit 1; }
+  ax 'cat /var/log/akari-agent/agent.log' | matches '"updater":true' || { echo "FAIL: Alpine agent does not see its updater"; exit 1; }
+  ax 'cat /var/log/akari-agent/agent.log' | matches 'units are not the ones' && { echo "FAIL: Alpine agent reports stale scripts"; exit 1; }
+  [ "$(psql_q "SELECT 'updater' = ANY(agent_capabilities) AND NOT 'stale-units' = ANY(agent_capabilities) FROM nodes WHERE id='$ALP_ID'")" = "t" ] \
+    || { echo "FAIL: Alpine node capabilities"; exit 1; }
+  # Reinstall without BBR (AKARI_BBR=0): an earlier install's drop-in goes,
+  # the previous settings come back; the node reconnects.
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$ALP_ID/install" -H 'Content-Type: application/json' \
+      -d '{"origin":"http://127.0.0.1:8080"}')" = "200" ] || { echo "FAIL: alp-node re-install link"; exit 1; }
+  ALP_CMD2=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['command'])")
+  docker exec -e AKARI_BBR=0 akari-smoke-alp sh -c "$ALP_CMD2" >"$LOG/alp-reinstall.out" 2>&1 \
+    || { echo "FAIL: Alpine reinstall"; cat "$LOG/alp-reinstall.out"; exit 1; }
+  if [ "$ALP_BBR" = enabled ]; then
+    grep -q "BBR + fq: removed /etc/sysctl.d/90-akari-bbr.conf" "$LOG/alp-reinstall.out" || { echo "FAIL: AKARI_BBR=0 kept BBR"; cat "$LOG/alp-reinstall.out"; exit 1; }
+  else
+    grep -q "BBR + fq: not changed (--no-bbr)" "$LOG/alp-reinstall.out" || { echo "FAIL: AKARI_BBR=0"; cat "$LOG/alp-reinstall.out"; exit 1; }
+  fi
+  ax 'test ! -e /etc/sysctl.d/90-akari-bbr.conf && test ! -e /etc/modules-load.d/akari-bbr.conf' || { echo "FAIL: BBR drop-in after AKARI_BBR=0"; exit 1; }
+  [ "$(host_cc)" = "$BBR_BEFORE" ] || { echo "FAIL: AKARI_BBR=0 did not restore '$BBR_BEFORE' ($(host_cc))"; exit 1; }
+  grep -q "SUCCESS: the agent enrolled and is connected" "$LOG/alp-reinstall.out" || { echo "FAIL: Alpine reinstall output"; cat "$LOG/alp-reinstall.out"; exit 1; }
+  # Uninstall: services, scripts, user, mount, state, logs: all gone.
+  ax 'akari-agent-uninstall' >>"$LOG/alp-install.out" 2>&1 || { echo "FAIL: Alpine uninstall"; exit 1; }
+  ax 'test ! -e /etc/init.d/akari-agent && test ! -e /etc/init.d/akari-agent-update && test ! -e /usr/local/bin/akari-agent &&
+      test ! -e /etc/akari-agent && test ! -e /var/lib/akari-agent && test ! -e /var/lib/akari-agent-update &&
+      test ! -e /var/log/akari-agent && ! grep -q "^akari-agent:" /etc/passwd /etc/group &&
+      ! awk "\$5 == \"/var/lib/akari-agent\" { f = 1 } END { exit !f }" /proc/self/mountinfo &&
+      ! rc-update show default | grep akari >/dev/null' || { echo "FAIL: Alpine uninstall left something behind"; exit 1; }
+  ax 'ps -o args' | matches '^/usr/local/bin/akari-agent ' && { echo "FAIL: Alpine agent still running after uninstall"; exit 1; }
+  docker rm -f akari-smoke-alp >/dev/null
+  eval "$PREV_EXIT_TRAP"
+  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$ALP_ID")" = "202" ] || { echo "FAIL: delete alp-node"; exit 1; }
+  echo "w32 Alpine node: ok (OpenRC install, BBR + fq $ALP_BBR, AKARI_BBR=0 reinstall restored it, uninstall clean)"
+fi
 
 echo "== One-click agent update check: fake GitHub release server -> verified -> stored like an upload; refusals store nothing =="
 # A local stand-in for api.github.com (plain http is accepted for loopback

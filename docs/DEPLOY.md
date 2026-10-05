@@ -461,7 +461,7 @@ curl -fsSL 'https://panel.example.com/<prefix>/install/<token>' | sh -c '[ "$(id
 ```
 
 Run it on the node (Linux with systemd >= 250, amd64 or arm64; Debian 12/13, Ubuntu 22.04+ are
-fine), as root or as a sudo user: the tail runs the script directly as root (images without
+fine; W32: also Alpine Linux with OpenRC >= 0.45, tested on 3.22 — §3h), as root or as a sudo user: the tail runs the script directly as root (images without
 `sudo` work) and through `sudo` otherwise (W10; commands issued before printed `| sudo sh`, which
 needs `sudo` even as root). Without root and without `sudo` it stops at `sudo` and runs nothing.
 It
@@ -483,9 +483,13 @@ It
    binary (§5b), so do not edit the installed unit files: local changes go into a drop-in
    (`/etc/systemd/system/akari-agent.service.d/*.conf`; an edited unit is reported on the node
    page and replaced by the next update or reinstall);
-3. with 节点域名 set: opens TCP 80 in an active `ufw`/`firewalld` (the CA's HTTP-01 check; a
+   On Alpine (OpenRC) it installs the release's OpenRC scripts instead (`/etc/init.d/akari-agent`,
+   `/etc/init.d/akari-agent-update`) and a system user `akari-agent` (§3h);
+3. turns on TCP BBR with the fq qdisc where the kernel supports it and the machine allows it
+   (W32, §3h; `--no-bbr` / `AKARI_BBR=0` skips it);
+4. with 节点域名 set: opens TCP 80 in an active `ufw`/`firewalld` (the CA's HTTP-01 check; a
    cloud firewall / security group is outside the machine, the output reminds you);
-4. starts the agent and waits until it has enrolled and connected (prints `SUCCESS`, or the
+5. starts the agent and waits until it has enrolled and connected (prints `SUCCESS`, or the
    agent's log and the reason). The certificate follows within seconds; its state is on the node
    page.
 
@@ -598,6 +602,69 @@ first renewal it moves onto a key generated on the node and the panel revokes th
 panel-generated one. Then delete `cert_pem`/`key_pem` from `/etc/akari-agent/bootstrap.toml`. To
 migrate at once instead of at renewal time, issue a new enrollment token for the node and install
 that bootstrap file.
+
+## 3h. 系统支持：BBR + fq 与 Alpine（W32，中文）
+
+**BBR + fq（安装时自动开启，可关闭）。** 一键安装脚本在节点上开启 TCP BBR 拥塞控制 + fq 队列
+（跨境、有丢包的长距离线路吞吐明显更好）。agent 本身**从不**修改内核参数，只有安装脚本做这件事：
+
+- 先检测：内核有 `tcp_bbr`（已内置、已加载，或能 `modprobe tcp_bbr`），且 `/proc/sys` 可写。
+  不满足就跳过并说明原因，安装照常完成——常见于 OpenVZ/LXC 等容器（内核参数只读、或容器有自己的
+  网络命名空间而没有 `net.core.default_qdisc`）以及没有 BBR 的旧内核；
+- 开启后写入独立的 `/etc/sysctl.d/90-akari-bbr.conf`（`net.core.default_qdisc = fq`、
+  `net.ipv4.tcp_congestion_control = bbr`，并以注释记下原来的值），`tcp_bbr` 是模块时另写
+  `/etc/modules-load.d/akari-bbr.conf`，开机自动生效。BBR 对新连接立即生效；fq 对之后新建的网卡
+  队列生效（重启后全部生效）；
+- 已经是 BBR + fq 的机器：不写任何文件（"already enabled ... left as it is"）。重复运行安装命令
+  是幂等的；
+- **关闭**：安装时加 `--no-bbr`，或设置环境变量 `AKARI_BBR=0`：
+  ```bash
+  curl -fsSL '<安装链接>' | sh -s -- --no-bbr               # root
+  curl -fsSL '<安装链接>' | sudo sh -s -- --no-bbr          # sudo 用户
+  curl -fsSL '<安装链接>' | sudo AKARI_BBR=0 sh             # 或用环境变量
+  ```
+  对已经由安装脚本开启过 BBR 的节点，带 `--no-bbr` 重装会删除上述文件并恢复原来的值；
+- **卸载**（`akari-agent-uninstall`）只删除安装脚本加的这两个文件；如果当前生效的仍是我们设置的
+  值，就恢复为安装前记录的值（期间被别人改过的不动）。自己手工配置的 sysctl 不受影响。
+
+**Alpine Linux（OpenRC）。** 同一条安装命令在 Alpine 上自动识别 OpenRC（要求 OpenRC ≥ 0.45；
+CI 在 Alpine 3.22 / OpenRC 0.62 上测试；amd64/arm64）。agent 是无 cgo 的静态二进制，musl 上直接运行，
+不需要单独的 musl 构建。安装内容：
+
+- 系统用户 `akari-agent`（代替 systemd 的 DynamicUser）；`/etc/init.d/akari-agent` 与
+  `/etc/init.d/akari-agent-update`（来自所装版本本身，`akari-agent -print-unit akari-agent`；
+  更早的、不带 OpenRC 脚本的版本在 Alpine 上会被拒绝，请先在「更新」里发布新版本），两者加入
+  default 运行级；
+- agent 由 supervise-daemon 守护（崩溃 3 秒后重启，默认不限次数），只有
+  `CAP_NET_BIND_SERVICE`（可监听 443）与 `no_new_privs`；`/etc/akari-agent/bootstrap.toml`
+  （及自备证书 `/etc/akari-agent/tls/*.pem`）在启动时复制到 `/run/credentials/akari-agent.service/`
+  （内存盘、仅 agent 可读、停止即删除），与 systemd 下路径一致；状态目录 `/var/lib/akari-agent`
+  （0700）以 bind mount 重新挂成 `noexec,nosuid,nodev`（W^X，与 systemd 的 noexec StateDirectory
+  等价；容器里没有挂载权限时照常启动并在服务日志里提示）；
+- 日志：`/var/log/akari-agent/agent.log`（`tail -f` 查看；每次启动时超过 16 MiB 轮转为
+  `agent.log.1`；需要定期轮转可 `apk add logrotate` 并配置 `copytruncate`），更新器日志
+  `/var/log/akari-agent-update.log`；
+- 常用命令：`rc-service akari-agent restart|status`；本地设置写在 `/etc/conf.d/akari-agent`
+  （例如 `AKARI_AGENT_ARGS="-heartbeat-interval 30s"`、`respawn_max=5 respawn_period=60`），
+  安装脚本与自更新**从不**修改 conf.d；不要直接改 `/etc/init.d/` 里的脚本（会被下次更新替换，
+  节点页会提示"单元已被修改"）；
+- BBR 持久化依赖 `sysctl` 服务在 boot 运行级（Alpine 标准安装默认如此；没有时安装脚本会提示
+  `rc-update add sysctl boot`）。
+
+**Alpine 上的自更新**与 systemd 节点走同一套校验（§5b），差异与已知缺口：
+
+| systemd | OpenRC（Alpine） |
+|---|---|
+| `akari-agent-update.path` 监视请求文件，立即触发 | `akari-agent-update` 服务是一个 root shell 循环，每秒检查一次请求文件（agent 等待裁决 90 秒，足够），然后运行**已安装的**二进制 `-apply-update`，一次一个 |
+| 更新器单元有沙箱：无网络、`ProtectSystem=strict`、能力边界集、系统调用过滤 | **缺口**：OpenRC 没有对应机制，更新器以普通 root 运行（通过 OpenRC 重启 agent 本身就需要启动服务所需的权限）。校验逻辑完全相同：不跟随符号链接、只收 agent 所有的单链接普通文件、先拷入 root 文件再校验副本、用自身编译进的公钥验签 |
+| agent 单元的文件系统/内核/系统调用沙箱（ProtectSystem、ProtectProc=invisible、SystemCallFilter 等） | **缺口**：只有专用用户 + 仅 `CAP_NET_BIND_SERVICE` + `no_new_privs` + `/etc/akari-agent` 仅 root 可读 + noexec 状态目录 |
+| 崩溃次数 = `NRestarts`；启动次数限制触发 = 立即回滚 | 崩溃次数 = supervise-daemon 的重启计数（`/run/openrc/options/akari-agent/start_count`）；conf.d 设置了 `respawn_max` 且 supervise-daemon 放弃（服务停止并标记 failed）或守护进程消失 = 立即回滚 |
+| 单元随更新刷新，`daemon-reload` | 两个 init 脚本随更新刷新（root 0755，旧的存 `units.prev/`，回滚恢复）；OpenRC 每次启动都重新读取脚本，无需 reload。更新器自己的脚本在它下次启动（重启或重装）时生效 |
+| `journalctl -u akari-agent-update` | `/var/log/akari-agent-update.log` |
+
+CI：agent 仓库的 `openrc self-update` job（Alpine 3.22 容器，OpenRC 为 init）覆盖 安装 → 更新 →
+坏版本回滚（重启计数与 supervise-daemon 放弃两种）→ 恶意请求拒绝；面板 smoke 的 W32 段用一键安装
+命令在 Alpine 容器里装节点、验证 BBR 开关、重装与卸载。
 
 ## 3g. First user: node group, plan, subscription
 
@@ -1283,6 +1350,10 @@ through a separate root unit that only ever runs the **installed** binary:
   "Nodes whose units predate W23";
 - `journalctl -u akari-agent-update` shows what the updater did; installing a newer agent by
   hand (or 重装命令) wins over everything the updater recorded;
+- **Alpine / OpenRC (W32)**: the same hand-over, with the `akari-agent-update` service (a root
+  loop that checks for the request once a second) instead of the path unit, the two init scripts
+  instead of the three units, and supervise-daemon's respawn counter instead of `NRestarts`;
+  differences and gaps (no updater sandbox) in §3h; log `/var/log/akari-agent-update.log`;
 - `akari-agent -release-keys` prints the pinned keys ("no release keys pinned" = self-update off).
 
 ## 6. Rollback
