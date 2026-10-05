@@ -167,12 +167,6 @@ fn compiling_rules() {
     // a later rule change never re-creates an inbound).
     let none = assemble(vec!["in-a".into()], vec![]);
     assert!(none.rules.is_empty() && !none.version.is_empty());
-
-    assert_eq!(
-        inbound_tags(&json!([{"tag":"b"},{"tag":"a"},{"port":1},{"tag":""},{"tag":"a"},{"tag":5}])),
-        ["a", "b"]
-    );
-    assert!(inbound_tags(&json!({"tag":"x"})).is_empty());
 }
 
 #[test]
@@ -537,7 +531,18 @@ async fn node_policy_follows_switch_and_rules() {
         .await
         .unwrap();
     let on = node_policy(&db.pool, node).await.unwrap().unwrap();
-    assert_eq!(on.inbound_tags, ["in-vless"]);
+    assert_eq!(on.inbound_tags, [crate::entrances::DIRECT_TAG]);
+    // W28-a: with its direct entrance disabled the node serves no inbound.
+    for enabled in [false, true] {
+        sqlx::query("UPDATE entrances SET enabled = $2 WHERE node_id = $1")
+            .bind(node)
+            .bind(enabled)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let p = node_policy(&db.pool, node).await.unwrap().unwrap();
+        assert_eq!(p == BlockPolicy::default(), !enabled);
+    }
     let ids: Vec<u64> = on.rules.iter().map(|r| r.id).collect();
     let (bt, tr) = (
         rule_id(&db, "bittorrent").await,
@@ -797,7 +802,7 @@ async fn session_sends_policy_and_stores_counters() {
             other => panic!("{other:?}"),
         }
     };
-    assert_eq!(on.inbound_tags, ["in-vless"]);
+    assert_eq!(on.inbound_tags, [crate::entrances::DIRECT_TAG]);
     assert_eq!(on.rules.len(), 2);
 
     let xl = rule_id(&db, "xunlei_pt").await;

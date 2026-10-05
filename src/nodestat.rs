@@ -670,43 +670,56 @@ pub async fn requested_at(pg: &PgPool, node: Uuid) -> sqlx::Result<Option<DateTi
     .flatten())
 }
 
-/// What the panel dials for one inbound: the client-facing host/port
-/// (connect override, else the node address and the inbound port) and
+/// What the panel dials for one entrance: the client-facing host/port
+/// (the entrance's, else the node's TLS domain and the inbound's port) and
 /// whether TCP can measure it.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Target {
-    pub tag: String,
+    /// The entrance's name (`node_latency.target`).
+    pub name: String,
     pub host: Option<String>,
     pub port: Option<u16>,
     pub udp_only: bool,
 }
 
-/// One target per tagged inbound, in inbound order.
-pub fn targets(server_addr: Option<&str>, inbounds: &Value, overrides: &Value) -> Vec<Target> {
-    let mut out = Vec::new();
-    for ib in inbounds.as_array().into_iter().flatten() {
-        let Some(tag) = ib.get("tag").and_then(Value::as_str) else {
-            continue;
-        };
-        let ov = crate::nodemeta::connect_for(overrides, tag);
-        let host = ov
-            .host
-            .or_else(|| server_addr.map(str::to_string))
-            .filter(|h| !h.is_empty());
-        let port = ov.port.or_else(|| {
-            ib.get("port")
-                .and_then(Value::as_u64)
+/// An enabled entrance's client-facing address as stored.
+#[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
+pub struct EntranceAddr {
+    pub name: String,
+    pub connect_host: Option<String>,
+    pub connect_port: Option<i32>,
+}
+
+/// One target per entrance, in the given order; none without an inbound.
+pub fn targets(
+    inbound: Option<&Value>,
+    tls_domain: Option<&str>,
+    entrances: &[EntranceAddr],
+) -> Vec<Target> {
+    let Some(ib) = inbound else {
+        return Vec::new();
+    };
+    let inbound_port = ib
+        .get("port")
+        .and_then(Value::as_u64)
+        .and_then(|p| u16::try_from(p).ok());
+    let (tcp, _) = crate::protocols::l4(ib);
+    entrances
+        .iter()
+        .map(|e| Target {
+            name: e.name.clone(),
+            host: e
+                .connect_host
+                .clone()
+                .or_else(|| tls_domain.map(str::to_string))
+                .filter(|h| !h.is_empty()),
+            port: e
+                .connect_port
                 .and_then(|p| u16::try_from(p).ok())
-        });
-        let (tcp, _) = crate::protocols::l4(ib);
-        out.push(Target {
-            tag: tag.to_string(),
-            host,
-            port,
+                .or(inbound_port),
             udp_only: !tcp,
-        });
-    }
-    out
+        })
+        .collect()
 }
 
 /// TCP connect time (DNS excluded: resolved once, first address), median
@@ -768,9 +781,10 @@ const PANEL_PROBE_TICK: Duration = Duration::from_secs(15);
 #[derive(sqlx::FromRow)]
 struct Due {
     id: Uuid,
-    server_addr: Option<String>,
-    xray_inbounds: Value,
-    connect_overrides: Value,
+    inbound: Option<Value>,
+    tls_domain: Option<String>,
+    /// `[EntranceAddr]` of the node's enabled entrances.
+    entrances: Value,
 }
 
 /// The panel's TCP test (any instance): every PANEL_PROBE_TICK claim up to
@@ -807,7 +821,11 @@ pub async fn panel_probe_round(
          WHERE n.id IN (SELECT id FROM nodes WHERE enabled AND deleting_at IS NULL \
              AND (panel_probe_next_at IS NULL OR panel_probe_next_at <= now()) \
              ORDER BY panel_probe_next_at NULLS FIRST, id LIMIT $2 FOR UPDATE SKIP LOCKED) \
-         RETURNING n.id, n.server_addr, n.xray_inbounds, n.connect_overrides",
+         RETURNING n.id, n.inbound, n.tls_domain, \
+             coalesce((SELECT jsonb_agg(jsonb_build_object('name', e.name, \
+                 'connect_host', e.connect_host, 'connect_port', e.connect_port) \
+                 ORDER BY e.kind <> 'direct', e.sort, e.created_at, e.id) \
+                 FROM entrances e WHERE e.node_id = n.id AND e.enabled), '[]'::jsonb) AS entrances",
     )
     .bind(interval_secs as f64)
     .bind(CLAIM_BATCH)
@@ -818,11 +836,9 @@ pub async fn panel_probe_round(
     for d in due {
         let pg = pg.clone();
         set.spawn(async move {
-            let ts = targets(
-                d.server_addr.as_deref(),
-                &d.xray_inbounds,
-                &d.connect_overrides,
-            );
+            let entrances: Vec<EntranceAddr> =
+                serde_json::from_value(d.entrances).unwrap_or_default();
+            let ts = targets(d.inbound.as_ref(), d.tls_domain.as_deref(), &entrances);
             let mut tags = Vec::new();
             let mut delays = Vec::new();
             let mut errors = Vec::new();
@@ -832,7 +848,7 @@ pub async fn panel_probe_round(
                     (Some(h), Some(p), false) => tcp_latency(h, p, attempts, timeout).await,
                     _ => Err("no address".to_string()),
                 };
-                tags.push(t.tag.clone());
+                tags.push(t.name.clone());
                 match r {
                     Ok(ms) => {
                         delays.push(Some(i32::try_from(ms).unwrap_or(i32::MAX)));
@@ -894,12 +910,11 @@ pub async fn node_status(
         latency: Value,
         traffic_raw_bytes: i64,
         traffic_billed_bytes: i64,
-        traffic_rate_permille: i32,
         probe_requested_at: Option<DateTime<Utc>>,
     }
     let row: Row = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT n.status, {} AS online, n.last_seen_at, {} AS latency, \
-         n.traffic_raw_bytes, n.traffic_billed_bytes, n.traffic_rate_permille, n.probe_requested_at \
+         n.traffic_raw_bytes, n.traffic_billed_bytes, n.probe_requested_at \
          FROM nodes n WHERE n.id = $1",
         online_sql("n"),
         latency_json_sql("n")
@@ -918,7 +933,6 @@ pub async fn node_status(
         "latency": row.latency,
         "traffic_raw_bytes": row.traffic_raw_bytes,
         "traffic_billed_bytes": row.traffic_billed_bytes,
-        "traffic_rate": f64::from(row.traffic_rate_permille) / 1000.0,
         "probe_requested_at": row.probe_requested_at,
     })))
 }
@@ -1092,7 +1106,10 @@ pub async fn request_probe(
 
 #[derive(Serialize, sqlx::FromRow)]
 pub struct MyNodeStatus {
+    /// The node's user-facing name and the entrance's (W28-a: one row per
+    /// usable entrance, "香港 01" + "直连").
     pub name: String,
+    pub entrance: String,
     pub region: Option<String>,
     pub tags: Vec<String>,
     /// Traffic multiplier (1.0 = billed as used).
@@ -1106,28 +1123,31 @@ pub struct MyNodeStatus {
     pub latency_measured_at: Option<DateTime<Utc>>,
 }
 
-/// GET /me/nodes (user portal): the nodes the caller can use and that are
-/// shown to users — name, region, tags, multiplier, online, latency. No
-/// ids, addresses, inbounds or machine metrics.
+/// GET /me/nodes (user portal): the entrances the caller can use on nodes
+/// shown to users — node and entrance name, region, tags, the entrance's
+/// multiplier, online, latency (the node's). No ids, addresses, inbounds or
+/// machine metrics.
 pub async fn my_nodes(
     State(state): State<AppState>,
     user: AuthUser,
 ) -> Result<Json<Vec<MyNodeStatus>>, ApiError> {
     let rows = sqlx::query_as::<_, MyNodeStatus>(sqlx::AssertSqlSafe(format!(
-        "SELECT coalesce(n.display_name, n.name) AS name, n.region, n.tags, \
-         (n.traffic_rate_permille / 1000.0)::float8 AS rate, {} AS online, \
+        "SELECT coalesce(n.display_name, n.name) AS name, e.name AS entrance, n.region, n.tags, \
+         (e.rate_permille / 1000.0)::float8 AS rate, {} AS online, \
          l.delay_ms AS latency_ms, \
          CASE WHEN l.delay_ms IS NOT NULL THEN 'ok' WHEN lf.node_id IS NOT NULL THEN 'timeout' \
               ELSE 'unknown' END AS latency_status, \
          coalesce(l.measured_at, lf.measured_at) AS latency_measured_at \
-         FROM node_users nu JOIN nodes n ON n.id = nu.node_id \
+         FROM entrance_users eu JOIN entrances e ON e.id = eu.entrance_id \
+         JOIN nodes n ON n.id = e.node_id \
          LEFT JOIN LATERAL (SELECT delay_ms, measured_at FROM node_latency \
              WHERE node_id = n.id AND source = 'agent' AND delay_ms IS NOT NULL \
              ORDER BY ord LIMIT 1) l ON true \
          LEFT JOIN LATERAL (SELECT node_id, measured_at FROM node_latency \
              WHERE node_id = n.id AND source = 'agent' ORDER BY ord LIMIT 1) lf ON true \
-         WHERE nu.user_id = $1 AND n.enabled AND n.visible AND n.deleting_at IS NULL \
-         ORDER BY n.sort, coalesce(n.display_name, n.name)",
+         WHERE eu.user_id = $1 AND n.enabled AND n.visible AND n.deleting_at IS NULL \
+         AND n.inbound IS NOT NULL AND e.enabled \
+         ORDER BY n.sort, coalesce(n.display_name, n.name), e.kind <> 'direct', e.sort, e.name",
         online_sql("n")
     )))
     .bind(user.id)

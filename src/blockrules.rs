@@ -303,24 +303,6 @@ pub fn assemble(inbound_tags: Vec<String>, rules: Vec<BlockRule>) -> BlockPolicy
     p
 }
 
-/// The tags of a node's inbound array (entries without a string tag are
-/// skipped: the panel's inbound validation requires one anyway).
-pub fn inbound_tags(inbounds: &Value) -> Vec<String> {
-    let mut tags: Vec<String> = inbounds
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|i| i.get("tag").and_then(Value::as_str))
-                .filter(|t| !t.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-    tags.sort();
-    tags.dedup();
-    tags
-}
-
 #[derive(sqlx::FromRow)]
 struct RuleRow {
     id: i64,
@@ -350,25 +332,30 @@ async fn enabled_rules(conn: &mut PgConnection) -> sqlx::Result<Vec<BlockRule>> 
 }
 
 /// The policy a node's agent should run (None = the node is gone). A node
-/// that is off, disabled or being deleted gets the empty policy.
+/// that is off, disabled or being deleted gets the empty policy, and so
+/// does one that serves no inbound (none set, or its direct entrance
+/// disabled: W28-a, the same condition as `grpc`'s state). The served
+/// inbound is tagged `entrances::DIRECT_TAG` by the panel.
 pub async fn node_policy(pg: &sqlx::PgPool, node: Uuid) -> sqlx::Result<Option<BlockPolicy>> {
     let mut tx = pg.begin().await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         .execute(&mut *tx)
         .await?;
-    let row: Option<(bool, Value)> = sqlx::query_as(
-        "SELECT block_rules_enabled AND enabled AND deleting_at IS NULL, xray_inbounds \
+    let row: Option<(bool, bool)> = sqlx::query_as(
+        "SELECT block_rules_enabled AND enabled AND deleting_at IS NULL, \
+                inbound IS NOT NULL AND coalesce((SELECT e.enabled FROM entrances e \
+                    WHERE e.node_id = nodes.id AND e.kind = 'direct'), false) \
          FROM nodes WHERE id = $1",
     )
     .bind(node)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((on, inbounds)) = row else {
+    let Some((on, served)) = row else {
         return Ok(None);
     };
-    let policy = if on {
+    let policy = if on && served {
         let rules = enabled_rules(&mut tx).await?;
-        assemble(inbound_tags(&inbounds), rules)
+        assemble(vec![crate::entrances::DIRECT_TAG.to_string()], rules)
     } else {
         BlockPolicy::default()
     };

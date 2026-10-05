@@ -19,7 +19,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use akari_panel::fuzzing::{cert_status_json, traffic_check, traffic_peek};
+use akari_panel::fuzzing::{cert_status_json, traffic_check, traffic_members, traffic_peek};
 use akari_panel::nodestat::{Sample, heartbeat_blob};
 use akari_panel::pb::AgentUp;
 use akari_panel::pb::agent_up::Msg;
@@ -84,10 +84,11 @@ fn check_heartbeat(hb: &akari_panel::pb::Heartbeat) {
 
 fuzz_target!(|data: &[u8]| {
     let node = Uuid::from_u128(0xA);
+    let entrance = Uuid::from_u128(0xE);
     let buf = TrafficBuffer::new();
-    let mut members: HashSet<Uuid> = users()[..2].iter().copied().collect();
-    let mut ever = members.clone();
-    buf.set_members(node, members.clone());
+    let mut members: Vec<Uuid> = users()[..2].to_vec();
+    let mut ever: HashSet<Uuid> = members.iter().copied().collect();
+    buf.set_members(node, traffic_members(entrance, &members));
     let mut last: HashMap<(Uuid, &str), (i64, i64)> = HashMap::new();
     let mut flushed = false;
     let mut i = 0;
@@ -139,7 +140,7 @@ fuzz_target!(|data: &[u8]| {
                     .map(|(_, u)| *u)
                     .collect();
                 ever.extend(members.iter().copied());
-                buf.set_members(node, members.clone());
+                buf.set_members(node, traffic_members(entrance, &members));
             }
         }
         if let Err(e) = traffic_check(&buf) {
@@ -147,7 +148,7 @@ fuzz_target!(|data: &[u8]| {
         }
         for u in users() {
             for s in SESSIONS {
-                match traffic_peek(&buf, node, u, s) {
+                match traffic_peek(&buf, node, entrance, u, s) {
                     Some(v) => {
                         if let Some(prev) = last.get(&(u, s)).filter(|_| !flushed) {
                             assert!(v.0 >= prev.0 && v.1 >= prev.1, "counter went backwards");
@@ -165,7 +166,11 @@ fuzz_target!(|data: &[u8]| {
     for u in users() {
         if !ever.contains(&u) {
             for s in SESSIONS {
-                assert_eq!(traffic_peek(&buf, node, u, s), None, "non-member buffered");
+                assert_eq!(
+                    traffic_peek(&buf, node, entrance, u, s),
+                    None,
+                    "non-member buffered"
+                );
             }
         }
     }
@@ -180,5 +185,8 @@ fuzz_target!(|data: &[u8]| {
         ..Default::default()
     };
     buf.update(stranger, "s-a", &r);
-    assert_eq!(traffic_peek(&buf, stranger, users()[0], "s-a"), None);
+    assert_eq!(
+        traffic_peek(&buf, stranger, entrance, users()[0], "s-a"),
+        None
+    );
 });

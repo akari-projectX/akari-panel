@@ -85,29 +85,26 @@ struct SubUser {
     expires_at: Option<DateTime<Utc>>,
 }
 
-/// One assignment of the subscribing user: the node's public data and the
-/// user's credentials on it (input of `render`).
+/// One usable entrance of the subscribing user (W28-a: every entrance is
+/// its own proxy): the node's public data, the entrance's client-facing
+/// address and the user's credential on it (input of `render`).
 #[derive(FromRow)]
 pub struct NodeRow {
     pub name: String,
-    pub xray_inbounds: Value,
-    pub server_addr: Option<String>,
-    pub credentials: Value,
-    /// W11 (`nodemeta.rs`): user-facing name and tags (proxy names), and
-    /// per-inbound client-facing host/port overrides.
-    #[sqlx(default)]
+    /// W11 (`nodemeta.rs`): user-facing name and tags (proxy names).
     pub display_name: Option<String>,
-    #[sqlx(default)]
     pub tags: Vec<String>,
-    #[sqlx(default)]
-    pub connect_overrides: Value,
-}
-
-#[derive(serde::Deserialize)]
-struct Credential {
-    inbound_tag: String,
-    protocol: String,
-    account: Value,
+    /// The entrance's name ("直连", "IPLC").
+    pub entrance: String,
+    /// The node's inbound (xray JSON).
+    pub inbound: Value,
+    /// What clients dial: the entrance's host (else the node's TLS domain;
+    /// none = left out) and port (none = the inbound's).
+    pub server: Option<String>,
+    pub port: Option<i32>,
+    /// The user's account on this entrance.
+    pub protocol: String,
+    pub account: Value,
 }
 
 mod clash;
@@ -232,14 +229,15 @@ pub async fn subscription(
         return reject::not_found();
     }
     let rows = match sqlx::query_as::<_, NodeRow>(
-        "SELECT n.name, n.xray_inbounds, \
-         COALESCE(NULLIF(n.server_addr, ''), n.tls_domain) AS server_addr, nu.credentials, \
-         n.display_name, n.tags, n.connect_overrides \
-         FROM node_users nu \
-         JOIN nodes n ON n.id = nu.node_id AND n.enabled = true AND n.visible \
-         JOIN users u ON u.id = nu.user_id AND u.enabled = true \
-         WHERE nu.user_id = $1 \
-         ORDER BY n.sort, coalesce(n.display_name, n.name), n.id",
+        "SELECT n.name, n.display_name, n.tags, e.name AS entrance, n.inbound, \
+         coalesce(e.connect_host, n.tls_domain) AS server, e.connect_port AS port, \
+         eu.protocol, eu.account \
+         FROM entrance_users eu \
+         JOIN entrances e ON e.id = eu.entrance_id AND e.enabled \
+         JOIN nodes n ON n.id = e.node_id AND n.enabled AND n.visible AND n.inbound IS NOT NULL \
+         JOIN users u ON u.id = eu.user_id AND u.enabled \
+         WHERE eu.user_id = $1 \
+         ORDER BY n.sort, coalesce(n.display_name, n.name), n.id, e.kind <> 'direct', e.sort, e.name",
     )
     .bind(user.id)
     .fetch_all(state.pg())
@@ -490,8 +488,42 @@ mod tests {
         assert!(render_sing_box(&p)["outbounds"][0].get("tls").is_none());
     }
 
-    /// A user on one node with a REALITY vless, a websocket vmess and a TLS
-    /// trojan inbound (every protocol and transport the renderers branch on).
+    /// One row per (inbound, credential) pair: a node `name` per inbound
+    /// (D2), its entrance named after the inbound's tag, at `server`.
+    pub(crate) fn rows_of(
+        name: &str,
+        server: Option<&str>,
+        inbounds: Value,
+        creds: Value,
+    ) -> Vec<NodeRow> {
+        let mut rows = Vec::new();
+        for c in creds.as_array().into_iter().flatten() {
+            let tag = c["inbound_tag"].as_str().unwrap_or_default();
+            let Some(ib) = inbounds
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|i| i["tag"] == tag)
+            else {
+                continue;
+            };
+            rows.push(NodeRow {
+                name: name.into(),
+                display_name: None,
+                tags: vec![],
+                entrance: tag.into(),
+                inbound: ib.clone(),
+                server: server.map(String::from),
+                port: None,
+                protocol: c["protocol"].as_str().unwrap_or_default().into(),
+                account: c["account"].clone(),
+            });
+        }
+        rows
+    }
+
+    /// A user on three entrances: a REALITY vless, a websocket vmess and a
+    /// TLS trojan (every protocol and transport the renderers branch on).
     fn snapshot_rows() -> Vec<NodeRow> {
         let inbounds = json!([
             {"tag": "in-vless", "protocol": "vless", "port": 443, "streamSettings": {
@@ -512,15 +544,7 @@ mod tests {
                 {"id": "22222222-2222-2222-2222-222222222222"}},
             {"inbound_tag": "in-trojan", "protocol": "trojan", "account": {"password": "pw"}},
         ]);
-        vec![NodeRow {
-            name: "HK 1".into(),
-            xray_inbounds: inbounds,
-            server_addr: Some("hk.example.com".into()),
-            credentials: creds,
-            display_name: None,
-            tags: vec![],
-            connect_overrides: Value::Null,
-        }]
+        rows_of("HK 1", Some("hk.example.com"), inbounds, creds)
     }
 
     /// A10: the three renderers' exact output (any change to a client-facing
@@ -539,7 +563,7 @@ mod tests {
         assert_eq!(
             lines[0],
             "vless://11111111-1111-1111-1111-111111111111@hk.example.com:443?type=tcp&security=reality\
-             &flow=xtls-rprx-vision&sni=www.apple.com&pbk=PUBKEY&sid=ab12&fp=firefox#HK%201%20%C2%B7%20in-vless"
+             &flow=xtls-rprx-vision&sni=www.apple.com&pbk=PUBKEY&sid=ab12&fp=firefox#HK%201%20in-vless"
         );
         let vmess: Value = serde_json::from_slice(
             &STANDARD
@@ -551,12 +575,12 @@ mod tests {
             vmess,
             json!({"add": "hk.example.com", "aid": "0", "host": "cdn.example.com",
                    "id": "22222222-2222-2222-2222-222222222222", "net": "ws", "path": "/ws",
-                   "port": "8443", "ps": "HK 1 · in-vmess", "scy": "auto", "sni": "", "tls": "",
+                   "port": "8443", "ps": "HK 1 in-vmess", "scy": "auto", "sni": "", "tls": "",
                    "type": "none", "v": "2"})
         );
         assert_eq!(
             lines[2],
-            "trojan://pw@hk.example.com:9443?type=tcp&security=tls&sni=t.example.com#HK%201%20%C2%B7%20in-trojan"
+            "trojan://pw@hk.example.com:9443?type=tcp&security=tls&sni=t.example.com#HK%201%20in-trojan"
         );
 
         let (ct, body) = render("clash.meta", &rows);
@@ -564,7 +588,7 @@ mod tests {
         assert_eq!(
             body.trim_end(),
             r#"proxies:
-  - name: "HK 1 · in-vless"
+  - name: "HK 1 in-vless"
     type: vless
     server: hk.example.com
     port: 443
@@ -577,7 +601,7 @@ mod tests {
     reality-opts:
       public-key: PUBKEY
       short-id: ab12
-  - name: "HK 1 · in-vmess"
+  - name: "HK 1 in-vmess"
     type: vmess
     server: hk.example.com
     port: 8443
@@ -589,7 +613,7 @@ mod tests {
       path: /ws
       headers:
         Host: cdn.example.com
-  - name: "HK 1 · in-trojan"
+  - name: "HK 1 in-trojan"
     type: trojan
     server: hk.example.com
     port: 9443
@@ -601,9 +625,9 @@ proxy-groups:
   - name: PROXY
     type: select
     proxies:
-      - "HK 1 · in-vless"
-      - "HK 1 · in-vmess"
-      - "HK 1 · in-trojan"
+      - "HK 1 in-vless"
+      - "HK 1 in-vmess"
+      - "HK 1 in-trojan"
 rules:
   - MATCH,PROXY"#
         );
@@ -612,14 +636,14 @@ rules:
         assert_eq!(ct, "application/json; charset=utf-8");
         let want = json!({"outbounds": [
             {"flow": "xtls-rprx-vision", "server": "hk.example.com", "server_port": 443,
-             "tag": "HK 1 · in-vless",
+             "tag": "HK 1 in-vless",
              "tls": {"enabled": true, "reality": {"enabled": true, "public_key": "PUBKEY", "short_id": "ab12"},
                      "server_name": "www.apple.com", "utls": {"enabled": true, "fingerprint": "firefox"}},
              "type": "vless", "uuid": "11111111-1111-1111-1111-111111111111"},
-            {"server": "hk.example.com", "server_port": 8443, "tag": "HK 1 · in-vmess",
+            {"server": "hk.example.com", "server_port": 8443, "tag": "HK 1 in-vmess",
              "transport": {"headers": {"Host": "cdn.example.com"}, "path": "/ws", "type": "ws"},
              "type": "vmess", "uuid": "22222222-2222-2222-2222-222222222222"},
-            {"password": "pw", "server": "hk.example.com", "server_port": 9443, "tag": "HK 1 · in-trojan",
+            {"password": "pw", "server": "hk.example.com", "server_port": 9443, "tag": "HK 1 in-trojan",
              "tls": {"enabled": true, "server_name": "t.example.com"}, "type": "trojan"},
             {"tag": "direct", "type": "direct"}]});
         assert_eq!(
@@ -662,15 +686,7 @@ rules:
             // A stale Vision flow on a ws inbound is never rendered.
             {"inbound_tag": "ws", "protocol": "vless", "account": {"id": "55555555-5555-5555-5555-555555555555", "flow": "xtls-rprx-vision"}},
         ]);
-        vec![NodeRow {
-            name: "N".into(),
-            xray_inbounds: inbounds,
-            server_addr: Some("n.example.com".into()),
-            credentials: creds,
-            display_name: None,
-            tags: vec![],
-            connect_overrides: Value::Null,
-        }]
+        rows_of("N", Some("n.example.com"), inbounds, creds)
     }
 
     #[test]
@@ -682,17 +698,17 @@ rules:
         assert_eq!(
             l[0],
             "vless://11111111-1111-1111-1111-111111111111@n.example.com:443?type=xhttp&security=reality\
-            &sni=www.apple.com&pbk=PUB&sid=ab&fp=chrome&path=%2Fxh&mode=stream-one#N%20%C2%B7%20rx"
+            &sni=www.apple.com&pbk=PUB&sid=ab&fp=chrome&path=%2Fxh&mode=stream-one#N%20rx"
         );
         assert_eq!(
             l[1],
             "vless://22222222-2222-2222-2222-222222222222@n.example.com:2083?type=httpupgrade&security=tls\
-            &sni=n.example.com&path=%2Fup&host=n.example.com#N%20%C2%B7%20hu"
+            &sni=n.example.com&path=%2Fup&host=n.example.com#N%20hu"
         );
         assert_eq!(
             l[2],
             "trojan://tp@n.example.com:2087?type=grpc&security=tls&sni=n.example.com\
-            &serviceName=svc&mode=gun#N%20%C2%B7%20gr"
+            &serviceName=svc&mode=gun#N%20gr"
         );
         let vm = |s: &str| -> Value {
             serde_json::from_slice(
@@ -715,15 +731,15 @@ rules:
         assert_eq!(
             l[5],
             "ss://2022-blake3-aes-128-gcm:%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2Bw%3D%3D%3AdXNlcmtleXVzZXJrZXkxMg%3D%3D\
-            @n.example.com:8388#N%20%C2%B7%20ss"
+            @n.example.com:8388#N%20ss"
         );
         assert_eq!(
             l[6],
-            "hysteria2://a1b2@n.example.com:443/?sni=n.example.com#N%20%C2%B7%20hy"
+            "hysteria2://a1b2@n.example.com:443/?sni=n.example.com#N%20hy"
         );
         assert_eq!(
             l[7],
-            "vless://55555555-5555-5555-5555-555555555555@n.example.com:8443?type=ws&path=%2Fw#N%20%C2%B7%20ws"
+            "vless://55555555-5555-5555-5555-555555555555@n.example.com:8443?type=ws&path=%2Fw#N%20ws"
         );
     }
 
@@ -732,14 +748,14 @@ rules:
         let (_, body) = render("mihomo/1.19", &matrix_rows());
         let y = body.trim_end();
         // vmess+xhttp has no mihomo equivalent: left out (and out of the group).
-        assert!(!y.contains("N · vx"), "{y}");
+        assert!(!y.contains("N vx"), "{y}");
         for want in [
-            "  - name: \"N · rx\"\n    type: vless\n    server: n.example.com\n    port: 443\n    uuid: 11111111-1111-1111-1111-111111111111\n    network: xhttp\n    tls: true\n    servername: www.apple.com\n    client-fingerprint: chrome\n    reality-opts:\n      public-key: PUB\n      short-id: ab\n    xhttp-opts:\n      path: /xh\n      mode: stream-one\n",
+            "  - name: \"N rx\"\n    type: vless\n    server: n.example.com\n    port: 443\n    uuid: 11111111-1111-1111-1111-111111111111\n    network: xhttp\n    tls: true\n    servername: www.apple.com\n    client-fingerprint: chrome\n    reality-opts:\n      public-key: PUB\n      short-id: ab\n    xhttp-opts:\n      path: /xh\n      mode: stream-one\n",
             "    network: ws\n    tls: true\n    servername: n.example.com\n    ws-opts:\n      path: /up\n      headers:\n        Host: n.example.com\n      v2ray-http-upgrade: true\n",
             "    type: trojan\n    server: n.example.com\n    port: 2087\n    password: tp\n    network: grpc\n    tls: true\n    sni: n.example.com\n    grpc-opts:\n      grpc-service-name: svc\n",
             "    type: vmess\n    server: n.example.com\n    port: 2096\n    uuid: 33333333-3333-3333-3333-333333333333\n    alterId: 0\n    cipher: auto\n    network: grpc\n    grpc-opts:\n      grpc-service-name: vs\n",
-            "  - name: \"N · ss\"\n    type: ss\n    server: n.example.com\n    port: 8388\n    cipher: 2022-blake3-aes-128-gcm\n    password: \"+/+/+/+/+/+/+/+/+/+/+w==:dXNlcmtleXVzZXJrZXkxMg==\"\n    udp: true\n",
-            "  - name: \"N · hy\"\n    type: hysteria2\n    server: n.example.com\n    port: 443\n    password: a1b2\n    sni: n.example.com\n    alpn:\n      - h3\n",
+            "  - name: \"N ss\"\n    type: ss\n    server: n.example.com\n    port: 8388\n    cipher: 2022-blake3-aes-128-gcm\n    password: \"+/+/+/+/+/+/+/+/+/+/+w==:dXNlcmtleXVzZXJrZXkxMg==\"\n    udp: true\n",
+            "  - name: \"N hy\"\n    type: hysteria2\n    server: n.example.com\n    port: 443\n    password: a1b2\n    sni: n.example.com\n    alpn:\n      - h3\n",
             "    uuid: 55555555-5555-5555-5555-555555555555\n    network: ws\n    ws-opts:\n      path: /w\n",
         ] {
             assert!(y.contains(want), "missing:\n{want}\nin:\n{y}");
@@ -747,7 +763,7 @@ rules:
         assert!(!y.contains("flow:"), "stale vision flow rendered: {y}");
         // 7 proxies (+ the PROXY group's own "- name:"), all in the group.
         assert_eq!(y.matches("  - name: ").count(), 8);
-        assert_eq!(y.matches("      - \"N · ").count(), 7);
+        assert_eq!(y.matches("      - \"N ").count(), 7);
     }
 
     #[test]
@@ -759,9 +775,7 @@ rules:
         // Both xhttp proxies are left out (sing-box has no xhttp).
         assert_eq!(
             tags,
-            [
-                "N · hu", "N · gr", "N · vg", "N · ss", "N · hy", "N · ws", "direct"
-            ]
+            ["N hu", "N gr", "N vg", "N ss", "N hy", "N ws", "direct"]
         );
         assert_eq!(
             ob[0]["transport"],
@@ -777,56 +791,56 @@ rules:
         );
         assert_eq!(
             ob[3],
-            json!({"tag": "N · ss", "type": "shadowsocks", "server": "n.example.com", "server_port": 8388,
+            json!({"tag": "N ss", "type": "shadowsocks", "server": "n.example.com", "server_port": 8388,
             "method": "2022-blake3-aes-128-gcm", "password": "+/+/+/+/+/+/+/+/+/+/+w==:dXNlcmtleXVzZXJrZXkxMg=="})
         );
         assert_eq!(
             ob[4],
-            json!({"tag": "N · hy", "type": "hysteria2", "server": "n.example.com", "server_port": 443,
+            json!({"tag": "N hy", "type": "hysteria2", "server": "n.example.com", "server_port": 443,
             "password": "a1b2", "tls": {"enabled": true, "server_name": "n.example.com", "alpn": ["h3"]}})
         );
         assert!(ob[5].get("flow").is_none());
     }
 
-    /// W11: display name + tags name the proxies (the inbound tag only on
-    /// multi-inbound nodes), connect overrides set the dialed host/port in
-    /// all three formats, a node with only an override host is served, and
-    /// equal names stay unique.
+    /// W11/W28-a: display name + tags + the entrance name the proxies; the
+    /// entrance's address and port are what clients dial in all three
+    /// formats; without any address (no host, no TLS domain) the entrance is
+    /// left out; equal names stay unique.
     #[test]
-    fn w11_names_and_connect_overrides() {
+    fn w11_names_and_entrance_addresses() {
         let mut rows = snapshot_rows();
-        rows[0].display_name = Some("香港 01".into());
-        rows[0].tags = vec!["IPLC".into(), "0.5x".into()];
-        rows[0].connect_overrides =
-            json!({"in-trojan": {"host": "relay.example.net", "port": 30443}});
+        for r in &mut rows {
+            r.display_name = Some("香港 01".into());
+            r.tags = vec!["IPLC".into(), "0.5x".into()];
+        }
+        rows[2].server = Some("relay.example.net".into());
+        rows[2].port = Some(30443);
         let single = |name: &str, server: Option<&str>| NodeRow {
             name: name.into(),
-            xray_inbounds: json!([{"tag": "t", "protocol": "trojan", "port": 443,
-                "streamSettings": {"network": "tcp", "security": "tls",
-                    "tlsSettings": {"serverName": "x.example.com"}}}]),
-            server_addr: server.map(String::from),
-            credentials: json!([{"inbound_tag": "t", "protocol": "trojan",
-                "account": {"password": "p"}}]),
             display_name: Some("东京".into()),
             tags: vec![],
-            connect_overrides: if server.is_none() {
-                json!({"t": {"host": "nat.example.org"}})
-            } else {
-                Value::Null
-            },
+            entrance: "直连".into(),
+            inbound: json!({"protocol": "trojan", "port": 443,
+                "streamSettings": {"network": "tcp", "security": "tls",
+                    "tlsSettings": {"serverName": "x.example.com"}}}),
+            server: server.map(String::from),
+            port: None,
+            protocol: "trojan".into(),
+            account: json!({"password": "p"}),
         };
         rows.push(single("jp-1", Some("jp1.example.com")));
-        rows.push(single("jp-2", None));
+        rows.push(single("jp-2", Some("nat.example.org")));
+        rows.push(single("jp-3", None));
         let proxies = collect_proxies(&rows);
         let names: Vec<&str> = proxies.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
             [
-                "香港 01 | IPLC | 0.5x · in-vless",
-                "香港 01 | IPLC | 0.5x · in-vmess",
-                "香港 01 | IPLC | 0.5x · in-trojan",
-                "东京",
-                "东京 #2",
+                "香港 01 | IPLC | 0.5x in-vless",
+                "香港 01 | IPLC | 0.5x in-vmess",
+                "香港 01 | IPLC | 0.5x in-trojan",
+                "东京 直连",
+                "东京 直连 #2",
             ]
         );
         let trojan = &proxies[2];

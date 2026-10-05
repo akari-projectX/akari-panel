@@ -57,30 +57,39 @@ fn ranges() {
 }
 
 #[test]
-fn targets_use_overrides_and_flag_udp() {
-    let inbounds = json!([
-        {"tag": "r", "protocol": "vless", "port": 443},
-        {"tag": "hy", "protocol": "hysteria", "port": 8443,
-         "streamSettings": {"network": "hysteria"}},
-        {"tag": "nat", "protocol": "trojan", "port": 2083},
-        {"protocol": "socks", "port": 1080}
-    ]);
-    let ov = json!({"nat": {"host": "relay.example.com", "port": 30083}});
-    let t = targets(Some("1.2.3.4"), &inbounds, &ov);
-    assert_eq!(t.len(), 3, "untagged inbounds are skipped");
+fn targets_use_entrance_addresses_and_flag_udp() {
+    let e = |name: &str, host: Option<&str>, port: Option<i32>| EntranceAddr {
+        name: name.into(),
+        connect_host: host.map(String::from),
+        connect_port: port,
+    };
+    let entrances = [
+        e("直连", Some("1.2.3.4"), None),
+        e("nat", Some("relay.example.com"), Some(30083)),
+        e("domain", None, None),
+    ];
+    let vless = json!({"protocol": "vless", "port": 443});
+    let t = targets(Some(&vless), Some("n.example.com"), &entrances);
     assert_eq!(
         t[0],
         Target {
-            tag: "r".into(),
+            name: "直连".into(),
             host: Some("1.2.3.4".into()),
             port: Some(443),
             udp_only: false
         }
     );
-    assert!(t[1].udp_only, "Hysteria 2 is UDP only: {:?}", t[1]);
-    assert_eq!(t[2].host.as_deref(), Some("relay.example.com"));
-    assert_eq!(t[2].port, Some(30083));
-    assert!(targets(None, &inbounds, &json!({}))[0].host.is_none());
+    assert_eq!(t[1].host.as_deref(), Some("relay.example.com"));
+    assert_eq!(t[1].port, Some(30083));
+    assert_eq!(t[2].host.as_deref(), Some("n.example.com"), "TLS domain");
+    assert!(targets(Some(&vless), None, &entrances)[2].host.is_none());
+    let hy = json!({"protocol": "hysteria", "port": 8443,
+        "streamSettings": {"network": "hysteria"}});
+    assert!(
+        targets(Some(&hy), None, &entrances)[0].udp_only,
+        "Hysteria 2 is UDP only"
+    );
+    assert!(targets(None, None, &entrances).is_empty(), "no inbound");
 }
 
 #[test]
@@ -497,36 +506,60 @@ async fn panel_tcp_probe_round() {
             let _ = open.accept().await;
         }
     });
-    let n = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO nodes (id, name, server_addr, xray_inbounds, connect_overrides) VALUES ($1, 'p', '127.0.0.1', $2, $3)",
+    // One node per case: its direct entrance dials 127.0.0.1 (an open
+    // port via the entrance's port; a closed one; a UDP-only inbound).
+    let node = |inbound: Value, port: Option<u16>| {
+        let pool = db.pool.clone();
+        async move {
+            let n = Uuid::new_v4();
+            sqlx::query("INSERT INTO nodes (id, name, inbound) VALUES ($1, $1::text, $2)")
+                .bind(n)
+                .bind(inbound)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "UPDATE entrances SET connect_host = '127.0.0.1', connect_port = $2 \
+                 WHERE node_id = $1",
+            )
+            .bind(n)
+            .bind(port.map(i32::from))
+            .execute(&pool)
+            .await
+            .unwrap();
+            n
+        }
+    };
+    let ok = node(json!({"protocol": "vless", "port": 1}), Some(open_port)).await;
+    let refused = node(json!({"protocol": "vless", "port": closed_port}), None).await;
+    let udp = node(
+        json!({"protocol": "hysteria", "port": 443, "streamSettings": {"network": "hysteria"}}),
+        None,
     )
-    .bind(n)
-    .bind(json!([
-        {"tag": "a", "protocol": "vless", "port": 1},
-        {"tag": "b", "protocol": "vless", "port": closed_port},
-        {"tag": "hy", "protocol": "hysteria", "port": 443, "streamSettings": {"network": "hysteria"}}
-    ]))
-    .bind(json!({"a": {"port": open_port}}))
-    .execute(&db.pool)
-    .await
-    .unwrap();
-    // Other nodes in this schema-less database are other tests': count ours.
+    .await;
     panel_probe_round(&db.pool, 3600, 2, Duration::from_secs(2))
         .await
         .unwrap();
-    let rows: Vec<(String, Option<i32>, Option<String>)> = sqlx::query_as(
-        "SELECT target, delay_ms, error FROM node_latency WHERE node_id = $1 AND source = 'panel' ORDER BY ord",
-    )
-    .bind(n)
-    .fetch_all(&db.pool)
-    .await
-    .unwrap();
-    assert_eq!(rows.len(), 3, "{rows:?}");
-    assert_eq!(rows[0].0, "a");
+    let result = |n: Uuid| {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query_as::<_, (String, Option<i32>, Option<String>)>(
+                "SELECT target, delay_ms, error FROM node_latency \
+                 WHERE node_id = $1 AND source = 'panel' ORDER BY ord",
+            )
+            .bind(n)
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let rows = result(ok).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].0, "直连");
     assert!(rows[0].1.is_some(), "{rows:?}");
-    assert_eq!(rows[1].2.as_deref(), Some("refused"));
-    assert_eq!(rows[2].2.as_deref(), Some("udp"));
+    assert_eq!(result(refused).await[0].2.as_deref(), Some("refused"));
+    assert_eq!(result(udp).await[0].2.as_deref(), Some("udp"));
+    let n = ok;
     let next: Option<DateTime<Utc>> =
         sqlx::query_scalar("SELECT panel_probe_next_at FROM nodes WHERE id = $1")
             .bind(n)
@@ -560,13 +593,18 @@ async fn api_status_metrics_probe_and_portal_visibility() {
     db.assign(hidden, u).await;
     db.assign(disabled, u).await;
     sqlx::query(
-        "UPDATE nodes SET display_name = '香港 01', tags = '{IPLC,0.5x}', traffic_rate_permille = 500, \
+        "UPDATE nodes SET display_name = '香港 01', tags = '{IPLC,0.5x}', \
          status = 'online', last_seen_at = now(), sort = 2 WHERE id = $1",
     )
     .bind(shown)
     .execute(&db.pool)
     .await
     .unwrap();
+    sqlx::query("UPDATE entrances SET rate_permille = 500 WHERE node_id = $1")
+        .bind(shown)
+        .execute(&db.pool)
+        .await
+        .unwrap();
     sqlx::query("UPDATE nodes SET visible = false WHERE id = $1")
         .bind(hidden)
         .execute(&db.pool)
@@ -625,18 +663,13 @@ async fn api_status_metrics_probe_and_portal_visibility() {
     );
     let n = &list[0];
     assert_eq!(n["name"], "香港 01");
+    assert_eq!(n["entrance"], "直连");
     assert_eq!(n["tags"], json!(["IPLC", "0.5x"]));
     assert_eq!(n["rate"], 0.5);
     assert_eq!(n["online"], true);
     assert_eq!(n["latency_ms"], 88);
     assert_eq!(n["latency_status"], "ok");
-    for leak in [
-        "id",
-        "server_addr",
-        "xray_inbounds",
-        "heartbeat",
-        "cpu_percent",
-    ] {
+    for leak in ["id", "connect_host", "inbound", "heartbeat", "cpu_percent"] {
         assert!(n.get(leak).is_none(), "{leak} leaked to users");
     }
     let _ = unassigned;
@@ -661,7 +694,6 @@ async fn api_status_metrics_probe_and_portal_visibility() {
     assert_eq!(r.status, StatusCode::OK);
     let v = r.json();
     assert_eq!(v["online"], true);
-    assert_eq!(v["traffic_rate"], 0.5);
     assert_eq!(v["latency"].as_array().unwrap().len(), 2);
     let r = admin
         .get(&format!("/test/api/v1/nodes/{shown}/metrics?range=1h"))
@@ -692,7 +724,7 @@ async fn api_status_metrics_probe_and_portal_visibility() {
         .find(|x| x["id"] == shown.to_string())
         .unwrap();
     assert_eq!(row["display_name"], "香港 01");
-    assert_eq!(row["traffic_rate"], 0.5);
+    assert_eq!(row["entrances"][0]["rate"], 0.5);
     assert_eq!(row["online"], true);
     assert_eq!(row["latency"].as_array().unwrap().len(), 2);
 

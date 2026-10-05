@@ -211,7 +211,8 @@ pub async fn apply_create(
     }
     if let Some(n) = req.node_id {
         let mine: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM node_users WHERE node_id = $1 AND user_id = $2)",
+            "SELECT EXISTS (SELECT 1 FROM entrance_users eu JOIN entrances e ON e.id = eu.entrance_id \
+             WHERE e.node_id = $1 AND eu.user_id = $2)",
         )
         .bind(n)
         .bind(user.id)

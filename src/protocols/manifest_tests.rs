@@ -212,8 +212,7 @@ fn accounts_have_the_manifest_shape() {
 #[test]
 fn subscription_formats_follow_the_manifest() {
     let m = manifest::get();
-    let mut inbounds = Vec::new();
-    let mut creds = Vec::new();
+    let mut rows = Vec::new();
     let mut expect: Vec<(String, String, String, String)> = Vec::new();
     for (i, (p, t, s, opts)) in combinations(m).into_iter().enumerate() {
         if !legal(m, &p, &t, &s, &opts) {
@@ -221,24 +220,20 @@ fn subscription_formats_follow_the_manifest() {
         }
         let mut ib = xray_inbound(m, &p, &t, &s, &opts).unwrap();
         let tag = format!("c{i}");
-        ib["tag"] = json!(tag);
         ib["port"] = json!(1000 + i);
-        creds.push(
-            json!({"inbound_tag": tag, "protocol": m.protocol(&p).unwrap().wire,
-                          "account": super::generate_account(&ib).unwrap()}),
-        );
-        inbounds.push(ib);
+        rows.push(crate::sub::NodeRow {
+            name: "N".into(),
+            display_name: None,
+            tags: vec![],
+            entrance: tag.clone(),
+            account: super::generate_account(&ib).unwrap(),
+            protocol: m.protocol(&p).unwrap().wire.clone(),
+            inbound: ib,
+            server: Some("n.example.com".into()),
+            port: None,
+        });
         expect.push((tag, p, t, s));
     }
-    let rows = vec![crate::sub::NodeRow {
-        name: "N".into(),
-        xray_inbounds: Value::Array(inbounds),
-        server_addr: Some("n.example.com".into()),
-        credentials: Value::Array(creds),
-        display_name: None,
-        tags: vec![],
-        connect_overrides: Value::Null,
-    }];
     for f in &m.format {
         let (_, body) = crate::sub::render_for(Some(&format!("format={}", f.id)), "", &rows);
         let text = if f.id == "links" {
@@ -256,9 +251,9 @@ fn subscription_formats_follow_the_manifest() {
             .collect::<Vec<_>>()
             .join("\n");
         for (tag, p, t, s) in &expect {
-            let present = text.contains(&format!("N · {tag}\""))
-                || text.contains(&format!("N%20%C2%B7%20{tag}\n"))
-                || text.ends_with(&format!("N%20%C2%B7%20{tag}"));
+            let present = text.contains(&format!("N {tag}\""))
+                || text.contains(&format!("N%20{tag}\n"))
+                || text.ends_with(&format!("N%20{tag}"));
             let want = m.unsupported_in(&f.id, p, t, s).is_none();
             assert_eq!(present, want, "format {} {p}/{t}/{s}", f.id);
         }

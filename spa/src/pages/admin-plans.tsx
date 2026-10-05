@@ -634,7 +634,7 @@ function GroupsCard({ groups = [], loading, nodes }: { groups?: GroupView[]; loa
   async function saveMembers(g: GroupView) {
     setError(null);
     try {
-      await patch(`/node-groups/${g.id}`, { node_ids: members });
+      await patch(`/node-groups/${g.id}`, { entrance_ids: members });
       setEditing(null);
       await invalidate();
     } catch (err) {
@@ -645,7 +645,7 @@ function GroupsCard({ groups = [], loading, nodes }: { groups?: GroupView[]; loa
   async function remove(g: GroupView) {
     const ok = await confirm({
       title: `删除节点组「${g.name}」？`,
-      message: "授予该组的套餐会失去其中的节点，持有这些套餐的用户随即失去这些节点的访问权。",
+      message: "授予该组的套餐会失去其中的入口，持有这些套餐的用户随即失去这些入口的访问权。",
       confirmLabel: "删除",
       destructive: true,
     });
@@ -659,7 +659,9 @@ function GroupsCard({ groups = [], loading, nodes }: { groups?: GroupView[]; loa
     }
   }
 
-  const nodeName = (id: string) => nodes.find((n) => n.id === id)?.name ?? id.slice(0, 8);
+  // W28-a: groups hold entrances; each named "<node> · <entrance>".
+  const entrances = nodes.flatMap((n) => n.entrances.map((e) => ({ id: e.id, name: `${n.name} · ${e.name}` })));
+  const entranceName = (id: string) => entrances.find((e) => e.id === id)?.name ?? id.slice(0, 8);
 
   return (
     <Card>
@@ -667,7 +669,7 @@ function GroupsCard({ groups = [], loading, nodes }: { groups?: GroupView[]; loa
         <CardTitle>
           <h2>节点组</h2>
         </CardTitle>
-        <CardDescription>一个节点可以属于任意多个组；套餐通过节点组授予节点。</CardDescription>
+        <CardDescription>一个入口（节点的直连入口等）可以属于任意多个组；套餐通过节点组授予入口。</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <form className="flex flex-wrap items-end gap-3" onSubmit={create} aria-label="新建节点组">
@@ -686,7 +688,7 @@ function GroupsCard({ groups = [], loading, nodes }: { groups?: GroupView[]; loa
           <TableHeader>
             <TableRow>
               <TableHead>节点组</TableHead>
-              <TableHead>节点</TableHead>
+              <TableHead>入口</TableHead>
               <TableHead>套餐数</TableHead>
               <TableHead className="text-right">
                 <span className="sr-only">操作</span>
@@ -705,16 +707,16 @@ function GroupsCard({ groups = [], loading, nodes }: { groups?: GroupView[]; loa
                 <TableCell className="space-y-2">
                   {editing === g.id ? (
                     <>
-                      <Checklist label="节点" items={nodes} selected={members} onChange={setMembers} />
+                      <Checklist label="入口" items={entrances} selected={members} onChange={setMembers} />
                       <Button size="sm" onClick={() => saveMembers(g)}>
                         保存成员
                       </Button>
                     </>
                   ) : (
                     <div className="space-x-1">
-                      {g.node_ids.map((n) => (
-                        <Badge key={n} variant="secondary">
-                          {nodeName(n)}
+                      {g.entrance_ids.map((e) => (
+                        <Badge key={e} variant="secondary">
+                          {entranceName(e)}
                         </Badge>
                       ))}
                     </div>
@@ -726,7 +728,7 @@ function GroupsCard({ groups = [], loading, nodes }: { groups?: GroupView[]; loa
                     variant="outline"
                     size="sm"
                     onClick={() => {
-                      setMembers(g.node_ids);
+                      setMembers(g.entrance_ids);
                       setEditing(editing === g.id ? null : g.id);
                     }}
                   >

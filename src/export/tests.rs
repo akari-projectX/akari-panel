@@ -202,8 +202,9 @@ async fn traffic_export_days_and_nodes() {
     let n = db.node().await;
     let today = Utc::now().date_naive();
     sqlx::query(
-        "INSERT INTO traffic_node_daily (node_id, day, up_bytes, down_bytes, billed_bytes, users) \
-         VALUES ($1, $2, 10, 20, 30, 2), ($1, $3, 1, 2, 3, 1)",
+        "INSERT INTO traffic_entrance_daily \
+         (entrance_id, node_id, day, up_bytes, down_bytes, billed_bytes, users) \
+         VALUES ($1, $1, $2, 10, 20, 30, 2), ($1, $1, $3, 1, 2, 3, 1)",
     )
     .bind(n)
     .bind(today)

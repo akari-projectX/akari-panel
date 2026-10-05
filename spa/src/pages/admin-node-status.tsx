@@ -10,6 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { TableCell, TableHead } from "../components/ui/table";
 import {
   ApiError,
+  directEntrance,
   get,
   post,
   type LatencyResult,
@@ -269,7 +270,7 @@ export function NodeDetail({ node, onClose }: { node: NodeView; onClose: () => v
           <Stat
             label="流量（实际 / 计费）"
             value={s ? `${humanBytes(s.traffic_raw_bytes)} / ${humanBytes(s.traffic_billed_bytes)}` : "—"}
-            sub={s && `倍率 ${s.traffic_rate}x`}
+            sub={`直连倍率 ${directEntrance(node)?.rate ?? 1}x`}
           />
         </dl>
         {node.online && !m && (

@@ -15,7 +15,6 @@ afterEach(() => {
 
 const CERT_FILE = "/run/credentials/akari-agent.service/tls_fullchain.pem";
 const tlsInbound = {
-  tag: "ws",
   protocol: "vless",
   port: 443,
   streamSettings: { security: "tls", tlsSettings: { certificates: [{ certificateFile: CERT_FILE }] } },
@@ -28,7 +27,7 @@ const node = (over: Partial<NodeView>): NodeView =>
     enabled: true,
     status: "online",
     agent_protocol: 6,
-    xray_inbounds: [tlsInbound],
+    inbound: tlsInbound,
     tls_domain: "hk1.example.com",
     agent_addr: "198.51.100.7",
     heartbeat: null,
@@ -116,7 +115,7 @@ describe("NodeCertStatus", () => {
 
   it("says nothing is ordered for nodes without a TLS inbound", () => {
     fakeApi({});
-    renderAdmin(<NodeCertStatus node={node({ xray_inbounds: [{ tag: "r", protocol: "vless", port: 443 }] })} />);
+    renderAdmin(<NodeCertStatus node={node({ inbound: { protocol: "vless", port: 443 } })} />);
     expect(screen.getByRole("status").textContent).toMatch(/不会申请证书/);
   });
 });
@@ -168,13 +167,13 @@ describe("TlsDomainField", () => {
     });
     function Host() {
       const [v, setV] = useState("");
-      return <TlsDomainField id="t" value={v} onChange={setV} serverAddr="192.0.2.1" />;
+      return <TlsDomainField id="t" value={v} onChange={setV} connectHost="192.0.2.1" />;
     }
     renderAdmin(<Host />);
     fireEvent.change(screen.getByLabelText(/节点域名/), { target: { value: "n.example.com" } });
     fireEvent.click(screen.getByRole("button", { name: "检查解析" }));
     await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/解析正确/));
-    expect(calls[0].body).toEqual({ domain: "n.example.com", server_addr: "192.0.2.1" });
+    expect(calls[0].body).toEqual({ domain: "n.example.com", connect_host: "192.0.2.1" });
   });
 });
 

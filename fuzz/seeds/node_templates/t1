@@ -1,1 +1,1 @@
-{"templates": [{"template": "vless_reality_xhttp", "port": 8443, "path": "/x", "mode": "stream-one"}], "tls_domain": "node.example.com"}
+{"tls_domain": "node.example.com", "template": {"template": "vless_reality_xhttp", "port": 8443, "path": "/x", "mode": "stream-one"}}

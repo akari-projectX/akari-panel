@@ -1,1 +1,1 @@
-[{"tag": "m", "port": 8443, "protocol": "vmess", "settings": {"clients": []}, "streamSettings": {"network": "ws", "security": "tls", "wsSettings": {"path": "/ws", "host": "a.example.com"}}}]
+{"port": 8443, "protocol": "vmess", "settings": {"clients": []}, "streamSettings": {"network": "ws", "security": "tls", "wsSettings": {"path": "/ws", "host": "a.example.com"}}}

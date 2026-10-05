@@ -1,82 +1,82 @@
 == generate_account / issuable / l4 per inbound
-vless-reality-443: issuable=true l4=(true,false) account={"flow":"xtls-rprx-vision","id":"93e31803-75f0-49e8-a28b-74809e862c35"}
-reality-plain: issuable=true l4=(true,false) account={"flow":"","id":"b38bf042-f91c-409a-b381-73396c2b928c"}
-vless-xhttp-445: issuable=true l4=(true,false) account={"flow":"","id":"8d89960b-5015-4cf2-adbd-46452ba89a7d"}
-vless-vision-446: issuable=true l4=(true,false) account={"flow":"xtls-rprx-vision","id":"fdf27130-9d61-4d7e-8b72-e63d3baaf49d"}
-vless-ws-447: issuable=true l4=(true,false) account={"flow":"","id":"c9e0a063-3c47-4db5-b830-07d26ab0b1a6"}
-vmess-ws-448: issuable=true l4=(true,false) account={"id":"b621ea47-a15c-4fdc-acf4-349e49c61ff7"}
-vmess-ws-449: issuable=true l4=(true,false) account={"id":"3c9fe5ed-944f-44b1-9430-dda4b9cfb531"}
-vmess-tcp-450: issuable=true l4=(true,false) account={"id":"b40cb3d7-3528-4f86-b47b-16e540083141"}
-trojan-451: issuable=true l4=(true,false) account={"password":"462be751c5c232131c86e3a90da81d554aa72ef1e2d7bab9f8bf3384f492aca6"}
-vless-httpupgrade-452: issuable=true l4=(true,false) account={"flow":"","id":"7d1e3161-fbd6-4dc7-a42d-bfcb79b1a4c2"}
-vmess-xhttp-453: issuable=true l4=(true,false) account={"id":"8d9bbe1d-65e7-497b-97fe-dc123c9f820f"}
-trojan-grpc-454: issuable=true l4=(true,false) account={"password":"45bbf3a2ac1bbcd1be637ff44be42064518a8c25cde2988fa0432718aad08063"}
-ss2022-455: issuable=true l4=(true,true) account={"password":"YuLvUNHaAhRw4RSr1Q0Prw=="}
-ss2022-456: issuable=true l4=(true,true) account={"password":"DoJ0BOrZ/4ZwH95kEqTh4g5YBpC9eB1YKpHw4Tqzu08="}
-hysteria2-443: issuable=true l4=(false,true) account={"auth":"dfce643b21ff9764663476a860e5a781e218f617a9c27ea73be9002c0d19a7d5"}
-vless-grpc-457: issuable=true l4=(true,false) account={"flow":"","id":"bbe386dc-024a-44ad-b0cb-aff78d506c36"}
+t0: issuable=true l4=(true,false) account={"flow":"xtls-rprx-vision","id":"93e31803-75f0-49e8-a28b-74809e862c35"}
+t1: issuable=true l4=(true,false) account={"flow":"","id":"b38bf042-f91c-409a-b381-73396c2b928c"}
+t2: issuable=true l4=(true,false) account={"flow":"","id":"8d89960b-5015-4cf2-adbd-46452ba89a7d"}
+t3: issuable=true l4=(true,false) account={"flow":"xtls-rprx-vision","id":"fdf27130-9d61-4d7e-8b72-e63d3baaf49d"}
+t4: issuable=true l4=(true,false) account={"flow":"","id":"c9e0a063-3c47-4db5-b830-07d26ab0b1a6"}
+t5: issuable=true l4=(true,false) account={"id":"b621ea47-a15c-4fdc-acf4-349e49c61ff7"}
+t6: issuable=true l4=(true,false) account={"id":"3c9fe5ed-944f-44b1-9430-dda4b9cfb531"}
+t7: issuable=true l4=(true,false) account={"id":"b40cb3d7-3528-4f86-b47b-16e540083141"}
+t8: issuable=true l4=(true,false) account={"password":"462be751c5c232131c86e3a90da81d554aa72ef1e2d7bab9f8bf3384f492aca6"}
+t9: issuable=true l4=(true,false) account={"flow":"","id":"7d1e3161-fbd6-4dc7-a42d-bfcb79b1a4c2"}
+t10: issuable=true l4=(true,false) account={"id":"8d9bbe1d-65e7-497b-97fe-dc123c9f820f"}
+t11: issuable=true l4=(true,false) account={"password":"45bbf3a2ac1bbcd1be637ff44be42064518a8c25cde2988fa0432718aad08063"}
+t12: issuable=true l4=(true,true) account={"password":"YuLvUNHaAhRw4RSr1Q0Prw=="}
+t13: issuable=true l4=(true,true) account={"password":"DoJ0BOrZ/4ZwH95kEqTh4g5YBpC9eB1YKpHw4Tqzu08="}
+t14: issuable=true l4=(false,true) account={"auth":"dfce643b21ff9764663476a860e5a781e218f617a9c27ea73be9002c0d19a7d5"}
+t15: issuable=true l4=(true,false) account={"flow":"","id":"bbe386dc-024a-44ad-b0cb-aff78d506c36"}
 dokodemo: issuable=false l4=(true,true) account=ERR unsupported protocol "dokodemo-door" (vless, vmess, trojan, shadowsocks, hysteria)
 ss-legacy: issuable=false l4=(true,true) account=ERR shadowsocks method "aes-128-gcm" is not a multi-user 2022 method
 vless-kcp: issuable=true l4=(true,false) account={"flow":"","id":"008be7e4-099f-44a4-bb26-bce8b875a45a"}
 hy-bad: issuable=false l4=(false,true) account={"auth":"218ae35be66a56d0d521f6febcc7c8dfd15dceb0dea41ebe46740970f155c558"}
 ss-tcp: issuable=true l4=(true,false) account={"password":"cA4JhICOyNDy4YKri1I7Aw=="}
 vless-split: issuable=true l4=(true,false) account={"flow":"xtls-rprx-vision","id":"40802228-e408-454f-a2df-b3cc7ca081f1"}
-== eligible_inbounds
-vless-reality-443 vless
-reality-plain vless
-vless-xhttp-445 vless
-vless-vision-446 vless
-vless-ws-447 vless
-vmess-ws-448 vmess
-vmess-ws-449 vmess
-vmess-tcp-450 vmess
-trojan-451 trojan
-vless-httpupgrade-452 vless
-vmess-xhttp-453 vmess
-trojan-grpc-454 trojan
-ss2022-455 shadowsocks
-ss2022-456 shadowsocks
-hysteria2-443 hysteria
-vless-grpc-457 vless
+== eligible_protocol
+t0 vless
+t1 vless
+t2 vless
+t3 vless
+t4 vless
+t5 vmess
+t6 vmess
+t7 vmess
+t8 trojan
+t9 vless
+t10 vmess
+t11 trojan
+t12 shadowsocks
+t13 shadowsocks
+t14 hysteria
+t15 vless
 vless-kcp vless
 ss-tcp shadowsocks
 vless-split vless
-== merge_credentials (2 users)
-00000001-0000-4000-8000-000000000001 vless-reality-443 vless {"flow":"xtls-rprx-vision","id":"6ec49bd3-33c0-48ae-9341-972e7ec7907a"}
-00000001-0000-4000-8000-000000000001 reality-plain vless {"flow":"","id":"19510f1c-2317-499e-88f9-de4ba7c9de23"}
-00000001-0000-4000-8000-000000000001 vless-xhttp-445 vless {"flow":"","id":"9fc5e0cb-6285-4e5e-91bb-453df4efed35"}
-00000001-0000-4000-8000-000000000001 vless-vision-446 vless {"flow":"xtls-rprx-vision","id":"0e300dc6-a276-4d18-ae60-f4c0d8cae46b"}
-00000001-0000-4000-8000-000000000001 vless-ws-447 vless {"flow":"","id":"cd9fe072-8907-4ef0-9be3-61ea4b2864d2"}
-00000001-0000-4000-8000-000000000001 vmess-ws-448 vmess {"id":"639e4e86-c81c-4f57-ac4d-eea4a02ee159"}
-00000001-0000-4000-8000-000000000001 vmess-ws-449 vmess {"id":"c834fe96-83b6-4ac5-aa3c-418e6ee87c4c"}
-00000001-0000-4000-8000-000000000001 vmess-tcp-450 vmess {"id":"99a30bd0-1ec6-45ee-b407-25eb87c005bd"}
-00000001-0000-4000-8000-000000000001 trojan-451 trojan {"password":"d770f7cf496f7fca357a5e0d287ad93e1f30d38cc28ea4d4a56ac81082c0eec1"}
-00000001-0000-4000-8000-000000000001 vless-httpupgrade-452 vless {"flow":"","id":"1b777d6a-cf96-4f89-9e59-7d889fe4235a"}
-00000001-0000-4000-8000-000000000001 vmess-xhttp-453 vmess {"id":"8b8853fb-3547-4ca5-b7f3-d8736f2b8b3f"}
-00000001-0000-4000-8000-000000000001 trojan-grpc-454 trojan {"password":"cbbc6cfae4be8acdee3561a8df10aef63e25a8dbc3378aeafef351e2a793deec"}
-00000001-0000-4000-8000-000000000001 ss2022-455 shadowsocks {"password":"VpMbq1DuxbJ4K7+2OZjLRA=="}
-00000001-0000-4000-8000-000000000001 ss2022-456 shadowsocks {"password":"YMEFSB8ZlmWBrEeUAjjV8PnmNBzVO0/23vvDfFDywFE="}
-00000001-0000-4000-8000-000000000001 hysteria2-443 hysteria {"auth":"a06a4623c47ef6fe84a19107d4f4a1ea321c80d6cd97e152b707229aae790131"}
-00000001-0000-4000-8000-000000000001 vless-grpc-457 vless {"flow":"","id":"bed6a9eb-78e2-405b-941a-f173a1818db6"}
+== fit_account, new (2 users)
+00000001-0000-4000-8000-000000000001 t0 vless {"flow":"xtls-rprx-vision","id":"6ec49bd3-33c0-48ae-9341-972e7ec7907a"}
+00000001-0000-4000-8000-000000000001 t1 vless {"flow":"","id":"19510f1c-2317-499e-88f9-de4ba7c9de23"}
+00000001-0000-4000-8000-000000000001 t2 vless {"flow":"","id":"9fc5e0cb-6285-4e5e-91bb-453df4efed35"}
+00000001-0000-4000-8000-000000000001 t3 vless {"flow":"xtls-rprx-vision","id":"0e300dc6-a276-4d18-ae60-f4c0d8cae46b"}
+00000001-0000-4000-8000-000000000001 t4 vless {"flow":"","id":"cd9fe072-8907-4ef0-9be3-61ea4b2864d2"}
+00000001-0000-4000-8000-000000000001 t5 vmess {"id":"639e4e86-c81c-4f57-ac4d-eea4a02ee159"}
+00000001-0000-4000-8000-000000000001 t6 vmess {"id":"c834fe96-83b6-4ac5-aa3c-418e6ee87c4c"}
+00000001-0000-4000-8000-000000000001 t7 vmess {"id":"99a30bd0-1ec6-45ee-b407-25eb87c005bd"}
+00000001-0000-4000-8000-000000000001 t8 trojan {"password":"d770f7cf496f7fca357a5e0d287ad93e1f30d38cc28ea4d4a56ac81082c0eec1"}
+00000001-0000-4000-8000-000000000001 t9 vless {"flow":"","id":"1b777d6a-cf96-4f89-9e59-7d889fe4235a"}
+00000001-0000-4000-8000-000000000001 t10 vmess {"id":"8b8853fb-3547-4ca5-b7f3-d8736f2b8b3f"}
+00000001-0000-4000-8000-000000000001 t11 trojan {"password":"cbbc6cfae4be8acdee3561a8df10aef63e25a8dbc3378aeafef351e2a793deec"}
+00000001-0000-4000-8000-000000000001 t12 shadowsocks {"password":"VpMbq1DuxbJ4K7+2OZjLRA=="}
+00000001-0000-4000-8000-000000000001 t13 shadowsocks {"password":"YMEFSB8ZlmWBrEeUAjjV8PnmNBzVO0/23vvDfFDywFE="}
+00000001-0000-4000-8000-000000000001 t14 hysteria {"auth":"a06a4623c47ef6fe84a19107d4f4a1ea321c80d6cd97e152b707229aae790131"}
+00000001-0000-4000-8000-000000000001 t15 vless {"flow":"","id":"bed6a9eb-78e2-405b-941a-f173a1818db6"}
 00000001-0000-4000-8000-000000000001 vless-kcp vless {"flow":"","id":"c4a57424-7065-4ff5-91ea-f8209906ba4b"}
 00000001-0000-4000-8000-000000000001 ss-tcp shadowsocks {"password":"4blVDvXrbBABiSMfkVTDqA=="}
 00000001-0000-4000-8000-000000000001 vless-split vless {"flow":"xtls-rprx-vision","id":"d01dbffb-44dc-468e-974c-3da0e05d0bc5"}
-00000002-0000-4000-8000-000000000002 vless-reality-443 vless {"flow":"xtls-rprx-vision","id":"0b145e40-d0be-4aa4-b7af-a5ca10a02e09"}
-00000002-0000-4000-8000-000000000002 reality-plain vless {"flow":"","id":"427ec84d-a77b-4194-9f11-9e62c153cada"}
-00000002-0000-4000-8000-000000000002 vless-xhttp-445 vless {"flow":"","id":"856dba5a-b252-49c2-81ca-5c85f4da49f0"}
-00000002-0000-4000-8000-000000000002 vless-vision-446 vless {"flow":"xtls-rprx-vision","id":"c090e6f4-8999-45a4-8a44-81b072af785b"}
-00000002-0000-4000-8000-000000000002 vless-ws-447 vless {"flow":"","id":"0e37b873-edfd-4d99-87df-738bebb63973"}
-00000002-0000-4000-8000-000000000002 vmess-ws-448 vmess {"id":"d89a6888-5602-408e-8ef5-7a6bda736b12"}
-00000002-0000-4000-8000-000000000002 vmess-ws-449 vmess {"id":"1e7addbc-e2c8-45ed-8e87-427891f5f44a"}
-00000002-0000-4000-8000-000000000002 vmess-tcp-450 vmess {"id":"11cd488c-abce-4869-837d-c684af10989d"}
-00000002-0000-4000-8000-000000000002 trojan-451 trojan {"password":"cabdf8835b24a4295c53177dc3e4787837a4380d1e7d55bc541268f9a969e59c"}
-00000002-0000-4000-8000-000000000002 vless-httpupgrade-452 vless {"flow":"","id":"a775d916-5b44-4a57-909a-70c3e5c36df5"}
-00000002-0000-4000-8000-000000000002 vmess-xhttp-453 vmess {"id":"1d638dba-e629-46a7-ab02-0a01659b8c6c"}
-00000002-0000-4000-8000-000000000002 trojan-grpc-454 trojan {"password":"2f7c9df71745e253ae2b18210db378c6ea2ac04971eb90406d134e7070dfd8d0"}
-00000002-0000-4000-8000-000000000002 ss2022-455 shadowsocks {"password":"eQZH+P+o9XSi3pwZVZDEwQ=="}
-00000002-0000-4000-8000-000000000002 ss2022-456 shadowsocks {"password":"NOOR2NBEAXb0yWkd6uLF7ox64asmlmBO2hh7ScjyY8c="}
-00000002-0000-4000-8000-000000000002 hysteria2-443 hysteria {"auth":"dd6805f674d5979edb4a09417e2b96de738245d78944924fff6e60a82b24618a"}
-00000002-0000-4000-8000-000000000002 vless-grpc-457 vless {"flow":"","id":"6849ee31-fc90-4bd2-9f04-6c74a886c17c"}
+00000002-0000-4000-8000-000000000002 t0 vless {"flow":"xtls-rprx-vision","id":"0b145e40-d0be-4aa4-b7af-a5ca10a02e09"}
+00000002-0000-4000-8000-000000000002 t1 vless {"flow":"","id":"427ec84d-a77b-4194-9f11-9e62c153cada"}
+00000002-0000-4000-8000-000000000002 t2 vless {"flow":"","id":"856dba5a-b252-49c2-81ca-5c85f4da49f0"}
+00000002-0000-4000-8000-000000000002 t3 vless {"flow":"xtls-rprx-vision","id":"c090e6f4-8999-45a4-8a44-81b072af785b"}
+00000002-0000-4000-8000-000000000002 t4 vless {"flow":"","id":"0e37b873-edfd-4d99-87df-738bebb63973"}
+00000002-0000-4000-8000-000000000002 t5 vmess {"id":"d89a6888-5602-408e-8ef5-7a6bda736b12"}
+00000002-0000-4000-8000-000000000002 t6 vmess {"id":"1e7addbc-e2c8-45ed-8e87-427891f5f44a"}
+00000002-0000-4000-8000-000000000002 t7 vmess {"id":"11cd488c-abce-4869-837d-c684af10989d"}
+00000002-0000-4000-8000-000000000002 t8 trojan {"password":"cabdf8835b24a4295c53177dc3e4787837a4380d1e7d55bc541268f9a969e59c"}
+00000002-0000-4000-8000-000000000002 t9 vless {"flow":"","id":"a775d916-5b44-4a57-909a-70c3e5c36df5"}
+00000002-0000-4000-8000-000000000002 t10 vmess {"id":"1d638dba-e629-46a7-ab02-0a01659b8c6c"}
+00000002-0000-4000-8000-000000000002 t11 trojan {"password":"2f7c9df71745e253ae2b18210db378c6ea2ac04971eb90406d134e7070dfd8d0"}
+00000002-0000-4000-8000-000000000002 t12 shadowsocks {"password":"eQZH+P+o9XSi3pwZVZDEwQ=="}
+00000002-0000-4000-8000-000000000002 t13 shadowsocks {"password":"NOOR2NBEAXb0yWkd6uLF7ox64asmlmBO2hh7ScjyY8c="}
+00000002-0000-4000-8000-000000000002 t14 hysteria {"auth":"dd6805f674d5979edb4a09417e2b96de738245d78944924fff6e60a82b24618a"}
+00000002-0000-4000-8000-000000000002 t15 vless {"flow":"","id":"6849ee31-fc90-4bd2-9f04-6c74a886c17c"}
 00000002-0000-4000-8000-000000000002 vless-kcp vless {"flow":"","id":"ab25af19-fc33-4efd-9a1c-b68e343045cf"}
 00000002-0000-4000-8000-000000000002 ss-tcp shadowsocks {"password":"gABMhhafFAmZgRk2e4sMDQ=="}
 00000002-0000-4000-8000-000000000002 vless-split vless {"flow":"xtls-rprx-vision","id":"e420d205-288b-4fee-aac7-1c49b251d686"}
@@ -91,7 +91,8 @@ ss garbage key: {"password":"5xS+aUA0p6zi74JgNi+sVw=="}
 ss no password: {"password":"Kq3/vKsBShnE8OLKhVKSQw=="}
 vmess untouched: None
 unknown method: None
-== refit_credentials (set_inbounds path)
-vless-reality-443 vless {"flow":"xtls-rprx-vision","id":"11111111-1111-4111-8111-111111111111"}
-reality-plain vless {"flow":"","id":"22222222-2222-4222-8222-222222222222"}
-ss2022-456 shadowsocks {"password":"kmZAW092d/oCaODMx+WSzsFDhou16+2Sv3NA5aJX3b0="}
+== fit_account, kept (set_inbound path)
+t0 vless -> {"flow":"xtls-rprx-vision","id":"11111111-1111-4111-8111-111111111111"}
+t1 vless -> {"flow":"","id":"22222222-2222-4222-8222-222222222222"}
+t13 shadowsocks -> {"password":"kmZAW092d/oCaODMx+WSzsFDhou16+2Sv3NA5aJX3b0="}
+t0 vmess -> {"flow":"xtls-rprx-vision","id":"5a5a31ab-3ebf-48a9-86f3-caf41b9d0641"}

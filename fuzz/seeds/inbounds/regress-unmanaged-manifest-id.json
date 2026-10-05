@@ -1,1 +1,1 @@
-[{"tag": "prot", "port": 443, "protocol": "ss2022", "settings": {"clients": []}, "streamSettings": {"network": "grpc", "secbrit\\\\\\\\\\\\\\\\\\\\\\*\\\ttpings\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\y": "tls", "grpcSettings": {"serviNceame": "g"}}}]
+{"port": 443, "protocol": "ss2022", "settings": {"clients": []}, "streamSettings": {"network": "grpc", "secbrit\\\\\\\\\\\\\\\\\\\\\\*\\\ttpings\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\y": "tls", "grpcSettings": {"serviNceame": "g"}}}

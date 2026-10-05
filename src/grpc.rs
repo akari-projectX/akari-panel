@@ -2102,7 +2102,9 @@ async fn store_heartbeat(state: &AppState, node_id: Uuid, hb: &Heartbeat) {
 #[derive(sqlx::FromRow)]
 struct NodeRow {
     enabled: bool,
-    xray_inbounds: serde_json::Value,
+    inbound: Option<serde_json::Value>,
+    /// The direct entrance is enabled (its inbound is served).
+    direct_enabled: bool,
     config_version: i64,
     user_version: i64,
     failed_config_version: Option<i64>,
@@ -2116,11 +2118,19 @@ struct NodeRow {
 }
 
 #[derive(sqlx::FromRow)]
-struct NodeUserRow {
+struct EntranceUserRow {
     user_id: Uuid,
-    credentials: serde_json::Value,
+    protocol: String,
+    account: serde_json::Value,
     /// The user's active plan's speed limit (Mbps), if any.
     speed_limit_mbps: Option<i32>,
+}
+
+/// The key the agent counts a user's traffic under (UserOp.user_id = the
+/// xray "email", echoed in UserTraffic.user_id). W28-a: a node serves one
+/// inbound (its direct entrance), so the user id.
+pub fn stat_key(user: Uuid) -> String {
+    user.to_string()
 }
 
 /// Mbps (decimal, as plans state it) -> bytes per second; None/<=0 = 0
@@ -2130,13 +2140,6 @@ pub fn mbps_to_bytes_per_sec(mbps: Option<i32>) -> u64 {
         Some(m) if m > 0 => m as u64 * 125_000,
         _ => 0,
     }
-}
-
-#[derive(serde::Deserialize)]
-struct Credential {
-    inbound_tag: String,
-    protocol: String,
-    account: serde_json::Value,
 }
 
 /// What the node must run right now, plus its recorded apply error.
@@ -2152,8 +2155,9 @@ struct Desired {
 }
 
 /// The desired state of a node. A disabled node runs nothing (no inbounds,
-/// no users). Users are served only if enabled and, for role=user, not
-/// expired. The expiry filter uses the DB clock at read time, so any
+/// no users); neither does a node without an inbound or whose direct
+/// entrance is disabled (W28-a: the inbound is the direct entrance's).
+/// Users are served only if enabled and, for role=user, not expired. The expiry filter uses the DB clock at read time, so any
 /// snapshot built after the expiry excludes the user even before the
 /// periodic enforcement pass bumps the version. Versions and user set are
 /// read in ONE repeatable-read snapshot, so a version always labels the
@@ -2164,7 +2168,10 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
         .execute(&mut *tx)
         .await?;
     let node = sqlx::query_as::<_, NodeRow>(
-        "SELECT enabled, xray_inbounds, config_version, user_version, \
+        "SELECT enabled, inbound, \
+         coalesce((SELECT e.enabled FROM entrances e WHERE e.node_id = nodes.id \
+             AND e.kind = 'direct'), false) AS direct_enabled, \
+         config_version, user_version, \
          failed_config_version, failed_user_version, failed_held_config_version, \
          failed_held_user_version, failed_reason, online_session, \
          deleting_at IS NOT NULL AS deleting, tls_domain FROM nodes WHERE id = $1",
@@ -2180,58 +2187,52 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
     // A node being deleted is served like a disabled one (it is disabled
     // in the same transaction; this is belt and braces).
     let serve = node.enabled && !node.deleting;
-    let inbounds_json = if serve {
-        let rows = sqlx::query_as::<_, NodeUserRow>(sqlx::AssertSqlSafe(format!(
-            "SELECT nu.user_id, nu.credentials, p.speed_limit_mbps \
-             FROM node_users nu JOIN users u ON u.id = nu.user_id \
-             LEFT JOIN user_plans up ON up.user_id = nu.user_id AND up.status = 'active' \
+    let inbounds: Vec<serde_json::Value> = match &node.inbound {
+        Some(serde_json::Value::Object(ib)) if serve && node.direct_enabled => {
+            let mut ib = ib.clone();
+            ib.insert("tag".into(), crate::entrances::DIRECT_TAG.into());
+            vec![serde_json::Value::Object(ib)]
+        }
+        _ => Vec::new(),
+    };
+    if !inbounds.is_empty() {
+        let rows = sqlx::query_as::<_, EntranceUserRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT eu.user_id, eu.protocol, eu.account, p.speed_limit_mbps \
+             FROM entrance_users eu \
+             JOIN entrances e ON e.id = eu.entrance_id AND e.node_id = $1 AND e.kind = 'direct' \
+             JOIN users u ON u.id = eu.user_id \
+             LEFT JOIN user_plans up ON up.user_id = eu.user_id AND up.status = 'active' \
              LEFT JOIN plans p ON p.id = up.plan_id \
-             WHERE nu.node_id = $1 AND {} \
-             ORDER BY nu.user_id",
+             WHERE {} ORDER BY eu.user_id",
             crate::enforce::SERVED
         )))
         .bind(node_id)
         .fetch_all(&mut *tx)
         .await?;
         for r in rows {
-            // Corrupt credentials: log and leave the user out of the snapshot
-            // (the REST paths answer 500 for the same data); never silently
-            // serve an empty inbound set as if it were valid.
-            let creds: Vec<Credential> = match serde_json::from_value(r.credentials) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!(%node_id, user_id = %r.user_id, error = %e,
-                        "node_users.credentials is not a valid credential list; user skipped in snapshot");
-                    continue;
-                }
-            };
             users.push(UserOp {
                 op: UserOpKind::Add as i32,
-                user_id: r.user_id.to_string(),
-                inbound_users: creds
-                    .into_iter()
-                    .map(|c| InboundUser {
-                        inbound_tag: c.inbound_tag,
-                        // serde_json (no preserve_order): compact, keys
-                        // sorted — the canonical form the state hash uses.
-                        account_json: c.account.to_string(),
-                        protocol: c.protocol,
-                    })
-                    .collect(),
+                user_id: stat_key(r.user_id),
+                inbound_users: vec![InboundUser {
+                    inbound_tag: crate::entrances::DIRECT_TAG.to_string(),
+                    // serde_json (no preserve_order): compact, keys sorted —
+                    // the canonical form the state hash uses.
+                    account_json: r.account.to_string(),
+                    protocol: r.protocol,
+                }],
                 speed_limit_bytes_per_sec: mbps_to_bytes_per_sec(r.speed_limit_mbps),
             });
         }
-        serde_json::to_string(&node.xray_inbounds)?
-    } else {
-        "[]".to_string()
-    };
+    }
+    let inbounds = serde_json::Value::Array(inbounds);
+    let inbounds_json = serde_json::to_string(&inbounds)?;
     tx.commit().await?;
     // W10: an automatic certificate only where an inbound reads the node
     // certificate files (a REALITY-only node never orders one).
     // directory_url/email come from the panel config (sync_if_stale).
     let acme = node
         .tls_domain
-        .filter(|_| serve && crate::nodetpl::needs_certificate(&node.xray_inbounds))
+        .filter(|_| serve && crate::nodetpl::needs_certificate(&inbounds))
         .map(|domain| crate::pb::AcmeConfig {
             domain,
             ..Default::default()
@@ -3464,7 +3465,7 @@ mod tests {
         assert!(d.enabled);
         let set = user_set(&d.snapshot.users);
         assert_eq!(
-            set[&u.to_string()]["in-vless"],
+            set[&u.to_string()][crate::entrances::DIRECT_TAG],
             ("vless".to_string(), "{\"id\":\"x\"}".to_string())
         );
         let st = NodeState {
@@ -3497,14 +3498,14 @@ mod tests {
             d.snapshot.acme.is_none(),
             "no inbound reads the node certificate"
         );
-        let tls = serde_json::json!([{
-            "tag": "in-vless", "port": 443, "protocol": "vless",
+        let tls = serde_json::json!({
+            "port": 443, "protocol": "vless",
             "settings": {"clients": [], "decryption": "none"},
             "streamSettings": {"network": "ws", "security": "tls", "tlsSettings": {
                 "serverName": "n1.example.com",
                 "certificates": [{"certificateFile": crate::nodetpl::TLS_CERT_FILE, "keyFile": crate::nodetpl::TLS_KEY_FILE}]}}
-        }]);
-        sqlx::query("UPDATE nodes SET xray_inbounds = $2 WHERE id = $1")
+        });
+        sqlx::query("UPDATE nodes SET inbound = $2 WHERE id = $1")
             .bind(n)
             .bind(&tls)
             .execute(&db.pool)
@@ -3579,28 +3580,6 @@ mod tests {
         assert!(!hostile.to_string().contains("\\u0000"));
     }
 
-    /// B2: corrupt credentials are logged and the user is left out of the
-    /// snapshot instead of being served as a valid empty inbound set; the
-    /// healthy users are unaffected. (The 0050 CHECK already keeps non-array
-    /// JSON out; a wrongly shaped array is what reaches this path.)
-    #[tokio::test]
-    async fn desired_state_skips_corrupt_credentials() {
-        let Some(db) = TestDb::new().await else {
-            return;
-        };
-        let (n, u) = db.member().await;
-        sqlx::query(
-            "UPDATE node_users SET credentials = '[{\"nope\": 1}]'::jsonb WHERE user_id = $1",
-        )
-        .bind(u)
-        .execute(&db.pool)
-        .await
-        .unwrap();
-        let d = desired_state(&db.pool, n).await.unwrap().unwrap();
-        assert!(d.snapshot.users.is_empty());
-        db.drop().await;
-    }
-
     /// B7 (0050): the database refuses nonsense the app never writes.
     #[tokio::test]
     async fn check_constraints_reject_nonsense() {
@@ -3613,7 +3592,7 @@ mod tests {
             ("UPDATE users SET traffic_used_bytes = -1 WHERE id = $1", u),
             ("UPDATE nodes SET status = 'zombie' WHERE id = $1", n),
             (
-                "UPDATE node_users SET credentials = '{}'::jsonb WHERE user_id = $1",
+                "UPDATE entrance_users SET account = '[]'::jsonb WHERE user_id = $1",
                 u,
             ),
         ] {

@@ -107,8 +107,8 @@ async fn create(admin: &Client, name: &str) -> Value {
             json!({
                 "name": name,
                 "region": "Tokyo",
-                "server_addr": "203.0.113.9",
-                "templates": [{"template": "vless_reality", "port": 443}],
+                "direct": {"connect_host": "203.0.113.9"},
+                "template": {"template": "vless_reality", "port": 443},
                 "install": {"origin": ORIGIN},
             }),
         )
@@ -148,15 +148,17 @@ async fn install_link_lifecycle() {
     );
     assert!(inst["pin"].is_null());
     // The form landed in the same transaction.
-    let (region, addr, inbounds): (Option<String>, Option<String>, Value) =
-        sqlx::query_as("SELECT region, server_addr, xray_inbounds FROM nodes WHERE id = $1")
-            .bind(id)
-            .fetch_one(st.pg())
-            .await
-            .unwrap();
+    let (region, addr, inbound): (Option<String>, Option<String>, Value) = sqlx::query_as(
+        "SELECT n.region, e.connect_host, n.inbound FROM nodes n \
+         JOIN entrances e ON e.node_id = n.id AND e.kind = 'direct' WHERE n.id = $1",
+    )
+    .bind(id)
+    .fetch_one(st.pg())
+    .await
+    .unwrap();
     assert_eq!(region.as_deref(), Some("Tokyo"));
     assert_eq!(addr.as_deref(), Some("203.0.113.9"));
-    assert_eq!(inbounds[0]["streamSettings"]["security"], "reality");
+    assert_eq!(inbound["streamSettings"]["security"], "reality");
     // One token issuance audited, flagged as an install link.
     let n: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM audit_log WHERE target_id = $1 AND action = 'node.enroll_token' \
@@ -456,15 +458,16 @@ async fn create_and_install_validation() {
             "https",
         ),
         (
-            json!({"name": "a", "templates": [], "inbounds": []}),
-            "either templates or inbounds",
+            json!({"name": "a", "template": {"template": "vmess_ws", "port": 443},
+                   "inbound": {"protocol": "vless"}}),
+            "either template or inbound",
         ),
         (
-            json!({"name": "a", "templates": [{"template": "vless_reality", "port": 443}, {"template": "vmess_ws", "port": 443}]}),
-            "port 443",
+            json!({"name": "a", "template": {"template": "vless_reality", "port": 0}}),
+            "port",
         ),
         (
-            json!({"name": "a", "inbounds": [{"tag": "x", "protocol": "vless", "streamSettings": {"network": "kcp"}}]}),
+            json!({"name": "a", "inbound": {"tag": "x", "protocol": "vless", "streamSettings": {"network": "kcp"}}}),
             "kcp",
         ),
         (json!({"name": "a", "region": "x".repeat(65)}), "region"),
@@ -487,12 +490,20 @@ async fn create_and_install_validation() {
     let r = admin
         .post(
             "/test/api/v1/inbound-templates/render",
-            json!({"templates": [{"template": "trojan_tls", "port": 8443, "domain": "n.example.com"}], "taken_ports": [443]}),
+            json!({"template": {"template": "trojan_tls", "port": 8443, "domain": "n.example.com"}, "taken_ports": [443]}),
         )
         .await;
     assert_eq!(r.status, 200);
     assert_eq!(r.json()["needs_certificate"], true);
-    assert_eq!(r.json()["inbounds"][0]["protocol"], "trojan");
+    assert_eq!(r.json()["inbound"]["protocol"], "trojan");
+    let r = admin
+        .post(
+            "/test/api/v1/inbound-templates/render",
+            json!({"template": {"template": "vmess_tcp", "port": 443}, "taken_ports": [443]}),
+        )
+        .await;
+    assert_eq!(r.status, 400);
+    assert_eq!(r.json()["code"], "template.port_clash");
     let r = admin.get("/test/api/v1/inbound-templates").await;
     assert_eq!(r.json()["reality_dests"][0], "www.apple.com");
     let anon = Client::new(&st, rand_ip());
@@ -621,10 +632,7 @@ async fn tls_domain_flows_into_templates_and_script() {
             json!({
                 "name": "hk-tls",
                 "tls_domain": "HK1.Example.com",
-                "templates": [
-                    {"template": "vless_ws_tls", "port": 443},
-                    {"template": "hysteria2", "port": 443},
-                ],
+                "template": {"template": "vless_ws_tls", "port": 443},
                 "install": {"origin": ORIGIN},
             }),
         )
@@ -632,20 +640,18 @@ async fn tls_domain_flows_into_templates_and_script() {
     assert_eq!(r.status, 201, "{}", String::from_utf8_lossy(&r.body));
     let v: Value = r.json();
     let id: Uuid = v["id"].as_str().unwrap().parse().unwrap();
-    let (domain, inbounds, cv): (Option<String>, Value, i64) =
-        sqlx::query_as("SELECT tls_domain, xray_inbounds, config_version FROM nodes WHERE id = $1")
+    let (domain, inbound, cv): (Option<String>, Value, i64) =
+        sqlx::query_as("SELECT tls_domain, inbound, config_version FROM nodes WHERE id = $1")
             .bind(id)
             .fetch_one(st.pg())
             .await
             .unwrap();
     assert_eq!(domain.as_deref(), Some("hk1.example.com"));
     assert!(cv >= 1);
-    for i in inbounds.as_array().unwrap() {
-        assert_eq!(
-            i["streamSettings"]["tlsSettings"]["serverName"],
-            "hk1.example.com"
-        );
-    }
+    assert_eq!(
+        inbound["streamSettings"]["tlsSettings"]["serverName"],
+        "hk1.example.com"
+    );
     let n: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM audit_log WHERE target_id = $1 AND action = 'node.update' \
          AND after->>'tls_domain' = 'hk1.example.com'",
@@ -671,7 +677,7 @@ async fn tls_domain_flows_into_templates_and_script() {
             json!({
                 "name": "hk-bad",
                 "tls_domain": "hk2.example.com",
-                "templates": [{"template": "trojan_tls", "port": 443, "domain": "other.example.com"}],
+                "template": {"template": "trojan_tls", "port": 443, "domain": "other.example.com"},
             }),
         )
         .await;
@@ -695,8 +701,8 @@ async fn tls_domain_flows_into_templates_and_script() {
     let r = admin
         .req(
             axum::http::Method::PUT,
-            &format!("{path}/inbounds"),
-            Some(json!({"inbounds": inbounds})),
+            &format!("{path}/inbound"),
+            Some(json!({"inbound": inbound})),
         )
         .await;
     assert_eq!(r.status, 400);
@@ -786,7 +792,7 @@ async fn tls_domain_check_compares_with_the_node() {
     let r = admin
         .post(
             "/test/api/v1/inbound-templates/check-domain",
-            json!({"domain": "node.invalid", "server_addr": "192.0.2.1"}),
+            json!({"domain": "node.invalid", "connect_host": "192.0.2.1"}),
         )
         .await;
     let c: Value = r.json();

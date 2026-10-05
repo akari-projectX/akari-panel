@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """W8 protocol matrix smoke (called by smoke.sh with the agent running).
 
-For every inbound template: render it through the panel API, put it on the
-smoke node (127.0.0.1, a throwaway self-signed certificate in place of the
-node's certificate files, a local TLS 1.3 site as the REALITY target),
-assign one user to every inbound, and check
-  - the agent applies the whole set (no last_error, a fresh "state applied"),
-  - the three subscription formats carry correct entries (and leave out
+For every inbound template, one after the other (W28-a/D2: a node has one
+inbound): render it through the panel API, put it on the smoke node
+(127.0.0.1, a throwaway self-signed certificate in place of the node's
+certificate files, a local TLS 1.3 site as the REALITY target) and check
+  - the agent applies it (no last_error, a fresh "state applied"),
+  - the plan-granted user's credential fits the protocol,
+  - the three subscription formats carry a correct entry (and leave out
     what a format cannot express: xhttp in sing-box),
   - with real clients when available (mihomo: MIHOMO_BIN or
-    ../akari-client/bin/mihomo; sing-box: SINGBOX_BIN), every proxy of the
-    rendered subscription relays HTTP through the agent, and deleting the
-    user cuts new connections (gate + validator).
-The node's previous inbounds are restored at the end.
+    ../akari-client/bin/mihomo; sing-box: SINGBOX_BIN), the proxy of the
+    rendered subscription relays HTTP through the agent.
+Deleting the user then cuts new connections (gate + validator). The node's
+previous inbound is restored at the end.
 
-Env: BASE, JAR, NODE_ID, LOG (smoke log dir), AGENT_LOG.
+Env: BASE, JAR, NODE_ID, ACCESS_PLAN (a plan granting the node's direct
+entrance), LOG (smoke log dir), AGENT_LOG, VALKEY_DB (smoke's Valkey db:
+the subscription rate limit is reset between templates).
 """
 
 import base64
@@ -34,6 +37,8 @@ import urllib.request
 BASE = os.environ["BASE"]
 JAR = os.environ["JAR"]
 NODE_ID = os.environ["NODE_ID"]
+ACCESS_PLAN = os.environ["ACCESS_PLAN"]
+VALKEY_DB = os.environ["VALKEY_DB"]
 LOG = os.environ["LOG"]
 AGENT_LOG = os.environ["AGENT_LOG"]
 W8 = os.path.join(LOG, "w8")
@@ -134,125 +139,32 @@ dest.socket = tls_ctx.wrap_socket(dest.socket, server_side=True)
 threading.Thread(target=dest.serve_forever, daemon=True).start()
 DEST = f"localhost:{dest.server_address[1]}"
 
-# --- templates -----------------------------------------------------------------
+# --- one template at a time ----------------------------------------------------
 
-st, nodes = api("GET", "/api/v1/nodes")
-node = [n for n in nodes if n["id"] == NODE_ID][0]
-original = node["xray_inbounds"]
-taken = [i["port"] for i in original if isinstance(i.get("port"), int)]
+st, node = api("GET", f"/api/v1/nodes/{NODE_ID}")
+original = node["inbound"]
 
 real = {"dest": DEST, "server_name": DOMAIN}
-T = [  # (expected protocol, template spec without port)
-    ("vless", dict(template="vless_reality", tag="w8-reality-vision", **real)),
-    ("vless", dict(template="vless_reality_xhttp", tag="w8-reality-xhttp", path="/rx", **real)),
-    ("vless", dict(template="vless_tls_vision", tag="w8-tls-vision", domain=DOMAIN)),
-    ("vless", dict(template="vless_ws_tls", tag="w8-vless-ws-tls", domain=DOMAIN)),
-    ("vless", dict(template="transport", tag="w8-vless-hu", protocol="vless", network="httpupgrade")),
-    ("vless", dict(template="transport", tag="w8-vless-hu-tls", protocol="vless", network="httpupgrade", tls_domain=DOMAIN)),
-    ("vless", dict(template="transport", tag="w8-vless-xhttp", protocol="vless", network="xhttp")),
-    ("vless", dict(template="transport", tag="w8-vless-xhttp-tls", protocol="vless", network="xhttp", tls_domain=DOMAIN)),
-    ("vless", dict(template="transport", tag="w8-vless-grpc", protocol="vless", network="grpc", tls_domain=DOMAIN, service_name="w8svc")),
-    ("vmess", dict(template="vmess_tcp", tag="w8-vmess-tcp")),
-    ("vmess", dict(template="vmess_ws", tag="w8-vmess-ws")),
-    ("vmess", dict(template="transport", tag="w8-vmess-grpc", protocol="vmess", network="grpc", tls_domain=DOMAIN)),
-    ("trojan", dict(template="trojan_tls", tag="w8-trojan-tls", domain=DOMAIN)),
-    ("trojan", dict(template="transport", tag="w8-trojan-ws", protocol="trojan", network="ws", tls_domain=DOMAIN)),
-    ("trojan", dict(template="transport", tag="w8-trojan-grpc", protocol="trojan", network="grpc", tls_domain=DOMAIN)),
-    ("shadowsocks", dict(template="shadowsocks_2022", tag="w8-ss128")),
-    ("shadowsocks", dict(template="shadowsocks_2022", tag="w8-ss256", method="2022-blake3-aes-256-gcm")),
-    ("hysteria", dict(template="hysteria2", tag="w8-hy2", domain=DOMAIN)),
+T = [  # (label, expected protocol, template spec without port)
+    ("w8-reality-vision", "vless", dict(template="vless_reality", **real)),
+    ("w8-reality-xhttp", "vless", dict(template="vless_reality_xhttp", path="/rx", **real)),
+    ("w8-tls-vision", "vless", dict(template="vless_tls_vision", domain=DOMAIN)),
+    ("w8-vless-ws-tls", "vless", dict(template="vless_ws_tls", domain=DOMAIN)),
+    ("w8-vless-hu", "vless", dict(template="transport", protocol="vless", network="httpupgrade")),
+    ("w8-vless-hu-tls", "vless", dict(template="transport", protocol="vless", network="httpupgrade", tls_domain=DOMAIN)),
+    ("w8-vless-xhttp", "vless", dict(template="transport", protocol="vless", network="xhttp")),
+    ("w8-vless-xhttp-tls", "vless", dict(template="transport", protocol="vless", network="xhttp", tls_domain=DOMAIN)),
+    ("w8-vless-grpc", "vless", dict(template="transport", protocol="vless", network="grpc", tls_domain=DOMAIN, service_name="w8svc")),
+    ("w8-vmess-tcp", "vmess", dict(template="vmess_tcp")),
+    ("w8-vmess-ws", "vmess", dict(template="vmess_ws")),
+    ("w8-vmess-grpc", "vmess", dict(template="transport", protocol="vmess", network="grpc", tls_domain=DOMAIN)),
+    ("w8-trojan-tls", "trojan", dict(template="trojan_tls", domain=DOMAIN)),
+    ("w8-trojan-ws", "trojan", dict(template="transport", protocol="trojan", network="ws", tls_domain=DOMAIN)),
+    ("w8-trojan-grpc", "trojan", dict(template="transport", protocol="trojan", network="grpc", tls_domain=DOMAIN)),
+    ("w8-ss128", "shadowsocks", dict(template="shadowsocks_2022")),
+    ("w8-ss256", "shadowsocks", dict(template="shadowsocks_2022", method="2022-blake3-aes-256-gcm")),
+    ("w8-hy2", "hysteria", dict(template="hysteria2", domain=DOMAIN)),
 ]
-specs = []
-for _, spec in T:
-    specs.append(dict(spec, port=free_port(exclude=taken)))
-rendered = []
-for k in range(0, len(specs), 9):  # the API renders at most 16 at once
-    st, r = api("POST", "/api/v1/inbound-templates/render",
-                {"templates": specs[k:k + 9], "taken_ports": taken + [i["port"] for i in rendered]})
-    if st != 200:
-        fail(f"render templates: {st} {r}")
-    if not r["needs_certificate"]:
-        fail("render: certificate templates not flagged")
-    rendered += r["inbounds"]
-for i in rendered:
-    i["listen"] = "127.0.0.1"
-    for c in i.get("streamSettings", {}).get("tlsSettings", {}).get("certificates", []):
-        if c.get("certificateFile") != CERT_FILE or c.get("keyFile") != KEY_FILE:
-            fail(f"{i['tag']}: template does not read the node certificate files")
-        c["certificateFile"] = f"{W8}/fullchain.pem"
-        c["keyFile"] = f"{W8}/privkey.pem"
-
-applied_before = open(AGENT_LOG).read().count('"msg":"state applied"')
-st, r = api("PUT", f"/api/v1/nodes/{NODE_ID}/inbounds", {"inbounds": original + rendered})
-if st != 200:
-    fail(f"put rendered inbounds: {st} {r}")
-
-st, u = api("POST", "/api/v1/users", {"email": "w8-user@smoke.test", "password": "user-password-123"})
-if st != 201:
-    fail(f"create w8 user: {st} {u}")
-USER, SUB = u["id"], u["sub_token"]
-for (proto, spec), inb in zip(T, rendered):
-    if inb["protocol"] != proto:
-        fail(f"{spec['tag']}: rendered protocol {inb['protocol']} != {proto}")
-    st, a = api("POST", f"/api/v1/users/{USER}/nodes/{NODE_ID}", {"inbound_tag": inb["tag"], "protocol": proto})
-    if st != 201:
-        fail(f"assign {inb['tag']}: {st} {a}")
-    acc = a["account"]
-    want_flow = "xtls-rprx-vision" if spec["template"] in ("vless_reality", "vless_tls_vision") else ""
-    if proto == "vless" and acc.get("flow") != want_flow:
-        fail(f"{inb['tag']}: account flow {acc.get('flow')!r}, want {want_flow!r}")
-    if proto == "shadowsocks":
-        n = 32 if "256" in inb["settings"]["method"] else 16
-        if len(base64.b64decode(acc["password"])) != n:
-            fail(f"{inb['tag']}: user key is not {n} bytes")
-    if proto == "hysteria" and len(acc.get("auth", "")) != 64:
-        fail(f"{inb['tag']}: hysteria auth missing")
-
-# --- the agent applies everything ------------------------------------------------
-
-deadline = time.time() + 30
-while time.time() < deadline:
-    st, nodes = api("GET", "/api/v1/nodes")
-    n = [x for x in nodes if x["id"] == NODE_ID][0]
-    applied = open(AGENT_LOG).read().count('"msg":"state applied"')
-    # (W18: the "run 重装命令 once" updater warning is about the agent build,
-    # not the inbounds: an agent main without the updater shows it.)
-    inbound_warnings = [w for w in n["warnings"] if "akari-agent-update" not in w]
-    if n["last_error"] is None and applied > applied_before and not inbound_warnings:
-        # the last apply must have every port listening
-        ok = True
-        for i in rendered:
-            if i["protocol"] == "hysteria":
-                continue
-            s = socket.socket()
-            s.settimeout(1)
-            try:
-                s.connect(("127.0.0.1", i["port"]))
-            except OSError:
-                ok = False
-            finally:
-                s.close()
-        if ok:
-            break
-    time.sleep(1)
-else:
-    fail(f"agent did not apply the matrix (last_error={n['last_error']}, warnings={n['warnings']})")
-if any('"level":"ERROR"' in line and "apply" in line for line in open(AGENT_LOG).readlines()[-50:]):
-    fail("agent logged an apply error")
-print(f"agent applied {len(rendered)} template inbounds")
-
-# --- subscriptions ----------------------------------------------------------------
-
-st, body = api("GET", f"/sub/{SUB}", ua="v2rayN/7.0", raw=True)
-links = base64.b64decode(body.strip()).decode().splitlines()
-if len(links) != len(rendered):
-    fail(f"links: {len(links)} lines for {len(rendered)} inbounds")
-by_tag = {}
-for line in links:
-    tag = urllib.request.unquote(line.rsplit("#", 1)[1]).split(" · ")[-1] if "#" in line else None
-    if line.startswith("vmess://"):
-        tag = json.loads(base64.b64decode(line[8:]))["ps"].split(" · ")[-1]
-    by_tag[tag] = line
 expect_links = {
     "w8-reality-vision": ["vless://", "type=tcp", "security=reality", "flow=xtls-rprx-vision", "pbk=", "sid=", "fp=chrome"],
     "w8-reality-xhttp": ["type=xhttp", "security=reality", "path=%2Frx", "mode=auto"],
@@ -270,47 +182,125 @@ expect_links = {
     "w8-ss256": ["ss://2022-blake3-aes-256-gcm:"],
     "w8-hy2": ["hysteria2://", f"sni={DOMAIN}"],
 }
-for tag, parts in expect_links.items():
-    line = by_tag.get(tag, "")
-    for p in parts:
+vmess_nets = {"w8-vmess-tcp": "tcp", "w8-vmess-ws": "ws", "w8-vmess-grpc": "grpc"}
+
+st, u = api("POST", "/api/v1/users", {"email": "w8-user@smoke.test", "password": "user-password-123"})
+if st != 201:
+    fail(f"create w8 user: {st} {u}")
+USER, SUB = u["id"], u["sub_token"]
+# D3: access comes from the plan (it grants the node's direct entrance).
+st, r = api("PUT", f"/api/v1/users/{USER}/plan", {"plan_id": ACCESS_PLAN, "period": "month"})
+if st != 200:
+    fail(f"w8 user plan: {st} {r}")
+
+
+def render(label, spec):
+    st, r = api("POST", "/api/v1/inbound-templates/render", {"template": dict(spec, port=free_port())})
+    if st != 200:
+        fail(f"render {label}: {st} {r}")
+    inb = r["inbound"]
+    if "tag" in inb:
+        fail(f"{label}: a rendered inbound carries a tag (the panel names it)")
+    inb["listen"] = "127.0.0.1"
+    certs = inb.get("streamSettings", {}).get("tlsSettings", {}).get("certificates", [])
+    if certs and not r["needs_certificate"]:
+        fail(f"{label}: reads the node certificate but needs_certificate is false")
+    for c in certs:
+        if c.get("certificateFile") != CERT_FILE or c.get("keyFile") != KEY_FILE:
+            fail(f"{label}: template does not read the node certificate files")
+        c["certificateFile"] = f"{W8}/fullchain.pem"
+        c["keyFile"] = f"{W8}/privkey.pem"
+    return inb
+
+
+def apply(label, inb):
+    before = open(AGENT_LOG).read().count('"msg":"state applied"')
+    st, r = api("PUT", f"/api/v1/nodes/{NODE_ID}/inbound", {"inbound": inb})
+    if st != 200:
+        fail(f"put {label}: {st} {r}")
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        st, n = api("GET", f"/api/v1/nodes/{NODE_ID}")
+        applied = open(AGENT_LOG).read().count('"msg":"state applied"')
+        # (W18: the "run 重装命令 once" updater warning is about the agent
+        # build, not the inbound: an agent main without the updater shows it.)
+        warnings = [w for w in n["warnings"] if "akari-agent-update" not in w]
+        if n["last_error"] is None and applied > before and not warnings:
+            if inb["protocol"] == "hysteria":
+                return
+            s = socket.socket()
+            s.settimeout(1)
+            try:
+                s.connect(("127.0.0.1", inb["port"]))
+                return
+            except OSError:
+                pass
+            finally:
+                s.close()
+        time.sleep(0.5)
+    fail(f"agent did not apply {label} (last_error={n['last_error']}, warnings={n['warnings']})")
+
+
+def check_link(label, proto, spec, inb):
+    reset_sub_limit()
+    st, body = api("GET", f"/sub/{SUB}", ua="v2rayN/7.0", raw=True)
+    links = base64.b64decode(body.strip()).decode().splitlines()
+    if len(links) != 1:
+        fail(f"links for {label}: {links}")
+    line = links[0]
+    for p in expect_links.get(label, []):
         if p not in line:
-            fail(f"links: {tag} lacks {p!r}: {line}")
-for tag, net in (("w8-vmess-tcp", "tcp"), ("w8-vmess-ws", "ws"), ("w8-vmess-grpc", "grpc")):
-    v = json.loads(base64.b64decode(by_tag[tag][8:]))
-    if v["net"] != net or v["aid"] != "0" or v["scy"] != "auto":
-        fail(f"links: vmess {tag}: {v}")
-for tag in ("w8-ss128", "w8-ss256"):
-    user = by_tag[tag].split("@")[0][len("ss://"):]
-    method, pw = user.split(":", 1)
-    psk, key = urllib.request.unquote(pw).split(":")
-    inb = [i for i in rendered if i["tag"] == tag][0]
-    if psk != inb["settings"]["password"]:
-        fail(f"links: {tag} server PSK mismatch")
+            fail(f"links: {label} lacks {p!r}: {line}")
+    if label in vmess_nets:
+        v = json.loads(base64.b64decode(line[8:]))
+        if v["net"] != vmess_nets[label] or v["aid"] != "0" or v["scy"] != "auto":
+            fail(f"links: vmess {label}: {v}")
+    # The user's credential fits the protocol (D3: the plan generated it).
+    want_flow = "xtls-rprx-vision" if spec["template"] in ("vless_reality", "vless_tls_vision") else ""
+    if proto == "vless" and ("flow=xtls-rprx-vision" in line) != bool(want_flow):
+        fail(f"{label}: flow in {line}, want {want_flow!r}")
+    if proto == "shadowsocks":
+        method, pw = line.split("@")[0][len("ss://"):].split(":", 1)
+        psk, key = urllib.request.unquote(pw).split(":")
+        if psk != inb["settings"]["password"]:
+            fail(f"links: {label} server PSK mismatch")
+        n = 32 if "256" in method else 16
+        if len(base64.b64decode(key)) != n:
+            fail(f"{label}: user key is not {n} bytes")
+    if proto == "hysteria" and len(line[len("hysteria2://"):].split("@")[0]) != 64:
+        fail(f"{label}: hysteria auth missing")
 
-st, clash = api("GET", f"/sub/{SUB}", ua="clash.meta/1.19", raw=True)
-clash = clash.decode()
-proxies = clash.count("\n  - name: ") + clash.startswith("  - name: ") - 1  # minus the group
-if proxies != len(rendered):
-    fail(f"clash: {proxies} proxies for {len(rendered)} inbounds")
-for want in ("type: ss\n", "cipher: 2022-blake3-aes-256-gcm", "type: hysteria2\n", "network: xhttp\n",
-             "v2ray-http-upgrade: true", "grpc-service-name: w8svc", "flow: xtls-rprx-vision"):
-    if want not in clash:
-        fail(f"clash lacks {want!r}")
 
-st, sb = api("GET", f"/sub/{SUB}", ua="sing-box/1.12.0")
-outs = [o for o in sb["outbounds"] if o["type"] != "direct"]
-xhttp = [i for i in rendered if i.get("streamSettings", {}).get("network") == "xhttp"]
-if len(outs) != len(rendered) - len(xhttp):
-    fail(f"sing-box: {len(outs)} outbounds, want {len(rendered) - len(xhttp)} (xhttp left out)")
-types = {o["type"] for o in outs}
-for t in ("vless", "vmess", "trojan", "shadowsocks", "hysteria2"):
-    if t not in types:
-        fail(f"sing-box lacks {t}")
-if not any(o.get("transport", {}).get("type") == "httpupgrade" for o in outs):
-    fail("sing-box lacks the httpupgrade transport")
-if not any(o.get("transport", {}).get("type") == "grpc" for o in outs):
-    fail("sing-box lacks the grpc transport")
-print("subscriptions: links/clash/sing-box carry the matrix")
+clash_all = ""
+sb_outs = []
+
+
+def reset_sub_limit():
+    # Three formats per template, 18 templates: past smoke's per-token
+    # subscription limit (8 per window). Clear its buckets.
+    subprocess.run(
+        ["docker", "compose", "exec", "-T", "valkey", "valkey-cli", "-n", VALKEY_DB, "EVAL",
+         "for _,k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call('DEL', k) end return 1",
+         "0", "akari:rl:sub:*"],
+        check=True, capture_output=True)
+
+
+
+def subscriptions(label, inb):
+    global clash_all
+    st, clash = api("GET", f"/sub/{SUB}", ua="clash.meta/1.19", raw=True)
+    clash = clash.decode()
+    if clash.count("\n  - name: ") + clash.startswith("  - name: ") - 1 != 1:  # minus the group
+        fail(f"clash: not one proxy for {label}")
+    clash_all += clash
+    st, sb = api("GET", f"/sub/{SUB}", ua="sing-box/1.12.0")
+    outs = [o for o in sb["outbounds"] if o["type"] != "direct"]
+    xhttp = inb.get("streamSettings", {}).get("network") == "xhttp"
+    if len(outs) != (0 if xhttp else 1):
+        fail(f"sing-box: {len(outs)} outbounds for {label} (xhttp left out)")
+    sb_outs.extend(outs)
+    return clash, outs
+
 
 # --- real clients ---------------------------------------------------------------------
 
@@ -337,7 +327,7 @@ def wait_listen(port, t=15):
     return False
 
 
-def mihomo_run(binary):
+def mihomo_run(binary, clash, label):
     # The rendered subscription, pointed at 127.0.0.1, self-signed accepted,
     # one mixed listener per proxy.
     lines = []
@@ -363,12 +353,12 @@ def mihomo_run(binary):
     os.makedirs(d, exist_ok=True)
     open(os.path.join(d, "config.yaml"), "w").write(cfg)
     p = subprocess.Popen([binary, "-d", d, "-f", os.path.join(d, "config.yaml")],
-                         stdout=open(os.path.join(W8, "mihomo.log"), "w"), stderr=subprocess.STDOUT)
+                         stdout=open(os.path.join(W8, f"mihomo-{label}.log"), "w"), stderr=subprocess.STDOUT)
     procs.append(p)
     return ports
 
 
-def singbox_run(binary):
+def singbox_run(binary, outs, label):
     ob = []
     for o in outs:
         o = json.loads(json.dumps(o))
@@ -389,44 +379,84 @@ def singbox_run(binary):
     path = os.path.join(W8, "sing-box.json")
     json.dump(cfg, open(path, "w"))
     p = subprocess.Popen([binary, "run", "-c", path],
-                         stdout=open(os.path.join(W8, "sing-box.log"), "w"), stderr=subprocess.STDOUT)
+                         stdout=open(os.path.join(W8, f"sing-box-{label}.log"), "w"), stderr=subprocess.STDOUT)
     procs.append(p)
     return ports
 
 
-def check_clients(label, ports):
+def check_clients(client, label, ports):
     for name, port in ports.items():
         if not wait_listen(port):
-            fail(f"{label}: listener for {name} did not come up (see {W8}/{label}.log)")
-    bad = []
+            fail(f"{client}: listener for {label} did not come up (see {W8}/{client}-{label}.log)")
     for name, port in ports.items():
-        ok = False
         for _ in range(5):
             if curl_via(port):
-                ok = True
                 break
             time.sleep(1)
-        if not ok:
-            bad.append(name)
-    if bad:
-        fail(f"{label}: no relay through {bad} (see {W8}/{label}.log)")
-    print(f"{label}: {len(ports)} proxies relay through the agent")
+        else:
+            fail(f"{client}: no relay through {label} (see {W8}/{client}-{label}.log)")
 
 
-clients = {}
+def stop_clients():
+    for p in procs:
+        p.terminate()
+        try:
+            p.wait(5)
+        except subprocess.TimeoutExpired:
+            p.kill()
+    procs.clear()
+
+
 mihomo = os.environ.get("MIHOMO_BIN") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../akari-client/bin/mihomo")
-if os.access(mihomo, os.X_OK):
-    clients["mihomo"] = mihomo_run(mihomo)
-else:
+if not os.access(mihomo, os.X_OK):
+    mihomo = None
     print("mihomo: not available (MIHOMO_BIN) — real-client check skipped")
 singbox = os.environ.get("SINGBOX_BIN") or shutil.which("sing-box")
-if singbox and os.access(singbox, os.X_OK):
-    clients["sing-box"] = singbox_run(singbox)
-else:
+if not (singbox and os.access(singbox, os.X_OK)):
+    singbox = None
     print("sing-box: not available (SINGBOX_BIN) — real-client check skipped")
+
+relayed = {"mihomo": 0, "sing-box": 0}
+last_ports = {}
 try:
-    for label, ports in clients.items():
-        check_clients(label, ports)
+    for i, (label, proto, spec) in enumerate(T):
+        inb = render(label, spec)
+        if inb["protocol"] != proto:
+            fail(f"{label}: rendered protocol {inb['protocol']} != {proto}")
+        apply(label, inb)
+        check_link(label, proto, spec, inb)
+        clash, outs = subscriptions(label, inb)
+        last = i == len(T) - 1
+        clients = {}
+        if mihomo:
+            clients["mihomo"] = mihomo_run(mihomo, clash, label)
+        if singbox and outs:
+            clients["sing-box"] = singbox_run(singbox, outs, label)
+        for client, ports in clients.items():
+            check_clients(client, label, ports)
+            relayed[client] += len(ports)
+        if last:
+            last_ports = clients
+        else:
+            stop_clients()
+    print(f"agent applied {len(T)} template inbounds one after the other")
+
+    for want in ("type: ss\n", "cipher: 2022-blake3-aes-256-gcm", "type: hysteria2\n", "network: xhttp\n",
+                 "v2ray-http-upgrade: true", "grpc-service-name: w8svc", "flow: xtls-rprx-vision"):
+        if want not in clash_all:
+            fail(f"clash lacks {want!r}")
+    types = {o["type"] for o in sb_outs}
+    for t in ("vless", "vmess", "trojan", "shadowsocks", "hysteria2"):
+        if t not in types:
+            fail(f"sing-box lacks {t}")
+    if not any(o.get("transport", {}).get("type") == "httpupgrade" for o in sb_outs):
+        fail("sing-box lacks the httpupgrade transport")
+    if not any(o.get("transport", {}).get("type") == "grpc" for o in sb_outs):
+        fail("sing-box lacks the grpc transport")
+    print("subscriptions: links/clash/sing-box carry the matrix")
+    for client, n in relayed.items():
+        if n:
+            print(f"{client}: {n} proxies relayed through the agent")
 
     # --- revocation through the panel: the user goes, new connections fail ---
     st, _ = api("DELETE", f"/api/v1/users/{USER}")
@@ -434,24 +464,19 @@ try:
         fail(f"delete w8 user: {st}")
     time.sleep(1)
     deadline = time.time() + 20
-    for label, ports in clients.items():
+    for client, ports in last_ports.items():
         for name, port in ports.items():
             while curl_via(port):
                 if time.time() > deadline:
-                    fail(f"{label}: {name} still relays after the user was deleted")
+                    fail(f"{client}: {name} still relays after the user was deleted")
                 time.sleep(1)
-    if clients:
-        print("revocation: every proxy refused after the user was deleted")
+    if last_ports:
+        print("revocation: the proxy is refused after the user was deleted")
 finally:
-    for p in procs:
-        p.terminate()
-        try:
-            p.wait(5)
-        except subprocess.TimeoutExpired:
-            p.kill()
+    stop_clients()
 
 st, _ = api("DELETE", f"/api/v1/users/{USER}")
-st, r = api("PUT", f"/api/v1/nodes/{NODE_ID}/inbounds", {"inbounds": original})
+st, r = api("PUT", f"/api/v1/nodes/{NODE_ID}/inbound", {"inbound": original})
 if st != 200:
-    fail(f"restore inbounds: {st} {r}")
+    fail(f"restore inbound: {st} {r}")
 print("w8 protocol matrix: ok")

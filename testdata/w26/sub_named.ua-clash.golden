@@ -1,6 +1,6 @@
 content-type: text/yaml; charset=utf-8
 proxies:
-  - name: "东京 01 | IPLC | 0.5x · vless-reality-443"
+  - name: "东京 01 | IPLC | 0.5x t0"
     type: vless
     server: relay.example.net
     port: 30443
@@ -13,7 +13,7 @@ proxies:
     reality-opts:
       public-key: 5Jb27oX8W738ZxUIXkYUhgRdCa094FSJXhP9YvUkUjU
       short-id: 54743dc5e24d2a41
-  - name: "东京 01 | IPLC | 0.5x · reality-plain"
+  - name: "东京 01 | IPLC | 0.5x t1"
     type: vless
     server: 203.0.113.7
     port: 444
@@ -25,7 +25,7 @@ proxies:
     reality-opts:
       public-key: vQV2yDqkaV19psaYsR47O9PZ7m5wVh_XTJzv3SNmcSw
       short-id: ea88e527a819b062
-  - name: "东京 01 | IPLC | 0.5x · vless-xhttp-445"
+  - name: "东京 01 | IPLC | 0.5x t2"
     type: vless
     server: 203.0.113.7
     port: 445
@@ -40,7 +40,7 @@ proxies:
     xhttp-opts:
       path: /c680488a0d74b233
       mode: stream-one
-  - name: "东京 01 | IPLC | 0.5x · vless-vision-446"
+  - name: "东京 01 | IPLC | 0.5x t3"
     type: vless
     server: 203.0.113.7
     port: 446
@@ -49,7 +49,7 @@ proxies:
     network: tcp
     tls: true
     servername: node.example.com
-  - name: "东京 01 | IPLC | 0.5x · vless-ws-447"
+  - name: "东京 01 | IPLC | 0.5x t4"
     type: vless
     server: 203.0.113.7
     port: 447
@@ -59,7 +59,7 @@ proxies:
     servername: node.example.com
     ws-opts:
       path: /vl
-  - name: "东京 01 | IPLC | 0.5x · vmess-ws-448"
+  - name: "东京 01 | IPLC | 0.5x t5"
     type: vmess
     server: 203.0.113.7
     port: 448
@@ -69,7 +69,7 @@ proxies:
     network: ws
     ws-opts:
       path: /c9769a35fb136de4
-  - name: "东京 01 | IPLC | 0.5x · vmess-ws-449"
+  - name: "东京 01 | IPLC | 0.5x t6"
     type: vmess
     server: 203.0.113.7
     port: 449
@@ -81,7 +81,7 @@ proxies:
     servername: node.example.com
     ws-opts:
       path: /a4f4557f17fef863
-  - name: "东京 01 | IPLC | 0.5x · vmess-tcp-450"
+  - name: "东京 01 | IPLC | 0.5x t7"
     type: vmess
     server: 203.0.113.7
     port: 450
@@ -89,7 +89,7 @@ proxies:
     alterId: 0
     cipher: auto
     network: tcp
-  - name: "东京 01 | IPLC | 0.5x · trojan-451"
+  - name: "东京 01 | IPLC | 0.5x t8"
     type: trojan
     server: 203.0.113.7
     port: 451
@@ -97,7 +97,7 @@ proxies:
     network: tcp
     tls: true
     sni: node.example.com
-  - name: "东京 01 | IPLC | 0.5x · vless-httpupgrade-452"
+  - name: "东京 01 | IPLC | 0.5x t9"
     type: vless
     server: 203.0.113.7
     port: 452
@@ -110,7 +110,7 @@ proxies:
       headers:
         Host: cdn.example.com
       v2ray-http-upgrade: true
-  - name: "东京 01 | IPLC | 0.5x · trojan-grpc-454"
+  - name: "东京 01 | IPLC | 0.5x t11"
     type: trojan
     server: 203.0.113.7
     port: 454
@@ -120,21 +120,21 @@ proxies:
     sni: node.example.com
     grpc-opts:
       grpc-service-name: 081f5b7d6c24c39b
-  - name: "东京 01 | IPLC | 0.5x · ss2022-455"
+  - name: "东京 01 | IPLC | 0.5x t12"
     type: ss
     server: 203.0.113.7
     port: 18388
     cipher: 2022-blake3-aes-128-gcm
     password: "D4SCUD+QykMDrsw++ZuN8g==:VpMbq1DuxbJ4K7+2OZjLRA=="
     udp: true
-  - name: "东京 01 | IPLC | 0.5x · ss2022-456"
+  - name: "东京 01 | IPLC | 0.5x t13"
     type: ss
     server: 203.0.113.7
     port: 456
     cipher: 2022-blake3-aes-256-gcm
     password: "ToH1n8izc5aaDQX0Zz71ob9Biwvc7tQfagD2Xx5TNUM=:YMEFSB8ZlmWBrEeUAjjV8PnmNBzVO0/23vvDfFDywFE="
     udp: true
-  - name: "东京 01 | IPLC | 0.5x · hysteria2-443"
+  - name: "东京 01 | IPLC | 0.5x t14"
     type: hysteria2
     server: 203.0.113.7
     port: 443
@@ -142,7 +142,7 @@ proxies:
     sni: node.example.com
     alpn:
       - h3
-  - name: "东京 01 | IPLC | 0.5x · vless-grpc-457"
+  - name: "东京 01 | IPLC | 0.5x t15"
     type: vless
     server: 203.0.113.7
     port: 457
@@ -152,20 +152,20 @@ proxies:
     servername: node.example.com
     grpc-opts:
       grpc-service-name: grpc-svc
-  - name: "东京 01 | IPLC | 0.5x · vless-kcp"
+  - name: "东京 01 | IPLC | 0.5x vless-kcp"
     type: vless
     server: 203.0.113.7
     port: 9002
     uuid: c4a57424-7065-4ff5-91ea-f8209906ba4b
     network: kcp
-  - name: "东京 01 | IPLC | 0.5x · ss-tcp"
+  - name: "东京 01 | IPLC | 0.5x ss-tcp"
     type: ss
     server: 203.0.113.7
     port: 9004
     cipher: 2022-blake3-aes-128-gcm
     password: "AAAAAAAAAAAAAAAAAAAAAA==:4blVDvXrbBABiSMfkVTDqA=="
     udp: false
-  - name: "东京 01 | IPLC | 0.5x · vless-split"
+  - name: "东京 01 | IPLC | 0.5x vless-split"
     type: vless
     server: 203.0.113.7
     port: 9005
@@ -173,7 +173,7 @@ proxies:
     network: xhttp
     xhttp-opts:
       path: /s
-  - name: "Same"
+  - name: "Same t8"
     type: trojan
     server: a.example.com
     port: 451
@@ -181,7 +181,7 @@ proxies:
     network: tcp
     tls: true
     sni: node.example.com
-  - name: "Same #2"
+  - name: "Same t8 #2"
     type: trojan
     server: nat.example.org
     port: 451
@@ -193,28 +193,460 @@ proxy-groups:
   - name: PROXY
     type: select
     proxies:
-      - "东京 01 | IPLC | 0.5x · vless-reality-443"
-      - "东京 01 | IPLC | 0.5x · reality-plain"
-      - "东京 01 | IPLC | 0.5x · vless-xhttp-445"
-      - "东京 01 | IPLC | 0.5x · vless-vision-446"
-      - "东京 01 | IPLC | 0.5x · vless-ws-447"
-      - "东京 01 | IPLC | 0.5x · vmess-ws-448"
-      - "东京 01 | IPLC | 0.5x · vmess-ws-449"
-      - "东京 01 | IPLC | 0.5x · vmess-tcp-450"
-      - "东京 01 | IPLC | 0.5x · trojan-451"
-      - "东京 01 | IPLC | 0.5x · vless-httpupgrade-452"
-      - "东京 01 | IPLC | 0.5x · trojan-grpc-454"
-      - "东京 01 | IPLC | 0.5x · ss2022-455"
-      - "东京 01 | IPLC | 0.5x · ss2022-456"
-      - "东京 01 | IPLC | 0.5x · hysteria2-443"
-      - "东京 01 | IPLC | 0.5x · vless-grpc-457"
-      - "东京 01 | IPLC | 0.5x · vless-kcp"
-      - "东京 01 | IPLC | 0.5x · ss-tcp"
-      - "东京 01 | IPLC | 0.5x · vless-split"
-      - "Same"
-      - "Same #2"
+      - "东京 01 | IPLC | 0.5x t0"
+      - "东京 01 | IPLC | 0.5x t1"
+      - "东京 01 | IPLC | 0.5x t2"
+      - "东京 01 | IPLC | 0.5x t3"
+      - "东京 01 | IPLC | 0.5x t4"
+      - "东京 01 | IPLC | 0.5x t5"
+      - "东京 01 | IPLC | 0.5x t6"
+      - "东京 01 | IPLC | 0.5x t7"
+      - "东京 01 | IPLC | 0.5x t8"
+      - "东京 01 | IPLC | 0.5x t9"
+      - "东京 01 | IPLC | 0.5x t11"
+      - "东京 01 | IPLC | 0.5x t12"
+      - "东京 01 | IPLC | 0.5x t13"
+      - "东京 01 | IPLC | 0.5x t14"
+      - "东京 01 | IPLC | 0.5x t15"
+      - "东京 01 | IPLC | 0.5x vless-kcp"
+      - "东京 01 | IPLC | 0.5x ss-tcp"
+      - "东京 01 | IPLC | 0.5x vless-split"
+      - "Same t8"
+      - "Same t8 #2"
 rules:
   - MATCH,PROXY
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

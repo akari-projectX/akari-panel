@@ -1,5 +1,6 @@
-// 节点表单的 xboard 式字段（W11）：显示名称、排序、对用户显示、标签、倍率、
-// 节点组，以及每个入站的连接地址/连接端口。后台只做中文。
+// 节点表单的 xboard 式字段（W11）：显示名称、排序、对用户显示、标签；
+// W28-a：倍率、节点组与连接地址/端口属于节点的「直连」入口
+// （PATCH /entrances/{id}）。后台只做中文。
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
@@ -7,7 +8,7 @@ import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
-import { get, patch, type ConnectOverride, type GroupView, type Inbound, type NodeView } from "../lib/api";
+import { directEntrance, get, patch, type GroupView, type NodeView } from "../lib/api";
 import { adminErrorText } from "../lib/admin-errors";
 import { humanBytes } from "../lib/utils";
 
@@ -16,6 +17,7 @@ export interface NodeOpsValue {
   sort: string;
   visible: boolean;
   tags: string;
+  // The direct entrance's multiplier and groups.
   rate: string;
   groupIds: string[];
 }
@@ -25,13 +27,14 @@ export function emptyOps(): NodeOpsValue {
 }
 
 export function opsFromNode(n: NodeView): NodeOpsValue {
+  const direct = directEntrance(n);
   return {
     displayName: n.display_name ?? "",
     sort: String(n.sort),
     visible: n.visible,
     tags: n.tags.join(", "),
-    rate: String(n.traffic_rate),
-    groupIds: [...n.group_ids],
+    rate: String(direct?.rate ?? 1),
+    groupIds: [...(direct?.group_ids ?? [])],
   };
 }
 
@@ -43,8 +46,14 @@ export function parseTags(s: string): string[] {
     .filter((t) => t.length > 0);
 }
 
-/** The API body for these fields, or an error message. */
-export function opsToBody(v: NodeOpsValue): Record<string, unknown> | string {
+/** The node's fields and its direct entrance's, as the API takes them. */
+export interface OpsBody {
+  node: Record<string, unknown>;
+  direct: Record<string, unknown>;
+}
+
+/** The API bodies for these fields, or an error message. */
+export function opsToBody(v: NodeOpsValue): OpsBody | string {
   const rate = Number(v.rate.trim());
   if (!v.rate.trim() || !Number.isFinite(rate) || rate < 0 || rate > 100) return "倍率须为 0–100 之间的数字";
   if (Math.abs(rate * 1000 - Math.round(rate * 1000)) > 1e-6) return "倍率最多 3 位小数";
@@ -54,19 +63,24 @@ export function opsToBody(v: NodeOpsValue): Record<string, unknown> | string {
   if (tags.length > 8) return "标签最多 8 个";
   if (tags.some((t) => t.includes("|"))) return "标签不能包含 |";
   return {
-    display_name: v.displayName.trim() || null,
-    sort,
-    visible: v.visible,
-    tags,
-    traffic_rate: rate,
-    group_ids: v.groupIds,
+    node: { display_name: v.displayName.trim() || null, sort, visible: v.visible, tags },
+    direct: { rate, group_ids: v.groupIds },
   };
 }
 
 /** Only the fields that differ from a new node's defaults (create form). */
-export function changedFromDefaults(body: Record<string, unknown>): Record<string, unknown> {
-  const defaults = opsToBody(emptyOps()) as Record<string, unknown>;
+export function changedFromDefaults(body: Record<string, unknown>, defaults: Record<string, unknown>) {
   return Object.fromEntries(Object.entries(body).filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(defaults[k])));
+}
+
+/** POST /nodes fields: the node's changed fields and `direct` (address + changed entrance fields). */
+export function createBody(ops: OpsBody, connectHost: string): Record<string, unknown> {
+  const defaults = opsToBody(emptyOps()) as OpsBody;
+  const direct = changedFromDefaults(ops.direct, defaults.direct);
+  if (connectHost.trim()) direct.connect_host = connectHost.trim();
+  const out = changedFromDefaults(ops.node, defaults.node);
+  if (Object.keys(direct).length > 0) out.direct = direct;
+  return out;
 }
 
 /** 显示名称 / 排序 / 显示 / 标签 / 倍率 / 节点组 (controlled). */
@@ -132,7 +146,7 @@ export function NodeOpsFields({
         </label>
       </div>
       <p className="text-xs text-muted-foreground">
-        倍率：用户流量按「实际用量 × 倍率」计费（如 0.5 = 半价，2 = 双倍，0 =
+        倍率（直连入口）：用户流量按「实际用量 × 倍率」计费（如 0.5 = 半价，2 = 双倍，0 =
         免费）。隐藏的节点照常为已授权用户服务，只是不出现在用户的节点列表与订阅里。
       </p>
       <fieldset className="space-y-1">
@@ -159,59 +173,47 @@ export function NodeOpsFields({
             ))}
           </div>
         )}
-        <p className="text-xs text-muted-foreground">套餐授权节点组：加入组后，持有对应套餐的用户即可使用此节点。</p>
+        <p className="text-xs text-muted-foreground">
+          套餐授权节点组：直连入口加入组后，持有对应套餐的用户即可使用此节点。
+        </p>
       </fieldset>
     </div>
   );
 }
 
-type OverrideRows = Record<string, { host: string; port: string }>;
-
-function overrideRows(inbounds: Inbound[], stored: Record<string, ConnectOverride>): OverrideRows {
-  const out: OverrideRows = {};
-  for (const i of inbounds) {
-    const o = stored[i.tag] ?? {};
-    out[i.tag] = { host: o.host ?? "", port: o.port != null ? String(o.port) : "" };
+/** The direct entrance's connect_host / connect_port, or an error message. */
+export function connectToBody(host: string, portText: string): Record<string, unknown> | string {
+  const out: Record<string, unknown> = { connect_host: host.trim() || null, connect_port: null };
+  if (portText.trim()) {
+    const p = Number(portText.trim());
+    if (!Number.isInteger(p) || p < 1 || p > 65535) return "连接端口须为 1–65535";
+    out.connect_port = p;
   }
   return out;
 }
 
-/** The connect_overrides body, or an error message. */
-export function overridesToBody(rows: OverrideRows): Record<string, ConnectOverride> | string {
-  const out: Record<string, ConnectOverride> = {};
-  for (const [tag, r] of Object.entries(rows)) {
-    const host = r.host.trim();
-    const portText = r.port.trim();
-    const o: ConnectOverride = {};
-    if (host) o.host = host;
-    if (portText) {
-      const p = Number(portText);
-      if (!Number.isInteger(p) || p < 1 || p > 65535) return `入站 ${tag}：端口须为 1–65535`;
-      o.port = p;
-    }
-    if (o.host || o.port) out[tag] = o;
-  }
-  return out;
-}
-
-/** 展示与计费：the W11 fields of an existing node, saved with one PATCH. */
+/** 展示与计费：the W11 fields of a node and its direct entrance. */
 export function NodeOpsCard({ node }: { node: NodeView }) {
   const queryClient = useQueryClient();
+  const direct = directEntrance(node);
   const [ops, setOps] = useState<NodeOpsValue>(() => opsFromNode(node));
-  const [rows, setRows] = useState<OverrideRows>(() => overrideRows(node.xray_inbounds, node.connect_overrides));
+  const [host, setHost] = useState(direct?.connect_host ?? "");
+  const [port, setPort] = useState(direct?.connect_port != null ? String(direct.connect_port) : "");
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const inboundPort = node.inbound?.port != null ? String(node.inbound.port) : "";
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
     setMsg(null);
     const body = opsToBody(ops);
     if (typeof body === "string") return setMsg({ ok: false, text: body });
-    const overrides = overridesToBody(rows);
-    if (typeof overrides === "string") return setMsg({ ok: false, text: overrides });
+    const connect = connectToBody(host, port);
+    if (typeof connect === "string") return setMsg({ ok: false, text: connect });
     setBusy(true);
     try {
-      await patch(`/nodes/${node.id}`, { ...body, connect_overrides: overrides });
+      await patch(`/nodes/${node.id}`, body.node);
+      if (direct) await patch(`/entrances/${direct.id}`, { ...body.direct, ...connect });
       setMsg({ ok: true, text: "已保存" });
       await queryClient.invalidateQueries({ queryKey: ["nodes"] });
     } catch (err) {
@@ -236,44 +238,34 @@ export function NodeOpsCard({ node }: { node: NodeView }) {
         <form className="space-y-5" onSubmit={save}>
           <NodeOpsFields value={ops} onChange={setOps} idPrefix={`ops-${node.id}`} />
           <div className="space-y-2">
-            <p className="text-sm font-medium">连接地址 / 连接端口</p>
+            <p className="text-sm font-medium">连接地址 / 连接端口（直连入口）</p>
             <p className="text-xs text-muted-foreground">
-              客户端连接的地址/端口与节点监听的不同时填写（NAT、端口转发、中转）。留空 = 公网地址「
-              {node.server_addr ?? "未设置"}」与入站端口。三种订阅格式与面板测速都使用这里的值。
+              客户端连接的地址/端口。地址留空 = 节点域名「{node.tls_domain ?? "未设置"}
+              」（都没有则不出现在订阅中）；端口留空 = 入站端口。三种订阅格式与面板测速都使用这里的值。
             </p>
-            {node.xray_inbounds.length === 0 ? (
-              <p className="text-sm text-muted-foreground">没有入站。</p>
-            ) : (
-              node.xray_inbounds.map((i) => (
-                <div key={i.tag} className="flex flex-wrap items-end gap-3">
-                  <span className="w-40 truncate pb-2 text-sm" title={i.tag}>
-                    {i.tag}
-                    <span className="ml-1 text-xs text-muted-foreground">:{String(i.port ?? "")}</span>
-                  </span>
-                  <div className="space-y-1.5">
-                    <Label htmlFor={`ov-host-${node.id}-${i.tag}`}>连接地址</Label>
-                    <Input
-                      id={`ov-host-${node.id}-${i.tag}`}
-                      className="w-56"
-                      value={rows[i.tag]?.host ?? ""}
-                      placeholder={node.server_addr ?? "relay.example.com"}
-                      onChange={(e) => setRows({ ...rows, [i.tag]: { ...rows[i.tag], host: e.target.value } })}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor={`ov-port-${node.id}-${i.tag}`}>连接端口</Label>
-                    <Input
-                      id={`ov-port-${node.id}-${i.tag}`}
-                      className="w-28"
-                      inputMode="numeric"
-                      value={rows[i.tag]?.port ?? ""}
-                      placeholder={String(i.port ?? "")}
-                      onChange={(e) => setRows({ ...rows, [i.tag]: { ...rows[i.tag], port: e.target.value } })}
-                    />
-                  </div>
-                </div>
-              ))
-            )}
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor={`ov-host-${node.id}`}>连接地址</Label>
+                <Input
+                  id={`ov-host-${node.id}`}
+                  className="w-56"
+                  value={host}
+                  placeholder="203.0.113.10 或 node1.example.com"
+                  onChange={(e) => setHost(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor={`ov-port-${node.id}`}>连接端口</Label>
+                <Input
+                  id={`ov-port-${node.id}`}
+                  className="w-28"
+                  inputMode="numeric"
+                  value={port}
+                  placeholder={inboundPort}
+                  onChange={(e) => setPort(e.target.value)}
+                />
+              </div>
+            </div>
           </div>
           <div className="flex items-center gap-3">
             <Button type="submit" variant="outline" disabled={busy}>

@@ -1,5 +1,5 @@
 use crate::auth::{api_error, bad_request, conflict};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use axum::Json;
@@ -922,7 +922,7 @@ pub struct CreatedUser {
 // raises the per-node NOTIFY (trigger, migration 0007), delivered to every
 // panel instance on commit — handlers do nothing after committing. Global
 // lock order, to stay
-// deadlock-free: nodes (ORDER BY id, FOR UPDATE) -> users -> node_users.
+// deadlock-free: nodes (ORDER BY id, FOR UPDATE) -> users -> entrance_users.
 // ---------------------------------------------------------------------------
 
 /// JSON body extractor whose every rejection (syntax, unknown field, wrong
@@ -973,36 +973,28 @@ pub(crate) fn non_null<T: Clone>(
     }
 }
 
-/// Locks (in id order) and returns the nodes the user is assigned to.
+/// Locks (in id order) and returns the nodes the user holds credentials on.
 async fn lock_user_nodes(conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result<Vec<Uuid>> {
-    sqlx::query_scalar(
-        "SELECT id FROM nodes WHERE id IN (SELECT node_id FROM node_users WHERE user_id = $1) \
-         ORDER BY id FOR UPDATE",
-    )
-    .bind(user_id)
+    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT id FROM nodes WHERE id IN ({}) ORDER BY id FOR UPDATE",
+        crate::entitle::NODES_OF_USERS
+    )))
+    .bind([user_id])
     .fetch_all(conn)
     .await
 }
 
-/// Bumps user_version on every node the user is assigned to, as visible
-/// now (after the user row is locked, so concurrent assigns are either
-/// visible here or serialized after us). Returns the bumped node ids.
+/// Bumps user_version on every node the user holds credentials on, as
+/// visible now (after the user row is locked, so concurrent reconciles are
+/// either visible here or serialized after us). Returns the bumped node ids.
 async fn bump_user_nodes(conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result<Vec<Uuid>> {
-    sqlx::query_scalar(
-        "UPDATE nodes SET user_version = user_version + 1 \
-         WHERE id IN (SELECT node_id FROM node_users WHERE user_id = $1) RETURNING id",
-    )
-    .bind(user_id)
+    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "UPDATE nodes SET user_version = user_version + 1 WHERE id IN ({}) RETURNING id",
+        crate::entitle::NODES_OF_USERS
+    )))
+    .bind([user_id])
     .fetch_all(conn)
     .await
-}
-
-async fn bump_node_users(conn: &mut PgConnection, node_id: Uuid) -> sqlx::Result<()> {
-    sqlx::query("UPDATE nodes SET user_version = user_version + 1 WHERE id = $1")
-        .bind(node_id)
-        .execute(conn)
-        .await?;
-    Ok(())
 }
 
 /// PATCH /users/{id}. D12: the traffic limit and expiry are not editable
@@ -1397,11 +1389,14 @@ async fn apply_delete_user(
     let Some(before) = before else {
         return Err(ApiError::not_found());
     };
-    let nodes: Vec<Uuid> =
-        sqlx::query_scalar("DELETE FROM node_users WHERE user_id = $1 RETURNING node_id")
-            .bind(id)
-            .fetch_all(&mut *conn)
-            .await?;
+    let nodes: Vec<Uuid> = sqlx::query_scalar(
+        "WITH d AS (DELETE FROM entrance_users eu USING entrances e \
+         WHERE eu.user_id = $1 AND e.id = eu.entrance_id RETURNING e.node_id) \
+         SELECT DISTINCT node_id FROM d ORDER BY node_id",
+    )
+    .bind(id)
+    .fetch_all(&mut *conn)
+    .await?;
     sqlx::query("UPDATE nodes SET user_version = user_version + 1 WHERE id = ANY($1)")
         .bind(&nodes)
         .execute(&mut *conn)
@@ -1456,10 +1451,12 @@ pub struct NodeView {
     update_status: Option<serde_json::Value>,
     config_version: i64,
     user_version: i64,
-    xray_inbounds: serde_json::Value,
-    /// Public hostname/IP clients dial for this node's inbounds; null until
-    /// the admin sets it. Subscriptions skip accounts on such nodes.
-    server_addr: Option<String>,
+    /// W28-a (D2): the node's one inbound (xray inbound object without a
+    /// tag); null = not configured yet.
+    inbound: Option<serde_json::Value>,
+    /// W28-a: how clients reach the node (`entrances::EntranceView` shape;
+    /// the built-in direct entrance first).
+    entrances: serde_json::Value,
     /// M3: free-text region shown to users (portal node list).
     region: Option<String>,
     /// W10: the node's TLS domain (automatic certificate; null = the
@@ -1513,19 +1510,13 @@ pub struct NodeView {
     #[serde(skip)]
     unenforced_speed_limits: bool,
     /// W11 (xboard-style form, `nodemeta.rs`): user-facing name (null =
-    /// `name`), display order, shown to users, tags, multiplier (permille
-    /// and as a number), per-inbound client-facing address/port, groups.
+    /// `name`), display order, shown to users, tags.
     display_name: Option<String>,
     sort: i32,
     visible: bool,
     tags: Vec<String>,
-    traffic_rate_permille: i32,
-    #[sqlx(skip)]
-    traffic_rate: f64,
-    connect_overrides: serde_json::Value,
-    group_ids: Vec<Uuid>,
-    /// W11: bytes accepted on this node (before the multiplier) and billed
-    /// to users (after it), since the columns exist.
+    /// W11: bytes accepted on this node (before the multipliers) and billed
+    /// to users (after them), since the columns exist.
     traffic_raw_bytes: i64,
     traffic_billed_bytes: i64,
     /// W11 (`nodestat.rs`): online by the reaper's rule (status online,
@@ -1542,9 +1533,8 @@ const CERT_WARN_DAYS: i64 = 14;
 
 impl NodeView {
     fn with_warnings(mut self) -> Self {
-        self.traffic_rate = f64::from(self.traffic_rate_permille) / 1000.0;
         self.warnings = node_warnings(
-            &self.xray_inbounds,
+            self.inbound.as_ref(),
             self.tls_domain.as_deref(),
             self.agent_protocol,
             self.cert_not_after,
@@ -1557,15 +1547,15 @@ impl NodeView {
 
 /// The node's `warnings` (full view and summary alike).
 fn node_warnings(
-    inbounds: &serde_json::Value,
+    inbound: Option<&serde_json::Value>,
     tls_domain: Option<&str>,
     agent_protocol: Option<i32>,
     cert_not_after: Option<DateTime<Utc>>,
     unenforced_speed_limits: bool,
     agent_capabilities: Option<&[String]>,
 ) -> Vec<String> {
-    let mut w = inbound_warnings(inbounds);
-    w.extend(tls_domain_warnings(tls_domain, inbounds, agent_protocol));
+    let mut w: Vec<String> = inbound.and_then(inbound_warning).into_iter().collect();
+    w.extend(tls_domain_warnings(tls_domain, inbound, agent_protocol));
     if let Some(c) = cert_warning(cert_not_after, agent_protocol, Utc::now()) {
         w.push(c);
     }
@@ -1599,7 +1589,6 @@ pub struct NodeSummary {
     online: bool,
     deleting_at: Option<DateTime<Utc>>,
     region: Option<String>,
-    server_addr: Option<String>,
     agent_version: Option<String>,
     agent_os: Option<String>,
     agent_arch: Option<String>,
@@ -1614,10 +1603,8 @@ pub struct NodeSummary {
     sort: i32,
     visible: bool,
     tags: Vec<String>,
-    #[serde(skip)]
-    traffic_rate_permille: i32,
-    #[sqlx(skip)]
-    traffic_rate: f64,
+    /// W28-a: the node's entrances (as in NodeView).
+    entrances: serde_json::Value,
     /// The agent's best url-test result (first success in order, else the
     /// first result), as the list's latency badge shows it.
     latency: Option<serde_json::Value>,
@@ -1631,7 +1618,7 @@ pub struct NodeSummary {
     #[sqlx(skip)]
     heartbeat: Option<HeartbeatSummary>,
     #[serde(skip)]
-    xray_inbounds: serde_json::Value,
+    inbound: Option<serde_json::Value>,
     #[serde(skip)]
     tls_domain: Option<String>,
     #[serde(skip)]
@@ -1668,18 +1655,27 @@ pub struct HeartbeatMetricsSummary {
     online_users: u64,
 }
 
-pub const NODE_SUMMARY_COLS: &str = "nodes.id, name, display_name, enabled, status, \
-     (nodes.status = 'online' AND nodes.last_seen_at > now() - interval '90 seconds') AS online, \
-     deleting_at, region, server_addr, agent_version, agent_os, agent_arch, agent_protocol, \
-     ro.update_status, lease_expires_at, cert_serial IS NOT NULL AS enrolled, cert_not_after, \
-     enr.expires_at AS enroll_token_expires_at, last_seen_at, last_error, sort, visible, tags, \
-     traffic_rate_permille, lb.latency, coalesce(al.n, 0) AS alerts_firing, xray_inbounds, \
-     tls_domain, agent_capabilities, \
-     CASE WHEN agent_protocol < 4 THEN EXISTS (SELECT 1 FROM node_users nu \
-        JOIN user_plans up ON up.user_id = nu.user_id AND up.status = 'active' \
+/// SQL (one row aliased `nodes`): the node serves a speed-limited user but
+/// its agent predates speed limits (protocol < 4).
+const UNENFORCED_SPEED_LIMITS_SQL: &str = "CASE WHEN agent_protocol < 4 THEN EXISTS (\
+     SELECT 1 FROM entrance_users eu JOIN entrances e ON e.id = eu.entrance_id \
+        JOIN user_plans up ON up.user_id = eu.user_id AND up.status = 'active' \
         JOIN plans p ON p.id = up.plan_id \
-        WHERE nu.node_id = nodes.id AND p.speed_limit_mbps IS NOT NULL) \
-        ELSE false END AS unenforced_speed_limits";
+        WHERE e.node_id = nodes.id AND p.speed_limit_mbps IS NOT NULL) \
+     ELSE false END";
+
+pub static NODE_SUMMARY_COLS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        "nodes.id, name, display_name, enabled, status, \
+         (nodes.status = 'online' AND nodes.last_seen_at > now() - interval '90 seconds') AS online, \
+         deleting_at, region, agent_version, agent_os, agent_arch, agent_protocol, \
+         ro.update_status, lease_expires_at, cert_serial IS NOT NULL AS enrolled, cert_not_after, \
+         enr.expires_at AS enroll_token_expires_at, last_seen_at, last_error, sort, visible, tags, \
+         {} AS entrances, lb.latency, coalesce(al.n, 0) AS alerts_firing, inbound, \
+         tls_domain, agent_capabilities, {UNENFORCED_SPEED_LIMITS_SQL} AS unenforced_speed_limits",
+        crate::entrances::ENTRANCES_JSON_SQL
+    )
+});
 
 pub const NODE_SUMMARY_FROM: &str = "FROM nodes \
      LEFT JOIN node_enrollments enr ON enr.node_id = nodes.id \
@@ -1703,16 +1699,16 @@ pub const NODE_SUMMARY_FROM: &str = "FROM nodes \
 
 impl NodeSummary {
     fn finish(mut self, blob: Option<String>) -> Self {
-        self.traffic_rate = f64::from(self.traffic_rate_permille) / 1000.0;
         self.warnings = node_warnings(
-            &self.xray_inbounds,
+            self.inbound.as_ref(),
             self.tls_domain.as_deref(),
             self.agent_protocol,
             self.cert_not_after,
             self.unenforced_speed_limits,
             self.agent_capabilities.as_deref(),
         );
-        self.needs_certificate = crate::nodetpl::needs_certificate(&self.xray_inbounds);
+        self.needs_certificate =
+            crate::nodetpl::needs_certificate(&inbounds_of(self.inbound.as_ref()));
         self.heartbeat = blob.and_then(|b| serde_json::from_str(&b).ok());
         self
     }
@@ -1722,7 +1718,8 @@ impl NodeSummary {
 pub async fn node_summaries(state: &AppState) -> Result<Vec<NodeSummary>, ApiError> {
     use fred::prelude::KeysInterface;
     let rows = sqlx::query_as::<_, NodeSummary>(sqlx::AssertSqlSafe(format!(
-        "SELECT {NODE_SUMMARY_COLS} {NODE_SUMMARY_FROM} ORDER BY sort, nodes.created_at, nodes.id"
+        "SELECT {} {NODE_SUMMARY_FROM} ORDER BY sort, nodes.created_at, nodes.id",
+        *NODE_SUMMARY_COLS
     )))
     .fetch_all(state.pg())
     .await?;
@@ -1825,23 +1822,29 @@ fn stale_units_warning(caps: Option<&[String]>) -> Option<String> {
 /// WHOLE snapshot when the files are missing. Refused at write time.
 fn acme_needs_newer_agent(
     domain: Option<&str>,
-    inbounds: &serde_json::Value,
+    inbound: Option<&serde_json::Value>,
     protocol: Option<i32>,
 ) -> Option<i32> {
     let p = protocol.filter(|p| (1..crate::grpc::ACME_PROTOCOL).contains(p))?;
-    (domain.is_some() && crate::nodetpl::needs_certificate(inbounds)).then_some(p)
+    (domain.is_some() && crate::nodetpl::needs_certificate(&inbounds_of(inbound))).then_some(p)
+}
+
+/// The node's inbound as an inbounds array (`[]` without one), for the
+/// helpers that look at every inbound an agent runs.
+pub(crate) fn inbounds_of(inbound: Option<&serde_json::Value>) -> serde_json::Value {
+    serde_json::Value::Array(inbound.into_iter().cloned().collect())
 }
 
 async fn refuse_acme_for_old_agent(conn: &mut PgConnection, id: Uuid) -> Result<(), ApiError> {
-    let row: Option<(Option<String>, serde_json::Value, Option<i32>)> =
-        sqlx::query_as("SELECT tls_domain, xray_inbounds, agent_protocol FROM nodes WHERE id = $1")
+    let row: Option<(Option<String>, Option<serde_json::Value>, Option<i32>)> =
+        sqlx::query_as("SELECT tls_domain, inbound, agent_protocol FROM nodes WHERE id = $1")
             .bind(id)
             .fetch_optional(&mut *conn)
             .await?;
-    let Some((domain, inbounds, protocol)) = row else {
+    let Some((domain, inbound, protocol)) = row else {
         return Ok(());
     };
-    if let Some(p) = acme_needs_newer_agent(domain.as_deref(), &inbounds, protocol) {
+    if let Some(p) = acme_needs_newer_agent(domain.as_deref(), inbound.as_ref(), protocol) {
         return Err(bad_request!(
             "node.acme_agent_too_old",
             "该节点的 agent 版本过旧（协议 {p} < {need}），不支持节点域名自动证书：它会忽略节点域名，并因缺少证书文件\
@@ -1857,14 +1860,15 @@ async fn refuse_acme_for_old_agent(conn: &mut PgConnection, id: Uuid) -> Result<
 /// W10: what keeps the automatic certificate from working.
 fn tls_domain_warnings(
     domain: Option<&str>,
-    inbounds: &serde_json::Value,
+    inbound: Option<&serde_json::Value>,
     protocol: Option<i32>,
 ) -> Vec<String> {
     let Some(domain) = domain else {
         return Vec::new();
     };
     let mut out = Vec::new();
-    if !crate::nodetpl::needs_certificate(inbounds) {
+    let inbounds = inbounds_of(inbound);
+    if !crate::nodetpl::needs_certificate(&inbounds) {
         return out;
     }
     if protocol.is_some_and(|p| p < crate::grpc::ACME_PROTOCOL) {
@@ -1889,10 +1893,7 @@ fn tls_domain_warnings(
             .and_then(serde_json::Value::as_str);
         if uses_node_cert && sni.is_some_and(|s| !s.eq_ignore_ascii_case(domain)) {
             out.push(format!(
-                "入站 {:?}：serverName {:?} 不是节点域名 {domain}，自动证书只覆盖 {domain}",
-                i.get("tag")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("?"),
+                "入站的 serverName {:?} 不是节点域名 {domain}，自动证书只覆盖 {domain}",
                 sni.unwrap_or_default()
             ));
         }
@@ -1960,30 +1961,29 @@ async fn with_heartbeats(state: &AppState, mut views: Vec<NodeView>) -> Vec<Node
 /// correlated subqueries: for the 200-node list that is one pass over each
 /// table instead of 200 probes per table (W14: 4.4 -> 2.6 ms, the list was
 /// the slowest admin read under agent load).
-pub const NODE_VIEW_COLS: &str = "nodes.id, name, enabled, status, agent_version, core_version, agent_os, agent_arch, \
-     ro.update_status, config_version, \
-     user_version, xray_inbounds, server_addr, region, tls_domain, host(agent_addr) AS agent_addr, last_error, last_error_at, failed_config_version, \
-     failed_user_version, agent_protocol, agent_capabilities, lease_expires_at, \
-     GREATEST(0, EXTRACT(EPOCH FROM lease_expires_at - now()))::bigint AS lease_remaining_seconds, \
-     traffic_max_rate_bytes_per_sec, deleting_at, last_seen_at, nodes.created_at, \
-     cert_serial IS NOT NULL AS enrolled, cert_not_after, \
-     enr.expires_at AS enroll_token_expires_at, \
-     CASE WHEN agent_protocol < 4 THEN EXISTS (SELECT 1 FROM node_users nu \
-        JOIN user_plans up ON up.user_id = nu.user_id AND up.status = 'active' \
-        JOIN plans p ON p.id = up.plan_id \
-        WHERE nu.node_id = nodes.id AND p.speed_limit_mbps IS NOT NULL) \
-        ELSE false END AS unenforced_speed_limits, \
-     display_name, sort, visible, tags, traffic_rate_permille, connect_overrides, \
-     coalesce(grp.group_ids, '{}') AS group_ids, traffic_raw_bytes, traffic_billed_bytes, \
-     (nodes.status = 'online' AND nodes.last_seen_at > now() - interval '90 seconds') AS online, \
-     coalesce(lat.latency, '[]'::jsonb) AS latency, probe_requested_at";
+pub static NODE_VIEW_COLS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        "nodes.id, name, enabled, status, agent_version, core_version, agent_os, agent_arch, \
+         ro.update_status, config_version, user_version, inbound, {} AS entrances, region, \
+         tls_domain, host(agent_addr) AS agent_addr, last_error, last_error_at, \
+         failed_config_version, failed_user_version, agent_protocol, agent_capabilities, \
+         lease_expires_at, \
+         GREATEST(0, EXTRACT(EPOCH FROM lease_expires_at - now()))::bigint AS lease_remaining_seconds, \
+         traffic_max_rate_bytes_per_sec, deleting_at, last_seen_at, nodes.created_at, \
+         cert_serial IS NOT NULL AS enrolled, cert_not_after, \
+         enr.expires_at AS enroll_token_expires_at, \
+         {UNENFORCED_SPEED_LIMITS_SQL} AS unenforced_speed_limits, \
+         display_name, sort, visible, tags, traffic_raw_bytes, traffic_billed_bytes, \
+         (nodes.status = 'online' AND nodes.last_seen_at > now() - interval '90 seconds') AS online, \
+         coalesce(lat.latency, '[]'::jsonb) AS latency, probe_requested_at",
+        crate::entrances::ENTRANCES_JSON_SQL
+    )
+});
 
 /// The FROM clause that goes with `NODE_VIEW_COLS` (filters on `nodes.`).
 pub const NODE_VIEW_FROM: &str = "FROM nodes \
      LEFT JOIN node_enrollments enr ON enr.node_id = nodes.id \
         AND enr.used_at IS NULL AND enr.expires_at > now() \
-     LEFT JOIN (SELECT node_id, array_agg(group_id ORDER BY group_id) AS group_ids \
-        FROM node_group_members GROUP BY node_id) grp ON grp.node_id = nodes.id \
      LEFT JOIN (SELECT node_id, jsonb_agg(jsonb_build_object('source', l.source, \
         'target', l.target, 'delay_ms', l.delay_ms, 'error', l.error, \
         'measured_at', l.measured_at) ORDER BY l.source, l.ord) AS latency \
@@ -2017,7 +2017,8 @@ pub async fn list_nodes(
     let body = match q.view.as_deref() {
         None | Some("full") => {
             let rows = sqlx::query_as::<_, NodeView>(sqlx::AssertSqlSafe(format!(
-                "SELECT {NODE_VIEW_COLS} {NODE_VIEW_FROM} ORDER BY sort, nodes.created_at, nodes.id"
+                "SELECT {} {NODE_VIEW_FROM} ORDER BY sort, nodes.created_at, nodes.id",
+                *NODE_VIEW_COLS
             )))
             .fetch_all(state.pg())
             .await?;
@@ -2043,7 +2044,8 @@ pub async fn get_node(
 ) -> Result<Json<NodeView>, ApiError> {
     user.require_admin()?;
     let row = sqlx::query_as::<_, NodeView>(sqlx::AssertSqlSafe(format!(
-        "SELECT {NODE_VIEW_COLS} {NODE_VIEW_FROM} WHERE nodes.id = $1"
+        "SELECT {} {NODE_VIEW_FROM} WHERE nodes.id = $1",
+        *NODE_VIEW_COLS
     )))
     .bind(id)
     .fetch_optional(state.pg())
@@ -2060,19 +2062,17 @@ pub struct CreateNodeReq {
     /// R18-2 form fields (all optional; the CLI path sends only `name`).
     #[serde(default)]
     pub region: Option<String>,
-    /// Public address clients dial (IP or domain).
-    #[serde(default)]
-    pub server_addr: Option<String>,
     /// W10: the node's TLS domain ("节点域名"): the agent obtains its
     /// certificate automatically; TLS templates default to it.
     #[serde(default)]
     pub tls_domain: Option<String>,
-    /// Inbounds from templates (`nodetpl::InboundSpec`) ...
+    /// W28-a (D2): the node's one inbound, from a template
+    /// (`nodetpl::InboundSpec`) ...
     #[serde(default)]
-    pub templates: Option<Vec<crate::nodetpl::InboundSpec>>,
-    /// ... or a raw xray inbounds array (not both).
+    pub template: Option<crate::nodetpl::InboundSpec>,
+    /// ... or as a raw xray inbound object (not both).
     #[serde(default)]
-    pub inbounds: Option<serde_json::Value>,
+    pub inbound: Option<serde_json::Value>,
     /// Issue an install link (one-line installer) instead of a 24 h
     /// bootstrap token; same token either way.
     #[serde(default)]
@@ -2086,12 +2086,10 @@ pub struct CreateNodeReq {
     pub visible: Option<bool>,
     #[serde(default)]
     pub tags: Option<Vec<String>>,
+    /// W28-a: settings of the built-in direct entrance (address, port,
+    /// multiplier, groups; as PATCH /entrances/{id}).
     #[serde(default)]
-    pub traffic_rate: Option<f64>,
-    #[serde(default)]
-    pub connect_overrides: Option<serde_json::Value>,
-    #[serde(default)]
-    pub group_ids: Option<Vec<Uuid>>,
+    pub direct: Option<crate::entrances::EntranceReq>,
 }
 
 /// The one-time enrollment material returned by create / enroll-token: the
@@ -2136,10 +2134,11 @@ fn enrollment_view(
 }
 
 /// POST /nodes (admin): create a node (pending) with a one-time enrollment
-/// token (M1-8). R18-2: optionally region, public address and inbounds
-/// (templates rendered server-side, or raw JSON — same validation as PUT
-/// inbounds) in the same transaction, and an install link (`install`).
-/// 201 with the token, bootstrap file and install command.
+/// token (M1-8). R18-2: optionally region, its inbound (a template rendered
+/// server-side, or raw JSON — same validation as PUT inbound), the direct
+/// entrance's settings (W28-a) and an install link (`install`), all in the
+/// same transaction. 201 with the token, bootstrap file and install
+/// command.
 pub async fn create_node(
     State(state): State<AppState>,
     user: AuthUser,
@@ -2150,33 +2149,27 @@ pub async fn create_node(
         Some(d) if !d.is_empty() => Some(crate::nodetpl::node_tls_domain(d)?),
         _ => None,
     };
-    let inbounds = match (&req.templates, &req.inbounds) {
+    let inbound = match (&req.template, &req.inbound) {
         (Some(_), Some(_)) => {
             return Err(bad_request!(
-                "node.templates_and_inbounds",
-                "give either templates or inbounds, not both"
+                "node.template_and_inbound",
+                "give either template or inbound, not both"
             ));
         }
-        (Some(t), None) => Some(serde_json::Value::Array(crate::nodetpl::render(
-            t,
-            &[],
-            tls_domain.as_deref(),
-        )?)),
-        (None, Some(raw)) => Some(raw.clone()),
+        (Some(t), None) => Some(crate::nodetpl::render(t, &[], tls_domain.as_deref())?),
+        (None, Some(raw)) => Some(normalize_inbound(raw)?),
         (None, None) => None,
     };
-    if let Some(i) = &inbounds {
-        validate_inbounds(i)?;
-    }
     let prepared = match &req.install {
         Some(r) => Some(crate::nodeinstall::prepare(&state, r).await?),
         None => None,
     };
     let actor = Actor::of(&user);
     let mut tx = state.pg().begin().await?;
-    if inbounds.is_some() || req.group_ids.is_some() {
-        // Lock order: the entitlement lock before any row (set_inbounds
-        // and set_node_groups take it again; advisory xact locks nest).
+    let direct = req.direct.as_ref().filter(|d| !d.is_empty());
+    if inbound.is_some() || direct.is_some_and(|d| d.group_ids.is_some()) {
+        // Lock order: the entitlement lock before any row (set_inbound and
+        // the entrance update take it again; advisory xact locks nest).
         crate::entitle::lock(&mut tx).await?;
     }
     let (ttl, link) = match &prepared {
@@ -2186,28 +2179,26 @@ pub async fn create_node(
     let endpoint = crate::settings::node_endpoint(&mut tx, state.cfg()).await?;
     let (id, token, expires) =
         crate::enroll::apply_create_node(&mut tx, &actor, &req.name, ttl, link, &endpoint).await?;
-    if let Some(i) = &inbounds {
-        apply_set_inbounds(&mut tx, &actor, id, i).await?;
-    }
-    // The form fields in one update, after the inbounds (W11 connect
-    // overrides name inbound tags).
     let w11 = UpdateNodeReq {
-        server_addr: req.server_addr.clone().map(Some),
         region: req.region.clone().map(Some),
         display_name: req.display_name.clone().map(Some),
         sort: req.sort.map(Some),
         visible: req.visible.map(Some),
         tags: req.tags.clone().map(Some),
-        traffic_rate: req.traffic_rate.map(Some),
-        connect_overrides: req.connect_overrides.clone().map(Some),
         tls_domain: tls_domain.clone().map(Some),
         ..Default::default()
     };
-    if w11.has_node_fields() {
+    if w11.has_fields() {
         apply_update_node(&mut tx, &actor, id, &w11).await?;
     }
-    if let Some(g) = &req.group_ids {
-        crate::nodemeta::apply_set_node_groups(&mut tx, &actor, id, g).await?;
+    if let Some(d) = direct {
+        let entrance = crate::entrances::direct_of(&mut tx, id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("node {id} has no direct entrance"))?;
+        crate::entrances::apply_update(&mut tx, &actor, entrance, d).await?;
+    }
+    if let Some(i) = &inbound {
+        apply_set_inbound(&mut tx, &actor, id, Some(i)).await?;
     }
     tx.commit().await?;
     let mut view = enrollment_view(
@@ -2261,9 +2252,6 @@ pub struct UpdateNodeReq {
     pub enabled: Option<Option<bool>>,
     #[serde(default, deserialize_with = "double_option")]
     pub name: Option<Option<String>>,
-    /// null (or "") clears it.
-    #[serde(default, deserialize_with = "double_option")]
-    pub server_addr: Option<Option<String>>,
     /// Per-node aggregate billing plausibility cap (bytes/s, > 0); null
     /// falls back to traffic.node_max_rate_bytes_per_sec.
     #[serde(default, deserialize_with = "double_option")]
@@ -2283,16 +2271,6 @@ pub struct UpdateNodeReq {
     /// Labels ([] clears).
     #[serde(default, deserialize_with = "double_option")]
     pub tags: Option<Option<Vec<String>>>,
-    /// Traffic multiplier 0..=100, at most 3 decimals (stored as permille).
-    #[serde(default, deserialize_with = "double_option")]
-    pub traffic_rate: Option<Option<f64>>,
-    /// {"<inbound tag>": {"host", "port"}}; null or {} clears.
-    #[serde(default, deserialize_with = "double_option")]
-    pub connect_overrides: Option<Option<serde_json::Value>>,
-    /// Node groups (the complete list; [] = none). Handled by
-    /// `nodemeta::apply_set_node_groups`, not `apply_update_node`.
-    #[serde(default, deserialize_with = "double_option")]
-    pub group_ids: Option<Option<Vec<Uuid>>>,
     /// W10: the node's TLS domain (automatic certificate); null (or "")
     /// clears it (back to certificate files installed by hand). A change
     /// bumps config_version (the agent gets it with a Snapshot).
@@ -2301,19 +2279,15 @@ pub struct UpdateNodeReq {
 }
 
 impl UpdateNodeReq {
-    /// Any field `apply_update_node` writes (everything but group_ids).
-    fn has_node_fields(&self) -> bool {
+    fn has_fields(&self) -> bool {
         self.enabled.is_some()
             || self.name.is_some()
-            || self.server_addr.is_some()
             || self.traffic_max_rate_bytes_per_sec.is_some()
             || self.region.is_some()
             || self.display_name.is_some()
             || self.sort.is_some()
             || self.visible.is_some()
             || self.tags.is_some()
-            || self.traffic_rate.is_some()
-            || self.connect_overrides.is_some()
             || self.tls_domain.is_some()
     }
 }
@@ -2329,7 +2303,7 @@ async fn apply_update_node(
 ) -> Result<bool, ApiError> {
     let enabled = non_null("enabled", &req.enabled)?;
     let name = non_null("name", &req.name)?;
-    if !req.has_node_fields() {
+    if !req.has_fields() {
         return Err(bad_request!("request.no_fields", "no fields to update"));
     }
     // W11 fields (validated before any row is touched).
@@ -2344,9 +2318,6 @@ async fn apply_update_node(
     let visible = non_null("visible", &req.visible)?;
     let tags = non_null("tags", &req.tags)?
         .map(|t| crate::nodemeta::tags(&t))
-        .transpose()?;
-    let rate = non_null("traffic_rate", &req.traffic_rate)?
-        .map(crate::nodemeta::rate_permille)
         .transpose()?;
     let tls_domain: Option<Option<String>> = match &req.tls_domain {
         None => None,
@@ -2384,25 +2355,12 @@ async fn apply_update_node(
             "region must be at most 64 characters"
         ));
     }
-    // "" and whitespace normalize to null (cleared).
-    let server_addr: Option<Option<String>> = req.server_addr.as_ref().map(|a| {
-        a.as_deref()
-            .map(str::trim)
-            .filter(|a| !a.is_empty())
-            .map(String::from)
-    });
-
     refuse_if_deleting(conn, id).await?;
-    let (was_enabled, inbounds, was_domain): (bool, serde_json::Value, Option<String>) =
-        sqlx::query_as("SELECT enabled, xray_inbounds, tls_domain FROM nodes WHERE id = $1")
+    let (was_enabled, was_domain): (bool, Option<String>) =
+        sqlx::query_as("SELECT enabled, tls_domain FROM nodes WHERE id = $1")
             .bind(id)
             .fetch_one(&mut *conn)
             .await?;
-    let overrides = match &req.connect_overrides {
-        None => None,
-        Some(None) => Some(json!({})),
-        Some(Some(v)) => Some(crate::nodemeta::connect_overrides(v, &inbounds)?),
-    };
     let toggles = enabled.is_some_and(|e| e != was_enabled);
     // The agent learns the domain from a Snapshot (ConfigSnapshot.acme).
     let domain_changes = tls_domain.as_ref().is_some_and(|d| *d != was_domain);
@@ -2422,9 +2380,6 @@ async fn apply_update_node(
     if let Some(v) = name {
         set.push("name = ").push_bind_unseparated(v);
     }
-    if let Some(v) = server_addr {
-        set.push("server_addr = ").push_bind_unseparated(v);
-    }
     if let Some(v) = req.traffic_max_rate_bytes_per_sec {
         set.push("traffic_max_rate_bytes_per_sec = ")
             .push_bind_unseparated(v);
@@ -2443,13 +2398,6 @@ async fn apply_update_node(
     }
     if let Some(v) = tags {
         set.push("tags = ").push_bind_unseparated(v);
-    }
-    if let Some(v) = rate {
-        set.push("traffic_rate_permille = ")
-            .push_bind_unseparated(v);
-    }
-    if let Some(v) = overrides {
-        set.push("connect_overrides = ").push_bind_unseparated(v);
     }
     qb.push(" WHERE id = ").push_bind(id);
     qb.push(format!(
@@ -2491,24 +2439,12 @@ pub async fn update_node(
     ApiJson(req): ApiJson<UpdateNodeReq>,
 ) -> Result<Json<NodeView>, ApiError> {
     user.require_admin()?;
-    let actor = Actor::of(&user);
     let mut tx = state.pg().begin().await?;
-    let groups = non_null("group_ids", &req.group_ids)?;
-    if groups.is_some() {
-        // Lock order: the entitlement lock before the node row.
-        crate::entitle::lock(&mut tx).await?;
-    } else if !req.has_node_fields() {
-        return Err(bad_request!("request.no_fields", "no fields to update"));
-    }
-    if req.has_node_fields() {
-        apply_update_node(&mut tx, &actor, id, &req).await?;
-    }
-    if let Some(g) = groups {
-        crate::nodemeta::apply_set_node_groups(&mut tx, &actor, id, &g).await?;
-    }
+    apply_update_node(&mut tx, &Actor::of(&user), id, &req).await?;
     tx.commit().await?;
     let row = sqlx::query_as::<_, NodeView>(sqlx::AssertSqlSafe(format!(
-        "SELECT {NODE_VIEW_COLS} {NODE_VIEW_FROM} WHERE nodes.id = $1"
+        "SELECT {} {NODE_VIEW_FROM} WHERE nodes.id = $1",
+        *NODE_VIEW_COLS
     )))
     .bind(id)
     .fetch_optional(state.pg())
@@ -2521,7 +2457,7 @@ pub async fn update_node(
 /// the node, mark it deleting and disable it. The first call bumps
 /// config_version, so the agent (wherever it is connected) converges to
 /// the empty state and acks it; its final counters are still billed
-/// (node_users is untouched). Phase 2 (`crate::reaper`) revokes the
+/// (entrance_users is untouched). Phase 2 (`crate::reaper`) revokes the
 /// certificate and deletes the row. Idempotent. Returns whether this call
 /// started the deletion.
 pub(crate) async fn apply_begin_delete_node(
@@ -2600,98 +2536,53 @@ pub async fn delete_node(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SetInboundsReq {
-    /// Full xray "inbounds" array for this node.
-    pub inbounds: serde_json::Value,
+pub struct SetInboundReq {
+    /// The node's xray inbound (an object; its tag, if any, is dropped:
+    /// the panel names the inbounds it renders); null removes it.
+    pub inbound: Option<serde_json::Value>,
 }
 
-/// tag -> protocol of a node's inbounds.
-fn inbound_protocols(inbounds: &serde_json::Value) -> HashMap<String, String> {
-    inbounds
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|i| {
-                    let tag = i.get("tag")?.as_str()?;
-                    let proto = i.get("protocol")?.as_str()?;
-                    Some((tag.to_string(), proto.to_string()))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Tags the agent may use for its own inbounds (xray API, future
-/// internals); panel-managed inbounds must not collide with them.
-fn reserved_tag(tag: &str) -> bool {
-    tag == "api" || tag.starts_with("akari-") || tag.starts_with("_")
-}
-
-/// Every inbound needs a unique, non-reserved, non-empty tag and a protocol.
-pub(crate) fn validate_inbounds(inbounds: &serde_json::Value) -> Result<(), ApiError> {
-    let Some(items) = inbounds.as_array() else {
+/// D2: the stored form of an admin-supplied inbound: a JSON object, its tag
+/// removed (the panel names the inbounds it renders), checked like every
+/// stored inbound (`validate_inbound`).
+pub(crate) fn normalize_inbound(raw: &serde_json::Value) -> Result<serde_json::Value, ApiError> {
+    let Some(obj) = raw.as_object() else {
         return Err(bad_request!(
-            "inbound.not_array",
-            "inbounds must be an array"
+            "inbound.not_object",
+            "inbound must be a JSON object"
         ));
     };
-    let mut seen = HashSet::new();
-    for item in items {
-        let tag = match item.get("tag").and_then(|t| t.as_str()) {
-            Some(tag) if !tag.is_empty() => tag,
-            _ => {
-                return Err(bad_request!(
-                    "inbound.tag_missing",
-                    "every inbound needs a non-empty tag"
-                ));
-            }
-        };
-        if reserved_tag(tag) {
+    let mut obj = obj.clone();
+    obj.retain(|k, _| crate::protocols::fold_json_key(k) != "tag");
+    let inbound = serde_json::Value::Object(obj);
+    validate_inbound(&inbound)?;
+    Ok(inbound)
+}
+
+/// A stored inbound needs a protocol and must pass the protocol/transport
+/// rules (W8, `protocols::check_inbound`) and the agent's FakeDNS rule.
+pub(crate) fn validate_inbound(inbound: &serde_json::Value) -> Result<(), ApiError> {
+    match inbound.get("protocol").and_then(|p| p.as_str()) {
+        Some(p) if !p.is_empty() => {}
+        _ => {
             return Err(bad_request!(
-                "inbound.tag_reserved",
-                "inbound tag {tag:?} is reserved (api, akari-*, _*)",
-                tag = tag
-            ));
-        }
-        if !seen.insert(tag) {
-            return Err(bad_request!(
-                "inbound.tag_duplicate",
-                "duplicate inbound tag {tag:?}",
-                tag = tag
-            ));
-        }
-        match item.get("protocol").and_then(|p| p.as_str()) {
-            Some(p) if !p.is_empty() => {}
-            _ => {
-                return Err(bad_request!(
-                    "inbound.protocol_missing",
-                    "inbound {tag:?} needs a protocol",
-                    tag = tag
-                ));
-            }
-        }
-        // The agent's gate dispatcher wraps a DefaultDispatcher without a
-        // FakeDNS engine (R10 F4): fakedns sniffing would silently misroute.
-        if mentions_fakedns(item) {
-            return Err(bad_request!(
-                "inbound.fakedns",
-                "inbound {tag:?}: fakedns is not supported by the agent",
-                tag = tag
-            ));
-        }
-        // W8: protocol/transport matrix (protocols.rs). gRPC is allowed
-        // again since R26 (agent grpc-go pinned past GO-2026-6443).
-        if let Err(e) = crate::protocols::check_inbound(item) {
-            return Err(bad_request!(
-                "inbound.invalid",
-                "inbound {tag:?}: {e}",
-                tag = tag,
-                e = e
+                "inbound.protocol_missing",
+                "the inbound needs a protocol"
             ));
         }
     }
-    if let Some(e) = crate::protocols::port_clash(items) {
-        return Err(bad_request!("inbound.port_clash", "{detail}", detail = e));
+    // The agent's gate dispatcher wraps a DefaultDispatcher without a
+    // FakeDNS engine (R10 F4): fakedns sniffing would silently misroute.
+    if mentions_fakedns(inbound) {
+        return Err(bad_request!(
+            "inbound.fakedns",
+            "fakedns is not supported by the agent"
+        ));
+    }
+    // W8: protocol/transport matrix (protocols.rs). gRPC is allowed again
+    // since R26 (agent grpc-go pinned past GO-2026-6443).
+    if let Err(e) = crate::protocols::check_inbound(inbound) {
+        return Err(bad_request!("inbound.invalid", "{detail}", detail = e));
     }
     Ok(())
 }
@@ -2742,157 +2633,79 @@ fn mentions_fakedns(inbound: &serde_json::Value) -> bool {
         })
 }
 
-/// Warnings for stored inbounds (NodeView): configurations accepted before
-/// a check existed stay as they are until an admin changes them; each
-/// inbound that would now be refused is listed with the reason.
-pub(crate) fn inbound_warnings(inbounds: &serde_json::Value) -> Vec<String> {
-    let Some(items) = inbounds.as_array() else {
-        return Vec::new();
-    };
-    let mut out: Vec<String> = items
-        .iter()
-        .filter_map(|i| {
-            let tag = i.get("tag").and_then(|t| t.as_str()).unwrap_or("?");
-            crate::protocols::check_inbound(i)
-                .err()
-                .map(|e| format!("入站 {tag:?}：{e}"))
-        })
-        .collect();
-    out.extend(crate::protocols::port_clash(items));
-    out
+/// Warning for a stored inbound (NodeView): a configuration accepted
+/// before a check existed stays as it is until an admin changes it; if it
+/// would now be refused, the reason.
+pub(crate) fn inbound_warning(inbound: &serde_json::Value) -> Option<String> {
+    crate::protocols::check_inbound(inbound)
+        .err()
+        .map(|e| format!("入站：{e}"))
 }
 
-/// Keep only credentials whose inbound still exists with the same protocol.
-fn prune_credentials(
-    creds: Vec<Credential>,
-    inbounds: &HashMap<String, String>,
-) -> Vec<Credential> {
-    creds
-        .into_iter()
-        .filter(|c| inbounds.get(&c.inbound_tag) == Some(&c.protocol))
-        .collect()
-}
-
-/// Accounts adjusted to their (current) inbounds (protocols::refit_account:
-/// VLESS flow follows the inbound, a Shadowsocks key of the wrong length
-/// is reissued).
-pub(crate) fn refit_credentials(
-    creds: Vec<Credential>,
-    inbounds: &serde_json::Value,
-) -> Vec<Credential> {
-    creds
-        .into_iter()
-        .map(|mut c| {
-            if let Some(a) = inbound_by_tag(inbounds, &c.inbound_tag)
-                .and_then(|i| crate::protocols::refit_account(i, &c.account))
-            {
-                c.account = a;
-            }
-            c
-        })
-        .collect()
-}
-
-/// Replace a node's inbounds and, in the same transaction, drop credentials
-/// that point at removed or re-protocoled inbounds (otherwise the agent's
-/// AddUser fails on them); rows left empty are deleted. Returns the new
-/// config_version (the snapshot it triggers carries the pruned users).
-async fn apply_set_inbounds(
+/// Replace a node's inbound (None removes it) and, in the same
+/// transaction, reconcile its entrances' credentials: accounts of the same
+/// protocol are kept (refit: a VLESS flow follows the inbound, a
+/// Shadowsocks key of the wrong length is reissued), others are reissued,
+/// and without an issuable inbound every row goes (departed). Bumps
+/// config_version (the agent gets the new inbound with a Snapshot). Returns
+/// the new config_version.
+pub(crate) async fn apply_set_inbound(
     conn: &mut PgConnection,
     actor: &Actor,
     id: Uuid,
-    inbounds: &serde_json::Value,
+    inbound: Option<&serde_json::Value>,
 ) -> Result<i64, ApiError> {
-    validate_inbounds(inbounds)?;
-    let protocols = inbound_protocols(inbounds);
+    let inbound = inbound.map(normalize_inbound).transpose()?;
     crate::entitle::lock(conn).await?;
     refuse_if_deleting(conn, id).await?;
-
-    let updated: Option<(i64, serde_json::Value)> = sqlx::query_as(
-        "UPDATE nodes SET xray_inbounds = $2, config_version = config_version + 1, updated_at = now(), \
-         connect_overrides = (SELECT coalesce(jsonb_object_agg(o.key, o.value), '{}'::jsonb) \
-             FROM jsonb_each(nodes.connect_overrides) o \
-             WHERE o.key IN (SELECT i->>'tag' FROM jsonb_array_elements($2) i)) \
-         WHERE id = $1 RETURNING new.config_version, old.xray_inbounds",
+    let (version, old): (i64, Option<serde_json::Value>) = sqlx::query_as(
+        "UPDATE nodes SET inbound = $2, config_version = config_version + 1, updated_at = now() \
+         WHERE id = $1 RETURNING new.config_version, old.inbound",
     )
     .bind(id)
-    .bind(inbounds)
-    .fetch_optional(&mut *conn)
+    .bind(&inbound)
+    .fetch_one(&mut *conn)
     .await?;
-    let Some((version, old_inbounds)) = updated else {
-        return Err(ApiError::not_found());
-    };
-    let mut pruned = Vec::new();
-
-    // Manual rows are pruned here; plan rows by the reconcile below (which
-    // also issues credentials for new eligible inbounds).
-    let rows: Vec<(Uuid, serde_json::Value)> = sqlx::query_as(
-        "SELECT user_id, credentials FROM node_users WHERE node_id = $1 AND manual \
-         ORDER BY user_id FOR UPDATE",
-    )
-    .bind(id)
-    .fetch_all(&mut *conn)
-    .await?;
-    for (user_id, raw) in rows {
-        let creds: Vec<Credential> = serde_json::from_value(raw)
-            .map_err(|e| anyhow::anyhow!("corrupt credentials json: {e}"))?;
-        let before = creds.clone();
-        let kept = refit_credentials(prune_credentials(creds, &protocols), inbounds);
-        if kept == before {
-            continue;
-        }
-        pruned.push(user_id);
-        if kept.is_empty() {
-            sqlx::query("DELETE FROM node_users WHERE node_id = $1 AND user_id = $2")
-                .bind(id)
-                .bind(user_id)
-                .execute(&mut *conn)
-                .await?;
-            record_departed(conn, id, user_id).await?;
-        } else {
-            sqlx::query(
-                "UPDATE node_users SET credentials = $3 WHERE node_id = $1 AND user_id = $2",
-            )
-            .bind(id)
-            .bind(user_id)
-            .bind(serde_json::to_value(&kept)?)
-            .execute(&mut *conn)
-            .await?;
-        }
-    }
     refuse_acme_for_old_agent(conn, id).await?;
     let plan = crate::entitle::apply_reconcile(conn, crate::entitle::Scope::Nodes(&[id])).await?;
-    let mut after = crate::audit::inbounds_summary(inbounds);
-    after["pruned_credentials_of"] = json!(pruned);
+    let mut after = json!({ "inbound": crate::audit::inbound_summary(inbound.as_ref()) });
     after["entitlement"] = plan.summary();
     crate::audit::record(
         conn,
         actor,
-        "node.set_inbounds",
+        "node.set_inbound",
         "node",
         Some(id.to_string()),
-        Some(crate::audit::inbounds_summary(&old_inbounds)),
+        Some(json!({ "inbound": crate::audit::inbound_summary(old.as_ref()) })),
         Some(after),
     )
     .await?;
     Ok(version)
 }
 
-pub async fn set_inbounds(
+/// PUT /nodes/{id}/inbound (admin).
+pub async fn set_inbound(
     State(state): State<AppState>,
     user: AuthUser,
     Path((_, id)): Path<(String, Uuid)>,
-    ApiJson(req): ApiJson<SetInboundsReq>,
+    ApiJson(req): ApiJson<SetInboundReq>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    let version = apply_set_inbounds(&mut tx, &Actor::of(&user), id, &req.inbounds).await?;
+    let version = apply_set_inbound(&mut tx, &Actor::of(&user), id, req.inbound.as_ref()).await?;
     tx.commit().await?;
     Ok(Json(json!({ "config_version": version })))
 }
 
+/// A new account for `inbound` (protocols.rs: the inbound's protocol and
+/// settings decide its shape).
+pub(crate) fn generate_account(inbound: &serde_json::Value) -> Result<serde_json::Value, ApiError> {
+    crate::protocols::generate_account(inbound)
+        .map_err(|e| bad_request!("inbound.account_invalid", "{detail}", detail = e))
+}
+
 // ---------------------------------------------------------------------------
-// Account assignment: the panel generates and stores per-inbound credentials.
+// Subscription token
 // ---------------------------------------------------------------------------
 
 /// Regenerates a user's subscription token, invalidating the old one.
@@ -2912,319 +2725,77 @@ pub async fn regenerate_sub_token(
     Ok(Json(json!({ "sub_token": token, "sub_url": sub_url })))
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssignReq {
-    pub inbound_tag: String,
-    pub protocol: String,
-}
+// ---------------------------------------------------------------------------
+// Second factor: admin reset (also `akari admin reset-2fa`).
+// ---------------------------------------------------------------------------
 
-#[derive(serde::Deserialize, serde::Serialize, Debug, PartialEq, Clone)]
-pub(crate) struct Credential {
-    pub(crate) inbound_tag: String,
-    pub(crate) protocol: String,
-    pub(crate) account: serde_json::Value,
-}
-
-/// A new account for `inbound` (protocols.rs: the inbound's protocol and
-/// settings decide its shape).
-pub(crate) fn generate_account(inbound: &serde_json::Value) -> Result<serde_json::Value, ApiError> {
-    crate::protocols::generate_account(inbound)
-        .map_err(|e| bad_request!("inbound.account_invalid", "{detail}", detail = e))
-}
-
-/// The inbound of `inbounds` tagged `tag`.
-pub(crate) fn inbound_by_tag<'a>(
-    inbounds: &'a serde_json::Value,
-    tag: &str,
-) -> Option<&'a serde_json::Value> {
-    inbounds
-        .as_array()?
-        .iter()
-        .find(|i| i.get("tag").and_then(|t| t.as_str()) == Some(tag))
-}
-
-fn is_fk_violation(e: &sqlx::Error) -> bool {
-    matches!(e, sqlx::Error::Database(d) if d.code().as_deref() == Some("23503"))
-}
-
-/// Read-modify-write of the user's credentials on one node; the row
-/// becomes a manual override (M3: the plan reconcile never touches it, and
-/// its plan-issued credentials for other inbounds are kept as they are).
-/// The node row
-/// lock serializes all assignments on that node (including first-time ones,
-/// where there is no node_users row to lock) and the inbound protocol is
-/// read under it. Returns the generated account.
-async fn apply_assign(
+/// Remove an account's TOTP (active or pending) and recovery codes and end
+/// all its sessions, in the caller's transaction; audited
+/// ("user.totp.reset"). The account then logs in with the password alone
+/// (R18; with `auth.require_admin_2fa` an admin gets an enrollment-only
+/// session). Returns what was removed ("active", "pending", "none").
+pub(crate) async fn apply_reset_totp(
     conn: &mut PgConnection,
     actor: &Actor,
     user_id: Uuid,
-    node_id: Uuid,
-    req: &AssignReq,
-) -> Result<serde_json::Value, ApiError> {
-    if !crate::protocols::MANAGED.contains(&req.protocol.as_str()) {
-        return Err(bad_request!(
-            "user.assign_protocol_invalid",
-            "unsupported protocol {protocol:?} ({allowed})",
-            protocol = req.protocol.clone(),
-            allowed = crate::protocols::MANAGED.join(", ")
-        ));
-    }
-    // M3: assignments take the entitlement lock like every node_users
-    // writer that interacts with the reconcile (entitle.rs), before rows.
-    crate::entitle::lock(conn).await?;
-    refuse_if_deleting(conn, node_id).await?;
-    let inbounds: Option<serde_json::Value> =
-        sqlx::query_scalar("SELECT xray_inbounds FROM nodes WHERE id = $1 FOR UPDATE")
-            .bind(node_id)
-            .fetch_optional(&mut *conn)
-            .await?;
-    let Some(inbounds) = inbounds else {
-        return Err(ApiError::not_found());
-    };
-    // FOR SHARE conflicts with the user-row locks of update/delete_user, so
-    // a concurrent user change is ordered strictly before or after us.
-    let role: Option<String> = sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR SHARE")
+) -> Result<&'static str, ApiError> {
+    let found: Option<i32> = sqlx::query_scalar("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
         .bind(user_id)
         .fetch_optional(&mut *conn)
         .await?;
-    match role.as_deref() {
-        None => return Err(ApiError::not_found()),
-        Some("user") => {}
-        Some(_) => {
-            return Err(bad_request!(
-                "user.admin_not_assignable",
-                "admin accounts are not proxy users and cannot be assigned to nodes"
-            ));
-        }
+    if found.is_none() {
+        return Err(ApiError::not_found());
     }
-    match inbound_protocols(&inbounds).get(&req.inbound_tag) {
-        None => {
-            return Err(bad_request!(
-                "user.assign_inbound_missing",
-                "inbound {tag:?} does not exist on this node",
-                tag = req.inbound_tag.clone()
-            ));
-        }
-        Some(p) if *p != req.protocol => {
-            return Err(bad_request!(
-                "user.assign_protocol_mismatch",
-                "inbound {tag:?} is {actual}, not {protocol}",
-                tag = req.inbound_tag.clone(),
-                actual = p.clone(),
-                protocol = req.protocol.clone()
-            ));
-        }
-        Some(_) => {}
-    }
-    let account = generate_account(
-        inbound_by_tag(&inbounds, &req.inbound_tag).unwrap_or(&serde_json::Value::Null),
-    )?;
-
-    let existing: Option<serde_json::Value> = sqlx::query_scalar(
-        "SELECT credentials FROM node_users WHERE node_id = $1 AND user_id = $2 FOR UPDATE",
+    let removed: Option<bool> = sqlx::query_scalar(
+        "DELETE FROM user_totp WHERE user_id = $1 RETURNING enabled_at IS NOT NULL",
     )
-    .bind(node_id)
     .bind(user_id)
     .fetch_optional(&mut *conn)
     .await?;
-    let mut creds: Vec<Credential> = existing
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(|e| anyhow::anyhow!("corrupt credentials json: {e}"))?
-        .unwrap_or_default();
-    // One credential per inbound: re-assigning rotates the account.
-    creds.retain(|c| c.inbound_tag != req.inbound_tag);
-    creds.push(Credential {
-        inbound_tag: req.inbound_tag.clone(),
-        protocol: req.protocol.clone(),
-        account: account.clone(),
-    });
-
-    let res = sqlx::query(
-        "INSERT INTO node_users (node_id, user_id, credentials, manual) VALUES ($1, $2, $3, true) \
-         ON CONFLICT (node_id, user_id) DO UPDATE SET credentials = EXCLUDED.credentials, manual = true",
-    )
-    .bind(node_id)
-    .bind(user_id)
-    .bind(serde_json::to_value(&creds)?)
-    .execute(&mut *conn)
-    .await;
-    match res {
-        Ok(_) => {}
-        Err(e) if is_fk_violation(&e) => return Err(ApiError::not_found()),
-        Err(e) => return Err(e.into()),
-    }
-    // Assigned again: no longer a departed pair.
-    sqlx::query("DELETE FROM node_users_departed WHERE node_id = $1 AND user_id = $2")
-        .bind(node_id)
+    let codes = sqlx::query("DELETE FROM user_recovery_codes WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected();
+    sqlx::query("UPDATE users SET session_ver = session_ver + 1 WHERE id = $1")
         .bind(user_id)
         .execute(&mut *conn)
         .await?;
-    bump_node_users(conn, node_id).await?;
+    let was = match removed {
+        Some(true) => "active",
+        Some(false) => "pending",
+        None => "none",
+    };
+    let after = json!({ "totp": "none", "recovery_codes": 0 });
     crate::audit::record(
         conn,
         actor,
-        "node.assign",
-        "assignment",
-        Some(format!("{user_id}@{node_id}")),
-        None,
-        Some(json!({
-            "user_id": user_id, "node_id": node_id, "inbound_tag": req.inbound_tag,
-            "protocol": req.protocol, "account": crate::audit::CHANGED,
-        })),
+        "user.totp.reset",
+        "user",
+        Some(user_id.to_string()),
+        Some(json!({ "totp": was, "recovery_codes": codes })),
+        Some(after),
     )
     .await?;
-    Ok(account)
+    Ok(was)
 }
 
-pub async fn assign_user(
+/// DELETE /api/v1/users/{id}/totp (admin): reset the account's 2FA and end
+/// its sessions (resetting your own ends this session too). 200 with
+/// `{"totp": <what was removed: "active" | "pending" | "none">}`.
+pub async fn reset_totp(
     State(state): State<AppState>,
     user: AuthUser,
-    Path((_, user_id, node_id)): Path<(String, Uuid, Uuid)>,
-    ApiJson(req): ApiJson<AssignReq>,
-) -> Result<(axum::http::StatusCode, Response), ApiError> {
+    Path((_, id)): Path<(String, Uuid)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    let account = apply_assign(&mut tx, &Actor::of(&user), user_id, node_id, &req).await?;
+    let was = apply_reset_totp(&mut tx, &Actor::of(&user), id).await?;
     tx.commit().await?;
-    Ok((
-        axum::http::StatusCode::CREATED,
-        Json(json!({
-            "inbound_tag": req.inbound_tag,
-            "protocol": req.protocol,
-            "account": account,
-        }))
-        .into_response(),
-    ))
-}
-
-/// Remove a manual assignment. M3: if the user's plan grants the node, the
-/// pair is handed back to the plan instead (row kept, `manual = false`,
-/// credentials normalized by the reconcile: those of still eligible
-/// inbounds are kept, so clients keep working); otherwise the row is
-/// deleted (departed). Plan-managed rows cannot be unassigned (409: change
-/// the plan or its groups).
-pub(crate) async fn apply_unassign(
-    conn: &mut PgConnection,
-    actor: &Actor,
-    user_id: Uuid,
-    node_id: Uuid,
-) -> Result<(), ApiError> {
-    crate::entitle::lock(conn).await?;
-    let node: Option<i32> = sqlx::query_scalar("SELECT 1 FROM nodes WHERE id = $1 FOR UPDATE")
-        .bind(node_id)
-        .fetch_optional(&mut *conn)
-        .await?;
-    if node.is_none() {
-        return Err(ApiError::not_found());
-    }
-    let manual: Option<bool> = sqlx::query_scalar(
-        "SELECT manual FROM node_users WHERE node_id = $1 AND user_id = $2 FOR UPDATE",
-    )
-    .bind(node_id)
-    .bind(user_id)
-    .fetch_optional(&mut *conn)
-    .await?;
-    match manual {
-        None => return Err(ApiError::not_found()),
-        Some(false) => {
-            return Err(conflict!(
-                "user.access_from_plan",
-                "this access is granted by the user's plan; change the plan or its node groups"
-            ));
-        }
-        Some(true) => {}
-    }
-    let to_plan = crate::entitle::is_granted(conn, user_id, node_id).await?;
-    if to_plan {
-        sqlx::query("UPDATE node_users SET manual = false WHERE node_id = $1 AND user_id = $2")
-            .bind(node_id)
-            .bind(user_id)
-            .execute(&mut *conn)
-            .await?;
-        crate::entitle::apply_reconcile(
-            conn,
-            crate::entitle::Scope::Pairs {
-                users: &[user_id],
-                nodes: &[node_id],
-            },
-        )
-        .await?;
-    } else {
-        sqlx::query("DELETE FROM node_users WHERE node_id = $1 AND user_id = $2")
-            .bind(node_id)
-            .bind(user_id)
-            .execute(&mut *conn)
-            .await?;
-        record_departed(conn, node_id, user_id).await?;
-    }
-    // Always bump: either the row went away or (reconciled) its
-    // credentials may have changed; a bump with an unchanged set is a
-    // no-op delta.
-    bump_node_users(conn, node_id).await?;
-    crate::audit::record(
-        conn,
-        actor,
-        "node.unassign",
-        "assignment",
-        Some(format!("{user_id}@{node_id}")),
-        Some(json!({ "user_id": user_id, "node_id": node_id, "manual": true })),
-        to_plan.then(|| json!({ "user_id": user_id, "node_id": node_id, "manual": false })),
-    )
-    .await?;
-    Ok(())
-}
-
-/// The user still exists but no longer has this node: its final counters
-/// (reported by the agent after the REMOVE) stay billable for the departed
-/// grace (traffic::FLUSH_SQL). Not used for user deletion (nothing left to
-/// bill; the row cascades away).
-pub(crate) async fn record_departed(
-    conn: &mut PgConnection,
-    node_id: Uuid,
-    user_id: Uuid,
-) -> sqlx::Result<()> {
-    sqlx::query(
-        "INSERT INTO node_users_departed (node_id, user_id, departed_at) VALUES ($1, $2, now()) \
-         ON CONFLICT (node_id, user_id) DO UPDATE SET departed_at = now(), billed_bytes = 0",
-    )
-    .bind(node_id)
-    .bind(user_id)
-    .execute(&mut *conn)
-    .await?;
-    Ok(())
-}
-
-pub async fn unassign_user(
-    State(state): State<AppState>,
-    user: AuthUser,
-    Path((_, user_id, node_id)): Path<(String, Uuid, Uuid)>,
-) -> Result<axum::http::StatusCode, ApiError> {
-    user.require_admin()?;
-    let mut tx = state.pg().begin().await?;
-    apply_unassign(&mut tx, &Actor::of(&user), user_id, node_id).await?;
-    tx.commit().await?;
-    Ok(axum::http::StatusCode::NO_CONTENT)
+    Ok(Json(json!({ "totp": was })))
 }
 
 /// Test hooks for other modules' tests (plans.rs).
-#[cfg(test)]
-pub(crate) async fn apply_assign_for_test(conn: &mut PgConnection, user: Uuid, node: Uuid) {
-    apply_assign(
-        conn,
-        &Actor::test(),
-        user,
-        node,
-        &AssignReq {
-            inbound_tag: "in-vless".into(),
-            protocol: "vless".into(),
-        },
-    )
-    .await
-    .unwrap_or_else(|e| panic!("assign: {}", e.message()));
-}
-
 #[cfg(test)]
 pub(crate) async fn apply_update_user_for_test(
     conn: &mut PgConnection,
@@ -3240,14 +2811,7 @@ mod tests {
     use crate::testdb::TestDb;
     use axum::extract::FromRequest;
     use axum::http::StatusCode;
-
-    fn cred(tag: &str, proto: &str) -> Credential {
-        Credential {
-            inbound_tag: tag.into(),
-            protocol: proto.into(),
-            account: json!({}),
-        }
-    }
+    use std::collections::HashSet;
 
     /// M1-8: a certificate within 14 days of expiry (or expired) is flagged,
     /// with the likely cause by agent protocol.
@@ -3274,24 +2838,24 @@ mod tests {
     #[test]
     fn tls_domain_warnings_flag_old_agents_and_other_names() {
         let tls = |sni: &str| {
-            json!([{"tag": "t", "streamSettings": {"security": "tls", "tlsSettings": {
+            json!({"streamSettings": {"security": "tls", "tlsSettings": {
                 "serverName": sni,
-                "certificates": [{"certificateFile": crate::nodetpl::TLS_CERT_FILE, "keyFile": crate::nodetpl::TLS_KEY_FILE}]}}}])
+                "certificates": [{"certificateFile": crate::nodetpl::TLS_CERT_FILE, "keyFile": crate::nodetpl::TLS_KEY_FILE}]}}})
         };
         let d = Some("n1.example.com");
-        assert!(tls_domain_warnings(None, &tls("x.example.com"), Some(5)).is_empty());
-        assert!(tls_domain_warnings(d, &tls("n1.example.com"), Some(6)).is_empty());
+        assert!(tls_domain_warnings(None, Some(&tls("x.example.com")), Some(5)).is_empty());
+        assert!(tls_domain_warnings(d, Some(&tls("n1.example.com")), Some(6)).is_empty());
         assert!(
-            tls_domain_warnings(d, &tls("N1.example.com"), None).is_empty(),
+            tls_domain_warnings(d, Some(&tls("N1.example.com")), None).is_empty(),
             "not connected yet"
         );
         assert!(
-            tls_domain_warnings(d, &json!([]), Some(1)).is_empty(),
+            tls_domain_warnings(d, None, Some(1)).is_empty(),
             "no certificate needed"
         );
-        let w = tls_domain_warnings(d, &tls("n1.example.com"), Some(5));
+        let w = tls_domain_warnings(d, Some(&tls("n1.example.com")), Some(5));
         assert!(w.len() == 1 && w[0].contains("版本过旧"), "{w:?}");
-        let w = tls_domain_warnings(d, &tls("other.example.com"), Some(6));
+        let w = tls_domain_warnings(d, Some(&tls("other.example.com")), Some(6));
         assert!(w.len() == 1 && w[0].contains("other.example.com"), "{w:?}");
     }
 
@@ -3301,16 +2865,17 @@ mod tests {
     /// pass, as does a node without a TLS domain (certificates by hand).
     #[test]
     fn acme_inbounds_need_an_acme_agent() {
-        let tls = json!([{"tag": "t", "streamSettings": {"security": "tls", "tlsSettings": {
-            "certificates": [{"certificateFile": crate::nodetpl::TLS_CERT_FILE, "keyFile": crate::nodetpl::TLS_KEY_FILE}]}}}]);
+        let tls = json!({"streamSettings": {"security": "tls", "tlsSettings": {
+            "certificates": [{"certificateFile": crate::nodetpl::TLS_CERT_FILE, "keyFile": crate::nodetpl::TLS_KEY_FILE}]}}});
+        let t = Some(&tls);
         let d = Some("n1.example.com");
-        assert_eq!(acme_needs_newer_agent(d, &tls, Some(5)), Some(5));
-        assert_eq!(acme_needs_newer_agent(d, &tls, Some(1)), Some(1));
-        assert_eq!(acme_needs_newer_agent(d, &tls, Some(6)), None);
-        assert_eq!(acme_needs_newer_agent(d, &tls, None), None);
-        assert_eq!(acme_needs_newer_agent(d, &tls, Some(0)), None);
-        assert_eq!(acme_needs_newer_agent(None, &tls, Some(5)), None);
-        assert_eq!(acme_needs_newer_agent(d, &json!([]), Some(5)), None);
+        assert_eq!(acme_needs_newer_agent(d, t, Some(5)), Some(5));
+        assert_eq!(acme_needs_newer_agent(d, t, Some(1)), Some(1));
+        assert_eq!(acme_needs_newer_agent(d, t, Some(6)), None);
+        assert_eq!(acme_needs_newer_agent(d, t, None), None);
+        assert_eq!(acme_needs_newer_agent(d, t, Some(0)), None);
+        assert_eq!(acme_needs_newer_agent(None, t, Some(5)), None);
+        assert_eq!(acme_needs_newer_agent(d, None, Some(5)), None);
     }
 
     /// W18: self-updatable agents without the "updater" capability fail on
@@ -3344,7 +2909,7 @@ mod tests {
         assert!(stale_units_warning(Some(&caps(&["metrics", "updater"]))).is_none());
         assert!(stale_units_warning(None).is_none());
         let all = node_warnings(
-            &serde_json::json!([]),
+            None,
             None,
             Some(6),
             None,
@@ -3354,38 +2919,22 @@ mod tests {
         assert_eq!(all.len(), 1, "{all:?}");
     }
 
-    #[test]
-    fn prune_keeps_only_matching_tag_and_protocol() {
-        let inb = inbound_protocols(&json!([
-            {"tag": "a", "protocol": "vless"},
-            {"tag": "b", "protocol": "trojan"},
-        ]));
-        let kept = prune_credentials(
-            vec![
-                cred("a", "vless"),
-                cred("b", "vmess"),
-                cred("gone", "vless"),
-            ],
-            &inb,
-        );
-        assert_eq!(kept, vec![cred("a", "vless")]);
-    }
-
+    /// D2: one inbound object per node; its tag (any case variant, the
+    /// way xray reads keys) is the panel's business and dropped.
     #[test]
     fn inbound_validation() {
-        let ok = json!([{"tag": "a", "protocol": "vless"}, {"tag": "b", "protocol": "vmess"}]);
-        assert!(validate_inbounds(&ok).is_ok());
+        let ok = normalize_inbound(&json!({"tag": "a", "TAG": "b", "protocol": "vless"})).unwrap();
+        assert_eq!(ok, json!({"protocol": "vless"}));
+        assert!(validate_inbound(&json!({"protocol": "vmess"})).is_ok());
         for bad in [
-            json!({}),
-            json!([{"tag": "", "protocol": "vless"}]),
+            json!([]),
             json!([{"protocol": "vless"}]),
-            json!([{"tag": "a", "protocol": "vless"}, {"tag": "a", "protocol": "vmess"}]),
-            json!([{"tag": "a"}]),
-            json!([{"tag": "api", "protocol": "vless"}]),
-            json!([{"tag": "akari-x", "protocol": "vless"}]),
-            json!([{"tag": "_x", "protocol": "vless"}]),
+            json!("vless"),
+            json!({}),
+            json!({"protocol": ""}),
+            json!({"tag": "a"}),
         ] {
-            let e = validate_inbounds(&bad).unwrap_err();
+            let e = normalize_inbound(&bad).unwrap_err();
             assert_eq!(e.status(), StatusCode::BAD_REQUEST, "{bad}");
         }
     }
@@ -3404,9 +2953,9 @@ mod tests {
     #[tokio::test]
     async fn patch_bodies_absent_null_and_bad_input() {
         let r: UpdateNodeReq = parse("{}").await.unwrap_or_else(|_| panic!());
-        assert!(r.enabled.is_none() && r.server_addr.is_none());
-        let r: UpdateNodeReq = parse(r#"{"server_addr": null}"#).await.ok().unwrap();
-        assert_eq!(r.server_addr, Some(None));
+        assert!(r.enabled.is_none() && r.region.is_none());
+        let r: UpdateNodeReq = parse(r#"{"region": null}"#).await.ok().unwrap();
+        assert_eq!(r.region, Some(None));
         let r: UpdateUserReq = parse(r#"{"password": null}"#).await.ok().unwrap();
         assert_eq!(r.password, Some(None));
         for bad in [
@@ -3438,12 +2987,21 @@ mod tests {
         let Some(db) = TestDb::new().await else {
             return;
         };
+        // u starts with raw credentials on n1 and n2 (as a pre-plan row
+        // would be): the user cases below need an account without a plan
+        // (role changes); the first reconcile that looks at them revokes
+        // them (D3: plans are the only source).
         let (n1, u) = db.member().await;
         let n2 = db.node().await;
         db.assign(n2, u).await;
         let other = db.node().await;
         let doomed = db.node().await;
         let ours = [n1, n2, other, doomed];
+        let (e1, eo, ed) = (
+            db.direct(n1).await,
+            db.direct(other).await,
+            db.direct(doomed).await,
+        );
         // M3: an (initially empty) group granted by a plan.
         let (group, plan) = {
             let mut tx = db.pool.begin().await.unwrap();
@@ -3454,7 +3012,7 @@ mod tests {
                 &crate::plans::CreateGroupReq {
                     name: "g".into(),
                     description: None,
-                    node_ids: None,
+                    entrance_ids: None,
                 },
             )
             .await
@@ -3481,17 +3039,17 @@ mod tests {
             tx.commit().await.unwrap();
             (g, p)
         };
-        let group_nodes = move |nodes: Vec<Uuid>| -> Op {
-            let nodes = std::sync::Arc::new(nodes);
+        let group_entrances = move |entrances: Vec<Uuid>| -> Op {
+            let entrances = std::sync::Arc::new(entrances);
             Box::new(move |c| {
-                let nodes = nodes.clone();
+                let entrances = entrances.clone();
                 Box::pin(async move {
                     crate::plans::apply_update_group(
                         c,
                         &crate::audit::Actor::test(),
                         group,
                         &crate::plans::UpdateGroupReq {
-                            node_ids: Some(Some(nodes.to_vec())),
+                            entrance_ids: Some(Some(entrances.to_vec())),
                             ..Default::default()
                         },
                     )
@@ -3516,6 +3074,48 @@ mod tests {
                     )
                     .await
                     .map(|_| ())
+                })
+            })
+        };
+        let entrance = move |id: Uuid, req: crate::entrances::EntranceReq| -> Op {
+            let req = std::sync::Arc::new(req);
+            Box::new(move |c| {
+                let req = req.clone();
+                Box::pin(async move {
+                    crate::entrances::apply_update(c, &crate::audit::Actor::test(), id, &req)
+                        .await
+                        .map(|_| ())
+                })
+            })
+        };
+        let set_plan = move || -> Op {
+            Box::new(move |c| {
+                Box::pin(async move {
+                    crate::plans::apply_set_user_plan(
+                        c,
+                        &crate::audit::Actor::test(),
+                        u,
+                        &crate::plans::SetUserPlanReq {
+                            plan_id: plan,
+                            term: crate::plans::Term::new(
+                                crate::billing::catalog::PeriodKind::Month,
+                                None,
+                            )?,
+                        },
+                    )
+                    .await
+                    .map(|_| ())
+                })
+            })
+        };
+        let node = move |id: Uuid, req: UpdateNodeReq| -> Op {
+            let req = std::sync::Arc::new(req);
+            Box::new(move |c| {
+                let req = req.clone();
+                Box::pin(async move {
+                    apply_update_node(c, &crate::audit::Actor::test(), id, &req)
+                        .await
+                        .map(|_| ())
                 })
             })
         };
@@ -3596,313 +3196,219 @@ mod tests {
             ),
             (
                 "disable node",
-                Box::new(move |c| {
-                    Box::pin(async move {
-                        apply_update_node(
-                            c,
-                            &crate::audit::Actor::test(),
-                            n1,
-                            &UpdateNodeReq {
-                                enabled: Some(Some(false)),
-                                ..Default::default()
-                            },
-                        )
-                        .await
-                        .map(|_| ())
-                    })
-                }),
+                node(
+                    n1,
+                    UpdateNodeReq {
+                        enabled: Some(Some(false)),
+                        ..Default::default()
+                    },
+                ),
                 vec![n1],
                 true,
             ),
             (
                 "enable node",
-                Box::new(move |c| {
-                    Box::pin(async move {
-                        apply_update_node(
-                            c,
-                            &crate::audit::Actor::test(),
-                            n1,
-                            &UpdateNodeReq {
-                                enabled: Some(Some(true)),
-                                ..Default::default()
-                            },
-                        )
-                        .await
-                        .map(|_| ())
-                    })
-                }),
+                node(
+                    n1,
+                    UpdateNodeReq {
+                        enabled: Some(Some(true)),
+                        ..Default::default()
+                    },
+                ),
                 vec![n1],
                 true,
             ),
             (
                 "enable node again (no-op)",
-                Box::new(move |c| {
-                    Box::pin(async move {
-                        apply_update_node(
-                            c,
-                            &crate::audit::Actor::test(),
-                            n1,
-                            &UpdateNodeReq {
-                                enabled: Some(Some(true)),
-                                ..Default::default()
-                            },
-                        )
-                        .await
-                        .map(|_| ())
-                    })
-                }),
-                vec![n1],
-                false,
-            ),
-            (
-                "server_addr",
-                Box::new(move |c| {
-                    Box::pin(async move {
-                        apply_update_node(
-                            c,
-                            &crate::audit::Actor::test(),
-                            n1,
-                            &UpdateNodeReq {
-                                server_addr: Some(Some("h".into())),
-                                ..Default::default()
-                            },
-                        )
-                        .await
-                        .map(|_| ())
-                    })
-                }),
+                node(
+                    n1,
+                    UpdateNodeReq {
+                        enabled: Some(Some(true)),
+                        ..Default::default()
+                    },
+                ),
                 vec![n1],
                 false,
             ),
             (
                 "tls domain (W10: the agent gets it with a Snapshot)",
-                Box::new(move |c| {
-                    Box::pin(async move {
-                        apply_update_node(
-                            c,
-                            &crate::audit::Actor::test(),
-                            n1,
-                            &UpdateNodeReq {
-                                tls_domain: Some(Some("N1.Example.com".into())),
-                                ..Default::default()
-                            },
-                        )
-                        .await
-                        .map(|_| ())
-                    })
-                }),
+                node(
+                    n1,
+                    UpdateNodeReq {
+                        tls_domain: Some(Some("N1.Example.com".into())),
+                        ..Default::default()
+                    },
+                ),
                 vec![n1],
                 true,
             ),
             (
                 "same tls domain (no-op)",
-                Box::new(move |c| {
-                    Box::pin(async move {
-                        apply_update_node(
-                            c,
-                            &crate::audit::Actor::test(),
-                            n1,
-                            &UpdateNodeReq {
-                                tls_domain: Some(Some("n1.example.com".into())),
-                                ..Default::default()
-                            },
-                        )
-                        .await
-                        .map(|_| ())
-                    })
-                }),
+                node(
+                    n1,
+                    UpdateNodeReq {
+                        tls_domain: Some(Some("n1.example.com".into())),
+                        ..Default::default()
+                    },
+                ),
                 vec![n1],
                 false,
             ),
             (
                 "clear tls domain",
-                Box::new(move |c| {
-                    Box::pin(async move {
-                        apply_update_node(
-                            c,
-                            &crate::audit::Actor::test(),
-                            n1,
-                            &UpdateNodeReq {
-                                tls_domain: Some(None),
-                                ..Default::default()
-                            },
-                        )
-                        .await
-                        .map(|_| ())
-                    })
-                }),
+                node(
+                    n1,
+                    UpdateNodeReq {
+                        tls_domain: Some(None),
+                        ..Default::default()
+                    },
+                ),
                 vec![n1],
                 true,
             ),
             (
-                "set inbounds",
-                Box::new(move |c| {
-                    Box::pin(async move {
-                        apply_set_inbounds(
-                            c,
-                            &crate::audit::Actor::test(),
-                            n1,
-                            &json!([{"tag": "in-vless", "protocol": "vless"}]),
-                        )
-                        .await
-                        .map(|_| ())
-                    })
-                }),
-                vec![n1],
-                true,
-            ),
-            (
-                "assign",
-                Box::new(move |c| {
-                    Box::pin(async move {
-                        apply_assign(
-                            c,
-                            &crate::audit::Actor::test(),
-                            u,
-                            other,
-                            &AssignReq {
-                                inbound_tag: "in-vless".into(),
-                                protocol: "vless".into(),
-                            },
-                        )
-                        .await
-                        .map(|_| ())
-                    })
-                }),
-                vec![other],
-                true,
-            ),
-            (
-                "unassign",
-                Box::new(move |c| {
-                    Box::pin(async move {
-                        apply_unassign(c, &crate::audit::Actor::test(), u, other).await
-                    })
-                }),
-                vec![other],
-                true,
-            ),
-            (
-                // D12: one month from now; the new expiry changes what the
-                // user's (manual) nodes enforce.
-                "set user plan (empty group)",
-                Box::new(move |c| {
-                    Box::pin(async move {
-                        crate::plans::apply_set_user_plan(
-                            c,
-                            &crate::audit::Actor::test(),
-                            u,
-                            &crate::plans::SetUserPlanReq {
-                                plan_id: plan,
-                                term: crate::plans::Term::new(
-                                    crate::billing::catalog::PeriodKind::Month,
-                                    None,
-                                )?,
-                            },
-                        )
-                        .await
-                        .map(|_| ())
-                    })
-                }),
-                vec![n1, n2],
-                true,
-            ),
-            (
-                "group gains node",
-                group_nodes(vec![other]),
-                vec![other],
-                true,
-            ),
-            (
-                "group gains a manually assigned node",
-                group_nodes(vec![other, n1]),
+                "node display fields (W11, no access change)",
+                node(
+                    n1,
+                    UpdateNodeReq {
+                        display_name: Some(Some("香港 01".into())),
+                        sort: Some(Some(3)),
+                        visible: Some(Some(false)),
+                        tags: Some(Some(vec!["IPLC".into()])),
+                        ..Default::default()
+                    },
+                ),
                 vec![n1],
                 false,
             ),
-            ("plan drops group", plan_groups(vec![]), vec![other], true),
+            (
+                "entrance address, multiplier, name (W28-a: subscription and billing only)",
+                entrance(
+                    e1,
+                    crate::entrances::EntranceReq {
+                        name: Some(Some("直连 2".into())),
+                        connect_host: Some(Some("relay.example.com".into())),
+                        connect_port: Some(Some(30443)),
+                        rate: Some(Some(0.5)),
+                        sort: Some(Some(2)),
+                        ..Default::default()
+                    },
+                ),
+                vec![n1],
+                false,
+            ),
+            (
+                "disable the direct entrance (its inbound goes away)",
+                entrance(
+                    e1,
+                    crate::entrances::EntranceReq {
+                        enabled: Some(Some(false)),
+                        ..Default::default()
+                    },
+                ),
+                vec![n1],
+                true,
+            ),
+            (
+                "enable it again",
+                entrance(
+                    e1,
+                    crate::entrances::EntranceReq {
+                        enabled: Some(Some(true)),
+                        ..Default::default()
+                    },
+                ),
+                vec![n1],
+                true,
+            ),
+            (
+                "set inbound (the reconcile revokes the plan-less row)",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        apply_set_inbound(
+                            c,
+                            &crate::audit::Actor::test(),
+                            n1,
+                            Some(&json!({"protocol": "vless", "port": 2})),
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                }),
+                vec![n1],
+                true,
+            ),
+            (
+                "set user plan (empty group; revokes the other plan-less row)",
+                set_plan(),
+                vec![n2],
+                true,
+            ),
+            (
+                "set user plan again (nothing to change)",
+                set_plan(),
+                vec![n1, n2, other],
+                false,
+            ),
+            (
+                "group gains an entrance",
+                group_entrances(vec![eo]),
+                vec![other],
+                true,
+            ),
+            (
+                "group gains another",
+                group_entrances(vec![eo, e1]),
+                vec![n1],
+                true,
+            ),
+            (
+                "plan drops group",
+                plan_groups(vec![]),
+                vec![other, n1],
+                true,
+            ),
             (
                 "plan regains group",
                 plan_groups(vec![group]),
-                vec![other],
+                vec![other, n1],
                 true,
             ),
             (
-                "node form: node joins a granted group (W11)",
-                Box::new(move |c| {
-                    Box::pin(async move {
-                        crate::nodemeta::apply_set_node_groups(
-                            c,
-                            &crate::audit::Actor::test(),
-                            doomed,
-                            &[group],
-                        )
-                        .await
-                        .map(|_| ())
-                    })
-                }),
+                "entrance form: joins a granted group",
+                entrance(
+                    ed,
+                    crate::entrances::EntranceReq {
+                        group_ids: Some(Some(vec![group])),
+                        ..Default::default()
+                    },
+                ),
                 vec![doomed],
                 true,
             ),
             (
-                "node form: same groups again (no-op)",
-                Box::new(move |c| {
-                    Box::pin(async move {
-                        crate::nodemeta::apply_set_node_groups(
-                            c,
-                            &crate::audit::Actor::test(),
-                            doomed,
-                            &[group],
-                        )
-                        .await
-                        .map(|_| ())
-                    })
-                }),
+                "entrance form: same groups again (no-op)",
+                entrance(
+                    ed,
+                    crate::entrances::EntranceReq {
+                        group_ids: Some(Some(vec![group])),
+                        ..Default::default()
+                    },
+                ),
                 vec![doomed],
                 false,
             ),
             (
-                "node form: node leaves the group (W11)",
-                Box::new(move |c| {
-                    Box::pin(async move {
-                        crate::nodemeta::apply_set_node_groups(
-                            c,
-                            &crate::audit::Actor::test(),
-                            doomed,
-                            &[],
-                        )
-                        .await
-                        .map(|_| ())
-                    })
-                }),
+                "entrance form: leaves the group",
+                entrance(
+                    ed,
+                    crate::entrances::EntranceReq {
+                        group_ids: Some(Some(vec![])),
+                        ..Default::default()
+                    },
+                ),
                 vec![doomed],
                 true,
-            ),
-            (
-                "node display fields and multiplier (W11, no access change)",
-                Box::new(move |c| {
-                    Box::pin(async move {
-                        apply_update_node(
-                            c,
-                            &crate::audit::Actor::test(),
-                            n1,
-                            &UpdateNodeReq {
-                                display_name: Some(Some("香港 01".into())),
-                                sort: Some(Some(3)),
-                                visible: Some(Some(false)),
-                                tags: Some(Some(vec!["IPLC".into()])),
-                                traffic_rate: Some(Some(0.5)),
-                                connect_overrides: Some(Some(
-                                    json!({"in-vless": {"host": "relay.example.com", "port": 30443}}),
-                                )),
-                                ..Default::default()
-                            },
-                        )
-                        .await
-                        .map(|_| ())
-                    })
-                }),
-                vec![n1],
-                false,
             ),
             (
                 "node alert rules (W17, nothing the agent runs)",
@@ -3941,7 +3447,7 @@ mod tests {
                         .map(|_| ())
                     })
                 }),
-                vec![n1, n2, other],
+                vec![n1, other],
                 true,
             ),
             (
@@ -3962,7 +3468,7 @@ mod tests {
                         .map(|_| ())
                     })
                 }),
-                vec![n1, n2, other],
+                vec![n1, other],
                 false,
             ),
             (
@@ -3974,7 +3480,7 @@ mod tests {
                             .map(|_| ())
                     })
                 }),
-                vec![n1, n2, other],
+                vec![n1, other],
                 false,
             ),
             (
@@ -3988,7 +3494,7 @@ mod tests {
                             .map(|_| ())
                     })
                 }),
-                vec![n1, n2, other],
+                vec![n1, other],
                 false,
             ),
             (
@@ -4009,7 +3515,7 @@ mod tests {
                             .map(|_| ())
                     })
                 }),
-                vec![n1, n2, other],
+                vec![n1, other],
                 true,
             ),
             (
@@ -4026,7 +3532,7 @@ mod tests {
                         .map(|_| ())
                     })
                 }),
-                vec![n1, n2, other],
+                vec![n1, other],
                 true,
             ),
             (
@@ -4038,16 +3544,26 @@ mod tests {
                             .map(|_| ())
                     })
                 }),
-                // W7: the plan had a speed limit; the manual nodes n1/n2
-                // now serve the user unlimited.
-                vec![n1, n2, other],
+                vec![n1, other],
                 true,
             ),
             (
                 "group change without subscribers",
-                group_nodes(vec![]),
+                group_entrances(vec![]),
                 vec![other, n1],
                 false,
+            ),
+            (
+                "the plan again (its group is empty now)",
+                set_plan(),
+                vec![other, n1],
+                false,
+            ),
+            (
+                "group back (the user regains both)",
+                group_entrances(vec![eo, e1]),
+                vec![other, n1],
+                true,
             ),
             (
                 // W16: money moves, access does not (one ledger row, one
@@ -4069,7 +3585,7 @@ mod tests {
                         .map(|_| ())
                     })
                 }),
-                vec![n1, n2, other],
+                vec![n1, other],
                 false,
             ),
             (
@@ -4081,7 +3597,7 @@ mod tests {
                             .map(|_| ())
                     })
                 }),
-                vec![n1, n2],
+                vec![n1, other],
                 true,
             ),
             (
@@ -4174,11 +3690,11 @@ mod tests {
             vec![format!("del:{doomed}")]
         );
         drop(listener); // holds a pool connection: close() would wait on it
-        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM node_users")
+        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM entrance_users")
             .fetch_one(&db.pool)
             .await
             .unwrap();
-        assert_eq!(left, 0, "delete_user removed the assignments");
+        assert_eq!(left, 0, "delete_user removed the credentials");
         db.drop().await;
     }
 
@@ -4268,49 +3784,6 @@ mod tests {
             return;
         };
         let (n, u) = db.member().await;
-        let assign = |user: Uuid, node: Uuid, tag: &str, proto: &str| {
-            let req = AssignReq {
-                inbound_tag: tag.into(),
-                protocol: proto.into(),
-            };
-            let pool = db.pool.clone();
-            async move {
-                let mut tx = pool.begin().await.unwrap();
-                let r = apply_assign(&mut tx, &crate::audit::Actor::test(), user, node, &req).await;
-                if r.is_ok() {
-                    tx.commit().await.unwrap();
-                }
-                r
-            }
-        };
-        assert_eq!(
-            err_status(assign(u, n, "in-vless", "vmess").await),
-            StatusCode::BAD_REQUEST
-        );
-        assert_eq!(
-            err_status(assign(u, n, "nope", "vless").await),
-            StatusCode::BAD_REQUEST
-        );
-        assert_eq!(
-            err_status(assign(Uuid::new_v4(), n, "in-vless", "vless").await),
-            StatusCode::NOT_FOUND
-        );
-        assert_eq!(
-            err_status(assign(u, Uuid::new_v4(), "in-vless", "vless").await),
-            StatusCode::NOT_FOUND
-        );
-        // Admin accounts are not proxy users (R6 L6).
-        let admin = db.user().await;
-        sqlx::query("UPDATE users SET role = 'admin' WHERE id = $1")
-            .bind(admin)
-            .execute(&db.pool)
-            .await
-            .unwrap();
-        assert_eq!(
-            err_status(assign(admin, n, "in-vless", "vless").await),
-            StatusCode::BAD_REQUEST
-        );
-
         let upd_node = |req: UpdateNodeReq| {
             let pool = db.pool.clone();
             async move {
@@ -4335,26 +3808,34 @@ mod tests {
             StatusCode::BAD_REQUEST
         );
         upd_node(UpdateNodeReq {
-            server_addr: Some(Some("h.example".into())),
+            region: Some(Some("  ".into())),
             ..Default::default()
         })
         .await
         .ok()
         .unwrap();
-        upd_node(UpdateNodeReq {
-            server_addr: Some(Some("  ".into())),
-            ..Default::default()
-        })
-        .await
-        .ok()
-        .unwrap();
-        let addr: Option<String> =
-            sqlx::query_scalar("SELECT server_addr FROM nodes WHERE id = $1")
-                .bind(n)
-                .fetch_one(&db.pool)
-                .await
-                .unwrap();
-        assert_eq!(addr, None, "blank server_addr clears it");
+        let region: Option<String> = sqlx::query_scalar("SELECT region FROM nodes WHERE id = $1")
+            .bind(n)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(region, None, "blank region clears it");
+        let set_inbound = |node: Uuid, inbound: serde_json::Value| {
+            let pool = db.pool.clone();
+            async move {
+                let mut tx = pool.begin().await.unwrap();
+                apply_set_inbound(&mut tx, &crate::audit::Actor::test(), node, Some(&inbound)).await
+            }
+        };
+        assert_eq!(
+            err_status(set_inbound(n, json!([{"protocol": "vless"}])).await),
+            StatusCode::BAD_REQUEST,
+            "D2: one object, not an array"
+        );
+        assert_eq!(
+            err_status(set_inbound(Uuid::new_v4(), json!({"protocol": "vless"})).await),
+            StatusCode::NOT_FOUND
+        );
 
         let mut tx = db.pool.begin().await.unwrap();
         assert_eq!(
@@ -4403,78 +3884,173 @@ mod tests {
         db.drop().await;
     }
 
-    #[tokio::test]
-    async fn set_inbounds_prunes_credentials_in_same_tx() {
-        let Some(db) = TestDb::new().await else {
-            return;
-        };
-        let (n, u) = db.member().await;
-        let u2 = db.user().await;
-        sqlx::query("INSERT INTO node_users (node_id, user_id, credentials) VALUES ($1, $2, $3)")
-            .bind(n)
-            .bind(u2)
-            .bind(json!([
-                {"inbound_tag": "in-vless", "protocol": "vless", "account": {}},
-                {"inbound_tag": "in-t", "protocol": "trojan", "account": {}},
-            ]))
-            .execute(&db.pool)
-            .await
-            .unwrap();
+    /// A group with the direct entrances of `nodes`, a plan granting it and
+    /// that plan for `users` (committed). Returns (group, plan).
+    async fn grant(db: &TestDb, nodes: &[Uuid], users: &[Uuid]) -> (Uuid, Uuid) {
+        let mut entrances = Vec::new();
+        for n in nodes {
+            entrances.push(db.direct(*n).await);
+        }
+        let actor = crate::audit::Actor::test();
         let mut tx = db.pool.begin().await.unwrap();
-        // in-vless becomes vmess (protocol change) and in-t stays.
-        apply_set_inbounds(
-            &mut tx, &crate::audit::Actor::test(),
-            n,
-            &json!([{"tag": "in-vless", "protocol": "vmess"}, {"tag": "in-t", "protocol": "trojan"}]),
+        let g = crate::plans::apply_create_group(
+            &mut tx,
+            &actor,
+            &crate::plans::CreateGroupReq {
+                name: format!("g-{}", Uuid::new_v4()),
+                description: None,
+                entrance_ids: Some(entrances),
+            },
         )
         .await
         .ok()
         .unwrap();
+        let p = crate::plans::apply_create_plan(
+            &mut tx,
+            &actor,
+            &crate::plans::CreatePlanReq {
+                name: format!("p-{}", Uuid::new_v4()),
+                traffic_quota_bytes: None,
+                period: "monthly".into(),
+                group_ids: Some(vec![g]),
+                ..Default::default()
+            },
+        )
+        .await
+        .ok()
+        .unwrap();
+        for u in users {
+            crate::plans::apply_set_user_plan(
+                &mut tx,
+                &actor,
+                *u,
+                &crate::plans::SetUserPlanReq {
+                    plan_id: p,
+                    term: crate::plans::Term {
+                        kind: crate::billing::catalog::PeriodKind::Onetime,
+                        days: None,
+                    },
+                },
+            )
+            .await
+            .ok()
+            .unwrap();
+        }
         tx.commit().await.unwrap();
-        let rows: Vec<(Uuid, serde_json::Value)> =
-            sqlx::query_as("SELECT user_id, credentials FROM node_users WHERE node_id = $1")
-                .bind(n)
-                .fetch_all(&db.pool)
-                .await
-                .unwrap();
-        assert_eq!(
-            rows.len(),
-            1,
-            "u's only credential was pruned -> row deleted"
-        );
-        assert_eq!(rows[0].0, u2);
-        assert_eq!(rows[0].1.as_array().unwrap().len(), 1);
-        let _ = u;
-        db.drop().await;
+        (g, p)
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn twenty_concurrent_assigns_serialize() {
+    async fn account_of(db: &TestDb, n: Uuid, u: Uuid) -> Option<(String, serde_json::Value)> {
+        sqlx::query_as(
+            "SELECT eu.protocol, eu.account FROM entrance_users eu \
+             JOIN entrances e ON e.id = eu.entrance_id WHERE e.node_id = $1 AND eu.user_id = $2",
+        )
+        .bind(n)
+        .bind(u)
+        .fetch_optional(&db.pool)
+        .await
+        .unwrap()
+    }
+
+    /// D2: replacing the inbound keeps an account of the same protocol
+    /// (refit), reissues one of another protocol, and an inbound the panel
+    /// issues nothing for revokes every row (departed) — all in the same
+    /// transaction as the inbound change.
+    #[tokio::test]
+    async fn set_inbound_keeps_refits_or_reissues_credentials() {
         let Some(db) = TestDb::new().await else {
             return;
         };
         let n = db.node().await;
-        let (c0, u0) = db.versions(n).await;
-        let mut users = vec![];
-        for _ in 0..20 {
-            users.push(db.user().await);
-        }
-        let shared = users[0];
-        let mut tasks = vec![];
-        for (i, &u) in users.iter().enumerate() {
-            // Half assign distinct users, half re-assign the same user.
-            let who = if i % 2 == 0 { u } else { shared };
+        let u = db.user().await;
+        grant(&db, &[n], &[u]).await;
+        let (proto, first) = account_of(&db, n, u).await.unwrap();
+        assert_eq!(proto, "vless");
+        assert_eq!(first["flow"], "");
+        let set = |inbound: serde_json::Value| {
             let pool = db.pool.clone();
-            tasks.push(tokio::spawn(async move {
+            async move {
                 let mut tx = pool.begin().await.unwrap();
-                let req = AssignReq {
-                    inbound_tag: "in-vless".into(),
-                    protocol: "vless".into(),
-                };
-                apply_assign(&mut tx, &crate::audit::Actor::test(), who, n, &req)
+                apply_set_inbound(&mut tx, &crate::audit::Actor::test(), n, Some(&inbound))
                     .await
                     .ok()
                     .unwrap();
+                tx.commit().await.unwrap();
+            }
+        };
+        // Same protocol: the id is kept, the flow follows the inbound.
+        set(json!({"protocol": "vless", "port": 443, "settings": {"flow": "xtls-rprx-vision"},
+            "streamSettings": {"network": "tcp", "security": "reality",
+                "realitySettings": {"dest": "www.apple.com:443", "serverNames": ["www.apple.com"],
+                    "privateKey": "aGVsbG8taGVsbG8taGVsbG8taGVsbG8taGVsbG8taGU", "shortIds": ["ab"]}}}))
+        .await;
+        let (_, kept) = account_of(&db, n, u).await.unwrap();
+        assert_eq!(kept["id"], first["id"]);
+        assert_eq!(kept["flow"], "xtls-rprx-vision");
+        // Another protocol: a new account of that protocol.
+        set(json!({"protocol": "trojan", "port": 443})).await;
+        let (proto, trojan) = account_of(&db, n, u).await.unwrap();
+        assert_eq!(proto, "trojan");
+        assert!(trojan.get("password").is_some());
+        let departed = || async {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM entrance_users_departed WHERE user_id = $1",
+            )
+            .bind(u)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+        };
+        assert_eq!(departed().await, 0);
+        // Nothing to issue for: revoked, departed (final counters billed).
+        set(json!({"protocol": "dokodemo-door", "port": 443})).await;
+        assert!(account_of(&db, n, u).await.is_none());
+        assert_eq!(departed().await, 1);
+        // And no inbound at all.
+        set(json!({"protocol": "vless", "port": 443})).await;
+        assert!(account_of(&db, n, u).await.is_some());
+        assert_eq!(departed().await, 0, "granted again: no longer departed");
+        let mut tx = db.pool.begin().await.unwrap();
+        apply_set_inbound(&mut tx, &crate::audit::Actor::test(), n, None)
+            .await
+            .ok()
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert!(account_of(&db, n, u).await.is_none());
+        db.drop().await;
+    }
+
+    /// Twenty concurrent plan assignments on one node serialize on the
+    /// entitlement lock: one credential each, one bump each.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn twenty_concurrent_grants_serialize() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let n = db.node().await;
+        let (_, plan) = grant(&db, &[n], &[]).await;
+        let (c0, u0) = db.versions(n).await;
+        let mut tasks = vec![];
+        for _ in 0..20 {
+            let u = db.user().await;
+            let pool = db.pool.clone();
+            tasks.push(tokio::spawn(async move {
+                let mut tx = pool.begin().await.unwrap();
+                crate::plans::apply_set_user_plan(
+                    &mut tx,
+                    &crate::audit::Actor::test(),
+                    u,
+                    &crate::plans::SetUserPlanReq {
+                        plan_id: plan,
+                        term: crate::plans::Term {
+                            kind: crate::billing::catalog::PeriodKind::Onetime,
+                            days: None,
+                        },
+                    },
+                )
+                .await
+                .ok()
+                .unwrap();
                 tx.commit().await.unwrap();
             }));
         }
@@ -4483,83 +4059,92 @@ mod tests {
         }
         let (c1, u1) = db.versions(n).await;
         assert_eq!((c1, u1), (c0, u0 + 20));
-        let rows: Vec<serde_json::Value> =
-            sqlx::query_scalar("SELECT credentials FROM node_users WHERE node_id = $1")
-                .bind(n)
-                .fetch_all(&db.pool)
-                .await
-                .unwrap();
-        assert_eq!(rows.len(), 10);
-        assert!(
-            rows.iter().all(|c| c.as_array().unwrap().len() == 1),
-            "no lost/duplicate creds"
-        );
+        let ids: Vec<String> = sqlx::query_scalar(
+            "SELECT eu.account->>'id' FROM entrance_users eu JOIN entrances e \
+             ON e.id = eu.entrance_id WHERE e.node_id = $1",
+        )
+        .bind(n)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(ids.len(), 20);
+        let distinct: HashSet<&String> = ids.iter().collect();
+        assert_eq!(distinct.len(), 20, "no lost/duplicate creds");
         db.drop().await;
     }
 
-    /// R10 F1: removing a node_users row of a still-existing user leaves a
-    /// departed marker (unassign, set_inbounds pruning to nothing);
-    /// re-assigning clears it.
+    /// R10 F1: losing a credential while the user exists leaves a departed
+    /// marker (plan cancelled, inbound without credentials); regaining it
+    /// clears the marker.
     #[tokio::test]
     async fn departed_marker_written_and_cleared() {
         let Some(db) = TestDb::new().await else {
             return;
         };
-        let departed = |n: Uuid, u: Uuid| {
+        let departed = |u: Uuid| {
             let pool = db.pool.clone();
             async move {
                 sqlx::query_scalar::<_, i64>(
-                    "SELECT count(*) FROM node_users_departed WHERE node_id = $1 AND user_id = $2",
+                    "SELECT count(*) FROM entrance_users_departed WHERE user_id = $1",
                 )
-                .bind(n)
                 .bind(u)
                 .fetch_one(&pool)
                 .await
                 .unwrap()
             }
         };
-        let (n, u) = db.member().await;
+        let n = db.node().await;
+        let u = db.user().await;
+        let (_, plan) = grant(&db, &[n], &[u]).await;
         let mut tx = db.pool.begin().await.unwrap();
-        apply_unassign(&mut tx, &crate::audit::Actor::test(), u, n)
+        crate::plans::apply_cancel_user_plan(&mut tx, &crate::audit::Actor::test(), u)
             .await
             .ok()
             .unwrap();
         tx.commit().await.unwrap();
-        assert_eq!(departed(n, u).await, 1);
-        let req = AssignReq {
-            inbound_tag: "in-vless".into(),
-            protocol: "vless".into(),
-        };
+        assert_eq!(departed(u).await, 1);
         let mut tx = db.pool.begin().await.unwrap();
-        apply_assign(&mut tx, &crate::audit::Actor::test(), u, n, &req)
-            .await
-            .ok()
-            .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(departed(n, u).await, 0, "re-assign clears it");
-        let mut tx = db.pool.begin().await.unwrap();
-        apply_set_inbounds(
+        crate::plans::apply_set_user_plan(
             &mut tx,
             &crate::audit::Actor::test(),
-            n,
-            &json!([{"tag": "other", "protocol": "trojan"}]),
+            u,
+            &crate::plans::SetUserPlanReq {
+                plan_id: plan,
+                term: crate::plans::Term {
+                    kind: crate::billing::catalog::PeriodKind::Onetime,
+                    days: None,
+                },
+            },
         )
         .await
         .ok()
         .unwrap();
         tx.commit().await.unwrap();
-        assert_eq!(departed(n, u).await, 1, "pruned to nothing = departed");
+        assert_eq!(departed(u).await, 0, "granted again clears it");
+        let mut tx = db.pool.begin().await.unwrap();
+        apply_set_inbound(
+            &mut tx,
+            &crate::audit::Actor::test(),
+            n,
+            Some(&json!({"protocol": "dokodemo-door", "port": 1})),
+        )
+        .await
+        .ok()
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(departed(u).await, 1, "nothing issuable = departed");
         db.drop().await;
     }
 
-    /// A node being deleted stays disabled: other node mutations are 409;
-    /// the per-node rate override is validated.
+    /// A node being deleted stays disabled: other node and entrance
+    /// mutations are 409; the per-node rate override is validated.
     #[tokio::test]
     async fn deleting_node_refuses_mutations_and_rate_override_validated() {
         let Some(db) = TestDb::new().await else {
             return;
         };
-        let (n, u) = db.member().await;
+        let n = db.node().await;
+        let e = db.direct(n).await;
         let mut tx = db.pool.begin().await.unwrap();
         let bad = apply_update_node(
             &mut tx,
@@ -4605,24 +4190,27 @@ mod tests {
         assert_eq!(err_status(r), StatusCode::CONFLICT);
         tx.rollback().await.unwrap();
         let mut tx = db.pool.begin().await.unwrap();
-        let r = apply_set_inbounds(
+        let r = apply_set_inbound(
             &mut tx,
             &crate::audit::Actor::test(),
             n,
-            &json!([{"tag": "x", "protocol": "vless"}]),
+            Some(&json!({"protocol": "vless"})),
         )
         .await;
         assert_eq!(err_status(r), StatusCode::CONFLICT);
         tx.rollback().await.unwrap();
         let mut tx = db.pool.begin().await.unwrap();
-        let req = AssignReq {
-            inbound_tag: "in-vless".into(),
-            protocol: "vless".into(),
-        };
-        assert_eq!(
-            err_status(apply_assign(&mut tx, &crate::audit::Actor::test(), u, n, &req).await),
-            StatusCode::CONFLICT
-        );
+        let r = crate::entrances::apply_update(
+            &mut tx,
+            &crate::audit::Actor::test(),
+            e,
+            &crate::entrances::EntranceReq {
+                enabled: Some(Some(false)),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(err_status(r), StatusCode::CONFLICT);
         tx.rollback().await.unwrap();
         let (enabled, rate): (bool, Option<i64>) = sqlx::query_as(
             "SELECT enabled, traffic_max_rate_bytes_per_sec FROM nodes WHERE id = $1",
@@ -4646,66 +4234,58 @@ mod tests {
 
     #[test]
     fn fakedns_inbounds_rejected() {
-        let one = |inb: serde_json::Value| validate_inbounds(&json!([inb]));
         for bad in [
-            json!({"tag": "a", "protocol": "vless",
+            json!({"protocol": "vless",
                 "sniffing": {"enabled": true, "destOverride": ["http", "fakedns+others"]}}),
-            json!({"tag": "a", "protocol": "vless", "sniffing": {"destOverride": ["FakeDNS"]}}),
-            json!({"tag": "a", "protocol": "vless", "sniffing": {"destOverride": "http, fakedns"}}),
-            json!({"tag": "a", "protocol": "vless", "Sniffing": {"DESTOVERRIDE": ["fakedns"]}}),
+            json!({"protocol": "vless", "sniffing": {"destOverride": ["FakeDNS"]}}),
+            json!({"protocol": "vless", "sniffing": {"destOverride": "http, fakedns"}}),
+            json!({"protocol": "vless", "Sniffing": {"DESTOVERRIDE": ["fakedns"]}}),
             // Go's json folds U+017F onto 's', xray lowercases U+212A to 'k'.
-            json!({"tag": "a", "protocol": "vless", "\u{17f}niffing": {"de\u{17f}tOverride": ["fa\u{212a}edns"]}}),
+            json!({"protocol": "vless", "\u{17f}niffing": {"de\u{17f}tOverride": ["fa\u{212a}edns"]}}),
             // Duplicate keys by case: whichever Go picks must be safe.
-            json!({"tag": "a", "protocol": "vless", "sniffing": {"destOverride": ["http"]},
+            json!({"protocol": "vless", "sniffing": {"destOverride": ["http"]},
                 "SNIFFING": {"destOverride": ["fakedns"]}}),
-            json!({"tag": "a", "protocol": "fakedns"}),
+            json!({"protocol": "fakedns"}),
         ] {
-            assert!(one(bad.clone()).is_err(), "{bad}");
+            assert!(validate_inbound(&bad).is_err(), "{bad}");
         }
         for ok in [
-            json!({"tag": "a", "protocol": "vless",
+            json!({"protocol": "vless",
                 "sniffing": {"enabled": true, "destOverride": ["http", "tls"]}}),
-            json!({"tag": "fakedns-in", "protocol": "vless"}),
-            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "ws",
+            json!({"protocol": "vless", "streamSettings": {"network": "ws",
                 "wsSettings": {"path": "/fakedns"}, "tlsSettings": {"serverName": "fakedns.example"}}}),
-            json!({"tag": "a", "protocol": "vless", "settings": {"fakedns": true},
+            json!({"protocol": "vless", "settings": {"fakedns": true},
                 "sniffing": {"destOverride": ["fakednsx", "notfakedns"]}}),
         ] {
-            assert!(one(ok.clone()).is_ok(), "{ok}");
+            assert!(validate_inbound(&ok).is_ok(), "{ok}");
         }
     }
 
     /// R26: the gRPC transport is accepted again (the agent pins a grpc-go
-    /// past GO-2026-6443); W8: stored inbounds that the protocol matrix
-    /// would now refuse are surfaced as NodeView warnings.
+    /// past GO-2026-6443); W8: a stored inbound that the protocol matrix
+    /// would now refuse is surfaced as a NodeView warning.
     #[test]
     fn grpc_transport_accepted_and_stored_problems_warned() {
-        let one = |inb: serde_json::Value| validate_inbounds(&json!([inb]));
         for ok in [
-            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "grpc",
+            json!({"protocol": "vless", "streamSettings": {"network": "grpc",
                 "grpcSettings": {"serviceName": "svc"}}}),
-            json!({"tag": "a", "protocol": "trojan", "streamSettings": {"network": "grpc", "security": "tls"}}),
-            json!({"tag": "a", "protocol": "vless", "streamSettings": {"network": "grpc", "security": "reality"}}),
+            json!({"protocol": "trojan", "streamSettings": {"network": "grpc", "security": "tls"}}),
+            json!({"protocol": "vless", "streamSettings": {"network": "grpc", "security": "reality"}}),
         ] {
-            assert!(one(ok.clone()).is_ok(), "{ok}");
+            assert!(validate_inbound(&ok).is_ok(), "{ok}");
         }
-        let e = one(
-            json!({"tag": "a", "protocol": "vless", "settings": {"flow": "xtls-rprx-vision"},
+        let e = validate_inbound(
+            &json!({"protocol": "vless", "settings": {"flow": "xtls-rprx-vision"},
             "streamSettings": {"network": "grpc", "security": "tls"}}),
         )
         .expect_err("vision over grpc");
-        assert!(e.message().contains("inbound \"a\"") && e.message().contains("xtls-rprx-vision"));
-        let stored = json!([
-            {"tag": "ok", "protocol": "vless", "port": 443},
-            {"tag": "old-kcp", "protocol": "vless", "port": 444, "streamSettings": {"network": "kcp"}},
-            {"tag": "dup", "protocol": "vmess", "port": 443},
-        ]);
-        let w = inbound_warnings(&stored);
-        assert_eq!(w.len(), 2, "{w:?}");
-        assert!(w[0].contains("old-kcp") && w[0].contains("kcp"));
-        assert!(w[1].contains("port 443"));
-        assert!(inbound_warnings(&json!([{"tag": "a"}])).is_empty());
-        assert!(inbound_warnings(&json!({"not": "an array"})).is_empty());
+        assert!(e.message().contains("xtls-rprx-vision"), "{}", e.message());
+        let w = inbound_warning(
+            &json!({"protocol": "vless", "port": 444, "streamSettings": {"network": "kcp"}}),
+        )
+        .unwrap();
+        assert!(w.contains("kcp"), "{w}");
+        assert!(inbound_warning(&json!({"protocol": "vless", "port": 443})).is_none());
     }
 
     // ----- S4-2: session revocation and the last-admin guard ----------
@@ -5447,13 +5027,7 @@ mod tests {
         apply_begin_delete_node(&mut tx, &actor, n).await.unwrap();
         tx.commit().await.unwrap();
         let mut tx = db.pool.begin().await.unwrap();
-        let r = apply_set_inbounds(
-            &mut tx,
-            &actor,
-            n,
-            &json!([{"tag": "x", "protocol": "vless"}]),
-        )
-        .await;
+        let r = apply_set_inbound(&mut tx, &actor, n, Some(&json!({"protocol": "vless"}))).await;
         assert_eq!(err_status(r), StatusCode::CONFLICT);
         drop(tx);
         // Committed: who, from where, what, before/after.
@@ -5524,29 +5098,19 @@ mod tests {
             crate::sub::hash_token(&created.sub_token),
         ];
         let n = db.node().await;
+        grant(&db, &[n], &[u]).await;
         let mut tx = db.pool.begin().await.unwrap();
-        apply_set_inbounds(
+        apply_set_inbound(
             &mut tx,
             &Actor::of(&admin),
             n,
-            &json!([{"tag": "in-vless", "protocol": "vless", "port": 443,
+            Some(&json!({"protocol": "vless", "port": 443,
                 "streamSettings": {"network": "tcp", "security": "reality",
-                    "realitySettings": {"privateKey": "REALITY-PRIVATE-KEY", "shortIds": ["5eed"]}}}]),
+                    "realitySettings": {"privateKey": "REALITY-PRIVATE-KEY", "shortIds": ["5eed"]}}})),
         )
         .await
         .unwrap();
-        let account = apply_assign(
-            &mut tx,
-            &Actor::of(&admin),
-            u,
-            n,
-            &AssignReq {
-                inbound_tag: "in-vless".into(),
-                protocol: "vless".into(),
-            },
-        )
-        .await
-        .unwrap();
+        let (_, account) = account_of(&db, n, u).await.unwrap();
         secrets.push(account["id"].as_str().unwrap().to_string());
         secrets.push("REALITY-PRIVATE-KEY".into());
         apply_update_user(
@@ -5597,8 +5161,8 @@ mod tests {
         }
         for want in [
             "user.create",
-            "node.set_inbounds",
-            "node.assign",
+            "node.set_inbound",
+            "user.plan.set",
             "user.update",
             "user.sub_token.rotate",
         ] {
@@ -5680,18 +5244,16 @@ mod tests {
             .iter()
             .find(|x| x["id"] == n1.to_string())
             .unwrap();
-        for absent in [
-            "xray_inbounds",
-            "connect_overrides",
-            "lease_remaining_seconds",
-            "group_ids",
-        ] {
+        for absent in ["inbound", "lease_remaining_seconds"] {
             assert!(row.get(absent).is_none(), "{absent}");
         }
         assert_eq!(row["latency"]["delay_ms"], 87);
         assert_eq!(row["alerts_firing"], 0);
         assert_eq!(row["needs_certificate"], false);
-        assert_eq!(row["traffic_rate"], 1.0);
+        // W28-a: the built-in direct entrance, multiplier 1.
+        assert_eq!(row["entrances"].as_array().map(Vec::len), Some(1));
+        assert_eq!(row["entrances"][0]["kind"], "direct");
+        assert_eq!(row["entrances"][0]["rate"], 1.0);
         assert_eq!(
             row["heartbeat"],
             json!({"cpu_percent": 12.5, "mem_used_bytes": 100, "mem_total_bytes": 400,
@@ -5742,14 +5304,15 @@ mod tests {
         // The full list (default) and one node keep every field.
         let full = c.get("/test/api/v1/nodes").await;
         assert!(full.headers.contains_key(header::ETAG));
-        assert!(full.json()[0].get("xray_inbounds").is_some());
+        assert!(full.json()[0].get("inbound").is_some());
         assert!(full.body.len() > r.body.len());
         let one = c.get(&format!("/test/api/v1/nodes/{n1}")).await;
         assert_eq!(one.status, StatusCode::OK);
         let one = one.json();
         assert_eq!(one["heartbeat"]["metrics"]["xray_version"], "26.1");
         assert_eq!(one["latency"].as_array().unwrap().len(), 3);
-        assert!(one.get("xray_inbounds").is_some());
+        assert_eq!(one["inbound"]["protocol"], "vless");
+        assert_eq!(one["entrances"][0]["group_ids"], json!([]));
         assert_eq!(
             c.get(&format!("/test/api/v1/nodes/{}", Uuid::new_v4()))
                 .await

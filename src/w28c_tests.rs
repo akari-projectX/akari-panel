@@ -21,12 +21,12 @@ async fn setup() -> Option<(TestDb, AppState, Uuid, Client)> {
 }
 
 /// A plan (quota 1000 bytes, monthly reset) granting a group that holds
-/// `node`.
-async fn plan(c: &Client, name: &str, node: Uuid) -> Uuid {
+/// `entrance` (W28-a: groups hold entrances).
+async fn plan(c: &Client, name: &str, entrance: Uuid) -> Uuid {
     let g = c
         .post(
             "/test/api/v1/node-groups",
-            json!({ "name": format!("g-{name}"), "node_ids": [node] }),
+            json!({ "name": format!("g-{name}"), "entrance_ids": [entrance] }),
         )
         .await;
     assert_eq!(g.status, StatusCode::CREATED, "{:?}", g.json());
@@ -61,7 +61,7 @@ async fn create_with_plan_and_subscription_view() {
         return;
     };
     let node = db.node().await;
-    let p = plan(&c, "gold", node).await;
+    let p = plan(&c, "gold", db.direct(node).await).await;
     // The old direct fields are gone.
     for body in [
         json!({ "email": "xx1@w28c.test", "password": "password-123", "traffic_limit_bytes": 5 }),
@@ -122,7 +122,7 @@ async fn create_with_plan_and_subscription_view() {
     assert!(v["sub_token"].is_string());
     assert_eq!(audits(&db, "user.create").await, 1);
     assert_eq!(audits(&db, "user.plan.set").await, 1);
-    let nodes: i64 = sqlx::query_scalar("SELECT count(*) FROM node_users WHERE user_id = $1")
+    let nodes: i64 = sqlx::query_scalar("SELECT count(*) FROM entrance_users WHERE user_id = $1")
         .bind(u)
         .fetch_one(&db.pool)
         .await
@@ -195,7 +195,7 @@ async fn renew_extend_and_one_time_rules() {
         return;
     };
     let node = db.node().await;
-    let p = plan(&c, "silver", node).await;
+    let p = plan(&c, "silver", db.direct(node).await).await;
     let u = db.user().await;
     let url = format!("/test/api/v1/users/{u}/plan");
     // Without a plan: 409; unknown user: 404.
@@ -312,7 +312,7 @@ async fn reset_traffic_is_confirmed_and_reenables_quota() {
         return;
     };
     let node = db.node().await;
-    let p = plan(&c, "bronze", node).await;
+    let p = plan(&c, "bronze", db.direct(node).await).await;
     let u = db.user().await;
     let url = format!("/test/api/v1/users/{u}/plan/reset-traffic");
     let r = c.post(&url, json!({ "confirm": true })).await;
@@ -380,7 +380,7 @@ async fn ban_revokes_and_confines_to_the_portal() {
         return;
     };
     let node = db.node().await;
-    let p = plan(&c, "ban-plan", node).await;
+    let p = plan(&c, "ban-plan", db.direct(node).await).await;
     let r = c
         .post(
             "/test/api/v1/users",

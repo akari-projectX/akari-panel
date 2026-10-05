@@ -546,6 +546,7 @@ struct Link {
     origin: String,
     pin: Option<String>,
     expires_at: DateTime<Utc>,
+    /// What the agent will run (the node's inbound, as an array).
     inbounds: serde_json::Value,
     /// R22: endpoint fixed when the link was issued (NULL for links issued
     /// before 0060: the current node endpoint).
@@ -585,14 +586,14 @@ async fn live_link(state: &AppState, ip: Option<IpAddr>, token: &str) -> Option<
         Option<String>,
         DateTime<Utc>,
         String,
-        serde_json::Value,
+        Option<serde_json::Value>,
         Option<String>,
         Option<String>,
         Option<String>,
     );
     let row: Option<Row> = match sqlx::query_as(
         "SELECT e.node_id, e.token_hash, e.install_origin, e.install_pin, e.expires_at, \
-                n.name, n.xray_inbounds, e.panel_addr, e.server_name, n.tls_domain \
+                n.name, n.inbound, e.panel_addr, e.server_name, n.tls_domain \
          FROM node_enrollments e JOIN nodes n ON n.id = e.node_id \
          WHERE e.token_hash = $1 AND e.used_at IS NULL AND e.expires_at > now() \
            AND e.install_origin IS NOT NULL AND n.deleting_at IS NULL",
@@ -632,7 +633,7 @@ async fn live_link(state: &AppState, ip: Option<IpAddr>, token: &str) -> Option<
         origin,
         pin,
         expires_at,
-        inbounds,
+        inbounds: crate::api::inbounds_of(inbounds.as_ref()),
         panel_addr,
         server_name,
         tls_domain,

@@ -10,8 +10,8 @@ import {
   patch,
   post,
   put,
+  directEntrance,
   type CheckDestView,
-  type GeneratedAccount,
   type Inbound,
   type InboundSpec,
   type InstallView,
@@ -19,14 +19,13 @@ import {
   type NodeUpdateStatus,
   type NodeSummary,
   type NodeView,
-  type RenderedInbounds,
+  type RenderedInbound,
   type TemplateCatalog,
 } from "../lib/api";
 import {
   enumValues,
   fieldDefault,
   networkOptionLabel,
-  protocolL4,
   protocolOptionLabel,
   templateRequiresTls,
   transportFields,
@@ -40,14 +39,7 @@ import { fmtDate, fmtDateTime, fmtDuration } from "../lib/datetime";
 import { useAdminConfirm as useConfirm } from "../admin-confirm";
 import { RowMenu } from "../components/row-menu";
 import { navigate, usePath } from "../lib/router";
-import {
-  NodeOpsCard,
-  NodeOpsFields,
-  changedFromDefaults,
-  emptyOps,
-  opsToBody,
-  type NodeOpsValue,
-} from "./admin-node-form";
+import { NodeOpsCard, NodeOpsFields, createBody, emptyOps, opsToBody, type NodeOpsValue } from "./admin-node-form";
 import { NodeAlertRulesCard } from "./admin-alerts";
 import { NodeDetail, NodeLiveCells, NodeLiveHeads } from "./admin-node-status";
 import { NodeCertStatus, TlsDomainField } from "./admin-node-cert";
@@ -275,7 +267,9 @@ export function AdminNodes() {
                       <span className="whitespace-nowrap">{n.display_name ?? n.name}</span>
                       {n.display_name && <span className="block text-xs text-muted-foreground">{n.name}</span>}
                       <span className="mt-0.5 flex flex-wrap gap-1">
-                        {n.traffic_rate !== 1 && <Badge variant="outline">{n.traffic_rate}x</Badge>}
+                        {(directEntrance(n)?.rate ?? 1) !== 1 && (
+                          <Badge variant="outline">{directEntrance(n)?.rate}x</Badge>
+                        )}
                         {!n.visible && <Badge variant="secondary">已隐藏</Badge>}
                         {n.tags.map((t) => (
                           <Badge key={t} variant="secondary">
@@ -290,7 +284,7 @@ export function AdminNodes() {
                     <NodeLiveCells n={n} />
                     <TableCell className="whitespace-nowrap text-muted-foreground">
                       {n.region ?? "—"}
-                      <span className="block text-xs">{n.server_addr ?? "未设置地址"}</span>
+                      <span className="block text-xs">{directEntrance(n)?.connect_host ?? "未设置地址"}</span>
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-muted-foreground">
                       {n.agent_version ?? "—"}
@@ -458,22 +452,8 @@ const TEMPLATE_LABELS: Record<TemplateKind, string> = {
   hysteria2: "Hysteria 2（QUIC/UDP，需节点证书）",
 };
 
-// W26: the manifest protocol each template is (L4, choices); the template
-// rows below are per-template UI overrides, the free "transport" row is
-// generated from the manifest (admin-protocol-form.ts).
-const TEMPLATE_PROTOCOL: Record<TemplateKind, string> = {
-  vless_reality: "vless",
-  vless_reality_xhttp: "vless",
-  vless_tls_vision: "vless",
-  vless_ws_tls: "vless",
-  vmess_ws: "vmess",
-  vmess_tcp: "vmess",
-  trojan_tls: "trojan",
-  transport: "vless",
-  shadowsocks_2022: "ss2022",
-  hysteria2: "hysteria2",
-};
-
+// W26: the template rows below are per-template UI overrides, the free
+// "transport" row is generated from the manifest (admin-protocol-form.ts).
 // Form row keys of the manifest's transport fields.
 const FIELD_KEYS: Record<string, "path" | "host" | "mode" | "serviceName"> = {
   path: "path",
@@ -503,7 +483,6 @@ interface SpecRow {
   key: number;
   template: TemplateKind;
   port: string;
-  tag: string;
   dest: string;
   customDest: string;
   serverName: string;
@@ -528,7 +507,6 @@ function newRow(template: TemplateKind = "vless_reality", port = "443"): SpecRow
     key: rowSeq,
     template,
     port,
-    tag: "",
     dest: "",
     customDest: "",
     serverName: "",
@@ -546,28 +524,15 @@ function newRow(template: TemplateKind = "vless_reality", port = "443"): SpecRow
   };
 }
 
-// Which L4 a template listens on (manifest: Hysteria 2 is UDP only,
-// Shadowsocks both).
-function rowL4(t: TemplateKind): ("tcp" | "udp")[] {
-  return protocolL4(TEMPLATE_PROTOCOL[t]);
-}
-
 // Form rows → API specs; an error string for the first invalid row.
 // nodeDomain (W10): the node's TLS domain — TLS rows without their own
 // domain use it (the panel fills it in).
 export function toSpecs(rows: SpecRow[], nodeDomain = ""): InboundSpec[] | string {
   const hasNodeDomain = nodeDomain.trim() !== "";
   const out: InboundSpec[] = [];
-  const ports = new Set<string>();
-  for (const [i, r] of rows.entries()) {
-    const n = i + 1;
+  for (const r of rows) {
     const port = Number(r.port);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) return `第 ${n} 个入站：端口须为 1–65535`;
-    for (const l4 of rowL4(r.template)) {
-      if (ports.has(`${port}/${l4}`)) return `第 ${n} 个入站：端口 ${port} 重复`;
-    }
-    for (const l4 of rowL4(r.template)) ports.add(`${port}/${l4}`);
-    const tag = r.tag.trim() || undefined;
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return "入站：端口须为 1–65535";
     const domain = r.domain.trim();
     const reality = () => {
       const dest = r.dest === "custom" ? r.customDest.trim() : r.dest;
@@ -582,13 +547,12 @@ export function toSpecs(rows: SpecRow[], nodeDomain = ""): InboundSpec[] | strin
       r.dest === "custom" &&
       !r.customDest.trim()
     )
-      return `第 ${n} 个入站：请填写自定义目标站点`;
+      return `入站：请填写自定义目标站点`;
     switch (r.template) {
       case "vless_reality":
         out.push({
           template: "vless_reality",
           port,
-          tag,
           ...reality(),
           vision: r.vision === false ? false : undefined,
         });
@@ -597,7 +561,6 @@ export function toSpecs(rows: SpecRow[], nodeDomain = ""): InboundSpec[] | strin
         out.push({
           template: "vless_reality_xhttp",
           port,
-          tag,
           ...reality(),
           path: r.path.trim() || undefined,
           mode: r.mode && r.mode !== "auto" ? r.mode : undefined,
@@ -607,24 +570,22 @@ export function toSpecs(rows: SpecRow[], nodeDomain = ""): InboundSpec[] | strin
       case "trojan_tls":
       case "vless_tls_vision":
       case "hysteria2": {
-        if (!domain && !hasNodeDomain) return `第 ${n} 个入站：请填写证书域名（或填写节点域名）`;
+        if (!domain && !hasNodeDomain) return `入站：请填写证书域名（或填写节点域名）`;
         if (r.template === "vless_ws_tls")
           out.push({
             template: "vless_ws_tls",
             port,
-            tag,
             domain: domain || undefined,
             path: r.path.trim() || undefined,
           });
-        else out.push({ template: r.template, port, tag, domain: domain || undefined });
+        else out.push({ template: r.template, port, domain: domain || undefined });
         break;
       }
       case "vmess_ws": {
-        if (r.tls && !domain && !hasNodeDomain) return `第 ${n} 个入站：启用 TLS 时请填写证书域名（或填写节点域名）`;
+        if (r.tls && !domain && !hasNodeDomain) return `入站：启用 TLS 时请填写证书域名（或填写节点域名）`;
         out.push({
           template: "vmess_ws",
           port,
-          tag,
           path: r.path.trim() || undefined,
           tls_domain: r.tls ? domain || undefined : undefined,
           tls: r.tls && !domain ? true : undefined,
@@ -632,14 +593,14 @@ export function toSpecs(rows: SpecRow[], nodeDomain = ""): InboundSpec[] | strin
         break;
       }
       case "vmess_tcp":
-        out.push({ template: "vmess_tcp", port, tag });
+        out.push({ template: "vmess_tcp", port });
         break;
       case "transport": {
         const protocol = r.protocol ?? "vless";
         const network = r.network ?? "ws";
         const tls = r.tls || templateRequiresTls(protocol, network);
         if (tls && !domain && !hasNodeDomain)
-          return `第 ${n} 个入站：Trojan 与 gRPC 必须启用 TLS，请填写证书域名（或填写节点域名）`;
+          return `入站：Trojan 与 gRPC 必须启用 TLS，请填写证书域名（或填写节点域名）`;
         // The transport's manifest fields: set values only (enum fields
         // only when they differ from the default).
         const fields: Record<string, string | undefined> = {};
@@ -650,7 +611,6 @@ export function toSpecs(rows: SpecRow[], nodeDomain = ""): InboundSpec[] | strin
         out.push({
           template: "transport",
           port,
-          tag,
           protocol: protocol as "vless" | "vmess" | "trojan",
           network: network as "ws" | "httpupgrade" | "xhttp" | "grpc",
           path: fields.path,
@@ -663,7 +623,7 @@ export function toSpecs(rows: SpecRow[], nodeDomain = ""): InboundSpec[] | strin
         break;
       }
       case "shadowsocks_2022":
-        out.push({ template: "shadowsocks_2022", port, tag, method: r.method || undefined });
+        out.push({ template: "shadowsocks_2022", port, method: r.method || undefined });
         break;
     }
   }
@@ -672,8 +632,8 @@ export function toSpecs(rows: SpecRow[], nodeDomain = ""): InboundSpec[] | strin
 
 const CERT_FILE = "/run/credentials/akari-agent.service/tls_fullchain.pem";
 
-export function needsCertificate(inbounds: Inbound[]): boolean {
-  return inbounds.some((i) => JSON.stringify(i).includes(CERT_FILE));
+export function needsCertificate(inbound: Inbound | null): boolean {
+  return inbound !== null && JSON.stringify(inbound).includes(CERT_FILE);
 }
 
 function TemplateRows({
@@ -710,11 +670,11 @@ function TemplateRows({
 
   return (
     <div className="space-y-3">
-      {rows.map((r, i) => (
+      {rows.map((r) => (
         <div key={r.key} className="space-y-3 rounded-lg border border-border p-3">
           <div className="flex flex-wrap items-end gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor={`tpl-${r.key}`}>入站 {i + 1} 协议</Label>
+              <Label htmlFor={`tpl-${r.key}`}>协议</Label>
               <select
                 id={`tpl-${r.key}`}
                 className={selectCls}
@@ -738,26 +698,6 @@ function TemplateRows({
                 onChange={(e) => update(r.key, { port: e.target.value })}
               />
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={`tag-${r.key}`}>标签（可选）</Label>
-              <Input
-                id={`tag-${r.key}`}
-                className="w-40"
-                value={r.tag}
-                placeholder="自动生成"
-                onChange={(e) => update(r.key, { tag: e.target.value })}
-              />
-            </div>
-            {rows.length > 1 && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => setRows(rows.filter((x) => x.key !== r.key))}
-              >
-                移除
-              </Button>
-            )}
           </div>
           {(r.template === "vless_reality" || r.template === "vless_reality_xhttp") && (
             <div className="flex flex-wrap items-end gap-3">
@@ -957,9 +897,6 @@ function TemplateRows({
           )}
         </div>
       ))}
-      <Button type="button" variant="outline" size="sm" onClick={() => setRows([...rows, newRow("vless_reality", "")])}>
-        添加入站
-      </Button>
     </div>
   );
 }
@@ -1106,17 +1043,16 @@ function NodeWizard({
     const body: Record<string, unknown> = {
       name: name.trim(),
       install: { origin: location.origin },
-      ...changedFromDefaults(opsBody),
+      ...createBody(opsBody, addr),
     };
     if (region.trim()) body.region = region.trim();
-    if (addr.trim()) body.server_addr = addr.trim();
     if (tlsDomain.trim()) body.tls_domain = tlsDomain.trim();
     let needsCert = false;
     if (raw !== null) {
       try {
-        const parsed = JSON.parse(raw) as Inbound[];
-        body.inbounds = parsed;
-        needsCert = Array.isArray(parsed) && needsCertificate(parsed);
+        const parsed = JSON.parse(raw) as Inbound;
+        body.inbound = parsed;
+        needsCert = needsCertificate(parsed);
       } catch {
         setError("入站 JSON 格式错误");
         return;
@@ -1127,7 +1063,7 @@ function NodeWizard({
         setError(specs);
         return;
       }
-      body.templates = specs;
+      body.template = specs[0];
       // With a node domain the agent obtains the certificate itself.
       needsCert = specs.some(specNeedsCertificate) && !tlsDomain.trim();
     }
@@ -1147,15 +1083,15 @@ function NodeWizard({
     setError(null);
     const specs = toSpecs(rows, tlsDomain);
     if (typeof specs === "string") {
-      setRaw("[]");
+      setRaw("{}");
       return;
     }
     try {
-      const r = await post<RenderedInbounds>("/inbound-templates/render", {
-        templates: specs,
+      const r = await post<RenderedInbound>("/inbound-templates/render", {
+        template: specs[0],
         tls_domain: tlsDomain.trim() || undefined,
       });
-      setRaw(JSON.stringify(r.inbounds, null, 2));
+      setRaw(JSON.stringify(r.inbound, null, 2));
     } catch (err) {
       setError(msg(err, "生成 JSON 失败"));
     }
@@ -1196,7 +1132,7 @@ function NodeWizard({
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="nn-addr">公网地址（IP 或域名）</Label>
+              <Label htmlFor="nn-addr">连接地址（IP 或域名）</Label>
               <Input
                 id="nn-addr"
                 className="w-64"
@@ -1207,7 +1143,7 @@ function NodeWizard({
             </div>
           </div>
           <NodeOpsFields value={ops} onChange={setOps} idPrefix="nn-ops" />
-          <TlsDomainField id="nn-tls" value={tlsDomain} onChange={setTlsDomain} serverAddr={addr} />
+          <TlsDomainField id="nn-tls" value={tlsDomain} onChange={setTlsDomain} connectHost={addr} />
           {raw === null ? (
             <>
               <TemplateRows rows={rows} setRows={setRows} catalog={catalog.data} nodeDomain={tlsDomain} />
@@ -1217,7 +1153,7 @@ function NodeWizard({
             </>
           ) : (
             <div className="space-y-2">
-              <Label htmlFor="nn-raw">Xray 入站 JSON（数组）</Label>
+              <Label htmlFor="nn-raw">Xray 入站 JSON（对象）</Label>
               <textarea
                 id="nn-raw"
                 className="h-64 w-full rounded-lg border border-border bg-card p-3 font-mono text-xs"
@@ -1410,23 +1346,15 @@ function NodeEditor({ node }: { node: NodeView }) {
 
   // Basics (own error/state: F4).
   const [name, setName] = useState(node.name);
-  const [serverAddr, setServerAddr] = useState(node.server_addr ?? "");
   const [region, setRegion] = useState(node.region ?? "");
   const [tlsDomain, setTlsDomain] = useState(node.tls_domain ?? "");
   const [basicsMsg, setBasicsMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
-  // Inbounds: the pending list (starts as the stored one).
-  const [pending, setPending] = useState<Inbound[]>(() => node.xray_inbounds);
-  const [adding, setAdding] = useState<SpecRow[] | null>(null);
+  // D2: the node's one inbound (starts as the stored one).
+  const [pending, setPending] = useState<Inbound | null>(() => node.inbound);
+  const [replacing, setReplacing] = useState<SpecRow[] | null>(null);
   const [raw, setRaw] = useState<string | null>(null);
   const [inboundMsg, setInboundMsg] = useState<{ ok: boolean; text: string } | null>(null);
-
-  // Manual assignment.
-  const [userId, setUserId] = useState("");
-  const [inboundTag, setInboundTag] = useState(node.xray_inbounds[0]?.tag ?? "");
-  const [protocol, setProtocol] = useState("vless");
-  const [account, setAccount] = useState<GeneratedAccount | null>(null);
-  const [assignError, setAssignError] = useState<string | null>(null);
 
   async function saveBasics(e: React.FormEvent) {
     e.preventDefault();
@@ -1444,7 +1372,6 @@ function NodeEditor({ node }: { node: NodeView }) {
     try {
       await patch(`/nodes/${node.id}`, {
         name: name.trim(),
-        server_addr: serverAddr.trim() || null,
         region: region.trim() || null,
         tls_domain: tlsDomain.trim() || null,
       });
@@ -1455,59 +1382,53 @@ function NodeEditor({ node }: { node: NodeView }) {
     }
   }
 
-  async function addFromTemplates() {
-    if (!adding) return;
+  async function replaceFromTemplate() {
+    if (!replacing) return;
     setInboundMsg(null);
-    const specs = toSpecs(adding, node.tls_domain ?? "");
+    const specs = toSpecs(replacing, node.tls_domain ?? "");
     if (typeof specs === "string") {
       setInboundMsg({ ok: false, text: specs });
       return;
     }
-    const taken = pending
-      .map((i) => (typeof i.port === "number" ? i.port : Number(i.port)))
-      .filter((p) => Number.isInteger(p));
     try {
-      const r = await post<RenderedInbounds>("/inbound-templates/render", {
-        templates: specs,
-        taken_ports: taken,
+      const r = await post<RenderedInbound>("/inbound-templates/render", {
+        template: specs[0],
         tls_domain: node.tls_domain ?? undefined,
       });
-      setPending([...pending, ...r.inbounds]);
-      setAdding(null);
+      setPending(r.inbound);
+      setReplacing(null);
     } catch (err) {
       setInboundMsg({ ok: false, text: msg(err, "生成失败") });
     }
   }
 
-  async function saveInbounds() {
+  async function saveInbound() {
     setInboundMsg(null);
-    let list = pending;
+    let inbound = pending;
     if (raw !== null) {
       try {
-        list = JSON.parse(raw) as Inbound[];
+        inbound = JSON.parse(raw) as Inbound | null;
       } catch {
         setInboundMsg({ ok: false, text: "入站 JSON 格式错误" });
         return;
       }
     }
-    const before = new Set(node.xray_inbounds.map((i) => i.tag));
-    const removed = [...before].filter((t) => !list.some((i) => i.tag === t));
     if (
       !(await confirm({
         title: "保存入站？",
         message:
-          removed.length > 0
-            ? `将移除 ${removed.join("、")}，这些入站上的用户凭据会被删除；节点会重建配置并断开现有连接。`
-            : "节点会重建配置并断开现有连接。",
+          inbound === null
+            ? "将移除节点的入站，所有用户凭据会被删除；节点会重建配置并断开现有连接。"
+            : "节点会重建配置并断开现有连接；协议变化时用户需要更新订阅。",
         confirmLabel: "保存并下发",
-        destructive: removed.length > 0,
+        destructive: inbound === null,
       }))
     ) {
       return;
     }
     try {
-      await put(`/nodes/${node.id}/inbounds`, { inbounds: list });
-      setPending(list);
+      await put(`/nodes/${node.id}/inbound`, { inbound });
+      setPending(inbound);
       setRaw(null);
       setInboundMsg({ ok: true, text: "已下发" });
       await queryClient.invalidateQueries({ queryKey: ["nodes"] });
@@ -1516,44 +1437,7 @@ function NodeEditor({ node }: { node: NodeView }) {
     }
   }
 
-  async function assign(e: React.FormEvent) {
-    e.preventDefault();
-    setAssignError(null);
-    try {
-      const acc = await post<GeneratedAccount>(`/users/${userId.trim()}/nodes/${node.id}`, {
-        inbound_tag: inboundTag,
-        protocol,
-      });
-      setAccount(acc);
-    } catch (err) {
-      setAssignError(msg(err, "分配失败"));
-    }
-  }
-
-  async function unassign() {
-    setAssignError(null);
-    setAccount(null);
-    if (!userId.trim()) {
-      setAssignError("请填写用户 ID");
-      return;
-    }
-    if (
-      !(await confirm({
-        title: "把该用户从此节点移除？",
-        message: "其在此节点上的连接会被断开。",
-        confirmLabel: "移除",
-        destructive: true,
-      }))
-    )
-      return;
-    try {
-      await del(`/users/${userId.trim()}/nodes/${node.id}`);
-    } catch (err) {
-      setAssignError(msg(err, "移除失败"));
-    }
-  }
-
-  const dirty = raw !== null || JSON.stringify(pending) !== JSON.stringify(node.xray_inbounds);
+  const dirty = raw !== null || JSON.stringify(pending) !== JSON.stringify(node.inbound);
 
   return (
     <Card>
@@ -1595,16 +1479,6 @@ function NodeEditor({ node }: { node: NodeView }) {
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="saddr">公网地址</Label>
-            <Input
-              id="saddr"
-              className="w-64"
-              value={serverAddr}
-              onChange={(e) => setServerAddr(e.target.value)}
-              placeholder="node.example.com"
-            />
-          </div>
-          <div className="space-y-1.5">
             <Label htmlFor="region">地区（用户可见）</Label>
             <Input
               id="region"
@@ -1619,7 +1493,7 @@ function NodeEditor({ node }: { node: NodeView }) {
             value={tlsDomain}
             onChange={setTlsDomain}
             nodeId={node.id}
-            serverAddr={serverAddr}
+            connectHost={directEntrance(node)?.connect_host ?? undefined}
           />
           <Button variant="outline" type="submit">
             保存
@@ -1635,54 +1509,33 @@ function NodeEditor({ node }: { node: NodeView }) {
         </form>
 
         <div className="space-y-3">
-          <p className="text-sm font-medium">入站</p>
+          <p className="text-sm font-medium">入站（每个节点一个）</p>
           {raw === null ? (
             <>
-              {pending.length === 0 ? (
+              {pending === null ? (
                 <p className="text-sm text-muted-foreground">没有入站。</p>
               ) : (
-                <Table label="入站列表">
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>标签</TableHead>
-                      <TableHead>协议</TableHead>
-                      <TableHead>端口</TableHead>
-                      <TableHead className="text-right">操作</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {pending.map((i) => (
-                      <TableRow key={i.tag}>
-                        <TableCell className="font-mono text-xs">{i.tag}</TableCell>
-                        <TableCell>{describeInbound(i)}</TableCell>
-                        <TableCell>{String(i.port ?? "—")}</TableCell>
-                        <TableCell className="text-right">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setPending(pending.filter((x) => x.tag !== i.tag))}
-                          >
-                            移除
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                <div className="flex flex-wrap items-center gap-3 text-sm">
+                  <span>{describeInbound(pending)}</span>
+                  <span className="text-muted-foreground">端口 {String(pending.port ?? "—")}</span>
+                  <Button variant="ghost" size="sm" onClick={() => setPending(null)}>
+                    移除
+                  </Button>
+                </div>
               )}
-              {adding ? (
+              {replacing ? (
                 <div className="space-y-2">
                   <TemplateRows
-                    rows={adding}
-                    setRows={setAdding}
+                    rows={replacing}
+                    setRows={setReplacing}
                     catalog={catalog.data}
                     nodeDomain={node.tls_domain ?? ""}
                   />
                   <div className="flex gap-2">
-                    <Button type="button" size="sm" onClick={addFromTemplates}>
-                      加入列表
+                    <Button type="button" size="sm" onClick={replaceFromTemplate}>
+                      使用此入站
                     </Button>
-                    <Button type="button" variant="outline" size="sm" onClick={() => setAdding(null)}>
+                    <Button type="button" variant="outline" size="sm" onClick={() => setReplacing(null)}>
                       取消
                     </Button>
                   </div>
@@ -1693,9 +1546,9 @@ function NodeEditor({ node }: { node: NodeView }) {
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => setAdding([newRow("vless_reality", "")])}
+                    onClick={() => setReplacing([newRow("vless_reality", "")])}
                   >
-                    从模板添加入站
+                    {pending === null ? "从模板设置入站" : "从模板替换入站"}
                   </Button>
                   <Button
                     type="button"
@@ -1710,7 +1563,7 @@ function NodeEditor({ node }: { node: NodeView }) {
             </>
           ) : (
             <div className="space-y-2">
-              <Label htmlFor="inbounds">Xray 入站 JSON（数组）</Label>
+              <Label htmlFor="inbounds">Xray 入站 JSON（对象）</Label>
               <textarea
                 id="inbounds"
                 className="h-64 w-full rounded-lg border border-border bg-card p-3 font-mono text-xs"
@@ -1724,7 +1577,7 @@ function NodeEditor({ node }: { node: NodeView }) {
             </div>
           )}
           <div className="flex items-center gap-3">
-            <Button type="button" disabled={!dirty} onClick={saveInbounds}>
+            <Button type="button" disabled={!dirty} onClick={saveInbound}>
               保存并下发入站
             </Button>
             {inboundMsg && (
@@ -1737,62 +1590,9 @@ function NodeEditor({ node }: { node: NodeView }) {
             )}
           </div>
         </div>
-
-        <div className="rounded-lg border border-border p-4">
-          <p className="mb-1 text-sm font-medium">手动分配（覆盖套餐）</p>
-          <p className="mb-3 text-xs text-muted-foreground">
-            通常用户的节点权限来自套餐（套餐 →
-            节点组）。手动分配会在此节点上固定该用户的权限，与套餐无关；移除后交还给套餐。
-          </p>
-          <form className="flex flex-wrap items-end gap-3" onSubmit={assign}>
-            <div className="space-y-1.5">
-              <Label htmlFor="uid">用户 ID</Label>
-              <Input
-                id="uid"
-                className="w-72 font-mono text-xs"
-                value={userId}
-                onChange={(e) => setUserId(e.target.value)}
-                placeholder="用户 UUID"
-                required
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="itag">入站</Label>
-              <select
-                id="itag"
-                className={selectCls}
-                value={inboundTag}
-                onChange={(e) => setInboundTag(e.target.value)}
-              >
-                {node.xray_inbounds.map((i) => (
-                  <option key={i.tag} value={i.tag}>
-                    {i.tag}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="proto">协议</Label>
-              <select id="proto" className={selectCls} value={protocol} onChange={(e) => setProtocol(e.target.value)}>
-                <option value="vless">vless</option>
-                <option value="vmess">vmess</option>
-                <option value="trojan">trojan</option>
-              </select>
-            </div>
-            <Button type="submit">生成并分配</Button>
-            <Button type="button" variant="outline" onClick={unassign}>
-              从节点移除该用户
-            </Button>
-          </form>
-          {assignError && (
-            <p role="alert" className="mt-2 text-sm text-destructive">
-              {assignError}
-            </p>
-          )}
-          {account && (
-            <pre className="mt-3 overflow-auto rounded-lg bg-muted p-3 text-xs">{JSON.stringify(account, null, 2)}</pre>
-          )}
-        </div>
+        <p className="text-xs text-muted-foreground">
+          用户能否使用此节点只由套餐决定（套餐 → 节点组 → 入口）；直连入口的节点组在下方设置。
+        </p>
       </CardContent>
     </Card>
   );

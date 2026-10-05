@@ -92,7 +92,7 @@ async fn plan_with(db: &TestDb, node: Uuid) -> Uuid {
         &plans::CreateGroupReq {
             name: format!("g-{}", Uuid::new_v4().simple()),
             description: None,
-            node_ids: Some(vec![node]),
+            entrance_ids: Some(vec![db.direct(node).await]),
         },
     )
     .await
@@ -539,16 +539,32 @@ async fn bumps_only_real_access_changes() {
             out
         }
     };
-    // Both hold a plan without nodes or expiry (D12: traffic resets are
-    // per subscription); assigning it changes nothing the nodes serve.
-    let empty = {
+    // Each holds a plan granting its own node's direct entrance, without
+    // expiry (D3: access only comes from a plan; D12: traffic resets are
+    // per subscription); assigning it again changes nothing the nodes
+    // serve.
+    let mut access = Vec::new();
+    for (k, n) in [n1, n2].into_iter().enumerate() {
         let mut tx = db.pool.begin().await.unwrap();
+        let g = plans::apply_create_group(
+            &mut tx,
+            &Actor::test(),
+            &plans::CreateGroupReq {
+                name: format!("g{k}"),
+                description: None,
+                entrance_ids: Some(vec![db.direct(n).await]),
+            },
+        )
+        .await
+        .ok()
+        .unwrap();
         let p = plans::apply_create_plan(
             &mut tx,
             &Actor::test(),
             &plans::CreatePlanReq {
-                name: "empty".into(),
+                name: format!("access{k}"),
                 period: "monthly".into(),
+                group_ids: Some(vec![g]),
                 ..Default::default()
             },
         )
@@ -556,21 +572,27 @@ async fn bumps_only_real_access_changes() {
         .ok()
         .unwrap();
         tx.commit().await.unwrap();
-        p
+        access.push(p);
+    }
+    let set_access = || async {
+        for (u, p) in [(u1, access[0]), (u2, access[1])] {
+            create(
+                &db,
+                ids(&[u]),
+                Action::SetPlan {
+                    plan_id: p,
+                    period: serde_json::from_value(json!("onetime")).unwrap(),
+                    days: None,
+                },
+            )
+            .await
+            .unwrap();
+            finish(&st).await;
+        }
     };
+    set_access().await;
     let before = v(&db).await;
-    create(
-        &db,
-        ids(&[u1, u2]),
-        Action::SetPlan {
-            plan_id: empty,
-            period: serde_json::from_value(json!("onetime")).unwrap(),
-            days: None,
-        },
-    )
-    .await
-    .unwrap();
-    finish(&st).await;
+    set_access().await;
     assert_eq!(v(&db).await, before);
     // Unbanning users that are not banned: skipped, nothing bumped.
     create(&db, ids(&[u1, u2]), Action::Unban {}).await.unwrap();
@@ -763,10 +785,7 @@ async fn plan_actions() {
     .await
     .unwrap();
     finish(&st).await;
-    assert_eq!(
-        scalar(&db, "SELECT count(*) FROM node_users WHERE NOT manual").await,
-        4
-    );
+    assert_eq!(scalar(&db, "SELECT count(*) FROM entrance_users").await, 4);
     assert!(scalar(&db, "SELECT user_version FROM nodes").await > before);
     assert_eq!(audits(&db, "user.plan.set").await, 4);
     create(&db, ids(&us[..2]), Action::CancelPlan {})
@@ -777,9 +796,9 @@ async fn plan_actions() {
         .await
         .unwrap();
     finish(&st).await;
-    assert_eq!(scalar(&db, "SELECT count(*) FROM node_users").await, 1);
+    assert_eq!(scalar(&db, "SELECT count(*) FROM entrance_users").await, 1);
     assert_eq!(
-        scalar(&db, "SELECT count(*) FROM node_users_departed").await,
+        scalar(&db, "SELECT count(*) FROM entrance_users_departed").await,
         3,
         "tail billing kept"
     );
@@ -914,12 +933,12 @@ async fn concurrent_batch_vs_user_edits() {
     );
     assert_eq!(scalar(&db, "SELECT count(*) FROM balance_ledger").await, 80);
     // At most one active plan per user (partial unique index) and the
-    // node rows match the active plans.
+    // credentials match the active plans.
     assert_eq!(
         scalar(
             &db,
-            "SELECT count(*) FROM node_users nu WHERE NOT nu.manual AND NOT EXISTS \
-             (SELECT 1 FROM user_plans up WHERE up.user_id = nu.user_id AND up.status = 'active')"
+            "SELECT count(*) FROM entrance_users eu WHERE NOT EXISTS \
+             (SELECT 1 FROM user_plans up WHERE up.user_id = eu.user_id AND up.status = 'active')"
         )
         .await,
         0

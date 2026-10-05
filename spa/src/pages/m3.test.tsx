@@ -17,7 +17,7 @@ const group = (over: Partial<GroupView>): GroupView => ({
   id: "g1",
   name: "asia",
   description: "",
-  node_ids: [],
+  entrance_ids: [],
   plan_ids: [],
   created_at: "2026-10-01T00:00:00Z",
   updated_at: "2026-10-01T00:00:00Z",
@@ -46,7 +46,9 @@ const plan = (over: Partial<PlanView>): PlanView => ({
   ...over,
 });
 
-const node = (id: string, name: string) => ({ id, name }) as unknown as NodeView;
+// A node with its direct entrance "e-<id>".
+const node = (id: string, name: string) =>
+  ({ id, name, entrances: [{ id: `e-${id}`, kind: "direct", name: "直连" }] }) as unknown as NodeView;
 
 describe("plan form helpers", () => {
   it("builds periods and quotas", () => {
@@ -100,7 +102,7 @@ describe("plan form helpers", () => {
 describe("AdminPlans", () => {
   it("lists plans and groups, and creates a plan with its prices in one request", async () => {
     const calls = fakeApi({
-      "GET /node-groups": [group({ node_ids: ["n1"], plan_ids: ["p1"] }), group({ id: "g2", name: "eu" })],
+      "GET /node-groups": [group({ entrance_ids: ["e-n1"], plan_ids: ["p1"] }), group({ id: "g2", name: "eu" })],
       "GET /plans": [plan({})],
       "GET /nodes": [node("n1", "jp-1"), node("n2", "de-1")],
       "POST /plans": () => ({ status: 201, body: plan({ id: "p2", name: "pro" }) }),
@@ -108,7 +110,7 @@ describe("AdminPlans", () => {
     renderAdmin(<AdminPlans />);
     expect(await screen.findByRole("cell", { name: "basic" })).toBeTruthy();
     expect(screen.getByText("100.0 GiB")).toBeTruthy();
-    expect(screen.getByText("jp-1")).toBeTruthy();
+    expect(screen.getByText("jp-1 · 直连")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "新建套餐" }));
     const form = await screen.findByRole("form", { name: "新建套餐" });
@@ -216,19 +218,19 @@ describe("AdminPlans", () => {
     await waitFor(() => expect(calls.find((c) => c.method === "PATCH")?.body).toEqual({ enabled: false }));
   });
 
-  it("replaces a group's membership with PATCH node_ids", async () => {
+  it("replaces a group's membership with PATCH entrance_ids", async () => {
     const calls = fakeApi({
-      "GET /node-groups": [group({ node_ids: ["n1"] })],
+      "GET /node-groups": [group({ entrance_ids: ["e-n1"] })],
       "GET /plans": [],
       "GET /nodes": [node("n1", "jp-1"), node("n2", "de-1")],
-      "PATCH /node-groups/g1": group({ node_ids: ["n1", "n2"] }),
+      "PATCH /node-groups/g1": group({ entrance_ids: ["e-n1", "e-n2"] }),
     });
     renderAdmin(<AdminPlans />);
     fireEvent.click(await screen.findByRole("button", { name: "成员" }));
-    fireEvent.click(screen.getByLabelText("de-1"));
+    fireEvent.click(screen.getByLabelText("de-1 · 直连"));
     fireEvent.click(screen.getByRole("button", { name: "保存成员" }));
     await waitFor(() => expect(calls.some((c) => c.method === "PATCH")).toBe(true));
-    expect(calls.find((c) => c.method === "PATCH")?.body).toEqual({ node_ids: ["n1", "n2"] });
+    expect(calls.find((c) => c.method === "PATCH")?.body).toEqual({ entrance_ids: ["e-n1", "e-n2"] });
   });
 
   it("shows the server's refusal", async () => {

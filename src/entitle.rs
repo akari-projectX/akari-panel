@@ -1,44 +1,59 @@
-//! M3 entitlement: which (user, node) pairs a plan grants, and the
-//! deterministic reconcile that makes `node_users` match it.
+//! Entitlement (M3; W28-a: per entrance, PLAN-v0.4 D3 and section 5): which
+//! (user, entrance) pairs a plan grants, and the deterministic reconcile
+//! that makes `entrance_users` match it.
 //!
 //! Model:
-//! - A user's plan-granted nodes = the members of the groups of their
-//!   ACTIVE plan (`user_plans.status = 'active'`), minus nodes being
-//!   deleted. Role, enabled and expiry do not matter here: what a node
-//!   actually serves is still filtered by `enforce::SERVED`, so an
-//!   admin/disabled/expired user keeps rows (exactly like pre-M3 manual
-//!   assignments) and regains service without new credentials.
-//! - A plan-granted pair has a `node_users` row with `manual = false` and
-//!   one credential per eligible inbound of the node (protocol vless, vmess
-//!   or trojan). Existing credentials whose (tag, protocol) still exists are
-//!   kept byte for byte (clients keep working across plan changes); missing
-//!   ones are generated; others dropped. A pair with no eligible inbound
-//!   has no row.
-//! - Manual overrides (`manual = true`: the admin assignment endpoint and
-//!   every pre-M3 row) are never touched by the reconcile. Precedence: a
-//!   manual row wins over the plan for its (user, node) pair; unassigning a
-//!   manual row hands the pair back to the plan (see api::apply_unassign).
+//! - A user's entrances = the members (`entrance_group_members`) of the
+//!   groups of their ACTIVE plan (`user_plans.status = 'active'`), on nodes
+//!   not being deleted. Plans are the only source (D3: no manual
+//!   assignment). Role, enabled, expiry and the entrance's own `enabled`
+//!   do not matter here: what an agent actually runs is still filtered at
+//!   read time (`enforce::SERVED`, enabled entrances of enabled nodes), so
+//!   a user or entrance switched off and on again keeps its credentials.
+//! - A granted pair has an `entrance_users` row with one account for the
+//!   node's inbound (protocols::issuable: vless/vmess/trojan/multi-user
+//!   SS2022/Hysteria 2). Every entrance has its own account (section 5:
+//!   independent credentials per inbound). An existing account whose
+//!   protocol still matches the inbound is kept (refit to it, see
+//!   protocols::refit_account), so clients keep working across plan and
+//!   inbound changes; otherwise a new one is generated. A node without an
+//!   issuable inbound has no rows.
+//! - A pair no longer granted loses its row and gets an
+//!   `entrance_users_departed` row in the same statement batch, so the
+//!   final counters the agent reports after the removal are still billed.
 //!
-//! Concurrency: every writer of node_groups, node_group_members, plans,
-//! plan_groups and user_plans — and every caller of `apply_reconcile` —
-//! takes `lock()` (a transaction-scoped advisory lock) FIRST, before any
-//! row lock. Entitlement changes are therefore serialized, and the
-//! reconcile, reading after the lock, sees every committed change (READ
-//! COMMITTED: fresh snapshot per statement). Without it, "add node N to
-//! group G" and "give user U a plan with G" could each miss the other
-//! (write skew). Row locks then follow the global order: nodes (one
-//! statement, ORDER BY id) -> users -> node_users.
+//! Concurrency: every writer of node_groups, entrance_group_members, plans,
+//! plan_groups, user_plans and of a node's inbound or entrances — and every
+//! caller of `apply_reconcile` — takes `lock()` (a transaction-scoped
+//! advisory lock) FIRST, before any row lock. Entitlement changes are
+//! therefore serialized, and the reconcile, reading after the lock, sees
+//! every committed change (READ COMMITTED: fresh snapshot per statement).
+//! Without it, "add entrance E to group G" and "give user U a plan with G"
+//! could each miss the other (write skew). Row locks then follow the
+//! global order: nodes (one statement, ORDER BY id) -> users ->
+//! entrance_users.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::Value;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::api::Credential;
-
 /// Protocols the panel can generate accounts for (protocols.rs).
 pub const ELIGIBLE_PROTOCOLS: [&str; 5] = crate::protocols::MANAGED;
+
+/// SQL: the nodes on which the users in `$1` (uuid[]) hold credentials.
+pub const NODES_OF_USERS: &str = "SELECT e.node_id FROM entrance_users eu \
+     JOIN entrances e ON e.id = eu.entrance_id WHERE eu.user_id = ANY($1)";
+
+/// SQL: (entrance_id, user_id) pairs granted by active plans, restricted to
+/// the entrances in `$1` (uuid[]) and, unless `$2` is NULL, the users in
+/// `$2` (uuid[]).
+const GRANTED_PAIRS: &str = "SELECT DISTINCT m.entrance_id, up.user_id FROM user_plans up \
+     JOIN plan_groups pg ON pg.plan_id = up.plan_id \
+     JOIN entrance_group_members m ON m.group_id = pg.group_id \
+     WHERE up.status = 'active' AND m.entrance_id = ANY($1) \
+     AND ($2::uuid[] IS NULL OR up.user_id = ANY($2))";
 
 /// Take the entitlement lock (held until the transaction ends). Must be the
 /// first lock of the transaction.
@@ -52,17 +67,14 @@ pub async fn lock(conn: &mut PgConnection) -> sqlx::Result<()> {
 /// What a reconcile looks at.
 #[derive(Clone, Copy, Debug)]
 pub enum Scope<'a> {
-    /// Every pair of these users (all nodes). Also locks every node the
-    /// users have any row on (manual included), so a caller may update the
-    /// users' rows and bump their nodes afterwards in lock order.
+    /// Every pair of these users (all entrances). Also locks every node the
+    /// users hold credentials on, so a caller may update the users' rows
+    /// and bump their nodes afterwards in lock order.
     Users(&'a [Uuid]),
-    /// Every pair on these nodes (all users).
+    /// Every pair on the entrances of these nodes (all users).
     Nodes(&'a [Uuid]),
-    /// Only these users on these nodes.
-    Pairs {
-        users: &'a [Uuid],
-        nodes: &'a [Uuid],
-    },
+    /// Every pair on these entrances (all users).
+    Entrances(&'a [Uuid]),
 }
 
 /// What a reconcile changed.
@@ -74,7 +86,7 @@ pub struct Outcome {
     pub issued: usize,
     /// Pairs whose row was removed (departed rows written).
     pub revoked: usize,
-    /// Pairs whose credentials changed.
+    /// Pairs whose account changed.
     pub updated: usize,
 }
 
@@ -98,67 +110,25 @@ impl Outcome {
     }
 }
 
-/// SQL: the users a node is plan-granted to (bind $1 = node id).
-const GRANTED_USERS_OF_NODE: &str = "SELECT up.user_id FROM user_plans up \
-     JOIN plan_groups pg ON pg.plan_id = up.plan_id \
-     JOIN node_group_members m ON m.group_id = pg.group_id \
-     WHERE up.status = 'active' AND m.node_id = $1";
-
-/// (tag, protocol) of a node's inbounds the panel issues credentials for,
-/// in inbound order.
-pub fn eligible_inbounds(inbounds: &Value) -> Vec<(String, String)> {
-    inbounds
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|i| {
-                    let tag = i.get("tag")?.as_str()?;
-                    let proto = i.get("protocol")?.as_str()?;
-                    (!tag.is_empty()
-                        && ELIGIBLE_PROTOCOLS.contains(&proto)
-                        && crate::protocols::issuable(i))
-                    .then(|| (tag.to_string(), proto.to_string()))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+/// The wire protocol the panel issues accounts for on `inbound`, if any.
+pub fn eligible_protocol(inbound: Option<&Value>) -> Option<&str> {
+    let inbound = inbound?;
+    let proto = inbound.get("protocol")?.as_str()?;
+    (ELIGIBLE_PROTOCOLS.contains(&proto) && crate::protocols::issuable(inbound)).then_some(proto)
 }
 
-/// The credentials a plan-granted pair must have: existing ones for still
-/// eligible (tag, protocol) kept in their order (accounts refit to their
-/// inbound, see protocols::refit_account), then new ones for the rest in
-/// inbound order. `None` = unchanged.
-pub(crate) fn merge_credentials(
-    existing: &[Credential],
-    eligible: &[(String, String)],
-    inbounds: &Value,
-) -> Result<Option<Vec<Credential>>, crate::auth::ApiError> {
-    let want: HashSet<(&str, &str)> = eligible
-        .iter()
-        .map(|(t, p)| (t.as_str(), p.as_str()))
-        .collect();
-    let mut seen = HashSet::new();
-    let kept: Vec<Credential> = existing
-        .iter()
-        .filter(|c| {
-            want.contains(&(c.inbound_tag.as_str(), c.protocol.as_str()))
-                && seen.insert(c.inbound_tag.clone())
-        })
-        .cloned()
-        .collect();
-    let mut out = crate::api::refit_credentials(kept, inbounds);
-    for (tag, proto) in eligible {
-        if !seen.contains(tag) {
-            out.push(Credential {
-                inbound_tag: tag.clone(),
-                protocol: proto.clone(),
-                account: crate::api::generate_account(
-                    crate::api::inbound_by_tag(inbounds, tag).unwrap_or(&Value::Null),
-                )?,
-            });
-        }
+/// The account a granted pair must have on `inbound` (whose eligible
+/// protocol is `proto`), given its current one: kept (refit to the inbound)
+/// when the protocol still matches, else a new one. `None` = unchanged.
+pub(crate) fn fit_account(
+    current: Option<(&str, &Value)>,
+    proto: &str,
+    inbound: &Value,
+) -> Result<Option<Value>, crate::auth::ApiError> {
+    match current {
+        Some((p, account)) if p == proto => Ok(crate::protocols::refit_account(inbound, account)),
+        _ => crate::api::generate_account(inbound).map(Some),
     }
-    Ok((out != existing).then_some(out))
 }
 
 async fn lock_nodes(conn: &mut PgConnection, ids: &[Uuid]) -> sqlx::Result<Vec<Uuid>> {
@@ -171,15 +141,22 @@ async fn lock_nodes(conn: &mut PgConnection, ids: &[Uuid]) -> sqlx::Result<Vec<U
 /// The nodes a scope may touch, as of now.
 async fn scope_nodes(conn: &mut PgConnection, scope: Scope<'_>) -> sqlx::Result<Vec<Uuid>> {
     match scope {
-        Scope::Nodes(n) | Scope::Pairs { nodes: n, .. } => Ok(n.to_vec()),
+        Scope::Nodes(n) => Ok(n.to_vec()),
+        Scope::Entrances(e) => {
+            sqlx::query_scalar("SELECT DISTINCT node_id FROM entrances WHERE id = ANY($1)")
+                .bind(e)
+                .fetch_all(conn)
+                .await
+        }
         Scope::Users(u) => {
-            sqlx::query_scalar(
-                "SELECT m.node_id FROM user_plans up \
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT e.node_id FROM user_plans up \
                  JOIN plan_groups pg ON pg.plan_id = up.plan_id \
-                 JOIN node_group_members m ON m.group_id = pg.group_id \
+                 JOIN entrance_group_members m ON m.group_id = pg.group_id \
+                 JOIN entrances e ON e.id = m.entrance_id \
                  WHERE up.status = 'active' AND up.user_id = ANY($1) \
-                 UNION SELECT node_id FROM node_users WHERE user_id = ANY($1)",
-            )
+                 UNION {NODES_OF_USERS}"
+            )))
             .bind(u)
             .fetch_all(conn)
             .await
@@ -187,21 +164,25 @@ async fn scope_nodes(conn: &mut PgConnection, scope: Scope<'_>) -> sqlx::Result<
     }
 }
 
-/// Make `node_users` match the plan entitlement for `scope`, in the
-/// caller's transaction (which must hold `lock()`): issue rows/credentials
-/// for granted pairs, revoke plan rows no longer granted (writing
-/// `node_users_departed`, so final counters are still billed), and bump
-/// user_version on exactly the nodes whose rows changed. Manual rows are
-/// left alone. Idempotent: a second run changes nothing.
+/// Make `entrance_users` match the plan entitlement for `scope`, in the
+/// caller's transaction (which must hold `lock()`): issue rows for granted
+/// pairs, refit kept accounts, revoke rows no longer granted (writing
+/// `entrance_users_departed`, so final counters are still billed), and bump
+/// user_version on exactly the nodes whose rows changed. Idempotent: a
+/// second run changes nothing.
 pub async fn apply_reconcile(
     conn: &mut PgConnection,
     scope: Scope<'_>,
 ) -> Result<Outcome, crate::auth::ApiError> {
     let users: Option<&[Uuid]> = match scope {
-        Scope::Users(u) | Scope::Pairs { users: u, .. } => Some(u),
-        Scope::Nodes(_) => None,
+        Scope::Users(u) => Some(u),
+        Scope::Nodes(_) | Scope::Entrances(_) => None,
     };
-    if users.is_some_and(<[Uuid]>::is_empty) {
+    let entrances: Option<&[Uuid]> = match scope {
+        Scope::Entrances(e) => Some(e),
+        Scope::Nodes(_) | Scope::Users(_) => None,
+    };
+    if users.is_some_and(<[Uuid]>::is_empty) || entrances.is_some_and(<[Uuid]>::is_empty) {
         return Ok(Outcome::default());
     }
     let nodes = scope_nodes(conn, scope).await?;
@@ -211,19 +192,30 @@ pub async fn apply_reconcile(
     let locked = lock_nodes(conn, &nodes).await?;
     let mut total = Outcome::default();
     for node in locked {
-        total.merge(reconcile_node(conn, node, users).await?);
+        total.merge(reconcile_node(conn, node, users, entrances).await?);
     }
     Ok(total)
 }
 
-/// One locked node.
+/// One row of `entrance_users` as the reconcile reads it.
+#[derive(sqlx::FromRow)]
+struct Row {
+    entrance_id: Uuid,
+    user_id: Uuid,
+    protocol: String,
+    account: Value,
+}
+
+/// One locked node: its entrances (all, or those of `only`), all users or
+/// those of `users`.
 async fn reconcile_node(
     conn: &mut PgConnection,
     node: Uuid,
     users: Option<&[Uuid]>,
+    only: Option<&[Uuid]>,
 ) -> Result<Outcome, crate::auth::ApiError> {
-    let (inbounds, deleting): (Value, bool) =
-        sqlx::query_as("SELECT xray_inbounds, deleting_at IS NOT NULL FROM nodes WHERE id = $1")
+    let (inbound, deleting): (Option<Value>, bool) =
+        sqlx::query_as("SELECT inbound, deleting_at IS NOT NULL FROM nodes WHERE id = $1")
             .bind(node)
             .fetch_one(&mut *conn)
             .await?;
@@ -232,112 +224,134 @@ async fn reconcile_node(
         // phase 2 deletes the node.
         return Ok(Outcome::default());
     }
-    let eligible = eligible_inbounds(&inbounds);
-    // Granted users, row-locked FOR KEY SHARE (users after nodes): a
-    // concurrent user deletion then waits for us instead of failing our
-    // insert's foreign key check.
-    let granted: HashSet<Uuid> = if eligible.is_empty() {
-        HashSet::new()
-    } else {
-        sqlx::query_scalar::<_, Uuid>(sqlx::AssertSqlSafe(format!(
-            "SELECT id FROM users WHERE id IN ({GRANTED_USERS_OF_NODE}) \
-             AND ($2::uuid[] IS NULL OR id = ANY($2)) ORDER BY id FOR KEY SHARE"
-        )))
-        .bind(node)
-        .bind(users)
-        .fetch_all(&mut *conn)
-        .await?
-        .into_iter()
-        .collect()
-    };
-    let rows: Vec<(Uuid, Value, bool)> = sqlx::query_as(
-        "SELECT user_id, credentials, manual FROM node_users WHERE node_id = $1 \
-         AND ($2::uuid[] IS NULL OR user_id = ANY($2)) ORDER BY user_id FOR UPDATE",
+    let entrances: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM entrances WHERE node_id = $1 AND ($2::uuid[] IS NULL OR id = ANY($2)) \
+         ORDER BY id",
     )
     .bind(node)
+    .bind(only)
+    .fetch_all(&mut *conn)
+    .await?;
+    if entrances.is_empty() {
+        return Ok(Outcome::default());
+    }
+    let proto = eligible_protocol(inbound.as_ref());
+    // Granted pairs, the users row-locked FOR KEY SHARE (users after
+    // nodes): a concurrent user deletion then waits for us instead of
+    // failing our insert's foreign key check.
+    let granted: HashSet<(Uuid, Uuid)> = match proto {
+        None => HashSet::new(),
+        Some(_) => {
+            let pairs: Vec<(Uuid, Uuid)> = sqlx::query_as(sqlx::AssertSqlSafe(GRANTED_PAIRS))
+                .bind(&entrances)
+                .bind(users)
+                .fetch_all(&mut *conn)
+                .await?;
+            let mut ids: Vec<Uuid> = pairs.iter().map(|(_, u)| *u).collect();
+            ids.sort();
+            ids.dedup();
+            let live: HashSet<Uuid> = sqlx::query_scalar(
+                "SELECT id FROM users WHERE id = ANY($1) ORDER BY id FOR KEY SHARE",
+            )
+            .bind(&ids)
+            .fetch_all(&mut *conn)
+            .await?
+            .into_iter()
+            .collect();
+            pairs
+                .into_iter()
+                .filter(|(_, u)| live.contains(u))
+                .collect()
+        }
+    };
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT entrance_id, user_id, protocol, account FROM entrance_users \
+         WHERE entrance_id = ANY($1) AND ($2::uuid[] IS NULL OR user_id = ANY($2)) \
+         ORDER BY entrance_id, user_id FOR UPDATE",
+    )
+    .bind(&entrances)
     .bind(users)
     .fetch_all(&mut *conn)
     .await?;
 
-    let mut revoke = Vec::new();
-    let mut update: Vec<(Uuid, Value)> = Vec::new();
-    let mut have = HashSet::new();
-    for (user, raw, manual) in rows {
-        have.insert(user);
-        if manual {
-            continue;
-        }
-        if !granted.contains(&user) {
-            revoke.push(user);
-            continue;
-        }
-        let creds: Vec<Credential> = serde_json::from_value(raw)
-            .map_err(|e| anyhow::anyhow!("corrupt credentials json: {e}"))?;
-        if let Some(new) = merge_credentials(&creds, &eligible, &inbounds)? {
-            update.push((user, serde_json::to_value(&new)?));
+    let mut revoke: Vec<(Uuid, Uuid)> = Vec::new();
+    let mut write: BTreeMap<(Uuid, Uuid), Value> = BTreeMap::new();
+    let mut have: HashMap<(Uuid, Uuid), Row> = HashMap::new();
+    for r in rows {
+        have.insert((r.entrance_id, r.user_id), r);
+    }
+    let mut keys: Vec<&(Uuid, Uuid)> = have.keys().collect();
+    keys.sort();
+    for key in keys {
+        if !granted.contains(key) {
+            revoke.push(*key);
         }
     }
-    let mut issue: Vec<(Uuid, Value)> = Vec::new();
-    let mut new_users: Vec<Uuid> = granted.difference(&have).copied().collect();
-    new_users.sort();
-    for user in new_users {
-        if let Some(new) = merge_credentials(&[], &eligible, &inbounds)? {
-            issue.push((user, serde_json::to_value(&new)?));
+    let mut issued = 0;
+    let mut updated = 0;
+    if let (Some(proto), Some(inbound)) = (proto, inbound.as_ref()) {
+        let mut want: Vec<&(Uuid, Uuid)> = granted.iter().collect();
+        want.sort();
+        for key in want {
+            let current = have.get(key).map(|r| (r.protocol.as_str(), &r.account));
+            if let Some(account) = fit_account(current, proto, inbound)? {
+                if current.is_some() {
+                    updated += 1;
+                } else {
+                    issued += 1;
+                }
+                write.insert(*key, account);
+            }
         }
     }
 
     if !revoke.is_empty() {
+        let (e, u): (Vec<Uuid>, Vec<Uuid>) = revoke.iter().copied().unzip();
         sqlx::query(
-            "DELETE FROM node_users WHERE node_id = $1 AND user_id = ANY($2) AND NOT manual",
+            "DELETE FROM entrance_users eu USING unnest($1::uuid[], $2::uuid[]) AS t(e, u) \
+             WHERE eu.entrance_id = t.e AND eu.user_id = t.u",
         )
-        .bind(node)
-        .bind(&revoke)
+        .bind(&e)
+        .bind(&u)
         .execute(&mut *conn)
         .await?;
         // The users still exist (rows are only revoked for live users;
         // deletion cascades): their final counters stay billable.
-        sqlx::query(
-            "INSERT INTO node_users_departed (node_id, user_id, departed_at) \
-             SELECT $1, u, now() FROM unnest($2::uuid[]) AS u \
-             ON CONFLICT (node_id, user_id) DO UPDATE SET departed_at = now(), billed_bytes = 0",
-        )
-        .bind(node)
-        .bind(&revoke)
-        .execute(&mut *conn)
-        .await?;
+        record_departed(conn, &e, &u).await?;
     }
-    if !update.is_empty() {
-        let (u, c): (Vec<Uuid>, Vec<Value>) = update.iter().cloned().unzip();
+    if !write.is_empty() {
+        let mut e = Vec::with_capacity(write.len());
+        let mut u = Vec::with_capacity(write.len());
+        let mut a = Vec::with_capacity(write.len());
+        for ((entrance, user), account) in &write {
+            e.push(*entrance);
+            u.push(*user);
+            a.push(account.clone());
+        }
+        let proto = proto.unwrap_or_default();
         sqlx::query(
-            "UPDATE node_users nu SET credentials = t.c \
-             FROM unnest($2::uuid[], $3::jsonb[]) AS t(u, c) \
-             WHERE nu.node_id = $1 AND nu.user_id = t.u",
+            "INSERT INTO entrance_users (entrance_id, user_id, protocol, account) \
+             SELECT t.e, t.u, $4, t.a FROM unnest($1::uuid[], $2::uuid[], $3::jsonb[]) AS t(e, u, a) \
+             ON CONFLICT (entrance_id, user_id) DO UPDATE \
+             SET protocol = EXCLUDED.protocol, account = EXCLUDED.account",
         )
-        .bind(node)
+        .bind(&e)
         .bind(&u)
-        .bind(&c)
-        .execute(&mut *conn)
-        .await?;
-    }
-    if !issue.is_empty() {
-        let (u, c): (Vec<Uuid>, Vec<Value>) = issue.iter().cloned().unzip();
-        sqlx::query(
-            "INSERT INTO node_users (node_id, user_id, credentials, manual) \
-             SELECT $1, t.u, t.c, false FROM unnest($2::uuid[], $3::jsonb[]) AS t(u, c)",
-        )
-        .bind(node)
-        .bind(&u)
-        .bind(&c)
+        .bind(&a)
+        .bind(proto)
         .execute(&mut *conn)
         .await?;
         // Granted again: no longer departed pairs.
-        sqlx::query("DELETE FROM node_users_departed WHERE node_id = $1 AND user_id = ANY($2)")
-            .bind(node)
-            .bind(&u)
-            .execute(&mut *conn)
-            .await?;
+        sqlx::query(
+            "DELETE FROM entrance_users_departed d USING unnest($1::uuid[], $2::uuid[]) AS t(e, u) \
+             WHERE d.entrance_id = t.e AND d.user_id = t.u",
+        )
+        .bind(&e)
+        .bind(&u)
+        .execute(&mut *conn)
+        .await?;
     }
-    let changed = !(revoke.is_empty() && update.is_empty() && issue.is_empty());
+    let changed = !(revoke.is_empty() && write.is_empty());
     if changed {
         sqlx::query("UPDATE nodes SET user_version = user_version + 1 WHERE id = $1")
             .bind(node)
@@ -346,63 +360,62 @@ async fn reconcile_node(
     }
     Ok(Outcome {
         bumped: if changed { vec![node] } else { Vec::new() },
-        issued: issue.len(),
+        issued,
         revoked: revoke.len(),
-        updated: update.len(),
+        updated,
     })
 }
 
-/// Is (user, node) plan-granted right now (node not being deleted, with at
-/// least one eligible inbound)?
-pub async fn is_granted(conn: &mut PgConnection, user: Uuid, node: Uuid) -> sqlx::Result<bool> {
-    let row: Option<(Value, bool)> =
-        sqlx::query_as("SELECT xray_inbounds, deleting_at IS NOT NULL FROM nodes WHERE id = $1")
-            .bind(node)
-            .fetch_optional(&mut *conn)
-            .await?;
-    let Some((inbounds, deleting)) = row else {
-        return Ok(false);
-    };
-    if deleting || eligible_inbounds(&inbounds).is_empty() {
-        return Ok(false);
-    }
-    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT EXISTS ({GRANTED_USERS_OF_NODE} AND up.user_id = $2)"
-    )))
-    .bind(node)
-    .bind(user)
-    .fetch_one(conn)
-    .await
+/// The pairs (entrances `e[i]`, users `u[i]`) lost their rows while the
+/// users still exist: their final counters (reported by the agent after the
+/// removal) stay billable for the departed grace (traffic::FLUSH_SQL). Not
+/// used for user deletion (nothing left to bill; the rows cascade away).
+pub(crate) async fn record_departed(
+    conn: &mut PgConnection,
+    e: &[Uuid],
+    u: &[Uuid],
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO entrance_users_departed (entrance_id, user_id, departed_at) \
+         SELECT t.e, t.u, now() FROM unnest($1::uuid[], $2::uuid[]) AS t(e, u) \
+         ON CONFLICT (entrance_id, user_id) DO UPDATE SET departed_at = now(), billed_bytes = 0",
+    )
+    .bind(e)
+    .bind(u)
+    .execute(conn)
+    .await?;
+    Ok(())
 }
 
-/// Nodes the users have rows on (any kind) — for bumps after a change to
-/// what they are served.
+/// Nodes the users hold credentials on — for bumps after a change to what
+/// they are served.
 pub async fn nodes_of_users(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::Result<Vec<Uuid>> {
-    sqlx::query_scalar(
-        "SELECT DISTINCT node_id FROM node_users WHERE user_id = ANY($1) ORDER BY node_id",
-    )
+    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT DISTINCT node_id FROM ({NODES_OF_USERS}) n ORDER BY node_id"
+    )))
     .bind(users)
     .fetch_all(conn)
     .await
 }
 
 /// Debug helper for tests: the pairs a fresh full computation grants
-/// (`user -> nodes`), ignoring manual rows.
+/// (`user -> entrances`).
 #[cfg(test)]
-pub async fn granted_pairs(conn: &mut PgConnection) -> std::collections::HashMap<Uuid, Vec<Uuid>> {
+pub async fn granted_pairs(conn: &mut PgConnection) -> HashMap<Uuid, Vec<Uuid>> {
     let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
-        "SELECT DISTINCT up.user_id, m.node_id FROM user_plans up \
+        "SELECT DISTINCT up.user_id, m.entrance_id FROM user_plans up \
          JOIN plan_groups pg ON pg.plan_id = up.plan_id \
-         JOIN node_group_members m ON m.group_id = pg.group_id \
-         JOIN nodes n ON n.id = m.node_id AND n.deleting_at IS NULL \
+         JOIN entrance_group_members m ON m.group_id = pg.group_id \
+         JOIN entrances e ON e.id = m.entrance_id \
+         JOIN nodes n ON n.id = e.node_id AND n.deleting_at IS NULL \
          WHERE up.status = 'active' ORDER BY 1, 2",
     )
     .fetch_all(conn)
     .await
     .unwrap_or_default();
-    let mut out: std::collections::HashMap<Uuid, Vec<Uuid>> = Default::default();
-    for (u, n) in rows {
-        out.entry(u).or_default().push(n);
+    let mut out: HashMap<Uuid, Vec<Uuid>> = Default::default();
+    for (u, e) in rows {
+        out.entry(u).or_default().push(e);
     }
     out
 }
@@ -412,63 +425,61 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn cred(tag: &str, proto: &str, id: &str) -> Credential {
-        Credential {
-            inbound_tag: tag.into(),
-            protocol: proto.into(),
-            account: json!({ "id": id }),
-        }
-    }
-
     #[test]
-    fn eligible_filters_protocols_and_tags() {
-        let inb = json!([
-            {"tag": "a", "protocol": "vless"},
-            {"tag": "b", "protocol": "shadowsocks"},
-            {"tag": "", "protocol": "vmess"},
-            {"protocol": "trojan"},
-            {"tag": "c", "protocol": "trojan"},
-        ]);
+    fn eligible_protocol_of_inbounds() {
         assert_eq!(
-            eligible_inbounds(&inb),
-            vec![("a".into(), "vless".into()), ("c".into(), "trojan".into())]
+            eligible_protocol(Some(&json!({"protocol": "vless", "port": 1}))),
+            Some("vless")
         );
-        assert!(eligible_inbounds(&json!({})).is_empty());
+        assert_eq!(
+            eligible_protocol(Some(&json!({"protocol": "vmess", "port": 1}))),
+            Some("vmess")
+        );
+        // Not managed / no protocol / no inbound.
+        assert_eq!(
+            eligible_protocol(Some(&json!({"protocol": "dokodemo-door"}))),
+            None
+        );
+        assert_eq!(eligible_protocol(Some(&json!({"port": 1}))), None);
+        assert_eq!(eligible_protocol(None), None);
+        // A hand-written (single-user) shadowsocks inbound gets no users.
+        assert_eq!(
+            eligible_protocol(Some(&json!({"protocol": "shadowsocks", "port": 1,
+                "settings": {"method": "aes-128-gcm", "password": "x"}}))),
+            None
+        );
     }
 
     #[test]
-    fn merge_keeps_existing_and_fills_gaps() {
-        let elig = vec![
-            ("a".to_string(), "vless".to_string()),
-            ("b".to_string(), "vmess".to_string()),
-        ];
-        let inb = json!([{"tag": "a", "protocol": "vless"}, {"tag": "b", "protocol": "vmess"}]);
-        let existing = vec![cred("a", "vless", "keep")];
-        let out = merge_credentials(&existing, &elig, &inb)
+    fn fit_keeps_matching_accounts_and_replaces_the_rest() {
+        let vless = json!({"protocol": "vless", "port": 1});
+        let kept = json!({"id": "keep", "flow": ""});
+        // Same protocol, already fitting: unchanged.
+        assert_eq!(
+            fit_account(Some(("vless", &kept)), "vless", &vless).ok(),
+            Some(None)
+        );
+        // Flow follows the inbound, the id is kept.
+        let vision = json!({"protocol": "vless", "port": 1,
+            "settings": {"flow": "xtls-rprx-vision"}});
+        let refit = fit_account(Some(("vless", &kept)), "vless", &vision)
             .ok()
             .flatten()
             .unwrap_or_default();
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0], existing[0], "kept byte for byte");
-        assert_eq!(out[1].inbound_tag, "b");
-        // Unchanged when complete.
-        assert_eq!(merge_credentials(&out, &elig, &inb).ok(), Some(None));
-        // Re-protocoled or removed inbounds are dropped, duplicates too.
-        let stale = vec![
-            cred("a", "vmess", "x"),
-            cred("b", "vmess", "y"),
-            cred("b", "vmess", "dup"),
-            cred("gone", "vless", "z"),
-        ];
-        let out = merge_credentials(&stale, &elig, &inb)
+        assert_eq!(refit["id"], "keep");
+        assert_eq!(refit["flow"], "xtls-rprx-vision");
+        // Another protocol, or none yet: a new account.
+        let trojan = json!({"protocol": "trojan", "port": 1});
+        let new = fit_account(Some(("vless", &kept)), "trojan", &trojan)
             .ok()
             .flatten()
             .unwrap_or_default();
-        assert_eq!(out[0], cred("b", "vmess", "y"));
-        assert_eq!(out[1].inbound_tag, "a");
-        assert_eq!(out[1].protocol, "vless");
-        assert_eq!(out.len(), 2);
-        // Nothing eligible: empty.
-        assert_eq!(merge_credentials(&[], &[], &json!([])).ok(), Some(None));
+        assert!(new.get("password").is_some());
+        assert!(
+            fit_account(None, "vless", &vless)
+                .ok()
+                .flatten()
+                .is_some_and(|a| a.get("id").is_some())
+        );
     }
 }

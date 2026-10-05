@@ -247,7 +247,7 @@ test("W11 nodes: xboard-style form, live status, detail page, 立即测速", asy
   await expect(page).toHaveURL(`${ADMIN_BASE}/nodes`);
   await page.getByRole("button", { name: "新建节点" }).click();
   await page.getByLabel("名称（内部，唯一）").fill("e2e-w11");
-  await page.getByLabel("公网地址（IP 或域名）").fill("198.51.100.20");
+  await page.getByLabel("连接地址（IP 或域名）").fill("198.51.100.20");
   await page.getByLabel("显示名称（用户可见）").fill("东京 01");
   await page.getByLabel("标签（逗号分隔）").fill("日本, IPLC");
   await page.getByLabel("倍率").fill("0.5");
@@ -296,8 +296,8 @@ test("W26: node template form generated from the protocol manifest", async ({ br
   await expect(page).toHaveURL(`${ADMIN_BASE}/nodes`);
   await page.getByRole("button", { name: "新建节点" }).click();
   await page.getByLabel("名称（内部，唯一）").fill("e2e-w26");
-  await page.getByLabel("公网地址（IP 或域名）").fill("198.51.100.26");
-  await page.getByLabel("入站 1 协议").selectOption("transport");
+  await page.getByLabel("连接地址（IP 或域名）").fill("198.51.100.26");
+  await page.getByLabel("协议", { exact: true }).selectOption("transport");
   await expect(page.getByLabel("代理协议").locator("option")).toHaveText(["VLESS", "VMess", "Trojan（需 TLS）"]);
   await page.getByLabel("代理协议").selectOption("vmess");
   await expect(page.getByLabel("传输方式").locator("option")).toHaveText([
@@ -321,12 +321,12 @@ test("W26: node template form generated from the protocol manifest", async ({ br
   const api = BASE.replace(/\/app$/, "/api/v1");
   const nodes = (await (await page.request.get(`${api}/nodes`)).json()) as {
     name: string;
-    xray_inbounds: {
+    inbound: {
       protocol: string;
       streamSettings?: { network?: string; xhttpSettings?: Record<string, string> };
-    }[];
+    } | null;
   }[];
-  const ib = nodes.find((n) => n.name === "e2e-w26")?.xray_inbounds[0];
+  const ib = nodes.find((n) => n.name === "e2e-w26")?.inbound;
   expect(ib?.protocol).toBe("vmess");
   expect(ib?.streamSettings?.network).toBe("xhttp");
   expect(ib?.streamSettings?.xhttpSettings).toEqual({ path: "/w26", mode: "stream-up" });

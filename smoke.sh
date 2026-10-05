@@ -465,24 +465,56 @@ echo "== unauthorized access =="
 echo "unauthorized: ok"
 
 echo "== configure node + user via API =="
-[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' \
-    -d '{"inbounds":[{"tag":"in-vless","listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp"}}]}')" = "200" ] \
-  || { echo "FAIL: set inbounds failed"; exit 1; }
-[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' \
-    -d '{"inbounds":[{"tag":"in-vless","listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"sniffing":{"enabled":true,"destOverride":["fakedns"]}}]}')" = "400" ] \
+# W28-a (D2): a node has one inbound (the panel names it; PUT .../inbound).
+put_inbound() { code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbound" -H 'Content-Type: application/json' -d "{\"inbound\":$1}"; }
+GOOD_IB='{"listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp"}}'
+[ "$(put_inbound "$GOOD_IB")" = "200" ] || { echo "FAIL: set inbound failed"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(put_inbound '[{"listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp"}}]')" = "400" ] && last_json "d['code']" | matches -x 'inbound.not_object' \
+  || { echo "FAIL: an inbound array (pre-D2 shape) not refused"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' -d '{"inbounds":[]}')" = "404" ] \
+  || { echo "FAIL: the removed multi-inbound endpoint answers"; exit 1; }
+[ "$(put_inbound '{"listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"sniffing":{"enabled":true,"destOverride":["fakedns"]}}')" = "400" ] \
   || { echo "FAIL: fakedns inbound not rejected"; exit 1; }
 # W8: the protocol matrix is validated (Vision only on raw TCP + TLS/REALITY).
 # gRPC is accepted again since R26 (exercised in the W8 section below).
-[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' \
-    -d '{"inbounds":[{"tag":"in-vless","listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":"xtls-rprx-vision"},"streamSettings":{"network":"ws"}}]}')" = "400" ] \
+[ "$(put_inbound '{"listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none","flow":"xtls-rprx-vision"},"streamSettings":{"network":"ws"}}')" = "400" ] \
   || { echo "FAIL: vision over ws not rejected"; exit 1; }
 grep -q 'xtls-rprx-vision needs' /tmp/akari-smoke/last || { echo "FAIL: vision rejection lacks the reason"; exit 1; }
 code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
 grep -q '"warnings":\[\]' /tmp/akari-smoke/last || { echo "FAIL: node view lacks empty warnings"; exit 1; }
 
-[ "$(code -b "$JAR" -X PATCH "$BASE/api/v1/nodes/$NODE_ID" -H 'Content-Type: application/json' \
-    -d '{"server_addr":"node1.example.test"}')" = "200" ] \
-  || { echo "FAIL: set server_addr failed"; exit 1; }
+# W28-a: every node has its built-in direct entrance; clients dial its
+# connect host (PATCH /entrances/{id}).
+[ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID")" = "200" ] || { echo "FAIL: GET node"; exit 1; }
+DIRECT_ID=$(last_json "[e['id'] for e in d['entrances'] if e['kind'] == 'direct'][0]")
+last_json "[(e['kind'], e['name'] == '直连', e['rate_permille'], e['enabled']) for e in d['entrances']]" \
+  | matches -Fx "[('direct', True, 1000, True)]" \
+  || { echo "FAIL: node without exactly its direct entrance"; cat /tmp/akari-smoke/last; exit 1; }
+entrance_patch() { code -b "$JAR" -X PATCH "$BASE/api/v1/entrances/$DIRECT_ID" -H 'Content-Type: application/json' -d "$1"; }
+[ "$(entrance_patch '{"connect_host":"node1.example.test"}')" = "200" ] && last_json "d['connect_host']" | matches -x 'node1.example.test' \
+  || { echo "FAIL: set the direct entrance's connect host"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(entrance_patch '{"connect_host":"bad host!"}')" = "400" ] && last_json "d['code']" | matches -x 'entrance.host_invalid' \
+  || { echo "FAIL: bad connect host accepted"; exit 1; }
+[ "$(code -b "$JAR" -X PATCH "$BASE/api/v1/entrances/00000000-0000-0000-0000-000000000000" -H 'Content-Type: application/json' -d '{"enabled":true}')" = "404" ] \
+  || { echo "FAIL: PATCH of an unknown entrance not 404"; exit 1; }
+
+# W28-a (D3): access only comes from a plan (plan -> node group -> entrance);
+# there is no manual assignment. One access plan grants the direct entrance
+# (its quota = smoke-user's limit); grant USER gives USER that plan.
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/node-groups" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"smoke-access\",\"entrance_ids\":[\"$DIRECT_ID\"]}")" = "201" ] \
+  || { echo "FAIL: create access group"; cat /tmp/akari-smoke/last; exit 1; }
+ACCESS_GROUP=$(last_json "d['id']")
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/plans" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"smoke-access\",\"traffic_quota_bytes\":107374182400,\"period\":\"monthly\",\"group_ids\":[\"$ACCESS_GROUP\"]}")" = "201" ] \
+  || { echo "FAIL: create access plan"; cat /tmp/akari-smoke/last; exit 1; }
+ACCESS_PLAN=$(last_json "d['id']")
+grant() { # user id -> the access plan (200)
+  [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/users/$1/plan" -H 'Content-Type: application/json' \
+      -d "{\"plan_id\":\"$ACCESS_PLAN\",\"period\":\"month\"}")" = "200" ] || { echo "FAIL: grant $1"; cat /tmp/akari-smoke/last; exit 1; }
+}
+# The user's account on the direct entrance (field $2, default id).
+account_of() { psql_q "SELECT account->>'${2:-id}' FROM entrance_users WHERE user_id='$1' AND entrance_id='$DIRECT_ID'"; }
 
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
     -d '{"email":"smoke-user@smoke.test","password":"user-password-123"}')" = "201" ] \
@@ -491,10 +523,11 @@ USER_ID=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))
 SUB_TOKEN=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['sub_token'])")
 
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_ID/nodes/$NODE_ID" -H 'Content-Type: application/json' \
-    -d '{"inbound_tag":"in-vless","protocol":"vless"}')" = "201" ] \
-  || { echo "FAIL: assign account failed"; cat /tmp/akari-smoke/last; exit 1; }
-grep -q '"flow":""' /tmp/akari-smoke/last || { echo "FAIL: generated vless account missing"; cat /tmp/akari-smoke/last; exit 1; }
-VLESS_A=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['account']['id'])")
+    -d '{"inbound_tag":"in-vless","protocol":"vless"}')" = "404" ] \
+  || { echo "FAIL: the removed manual assignment endpoint answers (D3)"; exit 1; }
+grant "$USER_ID"
+[ "$(account_of "$USER_ID" flow)" = "" ] && VLESS_A=$(account_of "$USER_ID") && [ -n "$VLESS_A" ] \
+  || { echo "FAIL: the plan did not generate a vless account"; exit 1; }
 echo "api setup: ok (user $USER_ID on node $NODE_ID)"
 
 echo "== subscription =="
@@ -507,7 +540,7 @@ curl -s --noproxy '*' -A "sing-box/1.12.0" "$SUB" \
 curl -s --noproxy '*' -A "clash-meta/1.19" "$SUB" | matches "^    type: vless" \
   || { echo "FAIL: clash format"; exit 1; }
 INFO=$(curl -s --noproxy '*' -D - -o /dev/null "$SUB" | grep -i "^subscription-userinfo:")
-echo "$INFO" | matches "download=0" && echo "$INFO" | matches "total=0" \
+echo "$INFO" | matches "download=0" && echo "$INFO" | matches "total=107374182400" \
   || { echo "FAIL: subscription-userinfo header: $INFO"; exit 1; }
 SIZE=$(curl -s --noproxy '*' -o /tmp/akari-smoke/subbody "$SUB" && wc -c < /tmp/akari-smoke/subbody)
 [ "$SIZE" -ge 8192 ] || { echo "FAIL: body not padded ($SIZE bytes)"; exit 1; }
@@ -520,8 +553,8 @@ echo "== subscription: REALITY inbound carries a uTLS fingerprint (default + adm
 # Throwaway REALITY inbound + user; the panel only reads publicKey/fingerprint
 # for subscriptions (the keys here are never used by a client).
 RKEY=$(python3 -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip('='))")
-reality_inbounds() { # $1 = extra realitySettings JSON members (leading comma) or empty
-  printf '{"inbounds":[{"tag":"in-vless","listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp"}},{"tag":"in-reality","listen":"127.0.0.1","port":11445,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"dest":"www.apple.com:443","serverNames":["www.apple.com"],"privateKey":"%s","publicKey":"%s","shortIds":["ab12"],"shortId":"ab12"%s}}}]}' "$RKEY" "$RKEY" "$1"
+reality_inbound() { # $1 = extra realitySettings JSON members (leading comma) or empty
+  printf '{"listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"dest":"www.apple.com:443","serverNames":["www.apple.com"],"privateKey":"%s","publicKey":"%s","shortIds":["ab12"],"shortId":"ab12"%s}}}' "$RKEY" "$RKEY" "$1"
 }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
     -d '{"email":"smoke-fp@smoke.test","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create fp user"; cat /tmp/akari-smoke/last; exit 1; }
@@ -536,18 +569,15 @@ check_fp() { # $1 = expected fingerprint
     | python3 -c "import json,sys; d=json.load(sys.stdin); u=[o['tls']['utls'] for o in d['outbounds'] if o.get('tls',{}).get('reality')][0]; assert u=={'enabled':True,'fingerprint':'$1'}, u" \
     || { echo "FAIL: sing-box lacks tls.utls $1"; exit 1; }
 }
-[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' -d "$(reality_inbounds '')")" = "200" ] \
-  || { echo "FAIL: put reality inbound"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$FP_USER/nodes/$NODE_ID" -H 'Content-Type: application/json' \
-    -d '{"inbound_tag":"in-reality","protocol":"vless"}')" = "201" ] || { echo "FAIL: assign reality account"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(put_inbound "$(reality_inbound '')")" = "200" ] || { echo "FAIL: put reality inbound"; cat /tmp/akari-smoke/last; exit 1; }
+grant "$FP_USER"
 check_fp chrome
-[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' -d "$(reality_inbounds ',"fingerprint":"firefox"')")" = "200" ] \
-  || { echo "FAIL: put reality inbound with fingerprint"; exit 1; }
+[ "$(put_inbound "$(reality_inbound ',"fingerprint":"firefox"')")" = "200" ] || { echo "FAIL: put reality inbound with fingerprint"; exit 1; }
 check_fp firefox
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$FP_USER")" = "204" ] || { echo "FAIL: delete fp user"; exit 1; }
-[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' \
-    -d '{"inbounds":[{"tag":"in-vless","listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp"}}]}')" = "200" ] \
-  || { echo "FAIL: restore inbounds"; exit 1; }
+[ "$(put_inbound "$GOOD_IB")" = "200" ] || { echo "FAIL: restore inbound"; exit 1; }
+# Same protocol (vless -> vless): smoke-user keeps its credential.
+[ "$(account_of "$USER_ID")" = "$VLESS_A" ] || { echo "FAIL: an inbound edit of the same protocol reissued the credential"; exit 1; }
 echo "reality fingerprint: ok"
 
 echo "== M1-9 self-service sub token; M1-10 over the limit = the canonical rejection =="
@@ -668,25 +698,25 @@ echo "== PATCH semantics =="
 for f in '{"expires_at": null}' '{"traffic_limit_bytes": 1}'; do
   [ "$(patch_code "$BASE/api/v1/users/$USER_ID" "$f")" = "400" ] || { echo "FAIL: PATCH user $f not 400"; exit 1; }
 done
-[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"server_addr": null}')" = "200" ] || { echo "FAIL: clear server_addr not 200"; exit 1; }
-grep -q '"server_addr":null' /tmp/akari-smoke/last || { echo "FAIL: server_addr not cleared"; exit 1; }
-[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"server_addr": "node1.example.test"}')" = "200" ] || { echo "FAIL: restore server_addr"; exit 1; }
+[ "$(entrance_patch '{}')" = "400" ] || { echo "FAIL: PATCH entrance {} not 400"; exit 1; }
+[ "$(entrance_patch '{"connect_host": null}')" = "200" ] || { echo "FAIL: clear connect_host not 200"; exit 1; }
+grep -q '"connect_host":null' /tmp/akari-smoke/last || { echo "FAIL: connect_host not cleared"; exit 1; }
+[ "$(entrance_patch '{"connect_host": "node1.example.test"}')" = "200" ] || { echo "FAIL: restore connect_host"; exit 1; }
 echo "patch: ok"
 
 echo "== failed apply is recorded (last_error) and cleared =="
-GOOD_INB='{"inbounds":[{"tag":"in-vless","listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp"}}]}'
-BAD_INB='{"inbounds":[{"tag":"in-vless","listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp"}},{"tag":"in-bad","listen":"127.0.0.1","port":11444,"protocol":"no-such-protocol","settings":{}}]}'
+# Valid for the panel (users keep their vless credentials), refused by xray
+# ("unable to listen on domain address").
+BAD_IB='{"listen":"bad-listen.invalid","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp"}}'
 node_field() { # jq-less: print field $1 of node $NODE_ID
   code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
   python3 -c "import json,sys; print(json.dumps([n for n in json.load(open('/tmp/akari-smoke/last')) if n['id']=='$NODE_ID'][0]['$1']))"
 }
-[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' -d "$BAD_INB")" = "200" ] \
-  || { echo "FAIL: put bad inbounds"; exit 1; }
+[ "$(put_inbound "$BAD_IB")" = "200" ] || { echo "FAIL: put bad inbound"; cat /tmp/akari-smoke/last; exit 1; }
 for _ in $(seq 1 10); do [ "$(node_field last_error)" != "null" ] && break; sleep 1; done
 [ "$(node_field last_error)" != "null" ] || { echo "FAIL: last_error not recorded"; exit 1; }
 echo "last_error: $(node_field last_error | cut -c1-100)"
-[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' -d "$GOOD_INB")" = "200" ] \
-  || { echo "FAIL: restore inbounds"; exit 1; }
+[ "$(put_inbound "$GOOD_IB")" = "200" ] || { echo "FAIL: restore inbound"; exit 1; }
 for _ in $(seq 1 10); do [ "$(node_field last_error)" = "null" ] && break; sleep 1; done
 [ "$(node_field last_error)" = "null" ] || { echo "FAIL: last_error not cleared by a good apply"; exit 1; }
 wait_users 1 10 "after restoring inbounds"
@@ -752,10 +782,12 @@ wait_port open 10
 echo "node disable/enable: ok"
 
 echo "== expiry removes the user from the node =="
-# D12: only a plan writes the enforced expiry; this fixture user has a
-# manual assignment and no plan, so the expiry is written directly (what a
-# plan renewal writes: the expiry with a reset marker).
-psql_q "UPDATE users SET expires_at = now() + interval '3 seconds', expiry_enforced = false WHERE id='$USER_ID'" >/dev/null
+[ "$(psql_q "SELECT count(*) FROM user_plans WHERE user_id='$USER_ID' AND status='active'")" = "1" ] || { echo "FAIL: smoke user has no active plan"; exit 1; }
+# Only the plan writes the enforced expiry, and no API sets one seconds
+# away: move the active plan's expiry (and the user's copy, as
+# sync_users_from_plan writes it); the enforce pass then ends the plan.
+psql_q "WITH p AS (UPDATE user_plans SET expires_at = now() + interval '3 seconds' WHERE user_id='$USER_ID' AND status='active' RETURNING expires_at) \
+        UPDATE users SET expires_at = (SELECT expires_at FROM p), expiry_enforced = false WHERE id='$USER_ID'" >/dev/null
 wait_users 0 20 "expiry"
 # R21: an expired user still logs in, with the renewal scope only.
 EJAR="$LOG/expired-cookies"
@@ -767,9 +799,9 @@ EJAR="$LOG/expired-cookies"
 [ "$(code -b "$EJAR" "$BASE/api/v1/me/plan")" = "200" ] || { echo "FAIL: expired user /me/plan"; exit 1; }
 [ "$(code -b "$EJAR" -X POST "$BASE/api/v1/me/sub-token" -H 'Content-Type: application/json' -d '{}')" = "401" ] \
   || { echo "FAIL: expired user regenerated the subscription token"; exit 1; }
-psql_q "UPDATE users SET expires_at = NULL, expiry_enforced = false WHERE id='$USER_ID'" >/dev/null
-psql_q "UPDATE nodes SET user_version = user_version + 1 WHERE id='$NODE_ID'" >/dev/null
-wait_users 1 10 "expiry cleared"
+grant "$USER_ID" # renewed
+wait_users 1 10 "plan renewed"
+VLESS_A=$(account_of "$USER_ID")
 echo "expiry: ok"
 
 echo "== Sprint 3a: user-only change = UserDelta, no rebuild, other users' connections survive =="
@@ -822,9 +854,8 @@ PY
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
     -d '{"email":"smoke-user-b@smoke.test","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create user B"; exit 1; }
 USER_B=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
-[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_B/nodes/$NODE_ID" -H 'Content-Type: application/json' \
-    -d '{"inbound_tag":"in-vless","protocol":"vless"}')" = "201" ] || { echo "FAIL: assign B"; exit 1; }
-VLESS_B=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['account']['id'])")
+grant "$USER_B"
+VLESS_B=$(account_of "$USER_B")
 wait_users 2 10 "user B added"
 grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | matches '"via":"delta"' \
   || { echo "FAIL: adding a user was not a delta"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
@@ -856,14 +887,16 @@ if need_agent "protocol>=4" "W9 Shadowsocks 2022 delta/snapshot"; then
   # tombstone (indices never move), so the panel sends removals and re-adds
   # on a Shadowsocks node as deltas; older agents get a Snapshot (W8 rule).
   SS_PSK=$(python3 -c "import base64,os;print(base64.b64encode(os.urandom(16)).decode())")
-  SS_INB="{\"inbounds\":[{\"tag\":\"in-vless\",\"listen\":\"127.0.0.1\",\"port\":11443,\"protocol\":\"vless\",\"settings\":{\"clients\":[],\"decryption\":\"none\"},\"streamSettings\":{\"network\":\"tcp\"}},{\"tag\":\"in-ss\",\"listen\":\"127.0.0.1\",\"port\":11445,\"protocol\":\"shadowsocks\",\"settings\":{\"method\":\"2022-blake3-aes-128-gcm\",\"password\":\"$SS_PSK\",\"clients\":[],\"network\":\"tcp\"}}]}"
-  [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' -d "$SS_INB")" = "200" ] \
-    || { echo "FAIL: put shadowsocks inbounds"; cat /tmp/akari-smoke/last; exit 1; }
+  # One inbound per node (D2): the node switches to Shadowsocks; smoke-user's
+  # vless credential is reissued as a Shadowsocks one (protocol change).
+  SS_IB="{\"listen\":\"127.0.0.1\",\"port\":11445,\"protocol\":\"shadowsocks\",\"settings\":{\"method\":\"2022-blake3-aes-128-gcm\",\"password\":\"$SS_PSK\",\"clients\":[],\"network\":\"tcp\"}}"
+  [ "$(put_inbound "$SS_IB")" = "200" ] || { echo "FAIL: put shadowsocks inbound"; cat /tmp/akari-smoke/last; exit 1; }
+  [ "$(psql_q "SELECT protocol FROM entrance_users WHERE user_id='$USER_ID'")" = "shadowsocks" ] \
+    || { echo "FAIL: protocol change did not reissue the credential"; exit 1; }
   [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
       -d '{"email":"smoke-user-ss@smoke.test","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create SS user"; exit 1; }
   USER_SS=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
-  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_SS/nodes/$NODE_ID" -H 'Content-Type: application/json' \
-      -d '{"inbound_tag":"in-ss","protocol":"shadowsocks"}')" = "201" ] || { echo "FAIL: assign SS user"; cat /tmp/akari-smoke/last; exit 1; }
+  grant "$USER_SS"
   wait_users 2 15 "SS user added"
   for _ in $(seq 1 10); do [ "$(node_field last_error)" = "null" ] && break; sleep 1; done
   SS_PROTO=$(node_field agent_protocol)
@@ -889,10 +922,10 @@ if need_agent "protocol>=4" "W9 Shadowsocks 2022 delta/snapshot"; then
 fi
 [ "$(node_field last_error)" = "null" ] || { echo "FAIL: last_error after SS changes: $(node_field last_error)"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_SS")" = "204" ] || { echo "FAIL: delete SS user"; exit 1; }
-[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbounds" -H 'Content-Type: application/json' -d "$GOOD_INB")" = "200" ] \
-  || { echo "FAIL: restore inbounds after SS"; exit 1; }
+[ "$(put_inbound "$GOOD_IB")" = "200" ] || { echo "FAIL: restore inbound after SS"; exit 1; }
 wait_users 1 15 "after SS inbound removed"
 wait_port open 10
+VLESS_A=$(account_of "$USER_ID")
 fi
 
 echo "== Sprint 3a: protocol + lease surfaced on the node =="
@@ -911,24 +944,26 @@ echo "== W11: node form fields, multiplier billing, machine status, latency =="
 # Agent-side assertions need the agent capabilities "metrics" / "latency"
 # (W12 gates); the panel-side ones always run.
 # xboard-style fields: display name, tags, multiplier, connect override.
-[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" \
-    '{"display_name":"冒烟 01","tags":["IPLC","0.5x"],"traffic_rate":0.5,"sort":1,"connect_overrides":{"in-vless":{"host":"127.0.0.1","port":11443}}}')" = "200" ] \
+# W28-a: multiplier and address belong to the (direct) entrance.
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"display_name":"冒烟 01","tags":["IPLC","0.5x"],"sort":1}')" = "200" ] \
   || { echo "FAIL: W11 node fields"; cat /tmp/akari-smoke/last; exit 1; }
-grep -q '"traffic_rate_permille":500' /tmp/akari-smoke/last || { echo "FAIL: multiplier not stored"; exit 1; }
-[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"traffic_rate":0.0001}')" = "400" ] || { echo "FAIL: bad multiplier accepted"; exit 1; }
-[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"connect_overrides":{"nope":{"port":1}}}')" = "400" ] \
-  || { echo "FAIL: override for an unknown inbound accepted"; exit 1; }
-[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='node.update' AND target_id='$NODE_ID' AND after->>'traffic_rate_permille' = '500'")" -ge 1 ] \
-  || { echo "FAIL: W11 node update not audited"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"traffic_rate":0.5}')" = "400" ] || { echo "FAIL: node-level multiplier accepted"; exit 1; }
+[ "$(entrance_patch '{"rate":0.5,"connect_host":"127.0.0.1","connect_port":11443}')" = "200" ] \
+  || { echo "FAIL: W11 entrance fields"; cat /tmp/akari-smoke/last; exit 1; }
+last_json "(d['rate_permille'], d['connect_port'])" | matches -Fx '(500, 11443)' || { echo "FAIL: multiplier not stored"; exit 1; }
+[ "$(entrance_patch '{"rate":0.0001}')" = "400" ] && last_json "d['code']" | matches -x 'entrance.rate_invalid' \
+  || { echo "FAIL: bad multiplier accepted"; exit 1; }
+[ "$(entrance_patch '{"connect_port":70000}')" = "400" ] || { echo "FAIL: bad connect port accepted"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='entrance.update' AND target_id='$DIRECT_ID' AND after->>'rate_permille' = '500'")" -ge 1 ] \
+  || { echo "FAIL: W11 entrance update not audited"; exit 1; }
 # Multiplier on a real transfer: user D on the 0.5x node bills half the
 # bytes the node accepted for D (floor per row: never more).
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
     -d '{"email":"smoke-user-d@smoke.test","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create user D"; exit 1; }
 USER_D=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
 SUB_D=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['sub_token'])")
-[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_D/nodes/$NODE_ID" -H 'Content-Type: application/json' \
-    -d '{"inbound_tag":"in-vless","protocol":"vless"}')" = "201" ] || { echo "FAIL: assign D"; exit 1; }
-VLESS_D=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['account']['id'])")
+grant "$USER_D"
+VLESS_D=$(account_of "$USER_D")
 cat >"$LOG/w11-vless.py" <<'PY'
 import socket, struct, sys, threading, time, uuid
 echo = socket.socket(); echo.bind(("127.0.0.1", 0)); echo.listen(1)
@@ -973,7 +1008,7 @@ assert 2 * (b1 - b0) <= r1 - r0, (b0, b1, r0, r1)
 echo "multiplier: ok (raw $RAW_D bytes, billed $USED_D at 0.5x)"
 # Subscription: display name + tags name the proxy, the override is dialed.
 curl -s --noproxy '*' -A 'clash.meta' "$BASE/sub/$SUB_D" >"$LOG/w11-sub.yaml"
-grep -q '"冒烟 01 | IPLC | 0.5x"' "$LOG/w11-sub.yaml" || { echo "FAIL: subscription name"; head -20 "$LOG/w11-sub.yaml"; exit 1; }
+grep -q '"冒烟 01 | IPLC | 0.5x 直连"' "$LOG/w11-sub.yaml" || { echo "FAIL: subscription name"; head -20 "$LOG/w11-sub.yaml"; exit 1; }
 grep -q 'server: 127.0.0.1' "$LOG/w11-sub.yaml" || { echo "FAIL: connect override not in subscription"; exit 1; }
 # Portal: the user's node list (no ids/addresses).
 DJAR="$LOG/w11-d.jar"
@@ -982,8 +1017,8 @@ DJAR="$LOG/w11-d.jar"
 [ "$(code -b "$DJAR" "$BASE/api/v1/me/nodes")" = "200" ] || { echo "FAIL: /me/nodes"; exit 1; }
 python3 -c "
 import json; v = json.load(open('/tmp/akari-smoke/last'))
-assert len(v) == 1 and v[0]['name'] == '冒烟 01' and v[0]['rate'] == 0.5 and v[0]['online'] is True, v
-assert 'id' not in v[0] and 'server_addr' not in v[0], v
+assert len(v) == 1 and v[0]['name'] == '冒烟 01' and v[0]['entrance'] == '直连' and v[0]['rate'] == 0.5 and v[0]['online'] is True, v
+assert 'id' not in v[0] and 'connect_host' not in v[0], v
 " || { echo "FAIL: /me/nodes content"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$DJAR" "$BASE/api/v1/nodes/$NODE_ID/status")" = "403" ] || { echo "FAIL: user reads node status"; exit 1; }
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"visible":false}')" = "200" ] || { echo "FAIL: hide node"; exit 1; }
@@ -1134,7 +1169,6 @@ if need_agent cap:metrics "W11 machine status"; then
 import json; v = json.load(open('/tmp/akari-smoke/last')); m = v['heartbeat']['metrics']
 assert v['online'] is True and v['heartbeat']['mem_total_bytes'] > 0, v
 assert m['cpu_count'] >= 1 and m['disk_total_bytes'] > 0 and m['xray_version'], m
-assert v['traffic_rate'] == 0.5, v
 " || { echo "FAIL: node status content"; cat /tmp/akari-smoke/last; exit 1; }
   for _ in $(seq 1 15); do [ "$(psql_q "SELECT count(*) FROM node_metrics_1m WHERE node_id='$NODE_ID'")" -ge 1 ] && break; sleep 1; done
   [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID/metrics?range=1h")" = "200" ] || { echo "FAIL: metrics API"; exit 1; }
@@ -1170,7 +1204,7 @@ if need_agent cap:latency "W11 latency test"; then
   [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$NODE_ID/probe")" = "429" ] || { echo "FAIL: probe cooldown"; exit 1; }
   for _ in $(seq 1 40); do
     [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='agent' AND delay_ms IS NOT NULL AND target='http://127.0.0.1:18204/generate_204' AND measured_at > now() - interval '1 minute'")" = "1" ] \
-      && [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='panel' AND target='in-vless' AND delay_ms IS NOT NULL")" = "1" ] && break
+      && [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='panel' AND target='直连' AND delay_ms IS NOT NULL")" = "1" ] && break
     sleep 1
   done
   [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='agent' AND delay_ms IS NOT NULL")" -ge 1 ] \
@@ -1239,7 +1273,8 @@ python3 -c "import json; p = json.load(open('/tmp/akari-smoke/last'))['probe']; 
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='settings.probe.update' AND actor_label='cli'")" = "1" ] \
   || { echo "FAIL: CLI probe unset not audited"; exit 1; }
 # Back to the defaults the rest of the smoke expects.
-[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"display_name":null,"tags":[],"traffic_rate":1,"sort":0,"connect_overrides":null}')" = "200" ] \
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"display_name":null,"tags":[],"sort":0}')" = "200" ] \
+  && [ "$(entrance_patch '{"rate":1,"connect_host":"node1.example.test","connect_port":null}')" = "200" ] \
   || { echo "FAIL: reset W11 fields"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_D")" = "204" ] || { echo "FAIL: delete D"; exit 1; }
 # The test-URL server is done (background helpers inherit the caller's
@@ -1293,11 +1328,12 @@ echo "== M3 operations model: group + plan -> automatic access; quota; period re
 last_json() { python3 -c "import json,sys; d=json.load(open('/tmp/akari-smoke/last')); print($1)"; }
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"region": "Smokeland"}')" = "200" ] || { echo "FAIL: set region"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/node-groups" -H 'Content-Type: application/json' \
-    -d "{\"name\":\"smoke-group\",\"node_ids\":[\"$NODE_ID\"]}")" = "201" ] || { echo "FAIL: create group"; cat /tmp/akari-smoke/last; exit 1; }
+    -d "{\"name\":\"smoke-group\",\"entrance_ids\":[\"$DIRECT_ID\"]}")" = "201" ] || { echo "FAIL: create group"; cat /tmp/akari-smoke/last; exit 1; }
 GROUP_ID=$(last_json "d['id']")
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/node-groups" -H 'Content-Type: application/json' \
     -d '{"name":"x","nodes":[]}')" = "400" ] || { echo "FAIL: unknown group field not 400"; exit 1; }
-[ "$(patch_code "$BASE/api/v1/node-groups/$GROUP_ID" '{"node_ids": null}')" = "400" ] || { echo "FAIL: node_ids null not 400"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/node-groups/$GROUP_ID" '{"entrance_ids": null}')" = "400" ] || { echo "FAIL: entrance_ids null not 400"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/node-groups/$GROUP_ID" '{"node_ids": []}')" = "400" ] || { echo "FAIL: pre-W28 node_ids accepted"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/plans" -H 'Content-Type: application/json' \
     -d '{"name":"smoke-plan","traffic_quota_bytes":150000,"period":"weekly"}')" = "400" ] || { echo "FAIL: bad period not 400"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/plans" -H 'Content-Type: application/json' \
@@ -1314,11 +1350,12 @@ PU=$(last_json "d['id']")
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/users/$PU/plan" -H 'Content-Type: application/json' \
     -d "{\"plan_id\":\"$PLAN_ID\",\"period\":\"days\",\"days\":30}")" = "200" ] || { echo "FAIL: assign plan"; cat /tmp/akari-smoke/last; exit 1; }
 wait_users 1 10 "plan grants the node (no manual assignment)"
-[ "$(psql_q "SELECT manual FROM node_users WHERE user_id='$PU' AND node_id='$NODE_ID'")" = "f" ] \
-  || { echo "FAIL: plan row not plan-managed"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM entrance_users WHERE user_id='$PU' AND entrance_id='$DIRECT_ID'")" = "1" ] \
+  || { echo "FAIL: plan did not grant the entrance"; exit 1; }
 [ "$(psql_q "SELECT traffic_limit_bytes FROM users WHERE id='$PU'")" = "150000" ] || { echo "FAIL: limit not derived from the plan"; exit 1; }
 [ "$(patch_code "$BASE/api/v1/users/$PU" '{"traffic_limit_bytes": 1}')" = "400" ] || { echo "FAIL: limit editable (D12)"; exit 1; }
-[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$PU/nodes/$NODE_ID")" = "409" ] || { echo "FAIL: plan row unassignable"; exit 1; }
+# D3: no manual (un)assignment.
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$PU/nodes/$NODE_ID")" = "404" ] || { echo "FAIL: manual unassign endpoint answers"; exit 1; }
 # D12: the user detail carries the current subscription (the node-access
 # view GET /users/{id}/nodes is gone: canonical rejection).
 [ "$(code -b "$JAR" "$BASE/api/v1/users/$PU")" = "200" ] || { echo "FAIL: user detail"; cat /tmp/akari-smoke/last; exit 1; }
@@ -1375,7 +1412,7 @@ while len(got) < len(msg) + 2:
 print("vless round trip ok")
 PY
 wait_port open 10
-PU_VLESS=$(psql_q "SELECT credentials->0->'account'->>'id' FROM node_users WHERE user_id='$PU' AND node_id='$NODE_ID'")
+PU_VLESS=$(account_of "$PU")
 python3 "$LOG/vless1.py" "$PU_VLESS" || { echo "FAIL: vless round trip for the plan user"; exit 1; }
 for _ in $(seq 1 30); do
   [ "$(psql_q "SELECT disabled_reason FROM users WHERE id='$PU'")" = "quota" ] && break; sleep 1
@@ -1430,7 +1467,7 @@ psql_q "UPDATE users SET traffic_used_bytes = 1234 WHERE id='$PU'" >/dev/null
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/plans/$PLAN_ID")" = "409" ] || { echo "FAIL: plan with a subscriber deleted"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$PU/plan")" = "204" ] || { echo "FAIL: cancel plan"; exit 1; }
 wait_users 0 10 "plan cancelled"
-[ "$(psql_q "SELECT count(*) FROM node_users_departed WHERE user_id='$PU' AND node_id='$NODE_ID'")" = "1" ] \
+[ "$(psql_q "SELECT count(*) FROM entrance_users_departed WHERE user_id='$PU' AND entrance_id='$DIRECT_ID'")" = "1" ] \
   || { echo "FAIL: no departed row after cancel"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$PU/plan")" = "409" ] || { echo "FAIL: second cancel not 409"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/audit?action=user.plan.&limit=10")" = "200" ] || { echo "FAIL: audit user.plan."; exit 1; }
@@ -1644,7 +1681,7 @@ last_json "d['active'] and d['config']['app_private_key_set'] and d['notify_url'
 [ "$(psql_q "SELECT get_byte(secrets_enc, 0) = 1 AND position(convert_to('MII', 'UTF8') IN secrets_enc) = 0 FROM payment_methods WHERE id = '$METHOD'")" = "t" ] \
   || { echo "FAIL: payment secrets not sealed"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/node-groups" -H 'Content-Type: application/json' \
-    -d "{\"name\":\"paid-group\",\"node_ids\":[\"$NODE_ID\"]}")" = "201" ] || { echo "FAIL: create paid group"; exit 1; }
+    -d "{\"name\":\"paid-group\",\"entrance_ids\":[\"$DIRECT_ID\"]}")" = "201" ] || { echo "FAIL: create paid group"; exit 1; }
 PAID_GROUP=$(last_json "d['id']")
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/plans" -H 'Content-Type: application/json' \
     -d "{\"name\":\"paid-plan\",\"period\":\"monthly\",\"group_ids\":[\"$PAID_GROUP\"]}")" = "201" ] || { echo "FAIL: create paid plan"; exit 1; }
@@ -1719,7 +1756,7 @@ python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); assert d['s
   || { echo "FAIL: order not paid+fulfilled"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(psql_q "SELECT plan_id FROM user_plans WHERE user_id='$BUYER' AND status='active'")" = "$PAID_PLAN" ] || { echo "FAIL: plan not active"; exit 1; }
 wait_users 1 10 "purchased plan grants the node"
-BUYER_VLESS=$(psql_q "SELECT credentials->0->'account'->>'id' FROM node_users WHERE user_id='$BUYER' AND node_id='$NODE_ID'")
+BUYER_VLESS=$(account_of "$BUYER")
 wait_port open 10
 python3 "$LOG/vless1.py" "$BUYER_VLESS" || { echo "FAIL: vless round trip for the buyer"; exit 1; }
 # Replay: acknowledged, fulfilled exactly once.
@@ -2191,7 +2228,7 @@ echo "== W8 protocol matrix: every template -> agent -> three subscription forma
 # before protocol 4 bumped; protocol >= 4 implies it.
 if need_agent "protocol>=4" "W8 protocol matrix"; then
   # shellcheck disable=SC2097,SC2098 # $LOG is the same value on both sides
-  BASE="$BASE" JAR="$JAR" NODE_ID="$NODE_ID" LOG="$LOG" AGENT_LOG="$LOG/agent.log" \
+  BASE="$BASE" JAR="$JAR" NODE_ID="$NODE_ID" ACCESS_PLAN="$ACCESS_PLAN" VALKEY_DB="$SMOKE_VALKEY_DB" LOG="$LOG" AGENT_LOG="$LOG/agent.log" \
     python3 scripts/smoke-protocols.py || { echo "FAIL: W8 protocol matrix"; tail -20 "$LOG/agent.log"; exit 1; }
 fi
 
@@ -2394,7 +2431,7 @@ ETAG=$(tr -d '\r' <"$LOG/sum.h" | awk -F': ' 'tolower($1)=="etag"{print $2}')
 [ -n "$ETAG" ] || { echo "FAIL: summary view without ETag"; cat "$LOG/sum.h"; exit 1; }
 tr -d '\r' <"$LOG/sum.h" | matches -i '^cache-control: private, no-cache$' || { echo "FAIL: summary cache-control"; exit 1; }
 last_json "[n for n in d if n['id']=='$NODE_ID'][0]['online']" | matches True || { echo "FAIL: node not online in the summary"; exit 1; }
-matches -F 'xray_inbounds' </tmp/akari-smoke/last && { echo "FAIL: summary carries the inbounds JSON"; exit 1; }
+matches -F '"inbound"' </tmp/akari-smoke/last && { echo "FAIL: summary carries the inbound JSON"; exit 1; }
 SUM_BYTES=$(wc -c </tmp/akari-smoke/last)
 [ "$(code -b "$JAR" "$BASE/api/v1/nodes")" = "200" ] && [ "$(wc -c </tmp/akari-smoke/last)" -gt "$SUM_BYTES" ] \
   || { echo "FAIL: full list"; exit 1; }
@@ -2413,7 +2450,7 @@ done
 [ -n "$GOT304" ] || { echo "FAIL: If-None-Match never answered with 304"; exit 1; }
 [ "$(code -b "$JAR" -H 'If-None-Match: "stale"' "$BASE/api/v1/nodes?view=summary")" = "200" ] \
   || { echo "FAIL: a stale ETag did not get the body"; exit 1; }
-[ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID")" = "200" ] && matches -F 'xray_inbounds' </tmp/akari-smoke/last \
+[ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID")" = "200" ] && matches -F '"inbound"' </tmp/akari-smoke/last \
   || { echo "FAIL: GET /nodes/{id}"; exit 1; }
 echo "summary view: ok ($SUM_BYTES bytes, 304 on revalidation)"
 
@@ -2494,9 +2531,8 @@ echo "== Sprint 3b: node delete = empty state, then revoke + close; billing rows
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
     -d '{"email":"smoke-user-c@smoke.test","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create user C"; exit 1; }
 USER_C=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
-[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_C/nodes/$NODE_ID" -H 'Content-Type: application/json' \
-    -d '{"inbound_tag":"in-vless","protocol":"vless"}')" = "201" ] || { echo "FAIL: assign C"; exit 1; }
-VLESS_C=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['account']['id'])")
+grant "$USER_C"
+VLESS_C=$(account_of "$USER_C")
 wait_users 1 10 "user C added"
 wait_port open 10
 cat >"$LOG/vless1.py" <<'PY'
@@ -2695,7 +2731,7 @@ echo "enrollment + renewal: ok"
 
 echo "== M1-7 audit log: admin view lists the actions, no secrets =="
 [ "$(code -b "$JAR" "$BASE/api/v1/audit?limit=200")" = "200" ] || { echo "FAIL: audit list"; exit 1; }
-for a in user.create node.create node.set_inbounds node.update node.assign user.ban user.unban user.delete \
+for a in user.create node.create node.set_inbound node.update entrance.update user.plan.set user.ban user.unban user.delete \
          auth.login auth.login_failed user.sub_token.rotate node.delete \
          node.enroll_token node.enroll node.cert.renew node.cert.rotated; do
   # (By database: the API's 200 newest rows no longer reach back to the
@@ -2973,15 +3009,20 @@ fi
 [ "$(code -b "$JAR" "$BASE/api/v1/inbound-templates")" = "200" ] && grep -q '"www.apple.com"' /tmp/akari-smoke/last \
   || { echo "FAIL: template catalog"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/inbound-templates/render" -H 'Content-Type: application/json' \
-    -d '{"templates":[{"template":"vless_reality","port":443},{"template":"vless_reality","port":443}]}')" = "400" ] \
-  || { echo "FAIL: duplicate template ports accepted"; exit 1; }
+    -d '{"template":{"template":"vless_reality","port":443},"taken_ports":[443]}')" = "400" ] \
+  && last_json "d['code']" | matches -x 'template.port_clash' || { echo "FAIL: a taken template port accepted"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/inbound-templates/render" -H 'Content-Type: application/json' \
+    -d '{"template":{"template":"vless_reality","port":443}}')" = "200" ] && last_json "d['inbound']['protocol']" | matches -x vless \
+  || { echo "FAIL: render one template"; cat /tmp/akari-smoke/last; exit 1; }
 INST_PORT_R=24443
-INST_PORT_W=24080
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' \
-    -d "{\"name\":\"inst-node\",\"region\":\"Smoke\",\"server_addr\":\"127.0.0.1\",
-         \"templates\":[{\"template\":\"vless_reality\",\"port\":$INST_PORT_R},{\"template\":\"vmess_ws\",\"port\":$INST_PORT_W}],
+    -d '{"name":"x-node","template":{"template":"vmess_tcp","port":1},"inbound":{"protocol":"vmess","port":1}}')" = "400" ] \
+  && last_json "d['code']" | matches -x 'node.template_and_inbound' || { echo "FAIL: template + inbound accepted"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"inst-node\",\"region\":\"Smoke\",\"direct\":{\"connect_host\":\"127.0.0.1\",\"rate\":2},
+         \"template\":{\"template\":\"vless_reality\",\"port\":$INST_PORT_R},
          \"install\":{\"origin\":\"http://127.0.0.1:8080\"}}")" = "201" ] \
-  || { echo "FAIL: create node with templates: $(cat /tmp/akari-smoke/last)"; exit 1; }
+  || { echo "FAIL: create node with a template: $(cat /tmp/akari-smoke/last)"; exit 1; }
 cp /tmp/akari-smoke/last "$LOG/inst-create.json"
 INST_ID=$(python3 -c "import json;print(json.load(open('$LOG/inst-create.json'))['id'])")
 INST_URL=$(python3 -c "import json;print(json.load(open('$LOG/inst-create.json'))['install']['url'])")
@@ -2996,12 +3037,14 @@ assert i["pin"] is None and i["command_wget"].startswith("wget -qO- ")
 assert i["releases"]["amd64"]["version"] == "v900.0.1", i["releases"]
 assert sys.argv[2].endswith("/install/" + v["enrollment_token"])
 PY
-psql_q "SELECT xray_inbounds FROM nodes WHERE id='$INST_ID'" | python3 -c "
+psql_q "SELECT inbound FROM nodes WHERE id='$INST_ID'" | python3 -c "
 import json, sys; ib = json.load(sys.stdin)
-r = ib[0]['streamSettings']['realitySettings']
-assert ib[0]['port'] == $INST_PORT_R and r['dest'] == 'www.apple.com:443' and len(r['privateKey']) == 43 and len(r['publicKey']) == 43
-assert ib[1]['protocol'] == 'vmess' and ib[1]['streamSettings']['network'] == 'ws'" \
-  || { echo "FAIL: template inbounds not stored"; exit 1; }
+r = ib['streamSettings']['realitySettings']
+assert ib['port'] == $INST_PORT_R and r['dest'] == 'www.apple.com:443' and len(r['privateKey']) == 43 and len(r['publicKey']) == 43
+assert 'tag' not in ib" \
+  || { echo "FAIL: template inbound not stored"; exit 1; }
+[ "$(psql_q "SELECT kind || ' ' || connect_host || ' ' || rate_permille FROM entrances WHERE node_id='$INST_ID'")" = "direct 127.0.0.1 2000" ] \
+  || { echo "FAIL: create did not set the direct entrance"; exit 1; }
 # The script: complete, POSIX sh, shellcheck-clean.
 [ "$(code "$INST_URL")" = "200" ] || { echo "FAIL: install script not served"; exit 1; }
 cp /tmp/akari-smoke/last "$LOG/install.sh"
@@ -3121,7 +3164,7 @@ if need_agent "unit:akari-agent" "W32 Alpine install (OpenRC)" \
   # the same address within the 10-minute window).
   ALP_RL=$(vk eval "local o = {} for _, k in ipairs(redis.call('keys', 'akari:rl:enroll:*')) do o[#o+1] = k .. '=' .. redis.call('get', k) end return table.concat(o, ' ')" 0)
   [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' \
-      -d "{\"name\":\"alp-node\",\"server_addr\":\"127.0.0.1\",\"templates\":[{\"template\":\"vless_reality\",\"port\":$ALP_PORT}],
+      -d "{\"name\":\"alp-node\",\"direct\":{\"connect_host\":\"127.0.0.1\"},\"template\":{\"template\":\"vless_reality\",\"port\":$ALP_PORT},
            \"install\":{\"origin\":\"http://127.0.0.1:8080\"}}")" = "201" ] \
     || { echo "FAIL: create alp-node: $(cat /tmp/akari-smoke/last)"; exit 1; }
   ALP_ID=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")

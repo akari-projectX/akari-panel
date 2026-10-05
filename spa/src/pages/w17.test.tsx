@@ -454,7 +454,7 @@ describe("node list (summary view)", () => {
       warnings: [],
       tags: [],
       visible: true,
-      traffic_rate: 1,
+      entrances: [],
       enrolled: true,
       display_name: null,
       lease_expires_at: null,

@@ -344,7 +344,8 @@ export interface GroupView {
   id: string;
   name: string;
   description: string;
-  node_ids: string[];
+  // W28-a: groups hold entrances (plans -> node groups -> entrances).
+  entrance_ids: string[];
   plan_ids: string[];
   created_at: string;
   updated_at: string;
@@ -456,9 +457,33 @@ export interface UserDetail extends UserView {
   ban: BanView | null;
 }
 
+// An xray inbound object (W28-a/D2: a node has one; the panel names it,
+// so the stored object has no tag).
 export interface Inbound {
-  tag: string;
+  tag?: string;
   [k: string]: unknown;
+}
+
+// W28-a: how clients reach a node (mirror of entrances.rs EntranceView).
+// Every node has its built-in "direct" entrance.
+export interface EntranceView {
+  id: string;
+  kind: "direct";
+  name: string;
+  // What clients dial: null host = the node's TLS domain, null port = the
+  // inbound's port.
+  connect_host: string | null;
+  connect_port: number | null;
+  rate_permille: number;
+  rate: number;
+  enabled: boolean;
+  sort: number;
+  group_ids: string[];
+}
+
+/** The node's built-in direct entrance. */
+export function directEntrance(n: { entrances: EntranceView[] }): EntranceView | undefined {
+  return n.entrances.find((e) => e.kind === "direct");
 }
 
 export interface NodeView {
@@ -474,8 +499,9 @@ export interface NodeView {
   update_status: NodeUpdateStatus | null;
   config_version: number;
   user_version: number;
-  xray_inbounds: Inbound[];
-  server_addr: string | null;
+  // W28-a (D2): the node's one inbound; null = not configured yet.
+  inbound: Inbound | null;
+  entrances: EntranceView[];
   // M3: region shown to users in the portal.
   region: string | null;
   // W10: the node's TLS domain ("节点域名": the agent obtains the
@@ -507,16 +533,11 @@ export interface NodeView {
   // Problems the admin must fix (stored config, certificate expiry).
   warnings: string[];
   // W11 (xboard-style form): user-facing name (null = name), order, shown
-  // to users, tags, multiplier (permille and as a number), per-inbound
-  // client-facing host/port, node groups.
+  // to users, tags (multiplier, address and groups: the entrances).
   display_name: string | null;
   sort: number;
   visible: boolean;
   tags: string[];
-  traffic_rate_permille: number;
-  traffic_rate: number;
-  connect_overrides: Record<string, ConnectOverride>;
-  group_ids: string[];
   // W11: bytes accepted on the node (before the multiplier) and billed.
   traffic_raw_bytes: number;
   traffic_billed_bytes: number;
@@ -538,7 +559,6 @@ export interface NodeSummary {
   online: boolean;
   deleting_at: string | null;
   region: string | null;
-  server_addr: string | null;
   agent_version: string | null;
   agent_os: string | null;
   agent_arch: string | null;
@@ -553,7 +573,7 @@ export interface NodeSummary {
   sort: number;
   visible: boolean;
   tags: string[];
-  traffic_rate: number;
+  entrances: EntranceView[];
   latency: LatencyResult | null;
   alerts_firing: number;
   warnings: string[];
@@ -621,11 +641,6 @@ export interface MyTicketView {
   messages: TicketMessage[];
 }
 
-export interface ConnectOverride {
-  host?: string;
-  port?: number;
-}
-
 // W11: one latency result. source "agent" = the node's url-test (target =
 // URL), "panel" = TCP connect from the panel (target = inbound tag);
 // delay_ms null = failed (error: "timeout", "refused", "udp" = n/a, ...).
@@ -647,7 +662,6 @@ export interface NodeStatus {
   latency: LatencyResult[];
   traffic_raw_bytes: number;
   traffic_billed_bytes: number;
-  traffic_rate: number;
   probe_requested_at: string | null;
 }
 
@@ -686,6 +700,8 @@ export interface NodeMetricsView {
 // W11: GET /me/nodes (portal): no ids, addresses or machine metrics.
 export interface MyNodeStatus {
   name: string;
+  // W28-a: the entrance's name (one row per usable entrance).
+  entrance: string;
   region: string | null;
   tags: string[];
   rate: number;
@@ -894,18 +910,17 @@ interface RealityOpts {
   fingerprint?: string;
 }
 export type InboundSpec =
-  | ({ template: "vless_reality"; port: number; tag?: string; vision?: boolean } & RealityOpts)
-  | ({ template: "vless_reality_xhttp"; port: number; tag?: string; path?: string; mode?: string } & RealityOpts)
+  | ({ template: "vless_reality"; port: number; vision?: boolean } & RealityOpts)
+  | ({ template: "vless_reality_xhttp"; port: number; path?: string; mode?: string } & RealityOpts)
   // W10: domain/tls_domain default to the node's TLS domain (tls: true).
-  | { template: "vless_tls_vision"; port: number; tag?: string; domain?: string }
-  | { template: "vless_ws_tls"; port: number; tag?: string; domain?: string; path?: string }
-  | { template: "vmess_ws"; port: number; tag?: string; path?: string; tls_domain?: string; tls?: boolean }
-  | { template: "vmess_tcp"; port: number; tag?: string }
-  | { template: "trojan_tls"; port: number; tag?: string; domain?: string }
+  | { template: "vless_tls_vision"; port: number; domain?: string }
+  | { template: "vless_ws_tls"; port: number; domain?: string; path?: string }
+  | { template: "vmess_ws"; port: number; path?: string; tls_domain?: string; tls?: boolean }
+  | { template: "vmess_tcp"; port: number }
+  | { template: "trojan_tls"; port: number; domain?: string }
   | {
       template: "transport";
       port: number;
-      tag?: string;
       protocol: "vless" | "vmess" | "trojan";
       network: "ws" | "httpupgrade" | "xhttp" | "grpc";
       path?: string;
@@ -915,8 +930,8 @@ export type InboundSpec =
       tls_domain?: string;
       tls?: boolean;
     }
-  | { template: "shadowsocks_2022"; port: number; tag?: string; method?: string }
-  | { template: "hysteria2"; port: number; tag?: string; domain?: string };
+  | { template: "shadowsocks_2022"; port: number; method?: string }
+  | { template: "hysteria2"; port: number; domain?: string };
 
 export interface TemplateCatalog {
   reality_dests: string[];
@@ -926,8 +941,8 @@ export interface TemplateCatalog {
   xhttp_modes?: string[];
 }
 
-export interface RenderedInbounds {
-  inbounds: Inbound[];
+export interface RenderedInbound {
+  inbound: Inbound;
   needs_certificate: boolean;
 }
 
@@ -937,10 +952,4 @@ export interface CheckDestView {
   h2: boolean;
   trusted: boolean;
   error: string | null;
-}
-
-export interface GeneratedAccount {
-  inbound_tag: string;
-  protocol: string;
-  account: Record<string, unknown>;
 }

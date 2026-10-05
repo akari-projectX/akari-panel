@@ -257,7 +257,7 @@ async fn priced_plan(db: &TestDb, name: &str, cents: i64, days: i32) -> (Uuid, U
         &crate::plans::CreateGroupReq {
             name: format!("g-{name}"),
             description: None,
-            node_ids: Some(vec![node]),
+            entrance_ids: Some(vec![db.direct(node).await]),
         },
     )
     .await
@@ -537,7 +537,7 @@ async fn http_purchase_flow() {
     assert_eq!(
         count(
             &db,
-            "SELECT count(*) FROM node_users WHERE user_id = $1 AND NOT manual",
+            "SELECT count(*) FROM entrance_users WHERE user_id = $1",
             user
         )
         .await,
@@ -1049,7 +1049,7 @@ async fn renew_replace_and_bumps() {
     assert_eq!(
         count(
             &db,
-            "SELECT count(*) FROM node_users_departed WHERE user_id = $1",
+            "SELECT count(*) FROM entrance_users_departed WHERE user_id = $1",
             user
         )
         .await,
@@ -1488,7 +1488,7 @@ async fn catalog_plan(
         &crate::plans::CreateGroupReq {
             name: format!("g-{name}"),
             description: None,
-            node_ids: Some(vec![node]),
+            entrance_ids: Some(vec![db.direct(node).await]),
         },
     )
     .await
@@ -2425,13 +2425,9 @@ async fn speed_limits_reach_the_desired_state() {
     .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(limit_of(node).await, Some(12_500_000));
-    // A manual assignment elsewhere carries the user's plan limit too.
-    let other = db.node().await;
-    db.assign(other, user).await;
-    assert_eq!(limit_of(other).await, Some(12_500_000));
 
     // Editing the plan's limit bumps every node of its users.
-    let before = (db.versions(node).await, db.versions(other).await);
+    let before = db.versions(node).await;
     let mut tx = db.pool.begin().await.unwrap();
     crate::plans::apply_update_plan(
         &mut tx,
@@ -2446,11 +2442,10 @@ async fn speed_limits_reach_the_desired_state() {
     .ok()
     .unwrap();
     tx.commit().await.unwrap();
-    assert_ne!(db.versions(node).await, before.0);
-    assert_ne!(db.versions(other).await, before.1);
+    assert_ne!(db.versions(node).await, before);
     assert_eq!(limit_of(node).await, Some(1_000_000));
     // A name-only edit bumps nothing.
-    let before = db.versions(other).await;
+    let before = db.versions(node).await;
     let mut tx = db.pool.begin().await.unwrap();
     crate::plans::apply_update_plan(
         &mut tx,
@@ -2465,22 +2460,21 @@ async fn speed_limits_reach_the_desired_state() {
     .ok()
     .unwrap();
     tx.commit().await.unwrap();
-    assert_eq!(db.versions(other).await, before);
+    assert_eq!(db.versions(node).await, before);
 
-    // Cancelling the plan: the manual node now serves the user unlimited.
-    let before = db.versions(other).await;
+    // Cancelling the plan: access is gone (D3: plans are the only source).
+    let before = db.versions(node).await;
     let mut tx = db.pool.begin().await.unwrap();
     crate::plans::apply_cancel_user_plan(&mut tx, &actor, user)
         .await
         .ok()
         .unwrap();
     tx.commit().await.unwrap();
-    assert_ne!(db.versions(other).await, before, "manual node bumped");
-    assert_eq!(limit_of(other).await, Some(0));
+    assert_ne!(db.versions(node).await, before, "node bumped");
     assert_eq!(limit_of(node).await, None, "plan access gone");
 
-    // Switching between plans whose limits differ bumps shared nodes.
-    let (_, slow) = catalog_plan(&db, "slow", &[(PeriodKind::Month, None, 100)], |r| {
+    // A plan with another limit reaches its node.
+    let (slow_node, slow) = catalog_plan(&db, "slow", &[(PeriodKind::Month, None, 100)], |r| {
         r.speed_limit_mbps = Some(2)
     })
     .await;
@@ -2501,7 +2495,7 @@ async fn speed_limits_reach_the_desired_state() {
     .ok()
     .unwrap();
     tx.commit().await.unwrap();
-    assert_eq!(limit_of(other).await, Some(250_000));
+    assert_eq!(limit_of(slow_node).await, Some(250_000));
     db.drop().await;
 }
 

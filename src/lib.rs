@@ -23,6 +23,7 @@ pub mod db;
 pub mod enforce;
 pub mod enroll;
 pub mod entitle;
+pub mod entrances;
 pub mod entropy;
 pub mod export;
 #[cfg(fuzzing)]

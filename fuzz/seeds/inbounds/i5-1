@@ -1,0 +1,1 @@
+{"port": 1080, "protocol": "dokodemo-door", "settings": {"network": "tcp,udp"}, "sniffing": {"destOverride": ["fakedns"]}}

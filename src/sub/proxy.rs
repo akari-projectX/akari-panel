@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 
-use super::{Credential, NodeRow};
+use super::NodeRow;
 use crate::protocols::manifest;
 use crate::protocols::model::{self, Inbound, Protocol, Security, TransportKind};
 
@@ -144,90 +144,59 @@ pub(crate) fn collect_proxies(rows: &[NodeRow]) -> Vec<Proxy> {
     let mut proxies: Vec<Proxy> = Vec::new();
     let mut names = HashSet::new();
     for row in rows {
-        let node_server = row.server_addr.as_deref().filter(|s| !s.is_empty());
-        let credentials: Vec<Credential> = match serde_json::from_value(row.credentials.clone()) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!(node = %row.name, error = %e,
-                    "node_users.credentials is not a valid credential list; node skipped in subscription");
-                continue;
-            }
+        let ib = crate::protocols::xray::parse_as(&row.inbound, &row.protocol);
+        let Some(mut net) = net_of(&ib) else {
+            continue;
         };
-        let credentials_len = credentials.len();
-        for cred in credentials {
-            let Some(inbound) = row.xray_inbounds.as_array().and_then(|arr| {
-                arr.iter()
-                    .find(|i| i.get("tag").and_then(|t| t.as_str()) == Some(&cred.inbound_tag))
-            }) else {
-                continue;
-            };
-            let ib = crate::protocols::xray::parse_as(inbound, &cred.protocol);
-            let Some(mut net) = net_of(&ib) else {
-                continue;
-            };
-            // W11 连接地址/连接端口: what clients dial may differ from what
-            // the inbound listens on (NAT, port forwarding, relays).
-            let ov = crate::nodemeta::connect_for(&row.connect_overrides, &cred.inbound_tag);
-            let Some(server) = ov.host.as_deref().or(node_server) else {
-                continue; // admin has not set a public address yet
-            };
-            if let Some(p) = ov.port {
-                net.port = p;
-            }
-            let Some(spec) = m.protocol_by_wire(&cred.protocol) else {
-                continue;
-            };
-            let acc = |k: &str| cred.account.get(k).and_then(|v| v.as_str());
-            let mut method = String::new();
-            let id_or_password = match &ib.protocol {
-                Protocol::Vless { .. } | Protocol::Vmess => acc("id").map(String::from),
-                Protocol::Trojan => acc("password").map(String::from),
-                Protocol::Hysteria2 { .. } => acc("auth").map(String::from),
-                Protocol::Ss2022 { method: m, psk, .. } => {
-                    // SIP022 multi-user: "<server PSK>:<user key>".
-                    method = m.clone().unwrap_or_default();
-                    match (psk, acc("password")) {
-                        (Some(psk), Some(user)) if !method.is_empty() => {
-                            Some(format!("{psk}:{user}"))
-                        }
-                        _ => None,
-                    }
-                }
-                Protocol::Unmanaged { .. } => None,
-            };
-            let Some(id_or_password) = id_or_password else {
-                continue;
-            };
-            let flow = match acc("flow") {
-                Some(f) if flow_applies(&spec.id, &net) => f,
-                _ => "",
-            };
-            // W11: display name and tags when set ("香港 01 | IPLC"), the
-            // inbound tag only when the node has several; names stay unique
-            // across the subscription (clients key proxies by name).
-            let name = if row.display_name.is_none() && row.tags.is_empty() {
-                format!("{} · {}", row.name, cred.inbound_tag)
-            } else {
-                let base =
-                    crate::nodemeta::public_name(&row.name, row.display_name.as_deref(), &row.tags);
-                if credentials_len > 1 {
-                    format!("{base} · {}", cred.inbound_tag)
-                } else {
-                    base
-                }
-            };
-            let name = unique_name(&mut names, name);
-            proxies.push(Proxy {
-                name,
-                protocol: spec.id.as_str(),
-                id_or_password,
-                flow: flow.to_string(),
-                method,
-                udp: crate::protocols::l4(inbound).1,
-                server: server.to_string(),
-                net,
-            });
+        // What clients dial may differ from what the inbound listens on
+        // (NAT, port forwarding, relays): the entrance's address.
+        let Some(server) = row.server.as_deref().filter(|s| !s.is_empty()) else {
+            continue; // no client-facing address yet
+        };
+        if let Some(p) = row.port.and_then(|p| u16::try_from(p).ok()) {
+            net.port = p;
         }
+        let Some(spec) = m.protocol_by_wire(&row.protocol) else {
+            continue;
+        };
+        let acc = |k: &str| row.account.get(k).and_then(|v| v.as_str());
+        let mut method = String::new();
+        let id_or_password = match &ib.protocol {
+            Protocol::Vless { .. } | Protocol::Vmess => acc("id").map(String::from),
+            Protocol::Trojan => acc("password").map(String::from),
+            Protocol::Hysteria2 { .. } => acc("auth").map(String::from),
+            Protocol::Ss2022 { method: m, psk, .. } => {
+                // SIP022 multi-user: "<server PSK>:<user key>".
+                method = m.clone().unwrap_or_default();
+                match (psk, acc("password")) {
+                    (Some(psk), Some(user)) if !method.is_empty() => Some(format!("{psk}:{user}")),
+                    _ => None,
+                }
+            }
+            Protocol::Unmanaged { .. } => None,
+        };
+        let Some(id_or_password) = id_or_password else {
+            continue;
+        };
+        let flow = match acc("flow") {
+            Some(f) if flow_applies(&spec.id, &net) => f,
+            _ => "",
+        };
+        // W11 display name and tags, then the entrance ("香港 01 | IPLC
+        // 直连"); names stay unique across the subscription (clients key
+        // proxies by name).
+        let base = crate::nodemeta::public_name(&row.name, row.display_name.as_deref(), &row.tags);
+        let name = unique_name(&mut names, format!("{base} {}", row.entrance));
+        proxies.push(Proxy {
+            name,
+            protocol: spec.id.as_str(),
+            id_or_password,
+            flow: flow.to_string(),
+            method,
+            udp: crate::protocols::l4(&row.inbound).1,
+            server: server.to_string(),
+            net,
+        });
     }
     proxies
 }

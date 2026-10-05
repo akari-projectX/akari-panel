@@ -85,36 +85,22 @@ pub async fn ensure_database(url: &str, reset: bool) -> Result<()> {
     Ok(())
 }
 
-fn inbounds(i: usize) -> serde_json::Value {
-    serde_json::json!([
-        {
-            "tag": "in-vless",
-            "protocol": "vless",
-            "port": 443,
-            "settings": {"decryption": "none"},
-            "streamSettings": {
-                "network": "tcp",
-                "security": "reality",
-                "realitySettings": {
-                    "serverNames": [format!("n{i}.example.com")],
-                    "publicKey": "Z84J2IelR9ch3k8VtlVhhs5ycBUlXA7wHBWcBrjqnAw",
-                    "shortId": "6ba85179e30d4fc2",
-                    "privateKey": "redacted-bench"
-                }
-            }
-        },
-        {
-            "tag": "in-trojan",
-            "protocol": "trojan",
-            "port": 8443,
-            "streamSettings": {
-                "network": "ws",
-                "security": "tls",
-                "tlsSettings": {"serverName": format!("n{i}.example.com")},
-                "wsSettings": {"path": "/t", "headers": {"Host": format!("n{i}.example.com")}}
+fn inbound(i: usize) -> serde_json::Value {
+    serde_json::json!({
+        "protocol": "vless",
+        "port": 443,
+        "settings": {"decryption": "none", "flow": "xtls-rprx-vision"},
+        "streamSettings": {
+            "network": "tcp",
+            "security": "reality",
+            "realitySettings": {
+                "serverNames": [format!("n{i}.example.com")],
+                "publicKey": "Z84J2IelR9ch3k8VtlVhhs5ycBUlXA7wHBWcBrjqnAw",
+                "shortId": "6ba85179e30d4fc2",
+                "privateKey": "redacted-bench"
             }
         }
-    ])
+    })
 }
 
 pub async fn run(args: SeedArgs) -> Result<()> {
@@ -143,32 +129,30 @@ pub async fn run(args: SeedArgs) -> Result<()> {
     seed_users(&pg, args.users).await?;
     seed_accounts(&pg).await?;
     let t = Instant::now();
-    // Every user of group g on every node of group g (both numbered by
-    // name order), one vless + one trojan credential per pair.
+    // Every user of group g on the direct entrance of every node of group
+    // g (both numbered by name order), one vless credential per pair.
     let assigned = sqlx::query(
         "WITH n AS (SELECT id, (row_number() OVER (ORDER BY name) - 1) % $1 AS g FROM nodes), \
               u AS (SELECT id, (row_number() OVER (ORDER BY email) - 1) % $1 AS g FROM users \
                     WHERE email LIKE 'bench-user-%') \
-         INSERT INTO node_users (node_id, user_id, credentials) \
-         SELECT n.id, u.id, jsonb_build_array( \
-             jsonb_build_object('inbound_tag', 'in-vless', 'protocol', 'vless', \
-                 'account', jsonb_build_object('id', gen_random_uuid()::text, 'flow', 'xtls-rprx-vision')), \
-             jsonb_build_object('inbound_tag', 'in-trojan', 'protocol', 'trojan', \
-                 'account', jsonb_build_object('password', encode(gen_random_bytes(32), 'hex')))) \
-         FROM n JOIN u USING (g)",
+         INSERT INTO entrance_users (entrance_id, user_id, protocol, account) \
+         SELECT e.id, u.id, 'vless', \
+             jsonb_build_object('id', gen_random_uuid()::text, 'flow', 'xtls-rprx-vision') \
+         FROM n JOIN u USING (g) JOIN entrances e ON e.node_id = n.id AND e.kind = 'direct'",
     )
     .bind(groups)
     .execute(&pg)
     .await?
     .rows_affected();
-    println!("node_users: {assigned} rows in {:.1?}", t.elapsed());
+    println!("entrance_users: {assigned} rows in {:.1?}", t.elapsed());
     if args.counters {
         let t = Instant::now();
         let n = sqlx::query(
-            "INSERT INTO traffic_counters (node_id, user_id, session_id, up_bytes, down_bytes, \
-             updated_at, first_seen_at) \
-             SELECT node_id, user_id, 'bench-old-session', 1000000, 5000000, \
-                    now() - interval '3 days', now() - interval '10 days' FROM node_users",
+            "INSERT INTO traffic_counters (node_id, entrance_id, user_id, session_id, up_bytes, \
+             down_bytes, updated_at, first_seen_at) \
+             SELECT e.node_id, eu.entrance_id, eu.user_id, 'bench-old-session', 1000000, 5000000, \
+                    now() - interval '3 days', now() - interval '10 days' \
+             FROM entrance_users eu JOIN entrances e ON e.id = eu.entrance_id",
         )
         .execute(&pg)
         .await?
@@ -214,7 +198,7 @@ async fn seed_history(pg: &PgPool, args: &SeedArgs, groups: i64) -> Result<()> {
     let k = (args.history_nodes_per_user as i64).min(per_group);
     let t = Instant::now();
     let n = sqlx::query(
-        "WITH n AS (SELECT id, (row_number() OVER (ORDER BY name) - 1) % $1 AS g,                            (row_number() OVER (ORDER BY name) - 1) / $1 AS r FROM nodes),               u AS (SELECT id, (row_number() OVER (ORDER BY email) - 1) % $1 AS g FROM users                     WHERE email LIKE 'bench-user-%'),               p AS (SELECT u.id AS user_id, u.g,                            (now() AT TIME ZONE 'UTC')::date - d AS day,                            abs(hashtextextended(u.id::text, d)) AS h                     FROM u CROSS JOIN generate_series(0, $3 - 1) d)          INSERT INTO traffic_daily (user_id, day, node_id, up_bytes, down_bytes, billed_bytes)          SELECT p.user_id, p.day, n.id, p.h % 50000000, (p.h % 50000000) * 4, (p.h % 50000000) * 5          FROM p CROSS JOIN LATERAL generate_series(0, $4 - 1) i          JOIN n ON n.g = p.g AND n.r = (p.h + i) % $2",
+        "WITH n AS (SELECT id, (row_number() OVER (ORDER BY name) - 1) % $1 AS g,                            (row_number() OVER (ORDER BY name) - 1) / $1 AS r FROM nodes),               u AS (SELECT id, (row_number() OVER (ORDER BY email) - 1) % $1 AS g FROM users                     WHERE email LIKE 'bench-user-%'),               p AS (SELECT u.id AS user_id, u.g,                            (now() AT TIME ZONE 'UTC')::date - d AS day,                            abs(hashtextextended(u.id::text, d)) AS h                     FROM u CROSS JOIN generate_series(0, $3 - 1) d)          INSERT INTO traffic_daily (user_id, day, entrance_id, node_id, up_bytes, down_bytes, billed_bytes)          SELECT p.user_id, p.day, e.id, n.id, p.h % 50000000, (p.h % 50000000) * 4, (p.h % 50000000) * 5          FROM p CROSS JOIN LATERAL generate_series(0, $4 - 1) i          JOIN n ON n.g = p.g AND n.r = (p.h + i) % $2          JOIN entrances e ON e.node_id = n.id AND e.kind = 'direct'",
     )
     .bind(groups)
     .bind(per_group)
@@ -224,13 +208,13 @@ async fn seed_history(pg: &PgPool, args: &SeedArgs, groups: i64) -> Result<()> {
     .await?
     .rows_affected();
     let m = sqlx::query(
-        "INSERT INTO traffic_node_daily (node_id, day, up_bytes, down_bytes, billed_bytes, users)          SELECT node_id, day, sum(up_bytes), sum(down_bytes), sum(billed_bytes), count(*)          FROM traffic_daily GROUP BY 1, 2",
+        "INSERT INTO traffic_entrance_daily (entrance_id, day, node_id, up_bytes, down_bytes, billed_bytes, users)          SELECT entrance_id, day, node_id, sum(up_bytes), sum(down_bytes), sum(billed_bytes), count(*)          FROM traffic_daily GROUP BY 1, 2, 3",
     )
     .execute(pg)
     .await?
     .rows_affected();
     println!(
-        "traffic history: {n} daily rows, {m} node-day rows in {:.1?}",
+        "traffic history: {n} daily rows, {m} entrance-day rows in {:.1?}",
         t.elapsed()
     );
     Ok(())
@@ -239,18 +223,26 @@ async fn seed_history(pg: &PgPool, args: &SeedArgs, groups: i64) -> Result<()> {
 async fn seed_nodes(pg: &PgPool, count: usize) -> Result<()> {
     let ids: Vec<Uuid> = (0..count).map(|_| Uuid::new_v4()).collect();
     let names: Vec<String> = (0..count).map(common::node_name).collect();
-    let inb: Vec<serde_json::Value> = (0..count).map(inbounds).collect();
+    let inb: Vec<serde_json::Value> = (0..count).map(inbound).collect();
     let addrs: Vec<String> = (0..count)
         .map(|i| format!("198.51.{}.{}", i / 250, 1 + i % 250))
         .collect();
     let mut tx = pg.begin().await?;
     sqlx::query(
-        "INSERT INTO nodes (id, name, xray_inbounds, server_addr) \
-         SELECT * FROM unnest($1::uuid[], $2::text[], $3::jsonb[], $4::text[])",
+        "INSERT INTO nodes (id, name, inbound) \
+         SELECT * FROM unnest($1::uuid[], $2::text[], $3::jsonb[])",
     )
     .bind(&ids)
     .bind(&names)
     .bind(&inb)
+    .execute(&mut *tx)
+    .await?;
+    // The direct entrances (created with the nodes) carry the address.
+    sqlx::query(
+        "UPDATE entrances e SET connect_host = t.a \
+         FROM unnest($1::uuid[], $2::text[]) AS t(id, a) WHERE e.node_id = t.id",
+    )
+    .bind(&ids)
     .bind(&addrs)
     .execute(&mut *tx)
     .await?;

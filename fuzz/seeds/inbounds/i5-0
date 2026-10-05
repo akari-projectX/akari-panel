@@ -1,0 +1,1 @@
+{"port": 444, "protocol": "vless", "settings": {"clients": [], "decryption": "none"}, "streamSettings": {"network": "httpupgrade", "httpupgradeSettings": {"path": "/u"}}}
