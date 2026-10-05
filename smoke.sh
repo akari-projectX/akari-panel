@@ -457,7 +457,8 @@ grep -q '"warnings":\[\]' /tmp/akari-smoke/last || { echo "FAIL: node view lacks
 # connect host (PATCH /entrances/{id}).
 [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID")" = "200" ] || { echo "FAIL: GET node"; exit 1; }
 DIRECT_ID=$(last_json "[e['id'] for e in d['entrances'] if e['kind'] == 'direct'][0]")
-last_json "[(e['name'], e['rate'], e['enabled']) for e in d['entrances']]" | matches -Fx "[('直连', 1.0, True)]" \
+last_json "[(e['kind'], e['name'] == '直连', e['rate_permille'], e['enabled']) for e in d['entrances']]" \
+  | matches -Fx "[('direct', True, 1000, True)]" \
   || { echo "FAIL: node without exactly its direct entrance"; cat /tmp/akari-smoke/last; exit 1; }
 entrance_patch() { code -b "$JAR" -X PATCH "$BASE/api/v1/entrances/$DIRECT_ID" -H 'Content-Type: application/json' -d "$1"; }
 [ "$(entrance_patch '{"connect_host":"node1.example.test"}')" = "200" ] && last_json "d['connect_host']" | matches -x 'node1.example.test' \
@@ -1063,7 +1064,7 @@ if need_agent cap:latency "W11 latency test"; then
   [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$NODE_ID/probe")" = "429" ] || { echo "FAIL: probe cooldown"; exit 1; }
   for _ in $(seq 1 40); do
     [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='agent' AND delay_ms IS NOT NULL AND target='http://127.0.0.1:18204/generate_204' AND measured_at > now() - interval '1 minute'")" = "1" ] \
-      && [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='panel' AND target='in-vless' AND delay_ms IS NOT NULL")" = "1" ] && break
+      && [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='panel' AND target='直连' AND delay_ms IS NOT NULL")" = "1" ] && break
     sleep 1
   done
   [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='agent' AND delay_ms IS NOT NULL")" -ge 1 ] \
