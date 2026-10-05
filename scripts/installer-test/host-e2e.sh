@@ -61,8 +61,15 @@ code() {
 # login). A v0.3.x panel (the refused-upgrade check) still takes {"login"}.
 admin_email=admin@myapp.test
 login() {
+	# v0.4 (W27): the form token from /auth/options, posted no sooner than
+	# the minimum submit time (default 2 s) after it.
+	local ft guard=""
+	[ "$(code "$origin/$1/auth/options")" = 200 ] || fail "auth options"
+	ft=$(sed -n 's/.*"form_token":"\([A-Za-z0-9_-]*\)".*/\1/p' "$work/last")
+	[ -z "$ft" ] || guard=",\"guard\":{\"form_token\":\"$ft\"}"
+	sleep 3
 	[ "$(code "$origin/$1/auth/login" -c "$work/jar" -X POST -H 'Content-Type: application/json' \
-		-d "{\"email\":\"$admin_email\",\"password\":\"$pw\"}")" = 200 ] ||
+		-d "{\"email\":\"$admin_email\",\"password\":\"$pw\"$guard}")" = 200 ] ||
 		[ "$(code "$origin/$1/auth/login" -c "$work/jar" -X POST -H 'Content-Type: application/json' \
 			-d "{\"login\":\"$admin_email\",\"password\":\"$pw\"}")" = 200 ] || fail "admin login"
 }

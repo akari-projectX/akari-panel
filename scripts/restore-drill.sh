@@ -75,9 +75,13 @@ api() { # api <jar> curl-args... (with $BASE)
   local jar="$1"; shift
   curl -s --noproxy '*' -b "$jar" -c "$jar" "$@"
 }
-login() { # -> http status
+login() { # -> http status (W27: with the form token, after the minimum submit time)
+  local ft
+  ft=$(api "$W/jar" "$BASE/auth/options" | sed -n 's/.*"form_token":"\([A-Za-z0-9_-]*\)".*/\1/p')
+  sleep 3
   api "$W/jar" -o "$W/login.json" -w '%{http_code}' -X POST "$BASE/auth/login" \
-    -H 'Content-Type: application/json' -d "{\"email\":\"root@drill.example\",\"password\":\"$PW\"}"
+    -H 'Content-Type: application/json' \
+    -d "{\"email\":\"root@drill.example\",\"password\":\"$PW\",\"guard\":{\"form_token\":\"$ft\"}}"
 }
 
 echo "== 1. fresh install: admin, user, node, agent online =="

@@ -48,6 +48,8 @@ MODULES = {
     "src/csvx.rs": 90.0,
     "src/billing/manual.rs": 90.0,
     "src/billing/coupon_batches.rs": 90.0,
+    # W27: bot protection of the public forms (tokens, honeypot, Turnstile).
+    "src/botguard.rs": 90.0,
 }
 
 TEST_MOD = re.compile(r"^(pub(\(crate\))? )?mod \w+ \{")

@@ -76,6 +76,8 @@ export const zh = {
     localeInvalid: "不支持的语言",
     passwordTooLong: "密码过长",
     passwordTooShort: "密码至少需要 8 位",
+    captchaFailed: "人机验证未通过，请重试",
+    captchaUnavailable: "人机验证服务暂不可用，请稍后再试",
     credentialsRequired: "请填写账号和密码",
     adminNoBalance: "管理员账户没有余额",
     invalidInviter: "邀请关系无效",

@@ -805,6 +805,7 @@ test("W15: 系统设置 注册/邮件, sign up by email code, reset the password
   await ap.getByRole("tab", { name: "注册" }).click();
   await ap.reload();
   await ap.getByLabel("开放注册").check();
+  await ap.getByLabel("注册需要邮箱验证").check(); // v0.4: its own switch, default off
   await ap.getByLabel("允许通过邮件找回密码").check();
   await ap.getByRole("button", { name: "保存注册设置" }).click();
   await expect(ap.getByText("已保存。").first()).toBeVisible();
@@ -903,7 +904,7 @@ test("W24: 系统设置 → 支付 (imported + added method, 测试连接), sign
   await ap.getByRole("button", { name: "取消" }).click();
   // 注册: no email verification.
   await ap.getByRole("tab", { name: "注册" }).click();
-  await ap.getByLabel("注册需要邮箱验证").selectOption("off");
+  await ap.getByLabel("注册需要邮箱验证").uncheck();
   await ap.getByRole("button", { name: "保存注册设置" }).click();
   await expect(ap.getByText("已保存。").first()).toBeVisible();
   expect(adminProblems).toEqual([]);

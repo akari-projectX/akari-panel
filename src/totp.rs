@@ -35,6 +35,8 @@ pub struct Keys {
     pay: aead::LessSafeKey,
     /// W24: registration proof-of-work challenges (stateless, HMAC-bound).
     pow: hmac::Key,
+    /// v0.4 D1: public form tokens (`botguard`, minimum submit time).
+    form: hmac::Key,
 }
 
 const SEAL_VERSION: u8 = 1;
@@ -51,6 +53,7 @@ impl Keys {
         let sub = hmac::sign(&root, b"akari/sub-token-aead/v1");
         let pay = hmac::sign(&root, b"akari/payment-secrets-aead/v1");
         let pow = hmac::sign(&root, b"akari/signup-pow-hmac/v1");
+        let form = hmac::sign(&root, b"akari/form-token-hmac/v1");
         let aead_key = |k: &[u8]| {
             aead::UnboundKey::new(&aead::AES_256_GCM, k)
                 .map(aead::LessSafeKey::new)
@@ -62,6 +65,7 @@ impl Keys {
             sub: aead_key(sub.as_ref())?,
             pay: aead_key(pay.as_ref())?,
             pow: hmac::Key::new(hmac::HMAC_SHA256, pow.as_ref()),
+            form: hmac::Key::new(hmac::HMAC_SHA256, form.as_ref()),
         })
     }
 
@@ -103,6 +107,14 @@ impl Keys {
     /// W24: MAC of a registration proof-of-work challenge.
     pub fn pow_mac(&self, challenge: &[u8]) -> [u8; 32] {
         let tag = hmac::sign(&self.pow, challenge);
+        let mut out = [0u8; 32];
+        out.copy_from_slice(tag.as_ref());
+        out
+    }
+
+    /// v0.4 D1: MAC of a public form token (`botguard`).
+    pub fn form_mac(&self, payload: &[u8]) -> [u8; 32] {
+        let tag = hmac::sign(&self.form, payload);
         let mut out = [0u8; 32];
         out.copy_from_slice(tag.as_ref());
         out
@@ -215,6 +227,11 @@ mod tests {
         assert_eq!(
             hex::encode(keys.pow_mac(b"challenge")),
             "aa9df01256e2651fee8b9e586bf1ca98fcdeee1c797b06b1a7cb85f601e8776b"
+        );
+        // akari/form-token-hmac/v1 (v0.4): pinned from its introduction.
+        assert_eq!(
+            hex::encode(keys.form_mac(b"form")),
+            "535b240603c1c393a44ba5252f121038c4d665df5f13ab6c6ad30a628830baf1",
         );
     }
 

@@ -11,6 +11,7 @@ pub mod auth;
 pub mod batch;
 pub mod billing;
 pub mod blockrules;
+pub mod botguard;
 pub mod branding;
 pub mod client_ip;
 pub mod cloudflare;

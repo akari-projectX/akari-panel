@@ -54,9 +54,15 @@ announcement.title_long
 announcement.title_multiline
 announcement.title_required
 announcement.window_invalid
+auth.captcha_failed
+auth.captcha_unavailable
 auth.credentials_required
 auth.forbidden
 auth.unauthorized
+auth_admin.min_submit_range
+auth_admin.turnstile_incomplete
+auth_admin.turnstile_key_invalid
+auth_admin.turnstile_secret_invalid
 balance.admin_none
 balance.insufficient
 batch.body_length

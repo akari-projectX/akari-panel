@@ -2494,6 +2494,15 @@ pub async fn cli_unset(cfg: &PanelConfig, pg: &sqlx::PgPool, field: &str) -> any
         .await
         .map_err(msg)?;
     }
+    if field == "turnstile" {
+        // W27: the Turnstile switches of the public forms (keys kept).
+        crate::botguard::apply_turnstile_off(&mut tx, &Actor::cli())
+            .await
+            .map_err(msg)?;
+        tx.commit().await?;
+        println!("turnstile: switched off on every form; running panels apply it at once");
+        return Ok(());
+    }
     if field != "probe" {
         let cur = read_stored(&mut tx, false).await?;
         let mut new = Values::of(&cur);
@@ -2503,7 +2512,9 @@ pub async fn cli_unset(cfg: &PanelConfig, pg: &sqlx::PgPool, field: &str) -> any
             "node" => new.node_domain = None,
             "trust-cloudflare" => new.trust_cloudflare = None,
             "all" => new = Values::default(),
-            _ => anyhow::bail!("field must be main, sub, node, trust-cloudflare, probe or all"),
+            _ => anyhow::bail!(
+                "field must be main, sub, node, trust-cloudflare, probe, turnstile or all"
+            ),
         }
         apply_update(&mut tx, &Actor::cli(), cur.version, &new)
             .await

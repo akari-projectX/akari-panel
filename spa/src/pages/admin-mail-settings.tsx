@@ -24,8 +24,7 @@ export interface SignupView {
   trial_days: number;
   reset_enabled: boolean;
   // W24: null = 自动（已启用邮件发送时验证）。
-  email_verify: boolean | null;
-  email_verify_effective: boolean;
+  email_verify: boolean;
   mail_enabled: boolean;
   public_origin: string | null;
   warnings: string[];
@@ -184,9 +183,7 @@ function SignupForm({ data, saved, onSaved }: FormProps<SignupView>) {
   const [trialPlan, setTrialPlan] = useState(data.trial_plan_id ?? "");
   const [trialDays, setTrialDays] = useState(String(data.trial_days));
   const [reset, setReset] = useState(data.reset_enabled);
-  const [verify, setVerify] = useState<"auto" | "on" | "off">(
-    data.email_verify == null ? "auto" : data.email_verify ? "on" : "off",
-  );
+  const [verify, setVerify] = useState(data.email_verify);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -209,7 +206,7 @@ function SignupForm({ data, saved, onSaved }: FormProps<SignupView>) {
         trial_plan_id: trialPlan || null,
         trial_days: days,
         reset_enabled: reset,
-        email_verify: verify === "auto" ? null : verify === "on",
+        email_verify: verify,
       });
       onSaved(res.version);
       qc.setQueryData(["settings-signup"], res);
@@ -242,24 +239,13 @@ function SignupForm({ data, saved, onSaved }: FormProps<SignupView>) {
             hint="登录页显示「注册」。新用户的账号即邮箱，注册后可直接登录。"
           />
           <div className="space-y-3 pl-6">
-            <div className="space-y-1.5">
-              <Label htmlFor="su-verify">注册需要邮箱验证</Label>
-              <select
-                id="su-verify"
-                className="h-9 rounded-lg border border-border bg-transparent px-3 text-sm"
-                value={verify}
-                onChange={(e) => setVerify(e.target.value as "auto" | "on" | "off")}
-              >
-                <option value="auto">自动（已启用邮件发送时验证）</option>
-                <option value="on">需要（发送验证码）</option>
-                <option value="off">不需要</option>
-              </select>
-              <p className="text-xs text-muted-foreground">
-                当前：{data.email_verify_effective ? "需要邮箱验证码" : "不验证邮箱"}。不验证时用户直接以邮箱 +
-                密码注册，邮箱为「未验证」状态（不能用于找回密码，配置邮件后可在账户页验证，管理员也可在用户详情中标记为已验证）；
-                防滥用由内置人机校验（浏览器自动完成，用户无感）与按 IP / 邮箱的频率限制负责。
-              </p>
-            </div>
+            <Check
+              id="su-verify"
+              label="注册需要邮箱验证"
+              checked={verify}
+              onChange={setVerify}
+              hint="开启后注册须填写邮件验证码（需要邮件发送）。关闭时用户直接以邮箱 + 密码注册，邮箱为「未验证」状态（不能用于找回密码，可在账户页验证，管理员也可标记为已验证）；防滥用由内置人机校验与按 IP / 邮箱的频率限制负责。"
+            />
             <Check
               id="su-invite"
               label="必须使用邀请码"

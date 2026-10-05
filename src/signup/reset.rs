@@ -48,6 +48,9 @@ const TOKEN_LEN: usize = 43;
 #[serde(deny_unknown_fields)]
 pub struct RequestReq {
     pub email: String,
+    /// v0.4: honeypot / form token / Turnstile (`botguard`).
+    #[serde(default)]
+    pub guard: Option<crate::botguard::Guard>,
 }
 
 #[derive(Deserialize)]
@@ -87,9 +90,21 @@ pub async fn request_reset(
         return Ok(crate::reject::not_found());
     }
     let req: RequestReq = read_json(body).await?;
+    let client = state.client_ip(peer.ip(), &headers);
+    // A trapped request gets the answer every request gets (nothing sent).
+    if crate::botguard::check_form(
+        &state,
+        crate::botguard::Form::Reset,
+        req.guard.as_ref(),
+        client,
+    )
+    .await?
+        == crate::botguard::Verdict::Trap
+    {
+        return Ok(super::ok_json(json!({ "ok": true })));
+    }
     let addr = email::parse(&req.email)
         .ok_or_else(|| bad_request!("signup.invalid_email", "invalid email address"))?;
-    let client = state.client_ip(peer.ip(), &headers);
     super::limit_send(&state, &crate::client_ip::bucket(client), &addr).await?;
     let st = state.clone();
     tokio::spawn(async move {

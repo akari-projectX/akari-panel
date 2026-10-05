@@ -27,6 +27,9 @@ pub struct LoginReq {
     /// D1: the account's email address (any case; stored lower-case).
     pub email: String,
     pub password: String,
+    /// v0.4: honeypot / form token / Turnstile (`botguard`).
+    #[serde(default)]
+    pub guard: Option<crate::botguard::Guard>,
 }
 
 /// POST /auth/login {email, password}. Failed attempts are rate limited per
@@ -69,6 +72,28 @@ pub async fn login(
             })?
             .ok_or_else(ApiError::too_many)?;
 
+    // v0.4 bot protection: a trapped attempt is answered exactly like a
+    // wrong password (same work: one argon2), and counts like one; a
+    // Turnstile refusal is its own error (the reservation is released).
+    match crate::botguard::check_form(
+        &state,
+        crate::botguard::Form::Login,
+        req.guard.as_ref(),
+        client,
+    )
+    .await
+    {
+        Ok(crate::botguard::Verdict::Pass) => {}
+        Ok(crate::botguard::Verdict::Trap) => {
+            auth::scrub_password_async(&req.password).await;
+            attempt.fail();
+            return Err(ApiError::unauthorized());
+        }
+        Err(e) => {
+            attempt.release(&state).await;
+            return Err(e);
+        }
+    }
     match check_credentials(&state, &email, &req.password).await {
         Ok(Checked::Ok(row)) => match finish_login(&state, &row, client).await {
             Ok(()) => {
@@ -5192,6 +5217,7 @@ mod tests {
             ApiJson(LoginReq {
                 email: login.into(),
                 password: password.into(),
+                guard: None,
             }),
         )
         .await;

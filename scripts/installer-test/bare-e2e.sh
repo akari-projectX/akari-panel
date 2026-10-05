@@ -98,14 +98,21 @@ https_code() {
 	cx curl -sk -o /tmp/last -w '%{http_code}' --resolve "myapp.test:443:127.0.0.1" "$@" "$url"
 }
 check_panel() {
-	local want_version=$1 p
+	local want_version=$1 p ft
 	p=$(prefix)
 	[ -n "$p" ] || fail "no prefix from akari-ctl info"
 	[ "$(https_code "$origin/$p/healthz")" = 200 ] || fail "healthz through Caddy"
 	[ "$(https_code "$origin/")" = 404 ] || fail "/ is not the plain 404"
 	# A v0.3.x panel (the refused-upgrade check) still takes {"login"}.
+	# v0.4 (W27): the form token from /auth/options, posted no sooner than
+	# the minimum submit time (default 2 s) after it.
+	local guard=""
+	[ "$(https_code "$origin/$p/auth/options")" = 200 ] || fail "auth options"
+	ft=$(cx sed -n 's/.*"form_token":"\([A-Za-z0-9_-]*\)".*/\1/p' /tmp/last)
+	[ -z "$ft" ] || guard=",\"guard\":{\"form_token\":\"$ft\"}"
+	sleep 3
 	[ "$(https_code "$origin/$p/auth/login" -c /tmp/jar -X POST -H 'Content-Type: application/json' \
-		-d "{\"email\":\"$admin_email\",\"password\":\"$pw\"}")" = 200 ] ||
+		-d "{\"email\":\"$admin_email\",\"password\":\"$pw\"$guard}")" = 200 ] ||
 		[ "$(https_code "$origin/$p/auth/login" -c /tmp/jar -X POST -H 'Content-Type: application/json' \
 			-d "{\"login\":\"$admin_email\",\"password\":\"$pw\"}")" = 200 ] || fail "admin login via the API"
 	cx grep -q '"role":"admin"' /tmp/last || fail "login response"

@@ -53,6 +53,9 @@ pub struct CodeReq {
     pub invite_code: Option<String>,
     #[serde(default)]
     pub locale: Option<String>,
+    /// v0.4: honeypot / form token / Turnstile (`botguard`).
+    #[serde(default)]
+    pub guard: Option<crate::botguard::Guard>,
 }
 
 #[derive(Deserialize)]
@@ -77,6 +80,9 @@ pub struct RegisterReq {
     pub invite_code: Option<String>,
     #[serde(default)]
     pub locale: Option<String>,
+    /// v0.4: honeypot / form token / Turnstile (`botguard`).
+    #[serde(default)]
+    pub guard: Option<crate::botguard::Guard>,
 }
 
 /// Address + invite checks shared by both steps (they depend only on the
@@ -124,15 +130,28 @@ pub async fn request_code(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, ApiError> {
-    let Some((s, _)) = super::settings_with_mail(&state)
+    let Some(s) = super::settings_or_none(&state)
         .await
-        .filter(|(s, mail)| s.register_enabled && s.verification_required(*mail))
+        .filter(|s| s.register_enabled && s.email_verify)
     else {
         return Ok(crate::reject::not_found());
     };
     let req: CodeReq = read_json(body).await?;
-    let (addr, _) = admit(&state, &s, &req.email, req.invite_code.as_deref()).await?;
     let client = state.client_ip(peer.ip(), &headers);
+    // A trapped request gets the answer every request gets (and nothing
+    // is sent).
+    if crate::botguard::check_form(
+        &state,
+        crate::botguard::Form::RegisterCode,
+        req.guard.as_ref(),
+        client,
+    )
+    .await?
+        == crate::botguard::Verdict::Trap
+    {
+        return Ok(super::ok_json(json!({ "ok": true })));
+    }
+    let (addr, _) = admit(&state, &s, &req.email, req.invite_code.as_deref()).await?;
     super::limit_send(&state, &crate::client_ip::bucket(client), &addr).await?;
     let locale = Locale::parse(req.locale.as_deref().unwrap_or("zh"));
     // Everything that depends on the address having an account happens
@@ -362,9 +381,9 @@ pub fn unavailable() -> ApiError {
 /// GET /{prefix}/auth/register/challenge → `{challenge, bits}` (W24;
 /// registration without verification only, else the canonical rejection).
 pub async fn challenge(State(state): State<AppState>) -> Response {
-    let open = super::settings_with_mail(&state)
+    let open = super::settings_or_none(&state)
         .await
-        .is_some_and(|(s, mail)| s.register_enabled && !s.verification_required(mail));
+        .is_some_and(|s| s.register_enabled && !s.email_verify);
     if !open {
         return crate::reject::not_found();
     }
@@ -523,9 +542,9 @@ pub async fn register(
     jar: CookieJar,
     body: Body,
 ) -> Result<Response, ApiError> {
-    let Some((s, mail)) = super::settings_with_mail(&state)
+    let Some(s) = super::settings_or_none(&state)
         .await
-        .filter(|(s, _)| s.register_enabled)
+        .filter(|s| s.register_enabled)
     else {
         return Ok(crate::reject::not_found());
     };
@@ -533,7 +552,23 @@ pub async fn register(
     super::check_password(&req.password)?;
     let client = state.client_ip(peer.ip(), &headers);
     let bucket = crate::client_ip::bucket(client);
-    let verify = s.verification_required(mail);
+    let verify = s.email_verify;
+    // A trapped registration gets the generic refusal of its mode.
+    if crate::botguard::check_form(
+        &state,
+        crate::botguard::Form::Register,
+        req.guard.as_ref(),
+        client,
+    )
+    .await?
+        == crate::botguard::Verdict::Trap
+    {
+        return Err(if verify {
+            invalid_code()
+        } else {
+            unavailable()
+        });
+    }
     let locale = Locale::parse(req.locale.as_deref().unwrap_or("zh"));
     let r = if verify {
         super::limit_complete(&state, &bucket).await?;

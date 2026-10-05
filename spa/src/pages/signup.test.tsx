@@ -243,8 +243,7 @@ describe("portal cards", () => {
 
 const signupView = (over: Partial<SignupView> = {}): SignupView => ({
   version: 3,
-  email_verify: null,
-  email_verify_effective: true,
+  email_verify: false,
   register_enabled: false,
   invite_required: false,
   invite_single_use: false,
@@ -331,7 +330,7 @@ describe("admin 注册 / 邮件", () => {
       trial_plan_id: "p1",
       trial_days: 3,
       reset_enabled: false,
-      email_verify: null,
+      email_verify: false,
     });
 
     expect((screen.getByLabelText("密码") as HTMLInputElement).placeholder).toBe("已保存，留空不修改");

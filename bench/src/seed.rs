@@ -316,5 +316,11 @@ async fn seed_accounts(pg: &PgPool) -> Result<()> {
         .bind(hash)
         .execute(pg)
         .await?;
+    // The tools post logins straight from code: no form token / minimum
+    // submit time (the settings row is still read per login, as in
+    // production).
+    sqlx::query("UPDATE auth_settings SET honeypot = false, min_submit_secs = 0")
+        .execute(pg)
+        .await?;
     Ok(())
 }

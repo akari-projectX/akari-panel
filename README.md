@@ -46,6 +46,21 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
 - All panel API lives under a per-install random route prefix. Anything that
   guesses wrong — including the bare prefix and `/` — gets one identical
   empty 404 (no body, none of the panel's security headers).
+- **Bot protection of the public forms (W27, `botguard.rs`)**: login,
+  registration (code + submit) and the reset request take an optional
+  `guard: {form_token?, website?, turnstile?}`. Honeypot (default on): a
+  non-empty `website` (a field people never see) is a bot. Minimum submit
+  time (default 2 s, 0 = off): `form_token` (from `/auth/options`; an HMAC
+  of its issue time with a key derived from `data/master.key`, valid 24 h)
+  must be at least that old. A trapped request gets exactly the answer of an
+  ordinary failure of that form (login: the uniform 401, counted like a
+  wrong password; mail requests: `{"ok":true}`, nothing sent; registration:
+  the generic refusal) and increments only `akari_bot_trap_total{form,reason}`
+  (no log line). Cloudflare Turnstile (per form, default off) is verified
+  server side after those checks and fails closed (400/503). Clients: fetch
+  `/auth/options`, wait `form_min_secs`, post `guard.form_token`; the
+  console's Turnstile widget (CSP: `challenges.cloudflare.com`) is not built
+  yet (W36-b).
 - `POST /{prefix}/auth/login` (`{email, password}`) verifies argon2id hashes
   (timing-equalized for unknown addresses; failed attempts rate limited per
   client address — IPv6 per /64 — at 20/15min and per address at 50/15min,
@@ -228,12 +243,12 @@ separate loopback listener, never on the public port.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| POST | /auth/login | — | `{email, password}` (D1: the address, any case, verified or not): argon2id, sets the session cookie; → `{id, email, role, expired, quota_exhausted, banned}` (R21 renewal scope; W28-c: a banned role=user account signs in to the portal scope*). Every failure is the uniform 401 |
+| POST | /auth/login | — | `{email, password, guard?}` (D1: the address, any case, verified or not): argon2id, sets the session cookie; → `{id, email, role, expired, quota_exhausted, banned}` (R21 renewal scope; W28-c: a banned role=user account signs in to the portal scope*). Every failure is the uniform 401 — including a trapped bot (W27 `guard`, below). Turnstile on: 400 `auth.captcha_failed` (missing/rejected token) / 503 `auth.captcha_unavailable` (verifier unreachable) |
 | POST | /auth/logout | — | clears the cookie and ends all of the account's sessions |
-| GET | /auth/options | — | W15: what the login page offers `{register, invite_required, email_domains, reset}` |
-| POST | /auth/register/code | — (registration on) | W15: `{email, invite_code?, locale?}` → `{"ok":true}` for every address (a code by mail, or an "already registered" mail); rate limited per client and address |
-| POST | /auth/register | — (registration on) | W15: `{email, code, password, invite_code?, locale?}` → account (address verified) + session `{id, email, role, …}`; wrong/expired/used code = 400 `invalid or expired code` |
-| POST | /auth/password-reset/request | — (reset on) | W15: `{email}` → `{"ok":true}` for every address; a 30-minute single-use link goes to a verified address |
+| GET | /auth/options | — | W15: what the login page offers `{register, invite_required, email_domains, reset, email_verify, site_name, branding, guard}`; `Cache-Control: no-store`. W27 `guard` = `{form_token, form_min_secs, honeypot, turnstile: {site_key, login, register, reset} \| null}` (null = settings unreadable: the forms refuse) |
+| POST | /auth/register/code | — (registration + verification on) | W15: `{email, invite_code?, locale?, guard?}` → `{"ok":true}` for every address (a code by mail, or an "already registered" mail); rate limited per client and address |
+| POST | /auth/register | — (registration on) | W15: `{email, code \| pow, password, invite_code?, locale?, guard?}` (`code` when 注册需要邮箱验证 is on, else the W24 proof of work); a trapped bot gets the mode's generic refusal → account (address verified) + session `{id, email, role, …}`; wrong/expired/used code = 400 `invalid or expired code` |
+| POST | /auth/password-reset/request | — (reset on) | W15: `{email, guard?}` → `{"ok":true}` for every address (and for a trapped bot: nothing sent); a 30-minute single-use link goes to a verified address |
 | POST | /auth/password-reset | — (reset on) | W15: `{token, password}`: new password, every session ends |
 | GET | /api/v1/me | user (portal scope*) | profile (`email` = the login name, `email_verified`) + traffic usage; `expired` / `quota_exhausted` (R21); W28-c `banned`, `ban_reason` (written by the admin for the user), `banned_at`; W20: `sub_token` + `sub_url` (the subscription link, `Cache-Control: no-store`; null for admins and the renewal scope; an account without a token gets one here), `sub_legacy` (pre-W20 link: works, cannot be shown until reset), `probe_interval_secs` |
 | POST | /api/v1/me/sub-token | user (role=user) | reset own subscription link (5/hour); the old link stops working |
@@ -244,7 +259,8 @@ separate loopback listener, never on the public port.
 | PUT | /api/v1/me/locale | user (renewal scope*) | W15: `{locale: zh\|en}`: language of the account's mails |
 | GET/POST | /api/v1/me/invite-codes | user (role=user) | W15: own invite codes, link base, invited count / new code (per-user limit; registration must be open) |
 | DELETE | /api/v1/me/invite-codes/{code} | user (role=user) | W15: delete an invite code |
-| GET/PUT | /api/v1/settings/signup | admin | W15 系统设置 → 注册: registration, invite rules, email domain allow-list, trial plan, password reset (optimistic `version`) |
+| GET/PUT | /api/v1/settings/signup | admin | W15 系统设置 → 注册: registration, invite rules, email domain allow-list, trial plan, password reset, `email_verify` (W27: a plain bool, default false; true needs mail sending) (optimistic `version`) |
+| GET/PUT | /api/v1/settings/auth | admin | W27 bot protection of the public forms: `{version, turnstile_site_key, turnstile_secret?, turnstile_login, turnstile_register, turnstile_reset, honeypot, min_submit_secs}`; the secret is write-only (absent = keep, `""` = remove; sealed with the master key; GET answers `turnstile_secret_set`; audit `settings.auth.update` records it as `"changed"`); a form switch needs both keys (`auth_admin.turnstile_incomplete`); `min_submit_secs` 0–60 (0 = off). CLI way back in: `akari settings unset turnstile` |
 | GET/PUT | /api/v1/settings/mail | admin | W15 系统设置 → 邮件: provider (W31: `smtp` or `resend`; absent = keep), SMTP host/port/security/credentials (password write-only, sealed), Resend `api_key` (write-only, sealed; view: `api_key_set`), sender, notice switches |
 | POST | /api/v1/settings/mail/test | admin | W15: `{to}`: send a test mail now with the saved settings (502 = the server's answer) |
 | POST | /api/v1/settings/mail/diagnose | admin | W31: `{to}`: step-by-step check of the saved provider — config, DNS, TCP, TLS (implicit 465 / STARTTLS 587, mismatch detected), greeting, AUTH, send — always 200 `{provider, ok, steps: [{step, status ok\|warn\|fail\|skip, elapsed_ms, code mail.diag.*, params, message: {zh, en}}]}`; audited `settings.mail.test` |

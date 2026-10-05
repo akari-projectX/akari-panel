@@ -238,6 +238,7 @@ docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE plans,
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "UPDATE panel_settings SET version = 0, main_domain = NULL, sub_domain = NULL, node_domain = NULL, trust_cloudflare = NULL, probe_interval_secs = NULL, probe_urls = NULL, probe_panel_tcp = NULL, site_name = NULL, cloudflare_ranges = NULL, install_tls_pin = NULL, install_fallback_url = NULL, acme_directory_url = NULL, acme_email = NULL, audit_retention_days = NULL, traffic_daily_retention_days = NULL, remove_mode = NULL, extra_release_keys = NULL; TRUNCATE grpc_server_names, legacy_config_imports;" >/dev/null 2>&1 || true
 # W15 settings back to the defaults (off; version 0) and an empty outbox.
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM signup_settings; INSERT INTO signup_settings (id) VALUES (1); DELETE FROM mail_settings; INSERT INTO mail_settings (id) VALUES (1); TRUNCATE mail_outbox;" >/dev/null 2>&1 || true
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM auth_settings; INSERT INTO auth_settings (id) VALUES (1);" >/dev/null 2>&1 || true
 # W17: alert settings an aborted run may leave (a webhook to a dead receiver).
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE node_alerts, alert_notifications; UPDATE alert_settings SET version = 0, enabled = true, offline_secs = 300, webhook_enabled = false, webhook_url = NULL, webhook_secret_enc = NULL, telegram_enabled = false, telegram_chat_id = NULL, telegram_token_enc = NULL, telegram_api_url = NULL, email_enabled = false, email_to = '{}';" >/dev/null 2>&1 || true
 # Ops: announcements, knowledge base, templates and branding of an earlier run.
@@ -326,6 +327,50 @@ done
 curl -s --noproxy '*' -D - -o /dev/null "$BASE/healthz" | matches -i '^x-frame-options: DENY' \
   || { echo "FAIL: security headers missing on real responses"; exit 1; }
 echo "rejections: ok ($REJ)"
+
+echo "== W27: bot protection of the public forms (default: honeypot + 2 s minimum) =="
+# Fingerprint without the per-request id (status, headers, body).
+fpr() { curl -s --noproxy '*' -D - "$@" | tr -d '\r' | grep -viE '^(date|x-request-id):' | sha256sum | cut -d' ' -f1; }
+guard_opts() { # -> the form token of a fresh /auth/options (asserts the guard part)
+  curl -s --noproxy '*' -D /tmp/akari-smoke/opth -o /tmp/akari-smoke/last "$BASE/auth/options"
+  tr -d '\r' </tmp/akari-smoke/opth | matches -i '^cache-control: no-store' || { echo "FAIL: /auth/options cacheable"; exit 1; }
+  last_json "d['guard']['form_token'] or ''"
+}
+FT=$(guard_opts)
+last_json "d['guard']['form_min_secs'] == 2 and d['guard']['honeypot'] is True and d['guard']['turnstile'] is None" | matches '^True$' \
+  || { echo "FAIL: default guard options"; cat /tmp/akari-smoke/last; exit 1; }
+[ -n "$FT" ] || { echo "FAIL: no form token"; exit 1; }
+sleep 2.2
+gl() { printf '{"email":"root@smoke.test","password":"%s","guard":%s}' "$1" "$2"; }
+WRONG=$(fpr -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "$(gl wrong-password "{\"form_token\":\"$FT\"}")")
+FRESH=$(guard_opts)
+for trap in "{\"form_token\":\"$FT\",\"website\":\"http://spam.example\"}" "{\"form_token\":\"$FRESH\"}" "{}"; do
+  [ "$(fpr -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "$(gl "$ADMIN_PW" "$trap")")" = "$WRONG" ] \
+    || { echo "FAIL: trapped login differs from a wrong password: $trap"; exit 1; }
+done
+[ "$(code -c "$JAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "$(gl "$ADMIN_PW" "{\"form_token\":\"$FT\",\"website\":\"\"}")")" = "200" ] || { echo "FAIL: guarded login"; exit 1; }
+curl -s --noproxy '*' http://127.0.0.1:9109/metrics | matches '^akari_bot_trap_total{form="login",reason="honeypot"} 1$' \
+  || { echo "FAIL: trap counter"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'auth.login_failed'")" -ge 1 ] || { echo "FAIL: failed login audit"; exit 1; }
+# 系统设置 → 登录与注册: the secret is write-only; a Turnstile switch needs both keys.
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/auth")" = "200" ] && last_json "d['turnstile_secret_set'] is False and d['min_submit_secs'] == 2 and d['version'] == 0" | matches '^True$' \
+  || { echo "FAIL: GET settings/auth"; cat /tmp/akari-smoke/last; exit 1; }
+AUTHSET='"turnstile_register":false,"turnstile_reset":false,"honeypot":true'
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/auth" -H 'Content-Type: application/json' \
+    -d "{\"version\":0,\"turnstile_site_key\":\"0x4AAA\",\"turnstile_login\":true,$AUTHSET,\"min_submit_secs\":2}")" = "400" ] \
+  && last_json "d['code']" | matches '^auth_admin.turnstile_incomplete$' || { echo "FAIL: Turnstile without secret accepted"; exit 1; }
+# The rest of the smoke posts logins straight from curl: no minimum time.
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/auth" -H 'Content-Type: application/json' \
+    -d "{\"version\":0,\"turnstile_site_key\":\"0x4AAA\",\"turnstile_secret\":\"smoke-secret-x\",\"turnstile_login\":false,$AUTHSET,\"min_submit_secs\":0}")" = "200" ] \
+  && last_json "d['turnstile_secret_set'] is True and 'smoke-secret-x' not in json.dumps(d)" | matches '^True$' || { echo "FAIL: PUT settings/auth"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT after->>'turnstile_secret' FROM audit_log WHERE action = 'settings.auth.update'")" = "changed" ] \
+  || { echo "FAIL: settings.auth.update audit"; exit 1; }
+curl -s --noproxy '*' -o /tmp/akari-smoke/last "$BASE/auth/options"
+last_json "d['guard']['form_token'] is None and d['guard']['turnstile'] == {'site_key': '0x4AAA', 'login': False, 'register': False, 'reset': False}" | matches '^True$' \
+  || { echo "FAIL: options after the change"; cat /tmp/akari-smoke/last; exit 1; }
+matches -v smoke-secret-x /tmp/akari-smoke/last || { echo "FAIL: Turnstile secret leaked"; exit 1; }
+echo "bot protection: ok"
 
 echo "== login (wrong password x3, then ok) =="
 for i in 1 2 3; do
@@ -1417,7 +1462,7 @@ for p in register/code register password-reset/request password-reset; do
 done
 [ "$(code "$BASE/auth/options")" = "200" ] && last_json "d['register'] or d['reset']" | matches False \
   || { echo "FAIL: auth options while disabled"; cat /tmp/akari-smoke/last; exit 1; }
-SIGNUP_ON='"register_enabled":true,"invite_required":false,"invite_single_use":false,"invite_codes_per_user":5,"email_domains":[],"trial_plan_id":null,"trial_days":3,"reset_enabled":true'
+SIGNUP_ON='"register_enabled":true,"invite_required":false,"invite_single_use":false,"invite_codes_per_user":5,"email_domains":[],"trial_plan_id":null,"trial_days":3,"reset_enabled":true,"email_verify":true'
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/signup" -H "$J" -d "{\"version\":0,$SIGNUP_ON}")" = "409" ] \
   || { echo "FAIL: registration enabled without mail"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/mail" -H "$J" -d '{"version":0,"enabled":true,"host":"127.0.0.1","port":11025,"security":"none","username":null,"from_addr":"noreply@akari.test","from_name":"Akari Smoke","notify_order_paid":true,"notify_expiry_days":3,"notify_expired":true,"notify_quota":true}')" = "200" ] \
@@ -1499,11 +1544,11 @@ grep -qe "$RESET_TOKEN" -e "\"$REG_CODE\"" "$LOG/panel.log" && { echo "FAIL: a c
   && python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); u=[x for x in (d['users'] if isinstance(d, dict) else d) if x['email']=='$REG'][0]; assert u['email_verified'], u" \
   || { echo "FAIL: user list email"; exit 1; }
 
-echo "== W24: registration without email verification (no SMTP): proof of work, generic refusal, unverified login, admin verify =="
-# No SMTP (sending off): the automatic setting registers without a code.
-psql_q "UPDATE mail_settings SET enabled = false" >/dev/null
+echo "== W24: registration without email verification: proof of work, generic refusal, unverified login, admin verify =="
+# v0.4: verification is its own switch (SMTP stays on here).
+psql_q "UPDATE signup_settings SET email_verify = false" >/dev/null
 [ "$(code "$BASE/auth/options")" = "200" ] && last_json "d['register'] and not d['email_verify']" | matches True \
-  || { echo "FAIL: options say verification while SMTP is off"; cat /tmp/akari-smoke/last; exit 1; }
+  || { echo "FAIL: options say verification while it is switched off"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(fp -X POST "$BASE/auth/register/code" -H "$J" -d '{"email":"x@akari.test"}')" = "$REJ" ] \
   || { echo "FAIL: code endpoint not the canonical rejection without verification"; exit 1; }
 w24_register() { # email password -> HTTP code (body in /tmp/akari-smoke/last)
@@ -1541,9 +1586,9 @@ W24_ID=$(psql_q "SELECT id FROM users WHERE email = '$W24'")
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$W24_ID/email/verify" -H "$J" -d '{}')" = "200" ] \
   && [ "$(psql_q "SELECT email_verified_at IS NOT NULL FROM users WHERE id = '$W24_ID'")" = "t" ] \
   || { echo "FAIL: admin marks the address verified"; cat /tmp/akari-smoke/last; exit 1; }
-psql_q "UPDATE mail_settings SET enabled = true" >/dev/null
+psql_q "UPDATE signup_settings SET email_verify = true" >/dev/null
 [ "$(code "$BASE/auth/options")" = "200" ] && last_json "d['email_verify']" | matches True \
-  || { echo "FAIL: verification back with SMTP"; exit 1; }
+  || { echo "FAIL: verification switched back on"; exit 1; }
 echo "W24 registration without verification: ok"
 
 echo "== R18-3 Alipay F2F: price -> order (precreate) -> signed notify -> plan + node access; replay no-op; bad notify = rejection =="
