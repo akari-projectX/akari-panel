@@ -1281,7 +1281,7 @@ psql_q "UPDATE users SET traffic_used_bytes = 1234 WHERE id='$PU'" >/dev/null
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$PU/plan/reset-traffic" -H 'Content-Type: application/json' \
     -d '{"confirm": true}')" = "200" ] && last_json "d['subscription']['traffic_used_bytes']" | matches '^0$' \
   || { echo "FAIL: traffic reset"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='user.traffic.reset' AND actor_login <> 'system' AND target_id='$PU'")" = "1" ] \
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='user.traffic.reset' AND actor_label <> 'system' AND target_id='$PU'")" = "1" ] \
   || { echo "FAIL: admin traffic reset not audited"; exit 1; }
 # Cancel: plan access removed (departed row for the final counters).
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/plans/$PLAN_ID")" = "409" ] || { echo "FAIL: plan with a subscriber deleted"; exit 1; }
