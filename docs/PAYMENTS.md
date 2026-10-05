@@ -497,7 +497,7 @@ Ops additions: `order.create` + `order.paid` (manual orders, `after.manual`,
 `order.expire`, `order.paid` (actor `alipay` for notify/query, the admin
 for manual; includes the fulfilment result), `order.fulfil.retry`,
 `order.payment.rejected`, plus the plan change's own `user.plan.set` /
-`user.plan.update` row. W16: `order.refund`, `coupon.create` /
+`user.plan.renew` row. W16: `order.refund`, `coupon.create` /
 `coupon.update` / `coupon.delete`, `commission.create` /
 `commission.reverse`, `commission.settings.update`,
 `withdrawal.approved` / `withdrawal.rejected` / `withdrawal.cancelled`, and

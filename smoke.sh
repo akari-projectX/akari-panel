@@ -1983,7 +1983,7 @@ fi
 [ "$(last_json "len(d)")" = "3" ] || { echo "FAIL: admin order list"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/orders/$ORDER")" = "200" ] || { echo "FAIL: admin order detail"; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/orders")" = "403" ] || { echo "FAIL: user reached admin orders"; exit 1; }
-for a in order.create order.paid plan.price.set user.plan.set user.plan.update; do
+for a in order.create order.paid plan.price.set user.plan.set user.plan.renew; do
   [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='$a'")" -ge 1 ] || { echo "FAIL: audit lacks $a"; exit 1; }
 done
 
