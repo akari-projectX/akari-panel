@@ -139,6 +139,9 @@ enum AdminCmd {
     /// Set an account's password (prompts unless AKARI_ADMIN_PASSWORD is
     /// set). Ends all of the account's sessions.
     Passwd { email: String },
+    /// Lost passkey: delete the account's passkeys and switch its password
+    /// login back on (audited, actor cli)
+    ResetLogin { email: String },
 }
 
 #[tokio::main]
@@ -170,6 +173,7 @@ async fn main() -> Result<()> {
         Cmd::Admin { action } => match action {
             AdminCmd::Add { email, role } => nodeops::admin_add(cfg, email, role).await,
             AdminCmd::Passwd { email } => nodeops::admin_passwd(cfg, email).await,
+            AdminCmd::ResetLogin { email } => nodeops::admin_reset_login(cfg, email).await,
         },
         Cmd::Secrets { action } => match action {
             SecretsCmd::RotatePrefix => nodeops::secrets_rotate_prefix(cfg).await,

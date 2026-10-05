@@ -1,4 +1,4 @@
-use crate::auth::{bad_request, conflict};
+use crate::auth::{api_error, bad_request, conflict};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 
@@ -95,24 +95,24 @@ pub async fn login(
         }
     }
     match check_credentials(&state, &email, &req.password).await {
-        Ok(Checked::Ok(row)) => match finish_login(&state, &row, client).await {
-            Ok(()) => {
-                attempt.release(&state).await;
-                let token = auth::issue_token(&state, row.id, &row.role, row.session_ver)?;
-                Ok((
-                    jar.add(auth::session_cookie(&state, token)),
-                    Json(json!({
-                        "id": row.id, "email": row.email, "role": row.role,
-                        "expired": row.expired, "quota_exhausted": row.quota_disabled,
-                    })),
-                )
-                    .into_response())
+        Ok(Checked::Ok(row)) => {
+            // The password was right: whatever follows is not a credential
+            // failure.
+            attempt.release(&state).await;
+            // W27: an account with a passkey may be passkey-only (its own
+            // choice or the role's policy); only the holder of the
+            // password learns that.
+            let policy = crate::passkey::login_policy(&state, row.id, &row.role).await?;
+            if policy.password_refused {
+                return Err(api_error!(
+                    FORBIDDEN,
+                    "auth.passkey_required",
+                    "this account signs in with a passkey"
+                ));
             }
-            Err(e) => {
-                attempt.release(&state).await;
-                Err(e)
-            }
-        },
+            finish_login(&state, &row, client, "password").await?;
+            login_response(&state, jar, &row, policy.prompt)
+        }
         Ok(Checked::Failed(account)) => {
             let n = attempt.name_count;
             attempt.fail();
@@ -132,16 +132,51 @@ pub async fn login(
 }
 
 #[derive(sqlx::FromRow)]
-struct LoginRow {
-    id: Uuid,
-    email: String,
-    role: String,
-    enabled: bool,
-    expired: bool,
+pub(crate) struct LoginRow {
+    pub id: Uuid,
+    pub email: String,
+    pub role: String,
+    pub enabled: bool,
+    pub expired: bool,
     /// role=user disabled for quota: may log in to renew (R21).
-    quota_disabled: bool,
-    password_hash: Option<String>,
-    session_ver: i64,
+    pub quota_disabled: bool,
+    pub password_hash: Option<String>,
+    pub session_ver: i64,
+}
+
+/// The columns of `LoginRow` (alias `u`).
+pub(crate) fn login_row_cols() -> String {
+    format!(
+        "u.id, u.email, u.role, u.enabled, u.password_hash, u.session_ver, {} AS expired, \
+         (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'quota') AS quota_disabled",
+        crate::enforce::EXPIRED
+    )
+}
+
+/// Whether the account may sign in at all (R21: an expired or
+/// quota-disabled role=user account still may — its sessions only reach the
+/// renewal scope; accounts disabled for any other reason may not).
+pub(crate) fn may_sign_in(r: &LoginRow) -> bool {
+    r.enabled || r.quota_disabled
+}
+
+/// The session cookie + the login answer (password and passkey logins).
+pub(crate) fn login_response(
+    state: &AppState,
+    jar: CookieJar,
+    row: &LoginRow,
+    passkey_prompt: bool,
+) -> Result<Response, ApiError> {
+    let token = auth::issue_token(state, row.id, &row.role, row.session_ver)?;
+    Ok((
+        jar.add(auth::session_cookie(state, token)),
+        Json(json!({
+            "id": row.id, "email": row.email, "role": row.role,
+            "expired": row.expired, "quota_exhausted": row.quota_disabled,
+            "passkey_prompt": passkey_prompt,
+        })),
+    )
+        .into_response())
 }
 
 enum Checked {
@@ -161,10 +196,8 @@ async fn check_credentials(
     // Expiry applies to role=user only (an admin must never lock themselves
     // out by a date).
     let row = sqlx::query_as::<_, LoginRow>(sqlx::AssertSqlSafe(format!(
-        "SELECT u.id, u.email, u.role, u.enabled, u.password_hash, u.session_ver, {} AS expired, \
-         (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'quota') AS quota_disabled \
-         FROM users u WHERE u.email = $1",
-        crate::enforce::EXPIRED
+        "SELECT {} FROM users u WHERE u.email = $1",
+        login_row_cols()
     )))
     .bind(email)
     .fetch_optional(state.pg())
@@ -174,8 +207,7 @@ async fn check_credentials(
     // R21: an expired or quota-disabled (role=user) account still logs in —
     // its sessions only reach the renewal scope (`auth::ShopUser`).
     // Accounts disabled for any other reason do not.
-    let Some(row) = row.filter(|r| (r.enabled || r.quota_disabled) && r.password_hash.is_some())
-    else {
+    let Some(row) = row.filter(|r| may_sign_in(r) && r.password_hash.is_some()) else {
         auth::scrub_password_async(password).await;
         return Ok(Checked::Failed(account));
     };
@@ -192,10 +224,12 @@ async fn check_credentials(
 const LOGIN_OK_THROTTLE_SECS: i64 = 600;
 
 /// Record a successful login (audit row; regular users throttled).
-async fn finish_login(
+/// `method`: "password" | "passkey".
+pub(crate) async fn finish_login(
     state: &AppState,
     row: &LoginRow,
     ip: std::net::IpAddr,
+    method: &str,
 ) -> Result<(), ApiError> {
     if row.role == "admin" || login_ok_due(state, row.id).await {
         let mut c = state.pg().acquire().await?;
@@ -206,7 +240,7 @@ async fn finish_login(
             "user",
             Some(row.id.to_string()),
             None,
-            Some(json!({ "method": "password" })),
+            Some(json!({ "method": method })),
         )
         .await?;
     }

@@ -438,6 +438,8 @@ pub async fn options(State(state): State<AppState>) -> Response {
     v["guard"] = guard.map_or(serde_json::Value::Null, |g| {
         crate::botguard::public_view(&state, &g)
     });
+    // W27: whether the login page offers "sign in with a passkey".
+    v["passkey"] = crate::passkey::public_view(&state);
     ([(axum::http::header::CACHE_CONTROL, "no-store")], Json(v)).into_response()
 }
 

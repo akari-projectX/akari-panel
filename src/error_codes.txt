@@ -5,6 +5,12 @@
 account.invalid_password
 account.locale_invalid
 account.mail_off
+account.passkey_exists
+account.passkey_failed
+account.passkey_limit
+account.passkey_name_invalid
+account.passkey_required
+account.passkey_unavailable
 account.password_too_long
 account.password_too_short
 agent_update.asset_missing
@@ -57,6 +63,7 @@ auth.captcha_failed
 auth.captcha_unavailable
 auth.credentials_required
 auth.forbidden
+auth.passkey_required
 auth.unauthorized
 auth_admin.min_submit_range
 auth_admin.turnstile_incomplete

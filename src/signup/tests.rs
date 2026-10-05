@@ -332,6 +332,11 @@ async fn disabled_endpoints_are_the_canonical_rejection() {
             .unwrap()
             .is_object()
     );
+    // W27: passkeys (the main domain here is an https name).
+    assert_eq!(
+        v.as_object_mut().unwrap().remove("passkey"),
+        Some(json!(true))
+    );
     assert!(branding["logo_url"].is_null() && branding["footer_links"] == json!([]));
     assert_eq!(
         v,

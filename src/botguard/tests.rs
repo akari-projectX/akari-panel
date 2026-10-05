@@ -27,6 +27,9 @@ fn settings(honeypot: bool, min: i32) -> Settings {
         turnstile_reset: false,
         honeypot,
         min_submit_secs: min,
+        passkey_only_admins: false,
+        passkey_only_users: false,
+        passkey_prompt: false,
     }
 }
 
@@ -341,7 +344,8 @@ async fn turnstile_settings_and_login() {
         v,
         json!({ "version": 0, "turnstile_site_key": null, "turnstile_secret_set": false,
                 "turnstile_login": false, "turnstile_register": false, "turnstile_reset": false,
-                "honeypot": true, "min_submit_secs": 0 })
+                "honeypot": true, "min_submit_secs": 0, "passkey_only_admins": false,
+                "passkey_only_users": false, "passkey_prompt": false, "warnings": [] })
     );
     let put = |body: Value| {
         let admin = &admin;
@@ -349,7 +353,8 @@ async fn turnstile_settings_and_login() {
     };
     let base = json!({ "version": 0, "turnstile_site_key": "0x4AAAAAAA-site_key",
         "turnstile_login": true, "turnstile_register": false, "turnstile_reset": false,
-        "honeypot": true, "min_submit_secs": 0 });
+        "honeypot": true, "min_submit_secs": 0, "passkey_only_admins": false,
+        "passkey_only_users": false, "passkey_prompt": false });
     let r = put(base.clone()).await;
     assert_eq!(
         (r.status, r.json()["code"].clone()),
@@ -573,7 +578,8 @@ async fn turnstile_other_forms_fail_closed() {
             json!({ "version": v["version"], "turnstile_site_key": "site",
                     "turnstile_secret": "bad\nsecret", "turnstile_login": false,
                     "turnstile_register": true, "turnstile_reset": true,
-                    "honeypot": true, "min_submit_secs": 0 }),
+                    "honeypot": true, "min_submit_secs": 0, "passkey_only_admins": false,
+                    "passkey_only_users": false, "passkey_prompt": false }),
         )
         .await;
     assert_eq!(r.json()["code"], "auth_admin.turnstile_secret_invalid");

@@ -61,6 +61,16 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   `/auth/options`, wait `form_min_secs`, post `guard.form_token`; the
   console's Turnstile widget (CSP: `challenges.cloudflare.com`) is not built
   yet (W36-b).
+- **Passkeys (W27, `passkey.rs`, webauthn-rs)**: RP ID = the main domain's
+  host (https DNS name; otherwise passkeys are unavailable and no policy
+  applies). Usernameless login (no address sent: no account oracle);
+  ceremony state in Valkey, single use, 5 min. Password login is refused
+  (403 `auth.passkey_required`, only after the right password) when the
+  account has a passkey for today's RP ID and chose passkey-only or its
+  role's policy says so; without a current passkey the password always
+  works (a domain change or deleting the last passkey never locks anyone
+  out). The login answer's `passkey_prompt` asks the page to offer binding
+  one. Lost passkey: `akari admin reset-login <email>`.
 - `POST /{prefix}/auth/login` (`{email, password}`) verifies argon2id hashes
   (timing-equalized for unknown addresses; failed attempts rate limited per
   client address — IPv6 per /64 — at 20/15min and per address at 50/15min,
@@ -244,6 +254,8 @@ separate loopback listener, never on the public port.
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | POST | /auth/login | — | `{email, password, guard?}` (D1: the address, any case, verified or not): argon2id, sets the session cookie; → `{id, email, role, expired, quota_exhausted}`. Every failure is the uniform 401 — including a trapped bot (W27 `guard`, below). Turnstile on: 400 `auth.captcha_failed` (missing/rejected token) / 503 `auth.captcha_unavailable` (verifier unreachable) |
+| POST | /auth/passkey/options | — (passkeys available) | W27: discoverable-login challenge `{state, options}` (`options` = WebAuthn `publicKey` request options; `no-store`; 30/min per client address). No https main domain = the canonical rejection |
+| POST | /auth/passkey/login | — (passkeys available) | W27: `{state, credential}` (the browser's `PublicKeyCredential` JSON) → session cookie + the login answer. Every failure is the uniform 401 |
 | POST | /auth/logout | — | clears the cookie and ends all of the account's sessions |
 | GET | /auth/options | — | W15: what the login page offers `{register, invite_required, email_domains, reset, email_verify, site_name, branding, guard}`; `Cache-Control: no-store`. W27 `guard` = `{form_token, form_min_secs, honeypot, turnstile: {site_key, login, register, reset} \| null}` (null = settings unreadable: the forms refuse) |
 | POST | /auth/register/code | — (registration + verification on) | W15: `{email, invite_code?, locale?, guard?}` → `{"ok":true}` for every address (a code by mail, or an "already registered" mail); rate limited per client and address |
@@ -260,7 +272,13 @@ separate loopback listener, never on the public port.
 | GET/POST | /api/v1/me/invite-codes | user (role=user) | W15: own invite codes, link base, invited count / new code (per-user limit; registration must be open) |
 | DELETE | /api/v1/me/invite-codes/{code} | user (role=user) | W15: delete an invite code |
 | GET/PUT | /api/v1/settings/signup | admin | W15 系统设置 → 注册: registration, invite rules, email domain allow-list, trial plan, password reset, `email_verify` (W27: a plain bool, default false; true needs mail sending) (optimistic `version`) |
-| GET/PUT | /api/v1/settings/auth | admin | W27 bot protection of the public forms: `{version, turnstile_site_key, turnstile_secret?, turnstile_login, turnstile_register, turnstile_reset, honeypot, min_submit_secs}`; the secret is write-only (absent = keep, `""` = remove; sealed with the master key; GET answers `turnstile_secret_set`; audit `settings.auth.update` records it as `"changed"`); a form switch needs both keys (`auth_admin.turnstile_incomplete`); `min_submit_secs` 0–60 (0 = off). CLI way back in: `akari settings unset turnstile` |
+| GET/PUT | /api/v1/me/passkeys | user (renewal scope*) | W27: GET `{available, rp_id, passkeys: [{id, name, created_at, last_used_at, current}], password_set, password_login_disabled, password_login, max}`; POST `{state, credential, name, disable_password?}` → 201 `{id, name}` (stores a verified passkey; `disable_password` = the login prompt's "passkey only") |
+| POST | /api/v1/me/passkeys/options | user (renewal scope*) | W27: registration challenge `{state, options}` (resident key + user verification required; 20/hour; ≤10 per account; 409 `account.passkey_unavailable` without an https main domain) |
+| PATCH/DELETE | /api/v1/me/passkeys/{id} | user (renewal scope*) | W27: rename `{name}` / delete (someone else's id = the canonical rejection) |
+| PUT | /api/v1/me/password-login | user (renewal scope*) | W27: `{enabled}`: the account's own passkey-only switch (off needs a current passkey, 409 `account.passkey_required`) → the GET view |
+| GET | /api/v1/users/{id}/passkeys | admin | W27: an account's login methods (same view) |
+| POST | /api/v1/users/{id}/login-method/reset | admin | W27: lost passkey: delete the account's passkeys, password login back on (audited `user.login_method.reset`) → `{deleted_passkeys}`; CLI `akari admin reset-login <email>` |
+| GET/PUT | /api/v1/settings/auth | admin | W27 bot protection of the public forms and the passkey policies: `{version, turnstile_site_key, turnstile_secret?, turnstile_login, turnstile_register, turnstile_reset, honeypot, min_submit_secs, passkey_only_admins, passkey_only_users, passkey_prompt}` (GET/PUT answer adds `warnings`); the secret is write-only (absent = keep, `""` = remove; sealed with the master key; GET answers `turnstile_secret_set`; audit `settings.auth.update` records it as `"changed"`); a form switch needs both keys (`auth_admin.turnstile_incomplete`); `min_submit_secs` 0–60 (0 = off). CLI way back in: `akari settings unset turnstile` |
 | GET/PUT | /api/v1/settings/mail | admin | W15 系统设置 → 邮件: provider (W31: `smtp` or `resend`; absent = keep), SMTP host/port/security/credentials (password write-only, sealed), Resend `api_key` (write-only, sealed; view: `api_key_set`), sender, notice switches |
 | POST | /api/v1/settings/mail/test | admin | W15: `{to}`: send a test mail now with the saved settings (502 = the server's answer) |
 | POST | /api/v1/settings/mail/diagnose | admin | W31: `{to}`: step-by-step check of the saved provider — config, DNS, TCP, TLS (implicit 465 / STARTTLS 587, mismatch detected), greeting, AUTH, send — always 200 `{provider, ok, steps: [{step, status ok\|warn\|fail\|skip, elapsed_ms, code mail.diag.*, params, message: {zh, en}}]}`; audited `settings.mail.test` |

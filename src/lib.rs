@@ -41,6 +41,7 @@ pub mod nodeops;
 pub mod nodestat;
 pub mod nodetpl;
 pub mod notify;
+pub mod passkey;
 pub mod pb;
 pub mod plans;
 pub mod protocols;

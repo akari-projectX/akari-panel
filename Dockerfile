@@ -2,8 +2,9 @@
 #
 # akari panel image (M1-1). Multi-stage:
 #   spa        builds the React bundle (embedded into the binary)
-#   builder    static musl binary (rust:alpine; ring/rustls/sqlx have no C
-#              library dependency, so the result runs on any Linux kernel)
+#   builder    static musl binary (rust:alpine; no system C library
+#              dependency — the vendored OpenSSL of the passkey verifier is
+#              compiled in — so the result runs on any Linux kernel)
 #   artifact   FROM scratch holding only the binary: the release workflow
 #              exports it (`--target artifact --output type=local,dest=out`)
 #              so the tarball and the image carry the same bytes
@@ -31,7 +32,7 @@ COPY spa/ ./
 RUN npm run build
 
 FROM ${RUST_IMAGE} AS builder
-RUN apk add --no-cache musl-dev gcc make cmake perl
+RUN apk add --no-cache musl-dev gcc make cmake perl linux-headers
 WORKDIR /src
 ARG AKARI_GIT_SHA=unknown
 ARG SOURCE_DATE_EPOCH=0
