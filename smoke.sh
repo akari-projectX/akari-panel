@@ -2945,6 +2945,9 @@ echo "== W32 Alpine node: one-line installer under OpenRC, BBR + fq, reinstall w
 if need_agent "unit:akari-agent" "W32 Alpine install (OpenRC)" \
    && { [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ] || { echo "Alpine container test skipped (SMOKE_INSTALL_CONTAINER=0)"; false; }; }; then
   ALP_PORT=26443
+  # The sections above used up most of this address's install-link budget
+  # (20 requests / 10 min per source, Valkey): start this node afresh.
+  vk eval "for _, k in ipairs(redis.call('keys', 'akari:rl:install:*')) do redis.call('del', k) end" 0 >/dev/null
   [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' \
       -d "{\"name\":\"alp-node\",\"server_addr\":\"127.0.0.1\",\"templates\":[{\"template\":\"vless_reality\",\"port\":$ALP_PORT}],
            \"install\":{\"origin\":\"http://127.0.0.1:8080\"}}")" = "201" ] \
