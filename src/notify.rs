@@ -43,6 +43,9 @@ pub enum Event {
     /// System settings changed (0060 triggers, payload `settings`): reload
     /// them (settings.rs). Agent sessions are not woken.
     Settings,
+    /// W29: block rules changed (1060 trigger, payload `block-rules`):
+    /// every session re-sends its compiled policy if it changed.
+    BlockRules,
     /// Not ours or malformed: wake everyone (cheap insurance; a session
     /// only re-reads its node).
     Unknown,
@@ -51,6 +54,9 @@ pub enum Event {
 pub fn parse(payload: &str) -> Event {
     if payload == "settings" {
         return Event::Settings;
+    }
+    if payload == "block-rules" {
+        return Event::BlockRules;
     }
     let (kind, id) = match payload.split_once(':') {
         Some((k, id)) => (k, id),
@@ -136,7 +142,7 @@ impl Wakeups {
         match ev {
             Event::Changed(n) | Event::Deleted(n) => self.wake(n),
             Event::Ping(_) | Event::Settings => {}
-            Event::Unknown => self.wake_all(),
+            Event::BlockRules | Event::Unknown => self.wake_all(),
         }
     }
 
@@ -436,6 +442,7 @@ mod tests {
         assert_eq!(parse(&format!("del:{n}")), Event::Deleted(n));
         assert_eq!(parse(&format!("ping:{n}")), Event::Ping(n));
         assert_eq!(parse("settings"), Event::Settings);
+        assert_eq!(parse("block-rules"), Event::BlockRules);
         for bad in [
             String::new(),
             "del:".into(),
@@ -490,6 +497,22 @@ mod tests {
             .is_ok_and(|r| r.is_ok())
     }
 
+    /// Targeted wakes in a counter value (wake-alls add WAKE_ALL).
+    fn targeted(v: u64) -> u64 {
+        v & (WAKE_ALL - 1)
+    }
+
+    /// Wait until `rx`'s counter satisfies `done`, ignoring other changes.
+    async fn wait_for(
+        rx: &mut watch::Receiver<u64>,
+        secs: u64,
+        done: impl Fn(u64) -> bool,
+    ) -> bool {
+        tokio::time::timeout(Duration::from_secs(secs), rx.wait_for(|v| done(*v)))
+            .await
+            .is_ok_and(|r| r.is_ok())
+    }
+
     async fn bump(pool: &sqlx::PgPool, node: Uuid) {
         sqlx::query("UPDATE nodes SET user_version = user_version + 1 WHERE id = $1")
             .bind(node)
@@ -511,14 +534,26 @@ mod tests {
         let (n, other) = (db.node().await, db.node().await);
         let a = AppState::for_test(db.pool.clone()).await;
         let b = AppState::for_test(db.pool.clone()).await;
-        let la = start(a.clone()).await;
-        let lb = start(b.clone()).await;
+        // Subscribe before B's listener starts, so its initial wake-all
+        // (sent from the spawned supervisor, at no fixed time) is
+        // observable: wait for it instead of sleeping past it.
         let mut rx = b.wakeups().subscribe(n);
         let mut rx_other = b.wakeups().subscribe(other);
-        // Past the initial wake-all.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        rx.borrow_and_update();
-        rx_other.borrow_and_update();
+        let la = start(a.clone()).await;
+        let lb = start(b.clone()).await;
+        for r in [&mut rx, &mut rx_other] {
+            assert!(
+                wait_for(r, 5, |v| is_wake_all(0, v)).await,
+                "initial wake-all after LISTEN"
+            );
+        }
+        // The NOTIFY channel is database-wide: tests running in parallel
+        // (other schemas) send `block-rules` — every migration run seeds
+        // block_rules — which wakes all of B's sessions at any moment. So
+        // the targeted wakes are asserted on the low counter bits; a wake
+        // of the wrong node, or a malformed payload (Unknown -> wake-all),
+        // still fails.
+        let (n0, other0) = (*rx.borrow_and_update(), *rx_other.borrow_and_update());
 
         let mut tx = a.pg().begin().await.unwrap();
         crate::api::apply_begin_delete_node(&mut tx, &crate::audit::Actor::test(), n)
@@ -526,12 +561,14 @@ mod tests {
             .unwrap();
         tx.commit().await.unwrap();
         assert!(
-            changed_within(&mut rx, 5).await,
-            "A's commit wakes B's session"
+            wait_for(&mut rx, 5, |v| targeted(v) > targeted(n0)).await,
+            "A's commit wakes B's session (targeted)"
         );
-        assert!(
-            !rx_other.has_changed().unwrap(),
-            "other nodes are not woken"
+        let other_now = *rx_other.borrow();
+        assert_eq!(
+            targeted(other_now),
+            targeted(other0),
+            "other nodes are not woken ({other0:#x} -> {other_now:#x})"
         );
 
         // Kill B's listener and hold it down: a deterministic gap.
@@ -564,9 +601,9 @@ mod tests {
         assert!(b.wakeups().connects() > connects);
         assert!(b.wakeups().connected());
         // And delivery works again afterwards.
-        rx.borrow_and_update();
+        let before = targeted(*rx.borrow_and_update());
         bump(a.pg(), n).await;
-        assert!(changed_within(&mut rx, 5).await);
+        assert!(wait_for(&mut rx, 5, |v| targeted(v) > before).await);
 
         la.abort();
         lb.abort();

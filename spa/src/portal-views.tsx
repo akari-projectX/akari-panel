@@ -3,7 +3,8 @@
 // bottom tab bar on phones. Adding a view = one entry here (label keys in
 // the `nav` i18n namespace). `restricted: true` = also shown to the R21
 // renewal scope (expired / quota-exhausted), whose sessions only reach the
-// ShopUser endpoints.
+// ShopUser endpoints. A banned account (W28-c) gets the dashboard as a ban
+// notice and tickets only (its sessions reach nothing else).
 import type { ReactNode } from "react";
 
 import {
@@ -19,7 +20,7 @@ import {
 } from "./components/nav-icons";
 import type { MessageKey } from "./i18n";
 import { appBase, type Me } from "./lib/api";
-import { Dashboard } from "./pages/dashboard";
+import { BannedNotice, Dashboard } from "./pages/dashboard";
 import { Help } from "./pages/help";
 import { AccountSettings } from "./pages/portal";
 import { NodesCard } from "./pages/portal-nodes";
@@ -48,7 +49,7 @@ export const PORTAL_VIEWS: PortalView[] = [
     short: "nav.dashboardShort",
     icon: HomeIcon,
     restricted: true,
-    render: (me) => <Dashboard me={me} />,
+    render: (me) => (me.banned ? <BannedNotice me={me} /> : <Dashboard me={me} />),
   },
   {
     id: "shop",
@@ -120,6 +121,7 @@ export const PORTAL_VIEWS: PortalView[] = [
 
 /** The views `me` may open. */
 export function viewsFor(me: Me): PortalView[] {
+  if (me.banned) return PORTAL_VIEWS.filter((v) => v.id === "" || v.id === "tickets");
   const restricted = me.expired || me.quota_exhausted;
   return PORTAL_VIEWS.filter((v) => v.restricted || !restricted);
 }

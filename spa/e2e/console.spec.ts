@@ -437,16 +437,15 @@ test("W21: dashboard, user search + create dialog, plan dialog, settings tabs, c
   const dialog = page.getByRole("dialog", { name: "新建用户" });
   await dialog.getByLabel("邮箱", { exact: true }).fill("e2e-w21-user@e2e.test");
   await dialog.getByLabel("密码", { exact: true }).fill("e2e-w21-password");
-  await dialog.getByLabel(/到期日/).fill("2099-12-31");
+  await expect(dialog.getByLabel(/到期日/)).toHaveCount(0); // D12: the plan decides
   await dialog.getByRole("button", { name: "创建" }).click();
   await expect(page.getByText(/的订阅令牌（之后也可以/)).toBeVisible();
   await page.getByLabel("搜索").fill("E2E-W21");
   await expect(page.getByText("找到 1 个用户")).toBeVisible();
   const row = page.getByRole("row").filter({ hasText: "e2e-w21-user" });
   await expect(row.getByText("e2e-w21-user@e2e.test").first()).toBeVisible();
-  await expect(row.getByText("2099-12-31")).toBeVisible(); // a Beijing day, not shifted by UTC
   await expect(row.getByText("正常")).toBeVisible();
-  await page.getByRole("button", { name: "已停用" }).click();
+  await page.getByRole("button", { name: "已封禁" }).click();
   await expect(page.getByText("没有符合条件的用户。")).toBeVisible();
   await page.getByRole("button", { name: "全部" }).click();
   // A server error comes back in Chinese (coded error, W21 M6).
@@ -677,7 +676,9 @@ test("W20: quota-exhausted user lands on the reset pack", async ({ browser }) =>
   ).users;
   const uid = users.find((u) => u.email === QUOTA_USER)?.id;
   expect(uid).toBeTruthy();
-  expect((await actx.request.put(`${api}/users/${uid}/plan`, { data: { plan_id: planId } })).status()).toBe(200);
+  expect(
+    (await actx.request.put(`${api}/users/${uid}/plan`, { data: { plan_id: planId, period: "month" } })).status(),
+  ).toBe(200);
   // Traffic only comes from agents; here the counter is set directly and the
   // enforcement pass (5 s) disables the account for quota.
   execFileSync(

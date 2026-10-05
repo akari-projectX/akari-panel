@@ -78,6 +78,9 @@ const MARKERS = [
   ["admin API /settings/mail-templates", /\/settings\/mail-templates/],
   ["heading 邮件模板", /邮件模板/],
   ["heading 内容管理", /内容管理/],
+  // W28-c
+  ["admin API /plan/reset-traffic", /\/plan\/reset-traffic/],
+  ["button 封禁用户", /封禁用户/],
 ];
 const files = (dir) =>
   readdirSync(dir).flatMap((name) => {

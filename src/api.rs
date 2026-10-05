@@ -14,7 +14,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::audit::Actor;
-use crate::auth::{self, ApiError, AuthUser, COOKIE_NAME, ShopUser};
+use crate::auth::{self, ApiError, AuthUser, COOKIE_NAME, PortalUser};
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -140,6 +140,9 @@ pub(crate) struct LoginRow {
     pub expired: bool,
     /// role=user disabled for quota: may log in to renew (R21).
     pub quota_disabled: bool,
+    /// role=user banned by an admin: may log in to the portal scope only
+    /// (the ban reason and tickets, W28-c).
+    pub banned: bool,
     pub password_hash: Option<String>,
     pub session_ver: i64,
 }
@@ -148,16 +151,18 @@ pub(crate) struct LoginRow {
 pub(crate) fn login_row_cols() -> String {
     format!(
         "u.id, u.email, u.role, u.enabled, u.password_hash, u.session_ver, {} AS expired, \
-         (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'quota') AS quota_disabled",
+         (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'quota') AS quota_disabled, \
+         (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'admin') AS banned",
         crate::enforce::EXPIRED
     )
 }
 
 /// Whether the account may sign in at all (R21: an expired or
 /// quota-disabled role=user account still may — its sessions only reach the
-/// renewal scope; accounts disabled for any other reason may not).
+/// renewal scope; a banned one (W28-c) signs in to the portal scope;
+/// disabled admins may not).
 pub(crate) fn may_sign_in(r: &LoginRow) -> bool {
-    r.enabled || r.quota_disabled
+    r.enabled || r.quota_disabled || r.banned
 }
 
 /// The session cookie + the login answer (password and passkey logins).
@@ -173,7 +178,7 @@ pub(crate) fn login_response(
         Json(json!({
             "id": row.id, "email": row.email, "role": row.role,
             "expired": row.expired, "quota_exhausted": row.quota_disabled,
-            "passkey_prompt": passkey_prompt,
+            "banned": row.banned, "passkey_prompt": passkey_prompt,
         })),
     )
         .into_response())
@@ -205,8 +210,10 @@ async fn check_credentials(
     let account = row.as_ref().map(|r| r.id);
 
     // R21: an expired or quota-disabled (role=user) account still logs in —
-    // its sessions only reach the renewal scope (`auth::ShopUser`).
-    // Accounts disabled for any other reason do not.
+    // its sessions only reach the renewal scope (`auth::ShopUser`); a
+    // banned role=user account logs in to the portal scope
+    // (`auth::PortalUser`: ban reason and tickets, W28-c). Disabled admins
+    // do not log in at all.
     let Some(row) = row.filter(|r| may_sign_in(r) && r.password_hash.is_some()) else {
         auth::scrub_password_async(password).await;
         return Ok(Checked::Failed(account));
@@ -356,56 +363,6 @@ pub async fn revoke_sessions(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
-#[derive(sqlx::FromRow, Serialize)]
-pub struct UserNodeView {
-    node_id: Uuid,
-    name: String,
-    region: Option<String>,
-    enabled: bool,
-    status: String,
-    deleting: bool,
-    /// true = an admin assignment (override), false = granted by the plan.
-    manual: bool,
-    /// `[{tag, protocol}]` of the credentials (never the accounts).
-    inbounds: serde_json::Value,
-}
-
-/// GET /api/v1/users/{id}/nodes (admin): the nodes the account can use
-/// (its node_users rows) with the inbounds it has credentials for and
-/// whether each row is a manual assignment or plan-granted. Read-only; the
-/// credentials themselves (UUIDs, passwords) are not returned. 404 for an
-/// unknown user.
-pub async fn user_nodes(
-    State(state): State<AppState>,
-    user: AuthUser,
-    Path((_, id)): Path<(String, Uuid)>,
-) -> Result<Json<Vec<UserNodeView>>, ApiError> {
-    user.require_admin()?;
-    let mut tx = state.pg().begin().await?;
-    let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM users WHERE id = $1")
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?;
-    if exists.is_none() {
-        return Err(ApiError::not_found());
-    }
-    let rows = sqlx::query_as::<_, UserNodeView>(
-        "SELECT n.id AS node_id, n.name, n.region, n.enabled, n.status, \
-         n.deleting_at IS NOT NULL AS deleting, nu.manual, \
-         COALESCE((SELECT jsonb_agg(jsonb_build_object( \
-             'tag', c->>'inbound_tag', 'protocol', c->>'protocol') ORDER BY c->>'inbound_tag') \
-           FROM jsonb_array_elements(CASE WHEN jsonb_typeof(nu.credentials) = 'array' \
-                THEN nu.credentials ELSE '[]'::jsonb END) c), '[]'::jsonb) AS inbounds \
-         FROM node_users nu JOIN nodes n ON n.id = nu.node_id \
-         WHERE nu.user_id = $1 ORDER BY n.name, n.id",
-    )
-    .bind(id)
-    .fetch_all(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    Ok(Json(rows))
-}
-
 // ---------------------------------------------------------------------------
 // Self
 // ---------------------------------------------------------------------------
@@ -418,6 +375,8 @@ struct MeRow {
     email: String,
     email_verified: bool,
     locale: String,
+    disabled_note: Option<String>,
+    disabled_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Serialize)]
@@ -431,6 +390,12 @@ pub struct MeView {
     expired: bool,
     /// R21: disabled for exceeding the traffic limit: renewal scope only.
     quota_exhausted: bool,
+    /// W28-c: banned by an admin: the portal shows `ban_reason` (written
+    /// for the user) and tickets; everything else answers 403
+    /// `account.banned`.
+    banned: bool,
+    ban_reason: Option<String>,
+    banned_at: Option<DateTime<Utc>>,
     /// D1: the account's address (its login name) and whether it is
     /// verified (only a verified address gets mail and resets the password).
     email: String,
@@ -451,7 +416,8 @@ pub struct MeView {
     probe_interval_secs: u64,
 }
 
-/// GET /api/v1/me (renewal scope: also for expired users, R21).
+/// GET /api/v1/me (portal scope: also for expired and quota-disabled users,
+/// R21, and banned ones, W28-c).
 ///
 /// W20: carries the subscription link for role=user accounts in good
 /// standing (`sub::ensure_token`: decrypted from `users.sub_token_enc`; an
@@ -459,22 +425,24 @@ pub struct MeView {
 /// The response holds a credential: `Cache-Control: no-store`.
 pub async fn me(
     State(state): State<AppState>,
-    ShopUser {
+    PortalUser {
         user,
         expired,
         quota_exhausted,
-    }: ShopUser,
+        banned,
+    }: PortalUser,
 ) -> Result<Response, ApiError> {
     let mut tx = state.pg().begin().await?;
     let row = sqlx::query_as::<_, MeRow>(
         "SELECT traffic_used_bytes, traffic_limit_bytes, expires_at, email, \
-         email_verified_at IS NOT NULL AS email_verified, locale FROM users WHERE id = $1",
+         email_verified_at IS NOT NULL AS email_verified, locale, disabled_note, disabled_at \
+         FROM users WHERE id = $1",
     )
     .bind(user.id)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(ApiError::unauthorized)?;
-    let stored = if user.role == "user" && !expired && !quota_exhausted {
+    let stored = if user.role == "user" && !expired && !quota_exhausted && !banned {
         crate::sub::ensure_token(&mut tx, state.totp(), &Actor::of(&user), user.id).await?
     } else {
         None
@@ -497,6 +465,9 @@ pub async fn me(
         expires_at: row.expires_at,
         expired,
         quota_exhausted,
+        banned,
+        ban_reason: if banned { row.disabled_note } else { None },
+        banned_at: if banned { row.disabled_at } else { None },
         email: row.email,
         email_verified: row.email_verified,
         locale: row.locale,
@@ -590,7 +561,7 @@ pub struct UserView {
     traffic_used_bytes: i64,
     expires_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
-    /// Why the account is disabled: admin | quota | expiry (null = enabled).
+    /// Why the account is disabled: admin (banned) | quota (null = enabled).
     disabled_reason: Option<String>,
     /// M3: the active plan (null = none) and the next traffic reset.
     plan_id: Option<Uuid>,
@@ -604,7 +575,7 @@ pub struct UserView {
 
 /// UserView columns (alias `users` table as itself).
 pub const USER_VIEW_COLS: &str = "id, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, created_at, \
-     disabled_reason::text AS disabled_reason, \
+     disabled_reason, \
      (SELECT up.plan_id FROM user_plans up WHERE up.user_id = users.id AND up.status = 'active') \
      AS plan_id, \
      (SELECT p.name FROM user_plans up JOIN plans p ON p.id = up.plan_id \
@@ -623,7 +594,7 @@ pub struct UserListQuery {
     pub q: Option<String>,
     /// A plan id, or `none` (no active plan).
     pub plan_id: Option<String>,
-    /// Derived status (the console's badge): active | expired | quota | disabled.
+    /// Derived status (the console's badge): active | expired | quota | banned.
     pub status: Option<String>,
     /// user | admin.
     pub role: Option<String>,
@@ -642,9 +613,9 @@ pub struct UserPage {
 const MAX_USER_QUERY: usize = 64;
 
 /// SQL predicates (over alias `u`) of the derived statuses; mutually
-/// exclusive, in the badge's precedence: disabled (any reason but quota) >
+/// exclusive, in the badge's precedence: banned (any reason but quota) >
 /// over quota > expired (users only, `enforce::EXPIRED`) > active.
-pub const STATUS_DISABLED: &str = "(NOT u.enabled AND u.disabled_reason IS DISTINCT FROM 'quota')";
+pub const STATUS_BANNED: &str = "(NOT u.enabled AND u.disabled_reason IS DISTINCT FROM 'quota')";
 pub const STATUS_QUOTA: &str = "(NOT u.enabled AND u.disabled_reason = 'quota')";
 pub const STATUS_EXPIRED: &str =
     "(u.enabled AND u.role = 'user' AND u.expires_at IS NOT NULL AND u.expires_at <= now())";
@@ -720,13 +691,13 @@ pub(crate) fn push_user_filters(
         Some("quota") => {
             qb.push(" AND ").push(STATUS_QUOTA);
         }
-        Some("disabled") => {
-            qb.push(" AND ").push(STATUS_DISABLED);
+        Some("banned") => {
+            qb.push(" AND ").push(STATUS_BANNED);
         }
         Some(_) => {
             return Err(bad_request!(
                 "user.status_filter_invalid",
-                "status must be active, expired, quota or disabled"
+                "status must be active, expired, quota or banned"
             ));
         }
     }
@@ -809,8 +780,9 @@ pub struct CreateUserReq {
     pub email: String,
     pub password: String,
     pub role: Option<String>,
-    pub traffic_limit_bytes: Option<i64>,
-    pub expires_at: Option<DateTime<Utc>>,
+    /// D12: the plan and term to start with (role=user only); the traffic
+    /// limit and expiry come from it, never from the request.
+    pub plan: Option<crate::plans::AssignPlanReq>,
 }
 
 pub async fn create_user(
@@ -819,12 +791,6 @@ pub async fn create_user(
     ApiJson(req): ApiJson<CreateUserReq>,
 ) -> Result<(axum::http::StatusCode, Json<CreatedUser>), ApiError> {
     user.require_admin()?;
-    if req.traffic_limit_bytes.is_some_and(|l| l < 0) {
-        return Err(bad_request!(
-            "user.limit_negative",
-            "traffic_limit_bytes must be >= 0"
-        ));
-    }
     let email = crate::signup::email::parse(req.email.trim())
         .ok_or_else(|| bad_request!("signup.invalid_email", "invalid email address"))?;
     if req.password.len() < 8 {
@@ -840,19 +806,30 @@ pub async fn create_user(
             "role must be 'user' or 'admin'"
         ));
     }
+    let assign = req
+        .plan
+        .as_ref()
+        .map(crate::plans::AssignPlanReq::assignment)
+        .transpose()?;
     let hash = auth::hash_password_async(&req.password).await?;
     let id = Uuid::new_v4();
     // Mint the subscription token now (W20: stored encrypted as well, so
     // the user and admins can see the link again).
     let sub_token = crate::sub::generate_token();
     let sub_enc = state.totp().seal_sub_token(id, &sub_token)?;
+    let actor = Actor::of(&user);
     let mut tx = state.pg().begin().await?;
+    // A plan is assigned in the same transaction (its entitlement lock is
+    // taken first: lock order entitle -> nodes -> users).
+    if assign.is_some() {
+        crate::entitle::lock(&mut tx).await?;
+    }
     match sqlx::query_as::<_, UserView>(
         "INSERT INTO users (id, email, email_verified_at, password_hash, role, \
-         traffic_limit_bytes, expires_at, sub_token_hash, sub_token_enc) \
-         VALUES ($1, $2, now(), $3, $4, $5, $6, $7, $8) \
+         sub_token_hash, sub_token_enc) \
+         VALUES ($1, $2, now(), $3, $4, $5, $6) \
          RETURNING id, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, \
-         created_at, disabled_reason::text AS disabled_reason, \
+         created_at, disabled_reason, \
          NULL::uuid AS plan_id, NULL::text AS plan_name, NULL::timestamptz AS next_reset_at, \
          email, email_verified_at IS NOT NULL AS email_verified",
     )
@@ -860,8 +837,6 @@ pub async fn create_user(
     .bind(&email)
     .bind(&hash)
     .bind(role)
-    .bind(req.traffic_limit_bytes)
-    .bind(req.expires_at)
     .bind(crate::sub::hash_token(&sub_token))
     .bind(&sub_enc)
     .fetch_one(&mut *tx)
@@ -870,13 +845,12 @@ pub async fn create_user(
         Ok(view) => {
             let after = json!({
                 "role": view.role, "enabled": view.enabled,
-                "traffic_limit_bytes": view.traffic_limit_bytes, "expires_at": view.expires_at,
                 "email": view.email,
                 "password": crate::audit::CHANGED, "sub_token": crate::audit::CHANGED,
             });
             crate::audit::record(
                 &mut tx,
-                &Actor::of(&user),
+                &actor,
                 "user.create",
                 "user",
                 Some(view.id.to_string()),
@@ -884,6 +858,18 @@ pub async fn create_user(
                 Some(after),
             )
             .await?;
+            let view = match assign {
+                None => view,
+                Some(a) => {
+                    crate::plans::apply_set_user_plan(&mut tx, &actor, id, &a).await?;
+                    sqlx::query_as::<_, UserView>(sqlx::AssertSqlSafe(format!(
+                        "SELECT {USER_VIEW_COLS} FROM users WHERE id = $1"
+                    )))
+                    .bind(id)
+                    .fetch_one(&mut *tx)
+                    .await?
+                }
+            };
             tx.commit().await?;
             Ok((
                 axum::http::StatusCode::CREATED,
@@ -1019,22 +1005,16 @@ async fn bump_node_users(conn: &mut PgConnection, node_id: Uuid) -> sqlx::Result
     Ok(())
 }
 
+/// PATCH /users/{id}. D12: the traffic limit and expiry are not editable
+/// (they come from the plan: `PUT`/`PATCH /users/{id}/plan`); W28-c:
+/// disabling is a ban with a reason (`POST /users/{id}/ban`).
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateUserReq {
     #[serde(default, deserialize_with = "double_option")]
-    pub enabled: Option<Option<bool>>,
-    #[serde(default, deserialize_with = "double_option")]
     pub password: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     pub role: Option<Option<String>>,
-    /// null clears the limit. Raising a limit does NOT re-enable a user the
-    /// traffic-limit pass disabled; send `enabled: true` explicitly.
-    #[serde(default, deserialize_with = "double_option")]
-    pub traffic_limit_bytes: Option<Option<i64>>,
-    /// null clears the expiry. Any change resets the expiry marker.
-    #[serde(default, deserialize_with = "double_option")]
-    pub expires_at: Option<Option<DateTime<Utc>>>,
 }
 
 /// PATCH /users/{id}. Returns the nodes whose versions were bumped.
@@ -1045,15 +1025,9 @@ pub(crate) async fn apply_update_user(
     id: Uuid,
     req: &UpdateUserReq,
 ) -> Result<Vec<Uuid>, ApiError> {
-    let enabled = non_null("enabled", &req.enabled)?;
     let password = non_null("password", &req.password)?;
     let role = non_null("role", &req.role)?;
-    if enabled.is_none()
-        && password.is_none()
-        && role.is_none()
-        && req.traffic_limit_bytes.is_none()
-        && req.expires_at.is_none()
-    {
+    if password.is_none() && role.is_none() {
         return Err(bad_request!("request.no_fields", "no fields to update"));
     }
     if let Some(role) = &role
@@ -1073,29 +1047,18 @@ pub(crate) async fn apply_update_user(
             "password must be at least 8 characters"
         ));
     }
-    if let Some(Some(limit)) = req.traffic_limit_bytes
-        && limit < 0
-    {
-        return Err(bad_request!(
-            "user.limit_negative",
-            "traffic_limit_bytes must be >= 0"
-        ));
-    }
     // Hashed before any lock is taken (and off the async workers).
     let password_hash = match &password {
         Some(v) => Some(auth::hash_password_async(v).await?),
         None => None,
     };
-    // Enabled, role (expiry only applies to role=user) and expiry change
-    // what nodes serve.
-    let affects_nodes = enabled.is_some() || role.is_some() || req.expires_at.is_some();
+    // The role changes what nodes serve (admins are not proxy users).
+    let affects_nodes = role.is_some();
 
-    // M3: with an active plan, the traffic limit and expiry are the plan's
-    // (written on every plan change; edit the user's plan instead), and the
-    // account must stay a proxy user. Checked under the entitlement lock,
-    // which every plan assignment takes, so the check cannot race one.
-    let plan_managed = req.traffic_limit_bytes.is_some() || req.expires_at.is_some();
-    if plan_managed || role.as_deref().is_some_and(|r| r != "user") {
+    // M3: a user with an active plan must stay a proxy user. Checked under
+    // the entitlement lock, which every plan assignment takes, so the check
+    // cannot race one.
+    if role.as_deref().is_some_and(|r| r != "user") {
         crate::entitle::lock(conn).await?;
         let has_plan: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM user_plans WHERE user_id = $1 AND status = 'active')",
@@ -1103,13 +1066,6 @@ pub(crate) async fn apply_update_user(
         .bind(id)
         .fetch_one(&mut *conn)
         .await?;
-        if has_plan && plan_managed {
-            return Err(conflict!(
-                "user.plan_managed",
-                "traffic_limit_bytes and expires_at are managed by the user's plan; \
-                 change the plan (PUT/PATCH /users/{{id}}/plan) or cancel it first"
-            ));
-        }
         if has_plan {
             return Err(conflict!(
                 "user.has_plan",
@@ -1123,26 +1079,11 @@ pub(crate) async fn apply_update_user(
     }
     let mut qb = sqlx::QueryBuilder::new("UPDATE users SET ");
     let mut set = qb.separated(", ");
-    if let Some(v) = enabled {
-        set.push("enabled = ").push_bind_unseparated(v);
-        // An explicit disable is an admin decision, even over a quota
-        // disable (only 'quota' is ever re-enabled automatically).
-        if !v {
-            set.push("disabled_reason = 'admin'");
-        }
-    }
     if let Some(v) = password_hash {
         set.push("password_hash = ").push_bind_unseparated(v);
     }
     if let Some(v) = role {
         set.push("role = ").push_bind_unseparated(v);
-    }
-    if let Some(v) = req.traffic_limit_bytes {
-        set.push("traffic_limit_bytes = ").push_bind_unseparated(v);
-    }
-    if let Some(v) = req.expires_at {
-        set.push("expires_at = ").push_bind_unseparated(v);
-        set.push("expiry_enforced = false");
     }
     qb.push(" WHERE id = ").push_bind(id);
     qb.push(format!(
@@ -1174,6 +1115,225 @@ pub(crate) async fn apply_update_user(
         return Ok(Vec::new());
     }
     Ok(bump_user_nodes(conn, id).await?)
+}
+
+/// Longest ban reason (characters; the portal shows it to the user).
+pub const MAX_BAN_REASON: usize = 500;
+
+/// `POST /users/{id}/ban`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BanReq {
+    /// Shown to the user in the portal: write it for them.
+    pub reason: String,
+}
+
+/// The reason as stored: trimmed, control characters other than newlines
+/// removed, 1..=MAX_BAN_REASON characters.
+pub(crate) fn clean_ban_reason(raw: &str) -> Result<String, ApiError> {
+    let cleaned: String = raw
+        .trim()
+        .chars()
+        .filter(|c| *c == '\n' || !c.is_control())
+        .collect();
+    let n = cleaned.chars().count();
+    if n == 0 {
+        return Err(bad_request!(
+            "user.ban_reason_required",
+            "a ban needs a reason (it is shown to the user)"
+        ));
+    }
+    if n > MAX_BAN_REASON {
+        return Err(bad_request!(
+            "user.ban_reason_too_long",
+            "the reason is longer than {max} characters",
+            max = MAX_BAN_REASON
+        ));
+    }
+    Ok(cleaned)
+}
+
+/// W28-c admin ban: disable the account (`disabled_reason = 'admin'`) with
+/// a reason the user sees in the portal. Same transaction: the user's nodes
+/// are locked first (nodes -> users) and bumped, so every agent drops the
+/// user and cuts their live connections (the existing revocation path);
+/// the `users` trigger bumps `session_ver` when the account was enabled
+/// (every session ends; a new login only reaches the portal scope: ban
+/// reason and tickets). Banning again replaces the reason. Your own
+/// account cannot be banned (400); the last enabled admin neither (409,
+/// AK001). Audited `user.ban`. Returns the bumped nodes.
+pub(crate) async fn apply_ban_user(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    id: Uuid,
+    reason: &str,
+) -> Result<Vec<Uuid>, ApiError> {
+    let reason = clean_ban_reason(reason)?;
+    if actor.id == Some(id) {
+        return Err(bad_request!(
+            "user.ban_self",
+            "you cannot ban your own account"
+        ));
+    }
+    lock_user_nodes(conn, id).await?;
+    let row: Option<(serde_json::Value, serde_json::Value, Option<String>)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "UPDATE users SET enabled = false, disabled_reason = 'admin', disabled_note = $2, \
+             disabled_by = (SELECT a.id FROM users a WHERE a.id = $3), disabled_at = now() \
+             WHERE id = $1 \
+             RETURNING {}, {}, old.disabled_note",
+            crate::audit::user_snapshot_sql("old"),
+            crate::audit::user_snapshot_sql("new")
+        )))
+        .bind(id)
+        .bind(&reason)
+        .bind(actor.id)
+        .fetch_optional(&mut *conn)
+        .await?;
+    let Some((mut before, mut after, old_reason)) = row else {
+        return Err(ApiError::not_found());
+    };
+    before["reason"] = json!(old_reason);
+    after["reason"] = json!(reason);
+    crate::audit::record(
+        conn,
+        actor,
+        "user.ban",
+        "user",
+        Some(id.to_string()),
+        Some(before),
+        Some(after),
+    )
+    .await?;
+    Ok(bump_user_nodes(conn, id).await?)
+}
+
+/// W28-c: lift a ban (409 `user.not_banned` unless the account is banned).
+/// The account is enabled again (the traffic-limit pass re-disables it for
+/// quota on its next tick if it is still over); nodes bumped in the same
+/// transaction. Audited `user.unban`. Returns the bumped nodes.
+pub(crate) async fn apply_unban_user(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    id: Uuid,
+) -> Result<Vec<Uuid>, ApiError> {
+    lock_user_nodes(conn, id).await?;
+    let row: Option<(bool, serde_json::Value, serde_json::Value, Option<String>)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "UPDATE users u SET enabled = (u.disabled_reason = 'admin') OR u.enabled \
+             WHERE id = $1 RETURNING old.disabled_reason IS NOT DISTINCT FROM 'admin', {}, {}, \
+             old.disabled_note",
+            crate::audit::user_snapshot_sql("old"),
+            crate::audit::user_snapshot_sql("new")
+        )))
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await?;
+    let Some((was_banned, mut before, after, reason)) = row else {
+        return Err(ApiError::not_found());
+    };
+    if !was_banned {
+        return Err(conflict!("user.not_banned", "the account is not banned"));
+    }
+    before["reason"] = json!(reason);
+    crate::audit::record(
+        conn,
+        actor,
+        "user.unban",
+        "user",
+        Some(id.to_string()),
+        Some(before),
+        Some(after),
+    )
+    .await?;
+    Ok(bump_user_nodes(conn, id).await?)
+}
+
+/// POST /users/{id}/ban `{reason}` (admin). Returns the user's detail.
+pub async fn ban_user(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((_, id)): Path<(String, Uuid)>,
+    ApiJson(req): ApiJson<BanReq>,
+) -> Result<Json<UserDetail>, ApiError> {
+    user.require_admin()?;
+    let mut tx = state.pg().begin().await?;
+    apply_ban_user(&mut tx, &Actor::of(&user), id, &req.reason).await?;
+    let view = user_detail_in(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok(Json(view))
+}
+
+/// POST /users/{id}/unban (admin). Returns the user's detail.
+pub async fn unban_user(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((_, id)): Path<(String, Uuid)>,
+) -> Result<Json<UserDetail>, ApiError> {
+    user.require_admin()?;
+    let mut tx = state.pg().begin().await?;
+    apply_unban_user(&mut tx, &Actor::of(&user), id).await?;
+    let view = user_detail_in(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok(Json(view))
+}
+
+/// The ban of a banned account (W28-c), for the console.
+#[derive(Serialize, sqlx::FromRow)]
+pub struct BanView {
+    /// As shown to the user.
+    pub reason: Option<String>,
+    pub banned_at: Option<DateTime<Utc>>,
+    /// The admin who banned (null = deleted since, or CLI/SQL).
+    pub banned_by_id: Option<Uuid>,
+    pub banned_by_email: Option<String>,
+}
+
+/// `GET /users/{id}`: the list row plus the D12 current subscription and
+/// the ban (null when not banned).
+#[derive(Serialize)]
+pub struct UserDetail {
+    #[serde(flatten)]
+    pub user: UserView,
+    pub subscription: Option<crate::plans::SubscriptionView>,
+    pub ban: Option<BanView>,
+}
+
+async fn user_detail_in(conn: &mut PgConnection, id: Uuid) -> Result<UserDetail, ApiError> {
+    let user = sqlx::query_as::<_, UserView>(sqlx::AssertSqlSafe(format!(
+        "SELECT {USER_VIEW_COLS} FROM users WHERE id = $1"
+    )))
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(ApiError::not_found)?;
+    let ban = sqlx::query_as::<_, BanView>(
+        "SELECT u.disabled_note AS reason, u.disabled_at AS banned_at, \
+         u.disabled_by AS banned_by_id, b.email AS banned_by_email \
+         FROM users u LEFT JOIN users b ON b.id = u.disabled_by \
+         WHERE u.id = $1 AND NOT u.enabled AND u.disabled_reason = 'admin'",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let subscription = crate::plans::subscription(conn, id).await?;
+    Ok(UserDetail {
+        user,
+        subscription,
+        ban,
+    })
+}
+
+/// GET /users/{id} (admin): the user, the D12 current subscription (plan,
+/// term, expiry, used/total traffic, last/next reset, status) and the ban.
+pub async fn user_detail(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((_, id)): Path<(String, Uuid)>,
+) -> Result<Json<UserDetail>, ApiError> {
+    user.require_admin()?;
+    let mut c = state.pg().acquire().await?;
+    Ok(Json(user_detail_in(&mut c, id).await?))
 }
 
 pub async fn update_user(
@@ -3247,12 +3407,16 @@ mod tests {
         assert!(r.enabled.is_none() && r.server_addr.is_none());
         let r: UpdateNodeReq = parse(r#"{"server_addr": null}"#).await.ok().unwrap();
         assert_eq!(r.server_addr, Some(None));
-        let r: UpdateUserReq = parse(r#"{"expires_at": null}"#).await.ok().unwrap();
-        assert_eq!(r.expires_at, Some(None));
+        let r: UpdateUserReq = parse(r#"{"password": null}"#).await.ok().unwrap();
+        assert_eq!(r.password, Some(None));
         for bad in [
-            r#"{"enabeld": false}"#,
-            r#"{"expires_at": "2026-10-01"}"#,
-            r#"{"enabled": "yes"}"#,
+            r#"{"rol": "user"}"#,
+            // D12: limit and expiry come from the plan; W28-c: disabling is
+            // a ban with a reason.
+            r#"{"expires_at": null}"#,
+            r#"{"traffic_limit_bytes": 1}"#,
+            r#"{"enabled": false}"#,
+            r#"{"role": 1}"#,
             r#"not json"#,
         ] {
             let e = parse::<UpdateUserReq>(bad).await.err().unwrap();
@@ -3380,19 +3544,25 @@ mod tests {
         };
         let cases: Vec<(&str, Op, Vec<Uuid>, bool)> = vec![
             (
-                "disable user",
-                upd(UpdateUserReq {
-                    enabled: Some(Some(false)),
-                    ..Default::default()
+                "ban user (W28-c)",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        apply_ban_user(c, &crate::audit::Actor::test(), u, "abuse")
+                            .await
+                            .map(|_| ())
+                    })
                 }),
                 vec![n1, n2],
                 true,
             ),
             (
-                "enable user",
-                upd(UpdateUserReq {
-                    enabled: Some(Some(true)),
-                    ..Default::default()
+                "unban user (W28-c)",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        apply_unban_user(c, &crate::audit::Actor::test(), u)
+                            .await
+                            .map(|_| ())
+                    })
                 }),
                 vec![n1, n2],
                 true,
@@ -3416,36 +3586,9 @@ mod tests {
                 true,
             ),
             (
-                "expiry set",
-                upd(UpdateUserReq {
-                    expires_at: Some(Some(Utc::now())),
-                    ..Default::default()
-                }),
-                vec![n1, n2],
-                true,
-            ),
-            (
-                "expiry cleared",
-                upd(UpdateUserReq {
-                    expires_at: Some(None),
-                    ..Default::default()
-                }),
-                vec![n1, n2],
-                true,
-            ),
-            (
                 "password only",
                 upd(UpdateUserReq {
                     password: Some(Some("longenough1".into())),
-                    ..Default::default()
-                }),
-                vec![n1, n2],
-                false,
-            ),
-            (
-                "limit only",
-                upd(UpdateUserReq {
-                    traffic_limit_bytes: Some(Some(5)),
                     ..Default::default()
                 }),
                 vec![n1, n2],
@@ -3640,6 +3783,8 @@ mod tests {
                 true,
             ),
             (
+                // D12: one month from now; the new expiry changes what the
+                // user's (manual) nodes enforce.
                 "set user plan (empty group)",
                 Box::new(move |c| {
                     Box::pin(async move {
@@ -3649,17 +3794,18 @@ mod tests {
                             u,
                             &crate::plans::SetUserPlanReq {
                                 plan_id: plan,
-                                expires_at: None,
-                                period_anchor: None,
-                                reset_traffic: None,
+                                term: crate::plans::Term::new(
+                                    crate::billing::catalog::PeriodKind::Month,
+                                    None,
+                                )?,
                             },
                         )
                         .await
                         .map(|_| ())
                     })
                 }),
-                vec![n1, n2, other],
-                false,
+                vec![n1, n2],
+                true,
             ),
             (
                 "group gains node",
@@ -3867,17 +4013,14 @@ mod tests {
                 true,
             ),
             (
-                "user plan expiry",
+                "extend user plan by N days (D12)",
                 Box::new(move |c| {
                     Box::pin(async move {
-                        crate::plans::apply_update_user_plan(
+                        crate::plans::apply_renew_user_plan(
                             c,
                             &crate::audit::Actor::test(),
                             u,
-                            &crate::plans::UpdateUserPlanReq {
-                                expires_at: Some(Some(Utc::now() + chrono::Duration::days(30))),
-                                ..Default::default()
-                            },
+                            crate::plans::Renewal::ExtendDays(30),
                         )
                         .await
                         .map(|_| ())
@@ -4083,20 +4226,16 @@ mod tests {
 
         assert_eq!(run(1).await, vec![n]);
         assert!(run(1).await.is_empty(), "marker makes it idempotent");
-        // Extend into the future: marker reset + bump; not due yet.
-        let mut tx = db.pool.begin().await.unwrap();
-        let req = UpdateUserReq {
-            expires_at: Some(Some(Utc::now() + chrono::Duration::milliseconds(300))),
-            ..Default::default()
-        };
-        assert_eq!(
-            apply_update_user(&mut tx, &crate::audit::Actor::test(), u, &req)
-                .await
-                .ok()
-                .unwrap(),
-            vec![n]
-        );
-        tx.commit().await.unwrap();
+        // Extended into the future (what a plan renewal writes: the marker
+        // is reset with the expiry); not due yet.
+        sqlx::query(
+            "UPDATE users SET expires_at = now() + interval '300 milliseconds', \
+             expiry_enforced = false WHERE id = $1",
+        )
+        .bind(u)
+        .execute(&db.pool)
+        .await
+        .unwrap();
         assert!(run(1).await.is_empty());
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         assert_eq!(run(1).await, vec![n], "re-expiry is enforced again");
@@ -4237,7 +4376,7 @@ mod tests {
                     &crate::audit::Actor::test(),
                     u,
                     &UpdateUserReq {
-                        traffic_limit_bytes: Some(Some(-1)),
+                        password: Some(Some("short".into())),
                         ..Default::default()
                     }
                 )
@@ -4252,7 +4391,7 @@ mod tests {
                     &crate::audit::Actor::test(),
                     Uuid::new_v4(),
                     &UpdateUserReq {
-                        enabled: Some(Some(true)),
+                        role: Some(Some("user".into())),
                         ..Default::default()
                     }
                 )
@@ -4600,20 +4739,17 @@ mod tests {
         tx.commit().await.map_err(ApiError::from)
     }
 
+    async fn ban(db: &TestDb, id: Uuid) -> Result<(), ApiError> {
+        let mut tx = db.pool.begin().await.unwrap();
+        apply_ban_user(&mut tx, &crate::audit::Actor::test(), id, "reason").await?;
+        tx.commit().await.map_err(ApiError::from)
+    }
+
     fn admin_user(id: Uuid) -> AuthUser {
         AuthUser {
             id,
             email: "a@example.com".into(),
             role: "admin".into(),
-            ip: None,
-        }
-    }
-
-    fn plain_user(id: Uuid) -> AuthUser {
-        AuthUser {
-            id,
-            email: "u@example.com".into(),
-            role: "user".into(),
             ip: None,
         }
     }
@@ -4646,18 +4782,12 @@ mod tests {
         let cases: Vec<(&str, Step<'_>, bool)> = vec![
             (
                 "traffic limit change",
-                upd(UpdateUserReq {
-                    traffic_limit_bytes: Some(Some(1 << 40)),
-                    ..Default::default()
-                }),
+                sql("UPDATE users SET traffic_limit_bytes = 1099511627776 WHERE id = $1"),
                 false,
             ),
             (
                 "expiry change",
-                upd(UpdateUserReq {
-                    expires_at: Some(Some(Utc::now() + chrono::Duration::days(30))),
-                    ..Default::default()
-                }),
+                sql("UPDATE users SET expires_at = now() + interval '30 days' WHERE id = $1"),
                 false,
             ),
             (
@@ -4667,10 +4797,7 @@ mod tests {
             ),
             (
                 "enable (already enabled)",
-                upd(UpdateUserReq {
-                    enabled: Some(Some(true)),
-                    ..Default::default()
-                }),
+                sql("UPDATE users SET enabled = true WHERE id = $1"),
                 false,
             ),
             (
@@ -4681,30 +4808,20 @@ mod tests {
                 }),
                 true,
             ),
-            // Re-enabling must not revive the sessions the disable ended.
+            // Unbanning must not revive the sessions the ban ended.
             (
-                "API disable, then re-enable",
+                "API ban, then unban",
                 Box::pin(async {
-                    update(
-                        &db,
-                        u,
-                        UpdateUserReq {
-                            enabled: Some(Some(false)),
-                            ..Default::default()
-                        },
-                    )
-                    .await
-                    .unwrap();
-                    update(
-                        &db,
-                        u,
-                        UpdateUserReq {
-                            enabled: Some(Some(true)),
-                            ..Default::default()
-                        },
-                    )
-                    .await
-                    .unwrap();
+                    let mut tx = db.pool.begin().await.unwrap();
+                    apply_ban_user(&mut tx, &crate::audit::Actor::test(), u, "r")
+                        .await
+                        .ok()
+                        .unwrap();
+                    apply_unban_user(&mut tx, &crate::audit::Actor::test(), u)
+                        .await
+                        .ok()
+                        .unwrap();
+                    tx.commit().await.unwrap();
                 }),
                 true,
             ),
@@ -4908,47 +5025,6 @@ mod tests {
         db.drop().await;
     }
 
-    /// GET /users/{id}/nodes: the account's node rows with inbound tags
-    /// and manual/plan origin; never the credentials; 404 for no user.
-    #[tokio::test]
-    async fn user_nodes_lists_access_without_secrets() {
-        let Some(db) = TestDb::new().await else {
-            return;
-        };
-        let a = db.admin().await;
-        let (n, u) = db.member().await;
-        let state = AppState::for_test(db.pool.clone()).await;
-        let Json(rows) = user_nodes(State(state.clone()), admin_user(a), Path(("p".into(), u)))
-            .await
-            .unwrap_or_else(|e| panic!("{}", e.message()));
-        let v = serde_json::to_value(&rows).unwrap();
-        assert_eq!(v.as_array().map(Vec::len), Some(1));
-        assert_eq!(v[0]["node_id"], json!(n));
-        assert_eq!(v[0]["manual"], true);
-        assert_eq!(v[0]["deleting"], false);
-        assert_eq!(
-            v[0]["inbounds"],
-            json!([{"tag": "in-vless", "protocol": "vless"}])
-        );
-        assert!(!v.to_string().contains("account"), "{v}");
-        let e = user_nodes(
-            State(state.clone()),
-            admin_user(a),
-            Path(("p".into(), Uuid::new_v4())),
-        )
-        .await
-        .err()
-        .map(|e| e.status());
-        assert_eq!(e, Some(StatusCode::NOT_FOUND));
-        let e = user_nodes(State(state.clone()), plain_user(u), Path(("p".into(), u)))
-            .await
-            .err()
-            .map(|e| e.status());
-        assert_eq!(e, Some(StatusCode::FORBIDDEN));
-        drop(state);
-        db.drop().await;
-    }
-
     #[tokio::test]
     async fn last_enabled_admin_cannot_be_removed() {
         let Some(db) = TestDb::new().await else {
@@ -4960,17 +5036,7 @@ mod tests {
             assert_eq!(e.status(), StatusCode::CONFLICT);
             assert_eq!(e.message(), "cannot remove the last enabled admin");
         };
-        conflict(
-            update(
-                &db,
-                a,
-                UpdateUserReq {
-                    enabled: Some(Some(false)),
-                    ..Default::default()
-                },
-            )
-            .await,
-        );
+        conflict(ban(&db, a).await);
         conflict(
             update(
                 &db,
@@ -5000,28 +5066,9 @@ mod tests {
         )
         .await
         .unwrap();
-        update(
-            &db,
-            a,
-            UpdateUserReq {
-                enabled: Some(Some(true)),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
         // With a second enabled admin either may go, but not both.
         let b = db.admin().await;
-        update(
-            &db,
-            a,
-            UpdateUserReq {
-                enabled: Some(Some(false)),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
+        ban(&db, a).await.unwrap();
         conflict(
             update(
                 &db,
@@ -5126,17 +5173,9 @@ mod tests {
                 tokio::spawn(async move {
                     let mut tx = pool.begin().await.unwrap();
                     let r = match kind % 3 {
-                        0 => apply_update_user(
-                            &mut tx,
-                            &crate::audit::Actor::test(),
-                            id,
-                            &UpdateUserReq {
-                                enabled: Some(Some(false)),
-                                ..Default::default()
-                            },
-                        )
-                        .await
-                        .map(|_| ()),
+                        0 => apply_ban_user(&mut tx, &crate::audit::Actor::test(), id, "r")
+                            .await
+                            .map(|_| ()),
                         1 => apply_update_user(
                             &mut tx,
                             &crate::audit::Actor::test(),
@@ -5388,17 +5427,7 @@ mod tests {
             ip: Some("2001:db8::7".parse().unwrap()),
         };
         let mut tx = db.pool.begin().await.unwrap();
-        apply_update_user(
-            &mut tx,
-            &actor,
-            u,
-            &UpdateUserReq {
-                enabled: Some(Some(false)),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
+        apply_ban_user(&mut tx, &actor, u, "reason").await.unwrap();
         let inside: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_log")
             .fetch_one(&mut *tx)
             .await
@@ -5434,7 +5463,7 @@ mod tests {
             &actor,
             u,
             &UpdateUserReq {
-                traffic_limit_bytes: Some(Some(42)),
+                role: Some(Some("admin".into())),
                 ..Default::default()
             },
         )
@@ -5460,8 +5489,8 @@ mod tests {
         assert_eq!(row.1, "boss");
         assert_eq!(row.2.as_deref(), Some("2001:db8::7"));
         assert_eq!(row.4, u.to_string());
-        assert_eq!(row.5["traffic_limit_bytes"], serde_json::Value::Null);
-        assert_eq!(row.6["traffic_limit_bytes"], 42);
+        assert_eq!(row.5["role"], "user");
+        assert_eq!(row.6["role"], "admin");
         assert_eq!(audit_count(&db.pool).await, 2, "node.delete + user.update");
         db.drop().await;
     }
@@ -5483,8 +5512,7 @@ mod tests {
                 email: "redact-me@example.com".into(),
                 password: "first-password-123".into(),
                 role: None,
-                traffic_limit_bytes: None,
-                expires_at: None,
+                plan: None,
             }),
         )
         .await

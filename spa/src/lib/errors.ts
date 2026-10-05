@@ -16,6 +16,7 @@ import { ApiError, type ErrorParams } from "./api";
  * every `<p>_cents`.
  */
 export const CODE_KEYS: Record<string, MessageKey> = {
+  "account.banned": "errors.accountBanned",
   "account.invalid_password": "errors.invalidPassword",
   "account.locale_invalid": "errors.localeInvalid",
   "account.passkey_exists": "errors.passkeyExists",

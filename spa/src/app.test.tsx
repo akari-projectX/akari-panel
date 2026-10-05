@@ -31,6 +31,9 @@ const me = (role: string): Me => ({
   expires_at: null,
   expired: false,
   quota_exhausted: false,
+  banned: false,
+  ban_reason: null,
+  banned_at: null,
   email: role === "admin" ? "root@example.com" : "alice@example.com",
   email_verified: false,
   locale: "en",
@@ -108,6 +111,20 @@ describe("App session routing", () => {
     expect(await screen.findByText(/used up your traffic/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Buy a traffic reset pack" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Subscription link" })).toBeNull();
+  });
+
+  it("banned users (W28-c) see the reason and tickets only, nothing else is requested", async () => {
+    const calls = fakeApi({
+      "GET /me": { ...me("user"), banned: true, ban_reason: "Account shared" },
+      "GET /me/tickets": [],
+    });
+    renderWithClient(<App />);
+    expect(await screen.findByText(/Your account is banned.*Reason: Account shared/)).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Buy a plan" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Account settings" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Tickets" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Tickets" })).toBeTruthy();
+    expect(calls.some((c) => c.path === "/me/plan" || c.path === "/me/shop")).toBe(false);
   });
 });
 

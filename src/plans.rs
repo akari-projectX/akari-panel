@@ -42,6 +42,7 @@ use uuid::Uuid;
 use crate::api::{ApiJson, double_option, non_null};
 use crate::audit::Actor;
 use crate::auth::{ApiError, AuthUser};
+use crate::billing::catalog::{PeriodKind, PeriodKindText};
 use crate::entitle::{self, Outcome, Scope};
 use crate::state::AppState;
 
@@ -1202,6 +1203,9 @@ pub struct UserPlanView {
     plan_id: Uuid,
     plan_name: String,
     status: String,
+    /// The term (catalog period kind) and its days.
+    period: String,
+    period_days: Option<i32>,
     starts_at: DateTime<Utc>,
     expires_at: Option<DateTime<Utc>>,
     period_anchor: DateTime<Utc>,
@@ -1211,29 +1215,136 @@ pub struct UserPlanView {
 }
 
 const USER_PLAN_VIEW_SQL: &str = "SELECT up.id, up.plan_id, p.name AS plan_name, \
-     up.status::text AS status, up.starts_at, up.expires_at, up.period_anchor, up.last_reset_at, \
+     up.status::text AS status, up.term_kind AS period, up.term_days AS period_days, up.starts_at, up.expires_at, up.period_anchor, up.last_reset_at, \
      up.next_reset_at, up.ended_at FROM user_plans up JOIN plans p ON p.id = up.plan_id";
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SetUserPlanReq {
-    pub plan_id: Uuid,
-    /// null/absent = no expiry. Must be in the future.
-    pub expires_at: Option<DateTime<Utc>>,
-    /// Start of the first traffic period (default now); not in the future.
-    pub period_anchor: Option<DateTime<Utc>>,
-    /// Zero the user's usage (default false: a plan change keeps it).
-    pub reset_traffic: Option<bool>,
+/// D12: the duration of a subscription — a catalog period kind (the
+/// traffic reset pack is not a duration) and its days. Admins assign plans
+/// only as plan + term (or extend a periodic one by N days); the expiry is
+/// always computed in SQL (`akari_period_end`), never sent by a client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Term {
+    pub kind: PeriodKind,
+    pub days: Option<i32>,
 }
 
+impl Term {
+    /// A validated term (400 `user_plan.term_*`).
+    pub fn new(kind: PeriodKind, days: Option<i32>) -> Result<Self, ApiError> {
+        if kind == PeriodKind::Reset {
+            return Err(bad_request!(
+                "user_plan.term_reset",
+                "the traffic reset pack is not a subscription term"
+            ));
+        }
+        match (kind.days_rule(), days) {
+            (Some(true), None) => Err(bad_request!(
+                "user_plan.term_days_missing",
+                "period \"days\" needs days"
+            )),
+            (Some(false), Some(_)) => Err(bad_request!(
+                "user_plan.term_days_unexpected",
+                "period {period} takes no days",
+                period = kind.as_str()
+            )),
+            (_, Some(d)) if !(1..=MAX_PERIOD_DAYS).contains(&d) => Err(bad_request!(
+                "user_plan.term_days_range",
+                "days must be 1..={max_period_days}",
+                max_period_days = MAX_PERIOD_DAYS
+            )),
+            _ => Ok(Term { kind, days }),
+        }
+    }
+
+    /// A one-time purchase (ruling ④: never extended by N days).
+    pub fn is_onetime(self) -> bool {
+        self.kind == PeriodKind::Onetime
+    }
+}
+
+/// `PUT /users/{id}/plan` (and `POST /users` `plan`, batch `set_plan`):
+/// assign or change the plan for one term from now.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssignPlanReq {
+    pub plan_id: Uuid,
+    pub period: PeriodKindText,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub days: Option<i32>,
+}
+
+impl AssignPlanReq {
+    pub fn assignment(&self) -> Result<SetUserPlanReq, ApiError> {
+        Ok(SetUserPlanReq {
+            plan_id: self.plan_id,
+            term: Term::new(self.period.0, self.days)?,
+        })
+    }
+}
+
+/// What `apply_set_user_plan` assigns: the plan for `term` from now. The
+/// user's usage is zeroed (a new subscription starts empty, like a bought
+/// one — docs/PAYMENTS.md "Switching plans").
+#[derive(Clone, Copy, Debug)]
+pub struct SetUserPlanReq {
+    pub plan_id: Uuid,
+    pub term: Term,
+}
+
+/// `PATCH /users/{id}/plan`: renew the active subscription by one term
+/// (`period` + `days`) or extend it by `extend_days` — both from the later
+/// of its expiry and now.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct UpdateUserPlanReq {
-    /// null clears the expiry.
-    #[serde(default, deserialize_with = "double_option")]
-    pub expires_at: Option<Option<DateTime<Utc>>>,
-    #[serde(default, deserialize_with = "double_option")]
-    pub period_anchor: Option<Option<DateTime<Utc>>>,
+pub struct RenewUserPlanReq {
+    #[serde(default)]
+    pub period: Option<PeriodKindText>,
+    #[serde(default)]
+    pub days: Option<i32>,
+    #[serde(default)]
+    pub extend_days: Option<i32>,
+}
+
+impl RenewUserPlanReq {
+    pub fn renewal(&self) -> Result<Renewal, ApiError> {
+        match (self.period, self.extend_days) {
+            (Some(p), None) => Ok(Renewal::Term(Term::new(p.0, self.days)?)),
+            (None, Some(n)) if self.days.is_none() => Renewal::extend(n),
+            _ => Err(bad_request!(
+                "user_plan.renew_mode",
+                "send either period (with days when needed) or extend_days"
+            )),
+        }
+    }
+}
+
+/// How a subscription is renewed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Renewal {
+    /// One more term (its kind becomes the subscription's term).
+    Term(Term),
+    /// N more days; periodic subscriptions only (not `onetime`, ruling ④).
+    ExtendDays(i32),
+}
+
+impl Renewal {
+    pub fn extend(days: i32) -> Result<Self, ApiError> {
+        if !(1..=MAX_PERIOD_DAYS).contains(&days) {
+            return Err(bad_request!(
+                "user_plan.extend_days_range",
+                "extend_days must be 1..={max_period_days}",
+                max_period_days = MAX_PERIOD_DAYS
+            ));
+        }
+        Ok(Renewal::ExtendDays(days))
+    }
+}
+
+/// `POST /users/{id}/plan/reset-traffic`: the console's confirmation.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResetTrafficReq {
+    pub confirm: bool,
 }
 
 /// What a user plan mutation bumped.
@@ -1258,46 +1369,8 @@ impl UserPlanChange {
     }
 }
 
-/// 400 unless `t` is after the DB clock's now.
-async fn require_future(
-    conn: &mut PgConnection,
-    field: &str,
-    t: DateTime<Utc>,
-) -> Result<(), ApiError> {
-    let ok: bool = sqlx::query_scalar("SELECT $1 > now()")
-        .bind(t)
-        .fetch_one(conn)
-        .await?;
-    if !ok {
-        return Err(bad_request!(
-            "user_plan.expiry_past",
-            "{field} must be in the future",
-            field = field
-        ));
-    }
-    Ok(())
-}
-
-async fn require_not_future(
-    conn: &mut PgConnection,
-    field: &str,
-    t: DateTime<Utc>,
-) -> Result<(), ApiError> {
-    let ok: bool = sqlx::query_scalar("SELECT $1 <= now()")
-        .bind(t)
-        .fetch_one(conn)
-        .await?;
-    if !ok {
-        return Err(bad_request!(
-            "user_plan.anchor_future",
-            "{field} must not be in the future",
-            field = field
-        ));
-    }
-    Ok(())
-}
-
-/// PUT /users/{id}/plan: give the user a plan, replacing the active one.
+/// PUT /users/{id}/plan: give the user a plan for one term from now,
+/// replacing the active one (status `replaced`), and zero their usage.
 /// Credentials of nodes the old and new plan share are kept.
 pub async fn apply_set_user_plan(
     conn: &mut PgConnection,
@@ -1329,12 +1402,6 @@ pub async fn apply_set_user_plan(
         Some(false) => return Err(conflict!("plan.disabled", "plan is disabled (not offered)")),
         Some(true) => {}
     }
-    if let Some(t) = req.expires_at {
-        require_future(conn, "expires_at", t).await?;
-    }
-    if let Some(a) = req.period_anchor {
-        require_not_future(conn, "period_anchor", a).await?;
-    }
     // Lock every node the reconcile will touch BEFORE the user_plans insert
     // (whose foreign key check share-locks the user row): nodes -> users.
     sqlx::query(
@@ -1362,25 +1429,25 @@ pub async fn apply_set_user_plan(
     .fetch_one(&mut *conn)
     .await?;
     let up_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO user_plans (id, user_id, plan_id, expires_at, period_anchor, next_reset_at) \
-         SELECT $1, $2, p.id, $4, COALESCE($5, now()), \
-                akari_next_reset(COALESCE($5, now()), p.reset_period, p.reset_days, now()) \
-         FROM plans p WHERE p.id = $3",
+    let expires_at: Option<DateTime<Utc>> = sqlx::query_scalar(
+        "INSERT INTO user_plans (id, user_id, plan_id, expires_at, period_anchor, next_reset_at, \
+                                 term_kind, term_days) \
+         SELECT $1, $2, p.id, akari_period_end(now(), $4, $5), now(), \
+                akari_next_reset(now(), p.reset_period, p.reset_days, now()), $4, $5 \
+         FROM plans p WHERE p.id = $3 RETURNING expires_at",
     )
     .bind(up_id)
     .bind(user_id)
     .bind(req.plan_id)
-    .bind(req.expires_at)
-    .bind(req.period_anchor)
-    .execute(&mut *conn)
+    .bind(req.term.kind.as_str())
+    .bind(req.term.days)
+    .fetch_one(&mut *conn)
     .await?;
     let mut res = UserPlanChange {
         outcome: entitle::apply_reconcile(conn, Scope::Users(&[user_id])).await?,
         ..Default::default()
     };
-    let reset = req.reset_traffic.unwrap_or(false);
-    let synced = sync_users_from_plan(conn, &[user_id], reset).await?;
+    let synced = sync_users_from_plan(conn, &[user_id], true).await?;
     let (before, mut after) = match synced.into_iter().next() {
         Some(s) => {
             // Served state or speed limit changed: every node of the user
@@ -1394,7 +1461,8 @@ pub async fn apply_set_user_plan(
     };
     after["plan_id"] = json!(req.plan_id);
     after["user_plan_id"] = json!(up_id);
-    after["reset_traffic"] = json!(reset);
+    after["term"] = json!({ "period": req.term.kind.as_str(), "days": req.term.days });
+    after["plan_expires_at"] = json!(expires_at);
     after["entitlement"] = res.outcome.summary();
     let mut before = before;
     before["plan_id"] = json!(previous.map(|p| p.1));
@@ -1411,58 +1479,93 @@ pub async fn apply_set_user_plan(
     Ok(res)
 }
 
-/// PATCH /users/{id}/plan: change the active plan's expiry (renewal) or
-/// period anchor. Entitlement is unchanged.
-pub async fn apply_update_user_plan(
+/// 404 for an unknown user, 409 `user_plan.none` for one without an active
+/// plan.
+async fn no_active_plan(conn: &mut PgConnection, user_id: Uuid) -> Result<ApiError, ApiError> {
+    let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+    Ok(match exists {
+        None => ApiError::not_found(),
+        Some(_) => conflict!("user_plan.none", "the user has no active plan"),
+    })
+}
+
+/// PATCH /users/{id}/plan (and a paid renewal order, and batch "extend"):
+/// push the active subscription's expiry out by one term or by N days,
+/// from the later of its expiry and now (DB clock). A subscription without
+/// expiry has nothing to renew (409 `user_plan.no_expiry`); N days are
+/// refused for a one-time purchase (409 `user_plan.extend_onetime`, ruling
+/// ④). Entitlement is unchanged; usage and the reset schedule stay.
+pub async fn apply_renew_user_plan(
     conn: &mut PgConnection,
     actor: &Actor,
     user_id: Uuid,
-    req: &UpdateUserPlanReq,
+    renewal: Renewal,
 ) -> Result<UserPlanChange, ApiError> {
-    let anchor = non_null("period_anchor", &req.period_anchor)?;
-    if req.expires_at.is_none() && anchor.is_none() {
-        return Err(bad_request!("request.no_fields", "no fields to update"));
-    }
     entitle::lock(conn).await?;
-    if let Some(Some(t)) = req.expires_at {
-        require_future(conn, "expires_at", t).await?;
-    }
-    if let Some(a) = anchor {
-        require_not_future(conn, "period_anchor", a).await?;
-    }
-    let mut qb = sqlx::QueryBuilder::new("UPDATE user_plans up SET ");
-    let mut set = qb.separated(", ");
-    if let Some(e) = req.expires_at {
-        set.push("expires_at = ").push_bind_unseparated(e);
-    }
-    if let Some(a) = anchor {
-        set.push("period_anchor = ").push_bind_unseparated(a);
-        set.push("next_reset_at = akari_next_reset(")
-            .push_bind_unseparated(a)
-            .push_unseparated(", p.reset_period, p.reset_days, now())");
-    }
-    qb.push(" FROM plans p WHERE p.id = up.plan_id AND up.status = 'active' AND up.user_id = ")
-        .push_bind(user_id);
-    qb.push(
-        " RETURNING jsonb_build_object('expires_at', old.expires_at, 'period_anchor', \
-         old.period_anchor, 'next_reset_at', old.next_reset_at), \
-         jsonb_build_object('expires_at', new.expires_at, 'period_anchor', new.period_anchor, \
-         'next_reset_at', new.next_reset_at)",
-    );
-    let Some((plan_before, plan_after)) = qb
-        .build_query_as::<(Value, Value)>()
-        .fetch_optional(&mut *conn)
-        .await?
-    else {
-        return Err(ApiError::not_found());
+    type Active = (Uuid, String, Option<i32>, Option<DateTime<Utc>>);
+    let active: Option<Active> = sqlx::query_as(
+        "SELECT id, term_kind, term_days, expires_at FROM user_plans \
+         WHERE user_id = $1 AND status = 'active' FOR UPDATE",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((up_id, term_kind, term_days, expires)) = active else {
+        return Err(no_active_plan(conn, user_id).await?);
     };
+    if expires.is_none() {
+        return Err(conflict!(
+            "user_plan.no_expiry",
+            "the subscription has no expiry; nothing to renew"
+        ));
+    }
+    let (term, extend) = match renewal {
+        Renewal::Term(t) => (Some(t), None),
+        Renewal::ExtendDays(n) => {
+            if term_kind == PeriodKind::Onetime.as_str() {
+                return Err(conflict!(
+                    "user_plan.extend_onetime",
+                    "a one-time purchase cannot be extended by days; renew it or assign a plan"
+                ));
+            }
+            (None, Some(n))
+        }
+    };
+    let new_expiry: Option<DateTime<Utc>> = sqlx::query_scalar(
+        "UPDATE user_plans SET \
+         expires_at = CASE WHEN $2::text IS NULL \
+             THEN GREATEST(expires_at, now()) + make_interval(secs => $4::bigint * 86400) \
+             ELSE akari_period_end(GREATEST(expires_at, now()), $2, $3) END, \
+         term_kind = COALESCE($2, term_kind), \
+         term_days = CASE WHEN $2::text IS NULL THEN term_days ELSE $3 END \
+         WHERE id = $1 RETURNING expires_at",
+    )
+    .bind(up_id)
+    .bind(term.map(|t| t.kind.as_str()))
+    .bind(term.and_then(|t| t.days))
+    .bind(extend)
+    .fetch_one(&mut *conn)
+    .await?;
     // Locks the user's nodes (nothing to change: same entitlement).
     let mut res = UserPlanChange {
         outcome: entitle::apply_reconcile(conn, Scope::Users(&[user_id])).await?,
         ..Default::default()
     };
     let synced = sync_users_from_plan(conn, &[user_id], false).await?;
-    let mut after = plan_after;
+    let mut after = json!({
+        "user_plan_id": up_id,
+        "expires_at": new_expiry,
+        "term": term.map_or_else(
+            || json!({ "period": term_kind, "days": term_days }),
+            |t| json!({ "period": t.kind.as_str(), "days": t.days })
+        ),
+    });
+    if let Some(n) = extend {
+        after["extend_days"] = json!(n);
+    }
     if let Some(s) = synced.into_iter().next() {
         if s.serve_changed {
             res.served_bumped = bump_nodes_of_users(conn, &[user_id]).await?;
@@ -1472,10 +1575,14 @@ pub async fn apply_update_user_plan(
     crate::audit::record(
         conn,
         actor,
-        "user.plan.update",
+        "user.plan.renew",
         "user",
         Some(user_id.to_string()),
-        Some(plan_before),
+        Some(json!({
+            "user_plan_id": up_id,
+            "expires_at": expires,
+            "term": { "period": term_kind, "days": term_days },
+        })),
         Some(after),
     )
     .await?;
@@ -1484,7 +1591,7 @@ pub async fn apply_update_user_plan(
 
 /// DELETE /users/{id}/plan: end the active plan; plan-granted access is
 /// revoked (departed rows written). The user's enforced limit and expiry
-/// stay as they were (now editable via PATCH /users).
+/// stay as they were (a record; only a new plan changes them, D12).
 pub async fn apply_cancel_user_plan(
     conn: &mut PgConnection,
     actor: &Actor,
@@ -1499,7 +1606,7 @@ pub async fn apply_cancel_user_plan(
     .fetch_optional(&mut *conn)
     .await?;
     let Some((up_id, plan_id)) = ended else {
-        return Err(ApiError::not_found());
+        return Err(no_active_plan(conn, user_id).await?);
     };
     let mut res = UserPlanChange {
         outcome: entitle::apply_reconcile(conn, Scope::Users(&[user_id])).await?,
@@ -1553,16 +1660,33 @@ pub async fn apply_reset_traffic(
     .await
 }
 
-/// Ops (admin batch "重置已用流量"): zero the user's used traffic whether or
-/// not they hold a plan; a quota-disabled account is re-enabled (never an
-/// admin-disabled one). Audited `user.traffic.reset` (source `admin`).
+/// D12 "重置套餐流量" (`POST /users/{id}/plan/reset-traffic`, batch
+/// `reset_traffic`): zero the used traffic of a user with an active plan
+/// (409 `user_plan.none` otherwise); a quota-disabled account is re-enabled
+/// (never a banned one). The reset schedule stays. Audited
+/// `user.traffic.reset` (source `admin`).
 pub async fn apply_admin_reset_traffic(
     conn: &mut PgConnection,
     actor: &Actor,
     user_id: Uuid,
 ) -> Result<UserPlanChange, ApiError> {
     entitle::lock(conn).await?;
-    reset_traffic_locked(conn, actor, user_id, json!({ "source": "admin" })).await
+    let active: Option<Uuid> = sqlx::query_scalar(
+        "SELECT plan_id FROM user_plans WHERE user_id = $1 AND status = 'active'",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(plan_id) = active else {
+        return Err(no_active_plan(conn, user_id).await?);
+    };
+    reset_traffic_locked(
+        conn,
+        actor,
+        user_id,
+        json!({ "source": "admin", "plan_id": plan_id }),
+    )
+    .await
 }
 
 /// The reset itself (caller holds `entitle::lock`): nodes -> users lock
@@ -1584,7 +1708,7 @@ async fn reset_traffic_locked(
     let row: Option<(i64, bool, bool, Option<String>)> = sqlx::query_as(
         "UPDATE users u SET traffic_used_bytes = 0, \
          enabled = u.enabled OR u.disabled_reason = 'quota' WHERE u.id = $1 \
-         RETURNING old.traffic_used_bytes, old.enabled, new.enabled, old.disabled_reason::text",
+         RETURNING old.traffic_used_bytes, old.enabled, new.enabled, old.disabled_reason",
     )
     .bind(user_id)
     .fetch_optional(&mut *conn)
@@ -1592,6 +1716,13 @@ async fn reset_traffic_locked(
     let Some((used, was_enabled, enabled, reason)) = row else {
         return Err(ApiError::not_found());
     };
+    // The subscription's record of its last zeroing (the schedule stays).
+    sqlx::query(
+        "UPDATE user_plans SET last_reset_at = now() WHERE user_id = $1 AND status = 'active'",
+    )
+    .bind(user_id)
+    .execute(&mut *conn)
+    .await?;
     let mut res = UserPlanChange::default();
     if !was_enabled && enabled {
         res.served_bumped = bump_nodes_of_users(conn, &[user_id]).await?;
@@ -1646,25 +1777,27 @@ pub async fn set_user_plan(
     State(state): State<AppState>,
     user: AuthUser,
     Path((_, id)): Path<(String, Uuid)>,
-    ApiJson(req): ApiJson<SetUserPlanReq>,
+    ApiJson(req): ApiJson<AssignPlanReq>,
 ) -> Result<Json<Value>, ApiError> {
     user.require_admin()?;
+    let assign = req.assignment()?;
     let mut tx = state.pg().begin().await?;
-    apply_set_user_plan(&mut tx, &Actor::of(&user), id, &req).await?;
+    apply_set_user_plan(&mut tx, &Actor::of(&user), id, &assign).await?;
     let view = user_plan_state(&mut tx, id).await?;
     tx.commit().await?;
     Ok(Json(view))
 }
 
-pub async fn update_user_plan(
+pub async fn renew_user_plan(
     State(state): State<AppState>,
     user: AuthUser,
     Path((_, id)): Path<(String, Uuid)>,
-    ApiJson(req): ApiJson<UpdateUserPlanReq>,
+    ApiJson(req): ApiJson<RenewUserPlanReq>,
 ) -> Result<Json<Value>, ApiError> {
     user.require_admin()?;
+    let renewal = req.renewal()?;
     let mut tx = state.pg().begin().await?;
-    apply_update_user_plan(&mut tx, &Actor::of(&user), id, &req).await?;
+    apply_renew_user_plan(&mut tx, &Actor::of(&user), id, renewal).await?;
     let view = user_plan_state(&mut tx, id).await?;
     tx.commit().await?;
     Ok(Json(view))
@@ -1680,6 +1813,85 @@ pub async fn cancel_user_plan(
     apply_cancel_user_plan(&mut tx, &Actor::of(&user), id).await?;
     tx.commit().await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+/// POST /users/{id}/plan/reset-traffic `{confirm: true}`: D12 "重置套餐流量".
+/// Returns the user's current subscription.
+pub async fn reset_user_traffic(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((_, id)): Path<(String, Uuid)>,
+    ApiJson(req): ApiJson<ResetTrafficReq>,
+) -> Result<Json<Value>, ApiError> {
+    user.require_admin()?;
+    if !req.confirm {
+        return Err(bad_request!(
+            "user_plan.confirm_required",
+            "resetting the traffic needs confirm: true"
+        ));
+    }
+    let mut tx = state.pg().begin().await?;
+    apply_admin_reset_traffic(&mut tx, &Actor::of(&user), id).await?;
+    let sub = subscription(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok(Json(json!({ "subscription": sub })))
+}
+
+/// D12 "当前订阅" of a user's detail view (`GET /users/{id}`).
+#[derive(Serialize, sqlx::FromRow, Debug)]
+pub struct SubscriptionView {
+    pub user_plan_id: Uuid,
+    pub plan_id: Uuid,
+    pub plan_name: String,
+    /// The term it was assigned/bought or last renewed with (catalog period
+    /// kind: month … three_year, days, onetime) and its days.
+    pub period: String,
+    pub period_days: Option<i32>,
+    pub starts_at: DateTime<Utc>,
+    /// null = no expiry.
+    pub expires_at: Option<DateTime<Utc>>,
+    pub traffic_used_bytes: i64,
+    /// The plan's quota (null = unlimited).
+    pub traffic_total_bytes: Option<i64>,
+    /// The plan's traffic reset period ("monthly", "days-N", "none").
+    pub reset_period: String,
+    pub last_reset_at: Option<DateTime<Utc>>,
+    /// null = never (reset period "none").
+    pub next_reset_at: Option<DateTime<Utc>>,
+    pub speed_limit_mbps: Option<i32>,
+    /// banned | over_quota | expired | active (the badge's precedence).
+    pub status: String,
+    #[serde(skip)]
+    reset_kind: String,
+    #[serde(skip)]
+    reset_days: Option<i32>,
+}
+
+/// The user's active subscription (None without one).
+pub async fn subscription(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+) -> Result<Option<SubscriptionView>, ApiError> {
+    let row = sqlx::query_as::<_, SubscriptionView>(
+        "SELECT up.id AS user_plan_id, up.plan_id, p.name AS plan_name, up.term_kind AS period, \
+         up.term_days AS period_days, up.starts_at, up.expires_at, u.traffic_used_bytes, \
+         p.traffic_quota_bytes AS traffic_total_bytes, '' AS reset_period, up.last_reset_at, \
+         up.next_reset_at, p.speed_limit_mbps, \
+         CASE WHEN NOT u.enabled AND u.disabled_reason = 'admin' THEN 'banned' \
+              WHEN NOT u.enabled THEN 'over_quota' \
+              WHEN up.expires_at IS NOT NULL AND up.expires_at <= now() THEN 'expired' \
+              ELSE 'active' END AS status, \
+         p.reset_period AS reset_kind, p.reset_days \
+         FROM user_plans up JOIN plans p ON p.id = up.plan_id JOIN users u ON u.id = up.user_id \
+         WHERE up.user_id = $1 AND up.status = 'active'",
+    )
+    .bind(user_id)
+    .fetch_optional(conn)
+    .await?;
+    Ok(row.map(|mut r| {
+        r.reset_period = Period::from_columns(&r.reset_kind, r.reset_days).render();
+        r
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1875,7 +2087,7 @@ pub async fn apply_period_resets(conn: &mut PgConnection) -> Result<Vec<Uuid>, A
          enabled = u.enabled OR u.disabled_reason = 'quota' \
          WHERE u.id = ANY($1) \
          RETURNING u.id, old.traffic_used_bytes, old.enabled, new.enabled, \
-         old.disabled_reason::text",
+         old.disabled_reason",
     )
     .bind(&users)
     .fetch_all(&mut *conn)
@@ -2020,21 +2232,40 @@ mod tests {
         expires: Option<DateTime<Utc>>,
     ) -> Vec<Uuid> {
         let mut tx = db.pool.begin().await.unwrap();
-        let r = apply_set_user_plan(
-            &mut tx,
-            &a(),
-            user,
-            &SetUserPlanReq {
-                plan_id: plan,
-                expires_at: expires,
-                period_anchor: None,
-                reset_traffic: None,
-            },
-        )
-        .await
-        .unwrap_or_else(|e| panic!("set plan: {}", e.message()));
+        let r = apply_set_user_plan(&mut tx, &a(), user, &forever(plan))
+            .await
+            .unwrap_or_else(|e| panic!("set plan: {}", e.message()));
+        // A test-chosen expiry, written the way a renewal does (marker
+        // reset with it).
+        if let Some(t) = expires {
+            sqlx::query(
+                "UPDATE user_plans SET expires_at = $2 WHERE user_id = $1 AND status = 'active'",
+            )
+            .bind(user)
+            .bind(t)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+            sqlx::query("UPDATE users SET expires_at = $2, expiry_enforced = false WHERE id = $1")
+                .bind(user)
+                .bind(t)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+        }
         tx.commit().await.unwrap();
         r.bumped()
+    }
+
+    /// The plan without expiry (a permanent one-time purchase).
+    fn forever(plan_id: Uuid) -> SetUserPlanReq {
+        SetUserPlanReq {
+            plan_id,
+            term: Term {
+                kind: PeriodKind::Onetime,
+                days: None,
+            },
+        }
     }
 
     async fn plan_update(db: &TestDb, plan: Uuid, req: UpdatePlanReq) -> PlanUpdate {
@@ -2509,7 +2740,7 @@ mod tests {
         assert_eq!(o, Outcome::default());
         tx.commit().await.unwrap();
 
-        // Cancel: access gone, departed; limits stay; second cancel 404.
+        // Cancel: access gone, departed; limits stay; second cancel 409.
         let mut tx = db.pool.begin().await.unwrap();
         let r = apply_cancel_user_plan(&mut tx, &a(), u).await.ok().unwrap();
         tx.commit().await.unwrap();
@@ -2520,7 +2751,7 @@ mod tests {
             .await
             .err()
             .unwrap();
-        assert_eq!(e.status(), StatusCode::NOT_FOUND);
+        assert_eq!(e.code(), "user_plan.none");
         drop(tx);
         assert!(nodes_of(&db, bystander).await.is_empty());
         assert_consistent(&db).await;
@@ -2573,12 +2804,7 @@ mod tests {
         let u = db.user().await;
         let p = plan(&db, "p", &[], Some(10)).await;
         let mut tx = db.pool.begin().await.unwrap();
-        let req = SetUserPlanReq {
-            plan_id: p,
-            expires_at: None,
-            period_anchor: None,
-            reset_traffic: None,
-        };
+        let req = forever(p);
         let e = apply_set_user_plan(&mut tx, &a(), admin, &req)
             .await
             .err()
@@ -2586,26 +2812,8 @@ mod tests {
         assert_eq!(e.status(), StatusCode::BAD_REQUEST);
         drop(tx);
         let mut tx = db.pool.begin().await.unwrap();
-        let bad = SetUserPlanReq {
-            plan_id: Uuid::new_v4(),
-            expires_at: None,
-            period_anchor: None,
-            reset_traffic: None,
-        };
+        let bad = forever(Uuid::new_v4());
         let e = apply_set_user_plan(&mut tx, &a(), u, &bad)
-            .await
-            .err()
-            .unwrap();
-        assert_eq!(e.status(), StatusCode::BAD_REQUEST);
-        drop(tx);
-        let mut tx = db.pool.begin().await.unwrap();
-        let past = SetUserPlanReq {
-            plan_id: p,
-            expires_at: Some(Utc::now() - chrono::Duration::seconds(5)),
-            period_anchor: None,
-            reset_traffic: None,
-        };
-        let e = apply_set_user_plan(&mut tx, &a(), u, &past)
             .await
             .err()
             .unwrap();
@@ -2624,7 +2832,8 @@ mod tests {
         assert_eq!(statuses, vec!["replaced", "active"]);
         // The partial unique index is the backstop.
         let dup = sqlx::query(
-            "INSERT INTO user_plans (id, user_id, plan_id, period_anchor) VALUES ($1, $2, $3, now())",
+            "INSERT INTO user_plans (id, user_id, plan_id, period_anchor, term_kind) \
+             VALUES ($1, $2, $3, now(), 'onetime')",
         )
         .bind(Uuid::new_v4())
         .bind(u)
@@ -2633,20 +2842,10 @@ mod tests {
         .await;
         assert!(dup.is_err(), "second active plan refused by the index");
 
-        for req in [
-            crate::api::UpdateUserReq {
-                traffic_limit_bytes: Some(Some(5)),
-                ..Default::default()
-            },
-            crate::api::UpdateUserReq {
-                expires_at: Some(None),
-                ..Default::default()
-            },
-            crate::api::UpdateUserReq {
-                role: Some(Some("admin".into())),
-                ..Default::default()
-            },
-        ] {
+        for req in [crate::api::UpdateUserReq {
+            role: Some(Some("admin".into())),
+            ..Default::default()
+        }] {
             let mut tx = db.pool.begin().await.unwrap();
             let e = crate::api::apply_update_user_for_test(&mut tx, u, &req)
                 .await
@@ -2677,7 +2876,7 @@ mod tests {
 
     async fn user_state(db: &TestDb, u: Uuid) -> (i64, bool, Option<String>) {
         sqlx::query_as(
-            "SELECT traffic_used_bytes, enabled, disabled_reason::text FROM users WHERE id = $1",
+            "SELECT traffic_used_bytes, enabled, disabled_reason FROM users WHERE id = $1",
         )
         .bind(u)
         .fetch_one(&db.pool)
@@ -2745,17 +2944,10 @@ mod tests {
         );
         // The admin then disables admin_off explicitly: reason 'admin'.
         let mut tx = db.pool.begin().await.unwrap();
-        crate::api::apply_update_user_for_test(
-            &mut tx,
-            admin_off,
-            &crate::api::UpdateUserReq {
-                enabled: Some(Some(false)),
-                ..Default::default()
-            },
-        )
-        .await
-        .ok()
-        .unwrap();
+        crate::api::apply_ban_user(&mut tx, &a(), admin_off, "r")
+            .await
+            .ok()
+            .unwrap();
         tx.commit().await.unwrap();
         assert_eq!(user_state(&db, admin_off).await.2.as_deref(), Some("admin"));
 
@@ -3027,20 +3219,10 @@ mod tests {
         let pool = db.pool.clone();
         let t2 = tokio::spawn(async move {
             let mut tx = pool.begin().await.unwrap();
-            apply_set_user_plan(
-                &mut tx,
-                &Actor::test(),
-                late,
-                &SetUserPlanReq {
-                    plan_id: pc,
-                    expires_at: None,
-                    period_anchor: None,
-                    reset_traffic: None,
-                },
-            )
-            .await
-            .ok()
-            .unwrap();
+            apply_set_user_plan(&mut tx, &Actor::test(), late, &forever(pc))
+                .await
+                .ok()
+                .unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             tx.commit().await.unwrap();
         });
@@ -3170,8 +3352,17 @@ mod tests {
                 Some(json!({ "plan_id": p })),
             )
             .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "D12: a term is required");
+        let r = c
+            .req(
+                Method::PUT,
+                &format!("/test/api/v1/users/{u}/plan"),
+                Some(json!({ "plan_id": p, "period": "month" })),
+            )
+            .await;
         assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
         assert_eq!(r.json()["active"]["plan_name"], "basic");
+        assert_eq!(r.json()["active"]["period"], "month");
         let r = c
             .req(
                 Method::PATCH,
@@ -3179,7 +3370,7 @@ mod tests {
                 Some(json!({ "traffic_limit_bytes": 5 })),
             )
             .await;
-        assert_eq!(r.status, StatusCode::CONFLICT);
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "D12: not editable");
         let r = c.get("/test/api/v1/users").await;
         let me_row = r.json()["users"]
             .as_array()
@@ -3198,8 +3389,18 @@ mod tests {
                 Some(json!({ "expires_at": "2099-01-01T00:00:00Z" })),
             )
             .await;
-        assert_eq!(r.status, StatusCode::OK);
-        assert_eq!(r.json()["active"]["expires_at"], "2099-01-01T00:00:00Z");
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "D12: no direct expiry");
+        let before = me_row["expires_at"].as_str().map(str::to_owned);
+        let r = c
+            .req(
+                Method::PATCH,
+                &format!("/test/api/v1/users/{u}/plan"),
+                Some(json!({ "extend_days": 10 })),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+        let after = r.json()["active"]["expires_at"].as_str().map(str::to_owned);
+        assert!(after > before, "{before:?} -> {after:?}");
         let r = c.get(&format!("/test/api/v1/users/{u}/plan")).await;
         assert_eq!(r.status, StatusCode::OK);
         let r = c
@@ -3287,7 +3488,7 @@ mod tests {
                 None,
             )
             .await;
-        assert_eq!(r.status, StatusCode::NOT_FOUND);
+        assert_eq!(r.status, StatusCode::CONFLICT, "no active plan");
         let r = c
             .req(Method::DELETE, &format!("/test/api/v1/plans/{p}"), None)
             .await;

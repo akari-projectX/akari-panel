@@ -16,6 +16,7 @@ import { Label } from "../components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { ApiError, apiBase, get, post, type PlanView, type UserPage } from "../lib/api";
 import { adminErrorText } from "../lib/admin-errors";
+import { TERM_KINDS, termBody, termDays, termKindZh, type TermKind } from "../lib/admin-terms";
 import {
   PERIOD_KINDS,
   parseYuan,
@@ -26,7 +27,7 @@ import {
   type PeriodKind,
   type Prices,
 } from "../lib/billing";
-import { datetimeInputIso, endOfDayIso, fmtDateTime, TZ_LABEL } from "../lib/datetime";
+import { datetimeInputIso, fmtDateTime, TZ_LABEL } from "../lib/datetime";
 
 const selectCls =
   "h-9 rounded-lg border border-border bg-card px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -61,13 +62,13 @@ export function ExportLink({ href, children }: { href: string; children: React.R
 // ---------------------------------------------------------------------------
 
 export type BatchKind =
-  "extend_expiry" | "reset_traffic" | "enable" | "disable" | "set_plan" | "cancel_plan" | "add_balance" | "send_email";
+  "extend_expiry" | "reset_traffic" | "ban" | "unban" | "set_plan" | "cancel_plan" | "add_balance" | "send_email";
 
 export const BATCH_KINDS: { id: BatchKind; label: string }[] = [
-  { id: "extend_expiry", label: "延长到期时间" },
-  { id: "reset_traffic", label: "重置已用流量" },
-  { id: "enable", label: "启用账户" },
-  { id: "disable", label: "停用账户" },
+  { id: "extend_expiry", label: "延长 N 天" },
+  { id: "reset_traffic", label: "重置套餐流量" },
+  { id: "ban", label: "封禁" },
+  { id: "unban", label: "解除封禁" },
   { id: "set_plan", label: "分配 / 更换套餐" },
   { id: "cancel_plan", label: "取消套餐" },
   { id: "add_balance", label: "调整余额" },
@@ -86,8 +87,8 @@ export interface BatchForm {
   kind: BatchKind;
   days: string;
   planId: string;
-  expires: string;
-  resetTraffic: boolean;
+  term: TermKind;
+  termDays: string;
   amount: string;
   credit: boolean;
   reason: string;
@@ -99,8 +100,8 @@ export const EMPTY_BATCH: BatchForm = {
   kind: "extend_expiry",
   days: "30",
   planId: "",
-  expires: "",
-  resetTraffic: false,
+  term: "month",
+  termDays: "",
   amount: "",
   credit: true,
   reason: "",
@@ -119,15 +120,13 @@ export function batchAction(f: BatchForm): Record<string, unknown> | string {
     }
     case "set_plan": {
       if (!f.planId) return "请选择套餐";
-      const a: Record<string, unknown> = { kind: f.kind, plan_id: f.planId };
-      if (f.expires) {
-        const iso = endOfDayIso(f.expires);
-        if (!iso) return "到期日无效";
-        a.expires_at = iso;
-      }
-      if (f.resetTraffic) a.reset_traffic = true;
-      return a;
+      const term = termBody(f.term, f.termDays);
+      if (typeof term === "string") return term;
+      return { kind: f.kind, plan_id: f.planId, ...term };
     }
+    case "ban":
+      if (!f.reason.trim()) return "请填写封禁原因（会显示给用户）";
+      return { kind: f.kind, reason: f.reason.trim() };
     case "add_balance": {
       const cents = parseYuan(f.amount);
       if (cents == null || cents <= 0) return "金额无效（元，最多两位小数）";
@@ -148,9 +147,14 @@ export function batchSummary(a: Record<string, unknown>, plans: PlanView[]): str
   const kind = a.kind as BatchKind;
   switch (kind) {
     case "extend_expiry":
-      return `到期时间延长 ${String(a.days)} 天（从当前到期时间与现在中较晚者算起；无到期时间的用户跳过）`;
+      return `套餐到期时间延长 ${String(a.days)} 天（从当前到期时间与现在中较晚者算起；无套餐、一次性套餐、无到期时间的用户跳过）`;
     case "set_plan":
-      return `分配套餐「${plans.find((p) => p.id === a.plan_id)?.name ?? "?"}」（替换现有套餐）`;
+      return `分配套餐「${plans.find((p) => p.id === a.plan_id)?.name ?? "?"}」，时长 ${periodZh(
+        a.period as PeriodKind,
+        (a.days as number | undefined) ?? null,
+      )}（替换现有套餐，已用流量清零）`;
+    case "ban":
+      return `封禁并立即踢下线，原因：${String(a.reason)}`;
     case "add_balance": {
       const c = a.amount_cents as number;
       return `${c > 0 ? "增加" : "扣减"}余额 ¥${yuan(Math.abs(c))}（每人一条明细，余额不足的扣减会失败）`;
@@ -241,7 +245,7 @@ export function BatchDialog({
       title: `对 ${users} 个用户执行「${BATCH_ZH[f.kind]}」？`,
       message: `${batchSummary(action, plans)}。${p.admins > 0 ? `另有 ${p.admins} 个管理员账户会被跳过。` : ""}任务在后台逐批执行、每个用户单独记审计，可在下方查看进度或取消。`,
       confirmLabel: "开始执行",
-      destructive: ["disable", "cancel_plan", "set_plan"].includes(f.kind) || (f.kind === "add_balance" && !f.credit),
+      destructive: ["ban", "cancel_plan", "set_plan"].includes(f.kind) || (f.kind === "add_balance" && !f.credit),
     });
     if (!ok) return;
     setBusy(true);
@@ -312,13 +316,42 @@ export function BatchDialog({
               </select>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="batch-exp">到期日（{TZ_LABEL}，可选）</Label>
-              <Input id="batch-exp" type="date" value={f.expires} onChange={(e) => set("expires", e.target.value)} />
+              <Label htmlFor="batch-term">时长</Label>
+              <select
+                id="batch-term"
+                className={selectCls}
+                value={f.term}
+                onChange={(e) => set("term", e.target.value as TermKind)}
+              >
+                {TERM_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {termKindZh(k)}
+                  </option>
+                ))}
+              </select>
             </div>
-            <label className="flex h-9 items-center gap-1.5 text-sm">
-              <input type="checkbox" checked={f.resetTraffic} onChange={(e) => set("resetTraffic", e.target.checked)} />
-              清零已用流量
-            </label>
+            {termDays(f.term) !== "none" && (
+              <div className="space-y-1.5">
+                <Label htmlFor="batch-term-days">天数{termDays(f.term) === "optional" ? "（可选）" : ""}</Label>
+                <Input
+                  id="batch-term-days"
+                  className="w-28"
+                  value={f.termDays}
+                  onChange={(e) => set("termDays", e.target.value)}
+                />
+              </div>
+            )}
+          </div>
+        )}
+        {f.kind === "ban" && (
+          <div className="space-y-1.5">
+            <Label htmlFor="batch-ban-reason">封禁原因（门户中对用户可见）</Label>
+            <Input
+              id="batch-ban-reason"
+              maxLength={500}
+              value={f.reason}
+              onChange={(e) => set("reason", e.target.value)}
+            />
           </div>
         )}
         {f.kind === "add_balance" && (

@@ -10,6 +10,7 @@ pub mod audit;
 pub mod auth;
 pub mod batch;
 pub mod billing;
+pub mod blockrules;
 pub mod botguard;
 pub mod branding;
 pub mod client_ip;
@@ -73,4 +74,6 @@ mod w20_tests;
 mod w21_tests;
 #[cfg(test)]
 mod w26_golden_tests;
+#[cfg(test)]
+mod w28c_tests;
 pub mod web;

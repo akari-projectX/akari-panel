@@ -38,6 +38,8 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::kb::routes())
         .merge(crate::branding::routes())
         .merge(crate::sysstatus::routes())
+        // W29: node block rules (审计规则) and the per-node switch.
+        .merge(crate::blockrules::routes())
         // R23: two bundles. The user portal (and shared login) is public;
         // the admin console's index and assets answer admin sessions only
         // (everything else under /admin is the canonical rejection).
@@ -72,7 +74,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/{prefix}/api/v1/users/{id}",
-            axum::routing::patch(api::update_user).delete(api::delete_user),
+            get(api::user_detail)
+                .patch(api::update_user)
+                .delete(api::delete_user),
         )
         .route(
             "/{prefix}/api/v1/users/{id}/revoke-sessions",
@@ -86,7 +90,6 @@ pub fn router(state: AppState) -> Router {
             "/{prefix}/api/v1/users/{id}/subscription",
             get(api::user_subscription),
         )
-        .route("/{prefix}/api/v1/users/{id}/nodes", get(api::user_nodes))
         .route(
             "/{prefix}/api/v1/users/{id}/nodes/{node_id}",
             post(api::assign_user).delete(api::unassign_user),
@@ -95,9 +98,15 @@ pub fn router(state: AppState) -> Router {
             "/{prefix}/api/v1/users/{id}/plan",
             get(plans::get_user_plan)
                 .put(plans::set_user_plan)
-                .patch(plans::update_user_plan)
+                .patch(plans::renew_user_plan)
                 .delete(plans::cancel_user_plan),
         )
+        .route(
+            "/{prefix}/api/v1/users/{id}/plan/reset-traffic",
+            post(plans::reset_user_traffic),
+        )
+        .route("/{prefix}/api/v1/users/{id}/ban", post(api::ban_user))
+        .route("/{prefix}/api/v1/users/{id}/unban", post(api::unban_user))
         .route(
             "/{prefix}/api/v1/node-groups",
             get(plans::list_groups).post(plans::create_group),

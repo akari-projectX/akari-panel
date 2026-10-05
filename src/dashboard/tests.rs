@@ -138,8 +138,8 @@ async fn aggregates_every_source() {
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO user_plans (id, user_id, plan_id, status, period_anchor) \
-         VALUES ($1, $2, $3, 'active', now())",
+        "INSERT INTO user_plans (id, user_id, plan_id, status, period_anchor, term_kind) \
+         VALUES ($1, $2, $3, 'active', now(), 'onetime')",
     )
     .bind(Uuid::new_v4())
     .bind(u)
