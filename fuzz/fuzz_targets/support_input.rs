@@ -119,6 +119,7 @@ fn evaluator(data: &[u8]) {
         cert_days: opt(b(6), i64::from(b(7))),
         latency: b(0) & 2 == 2,
         last_error: b(0) & 4 == 4,
+        entrance_down: b(0) & 8 == 8,
     };
     let rest = &data[32..];
     let text = String::from_utf8_lossy(&rest[16..]).into_owned();
@@ -147,6 +148,11 @@ fn evaluator(data: &[u8]) {
             i64::from(b(6) % 4),
             text.clone(),
         )],
+        hidden_entrances: if b(7) & 1 == 1 {
+            vec![("IPLC".into(), (b(7) & 2 == 2).then(|| text.clone()))]
+        } else {
+            Vec::new()
+        },
     };
     let v = evaluate(&facts, &rules, now);
     let mut kinds: Vec<&str> = v.firing.iter().map(|o| o.kind).collect();

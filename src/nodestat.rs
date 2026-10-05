@@ -1146,7 +1146,7 @@ pub async fn my_nodes(
          LEFT JOIN LATERAL (SELECT node_id, measured_at FROM node_latency \
              WHERE node_id = n.id AND source = 'agent' ORDER BY ord LIMIT 1) lf ON true \
          WHERE eu.user_id = $1 AND n.enabled AND n.visible AND n.deleting_at IS NULL \
-         AND n.inbound IS NOT NULL AND e.enabled \
+         AND n.inbound IS NOT NULL AND e.enabled AND e.hidden_since IS NULL \
          ORDER BY n.sort, coalesce(n.display_name, n.name), e.kind <> 'direct', e.sort, e.name",
         online_sql("n")
     )))

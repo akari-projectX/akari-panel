@@ -32,6 +32,7 @@ fn all_rules() -> Rules {
         cert_days: Some(14),
         latency: true,
         last_error: true,
+        entrance_down: true,
     }
 }
 
@@ -82,6 +83,35 @@ fn offline_rule_and_stale_live_kinds() {
         ..all_rules()
     };
     assert!(evaluate(&f, &r, now()).firing.is_empty());
+}
+
+/// W28-a: hidden relay entrances fire the node's entrance_down alert
+/// (whatever the node's own state), listing them; the rule can be off.
+#[test]
+fn hidden_relay_entrances_fire_entrance_down() {
+    let mut f = Facts {
+        online: false,
+        hidden_entrances: vec![
+            ("IPLC".into(), Some("timeout".into())),
+            ("BGP".into(), None),
+        ],
+        ..Default::default()
+    };
+    let v = evaluate(&f, &all_rules(), now());
+    assert_eq!(kinds(&v), vec!["entrance_down"]);
+    assert_eq!(v.firing[0].value, "2 个中转入口不可用");
+    assert!(
+        v.firing[0].detail.contains("IPLC（timeout）、BGP"),
+        "{}",
+        v.firing[0].detail
+    );
+    let off = Rules {
+        entrance_down: false,
+        ..all_rules()
+    };
+    assert!(evaluate(&f, &off, now()).firing.is_empty());
+    f.hidden_entrances.clear();
+    assert!(evaluate(&f, &all_rules(), now()).firing.is_empty());
 }
 
 #[test]

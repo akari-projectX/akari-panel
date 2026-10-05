@@ -502,6 +502,16 @@ isolation only; a failure or a missing updater shows on the node page as "来源
 Older agents ignore the allowlist (warning on the node page) and, below protocol 7, count a user's
 speed limit separately per entrance.
 
+**中转入口健康检查.** Every minute the panel opens one TCP connection to each enabled relay
+entrance's address (its 连接地址:连接端口, i.e. the relay itself). After 3 failures in a row
+the relay entrance is hidden from subscriptions and the portal, and the node's **中转入口不可用**
+alert (`entrance_down`) fires on the configured channels. The first successful test brings it
+back and resolves the alert. The node keeps serving it the whole time, so clients already
+connected through the relay are not cut. Changing the relay's address triggers a test right away.
+The check follows 系统设置 → 测速 → 面板 TCP 测速: when that switch is off, no relay is tested or
+hidden. Relays of a UDP-only inbound (Hysteria 2) cannot be TCP-tested and are never hidden.
+The node page shows each relay's last result (`health_ok`, `health_error`, `hidden_since`).
+
 Creating the node shows a **one-line install command**, valid for 1 hour (built in) and only
 until the agent has enrolled with it. It needs 系统设置 → 节点通信 → **节点通信域名** (the address
 agents dial; without it the panel refuses to issue the command):

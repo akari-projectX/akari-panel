@@ -276,6 +276,7 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
         tokio::spawn(state.clone().persist_online_loop()),
         tokio::spawn(akari_panel::billing::reconcile_loop(state.clone())),
         tokio::spawn(akari_panel::nodestat::panel_probe_loop(state.clone())),
+        tokio::spawn(akari_panel::entrance_health::health_loop(state.clone())),
         tokio::spawn(akari_panel::mail::sender::run(state.clone())),
         tokio::spawn(akari_panel::alerts::run(state.clone())),
         tokio::spawn(akari_panel::updatecheck::auto_loop(state.clone())),

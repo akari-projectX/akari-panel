@@ -35,6 +35,8 @@ pub struct Rules {
     pub cert_days: Option<i64>,
     pub latency: bool,
     pub last_error: bool,
+    /// W28-a: relay entrances hidden by the health test.
+    pub entrance_down: bool,
 }
 
 /// What the evaluator knows about one monitored node.
@@ -58,6 +60,9 @@ pub struct Facts {
     /// Latency result sets: (source, measurable targets, failed, a failed
     /// target with its error).
     pub latency: Vec<(String, i64, i64, String)>,
+    /// W28-a: names of the node's relay entrances hidden as unreachable
+    /// (`entrance_health.rs`), with their last error.
+    pub hidden_entrances: Vec<(String, Option<String>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,6 +256,25 @@ pub fn evaluate(f: &Facts, r: &Rules, now: DateTime<Utc>) -> Verdict {
     {
         fire("last_error", "配置应用失败".into(), e.clone());
     }
+    if r.entrance_down && !f.hidden_entrances.is_empty() {
+        let list: Vec<String> = f
+            .hidden_entrances
+            .iter()
+            .map(|(name, err)| match err {
+                Some(e) => format!("{name}（{e}）"),
+                None => name.clone(),
+            })
+            .collect();
+        fire(
+            "entrance_down",
+            format!("{} 个中转入口不可用", f.hidden_entrances.len()),
+            format!(
+                "面板连续 {} 次连不上：{}。已从订阅中隐藏，恢复后自动重新显示",
+                crate::config::ENTRANCE_HEALTH_FAILURES,
+                list.join("、")
+            ),
+        );
+    }
     v.unknown = unknown;
     v
 }
@@ -353,6 +377,7 @@ struct NodeRow {
     mem_minutes: Option<i32>,
     disk_percent: Option<i32>,
     cert_days: Option<i32>,
+    hidden_entrances: serde_json::Value,
 }
 
 /// One monitored node: name, whether it is muted, its rules and facts.
@@ -386,6 +411,7 @@ fn rules_of(s: &Settings, n: &NodeRow) -> Rules {
         },
         latency: s.latency_failures && !off("latency"),
         last_error: s.last_error && !off("last_error"),
+        entrance_down: !off("entrance_down"),
     }
 }
 
@@ -440,7 +466,10 @@ pub async fn gather(
         "SELECT n.id, coalesce(n.display_name, n.name) AS name, {} AS online, \
            EXTRACT(EPOCH FROM now() - n.last_seen_at)::bigint AS seen_age_secs, n.last_error, \
            n.cert_not_after, n.tls_domain, r.muted, r.disabled, r.offline_secs, r.cpu_percent, \
-           r.cpu_minutes, r.mem_percent, r.mem_minutes, r.disk_percent, r.cert_days \
+           r.cpu_minutes, r.mem_percent, r.mem_minutes, r.disk_percent, r.cert_days, \
+           coalesce((SELECT jsonb_agg(jsonb_build_array(e.name, e.health_error) ORDER BY e.sort, e.name) \
+               FROM entrances e WHERE e.node_id = n.id AND e.enabled AND e.hidden_since IS NOT NULL), \
+               '[]'::jsonb) AS hidden_entrances \
          FROM nodes n LEFT JOIN node_alert_rules r ON r.node_id = n.id \
          WHERE n.enabled AND n.deleting_at IS NULL AND n.cert_serial IS NOT NULL \
          ORDER BY n.id",
@@ -461,6 +490,8 @@ pub async fn gather(
                 last_error: n.last_error.clone(),
                 agent_cert_not_after: n.cert_not_after,
                 tls_domain: n.tls_domain.clone(),
+                hidden_entrances: serde_json::from_value(n.hidden_entrances.clone())
+                    .unwrap_or_default(),
                 ..Default::default()
             },
         })
