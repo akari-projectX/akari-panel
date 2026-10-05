@@ -983,6 +983,82 @@ assert any(n['node_id'] == '$NODE_ID' for n in v['top_nodes']), v
 [ "$(code -b "$JAR" "$BASE/api/v1/traffic/summary?from=2026-13-01")" = "400" ] || { echo "FAIL: bad date accepted"; exit 1; }
 echo "traffic history: ok (D billed $USED_D on $TODAY_UTC)"
 
+echo "== W29: block rules (审计规则): API, per-node switch, agent routing + counters =="
+# Panel side (any agent): built-ins, a custom rule, validation, admins only,
+# and the switch neither bumps the node nor pushes a configuration.
+[ "$(code -b "$JAR" "$BASE/api/v1/block-rules")" = "200" ] \
+  && [ "$(last_json "[(r['builtin_key'], r['enabled']) for r in d['rules']]")" = "[('bittorrent', True), ('bt_tracker', True), ('xunlei_pt', False)]" ] \
+  || { echo "FAIL: built-in block rules"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/block-rules" -H 'Content-Type: application/json' \
+    -d '{"kind":"domain","name":"smoke","pattern":"full:LOCALHOST"}')" = "201" ] || { echo "FAIL: create block rule"; cat /tmp/akari-smoke/last; exit 1; }
+W29_RULE=$(last_json "d['id']")
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/block-rules" -H 'Content-Type: application/json' \
+    -d '{"kind":"ip","name":"bad","pattern":"10.0.0.0/33"}')" = "400" ] && [ "$(last_json "d['code']")" = "block_rule.entry_invalid" ] \
+  || { echo "FAIL: bad block rule accepted"; exit 1; }
+[ "$(code -b "$DJAR" "$BASE/api/v1/block-rules")" = "403" ] || { echo "FAIL: user lists block rules"; exit 1; }
+[ "$(code "$BASE/api/v1/nodes/$NODE_ID/block-rules")" = "401" ] || { echo "FAIL: anonymous reads node block rules"; exit 1; }
+W29_V0=$(psql_q "SELECT config_version || ' ' || user_version FROM nodes WHERE id='$NODE_ID'")
+W29_SNAPS0=$(grep -c '"via":"snapshot"' "$LOG/agent.log" || true)
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/block-rules" -H 'Content-Type: application/json' \
+    -d '{"enabled":true}')" = "200" ] && [ "$(last_json "d['changed']")" = "True" ] || { echo "FAIL: block rules switch"; exit 1; }
+[ "$(psql_q "SELECT config_version || ' ' || user_version FROM nodes WHERE id='$NODE_ID'")" = "$W29_V0" ] \
+  || { echo "FAIL: the block rules switch bumped the node"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='node.block_rules.set' AND target_id='$NODE_ID'")" = "1" ] \
+  && [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='block_rule.create' AND target_id='$W29_RULE'")" = "1" ] \
+  || { echo "FAIL: block rules audit"; exit 1; }
+cat >"$LOG/w29-vless.py" <<'PY'
+# VLESS to a local echo server, addressed by name (localhost) or by IP:
+# prints "ok" on an echoed round trip, "blocked" when the node closes it.
+import socket, struct, sys, threading, uuid
+echo = socket.socket(); echo.bind(("127.0.0.1", 0)); echo.listen(1)
+def serve():
+    c, _ = echo.accept()
+    for d in iter(lambda: c.recv(65536), b""): c.sendall(d)
+threading.Thread(target=serve, daemon=True).start()
+port = struct.pack(">H", echo.getsockname()[1])
+addr = b"\x02\x09localhost" if sys.argv[2] == "name" else b"\x01" + socket.inet_aton("127.0.0.1")
+s = socket.create_connection(("127.0.0.1", 11443), timeout=10)
+s.sendall(b"\x00" + uuid.UUID(sys.argv[1]).bytes + b"\x00\x01" + port + addr + b"w29-probe")
+got = b""
+try:
+    while len(got) < 2 + 9:
+        d = s.recv(65536)
+        if not d: break
+        got += d
+except OSError:
+    pass
+print("ok" if got.endswith(b"w29-probe") else "blocked")
+PY
+w29_view() { code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID/block-rules" >/dev/null; }
+if need_agent cap:block-rules "W29 block rules on the agent"; then
+  for _ in $(seq 1 40); do w29_view; [ "$(last_json "d['in_sync']")" = "True" ] && break; sleep 1; done
+  [ "$(last_json "d['in_sync'] and d['agent_supported'] and d['error'] is None")" = "True" ] \
+    || { echo "FAIL: agent did not apply the block policy"; cat /tmp/akari-smoke/last; exit 1; }
+  [ "$(python3 "$LOG/w29-vless.py" "$VLESS_D" name)" = "blocked" ] || { echo "FAIL: blocked domain reached its target"; exit 1; }
+  [ "$(python3 "$LOG/w29-vless.py" "$VLESS_D" ip)" = "ok" ] || { echo "FAIL: unblocked destination failed"; exit 1; }
+  # The hit reaches the daily counters (heartbeat every 15 s).
+  for _ in $(seq 1 45); do
+    w29_view; [ "$(last_json "sum(x['hits'] for x in d['days'] if x['rule_id'] == $W29_RULE)")" -ge 1 ] && break; sleep 1
+  done
+  [ "$(last_json "sum(x['hits'] for x in d['days'] if x['rule_id'] == $W29_RULE)")" -ge 1 ] \
+    || { echo "FAIL: block counter did not increment"; cat /tmp/akari-smoke/last; exit 1; }
+  # Changing the rule content swaps the routing live: no Snapshot, no rebuild.
+  w29_view; W29_POLICY=$(last_json "d['policy_version']")
+  [ "$(patch_code "$BASE/api/v1/block-rules/$W29_RULE" '{"pattern":"full:blocked.invalid"}')" = "204" ] || { echo "FAIL: edit block rule"; exit 1; }
+  for _ in $(seq 1 40); do
+    w29_view; [ "$(last_json "d['in_sync'] and d['policy_version'] != '$W29_POLICY'")" = "True" ] && break; sleep 1
+  done
+  [ "$(python3 "$LOG/w29-vless.py" "$VLESS_D" name)" = "ok" ] || { echo "FAIL: edited rule still blocks"; exit 1; }
+  [ "$(grep -c '"via":"snapshot"' "$LOG/agent.log" || true)" = "$W29_SNAPS0" ] \
+    || { echo "FAIL: block rule changes caused a Snapshot"; exit 1; }
+  echo "block rules: ok (blocked by name, counted, edited live without a rebuild)"
+fi
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/block-rules" -H 'Content-Type: application/json' \
+    -d '{"enabled":false}')" = "200" ] || { echo "FAIL: block rules switch off"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/block-rules/$W29_RULE")" = "204" ] || { echo "FAIL: delete block rule"; exit 1; }
+[ "$(psql_q "SELECT config_version || ' ' || user_version FROM nodes WHERE id='$NODE_ID'")" = "$W29_V0" ] \
+  || { echo "FAIL: block rules bumped the node"; exit 1; }
+
 if need_agent cap:metrics "W11 machine status"; then
   # Machine status: the heartbeat blob carries metrics; history and
   # Prometheus fleet gauges follow.

@@ -37,6 +37,8 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::kb::routes())
         .merge(crate::branding::routes())
         .merge(crate::sysstatus::routes())
+        // W29: node block rules (审计规则) and the per-node switch.
+        .merge(crate::blockrules::routes())
         // R23: two bundles. The user portal (and shared login) is public;
         // the admin console's index and assets answer admin sessions only
         // (everything else under /admin is the canonical rejection).
