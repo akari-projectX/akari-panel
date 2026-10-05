@@ -1,1 +1,1 @@
-{"templates": [{"template": "hysteria2", "port": 443, "domain": "node.example.com"}], "tls_domain": "node.example.com"}
+{"tls_domain": "node.example.com", "template": {"template": "hysteria2", "port": 443, "domain": "node.example.com"}}

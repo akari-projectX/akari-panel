@@ -110,6 +110,10 @@ coupon_batch.count_range
 coupon_batch.length_range
 coupon_batch.prefix_invalid
 coupon_batch.revoked
+entrance.host_invalid
+entrance.name_invalid
+entrance.port_invalid
+entrance.rate_invalid
 export.group_invalid
 export.range_invalid
 export.range_too_long
@@ -125,12 +129,8 @@ group.unknown
 inbound.account_invalid
 inbound.fakedns
 inbound.invalid
-inbound.not_array
-inbound.port_clash
+inbound.not_object
 inbound.protocol_missing
-inbound.tag_duplicate
-inbound.tag_missing
-inbound.tag_reserved
 install.origin_invalid
 install.origin_required
 invite.invalid_inviter
@@ -166,7 +166,6 @@ mail_template.subject_length
 mail_template.subject_multiline
 mail_template.version_conflict
 node.acme_agent_too_old
-node.connect_override_invalid
 node.deleting
 node.display_name_invalid
 node.max_rate_invalid
@@ -175,11 +174,10 @@ node.name_exists
 node.name_invalid
 node.probe_cooldown
 node.range_invalid
-node.rate_invalid
 node.region_long
 node.sort_range
 node.tag_invalid
-node.templates_and_inbounds
+node.template_and_inbound
 node.tls_domain_invalid
 node.too_many_tags
 node.view_invalid
@@ -334,7 +332,6 @@ template.port_clash
 template.protocol_invalid
 template.service_name_invalid
 template.tls_domain_without_tls
-template.too_many
 ticket.choice_invalid
 ticket.closed
 ticket.full
@@ -351,13 +348,8 @@ ticket_admin.assignee_invalid
 ticket_admin.not_closed
 ticket_admin.search_long
 ticket_admin.status_invalid
-user.access_from_plan
 user.admin_no_plan
 user.admin_no_subscription
-user.admin_not_assignable
-user.assign_inbound_missing
-user.assign_protocol_invalid
-user.assign_protocol_mismatch
 user.email_exists
 user.has_plan
 user.last_admin

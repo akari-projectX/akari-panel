@@ -10,18 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
-import {
-  del,
-  get,
-  patch,
-  post,
-  put,
-  subscriptionUrl,
-  type PlanView,
-  type UserNodeView,
-  type UserPage,
-  type UserView,
-} from "../lib/api";
+import { del, get, patch, post, put, subscriptionUrl, type PlanView, type UserPage, type UserView } from "../lib/api";
 import { adminErrorText } from "../lib/admin-errors";
 import { dateInputValue, endOfDayIso, fmtDate, TZ_LABEL } from "../lib/datetime";
 import { copyText, GIB, humanBytes } from "../lib/utils";
@@ -506,7 +495,6 @@ function ManageUser({
     <div className="space-y-6 py-2 text-left">
       <EditUser user={user} />
       {user.role === "user" && <UserPlanForm user={user} plans={plans} />}
-      {user.role === "user" && <UserNodes user={user} />}
       {user.role === "user" && <UserTraffic userId={user.id} login={user.login} />}
       <section aria-label={`${user.login} 的其他操作`} className="space-y-2">
         <h2 className="text-sm font-medium">其他操作</h2>
@@ -745,51 +733,6 @@ function EditUser({ user }: { user: UserView }) {
         </p>
       )}
     </form>
-  );
-}
-
-// Read-only: which nodes the account can use, through which inbounds, and
-// whether each comes from the plan or a manual assignment.
-function UserNodes({ user }: { user: UserView }) {
-  const nodes = useQuery({
-    queryKey: ["user-nodes", user.id],
-    queryFn: () => get<UserNodeView[]>(`/users/${user.id}/nodes`),
-  });
-  return (
-    <section aria-label={`${user.login} 的节点权限`} className="space-y-2">
-      <h2 className="text-sm font-medium">节点权限</h2>
-      {nodes.isError && <ErrorText>{adminErrorText(nodes.error)}</ErrorText>}
-      <Table label="节点权限">
-        <TableHeader>
-          <TableRow>
-            <TableHead>节点</TableHead>
-            <TableHead>地区</TableHead>
-            <TableHead>状态</TableHead>
-            <TableHead>入站</TableHead>
-            <TableHead>来源</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {nodes.isPending && <TableNote colSpan={5}>加载中…</TableNote>}
-          {nodes.isSuccess && nodes.data.length === 0 && <TableNote colSpan={5}>该用户目前没有可用节点。</TableNote>}
-          {(nodes.data ?? []).map((n) => (
-            <TableRow key={n.node_id}>
-              <TableCell className="whitespace-nowrap font-medium">{n.name}</TableCell>
-              <TableCell>{n.region ?? "—"}</TableCell>
-              <TableCell className="whitespace-nowrap">
-                {n.deleting ? "删除中" : !n.enabled ? "已停用" : n.status === "online" ? "在线" : "离线"}
-              </TableCell>
-              <TableCell className="text-xs">
-                {n.inbounds.map((i) => `${i.tag}（${i.protocol}）`).join("、") || "—"}
-              </TableCell>
-              <TableCell>
-                <Badge variant="secondary">{n.manual ? "手动分配" : "套餐"}</Badge>
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </section>
   );
 }
 

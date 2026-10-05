@@ -163,8 +163,9 @@ async fn user_client(state: &AppState, user: Uuid) -> Client {
 
 async fn daily(db: &TestDb, user: Uuid, day: NaiveDate, node: Uuid, b: (i64, i64, i64)) {
     sqlx::query(
-        "INSERT INTO traffic_daily (user_id, day, node_id, up_bytes, down_bytes, billed_bytes) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO traffic_daily \
+         (user_id, day, entrance_id, node_id, up_bytes, down_bytes, billed_bytes) \
+         VALUES ($1, $2, $3, $3, $4, $5, $6)",
     )
     .bind(user)
     .bind(day)
@@ -176,8 +177,9 @@ async fn daily(db: &TestDb, user: Uuid, day: NaiveDate, node: Uuid, b: (i64, i64
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO traffic_node_daily AS t (node_id, day, up_bytes, down_bytes, billed_bytes, users) \
-         VALUES ($1, $2, $3, $4, $5, 1) ON CONFLICT (node_id, day) DO UPDATE SET \
+        "INSERT INTO traffic_entrance_daily AS t \
+         (entrance_id, node_id, day, up_bytes, down_bytes, billed_bytes, users) \
+         VALUES ($1, $1, $2, $3, $4, $5, 1) ON CONFLICT (entrance_id, day) DO UPDATE SET \
          up_bytes = t.up_bytes + EXCLUDED.up_bytes, down_bytes = t.down_bytes + EXCLUDED.down_bytes, \
          billed_bytes = t.billed_bytes + EXCLUDED.billed_bytes, users = t.users + 1",
     )
@@ -238,8 +240,9 @@ async fn endpoints_queries_and_permissions() {
     // A rolled-up month of u1 (older than the daily rows).
     let m = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
     sqlx::query(
-        "INSERT INTO traffic_monthly (user_id, month, node_id, up_bytes, down_bytes, billed_bytes) \
-         VALUES ($1, $2, $3, 50, 60, 70)",
+        "INSERT INTO traffic_monthly \
+         (user_id, month, entrance_id, node_id, up_bytes, down_bytes, billed_bytes) \
+         VALUES ($1, $2, $3, $3, 50, 60, 70)",
     )
     .bind(u1)
     .bind(m)

@@ -1,1 +1,0 @@
-[{"tag": "u", "port": 444, "protocol": "vless", "settings": {"clients": [], "decryption": "none"}, "streamSettings": {"network": "httpupgrade", "httpupgradeSettings": {"path": "/u"}}}, {"tag": "d", "port": 1080, "protocol": "dokodemo-door", "settings": {"network": "tcp,udp"}, "sniffing": {"destOverride": ["fakedns"]}}]

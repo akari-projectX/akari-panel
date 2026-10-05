@@ -59,8 +59,6 @@ pub enum InboundSpec {
     /// domain), with the Vision flow unless `vision: false`.
     VlessReality {
         port: u16,
-        #[serde(default)]
-        tag: Option<String>,
         /// Target site (host, optionally host:port; default port 443).
         /// Default: the first of `REALITY_DESTS`.
         #[serde(default)]
@@ -80,8 +78,6 @@ pub enum InboundSpec {
     VlessRealityXhttp {
         port: u16,
         #[serde(default)]
-        tag: Option<String>,
-        #[serde(default)]
         dest: Option<String>,
         #[serde(default)]
         server_name: Option<String>,
@@ -96,8 +92,6 @@ pub enum InboundSpec {
     /// VLESS over raw TCP + TLS (node certificate) with Vision.
     VlessTlsVision {
         port: u16,
-        #[serde(default)]
-        tag: Option<String>,
         /// Certificate domain (= SNI); default the node's TLS domain.
         #[serde(default)]
         domain: Option<String>,
@@ -105,8 +99,6 @@ pub enum InboundSpec {
     /// VLESS over WebSocket with TLS (certificate on the node).
     VlessWsTls {
         port: u16,
-        #[serde(default)]
-        tag: Option<String>,
         /// Domain of the node's certificate (= SNI); default the node's
         /// TLS domain.
         #[serde(default)]
@@ -120,8 +112,6 @@ pub enum InboundSpec {
     VmessWs {
         port: u16,
         #[serde(default)]
-        tag: Option<String>,
-        #[serde(default)]
         path: Option<String>,
         #[serde(default)]
         tls_domain: Option<String>,
@@ -129,16 +119,10 @@ pub enum InboundSpec {
         tls: Option<bool>,
     },
     /// VMess over raw TCP (no TLS; alterId 0, security auto).
-    VmessTcp {
-        port: u16,
-        #[serde(default)]
-        tag: Option<String>,
-    },
+    VmessTcp { port: u16 },
     /// Trojan over TLS (certificate on the node).
     TrojanTls {
         port: u16,
-        #[serde(default)]
-        tag: Option<String>,
         #[serde(default)]
         domain: Option<String>,
     },
@@ -148,8 +132,6 @@ pub enum InboundSpec {
     /// for grpc).
     Transport {
         port: u16,
-        #[serde(default)]
-        tag: Option<String>,
         protocol: String,
         network: String,
         #[serde(default)]
@@ -173,8 +155,6 @@ pub enum InboundSpec {
     #[serde(rename = "shadowsocks_2022")]
     Shadowsocks2022 {
         port: u16,
-        #[serde(default)]
-        tag: Option<String>,
         /// 2022-blake3-aes-128-gcm (default) | 2022-blake3-aes-256-gcm
         #[serde(default)]
         method: Option<String>,
@@ -182,8 +162,6 @@ pub enum InboundSpec {
     /// Hysteria 2 over QUIC (UDP), node certificate.
     Hysteria2 {
         port: u16,
-        #[serde(default)]
-        tag: Option<String>,
         #[serde(default)]
         domain: Option<String>,
     },
@@ -202,15 +180,6 @@ impl InboundSpec {
             | InboundSpec::Transport { port, .. }
             | InboundSpec::Shadowsocks2022 { port, .. }
             | InboundSpec::Hysteria2 { port, .. } => *port,
-        }
-    }
-
-    /// (tcp, udp) the rendered inbound listens on.
-    fn l4(&self) -> (bool, bool) {
-        match self {
-            InboundSpec::Shadowsocks2022 { .. } => (true, true),
-            InboundSpec::Hysteria2 { .. } => (false, true),
-            _ => (true, false),
         }
     }
 
@@ -457,31 +426,23 @@ pub fn build_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Inboun
     if port == 0 {
         return Err(bad_request!("request.port_range", "port must be 1-65535"));
     }
-    let tag_or = |tag: &Option<String>, default: String| -> String {
-        tag.as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .map(String::from)
-            .unwrap_or(default)
-    };
     let tls = |domain: &str, transport: &TransportKind| -> Security {
         security::tls(domain, transport::alpn(transport))
     };
-    let inbound =
-        |tag: String, protocol: Protocol, transport: Transport, security: Security| Inbound {
-            tag: Some(tag),
-            port: Some(Some(u64::from(port))),
-            protocol,
-            transport,
-            security,
-        };
+    // No tag: the panel names the inbounds it renders for the agent (D2).
+    let inbound = |protocol: Protocol, transport: Transport, security: Security| Inbound {
+        tag: None,
+        port: Some(Some(u64::from(port))),
+        protocol,
+        transport,
+        security,
+    };
     let vless = |flow: Option<&str>| Protocol::Vless {
         flow: flow.map(String::from),
         encryption: Some(Some("none".into())),
     };
     Ok(match spec {
         InboundSpec::VlessReality {
-            tag,
             dest,
             server_name,
             fingerprint,
@@ -493,12 +454,10 @@ pub fn build_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Inboun
             } else {
                 ""
             };
-            let tag = tag_or(tag, format!("vless-reality-{port}"));
             let reality = reality_settings(dest, server_name, fingerprint)?;
-            inbound(tag, vless(Some(flow)), transport::tcp(), reality)
+            inbound(vless(Some(flow)), transport::tcp(), reality)
         }
         InboundSpec::VlessRealityXhttp {
-            tag,
             dest,
             server_name,
             fingerprint,
@@ -506,30 +465,18 @@ pub fn build_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Inboun
             mode,
             ..
         } => {
-            let tag = tag_or(tag, format!("vless-xhttp-{port}"));
             let xhttp = transport::xhttp(&ws_path(path)?, &xhttp_mode(mode)?, None);
             let reality = reality_settings(dest, server_name, fingerprint)?;
-            inbound(tag, vless(None), xhttp, reality)
+            inbound(vless(None), xhttp, reality)
         }
-        InboundSpec::VlessTlsVision { tag, domain: d, .. } => {
+        InboundSpec::VlessTlsVision { domain: d, .. } => {
             let d = cert_domain(d, node_domain, "domain")?;
             let tcp = transport::tcp();
             let sec = tls(&d, &tcp.kind);
-            inbound(
-                tag_or(tag, format!("vless-vision-{port}")),
-                vless(Some(crate::protocols::VISION)),
-                tcp,
-                sec,
-            )
+            inbound(vless(Some(crate::protocols::VISION)), tcp, sec)
         }
-        InboundSpec::VmessTcp { tag, .. } => inbound(
-            tag_or(tag, format!("vmess-tcp-{port}")),
-            Protocol::Vmess,
-            transport::tcp(),
-            Security::None,
-        ),
+        InboundSpec::VmessTcp { .. } => inbound(Protocol::Vmess, transport::tcp(), Security::None),
         InboundSpec::Transport {
-            tag,
             protocol,
             network,
             path,
@@ -594,10 +541,9 @@ pub fn build_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Inboun
                 "vmess" => Protocol::Vmess,
                 _ => Protocol::Trojan,
             };
-            inbound(tag_or(tag, format!("{proto}-{net}-{port}")), p, t, sec)
+            inbound(p, t, sec)
         }
-        InboundSpec::Shadowsocks2022 { tag, method, .. } => {
-            let tag = tag_or(tag, format!("ss2022-{port}"));
+        InboundSpec::Shadowsocks2022 { method, .. } => {
             let m = method
                 .as_deref()
                 .map(str::trim)
@@ -611,7 +557,6 @@ pub fn build_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Inboun
                 )
             })?;
             inbound(
-                tag,
                 Protocol::Ss2022 {
                     method: Some(m.to_string()),
                     psk: Some(psk),
@@ -622,14 +567,13 @@ pub fn build_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Inboun
                 Security::None,
             )
         }
-        InboundSpec::Hysteria2 { tag, domain: d, .. } => {
+        InboundSpec::Hysteria2 { domain: d, .. } => {
             let d = cert_domain(d, node_domain, "domain")?;
             let alpn = crate::protocols::manifest::get()
                 .protocol("hysteria2")
                 .map(|p| p.alpn.clone())
                 .unwrap_or_default();
             inbound(
-                tag_or(tag, format!("hysteria2-{port}")),
                 Protocol::Hysteria2 {
                     version: Some(HYSTERIA_VERSION),
                 },
@@ -638,25 +582,19 @@ pub fn build_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Inboun
             )
         }
         InboundSpec::VlessWsTls {
-            tag,
-            domain: d,
-            path,
-            ..
+            domain: d, path, ..
         } => {
-            let tag = tag_or(tag, format!("vless-ws-{port}"));
             let d = cert_domain(d, node_domain, "domain")?;
             let ws = transport::ws(&ws_path(path)?, None);
             let sec = tls(&d, &ws.kind);
-            inbound(tag, vless(None), ws, sec)
+            inbound(vless(None), ws, sec)
         }
         InboundSpec::VmessWs {
-            tag,
             path,
             tls_domain,
             tls: want_tls,
             ..
         } => {
-            let tag = tag_or(tag, format!("vmess-ws-{port}"));
             let ws = transport::ws(&ws_path(path)?, None);
             if *want_tls == Some(false) && wants_tls(tls_domain, None) {
                 return Err(bad_request!(
@@ -670,18 +608,13 @@ pub fn build_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Inboun
             } else {
                 Security::None
             };
-            inbound(tag, Protocol::Vmess, ws, sec)
+            inbound(Protocol::Vmess, ws, sec)
         }
-        InboundSpec::TrojanTls { tag, domain: d, .. } => {
+        InboundSpec::TrojanTls { domain: d, .. } => {
             let d = cert_domain(d, node_domain, "domain")?;
             let tcp = transport::tcp();
             let sec = tls(&d, &tcp.kind);
-            inbound(
-                tag_or(tag, format!("trojan-{port}")),
-                Protocol::Trojan,
-                tcp,
-                sec,
-            )
+            inbound(Protocol::Trojan, tcp, sec)
         }
     })
 }
@@ -695,44 +628,27 @@ pub fn render_one(spec: &InboundSpec, node_domain: Option<&str>) -> Result<Value
     )?))
 }
 
-/// Render a list of templates, refusing duplicate ports (also against
-/// `taken`, the ports of inbounds kept from the node's current config).
-/// `node_domain`: the node's TLS domain (default certificate domain).
+/// Render a template, refusing a port another inbound of the agent
+/// already uses (`taken`: treated as TCP+UDP, their inbounds are not known
+/// here; the template's own L4 lets a UDP Hysteria 2 share a TCP port only
+/// with inbounds the panel knows). `node_domain`: the node's TLS domain
+/// (default certificate domain). The result passes the same checks as a
+/// saved inbound.
 pub fn render(
-    specs: &[InboundSpec],
+    spec: &InboundSpec,
     taken: &[u16],
     node_domain: Option<&str>,
-) -> Result<Vec<Value>, ApiError> {
-    if specs.len() > 16 {
+) -> Result<Value, ApiError> {
+    let p = spec.port();
+    if taken.contains(&p) {
         return Err(bad_request!(
-            "template.too_many",
-            "at most 16 templates at once"
+            "template.port_clash",
+            "port {p} is used by more than one inbound",
+            p = p
         ));
     }
-    // `taken` ports are treated as TCP+UDP (their inbounds are not known
-    // here); the templates' own L4 lets a UDP Hysteria 2 share a TCP port.
-    let mut ports: Vec<(u16, bool, bool)> = taken.iter().map(|p| (*p, true, true)).collect();
-    let mut out = Vec::with_capacity(specs.len());
-    for s in specs {
-        let p = s.port();
-        let (t, u) = s.l4();
-        if ports
-            .iter()
-            .any(|(q, qt, qu)| *q == p && ((t && *qt) || (u && *qu)))
-        {
-            return Err(bad_request!(
-                "template.port_clash",
-                "port {p} is used by more than one inbound",
-                p = p
-            ));
-        }
-        ports.push((p, t, u));
-        out.push(render_one(s, node_domain)?);
-    }
-    // What the templates produce must be what saving accepts: an
-    // admin-chosen tag can be reserved ("_x", "akari-*", "api") or repeat
-    // another template's (fuzz: node_templates). Same 400 as the save.
-    crate::api::validate_inbounds(&Value::Array(out.clone()))?;
+    let out = render_one(spec, node_domain)?;
+    crate::api::validate_inbound(&out)?;
     Ok(out)
 }
 
@@ -746,8 +662,8 @@ pub use crate::protocols::xray::needs_certificate;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RenderReq {
-    pub templates: Vec<InboundSpec>,
-    /// Ports already used by the inbounds the new ones are added to.
+    pub template: InboundSpec,
+    /// Ports already used by other inbounds of the agent.
     #[serde(default)]
     pub taken_ports: Vec<u16>,
     /// The node's TLS domain (W10): default certificate domain of the
@@ -758,14 +674,14 @@ pub struct RenderReq {
 
 #[derive(Serialize)]
 pub struct RenderView {
-    inbounds: Vec<Value>,
-    /// Some template needs the node's certificate files.
+    inbound: Value,
+    /// The inbound needs the node's certificate files.
     needs_certificate: bool,
 }
 
-/// POST /inbound-templates/render (admin): templates → inbounds JSON
-/// (fresh REALITY keys). Nothing is stored; the UI merges the result into
-/// the node's inbounds and saves them with PUT /nodes/{id}/inbounds.
+/// POST /inbound-templates/render (admin): a template → inbound JSON
+/// (fresh REALITY keys). Nothing is stored; the UI saves the result with
+/// PUT /nodes/{id}/inbound.
 pub async fn render_templates(
     user: AuthUser,
     ApiJson(req): ApiJson<RenderReq>,
@@ -775,10 +691,10 @@ pub async fn render_templates(
         Some(d) if !d.is_empty() => Some(node_tls_domain(d)?),
         _ => None,
     };
-    let inbounds = render(&req.templates, &req.taken_ports, node_domain.as_deref())?;
+    let inbound = render(&req.template, &req.taken_ports, node_domain.as_deref())?;
     Ok(Json(RenderView {
-        needs_certificate: req.templates.iter().any(InboundSpec::needs_certificate),
-        inbounds,
+        needs_certificate: req.template.needs_certificate(),
+        inbound,
     }))
 }
 
@@ -814,12 +730,13 @@ pub async fn catalog(user: AuthUser) -> Result<Json<TemplateCatalog>, ApiError> 
 #[serde(deny_unknown_fields)]
 pub struct CheckDomainReq {
     pub domain: String,
-    /// Existing node: compare with its agent's address and public address.
+    /// Existing node: compare with its agent's address and its direct
+    /// entrance's address.
     #[serde(default)]
     pub node_id: Option<uuid::Uuid>,
-    /// New node (wizard): the public address typed in the form.
+    /// New node (wizard): the direct entrance's address typed in the form.
     #[serde(default)]
-    pub server_addr: Option<String>,
+    pub connect_host: Option<String>,
 }
 
 #[derive(Serialize, Default, Debug)]
@@ -863,18 +780,20 @@ pub async fn check_domain(
     user.require_admin()?;
     let domain = node_tls_domain(&req.domain)?;
     let mut expected: Vec<IpAddr> = Vec::new();
-    let mut server_addr = req
-        .server_addr
+    let mut connect_host = req
+        .connect_host
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(String::from);
     if let Some(id) = req.node_id {
-        let row: Option<(Option<String>, Option<String>)> =
-            sqlx::query_as("SELECT host(agent_addr), server_addr FROM nodes WHERE id = $1")
-                .bind(id)
-                .fetch_optional(state.pg())
-                .await?;
+        let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT host(n.agent_addr), e.connect_host FROM nodes n \
+                 LEFT JOIN entrances e ON e.node_id = n.id AND e.kind = 'direct' WHERE n.id = $1",
+        )
+        .bind(id)
+        .fetch_optional(state.pg())
+        .await?;
         let (agent, server) = row.ok_or_else(ApiError::not_found)?;
         if let Some(ip) = agent
             .as_deref()
@@ -882,11 +801,11 @@ pub async fn check_domain(
         {
             expected.push(ip.to_canonical());
         }
-        if server_addr.is_none() {
-            server_addr = server;
+        if connect_host.is_none() {
+            connect_host = server;
         }
     }
-    if let Some(sa) = server_addr.as_deref() {
+    if let Some(sa) = connect_host.as_deref() {
         let host = sa.trim_start_matches('[').trim_end_matches(']');
         match host.parse::<IpAddr>() {
             Ok(ip) => expected.push(ip.to_canonical()),
@@ -1021,35 +940,39 @@ mod tests {
     use base64::engine::general_purpose::STANDARD as STANDARD_B64;
     use serde_json::json;
 
-    /// Templates without a node TLS domain (the pre-W10 behaviour).
-    fn render(specs: &[InboundSpec], taken: &[u16]) -> Result<Vec<Value>, ApiError> {
-        super::render(specs, taken, None)
+    /// Each template on its own (D2: one inbound per node), `taken` ports
+    /// refused, with the node's TLS domain `d`.
+    fn render_in(
+        specs: &[InboundSpec],
+        taken: &[u16],
+        d: Option<&str>,
+    ) -> Result<Vec<Value>, ApiError> {
+        specs.iter().map(|s| super::render(s, taken, d)).collect()
     }
 
-    /// Fuzz (node_templates) regression: a template tag the save would
-    /// refuse (reserved, or repeated across templates) is refused by the
-    /// render already, with the save's message.
+    /// Templates without a node TLS domain (the pre-W10 behaviour).
+    fn render(specs: &[InboundSpec], taken: &[u16]) -> Result<Vec<Value>, ApiError> {
+        render_in(specs, taken, None)
+    }
+
+    /// D2: the panel names the inbounds it renders for the agent; a
+    /// template takes no tag (an unknown field) and renders none.
     #[test]
-    fn render_refuses_tags_the_save_would_refuse() {
-        let spec = |tag: &str, port: u16| -> InboundSpec {
-            serde_json::from_value(serde_json::json!({
-                "template": "vmess_tcp", "port": port, "tag": tag
-            }))
-            .unwrap()
-        };
-        for bad in ["_:443", "akari-x", "api"] {
-            let e = render(&[spec(bad, 443)], &[]).unwrap_err();
-            assert!(e.message().contains("reserved"), "{bad}: {}", e.message());
-        }
-        let e = render(&[spec("same", 443), spec("same", 444)], &[]).unwrap_err();
-        assert!(e.message().contains("duplicate"), "{}", e.message());
-        assert!(render(&[spec("a", 443), spec("b", 444)], &[]).is_ok());
+    fn templates_take_no_tag() {
+        assert!(
+            serde_json::from_value::<InboundSpec>(
+                json!({"template": "vmess_tcp", "port": 443, "tag": "x"})
+            )
+            .is_err()
+        );
+        let v = render(&[spec(json!({"template": "vmess_tcp", "port": 443}))], &[]).unwrap();
+        assert!(v[0].get("tag").is_none(), "{}", v[0]);
     }
 
     #[test]
     fn node_tls_domain_is_the_default_and_the_only_certificate_domain() {
         let d = Some("node1.example.com");
-        let v = super::render(
+        let v = render_in(
             &[
                 spec(json!({"template": "vless_ws_tls", "port": 443})),
                 spec(json!({"template": "trojan_tls", "port": 8443, "domain": "NODE1.example.com"})),
@@ -1081,7 +1004,7 @@ mod tests {
         // Another name than the node's is refused (the certificate covers
         // only the node's TLS domain); without one a TLS template needs a
         // domain.
-        let e = super::render(
+        let e = render_in(
             &[spec(
                 json!({"template": "trojan_tls", "port": 443, "domain": "other.example.com"}),
             )],
@@ -1092,7 +1015,7 @@ mod tests {
         assert!(e.message().contains("node1.example.com"), "{e:?}");
         assert!(render(&[spec(json!({"template": "trojan_tls", "port": 443}))], &[]).is_err());
         assert!(render(&[spec(json!({"template": "transport", "port": 443, "protocol": "trojan", "network": "ws", "tls": true}))], &[]).is_err());
-        assert!(super::render(&[spec(json!({"template": "vmess_ws", "port": 80, "tls": false, "tls_domain": "node1.example.com"}))], &[], d).is_err());
+        assert!(render_in(&[spec(json!({"template": "vmess_ws", "port": 80, "tls": false, "tls_domain": "node1.example.com"}))], &[], d).is_err());
         // Without a node domain the explicit domain still works (manual
         // certificate files).
         let v = render(
@@ -1177,7 +1100,6 @@ mod tests {
         )
         .unwrap();
         let i = &v[0];
-        assert_eq!(i["tag"], "vless-reality-443");
         assert_eq!(i["protocol"], "vless");
         assert_eq!(i["settings"]["decryption"], "none");
         let rs = &i["streamSettings"]["realitySettings"];
@@ -1195,7 +1117,7 @@ mod tests {
             .unwrap();
         assert_eq!(reality_keys_from(sk).public_key, rs["publicKey"]);
         // Same validation as hand-written JSON.
-        crate::api::validate_inbounds(&Value::Array(v.clone())).unwrap();
+        crate::api::validate_inbound(i).unwrap();
         assert!(!needs_certificate(&Value::Array(v.clone())));
         // Two renders never share keys.
         let w = render(
@@ -1212,12 +1134,11 @@ mod tests {
     #[test]
     fn reality_options_validated() {
         let ok = render(
-            &[spec(json!({"template": "vless_reality", "port": 8443, "tag": "r1",
+            &[spec(json!({"template": "vless_reality", "port": 8443,
                 "dest": "dl.google.com:443", "server_name": "dl.google.com", "fingerprint": "firefox"}))],
             &[],
         )
         .unwrap();
-        assert_eq!(ok[0]["tag"], "r1");
         assert_eq!(
             ok[0]["streamSettings"]["realitySettings"]["fingerprint"],
             "firefox"
@@ -1255,7 +1176,9 @@ mod tests {
             &[],
         )
         .unwrap();
-        crate::api::validate_inbounds(&Value::Array(v.clone())).unwrap();
+        for i in &v {
+            crate::api::validate_inbound(i).unwrap();
+        }
         assert!(needs_certificate(&Value::Array(v.clone())));
         assert_eq!(v[0]["streamSettings"]["wsSettings"]["path"], "/ws");
         assert_eq!(
@@ -1304,12 +1227,11 @@ mod tests {
             json!({"template": "transport", "port": 452, "protocol": "vmess", "network": "xhttp"}),
             json!({"template": "shadowsocks_2022", "port": 8388}),
             json!({"template": "shadowsocks_2022", "port": 8389, "method": "2022-blake3-aes-256-gcm"}),
-            // UDP: may share 443/TCP with the REALITY inbound.
             json!({"template": "hysteria2", "port": 443, "domain": "n.example.com"}),
         ];
         let v = render(&specs.map(spec), &[]).unwrap();
-        crate::api::validate_inbounds(&Value::Array(v.clone())).unwrap();
         for i in &v {
+            crate::api::validate_inbound(i).unwrap();
             assert!(crate::protocols::issuable(i), "{i}");
             crate::protocols::generate_account(i).unwrap();
         }
@@ -1382,18 +1304,14 @@ mod tests {
         ] {
             assert!(render(&[spec(bad.clone())], &[]).is_err(), "{bad}");
         }
-        // SS (TCP+UDP) clashes with both TCP and UDP inbounds.
-        let ss = spec(json!({"template": "shadowsocks_2022", "port": 9000}));
-        let hy = spec(json!({"template": "hysteria2", "port": 9000, "domain": "n.example.com"}));
-        assert!(render(&[ss, hy], &[]).is_err());
     }
 
+    /// A port another inbound of the agent uses is refused.
     #[test]
-    fn duplicate_ports_refused() {
+    fn taken_ports_refused() {
         let a = spec(json!({"template": "vmess_ws", "port": 80}));
-        let b = spec(json!({"template": "trojan_tls", "port": 80, "domain": "x.com"}));
-        assert!(render(&[a.clone(), b], &[]).is_err());
-        assert!(render(std::slice::from_ref(&a), &[80]).is_err());
+        let e = render(std::slice::from_ref(&a), &[80]).unwrap_err();
+        assert_eq!(e.code(), "template.port_clash");
         assert!(render(&[a], &[443]).is_ok());
     }
 

@@ -132,12 +132,13 @@ impl TestDb {
         .unwrap();
     }
 
-    /// An enabled node with one vless inbound tagged "in-vless".
+    /// An enabled node with one vless inbound (and, like every node, its
+    /// direct entrance).
     pub async fn node(&self) -> Uuid {
         let id = Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO nodes (id, name, xray_inbounds) VALUES ($1, $2, \
-             '[{\"tag\":\"in-vless\",\"protocol\":\"vless\",\"port\":1}]'::jsonb)",
+            "INSERT INTO nodes (id, name, inbound) VALUES ($1, $2, \
+             '{\"protocol\":\"vless\",\"port\":1}'::jsonb)",
         )
         .bind(id)
         .bind(id.to_string())
@@ -147,10 +148,22 @@ impl TestDb {
         id
     }
 
+    /// The node's direct entrance.
+    pub async fn direct(&self, node: Uuid) -> Uuid {
+        sqlx::query_scalar("SELECT id FROM entrances WHERE node_id = $1 AND kind = 'direct'")
+            .bind(node)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap()
+    }
+
+    /// A raw credential for `user` on the node's direct entrance (bypasses
+    /// the plan reconcile; for tests of what a node serves and bills).
     pub async fn assign(&self, node: Uuid, user: Uuid) {
         sqlx::query(
-            "INSERT INTO node_users (node_id, user_id, credentials) VALUES ($1, $2, \
-             '[{\"inbound_tag\":\"in-vless\",\"protocol\":\"vless\",\"account\":{\"id\":\"x\"}}]'::jsonb)",
+            "INSERT INTO entrance_users (entrance_id, user_id, protocol, account) \
+             SELECT id, $2, 'vless', '{\"id\":\"x\"}'::jsonb FROM entrances \
+             WHERE node_id = $1 AND kind = 'direct'",
         )
         .bind(node)
         .bind(user)

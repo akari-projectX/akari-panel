@@ -1,0 +1,1 @@
+{"taken_ports": [1], "tls_domain": "node.example.com", "template": {"template": "vmess_ws", "port": 2086, "path": "/vm", "tls": false}}

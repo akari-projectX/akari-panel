@@ -1,1 +1,1 @@
-[{"tag": "t", "port": 443, "protocol": "trojan", "settings": {"clients": []}, "streamSettings": {"network": "grpc", "security": "tls", "grpcSettings": {"serviceName": "g"}}}]
+{"port": 443, "protocol": "trojan", "settings": {"clients": []}, "streamSettings": {"network": "grpc", "security": "tls", "grpcSettings": {"serviceName": "g"}}}

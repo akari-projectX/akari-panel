@@ -7,7 +7,7 @@
 //!   make bench                      # everything
 //!   cargo bench --manifest-path bench/Cargo.toml -- state_hash
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -18,6 +18,15 @@ use akari_panel::grpc::{
 };
 
 use akari_panel::pb::{InboundUser, TrafficReport, UserOp, UserTraffic, user_op};
+
+/// A traffic buffer membership: each user through `entrance`, keyed as the
+/// agent reports it.
+fn members(entrance: Uuid, users: &[Uuid]) -> HashMap<String, (Uuid, Uuid)> {
+    users
+        .iter()
+        .map(|&u| (akari_panel::grpc::stat_key(u), (entrance, u)))
+        .collect()
+}
 
 const DEFAULT_DB: &str = "postgres://akari:akari-dev@localhost:5433/akari_bench";
 
@@ -139,31 +148,47 @@ fn pure(c: &mut Criterion) {
     g.finish();
 }
 
+/// Two entrances per node, as a subscription row each: REALITY vless and
+/// trojan over ws+tls.
 fn sub_rows(nodes: usize) -> Vec<akari_panel::sub::NodeRow> {
-    (0..nodes)
-        .map(|i| akari_panel::sub::NodeRow {
+    let row = |i: usize, entrance: &str, inbound: serde_json::Value, protocol: &str, account| {
+        akari_panel::sub::NodeRow {
             name: format!("bench-node-{i:03}"),
-            xray_inbounds: serde_json::json!([
-                {"tag": "in-vless", "protocol": "vless", "port": 443,
-                 "streamSettings": {"network": "tcp", "security": "reality",
-                    "realitySettings": {"serverNames": ["n.example.com"],
-                        "publicKey": "Z84J2IelR9ch3k8VtlVhhs5ycBUlXA7wHBWcBrjqnAw",
-                        "shortId": "6ba85179e30d4fc2"}}},
-                {"tag": "in-trojan", "protocol": "trojan", "port": 8443,
-                 "streamSettings": {"network": "ws", "security": "tls",
-                    "tlsSettings": {"serverName": "n.example.com"},
-                    "wsSettings": {"path": "/t", "headers": {"Host": "n.example.com"}}}}
-            ]),
-            server_addr: Some(format!("198.51.100.{}", 1 + i % 250)),
-            credentials: serde_json::json!([
-                {"inbound_tag": "in-vless", "protocol": "vless",
-                 "account": {"id": Uuid::new_v4().to_string(), "flow": "xtls-rprx-vision"}},
-                {"inbound_tag": "in-trojan", "protocol": "trojan",
-                 "account": {"password": Uuid::new_v4().simple().to_string()}}
-            ]),
             display_name: None,
             tags: vec![],
-            connect_overrides: serde_json::Value::Null,
+            entrance: entrance.into(),
+            inbound,
+            server: Some(format!("198.51.100.{}", 1 + i % 250)),
+            port: None,
+            protocol: protocol.into(),
+            account,
+        }
+    };
+    (0..nodes)
+        .flat_map(|i| {
+            [
+                row(
+                    i,
+                    "vless",
+                    serde_json::json!({"protocol": "vless", "port": 443,
+                     "streamSettings": {"network": "tcp", "security": "reality",
+                        "realitySettings": {"serverNames": ["n.example.com"],
+                            "publicKey": "Z84J2IelR9ch3k8VtlVhhs5ycBUlXA7wHBWcBrjqnAw",
+                            "shortId": "6ba85179e30d4fc2"}}}),
+                    "vless",
+                    serde_json::json!({"id": Uuid::new_v4().to_string(), "flow": "xtls-rprx-vision"}),
+                ),
+                row(
+                    i,
+                    "trojan",
+                    serde_json::json!({"protocol": "trojan", "port": 8443,
+                     "streamSettings": {"network": "ws", "security": "tls",
+                        "tlsSettings": {"serverName": "n.example.com"},
+                        "wsSettings": {"path": "/t", "headers": {"Host": "n.example.com"}}}}),
+                    "trojan",
+                    serde_json::json!({"password": Uuid::new_v4().simple().to_string()}),
+                ),
+            ]
         })
         .collect()
 }
@@ -203,7 +228,7 @@ fn db() -> Option<Db> {
             .connect(&url)
             .await
             .ok()?;
-        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM node_users")
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM entrance_users")
             .fetch_one(&pg)
             .await
             .ok()?;
@@ -231,11 +256,12 @@ fn database(c: &mut Criterion) {
     // Snapshot of the biggest node: DB read (REPEATABLE READ) + build.
     let Ok(Some((node, users))) = db.rt.block_on(
         sqlx::query_as::<_, (Uuid, i64)>(
-            "SELECT node_id, count(*) FROM node_users GROUP BY node_id ORDER BY 2 DESC LIMIT 1",
+            "SELECT e.node_id, count(*) FROM entrance_users eu \
+             JOIN entrances e ON e.id = eu.entrance_id GROUP BY e.node_id ORDER BY 2 DESC LIMIT 1",
         )
         .fetch_optional(&db.pg),
     ) else {
-        eprintln!("no node_users");
+        eprintln!("no entrance_users");
         return;
     };
     g.throughput(Throughput::Elements(users as u64));
@@ -264,19 +290,20 @@ fn database(c: &mut Criterion) {
     // an UPDATE that bills a delta (the steady state).
     let rows = 50_000i64;
     let Ok(pairs) = db.rt.block_on(
-        sqlx::query_as::<_, (Uuid, Uuid)>(
-            "SELECT node_id, user_id FROM (SELECT node_id, user_id, \
-             row_number() OVER (PARTITION BY node_id ORDER BY user_id) AS r FROM node_users) t \
-             WHERE r <= $1 / (SELECT count(DISTINCT node_id) FROM node_users) LIMIT $1",
+        sqlx::query_as::<_, (Uuid, Uuid, Uuid)>(
+            "SELECT node_id, entrance_id, user_id FROM (SELECT e.node_id, eu.entrance_id, \
+             eu.user_id, row_number() OVER (PARTITION BY e.node_id ORDER BY eu.user_id) AS r \
+             FROM entrance_users eu JOIN entrances e ON e.id = eu.entrance_id) t \
+             WHERE r <= $1 / (SELECT count(*) FROM nodes) LIMIT $1",
         )
         .bind(rows)
         .fetch_all(&db.pg),
     ) else {
         return;
     };
-    let mut by_node: std::collections::HashMap<Uuid, Vec<Uuid>> = Default::default();
-    for (n, u) in &pairs {
-        by_node.entry(*n).or_default().push(*u);
+    let mut by_node: HashMap<(Uuid, Uuid), Vec<Uuid>> = Default::default();
+    for (n, e, u) in &pairs {
+        by_node.entry((*n, *e)).or_default().push(*u);
     }
     let rates = akari_panel::traffic::Rates::from_cfg(&akari_panel::config::PanelConfig::default());
     let session = format!("criterion-{}", Uuid::new_v4().simple());
@@ -288,8 +315,8 @@ fn database(c: &mut Criterion) {
             for _ in 0..iters {
                 step += 1;
                 let buf = akari_panel::traffic::TrafficBuffer::new();
-                for (node, users) in &by_node {
-                    buf.set_members(*node, users.iter().copied().collect::<HashSet<_>>());
+                for ((node, entrance), users) in &by_node {
+                    buf.set_members(*node, members(*entrance, users));
                     buf.update(
                         *node,
                         &session,
@@ -334,8 +361,8 @@ fn database(c: &mut Criterion) {
             for _ in 0..iters {
                 step += 1;
                 let buf = akari_panel::traffic::TrafficBuffer::new();
-                for (node, users) in &by_node {
-                    buf.set_members(*node, users.iter().copied().collect::<HashSet<_>>());
+                for ((node, entrance), users) in &by_node {
+                    buf.set_members(*node, members(*entrance, users));
                     buf.update(
                         *node,
                         &session,
@@ -396,7 +423,7 @@ fn buffer(c: &mut Criterion) {
     for _ in 0..nodes {
         let node = Uuid::new_v4();
         let users: Vec<Uuid> = (0..per_node).map(|_| Uuid::new_v4()).collect();
-        buf.set_members(node, users.iter().copied().collect::<HashSet<_>>());
+        buf.set_members(node, members(node, &users));
         buf.update(node, &session, &report(&users, 1));
         all.push((node, users));
     }

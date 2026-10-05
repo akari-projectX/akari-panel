@@ -16,8 +16,8 @@ export const ACME_PROTOCOL = 6;
 
 const CERT_FILE = "/run/credentials/akari-agent.service/tls_fullchain.pem";
 
-function readsNodeCert(inbounds: NodeView["xray_inbounds"]): boolean {
-  return inbounds.some((i) => JSON.stringify(i).includes(CERT_FILE));
+function readsNodeCert(inbound: NodeView["inbound"]): boolean {
+  return inbound !== null && JSON.stringify(inbound).includes(CERT_FILE);
 }
 
 function fmt(ts: string | null): string {
@@ -47,11 +47,11 @@ export function describeCheck(c: CheckDomainView): { ok: boolean; text: string }
   return { ok: true, text: `当前解析到 ${got}（节点地址未知，安装后可在节点页再检查）` };
 }
 
-async function checkDomain(domain: string, nodeId?: string, serverAddr?: string): Promise<CheckDomainView> {
+async function checkDomain(domain: string, nodeId?: string, connectHost?: string): Promise<CheckDomainView> {
   return post<CheckDomainView>("/inbound-templates/check-domain", {
     domain,
     node_id: nodeId,
-    server_addr: serverAddr?.trim() || undefined,
+    connect_host: connectHost?.trim() || undefined,
   });
 }
 
@@ -63,13 +63,13 @@ export function TlsDomainField({
   value,
   onChange,
   nodeId,
-  serverAddr,
+  connectHost,
 }: {
   id: string;
   value: string;
   onChange: (v: string) => void;
   nodeId?: string;
-  serverAddr?: string;
+  connectHost?: string;
 }) {
   const [check, setCheck] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -80,7 +80,7 @@ export function TlsDomainField({
     setBusy(true);
     setCheck(null);
     try {
-      setCheck(describeCheck(await checkDomain(d, nodeId, serverAddr)));
+      setCheck(describeCheck(await checkDomain(d, nodeId, connectHost)));
     } catch (err) {
       setCheck({ ok: false, text: adminErrorText(err, "检查失败") });
     } finally {
@@ -161,7 +161,7 @@ export function NodeCertStatus({ node }: { node: NodeView }) {
     retry: false,
   });
   if (!domain) return null;
-  const needs = readsNodeCert(node.xray_inbounds);
+  const needs = readsNodeCert(node.inbound);
   let tone = "text-muted-foreground";
   let text: string;
   if (!needs) {

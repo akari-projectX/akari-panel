@@ -17,7 +17,7 @@
 //! inbounds are xray JSON). The support matrix in docs/DEPLOY.md §3d is
 //! generated from the manifest (`generate`).
 //!
-//! Accounts (`node_users.credentials[].account`, sent verbatim to the agent
+//! Accounts (`entrance_users.account`, sent verbatim to the agent
 //! as `account_json`, which decodes them strictly — akari-agent
 //! `proto_*.go`):
 //!

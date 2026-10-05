@@ -63,15 +63,16 @@
 
 ### 前端（spa/）
 - 技术栈：React 19.3 / Vite 8.3(Rolldown) / Tailwind 4.3 / shadcn 风格手拷组件（button/input/card/table/badge/label）/ TanStack Query 5 / 手写 history 路由（`lib/router.ts`，零路由依赖）
-- 页面：`login`、`admin-users`（建户+sub token 展示/重发+启停删除）、`admin-nodes`（状态/版本表、server_addr、inbounds JSON 编辑推送、账号签发）、`portal`（用量进度）
+- 页面：`login`、`admin-users`（建户+sub token 展示/重发+启停删除）、`admin-nodes`（状态/版本表、节点的一个入站（模板/JSON）编辑推送、直连入口的连接地址/倍率/节点组）、`portal`（用量进度）
 - API 前缀自位置推导（`lib/api.ts` 的 appBase/apiBase），**不内嵌任何前缀知识**
 
 ## 4. 数据模型（migrations/）
 
-- `nodes`：id/name/enabled/status/xray_inbounds(JSONB)/config_version/user_version/cert_serial(UNIQUE)/server_addr/agent_version/core_version/last_seen_at
+- `nodes`：id/name/enabled/status/inbound(JSONB 对象，W28-a 每节点一个)/config_version/user_version/cert_serial(UNIQUE)/agent_version/core_version/last_seen_at
+- `entrances`（W28-a）：节点的入口（内置「直连」）：connect_host/connect_port/rate_permille/enabled；节点组成员 `entrance_group_members`
 - `users`：id/login(UNIQUE)/password_hash/role/enabled/traffic_limit_bytes/traffic_used_bytes/expires_at/sub_token_hash(UNIQUE)
-- `node_users`：(node_id,user_id) 主键，credentials JSONB=`[{inbound_tag,protocol,account}]`
-- `traffic_counters`：(node_id,user_id,session_id) 主键，累计值；面板做差值
+- `entrance_users`：(entrance_id,user_id) 主键，protocol + account JSONB（只由套餐 reconcile 写，无手工分配）
+- `traffic_counters`：(node_id,entrance_id,user_id,session_id) 主键，累计值；面板做差值
 
 ## 5. API 速查（全部在 `/{prefix}` 下）
 
@@ -81,10 +82,11 @@ GET  /api/v1/me                          当前用户 + 用量
 GET/POST /api/v1/users                   admin：列表/建户（响应含一次性 sub_token）
 PATCH/DELETE /api/v1/users/{id}          admin：更新/删除（启停→bump 节点版本→推送）
 POST /api/v1/users/{id}/sub-token        admin：重发订阅 token
-POST/DELETE /api/v1/users/{id}/nodes/{node_id}  admin：分配（生成账号）/解绑
-GET  /api/v1/nodes                       admin：节点列表（含 inbounds/server_addr）
-PATCH /api/v1/nodes/{id}                 admin：启停/改名/server_addr
-PUT  /api/v1/nodes/{id}/inbounds         admin：整体替换 inbounds（config_version+1）
+PUT  /api/v1/users/{id}/plan            admin：设套餐（授权的唯一来源：套餐 → 节点组 → 入口）
+GET  /api/v1/nodes                       admin：节点列表（含 inbound/entrances）
+PATCH /api/v1/nodes/{id}                 admin：启停/改名/地区/节点域名
+PUT  /api/v1/nodes/{id}/inbound          admin：替换节点的一个入站（config_version+1）
+PATCH /api/v1/entrances/{id}             admin：入口的连接地址/端口、倍率、启停、节点组
 GET  /sub/{token}                        订阅（UA 分流；token 即凭据；userinfo 头）
 GET  /app, /assets/*, /healthz           SPA / 静态资源 / 存活
 ```

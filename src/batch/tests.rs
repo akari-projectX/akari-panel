@@ -92,7 +92,7 @@ async fn plan_with(db: &TestDb, node: Uuid) -> Uuid {
         &plans::CreateGroupReq {
             name: format!("g-{}", Uuid::new_v4().simple()),
             description: None,
-            node_ids: Some(vec![node]),
+            entrance_ids: Some(vec![db.direct(node).await]),
         },
     )
     .await
@@ -650,10 +650,7 @@ async fn plan_actions() {
     .await
     .unwrap();
     finish(&st).await;
-    assert_eq!(
-        scalar(&db, "SELECT count(*) FROM node_users WHERE NOT manual").await,
-        4
-    );
+    assert_eq!(scalar(&db, "SELECT count(*) FROM entrance_users").await, 4);
     assert!(scalar(&db, "SELECT user_version FROM nodes").await > before);
     assert_eq!(audits(&db, "user.plan.set").await, 4);
     create(&db, ids(&us[..2]), Action::CancelPlan {})
@@ -664,9 +661,9 @@ async fn plan_actions() {
         .await
         .unwrap();
     finish(&st).await;
-    assert_eq!(scalar(&db, "SELECT count(*) FROM node_users").await, 1);
+    assert_eq!(scalar(&db, "SELECT count(*) FROM entrance_users").await, 1);
     assert_eq!(
-        scalar(&db, "SELECT count(*) FROM node_users_departed").await,
+        scalar(&db, "SELECT count(*) FROM entrance_users_departed").await,
         3,
         "tail billing kept"
     );
@@ -811,12 +808,12 @@ async fn concurrent_batch_vs_user_edits() {
     );
     assert_eq!(scalar(&db, "SELECT count(*) FROM balance_ledger").await, 80);
     // At most one active plan per user (partial unique index) and the
-    // node rows match the active plans.
+    // credentials match the active plans.
     assert_eq!(
         scalar(
             &db,
-            "SELECT count(*) FROM node_users nu WHERE NOT nu.manual AND NOT EXISTS \
-             (SELECT 1 FROM user_plans up WHERE up.user_id = nu.user_id AND up.status = 'active')"
+            "SELECT count(*) FROM entrance_users eu WHERE NOT EXISTS \
+             (SELECT 1 FROM user_plans up WHERE up.user_id = eu.user_id AND up.status = 'active')"
         )
         .await,
         0

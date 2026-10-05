@@ -25,6 +25,7 @@ MODULES = {
     "src/traffic.rs": 90.0,
     "src/enforce.rs": 90.0,
     "src/entitle.rs": 90.0,
+    "src/entrances.rs": 90.0,
     "src/plans.rs": 90.0,
     "src/billing/orders.rs": 90.0,
     "src/billing/catalog.rs": 90.0,

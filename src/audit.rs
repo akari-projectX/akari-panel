@@ -154,46 +154,44 @@ pub fn user_snapshot_sql(alias: &str) -> String {
     )
 }
 
-/// SQL expression: the snapshot of a `nodes` row (inbounds go through
-/// `inbounds_summary`; cert serial, versions and runtime state are left out).
+/// SQL expression: the snapshot of a `nodes` row (the inbound goes through
+/// `inbound_summary`; cert serial, versions and runtime state are left out).
 pub fn node_snapshot_sql(alias: &str) -> String {
     format!(
-        "jsonb_build_object('name', {a}.name, 'enabled', {a}.enabled, 'server_addr', {a}.server_addr, \
+        "jsonb_build_object('name', {a}.name, 'enabled', {a}.enabled, \
          'region', {a}.region, 'tls_domain', {a}.tls_domain, \
          'traffic_max_rate_bytes_per_sec', {a}.traffic_max_rate_bytes_per_sec, \
          'display_name', {a}.display_name, 'sort', {a}.sort, 'visible', {a}.visible, \
-         'tags', {a}.tags, 'traffic_rate_permille', {a}.traffic_rate_permille, \
-         'connect_overrides', {a}.connect_overrides, \
-         'deleting', {a}.deleting_at IS NOT NULL)",
+         'tags', {a}.tags, 'deleting', {a}.deleting_at IS NOT NULL)",
         a = alias
     )
 }
 
-/// Inbounds as the audit log may show them: per inbound only tag,
-/// protocol, listen, port, transport and security (allow-list), plus a
-/// SHA-256 of the full JSON so any change is visible without its content.
-pub fn inbounds_summary(inbounds: &Value) -> Value {
-    let items: Vec<Value> = inbounds
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .map(|i| {
-                    let ss = i.get("streamSettings");
-                    json!({
-                        "tag": i.get("tag").and_then(Value::as_str),
-                        "protocol": i.get("protocol").and_then(Value::as_str),
-                        "listen": i.get("listen").and_then(Value::as_str),
-                        "port": i.get("port").filter(|p| p.is_u64() || p.is_string()),
-                        "network": ss.and_then(|s| s.get("network")).and_then(Value::as_str),
-                        "security": ss.and_then(|s| s.get("security")).and_then(Value::as_str),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+/// SQL expression: the snapshot of an `entrances` row (W28-a).
+pub fn entrance_snapshot_sql(alias: &str) -> String {
+    format!(
+        "jsonb_build_object('node_id', {a}.node_id, 'kind', {a}.kind, 'name', {a}.name, \
+         'connect_host', {a}.connect_host, 'connect_port', {a}.connect_port, \
+         'rate_permille', {a}.rate_permille, 'enabled', {a}.enabled, 'sort', {a}.sort)",
+        a = alias
+    )
+}
+
+/// A node's inbound as the audit log may show it: only protocol, listen,
+/// port, transport and security (allow-list), plus a SHA-256 of the full
+/// JSON so any change is visible without its content. `null` = none.
+pub fn inbound_summary(inbound: Option<&Value>) -> Value {
+    let Some(i) = inbound else {
+        return Value::Null;
+    };
+    let ss = i.get("streamSettings");
     json!({
-        "inbounds": items,
-        "sha256": hex::encode(Sha256::digest(inbounds.to_string().as_bytes())),
+        "protocol": i.get("protocol").and_then(Value::as_str),
+        "listen": i.get("listen").and_then(Value::as_str),
+        "port": i.get("port").filter(|p| p.is_u64() || p.is_string()),
+        "network": ss.and_then(|s| s.get("network")).and_then(Value::as_str),
+        "security": ss.and_then(|s| s.get("security")).and_then(Value::as_str),
+        "sha256": hex::encode(Sha256::digest(i.to_string().as_bytes())),
     })
 }
 
@@ -365,15 +363,15 @@ mod tests {
     use crate::testdb::TestDb;
 
     #[test]
-    fn inbounds_summary_drops_secrets() {
-        let inb = json!([{
-            "tag": "r", "protocol": "vless", "port": 443, "listen": "0.0.0.0",
+    fn inbound_summary_drops_secrets() {
+        let inb = json!({
+            "protocol": "vless", "port": 443, "listen": "0.0.0.0",
             "settings": {"clients": [{"id": "client-uuid-secret"}], "decryption": "none"},
             "streamSettings": {"network": "tcp", "security": "reality",
                 "realitySettings": {"privateKey": "PRIVATE-KEY-SECRET", "shortIds": ["abcd"]},
                 "tlsSettings": {"certificates": [{"key": "TLS-KEY-SECRET"}]}}
-        }]);
-        let s = inbounds_summary(&inb);
+        });
+        let s = inbound_summary(Some(&inb));
         let text = s.to_string();
         for secret in [
             "client-uuid-secret",
@@ -383,12 +381,13 @@ mod tests {
         ] {
             assert!(!text.contains(secret), "{secret} leaked: {text}");
         }
-        assert_eq!(s["inbounds"][0]["tag"], "r");
-        assert_eq!(s["inbounds"][0]["security"], "reality");
-        assert_eq!(s["inbounds"][0]["port"], 443);
+        assert_eq!(s["protocol"], "vless");
+        assert_eq!(s["security"], "reality");
+        assert_eq!(s["port"], 443);
         let mut changed = inb.clone();
-        changed[0]["streamSettings"]["realitySettings"]["privateKey"] = json!("other");
-        assert_ne!(inbounds_summary(&changed)["sha256"], s["sha256"]);
+        changed["streamSettings"]["realitySettings"]["privateKey"] = json!("other");
+        assert_ne!(inbound_summary(Some(&changed))["sha256"], s["sha256"]);
+        assert_eq!(inbound_summary(None), Value::Null);
     }
 
     async fn insert(db: &TestDb, n: usize, actor: &str, action: &str) {

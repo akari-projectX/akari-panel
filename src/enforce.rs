@@ -1,7 +1,7 @@
 //! Periodic, restart-safe enforcement passes (run from the traffic flush
 //! loop). Each pass flips its marker AND bumps the affected nodes' versions
 //! in one transaction; the bump's trigger (migration 0007) notifies every
-//! panel instance on commit. Lock order as in api.rs: nodes -> users -> node_users.
+//! panel instance on commit. Lock order as in api.rs: nodes -> users -> entrance_users.
 
 use sqlx::PgConnection;
 use uuid::Uuid;
@@ -24,10 +24,10 @@ pub const SERVED: &str = "(u.role = 'user' AND u.enabled AND NOT \
      (u.expires_at IS NOT NULL AND u.expires_at <= now()))";
 
 async fn lock_nodes_of_ids(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::Result<()> {
-    sqlx::query(
-        "SELECT id FROM nodes WHERE id IN (SELECT node_id FROM node_users WHERE user_id = ANY($1)) \
-         ORDER BY id FOR UPDATE",
-    )
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT id FROM nodes WHERE id IN ({}) ORDER BY id FOR UPDATE",
+        crate::entitle::NODES_OF_USERS
+    )))
     .bind(users)
     .execute(conn)
     .await?;
@@ -35,10 +35,10 @@ async fn lock_nodes_of_ids(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::Res
 }
 
 async fn bump_nodes_of(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::Result<Vec<Uuid>> {
-    sqlx::query_scalar(
-        "UPDATE nodes SET user_version = user_version + 1 \
-         WHERE id IN (SELECT node_id FROM node_users WHERE user_id = ANY($1)) RETURNING id",
-    )
+    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "UPDATE nodes SET user_version = user_version + 1 WHERE id IN ({}) RETURNING id",
+        crate::entitle::NODES_OF_USERS
+    )))
     .bind(users)
     .fetch_all(conn)
     .await

@@ -138,12 +138,13 @@ AKARI_ADMIN_PASSWORD="$USER_PW" "$PANEL" -c "$DIR/panel.toml" admin add e2e-quot
 # W22: two UTC days of traffic history for e2e-user on a node that no
 # longer exists (portal: "其他节点 / Other nodes"; console: "已删除的节点").
 docker compose exec -T postgres psql -U akari -d "$E2E_DB" -qc "
-  INSERT INTO traffic_daily (user_id, day, node_id, up_bytes, down_bytes, billed_bytes)
+  INSERT INTO traffic_daily (user_id, day, node_id, entrance_id, up_bytes, down_bytes, billed_bytes)
   SELECT id, (now() AT TIME ZONE 'UTC')::date - d, '00000000-0000-4000-8000-0000000000e2',
+         '00000000-0000-4000-8000-0000000000e3',
          (2 - d) * 536870912, (2 - d) * 536870912, (2 - d) * 536870912
   FROM users CROSS JOIN generate_series(0, 1) d WHERE login = 'e2e-user';
-  INSERT INTO traffic_node_daily (node_id, day, up_bytes, down_bytes, billed_bytes, users)
-  SELECT node_id, day, up_bytes, down_bytes, billed_bytes, 1 FROM traffic_daily;" >/dev/null
+  INSERT INTO traffic_entrance_daily (entrance_id, day, node_id, up_bytes, down_bytes, billed_bytes, users)
+  SELECT entrance_id, day, node_id, up_bytes, down_bytes, billed_bytes, 1 FROM traffic_daily;" >/dev/null
 
 echo "e2e: http://$E2E_HOST:$PORT/$PREFIX/app"
 cd spa

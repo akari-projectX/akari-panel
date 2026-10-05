@@ -1,7 +1,7 @@
 //! W26: the xray kernel adapter — the only place that knows xray's inbound
 //! JSON. It renders the kernel-neutral model (`model::Inbound`) into the
-//! inbound JSON the agent runs (stored in `nodes.xray_inbounds`, sent
-//! verbatim as `ConfigSnapshot.inbounds_json`), parses stored JSON back
+//! inbound JSON the agent runs (stored in `nodes.inbound`, sent as part of
+//! `ConfigSnapshot.inbounds_json`), parses stored JSON back
 //! into the model (subscriptions, validation, credentials), explains
 //! validation faults in xray's terms, and holds the checks that are about
 //! xray's decoder itself (Go JSON key folding, binding of the `hysteria`

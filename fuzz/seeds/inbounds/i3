@@ -1,1 +1,1 @@
-[{"tag": "x", "port": 443, "protocol": "vless", "settings": {"clients": [], "decryption": "none"}, "streamSettings": {"network": "xhttp", "security": "tls", "xhttpSettings": {"path": "/x", "mode": "auto"}}}]
+{"port": 443, "protocol": "vless", "settings": {"clients": [], "decryption": "none"}, "streamSettings": {"network": "xhttp", "security": "tls", "xhttpSettings": {"path": "/x", "mode": "auto"}}}

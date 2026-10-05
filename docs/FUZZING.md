@@ -21,8 +21,8 @@ Every target asserts invariants, not only "no panic":
 |---|---|---|
 | `alipay_notify` | notify form body (anyone on the internet) | decoder is canonical (re-encode → same map), ≤ 64 params, no duplicates; nothing verifies without Alipay's key; a map Alipay signed (either empty-value convention) verifies after the wire round trip; tampering with any signed non-empty value, or `sign_type` ≠ RSA2, fails |
 | `alipay_response` | gateway response bytes | an unsigned/forged body is never accepted; a body signed over the exact raw `<method>_response` text is accepted iff `code` = 10000 and yields that text parsed; any change inside the signed text → `BadSignature` |
-| `inbounds` | admin inbounds JSON | verdict deterministic; accepted ⇒ every inbound passes `check_inbound`, no port clash, no object (any depth) with keys equal under Go's case folding (W14), issuable ones get an account that needs no refit, all three subscription formats render (sing-box is valid JSON) |
-| `node_templates` | template request (admin) | whatever renders is accepted by `validate_inbounds`; rendered managed inbounds are issuable; no TCP inbound on a taken port |
+| `inbounds` | admin inbound JSON (W28-a: one object per node) | verdict deterministic and idempotent; accepted ⇒ no tag (the panel names it), passes `check_inbound`, no object (any depth) with keys equal under Go's case folding (W14), issuable ones get an account that needs no refit, all three subscription formats render (sing-box is valid JSON) |
+| `node_templates` | template request (admin, one template) | whatever renders is accepted by `validate_inbound` and has no tag; a rendered managed inbound is issuable; never on a taken port |
 | `protocols_manifest` | W26: `proto/protocols.toml` (repository; parsed by build.rs and `protocols::manifest_def`) | parse deterministic; an accepted manifest validates again, every scenario is a legal combination (its protocol accepts the transport/security, no rule broken), the generated docs matrix renders and names every protocol |
 | `inbound_model` | W26: inbound JSON (admin-supplied or stored) through the xray adapter and the kernel-neutral model | no panic; every fault has an explanation; one render normalizes (render∘parse is idempotent after one pass); parsing as any managed protocol renders; an accepted inbound's issued account needs no refit and its normalized form is accepted |
 | `client_ip` | peer, trusted CIDRs, Cloudflare CIDRs, headers (attacker headers) | untrusted peer ⇒ the peer; the answer is the peer, an X-Forwarded-For hop or CF-Connecting-IP; CF-Connecting-IP never matters without Cloudflare trust; `Cidr` Display round-trips and contains its network |
@@ -80,7 +80,7 @@ build on each other. A crash fails the job and uploads `fuzz/artifacts/`.
 |---|---|---|
 | `domain` | a long IDN (Unicode form > 300 bytes, punycode ≤ 253) could not be saved back: the console sends the Unicode `display` and `Domain::parse` capped the input at 300 bytes | input bound raised to 1024 (the 253-byte ASCII limit is the real one); `settings::tests::long_idn_display_round_trips` |
 | `agent_messages` | `Heartbeat.cert` domain/challenge/error went into the shared Valkey blob uncapped and with control characters (a compromised node could park ~4 MB per heartbeat) | `grpc::cert_status_json` passes every agent string through `nodestat::agent_text` (253/512/32); latency URLs with control characters are dropped |
-| `node_templates` | templates rendered a tag the save refuses (`_x`, `akari-*`, `api`, duplicates) | `nodetpl::render` ends with `validate_inbounds` |
+| `node_templates` | templates rendered a tag the save refuses (`_x`, `akari-*`, `api`, duplicates) | `nodetpl::render` ends with `validate_inbound` (W28-a: templates carry no tag at all) |
 
 The coverage work also found that `traffic::db_tests::one_bad_row_does_not_poison_the_batch`
 had stopped exercising the row-by-row retry after the per-node index

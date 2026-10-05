@@ -3,14 +3,16 @@
 //! model + the xray adapter (P3) is provably byte-identical:
 //!
 //! - template rendering (`nodetpl::render`): the xray inbound JSON stored in
-//!   `nodes.xray_inbounds` and sent verbatim as `ConfigSnapshot.inbounds_json`,
-//!   and every template error (code, message, params);
+//!   `nodes.inbound` (W28-a: one per node, no tag) and sent within
+//!   `ConfigSnapshot.inbounds_json`, and every template error (code,
+//!   message, params);
 //! - credentials (`protocols::generate_account`/`refit_account`,
-//!   `entitle::merge_credentials`): the `account_json` the agent receives;
+//!   `entitle::{eligible_protocol, fit_account}`): the `account_json` the
+//!   agent receives;
 //! - state hash inputs and outputs (`grpc::state_hash` over the above);
 //! - the three subscription formats (`sub::render_for`), full bodies;
-//! - validation (`protocols::check_inbound`, `api::validate_inbounds`,
-//!   `api::inbound_warnings`, `protocols::{port_clash, l4, issuable}`).
+//! - validation (`protocols::check_inbound`, `api::normalize_inbound`,
+//!   `api::inbound_warning`, `protocols::{port_clash, l4, issuable}`).
 //!
 //! Randomness comes from fixed seeds (`entropy::seeded`). The golden files
 //! live in `testdata/w26/`; `AKARI_UPDATE_GOLDEN=1 cargo test w26_golden`
@@ -19,7 +21,6 @@
 
 use serde_json::{Value, json};
 
-use crate::api::Credential;
 use crate::auth::ApiError;
 use crate::entropy::seeded;
 use crate::nodetpl::{InboundSpec, render};
@@ -101,8 +102,8 @@ fn template_cases() -> Vec<(&'static str, Value, Vec<u16>, Option<&'static str>)
             None,
         ),
         (
-            "vless_reality custom dest/sni/fp/tag",
-            json!([{"template": "vless_reality", "port": 8443, "tag": " my-tag ",
+            "vless_reality custom dest/sni/fp",
+            json!([{"template": "vless_reality", "port": 8443,
             "dest": "DL.Google.com:8443", "server_name": "Www.Example.COM", "fingerprint": "firefox"}]),
             vec![],
             None,
@@ -114,8 +115,8 @@ fn template_cases() -> Vec<(&'static str, Value, Vec<u16>, Option<&'static str>)
             None,
         ),
         (
-            "vless_reality empty server_name/tag",
-            json!([{"template": "vless_reality", "port": 443, "server_name": "  ", "tag": ""}]),
+            "vless_reality empty server_name",
+            json!([{"template": "vless_reality", "port": 443, "server_name": "  "}]),
             vec![],
             None,
         ),
@@ -150,7 +151,7 @@ fn template_cases() -> Vec<(&'static str, Value, Vec<u16>, Option<&'static str>)
             None,
         ),
         (
-            "vless_reality reserved tag",
+            "vless_reality with a tag (D2: refused)",
             json!([{"template": "vless_reality", "port": 443, "tag": "_x"}]),
             vec![],
             None,
@@ -483,46 +484,47 @@ fn template_cases() -> Vec<(&'static str, Value, Vec<u16>, Option<&'static str>)
     c
 }
 
+/// Each spec of a case on its own (D2: one inbound per node), against the
+/// case's taken ports; a spec the API would refuse to parse (e.g. a `tag`)
+/// says so.
 #[test]
 fn w26_golden_templates() {
     let mut out = String::new();
     for (i, (name, specs, taken, nd)) in template_cases().into_iter().enumerate() {
-        let specs: Vec<InboundSpec> = specs
-            .as_array()
-            .unwrap()
-            .iter()
-            .cloned()
-            .map(spec)
-            .collect();
         let seed = 1000 + i as u64;
         out.push_str(&format!("== {name} (seed {seed})\n"));
-        match seeded(seed, || render(&specs, &taken, nd)) {
-            Ok(inbounds) => {
-                for ib in &inbounds {
-                    out.push_str(&serde_json::to_string(ib).unwrap());
-                    out.push('\n');
+        let specs = specs.as_array().cloned().unwrap_or_default();
+        seeded(seed, || {
+            for raw in &specs {
+                match serde_json::from_value::<InboundSpec>(raw.clone()) {
+                    Err(e) => out.push_str(&format!("SPEC ERR {e}\n")),
+                    Ok(spec) => match render(&spec, &taken, nd) {
+                        Ok(ib) => {
+                            out.push_str(&serde_json::to_string(&ib).unwrap());
+                            out.push_str(&format!(
+                                "\nneeds_certificate={} spec_needs_certificate={}\n",
+                                crate::nodetpl::needs_certificate(&Value::Array(vec![ib])),
+                                spec.needs_certificate()
+                            ));
+                        }
+                        Err(e) => {
+                            out.push_str(&err_line(&e));
+                            out.push('\n');
+                        }
+                    },
                 }
-                let arr = Value::Array(inbounds);
-                out.push_str(&format!(
-                    "needs_certificate={} spec_needs_certificate={}\n",
-                    crate::nodetpl::needs_certificate(&arr),
-                    specs.iter().any(|s| s.needs_certificate())
-                ));
             }
-            Err(e) => {
-                out.push_str(&err_line(&e));
-                out.push('\n');
-            }
-        }
+        });
     }
     check_golden("templates.golden", &out);
 }
 
-/// One node with every template (the inbounds a real node would store).
+/// Every template's inbound, tagged `t<i>` as if each were an inbound the
+/// agent runs.
 fn all_templates_inbounds() -> Vec<Value> {
     let specs = json!([
         {"template": "vless_reality", "port": 443},
-        {"template": "vless_reality", "port": 444, "vision": false, "fingerprint": "ios", "tag": "reality-plain"},
+        {"template": "vless_reality", "port": 444, "vision": false, "fingerprint": "ios"},
         {"template": "vless_reality_xhttp", "port": 445, "mode": "stream-one"},
         {"template": "vless_tls_vision", "port": 446},
         {"template": "vless_ws_tls", "port": 447, "path": "/vl"},
@@ -545,7 +547,17 @@ fn all_templates_inbounds() -> Vec<Value> {
         .cloned()
         .map(spec)
         .collect();
-    seeded(1, || render(&specs, &[], Some(NODE_DOMAIN))).unwrap()
+    seeded(1, || {
+        specs
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let mut ib = render(s, &[], Some(NODE_DOMAIN)).unwrap();
+                ib["tag"] = json!(format!("t{i}"));
+                ib
+            })
+            .collect()
+    })
 }
 
 /// Hand-written inbounds a node may also hold (legacy, unmanaged, edge).
@@ -567,16 +579,32 @@ fn user_id(i: u8) -> String {
     format!("0000000{i}-0000-4000-8000-00000000000{i}")
 }
 
-/// Credentials per user (entitle's path: eligible inbounds, refit, new).
-fn credentials_for(inbounds: &Value, users: u8) -> Vec<(String, Vec<Credential>)> {
-    let eligible = crate::entitle::eligible_inbounds(inbounds);
+/// A credential: (inbound tag, protocol, account).
+type Cred = (String, String, Value);
+
+/// Credentials per user (entitle's path: one per inbound with an eligible
+/// protocol, as every entrance has its own).
+fn credentials_for(inbounds: &Value, users: u8) -> Vec<(String, Vec<Cred>)> {
     (1..=users)
         .map(|u| {
             let creds = seeded(100 + u as u64, || {
-                crate::entitle::merge_credentials(&[], &eligible, inbounds)
-            })
-            .unwrap()
-            .unwrap();
+                inbounds
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|ib| {
+                        let proto = crate::entitle::eligible_protocol(Some(ib))?;
+                        let account = crate::entitle::fit_account(None, proto, ib)
+                            .unwrap()
+                            .unwrap();
+                        Some((
+                            ib["tag"].as_str().unwrap().to_string(),
+                            proto.to_string(),
+                            account,
+                        ))
+                    })
+                    .collect()
+            });
             (user_id(u), creds)
         })
         .collect()
@@ -602,17 +630,16 @@ fn w26_golden_accounts() {
         ));
     }
     let arr = Value::Array(inbounds.clone());
-    out.push_str("== eligible_inbounds\n");
-    for (t, p) in crate::entitle::eligible_inbounds(&arr) {
-        out.push_str(&format!("{t} {p}\n"));
+    out.push_str("== eligible_protocol\n");
+    for ib in &inbounds {
+        if let Some(p) = crate::entitle::eligible_protocol(Some(ib)) {
+            out.push_str(&format!("{} {p}\n", ib["tag"].as_str().unwrap()));
+        }
     }
-    out.push_str("== merge_credentials (2 users)\n");
+    out.push_str("== fit_account, new (2 users)\n");
     for (u, creds) in credentials_for(&arr, 2) {
-        for c in creds {
-            out.push_str(&format!(
-                "{u} {} {} {}\n",
-                c.inbound_tag, c.protocol, c.account
-            ));
+        for (tag, proto, account) in creds {
+            out.push_str(&format!("{u} {tag} {proto} {account}\n"));
         }
     }
     out.push_str("== refit_account\n");
@@ -662,27 +689,43 @@ fn w26_golden_accounts() {
             r.map(|v| v.to_string()).unwrap_or_else(|| "None".into())
         ));
     }
-    out.push_str("== refit_credentials (set_inbounds path)\n");
-    let stored = vec![
-        Credential {
-            inbound_tag: "vless-reality-443".into(),
-            protocol: "vless".into(),
-            account: json!({"id": "11111111-1111-4111-8111-111111111111", "flow": ""}),
-        },
-        Credential {
-            inbound_tag: "reality-plain".into(),
-            protocol: "vless".into(),
-            account: json!({"id": "22222222-2222-4222-8222-222222222222", "flow": "xtls-rprx-vision"}),
-        },
-        Credential {
-            inbound_tag: "ss2022-456".into(),
-            protocol: "shadowsocks".into(),
-            account: k16,
-        },
+    out.push_str("== fit_account, kept (set_inbound path)\n");
+    let by_tag = |t: &str| {
+        inbounds
+            .iter()
+            .find(|i| i["tag"] == t)
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    let stored = [
+        (
+            "t0",
+            "vless",
+            json!({"id": "11111111-1111-4111-8111-111111111111", "flow": ""}),
+        ),
+        (
+            "t1",
+            "vless",
+            json!({"id": "22222222-2222-4222-8222-222222222222", "flow": "xtls-rprx-vision"}),
+        ),
+        ("t13", "shadowsocks", k16.clone()),
+        (
+            "t0",
+            "vmess",
+            json!({"id": "33333333-3333-4333-8333-333333333333"}),
+        ),
     ];
-    for c in seeded(77, || crate::api::refit_credentials(stored, &arr)) {
-        out.push_str(&format!("{} {} {}\n", c.inbound_tag, c.protocol, c.account));
-    }
+    seeded(77, || {
+        for (tag, proto, account) in &stored {
+            let ib = by_tag(tag);
+            let want = crate::entitle::eligible_protocol(Some(&ib)).unwrap();
+            let r = crate::entitle::fit_account(Some((proto, account)), want, &ib).unwrap();
+            out.push_str(&format!(
+                "{tag} {proto} -> {}\n",
+                r.map(|v| v.to_string()).unwrap_or_else(|| "kept".into())
+            ));
+        }
+    });
     check_golden("accounts.golden", &out);
 }
 
@@ -701,10 +744,10 @@ fn w26_golden_state_hash() {
             user_id: u,
             inbound_users: creds
                 .into_iter()
-                .map(|c| InboundUser {
-                    inbound_tag: c.inbound_tag,
-                    account_json: c.account.to_string(),
-                    protocol: c.protocol,
+                .map(|(tag, protocol, account)| InboundUser {
+                    inbound_tag: tag,
+                    account_json: account.to_string(),
+                    protocol,
                 })
                 .collect(),
             speed_limit_bytes_per_sec: 0,
@@ -735,8 +778,28 @@ fn w26_golden_state_hash() {
     check_golden("state_hash.golden", &out);
 }
 
-fn creds_json(creds: &[Credential]) -> Value {
-    serde_json::to_value(creds).unwrap()
+/// One subscription row per credential whose inbound (by tag) exists.
+fn rows(name: &str, server: Option<&str>, inbounds: &Value, creds: &[Cred]) -> Vec<NodeRow> {
+    creds
+        .iter()
+        .filter_map(|(tag, protocol, account)| {
+            let ib = inbounds
+                .as_array()?
+                .iter()
+                .find(|i| i["tag"] == tag.as_str())?;
+            Some(NodeRow {
+                name: name.into(),
+                display_name: None,
+                tags: vec![],
+                entrance: tag.clone(),
+                inbound: ib.clone(),
+                server: server.map(String::from),
+                port: None,
+                protocol: protocol.clone(),
+                account: account.clone(),
+            })
+        })
+        .collect()
 }
 
 /// Subscription fixtures: (name, rows).
@@ -745,40 +808,31 @@ fn sub_fixtures() -> Vec<(&'static str, Vec<NodeRow>)> {
     inbounds.extend(hand_inbounds());
     let arr = Value::Array(inbounds);
     let creds = credentials_for(&arr, 1).remove(0).1;
-    let row = |name: &str, server: Option<&str>, creds: Value| NodeRow {
-        name: name.into(),
-        xray_inbounds: arr.clone(),
-        server_addr: server.map(String::from),
-        credentials: creds,
-        display_name: None,
-        tags: vec![],
-        connect_overrides: Value::Null,
+    let templates = rows("HK 1", Some("hk.example.com"), &arr, &creds);
+    let mut named = rows("jp-1", Some("203.0.113.7"), &arr, &creds);
+    for r in &mut named {
+        r.display_name = Some("东京 01".into());
+        r.tags = vec!["IPLC".into(), "0.5x".into()];
+        // Entrance addresses: another host and port, or only a port.
+        match r.entrance.as_str() {
+            "t0" => {
+                r.server = Some("relay.example.net".into());
+                r.port = Some(30443);
+            }
+            "t12" => r.port = Some(18388),
+            _ => {}
+        }
+    }
+    // Single-credential nodes whose display name repeats (unique names);
+    // the last has no address at all (left out).
+    let one = |name: &str, server: Option<&str>| {
+        let mut r = rows(name, server, &arr, &creds[8..9]);
+        r[0].display_name = Some("Same".into());
+        r
     };
-    let templates = vec![row("HK 1", Some("hk.example.com"), creds_json(&creds))];
-    let mut named = vec![row("jp-1", Some("203.0.113.7"), creds_json(&creds))];
-    named[0].display_name = Some("东京 01".into());
-    named[0].tags = vec!["IPLC".into(), "0.5x".into()];
-    named[0].connect_overrides = json!({"vless-reality-443": {"host": "relay.example.net", "port": 30443},
-                                        "ss2022-455": {"port": 18388}});
-    // A single-credential node with only an override host, and a node
-    // whose display name repeats (unique names).
-    let one = |name: &str, server: Option<&str>| NodeRow {
-        name: name.into(),
-        xray_inbounds: arr.clone(),
-        server_addr: server.map(String::from),
-        credentials: creds_json(&creds[8..9]),
-        display_name: Some("Same".into()),
-        tags: vec![],
-        connect_overrides: if server.is_none() {
-            json!({"trojan-451": {"host": "nat.example.org"}})
-        } else {
-            Value::Null
-        },
-    };
-    named.push(one("a", Some("a.example.com")));
-    named.push(one("b", None));
-    named.push(one("c", None));
-    named[3].connect_overrides = Value::Null; // no address at all: skipped
+    named.extend(one("a", Some("a.example.com")));
+    named.extend(one("b", Some("nat.example.org")));
+    named.extend(one("c", None));
 
     let edge_inbounds = json!([
         {"tag": "kcp", "protocol": "vless", "port": 1, "streamSettings": {"network": "kcp"}},
@@ -818,72 +872,88 @@ fn sub_fixtures() -> Vec<(&'static str, Vec<NodeRow>)> {
         {"tag": "xh-nomode", "protocol": "vless", "port": 23, "streamSettings": {"network": "xhttp", "security": "reality",
             "xhttpSettings": {"path": "/x"}, "realitySettings": {"serverNames": ["r.example.com"], "publicKey": "P", "shortId": ""}}},
     ]);
-    let edge_creds = json!([
-        {"inbound_tag": "kcp", "protocol": "vless", "account": {"id": "a1", "flow": ""}},
-        {"inbound_tag": "split", "protocol": "vless", "account": {"id": "a2", "flow": "xtls-rprx-vision"}},
-        {"inbound_tag": "ws-hdr", "protocol": "vless", "account": {"id": "a3"}},
-        {"inbound_tag": "ws-both", "protocol": "vmess", "account": {"id": "a4"}},
-        {"inbound_tag": "hu", "protocol": "trojan", "account": {"password": "p@ss word"}},
-        {"inbound_tag": "vmx", "protocol": "vmess", "account": {"id": "a5"}},
-        {"inbound_tag": "vmg", "protocol": "vmess", "account": {"id": "a6"}},
-        {"inbound_tag": "rx-nofp", "protocol": "vless", "account": {"id": "a7", "flow": "xtls-rprx-vision"}},
-        {"inbound_tag": "tls-vision", "protocol": "vless", "account": {"id": "a8", "flow": "xtls-rprx-vision"}},
-        {"inbound_tag": "plain-vision", "protocol": "vless", "account": {"id": "a9", "flow": "xtls-rprx-vision"}},
-        {"inbound_tag": "port-str", "protocol": "vless", "account": {"id": "b1"}},
-        {"inbound_tag": "no-port", "protocol": "vless", "account": {"id": "b2"}},
-        {"inbound_tag": "big-port", "protocol": "vless", "account": {"id": "b3"}},
-        {"inbound_tag": "ss-nopsk", "protocol": "shadowsocks", "account": {"password": "k"}},
-        {"inbound_tag": "ss-nomethod", "protocol": "shadowsocks", "account": {"password": "k"}},
-        {"inbound_tag": "ss-tcp", "protocol": "shadowsocks", "account": {"password": "AQEBAQEBAQEBAQEBAQEBAQ=="}},
-        {"inbound_tag": "ss-udp-only", "protocol": "shadowsocks", "account": {"password": "u"}},
-        {"inbound_tag": "hy-nosni", "protocol": "hysteria", "account": {"auth": "a:b c"}},
-        {"inbound_tag": "sec-weird", "protocol": "vless", "account": {"id": "b4"}},
-        {"inbound_tag": "tro-123", "protocol": "trojan", "account": {"password": "123"}},
-        {"inbound_tag": "tro-colon", "protocol": "trojan", "account": {"password": "true"}},
-        {"inbound_tag": "socks", "protocol": "socks", "account": {"user": "x"}},
-        {"inbound_tag": "missing", "protocol": "vless", "account": {"id": "b5"}},
-        {"inbound_tag": "dup", "protocol": "vmess", "account": {"id": "b6"}},
-        {"inbound_tag": "dup", "protocol": "vmess", "account": {"id": "b7"}},
-        {"inbound_tag": "grpc-empty", "protocol": "vless", "account": {"id": "b8"}},
-        {"inbound_tag": "xh-nomode", "protocol": "vless", "account": {"id": "b9", "flow": ""}},
-        {"inbound_tag": "kcp", "protocol": "vmess", "account": {}},
-        {"inbound_tag": "tls-vision", "protocol": "trojan", "account": {"password": 5}},
-    ]);
-    let mut edge = vec![NodeRow {
-        name: "Edge: \"quoted\" - true".into(),
-        xray_inbounds: edge_inbounds.clone(),
-        server_addr: Some("edge.example.com".into()),
-        credentials: edge_creds,
-        display_name: None,
-        tags: vec![],
-        connect_overrides: json!({"kcp": {"port": 65535}, "bogus": {"host": "x"}}),
-    }];
-    edge.push(NodeRow {
-        name: "corrupt".into(),
-        xray_inbounds: edge_inbounds.clone(),
-        server_addr: Some("c.example.com".into()),
-        credentials: json!({"not": "a list"}),
-        display_name: None,
-        tags: vec![],
-        connect_overrides: Value::Null,
-    });
-    edge.push(NodeRow {
-        name: "no-server".into(),
-        xray_inbounds: edge_inbounds,
-        server_addr: Some(String::new()),
-        credentials: json!([{"inbound_tag": "dup", "protocol": "vmess", "account": {"id": "c1"}}]),
-        display_name: None,
-        tags: vec![],
-        connect_overrides: Value::Null,
-    });
+    let c = |tag: &str, protocol: &str, account: Value| -> Cred {
+        (tag.into(), protocol.into(), account)
+    };
+    let edge_creds = vec![
+        c("kcp", "vless", json!({"id": "a1", "flow": ""})),
+        c(
+            "split",
+            "vless",
+            json!({"id": "a2", "flow": "xtls-rprx-vision"}),
+        ),
+        c("ws-hdr", "vless", json!({"id": "a3"})),
+        c("ws-both", "vmess", json!({"id": "a4"})),
+        c("hu", "trojan", json!({"password": "p@ss word"})),
+        c("vmx", "vmess", json!({"id": "a5"})),
+        c("vmg", "vmess", json!({"id": "a6"})),
+        c(
+            "rx-nofp",
+            "vless",
+            json!({"id": "a7", "flow": "xtls-rprx-vision"}),
+        ),
+        c(
+            "tls-vision",
+            "vless",
+            json!({"id": "a8", "flow": "xtls-rprx-vision"}),
+        ),
+        c(
+            "plain-vision",
+            "vless",
+            json!({"id": "a9", "flow": "xtls-rprx-vision"}),
+        ),
+        c("port-str", "vless", json!({"id": "b1"})),
+        c("no-port", "vless", json!({"id": "b2"})),
+        c("big-port", "vless", json!({"id": "b3"})),
+        c("ss-nopsk", "shadowsocks", json!({"password": "k"})),
+        c("ss-nomethod", "shadowsocks", json!({"password": "k"})),
+        c(
+            "ss-tcp",
+            "shadowsocks",
+            json!({"password": "AQEBAQEBAQEBAQEBAQEBAQ=="}),
+        ),
+        c("ss-udp-only", "shadowsocks", json!({"password": "u"})),
+        c("hy-nosni", "hysteria", json!({"auth": "a:b c"})),
+        c("sec-weird", "vless", json!({"id": "b4"})),
+        c("tro-123", "trojan", json!({"password": "123"})),
+        c("tro-colon", "trojan", json!({"password": "true"})),
+        c("socks", "socks", json!({"user": "x"})),
+        c("dup", "vmess", json!({"id": "b6"})),
+        c("dup", "vmess", json!({"id": "b7"})),
+        c("grpc-empty", "vless", json!({"id": "b8"})),
+        c("xh-nomode", "vless", json!({"id": "b9", "flow": ""})),
+        c("kcp", "vmess", json!({})),
+        c("tls-vision", "trojan", json!({"password": 5})),
+    ];
+    let mut edge = rows(
+        "Edge: \"quoted\" - true",
+        Some("edge.example.com"),
+        &edge_inbounds,
+        &edge_creds,
+    );
+    for r in &mut edge {
+        if r.entrance == "kcp" {
+            r.port = Some(65535);
+        }
+    }
+    // An empty address is no address; an inbound that is not one is
+    // nothing to render.
+    edge.extend(rows(
+        "no-server",
+        Some(""),
+        &edge_inbounds,
+        &[c("dup", "vmess", json!({"id": "c1"}))],
+    ));
     edge.push(NodeRow {
         name: "123".into(),
-        xray_inbounds: json!("not an array"),
-        server_addr: Some("x".into()),
-        credentials: json!([{"inbound_tag": "a", "protocol": "vless", "account": {"id": "c2"}}]),
         display_name: None,
         tags: vec![],
-        connect_overrides: Value::Null,
+        entrance: "a".into(),
+        inbound: json!("not an inbound"),
+        server: Some("x".into()),
+        port: None,
+        protocol: "vless".into(),
+        account: json!({"id": "c2"}),
     });
     vec![
         ("templates", templates),
@@ -1056,60 +1126,41 @@ fn w26_golden_validation() {
             crate::protocols::issuable(&ib),
         ));
     }
-    out.push_str("== validate_inbounds\n");
-    let lists = vec![
-        json!({"not": "an array"}),
+    out.push_str("== normalize_inbound\n");
+    let cases = vec![
+        json!({"not": "an inbound"}),
         json!([]),
         json!([{"protocol": "vless"}]),
-        json!([{"tag": "", "protocol": "vless"}]),
-        json!([{"tag": "api", "protocol": "vless"}]),
-        json!([{"tag": "akari-x", "protocol": "vless"}]),
-        json!([{"tag": "_x", "protocol": "vless"}]),
-        json!([{"tag": "a", "protocol": "vless"}, {"tag": "a", "protocol": "vmess"}]),
-        json!([{"tag": "a"}]),
-        json!([{"tag": "a", "protocol": ""}]),
-        json!([{"tag": "a", "protocol": "fakedns"}]),
-        json!([{"tag": "a", "protocol": "vless", "sniffing": {"destOverride": ["http", "FakeDNS"]}}]),
-        json!([{"tag": "a", "protocol": "vless", "Sniffing": {"DESTOVERRIDE": "tls, fakedns+others"}}]),
-        json!([{"tag": "fakedns-tag", "protocol": "vless", "sniffing": {"destOverride": ["http"]}}]),
-        json!([{"tag": "a", "protocol": "vless", "streamSettings": {"network": "kcp"}}]),
-        json!([{"tag": "a", "port": 443, "protocol": "vless"}, {"tag": "b", "port": 443, "protocol": "trojan"}]),
-        json!([{"tag": "a", "port": 443, "protocol": "vless"}, {"tag": "b", "port": 443, "protocol": "hysteria",
-               "settings": {"version": 2}, "streamSettings": {"network": "hysteria", "security": "tls", "hysteriaSettings": {"version": 2}}}]),
-        json!([{"tag": "a", "port": 1, "protocol": "vless", "listen": "127.0.0.1"},
-               {"tag": "b", "port": 1, "protocol": "vless", "listen": "127.0.0.2"}]),
-        json!([{"tag": "a", "port": 1, "protocol": "vless", "listen": "0.0.0.0"},
-               {"tag": "b", "port": 1, "protocol": "vless", "listen": "127.0.0.2"}]),
-        json!([{"tag": "a", "port": 1, "protocol": "dokodemo-door", "settings": {"network": "udp"}},
-               {"tag": "b", "port": 1, "protocol": "shadowsocks", "settings": {"network": "tcp"}}]),
-        Value::Array(all_templates_inbounds()),
+        json!("vless"),
+        json!({"protocol": "vless"}),
+        json!({"tag": "", "protocol": "vless"}),
+        json!({"tag": "api", "TAG": "akari-x", "protocol": "vless"}),
+        json!({"tag": "a"}),
+        json!({"tag": "a", "protocol": ""}),
+        json!({"protocol": "fakedns"}),
+        json!({"protocol": "vless", "sniffing": {"destOverride": ["http", "FakeDNS"]}}),
+        json!({"protocol": "vless", "Sniffing": {"DESTOVERRIDE": "tls, fakedns+others"}}),
+        json!({"tag": "fakedns-tag", "protocol": "vless", "sniffing": {"destOverride": ["http"]}}),
+        json!({"protocol": "vless", "streamSettings": {"network": "kcp"}}),
     ];
-    for l in lists {
+    for l in cases.into_iter().chain(all_templates_inbounds()) {
         out.push_str(&format!(
             "{}\n  -> {}\n",
             l,
-            match crate::api::validate_inbounds(&l) {
-                Ok(()) => "ok".to_string(),
+            match crate::api::normalize_inbound(&l) {
+                Ok(v) => format!("ok {v}"),
                 Err(e) => err_line(&e),
             }
         ));
     }
-    out.push_str("== inbound_warnings\n");
+    out.push_str("== inbound_warning\n");
     let mut stored = hand_inbounds();
-    stored.extend(
-        validation_corpus()
-            .into_iter()
-            .take(30)
-            .enumerate()
-            .map(|(i, mut v)| {
-                v["tag"] = json!(format!("c{i}"));
-                v
-            }),
-    );
-    stored.push(json!({"tag": "clash1", "port": 9000, "protocol": "vless"}));
-    for w in crate::api::inbound_warnings(&Value::Array(stored)) {
-        out.push_str(&w);
-        out.push('\n');
+    stored.extend(validation_corpus().into_iter().take(30));
+    for ib in &stored {
+        if let Some(w) = crate::api::inbound_warning(ib) {
+            out.push_str(&w);
+            out.push('\n');
+        }
     }
     out.push_str("== port_clash\n");
     for l in [

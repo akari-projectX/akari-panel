@@ -470,16 +470,16 @@ mod tests {
         let (n, u) = db.member().await;
         // ~6 MiB of inbounds JSON (written directly: the size is the point).
         let pad = "x".repeat(6 << 20);
-        let inbounds = serde_json::json!([{
-            "tag": "big", "protocol": "dokodemo-door", "port": 1,
+        let inbound = serde_json::json!({
+            "protocol": "dokodemo-door", "port": 1,
             "settings": {"address": "127.0.0.1", "network": "tcp", "pad": pad},
-        }]);
+        });
         sqlx::query(
-            "UPDATE nodes SET xray_inbounds = $2, config_version = config_version + 1 \
+            "UPDATE nodes SET inbound = $2, config_version = config_version + 1 \
              WHERE id = $1",
         )
         .bind(n)
-        .bind(&inbounds)
+        .bind(&inbound)
         .execute(&db.pool)
         .await
         .unwrap();

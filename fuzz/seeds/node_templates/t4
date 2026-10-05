@@ -1,1 +1,1 @@
-{"templates": [{"template": "vmess_ws", "port": 2086, "path": "/vm", "tls": false}], "tls_domain": "node.example.com"}
+{"tls_domain": "node.example.com", "template": {"template": "vmess_ws", "port": 2086, "path": "/vm", "tls": false}}

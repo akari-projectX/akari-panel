@@ -756,14 +756,10 @@ mod error_code_tests {
         );
         assert!(v.params().is_empty());
         // Debug formatting of a parameter stays in the message only.
-        let tag = "x\"y".to_string();
-        let e = bad_request!(
-            "inbound.tag_duplicate",
-            "duplicate inbound tag {tag:?}",
-            tag = tag
-        );
-        assert_eq!(e.message(), r#"duplicate inbound tag "x\"y""#);
-        assert_eq!(e.params()["tag"], json!("x\"y"));
+        let name = "x\"y".to_string();
+        let e = bad_request!("entrance.name_invalid", "bad name {name:?}", name = name);
+        assert_eq!(e.message(), r#"bad name "x\"y""#);
+        assert_eq!(e.params()["name"], json!("x\"y"));
     }
 }
 

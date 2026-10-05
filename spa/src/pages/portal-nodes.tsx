@@ -61,6 +61,7 @@ export function NodesCard({ me }: { me: Pick<Me, "probe_interval_secs"> }) {
                   <TableRow key={`${n.name}-${i}`}>
                     <TableCell>
                       <span className="font-medium">{n.name}</span>
+                      <span className="ml-1.5 text-sm">{n.entrance}</span>
                       {n.region && <span className="ml-2 text-xs text-muted-foreground">{n.region}</span>}
                       {n.tags.length > 0 && (
                         <span className="mt-1 flex flex-wrap gap-1">

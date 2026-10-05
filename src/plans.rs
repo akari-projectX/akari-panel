@@ -3,8 +3,8 @@
 //! plan expiry).
 //!
 //! Every mutation is an `apply_*` on the caller's transaction that takes
-//! the entitlement lock first (entitle.rs), writes, reconciles `node_users`
-//! (bumping exactly the nodes whose rows changed), syncs the users'
+//! the entitlement lock first (entitle.rs), writes, reconciles
+//! `entrance_users` (bumping exactly the nodes whose rows changed), syncs the users'
 //! enforced columns from their plan (`traffic_limit_bytes`, `expires_at`)
 //! and bumps the users' nodes when what they are served changed, and writes
 //! its audit row — all in that transaction.
@@ -207,7 +207,8 @@ pub struct GroupView {
     id: Uuid,
     name: String,
     description: String,
-    node_ids: Vec<Uuid>,
+    /// W28-a: groups hold entrances (plans -> node groups -> entrances).
+    entrance_ids: Vec<Uuid>,
     /// Plans granting this group.
     plan_ids: Vec<Uuid>,
     created_at: DateTime<Utc>,
@@ -215,8 +216,8 @@ pub struct GroupView {
 }
 
 const GROUP_VIEW_SQL: &str = "SELECT g.id, g.name, g.description, \
-     ARRAY(SELECT m.node_id FROM node_group_members m WHERE m.group_id = g.id ORDER BY m.node_id) \
-     AS node_ids, \
+     ARRAY(SELECT m.entrance_id FROM entrance_group_members m WHERE m.group_id = g.id \
+        ORDER BY m.entrance_id) AS entrance_ids, \
      ARRAY(SELECT pg.plan_id FROM plan_groups pg WHERE pg.group_id = g.id ORDER BY pg.plan_id) \
      AS plan_ids, g.created_at, g.updated_at FROM node_groups g";
 
@@ -248,7 +249,7 @@ pub async fn list_groups(
 pub struct CreateGroupReq {
     pub name: String,
     pub description: Option<String>,
-    pub node_ids: Option<Vec<Uuid>>,
+    pub entrance_ids: Option<Vec<Uuid>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -260,23 +261,27 @@ pub struct UpdateGroupReq {
     pub description: Option<Option<String>>,
     /// The complete membership (replaces it).
     #[serde(default, deserialize_with = "double_option")]
-    pub node_ids: Option<Option<Vec<Uuid>>>,
+    pub entrance_ids: Option<Option<Vec<Uuid>>>,
 }
 
 async fn group_members(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Vec<Uuid>> {
     sqlx::query_scalar(
-        "SELECT node_id FROM node_group_members WHERE group_id = $1 ORDER BY node_id",
+        "SELECT entrance_id FROM entrance_group_members WHERE group_id = $1 ORDER BY entrance_id",
     )
     .bind(id)
     .fetch_all(conn)
     .await
 }
 
-async fn lock_nodes(conn: &mut PgConnection, ids: &[Uuid]) -> sqlx::Result<()> {
-    sqlx::query("SELECT id FROM nodes WHERE id = ANY($1) ORDER BY id FOR UPDATE")
-        .bind(ids)
-        .execute(conn)
-        .await?;
+/// Lock the nodes of these entrances (global order: nodes by id).
+async fn lock_nodes_of(conn: &mut PgConnection, entrances: &[Uuid]) -> sqlx::Result<()> {
+    sqlx::query(
+        "SELECT id FROM nodes WHERE id IN (SELECT node_id FROM entrances WHERE id = ANY($1)) \
+         ORDER BY id FOR UPDATE",
+    )
+    .bind(entrances)
+    .execute(conn)
+    .await?;
     Ok(())
 }
 
@@ -288,10 +293,10 @@ pub async fn apply_create_group(
 ) -> Result<Uuid, ApiError> {
     let name = clean_name("name", &req.name)?;
     let description = clean_description(req.description.as_deref().unwrap_or(""))?;
-    let nodes = id_set(req.node_ids.as_deref().unwrap_or(&[]));
+    let entrances = id_set(req.entrance_ids.as_deref().unwrap_or(&[]));
     entitle::lock(conn).await?;
-    lock_nodes(conn, &nodes).await?;
-    require_all_exist(conn, "nodes", "node", &nodes).await?;
+    lock_nodes_of(conn, &entrances).await?;
+    require_all_exist(conn, "entrances", "entrance", &entrances).await?;
     let id = Uuid::new_v4();
     let r = sqlx::query("INSERT INTO node_groups (id, name, description) VALUES ($1, $2, $3)")
         .bind(id)
@@ -305,11 +310,13 @@ pub async fn apply_create_group(
         }
         r => r?,
     };
-    sqlx::query("INSERT INTO node_group_members (group_id, node_id) SELECT $1, unnest($2::uuid[])")
-        .bind(id)
-        .bind(&nodes)
-        .execute(&mut *conn)
-        .await?;
+    sqlx::query(
+        "INSERT INTO entrance_group_members (group_id, entrance_id) SELECT $1, unnest($2::uuid[])",
+    )
+    .bind(id)
+    .bind(&entrances)
+    .execute(&mut *conn)
+    .await?;
     crate::audit::record(
         conn,
         actor,
@@ -317,14 +324,14 @@ pub async fn apply_create_group(
         "node_group",
         Some(id.to_string()),
         None,
-        Some(json!({ "name": name, "description": description, "node_ids": nodes })),
+        Some(json!({ "name": name, "description": description, "entrance_ids": entrances })),
     )
     .await?;
     Ok(id)
 }
 
 /// PATCH /node-groups/{id}. A membership change reconciles exactly the
-/// nodes that joined or left.
+/// entrances that joined or left.
 pub async fn apply_update_group(
     conn: &mut PgConnection,
     actor: &Actor,
@@ -338,8 +345,8 @@ pub async fn apply_update_group(
         None => None,
         Some(d) => Some(clean_description(d.as_deref().unwrap_or(""))?),
     };
-    let nodes = non_null("node_ids", &req.node_ids)?.map(|n| id_set(&n));
-    if name.is_none() && description.is_none() && nodes.is_none() {
+    let entrances = non_null("entrance_ids", &req.entrance_ids)?.map(|n| id_set(&n));
+    if name.is_none() && description.is_none() && entrances.is_none() {
         return Err(bad_request!("request.no_fields", "no fields to update"));
     }
     entitle::lock(conn).await?;
@@ -351,33 +358,35 @@ pub async fn apply_update_group(
     let Some((old_name, old_desc)) = before else {
         return Err(ApiError::not_found());
     };
-    let old_nodes = group_members(conn, id).await?;
+    let old_entrances = group_members(conn, id).await?;
     let mut outcome = Outcome::default();
-    if let Some(new) = &nodes {
+    if let Some(new) = &entrances {
         let changed: Vec<Uuid> = id_set(
-            &old_nodes
+            &old_entrances
                 .iter()
-                .filter(|n| !new.contains(n))
-                .chain(new.iter().filter(|n| !old_nodes.contains(n)))
+                .filter(|e| !new.contains(e))
+                .chain(new.iter().filter(|e| !old_entrances.contains(e)))
                 .copied()
                 .collect::<Vec<_>>(),
         );
-        lock_nodes(conn, &changed).await?;
-        require_all_exist(conn, "nodes", "node", new).await?;
-        sqlx::query("DELETE FROM node_group_members WHERE group_id = $1 AND NOT node_id = ANY($2)")
-            .bind(id)
-            .bind(new)
-            .execute(&mut *conn)
-            .await?;
+        lock_nodes_of(conn, &changed).await?;
+        require_all_exist(conn, "entrances", "entrance", new).await?;
         sqlx::query(
-            "INSERT INTO node_group_members (group_id, node_id) SELECT $1, unnest($2::uuid[]) \
-             ON CONFLICT DO NOTHING",
+            "DELETE FROM entrance_group_members WHERE group_id = $1 AND NOT entrance_id = ANY($2)",
         )
         .bind(id)
         .bind(new)
         .execute(&mut *conn)
         .await?;
-        outcome = entitle::apply_reconcile(conn, Scope::Nodes(&changed)).await?;
+        sqlx::query(
+            "INSERT INTO entrance_group_members (group_id, entrance_id) \
+             SELECT $1, unnest($2::uuid[]) ON CONFLICT DO NOTHING",
+        )
+        .bind(id)
+        .bind(new)
+        .execute(&mut *conn)
+        .await?;
+        outcome = entitle::apply_reconcile(conn, Scope::Entrances(&changed)).await?;
     }
     let new_name = name.clone().unwrap_or_else(|| old_name.clone());
     let new_desc = description.clone().unwrap_or_else(|| old_desc.clone());
@@ -397,7 +406,7 @@ pub async fn apply_update_group(
     };
     let mut after = json!({
         "name": new_name, "description": new_desc,
-        "node_ids": nodes.clone().unwrap_or_else(|| old_nodes.clone()),
+        "entrance_ids": entrances.clone().unwrap_or_else(|| old_entrances.clone()),
     });
     after["entitlement"] = outcome.summary();
     crate::audit::record(
@@ -406,14 +415,14 @@ pub async fn apply_update_group(
         "group.update",
         "node_group",
         Some(id.to_string()),
-        Some(json!({ "name": old_name, "description": old_desc, "node_ids": old_nodes })),
+        Some(json!({ "name": old_name, "description": old_desc, "entrance_ids": old_entrances })),
         Some(after),
     )
     .await?;
     Ok(outcome)
 }
 
-/// DELETE /node-groups/{id}: plans granting it lose its nodes.
+/// DELETE /node-groups/{id}: plans granting it lose its entrances.
 pub async fn apply_delete_group(
     conn: &mut PgConnection,
     actor: &Actor,
@@ -428,20 +437,20 @@ pub async fn apply_delete_group(
     let Some((name, description)) = before else {
         return Err(ApiError::not_found());
     };
-    let nodes = group_members(conn, id).await?;
-    lock_nodes(conn, &nodes).await?;
+    let entrances = group_members(conn, id).await?;
+    lock_nodes_of(conn, &entrances).await?;
     sqlx::query("DELETE FROM node_groups WHERE id = $1")
         .bind(id)
         .execute(&mut *conn)
         .await?;
-    let outcome = entitle::apply_reconcile(conn, Scope::Nodes(&nodes)).await?;
+    let outcome = entitle::apply_reconcile(conn, Scope::Entrances(&entrances)).await?;
     crate::audit::record(
         conn,
         actor,
         "group.delete",
         "node_group",
         Some(id.to_string()),
-        Some(json!({ "name": name, "description": description, "node_ids": nodes })),
+        Some(json!({ "name": name, "description": description, "entrance_ids": entrances })),
         Some(json!({ "entitlement": outcome.summary() })),
     )
     .await?;
@@ -1164,36 +1173,15 @@ async fn bump_nodes_of_users(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::R
     if users.is_empty() {
         return Ok(Vec::new());
     }
-    let mut v: Vec<Uuid> = sqlx::query_scalar(
-        "UPDATE nodes SET user_version = user_version + 1 \
-         WHERE id IN (SELECT node_id FROM node_users WHERE user_id = ANY($1)) RETURNING id",
-    )
+    let mut v: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "UPDATE nodes SET user_version = user_version + 1 WHERE id IN ({}) RETURNING id",
+        entitle::NODES_OF_USERS
+    )))
     .bind(users)
     .fetch_all(conn)
     .await?;
     v.sort();
     Ok(v)
-}
-
-/// After users lost their plan (cancel/expiry): bump the nodes they still
-/// have rows on (manual assignments) when the plan they lost had a speed
-/// limit — those nodes must resend them unlimited. Nodes are locked by the
-/// caller's Scope::Users reconcile.
-async fn bump_nodes_of_limited(
-    conn: &mut PgConnection,
-    lost: &[(Uuid, Uuid)],
-) -> sqlx::Result<Vec<Uuid>> {
-    let users: Vec<Uuid> = lost.iter().map(|l| l.0).collect();
-    let plans: Vec<Uuid> = lost.iter().map(|l| l.1).collect();
-    let limited: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT DISTINCT l.u FROM unnest($1::uuid[], $2::uuid[]) AS l(u, p) \
-         JOIN plans p ON p.id = l.p WHERE p.speed_limit_mbps IS NOT NULL ORDER BY l.u",
-    )
-    .bind(&users)
-    .bind(&plans)
-    .fetch_all(&mut *conn)
-    .await?;
-    bump_nodes_of_users(conn, &limited).await
 }
 
 #[derive(Serialize, sqlx::FromRow, Debug)]
@@ -1337,12 +1325,14 @@ pub async fn apply_set_user_plan(
     }
     // Lock every node the reconcile will touch BEFORE the user_plans insert
     // (whose foreign key check share-locks the user row): nodes -> users.
-    sqlx::query(
-        "SELECT id FROM nodes WHERE id IN (SELECT m.node_id FROM plan_groups pg \
-         JOIN node_group_members m ON m.group_id = pg.group_id WHERE pg.plan_id = $2 \
-         UNION SELECT node_id FROM node_users WHERE user_id = $1) ORDER BY id FOR UPDATE",
-    )
-    .bind(user_id)
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT id FROM nodes WHERE id IN (SELECT e.node_id FROM plan_groups pg \
+         JOIN entrance_group_members m ON m.group_id = pg.group_id \
+         JOIN entrances e ON e.id = m.entrance_id WHERE pg.plan_id = $2 \
+         UNION {}) ORDER BY id FOR UPDATE",
+        entitle::NODES_OF_USERS
+    )))
+    .bind([user_id])
     .bind(req.plan_id)
     .execute(&mut *conn)
     .await?;
@@ -1501,12 +1491,12 @@ pub async fn apply_cancel_user_plan(
     let Some((up_id, plan_id)) = ended else {
         return Err(ApiError::not_found());
     };
-    let mut res = UserPlanChange {
+    // D3: plans are the only source of access: the reconcile revokes every
+    // credential of the user (what is left needs no speed-limit bump).
+    let res = UserPlanChange {
         outcome: entitle::apply_reconcile(conn, Scope::Users(&[user_id])).await?,
         ..Default::default()
     };
-    // Rows the user keeps (manual) lose the plan's speed limit.
-    res.served_bumped = bump_nodes_of_limited(conn, &[(user_id, plan_id)]).await?;
     crate::audit::record(
         conn,
         actor,
@@ -1574,11 +1564,11 @@ async fn reset_traffic_locked(
     source: Value,
 ) -> Result<UserPlanChange, ApiError> {
     // Lock order: nodes (of the user's rows) -> users.
-    sqlx::query(
-        "SELECT id FROM nodes WHERE id IN (SELECT node_id FROM node_users WHERE user_id = $1) \
-         ORDER BY id FOR UPDATE",
-    )
-    .bind(user_id)
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT id FROM nodes WHERE id IN ({}) ORDER BY id FOR UPDATE",
+        entitle::NODES_OF_USERS
+    )))
+    .bind([user_id])
     .execute(&mut *conn)
     .await?;
     let row: Option<(i64, bool, bool, Option<String>)> = sqlx::query_as(
@@ -1733,10 +1723,12 @@ pub async fn my_plan(
     .fetch_optional(&mut *c)
     .await?;
     let nodes = sqlx::query_as::<_, MyNode>(
-        "SELECT coalesce(n.display_name, n.name) AS name, n.region FROM node_users nu \
-         JOIN nodes n ON n.id = nu.node_id \
-         WHERE nu.user_id = $1 AND n.enabled AND n.visible AND n.deleting_at IS NULL \
-         ORDER BY n.sort, coalesce(n.display_name, n.name)",
+        "SELECT DISTINCT ON (n.sort, coalesce(n.display_name, n.name), n.id) \
+         coalesce(n.display_name, n.name) AS name, n.region FROM entrance_users eu \
+         JOIN entrances e ON e.id = eu.entrance_id AND e.enabled \
+         JOIN nodes n ON n.id = e.node_id \
+         WHERE eu.user_id = $1 AND n.enabled AND n.visible AND n.deleting_at IS NULL \
+         ORDER BY n.sort, coalesce(n.display_name, n.name), n.id",
     )
     .bind(user.id)
     .fetch_all(&mut *c)
@@ -1797,10 +1789,7 @@ pub async fn apply_plan_expiry(conn: &mut PgConnection) -> Result<Vec<Uuid>, Api
     }
     let mut users: Vec<Uuid> = ended.iter().map(|e| e.0).collect();
     users.sort();
-    let mut outcome = entitle::apply_reconcile(conn, Scope::Users(&users)).await?;
-    let pairs: Vec<(Uuid, Uuid)> = ended.iter().map(|e| (e.0, e.2)).collect();
-    let speed = bump_nodes_of_limited(conn, &pairs).await?;
-    outcome.bumped = id_set(&[outcome.bumped, speed].concat());
+    let outcome = entitle::apply_reconcile(conn, Scope::Users(&users)).await?;
     let actor = Actor::system();
     for (user, up, plan, expires) in &ended {
         crate::audit::record(
@@ -1848,8 +1837,9 @@ pub async fn apply_period_resets(conn: &mut PgConnection) -> Result<Vec<Uuid>, A
     entitle::lock(conn).await?;
     // Lock order: nodes (of the users' rows) -> users.
     sqlx::query(
-        "SELECT id FROM nodes WHERE id IN (SELECT nu.node_id FROM node_users nu \
-         JOIN user_plans up ON up.user_id = nu.user_id WHERE up.id = ANY($1)) \
+        "SELECT id FROM nodes WHERE id IN (SELECT e.node_id FROM entrance_users eu \
+         JOIN entrances e ON e.id = eu.entrance_id \
+         JOIN user_plans up ON up.user_id = eu.user_id WHERE up.id = ANY($1)) \
          ORDER BY id FOR UPDATE",
     )
     .bind(&due)
@@ -1953,7 +1943,18 @@ mod tests {
         Actor::test()
     }
 
+    /// The direct entrances of `nodes` (in order).
+    async fn directs(db: &TestDb, nodes: &[Uuid]) -> Vec<Uuid> {
+        let mut out = Vec::new();
+        for n in nodes {
+            out.push(db.direct(*n).await);
+        }
+        out
+    }
+
+    /// A group of the nodes' direct entrances.
     async fn group(db: &TestDb, name: &str, nodes: &[Uuid]) -> Uuid {
+        let entrances = directs(db, nodes).await;
         let mut tx = db.pool.begin().await.unwrap();
         let id = apply_create_group(
             &mut tx,
@@ -1961,7 +1962,7 @@ mod tests {
             &CreateGroupReq {
                 name: name.into(),
                 description: None,
-                node_ids: Some(nodes.to_vec()),
+                entrance_ids: Some(entrances),
             },
         )
         .await
@@ -1971,14 +1972,16 @@ mod tests {
         id
     }
 
+    /// The group holds the nodes' direct entrances (exactly).
     async fn set_group(db: &TestDb, g: Uuid, nodes: &[Uuid]) -> Outcome {
+        let entrances = directs(db, nodes).await;
         let mut tx = db.pool.begin().await.unwrap();
         let o = apply_update_group(
             &mut tx,
             &a(),
             g,
             &UpdateGroupReq {
-                node_ids: Some(Some(nodes.to_vec())),
+                entrance_ids: Some(Some(entrances)),
                 ..Default::default()
             },
         )
@@ -2046,8 +2049,8 @@ mod tests {
         r
     }
 
-    async fn set_inbounds(db: &TestDb, node: Uuid, inbounds: Value) {
-        let req = crate::api::SetInboundsReq { inbounds };
+    /// PUT /nodes/{id}/inbound (through the router).
+    async fn set_inbound(db: &TestDb, node: Uuid, inbound: Value) {
         let state = crate::state::AppState::for_test(db.pool.clone()).await;
         let mut c = Client::new(&state, rand_ip());
         let admin = db.admin().await;
@@ -2055,8 +2058,8 @@ mod tests {
         let r = c
             .req(
                 axum::http::Method::PUT,
-                &format!("/test/api/v1/nodes/{node}/inbounds"),
-                Some(json!({ "inbounds": req.inbounds })),
+                &format!("/test/api/v1/nodes/{node}/inbound"),
+                Some(json!({ "inbound": inbound })),
             )
             .await;
         assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
@@ -2072,10 +2075,11 @@ mod tests {
         crate::auth::issue_token(state, id, &role, sv, crate::auth::Stage::Full).unwrap()
     }
 
-    /// (node, credentials, manual) of a user's rows, by node.
-    async fn rows(db: &TestDb, user: Uuid) -> Vec<(Uuid, Value, bool)> {
+    /// (node, protocol, account) of a user's credentials, by node.
+    async fn rows(db: &TestDb, user: Uuid) -> Vec<(Uuid, String, Value)> {
         sqlx::query_as(
-            "SELECT node_id, credentials, manual FROM node_users WHERE user_id = $1 ORDER BY node_id",
+            "SELECT e.node_id, eu.protocol, eu.account FROM entrance_users eu \
+             JOIN entrances e ON e.id = eu.entrance_id WHERE eu.user_id = $1 ORDER BY e.node_id",
         )
         .bind(user)
         .fetch_all(&db.pool)
@@ -2087,9 +2091,11 @@ mod tests {
         rows(db, user).await.into_iter().map(|r| r.0).collect()
     }
 
+    /// Nodes whose entrance the user departed from.
     async fn departed(db: &TestDb, user: Uuid) -> Vec<Uuid> {
         sqlx::query_scalar(
-            "SELECT node_id FROM node_users_departed WHERE user_id = $1 ORDER BY node_id",
+            "SELECT e.node_id FROM entrance_users_departed d JOIN entrances e \
+             ON e.id = d.entrance_id WHERE d.user_id = $1 ORDER BY e.node_id",
         )
         .bind(user)
         .fetch_all(&db.pool)
@@ -2102,56 +2108,41 @@ mod tests {
         v
     }
 
-    /// The reconcile invariant over the whole database: plan rows are
-    /// exactly the granted pairs (minus manual pairs and nodes without an
-    /// eligible inbound), each with one credential per eligible inbound.
+    /// The reconcile invariant over the whole database: the credentials
+    /// are exactly the granted (entrance, user) pairs on nodes with an
+    /// issuable inbound, each of that inbound's protocol.
     async fn assert_consistent(db: &TestDb) {
         let mut c = db.pool.acquire().await.unwrap();
         let granted = entitle::granted_pairs(&mut c).await;
-        let all: Vec<(Uuid, Uuid, Value, bool)> =
-            sqlx::query_as("SELECT node_id, user_id, credentials, manual FROM node_users")
+        let all: Vec<(Uuid, Uuid, String)> =
+            sqlx::query_as("SELECT entrance_id, user_id, protocol FROM entrance_users")
                 .fetch_all(&mut *c)
                 .await
                 .unwrap();
-        let inbounds: std::collections::HashMap<Uuid, Value> =
-            sqlx::query_as::<_, (Uuid, Value)>("SELECT id, xray_inbounds FROM nodes")
-                .fetch_all(&mut *c)
-                .await
-                .unwrap()
-                .into_iter()
-                .collect();
-        let manual: std::collections::HashSet<(Uuid, Uuid)> =
-            all.iter().filter(|r| r.3).map(|r| (r.0, r.1)).collect();
+        let inbounds: std::collections::HashMap<Uuid, Option<Value>> =
+            sqlx::query_as::<_, (Uuid, Option<Value>)>(
+                "SELECT e.id, n.inbound FROM entrances e JOIN nodes n ON n.id = e.node_id",
+            )
+            .fetch_all(&mut *c)
+            .await
+            .unwrap()
+            .into_iter()
+            .collect();
         let mut want: Vec<(Uuid, Uuid)> = granted
             .iter()
-            .flat_map(|(u, ns)| ns.iter().map(move |n| (*n, *u)))
-            .filter(|p| !manual.contains(p))
-            .filter(|(n, _)| !entitle::eligible_inbounds(&inbounds[n]).is_empty())
+            .flat_map(|(u, es)| es.iter().map(move |e| (*e, *u)))
+            .filter(|(e, _)| entitle::eligible_protocol(inbounds[e].as_ref()).is_some())
             .collect();
         want.sort();
-        let mut have: Vec<(Uuid, Uuid)> = all.iter().filter(|r| !r.3).map(|r| (r.0, r.1)).collect();
+        let mut have: Vec<(Uuid, Uuid)> = all.iter().map(|r| (r.0, r.1)).collect();
         have.sort();
-        assert_eq!(have, want, "plan rows == granted pairs");
-        for (n, _, creds, m) in &all {
-            if *m {
-                continue;
-            }
-            let tags: Vec<(String, String)> = creds
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|c| {
-                    (
-                        c["inbound_tag"].as_str().unwrap().to_string(),
-                        c["protocol"].as_str().unwrap().to_string(),
-                    )
-                })
-                .collect();
-            let mut want = entitle::eligible_inbounds(&inbounds[n]);
-            let mut tags_sorted = tags.clone();
-            tags_sorted.sort();
-            want.sort();
-            assert_eq!(tags_sorted, want, "one credential per eligible inbound");
+        assert_eq!(have, want, "credentials == granted pairs");
+        for (e, _, proto) in &all {
+            assert_eq!(
+                Some(proto.as_str()),
+                entitle::eligible_protocol(inbounds[e].as_ref()),
+                "the inbound's protocol"
+            );
         }
     }
 
@@ -2285,50 +2276,51 @@ mod tests {
         db.drop().await;
     }
 
-    /// Group / plan / user-plan / inbound changes issue and revoke exactly
-    /// the right credentials, write departed rows, keep credentials across
-    /// changes, bump exactly the affected nodes; manual rows win.
-    #[tokio::test]
     /// W8: plan credentials for every managed protocol, shaped by their
-    /// inbound; inbound changes refit kept accounts (VLESS flow follows
-    /// settings.flow keeping the id; a Shadowsocks key is reissued when
-    /// the method's key length changes), on plan rows and manual rows.
+    /// inbound (one per entrance); inbound changes refit kept accounts
+    /// (VLESS flow follows settings.flow keeping the id; a Shadowsocks key
+    /// is reissued when the method's key length changes).
+    #[tokio::test]
     async fn w8_credentials_follow_inbound_settings() {
         use base64::Engine;
         let Some(db) = TestDb::new().await else {
             return;
         };
         let b64 = |n: usize| base64::engine::general_purpose::STANDARD.encode(vec![7u8; n]);
-        let n = db.node().await;
+        let (nv, ns, nh, nx) = (
+            db.node().await,
+            db.node().await,
+            db.node().await,
+            db.node().await,
+        );
         let u = db.user().await;
-        let g = group(&db, "g", &[n]).await;
+        let g = group(&db, "g", &[nv, ns, nh, nx]).await;
         let p = plan(&db, "p", &[g], None).await;
-        let inb = |flow: &str, method: &str, psk: String| {
-            json!([
-                {"tag": "in-vless", "protocol": "vless", "port": 443,
+        let vless = |flow: &str| {
+            json!({"protocol": "vless", "port": 443,
                  "settings": {"clients": [], "decryption": "none", "flow": flow},
-                 "streamSettings": {"network": "tcp", "security": "reality"}},
-                {"tag": "in-ss", "protocol": "shadowsocks", "port": 8388,
-                 "settings": {"method": method, "password": psk, "clients": [], "network": "tcp,udp"}},
-                {"tag": "in-hy", "protocol": "hysteria", "port": 443,
-                 "settings": {"version": 2, "clients": []},
-                 "streamSettings": {"network": "hysteria", "security": "tls", "hysteriaSettings": {"version": 2}}},
-                {"tag": "in-socks", "protocol": "socks", "port": 1080},
-            ])
+                 "streamSettings": {"network": "tcp", "security": "reality"}})
         };
-        set_inbounds(
+        let ss = |method: &str, psk: String| {
+            json!({"protocol": "shadowsocks", "port": 8388,
+                 "settings": {"method": method, "password": psk, "clients": [], "network": "tcp,udp"}})
+        };
+        set_inbound(&db, nv, vless("xtls-rprx-vision")).await;
+        set_inbound(&db, ns, ss("2022-blake3-aes-128-gcm", b64(16))).await;
+        set_inbound(
             &db,
-            n,
-            inb("xtls-rprx-vision", "2022-blake3-aes-128-gcm", b64(16)),
+            nh,
+            json!({"protocol": "hysteria", "port": 443,
+                 "settings": {"version": 2, "clients": []},
+                 "streamSettings": {"network": "hysteria", "security": "tls", "hysteriaSettings": {"version": 2}}}),
         )
         .await;
+        set_inbound(&db, nx, json!({"protocol": "socks", "port": 1080})).await;
         give(&db, u, p, None).await;
-        let creds = |r: &Value, tag: &str| -> Value {
-            r.as_array()
-                .unwrap()
-                .iter()
-                .find(|c| c["inbound_tag"] == tag)
-                .map(|c| c["account"].clone())
+        let account = |rows: &[(Uuid, String, Value)], n: Uuid| -> Value {
+            rows.iter()
+                .find(|r| r.0 == n)
+                .map(|r| r.2.clone())
                 .unwrap_or(Value::Null)
         };
         let key_len = |a: &Value| {
@@ -2337,41 +2329,33 @@ mod tests {
                 .unwrap()
                 .len()
         };
-        let r = rows(&db, u).await[0].1.clone();
-        assert_eq!(r.as_array().unwrap().len(), 3, "socks gets none: {r}");
-        let v = creds(&r, "in-vless");
+        let r = rows(&db, u).await;
+        assert_eq!(r.len(), 3, "socks gets none: {r:?}");
+        let v = account(&r, nv);
         assert_eq!(v["flow"], "xtls-rprx-vision");
-        assert_eq!(key_len(&creds(&r, "in-ss")), 16);
-        assert_eq!(creds(&r, "in-hy")["auth"].as_str().unwrap().len(), 64);
-        let hy = creds(&r, "in-hy");
+        assert_eq!(key_len(&account(&r, ns)), 16);
+        assert_eq!(account(&r, nh)["auth"].as_str().unwrap().len(), 64);
+        let hy = account(&r, nh);
         // Method 128 -> 256 and Vision off: SS key reissued (32 bytes),
         // VLESS id kept with flow "", hysteria untouched.
-        set_inbounds(&db, n, inb("", "2022-blake3-aes-256-gcm", b64(32))).await;
-        let r2 = rows(&db, u).await[0].1.clone();
-        assert_eq!(creds(&r2, "in-vless")["id"], v["id"]);
-        assert_eq!(creds(&r2, "in-vless")["flow"], "");
-        assert_eq!(key_len(&creds(&r2, "in-ss")), 32);
-        assert_eq!(creds(&r2, "in-hy"), hy);
+        set_inbound(&db, nv, vless("")).await;
+        set_inbound(&db, ns, ss("2022-blake3-aes-256-gcm", b64(32))).await;
+        let r2 = rows(&db, u).await;
+        assert_eq!(account(&r2, nv)["id"], v["id"]);
+        assert_eq!(account(&r2, nv)["flow"], "");
+        assert_eq!(key_len(&account(&r2, ns)), 32);
+        assert_eq!(account(&r2, nh), hy);
         // Same again: nothing changes (idempotent).
-        set_inbounds(&db, n, inb("", "2022-blake3-aes-256-gcm", b64(32))).await;
-        assert_eq!(rows(&db, u).await[0].1, r2);
-        // Manual rows refit the same way.
-        let mut tx = db.pool.begin().await.unwrap();
-        crate::api::apply_assign_for_test(&mut tx, u, n).await;
-        tx.commit().await.unwrap();
-        set_inbounds(
-            &db,
-            n,
-            inb("xtls-rprx-vision", "2022-blake3-aes-256-gcm", b64(32)),
-        )
-        .await;
-        let r3 = rows(&db, u).await[0].clone();
-        assert!(r3.2, "manual row");
-        assert_eq!(creds(&r3.1, "in-vless")["flow"], "xtls-rprx-vision");
+        set_inbound(&db, ns, ss("2022-blake3-aes-256-gcm", b64(32))).await;
+        assert_eq!(rows(&db, u).await, r2);
         assert_consistent(&db).await;
         db.drop().await;
     }
 
+    /// Group / plan / user-plan / inbound changes issue and revoke exactly
+    /// the right credentials, write departed rows, keep credentials across
+    /// changes and bump exactly the affected nodes (D3: plans are the only
+    /// source of access).
     #[tokio::test]
     async fn reconcile_follows_every_entitlement_change() {
         let Some(db) = TestDb::new().await else {
@@ -2385,13 +2369,13 @@ mod tests {
         let p1 = plan(&db, "p1", &[g1], Some(1000)).await;
         let p2 = plan(&db, "p2", &[g2], None).await;
 
-        // Assign: rows on A and B, plan-managed, one vless credential each.
+        // Assign: credentials on A and B, one vless account each.
         assert_eq!(give(&db, u, p1, None).await, sorted(vec![na, nb]));
         let r = rows(&db, u).await;
         assert_eq!(r.len(), 2);
         assert!(
             r.iter()
-                .all(|(_, c, m)| !m && c.as_array().unwrap().len() == 1)
+                .all(|(_, p, a)| p == "vless" && a.get("id").is_some())
         );
         let limit: Option<i64> =
             sqlx::query_scalar("SELECT traffic_limit_bytes FROM users WHERE id = $1")
@@ -2412,17 +2396,17 @@ mod tests {
         assert_eq!(departed(&db, u).await, vec![na]);
         assert_consistent(&db).await;
 
-        // Plan change P1 -> P2 (C only): B revoked, C's credentials kept
-        // byte for byte; A untouched (already gone).
+        // Plan change P1 -> P2 (C only): B revoked, C's account kept byte
+        // for byte; A untouched (already gone).
         let c_before = rows(&db, u)
             .await
             .into_iter()
             .find(|r| r.0 == nc)
             .unwrap()
-            .1;
+            .2;
         assert_eq!(give(&db, u, p2, None).await, vec![nb]);
         assert_eq!(nodes_of(&db, u).await, vec![nc]);
-        assert_eq!(rows(&db, u).await[0].1, c_before, "credentials kept");
+        assert_eq!(rows(&db, u).await[0].2, c_before, "credentials kept");
         assert_eq!(departed(&db, u).await, sorted(vec![na, nb]));
         let limit: Option<i64> =
             sqlx::query_scalar("SELECT traffic_limit_bytes FROM users WHERE id = $1")
@@ -2433,70 +2417,23 @@ mod tests {
         assert_eq!(limit, None, "P2 is unlimited");
         assert_consistent(&db).await;
 
-        // Inbound added to C: a trojan credential appears, vless kept.
+        // C's inbound becomes trojan: a trojan account replaces the vless one.
         let before_v = db.versions(nc).await;
-        set_inbounds(
-            &db,
-            nc,
-            json!([{"tag": "in-vless", "protocol": "vless"},
-                   {"tag": "in-trojan", "protocol": "trojan"},
-                   {"tag": "in-socks", "protocol": "socks"}]),
-        )
-        .await;
-        let creds = rows(&db, u).await[0].1.clone();
-        let creds = creds.as_array().unwrap();
-        assert_eq!(creds.len(), 2);
-        assert_eq!(creds[0], c_before.as_array().unwrap()[0]);
-        assert_eq!(creds[1]["protocol"], "trojan");
-        assert!(creds[1]["account"]["password"].as_str().unwrap().len() == 64);
+        set_inbound(&db, nc, json!({"protocol": "trojan", "port": 443})).await;
+        let r = rows(&db, u).await;
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].1, "trojan");
+        assert_eq!(r[0].2["password"].as_str().unwrap().len(), 64);
         assert_ne!(db.versions(nc).await, before_v);
         assert_consistent(&db).await;
-        // Only non-eligible inbounds left: revoked.
-        set_inbounds(&db, nc, json!([{"tag": "in-socks", "protocol": "socks"}])).await;
+        // Nothing issuable: revoked.
+        set_inbound(&db, nc, json!({"protocol": "socks", "port": 1080})).await;
         assert!(nodes_of(&db, u).await.is_empty());
         assert_eq!(departed(&db, u).await, sorted(vec![na, nb, nc]));
         // Back: issued again, departed row cleared.
-        set_inbounds(&db, nc, json!([{"tag": "in-vless", "protocol": "vless"}])).await;
+        set_inbound(&db, nc, json!({"protocol": "vless", "port": 443})).await;
         assert_eq!(nodes_of(&db, u).await, vec![nc]);
         assert_eq!(departed(&db, u).await, sorted(vec![na, nb]));
-        assert_consistent(&db).await;
-
-        // Manual override wins: a manual assignment on B (not granted)
-        // survives plan changes; on C it pins the plan row.
-        let mut tx = db.pool.begin().await.unwrap();
-        crate::api::apply_assign_for_test(&mut tx, u, nb).await;
-        crate::api::apply_assign_for_test(&mut tx, u, nc).await;
-        tx.commit().await.unwrap();
-        assert!(rows(&db, u).await.iter().all(|r| r.2), "both manual now");
-        let o = set_group(&db, g2, &[]).await;
-        assert!(o.bumped.is_empty(), "manual rows untouched");
-        assert_eq!(nodes_of(&db, u).await, sorted(vec![nb, nc]));
-        set_group(&db, g2, &[nc]).await;
-        // Unassign C: granted -> handed back to the plan (row kept).
-        let mut tx = db.pool.begin().await.unwrap();
-        crate::api::apply_unassign(&mut tx, &a(), u, nc)
-            .await
-            .ok()
-            .unwrap();
-        tx.commit().await.unwrap();
-        let r = rows(&db, u).await;
-        assert!(r.iter().any(|(n, _, m)| *n == nc && !m), "plan row again");
-        // Unassign of a plan row: 409.
-        let mut tx = db.pool.begin().await.unwrap();
-        let e = crate::api::apply_unassign(&mut tx, &a(), u, nc)
-            .await
-            .err()
-            .unwrap();
-        assert_eq!(e.status(), StatusCode::CONFLICT);
-        drop(tx);
-        // Unassign B: not granted -> deleted, departed.
-        let mut tx = db.pool.begin().await.unwrap();
-        crate::api::apply_unassign(&mut tx, &a(), u, nb)
-            .await
-            .ok()
-            .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(nodes_of(&db, u).await, vec![nc]);
         assert_consistent(&db).await;
 
         // Idempotent: reconciling everything again changes nothing.
@@ -2525,7 +2462,7 @@ mod tests {
         assert!(nodes_of(&db, bystander).await.is_empty());
         assert_consistent(&db).await;
 
-        // Deleting a group removes its nodes from plans.
+        // Deleting a group removes its entrances from plans.
         give(&db, u, p2, None).await;
         assert_eq!(nodes_of(&db, u).await, vec![nc]);
         let mut tx = db.pool.begin().await.unwrap();
@@ -3006,6 +2943,7 @@ mod tests {
         let gc = group(&db, "gc", &[]).await;
         let pc = plan(&db, "pc", &[gc], None).await;
         let late = db.user().await;
+        let e_new = db.direct(n_new).await;
         let pool = db.pool.clone();
         let t1 = tokio::spawn(async move {
             let mut tx = pool.begin().await.unwrap();
@@ -3014,7 +2952,7 @@ mod tests {
                 &Actor::test(),
                 gc,
                 &UpdateGroupReq {
-                    node_ids: Some(Some(vec![n_new])),
+                    entrance_ids: Some(Some(vec![e_new])),
                     ..Default::default()
                 },
             )
@@ -3070,21 +3008,25 @@ mod tests {
             .await
             .unwrap();
         use axum::http::Method;
+        let e = db.direct(n).await;
         let r = c
             .post(
                 "/test/api/v1/node-groups",
-                json!({ "name": "asia", "node_ids": [n] }),
+                json!({ "name": "asia", "entrance_ids": [e] }),
             )
             .await;
         assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
         let g = r.json()["id"].as_str().unwrap().to_string();
-        assert_eq!(r.json()["node_ids"], json!([n]));
+        assert_eq!(r.json()["entrance_ids"], json!([e]));
         for (body, want) in [
             (json!({ "name": "asia" }), StatusCode::CONFLICT),
             (json!({ "name": "" }), StatusCode::BAD_REQUEST),
-            (json!({ "name": "x", "nodes": [] }), StatusCode::BAD_REQUEST),
             (
-                json!({ "name": "x", "node_ids": [Uuid::new_v4()] }),
+                json!({ "name": "x", "node_ids": [] }),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                json!({ "name": "x", "entrance_ids": [Uuid::new_v4()] }),
                 StatusCode::BAD_REQUEST,
             ),
         ] {
@@ -3094,7 +3036,7 @@ mod tests {
         for (body, want) in [
             (json!({}), StatusCode::BAD_REQUEST),
             (json!({ "name": null }), StatusCode::BAD_REQUEST),
-            (json!({ "node_ids": null }), StatusCode::BAD_REQUEST),
+            (json!({ "entrance_ids": null }), StatusCode::BAD_REQUEST),
             (json!({ "description": null }), StatusCode::OK),
             (json!({ "description": "east" }), StatusCode::OK),
         ] {

@@ -1,0 +1,1 @@
+{"port": 443, "protocol": "hysteria", "settings": {"version": 2, "clients": []}, "streamSettings": {"network": "hysteria", "security": "tls", "hysteriaSettings": {"version": 2}}}

@@ -1,12 +1,14 @@
 //! Node inbound templates (`nodetpl`): the admin's template request
-//! (serde, deny_unknown_fields) rendered into xray inbounds.
+//! (serde, deny_unknown_fields) rendered into an xray inbound (D2: one per
+//! node).
 //!
-//! Invariants: no panic; what the templates render is always accepted by
-//! `validate_inbounds` (the panel never produces a configuration it would
-//! refuse) and every rendered managed inbound is issuable.
+//! Invariants: no panic; a rendered inbound never uses a taken port; what
+//! the template renders is always accepted by `normalize_inbound` (the
+//! panel never produces a configuration it would refuse) unchanged (no
+//! tag to drop), and a rendered managed inbound is issuable.
 #![no_main]
 
-use akari_panel::fuzzing::validate_inbounds;
+use akari_panel::fuzzing::normalize_inbound;
 use akari_panel::nodetpl::{RenderReq, needs_certificate, node_tls_domain, render};
 use akari_panel::protocols;
 use libfuzzer_sys::fuzz_target;
@@ -23,26 +25,23 @@ fuzz_target!(|data: &[u8]| {
         },
         _ => None,
     };
-    let Ok(inbounds) = render(&req.templates, &req.taken_ports, domain.as_deref()) else {
+    let Ok(inbound) = render(&req.template, &req.taken_ports, domain.as_deref()) else {
         return;
     };
-    for p in &req.taken_ports {
+    let port = inbound.get("port").and_then(Value::as_u64);
+    assert!(
+        !req.taken_ports.iter().any(|p| Some(u64::from(*p)) == port),
+        "rendered inbound on a taken port"
+    );
+    match normalize_inbound(&inbound) {
+        Ok(stored) => assert_eq!(stored, inbound, "a rendered inbound is stored as is"),
+        Err(e) => panic!("rendered template refused: {e}\n{inbound:#}"),
+    }
+    let _ = needs_certificate(&Value::Array(vec![inbound.clone()]));
+    if protocols::MANAGED.contains(&protocols::protocol(&inbound)) {
         assert!(
-            !inbounds.iter().any(
-                |i| i.get("port").and_then(Value::as_u64) == Some(u64::from(*p))
-                    && protocols::l4(i).0
-            ),
-            "rendered TCP inbound on a taken port {p}"
+            protocols::issuable(&inbound),
+            "rendered inbound not issuable: {inbound}"
         );
-    }
-    let arr = Value::Array(inbounds.clone());
-    if let Err(e) = validate_inbounds(&arr) {
-        panic!("rendered templates refused: {e}\n{arr:#}");
-    }
-    let _ = needs_certificate(&arr);
-    for i in &inbounds {
-        if protocols::MANAGED.contains(&protocols::protocol(i)) {
-            assert!(protocols::issuable(i), "rendered inbound not issuable: {i}");
-        }
     }
 });

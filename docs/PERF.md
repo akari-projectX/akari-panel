@@ -1,7 +1,7 @@
 # Performance and scale (M2)
 
 Targets (ROADMAP §0), measured on the data set of one panel instance serving
-200 nodes / 50k users / 10k users on every node (2M `node_users` rows, 2M
+200 nodes / 50k users / 10k users on every node (2M `node_users` rows — W28-a: `entrance_users`, one per user and entrance — 2M
 `traffic_counters` rows). Everything here is reproducible with `bench/`.
 
 ## Results against the targets
@@ -142,7 +142,7 @@ migrations apply 0151), `akari-bench http --only traffic_node --concurrency 16 -
 `GET /dashboard` (src/dashboard.rs) is one aggregate read in a REPEATABLE READ snapshot; `GET
 /users` gained search (`q`, login/email prefix), filters (`status`, `plan_id`, `role`), sorts and a
 `total`. Measured on the bench stack (own database `akari_bench_w21`: `make bench-seed` = 200 nodes,
-50k users, 2M node_users, 200k audit rows; plus 200k paid orders spread over a year (2 % refunded)
+50k users, 2M node_users (now `entrance_users`), 200k audit rows; plus 200k paid orders spread over a year (2 % refunded)
 and 10k expired ones, inserted with SQL), `akari-bench http` 16 closed-loop clients × 10 s, idle
 panel (no agents), three runs, while another worker's e2e ran on the same machine:
 
@@ -170,7 +170,7 @@ akari-bench http --data-dir <its data dir> --url <its url> --only dashboard,user
 ## Node list summary view (W17, 2026-10-02)
 
 W14 left `GET /nodes` borderline under 200 reporting agents (p99 47–55 ms, a 480 KB body). W17
-adds `GET /nodes?view=summary` — the list's columns only: no inbounds JSON, no full latency set
+adds `GET /nodes?view=summary` — the list's columns only: no inbound JSON, no full latency set
 (the best agent result), the heartbeat cut to CPU/memory/connections/rates/online users, no
 per-second `lease_remaining_seconds` — with a strong ETag (`If-None-Match` → empty 304) on both
 views. The console's list, the plan editor's and the rollout form's node pickers read it; the node

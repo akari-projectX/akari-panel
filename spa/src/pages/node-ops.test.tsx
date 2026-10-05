@@ -9,7 +9,7 @@ import { FixedLocale, setLocale } from "../i18n";
 import type { MyNodeStatus, NodeStatus, NodeView } from "../lib/api";
 import { nodeRoutes } from "../test/nodes";
 import { fakeApi, pickMenu, renderAdmin, renderWithClient } from "../test/harness";
-import { changedFromDefaults, emptyOps, opsToBody, overridesToBody, parseTags } from "./admin-node-form";
+import { connectToBody, createBody, emptyOps, opsToBody, parseTags } from "./admin-node-form";
 import { agentLatency, humanRate } from "./admin-node-status";
 import { AdminNodes } from "./admin-nodes";
 import { NodesCard } from "./portal-nodes";
@@ -34,11 +34,21 @@ const node = (over: Partial<NodeView> = {}): NodeView =>
     update_status: null,
     config_version: 1,
     user_version: 1,
-    xray_inbounds: [
-      { tag: "in-a", protocol: "vless", port: 443 },
-      { tag: "in-b", protocol: "trojan", port: 8443 },
+    inbound: { protocol: "vless", port: 443 },
+    entrances: [
+      {
+        id: "e1",
+        kind: "direct",
+        name: "直连",
+        connect_host: "203.0.113.1",
+        connect_port: null,
+        rate_permille: 500,
+        rate: 0.5,
+        enabled: true,
+        sort: 0,
+        group_ids: [],
+      },
     ],
-    server_addr: "203.0.113.1",
     region: "香港",
     last_error: null,
     last_error_at: null,
@@ -88,10 +98,6 @@ const node = (over: Partial<NodeView> = {}): NodeView =>
     sort: 0,
     visible: true,
     tags: ["IPLC"],
-    traffic_rate_permille: 500,
-    traffic_rate: 0.5,
-    connect_overrides: {},
-    group_ids: [],
     traffic_raw_bytes: 2 ** 30,
     traffic_billed_bytes: 2 ** 29,
     online: true,
@@ -155,11 +161,18 @@ describe("helpers", () => {
     expect(opsToBody({ ...emptyOps(), rate: "101" })).toMatch(/0–100/);
     expect(opsToBody({ ...emptyOps(), sort: "1.5" })).toMatch(/整数/);
     expect(opsToBody({ ...emptyOps(), tags: "a|b" })).toMatch(/\|/);
-    expect(changedFromDefaults(opsToBody(emptyOps()) as Record<string, unknown>)).toEqual({});
-    expect(
-      overridesToBody({ "in-a": { host: " relay.example.com ", port: "30443" }, "in-b": { host: "", port: "" } }),
-    ).toEqual({ "in-a": { host: "relay.example.com", port: 30443 } });
-    expect(overridesToBody({ x: { host: "", port: "70000" } })).toMatch(/1–65535/);
+    const defaults = opsToBody(emptyOps());
+    expect(typeof defaults).not.toBe("string");
+    if (typeof defaults !== "string") {
+      expect(createBody(defaults, "")).toEqual({});
+      expect(createBody(defaults, " relay.example.com ")).toEqual({ direct: { connect_host: "relay.example.com" } });
+    }
+    expect(connectToBody(" relay.example.com ", "30443")).toEqual({
+      connect_host: "relay.example.com",
+      connect_port: 30443,
+    });
+    expect(connectToBody("", "")).toEqual({ connect_host: null, connect_port: null });
+    expect(connectToBody("", "70000")).toMatch(/1–65535/);
   });
 });
 
@@ -190,7 +203,7 @@ describe("admin node list and form", () => {
   it("creates a node with display name, tags, multiplier and groups", async () => {
     const calls = fakeApi({
       "GET /nodes": [],
-      "GET /node-groups": [{ id: "g1", name: "亚洲", description: "", node_ids: [], plan_ids: [] }],
+      "GET /node-groups": [{ id: "g1", name: "亚洲", description: "", entrance_ids: [], plan_ids: [] }],
       "GET /inbound-templates": { reality_dests: ["www.apple.com:443"], fingerprints: ["chrome"] },
       "POST /nodes": () => ({
         status: 201,
@@ -211,37 +224,39 @@ describe("admin node list and form", () => {
       name: "jp",
       display_name: "东京 01",
       tags: ["日本", "0.5x"],
-      traffic_rate: 0.5,
-      group_ids: ["g1"],
+      direct: { rate: 0.5, group_ids: ["g1"] },
     });
     expect(body.sort).toBeUndefined(); // unchanged defaults are not sent
     expect(body.visible).toBeUndefined();
   });
 
-  it("saves display/billing fields and connect overrides with one PATCH", async () => {
+  it("saves display fields on the node and billing/address on its direct entrance", async () => {
     const calls = fakeApi({
       ...nodeRoutes([node()]),
       "GET /node-groups": [],
       "GET /inbound-templates": { reality_dests: [], fingerprints: [] },
       "PATCH /nodes/n1": node(),
+      "PATCH /entrances/e1": node().entrances[0],
     });
     renderAdmin(<AdminNodes />);
     await pickMenu("hk-1", "配置");
     const card = (await screen.findByText(/展示与计费/)).closest("div.rounded-lg") as HTMLElement;
     fireEvent.change(within(card).getByLabelText("倍率"), { target: { value: "2" } });
     fireEvent.click(within(card).getByLabelText("对用户显示"));
-    const ports = within(card).getAllByLabelText("连接端口");
-    fireEvent.change(ports[1], { target: { value: "30443" } });
+    fireEvent.change(within(card).getByLabelText("连接端口"), { target: { value: "30443" } });
     fireEvent.click(within(card).getByRole("button", { name: "保存" }));
     await within(card).findByText("已保存");
-    expect(calls.find((c) => c.method === "PATCH")?.body).toEqual({
+    expect(calls.find((c) => c.method === "PATCH" && c.path === "/nodes/n1")?.body).toEqual({
       display_name: "香港 01",
       sort: 0,
       visible: false,
       tags: ["IPLC"],
-      traffic_rate: 2,
+    });
+    expect(calls.find((c) => c.method === "PATCH" && c.path === "/entrances/e1")?.body).toEqual({
+      rate: 2,
       group_ids: [],
-      connect_overrides: { "in-b": { port: 30443 } },
+      connect_host: "203.0.113.1",
+      connect_port: 30443,
     });
   });
 });
@@ -258,7 +273,6 @@ describe("node detail", () => {
     ]),
     traffic_raw_bytes: 2 ** 30,
     traffic_billed_bytes: 2 ** 29,
-    traffic_rate: 0.5,
     probe_requested_at: null,
   };
   const metrics = {
@@ -427,6 +441,7 @@ describe("portal node list", () => {
   const mine: MyNodeStatus[] = [
     {
       name: "香港 01",
+      entrance: "直连",
       region: "香港",
       tags: ["IPLC"],
       rate: 0.5,
@@ -437,6 +452,7 @@ describe("portal node list", () => {
     },
     {
       name: "Tokyo",
+      entrance: "直连",
       region: null,
       tags: [],
       rate: 1,

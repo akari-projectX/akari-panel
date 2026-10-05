@@ -1,0 +1,1 @@
+{"taken_ports": [1], "tls_domain": "node.example.com", "template": {"template": "shadowsocks_2022", "port": 8388, "method": "2022-blake3-aes-256-gcm"}}

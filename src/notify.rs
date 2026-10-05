@@ -591,7 +591,7 @@ mod tests {
             "UPDATE nodes SET status = 'offline' WHERE id = $1",
             "UPDATE nodes SET last_error = 'x', failed_config_version = 1 WHERE id = $1",
             "UPDATE nodes SET traffic_tat = now(), agent_protocol = 1 WHERE id = $1",
-            "UPDATE nodes SET name = name || '-x', server_addr = 'h' WHERE id = $1",
+            "UPDATE nodes SET name = name || '-x', region = 'h' WHERE id = $1",
         ] {
             sqlx::query(sqlx::AssertSqlSafe(sql))
                 .bind(n)

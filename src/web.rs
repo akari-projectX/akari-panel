@@ -101,11 +101,6 @@ pub fn router(state: AppState) -> Router {
             "/{prefix}/api/v1/users/{id}/totp",
             axum::routing::delete(api::reset_totp),
         )
-        .route("/{prefix}/api/v1/users/{id}/nodes", get(api::user_nodes))
-        .route(
-            "/{prefix}/api/v1/users/{id}/nodes/{node_id}",
-            post(api::assign_user).delete(api::unassign_user),
-        )
         .route(
             "/{prefix}/api/v1/users/{id}/plan",
             get(plans::get_user_plan)
@@ -148,9 +143,10 @@ pub fn router(state: AppState) -> Router {
             "/{prefix}/api/v1/nodes/{id}/alert-rules",
             get(alerts::get_node_rules).put(alerts::put_node_rules),
         )
+        .route("/{prefix}/api/v1/nodes/{id}/inbound", put(api::set_inbound))
         .route(
-            "/{prefix}/api/v1/nodes/{id}/inbounds",
-            put(api::set_inbounds),
+            "/{prefix}/api/v1/entrances/{id}",
+            axum::routing::patch(crate::entrances::update_entrance),
         )
         .route(
             "/{prefix}/api/v1/nodes/{id}/install",

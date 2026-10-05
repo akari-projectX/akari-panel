@@ -16,9 +16,10 @@ pub fn alipay_parse_form(body: &[u8]) -> Option<BTreeMap<String, String>> {
 /// Maximum parameters `alipay_parse_form` accepts.
 pub const ALIPAY_MAX_NOTIFY_PARAMS: usize = crate::billing::api::MAX_NOTIFY_PARAMS;
 
-/// `api::validate_inbounds` (admin-supplied inbounds JSON), error as text.
-pub fn validate_inbounds(inbounds: &Value) -> Result<(), String> {
-    crate::api::validate_inbounds(inbounds).map_err(|e| e.message().to_string())
+/// `api::normalize_inbound` (an admin-supplied node inbound, D2): the
+/// stored form or the error as text.
+pub fn normalize_inbound(inbound: &Value) -> Result<Value, String> {
+    crate::api::normalize_inbound(inbound).map_err(|e| e.message().to_string())
 }
 
 /// `sub::plausible_token` (subscription path segment).
@@ -41,14 +42,27 @@ pub fn traffic_check(buf: &crate::traffic::TrafficBuffer) -> Result<(), String> 
     buf.check_invariants()
 }
 
+/// The traffic buffer membership of `users` through `entrance`, keyed as
+/// the agent reports them.
+pub fn traffic_members(
+    entrance: uuid::Uuid,
+    users: &[uuid::Uuid],
+) -> std::collections::HashMap<String, crate::traffic::Member> {
+    users
+        .iter()
+        .map(|&u| (crate::grpc::stat_key(u), (entrance, u)))
+        .collect()
+}
+
 /// Buffered (up, down) of one key, if any.
 pub fn traffic_peek(
     buf: &crate::traffic::TrafficBuffer,
     node: uuid::Uuid,
+    entrance: uuid::Uuid,
     user: uuid::Uuid,
     session: &str,
 ) -> Option<(i64, i64)> {
-    buf.peek(node, user, session)
+    buf.peek(node, (entrance, user), session)
 }
 
 // --- W15: registration / reset / email ------------------------------------

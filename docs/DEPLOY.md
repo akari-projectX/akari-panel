@@ -388,9 +388,10 @@ database configuration and then ignored with a warning: delete the section and i
 
 ## 3. Add a node and install the agent
 
-**In the UI: Nodes → 新建节点.** Fill in the name, the region users see, the node's public
-address (IP or domain), optionally the node's **节点域名** (TLS domain: the agent then gets the
-certificate by itself, §3f) and one or more inbounds from the protocol templates:
+**In the UI: Nodes → 新建节点.** Fill in the name, the region users see, the 连接地址 clients
+dial (IP or domain), optionally the node's **节点域名** (TLS domain: the agent then gets the
+certificate by itself, §3f) and the node's inbound from the protocol templates (W28-a: one inbound
+per node — a second protocol on the same machine is a second node):
 
 | Template | Needs on the node | Notes |
 |---|---|---|
@@ -403,7 +404,7 @@ certificate by itself, §3f) and one or more inbounds from the protocol template
 | Trojan + TLS | certificate | |
 | 自选传输 (VLESS/VMess/Trojan × WS/HTTPUpgrade/XHTTP/gRPC) | certificate with TLS | TLS optional for VLESS/VMess over WS/HTTPUpgrade/XHTTP, required for Trojan and gRPC; path/Host/XHTTP mode/gRPC service name |
 | Shadowsocks 2022 | nothing | multi-user, `2022-blake3-aes-128-gcm` (default) or `-256-gcm`; server key generated; TCP+UDP |
-| Hysteria 2 | certificate | QUIC on UDP (may share the TCP port of another inbound) |
+| Hysteria 2 | certificate | QUIC on UDP |
 
 Full matrix (what each client format can carry, what is refused and why): §3d.
 
@@ -418,8 +419,17 @@ root-only files are fine). The installer hands that directory to the agent as sy
 after putting the certificate there for the first time (before saving a TLS/Hysteria 2 inbound)
 and after every renewal run `systemctl restart akari-agent`. A WS inbound behind the node's own reverse proxy
 or a CDN is not a template (subscriptions would advertise the inbound's local port): write that
-JSON by hand. **高级：直接编辑入站 JSON** shows/edits the generated JSON; both paths go through the
-same validation (the §3d matrix, no `fakedns`).
+JSON by hand. **高级：直接编辑入站 JSON** shows/edits the generated JSON (one xray inbound object,
+no `tag`: the panel names it); both paths go through the same validation (the §3d matrix, no
+`fakedns`).
+
+**Entrances (入口, W28-a).** Clients reach a node through its entrances. Every node has a built-in
+**直连** (direct) entrance: 连接地址/连接端口 (empty address = 节点域名, empty port = the inbound's
+port), 倍率 and the node groups it belongs to are the entrance's (节点页 → 展示与计费;
+`PATCH /api/v1/entrances/{id}`). Plans grant node groups, groups hold entrances; a user can use
+exactly the entrances of their plan's groups (there is no manual per-user assignment) and every
+usable entrance is its own subscription entry, named "<显示名称 | 标签> <入口名>" (e.g.
+"香港 01 | IPLC 直连"). Disabling the direct entrance takes its users off the node.
 
 Creating the node shows a **one-line install command**, valid for 1 hour (built in) and only
 until the agent has enrolled with it. It needs 系统设置 → 节点通信 → **节点通信域名** (the address
@@ -654,7 +664,7 @@ later updates every user's credential (same id) and subscriptions follow.
 
 ## 3d. Protocol / transport matrix (W8, agent xray-core v26.3.27)
 
-Every row was checked end to end: template → `validate_inbounds` → per-user credential →
+Every row was checked end to end: template → `validate_inbound` → per-user credential →
 agent apply (gate revocation) → subscription in all three formats → a real client relaying
 traffic (`smoke.sh` W8 section: mihomo 1.19 and sing-box 1.12+ when available; the agent's
 `TestRT_ProtocolMatrix` canary with xray's own client, including billing and revocation).
@@ -728,7 +738,7 @@ other than none/tls/reality; REALITY with anything but VLESS over raw TCP/XHTTP/
 any transport but raw TCP with TLS/REALITY; VLESS `decryption` other than `none` (VLESS Encryption
 is not in subscriptions); bad paths (must start with `/`, no spaces/quotes/`#`), Host values,
 XHTTP modes (`auto`, `packet-up`, `stream-up`, `stream-one`) or gRPC service names; non-numeric
-ports; two inbounds on the same port and L4 protocol (a UDP Hysteria 2 may share a TCP port).
+ports; an array of inbounds (one inbound per node, W28-a).
 Inbounds stored before these checks keep working; the node list shows them under `warnings`.
 
 **gRPC (R26).** gRPC was refused while the agent's grpc-go was affected by GO-2026-6443. The agent
@@ -773,12 +783,13 @@ run **重装命令** once (§5b "Units").
   it tries the next URL (default `https://www.gstatic.com/generate_204`, then
   `https://cp.cloudflare.com/generate_204`). Nodes need outbound HTTPS to them;
 - the panel (any instance, rows claimed in the database) measures TCP connect time to each
-  inbound's client-facing address (连接地址/连接端口 override, else the node address and the
-  inbound port). UDP-only inbounds (Hysteria 2) show "n/a". Turn 面板 TCP 测速 off when the
-  panel host must not dial nodes.
+  entrance's client-facing address (its 连接地址/连接端口, else 节点域名 and the inbound port;
+  the result's target is the entrance name). UDP-only inbounds (Hysteria 2) show "n/a". Turn
+  面板 TCP 测速 off when the panel host must not dial nodes.
 
 Badges: < 200 ms green, < 500 ms amber, else red, timeout grey. Users see the agent result
-(online, multiplier, tags) of their visible nodes in the portal; never addresses or machine data.
+(online, multiplier, tags) of their usable entrances of visible nodes in the portal; never
+addresses or machine data.
 
 The interval (600 s – 7 d), the test URLs and 面板 TCP 测速 are set in the admin console only
 (系统设置 → 测速; `PUT /api/v1/settings/probe`; W25: no `[probe]` in panel.toml any more, an
@@ -788,13 +799,15 @@ to connected agents (no restart; agents reschedule on an interval change); a sho
 also pulls already scheduled panel TCP tests forward. `akari settings unset probe` goes back to
 the defaults above.
 
-**Traffic multiplier (倍率).** Billed bytes = floor(accepted bytes × rate) per counter row,
+**Traffic multiplier (倍率).** The multiplier is the entrance's (W28-a: a user's traffic is
+counted per entrance and billed with that entrance's rate). Billed bytes = floor(accepted bytes
+× rate) per counter row,
 computed only inside the flush SQL (never in panel memory); the rate in effect when a report is
 flushed applies to that report's increase (changing it never re-bills the past). Departed users'
 final counters are billed the same way; every plausibility cap works on the accepted (raw)
 bytes. The node list and detail page show both totals (`traffic_raw_bytes`,
-`traffic_billed_bytes`). 0 = free node. Hidden nodes (`visible = false`) keep serving the users
-they are assigned to; they are only left out of the portal and the subscription.
+`traffic_billed_bytes`). 0 = free entrance. Hidden nodes (`visible = false`) keep serving the
+users their plans grant; they are only left out of the portal and the subscription.
 
 **Prometheus.** The metrics listener adds fleet aggregates over the nodes connected to that
 instance (`akari_fleet{kind="nodes_reporting"|"online_users"|"connections"|"rx_bytes_per_second"|"tx_bytes_per_second"}`,
@@ -966,7 +979,7 @@ tickets and staff replies use the SMTP outbox when configured.
 ### Sizing
 
 At the M2 target (200 nodes, 50k users, 10k users per node) the database holds about 2M
-`node_users` and 2M `traffic_counters` rows. Give PostgreSQL room for that working set
+`entrance_users` and 2M `traffic_counters` rows. Give PostgreSQL room for that working set
 (`shared_buffers` 2 GB, `effective_cache_size` 6 GB, `max_wal_size` 4 GB were used for the
 measurements in docs/PERF.md; the stock 128 MB `shared_buffers` is too small) and about 1.5 GiB of
 RAM per panel instance at peak.

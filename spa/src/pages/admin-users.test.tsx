@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { PlanView, UserNodeView, UserView } from "../lib/api";
+import type { PlanView, UserView } from "../lib/api";
 import { fakeApi, renderAdmin } from "../test/harness";
 import { AdminUsers, PAGE_SIZE, createUserBody, userPatch, userStatus, usersQuery } from "./admin-users";
 
@@ -158,7 +158,6 @@ describe("AdminUsers", () => {
     const calls = fakeApi({
       "GET /users": page([user({ enabled: false, disabled_reason: "quota" })]),
       "GET /plans": [],
-      "GET /users/u1/nodes": [],
       "PATCH /users/u1": user({}),
     });
     renderAdmin(<AdminUsers />);
@@ -182,7 +181,6 @@ describe("AdminUsers", () => {
     fakeApi({
       "GET /users": page([user({ plan_id: "p1", plan_name: "basic" })]),
       "GET /plans": [plan({})],
-      "GET /users/u1/nodes": [],
     });
     renderAdmin(<AdminUsers />);
     await manage("alice");
@@ -191,34 +189,10 @@ describe("AdminUsers", () => {
     expect(screen.getAllByText(/沿用上一个套餐/).length).toBeGreaterThan(0);
   });
 
-  it("shows the account's node access without credentials", async () => {
-    const nodes: UserNodeView[] = [
-      {
-        node_id: "n1",
-        name: "tokyo-1",
-        region: "Tokyo",
-        enabled: true,
-        status: "online",
-        deleting: false,
-        manual: false,
-        inbounds: [{ tag: "in-vless", protocol: "vless" }],
-      },
-    ];
-    fakeApi({ "GET /users": page([user({})]), "GET /plans": [], "GET /users/u1/nodes": nodes });
-    renderAdmin(<AdminUsers />);
-    await manage("alice");
-    const section = await screen.findByRole("region", { name: "alice 的节点权限" });
-    expect(await within(section).findByText("tokyo-1")).toBeTruthy();
-    expect(within(section).getByText("在线")).toBeTruthy();
-    expect(within(section).getByText("in-vless（vless）")).toBeTruthy();
-    expect(within(section).getByText("套餐")).toBeTruthy();
-  });
-
   it("asks before deleting, revoking sessions and regenerating the token", async () => {
     const calls = fakeApi({
       "GET /users": page([user({})]),
       "GET /plans": [],
-      "GET /users/u1/nodes": [],
       "DELETE /users/u1": () => ({ status: 204 }),
       "POST /users/u1/revoke-sessions": () => ({ status: 204 }),
       "POST /users/u1/sub-token": { sub_token: "tok-123" },
@@ -263,7 +237,6 @@ describe("AdminUsers", () => {
     const calls = fakeApi({
       "GET /users": page([user({})]),
       "GET /plans": [plan({}), plan({ id: "p2", name: "retired", enabled: false })],
-      "GET /users/u1/nodes": [],
       "PUT /users/u1/plan": { active: null, history: [] },
     });
     renderAdmin(<AdminUsers />);

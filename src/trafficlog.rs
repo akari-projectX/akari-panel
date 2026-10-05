@@ -1,9 +1,11 @@
-//! W22: traffic history — per user, per node, per UTC day.
+//! W22: traffic history — per user, per entrance (W28-a; with its node),
+//! per UTC day.
 //!
-//! `traffic::FLUSH_SQL` writes `traffic_daily` (user, day, node) and
-//! `traffic_node_daily` (node, day) in the same statement that bills the
-//! users, from the same accepted deltas: the history is exactly as
-//! idempotent as the settlement, and Σ billed_bytes of a user's rows is
+//! `traffic::FLUSH_SQL` stages the accepted deltas in the same statement
+//! that bills the users, and `traffic::compact_pass` folds them into
+//! `traffic_daily` (user, day, entrance; node kept) and
+//! `traffic_entrance_daily` (entrance, day; node kept): the history is
+//! built from exactly the settled deltas, as idempotent as the settlement, and Σ billed_bytes of a user's rows is
 //! what was added to users.traffic_used_bytes. `traffic::rollup_pass` moves
 //! days older than `traffic.daily_retention_days` into `traffic_monthly`.
 //!
@@ -239,9 +241,8 @@ pub struct NodeRow {
     pub bytes: Bytes,
 }
 
-/// One day of a node (or of the fleet): `users` = distinct users with
-/// traffic on the node that day (fleet: summed over nodes, i.e. user-node
-/// pairs).
+/// One day of a node (or of the fleet): `users` = user-entrance pairs with
+/// traffic that day (a user on two entrances of the node counts twice).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
 pub struct NodeDayRow {
     pub day: NaiveDate,
@@ -339,17 +340,17 @@ pub async fn user_months(
     .await
 }
 
-/// A node per day (from traffic_node_daily).
+/// A node per day (its entrances' traffic_entrance_daily rows summed).
 pub async fn node_days(
     pg: &sqlx::PgPool,
     node: Uuid,
     from: NaiveDate,
     to: NaiveDate,
 ) -> sqlx::Result<Vec<NodeDayRow>> {
-    sqlx::query_as(
-        "SELECT day, up_bytes, down_bytes, billed_bytes, users::bigint AS users \
-         FROM traffic_node_daily WHERE node_id = $1 AND day BETWEEN $2 AND $3 ORDER BY day",
-    )
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT day, {SUMS}, sum(users)::bigint AS users FROM traffic_entrance_daily \
+         WHERE node_id = $1 AND day BETWEEN $2 AND $3 GROUP BY day ORDER BY day"
+    )))
     .bind(node)
     .bind(from)
     .bind(to)
@@ -381,15 +382,16 @@ pub async fn node_top_users(
     .await
 }
 
-/// The fleet per day: every node's traffic_node_daily rows summed (deleted
-/// nodes included). `users` = user-node pairs with traffic.
+/// The fleet per day: every traffic_entrance_daily row summed (deleted
+/// nodes and entrances included). `users` = user-entrance pairs with
+/// traffic.
 pub async fn fleet_days(
     pg: &sqlx::PgPool,
     from: NaiveDate,
     to: NaiveDate,
 ) -> sqlx::Result<Vec<NodeDayRow>> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT day, {SUMS}, sum(users)::bigint AS users FROM traffic_node_daily \
+        "SELECT day, {SUMS}, sum(users)::bigint AS users FROM traffic_entrance_daily \
          WHERE day BETWEEN $1 AND $2 GROUP BY day ORDER BY day"
     )))
     .bind(from)
@@ -408,7 +410,7 @@ pub async fn fleet_top_nodes(
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT t.node_id, coalesce(n.display_name, n.name) AS name, \
                 t.up_bytes, t.down_bytes, t.billed_bytes \
-         FROM (SELECT node_id, {SUMS} FROM traffic_node_daily \
+         FROM (SELECT node_id, {SUMS} FROM traffic_entrance_daily \
                WHERE day BETWEEN $1 AND $2 GROUP BY node_id \
                ORDER BY sum(up_bytes) + sum(down_bytes) DESC, node_id LIMIT $3) t \
          LEFT JOIN nodes n ON n.id = t.node_id \

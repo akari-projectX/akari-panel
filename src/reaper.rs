@@ -12,8 +12,8 @@
 //!   - DELETE_TIMEOUT has passed since phase 1 (unreachable or stuck agent).
 //!
 //! Deleting = in one transaction: lock the row, re-check, tombstone the
-//! certificate serial (revoked_certs), delete the row (node_users cascade;
-//! traffic_counters are kept). The delete trigger notifies `del:<id>`; any
+//! certificate serial (revoked_certs), delete the row (its entrances and
+//! their entrance_users cascade; traffic_counters are kept). The delete trigger notifies `del:<id>`; any
 //! session still open for the node reads "gone" and retires (empty state,
 //! close). The tombstoned certificate is served the empty state and closed
 //! on every later connection.
