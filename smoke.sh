@@ -1203,19 +1203,35 @@ refused() { # credential port: the inbound refuses it (within 20 s)
   return 1
 }
 relay_raw() { psql_q "SELECT coalesce(sum(up_bytes + down_bytes), 0) FROM traffic_counters WHERE entrance_id='$RELAY_ID' AND user_id='$USER_D'"; }
-USED_BEFORE=$(psql_q "SELECT traffic_used_bytes FROM users WHERE id='$USER_D'")
-DIRECT_RAW_BEFORE=$(psql_q "SELECT coalesce(sum(up_bytes + down_bytes), 0) FROM traffic_counters WHERE entrance_id='$DIRECT_ID' AND user_id='$USER_D'")
+# One snapshot of D's ledger: the relay's raw counters, D's usage, and the
+# billed history per entrance (pending + compacted + rolled up: the flush
+# writes the history in the same statement that bills the user, so the
+# sums are exact). Traffic of earlier steps (e.g. the W29 probes on the
+# direct entrance) may still land in this window: it is billed to the
+# direct entrance and must not be confused with the relay's bill.
+relay_ledger() {
+  psql_q "WITH h AS (
+      SELECT entrance_id, billed_bytes FROM traffic_daily_pending WHERE user_id='$USER_D'
+      UNION ALL SELECT entrance_id, billed_bytes FROM traffic_daily WHERE user_id='$USER_D'
+      UNION ALL SELECT entrance_id, billed_bytes FROM traffic_monthly WHERE user_id='$USER_D')
+    SELECT (SELECT coalesce(sum(up_bytes + down_bytes), 0) FROM traffic_counters WHERE entrance_id='$RELAY_ID' AND user_id='$USER_D') || ' ' ||
+      (SELECT coalesce(sum(up_bytes + down_bytes), 0) FROM traffic_counters WHERE entrance_id='$DIRECT_ID' AND user_id='$USER_D') || ' ' ||
+      (SELECT traffic_used_bytes FROM users WHERE id='$USER_D') || ' ' ||
+      (SELECT coalesce(sum(billed_bytes), 0) FROM h WHERE entrance_id='$RELAY_ID') || ' ' ||
+      (SELECT coalesce(sum(billed_bytes), 0) FROM h)"
+}
+LEDGER_BEFORE=$(relay_ledger)
 python3 "$LOG/w28-vless.py" "$VLESS_DR" 11446 || { echo "FAIL: vless round trip through the relay entrance"; exit 1; }
 for _ in $(seq 1 40); do [ "$(relay_raw)" -ge 600000 ] && break; sleep 1; done
-RELAY_RAW=$(relay_raw)
-USED_AFTER=$(psql_q "SELECT traffic_used_bytes FROM users WHERE id='$USER_D'")
-DIRECT_RAW_AFTER=$(psql_q "SELECT coalesce(sum(up_bytes + down_bytes), 0) FROM traffic_counters WHERE entrance_id='$DIRECT_ID' AND user_id='$USER_D'")
+LEDGER_AFTER=$(relay_ledger)
+RELAY_RAW=${LEDGER_AFTER%% *}
 python3 -c "
-raw, before, after = $RELAY_RAW, $USED_BEFORE, $USED_AFTER
-assert raw >= 600000, raw
-assert after - before == 2 * raw, ('2x relay', raw, before, after)
-assert $DIRECT_RAW_AFTER == $DIRECT_RAW_BEFORE, 'the direct entrance is not billed for relay traffic'
-" || { echo "FAIL: relay billing (raw $RELAY_RAW, used $USED_BEFORE -> $USED_AFTER)"; exit 1; }
+(raw0, direct0, used0, relay0, all0), (raw, direct, used, relay, all1) = [map(int, l.split()) for l in ('$LEDGER_BEFORE', '$LEDGER_AFTER')]
+assert raw0 == 0 and relay0 == 0 and raw >= 600000, (raw0, relay0, raw)
+assert direct - direct0 < 1000, ('the relay traffic is not counted on the direct entrance', direct0, direct)
+assert relay == 2 * raw, ('the relay entrance bills exactly 2x its own raw bytes', raw, relay)
+assert used - used0 == all1 - all0, ('usage grows by exactly the billed history', used0, used, all0, all1)
+" || { echo "FAIL: relay billing (relay raw/direct raw/used/relay billed/all billed: $LEDGER_BEFORE -> $LEDGER_AFTER)"; exit 1; }
 # Credentials are per entrance: D's direct credential does not open the relay.
 python3 "$LOG/w28-vless.py" "$VLESS_D" 11446 3 >/dev/null 2>&1 && { echo "FAIL: the direct credential works on the relay inbound"; exit 1; }
 # Source filter: enforced in the kernel by agents with the capability;
