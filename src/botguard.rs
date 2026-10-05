@@ -115,10 +115,18 @@ pub struct Settings {
     pub turnstile_reset: bool,
     pub honeypot: bool,
     pub min_submit_secs: i32,
+    /// W27 passkeys (migration 1012): password login refused for admins /
+    /// users that have a current passkey (`passkey::password_refused`).
+    pub passkey_only_admins: bool,
+    pub passkey_only_users: bool,
+    /// After a password login of an account without a passkey, the login
+    /// answer asks the page to offer binding one.
+    pub passkey_prompt: bool,
 }
 
 const COLS: &str = "version, turnstile_site_key, turnstile_secret_enc, turnstile_login, \
-     turnstile_register, turnstile_reset, honeypot, min_submit_secs";
+     turnstile_register, turnstile_reset, honeypot, min_submit_secs, passkey_only_admins, \
+     passkey_only_users, passkey_prompt";
 
 pub async fn load(conn: &mut PgConnection) -> sqlx::Result<Settings> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -335,10 +343,15 @@ pub struct SettingsView {
     turnstile_reset: bool,
     honeypot: bool,
     min_submit_secs: i32,
+    passkey_only_admins: bool,
+    passkey_only_users: bool,
+    passkey_prompt: bool,
+    /// Risk notes on the passkey policies (`passkey::policy_warnings`).
+    warnings: Vec<String>,
 }
 
 impl SettingsView {
-    fn of(s: &Settings) -> Self {
+    fn of(s: &Settings, warnings: Vec<String>) -> Self {
         Self {
             version: s.version,
             turnstile_site_key: s.turnstile_site_key.clone(),
@@ -348,6 +361,10 @@ impl SettingsView {
             turnstile_reset: s.turnstile_reset,
             honeypot: s.honeypot,
             min_submit_secs: s.min_submit_secs,
+            passkey_only_admins: s.passkey_only_admins,
+            passkey_only_users: s.passkey_only_users,
+            passkey_prompt: s.passkey_prompt,
+            warnings,
         }
     }
 }
@@ -366,6 +383,9 @@ pub struct SettingsReq {
     pub turnstile_reset: bool,
     pub honeypot: bool,
     pub min_submit_secs: i32,
+    pub passkey_only_admins: bool,
+    pub passkey_only_users: bool,
+    pub passkey_prompt: bool,
 }
 
 fn valid_key(k: &str) -> bool {
@@ -432,7 +452,8 @@ pub async fn apply_update(
     let row: Settings = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "UPDATE auth_settings SET version = version + 1, turnstile_site_key = $1, \
          turnstile_secret_enc = $2, turnstile_login = $3, turnstile_register = $4, \
-         turnstile_reset = $5, honeypot = $6, min_submit_secs = $7, updated_at = now() \
+         turnstile_reset = $5, honeypot = $6, min_submit_secs = $7, passkey_only_admins = $8, \
+         passkey_only_users = $9, passkey_prompt = $10, updated_at = now() \
          WHERE id = 1 RETURNING {COLS}"
     )))
     .bind(site_key)
@@ -442,6 +463,9 @@ pub async fn apply_update(
     .bind(req.turnstile_reset)
     .bind(req.honeypot)
     .bind(req.min_submit_secs)
+    .bind(req.passkey_only_admins)
+    .bind(req.passkey_only_users)
+    .bind(req.passkey_prompt)
     .fetch_one(&mut *conn)
     .await?;
     let snap = |s: &Settings, secret_changed: bool| {
@@ -454,6 +478,9 @@ pub async fn apply_update(
             "turnstile_reset": s.turnstile_reset,
             "honeypot": s.honeypot,
             "min_submit_secs": s.min_submit_secs,
+            "passkey_only_admins": s.passkey_only_admins,
+            "passkey_only_users": s.passkey_only_users,
+            "passkey_prompt": s.passkey_prompt,
         })
     };
     let secret_changed = req.turnstile_secret.is_some();
@@ -484,6 +511,9 @@ pub async fn apply_turnstile_off(conn: &mut PgConnection, actor: &Actor) -> Resu
         turnstile_reset: false,
         honeypot: cur.honeypot,
         min_submit_secs: cur.min_submit_secs,
+        passkey_only_admins: cur.passkey_only_admins,
+        passkey_only_users: cur.passkey_only_users,
+        passkey_prompt: cur.passkey_prompt,
     };
     // No secret is sealed (absent = keep): any key set serves.
     let keys = crate::totp::Keys::from_material(&[0u8; 32])?;
@@ -497,7 +527,9 @@ pub async fn get_settings(
 ) -> Result<Json<SettingsView>, ApiError> {
     user.require_admin()?;
     let mut c = state.pg().acquire().await?;
-    Ok(Json(SettingsView::of(&load(&mut c).await?)))
+    let s = load(&mut c).await?;
+    let w = crate::passkey::policy_warnings(&state, &mut c, &s).await?;
+    Ok(Json(SettingsView::of(&s, w)))
 }
 
 /// PUT /api/v1/settings/auth (admin).
@@ -509,8 +541,9 @@ pub async fn put_settings(
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
     let row = apply_update(&mut tx, state.totp(), &Actor::of(&user), &req).await?;
+    let w = crate::passkey::policy_warnings(&state, &mut tx, &row).await?;
     tx.commit().await?;
-    Ok(Json(SettingsView::of(&row)))
+    Ok(Json(SettingsView::of(&row, w)))
 }
 
 #[cfg(test)]

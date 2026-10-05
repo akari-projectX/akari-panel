@@ -63,6 +63,14 @@ mimalloc = { version = "0.1", default-features = false }
 # W15: SMTP (outbox sender, test mail); rustls + ring + webpki roots like the
 # rest of the binary, no native-tls/OpenSSL.
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls", "ring", "webpki-roots"] }
+# W27 passkeys: kanidm webauthn-rs (MPL-2.0, deny.toml exception). State
+# serialisation = ceremony state kept server-side in Valkey (never handed
+# to the client); conditional-ui = discoverable (usernameless) login.
+webauthn-rs = { version = "0.5.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }
+# webauthn-rs-core verifies with OpenSSL: the only OpenSSL in the binary,
+# built from source (vendored) so the static musl build stays
+# self-contained; TLS stays rustls.
+openssl = { version = "0.10.81", features = ["vendored"] }
 
 [build-dependencies]
 protox = "0.9"

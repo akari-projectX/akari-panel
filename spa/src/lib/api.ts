@@ -98,6 +98,8 @@ export interface AuthOptions {
   // W27: bot protection of the public forms (null = settings unreadable:
   // the forms refuse; absent on older panels).
   guard?: FormGuardOptions | null;
+  // W27: "sign in with a passkey" works here (an https main domain).
+  passkey?: boolean;
 }
 
 export interface FormGuardOptions {
@@ -281,6 +283,8 @@ export interface LoginResult {
   role: string;
   expired: boolean;
   quota_exhausted: boolean;
+  // W27: offer binding a passkey (policy on, the account has none).
+  passkey_prompt?: boolean;
 }
 
 export interface AuditEntry {

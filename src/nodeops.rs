@@ -81,6 +81,14 @@ pub async fn admin_add(cfg: PanelConfig, email: String, role: String) -> Result<
     Ok(())
 }
 
+/// `akari admin reset-login <email>` (W27): a lost passkey.
+pub async fn admin_reset_login(cfg: PanelConfig, email: String) -> Result<()> {
+    let pg = connect(&cfg).await?;
+    let n = crate::passkey::cli_reset_login(&pg, &email).await?;
+    println!("{email}: {n} passkey(s) deleted; password login is on again");
+    Ok(())
+}
+
 fn read_password_hash() -> Result<String> {
     let password = match std::env::var("AKARI_ADMIN_PASSWORD") {
         Ok(p) if !p.is_empty() => p,

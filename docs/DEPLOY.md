@@ -382,6 +382,14 @@ Everything here is off until you turn it on; nothing in panel.toml.
      with `data/master.key`), verified server side; when switched on it **fails closed** (no or a
      rejected token = 400, Cloudflare unreachable = 503). Locked out by a wrong key:
      `akari settings unset turnstile` switches it off on every form (audited, keys kept).
+7. **Passkeys (W27)** need the main domain (§2b) as an https DNS name: passkeys belong to that
+   name (RP ID). Policies (`PUT /api/v1/settings/auth`): 管理员仅通行密钥 / 用户仅通行密钥 (an
+   account with a passkey must use it; accounts without one keep their password until they add
+   one), and 密码登录后提示绑定 (binding from the prompt switches that account's password login
+   off). An admin needs no second passkey, but losing the only one means:
+   `akari admin reset-login <email>` on the server (deletes the account's passkeys, password login
+   back on, audited). **Changing the main domain** orphans existing passkeys (browsers only offer
+   them on the old name): they show as not current and those accounts fall back to the password.
 
 ### 发信方式与「测试发信」诊断（W31）
 

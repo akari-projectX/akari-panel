@@ -356,7 +356,7 @@ curl -s --noproxy '*' http://127.0.0.1:9109/metrics | matches '^akari_bot_trap_t
 # 系统设置 → 登录与注册: the secret is write-only; a Turnstile switch needs both keys.
 [ "$(code -b "$JAR" "$BASE/api/v1/settings/auth")" = "200" ] && last_json "d['turnstile_secret_set'] is False and d['min_submit_secs'] == 2 and d['version'] == 0" | matches '^True$' \
   || { echo "FAIL: GET settings/auth"; cat /tmp/akari-smoke/last; exit 1; }
-AUTHSET='"turnstile_register":false,"turnstile_reset":false,"honeypot":true'
+AUTHSET='"turnstile_register":false,"turnstile_reset":false,"honeypot":true,"passkey_only_admins":false,"passkey_only_users":false,"passkey_prompt":false'
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/auth" -H 'Content-Type: application/json' \
     -d "{\"version\":0,\"turnstile_site_key\":\"0x4AAA\",\"turnstile_login\":true,$AUTHSET,\"min_submit_secs\":2}")" = "400" ] \
   && last_json "d['code']" | matches '^auth_admin.turnstile_incomplete$' || { echo "FAIL: Turnstile without secret accepted"; exit 1; }
@@ -371,6 +371,28 @@ last_json "d['guard']['form_token'] is None and d['guard']['turnstile'] == {'sit
   || { echo "FAIL: options after the change"; cat /tmp/akari-smoke/last; exit 1; }
 matches -v smoke-secret-x /tmp/akari-smoke/last || { echo "FAIL: Turnstile secret leaked"; exit 1; }
 echo "bot protection: ok"
+
+echo "== W27: passkeys (unavailable without an https main domain), login-method reset =="
+curl -s --noproxy '*' -o /tmp/akari-smoke/last "$BASE/auth/options"
+last_json "d['passkey']" | matches '^False$' || { echo "FAIL: passkey offered without a main domain"; exit 1; }
+for p in "-X POST $BASE/auth/passkey/options" "-X POST $BASE/auth/passkey/login"; do
+  # shellcheck disable=SC2086
+  [ "$(fp $p)" = "$REJ" ] || { echo "FAIL: unavailable passkey endpoint answers: $p"; exit 1; }
+done
+[ "$(code -b "$JAR" "$BASE/api/v1/me/passkeys")" = "200" ] \
+  && last_json "d['available'] is False and d['passkeys'] == [] and d['password_login'] is True" | matches '^True$' \
+  || { echo "FAIL: GET /me/passkeys"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/me/passkeys/options")" = "409" ] && last_json "d['code']" | matches '^account.passkey_unavailable$' \
+  || { echo "FAIL: passkey registration without a main domain"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/me/password-login" -H 'Content-Type: application/json' -d '{"enabled":false}')" = "409" ] \
+  && last_json "d['code']" | matches '^account.passkey_required$' || { echo "FAIL: password login off without a passkey"; exit 1; }
+"$PANEL" admin reset-login ROOT@smoke.test | matches '0 passkey' || { echo "FAIL: akari admin reset-login"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'user.login_method.reset' AND actor_label = 'cli'")" = "1" ] \
+  || { echo "FAIL: reset-login not audited"; exit 1; }
+ROOT_ID=$(psql_q "SELECT id FROM users WHERE email = 'root@smoke.test'")
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$ROOT_ID/login-method/reset")" = "200" ] && last_json "d['deleted_passkeys']" | matches '^0$' \
+  || { echo "FAIL: admin login-method reset"; exit 1; }
+echo "passkeys: ok"
 
 echo "== login (wrong password x3, then ok) =="
 for i in 1 2 3; do
