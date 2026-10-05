@@ -235,7 +235,7 @@ pub async fn subscription(
          coalesce(e.connect_host, n.tls_domain) AS server, e.connect_port AS port, \
          eu.protocol, eu.account \
          FROM entrance_users eu \
-         JOIN entrances e ON e.id = eu.entrance_id AND e.enabled \
+         JOIN entrances e ON e.id = eu.entrance_id AND e.enabled AND e.hidden_since IS NULL \
          JOIN nodes n ON n.id = e.node_id AND n.enabled AND n.visible AND n.inbound IS NOT NULL \
          JOIN users u ON u.id = eu.user_id AND u.enabled \
          WHERE eu.user_id = $1 \

@@ -142,6 +142,8 @@ pub const ENTRANCES_JSON_SQL: &str = "coalesce((SELECT jsonb_agg(jsonb_build_obj
      'rate_permille', e.rate_permille, 'rate', e.rate_permille::float8 / 1000, \
      'enabled', e.enabled, 'sort', e.sort, 'wire_no', e.wire_no, \
      'listen_port', e.listen_port, 'source_cidrs', to_jsonb(e.source_cidrs::text[]), \
+     'health_ok', e.health_ok, 'health_at', e.health_at, 'health_failures', e.health_failures, \
+     'health_error', e.health_error, 'hidden_since', e.hidden_since, \
      'group_ids', coalesce((SELECT jsonb_agg(m.group_id ORDER BY m.group_id) \
         FROM entrance_group_members m WHERE m.entrance_id = e.id), '[]'::jsonb)) \
      ORDER BY e.kind <> 'direct', e.sort, e.created_at, e.id) \
@@ -172,12 +174,21 @@ pub struct EntranceView {
     /// egress networks allowed to reach it (direct: null / []).
     pub listen_port: Option<i32>,
     pub source_cidrs: Vec<String>,
+    /// Relay health (`entrance_health.rs`): the last TCP test (null = not
+    /// tested yet), consecutive failures, and since when the entrance is
+    /// hidden from subscriptions (null = shown).
+    pub health_ok: Option<bool>,
+    pub health_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub health_failures: i32,
+    pub health_error: Option<String>,
+    pub hidden_since: Option<chrono::DateTime<chrono::Utc>>,
     pub group_ids: Vec<Uuid>,
 }
 
 const ENTRANCE_VIEW_SQL: &str = "SELECT e.id, e.node_id, e.kind, e.name, e.connect_host, \
      e.connect_port, e.rate_permille, e.enabled, e.sort, e.wire_no, e.listen_port, \
-     e.source_cidrs::text[] AS source_cidrs, \
+     e.source_cidrs::text[] AS source_cidrs, e.health_ok, e.health_at, e.health_failures, \
+     e.health_error, e.hidden_since, \
      coalesce(ARRAY(SELECT m.group_id FROM entrance_group_members m \
         WHERE m.entrance_id = e.id ORDER BY m.group_id), '{}') AS group_ids \
      FROM entrances e WHERE e.id = $1";
@@ -494,6 +505,11 @@ pub async fn apply_update(
     }
     if let Some(v) = &c.connect_host {
         qb.push(", connect_host = ").push_bind(v.clone());
+    }
+    if c.connect_host.is_some() || c.connect_port.is_some() {
+        // A relay's new address is tested at the next health round; a
+        // hidden one stays hidden until it answers.
+        qb.push(", health_next_at = NULL, health_failures = 0");
     }
     if let Some(v) = c.connect_port {
         qb.push(", connect_port = ").push_bind(v);
