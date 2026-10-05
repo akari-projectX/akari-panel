@@ -540,7 +540,7 @@ curl -s --noproxy '*' -A "sing-box/1.12.0" "$SUB" \
 curl -s --noproxy '*' -A "clash-meta/1.19" "$SUB" | matches "^    type: vless" \
   || { echo "FAIL: clash format"; exit 1; }
 INFO=$(curl -s --noproxy '*' -D - -o /dev/null "$SUB" | grep -i "^subscription-userinfo:")
-echo "$INFO" | matches "download=0" && echo "$INFO" | matches "total=0" \
+echo "$INFO" | matches "download=0" && echo "$INFO" | matches "total=107374182400" \
   || { echo "FAIL: subscription-userinfo header: $INFO"; exit 1; }
 SIZE=$(curl -s --noproxy '*' -o /tmp/akari-smoke/subbody "$SUB" && wc -c < /tmp/akari-smoke/subbody)
 [ "$SIZE" -ge 8192 ] || { echo "FAIL: body not padded ($SIZE bytes)"; exit 1; }
