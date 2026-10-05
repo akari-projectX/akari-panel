@@ -44,6 +44,7 @@ dependencies = [
  "ring",
  "rpassword",
  "rust-embed",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",
