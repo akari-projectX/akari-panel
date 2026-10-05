@@ -420,14 +420,15 @@ async fn login_two_step_without_oracle() {
     let good = totp::code_at(&secret, step(now) + 1);
     let bad = if good == "000000" { "111111" } else { "000000" };
     uniform(&a.login(&login, PW, Some(bad)).await);
-    // Disabled by an admin: uniform even with the right password.
-    sqlx::query("UPDATE users SET enabled = false WHERE id = $1")
+    // A disabled admin account: uniform even with the right password (a
+    // banned role=user account does sign in, to the portal scope, W28-c).
+    sqlx::query("UPDATE users SET role = 'admin', enabled = false WHERE id = $1")
         .bind(id)
         .execute(&db.pool)
         .await
         .unwrap();
     uniform(&a.login(&login, PW, None).await);
-    sqlx::query("UPDATE users SET enabled = true WHERE id = $1")
+    sqlx::query("UPDATE users SET role = 'user', enabled = true WHERE id = $1")
         .bind(id)
         .execute(&db.pool)
         .await
