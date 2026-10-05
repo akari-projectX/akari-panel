@@ -2948,6 +2948,9 @@ if need_agent "unit:akari-agent" "W32 Alpine install (OpenRC)" \
   # The sections above used up most of this address's install-link budget
   # (20 requests / 10 min per source, Valkey): start this node afresh.
   vk eval "for _, k in ipairs(redis.call('keys', 'akari:rl:install:*')) do redis.call('del', k) end" 0 >/dev/null
+  # Its two enrollments come back at the end (later sections enroll from
+  # the same address within the 10-minute window).
+  ALP_RL=$(vk eval "local o = {} for _, k in ipairs(redis.call('keys', 'akari:rl:enroll:*')) do o[#o+1] = k .. '=' .. redis.call('get', k) end return table.concat(o, ' ')" 0)
   [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' \
       -d "{\"name\":\"alp-node\",\"server_addr\":\"127.0.0.1\",\"templates\":[{\"template\":\"vless_reality\",\"port\":$ALP_PORT}],
            \"install\":{\"origin\":\"http://127.0.0.1:8080\"}}")" = "201" ] \
@@ -3014,6 +3017,7 @@ if need_agent "unit:akari-agent" "W32 Alpine install (OpenRC)" \
   docker rm -f akari-smoke-alp >/dev/null
   eval "$PREV_EXIT_TRAP"
   [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$ALP_ID")" = "202" ] || { echo "FAIL: delete alp-node"; exit 1; }
+  for kv in $ALP_RL; do vk set "${kv%%=*}" "${kv#*=}" KEEPTTL >/dev/null; done
   echo "w32 Alpine node: ok (OpenRC install, BBR + fq $ALP_BBR, AKARI_BBR=0 reinstall restored it, uninstall clean)"
 fi
 
