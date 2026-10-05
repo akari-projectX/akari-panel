@@ -74,6 +74,13 @@ impl TestDb {
             .execute(&migrator)
             .await
             .unwrap();
+        // v0.4: the minimum submit time is on by default; tests post forms
+        // without a form token unless they test the bot protection
+        // (`botguard::tests` turns it back on).
+        sqlx::query("UPDATE auth_settings SET min_submit_secs = 0")
+            .execute(&migrator)
+            .await
+            .unwrap();
         migrator.close().await;
         let pool = PgPoolOptions::new()
             .max_connections(8)

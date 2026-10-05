@@ -73,7 +73,8 @@ enum SettingsCmd {
     /// <host[:port]>, trust-cloudflare <true|false>
     Set { field: String, value: String },
     /// Clear a stored setting back to the built-in default (audited):
-    /// main | sub | node | trust-cloudflare | probe | all
+    /// main | sub | node | trust-cloudflare | probe | all; turnstile = switch
+    /// Turnstile off on every form (keys kept)
     Unset { field: String },
 }
 

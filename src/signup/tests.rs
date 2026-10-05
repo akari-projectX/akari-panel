@@ -227,7 +227,7 @@ fn req(domains: &[&str]) -> SignupReq {
         trial_plan_id: None,
         trial_days: 3,
         reset_enabled: false,
-        email_verify: None,
+        email_verify: false,
     }
 }
 
@@ -324,6 +324,14 @@ async fn disabled_endpoints_are_the_canonical_rejection() {
     let mut v = o.json();
     // Ops: the public branding (no image set: no URLs).
     let branding = v.as_object_mut().unwrap().remove("branding").unwrap();
+    // v0.4: the bot-protection parameters (botguard::tests).
+    assert!(
+        v.as_object_mut()
+            .unwrap()
+            .remove("guard")
+            .unwrap()
+            .is_object()
+    );
     assert!(branding["logo_url"].is_null() && branding["footer_links"] == json!([]));
     assert_eq!(
         v,
@@ -333,7 +341,7 @@ async fn disabled_endpoints_are_the_canonical_rejection() {
 
     // Enabled for one feature only: the other stays rejected.
     enable_mail(&db).await;
-    set_signup(&db, "register_enabled = true").await;
+    set_signup(&db, "register_enabled = true, email_verify = true").await;
     for p in &paths[2..] {
         assert_eq!(
             c.post(p, json!({ "email": "a@example.com" }))
@@ -377,7 +385,7 @@ async fn registration_flow_and_login_by_email() {
     };
     let st = state(&db).await;
     enable_mail(&db).await;
-    set_signup(&db, "register_enabled = true").await;
+    set_signup(&db, "register_enabled = true, email_verify = true").await;
     let mut c = Client::new(&st, rand_ip());
     let o = c.get("/test/auth/options").await.json();
     assert_eq!(o["register"], true);
@@ -478,7 +486,11 @@ async fn code_request_has_no_existence_oracle() {
     };
     let st = state(&db).await;
     enable_mail(&db).await;
-    set_signup(&db, "register_enabled = true, reset_enabled = true").await;
+    set_signup(
+        &db,
+        "register_enabled = true, email_verify = true, reset_enabled = true",
+    )
+    .await;
     let existing = addr();
     let id = with_password(&db, "pw").await;
     verified(&db, id, &existing).await;
@@ -730,7 +742,7 @@ async fn invites_domains_and_trial() {
     enable_mail(&db).await;
     set_signup(
         &db,
-        "register_enabled = true, invite_required = true, invite_single_use = true, \
+        "register_enabled = true, email_verify = true, invite_required = true, invite_single_use = true, \
          invite_codes_per_user = 2, email_domains = '{example.com}'",
     )
     .await;
@@ -1130,7 +1142,7 @@ async fn email_change_needs_password_and_code() {
     let mut c = Client::new(&st, rand_ip());
     // A registered account.
     enable_mail(&db).await;
-    set_signup(&db, "register_enabled = true").await;
+    set_signup(&db, "register_enabled = true, email_verify = true").await;
     let first = addr();
     register_via_api(&mut c, &db, &first, "password1").await;
     let id = user_id(&db, &first).await;
@@ -1283,6 +1295,7 @@ async fn settings_api_validates_seals_and_audits() {
             "version": v, "register_enabled": true, "invite_required": false,
             "invite_single_use": false, "invite_codes_per_user": 5, "email_domains": [],
             "trial_plan_id": null, "trial_days": 7, "reset_enabled": true,
+            "email_verify": false,
         });
         for (k, val) in extra.as_object().unwrap() {
             b[k] = val.clone();
@@ -1463,7 +1476,7 @@ async fn send_rate_limits() {
     };
     let st = state(&db).await;
     enable_mail(&db).await;
-    set_signup(&db, "register_enabled = true").await;
+    set_signup(&db, "register_enabled = true, email_verify = true").await;
     let email = addr();
     for i in 0..SEND_PER_ADDR_HOUR {
         let c = Client::new(&st, rand_ip());
@@ -1530,7 +1543,7 @@ async fn registration_without_verification() {
         return;
     };
     let st = state(&db).await;
-    // No SMTP at all: registration can still be switched on (auto = off).
+    // No SMTP at all: registration can still be switched on (no verification).
     let admin = db.admin().await;
     let ca = crate::testdb::http::client_for(&st, admin).await;
     let mut r = req(&[]);
@@ -1543,8 +1556,7 @@ async fn registration_without_verification() {
         )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
-    assert_eq!(r.json()["email_verify"], Value::Null);
-    assert_eq!(r.json()["email_verify_effective"], false);
+    assert_eq!(r.json()["email_verify"], false);
     assert!(r.json()["warnings"].to_string().contains("注册不验证邮箱"));
 
     let mut c = Client::new(&st, rand_ip());
@@ -1710,7 +1722,7 @@ async fn registration_without_verification() {
         .fetch_one(&db.pool)
         .await
         .unwrap();
-    v.email_verify = Some(true);
+    v.email_verify = true;
     let r = ca
         .req(
             Method::PUT,
@@ -1719,9 +1731,22 @@ async fn registration_without_verification() {
         )
         .await;
     assert_eq!(r.json()["code"], "signup_admin.mail_off");
-    // With SMTP on, auto = verification: the challenge endpoint closes, the
-    // code endpoint opens.
+    // With SMTP on it is accepted: the challenge endpoint closes, the code
+    // endpoint opens. SMTP alone does not switch verification on (v0.4:
+    // an explicit switch).
     enable_mail(&db).await;
+    assert_eq!(
+        c.get("/test/auth/options").await.json()["email_verify"],
+        false
+    );
+    let r = ca
+        .req(
+            Method::PUT,
+            "/test/api/v1/settings/signup",
+            Some(serde_json::to_value(SignupReqJson::from(&v)).unwrap()),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
     check_rejected(&c, &["/test/auth/register/challenge"], &canonical).await;
     assert_eq!(
         c.get("/test/auth/options").await.json()["email_verify"],
@@ -1748,7 +1773,7 @@ struct SignupReqJson {
     trial_plan_id: Option<Uuid>,
     trial_days: i32,
     reset_enabled: bool,
-    email_verify: Option<bool>,
+    email_verify: bool,
 }
 
 impl From<&SignupReq> for SignupReqJson {

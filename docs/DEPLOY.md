@@ -347,8 +347,8 @@ Everything here is off until you turn it on; nothing in panel.toml.
    expired", traffic at 80 % and used up (once each per period). Only verified addresses get
    mail; users add theirs in the portal (邮箱 card: current password + emailed code).
 3. **系统设置 → 注册**: **开放注册** (login page shows 注册; the address becomes the login).
-   **注册需要邮箱验证** (W24): 自动 (default — a code is mailed exactly when 邮件发送 is enabled),
-   需要, or 不需要. Registration can be opened **without SMTP**: people then sign up with email +
+   **注册需要邮箱验证** (v0.4: an on/off switch, default off, independent of 必须使用邀请码; on
+   needs 邮件发送). Registration can be opened **without SMTP**: people then sign up with email +
    password only; the address is stored **unverified** (no mail to it, no password reset, not
    unique, not usable for the email form of the login — the login name is the address, any case,
    so they log in with it). Users verify it later under 账户 once mail works; an admin can mark
@@ -371,6 +371,17 @@ Everything here is off until you turn it on; nothing in panel.toml.
    address per hour and 20 per day, 30 code/link completions per client address per 15 minutes;
    a code burns after 5 wrong tries. With verification, answers never reveal whether an address
    has an account.
+6. **Bot protection (W27, `PUT /api/v1/settings/auth`; console page in W36-b)** for 登录、注册、找回密码:
+   - **蜜罐 + 最短提交时间**（默认开启：2 秒）: the page fetches a signed form token from
+     `/auth/options` and posts it no sooner than the minimum time; a filled hidden field, a
+     missing/forged/stale token or a too-fast post gets exactly the ordinary failure of that form
+     (no hint for the bot) and only increments `akari_bot_trap_total{form,reason}` — no log
+     lines. Scripts that log in with curl must do the same (`/auth/options` → wait → post
+     `"guard":{"form_token":…}`) or set 最短提交时间 to 0.
+   - **Cloudflare Turnstile** (per form, default off): site key + secret (secret write-only, sealed
+     with `data/master.key`), verified server side; when switched on it **fails closed** (no or a
+     rejected token = 400, Cloudflare unreachable = 503). Locked out by a wrong key:
+     `akari settings unset turnstile` switches it off on every form (audited, keys kept).
 
 ### 发信方式与「测试发信」诊断（W31）
 

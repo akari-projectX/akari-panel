@@ -75,6 +75,8 @@ export const en: Messages = {
     localeInvalid: "Unsupported language",
     passwordTooLong: "The password is too long",
     passwordTooShort: "The password must be at least 8 characters",
+    captchaFailed: "Human verification failed, please try again",
+    captchaUnavailable: "Human verification is unavailable, try again later",
     credentialsRequired: "Enter your account and password",
     adminNoBalance: "Admin accounts have no balance",
     invalidInviter: "Invalid invitation",

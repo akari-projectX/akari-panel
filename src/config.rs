@@ -374,6 +374,8 @@ pub const TELEGRAM_API_URL: &str = "https://api.telegram.org";
 pub const PROBE_TIMEOUT_MS: u32 = 5000;
 pub const PROBE_ATTEMPTS: u32 = 3;
 pub const PROBE_MANUAL_COOLDOWN_SECS: u64 = 30;
+/// Cloudflare Turnstile server-side verification (v0.4 D1).
+pub const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 /// Where the install script downloads the agent when no complete signed
 /// release was uploaded (系统设置 → 节点通信 → 备用下载地址 overrides it).
 pub const DEFAULT_FALLBACK_BINARY_URL: &str = "https://github.com/akari-projectX/akari-agent/releases/latest/download/akari-agent-linux-{arch}";
@@ -408,6 +410,9 @@ pub struct Limits {
     pub probe_timeout_ms: u32,
     pub probe_attempts: u32,
     pub probe_manual_cooldown_secs: u64,
+    /// Cloudflare Turnstile siteverify endpoint (tests point it at a
+    /// loopback mock; https or loopback http only).
+    pub turnstile_verify_url: String,
     /// Test overrides applied (logged at startup).
     pub test_overrides: Vec<String>,
 }
@@ -437,6 +442,7 @@ impl Default for Limits {
             probe_timeout_ms: PROBE_TIMEOUT_MS,
             probe_attempts: PROBE_ATTEMPTS,
             probe_manual_cooldown_secs: PROBE_MANUAL_COOLDOWN_SECS,
+            turnstile_verify_url: TURNSTILE_VERIFY_URL.to_string(),
             test_overrides: Vec::new(),
         }
     }

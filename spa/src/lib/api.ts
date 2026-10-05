@@ -72,8 +72,11 @@ export const putBinary = <T>(path: string, body: Blob) =>
 // Auth endpoints live at /{prefix}/auth/*, NOT under /api/v1 (see src/web.rs).
 // Do not route them through get/post: that yields /api/v1/auth/* -> 404.
 // D1: the email address is the login name; every failure is the same 401.
-export const login = (body: { email: string; password: string }) =>
-  request<LoginResult>(`${authBase}/login`, { method: "POST", body: JSON.stringify(body) });
+export const login = async (body: { email: string; password: string }) =>
+  request<LoginResult>(`${authBase}/login`, {
+    method: "POST",
+    body: JSON.stringify({ ...body, guard: await formGuard() }),
+  });
 export const logout = () => request<void>(`${authBase}/logout`, { method: "POST" });
 
 // W15 self-service (public, /{prefix}/auth/*). While registration or reset
@@ -92,6 +95,19 @@ export interface AuthOptions {
   site_name?: string;
   // Ops: 系统设置 → 站点 branding (null when unavailable; absent on older panels).
   branding?: Branding | null;
+  // W27: bot protection of the public forms (null = settings unreadable:
+  // the forms refuse; absent on older panels).
+  guard?: FormGuardOptions | null;
+}
+
+export interface FormGuardOptions {
+  // Signed issue time; a form may be posted form_min_secs after it (null
+  // when the minimum submit time is off).
+  form_token: string | null;
+  form_min_secs: number;
+  honeypot: boolean;
+  // Cloudflare Turnstile: the site key and the forms that need a token.
+  turnstile: { site_key: string; login: boolean; register: boolean; reset: boolean } | null;
 }
 
 // --- Ops: branding, announcements, knowledge base ---
@@ -167,11 +183,42 @@ export interface HelpArticle {
 export function pick<T>(locale: "zh" | "en", zh: T, en: T | null | undefined): T {
   return locale === "en" && en != null && en !== "" ? en : zh;
 }
-export const authOptions = () => request<AuthOptions>(`${authBase}/options`);
+// W27: the newest form token seen (every /auth/options answer carries a
+// fresh one) and when it arrived.
+let guardSeen: { token: string | null; min: number; at: number } | null = null;
+// Tokens live 24 h on the server; refresh well before.
+const GUARD_REFRESH_MS = 6 * 3600_000;
+
+export const authOptions = async () => {
+  const o = await request<AuthOptions>(`${authBase}/options`);
+  if (o.guard) guardSeen = { token: o.guard.form_token, min: o.guard.form_min_secs, at: Date.now() };
+  return o;
+};
+
+/** The `guard` part of a public form: the form token, posted no sooner than
+ * the minimum submit time after it was issued (waits if needed), and the
+ * honeypot left empty. */
+export async function formGuard(): Promise<{ form_token?: string; website: string } | undefined> {
+  if (!guardSeen || Date.now() - guardSeen.at > GUARD_REFRESH_MS) {
+    try {
+      await authOptions();
+    } catch {
+      return undefined;
+    }
+  }
+  const g = guardSeen;
+  if (!g) return undefined;
+  const wait = g.at + g.min * 1000 + 250 - Date.now();
+  if (g.min > 0 && wait > 0) await new Promise((r) => setTimeout(r, wait));
+  return { ...(g.token ? { form_token: g.token } : {}), website: "" };
+}
+
 const authPost = <T>(path: string, body: unknown) =>
   request<T>(`${authBase}${path}`, { method: "POST", body: JSON.stringify(body) });
+/** A public form post with its `guard` (W27). */
+const guardedPost = async <T>(path: string, body: object) => authPost<T>(path, { ...body, guard: await formGuard() });
 export const registerCode = (body: { email: string; invite_code?: string; locale?: string }) =>
-  authPost<{ ok: true }>("/register/code", body);
+  guardedPost<{ ok: true }>("/register/code", body);
 export const register = (body: {
   email: string;
   code?: string;
@@ -179,10 +226,10 @@ export const register = (body: {
   password: string;
   invite_code?: string;
   locale?: string;
-}) => authPost<LoginResult & { trial: boolean; email_verified?: boolean }>("/register", body);
+}) => guardedPost<LoginResult & { trial: boolean; email_verified?: boolean }>("/register", body);
 /** W24: a proof-of-work challenge (registration without email verification). */
 export const registerChallenge = () => request<{ challenge: string; bits: number }>(`${authBase}/register/challenge`);
-export const requestReset = (body: { email: string }) => authPost<{ ok: true }>("/password-reset/request", body);
+export const requestReset = (body: { email: string }) => guardedPost<{ ok: true }>("/password-reset/request", body);
 export const resetPassword = (body: { token: string; password: string }) =>
   authPost<{ ok: true }>("/password-reset", body);
 

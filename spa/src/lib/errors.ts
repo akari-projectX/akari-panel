@@ -21,6 +21,8 @@ export const CODE_KEYS: Record<string, MessageKey> = {
   "account.mail_off": "errors.mailOff",
   "account.password_too_long": "errors.passwordTooLong",
   "account.password_too_short": "errors.passwordTooShort",
+  "auth.captcha_failed": "errors.captchaFailed",
+  "auth.captcha_unavailable": "errors.captchaUnavailable",
   "auth.credentials_required": "errors.credentialsRequired",
   "auth.forbidden": "errors.forbidden",
   "auth.unauthorized": "errors.unauthorized",
