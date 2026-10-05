@@ -2335,7 +2335,10 @@ for who in expired quota; do
       -d "{\"email\":\"smoke-renew-$who@smoke.test\",\"password\":\"renew-password-123\"}")" = "201" ] || { echo "FAIL: create $who user"; exit 1; }
   RU=$(last_json "d['id']")
   if [ "$who" = expired ]; then
-    psql_q "UPDATE users SET expires_at = now() - interval '1 minute' WHERE id='$RU'" >/dev/null
+    # Enforced in the same UPDATE: the enforce pass (5 s) setting
+    # expiry_enforced later bumps session_ver and would end the session
+    # below at a random request.
+    psql_q "UPDATE users SET expires_at = now() - interval '1 minute', expiry_enforced = true WHERE id='$RU'" >/dev/null
   else
     psql_q "UPDATE users SET enabled = false, disabled_reason = 'quota' WHERE id='$RU'" >/dev/null
   fi
