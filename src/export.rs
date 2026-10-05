@@ -180,7 +180,6 @@ pub fn date_range(
 
 const USER_COLS: &[&str] = &[
     "id",
-    "login",
     "email",
     "email_verified",
     "role",
@@ -194,15 +193,13 @@ const USER_COLS: &[&str] = &[
     "next_reset_at",
     "expires_at",
     "balance_cents",
-    "totp_enabled",
     "created_at",
 ];
 
 #[derive(sqlx::FromRow)]
 struct UserRow {
     id: Uuid,
-    login: String,
-    email: Option<String>,
+    email: String,
     email_verified: bool,
     role: String,
     status: String,
@@ -215,16 +212,15 @@ struct UserRow {
     next_reset_at: Option<DateTime<Utc>>,
     expires_at: Option<DateTime<Utc>>,
     balance_cents: i64,
-    totp_enabled: bool,
     created_at: DateTime<Utc>,
 }
 
 /// Columns over alias `u`; `status` is the console's derived badge.
 fn user_select() -> String {
     format!(
-        "SELECT u.id, u.login, u.email, u.email_verified_at IS NOT NULL AS email_verified, u.role, \
-         CASE WHEN {} THEN 'disabled' WHEN {} THEN 'quota' WHEN {} THEN 'expired' ELSE 'active' END \
-         AS status, u.enabled, u.disabled_reason::text AS disabled_reason, \
+        "SELECT u.id, u.email, u.email_verified_at IS NOT NULL AS email_verified, u.role, \
+         CASE WHEN {} THEN 'banned' WHEN {} THEN 'quota' WHEN {} THEN 'expired' ELSE 'active' END \
+         AS status, u.enabled, u.disabled_reason, \
          (SELECT p.name FROM user_plans up JOIN plans p ON p.id = up.plan_id \
           WHERE up.user_id = u.id AND up.status = 'active') AS plan_name, \
          (SELECT up.expires_at FROM user_plans up WHERE up.user_id = u.id AND up.status = 'active') \
@@ -234,10 +230,8 @@ fn user_select() -> String {
           AS next_reset_at, \
          u.expires_at, \
          COALESCE((SELECT b.balance_cents FROM user_balances b WHERE b.user_id = u.id), 0) \
-          AS balance_cents, \
-         EXISTS (SELECT 1 FROM user_totp t WHERE t.user_id = u.id AND t.enabled_at IS NOT NULL) \
-          AS totp_enabled, u.created_at FROM users u",
-        api::STATUS_DISABLED,
+          AS balance_cents, u.created_at FROM users u",
+        api::STATUS_BANNED,
         api::STATUS_QUOTA,
         api::STATUS_EXPIRED
     )
@@ -246,8 +240,7 @@ fn user_select() -> String {
 fn user_cells(r: &UserRow) -> Vec<Cell> {
     vec![
         Cell::raw(r.id),
-        Cell::text(&r.login),
-        Cell::opt_text(r.email.as_deref()),
+        Cell::text(&r.email),
         Cell::bool(r.email_verified),
         Cell::raw(&r.role),
         Cell::raw(&r.status),
@@ -260,7 +253,6 @@ fn user_cells(r: &UserRow) -> Vec<Cell> {
         date(r.next_reset_at),
         date(r.expires_at),
         Cell::raw(r.balance_cents),
-        Cell::bool(r.totp_enabled),
         date(Some(r.created_at)),
     ]
 }
@@ -345,7 +337,8 @@ const ORDER_COLS: &[&str] = &[
     "out_trade_no",
     "created_at",
     "paid_at",
-    "user_login",
+    "user_label",
+    "user_email",
     "plan_name",
     "period",
     "period_days",
@@ -373,7 +366,8 @@ struct OrderRow {
     out_trade_no: String,
     created_at: DateTime<Utc>,
     paid_at: Option<DateTime<Utc>>,
-    user_login: String,
+    user_label: String,
+    user_email: Option<String>,
     plan_name: String,
     period: String,
     period_days: Option<i32>,
@@ -394,7 +388,8 @@ struct OrderRow {
     fulfil_error: Option<String>,
 }
 
-const ORDER_SELECT: &str = "SELECT o.id, o.out_trade_no, o.created_at, o.paid_at, o.user_login, \
+const ORDER_SELECT: &str = "SELECT o.id, o.out_trade_no, o.created_at, o.paid_at, o.user_label, \
+     (SELECT u.email FROM users u WHERE u.id = o.user_id) AS user_email, \
      o.plan_name, o.period, o.period_days, o.list_price_cents, o.discount_cents, o.coupon_code, \
      o.credit_cents, o.balance_cents, o.gift_cents, o.amount_cents, o.status, o.paid_via, \
      o.manual_reason, o.trade_no, \
@@ -407,7 +402,8 @@ fn order_cells(r: &OrderRow) -> Vec<Cell> {
         Cell::raw(&r.out_trade_no),
         date(Some(r.created_at)),
         date(r.paid_at),
-        Cell::text(&r.user_login),
+        Cell::text(&r.user_label),
+        Cell::opt_text(r.user_email.as_deref()),
         Cell::text(&r.plan_name),
         Cell::raw(&r.period),
         Cell::opt_raw(r.period_days),

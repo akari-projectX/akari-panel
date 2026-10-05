@@ -39,25 +39,32 @@ pub async fn settings_unset(cfg: PanelConfig, field: String) -> Result<()> {
 }
 
 /// Creates the first admin (or any) account. Reads the password from
-/// AKARI_ADMIN_PASSWORD or a hidden interactive prompt.
-pub async fn admin_add(cfg: PanelConfig, login: String, role: String) -> Result<()> {
+/// AKARI_ADMIN_PASSWORD or a hidden interactive prompt. The address is the
+/// login name (D1) and counts as verified (the operator vouches for it).
+pub async fn admin_add(cfg: PanelConfig, email: String, role: String) -> Result<()> {
     if role != "admin" && role != "user" {
         bail!("role must be 'admin' or 'user'");
     }
+    let Some(email) = crate::signup::email::parse(email.trim()) else {
+        bail!("not a valid email address: {email}");
+    };
     let hash = read_password_hash()?;
     let pg = connect(&cfg).await?;
     let id = uuid::Uuid::new_v4();
     let mut tx = pg.begin().await?;
-    sqlx::query("INSERT INTO users (id, login, password_hash, role) VALUES ($1, $2, $3, $4)")
-        .bind(id)
-        .bind(&login)
-        .bind(&hash)
-        .bind(&role)
-        .execute(&mut *tx)
-        .await
-        .with_context(|| format!("insert user {login}"))?;
+    sqlx::query(
+        "INSERT INTO users (id, email, email_verified_at, password_hash, role) \
+         VALUES ($1, $2, now(), $3, $4)",
+    )
+    .bind(id)
+    .bind(&email)
+    .bind(&hash)
+    .bind(&role)
+    .execute(&mut *tx)
+    .await
+    .with_context(|| format!("insert user {email}"))?;
     let after = serde_json::json!({
-        "login": login, "role": role, "enabled": true, "password": crate::audit::CHANGED,
+        "email": email, "role": role, "enabled": true, "password": crate::audit::CHANGED,
     });
     crate::audit::record(
         &mut tx,
@@ -70,15 +77,15 @@ pub async fn admin_add(cfg: PanelConfig, login: String, role: String) -> Result<
     )
     .await?;
     tx.commit().await?;
-    println!("created {role} account: {login} ({id})");
-    if role == "admin" {
-        let required: Option<bool> =
-            sqlx::query_scalar("SELECT require_admin_2fa FROM panel_settings WHERE id = 1")
-                .fetch_optional(&pg)
-                .await?
-                .flatten();
-        print_2fa_hint(required.unwrap_or(false));
-    }
+    println!("created {role} account: {email} ({id})");
+    Ok(())
+}
+
+/// `akari admin reset-login <email>` (W27): a lost passkey.
+pub async fn admin_reset_login(cfg: PanelConfig, email: String) -> Result<()> {
+    let pg = connect(&cfg).await?;
+    let n = crate::passkey::cli_reset_login(&pg, &email).await?;
+    println!("{email}: {n} passkey(s) deleted; password login is on again");
     Ok(())
 }
 
@@ -95,19 +102,20 @@ fn read_password_hash() -> Result<String> {
 
 /// Reset an account's password. The users trigger (migration 0009) bumps
 /// session_ver, so every existing session of the account ends.
-pub async fn admin_passwd(cfg: PanelConfig, login: String) -> Result<()> {
+pub async fn admin_passwd(cfg: PanelConfig, email: String) -> Result<()> {
+    let email = email.trim().to_lowercase();
     let hash = read_password_hash()?;
     let pg = connect(&cfg).await?;
     let mut tx = pg.begin().await?;
     let id: Option<uuid::Uuid> =
-        sqlx::query_scalar("UPDATE users SET password_hash = $2 WHERE login = $1 RETURNING id")
-            .bind(&login)
+        sqlx::query_scalar("UPDATE users SET password_hash = $2 WHERE email = $1 RETURNING id")
+            .bind(&email)
             .bind(&hash)
             .fetch_optional(&mut *tx)
             .await
-            .with_context(|| format!("update user {login}"))?;
+            .with_context(|| format!("update user {email}"))?;
     let Some(id) = id else {
-        bail!("no such account: {login}");
+        bail!("no such account: {email}");
     };
     crate::audit::record(
         &mut tx,
@@ -120,7 +128,7 @@ pub async fn admin_passwd(cfg: PanelConfig, login: String) -> Result<()> {
     )
     .await?;
     tx.commit().await?;
-    println!("password changed for {login}; its sessions are revoked");
+    println!("password changed for {email}; its sessions are revoked");
     Ok(())
 }
 
@@ -318,42 +326,6 @@ pub async fn node_list(cfg: PanelConfig) -> Result<()> {
     Ok(())
 }
 
-fn print_2fa_hint(required: bool) {
-    if required {
-        println!("two-factor authentication is required (系统设置 → 安全): set up an");
-        println!("authenticator app at the first login.");
-    } else {
-        println!("two-factor authentication is recommended: set it up in the console");
-        println!("(账户 / Account) after logging in.");
-    }
-}
-
-/// `akari admin reset-2fa <login>`: remove the account's 2FA (it logs in
-/// with the password alone until it sets 2FA up again) and end its
-/// sessions.
-pub async fn admin_reset_2fa(cfg: PanelConfig, login: String) -> Result<()> {
-    let pg = connect(&cfg).await?;
-    let was = reset_2fa(&pg, &login).await?;
-    println!("two-factor authentication of {login} reset (was: {was}); its sessions are revoked");
-    Ok(())
-}
-
-async fn reset_2fa(pg: &sqlx::PgPool, login: &str) -> Result<&'static str> {
-    let mut tx = pg.begin().await?;
-    let id: Option<uuid::Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE login = $1")
-        .bind(login)
-        .fetch_optional(&mut *tx)
-        .await?;
-    let Some(id) = id else {
-        bail!("no such account: {login}");
-    };
-    let was = crate::api::apply_reset_totp(&mut tx, &Actor::cli(), id)
-        .await
-        .map_err(|e| anyhow::anyhow!("{login}: {}", e.message()))?;
-    tx.commit().await?;
-    Ok(was)
-}
-
 /// `akari secrets rotate-prefix`.
 pub async fn secrets_rotate_prefix(cfg: PanelConfig) -> Result<()> {
     let pg = connect(&cfg).await?;
@@ -470,14 +442,14 @@ mod tests {
     }
 
     async fn audit_actions(db: &TestDb) -> Vec<(String, String)> {
-        sqlx::query_as("SELECT actor_login, action FROM audit_log ORDER BY id")
+        sqlx::query_as("SELECT actor_label, action FROM audit_log ORDER BY id")
             .fetch_all(&db.pool)
             .await
             .unwrap()
     }
 
     #[tokio::test]
-    async fn rotations_and_reset_are_audited_and_effective() {
+    async fn rotations_are_audited_and_effective() {
         let Some(db) = TestDb::new().await else {
             return;
         };
@@ -513,40 +485,11 @@ mod tests {
         assert_ne!(p, before.route_prefix);
         assert_eq!(install::ensure(&cfg).unwrap().route_prefix, p);
 
-        // reset-2fa by login: rows gone, sessions revoked.
-        let login: String = sqlx::query_scalar("SELECT login FROM users WHERE id = $1")
-            .bind(a)
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
-        // db.admin() has an active TOTP.
-        sqlx::query("INSERT INTO user_recovery_codes (user_id, code_hash) VALUES ($1, 'h')")
-            .bind(a)
-            .execute(&db.pool)
-            .await
-            .unwrap();
-        let a1 = sv(a).await;
-        let was = reset_2fa(&db.pool, &login).await.unwrap();
-        assert_eq!(was, "active");
-        assert_eq!(sv(a).await, a1 + 1);
-        let left: i64 = sqlx::query_scalar(
-            "SELECT (SELECT count(*) FROM user_totp) + (SELECT count(*) FROM user_recovery_codes)",
-        )
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-        assert_eq!(left, 0);
-        assert!(reset_2fa(&db.pool, "no-such-login").await.is_err());
-
         let rows = audit_actions(&db).await;
-        let want: Vec<(String, String)> = [
-            "secrets.rotate_jwt",
-            "secrets.rotate_prefix",
-            "user.totp.reset",
-        ]
-        .iter()
-        .map(|a| ("cli".to_string(), a.to_string()))
-        .collect();
+        let want: Vec<(String, String)> = ["secrets.rotate_jwt", "secrets.rotate_prefix"]
+            .iter()
+            .map(|a| ("cli".to_string(), a.to_string()))
+            .collect();
         assert_eq!(rows, want);
         // No secret material in the rows.
         let text: String = sqlx::query_scalar("SELECT string_agg(after::text, ' ') FROM audit_log")

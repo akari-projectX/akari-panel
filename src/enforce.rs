@@ -173,13 +173,11 @@ mod tests {
     use crate::testdb::TestDb;
 
     async fn user_row(db: &TestDb, u: Uuid) -> (bool, Option<String>, bool) {
-        sqlx::query_as(
-            "SELECT enabled, disabled_reason::text, expiry_enforced FROM users WHERE id = $1",
-        )
-        .bind(u)
-        .fetch_one(&db.pool)
-        .await
-        .unwrap()
+        sqlx::query_as("SELECT enabled, disabled_reason, expiry_enforced FROM users WHERE id = $1")
+            .bind(u)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
     }
 
     async fn set(db: &TestDb, u: Uuid, sql: &str) {

@@ -32,7 +32,7 @@ groups_of() {
   case "$1" in
     src/* | migrations/* | proto/* | build.rs | Cargo.toml | Cargo.lock | rust-toolchain.toml | \
       smoke.sh | scripts/smoke-* | Makefile | docker-compose.yml | deploy/systemd/* | \
-      deploy/panel.toml.example)
+      deploy/panel.toml.example | scripts/install-test/* | scripts/install-test-alpine/*)
       echo smoke ;;
   esac
   case "$1" in
@@ -40,7 +40,8 @@ groups_of() {
       echo e2e ;;
   esac
   case "$1" in
-    scripts/install.sh | scripts/installer-test/* | scripts/install-test/* | scripts/backup.sh | \
+    scripts/install.sh | scripts/installer-test/* | scripts/install-test/* | scripts/install-test-alpine/* | \
+      scripts/backup.sh | \
       scripts/restore.sh | scripts/release-bundle.sh | deploy/* | Dockerfile | .dockerignore)
       echo installer ;;
   esac

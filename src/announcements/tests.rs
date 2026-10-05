@@ -38,8 +38,8 @@ async fn give_plan(db: &TestDb, user: Uuid) {
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO user_plans (id, user_id, plan_id, status, period_anchor) \
-         VALUES ($1, $2, $3, 'active', now())",
+        "INSERT INTO user_plans (id, user_id, plan_id, status, period_anchor, term_kind) \
+         VALUES ($1, $2, $3, 'active', now(), 'onetime')",
     )
     .bind(Uuid::new_v4())
     .bind(user)
@@ -475,7 +475,7 @@ async fn mailing_batches_the_audience() {
     assert_eq!(r.status, StatusCode::CONFLICT);
     assert_eq!(r.json()["code"], "announcement.mail_unavailable");
     sqlx::query(
-        "UPDATE smtp_settings SET enabled = true, host = '127.0.0.1', port = 1025, security = 'none', \
+        "UPDATE mail_settings SET enabled = true, host = '127.0.0.1', port = 1025, security = 'none', \
          from_addr = 'noreply@example.com' WHERE id = 1",
     )
     .execute(&db.pool)

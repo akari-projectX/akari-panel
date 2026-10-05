@@ -43,16 +43,19 @@ describe("errorText (portal)", () => {
     );
     expect(errorText(new TypeError("Failed to fetch"), zh)).toBe("无法连接服务器，请检查网络后重试");
     // The portal never shows console texts (R23).
-    expect(errorText(new ApiError(409, "login already exists", { code: "user.login_exists" }), zh)).toBe(
-      "操作失败：login already exists",
-    );
+    expect(
+      errorText(
+        new ApiError(409, "another account already uses this email address", { code: "user.email_exists" }),
+        zh,
+      ),
+    ).toBe("操作失败：another account already uses this email address");
   });
 });
 
 describe("adminErrorText (console)", () => {
   it("maps console codes in Chinese with params", () => {
-    expect(adminErrorText(new ApiError(409, "login already exists", { code: "user.login_exists" }))).toBe(
-      "该账号已存在",
+    expect(adminErrorText(new ApiError(409, "email exists", { code: "user.email_exists" }))).toBe(
+      "已有其他账户使用这个邮箱",
     );
     const e = new ApiError(400, "speed_limit_mbps must be 1..=100000", {
       code: "plan.speed_limit_range",
@@ -81,8 +84,8 @@ describe("adminErrorText (console)", () => {
     expect(adminErrorText(new ApiError(500, "x"), "节点列表加载失败")).toBe(
       "节点列表加载失败：服务器出错了，请稍后再试",
     );
-    expect(adminErrorText(new ApiError(409, "login already exists", { code: "user.login_exists" }), "创建失败")).toBe(
-      "创建失败：该账号已存在",
+    expect(adminErrorText(new ApiError(409, "email exists", { code: "user.email_exists" }), "创建失败")).toBe(
+      "创建失败：已有其他账户使用这个邮箱",
     );
   });
   it("translates stored messages without a code", () => {

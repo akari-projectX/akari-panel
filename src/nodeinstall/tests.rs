@@ -87,8 +87,7 @@ async fn admin_client(state: &AppState, db: &TestDb) -> Client {
             .await
             .unwrap();
     let mut c = Client::new(state, rand_ip());
-    c.cookie =
-        Some(crate::auth::issue_token(state, id, &role, sv, crate::auth::Stage::Full).unwrap());
+    c.cookie = Some(crate::auth::issue_token(state, id, &role, sv).unwrap());
     c
 }
 
@@ -588,13 +587,23 @@ fn updater_units_fit_the_agent_unit() {
         "ReadWritePaths=/usr/local/bin -/var/lib/private/akari-agent",
         // W23: replaces the three units on an update.
         "ReadWritePaths=/etc/systemd/system",
-        "PrivateNetwork=yes",
-        "RestrictAddressFamilies=AF_UNIX",
+        // R44: nft for the relay source allowlists, in the host's network
+        // namespace (no IP traffic still).
+        "IPAddressDeny=any",
+        "RestrictAddressFamilies=AF_UNIX AF_NETLINK",
     ] {
         assert!(svc.contains(&l), "{l}");
     }
+    assert!(!svc.iter().any(|l| l.starts_with("PrivateNetwork")));
+    assert!(
+        svc.iter()
+            .any(|l| l.starts_with("CapabilityBoundingSet=") && l.contains("CAP_NET_ADMIN"))
+    );
+    // R44: never the agent itself.
+    assert!(!agent.iter().any(|l| l.contains("CAP_NET_ADMIN")));
     for l in [
         "PathExists=/var/lib/private/akari-agent/update/apply-request.json",
+        "PathExists=/var/lib/private/akari-agent/update/source-filter-request.json",
         "Unit=akari-agent-update.service",
     ] {
         assert!(path.contains(&l), "{l}");
@@ -610,11 +619,11 @@ fn updater_units_fit_the_agent_unit() {
     // machine metric read 0.
     assert!(agent.contains(&"ProtectProc=invisible"));
     assert!(!agent.iter().any(|l| l.starts_with("ProcSubset")));
-    // The updater never gets the network or the agent's capabilities.
-    assert!(
-        !svc.iter()
-            .any(|l| l.contains("CAP_NET") || l.starts_with("DynamicUser"))
-    );
+    // The updater never gets IP networking or the agent's capability to
+    // bind ports (R44: CAP_NET_ADMIN for nft only, asserted above).
+    assert!(!svc.iter().any(|l| l.contains("CAP_NET_BIND_SERVICE")
+        || l.contains("CAP_NET_RAW")
+        || l.starts_with("DynamicUser")));
 }
 
 /// W10: a node with a TLS domain: TLS templates take it, the script knows
@@ -808,4 +817,42 @@ async fn tls_domain_check_compares_with_the_node() {
         assert_eq!(r.status, 400);
     }
     db.drop().await;
+}
+
+/// W32: the script's OpenRC path and BBR + fq switch, and what the
+/// uninstaller undoes (the smoke runs both on real containers).
+#[test]
+fn openrc_and_bbr_in_the_script() {
+    for l in [
+        // OpenRC: the release's scripts, never a copy of ours.
+        r#""$TMP/akari-agent" -print-unit "$u" >"$TMP/rc.$u""#,
+        "for u in akari-agent akari-agent-update; do",
+        "has no OpenRC support",
+        r#"rc-update add akari-agent default"#,
+        r#"rc-update add akari-agent-update default"#,
+        // BBR + fq: opt-out, own drop-in, previous values recorded.
+        "BBR=${AKARI_BBR:-1}",
+        "--no-bbr) BBR=0 ;;",
+        "# akari-previous: net.core.default_qdisc=$qd net.ipv4.tcp_congestion_control=$cc",
+        "net.ipv4.tcp_congestion_control = bbr",
+        "net.core.default_qdisc = fq",
+        "bbr_remove",
+    ] {
+        assert!(SCRIPT.contains(l), "script lacks {l}");
+    }
+    for l in [
+        "BBR_CONF=/etc/sysctl.d/90-akari-bbr.conf",
+        "BBR_MOD=/etc/modules-load.d/akari-bbr.conf",
+        "RC_AGENT=/etc/init.d/akari-agent",
+        "RC_UPDATE=/etc/init.d/akari-agent-update",
+        r#"umount "$RC_STATE""#,
+        "deluser akari-agent",
+    ] {
+        assert!(UNINSTALL_FN.contains(l), "uninstall lacks {l}");
+    }
+    // The uninstaller restores only the two settings we change, and only
+    // plain values (the drop-in is root's, but still).
+    assert!(UNINSTALL_FN.contains("net.core.default_qdisc) ours=fq ;;"));
+    assert!(UNINSTALL_FN.contains("net.ipv4.tcp_congestion_control) ours=bbr ;;"));
+    assert!(UNINSTALL_FN.contains("'' | *[!a-z0-9_]*) continue ;;"));
 }

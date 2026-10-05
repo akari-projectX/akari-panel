@@ -423,14 +423,14 @@ struct Recipient {
 
 /// One batch of one due mailing. Returns the rows enqueued (0 = nothing
 /// due or another instance holds the row).
-pub async fn mail_pass(state: &AppState, smtp: &crate::mail::Smtp) -> sqlx::Result<usize> {
+pub async fn mail_pass(state: &AppState, smtp: &crate::mail::MailSettings) -> sqlx::Result<usize> {
     mail_pass_batch(state, smtp, MAIL_BATCH).await
 }
 
 /// `mail_pass` with an explicit batch size (tests).
 pub async fn mail_pass_batch(
     state: &AppState,
-    smtp: &crate::mail::Smtp,
+    smtp: &crate::mail::MailSettings,
     batch: i64,
 ) -> sqlx::Result<usize> {
     let mut tx = state.pg().begin().await?;

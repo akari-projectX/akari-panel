@@ -36,11 +36,11 @@ async fn users_export_follows_filters_and_escapes() {
     let Some((db, st, c)) = setup().await else {
         return;
     };
-    // A login that would be a formula, an email with a comma-free odd shape.
+    // An address that would be a formula.
     let evil = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO users (id, login, email, email_verified_at) \
-         VALUES ($1, '=HYPERLINK(\"x\")', 'a@example.com', now())",
+        "INSERT INTO users (id, email, email_verified_at) \
+         VALUES ($1, '=hyperlink(\"x\")@example.com', now())",
     )
     .bind(evil)
     .execute(&db.pool)
@@ -54,7 +54,7 @@ async fn users_export_follows_filters_and_escapes() {
         .unwrap();
     // More than one page of plain users (streamed in chunks).
     sqlx::query(
-        "INSERT INTO users (id, login) SELECT gen_random_uuid(), 'bulk-' || g \
+        "INSERT INTO users (id, email) SELECT gen_random_uuid(), 'bulk-' || g || '@example.com' \
          FROM generate_series(1, 2100) g",
     )
     .execute(&db.pool)
@@ -78,10 +78,13 @@ async fn users_export_follows_filters_and_escapes() {
         "header + every user, admin filtered out"
     );
     let ev = all.iter().find(|r| r[0] == evil.to_string()).unwrap();
-    assert_eq!(ev[1], "'=HYPERLINK(\"x\")", "formula neutralised");
-    assert_eq!(ev[3], "true");
+    assert_eq!(
+        ev[1], "'=hyperlink(\"x\")@example.com",
+        "formula neutralised"
+    );
+    assert_eq!(ev[2], "true");
     let ex = all.iter().find(|r| r[0] == expired.to_string()).unwrap();
-    assert_eq!(ex[5], "expired", "status column = console badge");
+    assert_eq!(ex[4], "expired", "status column = console badge");
     // The list's filters apply.
     let r = c.get("/test/api/v1/users/export.csv?status=expired").await;
     assert_eq!(rows(&r.body).len(), 2);
@@ -126,7 +129,7 @@ async fn orders_export_range_status_and_manual_flag() {
         let pool = db.pool.clone();
         async move {
             sqlx::query(
-                "INSERT INTO orders (id, out_trade_no, user_id, user_login, plan_id, plan_name, \
+                "INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_id, plan_name, \
                  amount_cents, period, period_days, list_price_cents, gift_cents, subject, \
                  expires_at, created_at, status, paid_at, paid_via, ended_at) \
                  VALUES (gen_random_uuid(), 'AK' || replace(gen_random_uuid()::text, '-', ''), \
@@ -162,7 +165,7 @@ async fn orders_export_range_status_and_manual_flag() {
     assert_eq!(manual.len(), 1);
     assert_eq!(manual[0][idx("gift_cents")], "1000");
     assert_eq!(manual[0][idx("amount_cents")], "0");
-    assert_eq!(all[1][idx("user_login")], "'@user");
+    assert_eq!(all[1][idx("user_label")], "'@user");
     assert_eq!(all[1][idx("plan_name")], "'+plan");
     let r = c
         .get("/test/api/v1/orders/export.csv?status=paid&via=manual")

@@ -102,7 +102,7 @@ pub enum Template {
     /// W17: a customer opened a ticket (to admins; Chinese console).
     TicketNew {
         subject: String,
-        user_login: String,
+        user_email: String,
         category: String,
         console_url: Option<String>,
     },
@@ -231,7 +231,7 @@ impl Template {
             },
             "ticket_new" => Template::TicketNew {
                 subject: "节点连不上".into(),
-                user_login: "alice".into(),
+                user_email: "alice@example.com".into(),
                 category: "technical".into(),
                 console_url: Some("https://panel.example/prefix/admin".into()),
             },
@@ -353,7 +353,7 @@ const TICKET_REPLY_PH: [Placeholder; 2] = [
 ];
 const TICKET_NEW_PH: [Placeholder; 4] = [
     ph("ticket_subject", "工单标题"),
-    ph("user_login", "用户账号"),
+    ph("user_email", "用户邮箱"),
     ph("category", "工单分类"),
     ph("console_url", "管理后台链接（按钮；未配置主域名时为空）"),
 ];
@@ -579,12 +579,12 @@ impl Template {
             ],
             Template::TicketNew {
                 subject,
-                user_login,
+                user_email,
                 category,
                 console_url,
             } => vec![
                 text("ticket_subject", subject.clone()),
-                text("user_login", user_login.clone()),
+                text("user_email", user_email.clone()),
                 text("category", category.clone()),
                 link("console_url", console_url.as_ref(), "前往工单管理"),
             ],
@@ -749,7 +749,7 @@ pub fn defaults(kind: &str, locale: Locale) -> Option<(&'static str, &'static st
         ),
         ("ticket_new", _) => (
             "{site}：新工单",
-            "用户 {user_login} 提交了新工单（{category}）：\n\n{ticket_subject}\n\n{console_url}",
+            "用户 {user_email} 提交了新工单（{category}）：\n\n{ticket_subject}\n\n{console_url}",
         ),
         ("node_alert", _) => ("{site}：{title}", "{text}"),
         ("admin_notice", _) => ("{subject}", "{body}"),
@@ -1238,7 +1238,7 @@ mod tests {
         let r = render(
             &Template::TicketNew {
                 subject: "<i>x</i>".into(),
-                user_login: "alice".into(),
+                user_email: "alice@example.com".into(),
                 category: "technical".into(),
                 console_url: None,
             },

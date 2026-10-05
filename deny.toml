@@ -62,3 +62,22 @@ highlight = "all"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+# W27 passkeys: the kanidm webauthn-rs family is MPL-2.0 (file-level
+# copyleft: the unmodified source is on crates.io; nothing of ours becomes
+# MPL). Allowed for exactly these crates, not crate-wide.
+[[licenses.exceptions]]
+allow = ["MPL-2.0"]
+crate = "webauthn-rs"
+[[licenses.exceptions]]
+allow = ["MPL-2.0"]
+crate = "webauthn-rs-core"
+[[licenses.exceptions]]
+allow = ["MPL-2.0"]
+crate = "webauthn-rs-proto"
+[[licenses.exceptions]]
+allow = ["MPL-2.0"]
+crate = "webauthn-attestation-ca"
+[[licenses.exceptions]]
+allow = ["MPL-2.0"]
+crate = "base64urlsafedata"

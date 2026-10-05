@@ -22,7 +22,7 @@ export type ErrorParams = Record<string, string | number | boolean | null>;
 
 export class ApiError extends Error {
   status: number;
-  /** The parsed JSON error body (e.g. login's `totp_required`). */
+  /** The parsed JSON error body. */
   body: Record<string, unknown>;
   /** Stable machine code of the server error ("plan.speed_limit_range"); "" if none (W21). */
   code: string;
@@ -71,10 +71,12 @@ export const putBinary = <T>(path: string, body: Blob) =>
 
 // Auth endpoints live at /{prefix}/auth/*, NOT under /api/v1 (see src/web.rs).
 // Do not route them through get/post: that yields /api/v1/auth/* -> 404.
-// `code`: TOTP code or recovery code (required by accounts with 2FA; every
-// failure is the same 401, so the form always offers the field).
-export const login = (body: { login: string; password: string; code?: string }) =>
-  request<LoginResult>(`${authBase}/login`, { method: "POST", body: JSON.stringify(body) });
+// D1: the email address is the login name; every failure is the same 401.
+export const login = async (body: { email: string; password: string }) =>
+  request<LoginResult>(`${authBase}/login`, {
+    method: "POST",
+    body: JSON.stringify({ ...body, guard: await formGuard() }),
+  });
 export const logout = () => request<void>(`${authBase}/logout`, { method: "POST" });
 
 // W15 self-service (public, /{prefix}/auth/*). While registration or reset
@@ -93,6 +95,21 @@ export interface AuthOptions {
   site_name?: string;
   // Ops: 系统设置 → 站点 branding (null when unavailable; absent on older panels).
   branding?: Branding | null;
+  // W27: bot protection of the public forms (null = settings unreadable:
+  // the forms refuse; absent on older panels).
+  guard?: FormGuardOptions | null;
+  // W27: "sign in with a passkey" works here (an https main domain).
+  passkey?: boolean;
+}
+
+export interface FormGuardOptions {
+  // Signed issue time; a form may be posted form_min_secs after it (null
+  // when the minimum submit time is off).
+  form_token: string | null;
+  form_min_secs: number;
+  honeypot: boolean;
+  // Cloudflare Turnstile: the site key and the forms that need a token.
+  turnstile: { site_key: string; login: boolean; register: boolean; reset: boolean } | null;
 }
 
 // --- Ops: branding, announcements, knowledge base ---
@@ -168,11 +185,42 @@ export interface HelpArticle {
 export function pick<T>(locale: "zh" | "en", zh: T, en: T | null | undefined): T {
   return locale === "en" && en != null && en !== "" ? en : zh;
 }
-export const authOptions = () => request<AuthOptions>(`${authBase}/options`);
+// W27: the newest form token seen (every /auth/options answer carries a
+// fresh one) and when it arrived.
+let guardSeen: { token: string | null; min: number; at: number } | null = null;
+// Tokens live 24 h on the server; refresh well before.
+const GUARD_REFRESH_MS = 6 * 3600_000;
+
+export const authOptions = async () => {
+  const o = await request<AuthOptions>(`${authBase}/options`);
+  if (o.guard) guardSeen = { token: o.guard.form_token, min: o.guard.form_min_secs, at: Date.now() };
+  return o;
+};
+
+/** The `guard` part of a public form: the form token, posted no sooner than
+ * the minimum submit time after it was issued (waits if needed), and the
+ * honeypot left empty. */
+export async function formGuard(): Promise<{ form_token?: string; website: string } | undefined> {
+  if (!guardSeen || Date.now() - guardSeen.at > GUARD_REFRESH_MS) {
+    try {
+      await authOptions();
+    } catch {
+      return undefined;
+    }
+  }
+  const g = guardSeen;
+  if (!g) return undefined;
+  const wait = g.at + g.min * 1000 + 250 - Date.now();
+  if (g.min > 0 && wait > 0) await new Promise((r) => setTimeout(r, wait));
+  return { ...(g.token ? { form_token: g.token } : {}), website: "" };
+}
+
 const authPost = <T>(path: string, body: unknown) =>
   request<T>(`${authBase}${path}`, { method: "POST", body: JSON.stringify(body) });
+/** A public form post with its `guard` (W27). */
+const guardedPost = async <T>(path: string, body: object) => authPost<T>(path, { ...body, guard: await formGuard() });
 export const registerCode = (body: { email: string; invite_code?: string; locale?: string }) =>
-  authPost<{ ok: true }>("/register/code", body);
+  guardedPost<{ ok: true }>("/register/code", body);
 export const register = (body: {
   email: string;
   code?: string;
@@ -180,10 +228,10 @@ export const register = (body: {
   password: string;
   invite_code?: string;
   locale?: string;
-}) => authPost<LoginResult & { trial: boolean; email_verified?: boolean }>("/register", body);
+}) => guardedPost<LoginResult & { trial: boolean; email_verified?: boolean }>("/register", body);
 /** W24: a proof-of-work challenge (registration without email verification). */
 export const registerChallenge = () => request<{ challenge: string; bits: number }>(`${authBase}/register/challenge`);
-export const requestReset = (body: { email: string }) => authPost<{ ok: true }>("/password-reset/request", body);
+export const requestReset = (body: { email: string }) => guardedPost<{ ok: true }>("/password-reset/request", body);
 export const resetPassword = (body: { token: string; password: string }) =>
   authPost<{ ok: true }>("/password-reset", body);
 
@@ -191,19 +239,25 @@ export const resetPassword = (body: { token: string; password: string }) =>
 
 export interface Me {
   id: string;
-  login: string;
   role: string;
   traffic_used_bytes: number;
   traffic_limit_bytes: number | null;
   expires_at: string | null;
   // R21: past expiry (role=user): renewal scope only (account, plan,
-  // password, shop/orders); subscription and 2FA are unavailable.
+  // password, shop/orders); the subscription is unavailable.
   expired: boolean;
   // R21: disabled for exceeding the traffic limit: same renewal scope.
   quota_exhausted: boolean;
-  // W15: the account's email address and whether it is verified (only a
-  // verified one gets mail and resets the password); language of the mails.
-  email: string | null;
+  // W28-c: banned by an admin: only this account view (with the reason,
+  // written for the user) and tickets; everything else is 403
+  // `account.banned`.
+  banned: boolean;
+  ban_reason: string | null;
+  banned_at: string | null;
+  // D1: the account's email address (its login name) and whether it is
+  // verified (only a verified one gets mail and resets the password);
+  // language of the mails.
+  email: string;
   email_verified: boolean;
   locale: "zh" | "en";
   // W20 (B1): the subscription link, always retrievable (stored encrypted).
@@ -223,43 +277,24 @@ export function mySubUrl(me: Pick<Me, "sub_token" | "sub_url">): string | null {
   return me.sub_token ? subscriptionUrl(me.sub_token) : null;
 }
 
-// "enroll": only with 系统设置 → 安全 → 管理员必须两步验证, an admin without 2FA; only the
-// /me/totp endpoints accept it.
-export type Stage = "full" | "enroll";
-
 export interface LoginResult {
   id: string;
-  login: string;
+  email: string;
   role: string;
-  stage: Stage;
-}
-
-export interface TotpStatus {
-  id: string;
-  login: string;
-  role: string;
-  stage: Stage;
-  enabled: boolean;
-  pending: boolean;
-  recovery_codes_left: number;
-  // 系统设置 → 安全 → 管理员必须两步验证: admins without 2FA only get an enrollment
-  // session. Off by default (2FA is optional, recommended to admins).
-  admin_2fa_required: boolean;
-}
-
-export interface TotpEnrollment {
-  secret: string;
-  otpauth_uri: string;
-  digits: number;
-  period: number;
-  algorithm: string;
+  expired: boolean;
+  quota_exhausted: boolean;
+  // W27: offer binding a passkey (policy on, the account has none).
+  passkey_prompt?: boolean;
 }
 
 export interface AuditEntry {
   id: number;
   at: string;
   actor_id: string | null;
-  actor_login: string;
+  // Q4: non-personal label ("u-1a2b3c4d", "cli", "system", …); the actor's
+  // current address when it is an account (null once deleted).
+  actor_label: string;
+  actor_email: string | null;
   ip: string | null;
   action: string;
   target_type: string | null;
@@ -278,23 +313,22 @@ export const subscriptionUrl = (token: string): string => `${location.origin}${p
 
 export interface UserView {
   id: string;
-  login: string;
   role: string;
   enabled: boolean;
   traffic_limit_bytes: number | null;
   traffic_used_bytes: number;
   expires_at: string | null;
   created_at: string;
-  totp_enabled: boolean;
-  // Why the account is disabled (null while enabled). Only "quota" is ever
-  // re-enabled automatically (period reset, plan change).
-  disabled_reason: "admin" | "quota" | "expiry" | null;
+  // Why the account is disabled (null while enabled): "admin" = banned
+  // (W28-c). Only "quota" is ever re-enabled automatically (period reset,
+  // plan change, traffic reset).
+  disabled_reason: "admin" | "quota" | null;
   // M3: the active plan (null = none) and its next traffic reset.
   plan_id: string | null;
   plan_name: string | null;
   next_reset_at: string | null;
-  // W15
-  email: string | null;
+  // D1: the login name.
+  email: string;
   email_verified: boolean;
 }
 
@@ -389,6 +423,40 @@ export function describePeriod(p: Period, t: TFunction): string {
 }
 
 // GET /users/{id}/nodes: an account's node access (no credentials).
+/** D12: a user's current subscription (GET /users/{id}). */
+export interface SubscriptionView {
+  user_plan_id: string;
+  plan_id: string;
+  plan_name: string;
+  /** The term it was assigned/bought or last renewed with (period kind) and its days. */
+  period: "month" | "quarter" | "half_year" | "year" | "two_year" | "three_year" | "days" | "onetime";
+  period_days: number | null;
+  starts_at: string;
+  expires_at: string | null;
+  traffic_used_bytes: number;
+  traffic_total_bytes: number | null;
+  /** The plan's traffic reset period: "monthly", "days-N" or "none". */
+  reset_period: string;
+  last_reset_at: string | null;
+  next_reset_at: string | null;
+  speed_limit_mbps: number | null;
+  status: "banned" | "over_quota" | "expired" | "active";
+}
+
+/** W28-c: the ban of a banned account. */
+export interface BanView {
+  reason: string | null;
+  banned_at: string | null;
+  banned_by_id: string | null;
+  banned_by_email: string | null;
+}
+
+/** GET /users/{id}: the list row, the current subscription and the ban. */
+export interface UserDetail extends UserView {
+  subscription: SubscriptionView | null;
+  ban: BanView | null;
+}
+
 // An xray inbound object (W28-a/D2: a node has one; the panel names it,
 // so the stored object has no tag).
 export interface Inbound {
@@ -559,8 +627,10 @@ export interface MyTicketRow {
 export interface TicketMessage {
   id: number;
   staff: boolean;
-  // Staff view only (customers never see admin logins).
-  author_login?: string;
+  // Staff view only (customers never learn who on the staff wrote): the
+  // snapshot label and the author's current address.
+  author_label?: string;
+  author_email?: string | null;
   body: string;
   created_at: string;
 }

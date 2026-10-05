@@ -189,6 +189,9 @@ message Heartbeat {
   CertStatus cert = 10;
   // Machine status (W11, capability "metrics"); unset from older agents.
   NodeMetrics metrics = 20;
+  // Block rule hit counters and the policy in force (W29, capability
+  // "block-rules"); unset from older agents.
+  BlockStats block = 41;
   // Source-IP allowlist state (W28-a, capability "source-filter"); unset
   // while the held Snapshot has no source_filters.
   SourceFilterStatus source_filter = 30;
@@ -445,9 +448,11 @@ message ConfigSnapshot {
   // Source-IP allowlists (W28-a, capability "source-filter"): new
   // connections to each listed port are accepted only from the listed
   // networks (a relay entrance's derived inbound accepts only its relay's
-  // egress addresses). The agent enforces them in the kernel (nftables,
-  // its own table, replaced as a whole on every Snapshot, removed when the
-  // list is empty) and reports the outcome in Heartbeat.source_filter. Not
+  // egress addresses). They are enforced in the kernel (nftables, a table
+  // of their own, replaced as a whole when they change, removed when the
+  // list is empty) by the agent's root updater, to which the agent hands
+  // them (R44: the agent has no CAP_NET_ADMIN; applied within seconds),
+  // and the outcome is reported in Heartbeat.source_filter. Not
   // part of the state hash: they change only with config_version. Agents
   // without the capability ignore them (per-entrance credentials still
   // isolate the entrances; the panel flags such nodes).
@@ -465,7 +470,9 @@ message SourceFilter {
 // Whether the agent enforces ConfigSnapshot.source_filters (W28-a).
 message SourceFilterStatus {
   bool applied = 1;  // the kernel rules match the last Snapshot
-  string error = 2;  // why not ("nft: permission denied", ...); "" when applied
+  // Why not ("pending: ..." until the root updater answers, "nft: ...",
+  // the updater missing, ...); "" when applied.
+  string error = 2;
 }
 
 // ACME (RFC 8555) certificate the agent obtains and renews itself (protocol
@@ -617,5 +624,63 @@ message PanelDown {
     LeaseGrant lease = 4;
     UpdateOffer update_offer = 5; // protocol >= 3
     LatencyProbeConfig latency_probe = 20; // capability "latency" (W11)
+    BlockPolicy block_policy = 40;         // capability "block-rules" (W29)
   }
+}
+
+// --- W29: node block rules (后台「审计规则」), capability "block-rules" -------
+//
+// The panel compiles the enabled rules into one BlockPolicy per agent and
+// sends it after every Hello and whenever it differs from the one last sent
+// on the stream (rule content, a node switch, the node's inbounds). It is
+// NOT part of ConfigSnapshot: the policy never bumps config_version, never
+// enters the state hash and never causes a Snapshot. The agent:
+//   - installs the rules into xray routing ("blackhole" outbound for every
+//     match), swapping the whole rule set atomically: a content change
+//     drops no connection and rebuilds nothing;
+//   - turns on sniffing (routeOnly: sniffed names feed routing only, never
+//     the destination) for the listed inbound tags that do not already
+//     configure sniffing themselves; only an inbound whose sniffing changes
+//     is re-created (its handler swapped, users and gate identities kept);
+//   - with no inbound_tags, removes everything: the xray config is then
+//     byte-identical to an agent without the feature.
+// Hit counts are aggregate per rule (never per user or per destination).
+
+message BlockPolicy {
+  // Inbounds the rules apply to (nodes with the switch on); empty = off.
+  repeated string inbound_tags = 1;
+  repeated BlockRule rules = 2; // ignored when inbound_tags is empty
+  // Opaque content id of this policy (panel: hex SHA-256 prefix of the
+  // tags and rules); echoed in BlockStats.applied once in force.
+  string version = 3;
+}
+
+message BlockRule {
+  uint64 id = 1; // panel rule id; BlockStats counts per id
+  // xray domain matchers, lowercase: "domain:<suffix>", "full:<name>",
+  // "keyword:<text>". Matched against the requested or sniffed name.
+  repeated string domains = 2;
+  // Destination networks ("192.0.2.0/24", "2001:db8::/32", single IPs as
+  // /32 or /128). Matched against destinations given as addresses only
+  // (no DNS resolution for domain requests).
+  repeated string cidrs = 3;
+  // Sniffed protocols: "bittorrent", "http", "tls", "quic".
+  repeated string protocols = 4;
+}
+
+message BlockStats {
+  // Identifies the agent process the counters belong to (fresh per start).
+  string epoch = 1;
+  // Cumulative blocked connections per rule within the epoch (rules that
+  // blocked nothing may be omitted).
+  repeated BlockHits hits = 2;
+  // BlockPolicy.version in force; "" = no policy (off).
+  string applied = 3;
+  // Why the last received policy could not be applied ("" = it was).
+  string error = 4;
+}
+
+message BlockHits {
+  uint64 rule_id = 1;
+  uint64 hits = 2;
 }

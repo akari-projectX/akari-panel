@@ -25,7 +25,7 @@ async fn edited_template_is_used_by_enqueue() {
     let admin = client_for(&state, db.admin().await).await;
     let user = client_for(&state, db.user().await).await;
     sqlx::query(
-        "UPDATE smtp_settings SET enabled = true, host = '127.0.0.1', port = 1025, security = 'none', \
+        "UPDATE mail_settings SET enabled = true, host = '127.0.0.1', port = 1025, security = 'none', \
          from_addr = 'noreply@example.com' WHERE id = 1",
     )
     .execute(&db.pool)
@@ -65,7 +65,7 @@ async fn edited_template_is_used_by_enqueue() {
     let smtp = crate::mail::load(&mut db.pool.acquire().await.unwrap())
         .await
         .unwrap();
-    async fn enqueue(db: &TestDb, smtp: &crate::mail::Smtp, tpl: &crate::mail::Template) {
+    async fn enqueue(db: &TestDb, smtp: &crate::mail::MailSettings, tpl: &crate::mail::Template) {
         let mut c = db.pool.acquire().await.unwrap();
         crate::mail::enqueue(
             &mut c,

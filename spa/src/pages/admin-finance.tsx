@@ -198,7 +198,7 @@ function WithdrawalsCard() {
     const text = (ref[w.id] ?? "").trim();
     if (!text) return setError(approve ? "请先填写打款凭证（交易号等）" : "请先填写拒绝原因");
     const what = approve
-      ? `确认已向 ${w.user_login} 打款 ¥${yuan(w.amount_cents)}？`
+      ? `确认已向 ${w.user_email ?? w.user_label} 打款 ¥${yuan(w.amount_cents)}？`
       : `拒绝并退回 ¥${yuan(w.amount_cents)} 到余额？`;
     if (!(await confirm({ title: what, confirmLabel: approve ? "确认已打款" : "拒绝", destructive: !approve }))) return;
     try {
@@ -262,7 +262,7 @@ function WithdrawalsCard() {
               {rows.map((w) => (
                 <TableRow key={w.id}>
                   <TableCell>{fmt(w.created_at)}</TableCell>
-                  <TableCell>{w.user_login}</TableCell>
+                  <TableCell>{w.user_email ?? w.user_label}</TableCell>
                   <TableCell>¥{yuan(w.amount_cents)}</TableCell>
                   <TableCell className="text-xs">
                     {METHOD_ZH[w.method]}：{w.account}
@@ -274,7 +274,7 @@ function WithdrawalsCard() {
                     {w.status === "pending" ? (
                       <div className="flex flex-wrap items-center gap-1">
                         <Input
-                          aria-label={`提现 ${w.user_login} 的打款凭证或拒绝原因`}
+                          aria-label={`提现 ${w.user_email ?? w.user_label} 的打款凭证或拒绝原因`}
                           className="w-48"
                           value={ref[w.id] ?? ""}
                           onChange={(e) => setRef({ ...ref, [w.id]: e.target.value })}
@@ -311,12 +311,12 @@ function WithdrawalsCard() {
 }
 
 function BalancesCard() {
-  const [login, setLogin] = useState("");
+  const [email, setEmail] = useState("");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const list = useQuery({
     queryKey: ["balances", search],
-    queryFn: () => get<BalanceRow[]>(search ? `/balances?login=${encodeURIComponent(search)}` : "/balances"),
+    queryFn: () => get<BalanceRow[]>(search ? `/balances?email=${encodeURIComponent(search)}` : "/balances"),
   });
   const rows = list.data ?? [];
   return (
@@ -332,12 +332,12 @@ function BalancesCard() {
           className="flex items-end gap-2"
           onSubmit={(e) => {
             e.preventDefault();
-            setSearch(login.trim());
+            setSearch(email.trim());
           }}
         >
           <div className="space-y-1">
-            <Label htmlFor="b-login">用户名（精确）</Label>
-            <Input id="b-login" className="w-48" value={login} onChange={(e) => setLogin(e.target.value)} />
+            <Label htmlFor="b-email">用户邮箱（精确）</Label>
+            <Input id="b-email" className="w-48" value={email} onChange={(e) => setEmail(e.target.value)} />
           </div>
           <Button type="submit" size="sm" variant="outline">
             查找
@@ -358,7 +358,7 @@ function BalancesCard() {
             <TableBody>
               {rows.map((b) => (
                 <TableRow key={b.user_id}>
-                  <TableCell>{b.login}</TableCell>
+                  <TableCell>{b.email}</TableCell>
                   <TableCell>¥{yuan(b.balance_cents)}</TableCell>
                   <TableCell>{fmt(b.updated_at)}</TableCell>
                   <TableCell>
@@ -405,7 +405,7 @@ function LedgerPanel({ id, onClose }: { id: string; onClose: () => void }) {
     const signed = sign === "+" ? cents : -cents;
     if (
       !(await confirm({
-        title: `${b?.login} 余额 ${signedYuan(signed)} 元，原因：${reason.trim()}。确定吗？`,
+        title: `${b?.email} 余额 ${signedYuan(signed)} 元，原因：${reason.trim()}。确定吗？`,
         confirmLabel: "确认调整",
       }))
     )
@@ -428,7 +428,7 @@ function LedgerPanel({ id, onClose }: { id: string; onClose: () => void }) {
   return (
     <div className="space-y-3 rounded-lg border border-border p-4">
       <p className="text-sm font-medium">
-        {b.login}：余额 ¥{yuan(b.balance_cents)}，可提现 ¥{yuan(b.withdrawable_cents)}
+        {b.email}：余额 ¥{yuan(b.balance_cents)}，可提现 ¥{yuan(b.withdrawable_cents)}
       </p>
       <form className="flex flex-wrap items-end gap-2" onSubmit={adjust}>
         <div className="space-y-1">
@@ -489,7 +489,7 @@ function LedgerPanel({ id, onClose }: { id: string; onClose: () => void }) {
                 <TableCell className="text-xs">
                   {[e.out_trade_no, e.reason].filter(Boolean).join(" · ") || "—"}
                 </TableCell>
-                <TableCell>{e.actor_login}</TableCell>
+                <TableCell>{e.actor_label}</TableCell>
               </TableRow>
             ))}
           </TableBody>
@@ -549,8 +549,8 @@ function CommissionsCard() {
               {rows.map((c) => (
                 <TableRow key={c.id}>
                   <TableCell>{fmt(c.created_at)}</TableCell>
-                  <TableCell>{c.inviter_login}</TableCell>
-                  <TableCell>{c.invitee_login}</TableCell>
+                  <TableCell>{c.inviter_email ?? c.inviter_label}</TableCell>
+                  <TableCell>{c.invitee_email ?? c.invitee_label}</TableCell>
                   <TableCell className="font-mono text-xs">{c.out_trade_no}</TableCell>
                   <TableCell>¥{yuan(c.base_cents)}</TableCell>
                   <TableCell>

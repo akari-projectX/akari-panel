@@ -1,6 +1,6 @@
 // R22 系统设置：主域名 / 订阅域名 / 节点通信域名 + 信任 Cloudflare；
 // W12：延迟测试（测速间隔、测速地址、面板 TCP 测速）；
-// W25（R39）：节点通信（安装命令、ACME、撤权方式）与安全（两步验证、保留期、
+// W25（R39）：节点通信（安装命令、ACME、撤权方式）与安全（保留期、
 // Cloudflare 网段、额外发布公钥）。这些设置只存数据库，panel.toml 不再参与。
 // 后台管理只有中文。类型手工镜像 src/settings.rs 的 SettingsView。
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -133,7 +133,6 @@ export interface NodeOpsView {
 }
 
 export interface SecurityView {
-  require_admin_2fa: Field<boolean>;
   audit_retention_days: Field<number>;
   traffic_daily_retention_days: Field<number>;
   cloudflare_ranges: string[] | null;
@@ -1131,7 +1130,7 @@ function NodeOpsForm({ data }: { data: SettingsView }) {
 /** 安全表单 → PUT /settings/security 的请求体；输入不合法时返回错误文案。 */
 export function securityBody(
   version: number,
-  f: { twoFactor: boolean; auditDays: string; trafficDays: string; ranges: string; keys: string },
+  f: { auditDays: string; trafficDays: string; ranges: string; keys: string },
 ): { body: Record<string, unknown> } | { error: string } {
   const days = (v: string, label: string, min: number) => {
     if (v.trim() === "") return { ok: null as number | null };
@@ -1161,7 +1160,6 @@ export function securityBody(
   return {
     body: {
       version,
-      require_admin_2fa: f.twoFactor,
       audit_retention_days: audit.ok,
       traffic_daily_retention_days: traffic.ok,
       cloudflare_ranges: ranges.length ? ranges : null,
@@ -1172,9 +1170,7 @@ export function securityBody(
 
 function SecurityForm({ data }: { data: SettingsView }) {
   const qc = useQueryClient();
-  const confirm = useConfirm();
   const s = data.security;
-  const [twoFactor, setTwoFactor] = useState(s.require_admin_2fa.effective);
   const [auditDays, setAuditDays] = useState(
     s.audit_retention_days.value === null ? "" : String(s.audit_retention_days.value),
   );
@@ -1191,17 +1187,8 @@ function SecurityForm({ data }: { data: SettingsView }) {
     e.preventDefault();
     setError(null);
     setSaved(false);
-    const req = securityBody(data.version, { twoFactor, auditDays, trafficDays, ranges, keys });
+    const req = securityBody(data.version, { auditDays, trafficDays, ranges, keys });
     if ("error" in req) return setError(req.error);
-    if (twoFactor && !s.require_admin_2fa.effective) {
-      const ok = await confirm({
-        title: "要求所有管理员开启两步验证？",
-        message:
-          "没有开启两步验证的管理员（可能包括你自己）下一次请求时会被要求先绑定身份验证器，在此之前只能访问两步验证设置页。",
-        confirmLabel: "确认开启",
-      });
-      if (!ok) return;
-    }
     setBusy(true);
     try {
       const res = await put<SettingsView>("/settings/security", req.body);
@@ -1224,16 +1211,6 @@ function SecurityForm({ data }: { data: SettingsView }) {
       </CardHeader>
       <CardContent>
         <form className="space-y-6" onSubmit={save} aria-label="安全设置" noValidate>
-          <label className="flex items-start gap-2 text-sm">
-            <input type="checkbox" checked={twoFactor} onChange={(e) => setTwoFactor(e.target.checked)} />
-            <span>
-              管理员必须开启两步验证
-              <span className="block text-xs text-muted-foreground">
-                默认关闭（推荐但不强制）。开启后，没有两步验证的管理员登录只能进入两步验证设置。
-              </span>
-            </span>
-          </label>
-
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="security-audit-days">审计日志保留天数</Label>

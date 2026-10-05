@@ -167,7 +167,7 @@ pub struct BatchView {
     pub prefix: String,
     pub count: i32,
     pub template: Value,
-    pub actor_login: String,
+    pub actor_label: String,
     pub created_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
     /// Codes still in the coupons table (deleted ones are gone).
@@ -177,7 +177,7 @@ pub struct BatchView {
     pub redeemed: i64,
 }
 
-const BATCH_SQL: &str = "SELECT b.id, b.name, b.prefix, b.count, b.template, b.actor_login, \
+const BATCH_SQL: &str = "SELECT b.id, b.name, b.prefix, b.count, b.template, b.actor_label, \
      b.created_at, b.revoked_at, \
      (SELECT count(*) FROM coupons c WHERE c.batch_id = b.id) AS codes, \
      (SELECT COALESCE(sum(c.used), 0)::bigint FROM coupons c WHERE c.batch_id = b.id) AS used, \
@@ -204,7 +204,7 @@ pub async fn apply_create(
         "new_users_only": t.new_users_only, "length": len,
     });
     sqlx::query(
-        "INSERT INTO coupon_batches (id, name, prefix, count, template, actor_login) \
+        "INSERT INTO coupon_batches (id, name, prefix, count, template, actor_label) \
          VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(id)
@@ -212,7 +212,7 @@ pub async fn apply_create(
     .bind(&prefix)
     .bind(req.count)
     .bind(&template)
-    .bind(&actor.login)
+    .bind(&actor.label)
     .execute(&mut *conn)
     .await?;
     let want = req.count as usize;

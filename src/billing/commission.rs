@@ -163,10 +163,11 @@ pub async fn on_paid(
     actor: &Actor,
     order_id: Uuid,
 ) -> Result<Option<(Uuid, i64)>, ApiError> {
-    let row: Option<(Uuid, i64, Uuid, Uuid, DateTime<Utc>)> = sqlx::query_as(
-        "INSERT INTO commissions (id, order_id, inviter_id, inviter_login, invitee_id, \
-           invitee_login, base_cents, rate_percent, amount_cents, available_at) \
-         SELECT gen_random_uuid(), o.id, inv.id, inv.login, u.id, u.login, o.amount_cents, \
+    let row: Option<(Uuid, i64, Uuid, Uuid, DateTime<Utc>)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO commissions (id, order_id, inviter_id, inviter_label, invitee_id, \
+           invitee_label, base_cents, rate_percent, amount_cents, available_at) \
+         SELECT gen_random_uuid(), o.id, inv.id, {}, u.id, {}, o.amount_cents, \
            s.rate_percent, (o.amount_cents * s.rate_percent) / 100, \
            now() + make_interval(days => s.hold_days) \
          FROM orders o JOIN users u ON u.id = o.user_id JOIN users inv ON inv.id = u.inviter_id \
@@ -179,10 +180,12 @@ pub async fn on_paid(
                 AND p.id <> o.id)) \
          ON CONFLICT (order_id) DO NOTHING \
          RETURNING id, amount_cents, inviter_id, invitee_id, available_at",
-    )
-    .bind(order_id)
-    .fetch_optional(&mut *conn)
-    .await?;
+            crate::audit::user_label_sql("inv.id"),
+            crate::audit::user_label_sql("u.id"),
+        )))
+        .bind(order_id)
+        .fetch_optional(&mut *conn)
+        .await?;
     let Some((id, amount, inviter, invitee, available_at)) = row else {
         return Ok(None);
     };
@@ -328,7 +331,9 @@ pub struct WithdrawReq {
 pub struct WithdrawalView {
     id: Uuid,
     user_id: Option<Uuid>,
-    user_login: String,
+    /// Q4: snapshot label; `user_email` = the requester's current address.
+    user_label: String,
+    user_email: Option<String>,
     amount_cents: i64,
     method: String,
     account: String,
@@ -340,7 +345,9 @@ pub struct WithdrawalView {
     created_at: DateTime<Utc>,
 }
 
-const WITHDRAWAL_SQL: &str = "SELECT id, user_id, user_login, amount_cents, method, account, \
+const WITHDRAWAL_SQL: &str = "SELECT id, user_id, user_label, \
+     (SELECT u.email FROM users u WHERE u.id = withdrawals.user_id) AS user_email, \
+     amount_cents, method, account, \
      status, payout_reference, note, decided_at, decided_by, created_at FROM withdrawals";
 
 /// A user's withdrawal request: checked against the withdrawable amount
@@ -385,14 +392,15 @@ pub async fn apply_request(
     }
     let id = Uuid::new_v4();
     let r = sqlx::query(
-        "INSERT INTO withdrawals (id, user_id, user_login, amount_cents, method, account) \
-         SELECT $1, u.id, u.login, $3, $4, $5 FROM users u WHERE u.id = $2",
+        "INSERT INTO withdrawals (id, user_id, user_label, amount_cents, method, account) \
+         SELECT $1, u.id, $6, $3, $4, $5 FROM users u WHERE u.id = $2",
     )
     .bind(id)
     .bind(user_id)
     .bind(req.amount_cents)
     .bind(req.method.as_str())
     .bind(account)
+    .bind(crate::audit::user_label(user_id))
     .execute(&mut *conn)
     .await;
     match r {
@@ -470,7 +478,7 @@ pub async fn apply_decide(
     .bind(status)
     .bind(payout_reference)
     .bind(note)
-    .bind(&actor.login)
+    .bind(&actor.label)
     .execute(&mut *conn)
     .await?;
     crate::audit::record(
@@ -532,7 +540,7 @@ pub async fn my_invite(
     .fetch_one(&mut *c)
     .await?;
     let history: Vec<MyCommission> = sqlx::query_as(
-        "SELECT id, invitee_login, base_cents, rate_percent, amount_cents, status, \
+        "SELECT id, invitee_label, base_cents, rate_percent, amount_cents, status, \
          available_at, credited_at, reversed_at, created_at FROM commissions \
          WHERE inviter_id = $1 ORDER BY created_at DESC, id DESC LIMIT 100",
     )
@@ -569,7 +577,8 @@ pub async fn my_invite(
 #[derive(Serialize, sqlx::FromRow, Debug)]
 pub struct MyCommission {
     id: Uuid,
-    invitee_login: String,
+    /// Q4: the invitee's non-personal label (never their address).
+    invitee_label: String,
     base_cents: i64,
     rate_percent: i32,
     amount_cents: i64,
@@ -636,8 +645,9 @@ pub async fn cancel_withdrawal(
 #[serde(deny_unknown_fields)]
 pub struct ListQuery {
     pub status: Option<String>,
-    /// Exact login (inviter for commissions, requester for withdrawals).
-    pub login: Option<String>,
+    /// Exact email address, any case (inviter for commissions, requester
+    /// for withdrawals).
+    pub email: Option<String>,
     pub limit: Option<i64>,
 }
 
@@ -647,9 +657,13 @@ pub struct CommissionView {
     order_id: Uuid,
     out_trade_no: String,
     inviter_id: Option<Uuid>,
-    inviter_login: String,
+    /// Q4: snapshot labels; the `*_email` fields are the current addresses
+    /// (null once the account is gone).
+    inviter_label: String,
+    inviter_email: Option<String>,
     invitee_id: Option<Uuid>,
-    invitee_login: String,
+    invitee_label: String,
+    invitee_email: Option<String>,
     base_cents: i64,
     rate_percent: i32,
     amount_cents: i64,
@@ -673,16 +687,23 @@ pub async fn list_commissions(
         return Err(bad_request!("request.status_invalid", "unknown status"));
     }
     let rows = sqlx::query_as(
-        "SELECT c.id, c.order_id, o.out_trade_no, c.inviter_id, c.inviter_login, c.invitee_id, \
-         c.invitee_login, c.base_cents, c.rate_percent, c.amount_cents, c.status, \
+        "SELECT c.id, c.order_id, o.out_trade_no, c.inviter_id, c.inviter_label, \
+         (SELECT u.email FROM users u WHERE u.id = c.inviter_id) AS inviter_email, c.invitee_id, \
+         c.invitee_label, (SELECT u.email FROM users u WHERE u.id = c.invitee_id) AS invitee_email, \
+         c.base_cents, c.rate_percent, c.amount_cents, c.status, \
          c.available_at, c.credited_at, c.reversed_at, c.reverse_reason, c.created_at \
          FROM commissions c JOIN orders o ON o.id = c.order_id \
          WHERE ($1::text IS NULL OR c.status = $1) \
-           AND ($2::text IS NULL OR c.inviter_login = $2) \
+           AND ($2::text IS NULL OR c.inviter_id = (SELECT u.id FROM users u WHERE u.email = $2)) \
          ORDER BY c.created_at DESC, c.id DESC LIMIT $3",
     )
     .bind(q.status)
-    .bind(q.login.filter(|l| !l.is_empty()))
+    .bind(
+        q.email
+            .as_deref()
+            .map(|e| e.trim().to_lowercase())
+            .filter(|e| !e.is_empty()),
+    )
     .bind(q.limit.unwrap_or(100).clamp(1, 500))
     .fetch_all(state.pg())
     .await?;
@@ -705,11 +726,16 @@ pub async fn list_withdrawals(
     }
     let rows = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{WITHDRAWAL_SQL} WHERE ($1::text IS NULL OR status = $1) \
-         AND ($2::text IS NULL OR user_login = $2) \
+         AND ($2::text IS NULL OR user_id = (SELECT u.id FROM users u WHERE u.email = $2)) \
          ORDER BY created_at DESC, id DESC LIMIT $3"
     )))
     .bind(q.status)
-    .bind(q.login.filter(|l| !l.is_empty()))
+    .bind(
+        q.email
+            .as_deref()
+            .map(|e| e.trim().to_lowercase())
+            .filter(|e| !e.is_empty()),
+    )
     .bind(q.limit.unwrap_or(100).clamp(1, 500))
     .fetch_all(state.pg())
     .await?;

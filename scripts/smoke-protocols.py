@@ -184,12 +184,12 @@ expect_links = {
 }
 vmess_nets = {"w8-vmess-tcp": "tcp", "w8-vmess-ws": "ws", "w8-vmess-grpc": "grpc"}
 
-st, u = api("POST", "/api/v1/users", {"login": "w8-user", "password": "user-password-123"})
+st, u = api("POST", "/api/v1/users", {"email": "w8-user@smoke.test", "password": "user-password-123"})
 if st != 201:
     fail(f"create w8 user: {st} {u}")
 USER, SUB = u["id"], u["sub_token"]
 # D3: access comes from the plan (it grants the node's direct entrance).
-st, r = api("PUT", f"/api/v1/users/{USER}/plan", {"plan_id": ACCESS_PLAN})
+st, r = api("PUT", f"/api/v1/users/{USER}/plan", {"plan_id": ACCESS_PLAN, "period": "month"})
 if st != 200:
     fail(f"w8 user plan: {st} {r}")
 

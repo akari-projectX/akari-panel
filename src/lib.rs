@@ -10,6 +10,8 @@ pub mod audit;
 pub mod auth;
 pub mod batch;
 pub mod billing;
+pub mod blockrules;
+pub mod botguard;
 pub mod branding;
 pub mod client_ip;
 pub mod cloudflare;
@@ -42,6 +44,7 @@ pub mod nodeops;
 pub mod nodestat;
 pub mod nodetpl;
 pub mod notify;
+pub mod passkey;
 pub mod pb;
 pub mod plans;
 pub mod protocols;
@@ -56,6 +59,7 @@ pub mod signup;
 pub mod spa;
 pub mod state;
 pub mod sub;
+pub mod sysstatus;
 #[cfg(test)]
 pub mod testdb;
 pub mod tickets;
@@ -72,4 +76,6 @@ mod w20_tests;
 mod w21_tests;
 #[cfg(test)]
 mod w26_golden_tests;
+#[cfg(test)]
+mod w28c_tests;
 pub mod web;

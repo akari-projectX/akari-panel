@@ -131,10 +131,10 @@ docker compose exec -T postgres psql -U akari -d "$E2E_DB" -qc \
 
 ADMIN_PW="e2e-admin-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 USER_PW="e2e-user-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" -c "$DIR/panel.toml" admin add e2e-admin >/dev/null
-AKARI_ADMIN_PASSWORD="$USER_PW" "$PANEL" -c "$DIR/panel.toml" admin add e2e-user --role user >/dev/null
+AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" -c "$DIR/panel.toml" admin add e2e-admin@e2e.test >/dev/null
+AKARI_ADMIN_PASSWORD="$USER_PW" "$PANEL" -c "$DIR/panel.toml" admin add e2e-user@e2e.test --role user >/dev/null
 # W20: a second user that the spec drives into quota exhaustion.
-AKARI_ADMIN_PASSWORD="$USER_PW" "$PANEL" -c "$DIR/panel.toml" admin add e2e-quota --role user >/dev/null
+AKARI_ADMIN_PASSWORD="$USER_PW" "$PANEL" -c "$DIR/panel.toml" admin add e2e-quota@e2e.test --role user >/dev/null
 # W22: two UTC days of traffic history for e2e-user on a node that no
 # longer exists (portal: "其他节点 / Other nodes"; console: "已删除的节点").
 docker compose exec -T postgres psql -U akari -d "$E2E_DB" -qc "
@@ -142,16 +142,16 @@ docker compose exec -T postgres psql -U akari -d "$E2E_DB" -qc "
   SELECT id, (now() AT TIME ZONE 'UTC')::date - d, '00000000-0000-4000-8000-0000000000e2',
          '00000000-0000-4000-8000-0000000000e3',
          (2 - d) * 536870912, (2 - d) * 536870912, (2 - d) * 536870912
-  FROM users CROSS JOIN generate_series(0, 1) d WHERE login = 'e2e-user';
+  FROM users CROSS JOIN generate_series(0, 1) d WHERE email = 'e2e-user@e2e.test';
   INSERT INTO traffic_entrance_daily (entrance_id, day, node_id, up_bytes, down_bytes, billed_bytes, users)
   SELECT entrance_id, day, node_id, up_bytes, down_bytes, billed_bytes, 1 FROM traffic_daily;" >/dev/null
 
 echo "e2e: http://$E2E_HOST:$PORT/$PREFIX/app"
 cd spa
 E2E_BASE="http://$E2E_HOST:$PORT/$PREFIX/app" \
-  E2E_ADMIN=e2e-admin E2E_ADMIN_PW="$ADMIN_PW" \
-  E2E_USER=e2e-user E2E_USER_PW="$USER_PW" \
-  E2E_QUOTA_USER=e2e-quota E2E_DB="$E2E_DB" E2E_PAY_DIR="$DIR" \
+  E2E_ADMIN=e2e-admin@e2e.test E2E_ADMIN_PW="$ADMIN_PW" \
+  E2E_USER=e2e-user@e2e.test E2E_USER_PW="$USER_PW" \
+  E2E_QUOTA_USER=e2e-quota@e2e.test E2E_DB="$E2E_DB" E2E_PAY_DIR="$DIR" \
   E2E_MAILPIT=http://127.0.0.1:18026/api/v1 E2E_SMTP_PORT=11026 \
   E2E_RELEASE_SOURCE="http://127.0.0.1:$REL_PORT/repos/akari-projectX/akari-agent/releases/latest" \
   NO_PROXY='*' no_proxy='*' \

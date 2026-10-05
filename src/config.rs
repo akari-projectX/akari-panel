@@ -162,6 +162,8 @@ pub enum Fate {
     Moved(&'static str),
     /// A built-in constant now: ignored.
     Constant,
+    /// The feature itself is gone (why, shown to the operator): ignored.
+    Removed(&'static str),
 }
 
 /// Every key earlier releases read from panel.toml and this one does not,
@@ -214,7 +216,7 @@ pub const OBSOLETE: &[(&str, Fate)] = &[
     ("traffic.departed_grace_secs", Fate::Constant),
     (
         "auth.require_admin_2fa",
-        Fate::Moved("安全 → 管理员必须两步验证"),
+        Fate::Removed("two-factor authentication (TOTP) was removed in v0.4; use passkeys"),
     ),
     ("agent.remove_mode", Fate::Moved("节点通信 → 撤权方式")),
     ("agent.cert_validity_secs", Fate::Constant),
@@ -372,6 +374,8 @@ pub const TELEGRAM_API_URL: &str = "https://api.telegram.org";
 pub const PROBE_TIMEOUT_MS: u32 = 5000;
 pub const PROBE_ATTEMPTS: u32 = 3;
 pub const PROBE_MANUAL_COOLDOWN_SECS: u64 = 30;
+/// Cloudflare Turnstile server-side verification (v0.4 D1).
+pub const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 /// W28-a relay entrance health (`entrance_health.rs`): one TCP connect to
 /// each relay's address this often (±10 %); this many consecutive failures
 /// hide it from subscriptions (the first success shows it again).
@@ -411,6 +415,9 @@ pub struct Limits {
     pub probe_timeout_ms: u32,
     pub probe_attempts: u32,
     pub probe_manual_cooldown_secs: u64,
+    /// Cloudflare Turnstile siteverify endpoint (tests point it at a
+    /// loopback mock; https or loopback http only).
+    pub turnstile_verify_url: String,
     pub entrance_health_interval_secs: u64,
     /// Test overrides applied (logged at startup).
     pub test_overrides: Vec<String>,
@@ -441,6 +448,7 @@ impl Default for Limits {
             probe_timeout_ms: PROBE_TIMEOUT_MS,
             probe_attempts: PROBE_ATTEMPTS,
             probe_manual_cooldown_secs: PROBE_MANUAL_COOLDOWN_SECS,
+            turnstile_verify_url: TURNSTILE_VERIFY_URL.to_string(),
             entrance_health_interval_secs: ENTRANCE_HEALTH_INTERVAL_SECS,
             test_overrides: Vec::new(),
         }

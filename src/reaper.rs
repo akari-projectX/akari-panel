@@ -89,6 +89,14 @@ pub async fn reap_loop(state: AppState) {
                 ),
                 Err(e) => tracing::warn!(error = %e, "traffic counters retention failed"),
             }
+            // W29: block rule hit counts (90 days) and dead baselines.
+            match crate::blockrules::retention_pass(state.pg()).await {
+                Ok((0, 0)) => {}
+                Ok((days, counters)) => {
+                    tracing::info!(days, counters, "block rule counters retention")
+                }
+                Err(e) => tracing::warn!(error = %e, "block rule counters retention failed"),
+            }
             // W22: per-day history older than the retention -> months.
             match crate::traffic::rollup_pass(
                 state.pg(),

@@ -38,7 +38,7 @@ impl Links {
 }
 
 /// The SMTP settings when mail can be sent (enabled and complete).
-async fn smtp(conn: &mut PgConnection) -> sqlx::Result<Option<mail::Smtp>> {
+async fn smtp(conn: &mut PgConnection) -> sqlx::Result<Option<mail::MailSettings>> {
     let s = mail::load(conn).await?;
     Ok((s.enabled && s.complete()).then_some(s))
 }
@@ -96,17 +96,17 @@ pub async fn ticket_created(
         return Ok(0);
     };
     let t: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT t.subject, u.login, t.category FROM tickets t JOIN users u ON u.id = t.user_id \
+        "SELECT t.subject, u.email, t.category FROM tickets t JOIN users u ON u.id = t.user_id \
          WHERE t.id = $1",
     )
     .bind(ticket)
     .fetch_optional(&mut *conn)
     .await?;
-    let Some((subject, user_login, category)) = t else {
+    let Some((subject, user_email, category)) = t else {
         return Ok(0);
     };
     let staff: Vec<(Uuid, String)> = sqlx::query_as(
-        "SELECT id, email FROM users WHERE role = 'admin' AND enabled AND email IS NOT NULL \
+        "SELECT id, email FROM users WHERE role = 'admin' AND enabled \
          AND email_verified_at IS NOT NULL ORDER BY created_at, id LIMIT $1",
     )
     .bind(MAX_STAFF_RECIPIENTS)
@@ -114,7 +114,7 @@ pub async fn ticket_created(
     .await?;
     let tpl = Template::TicketNew {
         subject,
-        user_login,
+        user_email,
         category,
         console_url: links
             .and_then(|l| l.console.clone())

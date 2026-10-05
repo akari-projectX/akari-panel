@@ -60,7 +60,6 @@ pub const MAIL_WINDOW_SECS: i64 = 600;
 const MAIL_RATE_KEY: &str = "akari:rl:batchmail";
 /// Items listed in a job's detail (failed/skipped first).
 const DETAIL_ITEMS: i64 = 500;
-pub const MAX_DAYS: i32 = 3650;
 pub const MAX_SUBJECT: usize = 120;
 pub const MAX_BODY: usize = 5000;
 
@@ -108,21 +107,25 @@ pub struct Selection {
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
-    /// Push the expiry out by N days (from the later of now and the
-    /// current expiry); users without an expiry are skipped.
+    /// D12 "延长 N 天": push the active subscription's expiry out by N days
+    /// (from the later of now and the expiry); users without a plan, with
+    /// a one-time purchase (ruling ④) or without an expiry are skipped.
     ExtendExpiry {
         days: i32,
     },
+    /// Reset the plan traffic (users without a plan are skipped).
     ResetTraffic {},
-    Enable {},
-    Disable {},
-    /// Assign / replace the plan (M3 replace semantics).
+    /// W28-c: ban with the reason shown to the users.
+    Ban {
+        reason: String,
+    },
+    Unban {},
+    /// Assign / replace the plan for one term (D12; M3 replace semantics).
     SetPlan {
         plan_id: Uuid,
+        period: crate::billing::catalog::PeriodKindText,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        expires_at: Option<DateTime<Utc>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        reset_traffic: Option<bool>,
+        days: Option<i32>,
     },
     CancelPlan {},
     /// Credit (or debit) the balance: one ledger row + audit per user.
@@ -142,8 +145,8 @@ impl Action {
         match self {
             Action::ExtendExpiry { .. } => "extend_expiry",
             Action::ResetTraffic {} => "reset_traffic",
-            Action::Enable {} => "enable",
-            Action::Disable {} => "disable",
+            Action::Ban { .. } => "ban",
+            Action::Unban {} => "unban",
             Action::SetPlan { .. } => "set_plan",
             Action::CancelPlan {} => "cancel_plan",
             Action::AddBalance { .. } => "add_balance",
@@ -197,13 +200,13 @@ pub struct CreateReq {
 pub fn check_action(a: &Action) -> Result<(), ApiError> {
     match a {
         Action::ExtendExpiry { days } => {
-            if !(1..=MAX_DAYS).contains(days) {
-                return Err(bad_request!(
-                    "batch.days_range",
-                    "days must be 1..={max_days}",
-                    max_days = MAX_DAYS
-                ));
-            }
+            plans::Renewal::extend(*days)?;
+        }
+        Action::Ban { reason } => {
+            api::clean_ban_reason(reason)?;
+        }
+        Action::SetPlan { period, days, .. } => {
+            plans::Term::new(period.0, *days)?;
         }
         Action::AddBalance {
             amount_cents,
@@ -232,11 +235,7 @@ pub fn check_action(a: &Action) -> Result<(), ApiError> {
                 ));
             }
         }
-        Action::ResetTraffic {}
-        | Action::Enable {}
-        | Action::Disable {}
-        | Action::SetPlan { .. }
-        | Action::CancelPlan {} => {}
+        Action::ResetTraffic {} | Action::Unban {} | Action::CancelPlan {} => {}
     }
     Ok(())
 }
@@ -281,7 +280,7 @@ pub struct Preview {
     pub total: i64,
     /// Admin accounts in the selection (always skipped).
     pub admins: i64,
-    /// Up to 10 logins.
+    /// Up to 10 email addresses.
     pub sample: Vec<String>,
 }
 
@@ -294,7 +293,7 @@ pub async fn preview_selection(
     );
     push_selection(&mut qb, sel)?;
     let (total, admins): (i64, i64) = qb.build_query_as().fetch_one(&mut *conn).await?;
-    let mut qb = sqlx::QueryBuilder::new("SELECT u.login FROM users u");
+    let mut qb = sqlx::QueryBuilder::new("SELECT u.email FROM users u");
     push_selection(&mut qb, sel)?;
     qb.push(" ORDER BY u.created_at, u.id LIMIT 10");
     let sample: Vec<String> = qb.build_query_scalar().fetch_all(conn).await?;
@@ -312,7 +311,7 @@ pub async fn preview_selection(
 #[derive(Serialize, sqlx::FromRow, Debug, Clone)]
 pub struct JobView {
     pub id: Uuid,
-    pub actor_login: String,
+    pub actor_label: String,
     pub action: String,
     pub params: Value,
     pub selection: String,
@@ -328,13 +327,16 @@ pub struct JobView {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
-const JOB_COLS: &str = "id, actor_login, action, params, selection, filter, status, total, done, \
+const JOB_COLS: &str = "id, actor_label, action, params, selection, filter, status, total, done, \
      failed, skipped, last_error, created_at, started_at, finished_at";
 
 #[derive(Serialize, sqlx::FromRow, Debug)]
 pub struct ItemView {
     pub user_id: Uuid,
-    pub user_login: String,
+    /// Q4: snapshot label; `user_email` = the current address (null once
+    /// the account is gone).
+    pub user_label: String,
+    pub user_email: Option<String>,
     pub status: String,
     pub detail: Option<String>,
     pub updated_at: DateTime<Utc>,
@@ -349,11 +351,7 @@ pub async fn apply_create(
 ) -> Result<JobView, ApiError> {
     check_action(&req.action)?;
     match &req.action {
-        Action::SetPlan {
-            plan_id,
-            expires_at,
-            ..
-        } => {
+        Action::SetPlan { plan_id, .. } => {
             let enabled: Option<bool> =
                 sqlx::query_scalar("SELECT enabled FROM plans WHERE id = $1")
                     .bind(plan_id)
@@ -366,18 +364,6 @@ pub async fn apply_create(
                 }
                 Some(true) => {}
             }
-            if let Some(t) = expires_at {
-                let future: bool = sqlx::query_scalar("SELECT $1 > now()")
-                    .bind(t)
-                    .fetch_one(&mut *conn)
-                    .await?;
-                if !future {
-                    return Err(bad_request!(
-                        "batch.expires_past",
-                        "expires_at must be in the future"
-                    ));
-                }
-            }
         }
         Action::SendEmail { .. } if !crate::mailhook::available(conn).await? => {
             return Err(conflict!(
@@ -389,19 +375,22 @@ pub async fn apply_create(
     }
     let id = Uuid::new_v4();
     let mut qb = sqlx::QueryBuilder::new(
-        "INSERT INTO admin_batch_items (job_id, user_id, user_login) SELECT ",
+        "INSERT INTO admin_batch_items (job_id, user_id, user_label) SELECT ",
     );
-    qb.push_bind(id).push(", u.id, u.login FROM users u");
+    qb.push_bind(id)
+        .push(", u.id, ")
+        .push(crate::audit::user_label_sql("u.id"))
+        .push(" FROM users u");
     let selection = push_selection(&mut qb, &req.selection)?;
     // The job row first (the items reference it); the total is the number
     // of snapshotted items.
     sqlx::query(
-        "INSERT INTO admin_batch_jobs (id, actor_id, actor_login, action, params, selection, \
+        "INSERT INTO admin_batch_jobs (id, actor_id, actor_label, action, params, selection, \
          filter, total) VALUES ($1, $2, $3, $4, $5, $6, $7, 0)",
     )
     .bind(id)
     .bind(actor.id)
-    .bind(&actor.login)
+    .bind(&actor.label)
     .bind(req.action.kind())
     .bind(req.action.params())
     .bind(selection)
@@ -546,7 +535,7 @@ pub enum Ran {
 struct Claimed {
     id: Uuid,
     actor_id: Option<Uuid>,
-    actor_login: String,
+    actor_label: String,
     action: String,
     params: Value,
     claim_token: Uuid,
@@ -560,7 +549,7 @@ pub async fn run_one(state: &AppState) -> anyhow::Result<Ran> {
          WHERE id = (SELECT id FROM admin_batch_jobs WHERE status IN ('pending', 'running') \
                      AND (claimed_until IS NULL OR claimed_until < now()) \
                      ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED) \
-         RETURNING id, actor_id, actor_login, action, params, claim_token",
+         RETURNING id, actor_id, actor_label, action, params, claim_token",
     )
     .bind(LEASE_SECS as f64)
     .fetch_optional(state.pg())
@@ -572,7 +561,7 @@ pub async fn run_one(state: &AppState) -> anyhow::Result<Ran> {
         .map_err(|e| anyhow::anyhow!(e.message().to_string()))?;
     let actor = Actor {
         id: job.actor_id,
-        login: job.actor_login.clone(),
+        label: job.actor_label.clone(),
         ip: None,
     };
     loop {
@@ -657,8 +646,8 @@ async fn chunk(
         }
         None => return Ok(Chunk::Paused),
     }
-    let items: Vec<(Uuid, String)> = sqlx::query_as(
-        "SELECT user_id, user_login FROM admin_batch_items WHERE job_id = $1 \
+    let items: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT user_id FROM admin_batch_items WHERE job_id = $1 \
          AND status = 'pending' ORDER BY user_id LIMIT $2 FOR UPDATE",
     )
     .bind(job.id)
@@ -678,7 +667,7 @@ async fn chunk(
     }
     let (mut done, mut failed, mut skipped) = (0i32, 0i32, 0i32);
     let mut paused = false;
-    for (user, _login) in &items {
+    for user in &items {
         if matches!(action, Action::SendEmail { .. }) && !mail_slot(state, &mut tx).await {
             paused = true;
             break;
@@ -763,94 +752,63 @@ async fn apply_one(
     action: &Action,
     user: Uuid,
 ) -> Result<Step, ApiError> {
-    type Row = (String, bool, Option<DateTime<Utc>>, bool);
+    type Row = (String, Option<String>, Option<String>, bool);
     let row: Option<Row> = sqlx::query_as(
-        "SELECT u.role, u.enabled, u.expires_at, \
-         EXISTS (SELECT 1 FROM user_plans up WHERE up.user_id = u.id AND up.status = 'active') \
-         FROM users u WHERE u.id = $1",
+        "SELECT u.role, u.disabled_reason, up.term_kind, up.expires_at IS NOT NULL \
+         FROM users u LEFT JOIN user_plans up ON up.user_id = u.id AND up.status = 'active' \
+         WHERE u.id = $1",
     )
     .bind(user)
     .fetch_optional(&mut *conn)
     .await?;
-    let Some((role, enabled, expires_at, has_plan)) = row else {
+    let Some((role, disabled_reason, term_kind, has_expiry)) = row else {
         return Ok(Step::Skipped("用户已删除".into()));
     };
     if role != "user" {
         return Ok(Step::Skipped("管理员账户".into()));
     }
+    let has_plan = term_kind.is_some();
+    let banned = disabled_reason.as_deref() == Some("admin");
     match action {
         Action::ExtendExpiry { days } => {
-            if expires_at.is_none() {
+            if !has_plan {
+                return Ok(Step::Skipped("无生效套餐".into()));
+            }
+            if term_kind.as_deref() == Some("onetime") {
+                return Ok(Step::Skipped("一次性套餐不能延长天数".into()));
+            }
+            if !has_expiry {
                 return Ok(Step::Skipped("无到期时间".into()));
             }
-            let new: DateTime<Utc> = sqlx::query_scalar(
-                "SELECT GREATEST(expires_at, now()) + make_interval(days => $2) \
-                 FROM users WHERE id = $1",
-            )
-            .bind(user)
-            .bind(*days)
-            .fetch_one(&mut *conn)
-            .await?;
-            if has_plan {
-                plans::apply_update_user_plan(
-                    conn,
-                    actor,
-                    user,
-                    &plans::UpdateUserPlanReq {
-                        expires_at: Some(Some(new)),
-                        ..Default::default()
-                    },
-                )
-                .await?;
-            } else {
-                api::apply_update_user(
-                    conn,
-                    actor,
-                    user,
-                    &api::UpdateUserReq {
-                        expires_at: Some(Some(new)),
-                        ..Default::default()
-                    },
-                )
-                .await?;
-            }
+            plans::apply_renew_user_plan(conn, actor, user, plans::Renewal::extend(*days)?).await?;
         }
         Action::ResetTraffic {} => {
+            if !has_plan {
+                return Ok(Step::Skipped("无生效套餐".into()));
+            }
             plans::apply_admin_reset_traffic(conn, actor, user).await?;
         }
-        Action::Enable {} | Action::Disable {} => {
-            let want = matches!(action, Action::Enable {});
-            if enabled == want {
-                return Ok(Step::Skipped("状态未变".into()));
+        Action::Ban { reason } => {
+            api::apply_ban_user(conn, actor, user, reason).await?;
+        }
+        Action::Unban {} => {
+            if !banned {
+                return Ok(Step::Skipped("未封禁".into()));
             }
-            api::apply_update_user(
-                conn,
-                actor,
-                user,
-                &api::UpdateUserReq {
-                    enabled: Some(Some(want)),
-                    ..Default::default()
-                },
-            )
-            .await?;
+            api::apply_unban_user(conn, actor, user).await?;
         }
         Action::SetPlan {
             plan_id,
-            expires_at,
-            reset_traffic,
+            period,
+            days,
         } => {
-            plans::apply_set_user_plan(
-                conn,
-                actor,
-                user,
-                &plans::SetUserPlanReq {
-                    plan_id: *plan_id,
-                    expires_at: *expires_at,
-                    period_anchor: None,
-                    reset_traffic: *reset_traffic,
-                },
-            )
-            .await?;
+            let assign = plans::AssignPlanReq {
+                plan_id: *plan_id,
+                period: *period,
+                days: *days,
+            }
+            .assignment()?;
+            plans::apply_set_user_plan(conn, actor, user, &assign).await?;
         }
         Action::CancelPlan {} => {
             if !has_plan {
@@ -982,8 +940,9 @@ pub async fn get(
     .await?
     .ok_or_else(ApiError::not_found)?;
     let items: Vec<ItemView> = sqlx::query_as(
-        "SELECT user_id, user_login, status, detail, updated_at FROM admin_batch_items \
-         WHERE job_id = $1 ORDER BY (status IN ('failed', 'skipped')) DESC, status, user_login \
+        "SELECT i.user_id, i.user_label, u.email AS user_email, i.status, i.detail, i.updated_at \
+         FROM admin_batch_items i LEFT JOIN users u ON u.id = i.user_id \
+         WHERE i.job_id = $1 ORDER BY (i.status IN ('failed', 'skipped')) DESC, i.status, i.user_label \
          LIMIT $2",
     )
     .bind(id)

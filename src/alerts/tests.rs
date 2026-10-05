@@ -444,7 +444,7 @@ async fn token(state: &AppState, id: Uuid) -> String {
             .fetch_one(state.pg())
             .await
             .unwrap();
-    crate::auth::issue_token(state, id, &role, sv, crate::auth::Stage::Full).unwrap()
+    crate::auth::issue_token(state, id, &role, sv).unwrap()
 }
 
 const SECRET: &str = "webhook-secret-0123456789";
@@ -1075,7 +1075,7 @@ async fn email_channel_uses_the_outbox() {
         StatusCode::BAD_REQUEST
     );
     sqlx::query(
-        "UPDATE smtp_settings SET enabled = true, host = 'smtp.example.com', \
+        "UPDATE mail_settings SET enabled = true, host = 'smtp.example.com', \
          from_addr = 'noreply@example.com'",
     )
     .execute(&db.pool)
@@ -1101,7 +1101,7 @@ async fn email_channel_uses_the_outbox() {
     );
     assert_eq!(mails[1].1, "oncall@example.com");
     // SMTP switched off meanwhile: the notification dies, nothing queued.
-    sqlx::query("UPDATE smtp_settings SET enabled = false")
+    sqlx::query("UPDATE mail_settings SET enabled = false")
         .execute(&db.pool)
         .await
         .unwrap();

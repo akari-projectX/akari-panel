@@ -127,7 +127,7 @@ pub async fn apply_set(
     .bind(locale.as_str())
     .bind(subject)
     .bind(&body)
-    .bind(&actor.login)
+    .bind(&actor.label)
     .fetch_one(&mut *conn)
     .await?;
     crate::audit::record(

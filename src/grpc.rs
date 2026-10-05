@@ -1080,6 +1080,13 @@ struct Session {
     /// The LatencyProbeConfig last sent on this stream (None = none sent
     /// yet; re-sent when the token or, W12, the 系统设置 values change).
     probe_sent: Mutex<Option<crate::pb::LatencyProbeConfig>>,
+    /// W29: the agent listed the "block-rules" capability in its Hello.
+    block_capable: AtomicBool,
+    /// The BlockPolicy last sent on this stream (None = none sent yet).
+    block_sent: Mutex<Option<crate::pb::BlockPolicy>>,
+    /// The block counters last stored from this stream (repeated
+    /// heartbeats with unchanged counts write nothing).
+    block_stored: Mutex<Option<crate::pb::BlockStats>>,
 }
 
 impl Session {
@@ -1110,6 +1117,9 @@ impl Session {
             latency_capable: AtomicBool::new(false),
             metrics_presence: AtomicBool::new(false),
             probe_sent: Mutex::new(None),
+            block_capable: AtomicBool::new(false),
+            block_sent: Mutex::new(None),
+            block_stored: Mutex::new(None),
             state,
         });
         lock_or_recover(&sess.sync).remove_rebuild =
@@ -1284,6 +1294,7 @@ async fn session<S>(
                 Ok(Synced::Current) => {
                     maybe_offer_update(&sess).await;
                     maybe_send_probe(&sess).await;
+                    maybe_send_block_policy(&sess).await;
                 }
                 Ok(Synced::Gone) => {
                     retire(&sess, "node deleted").await;
@@ -1384,6 +1395,16 @@ async fn session<S>(
                         *lock_or_recover(&sess.probe_sent) = None;
                     }
                     maybe_send_probe(&sess).await;
+                    // W29: the compiled block policy, after every Hello.
+                    sess.block_capable.store(
+                        hello
+                            .capabilities
+                            .iter()
+                            .any(|c| c == crate::blockrules::CAPABILITY),
+                        Ordering::SeqCst,
+                    );
+                    *lock_or_recover(&sess.block_sent) = None;
+                    maybe_send_block_policy(&sess).await;
                 }
                 Some(UpMsg::Latency(rep)) => {
                     // W11: like traffic, nothing before the Hello.
@@ -1404,6 +1425,11 @@ async fn session<S>(
                         crate::nodestat::legacy_presence(&mut hb);
                     }
                     store_heartbeat(&state, node_id, &hb).await;
+                    if let Some(b) = hb.block.as_ref()
+                        && sess.block_capable.load(Ordering::SeqCst)
+                    {
+                        store_block_stats(&sess, b).await;
+                    }
                     if let Some(h) = online_retry.take() {
                         if mark_online(&state, node_id, sess.online_session, &h).await {
                             sess.marked_online.store(true, Ordering::SeqCst);
@@ -1816,6 +1842,52 @@ async fn maybe_send_probe(sess: &Session) {
     }
 }
 
+/// W29: send the node's compiled block policy when it differs from the one
+/// last sent on this stream (the first one after every Hello, even "off":
+/// a restarted agent starts off, an agent that kept running may not).
+async fn maybe_send_block_policy(sess: &Session) {
+    if !sess.block_capable.load(Ordering::SeqCst) || sess.retiring() || sess.terminated() {
+        return;
+    }
+    let policy = match crate::blockrules::node_policy(sess.state.pg(), sess.node_id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!(node = %sess.node_id, error = %e, "block policy read failed");
+            return;
+        }
+    };
+    if lock_or_recover(&sess.block_sent).as_ref() == Some(&policy) {
+        return;
+    }
+    let Some(guard) = sess.lock().await else {
+        return;
+    };
+    match sess
+        .send(&guard, DownMsg::BlockPolicy(policy.clone()))
+        .await
+    {
+        Ok(true) => *lock_or_recover(&sess.block_sent) = Some(policy),
+        Ok(false) => {}
+        Err(e) => tracing::warn!(node = %sess.node_id, error = %e, "block policy send failed"),
+    }
+}
+
+/// W29: store a heartbeat's block counters unless they repeat the last
+/// stored ones (a failure leaves them unmarked: the next heartbeat retries).
+async fn store_block_stats(sess: &Session, stats: &crate::pb::BlockStats) {
+    let unchanged = lock_or_recover(&sess.block_stored)
+        .as_ref()
+        .is_some_and(|s| s.epoch == stats.epoch && s.hits == stats.hits);
+    if unchanged {
+        return;
+    }
+    match crate::blockrules::ingest_stats(sess.state.pg(), sess.node_id, stats).await {
+        Ok(()) => *lock_or_recover(&sess.block_stored) = Some(stats.clone()),
+        Err(e) => tracing::warn!(node = %sess.node_id, error = %e, "block counters store failed"),
+    }
+}
+
 /// W12: the capabilities to record from a Hello (agent input: at most 16
 /// names of at most 32 characters, sorted, deduplicated).
 fn hello_capabilities(hello: &crate::pb::Hello) -> Vec<String> {
@@ -2030,6 +2102,11 @@ fn heartbeat_value(hb: &Heartbeat) -> serde_json::Value {
     // W10: the automatic certificate (agent protocol 6).
     if let Some(c) = &hb.cert {
         blob["cert"] = cert_status_json(c);
+    }
+    // W29: the block policy in force and its last error (counters go to
+    // the database, grpc::store_block_stats).
+    if let Some(b) = &hb.block {
+        blob["block"] = crate::blockrules::status_json(b);
     }
     // W28-a: the relay entrances' source allowlists (capability
     // "source-filter"); agent text bounded like the certificate's.

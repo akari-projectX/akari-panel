@@ -20,6 +20,12 @@ pub async fn drain(l: &mut sqlx::postgres::PgListener, quiet: std::time::Duratio
     got
 }
 
+/// The address `TestDb::user`/`admin` give an account (D1: every account
+/// has a unique email).
+pub fn test_email(id: Uuid) -> String {
+    format!("{}@test.invalid", id.simple())
+}
+
 pub struct TestDb {
     pub admin: PgPool,
     pub pool: PgPool,
@@ -68,6 +74,13 @@ impl TestDb {
             .execute(&migrator)
             .await
             .unwrap();
+        // v0.4: the minimum submit time is on by default; tests post forms
+        // without a form token unless they test the bot protection
+        // (`botguard::tests` turns it back on).
+        sqlx::query("UPDATE auth_settings SET min_submit_secs = 0")
+            .execute(&migrator)
+            .await
+            .unwrap();
         migrator.close().await;
         let pool = PgPoolOptions::new()
             .max_connections(8)
@@ -93,43 +106,28 @@ impl TestDb {
         crate::settings::reload(state).await.unwrap();
     }
 
-    /// A plain enabled role=user account.
+    /// A plain enabled role=user account (email `<id>@test.invalid`).
     pub async fn user(&self) -> Uuid {
         let id = Uuid::new_v4();
-        sqlx::query("INSERT INTO users (id, login) VALUES ($1, $2)")
+        sqlx::query("INSERT INTO users (id, email) VALUES ($1, $2)")
             .bind(id)
-            .bind(id.to_string())
+            .bind(test_email(id))
             .execute(&self.pool)
             .await
             .unwrap();
         id
     }
 
-    /// An enabled admin account with an active (placeholder) TOTP, so its
-    /// full sessions are accepted under either `auth.require_admin_2fa`
-    /// setting.
+    /// An enabled admin account (email `<id>@test.invalid`).
     pub async fn admin(&self) -> Uuid {
         let id = Uuid::new_v4();
-        sqlx::query("INSERT INTO users (id, login, role) VALUES ($1, $2, 'admin')")
+        sqlx::query("INSERT INTO users (id, email, role) VALUES ($1, $2, 'admin')")
             .bind(id)
-            .bind(id.to_string())
+            .bind(test_email(id))
             .execute(&self.pool)
             .await
             .unwrap();
-        self.totp_active(id).await;
         id
-    }
-
-    /// Mark an account's 2FA active (placeholder secret: no code verifies).
-    pub async fn totp_active(&self, id: Uuid) {
-        sqlx::query(
-            "INSERT INTO user_totp (user_id, secret_enc, enabled_at) VALUES ($1, '\\x00', now()) \
-             ON CONFLICT (user_id) DO UPDATE SET enabled_at = now()",
-        )
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .unwrap();
     }
 
     /// An enabled node with one vless inbound (and, like every node, its

@@ -19,7 +19,7 @@ async fn paid_order(db: &TestDb, user: Uuid, cents: i64, paid_at: DateTime<Utc>)
     let id = Uuid::new_v4();
     let otn = format!("AKT{}", id.simple());
     sqlx::query(
-        "INSERT INTO orders (id, out_trade_no, user_id, user_login, plan_name, amount_cents, \
+        "INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_name, amount_cents, \
          list_price_cents, period, period_days, subject, expires_at, status, paid_at, paid_via, \
          created_at) VALUES ($1, $2, $3, 'u', 'p', $4, $4, 'days', 30, 's', $5, 'paid', $5, \
          'notify', $5)",
@@ -76,7 +76,7 @@ async fn aggregates_every_source() {
     .unwrap();
     // Not revenue: pending and before the window.
     sqlx::query(
-        "INSERT INTO orders (id, out_trade_no, user_id, user_login, plan_name, amount_cents, \
+        "INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_name, amount_cents, \
          list_price_cents, period, period_days, subject, expires_at) VALUES ($1, 'AKTpending', \
          $2, 'u', 'p', 999, 999, 'days', 30, 's', now() + interval '15 minutes')",
     )
@@ -87,7 +87,7 @@ async fn aggregates_every_source() {
     .unwrap();
     // Sign-ups: an old user (outside 30d) and an admin (not counted).
     sqlx::query(
-        "INSERT INTO users (id, login, created_at) VALUES ($1, 'old', now() - interval '90 days')",
+        "INSERT INTO users (id, email, created_at) VALUES ($1, 'old@example.com', now() - interval '90 days')",
     )
     .bind(Uuid::new_v4())
     .execute(&db.pool)
@@ -138,8 +138,8 @@ async fn aggregates_every_source() {
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO user_plans (id, user_id, plan_id, status, period_anchor) \
-         VALUES ($1, $2, $3, 'active', now())",
+        "INSERT INTO user_plans (id, user_id, plan_id, status, period_anchor, term_kind) \
+         VALUES ($1, $2, $3, 'active', now(), 'onetime')",
     )
     .bind(Uuid::new_v4())
     .bind(u)
@@ -228,7 +228,7 @@ async fn aggregates_every_source() {
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO withdrawals (id, user_id, user_login, amount_cents, method, account) \
+        "INSERT INTO withdrawals (id, user_id, user_label, amount_cents, method, account) \
          VALUES ($1, $2, 'u', 100, 'alipay', 'a')",
     )
     .bind(Uuid::new_v4())

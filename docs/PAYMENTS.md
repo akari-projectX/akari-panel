@@ -238,7 +238,9 @@ INSERT into the append-only `balance_ledger`: the ledger's trigger applies
 the amount under the balance row's lock and refuses a negative result
 (SQLSTATE `AK003` → 409 "insufficient balance"); a guard trigger refuses any
 other write of the column; ledger rows cannot be updated or deleted (only
-`user_id → NULL` when the user is deleted; `user_login` stays). So
+`user_id → NULL` when the user is deleted; the non-personal `user_label`
+snapshot — `u-` + the first 8 hex digits of the id, never the address —
+stays). So
 `balance = sum(ledger) ≥ 0` for every user, at every commit, whoever writes.
 Every movement is written by `ledger::apply_entry`: **one ledger row + one
 `balance.<kind>` audit row, in the transaction of its cause**.
@@ -365,7 +367,7 @@ lock after a later one.
 5. 应用私钥: paste (PEM or the bare base64 Alipay's key tool writes,
    PKCS#8 or PKCS#1) or load the file in the browser. It is validated (RSA,
    ≥ 2048 bits), then stored sealed (AES-256-GCM, key derived from
-   `data/totp.key` with the label `akari/payment-secrets-aead/v1`, AAD = the
+   `data/master.key` with the label `akari/payment-secrets-aead/v1`, AAD = the
    method id) and **never returned**: the page shows 已设置 + the app public
    key's SHA-256 fingerprint and the derived **应用公钥** (SPKI base64) to
    upload to the Alipay open platform. Leave it empty when editing to keep it.
@@ -497,7 +499,7 @@ Ops additions: `order.create` + `order.paid` (manual orders, `after.manual`,
 `order.expire`, `order.paid` (actor `alipay` for notify/query, the admin
 for manual; includes the fulfilment result), `order.fulfil.retry`,
 `order.payment.rejected`, plus the plan change's own `user.plan.set` /
-`user.plan.update` row. W16: `order.refund`, `coupon.create` /
+`user.plan.renew` row. W16: `order.refund`, `coupon.create` /
 `coupon.update` / `coupon.delete`, `commission.create` /
 `commission.reverse`, `commission.settings.update`,
 `withdrawal.approved` / `withdrawal.rejected` / `withdrawal.cancelled`, and
@@ -515,7 +517,8 @@ W24: `payment_method.create` / `.update` / `.delete` / `.import`.
   (账单); SQL:
 
 ```sql
-SELECT out_trade_no, trade_no, amount_cents, paid_amount_cents, paid_at, user_login, plan_name
+SELECT out_trade_no, trade_no, amount_cents, paid_amount_cents, paid_at, user_label,
+       (SELECT email FROM users WHERE id = orders.user_id) AS user_email, plan_name
 FROM orders WHERE status = 'paid' AND paid_at >= date_trunc('day', now() - interval '1 day')
 ORDER BY paid_at;
 ```

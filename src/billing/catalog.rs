@@ -114,7 +114,7 @@ impl PeriodKind {
 
     /// Whether `days` is required (Some(true)), optional (None) or
     /// forbidden (Some(false)) for this kind.
-    fn days_rule(self) -> Option<bool> {
+    pub(crate) fn days_rule(self) -> Option<bool> {
         match self {
             PeriodKind::Days => Some(true),
             PeriodKind::Onetime => None,
