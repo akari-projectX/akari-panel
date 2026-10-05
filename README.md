@@ -248,8 +248,10 @@ separate loopback listener, never on the public port.
 | GET/POST | /api/v1/me/invite-codes | user (role=user) | W15: own invite codes, link base, invited count / new code (per-user limit; registration must be open) |
 | DELETE | /api/v1/me/invite-codes/{code} | user (role=user) | W15: delete an invite code |
 | GET/PUT | /api/v1/settings/signup | admin | W15 系统设置 → 注册: registration, invite rules, email domain allow-list, trial plan, password reset (optimistic `version`) |
-| GET/PUT | /api/v1/settings/mail | admin | W15 系统设置 → 邮件: SMTP host/port/security/credentials (password write-only, sealed), sender, notice switches |
+| GET/PUT | /api/v1/settings/mail | admin | W15 系统设置 → 邮件: provider (W31: `smtp` or `resend`; absent = keep), SMTP host/port/security/credentials (password write-only, sealed), Resend `api_key` (write-only, sealed; view: `api_key_set`), sender, notice switches |
 | POST | /api/v1/settings/mail/test | admin | W15: `{to}`: send a test mail now with the saved settings (502 = the server's answer) |
+| POST | /api/v1/settings/mail/diagnose | admin | W31: `{to}`: step-by-step check of the saved provider — config, DNS, TCP, TLS (implicit 465 / STARTTLS 587, mismatch detected), greeting, AUTH, send — always 200 `{provider, ok, steps: [{step, status ok\|warn\|fail\|skip, elapsed_ms, code mail.diag.*, params, message: {zh, en}}]}`; audited `settings.mail.test` |
+| GET | /api/v1/system/status | admin | W31 系统状态: every panel instance (host CPU/memory/load/disk, RSS, version, agent sessions; Valkey heartbeats), PostgreSQL, Valkey, the reverse proxy (Caddy, probed via the main domain), background jobs (settlement, reconciliation, mail, alerts: last run, duration, lag, stale, last error, backlog); cached 5 s |
 | GET | /api/v1/mail/outbox | admin | W15: outbox rows `?status=dead\|pending\|sent&before&limit` (no bodies) |
 | POST | /api/v1/mail/outbox/{id}/retry | admin | W15: re-queue a dead letter (not for expired codes/links) |
 | POST | /api/v1/me/password | user/admin | `{current_password, new_password}`: change own password (wrong current = 400, counts against the login rate limit; other sessions end, this one continues) |

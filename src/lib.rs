@@ -54,6 +54,7 @@ pub mod signup;
 pub mod spa;
 pub mod state;
 pub mod sub;
+pub mod sysstatus;
 #[cfg(test)]
 pub mod testdb;
 pub mod tickets;

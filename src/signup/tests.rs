@@ -24,7 +24,7 @@ async fn state(db: &TestDb) -> AppState {
 
 async fn enable_mail(db: &TestDb) {
     sqlx::query(
-        "UPDATE smtp_settings SET enabled = true, host = '127.0.0.1', port = 1025, \
+        "UPDATE mail_settings SET enabled = true, host = '127.0.0.1', port = 1025, \
          security = 'none', from_addr = 'noreply@example.com' WHERE id = 1",
     )
     .execute(&db.pool)
@@ -1253,7 +1253,7 @@ async fn email_change_needs_password_and_code() {
     );
 
     // Mail sending off: a clear 409, not a silent success.
-    sqlx::query("UPDATE smtp_settings SET enabled = false")
+    sqlx::query("UPDATE mail_settings SET enabled = false")
         .execute(&db.pool)
         .await
         .unwrap();
@@ -1348,7 +1348,7 @@ async fn settings_api_validates_seals_and_audits() {
     assert_eq!(v["password_set"], true);
     assert_eq!(v["from_addr"], "no-reply@example.com");
     assert!(v.get("password").is_none() && !r.body.windows(9).any(|w| w == b"s3cret-pw"));
-    let sealed: Vec<u8> = sqlx::query_scalar("SELECT password_enc FROM smtp_settings")
+    let sealed: Vec<u8> = sqlx::query_scalar("SELECT password_enc FROM mail_settings")
         .fetch_one(&db.pool)
         .await
         .unwrap();
@@ -1372,7 +1372,7 @@ async fn settings_api_validates_seals_and_audits() {
         .req(Method::PUT, "/test/api/v1/settings/mail", Some(keep))
         .await;
     assert_eq!(r.status, StatusCode::OK);
-    let still: Vec<u8> = sqlx::query_scalar("SELECT password_enc FROM smtp_settings")
+    let still: Vec<u8> = sqlx::query_scalar("SELECT password_enc FROM mail_settings")
         .fetch_one(&db.pool)
         .await
         .unwrap();

@@ -375,6 +375,36 @@ Everything here is off until you turn it on; nothing in panel.toml.
    a code burns after 5 wrong tries. With verification, answers never reveal whether an address
    has an account.
 
+### 发信方式与「测试发信」诊断（W31）
+
+**系统设置 → 邮件 → 发信方式** 二选一：
+
+- **SMTP**：服务器、端口、加密方式与账号同上。常见组合：**465 + SSL/TLS（隐式 TLS）**，或
+  **587 + STARTTLS**。很多云服务商默认封锁出站 25/465/587，需要先提交工单开通。
+- **Resend（HTTPS API）**：只走出站 443，不受 SMTP 端口封锁影响。在 Resend 后台验证发件域名
+  （按提示添加 DNS 记录），创建一个有发信权限的 API 密钥，填入 **API 密钥**，发件地址必须属于
+  已验证的域名。
+
+密码与 API 密钥都用面板主密钥派生的同一把加密密钥存库（各自固定的 AAD：`SMTP_AAD`、`RESEND_AAD`），接口只返回「已设置」，审计只记
+"changed"；主密钥更换后需要重新填写。以后增加服务商 = `src/mail/transport/` 新增一个模块 +
+注册表一行 + 迁移放宽 `mail_settings_provider`。
+
+**测试发信**（`POST /api/v1/settings/mail/diagnose`）用**已保存**的设置逐步检查，每一步给出状态、
+耗时和中文说明（另附英文与 `mail.diag.*` 代码）：
+
+| 步骤 | 检查什么 | 常见失败与说明 |
+|---|---|---|
+| 配置 | 必填项、密钥能否解密、端口与加密方式是否匹配（465 应为 SSL/TLS，587/25 应为 STARTTLS，不匹配时警告） | 缺少服务器/发件地址/API 密钥；主密钥更换后密钥无法解密 |
+| DNS | 主机名能否解析 | 拼写错误、面板机器 DNS 故障 |
+| TCP | 能否连上端口（10 秒） | **超时 = 出站端口被服务商或防火墙封锁**；拒绝 = 端口上没有服务 |
+| TLS | 握手与证书 | 设为 SSL/TLS 但服务器发来明文问候 → 改 STARTTLS；设为 STARTTLS 但服务器不问候、却接受 TLS 握手 → 改 SSL/TLS；证书不受信任（填了 IP 或自签证书） |
+| 问候 | 220 问候与 EHLO | 服务器拒绝服务 |
+| 认证 | AUTH PLAIN / LOGIN | 535 用户名或密码错误（QQ/163/Gmail/Outlook 需要**授权码/应用专用密码**）；534 要求应用专用密码；530 要求先加密 |
+| 发送 | 用与发件队列相同的传输发出测试邮件 | 服务器拒收（发件地址与账号不一致、收件人不存在）；Resend：密钥无效、域名未验证、请求过多 |
+
+诊断最多 60 秒，前一步失败后其余步骤标为「未执行」；结果写审计 `settings.mail.test`。原来的
+「发送测试邮件」（`/settings/mail/test`，失败时 502 带服务器回答）保留。
+
 ## 2d. Payments (系统设置 → 支付, W24)
 
 Payment methods are configured only in the console (database; no panel.toml, every instance at
@@ -895,6 +925,23 @@ Prometheus data source. Metric labels never contain the route prefix or a node i
 detail is the console's node page and 告警中心 (§4b).
 Every response of an accepted request carries `X-Request-Id` (an incoming one is reused if it is
 short and printable); it is on the log lines of that request. Rejections never carry it.
+
+## 4a. 系统状态（W31）
+
+后台 `GET /api/v1/system/status`（仅管理员，结果缓存 5 秒）一次给出：
+
+- **面板实例**：每个实例每 10 秒把自己的心跳写进 Valkey（`akari:status:instances`，实例 id →
+  主机 CPU/内存/负载/数据目录磁盘、进程内存、版本、持有的 agent 连接数、数据库连接池、后台任务统计）。
+  30 秒没有心跳 = 离线，24 小时后自动移除。多实例部署时任一实例都能给出全部实例的状态。
+- **PostgreSQL**：版本、是否只读副本、连接数 / `max_connections`、库大小、往返延迟。
+- **Valkey**：版本、内存、客户端数、运行时长、往返延迟。
+- **Caddy（反向代理）**：经系统设置的主域名探测（TCP → TLS（证书到期时间）→ `HEAD /`，任何 HTTP
+  回答即视为在线）；未设置主域名时显示「未配置」。
+- **后台任务**：结算（流量入账，5 秒）、对账（支付订单，10 秒）、邮件队列（2 秒）、告警评估（30 秒）
+  各自的最近一次运行、耗时、距上次成功的延迟（`lag_secs`）、超过 6 个周期没有成功 = `stale`、最近
+  错误（已去掉邮箱地址），以及积压：待发/到期/最老到期邮件、死信数、待付订单数、待投递告警数。
+
+各项检查并发执行、每项最多 3 秒，不读写 agent 路径；读不到的值为 `null`（未知），不当作 0。
 
 ## 4b. Node alerts and notifications (告警中心, W17)
 

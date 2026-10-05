@@ -38,7 +38,7 @@ impl Links {
 }
 
 /// The SMTP settings when mail can be sent (enabled and complete).
-async fn smtp(conn: &mut PgConnection) -> sqlx::Result<Option<mail::Smtp>> {
+async fn smtp(conn: &mut PgConnection) -> sqlx::Result<Option<mail::MailSettings>> {
     let s = mail::load(conn).await?;
     Ok((s.enabled && s.complete()).then_some(s))
 }

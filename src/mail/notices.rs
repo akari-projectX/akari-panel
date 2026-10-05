@@ -23,7 +23,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
-use super::{Locale, Smtp, Template, enqueue};
+use super::{Locale, MailSettings, Template, enqueue};
 use crate::state::AppState;
 
 /// Candidates per notice kind per pass.
@@ -87,7 +87,7 @@ async fn claim(
 /// Returns the number of mails enqueued.
 pub async fn pass(
     conn: &mut PgConnection,
-    smtp: &Smtp,
+    smtp: &MailSettings,
     portal: Option<&str>,
 ) -> sqlx::Result<usize> {
     let mut n = 0;
@@ -194,7 +194,7 @@ pub async fn pass(
 }
 
 /// The periodic notices pass (one transaction).
-pub async fn run(state: &AppState, smtp: &Smtp) -> anyhow::Result<usize> {
+pub async fn run(state: &AppState, smtp: &MailSettings) -> anyhow::Result<usize> {
     let portal = super::portal_url(state);
     let mut tx = state.pg().begin().await?;
     let n = pass(&mut tx, smtp, portal.as_deref()).await?;

@@ -845,7 +845,7 @@ async fn send_email_through_outbox_with_rate_limit() {
         "batch.mail_unavailable"
     );
     sqlx::query(
-        "UPDATE smtp_settings SET enabled = true, host = 'smtp.invalid', \
+        "UPDATE mail_settings SET enabled = true, host = 'smtp.invalid', \
          from_addr = 'ops@example.com'",
     )
     .execute(&db.pool)

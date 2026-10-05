@@ -1540,7 +1540,12 @@ pub async fn flush_loop(state: AppState) {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
-        if let Err(e) = flush_once(&state).await {
+        let started = Instant::now();
+        let res = flush_once(&state).await;
+        state
+            .sysstatus()
+            .record_result(crate::sysstatus::Job::Settlement, started, &res);
+        if let Err(e) = res {
             tracing::warn!(error = %e, "traffic flush failed");
         }
     }

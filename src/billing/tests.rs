@@ -2828,7 +2828,7 @@ async fn paid_order_queues_one_receipt() {
     assert!(receipts(&db).await.is_empty());
 
     sqlx::query(
-        "UPDATE smtp_settings SET enabled = true, host = '127.0.0.1', security = 'none', \
+        "UPDATE mail_settings SET enabled = true, host = '127.0.0.1', security = 'none', \
          from_addr = 'noreply@example.com'",
     )
     .execute(&db.pool)
@@ -2871,13 +2871,13 @@ async fn paid_order_queues_one_receipt() {
     );
 
     // Receipts toggled off, or an unverified address: none.
-    sqlx::query("UPDATE smtp_settings SET notify_order_paid = false")
+    sqlx::query("UPDATE mail_settings SET notify_order_paid = false")
         .execute(&db.pool)
         .await
         .unwrap();
     let (o3, _) = order_row(&db, user, plan, 990, 30).await;
     pay(&db, o3).await;
-    sqlx::query("UPDATE smtp_settings SET notify_order_paid = true")
+    sqlx::query("UPDATE mail_settings SET notify_order_paid = true")
         .execute(&db.pool)
         .await
         .unwrap();

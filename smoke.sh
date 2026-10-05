@@ -237,7 +237,7 @@ docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE plans,
 # here cannot reach): back to "use panel.toml" (the trigger reloads them).
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "UPDATE panel_settings SET version = 0, main_domain = NULL, sub_domain = NULL, node_domain = NULL, trust_cloudflare = NULL, probe_interval_secs = NULL, probe_urls = NULL, probe_panel_tcp = NULL, site_name = NULL, cloudflare_ranges = NULL, install_tls_pin = NULL, install_fallback_url = NULL, acme_directory_url = NULL, acme_email = NULL, audit_retention_days = NULL, traffic_daily_retention_days = NULL, require_admin_2fa = NULL, remove_mode = NULL, extra_release_keys = NULL; TRUNCATE grpc_server_names, legacy_config_imports;" >/dev/null 2>&1 || true
 # W15 settings back to the defaults (off; version 0) and an empty outbox.
-docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM signup_settings; INSERT INTO signup_settings (id) VALUES (1); DELETE FROM smtp_settings; INSERT INTO smtp_settings (id) VALUES (1); TRUNCATE mail_outbox;" >/dev/null 2>&1 || true
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM signup_settings; INSERT INTO signup_settings (id) VALUES (1); DELETE FROM mail_settings; INSERT INTO mail_settings (id) VALUES (1); TRUNCATE mail_outbox;" >/dev/null 2>&1 || true
 # W17: alert settings an aborted run may leave (a webhook to a dead receiver).
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE node_alerts, alert_notifications; UPDATE alert_settings SET version = 0, enabled = true, offline_secs = 300, webhook_enabled = false, webhook_url = NULL, webhook_secret_enc = NULL, telegram_enabled = false, telegram_chat_id = NULL, telegram_token_enc = NULL, telegram_api_url = NULL, email_enabled = false, email_to = '{}';" >/dev/null 2>&1 || true
 # Ops: announcements, knowledge base, templates and branding of an earlier run.
@@ -1322,6 +1322,15 @@ SIGNUP_ON='"register_enabled":true,"invite_required":false,"invite_single_use":f
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/mail/test" -H "$J" -d '{"to":"admin@akari.test"}')" = "200" ] \
   || { echo "FAIL: test mail"; cat /tmp/akari-smoke/last; exit 1; }
 mp_mail admin@akari.test 1 | sed -n 1p | matches '^Akari Smoke 测试邮件$' || { echo "FAIL: test mail not delivered"; exit 1; }
+# W31: the step-by-step diagnostic against the same relay (plaintext = warn,
+# every step reported, the mail delivered), and the settings view's provider.
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/mail/diagnose" -H "$J" -d '{"to":"diag@akari.test"}')" = "200" ] \
+  && [ "$(last_json "d['ok'] and d['provider'] == 'smtp' and [s['step'] for s in d['steps']] == ['config','dns','tcp','tls','greeting','auth','send'] and d['steps'][0]['code'] == 'mail.diag.plaintext' and d['steps'][6]['status'] == 'ok'")" = "True" ] \
+  || { echo "FAIL: mail diagnostic"; cat /tmp/akari-smoke/last; exit 1; }
+mp_mail diag@akari.test 1 | sed -n 1p | matches '^Akari Smoke 测试邮件$' || { echo "FAIL: diagnostic mail not delivered"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/mail")" = "200" ] \
+  && [ "$(last_json "d['provider'] == 'smtp' and d['providers'] == ['smtp', 'resend'] and d['api_key_set'] is False")" = "True" ] \
+  || { echo "FAIL: mail settings provider view"; cat /tmp/akari-smoke/last; exit 1; }
 # Reset links need the main domain (never the request's Host): set it for
 # this section only (IP literal; the host gate keeps accepting 127.0.0.1).
 [ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
@@ -1388,7 +1397,7 @@ grep -qe "$RESET_TOKEN" -e "\"$REG_CODE\"" "$LOG/panel.log" && { echo "FAIL: a c
 
 echo "== W24: registration without email verification (no SMTP): proof of work, generic refusal, unverified login, admin verify =="
 # No SMTP (sending off): the automatic setting registers without a code.
-psql_q "UPDATE smtp_settings SET enabled = false" >/dev/null
+psql_q "UPDATE mail_settings SET enabled = false" >/dev/null
 [ "$(code "$BASE/auth/options")" = "200" ] && last_json "d['register'] and not d['email_verify']" | matches True \
   || { echo "FAIL: options say verification while SMTP is off"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(fp -X POST "$BASE/auth/register/code" -H "$J" -d '{"email":"x@akari.test"}')" = "$REJ" ] \
@@ -1428,7 +1437,7 @@ W24_ID=$(psql_q "SELECT id FROM users WHERE login = '$W24'")
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$W24_ID/email/verify" -H "$J" -d '{}')" = "200" ] \
   && [ "$(psql_q "SELECT email_verified_at IS NOT NULL FROM users WHERE id = '$W24_ID'")" = "t" ] \
   || { echo "FAIL: admin marks the address verified"; cat /tmp/akari-smoke/last; exit 1; }
-psql_q "UPDATE smtp_settings SET enabled = true" >/dev/null
+psql_q "UPDATE mail_settings SET enabled = true" >/dev/null
 [ "$(code "$BASE/auth/options")" = "200" ] && last_json "d['email_verify']" | matches True \
   || { echo "FAIL: verification back with SMTP"; exit 1; }
 echo "W24 registration without verification: ok"
@@ -1850,7 +1859,7 @@ done
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/plans/$OPS_PLAN")" = "204" ] || { echo "FAIL: delete ops plan"; exit 1; }
 echo "ops: ok (batch balance/mail/plan exactly once + audited, users/orders/traffic CSV, manual + gift orders, coupon batch)"
 # W15: Mailpit is no longer needed; stop sending (nothing to deliver to).
-psql_q "UPDATE smtp_settings SET enabled = false" >/dev/null
+psql_q "UPDATE mail_settings SET enabled = false" >/dev/null
 docker rm -f akari-smoke-mailpit >/dev/null 2>&1 || true
 trap 'cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
 
@@ -1918,6 +1927,12 @@ echo "== W21: dashboard, user search + total, coded errors, plan + prices in one
   && [ "$(last_json "d['d30']['orders'] >= 1 and d['users_total'] >= 1 and d['nodes']['total'] >= 1 and isinstance(d['latest_orders'], list)")" = "True" ] \
   || { echo "FAIL: dashboard"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/dashboard")" = "403" ] || { echo "FAIL: user reached the dashboard"; exit 1; }
+
+echo "== W31: system status =="
+[ "$(code -b "$JAR" "$BASE/api/v1/system/status")" = "200" ] \
+  && [ "$(last_json "d['postgres']['ok'] and d['valkey']['ok'] and any(i['this'] and i['alive'] for i in d['instances']) and [j['job'] for j in d['jobs']] == ['settlement','reconciliation','mail','alerts'] and next(j for j in d['jobs'] if j['job'] == 'settlement')['lag_secs'] is not None")" = "True" ] \
+  || { echo "FAIL: system status"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$BJAR" "$BASE/api/v1/system/status")" = "403" ] || { echo "FAIL: user reached the system status"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/users?q=SMOKE-BUY&role=user")" = "200" ] \
   && [ "$(last_json "d['total'] == 1 and d['users'][0]['login'] == 'smoke-buyer'")" = "True" ] \
   || { echo "FAIL: user search"; cat /tmp/akari-smoke/last; exit 1; }
