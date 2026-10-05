@@ -2360,7 +2360,7 @@ mod db_tests {
         let (a, b) = (db.node().await, db.node().await);
         let n = FLUSH_CHUNK_ROWS * 5 / 4; // per node
         let users: Vec<Uuid> = (0..n).map(|_| Uuid::new_v4()).collect();
-        sqlx::query("INSERT INTO users (id, login) SELECT u, u::text FROM unnest($1::uuid[]) u")
+        sqlx::query("INSERT INTO users (id, email) SELECT u, u::text || '@test.invalid' FROM unnest($1::uuid[]) u")
             .bind(&users)
             .execute(&db.pool)
             .await

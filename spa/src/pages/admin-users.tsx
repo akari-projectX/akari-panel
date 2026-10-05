@@ -41,7 +41,7 @@ const selectCls =
   "h-9 rounded-lg border border-border bg-card px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 export type StatusFilter = "" | "active" | "expired" | "quota" | "banned";
-export type SortKey = "created" | "-created" | "login" | "-traffic" | "expires";
+export type SortKey = "created" | "-created" | "email" | "-traffic" | "expires";
 
 const STATUS_CHIPS: { id: StatusFilter; label: string }[] = [
   { id: "", label: "全部" },
@@ -54,7 +54,7 @@ const STATUS_CHIPS: { id: StatusFilter; label: string }[] = [
 const SORTS: { id: SortKey; label: string }[] = [
   { id: "created", label: "注册时间（早→晚）" },
   { id: "-created", label: "注册时间（晚→早）" },
-  { id: "login", label: "账号" },
+  { id: "email", label: "邮箱" },
   { id: "-traffic", label: "已用流量（多→少）" },
   { id: "expires", label: "到期时间（近→远）" },
 ];
@@ -113,7 +113,7 @@ export function AdminUsers() {
   const plans = useQuery({ queryKey: ["plans"], queryFn: () => get<PlanView[]>("/plans") });
   const [open, setOpen] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [subToken, setSubToken] = useState<{ login: string; token: string; url?: string | null } | null>(null);
+  const [subToken, setSubToken] = useState<{ email: string; token: string; url?: string | null } | null>(null);
   // Ops: batch selection (ids across pages) and the batch dialog.
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [batch, setBatch] = useState<{ selection: BatchSelection; label: string } | null>(null);
@@ -167,7 +167,7 @@ export function AdminUsers() {
           onClose={() => setCreating(false)}
           onCreated={(u) => {
             setCreating(false);
-            if (u.role === "user") setSubToken({ login: u.login, token: u.sub_token, url: u.sub_url });
+            if (u.role === "user") setSubToken({ email: u.email, token: u.sub_token, url: u.sub_url });
           }}
         />
       )}
@@ -175,7 +175,7 @@ export function AdminUsers() {
         <Card>
           <CardContent className="space-y-2 pt-6">
             <p className="text-sm text-muted-foreground">
-              <span className="font-medium text-foreground">{subToken.login}</span> 的订阅令牌（之后也可以在「管理 →
+              <span className="font-medium text-foreground">{subToken.email}</span> 的订阅令牌（之后也可以在「管理 →
               复制订阅链接」再次取得）：
             </p>
             <pre className="overflow-auto rounded-lg bg-muted p-3 text-xs">{subToken.token}</pre>
@@ -319,16 +319,15 @@ export function AdminUsers() {
                 <TableHead>套餐</TableHead>
                 <TableHead>流量</TableHead>
                 <TableHead>到期（{TZ_LABEL}）</TableHead>
-                <TableHead>两步验证</TableHead>
                 <TableHead className="sticky right-0 z-[1] bg-card text-right">
                   <span className="sr-only">操作</span>
                 </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {users.isPending && <TableNote colSpan={8}>加载中…</TableNote>}
+              {users.isPending && <TableNote colSpan={7}>加载中…</TableNote>}
               {users.isSuccess && rows.length === 0 && (
-                <TableNote colSpan={8}>
+                <TableNote colSpan={7}>
                   {filtered
                     ? "没有符合条件的用户。"
                     : page === 0
@@ -344,23 +343,22 @@ export function AdminUsers() {
                       <TableCell className="w-8">
                         <input
                           type="checkbox"
-                          aria-label={`选择 ${u.login}`}
+                          aria-label={`选择 ${u.email}`}
                           checked={selected.has(u.id)}
                           onChange={() => toggleOne(u.id)}
                         />
                       </TableCell>
                       <TableCell className="sticky left-0 z-[1] bg-card">
                         <span className="flex max-w-[45vw] items-center gap-1.5 truncate whitespace-nowrap font-medium sm:max-w-none">
-                          {u.login}
+                          {u.email}
                           {u.role === "admin" && <Badge variant="outline">管理员</Badge>}
                         </span>
-                        {u.email && (
+                        {!u.email_verified && (
                           <span
-                            className="block max-w-56 truncate text-xs text-muted-foreground"
-                            title={u.email_verified ? "邮箱已验证" : "邮箱未验证：不会收到邮件，也不能用于找回密码"}
+                            className="block text-xs text-muted-foreground"
+                            title="邮箱未验证：不会收到邮件，也不能用于找回密码（仍可用它登录）"
                           >
-                            {u.email}
-                            {!u.email_verified && "（未验证）"}
+                            未验证
                           </span>
                         )}
                       </TableCell>
@@ -382,13 +380,6 @@ export function AdminUsers() {
                         )}
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-muted-foreground">{fmtDate(u.expires_at)}</TableCell>
-                      <TableCell>
-                        {u.totp_enabled ? (
-                          <Badge variant="success">已开启</Badge>
-                        ) : (
-                          <Badge variant="secondary">未开启</Badge>
-                        )}
-                      </TableCell>
                       <TableCell className="sticky right-0 z-[1] bg-card text-right">
                         <Button
                           variant="outline"
@@ -398,17 +389,17 @@ export function AdminUsers() {
                           onClick={() => setOpen(open === u.id ? null : u.id)}
                         >
                           {open === u.id ? "收起" : "管理"}
-                          <span className="sr-only"> {u.login}</span>
+                          <span className="sr-only"> {u.email}</span>
                         </Button>
                       </TableCell>
                     </TableRow>
                     {open === u.id && (
                       <TableRow id={`manage-${u.id}`} className="hover:bg-transparent">
-                        <TableCell colSpan={8} className="bg-muted/30">
+                        <TableCell colSpan={7} className="bg-muted/30">
                           <ManageUser
                             user={u}
                             plans={plans.data ?? []}
-                            onSubToken={(token, url) => setSubToken({ login: u.login, token, url })}
+                            onSubToken={(token, url) => setSubToken({ email: u.email, token, url })}
                             onClose={() => setOpen(null)}
                           />
                         </TableCell>
@@ -451,7 +442,7 @@ export function AdminUsers() {
 }
 
 // Everything about one account: role, current subscription and plan
-// actions (D12), ban (W28-c), sessions, 2FA, subscription token, delete.
+// actions (D12), ban (W28-c), sessions, subscription token, delete.
 function ManageUser({
   user,
   plans,
@@ -481,7 +472,7 @@ function ManageUser({
         return;
       }
       const url = r.sub_url ?? subscriptionUrl(r.sub_token);
-      setNotice((await copyText(url)) ? `已复制「${user.login}」的订阅链接。` : `复制失败，请手动复制：${url}`);
+      setNotice((await copyText(url)) ? `已复制「${user.email}」的订阅链接。` : `复制失败，请手动复制：${url}`);
     } catch (err) {
       setError(adminErrorText(err));
     }
@@ -509,8 +500,8 @@ function ManageUser({
       <EditUser user={user} />
       {user.role === "user" && <UserPlanForm user={user} plans={plans} />}
       <UserBan user={user} />
-      {user.role === "user" && <UserTraffic userId={user.id} login={user.login} />}
-      <section aria-label={`${user.login} 的其他操作`} className="space-y-2">
+      {user.role === "user" && <UserTraffic userId={user.id} email={user.email} />}
+      <section aria-label={`${user.email} 的其他操作`} className="space-y-2">
         <h2 className="text-sm font-medium">其他操作</h2>
         <div className="flex flex-wrap gap-2">
           {user.role === "user" && (
@@ -525,7 +516,7 @@ function ManageUser({
               onClick={() =>
                 run(
                   {
-                    title: `为「${user.login}」生成新的订阅令牌？`,
+                    title: `为「${user.email}」生成新的订阅令牌？`,
                     message: "旧的订阅链接会立即失效，用户需要在所有设备上重新导入。",
                     confirmLabel: "重新生成",
                     destructive: true,
@@ -569,7 +560,7 @@ function ManageUser({
             onClick={() =>
               run(
                 {
-                  title: `让「${user.login}」在所有设备上退出登录？`,
+                  title: `让「${user.email}」在所有设备上退出登录？`,
                   message: "该用户的全部会话立即失效，需要重新登录。",
                   confirmLabel: "吊销会话",
                 },
@@ -580,33 +571,13 @@ function ManageUser({
           >
             吊销会话
           </Button>
-          {user.totp_enabled && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                run(
-                  {
-                    title: `重置「${user.login}」的两步验证？`,
-                    message: "其会话会全部结束，之后只需密码即可登录，可再自行开启。",
-                    confirmLabel: "重置",
-                    destructive: true,
-                  },
-                  () => del(`/users/${user.id}/totp`),
-                  "已重置两步验证。",
-                )
-              }
-            >
-              重置两步验证
-            </Button>
-          )}
           <Button
             variant="destructive"
             size="sm"
             onClick={() =>
               run(
                 {
-                  title: `永久删除用户「${user.login}」？`,
+                  title: `永久删除用户「${user.email}」？`,
                   message: "此操作不可撤销，其订阅与节点权限会立即失效。",
                   confirmLabel: "删除",
                   destructive: true,
@@ -660,7 +631,7 @@ function EditUser({ user }: { user: UserView }) {
   }
 
   return (
-    <form className="space-y-3" onSubmit={save} aria-label={`编辑 ${user.login}`}>
+    <form className="space-y-3" onSubmit={save} aria-label={`编辑 ${user.email}`}>
       <h2 className="text-sm font-medium">编辑用户</h2>
       <div className="flex flex-wrap items-end gap-3">
         <div className="space-y-1.5">
@@ -709,12 +680,12 @@ function UserBan({ user }: { user: UserView }) {
     const ok = await confirm(
       banned
         ? {
-            title: `解除「${user.login}」的封禁？`,
+            title: `解除「${user.email}」的封禁？`,
             message: "账户恢复使用，节点立即重新下发。",
             confirmLabel: "解除封禁",
           }
         : {
-            title: `封禁「${user.login}」？`,
+            title: `封禁「${user.email}」？`,
             message: "立即踢下线（所有节点）、订阅停止；用户仍可登录门户查看原因并提交工单。写入审计。",
             confirmLabel: "封禁",
             destructive: true,
@@ -734,7 +705,7 @@ function UserBan({ user }: { user: UserView }) {
   }
 
   return (
-    <form className="space-y-2" onSubmit={act} aria-label={`封禁 ${user.login}`}>
+    <form className="space-y-2" onSubmit={act} aria-label={`封禁 ${user.email}`}>
       <h2 className="text-sm font-medium">封禁</h2>
       {banned ? (
         <div className="flex flex-wrap items-center gap-3 text-sm">
@@ -774,7 +745,6 @@ type Created = UserView & { sub_token: string; sub_url?: string | null };
 
 /** The POST /users body from the dialog's fields; a string = what is wrong. */
 export function createUserBody(f: {
-  login: string;
   password: string;
   email: string;
   role: string;
@@ -782,9 +752,8 @@ export function createUserBody(f: {
   term: TermKind;
   days: string;
 }): Record<string, unknown> | string {
-  const body: Record<string, unknown> = { login: f.login.trim(), password: f.password };
+  const body: Record<string, unknown> = { email: f.email.trim(), password: f.password };
   if (f.role !== "user") body.role = f.role;
-  if (f.email.trim()) body.email = f.email.trim();
   if (f.role === "user" && f.planId) {
     const term = termBody(f.term, f.days);
     if (typeof term === "string") return term;
@@ -851,7 +820,7 @@ function CreateUserDialog({
   onCreated: (u: Created) => void;
 }) {
   const queryClient = useQueryClient();
-  const [form, setForm] = useState({ login: "", password: "", email: "", role: "user", planId: "", days: "" });
+  const [form, setForm] = useState({ password: "", email: "", role: "user", planId: "", days: "" });
   const [term, setTerm] = useState<TermKind>("month");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -882,23 +851,19 @@ function CreateUserDialog({
     <Dialog
       open
       title="新建用户"
-      description="账号 3–64 个字符（字母、数字、_ . -），密码至少 8 位。流量与到期时间由套餐决定。"
+      description="邮箱即登录名（视为已验证：可收邮件、找回密码），密码至少 8 位。流量与到期时间由套餐决定。"
       onClose={onClose}
       className="sm:max-w-lg"
     >
       <form className="space-y-4" onSubmit={submit} aria-label="新建用户">
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <Label htmlFor="nu-login">账号</Label>
-            <Input id="nu-login" autoComplete="off" required {...field("login")} />
+            <Label htmlFor="nu-email">邮箱</Label>
+            <Input id="nu-email" type="email" autoComplete="off" required {...field("email")} />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="nu-password">密码</Label>
             <Input id="nu-password" type="password" autoComplete="new-password" required {...field("password")} />
-          </div>
-          <div className="space-y-1.5 sm:col-span-2">
-            <Label htmlFor="nu-email">邮箱（可选，视为已验证：可收邮件、找回密码）</Label>
-            <Input id="nu-email" type="email" autoComplete="off" {...field("email")} />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="nu-role">角色</Label>
@@ -1002,7 +967,7 @@ export function UserPlanForm({ user, plans }: { user: UserView; plans: PlanView[
     if (
       user.plan_id &&
       !(await confirm({
-        title: `为「${user.login}」更换 / 重新分配套餐？`,
+        title: `为「${user.email}」更换 / 重新分配套餐？`,
         message: "从现在起按新的时长计算，已用流量清零，并按新套餐的节点组重新授权。不产生订单。",
         confirmLabel: "确定",
         destructive: true,
@@ -1028,7 +993,7 @@ export function UserPlanForm({ user, plans }: { user: UserView; plans: PlanView[
 
   async function resetTraffic() {
     const ok = await confirm({
-      title: `重置「${user.login}」的套餐流量？`,
+      title: `重置「${user.email}」的套餐流量？`,
       message: "已用流量清零；因超出流量被停用的账户会自动恢复（封禁的不会）。重置周期不变，写入审计。",
       confirmLabel: "重置流量",
       destructive: true,
@@ -1038,7 +1003,7 @@ export function UserPlanForm({ user, plans }: { user: UserView; plans: PlanView[
 
   async function cancel() {
     const ok = await confirm({
-      title: `取消「${user.login}」的套餐？`,
+      title: `取消「${user.email}」的套餐？`,
       message: "套餐授予的节点会被移除；流量上限与到期时间保留为记录，之后只能通过分配套餐改变。",
       confirmLabel: "取消套餐",
       cancelLabel: "保留",
@@ -1048,7 +1013,7 @@ export function UserPlanForm({ user, plans }: { user: UserView; plans: PlanView[
   }
 
   return (
-    <form className="space-y-3" onSubmit={assign} aria-label={`${user.login} 的套餐`}>
+    <form className="space-y-3" onSubmit={assign} aria-label={`${user.email} 的套餐`}>
       <h2 className="text-sm font-medium">当前订阅</h2>
       {detail.isError && <ErrorText>{adminErrorText(detail.error)}</ErrorText>}
       {sub ? (

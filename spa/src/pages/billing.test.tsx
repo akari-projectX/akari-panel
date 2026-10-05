@@ -11,7 +11,6 @@ import { OrdersView, preselect, ShopView } from "./purchase";
 
 const ME: Me = {
   id: "u1",
-  login: "alice",
   role: "user",
   traffic_used_bytes: 0,
   traffic_limit_bytes: null,
@@ -21,7 +20,7 @@ const ME: Me = {
   banned: false,
   ban_reason: null,
   banned_at: null,
-  email: null,
+  email: "alice@example.com",
   email_verified: false,
   locale: "en",
   sub_token: null,
@@ -365,7 +364,8 @@ const adminOrder = (over: Partial<AdminOrder> = {}): AdminOrder => ({
   id: "o1",
   out_trade_no: "AK1",
   user_id: "u1",
-  user_login: "alice",
+  user_label: "u-12345678",
+  user_email: "alice@example.com",
   plan_id: "p1",
   plan_name: "Monthly",
   amount_cents: 990,

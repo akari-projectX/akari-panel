@@ -187,7 +187,7 @@ st, r = api("PUT", f"/api/v1/nodes/{NODE_ID}/inbounds", {"inbounds": original + 
 if st != 200:
     fail(f"put rendered inbounds: {st} {r}")
 
-st, u = api("POST", "/api/v1/users", {"login": "w8-user", "password": "user-password-123"})
+st, u = api("POST", "/api/v1/users", {"email": "w8-user@smoke.test", "password": "user-password-123"})
 if st != 201:
     fail(f"create w8 user: {st} {u}")
 USER, SUB = u["id"], u["sub_token"]

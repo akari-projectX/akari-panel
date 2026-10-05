@@ -776,7 +776,9 @@ pub struct RedemptionView {
     order_id: Uuid,
     out_trade_no: String,
     user_id: Option<Uuid>,
-    user_login: String,
+    /// Q4: the order's snapshot label; `user_email` = current address.
+    user_label: String,
+    user_email: Option<String>,
     status: String,
     over_limit: bool,
     discount_cents: i64,
@@ -798,7 +800,8 @@ pub async fn get(
             .await?
             .ok_or_else(ApiError::not_found)?;
     let redemptions: Vec<RedemptionView> = sqlx::query_as(
-        "SELECT r.order_id, o.out_trade_no, r.user_id, o.user_login, r.status, r.over_limit, \
+        "SELECT r.order_id, o.out_trade_no, r.user_id, o.user_label, \
+         (SELECT u.email FROM users u WHERE u.id = r.user_id) AS user_email, r.status, r.over_limit, \
          r.discount_cents, o.status AS order_status, r.created_at FROM coupon_redemptions r \
          JOIN orders o ON o.id = r.order_id WHERE r.coupon_id = $1 \
          ORDER BY r.created_at DESC LIMIT 200",

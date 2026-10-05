@@ -27,19 +27,17 @@ afterEach(() => {
 
 const user = (over: Partial<UserView>): UserView => ({
   id: "u1",
-  login: "alice",
   role: "user",
   enabled: true,
   traffic_limit_bytes: null,
   traffic_used_bytes: 0,
   expires_at: null,
   created_at: "2026-10-01T00:00:00Z",
-  totp_enabled: false,
   disabled_reason: null,
   plan_id: null,
   plan_name: null,
   next_reset_at: null,
-  email: null,
+  email: "alice@example.com",
   email_verified: false,
   ...over,
 });
@@ -48,7 +46,7 @@ const plan = { id: "p1", name: "basic", enabled: true } as PlanView;
 
 const job = (over: Partial<BatchJob>): BatchJob => ({
   id: "j1",
-  actor_login: "root",
+  actor_label: "u-12345678",
   action: "add_balance",
   params: { amount_cents: 100, reason: "r" },
   selection: "ids",
@@ -155,10 +153,13 @@ describe("pure helpers", () => {
 describe("users: batch selection", () => {
   it("previews, confirms and creates a batch for the selected users; exports the filter", async () => {
     const calls = fakeApi({
-      "GET /users": { users: [user({ id: "u1", login: "alice" }), user({ id: "u2", login: "bob" })], total: 2 },
+      "GET /users": {
+        users: [user({ id: "u1", email: "alice@example.com" }), user({ id: "u2", email: "bob@example.com" })],
+        total: 2,
+      },
       "GET /plans": [plan],
       "GET /users/batch": [],
-      "POST /users/batch/preview": { total: 2, admins: 0, sample: ["alice", "bob"] },
+      "POST /users/batch/preview": { total: 2, admins: 0, sample: ["alice@example.com", "bob@example.com"] },
       "POST /users/batch": (body: unknown) => ({ status: 202, body: job({ ...(body as object) }) }),
     });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -167,7 +168,7 @@ describe("users: batch selection", () => {
     const bulk = screen.getByRole("button", { name: /批量操作（已选 0）/ }) as HTMLButtonElement;
     expect(bulk.disabled).toBe(true);
     fireEvent.click(screen.getByLabelText("选择本页全部用户"));
-    fireEvent.click(screen.getByLabelText("选择 bob"));
+    fireEvent.click(screen.getByLabelText("选择 bob@example.com"));
     fireEvent.click(screen.getByRole("button", { name: /批量操作（已选 1）/ }));
     const dialog = await screen.findByRole("dialog", { name: "批量操作" });
     expect(await within(dialog).findByText(/将作用于 2 个账户/)).toBeTruthy();
@@ -198,7 +199,7 @@ describe("users: batch selection", () => {
       "GET /users": { users: [user({})], total: 120 },
       "GET /plans": [plan],
       "GET /users/batch": [],
-      "POST /users/batch/preview": { total: 120, admins: 1, sample: ["alice"] },
+      "POST /users/batch/preview": { total: 120, admins: 1, sample: ["alice@example.com"] },
     });
     vi.spyOn(window, "confirm").mockReturnValue(false);
     renderAdmin(<AdminUsers />);
@@ -219,7 +220,15 @@ describe("batch jobs", () => {
       "GET /users/batch": [job({}), job({ id: "j2", status: "done", done: 10, failed: 0 })],
       "GET /users/batch/j1": {
         job: job({}),
-        items: [{ user_id: "u9", user_login: "zed", status: "failed", detail: "balance.insufficient" }],
+        items: [
+          {
+            user_id: "u9",
+            user_label: "u-9a9a9a9a",
+            user_email: "zed@example.com",
+            status: "failed",
+            detail: "balance.insufficient",
+          },
+        ],
       },
       "POST /users/batch/j1/cancel": job({ status: "cancelled" }),
     });
@@ -251,15 +260,15 @@ describe("manual orders", () => {
           },
         ],
       },
-      "GET /users": { users: [user({ id: "u7", login: "carol" })], total: 1 },
+      "GET /users": { users: [user({ id: "u7", email: "carol@example.com" })], total: 1 },
       "POST /orders/manual": () => ({ status: 201, body: { id: "o1" } }),
     });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     const created = vi.fn();
     renderAdmin(<ManualOrderDialog onClose={() => {}} onCreated={created} />);
-    fireEvent.change(await screen.findByLabelText("用户（账号或邮箱）"), { target: { value: "Carol" } });
+    fireEvent.change(await screen.findByLabelText("用户邮箱"), { target: { value: "Carol@example.com" } });
     fireEvent.click(screen.getByRole("button", { name: "查找" }));
-    expect(await screen.findByText("用户：carol")).toBeTruthy();
+    expect(await screen.findByText("用户：carol@example.com")).toBeTruthy();
     await screen.findByRole("option", { name: "basic" });
     fireEvent.change(screen.getByLabelText("套餐"), { target: { value: "p1" } });
     fireEvent.change(screen.getByLabelText("周期"), { target: { value: "month" } });
@@ -268,7 +277,7 @@ describe("manual orders", () => {
     fireEvent.change(screen.getByLabelText("原因（必填，写入订单与审计）"), { target: { value: "活动奖品" } });
     fireEvent.click(screen.getByRole("button", { name: "创建并开通" }));
     await waitFor(() => expect(created).toHaveBeenCalledWith("o1"));
-    expect(confirm.mock.calls[0][0]).toContain("赠送「basic」给 carol");
+    expect(confirm.mock.calls[0][0]).toContain("赠送「basic」给 carol@example.com");
     expect(calls.find((c) => c.path === "/orders/manual")?.body).toEqual({
       user_id: "u7",
       plan_id: "p1",
@@ -292,7 +301,7 @@ describe("manual orders", () => {
           },
         ],
       },
-      "GET /users": { users: [user({ id: "u7", login: "carol" })], total: 1 },
+      "GET /users": { users: [user({ id: "u7", email: "carol@example.com" })], total: 1 },
       "POST /orders/manual": () => ({
         status: 409,
         body: { error: "x", code: "order_admin.user_has_pending", params: {} },
@@ -300,9 +309,9 @@ describe("manual orders", () => {
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
     renderAdmin(<ManualOrderDialog onClose={() => {}} onCreated={() => {}} />);
-    fireEvent.change(await screen.findByLabelText("用户（账号或邮箱）"), { target: { value: "carol" } });
+    fireEvent.change(await screen.findByLabelText("用户邮箱"), { target: { value: "carol@example.com" } });
     fireEvent.click(screen.getByRole("button", { name: "查找" }));
-    await screen.findByText("用户：carol");
+    await screen.findByText("用户：carol@example.com");
     await screen.findByRole("option", { name: "basic" });
     fireEvent.change(screen.getByLabelText("套餐"), { target: { value: "p1" } });
     fireEvent.change(screen.getByLabelText("周期"), { target: { value: "month" } });
@@ -322,7 +331,7 @@ describe("coupon batches", () => {
           prefix: "SALE-",
           count: 100,
           template: { kind: "percent", value: 20, max_uses: 1, ends_at: null },
-          actor_login: "root",
+          actor_label: "u-12345678",
           created_at: "2026-10-03T00:00:00Z",
           revoked_at: null,
           codes: 100,

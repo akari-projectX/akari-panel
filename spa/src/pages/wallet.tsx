@@ -350,7 +350,7 @@ function InviteCard() {
               <TableBody>
                 {d.commissions.map((c) => (
                   <TableRow key={c.id}>
-                    <TableCell>{c.invitee_login}</TableCell>
+                    <TableCell>{c.invitee_label}</TableCell>
                     <TableCell className="tabular-nums">{money(c.base_cents)}</TableCell>
                     <TableCell className="tabular-nums">
                       {money(c.amount_cents)} ({c.rate_percent}%)

@@ -40,8 +40,8 @@ use crate::auth::{ApiError, AuthUser};
 use crate::state::AppState;
 pub use templates::{Locale, Template};
 
-/// AAD of the sealed SMTP password (`totp::Keys::seal`, like TOTP secrets
-/// but bound to this fixed id instead of a user).
+/// AAD of the sealed SMTP password (`totp::Keys::seal`, bound to this fixed
+/// id).
 pub const SMTP_AAD: Uuid = Uuid::from_u128(0x616b_6172_692d_736d_7470_2d70_6173_7377);
 
 /// AAD of the sealed Resend API key (W31).

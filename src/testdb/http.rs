@@ -175,11 +175,8 @@ impl Client {
     }
 
     /// POST /test/auth/login; keeps the session cookie on success.
-    pub async fn login(&mut self, login: &str, password: &str, code: Option<&str>) -> Resp {
-        let mut body = serde_json::json!({ "login": login, "password": password });
-        if let Some(c) = code {
-            body["code"] = Value::String(c.into());
-        }
+    pub async fn login(&mut self, email: &str, password: &str) -> Resp {
+        let body = serde_json::json!({ "email": email, "password": password });
         let r = self.post("/test/auth/login", body).await;
         if let Some(c) = r.session_cookie() {
             self.cookie = Some(c);
@@ -204,7 +201,6 @@ pub async fn client_for(state: &AppState, id: uuid::Uuid) -> Client {
             .await
             .unwrap();
     let mut c = Client::new(state, rand_ip());
-    c.cookie =
-        Some(crate::auth::issue_token(state, id, &role, sv, crate::auth::Stage::Full).unwrap());
+    c.cookie = Some(crate::auth::issue_token(state, id, &role, sv).unwrap());
     c
 }

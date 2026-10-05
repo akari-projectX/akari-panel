@@ -395,9 +395,7 @@ mod tests {
             .fetch_one(&db.pool)
             .await
             .unwrap();
-        c.cookie = Some(
-            crate::auth::issue_token(&state, admin, "admin", sv, crate::auth::Stage::Full).unwrap(),
-        );
+        c.cookie = Some(crate::auth::issue_token(&state, admin, "admin", sv).unwrap());
         let g = c
             .post("/test/api/v1/node-groups", json!({"name": "hk"}))
             .await

@@ -5,7 +5,7 @@ What must be backed up:
 | What | Where | Why |
 |---|---|---|
 | PostgreSQL | `database_url` | the source of truth: users, nodes, traffic ledger, tombstones |
-| `data_dir` | `/var/lib/akari`, compose volume `akari-data` | **route prefix, the CA private key (`ca.key`), `jwt.key` and `totp.key`** |
+| `data_dir` | `/var/lib/akari`, compose volume `akari-data` | **route prefix, the CA private key (`ca.key`), `jwt.key` and `master.key`** |
 | configuration | `panel.toml`; compose `.env`, `env/*.env`; `/etc/akari/install.env` | optional (`AKARI_CONFIG_FILES`): passwords, for reference — a restore generates its own |
 | Valkey | -- | hot state only (liveness, rate-limit counters); not backed up |
 
@@ -37,17 +37,19 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
 
 The sections below are the same tooling by hand.
 
-> **WARNING: `data/` holds the CA private key, `jwt.key` and `totp.key`.** Whoever has them can
+> **WARNING: `data/` holds the CA private key, `jwt.key` and `master.key`.** Whoever has them can
 > mint agent certificates (impersonate any node, receive its users' credentials) and forge admin
-> sessions; `totp.key` together with a database copy decrypts every TOTP secret.
+> sessions; `master.key` together with a database copy decrypts every sealed secret
+> (subscription links, the SMTP password, payment and alert channel secrets).
 > Backups are therefore always encrypted; keep the decryption key offline, away from the
 > backup storage. Never commit or copy `data/` anywhere unencrypted.
 
 Losing `data/` while keeping the database means: new route prefix, new CA, every agent
-needs a new enrollment token (`akari node enroll-token <id>`, a new bootstrap file), and every account with two-factor authentication is locked out —
-the TOTP secrets in the database can no longer be decrypted; recover each with
-`akari admin reset-2fa <login>`. `totp.key` and the database belong to the same backup:
-restore them together. Losing the database means losing everything else.
+needs a new enrollment token (`akari node enroll-token <id>`, a new bootstrap file), and every
+secret sealed with the master key can no longer be decrypted: enter the SMTP password, payment
+method keys and alert channel secrets again; subscription links keep working but cannot be
+shown until users reset them. `master.key` (named `totp.key` before v0.4; the panel renames it
+once) and the database belong to the same backup: restore them together. Losing the database means losing everything else.
 
 Agents keep their own key and certificate in their state directory (`/var/lib/private/akari-agent`
 under the shipped unit). Losing it means re-enrolling that node with a new token; it is not part of
@@ -108,7 +110,8 @@ default `akari_drill`, dropped and recreated) and Valkey db index (`DRILL_VALKEY
 14); it binds the panel's default ports, so serialise it with smoke:
 install -> admin + user + node with a live agent -> backup -> stop panel, wipe database and
 data dir -> restore -> start panel -> assert same prefix, same login, user present, the
-unchanged agent reconnects and the node is online.
+user's sealed subscription link still decrypts (the master key came back), the unchanged agent
+reconnects and the node is online.
 
 Result, 2026-10-01 (WSL2 dev stack, PostgreSQL 18.6, age 1.2.1, dump via `docker compose exec`):
 

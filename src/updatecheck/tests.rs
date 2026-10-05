@@ -708,7 +708,7 @@ async fn api_status_settings_and_check() {
     assert_eq!(st["outdated_nodes"], 1);
     assert_eq!(st["update_available"], "v1.5.0");
     let actor: String =
-        sqlx::query_scalar("SELECT actor_login FROM audit_log WHERE action = 'agent_update.check'")
+        sqlx::query_scalar("SELECT actor_label FROM audit_log WHERE action = 'agent_update.check'")
             .fetch_one(&db.pool)
             .await
             .unwrap();
@@ -753,7 +753,7 @@ async fn auto_check_claims_one_slot() {
     .unwrap();
     assert!(due);
     let actor: String =
-        sqlx::query_scalar("SELECT actor_login FROM audit_log WHERE action = 'agent_update.check'")
+        sqlx::query_scalar("SELECT actor_label FROM audit_log WHERE action = 'agent_update.check'")
             .fetch_one(&db.pool)
             .await
             .unwrap();

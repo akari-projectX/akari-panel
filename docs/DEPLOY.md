@@ -16,7 +16,7 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
 | 安装方式 | `1` Docker Compose | `2` = 裸机（systemd：PostgreSQL 18 + Valkey 9 + Caddy） |
 | 主域名 | 留空 = 仅 IP | 填域名前先把 DNS A 记录指向本机，并放行 80/443 |
 | 证书通知邮箱 | 留空 | 仅用于 Let's Encrypt 通知 |
-| 管理员登录名 / 密码 | `admin` / 自动生成 | 自动生成的密码**只在结束时显示一次** |
+| 管理员邮箱 / 密码 | 证书通知邮箱，否则 `admin@<主域名>`（仅 IP：`admin@akari.invalid`）/ 自动生成 | 邮箱就是登录名（v0.4：所有人都用邮箱登录）；自动生成的密码**只在结束时显示一次** |
 | 自定义端口 | 否（80/443/8443） | 8443 是节点 agent 连接面板的 gRPC 端口 |
 
 结束时会打印管理后台与用户门户的完整地址（含**机密路由前缀**——没有前缀，面板对外只返回空 404）
@@ -29,7 +29,7 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
 akari-ctl status                    # 服务状态 + 健康检查
 akari-ctl info                      # 再次显示后台/门户地址（含前缀）
 akari-ctl upgrade                   # 升级到最新版本：先备份 → 校验签名 → 切换 → 健康检查，失败自动回滚
-akari-ctl backup                    # 备份数据库 + 数据目录（CA 私钥、jwt.key、totp.key）+ 配置
+akari-ctl backup                    # 备份数据库 + 数据目录（CA 私钥、jwt.key、master.key）+ 配置
 akari-ctl migrate --to docker       # 同一台机器上 裸机 → Docker（或 --to bare），保留前缀、密钥与数据
 akari-ctl uninstall                 # 卸载服务，保留数据与配置；--purge 彻底删除（需输入 purge 确认）
 ```
@@ -177,7 +177,7 @@ the database — there is no file fallback and no precedence between the two:
 主域名 / 订阅域名 / 信任 Cloudflare     系统设置 → 站点
 节点通信域名 (host agents dial)          系统设置 → 节点通信   (required before the first node)
 install pin, download fallback, ACME, remove mode   系统设置 → 节点通信
-2FA policy, retention, Cloudflare ranges, extra release keys   系统设置 → 安全
+retention, Cloudflare ranges, extra release keys               系统设置 → 安全
 latency tests                           系统设置 → 测速
 Telegram API origin (alert channel)     系统设置 → 告警
 ```
@@ -311,20 +311,17 @@ The installer creates it (and sets 主域名 / 节点通信域名, §2b); by han
 (`akari-ctl` installations: compose directory `/opt/akari`):
 
 ```bash
-# compose:  docker compose exec -e AKARI_ADMIN_PASSWORD='...' panel /akari admin add root
-# bare metal: sudo -u akari env AKARI_ADMIN_PASSWORD='...' akari -c /etc/akari/panel.toml admin add root
+# compose:  docker compose exec -e AKARI_ADMIN_PASSWORD='...' panel /akari admin add you@example.com
+# bare metal: sudo -u akari env AKARI_ADMIN_PASSWORD='...' akari -c /etc/akari/panel.toml admin add you@example.com
 ```
 
-Omit the variable to be prompted. Open `https://panel.example.com/<prefix>/app` and log in with
-the password; admins are taken to the console at `https://panel.example.com/<prefix>/admin`
-(served only to an admin session — without one it is the same empty 404 as any unknown path, so
-bookmark `/app`, not `/admin`). Two-factor authentication (TOTP) is **optional but recommended**: the console shows a
-banner until you turn it on under **账户** (scan the QR code, or type the key; save or download the
-10 recovery codes). Deployments that want it mandatory for admins tick 系统设置 → 安全 →
-**管理员必须两步验证** (default off) — an admin without 2FA then only gets a 15-minute setup
-session at login (on every instance at once). Lost authenticator and
-recovery codes: `akari admin reset-2fa <login>` (or another admin: 用户 → 管理 → 重置两步验证); the
-account then logs in with its password and can set 2FA up again.
+Omit the variable to be prompted. The e-mail address is the login name (v0.4: everyone, admins
+too, logs in with the address; it counts as verified). Open
+`https://panel.example.com/<prefix>/app` and log in with the address and the password; admins are
+taken to the console at `https://panel.example.com/<prefix>/admin` (served only to an admin
+session — without one it is the same empty 404 as any unknown path, so bookmark `/app`, not
+`/admin`). Forgotten password: `akari admin passwd <email>` (ends the account's sessions).
+(TOTP two-factor authentication was removed in v0.4; passkeys replace it.)
 
 ## 2b. 系统设置 (main domain)
 
@@ -342,7 +339,7 @@ Everything here is off until you turn it on; nothing in panel.toml.
 1. **系统设置 → 邮件**: SMTP server, port and security — **STARTTLS** (587) or **SSL/TLS**
    (465) for a mail provider; **不加密** only for a relay on the same host/private network (the
    panel refuses credentials over it). Username/password if the provider needs them (the password
-   is sealed with `data/totp.key` like 2FA secrets: if that file is lost, enter it again), sender
+   is sealed with a key derived from `data/master.key`: if that file is lost, enter it again), sender
    address (the provider must allow it; set SPF/DKIM for that domain at the provider) and sender
    name (also the site name in mails). Tick **启用邮件发送**, save, then **发送测试邮件** to
    yourself — the provider's answer is shown when it fails.
@@ -409,7 +406,7 @@ Everything here is off until you turn it on; nothing in panel.toml.
 
 Payment methods are configured only in the console (database; no panel.toml, every instance at
 once): **系统设置 → 支付 → 添加支付方式 → 支付宝当面付**, environment (正式/沙箱), APPID, optional
-商户 PID, paste the app private key (sealed with `data/totp.key`, never shown again) and Alipay's
+商户 PID, paste the app private key (sealed with `data/master.key`, never shown again) and Alipay's
 public key, upload the shown **应用公钥** at the Alipay open platform, enable, then **测试连接**.
 The notify URL is derived from the main domain (§2b) per method — nothing to configure at Alipay.
 Several methods are possible (payers choose at checkout). Details, key rotation and the legacy
@@ -1036,8 +1033,8 @@ recorded, never notified).
 **Telegram**: create a bot with @BotFather, add it to the group/channel, enter the bot token and
 the chat id (a number, groups and channels are negative, or `@channelname`), save, then 发送测试.
 The panel only calls `sendMessage` (outbound HTTPS to api.telegram.org; nothing to open
-inbound). The token is stored encrypted with a key derived from `data/totp.key` and never shown
-again (losing `totp.key` means entering it again). For networks that block Telegram, set
+inbound). The token is stored encrypted with a key derived from `data/master.key` and never shown
+again (losing `master.key` means entering it again). For networks that block Telegram, set
 **Telegram API 地址** (系统设置 → 告警) to a self-hosted Bot API server (https; origin only; empty =
 `https://api.telegram.org`). W25: the old `[alerts] telegram_api_url` is imported there once.
 
@@ -1097,7 +1094,7 @@ two or more for availability or headroom:
 ```
 
 - All instances use the same `database_url`, `valkey_url` and an identical
-  `data_dir` (CA, `jwt.key`, `totp.key`, route prefix: share the directory or
+  `data_dir` (CA, `jwt.key`, `master.key`, route prefix: share the directory or
   copy it byte for byte); each has its own web and gRPC bind addresses.
 - gRPC must be balanced at L4. The balancer must not terminate TLS (the agent's
   client certificate is the node identity). No stickiness is needed: an agent
@@ -1384,7 +1381,7 @@ akari-ctl uninstall --purge          # also database, data dir, configuration: t
                                      # (non-interactive: --yes --purge --confirm purge)
 ```
 
-Plain uninstall keeps: bare metal `/var/lib/akari` (prefix, CA key, jwt.key, totp.key),
+Plain uninstall keeps: bare metal `/var/lib/akari` (prefix, CA key, jwt.key, master.key),
 `/etc/akari/panel.toml`, the PostgreSQL database `akari`; Docker `/opt/akari` and the `akari_*`
 volumes. Running the installer again picks them up (same prefix, same accounts). Caddy is stopped
 when the installer installed it, and given back its previous configuration when it was there
@@ -1404,7 +1401,7 @@ akari-ctl migrate --to docker        # or --to bare
 Takes a safety backup (kept, encrypted if configured) and a plain dump for the move (in a 0700
 temporary directory, deleted afterwards), stops the current services, installs the other mode with
 **restore** (database via `pg_restore --single-transaction`, the data dir — route prefix, CA,
-`jwt.key`, `totp.key` — copied with its ownership), waits for health, then retires the old services
+`jwt.key`, `master.key` — copied with its ownership), waits for health, then retires the old services
 (their data stays until you delete it: bare metal `/var/lib/akari`, database `akari`; Docker the
 `akari_*` volumes). New database/Valkey passwords are generated; 系统设置 (domains, payment
 methods…) live in the database and move with it. Any failure brings the old mode back. The panel is

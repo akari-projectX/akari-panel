@@ -7,12 +7,11 @@ import { Button } from "./components/ui/button";
 import { ScrollFade } from "./components/ui/table";
 import { ErrorText, Loading } from "./components/status";
 import { FixedLocale, useHtmlLang } from "./i18n";
-import { ApiError, adminBase, appBase, get, logout as apiLogout, type Me, type TotpStatus } from "./lib/api";
+import { ApiError, adminBase, appBase, get, logout as apiLogout, type Me } from "./lib/api";
 import { adminErrorText } from "./lib/admin-errors";
 import { loadPage, navigate, usePath } from "./lib/router";
 import { useSiteName } from "./lib/title";
 import { PasswordCard } from "./pages/portal";
-import { EnrollPage, TwoFactorCard } from "./pages/two-factor";
 
 // W21: every view is its own chunk (the console passed 500 kB in one
 // file). CSP-safe: chunks are same-origin modules imported with relative
@@ -93,20 +92,11 @@ function AdminApp() {
 function AdminRoot() {
   const queryClient = useQueryClient();
   const me = useQuery({ queryKey: ["me"], queryFn: () => get<Me>("/me") });
-  // With 系统设置 → 安全 → 管理员必须两步验证 an admin without 2FA has an
-  // enrollment-only session: /me is 401 but /me/totp says stage "enroll".
   const unauthorized = me.isError && me.error instanceof ApiError && me.error.status === 401;
-  const totp = useQuery({
-    queryKey: ["totp"],
-    queryFn: () => get<TotpStatus>("/me/totp"),
-    enabled: unauthorized,
-    retry: false,
-  });
   const [logoutError, setLogoutError] = useState<string | null>(null);
   // The session ended (logout elsewhere, revoked, expired) or is no longer
   // an admin's: back to the login page, a full page load into the portal.
-  const leave =
-    (unauthorized && !totp.isPending && totp.data?.stage !== "enroll") || (me.data && me.data.role !== "admin");
+  const leave = unauthorized || (me.data && me.data.role !== "admin");
 
   useEffect(() => {
     if (leave) loadPage(loginTarget(location.pathname));
@@ -125,9 +115,8 @@ function AdminRoot() {
     loadPage(appBase);
   }
 
-  if (me.isPending || (unauthorized && totp.isPending) || leave) return <Loading label="加载中…" />;
+  if (me.isPending || leave) return <Loading label="加载中…" />;
   if (me.isError) {
-    if (unauthorized && totp.data?.stage === "enroll") return <EnrollPage status={totp.data} onLogout={logout} />;
     return (
       <main className="mx-auto max-w-md px-4 py-16">
         <ErrorText>{adminErrorText(me.error)}</ErrorText>
@@ -138,16 +127,6 @@ function AdminRoot() {
     );
   }
   return <AdminConsole user={me.data} onLogout={logout} logoutError={logoutError} />;
-}
-
-const BANNER_KEY = "akari.2fa-banner-dismissed";
-
-function bannerDismissed(id: string): boolean {
-  try {
-    return window.localStorage.getItem(BANNER_KEY) === id;
-  } catch {
-    return false;
-  }
 }
 
 // W17: navigation counters (unread tickets, firing alerts).
@@ -167,23 +146,11 @@ function AdminConsole({ user, onLogout, logoutError }: { user: Me; onLogout: () 
   });
   const count = (id: View) =>
     id === "tickets" ? badges.data?.tickets_unread : id === "alerts" ? badges.data?.alerts_firing : undefined;
-  const totp = useQuery({ queryKey: ["totp"], queryFn: () => get<TotpStatus>("/me/totp") });
   // 站点名称 (系统设置 → 站点) for the header and the browser title.
   const site = useSiteName();
   useEffect(() => {
     document.title = titleOf(view, site);
   }, [view, site]);
-  const [dismissed, setDismissed] = useState(() => bannerDismissed(user.id));
-  const showBanner = totp.data && !totp.data.enabled && !dismissed && view !== "account";
-
-  function dismiss() {
-    setDismissed(true);
-    try {
-      window.localStorage.setItem(BANNER_KEY, user.id);
-    } catch {
-      // Storage blocked: dismissed for this page only.
-    }
-  }
 
   return (
     <div className="min-h-screen">
@@ -223,7 +190,7 @@ function AdminConsole({ user, onLogout, logoutError }: { user: Me; onLogout: () 
           </div>
           <div className="flex items-center gap-2 sm:gap-3">
             <Badge variant="secondary">管理员</Badge>
-            <span className="max-w-[10rem] truncate text-sm text-muted-foreground">{user.login}</span>
+            <span className="max-w-[10rem] truncate text-sm text-muted-foreground">{user.email}</span>
             <Button variant="outline" size="sm" onClick={onLogout}>
               退出登录
             </Button>
@@ -235,31 +202,6 @@ function AdminConsole({ user, onLogout, logoutError }: { user: Me; onLogout: () 
           )}
         </div>
       </header>
-      {showBanner && (
-        <div role="region" aria-label="安全建议" className="border-b border-amber-300 bg-amber-50 text-amber-900">
-          <div className="mx-auto flex w-full max-w-screen-2xl items-center justify-between gap-2 px-4 py-1.5 text-xs sm:px-6 sm:py-2 sm:text-sm">
-            <p className="min-w-0">
-              建议开启两步验证<span className="hidden sm:inline">：管理员账户一旦密码泄露，影响整个面板</span>。
-              <a
-                className="ml-1 font-medium underline"
-                href={`${adminBase}/account`}
-                onClick={(e) => {
-                  e.preventDefault();
-                  navigate(`${adminBase}/account`);
-                }}
-              >
-                去设置
-              </a>
-            </p>
-            <Button variant="ghost" size="sm" className="shrink-0" onClick={dismiss} aria-label="不再提示两步验证建议">
-              <span aria-hidden="true" className="sm:hidden">
-                ✕
-              </span>
-              <span className="hidden sm:inline">不再提示</span>
-            </Button>
-          </div>
-        </div>
-      )}
       <main className="mx-auto w-full max-w-screen-2xl px-4 py-6 sm:px-6 sm:py-8">
         <Suspense fallback={<Loading label="加载中…" />}>
           {view === "users" ? (
@@ -290,7 +232,6 @@ function AdminConsole({ user, onLogout, logoutError }: { user: Me; onLogout: () 
             <div className="mx-auto max-w-3xl space-y-6">
               <h1 className="text-xl font-semibold tracking-tight">账户</h1>
               <PasswordCard />
-              <TwoFactorCard />
             </div>
           ) : (
             <AdminDashboard />

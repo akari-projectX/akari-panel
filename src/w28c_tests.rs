@@ -64,8 +64,8 @@ async fn create_with_plan_and_subscription_view() {
     let p = plan(&c, "gold", node).await;
     // The old direct fields are gone.
     for body in [
-        json!({ "login": "xx1", "password": "password-123", "traffic_limit_bytes": 5 }),
-        json!({ "login": "xx1", "password": "password-123",
+        json!({ "email": "xx1@w28c.test", "password": "password-123", "traffic_limit_bytes": 5 }),
+        json!({ "email": "xx1@w28c.test", "password": "password-123",
                 "expires_at": "2099-01-01T00:00:00Z" }),
     ] {
         let r = c.post("/test/api/v1/users", body).await;
@@ -76,7 +76,7 @@ async fn create_with_plan_and_subscription_view() {
     let r = c
         .post(
             "/test/api/v1/users",
-            json!({ "login": "xx2", "password": "password-123",
+            json!({ "email": "xx2@w28c.test", "password": "password-123",
                     "plan": { "plan_id": p, "period": "reset" } }),
         )
         .await;
@@ -84,7 +84,7 @@ async fn create_with_plan_and_subscription_view() {
     let r = c
         .post(
             "/test/api/v1/users",
-            json!({ "login": "xx2", "password": "password-123",
+            json!({ "email": "xx2@w28c.test", "password": "password-123",
                     "plan": { "plan_id": p, "period": "days" } }),
         )
         .await;
@@ -93,13 +93,13 @@ async fn create_with_plan_and_subscription_view() {
     let r = c
         .post(
             "/test/api/v1/users",
-            json!({ "login": "xx3", "password": "password-123", "role": "admin",
+            json!({ "email": "xx3@w28c.test", "password": "password-123", "role": "admin",
                     "plan": { "plan_id": p, "period": "month" } }),
         )
         .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
     assert_eq!(r.json()["code"], "user.admin_no_plan");
-    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE login = 'xx3'")
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE email = 'xx3@w28c.test'")
         .fetch_one(&db.pool)
         .await
         .unwrap();
@@ -108,7 +108,7 @@ async fn create_with_plan_and_subscription_view() {
     let r = c
         .post(
             "/test/api/v1/users",
-            json!({ "login": "d12", "password": "password-123",
+            json!({ "email": "d12@w28c.test", "password": "password-123",
                     "plan": { "plan_id": p, "period": "days", "days": 30 } }),
         )
         .await;
@@ -137,7 +137,7 @@ async fn create_with_plan_and_subscription_view() {
     let r = c.get(&format!("/test/api/v1/users/{u}")).await;
     assert_eq!(r.status, StatusCode::OK);
     let d = r.json();
-    assert_eq!(d["login"], "d12");
+    assert_eq!(d["email"], "d12@w28c.test");
     assert!(d["ban"].is_null());
     let s = &d["subscription"];
     assert_eq!(s["plan_id"], json!(p));
@@ -384,7 +384,7 @@ async fn ban_revokes_and_confines_to_the_portal() {
     let r = c
         .post(
             "/test/api/v1/users",
-            json!({ "login": "victim", "password": "password-123",
+            json!({ "email": "victim@w28c.test", "password": "password-123",
                     "plan": { "plan_id": p, "period": "month" } }),
         )
         .await;
@@ -396,7 +396,7 @@ async fn ban_revokes_and_confines_to_the_portal() {
     assert_eq!(anon.get(&sub).await.status, StatusCode::OK);
     let mut uc = Client::new(&state, rand_ip());
     assert_eq!(
-        uc.login("victim", "password-123", None).await.status,
+        uc.login("victim@w28c.test", "password-123").await.status,
         StatusCode::OK
     );
     assert_eq!(uc.get("/test/api/v1/me/plan").await.status, StatusCode::OK);
@@ -449,7 +449,7 @@ async fn ban_revokes_and_confines_to_the_portal() {
     assert_eq!(gone.status, StatusCode::NOT_FOUND);
     assert!(gone.body.is_empty());
     // The user signs in again: portal scope only.
-    let r = uc.login("victim", "password-123", None).await;
+    let r = uc.login("victim@w28c.test", "password-123").await;
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.json()["banned"], true);
     let me = uc.get("/test/api/v1/me").await;
@@ -520,7 +520,7 @@ async fn ban_revokes_and_confines_to_the_portal() {
     )
     .await;
     let mut ac = Client::new(&state, rand_ip());
-    let r = ac.login(&other.to_string(), "admin-password-1", None).await;
+    let r = ac.login(&crate::testdb::test_email(other), "admin-password-1").await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
     db.drop().await;
 }

@@ -11,7 +11,6 @@ import { describePeriod, get, post, type Me, type MyPlan } from "../lib/api";
 import { errorText } from "../lib/errors";
 import { humanBytes } from "../lib/utils";
 import { EmailCard } from "./portal-account";
-import { TwoFactorCard } from "./two-factor";
 
 // Dates in the visible locale (the admin console pins zh).
 function useDate() {
@@ -20,16 +19,13 @@ function useDate() {
   return (s: string | null | undefined) => (s ? new Date(s).toLocaleDateString(tag) : "—");
 }
 
-/** W20 (M1): the 账户设置 view — email, password, 2FA, language. */
+/** W20 (M1): the 账户设置 view — email, password, language. */
 export function AccountSettings({ me }: { me: Me }) {
   const t = useT();
-  // Renewal scope (R21): the 2FA endpoints refuse expired / quota-disabled accounts.
-  const restricted = me.expired || me.quota_exhausted;
   return (
     <div className="space-y-6">
       <EmailCard me={me} />
       <PasswordCard />
-      {!restricted && <TwoFactorCard />}
       <Card>
         <CardHeader>
           <CardTitle>

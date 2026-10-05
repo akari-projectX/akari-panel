@@ -12,11 +12,11 @@ use sha2::{Digest, Sha256};
 /// (bench/compose.yml, port 5433), so seeding never touches the dev stack.
 pub const DEFAULT_DB: &str = "postgres://akari:akari-dev@localhost:5433/akari_bench";
 
-/// Login of the seeded admin (active placeholder TOTP; the load tool signs
-/// its session with data/jwt.key instead of logging in).
-pub const ADMIN_LOGIN: &str = "bench-admin";
-/// Login and password of the seeded user that exercises the login path.
-pub const LOGIN_USER: &str = "bench-login";
+/// Address (login name) of the seeded admin (the load tool signs its
+/// session with data/jwt.key instead of logging in).
+pub const ADMIN_EMAIL: &str = "bench-admin@bench.invalid";
+/// Address and password of the seeded user that exercises the login path.
+pub const LOGIN_USER: &str = "bench-login@bench.invalid";
 pub const LOGIN_PASSWORD: &str = "bench-login-password";
 
 /// A 43-char base64url token derived from `kind` and `i`: the seeder
@@ -34,8 +34,8 @@ pub fn enroll_token(i: usize) -> String {
     token("enroll", i)
 }
 
-pub fn user_login(i: usize) -> String {
-    format!("bench-user-{i:05}")
+pub fn user_email(i: usize) -> String {
+    format!("bench-user-{i:05}@bench.invalid")
 }
 
 pub fn node_name(i: usize) -> String {

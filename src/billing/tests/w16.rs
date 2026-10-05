@@ -967,7 +967,7 @@ async fn balance_ledger_invariants() {
             .is_err()
     );
     assert!(sqlx::query(
-        "INSERT INTO balance_ledger (user_id, user_login, kind, amount_cents, reason, actor_login) \
+        "INSERT INTO balance_ledger (user_id, user_label, kind, amount_cents, reason, actor_label) \
          VALUES (NULL, 'x', 'admin_adjust', 5, 'r', 'x')"
     )
     .execute(&db.pool)
@@ -1047,7 +1047,7 @@ async fn balance_http_endpoints() {
     let admin = admin_client(&state, &db).await;
     let u = db.user().await;
     let uc = user_client(&state, u).await;
-    let login: String = sqlx::query_scalar("SELECT login FROM users WHERE id = $1")
+    let email: String = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
         .bind(u)
         .fetch_one(&db.pool)
         .await
@@ -1090,9 +1090,9 @@ async fn balance_http_endpoints() {
     assert_eq!(j["entries"][0]["kind"], "admin_adjust");
     assert_eq!(j["entries"][0]["reason"], "补偿");
     assert_eq!(
-        j["entries"][0]["actor_login"],
+        j["entries"][0]["actor_label"],
         json!(
-            sqlx::query_scalar::<_, String>("SELECT actor_login FROM balance_ledger LIMIT 1")
+            sqlx::query_scalar::<_, String>("SELECT actor_label FROM balance_ledger LIMIT 1")
                 .fetch_one(&db.pool)
                 .await
                 .unwrap()
@@ -1107,7 +1107,10 @@ async fn balance_http_endpoints() {
     );
     assert_eq!(uc.get(&path).await.status, StatusCode::FORBIDDEN);
     let r = admin
-        .get(&format!("/test/api/v1/balances?login={login}"))
+        .get(&format!(
+            "/test/api/v1/balances?email={}",
+            email.to_uppercase()
+        ))
         .await;
     assert_eq!(r.json()[0]["balance_cents"], 1234);
     assert_eq!(
@@ -1124,9 +1127,14 @@ async fn balance_http_endpoints() {
         uc.get("/test/api/v1/balances").await.status,
         StatusCode::FORBIDDEN
     );
-    // A customer without a balance row is found by login (balance 0).
+    // A customer without a balance row is found by address (balance 0).
     let v = db.user().await;
-    let r = admin.get(&format!("/test/api/v1/balances?login={v}")).await;
+    let r = admin
+        .get(&format!(
+            "/test/api/v1/balances?email={}",
+            crate::testdb::test_email(v)
+        ))
+        .await;
     assert_eq!(
         (
             r.json()[0]["user_id"].clone(),
@@ -1138,7 +1146,7 @@ async fn balance_http_endpoints() {
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.json()["balance_cents"], 1234);
     assert_eq!(r.json()["entries"].as_array().unwrap().len(), 1);
-    assert!(r.json()["entries"][0].get("actor_login").is_none());
+    assert!(r.json()["entries"][0].get("actor_label").is_none());
     let first = r.json()["entries"][0]["id"].as_i64().unwrap();
     let r = uc
         .get(&format!("/test/api/v1/me/balance?before={first}"))
@@ -1727,13 +1735,13 @@ async fn inviter_guard() {
     // A fresh insert with a valid inviter works; with itself it does not.
     let d = Uuid::new_v4();
     assert!(
-        sqlx::query("INSERT INTO users (id, login, inviter_id) VALUES ($1, 'd', $1)")
+        sqlx::query("INSERT INTO users (id, email, inviter_id) VALUES ($1, 'd@example.com', $1)")
             .bind(d)
             .execute(&db.pool)
             .await
             .is_err()
     );
-    sqlx::query("INSERT INTO users (id, login, inviter_id) VALUES ($1, 'd', $2)")
+    sqlx::query("INSERT INTO users (id, email, inviter_id) VALUES ($1, 'd@example.com', $2)")
         .bind(d)
         .bind(c)
         .execute(&db.pool)

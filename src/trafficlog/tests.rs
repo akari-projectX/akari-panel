@@ -148,16 +148,13 @@ async fn admin_client(state: &AppState, db: &TestDb) -> Client {
         .await
         .unwrap();
     let mut c = Client::new(state, rand_ip());
-    c.cookie = Some(
-        crate::auth::issue_token(state, admin, "admin", sv, crate::auth::Stage::Full).unwrap(),
-    );
+    c.cookie = Some(crate::auth::issue_token(state, admin, "admin", sv).unwrap());
     c
 }
 
 async fn user_client(state: &AppState, user: Uuid) -> Client {
     let mut c = Client::new(state, rand_ip());
-    c.cookie =
-        Some(crate::auth::issue_token(state, user, "user", 0, crate::auth::Stage::Full).unwrap());
+    c.cookie = Some(crate::auth::issue_token(state, user, "user", 0).unwrap());
     c
 }
 
@@ -305,14 +302,14 @@ async fn endpoints_queries_and_permissions() {
     let top = v["top_users"].as_array().unwrap();
     assert_eq!(top.len(), 2);
     assert_eq!(top[0]["user_id"], json!(u2));
-    assert_eq!(top[0]["login"], json!(u2.to_string()));
+    assert_eq!(top[0]["email"], json!(crate::testdb::test_email(u2)));
     assert_eq!(top[1]["user_id"], json!(u1));
     assert_eq!(bytes(&top[1]), (11, 22, 18));
     assert_eq!(bytes(&v["total"]), (1012, 1022, 2019));
     let r = admin.get(&format!("/test/api/v1/nodes/{n1}/traffic")).await;
     let top = r.json()["top_users"].as_array().unwrap().clone();
     assert_eq!(top.len(), 3);
-    assert!(top[2]["login"].is_null(), "deleted user: {top:?}");
+    assert!(top[2]["email"].is_null(), "deleted user: {top:?}");
 
     // Fleet summary: per day over every node (deleted included), top nodes.
     let r = admin

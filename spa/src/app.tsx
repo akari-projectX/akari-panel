@@ -15,7 +15,6 @@ import {
   put,
   type AuthOptions,
   type Me,
-  type TotpStatus,
 } from "./lib/api";
 import { errorText } from "./lib/errors";
 import { loadPage, navigate, usePath } from "./lib/router";
@@ -40,18 +39,9 @@ export function adminTarget(path: string): string {
 function App() {
   const queryClient = useQueryClient();
   const me = useQuery({ queryKey: ["me"], queryFn: () => get<Me>("/me") });
-  // With 系统设置 → 安全 → 管理员必须两步验证 an admin without 2FA has an
-  // enrollment-only session: /me is 401 but /me/totp says stage "enroll".
-  // The enrollment page belongs to the console.
   const unauthorized = me.isError && me.error instanceof ApiError && me.error.status === 401;
-  const totp = useQuery({
-    queryKey: ["totp"],
-    queryFn: () => get<TotpStatus>("/me/totp"),
-    enabled: unauthorized,
-    retry: false,
-  });
   const [logoutError, setLogoutError] = useState<string | null>(null);
-  const toConsole = me.data?.role === "admin" || (unauthorized && totp.data?.stage === "enroll");
+  const toConsole = me.data?.role === "admin";
 
   useEffect(() => {
     // A full page load: the console is a different bundle.
@@ -84,8 +74,7 @@ function App() {
     navigate(appBase); // "/app/" (trailing slash) is not a route: the panel rejects it
   }
 
-  if (me.isPending || (unauthorized && totp.isPending) || toConsole)
-    return <UserSurface>{(t) => <Loading label={t("common.loading")} />}</UserSurface>;
+  if (me.isPending || toConsole) return <UserSurface>{(t) => <Loading label={t("common.loading")} />}</UserSurface>;
   if (me.isError) {
     if (!unauthorized) {
       return (
@@ -148,7 +137,7 @@ function PortalShell({ me, onLogout, logoutError }: { me: Me; onLogout: () => vo
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-2.5 sm:px-6">
           <SiteMark />
           <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-            <span className="hidden max-w-[12rem] truncate text-sm text-muted-foreground sm:inline">{me.login}</span>
+            <span className="hidden max-w-[12rem] truncate text-sm text-muted-foreground sm:inline">{me.email}</span>
             <LocaleSwitch />
             <Button variant="outline" size="sm" onClick={onLogout}>
               {t("common.logout")}

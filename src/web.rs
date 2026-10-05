@@ -55,19 +55,6 @@ pub fn router(state: AppState) -> Router {
         .route("/{prefix}/auth/login", post(api::login))
         .route("/{prefix}/auth/logout", post(api::logout))
         .route("/{prefix}/api/v1/me", get(api::me))
-        .route("/{prefix}/api/v1/me/totp", get(account::totp_status))
-        .route(
-            "/{prefix}/api/v1/me/totp/enroll",
-            post(account::totp_enroll),
-        )
-        .route(
-            "/{prefix}/api/v1/me/totp/confirm",
-            post(account::totp_confirm),
-        )
-        .route(
-            "/{prefix}/api/v1/me/totp/recovery-codes",
-            post(account::regenerate_recovery_codes),
-        )
         .route(
             "/{prefix}/api/v1/me/sub-token",
             post(account::regenerate_own_sub_token),
@@ -99,10 +86,6 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/{prefix}/api/v1/users/{id}/subscription",
             get(api::user_subscription),
-        )
-        .route(
-            "/{prefix}/api/v1/users/{id}/totp",
-            axum::routing::delete(api::reset_totp),
         )
         .route(
             "/{prefix}/api/v1/users/{id}/nodes/{node_id}",

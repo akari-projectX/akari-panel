@@ -22,7 +22,7 @@ export type ErrorParams = Record<string, string | number | boolean | null>;
 
 export class ApiError extends Error {
   status: number;
-  /** The parsed JSON error body (e.g. login's `totp_required`). */
+  /** The parsed JSON error body. */
   body: Record<string, unknown>;
   /** Stable machine code of the server error ("plan.speed_limit_range"); "" if none (W21). */
   code: string;
@@ -71,9 +71,8 @@ export const putBinary = <T>(path: string, body: Blob) =>
 
 // Auth endpoints live at /{prefix}/auth/*, NOT under /api/v1 (see src/web.rs).
 // Do not route them through get/post: that yields /api/v1/auth/* -> 404.
-// `code`: TOTP code or recovery code (required by accounts with 2FA; every
-// failure is the same 401, so the form always offers the field).
-export const login = (body: { login: string; password: string; code?: string }) =>
+// D1: the email address is the login name; every failure is the same 401.
+export const login = (body: { email: string; password: string }) =>
   request<LoginResult>(`${authBase}/login`, { method: "POST", body: JSON.stringify(body) });
 export const logout = () => request<void>(`${authBase}/logout`, { method: "POST" });
 
@@ -191,13 +190,12 @@ export const resetPassword = (body: { token: string; password: string }) =>
 
 export interface Me {
   id: string;
-  login: string;
   role: string;
   traffic_used_bytes: number;
   traffic_limit_bytes: number | null;
   expires_at: string | null;
   // R21: past expiry (role=user): renewal scope only (account, plan,
-  // password, shop/orders); subscription and 2FA are unavailable.
+  // password, shop/orders); the subscription is unavailable.
   expired: boolean;
   // R21: disabled for exceeding the traffic limit: same renewal scope.
   quota_exhausted: boolean;
@@ -207,9 +205,10 @@ export interface Me {
   banned: boolean;
   ban_reason: string | null;
   banned_at: string | null;
-  // W15: the account's email address and whether it is verified (only a
-  // verified one gets mail and resets the password); language of the mails.
-  email: string | null;
+  // D1: the account's email address (its login name) and whether it is
+  // verified (only a verified one gets mail and resets the password);
+  // language of the mails.
+  email: string;
   email_verified: boolean;
   locale: "zh" | "en";
   // W20 (B1): the subscription link, always retrievable (stored encrypted).
@@ -229,43 +228,22 @@ export function mySubUrl(me: Pick<Me, "sub_token" | "sub_url">): string | null {
   return me.sub_token ? subscriptionUrl(me.sub_token) : null;
 }
 
-// "enroll": only with 系统设置 → 安全 → 管理员必须两步验证, an admin without 2FA; only the
-// /me/totp endpoints accept it.
-export type Stage = "full" | "enroll";
-
 export interface LoginResult {
   id: string;
-  login: string;
+  email: string;
   role: string;
-  stage: Stage;
-}
-
-export interface TotpStatus {
-  id: string;
-  login: string;
-  role: string;
-  stage: Stage;
-  enabled: boolean;
-  pending: boolean;
-  recovery_codes_left: number;
-  // 系统设置 → 安全 → 管理员必须两步验证: admins without 2FA only get an enrollment
-  // session. Off by default (2FA is optional, recommended to admins).
-  admin_2fa_required: boolean;
-}
-
-export interface TotpEnrollment {
-  secret: string;
-  otpauth_uri: string;
-  digits: number;
-  period: number;
-  algorithm: string;
+  expired: boolean;
+  quota_exhausted: boolean;
 }
 
 export interface AuditEntry {
   id: number;
   at: string;
   actor_id: string | null;
-  actor_login: string;
+  // Q4: non-personal label ("u-1a2b3c4d", "cli", "system", …); the actor's
+  // current address when it is an account (null once deleted).
+  actor_label: string;
+  actor_email: string | null;
   ip: string | null;
   action: string;
   target_type: string | null;
@@ -284,14 +262,12 @@ export const subscriptionUrl = (token: string): string => `${location.origin}${p
 
 export interface UserView {
   id: string;
-  login: string;
   role: string;
   enabled: boolean;
   traffic_limit_bytes: number | null;
   traffic_used_bytes: number;
   expires_at: string | null;
   created_at: string;
-  totp_enabled: boolean;
   // Why the account is disabled (null while enabled): "admin" = banned
   // (W28-c). Only "quota" is ever re-enabled automatically (period reset,
   // plan change, traffic reset).
@@ -300,8 +276,8 @@ export interface UserView {
   plan_id: string | null;
   plan_name: string | null;
   next_reset_at: string | null;
-  // W15
-  email: string | null;
+  // D1: the login name.
+  email: string;
   email_verified: boolean;
 }
 
@@ -569,8 +545,10 @@ export interface MyTicketRow {
 export interface TicketMessage {
   id: number;
   staff: boolean;
-  // Staff view only (customers never see admin logins).
-  author_login?: string;
+  // Staff view only (customers never learn who on the staff wrote): the
+  // snapshot label and the author's current address.
+  author_label?: string;
+  author_email?: string | null;
   body: string;
   created_at: string;
 }

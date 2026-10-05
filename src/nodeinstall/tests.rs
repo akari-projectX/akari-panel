@@ -87,8 +87,7 @@ async fn admin_client(state: &AppState, db: &TestDb) -> Client {
             .await
             .unwrap();
     let mut c = Client::new(state, rand_ip());
-    c.cookie =
-        Some(crate::auth::issue_token(state, id, &role, sv, crate::auth::Stage::Full).unwrap());
+    c.cookie = Some(crate::auth::issue_token(state, id, &role, sv).unwrap());
     c
 }
 

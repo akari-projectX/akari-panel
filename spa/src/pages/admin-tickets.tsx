@@ -30,7 +30,7 @@ import { navigate, usePath } from "../lib/router";
 export interface AdminTicketRow {
   id: string;
   user_id: string;
-  user_login: string;
+  user_email: string;
   subject: string;
   category: TicketCategory;
   priority: TicketPriority;
@@ -41,7 +41,7 @@ export interface AdminTicketRow {
   node_id: string | null;
   node_name: string | null;
   assignee_id: string | null;
-  assignee_login: string | null;
+  assignee_email: string | null;
   created_at: string;
   updated_at: string;
   closed_at: string | null;
@@ -59,7 +59,6 @@ export interface AdminTicketList {
 }
 
 export interface AdminTicketView extends AdminTicketRow {
-  user_email: string | null;
   user_enabled: boolean;
   thread: TicketMessage[];
 }
@@ -257,7 +256,7 @@ function TicketQueue() {
                     )}
                     <span className="block text-xs text-muted-foreground">{r.messages} 条消息</span>
                   </TableCell>
-                  <TableCell className="text-muted-foreground">{r.user_login}</TableCell>
+                  <TableCell className="text-muted-foreground">{r.user_email}</TableCell>
                   <TableCell>
                     <span className="mr-1 text-sm">{CATEGORY_ZH[r.category]}</span>
                     <PriorityBadge p={r.priority} />
@@ -265,7 +264,7 @@ function TicketQueue() {
                   <TableCell>
                     <TicketStatusBadge s={r.status} />
                   </TableCell>
-                  <TableCell className="text-muted-foreground">{r.assignee_login ?? "—"}</TableCell>
+                  <TableCell className="text-muted-foreground">{r.assignee_email ?? "—"}</TableCell>
                   <TableCell className="text-muted-foreground">{fmt(r.updated_at)}</TableCell>
                   <TableCell className="text-right">
                     <Button variant="outline" size="sm" onClick={() => navigate(`${adminBase}/tickets/${r.id}`)}>
@@ -308,7 +307,7 @@ function TicketDetail({ id, onBack }: { id: string; onBack: () => void }) {
   });
   const admins = useQuery({
     queryKey: ["admins"],
-    queryFn: () => get<{ id: string; login: string }[]>("/admins"),
+    queryFn: () => get<{ id: string; email: string }[]>("/admins"),
   });
 
   async function refresh() {
@@ -361,8 +360,7 @@ function TicketDetail({ id, onBack }: { id: string; onBack: () => void }) {
             <h1>{v.subject}</h1>
           </CardTitle>
           <CardDescription>
-            用户 {v.user_login}
-            {v.user_email && `（${v.user_email}）`}
+            用户 {v.user_email}
             {!v.user_enabled && "（账户已停用）"} · {CATEGORY_ZH[v.category]} · 创建于 {fmt(v.created_at)}
             {v.order_no && ` · 订单 ${v.order_no}`}
             {v.node_name && ` · 节点 ${v.node_name}`}
@@ -392,7 +390,7 @@ function TicketDetail({ id, onBack }: { id: string; onBack: () => void }) {
               <option value="">未分配</option>
               {(admins.data ?? []).map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.login}
+                  {a.email}
                 </option>
               ))}
             </select>
@@ -432,7 +430,9 @@ function TicketDetail({ id, onBack }: { id: string; onBack: () => void }) {
             >
               <p className="mb-1 text-xs text-muted-foreground">
                 <span className="font-medium text-foreground">
-                  {m.staff ? `客服 ${m.author_login ?? ""}` : (m.author_login ?? "用户")}
+                  {m.staff
+                    ? `客服 ${m.author_email ?? m.author_label ?? ""}`
+                    : (m.author_email ?? m.author_label ?? "用户")}
                 </span>
                 {" · "}
                 {fmt(m.created_at)}

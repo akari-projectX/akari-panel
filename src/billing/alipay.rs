@@ -1147,7 +1147,7 @@ impl super::provider::ProviderKind for AlipayKind {
                 || {
                     conflict!(
                         "payments.stored_key_unreadable",
-                        "the stored app private key cannot be opened (data/totp.key changed); paste it again"
+                        "the stored app private key cannot be opened (data/master.key changed); paste it again"
                     )
                 },
             )?),
