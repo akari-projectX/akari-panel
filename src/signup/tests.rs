@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::*;
@@ -1636,11 +1637,20 @@ async fn registration_without_verification() {
         .await;
     assert_eq!(r.json()["code"], "signup.challenge_invalid");
     let p = pow(&c3).await;
+    // A nonce that misses the difficulty: a fixed one meets it for about one
+    // challenge in 2^BITS (2^10 under test), so pick one that provably fails.
+    let ch = p["challenge"].as_str().unwrap();
+    let wrong = (0u32..)
+        .map(|n| format!("wrong{n}"))
+        .find(|n| {
+            pow::leading_zero_bits(&Sha256::digest(format!("{ch}:{n}").as_bytes())) < pow::BITS
+        })
+        .unwrap();
     let r = c3
         .post(
             "/test/auth/register",
             json!({ "email": addr(), "password": "long enough",
-                    "pow": { "challenge": p["challenge"], "nonce": "zzzzzz" } }),
+                    "pow": { "challenge": p["challenge"], "nonce": wrong } }),
         )
         .await;
     assert_eq!(r.json()["code"], "signup.challenge_invalid");
