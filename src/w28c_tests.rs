@@ -520,7 +520,9 @@ async fn ban_revokes_and_confines_to_the_portal() {
     )
     .await;
     let mut ac = Client::new(&state, rand_ip());
-    let r = ac.login(&crate::testdb::test_email(other), "admin-password-1").await;
+    let r = ac
+        .login(&crate::testdb::test_email(other), "admin-password-1")
+        .await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
     db.drop().await;
 }
