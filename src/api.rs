@@ -1483,6 +1483,7 @@ impl NodeView {
             self.cert_not_after,
             self.unenforced_speed_limits,
             self.agent_capabilities.as_deref(),
+            &self.entrances,
         );
         self
     }
@@ -1496,8 +1497,14 @@ fn node_warnings(
     cert_not_after: Option<DateTime<Utc>>,
     unenforced_speed_limits: bool,
     agent_capabilities: Option<&[String]>,
+    entrances: &serde_json::Value,
 ) -> Vec<String> {
     let mut w: Vec<String> = inbound.and_then(inbound_warning).into_iter().collect();
+    w.extend(relay_warnings(
+        entrances,
+        agent_protocol,
+        agent_capabilities,
+    ));
     w.extend(tls_domain_warnings(tls_domain, inbound, agent_protocol));
     if let Some(c) = cert_warning(cert_not_after, agent_protocol, Utc::now()) {
         w.push(c);
@@ -1515,6 +1522,59 @@ fn node_warnings(
         ));
     }
     w
+}
+
+/// W28-a: the node has enabled relay entrances but its agent cannot
+/// enforce their source allowlists (capability "source-filter") or shares
+/// limits per entrance rather than per user (protocol < 7).
+fn relay_warnings(
+    entrances: &serde_json::Value,
+    agent_protocol: Option<i32>,
+    agent_capabilities: Option<&[String]>,
+) -> Vec<String> {
+    let relays = entrances.as_array().is_some_and(|a| {
+        a.iter()
+            .any(|e| e["kind"] == crate::entrances::RELAY && e["enabled"] == true)
+    });
+    let Some(protocol) = agent_protocol.filter(|_| relays) else {
+        return Vec::new();
+    };
+    let mut w = Vec::new();
+    if !agent_capabilities.is_some_and(|c| c.iter().any(|c| c == "source-filter")) {
+        w.push(
+            "agent 不支持来源 IP 过滤：中转入口目前只靠独立凭据隔离（升级 agent 后由内核按中转出口 IP 过滤）"
+                .to_string(),
+        );
+    }
+    if protocol < crate::grpc::ACCOUNT_KEY_PROTOCOL {
+        w.push(format!(
+            "agent 版本过旧（协议 < {}）：同一用户在多个入口上的限速与在线人数分别计算，升级 agent 后按用户合并",
+            crate::grpc::ACCOUNT_KEY_PROTOCOL
+        ));
+    }
+    w
+}
+
+/// W28-a: the agent reports that it could not install the source
+/// allowlists of the node's relay entrances (heartbeat blob).
+fn source_filter_warning(blob: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Blob {
+        source_filter: Option<Status>,
+    }
+    #[derive(Deserialize)]
+    struct Status {
+        applied: bool,
+        #[serde(default)]
+        error: Option<String>,
+    }
+    let f = serde_json::from_str::<Blob>(blob).ok()?.source_filter?;
+    (!f.applied).then(|| {
+        format!(
+            "来源 IP 过滤未生效（{}）：中转入口目前只靠独立凭据隔离",
+            f.error.as_deref().unwrap_or("原因未知")
+        )
+    })
 }
 
 /// W17: one row of `GET /nodes?view=summary` — only what the node list
@@ -1649,7 +1709,10 @@ impl NodeSummary {
             self.cert_not_after,
             self.unenforced_speed_limits,
             self.agent_capabilities.as_deref(),
+            &self.entrances,
         );
+        self.warnings
+            .extend(blob.as_deref().and_then(source_filter_warning));
         self.needs_certificate =
             crate::nodetpl::needs_certificate(&inbounds_of(self.inbound.as_ref()));
         self.heartbeat = blob.and_then(|b| serde_json::from_str(&b).ok());
@@ -1891,6 +1954,8 @@ async fn with_heartbeats(state: &AppState, mut views: Vec<NodeView>) -> Vec<Node
     match state.valkey().mget::<Vec<Option<String>>, _>(keys).await {
         Ok(blobs) => {
             for (v, b) in views.iter_mut().zip(blobs) {
+                v.warnings
+                    .extend(b.as_deref().and_then(source_filter_warning));
                 v.heartbeat = b.and_then(|b| serde_json::value::RawValue::from_string(b).ok());
             }
         }
@@ -2601,6 +2666,11 @@ pub(crate) async fn apply_set_inbound(
     let inbound = inbound.map(normalize_inbound).transpose()?;
     crate::entitle::lock(conn).await?;
     refuse_if_deleting(conn, id).await?;
+    // W28-a: the relay entrances' derived inbounds take this inbound's
+    // protocol on their own ports.
+    if let Some(ib) = &inbound {
+        crate::entrances::port_clash(conn, id, ib, None).await?;
+    }
     let (version, old): (i64, Option<serde_json::Value>) = sqlx::query_as(
         "UPDATE nodes SET inbound = $2, config_version = config_version + 1, updated_at = now() \
          WHERE id = $1 RETURNING new.config_version, old.inbound",
@@ -2858,8 +2928,45 @@ mod tests {
             None,
             false,
             Some(&caps(&["updater", "stale-units"])),
+            &json!([]),
         );
         assert_eq!(all.len(), 1, "{all:?}");
+    }
+
+    /// W28-a: relay entrances on an agent without source filtering or the
+    /// per-account limits of protocol 7 are flagged; a filter the agent
+    /// could not install is reported from its heartbeat.
+    #[test]
+    fn relay_and_source_filter_warnings() {
+        let caps = |c: &[&str]| c.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let relay =
+            json!([{"kind": "direct", "enabled": true}, {"kind": "relay", "enabled": true}]);
+        let off = json!([{"kind": "direct", "enabled": true}, {"kind": "relay", "enabled": false}]);
+        let w = relay_warnings(&relay, Some(6), Some(&caps(&["metrics"])));
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(
+            w[0].contains("来源 IP 过滤") && w[1].contains("协议 < 7"),
+            "{w:?}"
+        );
+        assert!(relay_warnings(&relay, Some(7), Some(&caps(&["source-filter"]))).is_empty());
+        assert!(
+            relay_warnings(&off, Some(1), None).is_empty(),
+            "disabled relays"
+        );
+        assert!(
+            relay_warnings(&relay, None, None).is_empty(),
+            "never connected"
+        );
+        let w = source_filter_warning(
+            r#"{"ts":"x","source_filter":{"applied":false,"error":"nft: permission denied"}}"#,
+        )
+        .unwrap();
+        assert!(w.contains("nft: permission denied"), "{w}");
+        assert!(
+            source_filter_warning(r#"{"source_filter":{"applied":true,"error":null}}"#).is_none()
+        );
+        assert!(source_filter_warning(r#"{"ts":"x"}"#).is_none());
+        assert!(source_filter_warning("not json").is_none());
     }
 
     /// D2: one inbound object per node; its tag (any case variant, the
@@ -3080,6 +3187,26 @@ mod tests {
                 })
             })
         };
+        // An op on the node's (only) relay entrance, looked up when it runs.
+        type RelayFn = for<'c> fn(
+            &'c mut PgConnection,
+            Uuid,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), ApiError>> + Send + 'c>,
+        >;
+        let relay_op = |node: Uuid, f: RelayFn| -> Op {
+            Box::new(move |c| {
+                Box::pin(async move {
+                    let id: Uuid = sqlx::query_scalar(
+                        "SELECT id FROM entrances WHERE node_id = $1 AND kind = 'relay'",
+                    )
+                    .bind(node)
+                    .fetch_one(&mut *c)
+                    .await?;
+                    f(c, id).await
+                })
+            })
+        };
         let cases: Vec<(&str, Op, Vec<Uuid>, bool)> = vec![
             (
                 "disable user",
@@ -3277,6 +3404,85 @@ mod tests {
                         ..Default::default()
                     },
                 ),
+                vec![n1],
+                true,
+            ),
+            (
+                "create a relay entrance (a new inbound)",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        crate::entrances::apply_create_relay(
+                            c,
+                            &crate::audit::Actor::test(),
+                            n1,
+                            &crate::entrances::CreateRelayReq {
+                                name: "IPLC".into(),
+                                connect_host: "relay.example.net".into(),
+                                connect_port: 30443,
+                                listen_port: 20443,
+                                source_cidrs: vec!["203.0.113.7".into()],
+                                rate: Some(2.0),
+                                enabled: None,
+                                sort: None,
+                                group_ids: None,
+                            },
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                }),
+                vec![n1],
+                true,
+            ),
+            (
+                "relay listen port and sources (its inbound and filter change)",
+                relay_op(n1, |c, id| {
+                    Box::pin(async move {
+                        crate::entrances::apply_update(
+                            c,
+                            &crate::audit::Actor::test(),
+                            id,
+                            &crate::entrances::EntranceReq {
+                                listen_port: Some(Some(20444)),
+                                source_cidrs: Some(Some(vec!["198.51.100.0/24".into()])),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                }),
+                vec![n1],
+                true,
+            ),
+            (
+                "relay multiplier and address (subscription and billing only)",
+                relay_op(n1, |c, id| {
+                    Box::pin(async move {
+                        crate::entrances::apply_update(
+                            c,
+                            &crate::audit::Actor::test(),
+                            id,
+                            &crate::entrances::EntranceReq {
+                                rate: Some(Some(1.5)),
+                                connect_port: Some(Some(30444)),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                }),
+                vec![n1],
+                false,
+            ),
+            (
+                "delete the relay (its inbound goes away)",
+                relay_op(n1, |c, id| {
+                    Box::pin(async move {
+                        crate::entrances::apply_delete(c, &crate::audit::Actor::test(), id).await
+                    })
+                }),
                 vec![n1],
                 true,
             ),

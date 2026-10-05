@@ -14,6 +14,10 @@ uninstall() {
 		systemctl stop akari-agent-update.service >/dev/null 2>&1 || true
 		systemctl disable --now akari-agent.service >/dev/null 2>&1 || true
 	fi
+	# W28-a: the relay entrances' source allowlists (the agent's own table).
+	if command -v nft >/dev/null 2>&1; then
+		nft delete table inet akari_sources >/dev/null 2>&1 || true
+	fi
 	rm -f "$UNIT" "$UPDATE_SERVICE" "$UPDATE_PATH" "$BIN" "$BIN.prev" "$UNINSTALLER"
 	rm -rf "$DROPIN_DIR" "$CONF_DIR" /var/lib/private/akari-agent /var/lib/akari-agent /var/lib/akari-agent-update
 	if command -v systemctl >/dev/null 2>&1; then

@@ -397,10 +397,11 @@ export interface Inbound {
 }
 
 // W28-a: how clients reach a node (mirror of entrances.rs EntranceView).
-// Every node has its built-in "direct" entrance.
+// Every node has its built-in "direct" entrance; "relay" = an external
+// relay forwarding to the node's derived inbound on listen_port.
 export interface EntranceView {
   id: string;
-  kind: "direct";
+  kind: "direct" | "relay";
   name: string;
   // What clients dial: null host = the node's TLS domain, null port = the
   // inbound's port.
@@ -410,6 +411,9 @@ export interface EntranceView {
   rate: number;
   enabled: boolean;
   sort: number;
+  wire_no: number;
+  listen_port: number | null;
+  source_cidrs: string[];
   group_ids: string[];
 }
 

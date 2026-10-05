@@ -94,8 +94,10 @@ pub struct NodeRow {
     /// W11 (`nodemeta.rs`): user-facing name and tags (proxy names).
     pub display_name: Option<String>,
     pub tags: Vec<String>,
-    /// The entrance's name ("直连", "IPLC").
+    /// The entrance's name ("直连", "IPLC") and multiplier (permille;
+    /// shown in the proxy name when it is not 1x).
     pub entrance: String,
+    pub rate_permille: i32,
     /// The node's inbound (xray JSON).
     pub inbound: Value,
     /// What clients dial: the entrance's host (else the node's TLS domain;
@@ -229,7 +231,7 @@ pub async fn subscription(
         return reject::not_found();
     }
     let rows = match sqlx::query_as::<_, NodeRow>(
-        "SELECT n.name, n.display_name, n.tags, e.name AS entrance, n.inbound, \
+        "SELECT n.name, n.display_name, n.tags, e.name AS entrance, e.rate_permille, n.inbound, \
          coalesce(e.connect_host, n.tls_domain) AS server, e.connect_port AS port, \
          eu.protocol, eu.account \
          FROM entrance_users eu \
@@ -512,6 +514,7 @@ mod tests {
                 display_name: None,
                 tags: vec![],
                 entrance: tag.into(),
+                rate_permille: 1000,
                 inbound: ib.clone(),
                 server: server.map(String::from),
                 port: None,
@@ -802,7 +805,8 @@ rules:
         assert!(ob[5].get("flow").is_none());
     }
 
-    /// W11/W28-a: display name + tags + the entrance name the proxies; the
+    /// W11/W28-a: display name + tags + the entrance name (+ its
+    /// multiplier when not 1x) name the proxies; the
     /// entrance's address and port are what clients dial in all three
     /// formats; without any address (no host, no TLS domain) the entrance is
     /// left out; equal names stay unique.
@@ -815,11 +819,13 @@ rules:
         }
         rows[2].server = Some("relay.example.net".into());
         rows[2].port = Some(30443);
+        rows[2].rate_permille = 2000;
         let single = |name: &str, server: Option<&str>| NodeRow {
             name: name.into(),
             display_name: Some("东京".into()),
             tags: vec![],
             entrance: "直连".into(),
+            rate_permille: 1000,
             inbound: json!({"protocol": "trojan", "port": 443,
                 "streamSettings": {"network": "tcp", "security": "tls",
                     "tlsSettings": {"serverName": "x.example.com"}}}),
@@ -838,7 +844,7 @@ rules:
             [
                 "香港 01 | IPLC | 0.5x in-vless",
                 "香港 01 | IPLC | 0.5x in-vmess",
-                "香港 01 | IPLC | 0.5x in-trojan",
+                "香港 01 | IPLC | 0.5x in-trojan 2.0x",
                 "东京 直连",
                 "东京 直连 #2",
             ]

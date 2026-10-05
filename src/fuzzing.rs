@@ -50,7 +50,7 @@ pub fn traffic_members(
 ) -> std::collections::HashMap<String, crate::traffic::Member> {
     users
         .iter()
-        .map(|&u| (crate::grpc::stat_key(u), (entrance, u)))
+        .map(|&u| (crate::grpc::stat_key(u, 0), (entrance, u)))
         .collect()
 }
 

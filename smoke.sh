@@ -944,7 +944,7 @@ assert 2 * (b1 - b0) <= r1 - r0, (b0, b1, r0, r1)
 echo "multiplier: ok (raw $RAW_D bytes, billed $USED_D at 0.5x)"
 # Subscription: display name + tags name the proxy, the override is dialed.
 curl -s --noproxy '*' -A 'clash.meta' "$BASE/sub/$SUB_D" >"$LOG/w11-sub.yaml"
-grep -q '"冒烟 01 | IPLC | 0.5x 直连"' "$LOG/w11-sub.yaml" || { echo "FAIL: subscription name"; head -20 "$LOG/w11-sub.yaml"; exit 1; }
+grep -q '"冒烟 01 | IPLC | 0.5x 直连 0.5x"' "$LOG/w11-sub.yaml" || { echo "FAIL: subscription name"; head -20 "$LOG/w11-sub.yaml"; exit 1; }
 grep -q 'server: 127.0.0.1' "$LOG/w11-sub.yaml" || { echo "FAIL: connect override not in subscription"; exit 1; }
 # Portal: the user's node list (no ids/addresses).
 DJAR="$LOG/w11-d.jar"
@@ -1016,6 +1016,87 @@ assert any(n['node_id'] == '$NODE_ID' for n in v['top_nodes']), v
 " || { echo "FAIL: traffic summary content"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/traffic/summary?from=2026-13-01")" = "400" ] || { echo "FAIL: bad date accepted"; exit 1; }
 echo "traffic history: ok (D billed $USED_D on $TODAY_UTC)"
+
+echo "== W28-a: relay entrance (derived inbound, own credentials, per-entrance billing, removal isolation) =="
+# A relay entrance of the node: its derived inbound listens on 11446 (the
+# relay would forward there; here the client dials it directly from the
+# allowed 127.0.0.1), with its own credential per user, billed at its own
+# multiplier; the access plan grants it through a second group.
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/node-groups" -H 'Content-Type: application/json' -d '{"name":"smoke-relay"}')" = "201" ] \
+  || { echo "FAIL: create relay group"; exit 1; }
+RELAY_GROUP=$(last_json "d['id']")
+RELAY_BODY="{\"name\":\"IPLC\",\"connect_host\":\"127.0.0.1\",\"connect_port\":11446,\"listen_port\":11446,\"source_cidrs\":[\"127.0.0.1\"],\"rate\":2,\"group_ids\":[\"$RELAY_GROUP\"]}"
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$NODE_ID/entrances" -H 'Content-Type: application/json' -d "$RELAY_BODY")" = "201" ] \
+  && last_json "(d['kind'], d['wire_no'], d['source_cidrs'])" | matches -Fx "('relay', 1, ['127.0.0.1/32'])" \
+  || { echo "FAIL: create relay entrance"; cat /tmp/akari-smoke/last; exit 1; }
+RELAY_ID=$(last_json "d['id']")
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$NODE_ID/entrances" -H 'Content-Type: application/json' \
+    -d "$(echo "$RELAY_BODY" | sed 's/"IPLC"/"dup"/')")" = "400" ] && last_json "d['code']" | matches -x 'entrance.port_clash' \
+  || { echo "FAIL: a relay on a taken port accepted"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/entrances/$DIRECT_ID")" = "409" ] || { echo "FAIL: direct entrance deletable"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/plans/$ACCESS_PLAN" "{\"group_ids\":[\"$ACCESS_GROUP\",\"$RELAY_GROUP\"]}")" = "200" ] \
+  || { echo "FAIL: access plan gains the relay group"; cat /tmp/akari-smoke/last; exit 1; }
+relay_account() { psql_q "SELECT account->>'id' FROM entrance_users WHERE user_id='$1' AND entrance_id='$RELAY_ID'"; }
+VLESS_DR=$(relay_account "$USER_D")
+[ -n "$VLESS_DR" ] && [ "$VLESS_DR" != "$VLESS_D" ] || { echo "FAIL: no independent relay credential for D"; exit 1; }
+for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/11446) 2>/dev/null && break; sleep 0.5; done
+(exec 3<>/dev/tcp/127.0.0.1/11446) 2>/dev/null || { echo "FAIL: derived inbound not listening"; tail -5 "$LOG/agent.log"; exit 1; }
+# The subscription lists the relay as its own proxy, with its multiplier.
+curl -s --noproxy '*' -A 'clash.meta' "$BASE/sub/$SUB_D" >"$LOG/relay-sub.yaml"
+grep -q '"冒烟 01 | IPLC | 0.5x IPLC 2.0x"' "$LOG/relay-sub.yaml" && grep -q 'port: 11446' "$LOG/relay-sub.yaml" \
+  || { echo "FAIL: relay not in the subscription"; cat "$LOG/relay-sub.yaml"; exit 1; }
+# The W11 client with a port and an attempt count (argv 2, 3).
+sed -e 's/("127.0.0.1", 11443)/("127.0.0.1", int(sys.argv[2]))/' \
+  -e 's/for attempt in range(40):/for attempt in range(int(sys.argv[3]) if len(sys.argv) > 3 else 40):/' \
+  "$LOG/w11-vless.py" >"$LOG/w28-vless.py"
+refused() { # credential port: the inbound refuses it (within 20 s)
+  for _ in $(seq 1 20); do
+    python3 "$LOG/w28-vless.py" "$1" "$2" 1 >/dev/null 2>&1 || return 0
+    sleep 1
+  done
+  return 1
+}
+relay_raw() { psql_q "SELECT coalesce(sum(up_bytes + down_bytes), 0) FROM traffic_counters WHERE entrance_id='$RELAY_ID' AND user_id='$USER_D'"; }
+USED_BEFORE=$(psql_q "SELECT traffic_used_bytes FROM users WHERE id='$USER_D'")
+DIRECT_RAW_BEFORE=$(psql_q "SELECT coalesce(sum(up_bytes + down_bytes), 0) FROM traffic_counters WHERE entrance_id='$DIRECT_ID' AND user_id='$USER_D'")
+python3 "$LOG/w28-vless.py" "$VLESS_DR" 11446 || { echo "FAIL: vless round trip through the relay entrance"; exit 1; }
+for _ in $(seq 1 40); do [ "$(relay_raw)" -ge 600000 ] && break; sleep 1; done
+RELAY_RAW=$(relay_raw)
+USED_AFTER=$(psql_q "SELECT traffic_used_bytes FROM users WHERE id='$USER_D'")
+DIRECT_RAW_AFTER=$(psql_q "SELECT coalesce(sum(up_bytes + down_bytes), 0) FROM traffic_counters WHERE entrance_id='$DIRECT_ID' AND user_id='$USER_D'")
+python3 -c "
+raw, before, after = $RELAY_RAW, $USED_BEFORE, $USED_AFTER
+assert raw >= 600000, raw
+assert after - before == 2 * raw, ('2x relay', raw, before, after)
+assert $DIRECT_RAW_AFTER == $DIRECT_RAW_BEFORE, 'the direct entrance is not billed for relay traffic'
+" || { echo "FAIL: relay billing (raw $RELAY_RAW, used $USED_BEFORE -> $USED_AFTER)"; exit 1; }
+# Credentials are per entrance: D's direct credential does not open the relay.
+python3 "$LOG/w28-vless.py" "$VLESS_D" 11446 3 >/dev/null 2>&1 && { echo "FAIL: the direct credential works on the relay inbound"; exit 1; }
+# Source filter: enforced in the kernel by agents with the capability;
+# others are flagged on the node (credential isolation only).
+if need_agent cap:source-filter "W28-a relay source filter"; then
+  for _ in $(seq 1 30); do vk get "akari:node:hb:$NODE_ID" | matches '"source_filter":{"applied":' && break; sleep 1; done
+  vk get "akari:node:hb:$NODE_ID" | matches '"source_filter":{"applied":' || { echo "FAIL: no source filter status"; exit 1; }
+  echo "source filter: $(vk get "akari:node:hb:$NODE_ID" | python3 -c "import json,sys; print(json.load(sys.stdin)['source_filter'])")"
+else
+  [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID")" = "200" ] && matches -F '来源 IP 过滤' </tmp/akari-smoke/last \
+    || { echo "FAIL: node not flagged for the missing source filter"; exit 1; }
+fi
+# Removal isolation: the relay leaves the plan's groups; D keeps the direct
+# entrance (and its credential), loses the relay at once.
+[ "$(patch_code "$BASE/api/v1/entrances/$RELAY_ID" '{"group_ids":[]}')" = "200" ] || { echo "FAIL: relay leaves its group"; exit 1; }
+[ -z "$(relay_account "$USER_D")" ] && [ "$(account_of "$USER_D")" = "$VLESS_D" ] \
+  || { echo "FAIL: removal from the relay touched the direct entrance"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM entrance_users_departed WHERE user_id='$USER_D' AND entrance_id='$RELAY_ID'")" = "1" ] \
+  || { echo "FAIL: no departed row for the relay"; exit 1; }
+refused "$VLESS_DR" 11446 || { echo "FAIL: a removed relay credential still works"; exit 1; }
+python3 "$LOG/w28-vless.py" "$VLESS_D" 11443 || { echo "FAIL: the direct entrance stopped working"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/entrances/$RELAY_ID")" = "204" ] || { echo "FAIL: delete relay"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/plans/$ACCESS_PLAN" "{\"group_ids\":[\"$ACCESS_GROUP\"]}")" = "200" ] || { echo "FAIL: restore access plan"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/node-groups/$RELAY_GROUP")" = "204" ] || { echo "FAIL: delete relay group"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE target_id='$RELAY_ID' AND action IN ('entrance.create','entrance.update','entrance.delete')")" = "3" ] \
+  || { echo "FAIL: relay entrance not audited"; exit 1; }
+echo "relay entrance: ok (relay raw $RELAY_RAW billed at 2x, removal isolated)"
 
 if need_agent cap:metrics "W11 machine status"; then
   # Machine status: the heartbeat blob carries metrics; history and

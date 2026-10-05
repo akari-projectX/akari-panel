@@ -18,6 +18,19 @@ use libfuzzer_sys::fuzz_target;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+/// W28-a: a relay's egress networks are either refused or normalized to
+/// 1..=64 distinct CIDRs that normalize to themselves.
+fn relay_sources(raw: &[String]) {
+    if let Ok(c) = akari_panel::entrances::clean_cidrs(raw) {
+        assert!(!c.is_empty() && c.len() <= akari_panel::entrances::MAX_SOURCE_CIDRS);
+        assert_eq!(
+            akari_panel::entrances::clean_cidrs(&c).as_ref().ok(),
+            Some(&c),
+            "not idempotent"
+        );
+    }
+}
+
 fn strict<T: DeserializeOwned>(body: &[u8]) {
     if serde_json::from_slice::<T>(body).is_err() {
         return;
@@ -64,7 +77,7 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     use akari_panel::*;
-    match sel % 24 {
+    match sel % 25 {
         0 => strict::<api::LoginReq>(body),
         1 => strict::<api::CreateUserReq>(body),
         2 => strict::<api::UpdateUserReq>(body),
@@ -88,6 +101,12 @@ fuzz_target!(|data: &[u8]| {
         20 => strict::<nodetpl::RenderReq>(body),
         21 => strict::<updates::CreateReleaseReq>(body),
         22 => strict::<updates::Manifest>(body),
+        23 => {
+            strict::<entrances::CreateRelayReq>(body);
+            if let Ok(r) = serde_json::from_slice::<entrances::CreateRelayReq>(body) {
+                relay_sources(&r.source_cidrs);
+            }
+        }
         _ => path(&String::from_utf8_lossy(body)),
     }
 });

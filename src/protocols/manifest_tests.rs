@@ -226,6 +226,7 @@ fn subscription_formats_follow_the_manifest() {
             display_name: None,
             tags: vec![],
             entrance: tag.clone(),
+            rate_permille: 1000,
             account: super::generate_account(&ib).unwrap(),
             protocol: m.protocol(&p).unwrap().wire.clone(),
             inbound: ib,

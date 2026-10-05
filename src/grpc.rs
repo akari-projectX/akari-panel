@@ -216,6 +216,11 @@ pub const SS_TOMBSTONE_PROTOCOL: u32 = 5;
 /// admin installs (NodeView warns).
 pub const ACME_PROTOCOL: i32 = 6;
 
+/// W28-a: agents of this protocol share a user's speed limit and online
+/// count across the user's entrances on a node (UserOp.user_id
+/// "<user>#<n>"); older ones count each entrance on its own.
+pub const ACCOUNT_KEY_PROTOCOL: i32 = 7;
+
 /// A node's user set as the agent must run it: user id -> inbound tag ->
 /// (protocol, account_json). Users without any inbound are absent. Built
 /// with the proto's collapsing rules (a later InboundUser for the same tag,
@@ -1560,6 +1565,7 @@ async fn retire(sess: &Session, why: &'static str) {
             user_version: RETIRED_VERSIONS.1,
             acme: None,
             users: vec![],
+            source_filters: vec![],
         });
         let sent = match sess.lock().await {
             Some(g) => sess.send(&g, empty).await.unwrap_or(false),
@@ -2009,6 +2015,15 @@ pub(crate) fn cert_status_json(c: &crate::pb::CertStatus) -> serde_json::Value {
 }
 
 async fn store_heartbeat(state: &AppState, node_id: Uuid, hb: &Heartbeat) {
+    let blob = heartbeat_value(hb);
+    crate::nodestat::on_heartbeat(state, node_id, hb);
+    // The blob, and the liveness key kept fresh for the whole duration of
+    // the connection, in one round trip.
+    valkey_util::store_heartbeat(state, node_id, blob.to_string()).await;
+}
+
+/// The heartbeat as stored in Valkey (what the admin API shows).
+fn heartbeat_value(hb: &Heartbeat) -> serde_json::Value {
     // W11: the blob carries the machine status too (nodestat.rs), and the
     // sample feeds the history and the fleet gauges.
     let mut blob = crate::nodestat::heartbeat_blob(hb);
@@ -2016,18 +2031,22 @@ async fn store_heartbeat(state: &AppState, node_id: Uuid, hb: &Heartbeat) {
     if let Some(c) = &hb.cert {
         blob["cert"] = cert_status_json(c);
     }
-    crate::nodestat::on_heartbeat(state, node_id, hb);
-    // The blob, and the liveness key kept fresh for the whole duration of
-    // the connection, in one round trip.
-    valkey_util::store_heartbeat(state, node_id, blob.to_string()).await;
+    // W28-a: the relay entrances' source allowlists (capability
+    // "source-filter"); agent text bounded like the certificate's.
+    if let Some(f) = &hb.source_filter {
+        let err = crate::nodestat::agent_text(&f.error, 512);
+        blob["source_filter"] = serde_json::json!({
+            "applied": f.applied,
+            "error": (!err.is_empty()).then_some(err),
+        });
+    }
+    blob
 }
 
 #[derive(sqlx::FromRow)]
 struct NodeRow {
     enabled: bool,
     inbound: Option<serde_json::Value>,
-    /// The direct entrance is enabled (its inbound is served).
-    direct_enabled: bool,
     config_version: i64,
     user_version: i64,
     failed_config_version: Option<i64>,
@@ -2043,17 +2062,23 @@ struct NodeRow {
 #[derive(sqlx::FromRow)]
 struct EntranceUserRow {
     user_id: Uuid,
+    wire_no: i32,
     protocol: String,
     account: serde_json::Value,
     /// The user's active plan's speed limit (Mbps), if any.
     speed_limit_mbps: Option<i32>,
 }
 
-/// The key the agent counts a user's traffic under (UserOp.user_id = the
-/// xray "email", echoed in UserTraffic.user_id). W28-a: a node serves one
-/// inbound (its direct entrance), so the user id.
-pub fn stat_key(user: Uuid) -> String {
-    user.to_string()
+/// The key the agent counts a user's traffic under on one entrance
+/// (UserOp.user_id = the xray "email", echoed in UserTraffic.user_id):
+/// the user id on the direct entrance, `<user id>#<wire_no>` on a relay
+/// (W28-a; the agent of protocol 7 shares limits per part before '#').
+pub fn stat_key(user: Uuid, wire_no: i32) -> String {
+    if wire_no == 0 {
+        user.to_string()
+    } else {
+        format!("{user}#{wire_no}")
+    }
 }
 
 /// Mbps (decimal, as plans state it) -> bytes per second; None/<=0 = 0
@@ -2091,10 +2116,7 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
         .execute(&mut *tx)
         .await?;
     let node = sqlx::query_as::<_, NodeRow>(
-        "SELECT enabled, inbound, \
-         coalesce((SELECT e.enabled FROM entrances e WHERE e.node_id = nodes.id \
-             AND e.kind = 'direct'), false) AS direct_enabled, \
-         config_version, user_version, \
+        "SELECT enabled, inbound, config_version, user_version, \
          failed_config_version, failed_user_version, failed_held_config_version, \
          failed_held_user_version, failed_reason, online_session, \
          deleting_at IS NOT NULL AS deleting, tls_domain FROM nodes WHERE id = $1",
@@ -2107,26 +2129,56 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
     };
 
     let mut users = Vec::new();
+    let mut source_filters = Vec::new();
     // A node being deleted is served like a disabled one (it is disabled
     // in the same transaction; this is belt and braces).
     let serve = node.enabled && !node.deleting;
-    let inbounds: Vec<serde_json::Value> = match &node.inbound {
-        Some(serde_json::Value::Object(ib)) if serve && node.direct_enabled => {
-            let mut ib = ib.clone();
-            ib.insert("tag".into(), crate::entrances::DIRECT_TAG.into());
-            vec![serde_json::Value::Object(ib)]
+    // W28-a: one inbound per enabled entrance (the node's inbound for the
+    // direct one, a derived copy per relay).
+    let entrances: Vec<crate::entrances::Served> = match &node.inbound {
+        Some(_) if serve => {
+            sqlx::query_as(
+                "SELECT wire_no, listen_port, source_cidrs::text[] AS source_cidrs \
+                 FROM entrances WHERE node_id = $1 AND enabled ORDER BY wire_no",
+            )
+            .bind(node_id)
+            .fetch_all(&mut *tx)
+            .await?
         }
         _ => Vec::new(),
     };
+    let inbounds = node
+        .inbound
+        .as_ref()
+        .map(|ib| crate::entrances::derived_inbounds(ib, &entrances))
+        .unwrap_or_default();
     if !inbounds.is_empty() {
+        let (tcp, udp) = node
+            .inbound
+            .as_ref()
+            .map(crate::protocols::l4)
+            .unwrap_or((true, false));
+        for (e, ib) in entrances.iter().zip(&inbounds) {
+            if e.listen_port.is_some() {
+                source_filters.push(crate::pb::SourceFilter {
+                    port: ib
+                        .get("port")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0) as u32,
+                    tcp,
+                    udp,
+                    cidrs: e.source_cidrs.clone(),
+                });
+            }
+        }
         let rows = sqlx::query_as::<_, EntranceUserRow>(sqlx::AssertSqlSafe(format!(
-            "SELECT eu.user_id, eu.protocol, eu.account, p.speed_limit_mbps \
+            "SELECT eu.user_id, e.wire_no, eu.protocol, eu.account, p.speed_limit_mbps \
              FROM entrance_users eu \
-             JOIN entrances e ON e.id = eu.entrance_id AND e.node_id = $1 AND e.kind = 'direct' \
+             JOIN entrances e ON e.id = eu.entrance_id AND e.node_id = $1 AND e.enabled \
              JOIN users u ON u.id = eu.user_id \
              LEFT JOIN user_plans up ON up.user_id = eu.user_id AND up.status = 'active' \
              LEFT JOIN plans p ON p.id = up.plan_id \
-             WHERE {} ORDER BY eu.user_id",
+             WHERE {} ORDER BY eu.user_id, e.wire_no",
             crate::enforce::SERVED
         )))
         .bind(node_id)
@@ -2135,9 +2187,9 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
         for r in rows {
             users.push(UserOp {
                 op: UserOpKind::Add as i32,
-                user_id: stat_key(r.user_id),
+                user_id: stat_key(r.user_id, r.wire_no),
                 inbound_users: vec![InboundUser {
-                    inbound_tag: crate::entrances::DIRECT_TAG.to_string(),
+                    inbound_tag: crate::entrances::inbound_tag(r.wire_no),
                     // serde_json (no preserve_order): compact, keys sorted —
                     // the canonical form the state hash uses.
                     account_json: r.account.to_string(),
@@ -2168,6 +2220,7 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
             user_version: node.user_version as u64,
             users,
             acme,
+            source_filters,
         },
         enabled: serve,
         online_session: node.online_session,
@@ -2311,6 +2364,7 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
                     user_version: 0,
                     users: vec![],
                     acme: None,
+                    source_filters: vec![],
                 })
             }
             Plan::Snapshot { empty: false } => {
@@ -3459,6 +3513,38 @@ mod tests {
             );
         }
         db.drop().await;
+    }
+
+    /// W28-a: the source-filter state reaches the blob, agent text bounded.
+    #[test]
+    fn heartbeat_value_carries_the_source_filter() {
+        let hb = Heartbeat {
+            source_filter: Some(crate::pb::SourceFilterStatus {
+                applied: false,
+                error: format!("nft:\u{1b} {}", "x".repeat(600)),
+            }),
+            ..Default::default()
+        };
+        let v = heartbeat_value(&hb);
+        assert_eq!(v["source_filter"]["applied"], false);
+        let e = v["source_filter"]["error"].as_str().unwrap();
+        assert!(e.len() <= 512 && !e.contains('\u{1b}'), "{e}");
+        let ok = heartbeat_value(&Heartbeat {
+            source_filter: Some(crate::pb::SourceFilterStatus {
+                applied: true,
+                error: String::new(),
+            }),
+            ..Default::default()
+        });
+        assert_eq!(
+            ok["source_filter"],
+            serde_json::json!({"applied": true, "error": null})
+        );
+        assert!(
+            heartbeat_value(&Heartbeat::default())
+                .get("source_filter")
+                .is_none()
+        );
     }
 
     #[test]

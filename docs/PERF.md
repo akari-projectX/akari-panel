@@ -531,6 +531,30 @@ The first W26 run of the two `db/*` benches read +21%/+8%: the bench Postgres
 had just finished WAL recovery. Re-runs alternating main and W26 within
 minutes gave the rows above. The Snapshot path has no W26 code.
 
+## W28-a: per-entrance accounting and relay entrances (2026-10-05)
+
+Panel flush (`make bench-seed` + `cargo bench -- db/flush`, local bench stack, main vs the
+entrance branch, same machine): `db/flush/50000` 570.5 ms → 589.6 ms (+3.3 %, within the run-to-run
+noise; target < 1 s). The flush now joins each row's entrance for its multiplier (`ef AS
+MATERIALIZED`, like `nf`).
+
+Agent (`go test -bench . -count 6`, Intel Core Ultra 7 265K, agent main vs the W28-a agent branch;
+benchstat, `~` = no significant change):
+
+| Benchmark | main | W28-a | |
+|---|---|---|---|
+| `Rebuild10k` (10k users × 2 inbounds) | 75.2 ms | 74.0 ms | ~ |
+| `DeltaRotate1of10k` | 6.06 µs | 6.09 µs | ~ |
+| `StateHash10k` | 5.51 ms | 5.30 ms | −3.9 % |
+| `GateAdmitRelease` (count 10) | 287.0 ns | 288.7 ns | ~ (no lookup of the per-account limit while nobody is limited) |
+| `TrafficSnapshot10k` (count 10) | 357.2 µs | 360.6 µs | ~ |
+| `Rebuild10kEntrances` (the same 20k credentials as 20k per-entrance users `<id>` / `<id>#1`) | — | 94.6 ms | +26 % vs `Rebuild10k`: twice the xray users (one per entrance) |
+| `NftScript16x64` (16 relays × 64 networks; rendered per Snapshot, nft runs only on change) | — | 84.8 µs | |
+
+The extra cost of a relay entrance is its users: one more xray user per user and relay (its own
+credential and traffic key); nothing per packet beyond the kernel's `ct state new` match on the
+relay's port.
+
 ## Limits and honest caveats
 
 - Flush margin (W22): 0.58 s against the 1 s budget (W11: 0.49 s) for 50k rows; on a slower
