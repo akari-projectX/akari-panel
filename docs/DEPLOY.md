@@ -658,7 +658,7 @@ CI 在 Alpine 3.22 / OpenRC 0.62 上测试；amd64/arm64）。agent 是无 cgo �
 | `akari-agent-update.path` 监视请求文件，立即触发 | `akari-agent-update` 服务是一个 root shell 循环，每秒检查一次请求文件（agent 等待裁决 90 秒，足够），然后运行**已安装的**二进制 `-apply-update`，一次一个 |
 | 更新器单元有沙箱：无网络、`ProtectSystem=strict`、能力边界集、系统调用过滤 | **缺口**：OpenRC 没有对应机制，更新器以普通 root 运行（通过 OpenRC 重启 agent 本身就需要启动服务所需的权限）。校验逻辑完全相同：不跟随符号链接、只收 agent 所有的单链接普通文件、先拷入 root 文件再校验副本、用自身编译进的公钥验签 |
 | agent 单元的文件系统/内核/系统调用沙箱（ProtectSystem、ProtectProc=invisible、SystemCallFilter 等） | **缺口**：只有专用用户 + 仅 `CAP_NET_BIND_SERVICE` + `no_new_privs` + `/etc/akari-agent` 仅 root 可读 + noexec 状态目录 |
-| 崩溃次数 = `NRestarts`；启动次数限制触发 = 立即回滚 | 崩溃次数 = supervise-daemon 的重启计数（`/run/openrc/options/akari-agent/start_count`）；conf.d 设置了 `respawn_max` 且 supervise-daemon 放弃（服务停止并标记 failed）或守护进程消失 = 立即回滚 |
+| 崩溃次数 = `NRestarts`；启动次数限制触发 = 立即回滚 | 崩溃次数 = supervise-daemon 的重启计数（`/run/openrc/options/akari-agent/start_count`）；conf.d 设置了 `respawn_max` 且 supervise-daemon 放弃（服务停止并标记 failed）、守护进程消失，或服务仍显示 started 但子进程已不在超过 15 秒（supervise-daemon 偶尔会漏掉立即退出的子进程）= 立即回滚 |
 | 单元随更新刷新，`daemon-reload` | 两个 init 脚本随更新刷新（root 0755，旧的存 `units.prev/`，回滚恢复）；OpenRC 每次启动都重新读取脚本，无需 reload。更新器自己的脚本在它下次启动（重启或重装）时生效 |
 | `journalctl -u akari-agent-update` | `/var/log/akari-agent-update.log` |
 
