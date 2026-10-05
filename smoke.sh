@@ -552,7 +552,7 @@ for _ in $(seq 1 30); do grep -q '"users":0' "$LOG/agent.log" && break; sleep 0.
 grep -q '"users":0' "$LOG/agent.log" || { echo "FAIL: agent did not converge to empty user set"; cat "$LOG/agent.log"; exit 1; }
 BJAR="$LOG/banned-cookies"
 [ "$(code -c "$BJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
-    -d '{"login":"smoke-user","password":"user-password-123"}')" = "200" ] && last_json "d['banned']" | matches '^True$' \
+    -d '{"email":"smoke-user@smoke.test","password":"user-password-123"}')" = "200" ] && last_json "d['banned']" | matches '^True$' \
   || { echo "FAIL: banned user cannot sign in to the portal scope"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/me")" = "200" ] && last_json "d['ban_reason']" | matches '^smoke: shared account$' \
   && last_json "d['sub_token']" | matches '^None$' \
