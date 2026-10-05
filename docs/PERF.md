@@ -564,6 +564,52 @@ Sniffing waits for the client's first bytes (xray default up to ~300 ms);
 client-first protocols (the measured case) do not wait, server-first
 protocols on an audited node do. Reproduce: in akari-agent,
 `go test -run '^$' -bench 'PickRoute|BlockPolicy|BlockStats|ConnectEcho' -benchmem .`
+## W28-a: per-entrance accounting and relay entrances (2026-10-05)
+
+Panel flush (`make bench-seed` + `cargo bench -- db/flush`, local bench stack, main vs the
+entrance branch, same machine): `db/flush/50000` 570.5 ms → 589.6 ms (+3.3 %, within the run-to-run
+noise; target < 1 s). The flush now joins each row's entrance for its multiplier (`ef AS
+MATERIALIZED`, like `nf`).
+
+Agent (`go test -bench . -count 6`, Intel Core Ultra 7 265K, agent main vs the W28-a agent branch;
+benchstat, `~` = no significant change):
+
+| Benchmark | main | W28-a | |
+|---|---|---|---|
+| `Rebuild10k` (10k users × 2 inbounds) | 75.2 ms | 74.0 ms | ~ |
+| `DeltaRotate1of10k` | 6.06 µs | 6.09 µs | ~ |
+| `StateHash10k` | 5.51 ms | 5.30 ms | −3.9 % |
+| `GateAdmitRelease` (count 10) | 287.0 ns | 288.7 ns | ~ (no lookup of the per-account limit while nobody is limited) |
+| `TrafficSnapshot10k` (count 10) | 357.2 µs | 360.6 µs | ~ |
+| `Rebuild10kEntrances` (the same 20k credentials as 20k per-entrance users `<id>` / `<id>#1`) | — | 94.6 ms | +26 % vs `Rebuild10k`: twice the xray users (one per entrance) |
+| `NftScript16x64` (16 relays × 64 networks; rendered per Snapshot, nft runs only on change) | — | 84.8 µs | |
+
+The extra cost of a relay entrance is its users: one more xray user per user and relay (its own
+credential and traffic key); nothing per packet beyond the kernel's `ct state new` match on the
+relay's port.
+
+**R44 (2026-10-06): the root updater applies the allowlists, the agent has no `CAP_NET_ADMIN`.**
+`go test -bench -count 1` × 6 alternating runs, Intel Core Ultra 7 265K, agent main (322bc47, with
+W29 + W32) vs the R44 agent branch; benchstat, no row differs significantly (p > 0.06):
+
+| Benchmark | main | R44 branch | |
+|---|---|---|---|
+| `Rebuild10k` | 67.5 ms | 68.2 ms | ~ |
+| `InstanceHeap10k` (heap after build) | 21.35 MiB | 21.35 MiB | ~ |
+| `DeltaRotate1of10k` | 5.63 µs | 5.69 µs | ~ |
+| `TrafficSnapshot10k` | 355 µs | 357 µs | ~ |
+| `StateHash10k` | 4.72 ms | 4.68 ms | ~ |
+| `GateAdmitRelease` | 282 ns, 2 allocs | 285 ns, 2 allocs | ~ |
+| `ConnectEcho` (new VLESS connection + round trip) | 610 µs, 262 allocs | 618 µs, 263 allocs | ~ |
+| `Rebuild10kEntrances` | — | 88.4 ms | |
+| `SourceFilterRequest16x64` (agent, per Snapshot with relays: normalize + id + request JSON) | — | 81.5 µs, 72 KiB | |
+| `NftScript16x64` (root updater, per change) | — | 99.2 µs, 184 KiB | |
+
+Binary (stripped, linux/amd64): 33,972,384 → 34,005,152 bytes (+0.10 %, the whole W28-a agent
+change). The agent writes one small request file per changed allowlist and, while a request is
+unanswered, reads one ≤ 4 KiB result file per heartbeat; `Heartbeat.source_filter` adds a few bytes
+(nothing when no relay exists). nft runs in the root updater (one `nft -f` per change), not in the
+agent process.
 
 ## Limits and honest caveats
 

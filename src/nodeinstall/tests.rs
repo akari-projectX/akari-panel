@@ -587,13 +587,23 @@ fn updater_units_fit_the_agent_unit() {
         "ReadWritePaths=/usr/local/bin -/var/lib/private/akari-agent",
         // W23: replaces the three units on an update.
         "ReadWritePaths=/etc/systemd/system",
-        "PrivateNetwork=yes",
-        "RestrictAddressFamilies=AF_UNIX",
+        // R44: nft for the relay source allowlists, in the host's network
+        // namespace (no IP traffic still).
+        "IPAddressDeny=any",
+        "RestrictAddressFamilies=AF_UNIX AF_NETLINK",
     ] {
         assert!(svc.contains(&l), "{l}");
     }
+    assert!(!svc.iter().any(|l| l.starts_with("PrivateNetwork")));
+    assert!(
+        svc.iter()
+            .any(|l| l.starts_with("CapabilityBoundingSet=") && l.contains("CAP_NET_ADMIN"))
+    );
+    // R44: never the agent itself.
+    assert!(!agent.iter().any(|l| l.contains("CAP_NET_ADMIN")));
     for l in [
         "PathExists=/var/lib/private/akari-agent/update/apply-request.json",
+        "PathExists=/var/lib/private/akari-agent/update/source-filter-request.json",
         "Unit=akari-agent-update.service",
     ] {
         assert!(path.contains(&l), "{l}");
@@ -609,11 +619,11 @@ fn updater_units_fit_the_agent_unit() {
     // machine metric read 0.
     assert!(agent.contains(&"ProtectProc=invisible"));
     assert!(!agent.iter().any(|l| l.starts_with("ProcSubset")));
-    // The updater never gets the network or the agent's capabilities.
-    assert!(
-        !svc.iter()
-            .any(|l| l.contains("CAP_NET") || l.starts_with("DynamicUser"))
-    );
+    // The updater never gets IP networking or the agent's capability to
+    // bind ports (R44: CAP_NET_ADMIN for nft only, asserted above).
+    assert!(!svc.iter().any(|l| l.contains("CAP_NET_BIND_SERVICE")
+        || l.contains("CAP_NET_RAW")
+        || l.starts_with("DynamicUser")));
 }
 
 /// W10: a node with a TLS domain: TLS templates take it, the script knows

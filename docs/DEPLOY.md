@@ -475,7 +475,32 @@ port), 倍率 and the node groups it belongs to are the entrance's (节点页 �
 `PATCH /api/v1/entrances/{id}`). Plans grant node groups, groups hold entrances; a user can use
 exactly the entrances of their plan's groups (there is no manual per-user assignment) and every
 usable entrance is its own subscription entry, named "<显示名称 | 标签> <入口名>" (e.g.
-"香港 01 | IPLC 直连"). Disabling the direct entrance takes its users off the node.
+"香港 01 | IPLC 直连"；倍率不是 1 时名字后附倍率，如 "香港 01 IPLC 2.0x"). Disabling the direct entrance takes its users off the node.
+
+**中转入口（relay）.** A relay (IPLC, a forwarding VPS) that forwards to the node is added as a
+relay entrance (`POST /api/v1/nodes/{id}/entrances`): its name, the address/port clients dial
+(the relay's), the **listen port** on the node the relay forwards to, the relay's **egress IPs**
+(1–64 addresses/CIDRs), multiplier and node groups. The node then runs a derived inbound: the
+node's inbound with the same protocol and settings on the listen port, with its own credential per
+user (so a relay credential works only on that relay's inbound, and removing a user from one
+entrance never touches another). Open the listen port in the node's firewall for the relay's
+egress IPs. Traffic is counted and billed per entrance at that entrance's multiplier.
+
+Agents with the `source-filter` capability (W28-a agent releases) add a kernel allowlist for every
+derived inbound: an nftables table `inet akari_sources` of its own, replaced as a whole when the
+relays change and removed when there are none; new connections to a listen port from any other
+address are dropped (existing connections are not cut). **The agent itself has no
+`CAP_NET_ADMIN` (R44)**: it writes the allowlist to a request file in its state directory
+(`update/source-filter-request.json`), and the root updater that already installs self-updates
+(systemd: `akari-agent-update.path` + `.service`; Alpine: the `akari-agent-update` service loop)
+re-validates it, applies it with `nft -f -` within about a second and hands the outcome back; the
+agent reports it with its heartbeat. This needs `nft` on the node (the installer installs the
+`nftables` package when it is missing) and current updater units (nodes installed before this
+release get them with the agent's self-update, or by running the install command again). Until the
+updater has answered, and whenever it fails, the relay entrance still works with credential
+isolation only; a failure or a missing updater shows on the node page as "来源 IP 过滤未生效".
+Older agents ignore the allowlist (warning on the node page) and, below protocol 7, count a user's
+speed limit separately per entrance.
 
 Creating the node shows a **one-line install command**, valid for 1 hour (built in) and only
 until the agent has enrolled with it. It needs 系统设置 → 节点通信 → **节点通信域名** (the address

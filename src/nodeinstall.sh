@@ -18,8 +18,9 @@
 # akari-agent-update, with a system user akari-agent) and starts them,
 # turns on TCP BBR with the fq qdisc where the kernel supports it and the
 # machine lets us (W32: /etc/sysctl.d/90-akari-bbr.conf; containers with a
-# read-only /proc/sys are skipped with a message), then waits until the
-# agent has enrolled and connected.
+# read-only /proc/sys are skipped with a message), installs nftables when
+# missing (relay source allowlists, applied by the root updater), then
+# waits until the agent has enrolled and connected.
 # The service files are the ones the verified agent release carries
 # (`akari-agent -print-unit NAME`); releases older than that get the
 # systemd copies embedded in this script (OpenRC needs a release that
@@ -323,6 +324,26 @@ if [ "$BBR" = 0 ]; then
 	fi
 else
 	bbr_enable
+fi
+
+# --- nftables (relay entrances' source allowlists) ---------------------------
+# The root updater applies them with nft (W28-a, R44: the agent itself has
+# no CAP_NET_ADMIN). Installed when missing and a package manager is at
+# hand; without it relay entrances work with credential isolation only (the
+# node page warns).
+if ! command -v nft >/dev/null 2>&1; then
+	if command -v apk >/dev/null 2>&1; then
+		apk add --no-cache -q nftables >/dev/null 2>&1 || true
+	elif command -v apt-get >/dev/null 2>&1; then
+		export DEBIAN_FRONTEND=noninteractive
+		apt-get install -y -qq --no-install-recommends nftables >/dev/null 2>&1 \
+			|| { apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq --no-install-recommends nftables >/dev/null 2>&1; } || true
+	fi
+	if command -v nft >/dev/null 2>&1; then
+		say "nftables: installed (relay entrances' source allowlists)"
+	else
+		say "NOTE: nft is not installed: relay entrances will run without their source allowlists (install nftables)"
+	fi
 fi
 
 # --- firewall (automatic certificate) -----------------------------------------

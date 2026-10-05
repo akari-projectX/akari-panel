@@ -182,11 +182,16 @@ pub(crate) fn collect_proxies(rows: &[NodeRow]) -> Vec<Proxy> {
             Some(f) if flow_applies(&spec.id, &net) => f,
             _ => "",
         };
-        // W11 display name and tags, then the entrance ("香港 01 | IPLC
-        // 直连"); names stay unique across the subscription (clients key
-        // proxies by name).
+        // W11 display name and tags, then the entrance and its multiplier
+        // when not 1x ("香港 01 | IPLC 直连", "香港 01 IPLC 2.0x"); names stay
+        // unique across the subscription (clients key proxies by name).
         let base = crate::nodemeta::public_name(&row.name, row.display_name.as_deref(), &row.tags);
-        let name = unique_name(&mut names, format!("{base} {}", row.entrance));
+        let mut name = format!("{base} {}", row.entrance);
+        if row.rate_permille != 1000 {
+            name.push(' ');
+            name.push_str(&rate_label(row.rate_permille));
+        }
+        let name = unique_name(&mut names, name);
         proxies.push(Proxy {
             name,
             protocol: spec.id.as_str(),
@@ -255,4 +260,28 @@ pub(crate) fn yaml(s: &str) -> String {
 #[cfg(test)]
 pub(crate) fn net_from_inbound(inbound: &serde_json::Value) -> Option<Net> {
     net_of(&crate::protocols::xray::parse(inbound))
+}
+
+/// A multiplier as subscriptions show it: "2.0x", "0.5x", "1.25x", "0.125x".
+fn rate_label(permille: i32) -> String {
+    let r = f64::from(permille) / 1000.0;
+    if permille % 100 == 0 {
+        format!("{r:.1}x")
+    } else if permille % 10 == 0 {
+        format!("{r:.2}x")
+    } else {
+        format!("{r:.3}x")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rate_labels() {
+        assert_eq!(super::rate_label(2000), "2.0x");
+        assert_eq!(super::rate_label(500), "0.5x");
+        assert_eq!(super::rate_label(1250), "1.25x");
+        assert_eq!(super::rate_label(125), "0.125x");
+        assert_eq!(super::rate_label(0), "0.0x");
+    }
 }

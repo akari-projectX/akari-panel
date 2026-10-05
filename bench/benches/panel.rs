@@ -24,7 +24,7 @@ use akari_panel::pb::{InboundUser, TrafficReport, UserOp, UserTraffic, user_op};
 fn members(entrance: Uuid, users: &[Uuid]) -> HashMap<String, (Uuid, Uuid)> {
     users
         .iter()
-        .map(|&u| (akari_panel::grpc::stat_key(u), (entrance, u)))
+        .map(|&u| (akari_panel::grpc::stat_key(u, 0), (entrance, u)))
         .collect()
 }
 
@@ -157,6 +157,7 @@ fn sub_rows(nodes: usize) -> Vec<akari_panel::sub::NodeRow> {
             display_name: None,
             tags: vec![],
             entrance: entrance.into(),
+            rate_permille: 1000,
             inbound,
             server: Some(format!("198.51.100.{}", 1 + i % 250)),
             port: None,

@@ -141,7 +141,12 @@ pub fn router(state: AppState) -> Router {
         .route("/{prefix}/api/v1/nodes/{id}/inbound", put(api::set_inbound))
         .route(
             "/{prefix}/api/v1/entrances/{id}",
-            axum::routing::patch(crate::entrances::update_entrance),
+            axum::routing::patch(crate::entrances::update_entrance)
+                .delete(crate::entrances::delete_entrance),
+        )
+        .route(
+            "/{prefix}/api/v1/nodes/{id}/entrances",
+            post(crate::entrances::create_relay),
         )
         .route(
             "/{prefix}/api/v1/nodes/{id}/install",
