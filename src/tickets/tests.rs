@@ -597,7 +597,7 @@ async fn limits() {
 
 async fn enable_smtp(db: &TestDb) {
     sqlx::query(
-        "UPDATE smtp_settings SET enabled = true, host = 'smtp.example.com', \
+        "UPDATE mail_settings SET enabled = true, host = 'smtp.example.com', \
          from_addr = 'noreply@example.com'",
     )
     .execute(&db.pool)

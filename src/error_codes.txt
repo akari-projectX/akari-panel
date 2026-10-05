@@ -142,13 +142,16 @@ kb.name_multiline
 kb.name_required
 kb.query_long
 kb.sort_range
+mail.api_key_invalid
 mail.credentials_need_tls
+mail.enable_needs_api_key
 mail.enable_needs_host
 mail.expiry_days_range
 mail.from_invalid
 mail.from_name_long
 mail.host_invalid
 mail.password_invalid
+mail.provider_invalid
 mail.retry_not_dead
 mail.security_invalid
 mail.status_invalid

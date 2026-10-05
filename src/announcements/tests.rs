@@ -475,7 +475,7 @@ async fn mailing_batches_the_audience() {
     assert_eq!(r.status, StatusCode::CONFLICT);
     assert_eq!(r.json()["code"], "announcement.mail_unavailable");
     sqlx::query(
-        "UPDATE smtp_settings SET enabled = true, host = '127.0.0.1', port = 1025, security = 'none', \
+        "UPDATE mail_settings SET enabled = true, host = '127.0.0.1', port = 1025, security = 'none', \
          from_addr = 'noreply@example.com' WHERE id = 1",
     )
     .execute(&db.pool)

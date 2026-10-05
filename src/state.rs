@@ -63,6 +63,8 @@ struct Inner {
     /// W11: latest machine status of the nodes whose stream this instance
     /// holds (Prometheus fleet gauges) and the history write permits.
     nodestat: crate::nodestat::Local,
+    /// W31: this instance's id, job stats and 系统状态 cache.
+    sysstatus: crate::sysstatus::Local,
 }
 
 /// Counts a running agent session task (see `AppState::live_sessions`).
@@ -105,6 +107,7 @@ impl AppState {
             payments: arc_swap::ArcSwap::from_pointee(Default::default()),
             settings,
             nodestat: crate::nodestat::Local::default(),
+            sysstatus: crate::sysstatus::Local::default(),
         }))
     }
 
@@ -152,6 +155,9 @@ impl AppState {
     }
     pub fn nodestat(&self) -> &crate::nodestat::Local {
         &self.0.nodestat
+    }
+    pub fn sysstatus(&self) -> &crate::sysstatus::Local {
+        &self.0.sysstatus
     }
     pub fn traffic(&self) -> &TrafficBuffer {
         &self.0.traffic
