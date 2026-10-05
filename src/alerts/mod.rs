@@ -638,7 +638,7 @@ pub async fn test_channel(
     }
     let mut tx = state.pg().begin().await?;
     let s = load(&mut tx).await?;
-    let msg = channels::Message::test(&user.login);
+    let msg = channels::Message::test(&user.email);
     let res = channels::send(&state, Some(&mut tx), &s, &req.channel, &msg, 0).await;
     crate::audit::record(
         &mut tx,
@@ -938,7 +938,7 @@ pub async fn ack_alert(
     if acked.is_none() {
         sqlx::query("UPDATE node_alerts SET acked_at = now(), acked_by = $2 WHERE id = $1")
             .bind(id)
-            .bind(&user.login)
+            .bind(&user.email)
             .execute(&mut *tx)
             .await?;
         crate::audit::record(
@@ -1053,14 +1053,28 @@ pub async fn run(state: AppState) {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
-        match eval::round(&state).await {
-            Ok(Some(_)) => crate::metrics::alert_round("leader"),
-            Ok(None) => crate::metrics::alert_round("skipped"),
+        let started = std::time::Instant::now();
+        let (outcome, error) = match eval::round(&state).await {
+            Ok(Some(_)) => {
+                crate::metrics::alert_round("leader");
+                (crate::sysstatus::Outcome::Ok, None)
+            }
+            Ok(None) => {
+                crate::metrics::alert_round("skipped");
+                (crate::sysstatus::Outcome::Skipped, None)
+            }
             Err(e) => {
                 crate::metrics::alert_round("error");
                 tracing::warn!(error = %e, "alert evaluation failed");
+                (crate::sysstatus::Outcome::Error, Some(e.to_string()))
             }
-        }
+        };
+        state.sysstatus().record(
+            crate::sysstatus::Job::Alerts,
+            started,
+            outcome,
+            error.as_deref(),
+        );
         if let Err(e) = channels::deliver_due(&state).await {
             tracing::warn!(error = %e, "alert delivery failed");
         }

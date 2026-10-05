@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Encrypted backup of an Akari panel: PostgreSQL (custom format) + the data
-# directory (route prefix, CA private key, jwt.key, totp.key). See docs/BACKUP.md.
+# directory (route prefix, CA private key, jwt.key, master.key). See docs/BACKUP.md.
 #
 # Output: $AKARI_BACKUP_DIR/akari-<UTC timestamp>/
 #   db.dump.age     pg_dump --format=custom, age-encrypted
@@ -15,7 +15,7 @@
 # Plain mode (AKARI_BACKUP_PLAINTEXT=1, explicit; the installer's pre-upgrade
 # backup when no recipient is configured, and its same-host migration):
 # db.dump / data.tar / config.tar, unencrypted, directory 0700 and files
-# 0600, with a warning. They hold the CA key, jwt.key, totp.key and the
+# 0600, with a warning. They hold the CA key, jwt.key, master.key and the
 # database: never copy them off the host unencrypted.
 #
 # Configuration (environment):
@@ -62,7 +62,7 @@ elif [ -n "${AGE_RECIPIENT:-}" ]; then
   age_args=(-r "$AGE_RECIPIENT")
 elif [ "${AKARI_BACKUP_PLAINTEXT:-0}" = 1 ]; then
   plain=1
-  echo "backup: WARNING: plain (unencrypted) backup: it holds the CA key, jwt.key, totp.key and the database; keep it on this host (0600) or encrypt it (AGE_RECIPIENT, docs/BACKUP.md)" >&2
+  echo "backup: WARNING: plain (unencrypted) backup: it holds the CA key, jwt.key, master.key and the database; keep it on this host (0600) or encrypt it (AGE_RECIPIENT, docs/BACKUP.md)" >&2
 else
   die "set AGE_RECIPIENT or AGE_RECIPIENTS_FILE (age public key), or AKARI_BACKUP_PLAINTEXT=1; see docs/BACKUP.md"
 fi

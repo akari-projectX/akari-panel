@@ -70,12 +70,12 @@ pub async fn apply_create(
 ) -> Result<Uuid, ApiError> {
     let reason = check_reason(&req.reason)?;
     crate::entitle::lock(conn).await?;
-    let user: Option<(String, String)> =
-        sqlx::query_as("SELECT login, role FROM users WHERE id = $1 FOR KEY SHARE")
+    let role: Option<String> =
+        sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR KEY SHARE")
             .bind(req.user_id)
             .fetch_optional(&mut *conn)
             .await?;
-    let Some((login, role)) = user else {
+    let Some(role) = role else {
         return Err(ApiError::not_found());
     };
     if role != "user" {
@@ -106,7 +106,7 @@ pub async fn apply_create(
     let otn = new_out_trade_no();
     let subject: String = format!("Akari - {plan_name}").chars().take(128).collect();
     let r = sqlx::query_scalar::<_, Value>(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO orders (id, out_trade_no, user_id, user_login, plan_id, plan_name, \
+        "INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_id, plan_name, \
          amount_cents, period, period_days, list_price_cents, gift_cents, subject, expires_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7 - $8, $9, $10, $7, $8, $11, now()) RETURNING {}",
         orders::order_snapshot_sql("orders")
@@ -114,7 +114,7 @@ pub async fn apply_create(
     .bind(id)
     .bind(&otn)
     .bind(req.user_id)
-    .bind(&login)
+    .bind(crate::audit::user_label(req.user_id))
     .bind(req.plan_id)
     .bind(&plan_name)
     .bind(list_cents)
@@ -176,7 +176,7 @@ pub async fn apply_create(
         true,
         "manual_order",
         None,
-        Some(json!({ "reason": reason, "by": actor.login, "gift": req.gift })),
+        Some(json!({ "reason": reason, "by": actor.label, "gift": req.gift })),
         actor.ip,
     )
     .await?;

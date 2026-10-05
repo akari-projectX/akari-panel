@@ -339,7 +339,7 @@ pub enum Stored {
     /// The working token (decrypted, and its hash matches the lookup hash).
     Ready(String),
     /// A token works but cannot be shown: issued before 0120 (hash only),
-    /// or the ciphertext does not open (data/totp.key changed). Only a
+    /// or the ciphertext does not open (data/master.key changed). Only a
     /// reset gives a showable link; it is never rotated implicitly.
     Legacy,
 }
@@ -378,7 +378,7 @@ pub async fn ensure_token(
                     Some(t) if hash_token(&t) == hash => Stored::Ready(t),
                     _ => {
                         tracing::error!(user = %user_id,
-                            "stored subscription token does not open (data/totp.key changed?); \
+                            "stored subscription token does not open (data/master.key changed?); \
                              the user must reset the link to see it");
                         Stored::Legacy
                     }

@@ -8,7 +8,8 @@ use axum::http::{Method, StatusCode};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::sender::{self, OutMsg, SendError, SendFuture, Transport};
+use super::sender;
+use super::transport::{OutMsg, SendError, SendFuture, Transport};
 use super::*;
 use crate::testdb::TestDb;
 use crate::testdb::http::{Client, rand_ip};
@@ -36,9 +37,9 @@ impl Transport for Recorder {
     }
 }
 
-async fn smtp(db: &TestDb) -> Smtp {
+async fn smtp(db: &TestDb) -> MailSettings {
     sqlx::query(
-        "UPDATE smtp_settings SET enabled = true, host = '127.0.0.1', port = 1025, \
+        "UPDATE mail_settings SET enabled = true, host = '127.0.0.1', port = 1025, \
          security = 'none', from_addr = 'noreply@example.com' WHERE id = 1",
     )
     .execute(&db.pool)
@@ -47,7 +48,7 @@ async fn smtp(db: &TestDb) -> Smtp {
     load(&mut db.pool.acquire().await.unwrap()).await.unwrap()
 }
 
-async fn queue(db: &TestDb, s: &Smtp, t: &Template, to: &str, discard: Option<i64>) -> i64 {
+async fn queue(db: &TestDb, s: &MailSettings, t: &Template, to: &str, discard: Option<i64>) -> i64 {
     let mut c = db.pool.acquire().await.unwrap();
     enqueue(&mut c, s, t, Locale::Zh, to, None, discard)
         .await
@@ -87,14 +88,16 @@ fn backoff_doubles_and_caps() {
 
 #[test]
 fn smtp_values_rules() {
-    let base = SmtpReq {
+    let base = MailReq {
         version: 0,
         enabled: true,
+        provider: None,
         host: Some(" Smtp.Example.COM ".into()),
         port: 587,
         security: "starttls".into(),
         username: Some("u".into()),
         password: Some(Some("p".into())),
+        api_key: None,
         from_addr: Some("A@Example.com".into()),
         from_name: Some(" Akari ".into()),
         notify_order_paid: true,
@@ -102,15 +105,15 @@ fn smtp_values_rules() {
         notify_expired: true,
         notify_quota: true,
     };
-    let v = smtp_values(&base).unwrap();
+    let v = mail_values(&base).unwrap();
     assert_eq!(v.host.as_deref(), Some("smtp.example.com"));
     assert_eq!(v.from_addr.as_deref(), Some("a@example.com"));
     assert_eq!(v.from_name.as_deref(), Some("Akari"));
     assert_eq!(v.password, Some(Some("p".into())));
-    let with = |f: &dyn Fn(&mut SmtpReq)| {
-        let mut r = SmtpReq { ..clone_req(&base) };
+    let with = |f: &dyn Fn(&mut MailReq)| {
+        let mut r = MailReq { ..clone_req(&base) };
         f(&mut r);
-        smtp_values(&r)
+        mail_values(&r)
     };
     assert_eq!(
         with(&|r| r.password = Some(Some(String::new())))
@@ -143,7 +146,24 @@ fn smtp_values_rules() {
     assert!(with(&|r| r.username = Some("a\nb".into())).is_err());
     assert!(with(&|r| r.password = Some(Some("a\r\nb".into()))).is_err());
     assert!(with(&|r| r.from_name = Some("a\nBcc: x".into())).is_err());
-    assert!(with(&|r| r.host = None).is_err(), "enabled needs a host");
+    // Completeness for enabling depends on the stored secrets/provider:
+    // checked by apply_update_mail (tested there), not here.
+    assert!(with(&|r| r.host = None).is_ok());
+    assert!(with(&|r| r.provider = Some("sendgrid".into())).is_err());
+    assert_eq!(
+        with(&|r| r.provider = Some("resend".into()))
+            .unwrap()
+            .provider
+            .as_deref(),
+        Some("resend")
+    );
+    assert!(with(&|r| r.api_key = Some(Some("re_\nx".into()))).is_err());
+    assert_eq!(
+        with(&|r| r.api_key = Some(Some(String::new())))
+            .unwrap()
+            .api_key,
+        Some(None)
+    );
     let off = with(&|r| {
         r.enabled = false;
         r.host = None;
@@ -153,15 +173,17 @@ fn smtp_values_rules() {
     assert!(!off.enabled);
 }
 
-fn clone_req(r: &SmtpReq) -> SmtpReq {
-    SmtpReq {
+fn clone_req(r: &MailReq) -> MailReq {
+    MailReq {
         version: r.version,
         enabled: r.enabled,
+        provider: r.provider.clone(),
         host: r.host.clone(),
         port: r.port,
         security: r.security.clone(),
         username: r.username.clone(),
         password: r.password.clone(),
+        api_key: r.api_key.clone(),
         from_addr: r.from_addr.clone(),
         from_name: r.from_name.clone(),
         notify_order_paid: r.notify_order_paid,
@@ -327,9 +349,7 @@ async fn failures_retry_dead_letter_and_expire() {
     let state = crate::state::AppState::for_test(db.pool.clone()).await;
     let admin = db.admin().await;
     let mut c = Client::new(&state, rand_ip());
-    c.cookie = Some(
-        crate::auth::issue_token(&state, admin, "admin", 0, crate::auth::Stage::Full).unwrap(),
-    );
+    c.cookie = Some(crate::auth::issue_token(&state, admin, "admin", 0).unwrap());
     let list = c.get("/test/api/v1/mail/outbox?status=dead").await;
     assert_eq!(list.status, StatusCode::OK);
     let list = list.json();
@@ -392,7 +412,7 @@ async fn kinds_to(db: &TestDb, to: &str) -> Vec<String> {
         .unwrap()
 }
 
-async fn run_pass(db: &TestDb, s: &Smtp) -> usize {
+async fn run_pass(db: &TestDb, s: &MailSettings) -> usize {
     let mut tx = db.pool.begin().await.unwrap();
     let n = notices::pass(&mut tx, s, Some("https://p.example/x/app"))
         .await
@@ -535,9 +555,7 @@ async fn test_mail_endpoint_reports_failures() {
     let state = crate::state::AppState::for_test(db.pool.clone()).await;
     let admin = db.admin().await;
     let mut c = Client::new(&state, rand_ip());
-    c.cookie = Some(
-        crate::auth::issue_token(&state, admin, "admin", 0, crate::auth::Stage::Full).unwrap(),
-    );
+    c.cookie = Some(crate::auth::issue_token(&state, admin, "admin", 0).unwrap());
     let r = c
         .post(
             "/test/api/v1/settings/mail/test",
@@ -551,7 +569,7 @@ async fn test_mail_endpoint_reports_failures() {
         l.local_addr().unwrap().port()
     };
     sqlx::query(
-        "UPDATE smtp_settings SET host = '127.0.0.1', port = $1, security = 'none', \
+        "UPDATE mail_settings SET host = '127.0.0.1', port = $1, security = 'none', \
          from_addr = 'noreply@example.com' WHERE id = 1",
     )
     .bind(i32::from(port))
@@ -605,4 +623,255 @@ fn smtp_errors_are_logged_without_addresses() {
     );
     assert_eq!(r("用户 张三@例子.中国 不存在"), "用户 <address> 不存在");
     assert_eq!(r(""), "");
+}
+
+async fn admin_client(state: &crate::state::AppState, db: &TestDb) -> Client {
+    let admin = db.admin().await;
+    let mut c = Client::new(state, rand_ip());
+    c.cookie = Some(crate::auth::issue_token(state, admin, "admin", 0).unwrap());
+    c
+}
+
+fn put_body(version: i64, extra: serde_json::Value) -> serde_json::Value {
+    let mut b = json!({
+        "version": version, "enabled": false, "host": null, "port": 587,
+        "security": "starttls", "username": null, "from_addr": "noreply@example.com",
+        "from_name": null, "notify_order_paid": true, "notify_expiry_days": 3,
+        "notify_expired": true, "notify_quota": true,
+    });
+    for (k, v) in extra.as_object().unwrap() {
+        b[k] = v.clone();
+    }
+    b
+}
+
+/// W31: the provider and the Resend API key through the settings API.
+#[tokio::test]
+async fn resend_settings_seal_the_key_and_gate_enabling() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = crate::state::AppState::for_test(db.pool.clone()).await;
+    let c = admin_client(&state, &db).await;
+    let r = c.get("/test/api/v1/settings/mail").await;
+    assert_eq!(r.json()["provider"], "smtp");
+    assert_eq!(r.json()["providers"], json!(["smtp", "resend"]));
+    let v = r.json()["version"].as_i64().unwrap();
+    // Enabling Resend without a key: refused before anything is written.
+    let r = c
+        .put(
+            "/test/api/v1/settings/mail",
+            put_body(v, json!({ "enabled": true, "provider": "resend" })),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert_eq!(r.json()["code"], "mail.enable_needs_api_key");
+    let r = c
+        .put(
+            "/test/api/v1/settings/mail",
+            put_body(v, json!({ "provider": "mailgun" })),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "mail.provider_invalid");
+    // With a key: enabled, sealed under RESEND_AAD, never echoed.
+    let r = c
+        .put(
+            "/test/api/v1/settings/mail",
+            put_body(
+                v,
+                json!({ "enabled": true, "provider": "resend", "api_key": "re_abc" }),
+            ),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["api_key_set"], true);
+    assert!(!String::from_utf8_lossy(&r.body).contains("re_abc"));
+    let sealed: Vec<u8> = sqlx::query_scalar("SELECT api_key_enc FROM mail_settings")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        state.totp().open(RESEND_AAD, &sealed).as_deref(),
+        Some(&b"re_abc"[..])
+    );
+    assert!(state.totp().open(SMTP_AAD, &sealed).is_none(), "own AAD");
+    let s = load(&mut db.pool.acquire().await.unwrap()).await.unwrap();
+    assert!(s.enabled && s.complete() && s.provider == "resend");
+    // Absent provider/key = kept; audit says only "changed".
+    let r = c
+        .put(
+            "/test/api/v1/settings/mail",
+            put_body(s.version, json!({ "enabled": true, "from_name": "Shop" })),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["provider"], "resend");
+    assert_eq!(r.json()["api_key_set"], true);
+    let audits: Vec<String> = sqlx::query_scalar(
+        "SELECT after::text FROM audit_log WHERE action = 'settings.mail.update' ORDER BY id",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(audits.len(), 2);
+    assert!(audits[0].contains("\"api_key\": \"changed\"") && !audits[0].contains("re_abc"));
+    assert!(audits[1].contains("\"api_key\": \"\""));
+    // Removing the key of the enabled provider: refused (and the CHECK
+    // backs it for any other writer).
+    let r = c
+        .put(
+            "/test/api/v1/settings/mail",
+            put_body(s.version + 1, json!({ "enabled": true, "api_key": null })),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "mail.enable_needs_api_key");
+    let e = sqlx::query("UPDATE mail_settings SET api_key_enc = NULL")
+        .execute(&db.pool)
+        .await
+        .unwrap_err();
+    assert!(
+        e.to_string().contains("mail_settings_enabled_complete"),
+        "{e}"
+    );
+    let e = sqlx::query("UPDATE mail_settings SET provider = 'mailgun'")
+        .execute(&db.pool)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("mail_settings_provider"), "{e}");
+    db.drop().await;
+}
+
+/// W31: the diagnose endpoint runs every step against a local relay and
+/// reports a blocked port step by step; both are audited.
+#[tokio::test]
+async fn diagnose_endpoint_reports_steps() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = crate::state::AppState::for_test(db.pool.clone()).await;
+    let c = admin_client(&state, &db).await;
+    // A minimal plaintext relay (security none, no AUTH).
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    let got = Arc::new(Mutex::new(0usize));
+    let n = got.clone();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        while let Ok((tcp, _)) = l.accept().await {
+            let n = n.clone();
+            tokio::spawn(async move {
+                let mut io = BufReader::new(tcp);
+                let _ = io.get_mut().write_all(b"220 relay\r\n").await;
+                let mut data = false;
+                loop {
+                    let mut line = String::new();
+                    if io.read_line(&mut line).await.unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let l = line.trim_end();
+                    let reply: &[u8] = if data {
+                        if l != "." {
+                            continue;
+                        }
+                        data = false;
+                        *n.lock().unwrap() += 1;
+                        b"250 queued\r\n"
+                    } else if l.starts_with("EHLO") {
+                        b"250-relay\r\n250 8BITMIME\r\n"
+                    } else if l == "DATA" {
+                        data = true;
+                        b"354 go\r\n"
+                    } else if l == "QUIT" {
+                        let _ = io.get_mut().write_all(b"221 bye\r\n").await;
+                        break;
+                    } else {
+                        b"250 ok\r\n"
+                    };
+                    let _ = io.get_mut().write_all(reply).await;
+                }
+            });
+        }
+    });
+    sqlx::query(
+        "UPDATE mail_settings SET host = '127.0.0.1', port = $1, security = 'none', \
+         from_addr = 'noreply@example.com' WHERE id = 1",
+    )
+    .bind(i32::from(port))
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let r = c
+        .post(
+            "/test/api/v1/settings/mail/diagnose",
+            json!({ "to": "a@example.com" }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let j = r.json();
+    assert_eq!(j["ok"], true, "{j}");
+    assert_eq!(j["provider"], "smtp");
+    let names: Vec<&str> = j["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["step"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        ["config", "dns", "tcp", "tls", "greeting", "auth", "send"]
+    );
+    assert_eq!(j["steps"][0]["code"], "mail.diag.plaintext");
+    assert!(
+        j["steps"][6]["message"]["zh"]
+            .as_str()
+            .unwrap()
+            .contains("a@example.com")
+    );
+    assert_eq!(*got.lock().unwrap(), 1);
+    // A closed port: 200 with the failing step, never a hang.
+    let closed = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    sqlx::query("UPDATE mail_settings SET port = $1")
+        .bind(i32::from(closed))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let j = c
+        .post(
+            "/test/api/v1/settings/mail/diagnose",
+            json!({ "to": "a@example.com" }),
+        )
+        .await
+        .json();
+    assert_eq!(j["ok"], false);
+    assert_eq!(j["steps"][2]["code"], "mail.diag.tcp_refused");
+    assert_eq!(j["steps"][6]["status"], "skip");
+    let r = c
+        .post(
+            "/test/api/v1/settings/mail/diagnose",
+            json!({ "to": "nope" }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let outcomes: Vec<String> = sqlx::query_scalar(
+        "SELECT after->>'outcome' FROM audit_log WHERE action = 'settings.mail.test' ORDER BY id",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(outcomes, ["sent", "mail.diag.tcp_refused"]);
+    // Admins only.
+    let user = db.user().await;
+    let mut u = Client::new(&state, rand_ip());
+    u.cookie = Some(crate::auth::issue_token(&state, user, "user", 0).unwrap());
+    let r = u
+        .post(
+            "/test/api/v1/settings/mail/diagnose",
+            json!({ "to": "a@example.com" }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    db.drop().await;
 }

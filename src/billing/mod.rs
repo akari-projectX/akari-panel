@@ -66,8 +66,15 @@ pub async fn reconcile_loop(state: AppState) {
     let mut n: u64 = 0;
     loop {
         tick.tick().await;
-        if let Err(e) = orders::reconcile_tick(&state).await {
-            tracing::warn!(error = e.message(), "order reconcile tick failed");
+        let started = std::time::Instant::now();
+        let res = orders::reconcile_tick(&state)
+            .await
+            .map_err(|e| e.message().to_string());
+        state
+            .sysstatus()
+            .record_result(crate::sysstatus::Job::Reconciliation, started, &res);
+        if let Err(e) = res {
+            tracing::warn!(error = e, "order reconcile tick failed");
         }
         n += 1;
         if n.is_multiple_of(PRUNE_EVERY_TICKS)

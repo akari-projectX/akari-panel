@@ -7,23 +7,20 @@
 //!   `Actor` and record themselves), so a rolled-back change leaves no row
 //!   and a committed one always has its row.
 //! - Snapshots never contain secrets: no password hashes, subscription
-//!   tokens, TOTP secrets, recovery codes, proxy credentials or raw inbound
+//!   tokens, passkey material, proxy credentials or raw inbound
 //!   JSON (which can hold REALITY private keys, TLS keys, client ids). Such
 //!   fields appear only as a marker that they changed (`"changed"`), and
 //!   inbounds only as an allow-listed summary plus a digest.
-//! - Login events: successes are recorded (admins always — full admin
-//!   logins are bounded by TOTP replay protection to one per 30 s step —
-//!   regular users at most once per account per `LOGIN_OK_THROTTLE_SECS`);
-//!   failures only for existing accounts, and only the first failure of an
-//!   account's rate-limit window, the one that fills it, and every
-//!   second-factor failure (the password was right). Unknown login names are
+//! - Login events: successes are recorded (admins always, regular users at
+//!   most once per account per `LOGIN_OK_THROTTLE_SECS`); failures only for
+//!   existing accounts, and only the first failure of an account's
+//!   rate-limit window and the one that fills it. Unknown addresses are
 //!   never recorded. Together with login_limit.rs this bounds the rows a
 //!   remote client can create; failure rows are written off the request
 //!   path so their cost is not a timing oracle for account existence.
 //! - Not recorded: logout (it only ends the caller's own sessions), the
 //!   traffic-limit disable and user-expiry passes (visible in the user's
-//!   state: `disabled_reason`, `expires_at`), pending (unconfirmed) TOTP
-//!   enrollments, subscription fetches.
+//!   state: `disabled_reason`, `expires_at`), subscription fetches.
 //! - M3 periodic passes ARE recorded, actor `system`: traffic period
 //!   resets (`user.traffic.reset`, one row per user and period) and plan
 //!   expiry (`user.plan.expire`), since they change usage and access.
@@ -48,24 +45,46 @@ use crate::state::AppState;
 #[derive(Clone, Debug)]
 pub struct Actor {
     pub id: Option<Uuid>,
-    pub login: String,
+    /// Non-personal label (Q4): `user_label(id)` for accounts, else one of
+    /// the constants below. Displays join `users` on `id` for the address.
+    pub label: String,
     pub ip: Option<IpAddr>,
 }
 
-/// actor_login of command-line actions.
+/// actor_label of command-line actions.
 pub const CLI: &str = "cli";
-/// actor_login of the panel's own periodic passes (M3: traffic period
+/// actor_label of the panel's own periodic passes (M3: traffic period
 /// resets, plan expiry).
 pub const SYSTEM: &str = "system";
-/// actor_login of actions an agent triggers itself (enrollment, certificate
+/// actor_label of actions an agent triggers itself (enrollment, certificate
 /// renewal); `ip` = the agent's source address.
 pub const AGENT: &str = "agent";
+
+/// actor_label of an unauthenticated request (a failed login: the target is
+/// the account it named).
+pub const ANONYMOUS: &str = "anonymous";
+
+/// The non-personal label of an account in snapshot columns (Q4: money and
+/// audit rows outlive accounts and must not keep their email address):
+/// "u-" + the first 8 hex digits of the id. Stable, so it still groups an
+/// erased account's rows; never parsed back (the id columns are the link).
+pub fn user_label(id: Uuid) -> String {
+    let mut s = id.simple().to_string();
+    s.truncate(8);
+    format!("u-{s}")
+}
+
+/// SQL expression of `user_label` over a uuid expression (snapshot columns
+/// written by SQL, e.g. batch items).
+pub fn user_label_sql(id: &str) -> String {
+    format!("('u-' || left(replace(({id})::text, '-', ''), 8))")
+}
 
 impl Actor {
     pub fn cli() -> Self {
         Self {
             id: None,
-            login: CLI.into(),
+            label: CLI.into(),
             ip: None,
         }
     }
@@ -73,7 +92,7 @@ impl Actor {
     pub fn system() -> Self {
         Self {
             id: None,
-            login: SYSTEM.into(),
+            label: SYSTEM.into(),
             ip: None,
         }
     }
@@ -81,23 +100,27 @@ impl Actor {
     pub fn agent(ip: Option<IpAddr>) -> Self {
         Self {
             id: None,
-            login: AGENT.into(),
+            label: AGENT.into(),
+            ip,
+        }
+    }
+
+    pub fn anonymous(ip: Option<IpAddr>) -> Self {
+        Self {
+            id: None,
+            label: ANONYMOUS.into(),
             ip,
         }
     }
 
     pub fn of(user: &AuthUser) -> Self {
-        Self {
-            id: Some(user.id),
-            login: user.login.clone(),
-            ip: user.ip,
-        }
+        Self::account(user.id, user.ip)
     }
 
-    pub fn account(id: Uuid, login: &str, ip: Option<IpAddr>) -> Self {
+    pub fn account(id: Uuid, ip: Option<IpAddr>) -> Self {
         Self {
             id: Some(id),
-            login: login.into(),
+            label: user_label(id),
             ip,
         }
     }
@@ -106,7 +129,7 @@ impl Actor {
     pub fn test() -> Self {
         Self {
             id: None,
-            login: "test".into(),
+            label: "test".into(),
             ip: None,
         }
     }
@@ -123,11 +146,11 @@ pub async fn record(
     after: Option<Value>,
 ) -> sqlx::Result<()> {
     sqlx::query(
-        "INSERT INTO audit_log (actor_id, actor_login, ip, action, target_type, target_id, before, after) \
+        "INSERT INTO audit_log (actor_id, actor_label, ip, action, target_type, target_id, before, after) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(actor.id)
-    .bind(&actor.login)
+    .bind(&actor.label)
     .bind(actor.ip.map(|ip| crate::client_ip::canonical(ip).to_string()))
     .bind(action)
     .bind(target_type)
@@ -148,7 +171,7 @@ pub const CHANGED: &str = "changed";
 /// constant, never input.
 pub fn user_snapshot_sql(alias: &str) -> String {
     format!(
-        "jsonb_build_object('login', {a}.login, 'role', {a}.role, 'enabled', {a}.enabled, \
+        "jsonb_build_object('email', {a}.email, 'role', {a}.role, 'enabled', {a}.enabled, \
          'traffic_limit_bytes', {a}.traffic_limit_bytes, 'expires_at', {a}.expires_at)",
         a = alias
     )
@@ -207,7 +230,8 @@ pub struct AuditQuery {
     /// Keyset cursor: only entries with id < before (the previous page's
     /// `next_before`).
     before: Option<i64>,
-    /// Exact actor_login ("cli" for command-line actions).
+    /// Exact actor_label ("cli" for command-line actions, `u-…` for an
+    /// account).
     actor: Option<String>,
     /// Exact action, or a prefix ending in '.' (e.g. "user.").
     action: Option<String>,
@@ -218,7 +242,10 @@ pub struct AuditEntry {
     id: i64,
     at: DateTime<Utc>,
     actor_id: Option<Uuid>,
-    actor_login: String,
+    actor_label: String,
+    /// The acting account's current address (null: not an account, or
+    /// deleted since).
+    actor_email: Option<String>,
     ip: Option<String>,
     action: String,
     target_type: Option<String>,
@@ -246,10 +273,12 @@ pub async fn list(
 
 async fn query_page(pg: &sqlx::PgPool, q: &AuditQuery) -> Result<AuditPage, ApiError> {
     const COLS: &str =
-        "id, at, actor_id, actor_login, ip, action, target_type, target_id, before, after";
+        "id, at, actor_id, actor_label, ip, action, target_type, target_id, before, after";
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let action = q.action.as_deref().filter(|a| !a.is_empty());
-    let mut qb = sqlx::QueryBuilder::new("");
+    // The page query (index-friendly, see below) is wrapped once to join the
+    // acting account's current address (Q4: the row keeps a label only).
+    let mut qb = sqlx::QueryBuilder::new("SELECT q.*, u.email AS actor_email FROM (");
     let prefix = action.filter(|a| a.ends_with('.'));
     if let Some(p) = prefix {
         // Prefix match (M2-2) without LIKE wildcards from the input and
@@ -288,11 +317,11 @@ async fn query_page(pg: &sqlx::PgPool, q: &AuditQuery) -> Result<AuditPage, ApiE
     }
     if let Some(a) = q.actor.as_deref().filter(|a| !a.is_empty()) {
         if action.is_some() {
-            qb.push(" AND actor_login = ").push_bind(a.to_string());
+            qb.push(" AND actor_label = ").push_bind(a.to_string());
         } else {
-            qb.push(" AND actor_login >= ")
+            qb.push(" AND actor_label >= ")
                 .push_bind(a.to_string())
-                .push(" AND actor_login <= ")
+                .push(" AND actor_label <= ")
                 .push_bind(a.to_string());
         }
     }
@@ -304,7 +333,7 @@ async fn query_page(pg: &sqlx::PgPool, q: &AuditQuery) -> Result<AuditPage, ApiE
     // common values, a scan of most of the table for rare ones.
     let order = match (action, q.actor.as_deref().filter(|a| !a.is_empty())) {
         (Some(_), _) => " ORDER BY action DESC, id DESC LIMIT ",
-        (None, Some(_)) => " ORDER BY actor_login DESC, id DESC LIMIT ",
+        (None, Some(_)) => " ORDER BY actor_label DESC, id DESC LIMIT ",
         (None, None) => " ORDER BY id DESC LIMIT ",
     };
     qb.push(order).push_bind(limit + 1);
@@ -312,6 +341,7 @@ async fn query_page(pg: &sqlx::PgPool, q: &AuditQuery) -> Result<AuditPage, ApiE
         qb.push(") e ORDER BY e.id DESC LIMIT ")
             .push_bind(limit + 1);
     }
+    qb.push(") q LEFT JOIN users u ON u.id = q.actor_id ORDER BY q.id DESC");
     let mut entries: Vec<AuditEntry> = qb.build_query_as().fetch_all(pg).await?;
     let more = entries.len() as i64 > limit;
     entries.truncate(limit as usize);
@@ -397,7 +427,7 @@ mod tests {
             let mut c = db.pool.acquire().await.unwrap();
             let a = Actor {
                 id: None,
-                login: actor.into(),
+                label: actor.into(),
                 ip: Some("::ffff:192.0.2.1".parse().unwrap()),
             };
             record(&mut c, &a, action, "user", Some("x".into()), None, None)
@@ -447,7 +477,7 @@ mod tests {
             .unwrap();
         assert_eq!(p.entries.len(), 5);
         assert!(p.next_before.is_none());
-        assert!(p.entries.iter().all(|e| e.actor_login == "bob"));
+        assert!(p.entries.iter().all(|e| e.actor_label == "bob"));
         let p = query_page(&db.pool, &q(50, None, None, Some("user.")))
             .await
             .unwrap();

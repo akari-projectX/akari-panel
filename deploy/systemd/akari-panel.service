@@ -27,7 +27,7 @@ RestartSec=3
 TimeoutStopSec=20
 LimitNOFILE=65536
 
-# State: route prefix, CA key, jwt.key, totp.key. /var/lib/akari, owned by akari, 0700.
+# State: route prefix, CA key, jwt.key, master.key. /var/lib/akari, owned by akari, 0700.
 StateDirectory=akari
 StateDirectoryMode=0700
 WorkingDirectory=/var/lib/akari

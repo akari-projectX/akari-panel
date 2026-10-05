@@ -24,16 +24,16 @@ pub struct Install {
     pub server_cert_pem: String,
     pub server_key_pem: String,
     pub jwt_secret: String,
-    /// Keys derived from data/totp.key (TOTP secrets at rest, recovery-code
-    /// hashes; totp.rs).
-    pub totp: crate::totp::Keys,
+    /// Keys derived from data/master.key (secrets at rest, mail-code and PoW
+    /// MACs; totp.rs).
+    pub keys: crate::totp::Keys,
 }
 
 pub fn ensure(cfg: &PanelConfig) -> Result<Install> {
     fs::create_dir_all(&cfg.data_dir).context("create data dir")?;
     let route_prefix = ensure_state(&cfg.data_dir)?;
     let jwt_secret = ensure_jwt_key(&cfg.data_dir)?;
-    let totp = crate::totp::Keys::from_material(&ensure_totp_key(&cfg.data_dir)?)?;
+    let keys = crate::totp::Keys::from_material(&ensure_master_key(&cfg.data_dir)?)?;
     let (ca_pem, ca_key_pem) = ensure_ca(&cfg.data_dir)?;
     // The server cert is ephemeral: the boot one covers the built-in names;
     // `settings::reload` re-issues it for every recorded server name.
@@ -46,7 +46,7 @@ pub fn ensure(cfg: &PanelConfig) -> Result<Install> {
         server_cert_pem,
         server_key_pem,
         jwt_secret,
-        totp,
+        keys,
     })
 }
 
@@ -66,24 +66,66 @@ fn ensure_jwt_key(data_dir: &Path) -> Result<String> {
     Ok(secret)
 }
 
-/// Key material for TOTP secrets at rest and recovery-code hashes (32
-/// random bytes, hex, 0600). Unlike jwt.key it is never regenerated over a
-/// malformed file: that would silently make every enrolled secret
-/// unreadable. Losing it locks out every 2FA account until
-/// `akari admin reset-2fa`.
-fn ensure_totp_key(data_dir: &Path) -> Result<Vec<u8>> {
-    let path = data_dir.join("totp.key");
+/// File name of the master key (v0.4 D7).
+pub const MASTER_KEY: &str = "master.key";
+/// Its name before v0.4 (it was introduced for TOTP secrets).
+pub const LEGACY_MASTER_KEY: &str = "totp.key";
+
+/// The master key (32 random bytes, hex, 0600) every at-rest secret and
+/// MAC key is derived from (totp.rs). Unlike jwt.key it is never
+/// regenerated over a malformed file: that would silently make every sealed
+/// secret (SMTP password, alert channels, payment methods, subscription
+/// links) unreadable.
+///
+/// D7 rename: an install that still has only `totp.key` gets it renamed to
+/// `master.key` (atomic, same directory) and keeps working with identical
+/// derived keys. Both present: they must hold the same key (a restored
+/// backup next to a renamed file); different keys refuse to start rather
+/// than guess which one the database was sealed with.
+fn ensure_master_key(data_dir: &Path) -> Result<Vec<u8>> {
+    let path = data_dir.join(MASTER_KEY);
+    let legacy = data_dir.join(LEGACY_MASTER_KEY);
     if path.exists() {
-        let existing = fs::read_to_string(&path).context("read totp.key")?;
-        let key = hex::decode(existing.trim())
-            .ok()
-            .filter(|k| k.len() == 32)
-            .with_context(|| format!("{} is not 32 bytes of hex", path.display()))?;
+        let key = read_master_key(&path)?;
+        if legacy.exists() {
+            if read_master_key(&legacy)? != key {
+                anyhow::bail!(
+                    "{} and {} hold different keys; keep the one the database was \
+                     sealed with (the other came from a different install) and remove the other",
+                    path.display(),
+                    legacy.display()
+                );
+            }
+            tracing::warn!(
+                "{} is a leftover copy of {}; it can be removed",
+                legacy.display(),
+                path.display()
+            );
+        }
+        return Ok(key);
+    }
+    if legacy.exists() {
+        let key = read_master_key(&legacy)?;
+        fs::rename(&legacy, &path)
+            .with_context(|| format!("rename {} to {}", legacy.display(), path.display()))?;
+        #[cfg(unix)]
+        if let Ok(d) = fs::File::open(data_dir) {
+            let _ = d.sync_all();
+        }
+        tracing::info!("renamed {} to {}", legacy.display(), path.display());
         return Ok(key);
     }
     let secret = random_hex(32);
     write_secret(&path, secret.as_bytes())?;
     Ok(hex::decode(secret)?)
+}
+
+fn read_master_key(path: &Path) -> Result<Vec<u8>> {
+    let existing = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    hex::decode(existing.trim())
+        .ok()
+        .filter(|k| k.len() == 32)
+        .with_context(|| format!("{} is not 32 bytes of hex", path.display()))
 }
 
 fn random_hex(n: usize) -> String {
@@ -469,14 +511,14 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let mode = |f: &str| fs::metadata(dir.join(f)).unwrap().permissions().mode() & 0o777;
         let jwt = ensure_jwt_key(&dir).unwrap();
-        let totp = ensure_totp_key(&dir).unwrap();
+        let master = ensure_master_key(&dir).unwrap();
         let prefix = ensure_state(&dir).unwrap();
         assert_eq!(
-            (mode("jwt.key"), mode("totp.key"), mode("state.json")),
+            (mode("jwt.key"), mode(MASTER_KEY), mode("state.json")),
             (0o600, 0o600, 0o600)
         );
-        assert_eq!(totp.len(), 32);
-        assert_eq!(ensure_totp_key(&dir).unwrap(), totp, "stable");
+        assert_eq!(master.len(), 32);
+        assert_eq!(ensure_master_key(&dir).unwrap(), master, "stable");
         rotate_jwt_key(&dir).unwrap();
         let jwt2 = ensure_jwt_key(&dir).unwrap();
         assert_ne!(jwt, jwt2);
@@ -495,9 +537,57 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert!(names.iter().all(|n| !n.ends_with(".tmp")), "{names:?}");
-        // A corrupt totp.key is an error, never silently replaced.
-        fs::write(dir.join("totp.key"), "junk").unwrap();
-        assert!(ensure_totp_key(&dir).is_err());
+        // A corrupt master key is an error, never silently replaced.
+        fs::write(dir.join(MASTER_KEY), "junk").unwrap();
+        assert!(ensure_master_key(&dir).is_err());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// D7: totp.key → master.key, once, keeping the key (and so every
+    /// derived key) identical; conflicting copies refuse to start.
+    #[cfg(unix)]
+    #[test]
+    fn legacy_totp_key_is_renamed_once() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("akari-master-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let hexkey = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        write_secret(
+            &dir.join(LEGACY_MASTER_KEY),
+            format!("{hexkey}\n").as_bytes(),
+        )
+        .unwrap();
+        let key = ensure_master_key(&dir).unwrap();
+        assert_eq!(hex::encode(&key), hexkey);
+        assert!(!dir.join(LEGACY_MASTER_KEY).exists(), "renamed, not copied");
+        let mode = fs::metadata(dir.join(MASTER_KEY))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "permissions kept");
+        assert_eq!(
+            ensure_master_key(&dir).unwrap(),
+            key,
+            "stable after the rename"
+        );
+        // A leftover identical copy is tolerated…
+        write_secret(&dir.join(LEGACY_MASTER_KEY), hexkey.as_bytes()).unwrap();
+        assert_eq!(ensure_master_key(&dir).unwrap(), key);
+        // …a different one is refused, and nothing is overwritten.
+        let other = "ff".repeat(32);
+        write_secret(&dir.join(LEGACY_MASTER_KEY), other.as_bytes()).unwrap();
+        assert!(ensure_master_key(&dir).is_err());
+        assert_eq!(
+            fs::read_to_string(dir.join(LEGACY_MASTER_KEY)).unwrap(),
+            other,
+            "untouched"
+        );
+        assert_eq!(read_master_key(&dir.join(MASTER_KEY)).unwrap(), key);
+        // A corrupt legacy file is not renamed.
+        fs::remove_file(dir.join(MASTER_KEY)).unwrap();
+        fs::write(dir.join(LEGACY_MASTER_KEY), "junk").unwrap();
+        assert!(ensure_master_key(&dir).is_err());
+        assert!(!dir.join(MASTER_KEY).exists());
         fs::remove_dir_all(&dir).ok();
     }
 

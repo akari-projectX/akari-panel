@@ -175,7 +175,7 @@ pub async fn run(a: MultiArgs) -> Result<()> {
     // 1. Session revocation across instances.
     let login = http
         .post(format!("{pa}/auth/login"))
-        .json(&serde_json::json!({"login": common::LOGIN_USER, "password": common::LOGIN_PASSWORD}))
+        .json(&serde_json::json!({"email": common::LOGIN_USER, "password": common::LOGIN_PASSWORD}))
         .send()
         .await?;
     let cookie = login
@@ -216,7 +216,7 @@ pub async fn run(a: MultiArgs) -> Result<()> {
         let base = if i % 2 == 0 { &pa } else { &pb };
         let r = http
             .post(format!("{base}/auth/login"))
-            .json(&serde_json::json!({"login": common::LOGIN_USER, "password": "wrong"}))
+            .json(&serde_json::json!({"email": common::LOGIN_USER, "password": "wrong"}))
             .send()
             .await?;
         statuses.push(r.status().as_u16());

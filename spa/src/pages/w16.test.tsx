@@ -203,7 +203,7 @@ const invite = (over: Partial<MyInvite> = {}): MyInvite => ({
   commissions: [
     {
       id: "c1",
-      invitee_login: "bob",
+      invitee_label: "u-22222222",
       base_cents: 100000,
       rate_percent: 10,
       amount_cents: 10000,
@@ -220,7 +220,8 @@ const invite = (over: Partial<MyInvite> = {}): MyInvite => ({
 const withdrawal = (over: Partial<Withdrawal> = {}): Withdrawal => ({
   id: "w1",
   user_id: "u1",
-  user_login: "alice",
+  user_label: "u-12345678",
+  user_email: "alice@example.com",
   amount_cents: 6000,
   method: "alipay",
   account: "a@b 张三",
@@ -385,7 +386,8 @@ describe("console: coupons", () => {
             order_id: "o1",
             out_trade_no: "AK1",
             user_id: "u1",
-            user_login: "alice",
+            user_label: "u-12345678",
+            user_email: "alice@example.com",
             status: "redeemed",
             over_limit: true,
             discount_cents: 200,
@@ -457,18 +459,21 @@ describe("console: finance", () => {
       "GET /withdrawals": [withdrawal()],
       "POST /withdrawals/w1/approve": () => ({ status: 204 }),
       "POST /withdrawals/w1/reject": () => ({ status: 204 }),
-      "GET /balances": [{ user_id: "u1", login: "alice", balance_cents: 12000, updated_at: "2026-10-02T00:00:00Z" }],
+      "GET /balances": [
+        { user_id: "u1", email: "alice@example.com", balance_cents: 12000, updated_at: "2026-10-02T00:00:00Z" },
+      ],
       "GET /users/u1/balance": {
         user_id: "u1",
-        login: "alice",
+        email: "alice@example.com",
         balance_cents: 12000,
         withdrawable_cents: 10000,
         entries: [
           {
             ...balance().entries[1],
             user_id: "u1",
-            user_login: "alice",
-            actor_login: "root",
+            user_label: "u-12345678",
+            user_email: "alice@example.com",
+            actor_label: "u-99999999",
           },
         ],
       },
@@ -479,9 +484,11 @@ describe("console: finance", () => {
           order_id: "o1",
           out_trade_no: "AK1",
           inviter_id: "u1",
-          inviter_login: "alice",
+          inviter_label: "u-11111111",
+          inviter_email: "alice@example.com",
           invitee_id: "u2",
-          invitee_login: "bob",
+          invitee_label: "u-22222222",
+          invitee_email: "bob@example.com",
           base_cents: 1000,
           rate_percent: 10,
           amount_cents: 100,
@@ -507,14 +514,16 @@ describe("console: finance", () => {
     expect(await screen.findByText("a@b 张三", { exact: false })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "已打款" }));
     expect(await screen.findByText("请先填写打款凭证（交易号等）")).toBeTruthy();
-    const ref = screen.getByLabelText("提现 alice 的打款凭证或拒绝原因");
+    const ref = screen.getByLabelText("提现 alice@example.com 的打款凭证或拒绝原因");
     fireEvent.change(ref, { target: { value: "2026100222001" } });
     fireEvent.click(screen.getByRole("button", { name: "已打款" }));
     await waitFor(() => expect(calls.some((c) => c.path === "/withdrawals/w1/approve")).toBe(true));
     expect(calls.find((c) => c.path === "/withdrawals/w1/approve")?.body).toEqual({
       payout_reference: "2026100222001",
     });
-    fireEvent.change(screen.getByLabelText("提现 alice 的打款凭证或拒绝原因"), { target: { value: "账号有误" } });
+    fireEvent.change(screen.getByLabelText("提现 alice@example.com 的打款凭证或拒绝原因"), {
+      target: { value: "账号有误" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "拒绝" }));
     await waitFor(() => expect(calls.some((c) => c.path === "/withdrawals/w1/reject")).toBe(true));
     expect(calls.find((c) => c.path === "/withdrawals/w1/reject")?.body).toEqual({ reason: "账号有误" });
@@ -539,8 +548,8 @@ describe("console: finance", () => {
     });
     // Balance: find, ledger, signed adjustment.
     fireEvent.click(screen.getByRole("button", { name: "明细与调整" }));
-    expect(await screen.findByText("alice：余额 ¥120.00，可提现 ¥100.00")).toBeTruthy();
-    expect(screen.getByText("root")).toBeTruthy();
+    expect(await screen.findByText("alice@example.com：余额 ¥120.00，可提现 ¥100.00")).toBeTruthy();
+    expect(screen.getByText("u-99999999")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("方向"), { target: { value: "-" } });
     fireEvent.change(screen.getByLabelText("调整金额（元）"), { target: { value: "10" } });
     fireEvent.click(screen.getByRole("button", { name: "调整余额" }));
@@ -553,9 +562,9 @@ describe("console: finance", () => {
       reason: "误充",
     });
     expect(await screen.findByText("余额已调整")).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("用户名（精确）"), { target: { value: " bob " } });
+    fireEvent.change(screen.getByLabelText("用户邮箱（精确）"), { target: { value: " bob@example.com " } });
     fireEvent.click(screen.getByRole("button", { name: "查找" }));
-    await waitFor(() => expect(calls.some((c) => c.search === "?login=bob")).toBe(true));
+    await waitFor(() => expect(calls.some((c) => c.search === "?email=bob%40example.com")).toBe(true));
   });
 });
 
@@ -563,7 +572,8 @@ const adminOrder = (over: Partial<AdminOrder> = {}): AdminOrder => ({
   id: "o1",
   out_trade_no: "AK1",
   user_id: "u1",
-  user_login: "alice",
+  user_label: "u-12345678",
+  user_email: "alice@example.com",
   plan_id: "p1",
   plan_name: "Monthly",
   amount_cents: 700,

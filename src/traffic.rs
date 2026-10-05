@@ -1591,7 +1591,12 @@ pub async fn flush_loop(state: AppState) {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
-        if let Err(e) = flush_once(&state).await {
+        let started = Instant::now();
+        let res = flush_once(&state).await;
+        state
+            .sysstatus()
+            .record_result(crate::sysstatus::Job::Settlement, started, &res);
+        if let Err(e) = res {
             tracing::warn!(error = %e, "traffic flush failed");
         }
     }
@@ -2427,7 +2432,7 @@ mod db_tests {
         let (a, b) = (db.node().await, db.node().await);
         let n = FLUSH_CHUNK_ROWS * 5 / 4; // per node
         let users: Vec<Uuid> = (0..n).map(|_| Uuid::new_v4()).collect();
-        sqlx::query("INSERT INTO users (id, login) SELECT u, u::text FROM unnest($1::uuid[]) u")
+        sqlx::query("INSERT INTO users (id, email) SELECT u, u::text || '@test.invalid' FROM unnest($1::uuid[]) u")
             .bind(&users)
             .execute(&db.pool)
             .await

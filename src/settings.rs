@@ -1,7 +1,7 @@
 //! System settings (R22, admin "系统设置"): the three domains, "trust
 //! Cloudflare" and (W25/R39) everything else an operator changes: latency
 //! tests, Cloudflare ranges, install-command pin and download fallback,
-//! ACME, retention, admin 2FA policy, remove mode, extra release keys.
+//! ACME, retention, remove mode, extra release keys.
 //!
 //! * **Main domain** (`main_domain`): admin console, user portal, install
 //!   links (`nodeinstall::prepare`) and the base of payment notify URLs
@@ -267,8 +267,6 @@ pub struct Stored {
     /// W25: retention (NULL = 365 / 400 days).
     pub audit_retention_days: Option<i32>,
     pub traffic_daily_retention_days: Option<i32>,
-    /// W25: admins must use 2FA (NULL = false).
-    pub require_admin_2fa: Option<bool>,
     /// W25: "gate" | "rebuild" (NULL = gate).
     pub remove_mode: Option<String>,
     /// W25: release keys trusted besides the official ones.
@@ -280,7 +278,7 @@ pub struct Stored {
 const STORED_COLS: &str = "version, main_domain, sub_domain, node_domain, trust_cloudflare, \
      probe_interval_secs, probe_urls, probe_panel_tcp, site_name, cloudflare_ranges, \
      install_tls_pin, install_fallback_url, acme_directory_url, acme_email, \
-     audit_retention_days, traffic_daily_retention_days, require_admin_2fa, remove_mode, \
+     audit_retention_days, traffic_daily_retention_days, remove_mode, \
      extra_release_keys, updated_at";
 
 fn select_stored(lock: bool) -> sqlx::AssertSqlSafe<String> {
@@ -366,7 +364,6 @@ pub struct Effective {
     /// W25: days (0 = forever).
     pub audit_retention_days: u32,
     pub traffic_daily_retention_days: u32,
-    pub require_admin_2fa: bool,
     pub remove_mode: RemoveMode,
     /// W25: every trusted release key: the official ones compiled in, then
     /// the extra ones from the settings.
@@ -569,7 +566,6 @@ pub fn compute(cfg: &PanelConfig, stored: Stored, server_names: Vec<ServerName>)
             stored.traffic_daily_retention_days,
             crate::traffic::DEFAULT_DAILY_RETENTION_DAYS,
         ),
-        require_admin_2fa: stored.require_admin_2fa.unwrap_or(false),
         remove_mode: stored
             .remove_mode
             .as_deref()
@@ -1131,7 +1127,6 @@ impl NodeOpsValues {
 /// 安全 (validated; None = built-in default).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SecurityValues {
-    pub require_admin_2fa: Option<bool>,
     pub audit_retention_days: Option<i32>,
     pub traffic_daily_retention_days: Option<i32>,
     pub cloudflare_ranges: Option<Vec<String>>,
@@ -1141,7 +1136,6 @@ pub struct SecurityValues {
 impl SecurityValues {
     fn of(s: &Stored) -> Self {
         Self {
-            require_admin_2fa: s.require_admin_2fa,
             audit_retention_days: s.audit_retention_days,
             traffic_daily_retention_days: s.traffic_daily_retention_days,
             cloudflare_ranges: s.cloudflare_ranges.clone(),
@@ -1150,7 +1144,6 @@ impl SecurityValues {
     }
     fn audit(&self) -> serde_json::Value {
         json!({
-            "require_admin_2fa": self.require_admin_2fa,
             "audit_retention_days": self.audit_retention_days,
             "traffic_daily_retention_days": self.traffic_daily_retention_days,
             "cloudflare_ranges": self.cloudflare_ranges.as_ref().map(Vec::len),
@@ -1225,12 +1218,11 @@ pub async fn apply_update_security(
         return Ok(cur);
     }
     let row: Stored = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "UPDATE panel_settings SET require_admin_2fa = $1, audit_retention_days = $2, \
-             traffic_daily_retention_days = $3, cloudflare_ranges = $4, \
-             extra_release_keys = $5, version = version + 1, updated_at = now() \
+        "UPDATE panel_settings SET audit_retention_days = $1, \
+             traffic_daily_retention_days = $2, cloudflare_ranges = $3, \
+             extra_release_keys = $4, version = version + 1, updated_at = now() \
          WHERE id = 1 RETURNING {STORED_COLS}"
     )))
-    .bind(new.require_admin_2fa)
     .bind(new.audit_retention_days)
     .bind(new.traffic_daily_retention_days)
     .bind(&new.cloudflare_ranges)
@@ -1352,7 +1344,6 @@ pub fn acme_email_ok(e: &str) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct SecurityReq {
     pub version: i64,
-    pub require_admin_2fa: Option<bool>,
     /// null = 365; 0 = keep forever.
     pub audit_retention_days: Option<u32>,
     /// null = 400; 0 = keep forever; else 32..=36500.
@@ -1438,7 +1429,6 @@ pub fn security_values(req: &SecurityReq) -> Result<SecurityValues, ApiError> {
         }
     };
     Ok(SecurityValues {
-        require_admin_2fa: req.require_admin_2fa.filter(|b| *b),
         audit_retention_days: req
             .audit_retention_days
             .filter(|d| *d != DEFAULT_AUDIT_RETENTION_DAYS)
@@ -1870,7 +1860,6 @@ pub struct ReleaseKeyView {
 
 #[derive(Serialize)]
 pub struct SecurityView {
-    pub require_admin_2fa: Field<bool>,
     pub audit_retention_days: Field<u32>,
     pub traffic_daily_retention_days: Field<u32>,
     /// Stored override (null = the shipped list).
@@ -1918,7 +1907,6 @@ fn security_view(eff: &Effective) -> SecurityView {
     let s = &eff.stored;
     let official = crate::updates::official_release_keys();
     SecurityView {
-        require_admin_2fa: Field::of(s.require_admin_2fa, false),
         audit_retention_days: Field::of(
             s.audit_retention_days.and_then(|v| u32::try_from(v).ok()),
             DEFAULT_AUDIT_RETENTION_DAYS,
@@ -2401,14 +2389,6 @@ fn describe_lines(eff: &Effective) -> Vec<String> {
             "retention:        audit {} days, traffic history {} days (0 = forever)",
             eff.audit_retention_days, eff.traffic_daily_retention_days
         ),
-        format!(
-            "admin 2FA:        {}",
-            if eff.require_admin_2fa {
-                "required"
-            } else {
-                "optional"
-            }
-        ),
         format!("remove mode:      {}", eff.remove_mode.as_str()),
         format!(
             "release keys:     {}",
@@ -2514,6 +2494,15 @@ pub async fn cli_unset(cfg: &PanelConfig, pg: &sqlx::PgPool, field: &str) -> any
         .await
         .map_err(msg)?;
     }
+    if field == "turnstile" {
+        // W27: the Turnstile switches of the public forms (keys kept).
+        crate::botguard::apply_turnstile_off(&mut tx, &Actor::cli())
+            .await
+            .map_err(msg)?;
+        tx.commit().await?;
+        println!("turnstile: switched off on every form; running panels apply it at once");
+        return Ok(());
+    }
     if field != "probe" {
         let cur = read_stored(&mut tx, false).await?;
         let mut new = Values::of(&cur);
@@ -2523,7 +2512,9 @@ pub async fn cli_unset(cfg: &PanelConfig, pg: &sqlx::PgPool, field: &str) -> any
             "node" => new.node_domain = None,
             "trust-cloudflare" => new.trust_cloudflare = None,
             "all" => new = Values::default(),
-            _ => anyhow::bail!("field must be main, sub, node, trust-cloudflare, probe or all"),
+            _ => anyhow::bail!(
+                "field must be main, sub, node, trust-cloudflare, probe, turnstile or all"
+            ),
         }
         apply_update(&mut tx, &Actor::cli(), cur.version, &new)
             .await
@@ -2595,6 +2586,8 @@ pub enum Imported {
     Unusable(String),
     /// A built-in constant now: ignored.
     Constant,
+    /// The feature is gone: ignored.
+    Removed,
 }
 
 /// The one-time import's report (logged at startup; tests read it).
@@ -2644,7 +2637,6 @@ fn legacy_value(
             let list: Vec<String> = get!(Vec<String>);
             let req = SecurityReq {
                 version: 0,
-                require_admin_2fa: None,
                 audit_retention_days: None,
                 traffic_daily_retention_days: None,
                 cloudflare_ranges: Some(list),
@@ -2769,7 +2761,6 @@ fn legacy_value(
             }
             put(&mut new.traffic_daily_retention_days, v as i32)
         }
-        "auth.require_admin_2fa" => put(&mut new.require_admin_2fa, get!(bool)),
         "agent.remove_mode" => {
             let v = get!(String);
             let m = RemoveMode::parse(v.trim()).ok_or("must be gate or rebuild")?;
@@ -2883,6 +2874,11 @@ pub async fn import_legacy(state: &AppState) -> ImportReport {
                 "panel.toml {key} is obsolete: the value is built in now; delete it from \
                  panel.toml"
             ),
+            Imported::Removed => tracing::warn!(
+                key,
+                "panel.toml {key} is obsolete: the feature was removed; delete it from \
+                 panel.toml"
+            ),
         }
     }
     if report.host_gate_on {
@@ -2918,6 +2914,10 @@ async fn import_tx(
             None => continue,
             Some(crate::config::Fate::Constant) => {
                 report.keys.push((key.to_string(), Imported::Constant));
+                continue;
+            }
+            Some(crate::config::Fate::Removed(_)) => {
+                report.keys.push((key.to_string(), Imported::Removed));
                 continue;
             }
             Some(crate::config::Fate::Moved(_)) if key == "payments.*" => continue,
@@ -2958,7 +2958,7 @@ async fn import_tx(
                  probe_panel_tcp = $7, cloudflare_ranges = $8, install_tls_pin = $9, \
                  install_fallback_url = $10, acme_directory_url = $11, acme_email = $12, \
                  audit_retention_days = $13, traffic_daily_retention_days = $14, \
-                 require_admin_2fa = $15, remove_mode = $16, extra_release_keys = $17, \
+                 remove_mode = $15, extra_release_keys = $16, \
                  version = version + 1, updated_at = now() \
              WHERE id = 1",
         )
@@ -2976,7 +2976,6 @@ async fn import_tx(
         .bind(&new.acme_email)
         .bind(new.audit_retention_days)
         .bind(new.traffic_daily_retention_days)
-        .bind(new.require_admin_2fa)
         .bind(&new.remove_mode)
         .bind(&new.extra_release_keys)
         .execute(&mut *tx)

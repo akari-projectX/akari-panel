@@ -6,14 +6,14 @@
 #   (DRILL_VALKEY_DB, default 14: FLUSHDB), so other databases on the dev
 #   stack are untouched. Binds 8080/8443/8081: serialise with smoke (flock).
 #   Development machines only. Needs: make dev-up, a release build (make panel), the
-#   agent binary (../akari-agent/agent), age + age-keygen, jq, curl,
-#   python3 (TOTP codes: admins must use two-factor authentication).
+#   agent binary (../akari-agent/agent), age + age-keygen, jq, curl.
 #
 # Flow: fresh install -> admin + user + node, agent online -> backup.sh ->
 # stop panel, WIPE database and data dir (agent keeps running) -> restore.sh
-# -> start panel: same route prefix, same logins and users, the admin's
-# TOTP still works (data/totp.key restored with the database), the
-# (unchanged) agent reconnects and the node is online again.
+# -> start panel: same route prefix, same logins and users, the user's
+# stored subscription link still decrypts (data/master.key restored with
+# the database), the (unchanged) agent reconnects and the node is online
+# again.
 set -euo pipefail
 
 # Pattern test on a command's output that READS ALL OF IT (grep -q exits at
@@ -75,26 +75,13 @@ api() { # api <jar> curl-args... (with $BASE)
   local jar="$1"; shift
   curl -s --noproxy '*' -b "$jar" -c "$jar" "$@"
 }
-# RFC 6238 code for a step strictly after the last one used (the panel
-# refuses replays); waits for the next 30 s step when needed.
-cat >"$W/totp.py" <<'PY'
-import base64, hashlib, hmac, os, struct, sys, time
-secret, state = sys.argv[1], sys.argv[2]
-key = base64.b32decode(secret + "=" * (-len(secret) % 8))
-last = int(open(state).read()) if os.path.exists(state) else -1
-while int(time.time()) // 30 <= last:
-    time.sleep(30 - time.time() % 30 + 0.3)
-step = int(time.time()) // 30
-h = hmac.new(key, struct.pack(">Q", step), hashlib.sha1).digest()
-o = h[-1] & 15
-print("%06d" % ((struct.unpack(">I", h[o:o + 4])[0] & 0x7FFFFFFF) % 1000000))
-open(state, "w").write(str(step))
-PY
-totp() { python3 "$W/totp.py" "$TOTP_SECRET" "$W/totp.last"; }
-login() { # [code] -> http status
-  local body="{\"login\":\"root\",\"password\":\"$PW\"${1:+,\"code\":\"$1\"}}"
+login() { # -> http status (W27: with the form token, after the minimum submit time)
+  local ft
+  ft=$(api "$W/jar" "$BASE/auth/options" | sed -n 's/.*"form_token":"\([A-Za-z0-9_-]*\)".*/\1/p')
+  sleep 3
   api "$W/jar" -o "$W/login.json" -w '%{http_code}' -X POST "$BASE/auth/login" \
-    -H 'Content-Type: application/json' -d "$body"
+    -H 'Content-Type: application/json' \
+    -d "{\"email\":\"root@drill.example\",\"password\":\"$PW\",\"guard\":{\"form_token\":\"$ft\"}}"
 }
 
 echo "== 1. fresh install: admin, user, node, agent online =="
@@ -103,19 +90,14 @@ PREFIX="$(p info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')"
 [ -n "$PREFIX" ] || fail "no route prefix"
 BASE="http://127.0.0.1:8080/$PREFIX"
 start_panel
-p admin add root >/dev/null
-# 2FA is optional (R18): the password alone yields a full session; the drill
-# still enables TOTP so the restore proves totp.key survives the backup.
+p admin add root@drill.example >/dev/null
 [ "$(login)" = 200 ] || fail "login before backup"
-[ "$(jq -r .stage "$W/login.json")" = full ] || fail "admin without 2FA did not get a full session"
-TOTP_SECRET="$(api "$W/jar" -X POST "$BASE/api/v1/me/totp/enroll" -H 'Content-Type: application/json' -d '{}' | jq -r .secret)"
-[ -n "$TOTP_SECRET" ] && [ "$TOTP_SECRET" != null ] || fail "totp enroll"
-[ "$(api "$W/jar" -o /dev/null -w '%{http_code}' -X POST "$BASE/api/v1/me/totp/confirm" \
-  -H 'Content-Type: application/json' -d "{\"code\":\"$(totp)\"}")" = 200 ] \
-  || fail "totp confirm"
-[ "$(api "$W/jar" -o /dev/null -w '%{http_code}' -X POST "$BASE/api/v1/users" \
-  -H 'Content-Type: application/json' -d '{"login":"alice","password":"alice-password-123"}')" = 201 ] \
+[ "$(api "$W/jar" -o "$W/alice.json" -w '%{http_code}' -X POST "$BASE/api/v1/users" \
+  -H 'Content-Type: application/json' -d '{"email":"alice@drill.example","password":"alice-password-123"}')" = 201 ] \
   || fail "create user"
+ALICE="$(jq -r .id "$W/alice.json")"
+SUB="$(jq -r .sub_token "$W/alice.json")"
+[ -n "$SUB" ] && [ "$SUB" != null ] || fail "no subscription token"
 p node add drill-node --out "$W/boot.toml" >/dev/null
 "$AGENT" -config "$W/boot.toml" -state-dir "$W/agent-state" >"$W/agent.log" 2>&1 &
 AGENT_PID=$!
@@ -134,9 +116,10 @@ AGE_RECIPIENT="$RECIP" AKARI_DATA_DIR="$W/data" AKARI_BACKUP_DIR="$W/backups" \
 BACKUP="$(find "$W/backups" -maxdepth 1 -name 'akari-*' -type d | sed -n 1p)"
 ls -l "$BACKUP"
 grep -q "BEGIN" "$BACKUP/db.dump.age" && fail "backup is not encrypted"
-# The TOTP key must be in the backup: without it every 2FA account is locked out.
-age -d -i "$W/age.key" "$BACKUP/data.tar.age" | tar -tf - | matches -x './totp.key' \
-  || fail "data/totp.key missing from the backup"
+# The master key must be in the backup: without it every sealed secret
+# (subscription links, SMTP password, payment and alert secrets) is lost.
+age -d -i "$W/age.key" "$BACKUP/data.tar.age" | tar -tf - | matches -x './master.key' \
+  || fail "data/master.key missing from the backup"
 
 echo "== 3. disaster: stop panel, wipe database and data dir (agent keeps running) =="
 stop_panel
@@ -156,13 +139,14 @@ PREFIX2="$(p info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')"
 : >"$W/jar"
 started="$(date +%s)"
 start_panel
-[ "$(login)" = 401 ] || fail "password-only admin login after restore must fail"
-[ "$(login "$(totp)")" = 200 ] || fail "admin TOTP login after restore (totp.key restored?)"
-[ "$(jq -r .stage "$W/login.json")" = full ] || fail "admin login after restore is not a full session"
-[ "$(api "$W/jar" "$BASE/api/v1/users" | jq -r '[.[] | select(.login=="alice")] | length')" = 1 ] \
+[ "$(login)" = 200 ] || fail "admin login after restore"
+[ "$(api "$W/jar" "$BASE/api/v1/users" | jq -r '[.users[] | select(.email=="alice@drill.example")] | length')" = 1 ] \
   || fail "user alice missing after restore"
+# The stored (sealed) link opens only with the same master key.
+[ "$(api "$W/jar" "$BASE/api/v1/users/$ALICE/subscription" | jq -r .sub_token)" = "$SUB" ] \
+  || fail "alice's subscription link does not decrypt after restore (master.key restored?)"
 for _ in $(seq 1 90); do [ "$(online)" = online ] && break; sleep 1; done
 [ "$(online)" = online ] || fail "agent did not reconnect"
 [ "$(api "$W/jar" "$BASE/api/v1/nodes" | jq -r '.[0].id')" = "$NODE_ID" ] || fail "node identity changed"
 [ "$(grep -c "channel established" "$W/agent.log")" -ge 2 ] || fail "agent did not re-establish its channel"
-echo "DRILL PASS: prefix kept, logins (with TOTP) and users restored, agent reconnected in $(( $(date +%s) - started )) s (panel start to online)"
+echo "DRILL PASS: prefix kept, logins, users and sealed secrets restored, agent reconnected in $(( $(date +%s) - started )) s (panel start to online)"

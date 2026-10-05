@@ -46,7 +46,7 @@ export interface NodeTrafficView {
   daily_since: string | null;
   total: TrafficBytes;
   days: TrafficNodeDay[];
-  top_users: (TrafficBytes & { user_id: string; login: string | null })[];
+  top_users: (TrafficBytes & { user_id: string; email: string | null })[];
 }
 
 /** GET /traffic/summary (admin): fleet per day + top nodes. */

@@ -243,7 +243,7 @@ async fn token(state: &AppState, id: Uuid) -> String {
             .fetch_one(state.pg())
             .await
             .unwrap();
-    crate::auth::issue_token(state, id, &role, sv, crate::auth::Stage::Full).unwrap()
+    crate::auth::issue_token(state, id, &role, sv).unwrap()
 }
 
 /// A group with one node, a plan granting it, priced; returns (node, plan).
@@ -306,7 +306,7 @@ async fn order_row(db: &TestDb, user: Uuid, plan: Uuid, cents: i64, days: i32) -
     let id = Uuid::new_v4();
     let otn = format!("AKT{}", hex::encode(rand::random::<[u8; 12]>()));
     sqlx::query(
-        "INSERT INTO orders (id, out_trade_no, user_id, user_login, plan_id, plan_name, \
+        "INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_id, plan_name, \
          amount_cents, list_price_cents, period, period_days, subject, expires_at, \
          payment_method_id) \
          VALUES ($1, $2, $3, 'u', $4, 'p', $5, $5, 'days', $6, 's', \
@@ -683,7 +683,8 @@ async fn renewal_scope_users_can_shop() {
         assert_eq!(r.json()["status"], "cancelled", "{who}");
     }
 
-    // Disabled by an admin: no renewal scope.
+    // Banned by an admin (W28-c): the portal scope only, no shop/orders
+    // (403 account.banned).
     let banned = db.user().await;
     sqlx::query("UPDATE users SET enabled = false, disabled_reason = 'admin' WHERE id = $1")
         .bind(banned)
@@ -694,11 +695,11 @@ async fn renewal_scope_users_can_shop() {
     c.cookie = Some(token(&state, banned).await);
     assert_eq!(
         c.get("/test/api/v1/me/shop").await.status,
-        StatusCode::UNAUTHORIZED
+        StatusCode::FORBIDDEN
     );
     assert_eq!(
         c.get("/test/api/v1/me/orders").await.status,
-        StatusCode::UNAUTHORIZED
+        StatusCode::FORBIDDEN
     );
     assert_eq!(
         c.post(
@@ -707,7 +708,7 @@ async fn renewal_scope_users_can_shop() {
         )
         .await
         .status,
-        StatusCode::UNAUTHORIZED
+        StatusCode::FORBIDDEN
     );
     assert_eq!(
         count(
@@ -2148,9 +2149,10 @@ async fn switching_plans_with_proration() {
         u2,
         &crate::plans::SetUserPlanReq {
             plan_id: a,
-            expires_at: Some(chrono::Utc::now() + chrono::Duration::days(20)),
-            period_anchor: None,
-            reset_traffic: None,
+            term: crate::plans::Term {
+                kind: crate::billing::catalog::PeriodKind::Days,
+                days: Some(20),
+            },
         },
     )
     .await
@@ -2331,9 +2333,10 @@ async fn renewal_only_and_switch_rules() {
         holder,
         &crate::plans::SetUserPlanReq {
             plan_id: legacy,
-            expires_at: Some(chrono::Utc::now() + chrono::Duration::days(3)),
-            period_anchor: None,
-            reset_traffic: None,
+            term: crate::plans::Term {
+                kind: crate::billing::catalog::PeriodKind::Days,
+                days: Some(3),
+            },
         },
     )
     .await
@@ -2411,9 +2414,10 @@ async fn speed_limits_reach_the_desired_state() {
         user,
         &crate::plans::SetUserPlanReq {
             plan_id: fast,
-            expires_at: None,
-            period_anchor: None,
-            reset_traffic: None,
+            term: crate::plans::Term {
+                kind: crate::billing::catalog::PeriodKind::Onetime,
+                days: None,
+            },
         },
     )
     .await
@@ -2481,9 +2485,10 @@ async fn speed_limits_reach_the_desired_state() {
         user,
         &crate::plans::SetUserPlanReq {
             plan_id: slow,
-            expires_at: None,
-            period_anchor: None,
-            reset_traffic: None,
+            term: crate::plans::Term {
+                kind: crate::billing::catalog::PeriodKind::Onetime,
+                days: None,
+            },
         },
     )
     .await
@@ -2822,7 +2827,7 @@ async fn paid_order_queues_one_receipt() {
     assert!(receipts(&db).await.is_empty());
 
     sqlx::query(
-        "UPDATE smtp_settings SET enabled = true, host = '127.0.0.1', security = 'none', \
+        "UPDATE mail_settings SET enabled = true, host = '127.0.0.1', security = 'none', \
          from_addr = 'noreply@example.com'",
     )
     .execute(&db.pool)
@@ -2865,13 +2870,13 @@ async fn paid_order_queues_one_receipt() {
     );
 
     // Receipts toggled off, or an unverified address: none.
-    sqlx::query("UPDATE smtp_settings SET notify_order_paid = false")
+    sqlx::query("UPDATE mail_settings SET notify_order_paid = false")
         .execute(&db.pool)
         .await
         .unwrap();
     let (o3, _) = order_row(&db, user, plan, 990, 30).await;
     pay(&db, o3).await;
-    sqlx::query("UPDATE smtp_settings SET notify_order_paid = true")
+    sqlx::query("UPDATE mail_settings SET notify_order_paid = true")
         .execute(&db.pool)
         .await
         .unwrap();

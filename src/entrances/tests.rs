@@ -208,7 +208,7 @@ async fn node_form_entrance_patch_access_and_subscription() {
     let r = admin
         .put(
             &format!("/test/api/v1/users/{u}/plan"),
-            json!({"plan_id": p}),
+            json!({"plan_id": p, "period": "month"}),
         )
         .await;
     assert_eq!(

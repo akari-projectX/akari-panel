@@ -54,6 +54,7 @@ struct Metrics {
     sync_bytes: HistogramVec,
     handshakes_dropped: IntCounter,
     local_limits: IntCounterVec,
+    bot_traps: IntCounterVec,
 }
 
 static METRICS: OnceLock<Metrics> = OnceLock::new();
@@ -121,6 +122,12 @@ impl Metrics {
                 "akari_notify_queue_usage_ratio",
                 "pg_notification_queue_usage() (0..1)",
             ))?,
+            bot_traps: cv(
+                "akari_bot_trap_total",
+                "Public form submissions refused by the honeypot / minimum submit time \
+                 (answered like an ordinary failure), by form and reason",
+                &["form", "reason"],
+            )?,
             login_attempts: cv(
                 "akari_login_attempts_total",
                 "Login attempts by rate-limit outcome (allowed, limited)",
@@ -248,6 +255,12 @@ impl Metrics {
         m.registry
             .register(Box::new(m.handshakes_dropped.clone()))?;
         m.registry.register(Box::new(m.local_limits.clone()))?;
+        m.registry.register(Box::new(m.bot_traps.clone()))?;
+        for f in crate::botguard::FORMS {
+            for r in crate::botguard::TRAP_REASONS {
+                m.bot_traps.with_label_values(&[f, r]);
+            }
+        }
         for l in ["enroll", "sub"] {
             for r in ["allowed", "limited"] {
                 m.local_limits.with_label_values(&[l, r]);
@@ -426,6 +439,14 @@ pub fn alert_notification(channel: &str, result: &'static str) {
         m.alert_notifications
             .with_label_values(&[channel, result])
             .inc();
+    }
+}
+
+/// v0.4 D1: a public form submission caught by the honeypot or the
+/// minimum submit time (`form`/`reason` are fixed enums).
+pub fn bot_trap(form: &'static str, reason: &'static str) {
+    if let Some(m) = m() {
+        m.bot_traps.with_label_values(&[form, reason]).inc();
     }
 }
 

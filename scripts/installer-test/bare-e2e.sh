@@ -77,13 +77,17 @@ inst() {
 }
 local_rel=(-e AKARI_RELEASES_URL=file:///rel -e AKARI_COSIGN_KEY=/rel/cosign.pub)
 
+# The installer's default admin (v0.4 D1: the e-mail is the login):
+# admin@<domain>, or the reserved admin@akari.invalid on an IP-only install.
 if [ "$address" = ip ]; then
 	addr_args=()
 	ip=$(cx sh -c "hostname -I | awk '{print \$1}'")
 	origin="https://$ip"
+	admin_email=admin@akari.invalid
 else
 	addr_args=(--domain myapp.test --local-certs)
 	origin="https://myapp.test"
+	admin_email=admin@myapp.test
 fi
 
 prefix() { cx akari-ctl info | sed -n '1s|.*://[^/]*/\([^/]*\)/admin$|\1|p'; }
@@ -94,13 +98,23 @@ https_code() {
 	cx curl -sk -o /tmp/last -w '%{http_code}' --resolve "myapp.test:443:127.0.0.1" "$@" "$url"
 }
 check_panel() {
-	local want_version=$1 p
+	local want_version=$1 p ft
 	p=$(prefix)
 	[ -n "$p" ] || fail "no prefix from akari-ctl info"
 	[ "$(https_code "$origin/$p/healthz")" = 200 ] || fail "healthz through Caddy"
 	[ "$(https_code "$origin/")" = 404 ] || fail "/ is not the plain 404"
+	# A v0.3.x panel (the refused-upgrade check) still takes {"login"}.
+	# v0.4 (W27): the form token from /auth/options, posted no sooner than
+	# the minimum submit time (default 2 s) after it.
+	local guard=""
+	[ "$(https_code "$origin/$p/auth/options")" = 200 ] || fail "auth options"
+	ft=$(cx sed -n 's/.*"form_token":"\([A-Za-z0-9_-]*\)".*/\1/p' /tmp/last)
+	[ -z "$ft" ] || guard=",\"guard\":{\"form_token\":\"$ft\"}"
+	sleep 3
 	[ "$(https_code "$origin/$p/auth/login" -c /tmp/jar -X POST -H 'Content-Type: application/json' \
-		-d "{\"login\":\"admin\",\"password\":\"$pw\"}")" = 200 ] || fail "admin login via the API"
+		-d "{\"email\":\"$admin_email\",\"password\":\"$pw\"$guard}")" = 200 ] ||
+		[ "$(https_code "$origin/$p/auth/login" -c /tmp/jar -X POST -H 'Content-Type: application/json' \
+			-d "{\"login\":\"$admin_email\",\"password\":\"$pw\"}")" = 200 ] || fail "admin login via the API"
 	cx grep -q '"role":"admin"' /tmp/last || fail "login response"
 	cx akari --version | grep -q "^akari ${want_version#v} " || fail "binary version is not $want_version"
 	cx akari-ctl status >/dev/null || fail "akari-ctl status"
@@ -142,7 +156,7 @@ echo "ok: modes, ownership, no secrets in logs"
 
 log "user + subscription"
 [ "$(https_code "$origin/$PREFIX/api/v1/users" -b /tmp/jar -X POST -H 'Content-Type: application/json' \
-	-d '{"login":"e2e-user","password":"user-password-123"}')" = 201 ] || fail "create user"
+	-d '{"email":"e2e-user@example.com","password":"user-password-123"}')" = 201 ] || fail "create user"
 SUB=$(cx sh -c "sed -n 's/.*\"sub_token\":\"\([^\"]*\)\".*/\1/p' /tmp/last")
 [ -n "$SUB" ] || fail "no subscription token"
 [ "$(https_code "$origin/$PREFIX/sub/$SUB" -A clash.meta)" = 200 ] || fail "subscription fetch"

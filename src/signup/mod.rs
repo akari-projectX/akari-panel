@@ -91,16 +91,9 @@ pub struct SignupSettings {
     pub trial_plan_id: Option<Uuid>,
     pub trial_days: i32,
     pub reset_enabled: bool,
-    /// W24 注册需要邮箱验证: None = automatic (= SMTP sending enabled).
-    pub email_verify: Option<bool>,
-}
-
-impl SignupSettings {
-    /// Whether registration verifies the address by an emailed code (W24):
-    /// the explicit choice, else exactly when SMTP sending is enabled.
-    pub fn verification_required(&self, smtp_enabled: bool) -> bool {
-        self.email_verify.unwrap_or(smtp_enabled)
-    }
+    /// 注册需要邮箱验证 (v0.4 D1: an explicit switch, default off,
+    /// independent of 必须邀请码).
+    pub email_verify: bool,
 }
 
 const SETTINGS_COLS: &str = "version, register_enabled, invite_required, invite_single_use, \
@@ -133,20 +126,6 @@ async fn settings_or_none(state: &AppState) -> Option<SignupSettings> {
     }
 }
 
-/// The settings and whether SMTP sending is enabled, or None when they
-/// cannot be read (callers treat that as "disabled").
-pub(crate) async fn settings_with_mail(state: &AppState) -> Option<(SignupSettings, bool)> {
-    let s = settings_or_none(state).await?;
-    let mut c = state.pg().acquire().await.ok()?;
-    match crate::mail::load(&mut c).await {
-        Ok(m) => Some((s, m.enabled)),
-        Err(e) => {
-            tracing::error!(error = %e, "smtp settings unavailable");
-            None
-        }
-    }
-}
-
 #[derive(Serialize)]
 pub struct SignupView {
     version: i64,
@@ -158,10 +137,8 @@ pub struct SignupView {
     trial_plan_id: Option<Uuid>,
     trial_days: i32,
     reset_enabled: bool,
-    /// W24: null = automatic (follows SMTP sending).
-    email_verify: Option<bool>,
-    /// W24: what registration does now.
-    email_verify_effective: bool,
+    /// v0.4 D1: registration verifies the address by an emailed code.
+    email_verify: bool,
     /// SMTP sending is enabled (verified registration and reset need it).
     mail_enabled: bool,
     /// A main domain is configured (reset links need it).
@@ -174,7 +151,7 @@ async fn view(state: &AppState, conn: &mut PgConnection) -> Result<SignupView, A
     let smtp = crate::mail::load(conn).await?;
     let origin = state.settings().get().public_origin();
     let mut warnings = Vec::new();
-    let verify = s.verification_required(smtp.enabled);
+    let verify = s.email_verify;
     if (s.register_enabled && verify || s.reset_enabled) && !smtp.enabled {
         warnings.push("邮件发送未启用：验证码与重置链接无法送达".into());
     }
@@ -213,7 +190,6 @@ async fn view(state: &AppState, conn: &mut PgConnection) -> Result<SignupView, A
         trial_days: s.trial_days,
         reset_enabled: s.reset_enabled,
         email_verify: s.email_verify,
-        email_verify_effective: verify,
         mail_enabled: smtp.enabled,
         public_origin: origin,
         warnings,
@@ -242,10 +218,8 @@ pub struct SignupReq {
     pub trial_plan_id: Option<Uuid>,
     pub trial_days: i32,
     pub reset_enabled: bool,
-    /// W24: null/absent = automatic (verification exactly when SMTP sending
-    /// is enabled).
-    #[serde(default)]
-    pub email_verify: Option<bool>,
+    /// v0.4 D1: 注册需要邮箱验证 (default off).
+    pub email_verify: bool,
 }
 
 /// Validate and normalise a settings request (domains → punycode, deduped).
@@ -310,8 +284,8 @@ pub async fn apply_update_settings(
     let smtp = crate::mail::load(conn).await?;
     // Verified registration (and reset) need mail; registration without
     // verification does not (W24).
-    let verified_before = cur.register_enabled && cur.verification_required(smtp.enabled);
-    let verified_after = v.register_enabled && v.email_verify.unwrap_or(smtp.enabled);
+    let verified_before = cur.register_enabled && cur.email_verify;
+    let verified_after = v.register_enabled && v.email_verify;
     if (verified_after && !verified_before || v.reset_enabled && !cur.reset_enabled)
         && !smtp.enabled
     {
@@ -363,7 +337,7 @@ pub async fn apply_update_settings(
                 "trial_days": td, "reset_enabled": re,
             })
         };
-    let with_verify = |mut j: serde_json::Value, ev: Option<bool>| {
+    let with_verify = |mut j: serde_json::Value, ev: bool| {
         j["email_verify"] = json!(ev);
         j
     };
@@ -420,9 +394,15 @@ pub async fn put_signup_settings(
     Ok(Json(out))
 }
 
-/// GET /{prefix}/auth/options (public): what the login page offers.
-pub async fn options(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let s = settings_with_mail(&state).await;
+/// GET /{prefix}/auth/options (public): what the login page offers, and
+/// (v0.4) the bot-protection parameters of the public forms
+/// (`botguard::public_view`: a fresh form token, so `no-store`).
+pub async fn options(State(state): State<AppState>) -> Response {
+    let s = settings_or_none(&state).await;
+    let guard = match state.pg().acquire().await {
+        Ok(mut c) => crate::botguard::load(&mut c).await.ok(),
+        Err(_) => None,
+    };
     // W21: the site name for page titles (public anyway: it is in them).
     let site_name = state
         .settings()
@@ -434,9 +414,9 @@ pub async fn options(State(state): State<AppState>) -> Json<serde_json::Value> {
     // Ops: site branding (logo/favicon URLs, footer, links) for both
     // bundles; null when the database is unavailable.
     let branding = crate::branding::public_view(&state).await;
-    Json(match s {
-        Some((s, mail)) => {
-            let verify = s.register_enabled && s.verification_required(mail);
+    let mut v = match s {
+        Some(s) => {
+            let verify = s.register_enabled && s.email_verify;
             json!({
                 "register": s.register_enabled,
                 "invite_required": s.register_enabled && s.invite_required,
@@ -452,7 +432,15 @@ pub async fn options(State(state): State<AppState>) -> Json<serde_json::Value> {
         None => {
             json!({ "register": false, "invite_required": false, "email_domains": [], "email_verify": false, "reset": false, "site_name": site_name, "branding": branding })
         }
-    })
+    };
+    // The forms refuse every submission while their settings cannot be
+    // read (no token, Turnstile unknown): fail closed.
+    v["guard"] = guard.map_or(serde_json::Value::Null, |g| {
+        crate::botguard::public_view(&state, &g)
+    });
+    // W27: whether the login page offers "sign in with a passkey".
+    v["passkey"] = crate::passkey::public_view(&state);
+    ([(axum::http::header::CACHE_CONTROL, "no-store")], Json(v)).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -744,6 +732,10 @@ pub fn routes() -> axum::Router<AppState> {
         .route(
             "/{prefix}/api/v1/settings/signup",
             get(get_signup_settings).put(put_signup_settings),
+        )
+        .route(
+            "/{prefix}/api/v1/settings/auth",
+            get(crate::botguard::get_settings).put(crate::botguard::put_settings),
         )
         .route("/{prefix}/api/v1/me/email/code", post(request_email_change))
         .route(

@@ -217,7 +217,7 @@ fn open(
         .and_then(|b| String::from_utf8(b).ok())
         .ok_or_else(|| {
             SendError::Permanent(format!(
-                "{what} cannot be decrypted (data/totp.key changed?): enter it again"
+                "{what} cannot be decrypted (data/master.key changed?): enter it again"
             ))
         })
 }

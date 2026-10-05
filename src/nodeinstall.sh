@@ -4,19 +4,27 @@
 # inside this script) expires @@EXPIRES@@ and dies once the agent enrolls.
 #
 #   install / reinstall:  curl -fsSL <link> | sh   (as root; or | sudo sh)
+#   without BBR + fq:     curl -fsSL <link> | sh -s -- --no-bbr
+#                         (or AKARI_BBR=0 in the environment of sh)
 #   uninstall:            curl -fsSL <link> | sh -s -- --uninstall
 #                         (or, on an installed node, as root: akari-agent-uninstall)
 #
 # What it does: downloads the agent for this machine's architecture and
 # checks its SHA-256, writes /etc/akari-agent/bootstrap.toml (0600: panel
 # address, server name, panel CA, one-time enrollment token; no private
-# key), installs the systemd units (the agent, and its privileged updater:
-# akari-agent-update.path/.service, which applies signed self-updates) and
-# starts them, then waits until the agent has enrolled and connected.
-# The units are the ones the verified agent release carries
-# (`akari-agent -print-unit NAME`); releases older than that get the copies
-# embedded in this script. Self-updates install the units of each new
-# release along with its binary (W23).
+# key), installs the services (systemd: the agent unit and its privileged
+# updater akari-agent-update.path/.service, which applies signed
+# self-updates; OpenRC (Alpine, W32): /etc/init.d/akari-agent and
+# akari-agent-update, with a system user akari-agent) and starts them,
+# turns on TCP BBR with the fq qdisc where the kernel supports it and the
+# machine lets us (W32: /etc/sysctl.d/90-akari-bbr.conf; containers with a
+# read-only /proc/sys are skipped with a message), then waits until the
+# agent has enrolled and connected.
+# The service files are the ones the verified agent release carries
+# (`akari-agent -print-unit NAME`); releases older than that get the
+# systemd copies embedded in this script (OpenRC needs a release that
+# carries its scripts). Self-updates install the files of each new release
+# along with its binary (W23).
 # Running it again is safe: it is also how nodes installed before the
 # updater units existed, or whose units predate unit refresh, get the
 # current ones (重装命令).
@@ -49,20 +57,37 @@ die() {
 
 [ "$(id -u)" -eq 0 ] || die "run as root (… | sudo sh)"
 
-case "${1:-}" in
---uninstall)
-	uninstall
-	exit 0
-	;;
-"") ;;
-*) die "unknown option: $1 (only --uninstall)" ;;
-esac
+BBR=${AKARI_BBR:-1}
+for arg in "$@"; do
+	case "$arg" in
+	--uninstall)
+		uninstall
+		exit 0
+		;;
+	--no-bbr) BBR=0 ;;
+	*) die "unknown option: $arg (--no-bbr, --uninstall)" ;;
+	esac
+done
 
 # --- preflight ---------------------------------------------------------------
-[ -d /run/systemd/system ] || die "systemd is not running on this machine (required)"
-sdver=$(systemctl --version 2>/dev/null | sed -n '1s/^systemd \([0-9][0-9]*\).*/\1/p')
-[ -n "$sdver" ] && [ "$sdver" -ge 250 ] || die "systemd >= 250 is required (found: ${sdver:-unknown})"
-command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required (coreutils)"
+# The init system: systemd, or OpenRC (Alpine; W32).
+if [ -d /run/systemd/system ]; then
+	SVC_MGR=systemd
+	sdver=$(systemctl --version 2>/dev/null | sed -n '1s/^systemd \([0-9][0-9]*\).*/\1/p')
+	[ -n "$sdver" ] && [ "$sdver" -ge 250 ] || die "systemd >= 250 is required (found: ${sdver:-unknown})"
+elif [ -x /sbin/openrc-run ] && command -v rc-service >/dev/null 2>&1; then
+	SVC_MGR=openrc
+	[ -x /sbin/supervise-daemon ] || die "OpenRC without supervise-daemon (OpenRC >= 0.45 is required)"
+	rcver=$(openrc --version 2>/dev/null | sed -n '1s/.* \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')
+	rcmaj=${rcver%%.*}
+	rcmin=${rcver#*.}
+	{ [ "${rcmaj:-0}" -gt 0 ] || [ "${rcmin:-0}" -ge 45 ]; } 2>/dev/null ||
+		die "OpenRC >= 0.45 is required (capabilities, no_new_privs; found: ${rcver:-unknown})"
+	[ -d /run/openrc ] || die "OpenRC is installed but not running on this machine"
+else
+	die "systemd (>= 250) or OpenRC (Alpine) is required; neither is running on this machine"
+fi
+command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required (coreutils or busybox)"
 
 case "$(uname -m)" in
 x86_64 | amd64) ARCH=amd64 ;;
@@ -141,9 +166,30 @@ cat >"$TMP/bootstrap.toml" <<'AKARI_BOOTSTRAP_EOF'
 AKARI_BOOTSTRAP_EOF
 install -m 0600 "$TMP/bootstrap.toml" "$CONF_DIR/bootstrap.toml"
 
+if [ "$SVC_MGR" = openrc ]; then
+	# W32: the scripts of the release being installed; the updater installs
+	# each new release's the same way. A release that predates them cannot
+	# run under OpenRC.
+	for u in akari-agent akari-agent-update; do
+		if ! "$TMP/akari-agent" -print-unit "$u" >"$TMP/rc.$u" 2>/dev/null || [ ! -s "$TMP/rc.$u" ]; then
+			die "this agent release ($ver) has no OpenRC support: publish a newer release in the panel (Updates)"
+		fi
+	done
+	if ! grep -q '^akari-agent:' /etc/group; then
+		addgroup -S akari-agent >/dev/null || die "cannot create the group akari-agent"
+	fi
+	if ! grep -q '^akari-agent:' /etc/passwd; then
+		adduser -S -D -H -h "$RC_STATE" -s /sbin/nologin -G akari-agent -g akari-agent akari-agent >/dev/null ||
+			die "cannot create the user akari-agent"
+	fi
+	install -m 0755 "$TMP/rc.akari-agent" "$RC_AGENT"
+	install -m 0755 "$TMP/rc.akari-agent-update" "$RC_UPDATE"
+fi
+
 # The units: those of the release being installed (the verified binary
 # prints them; the updater installs each new release's units the same way),
 # else this panel's copies (releases that predate -print-unit).
+if [ "$SVC_MGR" = systemd ]; then
 units_from_binary=1
 for u in akari-agent.service akari-agent-update.service akari-agent-update.path; do
 	if ! "$TMP/akari-agent" -print-unit "$u" >"$TMP/$u" 2>/dev/null || [ ! -s "$TMP/$u" ]; then
@@ -178,6 +224,7 @@ cat >"$TMP/10-install.conf" <<'AKARI_DROPIN_EOF'
 LoadCredential=tls:/etc/akari-agent/tls
 AKARI_DROPIN_EOF
 install -m 0644 "$TMP/10-install.conf" "$DROPIN_DIR/10-install.conf"
+fi
 
 install -d -m 0755 "$(dirname "$UNINSTALLER")"
 cat >"$TMP/uninstall" <<'AKARI_UNINSTALL_EOF'
@@ -196,6 +243,87 @@ install -m 0755 "$TMP/uninstall" "$UNINSTALLER"
 install -m 0755 "$TMP/akari-agent" "$BIN.new"
 mv -f "$BIN.new" "$BIN"
 rm -f "$BIN.prev"
+
+# --- TCP BBR + fq (W32) ------------------------------------------------------
+# BBR congestion control with the fq qdisc: better throughput over lossy,
+# long-distance paths. Only where the kernel has it and this machine lets
+# us set it (OpenVZ/LXC and other containers often have a read-only
+# /proc/sys: skipped); persisted in our own sysctl drop-in (+ module load
+# file) that the uninstaller removes, putting the previous settings back.
+# --no-bbr (AKARI_BBR=0) skips it, and removes what an earlier install
+# added. The agent itself never changes kernel settings.
+bbr_enable() {
+	ccf=/proc/sys/net/ipv4/tcp_congestion_control
+	qdf=/proc/sys/net/core/default_qdisc
+	if [ ! -r "$ccf" ] || [ ! -r "$qdf" ]; then
+		say "BBR + fq: skipped (no net.core.default_qdisc / tcp_congestion_control here: a container with its own network namespace?)"
+		return 0
+	fi
+	cc=$(cat "$ccf")
+	qd=$(cat "$qdf")
+	if [ -f "$BBR_CONF" ]; then
+		modprobe tcp_bbr >/dev/null 2>&1 || true
+		if [ "$cc" = bbr ] && [ "$qd" = fq ]; then
+			say "BBR + fq: enabled ($BBR_CONF)"
+		elif printf fq >"$qdf" 2>/dev/null && printf bbr >"$ccf" 2>/dev/null; then
+			say "BBR + fq: enabled again ($BBR_CONF)"
+		else
+			say "WARNING: BBR + fq could not be applied now ($BBR_CONF stays; applies at boot)"
+		fi
+		return 0
+	fi
+	if [ "$cc" = bbr ] && [ "$qd" = fq ]; then
+		say "BBR + fq: already enabled on this machine (left as it is)"
+		return 0
+	fi
+	loaded=0
+	if ! grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
+		if modprobe tcp_bbr >/dev/null 2>&1 && grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
+			loaded=1
+		else
+			say "BBR + fq: skipped (kernel $(uname -r) has no tcp_bbr, or modules cannot be loaded here)"
+			return 0
+		fi
+	fi
+	if ! printf fq >"$qdf" 2>/dev/null; then
+		say "BBR + fq: skipped (kernel settings are read-only here: a container?)"
+		return 0
+	fi
+	if ! printf bbr >"$ccf" 2>/dev/null; then
+		printf '%s' "$qd" >"$qdf" 2>/dev/null || true
+		say "BBR + fq: skipped (cannot set the congestion control here: a container?)"
+		return 0
+	fi
+	install -d -m 0755 "$(dirname "$BBR_CONF")"
+	cat >"$TMP/bbr.conf" <<EOF
+# Written by the Akari agent installer (W32): TCP BBR congestion control
+# with the fq qdisc. Removed by akari-agent-uninstall (which puts the
+# previous settings back), or by installing again with --no-bbr.
+# akari-previous: net.core.default_qdisc=$qd net.ipv4.tcp_congestion_control=$cc
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+EOF
+	install -m 0644 "$TMP/bbr.conf" "$BBR_CONF"
+	if [ "$loaded" = 1 ] || grep -q '^tcp_bbr ' /proc/modules 2>/dev/null; then
+		install -d -m 0755 "$(dirname "$BBR_MOD")"
+		printf '# Written by the Akari agent installer (W32): see %s\ntcp_bbr\n' "$BBR_CONF" >"$TMP/bbr-mod.conf"
+		install -m 0644 "$TMP/bbr-mod.conf" "$BBR_MOD"
+	fi
+	say "BBR + fq: enabled (was $cc + $qd; $BBR_CONF; fq applies to network interfaces as they come up, i.e. after a reboot)"
+	if [ "$SVC_MGR" = openrc ] && ! rc-update show boot 2>/dev/null | grep -q '^ *sysctl '; then
+		say "      NOTE: the OpenRC service sysctl is not in the boot runlevel, so $BBR_CONF is not applied at"
+		say "      boot: rc-update add sysctl boot"
+	fi
+}
+if [ "$BBR" = 0 ]; then
+	if [ -f "$BBR_CONF" ]; then
+		bbr_remove
+	else
+		say "BBR + fq: not changed (--no-bbr)"
+	fi
+else
+	bbr_enable
+fi
 
 # --- firewall (automatic certificate) -----------------------------------------
 # The CA validates over TCP 80 (HTTP-01). Open it in an active host firewall;
@@ -218,18 +346,47 @@ if [ -n "$TLS_DOMAIN" ]; then
 fi
 
 # --- start ---------------------------------------------------------------------
-START=$(date +%s)
-systemctl daemon-reload
-systemctl enable akari-agent.service >/dev/null 2>&1
-systemctl enable --now akari-agent-update.path >/dev/null 2>&1 || die "cannot enable akari-agent-update.path"
-systemctl restart akari-agent.service
-restarts0=$(systemctl show -p NRestarts --value akari-agent.service 2>/dev/null || echo 0)
+# The agent's log since this start, its automatic restarts, whether it
+# failed; how to read the log.
+if [ "$SVC_MGR" = openrc ]; then
+	AGENT_LOG=$RC_LOG/agent.log
+	log_size() { { wc -c <"$AGENT_LOG"; } 2>/dev/null || echo 0; }
+	agent_log() {
+		size=$(log_size)
+		if [ "$size" -ge "$LOG_OFF" ]; then
+			tail -c +"$((LOG_OFF + 1))" "$AGENT_LOG" 2>/dev/null
+		else
+			cat "$AGENT_LOG" 2>/dev/null # rotated at the start
+		fi
+	}
+	agent_restarts() { cat /run/openrc/options/akari-agent/start_count 2>/dev/null || echo 0; }
+	agent_failed() { ! rc-service akari-agent status >/dev/null 2>&1; }
+	LOG_HINT="tail -f $AGENT_LOG"
+	RESTART_HINT="rc-service akari-agent restart"
+	LOG_OFF=$(log_size)
+	rc-update add akari-agent default >/dev/null 2>&1 || die "cannot add akari-agent to the default runlevel"
+	rc-update add akari-agent-update default >/dev/null 2>&1 || die "cannot add akari-agent-update to the default runlevel"
+	rc-service akari-agent-update restart >/dev/null 2>&1 || die "cannot start akari-agent-update"
+	rc-service akari-agent restart >/dev/null 2>&1 || die "cannot start akari-agent (see $AGENT_LOG)"
+else
+	START=$(date +%s)
+	agent_log() { journalctl -u akari-agent.service --since "@$START" -o cat --no-pager 2>/dev/null; }
+	agent_restarts() { systemctl show -p NRestarts --value akari-agent.service 2>/dev/null || echo 0; }
+	agent_failed() { systemctl is-failed --quiet akari-agent.service; }
+	LOG_HINT="journalctl -u akari-agent -f"
+	RESTART_HINT="systemctl restart akari-agent"
+	systemctl daemon-reload
+	systemctl enable akari-agent.service >/dev/null 2>&1
+	systemctl enable --now akari-agent-update.path >/dev/null 2>&1 || die "cannot enable akari-agent-update.path"
+	systemctl restart akari-agent.service
+fi
+restarts0=$(agent_restarts)
 say "agent started; waiting for it to enroll and connect"
 
 i=0
 result=
 while [ "$i" -lt 90 ]; do
-	log=$(journalctl -u akari-agent.service --since "@$START" -o cat --no-pager 2>/dev/null || true)
+	log=$(agent_log || true)
 	case "$log" in
 	*'"msg":"enrolled"'*'"msg":"channel established"'*)
 		result=ok
@@ -244,9 +401,9 @@ while [ "$i" -lt 90 ]; do
 		break
 		;;
 	esac
-	# Restart=always: a crash loop never reaches "failed".
-	restarts=$(systemctl show -p NRestarts --value akari-agent.service 2>/dev/null || echo 0)
-	if systemctl is-failed --quiet akari-agent.service || [ $((${restarts:-0} - ${restarts0:-0})) -ge 3 ]; then
+	# Restart=always / respawn: a crash loop never reaches "failed".
+	restarts=$(agent_restarts)
+	if agent_failed || [ $((${restarts:-0} - ${restarts0:-0})) -ge 3 ]; then
 		result=failed
 		break
 	fi
@@ -261,10 +418,10 @@ ok)
 		say "TLS certificate: the agent obtains one for $TLS_DOMAIN itself (Let's Encrypt) and renews it."
 		say "      Needs: the DNS record of $TLS_DOMAIN pointing at this machine, and TCP 80 open to the"
 		say "      internet (cloud firewall / security group too; TCP 443 also works when no inbound uses it)."
-		say "      Status: the node page in the panel, or journalctl -u akari-agent"
+		say "      Status: the node page in the panel, or $LOG_HINT"
 	elif [ "$NEEDS_CERT" = 1 ] && { [ ! -s "$CONF_DIR/tls/fullchain.pem" ] || [ ! -s "$CONF_DIR/tls/privkey.pem" ]; }; then
 		say "NOTE: this node has TLS inbounds. Put the certificate in $CONF_DIR/tls/fullchain.pem and"
-		say "      $CONF_DIR/tls/privkey.pem (0600), then: systemctl restart akari-agent"
+		say "      $CONF_DIR/tls/privkey.pem (0600), then: $RESTART_HINT"
 	fi
 	# Run through sudo: say so; as root (images without sudo): plain.
 	if [ -n "${SUDO_USER:-}" ] && command -v sudo >/dev/null 2>&1; then
@@ -274,15 +431,15 @@ ok)
 	fi
 	;;
 refused)
-	journalctl -u akari-agent.service --since "@$START" -o cat --no-pager -n 20 >&2 || true
+	agent_log | tail -n 20 >&2 || true
 	die "the panel refused the enrollment token (expired or already used): create a new install command in the panel"
 	;;
 ratelimited)
-	die "the panel is rate limiting enrollments from this address; the agent keeps retrying (journalctl -u akari-agent -f), or run this again in a few minutes"
+	die "the panel is rate limiting enrollments from this address; the agent keeps retrying ($LOG_HINT), or run this again in a few minutes"
 	;;
 *)
-	journalctl -u akari-agent.service --since "@$START" -o cat --no-pager -n 30 >&2 || true
-	die "the agent did not connect within 90 s (see the log above; journalctl -u akari-agent)"
+	agent_log | tail -n 30 >&2 || true
+	die "the agent did not connect within 90 s (see the log above; $LOG_HINT)"
 	;;
 esac
 }

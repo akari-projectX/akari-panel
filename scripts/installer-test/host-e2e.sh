@@ -57,9 +57,21 @@ code() {
 	shift
 	curl -sk --noproxy '*' -o "$work/last" -w '%{http_code}' "$@" "$url"
 }
+# The installer's default admin: admin@<domain> (v0.4 D1: the e-mail is the
+# login). A v0.3.x panel (the refused-upgrade check) still takes {"login"}.
+admin_email=admin@myapp.test
 login() {
+	# v0.4 (W27): the form token from /auth/options, posted no sooner than
+	# the minimum submit time (default 2 s) after it.
+	local ft guard=""
+	[ "$(code "$origin/$1/auth/options")" = 200 ] || fail "auth options"
+	ft=$(sed -n 's/.*"form_token":"\([A-Za-z0-9_-]*\)".*/\1/p' "$work/last")
+	[ -z "$ft" ] || guard=",\"guard\":{\"form_token\":\"$ft\"}"
+	sleep 3
 	[ "$(code "$origin/$1/auth/login" -c "$work/jar" -X POST -H 'Content-Type: application/json' \
-		-d "{\"login\":\"admin\",\"password\":\"$pw\"}")" = 200 ] || fail "admin login"
+		-d "{\"email\":\"$admin_email\",\"password\":\"$pw\"$guard}")" = 200 ] ||
+		[ "$(code "$origin/$1/auth/login" -c "$work/jar" -X POST -H 'Content-Type: application/json' \
+			-d "{\"login\":\"$admin_email\",\"password\":\"$pw\"}")" = 200 ] || fail "admin login"
 }
 check_panel() {
 	local p
@@ -147,7 +159,7 @@ node_online "$P" "$NODE_ID" || fail "the agent did not come online"
 echo "ok: node $NODE_ID online"
 
 [ "$(code "$origin/$P/api/v1/users" -b "$work/jar" -X POST -H 'Content-Type: application/json' \
-	-d '{"login":"e2e-user","password":"user-password-123"}')" = 201 ] || fail "create user"
+	-d '{"email":"e2e-user@myapp.test","password":"user-password-123"}')" = 201 ] || fail "create user"
 SUB=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['sub_token'])" "$work/last")
 [ "$(code "$origin/$P/sub/$SUB" -A clash.meta)" = 200 ] || fail "subscription"
 cert_before=$(sha256sum "$work/agent-state/identity.pem" | cut -d' ' -f1)

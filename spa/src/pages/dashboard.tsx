@@ -39,6 +39,18 @@ export function RenewalBanner({ me, cta = true }: { me: Me; cta?: boolean }) {
   );
 }
 
+/** W28-c: what a banned account sees instead of the dashboard (the reason, written for the user). */
+export function BannedNotice({ me }: { me: Me }) {
+  const t = useT();
+  return (
+    <div role="alert" className="space-y-3 rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-sm">
+      <p>{t("portal.bannedBanner", { reason: me.ban_reason ?? "—" })}</p>
+      <p>{t("portal.bannedHelp")}</p>
+      <Button onClick={() => navigate(`${appBase}/tickets`)}>{t("nav.tickets")}</Button>
+    </div>
+  );
+}
+
 export function Dashboard({ me }: { me: Me }) {
   const t = useT();
   const locale = useLocale();

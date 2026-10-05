@@ -57,7 +57,8 @@ export interface Dashboard {
   latest_orders: {
     id: string;
     out_trade_no: string;
-    user_login: string;
+    user_label: string;
+    user_email: string | null;
     plan_name: string;
     amount_cents: number;
     status: string;
@@ -295,7 +296,9 @@ export function AdminDashboard() {
                           <TableCell className="whitespace-nowrap text-muted-foreground">
                             {fmtDateTime(o.created_at)}
                           </TableCell>
-                          <TableCell className="whitespace-nowrap font-medium">{o.user_login}</TableCell>
+                          <TableCell className="whitespace-nowrap font-medium">
+                            {o.user_email ?? o.user_label}
+                          </TableCell>
                           <TableCell className="whitespace-nowrap">{o.plan_name}</TableCell>
                           <TableCell className="whitespace-nowrap text-right tabular-nums">
                             {money(o.amount_cents)}
