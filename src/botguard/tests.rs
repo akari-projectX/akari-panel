@@ -238,10 +238,17 @@ async fn honeypot_and_minimum_submit_time() {
             "honeypot",
             json!({ "form_token": aged, "website": "http://spam.example" }),
         ),
-        ("too fast", json!({ "form_token": issued })),
+        // Issued just before its post (a slow, instrumented run must not
+        // age it past the minimum).
+        ("too fast", Value::Null),
         ("no token", json!({})),
         ("forged", json!({ "form_token": forged })),
     ] {
+        let gd = if gd.is_null() {
+            json!({ "form_token": issue_token(st.totp(), chrono::Utc::now().timestamp_millis()) })
+        } else {
+            gd
+        };
         let r = c
             .post("/test/auth/login", login_body(&email, "right-password", gd))
             .await;
@@ -482,6 +489,11 @@ async fn turnstile_other_forms_fail_closed() {
     .await
     .unwrap();
     let c = Client::new(&st, rand_ip());
+    // Per-address mail limits live in the shared Valkey: a fresh address.
+    let addr = format!(
+        "r{}@example.com",
+        &Uuid::new_v4().simple().to_string()[..10]
+    );
     let reg = |t: &str| {
         json!({ "email": format!("u{}@example.com", &Uuid::new_v4().simple().to_string()[..10]),
                 "password": "long enough password", "pow": { "challenge": "x", "nonce": "y" },
@@ -497,14 +509,14 @@ async fn turnstile_other_forms_fail_closed() {
     let r = c
         .post(
             "/test/auth/password-reset/request",
-            json!({ "email": "a@example.com" }),
+            json!({ "email": addr.as_str() }),
         )
         .await;
     assert_eq!(r.json()["code"], "auth.captcha_failed");
     let r = c
         .post(
             "/test/auth/password-reset/request",
-            json!({ "email": "a@example.com", "guard": { "turnstile": "good-token" } }),
+            json!({ "email": addr.as_str(), "guard": { "turnstile": "good-token" } }),
         )
         .await;
     assert_eq!(
@@ -530,7 +542,7 @@ async fn turnstile_other_forms_fail_closed() {
     let r = cd
         .post(
             "/test/auth/password-reset/request",
-            json!({ "email": "a@example.com", "guard": { "turnstile": "good-token" } }),
+            json!({ "email": addr.as_str(), "guard": { "turnstile": "good-token" } }),
         )
         .await;
     assert_eq!(
@@ -548,7 +560,7 @@ async fn turnstile_other_forms_fail_closed() {
     let r = c
         .post(
             "/test/auth/password-reset/request",
-            json!({ "email": "a@example.com", "guard": { "turnstile": "good-token" } }),
+            json!({ "email": addr.as_str(), "guard": { "turnstile": "good-token" } }),
         )
         .await;
     assert_eq!(r.json()["code"], "auth.captcha_unavailable");
