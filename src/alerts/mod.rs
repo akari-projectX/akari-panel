@@ -52,7 +52,7 @@ use crate::auth::{ApiError, AuthUser};
 use crate::state::AppState;
 
 /// Every alert kind (the `node_alerts.kind` CHECK).
-pub const KINDS: [&str; 8] = [
+pub const KINDS: [&str; 9] = [
     "offline",
     "cpu",
     "memory",
@@ -61,6 +61,7 @@ pub const KINDS: [&str; 8] = [
     "cert",
     "agent_cert",
     "last_error",
+    "entrance_down",
 ];
 
 /// Kinds whose facts come from a live agent (unknown while it is offline).
@@ -81,6 +82,7 @@ pub fn kind_label(kind: &str) -> &'static str {
         "cert" => "节点证书即将到期",
         "agent_cert" => "Agent 证书即将到期",
         "last_error" => "配置应用失败",
+        "entrance_down" => "中转入口不可用",
         _ => "告警",
     }
 }

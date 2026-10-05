@@ -482,6 +482,13 @@ export interface EntranceView {
   wire_no: number;
   listen_port: number | null;
   source_cidrs: string[];
+  // Relay health (panel TCP test): null = not tested; hidden_since set =
+  // left out of subscriptions until it answers again.
+  health_ok: boolean | null;
+  health_at: string | null;
+  health_failures: number;
+  health_error: string | null;
+  hidden_since: string | null;
   group_ids: string[];
 }
 

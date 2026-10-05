@@ -376,6 +376,11 @@ pub const PROBE_ATTEMPTS: u32 = 3;
 pub const PROBE_MANUAL_COOLDOWN_SECS: u64 = 30;
 /// Cloudflare Turnstile server-side verification (v0.4 D1).
 pub const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+/// W28-a relay entrance health (`entrance_health.rs`): one TCP connect to
+/// each relay's address this often (±10 %); this many consecutive failures
+/// hide it from subscriptions (the first success shows it again).
+pub const ENTRANCE_HEALTH_INTERVAL_SECS: u64 = 60;
+pub const ENTRANCE_HEALTH_FAILURES: i32 = 3;
 /// Where the install script downloads the agent when no complete signed
 /// release was uploaded (系统设置 → 节点通信 → 备用下载地址 overrides it).
 pub const DEFAULT_FALLBACK_BINARY_URL: &str = "https://github.com/akari-projectX/akari-agent/releases/latest/download/akari-agent-linux-{arch}";
@@ -413,6 +418,7 @@ pub struct Limits {
     /// Cloudflare Turnstile siteverify endpoint (tests point it at a
     /// loopback mock; https or loopback http only).
     pub turnstile_verify_url: String,
+    pub entrance_health_interval_secs: u64,
     /// Test overrides applied (logged at startup).
     pub test_overrides: Vec<String>,
 }
@@ -443,6 +449,7 @@ impl Default for Limits {
             probe_attempts: PROBE_ATTEMPTS,
             probe_manual_cooldown_secs: PROBE_MANUAL_COOLDOWN_SECS,
             turnstile_verify_url: TURNSTILE_VERIFY_URL.to_string(),
+            entrance_health_interval_secs: ENTRANCE_HEALTH_INTERVAL_SECS,
             test_overrides: Vec::new(),
         }
     }
@@ -456,6 +463,11 @@ impl Limits {
         ("alerts_eval_interval_secs", 1, ALERTS_EVAL_INTERVAL_SECS),
         ("probe_manual_cooldown_secs", 0, PROBE_MANUAL_COOLDOWN_SECS),
         ("sub_rate_per_token", 1, SUB_RATE_PER_TOKEN as u64),
+        (
+            "entrance_health_interval_secs",
+            1,
+            ENTRANCE_HEALTH_INTERVAL_SECS,
+        ),
     ];
 
     /// The fail-closed lease actually granted: [1h, 30d].
@@ -485,6 +497,7 @@ impl Limits {
                 "alerts_eval_interval_secs" => self.alerts_eval_interval_secs = v,
                 "probe_manual_cooldown_secs" => self.probe_manual_cooldown_secs = v,
                 "sub_rate_per_token" => self.sub_rate_per_token = v as i64,
+                "entrance_health_interval_secs" => self.entrance_health_interval_secs = v,
                 _ => anyhow::bail!("{TEST_LIMITS_ENV}: {name:?} cannot be overridden"),
             }
             self.test_overrides.push(format!("{name}={v}"));

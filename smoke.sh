@@ -111,7 +111,7 @@ TOML
 # W25: the timers smoke shortens are built-in constants now; this TEST-ONLY
 # variable (logged at startup) shortens them: 8 subscription fetches per
 # token and window, a 5 s "立即测速" cooldown, node alerts every 5 s.
-SMOKE_LIMITS="sub_rate_per_token=8,probe_manual_cooldown_secs=5,alerts_eval_interval_secs=5"
+SMOKE_LIMITS="sub_rate_per_token=8,probe_manual_cooldown_secs=5,alerts_eval_interval_secs=5,entrance_health_interval_secs=2"
 # Helper servers (payment mock, latency target) must die with this script
 # on EVERY exit path, a crash or kill -9 included: they inherit the caller's
 # file descriptors, so a leftover one would keep holding `flock smoke.lock`
@@ -1287,6 +1287,30 @@ else
   [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID")" = "200" ] && matches -F '来源 IP 过滤' </tmp/akari-smoke/last \
     || { echo "FAIL: node not flagged for the missing source filter"; exit 1; }
 fi
+# Health: the panel TCP-tests the relay's address; an unreachable relay is
+# hidden from the subscription after 3 failures and the node's
+# entrance_down alert fires; once it answers again both come back.
+for _ in $(seq 1 20); do [ "$(psql_q "SELECT health_ok FROM entrances WHERE id='$RELAY_ID'")" = "t" ] && break; sleep 1; done
+[ "$(psql_q "SELECT health_ok FROM entrances WHERE id='$RELAY_ID'")" = "t" ] || { echo "FAIL: relay health never tested ok"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/entrances/$RELAY_ID" '{"connect_port":1}')" = "200" ] || { echo "FAIL: relay to a dead port"; exit 1; }
+for _ in $(seq 1 30); do [ "$(psql_q "SELECT hidden_since IS NOT NULL FROM entrances WHERE id='$RELAY_ID'")" = "t" ] && break; sleep 1; done
+[ "$(psql_q "SELECT health_failures >= 3 AND hidden_since IS NOT NULL FROM entrances WHERE id='$RELAY_ID'")" = "t" ] \
+  || { echo "FAIL: unreachable relay not hidden"; psql_q "SELECT health_ok, health_failures, health_error FROM entrances WHERE id='$RELAY_ID'"; exit 1; }
+rl_sub_clear() { vk EVAL "for _,k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call('DEL', k) end return 1" 0 'akari:rl:sub:*' >/dev/null; }
+rl_sub_clear
+curl -s --noproxy '*' -A 'clash.meta' "$BASE/sub/$SUB_D" | matches 'IPLC 2.0x' && { echo "FAIL: hidden relay still in the subscription"; exit 1; }
+for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM node_alerts WHERE node_id='$NODE_ID' AND kind='entrance_down' AND status='firing'")" = "1" ] && break; sleep 1; done
+[ "$(psql_q "SELECT count(*) FROM node_alerts WHERE node_id='$NODE_ID' AND kind='entrance_down' AND status='firing'")" = "1" ] \
+  || { echo "FAIL: no entrance_down alert"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/entrances/$RELAY_ID" '{"connect_port":11446}')" = "200" ] || { echo "FAIL: relay port back"; exit 1; }
+for _ in $(seq 1 20); do [ "$(psql_q "SELECT hidden_since IS NULL FROM entrances WHERE id='$RELAY_ID'")" = "t" ] && break; sleep 1; done
+[ "$(psql_q "SELECT health_ok AND hidden_since IS NULL FROM entrances WHERE id='$RELAY_ID'")" = "t" ] || { echo "FAIL: relay not restored"; exit 1; }
+rl_sub_clear
+curl -s --noproxy '*' -A 'clash.meta' "$BASE/sub/$SUB_D" | matches 'IPLC 2.0x' || { echo "FAIL: restored relay not in the subscription"; exit 1; }
+for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM node_alerts WHERE node_id='$NODE_ID' AND kind='entrance_down' AND status='resolved'")" = "1" ] && break; sleep 1; done
+[ "$(psql_q "SELECT count(*) FROM node_alerts WHERE node_id='$NODE_ID' AND kind='entrance_down' AND status='resolved'")" = "1" ] \
+  || { echo "FAIL: entrance_down not resolved"; exit 1; }
+echo "relay health: hidden after 3 failures, alert fired, restored and resolved"
 # Removal isolation: the relay leaves the plan's groups; D keeps the direct
 # entrance (and its credential), loses the relay at once.
 [ "$(patch_code "$BASE/api/v1/entrances/$RELAY_ID" '{"group_ids":[]}')" = "200" ] || { echo "FAIL: relay leaves its group"; exit 1; }

@@ -16,7 +16,8 @@ import { adminErrorText } from "../lib/admin-errors";
 import { fmtDateTime } from "../lib/datetime";
 import { navigate } from "../lib/router";
 
-export type AlertKind = "offline" | "cpu" | "memory" | "disk" | "latency" | "cert" | "agent_cert" | "last_error";
+export type AlertKind =
+  "offline" | "cpu" | "memory" | "disk" | "latency" | "cert" | "agent_cert" | "last_error" | "entrance_down";
 
 export const KIND_ZH: Record<AlertKind, string> = {
   offline: "节点离线",
@@ -27,6 +28,7 @@ export const KIND_ZH: Record<AlertKind, string> = {
   cert: "节点证书即将到期",
   agent_cert: "Agent 证书即将到期",
   last_error: "配置应用失败",
+  entrance_down: "中转入口不可用",
 };
 const KINDS = Object.keys(KIND_ZH) as AlertKind[];
 
