@@ -1799,7 +1799,7 @@ JOB=$(last_json "d['id']")
 [ "$(api_json "$JAR" POST "$BASE/api/v1/users/batch" "{\"selection\":{\"ids\":[\"$OPS1\",\"$OPS2\"]},\"action\":{\"kind\":\"send_email\",\"subject\":\"Ops smoke notice\",\"body\":\"Maintenance tonight.\"}}")" = "202" ] \
   || { echo "FAIL: create mail batch"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(wait_batch "$(last_json "d['id']")")" = "2/0/0" ] || { echo "FAIL: mail batch result"; exit 1; }
-mp_mail "ops2@akari.test" 1 | sed -n 1p | matches 'Ops smoke notice' || { echo "FAIL: batch mail not delivered"; exit 1; }
+mp_mail "smoke-ops-2@akari.test" 1 | sed -n 1p | matches 'Ops smoke notice' || { echo "FAIL: batch mail not delivered"; exit 1; }
 psql_q "SELECT count(*) FROM audit_log WHERE action = 'user.mail.send' AND after::text LIKE '%Maintenance%'" | matches '^0$' \
   || { echo "FAIL: mail body in the audit log"; exit 1; }
 # Plan for everyone, then disable one: node bumps come from the mutators.

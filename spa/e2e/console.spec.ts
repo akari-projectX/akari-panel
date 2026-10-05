@@ -357,7 +357,7 @@ test("W16: coupon + balance purchase (paid without the gateway), console coupons
   await expect(admin.getByRole("cell", { name: "E2E50" })).toBeVisible();
   await admin.getByRole("link", { name: "资金", exact: true }).click();
   await expect(admin.getByRole("heading", { name: "提现审核" })).toBeVisible();
-  await admin.getByLabel("用户名（精确）").fill(USER);
+  await admin.getByLabel("用户邮箱（精确）").fill(USER);
   await admin.getByRole("button", { name: "查找" }).click();
   await admin.getByRole("button", { name: "明细与调整" }).click();
   await admin.getByLabel("调整金额（元）").fill("10");
@@ -435,26 +435,25 @@ test("W21: dashboard, user search + create dialog, plan dialog, settings tabs, c
   await page.getByRole("link", { name: "用户", exact: true }).click();
   await page.getByRole("button", { name: "新建用户" }).click();
   const dialog = page.getByRole("dialog", { name: "新建用户" });
-  await dialog.getByLabel("账号", { exact: true }).fill("e2e-w21-user");
+  await dialog.getByLabel("邮箱", { exact: true }).fill("e2e-w21-user@e2e.test");
   await dialog.getByLabel("密码", { exact: true }).fill("e2e-w21-password");
-  await dialog.getByLabel(/邮箱/).fill("w21@e2e.test");
   await expect(dialog.getByLabel(/到期日/)).toHaveCount(0); // D12: the plan decides
   await dialog.getByRole("button", { name: "创建" }).click();
   await expect(page.getByText(/的订阅令牌（之后也可以/)).toBeVisible();
   await page.getByLabel("搜索").fill("E2E-W21");
   await expect(page.getByText("找到 1 个用户")).toBeVisible();
   const row = page.getByRole("row").filter({ hasText: "e2e-w21-user" });
-  await expect(row.getByText("w21@e2e.test")).toBeVisible();
+  await expect(row.getByText("e2e-w21-user@e2e.test")).toBeVisible();
   await expect(row.getByText("正常")).toBeVisible();
   await page.getByRole("button", { name: "已封禁" }).click();
   await expect(page.getByText("没有符合条件的用户。")).toBeVisible();
   await page.getByRole("button", { name: "全部" }).click();
   // A server error comes back in Chinese (coded error, W21 M6).
   await page.getByRole("button", { name: "新建用户" }).click();
-  await dialog.getByLabel("账号", { exact: true }).fill("e2e-w21-user");
+  await dialog.getByLabel("邮箱", { exact: true }).fill("E2E-W21-USER@e2e.test");
   await dialog.getByLabel("密码", { exact: true }).fill("e2e-w21-password");
   await dialog.getByRole("button", { name: "创建" }).click();
-  await expect(dialog.getByRole("alert")).toHaveText("该账号已存在");
+  await expect(dialog.getByRole("alert")).toHaveText("已有其他账户使用这个邮箱");
   await dialog.getByRole("button", { name: "取消" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 
@@ -1051,14 +1050,14 @@ test("Ops: batch balance on selected users, users CSV, gift order, coupon batch 
   });
   expect(plan.status()).toBe(201);
   const created = await ctx.request.post(`${api}/users`, {
-    data: { login: "e2e-ops-1", password: "e2e-ops-password" },
+    data: { email: "e2e-ops-1@e2e.test", password: "e2e-ops-password" },
   });
   expect(created.status()).toBe(201);
 
   // Batch: select one user, credit ¥5 with a reason, confirm, watch it finish.
   await admin.getByLabel("搜索").fill("e2e-ops");
   await expect(admin.getByText("找到 1 个用户")).toBeVisible();
-  await admin.getByLabel("选择 e2e-ops-1").check();
+  await admin.getByLabel("选择 e2e-ops-1@e2e.test").check();
   await admin.getByRole("button", { name: "批量操作（已选 1）" }).click();
   const dialog = admin.getByRole("dialog", { name: "批量操作" });
   await expect(dialog.getByText(/将作用于 1 个账户/)).toBeVisible();
@@ -1087,9 +1086,9 @@ test("Ops: batch balance on selected users, users CSV, gift order, coupon batch 
   await admin.getByRole("link", { name: "订单", exact: true }).click();
   await admin.getByRole("button", { name: "新建人工订单" }).click();
   const mo = admin.getByRole("dialog", { name: "新建人工订单" });
-  await mo.getByLabel("用户（账号或邮箱）").fill("e2e-ops-1");
+  await mo.getByLabel("用户邮箱").fill("e2e-ops-1@e2e.test");
   await mo.getByRole("button", { name: "查找" }).click();
-  await expect(mo.getByText("用户：e2e-ops-1")).toBeVisible();
+  await expect(mo.getByText("用户：e2e-ops-1@e2e.test")).toBeVisible();
   await mo.getByLabel("套餐", { exact: true }).selectOption({ label: "e2e-ops" });
   await mo.getByLabel("周期", { exact: true }).selectOption("month");
   await mo.getByLabel("赠送（金额 ¥0，不计入营收）").check();
