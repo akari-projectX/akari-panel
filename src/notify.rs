@@ -43,6 +43,9 @@ pub enum Event {
     /// System settings changed (0060 triggers, payload `settings`): reload
     /// them (settings.rs). Agent sessions are not woken.
     Settings,
+    /// W29: block rules changed (1060 trigger, payload `block-rules`):
+    /// every session re-sends its compiled policy if it changed.
+    BlockRules,
     /// Not ours or malformed: wake everyone (cheap insurance; a session
     /// only re-reads its node).
     Unknown,
@@ -51,6 +54,9 @@ pub enum Event {
 pub fn parse(payload: &str) -> Event {
     if payload == "settings" {
         return Event::Settings;
+    }
+    if payload == "block-rules" {
+        return Event::BlockRules;
     }
     let (kind, id) = match payload.split_once(':') {
         Some((k, id)) => (k, id),
@@ -136,7 +142,7 @@ impl Wakeups {
         match ev {
             Event::Changed(n) | Event::Deleted(n) => self.wake(n),
             Event::Ping(_) | Event::Settings => {}
-            Event::Unknown => self.wake_all(),
+            Event::BlockRules | Event::Unknown => self.wake_all(),
         }
     }
 
@@ -436,6 +442,7 @@ mod tests {
         assert_eq!(parse(&format!("del:{n}")), Event::Deleted(n));
         assert_eq!(parse(&format!("ping:{n}")), Event::Ping(n));
         assert_eq!(parse("settings"), Event::Settings);
+        assert_eq!(parse("block-rules"), Event::BlockRules);
         for bad in [
             String::new(),
             "del:".into(),
