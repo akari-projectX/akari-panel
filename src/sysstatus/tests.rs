@@ -160,7 +160,7 @@ async fn admin(state: &AppState, db: &TestDb) -> Client {
     let id = db.admin().await;
     let mut c = Client::new(state, rand_ip());
     c.cookie =
-        Some(crate::auth::issue_token(state, id, "admin", 0, crate::auth::Stage::Full).unwrap());
+        Some(crate::auth::issue_token(state, id, "admin", 0).unwrap());
     c
 }
 
@@ -259,7 +259,7 @@ async fn status_endpoint_reports_the_fleet() {
     let user = db.user().await;
     let mut u = Client::new(&state, rand_ip());
     u.cookie =
-        Some(crate::auth::issue_token(&state, user, "user", 0, crate::auth::Stage::Full).unwrap());
+        Some(crate::auth::issue_token(&state, user, "user", 0).unwrap());
     assert_eq!(
         u.get("/test/api/v1/system/status").await.status,
         StatusCode::FORBIDDEN
