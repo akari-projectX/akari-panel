@@ -16,7 +16,8 @@ Deleting the user then cuts new connections (gate + validator). The node's
 previous inbound is restored at the end.
 
 Env: BASE, JAR, NODE_ID, ACCESS_PLAN (a plan granting the node's direct
-entrance), LOG (smoke log dir), AGENT_LOG.
+entrance), LOG (smoke log dir), AGENT_LOG, VALKEY_DB (smoke's Valkey db:
+the subscription rate limit is reset between templates).
 """
 
 import base64
@@ -37,6 +38,7 @@ BASE = os.environ["BASE"]
 JAR = os.environ["JAR"]
 NODE_ID = os.environ["NODE_ID"]
 ACCESS_PLAN = os.environ["ACCESS_PLAN"]
+VALKEY_DB = os.environ["VALKEY_DB"]
 LOG = os.environ["LOG"]
 AGENT_LOG = os.environ["AGENT_LOG"]
 W8 = os.path.join(LOG, "w8")
@@ -240,6 +242,7 @@ def apply(label, inb):
 
 
 def check_link(label, proto, spec, inb):
+    reset_sub_limit()
     st, body = api("GET", f"/sub/{SUB}", ua="v2rayN/7.0", raw=True)
     links = base64.b64decode(body.strip()).decode().splitlines()
     if len(links) != 1:
@@ -270,6 +273,17 @@ def check_link(label, proto, spec, inb):
 
 clash_all = ""
 sb_outs = []
+
+
+def reset_sub_limit():
+    # Three formats per template, 18 templates: past smoke's per-token
+    # subscription limit (8 per window). Clear its buckets.
+    subprocess.run(
+        ["docker", "compose", "exec", "-T", "valkey", "valkey-cli", "-n", VALKEY_DB, "EVAL",
+         "for _,k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call('DEL', k) end return 1",
+         "0", "akari:rl:sub:*"],
+        check=True, capture_output=True)
+
 
 
 def subscriptions(label, inb):

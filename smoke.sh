@@ -2038,7 +2038,7 @@ echo "== W8 protocol matrix: every template -> agent -> three subscription forma
 # before protocol 4 bumped; protocol >= 4 implies it.
 if need_agent "protocol>=4" "W8 protocol matrix"; then
   # shellcheck disable=SC2097,SC2098 # $LOG is the same value on both sides
-  BASE="$BASE" JAR="$JAR" NODE_ID="$NODE_ID" ACCESS_PLAN="$ACCESS_PLAN" LOG="$LOG" AGENT_LOG="$LOG/agent.log" \
+  BASE="$BASE" JAR="$JAR" NODE_ID="$NODE_ID" ACCESS_PLAN="$ACCESS_PLAN" VALKEY_DB="$SMOKE_VALKEY_DB" LOG="$LOG" AGENT_LOG="$LOG/agent.log" \
     python3 scripts/smoke-protocols.py || { echo "FAIL: W8 protocol matrix"; tail -20 "$LOG/agent.log"; exit 1; }
 fi
 
