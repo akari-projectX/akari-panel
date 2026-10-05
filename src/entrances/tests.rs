@@ -576,7 +576,7 @@ async fn relay_entrance_lifecycle() {
     let r = admin
         .put(
             &format!("/test/api/v1/users/{u}/plan"),
-            json!({"plan_id": plan}),
+            json!({"plan_id": plan, "period": "month"}),
         )
         .await;
     assert_eq!(r.status, StatusCode::OK);

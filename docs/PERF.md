@@ -588,6 +588,29 @@ The extra cost of a relay entrance is its users: one more xray user per user and
 credential and traffic key); nothing per packet beyond the kernel's `ct state new` match on the
 relay's port.
 
+**R44 (2026-10-06): the root updater applies the allowlists, the agent has no `CAP_NET_ADMIN`.**
+`go test -bench -count 1` × 6 alternating runs, Intel Core Ultra 7 265K, agent main (322bc47, with
+W29 + W32) vs the R44 agent branch; benchstat, no row differs significantly (p > 0.06):
+
+| Benchmark | main | R44 branch | |
+|---|---|---|---|
+| `Rebuild10k` | 67.5 ms | 68.2 ms | ~ |
+| `InstanceHeap10k` (heap after build) | 21.35 MiB | 21.35 MiB | ~ |
+| `DeltaRotate1of10k` | 5.63 µs | 5.69 µs | ~ |
+| `TrafficSnapshot10k` | 355 µs | 357 µs | ~ |
+| `StateHash10k` | 4.72 ms | 4.68 ms | ~ |
+| `GateAdmitRelease` | 282 ns, 2 allocs | 285 ns, 2 allocs | ~ |
+| `ConnectEcho` (new VLESS connection + round trip) | 610 µs, 262 allocs | 618 µs, 263 allocs | ~ |
+| `Rebuild10kEntrances` | — | 88.4 ms | |
+| `SourceFilterRequest16x64` (agent, per Snapshot with relays: normalize + id + request JSON) | — | 81.5 µs, 72 KiB | |
+| `NftScript16x64` (root updater, per change) | — | 99.2 µs, 184 KiB | |
+
+Binary (stripped, linux/amd64): 33,972,384 → 34,005,152 bytes (+0.10 %, the whole W28-a agent
+change). The agent writes one small request file per changed allowlist and, while a request is
+unanswered, reads one ≤ 4 KiB result file per heartbeat; `Heartbeat.source_filter` adds a few bytes
+(nothing when no relay exists). nft runs in the root updater (one `nft -f` per change), not in the
+agent process.
+
 ## Limits and honest caveats
 
 - Flush margin (W22): 0.58 s against the 1 s budget (W11: 0.49 s) for 50k rows; on a slower

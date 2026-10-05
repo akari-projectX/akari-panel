@@ -56,6 +56,12 @@ docker rm -f akari-smoke-upd >/dev/null 2>&1 || true
 sleep 1
 UPD_CONTAINER=""
 cleanup_upd() {
+  # R44 section: the allowlist table a failed run may have left.
+  if [ -n "${SF_ROOT:-}" ]; then
+    sudo -n nft delete table inet akari_sources >/dev/null 2>&1 || true
+    sudo -n rm -rf "$SF_ROOT" || true
+    SF_ROOT=""
+  fi
   if [ -n "$UPD_CONTAINER" ]; then
     docker rm -f akari-smoke-upd >/dev/null 2>&1 || true
     UPD_CONTAINER=""
@@ -1214,10 +1220,51 @@ assert $DIRECT_RAW_AFTER == $DIRECT_RAW_BEFORE, 'the direct entrance is not bill
 python3 "$LOG/w28-vless.py" "$VLESS_D" 11446 3 >/dev/null 2>&1 && { echo "FAIL: the direct credential works on the relay inbound"; exit 1; }
 # Source filter: enforced in the kernel by agents with the capability;
 # others are flagged on the node (credential isolation only).
+SF_REQ="$LOG/state-main/update/source-filter-request.json"
+SF_ROOT=""
+sf_status() { vk get "akari:node:hb:$NODE_ID" | python3 -c "import json,sys; print(json.load(sys.stdin).get('source_filter'))"; }
+# R44: the agent has no CAP_NET_ADMIN; it hands the allowlist to its root
+# updater (akari-agent-update), played here once per request with sudo.
+sf_updater() {
+  sudo -n "$AGENT" -apply-update "$LOG/state-main" -updater-state "$SF_ROOT/state" >>"$LOG/sf-updater.log" 2>&1 \
+    || { echo "FAIL: the root updater run"; tail -5 "$LOG/sf-updater.log"; exit 1; }
+}
 if need_agent cap:source-filter "W28-a relay source filter"; then
+  for _ in $(seq 1 20); do [ -s "$SF_REQ" ] && break; sleep 0.5; done
+  python3 - "$SF_REQ" <<'PY' || { echo "FAIL: source filter request"; cat "$SF_REQ"; exit 1; }
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert r["schema"] == 1 and [(f["port"], f["cidrs"]) for f in r["filters"]] == [(11446, ["127.0.0.1/32"])], r
+PY
   for _ in $(seq 1 30); do vk get "akari:node:hb:$NODE_ID" | matches '"source_filter":{"applied":' && break; sleep 1; done
-  vk get "akari:node:hb:$NODE_ID" | matches '"source_filter":{"applied":' || { echo "FAIL: no source filter status"; exit 1; }
-  echo "source filter: $(vk get "akari:node:hb:$NODE_ID" | python3 -c "import json,sys; print(json.load(sys.stdin)['source_filter'])")"
+  sf_status | matches -F "'error': 'pending: " || { echo "FAIL: no pending source filter status: $(sf_status)"; exit 1; }
+  # Pending is not a node warning (the updater answers within seconds).
+  [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID")" = "200" ] && ! matches -F '来源 IP 过滤' </tmp/akari-smoke/last \
+    || { echo "FAIL: node flagged while the allowlist is pending"; exit 1; }
+  if sudo -n true 2>/dev/null && sudo -n sh -c 'command -v nft' >/dev/null 2>&1; then
+    SF_ROOT=$(mktemp -d)
+    sf_updater
+    [ ! -e "$SF_REQ" ] || { echo "FAIL: request not consumed"; exit 1; }
+    sudo -n nft list table inet akari_sources | matches -F 'tcp dport 11446 ct state new ip saddr != @s0_4 drop' \
+      || { echo "FAIL: nft table"; sudo -n nft list table inet akari_sources; exit 1; }
+    for _ in $(seq 1 20); do sf_status | matches -Fx "{'applied': True, 'error': None}" && break; sleep 1; done
+    sf_status | matches -Fx "{'applied': True, 'error': None}" || { echo "FAIL: source filter status $(sf_status)"; exit 1; }
+    # The kernel drops a new connection from outside the allowlist; the
+    # relay's address still gets through.
+    python3 - <<'PY' || { echo "FAIL: the allowlist does not drop other sources"; exit 1; }
+import socket
+s = socket.socket(); s.settimeout(2); s.bind(("127.0.0.3", 0))
+try:
+    s.connect(("127.0.0.1", 11446)); raise SystemExit("connected from 127.0.0.3")
+except socket.timeout:
+    pass
+PY
+    python3 "$LOG/w28-vless.py" "$VLESS_DR" 11446 || { echo "FAIL: the relay's address is filtered"; exit 1; }
+    echo "source filter: applied by the root updater (nft), other sources dropped"
+  else
+    [ -n "${GITHUB_ACTIONS:-}" ] && { echo "FAIL: CI runner without passwordless sudo + nft"; exit 1; }
+    echo "NOTE: no passwordless sudo/nft here: the root updater's nft step is akari-agent's systemd/openrc tests"
+  fi
 else
   [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID")" = "200" ] && matches -F '来源 IP 过滤' </tmp/akari-smoke/last \
     || { echo "FAIL: node not flagged for the missing source filter"; exit 1; }
@@ -1232,6 +1279,17 @@ fi
 refused "$VLESS_DR" 11446 || { echo "FAIL: a removed relay credential still works"; exit 1; }
 python3 "$LOG/w28-vless.py" "$VLESS_D" 11443 || { echo "FAIL: the direct entrance stopped working"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/entrances/$RELAY_ID")" = "204" ] || { echo "FAIL: delete relay"; exit 1; }
+if [ -n "$SF_ROOT" ]; then
+  # No relays left: the agent asks for the table's removal.
+  sf_empty() { python3 -c "import json,sys; sys.exit(json.load(open(sys.argv[1]))['filters'] != [])" "$SF_REQ" 2>/dev/null; }
+  for _ in $(seq 1 20); do sf_empty && break; sleep 0.5; done
+  sf_empty || { echo "FAIL: no removal request"; exit 1; }
+  sf_updater
+  sudo -n nft list table inet akari_sources >/dev/null 2>&1 && { echo "FAIL: allowlist table not removed"; exit 1; }
+  for _ in $(seq 1 20); do [ "$(sf_status)" = None ] && break; sleep 1; done
+  [ "$(sf_status)" = None ] || { echo "FAIL: source filter status after removal: $(sf_status)"; exit 1; }
+  sudo -n rm -rf "$SF_ROOT"
+fi
 [ "$(patch_code "$BASE/api/v1/plans/$ACCESS_PLAN" "{\"group_ids\":[\"$ACCESS_GROUP\"]}")" = "200" ] || { echo "FAIL: restore access plan"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/node-groups/$RELAY_GROUP")" = "204" ] || { echo "FAIL: delete relay group"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE target_id='$RELAY_ID' AND action IN ('entrance.create','entrance.update','entrance.delete')")" = "3" ] \

@@ -1626,7 +1626,14 @@ fn source_filter_warning(blob: &str) -> Option<String> {
         error: Option<String>,
     }
     let f = serde_json::from_str::<Blob>(blob).ok()?.source_filter?;
-    (!f.applied).then(|| {
+    // R44: the agent's root updater applies them within seconds; the agent
+    // says "pending: …" until then (and reports a missing updater after a
+    // minute).
+    let pending = f
+        .error
+        .as_deref()
+        .is_some_and(|e| e.starts_with("pending:"));
+    (!f.applied && !pending).then(|| {
         format!(
             "来源 IP 过滤未生效（{}）：中转入口目前只靠独立凭据隔离",
             f.error.as_deref().unwrap_or("原因未知")
@@ -3023,6 +3030,12 @@ mod tests {
             source_filter_warning(r#"{"source_filter":{"applied":true,"error":null}}"#).is_none()
         );
         assert!(source_filter_warning(r#"{"ts":"x"}"#).is_none());
+        assert!(
+            source_filter_warning(
+                r#"{"source_filter":{"applied":false,"error":"pending: waiting for the root updater"}}"#
+            )
+            .is_none()
+        );
         assert!(source_filter_warning("not json").is_none());
     }
 

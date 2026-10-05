@@ -148,7 +148,8 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   multiplier in the name when not 1x). Relay entrances (IPLC, forwarding
   VPS) are served on derived inbounds: the node's inbound on another port
   with their own credentials, reachable only from the relay's egress
-  addresses (nftables, agent capability `source-filter`).
+  addresses (nftables, agent capability `source-filter`; applied by the
+  agent's root updater: the agent has no `CAP_NET_ADMIN`).
   Agents report machine status with every heartbeat (CPU, load, memory/swap,
   disk, default-route interface rates and totals, TCP/UDP sockets, proxied
   connections, online users, RSS, uptime, xray version): latest values in
