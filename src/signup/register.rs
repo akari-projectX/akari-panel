@@ -6,11 +6,11 @@
 //! default while SMTP sending is off): `GET /auth/register/challenge` (a
 //! proof-of-work challenge, `pow.rs`) and `POST /auth/register` with
 //! `{email, password, pow: {challenge, nonce}, invite_code?}` → account
-//! with an UNVERIFIED address (login = the address) + session. The code
+//! with an UNVERIFIED address (still its login name, D1) + session. The code
 //! endpoint is the canonical rejection in that mode, the challenge endpoint
 //! in the verified mode. Residual oracle (inherent: a registration that
 //! succeeds creates a loginable account): an address already taken (any
-//! account's login or verified address) gets the one generic
+//! account's address, verified or not) gets the one generic
 //! `signup.unavailable`; enumeration is bounded by the proof of work and
 //! the per-client / per-address limits (`limit_register`).
 
@@ -53,6 +53,9 @@ pub struct CodeReq {
     pub invite_code: Option<String>,
     #[serde(default)]
     pub locale: Option<String>,
+    /// v0.4: honeypot / form token / Turnstile (`botguard`).
+    #[serde(default)]
+    pub guard: Option<crate::botguard::Guard>,
 }
 
 #[derive(Deserialize)]
@@ -77,6 +80,9 @@ pub struct RegisterReq {
     pub invite_code: Option<String>,
     #[serde(default)]
     pub locale: Option<String>,
+    /// v0.4: honeypot / form token / Turnstile (`botguard`).
+    #[serde(default)]
+    pub guard: Option<crate::botguard::Guard>,
 }
 
 /// Address + invite checks shared by both steps (they depend only on the
@@ -124,15 +130,28 @@ pub async fn request_code(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, ApiError> {
-    let Some((s, _)) = super::settings_with_mail(&state)
+    let Some(s) = super::settings_or_none(&state)
         .await
-        .filter(|(s, mail)| s.register_enabled && s.verification_required(*mail))
+        .filter(|s| s.register_enabled && s.email_verify)
     else {
         return Ok(crate::reject::not_found());
     };
     let req: CodeReq = read_json(body).await?;
-    let (addr, _) = admit(&state, &s, &req.email, req.invite_code.as_deref()).await?;
     let client = state.client_ip(peer.ip(), &headers);
+    // A trapped request gets the answer every request gets (and nothing
+    // is sent).
+    if crate::botguard::check_form(
+        &state,
+        crate::botguard::Form::RegisterCode,
+        req.guard.as_ref(),
+        client,
+    )
+    .await?
+        == crate::botguard::Verdict::Trap
+    {
+        return Ok(super::ok_json(json!({ "ok": true })));
+    }
+    let (addr, _) = admit(&state, &s, &req.email, req.invite_code.as_deref()).await?;
     super::limit_send(&state, &crate::client_ip::bucket(client), &addr).await?;
     let locale = Locale::parse(req.locale.as_deref().unwrap_or("zh"));
     // Everything that depends on the address having an account happens
@@ -158,13 +177,10 @@ async fn send_code(
         tracing::warn!("registration code requested while mail sending is disabled");
         return Ok(());
     }
-    let taken: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM users WHERE login = $1 \
-         OR (email = $1 AND email_verified_at IS NOT NULL))",
-    )
-    .bind(addr)
-    .fetch_one(&mut *tx)
-    .await?;
+    let taken: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE email = $1)")
+        .bind(addr)
+        .fetch_one(&mut *tx)
+        .await?;
     if taken {
         let t = Template::RegisterExists {
             reset_enabled,
@@ -218,14 +234,14 @@ pub struct Registration<'a> {
 #[derive(Debug)]
 pub struct Registered {
     pub id: Uuid,
-    pub login: String,
+    pub email: String,
     pub session_ver: i64,
     pub inviter: Option<Uuid>,
     pub trial: Option<Uuid>,
 }
 
 /// The registration transaction body: check + consume the code, consume
-/// the invite, create the account (login = address, verified), audit, then
+/// the invite, create the account (address verified), audit, then
 /// the optional trial plan under a savepoint. `Ok(None)` = invalid code
 /// (the caller commits so the wrong attempt counts). Errors roll back.
 pub async fn apply_register(
@@ -266,8 +282,8 @@ pub async fn apply_register(
     let id = Uuid::new_v4();
     let mut sp = conn.begin().await?;
     let inserted = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO users (id, login, password_hash, role, email, email_verified_at, locale, \
-         inviter_id) VALUES ($1, $2, $3, 'user', $2, now(), $4, $5) RETURNING session_ver",
+        "INSERT INTO users (id, email, email_verified_at, password_hash, role, locale, \
+         inviter_id) VALUES ($1, $2, now(), $3, 'user', $4, $5) RETURNING session_ver",
     )
     .bind(id)
     .bind(addr)
@@ -281,7 +297,7 @@ pub async fn apply_register(
             sp.commit().await?;
             v
         }
-        // The address (or a login equal to it) was taken after the code
+        // The address was taken after the code
         // was sent: the same answer as a wrong code.
         Err(sqlx::Error::Database(d)) if d.is_unique_violation() => {
             sp.rollback().await?;
@@ -289,7 +305,7 @@ pub async fn apply_register(
         }
         Err(e) => return Err(e.into()),
     };
-    let actor = Actor::account(id, addr, ip);
+    let actor = Actor::account(id, ip);
     crate::audit::record(
         conn,
         &actor,
@@ -298,7 +314,7 @@ pub async fn apply_register(
         Some(id.to_string()),
         None,
         Some(json!({
-            "login": addr, "email": addr, "inviter_id": inviter,
+            "email": addr, "inviter_id": inviter,
             "invite_code": invite_code.is_some(), "password": crate::audit::CHANGED,
         })),
     )
@@ -318,7 +334,7 @@ pub async fn apply_register(
     };
     Ok(Some(Registered {
         id,
-        login: addr.to_string(),
+        email: addr.to_string(),
         session_ver,
         inviter,
         trial,
@@ -335,16 +351,9 @@ async fn grant_trial(
     days: i32,
 ) -> Result<Option<Uuid>, ApiError> {
     let mut sp = conn.begin().await?;
-    let expires_at: chrono::DateTime<chrono::Utc> =
-        sqlx::query_scalar("SELECT now() + make_interval(days => $1)")
-            .bind(days)
-            .fetch_one(&mut *sp)
-            .await?;
     let req = crate::plans::SetUserPlanReq {
         plan_id,
-        expires_at: Some(expires_at),
-        period_anchor: None,
-        reset_traffic: None,
+        term: crate::plans::Term::new(crate::billing::catalog::PeriodKind::Days, Some(days))?,
     };
     match crate::plans::apply_set_user_plan(&mut sp, actor, user, &req).await {
         Ok(_) => {
@@ -360,7 +369,7 @@ async fn grant_trial(
 }
 
 /// The one answer to an address that cannot be registered without
-/// verification (taken by any account's login or verified address, or a
+/// verification (taken by any account, or a
 /// race lost): no detail.
 pub fn unavailable() -> ApiError {
     bad_request!(
@@ -372,9 +381,9 @@ pub fn unavailable() -> ApiError {
 /// GET /{prefix}/auth/register/challenge → `{challenge, bits}` (W24;
 /// registration without verification only, else the canonical rejection).
 pub async fn challenge(State(state): State<AppState>) -> Response {
-    let open = super::settings_with_mail(&state)
+    let open = super::settings_or_none(&state)
         .await
-        .is_some_and(|(s, mail)| s.register_enabled && !s.verification_required(mail));
+        .is_some_and(|s| s.register_enabled && !s.email_verify);
     if !open {
         return crate::reject::not_found();
     }
@@ -429,8 +438,8 @@ pub struct Unverified<'a> {
 
 /// W24: create an account with an UNVERIFIED address, in the caller's
 /// transaction: (entitle::lock when a trial is granted) → address lock →
-/// taken check (any account's login or verified address = the generic
-/// `unavailable`) → invite → insert (login = address; a unique violation is
+/// taken check (any account's address = the generic
+/// `unavailable`) → invite → insert (a unique violation is
 /// the same answer) → audit → optional trial.
 pub async fn apply_register_unverified(
     conn: &mut PgConnection,
@@ -448,13 +457,10 @@ pub async fn apply_register_unverified(
         crate::entitle::lock(conn).await?;
     }
     super::lock_address(conn, addr).await?;
-    let taken: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM users WHERE login = $1 \
-         OR (email = $1 AND email_verified_at IS NOT NULL))",
-    )
-    .bind(addr)
-    .fetch_one(&mut *conn)
-    .await?;
+    let taken: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE email = $1)")
+        .bind(addr)
+        .fetch_one(&mut *conn)
+        .await?;
     if taken {
         return Err(unavailable());
     }
@@ -469,8 +475,8 @@ pub async fn apply_register_unverified(
     let id = Uuid::new_v4();
     let mut sp = conn.begin().await?;
     let inserted = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO users (id, login, password_hash, role, email, email_verified_at, locale, \
-         inviter_id) VALUES ($1, $2, $3, 'user', $2, NULL, $4, $5) RETURNING session_ver",
+        "INSERT INTO users (id, email, password_hash, role, locale, inviter_id) \
+         VALUES ($1, $2, $3, 'user', $4, $5) RETURNING session_ver",
     )
     .bind(id)
     .bind(addr)
@@ -490,7 +496,7 @@ pub async fn apply_register_unverified(
         }
         Err(e) => return Err(e.into()),
     };
-    let actor = Actor::account(id, addr, ip);
+    let actor = Actor::account(id, ip);
     crate::audit::record(
         conn,
         &actor,
@@ -499,7 +505,7 @@ pub async fn apply_register_unverified(
         Some(id.to_string()),
         None,
         Some(json!({
-            "login": addr, "email": addr, "email_verified": false, "inviter_id": inviter,
+            "email": addr, "email_verified": false, "inviter_id": inviter,
             "invite_code": invite_code.is_some(), "password": crate::audit::CHANGED,
         })),
     )
@@ -518,7 +524,7 @@ pub async fn apply_register_unverified(
     };
     Ok(Registered {
         id,
-        login: addr.to_string(),
+        email: addr.to_string(),
         session_ver,
         inviter,
         trial,
@@ -536,9 +542,9 @@ pub async fn register(
     jar: CookieJar,
     body: Body,
 ) -> Result<Response, ApiError> {
-    let Some((s, mail)) = super::settings_with_mail(&state)
+    let Some(s) = super::settings_or_none(&state)
         .await
-        .filter(|(s, _)| s.register_enabled)
+        .filter(|s| s.register_enabled)
     else {
         return Ok(crate::reject::not_found());
     };
@@ -546,7 +552,23 @@ pub async fn register(
     super::check_password(&req.password)?;
     let client = state.client_ip(peer.ip(), &headers);
     let bucket = crate::client_ip::bucket(client);
-    let verify = s.verification_required(mail);
+    let verify = s.email_verify;
+    // A trapped registration gets the generic refusal of its mode.
+    if crate::botguard::check_form(
+        &state,
+        crate::botguard::Form::Register,
+        req.guard.as_ref(),
+        client,
+    )
+    .await?
+        == crate::botguard::Verdict::Trap
+    {
+        return Err(if verify {
+            invalid_code()
+        } else {
+            unavailable()
+        });
+    }
     let locale = Locale::parse(req.locale.as_deref().unwrap_or("zh"));
     let r = if verify {
         super::limit_complete(&state, &bucket).await?;
@@ -613,12 +635,12 @@ pub async fn register(
         tx.commit().await?;
         r
     };
-    let token = auth::issue_token(&state, r.id, "user", r.session_ver, auth::Stage::Full)?;
-    let jar = jar.add(auth::session_cookie(&state, token, auth::Stage::Full));
+    let token = auth::issue_token(&state, r.id, "user", r.session_ver)?;
+    let jar = jar.add(auth::session_cookie(&state, token));
     Ok((
         jar,
         Json(json!({
-            "id": r.id, "login": r.login, "role": "user", "stage": "full",
+            "id": r.id, "email": r.email, "role": "user",
             "expired": false, "quota_exhausted": false, "trial": r.trial.is_some(),
             "invited": r.inviter.is_some(), "email_verified": verify,
         })),

@@ -1,5 +1,5 @@
 //! The outbox sender (W15): runs on every panel instance (`run`, started
-//! from main). Each tick, while SMTP is enabled, it claims due rows ONE at a
+//! from main). Each tick, while sending is enabled, it claims due rows ONE at a
 //! time (`claim`: `FOR UPDATE SKIP LOCKED` picks a row no other instance is
 //! claiming, the UPDATE sets a lease `claimed_until` and a fresh
 //! `claim_token`), sends it, and settles it with an UPDATE conditioned on
@@ -17,48 +17,18 @@
 //! Settling clears the body of every sent row and of dead rows that carry
 //! a secret. Nothing here logs a body, an address or a code.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::time::Duration;
 
-use lettre::message::{Mailbox, MultiPart, SinglePart, header::ContentType};
-use lettre::transport::smtp::authentication::Credentials;
-use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::Smtp;
+use super::transport::{OutMsg, SendError, Transport};
 use crate::state::AppState;
-
-/// One message, rendered.
-#[derive(Debug, Clone)]
-pub struct OutMsg {
-    pub to: String,
-    pub subject: String,
-    pub text: String,
-    pub html: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct SendError {
-    /// Retrying cannot help (5xx reply, unusable address).
-    pub permanent: bool,
-    pub message: String,
-}
-
-pub type SendFuture<'a> = Pin<Box<dyn Future<Output = Result<(), SendError>> + Send + 'a>>;
-
-/// Something that delivers a message (SMTP in production; tests count).
-pub trait Transport: Send + Sync {
-    fn send<'a>(&'a self, msg: &'a OutMsg) -> SendFuture<'a>;
-}
 
 /// Lease of a claimed row; must exceed `SEND_TIMEOUT` with margin.
 pub const LEASE_SECS: i64 = 180;
-/// Upper bound of one delivery (connect, TLS, AUTH, DATA).
+/// Upper bound of one delivery (connect, TLS, AUTH, DATA / one API call).
 pub const SEND_TIMEOUT: Duration = Duration::from_secs(60);
-/// Per-command SMTP timeout.
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 /// Attempts before a transient failure becomes a dead letter (~2 h).
 pub const MAX_ATTEMPTS: i32 = 8;
 /// Messages per tick per instance (then the loop yields a tick).
@@ -76,95 +46,6 @@ pub const SECRET_KINDS: &str = "('register_code', 'email_code', 'password_reset'
 pub fn backoff(attempts: i32) -> i64 {
     let n = attempts.clamp(1, 16) - 1;
     (30_i64 << n).min(3600)
-}
-
-struct Lettre {
-    inner: AsyncSmtpTransport<Tokio1Executor>,
-    from: Mailbox,
-    domain: String,
-}
-
-impl Transport for Lettre {
-    fn send<'a>(&'a self, msg: &'a OutMsg) -> SendFuture<'a> {
-        Box::pin(async move {
-            let to: Mailbox = msg.to.parse().map_err(|_| SendError {
-                permanent: true,
-                message: "invalid recipient address".into(),
-            })?;
-            let m = Message::builder()
-                .from(self.from.clone())
-                .to(to)
-                .subject(msg.subject.clone())
-                .message_id(Some(format!(
-                    "<{}@{}>",
-                    Uuid::new_v4().simple(),
-                    self.domain
-                )))
-                .multipart(
-                    MultiPart::alternative()
-                        .singlepart(
-                            SinglePart::builder()
-                                .header(ContentType::TEXT_PLAIN)
-                                .body(msg.text.clone()),
-                        )
-                        .singlepart(
-                            SinglePart::builder()
-                                .header(ContentType::TEXT_HTML)
-                                .body(msg.html.clone()),
-                        ),
-                )
-                .map_err(|e| SendError {
-                    permanent: true,
-                    message: format!("message: {e}"),
-                })?;
-            match self.inner.send(m).await {
-                Ok(_) => Ok(()),
-                Err(e) => Err(SendError {
-                    permanent: e.is_permanent(),
-                    message: e.to_string().chars().take(300).collect(),
-                }),
-            }
-        })
-    }
-}
-
-/// The SMTP transport for the saved settings. Errors are admin-facing text
-/// (no secrets).
-pub fn smtp_transport(smtp: &Smtp, keys: &crate::totp::Keys) -> Result<Box<dyn Transport>, String> {
-    let host = smtp.host.as_deref().ok_or("no SMTP host")?;
-    let from_addr = smtp.from_addr.as_deref().ok_or("no sender address")?;
-    let port = u16::try_from(smtp.port).map_err(|_| "invalid port")?;
-    let builder = match smtp.security.as_str() {
-        "tls" => AsyncSmtpTransport::<Tokio1Executor>::relay(host)
-            .map_err(|e| format!("TLS setup: {e}"))?,
-        "starttls" => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
-            .map_err(|e| format!("TLS setup: {e}"))?,
-        _ => AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host),
-    };
-    let mut builder = builder.port(port).timeout(Some(COMMAND_TIMEOUT));
-    if let Some(user) = &smtp.username {
-        let password = match &smtp.password_enc {
-            Some(blob) => {
-                let pt = keys.open(super::SMTP_AAD, blob).ok_or(
-                    "the stored SMTP password cannot be decrypted (data/totp.key changed?); enter it again",
-                )?;
-                String::from_utf8(pt).map_err(|_| "stored SMTP password is not UTF-8")?
-            }
-            None => String::new(),
-        };
-        builder = builder.credentials(Credentials::new(user.clone(), password));
-    }
-    let from = Mailbox::new(
-        Some(smtp.sender_name().to_string()),
-        from_addr
-            .parse()
-            .map_err(|_| "the sender address is invalid")?,
-    );
-    Ok(Box::new(Lettre {
-        inner: builder.build(),
-        from,
-        domain: crate::signup::email::domain_of(from_addr).to_string(),
-    }))
 }
 
 #[derive(sqlx::FromRow)]
@@ -349,8 +230,11 @@ pub async fn run(state: AppState) {
     let mut last_notices = tokio::time::Instant::now();
     let mut last_maintain: Option<tokio::time::Instant> = None;
     let mut last_announce: Option<tokio::time::Instant> = None;
+    use crate::sysstatus::{Job, Outcome};
+    let status = state.sysstatus();
     loop {
         tick.tick().await;
+        let started = std::time::Instant::now();
         if last_maintain.is_none_or(|t| t.elapsed() >= MAINTAIN_EVERY) {
             last_maintain = Some(tokio::time::Instant::now());
             if let Err(e) = maintain(state.pg()).await {
@@ -362,15 +246,18 @@ pub async fn run(state: AppState) {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::warn!(error = %e, "mail settings unavailable");
+                    status.record(Job::Mail, started, Outcome::Error, Some(&e.to_string()));
                     continue;
                 }
             },
             Err(e) => {
                 tracing::warn!(error = %e, "mail sender: no database connection");
+                status.record(Job::Mail, started, Outcome::Error, Some(&e.to_string()));
                 continue;
             }
         };
         if !smtp.enabled {
+            status.record(Job::Mail, started, Outcome::Skipped, None);
             continue;
         }
         if last_notices.elapsed() >= NOTICES_EVERY {
@@ -389,14 +276,17 @@ pub async fn run(state: AppState) {
                 Err(e) => tracing::warn!(error = %e, "announcement mail pass failed"),
             }
         }
-        let transport = match smtp_transport(&smtp, state.totp()) {
+        let transport = match super::transport::build(&smtp, state.totp()) {
             Ok(t) => t,
             Err(e) => {
-                tracing::error!(error = %e, "mail sender: SMTP settings unusable");
+                tracing::error!(error = %e, provider = %smtp.provider, "mail sender: mail settings unusable");
+                status.record(Job::Mail, started, Outcome::Error, Some(&e));
                 continue;
             }
         };
-        if let Err(e) = deliver_due(state.pg(), transport.as_ref(), PER_TICK).await {
+        let res = deliver_due(state.pg(), transport.as_ref(), PER_TICK).await;
+        status.record_result(Job::Mail, started, &res);
+        if let Err(e) = res {
             tracing::warn!(error = %e, "mail sender tick failed");
         }
     }

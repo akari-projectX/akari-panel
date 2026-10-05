@@ -14,11 +14,15 @@ const calls = [];
 globalThis.location = { pathname: "/pfx0123/app/users" };
 globalThis.fetch = async (url, init) => {
   calls.push({ url, method: init?.method ?? "GET" });
-  return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  // W27: /auth/options carries the form guard (fetched once, then reused).
+  const body = String(url).endsWith("/auth/options")
+    ? { guard: { form_token: "t", form_min_secs: 0, honeypot: true, turnstile: null } }
+    : {};
+  return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 };
 
 const api = await import("../src/lib/api.ts");
-await api.login({ login: "a", password: "b" });
+await api.login({ email: "a@b.cc", password: "b" });
 await api.logout();
 await api.get("/me");
 // W15 public self-service endpoints are /auth/* too.
@@ -29,6 +33,8 @@ await api.requestReset({ email: "a@b.cc" });
 await api.resetPassword({ token: "t", password: "password" });
 
 const want = [
+  // W27: the first guarded form fetches /auth/options for its form token.
+  { url: "/pfx0123/auth/options", method: "GET" },
   { url: "/pfx0123/auth/login", method: "POST" },
   { url: "/pfx0123/auth/logout", method: "POST" },
   { url: "/pfx0123/api/v1/me", method: "GET" },

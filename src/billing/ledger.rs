@@ -92,9 +92,9 @@ pub async fn apply_entry(
     e: &Entry<'_>,
 ) -> Result<(i64, i64), ApiError> {
     let row: Option<(i64, i64)> = sqlx::query_as(
-        "INSERT INTO balance_ledger (user_id, user_login, kind, amount_cents, order_id, \
-         commission_id, withdrawal_id, reason, actor_login) \
-         SELECT u.id, u.login, $2, $3, $4, $5, $6, $7, $8 FROM users u WHERE u.id = $1 \
+        "INSERT INTO balance_ledger (user_id, user_label, kind, amount_cents, order_id, \
+         commission_id, withdrawal_id, reason, actor_label) \
+         SELECT u.id, $9, $2, $3, $4, $5, $6, $7, $8 FROM users u WHERE u.id = $1 \
          RETURNING id, balance_after_cents",
     )
     .bind(e.user_id)
@@ -104,7 +104,8 @@ pub async fn apply_entry(
     .bind(e.commission_id)
     .bind(e.withdrawal_id)
     .bind(e.reason)
-    .bind(&actor.login)
+    .bind(&actor.label)
+    .bind(crate::audit::user_label(e.user_id))
     .fetch_optional(&mut *conn)
     .await?;
     let Some((id, after)) = row else {
@@ -201,8 +202,10 @@ pub struct AdminEntryView {
     #[sqlx(flatten)]
     entry: EntryView,
     user_id: Option<Uuid>,
-    user_login: String,
-    actor_login: String,
+    /// Q4: non-personal snapshot labels (`audit::user_label` / cli /
+    /// system).
+    user_label: String,
+    actor_label: String,
 }
 
 const ENTRY_COLS: &str = "l.id, l.kind, l.amount_cents, l.balance_after_cents, l.order_id, \
@@ -222,7 +225,7 @@ async fn entries(
     q: &PageQuery,
 ) -> sqlx::Result<Vec<AdminEntryView>> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT {ENTRY_COLS}, l.user_id, l.user_login, l.actor_login FROM balance_ledger l \
+        "SELECT {ENTRY_COLS}, l.user_id, l.user_label, l.actor_label FROM balance_ledger l \
          LEFT JOIN orders o ON o.id = l.order_id \
          WHERE l.user_id = $1 AND ($2::bigint IS NULL OR l.id < $2) \
          ORDER BY l.id DESC LIMIT $3"
@@ -260,21 +263,21 @@ pub async fn my_balance(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BalancesQuery {
-    /// Exact login.
-    pub login: Option<String>,
+    /// Exact email address (any case).
+    pub email: Option<String>,
     pub limit: Option<i64>,
 }
 
 #[derive(Serialize, sqlx::FromRow, Debug)]
 pub struct BalanceRow {
     user_id: Uuid,
-    login: String,
+    email: String,
     balance_cents: i64,
     updated_at: DateTime<Utc>,
 }
 
 /// GET /balances: customers holding a balance row (largest first), or
-/// the customer with this exact login (balance 0 when they never had one,
+/// the customer with this exact address (balance 0 when they never had one,
 /// so an admin can find anyone to adjust). Admin.
 pub async fn list_balances(
     State(state): State<AppState>,
@@ -283,13 +286,17 @@ pub async fn list_balances(
 ) -> Result<Json<Vec<BalanceRow>>, ApiError> {
     user.require_admin()?;
     let rows = sqlx::query_as(
-        "SELECT u.id AS user_id, u.login, COALESCE(b.balance_cents, 0) AS balance_cents, \
+        "SELECT u.id AS user_id, u.email, COALESCE(b.balance_cents, 0) AS balance_cents, \
          COALESCE(b.updated_at, u.created_at) AS updated_at \
          FROM users u LEFT JOIN user_balances b ON b.user_id = u.id \
-         WHERE u.role = 'user' AND (($1::text IS NULL AND b.user_id IS NOT NULL) OR u.login = $1) \
-         ORDER BY balance_cents DESC, u.login LIMIT $2",
+         WHERE u.role = 'user' AND (($1::text IS NULL AND b.user_id IS NOT NULL) OR u.email = $1) \
+         ORDER BY balance_cents DESC, u.email LIMIT $2",
     )
-    .bind(q.login.filter(|l| !l.is_empty()))
+    .bind(
+        q.email
+            .map(|e| e.trim().to_lowercase())
+            .filter(|e| !e.is_empty()),
+    )
     .bind(q.limit.unwrap_or(100).clamp(1, 500))
     .fetch_all(state.pg())
     .await?;
@@ -305,11 +312,11 @@ pub async fn user_balance(
 ) -> Result<Json<Value>, ApiError> {
     user.require_admin()?;
     let mut c = state.pg().acquire().await?;
-    let login: Option<String> = sqlx::query_scalar("SELECT login FROM users WHERE id = $1")
+    let email: Option<String> = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
         .bind(id)
         .fetch_optional(&mut *c)
         .await?;
-    let Some(login) = login else {
+    let Some(email) = email else {
         return Err(ApiError::not_found());
     };
     let balance = balance(&mut c, id).await?;
@@ -317,7 +324,7 @@ pub async fn user_balance(
     let rows = entries(&mut c, id, &q).await?;
     Ok(Json(json!({
         "user_id": id,
-        "login": login,
+        "email": email,
         "balance_cents": balance,
         "withdrawable_cents": withdrawable,
         "entries": rows,

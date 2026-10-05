@@ -5,8 +5,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "e2e",
-  // One panel, shared accounts, ordered steps (2FA enrollment changes the
-  // admin's login): serial.
+  // One panel, shared accounts, ordered steps: serial.
   workers: 1,
   fullyParallel: false,
   timeout: 120_000,

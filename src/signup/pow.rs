@@ -6,7 +6,7 @@
 //!
 //! Challenge (stateless): `v1.<unix secs>.<16 random bytes hex>.<mac>`,
 //! mac = first 16 bytes of HMAC-SHA256 (`totp::Keys::pow_mac`, key from
-//! data/totp.key) over everything before it. A solution is a nonce (1–32
+//! data/master.key) over everything before it. A solution is a nonce (1–32
 //! ASCII alphanumerics) such that SHA-256(challenge ‖ ":" ‖ nonce) starts
 //! with `BITS` zero bits. Valid for `TTL_SECS`; single use (Valkey
 //! `SET NX`, all instances; fail closed).

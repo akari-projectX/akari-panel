@@ -63,6 +63,8 @@ struct Inner {
     /// W11: latest machine status of the nodes whose stream this instance
     /// holds (Prometheus fleet gauges) and the history write permits.
     nodestat: crate::nodestat::Local,
+    /// W31: this instance's id, job stats and 系统状态 cache.
+    sysstatus: crate::sysstatus::Local,
 }
 
 /// Counts a running agent session task (see `AppState::live_sessions`).
@@ -105,6 +107,7 @@ impl AppState {
             payments: arc_swap::ArcSwap::from_pointee(Default::default()),
             settings,
             nodestat: crate::nodestat::Local::default(),
+            sysstatus: crate::sysstatus::Local::default(),
         }))
     }
 
@@ -120,8 +123,10 @@ impl AppState {
     pub fn install(&self) -> &Install {
         &self.0.install
     }
+    /// The master-key derived keys (data/master.key; totp.rs). The name is
+    /// historical (see totp.rs).
     pub fn totp(&self) -> &crate::totp::Keys {
-        &self.0.install.totp
+        &self.0.install.keys
     }
     pub fn pg(&self) -> &PgPool {
         &self.0.pg
@@ -152,6 +157,9 @@ impl AppState {
     }
     pub fn nodestat(&self) -> &crate::nodestat::Local {
         &self.0.nodestat
+    }
+    pub fn sysstatus(&self) -> &crate::sysstatus::Local {
+        &self.0.sysstatus
     }
     pub fn traffic(&self) -> &TrafficBuffer {
         &self.0.traffic
@@ -266,7 +274,7 @@ impl AppState {
             server_cert_pem: String::new(),
             server_key_pem: String::new(),
             jwt_secret: "test".into(),
-            totp: crate::totp::Keys::from_material(&[0x42; 32]).expect("test totp keys"),
+            keys: crate::totp::Keys::from_material(&[0x42; 32]).expect("test master keys"),
         };
         Self::new(cfg, install, pg, valkey)
     }

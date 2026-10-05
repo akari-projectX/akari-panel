@@ -220,7 +220,7 @@ try:
     ctx = ssl.create_default_context(cafile=ROOT)
 
     # --- a user (D3: through a plan granting the node's direct entrance) ----------
-    st, u = api("POST", "/api/v1/users", {"login": "acme-user", "password": "user-password-123"})
+    st, u = api("POST", "/api/v1/users", {"email": "acme-user@smoke.test", "password": "user-password-123"})
     if st != 201:
         fail(f"create acme user: {st} {u}")
     USER, SUB = u["id"], u["sub_token"]
@@ -230,7 +230,7 @@ try:
     st, pl = api("POST", "/api/v1/plans", {"name": "acme-plan", "period": "monthly", "group_ids": [g["id"]]})
     if st != 201:
         fail(f"create acme plan: {st} {pl}")
-    st, r = api("PUT", f"/api/v1/users/{USER}/plan", {"plan_id": pl["id"]})
+    st, r = api("PUT", f"/api/v1/users/{USER}/plan", {"plan_id": pl["id"], "period": "month"})
     if st != 200:
         fail(f"acme user plan: {st} {r}")
 

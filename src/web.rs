@@ -26,6 +26,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::billing::methods::routes())
         // W15: registration / reset / invites / 系统设置 → 注册, 邮件.
         .merge(crate::signup::routes())
+        .merge(crate::passkey::routes())
         .merge(crate::mail::routes())
         // W22: traffic history (admin + /me/traffic).
         .merge(crate::trafficlog::routes())
@@ -36,6 +37,9 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::announcements::routes())
         .merge(crate::kb::routes())
         .merge(crate::branding::routes())
+        .merge(crate::sysstatus::routes())
+        // W29: node block rules (审计规则) and the per-node switch.
+        .merge(crate::blockrules::routes())
         // R23: two bundles. The user portal (and shared login) is public;
         // the admin console's index and assets answer admin sessions only
         // (everything else under /admin is the canonical rejection).
@@ -54,19 +58,6 @@ pub fn router(state: AppState) -> Router {
         .route("/{prefix}/auth/login", post(api::login))
         .route("/{prefix}/auth/logout", post(api::logout))
         .route("/{prefix}/api/v1/me", get(api::me))
-        .route("/{prefix}/api/v1/me/totp", get(account::totp_status))
-        .route(
-            "/{prefix}/api/v1/me/totp/enroll",
-            post(account::totp_enroll),
-        )
-        .route(
-            "/{prefix}/api/v1/me/totp/confirm",
-            post(account::totp_confirm),
-        )
-        .route(
-            "/{prefix}/api/v1/me/totp/recovery-codes",
-            post(account::regenerate_recovery_codes),
-        )
         .route(
             "/{prefix}/api/v1/me/sub-token",
             post(account::regenerate_own_sub_token),
@@ -83,7 +74,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/{prefix}/api/v1/users/{id}",
-            axum::routing::patch(api::update_user).delete(api::delete_user),
+            get(api::user_detail)
+                .patch(api::update_user)
+                .delete(api::delete_user),
         )
         .route(
             "/{prefix}/api/v1/users/{id}/revoke-sessions",
@@ -98,16 +91,18 @@ pub fn router(state: AppState) -> Router {
             get(api::user_subscription),
         )
         .route(
-            "/{prefix}/api/v1/users/{id}/totp",
-            axum::routing::delete(api::reset_totp),
-        )
-        .route(
             "/{prefix}/api/v1/users/{id}/plan",
             get(plans::get_user_plan)
                 .put(plans::set_user_plan)
-                .patch(plans::update_user_plan)
+                .patch(plans::renew_user_plan)
                 .delete(plans::cancel_user_plan),
         )
+        .route(
+            "/{prefix}/api/v1/users/{id}/plan/reset-traffic",
+            post(plans::reset_user_traffic),
+        )
+        .route("/{prefix}/api/v1/users/{id}/ban", post(api::ban_user))
+        .route("/{prefix}/api/v1/users/{id}/unban", post(api::unban_user))
         .route(
             "/{prefix}/api/v1/node-groups",
             get(plans::list_groups).post(plans::create_group),

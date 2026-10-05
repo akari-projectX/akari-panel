@@ -196,7 +196,10 @@ pub struct OrderView {
     id: Uuid,
     out_trade_no: String,
     user_id: Option<Uuid>,
-    user_login: String,
+    /// Q4: non-personal snapshot label (`audit::user_label`); the address
+    /// is `user_email` (null once the account is gone).
+    user_label: String,
+    user_email: Option<String>,
     plan_id: Option<Uuid>,
     plan_name: String,
     amount_cents: i64,
@@ -232,7 +235,8 @@ pub struct OrderView {
     payment_method_name: Option<String>,
 }
 
-const ORDER_SQL: &str = "SELECT id, out_trade_no, user_id, user_login, plan_id, plan_name, \
+const ORDER_SQL: &str = "SELECT id, out_trade_no, user_id, user_label, \
+     (SELECT u.email FROM users u WHERE u.id = orders.user_id) AS user_email, plan_id, plan_name, \
      amount_cents, period, period_days, list_price_cents, credit_cents, credit_order_id, \
      discount_cents, coupon_id, coupon_code, balance_cents, balance_state, gift_cents, \
      refunded_at, refund_cents, refund_reason, status, trade_no, paid_via, paid_amount_cents, manual_reason, \
@@ -697,7 +701,7 @@ pub async fn create_order(
     let coupon = coupon.filter(|_| split.discount_cents > 0);
     let subject: String = format!("Akari - {}", plan.name).chars().take(128).collect();
     let r = sqlx::query_scalar::<_, Value>(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO orders (id, out_trade_no, user_id, user_login, plan_id, plan_name, \
+        "INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_id, plan_name, \
          amount_cents, period, period_days, list_price_cents, credit_cents, credit_order_id, \
          discount_cents, coupon_id, coupon_code, balance_cents, balance_state, \
          subject, expires_at, payment_method_id) \
@@ -710,7 +714,7 @@ pub async fn create_order(
     .bind(id)
     .bind(&out_trade_no)
     .bind(user.id)
-    .bind(&user.login)
+    .bind(crate::audit::user_label(user.id))
     .bind(req.plan_id)
     .bind(&plan.name)
     .bind(split.amount_cents)
@@ -937,7 +941,8 @@ pub async fn cancel_order(
 #[serde(deny_unknown_fields)]
 pub struct ListOrdersQuery {
     pub status: Option<String>,
-    pub login: Option<String>,
+    /// The buyer's current email address (exact, any case).
+    pub email: Option<String>,
     pub out_trade_no: Option<String>,
     /// Keyset cursor: orders older than this order id.
     pub before: Option<Uuid>,
@@ -964,8 +969,10 @@ pub async fn list_orders(
     if let Some(s) = &q.status {
         qb.push(" AND status = ").push_bind(s.clone());
     }
-    if let Some(l) = q.login.as_deref().filter(|l| !l.is_empty()) {
-        qb.push(" AND user_login = ").push_bind(l.to_string());
+    if let Some(e) = q.email.as_deref().filter(|e| !e.is_empty()) {
+        qb.push(" AND user_id = (SELECT u.id FROM users u WHERE u.email = ")
+            .push_bind(e.trim().to_lowercase())
+            .push(")");
     }
     if let Some(o) = q.out_trade_no.as_deref().filter(|o| !o.is_empty()) {
         qb.push(" AND (out_trade_no = ")

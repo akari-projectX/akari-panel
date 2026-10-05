@@ -1,12 +1,11 @@
 //! W20 real-database HTTP tests: the subscription link stored encrypted at
-//! rest (B1), the two-step login (M9) and the automatic first invite code
+//! rest (B1) and the automatic first invite code
 //! (Minor 6).
 
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use axum::http::StatusCode;
-use fred::prelude::KeysInterface;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -22,7 +21,7 @@ const PW: &str = "w20-password-123";
 async fn user_with_password(db: &TestDb) -> (Uuid, String) {
     let id = db.user().await;
     let login: String =
-        sqlx::query_scalar("UPDATE users SET password_hash = $2 WHERE id = $1 RETURNING login")
+        sqlx::query_scalar("UPDATE users SET password_hash = $2 WHERE id = $1 RETURNING email")
             .bind(id)
             .bind(auth::hash_password(PW).unwrap())
             .fetch_one(&db.pool)
@@ -33,7 +32,7 @@ async fn user_with_password(db: &TestDb) -> (Uuid, String) {
 
 async fn signed_in(state: &AppState, login: &str) -> Client {
     let mut c = Client::new(state, rand_ip());
-    let r = c.login(login, PW, None).await;
+    let r = c.login(login, PW).await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
     c
 }
@@ -170,7 +169,7 @@ async fn subscription_link_is_stored_encrypted_and_retrievable() {
     // cannot use the admin endpoint; admins have no subscription.
     let admin = db.admin().await;
     let mut ac = Client::new(&state, rand_ip());
-    ac.cookie = Some(auth::issue_token(&state, admin, "admin", 0, auth::Stage::Full).unwrap());
+    ac.cookie = Some(auth::issue_token(&state, admin, "admin", 0).unwrap());
     let r = ac
         .get(&format!("/test/api/v1/users/{id}/subscription"))
         .await;
@@ -351,104 +350,6 @@ async fn legacy_tokens_are_kept_and_guarded() {
     assert!(me["sub_token"].is_null());
     assert_eq!(me["sub_legacy"], false);
     assert_eq!(stored(&db, id2).await, (None, None));
-    drop(state);
-    db.drop().await;
-}
-
-/// M9: two-step login. Password only for a 2FA account: the distinct
-/// `totp_required` 401 — only after the password verified; a wrong
-/// password, unknown or disabled account stays the uniform 401. The
-/// totp-required answer does not consume a login-limit slot; wrong
-/// passwords and wrong codes do, as before.
-#[tokio::test]
-async fn login_two_step_without_oracle() {
-    let Some(db) = TestDb::new().await else {
-        return;
-    };
-    let state = AppState::for_test(db.pool.clone()).await;
-    let (id, login) = user_with_password(&db).await;
-    // Enroll TOTP through the API.
-    let c = signed_in(&state, &login).await;
-    let e = c
-        .post("/test/api/v1/me/totp/enroll", json!({}))
-        .await
-        .json();
-    let secret = data_encoding::BASE32_NOPAD
-        .decode(e["secret"].as_str().unwrap().as_bytes())
-        .unwrap();
-    let step = |db_now: i64| totp::step_of(db_now);
-    let now: i64 = sqlx::query_scalar("SELECT EXTRACT(EPOCH FROM now())::bigint")
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-    let r = c
-        .post(
-            "/test/api/v1/me/totp/confirm",
-            json!({"code": totp::code_at(&secret, step(now))}),
-        )
-        .await;
-    assert_eq!(r.status, StatusCode::OK);
-
-    let ip = rand_ip();
-    let uniform = |r: &crate::testdb::http::Resp| {
-        assert_eq!(r.status, StatusCode::UNAUTHORIZED);
-        assert_eq!(
-            r.json(),
-            json!({"error": "unauthorized", "code": "auth.unauthorized", "params": {}})
-        );
-    };
-    let mut a = Client::new(&state, ip);
-    // Password right, no code (absent / blank): totp_required.
-    for code in [None, Some(""), Some("  ")] {
-        let r = a.login(&login, PW, code).await;
-        assert_eq!(r.status, StatusCode::UNAUTHORIZED);
-        assert_eq!(
-            r.json(),
-            json!({"error": "totp required", "totp_required": true})
-        );
-        assert!(r.session_cookie().is_none());
-    }
-    // Wrong password (with or without code), unknown account: uniform.
-    uniform(&a.login(&login, "wrong-password", None).await);
-    uniform(&a.login(&login, "wrong-password", Some("123456")).await);
-    uniform(&a.login("nobody-here", PW, None).await);
-    // Right password, wrong code: uniform.
-    let now: i64 = sqlx::query_scalar("SELECT EXTRACT(EPOCH FROM now())::bigint")
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-    let good = totp::code_at(&secret, step(now) + 1);
-    let bad = if good == "000000" { "111111" } else { "000000" };
-    uniform(&a.login(&login, PW, Some(bad)).await);
-    // Disabled by an admin: uniform even with the right password.
-    sqlx::query("UPDATE users SET enabled = false WHERE id = $1")
-        .bind(id)
-        .execute(&db.pool)
-        .await
-        .unwrap();
-    uniform(&a.login(&login, PW, None).await);
-    sqlx::query("UPDATE users SET enabled = true WHERE id = $1")
-        .bind(id)
-        .execute(&db.pool)
-        .await
-        .unwrap();
-    // Step two: password + code.
-    let r = a.login(&login, PW, Some(&good)).await;
-    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
-
-    // The limiter: only the 3 wrong passwords and the wrong code counted
-    // (+ the unknown account's own name bucket), the 3 totp-required
-    // answers did not.
-    let keys = crate::login_limit::keys(&crate::client_ip::bucket(ip), &login);
-    let ip_count: Option<i64> = state.valkey().get(&keys[0]).await.unwrap();
-    // wrong pw ×2, unknown ×1, wrong code ×1, disabled ×1 = 5
-    assert_eq!(ip_count, Some(5));
-    // A user without 2FA: password alone logs in (no second step).
-    let (_, plain) = user_with_password(&db).await;
-    let r = Client::new(&state, rand_ip()).login(&plain, PW, None).await;
-    assert_eq!(r.status, StatusCode::OK);
-
-    let _: i64 = state.valkey().del(keys).await.unwrap();
     drop(state);
     db.drop().await;
 }

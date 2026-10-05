@@ -16,7 +16,7 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
 | 安装方式 | `1` Docker Compose | `2` = 裸机（systemd：PostgreSQL 18 + Valkey 9 + Caddy） |
 | 主域名 | 留空 = 仅 IP | 填域名前先把 DNS A 记录指向本机，并放行 80/443 |
 | 证书通知邮箱 | 留空 | 仅用于 Let's Encrypt 通知 |
-| 管理员登录名 / 密码 | `admin` / 自动生成 | 自动生成的密码**只在结束时显示一次** |
+| 管理员邮箱 / 密码 | 证书通知邮箱，否则 `admin@<主域名>`（仅 IP：`admin@akari.invalid`）/ 自动生成 | 邮箱就是登录名（v0.4：所有人都用邮箱登录）；自动生成的密码**只在结束时显示一次** |
 | 自定义端口 | 否（80/443/8443） | 8443 是节点 agent 连接面板的 gRPC 端口 |
 
 结束时会打印管理后台与用户门户的完整地址（含**机密路由前缀**——没有前缀，面板对外只返回空 404）
@@ -29,7 +29,7 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
 akari-ctl status                    # 服务状态 + 健康检查
 akari-ctl info                      # 再次显示后台/门户地址（含前缀）
 akari-ctl upgrade                   # 升级到最新版本：先备份 → 校验签名 → 切换 → 健康检查，失败自动回滚
-akari-ctl backup                    # 备份数据库 + 数据目录（CA 私钥、jwt.key、totp.key）+ 配置
+akari-ctl backup                    # 备份数据库 + 数据目录（CA 私钥、jwt.key、master.key）+ 配置
 akari-ctl migrate --to docker       # 同一台机器上 裸机 → Docker（或 --to bare），保留前缀、密钥与数据
 akari-ctl uninstall                 # 卸载服务，保留数据与配置；--purge 彻底删除（需输入 purge 确认）
 ```
@@ -177,7 +177,7 @@ the database — there is no file fallback and no precedence between the two:
 主域名 / 订阅域名 / 信任 Cloudflare     系统设置 → 站点
 节点通信域名 (host agents dial)          系统设置 → 节点通信   (required before the first node)
 install pin, download fallback, ACME, remove mode   系统设置 → 节点通信
-2FA policy, retention, Cloudflare ranges, extra release keys   系统设置 → 安全
+retention, Cloudflare ranges, extra release keys               系统设置 → 安全
 latency tests                           系统设置 → 测速
 Telegram API origin (alert channel)     系统设置 → 告警
 ```
@@ -311,20 +311,17 @@ The installer creates it (and sets 主域名 / 节点通信域名, §2b); by han
 (`akari-ctl` installations: compose directory `/opt/akari`):
 
 ```bash
-# compose:  docker compose exec -e AKARI_ADMIN_PASSWORD='...' panel /akari admin add root
-# bare metal: sudo -u akari env AKARI_ADMIN_PASSWORD='...' akari -c /etc/akari/panel.toml admin add root
+# compose:  docker compose exec -e AKARI_ADMIN_PASSWORD='...' panel /akari admin add you@example.com
+# bare metal: sudo -u akari env AKARI_ADMIN_PASSWORD='...' akari -c /etc/akari/panel.toml admin add you@example.com
 ```
 
-Omit the variable to be prompted. Open `https://panel.example.com/<prefix>/app` and log in with
-the password; admins are taken to the console at `https://panel.example.com/<prefix>/admin`
-(served only to an admin session — without one it is the same empty 404 as any unknown path, so
-bookmark `/app`, not `/admin`). Two-factor authentication (TOTP) is **optional but recommended**: the console shows a
-banner until you turn it on under **账户** (scan the QR code, or type the key; save or download the
-10 recovery codes). Deployments that want it mandatory for admins tick 系统设置 → 安全 →
-**管理员必须两步验证** (default off) — an admin without 2FA then only gets a 15-minute setup
-session at login (on every instance at once). Lost authenticator and
-recovery codes: `akari admin reset-2fa <login>` (or another admin: 用户 → 管理 → 重置两步验证); the
-account then logs in with its password and can set 2FA up again.
+Omit the variable to be prompted. The e-mail address is the login name (v0.4: everyone, admins
+too, logs in with the address; it counts as verified). Open
+`https://panel.example.com/<prefix>/app` and log in with the address and the password; admins are
+taken to the console at `https://panel.example.com/<prefix>/admin` (served only to an admin
+session — without one it is the same empty 404 as any unknown path, so bookmark `/app`, not
+`/admin`). Forgotten password: `akari admin passwd <email>` (ends the account's sessions).
+(TOTP two-factor authentication was removed in v0.4; passkeys replace it.)
 
 ## 2b. 系统设置 (main domain)
 
@@ -342,7 +339,7 @@ Everything here is off until you turn it on; nothing in panel.toml.
 1. **系统设置 → 邮件**: SMTP server, port and security — **STARTTLS** (587) or **SSL/TLS**
    (465) for a mail provider; **不加密** only for a relay on the same host/private network (the
    panel refuses credentials over it). Username/password if the provider needs them (the password
-   is sealed with `data/totp.key` like 2FA secrets: if that file is lost, enter it again), sender
+   is sealed with a key derived from `data/master.key`: if that file is lost, enter it again), sender
    address (the provider must allow it; set SPF/DKIM for that domain at the provider) and sender
    name (also the site name in mails). Tick **启用邮件发送**, save, then **发送测试邮件** to
    yourself — the provider's answer is shown when it fails.
@@ -350,8 +347,8 @@ Everything here is off until you turn it on; nothing in panel.toml.
    expired", traffic at 80 % and used up (once each per period). Only verified addresses get
    mail; users add theirs in the portal (邮箱 card: current password + emailed code).
 3. **系统设置 → 注册**: **开放注册** (login page shows 注册; the address becomes the login).
-   **注册需要邮箱验证** (W24): 自动 (default — a code is mailed exactly when 邮件发送 is enabled),
-   需要, or 不需要. Registration can be opened **without SMTP**: people then sign up with email +
+   **注册需要邮箱验证** (v0.4: an on/off switch, default off, independent of 必须使用邀请码; on
+   needs 邮件发送). Registration can be opened **without SMTP**: people then sign up with email +
    password only; the address is stored **unverified** (no mail to it, no password reset, not
    unique, not usable for the email form of the login — the login name is the address, any case,
    so they log in with it). Users verify it later under 账户 once mail works; an admin can mark
@@ -374,12 +371,61 @@ Everything here is off until you turn it on; nothing in panel.toml.
    address per hour and 20 per day, 30 code/link completions per client address per 15 minutes;
    a code burns after 5 wrong tries. With verification, answers never reveal whether an address
    has an account.
+6. **Bot protection (W27, `PUT /api/v1/settings/auth`; console page in W36-b)** for 登录、注册、找回密码:
+   - **蜜罐 + 最短提交时间**（默认开启：2 秒）: the page fetches a signed form token from
+     `/auth/options` and posts it no sooner than the minimum time; a filled hidden field, a
+     missing/forged/stale token or a too-fast post gets exactly the ordinary failure of that form
+     (no hint for the bot) and only increments `akari_bot_trap_total{form,reason}` — no log
+     lines. Scripts that log in with curl must do the same (`/auth/options` → wait → post
+     `"guard":{"form_token":…}`) or set 最短提交时间 to 0.
+   - **Cloudflare Turnstile** (per form, default off): site key + secret (secret write-only, sealed
+     with `data/master.key`), verified server side; when switched on it **fails closed** (no or a
+     rejected token = 400, Cloudflare unreachable = 503). Locked out by a wrong key:
+     `akari settings unset turnstile` switches it off on every form (audited, keys kept).
+7. **Passkeys (W27)** need the main domain (§2b) as an https DNS name: passkeys belong to that
+   name (RP ID). Policies (`PUT /api/v1/settings/auth`): 管理员仅通行密钥 / 用户仅通行密钥 (an
+   account with a passkey must use it; accounts without one keep their password until they add
+   one), and 密码登录后提示绑定 (binding from the prompt switches that account's password login
+   off). An admin needs no second passkey, but losing the only one means:
+   `akari admin reset-login <email>` on the server (deletes the account's passkeys, password login
+   back on, audited). **Changing the main domain** orphans existing passkeys (browsers only offer
+   them on the old name): they show as not current and those accounts fall back to the password.
+
+### 发信方式与「测试发信」诊断（W31）
+
+**系统设置 → 邮件 → 发信方式** 二选一：
+
+- **SMTP**：服务器、端口、加密方式与账号同上。常见组合：**465 + SSL/TLS（隐式 TLS）**，或
+  **587 + STARTTLS**。很多云服务商默认封锁出站 25/465/587，需要先提交工单开通。
+- **Resend（HTTPS API）**：只走出站 443，不受 SMTP 端口封锁影响。在 Resend 后台验证发件域名
+  （按提示添加 DNS 记录），创建一个有发信权限的 API 密钥，填入 **API 密钥**，发件地址必须属于
+  已验证的域名。
+
+密码与 API 密钥都用面板主密钥派生的同一把加密密钥存库（各自固定的 AAD：`SMTP_AAD`、`RESEND_AAD`），接口只返回「已设置」，审计只记
+"changed"；主密钥更换后需要重新填写。以后增加服务商 = `src/mail/transport/` 新增一个模块 +
+注册表一行 + 迁移放宽 `mail_settings_provider`。
+
+**测试发信**（`POST /api/v1/settings/mail/diagnose`）用**已保存**的设置逐步检查，每一步给出状态、
+耗时和中文说明（另附英文与 `mail.diag.*` 代码）：
+
+| 步骤 | 检查什么 | 常见失败与说明 |
+|---|---|---|
+| 配置 | 必填项、密钥能否解密、端口与加密方式是否匹配（465 应为 SSL/TLS，587/25 应为 STARTTLS，不匹配时警告） | 缺少服务器/发件地址/API 密钥；主密钥更换后密钥无法解密 |
+| DNS | 主机名能否解析 | 拼写错误、面板机器 DNS 故障 |
+| TCP | 能否连上端口（10 秒） | **超时 = 出站端口被服务商或防火墙封锁**；拒绝 = 端口上没有服务 |
+| TLS | 握手与证书 | 设为 SSL/TLS 但服务器发来明文问候 → 改 STARTTLS；设为 STARTTLS 但服务器不问候、却接受 TLS 握手 → 改 SSL/TLS；证书不受信任（填了 IP 或自签证书） |
+| 问候 | 220 问候与 EHLO | 服务器拒绝服务 |
+| 认证 | AUTH PLAIN / LOGIN | 535 用户名或密码错误（QQ/163/Gmail/Outlook 需要**授权码/应用专用密码**）；534 要求应用专用密码；530 要求先加密 |
+| 发送 | 用与发件队列相同的传输发出测试邮件 | 服务器拒收（发件地址与账号不一致、收件人不存在）；Resend：密钥无效、域名未验证、请求过多 |
+
+诊断最多 60 秒，前一步失败后其余步骤标为「未执行」；结果写审计 `settings.mail.test`。原来的
+「发送测试邮件」（`/settings/mail/test`，失败时 502 带服务器回答）保留。
 
 ## 2d. Payments (系统设置 → 支付, W24)
 
 Payment methods are configured only in the console (database; no panel.toml, every instance at
 once): **系统设置 → 支付 → 添加支付方式 → 支付宝当面付**, environment (正式/沙箱), APPID, optional
-商户 PID, paste the app private key (sealed with `data/totp.key`, never shown again) and Alipay's
+商户 PID, paste the app private key (sealed with `data/master.key`, never shown again) and Alipay's
 public key, upload the shown **应用公钥** at the Alipay open platform, enable, then **测试连接**.
 The notify URL is derived from the main domain (§2b) per method — nothing to configure at Alipay.
 Several methods are possible (payers choose at checkout). Details, key rotation and the legacy
@@ -441,7 +487,7 @@ curl -fsSL 'https://panel.example.com/<prefix>/install/<token>' | sh -c '[ "$(id
 ```
 
 Run it on the node (Linux with systemd >= 250, amd64 or arm64; Debian 12/13, Ubuntu 22.04+ are
-fine), as root or as a sudo user: the tail runs the script directly as root (images without
+fine; W32: also Alpine Linux with OpenRC >= 0.45, tested on 3.22 — §3h), as root or as a sudo user: the tail runs the script directly as root (images without
 `sudo` work) and through `sudo` otherwise (W10; commands issued before printed `| sudo sh`, which
 needs `sudo` even as root). Without root and without `sudo` it stops at `sudo` and runs nothing.
 It
@@ -463,9 +509,13 @@ It
    binary (§5b), so do not edit the installed unit files: local changes go into a drop-in
    (`/etc/systemd/system/akari-agent.service.d/*.conf`; an edited unit is reported on the node
    page and replaced by the next update or reinstall);
-3. with 节点域名 set: opens TCP 80 in an active `ufw`/`firewalld` (the CA's HTTP-01 check; a
+   On Alpine (OpenRC) it installs the release's OpenRC scripts instead (`/etc/init.d/akari-agent`,
+   `/etc/init.d/akari-agent-update`) and a system user `akari-agent` (§3h);
+3. turns on TCP BBR with the fq qdisc where the kernel supports it and the machine allows it
+   (W32, §3h; `--no-bbr` / `AKARI_BBR=0` skips it);
+4. with 节点域名 set: opens TCP 80 in an active `ufw`/`firewalld` (the CA's HTTP-01 check; a
    cloud firewall / security group is outside the machine, the output reminds you);
-4. starts the agent and waits until it has enrolled and connected (prints `SUCCESS`, or the
+5. starts the agent and waits until it has enrolled and connected (prints `SUCCESS`, or the
    agent's log and the reason). The certificate follows within seconds; its state is on the node
    page.
 
@@ -578,6 +628,69 @@ first renewal it moves onto a key generated on the node and the panel revokes th
 panel-generated one. Then delete `cert_pem`/`key_pem` from `/etc/akari-agent/bootstrap.toml`. To
 migrate at once instead of at renewal time, issue a new enrollment token for the node and install
 that bootstrap file.
+
+## 3h. 系统支持：BBR + fq 与 Alpine（W32，中文）
+
+**BBR + fq（安装时自动开启，可关闭）。** 一键安装脚本在节点上开启 TCP BBR 拥塞控制 + fq 队列
+（跨境、有丢包的长距离线路吞吐明显更好）。agent 本身**从不**修改内核参数，只有安装脚本做这件事：
+
+- 先检测：内核有 `tcp_bbr`（已内置、已加载，或能 `modprobe tcp_bbr`），且 `/proc/sys` 可写。
+  不满足就跳过并说明原因，安装照常完成——常见于 OpenVZ/LXC 等容器（内核参数只读、或容器有自己的
+  网络命名空间而没有 `net.core.default_qdisc`）以及没有 BBR 的旧内核；
+- 开启后写入独立的 `/etc/sysctl.d/90-akari-bbr.conf`（`net.core.default_qdisc = fq`、
+  `net.ipv4.tcp_congestion_control = bbr`，并以注释记下原来的值），`tcp_bbr` 是模块时另写
+  `/etc/modules-load.d/akari-bbr.conf`，开机自动生效。BBR 对新连接立即生效；fq 对之后新建的网卡
+  队列生效（重启后全部生效）；
+- 已经是 BBR + fq 的机器：不写任何文件（"already enabled ... left as it is"）。重复运行安装命令
+  是幂等的；
+- **关闭**：安装时加 `--no-bbr`，或设置环境变量 `AKARI_BBR=0`：
+  ```bash
+  curl -fsSL '<安装链接>' | sh -s -- --no-bbr               # root
+  curl -fsSL '<安装链接>' | sudo sh -s -- --no-bbr          # sudo 用户
+  curl -fsSL '<安装链接>' | sudo AKARI_BBR=0 sh             # 或用环境变量
+  ```
+  对已经由安装脚本开启过 BBR 的节点，带 `--no-bbr` 重装会删除上述文件并恢复原来的值；
+- **卸载**（`akari-agent-uninstall`）只删除安装脚本加的这两个文件；如果当前生效的仍是我们设置的
+  值，就恢复为安装前记录的值（期间被别人改过的不动）。自己手工配置的 sysctl 不受影响。
+
+**Alpine Linux（OpenRC）。** 同一条安装命令在 Alpine 上自动识别 OpenRC（要求 OpenRC ≥ 0.45；
+CI 在 Alpine 3.22 / OpenRC 0.62 上测试；amd64/arm64）。agent 是无 cgo 的静态二进制，musl 上直接运行，
+不需要单独的 musl 构建。安装内容：
+
+- 系统用户 `akari-agent`（代替 systemd 的 DynamicUser）；`/etc/init.d/akari-agent` 与
+  `/etc/init.d/akari-agent-update`（来自所装版本本身，`akari-agent -print-unit akari-agent`；
+  更早的、不带 OpenRC 脚本的版本在 Alpine 上会被拒绝，请先在「更新」里发布新版本），两者加入
+  default 运行级；
+- agent 由 supervise-daemon 守护（崩溃 3 秒后重启，默认不限次数），只有
+  `CAP_NET_BIND_SERVICE`（可监听 443）与 `no_new_privs`；`/etc/akari-agent/bootstrap.toml`
+  （及自备证书 `/etc/akari-agent/tls/*.pem`）在启动时复制到 `/run/credentials/akari-agent.service/`
+  （内存盘、仅 agent 可读、停止即删除），与 systemd 下路径一致；状态目录 `/var/lib/akari-agent`
+  （0700）以 bind mount 重新挂成 `noexec,nosuid,nodev`（W^X，与 systemd 的 noexec StateDirectory
+  等价；容器里没有挂载权限时照常启动并在服务日志里提示）；
+- 日志：`/var/log/akari-agent/agent.log`（`tail -f` 查看；每次启动时超过 16 MiB 轮转为
+  `agent.log.1`；需要定期轮转可 `apk add logrotate` 并配置 `copytruncate`），更新器日志
+  `/var/log/akari-agent-update.log`；
+- 常用命令：`rc-service akari-agent restart|status`；本地设置写在 `/etc/conf.d/akari-agent`
+  （例如 `AKARI_AGENT_ARGS="-heartbeat-interval 30s"`、`respawn_max=5 respawn_period=60`），
+  安装脚本与自更新**从不**修改 conf.d；不要直接改 `/etc/init.d/` 里的脚本（会被下次更新替换，
+  节点页会提示"单元已被修改"）；
+- BBR 持久化依赖 `sysctl` 服务在 boot 运行级（Alpine 标准安装默认如此；没有时安装脚本会提示
+  `rc-update add sysctl boot`）。
+
+**Alpine 上的自更新**与 systemd 节点走同一套校验（§5b），差异与已知缺口：
+
+| systemd | OpenRC（Alpine） |
+|---|---|
+| `akari-agent-update.path` 监视请求文件，立即触发 | `akari-agent-update` 服务是一个 root shell 循环，每秒检查一次请求文件（agent 等待裁决 90 秒，足够），然后运行**已安装的**二进制 `-apply-update`，一次一个 |
+| 更新器单元有沙箱：无网络、`ProtectSystem=strict`、能力边界集、系统调用过滤 | **缺口**：OpenRC 没有对应机制，更新器以普通 root 运行（通过 OpenRC 重启 agent 本身就需要启动服务所需的权限）。校验逻辑完全相同：不跟随符号链接、只收 agent 所有的单链接普通文件、先拷入 root 文件再校验副本、用自身编译进的公钥验签 |
+| agent 单元的文件系统/内核/系统调用沙箱（ProtectSystem、ProtectProc=invisible、SystemCallFilter 等） | **缺口**：只有专用用户 + 仅 `CAP_NET_BIND_SERVICE` + `no_new_privs` + `/etc/akari-agent` 仅 root 可读 + noexec 状态目录 |
+| 崩溃次数 = `NRestarts`；启动次数限制触发 = 立即回滚 | 崩溃次数 = supervise-daemon 的重启计数（`/run/openrc/options/akari-agent/start_count`）；conf.d 设置了 `respawn_max` 且 supervise-daemon 放弃（服务停止并标记 failed）、守护进程消失，或服务仍显示 started 但子进程已不在超过 15 秒（supervise-daemon 偶尔会漏掉立即退出的子进程）= 立即回滚 |
+| 单元随更新刷新，`daemon-reload` | 两个 init 脚本随更新刷新（root 0755，旧的存 `units.prev/`，回滚恢复）；OpenRC 每次启动都重新读取脚本，无需 reload。更新器自己的脚本在它下次启动（重启或重装）时生效 |
+| `journalctl -u akari-agent-update` | `/var/log/akari-agent-update.log` |
+
+CI：agent 仓库的 `openrc self-update` job（Alpine 3.22 容器，OpenRC 为 init）覆盖 安装 → 更新 →
+坏版本回滚（重启计数与 supervise-daemon 放弃两种）→ 恶意请求拒绝；面板 smoke 的 W32 段用一键安装
+命令在 Alpine 容器里装节点、验证 BBR 开关、重装与卸载。
 
 ## 3g. First user: node group, plan, subscription
 
@@ -863,6 +976,37 @@ failure the next order tries the other challenge when it is available.
 - Not supported: ZeroSSL / EAB CAs (any CA without external account binding works through
   `directory_url`), several domains per node, DNS-01.
 
+## 3h. 审计规则（节点拦截，W29，agent 能力 `block-rules`）
+
+后台「审计规则」在节点上拦截指定流量（xray 路由 + `blackhole` 出站，被拦截的连接直接关闭）。规则在**面板**里编译好，agent 只把结果写进 xray 路由。
+
+**规则**（全站共用，`GET/POST /api/v1/block-rules`、`PATCH/DELETE /api/v1/block-rules/{id}`，均需管理员，写入审计 `block_rule.*`）：
+
+| 规则 | 内容 | 默认 |
+|---|---|---|
+| BitTorrent 协议识别（内置） | 按流量特征识别 BitTorrent / uTP | 开 |
+| BT Tracker 域名（内置） | v2fly `category-public-tracker` | 开 |
+| 迅雷 / PT 站域名（内置） | v2fly `xunlei` + `category-pt` | 关 |
+| 自定义：域名 | 每行一条：`example.com`（含子域）、`full:a.example.com`（精确）、`keyword:torrent`（包含） | — |
+| 自定义：IP | 每行一条：`192.0.2.0/24`、`2001:db8::/32`、单个地址 | — |
+| 自定义：协议 | `bittorrent`、`http`、`tls`、`quic`（`tls` 等于拦截几乎所有 HTTPS，慎用） | — |
+
+- 内置规则集只能开关、排序（不能改内容或删除，数据库触发器兜底）；自定义规则最多 32 条、每条最多 1000 行，不支持正则与 geosite（避免性能与依赖问题）。
+- 内置列表随面板发布（`src/blockrules/lists/`，来源 [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community)，MIT，版本见 `VERSION`）；更新 = 开发者运行 `scripts/update-block-lists.py [commit]` 后随新版面板发布。
+- 域名规则匹配客户端请求的域名，以及嗅探出的域名（TLS SNI、HTTP Host、QUIC）；IP 规则只匹配以 IP 形式请求的目标（不为域名请求做 DNS 解析）。
+
+**按节点开关**（`PUT /api/v1/nodes/{id}/block-rules {"enabled": true|false}`，默认关，审计 `node.block_rules.set`）：
+
+- **关闭时**节点上没有任何额外开销：xray 配置与没有本功能时逐字节相同，不开嗅探，没有拦截出站。
+- **开启时**该节点的入站开启嗅探（`routeOnly`：嗅探结果只用于路由，不改变连接目标；入站 JSON 里已经自己配置了 `sniffing` 的保持原样）。嗅探会等待客户端的第一个数据包（xray 默认最多约 300 ms），服务器先发数据的协议（如 SSH、SMTP）首包延迟会增加。
+- **开关时会断开哪些连接**：只重建这个节点的入站监听（不重建 xray，其他节点不受影响，用户与计费不变）。以下是 agent 金丝雀测试（`rt_block_canary_test.go`，真实 xray 客户端逐个协议组合）实测结果：
+  - **保留**：raw TCP / TLS / REALITY（含 Vision）、WebSocket、HTTPUpgrade、VMess TCP、Shadowsocks 2022、以及 TLS/REALITY 上的 XHTTP（一条长 HTTP/2 请求）。
+  - **断开一次、客户端自动重连**：gRPC（流属于监听端的 HTTP/2 服务）、明文 HTTP 上的 XHTTP（客户端 packet-up 模式，每次上传都是新请求）、Hysteria 2（QUIC 连接属于监听端）。
+- **修改规则内容**（增删改规则、开关某个规则集）**不断开任何连接**：agent 原子替换整套路由规则，不重建入站、不重建 xray。规则只作用于新建立的连接（路由在每次分发时决定）：已经建立的连接即使命中新规则也继续转发，直到客户端重连。
+- agent 版本过旧（没有 `block-rules` 能力）时开关无效，`GET /api/v1/nodes/{id}/block-rules` 的 `agent_supported` 为 false。
+
+**统计**：`GET /api/v1/nodes/{id}/block-rules?days=7`（1–90）返回开关状态、agent 是否支持、当前生效的规则版本是否与面板一致（`in_sync`、`error`）、以及最近 N 天（UTC）每条规则的拦截次数；规则列表里的 `hits_7d` 是全部节点近 7 天合计。**只记录每个节点每条规则的拦截次数，不记录任何用户或访问目标。**日数据保留 90 天。
+
 ## 3c. Resource footprint (measured)
 
 One real deployment on a 1 vCPU-class VPS with 920 MB RAM (Debian 13, compose, IP-only), resident
@@ -909,6 +1053,23 @@ detail is the console's node page and 告警中心 (§4b).
 Every response of an accepted request carries `X-Request-Id` (an incoming one is reused if it is
 short and printable); it is on the log lines of that request. Rejections never carry it.
 
+## 4a. 系统状态（W31）
+
+后台 `GET /api/v1/system/status`（仅管理员，结果缓存 5 秒）一次给出：
+
+- **面板实例**：每个实例每 10 秒把自己的心跳写进 Valkey（`akari:status:instances`，实例 id →
+  主机 CPU/内存/负载/数据目录磁盘、进程内存、版本、持有的 agent 连接数、数据库连接池、后台任务统计）。
+  30 秒没有心跳 = 离线，24 小时后自动移除。多实例部署时任一实例都能给出全部实例的状态。
+- **PostgreSQL**：版本、是否只读副本、连接数 / `max_connections`、库大小、往返延迟。
+- **Valkey**：版本、内存、客户端数、运行时长、往返延迟。
+- **Caddy（反向代理）**：经系统设置的主域名探测（TCP → TLS（证书到期时间）→ `HEAD /`，任何 HTTP
+  回答即视为在线）；未设置主域名时显示「未配置」。
+- **后台任务**：结算（流量入账，5 秒）、对账（支付订单，10 秒）、邮件队列（2 秒）、告警评估（30 秒）
+  各自的最近一次运行、耗时、距上次成功的延迟（`lag_secs`）、超过 6 个周期没有成功 = `stale`、最近
+  错误（已去掉邮箱地址），以及积压：待发/到期/最老到期邮件、死信数、待付订单数、待投递告警数。
+
+各项检查并发执行、每项最多 3 秒，不读写 agent 路径；读不到的值为 `null`（未知），不当作 0。
+
 ## 4b. Node alerts and notifications (告警中心, W17)
 
 The panel watches the fleet itself; Prometheus is optional. Console → **告警** shows what is
@@ -935,8 +1096,8 @@ recorded, never notified).
 **Telegram**: create a bot with @BotFather, add it to the group/channel, enter the bot token and
 the chat id (a number, groups and channels are negative, or `@channelname`), save, then 发送测试.
 The panel only calls `sendMessage` (outbound HTTPS to api.telegram.org; nothing to open
-inbound). The token is stored encrypted with a key derived from `data/totp.key` and never shown
-again (losing `totp.key` means entering it again). For networks that block Telegram, set
+inbound). The token is stored encrypted with a key derived from `data/master.key` and never shown
+again (losing `master.key` means entering it again). For networks that block Telegram, set
 **Telegram API 地址** (系统设置 → 告警) to a self-hosted Bot API server (https; origin only; empty =
 `https://api.telegram.org`). W25: the old `[alerts] telegram_api_url` is imported there once.
 
@@ -996,7 +1157,7 @@ two or more for availability or headroom:
 ```
 
 - All instances use the same `database_url`, `valkey_url` and an identical
-  `data_dir` (CA, `jwt.key`, `totp.key`, route prefix: share the directory or
+  `data_dir` (CA, `jwt.key`, `master.key`, route prefix: share the directory or
   copy it byte for byte); each has its own web and gRPC bind addresses.
 - gRPC must be balanced at L4. The balancer must not terminate TLS (the agent's
   client certificate is the node identity). No stickiness is needed: an agent
@@ -1249,6 +1410,10 @@ through a separate root unit that only ever runs the **installed** binary:
   "Nodes whose units predate W23";
 - `journalctl -u akari-agent-update` shows what the updater did; installing a newer agent by
   hand (or 重装命令) wins over everything the updater recorded;
+- **Alpine / OpenRC (W32)**: the same hand-over, with the `akari-agent-update` service (a root
+  loop that checks for the request once a second) instead of the path unit, the two init scripts
+  instead of the three units, and supervise-daemon's respawn counter instead of `NRestarts`;
+  differences and gaps (no updater sandbox) in §3h; log `/var/log/akari-agent-update.log`;
 - `akari-agent -release-keys` prints the pinned keys ("no release keys pinned" = self-update off).
 
 ## 6. Rollback
@@ -1279,7 +1444,7 @@ akari-ctl uninstall --purge          # also database, data dir, configuration: t
                                      # (non-interactive: --yes --purge --confirm purge)
 ```
 
-Plain uninstall keeps: bare metal `/var/lib/akari` (prefix, CA key, jwt.key, totp.key),
+Plain uninstall keeps: bare metal `/var/lib/akari` (prefix, CA key, jwt.key, master.key),
 `/etc/akari/panel.toml`, the PostgreSQL database `akari`; Docker `/opt/akari` and the `akari_*`
 volumes. Running the installer again picks them up (same prefix, same accounts). Caddy is stopped
 when the installer installed it, and given back its previous configuration when it was there
@@ -1299,7 +1464,7 @@ akari-ctl migrate --to docker        # or --to bare
 Takes a safety backup (kept, encrypted if configured) and a plain dump for the move (in a 0700
 temporary directory, deleted afterwards), stops the current services, installs the other mode with
 **restore** (database via `pg_restore --single-transaction`, the data dir — route prefix, CA,
-`jwt.key`, `totp.key` — copied with its ownership), waits for health, then retires the old services
+`jwt.key`, `master.key` — copied with its ownership), waits for health, then retires the old services
 (their data stays until you delete it: bare metal `/var/lib/akari`, database `akari`; Docker the
 `akari_*` volumes). New database/Valkey passwords are generated; 系统设置 (domains, payment
 methods…) live in the database and move with it. Any failure brings the old mode back. The panel is

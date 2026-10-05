@@ -450,7 +450,7 @@ function CouponDetailCard({ id, onClose }: { id: string; onClose: () => void }) 
                 <TableRow key={r.order_id}>
                   <TableCell>{fmt(r.created_at)}</TableCell>
                   <TableCell className="font-mono text-xs">{r.out_trade_no}</TableCell>
-                  <TableCell>{r.user_login}</TableCell>
+                  <TableCell>{r.user_email ?? r.user_label}</TableCell>
                   <TableCell>¥{yuan(r.discount_cents)}</TableCell>
                   <TableCell>
                     {REDEMPTION_ZH[r.status]}

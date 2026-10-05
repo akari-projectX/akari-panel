@@ -40,7 +40,7 @@ services:
       AKARI_CONFIG: /etc/akari/panel.toml
     command: ["serve"]
     volumes:
-      - akari-data:/data              # route prefix, CA key, jwt.key, totp.key: BACK UP (docs/BACKUP.md)
+      - akari-data:/data              # route prefix, CA key, jwt.key, master.key: BACK UP (docs/BACKUP.md)
       - ./panel.toml:/etc/akari/panel.toml:ro   # from panel.toml.compose.example
     ports:
       - "${AKARI_GRPC_PORT:-8443}:8443"   # gRPC, agents dial this directly (mTLS)

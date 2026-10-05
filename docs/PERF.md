@@ -531,6 +531,40 @@ The first W26 run of the two `db/*` benches read +21%/+8%: the bench Postgres
 had just finished WAL recovery. Re-runs alternating main and W26 within
 minutes gave the rows above. The Snapshot path has no W26 code.
 
+## W29: node block rules (agent Go benchmarks)
+
+Intel Xeon 2.1 GHz, 4 vCPU, Go 1.27, xray 26.3.27. Before = akari-agent main
+(0ac007c), after = branch `w29-block-rules`, 8 alternating runs each,
+`benchstat` (no row differs significantly, p > 0.2):
+
+| Benchmark (switch off) | before | after |
+|---|---|---|
+| Rebuild10k | 111.6 ms | 113.3 ms (~) |
+| InstanceHeap10k (heap after build) | 21.35 MiB | 21.34 MiB (~) |
+| TrafficSnapshot10k | 799 µs | 789 µs (~) |
+| GateAdmitRelease | 510 ns, 2 allocs | 512 ns, 2 allocs (~) |
+| ConnectEcho (new VLESS connection + 64 B round trip) | 280 µs, 266 allocs | 290 µs, 266 allocs (~, ±20% noise) |
+
+Switch off: the xray config is byte-identical to an agent without the
+feature (`TestBlockSniffingConfig`), and routing pays one atomic load per
+dispatch (`PickRouteBase` 1.2 ns → `PickRouteOff` 2.2 ns, 0 allocs).
+
+Switch on, with a policy the size of the built-in sets plus two 1000-line
+custom rules (2,573 domain entries, 1,000 CIDRs, BitTorrent protocol):
+
+| | |
+|---|---|
+| `PickRouteOnMiss` / `OnHit` | 225 ns / 153 ns per dispatch |
+| `ConnectEchoBlockOn` vs `ConnectEcho` (same run, n=10) | 305 µs vs 300 µs, +18 allocs per connection (sniffing) |
+| `BlockPolicySwap` (compile + atomic swap, a rule-content change) | 5.4 ms, 1.7 MB transient |
+| `BlockPolicyHeap` (resident cost of the compiled policy) | 320 KiB |
+| `BlockStatsSize`: `Heartbeat.block`, 35 rules all hit / switch off | 421 / 21 bytes per 15 s heartbeat |
+
+Sniffing waits for the client's first bytes (xray default up to ~300 ms);
+client-first protocols (the measured case) do not wait, server-first
+protocols on an audited node do. Reproduce: in akari-agent,
+`go test -run '^$' -bench 'PickRoute|BlockPolicy|BlockStats|ConnectEcho' -benchmem .`
+
 ## Limits and honest caveats
 
 - Flush margin (W22): 0.58 s against the 1 s budget (W11: 0.49 s) for 50k rows; on a slower

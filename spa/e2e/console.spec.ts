@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process";
-import { createHmac } from "node:crypto";
 
 import { expect, test, type APIRequestContext, type ConsoleMessage, type Page } from "@playwright/test";
 
@@ -18,30 +17,6 @@ function must(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`${name} is not set (run scripts/e2e.sh)`);
   return v;
-}
-
-// RFC 6238 (SHA-1, 6 digits, 30 s) for the step after `after`.
-function base32(s: string): Buffer {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  let bits = "";
-  for (const c of s.replace(/=+$/, "")) bits += alphabet.indexOf(c).toString(2).padStart(5, "0");
-  const out: number[] = [];
-  for (let i = 0; i + 8 <= bits.length; i += 8) out.push(parseInt(bits.slice(i, i + 8), 2));
-  return Buffer.from(out);
-}
-function totp(secret: string, step: number): string {
-  const msg = Buffer.alloc(8);
-  msg.writeBigUInt64BE(BigInt(step));
-  const h = createHmac("sha1", base32(secret)).update(msg).digest();
-  const o = h[h.length - 1] & 15;
-  return String((h.readUInt32BE(o) & 0x7fffffff) % 1_000_000).padStart(6, "0");
-}
-async function nextCode(secret: string, after: number): Promise<{ code: string; step: number }> {
-  for (;;) {
-    const step = Math.floor(Date.now() / 1000 / 30);
-    if (step > after) return { code: totp(secret, step), step };
-    await new Promise((r) => setTimeout(r, 1000));
-  }
 }
 
 // Every console message about CSP (violations are reported there by
@@ -79,22 +54,14 @@ async function rejection(req: APIRequestContext): Promise<string> {
   return r;
 }
 
-// W20 (M9): password first; the code field appears only when the server
-// answers `totp_required` (accounts with 2FA).
-async function login(page: Page, user: string, pw: string, code?: string) {
-  await page.locator("#login").fill(user);
+// D1: everyone signs in with the email address and the password.
+async function login(page: Page, email: string, pw: string) {
+  await page.locator("#email").fill(email);
   await page.locator("#password").fill(pw);
   await page.locator("form button[type=submit]").click();
-  if (code !== undefined) {
-    await page.locator("#code").fill(code);
-    await page.locator("form button[type=submit]").click();
-  }
 }
 
 test.describe.configure({ mode: "serial" });
-
-let secret = "";
-let usedStep = -1;
 
 test("login page: real CSP, language switch persists, <html lang> follows", async ({ browser }) => {
   const ctx = await browser.newContext({ locale: "en-US" });
@@ -109,12 +76,10 @@ test("login page: real CSP, language switch persists, <html lang> follows", asyn
   await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
   await page.reload();
   await expect(page.getByRole("heading", { name: "登录" })).toBeVisible();
-  // Uniform, localized credential error; no code field for a wrong password.
-  await expect(page.getByLabel("邮箱或账号")).toBeVisible();
-  await expect(page.locator("#code")).toHaveCount(0);
+  // Uniform, localized credential error.
+  await expect(page.getByLabel("邮箱")).toBeVisible();
   await login(page, USER, "wrong-password");
-  await expect(page.getByRole("alert")).toHaveText("账号或密码错误");
-  await expect(page.locator("#code")).toHaveCount(0);
+  await expect(page.getByRole("alert")).toHaveText("邮箱或密码错误");
   await expect(page).toHaveTitle("登录 · Akari");
   expect(problems).toEqual([]);
   await ctx.close();
@@ -219,7 +184,7 @@ test("no session: the console does not exist (canonical rejection)", async ({ br
   await ctx.close();
 });
 
-test("admin: optional 2FA, styled console, routable views, enroll with QR", async ({ browser }) => {
+test("admin: styled console, routable views, deep links, logout", async ({ browser }) => {
   const ctx = await browser.newContext({ locale: "en-US" });
   const page = await ctx.newPage();
   const problems = watch(page);
@@ -244,52 +209,6 @@ test("admin: optional 2FA, styled console, routable views, enroll with QR", asyn
   await expect(page.getByRole("heading", { name: "用户", exact: true })).toBeVisible();
   await page.goBack();
   await expect(page).toHaveURL(`${ADMIN_BASE}/audit`);
-  // Recommended, not forced: the banner leads to the account page.
-  await expect(page.getByText("建议开启两步验证")).toBeVisible();
-  await page.getByRole("link", { name: "去设置" }).click();
-  await expect(page).toHaveURL(`${ADMIN_BASE}/account`);
-  await page.getByRole("button", { name: "开启两步验证" }).click();
-  const qr = page.getByRole("img", { name: "两步验证二维码" });
-  await expect(qr).toBeVisible();
-  expect(Number(await qr.getAttribute("data-qr-version"))).toBeGreaterThan(0);
-  secret = (await page.locator("pre").first().innerText()).trim();
-  const first = await nextCode(secret, usedStep);
-  usedStep = first.step;
-  await page.getByLabel("App 中显示的验证码").fill(first.code);
-  await page.getByRole("button", { name: "启用" }).click();
-  await expect(page.getByText("恢复码：丢失身份验证器时")).toBeVisible();
-  await expect(page.getByRole("button", { name: "下载 .txt" })).toBeVisible();
-  await page.getByRole("button", { name: "我已保存" }).click();
-  await expect(page.getByText(/已开启 · 剩余 10 个恢复码/)).toBeVisible();
-  await page.getByRole("button", { name: "退出登录" }).click();
-  // Logged out: back on the portal's login page; the console is gone.
-  await expect(page).toHaveURL(BASE);
-  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
-  expect(await observe(ctx.request, ADMIN_BASE)).toBe(await rejection(ctx.request));
-  expect(problems).toEqual([]);
-  await ctx.close();
-});
-
-test("admin with 2FA: password alone refused, TOTP code accepted", async ({ browser }) => {
-  test.skip(!secret, "needs the enrollment test");
-  const ctx = await browser.newContext({ locale: "zh-CN" });
-  const page = await ctx.newPage();
-  const problems = watch(page);
-  await page.goto(BASE);
-  // W20 two-step: the password alone only reveals the code field.
-  await login(page, ADMIN, ADMIN_PW);
-  await expect(page.getByLabel("两步验证码")).toBeVisible();
-  await expect(page.getByText("该账户已开启两步验证")).toBeVisible();
-  await page.locator("#code").fill("000000");
-  await page.locator("form button[type=submit]").click();
-  await expect(page.getByRole("alert")).toHaveText("验证码错误或已使用，请输入新的验证码");
-  const next = await nextCode(secret, usedStep); // the confirm step is spent
-  usedStep = next.step;
-  await page.locator("#code").fill(next.code);
-  await page.locator("form button[type=submit]").click();
-  await expect(page).toHaveURL(ADMIN_BASE);
-  await expect(page.getByRole("heading", { name: "仪表盘", exact: true })).toBeVisible(); // W21 landing view
-  await expect(page.getByText("建议开启两步验证")).toHaveCount(0);
   // Deep links (a full page load of /admin/<view>) for every console view.
   for (const [view, label, heading] of [
     ["dashboard", "仪表盘", "仪表盘"],
@@ -304,25 +223,27 @@ test("admin with 2FA: password alone refused, TOTP code accepted", async ({ brow
     ["plans", "套餐", "套餐"],
     ["settings", "系统设置", "系统设置"],
     ["audit", "审计", "审计日志"],
-    ["account", "账户", "两步验证"],
+    ["account", "账户", "账户"],
   ]) {
     await page.goto(`${ADMIN_BASE}/${view}`);
     await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: label, exact: true })).toHaveAttribute("aria-current", "page");
   }
+  await page.getByRole("button", { name: "退出登录" }).click();
+  // Logged out: back on the portal's login page; the console is gone.
+  await expect(page).toHaveURL(BASE);
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  expect(await observe(ctx.request, ADMIN_BASE)).toBe(await rejection(ctx.request));
   expect(problems).toEqual([]);
   await ctx.close();
 });
 
 test("W11 nodes: xboard-style form, live status, detail page, 立即测速", async ({ browser }) => {
-  test.skip(!secret, "needs the enrollment test");
   const ctx = await browser.newContext({ locale: "zh-CN" });
   const page = await ctx.newPage();
   const problems = watch(page);
   await page.goto(`${BASE}/nodes`);
-  const next = await nextCode(secret, usedStep);
-  usedStep = next.step;
-  await login(page, ADMIN, ADMIN_PW, next.code);
+  await login(page, ADMIN, ADMIN_PW);
   await expect(page).toHaveURL(`${ADMIN_BASE}/nodes`);
   await page.getByRole("button", { name: "新建节点" }).click();
   await page.getByLabel("名称（内部，唯一）").fill("e2e-w11");
@@ -367,14 +288,11 @@ test("W11 nodes: xboard-style form, live status, detail page, 立即测速", asy
 // admin-protocols.gen.ts): protocols, transports with format notes, the
 // TLS rule and the transport fields; what it sends renders server-side.
 test("W26: node template form generated from the protocol manifest", async ({ browser }) => {
-  test.skip(!secret, "needs the enrollment test");
   const ctx = await browser.newContext({ locale: "zh-CN" });
   const page = await ctx.newPage();
   const problems = watch(page);
   await page.goto(`${BASE}/nodes`);
-  const next = await nextCode(secret, usedStep);
-  usedStep = next.step;
-  await login(page, ADMIN, ADMIN_PW, next.code);
+  await login(page, ADMIN, ADMIN_PW);
   await expect(page).toHaveURL(`${ADMIN_BASE}/nodes`);
   await page.getByRole("button", { name: "新建节点" }).click();
   await page.getByLabel("名称（内部，唯一）").fill("e2e-w26");
@@ -417,15 +335,12 @@ test("W26: node template form generated from the protocol manifest", async ({ br
 });
 
 test("W16: coupon + balance purchase (paid without the gateway), console coupons and balances", async ({ browser }) => {
-  test.skip(!secret, "needs the enrollment test");
   // Admin: a priced plan (API, same session), a coupon and a balance (UI).
   const actx = await browser.newContext({ locale: "zh-CN" });
   const admin = await actx.newPage();
   const problems = watch(admin);
   await admin.goto(`${BASE}/coupons`);
-  const next = await nextCode(secret, usedStep);
-  usedStep = next.step;
-  await login(admin, ADMIN, ADMIN_PW, next.code);
+  await login(admin, ADMIN, ADMIN_PW);
   await expect(admin).toHaveURL(`${ADMIN_BASE}/coupons`);
   const api = `${ADMIN_BASE.replace(/\/admin$/, "")}/api/v1`;
   const plan = await actx.request.post(`${api}/plans`, { data: { name: "e2e-w16", period: "monthly" } });
@@ -442,7 +357,7 @@ test("W16: coupon + balance purchase (paid without the gateway), console coupons
   await expect(admin.getByRole("cell", { name: "E2E50" })).toBeVisible();
   await admin.getByRole("link", { name: "资金", exact: true }).click();
   await expect(admin.getByRole("heading", { name: "提现审核" })).toBeVisible();
-  await admin.getByLabel("用户名（精确）").fill(USER);
+  await admin.getByLabel("用户邮箱（精确）").fill(USER);
   await admin.getByRole("button", { name: "查找" }).click();
   await admin.getByRole("button", { name: "明细与调整" }).click();
   await admin.getByLabel("调整金额（元）").fill("10");
@@ -494,7 +409,6 @@ test("W16: coupon + balance purchase (paid without the gateway), console coupons
 test("W21: dashboard, user search + create dialog, plan dialog, settings tabs, confirm dialog, phone layout", async ({
   browser,
 }) => {
-  test.skip(!secret, "needs the enrollment test");
   const ctx = await browser.newContext({ locale: "en-US" }); // the console stays Chinese
   const page = await ctx.newPage();
   const problems = watch(page);
@@ -504,9 +418,7 @@ test("W21: dashboard, user search + create dialog, plan dialog, settings tabs, c
     if (r.status() >= 400 && consoleUrl(r.url())) failed.push(`${r.status()} ${r.url()}`);
   });
   await page.goto(BASE);
-  const next = await nextCode(secret, usedStep);
-  usedStep = next.step;
-  await login(page, ADMIN, ADMIN_PW, next.code);
+  await login(page, ADMIN, ADMIN_PW);
   await expect(page).toHaveURL(ADMIN_BASE);
 
   // Dashboard (landing view), its own lazily loaded chunk under the prefix.
@@ -523,27 +435,25 @@ test("W21: dashboard, user search + create dialog, plan dialog, settings tabs, c
   await page.getByRole("link", { name: "用户", exact: true }).click();
   await page.getByRole("button", { name: "新建用户" }).click();
   const dialog = page.getByRole("dialog", { name: "新建用户" });
-  await dialog.getByLabel("账号", { exact: true }).fill("e2e-w21-user");
+  await dialog.getByLabel("邮箱", { exact: true }).fill("e2e-w21-user@e2e.test");
   await dialog.getByLabel("密码", { exact: true }).fill("e2e-w21-password");
-  await dialog.getByLabel(/邮箱/).fill("w21@e2e.test");
-  await dialog.getByLabel(/到期日/).fill("2099-12-31");
+  await expect(dialog.getByLabel(/到期日/)).toHaveCount(0); // D12: the plan decides
   await dialog.getByRole("button", { name: "创建" }).click();
   await expect(page.getByText(/的订阅令牌（之后也可以/)).toBeVisible();
   await page.getByLabel("搜索").fill("E2E-W21");
   await expect(page.getByText("找到 1 个用户")).toBeVisible();
   const row = page.getByRole("row").filter({ hasText: "e2e-w21-user" });
-  await expect(row.getByText("w21@e2e.test")).toBeVisible();
-  await expect(row.getByText("2099-12-31")).toBeVisible(); // a Beijing day, not shifted by UTC
+  await expect(row.getByText("e2e-w21-user@e2e.test").first()).toBeVisible();
   await expect(row.getByText("正常")).toBeVisible();
-  await page.getByRole("button", { name: "已停用" }).click();
+  await page.getByRole("button", { name: "已封禁" }).click();
   await expect(page.getByText("没有符合条件的用户。")).toBeVisible();
   await page.getByRole("button", { name: "全部" }).click();
   // A server error comes back in Chinese (coded error, W21 M6).
   await page.getByRole("button", { name: "新建用户" }).click();
-  await dialog.getByLabel("账号", { exact: true }).fill("e2e-w21-user");
+  await dialog.getByLabel("邮箱", { exact: true }).fill("E2E-W21-USER@e2e.test");
   await dialog.getByLabel("密码", { exact: true }).fill("e2e-w21-password");
   await dialog.getByRole("button", { name: "创建" }).click();
-  await expect(dialog.getByRole("alert")).toHaveText("该账号已存在");
+  await expect(dialog.getByRole("alert")).toHaveText("已有其他账户使用这个邮箱");
   await dialog.getByRole("button", { name: "取消" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 
@@ -663,7 +573,6 @@ async function mailTo(to: string, n: number): Promise<{ subject: string; text: s
 }
 
 test("W17: ticket both sides (portal zh/en, console desk), alert center settings", async ({ browser }) => {
-  test.skip(!secret, "needs the enrollment test");
   // User opens a ticket in the portal.
   const uctx = await browser.newContext({ locale: "zh-CN" });
   const user = await uctx.newPage();
@@ -686,9 +595,7 @@ test("W17: ticket both sides (portal zh/en, console desk), alert center settings
   const admin = await actx.newPage();
   const aproblems = watch(admin);
   await admin.goto(`${BASE}/tickets`);
-  const next = await nextCode(secret, usedStep);
-  usedStep = next.step;
-  await login(admin, ADMIN, ADMIN_PW, next.code);
+  await login(admin, ADMIN, ADMIN_PW);
   await expect(admin).toHaveURL(`${ADMIN_BASE}/tickets`);
   await expect(admin.getByRole("heading", { name: "工单管理" })).toBeVisible();
   const trow = admin.getByRole("row").filter({ hasText: "e2e：节点连不上" });
@@ -739,13 +646,11 @@ test("W17: ticket both sides (portal zh/en, console desk), alert center settings
 
 // W20 (M2): a quota-exhausted user is led to the traffic reset pack.
 test("W20: quota-exhausted user lands on the reset pack", async ({ browser }) => {
-  test.skip(!secret || !QUOTA_USER || !E2E_DB, "needs the enrollment test and scripts/e2e.sh");
+  test.skip(!QUOTA_USER || !E2E_DB, "needs scripts/e2e.sh");
   const actx = await browser.newContext({ locale: "zh-CN" });
   const admin = await actx.newPage();
   await admin.goto(BASE);
-  const next = await nextCode(secret, usedStep);
-  usedStep = next.step;
-  await login(admin, ADMIN, ADMIN_PW, next.code);
+  await login(admin, ADMIN, ADMIN_PW);
   await expect(admin).toHaveURL(ADMIN_BASE);
   const api = `${ADMIN_BASE.replace(/\/admin$/, "")}/api/v1`;
   const plan = await actx.request.post(`${api}/plans`, {
@@ -767,11 +672,13 @@ test("W20: quota-exhausted user lands on the reset pack", async ({ browser }) =>
     ).status(),
   ).toBe(204);
   const users = (
-    (await (await actx.request.get(`${api}/users?limit=200`)).json()) as { users: { id: string; login: string }[] }
+    (await (await actx.request.get(`${api}/users?limit=200`)).json()) as { users: { id: string; email: string }[] }
   ).users;
-  const uid = users.find((u) => u.login === QUOTA_USER)?.id;
+  const uid = users.find((u) => u.email === QUOTA_USER)?.id;
   expect(uid).toBeTruthy();
-  expect((await actx.request.put(`${api}/users/${uid}/plan`, { data: { plan_id: planId } })).status()).toBe(200);
+  expect(
+    (await actx.request.put(`${api}/users/${uid}/plan`, { data: { plan_id: planId, period: "month" } })).status(),
+  ).toBe(200);
   // Traffic only comes from agents; here the counter is set directly and the
   // enforcement pass (5 s) disables the account for quota.
   execFileSync(
@@ -787,7 +694,7 @@ test("W20: quota-exhausted user lands on the reset pack", async ({ browser }) =>
       "-d",
       E2E_DB,
       "-qc",
-      `UPDATE users SET traffic_used_bytes = 2097152 WHERE login = '${QUOTA_USER}'`,
+      `UPDATE users SET traffic_used_bytes = 2097152 WHERE email = '${QUOTA_USER}'`,
     ],
     { cwd: "..", stdio: "ignore" },
   );
@@ -796,9 +703,9 @@ test("W20: quota-exhausted user lands on the reset pack", async ({ browser }) =>
       async () =>
         (
           (await (await actx.request.get(`${api}/users?limit=200`)).json()) as {
-            users: { login: string; disabled_reason: string | null }[];
+            users: { email: string; disabled_reason: string | null }[];
           }
-        ).users.find((u) => u.login === QUOTA_USER)?.disabled_reason,
+        ).users.find((u) => u.email === QUOTA_USER)?.disabled_reason,
       { timeout: 20_000 },
     )
     .toBe("quota");
@@ -823,7 +730,6 @@ test("W20: quota-exhausted user lands on the reset pack", async ({ browser }) =>
 });
 
 test("W22: traffic history in the portal (zh/en) and on the console's user page", async ({ browser }) => {
-  test.skip(!secret, "needs the enrollment test");
   const uctx = await browser.newContext({ locale: "zh-CN" });
   const user = await uctx.newPage();
   const uproblems = watch(user);
@@ -853,9 +759,7 @@ test("W22: traffic history in the portal (zh/en) and on the console's user page"
   const admin = await actx.newPage();
   const aproblems = watch(admin);
   await admin.goto(`${BASE}/users`);
-  const next = await nextCode(secret, usedStep);
-  usedStep = next.step;
-  await login(admin, ADMIN, ADMIN_PW, next.code);
+  await login(admin, ADMIN, ADMIN_PW);
   await expect(admin).toHaveURL(`${ADMIN_BASE}/users`);
   await admin
     .getByRole("row")
@@ -877,9 +781,7 @@ test("W15: 系统设置 注册/邮件, sign up by email code, reset the password
   const adminProblems = watch(ap);
   ap.on("dialog", (d) => void d.accept());
   await ap.goto(BASE);
-  const next = await nextCode(secret, usedStep);
-  usedStep = next.step;
-  await login(ap, ADMIN, ADMIN_PW, next.code);
+  await login(ap, ADMIN, ADMIN_PW);
   await expect(ap).toHaveURL(ADMIN_BASE);
   await ap.goto(`${ADMIN_BASE}/settings/mail`);
   // 邮件 first (registration needs it), then the main domain, then 注册.
@@ -903,6 +805,7 @@ test("W15: 系统设置 注册/邮件, sign up by email code, reset the password
   await ap.getByRole("tab", { name: "注册" }).click();
   await ap.reload();
   await ap.getByLabel("开放注册").check();
+  await ap.getByLabel("注册需要邮箱验证").check(); // v0.4: its own switch, default off
   await ap.getByLabel("允许通过邮件找回密码").check();
   await ap.getByRole("button", { name: "保存注册设置" }).click();
   await expect(ap.getByText("已保存。").first()).toBeVisible();
@@ -961,7 +864,6 @@ test("W15: 系统设置 注册/邮件, sign up by email code, reset the password
 test("W24: 系统设置 → 支付 (imported + added method, 测试连接), sign-up without email verification, method picker", async ({
   browser,
 }) => {
-  test.skip(!secret, "needs the enrollment test");
   test.setTimeout(180_000);
   const payDir = process.env.E2E_PAY_DIR ?? "";
   test.skip(!payDir, "needs scripts/e2e.sh");
@@ -970,9 +872,7 @@ test("W24: 系统设置 → 支付 (imported + added method, 测试连接), sign
   const ap = await actx.newPage();
   const adminProblems = watch(ap);
   await ap.goto(BASE);
-  const next = await nextCode(secret, usedStep);
-  usedStep = next.step;
-  await login(ap, ADMIN, ADMIN_PW, next.code);
+  await login(ap, ADMIN, ADMIN_PW);
   await expect(ap).toHaveURL(ADMIN_BASE);
   await ap.goto(`${ADMIN_BASE}/settings/payments`);
   // The obsolete panel.toml section was imported once at the first start.
@@ -1004,7 +904,7 @@ test("W24: 系统设置 → 支付 (imported + added method, 测试连接), sign
   await ap.getByRole("button", { name: "取消" }).click();
   // 注册: no email verification.
   await ap.getByRole("tab", { name: "注册" }).click();
-  await ap.getByLabel("注册需要邮箱验证").selectOption("off");
+  await ap.getByLabel("注册需要邮箱验证").uncheck();
   await ap.getByRole("button", { name: "保存注册设置" }).click();
   await expect(ap.getByText("已保存。").first()).toBeVisible();
   expect(adminProblems).toEqual([]);
@@ -1039,14 +939,11 @@ test("W24: 系统设置 → 支付 (imported + added method, 测试连接), sign
 });
 
 test("W25: settings imported from an old panel.toml, 节点通信 and 安全 forms", async ({ browser }) => {
-  test.skip(!secret, "needs the enrollment test");
   const ctx = await browser.newContext({ locale: "zh-CN" });
   const page = await ctx.newPage();
   const problems = watch(page);
   await page.goto(BASE);
-  const next = await nextCode(secret, usedStep);
-  usedStep = next.step;
-  await login(page, ADMIN, ADMIN_PW, next.code);
+  await login(page, ADMIN, ADMIN_PW);
   await expect(page).toHaveURL(ADMIN_BASE);
   // The obsolete keys of scripts/e2e.sh's panel.toml were imported once
   // (node domain from grpc.advertise, names, audit retention) and are named
@@ -1086,16 +983,13 @@ test("W25: settings imported from an old panel.toml, 节点通信 and 安全 for
 test("agent update check: 检查更新 fetches the signed release, 有新版本 badge on the node list", async ({
   browser,
 }) => {
-  test.skip(!secret, "needs the enrollment test");
   const source = process.env.E2E_RELEASE_SOURCE ?? "";
   test.skip(!source || !E2E_DB, "needs scripts/e2e.sh");
   const ctx = await browser.newContext({ locale: "zh-CN" });
   const page = await ctx.newPage();
   const problems = watch(page);
   await page.goto(`${BASE}/updates`);
-  const next = await nextCode(secret, usedStep);
-  usedStep = next.step;
-  await login(page, ADMIN, ADMIN_PW, next.code);
+  await login(page, ADMIN, ADMIN_PW);
   await expect(page).toHaveURL(`${ADMIN_BASE}/updates`);
   await expect(page.getByRole("heading", { name: "检查更新" })).toBeVisible();
   // The local stand-in for GitHub (e2e.sh), saved through the form.
@@ -1140,15 +1034,12 @@ test("agent update check: 检查更新 fetches the signed release, 有新版本 
 });
 
 test("Ops: batch balance on selected users, users CSV, gift order, coupon batch + CSV", async ({ browser }) => {
-  test.skip(!secret, "needs the enrollment test");
   const { readFileSync } = await import("node:fs");
   const ctx = await browser.newContext({ locale: "zh-CN", acceptDownloads: true });
   const admin = await ctx.newPage();
   const problems = watch(admin);
   await admin.goto(`${BASE}/users`);
-  const next = await nextCode(secret, usedStep);
-  usedStep = next.step;
-  await login(admin, ADMIN, ADMIN_PW, next.code);
+  await login(admin, ADMIN, ADMIN_PW);
   await expect(admin).toHaveURL(`${ADMIN_BASE}/users`);
   const api = `${ADMIN_BASE.replace(/\/admin$/, "")}/api/v1`;
   const plan = await ctx.request.post(`${api}/plans`, {
@@ -1160,14 +1051,14 @@ test("Ops: batch balance on selected users, users CSV, gift order, coupon batch 
   });
   expect(plan.status()).toBe(201);
   const created = await ctx.request.post(`${api}/users`, {
-    data: { login: "e2e-ops-1", password: "e2e-ops-password" },
+    data: { email: "e2e-ops-1@e2e.test", password: "e2e-ops-password" },
   });
   expect(created.status()).toBe(201);
 
   // Batch: select one user, credit ¥5 with a reason, confirm, watch it finish.
   await admin.getByLabel("搜索").fill("e2e-ops");
   await expect(admin.getByText("找到 1 个用户")).toBeVisible();
-  await admin.getByLabel("选择 e2e-ops-1").check();
+  await admin.getByLabel("选择 e2e-ops-1@e2e.test").check();
   await admin.getByRole("button", { name: "批量操作（已选 1）" }).click();
   const dialog = admin.getByRole("dialog", { name: "批量操作" });
   await expect(dialog.getByText(/将作用于 1 个账户/)).toBeVisible();
@@ -1196,9 +1087,9 @@ test("Ops: batch balance on selected users, users CSV, gift order, coupon batch 
   await admin.getByRole("link", { name: "订单", exact: true }).click();
   await admin.getByRole("button", { name: "新建人工订单" }).click();
   const mo = admin.getByRole("dialog", { name: "新建人工订单" });
-  await mo.getByLabel("用户（账号或邮箱）").fill("e2e-ops-1");
+  await mo.getByLabel("用户邮箱").fill("e2e-ops-1@e2e.test");
   await mo.getByRole("button", { name: "查找" }).click();
-  await expect(mo.getByText("用户：e2e-ops-1")).toBeVisible();
+  await expect(mo.getByText("用户：e2e-ops-1@e2e.test")).toBeVisible();
   await mo.getByLabel("套餐", { exact: true }).selectOption({ label: "e2e-ops" });
   await mo.getByLabel("周期", { exact: true }).selectOption("month");
   await mo.getByLabel("赠送（金额 ¥0，不计入营收）").check();
@@ -1235,14 +1126,12 @@ test("Ops: batch balance on selected users, users CSV, gift order, coupon batch 
 // Ops: announcements on the portal dashboard, the help center, branding,
 // and an edited mail template that the test mail (Mailpit) carries.
 test("Ops: announcement + help article in the portal; edited mail template in a test mail", async ({ browser }) => {
-  test.skip(!secret || !MAILPIT || !SMTP_PORT, "needs the enrollment test and Mailpit (scripts/e2e.sh)");
+  test.skip(!MAILPIT || !SMTP_PORT, "needs Mailpit (scripts/e2e.sh)");
   const actx = await browser.newContext({ locale: "zh-CN" });
   const ap = await actx.newPage();
   const aproblems = watch(ap);
   await ap.goto(BASE);
-  const next = await nextCode(secret, usedStep);
-  usedStep = next.step;
-  await login(ap, ADMIN, ADMIN_PW, next.code);
+  await login(ap, ADMIN, ADMIN_PW);
   await expect(ap).toHaveURL(ADMIN_BASE);
 
   // Announcement through the console editor (live server preview).

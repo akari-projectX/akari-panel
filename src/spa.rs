@@ -11,7 +11,7 @@ use axum::http::{HeaderMap, HeaderValue, Uri, header};
 use axum::response::{IntoResponse, Response};
 use rust_embed::RustEmbed;
 
-use crate::auth::{ApiError, SessionUser};
+use crate::auth::{ApiError, AuthUser};
 use crate::{reject, state::AppState};
 
 // The compiled bundles (spa/dist/{app,admin}). build.rs drops placeholder
@@ -60,16 +60,14 @@ pub async fn asset(Path((_, rel)): Path<(String, String)>) -> Response {
 }
 
 /// The admin console entry point (every /admin and /admin/<view> path):
-/// only for a live admin session — a full one, or the enrollment-only
-/// session `auth.require_admin_2fa` gives an admin without 2FA (the console
-/// owns the enrollment page). Anything else — no or bad cookie, expired or
+/// only for a live admin session. Anything else — no or bad cookie, expired or
 /// revoked session, a user's session — is the canonical rejection, so the
 /// console is as invisible as an unknown path.
 pub async fn admin_index(
     State(state): State<AppState>,
     headers: HeaderMap,
     uri: Uri,
-    session: Result<SessionUser, ApiError>,
+    session: Result<AuthUser, ApiError>,
 ) -> Response {
     if !console_host(&state, &headers, &uri) || !is_admin(&session) {
         return reject::not_found();
@@ -92,7 +90,7 @@ pub async fn admin_asset(
     Path((_, rel)): Path<(String, String)>,
     headers: HeaderMap,
     uri: Uri,
-    session: Result<SessionUser, ApiError>,
+    session: Result<AuthUser, ApiError>,
 ) -> Response {
     if !console_host(&state, &headers, &uri) || !is_admin(&session) {
         return reject::not_found();
@@ -104,10 +102,10 @@ pub async fn admin_asset(
     }
 }
 
-/// The console gate. `SessionUser` already refuses missing, forged,
+/// The console gate. `AuthUser` already refuses missing, forged,
 /// revoked (session_ver), disabled and expired sessions; a database error
 /// is refused the same way (no distinguishable 500 under /admin).
-fn is_admin(session: &Result<SessionUser, ApiError>) -> bool {
+fn is_admin(session: &Result<AuthUser, ApiError>) -> bool {
     matches!(session, Ok(u) if u.role == "admin")
 }
 
@@ -170,14 +168,14 @@ fn file_response(key: &str, data: Vec<u8>, cache: &'static str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::{Stage, issue_token};
+    use crate::auth::issue_token;
     use crate::testdb::TestDb;
     use crate::testdb::http::{Client, rand_ip};
     use axum::http::{Method, StatusCode};
     use uuid::Uuid;
 
-    /// A client holding a session of `id` (current session_ver, `stage`).
-    async fn session(state: &AppState, id: Uuid, stage: Stage) -> Client {
+    /// A client holding a session of `id` (current session_ver).
+    async fn session(state: &AppState, id: Uuid) -> Client {
         let (role, sv): (String, i64) =
             sqlx::query_as("SELECT role, session_ver FROM users WHERE id = $1")
                 .bind(id)
@@ -185,7 +183,7 @@ mod tests {
                 .await
                 .unwrap();
         let mut c = Client::new(state, rand_ip());
-        c.cookie = Some(issue_token(state, id, &role, sv, stage).unwrap());
+        c.cookie = Some(issue_token(state, id, &role, sv).unwrap());
         c
     }
 
@@ -230,19 +228,19 @@ mod tests {
         ];
         paths.extend(admin_asset_path());
 
-        let user = session(&state, db.user().await, Stage::Full).await;
+        let user = session(&state, db.user().await).await;
         let mut forged = Client::new(&state, rand_ip());
         forged.cookie = Some("not-a-jwt".into());
         let admin_id = db.admin().await;
         // Revoked: a token from before the last session_ver bump.
-        let revoked = session(&state, admin_id, Stage::Full).await;
+        let revoked = session(&state, admin_id).await;
         let admin_live = {
             sqlx::query("UPDATE users SET session_ver = session_ver + 1 WHERE id = $1")
                 .bind(admin_id)
                 .execute(&db.pool)
                 .await
                 .unwrap();
-            session(&state, admin_id, Stage::Full).await
+            session(&state, admin_id).await
         };
 
         for c in [&anon, &forged, &user, &revoked] {
@@ -301,35 +299,6 @@ mod tests {
         }
     }
 
-    /// With `auth.require_admin_2fa` an admin without 2FA only holds an
-    /// enrollment session; the console (which owns the enrollment page) is
-    /// served to it. A user's session is still refused.
-    #[tokio::test]
-    async fn enrollment_session_of_an_admin_gets_the_console() {
-        let Some(db) = TestDb::new().await else {
-            return;
-        };
-        let state = AppState::for_test(db.pool.clone()).await;
-        db.settings(&state, "require_admin_2fa = true").await;
-        let canonical = Client::new(&state, rand_ip())
-            .get("/definitely/not/here")
-            .await
-            .fingerprint();
-        let id = Uuid::new_v4();
-        sqlx::query("INSERT INTO users (id, login, role) VALUES ($1, $2, 'admin')")
-            .bind(id)
-            .bind(id.to_string())
-            .execute(&db.pool)
-            .await
-            .unwrap();
-        for stage in [Stage::Enroll, Stage::Full] {
-            let c = session(&state, id, stage).await;
-            assert_eq!(c.get("/test/admin/account").await.status, StatusCode::OK);
-        }
-        let user = session(&state, db.user().await, Stage::Enroll).await;
-        assert_eq!(user.get("/test/admin").await.fingerprint(), canonical);
-    }
-
     /// R23-3 (with R22): once the main domain is set, the console answers
     /// on the main domain only (and IP literals); on the subscription
     /// domain it is the canonical rejection even for an admin session,
@@ -340,7 +309,7 @@ mod tests {
             return;
         };
         let state = AppState::for_test(db.pool.clone()).await;
-        let mut c = session(&state, db.admin().await, Stage::Full).await;
+        let mut c = session(&state, db.admin().await).await;
         let canonical = c.get("/definitely/not/here").await.fingerprint();
         c.headers = vec![("host".into(), "sub.example.com".into())];
         assert_eq!(

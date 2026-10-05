@@ -69,7 +69,7 @@ function Totals({ t }: { t: { up_bytes: number; down_bytes: number; billed_bytes
 }
 
 /** A user's history (用户管理 → 管理). */
-export function UserTraffic({ userId, login }: { userId: string; login: string }) {
+export function UserTraffic({ userId, email }: { userId: string; email: string }) {
   const [days, setDays] = useState(30);
   const { from, to } = lastDays(days);
   const daily = useQuery({
@@ -81,7 +81,7 @@ export function UserTraffic({ userId, login }: { userId: string; login: string }
     queryFn: () => get<UserTrafficView>(`/users/${userId}/traffic?group=node&from=${from}&to=${to}`),
   });
   return (
-    <section aria-label={`${login} 的流量明细`} className="space-y-3">
+    <section aria-label={`${email} 的流量明细`} className="space-y-3">
       <h3 className="text-sm font-medium">流量明细</h3>
       <RangeButtons days={days} onChange={setDays} label="流量明细时间范围" />
       {daily.isError && <ErrorText>{adminErrorText(daily.error, "流量明细加载失败")}</ErrorText>}
@@ -157,7 +157,7 @@ export function NodeTraffic({ nodeId }: { nodeId: string }) {
           {q.isSuccess && q.data.top_users.length === 0 && <TableNote colSpan={4}>这段时间没有流量。</TableNote>}
           {(q.data?.top_users ?? []).map((u) => (
             <TableRow key={u.user_id}>
-              <TableCell className="font-medium">{u.login ?? "已删除的用户"}</TableCell>
+              <TableCell className="font-medium">{u.email ?? "已删除的用户"}</TableCell>
               <TableCell className="text-right tabular-nums">{humanBytes(u.up_bytes)}</TableCell>
               <TableCell className="text-right tabular-nums">{humanBytes(u.down_bytes)}</TableCell>
               <TableCell className="text-right tabular-nums">{humanBytes(u.billed_bytes)}</TableCell>

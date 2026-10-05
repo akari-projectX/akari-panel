@@ -134,9 +134,9 @@ pub fn signup_body(kind: u8, body: &[u8]) -> Result<bool, String> {
         4 => strict::<profile::EmailCodeReq>(body)?.is_some(),
         5 => strict::<profile::VerifyReq>(body)?.is_some(),
         6 => strict::<profile::LocaleReq>(body)?.is_some(),
-        7 => match strict::<crate::mail::SmtpReq>(body)? {
+        7 => match strict::<crate::mail::MailReq>(body)? {
             Some(r) => {
-                if let Ok(v) = crate::mail::smtp_values(&r) {
+                if let Ok(v) = crate::mail::mail_values(&r) {
                     // Validated values never carry header-breaking text.
                     for s in [&v.host, &v.username, &v.from_addr, &v.from_name]
                         .into_iter()
