@@ -1942,7 +1942,7 @@ else
   echo "speed limit: NodeView warning for the protocol $AGENT_PROTO agent present (throughput check skipped above)"
 fi
 # Admin views and audit.
-[ "$(code -b "$JAR" "$BASE/api/v1/orders?email=smoke-buyer@smoke.test")" = "200" ] || { echo "FAIL: admin orders"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/orders?email=$BUYER_MAIL")" = "200" ] || { echo "FAIL: admin orders"; exit 1; }
 [ "$(last_json "len(d)")" = "3" ] || { echo "FAIL: admin order list"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/orders/$ORDER")" = "200" ] || { echo "FAIL: admin order detail"; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/orders")" = "403" ] || { echo "FAIL: user reached admin orders"; exit 1; }
@@ -1962,7 +1962,7 @@ echo "== W31: system status =="
   || { echo "FAIL: system status"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/system/status")" = "403" ] || { echo "FAIL: user reached the system status"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/users?q=SMOKE-BUY&role=user")" = "200" ] \
-  && [ "$(last_json "d['total'] == 1 and d['users'][0]['email'] == 'smoke-buyer@smoke.test'")" = "True" ] \
+  && [ "$(last_json "d['total'] == 1 and d['users'][0]['email'] == '$BUYER_MAIL'")" = "True" ] \
   || { echo "FAIL: user search"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/users?status=bogus")" = "400" ] \
   && [ "$(last_json "d['code'] + ' ' + str(sorted(d))")" = "user.status_filter_invalid ['code', 'error', 'params']" ] \
