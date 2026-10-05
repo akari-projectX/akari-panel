@@ -1036,9 +1036,12 @@ grep -q '冒烟' "$LOG/w11-sub-hidden.yaml" && { echo "FAIL: hidden node in subs
 echo "portal + subscription: ok"
 
 # W22: traffic history. D's transfer above lands (after compaction, ~30 s)
-# on today's UTC day and the 0.5x node: the user's /me/traffic (names only,
-# no ids) and the admin views show exactly what was settled.
-TODAY_UTC=$(psql_q "SELECT (now() AT TIME ZONE 'UTC')::date")
+# on today's day in the site time zone (Q3, default Asia/Shanghai) and the
+# 0.5x node: the user's /me/traffic (names only, no ids) and the admin views
+# show exactly what was settled; traffic_daily is partitioned by month.
+TODAY_SITE=$(psql_q "SELECT akari_site_day(now())")
+psql_q "SELECT count(*) FROM pg_inherits WHERE inhparent = 'traffic_daily'::regclass" | matches '^5$' \
+  || { echo "FAIL: traffic_daily partitions (default + last month .. +2)"; exit 1; }
 for _ in $(seq 1 75); do
   # Settled values now (a late final report may still have added a little).
   USED_D=$(psql_q "SELECT traffic_used_bytes FROM users WHERE id='$USER_D'")
@@ -1050,14 +1053,16 @@ done
 [ "$(code -b "$DJAR" "$BASE/api/v1/me/traffic")" = "200" ] || { echo "FAIL: /me/traffic"; exit 1; }
 python3 -c "
 import json; v = json.load(open('/tmp/akari-smoke/last')); t = v['total']
-assert v['timezone'] == 'UTC' and v['to'] == '$TODAY_UTC', v
+assert v['timezone'] == 'Asia/Shanghai' and v['to'] == '$TODAY_SITE', v
 assert t['billed_bytes'] == $USED_D, ('billed', t, $USED_D)
 assert t['up_bytes'] + t['down_bytes'] == $RAW_D, ('raw', t, $RAW_D)
 assert t['up_bytes'] > 0 and t['down_bytes'] > 0, t
-assert [d['day'] for d in v['days']] == ['$TODAY_UTC'], v['days']
+assert [d['day'] for d in v['days']] == ['$TODAY_SITE'], v['days']
 assert [n['name'] for n in v['nodes']] == ['冒烟 01'], v['nodes']
 assert 'node_id' not in json.dumps(v) and '$NODE_ID' not in json.dumps(v), v
 " || { echo "FAIL: /me/traffic content"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT DISTINCT tableoid::regclass FROM traffic_daily WHERE user_id = '$USER_D'")" = "traffic_daily_$(echo "$TODAY_SITE" | tr -d '-' | cut -c1-6)" ] \
+  || { echo "FAIL: today's rows outside this month's partition"; exit 1; }
 [ "$(code -b "$DJAR" "$BASE/api/v1/me/traffic?group=node")" = "400" ] || { echo "FAIL: /me/traffic accepted group"; exit 1; }
 for p in "users/$USER_D/traffic" "nodes/$NODE_ID/traffic" "traffic/summary"; do
   [ "$(code -b "$DJAR" "$BASE/api/v1/$p")" = "403" ] || { echo "FAIL: user reads admin $p"; exit 1; }
@@ -1072,7 +1077,7 @@ assert r[0]['billed_bytes'] == $USED_D, r
 [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID/traffic")" = "200" ] || { echo "FAIL: admin node traffic"; exit 1; }
 python3 -c "
 import json; v = json.load(open('/tmp/akari-smoke/last'))
-d = [x for x in v['days'] if x['day'] == '$TODAY_UTC']
+d = [x for x in v['days'] if x['day'] == '$TODAY_SITE']
 assert d and d[0]['users'] >= 1 and d[0]['billed_bytes'] >= $USED_D, v['days']
 u = [x for x in v['top_users'] if x['user_id'] == '$USER_D']
 assert u and u[0]['email'] == 'smoke-user-d@smoke.test' and u[0]['billed_bytes'] == $USED_D, v['top_users']
@@ -1080,12 +1085,12 @@ assert u and u[0]['email'] == 'smoke-user-d@smoke.test' and u[0]['billed_bytes']
 [ "$(code -b "$JAR" "$BASE/api/v1/traffic/summary")" = "200" ] || { echo "FAIL: traffic summary"; exit 1; }
 python3 -c "
 import json; v = json.load(open('/tmp/akari-smoke/last'))
-d = [x for x in v['days'] if x['day'] == '$TODAY_UTC']
+d = [x for x in v['days'] if x['day'] == '$TODAY_SITE']
 assert d and d[0]['billed_bytes'] >= $USED_D, v
 assert any(n['node_id'] == '$NODE_ID' for n in v['top_nodes']), v
 " || { echo "FAIL: traffic summary content"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/traffic/summary?from=2026-13-01")" = "400" ] || { echo "FAIL: bad date accepted"; exit 1; }
-echo "traffic history: ok (D billed $USED_D on $TODAY_UTC)"
+echo "traffic history: ok (D billed $USED_D on $TODAY_SITE)"
 
 echo "== W29: block rules (审计规则): API, per-node switch, agent routing + counters =="
 # Panel side (any agent): built-ins, a custom rule, validation, admins only,
@@ -1543,7 +1548,7 @@ wait_users 1 10 "plan grants the node (no manual assignment)"
 # D12: the user detail carries the current subscription (the node-access
 # view GET /users/{id}/nodes is gone: canonical rejection).
 [ "$(code -b "$JAR" "$BASE/api/v1/users/$PU")" = "200" ] || { echo "FAIL: user detail"; cat /tmp/akari-smoke/last; exit 1; }
-python3 -c "import json; s=json.load(open('/tmp/akari-smoke/last'))['subscription']; assert s['plan_name']=='smoke-plan' and s['period']=='days' and s['period_days']==30 and s['traffic_total_bytes']==150000 and s['reset_period']=='monthly' and s['next_reset_at'] and s['expires_at'] and s['status']=='active', s" \
+python3 -c "import json; s=json.load(open('/tmp/akari-smoke/last'))['subscription']; assert s['plan_name']=='smoke-plan' and s['period']=='days' and s['period_days']==30 and s['traffic_total_bytes']==150000 and s['reset_period']=='monthly' and s['next_reset_at'].endswith('+08:00') and s['timezone']=='Asia/Shanghai' and s['expires_at'] and s['status']=='active', s" \
   || { echo "FAIL: user detail subscription"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/users/00000000-0000-0000-0000-000000000000")" = "404" ] || { echo "FAIL: detail of no user not 404"; exit 1; }
 [ "$(fp -b "$JAR" "$BASE/api/v1/users/$PU/nodes")" = "$REJ" ] || { echo "FAIL: /users/{id}/nodes still answers"; exit 1; }
@@ -1565,7 +1570,7 @@ PJAR="$LOG/plan-user-cookies"
 [ "$(code -c "$PJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
     -d '{"email":"smoke-plan-user@smoke.test","password":"plan-password-123"}')" = "200" ] || { echo "FAIL: plan user login"; exit 1; }
 [ "$(code -b "$PJAR" "$BASE/api/v1/me/plan")" = "200" ] || { echo "FAIL: /me/plan"; exit 1; }
-python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); assert d['plan']['name']=='smoke-plan' and d['plan']['period']=='monthly' and d['plan']['next_reset_at'] and d['nodes']==[{'name':'test-node','region':'Smokeland'}], d" \
+python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); assert d['plan']['name']=='smoke-plan' and d['plan']['period']=='monthly' and d['plan']['next_reset_at'].endswith('+08:00') and d['nodes']==[{'name':'test-node','region':'Smokeland'}], d" \
   || { echo "FAIL: /me/plan content"; cat /tmp/akari-smoke/last; exit 1; }
 grep -q "$NODE_ID" /tmp/akari-smoke/last && { echo "FAIL: /me/plan exposes node ids"; exit 1; }
 [ "$(code -b "$PJAR" "$BASE/api/v1/plans")" = "403" ] || { echo "FAIL: user reached the plans API"; exit 1; }
@@ -2355,6 +2360,28 @@ done
 [ "$ok" = 1 ] || { echo "FAIL: site name not in /auth/options"; exit 1; }
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/site" -H 'Content-Type: application/json' \
     -d "{\"version\":$SV,\"site_name\":null}")" = "200" ] || { echo "FAIL: clear site name"; exit 1; }
+# Q3: the site time zone (IANA names only; absent = unchanged; null = the
+# default Asia/Shanghai; audited) drives the days and the reset times.
+SV=$(last_json "d['version']")
+[ "$(last_json "d['timezone']['effective']")" = "Asia/Shanghai" ] || { echo "FAIL: default time zone"; cat /tmp/akari-smoke/last; exit 1; }
+for tz in CST UTC+8 Mars/Base; do
+  [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/site" -H 'Content-Type: application/json' \
+      -d "{\"version\":$SV,\"timezone\":\"$tz\"}")" = "400" ] && [ "$(last_json "d['code']")" = "settings.timezone_invalid" ] \
+    || { echo "FAIL: time zone $tz accepted"; cat /tmp/akari-smoke/last; exit 1; }
+done
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/site" -H 'Content-Type: application/json' \
+    -d "{\"version\":$SV,\"timezone\":\"UTC\"}")" = "200" ] && [ "$(last_json "d['timezone']['value']")" = "UTC" ] \
+  || { echo "FAIL: set time zone"; cat /tmp/akari-smoke/last; exit 1; }
+SV=$(last_json "d['version']")
+[ "$(psql_q "SELECT akari_site_tz() || ' ' || (akari_site_day(now()) = (now() AT TIME ZONE 'UTC')::date)")" = "UTC t" ] \
+  || { echo "FAIL: SQL does not follow the time zone"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/traffic/summary")" = "200" ] && [ "$(last_json "d['timezone']")" = "UTC" ] \
+  || { echo "FAIL: history not in the new time zone"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/site" -H 'Content-Type: application/json' \
+    -d "{\"version\":$SV,\"timezone\":null}")" = "200" ] && [ "$(last_json "d['timezone']['source']")" = "default" ] \
+  || { echo "FAIL: reset time zone"; cat /tmp/akari-smoke/last; exit 1; }
+psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.site.update' AND after ? 'timezone' AND after->>'timezone' = 'UTC'" | matches '^1$' \
+  || { echo "FAIL: time zone change not audited"; exit 1; }
 # R21: expired and quota-disabled users (renewal scope) can shop, order,
 # poll and cancel; a banned user cannot (portal scope: 403 account.banned).
 for who in expired quota; do

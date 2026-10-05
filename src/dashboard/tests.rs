@@ -7,11 +7,18 @@ use super::*;
 use crate::testdb::TestDb;
 
 async fn today_start(db: &TestDb) -> DateTime<Utc> {
-    let (_, d1, _, _): (DateTime<Utc>, DateTime<Utc>, DateTime<Utc>, DateTime<Utc>) =
-        sqlx::query_as(BOUNDS_SQL)
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
+    type Bounds = (
+        DateTime<Utc>,
+        String,
+        chrono::NaiveDate,
+        DateTime<Utc>,
+        DateTime<Utc>,
+        DateTime<Utc>,
+    );
+    let (_, _, _, d1, _, _): Bounds = sqlx::query_as(BOUNDS_SQL)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
     d1
 }
 
@@ -58,6 +65,12 @@ async fn aggregates_every_source() {
     assert_eq!(d.pending, Pending::default());
     assert!(d.latest_orders.is_empty());
     assert_eq!(d.today_start, d1);
+    // Q3: local midnight of the site day (Asia/Shanghai = 16:00 UTC).
+    assert_eq!(d.timezone, "Asia/Shanghai");
+    assert_eq!(
+        d1,
+        d.today_date.and_hms_opt(0, 0, 0).unwrap().and_utc() - Duration::hours(8)
+    );
 
     // Revenue windows: today, 2 days ago (7d), 20 days ago (30d), 40 days
     // ago (none); exactly at the window start counts.

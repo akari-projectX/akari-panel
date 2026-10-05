@@ -2,8 +2,8 @@
 //!
 //! - `GET /users/export.csv?<users-list filters>` — the users matching the
 //!   current filter (same parameters and order as `GET /users`);
-//! - `GET /orders/export.csv?from&to&status&via` — orders created in a UTC
-//!   date range (≤366 days);
+//! - `GET /orders/export.csv?from&to&status&via` — orders created in a
+//!   date range of the site time zone (Q3; ≤366 days);
 //! - `GET /traffic/export.csv?from&to&group=day|node` — the W22 fleet
 //!   history per day, or per node over the range.
 //!
@@ -143,20 +143,19 @@ pub(crate) async fn audit(
     .await
 }
 
-fn today() -> NaiveDate {
-    Utc::now().date_naive()
+/// The download's name, dated with today in the site time zone (Q3).
+pub(crate) fn filename(what: &str, today: NaiveDate) -> String {
+    format!("akari-{what}-{}.csv", today.format("%Y%m%d"))
 }
 
-pub(crate) fn filename(what: &str) -> String {
-    format!("akari-{what}-{}.csv", today().format("%Y%m%d"))
-}
-
-/// A UTC date range from optional bounds (defaults: the last 30 days).
+/// A date range (days of the site time zone, Q3) from optional bounds
+/// (defaults: the last 30 days up to `today`).
 pub fn date_range(
     from: Option<NaiveDate>,
     to: Option<NaiveDate>,
+    today: NaiveDate,
 ) -> Result<(NaiveDate, NaiveDate), ApiError> {
-    let to = to.unwrap_or_else(today);
+    let to = to.unwrap_or(today);
     let from = from.unwrap_or(to - Duration::days(DEFAULT_RANGE_DAYS - 1));
     if from > to {
         return Err(bad_request!(
@@ -300,6 +299,7 @@ pub async fn users(
     api::push_user_filters(&mut probe, &q)?;
     api::user_order(q.sort.as_deref())?;
     let mut tx = state.pg().begin().await?;
+    let today = crate::settings::site_clock(&mut *tx).await?.today;
     audit(
         &mut tx,
         &Actor::of(&user),
@@ -311,7 +311,7 @@ pub async fn users(
     let (tx, rx) = tokio::sync::mpsc::channel(4);
     let sink = Sink::new(tx.clone(), USER_COLS);
     Ok(download(
-        filename("users"),
+        filename("users", today),
         produce_users(state, q, sink),
         tx,
         rx,
@@ -432,11 +432,12 @@ fn push_order_filters(
     to: NaiveDate,
     q: &OrdersQuery,
 ) {
-    qb.push(" WHERE o.created_at >= ")
+    // Local midnights of the site time zone (Q3).
+    qb.push(" WHERE o.created_at >= (")
         .push_bind(from)
-        .push("::date AND o.created_at < ")
+        .push("::date::timestamp AT TIME ZONE akari_site_tz()) AND o.created_at < (")
         .push_bind(to + Duration::days(1))
-        .push("::date");
+        .push("::date::timestamp AT TIME ZONE akari_site_tz())");
     if let Some(s) = &q.status {
         qb.push(" AND o.status = ").push_bind(s.clone());
     }
@@ -503,7 +504,8 @@ pub async fn orders(
     {
         return Err(bad_request!("export.via_invalid", "unknown paid_via"));
     }
-    let (from, to) = date_range(q.from, q.to)?;
+    let today = crate::settings::site_clock(state.pg()).await?.today;
+    let (from, to) = date_range(q.from, q.to, today)?;
     let mut tx = state.pg().begin().await?;
     audit(
         &mut tx,
@@ -516,7 +518,7 @@ pub async fn orders(
     let (tx, rx) = tokio::sync::mpsc::channel(4);
     let sink = Sink::new(tx.clone(), ORDER_COLS);
     Ok(download(
-        filename("orders"),
+        filename("orders", today),
         produce_orders(state, q, from, to, sink),
         tx,
         rx,
@@ -570,7 +572,7 @@ async fn produce_traffic(
 }
 
 /// GET /traffic/export.csv?from&to&group=day|node (admin): the fleet's
-/// W22 history (UTC days).
+/// W22 history (days of the site time zone).
 pub async fn traffic(
     State(state): State<AppState>,
     user: AuthUser,
@@ -587,7 +589,8 @@ pub async fn traffic(
             ));
         }
     };
-    let (from, to) = date_range(q.from, q.to)?;
+    let today = crate::settings::site_clock(state.pg()).await?.today;
+    let (from, to) = date_range(q.from, q.to, today)?;
     let mut tx = state.pg().begin().await?;
     audit(
         &mut tx,
@@ -601,11 +604,11 @@ pub async fn traffic(
     let cols: &[&str] = if by_node {
         &["node_id", "node", "up_bytes", "down_bytes", "billed_bytes"]
     } else {
-        &["day_utc", "up_bytes", "down_bytes", "billed_bytes", "users"]
+        &["day", "up_bytes", "down_bytes", "billed_bytes", "users"]
     };
     let sink = Sink::new(tx.clone(), cols);
     Ok(download(
-        filename("traffic"),
+        filename("traffic", today),
         produce_traffic(state, from, to, by_node, sink),
         tx,
         rx,

@@ -545,7 +545,7 @@ export const zh = {
   },
   traffic: {
     title: "流量记录",
-    description: "每天、每个节点的使用量（日期按 UTC 计算，约 1 分钟内更新）。",
+    description: "每天、每个节点的使用量（日期按站点时区计算，约 1 分钟内更新）。",
     range: "时间范围",
     lastDays: "近 {days} 天",
     upload: "上传",

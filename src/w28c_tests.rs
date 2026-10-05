@@ -259,7 +259,7 @@ async fn renew_extend_and_one_time_rules() {
     assert_eq!(r.status, StatusCode::OK);
     let e2 = ts(&r.json()["active"]["expires_at"]);
     let quarter: bool = sqlx::query_scalar(
-        "SELECT ($1 AT TIME ZONE 'UTC') + interval '3 months' = ($2 AT TIME ZONE 'UTC')",
+        "SELECT ($1 AT TIME ZONE akari_site_tz()) + interval '3 months' = ($2 AT TIME ZONE akari_site_tz())",
     )
     .bind(e1)
     .bind(e2)
@@ -349,7 +349,15 @@ async fn reset_traffic_is_confirmed_and_reenables_quota() {
     assert_eq!(s["traffic_used_bytes"], 0);
     assert_eq!(s["status"], "active", "quota-disabled account re-enabled");
     assert!(s["last_reset_at"].is_string());
-    assert_eq!(s["next_reset_at"], json!(next), "schedule unchanged");
+    // Q3: presented in the site time zone (Asia/Shanghai, +08:00).
+    let shown = s["next_reset_at"].as_str().unwrap();
+    assert!(shown.ends_with("+08:00"), "{shown}");
+    assert_eq!(
+        DateTime::parse_from_rfc3339(shown).unwrap().to_utc(),
+        next.unwrap(),
+        "schedule unchanged"
+    );
+    assert_eq!(s["timezone"], "Asia/Shanghai");
     assert_ne!(db.versions(node).await, v0, "back in service: bumped");
     assert_eq!(audits(&db, "user.traffic.reset").await, 1);
 

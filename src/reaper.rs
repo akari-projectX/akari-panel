@@ -50,6 +50,13 @@ pub async fn reap_loop(state: AppState) {
     let mut next_retention = tokio::time::Instant::now() + crate::traffic::RETENTION_EVERY;
     // W22: staged traffic history -> daily tables (one instance at a time).
     let mut next_compact = tokio::time::Instant::now() + crate::traffic::COMPACT_EVERY;
+    // Q3: the monthly traffic_daily partitions right away (the retention
+    // pass keeps them ahead after that), so a panel that was down over a
+    // month boundary does not write the new month into the DEFAULT
+    // partition for ten minutes.
+    if let Err(e) = crate::traffic::ensure_partitions(state.pg()).await {
+        tracing::warn!(error = %e, "traffic daily partitions failed");
+    }
     loop {
         tick.tick().await;
         if let Err(e) = reap_once(&state).await {

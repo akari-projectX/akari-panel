@@ -1,5 +1,5 @@
 //! W22: traffic history — per user, per entrance (W28-a; with its node),
-//! per UTC day.
+//! per day in the site time zone (Q3).
 //!
 //! `traffic::FLUSH_SQL` stages the accepted deltas in the same statement
 //! that bills the users, and `traffic::compact_pass` folds them into
@@ -19,17 +19,19 @@
 //! - user `GET /me/traffic?from&to` (own rows only: per day, per node NAME;
 //!   no node ids; hidden or deleted nodes merged into one unnamed row)
 //!
-//! Dates are `YYYY-MM-DD` UTC days, `to` inclusive; default the last 30
+//! Dates are `YYYY-MM-DD` days in the site time zone (Q3,
+//! `panel_settings.timezone`, default Asia/Shanghai), `to` inclusive; default the last 30
 //! days; at most 366 days (month grouping: 3660, widened to whole months).
 
 use axum::Json;
 use axum::extract::{Path, RawQuery, State};
-use chrono::{Duration, NaiveDate, Utc};
+use chrono::{Duration, NaiveDate};
 use serde::Serialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::auth::{ApiError, AuthUser};
+use crate::settings::{SiteClock as Clock, site_clock};
 use crate::state::AppState;
 
 /// Default range: the last 30 days (today included).
@@ -130,8 +132,8 @@ fn parse_day(v: &str) -> Option<NaiveDate> {
         .filter(|d| (earliest()..=latest()).contains(d))
 }
 
-/// Parse and validate a history query string (`today` = the current UTC
-/// day). Pure; every error is a short message for a 400.
+/// Parse and validate a history query string (`today` = the current day
+/// in the site time zone). Pure; every error is a short message for a 400.
 pub fn parse_query(raw: Option<&str>, today: NaiveDate, params: Params) -> Result<Range, String> {
     let (mut from, mut to, mut group, mut limit) = (None, None, None, None);
     let raw = raw.unwrap_or("");
@@ -312,7 +314,7 @@ pub async fn user_nodes(
     .await
 }
 
-/// A user's history per UTC calendar month over the whole months
+/// A user's history per calendar month (site days) over the whole months
 /// [month of `from`, month of `to`]: rolled-up months plus the daily rows
 /// still kept (a day is in exactly one of the two tables).
 pub async fn user_months(
@@ -450,23 +452,19 @@ pub async fn my_nodes(
     .await
 }
 
-/// The current UTC day (the history's day boundary).
-fn today() -> NaiveDate {
-    Utc::now().date_naive()
-}
-
-fn parse(raw: Option<String>, params: Params) -> Result<Range, ApiError> {
-    parse_query(raw.as_deref(), today(), params).map_err(|e| {
+fn parse(raw: Option<String>, params: Params, clock: &Clock) -> Result<Range, ApiError> {
+    parse_query(raw.as_deref(), clock.today, params).map_err(|e| {
         crate::auth::bad_request!("request.traffic_query_invalid", "{detail}", detail = e)
     })
 }
 
-/// First day still kept per day (older days are monthly only); None =
-/// days are kept forever.
-fn daily_since(state: &AppState) -> Option<NaiveDate> {
+/// First day surely kept per day (whole months older than it may be
+/// monthly only: the retention moves whole months); None = days are kept
+/// forever.
+fn daily_since(state: &AppState, clock: &Clock) -> Option<NaiveDate> {
     match state.settings().get().traffic_daily_retention_days {
         0 => None,
-        n => Some(today() - Duration::days(n as i64)),
+        n => Some(clock.today - Duration::days(n as i64)),
     }
 }
 
@@ -487,8 +485,9 @@ pub async fn user_traffic(
     RawQuery(q): RawQuery,
 ) -> Result<Json<Value>, ApiError> {
     user.require_admin()?;
-    let r = parse(q, Params::User)?;
     let pg = state.pg();
+    let clock = site_clock(pg).await?;
+    let r = parse(q, Params::User, &clock)?;
     exists(pg, "SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)", id).await?;
     let (rows, sum) = match r.group {
         Group::Day | Group::Month => {
@@ -515,9 +514,9 @@ pub async fn user_traffic(
     Ok(Json(json!({
         "from": r.from,
         "to": r.to,
-        "timezone": "UTC",
+        "timezone": clock.tz,
         "group": r.group.as_str(),
-        "daily_since": daily_since(&state),
+        "daily_since": daily_since(&state, &clock),
         "rows": rows,
         "total": sum,
     })))
@@ -531,16 +530,17 @@ pub async fn node_traffic(
     RawQuery(q): RawQuery,
 ) -> Result<Json<Value>, ApiError> {
     user.require_admin()?;
-    let r = parse(q, Params::Top)?;
     let pg = state.pg();
+    let clock = site_clock(pg).await?;
+    let r = parse(q, Params::Top, &clock)?;
     exists(pg, "SELECT EXISTS (SELECT 1 FROM nodes WHERE id = $1)", id).await?;
     let days = node_days(pg, id, r.from, r.to).await?;
     let top = node_top_users(pg, id, r.from, r.to, r.limit).await?;
     Ok(Json(json!({
         "from": r.from,
         "to": r.to,
-        "timezone": "UTC",
-        "daily_since": daily_since(&state),
+        "timezone": clock.tz,
+        "daily_since": daily_since(&state, &clock),
         "total": total(days.iter().map(|d| &d.bytes)),
         "days": days,
         "top_users": top,
@@ -555,14 +555,15 @@ pub async fn summary(
     RawQuery(q): RawQuery,
 ) -> Result<Json<Value>, ApiError> {
     user.require_admin()?;
-    let r = parse(q, Params::Top)?;
     let pg = state.pg();
+    let clock = site_clock(pg).await?;
+    let r = parse(q, Params::Top, &clock)?;
     let days = fleet_days(pg, r.from, r.to).await?;
     let top = fleet_top_nodes(pg, r.from, r.to, r.limit).await?;
     Ok(Json(json!({
         "from": r.from,
         "to": r.to,
-        "timezone": "UTC",
+        "timezone": clock.tz,
         "total": total(days.iter().map(|d| &d.bytes)),
         "days": days,
         "top_nodes": top,
@@ -576,15 +577,16 @@ pub async fn my_traffic(
     user: AuthUser,
     RawQuery(q): RawQuery,
 ) -> Result<Json<Value>, ApiError> {
-    let r = parse(q, Params::Me)?;
     let pg = state.pg();
+    let clock = site_clock(pg).await?;
+    let r = parse(q, Params::Me, &clock)?;
     let days = user_days(pg, user.id, r.from, r.to).await?;
     let nodes = my_nodes(pg, user.id, r.from, r.to).await?;
     Ok(Json(json!({
         "from": r.from,
         "to": r.to,
-        "timezone": "UTC",
-        "daily_since": daily_since(&state),
+        "timezone": clock.tz,
+        "daily_since": daily_since(&state, &clock),
         "total": total(days.iter().map(|d| &d.bytes)),
         "days": days,
         "nodes": nodes,

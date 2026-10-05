@@ -63,7 +63,7 @@ use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgConnection;
@@ -271,6 +271,9 @@ pub struct Stored {
     pub remove_mode: Option<String>,
     /// W25: release keys trusted besides the official ones.
     pub extra_release_keys: Option<Vec<String>>,
+    /// Q3 (W28-a): the site time zone (IANA; NULL = Asia/Shanghai): traffic
+    /// history days, plan monthly resets, the dashboard's days.
+    pub timezone: Option<String>,
     #[serde(skip)]
     pub updated_at: Option<DateTime<Utc>>,
 }
@@ -279,7 +282,7 @@ const STORED_COLS: &str = "version, main_domain, sub_domain, node_domain, trust_
      probe_interval_secs, probe_urls, probe_panel_tcp, site_name, cloudflare_ranges, \
      install_tls_pin, install_fallback_url, acme_directory_url, acme_email, \
      audit_retention_days, traffic_daily_retention_days, remove_mode, \
-     extra_release_keys, updated_at";
+     extra_release_keys, timezone, updated_at";
 
 fn select_stored(lock: bool) -> sqlx::AssertSqlSafe<String> {
     sqlx::AssertSqlSafe(format!(
@@ -1027,13 +1030,68 @@ pub fn site_name_value(raw: Option<&str>) -> Result<Option<String>, ApiError> {
     Ok(Some(v.to_string()))
 }
 
-/// W21: write the site name (same row and `version` as the domains: 409 on
-/// a stale form). Audited as `settings.site.update`.
+/// The site time zone when none is set (Q3).
+pub const DEFAULT_TIMEZONE: &str = "Asia/Shanghai";
+
+/// Q3: the site time zone (SQL `akari_site_tz()`, the authority) and the
+/// current day there (DB clock): the day boundary of the traffic history,
+/// the exports and the dashboard.
+pub struct SiteClock {
+    pub tz: String,
+    pub today: NaiveDate,
+}
+
+/// Q3: `t` presented in the site time zone, given `offset` = SQL
+/// `akari_site_offset(t)` (seconds east of UTC at `t`): the same instant,
+/// RFC 3339 with the local offset ("2026-11-01T00:00:00+08:00").
+pub fn site_time(t: DateTime<Utc>, offset: i32) -> DateTime<FixedOffset> {
+    FixedOffset::east_opt(offset).map_or_else(|| t.fixed_offset(), |o| t.with_timezone(&o))
+}
+
+pub async fn site_clock<'e, E: sqlx::PgExecutor<'e>>(e: E) -> sqlx::Result<SiteClock> {
+    let (tz, today) = sqlx::query_as("SELECT akari_site_tz(), akari_site_day(now())")
+        .fetch_one(e)
+        .await?;
+    Ok(SiteClock { tz, today })
+}
+
+/// Q3: a time zone from the form: trimmed; empty = unset (default); else
+/// an IANA name PostgreSQL knows (the database's zone list is the
+/// authority: the flush computes days with it).
+pub async fn timezone_value(
+    conn: &mut PgConnection,
+    raw: Option<&str>,
+) -> Result<Option<String>, ApiError> {
+    let Some(v) = raw.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(None);
+    };
+    // IANA names are short printable ASCII (a NUL would not even reach
+    // the lookup).
+    let known: bool = v.len() <= 64
+        && v.chars().all(|c| c.is_ascii_graphic())
+        && sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = $1)")
+            .bind(v)
+            .fetch_one(conn)
+            .await?;
+    if !known {
+        return Err(bad_request!(
+            "settings.timezone_invalid",
+            "unknown time zone {tz:?} (an IANA name such as Asia/Shanghai)",
+            tz = v
+        ));
+    }
+    Ok(Some(v.to_string()))
+}
+
+/// W21: write the site name and (Q3) the site time zone (each: None =
+/// unchanged, Some(None) = the default; same row and `version` as the
+/// domains: 409 on a stale form). Audited as `settings.site.update`.
 pub async fn apply_update_site(
     conn: &mut PgConnection,
     actor: &Actor,
     expected_version: i64,
-    site_name: Option<String>,
+    site_name: Option<Option<String>>,
+    timezone: Option<Option<String>>,
 ) -> Result<Stored, ApiError> {
     let cur = read_stored(&mut *conn, true).await?;
     if cur.version != expected_version {
@@ -1042,14 +1100,17 @@ pub async fn apply_update_site(
             "设置已被修改（可能是其他管理员），请刷新后重试"
         ));
     }
-    if cur.site_name == site_name {
+    let site_name = site_name.unwrap_or_else(|| cur.site_name.clone());
+    let timezone = timezone.unwrap_or_else(|| cur.timezone.clone());
+    if cur.site_name == site_name && cur.timezone == timezone {
         return Ok(cur);
     }
     let row: Stored = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "UPDATE panel_settings SET site_name = $1, version = version + 1, updated_at = now() \
-         WHERE id = 1 RETURNING {STORED_COLS}"
+        "UPDATE panel_settings SET site_name = $1, timezone = $2, version = version + 1, \
+         updated_at = now() WHERE id = 1 RETURNING {STORED_COLS}"
     )))
     .bind(&site_name)
+    .bind(&timezone)
     .fetch_one(&mut *conn)
     .await?;
     crate::audit::record(
@@ -1058,8 +1119,8 @@ pub async fn apply_update_site(
         "settings.site.update",
         "settings",
         None,
-        Some(json!({ "site_name": cur.site_name })),
-        Some(json!({ "site_name": site_name })),
+        Some(json!({ "site_name": cur.site_name, "timezone": cur.timezone })),
+        Some(json!({ "site_name": site_name, "timezone": timezone })),
     )
     .await?;
     Ok(row)
@@ -1069,20 +1130,31 @@ pub async fn apply_update_site(
 #[serde(deny_unknown_fields)]
 pub struct SiteReq {
     pub version: i64,
-    /// null or "" = the default ("Akari").
-    pub site_name: Option<String>,
+    /// Absent = unchanged; null or "" = the default ("Akari").
+    #[serde(default, deserialize_with = "crate::api::double_option")]
+    pub site_name: Option<Option<String>>,
+    /// Q3: absent = unchanged; null or "" = the default (Asia/Shanghai).
+    #[serde(default, deserialize_with = "crate::api::double_option")]
+    pub timezone: Option<Option<String>>,
 }
 
-/// PUT /api/v1/settings/site (admin): 站点名称.
+/// PUT /api/v1/settings/site (admin): 站点名称 and (Q3) 时区.
 pub async fn put_site(
     State(state): State<AppState>,
     user: AuthUser,
     ApiJson(req): ApiJson<SiteReq>,
 ) -> Result<Json<SettingsView>, ApiError> {
     user.require_admin()?;
-    let name = site_name_value(req.site_name.as_deref())?;
+    let name = match &req.site_name {
+        None => None,
+        Some(n) => Some(site_name_value(n.as_deref())?),
+    };
     let mut tx = state.pg().begin().await?;
-    apply_update_site(&mut tx, &Actor::of(&user), req.version, name).await?;
+    let timezone = match &req.timezone {
+        None => None,
+        Some(tz) => Some(timezone_value(&mut tx, tz.as_deref()).await?),
+    };
+    apply_update_site(&mut tx, &Actor::of(&user), req.version, name, timezone).await?;
     tx.commit().await?;
     reload_logged(&state).await;
     Ok(Json(view(&state, Vec::new()).await?))
@@ -1795,6 +1867,8 @@ pub struct SettingsView {
     pub security: SecurityView,
     /// W21: 站点名称 (null = default "Akari").
     pub site_name: Option<String>,
+    /// Q3: 时区 (traffic history days, monthly resets, dashboard days).
+    pub timezone: Field<String>,
     /// W25: obsolete keys in THIS instance's panel.toml (delete them).
     pub obsolete_config_keys: Vec<String>,
     /// Advisory notes from the last save (DNS checks).
@@ -1965,6 +2039,7 @@ pub async fn view(state: &AppState, mut warnings: Vec<String>) -> Result<Setting
     let s = &eff.stored;
     Ok(SettingsView {
         site_name: s.site_name.clone(),
+        timezone: Field::of(s.timezone.clone(), DEFAULT_TIMEZONE.to_string()),
         version: s.version,
         updated_at: s.updated_at,
         main: DomainView {

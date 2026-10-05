@@ -171,7 +171,10 @@ async fn orders_export_range_status_and_manual_flag() {
         .get("/test/api/v1/orders/export.csv?status=paid&via=manual")
         .await;
     assert_eq!(rows(&r.body).len(), 2);
-    let today = Utc::now().date_naive();
+    let today: NaiveDate = sqlx::query_scalar("SELECT akari_site_day(now())")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
     let r = c
         .get(&format!(
             "/test/api/v1/orders/export.csv?from={}&to={}",
@@ -200,7 +203,10 @@ async fn traffic_export_days_and_nodes() {
         return;
     };
     let n = db.node().await;
-    let today = Utc::now().date_naive();
+    let today: NaiveDate = sqlx::query_scalar("SELECT akari_site_day(now())")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
     sqlx::query(
         "INSERT INTO traffic_entrance_daily \
          (entrance_id, node_id, day, up_bytes, down_bytes, billed_bytes, users) \
@@ -216,7 +222,7 @@ async fn traffic_export_days_and_nodes() {
     let all = rows(&r.body);
     assert_eq!(
         all[0],
-        vec!["day_utc", "up_bytes", "down_bytes", "billed_bytes", "users"]
+        vec!["day", "up_bytes", "down_bytes", "billed_bytes", "users"]
     );
     assert_eq!(all.len(), 3);
     assert_eq!(

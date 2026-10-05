@@ -1571,8 +1571,9 @@ async fn expiry(db: &TestDb, user: Uuid) -> Option<chrono::DateTime<chrono::Utc>
 }
 
 /// The SQL period arithmetic and proration (the only place money and time
-/// are combined): calendar months clamp to the month's end in UTC, days are
-/// exact, permanent one-time has no end; the credit floors to the fen, is
+/// are combined): calendar months clamp to the month's end in the site
+/// time zone (default Asia/Shanghai; these cases read the same in UTC),
+/// days are exact, permanent one-time has no end; the credit floors to the fen, is
 /// capped and never negative.
 #[tokio::test]
 async fn period_and_proration_sql() {
@@ -2736,8 +2737,9 @@ async fn prune_events_keeps_money_records() {
     db.drop().await;
 }
 
-/// `PeriodKind::months` mirrors SQL `akari_period_end` (UTC calendar
-/// months, month end clamped) for every calendar kind; days/onetime are
+/// `PeriodKind::months` mirrors SQL `akari_period_end` (calendar months
+/// of the site time zone, Q3 — UTC here, chrono's calendar —, month end
+/// clamped) for every calendar kind; days/onetime are
 /// N x 24 h; the reset pack has no period end; a period kind outside the
 /// catalog read back from TEXT is an error, not a default.
 #[tokio::test]
@@ -2747,6 +2749,10 @@ async fn period_months_mirror_sql() {
     let Some(db) = TestDb::new().await else {
         return;
     };
+    sqlx::query("UPDATE panel_settings SET timezone = 'UTC' WHERE id = 1")
+        .execute(&db.pool)
+        .await
+        .unwrap();
     let base = Utc.with_ymd_and_hms(2026, 1, 31, 12, 0, 0).unwrap();
     for k in PeriodKind::ALL {
         let days = (k.months().is_none() && k != PeriodKind::Reset).then_some(30);

@@ -30,6 +30,9 @@ export interface DashboardWindow {
 
 export interface Dashboard {
   at: string;
+  // Q3: the site time zone and today there ("YYYY-MM-DD").
+  timezone: string;
+  today_date: string;
   today_start: string;
   today: DashboardWindow;
   d7: DashboardWindow;
@@ -45,7 +48,7 @@ export interface Dashboard {
     orders_unfulfilled: number;
     alerts_firing: number;
   };
-  // W22 traffic history (UTC days; days without traffic are absent).
+  // W22 traffic history (site days, Q3; days without traffic are absent).
   traffic_days: { day: string; up_bytes: number; down_bytes: number; billed_bytes: number; users: number }[];
   traffic_top_nodes: {
     node_id: string;
@@ -114,7 +117,7 @@ function Todo({ label, count, view }: { label: string; count: number; view: stri
 
 const money = (cents: number) => `¥${yuan(cents)}`;
 
-/** The last `n` UTC days ending at `at` ("YYYY-MM-DD"), oldest first. */
+/** The last `n` days ending at `at` ("YYYY-MM-DD"), oldest first. */
 export function lastDays(at: string, n: number): string[] {
   const end = Date.parse(`${at.slice(0, 10)}T00:00:00Z`);
   return Array.from({ length: n }, (_, i) => new Date(end - (n - 1 - i) * 86_400_000).toISOString().slice(0, 10));
@@ -122,7 +125,7 @@ export function lastDays(at: string, n: number): string[] {
 
 /** Fleet traffic per day (W22) with zero-filled missing days, and the top nodes. */
 function TrafficCard({ d }: { d: Dashboard }) {
-  const days = lastDays(d.at, 14);
+  const days = lastDays(d.today_date, 14);
   const by = new Map(d.traffic_days.map((r) => [r.day, r]));
   const up = days.map((x) => by.get(x)?.up_bytes ?? 0);
   const down = days.map((x) => by.get(x)?.down_bytes ?? 0);
@@ -133,7 +136,7 @@ function TrafficCard({ d }: { d: Dashboard }) {
         <CardTitle>
           <h2>流量（近 14 天）</h2>
         </CardTitle>
-        <CardDescription>全部节点每日上下行（UTC 日），合计 {humanBytes(total)}。</CardDescription>
+        <CardDescription>全部节点每日上下行（站点时区），合计 {humanBytes(total)}。</CardDescription>
       </CardHeader>
       <CardContent className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="min-w-0 lg:col-span-2">

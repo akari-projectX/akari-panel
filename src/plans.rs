@@ -33,7 +33,7 @@
 use crate::auth::{bad_request, conflict};
 use axum::Json;
 use axum::extract::{Path, State};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::PgConnection;
@@ -1846,11 +1846,19 @@ pub struct SubscriptionView {
     /// The plan's traffic reset period ("monthly", "days-N", "none").
     pub reset_period: String,
     pub last_reset_at: Option<DateTime<Utc>>,
-    /// null = never (reset period "none").
-    pub next_reset_at: Option<DateTime<Utc>>,
+    /// null = never (reset period "none"). Q3: presented in the site time
+    /// zone (RFC 3339 with its offset, e.g. `2026-11-01T00:00:00+08:00`).
+    #[sqlx(skip)]
+    pub next_reset_at: Option<DateTime<FixedOffset>>,
+    /// Q3: the site time zone (IANA) the reset schedule follows.
+    pub timezone: String,
     pub speed_limit_mbps: Option<i32>,
     /// banned | over_quota | expired | active (the badge's precedence).
     pub status: String,
+    #[serde(skip)]
+    next_reset_utc: Option<DateTime<Utc>>,
+    #[serde(skip)]
+    next_reset_offset: Option<i32>,
     #[serde(skip)]
     reset_kind: String,
     #[serde(skip)]
@@ -1866,7 +1874,8 @@ pub async fn subscription(
         "SELECT up.id AS user_plan_id, up.plan_id, p.name AS plan_name, up.term_kind AS period, \
          up.term_days AS period_days, up.starts_at, up.expires_at, u.traffic_used_bytes, \
          p.traffic_quota_bytes AS traffic_total_bytes, '' AS reset_period, up.last_reset_at, \
-         up.next_reset_at, p.speed_limit_mbps, \
+         up.next_reset_at AS next_reset_utc, akari_site_offset(up.next_reset_at) AS next_reset_offset, \
+         akari_site_tz() AS timezone, p.speed_limit_mbps, \
          CASE WHEN NOT u.enabled AND u.disabled_reason = 'admin' THEN 'banned' \
               WHEN NOT u.enabled THEN 'over_quota' \
               WHEN up.expires_at IS NOT NULL AND up.expires_at <= now() THEN 'expired' \
@@ -1880,6 +1889,9 @@ pub async fn subscription(
     .await?;
     Ok(row.map(|mut r| {
         r.reset_period = Period::from_columns(&r.reset_kind, r.reset_days).render();
+        r.next_reset_at = r
+            .next_reset_utc
+            .map(|t| crate::settings::site_time(t, r.next_reset_offset.unwrap_or(0)));
         r
     }))
 }
@@ -1907,6 +1919,7 @@ struct MyPlanRow {
     period_anchor: DateTime<Utc>,
     last_reset_at: Option<DateTime<Utc>>,
     next_reset_at: Option<DateTime<Utc>>,
+    next_reset_offset: Option<i32>,
 }
 
 /// GET /api/v1/me/plan (any full session): the caller's active plan (or
@@ -1928,7 +1941,8 @@ pub async fn my_plan(
     let plan = sqlx::query_as::<_, MyPlanRow>(
         "SELECT p.name, p.traffic_quota_bytes, p.reset_period, p.reset_days, p.speed_limit_mbps, \
          p.device_seats, up.starts_at, up.expires_at, up.period_anchor, up.last_reset_at, \
-         up.next_reset_at FROM user_plans up JOIN plans p ON p.id = up.plan_id \
+         up.next_reset_at, akari_site_offset(up.next_reset_at) AS next_reset_offset \
+         FROM user_plans up JOIN plans p ON p.id = up.plan_id \
          WHERE up.user_id = $1 AND up.status = 'active'",
     )
     .bind(user.id)
@@ -1956,7 +1970,9 @@ pub async fn my_plan(
             "expires_at": p.expires_at,
             "period_anchor": p.period_anchor,
             "last_reset_at": p.last_reset_at,
-            "next_reset_at": p.next_reset_at,
+            // Q3: in the site time zone (RFC 3339 with its offset).
+            "next_reset_at": p.next_reset_at
+                .map(|t| crate::settings::site_time(t, p.next_reset_offset.unwrap_or(0))),
         })
     });
     Ok(Json(json!({
@@ -2503,6 +2519,122 @@ mod tests {
         assert_eq!(
             q("2026-01-01T00:00:00Z", "none", None, "2026-01-30T23:59:59Z").await,
             None
+        );
+        db.drop().await;
+    }
+
+    /// Q3: monthly resets and calendar-month terms follow the site time
+    /// zone (default Asia/Shanghai, no DST): a plan started on the 1st
+    /// local (still the last day of the month in UTC) resets and ends on
+    /// the 1st local; UTC reproduces the old boundaries; in a DST zone the
+    /// local wall-clock time is kept across the change; N-day periods stay
+    /// exact seconds. The setting refuses anything but a full IANA name.
+    #[tokio::test]
+    async fn resets_and_terms_follow_the_site_time_zone() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let reset = |anchor: &'static str, period: &'static str, after: &'static str| {
+            let pool = db.pool.clone();
+            async move {
+                sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+                    "SELECT akari_next_reset($1::timestamptz, $2, 30, $3::timestamptz)",
+                )
+                .bind(anchor)
+                .bind(period)
+                .bind(after)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .map(|t| t.to_rfc3339())
+            }
+        };
+        let end = |base: &'static str, period: &'static str| {
+            let pool = db.pool.clone();
+            async move {
+                sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+                    "SELECT akari_period_end($1::timestamptz, $2, NULL)",
+                )
+                .bind(base)
+                .bind(period)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .map(|t| t.to_rfc3339())
+            }
+        };
+        let set_tz = |tz: Option<&'static str>| {
+            let pool = db.pool.clone();
+            async move {
+                sqlx::query("UPDATE panel_settings SET timezone = $1 WHERE id = 1")
+                    .bind(tz)
+                    .execute(&pool)
+                    .await
+            }
+        };
+        let some = |s: &str| Some(s.to_string());
+        // 2026-02-28 19:00 UTC = 2026-03-01 03:00 in Shanghai.
+        let start = "2026-02-28T19:00:00Z";
+        assert_eq!(
+            reset(start, "monthly", "2026-03-02T00:00:00Z").await,
+            some("2026-03-31T19:00:00+00:00"),
+            "the 1st of April, 03:00 Shanghai"
+        );
+        assert_eq!(
+            end(start, "month").await,
+            some("2026-03-31T19:00:00+00:00"),
+            "a month bought on the 1st (local) ends on the 1st (local)"
+        );
+        assert_eq!(
+            end(start, "quarter").await,
+            some("2026-05-31T19:00:00+00:00")
+        );
+        // The day clamps to the month's end in local time: 31 Jan 18:00
+        // Shanghai + 1 month = 28 Feb 18:00 Shanghai.
+        assert_eq!(
+            end("2026-01-31T10:00:00Z", "month").await,
+            some("2026-02-28T10:00:00+00:00")
+        );
+        // N days: exact seconds whatever the zone.
+        assert_eq!(
+            reset(start, "days", "2026-03-01T00:00:00Z").await,
+            some("2026-03-30T19:00:00+00:00")
+        );
+        // UTC: the old (v0.3) boundaries.
+        set_tz(Some("UTC")).await.unwrap();
+        assert_eq!(
+            reset(start, "monthly", "2026-03-02T00:00:00Z").await,
+            some("2026-03-28T19:00:00+00:00")
+        );
+        assert_eq!(end(start, "month").await, some("2026-03-28T19:00:00+00:00"));
+        // DST (America/New_York, 2026-03-08): 10:00 EST before, 10:00 EDT
+        // after, i.e. 15:00 UTC then 14:00 UTC.
+        set_tz(Some("America/New_York")).await.unwrap();
+        assert_eq!(
+            reset("2026-02-15T15:00:00Z", "monthly", "2026-03-01T00:00:00Z").await,
+            some("2026-03-15T14:00:00+00:00")
+        );
+        assert_eq!(
+            end("2026-02-15T15:00:00Z", "month").await,
+            some("2026-03-15T14:00:00+00:00")
+        );
+        // Only full IANA names (the trigger; the API checks first).
+        for bad in ["CST", "UTC+8", "+08", "Mars/Olympus_Mons", "asia/shanghai"] {
+            let e = set_tz(Some(bad)).await.unwrap_err();
+            assert_eq!(
+                e.as_database_error().and_then(|d| d.code()).as_deref(),
+                Some("23514"),
+                "{bad}"
+            );
+        }
+        // NULL = the default again.
+        set_tz(None).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT akari_site_tz()")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap(),
+            "Asia/Shanghai"
         );
         db.drop().await;
     }
@@ -3361,7 +3493,9 @@ mod tests {
         assert_eq!(v["plan"]["period"], "monthly");
         assert_eq!(v["traffic_limit_bytes"], 1000);
         assert_eq!(v["nodes"], json!([{ "name": "jp-1", "region": "Tokyo" }]));
-        assert!(v["plan"]["next_reset_at"].is_string());
+        // Q3: in the site time zone (Asia/Shanghai).
+        let next = v["plan"]["next_reset_at"].as_str().unwrap();
+        assert!(next.ends_with("+08:00"), "{next}");
         // Users cannot reach the admin API.
         assert_eq!(
             me.get("/test/api/v1/plans").await.status,
