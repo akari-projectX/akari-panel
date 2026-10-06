@@ -2171,11 +2171,18 @@ struct EntranceUserRow {
 /// `<user id>#<wire_no>` on every other (W28-a; the agent of protocol 7
 /// shares limits per part before '#').
 pub fn stat_key(user: Uuid, wire_no: i32) -> String {
+    // Encoded straight into one exactly sized String (a snapshot builds one
+    // per user and entrance; `Display` goes through the formatter).
+    let mut buf = Uuid::encode_buffer();
+    let id = user.hyphenated().encode_lower(&mut buf);
     if wire_no == 0 {
-        user.to_string()
-    } else {
-        format!("{user}#{wire_no}")
+        return id.to_owned();
     }
+    let mut key = String::with_capacity(id.len() + 12);
+    key.push_str(id);
+    key.push('#');
+    key.push_str(&wire_no.to_string());
+    key
 }
 
 /// Mbps (decimal, as plans state it) -> bytes per second; None/<=0 = 0
@@ -2229,9 +2236,8 @@ pub const SERVED_ENTRANCES: &str = "entrances e JOIN nodes n ON n.id = e.node_id
 /// ONE repeatable-read snapshot, so a version always labels the set it was
 /// committed with (deltas and state hashes rely on it).
 async fn desired_state(pg: &sqlx::PgPool, server_id: Uuid) -> anyhow::Result<Option<Desired>> {
-    let mut tx = pg.begin().await?;
-    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-        .execute(&mut *tx)
+    let mut tx = pg
+        .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         .await?;
     let server = sqlx::query_as::<_, ServerRow>(sqlx::AssertSqlSafe(format!(
         "SELECT config_version, user_version, \
@@ -2287,25 +2293,45 @@ async fn desired_state(pg: &sqlx::PgPool, server_id: Uuid) -> anyhow::Result<Opt
         inbounds.push(ib);
     }
     if !inbounds.is_empty() {
-        let rows = sqlx::query_as::<_, EntranceUserRow>(sqlx::AssertSqlSafe(format!(
+        // The credentials come from the covering primary key of
+        // entrance_users (migration 1090: an index-only scan per entrance,
+        // however its rows are spread over the heap). No ORDER BY: the rows
+        // of one entrance already arrive in user order and the sort below
+        // finds such runs in linear time, where the database sorts (and
+        // copies) every wide row (PERF.md "Snapshot read").
+        let mut rows = sqlx::query_as::<_, EntranceUserRow>(sqlx::AssertSqlSafe(format!(
             "SELECT eu.user_id, e.wire_no, eu.protocol, eu.account, up.speed_limit_mbps \
              FROM entrance_users eu \
              JOIN entrances e ON e.id = eu.entrance_id AND e.server_id = $1 AND e.enabled \
              JOIN nodes n ON n.id = e.node_id AND n.enabled AND n.inbound IS NOT NULL \
              JOIN users u ON u.id = eu.user_id \
              LEFT JOIN user_plans up ON up.user_id = eu.user_id AND up.status = 'active' \
-             WHERE {} ORDER BY eu.user_id, e.wire_no",
+             WHERE {}",
             crate::enforce::SERVED
         )))
         .bind(server_id)
         .fetch_all(&mut *tx)
         .await?;
+        rows.sort_unstable_by_key(|r| (r.user_id, r.wire_no));
+        // One tag per entrance, cloned per user (not formatted per user).
+        let tags: BTreeMap<i32, String> = entrances
+            .iter()
+            .map(|e| {
+                let w = e.entrance.wire_no;
+                (w, crate::entrances::inbound_tag(w))
+            })
+            .collect();
+        users.reserve_exact(rows.len());
         for r in rows {
+            let inbound_tag = match tags.get(&r.wire_no) {
+                Some(t) => t.clone(),
+                None => crate::entrances::inbound_tag(r.wire_no),
+            };
             users.push(UserOp {
                 op: UserOpKind::Add as i32,
                 user_id: stat_key(r.user_id, r.wire_no),
                 inbound_users: vec![InboundUser {
-                    inbound_tag: crate::entrances::inbound_tag(r.wire_no),
+                    inbound_tag,
                     // serde_json (no preserve_order): compact, keys sorted —
                     // the canonical form the state hash uses.
                     account_json: r.account.to_string(),
@@ -2666,6 +2692,88 @@ mod tests {
             },
             now,
         )
+    }
+
+    #[test]
+    fn stat_key_is_the_display_form() {
+        let u = Uuid::new_v4();
+        assert_eq!(stat_key(u, 0), u.to_string());
+        for w in [1, 7, 32767] {
+            assert_eq!(stat_key(u, w), format!("{u}#{w}"));
+        }
+    }
+
+    /// The snapshot's users are ordered by (user, entrance) whatever order
+    /// the database returns them in (no ORDER BY since the covering key),
+    /// one op per user and entrance with that entrance's tag.
+    #[tokio::test]
+    async fn snapshot_users_are_ordered_by_user_then_entrance() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let n1 = db.node().await;
+        let n2 = db.node_on(n1, 2).await;
+        let mut users = Vec::new();
+        for _ in 0..6 {
+            let u = db.user().await;
+            // Node 2 first: the heap order is not the snapshot's order.
+            db.assign(n2, u).await;
+            db.assign(n1, u).await;
+            users.push(u);
+        }
+        let snap = desired_snapshot(&db.pool, n1).await.unwrap().unwrap();
+        users.sort();
+        let want: Vec<(String, String)> = users
+            .iter()
+            .flat_map(|u| {
+                [
+                    (u.to_string(), "direct".to_owned()),
+                    (format!("{u}#1"), "e1".to_owned()),
+                ]
+            })
+            .collect();
+        let got: Vec<(String, String)> = snap
+            .users
+            .iter()
+            .map(|op| (op.user_id.clone(), op.inbound_users[0].inbound_tag.clone()))
+            .collect();
+        assert_eq!(got, want);
+        db.drop().await;
+    }
+
+    /// Migration 1090: the primary key carries the credential (index-only
+    /// snapshot reads) and an oversized credential is a constraint error.
+    #[tokio::test]
+    async fn entrance_users_key_covers_the_credential() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (keys, all): (i16, i16) = sqlx::query_as(
+            "SELECT i.indnkeyatts, i.indnatts FROM pg_index i \
+             JOIN pg_constraint c ON c.conindid = i.indexrelid \
+             WHERE c.conname = 'entrance_users_pkey' AND c.contype = 'p' \
+               AND c.conrelid = 'entrance_users'::regclass",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!((keys, all), (2, 4));
+        let (n, u) = (db.node().await, db.user().await);
+        let err = sqlx::query(
+            "INSERT INTO entrance_users (entrance_id, user_id, protocol, account) \
+             SELECT id, $2, 'vless', jsonb_build_object('id', repeat(md5(random()::text), 64)) \
+             FROM entrances WHERE node_id = $1",
+        )
+        .bind(n)
+        .bind(u)
+        .execute(&db.pool)
+        .await
+        .unwrap_err();
+        let constraint = err
+            .as_database_error()
+            .and_then(|e| e.constraint().map(str::to_owned));
+        assert_eq!(constraint.as_deref(), Some("entrance_users_account_size"));
+        db.drop().await;
     }
 
     #[test]
