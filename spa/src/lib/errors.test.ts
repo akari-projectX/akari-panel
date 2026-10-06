@@ -7,8 +7,10 @@ import { loadEN } from '@/i18n';
 import { errorText, errorVars } from './errors';
 
 describe('panel error codes', () => {
-  it('maps every user-visible panel code (scripts/user-error-codes.txt)', () => {
-    const codes = readFileSync('scripts/user-error-codes.txt', 'utf8').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  it('maps every user-visible panel code (the panel registry ../src/error_codes.txt)', () => {
+    const ns = ['auth', 'account', 'signup', 'shop', 'order', 'coupon', 'balance', 'withdrawal', 'invite', 'ticket', 'request'];
+    const codes = readFileSync('../src/error_codes.txt', 'utf8').split('\n').map((l) => l.trim())
+      .filter((l) => l && !l.startsWith('#') && (ns.includes(l.split('.')[0]) || l === 'kb.query_long'));
     expect(codes.length).toBeGreaterThan(80);
     expect(codes.filter((c) => !CODE_KEYS[c])).toEqual([]);
   });

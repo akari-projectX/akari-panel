@@ -8,13 +8,10 @@
 export const EN: Record<string, string> = {
   /* ── 导航与外壳 ── */
   '更多': 'More',
-  '总览': 'Overview',
   '节点': 'Nodes',
   '流量': 'Traffic',
   '套餐': 'Plans',
-  '订单': 'Orders',
   '工单': 'Tickets',
-  '公告': 'Announcements',
   '设置': 'Settings',
   '使用明细': 'Usage details',
   '我的订单': 'My orders',
@@ -24,7 +21,6 @@ export const EN: Record<string, string> = {
   '登录成功': 'Signed in',
   '注册': 'Sign up',
   '创建账号': 'Create account',
-  '返回首页': 'Back to home',
   '关闭': 'Close',
   '取消': 'Cancel',
   '复制': 'Copy',
@@ -33,30 +29,18 @@ export const EN: Record<string, string> = {
   '状态': 'Status',
   '日期': 'Date',
   '金额': 'Amount',
-  '内容': 'Content',
-  '目录': 'Contents',
-  '章节': 'Chapter',
-  '用户': 'User',
   '或': 'or',
   '中': 'Med',
   '高': 'High',
   '低': 'Low',
   '天': 'days',
-  '剩余': 'Left',
   '合计': 'Total',
-  '比例': 'Rate',
   '占比': 'Share',
 
   /* ── 页脚与法务 ── */
   '服务条款': 'Terms of Service',
   '隐私政策': 'Privacy Policy',
-  '帮助中心': 'Help Center',
   '节点状态': 'Node status',
-  '透明度报告': 'transparency report',
-  '中查阅。': '.',
-
-  /* ── 落地页导航 ── */
-  '常见问题': 'FAQ',
 
   /* ── 计划与账单 ── */
   '当前套餐': 'Current plan',
@@ -68,12 +52,8 @@ export const EN: Record<string, string> = {
   '订单金额': 'Order amount',
   '订单号': 'Order ID',
   '订单记录': 'Order history',
-  '订单页': 'orders page',
   '下单时间': 'Placed at',
   '支付方式': 'Payment method',
-  '支付渠道': 'Payment provider',
-  '发票': 'Invoice',
-  '申请退款': 'Request refund',
   '确认订单': 'Confirm order',
   '月付': 'Monthly',
   '年付': 'Yearly',
@@ -87,22 +67,15 @@ export const EN: Record<string, string> = {
   '在线': 'Online',
   '延迟': 'Latency',
   '线路': 'Route',
-  '连接': 'Connect',
   '流量倍率': 'Traffic multiplier',
   '流量用量': 'Traffic usage',
   '流量走势': 'Traffic trend',
   '上行': 'Upload',
   '下行': 'Download',
-  '同时在线': 'Concurrent devices',
-  '30 天': '30 days',
-  '30 天内': 'within 30 days',
-  '5 分钟内': 'under 5 minutes',
-  '7 天': '7 days',
 
   /* ── 工单与帮助 ── */
   '提交工单': 'New ticket',
   '提交新工单': 'Submit a ticket',
-  '开一张工单': 'open a ticket',
   '问题标题': 'Subject',
   '详细描述': 'Description',
   '优先级': 'Priority',
@@ -116,7 +89,6 @@ export const EN: Record<string, string> = {
   /* ── 账号与安全 ── */
   '账号信息': 'Account',
   '安全设置': 'Security',
-  '安全选项': 'Security options',
   '密码': 'Password',
   '当前密码': 'Current password',
   '新密码': 'New password',
@@ -126,69 +98,25 @@ export const EN: Record<string, string> = {
   '忘记密码': 'Forgot password',
   '输入密码': 'Enter password',
   '邮箱': 'Email',
-  '邮件': 'Email',
-  '邮件服务商': 'Email provider',
   '界面语言': 'Language',
-  '时区': 'Time zone',
   '订阅与密钥': 'Subscription & keys',
   '确认重置': 'Confirm reset',
   '生效中': 'Active',
-  '站内': 'In-app',
 
   /* ── 接入与教程 ── */
   '接入配置': 'Setup',
   '导入到客户端': 'Import into the client',
   '扫码导入': 'Scan to import',
   '使用文档': 'Documentation',
-  '发出': 'Sent',
-
-  /* ── 时区 / 单位 ── */
-
-  /* ── 套餐权益 ── */
 
   /* ── 页面标题与说明 ── */
-  '先看下面六个主题；找不到就搜常见问题；还不行就开工单，平均 18 分钟有人回。': 'Start with the six topics below, then search the FAQ. Still stuck? Open a ticket — 18-minute average response.',
   '一个链接，导入任意客户端': 'One link, any client',
   '例如：香港节点无法连接': 'e.g. Cannot connect to the Hong Kong node',
   '再次输入新密码': 'Re-enter the new password',
   '复制失败，请手动选中复制': 'Copy failed — please select and copy manually',
-  '同时在线设备数': 'Devices online at once',
-  '当月流量总量': 'Traffic this cycle',
-  '各套餐标注的设备数是': 'The device count listed for each plan is the number of',
-  '我们承诺月度可用性': 'We commit to a monthly availability of',
-
-  /* ── 法务：服务条款 ── */
-  '发送垃圾邮件、批量注册、撞库、爬取受保护数据。': 'Spam, bulk registration, credential stuffing, or scraping protected data.',
-  '对任何第三方发起攻击、扫描或未经授权的渗透测试。': 'Attacking, scanning or running unauthorised penetration tests against any third party.',
-  '转售、分销服务，或把订阅链接公开分享给账号以外的人。': 'Reselling or redistributing the service, or publishing your subscription link.',
-  '数，不是绑定数：你可以在任意多台设备上安装，只要同时连接的不超过上限。': 'devices, not registered devices: install it anywhere you like, as long as no more than the limit are connected at the same time.',
-  '，统计口径是全网可用节点数不低于 80% 的时间占比，以状态页公布的数据为准。': ', measured as the share of time at least 80% of nodes are available, per the figures published on the status page.',
-  '低于 99.0%：按 30% 折算。': 'Below 99.0%: 30% credited.',
-
-  /* ── 法务：隐私政策 ── */
-  '我们不记录你访问了什么。': 'We do not log what you visit.',
-  '节点全部无盘运行，系统跑在内存里，断电即清空，物理上没有可供事后调取的访问日志。': 'Every node runs diskless with the system in RAM. Cut the power and it is gone — there is physically no access log to produce later.',
-  '访问的域名、IP、URL——任何形式的目标地址。': 'Domains, IPs, URLs — destination addresses of any kind.',
-  'DNS 查询记录。我们运行自己的递归解析器，查询在内存中处理，不写盘、不上报。': 'DNS queries. We run our own recursive resolver; lookups are handled in memory, never written to disk or reported upstream.',
-  '连接时间戳与会话时长。': 'Connection timestamps and session durations.',
-  '你的真实来源 IP。接入时用于路由，会话结束即丢弃，不进入任何持久化存储。': 'Your real source IP. Used for routing while connected, discarded when the session ends, never persisted.',
-  '流量内容。全程加密，我们没有解密能力。': 'Traffic content. It is encrypted end to end; we have no way to decrypt it.',
-  '每台节点通过网络引导启动，根文件系统是 tmpfs，全部驻留内存。节点上没有任何可写的持久化介质。': 'Each node network-boots with a tmpfs root filesystem held entirely in RAM. There is no writable persistent medium on the machine.',
-  '这意味着：机器重启，此前的一切运行时状态归零；机器被物理带走，硬盘上没有东西可读，因为没有硬盘。': 'So: reboot the machine and all prior runtime state is gone. Seize the machine and there is nothing on the disk to read, because there is no disk.',
-  '这不是承诺，是一种架构选择——承诺可以反悔，架构不行。': 'This is not a promise but an architectural choice — promises can be broken, architecture cannot.',
-  '：拿到订单金额与交易号，拿不到你的使用数据。': ': sees the order amount and transaction ID, never your usage data.',
-  '：拿到你的邮箱与邮件内容（到期提醒、事故通知）。': ': sees your email address and the message content (expiry reminders, incident notices).',
-  '：提供物理设施与线路，无法接触节点内存中的数据。': ': provides the facilities and links; cannot reach the data held in a node’s memory.',
-  '机房与带宽供应商': 'Data-centre and bandwidth providers',
-  '我们没有能力提供访问记录，因为它不存在。这一点不因请求方是谁而改变。': 'We cannot provide access logs, because they do not exist. That does not change based on who is asking.',
 
   /* ── 订单 / 套餐名 ── */
   '支付成功，套餐已生效': 'Payment received — your plan is active',
-
-  /* ── 推广返佣 ── */
-
-  /* ── 帮助 / FAQ ── */
-  '搜索问题关键词': 'Search the FAQ',
 
   /* ── 补齐 ── */
   '简体中文': '简体中文',
@@ -205,7 +133,6 @@ export const EN: Record<string, string> = {
   '商店': 'Store',
   '文档': 'Docs',
   '邀请': 'Referral',
-  '用户中心': 'Account',
   '账户': 'Account',
   '打开菜单': 'Open menu',
   /* 页头「一线」：菜单按钮与弹出的卡片 */
@@ -213,7 +140,6 @@ export const EN: Record<string, string> = {
   '还有 {n} 天': '{n} days left',
   '共 {n} GB': '{n} GB total',
   '还没有套餐': 'No plan yet',
-  '正在读': 'Reading',
   '菜单，剩余流量 {n}%': 'Menu, {n}% data left',
   '菜单，{n} 张工单有新回复': 'Menu, new replies on {n} ticket(s)',
   '菜单，有待支付的订单': 'Menu, an order is awaiting payment',
@@ -224,40 +150,24 @@ export const EN: Record<string, string> = {
   '价格': 'Pricing',
 
   /* ── 统计与单位 ── */
-  '在线设备': 'Devices online',
   '上行流量': 'Upload',
   '下行流量': 'Download',
   '距离重置': 'Until reset',
   '订单总数': 'Orders',
   '累计消费': 'Lifetime spend',
   '全部工单': 'All tickets',
-  '18 分钟': '18 min',
-  '台': '',
-  '元': ' CNY',
-  '张': '',
-  '笔': '',
-  '人': '',
-  '月': 'mo',
-  '年': 'yr',
-  '分钟': ' min',
   '周期': 'cycle',
 
   /* ── 状态词 ── */
-  '正常': 'Normal',
   '待支付': 'Unpaid',
   '已回复': 'Replied',
   '待处理': 'Open',
   '已关闭': 'Closed',
-  '已失效': 'Void',
   '全部': 'All',
   '其他': 'Other',
-  '开启': 'On',
 
   /* ── 订单 / 支付 ── */
-  '支付完成': 'Payment complete',
   '扫码支付': 'Scan to pay',
-  '微信': 'WeChat',
-  '流量 / 设备': 'Traffic / devices',
 
   /* ── 返佣 ── */
   '复制链接': 'Copy link',
@@ -280,44 +190,16 @@ export const EN: Record<string, string> = {
   '等待你的确认': 'Waiting on you',
   '创建中': 'Creating',
 
-  /* ── 帮助中心主题 ── */
-  '开始使用': 'Getting started',
-  '客户端配置': 'Client setup',
-  '节点与线路': 'Nodes and routes',
-  '账单与退款': 'Billing and refunds',
-  '故障排查': 'Troubleshooting',
-  '账号安全': 'Account security',
-  '注册、下单、拿到订阅链接并连上第一个节点。': 'Sign up, order, get your subscription link and connect to your first node.',
-  'Windows / macOS / iOS / Android / Linux / 路由器逐平台步骤。': 'Step-by-step for Windows, macOS, iOS, Android, Linux and routers.',
-  '续费、发票、不退款政策与可用性补偿。': 'Renewals, invoices, our no-refund policy and availability credits.',
-  '连不上、速度慢、频繁断线的自查顺序。': 'What to check when you cannot connect, it is slow, or it keeps dropping.',
-
-  /* ── 状态页 ── */
-
   /* ── 落地页 ── */
   '不限速': 'No throttling',
 
-  ' 台': '',
   ' 天': ' days',
-  ' 元': ' CNY',
   ' 张': '',
   ' 笔': '',
   ' 人': '',
   '日均': 'Daily avg',
   '到期 {d}': 'Expires {d}',
   '峰值 {v} GB': 'Peak {v} GB',
-
-  ' 分钟': ' min',
-  '账号与资格': 'Accounts and eligibility',
-  '允许与禁止的用途': 'Acceptable use',
-  '设备数与公平使用': 'Device count and fair use',
-  '一句话版本': 'The short version',
-  '无盘运行是什么意思': 'What “diskless” actually means',
-  '第三方': 'Third parties',
-  '收到调证请求怎么办': 'When we receive a legal request',
-  '保存期限': 'Retention periods',
-  '本政策的变更': 'Changes to this policy',
-
 
   '共 {n} 条': '{n} items',
   '共 {n} 笔订单': '{n} orders',
@@ -331,7 +213,6 @@ export const EN: Record<string, string> = {
   '还没有客户端？': 'No client yet?',
   '还没有账号？': 'No account yet?',
 
-
   '注册即表示同意': 'By signing up you agree to the ',
   '已有账号？': 'Already have an account? ',
 
@@ -341,33 +222,13 @@ export const EN: Record<string, string> = {
   '节点变更与维护计划': 'Node changes and maintenance',
 
   '{a} / {b} GB': '{a} / {b} GB',
-  '{n} 笔': '{n} orders',
-  '{n} 张': '{n} open',
-  '{n} 条': '{n} items',
 
-  /* ── 法务页：章节标题 ── */
-  '缔约方与适用范围': 'Parties and scope',
-  '责任': 'Liability',
-  '条款与服务的变更': 'Changes to these terms and to the service',
-  '谁在处理你的数据': 'Who processes your data',
-  '谁能拿到这些数据': 'Who receives it',
-  'Cookie 与本地存储': 'Cookies and local storage',
-
-  /* ── 法务页：表头与关键短句 ── */
-  '数据类别': 'Data',
-  '不提供。': 'we do not.',
-  '访问权': 'Access',
-
-  '演示站点': 'Demo',
-
+  /* ── 线路标签 ── */
   'CN2 GIA': 'CN2 GIA',
   'AS9929': 'AS9929',
   'CMIN2': 'CMIN2',
   '标准': 'Standard',
-  'CN2 GIA / AS9929 / CMIN2 有什么区别、倍率怎么算、什么时候该换节点。': 'How CN2 GIA, AS9929 and CMIN2 differ, how multipliers work, and when to switch nodes.',
 
-
-  '语言': 'Language',
   /* 01 协议 */
 
   /* 加载态与出错页 */
@@ -395,18 +256,11 @@ export const EN: Record<string, string> = {
   '网络已恢复': 'Back online',
 
   /* 审计补漏：这些字符串此前渲染时没有走词典 */
-  '。': '.',
-  '已按关键词过滤': 'filtered by keyword',
-  '没有匹配的条目。换个词，或者直接': 'Nothing matched. Try another word, or just',
   '订单详情': 'Order details',
-  '{n} 台': '{n} devices',
   '更新于 {d}': 'updated {d}',
   '{what}已复制': '{what} copied',
   '登录中': 'Signing in',
   '与': 'and',
-
-  /* ── 落地页改版（大白话文案） ── */
-  '能做什么': 'What it does',
 
   /* ── 登录 / 注册 / 找回密码 ── */
   '找回密码': 'Reset your password',
@@ -414,204 +268,13 @@ export const EN: Record<string, string> = {
   '返回登录': 'Back to sign in',
 
   '{n} 天前': '{n} days ago',
-  /* ── 法务长文：服务条款 / 隐私政策 ── */
-  '你需年满 18 周岁并具备完全缔约能力。': 'You must be 18 or older and have full legal capacity to contract.',
-  '一个自然人只应持有一个账号。为重复领取新用户权益而注册的账号会被合并或关闭。':
-    'One person should hold one account. Accounts registered to claim the new-user benefit repeatedly will be merged or closed.',
-  '账号项下的一切操作视为你本人所为。密码泄露或设备遗失，请立即在设置页重置订阅链接。':
-    'Everything done under your account is treated as done by you. If your password leaks or a device goes missing, reset your subscription link on the settings page immediately.',
-  '我们不会以任何理由向你索要密码。任何自称客服并索取密码的都是诈骗。':
-    'We will never ask you for your password, for any reason. Anyone claiming to be support and asking for it is running a scam.',
-  '服务用于保护你的通信隐私、绕开网络故障与拥塞。下列行为一经查实即中止服务：':
-    'The service is for protecting the privacy of your communications and routing around network faults and congestion. The following, once established, ends the service:',
-  '传播恶意软件，或从事你所在司法辖区法律禁止的活动。': 'Distributing malware, or anything unlawful in the jurisdiction you are in.',
-  '我们不会为了发现这些行为而检视你的流量内容——判定依据是上游投诉、滥用举报，以及连接元数据中的异常特征。':
-    'We do not inspect the contents of your traffic in order to find these things. We act on upstream complaints, abuse reports, and anomalies in connection metadata.',
-  '各套餐标注的设备数是同时在线数，不是绑定数：你可以在任意多台设备上安装，只要同时连接的不超过上限。':
-    'The device count on each plan is how many may be connected at once, not how many may be paired. Install it on as many devices as you like, as long as no more than the limit are connected at the same time.',
-  '不限流量的套餐没有隐藏的降速阈值。若单账号的持续占用严重影响同节点其他用户，我们会先联系你，而不是直接限速。':
-    "Unlimited plans have no hidden throttling threshold. If one account's sustained use is seriously affecting others on the same node, we will contact you rather than quietly slow you down.",
-  '年付价格已包含折扣，不再叠加优惠码。':
-    'Annual prices already include the discount. Promo codes do not stack on top of them.',
-  '原因写在明处：我们的主要使用场景在中国大陆，那里的网络环境使得「先用满一个周期再申请退款」几乎无法防范，而每一笔退款的成本最终会转嫁到所有按规矩付费的用户身上。与其把价格抬高再用退款政策做营销，不如把价格压低、把退款收紧。':
-    'The reason, stated openly: most of our use is in mainland China, where the network conditions make “use a full period, then ask for a refund” nearly impossible to guard against, and the cost of every such refund ends up on the users who pay honestly. Rather than raise the price and market a generous refund policy, we keep the price low and the refunds tight.',
-  '，或': ', or',
-  '我们承诺月度可用性 99.99%，统计口径是全网可用节点数不低于 80% 的时间占比，以状态页公布的数据为准。低于承诺时按下表折算服务时长：':
-    "We commit to 99.99% monthly availability, measured as the share of time at least 80% of the network's nodes were available, as published on the status page. Below that, service time is credited per the table:",
-  '低于 99.99% 但高于 99.0%：按当月费用的 10% 折算。': "Below 99.99% but above 99.0%: credit worth 10% of that month's fee.",
-  '合同期限为你所购套餐的周期。我们不做默认自动续费——需要你在订单页手动开启。':
-    'The contract runs for the period of the plan you bought. We do not auto-renew by default — you switch it on yourself from the orders page.',
-  '已开启自动续订的，我们在每次扣款前至少 14 日以邮件提醒，写明金额与日期，你可随时一键关闭。':
-    'If you have switched auto-renewal on, we email you at least 14 days before each charge with the amount and the date, and you can turn it off in one click at any time.',
-  '若你违反「允许与禁止的用途」，我们会中止服务并说明理由。你可在 30 日内经工单申诉，我们将复核连接元数据并给出书面结论。':
-    'If you breach “What the service may and may not be used for”, we suspend the service and tell you why. You have 30 days to appeal through a ticket; we will re-examine the connection metadata and give you a written conclusion.',
-  '开通与维持服务': 'Opening and running the service',
-  '邮箱、密码哈希、注册时间': 'Email, password hash, sign-up time',
-  '账号存续期间，注销后 30 天内删除': 'While the account exists; deleted within 30 days of closure',
-  '套餐计量': 'Metering your plan',
-  '当月流量总量、同时在线设备数': 'Total traffic this month, devices connected at once',
-  '仅当前计费周期，跨周期即重置': 'Current billing period only; reset when it rolls over',
-  '套餐、金额、支付渠道交易号': 'Plan, amount, payment-channel transaction ID',
-  '到期与事故通知': 'Expiry and incident notices',
-  '同账号信息': 'Same as account information',
-  '防止滥用与保障网络安全': 'Preventing abuse and keeping the network up',
-  '连接元数据中的异常特征、上游投诉记录': 'Anomalies in connection metadata, upstream complaint records',
-  '90 天': '90 days',
-  '客服支持': 'Customer support',
-  '工单文字与截图': 'The text and screenshots in your tickets',
-  '结单后 12 个月': '12 months after the ticket closes',
-  '营销邮件': 'Marketing email',
-  '下面几节把「不记录」的边界说清楚——完全不存任何数据的服务并不存在，声称完全不存的公司在骗你。':
-    'The sections below set out the limits of “we keep no logs”. No service stores nothing at all, and a company claiming otherwise is lying to you.',
-  '这不是承诺，是一种架构选择——承诺可以反悔，架构不行。该架构已由 Deloitte 完成独立审计，报告全文公开。':
-    'This is not a promise, it is an architectural choice — a promise can be broken, an architecture cannot. The architecture has been independently audited by Deloitte and the report is published in full.',
-  '我们不出售、不出租、不以广告为目的共享任何个人数据。站点不加载第三方统计、广告或社交追踪脚本——打开浏览器的网络面板即可自行核对。':
-    "We do not sell, rent, or share any personal data for advertising. The site loads no third-party analytics, advertising or social tracking scripts — open your browser's network panel and check for yourself.",
-  '逐项期限见上文表格。期限届满即自动清除，不做「标记为已删除」。':
-    'The period for each item is in the table above. When it expires the data is erased automatically — not flagged as deleted.',
-  '我们不投放任何广告或分析类 Cookie，因此没有同意横幅。':
-    'We run no advertising or analytics cookies, so there is no consent banner.',
-  '我们会先核验请求的法律效力与管辖范围。经核验有效的请求，我们只能提供实际持有的数据——也就是上文表格里列出的内容。':
-    'We first verify that the request is legally valid and within jurisdiction. For a verified request we can only provide the data we actually hold — that is, what the table above lists.',
-
-  '这份条款约束你与 {site} 之间的服务关系：服务能做什么、不能做什么，你与我们各自的责任，以及付款后不予退款的政策。用词尽量直白，请在下单前读完。':
-    'These terms govern the service relationship between you and {site}: what the service does and does not do, what each of us is responsible for, and our no-refund policy once you have paid. The wording is kept plain — please read it before you order.',
-  '「服务」指我们通过 {host} 及其镜像站点、各平台客户端提供的加密网络接入服务。「你」指注册账号并使用服务的个人或组织。你注册账号、下单或使用服务，即表示你已阅读并同意本条款与隐私政策。':
-    '“The service” means the encrypted network access we provide through {host}, its mirror sites and our platform apps. “You” means the person or organisation that registers an account and uses the service. By signing up, placing an order or using the service, you confirm you have read and agree to these terms and to the Privacy Policy.',
-  '服务是什么，不是什么': 'What the service is, and is not',
-  '服务在你的设备与我们的节点之间建立加密通道，保护传输途中的数据不被中间网络查看或篡改。':
-    'The service sets up an encrypted tunnel between your device and our nodes, so the networks in between cannot read or tamper with your data in transit.',
-  '我们不保证能访问任何特定的网站、应用或内容。目标站点的地区限制、封禁与风控不在我们控制范围内。':
-    'We do not guarantee access to any particular website, app or content. Regional restrictions, blocks and risk controls on the destination side are outside our control.',
-  '服务不能让你完全匿名。你登录的账号、浏览器指纹、设备上的恶意软件仍可能暴露你的身份。':
-    'The service does not make you fully anonymous. Accounts you sign in to, your browser fingerprint and malware on your device can still reveal who you are.',
-  '节点的位置、线路与协议会随网络环境调整。我们尽量让各地区始终有可用节点，但不承诺某个特定节点长期存在。':
-    'Node locations, routes and protocols change with network conditions. We aim to keep working nodes available in every region, but do not promise that any particular node will stay.',
-  '你的合规责任': 'Your legal responsibility',
-  '使用前，请自行确认在你所在地使用加密网络服务是合法的。你对自己的使用行为承担全部法律责任；我们不对你在当地法律下是否合规作任何判断或保证。':
-    'Before using the service, make sure it is lawful to use an encrypted network service where you are. You are solely responsible for how you use it; we make no judgement or guarantee about whether your use complies with local law.',
-  '侵犯他人的版权、商标等知识产权。': 'Infringing copyright, trademarks or other intellectual property.',
-  '价格与付款': 'Prices and payment',
-  '下单页展示的价格即为最终应付金额，没有额外的隐藏费用。':
-    'The price shown at checkout is the final amount you pay. There are no hidden fees.',
-  '付款成功后立即开通，订阅链接同时签发，服务即视为已交付。':
-    'Access opens as soon as payment succeeds. Your subscription link is issued at the same moment, and the service counts as delivered.',
-  '我们可能调整套餐价格。调价只影响之后的订单与续费，不影响你已付费的周期。':
-    'We may change plan prices. A change only affects later orders and renewals, never a period you have already paid for.',
-  '所有订单不予退款': 'All sales are final — no refunds',
-  '订阅链接在付款成功的同时签发，服务即告交付。因此':
-    'Your subscription link is issued the moment payment succeeds, which is when the service is delivered. So ',
-  '所有订单一经付款，概不退款': 'no order is refundable once paid',
-  '，也不做部分退款、按比例退款或折算现金。': ' — no partial refunds, no pro-rata refunds, and no cash equivalent.',
-  '这包括但不限于以下情形：': 'This includes, without limitation:',
-  '改变主意，或未使用、未用完的时长与流量。': 'Changing your mind, or time and traffic left unused.',
-  '所在地的网络环境导致连接不稳定或无法连接。': 'Unstable or failed connections caused by the network where you are.',
-  '目标网站或应用无法访问。': 'A destination website or app being unreachable.',
-  '设备、系统或客户端不兼容。': 'An incompatible device, operating system or client.',
-  '账号因违反本条款被中止或终止。': 'Your account being suspended or terminated for breaching these terms.',
-  '已转入账户余额的金额同样不能提现或退回原支付方式，只能用于购买或续费套餐。':
-    'Money in your account balance likewise cannot be withdrawn or returned to the original payment method; it can only be spent on plans and renewals.',
-  '下单前请先在帮助中心确认你的设备与客户端受支持；拿不准的，先买最短周期的套餐试用。服务本身出了问题，我们的补救是修复与折算服务时长（见下一节），而不是退款。':
-    'Before ordering, check in the Help Center that your device and client are supported. If in doubt, buy the shortest plan first to try it. If the service itself fails, our remedy is to fix it and credit service time (see the next section) — not a refund.',
-  '付款后向银行或支付渠道发起拒付的，我们有权立即终止相关账号，并保留追讨款项与手续费的权利。':
-    'If you file a chargeback with your bank or payment provider after paying, we may terminate the account immediately and reserve the right to recover the amount and any fees.',
-  '可用性承诺与时长补偿': 'Availability commitment and service-time credits',
-  '低于 95.0%：当月全额折算。': 'Below 95.0%: the full month credited.',
-  '补偿无需你申请，我们在月度结算时自动发放并在订单页留痕。补偿只以服务时长的形式发放，不折现、不退款。':
-    'You do not have to apply. We issue the credit at monthly settlement and record it on your orders page. Credits are given as service time only — never as cash or a refund.',
-  '因不可抗力、所在地区的网络管控、你的网络环境或第三方设备导致的不可用不计入统计。':
-    'Unavailability caused by force majeure, network controls in your region, your own network, or third-party equipment is not counted.',
-  '期限、续费与终止': 'Term, renewal and termination',
-  '你可以随时在设置页注销账号。注销后订阅立即失效，剩余时长与账户余额一并作废，不予退款。':
-    'You can close your account from the settings page at any time. The subscription stops working immediately, and any remaining time and account balance are forfeited without refund.',
-  '申诉成立的，恢复服务并补足中止期间的时长；申诉不成立或情节严重的，终止账号，已付费用不予退还。':
-    'If the appeal succeeds, we restore the service and make up the time lost to the suspension. If it fails, or the breach is serious, we terminate the account and fees paid are not refunded.',
-  '免责声明': 'Disclaimer',
-  '服务按「现状」提供。在法律允许的最大范围内，我们不就服务不中断、无错误、适合特定用途，或能访问任何特定内容作出明示或默示的保证。':
-    'The service is provided “as is”. To the fullest extent the law allows, we give no express or implied warranty that it will be uninterrupted, error-free, fit for a particular purpose, or able to reach any particular content.',
-  '你通过服务访问的第三方网站、应用与内容不由我们提供或控制，我们对其内容及由此产生的后果不承担责任。':
-    'Third-party websites, apps and content you reach through the service are not provided or controlled by us, and we are not responsible for them or for anything that results from them.',
-  '责任限制': 'Limitation of liability',
-  '在法律允许的最大范围内，我们不对任何间接、附带、特殊或后果性损失承担责任，包括利润、数据与商誉的损失。':
-    'To the fullest extent the law allows, we are not liable for any indirect, incidental, special or consequential loss, including loss of profit, data or goodwill.',
-  '我们就与服务相关的全部索赔承担的累计责任，以你在索赔事由发生前 3 个月内实际支付给我们的费用为上限。':
-    'Our total liability for all claims relating to the service is capped at the fees you actually paid us in the 3 months before the event giving rise to the claim.',
-  '上述限制不适用于依法不得排除或限制的责任。':
-    'These limits do not apply to any liability that cannot be excluded or limited by law.',
-  '你的赔偿责任': 'Your indemnity',
-  '因你违反本条款或违法使用服务，致使我们遭受第三方索赔、处罚或损失的，由你负责赔偿，包括合理的律师费用。':
-    'If your breach of these terms or unlawful use of the service leads to third-party claims, penalties or losses against us, you will compensate us for them, including reasonable legal fees.',
-  '条款的重大变更提前 30 日在公告页与邮件中通知，本页顶部的日期随之更新。若你不接受新条款，请在生效前停止使用并注销账号；新条款生效后继续使用，视为接受。':
-    'Material changes are announced 30 days ahead on the announcements page and by email, and the date at the top of this page is updated. If you do not accept the new terms, stop using the service and close your account before they take effect; continuing to use it afterwards means you accept them.',
-  '我们会根据网络环境调整节点、线路、协议与客户端的支持范围。这类调整属于正常运维，不构成违约。':
-    'We adjust nodes, routes, protocols and supported clients as network conditions change. Such adjustments are normal operations and are not a breach of contract.',
-  '争议解决与适用法律': 'Disputes and governing law',
-  '本条款适用中国香港特别行政区法律。因本条款或服务产生的争议，双方先友好协商；协商不成的，提交香港特别行政区有管辖权的法院解决。':
-    'These terms are governed by the law of the Hong Kong SAR of China. Any dispute arising from these terms or the service will first be negotiated in good faith; failing that, it will be submitted to the competent courts of the Hong Kong SAR.',
-  '本条款任何部分被认定无效或不可执行的，不影响其余部分的效力。':
-    'If any part of these terms is found invalid or unenforceable, the rest remains in effect.',
-  '一家 VPN 服务商只有三件事值得写清楚：收集了什么、为什么收集、什么情况下会交出去。下面逐条回答。':
-    'There are only three things a VPN provider needs to make clear: what it collects, why, and when it would hand anything over. Each is answered below.',
-  '本政策所述数据由 {site} 处理，注册于中国香港特别行政区。':
-    'The data described in this policy is handled by {site}, registered in the Hong Kong SAR of China.',
-  '我们收集什么、为什么、存多久': 'What we collect, why, and for how long',
-  '用途': 'Purpose',
-  '账单与对账': 'Billing and reconciliation',
-  '按财务记账要求保存 7 年': 'Seven years, as bookkeeping requires',
-  '邮箱（仅在你订阅时）': 'Email (only if you subscribe)',
-  '退订即删除': 'Deleted as soon as you unsubscribe',
-  '「防止滥用」一项处理的只是连接元数据中的统计特征，不涉及目的地址与内容，是维持网络可用所必需的最小范围。':
-    'The abuse-prevention item covers only statistical features of connection metadata — never destinations or contents — and is the minimum needed to keep the network usable.',
-  '提供邮箱与付款信息是开通服务的必要条件。营销邮件是可选的，不订阅不影响服务。':
-    'An email address and payment details are needed to open the service. Marketing email is optional; not subscribing changes nothing about the service.',
-  '我们不记录的': 'What we do not log',
-  '用户画像。我们不分析你的使用习惯，也不把任何数据用于广告。':
-    'Profiles. We do not analyse your habits, and we use no data for advertising.',
-  '我们只把必要的数据交给三类服务商，且只允许他们为提供该项服务而使用：':
-    'We pass the necessary data to three kinds of provider, each allowed to use it only to deliver that service:',
-  '：拿到订单金额与交易号，拿不到你的使用数据。卡号、支付账户等信息由支付渠道直接处理，我们的服务器不接触、也不保存。':
-    ': sees the order amount and transaction ID, never your usage data. Card numbers and payment accounts are handled by the payment provider directly; our servers never see or store them.',
-  '数据安全': 'Security',
-  '账号与账单数据只存放在我们控制的服务器上，传输全程加密，访问权限只开给确有需要的运维人员。节点上不保存任何用户数据。':
-    'Account and billing data is kept only on servers we control, encrypted in transit, and accessible only to operations staff who genuinely need it. Nodes store no user data at all.',
-  '没有系统能做到绝对安全。若发生数据泄露，我们会尽快查明影响范围，并通过邮件与公告通知受影响的用户。':
-    'No system is perfectly secure. If a data breach happens, we will establish its scope as quickly as possible and notify affected users by email and announcement.',
-  '注销账号时，除账单记录外，其余数据在 30 天内彻底删除。':
-    'When you close your account, everything except billing records is erased within 30 days.',
-  '你对自己数据的控制': 'Your control over your data',
-  '查阅与导出': 'Access and export',
-  '：随时在设置页一键导出账号下的全部数据（JSON）。':
-    ': export everything held under your account (as JSON) from the settings page, any time.',
-  '更正': 'Correction',
-  '：设置页可自行修改，或通过工单要求我们更正。':
-    ': change it yourself on the settings page, or open a ticket and ask us to correct it.',
-  '：设置页一键注销即为真正删除。': ': closing your account from the settings page is a real deletion.',
-  '退订': 'Unsubscribe',
-  '：营销邮件可随时退订，不影响到期提醒等服务通知。':
-    ': unsubscribe from marketing email at any time; service notices such as expiry reminders are unaffected.',
-  '其他请求发到 {email}，我们在 30 日内答复，不收取任何费用。':
-    'Send any other request to {email}. We reply within 30 days, free of charge.',
-  '其他请求可通过工单提交，我们在 30 日内答复，不收取任何费用。':
-    'Send any other request through a support ticket. We reply within 30 days, free of charge.',
-  '站点只在浏览器本地存储里保存登录凭证、界面语言与明暗模式，页面数据的临时缓存在关闭标签页后即清除。这些内容只为让站点正常运行，不会被发往任何第三方。清除浏览器数据即清除它们。':
-    'The site keeps only your sign-in token, interface language and light or dark mode in browser local storage; a temporary cache of page data is cleared when you close the tab. These exist only to make the site work and are never sent to any third party. Clearing your browser data clears them.',
-  '未成年人': 'Minors',
-  '服务面向年满 18 周岁的用户。我们不会有意收集未成年人的数据，发现后会删除相应账号。':
-    'The service is for users aged 18 and over. We do not knowingly collect data from minors, and will delete any such account we find.',
-  '在法律允许的范围内，我们会通知受影响的用户，并按季度在透明度报告中公布收到的请求数量与配合情况。':
-    'So far as the law permits, we notify affected users and publish quarterly in our transparency report how many requests we received and how we responded.',
-  '涉及收集范围、用途或保存期限的变更，提前 30 日公告并邮件通知；仅措辞与排版的修订以本页顶部的更新日期标注。历次版本可在透明度报告中查阅。':
-    'Changes to what we collect, why, or how long we keep it are announced 30 days ahead, by notice and by email; revisions to wording or layout alone are marked by the update date at the top of this page. Past versions are available in the transparency report.',
-
   /* ── 通用 ── */
   '刷新': 'Refresh',
   '重试': 'Retry',
-  '搜索': 'Search',
   '清除': 'Clear',
   '验证': 'Apply',
   '选填': 'optional',
   '类型': 'Type',
-  '标签': 'Tags',
   '计费': 'Billed',
   '上一页': 'Previous',
   '下一页': 'Next',
@@ -666,12 +329,10 @@ export const EN: Record<string, string> = {
   '选择套餐': 'Choose a plan',
   '暂时没有可购买的套餐': 'No plans available right now',
   '仅剩 {n} 个名额': 'Only {n} seats left',
-  '折合每月 {v}': '{v} per month',
   '已售罄': 'Sold out',
   '续费': 'Renew',
   '更换到此套餐': 'Switch to this plan',
   '立即订阅': 'Subscribe',
-  '购买套餐': 'Buy a plan',
   '流量重置包': 'Traffic reset pack',
   '不改变套餐与到期时间，立即把本周期已用流量清零': 'Clears the traffic used this cycle without touching your plan or expiry date',
   '重置「{n}」的流量': 'Reset traffic on “{n}”',
@@ -706,8 +367,6 @@ export const EN: Record<string, string> = {
   '客户端会自动跳过': 'Clients skip these automatically',
   '全部线路正常': 'All lines healthy',
   '最低倍率': 'Lowest multiplier',
-  '最后检测': 'Last checked',
-  '搜索节点名称': 'Search node names',
 
   /* ── 使用明细 ── */
   '套餐已用流量': 'Plan traffic used',
@@ -721,7 +380,6 @@ export const EN: Record<string, string> = {
 
   /* ── 公告 / 文档 ── */
   '站点发布公告后会出现在这里。': 'Announcements from the site appear here.',
-  '搜索文档标题或内容': 'Search titles and content',
   '站点还没有发布文档': 'No docs published yet',
   '按平台查看教程': 'Guides by platform',
 
@@ -736,7 +394,6 @@ export const EN: Record<string, string> = {
   '把现象、时间和用的客户端写清楚，能省掉一轮来回': 'Describing what happened, when, and which client saves a round trip',
   '客服回复后这一页会显示新消息': 'New replies show up on this page',
   '最近更新 {t}': 'Updated {t}',
-  '关闭工单': 'Close ticket',
   '工单已关闭': 'Ticket closed',
   '这张工单已关闭，如果问题再次出现，请新开一张。': 'This ticket is closed. If it happens again, open a new one.',
 
@@ -750,7 +407,6 @@ export const EN: Record<string, string> = {
   '通过你的链接完成注册': 'Signed up through your link',
   '还没有返佣记录': 'No commission yet',
   '被你邀请的人完成付费后，明细会出现在这里。': 'Entries appear once someone you referred pays.',
-  '收款账号': 'Payout account',
   '提交申请': 'Submit request',
   '提现申请已提交': 'Withdrawal requested',
 
@@ -765,9 +421,6 @@ export const EN: Record<string, string> = {
   /* ── 顶部导航与落地页价格表 ── */
   '{n} 笔待支付': '{n} unpaid',
 
-  /* ── 服务状态（公开） ── */
-  '在线人数': 'Users online',
-
   /* ── 商店：分类与付费周期 ── */
   '可选 {list}': 'Available: {list}',
   '{p}折合每月 {v}': '{p}: {v}/mo',
@@ -776,38 +429,15 @@ export const EN: Record<string, string> = {
 
   /* ── 仪表盘平台卡片与节点负载 ── */
   '路由器': 'Router',
-  '下载并安装客户端': 'Install the client',
-  '安装客户端': 'Install the client',
-  '导入订阅': 'Import subscription',
-  '选择节点': 'Pick a node',
-  '开启系统代理': 'Turn on system proxy',
-  '授予网络权限': 'Grant network access',
-  '选择节点并连接': 'Pick a node and connect',
-  '准备外区 Apple ID': 'Get a non-China Apple ID',
-  '扫码导入订阅': 'Scan to import',
-  '手动导入（备选）': 'Import manually (fallback)',
-  '连接并选择节点': 'Connect and pick a node',
-  '启动 VPN': 'Start the VPN',
-  '安装 sing-box': 'Install sing-box',
-  '拉取订阅配置': 'Fetch the config',
-  '配置 systemd 服务': 'Set up the systemd service',
-  '设置代理环境变量': 'Set proxy env vars',
-  '确认固件支持': 'Check firmware support',
   'OpenWrt / 梅林固件': 'OpenWrt / Asuswrt-Merlin firmware',
-  '安装插件': 'Install the plugin',
-  '启动并验证': 'Start and verify',
 
   /* ── 文档页、商店卡片、用户菜单 ── */
   '上一篇': 'Previous',
   '下一篇': 'Next',
-  '位置': 'Breadcrumb',
   '分类': 'Categories',
-  '文档分类': 'Doc categories',
-  '更新于': 'Updated',
   '本页目录': 'On this page',
   '约 {n} 分钟读完': '{n} min read',
   '流量不重置': 'Traffic never resets',
-  '设备': 'Devices',
   '速率': 'Speed',
   '账户菜单': 'Account menu',
 
@@ -819,7 +449,7 @@ export const EN: Record<string, string> = {
   '通行密钥已添加': 'Passkey added',
   '以后可以直接用它登录': 'You can sign in with it from now on',
   '通行密钥已删除': 'Passkey removed',
-  '设备里的那一份需要到系统设置里自行删除': 'Remove the copy on your device from its system settings',
+  '设备里保存的那一份需要在设备上自行删除': 'Remove the copy saved on your device there',
   '还没有通行密钥': 'No passkeys yet',
   '添加后，登录页点「使用通行密钥登录」就能直接进来。': 'Once added, tap “Sign in with a passkey” on the sign-in page.',
   '添加于 {d}': 'Added {d}',
@@ -830,22 +460,9 @@ export const EN: Record<string, string> = {
   '删除': 'Remove',
   '确认删除': 'Confirm removal',
 
-  /* ── 套餐规格 ── */
-
-  /* ── 登录会话 ── */
-
-  /* ── 仅通行密钥模式 ── */
-
-  /* ── 仅通行密钥：老用户迁移 ── */
-  '通行密钥已创建': 'Passkey created',
-  '以后直接用它登录，不再需要密码': 'Sign in with it from now on — no password needed',
-
   /* ── 文档目录 ── */
-  '搜索相关': 'Search',
-
   '{n} 篇': '{n} articles',
   '清除搜索': 'Clear search',
-
 
   /* ── 支付宝一键付款 ── */
   '支付宝付款': 'Pay with Alipay',
@@ -857,29 +474,11 @@ export const EN: Record<string, string> = {
   '共 {t} GB，已用 {u} GB': '{u} GB of {t} GB used',
   '购买套餐后可用': 'Available after you buy a plan',
   '订阅可用的线路': 'Lines in your subscription',
-  '暂无可用流量': 'No traffic available',
   '进入用户中心': 'Go to dashboard',
   '当前可用线路与倍率': 'Available lines and rates',
   '上下行走势与每日用量': 'Traffic trends and daily usage',
   '提交问题并跟进处理': 'Report issues and track replies',
   '消费记录与支付状态': 'Purchases and payment status',
-  '支持哪些设备和操作系统？': 'Which devices and operating systems are supported?',
-  '我们提供 Windows、macOS、iOS、Android、Linux 原生客户端，同时支持 OpenWrt / 梅林 / pfSense 等路由器固件。一个账号最多可在 20 台设备上同时在线，覆盖全家与办公场景。': 'We offer native clients for Windows, macOS, iOS, Android and Linux, and support router firmware such as OpenWrt, Asuswrt-Merlin and pfSense. One account can be online on up to 20 devices at once — enough for the whole family and the office.',
-  '真的完全不记录任何日志吗？': 'Do you really keep no logs at all?',
-  '是的。节点上根本没有硬盘，系统跑在内存里，断一次电、重启一次，上面的东西就全没了——不是我们删掉的，是压根没地方存。这套做法请 Deloitte 独立查过，报告在透明度页面全文公开，你可以自己读。': 'Yes. Our nodes have no disks at all — the system runs in memory, so a power cut or a reboot wipes everything. It isn’t that we delete it; there’s simply nowhere to store it. Deloitte audited this setup independently, and the full report is published on our transparency page for you to read.',
-  '速度会比裸连慢很多吗？': 'Is it much slower than a direct connection?',
-  '晚上通常反而更快。你家宽带出国走的是一条公共通道，八点以后全国人都挤在上面，慢下来是必然的；我们额外花钱买了旁边那条车少的路，同一时段卡顿和丢包都低得多。有一点要说清楚：那仍然是公网，不是专线——我们买的是更贵的那条路，不是另建了一张网。': 'In the evening it’s usually faster. Your home broadband leaves the country through a shared public channel, and after 8 p.m. everyone is squeezed onto it, so slowdowns are inevitable. We pay extra for the quieter road next to it, so stalls and packet loss are much lower at the same hour. To be clear: it’s still the public internet, not a private line — we bought the pricier road, we didn’t build a new network.',
-  '支持哪些付款方式？可以退款吗？': 'Which payment methods do you accept? Can I get a refund?',
-  '支持支付宝、微信支付、信用卡（Visa/Master/JCB）以及 USDT 等加密货币。订阅链接付款即签发、服务即时交付，因此所有订单一经付款概不退款——这一点写在服务条款里，不藏在角落。拿不准的话，建议先买最短周期的套餐试用。服务本身出了问题，可用性低于承诺时我们会自动折算服务时长作为补偿。': 'We accept Alipay, WeChat Pay, credit cards (Visa/Mastercard/JCB) and cryptocurrencies such as USDT. Your subscription link is issued and the service delivered the moment you pay, so no order is refundable once paid — that’s stated in the Terms of Service, not hidden in a corner. If you’re unsure, try the shortest plan first. If the service itself falls short of our availability commitment, we automatically credit you extra service time.',
-  '如果节点被封锁或不可用怎么办？': 'What if a node gets blocked or goes down?',
-  '我们运维团队 7×24 小时监控全网链路，异常节点会在 5 分钟内自动摘除并切换备用线路。同时客户端内置智能测速与故障转移，你几乎不会感知到切换过程。': 'Our operations team monitors every route 24/7. Faulty nodes are removed automatically within 5 minutes and traffic switches to backup routes. The client also has built-in speed tests and failover, so you’ll barely notice the switch.',
-  '企业团队可以批量采购吗？': 'Can business teams buy in bulk?',
-  '可以。我们提供企业版方案，支持子账号管理、统一计费、SSO 单点登录、专属静态出口 IP 与 99.99% SLA 保障。请通过工单或商务邮箱联系我们获取报价。': 'Yes. Our business plan includes sub-account management, consolidated billing, SSO, dedicated static exit IPs and a 99.99% SLA. Contact us through a ticket or our sales email for a quote.',
-  '服务提供者（下称「我们」）为 {site}，注册于中国香港特别行政区。': 'The provider (“we”) is {site}, registered in the Hong Kong SAR of China.',
-  '联系邮箱 {email}。': ' Contact: {email}.',
-  '有问题请先走工单，那是最快的路径。未能解决的，可发邮件到 {email}。': 'For anything at all, open a ticket first — it is the fastest route. If that does not resolve it, email {email}.',
-  '有问题请先走工单，那是最快的路径。': 'For anything at all, open a ticket — it is the fastest route.',
-  '二维码': 'QR code',
   '余额抵扣': 'Paid from balance',
   '复制订单号': 'Copy order number',
   '完成支付': 'Payment',
@@ -897,16 +496,8 @@ export const EN: Record<string, string> = {
   '套餐名称': 'Plan',
   '你有一笔待支付的订单': 'You have an unpaid order',
   '支付 {v}': 'Pay {v}',
-  'Google 密码管理器': 'Google Password Manager',
-  'iCloud 钥匙串': 'iCloud Keychain',
-  '完成': 'Done',
-  '查询': 'Check',
-  '礼品卡': 'Gift card',
-  '兑换礼品卡': 'Redeem gift card',
-  '兑换': 'Redeem',
   '暂停注册': 'Sign-ups paused',
   '网站已暂停注册新用户。': 'This site has paused new sign-ups.',
-  '网站已暂停注册新用户': 'New sign-ups are paused',
   '目前不接受新账号注册，恢复开放后这里会重新出现注册表单。已有账号的用户不受影响，可以正常登录使用。': 'New accounts aren’t being accepted right now. The sign-up form will be back here when registration reopens. Existing users are not affected and can sign in as usual.',
   '登录已有账号': 'Sign in to your account',
 
@@ -920,9 +511,6 @@ export const EN: Record<string, string> = {
   '最新': 'Latest',
   '新': 'New',
   '阅读全文': 'Read more',
-
-  /* ── 文档列表：分组与上手路线 ── */
-  '已读': 'Read',
 
   /* ── 客户端下载（后台 APP 设置里的地址） ── */
   '下载客户端': 'Download a client',
@@ -1035,11 +623,19 @@ export const EN: Record<string, string> = {
   "尝试次数过多，请稍后再试": "Too many attempts. Please try again later.",
   "查询参数无效：{detail}": "Invalid query: {detail}",
   "登录已失效，请重新登录": "Your session has ended. Please sign in again.",
-  "收款账号须为 1–{max_account} 个字符": "The payout account must be 1–{max_account} characters",
   "提现金额须在 0.01–{max_price_yuan} 元之间": "The amount must be ¥0.01–¥{max_price_yuan}",
   "最低提现金额为 {min_yuan} 元": "The minimum withdrawal is ¥{min_yuan}",
   "提现金额超过可提现余额": "The amount exceeds your withdrawable balance.",
   "你已有一笔待处理的提现申请": "You already have an open withdrawal request.",
+  "注销账户需要确认": "Deleting the account needs a confirmation.",
+  "有待付款的订单：请先取消订单再注销": "There is an unpaid order: cancel it before deleting the account.",
+  "有待处理的提现：请先撤回提现再注销": "There is a pending withdrawal: withdraw it before deleting the account.",
+  "这不是有效的 {chain} 地址，请核对网络与地址": "This is not a valid {chain} address. Check the network and the address.",
+  "该网络暂不支持提现": "This network is not available for withdrawals.",
+  "Memo 须为 1–{max} 个字符": "The memo must be 1–{max} characters.",
+  "只有 TON 提现可以填写 Memo": "Only TON withdrawals take a memo.",
+  "请填写交易哈希": "Enter the transaction hash.",
+  "请填写大于 0、最多 6 位小数的 USDT 数量": "Enter a positive USDT amount with at most 6 decimals.",
   "该提现申请已处理": "This withdrawal request has already been handled.",
 
   /* ── W36-b：面板接入后的新界面文案 ── */
@@ -1053,8 +649,6 @@ export const EN: Record<string, string> = {
   "{n} 天": "{n} days",
   "{n} 张未关闭": "{n} open",
   "{n} 笔待审核": "{n} pending",
-  "{n} 笔待审核的提现（{v}）会被撤回并作废": "{n} pending withdrawal(s) ({v}) are withdrawn and forfeited",
-  "{n} 笔待支付订单会被取消": "{n} unpaid order(s) are cancelled",
   "{on} 条可用，共 {n} 条": "{on} available of {n}",
   "{t} 前未支付将自动关闭": "closes automatically if unpaid by {t}",
   "一次性（{n} 天）": "One-time ({n} days)",
@@ -1074,7 +668,6 @@ export const EN: Record<string, string> = {
   "仅限现有用户续费": "Renewal for current subscribers only",
   "付款后立即生效": "Takes effect on payment",
   "付款成功，但套餐没能开通": "Paid, but the plan could not be activated",
-  "付款时套餐已售罄、已下架，或你已经换了别的套餐。款项已自动退回账户余额，可以用来重新下单或申请提现。": "The plan was sold out or withdrawn when the payment arrived, or you had switched plans. The amount went back to your balance; use it for a new order or withdraw it.",
   "以后再说": "Not now",
   "以后只用通行密钥登录": "Sign in with passkeys only from now on",
   "以后用 {e} 登录": "Sign in with {e} from now on",
@@ -1090,7 +683,6 @@ export const EN: Record<string, string> = {
   "你的邀请链接": "Your invite link",
   "佣金入账、余额支付、退款到余额、提现都会记在这里。": "Commissions, balance payments, refunds to balance and withdrawals are recorded here.",
   "佣金冻结 {n} 天后入账（期间退款会撤销）": "Commissions are held for {n} days (a refund in that time cancels them)",
-  "佣金被追回后为负，之后的佣金会先抵扣它": "Negative after a clawback; later commissions cover it first",
   "佣金过了冻结期即可提现": "Commissions become withdrawable after the hold period",
   "佣金追回": "Commission clawback",
   "使用": "Apply",
@@ -1101,7 +693,6 @@ export const EN: Record<string, string> = {
   "共 {n} 条线路，点击「倍率」列可切换排序": "{n} lines; click the multiplier column to change the order",
   "关联订单": "Related order",
   "关联订单 {n}": "Related order {n}",
-  "其中 {v} 退回了账户余额。": "{v} went back to your balance.",
   "其中可提现 {v}": "{v} withdrawable",
   "其他设备上的登录已经结束": "Other devices have been signed out",
   "其他（已隐藏或删除的线路）": "Other (hidden or deleted lines)",
@@ -1153,7 +744,6 @@ export const EN: Record<string, string> = {
   "已撤回": "Withdrawn",
   "已收到付款": "Payment received",
   "已改为只用通行密钥登录": "Now passkey-only",
-  "已暂停": "Paused",
   "已用 {n} 次": "Used {n} times",
   "已用流量": "Traffic used",
   "已经通过它注册的人不受影响，佣金照常计算": "People who already signed up with it are not affected; commissions continue",
@@ -1168,7 +758,6 @@ export const EN: Record<string, string> = {
   "已驳回": "Rejected",
   "已验证": "Verified",
   "平均延迟": "Avg latency",
-  "平时 ×{r}": "Normally ×{r}",
   "延迟测速": "Latency test",
   "当前浏览器不支持通行密钥，请换用新版 Safari、Chrome 或 Edge。": "This browser does not support passkeys. Use a recent Safari, Chrome or Edge.",
   "待审核": "Pending",
@@ -1184,14 +773,12 @@ export const EN: Record<string, string> = {
   "打开后这个账户不能再用密码登录。通行密钥全部丢失时，需要联系管理员恢复。": "This account will no longer sign in with a password. If you lose all passkeys, the administrator must restore access.",
   "把链接发给需要的人。对方付费后，你按比例拿佣金，过了冻结期自动进入账户余额，可以抵扣订单或申请提现。": "Share your link. When people you invite pay, you earn a commission that lands in your balance after the hold period; use it for orders or withdraw it.",
   "折算作废": "Credit forfeited",
-  "按入口的倍率": "Per-entrance multiplier",
   "按天的明细只保留到 {d}，更早的日子显示为 0。": "Daily details are kept from {d}; earlier days show 0.",
   "按此刻生效的倍率": "Multiplier in effect now",
   "按线路": "By line",
   "换个关键词试试。": "Try another keyword.",
   "换个地址": "Use another address",
   "换套餐时可折算 {v}": "Worth {v} when switching",
-  "提交后金额立即从余额扣除，管理员核对后手动打款": "The amount leaves your balance at once; an administrator pays it out after review",
   "提交或查看工单": "Open or view tickets",
   "提现": "Withdrawal",
   "提现申请已撤回": "Withdrawal cancelled",
@@ -1201,9 +788,7 @@ export const EN: Record<string, string> = {
   "搜索节点、入口、地区或线路": "Search node, entrance, region or line",
   "撤回": "Cancel",
   "收支流水": "Ledger",
-  "收款方式": "Payout method",
   "新地址验证通过后就是你的登录名。": "Once verified, the new address is your sign-in name.",
-  "方式": "Method",
   "无法正常使用": "Not working properly",
   "旧套餐剩余价值里有 {v} 超过了新套餐的价格，换过去后这部分作废，不退回。": "{v} of your current plan's value exceeds the new plan's price; it is forfeited when you switch and not returned.",
   "旧套餐折算抵扣": "Credit from current plan",
@@ -1255,7 +840,6 @@ export const EN: Record<string, string> = {
   "第 {a} / {b} 页 · 共 {n} 条线路": "Page {a} / {b} · {n} lines",
   "管理员没有填写原因。": "No reason was given.",
   "管理员调整": "Admin adjustment",
-  "管理员账户": "Administrator account",
   "紧急": "Urgent",
   "线路分布": "By line",
   "线路暂不可用": "Lines unavailable",
@@ -1282,7 +866,6 @@ export const EN: Record<string, string> = {
   "设好之后，所有设备上的登录都会结束。": "After this, every device is signed out.",
   "设置新密码": "Set a new password",
   "说明": "Details",
-  "请使用后台地址登录管理后台。后台地址只有管理员知道，这里不会显示。": "Use the admin address to open the console. Only administrators know it; it is never shown here.",
   "请在 {t} 前完成支付（还剩 {m} 分钟），超时订单会自动关闭": "Pay by {t} ({m} min left); unpaid orders close automatically",
   "请查收 {e} 的邮件": "Check the inbox of {e}",
   "请查收邮件，也看看垃圾邮件箱": "Check your inbox, and the spam folder",
@@ -1291,7 +874,6 @@ export const EN: Record<string, string> = {
   "账单与付款": "Billing",
   "账号、邮箱、密码与通行密钥": "Account, email, password and passkeys",
   "账号、邮箱、密码与通行密钥。": "Account, email, password and passkeys.",
-  "账号与实名，例如：138xxxx 张三": "Account and real name, e.g. 138xxxx Zhang San",
   "账户余额 {v}": "Balance {v}",
   "账户余额 {v} 作废": "Balance of {v} is forfeited",
   "账户余额、收支流水与提现。余额可以在下单时抵扣。": "Balance, ledger and withdrawals. The balance can pay for orders.",
@@ -1310,16 +892,13 @@ export const EN: Record<string, string> = {
   "还没有收支记录": "No ledger entries yet",
   "这个账户只能用通行密钥登录。": "This account signs in with a passkey only.",
   "这个重置链接不完整或已经用过了。": "This reset link is incomplete or already used.",
-  "这是管理员账户，用户门户里没有它的内容。": "This is an administrator account; the user portal has nothing for it.",
   "这段时间的流量落在各条线路上的比例（原始流量）": "How this period's raw traffic splits across lines",
   "这段时间还没有流量记录": "No traffic in this period",
   "这笔订单已于 {d} 退款": "This order was refunded on {d}",
   "这笔订单已关闭，可以重新选购套餐。": "This order is closed; you can order again.",
   "这笔订单已退款。": "This order was refunded.",
-  "这笔订单带来的套餐效果已同时撤销或回退（新购的套餐结束、续费的时长收回、换套餐的恢复原套餐；流量重置包只退款）。": "What this order did to your plan was undone (a new plan ends, renewed time is taken back, a switch restores the previous plan; a reset pack is refunded only).",
   "这笔订单没有在线付款方式，请提交工单联系客服完成付款。": "This order has no online payment; open a ticket to pay.",
   "连接与技术": "Connection & technical",
-  "退回 {v}。": "{v} returned.",
   "退款到余额": "Refund to balance",
   "退款时间": "Refunded at",
   "通用链接": "Plain links",
@@ -1335,23 +914,76 @@ export const EN: Record<string, string> = {
   "重新申请重置": "Request a new reset",
   "重置包仅限正在使用此套餐的用户": "Reset packs are for current subscribers of this plan",
   "重置周期": "Reset period",
-  "重置订阅链接、通行密钥、修改密码与邮箱。": "Resetting the subscription link, passkeys, changing password and email.",
   "重置订阅？": "Reset subscription?",
-  "金额已从余额扣除，审核通过后打款；撤回或驳回会退回余额": "The amount left your balance; it is paid out after review. Cancelling or a rejection returns it",
   "金额已退回余额": "The amount is back in your balance",
   "钱包": "Wallet",
-  "银行卡": "Bank card",
   "链接无效": "Invalid link",
   "验证码已发出": "Code sent",
   "验证码已发到 {e}，30 分钟内有效。": "A code was sent to {e}; it is valid for 30 minutes.",
   "验证邮箱": "Verify email",
   "（上行 + 下行）× 倍率": "(upload + download) × multiplier",
   "（上行 + 下行）× 倍率，也就是真正扣掉的量": "(upload + download) × multiplier — what is actually counted",
-  "周日": "Sun",
-  "周一": "Mon",
-  "周二": "Tue",
-  "周三": "Wed",
-  "周四": "Thu",
-  "周五": "Fri",
-  "周六": "Sat",
+
+  /* ── W36-b：面板接入补齐（退款去向、USDT 提现、注销、知识库顶部、条款缺省） ── */
+  '这里还没有内容': 'Nothing here yet',
+  '套餐商店': 'Store',
+  '订阅方案与流量包': 'Plans and traffic packs',
+  '接入、计费与常见问题': 'Setup, billing and FAQs',
+  '账号状态、流量与订阅一览': 'Account status, traffic and subscription at a glance',
+  '退款中': 'Refunding',
+  '{n} 笔已付款但未开通的订单不再处理': '{n} paid but unfulfilled orders will no longer be handled',
+  '账户有付款记录：财务记录匿名保留，其余个人数据删除': 'The account has payment records: they are kept anonymized, all other personal data is deleted',
+  '账户会被整个删除': 'The account will be deleted entirely',
+  '还有 {n} 笔待支付订单：请先在订单页取消': '{n} unpaid orders: cancel them on the Orders page first',
+  '还有 {n} 笔待审核的提现（{v}）：请先在钱包页撤回': '{n} pending withdrawals ({v}): withdraw them on the Wallet page first',
+  '订阅地址已复制到剪贴板': 'Subscription link copied',
+  '客户端下载、连接指南与常见问题。': 'Client downloads, setup guides and FAQs.',
+  '复制订阅地址': 'Copy subscription link',
+  '搜索文档': 'Search the docs',
+  '搜索文档标题或内容…': 'Search titles and contents…',
+  '文档分类': 'Categories',
+  '你正在使用 {p}': 'You are on {p}',
+  '查看 {p} 教程': '{p} guides',
+  '关于「{q}」的搜索结果：找到 {n} 篇匹配文档': '{n} articles match "{q}"',
+  '暂无文档': 'No articles yet',
+  '站点知识库尚未发布使用指南。': 'No guides have been published yet.',
+  '未找到相关文档': 'No matching articles',
+  '请尝试使用其他关键词，或在上方选择不同的平台分类。': 'Try other keywords or another category above.',
+  '未读': 'Unread',
+  '阅读教程': 'Read',
+  '订阅链接已复制': 'Subscription link copied',
+  '按步骤操作仍遇到问题？提交工单联系我们。': 'Still stuck after following the steps? Open a ticket.',
+  '同类文档 · {c}': 'More in {c}',
+  '退款方式': 'Refund method',
+  '退款处理中': 'Refund in progress',
+  '已向支付渠道发起原路退款，渠道确认后款项按原支付方式退回，通常几分钟到几个工作日。': 'A refund to the original payment method was requested. Once the provider confirms it, the money returns the way you paid, usually within minutes to a few business days.',
+  '付款时套餐已售罄、已下架，或你已经换了别的套餐。款项会退回账户余额，可以用来重新下单或申请提现；有疑问请提交工单。': 'When the payment arrived the plan was sold out, off sale, or you had switched to another plan. The money goes back to your balance for a new order or a withdrawal; open a ticket if anything is unclear.',
+  '原路退回': 'Original payment method',
+  '退到余额': 'To balance',
+  '支付渠道退款': 'Refunded by the payment provider',
+  '套餐不受影响（只退款）。': 'Your plan is not affected (money only).',
+  '这笔订单开通的套餐已同时结束。': 'The plan this order started has ended.',
+  '这笔续费增加的时长已同时收回。': 'The time this renewal added has been taken back.',
+  '已恢复为换套餐之前的套餐。': 'Your plan before the switch has been restored.',
+  '{v} 已原路退回到 {m}。': '{v} was refunded to {m}.',
+  '{v} 已原路退回。': '{v} was refunded to the original payment method.',
+  '{v} 已通过支付渠道退回。': '{v} was refunded through the payment provider.',
+  '{v} 已退回账户余额。': '{v} went back to your balance.',
+  'T 开头的 34 位 Tron 地址': 'A 34-character Tron address starting with T',
+  '0x 开头的 42 位地址（EVM）': 'A 42-character address starting with 0x (EVM)',
+  'Base58 编码的 Solana 地址（32–44 位）': 'A Base58 Solana address (32–44 characters)',
+  'TON 地址（UQ / EQ 开头）；转到交易所时请填写 Memo': 'A TON address (starting with UQ / EQ); add the memo when sending to an exchange',
+  '收款地址': 'Receiving address',
+  '实付': 'Paid',
+  '交易哈希': 'Transaction hash',
+  '金额已从余额扣除，审核通过后以 USDT 打款；撤回或驳回会退回余额': 'The amount was taken from your balance and is paid in USDT once approved; withdrawing or a rejection returns it',
+  '暂未开放提现。': 'Withdrawals are not available yet.',
+  '提现以 USDT 打款到你填写的链上地址。': 'Withdrawals are paid in USDT to the on-chain address you enter.',
+  '提交后金额立即从余额扣除，管理员核对后以 USDT 打款到你的地址': 'The amount leaves your balance at once; an administrator checks it and pays USDT to your address',
+  '约 {v} USDT（按参考汇率，以实际打款为准）': 'About {v} USDT (reference rate; the payout decides)',
+  'USDT 网络': 'USDT network',
+  '网络选错资金无法找回：请和收款方（钱包或交易所充值页）显示的网络保持一致。': 'Funds sent on the wrong network cannot be recovered: use the network your wallet or exchange deposit page shows.',
+  'Memo（选填）': 'Memo (optional)',
+  '{site} 尚未发布这份文件。如有疑问，请登录后提交工单联系我们。': '{site} has not published this document yet. Questions? Sign in and open a ticket.',
+  '订阅二维码': 'Subscription QR code',
 };

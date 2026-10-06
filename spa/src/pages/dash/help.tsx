@@ -2,11 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, ArrowRight, BookOpen, Calendar, Check, ChevronDown, ChevronRight, Clock,
-  Copy, Download, Headphones, Search, Sparkles, X,
+  Copy, Download, Headphones, Search, X,
 } from 'lucide-react';
 import { DUR, NUDGE, stagger, useEnter } from '@/lib/motion';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { PageTitle } from '@/components/flat';
 import { Empty, LoadError, Loading } from '@/components/data-state';
@@ -143,19 +142,17 @@ function ListView() {
     }
   };
 
+  /* 当前设备：有同名分类就给「看教程」，站长配了下载地址就给「下载」；都没有就不占位置 */
+  const deviceChapter = chapters.find((c) => c.platform?.id === device.id);
+
   return (
-    <div className="space-y-8 pb-16">
+    <div className="pb-16">
       <PageTitle
         title={tr('使用手册')}
-        sub={tr('全平台客户端下载、连接指南与常见问题排查。')}
+        sub={tr('客户端下载、连接指南与常见问题。')}
         extra={
           subUrl && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleCopySubscribe}
-              className="gap-2 rounded-xl text-xs"
-            >
+            <Button variant="outline" className="h-9" onClick={handleCopySubscribe}>
               {copied === 'sub' ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
               {copied === 'sub' ? tr('已复制') : tr('复制订阅地址')}
             </Button>
@@ -163,147 +160,91 @@ function ListView() {
         }
       />
 
-      {/* ── 当前设备快速连接横幅 ── */}
-      <div
-        {...enter({ delay: 0.05 })}
-        className="relative overflow-hidden rounded-2xl border border-border/80 bg-gradient-to-br from-card via-card to-brand/5 p-4 sm:p-6 shadow-xs"
-      >
-        <div className="flex flex-col justify-between gap-4.5 sm:gap-6 lg:flex-row lg:items-center">
-          <div className="flex items-start gap-3.5 sm:gap-4">
-            <div className="flex size-11 sm:size-12 shrink-0 items-center justify-center rounded-xl sm:rounded-2xl bg-brand/10 text-brand shadow-inner">
-              <PlatformIcon name={device.icon} className="size-5.5 sm:size-6" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                <h2 className="text-[15px] sm:text-[17px] font-semibold text-foreground">
-                  {tp('推荐快速接入 · {p}', { p: device.name })}
-                </h2>
-                <Badge variant="secondary" className="rounded-full bg-brand/10 text-[10px] sm:text-[11px] font-medium text-brand-ink">
-                  <Sparkles className="mr-1 size-2.5 sm:size-3" />
-                  {tr('当前设备')}
-                </Badge>
-              </div>
-              <p className="mt-1 text-[12.5px] sm:text-[13.5px] text-muted-foreground leading-relaxed">
-                {tp('推荐选用 {client} 客户端，配合全协议节点提供极速无缝体验。', { client: device.client })}
-              </p>
-
-              {/* 4步指引微步骤 - 移动端支持水平滑移 */}
-              <div className="mt-3.5 flex items-center gap-1.5 sm:gap-2 text-[11px] sm:text-xs overflow-x-auto no-scrollbar pb-0.5">
-                {device.steps.map((step, idx) => (
-                  <div key={idx} className="flex shrink-0 items-center gap-1.5 rounded-lg bg-background/80 px-2.5 py-1 text-muted-foreground border border-border/60">
-                    <span className="font-mono text-brand font-semibold">{idx + 1}</span>
-                    <span className="whitespace-nowrap">{step}</span>
-                    {idx < device.steps.length - 1 && (
-                      <ChevronRight className="size-3 text-muted-foreground/40 ml-1 shrink-0" />
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="flex shrink-0 flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-2.5 pt-2 sm:pt-0 border-t border-border/60 sm:border-0">
-            {download?.url && (
-              <Button asChild size="sm" className="gap-1.5 rounded-xl shadow-xs justify-center w-full sm:w-auto">
-                <a href={download.url} target="_blank" rel="noreferrer noopener">
-                  <Download className="size-4" />
-                  {tp('下载 {p} 客户端', { p: device.name })}
-                </a>
-              </Button>
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setCategoryFilter(device.name)}
-              className="gap-1.5 rounded-xl justify-center w-full sm:w-auto"
-            >
-              <BookOpen className="size-4 text-brand" />
-              {tp('查看 {p} 教程', { p: device.name })}
-            </Button>
-          </div>
-        </div>
-      </div>
-
-      {/* ── 搜索与分类筛选控制栏 ── */}
-      <div {...enter({ delay: 0.1 })} className="space-y-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          {/* 分类标签胶囊栏 - 移动端横向滑动滑轨 */}
-          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1 -mx-4 px-4 sm:mx-0 sm:px-0">
+      {/* ── 顶部：搜索独占一行，分类在下面换行排开（不截断、不横向滚动），当前设备的捷径单独一行 ── */}
+      <div {...enter({ delay: 0.05 })} className="mt-8 space-y-4">
+        <form onSubmit={handleSearchSubmit} role="search" className="relative">
+          <Search className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="search"
+            aria-label={tr('搜索文档')}
+            value={kw}
+            onChange={(e) => setKw(e.target.value)}
+            placeholder={tr('搜索文档标题或内容…')}
+            className="h-11 rounded-xl pr-10 pl-10"
+          />
+          {kw && (
             <button
               type="button"
-              onClick={() => setCategoryFilter('all')}
-              className={cn(
-                'flex shrink-0 items-center gap-1.5 rounded-xl px-3 sm:px-3.5 py-1.5 sm:py-2 text-[12.5px] sm:text-[13px] font-medium transition-all cursor-pointer select-none',
-                currentCategory === 'all'
-                  ? 'bg-brand text-white shadow-xs'
-                  : 'bg-card border border-border/80 text-muted-foreground hover:border-brand/40 hover:text-foreground hover:bg-accent/40 shadow-2xs',
-              )}
+              aria-label={tr('清除搜索')}
+              onClick={clearSearch}
+              className="absolute top-1/2 right-2 grid size-7 -translate-y-1/2 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             >
-              <BookOpen className="size-3.5" />
-              <span>{tr('全部')}</span>
-              <span className={cn('ml-1 rounded-full px-1.5 py-0.2 text-[10.5px] sm:text-[11px]', currentCategory === 'all' ? 'bg-white/20 text-white' : 'bg-muted text-muted-foreground')}>
-                {totalArticles}
-              </span>
+              <X className="size-4" />
             </button>
+          )}
+        </form>
 
-            {chapters.map((c) => {
-              const active = currentCategory === c.name;
-              return (
-                <button
-                  key={c.name}
-                  type="button"
-                  onClick={() => setCategoryFilter(c.name)}
-                  className={cn(
-                    'flex shrink-0 items-center gap-1.5 rounded-xl px-3 sm:px-3.5 py-1.5 sm:py-2 text-[12.5px] sm:text-[13px] font-medium transition-all cursor-pointer select-none',
-                    active
-                      ? 'bg-brand text-white shadow-xs'
-                      : 'bg-card border border-border/80 text-muted-foreground hover:border-brand/40 hover:text-foreground hover:bg-accent/40 shadow-2xs',
-                  )}
-                >
-                  <DocCategoryIcon name={c.name} platform={c.platform} className={cn('size-3.5', active ? 'text-white' : 'text-muted-foreground')} />
-                  <span>{c.name}</span>
-                  <span className={cn('ml-1 rounded-full px-1.5 py-0.2 text-[10.5px] sm:text-[11px]', active ? 'bg-white/20 text-white' : 'bg-muted text-muted-foreground')}>
-                    {c.articles.length}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* 搜索框 */}
-          <form onSubmit={handleSearchSubmit} className="relative w-full sm:w-[260px] shrink-0">
-            <Search className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={kw}
-              onChange={(e) => setKw(e.target.value)}
-              placeholder={tr('搜索文档标题或内容...')}
-              className="h-9.5 rounded-xl pr-8 pl-9 text-xs"
+        {chapters.length > 0 && (
+          <nav aria-label={tr('文档分类')} className="flex flex-wrap gap-2">
+            <CategoryChip
+              active={currentCategory === 'all'}
+              onClick={() => setCategoryFilter('all')}
+              icon={<BookOpen className="size-3.5" />}
+              label={tr('全部')}
+              count={totalArticles}
             />
-            {kw && (
+            {chapters.map((c) => (
+              <CategoryChip
+                key={c.name}
+                active={currentCategory === c.name}
+                onClick={() => setCategoryFilter(c.name)}
+                icon={<DocCategoryIcon name={c.name} platform={c.platform} className="size-3.5" />}
+                label={c.name}
+                count={c.articles.length}
+              />
+            ))}
+          </nav>
+        )}
+
+        {(deviceChapter || download?.url) && !q && currentCategory === 'all' && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[13.5px] text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5">
+              <PlatformIcon name={device.icon} className="size-4 text-brand" />
+              {tp('你正在使用 {p}', { p: device.name })}
+            </span>
+            {deviceChapter && (
               <button
                 type="button"
-                onClick={clearSearch}
-                className="absolute top-1/2 right-2.5 size-4 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
+                onClick={() => setCategoryFilter(deviceChapter.name)}
+                className="inline-flex items-center gap-1 font-medium text-brand underline-offset-4 hover:underline"
               >
-                <X className="size-3.5" />
+                {tp('查看 {p} 教程', { p: deviceChapter.name })}<ArrowRight className="size-3.5" />
               </button>
             )}
-          </form>
-        </div>
+            {download?.url && (
+              <a
+                href={download.url}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="inline-flex items-center gap-1 font-medium text-brand underline-offset-4 hover:underline"
+              >
+                <Download className="size-3.5" />{tp('下载 {p} 客户端', { p: device.name })}
+              </a>
+            )}
+          </div>
+        )}
 
-        {/* 搜索结果提示 */}
         {q && (
-          <div className="flex items-center justify-between rounded-xl bg-muted/40 px-4 py-2.5 text-xs text-muted-foreground">
-            <span>
-              {tp('关于「{q}」的搜索结果：找到 {n} 篇匹配文档', { q, n: totalHitCount })}
-            </span>
-            <Button variant="ghost" size="sm" onClick={clearSearch} className="h-6 px-2 text-xs text-brand hover:text-brand-deep">
+          <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-muted/50 px-4 py-2.5 text-[13px] text-muted-foreground">
+            <span>{tp('关于「{q}」的搜索结果：找到 {n} 篇匹配文档', { q, n: totalHitCount })}</span>
+            <Button variant="ghost" size="sm" onClick={clearSearch} className="h-7 px-2 text-brand hover:text-brand-deep">
               {tr('清除搜索')}
             </Button>
           </div>
         )}
       </div>
 
+      <div className="mt-8">
       {/* ── 文档卡片区 ── */}
       {all.loading && !all.data ? (
         <Loading rows={4} />
@@ -327,7 +268,31 @@ function ListView() {
           ))}
         </div>
       )}
+      </div>
     </div>
+  );
+}
+
+/** 分类筛选：一枚胶囊，名字完整显示（换行排列，不截断） */
+function CategoryChip({
+  active, onClick, icon, label, count,
+}: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string; count: number }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={cn(
+        'inline-flex max-w-full items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-[13px] font-medium transition-colors',
+        active
+          ? 'border-brand bg-brand text-white dark:text-primary-foreground'
+          : 'border-border bg-card text-muted-foreground hover:border-brand/40 hover:text-foreground',
+      )}
+    >
+      <span className="shrink-0">{icon}</span>
+      <span className="min-w-0 break-words text-left">{label}</span>
+      <span className={cn('tnum shrink-0 rounded-full px-1.5 text-[11px]', active ? 'bg-white/20' : 'bg-muted')}>{count}</span>
+    </button>
   );
 }
 
@@ -478,67 +443,46 @@ function ArticleView({ id }: { id: string }) {
   if (!a) return null;
 
   return (
-    <div className="space-y-6 pb-20">
-      {/* ── 顶部导航栏 ── */}
-      <div {...enter()} className="flex items-center justify-between gap-2 sm:gap-4 border-b border-border/70 pb-3 sm:pb-4">
-        <div className="flex min-w-0 items-center gap-1.5 sm:gap-2 text-xs text-muted-foreground">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => toList(a.category)}
-            className="-ml-2 gap-1 rounded-xl text-xs text-muted-foreground hover:text-foreground h-8 px-2 sm:px-2.5"
+    <div className="pb-20">
+      {/* ── 页首：与其它页面同一套页首（同样的上边距与标题样式），上方一行面包屑，下方一行元信息 ── */}
+      <header {...enter()} className="pt-12 pb-2">
+        <nav aria-label={tr('使用手册')} className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-[13px] text-muted-foreground">
+          <button
+            type="button"
+            onClick={() => toList()}
+            className="inline-flex items-center gap-1 rounded-md transition-colors hover:text-foreground"
           >
-            <ArrowLeft className="size-3.5 sm:size-4" />
-            <span className="hidden sm:inline">{tr('返回使用手册')}</span>
-            <span className="sm:hidden">{tr('返回')}</span>
-          </Button>
-          <span className="text-border">/</span>
+            <ArrowLeft className="size-3.5" />
+            {tr('使用手册')}
+          </button>
+          <ChevronRight aria-hidden className="size-3.5 opacity-50" />
           <button
             type="button"
             onClick={() => toList(a.category)}
-            className="hover:text-foreground transition-colors cursor-pointer shrink-0"
+            className="min-w-0 rounded-md break-words transition-colors hover:text-foreground"
           >
             {a.category}
           </button>
-          <span className="text-border">/</span>
-          <span className="truncate max-w-[110px] sm:max-w-[240px] text-foreground font-medium">{a.title}</span>
+        </nav>
+
+        <div className="mt-4 flex flex-wrap items-end justify-between gap-x-6 gap-y-4">
+          <div className="min-w-0 max-w-[48rem]">
+            <h1 className="page-title text-balance break-words">{a.title}</h1>
+            <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[13px] text-muted-foreground">
+              <span className="inline-flex items-center gap-1.5"><Clock className="size-3.5" />{tp('约 {n} 分钟读完', { n: minutes })}</span>
+              <span className="inline-flex items-center gap-1.5"><Calendar className="size-3.5" />{formatDate(a.updated_at)}</span>
+            </div>
+          </div>
+          {subUrl && (
+            <Button variant="outline" className="h-9" onClick={handleCopySub}>
+              {copied === 'art-sub' ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
+              {copied === 'art-sub' ? tr('已复制') : tr('复制订阅链接')}
+            </Button>
+          )}
         </div>
-
-        {subUrl && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleCopySub}
-            className="gap-1.5 rounded-xl text-xs shrink-0 h-8 px-2.5"
-          >
-            {copied === 'art-sub' ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
-            <span className="hidden sm:inline">{copied === 'art-sub' ? tr('已复制') : tr('复制订阅链接')}</span>
-            <span className="sm:hidden">{copied === 'art-sub' ? tr('已复制') : tr('订阅链接')}</span>
-          </Button>
-        )}
-      </div>
-
-      {/* ── 文章头部 ── */}
-      <header {...enter({ delay: 0.05 })} className="space-y-2.5 sm:space-y-3">
-        <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
-          <Badge variant="secondary" className="rounded-full bg-brand/10 text-brand-ink text-xs font-medium">
-            {a.category}
-          </Badge>
-          <span className="text-xs text-muted-foreground flex items-center gap-1">
-            <Clock className="size-3.5" />
-            {tp('约 {n} 分钟读完', { n: minutes })}
-          </span>
-          <span className="text-xs text-muted-foreground flex items-center gap-1">
-            <Calendar className="size-3.5" />
-            {formatDate(a.updated_at)}
-          </span>
-        </div>
-
-        <h1 className="text-xl sm:text-2xl lg:text-3xl font-semibold tracking-tight text-foreground leading-snug">
-          {a.title}
-        </h1>
       </header>
 
+      <div className="mt-8 space-y-6">
       {/* 移动端目录折叠抽屉 */}
       {toc.length > 1 && (
         <div className="lg:hidden">
@@ -627,7 +571,7 @@ function ArticleView({ id }: { id: string }) {
           <div className="mt-6 sm:mt-8 flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 rounded-xl border border-border/70 bg-muted/30 p-4 sm:p-5 text-sm">
             <div className="flex items-center gap-2.5 sm:gap-3 text-muted-foreground text-xs sm:text-sm">
               <Headphones className="size-4 sm:size-5 shrink-0 text-brand" />
-              <span>{tr('按步骤操作仍遇到异常？我们的技术人员将竭诚为您协助。')}</span>
+              <span>{tr('按步骤操作仍遇到问题？提交工单联系我们。')}</span>
             </div>
             <Button size="sm" variant="outline" asChild className="shrink-0 rounded-xl self-end sm:self-auto">
               <Link to={R.tickets}>{tr('提交工单')}</Link>
@@ -701,6 +645,7 @@ function ArticleView({ id }: { id: string }) {
             )}
           </div>
         </aside>
+      </div>
       </div>
     </div>
   );

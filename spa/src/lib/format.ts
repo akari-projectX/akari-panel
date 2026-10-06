@@ -20,7 +20,7 @@ export function yuan(cents: number, { always2 = false } = {}): string {
   return c < 0 ? `−${body}` : body;
 }
 
-/** "¥9.90" / "−¥10"（余额被佣金追回后可以是负数，不能截成 0） */
+/** "¥9.90" / "−¥10"（流水里的支出是负数） */
 export function formatMoney(cents: number | null | undefined, { always2 = false } = {}): string {
   const c = Math.trunc(cents ?? 0);
   return `${c < 0 ? '−' : ''}¥${yuan(Math.abs(c), { always2 })}`;
@@ -272,11 +272,14 @@ export const ORDER_ACTION: Record<OfferAction, string> = {
   reset: '流量重置',
 };
 
-/** 订单在用户眼里的状态：已退款、已付款但没能开通（中-2：款项自动退到余额）优先于 status */
-export function orderState(o: { status: OrderStatus; refunded_at: string | null; fulfilled: boolean }): {
+/** 订单在用户眼里的状态：已退款、原路退款处理中、已付款但没能开通（中-2：款项自动退到余额）优先于 status */
+export function orderState(o: {
+  status: OrderStatus; refunded_at: string | null; fulfilled: boolean; refund_pending?: boolean;
+}): {
   text: string; tone: StatusTone;
 } {
   if (o.refunded_at) return { text: '已退款', tone: 'neutral' };
+  if (o.refund_pending) return { text: '退款中', tone: 'warning' };
   if (o.status === 'paid' && !o.fulfilled) return { text: '未开通', tone: 'warning' };
   return { text: ORDER_STATUS[o.status], tone: ORDER_TONE[o.status] };
 }

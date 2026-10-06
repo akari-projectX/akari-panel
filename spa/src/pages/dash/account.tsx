@@ -14,8 +14,7 @@ import { PageTitle, Row, Section } from '@/components/flat';
 import { Empty, LoadError, Loading } from '@/components/data-state';
 import ResetSubscription from '@/components/reset-subscription';
 import Subscribe from '@/components/subscribe';
-import { feature, meApi, passkeyApi, type LoginMethods } from '@/api';
-import { plannedApi } from '@/api/planned';
+import { accountApi, meApi, passkeyApi, type LoginMethods } from '@/api';
 import { isUserCancel, webauthnSupported } from '@/api/webauthn';
 import { useApi, usePending, type ApiState } from '@/hooks/use-api';
 import { K } from '@/lib/cache';
@@ -96,7 +95,7 @@ function Account() {
         </div>
       </Section>
 
-      {feature('self-delete') && <DeleteAccount />}
+      <DeleteAccount />
     </>
   );
 }
@@ -202,8 +201,9 @@ function EmailSection() {
 }
 
 /**
- * 自助注销（③ W27，self-delete 开关）：删除个人数据，财务记录匿名化保留。
- * 先给影响摘要（余额、待审提现、待付订单、当前套餐），再输入密码确认。
+ * 自助注销：删除个人数据；有财务记录的账户匿名化保留（面板 erase.rs）。
+ * 先给影响摘要（余额、待审提现、待付订单、当前套餐）。有待支付订单或待审核提现时面板拒绝（409），
+ * 这里直接说清楚要先处理哪一样，不让人点了再碰壁。密码确认：只用通行密钥登录的账户不需要。
  */
 function DeleteAccount() {
   const tr = useT();
@@ -212,15 +212,17 @@ function DeleteAccount() {
   const nav = useNavigate();
   const { signOut } = useAuth();
   const [open, setOpen] = useState(false);
-  const impact = useApi(() => plannedApi.deleteImpact(), [], { enabled: open });
+  const impact = useApi(() => accountApi.deleteImpact(), [], { enabled: open });
   const methods = useApi(() => passkeyApi.list(), [], { key: K.passkeys, enabled: open });
   const [password, setPassword] = useState('');
   const [busy, run] = usePending();
-  const needPassword = methods.data?.password_set ?? true;
+  /* 面板只在这个账户还能用密码登录时要密码（与登录策略同一个判断） */
+  const needPassword = methods.data?.password_login ?? true;
 
   const remove = () => run(async () => {
     try {
-      await plannedApi.deleteAccount(needPassword ? password : undefined);
+      await accountApi.deleteAccount(needPassword ? password : undefined);
+      /* 面板已清掉会话 cookie；本地状态照常收尾 */
       await signOut().catch(() => {});
       toast.success(tr('账户已注销'));
       nav(R.login, { replace: true });
@@ -230,6 +232,7 @@ function DeleteAccount() {
   });
 
   const d = impact.data;
+  const blocked = !!d && (d.pending_orders > 0 || d.pending_withdrawals > 0);
   return (
     <Section title={<><UserX className="size-4 text-danger" />{tr('注销账户')}</>} desc={tr('删除你的个人数据。付款与退款记录按法规匿名保留。注销后不能恢复。')}>
       {!open ? (
@@ -243,10 +246,16 @@ function DeleteAccount() {
             <ul className="space-y-1.5 rounded-xl bg-red-500/[.06] px-4 py-3.5 text-[13px] leading-[1.8]">
               {d.plan && <li>{tp('套餐「{p}」立即失效，剩余时长作废', { p: d.plan.name })}</li>}
               {d.balance_cents !== 0 && <li>{tp('账户余额 {v} 作废', { v: formatMoney(d.balance_cents) })}</li>}
-              {d.pending_withdrawals > 0 && <li>{tp('{n} 笔待审核的提现（{v}）会被撤回并作废', { n: d.pending_withdrawals, v: formatMoney(d.pending_withdrawal_cents) })}</li>}
-              {d.pending_orders > 0 && <li>{tp('{n} 笔待支付订单会被取消', { n: d.pending_orders })}</li>}
+              {d.unfulfilled_orders > 0 && <li>{tp('{n} 笔已付款但未开通的订单不再处理', { n: d.unfulfilled_orders })}</li>}
               <li>{tr('订阅链接、通行密钥、工单全部删除')}</li>
+              <li>{d.anonymized ? tr('账户有付款记录：财务记录匿名保留，其余个人数据删除') : tr('账户会被整个删除')}</li>
             </ul>
+            {blocked && (
+              <ul role="alert" className="space-y-1.5 rounded-xl border border-amber-500/30 bg-amber-500/[.07] px-4 py-3 text-[13px] leading-[1.8]">
+                {d.pending_orders > 0 && <li>{tp('还有 {n} 笔待支付订单：请先在订单页取消', { n: d.pending_orders })}</li>}
+                {d.pending_withdrawals > 0 && <li>{tp('还有 {n} 笔待审核的提现（{v}）：请先在钱包页撤回', { n: d.pending_withdrawals, v: formatMoney(d.pending_withdrawal_cents) })}</li>}
+              </ul>
+            )}
             {needPassword && (
               <div className="space-y-2">
                 <Label htmlFor="delete-password">{tr('输入当前密码确认')}</Label>
@@ -254,7 +263,7 @@ function DeleteAccount() {
               </div>
             )}
             <ConfirmDialog
-              trigger={<Button className="h-10 bg-red-600 text-white hover:bg-red-700" disabled={busy || (needPassword && !password)}>{tr('注销账户')}</Button>}
+              trigger={<Button className="h-10 bg-red-600 text-white hover:bg-red-700" disabled={busy || blocked || (needPassword && !password)}>{tr('注销账户')}</Button>}
               tone="danger"
               icon={<TriangleAlert />}
               title={tr('确定注销账户？')}
@@ -399,7 +408,7 @@ function Passkeys({ methods }: { methods: ApiState<LoginMethods> }) {
         await passkeyApi.remove(id);
         setConfirming(null);
         methods.reload();
-        toast.success(tr('通行密钥已删除'), { description: tr('设备里的那一份需要到系统设置里自行删除') });
+        toast.success(tr('通行密钥已删除'), { description: tr('设备里保存的那一份需要在设备上自行删除') });
       } catch (e) {
         toast.error(errText(e));
       }

@@ -27,7 +27,7 @@ export function fastNetwork(): boolean {
 
 export function prefetchDash(scope: Scope | undefined) {
   /* 开了省流量、或者网络不到 4G：预取是锦上添花，不替用户花流量 */
-  if (!fastNetwork() || !scope || scope === 'admin') return;
+  if (!fastNetwork() || !scope) return;
 
   for (const page of DASH_PAGES) page.preload();
 

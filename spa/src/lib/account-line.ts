@@ -37,7 +37,7 @@ export function useAttention(enabled: boolean) {
   const out = useBootOut();
   const { scope } = useAuth();
   const canOrders = enabled && (scope === 'full' || scope === 'renewal');
-  const canTickets = enabled && scope !== 'admin';
+  const canTickets = enabled && !!scope;
   const orders = useApi(() => orderApi.list(), [], { key: K.orders, enabled: canOrders && out });
   const tickets = useApi(() => ticketApi.list(), [], { key: K.tickets, enabled: canTickets && out });
   return useMemo(() => {

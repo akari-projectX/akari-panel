@@ -10,7 +10,7 @@ import { LoadError } from '@/components/data-state';
 import { DashSkeleton } from '@/components/loading';
 import StatusTag from '@/components/status-tag';
 import { useCopy } from '@/hooks/use-copy';
-import { orderApi, walletApi } from '@/api';
+import { orderApi, type MyOrder, type RefundEffect, type RefundRoute } from '@/api';
 import { useApi, usePending } from '@/hooks/use-api';
 import { K } from '@/lib/cache';
 import { useAuth } from '@/lib/auth';
@@ -54,12 +54,6 @@ export default function OrderDetail() {
   const [cancelling, runCancel] = usePending();
   const [copiedNo, copyText] = useCopy(1600);
 
-  /* 退款、付了款却没能开通的订单：去余额流水里找退回的那一笔 */
-  const refundCheck = !!data && (!!data.refunded_at || (data.status === 'paid' && !data.fulfilled));
-  const ledger = useApi(() => walletApi.balance({ limit: 100 }), [refundCheck], { enabled: refundCheck });
-  const backToBalance = (ledger.data?.entries ?? [])
-    .filter((e) => e.kind === 'refund_to_balance' && e.order_id === id)
-    .reduce((n, e) => n + e.amount_cents, 0);
 
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -137,13 +131,14 @@ export default function OrderDetail() {
         </button>
       </span>
     )],
-    ...(data.action ? [['订单类型', tr(ORDER_ACTION[data.action])] as [string, React.ReactNode]] : []),
+    ['订单类型', tr(ORDER_ACTION[data.action])],
     ['购买时长', periodText(data.period, data.period_days, tr, tp)],
     ['下单时间', formatDateTime(data.created_at)],
     ...(data.coupon_code ? [['优惠码', <code key="c" className="text-[12.5px]">{data.coupon_code}</code>] as [string, React.ReactNode]] : []),
     ...(data.payment_method_name ? [['支付方式', data.payment_method_name] as [string, React.ReactNode]] : []),
     ...(data.paid_at ? [['支付时间', formatDateTime(data.paid_at)] as [string, React.ReactNode]] : []),
     ...(data.refunded_at ? [['退款时间', formatDateTime(data.refunded_at)] as [string, React.ReactNode]] : []),
+    ...(data.refund_route ? [['退款方式', tr(REFUND_ROUTE[data.refund_route])] as [string, React.ReactNode]] : []),
   ];
 
   /* 进度：下单 → 付款 → 生效。关闭的订单第二步停在「已关闭」；退款 / 没能开通的第三步标出来 */
@@ -206,29 +201,32 @@ export default function OrderDetail() {
         </ol>
       </Section>
 
-      {(data.refunded_at || unfulfilled) && (
+      {(data.refunded_at || data.refund_pending || unfulfilled) && (
         <div role="status" className="notice mt-6">
-          {data.refunded_at ? <Undo2 className="size-4 shrink-0 text-brand" /> : <Wallet className="size-4 shrink-0 text-warning" />}
+          {data.refunded_at || data.refund_pending ? <Undo2 className="size-4 shrink-0 text-brand" /> : <Wallet className="size-4 shrink-0 text-warning" />}
           <div className="min-w-0 flex-1 text-[13.5px] leading-[1.8]">
             {data.refunded_at ? (
               <>
                 <div className="font-medium">{tp('这笔订单已于 {d} 退款', { d: formatDate(data.refunded_at) })}</div>
-                <div className="text-muted-foreground">
-                  {tr('这笔订单带来的套餐效果已同时撤销或回退（新购的套餐结束、续费的时长收回、换套餐的恢复原套餐；流量重置包只退款）。')}
-                  {backToBalance > 0 && <> {tp('其中 {v} 退回了账户余额。', { v: formatMoney(backToBalance) })}</>}
-                </div>
+                <RefundLines o={data} />
+              </>
+            ) : data.refund_pending ? (
+              <>
+                <div className="font-medium">{tr('退款处理中')}</div>
+                <div className="text-muted-foreground">{tr('已向支付渠道发起原路退款，渠道确认后款项按原支付方式退回，通常几分钟到几个工作日。')}</div>
               </>
             ) : (
               <>
                 <div className="font-medium">{tr('付款成功，但套餐没能开通')}</div>
                 <div className="text-muted-foreground">
-                  {tr('付款时套餐已售罄、已下架，或你已经换了别的套餐。款项已自动退回账户余额，可以用来重新下单或申请提现。')}
-                  {backToBalance > 0 && <> {tp('退回 {v}。', { v: formatMoney(backToBalance) })}</>}
+                  {tr('付款时套餐已售罄、已下架，或你已经换了别的套餐。款项会退回账户余额，可以用来重新下单或申请提现；有疑问请提交工单。')}
                 </div>
               </>
             )}
           </div>
-          <Button size="sm" variant="outline" onClick={() => nav(R.wallet)}>{tr('查看钱包')}</Button>
+          {(data.refund_balance_cents ?? 0) > 0 && (
+            <Button size="sm" variant="outline" onClick={() => nav(R.wallet)}>{tr('查看钱包')}</Button>
+          )}
         </div>
       )}
 
@@ -361,5 +359,44 @@ export default function OrderDetail() {
         </aside>
       </div>
     </>
+  );
+}
+
+const REFUND_ROUTE: Record<RefundRoute, string> = {
+  original: '原路退回',
+  balance: '退到余额',
+  manual: '支付渠道退款',
+};
+
+const REFUND_EFFECT: Record<RefundEffect, string> = {
+  none: '套餐不受影响（只退款）。',
+  cancel: '这笔订单开通的套餐已同时结束。',
+  rollback: '这笔续费增加的时长已同时收回。',
+  restore: '已恢复为换套餐之前的套餐。',
+};
+
+/**
+ * 退款去向（三种：原路退回支付渠道、退到账户余额、站长在支付渠道后台退款后登记）与对套餐的影响（P1）。
+ * 金额按订单记录的两部分显示：退回余额的、经支付渠道退回的。
+ */
+function RefundLines({ o }: { o: MyOrder }) {
+  const tr = useT();
+  const tp = useTp();
+  const toBalance = o.refund_balance_cents ?? 0;
+  const external = o.refund_external_cents ?? 0;
+  return (
+    <ul className="text-muted-foreground">
+      {external > 0 && (
+        <li>
+          {o.refund_route === 'original'
+            ? o.payment_method_name
+              ? tp('{v} 已原路退回到 {m}。', { v: formatMoney(external), m: o.payment_method_name })
+              : tp('{v} 已原路退回。', { v: formatMoney(external) })
+            : tp('{v} 已通过支付渠道退回。', { v: formatMoney(external) })}
+        </li>
+      )}
+      {toBalance > 0 && <li>{tp('{v} 已退回账户余额。', { v: formatMoney(toBalance) })}</li>}
+      {o.refund_effect && <li>{tr(REFUND_EFFECT[o.refund_effect])}</li>}
+    </ul>
   );
 }

@@ -25,12 +25,11 @@ export const Tickets = lazyRetry(() => import('@/pages/dash/tickets'));
 export const Help = lazyRetry(() => import('@/pages/dash/help'));
 export const Announcements = lazyRetry(() => import('@/pages/dash/announcements'));
 export const Account = lazyRetry(() => import('@/pages/dash/account'));
-export const Terms = lazyRetry(() => import('@/pages/terms'));
-export const Privacy = lazyRetry(() => import('@/pages/privacy'));
-export const Faq = lazyRetry(() => import('@/pages/faq'));
+export const Terms = lazyRetry(() => import('@/pages/legal').then((m) => ({ default: m.Terms })));
+export const Privacy = lazyRetry(() => import('@/pages/legal').then((m) => ({ default: m.Privacy })));
 
 /** 站点页（条款、常见问题、登录注册）空闲时预载的那一批 */
-export const SITE_PAGES = [Terms, Privacy, Faq, Login];
+export const SITE_PAGES = [Terms, Privacy, Login];
 
 /** 进入用户中心后空闲时预载的那一批 */
 export const DASH_PAGES = [

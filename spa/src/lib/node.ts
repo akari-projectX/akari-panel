@@ -1,4 +1,4 @@
-import { feature, type MyNode } from '@/api';
+import { type MyNode } from '@/api';
 
 /**
  * 节点 → 国旗。
@@ -100,15 +100,8 @@ export function nodeCC(n: Pick<MyNode, 'name' | 'region'>): string | null {
   return (n.region ? guessCC(n.region) : null) ?? guessCC(n.name);
 }
 
-/** 此刻的倍率：D9 合并后（rates 开关）用面板给的当前倍率，之前用入口的基础倍率 */
-export function nodeRate(n: Pick<MyNode, 'rate' | 'rate_now'>): number {
-  return feature('rates') && typeof n.rate_now === 'number' ? n.rate_now : n.rate;
-}
-
-/** D5：所在服务器流量额度用完、暂停服务（server-quota 开关） */
-export function nodeSuspended(n: Pick<MyNode, 'suspended'>): boolean {
-  return feature('server-quota') && n.suspended === true;
-}
-
-/** 能连：在线且没有被暂停 */
-export const nodeUp = (n: MyNode) => n.online && !nodeSuspended(n);
+/**
+ * 能连。D5：服务器流量额度用完的入口面板直接不给（/me/nodes 里没有这一行），
+ * 所以这里只看在线。倍率是面板给的此刻倍率（D9，`n.rate`）。
+ */
+export const nodeUp = (n: MyNode) => n.online;

@@ -2,16 +2,15 @@
  * 接口层：页面能调的全部函数。与面板之间的唯一边界——页面只从 '@/api' 导入。
  *
  * 每个函数对应面板的一个用户接口（akari-panel README「API surface」），形状见 ./types。
- * 依赖面板未合并功能的接口不在这里，在 ./planned（受 ./features 的开关控制）。
  */
 
 import { api, auth, qs } from './http';
 import { rememberGuard } from './guard';
 import { creationOptions, credentialJSON, requestOptions } from './webauthn';
 import type {
-  Announcements, AuthOptions, CreateOrder, FormGuard, HelpArticle, HelpList, InviteCodes, LoginMethods, LoginResult,
-  Me, MyBalance, MyInvite, MyNode, MyOrder, MyPlan, MyTraffic, NewTicket, PasskeyChallenge, Shop, SubTokenReset,
-  TicketDetail, TicketRow, Withdrawal, WithdrawMethod,
+  Announcements, AuthOptions, CreateOrder, DeleteImpact, FormGuard, HelpArticle, HelpList, InviteCodes, LegalPage,
+  LoginMethods, LoginResult, Me, MyBalance, MyInvite, MyNode, MyOrder, MyPlan, MyTraffic, NewTicket, PasskeyChallenge,
+  Shop, SubTokenReset, TicketDetail, TicketRow, UsdtChain, Withdrawal,
 } from './types';
 
 /* ───────────── 认证（/auth，公开） ───────────── */
@@ -85,6 +84,16 @@ export const meApi = {
   emailVerify: (code: string) => api.post<{ email: string }>('/me/email/verify', { code }),
 };
 
+/* ───────────── 自助注销 ───────────── */
+
+export const accountApi = {
+  /** 注销会丢掉什么（与后台的 delete-impact 同形） */
+  deleteImpact: () => api.get<DeleteImpact>('/me/delete-impact'),
+  /** 删除个人数据，财务记录匿名化保留；只用通行密钥登录的账户不传 password。成功后面板清掉会话 cookie */
+  deleteAccount: (password: string | undefined) =>
+    api.post<void>('/me/delete', { confirm: true, ...(password ? { password } : {}) }),
+};
+
 /* ───────────── 通行密钥（已登录） ───────────── */
 
 export const passkeyApi = {
@@ -136,8 +145,9 @@ export const walletApi = {
     api.get<MyBalance>(`/me/balance${qs({ before: opts.before, limit: opts.limit })}`),
   withdrawals: () => api.get<Withdrawal[]>('/me/withdrawals'),
   /** 立即从余额扣除；不超过可提现金额 */
-  withdraw: (amount_cents: number, method: WithdrawMethod, account: string) =>
-    api.post<Withdrawal>('/me/withdrawals', { amount_cents, method, account }),
+  /** R46：USDT 提现，网络必须是后台开着的；memo 只有 TON 用 */
+  withdraw: (body: { amount_cents: number; chain: UsdtChain; address: string; memo?: string }) =>
+    api.post<Withdrawal>('/me/withdrawals', body),
   cancelWithdrawal: (id: string) => api.post<Withdrawal>(`/me/withdrawals/${id}/cancel`),
 };
 
@@ -159,6 +169,11 @@ export const ticketApi = {
   close: (id: string) => api.post<void>(`/me/tickets/${id}/close`),
 };
 
+/** 条款与隐私（公开，未登录也能看）：站长没写时面板答统一的拒绝（404），页面改显示中性的缺省文案 */
+export const pageApi = {
+  get: (slug: 'terms' | 'privacy') => api.get<LegalPage>(`/pages/${slug}`),
+};
+
 export const contentApi = {
   announcements: () => api.get<Announcements>('/me/announcements'),
   markRead: (id: string) => api.post<void>(`/me/announcements/${id}/read`),
@@ -167,6 +182,5 @@ export const contentApi = {
 };
 
 export { ApiError, onSessionEvent } from './http';
-export { brandUrl, legacySubscriptionUrl, portalUrl, routerBase } from './base';
-export { feature } from './features';
+export { brandUrl, portalUrl } from './base';
 export * from './types';

@@ -21,7 +21,7 @@ export default function AccountBanners() {
   const [hidden, setHidden] = useState(() => {
     try { return sessionStorage.getItem(NUDGE_KEY) === '1'; } catch { return false; }
   });
-  if (!me || scope === 'banned' || scope === 'admin') return null;
+  if (!me || scope === 'banned') return null;
 
   const hide = () => {
     setHidden(true);

@@ -77,11 +77,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const m = await meApi.get();
       const scope = scopeOf(m);
-      /* 套餐：banned 与 admin 拿不到（面板答 403） */
+      /* 套餐：banned 拿不到（面板答 403） */
       const p = scope === 'full' || scope === 'renewal' ? await meApi.plan() : undefined;
       return { me: m, plan: p };
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) return null;
+      /* 401 = 没登录；404 = 统一的拒绝（同一浏览器里的管理员会话在门户上就是这个）：都按没登录处理 */
+      if (e instanceof ApiError && (e.status === 401 || e.status === 404)) return null;
       throw e;
     }
   }, []);

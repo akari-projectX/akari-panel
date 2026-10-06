@@ -48,8 +48,6 @@ export default function Orders() {
     const t = TABS.find((x) => x.key === tab) ?? TABS[0];
     return all.filter(t.test);
   }, [all, tab]);
-  /* 订单类型列：面板的 MyOrderView.action（已批准，随 PR2 合并）到了才显示 */
-  const typed = all.some((o) => o.action);
 
   const paidTotal = all.reduce((n, o) => n + spent(o), 0);
   const pendingCount = all.filter((o) => o.status === 'pending').length;
@@ -65,7 +63,7 @@ export default function Orders() {
       orders.reload();
     }
   });
-  const typeText = (o: MyOrder) => (o.action ? tr(ORDER_ACTION[o.action]) : '');
+  const typeText = (o: MyOrder) => tr(ORDER_ACTION[o.action]);
 
   return (
     <>
@@ -130,7 +128,7 @@ export default function Orders() {
                   <TableRow className="flat-head hover:bg-transparent">
                     <TableHead className="min-w-[180px] pl-0">{tr('订单号')}</TableHead>
                     <TableHead className="w-32">{tr('套餐')}</TableHead>
-                    {typed && <TableHead className="w-28">{tr('类型')}</TableHead>}
+                    <TableHead className="w-28">{tr('类型')}</TableHead>
                     <TableHead className="w-28">{tr('周期')}</TableHead>
                     <TableHead className="w-24">{tr('金额')}</TableHead>
                     <TableHead className="w-24">{tr('状态')}</TableHead>
@@ -149,7 +147,7 @@ export default function Orders() {
                       <TableCell>
                         <Badge variant="secondary" className="rounded-full bg-brand/10 text-brand-ink">{o.plan_name}</Badge>
                       </TableCell>
-                      {typed && <TableCell className="text-sm">{typeText(o)}</TableCell>}
+                      <TableCell className="text-sm">{typeText(o)}</TableCell>
                       <TableCell className="text-sm">{periodText(o.period, o.period_days, tr, tp)}</TableCell>
                       <TableCell className="tnum font-medium">{formatMoney(o.amount_cents)}</TableCell>
                       <TableCell>

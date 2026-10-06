@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /*
- * 产物体积预算（CI 必跑）。读 dist/.vite/manifest.json 与 dist/index.html：
+ * 产物体积预算（CI 必跑）。读 dist/app/.vite/manifest.json 与 dist/app/index.html：
  *   · initialJs  = 入口 + 它的全部静态 import（首屏必下的 JS），按 gzip 计；
  *   · initialCss = index.html 里 <link rel="stylesheet"> 的样式表（挡首帧），gzip；
- *   · totalJs / totalCss = dist/assets 下全部 .js / .css 的 gzip 之和（含按需加载的分包、字体声明）；
+ *   · totalJs / totalCss = dist/app/assets 下全部 .js / .css 的 gzip 之和（含按需加载的分包、字体声明）；
  *   · fonts = 全部 .woff2 的原始字节（已压缩，不再 gzip；按 unicode-range 用到哪片才下载哪片）。
  * 超出预算即非零退出。`--report` 只打印不判定（测基线用）。
  * 预算的来源与调整规则见 README「体积预算」。
@@ -12,7 +12,7 @@ import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
-const DIST = 'dist';
+const DIST = 'dist/app';
 const KB = 1024;
 /* 单位 KiB。调高前先看清楚是谁变大了（vite build 的输出表 + 本脚本的明细） */
 const BUDGET = {
