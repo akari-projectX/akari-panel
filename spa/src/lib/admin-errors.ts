@@ -296,6 +296,8 @@ export const ADMIN_CODES: Record<string, string> = {
   "settings.fallback_url_invalid": "备用下载地址：必须是含 {arch} 的 https:// 地址，不能有引号、空格或 shell 特殊字符",
   "settings.host_gate":
     "保存后面板只接受主域名/订阅域名（以及 IP 地址）的访问，当前访问地址 {host} 将被拒绝。请确认主域名已解析并能打开，再勾选确认后保存。",
+  "cleanup.after_days_range": "未使用天数须为 1–3650",
+  "cleanup.warn_days_range": "提醒后等待天数须为 1–90",
   "settings.domain_conflict": "{domain} 不能同时是{a}和{b}（一个域名只能有一种用途）",
   "settings.domain_duplicate": "{kind}：{domain} 重复",
   "settings.domain_removal_unconfirmed": "删除域名 {domains} 前需要先确认影响",
@@ -365,6 +367,9 @@ export const ADMIN_CODES: Record<string, string> = {
   "user.email_exists": "已有其他账户使用这个邮箱",
   "user.has_plan": "该用户有生效中的套餐：请先取消套餐，再设为管理员",
   "user.delete_confirm_required": "删除用户前需要先确认影响（余额、提现、订单、套餐）",
+  "user.bulk_delete_changed": "删除范围已变化：请重新预览数量后再确认",
+  "user.bulk_delete_too_many": "一次最多删除 {max} 个账号：请缩小范围",
+  "user.date_filter_invalid": "{field}：日期格式应为 YYYY-MM-DD",
   "user.erase_admin": "管理员账号不能注销：请先降级",
   "user.erased": "该账号已注销（匿名化保留），不能再修改",
   "user.owner_already": "该账号已经是所有者",

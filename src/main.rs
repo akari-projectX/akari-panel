@@ -300,6 +300,7 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
         tokio::spawn(akari_panel::alerts::run(state.clone())),
         tokio::spawn(akari_panel::updatecheck::auto_loop(state.clone())),
         tokio::spawn(akari_panel::batch::run_loop(state.clone())),
+        tokio::spawn(akari_panel::cleanup::run_loop(state.clone())),
         tokio::spawn(akari_panel::sysstatus::heartbeat_loop(state.clone())),
     ];
 

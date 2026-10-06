@@ -40,8 +40,10 @@ use crate::state::AppState;
 pub enum Why {
     /// The account holder (`POST /me/delete`).
     SelfService,
-    /// D10: never used (`cleanup.rs`).
+    /// D10: never used (`cleanup.rs`, the automatic cleanup).
     NeverUsed,
+    /// D10: the console's bulk deletion (`cleanup.rs`).
+    Bulk,
 }
 
 impl Why {
@@ -49,6 +51,7 @@ impl Why {
         match self {
             Why::SelfService => "self_service",
             Why::NeverUsed => "never_used",
+            Why::Bulk => "bulk",
         }
     }
 }

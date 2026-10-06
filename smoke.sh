@@ -474,6 +474,37 @@ LJAR="$LOG/leaving-cookies"
     -d '{"email":"smoke-leaving@smoke.test","password":"leaving-password-1"}')" = "401" ] || { echo "FAIL: a deleted account signs in"; exit 1; }
 echo "self-service deletion: ok"
 
+echo "== D10: never-used accounts: filters, bulk deletion with confirmation, automatic cleanup =="
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+    -d '{"email":"smoke-idle@smoke.test","password":"idle-password-123"}')" = "201" ] || { echo "FAIL: create idle user"; exit 1; }
+IDLE=$(last_json "d['id']")
+psql_q "UPDATE users SET created_at = now() - interval '40 days' WHERE id = '$IDLE'" >/dev/null
+BEFORE=$(date -u -d '-30 days' +%F)
+[ "$(code -b "$JAR" "$BASE/api/v1/users?never_used=true&registered_before=$BEFORE")" = "200" ] \
+  && last_json "[u['id'] for u in d['users']] == ['$IDLE']" | matches '^True$' \
+  || { echo "FAIL: never-used filter: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/users?registered_before=yesterday")" = "400" ] || { echo "FAIL: bad day filter"; exit 1; }
+SEL="{\"filter\":{\"never_used\":true,\"registered_before\":\"$BEFORE\"}}"
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/delete/preview" -H 'Content-Type: application/json' -d "{\"selection\":$SEL}")" = "200" ] \
+  && last_json "d['deletable'] == 1 and d['anonymized'] == 0" | matches '^True$' || { echo "FAIL: bulk delete preview: $(cat /tmp/akari-smoke/last)"; exit 1; }
+CTOK=$(last_json "d['confirm_token']")
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/delete" -H 'Content-Type: application/json' -d "{\"selection\":$SEL,\"confirm_token\":\"x\"}")" = "409" ] \
+  || { echo "FAIL: bulk delete without the preview's token"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/delete" -H 'Content-Type: application/json' -d "{\"selection\":$SEL,\"confirm_token\":\"$CTOK\"}")" = "200" ] \
+  && last_json "d == {'deleted': 1, 'anonymized': 0, 'failed': 0}" | matches '^True$' || { echo "FAIL: bulk delete: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM users WHERE id = '$IDLE'")" = "0" ] || { echo "FAIL: bulk-deleted account still there"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/cleanup")" = "200" ] \
+  && last_json "d['auto'] is False and d['after_days'] == 30 and d['warn'] is False and d['version'] == 0" | matches '^True$' \
+  || { echo "FAIL: cleanup settings defaults: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/cleanup" -H 'Content-Type: application/json' \
+    -d '{"version":0,"auto":false,"after_days":45,"warn":true,"warn_days":5}')" = "200" ] \
+  && last_json "d['after_days'] == 45 and d['warn_days'] == 5 and d['version'] == 1" | matches '^True$' \
+  || { echo "FAIL: cleanup settings: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.cleanup.update'")" = "1" ] || { echo "FAIL: cleanup settings not audited"; exit 1; }
+# A sign-in is recorded (and clears a cleanup warning).
+[ -n "$(psql_q "SELECT last_login_at FROM users WHERE email = 'root@smoke.test'")" ] || { echo "FAIL: last_login_at not recorded"; exit 1; }
+echo "never-used accounts: ok"
+
 echo "== D1/D7: email login, no second factor =="
 last_json "d['email'] == 'root@smoke.test' and 'login' not in d and 'stage' not in d" | matches '^True$' \
   || { echo "FAIL: login response shape"; cat /tmp/akari-smoke/last; exit 1; }

@@ -97,6 +97,7 @@ fn inner_router(state: AppState) -> Router {
         .merge(crate::passkey::routes())
         .merge(crate::owner::routes())
         .merge(crate::erase::routes())
+        .merge(crate::cleanup::routes())
         .merge(crate::mail::routes())
         // W22: traffic history (admin + /me/traffic).
         .merge(crate::trafficlog::routes())

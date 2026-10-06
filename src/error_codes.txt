@@ -105,6 +105,8 @@ branding.too_many_downloads
 branding.too_many_links
 branding.url_invalid
 branding.version_conflict
+cleanup.after_days_range
+cleanup.warn_days_range
 coupon.below_minimum
 coupon.expired
 coupon.invalid
@@ -414,6 +416,9 @@ user.admin_no_subscription
 user.ban_reason_required
 user.ban_reason_too_long
 user.ban_self
+user.bulk_delete_changed
+user.bulk_delete_too_many
+user.date_filter_invalid
 user.delete_confirm_required
 user.email_exists
 user.erase_admin
