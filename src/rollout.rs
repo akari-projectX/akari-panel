@@ -1,23 +1,23 @@
 //! M6 staged rollout of agent releases.
 //!
-//! A rollout targets one version and a fixed node selection, chosen at
-//! creation: all enrolled nodes not being deleted, or an explicit list, cut
+//! A rollout targets one version and a fixed server selection, chosen at
+//! creation: all enrolled servers not being deleted, or an explicit list, cut
 //! to `percentage` and split into cumulative `waves`, both in a
-//! deterministic order (SHA-256 of the rollout's seed and the node id, see
-//! `assign_waves`). Rows live in `rollout_nodes` (migration 0021).
+//! deterministic order (SHA-256 of the rollout's seed and the server id, see
+//! `assign_waves`). Rows live in `rollout_servers` (migration 0021).
 //!
-//! Node states: pending -> offered (an UpdateOffer went out on its stream)
+//! Server states: pending -> offered (an UpdateOffer went out on its stream)
 //! -> updating (Hello with the target version) -> healthy (an ok Ack on that
 //! stream: `on_converged`). failed: the agent reported REJECTED / FAILED /
 //! ROLLED_BACK, or no health within `health_timeout_secs` of the first
 //! offer. skipped: never offerable (agent protocol < 3, no artifact for its
-//! platform, offline for the whole timeout after its wave started, node
-//! being deleted). A node already at/above the target is healthy at once.
+//! platform, offline for the whole timeout after its wave started, server
+//! being deleted). A server already at/above the target is healthy at once.
 //!
 //! Rollout states: running -> paused (admin; no new offers) -> running;
 //! running -> halted (system: failed / (healthy + failed) > ratio) ->
 //! aborted (admin); running -> completed (system: all waves terminal). The
-//! next wave starts once every node of the current one is terminal. At most
+//! next wave starts once every server of the current one is terminal. At most
 //! one open (running/paused/halted) rollout exists (unique index).
 //!
 //! Every transition is audited in its own transaction: admin actions with
@@ -84,17 +84,17 @@ fn ceil_pct(n: usize, pct: i32) -> usize {
     (n * pct.clamp(0, 100) as usize).div_ceil(100)
 }
 
-/// Deterministic selection: nodes ordered by SHA-256(seed BE ‖ node id),
+/// Deterministic selection: servers ordered by SHA-256(seed BE ‖ server id),
 /// the first `percentage`% (rounded up, at least one) kept, each assigned
 /// to the first wave whose cumulative share (rounded up) covers its
-/// position. Returns (node, wave, position) in order.
+/// position. Returns (server, wave, position) in order.
 pub fn assign_waves(
     seed: i64,
-    nodes: &[Uuid],
+    servers: &[Uuid],
     percentage: i32,
     waves: &[i32],
 ) -> Vec<(Uuid, i32, i32)> {
-    let mut keyed: Vec<([u8; 32], Uuid)> = nodes
+    let mut keyed: Vec<([u8; 32], Uuid)> = servers
         .iter()
         .map(|n| {
             let mut h = Sha256::new();
@@ -140,7 +140,7 @@ pub fn update_due(running: &str, target: &str, rollback: bool) -> bool {
     }
 }
 
-/// What a pending node of an active wave becomes now (None = stays
+/// What a pending server of an active wave becomes now (None = stays
 /// pending until it is offered).
 #[derive(Debug, PartialEq, Eq)]
 pub enum PendingOutcome {
@@ -157,13 +157,13 @@ pub struct PendingNode<'a> {
     pub has_artifact: bool,
     /// The target release is a signed rollback target.
     pub rollback: bool,
-    /// The node's wave started more than the health timeout ago.
+    /// The server's wave started more than the health timeout ago.
     pub wave_timed_out: bool,
 }
 
 pub fn classify_pending(target: &str, n: &PendingNode) -> Option<PendingOutcome> {
     if n.deleting {
-        return Some(PendingOutcome::Skipped("node being deleted".into()));
+        return Some(PendingOutcome::Skipped("server being deleted".into()));
     }
     if let Some(v) = n.agent_version
         && !update_due(v, target, n.rollback)
@@ -174,7 +174,7 @@ pub fn classify_pending(target: &str, n: &PendingNode) -> Option<PendingOutcome>
     if n.online {
         if let Some(p) = n.protocol.filter(|p| *p < MIN_UPDATE_PROTOCOL as i32) {
             return Some(PendingOutcome::Skipped(format!(
-                "agent protocol {p} < {MIN_UPDATE_PROTOCOL}: update this node by hand"
+                "agent protocol {p} < {MIN_UPDATE_PROTOCOL}: update this server by hand"
             )));
         }
         if let Some(v) = n.agent_version.filter(|v| parse_version(v).is_none()) {
@@ -206,8 +206,8 @@ pub struct CreateRolloutReq {
     pub version: String,
     /// Share of the selection to update (1..=100). Default 100.
     pub percentage: Option<i32>,
-    /// Explicit node selection (default: every enrolled node).
-    pub node_ids: Option<Vec<Uuid>>,
+    /// Explicit server selection (default: every enrolled server).
+    pub server_ids: Option<Vec<Uuid>>,
     /// Cumulative wave percentages. Default [100].
     pub waves: Option<Vec<i32>>,
     pub health_timeout_secs: Option<i32>,
@@ -221,7 +221,7 @@ pub struct RolloutView {
     status: String,
     waves: Vec<i32>,
     percentage: i32,
-    explicit_nodes: bool,
+    explicit_servers: bool,
     current_wave: i32,
     wave_started_at: DateTime<Utc>,
     health_timeout_secs: i32,
@@ -231,20 +231,20 @@ pub struct RolloutView {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     finished_at: Option<DateTime<Utc>>,
-    /// Node count per status.
+    /// Server count per status.
     counts: serde_json::Value,
 }
 
 const ROLLOUT_VIEW_SQL: &str = "SELECT r.id, r.version, r.status, r.waves, r.percentage, \
-     r.explicit_nodes, r.current_wave, r.wave_started_at, r.health_timeout_secs, \
+     r.explicit_servers, r.current_wave, r.wave_started_at, r.health_timeout_secs, \
      r.max_failure_ratio, r.halted_reason, r.created_by, r.created_at, r.updated_at, \
      r.finished_at, COALESCE((SELECT jsonb_object_agg(s, c) FROM (SELECT status AS s, \
-     count(*) AS c FROM rollout_nodes WHERE rollout_id = r.id GROUP BY status) x), '{}') AS counts \
+     count(*) AS c FROM rollout_servers WHERE rollout_id = r.id GROUP BY status) x), '{}') AS counts \
      FROM rollouts r";
 
 #[derive(Serialize, sqlx::FromRow)]
-pub struct RolloutNodeView {
-    node_id: Uuid,
+pub struct RolloutServerView {
+    server_id: Uuid,
     name: String,
     wave: i32,
     position: i32,
@@ -260,7 +260,7 @@ pub struct RolloutNodeView {
 pub struct RolloutDetail {
     #[serde(flatten)]
     rollout: RolloutView,
-    nodes: Vec<RolloutNodeView>,
+    servers: Vec<RolloutServerView>,
 }
 
 async fn rollout_view(conn: &mut PgConnection, id: Uuid) -> Result<RolloutView, ApiError> {
@@ -294,16 +294,16 @@ pub async fn get_rollout(
     user.require_admin()?;
     let mut conn = state.pg().acquire().await?;
     let rollout = rollout_view(&mut conn, id).await?;
-    let nodes = sqlx::query_as::<_, RolloutNodeView>(
-        "SELECT rn.node_id, n.name, rn.wave, rn.position, rn.status, rn.from_version, \
+    let servers = sqlx::query_as::<_, RolloutServerView>(
+        "SELECT rn.server_id, n.name, rn.wave, rn.position, rn.status, rn.from_version, \
          n.agent_version, rn.offered_at, rn.finished_at, rn.detail \
-         FROM rollout_nodes rn JOIN nodes n ON n.id = rn.node_id \
+         FROM rollout_servers rn JOIN servers n ON n.id = rn.server_id \
          WHERE rn.rollout_id = $1 ORDER BY rn.position",
     )
     .bind(id)
     .fetch_all(&mut *conn)
     .await?;
-    Ok(Json(RolloutDetail { rollout, nodes }))
+    Ok(Json(RolloutDetail { rollout, servers }))
 }
 
 /// POST /rollouts.
@@ -368,13 +368,13 @@ pub async fn apply_create_rollout(
             "another rollout is open: finish or abort it first"
         ));
     }
-    let eligible: Vec<Uuid> = match &req.node_ids {
+    let eligible: Vec<Uuid> = match &req.server_ids {
         Some(ids) => {
             let mut ids = ids.clone();
             ids.sort();
             ids.dedup();
             let found: Vec<Uuid> = sqlx::query_scalar(
-                "SELECT id FROM nodes WHERE id = ANY($1) AND deleting_at IS NULL \
+                "SELECT id FROM servers WHERE id = ANY($1) AND deleting_at IS NULL \
                  AND cert_serial IS NOT NULL ORDER BY id",
             )
             .bind(&ids)
@@ -383,14 +383,14 @@ pub async fn apply_create_rollout(
             if found.len() != ids.len() {
                 return Err(bad_request!(
                     "rollout.bad_node",
-                    "node_ids: unknown, unenrolled or deleting node"
+                    "server_ids: unknown, unenrolled or deleting server"
                 ));
             }
             found
         }
         None => {
             sqlx::query_scalar(
-                "SELECT id FROM nodes WHERE deleting_at IS NULL AND cert_serial IS NOT NULL \
+                "SELECT id FROM servers WHERE deleting_at IS NULL AND cert_serial IS NOT NULL \
                  ORDER BY id",
             )
             .fetch_all(&mut *conn)
@@ -400,14 +400,14 @@ pub async fn apply_create_rollout(
     if eligible.is_empty() {
         return Err(bad_request!(
             "rollout.no_nodes",
-            "no enrolled node to update"
+            "no enrolled server to update"
         ));
     }
     let id = Uuid::new_v4();
     let seed: i64 = rand::random();
     let plan = assign_waves(seed, &eligible, percentage, &waves);
     sqlx::query(
-        "INSERT INTO rollouts (id, version, status, waves, percentage, explicit_nodes, \
+        "INSERT INTO rollouts (id, version, status, waves, percentage, explicit_servers, \
          health_timeout_secs, max_failure_ratio, seed, created_by) \
          VALUES ($1, $2, 'running', $3, $4, $5, $6, $7, $8, $9)",
     )
@@ -415,14 +415,14 @@ pub async fn apply_create_rollout(
     .bind(&req.version)
     .bind(&waves)
     .bind(percentage)
-    .bind(req.node_ids.is_some())
+    .bind(req.server_ids.is_some())
     .bind(timeout)
     .bind(ratio)
     .bind(seed)
     .bind(&actor.label)
     .execute(&mut *conn)
     .await?;
-    let (nodes, wv, pos): (Vec<Uuid>, Vec<i32>, Vec<i32>) = plan.iter().fold(
+    let (servers, wv, pos): (Vec<Uuid>, Vec<i32>, Vec<i32>) = plan.iter().fold(
         (Vec::new(), Vec::new(), Vec::new()),
         |(mut a, mut b, mut c), (n, w, p)| {
             a.push(*n);
@@ -432,12 +432,12 @@ pub async fn apply_create_rollout(
         },
     );
     sqlx::query(
-        "INSERT INTO rollout_nodes (rollout_id, node_id, wave, position, from_version) \
+        "INSERT INTO rollout_servers (rollout_id, server_id, wave, position, from_version) \
          SELECT $1, x.n, x.w, x.p, nd.agent_version \
-         FROM unnest($2::uuid[], $3::int[], $4::int[]) AS x(n, w, p) JOIN nodes nd ON nd.id = x.n",
+         FROM unnest($2::uuid[], $3::int[], $4::int[]) AS x(n, w, p) JOIN servers nd ON nd.id = x.n",
     )
     .bind(id)
-    .bind(&nodes)
+    .bind(&servers)
     .bind(&wv)
     .bind(&pos)
     .execute(&mut *conn)
@@ -452,7 +452,7 @@ pub async fn apply_create_rollout(
         None,
         Some(json!({
             "version": req.version, "percentage": percentage, "waves": waves,
-            "explicit_nodes": req.node_ids.is_some(), "nodes": nodes.len(),
+            "explicit_servers": req.server_ids.is_some(), "servers": servers.len(),
             "health_timeout_secs": timeout, "max_failure_ratio": ratio,
         })),
     )
@@ -460,11 +460,11 @@ pub async fn apply_create_rollout(
     Ok(id)
 }
 
-/// Wakes the sessions of a wave's pending nodes (on every instance) so they
+/// Wakes the sessions of a wave's pending servers (on every instance) so they
 /// get their offer now rather than at their next reconcile tick.
 async fn wake_wave(conn: &mut PgConnection, id: Uuid, wave: i32) -> sqlx::Result<()> {
     sqlx::query(
-        "SELECT pg_notify('akari_change', node_id::text) FROM rollout_nodes \
+        "SELECT pg_notify('akari_change', server_id::text) FROM rollout_servers \
          WHERE rollout_id = $1 AND wave <= $2 AND status IN ('pending','offered')",
     )
     .bind(id)
@@ -601,7 +601,7 @@ pub async fn abort_rollout(
 
 #[derive(sqlx::FromRow)]
 struct PendingRow {
-    node_id: Uuid,
+    server_id: Uuid,
     online: bool,
     deleting: bool,
     agent_protocol: Option<i32>,
@@ -613,7 +613,7 @@ struct PendingRow {
     wave_timed_out: bool,
 }
 
-/// A node counts as online if a session refreshed it this recently.
+/// A server counts as online if a session refreshed it this recently.
 const ONLINE_FRESH_SECS: f64 = 90.0;
 
 /// Advances every running rollout one step. Each rollout in its own
@@ -646,9 +646,9 @@ pub async fn tick_one(conn: &mut PgConnection, id: Uuid) -> anyhow::Result<()> {
     if status != "running" {
         return Ok(());
     }
-    // 1. Offered nodes past the health timeout fail.
+    // 1. Offered servers past the health timeout fail.
     sqlx::query(
-        "UPDATE rollout_nodes SET status = 'failed', finished_at = now(), \
+        "UPDATE rollout_servers SET status = 'failed', finished_at = now(), \
          detail = 'no healthy reconnect with the new version within ' || $2 || ' s' \
          WHERE rollout_id = $1 AND status IN ('offered','updating') \
          AND offered_at < now() - make_interval(secs => $2)",
@@ -657,9 +657,9 @@ pub async fn tick_one(conn: &mut PgConnection, id: Uuid) -> anyhow::Result<()> {
     .bind(timeout as f64)
     .execute(&mut *conn)
     .await?;
-    // 2. Pending nodes of active waves that can be settled without an offer.
+    // 2. Pending servers of active waves that can be settled without an offer.
     let pending: Vec<PendingRow> = sqlx::query_as(
-        "SELECT rn.node_id, \
+        "SELECT rn.server_id, \
            (n.status = 'online' AND n.last_seen_at > now() - make_interval(secs => $4)) AS online, \
            n.deleting_at IS NOT NULL AS deleting, n.agent_protocol, n.agent_version, \
            n.agent_os, n.agent_arch, \
@@ -668,7 +668,7 @@ pub async fn tick_one(conn: &mut PgConnection, id: Uuid) -> anyhow::Result<()> {
            EXISTS (SELECT 1 FROM agent_releases a WHERE a.version = $2 AND a.rollback) AS rollback, \
            (SELECT wave_started_at FROM rollouts WHERE id = $1) < now() - make_interval(secs => $3) \
              AS wave_timed_out \
-         FROM rollout_nodes rn JOIN nodes n ON n.id = rn.node_id \
+         FROM rollout_servers rn JOIN servers n ON n.id = rn.server_id \
          WHERE rn.rollout_id = $1 AND rn.status = 'pending' AND rn.wave <= $5",
     )
     .bind(id)
@@ -699,11 +699,11 @@ pub async fn tick_one(conn: &mut PgConnection, id: Uuid) -> anyhow::Result<()> {
             Some(PendingOutcome::Skipped(d)) => ("skipped", d),
         };
         sqlx::query(
-            "UPDATE rollout_nodes SET status = $3, detail = $4, finished_at = now() \
-             WHERE rollout_id = $1 AND node_id = $2 AND status = 'pending'",
+            "UPDATE rollout_servers SET status = $3, detail = $4, finished_at = now() \
+             WHERE rollout_id = $1 AND server_id = $2 AND status = 'pending'",
         )
         .bind(id)
-        .bind(p.node_id)
+        .bind(p.server_id)
         .bind(st)
         .bind(detail)
         .execute(&mut *conn)
@@ -714,7 +714,7 @@ pub async fn tick_one(conn: &mut PgConnection, id: Uuid) -> anyhow::Result<()> {
         "SELECT count(*) FILTER (WHERE status = 'healthy'), \
                 count(*) FILTER (WHERE status = 'failed'), \
                 count(*) FILTER (WHERE wave <= $2 AND status IN ('pending','offered','updating')) \
-         FROM rollout_nodes WHERE rollout_id = $1",
+         FROM rollout_servers WHERE rollout_id = $1",
     )
     .bind(id)
     .bind(wave)
@@ -798,13 +798,13 @@ pub async fn tick_one(conn: &mut PgConnection, id: Uuid) -> anyhow::Result<()> {
 // Session hooks (grpc.rs)
 // ---------------------------------------------------------------------------
 
-/// The offer for this node, if its wave of a running rollout is active, it
+/// The offer for this server, if its wave of a running rollout is active, it
 /// is pending/offered, its agent speaks protocol >= 3 and runs an older
 /// version, and a complete release exists for its platform. Marks the row
 /// offered (the health timeout runs from the FIRST offer).
 pub async fn offer_for(
     pg: &sqlx::PgPool,
-    node: Uuid,
+    server: Uuid,
     protocol: u32,
     agent_version: &str,
     platform: (&str, &str),
@@ -815,13 +815,13 @@ pub async fn offer_for(
     type R = (Uuid, String, Vec<u8>, serde_json::Value, bool);
     let row: Option<R> = sqlx::query_as(
         "SELECT r.id, r.version, a.manifest, a.signatures, a.rollback \
-         FROM rollout_nodes rn JOIN rollouts r ON r.id = rn.rollout_id \
+         FROM rollout_servers rn JOIN rollouts r ON r.id = rn.rollout_id \
          JOIN agent_releases a ON a.version = r.version AND a.os = $2 AND a.arch = $3 \
               AND a.complete_at IS NOT NULL \
-         WHERE rn.node_id = $1 AND r.status = 'running' AND rn.wave <= r.current_wave \
+         WHERE rn.server_id = $1 AND r.status = 'running' AND rn.wave <= r.current_wave \
            AND rn.status IN ('pending','offered')",
     )
-    .bind(node)
+    .bind(server)
     .bind(platform.0)
     .bind(platform.1)
     .fetch_optional(pg)
@@ -835,28 +835,28 @@ pub async fn offer_for(
     }
     let sigs: Vec<crate::updates::Signature> = serde_json::from_value(sigs).unwrap_or_default();
     sqlx::query(
-        "UPDATE rollout_nodes SET status = 'offered', offered_at = COALESCE(offered_at, now()), \
-         detail = 'offered' WHERE rollout_id = $1 AND node_id = $2 AND status IN ('pending','offered')",
+        "UPDATE rollout_servers SET status = 'offered', offered_at = COALESCE(offered_at, now()), \
+         detail = 'offered' WHERE rollout_id = $1 AND server_id = $2 AND status IN ('pending','offered')",
     )
     .bind(rollout)
-    .bind(node)
+    .bind(server)
     .execute(pg)
     .await?;
     Ok(Some(crate::updates::offer(rollout, manifest, &sigs)))
 }
 
-/// Hello with `version`: an offered node of an open rollout targeting it is
+/// Hello with `version`: an offered server of an open rollout targeting it is
 /// now updating. Returns whether this stream should report health
 /// (`on_converged`).
-pub async fn on_hello(pg: &sqlx::PgPool, node: Uuid, version: &str) -> sqlx::Result<bool> {
+pub async fn on_hello(pg: &sqlx::PgPool, server: Uuid, version: &str) -> sqlx::Result<bool> {
     let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "WITH u AS (UPDATE rollout_nodes rn SET status = 'updating', \
+        "WITH u AS (UPDATE rollout_servers rn SET status = 'updating', \
            detail = 'reconnected with ' || $2 \
          FROM rollouts r WHERE r.id = rn.rollout_id AND r.status IN {OPEN} \
-           AND rn.node_id = $1 AND r.version = $2 AND rn.status IN ('offered','updating') \
+           AND rn.server_id = $1 AND r.version = $2 AND rn.status IN ('offered','updating') \
          RETURNING 1) SELECT count(*) FROM u"
     )))
-    .bind(node)
+    .bind(server)
     .bind(version)
     .fetch_one(pg)
     .await?;
@@ -864,14 +864,14 @@ pub async fn on_hello(pg: &sqlx::PgPool, node: Uuid, version: &str) -> sqlx::Res
 }
 
 /// An ok Ack on a stream whose Hello carried `version`: healthy.
-pub async fn on_converged(pg: &sqlx::PgPool, node: Uuid, version: &str) -> sqlx::Result<bool> {
+pub async fn on_converged(pg: &sqlx::PgPool, server: Uuid, version: &str) -> sqlx::Result<bool> {
     let r = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "UPDATE rollout_nodes rn SET status = 'healthy', finished_at = now(), \
+        "UPDATE rollout_servers rn SET status = 'healthy', finished_at = now(), \
            detail = 'healthy on ' || $2 \
          FROM rollouts r WHERE r.id = rn.rollout_id AND r.status IN {OPEN} \
-           AND rn.node_id = $1 AND r.version = $2 AND rn.status IN ('offered','updating')"
+           AND rn.server_id = $1 AND r.version = $2 AND rn.status IN ('offered','updating')"
     )))
-    .bind(node)
+    .bind(server)
     .bind(version)
     .execute(pg)
     .await?;
@@ -881,7 +881,7 @@ pub async fn on_converged(pg: &sqlx::PgPool, node: Uuid, version: &str) -> sqlx:
 /// An UpdateStatus from the agent.
 pub async fn on_status(
     pg: &sqlx::PgPool,
-    node: Uuid,
+    server: Uuid,
     s: &crate::pb::UpdateStatus,
 ) -> sqlx::Result<()> {
     use crate::pb::update_status::State;
@@ -893,7 +893,7 @@ pub async fn on_status(
     let (terminal, label, from): (bool, &str, &str) = match state {
         State::Rejected => (true, "rejected", "('pending','offered','updating')"),
         State::Failed => (true, "failed", "('pending','offered','updating')"),
-        // The node really runs the old binary again, whatever we concluded.
+        // The server really runs the old binary again, whatever we concluded.
         State::RolledBack => (
             true,
             "rolled back",
@@ -915,24 +915,24 @@ pub async fn on_status(
         ""
     };
     sqlx::query(sqlx::AssertSqlSafe(format!(
-        "UPDATE rollout_nodes rn SET {set} detail = $3 FROM rollouts r \
-         WHERE r.id = rn.rollout_id AND rn.rollout_id = $1 AND rn.node_id = $2 \
+        "UPDATE rollout_servers rn SET {set} detail = $3 FROM rollouts r \
+         WHERE r.id = rn.rollout_id AND rn.rollout_id = $1 AND rn.server_id = $2 \
            AND r.version = $4 AND r.status IN {OPEN} AND rn.status IN {from}"
     )))
     .bind(rollout)
-    .bind(node)
+    .bind(server)
     .bind(detail)
     .bind(&s.version)
     .execute(pg)
     .await?;
     if terminal {
-        tracing::warn!(node = %node, rollout = %rollout, version = %s.version, state = label, error = %err, "agent update failed");
+        tracing::warn!(server = %server, rollout = %rollout, version = %s.version, state = label, error = %err, "agent update failed");
     }
     Ok(())
 }
 
 /// W18: what the admin can do about a failed update (shown in the rollout
-/// and node views).
+/// and server views).
 pub(crate) fn failure_hint(err: &str) -> &'static str {
     if err.contains("updater unit missing") || err.contains("did not pick up the request") {
         " — 节点缺少更新服务（akari-agent-update）：请在节点上重新运行一次安装命令（重装命令）"
@@ -951,7 +951,7 @@ mod tests {
     #[test]
     fn failure_hints_name_the_reinstall() {
         for e in [
-            "updater unit missing (akari-agent-update.path): run the panel's install command (重装命令) once on this node",
+            "updater unit missing (akari-agent-update.path): run the panel's install command (重装命令) once on this server",
             "switch to v0.4.0: the updater did not pick up the request (is akari-agent-update.path enabled? ...)",
             "switch to v0.4.0: permission denied",
         ] {
@@ -967,9 +967,9 @@ mod tests {
 
     #[test]
     fn waves_are_deterministic_and_cumulative() {
-        let nodes = ids(100);
-        let a = assign_waves(42, &nodes, 100, &[10, 50, 100]);
-        let mut shuffled = nodes.clone();
+        let servers = ids(100);
+        let a = assign_waves(42, &servers, 100, &[10, 50, 100]);
+        let mut shuffled = servers.clone();
         shuffled.reverse();
         assert_eq!(
             a,
@@ -978,7 +978,7 @@ mod tests {
         );
         assert_ne!(
             a.iter().map(|x| x.0).collect::<Vec<_>>(),
-            assign_waves(43, &nodes, 100, &[10, 50, 100])
+            assign_waves(43, &servers, 100, &[10, 50, 100])
                 .iter()
                 .map(|x| x.0)
                 .collect::<Vec<_>>(),
@@ -992,10 +992,10 @@ mod tests {
                 .all(|p| p[0].1 <= p[1].1 && p[0].2 + 1 == p[1].2)
         );
         // Percentage: a prefix of the same order.
-        let p30 = assign_waves(42, &nodes, 30, &[100]);
+        let p30 = assign_waves(42, &servers, 30, &[100]);
         assert_eq!(p30.len(), 30);
         assert!(p30.iter().zip(&a).all(|(x, y)| x.0 == y.0));
-        // Rounding up: 3 nodes at 10% -> one node, first wave non-empty.
+        // Rounding up: 3 servers at 10% -> one server, first wave non-empty.
         let small = assign_waves(7, &ids(3), 10, &[50, 100]);
         assert_eq!(small.len(), 1);
         assert_eq!(small[0].1, 0);
@@ -1136,11 +1136,11 @@ mod db_tests {
         c
     }
 
-    /// An enrolled, online node running `version` at `protocol`.
-    async fn agent_node(db: &TestDb, version: &str, protocol: i32) -> Uuid {
-        let id = db.node().await;
+    /// An enrolled, online server running `version` at `protocol`.
+    async fn agent_server(db: &TestDb, version: &str, protocol: i32) -> Uuid {
+        let id = db.server().await;
         sqlx::query(
-            "UPDATE nodes SET cert_serial = $2, status = 'online', last_seen_at = now(), \
+            "UPDATE servers SET cert_serial = $2, status = 'online', last_seen_at = now(), \
              agent_version = $3, agent_protocol = $4, agent_os = 'linux', agent_arch = 'amd64' \
              WHERE id = $1",
         )
@@ -1189,7 +1189,7 @@ mod db_tests {
         CreateRolloutReq {
             version: version.into(),
             percentage: None,
-            node_ids: None,
+            server_ids: None,
             waves: None,
             health_timeout_secs: None,
             max_failure_ratio: None,
@@ -1202,12 +1202,12 @@ mod db_tests {
         tx.commit().await.unwrap();
     }
 
-    async fn node_status(db: &TestDb, id: Uuid, node: Uuid) -> String {
+    async fn server_status(db: &TestDb, id: Uuid, server: Uuid) -> String {
         sqlx::query_scalar(
-            "SELECT status FROM rollout_nodes WHERE rollout_id = $1 AND node_id = $2",
+            "SELECT status FROM rollout_servers WHERE rollout_id = $1 AND server_id = $2",
         )
         .bind(id)
-        .bind(node)
+        .bind(server)
         .fetch_one(&db.pool)
         .await
         .unwrap()
@@ -1298,8 +1298,8 @@ mod db_tests {
         assert_eq!(audits(&db, "agent_release.create").await, 1);
         assert_eq!(audits(&db, "agent_release.upload").await, 1);
 
-        let n3 = agent_node(&db, "v1.0.0", 3).await;
-        let n2 = agent_node(&db, "v1.0.0", 2).await;
+        let n3 = agent_server(&db, "v1.0.0", 3).await;
+        let n2 = agent_server(&db, "v1.0.0", 2).await;
         let r = c
             .post(
                 "/test/api/v1/rollouts",
@@ -1345,29 +1345,29 @@ mod db_tests {
         assert_eq!(o.panel_protocol, crate::updates::PANEL_PROTOCOL);
         let m = crate::updates::parse_manifest(&o.manifest).unwrap();
         assert_eq!(m.version, "v1.1.0");
-        assert_eq!(node_status(&db, id, n3).await, "offered");
+        assert_eq!(server_status(&db, id, n3).await, "offered");
         tick_db(&db, id).await;
-        assert_eq!(node_status(&db, id, n2).await, "skipped");
+        assert_eq!(server_status(&db, id, n2).await, "skipped");
         assert_eq!(status(&db, id).await, "running");
 
         // Comes back with the new version, acks: healthy.
         assert!(on_hello(&db.pool, n3, "v1.1.0").await.unwrap());
-        assert_eq!(node_status(&db, id, n3).await, "updating");
+        assert_eq!(server_status(&db, id, n3).await, "updating");
         assert!(on_converged(&db.pool, n3, "v1.1.0").await.unwrap());
-        assert_eq!(node_status(&db, id, n3).await, "healthy");
+        assert_eq!(server_status(&db, id, n3).await, "healthy");
         tick_db(&db, id).await;
         assert_eq!(status(&db, id).await, "completed");
         assert_eq!(audits(&db, "rollout.create").await, 1);
         assert_eq!(audits(&db, "rollout.complete").await, 1);
-        // Completed: no more offers; the node view shows the outcome.
+        // Completed: no more offers; the server view shows the outcome.
         assert!(
             offer_for(&db.pool, n3, 3, "v1.0.0", ("linux", "amd64"))
                 .await
                 .unwrap()
                 .is_none()
         );
-        let nodes = c.get("/test/api/v1/nodes").await.json();
-        let v = nodes
+        let servers = c.get("/test/api/v1/servers").await.json();
+        let v = servers
             .as_array()
             .unwrap()
             .iter()
@@ -1376,12 +1376,12 @@ mod db_tests {
         assert_eq!(v["update_status"]["status"], "healthy");
         assert_eq!(v["agent_arch"], "amd64");
         let detail = c.get(&format!("/test/api/v1/rollouts/{id}")).await.json();
-        assert_eq!(detail["nodes"].as_array().unwrap().len(), 2);
+        assert_eq!(detail["servers"].as_array().unwrap().len(), 2);
         assert_eq!(detail["counts"]["healthy"], 1);
         db.drop().await;
     }
 
-    /// W23: after a reinstall (a new enrollment), the node's entry in a
+    /// W23: after a reinstall (a new enrollment), the server's entry in a
     /// finished rollout is history (`superseded`), not its current state;
     /// an open rollout's entry never is.
     #[tokio::test]
@@ -1391,10 +1391,10 @@ mod db_tests {
         };
         let state = AppState::for_test(db.pool.clone()).await;
         let c = admin_client(&state, &db).await;
-        let n = agent_node(&db, "v1.0.0", 6).await;
+        let n = agent_server(&db, "v1.0.0", 6).await;
         let r = Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO rollouts (id, version, status, waves, percentage, explicit_nodes, \
+            "INSERT INTO rollouts (id, version, status, waves, percentage, explicit_servers, \
                health_timeout_secs, max_failure_ratio, seed, created_by, created_at) \
              VALUES ($1, 'v1.1.0', 'halted', '{100}', 100, false, 600, 0, 1, 'test', \
                now() - interval '2 hours')",
@@ -1404,7 +1404,7 @@ mod db_tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO rollout_nodes (rollout_id, node_id, wave, position, status, offered_at, \
+            "INSERT INTO rollout_servers (rollout_id, server_id, wave, position, status, offered_at, \
                finished_at, detail) \
              VALUES ($1, $2, 0, 0, 'failed', now() - interval '2 hours', \
                now() - interval '2 hours', 'failed (v1.1.0): switch to v1.1.0: permission denied')",
@@ -1423,8 +1423,8 @@ mod db_tests {
                     .unwrap()["update_status"]
                     .clone()
             };
-            let full = pick(c.get("/test/api/v1/nodes").await.json());
-            let summary = pick(c.get("/test/api/v1/nodes?view=summary").await.json());
+            let full = pick(c.get("/test/api/v1/servers").await.json());
+            let summary = pick(c.get("/test/api/v1/servers?view=summary").await.json());
             assert_eq!(full, summary);
             full
         }
@@ -1434,7 +1434,7 @@ mod db_tests {
             (Some("failed"), Some(false))
         );
         // Reinstalled while the rollout is still open: still its state.
-        sqlx::query("UPDATE nodes SET enrolled_at = now() - interval '1 hour' WHERE id = $1")
+        sqlx::query("UPDATE servers SET enrolled_at = now() - interval '1 hour' WHERE id = $1")
             .bind(n)
             .execute(&db.pool)
             .await
@@ -1451,9 +1451,9 @@ mod db_tests {
             (v["status"].as_str(), v["superseded"].as_bool()),
             (Some("failed"), Some(true))
         );
-        // An entry newer than the enrollment is the node's state.
+        // An entry newer than the enrollment is the server's state.
         sqlx::query(
-            "UPDATE rollout_nodes SET finished_at = now() - interval '1 minute' WHERE node_id = $1",
+            "UPDATE rollout_servers SET finished_at = now() - interval '1 minute' WHERE server_id = $1",
         )
         .bind(n)
         .execute(&db.pool)
@@ -1481,8 +1481,8 @@ mod db_tests {
             .collect();
         upload(&c, h.state.route_prefix(), &signer, "v2.0.0", &bin).await;
         let sha = hex::encode(Sha256::digest(&bin));
-        let node = db.node().await;
-        let creds = h.register(&db, node).await;
+        let server = db.server().await;
+        let creds = h.register(&db, server).await;
         assert_eq!(h.fetch(Some(&creds), &sha, 0).await.unwrap(), bin);
         let off = crate::updates::CHUNK as u64 + 5;
         assert_eq!(
@@ -1525,8 +1525,8 @@ mod db_tests {
         let listener = crate::notify::start(h.state.clone()).await;
         let c = admin_client(&h.state, &db).await;
         upload(&c, h.state.route_prefix(), &signer, "v1.1.0", b"new agent").await;
-        let node = db.node().await;
-        let creds = h.register(&db, node).await;
+        let server = db.server().await;
+        let creds = h.register(&db, server).await;
         let mut a = h.connect(&creds).await.unwrap();
         a.hello_as((0, 0), String::new(), 3, "v1.0.0").await;
         let snap = a.snapshot().await;
@@ -1551,7 +1551,7 @@ mod db_tests {
         b.ack_snapshot(&snap).await;
         let mut healthy = false;
         for _ in 0..50 {
-            if node_status(&db, id, node).await == "healthy" {
+            if server_status(&db, id, server).await == "healthy" {
                 healthy = true;
                 break;
             }
@@ -1559,8 +1559,8 @@ mod db_tests {
         }
         assert!(
             healthy,
-            "node not healthy: {}",
-            node_status(&db, id, node).await
+            "server not healthy: {}",
+            server_status(&db, id, server).await
         );
         drop(b);
         listener.abort();
@@ -1570,7 +1570,7 @@ mod db_tests {
     }
 
     /// Waves advance only when the current one is terminal; a rollback
-    /// report fails the node, the ratio halts the rollout (audited, system
+    /// report fails the server, the ratio halts the rollout (audited, system
     /// actor), the next wave is never offered; halted can only be aborted.
     #[tokio::test]
     async fn waves_halt_pause_abort_timeout() {
@@ -1584,9 +1584,9 @@ mod db_tests {
             .await;
         let c = admin_client(&state, &db).await;
         upload(&c, "test", &signer, "v1.1.0", b"agent").await;
-        let mut nodes = Vec::new();
+        let mut servers = Vec::new();
         for _ in 0..4 {
-            nodes.push(agent_node(&db, "v1.0.0", 3).await);
+            servers.push(agent_server(&db, "v1.0.0", 3).await);
         }
         let id = create(
             &db,
@@ -1602,7 +1602,7 @@ mod db_tests {
             let pool = db.pool.clone();
             async move {
                 sqlx::query_scalar::<_, i32>(
-                    "SELECT wave FROM rollout_nodes WHERE rollout_id = $1 AND node_id = $2",
+                    "SELECT wave FROM rollout_servers WHERE rollout_id = $1 AND server_id = $2",
                 )
                 .bind(id)
                 .bind(n)
@@ -1613,7 +1613,7 @@ mod db_tests {
         };
         let mut first = Vec::new();
         let mut rest = Vec::new();
-        for n in &nodes {
+        for n in &servers {
             if wave_of(*n).await == 0 {
                 first.push(*n)
             } else {
@@ -1681,7 +1681,7 @@ mod db_tests {
         )
         .await
         .unwrap();
-        assert_eq!(node_status(&db, id, rest[0]).await, "failed");
+        assert_eq!(server_status(&db, id, rest[0]).await, "failed");
         tick_db(&db, id).await;
         assert_eq!(
             status(&db, id).await,
@@ -1689,14 +1689,14 @@ mod db_tests {
             "1 failed / 2 finished is not > 0.5"
         );
         sqlx::query(
-            "UPDATE rollout_nodes SET offered_at = now() - interval '1 hour' WHERE node_id = $1",
+            "UPDATE rollout_servers SET offered_at = now() - interval '1 hour' WHERE server_id = $1",
         )
         .bind(rest[1])
         .execute(&db.pool)
         .await
         .unwrap();
         tick_db(&db, id).await;
-        assert_eq!(node_status(&db, id, rest[1]).await, "failed");
+        assert_eq!(server_status(&db, id, rest[1]).await, "failed");
         assert_eq!(status(&db, id).await, "halted");
         let actor: String =
             sqlx::query_scalar("SELECT actor_label FROM audit_log WHERE action = 'rollout.halt'")
@@ -1730,7 +1730,7 @@ mod db_tests {
         on_status(&db.pool, rest[2], &ustatus(id, "v1.1.0", UState::Failed))
             .await
             .unwrap();
-        assert_eq!(node_status(&db, id, rest[2]).await, "offered");
+        assert_eq!(server_status(&db, id, rest[2]).await, "offered");
         db.drop().await;
     }
 }

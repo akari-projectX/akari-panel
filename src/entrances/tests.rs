@@ -119,7 +119,8 @@ async fn every_node_has_one_direct_entrance() {
     assert_eq!(rows, vec![("direct".into(), "直连".into(), 1000, true)]);
     // A second direct entrance is refused by the schema.
     let e = sqlx::query(
-        "INSERT INTO entrances (id, node_id, kind, name) VALUES (gen_random_uuid(), $1, 'direct', 'x')",
+        "INSERT INTO entrances (id, node_id, server_id, kind, name, wire_no) \
+         VALUES (gen_random_uuid(), $1, $1, 'direct', 'x', 9)",
     )
     .bind(n)
     .execute(&db.pool)
@@ -178,7 +179,13 @@ async fn node_form_entrance_patch_access_and_subscription() {
         String::from_utf8_lossy(&r.body)
     );
     let id: Uuid = r.json()["id"].as_str().unwrap().parse().unwrap();
+    // Q1: no server_id given = a server of its own, named like the node.
+    let server: Uuid = r.json()["server_id"].as_str().unwrap().parse().unwrap();
+    assert_ne!(server, id);
+    assert!(r.json()["enrollment_token"].is_string());
     let node = admin.get(&format!("/test/api/v1/nodes/{id}")).await.json();
+    assert_eq!(node["server_id"], server.to_string());
+    assert_eq!(node["server_name"], "w28-a");
     assert_eq!(
         node["inbound"],
         json!({"protocol": "vless", "port": 443,
@@ -217,7 +224,7 @@ async fn node_form_entrance_patch_access_and_subscription() {
         "{}",
         String::from_utf8_lossy(&r.body)
     );
-    let snap = crate::grpc::desired_snapshot(&db.pool, id)
+    let snap = crate::grpc::desired_snapshot(&db.pool, server)
         .await
         .unwrap()
         .unwrap();
@@ -286,7 +293,7 @@ async fn node_form_entrance_patch_access_and_subscription() {
         .await;
     assert_eq!(r.status, StatusCode::OK);
     assert_ne!(db.versions(id).await.0, before.0, "config_version bumped");
-    let snap = crate::grpc::desired_snapshot(&db.pool, id)
+    let snap = crate::grpc::desired_snapshot(&db.pool, server)
         .await
         .unwrap()
         .unwrap();
@@ -521,7 +528,7 @@ async fn relay_entrance_lifecycle() {
             .unwrap()
     };
     assert_eq!(count().await, 1);
-    let seq: i32 = sqlx::query_scalar("SELECT entrance_seq FROM nodes WHERE id = $1")
+    let seq: i32 = sqlx::query_scalar("SELECT entrance_seq FROM servers WHERE id = $1")
         .bind(n)
         .fetch_one(&db.pool)
         .await

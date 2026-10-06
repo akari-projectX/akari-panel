@@ -988,7 +988,7 @@ pub async fn apply_update_probe(
     let new_iv = effective_probe(cfg, &row).0.interval_secs;
     if new_iv < old_iv {
         sqlx::query(
-            "UPDATE nodes SET panel_probe_next_at = now() + make_interval(secs => $1 * random()) \
+            "UPDATE servers SET panel_probe_next_at = now() + make_interval(secs => $1 * random()) \
              WHERE panel_probe_next_at > now() + make_interval(secs => $1)",
         )
         .bind(new_iv as f64)
@@ -1544,7 +1544,7 @@ pub async fn put_security(
     Ok(Json(view(&state, Vec::new()).await?))
 }
 
-/// A node that may still verify a server name.
+/// A server (agent) that may still verify a gRPC server name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
 pub struct AffectedNode {
     pub id: Uuid,
@@ -1555,16 +1555,17 @@ pub struct AffectedNode {
     pub reason: String,
 }
 
-/// Nodes still using `name` (enrolled with it, or holding a live token
-/// for it). Nodes enrolled before 0060 are listed by `legacy_nodes`.
+/// Servers still using `name` (enrolled with it, or holding a live token
+/// for it). Servers enrolled before 0060 are listed by `legacy_nodes`.
 pub async fn nodes_using(conn: &mut PgConnection, name: &str) -> sqlx::Result<Vec<AffectedNode>> {
     sqlx::query_as(
-        "SELECT id, name, 'enrolled' AS reason FROM nodes \
+        "SELECT id, name, 'enrolled' AS reason FROM servers \
          WHERE deleting_at IS NULL AND cert_serial IS NOT NULL AND server_name = $1 \
          UNION \
-         SELECT n.id, n.name, 'pending' AS reason FROM node_enrollments e JOIN nodes n ON n.id = e.node_id \
+         SELECT s.id, s.name, 'pending' AS reason FROM server_enrollments e \
+         JOIN servers s ON s.id = e.server_id \
          WHERE e.server_name = $1 AND e.used_at IS NULL AND e.expires_at > now() \
-           AND n.deleting_at IS NULL \
+           AND s.deleting_at IS NULL \
          ORDER BY name, reason",
     )
     .bind(name)
@@ -1572,10 +1573,10 @@ pub async fn nodes_using(conn: &mut PgConnection, name: &str) -> sqlx::Result<Ve
     .await
 }
 
-/// Enrolled nodes whose server name is unknown (enrolled before 0060).
+/// Enrolled servers whose server name is unknown (enrolled before 0060).
 pub async fn legacy_nodes(conn: &mut PgConnection) -> sqlx::Result<Vec<AffectedNode>> {
     sqlx::query_as(
-        "SELECT id, name, 'unknown' AS reason FROM nodes \
+        "SELECT id, name, 'unknown' AS reason FROM servers \
          WHERE deleting_at IS NULL AND cert_serial IS NOT NULL AND server_name IS NULL \
          ORDER BY name",
     )

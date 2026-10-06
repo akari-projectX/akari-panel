@@ -2,7 +2,7 @@
 //! turns them into usage.
 //!
 //! Model (REVIEW P0 #2 / P1 #10): memory holds only the highest cumulative
-//! value seen per (node, entrance, user, session) — no pending deltas. The delta is
+//! value seen per (server, entrance, user, session) — no pending deltas. The delta is
 //! computed by PostgreSQL at flush time against the persisted
 //! `traffic_counters` row, in a single statement:
 //!
@@ -50,13 +50,13 @@ const MAX_ROW_FAILURES: u32 = 12;
 /// inflate memory or feed PostgreSQL an invalid TEXT value (NUL).
 const MAX_SESSION_LEN: usize = 128;
 
-/// A node may have at most this many sessions with unpersisted values. A
+/// A server may have at most this many sessions with unpersisted values. A
 /// report opening one more is dropped (warn). Reports for sessions already
 /// in memory are always accepted (e.g. the final report of a rebuilt
-/// instance). With a 5 s flush this admits ~3 new sessions/s per node, far
-/// above legitimate rebuild rates, while bounding what a compromised node
+/// instance). With a 5 s flush this admits ~3 new sessions/s per server, far
+/// above legitimate rebuild rates, while bounding what a compromised server
 /// can make the panel store and bill (REVIEW Phase C F1).
-const MAX_DIRTY_SESSIONS_PER_NODE: usize = 16;
+const MAX_DIRTY_SESSIONS_PER_SERVER: usize = 16;
 
 /// Absolute bound on rows per report (larger reports are dropped whole).
 /// Non-member rows inside an admissible report are dropped one by one, so a
@@ -75,12 +75,12 @@ pub const PLAUSIBLE_SLACK_SECS: i64 = 15;
 /// counted and settled on its own).
 pub type Member = (Uuid, Uuid);
 
-/// (node, member, agent session id). The session id is shared (`Arc<str>`,
-/// interned per node in `NodeIndex.sessions`): building a key on the report
+/// (server, member, agent session id). The session id is shared (`Arc<str>`,
+/// interned per server in `ServerIndex.sessions`): building a key on the report
 /// path is a reference-count bump, not a heap allocation (review 2026-10-02
 /// W3). Not a `Uuid`: the protocol and the acceptance rule
 /// (`valid_session_id`) allow any short string, and the raw text is what
-/// `nodes.agent_session` / `traffic_sessions` compare against.
+/// `servers.agent_session` / `traffic_sessions` compare against.
 type Key = (Uuid, Member, Arc<str>);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,7 +127,7 @@ fn valid_session_id(s: &str) -> bool {
 }
 
 #[derive(Default, Debug)]
-struct NodeIndex {
+struct ServerIndex {
     entries: usize,
     sessions: HashMap<Arc<str>, SessionIndex>,
 }
@@ -143,14 +143,14 @@ struct SessionIndex {
 #[derive(Default)]
 pub struct TrafficBuffer {
     entries: DashMap<Key, Entry>,
-    /// Per-node index of `entries` (counts, per-session users, dirtiness,
+    /// Per-server index of `entries` (counts, per-session users, dirtiness,
     /// recency), so admission, the dirty-session cap and eviction never scan
     /// `entries` (REVIEW Phase C N1).
-    index: DashMap<Uuid, NodeIndex>,
-    /// node -> the counter key the agent reports (`grpc::stat_key`) of
+    index: DashMap<Uuid, ServerIndex>,
+    /// server -> the counter key the agent reports (`grpc::stat_key`) of
     /// every pair it serves (entrance_users of its entrances) -> the pair.
     /// Loaded when an agent session starts and refreshed on every
-    /// notify/reconcile. Reports for nodes without a loaded map, and rows
+    /// notify/reconcile. Reports for servers without a loaded map, and rows
     /// for keys outside it, are dropped before they touch memory (REVIEW
     /// Phase B H1).
     members: DashMap<Uuid, Arc<HashMap<String, Member>>>,
@@ -168,7 +168,7 @@ pub struct TrafficBuffer {
 /// its agents stay connected — no reconnect credit — and their backlog
 /// would be cut to one burst window by the caps. So the instance remembers
 /// when its last full flush succeeded; the first flush after failures
-/// credits the nodes it writes back to that time (see `write_rows`). Only
+/// credits the servers it writes back to that time (see `write_rows`). Only
 /// this process's own failed flushes set `failing`: no agent input can.
 struct FlushHealth {
     /// When the last successful full flush took its snapshot.
@@ -197,7 +197,7 @@ pub const DEFAULT_DEPARTED_GRACE_SECS: u64 = 900;
 
 #[derive(Clone, Debug, PartialEq)]
 struct FlushRow {
-    node_id: Uuid,
+    server_id: Uuid,
     entrance_id: Uuid,
     user_id: Uuid,
     session_id: Arc<str>,
@@ -211,7 +211,7 @@ struct FlushRow {
 impl FlushRow {
     fn key(&self) -> Key {
         (
-            self.node_id,
+            self.server_id,
             (self.entrance_id, self.user_id),
             self.session_id.clone(),
         )
@@ -293,55 +293,55 @@ impl TrafficBuffer {
     }
 
     /// Record a report whose counters belong to `session_id`.
-    pub fn update(&self, node_id: Uuid, session_id: &str, report: &TrafficReport) {
-        self.update_at(node_id, session_id, report, Instant::now());
+    pub fn update(&self, server_id: Uuid, session_id: &str, report: &TrafficReport) {
+        self.update_at(server_id, session_id, report, Instant::now());
     }
 
-    fn update_at(&self, node_id: Uuid, session_id: &str, report: &TrafficReport, now: Instant) {
+    fn update_at(&self, server_id: Uuid, session_id: &str, report: &TrafficReport, now: Instant) {
         if session_id.is_empty() {
-            tracing::warn!(node = %node_id, "traffic report without session_id dropped (agent predates the field; upgrade it)");
+            tracing::warn!(server = %server_id, "traffic report without session_id dropped (agent predates the field; upgrade it)");
             return;
         }
         if !valid_session_id(session_id) {
-            tracing::warn!(node = %node_id, len = session_id.len(), "traffic report with invalid session id dropped");
+            tracing::warn!(server = %server_id, len = session_id.len(), "traffic report with invalid session id dropped");
             return;
         }
-        let Some(members) = self.members.get(&node_id).map(|m| m.clone()) else {
-            tracing::warn!(node = %node_id, "traffic report before node membership was loaded; dropped");
+        let Some(members) = self.members.get(&server_id).map(|m| m.clone()) else {
+            tracing::warn!(server = %server_id, "traffic report before server membership was loaded; dropped");
             return;
         };
         if report.users.len() > MAX_REPORT_ROWS {
-            tracing::warn!(node = %node_id, rows = report.users.len(), "oversized traffic report dropped");
+            tracing::warn!(server = %server_id, rows = report.users.len(), "oversized traffic report dropped");
             return;
         }
-        // Hard bound on memory per node: every assigned user in every
+        // Hard bound on memory per server: every assigned user in every
         // admissible session.
-        let max_entries = members.len().max(1) * MAX_DIRTY_SESSIONS_PER_NODE;
-        let session = self.session_key(node_id, session_id);
+        let max_entries = members.len().max(1) * MAX_DIRTY_SESSIONS_PER_SERVER;
+        let session = self.session_key(server_id, session_id);
         for u in &report.users {
             let Some(&member) = members.get(u.user_id.as_str()) else {
-                tracing::debug!(node = %node_id, key = %u.user_id, "traffic for an unknown or unassigned key dropped");
+                tracing::debug!(server = %server_id, key = %u.user_id, "traffic for an unknown or unassigned key dropped");
                 continue;
             };
             let (Ok(up), Ok(down)) = (i64::try_from(u.up_bytes), i64::try_from(u.down_bytes))
             else {
-                tracing::warn!(node = %node_id, key = %u.user_id, up = u.up_bytes, down = u.down_bytes,
+                tracing::warn!(server = %server_id, key = %u.user_id, up = u.up_bytes, down = u.down_bytes,
                     "traffic counters exceed i64::MAX; row dropped");
                 continue;
             };
-            let key = (node_id, member, session.clone());
+            let key = (server_id, member, session.clone());
             if !self.entries.contains_key(&key) {
-                if !self.session_known(node_id, session_id)
-                    && self.dirty_sessions(node_id) >= MAX_DIRTY_SESSIONS_PER_NODE
+                if !self.session_known(server_id, session_id)
+                    && self.dirty_sessions(server_id) >= MAX_DIRTY_SESSIONS_PER_SERVER
                 {
-                    tracing::warn!(node = %node_id, session = %session_id,
-                        "too many unpersisted sessions on node; report for new session dropped");
+                    tracing::warn!(server = %server_id, session = %session_id,
+                        "too many unpersisted sessions on server; report for new session dropped");
                     return;
                 }
-                if self.node_entry_count(node_id) >= max_entries
-                    && !self.evict_oldest_clean_session(node_id, session_id)
+                if self.server_entry_count(server_id) >= max_entries
+                    && !self.evict_oldest_clean_session(server_id, session_id)
                 {
-                    tracing::warn!(node = %node_id, "traffic entry cap reached for node; row dropped");
+                    tracing::warn!(server = %server_id, "traffic entry cap reached for server; row dropped");
                     continue;
                 }
             }
@@ -351,13 +351,13 @@ impl TrafficBuffer {
                 Entry::new(now)
             });
             if e.observe(up, down, now) {
-                tracing::warn!(node = %node_id, key = %u.user_id, session = %session_id,
+                tracing::warn!(server = %server_id, key = %u.user_id, session = %session_id,
                     "traffic counters went backwards within a session; ignored");
             }
             let dirty = e.dirty();
             // Index updated while the entry guard is held (lock order:
             // entries -> index), so no other writer can interleave.
-            let mut idx = self.index.entry(node_id).or_default();
+            let mut idx = self.index.entry(server_id).or_default();
             if inserted {
                 idx.entries += 1;
             }
@@ -376,24 +376,24 @@ impl TrafficBuffer {
         }
     }
 
-    /// Test helper: add pairs to a node's membership (keyed as the agent
+    /// Test helper: add pairs to a server's membership (keyed as the agent
     /// reports them).
     #[cfg(test)]
-    fn permit(&self, node_id: Uuid, pairs: &[Member]) {
+    fn permit(&self, server_id: Uuid, pairs: &[Member]) {
         let mut map: HashMap<String, Member> = self
             .members
-            .get(&node_id)
+            .get(&server_id)
             .map(|m| (**m).clone())
             .unwrap_or_default();
         for &(e, u) in pairs {
             map.insert(crate::grpc::stat_key(u, 0), (e, u));
         }
-        self.set_members(node_id, map);
+        self.set_members(server_id, map);
     }
 
-    /// Replace the membership of a node (reported key -> pair).
-    pub fn set_members(&self, node_id: Uuid, members: HashMap<String, Member>) {
-        self.members.insert(node_id, Arc::new(members));
+    /// Replace the membership of a server (reported key -> pair).
+    pub fn set_members(&self, server_id: Uuid, members: HashMap<String, Member>) {
+        self.members.insert(server_id, Arc::new(members));
     }
 
     /// Index bookkeeping for a removed entry.
@@ -425,17 +425,17 @@ impl TrafficBuffer {
         });
     }
 
-    fn node_entry_count(&self, node_id: Uuid) -> usize {
-        self.index.get(&node_id).map_or(0, |i| i.entries)
+    fn server_entry_count(&self, server_id: Uuid) -> usize {
+        self.index.get(&server_id).map_or(0, |i| i.entries)
     }
 
-    /// At the per-node cap: evict the node's least recently touched session
+    /// At the per-server cap: evict the server's least recently touched session
     /// with no unpersisted values, whole (always safe: billing compares
     /// against the DB row). Cost is proportional to the evicted session,
     /// not to the buffer. Never evicts `keep` (the session being written).
-    fn evict_oldest_clean_session(&self, node_id: Uuid, keep: &str) -> bool {
+    fn evict_oldest_clean_session(&self, server_id: Uuid, keep: &str) -> bool {
         let victim = {
-            let Some(idx) = self.index.get(&node_id) else {
+            let Some(idx) = self.index.get(&server_id) else {
                 return false;
             };
             idx.sessions
@@ -449,7 +449,7 @@ impl TrafficBuffer {
         };
         let mut freed = false;
         for u in users {
-            let key = (node_id, u, session.clone());
+            let key = (server_id, u, session.clone());
             // Skip anything that became dirty meanwhile.
             let removed = self.entries.remove_if(&key, |k, e| {
                 let clean = !e.dirty();
@@ -463,25 +463,25 @@ impl TrafficBuffer {
         freed
     }
 
-    /// The node's interned key for `session_id` (a new one for a session
+    /// The server's interned key for `session_id` (a new one for a session
     /// the index does not know yet): one allocation per new session, not
     /// two per row.
-    fn session_key(&self, node_id: Uuid, session_id: &str) -> Arc<str> {
+    fn session_key(&self, server_id: Uuid, session_id: &str) -> Arc<str> {
         self.index
-            .get(&node_id)
+            .get(&server_id)
             .and_then(|i| i.sessions.get_key_value(session_id).map(|(k, _)| k.clone()))
             .unwrap_or_else(|| Arc::from(session_id))
     }
 
-    fn session_known(&self, node_id: Uuid, session_id: &str) -> bool {
+    fn session_known(&self, server_id: Uuid, session_id: &str) -> bool {
         self.index
-            .get(&node_id)
+            .get(&server_id)
             .is_some_and(|i| i.sessions.contains_key(session_id))
     }
 
-    /// Distinct sessions of `node_id` with at least one unpersisted value.
-    fn dirty_sessions(&self, node_id: Uuid) -> usize {
-        self.index.get(&node_id).map_or(0, |i| {
+    /// Distinct sessions of `server_id` with at least one unpersisted value.
+    fn dirty_sessions(&self, server_id: Uuid) -> usize {
+        self.index.get(&server_id).map_or(0, |i| {
             i.sessions
                 .values()
                 .filter(|s| !s.dirty_users.is_empty())
@@ -489,11 +489,11 @@ impl TrafficBuffer {
         })
     }
 
-    /// Everything not yet durably persisted, in (node, entrance, user,
+    /// Everything not yet durably persisted, in (server, entrance, user,
     /// session) order:
-    /// flush chunks then hold few nodes each and write `traffic_counters` in
+    /// flush chunks then hold few servers each and write `traffic_counters` in
     /// index order. (Deadlock freedom between concurrent flushers does not
-    /// depend on it: `write_rows` locks nodes, then users, each in id
+    /// depend on it: `write_rows` locks servers, then users, each in id
     /// order.) Nothing is cleared here.
     fn snapshot(&self) -> Vec<FlushRow> {
         let now = Instant::now();
@@ -504,12 +504,12 @@ impl TrafficBuffer {
         // from `entries` and re-checked for dirtiness, so a row flushed
         // meanwhile is simply skipped.
         let mut keys: Vec<Key> = Vec::new();
-        for node in self.index.iter() {
-            for (session, s) in &node.sessions {
+        for server in self.index.iter() {
+            for (session, s) in &server.sessions {
                 keys.extend(
                     s.dirty_users
                         .iter()
-                        .map(|u| (*node.key(), *u, session.clone())),
+                        .map(|u| (*server.key(), *u, session.clone())),
                 );
             }
         }
@@ -523,9 +523,9 @@ impl TrafficBuffer {
                 let (up, down) = (e.up, e.down);
                 let age_secs = now.duration_since(e.first_seen).as_secs_f64();
                 drop(e);
-                let (node_id, (entrance_id, user_id), session_id) = key;
+                let (server_id, (entrance_id, user_id), session_id) = key;
                 Some(FlushRow {
-                    node_id,
+                    server_id,
                     entrance_id,
                     user_id,
                     session_id,
@@ -536,8 +536,8 @@ impl TrafficBuffer {
             })
             .collect();
         rows.sort_by(|a, b| {
-            (a.node_id, a.entrance_id, a.user_id, &a.session_id).cmp(&(
-                b.node_id,
+            (a.server_id, a.entrance_id, a.user_id, &a.session_id).cmp(&(
+                b.server_id,
                 b.entrance_id,
                 b.user_id,
                 &b.session_id,
@@ -575,7 +575,7 @@ impl TrafficBuffer {
                 e.failures = 0;
                 if before && !e.dirty() {
                     // Still under the entry guard (entries -> index).
-                    if let Some(mut idx) = self.index.get_mut(&r.node_id)
+                    if let Some(mut idx) = self.index.get_mut(&r.server_id)
                         && let Some(sess) = idx.sessions.get_mut(&r.session_id)
                     {
                         sess.dirty_users.remove(&(r.entrance_id, r.user_id));
@@ -598,12 +598,12 @@ impl TrafficBuffer {
         };
         if give_up {
             self.remove(&r.key());
-            tracing::error!(node = %r.node_id, entrance = %r.entrance_id, user = %r.user_id, session = %r.session_id,
+            tracing::error!(server = %r.server_id, entrance = %r.entrance_id, user = %r.user_id, session = %r.session_id,
                 up = r.up, down = r.down, "traffic row repeatedly rejected by database; dropped");
         }
     }
 
-    /// Evict fully persisted, idle entries, then rebuild the per-node index
+    /// Evict fully persisted, idle entries, then rebuild the per-server index
     /// from `entries` (self-heal: whatever drift a bug could introduce
     /// lives until the next rebuild). Operations racing with the rebuild may
     /// be off by one until the next one; they cannot corrupt `entries`.
@@ -643,11 +643,11 @@ impl TrafficBuffer {
         }
     }
 
-    /// The node's last local session ended: drop its membership cache
+    /// The server's last local session ended: drop its membership cache
     /// (reloaded when a session starts). Buffered entries stay until
     /// flushed.
-    pub fn drop_members(&self, node_id: Uuid) {
-        self.members.remove(&node_id);
+    pub fn drop_members(&self, server_id: Uuid) {
+        self.members.remove(&server_id);
     }
 
     #[cfg(test)]
@@ -655,27 +655,27 @@ impl TrafficBuffer {
         self.entries.is_empty()
     }
 
-    /// Drop everything held for a deleted node: its membership cache, its
+    /// Drop everything held for a deleted server: its membership cache, its
     /// buffered entries (they can no longer be billed: its entrance_users rows
-    /// are gone) and its index. Rare (node deletion), so a full scan is
+    /// are gone) and its index. Rare (server deletion), so a full scan is
     /// acceptable here — never on the report path.
-    pub fn forget_node(&self, node_id: Uuid) {
-        self.members.remove(&node_id);
+    pub fn forget_server(&self, server_id: Uuid) {
+        self.members.remove(&server_id);
         self.entries.retain(|k, _| {
-            let keep = k.0 != node_id;
+            let keep = k.0 != server_id;
             if !keep {
                 self.forget(k);
             }
             keep
         });
-        self.index.remove(&node_id);
+        self.index.remove(&server_id);
     }
 
     fn rebuild_index(&self) {
-        let mut fresh: HashMap<Uuid, NodeIndex> = HashMap::new();
+        let mut fresh: HashMap<Uuid, ServerIndex> = HashMap::new();
         for e in self.entries.iter() {
-            let (node, user, session) = e.key();
-            let idx = fresh.entry(*node).or_default();
+            let (server, user, session) = e.key();
+            let idx = fresh.entry(*server).or_default();
             idx.entries += 1;
             let sess = idx.sessions.entry(session.clone()).or_default();
             sess.users.insert(*user);
@@ -691,29 +691,29 @@ impl TrafficBuffer {
     }
 }
 
-/// One statement, run in `write_rows`' transaction after the input's node
+/// One statement, run in `write_rows`' transaction after the input's server
 /// rows are locked. Parameters: $1..$7 the rows, $8 per-key rate, $9
 /// MIN_PLAUSIBLE_SECS, $10 PLAUSIBLE_SLACK_SECS, $11 departed grace, $12
-/// default node rate, $13 burst window, $14 DEPARTED_SLACK_SECS. All times
+/// default server rate, $13 burst window, $14 DEPARTED_SLACK_SECS. All times
 /// are statement_timestamp() (never a transaction start that may precede a
 /// concurrent flusher's writes).
 ///
 /// Admission (W28-a: per entrance, R43): only (entrance, user) pairs of an
-/// entrance of the reporting node that are assigned (entrance_users) — or
+/// entrance of the reporting server that are assigned (entrance_users) — or
 /// were until less than $11 s ago (entrance_users_departed: the final
 /// counters of a removed user arrive after the removal) — are stored or
-/// billed: a node cannot bill users or entrances it does not serve. Reports
-/// of a RETIRED (node, session) (traffic_sessions.retired_at, M2-5
+/// billed: a server cannot bill users or entrances it does not serve. Reports
+/// of a RETIRED (server, session) (traffic_sessions.retired_at, M2-5
 /// retention) are refused too: its rows may be gone, and re-inserting one
-/// would re-bill the session's whole cumulative. Every admitted (node,
+/// would re-bill the session's whole cumulative. Every admitted (server,
 /// session) is recorded in traffic_sessions.
 ///
-/// Credit window (R13): every cap counts time only back to the node's
+/// Credit window (R13): every cap counts time only back to the server's
 /// floor = now − $13 (the burst window), or further back to
-/// nodes.traffic_credit_floor while a reconnect credit is valid
+/// servers.traffic_credit_floor while a reconnect credit is valid
 /// (traffic_credit_until > now; granted once per real disconnection by
 /// `grpc::set_online_row`, min(disconnected time, lease)). So an idle or
-/// under-using node never accumulates more than a burst window, and only a
+/// under-using server never accumulates more than a burst window, and only a
 /// recorded connectivity gap lets delayed traffic bill in full.
 ///
 /// Every cap only ever under-bills (the full counter is always stored):
@@ -726,43 +726,44 @@ impl TrafficBuffer {
 ///    earliest start) minus what the pair was already billed since the
 ///    departure (entrance_users_departed.billed_bytes, R13: cumulative
 ///    across flushes);
-/// 3. per node (GCRA): tat = max(traffic_tat (NULL: now − 60 s), floor); the
-///    node's sum is clamped to node_rate × max(0, now − tat), rows scaled
+/// 3. per server (GCRA): tat = max(traffic_tat (NULL: now − 60 s), floor); the
+///    server's sum is clamped to node_rate × max(0, now − tat), rows scaled
 ///    and floored (Σ ≤ allowance; no division when nothing was billed);
 ///    traffic_tat := tat + billed / node_rate (monotonic).
 ///
-/// Returns the refused keys, the rows clamped by (1)/(2) and the nodes
+/// Returns the refused keys, the rows clamped by (1)/(2) and the servers
 /// clamped by (3).
 pub const FLUSH_SQL: &str = r#"
 WITH input AS (
     SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::text[], $5::bigint[],
                          $6::bigint[], $7::float8[])
-        AS t(node_id, entrance_id, user_id, session_id, up, down, age_secs)
+        AS t(server_id, entrance_id, user_id, session_id, up, down, age_secs)
 ), nf AS MATERIALIZED (
-    -- One row per node of the batch, computed once (W11: referenced by
+    -- One row per server of the batch, computed once (W11: referenced by
     -- `classified` and `charged`; explicitly MATERIALIZED because inlining
     -- it into `classified` made the 50k-row flush ~2x slower, PERF.md).
-    SELECT n.id AS node_id,
-           COALESCE(n.traffic_max_rate_bytes_per_sec, $12)::numeric AS rate,
-           n.traffic_tat,
-           CASE WHEN n.traffic_credit_until > statement_timestamp()
+    SELECT s.id AS server_id,
+           COALESCE(s.traffic_max_rate_bytes_per_sec, $12)::numeric AS rate,
+           s.traffic_tat,
+           CASE WHEN s.traffic_credit_until > statement_timestamp()
                 THEN LEAST(statement_timestamp() - make_interval(secs => $13),
-                           COALESCE(n.traffic_credit_floor, 'infinity'::timestamptz))
+                           COALESCE(s.traffic_credit_floor, 'infinity'::timestamptz))
                 ELSE statement_timestamp() - make_interval(secs => $13) END AS floor
-    FROM nodes n WHERE n.id IN (SELECT DISTINCT node_id FROM input)
+    FROM servers s WHERE s.id IN (SELECT DISTINCT server_id FROM input)
 ), ef AS MATERIALIZED (
-    -- One row per entrance of the batch: its node (a node bills only its
-    -- own entrances) and its multiplier (the value in effect now).
-    SELECT e.id AS entrance_id, e.node_id, e.rate_permille::numeric AS mult
+    -- One row per entrance of the batch: its server (a server bills only
+    -- its own entrances), its node (history and node totals) and its
+    -- multiplier (the value in effect now).
+    SELECT e.id AS entrance_id, e.server_id, e.node_id, e.rate_permille::numeric AS mult
     FROM entrances e WHERE e.id IN (SELECT DISTINCT entrance_id FROM input)
 ), classified AS (
     SELECT i.*,
-           COALESCE(ef.node_id = i.node_id, false)
+           COALESCE(ef.server_id = i.server_id, false)
                AND (eu.entrance_id IS NOT NULL OR d.departed_at IS NOT NULL)
                AND ts.retired_at IS NULL AS is_member,
            CASE WHEN eu.entrance_id IS NOT NULL THEN NULL ELSE d.departed_at END AS departed_at,
            d.billed_bytes AS departed_billed,
-           ts.node_id IS NULL AS new_session,
+           ts.server_id IS NULL AS new_session,
            f.rate, f.traffic_tat, f.floor
     FROM input i
     LEFT JOIN ef ON ef.entrance_id = i.entrance_id
@@ -770,14 +771,14 @@ WITH input AS (
     LEFT JOIN entrance_users_departed d
            ON d.entrance_id = i.entrance_id AND d.user_id = i.user_id
           AND d.departed_at > statement_timestamp() - make_interval(secs => $11)
-    LEFT JOIN nf f ON f.node_id = i.node_id
-    LEFT JOIN traffic_sessions ts ON ts.node_id = i.node_id AND ts.session_id = i.session_id
+    LEFT JOIN nf f ON f.server_id = i.server_id
+    LEFT JOIN traffic_sessions ts ON ts.server_id = i.server_id AND ts.session_id = i.session_id
 ), member AS (
     SELECT * FROM classified WHERE is_member
 ), new_sessions AS (
-    INSERT INTO traffic_sessions (node_id, session_id, first_seen_at)
-    SELECT DISTINCT node_id, session_id, statement_timestamp() FROM member WHERE new_session
-    ON CONFLICT (node_id, session_id) DO NOTHING
+    INSERT INTO traffic_sessions (server_id, session_id, first_seen_at)
+    SELECT DISTINCT server_id, session_id, statement_timestamp() FROM member WHERE new_session
+    ON CONFLICT (server_id, session_id) DO NOTHING
     RETURNING 1
 ), upd AS (
     -- Existing rows (the steady state: every report after a session's
@@ -789,32 +790,32 @@ WITH input AS (
         down_bytes = GREATEST(c.down_bytes, m.down),
         updated_at = GREATEST(c.updated_at, statement_timestamp())
     FROM member m
-    WHERE c.node_id = m.node_id AND c.entrance_id = m.entrance_id AND c.user_id = m.user_id
+    WHERE c.server_id = m.server_id AND c.entrance_id = m.entrance_id AND c.user_id = m.user_id
       AND c.session_id = m.session_id
-    RETURNING new.node_id, new.entrance_id, new.user_id, new.session_id,
+    RETURNING new.server_id, new.entrance_id, new.user_id, new.session_id,
               old.up_bytes AS old_up, old.down_bytes AS old_down, old.updated_at AS old_at,
               COALESCE(old.first_seen_at, old.updated_at) AS old_first,
               new.up_bytes AS new_up, new.down_bytes AS new_down,
               m.age_secs, m.departed_at, m.departed_billed, m.rate, m.traffic_tat, m.floor
 ), ins AS (
     -- The rest are new rows. ON CONFLICT stays as the race arbiter (two
-    -- instances inserting the same key; the node locks make that rare).
+    -- instances inserting the same key; the server locks make that rare).
     INSERT INTO traffic_counters AS c
-        (node_id, entrance_id, user_id, session_id, up_bytes, down_bytes, updated_at,
+        (server_id, entrance_id, user_id, session_id, up_bytes, down_bytes, updated_at,
          first_seen_at)
-    SELECT node_id, entrance_id, user_id, session_id, up, down, statement_timestamp(),
+    SELECT server_id, entrance_id, user_id, session_id, up, down, statement_timestamp(),
            statement_timestamp()
     FROM member m
     WHERE (SELECT count(*) FROM upd) < (SELECT count(*) FROM member)
-      AND NOT EXISTS (SELECT 1 FROM upd u WHERE u.node_id = m.node_id
+      AND NOT EXISTS (SELECT 1 FROM upd u WHERE u.server_id = m.server_id
                       AND u.entrance_id = m.entrance_id AND u.user_id = m.user_id
                       AND u.session_id = m.session_id)
-    ORDER BY node_id, entrance_id, user_id, session_id
-    ON CONFLICT (node_id, entrance_id, user_id, session_id) DO UPDATE
+    ORDER BY server_id, entrance_id, user_id, session_id
+    ON CONFLICT (server_id, entrance_id, user_id, session_id) DO UPDATE
     SET up_bytes   = GREATEST(c.up_bytes, EXCLUDED.up_bytes),
         down_bytes = GREATEST(c.down_bytes, EXCLUDED.down_bytes),
         updated_at = GREATEST(c.updated_at, EXCLUDED.updated_at)
-    RETURNING new.node_id, new.entrance_id, new.user_id, new.session_id,
+    RETURNING new.server_id, new.entrance_id, new.user_id, new.session_id,
               old.up_bytes AS old_up, old.down_bytes AS old_down, old.updated_at AS old_at,
               COALESCE(old.first_seen_at, old.updated_at) AS old_first,
               new.up_bytes AS new_up, new.down_bytes AS new_down
@@ -823,12 +824,12 @@ WITH input AS (
     -- (no re-join); the few inserted rows join member.
     SELECT * FROM upd
     UNION ALL
-    SELECT i.node_id, i.entrance_id, i.user_id, i.session_id, i.old_up, i.old_down, i.old_at,
+    SELECT i.server_id, i.entrance_id, i.user_id, i.session_id, i.old_up, i.old_down, i.old_at,
            i.old_first, i.new_up, i.new_down,
            m.age_secs, m.departed_at, m.departed_billed, m.rate, m.traffic_tat, m.floor
-    FROM ins i JOIN member m USING (node_id, entrance_id, user_id, session_id)
+    FROM ins i JOIN member m USING (server_id, entrance_id, user_id, session_id)
 ), rows AS (
-    SELECT u.node_id, u.entrance_id, u.user_id, u.old_at, u.age_secs, u.departed_at,
+    SELECT u.server_id, u.entrance_id, u.user_id, u.old_at, u.age_secs, u.departed_at,
            u.departed_billed, u.rate, u.traffic_tat, u.floor,
            GREATEST(u.new_up - COALESCE(u.old_up, 0), 0)::numeric AS up_raw,
            GREATEST(u.new_up - COALESCE(u.old_up, 0), 0)::numeric
@@ -838,7 +839,7 @@ WITH input AS (
                     u.floor) AS start
     FROM upsert u
 ), per_row AS (
-    SELECT node_id, entrance_id, user_id, departed_at, departed_billed, rate, traffic_tat,
+    SELECT server_id, entrance_id, user_id, departed_at, departed_billed, rate, traffic_tat,
            floor, start, raw, up_raw,
            CASE WHEN departed_at IS NULL THEN
                $8::numeric * COALESCE(
@@ -854,49 +855,50 @@ WITH input AS (
 ), capped AS (
     SELECT *, LEAST(raw, cap) AS amount FROM per_row
 ), pair AS (
-    -- Per (node, entrance, user): a pair is either assigned or departed in
+    -- Per (server, entrance, user): a pair is either assigned or departed in
     -- all of its rows (departed_at belongs to the pair), so only departed
     -- pairs need their sum and allowance across the pair's rows; assigned
     -- rows (the bulk) skip the aggregation.
     SELECT c.*, p.pair_total, p.pair_allowance
     FROM capped c
     LEFT JOIN (
-        SELECT node_id, entrance_id, user_id, sum(amount) AS pair_total,
+        SELECT server_id, entrance_id, user_id, sum(amount) AS pair_total,
                GREATEST($8::numeric * GREATEST(extract(epoch FROM
                    min(departed_at) + make_interval(secs => $14) - min(start)), 0)
                  - min(departed_billed)::numeric, 0) AS pair_allowance
         FROM capped WHERE departed_at IS NOT NULL
-        GROUP BY node_id, entrance_id, user_id
-    ) p USING (node_id, entrance_id, user_id)
+        GROUP BY server_id, entrance_id, user_id
+    ) p USING (server_id, entrance_id, user_id)
 ), row2 AS (
-    SELECT node_id, entrance_id, user_id, departed_at IS NOT NULL AS departed, rate, floor,
+    SELECT server_id, entrance_id, user_id, departed_at IS NOT NULL AS departed, rate, floor,
            raw, up_raw,
            GREATEST(COALESCE(traffic_tat, statement_timestamp() - interval '60 seconds'), floor) AS tat,
            CASE WHEN departed_at IS NOT NULL AND pair_total > pair_allowance
                 THEN floor(amount * pair_allowance / pair_total)
                 ELSE amount END AS amount
     FROM pair
-), node_cap AS (
+), server_cap AS (
     SELECT *,
-           sum(amount) OVER (PARTITION BY node_id) AS node_total,
-           rate * GREATEST(extract(epoch FROM statement_timestamp() - tat), 0) AS node_allowance
+           sum(amount) OVER (PARTITION BY server_id) AS server_total,
+           rate * GREATEST(extract(epoch FROM statement_timestamp() - tat), 0) AS server_allowance
     FROM row2
 ), scaled AS (
-    SELECT node_id, entrance_id, user_id, departed, rate, tat, raw, up_raw,
-           node_total > node_allowance AS node_clamped,
-           CASE WHEN node_total > node_allowance THEN floor(amount * node_allowance / node_total)
+    SELECT server_id, entrance_id, user_id, departed, rate, tat, raw, up_raw,
+           server_total > server_allowance AS server_clamped,
+           CASE WHEN server_total > server_allowance
+                THEN floor(amount * server_allowance / server_total)
                 ELSE amount END AS billed
-    FROM node_cap
+    FROM server_cap
 ), charged AS (
     -- The entrance's traffic multiplier (entrances.rate_permille, the value
     -- in effect now; W28-a: per entrance, R43): users are charged
     -- floor(billed x permille / 1000) per row, never more than billed x
     -- rate. Every cap above works on the accepted (raw) bytes; departed
-    -- allowances and the node GCRA stay raw.
+    -- allowances and the server GCRA stay raw.
     -- W22: the accepted (raw) bytes split into up/down in proportion to
     -- the row's raw deltas (up floored, down = the rest: up + down =
     -- billed exactly).
-    SELECT s.node_id, s.entrance_id, s.user_id, s.billed,
+    SELECT s.server_id, ef.node_id, s.entrance_id, s.user_id, s.billed,
            floor(s.billed * ef.mult / 1000) AS charge,
            CASE WHEN s.raw > 0 THEN floor(s.billed * s.up_raw / s.raw) ELSE 0 END AS up_acc
     FROM scaled s JOIN ef USING (entrance_id)
@@ -932,24 +934,30 @@ WITH input AS (
     WHERE d.entrance_id = b.entrance_id AND d.user_id = b.user_id AND b.billed > 0
     RETURNING 1
 ), advanced AS (
-    UPDATE nodes n
+    UPDATE servers s
     SET traffic_tat = GREATEST(
-            COALESCE(n.traffic_tat, '-infinity'::timestamptz),
-            b.tat + make_interval(secs => (b.billed / b.rate)::float8)),
-        traffic_raw_bytes = LEAST(n.traffic_raw_bytes::numeric + b.billed, 9223372036854775807)::bigint,
+            COALESCE(s.traffic_tat, '-infinity'::timestamptz),
+            b.tat + make_interval(secs => (b.billed / b.rate)::float8))
+    FROM (SELECT server_id, min(tat) AS tat, min(rate) AS rate, sum(billed) AS billed
+          FROM scaled GROUP BY server_id) b
+    WHERE s.id = b.server_id
+    RETURNING 1
+), node_totals AS (
+    -- Per node (its entrances' rows): accepted raw bytes and the charge.
+    UPDATE nodes n
+    SET traffic_raw_bytes = LEAST(n.traffic_raw_bytes::numeric + c.billed, 9223372036854775807)::bigint,
         traffic_billed_bytes = LEAST(n.traffic_billed_bytes::numeric + c.charge, 9223372036854775807)::bigint
-    FROM (SELECT node_id, min(tat) AS tat, min(rate) AS rate, sum(billed) AS billed
-          FROM scaled GROUP BY node_id) b
-    JOIN (SELECT node_id, sum(charge) AS charge FROM charged GROUP BY node_id) c USING (node_id)
-    WHERE n.id = b.node_id
+    FROM (SELECT node_id, sum(billed) AS billed, sum(charge) AS charge
+          FROM charged GROUP BY node_id) c
+    WHERE n.id = c.node_id
     RETURNING 1
 )
-SELECT coalesce(array_agg(c.node_id) FILTER (WHERE NOT c.is_member), '{}') AS dropped_nodes,
+SELECT coalesce(array_agg(c.server_id) FILTER (WHERE NOT c.is_member), '{}') AS dropped_servers,
        coalesce(array_agg(c.entrance_id) FILTER (WHERE NOT c.is_member), '{}') AS dropped_entrances,
        coalesce(array_agg(c.user_id) FILTER (WHERE NOT c.is_member), '{}') AS dropped_users,
        coalesce(array_agg(c.session_id) FILTER (WHERE NOT c.is_member), '{}') AS dropped_sessions,
        (SELECT count(*) FROM per_row WHERE raw > cap) AS clamped,
-       (SELECT count(DISTINCT node_id) FROM scaled WHERE node_clamped) AS nodes_clamped,
+       (SELECT count(DISTINCT server_id) FROM scaled WHERE server_clamped) AS servers_clamped,
        (SELECT LEAST(coalesce(sum(delta) FILTER (WHERE delta > 0), 0),
                      9223372036854775807)::bigint FROM per_user) AS billed_total
 FROM classified c
@@ -964,8 +972,8 @@ pub const DEPARTED_SLACK_SECS: i64 = 30;
 pub struct Rates {
     /// traffic.max_rate_bytes_per_sec (per key).
     pub key: i64,
-    /// traffic.node_max_rate_bytes_per_sec (per node, unless overridden).
-    pub node: i64,
+    /// traffic.node_max_rate_bytes_per_sec (per server, unless overridden).
+    pub server: i64,
     /// Burst window: the longest period any cap credits, except for a
     /// recorded reconnect gap or flush outage (built in: `config::DEFAULT_NODE_BURST_SECS`).
     pub burst_secs: i64,
@@ -977,7 +985,7 @@ impl Rates {
     pub fn from_cfg(cfg: &crate::config::PanelConfig) -> Self {
         Self {
             key: cfg.limits.traffic_max_rate_bytes_per_sec.max(1),
-            node: cfg.limits.traffic_node_max_rate_bytes_per_sec.max(1),
+            server: cfg.limits.traffic_node_max_rate_bytes_per_sec.max(1),
             burst_secs: cfg.limits.traffic_node_burst_secs.max(1) as i64,
             lease_secs: cfg.limits.lease_seconds() as i64,
         }
@@ -985,7 +993,7 @@ impl Rates {
 }
 
 /// R14 N1: credit this instance's own flush outage (`outage_secs` since its
-/// last successful flush, at most the lease) to `nodes` — the nodes whose
+/// last successful flush, at most the lease) to `servers` — the servers whose
 /// backlog is being written now, rows already locked. Same one-time
 /// semantics as the reconnect credit (grpc::set_online_row): a credit is
 /// valid for one burst window from the grant and never extended; a valid
@@ -993,7 +1001,7 @@ impl Rates {
 /// longer than the burst window is covered by the window itself. Runs in
 /// the flush transaction, so it exists only if that flush commits.
 const OUTAGE_CREDIT_SQL: &str = "\
-UPDATE nodes SET
+UPDATE servers SET
     traffic_credit_floor = CASE WHEN traffic_credit_until > statement_timestamp()
         THEN LEAST(traffic_credit_floor, statement_timestamp() - make_interval(secs => $2))
         ELSE statement_timestamp() - make_interval(secs => $2) END,
@@ -1002,11 +1010,11 @@ UPDATE nodes SET
         ELSE statement_timestamp() + make_interval(secs => $3) END
 WHERE id IN (SELECT DISTINCT unnest($1::uuid[]))";
 
-/// Writes `rows` in one transaction: lock the rows' nodes, then their
-/// users (each in id order — the global lock order: nodes before users),
-/// then FLUSH_SQL. The node locks serialize concurrent flushers of the same
-/// node (e.g. two panel instances), so each reads the traffic_tat the other
-/// advanced; the ordered user locks keep flushers of disjoint nodes that
+/// Writes `rows` in one transaction: lock the rows' servers, then their
+/// users (each in id order — the global lock order: servers before users),
+/// then FLUSH_SQL. The server locks serialize concurrent flushers of the same
+/// server (e.g. two panel instances), so each reads the traffic_tat the other
+/// advanced; the ordered user locks keep flushers of disjoint servers that
 /// share users from deadlocking. Returns the keys the database refused as
 /// unassigned.
 async fn write_rows(
@@ -1016,7 +1024,7 @@ async fn write_rows(
     grace_secs: u64,
     outage_secs: Option<f64>,
 ) -> Result<Vec<Key>, sqlx::Error> {
-    let nodes: Vec<Uuid> = rows.iter().map(|r| r.node_id).collect();
+    let servers: Vec<Uuid> = rows.iter().map(|r| r.server_id).collect();
     let entrances: Vec<Uuid> = rows.iter().map(|r| r.entrance_id).collect();
     let users: Vec<Uuid> = rows.iter().map(|r| r.user_id).collect();
     let sessions: Vec<&str> = rows.iter().map(|r| &*r.session_id).collect();
@@ -1025,15 +1033,24 @@ async fn write_rows(
     let ages: Vec<f64> = rows.iter().map(|r| r.age_secs).collect();
     let mut tx = pg.begin().await?;
     sqlx::query(
-        "SELECT 1 FROM nodes WHERE id IN (SELECT DISTINCT unnest($1::uuid[])) \
+        "SELECT 1 FROM servers WHERE id IN (SELECT DISTINCT unnest($1::uuid[])) \
          ORDER BY id FOR NO KEY UPDATE",
     )
-    .bind(&nodes)
+    .bind(&servers)
+    .execute(&mut *tx)
+    .await?;
+    // Then the nodes of the batch's entrances (FLUSH_SQL adds to their
+    // totals), in id order: the global order is servers -> nodes -> users.
+    sqlx::query(
+        "SELECT 1 FROM nodes WHERE id IN (SELECT node_id FROM entrances \
+         WHERE id IN (SELECT DISTINCT unnest($1::uuid[]))) ORDER BY id FOR NO KEY UPDATE",
+    )
+    .bind(&entrances)
     .execute(&mut *tx)
     .await?;
     // Then the users the batch can bill, in id order: FLUSH_SQL's UPDATE of
     // users visits them in plan order, and two instances flushing disjoint
-    // nodes that share users (a user is served by many nodes) would
+    // servers that share users (a user is served by many servers) would
     // otherwise deadlock on them (M2-4).
     sqlx::query(
         "SELECT 1 FROM users WHERE id IN (SELECT DISTINCT unnest($1::uuid[])) \
@@ -1044,21 +1061,21 @@ async fn write_rows(
     .await?;
     if let Some(secs) = outage_secs.filter(|s| *s > rates.burst_secs as f64) {
         let n = sqlx::query(OUTAGE_CREDIT_SQL)
-            .bind(&nodes)
+            .bind(&servers)
             .bind(secs.min(rates.lease_secs as f64))
             .bind(rates.burst_secs as f64)
             .execute(&mut *tx)
             .await?
             .rows_affected();
         tracing::info!(
-            nodes = n,
+            servers = n,
             outage_secs = secs as u64,
-            "crediting this instance's flush outage to its nodes' billing caps"
+            "crediting this instance's flush outage to its servers' billing caps"
         );
     }
-    let (dn, de, du, ds, clamped, nodes_clamped, billed_total): FlushResult =
+    let (dn, de, du, ds, clamped, servers_clamped, billed_total): FlushResult =
         sqlx::query_as(FLUSH_SQL)
-            .bind(&nodes)
+            .bind(&servers)
             .bind(&entrances)
             .bind(&users)
             .bind(&sessions)
@@ -1069,7 +1086,7 @@ async fn write_rows(
             .bind(MIN_PLAUSIBLE_SECS)
             .bind(PLAUSIBLE_SLACK_SECS)
             .bind(grace_secs as f64)
-            .bind(rates.node)
+            .bind(rates.server)
             .bind(rates.burst_secs)
             .bind(DEPARTED_SLACK_SECS)
             .fetch_one(&mut *tx)
@@ -1089,11 +1106,11 @@ async fn write_rows(
             "implausible traffic deltas clamped"
         );
     }
-    if nodes_clamped > 0 {
+    if servers_clamped > 0 {
         tracing::warn!(
-            nodes = nodes_clamped,
-            default_node_rate = rates.node,
-            "implausible per-node traffic clamped (scaled proportionally)"
+            servers = servers_clamped,
+            default_node_rate = rates.server,
+            "implausible per-server traffic clamped (scaled proportionally)"
         );
     }
     Ok(dn
@@ -1105,8 +1122,8 @@ async fn write_rows(
         .collect())
 }
 
-/// What FLUSH_SQL returns: the refused keys (nodes, entrances, users,
-/// sessions), the rows clamped per row, the nodes clamped, the total billed.
+/// What FLUSH_SQL returns: the refused keys (servers, entrances, users,
+/// sessions), the rows clamped per row, the servers clamped, the total billed.
 type FlushResult = (Vec<Uuid>, Vec<Uuid>, Vec<Uuid>, Vec<String>, i64, i64, i64);
 
 /// Only data/integrity errors (SQLSTATE class 22/23) are properties of the
@@ -1125,18 +1142,18 @@ fn is_row_poison(e: &sqlx::Error) -> bool {
 /// Persist `buf`'s dirty rows. A data error on the batch falls back to
 /// per-row writes so one bad row cannot poison the rest; transient errors
 /// keep everything for the next tick (retry is idempotent). Public for the
-/// benchmarks; the panel calls it through `flush_all`/`flush_node`/the loop.
+/// benchmarks; the panel calls it through `flush_all`/`flush_server`/the loop.
 pub async fn flush_buffer(
     pg: &sqlx::PgPool,
     buf: &TrafficBuffer,
     rates: Rates,
-    only_node: Option<Uuid>,
+    only_server: Option<Uuid>,
 ) -> anyhow::Result<usize> {
     let snapshot_at = Instant::now();
     let outage = buf.outage_secs();
-    let r = flush_rows(pg, buf, rates, only_node, outage).await;
+    let r = flush_rows(pg, buf, rates, only_server, outage).await;
     // Only a full flush says anything about this instance's health.
-    if only_node.is_none() {
+    if only_server.is_none() {
         crate::metrics::flush_done(snapshot_at.elapsed(), r.is_ok());
         match &r {
             Ok(_) => buf.flush_succeeded(snapshot_at),
@@ -1150,12 +1167,12 @@ async fn flush_rows(
     pg: &sqlx::PgPool,
     buf: &TrafficBuffer,
     rates: Rates,
-    only_node: Option<Uuid>,
+    only_server: Option<Uuid>,
     outage: Option<f64>,
 ) -> anyhow::Result<usize> {
     let mut rows = buf.snapshot();
-    if let Some(n) = only_node {
-        rows.retain(|r| r.node_id == n);
+    if let Some(n) = only_server {
+        rows.retain(|r| r.server_id == n);
     }
     if rows.is_empty() {
         // Nothing buffered: nothing of this instance's is unbilled.
@@ -1163,8 +1180,8 @@ async fn flush_rows(
     }
     let grace = buf.departed_grace_secs();
     let mut written = 0;
-    // Highest node ids first: lock takers that follow the global order
-    // (nodes in ascending id order: admin writes, enforcement) then wait
+    // Highest server ids first: lock takers that follow the global order
+    // (servers in ascending id order: admin writes, enforcement) then wait
     // for at most one chunk instead of trailing the flush chunk by chunk.
     for chunk in rows.chunks(FLUSH_CHUNK_ROWS).rev() {
         written += flush_chunk(pg, buf, chunk, rates, grace, outage).await?;
@@ -1173,11 +1190,11 @@ async fn flush_rows(
 }
 
 /// Rows per flush transaction (M2). Each chunk is one `write_rows`
-/// transaction holding its nodes' row locks only for its own duration, so
+/// transaction holding its servers' row locks only for its own duration, so
 /// a large backlog (e.g. every agent re-reporting its whole session after
 /// a panel restart: millions of rows) never blocks admin writes and change
 /// propagation behind one long statement. Splitting is safe for billing:
-/// every row is idempotent on its own, and all per-node/per-pair caps are
+/// every row is idempotent on its own, and all per-server/per-pair caps are
 /// cumulative across transactions (GCRA tat, departed billed_bytes) — a
 /// chunk boundary is the same as one more flush tick.
 pub const FLUSH_CHUNK_ROWS: usize = 5_000;
@@ -1214,7 +1231,7 @@ async fn flush_chunk(
                         }
                     }
                     Err(e) if is_row_poison(&e) => {
-                        tracing::warn!(error = %e, node = %r.node_id, entrance = %r.entrance_id, user = %r.user_id, "traffic row rejected");
+                        tracing::warn!(error = %e, server = %r.server_id, entrance = %r.entrance_id, user = %r.user_id, "traffic row rejected");
                         buf.mark_failed(r);
                     }
                     Err(e) => return Err(e.into()),
@@ -1226,27 +1243,27 @@ async fn flush_chunk(
     }
 }
 
-/// Load the pairs `node_id` serves — plus pairs removed less than the
+/// Load the pairs `server_id` serves — plus pairs removed less than the
 /// departed grace ago (their final counters are still billable) — into the
 /// buffer's membership cache, keyed as the agent reports them.
 pub async fn refresh_members(
     pg: &sqlx::PgPool,
     buf: &TrafficBuffer,
-    node_id: Uuid,
+    server_id: Uuid,
 ) -> sqlx::Result<()> {
     let pairs: Vec<(Uuid, Uuid, i32)> = sqlx::query_as(
         "SELECT eu.entrance_id, eu.user_id, e.wire_no FROM entrance_users eu \
-         JOIN entrances e ON e.id = eu.entrance_id WHERE e.node_id = $1 \
+         JOIN entrances e ON e.id = eu.entrance_id WHERE e.server_id = $1 \
          UNION SELECT d.entrance_id, d.user_id, e.wire_no FROM entrance_users_departed d \
          JOIN entrances e ON e.id = d.entrance_id \
-         WHERE e.node_id = $1 AND d.departed_at > now() - make_interval(secs => $2)",
+         WHERE e.server_id = $1 AND d.departed_at > now() - make_interval(secs => $2)",
     )
-    .bind(node_id)
+    .bind(server_id)
     .bind(buf.departed_grace_secs() as f64)
     .fetch_all(pg)
     .await?;
     buf.set_members(
-        node_id,
+        server_id,
         pairs
             .into_iter()
             .map(|(e, u, wire)| (crate::grpc::stat_key(u, wire), (e, u)))
@@ -1272,7 +1289,7 @@ async fn prune_departed(pg: &sqlx::PgPool, grace_secs: u64) {
 // Retention (M2-5).
 // ---------------------------------------------------------------------------
 
-/// Drain proof: the stream owning a node must stay up this long after its
+/// Drain proof: the stream owning a server must stay up this long after its
 /// Hello. The agent sends its queued final reports right after Hello and
 /// drops each once the stream survived one traffic interval (10 s).
 pub const DRAIN_PROOF_SECS: u64 = 60;
@@ -1287,18 +1304,18 @@ pub const RETENTION_EVERY: Duration = Duration::from_secs(600);
 /// Rows per DELETE statement.
 const RETENTION_BATCH: i64 = 10_000;
 
-/// Retire node $1's sessions that are provably dead: the node has a drain
+/// Retire server $1's sessions that are provably dead: the server has a drain
 /// proof at least $2 s old (`finals_drained_at`: Hello time of a stream
 /// that stayed up DRAIN_PROOF_SECS), and the session was first seen before
 /// that Hello, is not the session that Hello carried, and is not the
 /// agent's current session. Such a session was superseded before the Hello,
 /// so the agent delivered its final report on that stream and will never
-/// send it again. Runs after locking the node row (serialized with flushes
-/// of the node).
+/// send it again. Runs after locking the server row (serialized with flushes
+/// of the server).
 pub const RETIRE_SQL: &str = "\
 UPDATE traffic_sessions ts SET retired_at = now()
-FROM nodes n
-WHERE n.id = $1 AND ts.node_id = n.id
+FROM servers n
+WHERE n.id = $1 AND ts.server_id = n.id
   AND ts.retired_at IS NULL
   AND n.finals_drained_at <= now() - make_interval(secs => $2)
   AND ts.first_seen_at < n.finals_drained_at
@@ -1306,29 +1323,29 @@ WHERE n.id = $1 AND ts.node_id = n.id
   AND ts.session_id IS DISTINCT FROM n.agent_session
 RETURNING ts.session_id";
 
-/// Node ids present in traffic_counters whose node no longer exists (one
-/// index probe per distinct node: a loose scan of the primary key).
-pub const DEAD_NODES_SQL: &str = "\
+/// Server ids present in traffic_counters whose server no longer exists (one
+/// index probe per distinct server: a loose scan of the primary key).
+pub const DEAD_SERVERS_SQL: &str = "\
 WITH RECURSIVE t AS (
-    (SELECT node_id FROM traffic_counters ORDER BY node_id LIMIT 1)
+    (SELECT server_id FROM traffic_counters ORDER BY server_id LIMIT 1)
     UNION ALL
-    SELECT (SELECT c.node_id FROM traffic_counters c WHERE c.node_id > t.node_id
-            ORDER BY c.node_id LIMIT 1)
-    FROM t WHERE t.node_id IS NOT NULL
+    SELECT (SELECT c.server_id FROM traffic_counters c WHERE c.server_id > t.server_id
+            ORDER BY c.server_id LIMIT 1)
+    FROM t WHERE t.server_id IS NOT NULL
 )
-SELECT node_id FROM t
-WHERE node_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id = t.node_id)";
+SELECT server_id FROM t
+WHERE server_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM servers n WHERE n.id = t.server_id)";
 
 /// What one `retention_pass` did.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Retention {
     pub sessions_retired: u64,
     pub rows_retired_session: u64,
-    pub rows_deleted_node: u64,
+    pub rows_deleted_server: u64,
 }
 
 /// traffic_counters retention: delete only provably dead rows — those of
-/// deleted nodes, and those of retired sessions (`RETIRE_SQL`; the
+/// deleted servers, and those of retired sessions (`RETIRE_SQL`; the
 /// tombstone makes FLUSH_SQL refuse the session, so a deleted row can
 /// never be re-inserted and re-billed). Rows of a live session are never
 /// deleted, whatever their age: re-assigning a user would make its
@@ -1337,46 +1354,46 @@ pub struct Retention {
 /// instances at once.
 pub async fn retention_pass(pg: &sqlx::PgPool, margin_secs: u64) -> anyhow::Result<Retention> {
     let mut done = Retention::default();
-    // 1. Retire, node by node, under the node row lock.
-    let nodes: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM nodes WHERE finals_drained_at <= now() - make_interval(secs => $1) \
+    // 1. Retire, server by server, under the server row lock.
+    let servers: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM servers WHERE finals_drained_at <= now() - make_interval(secs => $1) \
          ORDER BY id",
     )
     .bind(margin_secs as f64)
     .fetch_all(pg)
     .await?;
-    for node in nodes {
+    for server in servers {
         let mut tx = pg.begin().await?;
-        sqlx::query("SELECT 1 FROM nodes WHERE id = $1 FOR NO KEY UPDATE")
-            .bind(node)
+        sqlx::query("SELECT 1 FROM servers WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(server)
             .execute(&mut *tx)
             .await?;
         let retired: Vec<String> = sqlx::query_scalar(RETIRE_SQL)
-            .bind(node)
+            .bind(server)
             .bind(margin_secs as f64)
             .fetch_all(&mut *tx)
             .await?;
         tx.commit().await?;
         if !retired.is_empty() {
-            tracing::info!(node = %node, sessions = retired.len(), "traffic sessions retired");
+            tracing::info!(server = %server, sessions = retired.len(), "traffic sessions retired");
         }
         done.sessions_retired += retired.len() as u64;
     }
     // 2. Purge retired sessions' rows. FLUSH_SQL refuses them from the
     // retirement's commit on, so the rows are frozen.
     let retired: Vec<(Uuid, String)> = sqlx::query_as(
-        "SELECT node_id, session_id FROM traffic_sessions \
-         WHERE retired_at IS NOT NULL AND purged_at IS NULL ORDER BY node_id, session_id",
+        "SELECT server_id, session_id FROM traffic_sessions \
+         WHERE retired_at IS NOT NULL AND purged_at IS NULL ORDER BY server_id, session_id",
     )
     .fetch_all(pg)
     .await?;
-    for (node, session) in retired {
+    for (server, session) in retired {
         loop {
             let n = sqlx::query(
                 "DELETE FROM traffic_counters WHERE ctid = ANY(ARRAY( \
-                 SELECT ctid FROM traffic_counters WHERE node_id = $1 AND session_id = $2 LIMIT $3))",
+                 SELECT ctid FROM traffic_counters WHERE server_id = $1 AND session_id = $2 LIMIT $3))",
             )
-            .bind(node)
+            .bind(server)
             .bind(&session)
             .bind(RETENTION_BATCH)
             .execute(pg)
@@ -1388,28 +1405,28 @@ pub async fn retention_pass(pg: &sqlx::PgPool, margin_secs: u64) -> anyhow::Resu
             }
         }
         sqlx::query(
-            "UPDATE traffic_sessions SET purged_at = now() WHERE node_id = $1 AND session_id = $2",
+            "UPDATE traffic_sessions SET purged_at = now() WHERE server_id = $1 AND session_id = $2",
         )
-        .bind(node)
+        .bind(server)
         .bind(&session)
         .execute(pg)
         .await?;
     }
-    // 3. Rows of deleted nodes (node ids are never reused; without their
+    // 3. Rows of deleted servers (server ids are never reused; without their
     // entrances nothing can bill them).
-    let dead: Vec<Uuid> = sqlx::query_scalar(DEAD_NODES_SQL).fetch_all(pg).await?;
-    for node in dead {
+    let dead: Vec<Uuid> = sqlx::query_scalar(DEAD_SERVERS_SQL).fetch_all(pg).await?;
+    for server in dead {
         loop {
             let n = sqlx::query(
                 "DELETE FROM traffic_counters WHERE ctid = ANY(ARRAY( \
-                 SELECT ctid FROM traffic_counters WHERE node_id = $1 LIMIT $2))",
+                 SELECT ctid FROM traffic_counters WHERE server_id = $1 LIMIT $2))",
             )
-            .bind(node)
+            .bind(server)
             .bind(RETENTION_BATCH)
             .execute(pg)
             .await?
             .rows_affected();
-            done.rows_deleted_node += n;
+            done.rows_deleted_server += n;
             if n < RETENTION_BATCH as u64 {
                 break;
             }
@@ -1417,7 +1434,7 @@ pub async fn retention_pass(pg: &sqlx::PgPool, margin_secs: u64) -> anyhow::Resu
     }
     crate::metrics::retention("session_retired", done.sessions_retired);
     crate::metrics::retention("rows_retired_session", done.rows_retired_session);
-    crate::metrics::retention("rows_deleted_node", done.rows_deleted_node);
+    crate::metrics::retention("rows_deleted_server", done.rows_deleted_server);
     Ok(done)
 }
 
@@ -1690,14 +1707,14 @@ pub async fn flush_all(state: &AppState) -> anyhow::Result<usize> {
     .await
 }
 
-/// Persist (and bill) what this instance buffered for `node_id` now — used
-/// right before the node is deleted, so its last window is billed.
-pub async fn flush_node(state: &AppState, node_id: Uuid) -> anyhow::Result<usize> {
+/// Persist (and bill) what this instance buffered for `server_id` now — used
+/// right before the server is deleted, so its last window is billed.
+pub async fn flush_server(state: &AppState, server_id: Uuid) -> anyhow::Result<usize> {
     flush_buffer(
         state.pg(),
         state.traffic(),
         Rates::from_cfg(state.cfg()),
-        Some(node_id),
+        Some(server_id),
     )
     .await
 }
@@ -1842,7 +1859,7 @@ mod tests {
         b.update_at(n, "dirty", &report(&[(u, 2, 2)]), t0);
         b.maintain(late); // tick 0: full pass
         assert!(!b.entries.contains_key(&key(n, u, "clean")));
-        assert_eq!(b.node_entry_count(n), 1);
+        assert_eq!(b.server_entry_count(n), 1);
         b.update_at(n, "clean2", &report(&[(u, 1, 1)]), t0);
         b.mark_flushed(&b.snapshot());
         b.update_at(n, "dirty", &report(&[(u, 3, 3)]), t0);
@@ -1853,7 +1870,7 @@ mod tests {
         b.maintain(late); // next scan tick
         assert!(!b.entries.contains_key(&key(n, u, "clean2")));
         assert!(b.entries.contains_key(&key(n, u, "dirty")));
-        assert_eq!(b.node_entry_count(n), 1);
+        assert_eq!(b.server_entry_count(n), 1);
         assert_eq!(b.dirty_sessions(n), 1);
     }
 
@@ -2503,7 +2520,7 @@ mod db_tests {
     /// Default rates (per key and per node) and burst window.
     const RATES: Rates = Rates {
         key: RATE,
-        node: RATE,
+        server: RATE,
         burst_secs: crate::config::DEFAULT_NODE_BURST_SECS as i64,
         lease_secs: 86400,
     };
@@ -2532,7 +2549,7 @@ mod db_tests {
     async fn rows_of(db: &TestDb, node: Uuid) -> Vec<(String, i64)> {
         sqlx::query_as(
             "SELECT session_id, up_bytes + down_bytes FROM traffic_counters \
-             WHERE node_id = $1 ORDER BY session_id",
+             WHERE server_id = $1 ORDER BY session_id",
         )
         .bind(node)
         .fetch_all(&db.pool)
@@ -2561,7 +2578,7 @@ mod db_tests {
             async move {
                 sqlx::query(
                     "UPDATE traffic_sessions SET first_seen_at = now() - make_interval(secs => $3) \
-                     WHERE node_id = $1 AND session_id = $2",
+                     WHERE server_id = $1 AND session_id = $2",
                 )
                 .bind(n)
                 .bind(sess)
@@ -2580,7 +2597,7 @@ mod db_tests {
         // Proof: a stream whose Hello carried "prev", 1 h ago; the agent
         // now runs "cur". "old" was superseded before that Hello.
         sqlx::query(
-            "UPDATE nodes SET agent_session = 'cur', agent_session_at = now(), \
+            "UPDATE servers SET agent_session = 'cur', agent_session_at = now(), \
              finals_drained_session = 'prev', finals_drained_at = now() - interval '3600 seconds' \
              WHERE id = $1",
         )
@@ -2613,7 +2630,7 @@ mod db_tests {
         // The agent's current session is never retired, whatever the proof
         // says (e.g. a newer Hello on another stream).
         sqlx::query(
-            "UPDATE nodes SET agent_session = 'prev', finals_drained_session = 'x' WHERE id = $1",
+            "UPDATE servers SET agent_session = 'prev', finals_drained_session = 'x' WHERE id = $1",
         )
         .bind(n)
         .execute(&db.pool)
@@ -2637,13 +2654,13 @@ mod db_tests {
         b.update(a, "s", &report(u, 10, 0));
         b.update(c, "s", &report(u, 20, 0));
         db.flush(&b).await;
-        sqlx::query("DELETE FROM nodes WHERE id = $1")
+        sqlx::query("DELETE FROM servers WHERE id = $1")
             .bind(a)
             .execute(&db.pool)
             .await
             .unwrap();
         let r = retention_pass(&db.pool, 60).await.unwrap();
-        assert_eq!(r.rows_deleted_node, 1);
+        assert_eq!(r.rows_deleted_server, 1);
         assert!(rows_of(&db, a).await.is_empty());
         assert_eq!(rows_of(&db, c).await, vec![("s".to_string(), 20)]);
         db.drop().await;
@@ -2663,7 +2680,7 @@ mod db_tests {
             let pool = db.pool.clone();
             async move {
                 sqlx::query(
-                    "UPDATE nodes SET online_session = $2, agent_session = 'cur', \
+                    "UPDATE servers SET online_session = $2, agent_session = 'cur', \
                      agent_session_at = now() - make_interval(secs => $3) WHERE id = $1",
                 )
                 .bind(n)
@@ -2679,7 +2696,7 @@ mod db_tests {
             async move {
                 sqlx::query_as::<_, (Option<String>, bool)>(
                     "SELECT finals_drained_session, finals_drained_at IS NOT NULL \
-                     FROM nodes WHERE id = $1",
+                     FROM servers WHERE id = $1",
                 )
                 .bind(n)
                 .fetch_one(&pool)
@@ -2796,7 +2813,7 @@ mod db_tests {
         .unwrap();
         // SQL gate (a cache that still admits the pair must not matter).
         let row = FlushRow {
-            node_id: n,
+            server_id: n,
             entrance_id: db.direct(n).await,
             user_id: u,
             session_id: "s1".into(),
@@ -3155,8 +3172,8 @@ mod db_tests {
         set_rate(&db, n, 500).await;
         let relay = Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO entrances (id, node_id, kind, name, connect_host, connect_port, \
-             rate_permille, wire_no, listen_port, source_cidrs) VALUES ($1, $2, 'relay', 'IPLC', \
+            "INSERT INTO entrances (id, node_id, server_id, kind, name, connect_host, connect_port, \
+             rate_permille, wire_no, listen_port, source_cidrs) VALUES ($1, $2, $2, 'relay', 'IPLC', \
              'relay.example.net', 30443, 2000, 1, 20443, '{203.0.113.7/32}')",
         )
         .bind(relay)
@@ -3356,7 +3373,7 @@ mod db_tests {
         assert!(!enabled, "limit enforced in the same tick");
         assert_eq!(db.versions(n).await.1, v0.1 + 1);
         assert_eq!(flush_all(&state).await.unwrap(), 0);
-        assert_eq!(flush_node(&state, n).await.unwrap(), 0);
+        assert_eq!(flush_server(&state, n).await.unwrap(), 0);
         state.traffic().check_invariants().unwrap();
         db.drop().await;
     }
@@ -3418,7 +3435,7 @@ mod db_tests {
         b.update(n, "s1", &report(u, max, max));
         let unlimited = Rates {
             key: i64::MAX,
-            node: i64::MAX,
+            server: i64::MAX,
             burst_secs: RATES.burst_secs,
             lease_secs: RATES.lease_secs,
         };
@@ -3446,7 +3463,7 @@ mod db_tests {
     }
 
     /// Red team C-RT6: minting 1000 sessions for an unassigned victim bills
-    /// nothing and stores at most MAX_DIRTY_SESSIONS_PER_NODE sessions.
+    /// nothing and stores at most MAX_DIRTY_SESSIONS_PER_SERVER sessions.
     #[tokio::test]
     async fn c_rt6_session_minting_is_bounded_and_unbilled() {
         let Some(db) = TestDb::new().await else {
@@ -3491,11 +3508,11 @@ mod db_tests {
         let second = db.used(u).await as i128 - billed;
         let slack = RATE as i128 * (PLAUSIBLE_SLACK_SECS as i128 + 2);
         assert!(
-            second <= MAX_DIRTY_SESSIONS_PER_NODE as i128 * slack,
+            second <= MAX_DIRTY_SESSIONS_PER_SERVER as i128 * slack,
             "{second}"
         );
         assert!(
-            billed <= MAX_DIRTY_SESSIONS_PER_NODE as i128 * (cap + RATE as i128),
+            billed <= MAX_DIRTY_SESSIONS_PER_SERVER as i128 * (cap + RATE as i128),
             "{billed}"
         );
         assert_history(&db).await;
@@ -3531,19 +3548,19 @@ mod db_tests {
         let (u2, other) = (Uuid::new_v4(), Uuid::new_v4());
         b.permit(n, &[(n, u), (n, u2)]);
         b.permit(other, &[(other, u)]);
-        for i in 0..MAX_DIRTY_SESSIONS_PER_NODE {
+        for i in 0..MAX_DIRTY_SESSIONS_PER_SERVER {
             b.update(n, &format!("s{i}"), &report(u, 1, 1));
         }
         b.update(n, "one-too-many", &report(u, 1, 1));
-        assert_eq!(b.entries.len(), MAX_DIRTY_SESSIONS_PER_NODE);
+        assert_eq!(b.entries.len(), MAX_DIRTY_SESSIONS_PER_SERVER);
         // A known session (e.g. the final report of a rebuilt instance) and
         // another assigned user in a known session are always accepted.
         b.update(n, "s0", &report(u, 9, 9));
         b.update(n, "s0", &report(u2, 1, 1));
-        assert_eq!(b.entries.len(), MAX_DIRTY_SESSIONS_PER_NODE + 1);
+        assert_eq!(b.entries.len(), MAX_DIRTY_SESSIONS_PER_SERVER + 1);
         // Other nodes are unaffected.
         b.update(other, "x", &report(u, 1, 1));
-        assert_eq!(b.entries.len(), MAX_DIRTY_SESSIONS_PER_NODE + 2);
+        assert_eq!(b.entries.len(), MAX_DIRTY_SESSIONS_PER_SERVER + 2);
         // Once persisted, sessions stop counting.
         b.mark_flushed(&b.snapshot());
         b.update(n, "one-too-many", &report(u, 1, 1));
@@ -3553,7 +3570,7 @@ mod db_tests {
     /// Red team Phase B H1: a known session used to accept unlimited fake
     /// user ids (1M entries / 380 MB in < 1 s). Non-members never enter
     /// memory, oversized reports are dropped whole, and a node's entries
-    /// are bounded by assigned users x MAX_DIRTY_SESSIONS_PER_NODE.
+    /// are bounded by assigned users x MAX_DIRTY_SESSIONS_PER_SERVER.
     #[test]
     fn known_session_accepts_unbounded_fake_users() {
         let (b, node, real) = (TrafficBuffer::new(), Uuid::new_v4(), Uuid::new_v4());
@@ -3584,8 +3601,8 @@ mod db_tests {
         for i in 0..1000 {
             b.update(node, &format!("s{i}"), &report(real, 1, 1));
         }
-        assert!(b.entries.len() <= MAX_DIRTY_SESSIONS_PER_NODE);
-        assert_eq!(b.node_entry_count(node), b.entries.len());
+        assert!(b.entries.len() <= MAX_DIRTY_SESSIONS_PER_SERVER);
+        assert_eq!(b.server_entry_count(node), b.entries.len());
     }
 
     fn rep_users(users: &[Uuid], v: u64, session: &str) -> TrafficReport {
@@ -3619,11 +3636,14 @@ mod db_tests {
         let n = Uuid::new_v4();
         let us: Vec<Uuid> = (0..1000).map(|_| Uuid::new_v4()).collect();
         b.set_members(n, members(n, &us));
-        for s in 0..MAX_DIRTY_SESSIONS_PER_NODE {
+        for s in 0..MAX_DIRTY_SESSIONS_PER_SERVER {
             b.update(n, &format!("s{s}"), &rep_users(&us, 1, &format!("s{s}")));
         }
         b.mark_flushed(&b.snapshot());
-        assert_eq!(b.node_entry_count(n), 1000 * MAX_DIRTY_SESSIONS_PER_NODE);
+        assert_eq!(
+            b.server_entry_count(n),
+            1000 * MAX_DIRTY_SESSIONS_PER_SERVER
+        );
         let t = Instant::now();
         b.update(n, "s16", &rep_users(&us, 1, "s16"));
         let took = t.elapsed();
@@ -3633,14 +3653,17 @@ mod db_tests {
             took < Duration::from_millis(250),
             "report at cap took {took:?}"
         );
-        assert_eq!(b.node_entry_count(n), 1000 * MAX_DIRTY_SESSIONS_PER_NODE);
+        assert_eq!(
+            b.server_entry_count(n),
+            1000 * MAX_DIRTY_SESSIONS_PER_SERVER
+        );
         assert!(
             !b.session_known(n, "s0"),
             "oldest clean session evicted whole"
         );
         assert!(b.entries.contains_key(&(n, (n, us[999]), "s16".into())));
         assert_eq!(
-            b.node_entry_count(n),
+            b.server_entry_count(n),
             b.entries.iter().filter(|e| e.key().0 == n).count()
         );
     }
@@ -3684,9 +3707,9 @@ mod db_tests {
         assert_eq!(b.dirty_sessions(n), 1);
         b.remove(&(n, (n, us[0]), "b".into()));
         assert_eq!(b.dirty_sessions(n), 0);
-        assert_eq!(b.node_entry_count(n), 6);
+        assert_eq!(b.server_entry_count(n), 6);
         b.prune(Instant::now() + PRUNE_IDLE + Duration::from_secs(1));
-        assert_eq!(b.node_entry_count(n), 0);
+        assert_eq!(b.server_entry_count(n), 0);
         assert!(b.index.is_empty());
     }
 
@@ -3817,7 +3840,7 @@ mod db_tests {
         db.flush(&b).await;
         assert_eq!(db.used(u).await, 0);
         assert!(b.entries.is_empty());
-        assert_eq!(b.node_entry_count(n), 0);
+        assert_eq!(b.server_entry_count(n), 0);
         assert!(!b.session_known(n, "s1"));
         assert_history(&db).await;
         db.drop().await;
@@ -3834,7 +3857,7 @@ mod db_tests {
         for (node, user, ago) in [(n, u, "2 hours"), (n2, u2, "1 second")] {
             sqlx::query(sqlx::AssertSqlSafe(format!(
                 "INSERT INTO traffic_counters \
-                 (node_id, entrance_id, user_id, session_id, up_bytes, down_bytes, updated_at) \
+                 (server_id, entrance_id, user_id, session_id, up_bytes, down_bytes, updated_at) \
                  SELECT $1, e.id, $2, 's1', 0, 0, now() - interval '{ago}' FROM entrances e \
                  WHERE e.node_id = $1 AND e.kind = 'direct'"
             )))
@@ -3847,7 +3870,7 @@ mod db_tests {
         // A 2 h outage: the node was last seen 2 h ago and was last billed
         // then; its agent reconnects (R13 reconnect credit).
         sqlx::query(
-            "UPDATE nodes SET traffic_tat = now() - interval '2 hours', status = 'offline', \
+            "UPDATE servers SET traffic_tat = now() - interval '2 hours', status = 'offline', \
              last_seen_at = now() - interval '2 hours' WHERE id = $1",
         )
         .bind(n)
@@ -3868,7 +3891,7 @@ mod db_tests {
         );
         // The full counter is stored anyway: nothing re-bills later.
         let stored: i64 = sqlx::query_scalar(
-            "SELECT up_bytes FROM traffic_counters WHERE node_id = $1 AND user_id = $2",
+            "SELECT up_bytes FROM traffic_counters WHERE server_id = $1 AND user_id = $2",
         )
         .bind(n2)
         .bind(u2)
@@ -3890,7 +3913,7 @@ mod db_tests {
     async fn seed(db: &TestDb, n: Uuid, u: Uuid, session: &str, up: i64, ago: f64) {
         sqlx::query(
             "INSERT INTO traffic_counters \
-             (node_id, entrance_id, user_id, session_id, up_bytes, down_bytes, updated_at, \
+             (server_id, entrance_id, user_id, session_id, up_bytes, down_bytes, updated_at, \
               first_seen_at) \
              SELECT $1, e.id, $2, $3, $4, 0, now() - make_interval(secs => $5), \
                     now() - make_interval(secs => $5) \
@@ -3909,7 +3932,7 @@ mod db_tests {
     /// traffic_tat = now - ago (None = NULL).
     async fn set_tat(db: &TestDb, n: Uuid, ago: Option<f64>) {
         sqlx::query(
-            "UPDATE nodes SET traffic_tat = now() - make_interval(secs => $2) WHERE id = $1",
+            "UPDATE servers SET traffic_tat = now() - make_interval(secs => $2) WHERE id = $1",
         )
         .bind(n)
         .bind(ago)
@@ -3921,7 +3944,7 @@ mod db_tests {
     /// Seconds from now to traffic_tat (negative = in the past).
     async fn tat_from_now(db: &TestDb, n: Uuid) -> f64 {
         sqlx::query_scalar(
-            "SELECT extract(epoch FROM traffic_tat - now())::float8 FROM nodes WHERE id = $1",
+            "SELECT extract(epoch FROM traffic_tat - now())::float8 FROM servers WHERE id = $1",
         )
         .bind(n)
         .fetch_one(&db.pool)
@@ -3933,7 +3956,7 @@ mod db_tests {
     /// `direct_rows` / `write`).
     fn row(n: Uuid, u: Uuid, session: &str, up: i64, age: f64) -> FlushRow {
         FlushRow {
-            node_id: n,
+            server_id: n,
             entrance_id: Uuid::nil(),
             user_id: u,
             session_id: session.into(),
@@ -3947,7 +3970,7 @@ mod db_tests {
         let mut out = rows.to_vec();
         for r in &mut out {
             if r.entrance_id.is_nil() {
-                r.entrance_id = db.direct(r.node_id).await;
+                r.entrance_id = db.direct(r.server_id).await;
             }
         }
         out
@@ -3964,7 +3987,7 @@ mod db_tests {
     /// as if `secs` had elapsed.
     async fn elapse(db: &TestDb, secs: f64) {
         for sql in [
-            "UPDATE nodes SET traffic_tat = traffic_tat - make_interval(secs => $1)",
+            "UPDATE servers SET traffic_tat = traffic_tat - make_interval(secs => $1)",
             "UPDATE traffic_counters SET updated_at = updated_at - make_interval(secs => $1), \
              first_seen_at = first_seen_at - make_interval(secs => $1)",
             "UPDATE entrance_users_departed SET departed_at = departed_at - make_interval(secs => $1)",
@@ -4329,7 +4352,7 @@ mod db_tests {
         let (n, u) = db.member().await;
         seed(&db, n, u, "s1", 0, 86_000.0).await;
         sqlx::query(
-            "UPDATE nodes SET status = 'offline', last_seen_at = now() - interval '600 seconds', \
+            "UPDATE servers SET status = 'offline', last_seen_at = now() - interval '600 seconds', \
              traffic_tat = now() - interval '1 day' WHERE id = $1",
         )
         .bind(n)
@@ -4349,7 +4372,7 @@ mod db_tests {
         // Credit used up; after it expires, more reconnects mint (almost)
         // nothing: the node is back to the burst window from its tat.
         sqlx::query(
-            "UPDATE nodes SET traffic_credit_until = now() - interval '1 second' WHERE id = $1",
+            "UPDATE servers SET traffic_credit_until = now() - interval '1 second' WHERE id = $1",
         )
         .bind(n)
         .execute(&db.pool)
@@ -4374,7 +4397,7 @@ mod db_tests {
         let (n, u) = db.member().await;
         seed(db, n, u, "s1", 0, ago).await;
         sqlx::query(
-            "UPDATE nodes SET traffic_max_rate_bytes_per_sec = $2, \
+            "UPDATE servers SET traffic_max_rate_bytes_per_sec = $2, \
              traffic_tat = now() - make_interval(secs => $3) WHERE id = $1",
         )
         .bind(n)
@@ -4428,7 +4451,7 @@ mod db_tests {
         let (floor_age, until_left): (f64, f64) = sqlx::query_as(
             "SELECT extract(epoch FROM now() - traffic_credit_floor)::float8, \
                     extract(epoch FROM traffic_credit_until - now())::float8 \
-             FROM nodes WHERE id = $1",
+             FROM servers WHERE id = $1",
         )
         .bind(n)
         .fetch_one(&db.pool)
@@ -4460,7 +4483,7 @@ mod db_tests {
         );
         assert!(billed >= burst - R, "burst window billed: {billed}");
         let floor: Option<chrono::DateTime<chrono::Utc>> =
-            sqlx::query_scalar("SELECT traffic_credit_floor FROM nodes WHERE id = $1")
+            sqlx::query_scalar("SELECT traffic_credit_floor FROM servers WHERE id = $1")
                 .bind(n)
                 .fetch_one(&db.pool)
                 .await
@@ -4492,7 +4515,7 @@ mod db_tests {
         b.backdate_last_ok(Duration::from_secs(60));
         flush_buffer(&db.pool, &b, RATES, None).await.unwrap();
         let floor: Option<chrono::DateTime<chrono::Utc>> =
-            sqlx::query_scalar("SELECT traffic_credit_floor FROM nodes WHERE id = $1")
+            sqlx::query_scalar("SELECT traffic_credit_floor FROM servers WHERE id = $1")
                 .bind(n)
                 .fetch_one(&db.pool)
                 .await

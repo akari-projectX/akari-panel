@@ -66,7 +66,7 @@ async fn credentials(db: &TestDb, user: Uuid, node: Uuid) -> i64 {
 }
 
 async fn user_version(db: &TestDb, node: Uuid) -> i64 {
-    sqlx::query_scalar("SELECT user_version FROM nodes WHERE id = $1")
+    sqlx::query_scalar("SELECT user_version FROM servers WHERE id = $1")
         .bind(node)
         .fetch_one(&db.pool)
         .await

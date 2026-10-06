@@ -8,6 +8,8 @@ export function summaryOf(n: NodeView): NodeSummary {
   const hb = n.heartbeat;
   return {
     id: n.id,
+    server_id: n.server_id,
+    server_name: n.server_name,
     name: n.name,
     display_name: n.display_name,
     enabled: n.enabled,

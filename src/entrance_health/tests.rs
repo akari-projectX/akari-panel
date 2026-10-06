@@ -14,8 +14,9 @@ async fn relay(db: &TestDb, port: i32) -> (Uuid, Uuid) {
     let n = db.node().await;
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO entrances (id, node_id, kind, name, connect_host, connect_port, wire_no, \
-         listen_port, source_cidrs) VALUES ($1, $2, 'relay', 'IPLC', '127.0.0.1', $3, 1, 20443, \
+        "INSERT INTO entrances (id, node_id, server_id, kind, name, connect_host, connect_port, \
+         wire_no, listen_port, source_cidrs) VALUES ($1, $2, $2, 'relay', 'IPLC', '127.0.0.1', $3, \
+         1, 20443, \
          '{203.0.113.7/32}')",
     )
     .bind(id)
@@ -166,9 +167,14 @@ async fn hidden_relays_leave_subscription_and_portal_and_alert() {
     .execute(&db.pool)
     .await
     .unwrap();
-    sqlx::query("UPDATE nodes SET inbound = $2, cert_serial = 'aa' WHERE id = $1")
+    sqlx::query("UPDATE nodes SET inbound = $2 WHERE id = $1")
         .bind(n)
         .bind(json!({"protocol": "vless", "port": 443, "settings": {"clients": [], "decryption": "none"}}))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE servers SET cert_serial = 'aa' WHERE id = $1")
+        .bind(n)
         .execute(&db.pool)
         .await
         .unwrap();

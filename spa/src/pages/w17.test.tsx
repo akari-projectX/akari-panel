@@ -296,8 +296,8 @@ describe("console alert center", () => {
       alerts: [
         {
           id: 9,
-          node_id: "n1",
-          node_name: "香港 01",
+          server_id: "n1",
+          server_name: "香港 01",
           kind: "offline",
           status: "firing",
           fired_at: "2026-10-02T00:00:00Z",
@@ -425,8 +425,8 @@ describe("console alert center", () => {
       disk_percent: null,
       cert_days: null,
     };
-    const calls = fakeApi({ "GET /nodes/n1/alert-rules": rules, "PUT /nodes/n1/alert-rules": rules });
-    renderAdmin(<NodeAlertRulesCard nodeId="n1" />);
+    const calls = fakeApi({ "GET /servers/s1/alert-rules": rules, "PUT /servers/s1/alert-rules": rules });
+    renderAdmin(<NodeAlertRulesCard nodeId="s1" />);
     fireEvent.click(await screen.findByLabelText("静音此节点"));
     fireEvent.change(screen.getByLabelText("离线超过（秒）"), { target: { value: "600" } });
     fireEvent.click(screen.getByLabelText("CPU 过高"));
@@ -445,6 +445,8 @@ describe("node list (summary view)", () => {
   it("reads ?view=summary and links firing alerts", async () => {
     const full = {
       id: "n1",
+      server_id: "s1",
+      server_name: "hk-1",
       name: "hk-1",
       enabled: true,
       status: "online",

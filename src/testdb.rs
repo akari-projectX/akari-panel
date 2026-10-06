@@ -130,20 +130,63 @@ impl TestDb {
         id
     }
 
+    /// A server (an agent identity, pending: no certificate) without nodes.
+    pub async fn server(&self) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO servers (id, name) VALUES ($1, $2)")
+            .bind(id)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .unwrap();
+        id
+    }
+
     /// An enabled node with one vless inbound (and, like every node, its
-    /// direct entrance).
+    /// direct entrance) on a server of its own that shares the node's id —
+    /// the shape of a node migrated by 1036, so a test may use the id as
+    /// either. Tests of servers with several nodes use `node_on`.
     pub async fn node(&self) -> Uuid {
         let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO servers (id, name) VALUES ($1, $2)")
+            .bind(id)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .unwrap();
+        self.insert_node(id, id, 1).await;
+        id
+    }
+
+    /// Another enabled vless node on `server` (its own id; inbound port
+    /// `port`, which must not clash on the server).
+    pub async fn node_on(&self, server: Uuid, port: u16) -> Uuid {
+        let id = Uuid::new_v4();
+        self.insert_node(id, server, port).await;
+        id
+    }
+
+    async fn insert_node(&self, id: Uuid, server: Uuid, port: u16) {
         sqlx::query(
-            "INSERT INTO nodes (id, name, inbound) VALUES ($1, $2, \
-             '{\"protocol\":\"vless\",\"port\":1}'::jsonb)",
+            "INSERT INTO nodes (id, server_id, name, inbound) VALUES ($1, $2, $3, \
+             jsonb_build_object('protocol', 'vless', 'port', $4::int))",
         )
         .bind(id)
+        .bind(server)
         .bind(id.to_string())
+        .bind(i32::from(port))
         .execute(&self.pool)
         .await
         .unwrap();
-        id
+    }
+
+    /// The server a node runs on.
+    pub async fn server_of(&self, node: Uuid) -> Uuid {
+        sqlx::query_scalar("SELECT server_id FROM nodes WHERE id = $1")
+            .bind(node)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap()
     }
 
     /// The node's direct entrance.
@@ -185,17 +228,20 @@ impl TestDb {
             .unwrap()
     }
 
-    /// (config_version, user_version)
+    /// (config_version, user_version) of a server, or of a node's server.
     pub async fn versions(&self, node: Uuid) -> (i64, i64) {
-        sqlx::query_as("SELECT config_version, user_version FROM nodes WHERE id = $1")
-            .bind(node)
-            .fetch_one(&self.pool)
-            .await
-            .unwrap()
+        sqlx::query_as(
+            "SELECT config_version, user_version FROM servers \
+             WHERE id = $1 OR id = (SELECT server_id FROM nodes WHERE id = $1)",
+        )
+        .bind(node)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap()
     }
 
     /// A LISTEN on the change channel (see notify.rs). Channels are
-    /// database-wide: callers must filter by their own node ids.
+    /// database-wide: callers must filter by their own server ids.
     pub async fn listener(&self) -> sqlx::postgres::PgListener {
         let mut l = sqlx::postgres::PgListener::connect_with(&self.pool)
             .await

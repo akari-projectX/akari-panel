@@ -1112,7 +1112,7 @@ pub async fn badges(
     .fetch_one(state.pg())
     .await?;
     let firing: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM node_alerts WHERE status = 'firing'")
+        sqlx::query_scalar("SELECT count(*) FROM server_alerts WHERE status = 'firing'")
             .fetch_one(state.pg())
             .await?;
     Ok(Json(json!({

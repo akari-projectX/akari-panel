@@ -100,8 +100,8 @@ pub struct NodeRow {
     pub rate_permille: i32,
     /// The node's inbound (xray JSON).
     pub inbound: Value,
-    /// What clients dial: the entrance's host (else the node's TLS domain;
-    /// none = left out) and port (none = the inbound's).
+    /// What clients dial: the entrance's host (else the server's TLS
+    /// domain; none = left out) and port (none = the inbound's).
     pub server: Option<String>,
     pub port: Option<i32>,
     /// The user's account on this entrance.
@@ -230,17 +230,19 @@ pub async fn subscription(
     {
         return reject::not_found();
     }
-    let rows = match sqlx::query_as::<_, NodeRow>(
+    let rows = match sqlx::query_as::<_, NodeRow>(sqlx::AssertSqlSafe(format!(
         "SELECT n.name, n.display_name, n.tags, e.name AS entrance, e.rate_permille, n.inbound, \
-         coalesce(e.connect_host, n.tls_domain) AS server, e.connect_port AS port, \
+         coalesce(e.connect_host, s.tls_domain) AS server, e.connect_port AS port, \
          eu.protocol, eu.account \
          FROM entrance_users eu \
          JOIN entrances e ON e.id = eu.entrance_id AND e.enabled AND e.hidden_since IS NULL \
          JOIN nodes n ON n.id = e.node_id AND n.enabled AND n.visible AND n.inbound IS NOT NULL \
+         JOIN servers s ON s.id = n.server_id AND {} \
          JOIN users u ON u.id = eu.user_id AND u.enabled \
          WHERE eu.user_id = $1 \
          ORDER BY n.sort, coalesce(n.display_name, n.name), n.id, e.kind <> 'direct', e.sort, e.name",
-    )
+        crate::grpc::SERVER_SERVES
+    )))
     .bind(user.id)
     .fetch_all(state.pg())
     .await

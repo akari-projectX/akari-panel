@@ -265,7 +265,7 @@ pub async fn run(a: MultiArgs) -> Result<()> {
         .connect(&a.database_url)
         .await?;
     let node: uuid::Uuid =
-        sqlx::query_scalar("SELECT node_id FROM node_enrollments WHERE token_hash = $1")
+        sqlx::query_scalar("SELECT server_id FROM server_enrollments WHERE token_hash = $1")
             .bind(akari_panel::enroll::hash_token(&common::enroll_token(
                 a.delete_agent,
             )))
@@ -283,13 +283,13 @@ pub async fn run(a: MultiArgs) -> Result<()> {
     let admin = crate::load::admin_cookie(&pg, &a.data_dir).await?;
     let t = Instant::now();
     let del = http
-        .delete(format!("{pa}/api/v1/nodes/{node}"))
+        .delete(format!("{pa}/api/v1/servers/{node}"))
         .header(reqwest::header::COOKIE, &admin)
         .send()
         .await?;
     check(
         del.status().as_u16() == 202,
-        "DELETE node on A accepted (202)",
+        "DELETE server on A accepted (202)",
     )?;
     let empty = match ag.next(Duration::from_secs(10)).await {
         Ok(DownMsg::Snapshot(s)) => s,
@@ -310,7 +310,7 @@ pub async fn run(a: MultiArgs) -> Result<()> {
             Err(e) => break e,
         }
     };
-    let gone: bool = sqlx::query_scalar("SELECT NOT EXISTS (SELECT 1 FROM nodes WHERE id = $1)")
+    let gone: bool = sqlx::query_scalar("SELECT NOT EXISTS (SELECT 1 FROM servers WHERE id = $1)")
         .bind(node)
         .fetch_one(&pg)
         .await?;

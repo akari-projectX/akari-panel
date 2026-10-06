@@ -1,10 +1,10 @@
 //! W17 alert tests: the pure rules (`evaluate`, `plan`), validators, the
 //! webhook signature (fixed vector), and real-database rounds: fire →
-//! notify → resolve, dedupe, cooldown, muted nodes, one leader among two
+//! notify → resolve, dedupe, cooldown, muted servers, one leader among two
 //! instances, delivery through a mock webhook receiver and a mock Telegram
 //! Bot API (HMAC verified, retries, dead letters, exclusive claims), the
 //! settings API (optimistic concurrency, sealed secrets never returned or
-//! audited) and per-node rules.
+//! audited) and per-server rules.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -67,7 +67,7 @@ fn offline_rule_and_stale_live_kinds() {
     let v = evaluate(&f, &r, now());
     assert_eq!(kinds(&v), vec!["offline"]);
     assert_eq!(v.firing[0].value, "离线 1 小时 1 分");
-    // Never seen: not "offline" (a node that never connected is pending).
+    // Never seen: not "offline" (a server that never connected is pending).
     let f = Facts {
         seen_age_secs: None,
         ..f
@@ -85,8 +85,8 @@ fn offline_rule_and_stale_live_kinds() {
     assert!(evaluate(&f, &r, now()).firing.is_empty());
 }
 
-/// W28-a: hidden relay entrances fire the node's entrance_down alert
-/// (whatever the node's own state), listing them; the rule can be off.
+/// W28-a: hidden relay entrances fire the server's entrance_down alert
+/// (whatever the server's own state), listing them; the rule can be off.
 #[test]
 fn hidden_relay_entrances_fire_entrance_down() {
     let mut f = Facts {
@@ -190,16 +190,16 @@ fn disk_latency_certificates_last_error() {
     assert!(evaluate(&f, &Rules::default(), now()).firing.is_empty());
 }
 
-fn firing(id: i64, node: Uuid, kind: &str, notified: bool) -> Firing {
+fn firing(id: i64, server: Uuid, kind: &str, notified: bool) -> Firing {
     Firing {
         id,
-        node_id: node,
+        server_id: server,
         kind: kind.into(),
         value: "v".into(),
         detail: "d".into(),
         notified,
         fired_at: now(),
-        node_name: "n".into(),
+        server_name: "n".into(),
     }
 }
 
@@ -250,13 +250,13 @@ fn plan_transitions() {
                 value: "changed".into(),
                 detail: "d".into()
             },
-            // The node left monitoring: silent.
+            // The server left monitoring: silent.
             Step::Resolve {
                 id: 5,
                 notify: false
             },
             Step::Fire {
-                node: a,
+                server: a,
                 obs: obs("last_error", "e")
             },
         ]
@@ -307,14 +307,14 @@ fn validators() {
     for bad in ["ops", "a@b", "a b@c.com", "a@c.com,b@d.com", "@c.com"] {
         assert!(!valid_email(bad), "{bad}");
     }
-    let mut n = NodeRules {
+    let mut n = ServerRules {
         disabled: vec!["cpu".into()],
         ..Default::default()
     };
     assert!(n.check().is_ok());
     n.disabled.push("nope".into());
     assert!(n.check().is_err());
-    let n = NodeRules {
+    let n = ServerRules {
         cpu_minutes: Some(61),
         ..Default::default()
     };
@@ -355,11 +355,11 @@ fn webhook_signature_vector() {
 
 #[test]
 fn messages() {
-    let node = Uuid::new_v4();
+    let server = Uuid::new_v4();
     let m = Message::alert(
         "firing",
         7,
-        node,
+        server,
         "hk-1",
         "offline",
         "离线 5 分钟",
@@ -367,13 +367,13 @@ fn messages() {
         now(),
         None,
     );
-    assert_eq!(m.title(), "[告警] hk-1：节点离线");
+    assert_eq!(m.title(), "[告警] hk-1：服务器离线");
     assert!(m.text().contains("2026-10-02 12:00:00 UTC"));
     assert_eq!(m.payload["alert"]["id"], 7);
     let m = Message::alert(
         "resolved",
         7,
-        node,
+        server,
         "hk-1",
         "cpu",
         "CPU 95%",
@@ -493,11 +493,11 @@ async fn version(state: &AppState) -> i64 {
     load(&mut c).await.unwrap().version
 }
 
-/// An enrolled node that has been offline for `secs`.
+/// An enrolled server that has been offline for `secs`.
 async fn offline_node(db: &TestDb, secs: i64) -> Uuid {
-    let n = db.node().await;
+    let n = db.server().await;
     sqlx::query(
-        "UPDATE nodes SET cert_serial = $2, status = 'offline', \
+        "UPDATE servers SET cert_serial = $2, status = 'offline', \
          last_seen_at = now() - make_interval(secs => $3) WHERE id = $1",
     )
     .bind(n)
@@ -510,7 +510,7 @@ async fn offline_node(db: &TestDb, secs: i64) -> Uuid {
 }
 
 async fn set_online(db: &TestDb, n: Uuid) {
-    sqlx::query("UPDATE nodes SET status = 'online', last_seen_at = now() WHERE id = $1")
+    sqlx::query("UPDATE servers SET status = 'online', last_seen_at = now() WHERE id = $1")
         .bind(n)
         .execute(&db.pool)
         .await
@@ -518,11 +518,13 @@ async fn set_online(db: &TestDb, n: Uuid) {
 }
 
 async fn alerts_of(db: &TestDb, n: Uuid) -> Vec<(String, String, bool)> {
-    sqlx::query_as("SELECT kind, status, notified FROM node_alerts WHERE node_id = $1 ORDER BY id")
-        .bind(n)
-        .fetch_all(&db.pool)
-        .await
-        .unwrap()
+    sqlx::query_as(
+        "SELECT kind, status, notified FROM server_alerts WHERE server_id = $1 ORDER BY id",
+    )
+    .bind(n)
+    .fetch_all(&db.pool)
+    .await
+    .unwrap()
 }
 
 async fn notifications(db: &TestDb) -> Vec<(String, String, String)> {
@@ -548,7 +550,7 @@ async fn round_fires_notifies_and_resolves() {
     save(&state, req).await.unwrap();
 
     let n = offline_node(&db, 120).await;
-    let healthy = db.node().await; // pending (never enrolled): not monitored
+    let healthy = db.server().await; // pending (never enrolled): not monitored
     let s = eval::round(&state).await.unwrap().unwrap();
     assert_eq!((s.fired, s.notifications), (1, 1));
     assert_eq!(
@@ -577,7 +579,7 @@ async fn round_fires_notifies_and_resolves() {
         assert_eq!(h["x-akari-event"], "firing");
         let v: Value = serde_json::from_slice(body).unwrap();
         assert_eq!(v["alert"]["kind"], "offline");
-        assert_eq!(v["alert"]["node_id"], n.to_string());
+        assert_eq!(v["alert"]["server_id"], n.to_string());
         assert!(!String::from_utf8_lossy(body).contains(SECRET));
     }
     assert_eq!(
@@ -594,7 +596,7 @@ async fn round_fires_notifies_and_resolves() {
     assert_eq!(hook.got.lock().unwrap()[1].1["x-akari-event"], "resolved");
 
     // Flap within the cooldown: recorded, not notified; nor its resolution.
-    sqlx::query("UPDATE nodes SET status = 'offline', last_seen_at = now() - interval '2 minutes' WHERE id = $1")
+    sqlx::query("UPDATE servers SET status = 'offline', last_seen_at = now() - interval '2 minutes' WHERE id = $1")
         .bind(n)
         .execute(&db.pool)
         .await
@@ -612,27 +614,27 @@ async fn round_fires_notifies_and_resolves() {
         ]
     );
 
-    // Muted node: recorded, never notified. Disabled kind: never fires.
+    // Muted server: recorded, never notified. Disabled kind: never fires.
     let m = offline_node(&db, 600).await;
     let d = offline_node(&db, 600).await;
-    for (node, rules) in [
+    for (server, rules) in [
         (
             m,
-            NodeRules {
+            ServerRules {
                 muted: true,
                 ..Default::default()
             },
         ),
         (
             d,
-            NodeRules {
+            ServerRules {
                 disabled: vec!["offline".into()],
                 ..Default::default()
             },
         ),
     ] {
         let mut tx = db.pool.begin().await.unwrap();
-        apply_set_node_rules(&mut tx, &Actor::test(), node, &rules)
+        apply_set_server_rules(&mut tx, &Actor::test(), server, &rules)
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -644,13 +646,13 @@ async fn round_fires_notifies_and_resolves() {
         vec![("offline".into(), "firing".into(), false)]
     );
     assert!(alerts_of(&db, d).await.is_empty());
-    // A per-node threshold above the outage: resolves silently.
+    // A per-server threshold above the outage: resolves silently.
     let mut tx = db.pool.begin().await.unwrap();
-    apply_set_node_rules(
+    apply_set_server_rules(
         &mut tx,
         &Actor::test(),
         m,
-        &NodeRules {
+        &ServerRules {
             muted: true,
             offline_secs: Some(3600),
             ..Default::default()
@@ -671,7 +673,7 @@ async fn round_fires_notifies_and_resolves() {
     let s = eval::round(&state).await.unwrap().unwrap();
     assert_eq!((s.resolved, s.notifications, s.monitored), (1, 0, 0));
     let firing: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM node_alerts WHERE status = 'firing'")
+        sqlx::query_scalar("SELECT count(*) FROM server_alerts WHERE status = 'firing'")
             .fetch_one(&db.pool)
             .await
             .unwrap();
@@ -718,7 +720,7 @@ async fn one_leader_among_two_instances() {
         let (ra, rb) = (ra.unwrap(), rb.unwrap());
         assert!(ra.is_some() || rb.is_some());
     }
-    let alerts: i64 = sqlx::query_scalar("SELECT count(*) FROM node_alerts")
+    let alerts: i64 = sqlx::query_scalar("SELECT count(*) FROM server_alerts")
         .fetch_one(&db.pool)
         .await
         .unwrap();
@@ -768,7 +770,7 @@ async fn delivery_telegram_retry_dead_exclusive() {
     }
 
     // Transient: 502 -> pending, attempts 1, next attempt in ~30 s.
-    sqlx::query("UPDATE nodes SET status = 'online', last_seen_at = now()")
+    sqlx::query("UPDATE servers SET status = 'online', last_seen_at = now()")
         .execute(&db.pool)
         .await
         .unwrap();
@@ -843,7 +845,7 @@ async fn delivery_telegram_retry_dead_exclusive() {
 
 /// Settings and the alert center over HTTP: secrets never returned or
 /// audited in clear, optimistic concurrency, validation, the test button,
-/// per-node rules, ack, list filters, metrics counts.
+/// per-server rules, ack, list filters, metrics counts.
 #[tokio::test]
 async fn settings_and_alert_center_api() {
     let Some(db) = TestDb::new().await else {
@@ -971,14 +973,16 @@ async fn settings_and_alert_center_api() {
         .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
 
-    // Per-node rules.
+    // Per-server rules.
     let n = offline_node(&db, 900).await;
-    let r = c.get(&format!("/test/api/v1/nodes/{n}/alert-rules")).await;
-    assert_eq!(r.json(), json!(NodeRules::default()));
+    let r = c
+        .get(&format!("/test/api/v1/servers/{n}/alert-rules"))
+        .await;
+    assert_eq!(r.json(), json!(ServerRules::default()));
     let r = c
         .req(
             Method::PUT,
-            &format!("/test/api/v1/nodes/{n}/alert-rules"),
+            &format!("/test/api/v1/servers/{n}/alert-rules"),
             Some(json!({"disabled": ["latency", "cpu", "cpu"], "offline_secs": 600})),
         )
         .await;
@@ -987,7 +991,7 @@ async fn settings_and_alert_center_api() {
     let r = c
         .req(
             Method::PUT,
-            &format!("/test/api/v1/nodes/{n}/alert-rules"),
+            &format!("/test/api/v1/servers/{n}/alert-rules"),
             Some(json!({"disabled": ["nope"]})),
         )
         .await;
@@ -995,7 +999,7 @@ async fn settings_and_alert_center_api() {
     let r = c
         .req(
             Method::PUT,
-            &format!("/test/api/v1/nodes/{}/alert-rules", Uuid::new_v4()),
+            &format!("/test/api/v1/servers/{}/alert-rules", Uuid::new_v4()),
             Some(json!({})),
         )
         .await;
@@ -1007,7 +1011,7 @@ async fn settings_and_alert_center_api() {
     assert_eq!(l["firing"], 1);
     assert_eq!(l["firing_by_kind"]["offline"], 1);
     let a = &l["alerts"][0];
-    assert_eq!(a["node_id"], n.to_string());
+    assert_eq!(a["server_id"], n.to_string());
     assert_eq!(a["kind"], "offline");
     let id = a["id"].as_i64().unwrap();
     assert_eq!(
@@ -1097,7 +1101,7 @@ async fn email_channel_uses_the_outbox() {
     assert!(
         mails
             .iter()
-            .all(|m| m.0 == "node_alert" && m.2.contains("节点离线"))
+            .all(|m| m.0 == "node_alert" && m.2.contains("服务器离线"))
     );
     assert_eq!(mails[1].1, "oncall@example.com");
     // SMTP switched off meanwhile: the notification dies, nothing queued.
@@ -1105,7 +1109,7 @@ async fn email_channel_uses_the_outbox() {
         .execute(&db.pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE nodes SET status = 'online', last_seen_at = now()")
+    sqlx::query("UPDATE servers SET status = 'online', last_seen_at = now()")
         .execute(&db.pool)
         .await
         .unwrap();
@@ -1139,7 +1143,7 @@ async fn round_gathers_every_fact_source() {
     save(&state, req).await.unwrap();
     let n = offline_node(&db, 0).await;
     sqlx::query(
-        "UPDATE nodes SET status = 'online', last_seen_at = now(), tls_domain = 'n1.example.com', \
+        "UPDATE servers SET status = 'online', last_seen_at = now(), tls_domain = 'n1.example.com', \
          cert_not_after = now() + interval '2 days', last_error = 'xray: bad inbound' WHERE id = $1",
     )
     .bind(n)
@@ -1148,7 +1152,7 @@ async fn round_gathers_every_fact_source() {
     .unwrap();
     for ago in 1..=3 {
         sqlx::query(
-            "INSERT INTO node_metrics_1m (node_id, bucket, samples, cpu_sum, mem_used_sum, mem_total) \
+            "INSERT INTO server_metrics_1m (server_id, bucket, samples, cpu_sum, mem_used_sum, mem_total) \
              VALUES ($1, date_trunc('minute', now()) - make_interval(mins => $2), 2, 190, 1900, 1000)",
         )
         .bind(n)
@@ -1158,14 +1162,14 @@ async fn round_gathers_every_fact_source() {
         .unwrap();
     }
     sqlx::query(
-        "INSERT INTO node_latency (node_id, source, target, delay_ms, error, ord, measured_at) VALUES \
+        "INSERT INTO server_latency (server_id, source, target, delay_ms, error, ord, measured_at) VALUES \
          ($1, 'panel', 'in-vless', NULL, 'refused', 0, now()), ($1, 'panel', 'in-hy2', NULL, 'udp', 1, now())",
     )
     .bind(n)
     .execute(&db.pool)
     .await
     .unwrap();
-    let key = format!("akari:node:hb:{n}");
+    let key = format!("akari:server:hb:{n}");
     let blob = json!({
         "cpu_percent": 95.0, "ts": "2026-10-02T00:00:00Z",
         "metrics": {"disk_used_bytes": 99, "disk_total_bytes": 100},
@@ -1197,7 +1201,7 @@ async fn round_gathers_every_fact_source() {
         assert!(kinds.contains(&k.to_string()), "{k} in {kinds:?}");
     }
     // A new error text updates the firing alert in place.
-    sqlx::query("UPDATE nodes SET last_error = 'xray: other' WHERE id = $1")
+    sqlx::query("UPDATE servers SET last_error = 'xray: other' WHERE id = $1")
         .bind(n)
         .execute(&db.pool)
         .await
@@ -1205,7 +1209,7 @@ async fn round_gathers_every_fact_source() {
     let s = eval::round(&state).await.unwrap().unwrap();
     assert_eq!((s.fired, s.resolved), (0, 0));
     let detail: String = sqlx::query_scalar(
-        "SELECT detail FROM node_alerts WHERE node_id = $1 AND kind = 'last_error'",
+        "SELECT detail FROM server_alerts WHERE server_id = $1 AND kind = 'last_error'",
     )
     .bind(n)
     .fetch_one(&db.pool)
@@ -1213,7 +1217,7 @@ async fn round_gathers_every_fact_source() {
     .unwrap();
     assert_eq!(detail, "xray: other");
     let _: i64 = state.valkey().del(&key).await.unwrap();
-    // Heartbeat gone (Valkey TTL): disk and the node certificate are
+    // Heartbeat gone (Valkey TTL): disk and the server certificate are
     // undecided, so they stay firing.
     let s = eval::round(&state).await.unwrap().unwrap();
     assert_eq!(s.resolved, 0);
@@ -1347,14 +1351,14 @@ fn settings_refusals_carry_codes() {
         assert_eq!(e.status(), StatusCode::BAD_REQUEST);
     }
     assert!(check_put(&base()).is_ok());
-    let too_many = NodeRules {
+    let too_many = ServerRules {
         disabled: (0..=KINDS.len()).map(|i| format!("k{i}")).collect(),
-        ..NodeRules::default()
+        ..ServerRules::default()
     };
     assert_eq!(too_many.check().unwrap_err().code(), "alert.too_many_kinds");
-    let unknown = NodeRules {
+    let unknown = ServerRules {
         disabled: vec!["nope".into()],
-        ..NodeRules::default()
+        ..ServerRules::default()
     };
     let e = unknown.check().unwrap_err();
     assert_eq!(e.code(), "alert.kind_unknown");

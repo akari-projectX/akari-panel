@@ -129,6 +129,7 @@ async fn install_link_lifecycle() {
     let admin = admin_client(&st, &db).await;
     let v = create(&admin, "tokyo-1").await;
     let id: Uuid = v["id"].as_str().unwrap().parse().unwrap();
+    let sid: Uuid = v["server_id"].as_str().unwrap().parse().unwrap();
     let token = token_of(&v);
     assert_eq!(v["enrollment_token"], token);
     let inst = &v["install"];
@@ -161,10 +162,10 @@ async fn install_link_lifecycle() {
     assert_eq!(inbound["streamSettings"]["security"], "reality");
     // One token issuance audited, flagged as an install link.
     let n: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_log WHERE target_id = $1 AND action = 'node.enroll_token' \
+        "SELECT count(*) FROM audit_log WHERE target_id = $1 AND action = 'server.enroll_token' \
          AND (after->>'install_link')::bool",
     )
-    .bind(id.to_string())
+    .bind(sid.to_string())
     .fetch_one(st.pg())
     .await
     .unwrap();
@@ -217,11 +218,11 @@ async fn install_link_lifecycle() {
     ] {
         assert_eq!(c.get(&p).await.fingerprint(), junk(&c).await, "{p}");
     }
-    // Re-install: a fresh link for the enrolled node; enrolling with it
+    // Re-install: a fresh link for the enrolled server; enrolling with it
     // supersedes the old certificate.
     let r = admin
         .post(
-            &format!("/test/api/v1/nodes/{id}/install"),
+            &format!("/test/api/v1/servers/{sid}/install"),
             json!({"origin": ORIGIN}),
         )
         .await;
@@ -272,9 +273,9 @@ async fn only_live_install_links_are_served() {
     let t = token_of(&v);
     assert_eq!(c.get(&format!("/test/install/{t}")).await.status, 200);
     sqlx::query(
-        "UPDATE node_enrollments SET expires_at = now() - interval '1 second' WHERE node_id = $1",
+        "UPDATE server_enrollments SET expires_at = now() - interval '1 second' WHERE server_id = $1",
     )
-    .bind(v["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+    .bind(v["server_id"].as_str().unwrap().parse::<Uuid>().unwrap())
     .execute(st.pg())
     .await
     .unwrap();
@@ -283,15 +284,15 @@ async fn only_live_install_links_are_served() {
         want
     );
 
-    // Node being deleted.
+    // Server being deleted.
     let v = create(&admin, "del").await;
     let t = token_of(&v);
-    let id = v["id"].as_str().unwrap();
+    let sid = v["server_id"].as_str().unwrap();
     assert_eq!(
         admin
             .req(
                 axum::http::Method::DELETE,
-                &format!("/test/api/v1/nodes/{id}"),
+                &format!("/test/api/v1/servers/{sid}"),
                 None
             )
             .await
@@ -306,10 +307,10 @@ async fn only_live_install_links_are_served() {
     // Replaced by a newer link.
     let v = create(&admin, "re").await;
     let t = token_of(&v);
-    let id = v["id"].as_str().unwrap();
+    let sid = v["server_id"].as_str().unwrap();
     let r = admin
         .post(
-            &format!("/test/api/v1/nodes/{id}/install"),
+            &format!("/test/api/v1/servers/{sid}/install"),
             json!({"origin": ORIGIN}),
         )
         .await;
@@ -508,10 +509,10 @@ async fn create_and_install_validation() {
     assert_eq!(r.json()["reality_dests"][0], "www.apple.com");
     let anon = Client::new(&st, rand_ip());
     assert_eq!(anon.get("/test/api/v1/inbound-templates").await.status, 401);
-    // Re-install of an unknown node.
+    // Re-install of an unknown server.
     let r = admin
         .post(
-            &format!("/test/api/v1/nodes/{}/install", Uuid::new_v4()),
+            &format!("/test/api/v1/servers/{}/install", Uuid::new_v4()),
             json!({"origin": ORIGIN}),
         )
         .await;
@@ -650,12 +651,15 @@ async fn tls_domain_flows_into_templates_and_script() {
     assert_eq!(r.status, 201, "{}", String::from_utf8_lossy(&r.body));
     let v: Value = r.json();
     let id: Uuid = v["id"].as_str().unwrap().parse().unwrap();
-    let (domain, inbound, cv): (Option<String>, Value, i64) =
-        sqlx::query_as("SELECT tls_domain, inbound, config_version FROM nodes WHERE id = $1")
-            .bind(id)
-            .fetch_one(st.pg())
-            .await
-            .unwrap();
+    let sid: Uuid = v["server_id"].as_str().unwrap().parse().unwrap();
+    let (domain, inbound, cv): (Option<String>, Value, i64) = sqlx::query_as(
+        "SELECT s.tls_domain, n.inbound, s.config_version FROM nodes n \
+         JOIN servers s ON s.id = n.server_id WHERE n.id = $1",
+    )
+    .bind(id)
+    .fetch_one(st.pg())
+    .await
+    .unwrap();
     assert_eq!(domain.as_deref(), Some("hk1.example.com"));
     assert!(cv >= 1);
     assert_eq!(
@@ -663,10 +667,10 @@ async fn tls_domain_flows_into_templates_and_script() {
         "hk1.example.com"
     );
     let n: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_log WHERE target_id = $1 AND action = 'node.update' \
+        "SELECT count(*) FROM audit_log WHERE target_id = $1 AND action = 'server.update' \
          AND after->>'tls_domain' = 'hk1.example.com'",
     )
-    .bind(id.to_string())
+    .bind(sid.to_string())
     .fetch_one(st.pg())
     .await
     .unwrap();
@@ -702,16 +706,16 @@ async fn tls_domain_flows_into_templates_and_script() {
     // W18: an agent older than protocol 6 ignores the node domain and
     // fails the whole snapshot without certificate files: neither the
     // inbounds nor a domain change is accepted for it (nothing changes).
-    sqlx::query("UPDATE nodes SET agent_protocol = 5 WHERE id = $1")
-        .bind(id)
+    sqlx::query("UPDATE servers SET agent_protocol = 5 WHERE id = $1")
+        .bind(sid)
         .execute(st.pg())
         .await
         .unwrap();
-    let path = format!("/test/api/v1/nodes/{id}");
+    let path = format!("/test/api/v1/servers/{sid}");
     let r = admin
         .req(
             axum::http::Method::PUT,
-            &format!("{path}/inbound"),
+            &format!("/test/api/v1/nodes/{id}/inbound"),
             Some(json!({"inbound": inbound})),
         )
         .await;
@@ -726,8 +730,8 @@ async fn tls_domain_flows_into_templates_and_script() {
         .await;
     assert_eq!(r.status, 400);
     let (domain2, cv2): (Option<String>, i64) =
-        sqlx::query_as("SELECT tls_domain, config_version FROM nodes WHERE id = $1")
-            .bind(id)
+        sqlx::query_as("SELECT tls_domain, config_version FROM servers WHERE id = $1")
+            .bind(sid)
             .fetch_one(st.pg())
             .await
             .unwrap();
@@ -742,8 +746,8 @@ async fn tls_domain_flows_into_templates_and_script() {
         )
         .await;
     assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
-    sqlx::query("UPDATE nodes SET agent_protocol = 6 WHERE id = $1")
-        .bind(id)
+    sqlx::query("UPDATE servers SET agent_protocol = 6 WHERE id = $1")
+        .bind(sid)
         .execute(st.pg())
         .await
         .unwrap();
@@ -769,8 +773,8 @@ async fn tls_domain_check_compares_with_the_node() {
     let admin = admin_client(&st, &db).await;
     let v = create(&admin, "dns-1").await;
     let id: Uuid = v["id"].as_str().unwrap().parse().unwrap();
-    sqlx::query("UPDATE nodes SET agent_addr = '198.51.100.7' WHERE id = $1")
-        .bind(id)
+    sqlx::query("UPDATE servers SET agent_addr = '198.51.100.7' WHERE id = $1")
+        .bind(v["server_id"].as_str().unwrap().parse::<Uuid>().unwrap())
         .execute(st.pg())
         .await
         .unwrap();

@@ -1,7 +1,7 @@
 //! Periodic, restart-safe enforcement passes (run from the traffic flush
 //! loop). Each pass flips its marker AND bumps the affected nodes' versions
 //! in one transaction; the bump's trigger (migration 0007) notifies every
-//! panel instance on commit. Lock order as in api.rs: nodes -> users -> entrance_users.
+//! panel instance on commit. Lock order as in api.rs: servers -> nodes -> users -> entrance_users.
 
 use sqlx::PgConnection;
 use uuid::Uuid;
@@ -23,10 +23,10 @@ pub const OVER_LIMIT: &str = "(u.role = 'user' AND u.enabled AND u.traffic_limit
 pub const SERVED: &str = "(u.role = 'user' AND u.enabled AND NOT \
      (u.expires_at IS NOT NULL AND u.expires_at <= now()))";
 
-async fn lock_nodes_of_ids(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::Result<()> {
+async fn lock_servers_of_ids(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::Result<()> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT id FROM nodes WHERE id IN ({}) ORDER BY id FOR UPDATE",
-        crate::entitle::NODES_OF_USERS
+        "SELECT id FROM servers WHERE id IN ({}) ORDER BY id FOR UPDATE",
+        crate::entitle::SERVERS_OF_USERS
     )))
     .bind(users)
     .execute(conn)
@@ -34,10 +34,10 @@ async fn lock_nodes_of_ids(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::Res
     Ok(())
 }
 
-async fn bump_nodes_of(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::Result<Vec<Uuid>> {
+async fn bump_servers_of(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::Result<Vec<Uuid>> {
     sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "UPDATE nodes SET user_version = user_version + 1 WHERE id IN ({}) RETURNING id",
-        crate::entitle::NODES_OF_USERS
+        "UPDATE servers SET user_version = user_version + 1 WHERE id IN ({}) RETURNING id",
+        crate::entitle::SERVERS_OF_USERS
     )))
     .bind(users)
     .fetch_all(conn)
@@ -64,7 +64,7 @@ async fn apply_pass(conn: &mut PgConnection, pred: &str, set: &str) -> sqlx::Res
     if candidates.is_empty() {
         return Ok(Vec::new());
     }
-    lock_nodes_of_ids(conn, &candidates).await?;
+    lock_servers_of_ids(conn, &candidates).await?;
     let users: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "UPDATE users u SET {set} WHERE {pred} AND u.id = ANY($1) RETURNING u.id"
     )))
@@ -74,7 +74,7 @@ async fn apply_pass(conn: &mut PgConnection, pred: &str, set: &str) -> sqlx::Res
     if users.is_empty() {
         return Ok(Vec::new());
     }
-    bump_nodes_of(conn, &users).await
+    bump_servers_of(conn, &users).await
 }
 
 /// Disable users past their traffic limit (`disabled_reason = 'quota'`)

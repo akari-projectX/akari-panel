@@ -453,6 +453,23 @@ database configuration and then ignored with a warning: delete the section and i
 
 ## 3. Add a node and install the agent
 
+### 服务器与节点（Q1，中文）
+
+- **服务器** = 一台机器 = 一个 agent 身份：证书、注册/安装命令、在线状态、机器状态与测速、告警、
+  agent 更新（灰度按服务器）、节点域名（TLS 证书）、计费上限都属于服务器。
+- **节点** = 服务器上的**一个入站**（一个协议/端口），带它自己的入口（直连 + 中转）、倍率与节点组。
+  同一台机器要跑第二个协议 = 在同一服务器上再建一个节点，**不需要再装一个 agent**。
+- 后台节点页按 服务器 → 节点 → 入口 分组显示（`GET /api/v1/servers`）。
+- **新建节点**：不选服务器 = 同时新建一台同名服务器并给出一键安装命令（与以前一样）；选择已有服务器
+  （`POST /api/v1/nodes {"server_id": …}`）= 只加一个入站，agent 几秒内收到新配置，无需安装。
+  端口不能与该服务器上已有的入站或中转入口冲突（`entrance.port_clash`）。
+- **删除节点**：立即删除该节点、它的入口与用户凭据，服务器和其他节点照常运行（删除后才上报的尾部
+  流量不再计费）。**删除服务器**：先让 agent 收敛到空配置，再吊销证书并删除服务器及其全部节点
+  （两阶段，与以前删除节点相同）。
+- 命令行：`akari server add <名称>`（新服务器 + bootstrap 文件）、`akari server enroll-token <id>`、
+  `akari server list`、`akari server delete <id>`。升级时已有的每个节点成为一台同 id 的服务器，
+  已安装的 agent 不需要任何操作。
+
 **In the UI: Nodes → 新建节点.** Fill in the name, the region users see, the 连接地址 clients
 dial (IP or domain), optionally the node's **节点域名** (TLS domain: the agent then gets the
 certificate by itself, §3f) and the node's inbound from the protocol templates (W28-a: one inbound
@@ -614,15 +631,15 @@ shown under the install command after a create; **bootstrap** in the node list i
 
 ```bash
 # bare metal, on the panel host
-sudo -u akari akari -c /etc/akari/panel.toml node add tokyo-1 --out /tmp/tokyo-1-bootstrap.toml
+sudo -u akari akari -c /etc/akari/panel.toml server add tokyo-1 --out /tmp/tokyo-1-bootstrap.toml
 
 # compose: `--out -` writes the bootstrap to stdout (progress goes to stderr), so nothing is left
 # in the distroless container (it has no `rm`). Redirect on the host; -T = no TTY, keeps it clean.
-( umask 077; docker compose exec -T panel /akari node add vps-1 --out - > vps-1-bootstrap.toml )
+( umask 077; docker compose exec -T panel /akari server add vps-1 --out - > vps-1-bootstrap.toml )
 chmod 600 vps-1-bootstrap.toml
 ```
 
-`node enroll-token <id> --out -` works the same way. The bootstrap token is single use and
+`server enroll-token <id> --out -` works the same way (then add the server's nodes in the UI or with `POST /api/v1/nodes {"server_id": …}`). The bootstrap token is single use and
 expires after 24 h (built in). Treat the file as a credential until
 the agent has enrolled (copy it over SSH, delete the copy). On the node:
 
@@ -654,7 +671,7 @@ metric read 0 — the agent now reports what it cannot read as **未知** (unkno
 the node page says why (§3e).
 
 **Token expired / agent state lost / certificate expired** (agent offline longer than its
-validity): **重装命令** (or `akari node enroll-token <node id>` for a bootstrap file). The agent
+validity): **重装命令** (or `akari server enroll-token <server id>` for a bootstrap file). The agent
 re-enrolls once when the bootstrap file carries a token it has not used yet; after that the node's
 older certificates are refused. A used, unknown or expired token is refused with one uniform error
 ("enrollment refused"), and the agent exits.
@@ -980,11 +997,11 @@ users their plans grant; they are only left out of the portal and the subscripti
 instance (`akari_fleet{kind="nodes_reporting"|"online_users"|"connections"|"rx_bytes_per_second"|"tx_bytes_per_second"}`,
 `akari_fleet_cpu_percent_max`; sum over instances). There are no per-node series by design:
 node ids and names would be unbounded label values; per-node history is in the panel
-(`/nodes/{id}/metrics`). Per-node alert thresholds are a follow-up.
+(`/servers/{id}/metrics`). Per-node alert thresholds are a follow-up.
 
 ## 3f. Automatic node certificate (节点域名, W10, agent protocol 6)
 
-Set **节点域名** on a node (wizard or node page; `tls_domain` in `POST/PATCH /api/v1/nodes`) and
+Set **节点域名** on a server (wizard or node page; `tls_domain` in `POST /api/v1/nodes` for a new server, `PATCH /api/v1/servers/{id}`) and
 every inbound reading the node certificate files gets a Let's Encrypt certificate for it, obtained
 and renewed by the agent. Only nodes with such an inbound order one (a REALITY-only node never
 does). What the admin does: an `A`/`AAAA` record for the domain pointing at the node (DNS only —
@@ -1337,7 +1354,7 @@ release ships runs outside it before that reinstall.
 **Agents without a pinned release key** (protocol 1/2, and protocol 3 builds older than v0.2.0;
 `akari-agent -release-keys` prints "no release keys pinned") cannot self-update (§5b). Upload the
 release under **Updates** (every architecture you run), then on the node's page use **重装命令**
-(`POST /api/v1/nodes/{id}/install`) and run the printed command on the node: it installs the
+(`POST /api/v1/servers/{id}/install`) and run the printed command on the node: it installs the
 newest uploaded release in place and re-enrolls the node (its previous certificate is revoked
 once the new one is issued; inbounds, users and traffic stay). The panel may be upgraded first
 in this case: it serves agents down to protocol 1.
@@ -1418,7 +1435,7 @@ curl -b cookies -H 'Content-Type: application/json' -X POST "$BASE/api/v1/agent-
 curl -b cookies -X PUT --data-binary @akari-agent-linux-amd64 "$BASE/api/v1/agent-releases/<id>/binary"
 ```
 
-**Roll out** (`POST /api/v1/rollouts {version, percentage?, node_ids?, waves?, health_timeout_secs?,
+**Roll out** (`POST /api/v1/rollouts {version, percentage?, server_ids?, waves?, health_timeout_secs?,
 max_failure_ratio?}`; defaults 100 %, all enrolled nodes, `[100]`, 600 s, 0.2). Waves are
 cumulative percentages of the selection (e.g. `[10, 50, 100]`) in a fixed random order; the next
 wave starts once every node of the current one is healthy, failed or skipped. A node is

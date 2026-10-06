@@ -1,22 +1,22 @@
-//! W17 node alerts (W11 follow-up): thresholds, the evaluator, the alert
+//! W17 server alerts (W11 follow-up): thresholds, the evaluator, the alert
 //! center API and notification channels.
 //!
-//! - **Rules** (`alert_settings`, one row; per-node overrides in
-//!   `node_alert_rules`): node offline > N s, CPU > X % for M minutes,
+//! - **Rules** (`alert_settings`, one row; per-server overrides in
+//!   `server_alert_rules`): server offline > N s, CPU > X % for M minutes,
 //!   memory > X % for M minutes (W11 minute history), disk > X % (latest
-//!   heartbeat), every latency test target of a source failing, the node's
+//!   heartbeat), every latency test target of a source failing, the server's
 //!   TLS certificate (W10, heartbeat) or its agent certificate expiring
 //!   within D days, `last_error` set. A NULL threshold turns a rule off; a
-//!   node can override thresholds, disable kinds, or be muted (alerts
+//!   server can override thresholds, disable kinds, or be muted (alerts
 //!   recorded, never notified).
 //! - **Evaluator** (`eval.rs`, every `[alerts].eval_interval_secs` on every
 //!   instance): one instance at a time does the round — a transaction-level
 //!   advisory try-lock (`akari.alerts`, keyed per schema so test schemas do
 //!   not contend); the others skip it. Facts are read from the database
 //!   (and the Valkey heartbeat blobs), so whichever instance leads computes
-//!   the same thing. State machine per (node, kind): absent → firing →
+//!   the same thing. State machine per (server, kind): absent → firing →
 //!   resolved; at most one firing row (partial unique index = dedupe across
-//!   any writer); metric kinds of an offline node are "unknown" and keep
+//!   any writer); metric kinds of an offline server are "unknown" and keep
 //!   their state; a re-fire within `cooldown_minutes` of the last notified
 //!   one is recorded but not notified (flapping); a resolved notification
 //!   follows only a notified firing.
@@ -29,9 +29,9 @@
 //!   JSON), email through the W15 outbox (`mailhook`;
 //!   SMTP off = a permanent failure). The bot token and the webhook key are sealed in the database
 //!   (`totp::Keys::seal`) and never returned, logged or audited in clear.
-//! - **Prometheus**: `akari_node_alerts_firing{kind}` (bounded: the kinds),
+//! - **Prometheus**: `akari_server_alerts_firing{kind}` (bounded: the kinds),
 //!   `akari_alert_notifications_total{channel,result}`,
-//!   `akari_alert_rounds_total{result}`; no per-node labels.
+//!   `akari_alert_rounds_total{result}`; no per-server labels.
 
 pub mod channels;
 pub mod eval;
@@ -51,7 +51,7 @@ use crate::audit::{Actor, CHANGED};
 use crate::auth::{ApiError, AuthUser};
 use crate::state::AppState;
 
-/// Every alert kind (the `node_alerts.kind` CHECK).
+/// Every alert kind (the `server_alerts.kind` CHECK).
 pub const KINDS: [&str; 9] = [
     "offline",
     "cpu",
@@ -74,12 +74,12 @@ pub const WEBHOOK_AAD: Uuid = Uuid::from_u128(0x616b_6172_692d_616c_6572_742d_77
 
 pub fn kind_label(kind: &str) -> &'static str {
     match kind {
-        "offline" => "节点离线",
+        "offline" => "服务器离线",
         "cpu" => "CPU 过高",
         "memory" => "内存过高",
         "disk" => "磁盘将满",
         "latency" => "测速全部失败",
-        "cert" => "节点证书即将到期",
+        "cert" => "服务器证书即将到期",
         "agent_cert" => "Agent 证书即将到期",
         "last_error" => "配置应用失败",
         "entrance_down" => "中转入口不可用",
@@ -149,7 +149,7 @@ impl Settings {
     }
 }
 
-/// Thresholds shared by the global settings and the per-node overrides.
+/// Thresholds shared by the global settings and the per-server overrides.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Thresholds {
@@ -660,12 +660,12 @@ pub async fn test_channel(
 }
 
 // ---------------------------------------------------------------------------
-// Per-node rules
+// Per-server rules
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, sqlx::FromRow)]
 #[serde(deny_unknown_fields)]
-pub struct NodeRules {
+pub struct ServerRules {
     #[serde(default)]
     pub muted: bool,
     #[serde(default)]
@@ -689,7 +689,7 @@ pub struct NodeRules {
 const RULE_COLS: &str = "muted, disabled, offline_secs, cpu_percent, cpu_minutes, mem_percent, \
      mem_minutes, disk_percent, cert_days";
 
-impl NodeRules {
+impl ServerRules {
     pub fn check(&self) -> Result<(), ApiError> {
         Thresholds {
             offline_secs: self.offline_secs,
@@ -721,67 +721,67 @@ impl NodeRules {
     }
 }
 
-async fn node_exists(conn: &mut PgConnection, node: Uuid) -> sqlx::Result<bool> {
-    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM nodes WHERE id = $1)")
-        .bind(node)
+async fn server_exists(conn: &mut PgConnection, server: Uuid) -> sqlx::Result<bool> {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM servers WHERE id = $1)")
+        .bind(server)
         .fetch_one(conn)
         .await
 }
 
-pub async fn node_rules(conn: &mut PgConnection, node: Uuid) -> sqlx::Result<NodeRules> {
+pub async fn server_rules(conn: &mut PgConnection, server: Uuid) -> sqlx::Result<ServerRules> {
     Ok(sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT {RULE_COLS} FROM node_alert_rules WHERE node_id = $1"
+        "SELECT {RULE_COLS} FROM server_alert_rules WHERE server_id = $1"
     )))
-    .bind(node)
+    .bind(server)
     .fetch_optional(conn)
     .await?
     .unwrap_or_default())
 }
 
-/// Replace a node's overrides (all defaults = the row is removed). Does
-/// not bump the node (nothing the agent runs changes). Audited
-/// `node.alert_rules.set`.
-pub async fn apply_set_node_rules(
+/// Replace a server's overrides (all defaults = the row is removed). Does
+/// not bump the server (nothing the agent runs changes). Audited
+/// `server.alert_rules.set`.
+pub async fn apply_set_server_rules(
     conn: &mut PgConnection,
     actor: &Actor,
-    node: Uuid,
-    rules: &NodeRules,
+    server: Uuid,
+    rules: &ServerRules,
 ) -> Result<(), ApiError> {
     rules.check()?;
     let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM nodes WHERE id = $1 FOR KEY SHARE)")
-            .bind(node)
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM servers WHERE id = $1 FOR KEY SHARE)")
+            .bind(server)
             .fetch_one(&mut *conn)
             .await?;
     if !exists {
         return Err(ApiError::not_found());
     }
-    let before = node_rules(conn, node).await?;
+    let before = server_rules(conn, server).await?;
     let mut disabled = rules.disabled.clone();
     disabled.sort();
     disabled.dedup();
-    let rules = NodeRules {
+    let rules = ServerRules {
         disabled,
         ..rules.clone()
     };
-    if rules == NodeRules::default() {
-        sqlx::query("DELETE FROM node_alert_rules WHERE node_id = $1")
-            .bind(node)
+    if rules == ServerRules::default() {
+        sqlx::query("DELETE FROM server_alert_rules WHERE server_id = $1")
+            .bind(server)
             .execute(&mut *conn)
             .await?;
     } else {
         sqlx::query(
-            "INSERT INTO node_alert_rules (node_id, muted, disabled, offline_secs, cpu_percent, \
+            "INSERT INTO server_alert_rules (server_id, muted, disabled, offline_secs, cpu_percent, \
                cpu_minutes, mem_percent, mem_minutes, disk_percent, cert_days) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
-             ON CONFLICT (node_id) DO UPDATE SET muted = EXCLUDED.muted, \
+             ON CONFLICT (server_id) DO UPDATE SET muted = EXCLUDED.muted, \
                disabled = EXCLUDED.disabled, offline_secs = EXCLUDED.offline_secs, \
                cpu_percent = EXCLUDED.cpu_percent, cpu_minutes = EXCLUDED.cpu_minutes, \
                mem_percent = EXCLUDED.mem_percent, mem_minutes = EXCLUDED.mem_minutes, \
                disk_percent = EXCLUDED.disk_percent, cert_days = EXCLUDED.cert_days, \
                updated_at = now()",
         )
-        .bind(node)
+        .bind(server)
         .bind(rules.muted)
         .bind(&rules.disabled)
         .bind(rules.offline_secs)
@@ -797,9 +797,9 @@ pub async fn apply_set_node_rules(
     crate::audit::record(
         conn,
         actor,
-        "node.alert_rules.set",
-        "node",
-        Some(node.to_string()),
+        "server.alert_rules.set",
+        "server",
+        Some(server.to_string()),
         Some(json!(before)),
         Some(json!(rules)),
     )
@@ -807,29 +807,29 @@ pub async fn apply_set_node_rules(
     Ok(())
 }
 
-pub async fn get_node_rules(
+pub async fn get_server_rules(
     State(state): State<AppState>,
     user: AuthUser,
     Path((_, id)): Path<(String, Uuid)>,
-) -> Result<Json<NodeRules>, ApiError> {
+) -> Result<Json<ServerRules>, ApiError> {
     user.require_admin()?;
     let mut c = state.pg().acquire().await?;
-    if !node_exists(&mut c, id).await? {
+    if !server_exists(&mut c, id).await? {
         return Err(ApiError::not_found());
     }
-    Ok(Json(node_rules(&mut c, id).await?))
+    Ok(Json(server_rules(&mut c, id).await?))
 }
 
-pub async fn put_node_rules(
+pub async fn put_server_rules(
     State(state): State<AppState>,
     user: AuthUser,
     Path((_, id)): Path<(String, Uuid)>,
-    ApiJson(req): ApiJson<NodeRules>,
-) -> Result<Json<NodeRules>, ApiError> {
+    ApiJson(req): ApiJson<ServerRules>,
+) -> Result<Json<ServerRules>, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    apply_set_node_rules(&mut tx, &Actor::of(&user), id, &req).await?;
-    let r = node_rules(&mut tx, id).await?;
+    apply_set_server_rules(&mut tx, &Actor::of(&user), id, &req).await?;
+    let r = server_rules(&mut tx, id).await?;
     tx.commit().await?;
     Ok(Json(r))
 }
@@ -845,7 +845,7 @@ pub struct AlertQuery {
     #[serde(default)]
     pub status: Option<String>,
     #[serde(default)]
-    pub node: Option<Uuid>,
+    pub server: Option<Uuid>,
     #[serde(default)]
     pub kind: Option<String>,
     /// Keyset: alerts with id < before.
@@ -858,8 +858,8 @@ pub struct AlertQuery {
 #[derive(Serialize, sqlx::FromRow)]
 pub struct AlertRow {
     id: i64,
-    node_id: Uuid,
-    node_name: String,
+    server_id: Uuid,
+    server_name: String,
     kind: String,
     status: String,
     fired_at: DateTime<Utc>,
@@ -894,22 +894,22 @@ pub async fn list_alerts(
     }
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let rows: Vec<AlertRow> = sqlx::query_as(
-        "SELECT a.id, a.node_id, coalesce(n.display_name, n.name) AS node_name, a.kind, a.status, \
+        "SELECT a.id, a.server_id, n.name AS server_name, a.kind, a.status, \
            a.fired_at, a.resolved_at, a.value, a.detail, a.notified, a.acked_at, a.acked_by \
-         FROM node_alerts a JOIN nodes n ON n.id = a.node_id \
-         WHERE ($1::text IS NULL OR a.status = $1) AND ($2::uuid IS NULL OR a.node_id = $2) \
+         FROM server_alerts a JOIN servers n ON n.id = a.server_id \
+         WHERE ($1::text IS NULL OR a.status = $1) AND ($2::uuid IS NULL OR a.server_id = $2) \
            AND ($3::text IS NULL OR a.kind = $3) AND ($4::bigint IS NULL OR a.id < $4) \
          ORDER BY (a.status = 'firing') DESC, a.id DESC LIMIT $5",
     )
     .bind(&q.status)
-    .bind(q.node)
+    .bind(q.server)
     .bind(&q.kind)
     .bind(q.before)
     .bind(limit)
     .fetch_all(state.pg())
     .await?;
     let firing: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT kind, count(*) FROM node_alerts WHERE status = 'firing' GROUP BY kind ORDER BY kind",
+        "SELECT kind, count(*) FROM server_alerts WHERE status = 'firing' GROUP BY kind ORDER BY kind",
     )
     .fetch_all(state.pg())
     .await?;
@@ -930,7 +930,7 @@ pub async fn ack_alert(
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
     let row: Option<(Option<DateTime<Utc>>,)> =
-        sqlx::query_as("SELECT acked_at FROM node_alerts WHERE id = $1 FOR UPDATE")
+        sqlx::query_as("SELECT acked_at FROM server_alerts WHERE id = $1 FOR UPDATE")
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?;
@@ -938,7 +938,7 @@ pub async fn ack_alert(
         return Err(ApiError::not_found());
     };
     if acked.is_none() {
-        sqlx::query("UPDATE node_alerts SET acked_at = now(), acked_by = $2 WHERE id = $1")
+        sqlx::query("UPDATE server_alerts SET acked_at = now(), acked_by = $2 WHERE id = $1")
             .bind(id)
             .bind(&user.email)
             .execute(&mut *tx)
@@ -1042,7 +1042,7 @@ pub async fn retry_notification(
 
 /// Firing alerts by kind (Prometheus scrape; bounded label values).
 pub async fn firing_counts(pg: &sqlx::PgPool) -> sqlx::Result<Vec<(String, i64)>> {
-    sqlx::query_as("SELECT kind, count(*) FROM node_alerts WHERE status = 'firing' GROUP BY kind")
+    sqlx::query_as("SELECT kind, count(*) FROM server_alerts WHERE status = 'firing' GROUP BY kind")
         .fetch_all(pg)
         .await
 }

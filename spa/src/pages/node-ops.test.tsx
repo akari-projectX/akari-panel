@@ -24,6 +24,8 @@ afterEach(() => {
 const node = (over: Partial<NodeView> = {}): NodeView =>
   ({
     id: "n1",
+    server_id: "s1",
+    server_name: "hk-1",
     name: "hk-1",
     enabled: true,
     status: "online",
@@ -315,8 +317,8 @@ describe("node detail", () => {
     let probes = 0;
     const calls = fakeApi({
       ...nodeRoutes([node()]),
-      "GET /nodes/n1/status": status,
-      "GET /nodes/n1/metrics": metrics,
+      "GET /servers/s1/status": status,
+      "GET /servers/s1/metrics": metrics,
       "GET /nodes/n1/traffic": {
         from: "2026-09-03",
         to: "2026-10-02",
@@ -326,7 +328,7 @@ describe("node detail", () => {
         days: [],
         top_users: [],
       },
-      "GET /nodes/n1/alert-rules": {
+      "GET /servers/s1/alert-rules": {
         muted: false,
         disabled: [],
         offline_secs: null,
@@ -337,7 +339,7 @@ describe("node detail", () => {
         disk_percent: null,
         cert_days: null,
       },
-      "POST /nodes/n1/probe": () =>
+      "POST /servers/s1/probe": () =>
         ++probes === 1
           ? { status: 202, body: { requested_at: "2026-10-02T00:00:00Z" } }
           : { status: 429, body: { error: "a latency test was requested moments ago" } },
@@ -351,7 +353,7 @@ describe("node detail", () => {
     expect(screen.getByText("https://b/")).toBeTruthy();
     expect(screen.getByText(/UDP 协议/)).toBeTruthy();
     expect(screen.getAllByRole("img").length).toBe(5); // four machine charts + W22 daily traffic
-    expect(calls.some((c) => c.path === "/nodes/n1/metrics" && c.search === "?range=24h")).toBe(true);
+    expect(calls.some((c) => c.path === "/servers/s1/metrics" && c.search === "?range=24h")).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "7 天" }));
     await waitFor(() => expect(calls.some((c) => c.search === "?range=7d")).toBe(true));
     fireEvent.click(screen.getByRole("button", { name: "立即测速" }));
@@ -384,8 +386,8 @@ describe("node detail", () => {
     const n = node({ heartbeat: unknownHb });
     fakeApi({
       ...nodeRoutes([n]),
-      "GET /nodes/n1/status": { ...status, heartbeat: unknownHb },
-      "GET /nodes/n1/metrics": {
+      "GET /servers/s1/status": { ...status, heartbeat: unknownHb },
+      "GET /servers/s1/metrics": {
         ...metrics,
         points: metrics.points.map((p) => ({ ...p, cpu: null, cpu_max: null, mem_used: null, mem_total: null })),
       },
@@ -398,7 +400,7 @@ describe("node detail", () => {
         days: [],
         top_users: [],
       },
-      "GET /nodes/n1/alert-rules": {
+      "GET /servers/s1/alert-rules": {
         muted: false,
         disabled: [],
         offline_secs: null,

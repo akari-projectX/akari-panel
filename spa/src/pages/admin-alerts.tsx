@@ -25,7 +25,7 @@ export const KIND_ZH: Record<AlertKind, string> = {
   memory: "内存过高",
   disk: "磁盘将满",
   latency: "测速全部失败",
-  cert: "节点证书即将到期",
+  cert: "服务器证书即将到期",
   agent_cert: "Agent 证书即将到期",
   last_error: "配置应用失败",
   entrance_down: "中转入口不可用",
@@ -34,8 +34,9 @@ const KINDS = Object.keys(KIND_ZH) as AlertKind[];
 
 export interface AlertRow {
   id: number;
-  node_id: string;
-  node_name: string;
+  // Q1: alerts are per server (machine, agent).
+  server_id: string;
+  server_name: string;
   kind: AlertKind;
   status: "firing" | "resolved";
   fired_at: string;
@@ -280,18 +281,7 @@ function AlertCenter() {
                       </span>
                     )}
                   </TableCell>
-                  <TableCell>
-                    <a
-                      className="underline"
-                      href={`${adminBase}/nodes/${a.node_id}`}
-                      onClick={(e) => {
-                        e.preventDefault();
-                        navigate(`${adminBase}/nodes/${a.node_id}`);
-                      }}
-                    >
-                      {a.node_name}
-                    </a>
-                  </TableCell>
+                  <TableCell>{a.server_name}</TableCell>
                   <TableCell>{KIND_ZH[a.kind] ?? a.kind}</TableCell>
                   <TableCell className="max-w-sm">
                     {a.value}
@@ -825,12 +815,12 @@ function DeliveryLog() {
   );
 }
 
-/** The node page's 告警规则 card: per-node overrides, disabled kinds, mute. */
+/** The node page's 告警规则 card: its server's overrides, disabled kinds, mute. */
 export function NodeAlertRulesCard({ nodeId }: { nodeId: string }) {
   const queryClient = useQueryClient();
   const rules = useQuery({
     queryKey: ["node-alert-rules", nodeId],
-    queryFn: () => get<NodeAlertRules>(`/nodes/${nodeId}/alert-rules`),
+    queryFn: () => get<NodeAlertRules>(`/servers/${nodeId}/alert-rules`),
   });
   const [form, setForm] = useState<Record<string, string>>({});
   const [muted, setMuted] = useState(false);
@@ -867,7 +857,7 @@ export function NodeAlertRulesCard({ nodeId }: { nodeId: string }) {
     }
     setMsg(null);
     try {
-      await put(`/nodes/${nodeId}/alert-rules`, body);
+      await put(`/servers/${nodeId}/alert-rules`, body);
       await queryClient.invalidateQueries({ queryKey: ["node-alert-rules", nodeId] });
       setMsg({ ok: true, text: "已保存。" });
     } catch (err) {

@@ -4,7 +4,8 @@
 A pebble ACME CA (+ pebble-challtestsrv as its DNS, every name -> 127.0.0.1)
 runs in docker; the panel's ACME directory (系统设置 → 节点通信, imported
 from smoke's obsolete [acme] directory_url) points at it. Here:
-  - a node is created with a TLS domain and a certificate template
+  - a node is created with a TLS domain and a certificate template (no
+    server_id: a server of its own, whose domain it is)
     (Trojan-TLS) that defaults to that domain,
   - an agent is started for it (answers HTTP-01 on 5002, pebble's port),
   - the agent obtains the certificate itself; the panel shows it valid,
@@ -314,9 +315,10 @@ try:
         print("mihomo: Trojan-TLS, VLESS-WS-TLS and Hysteria 2 relay with certificate verification on")
 
     api("DELETE", f"/api/v1/users/{USER}?confirm=true")
-    st, _ = api("DELETE", f"/api/v1/nodes/{NODE}")
-    if st not in (200, 202, 204):
-        fail(f"delete acme node: {st}")
+    # Q1: the node came with a server of its own (no server_id given).
+    st, _ = api("DELETE", f"/api/v1/servers/{v['server_id']}")
+    if st != 202:
+        fail(f"delete the acme server: {st}")
     for path in (f"/api/v1/plans/{pl['id']}", f"/api/v1/node-groups/{g['id']}"):
         st, _ = api("DELETE", path)
         if st != 204:

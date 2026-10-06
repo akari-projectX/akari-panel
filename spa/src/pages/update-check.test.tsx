@@ -20,7 +20,7 @@ const status = (over: Partial<AgentUpdateStatus> = {}): AgentUpdateStatus => ({
   keys_configured: true,
   last_check: null,
   latest: null,
-  outdated_nodes: 0,
+  outdated_servers: 0,
   update_available: null,
   ...over,
 });
@@ -46,7 +46,7 @@ describe("UpdateCheck", () => {
                   stored: ["linux/amd64", "linux/arm64"],
                 },
                 latest: { version: "v0.5.0", platforms: ["linux/amd64", "linux/arm64"] },
-                outdated_nodes: 2,
+                outdated_servers: 2,
                 update_available: "v0.5.0",
               }),
             },
@@ -135,7 +135,7 @@ describe("UpdateCheck", () => {
 
 describe("UpdateAvailableBadge", () => {
   it("links to the updates view only when nodes run an older version", async () => {
-    fakeApi({ "GET /agent-updates": status({ update_available: "v0.5.0", outdated_nodes: 3 }) });
+    fakeApi({ "GET /agent-updates": status({ update_available: "v0.5.0", outdated_servers: 3 }) });
     renderAdmin(<UpdateAvailableBadge />);
     const badge = await screen.findByText("有新版本 v0.5.0");
     const link = badge.closest("a");

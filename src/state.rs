@@ -220,10 +220,10 @@ impl AppState {
 
 impl AppState {
     /// Refresh the rows this instance's sessions still own, locking them in
-    /// id order first (global lock order; flushes lock nodes too).
+    /// id order first (global lock order; flushes lock servers too).
     pub(crate) async fn persist_online(&self, ids: &[Uuid], sessions: &[Uuid]) -> sqlx::Result<()> {
         let mut tx = self.pg().begin().await?;
-        sqlx::query("SELECT 1 FROM nodes WHERE id = ANY($1) ORDER BY id FOR NO KEY UPDATE")
+        sqlx::query("SELECT 1 FROM servers WHERE id = ANY($1) ORDER BY id FOR NO KEY UPDATE")
             .bind(ids)
             .execute(&mut *tx)
             .await?;
@@ -233,7 +233,7 @@ impl AppState {
         // Hello. traffic::retention_pass retires sessions superseded before
         // finals_drained_at.
         sqlx::query(
-            "UPDATE nodes n SET status = 'online', last_seen_at = now(), \
+            "UPDATE servers n SET status = 'online', last_seen_at = now(), \
              finals_drained_session = CASE WHEN n.agent_session_at <= now() - make_interval(secs => $3) \
                  THEN n.agent_session ELSE n.finals_drained_session END, \
              finals_drained_at = CASE WHEN n.agent_session_at <= now() - make_interval(secs => $3) \

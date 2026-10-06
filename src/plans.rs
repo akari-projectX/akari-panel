@@ -275,9 +275,9 @@ async fn group_members(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Vec<Uu
 }
 
 /// Lock the nodes of these entrances (global order: nodes by id).
-async fn lock_nodes_of(conn: &mut PgConnection, entrances: &[Uuid]) -> sqlx::Result<()> {
+async fn lock_servers_of(conn: &mut PgConnection, entrances: &[Uuid]) -> sqlx::Result<()> {
     sqlx::query(
-        "SELECT id FROM nodes WHERE id IN (SELECT node_id FROM entrances WHERE id = ANY($1)) \
+        "SELECT id FROM servers WHERE id IN (SELECT server_id FROM entrances WHERE id = ANY($1)) \
          ORDER BY id FOR UPDATE",
     )
     .bind(entrances)
@@ -296,7 +296,7 @@ pub async fn apply_create_group(
     let description = clean_description(req.description.as_deref().unwrap_or(""))?;
     let entrances = id_set(req.entrance_ids.as_deref().unwrap_or(&[]));
     entitle::lock(conn).await?;
-    lock_nodes_of(conn, &entrances).await?;
+    lock_servers_of(conn, &entrances).await?;
     require_all_exist(conn, "entrances", "entrance", &entrances).await?;
     let id = Uuid::new_v4();
     let r = sqlx::query("INSERT INTO node_groups (id, name, description) VALUES ($1, $2, $3)")
@@ -370,7 +370,7 @@ pub async fn apply_update_group(
                 .copied()
                 .collect::<Vec<_>>(),
         );
-        lock_nodes_of(conn, &changed).await?;
+        lock_servers_of(conn, &changed).await?;
         require_all_exist(conn, "entrances", "entrance", new).await?;
         sqlx::query(
             "DELETE FROM entrance_group_members WHERE group_id = $1 AND NOT entrance_id = ANY($2)",
@@ -439,7 +439,7 @@ pub async fn apply_delete_group(
         return Err(ApiError::not_found());
     };
     let entrances = group_members(conn, id).await?;
-    lock_nodes_of(conn, &entrances).await?;
+    lock_servers_of(conn, &entrances).await?;
     sqlx::query("DELETE FROM node_groups WHERE id = $1")
         .bind(id)
         .execute(&mut *conn)
@@ -1042,8 +1042,8 @@ pub async fn apply_update_plan(
     if speed_changed && !users.is_empty() {
         // The limit travels in every user op (agent protocol 4): every node
         // serving these users must resend them.
-        let bumped = bump_nodes_of_users(conn, &users).await?;
-        after["speed_bumped_nodes"] = json!(bumped.len());
+        let bumped = bump_servers_of_users(conn, &users).await?;
+        after["speed_bumped_servers"] = json!(bumped.len());
         res.served_bumped = bumped;
     }
     if quota_changed && !users.is_empty() {
@@ -1053,7 +1053,7 @@ pub async fn apply_update_plan(
             .filter(|s| s.serve_changed)
             .map(|s| s.user)
             .collect();
-        let bumped = bump_nodes_of_users(conn, &changed).await?;
+        let bumped = bump_servers_of_users(conn, &changed).await?;
         res.served_bumped = id_set(&[res.served_bumped.clone(), bumped].concat());
         after["users_synced"] = json!(synced.len());
         after["users_reenabled"] = json!(changed);
@@ -1273,13 +1273,13 @@ async fn sync_users_from_plan(
 
 /// Bump user_version on every node the users have rows on (already locked
 /// by the caller). Returns them.
-async fn bump_nodes_of_users(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::Result<Vec<Uuid>> {
+async fn bump_servers_of_users(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::Result<Vec<Uuid>> {
     if users.is_empty() {
         return Ok(Vec::new());
     }
     let mut v: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "UPDATE nodes SET user_version = user_version + 1 WHERE id IN ({}) RETURNING id",
-        entitle::NODES_OF_USERS
+        "UPDATE servers SET user_version = user_version + 1 WHERE id IN ({}) RETURNING id",
+        entitle::SERVERS_OF_USERS
     )))
     .bind(users)
     .fetch_all(conn)
@@ -1496,13 +1496,13 @@ pub async fn apply_set_user_plan(
         Some(true) => {}
     }
     // Lock every node the reconcile will touch BEFORE the user_plans insert
-    // (whose foreign key check share-locks the user row): nodes -> users.
+    // (whose foreign key check share-locks the user row): servers -> users.
     sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT id FROM nodes WHERE id IN (SELECT e.node_id FROM plan_groups pg \
+        "SELECT id FROM servers WHERE id IN (SELECT e.server_id FROM plan_groups pg \
          JOIN entrance_group_members m ON m.group_id = pg.group_id \
          JOIN entrances e ON e.id = m.entrance_id WHERE pg.plan_id = $2 \
          UNION {}) ORDER BY id FOR UPDATE",
-        entitle::NODES_OF_USERS
+        entitle::SERVERS_OF_USERS
     )))
     .bind([user_id])
     .bind(req.plan_id)
@@ -1548,7 +1548,7 @@ pub async fn apply_set_user_plan(
             // Served state or speed limit changed: every node of the user
             // resends it (the reconcile only bumped nodes whose rows moved).
             if s.serve_changed || speed_changed {
-                res.served_bumped = bump_nodes_of_users(conn, &[user_id]).await?;
+                res.served_bumped = bump_servers_of_users(conn, &[user_id]).await?;
             }
             (s.before, s.after)
         }
@@ -1687,7 +1687,7 @@ pub async fn apply_renew_user_plan(
     }
     if let Some(s) = synced.into_iter().next() {
         if s.serve_changed {
-            res.served_bumped = bump_nodes_of_users(conn, &[user_id]).await?;
+            res.served_bumped = bump_servers_of_users(conn, &[user_id]).await?;
         }
         after["user"] = s.after;
     }
@@ -1830,11 +1830,11 @@ pub async fn apply_refund_revoke(
             // Lock order: every node the reconcile will touch (the replaced
             // plan's and the user's current ones), then the user rows.
             sqlx::query(sqlx::AssertSqlSafe(format!(
-                "SELECT id FROM nodes WHERE id IN (SELECT e.node_id FROM user_plan_groups ug \
+                "SELECT id FROM servers WHERE id IN (SELECT e.server_id FROM user_plan_groups ug \
                  JOIN entrance_group_members m ON m.group_id = ug.group_id \
                  JOIN entrances e ON e.id = m.entrance_id WHERE ug.user_plan_id = $2 \
                  UNION {}) ORDER BY id FOR UPDATE",
-                entitle::NODES_OF_USERS
+                entitle::SERVERS_OF_USERS
             )))
             .bind([user_id])
             .bind(prior_user_plan_id)
@@ -1890,7 +1890,7 @@ pub async fn apply_refund_revoke(
         let synced = sync_users_from_plan(conn, &[user_id], false).await?;
         // A restore may change the speed limit as well: resend everything.
         if synced.iter().any(|s| s.serve_changed) || prior.is_some() {
-            res.served_bumped = bump_nodes_of_users(conn, &[user_id]).await?;
+            res.served_bumped = bump_servers_of_users(conn, &[user_id]).await?;
         }
         if let Some(s) = synced.into_iter().next() {
             after["user"] = s.after;
@@ -1975,7 +1975,7 @@ pub async fn apply_admin_reset_traffic(
     .await
 }
 
-/// The reset itself (caller holds `entitle::lock`): nodes -> users lock
+/// The reset itself (caller holds `entitle::lock`): servers -> users lock
 /// order, bump only when the account comes back into service.
 async fn reset_traffic_locked(
     conn: &mut PgConnection,
@@ -1983,10 +1983,10 @@ async fn reset_traffic_locked(
     user_id: Uuid,
     source: Value,
 ) -> Result<UserPlanChange, ApiError> {
-    // Lock order: nodes (of the user's rows) -> users.
+    // Lock order: servers (of the user's rows) -> users.
     sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT id FROM nodes WHERE id IN ({}) ORDER BY id FOR UPDATE",
-        entitle::NODES_OF_USERS
+        "SELECT id FROM servers WHERE id IN ({}) ORDER BY id FOR UPDATE",
+        entitle::SERVERS_OF_USERS
     )))
     .bind([user_id])
     .execute(&mut *conn)
@@ -2011,7 +2011,7 @@ async fn reset_traffic_locked(
     .await?;
     let mut res = UserPlanChange::default();
     if !was_enabled && enabled {
-        res.served_bumped = bump_nodes_of_users(conn, &[user_id]).await?;
+        res.served_bumped = bump_servers_of_users(conn, &[user_id]).await?;
     }
     let mut after = json!({ "traffic_used_bytes": 0, "enabled": enabled });
     if let (Value::Object(a), Value::Object(s)) = (&mut after, source) {
@@ -2250,7 +2250,8 @@ pub async fn my_plan(
          coalesce(n.display_name, n.name) AS name, n.region FROM entrance_users eu \
          JOIN entrances e ON e.id = eu.entrance_id AND e.enabled \
          JOIN nodes n ON n.id = e.node_id \
-         WHERE eu.user_id = $1 AND n.enabled AND n.visible AND n.deleting_at IS NULL \
+         JOIN servers s ON s.id = n.server_id \
+         WHERE eu.user_id = $1 AND n.enabled AND n.visible AND s.deleting_at IS NULL \
          ORDER BY n.sort, coalesce(n.display_name, n.name), n.id",
     )
     .bind(user.id)
@@ -2360,9 +2361,9 @@ pub async fn apply_period_resets(conn: &mut PgConnection) -> Result<Vec<Uuid>, A
         return Ok(Vec::new());
     }
     entitle::lock(conn).await?;
-    // Lock order: nodes (of the users' rows) -> users.
+    // Lock order: servers (of the users' rows) -> users.
     sqlx::query(
-        "SELECT id FROM nodes WHERE id IN (SELECT e.node_id FROM entrance_users eu \
+        "SELECT id FROM servers WHERE id IN (SELECT e.server_id FROM entrance_users eu \
          JOIN entrances e ON e.id = eu.entrance_id \
          JOIN user_plans up ON up.user_id = eu.user_id WHERE up.id = ANY($1)) \
          ORDER BY id FOR UPDATE",
@@ -2399,7 +2400,7 @@ pub async fn apply_period_resets(conn: &mut PgConnection) -> Result<Vec<Uuid>, A
         .filter(|c| !c.2 && c.3)
         .map(|c| c.0)
         .collect();
-    let bumped = bump_nodes_of_users(conn, &reenabled).await?;
+    let bumped = bump_servers_of_users(conn, &reenabled).await?;
     let actor = Actor::system();
     for (user, used, was_enabled, enabled, reason) in &changed {
         let Some((_, boundary, next)) = reset.iter().find(|r| r.0 == *user) else {
@@ -3148,7 +3149,7 @@ mod tests {
         .await;
         assert_eq!(nodes_of(&db, u).await, vec![na]);
         let mut tx = db.pool.begin().await.unwrap();
-        crate::api::apply_begin_delete_node(&mut tx, &a(), na)
+        crate::servers::apply_begin_delete(&mut tx, &a(), na)
             .await
             .ok()
             .unwrap();

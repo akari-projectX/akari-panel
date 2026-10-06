@@ -149,19 +149,19 @@ export function NodeDetail({ node, onClose }: { node: NodeView; onClose: () => v
   const [probeMsg, setProbeMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const status = useQuery({
     queryKey: ["node-status", node.id],
-    queryFn: () => get<NodeStatus>(`/nodes/${node.id}/status`),
+    queryFn: () => get<NodeStatus>(`/servers/${node.server_id}/status`),
     refetchInterval: 5000,
   });
   const metrics = useQuery({
     queryKey: ["node-metrics", node.id, range],
-    queryFn: () => get<NodeMetricsView>(`/nodes/${node.id}/metrics?range=${range}`),
+    queryFn: () => get<NodeMetricsView>(`/servers/${node.server_id}/metrics?range=${range}`),
     refetchInterval: 60_000,
   });
 
   async function probe() {
     setProbeMsg(null);
     try {
-      await post(`/nodes/${node.id}/probe`, {});
+      await post(`/servers/${node.server_id}/probe`, {});
       setProbeMsg({ ok: true, text: "已发起测速，结果稍后显示（节点出口约数秒，面板 TCP 约 15 秒内）" });
       await queryClient.invalidateQueries({ queryKey: ["node-status", node.id] });
     } catch (err) {

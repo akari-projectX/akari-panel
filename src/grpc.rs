@@ -36,16 +36,16 @@ impl AgentChannel for AgentChannelService {
         request: Request<crate::pb::FetchArtifactRequest>,
     ) -> Result<Response<Self::FetchArtifactStream>, Status> {
         // Same identity rules as the channel: a verified certificate of a
-        // live node (a deleted node's tombstoned one gets nothing).
+        // live server (a deleted server's tombstoned one gets nothing).
         let (serial, _) = crate::enroll::peer_cert(&request)?;
         let ip = request.remote_addr().map(|a| a.ip());
-        let node = match node_for_serial_from(self.state.pg(), &serial, ip).await? {
-            AgentIdentity::Node(n) => n,
+        let server = match server_for_serial_from(self.state.pg(), &serial, ip).await? {
+            AgentIdentity::Server(n) => n,
             AgentIdentity::Revoked(_) => {
                 return Err(Status::unauthenticated("certificate revoked"));
             }
         };
-        crate::updates::fetch_artifact(&self.state, node, request.into_inner())
+        crate::updates::fetch_artifact(&self.state, server, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -58,17 +58,17 @@ impl AgentChannel for AgentChannelService {
 
         // Identity comes exclusively from the mTLS client certificate;
         // there is no token or credential in the protocol itself.
-        let identity = identify_node(&state, &request).await?;
-        if let (AgentIdentity::Node(node), Some(peer)) =
+        let identity = identify_server(&state, &request).await?;
+        if let (AgentIdentity::Server(server), Some(peer)) =
             (identity, request.remote_addr().map(|a| a.ip()))
         {
-            record_agent_addr(&state, node, peer).await;
+            record_agent_addr(&state, server, peer).await;
         }
 
-        // Disabled nodes are NOT rejected: a rejected agent would keep its
+        // Disabled servers are NOT rejected: a rejected agent would keep its
         // last xray config running forever. They are accepted and converge
         // to the disabled desired state (no inbounds, no users). For the
-        // same reason a revoked (deleted node's) certificate is accepted,
+        // same reason a revoked (deleted server's) certificate is accepted,
         // served the empty state and closed (R12 D2).
         let (tx, rx) = mpsc::channel::<Result<PanelDown, Status>>(64);
         tokio::spawn(session(state.clone(), identity, request.into_inner(), tx));
@@ -86,35 +86,35 @@ impl AgentChannel for AgentChannelService {
     }
 }
 
-/// W10: the agent's source address (gRPC peer) for the node page and the
+/// W10: the agent's source address (gRPC peer) for the server page and the
 /// TLS domain check. Best effort.
-async fn record_agent_addr(state: &AppState, node: Uuid, peer: std::net::IpAddr) {
+async fn record_agent_addr(state: &AppState, server: Uuid, peer: std::net::IpAddr) {
     let peer = crate::client_ip::canonical(peer).to_string();
     if let Err(e) = sqlx::query(
-        "UPDATE nodes SET agent_addr = $2::inet WHERE id = $1 AND agent_addr IS DISTINCT FROM $2::inet",
+        "UPDATE servers SET agent_addr = $2::inet WHERE id = $1 AND agent_addr IS DISTINCT FROM $2::inet",
     )
-    .bind(node)
+    .bind(server)
     .bind(peer)
     .execute(state.pg())
     .await
     {
-        tracing::warn!(node = %node, error = %e, "failed to record the agent address");
+        tracing::warn!(server = %server, error = %e, "failed to record the agent address");
     }
 }
 
-/// Maps the peer certificate to a registered node. TLS client auth is
+/// Maps the peer certificate to a registered server. TLS client auth is
 /// optional at the handshake (for AgentEnrollment.Enroll); here a verified
 /// client certificate is mandatory, so a client without one never reaches
 /// session code.
-async fn identify_node(
+async fn identify_server(
     state: &AppState,
     req: &Request<Streaming<AgentUp>>,
 ) -> Result<AgentIdentity, Status> {
     let (serial, not_after) = crate::enroll::peer_cert(req)?;
     let ip = req.remote_addr().map(|a| a.ip());
-    let who = node_for_serial_from(state.pg(), &serial, ip).await?;
-    if let AgentIdentity::Node(node) = who {
-        crate::enroll::note_legacy_expiry(state.pg(), node, &serial, not_after).await;
+    let who = server_for_serial_from(state.pg(), &serial, ip).await?;
+    if let AgentIdentity::Server(server) = who {
+        crate::enroll::note_legacy_expiry(state.pg(), server, &serial, not_after).await;
     }
     Ok(who)
 }
@@ -122,31 +122,31 @@ async fn identify_node(
 /// Who a certificate serial belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentIdentity {
-    Node(Uuid),
-    /// A deleted node's tombstoned certificate: served the empty state,
+    Server(Uuid),
+    /// A deleted server's tombstoned certificate: served the empty state,
     /// never trusted with traffic, then closed.
     Revoked(Uuid),
 }
 
 #[cfg(test)]
-pub(crate) async fn node_for_serial(
+pub(crate) async fn server_for_serial(
     pg: &sqlx::PgPool,
     serial: &str,
 ) -> Result<AgentIdentity, Status> {
-    node_for_serial_from(pg, serial, None).await
+    server_for_serial_from(pg, serial, None).await
 }
 
-/// The node a certificate serial belongs to. The revocation tombstones are
-/// consulted FIRST: a revoked serial stays revoked even if some node row
+/// The server a certificate serial belongs to. The revocation tombstones are
+/// consulted FIRST: a revoked serial stays revoked even if some server row
 /// carried it again (the DB also refuses that, migrations 0007/0011). A
 /// 'deleted' tombstone is accepted as `Revoked` (empty state, then closed);
 /// a 'rotated' one (superseded by a renewal, M1-8) is refused like an
-/// unknown serial — the node lives on and its agent must use its newer
-/// certificate. Otherwise the serial is the node's newest certificate
+/// unknown serial — the server lives on and its agent must use its newer
+/// certificate. Otherwise the serial is the server's newest certificate
 /// (cert_serial; the first sight while an older one is still accepted
 /// tombstones that one) or the one it renewed from (prev_cert_serial, still
 /// valid until the newer one is seen).
-async fn node_for_serial_from(
+async fn server_for_serial_from(
     pg: &sqlx::PgPool,
     serial: &str,
     ip: Option<std::net::IpAddr>,
@@ -159,11 +159,11 @@ async fn node_for_serial_from(
         Option<Uuid>,
     );
     let (revoked, reason, current, has_prev, prev): Row = sqlx::query_as(
-        "SELECT r.node_id, r.reason, c.id, c.prev_cert_serial IS NOT NULL, p.id \
+        "SELECT r.server_id, r.reason, c.id, c.prev_cert_serial IS NOT NULL, p.id \
          FROM (SELECT 1) one \
          LEFT JOIN revoked_certs r ON r.cert_serial = $1 \
-         LEFT JOIN nodes c ON c.cert_serial = $1 \
-         LEFT JOIN nodes p ON p.prev_cert_serial = $1",
+         LEFT JOIN servers c ON c.cert_serial = $1 \
+         LEFT JOIN servers p ON p.prev_cert_serial = $1",
     )
     .bind(serial)
     .fetch_one(pg)
@@ -173,22 +173,22 @@ async fn node_for_serial_from(
         tracing::error!(serial, error = %e, "certificate lookup failed");
         Status::unavailable("temporarily unavailable")
     })?;
-    if let Some(node) = revoked {
+    if let Some(server) = revoked {
         if reason.as_deref() == Some("deleted") {
-            return Ok(AgentIdentity::Revoked(node));
+            return Ok(AgentIdentity::Revoked(server));
         }
         return Err(Status::unauthenticated("unknown certificate"));
     }
-    if let Some(node) = current {
+    if let Some(server) = current {
         if has_prev == Some(true)
-            && let Err(e) = crate::enroll::promote_on_first_sight(pg, node, serial, ip).await
+            && let Err(e) = crate::enroll::promote_on_first_sight(pg, server, serial, ip).await
         {
             // The older certificate just stays accepted a bit longer.
-            tracing::warn!(node = %node, error = %e, "failed to retire the renewed-from certificate");
+            tracing::warn!(server = %server, error = %e, "failed to retire the renewed-from certificate");
         }
-        return Ok(AgentIdentity::Node(node));
+        return Ok(AgentIdentity::Server(server));
     }
-    prev.map(AgentIdentity::Node)
+    prev.map(AgentIdentity::Server)
         .ok_or_else(|| Status::unauthenticated("unknown certificate"))
 }
 
@@ -203,25 +203,25 @@ pub const SPEED_LIMIT_PROTOCOL: u32 = 4;
 
 /// W9: agents from this protocol on remove Shadowsocks 2022 users in place
 /// (the credential stays in xray's table as a gate-refused tombstone), so a
-/// removal on a Shadowsocks node is a delta. A rotation still needs a
+/// removal on a Shadowsocks server is a delta. A rotation still needs a
 /// Snapshot (xray's table holds one entry per user), and the agent answers
 /// BASE_MISMATCH for what it cannot apply in place (a re-add with a new key
 /// over a tombstone, too many tombstones): the panel then sends a Snapshot,
 /// which also compacts. Older agents get a Snapshot for any removal there.
 pub const SS_TOMBSTONE_PROTOCOL: u32 = 5;
 
-/// W10: agents from this protocol on obtain and renew the node certificate
-/// for `nodes.tls_domain` themselves (ConfigSnapshot.acme) and report it
+/// W10: agents from this protocol on obtain and renew the server certificate
+/// for `servers.tls_domain` themselves (ConfigSnapshot.acme) and report it
 /// (Heartbeat.cert). Older ones ignore both and keep reading the files the
 /// admin installs (NodeView warns).
 pub const ACME_PROTOCOL: i32 = 6;
 
 /// W28-a: agents of this protocol share a user's speed limit and online
-/// count across the user's entrances on a node (UserOp.user_id
+/// count across the user's entrances on a server (UserOp.user_id
 /// "<user>#<n>"); older ones count each entrance on its own.
 pub const ACCOUNT_KEY_PROTOCOL: i32 = 7;
 
-/// A node's user set as the agent must run it: user id -> inbound tag ->
+/// A server's user set as the agent must run it: user id -> inbound tag ->
 /// (protocol, account_json). Users without any inbound are absent. Built
 /// with the proto's collapsing rules (a later InboundUser for the same tag,
 /// or a later op for the same user, replaces the earlier one).
@@ -474,7 +474,7 @@ impl SetDigest {
         &self.hash
     }
 
-    /// No inbounds, no users (what a disabled/deleted node runs).
+    /// No inbounds, no users (what a disabled/deleted server runs).
     fn is_empty_state(&self) -> bool {
         use sha2::{Digest, Sha256};
         self.users.is_empty() && self.inbounds == <[u8; 32]>::from(Sha256::digest(b"[]"))
@@ -571,7 +571,7 @@ fn drops_credential_digest(base: &SetDigest, want: &SetDigest) -> bool {
 }
 
 /// Like `drops_credential_digest`, but only users that stay with changed
-/// credentials count (a user that is gone does not): on a Shadowsocks node
+/// credentials count (a user that is gone does not): on a Shadowsocks server
 /// of a protocol >= `SS_TOMBSTONE_PROTOCOL` agent, removals are deltas and
 /// rotations Snapshots. Conservative: any change of a staying user's
 /// credentials counts, on any inbound.
@@ -669,13 +669,13 @@ struct SyncState {
     /// Too-old agent: the empty state is pushed once per session no matter
     /// what its Hello claims.
     old_pushed: bool,
-    /// Last time this session persisted `nodes.lease_expires_at`.
+    /// Last time this session persisted `servers.lease_expires_at`.
     lease_written: Option<Instant>,
     /// agent.remove_mode = "rebuild": a removal/rotation is never a delta.
     remove_rebuild: bool,
 }
 
-/// A failed apply as persisted on the node.
+/// A failed apply as persisted on the server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DbFailure {
     /// The attempted versions.
@@ -787,8 +787,8 @@ impl SyncState {
     }
 
     /// What to send for `desired` (versions + user set, read under
-    /// `ticket`) now, if anything. `db_failed` is the node's persisted
-    /// failure; `can_delta` = node enabled. Marks it pending and sent.
+    /// `ticket`) now, if anything. `db_failed` is the server's persisted
+    /// failure; `can_delta` = server enabled. Marks it pending and sent.
     fn decide(
         &mut self,
         ticket: u64,
@@ -1037,7 +1037,7 @@ impl SyncState {
 /// One agent stream. Shared by the stream reader and the watcher task.
 struct Session {
     state: AppState,
-    node_id: Uuid,
+    server_id: Uuid,
     tx: mpsc::Sender<Result<PanelDown, Status>>,
     sync: Mutex<SyncState>,
     /// R12 P1: held across a whole `sync_if_stale` (ticket → DB read →
@@ -1051,17 +1051,17 @@ struct Session {
     /// Flips to true on termination; every lock wait, send and the reader
     /// race it.
     closed: tokio::sync::watch::Sender<bool>,
-    /// The node is gone or the certificate revoked: only the empty state
+    /// The server is gone or the certificate revoked: only the empty state
     /// and the close are sent; traffic reports are ignored.
     retiring: AtomicBool,
-    /// Last desired-state read said the node is being deleted (phase 1).
+    /// Last desired-state read said the server is being deleted (phase 1).
     deleting: AtomicBool,
-    /// This session marked the node online (nodes.online_session).
+    /// This session marked the server online (servers.online_session).
     marked_online: AtomicBool,
     /// A pre-Hello traffic report was dropped (logged once per session).
     pre_hello_warned: AtomicBool,
     online_session: Uuid,
-    /// A reader-side read found the node gone: the watcher retires.
+    /// A reader-side read found the server gone: the watcher retires.
     gone: Notify,
     /// M6: what the latest Hello said (agent version, protocol, platform),
     /// rollouts already offered on this stream, and whether an ok Ack must
@@ -1092,12 +1092,12 @@ struct Session {
 impl Session {
     fn new(
         state: AppState,
-        node_id: Uuid,
+        server_id: Uuid,
         tx: mpsc::Sender<Result<PanelDown, Status>>,
         revoked: bool,
     ) -> Arc<Self> {
         let sess = Arc::new(Session {
-            node_id,
+            server_id,
             tx,
             sync: Mutex::default(),
             send_lock: tokio::sync::Mutex::new(()),
@@ -1166,7 +1166,7 @@ impl Session {
             }
             _ = self.cancelled() => Ok(false),
             _ = tokio::time::sleep(SEND_TIMEOUT) => {
-                tracing::warn!(node = %self.node_id, "agent stopped reading its stream; closing it");
+                tracing::warn!(server = %self.server_id, "agent stopped reading its stream; closing it");
                 self.terminate(Status::deadline_exceeded("agent not reading its stream"));
                 Ok(false)
             }
@@ -1212,18 +1212,18 @@ async fn session<S>(
     use crate::pb::agent_up::Msg as UpMsg;
 
     let _live = state.session_started();
-    let (node_id, revoked) = match identity {
-        AgentIdentity::Node(n) => (n, false),
+    let (server_id, revoked) = match identity {
+        AgentIdentity::Server(n) => (n, false),
         AgentIdentity::Revoked(n) => (n, true),
     };
-    tracing::info!(node = %node_id, revoked, "agent connected");
+    tracing::info!(server = %server_id, revoked, "agent connected");
     // Subscribe BEFORE the membership load and the first read of the
     // desired state, so no committed change can fall between them.
-    let mut wake_rx = state.wakeups().subscribe(node_id);
-    let sess = Session::new(state.clone(), node_id, tx, revoked);
+    let mut wake_rx = state.wakeups().subscribe(server_id);
+    let sess = Session::new(state.clone(), server_id, tx, revoked);
     let generation = state.next_generation();
     if !revoked {
-        // One live stream per node on this instance: the newest wins.
+        // One live stream per server on this instance: the newest wins.
         let entry = crate::state::AgentEntry {
             generation,
             online_session: sess.online_session,
@@ -1236,16 +1236,16 @@ async fn session<S>(
                 })
             },
         };
-        if let Some(old) = state.agents().insert(node_id, entry) {
+        if let Some(old) = state.agents().insert(server_id, entry) {
             (old.close)(Status::aborted("superseded by a newer stream"));
         }
         // Traffic is only accepted for assigned users; load them before the
         // first report can arrive.
-        refresh_members(&state, node_id).await;
+        refresh_members(&state, server_id).await;
     }
 
-    // Push state on this node's wakeups (pg_notify, see notify.rs), and
-    // reconcile periodically. A node found gone (or a revoked certificate)
+    // Push state on this server's wakeups (pg_notify, see notify.rs), and
+    // reconcile periodically. A server found gone (or a revoked certificate)
     // is retired: empty state, then the stream is closed.
     let w = sess.clone();
     let watcher = tokio::spawn(async move {
@@ -1284,12 +1284,12 @@ async fn session<S>(
                 },
                 _ = tick.tick() => {}
                 _ = sess.gone.notified() => {
-                    retire(&sess, "node deleted").await;
+                    retire(&sess, "server deleted").await;
                     break;
                 }
                 _ = sess.cancelled() => break,
             }
-            refresh_members(&sess.state, node_id).await;
+            refresh_members(&sess.state, server_id).await;
             match sync_if_stale(&sess).await {
                 Ok(Synced::Current) => {
                     maybe_offer_update(&sess).await;
@@ -1297,20 +1297,20 @@ async fn session<S>(
                     maybe_send_block_policy(&sess).await;
                 }
                 Ok(Synced::Gone) => {
-                    retire(&sess, "node deleted").await;
+                    retire(&sess, "server deleted").await;
                     break;
                 }
                 Ok(Synced::Superseded) => {
                     sess.terminate(Status::aborted("superseded by a newer stream"));
                     break;
                 }
-                Err(e) => tracing::warn!(node = %node_id, error = %e, "config push failed"),
+                Err(e) => tracing::warn!(server = %server_id, error = %e, "config push failed"),
             }
         }
     });
 
     // A Hello whose online row write failed (DB blip): retried on each
-    // heartbeat until it lands (B1), so the node is never left 'offline'
+    // heartbeat until it lands (B1), so the server is never left 'offline'
     // with a stale online_session for the whole stream.
     let mut online_retry: Option<crate::pb::Hello> = None;
     let result: Result<(), Status> = async {
@@ -1352,7 +1352,7 @@ async fn session<S>(
             match msg.msg {
                 Some(UpMsg::Hello(hello)) => {
                     tracing::info!(
-                        node = %node_id,
+                        server = %server_id,
                         session = %hello.session_id,
                         protocol = hello.protocol_version,
                         "agent hello"
@@ -1365,19 +1365,19 @@ async fn session<S>(
                     );
                     sess.hello.notify_one();
                     online_retry = None;
-                    if mark_online(&state, node_id, sess.online_session, &hello).await {
+                    if mark_online(&state, server_id, sess.online_session, &hello).await {
                         sess.marked_online.store(true, Ordering::SeqCst);
                     } else {
-                        tracing::warn!(node = %node_id, "failed to mark node online; retrying on heartbeat");
+                        tracing::warn!(server = %server_id, "failed to mark server online; retrying on heartbeat");
                         online_retry = Some(hello.clone());
                     }
                     if hello.protocol_version < MIN_AGENT_PROTOCOL {
                         // Never trusted for convergence; say why it runs
                         // nothing.
-                        record_too_old(state.pg(), node_id, hello.protocol_version).await;
+                        record_too_old(state.pg(), server_id, hello.protocol_version).await;
                     } else {
                         // The agent only claims versions it applied cleanly.
-                        record_converged(state.pg(), node_id, held).await;
+                        record_converged(state.pg(), server_id, held).await;
                     }
                     after_sync(
                         &sess,
@@ -1410,28 +1410,28 @@ async fn session<S>(
                     // W11: like traffic, nothing before the Hello.
                     if lock_or_recover(&sess.sync).hello_seen
                         && let Err(e) =
-                            crate::nodestat::store_agent_latency(state.pg(), node_id, &rep).await
+                            crate::nodestat::store_agent_latency(state.pg(), server_id, &rep).await
                         {
-                            tracing::warn!(node = %node_id, error = %e, "failed to store latency result");
+                            tracing::warn!(server = %server_id, error = %e, "failed to store latency result");
                         }
                 }
                 Some(UpMsg::UpdateStatus(us)) => {
-                    if let Err(e) = crate::rollout::on_status(state.pg(), node_id, &us).await {
-                        tracing::warn!(node = %node_id, error = %e, "failed to record update status");
+                    if let Err(e) = crate::rollout::on_status(state.pg(), server_id, &us).await {
+                        tracing::warn!(server = %server_id, error = %e, "failed to record update status");
                     }
                 }
                 Some(UpMsg::Heartbeat(mut hb)) => {
                     if !sess.metrics_presence.load(Ordering::SeqCst) {
                         crate::nodestat::legacy_presence(&mut hb);
                     }
-                    store_heartbeat(&state, node_id, &hb).await;
+                    store_heartbeat(&state, server_id, &hb).await;
                     if let Some(b) = hb.block.as_ref()
                         && sess.block_capable.load(Ordering::SeqCst)
                     {
                         store_block_stats(&sess, b).await;
                     }
                     if let Some(h) = online_retry.take() {
-                        if mark_online(&state, node_id, sess.online_session, &h).await {
+                        if mark_online(&state, server_id, sess.online_session, &h).await {
                             sess.marked_online.store(true, Ordering::SeqCst);
                         } else {
                             online_retry = Some(h);
@@ -1443,13 +1443,13 @@ async fn session<S>(
                     // Hello (the agent always says Hello first).
                     if !lock_or_recover(&sess.sync).hello_seen {
                         if !sess.pre_hello_warned.swap(true, Ordering::Relaxed) {
-                            tracing::warn!(node = %node_id, "traffic report before hello dropped");
+                            tracing::warn!(server = %server_id, "traffic report before hello dropped");
                         }
                         continue;
                     }
                     // Billed per the session the report carries; the agent
                     // reads it atomically with the counters (REVIEW P0 #2).
-                    state.traffic().update(node_id, &report.session_id, &report);
+                    state.traffic().update(server_id, &report.session_id, &report);
                 }
                 Some(UpMsg::Ack(ack)) => {
                     crate::metrics::ack(
@@ -1457,7 +1457,7 @@ async fn session<S>(
                             .unwrap_or(crate::pb::ack::Reason::Unspecified),
                     );
                     tracing::debug!(
-                        node = %node_id,
+                        server = %server_id,
                         ok = ack.ok,
                         reason = ack.reason,
                         error = %ack.error,
@@ -1473,10 +1473,10 @@ async fn session<S>(
                     let v = (ack.config_version, ack.user_version);
                     match outcome {
                         AckOutcome::Converged => {
-                            record_converged(state.pg(), node_id, v).await;
+                            record_converged(state.pg(), server_id, v).await;
                             note_update_health(&sess).await;
                             if sess.deleting.load(Ordering::SeqCst) {
-                                mark_delete_acked(state.pg(), node_id, v).await;
+                                mark_delete_acked(state.pg(), server_id, v).await;
                             }
                         }
                         AckOutcome::Failed(msg) => {
@@ -1485,7 +1485,7 @@ async fn session<S>(
                                 held: held_before,
                                 no_ack: false,
                             };
-                            record_failure(state.pg(), node_id, f, &msg).await;
+                            record_failure(state.pg(), server_id, f, &msg).await;
                         }
                         AckOutcome::Resync => {
                             after_sync(&sess, sync_if_stale(&sess).await, "failed to resync")
@@ -1502,13 +1502,13 @@ async fn session<S>(
 
     watcher.abort();
     let _ = watcher.await; // drops its wakeup receiver
-    state.wakeups().release(node_id);
+    state.wakeups().release(server_id);
     let retired = sess.retiring();
     let superseded = !retired && sess.terminated();
     if !revoked {
         state
             .agents()
-            .remove_if(&node_id, |_, e| e.generation == generation);
+            .remove_if(&server_id, |_, e| e.generation == generation);
     }
     // A snapshot still unacked when the stream dies counts as a failed
     // apply, so a crash-looping agent gets backoff instead of resends.
@@ -1525,44 +1525,44 @@ async fn session<S>(
             })
     };
     if let Some(f) = lost {
-        record_failure(state.pg(), node_id, f, "no ack before the stream closed").await;
+        record_failure(state.pg(), server_id, f, "no ack before the stream closed").await;
     }
-    if !state.agents().contains_key(&node_id) {
-        // W11: no local stream for the node any more (fleet gauges).
-        state.nodestat().forget(node_id);
+    if !state.agents().contains_key(&server_id) {
+        // W11: no local stream for the server any more (fleet gauges).
+        state.nodestat().forget(server_id);
     }
     if retired {
         if !revoked {
-            forget_node(&state, node_id).await;
+            forget_server(&state, server_id).await;
         }
     } else {
-        if let Err(e) = mark_offline(state.pg(), node_id, sess.online_session).await {
-            tracing::warn!(node = %node_id, error = %e, "failed to mark node offline");
+        if let Err(e) = mark_offline(state.pg(), server_id, sess.online_session).await {
+            tracing::warn!(server = %server_id, error = %e, "failed to mark server offline");
         }
-        if !state.agents().contains_key(&node_id) {
-            // Last local session of the node: its membership cache goes
+        if !state.agents().contains_key(&server_id) {
+            // Last local session of the server: its membership cache goes
             // (buffered entries stay until flushed).
-            state.traffic().drop_members(node_id);
+            state.traffic().drop_members(server_id);
         }
     }
     if let Err(e) = result {
-        tracing::warn!(node = %node_id, error = %e, "agent stream error");
+        tracing::warn!(server = %server_id, error = %e, "agent stream error");
     }
-    tracing::info!(node = %node_id, retired, superseded, "agent disconnected");
+    tracing::info!(server = %server_id, retired, superseded, "agent disconnected");
 }
 
-/// Route a reader-side sync result: a gone/superseded node is handled by
+/// Route a reader-side sync result: a gone/superseded server is handled by
 /// the watcher (which may wait on the reader).
 fn after_sync(sess: &Session, r: anyhow::Result<Synced>, what: &str) {
     match r {
         Ok(Synced::Current) => {}
         Ok(Synced::Gone) => sess.gone.notify_one(),
         Ok(Synced::Superseded) => sess.terminate(Status::aborted("superseded by a newer stream")),
-        Err(e) => tracing::warn!(node = %sess.node_id, error = %e, "{what}"),
+        Err(e) => tracing::warn!(server = %sess.server_id, error = %e, "{what}"),
     }
 }
 
-/// The node is gone (deleted) or the certificate revoked: make sure the
+/// The server is gone (deleted) or the certificate revoked: make sure the
 /// agent runs the empty state (no inbounds, no users) — pushed at versions
 /// (0,0) unless it verifiably runs it already — give it RETIRE_WAIT to ack,
 /// then end the stream with UNAUTHENTICATED. A refused agent would keep its
@@ -1574,8 +1574,8 @@ async fn retire(sess: &Session, why: &'static str) {
         };
         sess.retiring.store(true, Ordering::SeqCst);
     }
-    let node_id = sess.node_id;
-    tracing::info!(node = %node_id, why, "retiring agent session");
+    let server_id = sess.server_id;
+    tracing::info!(server = %server_id, why, "retiring agent session");
     let hello_seen = lock_or_recover(&sess.sync).hello_seen;
     if !hello_seen {
         tokio::select! {
@@ -1600,7 +1600,7 @@ async fn retire(sess: &Session, why: &'static str) {
         if sent {
             tokio::select! {
                 r = tokio::time::timeout(RETIRE_WAIT, sess.retire_ack.notified()) => if r.is_err() {
-                    tracing::warn!(node = %node_id, "retiring agent did not ack the empty state; closing anyway");
+                    tracing::warn!(server = %server_id, "retiring agent did not ack the empty state; closing anyway");
                 },
                 _ = sess.cancelled() => return,
             }
@@ -1609,44 +1609,44 @@ async fn retire(sess: &Session, why: &'static str) {
     sess.terminate(Status::unauthenticated(why));
 }
 
-/// A deleted node's leftovers on this instance: live-status keys and the
+/// A deleted server's leftovers on this instance: live-status keys and the
 /// in-memory traffic state (membership, buffered entries, index).
-pub(crate) async fn forget_node(state: &AppState, node_id: Uuid) {
-    state.traffic().forget_node(node_id);
+pub(crate) async fn forget_server(state: &AppState, server_id: Uuid) {
+    state.traffic().forget_server(server_id);
     valkey_util::del(
         state,
         vec![
-            format!("akari:node:online:{node_id}"),
-            format!("akari:node:hb:{node_id}"),
+            format!("akari:server:online:{server_id}"),
+            format!("akari:server:hb:{server_id}"),
         ],
     )
     .await;
 }
 
 /// Phase 1 of a deletion is converged: the agent acked the (empty) state
-/// at the node's current versions. Lets phase 2 (reaper) proceed early.
-async fn mark_delete_acked(pg: &sqlx::PgPool, node_id: Uuid, versions: (u64, u64)) {
+/// at the server's current versions. Lets phase 2 (reaper) proceed early.
+async fn mark_delete_acked(pg: &sqlx::PgPool, server_id: Uuid, versions: (u64, u64)) {
     let res = sqlx::query(
-        "UPDATE nodes SET delete_acked_at = now() \
+        "UPDATE servers SET delete_acked_at = now() \
          WHERE id = $1 AND deleting_at IS NOT NULL AND delete_acked_at IS NULL \
-           AND NOT enabled AND config_version = $2 AND user_version = $3",
+           AND config_version = $2 AND user_version = $3",
     )
-    .bind(node_id)
+    .bind(server_id)
     .bind(versions.0 as i64)
     .bind(versions.1 as i64)
     .execute(pg)
     .await;
     if let Err(e) = res {
-        tracing::warn!(node = %node_id, error = %e, "failed to record the deletion ack");
+        tracing::warn!(server = %server_id, error = %e, "failed to record the deletion ack");
     }
 }
 
 /// Clear the recorded failure if `versions` (now running on the agent, per
 /// an ok Ack or a Hello) cover the failed ones. A stale report for older
 /// versions must not launder a newer failure.
-async fn record_converged(pg: &sqlx::PgPool, node_id: Uuid, versions: (u64, u64)) {
+async fn record_converged(pg: &sqlx::PgPool, server_id: Uuid, versions: (u64, u64)) {
     let res = sqlx::query(
-        "UPDATE nodes SET last_error = NULL, last_error_at = NULL, \
+        "UPDATE servers SET last_error = NULL, last_error_at = NULL, \
              failed_config_version = NULL, failed_user_version = NULL, \
              failed_held_config_version = NULL, failed_held_user_version = NULL, \
              failed_reason = NULL \
@@ -1654,32 +1654,32 @@ async fn record_converged(pg: &sqlx::PgPool, node_id: Uuid, versions: (u64, u64)
            AND $2 >= COALESCE(failed_config_version, 0) \
            AND $3 >= COALESCE(failed_user_version, 0)",
     )
-    .bind(node_id)
+    .bind(server_id)
     .bind(versions.0 as i64)
     .bind(versions.1 as i64)
     .execute(pg)
     .await;
     if let Err(e) = res {
-        tracing::warn!(node = %node_id, error = %e, "failed to clear node error");
+        tracing::warn!(server = %server_id, error = %e, "failed to clear server error");
     }
 }
 
 /// Persist a failed apply: the error, the ATTEMPTED versions, what the agent
 /// held at the time and whether it answered at all.
-async fn record_failure(pg: &sqlx::PgPool, node_id: Uuid, failure: DbFailure, error: &str) {
-    tracing::warn!(node = %node_id, error = %error, no_ack = failure.no_ack, "agent failed to apply update");
+async fn record_failure(pg: &sqlx::PgPool, server_id: Uuid, failure: DbFailure, error: &str) {
+    tracing::warn!(server = %server_id, error = %error, no_ack = failure.no_ack, "agent failed to apply update");
     let msg: String = if error.is_empty() {
         "agent reported failure without detail".into()
     } else {
         error.chars().take(2000).collect()
     };
     let res = sqlx::query(
-        "UPDATE nodes SET last_error = $2, last_error_at = now(), \
+        "UPDATE servers SET last_error = $2, last_error_at = now(), \
              failed_config_version = $3, failed_user_version = $4, \
              failed_held_config_version = $5, failed_held_user_version = $6, \
              failed_reason = $7 WHERE id = $1",
     )
-    .bind(node_id)
+    .bind(server_id)
     .bind(msg)
     .bind(failure.versions.0 as i64)
     .bind(failure.versions.1 as i64)
@@ -1689,35 +1689,35 @@ async fn record_failure(pg: &sqlx::PgPool, node_id: Uuid, failure: DbFailure, er
     .execute(pg)
     .await;
     if let Err(e) = res {
-        tracing::warn!(node = %node_id, error = %e, "failed to record node error");
+        tracing::warn!(server = %server_id, error = %e, "failed to record server error");
     }
 }
 
-/// A too-old agent (N5) runs the empty state; say so on the node. Clears
+/// A too-old agent (N5) runs the empty state; say so on the server. Clears
 /// failure context (the empty state is not a retried apply). Cleared by the
 /// next protocol-current agent's Hello (record_converged).
-async fn record_too_old(pg: &sqlx::PgPool, node_id: Uuid, protocol: u32) {
+async fn record_too_old(pg: &sqlx::PgPool, server_id: Uuid, protocol: u32) {
     let msg = format!(
         "agent too old: protocol_version {protocol} < {MIN_AGENT_PROTOCOL}; serving it the empty \
          state (no inbounds, no users) until the agent is upgraded"
     );
-    tracing::warn!(node = %node_id, protocol, "{msg}");
+    tracing::warn!(server = %server_id, protocol, "{msg}");
     let res = sqlx::query(
-        "UPDATE nodes SET last_error = $2, last_error_at = now(), \
+        "UPDATE servers SET last_error = $2, last_error_at = now(), \
              failed_config_version = NULL, failed_user_version = NULL, \
              failed_held_config_version = NULL, failed_held_user_version = NULL, \
              failed_reason = NULL WHERE id = $1",
     )
-    .bind(node_id)
+    .bind(server_id)
     .bind(msg)
     .execute(pg)
     .await;
     if let Err(e) = res {
-        tracing::warn!(node = %node_id, error = %e, "failed to record too-old agent");
+        tracing::warn!(server = %server_id, error = %e, "failed to record too-old agent");
     }
 }
 
-/// Returns whether the node row now names this session as its owner.
+/// Returns whether the server row now names this session as its owner.
 /// The agent fields of a Hello the update code needs.
 #[derive(Default, Clone)]
 struct HelloInfo {
@@ -1735,7 +1735,7 @@ fn lock_or_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// M6: after a Hello: remember the agent's version/platform, move a node
+/// M6: after a Hello: remember the agent's version/platform, move a server
 /// that came back with a rollout's target version to `updating` (its next
 /// ok Ack makes it healthy), and offer an update if one is due.
 async fn on_hello_update(sess: &Session, hello: &crate::pb::Hello) {
@@ -1749,29 +1749,33 @@ async fn on_hello_update(sess: &Session, hello: &crate::pb::Hello) {
     if hello.protocol_version >= crate::updates::MIN_UPDATE_PROTOCOL
         && !info.agent_version.is_empty()
     {
-        match crate::rollout::on_hello(sess.state.pg(), sess.node_id, &info.agent_version).await {
+        match crate::rollout::on_hello(sess.state.pg(), sess.server_id, &info.agent_version).await {
             Ok(true) => sess.update_watch.store(true, Ordering::SeqCst),
             Ok(false) => {}
-            Err(e) => tracing::warn!(node = %sess.node_id, error = %e, "rollout hello hook failed"),
+            Err(e) => {
+                tracing::warn!(server = %sess.server_id, error = %e, "rollout hello hook failed")
+            }
         }
     }
     maybe_offer_update(sess).await;
 }
 
 /// An ok Ack on a stream that came back with a rollout's target version:
-/// the node passed the health gate.
+/// the server passed the health gate.
 async fn note_update_health(sess: &Session) {
     if !sess.update_watch.load(Ordering::SeqCst) {
         return;
     }
     let version = lock_or_recover(&sess.agent).version.clone();
-    match crate::rollout::on_converged(sess.state.pg(), sess.node_id, &version).await {
+    match crate::rollout::on_converged(sess.state.pg(), sess.server_id, &version).await {
         Ok(_) => sess.update_watch.store(false, Ordering::SeqCst),
-        Err(e) => tracing::warn!(node = %sess.node_id, error = %e, "rollout health hook failed"),
+        Err(e) => {
+            tracing::warn!(server = %sess.server_id, error = %e, "rollout health hook failed")
+        }
     }
 }
 
-/// Sends the node's due UpdateOffer (protocol >= 3 only), at most once per
+/// Sends the server's due UpdateOffer (protocol >= 3 only), at most once per
 /// stream and rollout.
 async fn maybe_offer_update(sess: &Session) {
     let info = lock_or_recover(&sess.agent).clone();
@@ -1780,7 +1784,7 @@ async fn maybe_offer_update(sess: &Session) {
     }
     let offer = match crate::rollout::offer_for(
         sess.state.pg(),
-        sess.node_id,
+        sess.server_id,
         info.protocol,
         &info.version,
         (&info.os, &info.arch),
@@ -1790,7 +1794,7 @@ async fn maybe_offer_update(sess: &Session) {
         Ok(Some(o)) => o,
         Ok(None) => return,
         Err(e) => {
-            tracing::warn!(node = %sess.node_id, error = %e, "update offer lookup failed");
+            tracing::warn!(server = %sess.server_id, error = %e, "update offer lookup failed");
             return;
         }
     };
@@ -1807,9 +1811,9 @@ async fn maybe_offer_update(sess: &Session) {
     let Some(guard) = sess.lock().await else {
         return;
     };
-    tracing::info!(node = %sess.node_id, rollout = %rollout, "sending update offer");
+    tracing::info!(server = %sess.server_id, rollout = %rollout, "sending update offer");
     if let Err(e) = sess.send(&guard, DownMsg::UpdateOffer(offer)).await {
-        tracing::warn!(node = %sess.node_id, error = %e, "update offer send failed");
+        tracing::warn!(server = %sess.server_id, error = %e, "update offer send failed");
     }
 }
 
@@ -1821,10 +1825,10 @@ async fn maybe_send_probe(sess: &Session) {
     if !sess.latency_capable.load(Ordering::SeqCst) || sess.retiring() || sess.terminated() {
         return;
     }
-    let requested = match crate::nodestat::requested_at(sess.state.pg(), sess.node_id).await {
+    let requested = match crate::nodestat::requested_at(sess.state.pg(), sess.server_id).await {
         Ok(r) => r,
         Err(e) => {
-            tracing::warn!(node = %sess.node_id, error = %e, "probe request lookup failed");
+            tracing::warn!(server = %sess.server_id, error = %e, "probe request lookup failed");
             return;
         }
     };
@@ -1838,22 +1842,24 @@ async fn maybe_send_probe(sess: &Session) {
     match sess.send(&guard, DownMsg::LatencyProbe(cfg.clone())).await {
         Ok(true) => *lock_or_recover(&sess.probe_sent) = Some(cfg),
         Ok(false) => {}
-        Err(e) => tracing::warn!(node = %sess.node_id, error = %e, "latency config send failed"),
+        Err(e) => {
+            tracing::warn!(server = %sess.server_id, error = %e, "latency config send failed")
+        }
     }
 }
 
-/// W29: send the node's compiled block policy when it differs from the one
+/// W29: send the server's compiled block policy when it differs from the one
 /// last sent on this stream (the first one after every Hello, even "off":
 /// a restarted agent starts off, an agent that kept running may not).
 async fn maybe_send_block_policy(sess: &Session) {
     if !sess.block_capable.load(Ordering::SeqCst) || sess.retiring() || sess.terminated() {
         return;
     }
-    let policy = match crate::blockrules::node_policy(sess.state.pg(), sess.node_id).await {
+    let policy = match crate::blockrules::server_policy(sess.state.pg(), sess.server_id).await {
         Ok(Some(p)) => p,
         Ok(None) => return,
         Err(e) => {
-            tracing::warn!(node = %sess.node_id, error = %e, "block policy read failed");
+            tracing::warn!(server = %sess.server_id, error = %e, "block policy read failed");
             return;
         }
     };
@@ -1869,7 +1875,7 @@ async fn maybe_send_block_policy(sess: &Session) {
     {
         Ok(true) => *lock_or_recover(&sess.block_sent) = Some(policy),
         Ok(false) => {}
-        Err(e) => tracing::warn!(node = %sess.node_id, error = %e, "block policy send failed"),
+        Err(e) => tracing::warn!(server = %sess.server_id, error = %e, "block policy send failed"),
     }
 }
 
@@ -1882,9 +1888,11 @@ async fn store_block_stats(sess: &Session, stats: &crate::pb::BlockStats) {
     if unchanged {
         return;
     }
-    match crate::blockrules::ingest_stats(sess.state.pg(), sess.node_id, stats).await {
+    match crate::blockrules::ingest_stats(sess.state.pg(), sess.server_id, stats).await {
         Ok(()) => *lock_or_recover(&sess.block_stored) = Some(stats.clone()),
-        Err(e) => tracing::warn!(node = %sess.node_id, error = %e, "block counters store failed"),
+        Err(e) => {
+            tracing::warn!(server = %sess.server_id, error = %e, "block counters store failed")
+        }
     }
 }
 
@@ -1905,15 +1913,15 @@ fn hello_capabilities(hello: &crate::pb::Hello) -> Vec<String> {
 
 async fn mark_online(
     state: &AppState,
-    node_id: Uuid,
+    server_id: Uuid,
     online_session: Uuid,
     hello: &crate::pb::Hello,
 ) -> bool {
-    valkey_util::set_online(state, node_id).await;
+    valkey_util::set_online(state, server_id).await;
     let info = hello.info.as_ref();
     let owned = set_online_row(
         state.pg(),
-        node_id,
+        server_id,
         online_session,
         info.map(|i| i.agent_version.as_str()),
         info.map(|i| i.core_version.as_str()),
@@ -1922,10 +1930,10 @@ async fn mark_online(
     .await
     .is_ok();
     if let Err(e) = sqlx::query(
-        "UPDATE nodes SET agent_protocol = $2, agent_os = $3, agent_arch = $4, \
+        "UPDATE servers SET agent_protocol = $2, agent_os = $3, agent_arch = $4, \
              agent_capabilities = $5 WHERE id = $1",
     )
-    .bind(node_id)
+    .bind(server_id)
     .bind(hello.protocol_version as i32)
     .bind(info.map(|i| i.os.as_str()).filter(|s| !s.is_empty()))
     .bind(info.map(|i| i.arch.as_str()).filter(|s| !s.is_empty()))
@@ -1933,46 +1941,46 @@ async fn mark_online(
     .execute(state.pg())
     .await
     {
-        tracing::warn!(node = %node_id, error = %e, "failed to record agent platform");
+        tracing::warn!(server = %server_id, error = %e, "failed to record agent platform");
     }
     if owned {
         // M2-5: the agent's current traffic session, as of this Hello on
-        // the stream that owns the node (traffic::retention_pass; the drain
+        // the stream that owns the server (traffic::retention_pass; the drain
         // proof is written by `AppState::persist_online`).
         // Losing this write stops retention_pass from ever retiring the
-        // node's superseded sessions (M2-5 drain proof): say so.
+        // server's superseded sessions (M2-5 drain proof): say so.
         if let Err(e) = sqlx::query(
-            "UPDATE nodes SET agent_session = $2, agent_session_at = now() \
+            "UPDATE servers SET agent_session = $2, agent_session_at = now() \
              WHERE id = $1 AND online_session = $3",
         )
-        .bind(node_id)
+        .bind(server_id)
         .bind(Some(hello.session_id.as_str()).filter(|s| !s.is_empty()))
         .bind(online_session)
         .execute(state.pg())
         .await
         {
-            tracing::warn!(node = %node_id, error = %e, "failed to record agent traffic session");
+            tracing::warn!(server = %server_id, error = %e, "failed to record agent traffic session");
         }
     }
     owned
 }
 
-/// Mark the node online for this session. Also grants the billing
-/// reconnect credit (R13): the time since the node was last seen (min
+/// Mark the server online for this session. Also grants the billing
+/// reconnect credit (R13): the time since the server was last seen (min
 /// lease) — traffic the agent carried while the panel could not hear it —
 /// becomes the caps' credit floor for one burst window. A credit still
 /// valid is neither replaced nor extended, and last_seen_at moves to now,
 /// so each disconnection can be claimed once.
 async fn set_online_row(
     pg: &sqlx::PgPool,
-    node_id: Uuid,
+    server_id: Uuid,
     online_session: Uuid,
     agent_version: Option<&str>,
     core_version: Option<&str>,
     credit: CreditWindow,
 ) -> sqlx::Result<()> {
     sqlx::query(
-        "UPDATE nodes SET status = 'online', agent_version = $1, core_version = $2, \
+        "UPDATE servers SET status = 'online', agent_version = $1, core_version = $2, \
          online_session = $4, last_seen_at = now(), \
          traffic_credit_floor = CASE WHEN traffic_credit_until > now() THEN traffic_credit_floor \
              ELSE now() - make_interval(secs => LEAST(GREATEST(COALESCE( \
@@ -1983,7 +1991,7 @@ async fn set_online_row(
     )
     .bind(agent_version)
     .bind(core_version)
-    .bind(node_id)
+    .bind(server_id)
     .bind(online_session)
     .bind(credit.lease_secs as f64)
     .bind(credit.burst_secs as f64)
@@ -1993,9 +2001,9 @@ async fn set_online_row(
 }
 
 #[cfg(test)]
-pub(crate) async fn reconnect_for_test(pg: &sqlx::PgPool, node: Uuid) {
+pub(crate) async fn reconnect_for_test(pg: &sqlx::PgPool, server: Uuid) {
     let cw = CreditWindow::from_cfg(&crate::config::PanelConfig::default());
-    set_online_row(pg, node, Uuid::new_v4(), None, None, cw)
+    set_online_row(pg, server, Uuid::new_v4(), None, None, cw)
         .await
         .unwrap();
 }
@@ -2016,33 +2024,37 @@ impl CreditWindow {
     }
 }
 
-/// Only the session that last marked the node online may mark it offline.
-async fn mark_offline(pg: &sqlx::PgPool, node_id: Uuid, online_session: Uuid) -> sqlx::Result<()> {
+/// Only the session that last marked the server online may mark it offline.
+async fn mark_offline(
+    pg: &sqlx::PgPool,
+    server_id: Uuid,
+    online_session: Uuid,
+) -> sqlx::Result<()> {
     sqlx::query(
-        "UPDATE nodes SET status = 'offline', last_seen_at = now() \
+        "UPDATE servers SET status = 'offline', last_seen_at = now() \
          WHERE id = $1 AND online_session = $2",
     )
-    .bind(node_id)
+    .bind(server_id)
     .bind(online_session)
     .execute(pg)
     .await?;
     Ok(())
 }
 
-async fn refresh_members(state: &AppState, node_id: Uuid) {
+async fn refresh_members(state: &AppState, server_id: Uuid) {
     let Ok(_permit) = state.read_permits().acquire().await else {
         return;
     };
-    if let Err(e) = crate::traffic::refresh_members(state.pg(), state.traffic(), node_id).await {
-        tracing::warn!(node = %node_id, error = %e, "failed to load node membership");
+    if let Err(e) = crate::traffic::refresh_members(state.pg(), state.traffic(), server_id).await {
+        tracing::warn!(server = %server_id, error = %e, "failed to load server membership");
     }
 }
 
-/// Heartbeat.cert (agent protocol 6) as the node page reads it: enums as
+/// Heartbeat.cert (agent protocol 6) as the server page reads it: enums as
 /// lowercase names, times as RFC 3339 (null when unset), every agent
 /// string through `nodestat::agent_text` (control characters dropped,
 /// length capped: the domain at 253, the error at 512 — the agent caps it
-/// too —, the challenge name at 32). A compromised node must not be able
+/// too —, the challenge name at 32). A compromised server must not be able
 /// to park megabytes of arbitrary text in the shared Valkey blob (fuzz:
 /// agent_messages).
 pub(crate) fn cert_status_json(c: &crate::pb::CertStatus) -> serde_json::Value {
@@ -2086,12 +2098,12 @@ pub(crate) fn cert_status_json(c: &crate::pb::CertStatus) -> serde_json::Value {
     })
 }
 
-async fn store_heartbeat(state: &AppState, node_id: Uuid, hb: &Heartbeat) {
+async fn store_heartbeat(state: &AppState, server_id: Uuid, hb: &Heartbeat) {
     let blob = heartbeat_value(hb);
-    crate::nodestat::on_heartbeat(state, node_id, hb);
+    crate::nodestat::on_heartbeat(state, server_id, hb);
     // The blob, and the liveness key kept fresh for the whole duration of
     // the connection, in one round trip.
-    valkey_util::store_heartbeat(state, node_id, blob.to_string()).await;
+    valkey_util::store_heartbeat(state, server_id, blob.to_string()).await;
 }
 
 /// The heartbeat as stored in Valkey (what the admin API shows).
@@ -2121,9 +2133,7 @@ fn heartbeat_value(hb: &Heartbeat) -> serde_json::Value {
 }
 
 #[derive(sqlx::FromRow)]
-struct NodeRow {
-    enabled: bool,
-    inbound: Option<serde_json::Value>,
+struct ServerRow {
     config_version: i64,
     user_version: i64,
     failed_config_version: Option<i64>,
@@ -2133,7 +2143,16 @@ struct NodeRow {
     failed_reason: Option<String>,
     online_session: Option<Uuid>,
     deleting: bool,
+    serves: bool,
     tls_domain: Option<String>,
+}
+
+/// One enabled entrance of a served node (the node's inbound with it).
+#[derive(sqlx::FromRow)]
+struct ServedEntrance {
+    inbound: serde_json::Value,
+    #[sqlx(flatten)]
+    entrance: crate::entrances::Served,
 }
 
 #[derive(sqlx::FromRow)]
@@ -2148,8 +2167,9 @@ struct EntranceUserRow {
 
 /// The key the agent counts a user's traffic under on one entrance
 /// (UserOp.user_id = the xray "email", echoed in UserTraffic.user_id):
-/// the user id on the direct entrance, `<user id>#<wire_no>` on a relay
-/// (W28-a; the agent of protocol 7 shares limits per part before '#').
+/// the user id on entrance 0 (the server's first direct entrance),
+/// `<user id>#<wire_no>` on every other (W28-a; the agent of protocol 7
+/// shares limits per part before '#').
 pub fn stat_key(user: Uuid, wire_no: i32) -> String {
     if wire_no == 0 {
         user.to_string()
@@ -2167,97 +2187,109 @@ pub fn mbps_to_bytes_per_sec(mbps: Option<i32>) -> u64 {
     }
 }
 
-/// What the node must run right now, plus its recorded apply error.
+/// What the server must run right now, plus its recorded apply error.
 struct Desired {
     snapshot: ConfigSnapshot,
+    /// Something is served (delta-able); false = the empty state of a
+    /// server being deleted or over its traffic quota.
     enabled: bool,
     /// The persisted failed apply, if any.
     failed: Option<DbFailure>,
-    /// The session that last marked the node online (any instance).
+    /// The session that last marked the server online (any instance).
     online_session: Option<Uuid>,
-    /// Phase 1 of a deletion: served like a disabled node.
+    /// Phase 1 of a deletion: served the empty state.
     deleting: bool,
 }
 
-/// The desired state of a node. A disabled node runs nothing (no inbounds,
-/// no users); neither does a node without an inbound or whose direct
-/// entrance is disabled (W28-a: the inbound is the direct entrance's).
-/// Users are served only if enabled and, for role=user, not expired. The expiry filter uses the DB clock at read time, so any
-/// snapshot built after the expiry excludes the user even before the
-/// periodic enforcement pass bumps the version. Versions and user set are
-/// read in ONE repeatable-read snapshot, so a version always labels the
-/// set it was committed with (deltas and state hashes rely on it).
-async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Option<Desired>> {
+/// SQL condition (servers aliased `s`): the server serves its nodes — not
+/// being deleted and not over its traffic quota (D5: an exceeded server
+/// runs the empty state, like a disabled node, without touching any
+/// node's `enabled`).
+pub const SERVER_SERVES: &str = "s.deleting_at IS NULL";
+
+/// The desired state of a server (Q1): the inbounds of all its nodes that
+/// are served — enabled, with an inbound — one per enabled entrance (the
+/// node's inbound for its direct entrance, a derived copy per relay), and
+/// their users. A disabled node, a node without an inbound and a disabled
+/// entrance contribute nothing; a server being deleted runs nothing.
+/// Users are served only if enabled and, for role=user, not expired. The
+/// expiry filter uses the DB clock at read time, so any snapshot built
+/// after the expiry excludes the user even before the periodic
+/// enforcement pass bumps the version. Versions and user set are read in
+/// ONE repeatable-read snapshot, so a version always labels the set it was
+/// committed with (deltas and state hashes rely on it).
+async fn desired_state(pg: &sqlx::PgPool, server_id: Uuid) -> anyhow::Result<Option<Desired>> {
     let mut tx = pg.begin().await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         .execute(&mut *tx)
         .await?;
-    let node = sqlx::query_as::<_, NodeRow>(
-        "SELECT enabled, inbound, config_version, user_version, \
+    let server = sqlx::query_as::<_, ServerRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT config_version, user_version, \
          failed_config_version, failed_user_version, failed_held_config_version, \
          failed_held_user_version, failed_reason, online_session, \
-         deleting_at IS NOT NULL AS deleting, tls_domain FROM nodes WHERE id = $1",
-    )
-    .bind(node_id)
+         deleting_at IS NOT NULL AS deleting, ({SERVER_SERVES}) AS serves, tls_domain \
+         FROM servers s WHERE id = $1"
+    )))
+    .bind(server_id)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some(node) = node else {
+    let Some(server) = server else {
         return Ok(None);
     };
 
     let mut users = Vec::new();
     let mut source_filters = Vec::new();
-    // A node being deleted is served like a disabled one (it is disabled
-    // in the same transaction; this is belt and braces).
-    let serve = node.enabled && !node.deleting;
-    // W28-a: one inbound per enabled entrance (the node's inbound for the
-    // direct one, a derived copy per relay).
-    let entrances: Vec<crate::entrances::Served> = match &node.inbound {
-        Some(_) if serve => {
-            sqlx::query_as(
-                "SELECT wire_no, listen_port, source_cidrs::text[] AS source_cidrs \
-                 FROM entrances WHERE node_id = $1 AND enabled ORDER BY wire_no",
-            )
-            .bind(node_id)
-            .fetch_all(&mut *tx)
-            .await?
-        }
-        _ => Vec::new(),
+    let serve = server.serves;
+    // W28-a: one inbound per enabled entrance of every served node, in
+    // entrance number order (the server's numbering).
+    let entrances: Vec<ServedEntrance> = if serve {
+        sqlx::query_as(
+            "SELECT n.inbound, e.wire_no, e.listen_port, e.source_cidrs::text[] AS source_cidrs \
+             FROM entrances e JOIN nodes n ON n.id = e.node_id \
+             WHERE e.server_id = $1 AND e.enabled AND n.enabled AND n.inbound IS NOT NULL \
+             ORDER BY e.wire_no",
+        )
+        .bind(server_id)
+        .fetch_all(&mut *tx)
+        .await?
+    } else {
+        Vec::new()
     };
-    let inbounds = node
-        .inbound
-        .as_ref()
-        .map(|ib| crate::entrances::derived_inbounds(ib, &entrances))
-        .unwrap_or_default();
-    if !inbounds.is_empty() {
-        let (tcp, udp) = node
-            .inbound
-            .as_ref()
-            .map(crate::protocols::l4)
-            .unwrap_or((true, false));
-        for (e, ib) in entrances.iter().zip(&inbounds) {
-            if e.listen_port.is_some() {
-                source_filters.push(crate::pb::SourceFilter {
-                    port: ib
-                        .get("port")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(0) as u32,
-                    tcp,
-                    udp,
-                    cidrs: e.source_cidrs.clone(),
-                });
-            }
+    let mut inbounds = Vec::with_capacity(entrances.len());
+    for e in &entrances {
+        let Some(ib) =
+            crate::entrances::derived_inbounds(&e.inbound, std::slice::from_ref(&e.entrance))
+                .into_iter()
+                .next()
+        else {
+            continue;
+        };
+        if e.entrance.listen_port.is_some() {
+            let (tcp, udp) = crate::protocols::l4(&e.inbound);
+            source_filters.push(crate::pb::SourceFilter {
+                port: ib
+                    .get("port")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0) as u32,
+                tcp,
+                udp,
+                cidrs: e.entrance.source_cidrs.clone(),
+            });
         }
+        inbounds.push(ib);
+    }
+    if !inbounds.is_empty() {
         let rows = sqlx::query_as::<_, EntranceUserRow>(sqlx::AssertSqlSafe(format!(
             "SELECT eu.user_id, e.wire_no, eu.protocol, eu.account, up.speed_limit_mbps \
              FROM entrance_users eu \
-             JOIN entrances e ON e.id = eu.entrance_id AND e.node_id = $1 AND e.enabled \
+             JOIN entrances e ON e.id = eu.entrance_id AND e.server_id = $1 AND e.enabled \
+             JOIN nodes n ON n.id = e.node_id AND n.enabled AND n.inbound IS NOT NULL \
              JOIN users u ON u.id = eu.user_id \
              LEFT JOIN user_plans up ON up.user_id = eu.user_id AND up.status = 'active' \
              WHERE {} ORDER BY eu.user_id, e.wire_no",
             crate::enforce::SERVED
         )))
-        .bind(node_id)
+        .bind(server_id)
         .fetch_all(&mut *tx)
         .await?;
         for r in rows {
@@ -2278,10 +2310,10 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
     let inbounds = serde_json::Value::Array(inbounds);
     let inbounds_json = serde_json::to_string(&inbounds)?;
     tx.commit().await?;
-    // W10: an automatic certificate only where an inbound reads the node
-    // certificate files (a REALITY-only node never orders one).
+    // W10: an automatic certificate only where an inbound reads the
+    // server certificate files (REALITY-only servers never order one).
     // directory_url/email come from the panel config (sync_if_stale).
-    let acme = node
+    let acme = server
         .tls_domain
         .filter(|_| serve && crate::nodetpl::needs_certificate(&inbounds))
         .map(|domain| crate::pb::AcmeConfig {
@@ -2291,37 +2323,38 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
 
     Ok(Some(Desired {
         snapshot: ConfigSnapshot {
-            config_version: node.config_version as u64,
+            config_version: server.config_version as u64,
             inbounds_json,
-            user_version: node.user_version as u64,
+            user_version: server.user_version as u64,
             users,
             acme,
             source_filters,
         },
         enabled: serve,
-        online_session: node.online_session,
-        deleting: node.deleting,
-        failed: node
+        online_session: server.online_session,
+        deleting: server.deleting,
+        failed: server
             .failed_config_version
-            .zip(node.failed_user_version)
+            .zip(server.failed_user_version)
             .map(|(c, u)| DbFailure {
                 versions: (c as u64, u as u64),
                 held: (
-                    node.failed_held_config_version.unwrap_or(0) as u64,
-                    node.failed_held_user_version.unwrap_or(0) as u64,
+                    server.failed_held_config_version.unwrap_or(0) as u64,
+                    server.failed_held_user_version.unwrap_or(0) as u64,
                 ),
-                no_ack: node.failed_reason.as_deref() == Some("no_ack"),
+                no_ack: server.failed_reason.as_deref() == Some("no_ack"),
             }),
     }))
 }
 
-/// The snapshot `desired_state` would send `node_id` now (benchmarks and
-/// load tooling; sessions use `desired_state` itself). None: no such node.
+/// The snapshot `desired_state` would send `server_id` now (benchmarks and
+/// load tooling; sessions use `desired_state` itself). None: no such
+/// server.
 pub async fn desired_snapshot(
     pg: &sqlx::PgPool,
-    node_id: Uuid,
+    server_id: Uuid,
 ) -> anyhow::Result<Option<ConfigSnapshot>> {
-    Ok(desired_state(pg, node_id).await?.map(|d| d.snapshot))
+    Ok(desired_state(pg, server_id).await?.map(|d| d.snapshot))
 }
 
 /// Persist how long the node's current lease runs (NodeView), at most
@@ -2330,7 +2363,7 @@ const LEASE_WRITE_EVERY: Duration = Duration::from_secs(30);
 
 /// gRPC message limit on AgentChannel, both directions (review 2026-10-02
 /// C3). tonic's default 4 MiB decode limit (and grpc-go's 4 MiB receive
-/// limit in the agent) silently caps a node at ~18k users: the Snapshot is
+/// limit in the agent) silently caps a server at ~18k users: the Snapshot is
 /// never delivered and the agent reconnects forever. 64 MiB is ~280k users.
 /// The agent must raise its receive limit to match (agent side of C3).
 pub const MAX_MESSAGE_BYTES: usize = 64 << 20;
@@ -2340,12 +2373,12 @@ pub const MAX_MESSAGE_BYTES: usize = 64 << 20;
 const MAX_ENROLL_MESSAGE_BYTES: usize = 64 << 10;
 
 /// Record a desired-state message's encoded size; WARN past half the limit
-/// (the snapshot must be paged before a node grows that far).
-fn note_message_size(node_id: Uuid, kind: &'static str, bytes: usize) {
+/// (the snapshot must be paged before a server grows that far).
+fn note_message_size(server_id: Uuid, kind: &'static str, bytes: usize) {
     crate::metrics::sync_bytes(kind, bytes);
     if bytes > MAX_MESSAGE_BYTES / 2 {
         tracing::warn!(
-            node = %node_id,
+            server = %server_id,
             kind,
             bytes,
             limit = MAX_MESSAGE_BYTES,
@@ -2362,7 +2395,7 @@ fn note_message_size(node_id: Uuid, kind: &'static str, bytes: usize) {
 /// BEFORE any snapshot, so an agent whose lease ran out keeps what it
 /// rebuilds); a failed read grants nothing.
 async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
-    let (state, node_id) = (&sess.state, sess.node_id);
+    let (state, server_id) = (&sess.state, sess.server_id);
     // R12 P1: the whole ticket → read → decide → send sequence runs under
     // the session's send lock, so a later decision is never sent first.
     let Some(guard) = sess.lock().await else {
@@ -2376,10 +2409,10 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
     // from them (~1.3 KB per user): it is held until the message is built
     // (M2: 200 sessions waking at once must not hold 200 full sets).
     let permit = state.read_permits().acquire().await?;
-    let desired = desired_state(state.pg(), node_id).await?;
+    let desired = desired_state(state.pg(), server_id).await?;
     let Some(mut desired) = desired else {
         // Deleted (maybe while its notification was missed): the caller
-        // retires the session. No lease for a node that does not exist.
+        // retires the session. No lease for a server that does not exist.
         return Ok(Synced::Gone);
     };
     sess.deleting.store(desired.deleting, Ordering::SeqCst);
@@ -2392,7 +2425,7 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
             .online_session
             .is_some_and(|o| o != sess.online_session)
     {
-        // A newer stream of this node (on some instance) took over.
+        // A newer stream of this server (on some instance) took over.
         return Ok(Synced::Superseded);
     }
     let now = Instant::now();
@@ -2433,7 +2466,7 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
         };
         let msg = match plan {
             Plan::Snapshot { empty: true } => {
-                tracing::info!(node = %node_id, "sending the empty state to a too-old agent");
+                tracing::info!(server = %server_id, "sending the empty state to a too-old agent");
                 DownMsg::Snapshot(ConfigSnapshot {
                     config_version: 0,
                     inbounds_json: "[]".into(),
@@ -2445,14 +2478,14 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
             }
             Plan::Snapshot { empty: false } => {
                 tracing::info!(
-                    node = %node_id,
+                    server = %server_id,
                     config_version = snap.config_version,
                     user_version = snap.user_version,
                     users = snap.users.len(),
                     inbounds_json_len = snap.inbounds_json.len(),
                     "sending snapshot"
                 );
-                note_message_size(node_id, "snapshot", prost::Message::encoded_len(&snap));
+                note_message_size(server_id, "snapshot", prost::Message::encoded_len(&snap));
                 DownMsg::Snapshot(snap)
             }
             Plan::Delta { base, base_set } => {
@@ -2460,7 +2493,7 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
                     want_digest.unwrap_or_else(|| Arc::new(SetDigest::of(want.0, &set)));
                 let ops = diff_from_digest(&base_set, &want_digest, &set);
                 tracing::info!(
-                    node = %node_id,
+                    server = %server_id,
                     base_config_version = base.0,
                     base_user_version = base.1,
                     user_version = want.1,
@@ -2474,7 +2507,7 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
                     base_user_version: base.1,
                     config_version: want.0,
                 };
-                note_message_size(node_id, "delta", prost::Message::encoded_len(&delta));
+                note_message_size(server_id, "delta", prost::Message::encoded_len(&delta));
                 DownMsg::Delta(delta)
             }
         };
@@ -2483,8 +2516,8 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
     drop(set);
     drop(permit);
     if desired.deleting && converged {
-        // Reconnected agent already runs the deleting node's empty state.
-        mark_delete_acked(state.pg(), node_id, want).await;
+        // Reconnected agent already runs the deleting server's empty state.
+        mark_delete_acked(state.pg(), server_id, want).await;
     }
     if grant {
         let secs = state.cfg().limits.lease_seconds();
@@ -2498,15 +2531,15 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
         .await?;
         if write_lease
             && let Err(e) = sqlx::query(
-                "UPDATE nodes SET lease_expires_at = now() + make_interval(secs => $2) \
+                "UPDATE servers SET lease_expires_at = now() + make_interval(secs => $2) \
                  WHERE id = $1",
             )
-            .bind(node_id)
+            .bind(server_id)
             .bind(secs as f64)
             .execute(state.pg())
             .await
         {
-            tracing::warn!(node = %node_id, error = %e, "failed to persist lease expiry");
+            tracing::warn!(server = %server_id, error = %e, "failed to persist lease expiry");
         }
     }
     let Some((sent_kind, msg)) = out else {
@@ -2531,11 +2564,11 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
 /// What `sync_if_stale` found.
 #[derive(Debug, PartialEq, Eq)]
 enum Synced {
-    /// The node exists; whatever it needed was sent.
+    /// The server exists; whatever it needed was sent.
     Current,
-    /// The node no longer exists.
+    /// The server no longer exists.
     Gone,
-    /// Another (newer) stream of the node owns it now.
+    /// Another (newer) stream of the server owns it now.
     Superseded,
 }
 
@@ -3490,18 +3523,20 @@ mod tests {
         };
         let n = db.node().await;
         record_too_old(&db.pool, n, 0).await;
-        let err: Option<String> = sqlx::query_scalar("SELECT last_error FROM nodes WHERE id = $1")
-            .bind(n)
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
+        let err: Option<String> =
+            sqlx::query_scalar("SELECT last_error FROM servers WHERE id = $1")
+                .bind(n)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
         assert!(err.unwrap().contains("agent too old"));
         record_converged(&db.pool, n, (0, 0)).await;
-        let err: Option<String> = sqlx::query_scalar("SELECT last_error FROM nodes WHERE id = $1")
-            .bind(n)
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
+        let err: Option<String> =
+            sqlx::query_scalar("SELECT last_error FROM servers WHERE id = $1")
+                .bind(n)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
         assert!(err.is_none());
         db.drop().await;
     }
@@ -3541,7 +3576,7 @@ mod tests {
         let (n, _) = db.member().await;
         let d = desired_state(&db.pool, n).await.unwrap().unwrap();
         assert!(d.snapshot.acme.is_none());
-        sqlx::query("UPDATE nodes SET tls_domain = 'n1.example.com' WHERE id = $1")
+        sqlx::query("UPDATE servers SET tls_domain = 'n1.example.com' WHERE id = $1")
             .bind(n)
             .execute(&db.pool)
             .await
@@ -3579,7 +3614,7 @@ mod tests {
         // The column refuses what the API refuses.
         for bad in ["1.2.3.4", "*.example.com", "Upper.example.com", "nodot"] {
             assert!(
-                sqlx::query("UPDATE nodes SET tls_domain = $2 WHERE id = $1")
+                sqlx::query("UPDATE servers SET tls_domain = $2 WHERE id = $1")
                     .bind(n)
                     .bind(bad)
                     .execute(&db.pool)
@@ -3675,7 +3710,7 @@ mod tests {
         for (sql, id) in [
             ("UPDATE users SET role = 'root' WHERE id = $1", u),
             ("UPDATE users SET traffic_used_bytes = -1 WHERE id = $1", u),
-            ("UPDATE nodes SET status = 'zombie' WHERE id = $1", n),
+            ("UPDATE servers SET status = 'zombie' WHERE id = $1", n),
             (
                 "UPDATE entrance_users SET account = '[]'::jsonb WHERE user_id = $1",
                 u,
@@ -3697,7 +3732,7 @@ mod tests {
         let n = db.node().await;
         let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
         let status = || async {
-            sqlx::query_scalar::<_, String>("SELECT status FROM nodes WHERE id = $1")
+            sqlx::query_scalar::<_, String>("SELECT status FROM servers WHERE id = $1")
                 .bind(n)
                 .fetch_one(&db.pool)
                 .await
@@ -3864,7 +3899,7 @@ mod tests {
     }
 
     async fn delete_acked(db: &TestDb, n: Uuid) -> bool {
-        sqlx::query_scalar("SELECT delete_acked_at IS NOT NULL FROM nodes WHERE id = $1")
+        sqlx::query_scalar("SELECT delete_acked_at IS NOT NULL FROM servers WHERE id = $1")
             .bind(n)
             .fetch_one(&db.pool)
             .await
@@ -3883,7 +3918,7 @@ mod tests {
             return;
         };
         let (n, u) = db.member().await;
-        sqlx::query("UPDATE nodes SET cert_serial = 'abc123' WHERE id = $1")
+        sqlx::query("UPDATE servers SET cert_serial = 'abc123' WHERE id = $1")
             .bind(n)
             .execute(&db.pool)
             .await
@@ -3891,11 +3926,11 @@ mod tests {
         let state = AppState::for_test(db.pool.clone()).await;
         let listener = crate::notify::start(state.clone()).await;
         assert_eq!(
-            node_for_serial(&db.pool, "abc123").await.unwrap(),
-            AgentIdentity::Node(n)
+            server_for_serial(&db.pool, "abc123").await.unwrap(),
+            AgentIdentity::Server(n)
         );
 
-        let mut agent = spawn_agent(&state, AgentIdentity::Node(n));
+        let mut agent = spawn_agent(&state, AgentIdentity::Server(n));
         agent.hello((0, 0), String::new()).await;
         let s1 = agent.snapshot().await;
         assert_eq!(s1.users.len(), 1);
@@ -3906,7 +3941,7 @@ mod tests {
 
         let mut tx = db.pool.begin().await.unwrap();
         assert!(
-            crate::api::apply_begin_delete_node(&mut tx, &crate::audit::Actor::test(), n)
+            crate::servers::apply_begin_delete(&mut tx, &crate::audit::Actor::test(), n)
                 .await
                 .unwrap()
         );
@@ -3929,7 +3964,7 @@ mod tests {
         );
         // Not yet: the ack must settle (the session's instance flushes).
         assert!(crate::reaper::reap_once(&state).await.unwrap().is_empty());
-        sqlx::query("UPDATE nodes SET delete_acked_at = now() - interval '1 minute'")
+        sqlx::query("UPDATE servers SET delete_acked_at = now() - interval '1 minute'")
             .execute(&db.pool)
             .await
             .unwrap();
@@ -3943,7 +3978,7 @@ mod tests {
             "final counters billed before deletion"
         );
         let kept: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM traffic_counters WHERE node_id = $1")
+            sqlx::query_scalar("SELECT count(*) FROM traffic_counters WHERE server_id = $1")
                 .bind(n)
                 .fetch_one(&db.pool)
                 .await
@@ -3954,7 +3989,7 @@ mod tests {
 
         // Same certificate again: tombstoned, served, closed.
         assert_eq!(
-            node_for_serial(&db.pool, "abc123").await.unwrap(),
+            server_for_serial(&db.pool, "abc123").await.unwrap(),
             AgentIdentity::Revoked(n)
         );
         let mut again = spawn_agent(&state, AgentIdentity::Revoked(n));
@@ -3986,11 +4021,13 @@ mod tests {
         assert!(state.traffic().is_empty(), "revoked traffic never buffered");
         assert_eq!(db.used(u).await, 300);
 
-        let unknown = node_for_serial(&db.pool, "not-a-serial").await.unwrap_err();
+        let unknown = server_for_serial(&db.pool, "not-a-serial")
+            .await
+            .unwrap_err();
         assert_eq!(unknown.code(), tonic::Code::Unauthenticated);
         // A revoked serial can never be registered again.
         let err = sqlx::query(
-            "INSERT INTO nodes (id, name, cert_serial) VALUES (gen_random_uuid(), 'again', 'abc123')",
+            "INSERT INTO servers (id, name, cert_serial) VALUES (gen_random_uuid(), 'again', 'abc123')",
         )
         .execute(&db.pool)
         .await
@@ -4014,12 +4051,12 @@ mod tests {
         };
         let (n, _u) = db.member().await;
         let state = AppState::for_test(db.pool.clone()).await; // no listener
-        let mut agent = spawn_agent(&state, AgentIdentity::Node(n));
+        let mut agent = spawn_agent(&state, AgentIdentity::Server(n));
         agent.hello((0, 0), String::new()).await;
         let s1 = agent.snapshot().await;
         let v1 = (s1.config_version, s1.user_version);
         agent.ack(v1, hash_of(&s1)).await;
-        sqlx::query("DELETE FROM nodes WHERE id = $1")
+        sqlx::query("DELETE FROM servers WHERE id = $1")
             .bind(n)
             .execute(&db.pool)
             .await
@@ -4041,10 +4078,10 @@ mod tests {
         };
         let (n, _u) = db.member().await;
         let state = AppState::for_test(db.pool.clone()).await;
-        let mut old = spawn_agent(&state, AgentIdentity::Node(n));
+        let mut old = spawn_agent(&state, AgentIdentity::Server(n));
         old.hello((0, 0), String::new()).await;
         let s = old.snapshot().await;
-        let mut new = spawn_agent(&state, AgentIdentity::Node(n));
+        let mut new = spawn_agent(&state, AgentIdentity::Server(n));
         old.closed_with(tonic::Code::Aborted).await;
         new.hello((0, 0), String::new()).await;
         assert_eq!(new.snapshot().await.config_version, s.config_version);
@@ -4094,7 +4131,7 @@ mod tests {
 
         sess.terminate(Status::aborted("test"));
         assert!(matches!(rx.recv().await, Some(Err(_))));
-        sqlx::query("UPDATE nodes SET user_version = user_version + 1 WHERE id = $1")
+        sqlx::query("UPDATE servers SET user_version = user_version + 1 WHERE id = $1")
             .bind(n)
             .execute(&db.pool)
             .await
@@ -4120,7 +4157,7 @@ mod tests {
         let (n, u) = db.member().await;
         let state = AppState::for_test(db.pool.clone()).await;
         let _l = crate::notify::start(state.clone()).await;
-        let mut a = spawn_agent(&state, AgentIdentity::Node(n));
+        let mut a = spawn_agent(&state, AgentIdentity::Server(n));
         a.hello((0, 0), String::new()).await;
         let s1 = a.snapshot().await;
         a.ack((s1.config_version, s1.user_version), hash_of(&s1))
@@ -4128,7 +4165,7 @@ mod tests {
         let _ = u;
         // Stop reading `a.down`; the panel keeps getting wakeups.
         for _ in 0..80 {
-            sqlx::query("UPDATE nodes SET user_version = user_version + 1 WHERE id = $1")
+            sqlx::query("UPDATE servers SET user_version = user_version + 1 WHERE id = $1")
                 .bind(n)
                 .execute(&db.pool)
                 .await
@@ -4138,11 +4175,11 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
         // Delete it (phase 1 + forced phase 2) and supersede it.
         let mut tx = db.pool.begin().await.unwrap();
-        crate::api::apply_begin_delete_node(&mut tx, &crate::audit::Actor::test(), n)
+        crate::servers::apply_begin_delete(&mut tx, &crate::audit::Actor::test(), n)
             .await
             .unwrap();
         tx.commit().await.unwrap();
-        let _b = spawn_agent(&state, AgentIdentity::Node(n));
+        let _b = spawn_agent(&state, AgentIdentity::Server(n));
         let r = tokio::time::timeout(Duration::from_secs(30), &mut a.task).await;
         eprintln!("RT3b-3 old session ended: {}", r.is_ok());
         assert!(r.is_ok(), "wedged session never terminates");
@@ -4168,7 +4205,7 @@ mod tests {
         };
         let (n, u) = db.member().await;
         let state = AppState::for_test(db.pool.clone()).await;
-        let mut a = spawn_agent(&state, AgentIdentity::Node(n));
+        let mut a = spawn_agent(&state, AgentIdentity::Server(n));
         a.traffic(u, 5_000_000).await; // before Hello: must not count
         a.hello((0, 0), String::new()).await;
         let _ = a.snapshot().await;
@@ -4199,13 +4236,13 @@ mod tests {
         let (n, _u) = db.member().await;
         let state = AppState::for_test(db.pool.clone()).await; // no listener
         let bump = || async {
-            sqlx::query("UPDATE nodes SET user_version = user_version + 1 WHERE id = $1")
+            sqlx::query("UPDATE servers SET user_version = user_version + 1 WHERE id = $1")
                 .bind(n)
                 .execute(&db.pool)
                 .await
                 .unwrap();
         };
-        let mut a = spawn_agent(&state, AgentIdentity::Node(n));
+        let mut a = spawn_agent(&state, AgentIdentity::Server(n));
         a.hello((0, 0), String::new()).await;
         let s1 = a.snapshot().await;
         let v1 = (s1.config_version, s1.user_version);
@@ -4267,7 +4304,7 @@ mod tests {
         };
         let (n, u) = db.member().await;
         let state = AppState::for_test(db.pool.clone()).await;
-        let mut a = spawn_agent(&state, AgentIdentity::Node(n));
+        let mut a = spawn_agent(&state, AgentIdentity::Server(n));
         a.hello((0, 0), String::new()).await;
         let _ = a.snapshot().await;
         a.traffic(u, 777).await;
@@ -4280,7 +4317,7 @@ mod tests {
         a.closed_with(tonic::Code::Unavailable).await;
         assert_eq!(state.live_sessions(), 0);
         assert!(state.agents().is_empty());
-        let status: String = sqlx::query_scalar("SELECT status FROM nodes WHERE id = $1")
+        let status: String = sqlx::query_scalar("SELECT status FROM servers WHERE id = $1")
             .bind(n)
             .fetch_one(&db.pool)
             .await
@@ -4288,7 +4325,7 @@ mod tests {
         assert_eq!(status, "offline", "session cleanup ran before the flush");
         // A no-ack failure is not recorded for a shutdown.
         let failed: Option<i64> =
-            sqlx::query_scalar("SELECT failed_config_version FROM nodes WHERE id = $1")
+            sqlx::query_scalar("SELECT failed_config_version FROM servers WHERE id = $1")
                 .bind(n)
                 .fetch_one(&db.pool)
                 .await
@@ -4296,7 +4333,7 @@ mod tests {
         assert_eq!(failed, None);
 
         // A stream arriving during the shutdown is ended at once.
-        let mut late = spawn_agent(&state, AgentIdentity::Node(n));
+        let mut late = spawn_agent(&state, AgentIdentity::Server(n));
         late.closed_with(tonic::Code::Unavailable).await;
 
         assert!(crate::shutdown::final_flush(&state, crate::shutdown::FINAL_FLUSH).await);

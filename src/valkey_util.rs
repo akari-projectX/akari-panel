@@ -21,28 +21,28 @@ pub async fn set_with_ttl(state: &AppState, key: String, value: String, ttl_secs
     }
 }
 
-pub async fn set_online(state: &AppState, node_id: uuid::Uuid) {
+pub async fn set_online(state: &AppState, server_id: uuid::Uuid) {
     set_with_ttl(
         state,
-        format!("akari:node:online:{node_id}"),
+        format!("akari:server:online:{server_id}"),
         "1".into(),
         60,
     )
     .await;
 }
 
-/// A node heartbeat: the status blob (600 s) and the liveness key (60 s)
+/// A server heartbeat: the status blob (600 s) and the liveness key (60 s)
 /// in one pipelined round trip (review 2026-10-02 W9: the stream read loop
 /// awaits this, so two sequential round trips delayed the agent's next
 /// message, e.g. a TrafficReport, twice as long). Order is kept: the read
-/// loop still awaits it, so a later delete (`grpc::forget_node`) cannot be
+/// loop still awaits it, so a later delete (`grpc::forget_server`) cannot be
 /// overtaken by an earlier heartbeat.
-pub async fn store_heartbeat(state: &AppState, node_id: uuid::Uuid, blob: String) {
+pub async fn store_heartbeat(state: &AppState, server_id: uuid::Uuid, blob: String) {
     let pipeline = state.valkey().next().pipeline();
     let queued: Result<(), Error> = async {
         let () = pipeline
             .set(
-                format!("akari:node:hb:{node_id}"),
+                format!("akari:server:hb:{server_id}"),
                 blob,
                 Some(Expiration::EX(600)),
                 None,
@@ -51,7 +51,7 @@ pub async fn store_heartbeat(state: &AppState, node_id: uuid::Uuid, blob: String
             .await?;
         let () = pipeline
             .set(
-                format!("akari:node:online:{node_id}"),
+                format!("akari:server:online:{server_id}"),
                 "1",
                 Some(Expiration::EX(60)),
                 None,
@@ -85,11 +85,11 @@ mod tests {
             return;
         };
         let st = AppState::for_test(db.pool.clone()).await;
-        let node = uuid::Uuid::new_v4();
-        store_heartbeat(&st, node, "{\"cpu\":1}".into()).await;
+        let server = uuid::Uuid::new_v4();
+        store_heartbeat(&st, server, "{\"cpu\":1}".into()).await;
         let (hb, on) = (
-            format!("akari:node:hb:{node}"),
-            format!("akari:node:online:{node}"),
+            format!("akari:server:hb:{server}"),
+            format!("akari:server:online:{server}"),
         );
         let blob: Option<String> = st.valkey().get(&hb).await.unwrap();
         let live: Option<String> = st.valkey().get(&on).await.unwrap();

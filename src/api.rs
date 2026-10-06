@@ -820,7 +820,7 @@ pub async fn create_user(
     let actor = Actor::of(&user);
     let mut tx = state.pg().begin().await?;
     // A plan is assigned in the same transaction (its entitlement lock is
-    // taken first: lock order entitle -> nodes -> users).
+    // taken first: lock order entitle -> servers -> users).
     if assign.is_some() {
         crate::entitle::lock(&mut tx).await?;
     }
@@ -974,10 +974,10 @@ pub(crate) fn non_null<T: Clone>(
 }
 
 /// Locks (in id order) and returns the nodes the user holds credentials on.
-async fn lock_user_nodes(conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result<Vec<Uuid>> {
+async fn lock_user_servers(conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result<Vec<Uuid>> {
     sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT id FROM nodes WHERE id IN ({}) ORDER BY id FOR UPDATE",
-        crate::entitle::NODES_OF_USERS
+        "SELECT id FROM servers WHERE id IN ({}) ORDER BY id FOR UPDATE",
+        crate::entitle::SERVERS_OF_USERS
     )))
     .bind([user_id])
     .fetch_all(conn)
@@ -987,10 +987,10 @@ async fn lock_user_nodes(conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result
 /// Bumps user_version on every node the user holds credentials on, as
 /// visible now (after the user row is locked, so concurrent reconciles are
 /// either visible here or serialized after us). Returns the bumped node ids.
-async fn bump_user_nodes(conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result<Vec<Uuid>> {
+async fn bump_user_servers(conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result<Vec<Uuid>> {
     sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "UPDATE nodes SET user_version = user_version + 1 WHERE id IN ({}) RETURNING id",
-        crate::entitle::NODES_OF_USERS
+        "UPDATE servers SET user_version = user_version + 1 WHERE id IN ({}) RETURNING id",
+        crate::entitle::SERVERS_OF_USERS
     )))
     .bind([user_id])
     .fetch_all(conn)
@@ -1067,7 +1067,7 @@ pub(crate) async fn apply_update_user(
     }
 
     if affects_nodes {
-        lock_user_nodes(conn, id).await?;
+        lock_user_servers(conn, id).await?;
     }
     let mut qb = sqlx::QueryBuilder::new("UPDATE users SET ");
     let mut set = qb.separated(", ");
@@ -1106,7 +1106,7 @@ pub(crate) async fn apply_update_user(
     if !affects_nodes {
         return Ok(Vec::new());
     }
-    Ok(bump_user_nodes(conn, id).await?)
+    Ok(bump_user_servers(conn, id).await?)
 }
 
 /// Longest ban reason (characters; the portal shows it to the user).
@@ -1147,7 +1147,7 @@ pub(crate) fn clean_ban_reason(raw: &str) -> Result<String, ApiError> {
 
 /// W28-c admin ban: disable the account (`disabled_reason = 'admin'`) with
 /// a reason the user sees in the portal. Same transaction: the user's nodes
-/// are locked first (nodes -> users) and bumped, so every agent drops the
+/// are locked first (servers -> users) and bumped, so every agent drops the
 /// user and cuts their live connections (the existing revocation path);
 /// the `users` trigger bumps `session_ver` when the account was enabled
 /// (every session ends; a new login only reaches the portal scope: ban
@@ -1167,7 +1167,7 @@ pub(crate) async fn apply_ban_user(
             "you cannot ban your own account"
         ));
     }
-    lock_user_nodes(conn, id).await?;
+    lock_user_servers(conn, id).await?;
     let row: Option<(serde_json::Value, serde_json::Value, Option<String>)> =
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "UPDATE users SET enabled = false, disabled_reason = 'admin', disabled_note = $2, \
@@ -1197,7 +1197,7 @@ pub(crate) async fn apply_ban_user(
         Some(after),
     )
     .await?;
-    Ok(bump_user_nodes(conn, id).await?)
+    Ok(bump_user_servers(conn, id).await?)
 }
 
 /// W28-c: lift a ban (409 `user.not_banned` unless the account is banned).
@@ -1209,7 +1209,7 @@ pub(crate) async fn apply_unban_user(
     actor: &Actor,
     id: Uuid,
 ) -> Result<Vec<Uuid>, ApiError> {
-    lock_user_nodes(conn, id).await?;
+    lock_user_servers(conn, id).await?;
     let row: Option<(bool, serde_json::Value, serde_json::Value, Option<String>)> =
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "UPDATE users u SET enabled = (u.disabled_reason = 'admin') OR u.enabled \
@@ -1238,7 +1238,7 @@ pub(crate) async fn apply_unban_user(
         Some(after),
     )
     .await?;
-    Ok(bump_user_nodes(conn, id).await?)
+    Ok(bump_user_servers(conn, id).await?)
 }
 
 /// POST /users/{id}/ban `{reason}` (admin). Returns the user's detail.
@@ -1376,9 +1376,9 @@ async fn apply_delete_user(
     id: Uuid,
 ) -> Result<Vec<Uuid>, ApiError> {
     // Global lock order: entitlement lock first (a concurrent reconcile
-    // holds it while locking nodes), then nodes, then the user row.
+    // holds it while locking servers), then servers, then the user row.
     crate::entitle::lock(conn).await?;
-    lock_user_nodes(conn, id).await?;
+    lock_user_servers(conn, id).await?;
     let before: Option<serde_json::Value> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT {} FROM users u WHERE id = $1 FOR UPDATE",
         crate::audit::user_snapshot_sql("u")
@@ -1389,16 +1389,16 @@ async fn apply_delete_user(
     let Some(before) = before else {
         return Err(ApiError::not_found());
     };
-    let nodes: Vec<Uuid> = sqlx::query_scalar(
+    let servers: Vec<Uuid> = sqlx::query_scalar(
         "WITH d AS (DELETE FROM entrance_users eu USING entrances e \
-         WHERE eu.user_id = $1 AND e.id = eu.entrance_id RETURNING e.node_id) \
-         SELECT DISTINCT node_id FROM d ORDER BY node_id",
+         WHERE eu.user_id = $1 AND e.id = eu.entrance_id RETURNING e.server_id) \
+         SELECT DISTINCT server_id FROM d ORDER BY server_id",
     )
     .bind(id)
     .fetch_all(&mut *conn)
     .await?;
-    sqlx::query("UPDATE nodes SET user_version = user_version + 1 WHERE id = ANY($1)")
-        .bind(&nodes)
+    sqlx::query("UPDATE servers SET user_version = user_version + 1 WHERE id = ANY($1)")
+        .bind(&servers)
         .execute(&mut *conn)
         .await?;
     sqlx::query("DELETE FROM users WHERE id = $1")
@@ -1412,10 +1412,10 @@ async fn apply_delete_user(
         "user",
         Some(id.to_string()),
         Some(before),
-        Some(json!({ "unassigned_nodes": nodes })),
+        Some(json!({ "unassigned_servers": servers })),
     )
     .await?;
-    Ok(nodes)
+    Ok(servers)
 }
 
 #[derive(Deserialize, Default)]
@@ -1499,387 +1499,8 @@ pub async fn user_delete_impact(
 }
 
 // ---------------------------------------------------------------------------
-// Nodes (admin)
+// Shared helpers
 // ---------------------------------------------------------------------------
-
-#[derive(sqlx::FromRow, Serialize)]
-pub struct NodeView {
-    id: Uuid,
-    name: String,
-    enabled: bool,
-    status: String,
-    agent_version: Option<String>,
-    core_version: Option<String>,
-    /// M6: platform of the connected agent and its latest rollout entry
-    /// ({rollout_id, version, rollout_status, status, detail, superseded};
-    /// W23: superseded = the rollout is over and the node enrolled again
-    /// after its last step there (a reinstall): history, not its state).
-    agent_os: Option<String>,
-    agent_arch: Option<String>,
-    update_status: Option<serde_json::Value>,
-    config_version: i64,
-    user_version: i64,
-    /// W28-a (D2): the node's one inbound (xray inbound object without a
-    /// tag); null = not configured yet.
-    inbound: Option<serde_json::Value>,
-    /// W28-a: how clients reach the node (`entrances::EntranceView` shape;
-    /// the built-in direct entrance first).
-    entrances: serde_json::Value,
-    /// M3: free-text region shown to users (portal node list).
-    region: Option<String>,
-    /// W10: the node's TLS domain (automatic certificate; null = the
-    /// certificate files installed by hand), and the agent's source address
-    /// as the panel saw it (the certificate status compares the domain's
-    /// DNS with it). The certificate state itself is `heartbeat.cert`.
-    tls_domain: Option<String>,
-    agent_addr: Option<String>,
-    /// The agent's last failed apply (e.g. xray rejected the inbounds) and
-    /// the versions it was attempting; null once an update applies cleanly.
-    last_error: Option<String>,
-    last_error_at: Option<DateTime<Utc>>,
-    failed_config_version: Option<i64>,
-    failed_user_version: Option<i64>,
-    /// Hello.protocol_version of the last connected agent; below the
-    /// panel's minimum the node runs the empty state (see last_error).
-    agent_protocol: Option<i32>,
-    /// W12: Hello.capabilities of the last connected agent (sorted; null
-    /// before any Hello recorded them).
-    agent_capabilities: Option<Vec<String>>,
-    /// When the agent's fail-closed lease runs out (renewed while the panel
-    /// can read the node's desired state), and the seconds left.
-    lease_expires_at: Option<DateTime<Utc>>,
-    lease_remaining_seconds: Option<i64>,
-    /// Per-node billing cap override (bytes/s); null = global default.
-    traffic_max_rate_bytes_per_sec: Option<i64>,
-    /// Set while the node is being deleted (it disappears once done).
-    deleting_at: Option<DateTime<Utc>>,
-    last_seen_at: Option<DateTime<Utc>>,
-    created_at: DateTime<Utc>,
-    /// M1-8: whether the agent holds a certificate (enrolled), when the
-    /// newest one expires (null for a pre-M1c certificate until its agent
-    /// next connects), and the expiry of a live (unused) enrollment token.
-    enrolled: bool,
-    cert_not_after: Option<DateTime<Utc>>,
-    enroll_token_expires_at: Option<DateTime<Utc>>,
-    /// Last heartbeat (Valkey, ~15 s cadence, 10 min TTL): cpu/mem,
-    /// connections, uptime_seconds, lease_remaining_seconds, ts.
-    /// Passed through as stored (validated JSON, not re-parsed into a
-    /// `Value`: 200 blobs per node-list request, W14).
-    #[sqlx(skip)]
-    heartbeat: Option<Box<serde_json::value::RawValue>>,
-    /// Problems with the stored configuration the admin must fix (e.g. an
-    /// inbound using a transport the agent refuses for security reasons,
-    /// stored before the check existed). Computed, not stored.
-    #[sqlx(skip)]
-    warnings: Vec<String>,
-    /// W7: the node serves speed-limited users but its agent predates
-    /// speed limits (protocol < 4): they run unthrottled. Only computed
-    /// for such agents.
-    #[serde(skip)]
-    unenforced_speed_limits: bool,
-    /// W11 (xboard-style form, `nodemeta.rs`): user-facing name (null =
-    /// `name`), display order, shown to users, tags.
-    display_name: Option<String>,
-    sort: i32,
-    visible: bool,
-    tags: Vec<String>,
-    /// W11: bytes accepted on this node (before the multipliers) and billed
-    /// to users (after them), since the columns exist.
-    traffic_raw_bytes: i64,
-    traffic_billed_bytes: i64,
-    /// W11 (`nodestat.rs`): online by the reaper's rule (status online,
-    /// refreshed within 90 s), latest latency results, last "立即测速".
-    online: bool,
-    latency: serde_json::Value,
-    probe_requested_at: Option<DateTime<Utc>>,
-}
-
-/// A certificate expiring within this many days is flagged (agents of
-/// protocol >= 2 renew with a third of the validity left, i.e. 30 days at
-/// the default 90; protocol 1 agents never renew).
-const CERT_WARN_DAYS: i64 = 14;
-
-impl NodeView {
-    fn with_warnings(mut self) -> Self {
-        self.warnings = node_warnings(
-            self.inbound.as_ref(),
-            self.tls_domain.as_deref(),
-            self.agent_protocol,
-            self.cert_not_after,
-            self.unenforced_speed_limits,
-            self.agent_capabilities.as_deref(),
-            &self.entrances,
-        );
-        self
-    }
-}
-
-/// The node's `warnings` (full view and summary alike).
-fn node_warnings(
-    inbound: Option<&serde_json::Value>,
-    tls_domain: Option<&str>,
-    agent_protocol: Option<i32>,
-    cert_not_after: Option<DateTime<Utc>>,
-    unenforced_speed_limits: bool,
-    agent_capabilities: Option<&[String]>,
-    entrances: &serde_json::Value,
-) -> Vec<String> {
-    let mut w: Vec<String> = inbound.and_then(inbound_warning).into_iter().collect();
-    w.extend(relay_warnings(
-        entrances,
-        agent_protocol,
-        agent_capabilities,
-    ));
-    w.extend(tls_domain_warnings(tls_domain, inbound, agent_protocol));
-    if let Some(c) = cert_warning(cert_not_after, agent_protocol, Utc::now()) {
-        w.push(c);
-    }
-    if let Some(u) = updater_warning(agent_protocol, agent_capabilities) {
-        w.push(u);
-    }
-    if let Some(u) = stale_units_warning(agent_capabilities) {
-        w.push(u);
-    }
-    if unenforced_speed_limits {
-        w.push(format!(
-            "agent 版本过旧，不支持限速（协议 < {}）：升级 agent 之前，套餐限速在此节点不生效",
-            crate::grpc::SPEED_LIMIT_PROTOCOL
-        ));
-    }
-    w
-}
-
-/// W28-a: the node has enabled relay entrances but its agent cannot
-/// enforce their source allowlists (capability "source-filter") or shares
-/// limits per entrance rather than per user (protocol < 7).
-fn relay_warnings(
-    entrances: &serde_json::Value,
-    agent_protocol: Option<i32>,
-    agent_capabilities: Option<&[String]>,
-) -> Vec<String> {
-    let relays = entrances.as_array().is_some_and(|a| {
-        a.iter()
-            .any(|e| e["kind"] == crate::entrances::RELAY && e["enabled"] == true)
-    });
-    let Some(protocol) = agent_protocol.filter(|_| relays) else {
-        return Vec::new();
-    };
-    let mut w = Vec::new();
-    if !agent_capabilities.is_some_and(|c| c.iter().any(|c| c == "source-filter")) {
-        w.push(
-            "agent 不支持来源 IP 过滤：中转入口目前只靠独立凭据隔离（升级 agent 后由内核按中转出口 IP 过滤）"
-                .to_string(),
-        );
-    }
-    if protocol < crate::grpc::ACCOUNT_KEY_PROTOCOL {
-        w.push(format!(
-            "agent 版本过旧（协议 < {}）：同一用户在多个入口上的限速与在线人数分别计算，升级 agent 后按用户合并",
-            crate::grpc::ACCOUNT_KEY_PROTOCOL
-        ));
-    }
-    w
-}
-
-/// W28-a: the agent reports that it could not install the source
-/// allowlists of the node's relay entrances (heartbeat blob).
-fn source_filter_warning(blob: &str) -> Option<String> {
-    #[derive(Deserialize)]
-    struct Blob {
-        source_filter: Option<Status>,
-    }
-    #[derive(Deserialize)]
-    struct Status {
-        applied: bool,
-        #[serde(default)]
-        error: Option<String>,
-    }
-    let f = serde_json::from_str::<Blob>(blob).ok()?.source_filter?;
-    // R44: the agent's root updater applies them within seconds; the agent
-    // says "pending: …" until then (and reports a missing updater after a
-    // minute).
-    let pending = f
-        .error
-        .as_deref()
-        .is_some_and(|e| e.starts_with("pending:"));
-    (!f.applied && !pending).then(|| {
-        format!(
-            "来源 IP 过滤未生效（{}）：中转入口目前只靠独立凭据隔离",
-            f.error.as_deref().unwrap_or("原因未知")
-        )
-    })
-}
-
-/// W17: one row of `GET /nodes?view=summary` — only what the node list
-/// shows: no inbounds JSON, no full latency set, a slim heartbeat (the W14
-/// list was 480 KB for 200 nodes). Fields that tick every second (lease
-/// remaining) are left to the client (`lease_expires_at`), so the ETag
-/// stays put between heartbeats.
-#[derive(sqlx::FromRow, Serialize)]
-pub struct NodeSummary {
-    id: Uuid,
-    name: String,
-    display_name: Option<String>,
-    enabled: bool,
-    status: String,
-    online: bool,
-    deleting_at: Option<DateTime<Utc>>,
-    region: Option<String>,
-    agent_version: Option<String>,
-    agent_os: Option<String>,
-    agent_arch: Option<String>,
-    agent_protocol: Option<i32>,
-    update_status: Option<serde_json::Value>,
-    lease_expires_at: Option<DateTime<Utc>>,
-    enrolled: bool,
-    cert_not_after: Option<DateTime<Utc>>,
-    enroll_token_expires_at: Option<DateTime<Utc>>,
-    last_seen_at: Option<DateTime<Utc>>,
-    last_error: Option<String>,
-    sort: i32,
-    visible: bool,
-    tags: Vec<String>,
-    /// W28-a: the node's entrances (as in NodeView).
-    entrances: serde_json::Value,
-    /// The agent's best url-test result (first success in order, else the
-    /// first result), as the list's latency badge shows it.
-    latency: Option<serde_json::Value>,
-    /// W17: alerts firing on this node.
-    alerts_firing: i64,
-    #[sqlx(skip)]
-    warnings: Vec<String>,
-    /// Some inbound needs the node's TLS certificate (install card hint).
-    #[sqlx(skip)]
-    needs_certificate: bool,
-    #[sqlx(skip)]
-    heartbeat: Option<HeartbeatSummary>,
-    #[serde(skip)]
-    inbound: Option<serde_json::Value>,
-    #[serde(skip)]
-    tls_domain: Option<String>,
-    #[serde(skip)]
-    unenforced_speed_limits: bool,
-    /// W18: for the updater warning only.
-    #[serde(skip)]
-    agent_capabilities: Option<Vec<String>>,
-}
-
-/// The heartbeat fields the list shows.
-#[derive(Deserialize, Serialize, Debug, PartialEq)]
-pub struct HeartbeatSummary {
-    // W23: null = the agent could not read it.
-    #[serde(default)]
-    cpu_percent: Option<f64>,
-    #[serde(default)]
-    mem_used_bytes: Option<u64>,
-    #[serde(default)]
-    mem_total_bytes: Option<u64>,
-    connections: u64,
-    #[serde(default)]
-    uptime_seconds: Option<u64>,
-    ts: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    metrics: Option<HeartbeatMetricsSummary>,
-}
-
-#[derive(Deserialize, Serialize, Debug, PartialEq)]
-pub struct HeartbeatMetricsSummary {
-    #[serde(default)]
-    net_rx_bytes_per_sec: Option<u64>,
-    #[serde(default)]
-    net_tx_bytes_per_sec: Option<u64>,
-    online_users: u64,
-}
-
-/// SQL (one row aliased `nodes`): the node serves a speed-limited user but
-/// its agent predates speed limits (protocol < 4).
-const UNENFORCED_SPEED_LIMITS_SQL: &str = "CASE WHEN agent_protocol < 4 THEN EXISTS (\
-     SELECT 1 FROM entrance_users eu JOIN entrances e ON e.id = eu.entrance_id \
-        JOIN user_plans up ON up.user_id = eu.user_id AND up.status = 'active' \
-        WHERE e.node_id = nodes.id AND up.speed_limit_mbps IS NOT NULL) \
-     ELSE false END";
-
-pub static NODE_SUMMARY_COLS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    format!(
-        "nodes.id, name, display_name, enabled, status, \
-         (nodes.status = 'online' AND nodes.last_seen_at > now() - interval '90 seconds') AS online, \
-         deleting_at, region, agent_version, agent_os, agent_arch, agent_protocol, \
-         ro.update_status, lease_expires_at, cert_serial IS NOT NULL AS enrolled, cert_not_after, \
-         enr.expires_at AS enroll_token_expires_at, last_seen_at, last_error, sort, visible, tags, \
-         {} AS entrances, lb.latency, coalesce(al.n, 0) AS alerts_firing, inbound, \
-         tls_domain, agent_capabilities, {UNENFORCED_SPEED_LIMITS_SQL} AS unenforced_speed_limits",
-        crate::entrances::ENTRANCES_JSON_SQL
-    )
-});
-
-pub const NODE_SUMMARY_FROM: &str = "FROM nodes \
-     LEFT JOIN node_enrollments enr ON enr.node_id = nodes.id \
-        AND enr.used_at IS NULL AND enr.expires_at > now() \
-     LEFT JOIN (SELECT DISTINCT ON (l.node_id) l.node_id, jsonb_build_object('source', l.source, \
-        'target', l.target, 'delay_ms', l.delay_ms, 'error', l.error, \
-        'measured_at', l.measured_at) AS latency \
-        FROM node_latency l WHERE l.source = 'agent' \
-        ORDER BY l.node_id, (l.delay_ms IS NULL), l.ord) lb ON lb.node_id = nodes.id \
-     LEFT JOIN (SELECT node_id, count(*) AS n FROM node_alerts WHERE status = 'firing' \
-        GROUP BY node_id) al ON al.node_id = nodes.id \
-     LEFT JOIN (SELECT DISTINCT ON (rn.node_id) rn.node_id, jsonb_build_object( \
-        'rollout_id', r.id, 'version', r.version, 'rollout_status', r.status, \
-        'status', rn.status, 'detail', rn.detail, \
-        'superseded', r.status NOT IN ('running','paused','halted') \
-            AND coalesce(en.enrolled_at > greatest(r.created_at, rn.offered_at, \
-                rn.finished_at), false)) AS update_status \
-        FROM rollout_nodes rn JOIN rollouts r ON r.id = rn.rollout_id \
-        JOIN nodes en ON en.id = rn.node_id \
-        ORDER BY rn.node_id, r.created_at DESC) ro ON ro.node_id = nodes.id";
-
-impl NodeSummary {
-    fn finish(mut self, blob: Option<String>) -> Self {
-        self.warnings = node_warnings(
-            self.inbound.as_ref(),
-            self.tls_domain.as_deref(),
-            self.agent_protocol,
-            self.cert_not_after,
-            self.unenforced_speed_limits,
-            self.agent_capabilities.as_deref(),
-            &self.entrances,
-        );
-        self.warnings
-            .extend(blob.as_deref().and_then(source_filter_warning));
-        self.needs_certificate =
-            crate::nodetpl::needs_certificate(&inbounds_of(self.inbound.as_ref()));
-        self.heartbeat = blob.and_then(|b| serde_json::from_str(&b).ok());
-        self
-    }
-}
-
-/// The summary rows with their slim heartbeats (one MGET; best effort).
-pub async fn node_summaries(state: &AppState) -> Result<Vec<NodeSummary>, ApiError> {
-    use fred::prelude::KeysInterface;
-    let rows = sqlx::query_as::<_, NodeSummary>(sqlx::AssertSqlSafe(format!(
-        "SELECT {} {NODE_SUMMARY_FROM} ORDER BY sort, nodes.created_at, nodes.id",
-        *NODE_SUMMARY_COLS
-    )))
-    .fetch_all(state.pg())
-    .await?;
-    if rows.is_empty() {
-        return Ok(rows);
-    }
-    let keys: Vec<String> = rows
-        .iter()
-        .map(|v| format!("akari:node:hb:{}", v.id))
-        .collect();
-    let blobs = match state.valkey().mget::<Vec<Option<String>>, _>(keys).await {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!(error = %e, "heartbeat lookup failed");
-            Vec::new()
-        }
-    };
-    let mut blobs = blobs.into_iter();
-    Ok(rows
-        .into_iter()
-        .map(|r| r.finish(blobs.next().flatten()))
-        .collect())
-}
 
 /// A JSON body with a strong ETag (SHA-256 of the bytes, 128 bits): a
 /// matching `If-None-Match` gets 304 without a body. `private, no-cache`:
@@ -1920,124 +1541,6 @@ pub fn json_with_etag(req: &HeaderMap, body: Vec<u8>) -> Response {
     res
 }
 
-/// W18: agents that can be offered updates (protocol >= 3) but predate the
-/// privileged updater try to execute the update from their state
-/// directory, which systemd >= 256 mounts noexec ("permission denied").
-/// One run of the install command (重装命令) installs the updater units and
-/// the current agent.
-fn updater_warning(protocol: Option<i32>, caps: Option<&[String]>) -> Option<String> {
-    let p = protocol?;
-    if p < 3 || caps.is_some_and(|c| c.iter().any(|c| c == "updater")) {
-        return None;
-    }
-    Some(
-        "agent 不支持新的自更新方式：在 systemd 257 及以上（如 Debian 13）的节点上自更新会失败\
-         （permission denied）。请在节点上重新运行一次安装命令（重装命令），它会安装更新服务\
-         akari-agent-update 并升级 agent"
-            .to_string(),
-    )
-}
-
-/// W23: the agent reports ("stale-units") that the node's installed
-/// systemd units are not the ones its release carries: they were installed
-/// by an installer or updater that predates unit refresh (or edited by
-/// hand). Updates refresh them only once the updater's own unit allows it,
-/// i.e. after one reinstall.
-fn stale_units_warning(caps: Option<&[String]>) -> Option<String> {
-    caps?.iter().any(|c| c == "stale-units").then(|| {
-        "节点上的 systemd 单元文件（akari-agent.service / akari-agent-update.*）不是当前 agent \
-         版本自带的版本（由旧版安装命令或旧版更新服务安装，或被手工修改），例如机器状态可能读不到。\
-         请在节点上重新运行一次安装命令（重装命令），之后的自更新会一并更新单元文件；\
-         自定义设置请用 drop-in（/etc/systemd/system/akari-agent.service.d/）"
-            .to_string()
-    })
-}
-
-/// W18: a node certificate the agent must obtain itself (节点域名 + an
-/// inbound reading the certificate files) for an agent too old to do it
-/// (protocol 1..6): such an agent ignores ConfigSnapshot.acme and fails the
-/// WHOLE snapshot when the files are missing. Refused at write time.
-fn acme_needs_newer_agent(
-    domain: Option<&str>,
-    inbound: Option<&serde_json::Value>,
-    protocol: Option<i32>,
-) -> Option<i32> {
-    let p = protocol.filter(|p| (1..crate::grpc::ACME_PROTOCOL).contains(p))?;
-    (domain.is_some() && crate::nodetpl::needs_certificate(&inbounds_of(inbound))).then_some(p)
-}
-
-/// The node's inbound as an inbounds array (`[]` without one), for the
-/// helpers that look at every inbound an agent runs.
-pub(crate) fn inbounds_of(inbound: Option<&serde_json::Value>) -> serde_json::Value {
-    serde_json::Value::Array(inbound.into_iter().cloned().collect())
-}
-
-async fn refuse_acme_for_old_agent(conn: &mut PgConnection, id: Uuid) -> Result<(), ApiError> {
-    let row: Option<(Option<String>, Option<serde_json::Value>, Option<i32>)> =
-        sqlx::query_as("SELECT tls_domain, inbound, agent_protocol FROM nodes WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&mut *conn)
-            .await?;
-    let Some((domain, inbound, protocol)) = row else {
-        return Ok(());
-    };
-    if let Some(p) = acme_needs_newer_agent(domain.as_deref(), inbound.as_ref(), protocol) {
-        return Err(bad_request!(
-            "node.acme_agent_too_old",
-            "该节点的 agent 版本过旧（协议 {p} < {need}），不支持节点域名自动证书：它会忽略节点域名，并因缺少证书文件\
-             导致整份配置下发失败。请先升级 agent（升级发布，或在节点上重新运行一次安装命令），\
-             或清空节点域名并手动放置证书",
-            p = p,
-            need = crate::grpc::ACME_PROTOCOL
-        ));
-    }
-    Ok(())
-}
-
-/// W10: what keeps the automatic certificate from working.
-fn tls_domain_warnings(
-    domain: Option<&str>,
-    inbound: Option<&serde_json::Value>,
-    protocol: Option<i32>,
-) -> Vec<String> {
-    let Some(domain) = domain else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    let inbounds = inbounds_of(inbound);
-    if !crate::nodetpl::needs_certificate(&inbounds) {
-        return out;
-    }
-    if protocol.is_some_and(|p| p < crate::grpc::ACME_PROTOCOL) {
-        out.push(format!(
-            "agent 版本过旧（协议 < {}）：不会自动申请 {domain} 的证书，且在缺少证书文件时整份配置下发失败。\
-             请先升级 agent（升级发布，或在节点上重新运行一次安装命令），或手动放置 {domain} 的证书",
-            crate::grpc::ACME_PROTOCOL
-        ));
-    }
-    for i in inbounds.as_array().into_iter().flatten() {
-        let uses_node_cert = i
-            .pointer("/streamSettings/tlsSettings/certificates")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|c| {
-                c.iter().any(|c| {
-                    c.get("certificateFile").and_then(serde_json::Value::as_str)
-                        == Some(crate::nodetpl::TLS_CERT_FILE)
-                })
-            });
-        let sni = i
-            .pointer("/streamSettings/tlsSettings/serverName")
-            .and_then(serde_json::Value::as_str);
-        if uses_node_cert && sni.is_some_and(|s| !s.eq_ignore_ascii_case(domain)) {
-            out.push(format!(
-                "入站的 serverName {:?} 不是节点域名 {domain}，自动证书只覆盖 {domain}",
-                sni.unwrap_or_default()
-            ));
-        }
-    }
-    out
-}
-
 /// `YYYY-MM-DD HH:MM` in Beijing time (UTC+8, no DST): the console's
 /// time zone (W21, M7), for server-written Chinese texts.
 pub(crate) fn beijing_time(t: DateTime<Utc>) -> String {
@@ -2047,639 +1550,9 @@ pub(crate) fn beijing_time(t: DateTime<Utc>) -> String {
     }
 }
 
-fn cert_warning(
-    not_after: Option<DateTime<Utc>>,
-    protocol: Option<i32>,
-    now: DateTime<Utc>,
-) -> Option<String> {
-    let left = not_after? - now;
-    if left > chrono::Duration::days(CERT_WARN_DAYS) {
-        return None;
-    }
-    let why = if protocol.unwrap_or(0) < 2 {
-        "agent 版本过旧，不能续期（协议 < 2）：请升级 agent，或重新生成安装命令"
-    } else {
-        "agent 没有按时续期：请查看节点上的 agent 日志"
-    };
-    let at = beijing_time(not_after?);
-    Some(if left <= chrono::Duration::zero() {
-        format!("agent 证书已于 {at}（北京时间）过期；{why}")
-    } else {
-        format!(
-            "agent 证书将在 {} 天后（{at}，北京时间）过期；{why}",
-            left.num_days()
-        )
-    })
-}
-
-/// Attach the last heartbeat of each node (one MGET; best effort).
-async fn with_heartbeats(state: &AppState, mut views: Vec<NodeView>) -> Vec<NodeView> {
-    use fred::prelude::KeysInterface;
-    if views.is_empty() {
-        return views;
-    }
-    let keys: Vec<String> = views
-        .iter()
-        .map(|v| format!("akari:node:hb:{}", v.id))
-        .collect();
-    match state.valkey().mget::<Vec<Option<String>>, _>(keys).await {
-        Ok(blobs) => {
-            for (v, b) in views.iter_mut().zip(blobs) {
-                v.warnings
-                    .extend(b.as_deref().and_then(source_filter_warning));
-                v.heartbeat = b.and_then(|b| serde_json::value::RawValue::from_string(b).ok());
-            }
-        }
-        Err(e) => tracing::warn!(error = %e, "heartbeat lookup failed"),
-    }
-    views
-}
-
-/// `SELECT {NODE_VIEW_COLS} {NODE_VIEW_FROM} ...`: the per-node extras
-/// (enrollment, groups, latency, rollout) are joined from aggregates, not
-/// correlated subqueries: for the 200-node list that is one pass over each
-/// table instead of 200 probes per table (W14: 4.4 -> 2.6 ms, the list was
-/// the slowest admin read under agent load).
-pub static NODE_VIEW_COLS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    format!(
-        "nodes.id, name, enabled, status, agent_version, core_version, agent_os, agent_arch, \
-         ro.update_status, config_version, user_version, inbound, {} AS entrances, region, \
-         tls_domain, host(agent_addr) AS agent_addr, last_error, last_error_at, \
-         failed_config_version, failed_user_version, agent_protocol, agent_capabilities, \
-         lease_expires_at, \
-         GREATEST(0, EXTRACT(EPOCH FROM lease_expires_at - now()))::bigint AS lease_remaining_seconds, \
-         traffic_max_rate_bytes_per_sec, deleting_at, last_seen_at, nodes.created_at, \
-         cert_serial IS NOT NULL AS enrolled, cert_not_after, \
-         enr.expires_at AS enroll_token_expires_at, \
-         {UNENFORCED_SPEED_LIMITS_SQL} AS unenforced_speed_limits, \
-         display_name, sort, visible, tags, traffic_raw_bytes, traffic_billed_bytes, \
-         (nodes.status = 'online' AND nodes.last_seen_at > now() - interval '90 seconds') AS online, \
-         coalesce(lat.latency, '[]'::jsonb) AS latency, probe_requested_at",
-        crate::entrances::ENTRANCES_JSON_SQL
-    )
-});
-
-/// The FROM clause that goes with `NODE_VIEW_COLS` (filters on `nodes.`).
-pub const NODE_VIEW_FROM: &str = "FROM nodes \
-     LEFT JOIN node_enrollments enr ON enr.node_id = nodes.id \
-        AND enr.used_at IS NULL AND enr.expires_at > now() \
-     LEFT JOIN (SELECT node_id, jsonb_agg(jsonb_build_object('source', l.source, \
-        'target', l.target, 'delay_ms', l.delay_ms, 'error', l.error, \
-        'measured_at', l.measured_at) ORDER BY l.source, l.ord) AS latency \
-        FROM node_latency l GROUP BY node_id) lat ON lat.node_id = nodes.id \
-     LEFT JOIN (SELECT DISTINCT ON (rn.node_id) rn.node_id, jsonb_build_object( \
-        'rollout_id', r.id, 'version', r.version, 'rollout_status', r.status, \
-        'status', rn.status, 'detail', rn.detail, \
-        'superseded', r.status NOT IN ('running','paused','halted') \
-            AND coalesce(en.enrolled_at > greatest(r.created_at, rn.offered_at, \
-                rn.finished_at), false)) AS update_status \
-        FROM rollout_nodes rn JOIN rollouts r ON r.id = rn.rollout_id \
-        JOIN nodes en ON en.id = rn.node_id \
-        ORDER BY rn.node_id, r.created_at DESC) ro ON ro.node_id = nodes.id";
-
-#[derive(Deserialize, Debug, Default)]
-#[serde(deny_unknown_fields)]
-pub struct NodeListQuery {
-    /// `summary` (W17: the list's columns only) or `full` (default).
-    #[serde(default)]
-    pub view: Option<String>,
-}
-
-/// GET /nodes[?view=summary|full] (admin), with an ETag (304 on a match).
-pub async fn list_nodes(
-    State(state): State<AppState>,
-    user: AuthUser,
-    Query(q): Query<NodeListQuery>,
-    headers: HeaderMap,
-) -> Result<Response, ApiError> {
-    user.require_admin()?;
-    let body = match q.view.as_deref() {
-        None | Some("full") => {
-            let rows = sqlx::query_as::<_, NodeView>(sqlx::AssertSqlSafe(format!(
-                "SELECT {} {NODE_VIEW_FROM} ORDER BY sort, nodes.created_at, nodes.id",
-                *NODE_VIEW_COLS
-            )))
-            .fetch_all(state.pg())
-            .await?;
-            let views = rows.into_iter().map(NodeView::with_warnings).collect();
-            serde_json::to_vec(&with_heartbeats(&state, views).await)?
-        }
-        Some("summary") => serde_json::to_vec(&node_summaries(&state).await?)?,
-        Some(_) => {
-            return Err(bad_request!(
-                "node.view_invalid",
-                "view must be summary or full"
-            ));
-        }
-    };
-    Ok(json_with_etag(&headers, body))
-}
-
-/// GET /nodes/{id} (admin): one node, full view (the node page).
-pub async fn get_node(
-    State(state): State<AppState>,
-    user: AuthUser,
-    Path((_, id)): Path<(String, Uuid)>,
-) -> Result<Json<NodeView>, ApiError> {
-    user.require_admin()?;
-    let row = sqlx::query_as::<_, NodeView>(sqlx::AssertSqlSafe(format!(
-        "SELECT {} {NODE_VIEW_FROM} WHERE nodes.id = $1",
-        *NODE_VIEW_COLS
-    )))
-    .bind(id)
-    .fetch_optional(state.pg())
-    .await?
-    .ok_or_else(ApiError::not_found)?;
-    let mut views = with_heartbeats(&state, vec![row.with_warnings()]).await;
-    views.pop().map(Json).ok_or_else(ApiError::not_found)
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CreateNodeReq {
-    pub name: String,
-    /// R18-2 form fields (all optional; the CLI path sends only `name`).
-    #[serde(default)]
-    pub region: Option<String>,
-    /// W10: the node's TLS domain ("节点域名"): the agent obtains its
-    /// certificate automatically; TLS templates default to it.
-    #[serde(default)]
-    pub tls_domain: Option<String>,
-    /// W28-a (D2): the node's one inbound, from a template
-    /// (`nodetpl::InboundSpec`) ...
-    #[serde(default)]
-    pub template: Option<crate::nodetpl::InboundSpec>,
-    /// ... or as a raw xray inbound object (not both).
-    #[serde(default)]
-    pub inbound: Option<serde_json::Value>,
-    /// Issue an install link (one-line installer) instead of a 24 h
-    /// bootstrap token; same token either way.
-    #[serde(default)]
-    pub install: Option<crate::nodeinstall::InstallReq>,
-    /// W11 form fields (see UpdateNodeReq).
-    #[serde(default)]
-    pub display_name: Option<String>,
-    #[serde(default)]
-    pub sort: Option<i32>,
-    #[serde(default)]
-    pub visible: Option<bool>,
-    #[serde(default)]
-    pub tags: Option<Vec<String>>,
-    /// W28-a: settings of the built-in direct entrance (address, port,
-    /// multiplier, groups; as PATCH /entrances/{id}).
-    #[serde(default)]
-    pub direct: Option<crate::entrances::EntranceReq>,
-}
-
-/// The one-time enrollment material returned by create / enroll-token: the
-/// token and the complete bootstrap file (shown once; only the token's
-/// SHA-256 is stored).
-#[derive(Serialize)]
-pub struct EnrollmentView {
-    id: Uuid,
-    name: String,
-    enrollment_token: String,
-    expires_at: DateTime<Utc>,
-    bootstrap: String,
-    /// The one-line install command (R18-2), when requested.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    install: Option<crate::nodeinstall::InstallView>,
-}
-
-fn enrollment_view(
-    state: &AppState,
-    id: Uuid,
-    name: String,
-    token: String,
-    expires_at: DateTime<Utc>,
-    endpoint: &crate::settings::NodeEndpoint,
-) -> EnrollmentView {
-    let bootstrap = crate::enroll::bootstrap_toml(
-        &name,
-        &endpoint.panel_addr,
-        &endpoint.server_name,
-        &state.install().ca_pem,
-        &token,
-        expires_at,
-    );
-    EnrollmentView {
-        id,
-        name,
-        enrollment_token: token,
-        expires_at,
-        bootstrap,
-        install: None,
-    }
-}
-
-/// POST /nodes (admin): create a node (pending) with a one-time enrollment
-/// token (M1-8). R18-2: optionally region, its inbound (a template rendered
-/// server-side, or raw JSON — same validation as PUT inbound), the direct
-/// entrance's settings (W28-a) and an install link (`install`), all in the
-/// same transaction. 201 with the token, bootstrap file and install
-/// command.
-pub async fn create_node(
-    State(state): State<AppState>,
-    user: AuthUser,
-    ApiJson(req): ApiJson<CreateNodeReq>,
-) -> Result<(axum::http::StatusCode, Json<EnrollmentView>), ApiError> {
-    user.require_admin()?;
-    let tls_domain = match req.tls_domain.as_deref().map(str::trim) {
-        Some(d) if !d.is_empty() => Some(crate::nodetpl::node_tls_domain(d)?),
-        _ => None,
-    };
-    let inbound = match (&req.template, &req.inbound) {
-        (Some(_), Some(_)) => {
-            return Err(bad_request!(
-                "node.template_and_inbound",
-                "give either template or inbound, not both"
-            ));
-        }
-        (Some(t), None) => Some(crate::nodetpl::render(t, &[], tls_domain.as_deref())?),
-        (None, Some(raw)) => Some(normalize_inbound(raw)?),
-        (None, None) => None,
-    };
-    let prepared = match &req.install {
-        Some(r) => Some(crate::nodeinstall::prepare(&state, r).await?),
-        None => None,
-    };
-    let actor = Actor::of(&user);
-    let mut tx = state.pg().begin().await?;
-    let direct = req.direct.as_ref().filter(|d| !d.is_empty());
-    if inbound.is_some() || direct.is_some_and(|d| d.group_ids.is_some()) {
-        // Lock order: the entitlement lock before any row (set_inbound and
-        // the entrance update take it again; advisory xact locks nest).
-        crate::entitle::lock(&mut tx).await?;
-    }
-    let (ttl, link) = match &prepared {
-        Some(p) => (state.cfg().limits.install_token_ttl_secs, Some(p.link())),
-        None => (state.cfg().limits.enroll_token_ttl_secs, None),
-    };
-    let endpoint = crate::settings::node_endpoint(&mut tx, state.cfg()).await?;
-    let (id, token, expires) =
-        crate::enroll::apply_create_node(&mut tx, &actor, &req.name, ttl, link, &endpoint).await?;
-    let w11 = UpdateNodeReq {
-        region: req.region.clone().map(Some),
-        display_name: req.display_name.clone().map(Some),
-        sort: req.sort.map(Some),
-        visible: req.visible.map(Some),
-        tags: req.tags.clone().map(Some),
-        tls_domain: tls_domain.clone().map(Some),
-        ..Default::default()
-    };
-    if w11.has_fields() {
-        apply_update_node(&mut tx, &actor, id, &w11).await?;
-    }
-    if let Some(d) = direct {
-        let entrance = crate::entrances::direct_of(&mut tx, id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("node {id} has no direct entrance"))?;
-        crate::entrances::apply_update(&mut tx, &actor, entrance, d).await?;
-    }
-    if let Some(i) = &inbound {
-        apply_set_inbound(&mut tx, &actor, id, Some(i)).await?;
-    }
-    tx.commit().await?;
-    let mut view = enrollment_view(
-        &state,
-        id,
-        req.name.trim().to_string(),
-        token.clone(),
-        expires,
-        &endpoint,
-    );
-    if let Some(p) = prepared {
-        view.install = Some(crate::nodeinstall::view(&state, p, &token, expires).await?);
-    }
-    Ok((axum::http::StatusCode::CREATED, Json(view)))
-}
-
-/// POST /nodes/{id}/enroll-token (admin): a new one-time enrollment token
-/// (replaces any unused one). Once the agent enrolls with it, the node's
-/// previous certificates are revoked. 409 for a deleting node.
-pub async fn issue_enroll_token(
-    State(state): State<AppState>,
-    user: AuthUser,
-    Path((_, id)): Path<(String, Uuid)>,
-) -> Result<Json<EnrollmentView>, ApiError> {
-    user.require_admin()?;
-    let mut tx = state.pg().begin().await?;
-    let endpoint = crate::settings::node_endpoint(&mut tx, state.cfg()).await?;
-    let (token, expires) = crate::enroll::apply_issue_token(
-        &mut tx,
-        &Actor::of(&user),
-        id,
-        state.cfg().limits.enroll_token_ttl_secs,
-        None,
-        &endpoint,
-    )
-    .await?;
-    let name: String = sqlx::query_scalar("SELECT name FROM nodes WHERE id = $1")
-        .bind(id)
-        .fetch_one(&mut *tx)
-        .await?;
-    tx.commit().await?;
-    Ok(Json(enrollment_view(
-        &state, id, name, token, expires, &endpoint,
-    )))
-}
-
-#[derive(Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct UpdateNodeReq {
-    #[serde(default, deserialize_with = "double_option")]
-    pub enabled: Option<Option<bool>>,
-    #[serde(default, deserialize_with = "double_option")]
-    pub name: Option<Option<String>>,
-    /// Per-node aggregate billing plausibility cap (bytes/s, > 0); null
-    /// falls back to traffic.node_max_rate_bytes_per_sec.
-    #[serde(default, deserialize_with = "double_option")]
-    pub traffic_max_rate_bytes_per_sec: Option<Option<i64>>,
-    /// M3: region shown to users; null (or "") clears it. <= 64 chars.
-    #[serde(default, deserialize_with = "double_option")]
-    pub region: Option<Option<String>>,
-    /// W11 (`nodemeta.rs`): user-facing name; null (or "") = `name`.
-    #[serde(default, deserialize_with = "double_option")]
-    pub display_name: Option<Option<String>>,
-    /// Display order (ascending).
-    #[serde(default, deserialize_with = "double_option")]
-    pub sort: Option<Option<i32>>,
-    /// Shown to users (portal, subscription); hidden nodes keep serving.
-    #[serde(default, deserialize_with = "double_option")]
-    pub visible: Option<Option<bool>>,
-    /// Labels ([] clears).
-    #[serde(default, deserialize_with = "double_option")]
-    pub tags: Option<Option<Vec<String>>>,
-    /// W10: the node's TLS domain (automatic certificate); null (or "")
-    /// clears it (back to certificate files installed by hand). A change
-    /// bumps config_version (the agent gets it with a Snapshot).
-    #[serde(default, deserialize_with = "double_option")]
-    pub tls_domain: Option<Option<String>>,
-}
-
-impl UpdateNodeReq {
-    fn has_fields(&self) -> bool {
-        self.enabled.is_some()
-            || self.name.is_some()
-            || self.traffic_max_rate_bytes_per_sec.is_some()
-            || self.region.is_some()
-            || self.display_name.is_some()
-            || self.sort.is_some()
-            || self.visible.is_some()
-            || self.tags.is_some()
-            || self.tls_domain.is_some()
-    }
-}
-
-/// PATCH /nodes/{id}. Disabling AND enabling bump config_version (the
-/// desired state of a disabled node is "no inbounds, no users"), so the
-/// agent converges either way. Returns whether it bumped.
-async fn apply_update_node(
-    conn: &mut PgConnection,
-    actor: &Actor,
-    id: Uuid,
-    req: &UpdateNodeReq,
-) -> Result<bool, ApiError> {
-    let enabled = non_null("enabled", &req.enabled)?;
-    let name = non_null("name", &req.name)?;
-    if !req.has_fields() {
-        return Err(bad_request!("request.no_fields", "no fields to update"));
-    }
-    // W11 fields (validated before any row is touched).
-    let display_name = req
-        .display_name
-        .as_ref()
-        .map(|d| crate::nodemeta::display_name(d.as_deref()))
-        .transpose()?;
-    let sort = non_null("sort", &req.sort)?
-        .map(crate::nodemeta::sort)
-        .transpose()?;
-    let visible = non_null("visible", &req.visible)?;
-    let tags = non_null("tags", &req.tags)?
-        .map(|t| crate::nodemeta::tags(&t))
-        .transpose()?;
-    let tls_domain: Option<Option<String>> = match &req.tls_domain {
-        None => None,
-        Some(d) => Some(match d.as_deref().map(str::trim) {
-            Some(d) if !d.is_empty() => Some(crate::nodetpl::node_tls_domain(d)?),
-            _ => None,
-        }),
-    };
-    if let Some(Some(r)) = req.traffic_max_rate_bytes_per_sec
-        && r <= 0
-    {
-        return Err(bad_request!(
-            "node.max_rate_invalid",
-            "traffic_max_rate_bytes_per_sec must be > 0"
-        ));
-    }
-    let name = match name {
-        Some(n) if n.trim().is_empty() => {
-            return Err(bad_request!("node.name_empty", "name must not be empty"));
-        }
-        n => n.map(|n| n.trim().to_string()),
-    };
-    let region: Option<Option<String>> = req.region.as_ref().map(|r| {
-        r.as_deref()
-            .map(str::trim)
-            .filter(|r| !r.is_empty())
-            .map(String::from)
-    });
-    if region
-        .as_ref()
-        .is_some_and(|r| r.as_ref().is_some_and(|r| r.chars().count() > 64))
-    {
-        return Err(bad_request!(
-            "node.region_long",
-            "region must be at most 64 characters"
-        ));
-    }
-    refuse_if_deleting(conn, id).await?;
-    let (was_enabled, was_domain): (bool, Option<String>) =
-        sqlx::query_as("SELECT enabled, tls_domain FROM nodes WHERE id = $1")
-            .bind(id)
-            .fetch_one(&mut *conn)
-            .await?;
-    let toggles = enabled.is_some_and(|e| e != was_enabled);
-    // The agent learns the domain from a Snapshot (ConfigSnapshot.acme).
-    let domain_changes = tls_domain.as_ref().is_some_and(|d| *d != was_domain);
-
-    let mut qb = sqlx::QueryBuilder::new("UPDATE nodes SET ");
-    let mut set = qb.separated(", ");
-    set.push("updated_at = now()");
-    if let Some(v) = enabled {
-        set.push("enabled = ").push_bind_unseparated(v);
-    }
-    if toggles || domain_changes {
-        set.push("config_version = config_version + 1");
-    }
-    if let Some(v) = tls_domain {
-        set.push("tls_domain = ").push_bind_unseparated(v);
-    }
-    if let Some(v) = name {
-        set.push("name = ").push_bind_unseparated(v);
-    }
-    if let Some(v) = req.traffic_max_rate_bytes_per_sec {
-        set.push("traffic_max_rate_bytes_per_sec = ")
-            .push_bind_unseparated(v);
-    }
-    if let Some(v) = region {
-        set.push("region = ").push_bind_unseparated(v);
-    }
-    if let Some(v) = display_name {
-        set.push("display_name = ").push_bind_unseparated(v);
-    }
-    if let Some(v) = sort {
-        set.push("sort = ").push_bind_unseparated(v);
-    }
-    if let Some(v) = visible {
-        set.push("visible = ").push_bind_unseparated(v);
-    }
-    if let Some(v) = tags {
-        set.push("tags = ").push_bind_unseparated(v);
-    }
-    qb.push(" WHERE id = ").push_bind(id);
-    qb.push(format!(
-        " RETURNING {}, {}",
-        crate::audit::node_snapshot_sql("old"),
-        crate::audit::node_snapshot_sql("new")
-    ));
-    let (before, after) = match qb
-        .build_query_as::<(serde_json::Value, serde_json::Value)>()
-        .fetch_one(&mut *conn)
-        .await
-    {
-        Ok(r) => r,
-        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
-            return Err(conflict!("node.name_exists", "node name already exists"));
-        }
-        Err(e) => return Err(e.into()),
-    };
-    if domain_changes {
-        refuse_acme_for_old_agent(conn, id).await?;
-    }
-    crate::audit::record(
-        conn,
-        actor,
-        "node.update",
-        "node",
-        Some(id.to_string()),
-        Some(before),
-        Some(after),
-    )
-    .await?;
-    Ok(toggles || domain_changes)
-}
-
-pub async fn update_node(
-    State(state): State<AppState>,
-    user: AuthUser,
-    Path((_, id)): Path<(String, Uuid)>,
-    ApiJson(req): ApiJson<UpdateNodeReq>,
-) -> Result<Json<NodeView>, ApiError> {
-    user.require_admin()?;
-    let mut tx = state.pg().begin().await?;
-    apply_update_node(&mut tx, &Actor::of(&user), id, &req).await?;
-    tx.commit().await?;
-    let row = sqlx::query_as::<_, NodeView>(sqlx::AssertSqlSafe(format!(
-        "SELECT {} {NODE_VIEW_FROM} WHERE nodes.id = $1",
-        *NODE_VIEW_COLS
-    )))
-    .bind(id)
-    .fetch_optional(state.pg())
-    .await?
-    .ok_or_else(ApiError::not_found)?;
-    Ok(Json(row.with_warnings()))
-}
-
-/// Phase 1 of a node deletion (R12 D1), in the caller's transaction: lock
-/// the node, mark it deleting and disable it. The first call bumps
-/// config_version, so the agent (wherever it is connected) converges to
-/// the empty state and acks it; its final counters are still billed
-/// (entrance_users is untouched). Phase 2 (`crate::reaper`) revokes the
-/// certificate and deletes the row. Idempotent. Returns whether this call
-/// started the deletion.
-pub(crate) async fn apply_begin_delete_node(
-    conn: &mut PgConnection,
-    actor: &Actor,
-    id: Uuid,
-) -> Result<bool, ApiError> {
-    let deleting: Option<bool> =
-        sqlx::query_scalar("SELECT deleting_at IS NOT NULL FROM nodes WHERE id = $1 FOR UPDATE")
-            .bind(id)
-            .fetch_optional(&mut *conn)
-            .await?;
-    match deleting {
-        None => Err(ApiError::not_found()),
-        Some(true) => Ok(false),
-        Some(false) => {
-            let before: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-                "UPDATE nodes SET deleting_at = now(), delete_acked_at = NULL, enabled = false, \
-                 config_version = config_version + 1, updated_at = now() WHERE id = $1 \
-                 RETURNING {}",
-                crate::audit::node_snapshot_sql("old")
-            )))
-            .bind(id)
-            .fetch_one(&mut *conn)
-            .await?;
-            crate::audit::record(
-                conn,
-                actor,
-                "node.delete",
-                "node",
-                Some(id.to_string()),
-                Some(before),
-                Some(json!({ "phase": "deleting" })),
-            )
-            .await?;
-            Ok(true)
-        }
-    }
-}
-
-/// Mutations other than deletion are refused on a node being deleted (it
-/// must stay disabled until phase 2 removes it). Locks the node row.
-async fn refuse_if_deleting(conn: &mut PgConnection, id: Uuid) -> Result<(), ApiError> {
-    let deleting: Option<bool> =
-        sqlx::query_scalar("SELECT deleting_at IS NOT NULL FROM nodes WHERE id = $1 FOR UPDATE")
-            .bind(id)
-            .fetch_optional(&mut *conn)
-            .await?;
-    match deleting {
-        None => Err(ApiError::not_found()),
-        Some(true) => Err(conflict!("node.deleting", "node is being deleted")),
-        Some(false) => Ok(()),
-    }
-}
-
-/// DELETE /nodes/{id}: phase 1 (see `apply_begin_delete_node`). 202: the
-/// row disappears once the agent acked the empty state (or after a
-/// timeout, or at once if no agent is online), on any panel instance.
-pub async fn delete_node(
-    State(state): State<AppState>,
-    user: AuthUser,
-    Path((_, id)): Path<(String, Uuid)>,
-) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), ApiError> {
-    user.require_admin()?;
-    let mut tx = state.pg().begin().await?;
-    let started = apply_begin_delete_node(&mut tx, &Actor::of(&user), id).await?;
-    tx.commit().await?;
-    if started {
-        tracing::info!(node = %id, "node deletion started");
-    }
-    Ok((
-        axum::http::StatusCode::ACCEPTED,
-        Json(json!({ "id": id, "deleting": true })),
-    ))
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SetInboundReq {
-    /// The node's xray inbound (an object; its tag, if any, is dropped:
-    /// the panel names the inbounds it renders); null removes it.
-    pub inbound: Option<serde_json::Value>,
-}
+// ---------------------------------------------------------------------------
+// Inbounds (node inbound validation, D2)
+// ---------------------------------------------------------------------------
 
 /// D2: the stored form of an admin-supplied inbound: a JSON object, its tag
 /// removed (the panel names the inbounds it renders), checked like every
@@ -2779,66 +1652,6 @@ pub(crate) fn inbound_warning(inbound: &serde_json::Value) -> Option<String> {
     crate::protocols::check_inbound(inbound)
         .err()
         .map(|e| format!("入站：{e}"))
-}
-
-/// Replace a node's inbound (None removes it) and, in the same
-/// transaction, reconcile its entrances' credentials: accounts of the same
-/// protocol are kept (refit: a VLESS flow follows the inbound, a
-/// Shadowsocks key of the wrong length is reissued), others are reissued,
-/// and without an issuable inbound every row goes (departed). Bumps
-/// config_version (the agent gets the new inbound with a Snapshot). Returns
-/// the new config_version.
-pub(crate) async fn apply_set_inbound(
-    conn: &mut PgConnection,
-    actor: &Actor,
-    id: Uuid,
-    inbound: Option<&serde_json::Value>,
-) -> Result<i64, ApiError> {
-    let inbound = inbound.map(normalize_inbound).transpose()?;
-    crate::entitle::lock(conn).await?;
-    refuse_if_deleting(conn, id).await?;
-    // W28-a: the relay entrances' derived inbounds take this inbound's
-    // protocol on their own ports.
-    if let Some(ib) = &inbound {
-        crate::entrances::port_clash(conn, id, ib, None).await?;
-    }
-    let (version, old): (i64, Option<serde_json::Value>) = sqlx::query_as(
-        "UPDATE nodes SET inbound = $2, config_version = config_version + 1, updated_at = now() \
-         WHERE id = $1 RETURNING new.config_version, old.inbound",
-    )
-    .bind(id)
-    .bind(&inbound)
-    .fetch_one(&mut *conn)
-    .await?;
-    refuse_acme_for_old_agent(conn, id).await?;
-    let plan = crate::entitle::apply_reconcile(conn, crate::entitle::Scope::Nodes(&[id])).await?;
-    let mut after = json!({ "inbound": crate::audit::inbound_summary(inbound.as_ref()) });
-    after["entitlement"] = plan.summary();
-    crate::audit::record(
-        conn,
-        actor,
-        "node.set_inbound",
-        "node",
-        Some(id.to_string()),
-        Some(json!({ "inbound": crate::audit::inbound_summary(old.as_ref()) })),
-        Some(after),
-    )
-    .await?;
-    Ok(version)
-}
-
-/// PUT /nodes/{id}/inbound (admin).
-pub async fn set_inbound(
-    State(state): State<AppState>,
-    user: AuthUser,
-    Path((_, id)): Path<(String, Uuid)>,
-    ApiJson(req): ApiJson<SetInboundReq>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    user.require_admin()?;
-    let mut tx = state.pg().begin().await?;
-    let version = apply_set_inbound(&mut tx, &Actor::of(&user), id, req.inbound.as_ref()).await?;
-    tx.commit().await?;
-    Ok(Json(json!({ "config_version": version })))
 }
 
 /// A new account for `inbound` (protocols.rs: the inbound's protocol and
@@ -2958,159 +1771,11 @@ pub(crate) async fn apply_update_user_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nodes::{UpdateNodeReq, apply_set_inbound, apply_update_node};
     use crate::testdb::TestDb;
     use axum::extract::FromRequest;
     use axum::http::StatusCode;
     use std::collections::HashSet;
-
-    /// M1-8: a certificate within 14 days of expiry (or expired) is flagged,
-    /// with the likely cause by agent protocol.
-    #[test]
-    fn cert_expiry_warning() {
-        let now = Utc::now();
-        let d = chrono::Duration::days;
-        assert_eq!(cert_warning(None, Some(2), now), None, "unknown expiry");
-        assert_eq!(cert_warning(Some(now + d(15)), Some(1), now), None);
-        let w = cert_warning(Some(now + d(10)), Some(1), now).unwrap();
-        assert!(
-            w.contains("将在 9 天后") || w.contains("将在 10 天后"),
-            "{w}"
-        );
-        assert!(w.contains("不能续期"), "{w}");
-        let w = cert_warning(Some(now + d(3)), Some(2), now).unwrap();
-        assert!(w.contains("没有按时续期"), "{w}");
-        let w = cert_warning(Some(now - d(1)), None, now).unwrap();
-        assert!(w.contains("已于") && w.contains("过期"), "{w}");
-    }
-
-    /// W10: an old agent or an inbound naming another SNI keeps the
-    /// automatic certificate from working; said on the node.
-    #[test]
-    fn tls_domain_warnings_flag_old_agents_and_other_names() {
-        let tls = |sni: &str| {
-            json!({"streamSettings": {"security": "tls", "tlsSettings": {
-                "serverName": sni,
-                "certificates": [{"certificateFile": crate::nodetpl::TLS_CERT_FILE, "keyFile": crate::nodetpl::TLS_KEY_FILE}]}}})
-        };
-        let d = Some("n1.example.com");
-        assert!(tls_domain_warnings(None, Some(&tls("x.example.com")), Some(5)).is_empty());
-        assert!(tls_domain_warnings(d, Some(&tls("n1.example.com")), Some(6)).is_empty());
-        assert!(
-            tls_domain_warnings(d, Some(&tls("N1.example.com")), None).is_empty(),
-            "not connected yet"
-        );
-        assert!(
-            tls_domain_warnings(d, None, Some(1)).is_empty(),
-            "no certificate needed"
-        );
-        let w = tls_domain_warnings(d, Some(&tls("n1.example.com")), Some(5));
-        assert!(w.len() == 1 && w[0].contains("版本过旧"), "{w:?}");
-        let w = tls_domain_warnings(d, Some(&tls("other.example.com")), Some(6));
-        assert!(w.len() == 1 && w[0].contains("other.example.com"), "{w:?}");
-    }
-
-    /// W18: a node certificate the agent must obtain itself is refused for
-    /// agents of protocol 1..6 (they would fail the whole snapshot); not
-    /// connected yet (None) and protocol-0 agents (served the empty state)
-    /// pass, as does a node without a TLS domain (certificates by hand).
-    #[test]
-    fn acme_inbounds_need_an_acme_agent() {
-        let tls = json!({"streamSettings": {"security": "tls", "tlsSettings": {
-            "certificates": [{"certificateFile": crate::nodetpl::TLS_CERT_FILE, "keyFile": crate::nodetpl::TLS_KEY_FILE}]}}});
-        let t = Some(&tls);
-        let d = Some("n1.example.com");
-        assert_eq!(acme_needs_newer_agent(d, t, Some(5)), Some(5));
-        assert_eq!(acme_needs_newer_agent(d, t, Some(1)), Some(1));
-        assert_eq!(acme_needs_newer_agent(d, t, Some(6)), None);
-        assert_eq!(acme_needs_newer_agent(d, t, None), None);
-        assert_eq!(acme_needs_newer_agent(d, t, Some(0)), None);
-        assert_eq!(acme_needs_newer_agent(None, t, Some(5)), None);
-        assert_eq!(acme_needs_newer_agent(d, None, Some(5)), None);
-    }
-
-    /// W18: self-updatable agents without the "updater" capability fail on
-    /// systemd >= 256 (noexec state directory): told on the node.
-    #[test]
-    fn updater_warning_for_pre_updater_agents() {
-        let caps = |c: &[&str]| c.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let w = updater_warning(Some(6), Some(&caps(&["metrics", "latency"]))).unwrap();
-        assert!(
-            w.contains("重装命令") && w.contains("akari-agent-update"),
-            "{w}"
-        );
-        assert!(
-            updater_warning(Some(3), None).is_some(),
-            "protocol 3, no capabilities"
-        );
-        assert!(updater_warning(Some(6), Some(&caps(&["metrics", "updater"]))).is_none());
-        assert!(
-            updater_warning(Some(2), None).is_none(),
-            "never offered updates"
-        );
-        assert!(updater_warning(None, None).is_none(), "not connected yet");
-    }
-
-    /// W23: the agent says its node's systemd units are not its own.
-    #[test]
-    fn stale_units_warning_names_the_reinstall() {
-        let caps = |c: &[&str]| c.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let w = stale_units_warning(Some(&caps(&["metrics", "stale-units"]))).unwrap();
-        assert!(w.contains("重装命令") && w.contains("drop-in"), "{w}");
-        assert!(stale_units_warning(Some(&caps(&["metrics", "updater"]))).is_none());
-        assert!(stale_units_warning(None).is_none());
-        let all = node_warnings(
-            None,
-            None,
-            Some(6),
-            None,
-            false,
-            Some(&caps(&["updater", "stale-units"])),
-            &json!([]),
-        );
-        assert_eq!(all.len(), 1, "{all:?}");
-    }
-
-    /// W28-a: relay entrances on an agent without source filtering or the
-    /// per-account limits of protocol 7 are flagged; a filter the agent
-    /// could not install is reported from its heartbeat.
-    #[test]
-    fn relay_and_source_filter_warnings() {
-        let caps = |c: &[&str]| c.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let relay =
-            json!([{"kind": "direct", "enabled": true}, {"kind": "relay", "enabled": true}]);
-        let off = json!([{"kind": "direct", "enabled": true}, {"kind": "relay", "enabled": false}]);
-        let w = relay_warnings(&relay, Some(6), Some(&caps(&["metrics"])));
-        assert_eq!(w.len(), 2, "{w:?}");
-        assert!(
-            w[0].contains("来源 IP 过滤") && w[1].contains("协议 < 7"),
-            "{w:?}"
-        );
-        assert!(relay_warnings(&relay, Some(7), Some(&caps(&["source-filter"]))).is_empty());
-        assert!(
-            relay_warnings(&off, Some(1), None).is_empty(),
-            "disabled relays"
-        );
-        assert!(
-            relay_warnings(&relay, None, None).is_empty(),
-            "never connected"
-        );
-        let w = source_filter_warning(
-            r#"{"ts":"x","source_filter":{"applied":false,"error":"nft: permission denied"}}"#,
-        )
-        .unwrap();
-        assert!(w.contains("nft: permission denied"), "{w}");
-        assert!(
-            source_filter_warning(r#"{"source_filter":{"applied":true,"error":null}}"#).is_none()
-        );
-        assert!(source_filter_warning(r#"{"ts":"x"}"#).is_none());
-        assert!(
-            source_filter_warning(
-                r#"{"source_filter":{"applied":false,"error":"pending: waiting for the root updater"}}"#
-            )
-            .is_none()
-        );
-        assert!(source_filter_warning("not json").is_none());
-    }
 
     /// D2: one inbound object per node; its tag (any case variant, the
     /// way xray reads keys) is the panel's business and dropped.
@@ -3332,6 +1997,17 @@ mod tests {
                 })
             })
         };
+        let server = move |id: Uuid, req: crate::servers::UpdateServerReq| -> Op {
+            let req = std::sync::Arc::new(req);
+            Box::new(move |c| {
+                let req = req.clone();
+                Box::pin(async move {
+                    crate::servers::apply_update(c, &crate::audit::Actor::test(), id, &req)
+                        .await
+                        .map(|_| ())
+                })
+            })
+        };
         // u is promoted and demoted below; another admin stays (0009 guard).
         db.admin().await;
         // R12 D3: the bump itself notifies (trigger), once per node.
@@ -3465,9 +2141,9 @@ mod tests {
             ),
             (
                 "tls domain (W10: the agent gets it with a Snapshot)",
-                node(
+                server(
                     n1,
-                    UpdateNodeReq {
+                    crate::servers::UpdateServerReq {
                         tls_domain: Some(Some("N1.Example.com".into())),
                         ..Default::default()
                     },
@@ -3477,9 +2153,9 @@ mod tests {
             ),
             (
                 "same tls domain (no-op)",
-                node(
+                server(
                     n1,
-                    UpdateNodeReq {
+                    crate::servers::UpdateServerReq {
                         tls_domain: Some(Some("n1.example.com".into())),
                         ..Default::default()
                     },
@@ -3489,9 +2165,9 @@ mod tests {
             ),
             (
                 "clear tls domain",
-                node(
+                server(
                     n1,
-                    UpdateNodeReq {
+                    crate::servers::UpdateServerReq {
                         tls_domain: Some(None),
                         ..Default::default()
                     },
@@ -3726,11 +2402,11 @@ mod tests {
                 "node alert rules (W17, nothing the agent runs)",
                 Box::new(move |c| {
                     Box::pin(async move {
-                        crate::alerts::apply_set_node_rules(
+                        crate::alerts::apply_set_server_rules(
                             c,
                             &crate::audit::Actor::test(),
                             n1,
-                            &crate::alerts::NodeRules {
+                            &crate::alerts::ServerRules {
                                 muted: true,
                                 cpu_percent: Some(95),
                                 ..Default::default()
@@ -4023,7 +2699,7 @@ mod tests {
                 "begin node deletion",
                 Box::new(move |c| {
                     Box::pin(async move {
-                        apply_begin_delete_node(c, &crate::audit::Actor::test(), doomed)
+                        crate::servers::apply_begin_delete(c, &crate::audit::Actor::test(), doomed)
                             .await
                             .map(|_| ())
                     })
@@ -4035,7 +2711,7 @@ mod tests {
                 "begin node deletion again (no-op)",
                 Box::new(move |c| {
                     Box::pin(async move {
-                        apply_begin_delete_node(c, &crate::audit::Actor::test(), doomed)
+                        crate::servers::apply_begin_delete(c, &crate::audit::Actor::test(), doomed)
                             .await
                             .map(|_| ())
                     })
@@ -4094,11 +2770,13 @@ mod tests {
             );
         }
         // Phase 2 of the deletion: the delete trigger says 'del:<id>'.
-        sqlx::query("UPDATE nodes SET delete_acked_at = now() - interval '1 minute' WHERE id = $1")
-            .bind(doomed)
-            .execute(&db.pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE servers SET delete_acked_at = now() - interval '1 minute' WHERE id = $1",
+        )
+        .bind(doomed)
+        .execute(&db.pool)
+        .await
+        .unwrap();
         crate::testdb::drain(&mut listener, std::time::Duration::from_millis(20)).await;
         let mut tx = db.pool.begin().await.unwrap();
         assert!(
@@ -4559,21 +3237,21 @@ mod tests {
         db.drop().await;
     }
 
-    /// A node being deleted stays disabled: other node and entrance
-    /// mutations are 409; the per-node rate override is validated.
+    /// While its server is being deleted, node and entrance mutations are
+    /// 409; the per-server rate override is validated.
     #[tokio::test]
-    async fn deleting_node_refuses_mutations_and_rate_override_validated() {
+    async fn deleting_server_refuses_mutations_and_rate_override_validated() {
         let Some(db) = TestDb::new().await else {
             return;
         };
         let n = db.node().await;
         let e = db.direct(n).await;
         let mut tx = db.pool.begin().await.unwrap();
-        let bad = apply_update_node(
+        let bad = crate::servers::apply_update(
             &mut tx,
             &crate::audit::Actor::test(),
             n,
-            &UpdateNodeReq {
+            &crate::servers::UpdateServerReq {
                 traffic_max_rate_bytes_per_sec: Some(Some(0)),
                 ..Default::default()
             },
@@ -4582,11 +3260,11 @@ mod tests {
         assert_eq!(err_status(bad), StatusCode::BAD_REQUEST);
         tx.rollback().await.unwrap();
         let mut tx = db.pool.begin().await.unwrap();
-        apply_update_node(
+        crate::servers::apply_update(
             &mut tx,
             &crate::audit::Actor::test(),
             n,
-            &UpdateNodeReq {
+            &crate::servers::UpdateServerReq {
                 traffic_max_rate_bytes_per_sec: Some(Some(1000)),
                 ..Default::default()
             },
@@ -4594,7 +3272,7 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            apply_begin_delete_node(&mut tx, &crate::audit::Actor::test(), n)
+            crate::servers::apply_begin_delete(&mut tx, &crate::audit::Actor::test(), n)
                 .await
                 .unwrap()
         );
@@ -4635,19 +3313,26 @@ mod tests {
         .await;
         assert_eq!(err_status(r), StatusCode::CONFLICT);
         tx.rollback().await.unwrap();
+        // Q1: the server serves nothing while it is being deleted; its
+        // nodes keep their own switch (they go away with it).
         let (enabled, rate): (bool, Option<i64>) = sqlx::query_as(
-            "SELECT enabled, traffic_max_rate_bytes_per_sec FROM nodes WHERE id = $1",
+            "SELECT n.enabled, s.traffic_max_rate_bytes_per_sec FROM nodes n \
+             JOIN servers s ON s.id = n.server_id WHERE n.id = $1",
         )
         .bind(n)
         .fetch_one(&db.pool)
         .await
         .unwrap();
-        assert_eq!((enabled, rate), (false, Some(1000)));
+        assert_eq!((enabled, rate), (true, Some(1000)));
         let mut tx = db.pool.begin().await.unwrap();
         assert_eq!(
             err_status(
-                apply_begin_delete_node(&mut tx, &crate::audit::Actor::test(), Uuid::new_v4())
-                    .await
+                crate::servers::apply_begin_delete(
+                    &mut tx,
+                    &crate::audit::Actor::test(),
+                    Uuid::new_v4()
+                )
+                .await
             ),
             StatusCode::NOT_FOUND
         );
@@ -5447,7 +4132,9 @@ mod tests {
         assert!(enabled);
         // A failing mutation leaves nothing either (deleting node: 409).
         let mut tx = db.pool.begin().await.unwrap();
-        apply_begin_delete_node(&mut tx, &actor, n).await.unwrap();
+        crate::servers::apply_begin_delete(&mut tx, &actor, n)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
         let mut tx = db.pool.begin().await.unwrap();
         let r = apply_set_inbound(&mut tx, &actor, n, Some(&json!({"protocol": "vless"}))).await;
@@ -5625,7 +4312,7 @@ mod tests {
         let n1 = db.node().await;
         let n2 = db.node().await;
         sqlx::query(
-            "INSERT INTO node_latency (node_id, source, target, delay_ms, error, ord, measured_at) \
+            "INSERT INTO server_latency (server_id, source, target, delay_ms, error, ord, measured_at) \
              VALUES ($1, 'agent', 'https://a/204', NULL, 'timeout', 0, now()), \
                     ($1, 'agent', 'https://b/204', 87, NULL, 1, now()), \
                     ($1, 'panel', 'in-vless', 12, NULL, 0, now())",
@@ -5642,7 +4329,7 @@ mod tests {
                         "online_users": 3, "disk_used_bytes": 1, "xray_version": "26.1"},
             "cert": {"state": "valid"},
         });
-        let key = format!("akari:node:hb:{n1}");
+        let key = format!("akari:server:hb:{n1}");
         let _: () = state
             .valkey()
             .set(

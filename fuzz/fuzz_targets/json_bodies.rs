@@ -77,13 +77,13 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     use akari_panel::*;
-    match sel % 25 {
+    match sel % 27 {
         0 => strict::<api::LoginReq>(body),
         1 => strict::<api::CreateUserReq>(body),
         2 => strict::<api::UpdateUserReq>(body),
-        3 => strict::<api::CreateNodeReq>(body),
-        4 => strict::<api::UpdateNodeReq>(body),
-        5 => strict::<api::SetInboundReq>(body),
+        3 => strict::<nodes::CreateNodeReq>(body),
+        4 => strict::<nodes::UpdateNodeReq>(body),
+        5 => strict::<nodes::SetInboundReq>(body),
         6 => strict::<entrances::EntranceReq>(body),
         7 | 8 => strict::<signup::SignupReq>(body),
         9 => strict::<account::ChangePasswordReq>(body),
@@ -106,6 +106,8 @@ fuzz_target!(|data: &[u8]| {
                 relay_sources(&r.source_cidrs);
             }
         }
+        24 => strict::<servers::CreateServerReq>(body),
+        25 => strict::<servers::UpdateServerReq>(body),
         _ => path(&String::from_utf8_lossy(body)),
     }
 });

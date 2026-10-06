@@ -1,7 +1,7 @@
 //! Wire-level fake agent (Sprint 4a, S4-5): a real tonic client speaking the
 //! control protocol over mutual TLS to a real panel gRPC server on an
 //! ephemeral port, using a certificate issued by a throwaway CA exactly like
-//! `akari node add` does.
+//! `akari server add` does.
 //!
 //! Complements the in-process `FakeAgent` in grpc.rs tests (which drives
 //! `session()` directly, no TLS/transport): this one exercises the TLS
@@ -100,14 +100,15 @@ impl PanelHarness {
         }
     }
 
-    /// Mint an agent certificate and register its serial on `node` (what a
-    /// v1 `akari node add` did: panel-generated key; still supported).
-    pub async fn register(&self, db: &TestDb, node: Uuid) -> AgentCreds {
+    /// Mint an agent certificate and register its serial on `server` (what
+    /// a v1 `akari node add` did: panel-generated key; still supported).
+    /// `db.node()` ids are their server's too.
+    pub async fn register(&self, db: &TestDb, server: Uuid) -> AgentCreds {
         let (cert, key, serial) =
-            crate::install::issue_agent_cert(&self.ca_pem, &self.ca_key_pem, &node.to_string())
+            crate::install::issue_agent_cert(&self.ca_pem, &self.ca_key_pem, &server.to_string())
                 .unwrap();
-        sqlx::query("UPDATE nodes SET cert_serial = $2 WHERE id = $1")
-            .bind(node)
+        sqlx::query("UPDATE servers SET cert_serial = $2 WHERE id = $1")
+            .bind(server)
             .bind(&serial)
             .execute(&db.pool)
             .await
@@ -447,7 +448,7 @@ mod tests {
         // Reports are buffered, then persisted by the flusher; flush now.
         let mut billed = 0;
         for _ in 0..100 {
-            crate::traffic::flush_node(&panel.state, n).await.unwrap();
+            crate::traffic::flush_server(&panel.state, n).await.unwrap();
             billed = db.used(u).await;
             if billed > 0 {
                 break;
@@ -475,8 +476,9 @@ mod tests {
             "settings": {"address": "127.0.0.1", "network": "tcp", "pad": pad},
         });
         sqlx::query(
-            "UPDATE nodes SET inbound = $2, config_version = config_version + 1 \
-             WHERE id = $1",
+            "WITH n AS (UPDATE nodes SET inbound = $2 WHERE id = $1 RETURNING server_id) \
+             UPDATE servers SET config_version = config_version + 1 \
+             WHERE id IN (SELECT server_id FROM n)",
         )
         .bind(n)
         .bind(&inbound)
@@ -497,7 +499,7 @@ mod tests {
         agent.traffic(u, 10, 5).await;
         let mut billed = 0;
         for _ in 0..100 {
-            crate::traffic::flush_node(&panel.state, n).await.unwrap();
+            crate::traffic::flush_server(&panel.state, n).await.unwrap();
             billed = db.used(u).await;
             if billed > 0 {
                 break;

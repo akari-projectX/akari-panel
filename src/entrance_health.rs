@@ -63,8 +63,8 @@ pub async fn health_round(
     let due: Vec<Due> = sqlx::query_as(
         "UPDATE entrances e SET health_next_at = now() + make_interval(secs => $1 * (0.9 + 0.2 * random())) \
          FROM nodes n WHERE n.id = e.node_id AND e.id IN (SELECT e2.id FROM entrances e2 \
-             JOIN nodes n2 ON n2.id = e2.node_id \
-             WHERE e2.kind = 'relay' AND e2.enabled AND n2.enabled AND n2.deleting_at IS NULL \
+             JOIN nodes n2 ON n2.id = e2.node_id JOIN servers s2 ON s2.id = n2.server_id \
+             WHERE e2.kind = 'relay' AND e2.enabled AND n2.enabled AND s2.deleting_at IS NULL \
              AND n2.inbound IS NOT NULL \
              AND (e2.health_next_at IS NULL OR e2.health_next_at <= now()) \
              ORDER BY e2.health_next_at NULLS FIRST, e2.id LIMIT $2 FOR UPDATE OF e2 SKIP LOCKED) \

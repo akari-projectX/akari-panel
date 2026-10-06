@@ -45,7 +45,7 @@ The sections below are the same tooling by hand.
 > backup storage. Never commit or copy `data/` anywhere unencrypted.
 
 Losing `data/` while keeping the database means: new route prefix, new CA, every agent
-needs a new enrollment token (`akari node enroll-token <id>`, a new bootstrap file), and every
+needs a new enrollment token (`akari server enroll-token <id>`, a new bootstrap file), and every
 secret sealed with the master key can no longer be decrypted: enter the SMTP password, payment
 method keys and alert channel secrets again; subscription links keep working but cannot be
 shown until users reset them. `master.key` (named `totp.key` before v0.4; the panel renames it

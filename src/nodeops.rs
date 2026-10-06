@@ -132,17 +132,17 @@ pub async fn admin_passwd(cfg: PanelConfig, email: String) -> Result<()> {
     Ok(())
 }
 
-/// `akari node add <name>`: create the node with a one-time enrollment
+/// `akari server add <name>`: create the server with a one-time enrollment
 /// token and write the bootstrap file (panel address, server name, CA,
 /// token — no private key: the agent generates its key and enrolls, M1-8).
-pub async fn node_add(cfg: PanelConfig, name: String, out: Option<PathBuf>) -> Result<()> {
+pub async fn server_add(cfg: PanelConfig, name: String, out: Option<PathBuf>) -> Result<()> {
     let inst = install::ensure(&cfg)?;
     let pg = connect(&cfg).await?;
     let mut tx = pg.begin().await?;
     let endpoint = crate::settings::node_endpoint(&mut tx, &cfg)
         .await
         .map_err(|e| anyhow::anyhow!("{} (akari settings set node <host[:port]>)", e.message()))?;
-    let (id, token, expires) = crate::enroll::apply_create_node(
+    let (id, token, expires) = crate::enroll::apply_create_server(
         &mut tx,
         &Actor::cli(),
         &name,
@@ -151,9 +151,9 @@ pub async fn node_add(cfg: PanelConfig, name: String, out: Option<PathBuf>) -> R
         &endpoint,
     )
     .await
-    .map_err(|e| anyhow::anyhow!("node {name}: {}", e.message()))?;
+    .map_err(|e| anyhow::anyhow!("server {name}: {}", e.message()))?;
     let out_path = out.unwrap_or_else(|| PathBuf::from(format!("{name}-bootstrap.toml")));
-    // Written before the commit: a committed node always has its file.
+    // Written before the commit: a committed server always has its file.
     write_bootstrap(
         &endpoint,
         &inst,
@@ -165,17 +165,17 @@ pub async fn node_add(cfg: PanelConfig, name: String, out: Option<PathBuf>) -> R
     )?;
     tx.commit().await?;
     let mut say = progress(&out_path);
-    writeln!(say, "node registered:  {id}")?;
+    writeln!(say, "server registered: {id}")?;
     writeln!(say, "bootstrap file:   {}", out_path.display())?;
     writeln!(say, "enrollment token expires {}", expires.to_rfc3339())?;
     Ok(())
 }
 
-/// `akari node enroll-token <id>`: a new one-time enrollment token for an
-/// existing node (the first one expired, or the agent's state was lost)
-/// and its bootstrap file. Once the agent enrolls with it, the node's
-/// previous certificates are revoked.
-pub async fn node_enroll_token(
+/// `akari server enroll-token <id>`: a new one-time enrollment token for
+/// an existing server (the first one expired, or the agent's state was
+/// lost) and its bootstrap file. Once the agent enrolls with it, the
+/// server's previous certificates are revoked.
+pub async fn server_enroll_token(
     cfg: PanelConfig,
     id: uuid::Uuid,
     out: Option<PathBuf>,
@@ -183,12 +183,12 @@ pub async fn node_enroll_token(
     let inst = install::ensure(&cfg)?;
     let pg = connect(&cfg).await?;
     let mut tx = pg.begin().await?;
-    let name: Option<String> = sqlx::query_scalar("SELECT name FROM nodes WHERE id = $1")
+    let name: Option<String> = sqlx::query_scalar("SELECT name FROM servers WHERE id = $1")
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?;
     let Some(name) = name else {
-        bail!("no such node: {id}");
+        bail!("no such server: {id}");
     };
     let endpoint = crate::settings::node_endpoint(&mut tx, &cfg)
         .await
@@ -202,7 +202,7 @@ pub async fn node_enroll_token(
         &endpoint,
     )
     .await
-    .map_err(|e| anyhow::anyhow!("node {id}: {}", e.message()))?;
+    .map_err(|e| anyhow::anyhow!("server {id}: {}", e.message()))?;
     let out_path = out.unwrap_or_else(|| PathBuf::from(format!("{name}-bootstrap.toml")));
     write_bootstrap(
         &endpoint,
@@ -215,7 +215,7 @@ pub async fn node_enroll_token(
     )?;
     tx.commit().await?;
     let mut say = progress(&out_path);
-    writeln!(say, "new enrollment token for node {id}")?;
+    writeln!(say, "new enrollment token for server {id}")?;
     writeln!(say, "bootstrap file:   {}", out_path.display())?;
     writeln!(say, "enrollment token expires {}", expires.to_rfc3339())?;
     Ok(())
@@ -265,26 +265,27 @@ fn write_bootstrap(
         .with_context(|| format!("write {}", path.display()))
 }
 
-/// Phase 1 of a node deletion (see api::apply_begin_delete_node); a running
-/// panel (reaper) completes it.
-pub async fn node_delete(cfg: PanelConfig, id: uuid::Uuid) -> Result<()> {
+/// Phase 1 of a server deletion (see servers::apply_begin_delete); a
+/// running panel (reaper) completes it.
+pub async fn server_delete(cfg: PanelConfig, id: uuid::Uuid) -> Result<()> {
     let pg = connect(&cfg).await?;
     let mut tx = pg.begin().await?;
-    let started = crate::api::apply_begin_delete_node(&mut tx, &Actor::cli(), id)
+    let started = crate::servers::apply_begin_delete(&mut tx, &Actor::cli(), id)
         .await
-        .map_err(|e| anyhow::anyhow!("node {id}: {}", e.message()))?;
+        .map_err(|e| anyhow::anyhow!("server {id}: {}", e.message()))?;
     tx.commit().await?;
     if started {
-        println!("node {id}: deletion started (disabled; certificate is revoked and the node");
-        println!("removed by the running panel once the agent runs the empty state)");
+        println!("server {id}: deletion started (it serves nothing; its certificate is revoked");
+        println!("and it is removed with its nodes by the running panel once the agent runs the");
+        println!("empty state)");
     } else {
-        println!("node {id}: deletion already in progress");
+        println!("server {id}: deletion already in progress");
     }
     Ok(())
 }
 
 #[derive(sqlx::FromRow)]
-struct NodeListRow {
+struct ServerListRow {
     id: uuid::Uuid,
     name: String,
     status: String,
@@ -293,15 +294,14 @@ struct NodeListRow {
     last_seen_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-pub async fn node_list(cfg: PanelConfig) -> Result<()> {
+pub async fn server_list(cfg: PanelConfig) -> Result<()> {
     let pg = sqlx::postgres::PgPoolOptions::new()
         .max_connections(2)
         .connect(&cfg.database_url)
         .await?;
-    let rows = sqlx::query_as::<_, NodeListRow>(
-        "SELECT id, name, CASE WHEN deleting_at IS NOT NULL THEN 'deleting' \
-         WHEN NOT enabled THEN 'disabled' ELSE status END AS status, agent_version, \
-         core_version, last_seen_at FROM nodes ORDER BY created_at",
+    let rows = sqlx::query_as::<_, ServerListRow>(
+        "SELECT id, name, CASE WHEN deleting_at IS NOT NULL THEN 'deleting' ELSE status END \
+         AS status, agent_version, core_version, last_seen_at FROM servers ORDER BY created_at",
     )
     .fetch_all(&pg)
     .await?;

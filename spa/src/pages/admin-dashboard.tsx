@@ -40,7 +40,7 @@ export interface Dashboard {
   users_total: number;
   subscribers: number;
   online_users: number;
-  nodes: { total: number; online: number; offline: number; disabled: number; pending: number; alerting: number };
+  servers: { total: number; online: number; offline: number; disabled: number; pending: number; alerting: number };
   pending: {
     tickets_open: number;
     withdrawals: number;
@@ -237,15 +237,15 @@ export function AdminDashboard() {
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               <Tile label="用户总数" value={d.users_total} sub={`今日新注册 ${d.today.signups}`} />
               <Tile label="有效订阅" value={d.subscribers} sub="持有生效中套餐的用户" />
-              <Tile label="在线用户" value={d.online_users} sub="各在线节点上报之和" />
+              <Tile label="在线用户" value={d.online_users} sub="各在线服务器上报之和" />
               <Tile
-                label="节点在线"
-                value={`${d.nodes.online} / ${d.nodes.total}`}
+                label="服务器在线"
+                value={`${d.servers.online} / ${d.servers.total}`}
                 sub={
                   <>
-                    离线 {d.nodes.offline} · 等待安装 {d.nodes.pending} · 已停用 {d.nodes.disabled}
-                    {d.nodes.alerting > 0 && (
-                      <span className="font-medium text-destructive"> · 告警 {d.nodes.alerting}</span>
+                    离线 {d.servers.offline} · 等待安装 {d.servers.pending} · 已停用 {d.servers.disabled}
+                    {d.servers.alerting > 0 && (
+                      <span className="font-medium text-destructive"> · 告警 {d.servers.alerting}</span>
                     )}
                   </>
                 }

@@ -166,14 +166,14 @@ async fn aggregates_every_source() {
     // Nodes: online (alerting), offline (enrolled), pending, disabled, deleting.
     let online_node = db.node().await;
     sqlx::query(
-        "UPDATE nodes SET status = 'online', last_seen_at = now(), cert_serial = '41' WHERE id = $1",
+        "UPDATE servers SET status = 'online', last_seen_at = now(), cert_serial = '41' WHERE id = $1",
     )
     .bind(online_node)
     .execute(&db.pool)
     .await
     .unwrap();
     let offline = db.node().await;
-    sqlx::query("UPDATE nodes SET cert_serial = '42' WHERE id = $1")
+    sqlx::query("UPDATE servers SET cert_serial = '42' WHERE id = $1")
         .bind(offline)
         .execute(&db.pool)
         .await
@@ -186,7 +186,7 @@ async fn aggregates_every_source() {
         .await
         .unwrap();
     let deleting = db.node().await;
-    sqlx::query("UPDATE nodes SET deleting_at = now(), enabled = false WHERE id = $1")
+    sqlx::query("UPDATE servers SET deleting_at = now() WHERE id = $1")
         .bind(deleting)
         .execute(&db.pool)
         .await
@@ -194,7 +194,7 @@ async fn aggregates_every_source() {
     // A stale "online" row (last seen 5 minutes ago) is offline.
     let stale = db.node().await;
     sqlx::query(
-        "UPDATE nodes SET status = 'online', last_seen_at = now() - interval '5 minutes', \
+        "UPDATE servers SET status = 'online', last_seen_at = now() - interval '5 minutes', \
          cert_serial = '43' WHERE id = $1",
     )
     .bind(stale)
@@ -206,15 +206,17 @@ async fn aggregates_every_source() {
         (online_node, "memory"),
         (offline, "offline"),
     ] {
-        sqlx::query("INSERT INTO node_alerts (node_id, kind, status) VALUES ($1, $2, 'firing')")
-            .bind(node)
-            .bind(kind)
-            .execute(&db.pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO server_alerts (server_id, kind, status) VALUES ($1, $2, 'firing')",
+        )
+        .bind(node)
+        .bind(kind)
+        .execute(&db.pool)
+        .await
+        .unwrap();
     }
     sqlx::query(
-        "INSERT INTO node_alerts (node_id, kind, status, resolved_at) \
+        "INSERT INTO server_alerts (server_id, kind, status, resolved_at) \
          VALUES ($1, 'disk', 'resolved', now())",
     )
     .bind(disabled)
@@ -270,8 +272,8 @@ async fn aggregates_every_source() {
     let (d, online) = read(&db.pool).await.unwrap();
     assert_eq!(d.subscribers, 1);
     assert_eq!(
-        d.nodes,
-        Nodes {
+        d.servers,
+        Servers {
             total: 5,
             online: 1,
             offline: 2,
@@ -332,7 +334,7 @@ async fn http_admin_only_and_shape() {
         "today",
         "d7",
         "d30",
-        "nodes",
+        "servers",
         "pending",
         "latest_orders",
         "online_users",

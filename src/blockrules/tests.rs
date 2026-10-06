@@ -491,7 +491,7 @@ async fn notifications_and_node_switch() {
             .status,
         StatusCode::NOT_FOUND
     );
-    sqlx::query("UPDATE nodes SET deleting_at = now() WHERE id = $1")
+    sqlx::query("UPDATE servers SET deleting_at = now() WHERE id = $1")
         .bind(node)
         .execute(&db.pool)
         .await
@@ -516,10 +516,10 @@ async fn node_policy_follows_switch_and_rules() {
         return;
     };
     let node = db.node().await;
-    let off = node_policy(&db.pool, node).await.unwrap().unwrap();
+    let off = server_policy(&db.pool, node).await.unwrap().unwrap();
     assert_eq!(off, BlockPolicy::default());
     assert!(
-        node_policy(&db.pool, Uuid::new_v4())
+        server_policy(&db.pool, Uuid::new_v4())
             .await
             .unwrap()
             .is_none()
@@ -530,7 +530,7 @@ async fn node_policy_follows_switch_and_rules() {
         .execute(&db.pool)
         .await
         .unwrap();
-    let on = node_policy(&db.pool, node).await.unwrap().unwrap();
+    let on = server_policy(&db.pool, node).await.unwrap().unwrap();
     assert_eq!(on.inbound_tags, [crate::entrances::DIRECT_TAG]);
     // W28-a: with its direct entrance disabled the node serves no inbound.
     for enabled in [false, true] {
@@ -540,7 +540,7 @@ async fn node_policy_follows_switch_and_rules() {
             .execute(&db.pool)
             .await
             .unwrap();
-        let p = node_policy(&db.pool, node).await.unwrap().unwrap();
+        let p = server_policy(&db.pool, node).await.unwrap().unwrap();
         assert_eq!(p == BlockPolicy::default(), !enabled);
     }
     let ids: Vec<u64> = on.rules.iter().map(|r| r.id).collect();
@@ -576,18 +576,19 @@ async fn node_policy_follows_switch_and_rules() {
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    let p = node_policy(&db.pool, node).await.unwrap().unwrap();
+    let p = server_policy(&db.pool, node).await.unwrap().unwrap();
     let ids: Vec<u64> = p.rules.iter().map(|r| r.id).collect();
     assert_eq!(ids, [custom as u64, bt as u64]);
     assert_ne!(p.version, on.version);
 
     for sql in [
         "UPDATE nodes SET enabled = false WHERE id = $1",
-        "UPDATE nodes SET enabled = true, deleting_at = now() WHERE id = $1",
+        "WITH n AS (UPDATE nodes SET enabled = true WHERE id = $1 RETURNING server_id) \
+         UPDATE servers SET deleting_at = now() WHERE id IN (SELECT server_id FROM n)",
     ] {
         sqlx::query(sql).bind(node).execute(&db.pool).await.unwrap();
         assert_eq!(
-            node_policy(&db.pool, node).await.unwrap().unwrap(),
+            server_policy(&db.pool, node).await.unwrap().unwrap(),
             BlockPolicy::default()
         );
     }
@@ -595,17 +596,19 @@ async fn node_policy_follows_switch_and_rules() {
 }
 
 async fn daily(db: &TestDb, node: Uuid) -> Vec<(i64, i64)> {
-    sqlx::query_as("SELECT rule_id, hits FROM node_block_daily WHERE node_id = $1 ORDER BY rule_id")
-        .bind(node)
-        .fetch_all(&db.pool)
-        .await
-        .unwrap()
+    sqlx::query_as(
+        "SELECT rule_id, hits FROM server_block_daily WHERE server_id = $1 ORDER BY rule_id",
+    )
+    .bind(node)
+    .fetch_all(&db.pool)
+    .await
+    .unwrap()
 }
 
 /// Counters: deltas of the cumulative counts land once (replays, reorders
 /// and regressions add nothing; a new epoch starts from zero), unknown
 /// rules are dropped, a node holds baselines for at most
-/// MAX_EPOCHS_PER_NODE processes, and retention prunes both tables.
+/// MAX_EPOCHS_PER_SERVER processes, and retention prunes both tables.
 #[tokio::test]
 async fn ingest_exactly_once_and_bounded() {
     let Some(db) = TestDb::new().await else {
@@ -645,7 +648,7 @@ async fn ingest_exactly_once_and_bounded() {
 
     // Epoch cap: two live already; six more fit, then new ones are dropped
     // while known ones keep counting.
-    for i in 0..(MAX_EPOCHS_PER_NODE - 2) {
+    for i in 0..(MAX_EPOCHS_PER_SERVER - 2) {
         ingest_stats(&db.pool, node, &stats(&format!("x{i}"), &[(bt, 1)]))
             .await
             .unwrap();
@@ -657,23 +660,23 @@ async fn ingest_exactly_once_and_bounded() {
         .await
         .unwrap();
     let epochs: i64 = sqlx::query_scalar(
-        "SELECT count(DISTINCT epoch) FROM node_block_counters WHERE node_id = $1",
+        "SELECT count(DISTINCT epoch) FROM server_block_counters WHERE server_id = $1",
     )
     .bind(node)
     .fetch_one(&db.pool)
     .await
     .unwrap();
-    assert_eq!(epochs, MAX_EPOCHS_PER_NODE);
+    assert_eq!(epochs, MAX_EPOCHS_PER_SERVER);
     assert_eq!(daily(&db, node).await[0], (bt as i64, 14 + 6 + 1));
 
     // Retention: old days and silent epochs go; the rest stays.
-    sqlx::query("UPDATE node_block_daily SET day = day - 91 WHERE rule_id = $1")
+    sqlx::query("UPDATE server_block_daily SET day = day - 91 WHERE rule_id = $1")
         .bind(tr as i64)
         .execute(&db.pool)
         .await
         .unwrap();
     sqlx::query(
-        "UPDATE node_block_counters SET updated_at = now() - interval '8 days' WHERE epoch = 'p1'",
+        "UPDATE server_block_counters SET updated_at = now() - interval '8 days' WHERE epoch = 'p1'",
     )
     .execute(&db.pool)
     .await
@@ -681,13 +684,13 @@ async fn ingest_exactly_once_and_bounded() {
     let (days, counters) = retention_pass(&db.pool).await.unwrap();
     assert_eq!((days, counters), (1, 2));
     assert_eq!(daily(&db, node).await, [(bt as i64, 21)]);
-    // Deleting a node or a rule takes their rows with them.
-    sqlx::query("DELETE FROM nodes WHERE id = $1")
+    // Deleting a server or a rule takes their rows with them.
+    sqlx::query("DELETE FROM servers WHERE id = $1")
         .bind(node)
         .execute(&db.pool)
         .await
         .unwrap();
-    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM node_block_counters")
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM server_block_counters")
         .fetch_one(&db.pool)
         .await
         .unwrap();
@@ -705,7 +708,12 @@ async fn node_view_endpoint() {
     let state = AppState::for_test(db.pool.clone()).await;
     let admin = client_for(&state, db.admin().await).await;
     let node = db.node().await;
-    sqlx::query("UPDATE nodes SET block_rules_enabled = true, agent_capabilities = ARRAY['block-rules'] WHERE id = $1")
+    sqlx::query("UPDATE nodes SET block_rules_enabled = true WHERE id = $1")
+        .bind(node)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE servers SET agent_capabilities = ARRAY['block-rules'] WHERE id = $1")
         .bind(node)
         .execute(&db.pool)
         .await
@@ -714,10 +722,10 @@ async fn node_view_endpoint() {
     ingest_stats(&db.pool, node, &stats("p", &[(bt, 7)]))
         .await
         .unwrap();
-    let policy = node_policy(&db.pool, node).await.unwrap().unwrap();
+    let policy = server_policy(&db.pool, node).await.unwrap().unwrap();
     crate::valkey_util::set_with_ttl(
         &state,
-        format!("akari:node:hb:{node}"),
+        format!("akari:server:hb:{node}"),
         json!({"block": {"applied": policy.version, "error": null}}).to_string(),
         60,
     )
@@ -749,7 +757,7 @@ async fn node_view_endpoint() {
             .status,
         StatusCode::NOT_FOUND
     );
-    crate::valkey_util::del(&state, vec![format!("akari:node:hb:{node}")]).await;
+    crate::valkey_util::del(&state, vec![format!("akari:server:hb:{node}")]).await;
     db.drop().await;
 }
 

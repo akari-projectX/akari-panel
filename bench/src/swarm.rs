@@ -356,7 +356,7 @@ async fn node_ids(pg: &sqlx::PgPool, n: usize) -> Result<Vec<Uuid>> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let id: Uuid =
-            sqlx::query_scalar("SELECT node_id FROM node_enrollments WHERE token_hash = $1")
+            sqlx::query_scalar("SELECT server_id FROM server_enrollments WHERE token_hash = $1")
                 .bind(akari_panel::enroll::hash_token(&common::enroll_token(i)))
                 .fetch_optional(pg)
                 .await?

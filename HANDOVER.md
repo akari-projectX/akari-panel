@@ -99,7 +99,7 @@ make smoke                      # 验收（TRUNCATE PG + flushall Valkey，仅�
 make check                      # fmt + clippy -D warnings + tsc（快速门）；CI 另跑 make lint test deny
 # agent 侧：make -C ../akari-agent vet fmt-check test build；改 proto 后 make sync-proto
 ```
-运行顺序：`akari serve` → `AKARI_ADMIN_PASSWORD=… akari admin add root` → `akari node add test-node` → agent `-config bootstrap` → 浏览器 `/{prefix}/app`。默认 `127.0.0.1:8080`(web) / `:8443`(gRPC)。
+运行顺序：`akari serve` → `AKARI_ADMIN_PASSWORD=… akari admin add root` → `akari server add test-node` → agent `-config bootstrap` → 浏览器 `/{prefix}/app`。默认 `127.0.0.1:8080`(web) / `:8443`(gRPC)。
 
 ## 7. 踩坑记录（改代码前必读）
 

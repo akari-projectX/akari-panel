@@ -92,38 +92,67 @@ pub fn derived_inbounds(
         .collect()
 }
 
-/// A port clash among the inbounds the node would serve with `inbound` and
-/// all of its entrances (enabled or not: a disabled relay keeps its port),
-/// or None.
+/// A port clash among the inbounds the server would run (Q1: every node of
+/// the server shares its ports) with `node`'s inbound replaced by
+/// `inbound` (`node` = None: a node being created, with its direct
+/// entrance), all entrances counted (enabled or not: a disabled entrance
+/// or node keeps its port), plus `extra` = (an entrance of `node` to leave
+/// out, a relay listen port of `node` to add) — or None.
 pub async fn port_clash(
     conn: &mut PgConnection,
-    node: Uuid,
+    server: Uuid,
+    node: Option<Uuid>,
     inbound: &serde_json::Value,
     extra: Option<(Option<Uuid>, i32)>,
 ) -> Result<(), ApiError> {
-    let mut entrances: Vec<Served> = sqlx::query_as(
-        "SELECT wire_no, listen_port, source_cidrs::text[] AS source_cidrs FROM entrances \
-         WHERE node_id = $1 AND ($2::uuid IS NULL OR id <> $2) ORDER BY wire_no",
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        node_id: Uuid,
+        inbound: Option<serde_json::Value>,
+        #[sqlx(flatten)]
+        entrance: Served,
+    }
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT e.node_id, n.inbound, e.wire_no, e.listen_port, \
+         e.source_cidrs::text[] AS source_cidrs \
+         FROM entrances e JOIN nodes n ON n.id = e.node_id \
+         WHERE e.server_id = $1 AND ($2::uuid IS NULL OR e.id <> $2) ORDER BY e.wire_no",
     )
-    .bind(node)
+    .bind(server)
     .bind(extra.and_then(|(id, _)| id))
     .fetch_all(&mut *conn)
     .await?;
+    let mut all = Vec::new();
+    let mut has_direct = false;
+    for r in &rows {
+        let ours = Some(r.node_id) == node;
+        has_direct |= ours && r.entrance.listen_port.is_none();
+        let ib = if ours {
+            Some(inbound)
+        } else {
+            r.inbound.as_ref()
+        };
+        if let Some(ib) = ib {
+            all.extend(derived_inbounds(ib, std::slice::from_ref(&r.entrance)));
+        }
+    }
+    let mut more = Vec::new();
+    if !has_direct {
+        more.push(Served {
+            wire_no: -1,
+            listen_port: None,
+            source_cidrs: Vec::new(),
+        });
+    }
     if let Some((_, port)) = extra {
-        entrances.push(Served {
+        more.push(Served {
             wire_no: i32::MAX,
             listen_port: Some(port),
             source_cidrs: Vec::new(),
         });
     }
-    if !entrances.iter().any(|e| e.wire_no == 0) {
-        entrances.push(Served {
-            wire_no: 0,
-            listen_port: None,
-            source_cidrs: Vec::new(),
-        });
-    }
-    match crate::protocols::port_clash(&derived_inbounds(inbound, &entrances)) {
+    all.extend(derived_inbounds(inbound, &more));
+    match crate::protocols::port_clash(&all) {
         None => Ok(()),
         Some(detail) => Err(bad_request!(
             "entrance.port_clash",
@@ -453,10 +482,11 @@ fn listen_port(v: Option<i32>) -> Result<Option<i32>, ApiError> {
 }
 
 /// Update an entrance in the caller's transaction: `entitle::lock` (when
-/// the groups change) -> the node row (FOR UPDATE; refused while the node is
-/// being deleted) -> the entrance -> membership + reconcile of this
-/// entrance -> audit `entrance.update`. Enabling/disabling bumps the node's
-/// config_version (its inbound set changes). Returns the reconcile outcome.
+/// the groups change) -> the server row (FOR UPDATE; refused while the
+/// server is being deleted) -> the entrance -> membership + reconcile of
+/// this entrance -> audit `entrance.update`. Enabling/disabling bumps the
+/// server's config_version (its inbound set changes). Returns the
+/// reconcile outcome.
 pub async fn apply_update(
     conn: &mut PgConnection,
     actor: &Actor,
@@ -470,18 +500,19 @@ pub async fn apply_update(
     if c.groups.is_some() {
         entitle::lock(conn).await?;
     }
-    let node: Option<(Uuid, bool, String, Option<serde_json::Value>)> = sqlx::query_as(
-        "SELECT n.id, n.deleting_at IS NOT NULL, e.kind, n.inbound \
-         FROM entrances e JOIN nodes n ON n.id = e.node_id WHERE e.id = $1 FOR UPDATE OF n",
+    let row: Option<(Uuid, Uuid, bool, String, Option<serde_json::Value>)> = sqlx::query_as(
+        "SELECT s.id, n.id, s.deleting_at IS NOT NULL, e.kind, n.inbound \
+         FROM entrances e JOIN nodes n ON n.id = e.node_id JOIN servers s ON s.id = e.server_id \
+         WHERE e.id = $1 FOR UPDATE OF s",
     )
     .bind(id)
     .fetch_optional(&mut *conn)
     .await?;
-    let Some((node, deleting, kind, inbound)) = node else {
+    let Some((server, node, deleting, kind, inbound)) = row else {
         return Err(ApiError::not_found());
     };
     if deleting {
-        return Err(conflict!("node.deleting", "node is being deleted"));
+        return Err(conflict!("server.deleting", "server is being deleted"));
     }
     if kind == RELAY {
         if matches!(c.connect_host, Some(None)) || matches!(c.connect_port, Some(None)) {
@@ -497,7 +528,7 @@ pub async fn apply_update(
         ));
     }
     if let (Some(port), Some(ib)) = (c.listen_port, &inbound) {
-        port_clash(conn, node, ib, Some((Some(id), port))).await?;
+        port_clash(conn, server, Some(node), ib, Some((Some(id), port))).await?;
     }
     let mut qb = sqlx::QueryBuilder::new("UPDATE entrances SET updated_at = now()");
     if let Some(v) = &c.name {
@@ -546,8 +577,8 @@ pub async fn apply_update(
         .await
         .map_err(listen_port_taken)?;
     if reconfigured {
-        sqlx::query("UPDATE nodes SET config_version = config_version + 1 WHERE id = $1")
-            .bind(node)
+        sqlx::query("UPDATE servers SET config_version = config_version + 1 WHERE id = $1")
+            .bind(server)
             .execute(&mut *conn)
             .await?;
     }
@@ -574,14 +605,14 @@ pub async fn apply_update(
     Ok(outcome)
 }
 
-/// The unique (node, listen_port) index refused the port (another relay of
-/// the node has it).
+/// The unique (server, listen_port) index refused the port (another relay
+/// of the server has it).
 fn listen_port_taken(e: sqlx::Error) -> ApiError {
     match &e {
         sqlx::Error::Database(d) if d.constraint() == Some("entrances_listen_port_key") => {
             bad_request!(
                 "entrance.port_clash",
-                "listen_port is used by another entrance of the node"
+                "listen_port is used by another entrance of the server"
             )
         }
         sqlx::Error::Database(d) if d.constraint() == Some("entrances_name_key") => conflict!(
@@ -615,10 +646,11 @@ pub struct CreateRelayReq {
 }
 
 /// Create a relay entrance in the caller's transaction: `entitle::lock`
-/// (when it joins groups) -> the node row (FOR UPDATE; 404 / 409 while
-/// deleting) -> port check against the node's inbounds -> a fresh
-/// `wire_no` from `nodes.entrance_seq` -> the row, bumping config_version
-/// (a new inbound) -> membership + reconcile -> audit `entrance.create`.
+/// (when it joins groups) -> the server row (FOR UPDATE; 404 / 409 while
+/// deleting) -> port check against the server's inbounds -> a fresh
+/// `wire_no` from `servers.entrance_seq` -> the row, bumping the server's
+/// config_version (a new inbound) -> membership + reconcile -> audit
+/// `entrance.create`.
 pub async fn apply_create_relay(
     conn: &mut PgConnection,
     actor: &Actor,
@@ -650,40 +682,41 @@ pub async fn apply_create_relay(
     if groups.is_some() {
         entitle::lock(conn).await?;
     }
-    let row: Option<(bool, Option<serde_json::Value>)> = sqlx::query_as(
-        "SELECT deleting_at IS NOT NULL, inbound FROM nodes WHERE id = $1 FOR UPDATE",
+    let row: Option<(Uuid, bool, Option<serde_json::Value>)> = sqlx::query_as(
+        "SELECT s.id, s.deleting_at IS NOT NULL, n.inbound FROM nodes n \
+         JOIN servers s ON s.id = n.server_id WHERE n.id = $1 FOR UPDATE OF s",
     )
     .bind(node)
     .fetch_optional(&mut *conn)
     .await?;
-    let Some((deleting, inbound)) = row else {
+    let Some((server, deleting, inbound)) = row else {
         return Err(ApiError::not_found());
     };
     if deleting {
-        return Err(conflict!("node.deleting", "node is being deleted"));
+        return Err(conflict!("server.deleting", "server is being deleted"));
     }
     if let Some(ib) = &inbound {
-        port_clash(conn, node, ib, Some((None, listen))).await?;
+        port_clash(conn, server, Some(node), ib, Some((None, listen))).await?;
     }
     let wire: i32 = sqlx::query_scalar(
-        "UPDATE nodes SET entrance_seq = entrance_seq + 1, config_version = config_version + 1 \
+        "UPDATE servers SET entrance_seq = entrance_seq + 1, config_version = config_version + 1 \
          WHERE id = $1 RETURNING entrance_seq",
     )
-    .bind(node)
+    .bind(server)
     .fetch_one(&mut *conn)
     .await
     .map_err(|e| match &e {
-        sqlx::Error::Database(d) if d.constraint() == Some("nodes_entrance_seq") => conflict!(
+        sqlx::Error::Database(d) if d.constraint() == Some("servers_entrance_seq") => conflict!(
             "entrance.too_many",
-            "the node has used up its entrance numbers"
+            "the server has used up its entrance numbers"
         ),
         _ => e.into(),
     })?;
     let id = Uuid::new_v4();
     let after: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO entrances AS e (id, node_id, kind, name, connect_host, connect_port, \
-         rate_permille, enabled, sort, wire_no, listen_port, source_cidrs) \
-         VALUES ($1, $2, 'relay', $3, $4, $5, $6, $7, $8, $9, $10, $11::cidr[]) RETURNING {}",
+        "INSERT INTO entrances AS e (id, node_id, server_id, kind, name, connect_host, \
+         connect_port, rate_permille, enabled, sort, wire_no, listen_port, source_cidrs) \
+         VALUES ($1, $2, $12, 'relay', $3, $4, $5, $6, $7, $8, $9, $10, $11::cidr[]) RETURNING {}",
         crate::audit::entrance_snapshot_sql("e")
     )))
     .bind(id)
@@ -697,6 +730,7 @@ pub async fn apply_create_relay(
     .bind(wire)
     .bind(listen)
     .bind(&cidrs)
+    .bind(server)
     .fetch_one(&mut *conn)
     .await
     .map_err(listen_port_taken)?;
@@ -722,7 +756,7 @@ pub async fn apply_create_relay(
 }
 
 /// Delete a relay entrance in the caller's transaction: `entitle::lock` ->
-/// the node row -> the row (its credentials and memberships cascade; its
+/// the server row -> the row (its credentials and memberships cascade; its
 /// derived inbound goes away: config_version) -> audit `entrance.delete`.
 /// The direct entrance cannot be deleted (409; disable it instead). The
 /// relay's users lose it at once; counters the agent reports for it after
@@ -734,13 +768,13 @@ pub async fn apply_delete(
 ) -> Result<(), ApiError> {
     entitle::lock(conn).await?;
     let row: Option<(Uuid, String, bool)> = sqlx::query_as(
-        "SELECT n.id, e.kind, n.deleting_at IS NOT NULL FROM entrances e \
-         JOIN nodes n ON n.id = e.node_id WHERE e.id = $1 FOR UPDATE OF n",
+        "SELECT s.id, e.kind, s.deleting_at IS NOT NULL FROM entrances e \
+         JOIN servers s ON s.id = e.server_id WHERE e.id = $1 FOR UPDATE OF s",
     )
     .bind(id)
     .fetch_optional(&mut *conn)
     .await?;
-    let Some((node, kind, deleting)) = row else {
+    let Some((server, kind, deleting)) = row else {
         return Err(ApiError::not_found());
     };
     if kind == DIRECT {
@@ -750,7 +784,7 @@ pub async fn apply_delete(
         ));
     }
     if deleting {
-        return Err(conflict!("node.deleting", "node is being deleted"));
+        return Err(conflict!("server.deleting", "server is being deleted"));
     }
     let before: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "DELETE FROM entrances AS e WHERE id = $1 RETURNING {}",
@@ -759,8 +793,8 @@ pub async fn apply_delete(
     .bind(id)
     .fetch_one(&mut *conn)
     .await?;
-    sqlx::query("UPDATE nodes SET config_version = config_version + 1 WHERE id = $1")
-        .bind(node)
+    sqlx::query("UPDATE servers SET config_version = config_version + 1 WHERE id = $1")
+        .bind(server)
         .execute(&mut *conn)
         .await?;
     crate::audit::record(
@@ -777,7 +811,7 @@ pub async fn apply_delete(
 }
 
 /// Replace the entrance's group membership (caller holds `entitle::lock`
-/// and the node row); returns the previous groups (sorted). 400 for an
+/// and the server row); returns the previous groups (sorted). 400 for an
 /// unknown group.
 async fn set_groups(
     conn: &mut PgConnection,

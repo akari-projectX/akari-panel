@@ -65,7 +65,7 @@ pub const DAILY_RETENTION_DAYS: i32 = 90;
 pub const COUNTER_RETENTION_DAYS: i32 = 7;
 /// Distinct agent processes (epochs) with live baselines per node at most:
 /// a compromised agent cannot grow the table by inventing epochs.
-pub const MAX_EPOCHS_PER_NODE: i64 = 8;
+pub const MAX_EPOCHS_PER_SERVER: i64 = 8;
 /// Hit entries accepted from one heartbeat at most (agent input).
 pub const MAX_REPORTED_RULES: usize = 64;
 /// Longest stats range (days) for the node view.
@@ -331,31 +331,46 @@ async fn enabled_rules(conn: &mut PgConnection) -> sqlx::Result<Vec<BlockRule>> 
         .collect())
 }
 
-/// The policy a node's agent should run (None = the node is gone). A node
-/// that is off, disabled or being deleted gets the empty policy, and so
-/// does one that serves no inbound (none set, or its direct entrance
-/// disabled: W28-a, the same condition as `grpc`'s state). The served
-/// inbound is tagged `entrances::DIRECT_TAG` by the panel.
-pub async fn node_policy(pg: &sqlx::PgPool, node: Uuid) -> sqlx::Result<Option<BlockPolicy>> {
+/// The policy a server's agent should run (None = the server is gone).
+/// It lists the inbound of every node with the switch on that the agent
+/// serves — enabled, with an inbound, its direct entrance enabled (W28-a,
+/// the same conditions as `grpc`'s state) — tagged as the panel names that
+/// entrance's inbound (`entrances::inbound_tag`). A server being deleted
+/// (or not serving, D5) gets the empty policy.
+pub async fn server_policy(pg: &sqlx::PgPool, server: Uuid) -> sqlx::Result<Option<BlockPolicy>> {
     let mut tx = pg.begin().await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         .execute(&mut *tx)
         .await?;
-    let row: Option<(bool, bool)> = sqlx::query_as(
-        "SELECT block_rules_enabled AND enabled AND deleting_at IS NULL, \
-                inbound IS NOT NULL AND coalesce((SELECT e.enabled FROM entrances e \
-                    WHERE e.node_id = nodes.id AND e.kind = 'direct'), false) \
-         FROM nodes WHERE id = $1",
-    )
-    .bind(node)
+    let serves: Option<bool> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM servers s WHERE s.id = $1",
+        crate::grpc::SERVER_SERVES
+    )))
+    .bind(server)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((on, served)) = row else {
+    let Some(serves) = serves else {
         return Ok(None);
     };
-    let policy = if on && served {
+    let tags: Vec<String> = if serves {
+        sqlx::query_scalar::<_, i32>(
+            "SELECT e.wire_no FROM nodes n \
+             JOIN entrances e ON e.node_id = n.id AND e.kind = 'direct' AND e.enabled \
+             WHERE n.server_id = $1 AND n.block_rules_enabled AND n.enabled \
+             AND n.inbound IS NOT NULL ORDER BY e.wire_no",
+        )
+        .bind(server)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(crate::entrances::inbound_tag)
+        .collect()
+    } else {
+        Vec::new()
+    };
+    let policy = if !tags.is_empty() {
         let rules = enabled_rules(&mut tx).await?;
-        assemble(vec![crate::entrances::DIRECT_TAG.to_string()], rules)
+        assemble(tags, rules)
     } else {
         BlockPolicy::default()
     };
@@ -394,28 +409,28 @@ pub fn clean_stats(s: &BlockStats) -> Option<(String, Vec<i64>, Vec<i64>)> {
 /// (site time zone, Q3) daily counts, in one statement: a replayed or
 /// reordered report adds nothing (the baseline only grows), counts for
 /// unknown rules are dropped, and a node cannot hold baselines for more
-/// than MAX_EPOCHS_PER_NODE agent processes.
+/// than MAX_EPOCHS_PER_SERVER agent processes.
 pub const INGEST_SQL: &str = "\
 WITH input AS (
     SELECT t.rule_id, t.hits FROM unnest($3::bigint[], $4::bigint[]) AS t(rule_id, hits)
     JOIN block_rules r ON r.id = t.rule_id
-    WHERE EXISTS (SELECT 1 FROM node_block_counters WHERE node_id = $1 AND epoch = $2)
-       OR (SELECT count(DISTINCT epoch) FROM node_block_counters WHERE node_id = $1) < $5
+    WHERE EXISTS (SELECT 1 FROM server_block_counters WHERE server_id = $1 AND epoch = $2)
+       OR (SELECT count(DISTINCT epoch) FROM server_block_counters WHERE server_id = $1) < $5
 ),
 raised AS (
-    INSERT INTO node_block_counters AS c (node_id, epoch, rule_id, hits)
+    INSERT INTO server_block_counters AS c (server_id, epoch, rule_id, hits)
     SELECT $1, $2, rule_id, hits FROM input
-    ON CONFLICT (node_id, epoch, rule_id) DO UPDATE
+    ON CONFLICT (server_id, epoch, rule_id) DO UPDATE
         SET hits = GREATEST(c.hits, EXCLUDED.hits), updated_at = now()
     RETURNING new.rule_id, new.hits - COALESCE(old.hits, 0) AS added
 )
-INSERT INTO node_block_daily AS d (node_id, day, rule_id, hits)
+INSERT INTO server_block_daily AS d (server_id, day, rule_id, hits)
 SELECT $1, (SELECT akari_site_day(statement_timestamp())), rule_id, added
 FROM raised WHERE added > 0
-ON CONFLICT (node_id, day, rule_id) DO UPDATE SET hits = d.hits + EXCLUDED.hits";
+ON CONFLICT (server_id, day, rule_id) DO UPDATE SET hits = d.hits + EXCLUDED.hits";
 
 /// Store one heartbeat's counters (nothing to do without hits).
-pub async fn ingest_stats(pg: &sqlx::PgPool, node: Uuid, stats: &BlockStats) -> sqlx::Result<()> {
+pub async fn ingest_stats(pg: &sqlx::PgPool, server: Uuid, stats: &BlockStats) -> sqlx::Result<()> {
     let Some((epoch, ids, hits)) = clean_stats(stats) else {
         return Ok(());
     };
@@ -423,11 +438,11 @@ pub async fn ingest_stats(pg: &sqlx::PgPool, node: Uuid, stats: &BlockStats) -> 
         return Ok(());
     }
     sqlx::query(INGEST_SQL)
-        .bind(node)
+        .bind(server)
         .bind(epoch)
         .bind(ids)
         .bind(hits)
-        .bind(MAX_EPOCHS_PER_NODE)
+        .bind(MAX_EPOCHS_PER_SERVER)
         .execute(pg)
         .await?;
     Ok(())
@@ -447,7 +462,7 @@ pub fn status_json(s: &BlockStats) -> Value {
 /// processes that stopped reporting.
 pub async fn retention_pass(pg: &sqlx::PgPool) -> sqlx::Result<(u64, u64)> {
     let days = sqlx::query(
-        "DELETE FROM node_block_daily \
+        "DELETE FROM server_block_daily \
          WHERE day < (SELECT akari_site_day(statement_timestamp())) - $1",
     )
     .bind(DAILY_RETENTION_DAYS)
@@ -455,7 +470,7 @@ pub async fn retention_pass(pg: &sqlx::PgPool) -> sqlx::Result<(u64, u64)> {
     .await?
     .rows_affected();
     let counters = sqlx::query(
-        "DELETE FROM node_block_counters WHERE updated_at < now() - make_interval(days => $1)",
+        "DELETE FROM server_block_counters WHERE updated_at < now() - make_interval(days => $1)",
     )
     .bind(COUNTER_RETENTION_DAYS)
     .execute(pg)
@@ -720,21 +735,27 @@ pub async fn apply_delete(
     Ok(true)
 }
 
-/// Switch block rules on or off for a node (no version bump: the 1060
-/// trigger wakes its sessions). Ok(None) = no such node (or it is being
-/// deleted); Ok(Some(changed)).
+/// Switch block rules on or off for a node (no version bump: the 1065
+/// trigger wakes its server's sessions). Ok(None) = no such node (or its
+/// server is being deleted); Ok(Some(changed)). Locks the server, then
+/// the node.
 pub async fn apply_set_node(
     conn: &mut PgConnection,
     actor: &Actor,
     node: Uuid,
     enabled: bool,
 ) -> Result<Option<bool>, ApiError> {
-    let before: Option<bool> = sqlx::query_scalar(
-        "SELECT block_rules_enabled FROM nodes WHERE id = $1 AND deleting_at IS NULL FOR UPDATE",
-    )
-    .bind(node)
-    .fetch_optional(&mut *conn)
-    .await?;
+    if crate::servers::lock_live_server_of(conn, node)
+        .await?
+        .is_none()
+    {
+        return Ok(None);
+    }
+    let before: Option<bool> =
+        sqlx::query_scalar("SELECT block_rules_enabled FROM nodes WHERE id = $1 FOR UPDATE")
+            .bind(node)
+            .fetch_optional(&mut *conn)
+            .await?;
     let Some(before) = before else {
         return Ok(None);
     };
@@ -798,7 +819,7 @@ pub async fn list(
     user.require_admin()?;
     let mut rules: Vec<RuleView> = sqlx::query_as(
         "SELECT r.id, r.kind, r.builtin_key, r.name, r.pattern, r.enabled, r.sort, \
-           COALESCE((SELECT sum(d.hits) FROM node_block_daily d WHERE d.rule_id = r.id \
+           COALESCE((SELECT sum(d.hits) FROM server_block_daily d WHERE d.rule_id = r.id \
              AND d.day > (SELECT akari_site_day(statement_timestamp())) - 7), 0)::bigint AS hits_7d, \
            r.created_at, r.updated_at \
          FROM block_rules r ORDER BY r.sort, r.id",
@@ -816,7 +837,8 @@ pub async fn list(
         .unwrap_or(0);
     }
     let nodes_enabled: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM nodes WHERE block_rules_enabled AND deleting_at IS NULL",
+        "SELECT count(*) FROM nodes n JOIN servers s ON s.id = n.server_id \
+         WHERE n.block_rules_enabled AND s.deleting_at IS NULL",
     )
     .fetch_one(state.pg())
     .await?;
@@ -892,9 +914,10 @@ pub struct DayHits {
     pub hits: i64,
 }
 
-/// GET /nodes/{id}/block-rules?days=N (admin): the switch, whether the
-/// agent supports it and runs the current policy, and daily hits per rule
-/// over the last N days (site time zone) (default 7, at most 90).
+/// GET /nodes/{id}/block-rules?days=N (admin): the node's switch, whether
+/// its server's agent supports it and runs the current policy, and the
+/// server's daily hits per rule over the last N days (site time zone;
+/// default 7, at most 90; hits are counted per agent, i.e. per server, Q1).
 pub async fn node_view(
     State(state): State<AppState>,
     user: AuthUser,
@@ -910,29 +933,31 @@ pub async fn node_view(
             max = MAX_STATS_DAYS
         ));
     }
-    let row: Option<(bool, Option<Vec<String>>)> =
-        sqlx::query_as("SELECT block_rules_enabled, agent_capabilities FROM nodes WHERE id = $1")
-            .bind(node)
-            .fetch_optional(state.pg())
-            .await?;
-    let Some((enabled, caps)) = row else {
+    let row: Option<(Uuid, bool, Option<Vec<String>>)> = sqlx::query_as(
+        "SELECT s.id, n.block_rules_enabled, s.agent_capabilities FROM nodes n \
+         JOIN servers s ON s.id = n.server_id WHERE n.id = $1",
+    )
+    .bind(node)
+    .fetch_optional(state.pg())
+    .await?;
+    let Some((server, enabled, caps)) = row else {
         return Err(ApiError::not_found());
     };
     let rows: Vec<DayHits> = sqlx::query_as(
-        "SELECT d.day, d.rule_id, r.name, d.hits FROM node_block_daily d \
+        "SELECT d.day, d.rule_id, r.name, d.hits FROM server_block_daily d \
          JOIN block_rules r ON r.id = d.rule_id \
-         WHERE d.node_id = $1 AND d.day > (SELECT akari_site_day(statement_timestamp())) - $2::int \
+         WHERE d.server_id = $1 AND d.day > (SELECT akari_site_day(statement_timestamp())) - $2::int \
          ORDER BY d.day, r.sort, d.rule_id",
     )
-    .bind(node)
+    .bind(server)
     .bind(i32::try_from(days).unwrap_or(7))
     .fetch_all(state.pg())
     .await?;
-    let expected = node_policy(state.pg(), node)
+    let expected = server_policy(state.pg(), server)
         .await?
         .ok_or_else(ApiError::not_found)?
         .version;
-    let status = heartbeat_block(&state, node).await;
+    let status = heartbeat_block(&state, server).await;
     let applied = status
         .as_ref()
         .and_then(|s| s.get("applied"))
@@ -949,12 +974,12 @@ pub async fn node_view(
     })))
 }
 
-/// The `block` member of the node's heartbeat blob (best effort).
-async fn heartbeat_block(state: &AppState, node: Uuid) -> Option<Value> {
+/// The `block` member of the server's heartbeat blob (best effort).
+async fn heartbeat_block(state: &AppState, server: Uuid) -> Option<Value> {
     use fred::prelude::KeysInterface;
     match state
         .valkey()
-        .get::<Option<String>, _>(format!("akari:node:hb:{node}"))
+        .get::<Option<String>, _>(format!("akari:server:hb:{server}"))
         .await
     {
         Ok(b) => b
