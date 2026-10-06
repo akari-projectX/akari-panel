@@ -21,7 +21,8 @@
 # healthz through Caddy, admin login (API), user + subscription -> broken
 # upgrade (backup, switch, failed health) rolls
 # back -> uninstall keeps data -> reinstall: same prefix, same password,
-# same subscription -> age-encrypted backup -> uninstall --purge removes
+# same subscription -> backup with the agent releases -> age-encrypted
+# backup (releases left out) -> uninstall --purge removes
 # everything but backups -> fresh install --restore from the encrypted
 # backup (a host move): same prefix, password, subscription.
 set -euo pipefail
@@ -205,12 +206,27 @@ check_panel "$new"
 [ "$(https_code "$origin$SUBP" -A clash.meta)" = 200 ] || fail "subscription after reinstall"
 echo "ok: data kept across uninstall/reinstall"
 
+# psql_akari SQL: one value from the panel database (bare metal).
+psql_akari() {
+	# shellcheck disable=SC2016 # expanded by the container's shell
+	cx sh -c 'cd / && runuser -u postgres -- psql -At -p "$(sed -n "s/^PG_PORT=//p" /etc/akari/install.env)" -d akari -c "$1"' sh "$1"
+}
+
+log "agent release binaries: left out of backups unless asked for"
+psql_akari "INSERT INTO agent_releases (id, version, os, arch, sha256, size, manifest, signatures, key_id, min_panel_protocol, complete_at) \
+	VALUES (gen_random_uuid(), 'v0.0.1-e2e', 'linux', 'amd64', repeat('a', 64), 1, '\\x00', '[]', 'k', 3, now())" >/dev/null || fail "insert a release"
+inst "$c" akari-ctl backup --yes --out /root/full --with-agent-releases || fail "backup with releases"
+cx sh -c 'grep -qx agent_releases=included /root/full/akari-*/MANIFEST && pg_restore --data-only --table=agent_releases -f - /root/full/akari-*/db.dump | grep -q v0.0.1-e2e' \
+	|| fail "--with-agent-releases did not keep the release"
+echo "ok: backup with the agent releases"
+
 log "encrypted backup for a host move (age)"
 cx sh -c 'DEBIAN_FRONTEND=noninteractive apt-get install -y -qq age >/dev/null 2>&1 && age-keygen -o /root/move.key 2>/dev/null' || fail "age"
 recipient=$(cx sh -c "sed -n 's/^# public key: //p' /root/move.key")
 inst "$c" akari-ctl backup --yes --out /root/moved --age-recipient "$recipient" || fail "encrypted backup"
 cx sh -c 'ls /root/moved/akari-*/db.dump.age /root/moved/akari-*/data.tar.age /root/moved/akari-*/config.tar.age' >/dev/null || fail "backup is not encrypted"
 cx sh -c 'ls /root/moved/akari-*/db.dump' >/dev/null 2>&1 && fail "plain dump next to the encrypted one"
+cx sh -c 'grep -qx agent_releases=excluded /root/moved/akari-*/MANIFEST' || fail "MANIFEST does not say the releases were left out"
 echo "ok: age-encrypted backup"
 
 log "uninstall --purge"
@@ -229,6 +245,7 @@ inst "${local_rel[@]}" "$c" sh /src/scripts/install.sh --yes --mode bare --versi
 check_panel "$new"
 [ "$(prefix)" = "$PREFIX" ] || fail "the prefix changed across the move"
 [ "$(https_code "$origin$SUBP" -A clash.meta)" = 200 ] || fail "subscription after the move"
-echo "ok: restored: same prefix, keys, admin password, subscription"
+[ "$(psql_akari "SELECT count(*) FROM agent_releases")" = 0 ] || fail "the default backup restored agent releases"
+echo "ok: restored: same prefix, keys, admin password, subscription (agent releases left out)"
 
 log "PASS: bare installer e2e on $base ($address)"

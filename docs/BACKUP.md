@@ -8,6 +8,23 @@ What must be backed up:
 | `data_dir` | `/var/lib/akari`, compose volume `akari-data` | **the CA private key (`ca.key`), `jwt.key`, `master.key` (and `state.json`: the seed of the admin prefix, which lives in the database)** |
 | configuration | `panel.toml`; compose `.env`, `env/*.env`; `/etc/akari/install.env` | optional (`AKARI_CONFIG_FILES`): passwords, for reference — a restore generates its own |
 | Valkey | -- | hot state only (liveness, rate-limit counters); not backed up |
+| agent release binaries | PostgreSQL tables `agent_releases`, `agent_release_chunks` | **left out by default** (see below) |
+
+### Agent release binaries (left out by default)
+
+The agent releases uploaded under 更新 (or fetched by 检查更新) live in the database, tens of MB per
+release (six releases made an 84 MB dump in the 2026-10 test deployment). They are copies of public,
+signed GitHub release assets, so backups leave their rows out: the tables are dumped empty
+(`pg_dump --exclude-table-data`) and MANIFEST says `agent_releases=excluded`. After a restore the
+panel has no stored release: 更新 → **检查更新** (or a manual upload) brings them back; until then
+the one-line node install falls back to 系统设置 → 节点通信 → 备用下载地址 (default: the GitHub
+release), and rollouts can only be created once a release is stored again. Agents already
+installed are unaffected (they keep their binary).
+
+To include them: `akari-ctl backup --with-agent-releases`, or `AKARI_BACKUP_AGENT_RELEASES=1`
+for `akari-ctl backup` / `scripts/backup.sh` (MANIFEST: `agent_releases=included`).
+`akari-ctl migrate` (same-host move) always includes them; the pre-upgrade backup of
+`akari-ctl upgrade` leaves them out. Restoring either kind works the same way.
 
 ## With the installer (`akari-ctl`)
 
@@ -77,7 +94,9 @@ DATABASE_URL=postgres://... scripts/backup.sh
 Variables: see the header of `scripts/backup.sh` (`AKARI_KEEP_DAYS` default 14 and
 `AKARI_KEEP_MIN` default 3 for retention; `AGE_RECIPIENTS_FILE` for several recipients;
 `AKARI_PG_DUMP_CMD` e.g. `docker compose exec -T postgres pg_dump -U akari -Fc akari` when the host
-has no matching `pg_dump` (needs the client of PostgreSQL >= 18); `AKARI_VERIFY_IDENTITY`
+has no matching `pg_dump` (needs the client of PostgreSQL >= 18; the script appends the
+`--exclude-table-data` options to it); `AKARI_BACKUP_AGENT_RELEASES=1` to keep the agent
+releases; `AKARI_VERIFY_IDENTITY`
 to decrypt-and-check each backup right away). Schedule it (cron/systemd timer) and copy the
 directory off the host (the files are ciphertext).
 

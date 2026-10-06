@@ -18,7 +18,7 @@ Cargo.toml 在仓库根（文档里的 `panel/` 前缀是拆仓前的旧路径�
 | `Dockerfile` | 多阶段：spa → musl 静态二进制 → distroless nonroot 镜像（target `artifact`/`prebuilt`/`runtime`） | — |
 | `deploy/` | systemd 单元、生产 compose、Caddy/nginx、Prometheus 告警、Grafana 面板 | `docs/DEPLOY.md` |
 | `docs/PAYMENTS.md` | 支付宝当面付：配置、沙箱、通知 URL、对账、实测记录 | — |
-| `scripts/` | `install.sh`（面板一键安装器 = 装好后的 `akari-ctl`：裸机/Docker 安装、升级、卸载、迁移、备份；POSIX sh）、`release-bundle.sh`（发布资产 install.sh + akari-deploy.tar.gz）、`installer-test/`（安装器 e2e：systemd 容器 + 本机，CI `installer-*`）、`backup.sh`/`restore.sh`（age 加密或显式明文）、`restore-drill.sh`（开发栈恢复演练）、`third-party.py`（二进制的第三方许可清单，`make third-party`） | `docs/DEPLOY.md`、`docs/BACKUP.md` |
+| `scripts/` | `install.sh`（面板一键安装器 = 装好后的 `akari-ctl`：裸机/Docker 安装、升级、卸载、迁移、备份；POSIX sh）、`release-bundle.sh`（发布资产 install.sh + akari-deploy.tar.gz）、`installer-test/`（安装器 e2e：systemd 容器 + 本机，CI `installer-*`）、`backup.sh`/`restore.sh`（age 加密或显式明文；默认不导出 `agent_releases`/`agent_release_chunks` 的数据，`AKARI_BACKUP_AGENT_RELEASES=1` / `akari-ctl backup --with-agent-releases` 包含，`migrate` 总是包含）、`restore-drill.sh`（开发栈恢复演练）、`third-party.py`（二进制的第三方许可清单，`make third-party`） | `docs/DEPLOY.md`、`docs/BACKUP.md` |
 | `.github/workflows/` | `ci.yml`（含 docker build、`bench-tooling` fmt/clippy；**W37 分级**见下文「CI 分级」）、`bench.yml`（手动：种子数据 + criterion，工件 `target/criterion`；噪声大，只看趋势）、`release.yml`（tag `v*`：先以 workflow_call 跑全套 ci.yml + fuzz.yml，通过后才推镜像/建 Release；构建、SBOM、cosign 无密钥签名、GitHub Release、ghcr 镜像） | — |
 | `data/` | 运行时生成：route prefix（`state.json`：只是后台前缀的初始值，第一次启动导入数据库，D4）、CA、jwt.key、master.key（v0.4 前名为 totp.key，启动时改名一次；gitignored，机密；master.key 丢失 = 用它封存的秘密（SMTP 密码、支付/告警密钥、订阅链接密文）全部打不开；CA 丢失 = 所有节点需 `server enroll-token` 重新注册） | — |
 
