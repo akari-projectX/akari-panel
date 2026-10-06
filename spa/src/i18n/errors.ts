@@ -4,7 +4,7 @@
  * 面板的错误体是 {error, code, params}：门户按 code 找到 `errors.*` 键，取简体原文，再按界面语言翻译（英文在 dict.ts，
  * 与全站文案同一套按需加载的词典）、用 params 填占位符。
  * 不显示 error 原文，也不按英文消息匹配。CODE_KEYS 必须覆盖用户可能遇到的每一个码：
- * scripts/check-error-codes.mjs 在 CI 里对照 scripts/user-error-codes.txt（从面板的错误码表生成）检查。
+ * scripts/check-error-codes.mjs 在 CI 里对照面板的错误码表（../src/error_codes.txt）检查。
  *
  * 占位符是错误的 params；每个 `<p>_cents` 另有 `<p>_yuan`（元，两位小数）。
  */
@@ -27,6 +27,9 @@ export const ERRORS = {
   'errors.couponUsedUp': "优惠码已被领完",
   'errors.couponUserLimit': "你已使用过该优惠码",
   'errors.credentialsRequired': "请填写账号和密码",
+  'errors.deleteConfirmRequired': "注销账户需要确认",
+  'errors.deletePendingOrders': "有待付款的订单：请先取消订单再注销",
+  'errors.deletePendingWithdrawals': "有待处理的提现：请先撤回提现再注销",
   'errors.domainNotAllowed': "不支持该邮箱域名",
   'errors.fieldNotNull': "{field} 不能为空",
   'errors.fieldRequired': "请填写 {field}",
@@ -63,6 +66,7 @@ export const ERRORS = {
   'errors.passkeyNameInvalid': "名称须为 1–{max} 个字符",
   'errors.passkeyNeeded': "请先绑定一个通行密钥，再关闭密码登录",
   'errors.passkeyUnavailable': "本站暂不支持通行密钥（需要 https 主域名）",
+  'errors.passwordRequired': "请输入当前密码",
   'errors.passwordTooLong': "密码过长",
   'errors.passwordTooShort': "密码至少需要 8 位",
   'errors.paymentGateway': "支付服务暂时不可用，请稍后重试",
@@ -90,11 +94,16 @@ export const ERRORS = {
   'errors.tooMany': "尝试次数过多，请稍后再试",
   'errors.trafficQueryInvalid': "查询参数无效：{detail}",
   'errors.unauthorized': "登录已失效，请重新登录",
-  'errors.withdrawAccountLength': "收款账号须为 1–{max_account} 个字符",
+  'errors.withdrawAddressInvalid': "这不是有效的 {chain} 地址，请核对网络与地址",
   'errors.withdrawAmountRange': "提现金额须在 0.01–{max_price_yuan} 元之间",
   'errors.withdrawBelowMinimum': "最低提现金额为 {min_yuan} 元",
+  'errors.withdrawChainInvalid': "该网络暂不支持提现",
   'errors.withdrawExceeds': "提现金额超过可提现余额",
+  'errors.withdrawMemoInvalid': "Memo 须为 1–{max} 个字符",
+  'errors.withdrawMemoUnexpected': "只有 TON 提现可以填写 Memo",
   'errors.withdrawOpen': "你已有一笔待处理的提现申请",
+  'errors.withdrawTxidInvalid': "请填写交易哈希",
+  'errors.withdrawUsdtAmountInvalid': "请填写大于 0、最多 6 位小数的 USDT 数量",
   'errors.withdrawalNotPending': "该提现申请已处理",
 } as const satisfies Record<string, string>;
 
@@ -103,6 +112,9 @@ export type ErrorKey = keyof typeof ERRORS;
 /** 用户可能遇到的错误码 → 文案键 */
 export const CODE_KEYS: Record<string, ErrorKey> = {
   'account.banned': 'errors.accountBanned',
+  'account.delete_confirm_required': 'errors.deleteConfirmRequired',
+  'account.delete_pending_orders': 'errors.deletePendingOrders',
+  'account.delete_pending_withdrawals': 'errors.deletePendingWithdrawals',
   'account.invalid_password': 'errors.invalidPassword',
   'account.locale_invalid': 'errors.localeInvalid',
   'account.mail_off': 'errors.mailOff',
@@ -112,6 +124,7 @@ export const CODE_KEYS: Record<string, ErrorKey> = {
   'account.passkey_name_invalid': 'errors.passkeyNameInvalid',
   'account.passkey_required': 'errors.passkeyNeeded',
   'account.passkey_unavailable': 'errors.passkeyUnavailable',
+  'account.password_required': 'errors.passwordRequired',
   'account.password_too_long': 'errors.passwordTooLong',
   'account.password_too_short': 'errors.passwordTooShort',
   'auth.captcha_failed': 'errors.captchaFailed',
@@ -180,10 +193,15 @@ export const CODE_KEYS: Record<string, ErrorKey> = {
   'ticket.subject_required': 'errors.ticketSubjectRequired',
   'ticket.unknown_node': 'errors.ticketUnknownNode',
   'ticket.unknown_order': 'errors.ticketUnknownOrder',
-  'withdrawal.account_length': 'errors.withdrawAccountLength',
+  'withdrawal.address_invalid': 'errors.withdrawAddressInvalid',
   'withdrawal.amount_range': 'errors.withdrawAmountRange',
   'withdrawal.below_minimum': 'errors.withdrawBelowMinimum',
+  'withdrawal.chain_invalid': 'errors.withdrawChainInvalid',
   'withdrawal.exceeds': 'errors.withdrawExceeds',
+  'withdrawal.memo_invalid': 'errors.withdrawMemoInvalid',
+  'withdrawal.memo_unexpected': 'errors.withdrawMemoUnexpected',
   'withdrawal.not_pending': 'errors.withdrawalNotPending',
   'withdrawal.open': 'errors.withdrawOpen',
+  'withdrawal.txid_invalid': 'errors.withdrawTxidInvalid',
+  'withdrawal.usdt_amount_invalid': 'errors.withdrawUsdtAmountInvalid',
 };

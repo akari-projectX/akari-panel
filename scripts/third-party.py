@@ -97,10 +97,15 @@ def npm_app(app, seen):
 
 def data_components():
     """Data files embedded in the binary under their own licence (W29: the
-    built-in block lists, src/blockrules/lists/)."""
+    built-in block lists, src/blockrules/lists/; W36-b: the portal's font
+    subsets, Noto Sans SC under the SIL Open Font License)."""
     lists = os.path.join(ROOT, "src", "blockrules", "lists")
     version = open(os.path.join(lists, "VERSION")).read().strip()[:12]
-    return [("data", "v2fly/domain-list-community", version, "MIT", [os.path.join(lists, "LICENSE.v2fly")])]
+    return [
+        ("data", "v2fly/domain-list-community", version, "MIT", [os.path.join(lists, "LICENSE.v2fly")]),
+        ("data", "Noto Sans SC (portal subset)", "variable", "OFL-1.1",
+         [os.path.join(ROOT, "spa", "fonts-src", "noto", "OFL.txt")]),
+    ]
 
 
 def dedupe(files):

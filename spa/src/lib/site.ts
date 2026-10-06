@@ -8,22 +8,13 @@ import { useSiteOptions } from '@/lib/auth';
  * 不使用任何注入到 window 上的全局变量（面板的 CSP 不允许内联脚本）。
  */
 
-/**
- * 品牌。页脚版权、服务条款与隐私政策里的「我们」一律用 BRAND.name，不取后台的站点名称：
- * 站点名称是站长随手填的展示名，法务文本里的缔约方必须是固定的品牌。
- */
-export const BRAND = { name: 'Akari', zh: '灯塔', domain: 'akari.cc' } as const;
-
-/** 法务页的联系方式：面板没有这两个设置，主题自带页面说「提交工单」 */
-export const LEGAL = { email: '', privacyEmail: '' } as const;
-
 export type Site = {
   title: string;
   logo: string;
   favicon: string;
   footerText: string;
   footerLinks: { label: string; url: string }[];
-  /** 配了外链就跳外链，没配用主题自带的条款 / 隐私页 */
+  /** 配了外链就跳外链，没配用门户的条款 / 隐私页 */
   tosUrl: string | null;
   privacyUrl: string | null;
   downloads: Branding['client_downloads'];
@@ -40,7 +31,7 @@ export type Site = {
 export function siteFrom(o: AuthOptions | undefined): Site {
   const b = o?.branding ?? null;
   return {
-    title: o?.site_name?.trim() || BRAND.name,
+    title: o?.site_name?.trim() || 'Akari',
     logo: b?.logo_url ? brandUrl(b.logo_url) : '',
     favicon: b?.favicon_url ? brandUrl(b.favicon_url) : '',
     footerText: b?.footer_text ?? '',

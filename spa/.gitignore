@@ -25,4 +25,6 @@ dist-ssr
 
 # Python 脚本的缓存
 __pycache__/
-.e2e/
+# Playwright
+test-results/
+playwright-report/

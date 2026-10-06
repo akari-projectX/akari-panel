@@ -5,8 +5,8 @@
     "src/main.tsx",
     "src/boot/boot.js",
     "scripts/*.mjs",
+    "e2e/*.ts",
     "e2e/*.mjs",
-    "e2e/*.spec.ts",
     "src/**/*.test.ts"
   ],
   "ignore": [

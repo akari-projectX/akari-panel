@@ -1,12 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { MyTraffic, Offer, ShopPlan } from '@/api';
-import { parseFeatures } from '@/api/features';
 import { safeRedirect, scopeOf } from './auth';
 import { docCategories, pick } from './doc-categories';
 import { defaultPasskeyName } from './passkey-name';
 import { allowed, R } from './routes';
 import { needsMethod, needsSwitchConfirm, offerKey, planRefusal, preselect } from './shop';
-import { importLinks, mySubUrl, withFormat } from './sub-links';
+import { enabledFormats, importLinks, mySubUrl, withFormat } from './sub-links';
 import { trafficByNode, trafficDays } from './traffic';
 
 const offer = (o: Partial<Offer>): Offer => ({
@@ -60,25 +59,29 @@ describe('subscription links', () => {
     expect(withFormat('https://s.example/sub/t', 'clash')).toBe('https://s.example/sub/t?format=clash');
     expect(withFormat('https://s.example/x?a=1', 'links')).toBe('https://s.example/x?a=1&format=links');
   });
-  it('builds one-click import links in each client\'s own format (no Surge / Loon)', () => {
-    const links = importLinks('https://s.example/sub/t', 'Akari');
-    expect(links.map((l) => l.id)).toEqual(['clash', 'shadowrocket', 'sing-box', 'stash', 'hiddify']);
+  it('builds one-click import links in each client\'s own format, in the panel\'s order', () => {
+    const links = importLinks('https://s.example/sub/t', 'Akari', ['clash', 'stash', 'shadowrocket', 'sing-box', 'hiddify']);
+    expect(links.map((l) => l.id)).toEqual(['clash', 'stash', 'shadowrocket', 'sing-box', 'hiddify']);
     expect(links[0].href).toBe('clash://install-config?url=https%3A%2F%2Fs.example%2Fsub%2Ft%3Fformat%3Dclash&name=Akari');
-    expect(links[1].href).toBe(`shadowrocket://add/sub://${btoa('https://s.example/sub/t?format=links')}?remark=Akari`);
+    /* URL-safe base64 without padding: '+' '/' '=' would be read as URL syntax */
+    const b64 = btoa('https://s.example/sub/t?format=links').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    expect(links[2].href).toBe(`shadowrocket://add/sub://${b64}?remark=Akari`);
+    expect(b64).not.toMatch(/[+/=]/);
   });
-  it('only shows the panel\'s sub_url once the random path is live (root mode)', () => {
-    expect(mySubUrl({ sub_url: 'https://sub.example/r4nd/t', sub_token: 't' })).toBe('https://sub.example/r4nd/t');
-    expect(mySubUrl({ sub_url: null, sub_token: 't' })).toBeNull();
+  it('shows only the clients and formats the panel has on', () => {
+    expect(importLinks('https://s.example/x', 'A', ['hiddify', 'nope']).map((l) => l.id)).toEqual(['hiddify']);
+    expect(importLinks('https://s.example/x', 'A', [])).toEqual([]);
+    expect(enabledFormats({ sub_formats: ['links'] })).toEqual(['auto', 'links']);
+    expect(enabledFormats({ sub_formats: ['clash', 'sing-box', 'links'] })).toEqual(['auto', 'clash', 'sing-box', 'links']);
+  });
+  it('uses the panel\'s sub_url only (random path), absolute on this origin when relative', () => {
+    expect(mySubUrl({ sub_url: 'https://sub.example/r4nd/t' })).toBe('https://sub.example/r4nd/t');
+    expect(mySubUrl({ sub_url: '/r4nd/t' }, 'https://p.example')).toBe('https://p.example/r4nd/t');
+    expect(mySubUrl({ sub_url: null })).toBeNull();
     expect(mySubUrl(undefined)).toBeNull();
   });
 });
 
-describe('feature flags', () => {
-  it('parses the comma list and ignores unknown names', () => {
-    expect([...parseFeatures(' rates, self-delete ,bogus,')]).toEqual(['rates', 'self-delete']);
-    expect(parseFeatures(undefined).size).toBe(0);
-  });
-});
 
 describe('account scopes and routes', () => {
   const me = { role: 'user' as const, banned: false, expired: false, quota_exhausted: false };
@@ -86,15 +89,13 @@ describe('account scopes and routes', () => {
     expect(scopeOf(me)).toBe('full');
     expect(scopeOf({ ...me, expired: true })).toBe('renewal');
     expect(scopeOf({ ...me, quota_exhausted: true, banned: true })).toBe('banned');
-    expect(scopeOf({ ...me, role: 'admin', banned: true })).toBe('admin');
   });
   it('opens pages per scope', () => {
     expect(allowed(R.nodes, 'renewal')).toBe(false);
     expect(allowed(R.shop, 'renewal')).toBe(true);
     expect(allowed(R.tickets, 'banned')).toBe(true);
     expect(allowed(R.wallet, 'banned')).toBe(false);
-    expect(allowed(R.dashboard, 'admin')).toBe(true);
-    expect(allowed(R.shop, 'admin')).toBe(false);
+    expect(allowed(R.dashboard, 'banned')).toBe(true);
   });
   it('only redirects inside the portal', () => {
     expect(safeRedirect('/orders/1')).toBe('/orders/1');

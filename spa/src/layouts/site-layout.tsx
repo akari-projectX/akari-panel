@@ -14,7 +14,6 @@ import { useAuth } from '@/lib/auth';
 import { prefetchSite, whenIdle } from '@/lib/prefetch';
 import { useSite } from '@/lib/site';
 import { R } from '@/lib/routes';
-import { cn } from '@/lib/utils';
 
 /**
  * 访客/未登录时的轻量页头：
@@ -31,20 +30,7 @@ function GuestHeader() {
   return (
     <header className="sticky top-0 z-30 h-16 border-b border-border bg-background/95 backdrop-blur-sm">
       <div className="page-wrap flex h-full items-center justify-between gap-6">
-        <div className="flex items-center gap-8">
-          <Link to={R.login} className="shrink-0"><Logo /></Link>
-          <nav className="hidden items-center gap-6 sm:flex">
-            <Link
-              to={R.faq}
-              className={cn(
-                'text-[14px] font-medium transition-colors hover:text-brand',
-                pathname === R.faq ? 'text-brand' : 'text-muted-foreground',
-              )}
-            >
-              {tr('常见问题')}
-            </Link>
-          </nav>
-        </div>
+        <Link to={R.login} className="shrink-0"><Logo /></Link>
 
         <div className="flex items-center gap-1.5 sm:gap-2">
           <ThemeToggle />

@@ -2,11 +2,9 @@
 /*
  * 门户对面板错误码的覆盖检查（CI 必跑）。
  *
- * 面板的错误体带稳定的 code（面板 src/error_codes.txt）。门户必须为用户可能遇到的每一个码准备中英文案：
- * src/i18n/errors.ts 的 CODE_KEYS。用户可能遇到的码 = 面板错误码表里这些命名空间的码 + kb.query_long。
- *
- *   node scripts/check-error-codes.mjs                       # 用 scripts/user-error-codes.txt（主题仓库里的那份）
- *   node scripts/check-error-codes.mjs --registry ../src/error_codes.txt   # 直接读面板的错误码表（并入面板仓库后用这个）
+ * 面板的错误体带稳定的 code（错误码表 ../src/error_codes.txt，面板测试保证它与源码一致）。门户必须为用户可能遇到的
+ * 每一个码准备中英文案：src/i18n/errors.ts 的 CODE_KEYS。用户可能遇到的码 = 错误码表里这些命名空间的码 + kb.query_long；
+ * 其余命名空间是后台的，由后台应用自己检查（门户里不出现后台文案）。
  *
  * 映射了面板已经没有的码、或者一个码映射两次，也算失败。
  */
@@ -19,10 +17,8 @@ const NAMESPACES = ['auth', 'account', 'signup', 'shop', 'order', 'coupon', 'bal
 const EXTRA = ['kb.query_long'];
 
 const lines = (file) => readFileSync(file, 'utf8').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
-const i = process.argv.indexOf('--registry');
-const userCodes = i > 0
-  ? lines(process.argv[i + 1]).filter((c) => NAMESPACES.includes(c.split('.')[0]) || EXTRA.includes(c))
-  : lines(join(root, 'scripts/user-error-codes.txt'));
+const userCodes = lines(join(root, '../src/error_codes.txt'))
+  .filter((c) => NAMESPACES.includes(c.split('.')[0]) || EXTRA.includes(c));
 
 const src = readFileSync(join(root, 'src/i18n/errors.ts'), 'utf8');
 const start = src.indexOf('export const CODE_KEYS');

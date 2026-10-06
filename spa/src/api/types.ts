@@ -5,10 +5,8 @@
  *   · id 一律是 UUID 字符串（工单消息、流水条目除外，它们是数字）；
  *   · 时间一律是 RFC 3339 字符串（"2026-10-06T08:00:00Z"，带时区偏移的也有），不是 Unix 秒；
  *     日期类字段（"2026-10-06"）是全站时区里的日历日；
- *   · 金额一律是人民币**分**（整数），可以为负（佣金追回后余额可能是负数）；
+ *   · 金额一律是人民币**分**（整数），流水的变动有正有负（余额本身不会为负）；
  *   · 流量一律是**字节**。
- *
- * 标了「② 待合并」「③ 待合并」的字段属于面板还没合并的功能（见 ./features）：可选，没有时页面照常工作。
  */
 
 /* ───────────── 认证与站点 ───────────── */
@@ -55,8 +53,8 @@ export type AuthOptions = {
   guard: FormGuardOptions | null;
   /** 这里能用通行密钥登录（需要 https 主域名） */
   passkey: boolean;
-  /** 全站时区（已批准，随 W36-b PR2 合并） */
-  timezone?: string;
+  /** 全站时区（IANA 名）：日期一律按它显示 */
+  timezone: string;
 };
 
 /** POST /auth/login、/auth/passkey/login、/auth/register 的答复 */
@@ -97,14 +95,21 @@ export type Me = {
   email_verified: boolean;
   /** 邮件语言 */
   locale: 'zh' | 'en';
-  /** 订阅链接；管理员、续费范围、旧链接（sub_legacy）都是 null */
+  /**
+   * 订阅链接（D11 随机订阅路径；D8 可能在订阅域名上）；管理员、续费范围、旧链接（sub_legacy）都是 null。
+   * 没配域名时是相对地址 `/<订阅路径>/<令牌>`（lib/sub-links 的 mySubUrl 补 origin）。
+   */
   sub_token: string | null;
   sub_url: string | null;
   /** 旧格式链接：还能用，但重置之前显示不出来 */
   sub_legacy: boolean;
+  /** 系统设置里开着的订阅格式（clash / sing-box / links） */
+  sub_formats: string[];
+  /** 要显示的一键导入按钮（客户端 id，已按开着的格式筛过；顺序即显示顺序） */
+  sub_import_clients: string[];
   probe_interval_secs: number;
-  /** 全站时区（已批准，随 W36-b PR2 合并） */
-  timezone?: string;
+  /** 全站时区（IANA 名）：日期一律按它显示 */
+  timezone: string;
 };
 
 /** "monthly" | "none" | "days-N" */
@@ -161,27 +166,18 @@ export type SubFormat = 'auto' | 'clash' | 'sing-box' | 'links';
 
 export type SubTokenReset = { sub_token: string; sub_url: string | null; credentials_rotated: number };
 
-/** D9 时段倍率规则（② 待合并） */
-export type RateRule = { days: number[]; start: string; end: string; rate: number };
-
 /** GET /me/nodes 的一行：一个可用入口 */
 export type MyNode = {
   name: string;
   entrance: string;
   region: string | null;
   tags: string[];
-  /** 入口的基础倍率 */
+  /** 入口此刻生效的倍率（D9：基础倍率 + 站点时区的时段规则，面板在 SQL 里算） */
   rate: number;
   online: boolean;
   latency_ms: number | null;
   latency_status: 'ok' | 'timeout' | 'unknown';
   latency_measured_at: string | null;
-  /** D9 此刻生效的倍率（② 待合并） */
-  rate_now?: number;
-  /** D9 时段规则（② 待合并） */
-  rate_rules?: RateRule[];
-  /** D5 节点所在服务器流量额度用完、暂停服务（② 待合并） */
-  suspended?: boolean;
 };
 
 export type TrafficBytes = { up_bytes: number; down_bytes: number; billed_bytes: number };
@@ -289,9 +285,24 @@ export type MyOrder = {
   paid_at: string | null;
   /** 已付款且已开通；已付款但没开通的会被自动退到余额 */
   fulfilled: boolean;
-  /** 订单类型（已批准，随 W36-b PR2 合并：MyOrderView.action） */
-  action?: OfferAction | null;
+  /** 订单类型 */
+  action: OfferAction;
+  /**
+   * 退款去向（退款后才有）：original = 原路退回支付渠道，balance = 退到余额，
+   * manual = 站长已在支付渠道后台退款并登记
+   */
+  refund_route: RefundRoute | null;
+  /** 退到余额的部分、经支付渠道退回的部分（分；退款后才有） */
+  refund_balance_cents: number | null;
+  refund_external_cents: number | null;
+  /** 已向支付渠道发起原路退款、渠道还没确认 */
+  refund_pending: boolean;
+  /** 退款对套餐的影响：none 只退钱、cancel 套餐已结束、rollback 到期时间已回退、restore 已恢复换套餐前的套餐 */
+  refund_effect: RefundEffect | null;
 };
+
+export type RefundRoute = 'original' | 'balance' | 'manual';
+export type RefundEffect = 'none' | 'cancel' | 'rollback' | 'restore';
 
 export type CreateOrder = {
   plan_id: string;
@@ -323,17 +334,23 @@ export type LedgerEntry = {
 
 export type MyBalance = { balance_cents: number; withdrawable_cents: number; entries: LedgerEntry[] };
 
-export type WithdrawMethod = 'alipay' | 'wechat' | 'bank' | 'other';
-export const WITHDRAW_METHODS: WithdrawMethod[] = ['alipay', 'wechat', 'bank', 'other'];
+/** R46：佣金只用 USDT 提现，可选的网络由站长在后台勾选 */
+export type UsdtChain = 'trc20' | 'plasma' | 'polygon' | 'arbitrum' | 'solana' | 'xlayer' | 'ton';
 export type WithdrawalStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
 
 export type Withdrawal = {
   id: string;
+  /** 申请时从余额扣除的人民币（分） */
   amount_cents: number;
-  method: WithdrawMethod;
-  account: string;
+  chain: UsdtChain;
+  /** 收款地址（只有本人和管理员看得到） */
+  address: string;
+  /** TON 的 Memo / 备注 */
+  memo: string | null;
   status: WithdrawalStatus;
-  payout_reference: string | null;
+  /** 实际打出的 USDT（6 位小数的文本）与链上交易哈希：通过后才有 */
+  usdt_amount: string | null;
+  txid: string | null;
   note: string | null;
   decided_at: string | null;
   created_at: string;
@@ -361,6 +378,10 @@ export type MyInvite = {
   first_order_only: boolean;
   hold_days: number;
   min_withdrawal_cents: number;
+  /** 后台开着的 USDT 网络（顺序即显示顺序） */
+  usdt_chains: { id: UsdtChain; name: string }[];
+  /** 参考汇率：1 USDT 折合多少分人民币（只用于显示「约 N USDT」）；没设为 null */
+  usdt_rate_cents: number | null;
   invite_codes: string[] | null;
   invited_count: number;
   pending_cents: number;
@@ -472,14 +493,30 @@ export type HelpArticle = {
   updated_at: string;
 };
 
-/* ───────────── ③ 待合并：自助注销 ───────────── */
+/* ───────────── 条款与隐私（公开） ───────────── */
 
-/** 注销前给用户看的影响摘要（形状照后台的 delete-impact） */
+/** GET /api/v1/pages/{terms|privacy}：站长在知识库里写的条款 / 隐私（固定 slug），服务端渲染好的 HTML */
+export type LegalPage = {
+  title_zh: string;
+  title_en: string | null;
+  html_zh: string;
+  html_en: string | null;
+  updated_at: string;
+};
+
+/* ───────────── 自助注销 ───────────── */
+
+/** GET /me/delete-impact：注销前给用户看的影响摘要（与后台的 delete-impact 同形） */
 export type DeleteImpact = {
+  email: string;
   balance_cents: number;
   withdrawable_cents: number;
   pending_withdrawals: number;
   pending_withdrawal_cents: number;
   pending_orders: number;
+  /** 已付款但没能开通的订单 */
+  unfulfilled_orders: number;
   plan: { name: string; expires_at: string | null } | null;
+  /** 有财务记录：账户匿名化保留，而不是整个删除 */
+  anonymized: boolean;
 };

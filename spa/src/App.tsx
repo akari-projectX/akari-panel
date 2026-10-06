@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef } from 'react';
-import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { BrowserRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import ErrorBoundary from '@/components/error-boundary';
 import ErrorScreen from '@/components/error-screen';
@@ -13,10 +13,9 @@ import { AuthProvider, GuestOnly, RequireAuth, RequireScope, SiteProvider } from
 import { startBoot, useBootOut } from '@/lib/boot';
 import { warmHanFont } from '@/lib/han-font';
 import { fastNetwork, whenIdle } from '@/lib/prefetch';
-import { ALIASES, R } from '@/lib/routes';
-import { routerBase } from '@/api';
+import { R } from '@/lib/routes';
 import {
-  Account, Announcements, Dashboard, Faq, Forgot, Help, Invite, Login, Nodes, OrderDetail, Orders, Privacy, Register,
+  Account, Announcements, Dashboard, Forgot, Help, Invite, Login, Nodes, OrderDetail, Orders, Privacy, Register,
   Reset, Shop, Terms, Tickets, Traffic, Wallet,
 } from '@/pages/registry';
 
@@ -58,7 +57,7 @@ function WarmOtherLocale() {
 }
 
 /* 刷新后回到页首的站点页（用户中心保留浏览器恢复的位置） */
-const SITE_PATHS = new Set<string>([R.terms, R.privacy, R.faq, R.login, R.register, R.forgot, R.reset]);
+const SITE_PATHS = new Set<string>([R.terms, R.privacy, R.login, R.register, R.forgot, R.reset]);
 
 function ScrollTop() {
   const { pathname, hash } = useLocation();
@@ -103,10 +102,10 @@ export default function App() {
     <LocaleProvider>
     <TooltipProvider delayDuration={200}>
       {/*
-        BrowserRouter：门户在主域名根路径（③ 之后），或过渡期在面板秘密前缀下的 /app（routerBase，见 api/base）。
-        面板对门户的任何路径都返回 index.html；路由表见 lib/routes 与 README。
+        BrowserRouter：门户在主域名根路径（D11）。面板对路由表里的每个顶层路径都返回 index.html
+        （akari-panel access::PORTAL_PAGES，测试保证两边一致）；路由表见 lib/routes。
       */}
-      <BrowserRouter basename={routerBase || undefined}>
+      <BrowserRouter>
       <SiteProvider>
       <AuthProvider>
         <ScrollTop />
@@ -122,7 +121,6 @@ export default function App() {
               <Route element={<SiteLayout />}>
                 <Route path={R.terms} element={<Terms />} />
                 <Route path={R.privacy} element={<Privacy />} />
-                <Route path={R.faq} element={<Faq />} />
                 {/* GuestOnly：已登录的人点回登录页时直接送进用户中心，而不是让他再登一次 */}
                 <Route path={R.login} element={<GuestOnly><Login /></GuestOnly>} />
                 <Route path={R.register} element={<GuestOnly><Register /></GuestOnly>} />
@@ -144,7 +142,6 @@ export default function App() {
                 <Route path={R.nodes} element={scoped(['full'], <Nodes />)} />
                 <Route path={R.traffic} element={scoped(['full'], <Traffic />)} />
                 <Route path={R.invite} element={scoped(['full'], <Invite />)} />
-                {ALIASES.map(([from, to]) => <Route key={from} path={from} element={<Navigate to={to} replace />} />)}
               </Route>
               <Route element={<SiteLayout />}>
                 {/* 走错地址的人应该知道自己走错了，而不是被悄悄送回首页 */}

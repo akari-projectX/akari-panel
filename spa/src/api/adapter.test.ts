@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, authApi, inviteApi, meApi, onSessionEvent, orderApi, passkeyApi, shopApi, ticketApi, walletApi } from './index';
+import { ApiError, accountApi, authApi, inviteApi, meApi, onSessionEvent, orderApi, pageApi, passkeyApi, shopApi, ticketApi, walletApi } from './index';
 import { buildGuard, guardWait, rememberGuard } from './guard';
 
 type Call = { url: string; init: RequestInit };
@@ -97,7 +97,7 @@ describe('endpoints', () => {
   it('maps wallet, invite, ticket and traffic paths', async () => {
     for (let i = 0; i < 8; i++) replies.push(json(200, {}));
     await walletApi.balance({ before: 42, limit: 30 });
-    await walletApi.withdraw(990, 'alipay', 'acc');
+    await walletApi.withdraw({ amount_cents: 990, chain: 'ton', address: 'UQx', memo: '42' });
     await walletApi.cancelWithdrawal('w1');
     await inviteApi.deleteCode('A B');
     await ticketApi.reply('t1', 'hi');
@@ -114,8 +114,21 @@ describe('endpoints', () => {
       'POST /api/v1/me/email/code',
       'PUT /api/v1/me/password-login',
     ]);
-    expect(body(1)).toEqual({ amount_cents: 990, method: 'alipay', account: 'acc' });
+    expect(body(1)).toEqual({ amount_cents: 990, chain: 'ton', address: 'UQx', memo: '42' });
     expect(body(7)).toEqual({ enabled: false });
+  });
+
+  it('maps self-delete and the public legal pages', async () => {
+    for (let i = 0; i < 3; i++) replies.push(json(200, {}));
+    await accountApi.deleteImpact();
+    await accountApi.deleteAccount('pw');
+    await pageApi.get('privacy');
+    expect(calls.map((c) => `${c.init.method ?? 'GET'} ${c.url}`)).toEqual([
+      'GET /api/v1/me/delete-impact',
+      'POST /api/v1/me/delete',
+      'GET /api/v1/pages/privacy',
+    ]);
+    expect(body(1)).toEqual({ confirm: true, password: 'pw' });
   });
 });
 

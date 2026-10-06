@@ -5,16 +5,15 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { PageTitle, Row, Section, StatRow } from '@/components/flat';
 import { Empty, LoadError, Loading } from '@/components/data-state';
 import Flag from '@/components/flag';
 import NodeTags from '@/components/node-tags';
-import { feature, meApi, type MyNode, type RateRule } from '@/api';
+import { meApi, type MyNode } from '@/api';
 import { useApi } from '@/hooks/use-api';
 import { useAuth } from '@/lib/auth';
 import { K } from '@/lib/cache';
-import { nodeCC, nodeKey, nodeRate, nodeSuspended, nodeUp, rateTone, sortTags, stripFlag } from '@/lib/node';
+import { nodeCC, nodeKey, nodeUp, rateTone, sortTags, stripFlag } from '@/lib/node';
 import { formatRate, fromNow } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { useT, useTp } from '@/i18n';
@@ -43,12 +42,12 @@ export default function Nodes() {
         || (n.region ?? '').toLowerCase().includes(k)
         || n.tags.some((t) => t.toLowerCase().includes(k)))
       /* 默认按倍率升序：对用户来说「哪条最省流量」比「哪条排在前面」有用得多 */
-      .sort((a, b) => (sortAsc ? 1 : -1) * (nodeRate(a) - nodeRate(b)));
+      .sort((a, b) => (sortAsc ? 1 : -1) * (a.rate - b.rate));
   }, [all, kw, sortAsc]);
 
   const up = all.filter(nodeUp);
   const down = all.length - up.length;
-  const cheapest = all.length ? Math.min(...all.map(nodeRate)) : 0;
+  const cheapest = all.length ? Math.min(...all.map((n) => n.rate)) : 0;
   const lastProbe = all.reduce<string | null>(
     (max, n) => (n.latency_measured_at && (!max || n.latency_measured_at > max) ? n.latency_measured_at : max), null,
   );
@@ -76,7 +75,7 @@ export default function Nodes() {
             },
             {
               k: tr('最低倍率'), v: formatRate(cheapest), suffix: '×',
-              x: feature('rates') ? tr('按此刻生效的倍率') : tr('按入口的倍率'),
+              x: tr('按此刻生效的倍率'),
             },
             {
               k: tr('延迟测速'), v: probeMinutes ?? '—', suffix: probeMinutes ? tr(' 分钟一次') : '',
@@ -196,32 +195,12 @@ function State({ n }: { n: MyNode }) {
   return (
     <span className={cn('inline-flex shrink-0 items-center gap-1.5 text-sm whitespace-nowrap', !ok && 'text-warning')}>
       <span className={cn('size-1.5 rounded-full', ok ? 'bg-emerald-500' : 'bg-amber-500')} />
-      {tr(ok ? '在线' : nodeSuspended(n) ? '已暂停' : '离线')}
+      {tr(ok ? '在线' : '离线')}
     </span>
   );
 }
 
-const DAY = ['日', '一', '二', '三', '四', '五', '六'];
-
-/** 倍率徽标；D9 有时段规则时悬停列出规则（rates 开关） */
+/** 倍率徽标：此刻生效的倍率（D9 时段倍率由面板按站点时区算好） */
 function RateBadge({ n }: { n: MyNode }) {
-  const tr = useT();
-  const tp = useTp();
-  const rate = nodeRate(n);
-  const badge = <Badge variant="secondary" className={cn('rounded-full', rateTone(rate))}>×{formatRate(rate)}</Badge>;
-  const rules: RateRule[] = feature('rates') ? n.rate_rules ?? [] : [];
-  if (rules.length === 0) return badge;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild><span className="cursor-help">{badge}</span></TooltipTrigger>
-      <TooltipContent className="space-y-1">
-        <div>{tp('平时 ×{r}', { r: formatRate(n.rate) })}</div>
-        {rules.map((r, i) => (
-          <div key={i} className="tnum">
-            {r.days.map((d) => tr(`周${DAY[d % 7]}`)).join(' ')} {r.start}–{r.end} ×{formatRate(r.rate)}
-          </div>
-        ))}
-      </TooltipContent>
-    </Tooltip>
-  );
+  return <Badge variant="secondary" className={cn('rounded-full', rateTone(n.rate))}>×{formatRate(n.rate)}</Badge>;
 }

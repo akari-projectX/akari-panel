@@ -1,6 +1,6 @@
 import { lazy, Suspense, useMemo, useState } from 'react';
 import { DUR, NUDGE, stagger, useEnter } from '@/lib/motion';
-import { Ban, BookOpen, ChevronRight, Headphones, Megaphone, ShieldCheck, TrendingUp, Wifi, Zap } from 'lucide-react';
+import { Ban, BookOpen, ChevronRight, Headphones, Megaphone, TrendingUp, Wifi, Zap } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -20,7 +20,7 @@ import { contentApi, meApi, ticketApi, walletApi, type Announcement, type MyNode
 import { useApi } from '@/hooks/use-api';
 import { K } from '@/lib/cache';
 import { useAuth } from '@/lib/auth';
-import { nodeCC, nodeKey, nodeRate, nodeSuspended, nodeUp, rateTone, stripFlag } from '@/lib/node';
+import { nodeCC, nodeKey, nodeUp, rateTone, stripFlag } from '@/lib/node';
 import { addDays, daysLeft, formatDate, formatDateTime, formatMoney, formatRate, fromNow, siteToday, toGB, trafficUsage } from '@/lib/format';
 import { trafficDays } from '@/lib/traffic';
 import { summarize } from '@/lib/content-text';
@@ -42,27 +42,8 @@ const WeekChart = lazy(() => import('./week-chart'));
  */
 export default function Dashboard() {
   const { scope } = useAuth();
-  if (scope === 'admin') return <AdminNotice />;
   if (scope === 'banned') return <BannedNotice />;
   return <Overview full={scope === 'full'} />;
-}
-
-function AdminNotice() {
-  const tr = useT();
-  return (
-    <>
-      <PageTitle title={tr('管理员账户')} />
-      <Section>
-        <div className="flex max-w-[62ch] items-start gap-4">
-          <ShieldCheck className="mt-0.5 size-5 shrink-0 text-brand" />
-          <div className="space-y-2 text-[14px] leading-[1.9] text-muted-foreground">
-            <p className="font-medium text-foreground">{tr('这是管理员账户，用户门户里没有它的内容。')}</p>
-            <p>{tr('请使用后台地址登录管理后台。后台地址只有管理员知道，这里不会显示。')}</p>
-          </div>
-        </div>
-      </Section>
-    </>
-  );
 }
 
 function BannedNotice() {
@@ -428,7 +409,7 @@ function Overview({ full }: { full: boolean }) {
                     {paged.map((n, i) => {
                       const cc = nodeCC(n);
                       const up = nodeUp(n);
-                      const rate = nodeRate(n);
+                      const rate = n.rate;
                       return (
                         <Row
                           key={nodeKey(n)} index={(page - 1) * pageSize + i + 1} className={cn(!up && 'is-off')}
@@ -452,7 +433,7 @@ function Overview({ full }: { full: boolean }) {
                             : (
                               <Badge variant="secondary" className="gap-1.5 rounded-full bg-muted font-normal text-muted-foreground">
                                 <i className="size-1.5 rounded-full bg-muted-foreground/60" />
-                                {tr(nodeSuspended(n) ? '已暂停' : '离线')}
+                                {tr('离线')}
                               </Badge>
                             )}
                         />

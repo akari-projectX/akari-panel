@@ -11,14 +11,12 @@ import {
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useCopy } from '@/hooks/use-copy';
-import { useApi } from '@/hooks/use-api';
-import { feature, type SubFormat } from '@/api';
-import { plannedApi } from '@/api/planned';
+import type { SubFormat } from '@/api';
 import { useAuth } from '@/lib/auth';
 import { useSite } from '@/lib/site';
 import { R } from '@/lib/routes';
 import { PLATFORMS } from '@/data/platforms';
-import { SUB_FORMATS, importLinks, mySubUrl, withFormat, type ImportLink } from '@/lib/sub-links';
+import { enabledFormats, importLinks, mySubUrl, withFormat, type ImportLink } from '@/lib/sub-links';
 import { useT, useTp } from '@/i18n';
 import { cn } from '@/lib/utils';
 /*
@@ -76,13 +74,13 @@ export default function Subscribe() {
   const base = mySubUrl(me);
   const url = base ? withFormat(base, format) : '';
 
-  /* 一键导入的客户端：② W30 之后由面板给清单（scheme 以 W30 定稿为准），之前用面板现有的那一份 */
-  const server = useApi(() => plannedApi.subClients(), [], { enabled: feature('sub-clients') && !!base });
-  const clients: ImportLink[] = useMemo(() => {
-    if (!base) return [];
-    if (server.data) return server.data.clients.map((c) => ({ id: c.id, name: c.name, platforms: c.platforms.join(' · '), href: c.href }));
-    return importLinks(base, site.title);
-  }, [base, server.data, site.title]);
+  /* 一键导入的客户端与可选格式：系统设置里开着的那些（面板已按开着的格式筛过客户端） */
+  const importIds = me?.sub_import_clients;
+  const clients: ImportLink[] = useMemo(
+    () => (base ? importLinks(base, site.title, importIds ?? []) : []),
+    [base, site.title, importIds],
+  );
+  const formats = enabledFormats(me);
   const primary = clients.slice(0, PRIMARY_COUNT);
   const more = clients.slice(PRIMARY_COUNT);
 
@@ -149,7 +147,7 @@ export default function Subscribe() {
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-52">
-              {SUB_FORMATS.map((f) => (
+              {formats.map((f) => (
                 <DropdownMenuItem key={f} onClick={() => setFormat(f)} data-on={f === format} className="justify-between">
                   <span>{tr(FORMAT_LABEL[f])}</span>
                   {f === format && <Check className="size-3.5 text-brand" />}
@@ -159,6 +157,7 @@ export default function Subscribe() {
           </DropdownMenu>
         </div>
 
+        {clients.length > 0 && (
         <div>
           <div className="mb-1.5 text-[12.5px] tracking-[.05em] text-muted-foreground">{tr('导入到客户端')}</div>
           <div className="flex flex-wrap items-center gap-x-1 gap-y-1.5 text-[13.5px] @max-sm:gap-x-2.5">
@@ -205,6 +204,7 @@ export default function Subscribe() {
             )}
           </div>
         </div>
+        )}
 
         {/* 退路：站长在后台配了下载地址的平台直接给下载，没配的去文档页 */}
         <div className="border-t border-border pt-4">
@@ -258,6 +258,7 @@ export default function Subscribe() {
           <Brackets />
           <QRCodeSVG
             value={url}
+            title={tr('订阅二维码')}
             size={112}
             level="H"
             fgColor="#0d1526"

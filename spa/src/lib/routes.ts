@@ -1,10 +1,11 @@
 import type { Scope } from '@/lib/auth';
 
 /**
- * 门户的路由表（BrowserRouter，相对 api/base 的 routerBase）。README「路由表」是它的说明。
+ * 门户的路由表（BrowserRouter，门户在主域名根路径）。
  *
- * 路由名与面板邮件里写死的链接一致（到期提醒 `…/shop`、重置密码 `…/reset#token=…`、
- * 邀请 `…/register?invite=…`）：③ 把门户挪到根路径之后，面板只需把邮件链接的 `/app` 前缀去掉，路径不变。
+ * 路由名与面板邮件里的链接一致（到期提醒 `/shop`、重置密码 `/reset#token=…`、邀请 `/register?invite=…`）。
+ * 面板只对这里的顶层路径返回 index.html（akari-panel `access::PORTAL_PAGES`；面板测试
+ * `routes_match_the_portal` 读这个文件比对，所以加路由要两边一起改）。
  */
 export const R = {
   dashboard: '/',
@@ -26,17 +27,7 @@ export const R = {
   reset: '/reset',
   terms: '/terms',
   privacy: '/privacy',
-  faq: '/faq',
 } as const;
-
-/** 旧地址（主题旧路由名）→ 新地址，书签和旧链接不至于 404 */
-export const ALIASES: [string, string][] = [
-  ['/dashboard', R.dashboard],
-  ['/plans', R.shop],
-  ['/settings', R.account],
-  ['/guide', R.help],
-  ['/referral', R.invite],
-];
 
 const FULL: Scope[] = ['full'];
 const SHOP: Scope[] = ['full', 'renewal'];
