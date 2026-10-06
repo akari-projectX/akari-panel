@@ -1,113 +1,859 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "./styles/shadcn-tailwind.css";
+/*
+ * 正文字体：Noto Sans SC，全平台、中英文都用它（见下面「字体栈」）。
+ * 字体声明不在这份样式表里：一百多条 @font-face 会让首帧多等十几 kB。
+ * 由 index.html 的启动脚本插入 public/fonts/akari/akari.css（scripts/subset-akari-font.py 生成），
+ * 万一没插上，src/lib/han-font.ts 在应用挂载时补。
+ */
+/*
+ * 印章不需要网页字体：它是两张现成的 PNG（src/assets/brand/，每张约 3 kB，打包时内联进脚本），
+ * 零请求、首帧即最终形态。见 src/components/logo.tsx 顶部说明。
+ */
+
+@custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-border: var(--border);
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
-  --color-ring: var(--ring);
-  --radius-lg: 0.5rem;
+    /*
+     * Tailwind 的 transition-colors / transition-* 默认 150ms + 标准曲线；
+     * 改成和站内 CSS 悬停同一口径（--dur-hover / --ease-out），组件里的悬停与手写样式的悬停一样快。
+     */
+    --default-transition-duration: 200ms;
+    --default-transition-timing-function: cubic-bezier(.22, 1, .36, 1);
+    --font-heading: var(--font-sans);
+    /* --font-sans 在下面「字体栈」那一段定义（全平台 Noto Sans SC） */
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
 }
 
 :root {
-  --background: oklch(0.99 0 0);
-  --foreground: oklch(0.2 0.02 260);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.2 0.02 260);
-  --primary: oklch(0.35 0.05 260);
-  --primary-foreground: oklch(0.98 0 0);
-  --muted: oklch(0.96 0.005 260);
-  --muted-foreground: oklch(0.5 0.02 260);
-  --border: oklch(0.9 0.01 260);
-  --destructive: oklch(0.55 0.19 25);
-  --destructive-foreground: oklch(0.98 0 0);
-  /* Keyboard focus ring (focus-visible:ring-ring); WCAG 3:1 against the card. */
-  --ring: oklch(0.55 0.15 260);
+    --background: #f8fafc;
+    --foreground: #0f172a;
+    --card: #ffffff;
+    --card-foreground: #0f172a;
+    --popover: #ffffff;
+    --popover-foreground: #0f172a;
+    --primary: #2563eb;
+    --primary-foreground: #ffffff;
+    --secondary: #f1f5f9;
+    --secondary-foreground: #0f172a;
+    --muted: #f1f5f9;
+    --muted-foreground: #64748b;
+    --accent: #f1f5f9;
+    --accent-foreground: #0f172a;
+    --destructive: oklch(0.577 0.245 27.325);
+    --border: #e2e8f0;
+    --input: #e2e8f0;
+    --ring: #2563eb;
+    --chart-1: #2563eb;
+    --chart-2: #38bdf8;
+    --chart-3: #60a5fa;
+    --chart-4: #93c5fd;
+    --chart-5: #bfdbfe;
+    --radius: 0.625rem;
+    --sidebar: #ffffff;
+    --sidebar-foreground: #0f172a;
+    --sidebar-primary: #2563eb;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: color-mix(in srgb, #2563eb 8%, transparent);
+    --sidebar-accent-foreground: #2563eb;
+    --sidebar-border: #e2e8f0;
+    --sidebar-ring: #2563eb;
 }
 
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    }
+  body {
+    @apply bg-background text-foreground;
+    }
+  html {
+    @apply font-sans;
+    }
+}
+
+/*
+ * 切页时导航栏左右跳：页面高度一变，桌面浏览器的竖向滚动条就一会儿有一会儿没有
+ * （切页淡出、新页先出骨架屏都会让页面变矮），居中的页头跟着左右挪半个滚动条宽。
+ * 固定给滚动条留位，页面长短都不再挪。手机上滚动条是悬浮的，不占位，这条对它无影响。
+ */
+/*
+ * 只在支持 scrollbar-gutter 时清除 Radix 的滚动条补偿；否则打开下拉菜单时会横跳一个滚动条宽。
+ */
+@supports (scrollbar-gutter: stable) {
+  html { scrollbar-gutter: stable; }
+
+  /*
+   * 配套的一条，不能漏：Radix 弹层（下拉菜单、对话框）锁滚动时，按「innerWidth − clientWidth」
+   * 给 body 补一段 margin-right 顶替消失的滚动条。留了位之后滚动条的位置本来就在，
+   * 它量出来的仍是滚动条宽，再补一次就成了一打开「更多」菜单整页往左跳。
+   * 不放进 @layer：Radix 的样式是运行时插入、不分层的，这里靠选择器更具体来压过它。
+   */
+  html body[data-scroll-locked] {
+    margin-right: 0 !important;
+    --removed-body-scroll-bar-size: 0px !important;
+  }
+}
+
+/*
+ * 手机上点任何可点的东西，安卓 Chrome / iOS 会先盖一块半透明的蓝（灰）色长方形，方角、不跟圆角走，很难看。
+ * 按下的反馈由各组件自己的 hover / active 样式给，这块系统高亮关掉。
+ */
+html { -webkit-tap-highlight-color: transparent; }
+
+/*
+ * iOS Safari：输入框字号小于 16px，一聚焦就把整页放大，输完还不缩回去。
+ * 登录、注册、找回密码的输入框都是 15px（实测全中）。触屏设备上一律 16px，
+ * 桌面仍用各处设计的字号。不放进 @layer：分层的工具类（text-[15px] 等）压不过不分层的规则，
+ * 以后新加的输入框也自动生效。不用 maximum-scale=1 那种办法：安卓上会连双指缩放一起禁掉。
+ */
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]),
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+/* ===================================================================
+   品牌主题：简约白底 + 科技蓝点缀
+   =================================================================== */
+:root {
+  /*
+   * 动效口径，和 src/lib/motion.ts 同一套值，两边改要一起改：
+   *   --ease-out 进场与位移；--ease-in 退场
+   *   --dur-hover 悬停变色、底色；--dur-fast 小位移（下划线、箭头）；--dur-base 块级位移；--dur-exit 离开
+   */
+  --ease-out: cubic-bezier(.22, 1, .36, 1);
+  --ease-in: cubic-bezier(.4, 0, 1, 1);
+  --dur-hover: .2s;
+  --dur-fast: .26s;
+  --dur-base: .42s;
+  --dur-exit: .14s;
+
+  /*
+   * 浅色模式的文字色：一套带蓝调的冷灰（Slate），和品牌蓝、暗色主题同一色温。四级，全部是实色：
+   *   --foreground       #1e293b  标题、主要文字。不用纯黑：白底上明度差太大，边缘发眩，久看累眼；
+   *                              Noto Sans SC 笔画又粗，配纯黑整页发乌
+   *   --text-body        #475569  长篇正文（公告、文档、条款），7.6:1
+   *   --muted-foreground #5f6b7e  辅助说明、标签、元信息。白底 5.4:1，浅灰底（--muted）上 4.9:1，都过 WCAG AA
+   *                              （Tailwind 的 slate-500 在浅灰底上只有 4.35:1，所以取得再深一点）
+   *   --faint-foreground #8390a2  只给装饰：大号编号、分隔点、图标、「—」占位。3.2:1，够大字（≥24px）的 3:1，
+   *                              不许用在要读的小字上
+   * 半透明写法（text-foreground/70 这类）一律不用：叠在浅灰底、渐变上时实际灰度不可控，对比度也算不准。
+   *
+   * 可点的蓝：#1677ff 当文字只有 4.1:1，白字放在它上面也只有 4.1:1，都不到 AA。
+   * 浅色模式的品牌色取同色系深一档的 #1668dc（白底 5.2:1、白字 5.2:1）；图表、进度条这些非文字的蓝不受影响（--chart-*）。
+   * 状态色同理，取 700 那一档：成功 #047857、警示 #b45309、危险 #b91c1c，白底都在 5:1 以上。
+   */
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --secondary: #f1f5f9;
+  --secondary-foreground: #0f172a;
+  --accent: #f1f5f9;
+  --accent-foreground: #0f172a;
+  --text-body: #334155;
+  --muted-foreground: #64748b;
+  --faint-foreground: #94a3b8;
+  --muted: #f1f5f9;
+  --border: #e2e8f0;
+  --input: #e2e8f0;
+  --success: #059669;
+  --warning: #d97706;
+  --danger: #dc2626;
+
+  --primary: #2563eb;
+  --primary-foreground: #ffffff;
+  --ring: #2563eb;
+  --radius: 0.8rem;
+
+  --brand: #2563eb;
+  --brand-light: #60a5fa;
+  --brand-deep: #1d4ed8;
+  --brand-ink: #1d4ed8;
+
+  --chart-1: #2563eb;
+  --chart-2: #38bdf8;
+  --chart-3: #60a5fa;
+  --chart-4: #93c5fd;
+  --chart-5: #bfdbfe;
+
+  --sidebar: #ffffff;
+  --sidebar-foreground: #0f172a;
+  --sidebar-primary: #2563eb;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: color-mix(in srgb, #2563eb 8%, transparent);
+  --sidebar-accent-foreground: #2563eb;
+  --sidebar-border: #e2e8f0;
+  --sidebar-ring: #2563eb;
+}
+
+/*
+ * 弹出层（对话框、下拉菜单、选择框、提示）：shadcn 自带 100ms、标准曲线，开和关一样快。
+ * 改成站内口径：打开 --dur-hover 快起慢收，关闭 --dur-exit 快速离开——和切页「退场快、进场稳」一致。
+ * tw-animate-css 的 animate-in / animate-out 读的是 --tw-duration / --tw-ease；
+ * 这段不在任何 @layer 里，优先于组件上 duration-100 这类工具类。
+ */
+[data-slot$='-content'], [data-slot$='-overlay'] {
+  --tw-duration: var(--dur-hover);
+  --tw-ease: var(--ease-out);
+}
+:is([data-slot$='-content'], [data-slot$='-overlay']):is([data-state='closed'], [data-closed]) {
+  --tw-duration: var(--dur-exit);
+  --tw-ease: var(--ease-in);
+}
+
+/* 明暗、语言切换时整页交叉淡化（lib/motion 的 crossfade）。浏览器默认 .25s ease，改成站内口径 */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--dur-fast, .26s);
+  animation-timing-function: var(--ease-out, ease);
+}
+
+/*
+ * 入场 / 退场 / 切页。属性由 src/lib/motion.ts 打上，参数走 CSS 变量：
+ *   data-enter="wait"  停在起始状态（刷新时等启动画面淡出、或还没滚进视口）
+ *   data-enter="in"    播一次：从 透明 + 下沉 --enter-y（+ 缩放 --enter-scale）浮起到元素本来的样子
+ *   data-leave="true"  淡出并下沉，播完由组件卸载
+ *   data-grow          横向从 0 长到本来的宽度（落地页的延迟对比条）
+ * 位移用独立的 translate / scale 属性、填充用 backwards：播完不留任何样式，
+ * 元素自己的 transform、悬停时的 hover:-translate-y-* 都不受影响。
+ */
+@keyframes enter {
+  from { opacity: 0; translate: 0 var(--enter-y, 12px); scale: var(--enter-scale, 1); }
+}
+[data-enter='wait'] { opacity: 0; translate: 0 var(--enter-y, 12px); scale: var(--enter-scale, 1); }
+[data-enter='in'] { animation: enter var(--enter-dur, .42s) var(--ease-out) var(--enter-delay, 0s) backwards; }
+[data-leave='true'] {
+  opacity: 0; translate: 0 var(--enter-y, 12px); pointer-events: none;
+  transition: opacity var(--dur-exit) var(--ease-in), translate var(--dur-exit) var(--ease-in);
+}
+
+@keyframes grow-x { from { scale: 0 1; } }
+[data-grow='wait'] { scale: 0 1; }
+[data-grow='in'] { animation: grow-x var(--grow-dur, 1.1s) var(--grow-ease, var(--ease-out)) var(--grow-delay, 0s) backwards; }
+
+/* 操作成功的图标「弹出」：带一点回弹，和原来的弹簧手感接近 */
+@keyframes pop-in { from { opacity: 0; scale: .6; } }
+.pop-in { animation: pop-in .42s cubic-bezier(.34, 1.56, .64, 1) backwards; }
+
+/* 复制按钮上扫过的一道光 */
+@keyframes sweep { from { translate: -140% 0; } to { translate: 140% 0; } }
+
+/* 切页：旧页面淡出（EXIT），新页面上浮淡入（FAST），见 components/page-transition */
+@keyframes page-in { from { opacity: 0; translate: 0 6px; } }
+.page-in { animation: page-in var(--dur-fast) var(--ease-out) backwards; }
+.page-out { opacity: 0; pointer-events: none; transition: opacity var(--dur-exit) var(--ease-in); }
+
+
+/* 暗色：底色偏冷（和落地页首屏的夜色同一族），品牌蓝提亮一档才压得住深底 */
+.dark {
+  --background: oklch(0.16 0.014 258);
+  --foreground: oklch(0.97 0.004 258);
+  --card: oklch(0.196 0.015 258);
+  --card-foreground: oklch(0.97 0.004 258);
+  --popover: oklch(0.196 0.015 258);
+  --popover-foreground: oklch(0.97 0.004 258);
+  --primary: oklch(0.66 0.176 253);
+  --primary-foreground: oklch(0.15 0.02 258);
+  --secondary: oklch(0.25 0.015 258);
+  --secondary-foreground: oklch(0.97 0.004 258);
+  --muted: oklch(0.235 0.014 258);
+  --muted-foreground: oklch(0.68 0.014 258);
+  /* 新增的几个：暗色下正文沿用原来的辅助色，装饰色取原来 muted/50 叠在深底上的灰度，状态色是原来夜间模式那一套亮一档的 400 */
+  --text-body: oklch(0.68 0.014 258);
+  --faint-foreground: oklch(0.53 0.014 258);
+  --success: #34d399;
+  --warning: #fbbf24;
+  --danger: #f87171;
+  --accent: oklch(0.25 0.015 258);
+  --accent-foreground: oklch(0.97 0.004 258);
+  --border: oklch(1 0 0 / 11%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.66 0.176 253);
+  --destructive: oklch(0.704 0.191 22.216);
+
+  --brand: #4a9dff;
+  --brand-light: #7fdcff;
+  --brand-deep: #1677ff;
+  --brand-ink: #4a9dff;
+
+  --chart-1: #4a9dff;
+  --chart-2: #7fdcff;
+  --chart-3: #69b1ff;
+  --chart-4: #91caff;
+  --chart-5: #bae0ff;
+
+  --sidebar: oklch(0.196 0.015 258);
+  --sidebar-foreground: oklch(0.97 0.004 258);
+  --sidebar-primary: oklch(0.66 0.176 253);
+  --sidebar-primary-foreground: oklch(0.15 0.02 258);
+  --sidebar-accent: color-mix(in srgb, #4a9dff 14%, transparent);
+  --sidebar-accent-foreground: #7fdcff;
+  --sidebar-border: oklch(1 0 0 / 11%);
+  --sidebar-ring: oklch(0.66 0.176 253);
+}
+
+/*
+ * 字体栈：全平台、中英文都用 Noto Sans SC（Google / Adobe 的开源黑体，SIL OFL），苹果设备也一样。
+ *
+ * · 网页字体收了英文、数字、常用 3500 字和界面用字，可变字重 300–700，写多少就是多少，中英文粗细一致。
+ * · 家族名是 Noto Sans SC Variable，故意不和本机字体同名：@font-face 会遮住同名的本机字体，
+ *   同名的话没收进子集的生僻字就找不到本机那份了。现在它们先找本机装的 Noto Sans SC，
+ *   再落到苹方（苹果设备）/ 微软雅黑（Windows）。
+ * · 字重比别的字体低一档用：Noto Sans SC 笔画粗，同样写 700，比苹方、微软雅黑黑得多，15–19px 的 600 就已经糊成一团。
+ *     400  正文、说明
+ *     500  按钮、导航、标签、表头、列表标题、24px 以下的小标题、正文里的强调（b / strong）、大号数字
+ *     600  24px 及以上的页面与区块标题
+ *   大号数字（统计值、价格、日期）用 500：Noto 的数字笔画粗，600 在 40px 以上显得笨重，500 已经足够醒目。
+ *   区块说明（.sec-desc）是说明文字：400、辅助灰。
+ *   夹在灰色说明里的数值、名称（「在线 5 / 6」「检测到你在用 Windows」）只换正文色、不加粗；
+ *   行内链接（「按平台查看教程」「注册」）用品牌色、不加粗，悬停出下划线。
+ *   不用 700 及以上（font-bold、700、650 这类写法都不要用）。
+ * · Noto Sans SC 没有等宽数字特性（tnum），下面 .tnum 那条对它不起作用；不过它的数字本来就一样宽，数字照样对得齐、不跳动。
+ * · Noto Sans SC 的 ’ ‘ “ ” … 是全角的，占一个汉字宽——中文排版本该如此，英文里却会把 month’s 撑出两道空。
+ *   英文界面打开字体的比例宽度（pwid），换成窄的那一套；中文界面不动，中文引号保持全角。
+ *   用 font-variant-east-asian 而不是 font-feature-settings：后者会被 .tnum 那条整个覆盖掉。
+ */
+@theme inline {
+  --font-sans: var(--font-stack);
+  --color-body: var(--text-body);
+  --color-faint: var(--faint-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-brand: var(--brand);
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-light: var(--brand-light);
+  --color-brand-deep: var(--brand-deep);
+}
+:root {
+  --font-stack: 'Noto Sans SC Variable', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+:root:lang(en) {
+  font-variant-east-asian: proportional-width;
+}
+
+/* ---------- 排版基础 ---------- */
 body {
-  @apply bg-background text-foreground antialiased;
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    "Segoe UI",
-    sans-serif;
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 15px;
+  line-height: 1.6;
+  letter-spacing: -0.006em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-synthesis: none;
 }
 
-/* A visible focus indicator for elements without their own ring utility. */
-:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
+/*
+ * 中文段落更松的行高；标题更紧的行高。放在 base 层：组件里写了 leading-* 的以组件为准。
+ * 以前写在层外，层外的规则压过所有工具类——33 个段落、7 个标题上写的行高全部失效：
+ * 首屏大标题本意 1.04、实际 1.2，两行之间空出一大截；弹窗标题本意 1.35–1.45、实际 1.2，中文折成两行时挤在一起。
+ */
+@layer base {
+  /* <b> / <strong> 默认是 bolder，正文里会算成 700——在 Noto 上又粗又黑。强调用中黑（见上面「字体栈」的字重说明） */
+  b, strong { font-weight: 500; }
+  p { line-height: 1.75; }
+  h1, h2, h3, h4 { line-height: 1.2; text-wrap: balance; }
+}
+/* 标题字距仍写在层外：标题上的 tracking-* 因此不生效，一律 -0.022em。这是一直以来的实际效果，保持不动 */
+h1, h2, h3, h4 { letter-spacing: -0.022em; }
+
+/* 数字等宽：统计值、表格、价格对齐 */
+.tnum, .stat-v, .hero-num, table, code, time {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
 }
 
-/* Ops: HTML rendered by the panel from the safe Markdown subset
-   (announcements, help articles; components/rich-html.tsx). */
-.md {
-  font-size: 0.875rem;
-  line-height: 1.65;
-  overflow-wrap: anywhere;
+::selection { background: color-mix(in srgb, var(--brand) 22%, transparent); }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--foreground) 18%, transparent);
+  border-radius: 99px; border: 3px solid var(--background);
 }
-.md > * + * {
-  margin-top: 0.75em;
+::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--foreground) 30%, transparent); }
+
+/* 统一的键盘焦点环 */
+:focus-visible { outline: 2px solid color-mix(in srgb, var(--brand) 55%, transparent); outline-offset: 2px; }
+/*
+ * 输入框除外。浏览器对可输入的元素一律算 focus-visible——手指点一下也算，不只是键盘——
+ * 而上面这条不在 @layer 里，压过了输入框自己的 outline-none，和组件的聚焦边框叠成两层。
+ * 输入框的聚焦样式由组件自己给（边框变色 + 淡光晕），见 components/ui/input.tsx。
+ */
+input:focus-visible, textarea:focus-visible, select:focus-visible { outline: none; }
+
+/* ---------- 渐变文字 ---------- */
+.grad-text {
+  background: linear-gradient(100deg, var(--brand-deep) 0%, var(--brand) 45%, var(--brand-light) 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  -webkit-font-smoothing: subpixel-antialiased;
 }
-.md h3 {
-  font-size: 1.05rem;
-  font-weight: 600;
+
+/* ===================================================================
+   shadcn 版 · 编辑式极简版式（无卡片 · 大留白 · 排版优先）
+   =================================================================== */
+
+/* --- 定宽容器：两侧留出较宽边距 --- */
+.page-wrap {
+  width: 100%; max-width: 1240px; margin-inline: auto; padding-inline: 56px;
 }
-.md h4,
-.md h5,
-.md h6 {
-  font-weight: 600;
+
+/* --- 页面大标题 --- */
+.page-title {
+  font-size: 34px; font-weight: 600; letter-spacing: -0.032em; line-height: 1.18;
+  /* 不写 margin：Tailwind 的基础样式已经清零，写在这里（层外）反而压掉了标题上的 mt-*（条款页、错误页的标题因此贴着上一行） */
 }
-.md a {
-  color: var(--primary);
-  text-decoration: underline;
-  text-underline-offset: 3px;
+.page-sub {
+  margin-top: 10px; font-size: 15px; line-height: 1.75;
+  color: var(--muted-foreground); max-width: 620px; letter-spacing: -0.008em;
 }
-.md ul {
-  list-style: disc;
-  padding-left: 1.25rem;
+
+/* --- 区块：靠留白分隔，不画线 --- */
+.sec { padding-block: 44px; container-type: inline-size; }
+.sec + .sec { border-top: 1px solid var(--border); }
+.sec-head {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 20px; margin-bottom: 26px; flex-wrap: wrap;
 }
-.md ol {
-  list-style: decimal;
-  padding-left: 1.25rem;
-}
-.md blockquote {
-  border-left: 3px solid var(--border);
-  padding-left: 0.75rem;
+/* 微标签式标题：小号大写字距 */
+.sec-title {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12.5px; font-weight: 500; letter-spacing: .055em;
   color: var(--muted-foreground);
 }
-.md code {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 0.85em;
+.sec-title :is(svg) { letter-spacing: normal; }
+/*
+ * 区块说明：辅助灰、14px，和仪表盘分栏的 .pane-desc 同一种写法。
+ * 以前是 15px 正文色，比上面的灰色区块标签还醒目，「共 0 条」「不改变套餐与到期时间……」这种说明反倒成了区块里最抢眼的一行。
+ */
+.sec-desc {
+  font-size: 14px; color: var(--muted-foreground); margin-top: 6px;
+  font-weight: 400; letter-spacing: -0.008em;
+}
+/* 分栏标题的说明行：比区块说明更轻，保证左右两栏行高一致 */
+.pane-desc {
+  font-size: 13px; color: var(--muted-foreground); margin-top: 6px;
+  font-weight: 400; letter-spacing: -0.004em;
+}
+
+/* --- 指标：数字在上、标签在下、无分隔线 --- */
+.statrow { display: flex; flex-wrap: wrap; gap: 56px 72px; }
+.statrow > div { min-width: 0; }
+.stat-v { font-size: 46px; font-weight: 500; letter-spacing: -0.038em; line-height: 1.02; white-space: nowrap; }
+/* 数字后的单位（GB / 个 / 天 / CNY）：小一号、灰一档，数字才是主角 */
+.stat-unit { font-size: .42em; font-weight: 500; letter-spacing: 0; color: var(--muted-foreground); margin-left: .22em; }
+.stat-k { font-size: 13px; color: var(--muted-foreground); margin-top: 12px; letter-spacing: -0.004em; }
+.stat-x { margin-top: 10px; font-size: 12.5px; color: var(--muted-foreground); max-width: 210px; }
+
+/* --- 行式列表：宽松，靠留白 --- */
+/* 放在 components 层：行上写的 pt-0 这类工具类要能生效（层外的规则压过所有工具类，列表第一行的 pt-0 以前不起作用） */
+@layer components {
+  .rowline {
+    display: flex; align-items: center; gap: 18px;
+    padding: 18px 0; border-bottom: 1px solid var(--border);
+  }
+  .rowline:last-child { border-bottom: none; }
+}
+/*
+ * 可点的行：悬停时铺一块圆角浅底。底色画在伪元素上而不是行本身——
+ * 行自己带着 1px 底边线，给行加圆角的话，那条线会在两端跟着弯上去，看着像一道阴影。
+ */
+.rowline-hover { position: relative; isolation: isolate; }
+.rowline-hover::before {
+  content: ''; position: absolute; inset: 3px -14px; z-index: -1;
+  border-radius: 12px; background: var(--muted); opacity: 0; transition: opacity var(--dur-hover);
+}
+.rowline-hover:hover::before { opacity: 1; }
+.rowline-main { flex: 1; min-width: 0; }
+/* 维护中的节点：旗子和名字置灰，右侧的「维护中」标记保持清楚 */
+.rowline.is-off > :not(.rowline-x) { opacity: .5; }
+/* 列表行标题：字距 0——负字距对英文是收紧，对中文是把字挤在一起，Noto 笔画又粗，一挤就糊 */
+.rowline-t { font-size: 15px; font-weight: 500; letter-spacing: 0; }
+.rowline-d { font-size: 13px; color: var(--muted-foreground); margin-top: 4px; }
+.rowline-x { flex-shrink: 0; display: flex; align-items: center; gap: 14px; }
+
+/* --- 两栏分区：靠间距，不画竖线 --- */
+.split2 { display: grid; grid-template-columns: 1fr 1fr; gap: 72px; }
+.split2 > .pane { display: flex; flex-direction: column; }
+.split2 > .vline { display: none; }
+
+/* --- 表格：仅微标签表头，无表头底色 --- */
+.flat-head th {
+  font-size: 11.5px !important; font-weight: 500 !important;
+  letter-spacing: .05em; color: var(--muted-foreground) !important;
+  padding-bottom: 14px !important;
+}
+
+/* --- 提示条：整块浅底，无边框 --- */
+/*
+ * 横向可滑、不显示滚动条的一排（公告的分类页签这类）。
+ * 单写 overflow-x: auto 时，纵向会跟着变成 auto：选中页签的阴影、边框超出一两像素，右边就冒出一条细细的滚动条。
+ * 纵向显式 hidden；上下各留 2px 给阴影，再用负外边距抵掉，排版不变。窄屏上照样能用手指横滑。
+ */
+.scroll-row { overflow-x: auto; overflow-y: hidden; scrollbar-width: none; padding-block: 2px; margin-block: -2px; }
+.scroll-row::-webkit-scrollbar { display: none; }
+
+.notice {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 18px 22px; border-radius: 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 3px 0 rgba(15, 23, 42, 0.03), 0 1px 2px -1px rgba(15, 23, 42, 0.03);
+  font-size: 14.5px;
+}
+.dark .notice {
   background: var(--muted);
-  border-radius: 4px;
-  padding: 0.1em 0.3em;
+  border-color: transparent;
+  box-shadow: none;
 }
-.md pre {
+
+.hero-line { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.hero-num { font-size: 52px; font-weight: 500; letter-spacing: -0.04em; line-height: 1.02; }
+
+/* --- 定价三栏：靠间距分隔，主推列浅底圆角 --- */
+/*
+ * 商店的套餐列。沿用站内的语言：不画卡片框和投影，每列顶上一道细线，
+ * 和区块之间的分隔线是同一种；当前套餐用浅灰底圆角块托住（接入前商店「热门」那一栏的写法）。
+ * 悬停时一道品牌色细线从左往右扫过顶边——和顶部导航的下划线同一个动作，不上浮、不加阴影。
+ */
+.plan-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px 40px; }
+.plan-col {
+  position: relative; display: flex; flex-direction: column;
+  padding: 26px 0 30px; border-top: 1px solid var(--border);
+}
+.plan-col::before {
+  content: ''; position: absolute; left: 0; right: 0; top: -1px; height: 2px;
+  background: var(--brand); transform: scaleX(0); transform-origin: left;
+  transition: transform var(--dur-base) var(--ease-out);
+}
+.plan-col:hover::before, .plan-col:focus-within::before { transform: scaleX(1); }
+.plan-col.is-current {
+  border-top-color: transparent;
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 24px -6px rgba(15, 23, 42, 0.06), 0 2px 6px -2px rgba(15, 23, 42, 0.04);
+  border-radius: 20px; padding-inline: 24px; margin-inline: -12px;
+}
+.dark .plan-col.is-current {
   background: var(--muted);
-  border-radius: 6px;
-  padding: 0.75rem;
-  overflow-x: auto;
+  border-color: transparent;
+  box-shadow: none;
 }
-.md pre code {
-  background: none;
-  padding: 0;
+.plan-col.is-current::before { display: none; }
+@media (max-width: 1023px) { .plan-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px) {
+  .plan-cols { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .plan-col.is-current { margin-inline: 0; }
 }
-.md hr {
-  border: none;
-  border-top: 1px solid var(--border);
+@media (prefers-reduced-motion: reduce) { .plan-col::before { transition: none; } }
+
+/* --- 顶部导航：底部蓝线激活态，与文字链同一手法 --- */
+.topnav-link {
+  position: relative; display: flex; align-items: center;
+  height: 36px; white-space: nowrap;
+  font-size: 14px; font-weight: 500;
+  color: var(--muted-foreground); transition: color var(--dur-hover);
 }
-.md img {
-  max-width: 100%;
-  height: auto;
-  border-radius: 6px;
+.topnav-link::after {
+  content: ''; position: absolute; inset-inline: 0; bottom: 0; height: 2px;
+  border-radius: 2px; background: var(--brand);
+  transform: scaleX(0); transform-origin: left;
+  transition: transform var(--dur-fast) var(--ease-out);
 }
+.topnav-link:hover { color: var(--foreground); }
+.topnav-link:hover::after { transform: scaleX(1); }
+.topnav-link[data-active='true'] { color: var(--brand); }
+/* 当前项的下划线由 NavIndicator 画（切页时从旧的一项滑到新的一项），伪元素只管悬停 */
+.nav-indicator {
+  position: absolute; left: 0; top: 0; height: 2px; border-radius: 2px;
+  background: var(--brand); pointer-events: none;
+}
+.nav-indicator[data-ready='true'] { transition: translate .32s var(--ease-out), width .32s var(--ease-out); }
+.topnav-link[data-active='true']::after { transform: scaleX(0); }
+
+@media (max-width: 1100px) { .page-wrap { padding-inline: 32px; } }
+@media (max-width: 991px) {
+  .statrow { gap: 36px 48px; }
+  .stat-v { font-size: 38px; }
+  .split2 { grid-template-columns: 1fr; gap: 44px; }
+}
+@media (max-width: 640px) {
+  .page-wrap { padding-inline: 20px; }
+  .page-title { font-size: 27px; }
+  .statrow { gap: 28px 40px; }
+}
+
+/* ---------- 法务长文正文 ---------- */
+.doc-body { font-size: 15px; line-height: 1.95; color: var(--text-body); }
+.doc-body > * + * { margin-top: 14px; }
+.doc-body strong { color: var(--foreground); font-weight: 500; }
+.doc-body ul { display: flex; flex-direction: column; gap: 9px; }
+.doc-body li { position: relative; padding-left: 18px; }
+.doc-body li::before {
+  content: ""; position: absolute; left: 2px; top: 12px;
+  width: 5px; height: 1px; background: var(--brand); opacity: .7;
+}
+
+/* ---------- 夜间模式下的语义色 ----------
+   成功 / 警示 / 危险的字色已经是变量（--success / --warning / --danger，组件里写 text-success 这类），
+   两种模式各取各的值，见上面 :root 与 .dark。这里只剩还没换成变量的紫色标签。 */
+.dark .text-violet-600 { color: #a78bfa; }
+
+
+/* ---------- 页头「一线」：窄屏的菜单按钮、宽屏名字下面那根线、卡片顶边那根线 ----------
+   见 components/menu-lines.tsx。下面那根线的长度由 --v（0–100%）给出：
+   用户是剩余流量，落地页上的访客是阅读进度。 */
+.lines, .acct {
+  --line-fg: var(--foreground);
+  --line-track: rgb(10 10 10 / .16);
+  --line-fill: var(--brand);
+}
+.dark .lines, .dark .acct { --line-track: rgb(255 255 255 / .2); }
+.lines[data-dark], .acct[data-dark] { --line-fg: #fff; --line-track: rgb(255 255 255 / .3); --line-fill: #4a9dff; }
+.lines[data-tone='warn'], .acct[data-tone='warn'] { --line-fill: #f59e0b; }
+
+.lines {
+  position: relative; flex: none; width: 44px; height: 44px; border-radius: 9999px; cursor: pointer;
+  transition: background-color var(--dur-hover);
+}
+.lines:hover, .lines[data-state='open'] { background: var(--muted); }
+.lines[data-dark]:hover { background: rgb(255 255 255 / .1); }
+.lines:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+/* 两根 18 × 1.5px、间距 7px 的线；打开时各旋 45° 合成 × */
+.lines > i {
+  position: absolute; left: 13px; top: 21.25px; width: 18px; height: 1.5px; border-radius: 1px; overflow: hidden;
+  transition: transform .38s var(--ease-out), background-color var(--dur-hover);
+}
+.lines > i:first-child { background: var(--line-fg); transform: translateY(-3.5px); }
+.lines > i:nth-child(2) { background: var(--line-track); transform: translateY(3.5px); }
+.lines[data-solid] > i:nth-child(2) { background: var(--line-fg); }
+.lines > i > b { position: absolute; inset: 0 auto 0 0; width: var(--v, 0%); background: var(--line-fill); transition: opacity .18s; }
+.lines[data-state='open'] > i:first-child { transform: rotate(45deg); }
+.lines[data-state='open'] > i:nth-child(2) { transform: rotate(-45deg); background: var(--line-fg); }
+.lines[data-state='open'] > i > b { opacity: 0; }
+/* 「有事等你」：上面那根线右端外 3px 一个 4px 的圆点 */
+.lines > s { position: absolute; left: 34px; top: 16.5px; width: 4px; height: 4px; border-radius: 9999px; background: var(--brand); transition: opacity .2s, transform .3s var(--ease-out); }
+.lines[data-dark] > s { background: #4a9dff; }
+.lines[data-state='open'] > s { opacity: 0; transform: scale(.4); }
+/* 本次访问第一次出现时，下面那根从 0 画到当前值 */
+.lines[data-intro] > i > b { animation: line-draw 1s var(--ease-out) .35s both; }
+@keyframes line-draw { from { width: 0; } }
+
+/* 卡片顶边：按钮下面那根线放大后的样子，每次打开从左边画到对应的值 */
+.card-line { position: relative; height: 2px; background: rgb(10 10 10 / .08); }
+.dark .card-line { background: rgb(255 255 255 / .12); }
+.card-line > b { position: absolute; inset: 0 auto 0 0; width: var(--v, 0%); background: var(--brand); animation: line-draw .7s var(--ease-out) .06s both; }
+.card-line[data-tone='warn'] > b { background: #f59e0b; }
+
+/* 宽屏：名字下面一根细线，长度同样是剩余流量 */
+.acct-name { position: relative; margin-top: 4px; padding-bottom: 4px; }
+.acct-name::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 1.5px; border-radius: 1px;
+  background: linear-gradient(90deg, var(--line-fill) 0 var(--v, 0%), var(--line-track) var(--v, 0%) 100%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lines > i, .lines > s { transition: none; }
+  .lines[data-intro] > i > b, .card-line > b { animation: none; }
+}
+
+/* ---------- 面板下发的内容 ----------
+   公告正文、知识库文章由面板在服务端渲染成 HTML（components/server-html），
+   标签集是固定的：p br h3–h6 strong em code pre ul ol li blockquote hr a img，
+   没有 class / style。这里只给一套克制的排版底子。h3 是内容里的最高一级标题。 */
+.rich { font-size: 14.5px; line-height: 1.9; color: var(--text-body); overflow-wrap: anywhere; }
+.rich > * + * { margin-top: 13px; }
+.rich strong { color: var(--foreground); font-weight: 500; }
+.rich h3, .rich h4, .rich h5, .rich h6 {
+  color: var(--foreground); font-weight: 500; line-height: 1.45; letter-spacing: -0.015em;
+  margin-top: 22px;
+}
+.rich h3 { font-size: 17px; } .rich h4 { font-size: 15.5px; }
+.rich h5, .rich h6 { font-size: 14.5px; }
+.rich ul, .rich ol { padding-left: 20px; display: flex; flex-direction: column; gap: 7px; }
+.rich ul { list-style: disc; } .rich ol { list-style: decimal; }
+.rich li::marker { color: color-mix(in srgb, var(--brand) 70%, transparent); }
+.rich a { color: var(--brand); text-decoration: underline; text-underline-offset: 3px; }
+.rich code {
+  font-size: .92em; padding: 1.5px 5px; border-radius: 5px;
+  background: var(--muted); color: var(--foreground);
+}
+.rich pre {
+  padding: 12px 14px; border-radius: 12px; background: var(--muted);
+  overflow-x: auto; font-size: 12.5px; line-height: 1.7;
+}
+.rich pre code { padding: 0; background: none; }
+.rich blockquote {
+  padding-left: 14px; border-left: 2px solid color-mix(in srgb, var(--brand) 45%, transparent);
+  color: var(--muted-foreground);
+}
+.rich img { border-radius: 12px; height: auto; }
+.rich hr { border: 0; border-top: 1px solid var(--border); }
+.rich h3, .rich h4 { scroll-margin-top: 92px; }
+
+/* ---------- 套餐说明 ----------
+   站长写的纯文本（面板的「Markdown-lite」：以 - / * / • 开头的行是列表），按文本节点渲染，
+   列表项画成品牌色对勾（components/plan-content）。 */
+.plan-rich { font-size: 13.5px; line-height: 1.75; }
+.plan-rich > * + * { margin-top: 10px; }
+.plan-rich ul { display: flex; flex-direction: column; list-style: none; padding-left: 0; gap: 9px; }
+.plan-rich ul li { position: relative; padding-left: 24px; }
+.plan-rich ul li::before {
+  content: ''; position: absolute; left: 0; top: .3em; width: 16px; height: 16px;
+  background: var(--brand);
+  /* 图标是文件而不是 data: 地址：面板的 CSP（default-src 'self'）不允许 data: 图片 */
+  mask: url("./assets/icons/check.svg") center / contain no-repeat;
+}
+
+/* ---------- 文档正文 ----------
+   比通用内容大一号、行距更松，h3（章节）之间留出章节感；长文读起来不累。 */
+.rich-article { font-size: 15.5px; line-height: 1.95; color: color-mix(in srgb, var(--foreground) 78%, transparent); }
+.rich-article > * + * { margin-top: 16px; }
+.rich-article h3 { font-size: 20px; margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--border); }
+.rich-article > h3:first-child { padding-top: 0; border-top: 0; margin-top: 0; }
+.rich-article h4 { font-size: 17px; margin-top: 28px; }
+.rich-article h5, .rich-article h6 { font-size: 15.5px; margin-top: 22px; }
+.rich-article img { border-radius: 14px; border: 1px solid var(--border); }
+.rich-article pre { font-size: 13px; }
+
+/* ===================================================================
+   加载态
+   =================================================================== */
+
+/*
+ * 苹果那只活动指示器：12 根锥形短棒，亮度依次衰减。
+ * 之前用的是灯塔式的锥形光束，44px 下只剩两个飘着的色块，认不出是什么。
+ * 这个在任何尺寸下都读得出来，而且足够安静，不跟页面内容抢注意力。
+ */
+.spinner {
+  position: relative;
+  display: inline-block;
+  width: var(--spin-size, 28px);
+  height: var(--spin-size, 28px);
+  flex-shrink: 0;
+  /* 默认灰；放在实心按钮里时由 tone="current" 改成跟随文字色 */
+  color: var(--spin-color, var(--muted-foreground));
+}
+.spinner i {
+  position: absolute; top: 0; left: 50%;
+  width: 7.5%; height: 27%;
+  margin-left: -3.75%;
+  border-radius: 999px;
+  background: currentColor;
+  transform-origin: 50% calc(100% / 0.27 / 2); /* 绕圆心转，不是绕自己 */
+  transform: rotate(calc(var(--i) * 30deg));
+  animation: spin-fade 1s linear infinite;
+  animation-delay: calc(var(--i) * -0.0833s);
+}
+@keyframes spin-fade { 0% { opacity: 1; } 100% { opacity: .12; } }
+
+/*
+ * 这里**不**跟随 prefers-reduced-motion 停下。
+ * 短棒本身不位移，只是明暗轮换，不属于会引起不适的那类动效；
+ * 而一只冻住的指示器等于告诉用户「卡死了」，比动着更糟。
+ * 只把它放慢一档。
+ */
+@media (prefers-reduced-motion: reduce) {
+  .spinner i { animation-duration: 1.4s; }
+}
+
+/*
+ * 骨架条。扫光用统一的 --sk-delay 排相位，
+ * 一屏骨架合起来是一道光扫过整页，而不是每条各闪各的。
+ */
+.sk {
+  position: relative; display: block; overflow: hidden; border-radius: 3px;
+  background: color-mix(in srgb, var(--muted-foreground) 13%, transparent);
+}
+.sk::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(90deg,
+    transparent, color-mix(in srgb, var(--foreground) 9%, transparent), transparent);
+  transform: translateX(-100%);
+  animation: sk-beam 1.75s cubic-bezier(.5, 0, .3, 1) infinite;
+  animation-delay: var(--sk-delay, 0s);
+}
+@keyframes sk-beam { to { transform: translateX(100%); } }
+
+/* 三秒之内加载完就不该看到这句话 */
+/*
+ * 加载占位（骨架、整页菊花）：晚 120ms 才淡入。
+ * 多数请求在这之前就回来了，占位根本不露面——否则就是骨架一闪即逝、内容再冒出来，比直接等更晃眼。
+ * 真慢的时候，它淡入而不是跳出来。
+ */
+.load-in { animation: state-in var(--dur-fast) var(--ease-out) .12s both; }
+/* 区块的空状态、出错提示：出现时淡入，和其余内容的入场同一口径 */
+.state-in { animation: state-in var(--dur-fast) var(--ease-out) both; }
+@keyframes state-in { from { opacity: 0; } }
+
+.load-hint { opacity: 0; animation: load-hint .5s ease 3s forwards; }
+@keyframes load-hint { to { opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .sk::after { display: none; }
+  .load-hint { opacity: 1; animation: none; }
+}
+
+/* ---------- 出错页：灭掉的镜面 ----------
+   光束是灰的，不用品牌蓝——灯没亮，就别装作亮着。 */
+.err-lens { position: relative; display: inline-grid; place-items: center; flex-shrink: 0; }
+.err-lens::before {
+  content: ''; position: absolute; inset: -19px; border-radius: 50%;
+  background: conic-gradient(from 0deg,
+    color-mix(in srgb, var(--muted-foreground) 32%, transparent) 0deg 15deg, transparent 15deg 360deg);
+  /* 只留镜面之外的一圈：不遮住镜面，看着才像一道扫出去的光，而不是进度饼 */
+  mask: radial-gradient(closest-side, transparent 66%, #000 73%, transparent 100%);
+  animation: err-search 7s linear infinite;
+}
+@keyframes err-search { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .err-lens::before { animation: none; } }
+
+/* 隐藏横向滚动条但保留平滑滚动（移动端标签滑轨与步骤条） */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
+

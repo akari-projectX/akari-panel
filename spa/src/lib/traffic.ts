@@ -1,110 +1,36 @@
-// W22: traffic history (mirror of src/trafficlog.rs). Days are calendar
-// days "YYYY-MM-DD" in the site time zone (Q3, W28-a: the response's
-// `timezone`; default Asia/Shanghai, the console's zone); rows exist only
-// for days with traffic.
-import { TIME_ZONE } from "./datetime";
+import type { MyTraffic } from '@/api';
+import { fillDays, formatMonthDay, toGB } from '@/lib/format';
 
-export interface TrafficBytes {
-  up_bytes: number;
-  down_bytes: number;
-  billed_bytes: number;
+/** 图表与明细表用的一天：GB，保留两位小数 */
+export type TrafficDay = { date: string; day: string; up: number; down: number; billed: number };
+
+const gb = (b: number) => +toGB(b).toFixed(2);
+
+/**
+ * GET /me/traffic 的按天明细 → 图表数据。面板只给有流量的日子，这里补齐 [from, to] 的每一天。
+ * 日子是全站时区的日历日（面板已经按它切好），前端不再换算时区。
+ */
+export function trafficDays(t: MyTraffic | undefined): TrafficDay[] {
+  if (!t) return [];
+  return fillDays(t.days, t.from, t.to, { up_bytes: 0, down_bytes: 0, billed_bytes: 0 }).map((d) => ({
+    day: d.day,
+    date: formatMonthDay(d.day),
+    up: gb(d.up_bytes),
+    down: gb(d.down_bytes),
+    billed: gb(d.billed_bytes),
+  }));
 }
 
-export interface TrafficDay extends TrafficBytes {
-  day: string;
-}
-
-export interface TrafficNodeDay extends TrafficDay {
-  /** Distinct users with traffic on the node that day (fleet: user-node pairs). */
-  users: number;
-}
-
-/** GET /me/traffic: per day and per node name (null = hidden or deleted nodes, merged). */
-export interface MyTraffic {
-  from: string;
-  to: string;
-  timezone: string;
-  daily_since: string | null;
-  total: TrafficBytes;
-  days: TrafficDay[];
-  nodes: (TrafficBytes & { name: string | null })[];
-}
-
-/** GET /users/{id}/traffic (admin). */
-export interface UserTrafficView {
-  from: string;
-  to: string;
-  timezone: string;
-  group: "day" | "node" | "month";
-  daily_since: string | null;
-  total: TrafficBytes;
-  rows: (TrafficBytes & { day?: string; node_id?: string; name?: string | null })[];
-}
-
-/** GET /nodes/{id}/traffic (admin). */
-export interface NodeTrafficView {
-  from: string;
-  to: string;
-  timezone: string;
-  daily_since: string | null;
-  total: TrafficBytes;
-  days: TrafficNodeDay[];
-  top_users: (TrafficBytes & { user_id: string; email: string | null })[];
-}
-
-/** GET /traffic/summary (admin): fleet per day + top nodes. */
-export interface TrafficSummaryView {
-  from: string;
-  to: string;
-  timezone: string;
-  total: TrafficBytes;
-  days: TrafficNodeDay[];
-  top_nodes: (TrafficBytes & { node_id: string; name: string | null })[];
-}
-
-const DAY_MS = 86_400_000;
-
-function parseDay(s: string): number {
-  const [y, m, d] = s.split("-").map(Number);
-  return Date.UTC(y, m - 1, d);
-}
-
-function fmtDay(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10);
-}
-
-const DAY_FORMAT = new Intl.DateTimeFormat("en-CA", {
-  timeZone: TIME_ZONE,
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
-
-/** Today in the (default) site time zone. */
-export function siteToday(now: Date = new Date()): string {
-  return DAY_FORMAT.format(now);
-}
-
-/** The query string for the last `days` site days (today included). */
-export function lastDays(days: number, now: Date = new Date()): { from: string; to: string } {
-  const to = siteToday(now);
-  return { from: fmtDay(parseDay(to) - (days - 1) * DAY_MS), to };
-}
-
-/** Every day of [from, to] (at most 400), with the rows' bytes or zeros. */
-export function fillDays<T extends TrafficDay>(rows: T[], from: string, to: string): TrafficDay[] {
-  const by = new Map(rows.map((r) => [r.day, r]));
-  const out: TrafficDay[] = [];
-  const end = parseDay(to);
-  for (let t = parseDay(from), i = 0; t <= end && i < 400; t += DAY_MS, i += 1) {
-    const day = fmtDay(t);
-    const r = by.get(day);
-    out.push({
-      day,
-      up_bytes: r?.up_bytes ?? 0,
-      down_bytes: r?.down_bytes ?? 0,
-      billed_bytes: r?.billed_bytes ?? 0,
-    });
-  }
-  return out;
+/**
+ * 按节点汇总（原始流量 GB，从多到少）。name 为 null 的是隐藏或已删除的节点，合成一项。
+ * rate 是这段时间的有效倍率：计费 ÷ 原始（D9 分时段倍率之后同一节点不同时段倍率不同，只能这样算）。
+ */
+export function trafficByNode(t: MyTraffic | undefined, other: string) {
+  return (t?.nodes ?? [])
+    .map((n) => {
+      const raw = n.up_bytes + n.down_bytes;
+      return { name: n.name ?? other, value: gb(raw), billed: gb(n.billed_bytes), rate: raw > 0 ? +(n.billed_bytes / raw).toFixed(2) : null };
+    })
+    .filter((n) => n.value > 0)
+    .sort((a, b) => b.value - a.value);
 }

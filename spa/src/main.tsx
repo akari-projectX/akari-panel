@@ -1,7 +1,8 @@
-// User portal entry (/{prefix}/app). Must never import admin modules (R23):
-// the user build fails if any becomes reachable (vite.config.ts) and
-// scripts/check-bundles.mjs greps the emitted files for admin markers.
-import { App } from "./app";
-import { mount } from "./mount";
+/* 明暗最先定（src/lib/theme.ts 接手 src/boot/boot.js 在首帧前做的判断），再加载样式、挂载应用 */
+import './lib/theme';
+import './boot/boot.css';
+import './index.css';
+import { start } from './mount';
 
-mount(<App />);
+/* 启动画面何时收起由 App 决定，见 lib/boot.ts */
+start();
