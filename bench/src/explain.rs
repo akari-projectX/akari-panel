@@ -112,10 +112,12 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         &mut tx,
         p,
         "grpc::desired_state entrances",
-        q!("SELECT n.inbound, e.wire_no, e.listen_port, e.source_cidrs::text[] AS source_cidrs \
+        q!(
+            "SELECT n.inbound, e.wire_no, e.listen_port, e.source_cidrs::text[] AS source_cidrs \
             FROM entrances e JOIN nodes n ON n.id = e.node_id \
             WHERE e.server_id = $1 AND e.enabled AND n.enabled AND n.inbound IS NOT NULL \
-            ORDER BY e.wire_no")
+            ORDER BY e.wire_no"
+        )
         .bind(ids.node),
     )
     .await?;
@@ -140,11 +142,13 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         &mut tx,
         p,
         "traffic::refresh_members",
-        q!("SELECT eu.entrance_id, eu.user_id, e.wire_no FROM entrance_users eu \
+        q!(
+            "SELECT eu.entrance_id, eu.user_id, e.wire_no FROM entrance_users eu \
             JOIN entrances e ON e.id = eu.entrance_id WHERE e.server_id = $1 \
             UNION SELECT d.entrance_id, d.user_id, e.wire_no FROM entrance_users_departed d \
             JOIN entrances e ON e.id = d.entrance_id \
-            WHERE e.server_id = $1 AND d.departed_at > now() - make_interval(secs => $2)")
+            WHERE e.server_id = $1 AND d.departed_at > now() - make_interval(secs => $2)"
+        )
         .bind(ids.node)
         .bind(900f64),
     )
@@ -300,7 +304,8 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         p,
         "sub::subscription nodes",
         q!(format!(
-            "SELECT n.name, n.display_name, n.tags, e.name AS entrance, e.rate_permille, \
+            "SELECT n.name, n.display_name, n.tags, e.name AS entrance, \
+            akari_entrance_rate(e.id, statement_timestamp()) AS rate_permille, \
             n.inbound, coalesce(e.connect_host, s.tls_domain) AS server, \
             e.connect_port AS port, eu.protocol, eu.account \
             FROM entrance_users eu \

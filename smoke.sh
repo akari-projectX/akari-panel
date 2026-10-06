@@ -1436,6 +1436,22 @@ if need_agent "protocol>=7" "Q1 two nodes on one server"; then
   echo "q1 two nodes on one server: ok"
 fi
 
+echo "== D9: time-window multipliers =="
+RULES='{"rules":[{"weekdays":[1,2,3,4,5,6,7],"start":"00:00","end":"24:00","rate":3},{"weekdays":[1],"start":"08:00","end":"09:00","rate":1.5}]}'
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/entrances/$DIRECT_ID/rate-rules" -H 'Content-Type: application/json' -d "$RULES")" = "200" ] \
+  && [ "$(last_json "d['entrance']['rate_now'], len(d['entrance']['rate_rules']), len(d['warnings'])")" = "3.0 2 1" ] \
+  || { echo "FAIL: set rate rules"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/entrances/$DIRECT_ID/rate-rules" -H 'Content-Type: application/json' \
+    -d '{"rules":[{"weekdays":[8],"start":"00:00","end":"24:00","rate":1}]}')" = "400" ] \
+  && [ "$(last_json "d['code']")" = "entrance.rate_rule_invalid" ] || { echo "FAIL: bad weekday accepted"; exit 1; }
+rl_sub_clear
+curl -s --noproxy '*' -A 'clash.meta' "$BASE/sub/$SUB_D" | matches '3\.0x' || { echo "FAIL: subscription name lacks the rule's multiplier"; exit 1; }
+[ "$(psql_q "SELECT akari_entrance_rate('$DIRECT_ID', now())")" = "3000" ] || { echo "FAIL: SQL rate"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/entrances/$DIRECT_ID/rate-rules" -H 'Content-Type: application/json' -d '{"rules":[]}')" = "200" ] \
+  && [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='entrance.rate_rules.set' AND target_id='$DIRECT_ID'")" = "2" ] \
+  || { echo "FAIL: clear rate rules / audit"; exit 1; }
+echo "d9 time-window multipliers: ok"
+
 echo "== D5: server traffic quota from the network interface =="
 if need_agent cap:metrics "D5 server traffic quota"; then
   [ "$(patch_code "$BASE/api/v1/servers/$SERVER_ID" '{"traffic_quota_bytes":0}')" = "400" ] \

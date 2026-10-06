@@ -753,8 +753,12 @@ WITH input AS (
 ), ef AS MATERIALIZED (
     -- One row per entrance of the batch: its server (a server bills only
     -- its own entrances), its node (history and node totals) and its
-    -- multiplier (the value in effect now).
-    SELECT e.id AS entrance_id, e.server_id, e.node_id, e.rate_permille::numeric AS mult
+    -- multiplier: D9, the lower of the rates now and 30 s ago
+    -- (akari_entrance_rate: base or time-window rule, site time zone), so
+    -- bytes moved in a cheaper window are never billed at a dearer one.
+    SELECT e.id AS entrance_id, e.server_id, e.node_id,
+           LEAST(akari_entrance_rate(e.id, statement_timestamp()),
+                 akari_entrance_rate(e.id, statement_timestamp() - interval '30 seconds'))::numeric AS mult
     FROM entrances e WHERE e.id IN (SELECT DISTINCT entrance_id FROM input)
 ), classified AS (
     SELECT i.*,
@@ -890,8 +894,8 @@ WITH input AS (
                 ELSE amount END AS billed
     FROM server_cap
 ), charged AS (
-    -- The entrance's traffic multiplier (entrances.rate_permille, the value
-    -- in effect now; W28-a: per entrance, R43): users are charged
+    -- The entrance's traffic multiplier (`ef.mult`: D9 base or time-window
+    -- rule, see ef; W28-a: per entrance, R43): users are charged
     -- floor(billed x permille / 1000) per row, never more than billed x
     -- rate. Every cap above works on the accepted (raw) bytes; departed
     -- allowances and the server GCRA stay raw.

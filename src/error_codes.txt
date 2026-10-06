@@ -136,6 +136,8 @@ entrance.name_invalid
 entrance.port_clash
 entrance.port_invalid
 entrance.rate_invalid
+entrance.rate_rule_invalid
+entrance.rate_rules_too_many
 entrance.relay_address
 entrance.relay_only
 entrance.source_invalid

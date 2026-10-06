@@ -353,6 +353,10 @@ async fn endpoints_queries_and_permissions() {
     assert_eq!(bytes(&nodes[0]), (11, 22, 18));
     assert!(nodes[1]["name"].is_null());
     assert_eq!(bytes(&nodes[1]), (105, 205, 305));
+    // D9: the current multipliers of the user's entrances (none here for
+    // the merged row; an array for the named one).
+    assert_eq!(nodes[1]["rates"], json!([]));
+    assert!(nodes[0]["rates"].is_array());
     let body = v.to_string();
     for leak in [
         n1.to_string(),

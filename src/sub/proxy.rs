@@ -263,7 +263,7 @@ pub(crate) fn net_from_inbound(inbound: &serde_json::Value) -> Option<Net> {
 }
 
 /// A multiplier as subscriptions show it: "2.0x", "0.5x", "1.25x", "0.125x".
-fn rate_label(permille: i32) -> String {
+pub(crate) fn rate_label(permille: i32) -> String {
     let r = f64::from(permille) / 1000.0;
     if permille % 100 == 0 {
         format!("{r:.1}x")

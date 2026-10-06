@@ -187,6 +187,10 @@ pub fn router(state: AppState) -> Router {
             "/{prefix}/api/v1/nodes/{id}/entrances",
             post(crate::entrances::create_relay),
         )
+        .route(
+            "/{prefix}/api/v1/entrances/{id}/rate-rules",
+            put(crate::rates::set_rules),
+        )
         // The portal node list.
         .route("/{prefix}/api/v1/me/nodes", get(nodestat::my_nodes))
         // W17: support tickets (customers: own tickets only; staff: all).

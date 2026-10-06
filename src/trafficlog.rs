@@ -267,9 +267,12 @@ pub struct UserRow {
 
 /// One node of the user's own history: its public name, or null for nodes
 /// that are hidden or gone (merged into one row).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, PartialEq, Serialize, sqlx::FromRow)]
 pub struct MyNodeRow {
     pub name: Option<String>,
+    /// D9: the multipliers in effect now on the user's entrances of the
+    /// node (distinct, ascending; empty for the merged hidden/deleted row).
+    pub rates: Vec<f64>,
     #[sqlx(flatten)]
     #[serde(flatten)]
     pub bytes: Bytes,
@@ -436,10 +439,14 @@ pub async fn my_nodes(
     to: NaiveDate,
 ) -> sqlx::Result<Vec<MyNodeRow>> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT name, {SUMS} FROM ( \
+        "SELECT name, CASE WHEN name IS NULL THEN '{{}}'::float8[] ELSE coalesce(( \
+                SELECT array_agg(DISTINCT akari_entrance_rate(e.id, statement_timestamp())::float8 / 1000) \
+                FROM entrances e JOIN entrance_users eu ON eu.entrance_id = e.id AND eu.user_id = $1 \
+                WHERE e.node_id = ANY (array_agg(x.node_id)) AND e.enabled), '{{}}') END AS rates, \
+            {SUMS} FROM ( \
             SELECT CASE WHEN n.visible AND s.deleting_at IS NULL \
                         THEN coalesce(n.display_name, n.name) END AS name, \
-                   t.up_bytes, t.down_bytes, t.billed_bytes \
+                   t.node_id, t.up_bytes, t.down_bytes, t.billed_bytes \
             FROM (SELECT node_id, {SUMS} FROM traffic_daily \
                   WHERE user_id = $1 AND day BETWEEN $2 AND $3 GROUP BY node_id) t \
             LEFT JOIN nodes n ON n.id = t.node_id \

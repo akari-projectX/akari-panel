@@ -1228,7 +1228,8 @@ pub async fn my_nodes(
 ) -> Result<Json<Vec<MyNodeStatus>>, ApiError> {
     let rows = sqlx::query_as::<_, MyNodeStatus>(sqlx::AssertSqlSafe(format!(
         "SELECT coalesce(n.display_name, n.name) AS name, e.name AS entrance, n.region, n.tags, \
-         (e.rate_permille / 1000.0)::float8 AS rate, {} AS online, \
+         (akari_entrance_rate(e.id, statement_timestamp()) / 1000.0)::float8 AS rate, \
+         {} AS online, \
          l.delay_ms AS latency_ms, \
          CASE WHEN l.delay_ms IS NOT NULL THEN 'ok' WHEN lf.server_id IS NOT NULL THEN 'timeout' \
               ELSE 'unknown' END AS latency_status, \
