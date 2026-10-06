@@ -1487,7 +1487,11 @@ async fn no_active_plan(conn: &mut PgConnection, user_id: Uuid) -> Result<ApiErr
 /// from the later of its expiry and now (DB clock). A subscription without
 /// expiry has nothing to renew (409 `user_plan.no_expiry`); N days are
 /// refused for a one-time purchase (409 `user_plan.extend_onetime`, ruling
-/// ④). Entitlement is unchanged; usage and the reset schedule stay.
+/// ④). Entitlement is unchanged; the reset schedule stays. Usage stays too
+/// — except that a new term of a one-time purchase or of a plan without
+/// periodic resets starts a fresh quota (运营审查中-1: otherwise a user
+/// who used up such a plan pays a renewal and stays cut off); a quota-
+/// disabled account comes back.
 pub async fn apply_renew_user_plan(
     conn: &mut PgConnection,
     actor: &Actor,
@@ -1539,12 +1543,30 @@ pub async fn apply_renew_user_plan(
     .bind(extend)
     .fetch_one(&mut *conn)
     .await?;
+    // 中-1: a new term without periodic resets = a fresh quota.
+    let fresh_quota = match term {
+        None => false,
+        Some(t) if t.is_onetime() => true,
+        Some(_) => sqlx::query_scalar(
+            "SELECT p.reset_period = 'none' FROM user_plans up JOIN plans p ON p.id = up.plan_id \
+             WHERE up.id = $1",
+        )
+        .bind(up_id)
+        .fetch_one(&mut *conn)
+        .await?,
+    };
+    if fresh_quota {
+        sqlx::query("UPDATE user_plans SET last_reset_at = now() WHERE id = $1")
+            .bind(up_id)
+            .execute(&mut *conn)
+            .await?;
+    }
     // Locks the user's nodes (nothing to change: same entitlement).
     let mut res = UserPlanChange {
         outcome: entitle::apply_reconcile(conn, Scope::Users(&[user_id])).await?,
         ..Default::default()
     };
-    let synced = sync_users_from_plan(conn, &[user_id], false).await?;
+    let synced = sync_users_from_plan(conn, &[user_id], fresh_quota).await?;
     let mut after = json!({
         "user_plan_id": up_id,
         "expires_at": new_expiry,
@@ -1553,6 +1575,9 @@ pub async fn apply_renew_user_plan(
             |t| json!({ "period": t.kind.as_str(), "days": t.days })
         ),
     });
+    if fresh_quota {
+        after["traffic_reset"] = json!(true);
+    }
     if let Some(n) = extend {
         after["extend_days"] = json!(n);
     }

@@ -70,3 +70,76 @@ async fn switch_credit_counts_the_traffic_left() {
     drop(state);
     db.drop().await;
 }
+
+async fn quota_disabled(db: &TestDb, user: Uuid, used: i64) {
+    sqlx::query(
+        "UPDATE users SET traffic_used_bytes = $2, enabled = false, disabled_reason = 'quota' \
+         WHERE id = $1",
+    )
+    .bind(user)
+    .bind(used)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+}
+
+async fn served(db: &TestDb, user: Uuid) -> (i64, bool) {
+    sqlx::query_as("SELECT traffic_used_bytes, enabled FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+}
+
+/// 中-1: a renewal of a plan without periodic resets, or of a one-time
+/// purchase, starts a fresh quota (a quota-disabled user is back); a
+/// renewal of a monthly-reset plan keeps the usage (the reset handles it).
+#[tokio::test]
+async fn renewal_of_a_no_reset_plan_starts_a_fresh_quota() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let prices = [
+        (PeriodKind::Month, None, 1000),
+        (PeriodKind::Onetime, Some(30), 900),
+    ];
+    let (_, flat) = catalog_plan(&db, "mi1-none", &prices, |r| r.period = "none".into()).await;
+    let (_, monthly) = catalog_plan(&db, "mi1-monthly", &prices, |_| {}).await;
+    let u = db.user().await;
+    let c = user_client(&state, u).await;
+    bought(&db, &c, flat, "month").await;
+    quota_disabled(&db, u, 2 << 30).await;
+    // (Disabling ends the session: sign in again, renewal scope.)
+    let c = user_client(&state, u).await;
+    bought(&db, &c, flat, "month").await;
+    assert_eq!(
+        served(&db, u).await,
+        (0, true),
+        "fresh quota, back in service"
+    );
+    let last: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "SELECT last_reset_at FROM user_plans WHERE user_id = $1 AND status = 'active'",
+    )
+    .bind(u)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert!(last.is_some());
+    // Monthly resets: a renewal keeps the usage; a one-time term does not.
+    let v = db.user().await;
+    let cv = user_client(&state, v).await;
+    bought(&db, &cv, monthly, "month").await;
+    sqlx::query("UPDATE users SET traffic_used_bytes = 500 WHERE id = $1")
+        .bind(v)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    bought(&db, &cv, monthly, "month").await;
+    assert_eq!(served(&db, v).await, (500, true));
+    bought(&db, &cv, monthly, "onetime").await;
+    assert_eq!(served(&db, v).await, (0, true));
+    drop(state);
+    db.drop().await;
+}
