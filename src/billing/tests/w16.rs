@@ -1406,8 +1406,53 @@ async fn refunds() {
     let (o2, otn2) = (order_id(&r), otn_of(&r));
     mock.pay(&otn2);
     poll_until_paid(&db, &uc, o2).await;
-    let r = refund(o2, json!({"reason": "支付宝后台已退"})).await;
-    assert_eq!(r.json()["refund_cents"], 0);
+    // 中-3: the amount refunded in the Alipay console is recorded.
+    for (body, code) in [
+        (
+            json!({"reason": "支付宝后台已退"}),
+            "order_admin.refund_external_required",
+        ),
+        (
+            json!({"reason": "r", "external_cents": 1001}),
+            "order_admin.refund_external_range",
+        ),
+        (
+            json!({"reason": "r", "external_cents": -1}),
+            "order_admin.refund_external_range",
+        ),
+        (
+            json!({"reason": "r", "to_balance": true, "external_cents": 5}),
+            "order_admin.refund_external_with_balance",
+        ),
+    ] {
+        let r = refund(o2, body).await;
+        assert_eq!(
+            (r.status, r.json()["code"].clone()),
+            (StatusCode::BAD_REQUEST, json!(code))
+        );
+    }
+    let r = refund(
+        o2,
+        json!({"reason": "支付宝后台已退", "external_cents": 1000}),
+    )
+    .await;
+    assert_eq!(
+        (
+            r.json()["refund_cents"].clone(),
+            r.json()["refund_balance_cents"].clone(),
+            r.json()["refund_external_cents"].clone()
+        ),
+        (json!(1000), json!(0), json!(1000))
+    );
+    let row: (i64, i64, i64) = sqlx::query_as(
+        "SELECT refund_cents, refund_balance_cents, refund_external_cents FROM orders \
+         WHERE id = $1",
+    )
+    .bind(o2)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(row, (1000, 0, 1000));
     assert_eq!(balance(&db, u).await, 1000);
     assert_eq!(
         count(
@@ -1557,7 +1602,7 @@ async fn commission_lifecycle() {
     let r = admin
         .post(
             &format!("/test/api/v1/orders/{o3}/refund"),
-            json!({"reason": "退款"}),
+            json!({"reason": "退款", "external_cents": 0}),
         )
         .await;
     assert_eq!(r.json()["commission"], "reversed");
@@ -1571,7 +1616,7 @@ async fn commission_lifecycle() {
     let r = admin
         .post(
             &format!("/test/api/v1/orders/{o1}/refund"),
-            json!({"reason": "late"}),
+            json!({"reason": "late", "external_cents": 0}),
         )
         .await;
     assert_eq!(r.json()["commission"], "credited");

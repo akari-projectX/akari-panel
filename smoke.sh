@@ -2111,6 +2111,20 @@ PORDER=$(last_json "d['id']")
 [ "$(psql_q "SELECT count(*) FROM user_plans WHERE user_id='$W16U' AND status='active'")/$(psql_q "SELECT count(*) FROM entrance_users WHERE user_id='$W16U'")" = "0/0" ] \
   || { echo "FAIL: the refunded subscription kept its access"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/orders/$CORDER/refund-preview")" = "409" ] || { echo "FAIL: preview of a refunded order"; exit 1; }
+# 中-3: an Alipay-console refund is recorded with the amount the admin enters.
+[ "$(api_json "$WJAR" POST "$BASE/api/v1/me/orders" "{\"plan_id\":\"$W16_PLAN\",\"period\":\"month\"}")" = "201" ] \
+  || { echo "FAIL: order to refund out of band"; cat /tmp/akari-smoke/last; exit 1; }
+XORDER=$(last_json "d['id']"); XOTN=$(last_json "d['out_trade_no']")
+[ "$(curl -s --noproxy '*' -X POST "$BASE/pay/alipay/notify" --data-binary "$(python3 "$PAY/notify.py" "$PAY" "$XOTN" 10.00 TRADE_SUCCESS)")" = "success" ] \
+  || { echo "FAIL: out-of-band refund order notify"; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/orders/$XORDER/refund" '{"reason":"支付宝后台已退"}')" = "400" ] \
+  && last_json "d['code']" | matches '^order_admin.refund_external_required$' \
+  || { echo "FAIL: out-of-band refund without its amount"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/orders/$XORDER/refund" '{"reason":"支付宝后台已退","external_cents":1000}')" = "200" ] \
+  && [ "$(last_json "d['refund_cents']")/$(last_json "d['refund_balance_cents']")/$(last_json "d['refund_external_cents']")" = "1000/0/1000" ] \
+  || { echo "FAIL: out-of-band refund"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT refund_cents || '/' || refund_external_cents FROM orders WHERE id='$XORDER'")" = "1000/1000" ] \
+  || { echo "FAIL: out-of-band refund not recorded"; exit 1; }
 [ "$(psql_q "SELECT balance_cents FROM user_balances WHERE user_id='$W16U'")" = "1100" ] || { echo "FAIL: refund not on the balance"; exit 1; }
 # The money invariants, over everything above.
 [ "$(psql_q "SELECT count(*) FROM users u LEFT JOIN user_balances b ON b.user_id = u.id

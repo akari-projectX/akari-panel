@@ -170,6 +170,9 @@ export interface AdminOrder {
   gift_cents: number;
   refunded_at: string | null;
   refund_cents: number | null;
+  /** 中-3: credited to the balance / refunded at the provider. */
+  refund_balance_cents: number | null;
+  refund_external_cents: number | null;
   refund_reason: string | null;
   /** P1: what the refund did to the subscription. */
   refund_effect: RefundEffect | null;

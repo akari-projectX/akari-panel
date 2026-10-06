@@ -357,6 +357,8 @@ const ORDER_COLS: &[&str] = &[
     "payment_method",
     "refunded_at",
     "refund_cents",
+    "refund_balance_cents",
+    "refund_external_cents",
     "fulfil_error",
 ];
 
@@ -385,6 +387,8 @@ struct OrderRow {
     payment_method: Option<String>,
     refunded_at: Option<DateTime<Utc>>,
     refund_cents: Option<i64>,
+    refund_balance_cents: Option<i64>,
+    refund_external_cents: Option<i64>,
     fulfil_error: Option<String>,
 }
 
@@ -394,7 +398,8 @@ const ORDER_SELECT: &str = "SELECT o.id, o.out_trade_no, o.created_at, o.paid_at
      o.credit_cents, o.balance_cents, o.gift_cents, o.amount_cents, o.status, o.paid_via, \
      o.manual_reason, o.trade_no, \
      (SELECT m.display_name FROM payment_methods m WHERE m.id = o.payment_method_id) \
-      AS payment_method, o.refunded_at, o.refund_cents, o.fulfil_error FROM orders o";
+      AS payment_method, o.refunded_at, o.refund_cents, o.refund_balance_cents, \
+      o.refund_external_cents, o.fulfil_error FROM orders o";
 
 fn order_cells(r: &OrderRow) -> Vec<Cell> {
     vec![
@@ -422,6 +427,8 @@ fn order_cells(r: &OrderRow) -> Vec<Cell> {
         Cell::opt_text(r.payment_method.as_deref()),
         date(r.refunded_at),
         Cell::opt_raw(r.refund_cents),
+        Cell::opt_raw(r.refund_balance_cents),
+        Cell::opt_raw(r.refund_external_cents),
         Cell::opt_text(r.fulfil_error.as_deref()),
     ]
 }
