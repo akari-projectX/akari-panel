@@ -7,8 +7,10 @@
 //! replaces any earlier token of the node). The admin runs
 //!
 //! ```text
-//! curl -fsSL https://<panel>/<prefix>/install/<token> | sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'
+//! sh -c 'command -v curl …' && curl -fsSL https://<panel>/install/<token> | sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'
 //! ```
+//!
+//! (`require_tool`: without curl the line stops with how to install it.)
 //!
 //! (`AS_ROOT`: as root the script runs directly, otherwise through sudo,
 //! so the same line works on root-only images without sudo and for sudo
@@ -553,6 +555,41 @@ pub async fn apply_issue(
 /// missing sudo fails (exec) instead of running the script unprivileged.
 pub const AS_ROOT: &str = r#"sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'"#;
 
+/// The start of every install command: stop with how to install the
+/// download tool when it is missing (minimal images, e.g. Lightsail's
+/// Debian 13, have neither curl nor wget: a bare `curl: not found` left
+/// the admin guessing). Plain `sh -c '…' &&` so it works from any login
+/// shell that runs the rest of the line.
+pub fn require_tool(tool: &str) -> String {
+    format!(
+        "sh -c 'command -v {tool} >/dev/null || {{ echo \"缺少 {tool}，请先安装 / {tool} not found, \
+         install it first: apt-get update && apt-get install -y {tool} (Debian/Ubuntu), \
+         apk add {tool} (Alpine)\" >&2; exit 1; }}' && "
+    )
+}
+
+/// The install command (curl; pinned when the origin's certificate is not
+/// publicly trusted) and the wget variant (only without a pin: wget cannot
+/// pin).
+pub fn install_commands(url: &str, pin: Option<&str>) -> (String, Option<String>) {
+    match pin {
+        Some(pin) => (
+            format!(
+                "{}curl -fsSL --proto '=https' -k --pinnedpubkey '{pin}' '{url}' | {AS_ROOT}",
+                require_tool("curl")
+            ),
+            None,
+        ),
+        None => (
+            format!("{}curl -fsSL '{url}' | {AS_ROOT}", require_tool("curl")),
+            Some(format!(
+                "{}wget -qO- '{url}' | {AS_ROOT}",
+                require_tool("wget")
+            )),
+        ),
+    }
+}
+
 pub async fn view(
     state: &AppState,
     p: Prepared,
@@ -561,16 +598,7 @@ pub async fn view(
 ) -> Result<InstallView, ApiError> {
     // D4/D11: a public path of its own, never the admin prefix.
     let url = format!("{}/install/{token}", p.origin);
-    let (command, command_wget) = match &p.pin {
-        Some(pin) => (
-            format!("curl -fsSL --proto '=https' -k --pinnedpubkey '{pin}' '{url}' | {AS_ROOT}"),
-            None,
-        ),
-        None => (
-            format!("curl -fsSL '{url}' | {AS_ROOT}"),
-            Some(format!("wget -qO- '{url}' | {AS_ROOT}")),
-        ),
-    };
+    let (command, command_wget) = install_commands(&url, p.pin.as_deref());
     let releases = latest_releases(state.pg()).await?;
     let fallback = state.settings().get().install_fallback_url.clone();
     let mut warnings = p.warnings;

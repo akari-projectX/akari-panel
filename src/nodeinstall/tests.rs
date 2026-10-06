@@ -135,7 +135,10 @@ async fn install_link_lifecycle() {
     let inst = &v["install"];
     assert_eq!(
         inst["command"],
-        format!("curl -fsSL '{ORIGIN}/install/{token}' | {AS_ROOT}")
+        format!(
+            "{}curl -fsSL '{ORIGIN}/install/{token}' | {AS_ROOT}",
+            require_tool("curl")
+        )
     );
     assert_eq!(
         AS_ROOT, r#"sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'"#,
@@ -145,7 +148,7 @@ async fn install_link_lifecycle() {
         inst["command_wget"]
             .as_str()
             .unwrap()
-            .starts_with("wget -qO- ")
+            .starts_with(&format!("{}wget -qO- ", require_tool("wget")))
     );
     assert!(inst["pin"].is_null());
     // The form landed in the same transaction.
@@ -529,7 +532,8 @@ async fn configured_public_url_and_pin_win() {
     assert_eq!(
         v["install"]["command"],
         format!(
-            "curl -fsSL --proto '=https' -k --pinnedpubkey '{pin}' 'https://203.0.113.7/install/{t}' | {AS_ROOT}"
+            "{}curl -fsSL --proto '=https' -k --pinnedpubkey '{pin}' 'https://203.0.113.7/install/{t}' | {AS_ROOT}",
+            require_tool("curl")
         )
     );
     assert!(v["install"]["command_wget"].is_null());
@@ -970,4 +974,43 @@ async fn probe_tries_every_address() {
         tls_probe_any(&[], "probe.test", &[]).await.err().unwrap(),
         "the name has no address"
     );
+}
+
+#[test]
+fn missing_download_tool_is_explained() {
+    // Test-deployment finding P3: Lightsail's Debian 13 has neither curl
+    // nor wget. The command stops with how to install it; with the tool
+    // present the rest of the line runs.
+    let dir = std::env::temp_dir().join(format!("akari-need-{}", Uuid::new_v4()));
+    std::fs::create_dir(&dir).unwrap();
+    std::os::unix::fs::symlink("/bin/sh", dir.join("sh")).unwrap();
+    let run = |line: String| {
+        std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(line)
+            .env_clear()
+            .env("PATH", &dir)
+            .output()
+            .unwrap()
+    };
+    for tool in ["curl", "wget"] {
+        let out = run(format!("{}echo ran", require_tool(tool)));
+        assert!(!out.status.success());
+        assert!(out.stdout.is_empty(), "the rest of the line ran");
+        let err = String::from_utf8(out.stderr).unwrap();
+        assert!(
+            err.contains(&format!("apt-get update && apt-get install -y {tool}"))
+                && err.contains(&format!("缺少 {tool}"))
+                && err.contains(&format!("apk add {tool}")),
+            "{err}"
+        );
+        std::os::unix::fs::symlink("/bin/true", dir.join(tool)).unwrap();
+        let out = run(format!("{}echo ran", require_tool(tool)));
+        assert!(out.status.success());
+        assert_eq!(out.stdout, b"ran\n");
+    }
+    let (curl, wget) = install_commands("https://p.test/install/T", None);
+    assert!(curl.starts_with(&require_tool("curl")));
+    assert!(wget.unwrap().starts_with(&require_tool("wget")));
+    std::fs::remove_dir_all(&dir).unwrap();
 }
