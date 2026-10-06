@@ -181,7 +181,7 @@ fn codes_and_tokens() {
 
 #[test]
 fn code_hash_binds_purpose_subject_and_address() {
-    let k = crate::totp::Keys::from_material(&[9u8; 32]).unwrap();
+    let k = crate::masterkey::Keys::from_material(&[9u8; 32]).unwrap();
     let h = k.mail_code_hash("register", "a@x.cc", "a@x.cc", "123456");
     assert_eq!(
         h,
@@ -208,7 +208,7 @@ fn code_hash_binds_purpose_subject_and_address() {
         k.mail_code_hash("ab", "c", "", ""),
         k.mail_code_hash("a", "bc", "", "")
     );
-    let other = crate::totp::Keys::from_material(&[8u8; 32]).unwrap();
+    let other = crate::masterkey::Keys::from_material(&[8u8; 32]).unwrap();
     assert_ne!(
         h,
         other.mail_code_hash("register", "a@x.cc", "a@x.cc", "123456")
@@ -571,7 +571,7 @@ async fn codes_burn_after_five_wrong_attempts_and_expire() {
         .unwrap();
     let email = addr();
     let mut tx = db.pool.begin().await.unwrap();
-    let code = issue_code(&mut tx, st.totp(), "register", &email, &email, None)
+    let code = issue_code(&mut tx, st.master_key(), "register", &email, &email, None)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -584,7 +584,7 @@ async fn codes_burn_after_five_wrong_attempts_and_expire() {
             let mut tx = pool.begin().await.unwrap();
             let r = register::apply_register(
                 &mut tx,
-                st.totp(),
+                st.master_key(),
                 &s,
                 &register::Registration {
                     addr: &email,
@@ -609,7 +609,7 @@ async fn codes_burn_after_five_wrong_attempts_and_expire() {
 
     // A fresh code works; an expired one does not.
     let mut tx = db.pool.begin().await.unwrap();
-    let code = issue_code(&mut tx, st.totp(), "register", &email, &email, None)
+    let code = issue_code(&mut tx, st.master_key(), "register", &email, &email, None)
         .await
         .unwrap();
     sqlx::query(
@@ -622,7 +622,7 @@ async fn codes_burn_after_five_wrong_attempts_and_expire() {
     tx.commit().await.unwrap();
     assert!(!attempt(code).await, "expired");
     let mut tx = db.pool.begin().await.unwrap();
-    let code = issue_code(&mut tx, st.totp(), "register", &email, &email, None)
+    let code = issue_code(&mut tx, st.master_key(), "register", &email, &email, None)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -647,7 +647,7 @@ async fn racing_registrations_of_one_address() {
     for _round in 0..5 {
         let email = addr();
         let mut tx = db.pool.begin().await.unwrap();
-        let code = issue_code(&mut tx, st.totp(), "register", &email, &email, None)
+        let code = issue_code(&mut tx, st.master_key(), "register", &email, &email, None)
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -665,7 +665,7 @@ async fn racing_registrations_of_one_address() {
                 let mut tx = pool.begin().await.unwrap();
                 let r = register::apply_register(
                     &mut tx,
-                    st.totp(),
+                    st.master_key(),
                     &s,
                     &register::Registration {
                         addr: &email,
@@ -709,7 +709,7 @@ async fn racing_registrations_of_one_address() {
     // The address got verified elsewhere after the code was sent.
     let email = addr();
     let mut tx = db.pool.begin().await.unwrap();
-    let code = issue_code(&mut tx, st.totp(), "register", &email, &email, None)
+    let code = issue_code(&mut tx, st.master_key(), "register", &email, &email, None)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -718,7 +718,7 @@ async fn racing_registrations_of_one_address() {
     let mut tx = db.pool.begin().await.unwrap();
     let r = register::apply_register(
         &mut tx,
-        st.totp(),
+        st.master_key(),
         &s,
         &register::Registration {
             addr: &email,
@@ -1366,7 +1366,9 @@ async fn settings_api_validates_seals_and_audits() {
         .unwrap();
     assert!(!sealed.windows(9).any(|w| w == b"s3cret-pw"));
     assert_eq!(
-        st.totp().open(crate::mail::SMTP_AAD, &sealed).as_deref(),
+        st.master_key()
+            .open(crate::mail::SMTP_AAD, &sealed)
+            .as_deref(),
         Some(&b"s3cret-pw"[..])
     );
     // Stale version; keep password when absent; audit never holds it.
@@ -1389,7 +1391,9 @@ async fn settings_api_validates_seals_and_audits() {
         .await
         .unwrap();
     assert_eq!(
-        st.totp().open(crate::mail::SMTP_AAD, &still).as_deref(),
+        st.master_key()
+            .open(crate::mail::SMTP_AAD, &still)
+            .as_deref(),
         Some(&b"s3cret-pw"[..])
     );
     let audit: Vec<String> = sqlx::query_scalar(
@@ -1667,7 +1671,7 @@ async fn registration_without_verification() {
         )
         .await;
     assert_eq!(r.json()["code"], "signup.challenge_invalid", "single use");
-    let forged = crate::totp::Keys::from_material(&[9; 32]).unwrap();
+    let forged = crate::masterkey::Keys::from_material(&[9; 32]).unwrap();
     let ch = pow::issue(&forged, chrono::Utc::now().timestamp());
     let r = c3
         .post(

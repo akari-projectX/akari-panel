@@ -244,7 +244,7 @@ pub fn payment_method_body(body: &[u8]) -> Result<bool, String> {
 /// `signup::pow::check` on arbitrary input with a fixed key (never
 /// panics; a random nonce essentially never passes 18 bits).
 pub fn pow_check(challenge: &str, nonce: &str) -> bool {
-    let keys = crate::totp::Keys::from_material(&[7; 32]).expect("keys");
+    let keys = crate::masterkey::Keys::from_material(&[7; 32]).expect("keys");
     crate::signup::pow::check(
         &keys,
         challenge,

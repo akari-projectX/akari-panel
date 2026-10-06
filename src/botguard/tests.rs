@@ -13,8 +13,8 @@ use crate::state::AppState;
 use crate::testdb::TestDb;
 use crate::testdb::http::{Client, client_for, rand_ip};
 
-fn keys() -> crate::totp::Keys {
-    crate::totp::Keys::from_material(&[3u8; 32]).unwrap()
+fn keys() -> crate::masterkey::Keys {
+    crate::masterkey::Keys::from_material(&[3u8; 32]).unwrap()
 }
 
 fn settings(honeypot: bool, min: i32) -> Settings {
@@ -51,7 +51,7 @@ fn form_tokens_carry_their_age_and_resist_tampering() {
     // Another master key, a flipped byte, junk: not tokens.
     assert_eq!(
         token_age_ms(
-            &crate::totp::Keys::from_material(&[4u8; 32]).unwrap(),
+            &crate::masterkey::Keys::from_material(&[4u8; 32]).unwrap(),
             &t,
             now
         ),
@@ -225,7 +225,14 @@ async fn honeypot_and_minimum_submit_time() {
     );
     assert!(g["turnstile"].is_null());
     let issued = g["form_token"].as_str().unwrap().to_string();
-    assert!(token_age_ms(st.totp(), &issued, chrono::Utc::now().timestamp_millis()).is_some());
+    assert!(
+        token_age_ms(
+            st.master_key(),
+            &issued,
+            chrono::Utc::now().timestamp_millis()
+        )
+        .is_some()
+    );
 
     let wrong = c
         .post(
@@ -234,7 +241,10 @@ async fn honeypot_and_minimum_submit_time() {
         )
         .await;
     assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
-    let aged = issue_token(st.totp(), chrono::Utc::now().timestamp_millis() - 3_000);
+    let aged = issue_token(
+        st.master_key(),
+        chrono::Utc::now().timestamp_millis() - 3_000,
+    );
     let forged = URL_SAFE_NO_PAD.encode([0u8; TOKEN_LEN]);
     for (what, gd) in [
         (
@@ -248,7 +258,7 @@ async fn honeypot_and_minimum_submit_time() {
         ("forged", json!({ "form_token": forged })),
     ] {
         let gd = if gd.is_null() {
-            json!({ "form_token": issue_token(st.totp(), chrono::Utc::now().timestamp_millis()) })
+            json!({ "form_token": issue_token(st.master_key(), chrono::Utc::now().timestamp_millis()) })
         } else {
             gd
         };
@@ -302,7 +312,7 @@ async fn honeypot_and_minimum_submit_time() {
     let r = c
         .post(
             "/test/auth/password-reset/request",
-            json!({ "email": email, "guard": { "form_token": issue_token(st.totp(), 0) } }),
+            json!({ "email": email, "guard": { "form_token": issue_token(st.master_key(), 0) } }),
         )
         .await;
     assert_eq!(
@@ -478,7 +488,10 @@ async fn turnstile_other_forms_fail_closed() {
     let (_verifier, url) = Verifier::start().await;
     let st =
         AppState::for_test_with(db.pool.clone(), |c| c.limits.turnstile_verify_url = url).await;
-    let enc = st.totp().seal(TURNSTILE_AAD, b"0x4AAAAAAA-secret").unwrap();
+    let enc = st
+        .master_key()
+        .seal(TURNSTILE_AAD, b"0x4AAAAAAA-secret")
+        .unwrap();
     sqlx::query(
         "UPDATE auth_settings SET turnstile_site_key = 'site', turnstile_secret_enc = $1, \
          turnstile_register = true, turnstile_reset = true WHERE id = 1",

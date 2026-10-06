@@ -40,7 +40,7 @@ use crate::auth::{ApiError, AuthUser};
 use crate::state::AppState;
 pub use templates::{Locale, Template};
 
-/// AAD of the sealed SMTP password (`totp::Keys::seal`, bound to this fixed
+/// AAD of the sealed SMTP password (`masterkey::Keys::seal`, bound to this fixed
 /// id).
 pub const SMTP_AAD: Uuid = Uuid::from_u128(0x616b_6172_692d_736d_7470_2d70_6173_7377);
 
@@ -440,7 +440,7 @@ pub fn mail_values(req: &MailReq) -> Result<MailValues, ApiError> {
 pub async fn apply_update_mail(
     conn: &mut PgConnection,
     actor: &Actor,
-    keys: &crate::totp::Keys,
+    keys: &crate::masterkey::Keys,
     version: i64,
     v: &MailValues,
 ) -> Result<(), ApiError> {
@@ -551,7 +551,14 @@ pub async fn put_mail_settings(
     user.require_admin()?;
     let v = mail_values(&req)?;
     let mut tx = state.pg().begin().await?;
-    apply_update_mail(&mut tx, &Actor::of(&user), state.totp(), req.version, &v).await?;
+    apply_update_mail(
+        &mut tx,
+        &Actor::of(&user),
+        state.master_key(),
+        req.version,
+        &v,
+    )
+    .await?;
     let out = view(&mut tx).await?;
     tx.commit().await?;
     Ok(Json(out))
@@ -605,7 +612,7 @@ pub(crate) async fn send_now(
             "save the SMTP host and sender address first"
         ));
     }
-    let transport = transport::build(settings, state.totp()).map_err(|e| {
+    let transport = transport::build(settings, state.master_key()).map_err(|e| {
         crate::auth::api_error!(BAD_GATEWAY, "mail.test_failed", "{detail}", detail = e)
     })?;
     let msg = transport::OutMsg {

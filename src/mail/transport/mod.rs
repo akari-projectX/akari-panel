@@ -7,7 +7,7 @@
 //! diagnostic behind 系统设置 → 邮件 → 测试发信 (`super::diagnose`).
 //!
 //! Secrets (SMTP password, API keys) are sealed with the panel's master key
-//! (`state.totp()`, AEAD with a fixed per-secret AAD) and only opened here,
+//! (`state.master_key()`, AEAD with a fixed per-secret AAD) and only opened here,
 //! right before use. Errors are admin-facing text and never carry a secret.
 
 pub mod resend;
@@ -18,7 +18,7 @@ use std::pin::Pin;
 
 use super::MailSettings;
 use super::diagnose::Report;
-use crate::totp::Keys;
+use crate::masterkey::Keys;
 
 /// One message, rendered.
 #[derive(Debug, Clone)]

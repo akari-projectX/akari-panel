@@ -25,15 +25,15 @@ pub struct Install {
     pub server_key_pem: String,
     pub jwt_secret: String,
     /// Keys derived from data/master.key (secrets at rest, mail-code and PoW
-    /// MACs; totp.rs).
-    pub keys: crate::totp::Keys,
+    /// MACs; masterkey.rs).
+    pub keys: crate::masterkey::Keys,
 }
 
 pub fn ensure(cfg: &PanelConfig) -> Result<Install> {
     fs::create_dir_all(&cfg.data_dir).context("create data dir")?;
     let route_prefix = ensure_state(&cfg.data_dir)?;
     let jwt_secret = ensure_jwt_key(&cfg.data_dir)?;
-    let keys = crate::totp::Keys::from_material(&ensure_master_key(&cfg.data_dir)?)?;
+    let keys = crate::masterkey::Keys::from_material(&ensure_master_key(&cfg.data_dir)?)?;
     let (ca_pem, ca_key_pem) = ensure_ca(&cfg.data_dir)?;
     // The server cert is ephemeral: the boot one covers the built-in names;
     // `settings::reload` re-issues it for every recorded server name.
@@ -72,7 +72,7 @@ pub const MASTER_KEY: &str = "master.key";
 pub const LEGACY_MASTER_KEY: &str = "totp.key";
 
 /// The master key (32 random bytes, hex, 0600) every at-rest secret and
-/// MAC key is derived from (totp.rs). Unlike jwt.key it is never
+/// MAC key is derived from (masterkey.rs). Unlike jwt.key it is never
 /// regenerated over a malformed file: that would silently make every sealed
 /// secret (SMTP password, alert channels, payment methods, subscription
 /// links) unreadable.

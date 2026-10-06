@@ -186,10 +186,11 @@ async fn hidden_relays_leave_subscription_and_portal_and_alert() {
     let state = crate::state::AppState::for_test(db.pool.clone()).await;
     let token = {
         let mut tx = db.pool.begin().await.unwrap();
-        let t = crate::sub::rotate_token(&mut tx, state.totp(), &crate::audit::Actor::test(), u)
-            .await
-            .unwrap()
-            .unwrap();
+        let t =
+            crate::sub::rotate_token(&mut tx, state.master_key(), &crate::audit::Actor::test(), u)
+                .await
+                .unwrap()
+                .unwrap();
         tx.commit().await.unwrap();
         t
     };

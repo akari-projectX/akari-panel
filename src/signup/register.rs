@@ -197,7 +197,8 @@ async fn send_code(
         )
         .await?;
     } else {
-        let code = super::issue_code(&mut tx, state.totp(), PURPOSE, addr, addr, None).await?;
+        let code =
+            super::issue_code(&mut tx, state.master_key(), PURPOSE, addr, addr, None).await?;
         let t = Template::RegisterCode {
             code,
             minutes: super::CODE_TTL_SECS / 60,
@@ -246,7 +247,7 @@ pub struct Registered {
 /// (the caller commits so the wrong attempt counts). Errors roll back.
 pub async fn apply_register(
     conn: &mut PgConnection,
-    keys: &crate::totp::Keys,
+    keys: &crate::masterkey::Keys,
     s: &SignupSettings,
     r: &Registration<'_>,
 ) -> Result<Option<Registered>, ApiError> {
@@ -387,7 +388,7 @@ pub async fn challenge(State(state): State<AppState>) -> Response {
     if !open {
         return crate::reject::not_found();
     }
-    let c = super::pow::issue(state.totp(), chrono::Utc::now().timestamp());
+    let c = super::pow::issue(state.master_key(), chrono::Utc::now().timestamp());
     (
         [(axum::http::header::CACHE_CONTROL, "no-store")],
         Json(json!({ "challenge": c, "bits": super::pow::BITS })),
@@ -578,7 +579,7 @@ pub async fn register(
         let mut tx = state.pg().begin().await?;
         let done = apply_register(
             &mut tx,
-            state.totp(),
+            state.master_key(),
             &s,
             &Registration {
                 addr: &addr,
@@ -606,7 +607,7 @@ pub async fn register(
             return Err(bad_pow());
         };
         super::pow::check(
-            state.totp(),
+            state.master_key(),
             &pow.challenge,
             &pow.nonce,
             chrono::Utc::now().timestamp(),

@@ -143,7 +143,7 @@ pub async fn regenerate_own_sub_token(
     }
     let mut tx = state.pg().begin().await?;
     let (token, outcome) =
-        crate::sub::apply_reset(&mut tx, state.totp(), &Actor::of(&user), user.id)
+        crate::sub::apply_reset(&mut tx, state.master_key(), &Actor::of(&user), user.id)
             .await?
             .ok_or_else(ApiError::unauthorized)?;
     tx.commit().await?;

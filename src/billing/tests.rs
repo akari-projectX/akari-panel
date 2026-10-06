@@ -189,7 +189,7 @@ async fn add_method(state: &AppState, gateway: &str, name: &str) -> Uuid {
     let mut tx = state.pg().begin().await.unwrap();
     let row = super::methods::apply_create(
         &mut tx,
-        state.totp(),
+        state.master_key(),
         &crate::audit::Actor::test(),
         "payment_method.create",
         &alipay_method_req(gateway, name),

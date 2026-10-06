@@ -5,7 +5,7 @@
 //! - **Secrets** (e.g. the Alipay app private key) are one JSON object
 //!   sealed with AES-256-GCM under a key derived from data/master.key (label
 //!   `akari/payment-secrets-aead/v1`), AAD = the method id
-//!   (`totp::Keys::seal_payment_secrets`). The API never returns them (the
+//!   (`masterkey::Keys::seal_payment_secrets`). The API never returns them (the
 //!   kind's `view` shows `<field>_set` and fingerprints); the audit log
 //!   records them as `"changed"`.
 //! - **Writes** go through `apply_create` / `apply_update` / `apply_delete`
@@ -78,7 +78,7 @@ async fn load_one(conn: &mut PgConnection, id: Uuid, lock: bool) -> sqlx::Result
 pub struct Unreadable;
 
 /// The secrets of a row: Ok(None) = none stored.
-pub fn open_secrets(keys: &crate::totp::Keys, row: &Row) -> Result<Option<Value>, Unreadable> {
+pub fn open_secrets(keys: &crate::masterkey::Keys, row: &Row) -> Result<Option<Value>, Unreadable> {
     let Some(blob) = &row.secrets_enc else {
         return Ok(None);
     };
@@ -99,7 +99,7 @@ fn kind_of(id: &str) -> Result<&'static dyn ProviderKind, ApiError> {
 }
 
 /// Build the client of a stored row (enabled or not).
-pub fn build(keys: &crate::totp::Keys, row: &Row) -> Result<Arc<dyn PaymentProvider>, String> {
+pub fn build(keys: &crate::masterkey::Keys, row: &Row) -> Result<Arc<dyn PaymentProvider>, String> {
     let kind = provider::kind(&row.kind).ok_or("unknown kind")?;
     let secrets = open_secrets(keys, row)
         .map_err(|_| "the stored secrets cannot be opened (data/master.key changed?)".to_string())?
@@ -169,7 +169,7 @@ pub async fn reload(state: &AppState) -> anyhow::Result<()> {
             continue;
         };
         let provider = if row.enabled {
-            match build(state.totp(), &row) {
+            match build(state.master_key(), &row) {
                 Ok(p) => Some(p),
                 Err(e) => {
                     tracing::error!(method = %row.id, error = %e, "payment method unusable");
@@ -260,7 +260,7 @@ fn snapshot(row: &Row) -> Value {
     })
 }
 
-fn seal(keys: &crate::totp::Keys, id: Uuid, secrets: &Value) -> Result<Vec<u8>, ApiError> {
+fn seal(keys: &crate::masterkey::Keys, id: Uuid, secrets: &Value) -> Result<Vec<u8>, ApiError> {
     keys.seal_payment_secrets(id, secrets.to_string().as_bytes())
         .map_err(|e| {
             tracing::error!(error = %e, "sealing payment secrets failed");
@@ -330,7 +330,7 @@ async fn write_row(
 /// Create a method (audited `payment_method.create`, or `action`).
 pub async fn apply_create(
     conn: &mut PgConnection,
-    keys: &crate::totp::Keys,
+    keys: &crate::masterkey::Keys,
     actor: &Actor,
     action: &str,
     req: &MethodReq,
@@ -378,7 +378,7 @@ fn not_found() -> ApiError {
 /// Audited `payment_method.update`.
 pub async fn apply_update(
     conn: &mut PgConnection,
-    keys: &crate::totp::Keys,
+    keys: &crate::masterkey::Keys,
     actor: &Actor,
     id: Uuid,
     req: &MethodReq,
@@ -498,7 +498,7 @@ pub struct MethodView {
 
 pub fn method_view(state: &AppState, row: &Row) -> MethodView {
     let kind = provider::kind(&row.kind);
-    let secrets = open_secrets(state.totp(), row);
+    let secrets = open_secrets(state.master_key(), row);
     let mut warnings = Vec::new();
     if secrets.is_err() {
         warnings
@@ -575,7 +575,7 @@ pub async fn create(
     let mut tx = state.pg().begin().await?;
     let row = apply_create(
         &mut tx,
-        state.totp(),
+        state.master_key(),
         &Actor::of(&user),
         "payment_method.create",
         &req,
@@ -601,7 +601,7 @@ pub async fn update(
         ));
     }
     let mut tx = state.pg().begin().await?;
-    let row = apply_update(&mut tx, state.totp(), &Actor::of(&user), id, &req).await?;
+    let row = apply_update(&mut tx, state.master_key(), &Actor::of(&user), id, &req).await?;
     tx.commit().await?;
     after_write(&state).await;
     Ok(Json(method_view(&state, &row)))
@@ -638,13 +638,13 @@ pub async fn test(
     let mut c = state.pg().acquire().await?;
     let row = load_one(&mut c, id, false).await?.ok_or_else(not_found)?;
     drop(c);
-    if open_secrets(state.totp(), &row).is_err() {
+    if open_secrets(state.master_key(), &row).is_err() {
         return Err(conflict!(
             "payments.stored_key_unreadable",
             "the stored secrets cannot be opened (data/master.key changed); paste them again"
         ));
     }
-    let client = build(state.totp(), &row).map_err(|_| {
+    let client = build(state.master_key(), &row).map_err(|_| {
         conflict!(
             "payments.not_configured",
             "save a complete configuration first"
@@ -752,7 +752,7 @@ pub async fn import_legacy(state: &AppState) {
         let req = legacy_request(&legacy.alipay).map_err(anyhow::Error::msg)?;
         let row = apply_create(
             &mut tx,
-            state.totp(),
+            state.master_key(),
             &Actor::system(),
             "payment_method.import",
             &req,

@@ -276,7 +276,7 @@ pub async fn run(state: AppState) {
                 Err(e) => tracing::warn!(error = %e, "announcement mail pass failed"),
             }
         }
-        let transport = match super::transport::build(&smtp, state.totp()) {
+        let transport = match super::transport::build(&smtp, state.master_key()) {
             Ok(t) => t,
             Err(e) => {
                 tracing::error!(error = %e, provider = %smtp.provider, "mail sender: mail settings unusable");

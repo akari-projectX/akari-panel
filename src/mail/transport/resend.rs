@@ -15,7 +15,7 @@ use serde_json::json;
 use super::{DiagFuture, OutMsg, Provider, SendError, SendFuture, Transport, open_secret};
 use crate::mail::MailSettings;
 use crate::mail::diagnose::{self as d, Code, Report, Status, clip};
-use crate::totp::Keys;
+use crate::masterkey::Keys;
 
 /// Upper bound of one API call.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
