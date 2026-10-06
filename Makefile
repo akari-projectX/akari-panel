@@ -25,7 +25,7 @@ agent-build:
 
 check: check-generated shellcheck
 	cargo fmt --check && cargo clippy -- -D warnings
-	cd spa && npx tsc --noEmit && npm run lint && node scripts/check-auth-paths.mjs && node scripts/check-error-codes.mjs && npx vitest run
+	cd spa && npm run check
 	cd admin && npm run check
 
 # Every shell script (installer, backup/restore, smoke, test drivers, the
@@ -56,6 +56,7 @@ check-generated:
 # own database / Valkey index / data dir / port 8090 (does not touch smoke's).
 # Needs `make dev-up` and `npx playwright install chromium` once.
 e2e: dev-up spa admin panel
+	./scripts/e2e-portal.sh
 	./scripts/e2e.sh
 
 # Smoke isolation (parallel checkouts): SMOKE_DB=<name> runs against its own

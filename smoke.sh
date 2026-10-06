@@ -415,6 +415,8 @@ echo "bot protection: ok"
 echo "== W27: passkeys (unavailable without an https main domain), login-method reset =="
 curl -s --noproxy '*' -o /tmp/akari-smoke/last "$BASE/auth/options"
 last_json "d['passkey']" | matches '^False$' || { echo "FAIL: passkey offered without a main domain"; exit 1; }
+# W36-b: the site time zone, for the portal's dates (default Asia/Shanghai).
+last_json "d['timezone']" | matches '^Asia/Shanghai$' || { echo "FAIL: /auth/options timezone"; exit 1; }
 for p in "-X POST $BASE/auth/passkey/options" "-X POST $BASE/auth/passkey/login"; do
   # shellcheck disable=SC2086
   [ "$(fp $p)" = "$REJ" ] || { echo "FAIL: unavailable passkey endpoint answers: $p"; exit 1; }
@@ -781,6 +783,7 @@ SUB="$SUBBASE/$NEW_TOKEN"
 [ "$(code -D "$LOG/me.h" -b "$UJAR" "$BASE/api/v1/me")" = "200" ] \
   && last_json "d['sub_token']" | matches "^$NEW_TOKEN\$" \
   && last_json "d['sub_legacy']" | matches '^False$' \
+  && last_json "d['timezone']" | matches '^Asia/Shanghai$' \
   && tr -d '\r' <"$LOG/me.h" | matches -i '^cache-control: no-store$' \
   || { echo "FAIL: /me does not return the stored subscription link"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/users/$USER_ID/subscription")" = "200" ] \
@@ -2302,7 +2305,7 @@ GOOD_NOTIFY=$(python3 "$PAY/notify.py" "$PAY" "$OTN" 0.01 TRADE_SUCCESS)
 [ "$(curl -s --noproxy '*' -X POST "$NOTIFY" --data-binary "$GOOD_NOTIFY")" = "success" ] \
   || { echo "FAIL: valid notify not acknowledged"; tail -5 "$LOG/panel.log"; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/me/orders/$ORDER")" = "200" ] || { echo "FAIL: order status"; exit 1; }
-python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); assert d['status']=='paid' and d['fulfilled'] and d['qr_code'] is None, d" \
+python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); assert d['status']=='paid' and d['fulfilled'] and d['qr_code'] is None and d['action']=='new' and d['refund_route'] is None and d['refund_pending'] is False, d" \
   || { echo "FAIL: order not paid+fulfilled"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(psql_q "SELECT plan_id FROM user_plans WHERE user_id='$BUYER' AND status='active'")" = "$PAID_PLAN" ] || { echo "FAIL: plan not active"; exit 1; }
 wait_users 1 10 "purchased plan grants the node"
@@ -2532,6 +2535,17 @@ OORDER=$(last_json "d['id']"); OOTN=$(last_json "d['out_trade_no']")
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'order.refund.request' AND target_id = '$OORDER'")" = "1" ] \
   || { echo "FAIL: original-route refund request not audited"; exit 1; }
 [ "$(psql_q "SELECT balance_cents FROM user_balances WHERE user_id='$W16U'")" = "1100" ] || { echo "FAIL: refund not on the balance"; exit 1; }
+# W36-b: the customer's order view says where each refund went (the three
+# routes) and what it did to the subscription.
+for o in "$CORDER:balance:800:0:cancel" "$XORDER:manual:0:1000:" "$OORDER:original:0:600:"; do
+  IFS=: read -r oid route bal ext effect <<EOF
+$o
+EOF
+  [ "$(code -b "$WJAR" "$BASE/api/v1/me/orders/$oid")" = "200" ] \
+    && [ "$(last_json "d['refund_route']")/$(last_json "d['refund_balance_cents']")/$(last_json "d['refund_external_cents']")/$(last_json "d['refund_pending']")" = "$route/$bal/$ext/False" ] \
+    && { [ -z "$effect" ] || [ "$(last_json "d['refund_effect']")" = "$effect" ]; } \
+    || { echo "FAIL: /me/orders refund route ($route)"; cat /tmp/akari-smoke/last; exit 1; }
+done
 # The money invariants, over everything above.
 [ "$(psql_q "SELECT count(*) FROM users u LEFT JOIN user_balances b ON b.user_id = u.id
              WHERE COALESCE(b.balance_cents, 0) <> COALESCE((SELECT sum(amount_cents) FROM balance_ledger l WHERE l.user_id = u.id), 0)")" = "0" ] \
@@ -4346,21 +4360,47 @@ curl -s --noproxy '*' -D - -o /dev/null -H 'X-Request-Id: smoke-req-1' "$BASE/no
 [ "$(fp -H 'X-Request-Id: smoke-req-1' "$BASE/nope")" = "$REJ" ] || { echo "FAIL: rejection differs with a request id"; exit 1; }
 echo "m1a: ok"
 
-echo "== SPA =="
-# The portal at / (D11): its index, prefix-free assets, its CSP.
+echo "== SPA (the portal at /, D11) =="
 [ "$(code "$ROOT/")" = "200" ] || { echo "FAIL: portal / not 200"; exit 1; }
 grep -q 'id="root"' /tmp/akari-smoke/last || { echo "FAIL: portal index has no root div"; exit 1; }
-JS=$(grep -o '"/assets/[^"]*\.js' /tmp/akari-smoke/last | tr -d '"' | sed -n 1p)
-[ -n "$JS" ] || { echo "FAIL: portal index did not reference its assets"; exit 1; }
-CT=$(curl -s --noproxy '*' -o /dev/null -w "%{content_type}" "http://127.0.0.1:8080$JS")
+grep -q "$PREFIX" /tmp/akari-smoke/last && { echo "FAIL: portal index carries the admin prefix"; exit 1; }
+JS=$(grep -o '"/assets/[^"]*\.js"' /tmp/akari-smoke/last | tr -d '"' | grep -v '/assets/boot-' | sed -n 1p)
+[ -n "$JS" ] || { echo "FAIL: portal index references no /assets/ script"; exit 1; }
+grep -q '"/assets/[^"]*\.css"' /tmp/akari-smoke/last || { echo "FAIL: portal index has no stylesheet"; exit 1; }
+CT=$(curl -s --noproxy '*' -o /dev/null -w "%{content_type}" "$ROOT$JS")
 echo "$CT" | matches javascript || { echo "FAIL: asset content-type '$CT'"; exit 1; }
-# The frontends' own stylesheets and scripts must be allowed by the CSP they
-# are served with (a real-browser check found style-src missing 'self').
-for page in "$ROOT/" "$BASE/app"; do
-  CSP=$(curl -s --noproxy '*' -D - -o /dev/null "$page" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-security-policy"{print $2}')
-  echo "$CSP" | matches -E "style-src[^;]*'self'" || { echo "FAIL: CSP style-src lacks 'self' ($page): $CSP"; exit 1; }
-  echo "$CSP" | matches -E "default-src[^;]*'self'" || { echo "FAIL: CSP default-src lacks 'self' ($page): $CSP"; exit 1; }
+# The portal's own stylesheet and script must be allowed by the CSP it is
+# served with; Turnstile is off here, so nothing beyond 'self'.
+CSP=$(curl -s --noproxy '*' -D - -o /dev/null "$ROOT/" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-security-policy"{print $2}')
+[ "$CSP" = "default-src 'self'; style-src 'self' 'unsafe-inline'" ] || { echo "FAIL: portal CSP: $CSP"; exit 1; }
+# Every client-side route answers the index (W36-b route table), deep paths too.
+for r in shop orders orders/x wallet invite nodes traffic tickets help announcements account login register forgot reset terms privacy; do
+  [ "$(code "$ROOT/$r")" = "200" ] || { echo "FAIL: portal route /$r"; exit 1; }
 done
+[ "$(fp "$ROOT/dashboard")" = "$REJ" ] || { echo "FAIL: an unknown portal path is not the rejection"; exit 1; }
+[ "$(code "$ROOT/assets/missing.js")" = "404" ] || { echo "FAIL: missing asset not 404"; exit 1; }
+# (Request paths: spa/src/api/adapter.test.ts runs the real API layer.)
+# The portal as served carries no console code (R23, D4): every file the
+# index loads, and every chunk those import, through the build-time guard.
+SERVED_PORTAL="$LOG/served-portal"; rm -rf "$SERVED_PORTAL" && mkdir -p "$SERVED_PORTAL"
+curl -s --noproxy '*' "$ROOT/" >"$SERVED_PORTAL/index.html"
+todo=""
+for a in $(grep -o '/assets/[A-Za-z0-9_.-]*\.\(js\|css\)' "$SERVED_PORTAL/index.html" | sort -u); do
+  curl -s --noproxy '*' "$ROOT$a" >"$SERVED_PORTAL/$(basename "$a")"; todo="$todo $SERVED_PORTAL/$(basename "$a")"
+done
+while [ -n "$todo" ]; do
+  next=""
+  # shellcheck disable=SC2086
+  for c in $(cat $todo | grep -ao '\(\./\|assets/\)[A-Za-z0-9_.-]*\.\(js\|css\)' | sed 's#.*/##' | sort -u); do
+    f="$SERVED_PORTAL/$c"
+    [ -e "$f" ] && continue
+    [ "$(curl -s --noproxy '*' -o "$f" -w '%{http_code}' "$ROOT/assets/$c")" = "200" ] || { echo "FAIL: portal chunk $c not served"; exit 1; }
+    next="$next $f"
+  done
+  todo="$next"
+done
+[ "$(ls "$SERVED_PORTAL"/*.js | wc -l)" -gt 10 ] || { echo "FAIL: portal chunks not found"; exit 1; }
+node spa/scripts/check-bundles.mjs "$SERVED_PORTAL" || { echo "FAIL: served portal bundle carries admin code"; exit 1; }
 # W33-b: the admin sign-in page under the prefix (its own bundle).
 [ "$(code "$BASE/app")" = "200" ] || { echo "FAIL: /app not 200"; exit 1; }
 grep -q 'id="root"' /tmp/akari-smoke/last || { echo "FAIL: sign-in page has no root div"; exit 1; }
@@ -4374,11 +4414,13 @@ grep -q "/$PREFIX/app/assets/[^\"]*\.css" /tmp/akari-smoke/last || { echo "FAIL:
 # REVIEW P0 #1 regression guards: the shipped sign-in JS derives a
 # `${prefix}/auth` base and never carries a bare "/auth/login" literal (that
 # shape is what gets prefixed with /api/v1 by get/post).
-node spa/scripts/check-auth-paths.mjs || { echo "FAIL: SPA auth request paths"; exit 1; }
 curl -s --noproxy '*' "http://127.0.0.1:8080$LJS" >/tmp/akari-smoke/app.js
 grep -q '}/auth[`"'"'"']' /tmp/akari-smoke/app.js || { echo "FAIL: bundle lacks the {prefix}/auth base"; exit 1; }
 grep -qE '[`"'"'"']/auth/(login|logout)' /tmp/akari-smoke/app.js \
   && { echo "FAIL: bundle posts a bare /auth/* path (would be joined to /api/v1)"; exit 1; }
+# The sign-in page's stylesheet and script must be allowed by its CSP too.
+CSP=$(curl -s --noproxy '*' -D - -o /dev/null "$BASE/app" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-security-policy"{print $2}')
+[ "$CSP" = "default-src 'self'; style-src 'self' 'unsafe-inline'" ] || { echo "FAIL: sign-in page CSP: $CSP"; exit 1; }
 echo "spa: ok (portal $JS, sign-in $LJS)"
 
 echo "== R23: separate admin bundle, served to admin sessions only =="

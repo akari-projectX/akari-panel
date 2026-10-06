@@ -1,9 +1,10 @@
 # 端到端测试用的支付宝当面付模拟网关（移植自面板 smoke.sh，只用临时生成的密钥）。
 #   python3 e2e/mock-alipay.py <密钥目录> <端口>
-# 校验面板的请求签名（应用公钥），用「支付宝」私钥签名答复；POST /control/pay?otn=X 把交易标成已付款（查单时返回 TRADE_SUCCESS）。
+# 校验面板的请求签名（应用公钥），用「支付宝」私钥签名答复；POST /control/pay?otn=X 把交易标成已付款（查单时返回 TRADE_SUCCESS）；
+# 原路退款（alipay.trade.refund）按请求号幂等记账，退款查询照实回答。
 import base64, json, subprocess, sys, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-D = sys.argv[1]; trades = {}
+D = sys.argv[1]; trades = {}; refunds = {}
 def sign(data):
     return base64.b64encode(subprocess.run(["openssl", "dgst", "-sha256", "-sign", D + "/alipay-key.pem"],
         input=data.encode(), capture_output=True, check=True).stdout).decode()
@@ -34,6 +35,14 @@ class H(BaseHTTPRequestHandler):
             t = trades[otn]
             obj = {"code": "10000", "msg": "Success", "out_trade_no": otn, "trade_no": "2026" + otn[-10:],
                    "trade_status": t["status"], "total_amount": t["total"]}
+        elif m == "alipay.trade.refund" and otn in trades:
+            refunds.setdefault(biz["out_request_no"], (otn, biz["refund_amount"]))
+            obj = {"code": "10000", "msg": "Success", "out_trade_no": otn, "trade_no": "2026" + otn[-10:],
+                   "refund_fee": refunds[biz["out_request_no"]][1], "fund_change": "Y"}
+        elif m == "alipay.trade.fastpay.refund.query":
+            r = refunds.get(biz["out_request_no"])
+            obj = {"code": "10000", "msg": "Success", "out_trade_no": otn}
+            if r: obj.update({"out_request_no": biz["out_request_no"], "refund_amount": r[1]})
         else:
             obj = {"code": "40004", "msg": "Business Failed", "sub_code": "ACQ.TRADE_NOT_EXIST", "sub_msg": "x"}
         body = json.dumps(obj, separators=(",", ":"))
