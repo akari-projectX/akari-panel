@@ -819,6 +819,13 @@ jsDelivr 上的 MetaCubeX meta-rules-dat；国内访问 jsDelivr 不稳定时可
 `rule_set_singbox_url`，必须是 https 且包含 `{name}`，可含 `{kind}` = geosite|geoip）。规则下载在客户端首次
 启动时经代理进行（规则未加载前全部流量走 PROXY）。修改写审计 `settings.subscription.update`。
 
+**订阅格式开关与一键导入开关**（PR ② §5，同一接口的 `formats` / `import_clients`，写审计）：可以分别关闭
+Clash、sing-box、base64 链接三种输出格式，以及门户里每个客户端的一键导入按钮（默认全部开启）。关闭的格式
+对订阅链接的回答与无效令牌**完全相同**（统一的 404，不会透露「已关闭」）：显式 `?format=` 指向关闭的格式、或
+识别出的客户端所用格式已关闭 → 拒绝；无法识别的客户端按 链接 → Clash → sing-box 的顺序落到第一个开启的格式。
+格式关闭时它的导入按钮也自动隐藏。保存的是「开启的列表」：以后新增的格式（包括自研客户端的通道）对已自定义
+列表的站点默认是关闭的——全部第三方格式都关掉后，就只剩自研客户端可用。
+
 **验证情况**（云端/CI 没有图形客户端，以下是实际做过的）：mihomo v1.19（`mihomo -t` 校验配置，并实际运行加载
 rule-providers）与 sing-box 1.14（`sing-box check`，并实际运行加载远程规则集）对生成的配置验证通过；黄金文件
 （`testdata/w26/sub_*.golden`、`w30_*.golden`）锁定每种格式与每个客户端 UA 的输出。**未用真实 GUI 客户端验证**：

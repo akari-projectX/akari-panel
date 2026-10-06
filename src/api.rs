@@ -411,6 +411,10 @@ pub struct MeView {
     /// W20: a link from before 0120 works but cannot be shown (hash only);
     /// resetting it gives a showable one. Never rotated implicitly.
     sub_legacy: bool,
+    /// PR ② section 5: the subscription formats that are on (the portal's
+    /// format selector) and the one-click import buttons to show.
+    sub_formats: Vec<String>,
+    sub_import_clients: Vec<String>,
     /// W20 (Minor 1): the effective latency-test interval (系统设置 >
     /// panel.toml), for the portal's node list.
     probe_interval_secs: u64,
@@ -474,6 +478,8 @@ pub async fn me(
         sub_token,
         sub_url,
         sub_legacy,
+        sub_formats: settings.sub_formats.clone(),
+        sub_import_clients: settings.sub_import_clients.clone(),
         probe_interval_secs: settings.probe.interval_secs,
     };
     Ok(no_store(Json(view)))
