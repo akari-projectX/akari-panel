@@ -264,7 +264,8 @@ panel's dependency graph, never in the release binary).
 
 ```bash
 make bench-up                    # dedicated PostgreSQL :5433 / Valkey :6380 (bench/compose.yml)
-make bench-seed                  # 200 nodes, 50k users, 10k per node: ~60 s
+make bench-seed                  # 200 nodes, 50k users, 10k per node: ~2 min
+                                 # (akari-bench seed --layout scattered --plans true: production-like heap order and plans)
 akari-bench explain              # EXPLAIN (ANALYZE, BUFFERS) of every hot query, rolled back
 make bench                       # criterion: pure CPU + DB benches (snapshot, flush)
 akari -c bench/panel-bench-1.toml serve &                 # lifted rate limits, metrics on :19100
@@ -660,6 +661,55 @@ run, main (d907f52) and the branch (Q1 + D5 + D9) interleaved:
 - D5 adds one single-row `UPDATE servers` per heartbeat that passes the existing 5 s history
   throttle (background task, skipped when the 8 write permits are busy; the counters are
   cumulative, so a skipped heartbeat loses nothing).
+
+## Snapshot read: covering key, no SQL sort; flush trims (2026-10-07)
+
+Follow-up to "Phase A PR ②". `make bench-seed` (now with `--layout pinned|scattered` and
+`--plans`) + `cargo bench -- 'db/(desired_snapshot|snapshot_build_full|flush)'`, local bench stack,
+fresh seed per run, main (6376126) and the branch interleaved:
+
+| seed | bench | main | branch |
+|---|---|---|---|
+| pinned (`--layout pinned`, the default) | `db/desired_snapshot/10000` | 18.96 / 19.45 ms | **16.87 / 16.15 ms** (−13 %) |
+| | `db/snapshot_build_full/10000` | 24.75 / 24.03 ms | 21.85 / 20.52 ms |
+| | `db/flush/50000` | 599.1 / 618.3 ms | 585.8 / 600.6 ms (−2.5 %) |
+| scattered (`--layout scattered`: rows written user by user, as in production) | `db/desired_snapshot/10000` | 31.49 / 30.06 ms | **18.87 / 20.55 ms** (−35 %) |
+| | `db/snapshot_build_full/10000` | 37.17 / 34.33 ms | 23.81 / 25.34 ms |
+| | `db/flush/50000` | 654.0 / 633.7 ms | 611.8 / 637.6 ms |
+| scattered + `--plans` (every user has an active plan, as in production) | `db/desired_snapshot/10000` | 43.46 ms | **27.82 ms** (−36 %) |
+| | `db/flush/50000` | 638.1 ms | 639.0 ms |
+
+What the snapshot read cost (`EXPLAIN (ANALYZE, BUFFERS)`, 10k-user server, 50k users):
+
+- **Scattered heap.** One entrance's 10k `entrance_users` rows sat on 182 heap pages in the pinned
+  seed but on ~9.5k pages when written user by user (a user's rows on all 40 of its entrances land
+  together): a bitmap heap scan of 9.5k pages, +10–13 ms. Migration 1090 makes the primary key
+  covering, `(entrance_id, user_id) INCLUDE (protocol, account)`: an index-only scan of ~190–330
+  pages (`Heap Fetches: 0`) whatever the heap order. It replaces the old key (one index, ~95 bytes
+  more per assignment: 95 → 286 MB for 2M rows built in order, 507 MB when built user by user); key
+  columns are unchanged, so the flush's admission probe and every ON CONFLICT are as before. The
+  table vacuums at 1 % changed/inserted rows to keep the visibility map fresh. `account` updates
+  (credential reset) are no longer HOT; they are rare.
+- **Sort.** `ORDER BY eu.user_id, e.wire_no` sorted 10k wide rows in PostgreSQL (~1 ms). The rows
+  of one entrance come out of the key in user order, so the panel now sorts in Rust
+  (`sort_unstable_by_key`, linear on such runs); the op order sent to the agent is unchanged (test
+  `snapshot_users_are_ordered_by_user_then_entrance`).
+- **Rust build** (~1.9 ms of the total): one tag string per entrance cloned instead of formatted
+  per row, `stat_key` encoded straight into an exactly sized string, `BEGIN ISOLATION LEVEL …` in
+  one round trip.
+- **What remains**, and why it is not changed: the `users` filter (`enforce::SERVED`) and the
+  speed limit (`user_plans`) are hash joins over *all* users and active plans (seq scan + hash,
+  ~5–7 ms each at 50k): 10k index probes cost the same (~0.7 µs each, measured), an index-only scan
+  of `users` would fall back to the heap (billing updates every active user's row), and a
+  `= ANY(array)` probe of `users_pkey` was slower (6 ms). The bench's default seed has no
+  `user_plans`; `--plans` shows the production shape (above).
+
+Flush (D9 / Q1 overhead): `ef` called the plpgsql `akari_entrance_rate()` twice per entrance of a
+5000-row chunk; it now reads the base rate when the entrance has no rules (what the function
+returns then) and calls it only for entrances with rules. The server GCRA (`advanced`) and the
+node totals (`node_totals`) aggregated the chunk twice (the node one as Sort + GroupAggregate,
+~1.2 ms per chunk); both now read one `per_node` aggregate (per server and node). Billing results
+are unchanged (all billing tests, including the rate-rule settlement, pass unmodified).
 
 ## Limits and honest caveats
 

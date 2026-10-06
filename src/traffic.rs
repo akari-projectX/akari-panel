@@ -756,9 +756,13 @@ WITH input AS (
     -- multiplier: D9, the lower of the rates now and 30 s ago
     -- (akari_entrance_rate: base or time-window rule, site time zone), so
     -- bytes moved in a cheaper window are never billed at a dearer one.
+    -- Without rules both instants are the base rate (what the function
+    -- returns at once): read it here instead of two calls per entrance.
     SELECT e.id AS entrance_id, e.server_id, e.node_id,
-           LEAST(akari_entrance_rate(e.id, statement_timestamp()),
-                 akari_entrance_rate(e.id, statement_timestamp() - interval '30 seconds'))::numeric AS mult
+           CASE WHEN EXISTS (SELECT 1 FROM entrance_rate_rules r WHERE r.entrance_id = e.id)
+                THEN LEAST(akari_entrance_rate(e.id, statement_timestamp()),
+                           akari_entrance_rate(e.id, statement_timestamp() - interval '30 seconds'))
+                ELSE e.rate_permille END::numeric AS mult
     FROM entrances e WHERE e.id IN (SELECT DISTINCT entrance_id FROM input)
 ), classified AS (
     SELECT i.*,
@@ -902,7 +906,7 @@ WITH input AS (
     -- W22: the accepted (raw) bytes split into up/down in proportion to
     -- the row's raw deltas (up floored, down = the rest: up + down =
     -- billed exactly).
-    SELECT s.server_id, ef.node_id, s.entrance_id, s.user_id, s.billed,
+    SELECT s.server_id, ef.node_id, s.entrance_id, s.user_id, s.billed, s.rate, s.tat,
            floor(s.billed * ef.mult / 1000) AS charge,
            CASE WHEN s.raw > 0 THEN floor(s.billed * s.up_raw / s.raw) ELSE 0 END AS up_acc
     FROM scaled s JOIN ef USING (entrance_id)
@@ -924,6 +928,13 @@ WITH input AS (
     RETURNING 1
 ), per_user AS (
     SELECT user_id, sum(charge) AS delta FROM charged GROUP BY user_id
+), per_node AS MATERIALIZED (
+    -- One pass over the rows for both settlements below: per node (a node
+    -- belongs to one server) the accepted raw bytes, the charge and its
+    -- server's GCRA inputs (the same for every row of a server).
+    SELECT server_id, node_id, min(tat) AS tat, min(rate) AS rate, sum(billed) AS billed,
+           sum(charge) AS charge
+    FROM charged GROUP BY server_id, node_id
 ), billed AS (
     UPDATE users u
     SET traffic_used_bytes = LEAST(u.traffic_used_bytes::numeric + p.delta, 9223372036854775807)::bigint
@@ -943,7 +954,7 @@ WITH input AS (
             COALESCE(s.traffic_tat, '-infinity'::timestamptz),
             b.tat + make_interval(secs => (b.billed / b.rate)::float8))
     FROM (SELECT server_id, min(tat) AS tat, min(rate) AS rate, sum(billed) AS billed
-          FROM scaled GROUP BY server_id) b
+          FROM per_node GROUP BY server_id) b
     WHERE s.id = b.server_id
     RETURNING 1
 ), node_totals AS (
@@ -951,8 +962,7 @@ WITH input AS (
     UPDATE nodes n
     SET traffic_raw_bytes = LEAST(n.traffic_raw_bytes::numeric + c.billed, 9223372036854775807)::bigint,
         traffic_billed_bytes = LEAST(n.traffic_billed_bytes::numeric + c.charge, 9223372036854775807)::bigint
-    FROM (SELECT node_id, sum(billed) AS billed, sum(charge) AS charge
-          FROM charged GROUP BY node_id) c
+    FROM per_node c
     WHERE n.id = c.node_id
     RETURNING 1
 )
