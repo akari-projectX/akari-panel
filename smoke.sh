@@ -159,7 +159,7 @@ chmod 600 "$PAY"/*.pem
 cat >"$PAY/mock.py" <<'PY'
 import base64, json, subprocess, sys, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-D = sys.argv[1]; trades = {}
+D = sys.argv[1]; trades = {}; refunds = {}
 def sign(data):
     return base64.b64encode(subprocess.run(["openssl", "dgst", "-sha256", "-sign", D + "/alipay-key.pem"],
         input=data.encode(), capture_output=True, check=True).stdout).decode()
@@ -190,6 +190,14 @@ class H(BaseHTTPRequestHandler):
             t = trades[otn]
             obj = {"code": "10000", "msg": "Success", "out_trade_no": otn, "trade_no": "2026" + otn[-10:],
                    "trade_status": t["status"], "total_amount": t["total"]}
+        elif m == "alipay.trade.refund" and otn in trades:
+            refunds.setdefault(biz["out_request_no"], (otn, biz["refund_amount"]))
+            obj = {"code": "10000", "msg": "Success", "out_trade_no": otn, "trade_no": "2026" + otn[-10:],
+                   "refund_fee": refunds[biz["out_request_no"]][1], "fund_change": "Y"}
+        elif m == "alipay.trade.fastpay.refund.query":
+            r = refunds.get(biz["out_request_no"])
+            obj = {"code": "10000", "msg": "Success", "out_trade_no": otn}
+            if r: obj.update({"out_request_no": biz["out_request_no"], "refund_amount": r[1]})
         else:
             obj = {"code": "40004", "msg": "Business Failed", "sub_code": "ACQ.TRADE_NOT_EXIST", "sub_msg": "x"}
         body = json.dumps(obj, separators=(",", ":"))
@@ -2460,6 +2468,22 @@ mp_find smoke-w16@smoke.test 订单已退款 "原路退回（支付渠道）：�
   || { echo "FAIL: refund notice mail"; cat "$LOG/refund-mail.txt"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM mail_outbox WHERE kind='refund' AND to_addr='smoke-w16@smoke.test'")" = "2" ] \
   || { echo "FAIL: not one refund notice per refund"; exit 1; }
+# 原路退款: a partial refund through the (mock) Alipay gateway, idempotent
+# request number, recorded as refunded at the provider.
+[ "$(api_json "$WJAR" POST "$BASE/api/v1/me/orders" "{\"plan_id\":\"$W16_PLAN\",\"period\":\"month\"}")" = "201" ] \
+  || { echo "FAIL: order to refund through Alipay"; cat /tmp/akari-smoke/last; exit 1; }
+OORDER=$(last_json "d['id']"); OOTN=$(last_json "d['out_trade_no']")
+[ "$(curl -s --noproxy '*' -X POST "$ROOT/pay/alipay/notify" --data-binary "$(python3 "$PAY/notify.py" "$PAY" "$OOTN" 10.00 TRADE_SUCCESS)")" = "success" ] \
+  || { echo "FAIL: original-route refund order notify"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/orders/$OORDER/refund-preview")" = "200" ] && last_json "d['original_available']" | matches '^True$' \
+  || { echo "FAIL: original-route refund not offered"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/orders/$OORDER/refund" '{"reason":"原路退款","original":true,"original_cents":600}')" = "200" ] \
+  && [ "$(last_json "d['original']['out_request_no']")/$(last_json "d['refund_external_cents']")" = "${OOTN}R1/600" ] \
+  || { echo "FAIL: original-route refund: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(psql_q "SELECT refund_request->>'state' || '/' || refund_external_cents FROM orders WHERE id='$OORDER'")" = "done/600" ] \
+  || { echo "FAIL: original-route refund not recorded"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'order.refund.request' AND target_id = '$OORDER'")" = "1" ] \
+  || { echo "FAIL: original-route refund request not audited"; exit 1; }
 [ "$(psql_q "SELECT balance_cents FROM user_balances WHERE user_id='$W16U'")" = "1100" ] || { echo "FAIL: refund not on the balance"; exit 1; }
 # The money invariants, over everything above.
 [ "$(psql_q "SELECT count(*) FROM users u LEFT JOIN user_balances b ON b.user_id = u.id

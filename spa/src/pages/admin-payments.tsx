@@ -18,10 +18,10 @@ import { copyText } from "../lib/utils";
 export interface FieldSpec {
   name: string;
   label: string;
-  type: "select" | "text" | "number" | "key";
+  type: "select" | "text" | "number" | "key" | "bool";
   required?: boolean;
   secret?: boolean;
-  default?: number | string;
+  default?: number | string | boolean;
   options?: { value: string; label: string }[];
 }
 
@@ -93,6 +93,7 @@ export function configBody(kind: KindView, values: Values): Record<string, unkno
     const raw = (values[f.name] ?? "").trim();
     if (f.secret && !raw) continue;
     if (f.type === "number") out[f.name] = raw === "" ? null : Number(raw);
+    else if (f.type === "bool") out[f.name] = raw === "true";
     else out[f.name] = raw === "" ? null : raw;
   }
   return out;
@@ -381,6 +382,18 @@ function MethodForm({ kind, method, onDone }: { kind: KindView; method: MethodVi
           {kind.schema.map((f) => {
             if (f.name === "gateway_url" && !isCustom) return null;
             const id = `pm-${f.name}`;
+            if (f.type === "bool")
+              return (
+                <label key={f.name} className="flex items-center gap-2 text-sm">
+                  <input
+                    id={id}
+                    type="checkbox"
+                    checked={values[f.name] === "true"}
+                    onChange={(e) => set(f.name, e.target.checked ? "true" : "false")}
+                  />
+                  {f.label}
+                </label>
+              );
             if (f.type === "select")
               return (
                 <div key={f.name} className="space-y-1.5">

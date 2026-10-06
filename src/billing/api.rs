@@ -7,7 +7,7 @@
 //! mismatch) is the canonical `reject::not_found()` and leaves an event
 //! row. Only a verified notify for our order is answered `success`.
 
-use crate::auth::{bad_request, conflict};
+use crate::auth::{api_error, bad_request, conflict};
 use std::collections::BTreeMap;
 
 use axum::body::Bytes;
@@ -227,6 +227,9 @@ pub struct OrderView {
     refund_reason: Option<String>,
     /// P1: what the refund did to the subscription (billing::refund).
     refund_effect: Option<Value>,
+    /// 原路退款: the refund asked of the provider (`refund::OriginalRequest`:
+    /// request number, amount, pending/done/failed, attempts, last error).
+    refund_request: Option<Value>,
     status: String,
     trade_no: Option<String>,
     paid_via: Option<String>,
@@ -249,7 +252,7 @@ const ORDER_SQL: &str = "SELECT id, out_trade_no, user_id, user_label, \
      amount_cents, period, period_days, list_price_cents, credit_cents, credit_order_id, \
      discount_cents, coupon_id, coupon_code, balance_cents, balance_state, gift_cents, \
      refunded_at, refund_cents, refund_balance_cents, refund_external_cents, refund_reason, \
-     refund_effect, status, trade_no, paid_via, \
+     refund_effect, refund_request, status, trade_no, paid_via, \
      paid_amount_cents, manual_reason, \
      fulfilled_at, fulfil_result, fulfil_error, created_at, expires_at, paid_at, ended_at, \
      close_state, payment_method_id, \
@@ -1107,6 +1110,13 @@ pub struct RefundReq {
     /// (default: the order's effect on the subscription is undone).
     #[serde(default)]
     pub keep_plan: bool,
+    /// ① Refund through the payment provider (原路退款): the provider
+    /// returns `original_cents` (default: all of the gateway amount) to the
+    /// payer. Not with `to_balance` / `external_cents`.
+    #[serde(default)]
+    pub original: bool,
+    #[serde(default)]
+    pub original_cents: Option<i64>,
 }
 
 /// GET /orders/{id}/refund-preview: what a refund would do now (money and
@@ -1118,7 +1128,20 @@ pub async fn refund_preview(
 ) -> Result<Json<Value>, ApiError> {
     user.require_admin()?;
     let mut c = state.pg().acquire().await?;
-    Ok(Json(super::refund::preview(&mut c, id).await?))
+    let mut v = super::refund::preview(&mut c, id).await?;
+    // ① is offered when the order's method allows it.
+    let (method, request): (Option<Uuid>, Option<Value>) =
+        sqlx::query_as("SELECT payment_method_id, refund_request FROM orders WHERE id = $1")
+            .bind(id)
+            .fetch_one(&mut *c)
+            .await?;
+    v["original_available"] = json!(
+        method
+            .and_then(|m| state.payments().provider(m))
+            .is_some_and(|p| p.refunds())
+    );
+    v["original_request"] = request.unwrap_or(Value::Null);
+    Ok(Json(v))
 }
 
 /// POST /orders/{id}/refund {reason, to_balance, external_cents?, keep_plan}: W16/P1 support
@@ -1128,7 +1151,7 @@ pub async fn refund_order(
     user: AuthUser,
     Path((_, id)): Path<(String, Uuid)>,
     ApiJson(req): ApiJson<RefundReq>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Response, ApiError> {
     user.require_admin()?;
     let reason = req.reason.trim();
     if reason.is_empty() || reason.chars().count() > MAX_REASON {
@@ -1136,6 +1159,46 @@ pub async fn refund_order(
             "request.reason_length",
             "reason must be 1-{max_reason} characters",
             max_reason = MAX_REASON
+        ));
+    }
+    if req.original {
+        if req.to_balance || req.external_cents.is_some() {
+            return Err(bad_request!(
+                "order_admin.refund_original_conflict",
+                "an original-route refund goes back to the payer: not with to_balance or external_cents"
+            ));
+        }
+        let mut tx = state.pg().begin().await?;
+        super::refund::begin_original(
+            &mut tx,
+            &state,
+            &Actor::of(&user),
+            id,
+            &super::refund::Original {
+                reason,
+                cents: req.original_cents,
+                keep_plan: req.keep_plan,
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        return match super::refund::settle_original(&state, id).await? {
+            super::refund::Settled::Done(v) => Ok(Json(v).into_response()),
+            super::refund::Settled::Failed(detail) => Err(api_error!(
+                BAD_GATEWAY,
+                "order_admin.refund_gateway_failed",
+                "the payment provider refused the refund: {detail}",
+                detail = detail
+            )),
+            super::refund::Settled::Pending | super::refund::Settled::Gone => {
+                Ok((StatusCode::ACCEPTED, Json(json!({ "pending": true }))).into_response())
+            }
+        };
+    }
+    if req.original_cents.is_some() {
+        return Err(bad_request!(
+            "order_admin.refund_original_conflict",
+            "original_cents goes with original"
         ));
     }
     let portal = crate::mail::portal_url(&state);
@@ -1154,7 +1217,7 @@ pub async fn refund_order(
     )
     .await?;
     tx.commit().await?;
-    Ok(Json(r))
+    Ok(Json(r).into_response())
 }
 
 // ---------------------------------------------------------------------------

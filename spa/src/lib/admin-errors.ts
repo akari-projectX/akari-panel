@@ -9,6 +9,12 @@ import { ApiError } from "./api";
 import { CODE_KEYS, errorText, errorVars, zh } from "./errors";
 
 export const ADMIN_CODES: Record<string, string> = {
+  "order_admin.refund_gateway_failed": "支付宝拒绝了退款：{detail}（没有退出任何金额，可以重试或改用其他方式）",
+  "order_admin.refund_in_progress": "该订单有一笔正在进行的原路退款，等支付宝确认后再操作",
+  "order_admin.refund_original_conflict": "原路退款不能同时选择退到余额或填写后台已退金额",
+  "order_admin.refund_original_range": "原路退款金额须为 0.01–{amount_yuan} 元",
+  "order_admin.refund_original_unavailable": "该订单的支付方式未开启原路退款",
+  "payments.refund_original_invalid": "「允许原路退款」只能是开或关",
   // Agent 更新检查
   "agent_update.asset_missing": "发布 {version} 缺少文件 {name}（发布未签名或不完整）",
   "agent_update.check_running": "已有更新检查在进行中，请稍候",

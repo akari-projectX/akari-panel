@@ -213,6 +213,8 @@ export interface RefundPreview {
   balance_part_cents: number;
   amount_cents: number;
   effect: RefundEffect;
+  // ① 原路退款 is allowed by the order's payment method.
+  original_available?: boolean;
 }
 
 export interface PaymentEvent {
