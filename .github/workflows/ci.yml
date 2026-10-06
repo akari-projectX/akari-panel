@@ -130,8 +130,10 @@ jobs:
       - run: make bench-lint
 
   spa:
-    # W36-b: the user portal (spa/, Akari-theme). The admin console is its own app.
-    name: spa (portal: tsc, lint, tests, build)
+    # W36-b: the user portal (spa/, Akari-theme): typecheck, lint, error-code
+    # and i18n checks, unit tests, build. The admin console is its own app.
+    # (Job name kept: it is a required check.)
+    name: spa (tsc, auth paths, build)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
