@@ -117,6 +117,7 @@ pub async fn run_all(state: &crate::state::AppState) -> anyhow::Result<()> {
         Pass::Limits,
         Pass::Expiry,
         Pass::Commissions,
+        Pass::ServerQuota,
     ] {
         let name = match pass {
             Pass::PlanExpiry => "plan_expiry",
@@ -124,6 +125,7 @@ pub async fn run_all(state: &crate::state::AppState) -> anyhow::Result<()> {
             Pass::Limits => "limits",
             Pass::Expiry => "expiry",
             Pass::Commissions => "commissions",
+            Pass::ServerQuota => "server_quota_reset",
         };
         let r = run_pass(state, pass).await;
         crate::metrics::enforcement_pass(name, r.is_ok());
@@ -152,6 +154,13 @@ async fn run_pass(state: &crate::state::AppState, pass: Pass) -> anyhow::Result<
                 .map_err(|e| anyhow::anyhow!("commission pass: {}", e.message()))?;
             Vec::new()
         }
+        // D5: a new quota period restores servers that ran out.
+        Pass::ServerQuota => {
+            crate::servers::apply_quota_resets(&mut tx)
+                .await
+                .map_err(|e| anyhow::anyhow!("server quota pass: {}", e.message()))?;
+            Vec::new()
+        }
     };
     tx.commit().await?;
     Ok(())
@@ -164,6 +173,7 @@ enum Pass {
     Limits,
     Expiry,
     Commissions,
+    ServerQuota,
 }
 
 #[cfg(test)]

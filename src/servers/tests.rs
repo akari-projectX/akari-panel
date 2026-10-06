@@ -541,3 +541,269 @@ async fn block_policy_covers_the_nodes_with_the_switch() {
     assert!(policy().await.is_empty());
     db.drop().await;
 }
+
+/// (rx, tx, exceeded) of a server's quota period.
+async fn quota_state(db: &TestDb, s: Uuid) -> (i64, i64, bool) {
+    sqlx::query_as(
+        "SELECT traffic_quota_rx_bytes, traffic_quota_tx_bytes, \
+         traffic_quota_exceeded_at IS NOT NULL FROM servers WHERE id = $1",
+    )
+    .bind(s)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap()
+}
+
+async fn nic(db: &TestDb, s: Uuid, name: &str, rx: i64, tx: i64) {
+    crate::nodestat::write_nic(
+        &db.pool,
+        s,
+        &crate::nodestat::Nic {
+            name: name.into(),
+            rx,
+            tx,
+        },
+    )
+    .await
+    .unwrap();
+}
+
+/// Inbound tags the agent of `s` is told to run.
+async fn served_tags(db: &TestDb, s: Uuid) -> usize {
+    let snap = crate::grpc::desired_snapshot(&db.pool, s)
+        .await
+        .unwrap()
+        .unwrap();
+    serde_json::from_str::<Value>(&snap.inbounds_json)
+        .unwrap()
+        .as_array()
+        .map_or(0, Vec::len)
+}
+
+/// D5: the interface counters become the period's usage: a first sample
+/// and a new interface only set the baseline, a reboot counts from 0, an
+/// implausible step is capped (only ever under-counts).
+#[tokio::test]
+async fn nic_counters_accumulate_from_deltas() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = db.server().await;
+    nic(&db, s, "eth0", 1_000_000, 5_000_000).await;
+    assert_eq!(
+        quota_state(&db, s).await,
+        (0, 0, false),
+        "first sample = baseline"
+    );
+    nic(&db, s, "eth0", 1_300_000, 5_100_000).await;
+    assert_eq!(quota_state(&db, s).await, (300_000, 100_000, false));
+    // Reboot: the counters restart from 0.
+    nic(&db, s, "eth0", 40_000, 70_000).await;
+    assert_eq!(quota_state(&db, s).await, (340_000, 170_000, false));
+    // Another interface: new baseline, nothing counted.
+    nic(&db, s, "ens3", 9_000_000, 9_000_000).await;
+    assert_eq!(quota_state(&db, s).await, (340_000, 170_000, false));
+    // A step beyond 100 Gbit/s since the last sample is capped.
+    sqlx::query("UPDATE servers SET nic_at = now() - interval '2 seconds' WHERE id = $1")
+        .bind(s)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    nic(&db, s, "ens3", 9_000_000 + 10_i64.pow(15), 9_000_000).await;
+    let (rx, _, _) = quota_state(&db, s).await;
+    assert!(
+        (340_000 + 25_000_000_000..340_000 + 26_000_000_000).contains(&rx),
+        "{rx}"
+    );
+    db.drop().await;
+}
+
+/// D5 end to end: the quota runs out on a heartbeat → every node of the
+/// server gets the empty state (an admin-disabled node stays disabled),
+/// an alert fires; raising the quota restores; the period reset restores
+/// and is audited; a lowered quota stops at once. Every flip bumps.
+#[tokio::test]
+async fn quota_stops_and_restores_the_server() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let (state, c) = admin(&db).await;
+    let s = db.server().await;
+    let (a, b) = (db.node_on(s, 1001).await, db.node_on(s, 1002).await);
+    sqlx::query("UPDATE nodes SET enabled = false WHERE id = $1")
+        .bind(b)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(served_tags(&db, s).await, 1);
+
+    // Validation.
+    for (body, code) in [
+        (json!({"traffic_quota_bytes": 0}), "server.quota_invalid"),
+        (
+            json!({"traffic_quota_mode": "sideways"}),
+            "server.quota_mode_invalid",
+        ),
+        (
+            json!({"traffic_quota_reset_day": 32}),
+            "server.reset_day_invalid",
+        ),
+    ] {
+        let r = c
+            .req(
+                Method::PATCH,
+                &format!("/test/api/v1/servers/{s}"),
+                Some(body),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST);
+        assert_eq!(r.json()["code"], code);
+    }
+    let r = c
+        .req(
+            Method::PATCH,
+            &format!("/test/api/v1/servers/{s}"),
+            Some(
+                json!({"traffic_quota_bytes": 1_000_000, "traffic_quota_mode": "up",
+                        "traffic_quota_reset_day": 1}),
+            ),
+        )
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let v = r.json();
+    assert_eq!(v["traffic_quota"]["bytes"], 1_000_000);
+    assert_eq!(v["traffic_quota"]["mode"], "up");
+    assert!(v["traffic_quota"]["next_reset_at"].is_string());
+
+    // Up = tx only: lots of rx does not count.
+    let v0 = db.versions(s).await.0;
+    nic(&db, s, "eth0", 0, 0).await;
+    nic(&db, s, "eth0", 50_000_000, 999_999).await;
+    assert!(!quota_state(&db, s).await.2);
+    assert_eq!(db.versions(s).await.0, v0, "no flip, no bump");
+    nic(&db, s, "eth0", 50_000_000, 1_000_000).await;
+    assert!(quota_state(&db, s).await.2);
+    assert_eq!(db.versions(s).await.0, v0 + 1, "stopping bumps");
+    assert_eq!(served_tags(&db, s).await, 0, "the empty state");
+    let enabled: Vec<bool> =
+        sqlx::query_scalar("SELECT enabled FROM nodes WHERE server_id = $1 ORDER BY id = $2 DESC")
+            .bind(s)
+            .bind(a)
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(enabled, vec![true, false], "nodes untouched");
+    let r = c.get(&format!("/test/api/v1/servers/{s}")).await.json();
+    assert!(r["traffic_quota"]["exceeded_at"].is_string());
+    assert!(
+        r["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("流量额度已用完")),
+        "{}",
+        r["warnings"]
+    );
+    assert_eq!(r["traffic_quota"]["used_bytes"], 1_000_000);
+    // The alert.
+    let mut conn = db.pool.acquire().await.unwrap();
+    let settings = crate::alerts::load(&mut conn).await.unwrap();
+    let monitored = crate::alerts::eval::gather(&state, &mut conn, &settings)
+        .await
+        .unwrap();
+    drop(conn);
+    // A pending server (no certificate) is not monitored: enroll it.
+    assert!(monitored.iter().all(|m| m.id != s));
+    sqlx::query("UPDATE servers SET cert_serial = 'ab' WHERE id = $1")
+        .bind(s)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let mut conn = db.pool.acquire().await.unwrap();
+    let monitored = crate::alerts::eval::gather(&state, &mut conn, &settings)
+        .await
+        .unwrap();
+    drop(conn);
+    let m = monitored.iter().find(|m| m.id == s).unwrap();
+    let verdict = crate::alerts::eval::evaluate(&m.facts, &m.rules, chrono::Utc::now());
+    assert!(verdict.firing.iter().any(|o| o.kind == "traffic_quota"));
+
+    // Raising the quota restores (the disabled node stays off).
+    let r = c
+        .req(
+            Method::PATCH,
+            &format!("/test/api/v1/servers/{s}"),
+            Some(json!({"traffic_quota_bytes": 2_000_000})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(!quota_state(&db, s).await.2);
+    assert_eq!(db.versions(s).await.0, v0 + 2);
+    assert_eq!(served_tags(&db, s).await, 1);
+
+    // Lowering it below the usage stops at once; the mode switch to both
+    // counts the rx as well.
+    let r = c
+        .req(
+            Method::PATCH,
+            &format!("/test/api/v1/servers/{s}"),
+            Some(json!({"traffic_quota_mode": "both"})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(quota_state(&db, s).await.2);
+    assert_eq!(db.versions(s).await.0, v0 + 3);
+
+    // The period reset: counters 0, restored, next reset ahead, audited.
+    sqlx::query(
+        "UPDATE servers SET traffic_quota_next_reset_at = now() - interval '1 second' WHERE id = $1",
+    )
+    .bind(s)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let mut tx = db.pool.begin().await.unwrap();
+    assert_eq!(apply_quota_resets(&mut tx).await.unwrap(), vec![s]);
+    tx.commit().await.unwrap();
+    assert_eq!(quota_state(&db, s).await, (0, 0, false));
+    assert_eq!(db.versions(s).await.0, v0 + 4);
+    let (ahead, audits): (bool, i64) = sqlx::query_as(
+        "SELECT traffic_quota_next_reset_at > now(), (SELECT count(*) FROM audit_log \
+         WHERE action = 'server.traffic_quota.reset' AND target_id = $1::text) \
+         FROM servers WHERE id = $1",
+    )
+    .bind(s)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert!(ahead);
+    assert_eq!(audits, 1);
+    let mut tx = db.pool.begin().await.unwrap();
+    assert!(apply_quota_resets(&mut tx).await.unwrap().is_empty());
+    tx.commit().await.unwrap();
+    // Removing the quota: never stops.
+    let r = c
+        .req(
+            Method::PATCH,
+            &format!("/test/api/v1/servers/{s}"),
+            Some(json!({"traffic_quota_bytes": null, "traffic_quota_reset_day": null})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    nic(&db, s, "eth0", 90_000_000, 90_000_000).await;
+    assert!(!quota_state(&db, s).await.2);
+    let updates: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'server.update' AND target_id = $1::text",
+    )
+    .bind(s.to_string())
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(updates, 4);
+    db.drop().await;
+}

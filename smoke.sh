@@ -1436,6 +1436,39 @@ if need_agent "protocol>=7" "Q1 two nodes on one server"; then
   echo "q1 two nodes on one server: ok"
 fi
 
+echo "== D5: server traffic quota from the network interface =="
+if need_agent cap:metrics "D5 server traffic quota"; then
+  [ "$(patch_code "$BASE/api/v1/servers/$SERVER_ID" '{"traffic_quota_bytes":0}')" = "400" ] \
+    && [ "$(last_json "d['code']")" = "server.quota_invalid" ] || { echo "FAIL: zero quota accepted"; exit 1; }
+  # 1 byte, both directions, monthly on the 1st: the next heartbeats use it up.
+  [ "$(patch_code "$BASE/api/v1/servers/$SERVER_ID" '{"traffic_quota_bytes":1,"traffic_quota_mode":"both","traffic_quota_reset_day":1}')" = "200" ] \
+    && [ "$(last_json "d['traffic_quota']['bytes'], d['traffic_quota']['reset_day']")" = "1 1" ] \
+    || { echo "FAIL: set the quota"; cat /tmp/akari-smoke/last; exit 1; }
+  # Some bytes on the default-route interface (an idle runner may move none).
+  for _ in $(seq 1 90); do
+    [ "$(psql_q "SELECT traffic_quota_exceeded_at IS NOT NULL FROM servers WHERE id='$SERVER_ID'")" = "t" ] && break
+    curl -s -m 3 -o /dev/null https://github.com/ 2>/dev/null || true
+    sleep 1
+  done
+  [ "$(psql_q "SELECT traffic_quota_exceeded_at IS NOT NULL AND traffic_quota_rx_bytes + traffic_quota_tx_bytes > 0 FROM servers WHERE id='$SERVER_ID'")" = "t" ] \
+    || { echo "FAIL: quota never ran out: $(psql_q "SELECT nic_name, nic_rx_last, traffic_quota_rx_bytes FROM servers WHERE id='$SERVER_ID'")"; exit 1; }
+  # Every node of the server stops (the empty state); enabled stays as it was.
+  for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/11443) 2>/dev/null || break; sleep 0.5; done
+  (exec 3<>/dev/tcp/127.0.0.1/11443) 2>/dev/null && { echo "FAIL: the inbound still listens over the quota"; exit 1; }
+  [ "$(psql_q "SELECT enabled FROM nodes WHERE id='$NODE_ID'")" = "t" ] || { echo "FAIL: the quota touched nodes.enabled"; exit 1; }
+  [ "$(code -b "$JAR" "$BASE/api/v1/servers/$SERVER_ID")" = "200" ] && matches -F '流量额度已用完' </tmp/akari-smoke/last \
+    || { echo "FAIL: no quota warning on the server"; exit 1; }
+  for _ in $(seq 1 45); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='traffic_quota' AND status='firing'")" = "1" ] && break; sleep 1; done
+  [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='traffic_quota' AND status='firing'")" = "1" ] \
+    || { echo "FAIL: no traffic_quota alert"; exit 1; }
+  # Removing the quota restores at once.
+  [ "$(patch_code "$BASE/api/v1/servers/$SERVER_ID" '{"traffic_quota_bytes":null,"traffic_quota_reset_day":null}')" = "200" ] || { echo "FAIL: remove the quota"; exit 1; }
+  for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/11443) 2>/dev/null && break; sleep 0.5; done
+  python3 "$LOG/w28-vless.py" "$VLESS_D" 11443 || { echo "FAIL: not restored after the quota was removed"; exit 1; }
+  [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='server.update' AND target_id='$SERVER_ID'")" -ge 2 ] || { echo "FAIL: quota changes not audited"; exit 1; }
+  echo "d5 server traffic quota: ok"
+fi
+
 if need_agent cap:metrics "W11 machine status"; then
   # Machine status: the heartbeat blob carries metrics; history and
   # Prometheus fleet gauges follow.
@@ -2482,7 +2515,7 @@ done
 
 echo "== W21: dashboard, user search + total, coded errors, plan + prices in one request, site name =="
 [ "$(code -b "$JAR" "$BASE/api/v1/dashboard")" = "200" ] \
-  && [ "$(last_json "d['d30']['orders'] >= 1 and d['users_total'] >= 1 and d['nodes']['total'] >= 1 and isinstance(d['latest_orders'], list)")" = "True" ] \
+  && [ "$(last_json "d['d30']['orders'] >= 1 and d['users_total'] >= 1 and d['servers']['total'] >= 1 and isinstance(d['latest_orders'], list)")" = "True" ] \
   || { echo "FAIL: dashboard"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/dashboard")" = "403" ] || { echo "FAIL: user reached the dashboard"; exit 1; }
 

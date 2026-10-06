@@ -2205,7 +2205,7 @@ struct Desired {
 /// being deleted and not over its traffic quota (D5: an exceeded server
 /// runs the empty state, like a disabled node, without touching any
 /// node's `enabled`).
-pub const SERVER_SERVES: &str = "s.deleting_at IS NULL";
+pub const SERVER_SERVES: &str = "s.deleting_at IS NULL AND s.traffic_quota_exceeded_at IS NULL";
 
 /// The desired state of a server (Q1): the inbounds of all its nodes that
 /// are served — enabled, with an inbound — one per enabled entrance (the

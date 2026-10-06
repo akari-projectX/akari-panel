@@ -347,9 +347,60 @@ pub async fn write_sample(pg: &PgPool, server: Uuid, s: &Sample) -> sqlx::Result
     Ok(())
 }
 
+/// D5: the interface counters of a heartbeat (both totals known and an
+/// interface named; otherwise the quota counters are left alone).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Nic {
+    pub name: String,
+    pub rx: i64,
+    pub tx: i64,
+}
+
+impl Nic {
+    pub fn from_heartbeat(hb: &Heartbeat) -> Option<Self> {
+        let m = hb.metrics.as_ref()?;
+        let name = agent_text(&m.net_interface, 32);
+        if name.is_empty() {
+            return None;
+        }
+        Some(Self {
+            name,
+            rx: int(m.net_rx_bytes_total?),
+            tx: int(m.net_tx_bytes_total?),
+        })
+    }
+}
+
+/// D5: add what the interface moved since the baseline to the period's
+/// counters (`akari_nic_delta`: a first sample or a new interface only sets
+/// the baseline, a counter that went down counts from 0, steps are capped)
+/// and keep the new baseline. The trigger `servers_traffic_quota` stops the
+/// server when the quota is used up. Heartbeats skipped here lose nothing
+/// (the counters are cumulative).
+pub const NIC_SQL: &str = "\
+UPDATE servers SET \
+    traffic_quota_rx_bytes = LEAST(traffic_quota_rx_bytes::numeric \
+        + akari_nic_delta(nic_name = $2, nic_rx_last, $3, nic_at), 9223372036854775807)::bigint, \
+    traffic_quota_tx_bytes = LEAST(traffic_quota_tx_bytes::numeric \
+        + akari_nic_delta(nic_name = $2, nic_tx_last, $4, nic_at), 9223372036854775807)::bigint, \
+    nic_name = $2, nic_rx_last = $3, nic_tx_last = $4, nic_at = now() \
+WHERE id = $1";
+
+pub async fn write_nic(pg: &PgPool, server: Uuid, nic: &Nic) -> sqlx::Result<()> {
+    sqlx::query(NIC_SQL)
+        .bind(server)
+        .bind(&nic.name)
+        .bind(nic.rx)
+        .bind(nic.tx)
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
 /// Heartbeat hook (grpc.rs, after the Valkey write): fleet gauges and, at
-/// most every MIN_SAMPLE_GAP, a history write in the background (never
-/// delays the stream; skipped when WRITE_PERMITS are all busy).
+/// most every MIN_SAMPLE_GAP, the interface counters (D5) and a history
+/// write in the background (never delays the stream; skipped when
+/// WRITE_PERMITS are all busy).
 pub fn on_heartbeat(state: &AppState, server: Uuid, hb: &Heartbeat) {
     let s = Sample::from_heartbeat(hb);
     if !state.nodestat().observe(server, s, Instant::now()) {
@@ -359,8 +410,14 @@ pub fn on_heartbeat(state: &AppState, server: Uuid, hb: &Heartbeat) {
         tracing::debug!(server = %server, "metrics history write skipped (database busy)");
         return;
     };
+    let nic = Nic::from_heartbeat(hb);
     let pg = state.pg().clone();
     tokio::spawn(async move {
+        if let Some(nic) = &nic
+            && let Err(e) = write_nic(&pg, server, nic).await
+        {
+            tracing::warn!(server = %server, error = %e, "interface counters write failed");
+        }
         if let Err(e) = write_sample(&pg, server, &s).await {
             // A server deleted meanwhile (foreign key) is not worth a warning.
             tracing::debug!(server = %server, error = %e, "metrics history write failed");
@@ -1184,10 +1241,11 @@ pub async fn my_nodes(
              ORDER BY ord LIMIT 1) l ON true \
          LEFT JOIN LATERAL (SELECT server_id, measured_at FROM server_latency \
              WHERE server_id = s.id AND source = 'agent' ORDER BY ord LIMIT 1) lf ON true \
-         WHERE eu.user_id = $1 AND n.enabled AND n.visible AND s.deleting_at IS NULL \
+         WHERE eu.user_id = $1 AND n.enabled AND n.visible AND {serves} \
          AND n.inbound IS NOT NULL AND e.enabled AND e.hidden_since IS NULL \
          ORDER BY n.sort, coalesce(n.display_name, n.name), e.kind <> 'direct', e.sort, e.name",
-        online_sql("s")
+        online_sql("s"),
+        serves = crate::grpc::SERVER_SERVES
     )))
     .bind(user.id)
     .fetch_all(state.pg())

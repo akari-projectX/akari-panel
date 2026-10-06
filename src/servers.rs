@@ -123,6 +123,11 @@ pub struct WarnFacts {
     pub relays: i64,
     #[serde(skip)]
     pub entrances_enabled: i64,
+    /// D5: the server's traffic quota is used up since then (all its nodes
+    /// get the empty state); the next period starts at the reset time.
+    pub traffic_quota_exceeded_at: Option<DateTime<Utc>>,
+    #[serde(skip)]
+    pub traffic_quota_next_reset_at: Option<DateTime<Utc>>,
 }
 
 /// The `WarnFacts` columns for a server aliased `s`.
@@ -138,7 +143,7 @@ pub fn server_warn_cols() -> String {
      (SELECT count(*) FROM entrances e WHERE e.server_id = s.id AND e.kind = 'relay' \
         AND e.enabled) AS relays, \
      (SELECT count(*) FROM entrances e WHERE e.server_id = s.id AND e.enabled) \
-        AS entrances_enabled"
+        AS entrances_enabled, s.traffic_quota_exceeded_at, s.traffic_quota_next_reset_at"
         .to_string()
 }
 
@@ -170,6 +175,12 @@ impl WarnFacts {
         if let Some(u) = stale_units_warning(self.agent_capabilities.as_deref()) {
             w.push(u);
         }
+        if let Some(q) = quota_warning(
+            self.traffic_quota_exceeded_at,
+            self.traffic_quota_next_reset_at,
+        ) {
+            w.push(q);
+        }
         if self.unenforced_speed_limits {
             w.push(format!(
                 "agent 版本过旧，不支持限速（协议 < {}）：升级 agent 之前，套餐限速在此服务器上不生效",
@@ -178,6 +189,25 @@ impl WarnFacts {
         }
         w
     }
+}
+
+/// D5: the quota is used up: what happens and when it ends.
+fn quota_warning(
+    exceeded_at: Option<DateTime<Utc>>,
+    next_reset_at: Option<DateTime<Utc>>,
+) -> Option<String> {
+    let at = exceeded_at?;
+    let until = match next_reset_at {
+        Some(r) => format!(
+            "{}（北京时间）进入下个周期或提高额度后自动恢复",
+            crate::api::beijing_time(r)
+        ),
+        None => "提高额度后自动恢复（未设置重置日）".to_string(),
+    };
+    Some(format!(
+        "流量额度已用完（{}，北京时间）：此服务器上的全部节点已停止服务，{until}",
+        crate::api::beijing_time(at)
+    ))
 }
 
 /// W28-a / Q1: relay entrances the agent cannot filter by source address
@@ -423,7 +453,14 @@ pub fn server_cols() -> String {
          s.traffic_max_rate_bytes_per_sec, s.deleting_at, s.last_seen_at, \
          s.cert_serial IS NOT NULL AS enrolled, enr.expires_at AS enroll_token_expires_at, \
          coalesce(lat.latency, '[]'::jsonb) AS latency, s.probe_requested_at, \
-         coalesce(al.n, 0) AS alerts_firing, {warn}",
+         coalesce(al.n, 0) AS alerts_firing, \
+         jsonb_build_object('bytes', s.traffic_quota_bytes, 'mode', s.traffic_quota_mode, \
+            'reset_day', s.traffic_quota_reset_day, 'next_reset_at', s.traffic_quota_next_reset_at, \
+            'period_start', s.traffic_quota_period_start, 'rx_bytes', s.traffic_quota_rx_bytes, \
+            'tx_bytes', s.traffic_quota_tx_bytes, 'used_bytes', LEAST(akari_quota_used( \
+                s.traffic_quota_mode, s.traffic_quota_rx_bytes, s.traffic_quota_tx_bytes), \
+                9223372036854775807)::bigint, \
+            'exceeded_at', s.traffic_quota_exceeded_at) AS traffic_quota, {warn}",
         online = crate::nodestat::online_sql("s"),
         warn = server_warn_cols(),
     )
@@ -473,6 +510,11 @@ pub struct MachineView {
     pub probe_requested_at: Option<DateTime<Utc>>,
     /// W17: alerts firing on this server.
     pub alerts_firing: i64,
+    /// D5: the traffic quota counted from the network interface
+    /// ({bytes (null = none), mode both|up|down, reset_day (null = never),
+    /// next_reset_at, period_start, rx_bytes, tx_bytes, used_bytes (by
+    /// mode), exceeded_at}).
+    pub traffic_quota: Value,
     #[sqlx(flatten)]
     #[serde(flatten)]
     pub facts: WarnFacts,
@@ -778,6 +820,18 @@ pub struct UpdateServerReq {
     /// to the built-in default.
     #[serde(default, deserialize_with = "double_option")]
     pub traffic_max_rate_bytes_per_sec: Option<Option<i64>>,
+    /// D5: traffic quota in bytes counted from the network interface (> 0;
+    /// null = none). Raising it above the usage restores a server that ran
+    /// out (lowering it below stops it at once).
+    #[serde(default, deserialize_with = "double_option")]
+    pub traffic_quota_bytes: Option<Option<i64>>,
+    /// D5: what counts: both (rx + tx), up (tx: bytes the server sends),
+    /// down (rx).
+    pub traffic_quota_mode: Option<String>,
+    /// D5: monthly reset at 00:00 site time on this day (1-31, clamped to
+    /// the month's end); null = never resets.
+    #[serde(default, deserialize_with = "double_option")]
+    pub traffic_quota_reset_day: Option<Option<i16>>,
 }
 
 impl UpdateServerReq {
@@ -785,8 +839,43 @@ impl UpdateServerReq {
         self.name.is_some()
             || self.tls_domain.is_some()
             || self.traffic_max_rate_bytes_per_sec.is_some()
+            || self.traffic_quota_bytes.is_some()
+            || self.traffic_quota_mode.is_some()
+            || self.traffic_quota_reset_day.is_some()
+    }
+
+    /// D5 field checks (before any lock).
+    fn check_quota(&self) -> Result<(), ApiError> {
+        if let Some(Some(q)) = self.traffic_quota_bytes
+            && q <= 0
+        {
+            return Err(bad_request!(
+                "server.quota_invalid",
+                "traffic_quota_bytes must be > 0 (null = no quota)"
+            ));
+        }
+        if let Some(m) = &self.traffic_quota_mode
+            && !QUOTA_MODES.contains(&m.as_str())
+        {
+            return Err(bad_request!(
+                "server.quota_mode_invalid",
+                "traffic_quota_mode must be both, up or down"
+            ));
+        }
+        if let Some(Some(d)) = self.traffic_quota_reset_day
+            && !(1..=31).contains(&d)
+        {
+            return Err(bad_request!(
+                "server.reset_day_invalid",
+                "traffic_quota_reset_day must be 1-31 (null = never)"
+            ));
+        }
+        Ok(())
     }
 }
+
+/// D5 quota modes (the `servers_traffic_quota_mode` CHECK).
+pub const QUOTA_MODES: [&str; 3] = ["both", "up", "down"];
 
 /// A server name: trimmed, 1..=64 characters without control characters.
 pub fn clean_name(name: &str) -> Result<String, ApiError> {
@@ -801,7 +890,8 @@ pub fn clean_name(name: &str) -> Result<String, ApiError> {
 }
 
 /// PATCH /servers/{id} in the caller's transaction: lock the server, update,
-/// bump config_version when the TLS domain changes, audit `server.update`.
+/// bump config_version when the TLS domain changes (D5: the quota trigger bumps it
+/// when a quota change stops or restores the server), audit `server.update`.
 /// Returns whether it bumped.
 pub async fn apply_update(
     conn: &mut PgConnection,
@@ -822,6 +912,7 @@ pub async fn apply_update(
             _ => None,
         }),
     };
+    req.check_quota()?;
     if let Some(Some(r)) = req.traffic_max_rate_bytes_per_sec
         && r <= 0
     {
@@ -851,14 +942,31 @@ pub async fn apply_update(
         set.push("traffic_max_rate_bytes_per_sec = ")
             .push_bind_unseparated(v);
     }
+    // D5: the trigger `servers_traffic_quota` stops or restores the server
+    // (and bumps config_version) when the quota or the mode changes.
+    if let Some(v) = req.traffic_quota_bytes {
+        set.push("traffic_quota_bytes = ").push_bind_unseparated(v);
+    }
+    if let Some(v) = &req.traffic_quota_mode {
+        set.push("traffic_quota_mode = ")
+            .push_bind_unseparated(v.clone());
+    }
+    if let Some(v) = req.traffic_quota_reset_day {
+        set.push("traffic_quota_reset_day = ")
+            .push_bind_unseparated(v);
+        set.push("traffic_quota_next_reset_at = akari_quota_next_reset(")
+            .push_bind_unseparated(v)
+            .push_unseparated("::smallint, now())");
+    }
     qb.push(" WHERE id = ").push_bind(id);
     qb.push(format!(
-        " RETURNING {}, {}, old.config_version <> new.config_version",
+        " RETURNING {}, {}, old.config_version <> new.config_version, \
+         old.tls_domain IS DISTINCT FROM new.tls_domain",
         crate::audit::server_snapshot_sql("old"),
         crate::audit::server_snapshot_sql("new")
     ));
-    let (before, after, bumped) = match qb
-        .build_query_as::<(Value, Value, bool)>()
+    let (before, after, bumped, domain_changed) = match qb
+        .build_query_as::<(Value, Value, bool, bool)>()
         .fetch_one(&mut *conn)
         .await
     {
@@ -871,7 +979,7 @@ pub async fn apply_update(
         }
         Err(e) => return Err(e.into()),
     };
-    if bumped {
+    if domain_changed {
         refuse_acme_for_old_agent(conn, id).await?;
     }
     crate::audit::record(
@@ -899,6 +1007,48 @@ pub async fn update_server(
     apply_update(&mut tx, &Actor::of(&user), id, &req).await?;
     tx.commit().await?;
     get_server(State(state), user, Path((String::new(), id))).await
+}
+
+// ---------------------------------------------------------------------------
+// D5 traffic quota: period reset (enforce pass)
+// ---------------------------------------------------------------------------
+
+/// The quota period reset (`enforce::run_all`, any instance): servers whose
+/// `traffic_quota_next_reset_at` passed start a new period (counters 0,
+/// next reset computed in the site time zone); the trigger restores an
+/// exceeded server (bumps config_version, so its agent gets its nodes
+/// back). Rows locked by another instance are skipped (`SKIP LOCKED`).
+/// Audited `server.traffic_quota.reset` (actor system). Returns the servers
+/// reset.
+pub async fn apply_quota_resets(conn: &mut PgConnection) -> Result<Vec<Uuid>, ApiError> {
+    let rows: Vec<(Uuid, Value, Value)> = sqlx::query_as(
+        "UPDATE servers SET traffic_quota_rx_bytes = 0, traffic_quota_tx_bytes = 0, \
+            traffic_quota_period_start = now(), \
+            traffic_quota_next_reset_at = akari_quota_next_reset(traffic_quota_reset_day, now()) \
+         WHERE id IN (SELECT id FROM servers WHERE traffic_quota_next_reset_at <= now() \
+            ORDER BY id FOR UPDATE SKIP LOCKED) \
+         RETURNING id, jsonb_build_object('rx_bytes', old.traffic_quota_rx_bytes, \
+            'tx_bytes', old.traffic_quota_tx_bytes, \
+            'exceeded', old.traffic_quota_exceeded_at IS NOT NULL), \
+            jsonb_build_object('next_reset_at', new.traffic_quota_next_reset_at, \
+            'exceeded', new.traffic_quota_exceeded_at IS NOT NULL)",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let actor = Actor::system();
+    for (id, before, after) in &rows {
+        crate::audit::record(
+            conn,
+            &actor,
+            "server.traffic_quota.reset",
+            "server",
+            Some(id.to_string()),
+            Some(before.clone()),
+            Some(after.clone()),
+        )
+        .await?;
+    }
+    Ok(rows.into_iter().map(|r| r.0).collect())
 }
 
 // ---------------------------------------------------------------------------

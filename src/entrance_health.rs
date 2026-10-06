@@ -65,6 +65,7 @@ pub async fn health_round(
          FROM nodes n WHERE n.id = e.node_id AND e.id IN (SELECT e2.id FROM entrances e2 \
              JOIN nodes n2 ON n2.id = e2.node_id JOIN servers s2 ON s2.id = n2.server_id \
              WHERE e2.kind = 'relay' AND e2.enabled AND n2.enabled AND s2.deleting_at IS NULL \
+             AND s2.traffic_quota_exceeded_at IS NULL \
              AND n2.inbound IS NOT NULL \
              AND (e2.health_next_at IS NULL OR e2.health_next_at <= now()) \
              ORDER BY e2.health_next_at NULLS FIRST, e2.id LIMIT $2 FOR UPDATE OF e2 SKIP LOCKED) \
