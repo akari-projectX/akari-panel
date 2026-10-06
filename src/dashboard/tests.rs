@@ -80,7 +80,8 @@ async fn aggregates_every_source() {
     paid_order(&db, u, 800, d1 - Duration::days(40)).await;
     let refunded = paid_order(&db, u, 1600, d1 - Duration::days(6)).await;
     sqlx::query(
-        "UPDATE orders SET refunded_at = $2, refund_cents = 50, refund_reason = 'r' WHERE id = $1",
+        "UPDATE orders SET refunded_at = $2, refund_cents = 50, refund_balance_cents = 50, \
+         refund_external_cents = 0, refund_effect = '{}', refund_reason = 'r' WHERE id = $1",
     )
     .bind(refunded)
     .bind(d1 + Duration::seconds(1))

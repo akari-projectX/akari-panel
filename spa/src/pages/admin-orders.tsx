@@ -7,6 +7,7 @@ import { useState } from "react";
 
 import { get, post } from "../lib/api";
 import {
+  parseYuan,
   periodZh,
   sortPrices,
   yuan,
@@ -377,9 +378,9 @@ function OrderDetailCard({ id, onClose }: { id: string; onClose: () => void }) {
           <dt className="text-muted-foreground">退款</dt>
           <dd>
             {o.refunded_at
-              ? `${fmt(o.refunded_at)} 退回余额 ¥${yuan(o.refund_cents ?? 0)}（${o.refund_reason ?? ""}）${
-                  o.refund_effect ? `；${refundEffectZh(o.refund_effect)}` : ""
-                }`
+              ? `${fmt(o.refunded_at)} 退回余额 ¥${yuan(o.refund_balance_cents ?? 0)}，支付宝后台已退 ¥${yuan(
+                  o.refund_external_cents ?? 0,
+                )}（${o.refund_reason ?? ""}）${o.refund_effect ? `；${refundEffectZh(o.refund_effect)}` : ""}`
               : "—"}
           </dd>
           <dt className="text-muted-foreground">实付</dt>
@@ -495,10 +496,16 @@ function RefundForm({ order: o }: { order: AdminOrder }) {
   const [reason, setReason] = useState("");
   const [toBalance, setToBalance] = useState(false);
   const [keepPlan, setKeepPlan] = useState(false);
+  // 中-3: what was refunded in the Alipay console (default: all of it).
+  const [external, setExternal] = useState(yuan(o.amount_cents));
   const [error, setError] = useState<string | null>(null);
+  const needsExternal = !toBalance && o.amount_cents > 0;
 
   async function refund() {
     if (!reason.trim()) return setError("请填写退款原因（写入审计）");
+    const ext = /^0+(\.0{1,2})?$/.test(external.trim()) ? 0 : parseYuan(external);
+    if (needsExternal && (ext === null || ext > o.amount_cents))
+      return setError(`请填写支付宝后台实际退款金额（0–${yuan(o.amount_cents)} 元）`);
     setError(null);
     let p: RefundPreview;
     try {
@@ -507,7 +514,11 @@ function RefundForm({ order: o }: { order: AdminOrder }) {
       return setError(errText(err));
     }
     const back = p.balance_part_cents + (toBalance ? p.amount_cents : 0);
-    const how = toBalance ? "支付宝实付部分也退到用户余额" : "支付宝实付部分请在支付宝商家后台退款";
+    const how = toBalance
+      ? "支付宝实付部分也退到用户余额"
+      : needsExternal
+        ? `支付宝商家后台已退 ¥${yuan(ext ?? 0)}`
+        : "无支付宝实付部分";
     const effect = keepPlan ? WHY_ZH.keep_plan : refundEffectZh(p.effect);
     if (
       !(await confirm({
@@ -518,7 +529,12 @@ function RefundForm({ order: o }: { order: AdminOrder }) {
     )
       return;
     try {
-      await post(`/orders/${o.id}/refund`, { reason: reason.trim(), to_balance: toBalance, keep_plan: keepPlan });
+      await post(`/orders/${o.id}/refund`, {
+        reason: reason.trim(),
+        to_balance: toBalance,
+        keep_plan: keepPlan,
+        ...(needsExternal ? { external_cents: ext } : {}),
+      });
       setReason("");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["order-detail", o.id] }),
@@ -539,6 +555,12 @@ function RefundForm({ order: o }: { order: AdminOrder }) {
         <input type="checkbox" checked={toBalance} onChange={(e) => setToBalance(e.target.checked)} />
         支付宝实付 ¥{yuan(o.amount_cents)} 也退到余额
       </label>
+      {needsExternal && (
+        <div className="space-y-1">
+          <Label htmlFor="refund-external">支付宝后台已退金额（元）</Label>
+          <Input id="refund-external" className="w-32" value={external} onChange={(e) => setExternal(e.target.value)} />
+        </div>
+      )}
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={keepPlan} onChange={(e) => setKeepPlan(e.target.checked)} />
         仅退款（保留套餐）

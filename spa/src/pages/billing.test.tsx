@@ -382,6 +382,8 @@ const adminOrder = (over: Partial<AdminOrder> = {}): AdminOrder => ({
   gift_cents: 0,
   refunded_at: null,
   refund_cents: null,
+  refund_balance_cents: null,
+  refund_external_cents: null,
   refund_reason: null,
   refund_effect: null,
   status: "paid",

@@ -2,8 +2,9 @@
 //!
 //! `POST /orders/{id}/refund` refunds a paid order once, in one
 //! transaction: the money (the held balance part always goes back to the
-//! balance; the gateway part is credited to the balance with `to_balance`)
-//! and — P1 — what the order did to the subscription, unless the admin
+//! balance; the gateway part is credited to the balance with `to_balance`,
+//! otherwise the admin records what was refunded in the provider's console
+//! — `refund_balance_cents` / `refund_external_cents`, 中-3) and — P1 — what the order did to the subscription, unless the admin
 //! keeps the plan (`keep_plan`):
 //! - a new subscription ends (status `cancelled`, access revoked — the
 //!   agents drop the user's credentials and live connections);
@@ -30,7 +31,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::audit::Actor;
-use crate::auth::{ApiError, conflict};
+use crate::auth::{ApiError, bad_request, conflict};
 use crate::plans::Revoke;
 
 /// Why a refund leaves the subscription alone.
@@ -296,8 +297,36 @@ pub struct Refund<'a> {
     /// Credit the gateway amount to the balance too (else it was refunded
     /// in the provider's console).
     pub to_balance: bool,
+    /// Without `to_balance` (and with a gateway amount): what was refunded
+    /// in the provider's console, 0..=the order's gateway amount (中-3).
+    pub external_cents: Option<i64>,
     /// Refund the money only; the subscription stays as it is.
     pub keep_plan: bool,
+}
+
+impl Refund<'_> {
+    /// The out-of-band part of a refund of `amount` gateway cents
+    /// (400 when it does not fit the request).
+    fn external(&self, amount: i64) -> Result<i64, ApiError> {
+        match (self.to_balance, self.external_cents) {
+            (true, None | Some(0)) => Ok(0),
+            (true, Some(_)) => Err(bad_request!(
+                "order_admin.refund_external_with_balance",
+                "the gateway amount goes to the balance; do not also record an external refund"
+            )),
+            (false, None) if amount > 0 => Err(bad_request!(
+                "order_admin.refund_external_required",
+                "enter the amount refunded in the payment provider's console (external_cents)"
+            )),
+            (false, None) => Ok(0),
+            (false, Some(c)) if (0..=amount).contains(&c) => Ok(c),
+            (false, Some(_)) => Err(bad_request!(
+                "order_admin.refund_external_range",
+                "external_cents must be 0..={amount_cents}",
+                amount_cents = amount
+            )),
+        }
+    }
 }
 
 /// Refund a paid order once (409 afterwards), in the caller's transaction:
@@ -311,6 +340,7 @@ pub async fn apply_refund(
 ) -> Result<Value, ApiError> {
     crate::entitle::lock(conn).await?;
     let (_, _, user, amount, balance, balance_state) = refundable(conn, order_id, true).await?;
+    let external = req.external(amount)?;
     let effect = if req.keep_plan {
         Effect::none(Unchanged::KeepPlan)
     } else {
@@ -342,8 +372,8 @@ pub async fn apply_refund(
     }
     let effect_json = effect.to_json();
     sqlx::query(
-        "UPDATE orders SET refunded_at = now(), refund_cents = $2, refund_reason = $3, \
-         refund_effect = $4, \
+        "UPDATE orders SET refunded_at = now(), refund_cents = $2 + $5, refund_reason = $3, \
+         refund_effect = $4, refund_balance_cents = $2, refund_external_cents = $5, \
          balance_state = CASE WHEN balance_state = 'held' THEN 'refunded' ELSE balance_state END \
          WHERE id = $1",
     )
@@ -351,10 +381,13 @@ pub async fn apply_refund(
     .bind(credit)
     .bind(req.reason)
     .bind(&effect_json)
+    .bind(external)
     .execute(&mut *conn)
     .await?;
     let after = json!({
-        "refund_cents": credit,
+        "refund_cents": credit + external,
+        "refund_balance_cents": credit,
+        "refund_external_cents": external,
         "to_balance": req.to_balance,
         "balance_part_cents": balance_part,
         "cash_part_cents": cash_part,

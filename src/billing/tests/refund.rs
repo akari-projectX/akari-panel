@@ -177,7 +177,7 @@ async fn refund_rolls_a_renewal_back() {
     assert!(e2 > e1);
     let p = preview(&admin, renewal).await.json();
     assert_eq!(p["effect"]["kind"], "rollback", "{p}");
-    let r = refund(&admin, renewal, json!({"reason": "r"})).await;
+    let r = refund(&admin, renewal, json!({"reason": "r", "to_balance": true})).await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
     assert_eq!(expiry(&db, u).await, Some(e1));
     let users_expiry: Option<chrono::DateTime<chrono::Utc>> =
@@ -202,7 +202,7 @@ async fn refund_rolls_a_renewal_back() {
         preview(&admin, late).await.json()["effect"]["kind"],
         "cancel"
     );
-    let r = refund(&admin, late, json!({"reason": "r"})).await;
+    let r = refund(&admin, late, json!({"reason": "r", "to_balance": true})).await;
     assert_eq!(r.json()["effect"]["kind"], "cancel");
     assert_eq!(plans_of(&db, u).await[0].2, "cancelled");
     assert_eq!(credentials(&db, u, node).await, 0);
@@ -259,7 +259,7 @@ async fn refund_restores_the_plan_before_a_switch() {
         .execute(&db.pool)
         .await
         .unwrap();
-    let r = refund(&admin, switch2, json!({"reason": "r"})).await;
+    let r = refund(&admin, switch2, json!({"reason": "r", "to_balance": true})).await;
     assert_eq!(r.json()["effect"]["kind"], "cancel", "{:?}", r.json());
     assert!(plans_of(&db, u).await.iter().all(|p| p.2 != "active"));
     assert_eq!(credentials(&db, u, node_b).await, 0);
@@ -293,12 +293,17 @@ async fn refund_money_only() {
     let c = user_client(&state, u).await;
     let first = bought(&db, &c, a, "month").await;
     let pack = bought(&db, &c, a, "reset").await;
-    let r = refund(&admin, pack, json!({"reason": "r"})).await;
+    let r = refund(&admin, pack, json!({"reason": "r", "to_balance": true})).await;
     assert_eq!(
         r.json()["effect"],
         json!({"kind": "none", "why": "reset_pack"})
     );
-    let r = refund(&admin, first, json!({"reason": "r", "keep_plan": true})).await;
+    let r = refund(
+        &admin,
+        first,
+        json!({"reason": "r", "keep_plan": true, "external_cents": 1000}),
+    )
+    .await;
     assert_eq!(
         r.json()["effect"],
         json!({"kind": "none", "why": "keep_plan"})
@@ -308,7 +313,7 @@ async fn refund_money_only() {
     // Renewed, then switched away: the renewal's subscription is gone.
     let renewal = bought(&db, &c, a, "month").await;
     bought(&db, &c, b, "month").await;
-    let r = refund(&admin, renewal, json!({"reason": "r"})).await;
+    let r = refund(&admin, renewal, json!({"reason": "r", "to_balance": true})).await;
     assert_eq!(
         r.json()["effect"],
         json!({"kind": "none", "why": "not_active"})

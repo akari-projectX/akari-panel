@@ -590,6 +590,8 @@ const adminOrder = (over: Partial<AdminOrder> = {}): AdminOrder => ({
   gift_cents: 0,
   refunded_at: null,
   refund_cents: null,
+  refund_balance_cents: null,
+  refund_external_cents: null,
   refund_reason: null,
   refund_effect: null,
   status: "paid",
@@ -667,12 +669,19 @@ describe("console: refund", () => {
     fireEvent.click(await screen.findByRole("button", { name: "详情" }));
     fireEvent.change(await screen.findByLabelText("退款原因（必填，写入审计）"), { target: { value: "x" } });
     fireEvent.click(screen.getByRole("checkbox", { name: /仅退款/ }));
+    // 中-3: what was refunded in the Alipay console (prefilled: all of it).
+    expect((screen.getByLabelText("支付宝后台已退金额（元）") as HTMLInputElement).value).toBe("7.00");
+    fireEvent.change(screen.getByLabelText("支付宝后台已退金额（元）"), { target: { value: "8" } });
+    fireEvent.click(screen.getByRole("button", { name: "退款" }));
+    expect(await screen.findByText("请填写支付宝后台实际退款金额（0–7.00 元）")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("支付宝后台已退金额（元）"), { target: { value: "6.5" } });
     fireEvent.click(screen.getByRole("button", { name: "退款" }));
     await waitFor(() => expect(calls.some((c) => c.path === "/orders/o1/refund")).toBe(true));
     expect(calls.find((c) => c.path === "/orders/o1/refund")?.body).toEqual({
       reason: "x",
       to_balance: false,
       keep_plan: true,
+      external_cents: 650,
     });
     expect(confirm.mock.calls[0][0]).toContain("套餐保持不变");
   });

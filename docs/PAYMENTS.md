@@ -310,12 +310,16 @@ Withdrawals of a deleted user can only be approved.
 
 ### Refunds (admin) / 退款（管理员）
 
-订单 → 详情 → 退款（`POST /orders/{id}/refund {reason, to_balance, keep_plan?}`），
+订单 → 详情 → 退款（`POST /orders/{id}/refund {reason, to_balance, external_cents?, keep_plan?}`），
 只对已付款订单、只能退一次，一个事务内完成：
 
 - **钱**：订单扣的余额部分总是退回余额；勾选「也退到余额」（`to_balance`）时
   支付宝实付部分也记入余额（两者合为一行 `refund_to_balance` 明细），否则请在
-  支付宝商家后台原路退款。待结算的邀请返利撤销。
+  支付宝商家后台原路退款，并在面板填写**实际退款金额**（`external_cents`，0 到实付金额；
+  有实付金额时必填，运营审查中-3：以前登记为 0，仪表盘与导出漏记）。订单记录
+  `refund_balance_cents`（退到余额）、`refund_external_cents`（支付宝后台已退），
+  `refund_cents` = 两者之和；仪表盘「退款」与订单 CSV（两列分开）都按它统计。
+  待结算的邀请返利撤销。
 - **套餐（P1）**：默认同时撤销该订单对订阅的效果，写审计 `user.plan.refund`：
   - 新购：结束该订阅（状态 `cancelled`），用户的节点凭据随即撤销，agent 断开其连接；
   - 续费：到期时间回退该订单增加的时长（开通时记录 `base`，回退量 = 本单到期 −

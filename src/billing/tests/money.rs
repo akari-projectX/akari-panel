@@ -80,7 +80,7 @@ async fn switch_credit_is_what_was_paid() {
     let r = admin
         .post(
             &format!("/test/api/v1/orders/{renewal}/refund"),
-            json!({"reason": "r", "keep_plan": true}),
+            json!({"reason": "r", "keep_plan": true, "external_cents": 1000}),
         )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
