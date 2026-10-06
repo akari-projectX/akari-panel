@@ -233,7 +233,7 @@ async fn paid_state(db: &TestDb, mock: &Mock) -> AppState {
 /// 系统设置 main domain = ORIGIN's host, reloaded into `state`.
 pub(crate) async fn main_domain(db: &TestDb, state: &AppState) {
     let host = ORIGIN.trim_start_matches("https://");
-    db.settings(state, &format!("main_domain = '{host}'")).await;
+    db.domains(state, "main", &[host]).await;
 }
 
 async fn token(state: &AppState, id: Uuid) -> String {
@@ -1492,7 +1492,7 @@ async fn notify_url_follows_the_main_domain() {
         &crate::audit::Actor::test(),
         0,
         &crate::settings::Values {
-            main_domain: Some("pay.example.com".into()),
+            main_domains: vec!["pay.example.com".into()],
             ..Default::default()
         },
     )

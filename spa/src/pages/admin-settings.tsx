@@ -47,11 +47,58 @@ export function settingsTabOf(path: string): SettingsTab {
 
 export type Source = "settings" | "default" | "main" | "browser" | "unset";
 
+// D8: one name of a domain list (the preferred one first).
+export interface DomainEntry {
+  domain: string;
+  display: string;
+  preferred: boolean;
+}
+
 export interface DomainView {
   value: string | null;
   display: string | null;
+  domains: DomainEntry[];
   effective: string | null;
   source: Source;
+}
+
+// D8: what removing a name affects (POST /settings/domains/impact).
+export interface RemovedDomain {
+  kind: "main" | "sub" | "node";
+  domain: string;
+  preferred: boolean;
+  places: { what: string; count: number; detail?: string }[];
+}
+
+const PLACE_TEXT: Record<string, string> = {
+  portal_console: "门户与后台不再在这个域名上提供",
+  links: "邮件、安装命令与支付回调改用",
+  pending_orders: "个待付款订单的支付宝通知发往这个域名（轮询仍会确认付款）",
+  install_links: "个未使用的安装命令/注册文件使用这个域名",
+  subscription_links: "个用户的订阅链接在这个域名上，旧链接会失效",
+  nodes: "个已注册的节点用它连接面板（继续可用：证书保留这个名字）",
+};
+
+/** One line per removed name for the confirmation. */
+export function removalText(r: RemovedDomain): string {
+  const parts = r.places.map((p) =>
+    p.what === "portal_console"
+      ? PLACE_TEXT[p.what]
+      : p.what === "links"
+        ? `${PLACE_TEXT[p.what]} ${p.detail ?? "（无）"}`
+        : `${p.count} ${PLACE_TEXT[p.what] ?? p.what}${p.detail ? `：${p.detail}` : ""}`,
+  );
+  return `· ${r.domain}${r.preferred ? "（首选）" : ""}：${parts.join("；")}`;
+}
+
+/** D8: a form field becomes its list's preferred entry; the others stay. */
+export function listOf(v: string, current: DomainEntry[]): string[] {
+  const t = v.trim();
+  const rest = current
+    .slice(1)
+    .filter((d) => d.domain !== t && d.display !== t)
+    .map((d) => d.domain);
+  return t ? [t, ...rest] : rest;
 }
 
 export interface AffectedNode {
@@ -77,9 +124,11 @@ export interface SettingsView {
   sub: DomainView;
   // W21: 站点名称 (null = "Akari").
   site_name: string | null;
+  sub_domain_per_user: boolean;
   node: {
     value: string | null;
     display: string | null;
+    domains: DomainEntry[];
     // null = 未设置节点通信域名：无法生成安装命令/注册文件。
     panel_addr: string | null;
     server_name: string | null;
@@ -217,17 +266,18 @@ export function hostOf(value: string): string {
 const isIpLiteral = (h: string) => /^[\d.]+$/.test(h) || h.includes(":");
 
 /**
- * 保存主域名后，当前浏览器访问的地址还能不能用（与后端 host gate 规则一致：
- * IP 地址总是可以；域名只接受主域名/订阅域名）。IDN 的比较交给后端兜底。
+ * 保存主域名后，当前浏览器访问的地址还能不能进后台（与后端规则一致：IP 地址总是
+ * 可以；域名只认主域名列表，D8：订阅域名只提供订阅）。IDN 的比较交给后端兜底。
  */
-export function hostStillAllowed(current: string, main: string, sub: string): boolean {
+export function hostStillAllowed(current: string, mains: string[]): boolean {
   const h = current
     .toLowerCase()
     .replace(/^\[|\]$/g, "")
     .replace(/\.$/, "");
-  if (main.trim() === "") return true;
+  const list = mains.filter((d) => d.trim() !== "");
+  if (list.length === 0) return true;
   if (isIpLiteral(h)) return true;
-  return [main, sub].filter((d) => d.trim() !== "").some((d) => hostOf(d) === h);
+  return list.some((d) => hostOf(d) === h);
 }
 
 function SourceBadge({ source }: { source: Source }) {
@@ -465,7 +515,12 @@ function SettingsForm({ data, mode }: { data: SettingsView; mode: "site" | "node
 
   const value = { main, sub, node } as const;
   const nodeChanged = node.trim() !== (data.node.display ?? "");
-  const hostAtRisk = !hostStillAllowed(location.hostname, main, sub);
+  const lists = {
+    main_domains: listOf(main, data.main.domains),
+    sub_domains: listOf(sub, data.sub.domains),
+    node_domains: listOf(node, data.node.domains),
+  };
+  const hostAtRisk = !hostStillAllowed(location.hostname, lists.main_domains);
   const nodeBlocked = checks.node?.level === "block";
 
   async function dnsCheck(kind: Kind): Promise<DnsCheck | null> {
@@ -507,16 +562,39 @@ function SettingsForm({ data, mode }: { data: SettingsView; mode: "site" | "node
       });
       if (!ok) return;
     }
+    // D8: dropping a name shows what it affects first.
+    const kept = (k: "main" | "sub" | "node", d: DomainEntry) =>
+      lists[`${k}_domains`].some((x) => x === d.domain || x === d.display);
+    const dropping = (["main", "sub", "node"] as const).some((k) => data[k].domains.some((d) => !kept(k, d)));
+    let confirmRemoval = false;
+    if (dropping) {
+      try {
+        const impact = await post<{ removed: RemovedDomain[] }>("/settings/domains/impact", lists);
+        if (impact.removed.length > 0) {
+          const ok = await confirm({
+            title: "删除这些域名？",
+            message: impact.removed.map(removalText).join("\n"),
+            confirmLabel: "确认删除",
+            destructive: true,
+          });
+          if (!ok) return;
+          confirmRemoval = true;
+        }
+      } catch (err) {
+        setError(errText(err, "保存失败"));
+        return;
+      }
+    }
     setBusy(true);
     try {
       const res = await put<SettingsView>("/settings", {
         version: data.version,
-        main_domain: main.trim() || null,
-        sub_domain: sub.trim() || null,
-        node_domain: node.trim() || null,
+        ...lists,
+        sub_domain_per_user: data.sub_domain_per_user,
         trust_cloudflare: trust === "default" ? null : trust === "on",
         force_node_cloudflare: forceNode,
         confirm_host_change: confirmHost,
+        confirm_removal: confirmRemoval,
       });
       setWarnings(res.warnings);
       setSaved(true);

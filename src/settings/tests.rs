@@ -16,9 +16,9 @@ fn cfg() -> PanelConfig {
 
 fn stored(main: Option<&str>, sub: Option<&str>, node: Option<&str>) -> Stored {
     Stored {
-        main_domain: main.map(String::from),
-        sub_domain: sub.map(String::from),
-        node_domain: node.map(String::from),
+        main_domains: main.map(String::from).into_iter().collect(),
+        sub_domains: sub.map(String::from).into_iter().collect(),
+        node_domains: node.map(String::from).into_iter().collect(),
         ..Stored::default()
     }
 }
@@ -165,7 +165,7 @@ fn database_only_no_file_fallback() {
     assert_eq!((e.node.is_none(), e.node_source), (true, Source::Unset));
     assert!(!e.trust_cloudflare && e.trust_source == Source::Default);
     assert!(!e.host_gate_on());
-    assert_eq!(e.sub_url("p", "t"), None);
+    assert_eq!(e.sub_url(Uuid::nil(), "p", "t"), None);
     assert_eq!(e.cloudflare_source, Source::Default);
     assert!(!e.cloudflare.is_empty(), "the shipped list");
     assert_eq!(e.audit_retention_days, 365);
@@ -207,7 +207,7 @@ fn database_only_no_file_fallback() {
     );
     assert_eq!(e.public_origin(), e.install_origin());
     assert_eq!(
-        e.sub_url("pfx", "tok").as_deref(),
+        e.sub_url(Uuid::nil(), "pfx", "tok").as_deref(),
         Some("https://sub.example.org/pfx/tok")
     );
     assert_eq!(e.main_source, Source::Settings);
@@ -362,7 +362,7 @@ fn dns_verdicts() {
             .collect::<Vec<_>>()
     };
     let node_cf = judge(
-        Kind::Node,
+        DomainKind::Node,
         &d,
         &ips(&["104.21.3.4", "2606:4700:3030::6815:304"]),
         &cf,
@@ -370,21 +370,38 @@ fn dns_verdicts() {
     assert_eq!(node_cf.level, "block");
     assert!(node_cf.message.contains("灰色云朵"));
     assert!(node_cf.addresses.iter().all(|a| a.cloudflare));
-    let node_mixed = judge(Kind::Node, &d, &ips(&["203.0.113.9", "2606:4700::1"]), &cf);
+    let node_mixed = judge(
+        DomainKind::Node,
+        &d,
+        &ips(&["203.0.113.9", "2606:4700::1"]),
+        &cf,
+    );
     assert_eq!(node_mixed.level, "block", "any CF address blocks");
     assert_eq!(
-        judge(Kind::Node, &d, &ips(&["203.0.113.9", "2001:db8::9"]), &cf).level,
+        judge(
+            DomainKind::Node,
+            &d,
+            &ips(&["203.0.113.9", "2001:db8::9"]),
+            &cf
+        )
+        .level,
         "ok"
     );
     assert_eq!(
-        judge(Kind::Sub, &d, &ips(&["172.67.1.1", "2a06:98c1::1"]), &cf).level,
+        judge(
+            DomainKind::Sub,
+            &d,
+            &ips(&["172.67.1.1", "2a06:98c1::1"]),
+            &cf
+        )
+        .level,
         "ok"
     );
-    let sub_direct = judge(Kind::Sub, &d, &ips(&["203.0.113.9"]), &cf);
+    let sub_direct = judge(DomainKind::Sub, &d, &ips(&["203.0.113.9"]), &cf);
     assert_eq!(sub_direct.level, "warn");
     assert!(sub_direct.message.contains("橙色云朵"));
     assert_eq!(
-        judge(Kind::Main, &d, &ips(&["104.16.0.1"]), &cf).level,
+        judge(DomainKind::Main, &d, &ips(&["104.16.0.1"]), &cf).level,
         "ok"
     );
 }
@@ -431,9 +448,10 @@ async fn update_is_versioned_and_audited() {
         return;
     };
     let v = Values {
-        main_domain: Some("panel.example.com".into()),
-        sub_domain: Some("sub.example.com".into()),
-        node_domain: Some("grpc.example.com:9443".into()),
+        main_domains: vec!["panel.example.com".into()],
+        sub_domains: vec!["sub.example.com".into()],
+        node_domains: vec!["grpc.example.com:9443".into()],
+        sub_domain_per_user: None,
         trust_cloudflare: Some(true),
     };
     let s = set(&db, 0, v.clone()).await.unwrap();
@@ -445,10 +463,14 @@ async fn update_is_versioned_and_audited() {
     let rows = audit_rows(&db, "settings.update").await;
     assert_eq!(rows.len(), 1);
     assert_eq!(
-        rows[0].1.as_ref().unwrap()["node_domain"],
-        "grpc.example.com:9443"
+        rows[0].1.as_ref().unwrap()["node_domains"],
+        json!(["grpc.example.com:9443"])
     );
-    assert_eq!(rows[0].0.as_ref().unwrap()["main_domain"], Value::Null);
+    assert_eq!(
+        rows[0].0.as_ref().unwrap()["main_domains"],
+        json!([]),
+        "before"
+    );
     let names: Vec<String> = sqlx::query_scalar("SELECT name FROM grpc_server_names ORDER BY name")
         .fetch_all(&db.pool)
         .await
@@ -487,7 +509,7 @@ async fn change_propagates_to_another_instance() {
         &Actor::test(),
         0,
         &Values {
-            sub_domain: Some("sub.example.com".into()),
+            sub_domains: vec!["sub.example.com".into()],
             trust_cloudflare: Some(true),
             ..Values::default()
         },
@@ -498,7 +520,7 @@ async fn change_propagates_to_another_instance() {
     let mut seen = false;
     for _ in 0..100 {
         let e = b.settings().get();
-        if e.sub_url("sub", "t").as_deref() == Some("https://sub.example.com/sub/t") {
+        if e.sub_url(Uuid::nil(), "sub", "t").as_deref() == Some("https://sub.example.com/sub/t") {
             assert!(e.trust_cloudflare && !e.trust.cloudflare.is_empty());
             seen = true;
             break;
@@ -535,18 +557,23 @@ async fn unknown_host_gets_the_canonical_rejection() {
         &db,
         0,
         Values {
-            main_domain: Some("panel.example.com".into()),
-            sub_domain: Some("sub.example.com".into()),
+            main_domains: vec!["panel.example.com".into(), "panel2.example.com".into()],
+            sub_domains: vec!["sub.example.com".into()],
+            node_domains: vec!["grpc.example.com:8443".into()],
             ..Values::default()
         },
     )
     .await
     .unwrap();
     reload(&state).await.unwrap();
+    // D8: a subscription domain serves subscriptions only, a node
+    // communication name nothing over HTTP.
     for host in [
         "evil.example.com",
         "example.com",
         "panel.example.com.evil.net",
+        "SUB.example.com:443",
+        "grpc.example.com",
     ] {
         c.headers = vec![("host".into(), host.into())];
         for path in ["/test/healthz", "/test/api/v1/me", "/", "/sub/abc", "/nope"] {
@@ -555,7 +582,7 @@ async fn unknown_host_gets_the_canonical_rejection() {
     }
     for host in [
         "panel.example.com",
-        "SUB.example.com:443",
+        "Panel2.example.com.",
         "203.0.113.5:8080",
         "[2001:db8::1]",
     ] {
@@ -591,21 +618,21 @@ async fn settings_api() {
 
     // Validation.
     for (field, bad) in [
-        ("main_domain", "https://x.com"),
-        ("sub_domain", "x.com/p"),
-        ("node_domain", "*.x.com"),
+        ("main_domains", "https://x.com"),
+        ("sub_domains", "x.com/p"),
+        ("node_domains", "*.x.com"),
     ] {
-        let mut body = json!({"version": 0, "main_domain": null, "sub_domain": null,
-                              "node_domain": null, "trust_cloudflare": null});
-        body[field] = json!(bad);
+        let mut body = json!({"version": 0, "main_domains": [], "sub_domains": [],
+                              "node_domains": [], "trust_cloudflare": null, "confirm_removal": true});
+        body[field] = json!([bad]);
         let r = admin
             .req(axum::http::Method::PUT, "/test/api/v1/settings", Some(body))
             .await;
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{field}={bad}");
     }
     // An IP-literal node domain (no DNS involved), IDN main domain.
-    let body = json!({"version": 0, "main_domain": "例子.example", "sub_domain": "",
-                      "node_domain": "203.0.113.20", "trust_cloudflare": true});
+    let body = json!({"version": 0, "main_domains": ["例子.example"], "sub_domains": [],
+                      "node_domains": ["203.0.113.20"], "trust_cloudflare": true, "confirm_removal": true});
     let r = admin
         .req(axum::http::Method::PUT, "/test/api/v1/settings", Some(body))
         .await;
@@ -626,8 +653,8 @@ async fn settings_api() {
     // Accessing through a DNS name that the new main domain would refuse:
     // 422 unless confirmed.
     admin.headers = vec![("host".into(), "xn--fsqu00a.example".into())];
-    let body = json!({"version": 1, "main_domain": "new.example.com", "sub_domain": null,
-                      "node_domain": "203.0.113.20", "trust_cloudflare": true});
+    let body = json!({"version": 1, "main_domains": ["new.example.com"], "sub_domains": [],
+                      "node_domains": ["203.0.113.20"], "trust_cloudflare": true, "confirm_removal": true});
     let r = admin
         .req(
             axum::http::Method::PUT,
@@ -677,8 +704,8 @@ async fn settings_api() {
         )
         .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST, "current name");
-    let body = json!({"version": 2, "main_domain": "new.example.com", "sub_domain": null,
-                      "node_domain": "203.0.113.21", "trust_cloudflare": true});
+    let body = json!({"version": 2, "main_domains": ["new.example.com"], "sub_domains": [],
+                      "node_domains": ["203.0.113.21"], "trust_cloudflare": true, "confirm_removal": true});
     let r = admin
         .req(axum::http::Method::PUT, "/test/api/v1/settings", Some(body))
         .await;
@@ -884,7 +911,7 @@ async fn node_domain_hot_swaps_the_grpc_certificate() {
         &db,
         0,
         Values {
-            node_domain: Some("grpc.akari.test".into()),
+            node_domains: vec!["grpc.akari.test".into()],
             ..Values::default()
         },
     )
@@ -950,7 +977,7 @@ async fn node_domain_hot_swaps_the_grpc_certificate() {
         &db,
         1,
         Values {
-            node_domain: Some("grpc2.akari.test".into()),
+            node_domains: vec!["grpc2.akari.test".into()],
             ..Values::default()
         },
     )
@@ -984,8 +1011,8 @@ async fn ask_endpoint() {
         &db,
         0,
         Values {
-            main_domain: Some("panel.example.com".into()),
-            sub_domain: Some("sub.example.com:8443".into()),
+            main_domains: vec!["panel.example.com".into()],
+            sub_domains: vec!["sub.example.com:8443".into()],
             ..Values::default()
         },
     )
@@ -1187,10 +1214,8 @@ async fn probe_settings_api() {
         .req(
             axum::http::Method::PUT,
             "/test/api/v1/settings",
-            Some(
-                json!({"version": 1, "main_domain": null, "sub_domain": null,
-                        "node_domain": null, "trust_cloudflare": true}),
-            ),
+            Some(json!({"version": 1, "main_domains": [], "sub_domains": [],
+                        "node_domains": [], "trust_cloudflare": true, "confirm_removal": true})),
         )
         .await;
     assert_eq!(r.status, StatusCode::OK);
@@ -1410,7 +1435,7 @@ async fn obsolete_keys_are_imported_once() {
         Some("https://panel.example.com")
     );
     assert_eq!(
-        e.sub_url("p", "t").as_deref(),
+        e.sub_url(Uuid::nil(), "p", "t").as_deref(),
         Some("https://sub.example.com/p/t")
     );
     assert_eq!(e.node.as_ref().unwrap().panel_addr, "127.0.0.1:8443");
@@ -1460,8 +1485,11 @@ async fn obsolete_keys_are_imported_once() {
     assert_eq!(rows[0].0, "system");
     let after = rows[0].1.clone().unwrap();
     assert!(after["keys"].as_array().unwrap().len() >= 15, "{after}");
-    assert_eq!(after["values"]["main_domain"], "panel.example.com");
-    assert!(after["values"].get("node_domain").is_none(), "unchanged");
+    assert_eq!(
+        after["values"]["main_domains"],
+        json!(["panel.example.com"])
+    );
+    assert!(after["values"].get("node_domains").is_none(), "unchanged");
     let marks: i64 = sqlx::query_scalar("SELECT count(*) FROM legacy_config_imports")
         .fetch_one(&db.pool)
         .await
@@ -1513,7 +1541,7 @@ async fn import_edge_cases() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    sqlx::query("UPDATE panel_settings SET node_domain = NULL")
+    sqlx::query("DELETE FROM site_domains WHERE kind = 'node'")
         .execute(&db.pool)
         .await
         .unwrap();
@@ -1551,7 +1579,7 @@ async fn unset_node_domain_refuses_tokens() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    sqlx::query("UPDATE panel_settings SET node_domain = NULL")
+    sqlx::query("DELETE FROM site_domains WHERE kind = 'node'")
         .execute(&db.pool)
         .await
         .unwrap();
@@ -1878,5 +1906,274 @@ async fn subscription_routing_settings() {
         audits[0].1.as_ref().unwrap()["rules"][0]["value"],
         "corp.example"
     );
+    db.drop().await;
+}
+
+// ---------------------------------------------------------------------------
+// D8: domain lists
+// ---------------------------------------------------------------------------
+
+/// Pure: lists are normalized and consistent (no host twice in a kind, no
+/// host both main and subscription, a node name may share the main host).
+#[test]
+fn d8_lists_are_checked() {
+    let v = request_values(
+        &[
+            " Panel.Example.com ".into(),
+            "".into(),
+            "例子.example:8446".into(),
+        ],
+        &["sub.example.com".into()],
+        &["panel.example.com:8443".into()],
+        Some(true),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        v.main_domains,
+        vec![
+            "panel.example.com".to_string(),
+            "xn--fsqu00a.example:8446".into()
+        ]
+    );
+    assert_eq!(v.node_domains, vec!["panel.example.com:8443".to_string()]);
+    let code = |m: &[&str], s: &[&str], n: &[&str]| {
+        let f = |l: &[&str]| l.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        request_values(&f(m), &f(s), &f(n), None, None)
+            .unwrap_err()
+            .code()
+    };
+    assert_eq!(
+        code(&["a.example", "A.example:8443"], &[], &[]),
+        "settings.domain_duplicate"
+    );
+    assert_eq!(
+        code(&["a.example"], &["a.example:444"], &[]),
+        "settings.domain_conflict"
+    );
+    assert_eq!(
+        code(&["https://a.example"], &[], &[]),
+        "settings.domain_invalid"
+    );
+    assert_eq!(
+        code(&[], &[], &["0.0.0.0"]),
+        "settings.node_domain_unspecified"
+    );
+    let many: Vec<String> = (0..=MAX_DOMAINS).map(|i| format!("s{i}.example")).collect();
+    let many: Vec<&str> = many.iter().map(String::as_str).collect();
+    assert_eq!(code(&[], &many, &[]), "settings.domains_too_many");
+}
+
+/// Pure: roles per host, the ask list (main + subscription names), the
+/// preferred entries, and per-user subscription domains by rendezvous
+/// hashing (stable; a new domain takes users only to itself).
+#[test]
+fn d8_roles_and_per_user_subscription_domains() {
+    let mut s = Stored {
+        main_domains: vec!["panel.example.com".into(), "alt.example.com:8446".into()],
+        sub_domains: vec!["s1.example.com".into(), "s2.example.com".into()],
+        node_domains: vec!["panel.example.com:8443".into(), "grpc.example.com".into()],
+        ..Stored::default()
+    };
+    let e = compute(&cfg(), s.clone(), vec![]);
+    assert_eq!(e.host_role(Some("alt.example.com")), Some(HostRole::Main));
+    assert_eq!(
+        e.host_role(Some("panel.example.com")),
+        Some(HostRole::Main),
+        "main wins over the node name on the same host"
+    );
+    assert_eq!(e.host_role(Some("s2.example.com")), Some(HostRole::Sub));
+    assert_eq!(e.host_role(Some("grpc.example.com")), Some(HostRole::Node));
+    assert_eq!(e.host_role(Some("other.example.com")), None);
+    assert_eq!(e.host_role(Some("198.51.100.1")), Some(HostRole::Main));
+    for h in [
+        "panel.example.com",
+        "alt.example.com",
+        "s1.example.com",
+        "s2.example.com",
+    ] {
+        assert!(e.ask_allowed(h), "{h}");
+    }
+    assert!(
+        !e.ask_allowed("grpc.example.com"),
+        "node names: the panel's CA"
+    );
+    assert_eq!(
+        e.install_origin().as_deref(),
+        Some("https://panel.example.com")
+    );
+    assert_eq!(
+        e.node.as_ref().unwrap().panel_addr,
+        "panel.example.com:8443"
+    );
+    let users: Vec<Uuid> = (0..400).map(|_| Uuid::new_v4()).collect();
+    let pick = |e: &Effective, u: Uuid| e.sub_origin(u).unwrap().as_string();
+    assert!(
+        users
+            .iter()
+            .all(|u| pick(&e, *u) == "https://s1.example.com"),
+        "per user off: the preferred one"
+    );
+    s.sub_domain_per_user = Some(true);
+    let e = compute(&cfg(), s.clone(), vec![]);
+    let first: Vec<String> = users.iter().map(|u| pick(&e, *u)).collect();
+    let on_s2 = first
+        .iter()
+        .filter(|o| *o == "https://s2.example.com")
+        .count();
+    assert!((120..=280).contains(&on_s2), "spread: {on_s2}");
+    assert_eq!(
+        users.iter().map(|u| pick(&e, *u)).collect::<Vec<_>>(),
+        first,
+        "stable"
+    );
+    assert_eq!(
+        e.sub_url(users[0], "feed", "TOKEN"),
+        Some(format!("{}/feed/TOKEN", first[0]))
+    );
+    s.sub_domains.push("s3.example.com".into());
+    let e3 = compute(&cfg(), s, vec![]);
+    for (u, before) in users.iter().zip(&first) {
+        let now = pick(&e3, *u);
+        assert!(now == *before || now == "https://s3.example.com", "{u}");
+    }
+}
+
+/// The API: lists, removal only with confirmation (and the impact preview
+/// first), every node name recorded for the certificate, the per-user
+/// switch, audit.
+#[tokio::test]
+async fn d8_domain_lists_api() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let admin = admin_client(&state, &db).await;
+    let put = |body: Value| {
+        let admin = &admin;
+        async move {
+            admin
+                .req(axum::http::Method::PUT, "/test/api/v1/settings", Some(body))
+                .await
+        }
+    };
+    // IP literals: no DNS lookups in the test.
+    let r = put(
+        json!({"version": 0, "main_domains": ["203.0.113.1", "203.0.113.2:8446"],
+                       "sub_domains": [], "node_domains": ["127.0.0.1:8443", "203.0.113.9"],
+                       "sub_domain_per_user": true, "trust_cloudflare": null}),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let v = r.json();
+    assert_eq!(v["main"]["value"], "203.0.113.1");
+    assert_eq!(v["main"]["domains"][1]["domain"], "203.0.113.2:8446");
+    assert_eq!(v["main"]["domains"][1]["preferred"], false);
+    assert_eq!(v["node"]["domains"].as_array().unwrap().len(), 2);
+    assert_eq!(v["sub_domain_per_user"], true);
+    let names: Vec<String> = sqlx::query_scalar("SELECT name FROM grpc_server_names ORDER BY name")
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(names, vec!["203.0.113.9".to_string()], "the new node name");
+    // An enrollment dialling the second node name, then dropping names.
+    let node = db.node().await;
+    let ep = NodeEndpoint {
+        panel_addr: "203.0.113.9:8443".into(),
+        server_name: "203.0.113.9".into(),
+    };
+    let mut tx = db.pool.begin().await.unwrap();
+    crate::enroll::apply_issue_token(&mut tx, &Actor::test(), node, 3600, None, &ep)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let lists = json!({"main_domains": ["203.0.113.2:8446"], "sub_domains": [],
+                       "node_domains": ["127.0.0.1:8443"]});
+    let r = admin
+        .post("/test/api/v1/settings/domains/impact", lists.clone())
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let removed = r.json()["removed"].as_array().unwrap().clone();
+    assert_eq!(removed.len(), 2, "{removed:?}");
+    let main = removed.iter().find(|d| d["kind"] == "main").unwrap();
+    assert_eq!(main["domain"], "203.0.113.1");
+    assert_eq!(main["preferred"], true);
+    let what: Vec<&str> = main["places"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["what"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        what,
+        ["portal_console", "links", "pending_orders", "install_links"]
+    );
+    assert_eq!(main["places"][1]["detail"], "https://203.0.113.2:8446");
+    let node_removed = removed.iter().find(|d| d["kind"] == "node").unwrap();
+    assert_eq!(node_removed["places"][1]["what"], "install_links");
+    assert_eq!(node_removed["places"][1]["count"], 1);
+    let mut body = lists.clone();
+    body["version"] = v["version"].clone();
+    body["trust_cloudflare"] = Value::Null;
+    let r = put(body.clone()).await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    assert_eq!(r.json()["code"], "settings.domain_removal_unconfirmed");
+    body["confirm_removal"] = json!(true);
+    body["confirm_host_change"] = json!(true);
+    let r = put(body).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["main"]["value"], "203.0.113.2:8446");
+    // The certificate keeps the dropped node name (SAN only grows).
+    assert!(
+        state
+            .settings()
+            .get()
+            .sans
+            .contains(&"203.0.113.9".to_string())
+    );
+    let after: Value = sqlx::query_scalar(
+        "SELECT after FROM audit_log WHERE action = 'settings.update' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(after["main_domains"], json!(["203.0.113.2:8446"]));
+    // Exactly one preferred entry per kind, even from SQL.
+    let e = sqlx::query("UPDATE site_domains SET preferred = false WHERE kind = 'main'")
+        .execute(&db.pool)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("preferred"), "{e}");
+    db.drop().await;
+}
+
+/// CLI: `settings set` makes a name the preferred one (keeping the others),
+/// `unset` clears the list.
+#[tokio::test]
+async fn d8_cli_set_prefers() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let c = cfg();
+    cli_set(&c, &db.pool, "main", "a.example").await.unwrap();
+    cli_set(&c, &db.pool, "main", "b.example").await.unwrap();
+    cli_set(&c, &db.pool, "main", "a.example").await.unwrap();
+    let mut conn = db.pool.acquire().await.unwrap();
+    let s = read_stored(&mut conn, false).await.unwrap();
+    assert_eq!(
+        s.main_domains,
+        vec!["a.example".to_string(), "b.example".into()]
+    );
+    drop(conn);
+    cli_unset(&c, &db.pool, "main").await.unwrap();
+    let mut conn = db.pool.acquire().await.unwrap();
+    assert!(
+        read_stored(&mut conn, false)
+            .await
+            .unwrap()
+            .main_domains
+            .is_empty()
+    );
+    drop(conn);
     db.drop().await;
 }

@@ -25,7 +25,7 @@ const BASE: &str = "/test/api/v1/settings/payments";
 async fn db_state(db: &TestDb) -> AppState {
     let st = AppState::for_test(db.pool.clone()).await;
     let host = ORIGIN.trim_start_matches("https://");
-    db.settings(&st, &format!("main_domain = '{host}'")).await;
+    db.domains(&st, "main", &[host]).await;
     st
 }
 
@@ -729,7 +729,7 @@ async fn legacy_section_is_imported_once() {
     let st = AppState::for_test_with(db.pool.clone(), |c| c.legacy = parsed.legacy.clone()).await;
     pm::import_legacy(&st).await;
     let host = ORIGIN.trim_start_matches("https://");
-    db.settings(&st, &format!("main_domain = '{host}'")).await;
+    db.domains(&st, "main", &[host]).await;
     let mut c = db.pool.acquire().await.unwrap();
     let rows = pm::load_all(&mut c).await.unwrap();
     assert_eq!(rows.len(), 1);

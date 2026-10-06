@@ -322,7 +322,11 @@ settings.audit_retention_invalid
 settings.cloudflare_range_invalid
 settings.cloudflare_ranges_too_many
 settings.confirm_required
+settings.domain_conflict
+settings.domain_duplicate
 settings.domain_invalid
+settings.domain_removal_unconfirmed
+settings.domains_too_many
 settings.fallback_url_invalid
 settings.host_gate
 settings.node_domain_cloudflare

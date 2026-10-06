@@ -446,11 +446,8 @@ async fn subscription_path_change_mails_the_users() {
         return;
     };
     let st = AppState::for_test(db.pool.clone()).await;
-    db.settings(
-        &st,
-        "main_domain = 'panel.example', sub_domain = 'sub.example'",
-    )
-    .await;
+    db.domains(&st, "main", &["panel.example"]).await;
+    db.domains(&st, "sub", &["sub.example"]).await;
     sqlx::query(
         "UPDATE mail_settings SET enabled = true, host = '127.0.0.1', port = 1025, \
          security = 'none', from_addr = 'noreply@example.com' WHERE id = 1",

@@ -30,15 +30,18 @@ pub fn router(state: AppState) -> Router {
     }))
 }
 
-/// The front door: host gate (R22), then the URL layout. The admin prefix
-/// is compared in constant time and, with an allowlist, only answers the
-/// listed client addresses.
+/// The front door: host gate and the host's role (R22, D8: the main
+/// domain serves everything, a subscription domain subscriptions only, a
+/// node communication domain nothing), then the URL layout. The admin
+/// prefix is compared in constant time and, with an allowlist, only
+/// answers the listed client addresses.
 async fn front(state: AppState, inner: Router, mut req: Request) -> Response {
     use tower::ServiceExt as _;
     let host = settings::host_of(req.headers(), req.uri());
-    if !state.settings().get().host_allowed(host.as_deref()) {
-        return reject::not_found();
-    }
+    let role = match state.settings().get().host_role(host.as_deref()) {
+        Some(settings::HostRole::Node) | None => return reject::not_found(),
+        Some(r) => r,
+    };
     let layout = state.settings().access();
     let get = matches!(
         *req.method(),
@@ -46,7 +49,11 @@ async fn front(state: AppState, inner: Router, mut req: Request) -> Response {
     );
     let (path, via) = match access::route(&layout, req.uri().path(), get) {
         Route::Reject => return reject::not_found(),
-        Route::Inner { path, via } => (path, via),
+        Route::Inner { path, via } if role == settings::HostRole::Main || via == Via::Sub => {
+            (path, via)
+        }
+        Route::Inner { .. } => return reject::not_found(),
+        Route::Admin { .. } if role != settings::HostRole::Main => return reject::not_found(),
         Route::Admin { path } => {
             let peer = req
                 .extensions()
@@ -336,6 +343,10 @@ fn inner_router(state: AppState) -> Router {
         .route(
             "/{prefix}/api/v1/settings/security",
             put(settings::put_security),
+        )
+        .route(
+            "/{prefix}/api/v1/settings/domains/impact",
+            post(settings::domains_impact),
         )
         .route(
             "/{prefix}/api/v1/settings/dns-check",

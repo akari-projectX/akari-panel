@@ -296,6 +296,10 @@ export const ADMIN_CODES: Record<string, string> = {
   "settings.fallback_url_invalid": "备用下载地址：必须是含 {arch} 的 https:// 地址，不能有引号、空格或 shell 特殊字符",
   "settings.host_gate":
     "保存后面板只接受主域名/订阅域名（以及 IP 地址）的访问，当前访问地址 {host} 将被拒绝。请确认主域名已解析并能打开，再勾选确认后保存。",
+  "settings.domain_conflict": "{domain} 不能同时是{a}和{b}（一个域名只能有一种用途）",
+  "settings.domain_duplicate": "{kind}：{domain} 重复",
+  "settings.domain_removal_unconfirmed": "删除域名 {domains} 前需要先确认影响",
+  "settings.domains_too_many": "{kind}最多 {max} 个",
   "settings.node_domain_cloudflare": "{detail}",
   "settings.node_domain_unset": "节点通信域名未设置：请先在「系统设置 → 节点通信」填写节点连接面板所用的域名或 IP",
   "settings.node_domain_unspecified": "节点通信域名：不能是 0.0.0.0 / ::",

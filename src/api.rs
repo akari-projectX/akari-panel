@@ -469,7 +469,7 @@ pub async fn me(
         None => (None, false),
     };
     let settings = state.settings().get();
-    let sub_url = sub_token.as_deref().map(|t| state.sub_link(t));
+    let sub_url = sub_token.as_deref().map(|t| state.sub_link(user.id, t));
     let view = MeView {
         id: user.id,
         role: user.role,
@@ -554,7 +554,7 @@ pub async fn user_subscription(
     )
     .await?;
     tx.commit().await?;
-    let sub_url = token.as_deref().map(|t| state.sub_link(t));
+    let sub_url = token.as_deref().map(|t| state.sub_link(id, t));
     Ok(no_store(Json(json!({
         "legacy": token.is_none(),
         "sub_token": token,
@@ -895,7 +895,7 @@ pub async fn create_user(
                 axum::http::StatusCode::CREATED,
                 Json(CreatedUser {
                     user: view,
-                    sub_url: Some(state.sub_link(&sub_token)),
+                    sub_url: Some(state.sub_link(id, &sub_token)),
                     sub_token,
                 }),
             ))
@@ -1737,7 +1737,7 @@ pub async fn regenerate_sub_token(
             .await?
             .ok_or_else(ApiError::not_found)?;
     tx.commit().await?;
-    let sub_url = state.sub_link(&token);
+    let sub_url = state.sub_link(id, &token);
     Ok(Json(json!({
         "sub_token": token,
         "sub_url": sub_url,

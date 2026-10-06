@@ -513,11 +513,9 @@ async fn configured_public_url_and_pin_win() {
     };
     let pin = format!("sha256//{}", STANDARD.encode([9u8; 32]));
     let st = AppState::for_test(db.pool.clone()).await;
-    db.settings(
-        &st,
-        &format!("main_domain = '203.0.113.7', install_tls_pin = '{pin}'"),
-    )
-    .await;
+    db.domains(&st, "main", &["203.0.113.7"]).await;
+    db.settings(&st, &format!("install_tls_pin = '{pin}'"))
+        .await;
     let admin = admin_client(&st, &db).await;
     let r = admin
         .post(
