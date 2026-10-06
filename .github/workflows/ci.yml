@@ -389,7 +389,7 @@ jobs:
       tag: ${{ steps.v.outputs.tag }}
     env:
       CACHE_FROM: type=gha,scope=panel-image
-      CACHE_TO: ${{ github.ref == 'refs/heads/main' && 'type=gha,mode=max,scope=panel-image' || '' }}
+      CACHE_TO: type=gha,mode=max,scope=panel-image # TEMP: measure warm cache on the PR
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: v
