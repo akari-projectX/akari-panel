@@ -56,6 +56,13 @@ MODULES = {
     "src/passkey.rs": 90.0,
     # Phase A PR ①: refunds (money + the subscription effect).
     "src/billing/refund.rs": 90.0,
+    # Phase A PR ③: the owner, the front door / URL layout, account
+    # erasure and never-used cleanup, USDT withdrawal addresses.
+    "src/owner.rs": 90.0,
+    "src/access.rs": 90.0,
+    "src/erase.rs": 90.0,
+    "src/cleanup.rs": 90.0,
+    "src/billing/usdt.rs": 90.0,
 }
 
 TEST_MOD = re.compile(r"^(pub(\(crate\))? )?mod \w+ \{")
