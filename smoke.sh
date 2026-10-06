@@ -2373,7 +2373,7 @@ done
     -d "{\"version\":$SV,\"timezone\":\"UTC\"}")" = "200" ] && [ "$(last_json "d['timezone']['value']")" = "UTC" ] \
   || { echo "FAIL: set time zone"; cat /tmp/akari-smoke/last; exit 1; }
 SV=$(last_json "d['version']")
-[ "$(psql_q "SELECT akari_site_tz() || ' ' || (akari_site_day(now()) = (now() AT TIME ZONE 'UTC')::date)")" = "UTC t" ] \
+[ "$(psql_q "SELECT akari_site_tz(), akari_site_day(now()) = (now() AT TIME ZONE 'UTC')::date")" = "UTC|t" ] \
   || { echo "FAIL: SQL does not follow the time zone"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/traffic/summary")" = "200" ] && [ "$(last_json "d['timezone']")" = "UTC" ] \
   || { echo "FAIL: history not in the new time zone"; exit 1; }
