@@ -120,6 +120,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(plans::update_plan).delete(plans::delete_plan),
         )
         .route(
+            "/{prefix}/api/v1/plans/{id}/impact",
+            axum::routing::post(plans::plan_impact),
+        )
+        .route(
             "/{prefix}/api/v1/nodes",
             get(api::list_nodes).post(api::create_node),
         )

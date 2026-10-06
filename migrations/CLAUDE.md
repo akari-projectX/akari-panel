@@ -16,6 +16,7 @@ sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18，再拒绝 v0.3.x
 - **1056（Phase A PR ①，中-4）**：`commissions.clawback_cents`（退款追回的金额 = `amount_cents`，只对 credited）、`clawback_recovered_cents`（已从余额扣回）、`clawed_back_at`，CHECK `commissions_clawback`；部分索引 `commissions_clawback_due (inviter_id, id) WHERE clawback_cents > clawback_recovered_cents`（欠款）；`balance_ledger` 新 kind `commission_clawback`（负数、需 commission_id），两个 kind CHECK 重建。
 - **1057（Phase A PR ①，退款通知）**：`mail_outbox`/`mail_templates` 的 kind CHECK 加 `refund`；`notify_refund` boolean 默认 true（编号排在 1070 之前：DO 块按表名加到 `smtp_settings`（全新库，随 1070 改名带走）或 `mail_settings`（已跑过 1070 的开发库））。**编号陷阱**：本任务的 1054–1059 排在已合并的 1060/1070 之前，新库上先于它们执行——引用 1060 之后才有的对象要像这样兼容两种顺序。
 - **1058（Phase A PR ①，中-2）**：`orders.action` NOT NULL（new/renew/switch/reset，CHECK `orders_action`：reset ⇔ period reset；旧行按 `fulfil_result.kind`/period 回填）、部分索引 `orders_capacity_hold (plan_id, expires_at) WHERE pending AND action IN (new, switch)`（名额预占）；`alert_notifications.event` CHECK 加 `billing`。
+- **1059（Phase A PR ①，中-5）**：`user_plans` 加条款快照 `quota_bytes`/`reset_period`（NOT NULL）/`reset_days`/`speed_limit_mbps`（同 `plans` 的 CHECK），新表 `user_plan_groups`（PK (user_plan_id, group_id)，两边级联，索引 group_id）；触发器 `user_plans_terms`（BEFORE INSERT：`reset_period` 为空则从套餐复制全部条款，`akari_user_plan_terms()`）与 `user_plans_groups`（AFTER INSERT：复制 `plan_groups`，`akari_user_plan_groups()`）；已有订阅按当前套餐回填。
 - 改列名/加列后，同步检查 `src/` 中所有手写 SQL 与 `FromRow` 结构体（没有编译期 SQL 校验）。
 
 ## 当前表

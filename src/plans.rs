@@ -685,6 +685,11 @@ pub struct UpdatePlanReq {
     /// transaction as the field changes (absent = unchanged).
     #[serde(default)]
     pub pricing: Option<crate::billing::catalog::SetPricesReq>,
+    /// 中-5: also give the plan's current subscribers its (new) terms —
+    /// quota, reset policy, speed limit, node groups. Default: the edit
+    /// changes what new purchases get; existing subscriptions keep theirs.
+    #[serde(default)]
+    pub apply_to_existing: bool,
 }
 
 impl UpdatePlanReq {
@@ -702,6 +707,7 @@ impl UpdatePlanReq {
             || self.capacity.is_some()
             || self.renewal_only.is_some()
             || self.allow_switch_in.is_some()
+            || self.apply_to_existing
     }
 }
 
@@ -820,11 +826,15 @@ pub struct PlanUpdate {
     pub served_bumped: Vec<Uuid>,
 }
 
-/// PATCH /plans/{id}. Group changes reconcile the plan's active users;
-/// quota changes rewrite their enforced limit (re-enabling quota-disabled
-/// users the new quota admits); period changes move their next reset
-/// (computed from each user's anchor, strictly after now — never an
-/// immediate reset).
+/// PATCH /plans/{id}. 中-5: a subscription keeps the terms it was bought
+/// with (snapshot in `user_plans` + `user_plan_groups`), so an edit changes
+/// what new purchases get — unless `apply_to_existing`: then the plan's
+/// active subscriptions take its current terms (all of them), group changes
+/// reconcile those users, quota changes rewrite their enforced limit
+/// (re-enabling quota-disabled users the new quota admits), period changes
+/// move their next reset (from each user's anchor, strictly after now —
+/// never an immediate reset), speed changes resend them. The audit row
+/// records how many subscriptions took the edit.
 pub async fn apply_update_plan(
     conn: &mut PgConnection,
     actor: &Actor,
@@ -864,6 +874,7 @@ pub async fn apply_update_plan(
         && req.capacity.is_none()
         && renewal_only.is_none()
         && allow_switch_in.is_none()
+        && !req.apply_to_existing
     {
         return Err(bad_request!("request.no_fields", "no fields to update"));
     }
@@ -924,13 +935,12 @@ pub async fn apply_update_plan(
     }
     qb.push(" WHERE id = ").push_bind(id);
     qb.push(format!(
-        " RETURNING {}, {}, old.traffic_quota_bytes IS DISTINCT FROM new.traffic_quota_bytes, \
-         old.speed_limit_mbps IS DISTINCT FROM new.speed_limit_mbps",
+        " RETURNING {}, {}",
         plan_snapshot_sql("old"),
         plan_snapshot_sql("new")
     ));
-    let (before, mut after, quota_changed, speed_changed) = match qb
-        .build_query_as::<(Value, Value, bool, bool)>()
+    let (before, mut after) = match qb
+        .build_query_as::<(Value, Value)>()
         .fetch_one(&mut *conn)
         .await
     {
@@ -939,7 +949,6 @@ pub async fn apply_update_plan(
         }
         r => r?,
     };
-    let groups_changed = groups.as_ref().is_some_and(|g| *g != old_groups);
     if let Some(g) = &groups {
         sqlx::query("DELETE FROM plan_groups WHERE plan_id = $1")
             .bind(id)
@@ -951,24 +960,65 @@ pub async fn apply_update_plan(
             .execute(&mut *conn)
             .await?;
     }
-    if period.is_some() {
-        sqlx::query(
-            "UPDATE user_plans up SET next_reset_at = \
-             akari_next_reset(up.period_anchor, p.reset_period, p.reset_days, now()) \
-             FROM plans p WHERE p.id = up.plan_id AND up.plan_id = $1 AND up.status = 'active'",
+    let users: Vec<Uuid> = if req.apply_to_existing {
+        sqlx::query_scalar(
+            "SELECT user_id FROM user_plans WHERE plan_id = $1 AND status = 'active' \
+             ORDER BY user_id",
         )
         .bind(id)
-        .execute(&mut *conn)
+        .fetch_all(&mut *conn)
+        .await?
+    } else {
+        Vec::new()
+    };
+    after["applied_to_existing"] = json!(users.len());
+    let mut res = PlanUpdate::default();
+    // What the holders' snapshots change in (all of the plan's terms).
+    let (mut quota_changed, mut speed_changed, mut groups_changed) = (false, false, false);
+    if !users.is_empty() {
+        let (q, s, r): (bool, bool, bool) = sqlx::query_as(
+            "WITH t AS (UPDATE user_plans up SET quota_bytes = p.traffic_quota_bytes, \
+               reset_period = p.reset_period, reset_days = p.reset_days, \
+               speed_limit_mbps = p.speed_limit_mbps \
+               FROM plans p WHERE p.id = up.plan_id AND up.plan_id = $1 AND up.status = 'active' \
+               RETURNING old.quota_bytes IS DISTINCT FROM new.quota_bytes AS q, \
+                 old.speed_limit_mbps IS DISTINCT FROM new.speed_limit_mbps AS s, \
+                 (old.reset_period, old.reset_days) IS DISTINCT FROM \
+                 (new.reset_period, new.reset_days) AS r) \
+             SELECT COALESCE(bool_or(q), false), COALESCE(bool_or(s), false), \
+                    COALESCE(bool_or(r), false) FROM t",
+        )
+        .bind(id)
+        .fetch_one(&mut *conn)
+        .await?;
+        (quota_changed, speed_changed) = (q, s);
+        if r {
+            sqlx::query(
+                "UPDATE user_plans up SET next_reset_at = \
+                 akari_next_reset(up.period_anchor, up.reset_period, up.reset_days, now()) \
+                 WHERE up.plan_id = $1 AND up.status = 'active'",
+            )
+            .bind(id)
+            .execute(&mut *conn)
+            .await?;
+        }
+        groups_changed = sqlx::query_scalar(
+            "WITH gone AS (DELETE FROM user_plan_groups ug USING user_plans up \
+               WHERE ug.user_plan_id = up.id AND up.plan_id = $1 AND up.status = 'active' \
+               AND ug.group_id NOT IN (SELECT group_id FROM plan_groups WHERE plan_id = $1) \
+               RETURNING 1), \
+             added AS (INSERT INTO user_plan_groups (user_plan_id, group_id) \
+               SELECT up.id, pg.group_id FROM user_plans up \
+               JOIN plan_groups pg ON pg.plan_id = up.plan_id \
+               WHERE up.plan_id = $1 AND up.status = 'active' \
+               ON CONFLICT DO NOTHING RETURNING 1) \
+             SELECT EXISTS (SELECT 1 FROM gone) OR EXISTS (SELECT 1 FROM added)",
+        )
+        .bind(id)
+        .fetch_one(&mut *conn)
         .await?;
     }
-    let users: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT user_id FROM user_plans WHERE plan_id = $1 AND status = 'active' ORDER BY user_id",
-    )
-    .bind(id)
-    .fetch_all(&mut *conn)
-    .await?;
-    let mut res = PlanUpdate::default();
-    if (groups_changed || quota_changed || speed_changed) && !users.is_empty() {
+    if groups_changed || quota_changed || speed_changed {
         // Also locks every node the users have rows on (Scope::Users), so
         // the user updates and bumps below stay in lock order.
         res.outcome = entitle::apply_reconcile(conn, Scope::Users(&users)).await?;
@@ -1103,6 +1153,42 @@ pub async fn update_plan(
     Ok(Json(view))
 }
 
+/// POST /plans/{id}/impact (中-5), body = the PATCH it previews: how many
+/// active subscriptions the plan has (what "apply to existing subscribers"
+/// would change) and how many of them have already used more than the
+/// resulting quota (they would be paused at once). Reads only. Admin.
+pub async fn plan_impact(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((_, id)): Path<(String, Uuid)>,
+    ApiJson(req): ApiJson<UpdatePlanReq>,
+) -> Result<Json<Value>, ApiError> {
+    user.require_admin()?;
+    check_plan_numbers(
+        req.traffic_quota_bytes.flatten(),
+        req.speed_limit_mbps.flatten(),
+        req.device_seats.flatten(),
+    )?;
+    let row: Option<(i64, i64)> = sqlx::query_as(
+        "WITH q AS (SELECT CASE WHEN $2 THEN $3 ELSE p.traffic_quota_bytes END AS quota \
+                    FROM plans p WHERE p.id = $1) \
+         SELECT (SELECT count(*) FROM user_plans WHERE plan_id = $1 AND status = 'active'), \
+                (SELECT count(*) FROM user_plans up JOIN users u ON u.id = up.user_id \
+                 WHERE up.plan_id = $1 AND up.status = 'active' AND q.quota IS NOT NULL \
+                 AND u.traffic_used_bytes > q.quota) \
+         FROM q",
+    )
+    .bind(id)
+    .bind(req.traffic_quota_bytes.is_some())
+    .bind(req.traffic_quota_bytes.flatten())
+    .fetch_optional(state.pg())
+    .await?;
+    let (subscribers, over_quota) = row.ok_or_else(ApiError::not_found)?;
+    Ok(Json(
+        json!({ "subscribers": subscribers, "over_quota": over_quota }),
+    ))
+}
+
 pub async fn delete_plan(
     State(state): State<AppState>,
     user: AuthUser,
@@ -1129,7 +1215,8 @@ struct Synced {
 }
 
 /// Rewrite users' enforced `traffic_limit_bytes` / `expires_at` from their
-/// active plan (resetting the expiry marker when the expiry moves),
+/// active subscription (its quota snapshot, 中-5; resetting the expiry
+/// marker when the expiry moves),
 /// optionally zero their usage, and re-enable quota-disabled users the
 /// quota now admits. Callers hold the locks of every node the users have
 /// rows on (Scope::Users reconcile) — users are locked after nodes.
@@ -1139,14 +1226,14 @@ async fn sync_users_from_plan(
     reset_traffic: bool,
 ) -> sqlx::Result<Vec<Synced>> {
     let rows: Vec<(Uuid, Value, Value, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "UPDATE users u SET traffic_limit_bytes = p.traffic_quota_bytes, \
+        "UPDATE users u SET traffic_limit_bytes = up.quota_bytes, \
          expires_at = up.expires_at, \
          expiry_enforced = CASE WHEN u.expires_at IS DISTINCT FROM up.expires_at \
                            THEN false ELSE u.expiry_enforced END, \
          traffic_used_bytes = CASE WHEN $2 THEN 0 ELSE u.traffic_used_bytes END, \
-         enabled = u.enabled OR (u.disabled_reason = 'quota' AND (p.traffic_quota_bytes IS NULL \
-                   OR (CASE WHEN $2 THEN 0 ELSE u.traffic_used_bytes END) <= p.traffic_quota_bytes)) \
-         FROM user_plans up JOIN plans p ON p.id = up.plan_id \
+         enabled = u.enabled OR (u.disabled_reason = 'quota' AND (up.quota_bytes IS NULL \
+                   OR (CASE WHEN $2 THEN 0 ELSE u.traffic_used_bytes END) <= up.quota_bytes)) \
+         FROM user_plans up \
          WHERE u.id = ANY($1) AND up.user_id = u.id AND up.status = 'active' \
          RETURNING u.id, {}, {}, \
          (old.enabled <> new.enabled OR old.expires_at IS DISTINCT FROM new.expires_at)",
@@ -1359,7 +1446,9 @@ impl UserPlanChange {
 
 /// PUT /users/{id}/plan: give the user a plan for one term from now,
 /// replacing the active one (status `replaced`), and zero their usage.
-/// Credentials of nodes the old and new plan share are kept.
+/// Credentials of nodes the old and new plan share are kept. The new
+/// subscription snapshots the plan's terms (quota, reset policy, speed,
+/// groups — triggers of migration 1059, 中-5).
 pub async fn apply_set_user_plan(
     conn: &mut PgConnection,
     actor: &Actor,
@@ -1411,10 +1500,10 @@ pub async fn apply_set_user_plan(
     .fetch_optional(&mut *conn)
     .await?;
     let speed_changed: bool = sqlx::query_scalar(
-        "SELECT (SELECT speed_limit_mbps FROM plans WHERE id = $1) \
+        "SELECT (SELECT speed_limit_mbps FROM user_plans WHERE id = $1) \
          IS DISTINCT FROM (SELECT speed_limit_mbps FROM plans WHERE id = $2)",
     )
-    .bind(previous.map(|p| p.1))
+    .bind(previous.map(|p| p.0))
     .bind(req.plan_id)
     .fetch_one(&mut *conn)
     .await?;
@@ -1547,13 +1636,12 @@ pub async fn apply_renew_user_plan(
     let fresh_quota = match term {
         None => false,
         Some(t) if t.is_onetime() => true,
-        Some(_) => sqlx::query_scalar(
-            "SELECT p.reset_period = 'none' FROM user_plans up JOIN plans p ON p.id = up.plan_id \
-             WHERE up.id = $1",
-        )
-        .bind(up_id)
-        .fetch_one(&mut *conn)
-        .await?,
+        Some(_) => {
+            sqlx::query_scalar("SELECT reset_period = 'none' FROM user_plans WHERE id = $1")
+                .bind(up_id)
+                .fetch_one(&mut *conn)
+                .await?
+        }
     };
     if fresh_quota {
         sqlx::query("UPDATE user_plans SET last_reset_at = now() WHERE id = $1")
@@ -1726,10 +1814,9 @@ pub async fn apply_refund_revoke(
             // Lock order: every node the reconcile will touch (the replaced
             // plan's and the user's current ones), then the user rows.
             sqlx::query(sqlx::AssertSqlSafe(format!(
-                "SELECT id FROM nodes WHERE id IN (SELECT e.node_id FROM user_plans up \
-                 JOIN plan_groups pg ON pg.plan_id = up.plan_id \
-                 JOIN entrance_group_members m ON m.group_id = pg.group_id \
-                 JOIN entrances e ON e.id = m.entrance_id WHERE up.id = $2 \
+                "SELECT id FROM nodes WHERE id IN (SELECT e.node_id FROM user_plan_groups ug \
+                 JOIN entrance_group_members m ON m.group_id = ug.group_id \
+                 JOIN entrances e ON e.id = m.entrance_id WHERE ug.user_plan_id = $2 \
                  UNION {}) ORDER BY id FOR UPDATE",
                 entitle::NODES_OF_USERS
             )))
@@ -2066,14 +2153,14 @@ pub async fn subscription(
     let row = sqlx::query_as::<_, SubscriptionView>(
         "SELECT up.id AS user_plan_id, up.plan_id, p.name AS plan_name, up.term_kind AS period, \
          up.term_days AS period_days, up.starts_at, up.expires_at, u.traffic_used_bytes, \
-         p.traffic_quota_bytes AS traffic_total_bytes, '' AS reset_period, up.last_reset_at, \
+         up.quota_bytes AS traffic_total_bytes, '' AS reset_period, up.last_reset_at, \
          up.next_reset_at AS next_reset_utc, akari_site_offset(up.next_reset_at) AS next_reset_offset, \
-         akari_site_tz() AS timezone, p.speed_limit_mbps, \
+         akari_site_tz() AS timezone, up.speed_limit_mbps, \
          CASE WHEN NOT u.enabled AND u.disabled_reason = 'admin' THEN 'banned' \
               WHEN NOT u.enabled THEN 'over_quota' \
               WHEN up.expires_at IS NOT NULL AND up.expires_at <= now() THEN 'expired' \
               ELSE 'active' END AS status, \
-         p.reset_period AS reset_kind, p.reset_days \
+         up.reset_period AS reset_kind, up.reset_days \
          FROM user_plans up JOIN plans p ON p.id = up.plan_id JOIN users u ON u.id = up.user_id \
          WHERE up.user_id = $1 AND up.status = 'active'",
     )
@@ -2132,8 +2219,9 @@ pub async fn my_plan(
     .await?
     .ok_or_else(ApiError::unauthorized)?;
     let plan = sqlx::query_as::<_, MyPlanRow>(
-        "SELECT p.name, p.traffic_quota_bytes, p.reset_period, p.reset_days, p.speed_limit_mbps, \
-         p.device_seats, up.starts_at, up.expires_at, up.period_anchor, up.last_reset_at, \
+        "SELECT p.name, up.quota_bytes AS traffic_quota_bytes, up.reset_period, up.reset_days, \
+         up.speed_limit_mbps, p.device_seats, up.starts_at, up.expires_at, up.period_anchor, \
+         up.last_reset_at, \
          up.next_reset_at, akari_site_offset(up.next_reset_at) AS next_reset_offset \
          FROM user_plans up JOIN plans p ON p.id = up.plan_id \
          WHERE up.user_id = $1 AND up.status = 'active'",
@@ -2268,9 +2356,8 @@ pub async fn apply_period_resets(conn: &mut PgConnection) -> Result<Vec<Uuid>, A
     .await?;
     let reset: Vec<(Uuid, DateTime<Utc>, Option<DateTime<Utc>>)> = sqlx::query_as(
         "UPDATE user_plans up SET last_reset_at = now(), \
-         next_reset_at = akari_next_reset(up.period_anchor, p.reset_period, p.reset_days, now()) \
-         FROM plans p WHERE p.id = up.plan_id AND up.id = ANY($1) AND up.status = 'active' \
-         AND up.next_reset_at <= now() \
+         next_reset_at = akari_next_reset(up.period_anchor, up.reset_period, up.reset_days, now()) \
+         WHERE up.id = ANY($1) AND up.status = 'active' AND up.next_reset_at <= now() \
          RETURNING up.user_id, old.next_reset_at, new.next_reset_at",
     )
     .bind(&due)
@@ -3038,6 +3125,7 @@ mod tests {
             p2,
             UpdatePlanReq {
                 group_ids: Some(Some(vec![g3])),
+                apply_to_existing: true,
                 ..Default::default()
             },
         )
@@ -3310,6 +3398,7 @@ mod tests {
             p,
             UpdatePlanReq {
                 traffic_quota_bytes: Some(Some(120)),
+                apply_to_existing: true,
                 ..Default::default()
             },
         )
@@ -3322,6 +3411,7 @@ mod tests {
             p,
             UpdatePlanReq {
                 traffic_quota_bytes: Some(Some(200)),
+                apply_to_existing: true,
                 ..Default::default()
             },
         )
@@ -3438,6 +3528,7 @@ mod tests {
                         p,
                         &UpdatePlanReq {
                             group_ids: Some(Some(groups)),
+                            apply_to_existing: true,
                             ..Default::default()
                         },
                     )

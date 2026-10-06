@@ -2510,6 +2510,7 @@ async fn speed_limits_reach_the_desired_state() {
         fast,
         &crate::plans::UpdatePlanReq {
             speed_limit_mbps: Some(Some(8)),
+            apply_to_existing: true,
             ..Default::default()
         },
     )

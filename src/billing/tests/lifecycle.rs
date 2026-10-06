@@ -6,6 +6,7 @@
 //! holders, a late payment never silently replaces a newer plan.
 
 use axum::http::StatusCode;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::super::catalog::PeriodKind;
@@ -140,6 +141,131 @@ async fn renewal_of_a_no_reset_plan_starts_a_fresh_quota() {
     assert_eq!(served(&db, v).await, (500, true));
     bought(&db, &cv, monthly, "onetime").await;
     assert_eq!(served(&db, v).await, (0, true));
+    drop(state);
+    db.drop().await;
+}
+
+async fn admin(state: &AppState, db: &TestDb) -> Client {
+    let a = db.admin().await;
+    user_client(state, a).await
+}
+
+async fn limit(db: &TestDb, user: Uuid) -> Option<i64> {
+    sqlx::query_scalar("SELECT traffic_limit_bytes FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+}
+
+async fn on_node(db: &TestDb, user: Uuid, node: Uuid) -> bool {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM entrance_users eu JOIN entrances e \
+         ON e.id = eu.entrance_id WHERE eu.user_id = $1 AND e.node_id = $2)",
+    )
+    .bind(user)
+    .bind(node)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap()
+}
+
+/// 中-5: a subscription keeps the terms it was bought with (quota, groups,
+/// speed, reset policy) — a plan edit changes new purchases (and the plan's
+/// renewals keep the old terms) unless the admin applies it to existing
+/// subscribers, after an impact preview.
+#[tokio::test]
+async fn plan_terms_are_snapshotted_at_purchase() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let admin = admin(&state, &db).await;
+    let (n1, plan) = catalog_plan(&db, "mi5", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    let n2 = db.node().await;
+    let r = admin
+        .post(
+            "/test/api/v1/node-groups",
+            json!({"name": "mi5-g2", "entrance_ids": [db.direct(n2).await]}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+    let g2 = r.json()["id"].clone();
+    let old = db.user().await;
+    let c = user_client(&state, old).await;
+    bought(&db, &c, plan, "month").await;
+    sqlx::query("UPDATE users SET traffic_used_bytes = 500 WHERE id = $1")
+        .bind(old)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    // The edit: twice the quota, another group, a speed limit.
+    let edit = json!({"traffic_quota_bytes": 2147483648_i64, "group_ids": [g2],
+                      "speed_limit_mbps": 10});
+    let r = admin
+        .req(
+            axum::http::Method::PATCH,
+            &format!("/test/api/v1/plans/{plan}"),
+            Some(edit),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    // The existing subscriber keeps what was bought — also across a renewal.
+    bought(&db, &c, plan, "month").await;
+    assert_eq!(limit(&db, old).await, Some(1 << 30));
+    assert!(on_node(&db, old, n1).await && !on_node(&db, old, n2).await);
+    // A new buyer gets the new terms.
+    let new = db.user().await;
+    bought(&db, &user_client(&state, new).await, plan, "month").await;
+    assert_eq!(limit(&db, new).await, Some(2 << 30));
+    assert!(on_node(&db, new, n2).await && !on_node(&db, new, n1).await);
+    let speed: Option<i32> = sqlx::query_scalar(
+        "SELECT speed_limit_mbps FROM user_plans WHERE user_id = $1 AND status = 'active'",
+    )
+    .bind(new)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(speed, Some(10));
+    // The impact preview: 2 subscribers; with a 100-byte quota the one who
+    // used 500 bytes would be paused at once.
+    let r = admin
+        .post(
+            &format!("/test/api/v1/plans/{plan}/impact"),
+            json!({"traffic_quota_bytes": 100}),
+        )
+        .await;
+    assert_eq!(r.json(), json!({"subscribers": 2, "over_quota": 1}));
+    assert_eq!(
+        admin
+            .post(
+                &format!("/test/api/v1/plans/{}/impact", Uuid::new_v4()),
+                json!({})
+            )
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    // Applied to existing subscribers: the old one takes the plan's terms.
+    let r = admin
+        .req(
+            axum::http::Method::PATCH,
+            &format!("/test/api/v1/plans/{plan}"),
+            Some(json!({"apply_to_existing": true})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(limit(&db, old).await, Some(2 << 30));
+    assert!(on_node(&db, old, n2).await && !on_node(&db, old, n1).await);
+    let applied: Value = sqlx::query_scalar(
+        "SELECT after->'applied_to_existing' FROM audit_log WHERE action = 'plan.update' \
+         ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(applied, json!(2));
     drop(state);
     db.drop().await;
 }

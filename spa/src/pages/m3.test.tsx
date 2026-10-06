@@ -189,6 +189,29 @@ describe("AdminPlans", () => {
     });
   });
 
+  it("applies an edit to existing subscribers only when asked, after the impact preview", async () => {
+    const calls = fakeApi({
+      "GET /node-groups": [],
+      "GET /plans": [plan({})],
+      "GET /nodes": [],
+      "POST /plans/p1/impact": { subscribers: 2, over_quota: 1 },
+      "PATCH /plans/p1": plan({}),
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderAdmin(<AdminPlans />);
+    fireEvent.click(await screen.findByRole("button", { name: "编辑 basic" }));
+    const form = await screen.findByRole("form", { name: "编辑 basic" });
+    fireEvent.change(within(form).getByLabelText(/限速/), { target: { value: "50" } });
+    fireEvent.click(within(form).getByRole("checkbox", { name: /同时应用到现有用户（2 个订阅）/ }));
+    fireEvent.click(within(form).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(calls.some((c) => c.method === "PATCH")).toBe(true));
+    expect(confirm.mock.calls[0][0]).toContain("同时应用到 2 个现有订阅，其中 1 人已超出新额度");
+    expect(calls.find((c) => c.method === "PATCH")?.body).toMatchObject({
+      speed_limit_mbps: 50,
+      apply_to_existing: true,
+    });
+  });
+
   it("validates the dialog before sending", () => {
     const f = planForm(null);
     expect(planBody({ ...f, name: "" }, null)).toBe("请填写名称");
