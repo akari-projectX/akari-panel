@@ -708,7 +708,7 @@ caddy_options() {
 	printf '%s' "$o"
 }
 
-# configure_caddy (bare metal): our Caddyfile, the environment in a
+# configure_caddy PREFIX (bare metal): our Caddyfile, the environment in a
 # root-only file, and a drop-in that starts Caddy without --environ (it
 # would print the environment into the journal) and with the admin API off
 # (it would serve the configuration to local users).
@@ -725,6 +725,9 @@ configure_caddy() {
 	opts=$(caddy_options bare "$NL")
 	{
 		echo "AKARI_DOMAIN=${DOMAIN:-$PUBLIC_IP}"
+		# Only the Caddyfile of releases before v0.4 D4/D11 (which forwarded
+		# just the prefix) reads it; the current one forwards everything.
+		echo "AKARI_PREFIX=$1"
 		echo "AKARI_UPSTREAM=127.0.0.1:$WEB_PORT"
 		echo "AKARI_ASK=http://127.0.0.1:$ASK_PORT/ask"
 		# systemd EnvironmentFile: a quoted value may span lines.
@@ -734,7 +737,7 @@ configure_caddy() {
 	install -d -m 0755 /etc/systemd/system/caddy.service.d
 	cat >"$TMP/caddy-dropin.conf" <<'EOF'
 # Written by the Akari installer.
-# AKARI_DOMAIN / upstream / ask endpoint for
+# AKARI_DOMAIN / AKARI_PREFIX (secret; older releases) / upstream / ask endpoint for
 # /etc/caddy/Caddyfile. No --environ (it logs the environment), and the
 # admin API is off (`admin off`), so restart instead of reload.
 [Unit]
@@ -1279,7 +1282,7 @@ install_bare() {
 		die '面板未通过健康检查（journalctl -u akari-panel）' 'the panel did not become healthy (journalctl -u akari-panel)'
 	[ -n "$RESTORE_DIR" ] || apply_settings
 	create_admin
-	configure_caddy
+	configure_caddy "$prefix"
 	open_firewall
 	finish "$prefix"
 }
@@ -1305,6 +1308,8 @@ install_docker_mode() {
 	fi
 	prefix=$(docker_prefix)
 	[ -n "$prefix" ] || die '无法读取后台前缀' 'cannot read the admin prefix'
+	# Read only by the compose file of releases before v0.4 D4/D11.
+	kv_set "$DOCKER_DIR/.env" AKARI_PREFIX "$prefix"
 	step '启动容器' 'starting the containers'
 	run dc up -d || die 'docker compose up 失败（见日志）' 'docker compose up failed (see the log)'
 	wait_health "$(panel_health_url "$prefix")" 180 ||
