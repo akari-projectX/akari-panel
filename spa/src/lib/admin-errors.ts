@@ -365,6 +365,8 @@ export const ADMIN_CODES: Record<string, string> = {
   "user.email_exists": "已有其他账户使用这个邮箱",
   "user.has_plan": "该用户有生效中的套餐：请先取消套餐，再设为管理员",
   "user.delete_confirm_required": "删除用户前需要先确认影响（余额、提现、订单、套餐）",
+  "user.erase_admin": "管理员账号不能注销：请先降级",
+  "user.erased": "该账号已注销（匿名化保留），不能再修改",
   "user.owner_already": "该账号已经是所有者",
   "user.owner_confirm_required": "转让所有者需要二次确认",
   "user.owner_only": "只有所有者可以执行此操作（管理其他管理员、后台前缀与白名单、支付渠道密钥）",

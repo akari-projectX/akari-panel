@@ -552,7 +552,8 @@ async fn user_delete_needs_the_impact_and_a_confirmation() {
         r.json(),
         json!({"email": "leaving@example.com", "balance_cents": 1500, "withdrawable_cents": 0,
                "pending_withdrawals": 0, "pending_withdrawal_cents": 0, "pending_orders": 0,
-               "unfulfilled_orders": 0, "plan": {"name": "leaving", "expires_at": null}})
+               "unfulfilled_orders": 0, "plan": {"name": "leaving", "expires_at": null},
+               "anonymized": true})
     );
     assert_eq!(
         c.get(&format!(

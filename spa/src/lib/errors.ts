@@ -17,6 +17,10 @@ import { ApiError, type ErrorParams } from "./api";
  */
 export const CODE_KEYS: Record<string, MessageKey> = {
   "account.banned": "errors.accountBanned",
+  "account.delete_confirm_required": "errors.deleteConfirmRequired",
+  "account.delete_pending_orders": "errors.deletePendingOrders",
+  "account.delete_pending_withdrawals": "errors.deletePendingWithdrawals",
+  "account.password_required": "errors.passwordRequired",
   "account.invalid_password": "errors.invalidPassword",
   "account.locale_invalid": "errors.localeInvalid",
   "account.passkey_exists": "errors.passkeyExists",

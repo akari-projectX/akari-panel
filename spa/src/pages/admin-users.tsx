@@ -40,7 +40,7 @@ export const PAGE_SIZE = 50;
 const selectCls =
   "h-9 rounded-lg border border-border bg-card px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
-export type StatusFilter = "" | "active" | "expired" | "quota" | "banned";
+export type StatusFilter = "" | "active" | "expired" | "quota" | "banned" | "erased";
 export type SortKey = "created" | "-created" | "email" | "-traffic" | "expires";
 
 const STATUS_CHIPS: { id: StatusFilter; label: string }[] = [
@@ -49,6 +49,7 @@ const STATUS_CHIPS: { id: StatusFilter; label: string }[] = [
   { id: "expired", label: "已到期" },
   { id: "quota", label: "超出流量" },
   { id: "banned", label: "已封禁" },
+  { id: "erased", label: "已注销" },
 ];
 
 const SORTS: { id: SortKey; label: string }[] = [
@@ -79,12 +80,16 @@ export function usersQuery(f: UserFilters): string {
 
 /**
  * The status badge (W21, audit M8), the same precedence as the server's
- * status filter: banned (W28-c) > over quota > expired > active.
+ * status filter: erased (deleted, kept anonymized) > banned (W28-c) > over
+ * quota > expired > active.
  */
 export function userStatus(
-  u: Pick<UserView, "enabled" | "disabled_reason" | "expires_at" | "role">,
+  u: Pick<UserView, "enabled" | "disabled_reason" | "expires_at" | "role" | "erased">,
   now: number = Date.now(),
 ): { label: string; variant: "success" | "destructive" | "secondary" | "outline"; filter: StatusFilter } {
+  if (u.erased) {
+    return { label: "已注销", variant: "outline", filter: "erased" };
+  }
   if (!u.enabled && u.disabled_reason !== "quota") {
     return { label: "已封禁", variant: "secondary", filter: "banned" };
   }

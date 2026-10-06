@@ -3,6 +3,9 @@
 # codes in the source; spa/scripts/check-error-codes.mjs requires a SPA
 # mapping for each.
 account.banned
+account.delete_confirm_required
+account.delete_pending_orders
+account.delete_pending_withdrawals
 account.invalid_password
 account.locale_invalid
 account.mail_off
@@ -12,6 +15,7 @@ account.passkey_limit
 account.passkey_name_invalid
 account.passkey_required
 account.passkey_unavailable
+account.password_required
 account.password_too_long
 account.password_too_short
 agent_update.asset_missing
@@ -412,6 +416,8 @@ user.ban_reason_too_long
 user.ban_self
 user.delete_confirm_required
 user.email_exists
+user.erase_admin
+user.erased
 user.has_plan
 user.not_banned
 user.owner_already
