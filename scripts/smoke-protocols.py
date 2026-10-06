@@ -459,7 +459,7 @@ try:
             print(f"{client}: {n} proxies relayed through the agent")
 
     # --- revocation through the panel: the user goes, new connections fail ---
-    st, _ = api("DELETE", f"/api/v1/users/{USER}")
+    st, _ = api("DELETE", f"/api/v1/users/{USER}?confirm=true")
     if st != 204:
         fail(f"delete w8 user: {st}")
     time.sleep(1)
@@ -475,7 +475,7 @@ try:
 finally:
     stop_clients()
 
-st, _ = api("DELETE", f"/api/v1/users/{USER}")
+st, _ = api("DELETE", f"/api/v1/users/{USER}?confirm=true")
 st, r = api("PUT", f"/api/v1/nodes/{NODE_ID}/inbound", {"inbound": original})
 if st != 200:
     fail(f"restore inbound: {st} {r}")
