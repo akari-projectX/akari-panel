@@ -131,12 +131,12 @@ async fn orders_export_range_status_and_manual_flag() {
             sqlx::query(
                 "INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_id, plan_name, \
                  amount_cents, period, period_days, list_price_cents, gift_cents, subject, \
-                 expires_at, created_at, status, paid_at, paid_via, ended_at) \
+                 expires_at, created_at, status, paid_at, paid_via, ended_at, action) \
                  VALUES (gen_random_uuid(), 'AK' || replace(gen_random_uuid()::text, '-', ''), \
                  $1, '@user', $2, '+plan', 1000 - $6, 'days', 30, 1000, $6, 's', now(), \
                  now() - make_interval(days => $3), $4, \
                  CASE WHEN $4 = 'paid' THEN now() END, $5, \
-                 CASE WHEN $4 = 'cancelled' THEN now() END)",
+                 CASE WHEN $4 = 'cancelled' THEN now() END, 'new')",
             )
             .bind(u)
             .bind(plan)

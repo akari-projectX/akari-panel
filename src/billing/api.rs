@@ -285,7 +285,8 @@ struct ShopPlanRow {
     capacity: Option<i32>,
     renewal_only: bool,
     allow_switch_in: bool,
-    active: i64,
+    /// Slots taken (active subscribers + reservations, 中-2).
+    taken: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -304,11 +305,17 @@ fn price_of(r: &PriceRow) -> Option<Price> {
     })
 }
 
-const SALE_PLAN_SQL: &str = "SELECT p.id AS plan_id, p.name, p.description, \
-     p.traffic_quota_bytes, p.reset_period, p.reset_days, p.speed_limit_mbps, p.device_seats, \
-     p.capacity, p.renewal_only, p.allow_switch_in, \
-     (SELECT count(*) FROM user_plans up WHERE up.plan_id = p.id AND up.status = 'active') \
-     AS active FROM plans p WHERE p.enabled AND p.on_sale";
+/// The plans on sale with their taken slots (中-2: active subscribers +
+/// live reservations, `catalog::taken_sql`).
+fn sale_plan_sql() -> String {
+    format!(
+        "SELECT p.id AS plan_id, p.name, p.description, \
+         p.traffic_quota_bytes, p.reset_period, p.reset_days, p.speed_limit_mbps, \
+         p.device_seats, p.capacity, p.renewal_only, p.allow_switch_in, {} AS taken \
+         FROM plans p WHERE p.enabled AND p.on_sale",
+        catalog::taken_sql("p.id")
+    )
+}
 
 #[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
@@ -359,7 +366,8 @@ pub async fn shop(
     let (rows, prices): (Vec<ShopPlanRow>, Vec<PriceRow>) = if enabled {
         (
             sqlx::query_as(sqlx::AssertSqlSafe(format!(
-                "{SALE_PLAN_SQL} ORDER BY p.sort, p.name"
+                "{} ORDER BY p.sort, p.name",
+                sale_plan_sql()
             )))
             .fetch_all(&mut *c)
             .await?,
@@ -390,7 +398,7 @@ pub async fn shop(
             plan_id: r.plan_id,
             for_sale: true,
             capacity: r.capacity,
-            active: r.active,
+            taken: r.taken,
             renewal_only: r.renewal_only,
             allow_switch_in: r.allow_switch_in,
         };
@@ -474,7 +482,7 @@ pub async fn shop(
         .into_iter()
         .map(|(r, offers)| {
             let holder = cur.is_some_and(|c| c.plan_id == r.plan_id);
-            let remaining = r.capacity.map(|c| (i64::from(c) - r.active).max(0));
+            let remaining = r.capacity.map(|c| (i64::from(c) - r.taken).max(0));
             json!({
                 "plan_id": r.plan_id,
                 "name": r.name,
@@ -621,7 +629,8 @@ pub async fn create_order(
     // then the balance row.
     crate::entitle::lock(&mut tx).await?;
     let plan: Option<ShopPlanRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "{SALE_PLAN_SQL} AND p.id = $1"
+        "{} AND p.id = $1",
+        sale_plan_sql()
     )))
     .bind(req.plan_id)
     .fetch_optional(&mut *tx)
@@ -646,7 +655,7 @@ pub async fn create_order(
         plan_id: plan.plan_id,
         for_sale: true,
         capacity: plan.capacity,
-        active: plan.active,
+        taken: plan.taken,
         renewal_only: plan.renewal_only,
         allow_switch_in: plan.allow_switch_in,
     };
@@ -715,10 +724,10 @@ pub async fn create_order(
         "INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_id, plan_name, \
          amount_cents, period, period_days, list_price_cents, credit_cents, credit_order_id, \
          discount_cents, coupon_id, coupon_code, balance_cents, balance_state, \
-         subject, expires_at, payment_method_id) \
+         subject, expires_at, payment_method_id, action) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
                  CASE WHEN $16 > 0 THEN 'held' ELSE 'none' END, $17, \
-                 now() + make_interval(mins => $18), $19) \
+                 now() + make_interval(mins => $18), $19, $20) \
          RETURNING {}",
         orders::order_snapshot_sql("orders")
     )))
@@ -741,6 +750,7 @@ pub async fn create_order(
     .bind(&subject)
     .bind(provider.order_timeout_minutes() as i32)
     .bind((split.amount_cents > 0).then_some(method_id))
+    .bind(action.as_str())
     .fetch_one(&mut *tx)
     .await;
     let mut after = match r {
@@ -993,7 +1003,8 @@ pub async fn list_orders(
             .push(")");
     }
     if q.unfulfilled == Some(true) {
-        qb.push(" AND status = 'paid' AND fulfilled_at IS NULL");
+        // Needs attention: not granted and not refunded (中-2).
+        qb.push(" AND status = 'paid' AND fulfilled_at IS NULL AND refunded_at IS NULL");
     }
     if let Some(v) = q.via.as_deref().filter(|v| !v.is_empty()) {
         if !matches!(

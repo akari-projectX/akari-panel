@@ -85,7 +85,7 @@ export interface NotificationRow {
   id: number;
   alert_id: number | null;
   channel: "telegram" | "webhook" | "email";
-  event: "firing" | "resolved";
+  event: "firing" | "resolved" | "billing";
   status: "pending" | "sent" | "dead";
   attempts: number;
   last_error: string | null;

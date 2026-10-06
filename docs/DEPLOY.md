@@ -1163,7 +1163,10 @@ again (losing `master.key` means entering it again). For networks that block Tel
            "value": "离线 6 分钟", "detail": "…", "fired_at": "…", "resolved_at": null}}
 ```
 
-`event` is `firing`, `resolved` or `test` (`alert` is null for a test). Headers:
+`event` is `firing`, `resolved`, `test` or `billing` (`alert` is null for a test and for
+billing; a `billing` event — 中-2: a paid order the panel could not fulfil and refunded to the
+customer's balance automatically — carries `billing: {order_id, out_trade_no, code,
+refund_cents}`). Headers:
 `X-Akari-Event`, `X-Akari-Delivery` (notification id), `X-Akari-Timestamp` (unix seconds) and
 `X-Akari-Signature: sha256=<hex>` = HMAC-SHA256(secret, `<timestamp>.<raw body>`). Verify it
 before trusting the body and reject stale timestamps:

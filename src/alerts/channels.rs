@@ -110,6 +110,21 @@ impl Message {
         }
     }
 
+    /// A billing event for the admins (Phase A PR ①, 中-2: a paid order
+    /// that could not be fulfilled was refunded to the balance). Event
+    /// `billing`; `detail` is non-personal (order id/number, code, amount).
+    pub fn billing(title: &str, text: &str, detail: Value) -> Self {
+        Self {
+            payload: json!({
+                "event": "billing",
+                "title": title,
+                "text": format!("{title}\n{text}"),
+                "alert": null,
+                "billing": detail,
+            }),
+        }
+    }
+
     pub fn event(&self) -> &str {
         self.payload["event"].as_str().unwrap_or("firing")
     }

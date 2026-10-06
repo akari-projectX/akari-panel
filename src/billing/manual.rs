@@ -102,13 +102,22 @@ pub async fn apply_create(
         ));
     };
     let gift_cents = if req.gift { list_cents } else { 0 };
+    // What it does (stored like a customer order's; 中-2).
+    let current: Option<Uuid> = sqlx::query_scalar(
+        "SELECT plan_id FROM user_plans WHERE user_id = $1 AND status = 'active'",
+    )
+    .bind(req.user_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let action = super::catalog::action_for(current, req.plan_id, kind);
     let id = Uuid::new_v4();
     let otn = new_out_trade_no();
     let subject: String = format!("Akari - {plan_name}").chars().take(128).collect();
     let r = sqlx::query_scalar::<_, Value>(sqlx::AssertSqlSafe(format!(
         "INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_id, plan_name, \
-         amount_cents, period, period_days, list_price_cents, gift_cents, subject, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7 - $8, $9, $10, $7, $8, $11, now()) RETURNING {}",
+         amount_cents, period, period_days, list_price_cents, gift_cents, subject, expires_at, \
+         action) VALUES ($1, $2, $3, $4, $5, $6, $7 - $8, $9, $10, $7, $8, $11, now(), $12) \
+         RETURNING {}",
         orders::order_snapshot_sql("orders")
     )))
     .bind(id)
@@ -122,6 +131,7 @@ pub async fn apply_create(
     .bind(kind.as_str())
     .bind(days)
     .bind(&subject)
+    .bind(action.as_str())
     .fetch_one(&mut *conn)
     .await;
     let mut after = match r {

@@ -1976,6 +1976,18 @@ BUYER_CODE=$(mp_mail "$BUYER_MAIL" 1 | grep -oE '\b[0-9]{6}\b' | sed -n 1p)
 ORDER=$(last_json "d['id']"); OTN=$(last_json "d['out_trade_no']")
 last_json "d['qr_code']" | matches '^https://qr.alipay.com/smoke' || { echo "FAIL: no QR from precreate"; exit 1; }
 [ "$(last_json "d['status']")" = "pending" ] || { echo "FAIL: new order not pending"; exit 1; }
+# 中-2: the pending order reserves one of the plan's 5 slots (another
+# customer's shop shows 4 left).
+[ "$(psql_q "SELECT action FROM orders WHERE id='$ORDER'")" = "new" ] || { echo "FAIL: order action not stored"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+    -d '{"email":"smoke-viewer@smoke.test","password":"viewer-password-123"}')" = "201" ] || { echo "FAIL: create viewer"; exit 1; }
+VIEWER=$(last_json "d['id']"); VJAR="$LOG/viewer-cookies"
+[ "$(code -c "$VJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d '{"email":"smoke-viewer@smoke.test","password":"viewer-password-123"}')" = "200" ] || { echo "FAIL: viewer login"; exit 1; }
+[ "$(code -b "$VJAR" "$BASE/api/v1/me/shop")" = "200" ] \
+  && [ "$(last_json "[x for x in d['plans'] if x['plan_id']=='$PAID_PLAN'][0]['remaining']")" = "4" ] \
+  || { echo "FAIL: a pending order does not reserve its slot"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$VIEWER")" = "204" ] || { echo "FAIL: delete viewer"; exit 1; }
 NOTIFY="$BASE/pay/$METHOD/notify"
 # Tampered amount (signature no longer matches) / wrong amount (validly
 # signed): both the canonical rejection; nothing fulfilled.
