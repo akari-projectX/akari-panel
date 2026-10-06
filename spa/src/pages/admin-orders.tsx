@@ -495,17 +495,25 @@ function RefundForm({ order: o }: { order: AdminOrder }) {
   const confirm = useConfirm();
   const [reason, setReason] = useState("");
   const [toBalance, setToBalance] = useState(false);
+  // ① 原路退款: Alipay returns the amount to the payer (partial allowed).
+  const [original, setOriginal] = useState(false);
   const [keepPlan, setKeepPlan] = useState(false);
-  // 中-3: what was refunded in the Alipay console (default: all of it).
+  // 中-3: what was refunded in the Alipay console (default: all of it);
+  // with ① the amount to refund through Alipay.
   const [external, setExternal] = useState(yuan(o.amount_cents));
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const needsExternal = !toBalance && o.amount_cents > 0;
 
   async function refund() {
     if (!reason.trim()) return setError("请填写退款原因（写入审计）");
     const ext = /^0+(\.0{1,2})?$/.test(external.trim()) ? 0 : parseYuan(external);
-    if (needsExternal && (ext === null || ext > o.amount_cents))
-      return setError(`请填写支付宝后台实际退款金额（0–${yuan(o.amount_cents)} 元）`);
+    if (needsExternal && (ext === null || ext > o.amount_cents || (original && ext === 0)))
+      return setError(
+        original
+          ? `请填写原路退回金额（0.01–${yuan(o.amount_cents)} 元）`
+          : `请填写支付宝后台实际退款金额（0–${yuan(o.amount_cents)} 元）`,
+      );
     setError(null);
     let p: RefundPreview;
     try {
@@ -513,12 +521,15 @@ function RefundForm({ order: o }: { order: AdminOrder }) {
     } catch (err) {
       return setError(errText(err));
     }
+    if (original && !p.original_available) return setError("该订单的支付方式未开启原路退款");
     const back = p.balance_part_cents + (toBalance ? p.amount_cents : 0);
     const how = toBalance
       ? "支付宝实付部分也退到用户余额"
-      : needsExternal
-        ? `支付宝商家后台已退 ¥${yuan(ext ?? 0)}`
-        : "无支付宝实付部分";
+      : original
+        ? `由支付宝原路退回 ¥${yuan(ext ?? 0)}`
+        : needsExternal
+          ? `支付宝商家后台已退 ¥${yuan(ext ?? 0)}`
+          : "无支付宝实付部分";
     const effect = keepPlan ? WHY_ZH.keep_plan : refundEffectZh(p.effect);
     if (
       !(await confirm({
@@ -529,12 +540,18 @@ function RefundForm({ order: o }: { order: AdminOrder }) {
     )
       return;
     try {
-      await post(`/orders/${o.id}/refund`, {
-        reason: reason.trim(),
-        to_balance: toBalance,
-        keep_plan: keepPlan,
-        ...(needsExternal ? { external_cents: ext } : {}),
-      });
+      const r = await post<{ pending?: boolean }>(
+        `/orders/${o.id}/refund`,
+        original
+          ? { reason: reason.trim(), original: true, original_cents: ext, keep_plan: keepPlan }
+          : {
+              reason: reason.trim(),
+              to_balance: toBalance,
+              keep_plan: keepPlan,
+              ...(needsExternal ? { external_cents: ext } : {}),
+            },
+      );
+      setNotice(r?.pending ? "已提交支付宝，结果未知：面板会自动查询并在确认后记录退款" : null);
       setReason("");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["order-detail", o.id] }),
@@ -552,12 +569,32 @@ function RefundForm({ order: o }: { order: AdminOrder }) {
         <Input id="refund-reason" className="w-80" value={reason} onChange={(e) => setReason(e.target.value)} />
       </div>
       <label className="flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={toBalance} onChange={(e) => setToBalance(e.target.checked)} />
+        <input
+          type="checkbox"
+          checked={toBalance}
+          onChange={(e) => {
+            setToBalance(e.target.checked);
+            if (e.target.checked) setOriginal(false);
+          }}
+        />
         支付宝实付 ¥{yuan(o.amount_cents)} 也退到余额
       </label>
+      {o.amount_cents > 0 && (
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={original}
+            onChange={(e) => {
+              setOriginal(e.target.checked);
+              if (e.target.checked) setToBalance(false);
+            }}
+          />
+          原路退回支付宝
+        </label>
+      )}
       {needsExternal && (
         <div className="space-y-1">
-          <Label htmlFor="refund-external">支付宝后台已退金额（元）</Label>
+          <Label htmlFor="refund-external">{original ? "原路退回金额（元）" : "支付宝后台已退金额（元）"}</Label>
           <Input id="refund-external" className="w-32" value={external} onChange={(e) => setExternal(e.target.value)} />
         </div>
       )}
@@ -571,6 +608,11 @@ function RefundForm({ order: o }: { order: AdminOrder }) {
       {error && (
         <p role="alert" className="w-full text-sm text-destructive">
           {error}
+        </p>
+      )}
+      {notice && (
+        <p role="status" className="w-full text-sm text-muted-foreground">
+          {notice}
         </p>
       )}
     </div>

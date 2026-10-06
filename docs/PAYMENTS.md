@@ -344,8 +344,24 @@ Withdrawals of a deleted user can only be approved.
 
 ### Refunds (admin) / 退款（管理员）
 
-订单 → 详情 → 退款（`POST /orders/{id}/refund {reason, to_balance, external_cents?, keep_plan?}`），
-只对已付款订单、只能退一次，一个事务内完成：
+订单 → 详情 → 退款（`POST /orders/{id}/refund {reason, to_balance, external_cents?, keep_plan?,
+original?, original_cents?}`），只对已付款订单、只能退一次。支付宝实付部分有**三种处理方式**：
+
+1. **原路退回**（`original: true`，支付宝 API `alipay.trade.refund`，密钥模式）：面板直接请求支付宝把
+   `original_cents`（默认全部实付金额，可部分退款）退回付款账户。每笔请求带幂等的退款请求号
+   `out_request_no`（`<订单号>R<n>`）：同号重试绝不会退两次。支付宝确认后才记账（与方式 3 一样记为
+   「支付渠道已退」`refund_external_cents`，同时撤销订阅效果、发退款通知）；支付宝明确拒绝（余额不足等）
+   = 502 `order_admin.refund_gateway_failed`，没有退出任何钱，可重试（同金额用同一请求号）或改用其他方式；
+   结果未知（网络超时等）= 202 `{pending: true}`，此时其他退款方式被拒（409 `order_admin.refund_in_progress`），
+   对账循环用 `alipay.trade.fastpay.refund.query` 查询该请求号，查到即记账，查不到就用同一请求号重试
+   （1 分钟起翻倍，最长 1 小时）。订单详情的 `refund_request` 显示请求号、金额、状态（pending/done/failed）、
+   尝试次数与最近错误，可与支付宝账单对账。支付方式的「允许原路退款」开关（`refund_original`，默认开）
+   关闭后不提供此方式（409 `order_admin.refund_original_unavailable`）；`refund-preview` 的
+   `original_available` 告诉后台是否可用。审计 `order.refund.request`、`order.refund.failed`、`order.refund`。
+2. **退到余额**（`to_balance: true`）。
+3. **仅登记**：已在支付宝商家后台手工退款，填写实际金额（`external_cents`）。
+
+记账在一个事务内完成：
 
 - **钱**：订单扣的余额部分总是退回余额；勾选「也退到余额」（`to_balance`）时
   支付宝实付部分也记入余额（两者合为一行 `refund_to_balance` 明细），否则请在

@@ -411,3 +411,222 @@ async fn refund_notice_mail() {
     drop(state);
     db.drop().await;
 }
+
+// ---------------------------------------------------------------------------
+// ① Original route (支付宝原路退款)
+// ---------------------------------------------------------------------------
+
+async fn request_of(db: &TestDb, order: Uuid) -> Value {
+    sqlx::query_scalar("SELECT refund_request FROM orders WHERE id = $1")
+        .bind(order)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+}
+
+async fn otn_of(db: &TestDb, order: Uuid) -> String {
+    sqlx::query_scalar("SELECT out_trade_no FROM orders WHERE id = $1")
+        .bind(order)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+}
+
+/// A partial refund through Alipay: the gateway refunds it (idempotent
+/// request number), the panel records it as refunded at the provider, the
+/// subscription effect applies, the customer is told.
+#[tokio::test]
+async fn original_route_refund() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let admin = admin(&state, &db).await;
+    let (node, plan) =
+        catalog_plan(&db, "p1-orig", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    let u = db.user().await;
+    let c = user_client(&state, u).await;
+    let o = bought(&db, &c, plan, "month").await;
+    let p = preview(&admin, o).await.json();
+    assert_eq!(p["original_available"], true);
+    assert_eq!(p["original_request"], Value::Null);
+    for (body, code) in [
+        (
+            json!({"reason": "r", "original": true, "to_balance": true}),
+            "order_admin.refund_original_conflict",
+        ),
+        (
+            json!({"reason": "r", "original": true, "original_cents": 1001}),
+            "order_admin.refund_original_range",
+        ),
+        (
+            json!({"reason": "r", "original": true, "original_cents": 0}),
+            "order_admin.refund_original_range",
+        ),
+        (
+            json!({"reason": "r", "original_cents": 5}),
+            "order_admin.refund_original_conflict",
+        ),
+    ] {
+        assert_eq!(refund(&admin, o, body).await.json()["code"], code);
+    }
+    let r = refund(
+        &admin,
+        o,
+        json!({"reason": "部分退款", "original": true, "original_cents": 400}),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let otn = otn_of(&db, o).await;
+    assert_eq!(
+        r.json()["original"],
+        json!({"out_request_no": format!("{otn}R1"), "cents": 400})
+    );
+    assert_eq!(r.json()["refund_external_cents"], 400);
+    assert_eq!(r.json()["effect"]["kind"], "cancel");
+    assert_eq!(credentials(&db, u, node).await, 0);
+    assert_eq!(
+        mock.refunds()[&format!("{otn}R1")],
+        (otn.clone(), "4.00".to_string())
+    );
+    let req = request_of(&db, o).await;
+    assert_eq!(req["state"], "done");
+    assert_eq!(req["attempts"], 0);
+    let (ext, cents): (Option<i64>, Option<i64>) =
+        sqlx::query_as("SELECT refund_external_cents, refund_cents FROM orders WHERE id = $1")
+            .bind(o)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!((ext, cents), (Some(400), Some(400)));
+    let actions: Vec<String> = sqlx::query_scalar(
+        "SELECT action FROM audit_log WHERE target_id = $1 AND action LIKE 'order.refund%' ORDER BY id",
+    )
+    .bind(o.to_string())
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(actions, ["order.refund.request", "order.refund"]);
+    let r = refund(&admin, o, json!({"reason": "again", "original": true})).await;
+    assert_eq!(r.json()["code"], "order_admin.already_refunded");
+    // The admin's order view carries the request.
+    let v = admin.get(&format!("/test/api/v1/orders/{o}")).await.json();
+    assert_eq!(v["order"]["refund_request"]["state"], "done");
+    db.drop().await;
+}
+
+/// A refusal moves nothing (failed, audited; the admin may retry: the same
+/// amount reuses the request number); an unknown outcome stays pending,
+/// blocks other refunds, and the reconcile loop settles it by querying —
+/// never refunding twice.
+#[tokio::test]
+async fn original_route_failure_and_reconciliation() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let admin = admin(&state, &db).await;
+    let (_, plan) = catalog_plan(&db, "p1-fail", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    let c = user_client(&state, db.user().await).await;
+    let o = bought(&db, &c, plan, "month").await;
+    let otn = otn_of(&db, o).await;
+
+    mock.refuse_refunds(Some("ACQ.SELLER_BALANCE_NOT_ENOUGH"));
+    let r = refund(&admin, o, json!({"reason": "r", "original": true})).await;
+    assert_eq!(r.status, StatusCode::BAD_GATEWAY);
+    assert_eq!(r.json()["code"], "order_admin.refund_gateway_failed");
+    let req = request_of(&db, o).await;
+    assert_eq!(req["state"], "failed");
+    assert!(
+        req["last_error"]
+            .as_str()
+            .unwrap()
+            .contains("SELLER_BALANCE")
+    );
+    assert!(!order_status(&db, o).await.0.is_empty());
+    let refunded: bool =
+        sqlx::query_scalar("SELECT refunded_at IS NOT NULL FROM orders WHERE id = $1")
+            .bind(o)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert!(!refunded);
+
+    // The answer is lost: pending; nothing else may refund meanwhile.
+    mock.refuse_refunds(None);
+    mock.lose_refund_answers(true);
+    let r = refund(&admin, o, json!({"reason": "r", "original": true})).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.json());
+    let req = request_of(&db, o).await;
+    assert_eq!(
+        (req["state"].clone(), req["out_request_no"].clone()),
+        (json!("pending"), json!(format!("{otn}R1"))),
+        "same amount: same request number"
+    );
+    assert_eq!(
+        refund(&admin, o, json!({"reason": "r", "to_balance": true}))
+            .await
+            .json()["code"],
+        "order_admin.refund_in_progress"
+    );
+    // Not due yet: the tick leaves it alone.
+    assert_eq!(super::super::refund::refund_tick(&state).await.unwrap(), 0);
+    mock.lose_refund_answers(false);
+    sqlx::query(
+        "UPDATE orders SET refund_request = jsonb_set(refund_request, '{next_at}', \
+         to_jsonb(now() - interval '1 second')) WHERE id = $1",
+    )
+    .bind(o)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let refunds_before = mock.calls("alipay.trade.refund");
+    assert_eq!(super::super::refund::refund_tick(&state).await.unwrap(), 1);
+    assert_eq!(
+        mock.calls("alipay.trade.refund"),
+        refunds_before,
+        "found by the query: no second refund call"
+    );
+    assert_eq!(mock.calls("alipay.trade.fastpay.refund.query"), 1);
+    assert_eq!(request_of(&db, o).await["state"], "done");
+    let (ext,): (Option<i64>,) =
+        sqlx::query_as("SELECT refund_external_cents FROM orders WHERE id = $1")
+            .bind(o)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(ext, Some(1000));
+    assert_eq!(mock.refunds().len(), 1);
+    db.drop().await;
+}
+
+/// The channel's switch: off = no original-route refunds (the other two
+/// ways stay).
+#[tokio::test]
+async fn original_route_switch() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let admin = admin(&state, &db).await;
+    let (_, plan) = catalog_plan(&db, "p1-off", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    let c = user_client(&state, db.user().await).await;
+    let o = bought(&db, &c, plan, "month").await;
+    sqlx::query(
+        "UPDATE payment_methods SET config = config || '{\"refund_original\": false}', \
+         version = version + 1",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    crate::settings::reload(&state).await.unwrap();
+    assert_eq!(preview(&admin, o).await.json()["original_available"], false);
+    let r = refund(&admin, o, json!({"reason": "r", "original": true})).await;
+    assert_eq!(r.json()["code"], "order_admin.refund_original_unavailable");
+    let r = refund(&admin, o, json!({"reason": "r", "external_cents": 1000})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    db.drop().await;
+}

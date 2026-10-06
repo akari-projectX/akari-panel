@@ -71,9 +71,12 @@ pub async fn reconcile_loop(state: AppState) {
     loop {
         tick.tick().await;
         let started = std::time::Instant::now();
-        let res = orders::reconcile_tick(&state)
-            .await
-            .map_err(|e| e.message().to_string());
+        let res = match orders::reconcile_tick(&state).await {
+            // 原路退款: refunds whose outcome is not known yet.
+            Ok(n) => refund::refund_tick(&state).await.map(|m| n + m),
+            Err(e) => Err(e),
+        }
+        .map_err(|e| e.message().to_string());
         state
             .sysstatus()
             .record_result(crate::sysstatus::Job::Reconciliation, started, &res);

@@ -205,7 +205,7 @@ impl Template {
         let t = DateTime::parse_from_rfc3339("2026-10-02T08:30:00Z")
             .ok()?
             .with_timezone(&Utc);
-        let portal = Some("https://panel.example/prefix/app".to_string());
+        let portal = Some("https://panel.example".to_string());
         Some(match kind {
             "register_code" => Template::RegisterCode {
                 code: "123456".into(),
@@ -220,7 +220,7 @@ impl Template {
                 minutes: 10,
             },
             "password_reset" => Template::PasswordReset {
-                link: "https://panel.example/prefix/app/reset#token=example".into(),
+                link: "https://panel.example/reset#token=example".into(),
                 minutes: 30,
             },
             "order_paid" => Template::OrderPaid {

@@ -26,14 +26,31 @@
 //! `GET /orders/{id}/refund-preview` shows the same computation without
 //! changing anything (the console's confirmation dialog).
 //!
+//! Three ways for the gateway amount (支付宝原路退款): ① **original route**
+//! — the panel asks the provider (`alipay.trade.refund`, key mode) to
+//! refund all or part of it (`begin_original` + `settle_original`; the
+//! channel's "allow original-route refunds" switch, default on). The
+//! request number (`out_request_no`, `<out_trade_no>R<n>`) makes it
+//! idempotent; an unknown outcome (network) stays `pending` and the
+//! reconcile loop (`refund_tick`) queries the provider and retries with the
+//! same number until it is confirmed; a refusal is `failed` (nothing
+//! moved; the admin may try again or choose another way). When the
+//! provider confirms, `apply_refund` records it like ③ (the amount as
+//! refunded at the provider) with the subscription effect and the
+//! customer's notice. ② **to the balance**. ③ **record only** — refunded
+//! by hand in the provider's console, the real amount entered.
+//!
 //! Lock order (as `orders::apply_mark_paid`): `entitle::lock` → the order
 //! row → the subscription's nodes and user rows → commissions → balances.
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::PgConnection;
 use uuid::Uuid;
+
+use super::provider::{CallError, RefundReq, RefundState};
+use crate::state::AppState;
 
 use crate::audit::Actor;
 use crate::auth::{ApiError, bad_request, conflict};
@@ -241,7 +258,8 @@ pub async fn effect(conn: &mut PgConnection, order_id: Uuid) -> Result<Effect, A
     }
 }
 
-/// (status, refunded_at, user_id, amount, balance part, balance_state).
+/// (status, refunded_at, user_id, amount, balance part, balance_state,
+/// an original-route refund in progress).
 type RefundRow = (
     String,
     Option<DateTime<Utc>>,
@@ -249,6 +267,7 @@ type RefundRow = (
     i64,
     i64,
     String,
+    bool,
 );
 
 async fn refundable(
@@ -257,7 +276,8 @@ async fn refundable(
     lock: bool,
 ) -> Result<RefundRow, ApiError> {
     let row: Option<RefundRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT status, refunded_at, user_id, amount_cents, balance_cents, balance_state \
+        "SELECT status, refunded_at, user_id, amount_cents, balance_cents, balance_state, \
+         COALESCE(refund_request->>'state' = 'pending', false) \
          FROM orders WHERE id = $1{}",
         if lock { " FOR UPDATE" } else { "" }
     )))
@@ -279,6 +299,12 @@ async fn refundable(
             "the order was already refunded"
         ));
     }
+    if row.6 {
+        return Err(conflict!(
+            "order_admin.refund_in_progress",
+            "a refund through the payment provider is in progress"
+        ));
+    }
     Ok(row)
 }
 
@@ -286,7 +312,7 @@ async fn refundable(
 /// effect a refund would have now (409 like the refund when the order is
 /// not refundable).
 pub async fn preview(conn: &mut PgConnection, order_id: Uuid) -> Result<Value, ApiError> {
-    let (_, _, _, amount, balance, balance_state) = refundable(conn, order_id, false).await?;
+    let (_, _, _, amount, balance, balance_state, _) = refundable(conn, order_id, false).await?;
     let effect = effect(conn, order_id).await?;
     let commission = super::commission::refund_preview(conn, order_id).await?;
     let coupon: Option<String> = sqlx::query_scalar(
@@ -357,7 +383,7 @@ pub async fn apply_refund(
     req: &Refund<'_>,
 ) -> Result<Value, ApiError> {
     crate::entitle::lock(conn).await?;
-    let (_, _, user, amount, balance, balance_state) = refundable(conn, order_id, true).await?;
+    let (_, _, user, amount, balance, balance_state, _) = refundable(conn, order_id, true).await?;
     let external = req.external(amount)?;
     let effect = if req.keep_plan {
         Effect::none(Unchanged::KeepPlan)
@@ -435,4 +461,332 @@ pub async fn apply_refund(
     // failure never rolls the refund back).
     crate::mail::notices::order_refunded(conn, order_id, req.portal).await?;
     Ok(after)
+}
+
+// ---------------------------------------------------------------------------
+// ① Original route (the provider refunds)
+// ---------------------------------------------------------------------------
+
+/// `orders.refund_request` (migration 1018).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OriginalRequest {
+    pub out_request_no: String,
+    pub cents: i64,
+    /// pending | done | failed.
+    pub state: String,
+    pub attempts: i32,
+    pub last_error: Option<String>,
+    pub reason: String,
+    pub keep_plan: bool,
+    pub actor_id: Option<Uuid>,
+    pub actor_label: String,
+    pub requested_at: DateTime<Utc>,
+    /// The next reconcile attempt (pending).
+    pub next_at: Option<DateTime<Utc>>,
+    pub done_at: Option<DateTime<Utc>>,
+}
+
+/// After this many unanswered attempts the reconcile loop slows to hourly.
+const BACKOFF_CAP_SECS: i64 = 3600;
+
+fn backoff(attempts: i32) -> chrono::Duration {
+    let secs = 60i64.saturating_mul(1i64 << attempts.clamp(0, 6));
+    chrono::Duration::seconds(secs.min(BACKOFF_CAP_SECS))
+}
+
+/// What the admin asked for.
+#[derive(Clone, Copy, Debug)]
+pub struct Original<'a> {
+    pub reason: &'a str,
+    /// Of the gateway amount (None = all of it); partial refunds allowed.
+    pub cents: Option<i64>,
+    pub keep_plan: bool,
+}
+
+/// Start a refund through the order's provider (in the caller's short
+/// transaction): the order must be refundable, its method must allow
+/// original-route refunds, the amount 1..=the gateway amount. Records the
+/// request (`pending`, a new request number unless a failed one is
+/// repeated with the same amount) and audits `order.refund.request`.
+pub async fn begin_original(
+    conn: &mut PgConnection,
+    state: &AppState,
+    actor: &Actor,
+    order_id: Uuid,
+    req: &Original<'_>,
+) -> Result<OriginalRequest, ApiError> {
+    let (_, _, _, amount, _, _, _) = refundable(conn, order_id, true).await?;
+    let (otn, method, prev): (String, Option<Uuid>, Option<Value>) = sqlx::query_as(
+        "SELECT out_trade_no, payment_method_id, refund_request FROM orders WHERE id = $1",
+    )
+    .bind(order_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    let provider = method.and_then(|m| state.payments().provider(m));
+    if !provider.as_ref().is_some_and(|p| p.refunds()) {
+        return Err(conflict!(
+            "order_admin.refund_original_unavailable",
+            "this order's payment method does not allow original-route refunds"
+        ));
+    }
+    let cents = req.cents.unwrap_or(amount);
+    if amount <= 0 || !(1..=amount).contains(&cents) {
+        return Err(bad_request!(
+            "order_admin.refund_original_range",
+            "the original-route refund must be 1..={amount_cents} cents",
+            amount_cents = amount
+        ));
+    }
+    let prev: Option<OriginalRequest> = prev.and_then(|v| serde_json::from_value(v).ok());
+    // A failed request moved nothing: the same amount retries the same
+    // number (idempotent), another amount gets the next number.
+    let out_request_no = match &prev {
+        Some(p) if p.cents == cents => p.out_request_no.clone(),
+        Some(p) => {
+            let n: u32 = p
+                .out_request_no
+                .rsplit_once('R')
+                .and_then(|(_, n)| n.parse().ok())
+                .unwrap_or(1);
+            format!("{otn}R{}", n + 1)
+        }
+        None => format!("{otn}R1"),
+    };
+    let now: DateTime<Utc> = sqlx::query_scalar("SELECT now()")
+        .fetch_one(&mut *conn)
+        .await?;
+    let r = OriginalRequest {
+        out_request_no,
+        cents,
+        state: "pending".into(),
+        attempts: 0,
+        last_error: None,
+        reason: req.reason.to_string(),
+        keep_plan: req.keep_plan,
+        actor_id: actor.id,
+        actor_label: actor.label.clone(),
+        requested_at: now,
+        next_at: Some(now + backoff(0)),
+        done_at: None,
+    };
+    store(conn, order_id, &r).await?;
+    crate::audit::record(
+        conn,
+        actor,
+        "order.refund.request",
+        "order",
+        Some(order_id.to_string()),
+        None,
+        Some(json!({
+            "out_request_no": r.out_request_no,
+            "cents": r.cents,
+            "keep_plan": r.keep_plan,
+            "reason": r.reason,
+        })),
+    )
+    .await?;
+    Ok(r)
+}
+
+async fn store(conn: &mut PgConnection, order_id: Uuid, r: &OriginalRequest) -> sqlx::Result<()> {
+    sqlx::query("UPDATE orders SET refund_request = $2 WHERE id = $1")
+        .bind(order_id)
+        .bind(serde_json::to_value(r).unwrap_or(Value::Null))
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// Where an original-route refund stands after `settle_original`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Settled {
+    /// Confirmed and recorded (the `apply_refund` answer).
+    Done(Value),
+    /// The provider refused (nothing moved): its message.
+    Failed(String),
+    /// No answer yet: the reconcile loop keeps asking.
+    Pending,
+    /// Not pending any more (settled elsewhere meanwhile).
+    Gone,
+}
+
+/// Ask the provider about the pending refund of `order_id` and settle it:
+/// a retry (`attempts > 0`) queries first, then (not found) refunds again
+/// with the same request number; a first attempt refunds. Confirmed →
+/// `apply_refund` (+ state done) in one transaction; refused → failed
+/// (audited `order.refund.failed`); no answer → pending with a backoff.
+pub async fn settle_original(state: &AppState, order_id: Uuid) -> Result<Settled, ApiError> {
+    let row: Option<(String, Option<Uuid>, Option<Value>)> = sqlx::query_as(
+        "SELECT out_trade_no, payment_method_id, refund_request FROM orders WHERE id = $1",
+    )
+    .bind(order_id)
+    .fetch_optional(state.pg())
+    .await?;
+    let Some((otn, method, Some(raw))) = row else {
+        return Ok(Settled::Gone);
+    };
+    let Ok(r) = serde_json::from_value::<OriginalRequest>(raw) else {
+        return Ok(Settled::Gone);
+    };
+    if r.state != "pending" {
+        return Ok(Settled::Gone);
+    }
+    let provider = method.and_then(|m| state.payments().provider(m));
+    let outcome: Result<RefundState, CallError> = match &provider {
+        None => Err(CallError::Transport("payment method unavailable".into())),
+        Some(p) => {
+            let asked = if r.attempts > 0 {
+                p.refund_query(&otn, &r.out_request_no).await
+            } else {
+                Ok(RefundState::NotFound)
+            };
+            match asked {
+                Ok(RefundState::NotFound) => {
+                    p.refund(RefundReq {
+                        out_trade_no: &otn,
+                        out_request_no: &r.out_request_no,
+                        cents: r.cents,
+                        reason: &r.reason,
+                    })
+                    .await
+                }
+                other => other,
+            }
+        }
+    };
+    let actor = Actor {
+        id: r.actor_id,
+        label: r.actor_label.clone(),
+        ip: None,
+    };
+    let mut tx = state.pg().begin().await?;
+    // Still ours? (Another instance may have settled it meanwhile.)
+    let cur: Option<Value> =
+        sqlx::query_scalar("SELECT refund_request FROM orders WHERE id = $1 FOR UPDATE")
+            .bind(order_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    let still = cur
+        .and_then(|v| serde_json::from_value::<OriginalRequest>(v).ok())
+        .is_some_and(|c| c.state == "pending" && c.out_request_no == r.out_request_no);
+    if !still {
+        return Ok(Settled::Gone);
+    }
+    let mut next = r.clone();
+    let settled = match outcome {
+        Ok(RefundState::Refunded { cents }) if cents.is_none_or(|c| c >= r.cents) => {
+            // Recorded like ③: the amount was refunded at the provider.
+            let portal = crate::mail::portal_url(state);
+            // The row lock above is the order's: `apply_refund` takes the
+            // entitlement lock first, so release and redo in order.
+            drop(tx);
+            let mut tx = state.pg().begin().await?;
+            crate::entitle::lock(&mut tx).await?;
+            let cur: Option<Value> =
+                sqlx::query_scalar("SELECT refund_request FROM orders WHERE id = $1 FOR UPDATE")
+                    .bind(order_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            if !cur
+                .and_then(|v| serde_json::from_value::<OriginalRequest>(v).ok())
+                .is_some_and(|c| c.state == "pending" && c.out_request_no == r.out_request_no)
+            {
+                return Ok(Settled::Gone);
+            }
+            // Free the order for apply_refund (it refuses a pending one).
+            next.state = "done".into();
+            next.last_error = None;
+            next.next_at = None;
+            next.done_at = Some(Utc::now());
+            store(&mut tx, order_id, &next).await?;
+            let result = apply_refund(
+                &mut tx,
+                &actor,
+                order_id,
+                &Refund {
+                    reason: &r.reason,
+                    to_balance: false,
+                    external_cents: Some(r.cents),
+                    keep_plan: r.keep_plan,
+                    portal: portal.as_deref(),
+                },
+            )
+            .await?;
+            tx.commit().await?;
+            let mut result = result;
+            result["original"] = json!({
+                "out_request_no": r.out_request_no,
+                "cents": r.cents,
+            });
+            return Ok(Settled::Done(result));
+        }
+        Ok(RefundState::Refunded { .. }) => {
+            next.attempts += 1;
+            next.last_error = Some("the provider confirmed a smaller amount".into());
+            next.next_at = Some(Utc::now() + backoff(next.attempts));
+            Settled::Pending
+        }
+        Ok(RefundState::NotFound) => {
+            next.attempts += 1;
+            next.last_error = Some("the provider does not know the refund yet".into());
+            next.next_at = Some(Utc::now() + backoff(next.attempts));
+            Settled::Pending
+        }
+        Err(CallError::Business {
+            sub_code, sub_msg, ..
+        }) => {
+            next.state = "failed".into();
+            next.attempts += 1;
+            let detail = format!("{sub_code}: {sub_msg}");
+            next.last_error = Some(detail.clone());
+            next.next_at = None;
+            crate::audit::record(
+                &mut tx,
+                &actor,
+                "order.refund.failed",
+                "order",
+                Some(order_id.to_string()),
+                None,
+                Some(json!({ "out_request_no": r.out_request_no, "error": detail })),
+            )
+            .await?;
+            Settled::Failed(detail)
+        }
+        Err(e) => {
+            next.attempts += 1;
+            next.last_error = Some(e.to_string());
+            next.next_at = Some(Utc::now() + backoff(next.attempts));
+            Settled::Pending
+        }
+    };
+    store(&mut tx, order_id, &next).await?;
+    tx.commit().await?;
+    Ok(settled)
+}
+
+/// Reconcile: settle the pending original-route refunds that are due
+/// (each claimed by pushing `next_at` out first, so instances do not race
+/// on one). Returns how many were looked at.
+pub async fn refund_tick(state: &AppState) -> Result<usize, ApiError> {
+    let due: Vec<Uuid> = sqlx::query_scalar(
+        "UPDATE orders o SET refund_request = jsonb_set(o.refund_request, '{next_at}', \
+             to_jsonb(now() + interval '5 minutes')) \
+         FROM (SELECT id FROM orders \
+               WHERE refund_request->>'state' = 'pending' \
+               AND (refund_request->>'next_at')::timestamptz <= now() \
+               ORDER BY id LIMIT 20 FOR UPDATE SKIP LOCKED) d \
+         WHERE o.id = d.id RETURNING o.id",
+    )
+    .fetch_all(state.pg())
+    .await?;
+    for id in &due {
+        match settle_original(state, *id).await {
+            Ok(Settled::Failed(e)) => {
+                tracing::warn!(order = %id, error = e, "original-route refund refused")
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(order = %id, error = %e.message(), "original-route refund"),
+        }
+    }
+    Ok(due.len())
 }

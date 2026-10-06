@@ -232,7 +232,12 @@ order_admin.plan_gone
 order_admin.refund_external_range
 order_admin.refund_external_required
 order_admin.refund_external_with_balance
+order_admin.refund_gateway_failed
+order_admin.refund_in_progress
 order_admin.refund_not_paid
+order_admin.refund_original_conflict
+order_admin.refund_original_range
+order_admin.refund_original_unavailable
 order_admin.refund_user_gone
 order_admin.refunded
 order_admin.superseded
@@ -257,6 +262,7 @@ payments.public_key_invalid
 payments.public_key_is_app_key
 payments.public_key_is_private
 payments.public_key_too_short
+payments.refund_original_invalid
 payments.seller_id_invalid
 payments.sort_range
 payments.stored_key_unreadable

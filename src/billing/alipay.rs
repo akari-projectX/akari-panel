@@ -26,6 +26,8 @@ use ring::rand::SystemRandom;
 use ring::signature::{self, RsaKeyPair};
 use serde_json::Value;
 use serde_json::value::RawValue;
+
+use super::provider::{RefundReq, RefundState};
 use sha2::Digest as _;
 
 /// The Alipay "success" result code.
@@ -478,6 +480,8 @@ pub struct Params {
     pub seller_id: Option<String>,
     pub gateway_url: String,
     pub order_timeout_minutes: u32,
+    /// The channel allows refunds through Alipay (original route).
+    pub refund_original: bool,
 }
 
 pub struct Alipay {
@@ -485,6 +489,7 @@ pub struct Alipay {
     pub seller_id: Option<String>,
     gateway: String,
     pub order_timeout_minutes: u32,
+    pub refund_original: bool,
     keys: Keys,
 }
 
@@ -503,6 +508,7 @@ impl Alipay {
             seller_id: p.seller_id.clone().filter(|s| !s.is_empty()),
             gateway: p.gateway_url.clone(),
             order_timeout_minutes: p.order_timeout_minutes,
+            refund_original: p.refund_original,
             keys,
         }
     }
@@ -657,6 +663,64 @@ impl Alipay {
             }
             Err(CallError::Business { sub_code, .. }) if sub_code == "ACQ.TRADE_NOT_EXIST" => {
                 Ok(Query::NotExist)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// alipay.trade.refund (key mode): refund `cents` of the trade through
+    /// the original payment route. Idempotent per `out_request_no`: a
+    /// retry of a refund that went through answers success again
+    /// (`fund_change` N).
+    pub async fn refund(&self, req: &RefundReq<'_>) -> Result<RefundState, CallError> {
+        let biz = serde_json::json!({
+            "out_trade_no": req.out_trade_no,
+            "out_request_no": req.out_request_no,
+            "refund_amount": format_cents(req.cents),
+            "refund_reason": req.reason.chars().take(100).collect::<String>(),
+        });
+        let r = self.call("alipay.trade.refund", biz, None).await?;
+        if r.get("out_trade_no").and_then(Value::as_str) != Some(req.out_trade_no) {
+            return Err(CallError::Malformed("refund answered another order"));
+        }
+        Ok(RefundState::Refunded {
+            cents: r
+                .get("refund_fee")
+                .and_then(Value::as_str)
+                .and_then(parse_amount),
+        })
+    }
+
+    /// alipay.trade.fastpay.refund.query: the refund with this request
+    /// number, if Alipay has it.
+    pub async fn refund_query(
+        &self,
+        out_trade_no: &str,
+        out_request_no: &str,
+    ) -> Result<RefundState, CallError> {
+        let biz = serde_json::json!({
+            "out_trade_no": out_trade_no,
+            "out_request_no": out_request_no,
+        });
+        match self
+            .call("alipay.trade.fastpay.refund.query", biz, None)
+            .await
+        {
+            Ok(r) => {
+                let amount = r
+                    .get("refund_amount")
+                    .and_then(Value::as_str)
+                    .and_then(parse_amount);
+                let status = r.get("refund_status").and_then(Value::as_str);
+                Ok(match (amount, status) {
+                    (Some(c), None | Some("REFUND_SUCCESS")) => {
+                        RefundState::Refunded { cents: Some(c) }
+                    }
+                    _ => RefundState::NotFound,
+                })
+            }
+            Err(CallError::Business { sub_code, .. }) if sub_code == "ACQ.TRADE_NOT_EXIST" => {
+                Ok(RefundState::NotFound)
             }
             Err(e) => Err(e),
         }
@@ -907,6 +971,22 @@ impl super::provider::PaymentProvider for Alipay {
     fn close<'a>(&'a self, otn: &'a str) -> super::provider::BoxFut<'a, Result<Close, CallError>> {
         Box::pin(Alipay::close(self, otn))
     }
+    fn refunds(&self) -> bool {
+        self.refund_original
+    }
+    fn refund<'a>(
+        &'a self,
+        req: RefundReq<'a>,
+    ) -> super::provider::BoxFut<'a, Result<RefundState, CallError>> {
+        Box::pin(async move { Alipay::refund(self, &req).await })
+    }
+    fn refund_query<'a>(
+        &'a self,
+        otn: &'a str,
+        out_request_no: &'a str,
+    ) -> super::provider::BoxFut<'a, Result<RefundState, CallError>> {
+        Box::pin(Alipay::refund_query(self, otn, out_request_no))
+    }
     fn verify_notify(&self, body: &[u8]) -> super::provider::NotifyCheck {
         self.check_notify(body)
     }
@@ -1042,7 +1122,9 @@ impl super::provider::ProviderKind for AlipayKind {
             {"name": "app_private_key", "label": "应用私钥", "type": "key", "secret": true, "required": true},
             {"name": "alipay_public_key", "label": "支付宝公钥", "type": "key", "required": true},
             {"name": "order_timeout_minutes", "label": "订单有效期（分钟，5–120）", "type": "number",
-             "required": true, "default": 15}
+             "required": true, "default": 15},
+            {"name": "refund_original", "label": "允许原路退款（后台退款时直接退回支付宝）", "type": "bool",
+             "default": true}
         ])
     }
 
@@ -1067,6 +1149,7 @@ impl super::provider::ProviderKind for AlipayKind {
             "app_private_key",
             "alipay_public_key",
             "order_timeout_minutes",
+            "refund_original",
         ];
         if let Some(k) = obj.keys().find(|k| !KNOWN.contains(&k.as_str())) {
             return Err(bad_request!(
@@ -1123,6 +1206,20 @@ impl super::provider::ProviderKind for AlipayKind {
                 "order_timeout_minutes must be 5-120"
             ));
         }
+        // Absent / null = unchanged (a new method: on).
+        let refund_original = match input.get("refund_original") {
+            None | Some(Value::Null) => prev
+                .and_then(|(c, _)| c.get("refund_original"))
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+            Some(Value::Bool(b)) => *b,
+            Some(_) => {
+                return Err(bad_request!(
+                    "payments.refund_original_invalid",
+                    "refund_original must be true or false"
+                ));
+            }
+        };
         let too_long = |t: &str| t.len() > MAX_KEY_TEXT;
         let new_app = match text_field(input, "app_private_key") {
             None => None,
@@ -1191,6 +1288,7 @@ impl super::provider::ProviderKind for AlipayKind {
             "app_id": app_id,
             "seller_id": seller_id,
             "order_timeout_minutes": timeout,
+            "refund_original": refund_original,
             "alipay_public_key": public_after,
             "alipay_public_key_prev": prev_key,
             "alipay_public_key_prev_until": prev_until,
@@ -1243,6 +1341,10 @@ impl super::provider::ProviderKind for AlipayKind {
                 .and_then(Value::as_u64)
                 .unwrap_or(15)
                 .clamp(5, 120) as u32,
+            refund_original: config
+                .get("refund_original")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
         };
         Ok(std::sync::Arc::new(Alipay::new(
             &params,
@@ -1263,6 +1365,12 @@ impl super::provider::ProviderKind for AlipayKind {
         ] {
             v[k] = config.get(k).cloned().unwrap_or(Value::Null);
         }
+        v["refund_original"] = Value::Bool(
+            config
+                .get("refund_original")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+        );
         let app = secrets.and_then(app_key_of);
         v["app_private_key_set"] =
             Value::Bool(secrets.is_some_and(|s| s.get("app_private_key").is_some()));
@@ -1304,6 +1412,7 @@ pub(crate) mod tests {
             seller_id: Some("2088000000000001".into()),
             gateway_url: gateway.into(),
             order_timeout_minutes: 15,
+            refund_original: true,
         }
     }
 
@@ -1746,6 +1855,7 @@ pub(crate) mod live {
             seller_id: Some(env_value(&env, "ALIPAY_SANDBOX_SELLER_ID")),
             gateway_url: GATEWAY_SANDBOX.into(),
             order_timeout_minutes: 15,
+            refund_original: true,
         };
         let a = Alipay::new(
             &params,
@@ -1753,7 +1863,7 @@ pub(crate) mod live {
         );
         let t = a.test_connection().await;
         println!("test connection: {} {}", t.result, t.message);
-        let notify = "http://myapp.test:8080/PREFIX/pay/alipay/notify";
+        let notify = "http://myapp.test:8080/pay/alipay/notify";
         let otn = format!("AKLIVE{}", hex::encode(rand::random::<[u8; 8]>()));
         let qr = a.precreate(notify, &otn, 1, "Akari sandbox check").await;
         println!(

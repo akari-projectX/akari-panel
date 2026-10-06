@@ -68,6 +68,27 @@ pub enum Query {
     },
 }
 
+/// A refund through the provider (the original payment route). The
+/// request number makes it idempotent: the same number never refunds twice
+/// and a retry of a refund that went through answers success again.
+#[derive(Debug, Clone)]
+pub struct RefundReq<'a> {
+    pub out_trade_no: &'a str,
+    pub out_request_no: &'a str,
+    pub cents: i64,
+    pub reason: &'a str,
+}
+
+/// What a refund (or a refund query) found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefundState {
+    /// Refunded (this request number), integer cents if the provider
+    /// says how much.
+    Refunded { cents: Option<i64> },
+    /// The provider knows no refund with this request number.
+    NotFound,
+}
+
 /// What a close found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Close {
@@ -150,13 +171,21 @@ pub trait PaymentProvider: Send + Sync + std::fmt::Debug {
     fn verify_notify(&self, body: &[u8]) -> NotifyCheck;
     /// The body the provider expects when a notify was accepted.
     fn notify_ack(&self) -> &'static str;
-    /// Refund at the provider (optional; refunds are recorded by the
-    /// panel either way, `refund::apply_refund`).
-    fn refund<'a>(
+    /// The method allows refunds through the provider (the channel's
+    /// "allow original-route refunds" switch).
+    fn refunds(&self) -> bool {
+        false
+    }
+    /// Refund through the provider (idempotent per `out_request_no`).
+    fn refund<'a>(&'a self, _req: RefundReq<'a>) -> BoxFut<'a, Result<RefundState, CallError>> {
+        Box::pin(async { Err(CallError::Unsupported) })
+    }
+    /// Look a refund up by its request number (reconciliation).
+    fn refund_query<'a>(
         &'a self,
         _out_trade_no: &'a str,
-        _cents: i64,
-    ) -> BoxFut<'a, Result<(), CallError>> {
+        _out_request_no: &'a str,
+    ) -> BoxFut<'a, Result<RefundState, CallError>> {
         Box::pin(async { Err(CallError::Unsupported) })
     }
     /// 测试连接: one harmless authenticated call.
@@ -317,8 +346,19 @@ pub mod mock {
         assert_eq!(c, Checkout::Redirect("https://pay.example/AK1".into()));
         assert_eq!(m.query("AK1").await.unwrap(), Query::NotExist);
         assert_eq!(m.close("AK1").await.unwrap(), Close::NotExist);
+        assert!(!m.refunds());
         assert!(matches!(
-            m.refund("AK1", 1).await,
+            m.refund(RefundReq {
+                out_trade_no: "AK1",
+                out_request_no: "R1",
+                cents: 1,
+                reason: "r",
+            })
+            .await,
+            Err(CallError::Unsupported)
+        ));
+        assert!(matches!(
+            m.refund_query("AK1", "R1").await,
             Err(CallError::Unsupported)
         ));
         assert!(matches!(

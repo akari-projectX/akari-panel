@@ -45,6 +45,12 @@ struct MockInner {
     down: bool,
     /// Report this total instead of the order's (tampering).
     total_override: Option<String>,
+    /// 原路退款: refunds by out_request_no → (out_trade_no, amount).
+    refunds: HashMap<String, (String, String)>,
+    /// Refuse every refund with this sub_code.
+    refund_refuse: Option<String>,
+    /// Refund, but answer HTTP 503 (an unknown outcome for the panel).
+    refund_lost_answer: bool,
 }
 
 #[derive(Clone)]
@@ -91,6 +97,15 @@ impl Mock {
     }
     fn set_down(&self, down: bool) {
         self.inner.lock().unwrap().down = down;
+    }
+    fn refunds(&self) -> HashMap<String, (String, String)> {
+        self.inner.lock().unwrap().refunds.clone()
+    }
+    fn refuse_refunds(&self, sub_code: Option<&str>) {
+        self.inner.lock().unwrap().refund_refuse = sub_code.map(str::to_string);
+    }
+    fn lose_refund_answers(&self, lost: bool) {
+        self.inner.lock().unwrap().refund_lost_answer = lost;
     }
 }
 
@@ -154,6 +169,35 @@ async fn mock_gateway(
             }
             _ => not_exist,
         },
+        "alipay.trade.refund" => {
+            let no = biz["out_request_no"].as_str().unwrap().to_string();
+            let amount = biz["refund_amount"].as_str().unwrap().to_string();
+            match (g.trades.get(&otn).cloned(), g.refund_refuse.clone()) {
+                (None, _) => not_exist,
+                (Some(_), Some(code)) => {
+                    json!({"code":"40004","msg":"Business Failed","sub_code": code,"sub_msg":"退款失败"})
+                }
+                (Some(_), None) => {
+                    let fresh = !g.refunds.contains_key(&no);
+                    g.refunds.entry(no).or_insert((otn.clone(), amount.clone()));
+                    if g.refund_lost_answer {
+                        return (StatusCode::SERVICE_UNAVAILABLE, "lost").into_response();
+                    }
+                    json!({"code":"10000","msg":"Success","out_trade_no": otn,
+                           "trade_no": format!("2026{otn}"), "refund_fee": amount,
+                           "fund_change": if fresh { "Y" } else { "N" }})
+                }
+            }
+        }
+        "alipay.trade.fastpay.refund.query" => {
+            let no = biz["out_request_no"].as_str().unwrap();
+            match g.refunds.get(no) {
+                Some((o, amount)) if *o == otn => json!({"code":"10000","msg":"Success",
+                    "out_trade_no": otn, "out_request_no": no, "refund_amount": amount,
+                    "refund_status": "REFUND_SUCCESS"}),
+                _ => json!({"code":"10000","msg":"Success","out_trade_no": otn}),
+            }
+        }
         _ => json!({"code":"40004","sub_code":"isv.invalid-method"}),
     };
     signed_response(&method, &obj).into_response()
