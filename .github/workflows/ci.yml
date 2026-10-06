@@ -371,15 +371,41 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: shellcheck --version && make shellcheck
 
+  image-cache:
+    # Main runs only (push, nightly): refresh the BuildKit layer cache of
+    # the Dockerfile up to the cargo-chef `deps` stage (toolchain image,
+    # cargo-chef, compiled dependencies with the CI profile), which `build`
+    # reads. Never the crate's own target/: only the dependency layer. Runs
+    # beside `build` so writing the cache never delays the checks; when the
+    # dependencies are unchanged every layer is already cached.
+    name: image cache (main)
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: deps
+          platforms: linux/amd64
+          build-args: |
+            CARGO_PROFILE=ci
+          cache-from: type=gha,scope=panel-image
+          cache-to: type=gha,mode=max,scope=panel-image
+          outputs: type=cacheonly
+          provenance: false
+
   build:
     # One build of the static musl binary and the images per run, shared by
     # the docker check and the installer jobs (artifacts). Made like a
     # release (Dockerfile `artifact` -> `prebuilt`) but with the CI cargo
     # profile (Cargo.toml [profile.ci]; release.yml ships `release`),
     # versioned <Cargo version>-ci.<run> so that the installer sees an
-    # upgrade from the latest published release. Dependencies are compiled
-    # in a cargo-chef layer kept in the GitHub Actions cache (BuildKit
-    # `type=gha`; written by main runs only, read by every run).
+    # upgrade from the latest published release. Dependencies come from the
+    # Dockerfile's cargo-chef `deps` stage in the GitHub Actions cache
+    # (BuildKit `type=gha`, read-only here; written by `image-cache`).
     name: build (static binary + images)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.installer != 'false' || needs.changes.outputs.docker != 'false') }}
@@ -389,7 +415,6 @@ jobs:
       tag: ${{ steps.v.outputs.tag }}
     env:
       CACHE_FROM: type=gha,scope=panel-image
-      CACHE_TO: type=gha,mode=max,scope=panel-image # TEMP: measure warm cache on the PR
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: v
@@ -420,7 +445,6 @@ jobs:
             CARGO_PROFILE=ci
             AKARI_GIT_SHA=${{ steps.v.outputs.sha }}
           cache-from: ${{ env.CACHE_FROM }}
-          cache-to: ${{ env.CACHE_TO }}
           outputs: type=local,dest=out
           provenance: false
       - run: |

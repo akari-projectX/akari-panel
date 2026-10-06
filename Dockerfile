@@ -6,10 +6,10 @@
 #   planner    `cargo chef prepare`: the dependency recipe (manifests and
 #              lockfile only; the crate's own version is masked, so CI's
 #              version bump does not invalidate it)
-#   builder    `cargo chef cook` compiles the dependencies in their own
-#              layer (cached by BuildKit, e.g. CI's `type=gha` layer cache:
-#              unchanged deps are not rebuilt), then the
-#              static musl binary (rust:alpine; no system C library
+#   deps       `cargo chef cook`: the dependencies compiled in their own
+#              layer (CI keeps this stage in its BuildKit `type=gha` cache:
+#              unchanged deps are not rebuilt)
+#   builder    the static musl binary (rust:alpine; no system C library
 #              dependency — the vendored OpenSSL of the passkey verifier is
 #              compiled in — so the result runs on any Linux kernel)
 #   artifact   FROM scratch holding only the binary: the release workflow
@@ -58,7 +58,7 @@ COPY Cargo.toml Cargo.lock build.rs ./
 COPY src src
 RUN cargo chef prepare --recipe-path recipe.json
 
-FROM chef AS builder
+FROM chef AS deps
 ARG CARGO_PROFILE=release
 ARG SOURCE_DATE_EPOCH=0
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
@@ -68,7 +68,9 @@ ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     RUSTFLAGS="--remap-path-prefix=/src=/akari --remap-path-prefix=/usr/local/cargo=/cargo"
 COPY --from=planner /src/recipe.json recipe.json
 RUN cargo chef cook --profile "$CARGO_PROFILE" --locked --recipe-path recipe.json
-# Per-commit inputs only after the dependency layer.
+
+FROM deps AS builder
+ARG CARGO_PROFILE=release
 ARG AKARI_GIT_SHA=unknown
 ENV AKARI_GIT_SHA=${AKARI_GIT_SHA}
 COPY Cargo.toml Cargo.lock build.rs ./
