@@ -23,6 +23,8 @@ import {
 test.describe.configure({ mode: "serial" });
 
 async function setSwitch(s: Locator, on: boolean) {
+  // A switch that saves at once is disabled while it saves: wait it out.
+  await expect(s).toBeEnabled();
   if ((await s.getAttribute("aria-checked")) !== String(on)) await s.click();
   await expect(s).toHaveAttribute("aria-checked", String(on));
 }
@@ -142,7 +144,9 @@ test("SET-06 SET-07 SET-08 SET-09: console address and prefix rotation, the IP a
   const was = (await prompt.getAttribute("aria-checked")) === "true";
   await prompt.click();
   await toast(page, "已保存");
+  await expect(prompt).toHaveAttribute("aria-checked", String(!was));
   await setSwitch(prompt, was);
+  await expect(prompt).toBeEnabled();
   await expect(page.getByRole("switch", { name: "管理员仅允许通行密钥登录" })).toBeVisible();
   await expect(page.getByRole("switch", { name: "用户仅允许通行密钥登录" })).toBeVisible();
   // SET-09: retention and keys (the official key is listed read-only).
