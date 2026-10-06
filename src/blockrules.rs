@@ -14,7 +14,7 @@
 //!   `apply_set_node`, audit `node.block_rules.set`): never bumps the node's
 //!   versions — no Snapshot, no xray rebuild. The 1060 trigger wakes the
 //!   node's sessions instead.
-//! - **Compiling** ([`node_policy`] → `pb::BlockPolicy`): done here, once
+//! - **Compiling** ([`server_policy`] → `pb::BlockPolicy`): done here, once
 //!   per send; the agent only installs the result into xray routing.
 //!   Sessions of agents with the `block-rules` capability send it after the
 //!   Hello and whenever it differs from the one last sent on the stream
@@ -332,11 +332,12 @@ async fn enabled_rules(conn: &mut PgConnection) -> sqlx::Result<Vec<BlockRule>> 
 }
 
 /// The policy a server's agent should run (None = the server is gone).
-/// It lists the inbound of every node with the switch on that the agent
-/// serves — enabled, with an inbound, its direct entrance enabled (W28-a,
-/// the same conditions as `grpc`'s state) — tagged as the panel names that
-/// entrance's inbound (`entrances::inbound_tag`). A server being deleted
-/// (or not serving, D5) gets the empty policy.
+/// It lists every inbound the agent serves (`grpc::SERVED_ENTRANCES`: each
+/// enabled entrance, direct and relay, of an enabled node with an inbound)
+/// whose node has the switch on, tagged as the snapshot names it
+/// (`entrances::inbound_tag`) — a relay entrance is audited exactly like
+/// the direct one. A server being deleted (or not serving, D5) gets the
+/// empty policy.
 pub async fn server_policy(pg: &sqlx::PgPool, server: Uuid) -> sqlx::Result<Option<BlockPolicy>> {
     let mut tx = pg.begin().await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
@@ -353,12 +354,10 @@ pub async fn server_policy(pg: &sqlx::PgPool, server: Uuid) -> sqlx::Result<Opti
         return Ok(None);
     };
     let tags: Vec<String> = if serves {
-        sqlx::query_scalar::<_, i32>(
-            "SELECT e.wire_no FROM nodes n \
-             JOIN entrances e ON e.node_id = n.id AND e.kind = 'direct' AND e.enabled \
-             WHERE n.server_id = $1 AND n.block_rules_enabled AND n.enabled \
-             AND n.inbound IS NOT NULL ORDER BY e.wire_no",
-        )
+        sqlx::query_scalar::<_, i32>(sqlx::AssertSqlSafe(format!(
+            "SELECT e.wire_no FROM {} AND n.block_rules_enabled ORDER BY e.wire_no",
+            crate::grpc::SERVED_ENTRANCES
+        )))
         .bind(server)
         .fetch_all(&mut *tx)
         .await?

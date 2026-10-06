@@ -508,6 +508,72 @@ async fn notifications_and_node_switch() {
     db.drop().await;
 }
 
+/// Regression (test deployment): a relay entrance's derived inbound is
+/// audited like the direct one — with the direct entrance disabled the
+/// policy still covers the relay — and the policy's tags are exactly the
+/// tags of the inbounds the snapshot serves.
+#[tokio::test]
+async fn policy_covers_relay_entrances() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let node = db.node().await;
+    let relay = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO entrances (id, node_id, server_id, kind, name, connect_host, connect_port, \
+         wire_no, listen_port, source_cidrs) VALUES ($1, $2, $2, 'relay', 'IPLC', 'relay.test', \
+         443, 1, 20443, '{203.0.113.7/32}')",
+    )
+    .bind(relay)
+    .bind(node)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let tags = || async {
+        server_policy(&db.pool, node)
+            .await
+            .unwrap()
+            .unwrap()
+            .inbound_tags
+    };
+    let served = || async {
+        let snap = crate::grpc::desired_snapshot(&db.pool, node)
+            .await
+            .unwrap()
+            .unwrap();
+        let inbounds: Vec<serde_json::Value> = serde_json::from_str(&snap.inbounds_json).unwrap();
+        inbounds
+            .iter()
+            .map(|i| i["tag"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert!(tags().await.is_empty(), "switch off: no policy");
+    sqlx::query("UPDATE nodes SET block_rules_enabled = true WHERE id = $1")
+        .bind(node)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(tags().await, ["direct", "e1"]);
+    assert_eq!(tags().await, served().await);
+    sqlx::query("UPDATE entrances SET enabled = false WHERE node_id = $1 AND kind = 'direct'")
+        .bind(node)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(tags().await, ["e1"], "relay only: still audited");
+    assert_eq!(tags().await, served().await);
+    let p = server_policy(&db.pool, node).await.unwrap().unwrap();
+    assert!(!p.rules.is_empty() && !p.version.is_empty());
+    sqlx::query("UPDATE entrances SET enabled = false WHERE id = $1")
+        .bind(relay)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(tags().await.is_empty(), "nothing served: off");
+    assert_eq!(served().await, Vec::<String>::new());
+    db.drop().await;
+}
+
 /// The compiled policy: off unless the switch is on and the node serves;
 /// tags from the node's inbounds; only enabled rules, in sort order.
 #[tokio::test]

@@ -2207,6 +2207,16 @@ struct Desired {
 /// node's `enabled`).
 pub const SERVER_SERVES: &str = "s.deleting_at IS NULL AND s.traffic_quota_exceeded_at IS NULL";
 
+/// SQL FROM + WHERE (entrances `e`, nodes `n`, `$1` = the server): the
+/// entrances the agent runs an inbound for — every enabled entrance, direct
+/// and relay alike, of an enabled node with an inbound — each tagged
+/// `entrances::inbound_tag(e.wire_no)`. The one definition of the served
+/// inbound set: the snapshot (`desired_state`) and the block policy
+/// (`blockrules::server_policy`) both select through it, so a policy never
+/// leaves out an inbound the agent runs (a relay entrance included).
+pub const SERVED_ENTRANCES: &str = "entrances e JOIN nodes n ON n.id = e.node_id \
+     WHERE e.server_id = $1 AND e.enabled AND n.enabled AND n.inbound IS NOT NULL";
+
 /// The desired state of a server (Q1): the inbounds of all its nodes that
 /// are served — enabled, with an inbound — one per enabled entrance (the
 /// node's inbound for its direct entrance, a derived copy per relay), and
@@ -2243,12 +2253,10 @@ async fn desired_state(pg: &sqlx::PgPool, server_id: Uuid) -> anyhow::Result<Opt
     // W28-a: one inbound per enabled entrance of every served node, in
     // entrance number order (the server's numbering).
     let entrances: Vec<ServedEntrance> = if serve {
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT n.inbound, e.wire_no, e.listen_port, e.source_cidrs::text[] AS source_cidrs \
-             FROM entrances e JOIN nodes n ON n.id = e.node_id \
-             WHERE e.server_id = $1 AND e.enabled AND n.enabled AND n.inbound IS NOT NULL \
-             ORDER BY e.wire_no",
-        )
+             FROM {SERVED_ENTRANCES} ORDER BY e.wire_no"
+        )))
         .bind(server_id)
         .fetch_all(&mut *tx)
         .await?

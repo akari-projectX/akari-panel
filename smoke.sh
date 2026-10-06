@@ -1325,8 +1325,8 @@ W29_SNAPS0=$(grep -c '"via":"snapshot"' "$LOG/agent.log" || true)
   && [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='block_rule.create' AND target_id='$W29_RULE'")" = "1" ] \
   || { echo "FAIL: block rules audit"; exit 1; }
 cat >"$LOG/w29-vless.py" <<'PY'
-# VLESS to a local echo server, addressed by name (localhost) or by IP:
-# prints "ok" on an echoed round trip, "blocked" when the node closes it.
+# VLESS to a local echo server, addressed by name (localhost) or by IP
+# (argv 2), on the inbound at port argv 3 (default the direct one): prints "ok" on an echoed round trip, "blocked" when the node closes it.
 import socket, struct, sys, threading, uuid
 echo = socket.socket(); echo.bind(("127.0.0.1", 0)); echo.listen(1)
 def serve():
@@ -1335,7 +1335,7 @@ def serve():
 threading.Thread(target=serve, daemon=True).start()
 port = struct.pack(">H", echo.getsockname()[1])
 addr = b"\x02\x09localhost" if sys.argv[2] == "name" else b"\x01" + socket.inet_aton("127.0.0.1")
-s = socket.create_connection(("127.0.0.1", 11443), timeout=10)
+s = socket.create_connection(("127.0.0.1", int(sys.argv[3]) if len(sys.argv) > 3 else 11443), timeout=10)
 s.sendall(b"\x00" + uuid.UUID(sys.argv[1]).bytes + b"\x00\x01" + port + addr + b"w29-probe")
 got = b""
 try:
@@ -1505,6 +1505,35 @@ PY
 else
   [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID")" = "200" ] && matches -F '来源 IP 过滤' </tmp/akari-smoke/last \
     || { echo "FAIL: node not flagged for the missing source filter"; exit 1; }
+fi
+# W29 on the relay: the block rules cover the relay's derived inbound like
+# the direct one — also with the direct entrance disabled (regression: the
+# policy listed direct entrances only, so a relay bypassed every rule).
+if need_agent cap:block-rules "W29 block rules on a relay entrance"; then
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/block-rules" -H 'Content-Type: application/json' \
+      -d '{"kind":"domain","name":"smoke-relay","pattern":"full:localhost"}')" = "201" ] \
+    || { echo "FAIL: create the relay block rule"; cat /tmp/akari-smoke/last; exit 1; }
+  W29R_RULE=$(last_json "d['id']")
+  [ "$(entrance_patch '{"enabled":false}')" = "200" ] || { echo "FAIL: disable the direct entrance"; exit 1; }
+  refused "$VLESS_D" 11443 || { echo "FAIL: the disabled direct entrance still serves"; exit 1; }
+  [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/block-rules" -H 'Content-Type: application/json' \
+      -d '{"enabled":true}')" = "200" ] || { echo "FAIL: block rules switch on (relay)"; exit 1; }
+  for _ in $(seq 1 40); do w29_view; [ "$(last_json "d['in_sync']")" = "True" ] && break; sleep 1; done
+  [ "$(last_json "d['in_sync'] and d['error'] is None")" = "True" ] \
+    || { echo "FAIL: agent did not apply the relay block policy"; cat /tmp/akari-smoke/last; exit 1; }
+  [ "$(python3 "$LOG/w29-vless.py" "$VLESS_DR" name 11446)" = "blocked" ] || { echo "FAIL: blocked domain reached through the relay"; exit 1; }
+  [ "$(python3 "$LOG/w29-vless.py" "$VLESS_DR" ip 11446)" = "ok" ] || { echo "FAIL: unblocked destination failed through the relay"; exit 1; }
+  for _ in $(seq 1 45); do
+    w29_view; [ "$(last_json "sum(x['hits'] for x in d['days'] if x['rule_id'] == $W29R_RULE)")" -ge 1 ] && break; sleep 1
+  done
+  [ "$(last_json "sum(x['hits'] for x in d['days'] if x['rule_id'] == $W29R_RULE)")" -ge 1 ] \
+    || { echo "FAIL: relay block not counted"; cat /tmp/akari-smoke/last; exit 1; }
+  [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/block-rules" -H 'Content-Type: application/json' \
+      -d '{"enabled":false}')" = "200" ] || { echo "FAIL: block rules switch off (relay)"; exit 1; }
+  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/block-rules/$W29R_RULE")" = "204" ] || { echo "FAIL: delete the relay block rule"; exit 1; }
+  [ "$(entrance_patch '{"enabled":true}')" = "200" ] || { echo "FAIL: enable the direct entrance"; exit 1; }
+  python3 "$LOG/w28-vless.py" "$VLESS_D" 11443 || { echo "FAIL: the direct entrance did not come back"; exit 1; }
+  echo "block rules on the relay: ok (direct disabled, blocked by name through the relay, counted)"
 fi
 # Health: the panel TCP-tests the relay's address; an unreachable relay is
 # hidden from the subscription after 3 failures and the node's
