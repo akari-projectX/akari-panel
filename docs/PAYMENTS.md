@@ -92,6 +92,7 @@ value   = list_price − discount − gift  (what was actually paid: gateway
           amount + balance + the credit it carried; High-2)
 credit  = floor(value(latest) × remaining_seconds / (nominal_days(latest) × 86400))
 credit  = min(credit, Σ value of all such orders)   -- never more than was paid
+credit  = min(credit, floor(Σ value × traffic_left / quota))   -- High-1, quota plans only
 credit  = 0 when there is no such order (admin-assigned), no expiry,
           nothing remaining, or a permanent one-time purchase
 amount  = price − min(credit, price)        -- never negative
@@ -101,6 +102,11 @@ amount  = price − min(credit, price)        -- never negative
 不算价值，已退款的订单不参与折算（既不是最新一单，也不计入封顶）。所以「券只限套餐 A」不能
 靠换套餐变成别的套餐的价值，「赠送 A」也不会变成可换任意套餐的余额。最新一单是赠送（价值 0）
 时折算为 0（保守取值，只会少折、不会多折）。
+
+运营规则（运营逻辑审查高-1，lead 定的默认值）：折算 = 实付 × min(剩余时间比例, 剩余流量比例)。
+有流量额度的订阅（`users.traffic_limit_bytes`，即当前订阅的执行额度）按「剩余流量 / 额度」再打一次
+折：流量用完的订阅不值钱，来回换套餐不能只花时间的钱就买到满额流量。新套餐从零开始计流量。
+有周期重置的长订阅按**当前周期**的剩余比例计（只会少折）。不限流量的套餐只按时间算。
 
 Example: 30.00 for a month, switched with 15 days left → 15.00 credit; a
 50.00 plan then costs 35.00. A credit larger than the new price is

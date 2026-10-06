@@ -486,6 +486,15 @@ pub async fn splits(conn: &mut PgConnection, input: &[SplitIn]) -> sqlx::Result<
 /// coupon or a gifted plan cannot be turned into credit for another plan.
 /// The latest such order (even one worth 0) sets the daily value; the total
 /// paid for the subscription caps the credit.
+///
+/// The credit is also limited by the traffic left (ops-logic review
+/// High-1, the lead's default): `min(time credit, paid × traffic left /
+/// quota)` with `paid` = the total value above and the quota = the
+/// subscription's enforced limit (`users.traffic_limit_bytes`) — a used-up
+/// subscription is worth nothing, so switching back and forth cannot buy
+/// fresh quota for the price of the time alone. With a periodic reset the
+/// current period's fraction applies to the whole remaining value (it can
+/// only lower the credit). Unlimited traffic: time only.
 pub async fn switch_credit(
     conn: &mut PgConnection,
     user_id: Uuid,
@@ -501,11 +510,17 @@ pub async fn switch_credit(
                   AND o.fulfilled_at >= cur.starts_at AND o.period <> 'reset'), \
          latest AS (SELECT * FROM paid ORDER BY fulfilled_at DESC, id DESC LIMIT 1) \
          SELECT (SELECT id FROM latest), \
-                akari_prorate((SELECT value FROM latest), \
-                              (SELECT akari_period_nominal_days(period, period_days) FROM latest), \
-                              extract(epoch FROM cur.expires_at - now()), \
-                              (SELECT sum(value) FROM paid)::bigint) \
-         FROM cur",
+                LEAST(akari_prorate((SELECT value FROM latest), \
+                                    (SELECT akari_period_nominal_days(period, period_days) \
+                                     FROM latest), \
+                                    extract(epoch FROM cur.expires_at - now()), \
+                                    (SELECT sum(value) FROM paid)::bigint), \
+                      CASE WHEN u.traffic_limit_bytes IS NULL THEN NULL \
+                           WHEN u.traffic_limit_bytes <= 0 THEN 0 \
+                           ELSE floor((SELECT sum(value) FROM paid) \
+                                      * GREATEST(u.traffic_limit_bytes - u.traffic_used_bytes, 0) \
+                                      / u.traffic_limit_bytes)::bigint END) \
+         FROM cur JOIN users u ON u.id = $1",
     )
     .bind(user_id)
     .fetch_optional(conn)
