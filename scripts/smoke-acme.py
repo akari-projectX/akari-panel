@@ -313,7 +313,7 @@ try:
     if mihomo:
         print("mihomo: Trojan-TLS, VLESS-WS-TLS and Hysteria 2 relay with certificate verification on")
 
-    api("DELETE", f"/api/v1/users/{USER}")
+    api("DELETE", f"/api/v1/users/{USER}?confirm=true")
     st, _ = api("DELETE", f"/api/v1/nodes/{NODE}")
     if st not in (200, 202, 204):
         fail(f"delete acme node: {st}")
