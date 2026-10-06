@@ -487,11 +487,12 @@ async fn error_bodies_carry_codes() {
             "params": { "max_speed_mbps": 100000 },
         })
     );
-    // A conflict from the database guard (last enabled admin).
-    let me: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE role = 'admin'")
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
+    // A conflict from the owner guard (R47).
+    let me: Uuid =
+        sqlx::query_scalar("UPDATE users SET is_owner = true WHERE role = 'admin' RETURNING id")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
     let r = c
         .req(
             Method::PATCH,
@@ -500,7 +501,7 @@ async fn error_bodies_carry_codes() {
         )
         .await;
     assert_eq!(r.status, StatusCode::CONFLICT);
-    assert_eq!(r.json()["code"], "user.last_admin");
+    assert_eq!(r.json()["code"], "user.owner_protected");
     db.drop().await;
 }
 

@@ -130,6 +130,17 @@ impl TestDb {
         id
     }
 
+    /// R47: the owner (an enabled admin with `is_owner`).
+    pub async fn owner(&self) -> Uuid {
+        let id = self.admin().await;
+        sqlx::query("UPDATE users SET is_owner = true WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .unwrap();
+        id
+    }
+
     /// A server (an agent identity, pending: no certificate) without nodes.
     pub async fn server(&self) -> Uuid {
         let id = Uuid::new_v4();

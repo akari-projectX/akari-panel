@@ -268,6 +268,7 @@ pub async fn apply_admin_verify(
     actor: &Actor,
     user: Uuid,
 ) -> Result<String, ApiError> {
+    crate::owner::guard_target(conn, actor, user).await?;
     let row: Option<(String, bool)> = sqlx::query_as(
         "UPDATE users SET email_verified_at = COALESCE(email_verified_at, now()) \
          WHERE id = $1 RETURNING new.email, old.email_verified_at IS NULL",

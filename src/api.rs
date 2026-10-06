@@ -341,6 +341,7 @@ pub async fn revoke_sessions(
 ) -> Result<axum::http::StatusCode, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
+    crate::owner::guard_target(&mut tx, &Actor::of(&user), id).await?;
     let n = sqlx::query("UPDATE users SET session_ver = session_ver + 1 WHERE id = $1")
         .bind(id)
         .execute(&mut *tx)
@@ -377,6 +378,7 @@ struct MeRow {
     locale: String,
     disabled_note: Option<String>,
     disabled_at: Option<DateTime<Utc>>,
+    is_owner: bool,
 }
 
 #[derive(Serialize)]
@@ -418,6 +420,8 @@ pub struct MeView {
     /// W20 (Minor 1): the effective latency-test interval (系统设置 >
     /// panel.toml), for the portal's node list.
     probe_interval_secs: u64,
+    /// R47: the account is the owner (admin accounts only).
+    is_owner: bool,
 }
 
 /// GET /api/v1/me (portal scope: also for expired and quota-disabled users,
@@ -439,8 +443,8 @@ pub async fn me(
     let mut tx = state.pg().begin().await?;
     let row = sqlx::query_as::<_, MeRow>(
         "SELECT traffic_used_bytes, traffic_limit_bytes, expires_at, email, \
-         email_verified_at IS NOT NULL AS email_verified, locale, disabled_note, disabled_at \
-         FROM users WHERE id = $1",
+         email_verified_at IS NOT NULL AS email_verified, locale, disabled_note, disabled_at, \
+         is_owner FROM users WHERE id = $1",
     )
     .bind(user.id)
     .fetch_optional(&mut *tx)
@@ -481,6 +485,7 @@ pub async fn me(
         sub_formats: settings.sub_formats.clone(),
         sub_import_clients: settings.sub_import_clients.clone(),
         probe_interval_secs: settings.probe.interval_secs,
+        is_owner: row.is_owner,
     };
     Ok(no_store(Json(view)))
 }
@@ -577,6 +582,8 @@ pub struct UserView {
     /// verified.
     email: String,
     email_verified: bool,
+    /// R47: the owner.
+    is_owner: bool,
 }
 
 /// UserView columns (alias `users` table as itself).
@@ -588,7 +595,7 @@ pub const USER_VIEW_COLS: &str = "id, role, enabled, traffic_limit_bytes, traffi
       WHERE up.user_id = users.id AND up.status = 'active') AS plan_name, \
      (SELECT up.next_reset_at FROM user_plans up \
       WHERE up.user_id = users.id AND up.status = 'active') AS next_reset_at, \
-     email, email_verified_at IS NOT NULL AS email_verified";
+     email, email_verified_at IS NOT NULL AS email_verified, is_owner";
 
 /// `GET /users` query (W21, M3): page, search, filters and order.
 #[derive(Deserialize, Default)]
@@ -825,6 +832,10 @@ pub async fn create_user(
     let sub_enc = state.master_key().seal_sub_token(id, &sub_token)?;
     let actor = Actor::of(&user);
     let mut tx = state.pg().begin().await?;
+    // R47: only the owner makes admins.
+    if role == "admin" {
+        crate::owner::require(&mut tx, &actor).await?;
+    }
     // A plan is assigned in the same transaction (its entitlement lock is
     // taken first: lock order entitle -> servers -> users).
     if assign.is_some() {
@@ -837,7 +848,7 @@ pub async fn create_user(
          RETURNING id, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, \
          created_at, disabled_reason, \
          NULL::uuid AS plan_id, NULL::text AS plan_name, NULL::timestamptz AS next_reset_at, \
-         email, email_verified_at IS NOT NULL AS email_verified",
+         email, email_verified_at IS NOT NULL AS email_verified, is_owner",
     )
     .bind(id)
     .bind(&email)
@@ -1053,6 +1064,33 @@ pub(crate) async fn apply_update_user(
     // The role changes what nodes serve (admins are not proxy users).
     let affects_nodes = role.is_some();
 
+    // R47: another admin's account (or making one) is the owner's; the
+    // owner is never demoted.
+    crate::owner::guard_target(conn, actor, id).await?;
+    let current: Option<(String, bool)> = sqlx::query_as(
+        "SELECT role, NOT enabled AND disabled_reason = 'admin' FROM users WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((current_role, banned)) = current else {
+        return Err(ApiError::not_found());
+    };
+    let promote = role.as_deref() == Some("admin") && current_role != "admin";
+    if promote {
+        crate::owner::require(conn, actor).await?;
+        // A banned account is unbanned first (an admin that cannot sign in
+        // would look like one in the list).
+        if banned {
+            return Err(conflict!(
+                "user.promote_banned",
+                "the account is banned; unban it before making it an admin"
+            ));
+        }
+    } else if role.as_deref() == Some("user") {
+        crate::owner::protect(conn, id).await?;
+    }
+
     // M3: a user with an active plan must stay a proxy user. Checked under
     // the entitlement lock, which every plan assignment takes, so the check
     // cannot race one.
@@ -1082,6 +1120,12 @@ pub(crate) async fn apply_update_user(
     }
     if let Some(v) = role {
         set.push("role = ").push_bind_unseparated(v);
+    }
+    // Admins have no traffic quota: a promotion lifts a quota disable
+    // (the user's report behind R47: an admin promoted while over quota
+    // stayed disabled and did not count as one).
+    if promote {
+        set.push("enabled = enabled OR disabled_reason = 'quota'");
     }
     qb.push(" WHERE id = ").push_bind(id);
     qb.push(format!(
@@ -1173,6 +1217,8 @@ pub(crate) async fn apply_ban_user(
             "you cannot ban your own account"
         ));
     }
+    crate::owner::guard_target(conn, actor, id).await?;
+    crate::owner::protect(conn, id).await?;
     lock_user_servers(conn, id).await?;
     let row: Option<(serde_json::Value, serde_json::Value, Option<String>)> =
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -1215,6 +1261,7 @@ pub(crate) async fn apply_unban_user(
     actor: &Actor,
     id: Uuid,
 ) -> Result<Vec<Uuid>, ApiError> {
+    crate::owner::guard_target(conn, actor, id).await?;
     lock_user_servers(conn, id).await?;
     let row: Option<(bool, serde_json::Value, serde_json::Value, Option<String>)> =
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -1381,6 +1428,9 @@ async fn apply_delete_user(
     actor: &Actor,
     id: Uuid,
 ) -> Result<Vec<Uuid>, ApiError> {
+    // R47: admins are the owner's to delete; never the owner.
+    crate::owner::guard_target(conn, actor, id).await?;
+    crate::owner::protect(conn, id).await?;
     // Global lock order: entitlement lock first (a concurrent reconcile
     // holds it while locking servers), then servers, then the user row.
     crate::entitle::lock(conn).await?;
@@ -3364,12 +3414,6 @@ mod tests {
         tx.commit().await.map_err(ApiError::from)
     }
 
-    async fn ban(db: &TestDb, id: Uuid) -> Result<(), ApiError> {
-        let mut tx = db.pool.begin().await.unwrap();
-        apply_ban_user(&mut tx, &crate::audit::Actor::test(), id, "reason").await?;
-        tx.commit().await.map_err(ApiError::from)
-    }
-
     fn admin_user(id: Uuid) -> AuthUser {
         AuthUser {
             id,
@@ -3650,191 +3694,6 @@ mod tests {
         db.drop().await;
     }
 
-    #[tokio::test]
-    async fn last_enabled_admin_cannot_be_removed() {
-        let Some(db) = TestDb::new().await else {
-            return;
-        };
-        let a = db.admin().await;
-        let conflict = |r: Result<(), ApiError>| {
-            let e = r.expect_err("expected 409");
-            assert_eq!(e.status(), StatusCode::CONFLICT);
-            assert_eq!(e.message(), "cannot remove the last enabled admin");
-        };
-        conflict(ban(&db, a).await);
-        conflict(
-            update(
-                &db,
-                a,
-                UpdateUserReq {
-                    role: Some(Some("user".into())),
-                    ..Default::default()
-                },
-            )
-            .await,
-        );
-        let mut tx = db.pool.begin().await.unwrap();
-        conflict(
-            apply_delete_user(&mut tx, &crate::audit::Actor::test(), a)
-                .await
-                .map(|_| ()),
-        );
-        drop(tx);
-        // Harmless changes to the last admin still work.
-        update(
-            &db,
-            a,
-            UpdateUserReq {
-                password: Some(Some("new-password-1".into())),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        // With a second enabled admin either may go, but not both.
-        let b = db.admin().await;
-        ban(&db, a).await.unwrap();
-        conflict(
-            update(
-                &db,
-                b,
-                UpdateUserReq {
-                    role: Some(Some("user".into())),
-                    ..Default::default()
-                },
-            )
-            .await,
-        );
-        // A disabled admin does not count and may be deleted.
-        let mut tx = db.pool.begin().await.unwrap();
-        apply_delete_user(&mut tx, &crate::audit::Actor::test(), a)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        // A newly promoted user makes room.
-        let u = db.user().await;
-        update(
-            &db,
-            u,
-            UpdateUserReq {
-                role: Some(Some("admin".into())),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        let mut tx = db.pool.begin().await.unwrap();
-        apply_delete_user(&mut tx, &crate::audit::Actor::test(), b)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        // Direct SQL is guarded too (the trigger, not the handler).
-        let e = sqlx::query("UPDATE users SET enabled = false WHERE role = 'admin'")
-            .execute(&db.pool)
-            .await
-            .unwrap_err();
-        assert_eq!(ApiError::from(e).status(), StatusCode::CONFLICT);
-        let e = sqlx::query("DELETE FROM users")
-            .execute(&db.pool)
-            .await
-            .unwrap_err();
-        assert_eq!(ApiError::from(e).status(), StatusCode::CONFLICT);
-        db.drop().await;
-    }
-
-    /// Two admins demoting each other at the same time: exactly one wins.
-    #[tokio::test]
-    async fn concurrent_mutual_demotion_leaves_one_admin() {
-        let Some(db) = TestDb::new().await else {
-            return;
-        };
-        // Deterministic interleaving: T1 demotes b and holds its tx open;
-        // T2 (demote a) must wait for it and then fail.
-        let (a, b) = (db.admin().await, db.admin().await);
-        let demote = UpdateUserReq {
-            role: Some(Some("user".into())),
-            ..Default::default()
-        };
-        let mut t1 = db.pool.begin().await.unwrap();
-        apply_update_user(&mut t1, &crate::audit::Actor::test(), b, &demote)
-            .await
-            .unwrap();
-        let pool = db.pool.clone();
-        let t2 = tokio::spawn(async move {
-            let mut t2 = pool.begin().await.unwrap();
-            let r = apply_update_user(
-                &mut t2,
-                &crate::audit::Actor::test(),
-                a,
-                &UpdateUserReq {
-                    role: Some(Some("user".into())),
-                    ..Default::default()
-                },
-            )
-            .await;
-            match r {
-                Ok(_) => t2.commit().await.map_err(ApiError::from),
-                Err(e) => Err(e),
-            }
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        assert!(!t2.is_finished(), "T2 must wait for T1's guard lock");
-        t1.commit().await.unwrap();
-        let e = t2.await.unwrap().expect_err("second demotion must fail");
-        assert_eq!(e.status(), StatusCode::CONFLICT);
-
-        // Free-running races, disable vs demote vs delete.
-        for round in 0..15 {
-            let (x, y) = (db.admin().await, db.admin().await);
-            // Everyone else stops being an enabled admin (never the last:
-            // x and y remain).
-            sqlx::query("UPDATE users SET enabled = false WHERE role = 'admin' AND id <> ALL($1)")
-                .bind(vec![x, y])
-                .execute(&db.pool)
-                .await
-                .unwrap();
-            let go = |id: Uuid, kind: usize| {
-                let pool = db.pool.clone();
-                tokio::spawn(async move {
-                    let mut tx = pool.begin().await.unwrap();
-                    let r = match kind % 3 {
-                        0 => apply_ban_user(&mut tx, &crate::audit::Actor::test(), id, "r")
-                            .await
-                            .map(|_| ()),
-                        1 => apply_update_user(
-                            &mut tx,
-                            &crate::audit::Actor::test(),
-                            id,
-                            &UpdateUserReq {
-                                role: Some(Some("user".into())),
-                                ..Default::default()
-                            },
-                        )
-                        .await
-                        .map(|_| ()),
-                        _ => apply_delete_user(&mut tx, &crate::audit::Actor::test(), id)
-                            .await
-                            .map(|_| ()),
-                    };
-                    match r {
-                        Ok(()) => tx.commit().await.map_err(ApiError::from),
-                        Err(e) => Err(e),
-                    }
-                })
-            };
-            let (r1, r2) = tokio::join!(go(x, round), go(y, round + 1));
-            let (r1, r2) = (r1.unwrap(), r2.unwrap());
-            assert!(r1.is_ok() != r2.is_ok(), "round {round}: exactly one wins");
-            let left: i64 =
-                sqlx::query_scalar("SELECT count(*) FROM users WHERE role = 'admin' AND enabled")
-                    .fetch_one(&db.pool)
-                    .await
-                    .unwrap();
-            assert_eq!(left, 1, "round {round}");
-        }
-        db.drop().await;
-    }
-
     // ----- S4-1: login rate limit behind proxies ----------------------
 
     async fn account(db: &TestDb, password: &str) -> String {
@@ -4047,7 +3906,8 @@ mod tests {
         };
         let (n, u) = db.member().await;
         let actor = Actor {
-            id: Some(Uuid::new_v4()),
+            // R47: the owner (it makes an admin below).
+            id: Some(db.owner().await),
             label: "boss".into(),
             ip: Some("2001:db8::7".parse().unwrap()),
         };

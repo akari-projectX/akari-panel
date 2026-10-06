@@ -403,9 +403,14 @@ user.ban_self
 user.delete_confirm_required
 user.email_exists
 user.has_plan
-user.last_admin
 user.not_banned
+user.owner_already
+user.owner_confirm_required
+user.owner_only
+user.owner_protected
+user.owner_target
 user.plan_filter_invalid
+user.promote_banned
 user.query_too_long
 user.role_invalid
 user.sort_invalid

@@ -323,6 +323,22 @@ session — without one it is the same empty 404 as any unknown path, so bookmar
 `/admin`). Forgotten password: `akari admin passwd <email>` (ends the account's sessions).
 (TOTP two-factor authentication was removed in v0.4; passkeys replace it.)
 
+### 所有者（R47，中文）
+
+安装时创建的第一个管理员（`akari admin add`）是**所有者**，全站唯一。只有所有者能：
+
+- 管理其他管理员：设为管理员、降级、改密码、封禁、删除、踢下线、重置登录方式；
+- 修改后台前缀与 IP 白名单、支付渠道的密钥与账号；
+- 把所有者转让给另一位已启用的管理员（后台二次确认，写入审计 `user.owner.transfer`）。
+
+所有者不能被降级、封禁或删除（数据库同样拒绝）；普通管理员负责日常运营（用户、套餐、节点、订单、工单等）。
+所有者账号丢失时，在服务器上执行 `akari admin set-owner <邮箱>`（Docker：`docker compose exec panel /akari admin set-owner <邮箱>`）
+把所有者交给另一位已启用的管理员；忘记密码用 `akari admin passwd`，通行密钥丢失用 `akari admin reset-login`。
+
+提升管理员：被封禁的账号要先解封；因超流量被停用的账号提升后自动恢复（管理员没有流量额度）。
+（v0.4 之前的「至少保留一个启用的管理员」规则由「所有者必须是启用的管理员」取代。曾经出现过的"删除账号时提示必须保留一个管理员，
+但明明还有另一位管理员"，原因是那位管理员是在超流量停用状态下被提升的、一直处于停用状态，不算有效管理员；升级迁移会把这类账号恢复。）
+
 ## 2b. 系统设置 (main domain)
 
 (Installer: already set to `--domain`, and 节点通信域名 to the same name, or the IP for an IP-only
