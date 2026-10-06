@@ -476,8 +476,8 @@ CLI 须以面板的服务用户身份运行，并指向面板所用的同一个 
 
 权威计划见 `PLAN.md`（三仓库终态：`akari-panel` / `akari-agent` / `akari-client`）。战略决策：
 
-- **订阅端点是过渡性的。** 一旦自研客户端（内嵌 mihomo）发布，第三方格式（base64 链接、sing-box JSON、通用 Clash）将被淘汰；只保留给 akari-client 的 Clash 配置。
+- **第三方订阅由后台开关控制。** 各订阅格式与一键导入按客户端分别开关（默认开启）；自研客户端 akari-client 发布后，运营者可自行选择关闭第三方格式，不强制只保留自有客户端（2026-10-06 战略决策 2 修订）。
 - **设备限制采用席位绑定**（客户端登记其设备），而非基于 IP——随 akari-client 实现，现在刻意不做。
 
-已完成：控制平面、认证/REST API、内嵌 SPA、过渡性订阅（REALITY/TLS/WS 映射、填充、哈希令牌——WS+gRPC 传输映射尚不完整）。
+已完成：控制平面、认证/REST API、内嵌 SPA、订阅（REALITY/TLS/WS 映射、填充、哈希令牌——WS+gRPC 传输映射尚不完整）。
 下一步：拆仓 → akari-client MVP（内嵌 mihomo）→ 席位绑定（+ 订阅淘汰）→ agent CSR/自动更新 → 支付。
