@@ -167,7 +167,11 @@ log "user + subscription"
 	-d '{"email":"e2e-user@example.com","password":"user-password-123"}')" = 201 ] || fail "create user"
 SUB=$(cx sh -c "sed -n 's/.*\"sub_token\":\"\([^\"]*\)\".*/\1/p' /tmp/last")
 [ -n "$SUB" ] || fail "no subscription token"
-[ "$(https_code "$origin/$PREFIX/sub/$SUB" -A clash.meta)" = 200 ] || fail "subscription fetch"
+# v0.4 D11: subscriptions live at /<sub path>/<token> (outside the admin
+# prefix); the path comes from the answer's sub_url.
+SUBP=$(cx sh -c "sed -n 's/.*\"sub_url\":\"\([^\"]*\)\".*/\1/p' /tmp/last" | sed 's#^[a-z]*://[^/]*##')
+[ -n "$SUBP" ] || fail "no subscription link"
+[ "$(https_code "$origin$SUBP" -A clash.meta)" = 200 ] || fail "subscription fetch"
 echo "ok: subscription"
 
 log "broken release $broken: the upgrade must roll back"
@@ -186,7 +190,7 @@ cx test -s /var/lib/akari/ca.key.pem || fail "data dir not kept"
 inst "${local_rel[@]}" "$c" sh /src/scripts/install.sh --yes --mode bare --version "$new" "${addr_args[@]}" || fail "reinstall"
 check_panel "$new"
 [ "$(prefix)" = "$PREFIX" ] || fail "the prefix changed across uninstall/reinstall"
-[ "$(https_code "$origin/$PREFIX/sub/$SUB" -A clash.meta)" = 200 ] || fail "subscription after reinstall"
+[ "$(https_code "$origin$SUBP" -A clash.meta)" = 200 ] || fail "subscription after reinstall"
 echo "ok: data kept across uninstall/reinstall"
 
 log "encrypted backup for a host move (age)"
@@ -212,7 +216,7 @@ inst "${local_rel[@]}" "$c" sh /src/scripts/install.sh --yes --mode bare --versi
 	--restore "$moved" --age-identity /root/move.key || fail "install --restore"
 check_panel "$new"
 [ "$(prefix)" = "$PREFIX" ] || fail "the prefix changed across the move"
-[ "$(https_code "$origin/$PREFIX/sub/$SUB" -A clash.meta)" = 200 ] || fail "subscription after the move"
+[ "$(https_code "$origin$SUBP" -A clash.meta)" = 200 ] || fail "subscription after the move"
 echo "ok: restored: same prefix, keys, admin password, subscription"
 
 log "PASS: bare installer e2e on $base ($address)"
