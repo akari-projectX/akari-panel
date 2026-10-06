@@ -769,6 +769,13 @@ pub enum HostRole {
 }
 
 impl Effective {
+    /// Q3: the site time zone (IANA name; the stored value, else the
+    /// default), for the portal's date display (`/me`, `/auth/options`).
+    /// The SQL `akari_site_tz()` reads the same row.
+    pub fn timezone(&self) -> &str {
+        self.stored.timezone.as_deref().unwrap_or(DEFAULT_TIMEZONE)
+    }
+
     /// Host gate (R22 + D8): what `host` (see `request_host`) may reach;
     /// None = the canonical rejection for everything. IP literals are the
     /// main domain's (a mistyped domain never locks the admin out of

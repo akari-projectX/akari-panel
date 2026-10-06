@@ -39,17 +39,12 @@ struct ConsoleAssets;
 const CONSOLE_CACHE: &str = "private, no-store";
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
-/// The panel's CSP plus Cloudflare Turnstile (sign-in page with Turnstile
-/// switched on for logins).
-const CSP_TURNSTILE: &str = "default-src 'self'; style-src 'self' 'unsafe-inline'; \
-     script-src 'self' https://challenges.cloudflare.com; \
-     frame-src https://challenges.cloudflare.com";
 
 /// `/{prefix}/app[/…]`: the admin sign-in page under the admin prefix; the
 /// portal's pages at `/` (D11) otherwise.
 pub async fn app_entry(State(state): State<AppState>, entry: Entry) -> Response {
     if entry.0 != Some(Via::Admin) {
-        return spa::index().await;
+        return spa::index(&state).await;
     }
     let Some(file) = LoginAssets::get("login.html") else {
         return reject::not_found();
@@ -64,7 +59,7 @@ pub async fn app_entry(State(state): State<AppState>, entry: Entry) -> Response 
     if turnstile_login(&state).await {
         res.headers_mut().insert(
             header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static(CSP_TURNSTILE),
+            HeaderValue::from_static(crate::web::CSP_TURNSTILE),
         );
     }
     res
@@ -360,7 +355,8 @@ mod tests {
     /// The sign-in page is public under the prefix (no session needed), its
     /// assets immutable and prefixed; it is the admin app's own page, not
     /// the portal's; the portal at `/` stays the portal. Turnstile for
-    /// logins widens the sign-in page's CSP (and only that page's).
+    /// logins widens the sign-in page's CSP (and the portal's, whose login
+    /// form is switched by the same setting).
     #[tokio::test]
     async fn sign_in_page_is_public_under_the_prefix() {
         let Some(db) = TestDb::new().await else {
@@ -414,11 +410,15 @@ mod tests {
         .await
         .unwrap();
         let r = c.get("/test/app").await;
-        assert_eq!(header(&r, header::CONTENT_SECURITY_POLICY), CSP_TURNSTILE);
+        assert_eq!(
+            header(&r, header::CONTENT_SECURITY_POLICY),
+            crate::web::CSP_TURNSTILE
+        );
+        // The portal's login form is switched by the same setting.
         assert_eq!(
             header(&c.get("/").await, header::CONTENT_SECURITY_POLICY),
-            "default-src 'self'; style-src 'self' 'unsafe-inline'",
-            "the portal keeps its CSP"
+            crate::web::CSP_TURNSTILE,
+            "the portal's login form uses it too"
         );
     }
 }

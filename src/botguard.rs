@@ -124,6 +124,15 @@ pub struct Settings {
     pub passkey_prompt: bool,
 }
 
+impl Settings {
+    /// Turnstile protects at least one form: the portal page must be able
+    /// to load its script (`web::CSP_TURNSTILE`).
+    pub fn turnstile_on(&self) -> bool {
+        self.turnstile_site_key.is_some()
+            && (self.turnstile_login || self.turnstile_register || self.turnstile_reset)
+    }
+}
+
 const COLS: &str = "version, turnstile_site_key, turnstile_secret_enc, turnstile_login, \
      turnstile_register, turnstile_reset, honeypot, min_submit_secs, passkey_only_admins, \
      passkey_only_users, passkey_prompt";

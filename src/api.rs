@@ -435,6 +435,8 @@ pub struct MeView {
     probe_interval_secs: u64,
     /// R47: the account is the owner (admin accounts only).
     is_owner: bool,
+    /// Q3: the site time zone (IANA name): the portal shows dates in it.
+    timezone: String,
 }
 
 /// GET /api/v1/me (portal scope: also for expired and quota-disabled users,
@@ -497,6 +499,7 @@ pub async fn me(
         sub_import_clients: settings.sub_import_clients.clone(),
         probe_interval_secs: settings.probe.interval_secs,
         is_owner: row.is_owner,
+        timezone: settings.timezone().to_string(),
     };
     Ok(no_store(Json(view)))
 }

@@ -32,6 +32,13 @@ async fn refund(admin: &Client, order: Uuid, body: Value) -> crate::testdb::http
         .await
 }
 
+/// The order as its owner sees it (`MyOrderView`, W36-b refund fields).
+async fn mine(c: &Client, order: Uuid) -> Value {
+    c.get(&format!("/test/api/v1/me/orders/{order}"))
+        .await
+        .json()
+}
+
 async fn preview(admin: &Client, order: Uuid) -> crate::testdb::http::Resp {
     admin
         .get(&format!("/test/api/v1/orders/{order}/refund-preview"))
@@ -298,6 +305,25 @@ async fn refund_money_only() {
         r.json()["effect"],
         json!({"kind": "none", "why": "reset_pack"})
     );
+    let v = mine(&c, pack).await;
+    assert_eq!(
+        (
+            v["action"].clone(),
+            v["refund_route"].clone(),
+            v["refund_balance_cents"].clone(),
+            v["refund_external_cents"].clone(),
+            v["refund_effect"].clone(),
+            v["refund_pending"].clone()
+        ),
+        (
+            json!("reset"),
+            json!("balance"),
+            json!(300),
+            json!(0),
+            json!("none"),
+            json!(false)
+        )
+    );
     let r = refund(
         &admin,
         first,
@@ -308,6 +334,13 @@ async fn refund_money_only() {
         r.json()["effect"],
         json!({"kind": "none", "why": "keep_plan"})
     );
+    let v = mine(&c, first).await;
+    assert_eq!(v["action"], "new");
+    assert_eq!(
+        v["refund_route"], "manual",
+        "recorded, refunded outside the panel"
+    );
+    assert_eq!(v["refund_external_cents"], 1000);
     assert_eq!(plans_of(&db, u).await[0].2, "active");
     assert_eq!(credentials(&db, u, node).await, 1);
     // Renewed, then switched away: the renewal's subscription is gone.
@@ -485,6 +518,12 @@ async fn original_route_refund() {
     );
     assert_eq!(r.json()["refund_external_cents"], 400);
     assert_eq!(r.json()["effect"]["kind"], "cancel");
+    let v = mine(&c, o).await;
+    assert_eq!(v["refund_route"], "original");
+    assert_eq!(v["refund_external_cents"], 400);
+    assert_eq!(v["refund_effect"], "cancel");
+    assert_eq!(v["refund_pending"], false);
+    assert!(v["refunded_at"].is_string());
     assert_eq!(credentials(&db, u, node).await, 0);
     assert_eq!(
         mock.refunds()[&format!("{otn}R1")],
@@ -565,6 +604,11 @@ async fn original_route_failure_and_reconciliation() {
         (json!("pending"), json!(format!("{otn}R1"))),
         "same amount: same request number"
     );
+    // The customer sees it in progress, not refunded yet.
+    let v = mine(&c, o).await;
+    assert_eq!(v["refund_pending"], true);
+    assert_eq!(v["refund_route"], Value::Null);
+    assert_eq!(v["refunded_at"], Value::Null);
     assert_eq!(
         refund(&admin, o, json!({"reason": "r", "to_balance": true}))
             .await

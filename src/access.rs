@@ -77,12 +77,27 @@ impl Entry {
     }
 }
 
-/// The portal's pages (first path segment; `/` is the dashboard). Other
-/// paths are the canonical rejection, as before D11. Keep in step with the
-/// portal's views (spa/src/portal-views.tsx and the public pages).
+/// The portal's pages (first path segment; `/` is the dashboard): every
+/// client-side route answers the portal's index. Other paths are the
+/// canonical rejection, as before D11. Keep in step with the portal's route
+/// table (spa/src/lib/routes.ts; `routes_match_the_portal` checks it).
 pub const PORTAL_PAGES: &[&str] = &[
-    "shop", "nodes", "traffic", "orders", "wallet", "tickets", "help", "account", "register",
-    "reset", "forgot",
+    "shop",
+    "nodes",
+    "traffic",
+    "orders",
+    "wallet",
+    "invite",
+    "tickets",
+    "help",
+    "announcements",
+    "account",
+    "login",
+    "register",
+    "forgot",
+    "reset",
+    "terms",
+    "privacy",
 ];
 
 /// Paths that exist outside the admin prefix only.
@@ -121,6 +136,8 @@ pub const RESERVED: &[&str] = &[
     "nodes",
     "plan",
     "invite",
+    "terms",
+    "privacy",
     "favicon.ico",
     "robots.txt",
 ];

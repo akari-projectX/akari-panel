@@ -184,6 +184,21 @@ pub struct MyOrderView {
     expires_at: DateTime<Utc>,
     paid_at: Option<DateTime<Utc>>,
     fulfilled: bool,
+    /// W36-b: what the order does (new | renew | switch | reset; 1058).
+    action: String,
+    /// W36-b (PR ③ refund routes): how a refunded order's money went
+    /// back — `original` (through the payment provider), `balance` (to the
+    /// account balance) or `manual` (refunded outside the panel and
+    /// recorded); null until refunded. The two parts in fen.
+    refund_route: Option<String>,
+    refund_balance_cents: Option<i64>,
+    refund_external_cents: Option<i64>,
+    /// An original-route refund was asked for and the provider has not
+    /// confirmed it yet.
+    refund_pending: bool,
+    /// P1: what the refund did to the subscription (none | cancel |
+    /// rollback | restore); null until refunded.
+    refund_effect: Option<String>,
 }
 
 const MY_ORDER_SQL: &str = "SELECT id, out_trade_no, plan_id, plan_name, amount_cents, \
@@ -192,7 +207,13 @@ const MY_ORDER_SQL: &str = "SELECT id, out_trade_no, plan_id, plan_name, amount_
      CASE WHEN status = 'pending' THEN pay_url END AS pay_url, payment_method_id, \
      (SELECT m.display_name FROM payment_methods m WHERE m.id = payment_method_id) \
          AS payment_method_name, created_at, \
-     expires_at, paid_at, fulfilled_at IS NOT NULL AS fulfilled FROM orders";
+     expires_at, paid_at, fulfilled_at IS NOT NULL AS fulfilled, action, \
+     CASE WHEN refunded_at IS NULL THEN NULL \
+          WHEN refund_request->>'state' = 'done' THEN 'original' \
+          WHEN refund_external_cents > 0 THEN 'manual' ELSE 'balance' END AS refund_route, \
+     refund_balance_cents, refund_external_cents, \
+     COALESCE(refund_request->>'state' = 'pending', false) AS refund_pending, \
+     refund_effect->>'kind' AS refund_effect FROM orders";
 
 /// An order as an admin sees it.
 #[derive(Serialize, sqlx::FromRow, Debug)]
