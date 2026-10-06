@@ -402,3 +402,114 @@ async fn first_invite_code_is_created_once() {
     drop(state);
     db.drop().await;
 }
+
+/// 运营审查高-3: "重置订阅" (self-service and admin) also gives the user a
+/// new account on every entrance — the old client configs stop working —
+/// and bumps exactly those nodes; nobody else's credentials change.
+#[tokio::test]
+async fn reset_rotates_every_entrance_credential() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let (n1, n2, idle) = (db.node().await, db.node().await, db.node().await);
+    let (id, login) = user_with_password(&db).await;
+    let other = db.user().await;
+    {
+        let actor = crate::audit::Actor::test();
+        let mut tx = db.pool.begin().await.unwrap();
+        let g = crate::plans::apply_create_group(
+            &mut tx,
+            &actor,
+            &crate::plans::CreateGroupReq {
+                name: "hi3".into(),
+                description: None,
+                entrance_ids: Some(vec![db.direct(n1).await, db.direct(n2).await]),
+            },
+        )
+        .await
+        .ok()
+        .unwrap();
+        let p = crate::plans::apply_create_plan(
+            &mut tx,
+            &actor,
+            &crate::plans::CreatePlanReq {
+                name: "hi3".into(),
+                period: "monthly".into(),
+                group_ids: Some(vec![g]),
+                ..Default::default()
+            },
+        )
+        .await
+        .ok()
+        .unwrap();
+        for u in [id, other] {
+            crate::plans::apply_set_user_plan(
+                &mut tx,
+                &actor,
+                u,
+                &crate::plans::SetUserPlanReq {
+                    plan_id: p,
+                    term: crate::plans::Term::new(crate::billing::catalog::PeriodKind::Month, None)
+                        .ok()
+                        .unwrap(),
+                },
+            )
+            .await
+            .ok()
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+    }
+    let accounts = |u: Uuid| {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query_as::<_, (Uuid, String, serde_json::Value)>(
+                "SELECT entrance_id, protocol, account FROM entrance_users WHERE user_id = $1 \
+                 ORDER BY entrance_id",
+            )
+            .bind(u)
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let before = accounts(id).await;
+    let other_before = accounts(other).await;
+    assert_eq!(before.len(), 2);
+    let versions = (
+        db.versions(n1).await,
+        db.versions(n2).await,
+        db.versions(idle).await,
+    );
+    let c = signed_in(&state, &login).await;
+    let r = c.post("/test/api/v1/me/sub-token", json!({})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["credentials_rotated"], 2);
+    let after = accounts(id).await;
+    for (b, a) in before.iter().zip(&after) {
+        assert_eq!((a.0, a.1.as_str()), (b.0, "vless"));
+        assert_ne!(a.2["id"], b.2["id"], "credential not rotated");
+    }
+    assert_eq!(accounts(other).await, other_before);
+    assert!(db.versions(n1).await.1 > versions.0.1);
+    assert!(db.versions(n2).await.1 > versions.1.1);
+    assert_eq!(db.versions(idle).await, versions.2);
+    assert!(
+        audit_actions(&db, id)
+            .await
+            .contains(&"user.credentials.rotate".to_string())
+    );
+    // The console's reset does the same.
+    let admin = db.admin().await;
+    let mut ac = Client::new(&state, rand_ip());
+    ac.cookie = Some(auth::issue_token(&state, admin, "admin", 0).unwrap());
+    let r = ac
+        .post(&format!("/test/api/v1/users/{id}/sub-token"), json!({}))
+        .await;
+    assert_eq!(r.json()["credentials_rotated"], 2);
+    let again = accounts(id).await;
+    assert!(again.iter().zip(&after).all(|(x, y)| x.2 != y.2));
+    drop(state);
+    db.drop().await;
+}

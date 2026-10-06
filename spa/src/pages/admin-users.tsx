@@ -517,7 +517,8 @@ function ManageUser({
                 run(
                   {
                     title: `为「${user.email}」生成新的订阅令牌？`,
-                    message: "旧的订阅链接会立即失效，用户需要在所有设备上重新导入。",
+                    message:
+                      "旧的订阅链接和所有节点凭据会立即失效，已导入的客户端会被断开，用户需要在所有设备上重新导入。",
                     confirmLabel: "重新生成",
                     destructive: true,
                   },

@@ -2785,8 +2785,10 @@ pub(crate) fn generate_account(inbound: &serde_json::Value) -> Result<serde_json
 // Subscription token
 // ---------------------------------------------------------------------------
 
-/// Regenerates a user's subscription token, invalidating the old one.
-/// W20: stored encrypted as well (readable again via `GET /users/{id}/subscription`).
+/// Resets a user's subscription (高-3): a new token (the old link stops
+/// working; W20: stored encrypted, readable again via
+/// `GET /users/{id}/subscription`) and new credentials on every entrance
+/// (imported clients are disconnected and refused; `sub::apply_reset`).
 pub async fn regenerate_sub_token(
     State(state): State<AppState>,
     user: AuthUser,
@@ -2794,12 +2796,16 @@ pub async fn regenerate_sub_token(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    let token = crate::sub::rotate_token(&mut tx, state.totp(), &Actor::of(&user), id)
+    let (token, outcome) = crate::sub::apply_reset(&mut tx, state.totp(), &Actor::of(&user), id)
         .await?
         .ok_or_else(ApiError::not_found)?;
     tx.commit().await?;
     let sub_url = state.settings().get().sub_url(state.route_prefix(), &token);
-    Ok(Json(json!({ "sub_token": token, "sub_url": sub_url })))
+    Ok(Json(json!({
+        "sub_token": token,
+        "sub_url": sub_url,
+        "credentials_rotated": outcome.updated,
+    })))
 }
 
 // ---------------------------------------------------------------------------
@@ -3755,6 +3761,22 @@ mod tests {
                 true,
             ),
             (
+                // 高-3: "重置订阅" = a new token (user.sub_token.rotate)
+                // and new credentials on every entrance
+                // (user.credentials.rotate): both nodes resend the user.
+                "reset subscription (High-3)",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        let keys = crate::totp::Keys::from_material(&[7u8; 32])?;
+                        crate::sub::apply_reset(c, &keys, &crate::audit::Actor::test(), u)
+                            .await
+                            .map(|_| ())
+                    })
+                }),
+                vec![n1, other],
+                true,
+            ),
+            (
                 "refund: roll a renewal back (P1)",
                 Box::new(move |c| {
                     Box::pin(async move {
@@ -3928,7 +3950,11 @@ mod tests {
             tx.commit().await.unwrap();
             // M1-7: every mutation writes exactly one audit row (an
             // idempotent repeat of a node deletion changes nothing).
-            let want_rows = i64::from(name != "begin node deletion again (no-op)");
+            let want_rows = match name {
+                "begin node deletion again (no-op)" => 0,
+                "reset subscription (High-3)" => 2,
+                _ => 1,
+            };
             assert_eq!(
                 audit_count(&db.pool).await - audit_before,
                 want_rows,

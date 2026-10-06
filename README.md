@@ -271,7 +271,7 @@ separate loopback listener, never on the public port.
 | POST | /auth/password-reset/request | — (reset on) | W15: `{email, guard?}` → `{"ok":true}` for every address (and for a trapped bot: nothing sent); a 30-minute single-use link goes to a verified address |
 | POST | /auth/password-reset | — (reset on) | W15: `{token, password}`: new password, every session ends |
 | GET | /api/v1/me | user (portal scope*) | profile (`email` = the login name, `email_verified`) + traffic usage; `expired` / `quota_exhausted` (R21); W28-c `banned`, `ban_reason` (written by the admin for the user), `banned_at`; W20: `sub_token` + `sub_url` (the subscription link, `Cache-Control: no-store`; null for admins and the renewal scope; an account without a token gets one here), `sub_legacy` (pre-W20 link: works, cannot be shown until reset), `probe_interval_secs` |
-| POST | /api/v1/me/sub-token | user (role=user) | reset own subscription link (5/hour); the old link stops working |
+| POST | /api/v1/me/sub-token | user (role=user) | reset own subscription (5/hour): new link AND new credentials on every entrance (高-3) — the old link and every imported client stop working (live connections are cut); `credentials_rotated` = how many |
 | GET | /api/v1/me/plan | user | own active plan (or null), usage, enforced limit/expiry, node names + regions (Q3: `plan.next_reset_at` with the site time zone's offset) |
 | GET | /api/v1/me/nodes | user | W11: own visible entrances (W28-a: one row per usable entrance) — node display name, `entrance` name, region, tags, the entrance's multiplier, online, latency (no ids, addresses or machine metrics) |
 | POST | /api/v1/me/email/code | user (renewal scope*) | W15: `{email, password}`: code to the new address (current password required; same answer if the address is taken) |
@@ -323,7 +323,7 @@ separate loopback listener, never on the public port.
 | GET | /api/v1/nodes/{id}/metrics | admin | W11: history `?range=1h\|6h\|24h\|48h\|7d\|30d\|90d` (averages and maxima per point, ≤ 360 points) |
 | POST | /api/v1/nodes/{id}/probe | admin | W11: "立即测速" (202; 429 within the built-in 30 s cooldown) |
 | PUT | /api/v1/nodes/{id}/inbound | admin | W28-a: `{inbound}` replaces the node's one xray inbound (an object without tag; null = none; bumps config_version). Users keep their credentials when the protocol stays, get new ones when it changes |
-| POST | /api/v1/users/{id}/sub-token | admin | regenerate subscription token |
+| POST | /api/v1/users/{id}/sub-token | admin | reset the user's subscription: new token + new credentials on every entrance (高-3, as above) |
 | GET | /api/v1/users/{id}/subscription | admin | W20: the user's subscription link `{sub_token, sub_url, legacy}` (every read is audited as `user.sub_token.read`, without the token; `no-store`) |
 | POST | /api/v1/users/{id}/revoke-sessions | admin | log the account out everywhere (204) |
 | GET | /api/v1/me/shop | user (renewal scope*) | plans on sale with every priced period as the caller would buy it now (`action` new/renew/switch/reset, `discount_cents`, `credit_cents`, `balance_cents`, `amount_cents`, or `refusal`), description, stock; the caller's subscription, switch credit and balance. W16: `?coupon=CODE` (rate-limited) prices with a coupon (`coupon.refusal` / per-offer `coupon_refusal`), `?use_balance=true` with the balance |
@@ -671,7 +671,9 @@ at most once per 10 minutes per account. Admins: Audit view, or `GET
   working link; the portal offers a reset to make it viewable — it is never
   rotated implicitly. Users reset their own link in the portal
   (`POST /api/v1/me/sub-token`, 5 per hour, confirmed); admins can do it per
-  user.
+  user. A reset also replaces the user's credential on every entrance
+  (运营审查高-3): clients that imported the old link or its nodes are
+  disconnected and refused, so a leaked or shared subscription is stopped.
 
 Run the CLI as the panel's service user, against the same `data/`
 directory (and database) the panel uses.

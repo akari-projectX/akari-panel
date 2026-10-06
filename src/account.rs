@@ -142,12 +142,17 @@ pub async fn regenerate_own_sub_token(
         return Err(ApiError::too_many());
     }
     let mut tx = state.pg().begin().await?;
-    let token = crate::sub::rotate_token(&mut tx, state.totp(), &Actor::of(&user), user.id)
-        .await?
-        .ok_or_else(ApiError::unauthorized)?;
+    let (token, outcome) =
+        crate::sub::apply_reset(&mut tx, state.totp(), &Actor::of(&user), user.id)
+            .await?
+            .ok_or_else(ApiError::unauthorized)?;
     tx.commit().await?;
     let sub_url = state.settings().get().sub_url(state.route_prefix(), &token);
-    Ok(Json(json!({ "sub_token": token, "sub_url": sub_url })))
+    Ok(Json(json!({
+        "sub_token": token,
+        "sub_url": sub_url,
+        "credentials_rotated": outcome.updated,
+    })))
 }
 
 #[cfg(test)]
