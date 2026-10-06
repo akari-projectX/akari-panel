@@ -30,7 +30,8 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
 akari-ctl status                    # 服务状态 + 健康检查
 akari-ctl info                      # 再次显示后台地址（含后台前缀）与门户地址
 akari-ctl upgrade                   # 升级到最新版本：先备份 → 校验签名 → 切换 → 健康检查，失败自动回滚
-akari-ctl backup                    # 备份数据库 + 数据目录（CA 私钥、jwt.key、master.key）+ 配置
+akari-ctl backup                    # 备份数据库 + 数据目录（CA 私钥、jwt.key、master.key）+ 配置；
+                                    # 默认不含库里的 agent 发布二进制（--with-agent-releases 包含；docs/BACKUP.md）
 akari-ctl migrate --to docker       # 同一台机器上 裸机 → Docker（或 --to bare），保留前缀、密钥与数据
 akari-ctl uninstall                 # 卸载服务，保留数据与配置；--purge 彻底删除（需输入 purge 确认）
 ```
@@ -1558,7 +1559,7 @@ shown in Chinese) is kept as "上次检查". It never starts a rollout; use the 
 **Publish a release by hand** (advanced; Updates view, or the API): upload `akari-agent-linux-<arch>` with its
 `.manifest.json` and `.manifest.sig` from the GitHub release (verify it first, see "Verify a
 release"). The binary is stored in PostgreSQL (1 MiB rows, every panel instance can serve it;
-mind the backup size) and agents download it over their existing mTLS gRPC connection
+backups leave these rows out unless asked for, docs/BACKUP.md) and agents download it over their existing mTLS gRPC connection
 (`AgentChannel.FetchArtifact`): nodes need no extra egress.
 ```bash
 curl -b cookies -H 'Content-Type: application/json' -X POST "$BASE/api/v1/agent-releases" \

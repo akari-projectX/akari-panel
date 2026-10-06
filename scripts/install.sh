@@ -667,7 +667,7 @@ install_tools() {
 
 MODE='' DOMAIN='' PUBLIC_IP='' EMAIL='' ADMIN='' ADMIN_PW='' HTTP_PORT='' HTTPS_PORT='' GRPC_PORT=''
 VERSION_REQ='' DOCKER_DIR='' LOCAL_CERTS='' RESTORE_DIR='' AGE_IDENTITY='' AGE_RECIPIENT_OPT=''
-BACKUP_SH='' NODE_ADDR='' PURGE=0 MIGRATE_TO='' BACKUP_OUT='' FORCE=0 CONFIRM_PURGE='' VALKEY_PORT=''
+BACKUP_SH='' WITH_RELEASES='' NODE_ADDR='' PURGE=0 MIGRATE_TO='' BACKUP_OUT='' FORCE=0 CONFIRM_PURGE='' VALKEY_PORT=''
 
 load_state() {
 	[ -f "$STATE_ENV" ] || return 1
@@ -1117,12 +1117,13 @@ wait_docker_pg() {
 
 # --- backup / restore ---------------------------------------------------------------
 
-# do_backup OUT_PARENT PLAIN(0|1): one backup directory via backup.sh; sets
-# BACKUP_PATH. PLAIN=1 forces plain files (migration on this host, deleted
-# afterwards).
+# do_backup OUT_PARENT PLAIN(0|1) [RELEASES(0|1)]: one backup directory via
+# backup.sh; sets BACKUP_PATH. PLAIN=1 forces plain files (migration on
+# this host, deleted afterwards). RELEASES=1 keeps the agent release
+# binaries stored in the database (default: left out, docs/BACKUP.md).
 BACKUP_PATH=
 do_backup() {
-	parent=$1 plain=$2
+	parent=$1 plain=$2 releases=${3:-0}
 	install -d -m 0700 "$parent"
 	if [ "$plain" != 1 ] && [ -n "${AGE_RECIPIENT:-}" ]; then
 		have age || {
@@ -1148,7 +1149,7 @@ do_backup() {
 		config_files="$DOCKER_DIR/.env $DOCKER_DIR/panel.toml $DOCKER_DIR/env/panel.env $DOCKER_DIR/env/postgres.env $DOCKER_DIR/env/valkey.env $STATE_ENV"
 		ver=$(kv_get "$DOCKER_DIR/.env" AKARI_IMAGE)
 	fi
-	out=$(env "$recip_env" "$plain_env" AKARI_PG_DUMP_CMD="$dump_cmd" AKARI_DATA_DIR="$data_dir" \
+	out=$(env "$recip_env" "$plain_env" AKARI_BACKUP_AGENT_RELEASES="$releases" AKARI_PG_DUMP_CMD="$dump_cmd" AKARI_DATA_DIR="$data_dir" \
 		AKARI_BACKUP_DIR="$parent" AKARI_CONFIG_FILES="$config_files" AKARI_VERSION_STRING="$ver" \
 		AKARI_MANIFEST_EXTRA="mode=$MODE" bash "${BACKUP_SH:-$LIBDIR/backup.sh}" 2>>"$LOG") ||
 		die "备份失败（见 $LOG）" "backup failed (see $LOG)"
@@ -1807,7 +1808,8 @@ cmd_backup() {
 	out=${BACKUP_OUT:-$BACKUP_ROOT}
 	[ -z "$AGE_RECIPIENT_OPT" ] || AGE_RECIPIENT=$AGE_RECIPIENT_OPT
 	step '备份数据库、数据目录与配置' 'backing up the database, data dir and configuration'
-	do_backup "$out" 0
+	case "${WITH_RELEASES:-${AKARI_BACKUP_AGENT_RELEASES:-0}}" in 1) rel=1 ;; *) rel=0 ;; esac
+	do_backup "$out" 0 "$rel"
 	step "备份完成：$BACKUP_PATH" "backup written: $BACKUP_PATH"
 	note '迁移到新主机：复制该目录，在新主机上运行  install.sh --restore <目录>' \
 		'moving hosts: copy this directory and run  install.sh --restore <dir>  on the new host'
@@ -1837,7 +1839,7 @@ cmd_migrate() {
 	do_backup "$BACKUP_ROOT" 0
 	safety=$BACKUP_PATH
 	step '迁移用的转储（本机临时文件，完成后删除）' 'dump for the move (local temporary files, deleted afterwards)'
-	do_backup "$TMP/migrate" 1
+	do_backup "$TMP/migrate" 1 1
 	move=$BACKUP_PATH
 
 	from=$MODE
@@ -1959,7 +1961,7 @@ Akari panel installer / akari-ctl
 
   install.sh [install] [options]      install (interactive unless --yes)
   install.sh upgrade [--version vX]   upgrade (backup, verify, switch, health check, rollback)
-  install.sh backup [--out DIR] [--age-recipient age1...]
+  install.sh backup [--out DIR] [--age-recipient age1...] [--with-agent-releases]
   install.sh migrate --to docker|bare move this installation to the other mode
   install.sh uninstall [--purge [--confirm purge]]
   install.sh status | info
@@ -2015,6 +2017,7 @@ parse_args() {
 		--restore) RESTORE_DIR=$2 && shift ;;
 		--age-identity) AGE_IDENTITY=$2 && shift ;;
 		--age-recipient) AGE_RECIPIENT_OPT=$2 && shift ;;
+		--with-agent-releases) WITH_RELEASES=1 ;;
 		--out) BACKUP_OUT=$2 && shift ;;
 		--to) MIGRATE_TO=$2 && shift ;;
 		--purge) PURGE=1 ;;
@@ -2063,7 +2066,7 @@ set_lang() {
 become_root() {
 	[ "$(id -u)" -ne 0 ] || return 0
 	have sudo || die '请以 root 运行（或安装 sudo）' 'run as root (or install sudo)'
-	keep='AKARI_MODE,AKARI_DOMAIN,AKARI_PUBLIC_IP,AKARI_EMAIL,AKARI_ADMIN,AKARI_ADMIN_PASSWORD,AKARI_NODE_ADDRESS,AKARI_VERSION,AKARI_DOCKER_DIR,AKARI_RELEASES_URL,AKARI_COSIGN_KEY,AKARI_SOURCE_DIR,LANG,LC_ALL,LC_MESSAGES'
+	keep='AKARI_MODE,AKARI_DOMAIN,AKARI_PUBLIC_IP,AKARI_EMAIL,AKARI_ADMIN,AKARI_ADMIN_PASSWORD,AKARI_NODE_ADDRESS,AKARI_VERSION,AKARI_DOCKER_DIR,AKARI_RELEASES_URL,AKARI_COSIGN_KEY,AKARI_SOURCE_DIR,AKARI_BACKUP_AGENT_RELEASES,LANG,LC_ALL,LC_MESSAGES'
 	if [ -n "$SELF_FILE" ]; then
 		exec sudo --preserve-env="$keep" sh "$SELF_FILE" "$@"
 	fi

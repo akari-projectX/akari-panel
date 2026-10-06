@@ -35,6 +35,11 @@
 #   AKARI_MANIFEST_EXTRA   one more MANIFEST line (no secrets)
 #   AKARI_KEEP_DAYS        delete backups older than this (default 14) ...
 #   AKARI_KEEP_MIN         ... but always keep at least this many (default 3)
+#   AKARI_BACKUP_AGENT_RELEASES=1  include the agent release binaries stored
+#                          in the database (tables agent_releases and
+#                          agent_release_chunks; tens of MB each). Default:
+#                          their rows are left out (the tables are restored
+#                          empty; upload the releases again or use 检查更新)
 #   AKARI_VERIFY_IDENTITY  optional age identity file: when set, the fresh
 #                          backup is decrypted and checked (pg_restore --list,
 #                          tar -t) before success is reported
@@ -79,12 +84,21 @@ for f in ${AKARI_CONFIG_FILES:-}; do
   [ -f "$f" ] && config_files+=("$f")
 done
 
+# Agent release binaries: re-fetchable, and most of the dump's size.
+case "${AKARI_BACKUP_AGENT_RELEASES:-0}" in
+  1) exclude=() releases=included ;;
+  0) exclude=(--exclude-table-data=agent_releases --exclude-table-data=agent_release_chunks) releases=excluded ;;
+  *) die "AKARI_BACKUP_AGENT_RELEASES must be 0 or 1" ;;
+esac
+
 if [ -n "${AKARI_PG_DUMP_CMD:-}" ]; then
-  dump() { bash -c "$AKARI_PG_DUMP_CMD"; }
+  # The options go after the command (pg_dump accepts them after the
+  # database name).
+  dump() { bash -c "$AKARI_PG_DUMP_CMD ${exclude[*]}"; }
 else
   : "${DATABASE_URL:?set DATABASE_URL (or AKARI_PG_DUMP_CMD)}"
   need pg_dump
-  dump() { pg_dump --format=custom --no-owner --dbname "$DATABASE_URL"; }
+  dump() { pg_dump --format=custom --no-owner "${exclude[@]}" --dbname "$DATABASE_URL"; }
 fi
 
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -121,6 +135,7 @@ fi
   else
     echo "format=1 (db.dump.age: pg_dump -Fc; data.tar.age: tar of data_dir; config.tar.age: config files; age-encrypted)"
   fi
+  echo "agent_releases=$releases"
   [ -z "${AKARI_MANIFEST_EXTRA:-}" ] || echo "$AKARI_MANIFEST_EXTRA"
 } >"$tmp/MANIFEST"
 (cd "$tmp" && sha256sum "${files[@]}" >SHA256SUMS)
