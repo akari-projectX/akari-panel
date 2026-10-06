@@ -1578,6 +1578,11 @@ failed / (healthy + failed) > `max_failure_ratio`; a halted rollout can only be 
 stops new offers (in-flight updates finish). Every action and every automatic transition is in
 the audit log (`agent_release.*`, `rollout.*`; automatic ones with actor `system`).
 
+**一键安装用哪个版本**：节点安装命令下载的是「最新的、完整的、且没有在灰度中失败的」发布。某个版本
+最近一次灰度处于 halted（或 halted 之后被中止）时，新装/重装节点改用此前的版本（最后一个已知良好
+版本），安装卡片给出警告；同一版本之后有一次未失败的灰度（例如修好节点后重新灰度并完成）即恢复使用它。
+确认是坏版本后在「更新」页删除该发布。
+
 **On the node** (W18; the installer sets this up, §3 — nodes installed earlier: run their
 **重装命令** once, §5). The agent runs as a throw-away user and its StateDirectory is mounted
 `noexec` by systemd; that stays so (nothing the agent can write is ever executed). Updates go

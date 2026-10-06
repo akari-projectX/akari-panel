@@ -418,14 +418,42 @@ pub struct ReleaseRef {
     pub sha256: String,
 }
 
-/// The newest complete (non-rollback) linux release per architecture.
+/// A version whose latest rollout failed: halted (too many nodes failed or
+/// rolled back), or aborted after it halted. A later rollout of the same
+/// version that does not fail clears it.
+const FAILED_IN_ROLLOUT: &str = "coalesce((SELECT r.status = 'halted' \
+     OR (r.status = 'aborted' AND r.halted_reason IS NOT NULL) \
+     FROM rollouts r WHERE r.version = a.version \
+     ORDER BY r.created_at DESC, r.id DESC LIMIT 1), false)";
+
+/// The release new installs get, per architecture: the newest complete
+/// (non-rollback) linux release that did not fail in a rollout (test
+/// deployment P7: while a rollout of a bad release is halted, new and
+/// reinstalled nodes get the last known good one, not the bad one).
 async fn latest_releases(pg: &sqlx::PgPool) -> sqlx::Result<HashMap<String, ReleaseRef>> {
-    let rows: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT arch, version, sha256 FROM agent_releases \
-         WHERE os = 'linux' AND complete_at IS NOT NULL AND NOT rollback",
-    )
+    let rows: Vec<(String, String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT arch, version, sha256 FROM agent_releases a \
+         WHERE os = 'linux' AND complete_at IS NOT NULL AND NOT rollback \
+         AND NOT {FAILED_IN_ROLLOUT}"
+    )))
     .fetch_all(pg)
     .await?;
+    Ok(newest_per_arch(rows))
+}
+
+/// Complete linux releases skipped because they failed in a rollout:
+/// (arch, version) pairs, for the install card's warning.
+async fn held_back_releases(pg: &sqlx::PgPool) -> sqlx::Result<Vec<(String, String)>> {
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT arch, version FROM agent_releases a \
+         WHERE os = 'linux' AND complete_at IS NOT NULL AND NOT rollback \
+         AND {FAILED_IN_ROLLOUT} ORDER BY arch, version"
+    )))
+    .fetch_all(pg)
+    .await
+}
+
+fn newest_per_arch(rows: Vec<(String, String, String)>) -> HashMap<String, ReleaseRef> {
     let mut best: HashMap<String, ReleaseRef> = HashMap::new();
     for (arch, version, sha256) in rows {
         if !ARCHES.contains(&arch.as_str()) {
@@ -442,7 +470,7 @@ async fn latest_releases(pg: &sqlx::PgPool) -> sqlx::Result<HashMap<String, Rele
             best.insert(arch, ReleaseRef { version, sha256 });
         }
     }
-    Ok(best)
+    best
 }
 
 // ---------------------------------------------------------------------------
@@ -602,6 +630,18 @@ pub async fn view(
     let releases = latest_releases(state.pg()).await?;
     let fallback = state.settings().get().install_fallback_url.clone();
     let mut warnings = p.warnings;
+    for (arch, version) in held_back_releases(state.pg()).await? {
+        let newer_served = releases.get(&arch).is_some_and(|r| {
+            crate::updates::compare_versions(&r.version, &version)
+                == Some(std::cmp::Ordering::Greater)
+        });
+        if !newer_served {
+            warnings.push(format!(
+                "linux/{arch} 的 {version} 在灰度更新中失败（已停止或停止后中止），安装命令改用此前的\
+                 版本；确认它有问题后可在「更新」页删除该发布"
+            ));
+        }
+    }
     for a in ARCHES {
         if !releases.contains_key(a) && fallback.is_none() {
             warnings.push(format!(
