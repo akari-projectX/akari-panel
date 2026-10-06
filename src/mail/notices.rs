@@ -16,7 +16,11 @@
 //! quota markers are deleted when usage drops below the threshold (period
 //! reset, a bigger plan, an admin reset), re-arming them once per period.
 //! Only role=user accounts with a VERIFIED address that are enabled (or
-//! only quota-disabled) receive notices. Every candidate query excludes
+//! only quota-disabled) receive notices. Expiry notices follow the
+//! subscription (运营审查低-1): "expires soon" only for an active one,
+//! "expired" only for one that ran out (active past its expiry or
+//! `expired`) — never for a subscription that was cancelled or refunded
+//! (`users.expires_at` keeps its old value as a record). Every candidate query excludes
 //! already-notified rows before its LIMIT, so a backlog drains in batches.
 
 use chrono::{DateTime, Utc};
@@ -31,6 +35,15 @@ const BATCH: i64 = 500;
 
 /// Marker key of an expiry instant (microseconds since the epoch).
 const EXPIRY_KEY: &str = "((extract(epoch FROM u.expires_at) * 1000000)::bigint)::text";
+
+/// The account's subscription ending at `u.expires_at` has one of these
+/// statuses (`$STATUSES`: an SQL list).
+fn subscription_ends(statuses: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM user_plans up WHERE up.user_id = u.id \
+         AND up.expires_at = u.expires_at AND up.status IN ({statuses}))"
+    )
+}
 
 /// Accounts that may receive notices (alias `u`).
 const RECIPIENT: &str = "u.role = 'user' AND u.email_verified_at IS NOT NULL \
@@ -96,8 +109,9 @@ pub async fn pass(
     let portal_url = portal.map(|p| format!("{p}/shop"));
     if smtp.notify_expiry_days > 0 {
         let pred = format!(
-            "u.expires_at > now() AND u.expires_at <= now() + make_interval(days => {})",
-            smtp.notify_expiry_days
+            "u.expires_at > now() AND u.expires_at <= now() + make_interval(days => {}) AND {}",
+            smtp.notify_expiry_days,
+            subscription_ends("'active'")
         );
         for d in claim(conn, "expiry_soon", EXPIRY_KEY, &pred, None).await? {
             let Some(expires_at) = d.expires_at else {
@@ -123,8 +137,11 @@ pub async fn pass(
     if smtp.notify_expired {
         // Recent expiries only: enabling notices must not mail every
         // account that expired long ago.
-        let pred = "u.expires_at <= now() AND u.expires_at > now() - interval '3 days'";
-        for d in claim(conn, "expired", EXPIRY_KEY, pred, None).await? {
+        let pred = format!(
+            "u.expires_at <= now() AND u.expires_at > now() - interval '3 days' AND {}",
+            subscription_ends("'active', 'expired'")
+        );
+        for d in claim(conn, "expired", EXPIRY_KEY, &pred, None).await? {
             let Some(expires_at) = d.expires_at else {
                 continue;
             };

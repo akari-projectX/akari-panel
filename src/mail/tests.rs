@@ -404,6 +404,30 @@ async fn notice_user(db: &TestDb, sql: &str) -> (Uuid, String) {
     (id, email)
 }
 
+/// A subscription of `user` ending at the account's expiry, in `status`.
+async fn subscribe(db: &TestDb, user: Uuid, status: &str) {
+    let plan: Uuid = sqlx::query_scalar(
+        "INSERT INTO plans (id, name, reset_period) \
+         VALUES (gen_random_uuid(), 'n-' || $1::text, 'none') RETURNING id",
+    )
+    .bind(user)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO user_plans (id, user_id, plan_id, status, expires_at, period_anchor, \
+         term_kind, ended_at) SELECT gen_random_uuid(), u.id, $2, $3::user_plan_status, \
+         u.expires_at, now(), 'month', CASE WHEN $3 = 'active' THEN NULL ELSE now() END \
+         FROM users u WHERE u.id = $1",
+    )
+    .bind(user)
+    .bind(plan)
+    .bind(status)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+}
+
 async fn kinds_to(db: &TestDb, to: &str) -> Vec<String> {
     sqlx::query_scalar("SELECT kind FROM mail_outbox WHERE to_addr = $1 ORDER BY id")
         .bind(to)
@@ -431,9 +455,21 @@ async fn notices_once_per_event() {
     let (_, full_mail) =
         notice_user(&db, "traffic_limit_bytes = 100, traffic_used_bytes = 120").await;
     let (e, soon_mail) = notice_user(&db, "expires_at = now() + interval '2 days'").await;
-    let (_, late_mail) = notice_user(&db, "expires_at = now() + interval '5 days'").await;
-    let (_, gone_mail) = notice_user(&db, "expires_at = now() - interval '1 hour'").await;
-    let (_, old_mail) = notice_user(&db, "expires_at = now() - interval '10 days'").await;
+    subscribe(&db, e, "active").await;
+    let (late, late_mail) = notice_user(&db, "expires_at = now() + interval '5 days'").await;
+    subscribe(&db, late, "active").await;
+    let (gone, gone_mail) = notice_user(&db, "expires_at = now() - interval '1 hour'").await;
+    subscribe(&db, gone, "expired").await;
+    let (old, old_mail) = notice_user(&db, "expires_at = now() - interval '10 days'").await;
+    subscribe(&db, old, "expired").await;
+    // 低-1: a cancelled/refunded subscription gets no expiry mail (the
+    // account keeps the old expiry as a record), nor does an account
+    // without a subscription.
+    let (cs, cancelled_soon) = notice_user(&db, "expires_at = now() + interval '2 days'").await;
+    subscribe(&db, cs, "cancelled").await;
+    let (cg, cancelled_gone) = notice_user(&db, "expires_at = now() - interval '1 hour'").await;
+    subscribe(&db, cg, "cancelled").await;
+    let (_, no_plan) = notice_user(&db, "expires_at = now() + interval '2 days'").await;
     // Not recipients: unverified, admin-disabled.
     let (u, unverified) =
         notice_user(&db, "traffic_limit_bytes = 100, traffic_used_bytes = 99").await;
@@ -464,7 +500,15 @@ async fn notices_once_per_event() {
             .await
             .unwrap();
     assert!(text.contains("https://p.example/x/app/shop"), "{text}");
-    for m in [&late_mail, &old_mail, &unverified, &disabled] {
+    for m in [
+        &late_mail,
+        &old_mail,
+        &unverified,
+        &disabled,
+        &cancelled_soon,
+        &cancelled_gone,
+        &no_plan,
+    ] {
         assert!(kinds_to(&db, m).await.is_empty(), "{m}");
     }
     assert_eq!(run_pass(&db, &s).await, 0, "idempotent");
@@ -494,11 +538,16 @@ async fn notices_once_per_event() {
     );
 
     // Renewal (new expiry) re-arms the reminder.
-    sqlx::query("UPDATE users SET expires_at = expires_at + interval '1 day' WHERE id = $1")
-        .bind(e)
-        .execute(&db.pool)
-        .await
-        .unwrap();
+    for sql in [
+        "UPDATE users SET expires_at = expires_at + interval '1 day' WHERE id = $1",
+        "UPDATE user_plans SET expires_at = expires_at + interval '1 day' WHERE user_id = $1",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(e)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
     assert_eq!(run_pass(&db, &s).await, 1);
     assert_eq!(
         kinds_to(&db, &soon_mail).await,
