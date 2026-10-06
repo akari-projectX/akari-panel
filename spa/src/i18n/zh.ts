@@ -345,6 +345,7 @@ export const zh = {
     kindRefundToBalance: "退回余额",
     kindWithdrawal: "提现",
     kindWithdrawalReversal: "提现退回",
+    kindCommissionClawback: "返利追回（订单退款）",
     withdrawTitle: "申请提现",
     withdrawHint: "只有已入账的邀请返利可以提现；最低提现 ¥{min}。管理员人工打款后完成。",
     amountLabel: "提现金额（元）",

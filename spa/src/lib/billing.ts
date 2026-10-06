@@ -318,7 +318,13 @@ export function parseYuan(s: string): number | null {
 // ---------------------------------------------------------------------------
 
 export type LedgerKind =
-  "commission" | "admin_adjust" | "order_payment" | "refund_to_balance" | "withdrawal" | "withdrawal_reversal";
+  | "commission"
+  | "admin_adjust"
+  | "order_payment"
+  | "refund_to_balance"
+  | "withdrawal"
+  | "withdrawal_reversal"
+  | "commission_clawback";
 
 export interface LedgerEntry {
   id: number;

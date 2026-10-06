@@ -88,3 +88,149 @@ async fn switch_credit_is_what_was_paid() {
     drop(state);
     db.drop().await;
 }
+
+async fn balance_of(db: &TestDb, user: Uuid) -> i64 {
+    let mut c = db.pool.acquire().await.unwrap();
+    super::super::ledger::balance(&mut c, user).await.unwrap()
+}
+
+async fn withdrawable_of(db: &TestDb, user: Uuid) -> i64 {
+    let mut c = db.pool.acquire().await.unwrap();
+    super::super::ledger::withdrawable(&mut c, user)
+        .await
+        .unwrap()
+}
+
+/// Credit every due commission now (time travel past the hold).
+async fn credit_now(db: &TestDb) {
+    sqlx::query(
+        "UPDATE commissions SET available_at = now() - interval '1 second' \
+                 WHERE status = 'pending'",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let mut c = db.pool.acquire().await.unwrap();
+    super::super::commission::credit_due(&mut c)
+        .await
+        .ok()
+        .unwrap();
+}
+
+/// 中-4: a refund claws back a commission already credited and withdrawn:
+/// what the balance holds is taken now, the rest is owed — kept out of
+/// withdrawals and paid first by the next commission. Ledger = balance.
+#[tokio::test]
+async fn commission_clawback_after_the_hold() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let admin = admin(&state, &db).await;
+    let (_, plan) = catalog_plan(&db, "m4", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    let put = admin
+        .req(
+            axum::http::Method::PUT,
+            "/test/api/v1/commission-settings",
+            Some(
+                json!({"enabled": true, "rate_percent": 10, "first_order_only": false,
+                        "hold_days": 7, "min_withdrawal_cents": 50}),
+            ),
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::OK);
+    let (inviter, invitee) = (db.user().await, db.user().await);
+    sqlx::query("UPDATE users SET inviter_id = $1 WHERE id = $2")
+        .bind(inviter)
+        .bind(invitee)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let ic = user_client(&state, inviter).await;
+    let ec = user_client(&state, invitee).await;
+    let first = bought(&db, &ec, plan, "month", json!({})).await;
+    credit_now(&db).await;
+    assert_eq!(balance_of(&db, inviter).await, 100);
+    // Withdrawn and paid out.
+    let r = ic
+        .post(
+            "/test/api/v1/me/withdrawals",
+            json!({"amount_cents": 100, "method": "alipay", "account": "a"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+    let wd = r.json()["id"].as_str().unwrap().to_string();
+    let r = admin
+        .post(
+            &format!("/test/api/v1/withdrawals/{wd}/approve"),
+            json!({"payout_reference": "p"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    // The preview says what will happen to the commission.
+    let p = admin
+        .get(&format!("/test/api/v1/orders/{first}/refund-preview"))
+        .await
+        .json();
+    assert_eq!(
+        p["commission"],
+        json!({"status": "credited", "amount_cents": 100, "action": "claw_back",
+               "recoverable_now_cents": 0})
+    );
+    let r = admin
+        .post(
+            &format!("/test/api/v1/orders/{first}/refund"),
+            json!({"reason": "r", "external_cents": 1000}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["commission"], "clawed_back");
+    assert_eq!(
+        r.json()["commission_clawback"],
+        json!({"amount_cents": 100, "recovered_cents": 0, "outstanding_cents": 100})
+    );
+    assert_eq!(withdrawable_of(&db, inviter).await, 0);
+    // The next commission (150 on 1500) pays the debt first.
+    let (_, big) = catalog_plan(&db, "m4-big", &[(PeriodKind::Month, None, 1500)], |_| {}).await;
+    bought(&db, &ec, big, "month", json!({})).await;
+    credit_now(&db).await;
+    assert_eq!(balance_of(&db, inviter).await, 50);
+    assert_eq!(withdrawable_of(&db, inviter).await, 50);
+    let (owed, recovered): (i64, i64) = sqlx::query_as(
+        "SELECT clawback_cents, clawback_recovered_cents FROM commissions c \
+         JOIN orders o ON o.id = c.order_id WHERE o.id = $1",
+    )
+    .bind(first)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!((owed, recovered), (100, 100));
+    // Ledger = balance, and the clawback rows are audited.
+    let mismatch: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM users u LEFT JOIN user_balances b ON b.user_id = u.id \
+         WHERE COALESCE(b.balance_cents, 0) <> \
+               COALESCE((SELECT sum(amount_cents) FROM balance_ledger l WHERE l.user_id = u.id), 0)",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(mismatch, 0);
+    let rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM balance_ledger WHERE kind = 'commission_clawback'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'balance.commission_clawback'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!((rows, audits), (1, 1));
+    let inv = ic.get("/test/api/v1/me/invite").await.json();
+    assert_eq!(inv["commissions"][1]["clawback_cents"], 100);
+    drop(state);
+    db.drop().await;
+}

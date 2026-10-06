@@ -259,6 +259,7 @@ Every movement is written by `ledger::apply_entry`: **one ledger row + one
 | `order_payment` | − | the balance part of an order, at creation (held); or re-taken by a late payment |
 | `refund_to_balance` | + | the held balance part of an order that ended unpaid; an admin refund to balance |
 | `commission` | + | an invite commission past its hold |
+| `commission_clawback` | − | 中-4: a refunded order's credited commission taken back from the inviter (at the refund, as far as the balance goes; the rest out of the next commissions) |
 | `withdrawal` | − | a withdrawal request (funds held until decided) |
 | `withdrawal_reversal` | + | a rejected or cancelled withdrawal |
 
@@ -294,13 +295,18 @@ Settings (资金 → 邀请返利设置, `PUT /commission-settings`, audited
   (`billing::tests::w16::commission_exactly_once_under_duplicates`). An
   inviter deleted meanwhile → reversed.
 - An admin refund within the hold reverses the pending commission
-  (`commission.reverse`); after the hold it stays credited (the hold is the
-  refund window; claw back with an admin adjustment if needed).
+  (`commission.reverse`).
+- 运营规则（运营逻辑审查中-4）：冻结期**之后**退款也会追回已入账的返利（`commission.clawback`）：
+  邀请人余额够就当场扣回（明细 `commission_clawback`，负数，只追加）；不够（例如已经提现）
+  只扣到 0（余额永不为负），差额记为欠款（`commissions.clawback_cents` − `clawback_recovered_cents`），
+  之后该邀请人的新返利入账时**先抵扣欠款**；可提现金额把整笔追回都扣掉，所以欠款永远提不出来。
+  退款确认框（`refund-preview` 的 `commission`）显示「将撤销 / 将追回、当场可扣回多少」。
 
 ### Withdrawals (提现)
 
-Withdrawable = min(balance, credited commissions − withdrawals not rejected
-or cancelled): refunds and admin credits are spendable on plans, not cash.
+Withdrawable = min(balance, credited commissions − clawed-back commissions
+(中-4) − withdrawals not rejected or cancelled): refunds and admin credits are
+spendable on plans, not cash.
 A request (`POST /me/withdrawals {amount_cents, method, account}`, at least
 `min_withdrawal_cents`, one open request per user) debits the amount at once
 (ledger `withdrawal`). The admin pays out by hand (Alipay/WeChat/bank) and
@@ -319,7 +325,7 @@ Withdrawals of a deleted user can only be approved.
   有实付金额时必填，运营审查中-3：以前登记为 0，仪表盘与导出漏记）。订单记录
   `refund_balance_cents`（退到余额）、`refund_external_cents`（支付宝后台已退），
   `refund_cents` = 两者之和；仪表盘「退款」与订单 CSV（两列分开）都按它统计。
-  待结算的邀请返利撤销。
+  待结算的邀请返利撤销，已入账的追回（中-4，见上文「Invite commission」）。
 - **套餐（P1）**：默认同时撤销该订单对订阅的效果，写审计 `user.plan.refund`：
   - 新购：结束该订阅（状态 `cancelled`），用户的节点凭据随即撤销，agent 断开其连接；
   - 续费：到期时间回退该订单增加的时长（开通时记录 `base`，回退量 = 本单到期 −

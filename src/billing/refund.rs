@@ -283,10 +283,12 @@ async fn refundable(
 pub async fn preview(conn: &mut PgConnection, order_id: Uuid) -> Result<Value, ApiError> {
     let (_, _, _, amount, balance, balance_state) = refundable(conn, order_id, false).await?;
     let effect = effect(conn, order_id).await?;
+    let commission = super::commission::refund_preview(conn, order_id).await?;
     Ok(json!({
         "balance_part_cents": if balance_state == "held" { balance } else { 0 },
         "amount_cents": amount,
         "effect": effect.to_json(),
+        "commission": commission,
     }))
 }
 
@@ -364,6 +366,10 @@ pub async fn apply_refund(
     }
     let commission =
         super::commission::reverse_for_order(conn, actor, order_id, "order refunded").await?;
+    let (commission, clawback) = match commission {
+        Some(u) => (Some(u.status), u.clawback),
+        None => (None, None),
+    };
     if let (Some(user), true) = (user, credit > 0) {
         let mut e = super::ledger::Entry::new(user, super::ledger::Kind::RefundToBalance, credit);
         e.order_id = Some(order_id);
@@ -393,6 +399,7 @@ pub async fn apply_refund(
         "cash_part_cents": cash_part,
         "effect": effect_json,
         "commission": commission,
+        "commission_clawback": clawback,
         "reason": req.reason,
     });
     crate::audit::record(

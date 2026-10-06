@@ -39,6 +39,7 @@ export const LEDGER_ZH: Record<LedgerKind, string> = {
   refund_to_balance: "退回余额",
   withdrawal: "提现",
   withdrawal_reversal: "提现退回",
+  commission_clawback: "返利追回",
 };
 const W_STATUS_ZH: Record<WithdrawalStatus, string> = {
   pending: "待审核",

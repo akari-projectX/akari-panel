@@ -38,6 +38,7 @@ export const KIND_KEY = {
   refund_to_balance: "wallet.kindRefundToBalance",
   withdrawal: "wallet.kindWithdrawal",
   withdrawal_reversal: "wallet.kindWithdrawalReversal",
+  commission_clawback: "wallet.kindCommissionClawback",
 } as const satisfies Record<LedgerKind, MessageKey>;
 
 const W_STATUS_KEY = {

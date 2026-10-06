@@ -348,6 +348,7 @@ export const en: Messages = {
     kindRefundToBalance: "Refund to balance",
     kindWithdrawal: "Withdrawal",
     kindWithdrawalReversal: "Withdrawal returned",
+    kindCommissionClawback: "Commission taken back (order refunded)",
     withdrawTitle: "Request a withdrawal",
     withdrawHint: "Only credited invite commissions can be withdrawn; minimum ¥{min}. An admin pays out by hand.",
     amountLabel: "Amount (CNY)",

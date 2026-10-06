@@ -223,6 +223,17 @@ pub async fn credit_due(conn: &mut PgConnection) -> Result<usize, ApiError> {
             reverse(conn, &actor, *id, "the inviter no longer exists").await?;
             continue;
         };
+        // 中-4: the inviter's outstanding clawbacks, locked before the
+        // balance row (lock order commissions → user_balances); paid first
+        // out of what this commission brings.
+        let debts: Vec<(Uuid, i64)> = sqlx::query_as(
+            "SELECT id, clawback_cents - clawback_recovered_cents FROM commissions \
+             WHERE inviter_id = $1 AND clawback_cents > clawback_recovered_cents \
+             ORDER BY id FOR UPDATE",
+        )
+        .bind(inviter)
+        .fetch_all(&mut *conn)
+        .await?;
         let mut e = Entry::new(*inviter, Kind::Commission, *amount);
         e.commission_id = Some(*id);
         e.order_id = Some(*order);
@@ -235,8 +246,84 @@ pub async fn credit_due(conn: &mut PgConnection) -> Result<usize, ApiError> {
         .bind(ledger_id)
         .execute(&mut *conn)
         .await?;
+        for (debt, owed) in debts {
+            if recover(conn, &actor, *inviter, debt, owed).await? < owed {
+                break;
+            }
+        }
     }
     Ok(due.len())
+}
+
+/// 中-4: take up to `want` from `inviter`'s balance for the clawback of
+/// commission `id` (ledger `commission_clawback`; the caller holds the
+/// commission's row lock). Returns what was taken (never more than the
+/// balance: it cannot go negative).
+async fn recover(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    inviter: Uuid,
+    id: Uuid,
+    want: i64,
+) -> Result<i64, ApiError> {
+    let balance = ledger::lock_balance(conn, inviter).await?;
+    let take = balance.min(want);
+    if take <= 0 {
+        return Ok(0);
+    }
+    let mut e = Entry::new(inviter, Kind::CommissionClawback, -take);
+    e.commission_id = Some(id);
+    ledger::apply_entry(conn, actor, &e).await?;
+    sqlx::query(
+        "UPDATE commissions SET clawback_recovered_cents = clawback_recovered_cents + $2 \
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(take)
+    .execute(&mut *conn)
+    .await?;
+    Ok(take)
+}
+
+/// 中-4: claw a credited commission back (its order was refunded): the
+/// whole amount is owed; what the inviter's balance holds is taken now,
+/// the rest later (`credit_due`). Audited `commission.clawback`. Returns
+/// {amount_cents, recovered_cents, outstanding_cents}.
+async fn claw_back(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    id: Uuid,
+    inviter: Option<Uuid>,
+    amount: i64,
+    reason: &str,
+) -> Result<Value, ApiError> {
+    sqlx::query(
+        "UPDATE commissions SET clawback_cents = amount_cents, clawed_back_at = now() \
+         WHERE id = $1 AND status = 'credited' AND clawback_cents IS NULL",
+    )
+    .bind(id)
+    .execute(&mut *conn)
+    .await?;
+    // A deleted inviter has no balance left to take from.
+    let recovered = match inviter {
+        Some(u) => recover(conn, actor, u, id, amount).await?,
+        None => 0,
+    };
+    let detail = json!({ "amount_cents": amount, "recovered_cents": recovered,
+                         "outstanding_cents": amount - recovered });
+    let mut after = detail.clone();
+    after["reason"] = json!(reason);
+    crate::audit::record(
+        conn,
+        actor,
+        "commission.clawback",
+        "commission",
+        Some(id.to_string()),
+        Some(json!({ "status": "credited" })),
+        Some(after),
+    )
+    .await?;
+    Ok(detail)
 }
 
 /// Reverse one pending commission (audited `commission.reverse`). Returns
@@ -271,27 +358,84 @@ async fn reverse(
     Ok(true)
 }
 
-/// The order was refunded: reverse its commission if still pending.
-/// Returns the commission's state afterwards (None without one).
+/// What a refund did to its order's commission.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Undone {
+    /// `reversed` (was pending), `clawed_back` (was credited, 中-4), or
+    /// the state it was left in.
+    pub status: String,
+    /// The clawback: {amount_cents, recovered_cents, outstanding_cents}.
+    pub clawback: Option<Value>,
+}
+
+/// The order was refunded: a pending commission is reversed, a credited
+/// one clawed back (中-4: regardless of the hold; what the inviter's
+/// balance cannot cover now is netted against later commissions and kept
+/// out of withdrawals). None without a commission.
 pub async fn reverse_for_order(
     conn: &mut PgConnection,
     actor: &Actor,
     order_id: Uuid,
     reason: &str,
-) -> Result<Option<String>, ApiError> {
-    let c: Option<(Uuid, String)> =
-        sqlx::query_as("SELECT id, status FROM commissions WHERE order_id = $1 FOR UPDATE")
-            .bind(order_id)
-            .fetch_optional(&mut *conn)
-            .await?;
-    let Some((id, status)) = c else {
+) -> Result<Option<Undone>, ApiError> {
+    type Row = (Uuid, String, Option<Uuid>, i64, Option<i64>);
+    let c: Option<Row> = sqlx::query_as(
+        "SELECT id, status, inviter_id, amount_cents, clawback_cents FROM commissions \
+         WHERE order_id = $1 FOR UPDATE",
+    )
+    .bind(order_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((id, status, inviter, amount, clawback)) = c else {
         return Ok(None);
     };
-    if status == "pending" {
-        reverse(conn, actor, id, reason).await?;
-        return Ok(Some("reversed".into()));
-    }
-    Ok(Some(status))
+    Ok(Some(match (status.as_str(), clawback) {
+        ("pending", _) => {
+            reverse(conn, actor, id, reason).await?;
+            Undone {
+                status: "reversed".into(),
+                clawback: None,
+            }
+        }
+        ("credited", None) => Undone {
+            status: "clawed_back".into(),
+            clawback: Some(claw_back(conn, actor, id, inviter, amount, reason).await?),
+        },
+        _ => Undone {
+            status,
+            clawback: None,
+        },
+    }))
+}
+
+/// For the refund preview: the order's commission, what a refund would do
+/// to it and what the inviter's balance would cover now. None without one.
+pub async fn refund_preview(
+    conn: &mut PgConnection,
+    order_id: Uuid,
+) -> sqlx::Result<Option<Value>> {
+    let row: Option<(String, i64, Option<i64>, i64)> = sqlx::query_as(
+        "SELECT c.status, c.amount_cents, c.clawback_cents, \
+         COALESCE((SELECT b.balance_cents FROM user_balances b WHERE b.user_id = c.inviter_id), 0) \
+         FROM commissions c WHERE c.order_id = $1",
+    )
+    .bind(order_id)
+    .fetch_optional(conn)
+    .await?;
+    Ok(row.map(|(status, amount, clawback, balance)| {
+        let action = match (status.as_str(), clawback) {
+            ("pending", _) => "reverse",
+            ("credited", None) => "claw_back",
+            _ => "none",
+        };
+        let recoverable = if action == "claw_back" {
+            balance.min(amount)
+        } else {
+            0
+        };
+        json!({ "status": status, "amount_cents": amount, "action": action,
+                "recoverable_now_cents": recoverable })
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -541,7 +685,8 @@ pub async fn my_invite(
     .await?;
     let history: Vec<MyCommission> = sqlx::query_as(
         "SELECT id, invitee_label, base_cents, rate_percent, amount_cents, status, \
-         available_at, credited_at, reversed_at, created_at FROM commissions \
+         available_at, credited_at, reversed_at, clawback_cents, clawback_recovered_cents, \
+         clawed_back_at, created_at FROM commissions \
          WHERE inviter_id = $1 ORDER BY created_at DESC, id DESC LIMIT 100",
     )
     .bind(user.id)
@@ -586,6 +731,10 @@ pub struct MyCommission {
     available_at: DateTime<Utc>,
     credited_at: Option<DateTime<Utc>>,
     reversed_at: Option<DateTime<Utc>>,
+    /// 中-4: clawed back by a refund (amount; recovered so far).
+    clawback_cents: Option<i64>,
+    clawback_recovered_cents: i64,
+    clawed_back_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
 }
 
@@ -672,6 +821,10 @@ pub struct CommissionView {
     credited_at: Option<DateTime<Utc>>,
     reversed_at: Option<DateTime<Utc>>,
     reverse_reason: Option<String>,
+    /// 中-4: clawed back by a refund (amount; recovered so far).
+    clawback_cents: Option<i64>,
+    clawback_recovered_cents: i64,
+    clawed_back_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
 }
 
@@ -691,7 +844,8 @@ pub async fn list_commissions(
          (SELECT u.email FROM users u WHERE u.id = c.inviter_id) AS inviter_email, c.invitee_id, \
          c.invitee_label, (SELECT u.email FROM users u WHERE u.id = c.invitee_id) AS invitee_email, \
          c.base_cents, c.rate_percent, c.amount_cents, c.status, \
-         c.available_at, c.credited_at, c.reversed_at, c.reverse_reason, c.created_at \
+         c.available_at, c.credited_at, c.reversed_at, c.reverse_reason, c.clawback_cents, \
+         c.clawback_recovered_cents, c.clawed_back_at, c.created_at \
          FROM commissions c JOIN orders o ON o.id = c.order_id \
          WHERE ($1::text IS NULL OR c.status = $1) \
            AND ($2::text IS NULL OR c.inviter_id = (SELECT u.id FROM users u WHERE u.email = $2)) \
