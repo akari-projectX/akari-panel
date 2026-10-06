@@ -321,6 +321,7 @@ settings.release_key_invalid
 settings.release_keys_too_many
 settings.server_name_locked
 settings.site_name_invalid
+settings.timezone_invalid
 settings.tls_pin_invalid
 settings.traffic_retention_invalid
 settings.version_conflict

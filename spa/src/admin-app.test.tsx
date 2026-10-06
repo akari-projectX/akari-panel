@@ -43,6 +43,8 @@ const me = (role: string): Me => ({
 const unauthorized = () => ({ status: 401, body: { error: "unauthorized" } });
 const dashboard = {
   at: "2026-10-02T06:00:00Z",
+  timezone: "Asia/Shanghai",
+  today_date: "2026-10-02",
   today_start: "2026-10-01T16:00:00Z",
   today: { revenue_cents: 1990, orders: 2, refunds_cents: 0, signups: 3 },
   d7: { revenue_cents: 9900, orders: 10, refunds_cents: 100, signups: 12 },

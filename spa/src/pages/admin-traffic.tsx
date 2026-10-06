@@ -38,7 +38,7 @@ function DailyChart({ rows, from, to }: { rows: TrafficDay[]; from: string; to: 
   const filled = fillDays(rows, from, to);
   return (
     <LineChart
-      title="每日流量（UTC 日期）"
+      title="每日流量（站点时区日期）"
       times={filled.map((d) => `${d.day}T00:00:00Z`)}
       series={[
         { label: "下载", values: filled.map((d) => d.down_bytes), stroke: "stroke-sky-500", swatch: "bg-sky-500" },

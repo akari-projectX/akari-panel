@@ -3,10 +3,11 @@
 #
 #   restore.sh [--force] <backup dir>
 #
-# Stop the panel first. The target database should be empty (a fresh
-# `createdb`); with --force an existing database is cleaned (objects present
-# in the dump are dropped and recreated) and a non-empty data dir is
-# replaced (the old one is moved aside to <data dir>.pre-restore-<ts>).
+# Stop the panel first. The target database must be empty (a fresh
+# `createdb`: pg_restore --clean cannot drop the partitions of the
+# partitioned traffic_daily, so an existing database is not cleaned); with
+# --force a non-empty data dir is replaced (the old one is moved aside to
+# <data dir>.pre-restore-<ts>).
 #
 # Plain backups (backup.sh AKARI_BACKUP_PLAINTEXT=1: db.dump, data.tar) need
 # no key. config.tar(.age), when present, is not restored (the target's
@@ -17,7 +18,7 @@
 #   DATABASE_URL           target PostgreSQL URL                         [required*]
 #   AKARI_PG_RESTORE_CMD   alternative command reading a custom-format dump
 #                          on stdin, e.g.
-#                          'docker compose exec -T postgres pg_restore -U akari -d akari --clean --if-exists --no-owner --single-transaction'
+#                          'docker compose exec -T postgres pg_restore -U akari -d akari --no-owner --single-transaction'
 #   AKARI_DATA_DIR         target data_dir                               [required]
 #   AKARI_OWNER            user:group to chown the data dir to (needs root)
 set -euo pipefail
@@ -52,7 +53,7 @@ if [ -n "${AKARI_PG_RESTORE_CMD:-}" ]; then
 else
   : "${DATABASE_URL:?set DATABASE_URL (or AKARI_PG_RESTORE_CMD)}"
   need pg_restore
-  load() { pg_restore --clean --if-exists --no-owner --single-transaction --dbname "$DATABASE_URL"; }
+  load() { pg_restore --no-owner --exit-on-error --single-transaction --dbname "$DATABASE_URL"; }
 fi
 
 if [ -d "$AKARI_DATA_DIR" ] && [ -n "$(ls -A "$AKARI_DATA_DIR" 2>/dev/null)" ]; then

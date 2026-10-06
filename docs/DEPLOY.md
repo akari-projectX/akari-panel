@@ -332,6 +332,23 @@ from whatever address a browser happened to use, and the Host check (§1b) turns
 any other name get the empty 404. A subscription domain (for Cloudflare) and a node communication
 domain are optional (§1b).
 
+### 站点时区（Q3，W28-a，中文）
+
+**系统设置 → 站点 → 时区**（API `PUT /api/v1/settings/site {"version": N, "timezone": "Asia/Shanghai"}`），默认 `Asia/Shanghai`（北京时间，无夏令时）。填写 IANA 时区名（如 `Asia/Shanghai`、`Asia/Tokyo`、`UTC`、`America/New_York`），必须与 PostgreSQL 时区库中的名称完全一致；`CST`、`UTC+8`、`+08:00` 这类缩写或偏移会被拒绝（`settings.timezone_invalid`），因为它们的含义有歧义。留空 = 恢复默认。修改写入审计（`settings.site.update`）。
+
+它决定以下"日"和"月"的边界：
+
+- **流量明细**：每天的流量按该时区的 0 点切分（用户「流量记录」、后台用户/节点流量、仪表盘近 14 天、流量 CSV 导出）。默认设置下，北京时间 0 点即新的一天（以前按 UTC，相当于北京时间 8 点）。
+- **审计规则拦截次数**：按该时区的日统计（`node_block_daily`）。
+- **套餐流量月重置**：按该时区的当地日期与时刻（例如北京时间 3 月 1 日 03:00 开通，每月 1 日 03:00 重置；31 日开通的在小月夹到月末）。有夏令时的时区保持当地钟点不变。
+- **按月/季/年计的套餐时长**：同样按该时区的日历月计算到期（北京时间 1 号买的月付在下月 1 号同一时刻到期，与月重置对齐）。按天计的套餐始终是精确的 N×24 小时。
+- **仪表盘**的今日/近 7 天/近 30 天、**订单 CSV 导出**的日期范围（按当地 0 点）。
+- 后台用户详情与门户「我的套餐」里的下次重置时间以该时区呈现（`2026-11-01T00:00:00+08:00`）。
+
+**修改时区只影响之后的数据**：已经记录的流量日期不会改写；已经排好的下次重置时间在下一次重置时按新时区重新计算。建议在开始运营前设置好，之后不要频繁修改。
+
+**流量明细的存储**：`traffic_daily` 按月分区（`traffic_daily_YYYYMM`）。面板启动时和每 10 分钟检查一次，保证上个月到后两个月的分区存在；超过「流量明细保留天数」（系统设置 → 安全，默认 400 天）的**整月**汇总进月表后直接删除整个分区，不产生数据库膨胀。因此日明细至少保留设定的天数，最多再多保留不到一个月。
+
 ## 2c. Mail, registration and password reset (optional, W15)
 
 Everything here is off until you turn it on; nothing in panel.toml.
@@ -1040,7 +1057,7 @@ failure the next order tries the other challenge when it is available.
 - **修改规则内容**（增删改规则、开关某个规则集）**不断开任何连接**：agent 原子替换整套路由规则，不重建入站、不重建 xray。规则只作用于新建立的连接（路由在每次分发时决定）：已经建立的连接即使命中新规则也继续转发，直到客户端重连。
 - agent 版本过旧（没有 `block-rules` 能力）时开关无效，`GET /api/v1/nodes/{id}/block-rules` 的 `agent_supported` 为 false。
 
-**统计**：`GET /api/v1/nodes/{id}/block-rules?days=7`（1–90）返回开关状态、agent 是否支持、当前生效的规则版本是否与面板一致（`in_sync`、`error`）、以及最近 N 天（UTC）每条规则的拦截次数；规则列表里的 `hits_7d` 是全部节点近 7 天合计。**只记录每个节点每条规则的拦截次数，不记录任何用户或访问目标。**日数据保留 90 天。
+**统计**：`GET /api/v1/nodes/{id}/block-rules?days=7`（1–90）返回开关状态、agent 是否支持、当前生效的规则版本是否与面板一致（`in_sync`、`error`）、以及最近 N 天（按站点时区的日，见 §2b「站点时区」）每条规则的拦截次数；规则列表里的 `hits_7d` 是全部节点近 7 天合计。**只记录每个节点每条规则的拦截次数，不记录任何用户或访问目标。**日数据保留 90 天。
 
 ## 3c. Resource footprint (measured)
 
@@ -1462,11 +1479,14 @@ you want to undo:
   `docker compose up -d panel` (or `akari-ctl upgrade --version <previous> --force`).
 - **A migration ran**: migrations are forward-only, the old binary refuses the newer schema.
   Restore the pre-upgrade backup together with the old binary/image: stop the panel, restore
-  (docs/BACKUP.md "Restore"; `AKARI_PG_RESTORE_CMD`/`AKARI_DATA_DIR` as in the installer: bare
-  metal `runuser -u postgres -- pg_restore -p <port> -d akari --clean --if-exists --no-owner
-  --role=akari --single-transaction`, data dir `/var/lib/akari`; Docker `docker compose exec -T
-  postgres pg_restore -U akari -d akari --clean --if-exists --no-owner --single-transaction`, data
-  dir = the `akari_akari-data` volume's mountpoint), start the old release. Traffic counted since
+  (docs/BACKUP.md "Restore": first recreate the database empty — `DROP DATABASE akari WITH
+  (FORCE); CREATE DATABASE akari OWNER akari;` as `postgres` (bare) / `akari` (Docker) on the
+  `postgres` database, since `pg_restore --clean` cannot drop the partitions of `traffic_daily`;
+  then `AKARI_PG_RESTORE_CMD`/`AKARI_DATA_DIR` as in the installer: bare metal `runuser -u postgres
+  -- pg_restore -p <port> -d akari --no-owner --role=akari --single-transaction`, data dir
+  `/var/lib/akari`; Docker `docker compose exec -T postgres pg_restore -U akari -d akari
+  --no-owner --single-transaction`, data dir = the `akari_akari-data` volume's mountpoint), start
+  the old release. Traffic counted since
   the backup is lost; everything else is as of the backup.
 
 A restored database with the old `data/` keeps the same route prefix and agent certificates.

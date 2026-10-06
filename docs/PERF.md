@@ -611,6 +611,30 @@ unanswered, reads one ≤ 4 KiB result file per heartbeat; `Heartbeat.source_fil
 (nothing when no relay exists). nft runs in the root updater (one `nft -f` per change), not in the
 agent process.
 
+## W28-a PR4: site time zone and monthly partitions of `traffic_daily` (2026-10-06)
+
+Flush (`make bench-seed` + `cargo bench -- db/flush`, local bench stack, fresh seed per run, main
+(235ce59) and this branch interleaved, two rounds each): `db/flush/50000` main 595.6 / 584.9 ms,
+branch 598.8 / 592.5 ms (+0.5 % / +1.3 %, inside the run-to-run noise; target < 1 s). The only flush
+change is the staged rows' day: `(SELECT akari_site_day(statement_timestamp()))`, an uncorrelated
+sub-select (one initplan: one settings lookup per statement, not per row). The flush still writes
+only the unindexed, unpartitioned `traffic_daily_pending`.
+
+Retention (bench seed: 3M `traffic_daily` rows of the last 30 days, plus the same 3M copied 400
+days back; then the rollup of everything older than 400 days, one `DO` loop on the bench stack):
+
+| | main (`ROLLUP_SQL`: `DELETE … RETURNING` 10k rows per statement) | branch (`akari_rollup_traffic_partition`: whole month → `traffic_monthly`, `DROP`) |
+|---|---|---|
+| rows moved | 2.9M | 2.9M (two whole months) |
+| time | 21.8 s | 20.1 s (the `traffic_monthly` upsert dominates both) |
+| dead tuples left in `traffic_daily*` | 2.9M | 0 |
+| `traffic_daily*` size (heap + indexes) after | 1679 MB (unchanged until VACUUM, indexes bloated) | 880 MB (the partition's files are gone) |
+
+So the retention no longer leaves autovacuum a month of dead heap and B-tree entries per month,
+and the partition's disk space is returned at once. The parent's ACCESS EXCLUSIVE lock is taken by
+the `DROP` at the end of each month's transaction (`lock_timeout` 5 s, retried at the next pass), so
+readers wait at most for the commit, not for the copy.
+
 ## Limits and honest caveats
 
 - Flush margin (W22): 0.58 s against the 1 s budget (W11: 0.49 s) for 50k rows; on a slower

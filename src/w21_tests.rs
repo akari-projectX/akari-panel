@@ -378,6 +378,80 @@ async fn site_name_setting() {
     db.drop().await;
 }
 
+/// Q3: the site time zone: default Asia/Shanghai; a full IANA name only
+/// (abbreviations, POSIX strings, wrong case and unknown names are 400);
+/// absent = unchanged (the site name too); null = the default again;
+/// audited with before/after; the history follows it at once.
+#[tokio::test]
+async fn site_timezone_setting() {
+    let Some((db, state, c)) = setup().await else {
+        return;
+    };
+    crate::settings::init(&state).await.unwrap();
+    let v = c.get("/test/api/v1/settings").await.json();
+    assert_eq!(
+        v["timezone"],
+        json!({ "value": null, "effective": "Asia/Shanghai", "default": "Asia/Shanghai", "source": "default" })
+    );
+    let mut version = v["version"].as_i64().unwrap();
+    let put = |body: Value| c.req(Method::PUT, "/test/api/v1/settings/site", Some(body));
+    let r = put(json!({ "version": version, "site_name": "星云" })).await;
+    assert_eq!(r.status, StatusCode::OK);
+    version += 1;
+    for bad in [
+        "CST",
+        "UTC+8",
+        "+08:00",
+        "asia/shanghai",
+        "Mars/Olympus_Mons",
+        "Asia/Shanghai\u{0}",
+    ] {
+        let r = put(json!({ "version": version, "timezone": bad })).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}");
+        assert_eq!(r.json()["code"], "settings.timezone_invalid", "{bad}");
+    }
+    let r = put(json!({ "version": version, "timezone": " America/New_York " })).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["timezone"]["effective"], "America/New_York");
+    assert_eq!(
+        r.json()["site_name"],
+        "星云",
+        "an absent site name is unchanged"
+    );
+    version += 1;
+    let tz: String = sqlx::query_scalar("SELECT akari_site_tz()")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(tz, "America/New_York");
+    let r = c.get("/test/api/v1/traffic/summary").await;
+    assert_eq!(r.json()["timezone"], "America/New_York");
+    // Unchanged when absent; null = the default.
+    let r = put(json!({ "version": version, "site_name": "星云 2" })).await;
+    assert_eq!(r.json()["timezone"]["value"], "America/New_York");
+    version += 1;
+    let r = put(json!({ "version": version, "timezone": null })).await;
+    assert_eq!(r.json()["timezone"]["effective"], "Asia/Shanghai");
+    assert_eq!(r.json()["timezone"]["source"], "default");
+    let after: Vec<Value> = sqlx::query_scalar(
+        "SELECT after FROM audit_log WHERE action = 'settings.site.update' ORDER BY id",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    let zones: Vec<&Value> = after.iter().map(|a| &a["timezone"]).collect();
+    assert_eq!(
+        zones,
+        [
+            &Value::Null,
+            &json!("America/New_York"),
+            &json!("America/New_York"),
+            &Value::Null
+        ]
+    );
+    db.drop().await;
+}
+
 #[tokio::test]
 async fn error_bodies_carry_codes() {
     let Some((db, state, c)) = setup().await else {

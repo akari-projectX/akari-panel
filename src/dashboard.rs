@@ -12,13 +12,13 @@
 //! Benchmarked at bench scale (50k users, 200 nodes) in docs/PERF.md
 //! ("W21 dashboard").
 //!
-//! Days are Beijing days (Asia/Shanghai, the console's time zone, M7):
-//! "today" starts at 00:00 Beijing time; "7d"/"30d" are the last 7/30
+//! Days are site days (Q3: 系统设置 → 站点 → 时区, default Asia/Shanghai):
+//! "today" starts at 00:00 in the site time zone; "7d"/"30d" are the last 7/30
 //! calendar days including today. Money is integer fen.
 
 use axum::Json;
 use axum::extract::State;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -86,7 +86,11 @@ pub struct LatestOrder {
 pub struct Dashboard {
     /// When the figures were read (DB clock).
     pub at: DateTime<Utc>,
-    /// Start of today, Beijing time.
+    /// Q3: the site time zone (IANA) and today there: the day windows and
+    /// the traffic days are in it.
+    pub timezone: String,
+    pub today_date: NaiveDate,
+    /// Start of today in the site time zone.
     pub today_start: DateTime<Utc>,
     pub today: Window,
     pub d7: Window,
@@ -100,7 +104,7 @@ pub struct Dashboard {
     pub nodes: Nodes,
     pub pending: Pending,
     pub latest_orders: Vec<LatestOrder>,
-    /// W22 traffic history: the fleet per UTC day over the last
+    /// W22 traffic history: the fleet per site day over the last
     /// `TRAFFIC_DAYS` days (days without traffic omitted) and the top nodes
     /// over the same range.
     pub traffic_days: Vec<crate::trafficlog::NodeDayRow>,
@@ -113,10 +117,13 @@ pub const TRAFFIC_DAYS: i64 = 14;
 /// Top nodes listed.
 pub const TRAFFIC_TOP_NODES: i64 = 5;
 
-/// Window bounds: today's start (Beijing) and the 7/30-day starts.
-const BOUNDS_SQL: &str = "WITH b AS (SELECT now() AS at, \
-     (date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai') AS d1) \
-     SELECT at, d1, d1 - interval '6 days' AS d7, d1 - interval '29 days' AS d30 FROM b";
+/// Window bounds: the site time zone, today there, today's start and the
+/// 7/30-day starts (local midnights: right across a DST change too).
+const BOUNDS_SQL: &str = "WITH b AS (SELECT now() AS at, akari_site_tz() AS tz, \
+     akari_site_day(now()) AS day) \
+     SELECT at, tz, day, day::timestamp AT TIME ZONE tz AS d1, \
+     (day - 6)::timestamp AT TIME ZONE tz AS d7, (day - 29)::timestamp AT TIME ZONE tz AS d30 \
+     FROM b";
 
 const WINDOWS_SQL: &str = "SELECT \
      coalesce(sum(o.amount_cents) FILTER (WHERE o.paid_at >= $1), 0)::bigint, \
@@ -177,8 +184,16 @@ pub async fn read(pool: &sqlx::PgPool) -> Result<(Dashboard, Vec<Uuid>), ApiErro
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         .execute(&mut *tx)
         .await?;
-    type Bounds = (DateTime<Utc>, DateTime<Utc>, DateTime<Utc>, DateTime<Utc>);
-    let (at, d1, d7, d30): Bounds = sqlx::query_as(BOUNDS_SQL).fetch_one(&mut *tx).await?;
+    type Bounds = (
+        DateTime<Utc>,
+        String,
+        NaiveDate,
+        DateTime<Utc>,
+        DateTime<Utc>,
+        DateTime<Utc>,
+    );
+    let (at, timezone, today_date, d1, d7, d30): Bounds =
+        sqlx::query_as(BOUNDS_SQL).fetch_one(&mut *tx).await?;
     let (r1, n1, r7, n7, r30, n30): (i64, i64, i64, i64, i64, i64) = sqlx::query_as(WINDOWS_SQL)
         .bind(d1)
         .bind(d7)
@@ -258,6 +273,8 @@ pub async fn read(pool: &sqlx::PgPool) -> Result<(Dashboard, Vec<Uuid>), ApiErro
     Ok((
         Dashboard {
             at,
+            timezone,
+            today_date,
             today_start: d1,
             today: window((r1, m1, g1), n1, f1, s1),
             d7: window((r7, m7, g7), n7, f7, s7),
@@ -313,7 +330,7 @@ pub async fn get_dashboard(
     user.require_admin()?;
     let (mut d, online) = read(state.pg()).await?;
     d.online_users = online_users(&state, &online).await;
-    let to = d.at.date_naive();
+    let to = d.today_date;
     let from = to - chrono::Duration::days(TRAFFIC_DAYS - 1);
     d.traffic_days = crate::trafficlog::fleet_days(state.pg(), from, to).await?;
     d.traffic_top_nodes =

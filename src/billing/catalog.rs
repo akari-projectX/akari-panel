@@ -99,7 +99,7 @@ impl PeriodKind {
     }
 
     /// Calendar months a period adds (None for the others). Mirrors SQL
-    /// `akari_period_end`.
+    /// `akari_period_end` (which counts them in the site time zone).
     pub fn months(self) -> Option<i32> {
         match self {
             PeriodKind::Month => Some(1),

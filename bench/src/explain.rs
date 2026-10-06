@@ -424,8 +424,8 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
     explain(
         &mut tx,
         p,
-        "traffic::ROLLUP_SQL",
-        q!(traffic::ROLLUP_SQL).bind(400i32).bind(10_000i64),
+        "traffic::ROLLUP_DEFAULT_SQL",
+        q!(traffic::ROLLUP_DEFAULT_SQL).bind(400i32).bind(10_000i64),
     )
     .await?;
     tx.rollback().await?;
