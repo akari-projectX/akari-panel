@@ -1188,8 +1188,8 @@ failure the next order tries the other challenge when it is available.
 **按节点开关**（`PUT /api/v1/nodes/{id}/block-rules {"enabled": true|false}`，默认关，审计 `node.block_rules.set`）：
 
 - **关闭时**节点上没有任何额外开销：xray 配置与没有本功能时逐字节相同，不开嗅探，没有拦截出站。
-- **开启时**该节点的入站开启嗅探（`routeOnly`：嗅探结果只用于路由，不改变连接目标；入站 JSON 里已经自己配置了 `sniffing` 的保持原样）。嗅探会等待客户端的第一个数据包（xray 默认最多约 300 ms），服务器先发数据的协议（如 SSH、SMTP）首包延迟会增加。
-- **开关时会断开哪些连接**：只重建这个节点的入站监听（不重建 xray，其他节点不受影响，用户与计费不变）。以下是 agent 金丝雀测试（`rt_block_canary_test.go`，真实 xray 客户端逐个协议组合）实测结果：
+- **开启时**该节点**每个启用的入口**（直连入口与每个中转入口各自的入站，见 §3 的「中转入口（relay）」）都受规则约束：经中转入口连接的用户与直连用户一样被拦截、一样计数；直连入口停用时中转入口照样拦截。这些入站开启嗅探（`routeOnly`：嗅探结果只用于路由，不改变连接目标；入站 JSON 里已经自己配置了 `sniffing` 的保持原样）。嗅探会等待客户端的第一个数据包（xray 默认最多约 300 ms），服务器先发数据的协议（如 SSH、SMTP）首包延迟会增加。
+- **开关时会断开哪些连接**：只重建这个节点的入站监听（直连与中转入口的入站）（不重建 xray，其他节点不受影响，用户与计费不变）。以下是 agent 金丝雀测试（`rt_block_canary_test.go`，真实 xray 客户端逐个协议组合）实测结果：
   - **保留**：raw TCP / TLS / REALITY（含 Vision）、WebSocket、HTTPUpgrade、VMess TCP、Shadowsocks 2022、以及 TLS/REALITY 上的 XHTTP（一条长 HTTP/2 请求）。
   - **断开一次、客户端自动重连**：gRPC（流属于监听端的 HTTP/2 服务）、明文 HTTP 上的 XHTTP（客户端 packet-up 模式，每次上传都是新请求）、Hysteria 2（QUIC 连接属于监听端）。
 - **修改规则内容**（增删改规则、开关某个规则集）**不断开任何连接**：agent 原子替换整套路由规则，不重建入站、不重建 xray。规则只作用于新建立的连接（路由在每次分发时决定）：已经建立的连接即使命中新规则也继续转发，直到客户端重连。
@@ -1743,7 +1743,7 @@ that exact identity. Needs **cosign >= 3** (`cosign version`; 2.4.x works for bl
 commands against what it has just signed before it publishes.
 
 ```bash
-TAG=v0.4.0-rc.1
+TAG=v0.4.0-rc.2
 ID="https://github.com/akari-projectX/akari-panel/.github/workflows/release.yml@refs/tags/$TAG"
 ISS=https://token.actions.githubusercontent.com
 REL="https://github.com/akari-projectX/akari-panel/releases/download/$TAG"
@@ -1781,7 +1781,7 @@ Without access to ghcr.io, or to run an unreleased commit, build the same image 
 (about 10 minutes on 4 cores; Docker with BuildKit, nothing else needed) and point compose at it:
 
 ```bash
-cd /opt/akari-panel && git checkout v0.4.0-rc.1              # the release you want
+cd /opt/akari-panel && git checkout v0.4.0-rc.2              # the release you want
 docker build -t akari-panel:local --build-arg AKARI_GIT_SHA="$(git rev-parse --short=12 HEAD)" .
 sed -i 's|^AKARI_IMAGE=.*|AKARI_IMAGE=akari-panel:local|' deploy/.env
 cd deploy && docker compose up -d                           # skip `docker compose pull` for a local image
@@ -1811,7 +1811,7 @@ apt-get update && apt-get install -y docker.io docker-compose git
 docker compose version                                 # v2.x
 
 # 1. the deploy files of the release you install (the tag matches the image in step 3)
-git clone -b v0.4.0-rc.1 https://github.com/akari-projectX/akari-panel /opt/akari-panel
+git clone -b v0.4.0-rc.2 https://github.com/akari-projectX/akari-panel /opt/akari-panel
 cd /opt/akari-panel/deploy
 cp .env.example .env
 for f in env/*.example; do cp "$f" "${f%.example}"; done
@@ -1826,7 +1826,7 @@ sed -i "s/CHANGE-ME-valkey/$VKPW/" env/panel.env env/valkey.env
 #    ("Verify a release" below)
 cp panel.toml.compose.example panel.toml            # no names in it: domains are set in 系统设置
 sed -i 's/panel.example.com/panel.yourdomain.com/g' .env
-sed -i 's|^AKARI_IMAGE=.*|AKARI_IMAGE=ghcr.io/akari-projectx/akari-panel:0.4.0-rc.1@sha256:<digest>|' .env
+sed -i 's|^AKARI_IMAGE=.*|AKARI_IMAGE=ghcr.io/akari-projectx/akari-panel:0.4.0-rc.2@sha256:<digest>|' .env
 
 # 4. check, start, read the admin prefix
 docker compose run --rm panel config check             # last line: "configuration OK (0 warnings)"
