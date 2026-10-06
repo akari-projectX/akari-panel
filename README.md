@@ -79,9 +79,16 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   unless `web.cookie_secure = false`). The token carries the account's
   `session_ver`: a password change, disable, role change, expiry, logout or
   `POST /api/v1/users/{id}/revoke-sessions` ends every session of the
-  account (logout = log out everywhere; a copied cookie dies with it). The
-  last enabled admin cannot be disabled, demoted or deleted (409; enforced
-  by a DB trigger, race-free). Every administrative change is in the audit
+  account (logout = log out everywhere; a copied cookie dies with it).
+  **Owner (R47)**: the first admin `akari admin add` creates (the
+  installer's) is the owner (`is_owner` in `/me` and the user views). Only
+  the owner changes other admin accounts (role, password, ban, delete,
+  sessions, login method, email verification), makes admins, changes the
+  admin prefix and its allowlist, and writes payment channels' keys or
+  account (403 `user.owner_only`); the owner cannot be demoted, banned or
+  deleted (409 `user.owner_protected`, also enforced by the database) and
+  hands the role over with `POST /api/v1/users/{id}/owner`; recovery on the
+  server: `akari admin set-owner <email>`. Every administrative change is in the audit
   log (see "Security" below). (TOTP two-factor authentication was removed in
   v0.4: passkeys replace it.)
 - Admin API: user CRUD, node listing/enable, the node's xray `inbound`
@@ -308,9 +315,9 @@ separate loopback listener, never on the public port.
 | GET | /api/v1/audit | admin | audit log, `?limit&before&actor&action` (keyset, newest first; `actor` = an exact `actor_label`). Entries: `actor_id`, `actor_label` (Q4: non-personal — `u-<8 hex of the id>`, `cli`, `system`, `agent`, `anonymous`), `actor_email` (the account's current address, null when not an account or deleted) |
 | GET/POST | /api/v1/users | admin | list (`?q&plan_id&status=active\|expired\|quota\|banned&role&sort&limit&offset`; `q` = address prefix or id prefix; `sort` created\|-created\|email\|-traffic\|expires) / create `{email, password, role?, plan?: {plan_id, period, days?}}` (D1: the address is required and counts as verified; taken = 409 `user.email_exists`. D12: the plan and its term, assigned in the same transaction; never a traffic limit or expiry) |
 | GET | /api/v1/users/{id} | admin | D12/W28-c detail: the list row + `subscription` (null without a plan: `{user_plan_id, plan_id, plan_name, period, period_days, starts_at, expires_at, traffic_used_bytes, traffic_total_bytes, reset_period, last_reset_at, next_reset_at, timezone, speed_limit_mbps, status: active\|expired\|over_quota\|banned}`; Q3: `next_reset_at` is RFC 3339 with the site time zone's offset, e.g. `2026-11-01T00:00:00+08:00`, and `timezone` is that zone) + `ban` (null unless banned: `{reason, banned_at, banned_by_id, banned_by_email}`) |
-| PATCH/DELETE | /api/v1/users/{id} | admin | update `{password?, role?}` (D12: no `traffic_limit_bytes`/`expires_at`; W28-c: no `enabled` — ban instead; unknown fields 400) / delete user (中-7: `?confirm=true` required, else 400 `user.delete_confirm_required`) |
+| PATCH/DELETE | /api/v1/users/{id} | admin | update `{password?, role?}` (D12: no `traffic_limit_bytes`/`expires_at`; W28-c: no `enabled` — ban instead; unknown fields 400; R47: another admin's account or `role: admin` only by the owner (403 `user.owner_only`), the owner is never demoted (409 `user.owner_protected`), a banned account is not promoted (409 `user.promote_banned`), a promotion lifts a traffic-quota disable) / delete user (中-7: `?confirm=true` required, else 400 `user.delete_confirm_required`; never the owner) |
 | GET | /api/v1/users/{id}/delete-impact | admin | 中-7: what deleting the account loses: `{email, balance_cents, withdrawable_cents, pending_withdrawals, pending_withdrawal_cents, pending_orders, unfulfilled_orders, plan: {name, expires_at}|null}` (the console's confirmation shows it) |
-| POST | /api/v1/users/{id}/ban | admin | W28-c `{reason}` (1–500 characters, shown to the user): disable (`disabled_reason = admin`), every node drops the user at once (live connections cut), every session ends, the subscription is the canonical rejection; banning again replaces the reason; not yourself (400 `user.ban_self`), not the last enabled admin (409); audited `user.ban`; returns the detail |
+| POST | /api/v1/users/{id}/ban | admin | W28-c `{reason}` (1–500 characters, shown to the user): disable (`disabled_reason = admin`), every node drops the user at once (live connections cut), every session ends, the subscription is the canonical rejection; banning again replaces the reason; not yourself (400 `user.ban_self`), not the owner (409 `user.owner_protected`), another admin only by the owner (403 `user.owner_only`); audited `user.ban`; returns the detail |
 | POST | /api/v1/users/{id}/unban | admin | W28-c: lift a ban (409 `user.not_banned` otherwise); audited `user.unban`; returns the detail |
 | GET/PUT/PATCH/DELETE | /api/v1/users/{id}/plan | admin | active plan + history (with `period`/`period_days`) / D12 assign or change `{plan_id, period, days?}` (period = month…three_year, `days` (needs days), `onetime` (days optional = permanent); not `reset`; from now, usage zeroed) / renew `{period, days?}` (one more term) or `{extend_days}` (1–3650; not for `onetime` purchases: 409 `user_plan.extend_onetime`), both from max(expiry, now) (no expiry: 409 `user_plan.no_expiry`) / cancel (no plan: 409 `user_plan.none`) |
 | POST | /api/v1/users/{id}/plan/reset-traffic | admin | D12 `{confirm: true}`: zero the plan traffic (reset schedule unchanged, a quota-disabled account re-enabled, never a banned one); audited `user.traffic.reset`; returns `{subscription}` |
@@ -341,6 +348,7 @@ separate loopback listener, never on the public port.
 | POST | /api/v1/users/{id}/sub-token | admin | reset the user's subscription: new token + new credentials on every entrance (高-3, as above) |
 | GET | /api/v1/users/{id}/subscription | admin | W20: the user's subscription link `{sub_token, sub_url, legacy}` (every read is audited as `user.sub_token.read`, without the token; `no-store`) |
 | POST | /api/v1/users/{id}/revoke-sessions | admin | log the account out everywhere (204) |
+| POST | /api/v1/users/{id}/owner | owner | R47 `{confirm: true}`: hand the ownership to an enabled admin (204; 400 `user.owner_confirm_required`, 409 `user.owner_target` / `user.owner_already`, 403 `user.owner_only`); audited `user.owner.transfer` |
 | GET | /api/v1/me/shop | user (renewal scope*) | plans on sale with every priced period as the caller would buy it now (`action` new/renew/switch/reset, `discount_cents`, `credit_cents`, `balance_cents`, `amount_cents`, or `refusal`), description, stock; the caller's subscription, switch credit and balance. W16: `?coupon=CODE` (rate-limited) prices with a coupon (`coupon.refusal` / per-offer `coupon_refusal`), `?use_balance=true` with the balance |
 | GET/POST | /api/v1/me/orders | user (renewal scope*) | own orders (last 50) / create `{plan_id, period, coupon?, use_balance?}` → order + Alipay QR (the amount is the server's price minus coupon, switch credit and balance, computed in SQL; fully covered orders are paid at once) |
 | GET | /api/v1/me/balance | user (renewal scope*) | W16: balance, withdrawable amount, ledger (`?before&limit`) |

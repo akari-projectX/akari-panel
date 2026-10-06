@@ -279,10 +279,12 @@ echo "w25 import: ok"
 echo "== first admin (env password) =="
 # D1: the e-mail address is the login name.
 AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" admin add Root@Smoke.test | tee "$LOG/admin-add.out"
-grep -q "created admin account: root@smoke.test" "$LOG/admin-add.out" || { echo "FAIL: admin add (lower-cased address)"; exit 1; }
-AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" admin add root@smoke.test 2>&1 | matches "created admin account" \
+# R47: the first admin is the owner.
+grep -q "created the owner account: root@smoke.test" "$LOG/admin-add.out" || { echo "FAIL: admin add (lower-cased address, owner)"; exit 1; }
+[ "$(psql_q "SELECT is_owner FROM users WHERE email = 'root@smoke.test'")" = "t" ] || { echo "FAIL: the first admin is not the owner"; exit 1; }
+AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" admin add root@smoke.test 2>&1 | matches "created .* account" \
   && { echo "FAIL: duplicate admin creation should error"; exit 1; } || echo "duplicate rejected: ok"
-AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" admin add not-an-address 2>&1 | matches "created admin account" \
+AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" admin add not-an-address 2>&1 | matches "created .* account" \
   && { echo "FAIL: admin add accepted a non-address"; exit 1; } || echo "non-address rejected: ok"
 
 echo "== register server (M1-8: key-less bootstrap with a one-time enrollment token) =="
@@ -3156,7 +3158,23 @@ SV=$(psql_q "SELECT version FROM panel_settings")
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/security" -H 'Content-Type: application/json' \
     -d "{\"version\":$SV,\"extra_release_keys\":[\"$TEST_RELEASE_PUB TEST-ONLY\"]}")" = "200" ] \
   || { echo "FAIL: default retention again: $(cat /tmp/akari-smoke/last)"; exit 1; }
-# Keep root the last admin (S4-2 assertions below).
+# R47: only the owner (root) manages admins; ownership is handed over and
+# back (admin2 on instance B).
+ROOT_UID=$(psql_q "SELECT id FROM users WHERE email = 'root@smoke.test'")
+B_API="http://127.0.0.1:8081/$PREFIX/api/v1"
+[ "$(code -b "$A2JAR" -X DELETE "$B_API/users/$ROOT_UID?confirm=true")" = "403" ] \
+  && last_json "d['code']" | matches '^user.owner_only$' || { echo "FAIL: a non-owner admin deleted the owner: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$ADMIN2/owner" -H 'Content-Type: application/json' -d '{"confirm":false}')" = "400" ] \
+  && last_json "d['code']" | matches '^user.owner_confirm_required$' || { echo "FAIL: unconfirmed owner transfer"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$ADMIN2/owner" -H 'Content-Type: application/json' -d '{"confirm":true}')" = "204" ] \
+  || { echo "FAIL: owner transfer: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(psql_q "SELECT email FROM users WHERE is_owner")" = "admin2@smoke.test" ] || { echo "FAIL: owner after transfer"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$ADMIN2?confirm=true")" = "403" ] \
+  || { echo "FAIL: the former owner deleted the owner"; exit 1; }
+[ "$(code -b "$A2JAR" -X POST "$B_API/users/$ROOT_UID/owner" -H 'Content-Type: application/json' -d '{"confirm":true}')" = "204" ] \
+  || { echo "FAIL: owner transfer back: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'user.owner.transfer'")" = "2" ] || { echo "FAIL: owner transfers not audited"; exit 1; }
+# Keep root the only admin (S4-2 assertions below).
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$ADMIN2?confirm=true")" = "204" ] || { echo "FAIL: delete 2nd admin"; exit 1; }
 "$PANEL" -c "$LOG/panel-b.toml" server add renew-node --out "$LOG/renew-bootstrap.toml" >/dev/null
 # The node domain is one database setting (instance A's port): this agent
@@ -4015,14 +4033,16 @@ matches '节点通信域名未设置' <"$LOG/r22-none.out" || { echo "FAIL: unse
 grep -qF "$PREFIX" "$LOG/panel.log" && { echo "FAIL: prefix in the panel log"; exit 1; }
 echo "r22 settings: ok"
 
-echo "== S4-2 sessions: revoke-sessions, last admin, logout kills copies of the cookie =="
+echo "== S4-2 sessions: revoke-sessions, the owner (R47), logout kills copies of the cookie =="
 [ "$(code -b "$JAR" "$BASE/api/v1/me")" = "200" ] || { echo "FAIL: me failed"; exit 1; }
 ROOT_ID=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$ROOT_ID/ban" -H 'Content-Type: application/json' \
     -d '{"reason": "x"}')" = "400" ] && last_json "d['code']" | matches '^user.ban_self$' \
   || { echo "FAIL: self-ban not refused"; exit 1; }
-[ "$(patch_code "$BASE/api/v1/users/$ROOT_ID" '{"role": "user"}')" = "409" ] || { echo "FAIL: last admin demote not 409"; exit 1; }
-[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$ROOT_ID?confirm=true")" = "409" ] || { echo "FAIL: last admin delete not 409"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/users/$ROOT_ID" '{"role": "user"}')" = "409" ] \
+  && last_json "d['code']" | matches '^user.owner_protected$' || { echo "FAIL: owner demote not 409"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$ROOT_ID?confirm=true")" = "409" ] \
+  && last_json "d['code']" | matches '^user.owner_protected$' || { echo "FAIL: owner delete not 409"; exit 1; }
 JAR2="$LOG/cookies2"
 [ "$(code -c "$JAR2" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
     -d "{\"email\":\"root@smoke.test\",\"password\":\"$ADMIN_PW\"}")" = "200" ] || { echo "FAIL: second login"; exit 1; }

@@ -15,7 +15,8 @@ use crate::testdb::http::{Client, client_for, rand_ip};
 async fn setup() -> Option<(TestDb, AppState, Uuid, Client)> {
     let db = TestDb::new().await?;
     let state = AppState::for_test(db.pool.clone()).await;
-    let admin = db.admin().await;
+    // R47: the owner (the tests make and ban admins).
+    let admin = db.owner().await;
     let c = client_for(&state, admin).await;
     Some((db, state, admin, c))
 }

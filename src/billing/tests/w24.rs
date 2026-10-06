@@ -77,7 +77,7 @@ async fn payment_methods_api() {
     let mock = Mock::start().await;
     let state = db_state(&db).await;
     assert!(!state.payments().any_usable(), "none by default");
-    let admin = db.admin().await;
+    let admin = db.owner().await;
     let c = user_client(&state, admin).await;
 
     // Non-admins get nothing.
@@ -586,7 +586,7 @@ async fn unreadable_secrets() {
     };
     let mock = Mock::start().await;
     let state = db_state(&db).await;
-    let admin = db.admin().await;
+    let admin = db.owner().await;
     let c = user_client(&state, admin).await;
     let a = add_method(&state, &mock.url, "A").await;
     let b = add_method(&state, &mock.url, "B").await;
@@ -857,7 +857,7 @@ async fn live_sandbox_db_configured() {
         return;
     };
     let state = db_state(&db).await;
-    let admin = db.admin().await;
+    let admin = db.owner().await;
     let c = user_client(&state, admin).await;
     let r = c
         .post(
@@ -900,5 +900,49 @@ async fn live_sandbox_db_configured() {
     assert!(r.is_ok(), "precreate failed: {:?}", r.err());
     let _ = p.close(&otn).await;
     drop(state);
+    db.drop().await;
+}
+
+/// R47: payment channels' keys and account are the owner's; any admin may
+/// enable, disable, rename.
+#[tokio::test]
+async fn payment_channel_keys_are_the_owners() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = db_state(&db).await;
+    let owner = db.owner().await;
+    let a = db.admin().await;
+    let body = create_body(&mock.url);
+    let ca = user_client(&state, a).await;
+    let r = ca.post(BASE, body.clone()).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{:?}", r.json());
+    assert_eq!(r.json()["code"], "user.owner_only");
+    let co = user_client(&state, owner).await;
+    let r = co.post(BASE, body.clone()).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+    let id = r.json()["id"].as_str().unwrap().to_string();
+    let version = r.json()["version"].as_i64().unwrap();
+    // Renaming: any admin.
+    let mut rename = body.clone();
+    rename.as_object_mut().unwrap().remove("kind");
+    // Keys left out = kept.
+    rename["config"]
+        .as_object_mut()
+        .unwrap()
+        .remove("app_private_key");
+    rename["version"] = json!(version);
+    rename["display_name"] = json!("支付宝（新）");
+    let r = ca.put(&format!("{BASE}/{id}"), rename.clone()).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    // The account (APPID) or a key: the owner.
+    let mut change = rename;
+    change["version"] = json!(version + 1);
+    change["config"]["app_id"] = json!("2021000000000999");
+    let r = ca.put(&format!("{BASE}/{id}"), change).await;
+    assert_eq!(r.json()["code"], "user.owner_only");
+    let r = ca.req(Method::DELETE, &format!("{BASE}/{id}"), None).await;
+    assert_eq!(r.json()["code"], "user.owner_only");
     db.drop().await;
 }

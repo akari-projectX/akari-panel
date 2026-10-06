@@ -335,6 +335,8 @@ pub async fn apply_create(
     action: &str,
     req: &MethodReq,
 ) -> Result<Row, ApiError> {
+    // R47: payment channels and their keys are the owner's.
+    crate::owner::require(conn, actor).await?;
     let kind = kind_of(req.kind.as_deref().unwrap_or_default())?;
     let (name, icon) = common(req)?;
     let v = kind.validate(&req.config, None, req.enabled)?;
@@ -397,6 +399,11 @@ pub async fn apply_update(
         .flatten()
         .unwrap_or_else(|| json!({}));
     let v = kind.validate(&req.config, Some((&cur.config, &prev_secrets)), req.enabled)?;
+    // R47: the channel's keys and account (configuration) are the owner's;
+    // any admin may rename, sort, enable or disable it.
+    if !v.changed_secrets.is_empty() || v.config != cur.config {
+        crate::owner::require(conn, actor).await?;
+    }
     if req.enabled {
         kind.build(&v.config, &v.secrets)
             .map_err(|_| incomplete())?;
@@ -435,6 +442,7 @@ pub async fn apply_delete(
     actor: &Actor,
     id: Uuid,
 ) -> Result<(), ApiError> {
+    crate::owner::require(conn, actor).await?;
     let cur = load_one(conn, id, true).await?.ok_or_else(not_found)?;
     let used: bool =
         sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM orders WHERE payment_method_id = $1)")

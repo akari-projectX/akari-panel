@@ -52,19 +52,27 @@ pub async fn admin_add(cfg: PanelConfig, email: String, role: String) -> Result<
     let pg = connect(&cfg).await?;
     let id = uuid::Uuid::new_v4();
     let mut tx = pg.begin().await?;
+    // R47: the first admin (the installer's) is the owner. Serialized with
+    // concurrent `admin add`s by the unique index users_one_owner.
+    let owner: bool = role == "admin"
+        && !sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM users WHERE is_owner)")
+            .fetch_one(&mut *tx)
+            .await?;
     sqlx::query(
-        "INSERT INTO users (id, email, email_verified_at, password_hash, role) \
-         VALUES ($1, $2, now(), $3, $4)",
+        "INSERT INTO users (id, email, email_verified_at, password_hash, role, is_owner) \
+         VALUES ($1, $2, now(), $3, $4, $5)",
     )
     .bind(id)
     .bind(&email)
     .bind(&hash)
     .bind(&role)
+    .bind(owner)
     .execute(&mut *tx)
     .await
     .with_context(|| format!("insert user {email}"))?;
     let after = serde_json::json!({
         "email": email, "role": role, "enabled": true, "password": crate::audit::CHANGED,
+        "owner": owner,
     });
     crate::audit::record(
         &mut tx,
@@ -77,7 +85,20 @@ pub async fn admin_add(cfg: PanelConfig, email: String, role: String) -> Result<
     )
     .await?;
     tx.commit().await?;
-    println!("created {role} account: {email} ({id})");
+    if owner {
+        println!("created the owner account: {email} ({id})");
+    } else {
+        println!("created {role} account: {email} ({id})");
+    }
+    Ok(())
+}
+
+/// `akari admin set-owner <email>` (R47 recovery): make an enabled admin
+/// the owner (audited, actor cli).
+pub async fn admin_set_owner(cfg: PanelConfig, email: String) -> Result<()> {
+    let pg = connect(&cfg).await?;
+    crate::owner::cli_set_owner(&pg, &email).await?;
+    println!("{email} is now the owner");
     Ok(())
 }
 

@@ -877,6 +877,7 @@ pub async fn apply_reset_login(
     actor: &Actor,
     user: Uuid,
 ) -> Result<Option<i64>, ApiError> {
+    crate::owner::guard_target(conn, actor, user).await?;
     let was: Option<bool> = sqlx::query_scalar(
         "SELECT password_login_disabled_at IS NOT NULL FROM users WHERE id = $1 FOR UPDATE",
     )

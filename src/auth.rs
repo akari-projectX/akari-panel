@@ -186,8 +186,11 @@ impl From<anyhow::Error> for ApiError {
     }
 }
 
-/// SQLSTATE raised by the last-admin guard (migration 0009).
-pub const LAST_ADMIN_SQLSTATE: &str = "AK001";
+/// SQLSTATE raised by the owner guard (R47, migration 1013): deleting the
+/// owner, or ending the ownership without a transfer.
+pub const OWNER_SQLSTATE: &str = "AK001";
+/// CHECK constraint: the owner is an enabled admin (migration 1013).
+pub const OWNER_CHECK: &str = "users_owner_enabled_admin";
 /// SQLSTATE of the inviter guard (migration 0105): self-referral or cycle.
 pub const INVITER_SQLSTATE: &str = "AK002";
 /// SQLSTATE of the balance ledger (migration 0106): the entry would make
@@ -197,8 +200,8 @@ pub const BALANCE_SQLSTATE: &str = "AK003";
 impl From<sqlx::Error> for ApiError {
     fn from(e: sqlx::Error) -> Self {
         if let sqlx::Error::Database(d) = &e {
-            if d.code().as_deref() == Some(LAST_ADMIN_SQLSTATE) {
-                return conflict!("user.last_admin", "cannot remove the last enabled admin");
+            if d.code().as_deref() == Some(OWNER_SQLSTATE) || d.constraint() == Some(OWNER_CHECK) {
+                return crate::owner::protected();
             }
             if d.code().as_deref() == Some(INVITER_SQLSTATE) {
                 return conflict!(

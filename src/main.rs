@@ -145,6 +145,8 @@ enum AdminCmd {
     /// Lost passkey: delete the account's passkeys and switch its password
     /// login back on (audited, actor cli)
     ResetLogin { email: String },
+    /// Make an enabled admin the owner (R47 recovery; audited, actor cli)
+    SetOwner { email: String },
 }
 
 #[tokio::main]
@@ -177,6 +179,7 @@ async fn main() -> Result<()> {
             AdminCmd::Add { email, role } => nodeops::admin_add(cfg, email, role).await,
             AdminCmd::Passwd { email } => nodeops::admin_passwd(cfg, email).await,
             AdminCmd::ResetLogin { email } => nodeops::admin_reset_login(cfg, email).await,
+            AdminCmd::SetOwner { email } => nodeops::admin_set_owner(cfg, email).await,
         },
         Cmd::Secrets { action } => match action {
             SecretsCmd::RotatePrefix => nodeops::secrets_rotate_prefix(cfg).await,

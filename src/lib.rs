@@ -46,6 +46,7 @@ pub mod nodes;
 pub mod nodestat;
 pub mod nodetpl;
 pub mod notify;
+pub mod owner;
 pub mod passkey;
 pub mod pb;
 pub mod plans;
