@@ -1479,11 +1479,14 @@ you want to undo:
   `docker compose up -d panel` (or `akari-ctl upgrade --version <previous> --force`).
 - **A migration ran**: migrations are forward-only, the old binary refuses the newer schema.
   Restore the pre-upgrade backup together with the old binary/image: stop the panel, restore
-  (docs/BACKUP.md "Restore"; `AKARI_PG_RESTORE_CMD`/`AKARI_DATA_DIR` as in the installer: bare
-  metal `runuser -u postgres -- pg_restore -p <port> -d akari --clean --if-exists --no-owner
-  --role=akari --single-transaction`, data dir `/var/lib/akari`; Docker `docker compose exec -T
-  postgres pg_restore -U akari -d akari --clean --if-exists --no-owner --single-transaction`, data
-  dir = the `akari_akari-data` volume's mountpoint), start the old release. Traffic counted since
+  (docs/BACKUP.md "Restore": first recreate the database empty — `DROP DATABASE akari WITH
+  (FORCE); CREATE DATABASE akari OWNER akari;` as `postgres` (bare) / `akari` (Docker) on the
+  `postgres` database, since `pg_restore --clean` cannot drop the partitions of `traffic_daily`;
+  then `AKARI_PG_RESTORE_CMD`/`AKARI_DATA_DIR` as in the installer: bare metal `runuser -u postgres
+  -- pg_restore -p <port> -d akari --no-owner --role=akari --single-transaction`, data dir
+  `/var/lib/akari`; Docker `docker compose exec -T postgres pg_restore -U akari -d akari
+  --no-owner --single-transaction`, data dir = the `akari_akari-data` volume's mountpoint), start
+  the old release. Traffic counted since
   the backup is lost; everything else is as of the backup.
 
 A restored database with the old `data/` keeps the same route prefix and agent certificates.
