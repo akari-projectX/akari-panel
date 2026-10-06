@@ -853,7 +853,8 @@ groups; nodes, groups and plans can change later and every node converges by its
    matter for the shop (docs/PAYMENTS.md).
 3. **用户 → 新建用户**: login and password, then **分配套餐** on the user. The node receives the
    user within a second or two (`POST /api/v1/users`, `PUT /api/v1/users/{id}/plan
-   {"plan_id": …}`).
+   {"plan_id": …, "period": "month"}`; `period` is required: `month` … `three_year`, `days` with
+   `"days": N`, or `onetime` (optional `days`, none = permanent); see the README API table).
 4. The user logs in at `https://panel.yourdomain.com/` (the portal) and copies **订阅链接** (the
    admin sees the same URL on the user, `sub_url`). The link serves the format the client asks
    for by its User-Agent: Clash/mihomo YAML, sing-box JSON, or base64 share links (v2rayN,
