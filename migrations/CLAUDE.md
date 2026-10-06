@@ -14,6 +14,7 @@ sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18，再拒绝 v0.3.x
 - **1054（Phase A PR ①，P1）**：`orders.refund_effect` jsonb（退款对订阅做了什么：`billing::refund::Effect` 的 JSON；CHECK `orders_refund_effect`：与 `refunded_at` 同时为空/非空）。
 - **1055（Phase A PR ①，中-3）**：`orders.refund_balance_cents`（退到余额：余额部分 + `to_balance` 时的实付）、`refund_external_cents`（支付宝后台已退，管理员填写），CHECK `orders_refund_split`：与 `refunded_at` 同时为空/非空、外部退款 0..`amount_cents`、`refund_cents` = 两者之和；已有退款行回填为余额。
 - **1056（Phase A PR ①，中-4）**：`commissions.clawback_cents`（退款追回的金额 = `amount_cents`，只对 credited）、`clawback_recovered_cents`（已从余额扣回）、`clawed_back_at`，CHECK `commissions_clawback`；部分索引 `commissions_clawback_due (inviter_id, id) WHERE clawback_cents > clawback_recovered_cents`（欠款）；`balance_ledger` 新 kind `commission_clawback`（负数、需 commission_id），两个 kind CHECK 重建。
+- **1057（Phase A PR ①，退款通知）**：`mail_outbox`/`mail_templates` 的 kind CHECK 加 `refund`；`notify_refund` boolean 默认 true（编号排在 1070 之前：DO 块按表名加到 `smtp_settings`（全新库，随 1070 改名带走）或 `mail_settings`（已跑过 1070 的开发库））。**编号陷阱**：本任务的 1054–1059 排在已合并的 1060/1070 之前，新库上先于它们执行——引用 1060 之后才有的对象要像这样兼容两种顺序。
 - 改列名/加列后，同步检查 `src/` 中所有手写 SQL 与 `FromRow` 结构体（没有编译期 SQL 校验）。
 
 ## 当前表

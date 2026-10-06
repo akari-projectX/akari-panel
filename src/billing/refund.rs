@@ -318,6 +318,8 @@ pub struct Refund<'a> {
     pub external_cents: Option<i64>,
     /// Refund the money only; the subscription stays as it is.
     pub keep_plan: bool,
+    /// The portal link of the customer's refund notice (None: no link).
+    pub portal: Option<&'a str>,
 }
 
 impl Refund<'_> {
@@ -429,5 +431,8 @@ pub async fn apply_refund(
         Some(after.clone()),
     )
     .await?;
+    // The customer's notice commits with the refund (savepoint: a mail
+    // failure never rolls the refund back).
+    crate::mail::notices::order_refunded(conn, order_id, req.portal).await?;
     Ok(after)
 }

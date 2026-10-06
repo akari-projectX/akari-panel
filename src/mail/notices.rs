@@ -27,6 +27,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
+use super::templates::RefundPlan;
 use super::{Locale, MailSettings, Template, enqueue};
 use crate::state::AppState;
 
@@ -290,6 +291,102 @@ pub async fn order_paid(conn: &mut PgConnection, order_id: Uuid) -> sqlx::Result
         Ok(_) => sp.commit().await,
         Err(e) => {
             tracing::warn!(order = %order_id, error = %e, "order receipt not queued");
+            sp.rollback().await
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct Refunded {
+    user_id: Uuid,
+    email: String,
+    locale: String,
+    out_trade_no: String,
+    plan_name: String,
+    refund_balance_cents: i64,
+    refund_external_cents: i64,
+    refund_effect: Option<serde_json::Value>,
+}
+
+/// The mail's plan line from the stored refund effect
+/// (`billing::refund::Effect` as JSON).
+fn refund_plan(effect: Option<&serde_json::Value>) -> RefundPlan {
+    let Some(e) = effect else {
+        return RefundPlan::Unchanged;
+    };
+    let time = |k: &str| -> Option<DateTime<Utc>> {
+        e.get(k)
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+    };
+    match e["kind"].as_str().unwrap_or_default() {
+        "cancel" => RefundPlan::Cancelled,
+        "rollback" => match time("to") {
+            Some(expires_at) => RefundPlan::RolledBack { expires_at },
+            None => RefundPlan::Unchanged,
+        },
+        "restore" => RefundPlan::Restored {
+            plan_name: e["plan_name"].as_str().unwrap_or_default().to_string(),
+            expires_at: time("expires_at"),
+        },
+        _ if e["why"] == "not_fulfilled" => RefundPlan::NotGranted,
+        _ => RefundPlan::Unchanged,
+    }
+}
+
+async fn enqueue_refund(
+    conn: &mut PgConnection,
+    order_id: Uuid,
+    portal: Option<&str>,
+) -> sqlx::Result<bool> {
+    let smtp = super::load(conn).await?;
+    if !smtp.enabled || !smtp.notify_refund {
+        return Ok(false);
+    }
+    let r: Option<Refunded> = sqlx::query_as(
+        "SELECT u.id AS user_id, u.email, u.locale, o.out_trade_no, o.plan_name, \
+         o.refund_balance_cents, o.refund_external_cents, o.refund_effect \
+         FROM orders o JOIN users u ON u.id = o.user_id \
+         WHERE o.id = $1 AND o.refunded_at IS NOT NULL AND u.email_verified_at IS NOT NULL",
+    )
+    .bind(order_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(r) = r else { return Ok(false) };
+    let t = Template::Refund {
+        order_no: r.out_trade_no,
+        plan_name: r.plan_name,
+        to_balance_cents: r.refund_balance_cents,
+        external_cents: r.refund_external_cents,
+        plan: refund_plan(r.refund_effect.as_ref()),
+        portal_url: portal.map(String::from),
+    };
+    enqueue(
+        conn,
+        &smtp,
+        &t,
+        Locale::parse(&r.locale),
+        &r.email,
+        Some(r.user_id),
+        None,
+    )
+    .await?;
+    Ok(true)
+}
+
+/// Queue the refund notice of a just-refunded order (Phase A PR ①), in the
+/// refund's transaction under a savepoint: a failure is logged and rolled
+/// back alone — the refund always commits. `portal` = the portal URL
+/// (`mail::portal_url`), None without a main domain.
+pub async fn order_refunded(
+    conn: &mut PgConnection,
+    order_id: Uuid,
+    portal: Option<&str>,
+) -> sqlx::Result<()> {
+    let mut sp = conn.begin().await?;
+    match enqueue_refund(&mut sp, order_id, portal).await {
+        Ok(_) => sp.commit().await,
+        Err(e) => {
+            tracing::warn!(order = %order_id, error = %e, "refund notice not queued");
             sp.rollback().await
         }
     }

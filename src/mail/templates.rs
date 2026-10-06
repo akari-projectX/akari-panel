@@ -126,10 +126,40 @@ pub enum Template {
         body_md: String,
         portal_url: Option<String>,
     },
+    /// Phase A PR ①: an order was refunded — where the money went and what
+    /// happened to the subscription.
+    Refund {
+        order_no: String,
+        plan_name: String,
+        /// Credited to the account balance.
+        to_balance_cents: i64,
+        /// Refunded through the payment provider (outside the panel).
+        external_cents: i64,
+        plan: RefundPlan,
+        portal_url: Option<String>,
+    },
+}
+
+/// What a refund did to the subscription (the mail's plan line).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefundPlan {
+    /// Money only (reset pack, kept plan, a subscription no longer active).
+    Unchanged,
+    /// The order had not granted the plan.
+    NotGranted,
+    /// The subscription the order created ended.
+    Cancelled,
+    /// The renewal was taken back: the new expiry.
+    RolledBack { expires_at: DateTime<Utc> },
+    /// The plan before the switch is back.
+    Restored {
+        plan_name: String,
+        expires_at: Option<DateTime<Utc>>,
+    },
 }
 
 /// Every template kind (= `mail_outbox.kind` / `mail_templates.kind`).
-pub const KINDS: [&str; 15] = [
+pub const KINDS: [&str; 16] = [
     "register_code",
     "register_exists",
     "email_code",
@@ -145,6 +175,7 @@ pub const KINDS: [&str; 15] = [
     "node_alert",
     "announcement",
     "admin_notice",
+    "refund",
 ];
 
 impl Template {
@@ -165,6 +196,7 @@ impl Template {
             Template::NodeAlert { .. } => "node_alert",
             Template::AdminNotice { .. } => "admin_notice",
             Template::Announcement { .. } => "announcement",
+            Template::Refund { .. } => "refund",
         }
     }
 
@@ -247,6 +279,14 @@ impl Template {
             "announcement" => Template::Announcement {
                 title: "系统维护通知 / Maintenance".into(),
                 body_md: "节点将于 **周六 02:00–04:00** 维护。\n\nNodes will be maintained on Saturday 02:00–04:00.".into(),
+                portal_url: portal,
+            },
+            "refund" => Template::Refund {
+                order_no: "AK20261002EXAMPLE".into(),
+                plan_name: "Pro".into(),
+                to_balance_cents: 266,
+                external_cents: 1234,
+                plan: RefundPlan::Cancelled,
                 portal_url: portal,
             },
             _ => return None,
@@ -362,6 +402,17 @@ const ADMIN_NOTICE_PH: [Placeholder; 2] = [
     ph("subject", "管理员填写的主题"),
     ph("body", "管理员填写的正文（多段）"),
 ];
+const REFUND_PH: [Placeholder; 6] = [
+    ph("order_no", "订单号"),
+    ph("plan_name", "套餐名称"),
+    ph("refund", "退款总额（含货币符号）"),
+    ph("refund_lines", "退回余额 / 原路退回的金额行（可能为空）"),
+    ph(
+        "plan_line",
+        "套餐处理说明（已取消 / 到期时间回退 / 恢复原套餐 / 不受影响）",
+    ),
+    ph("portal_url", "用户门户链接（按钮；未配置主域名时为空）"),
+];
 const ANNOUNCEMENT_PH: [Placeholder; 3] = [
     ph("title", "公告标题"),
     ph("body", "公告正文（已渲染）"),
@@ -384,6 +435,7 @@ pub fn spec(kind: &str) -> Option<(&'static [Placeholder], &'static [&'static st
         "node_alert" => (&ALERT_PH, &["text"]),
         "announcement" => (&ANNOUNCEMENT_PH, &["body"]),
         "admin_notice" => (&ADMIN_NOTICE_PH, &["body"]),
+        "refund" => (&REFUND_PH, &["order_no"]),
         _ => return None,
     })
 }
@@ -406,6 +458,7 @@ pub fn kind_label(kind: &str) -> &'static str {
         "node_alert" => "节点告警",
         "announcement" => "公告",
         "admin_notice" => "管理员群发邮件",
+        "refund" => "订单退款通知",
         _ => "",
     }
 }
@@ -626,6 +679,98 @@ impl Template {
                         .join("\n\n"),
                 ),
             ],
+            Template::Refund {
+                order_no,
+                plan_name,
+                to_balance_cents,
+                external_cents,
+                plan,
+                portal_url,
+            } => {
+                let amount = |c: i64| {
+                    if zh {
+                        format!("¥{}", yuan(c))
+                    } else {
+                        format!("CNY {}", yuan(c))
+                    }
+                };
+                let mut lines = Vec::new();
+                if *to_balance_cents > 0 {
+                    lines.push(if zh {
+                        format!("退回账户余额：{}", amount(*to_balance_cents))
+                    } else {
+                        format!("Credited to your balance: {}", amount(*to_balance_cents))
+                    });
+                }
+                if *external_cents > 0 {
+                    lines.push(if zh {
+                        format!("原路退回（支付渠道）：{}", amount(*external_cents))
+                    } else {
+                        format!(
+                            "Returned to your payment account: {}",
+                            amount(*external_cents)
+                        )
+                    });
+                }
+                let plan_line = match (plan, zh) {
+                    (RefundPlan::Unchanged, true) => "你的套餐不受影响。".to_string(),
+                    (RefundPlan::Unchanged, false) => "Your plan is not affected.".to_string(),
+                    (RefundPlan::NotGranted, true) => "该订单没有开通套餐。".to_string(),
+                    (RefundPlan::NotGranted, false) => {
+                        "This order had not granted a plan.".to_string()
+                    }
+                    (RefundPlan::Cancelled, true) => {
+                        "该订单开通的套餐已取消，节点与订阅已停止服务。".to_string()
+                    }
+                    (RefundPlan::Cancelled, false) => {
+                        "The plan this order granted has been cancelled; its nodes and subscription have stopped."
+                            .to_string()
+                    }
+                    (RefundPlan::RolledBack { expires_at }, true) => {
+                        format!("该续费已撤销，套餐到期时间调整为 {}。", when(expires_at))
+                    }
+                    (RefundPlan::RolledBack { expires_at }, false) => format!(
+                        "The renewal was taken back; your plan now expires on {}.",
+                        when(expires_at)
+                    ),
+                    (
+                        RefundPlan::Restored {
+                            plan_name,
+                            expires_at,
+                        },
+                        true,
+                    ) => format!(
+                        "已恢复为换套餐之前的套餐「{plan_name}」{}。",
+                        expires_at
+                            .map(|e| format!("，到期时间 {}", when(&e)))
+                            .unwrap_or_default()
+                    ),
+                    (
+                        RefundPlan::Restored {
+                            plan_name,
+                            expires_at,
+                        },
+                        false,
+                    ) => format!(
+                        "Your previous plan \"{plan_name}\" is back{}.",
+                        expires_at
+                            .map(|e| format!(", expiring on {}", when(&e)))
+                            .unwrap_or_default()
+                    ),
+                };
+                vec![
+                    text("order_no", order_no.clone()),
+                    text("plan_name", plan_name.clone()),
+                    text("refund", amount(to_balance_cents + external_cents)),
+                    text("refund_lines", lines.join("\n")),
+                    text("plan_line", plan_line),
+                    link(
+                        "portal_url",
+                        portal_url.as_ref(),
+                        if zh { "查看账户" } else { "View account" },
+                    ),
+                ]
+            }
             Template::Announcement {
                 title,
                 body_md,
@@ -755,6 +900,14 @@ pub fn defaults(kind: &str, locale: Locale) -> Option<(&'static str, &'static st
         ("admin_notice", _) => ("{subject}", "{body}"),
         ("announcement", true) => ("{site}：{title}", "{title}\n\n{body}\n\n{portal_url}"),
         ("announcement", false) => ("{site}: {title}", "{title}\n\n{body}\n\n{portal_url}"),
+        ("refund", true) => (
+            "{site}：订单已退款",
+            "你的订单已退款：\n\n订单号：{order_no}\n\n套餐：{plan_name}\n\n退款金额：{refund}\n\n{refund_lines}\n\n{plan_line}\n\n{portal_url}",
+        ),
+        ("refund", false) => (
+            "{site}: your order was refunded",
+            "Your order has been refunded:\n\nOrder: {order_no}\n\nPlan: {plan_name}\n\nRefund: {refund}\n\n{refund_lines}\n\n{plan_line}\n\n{portal_url}",
+        ),
         _ => return None,
     })
 }
