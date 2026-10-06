@@ -635,6 +635,32 @@ and the partition's disk space is returned at once. The parent's ACCESS EXCLUSIV
 the `DROP` at the end of each month's transaction (`lock_timeout` 5 s, retried at the next pass), so
 readers wait at most for the commit, not for the copy.
 
+## Phase A PR ②: servers split, NIC quota, time-window multipliers (2026-10-06)
+
+`make bench-seed` + `cargo bench -- 'db/(flush|desired_snapshot)'`, local bench stack, fresh seed per
+run, main (d907f52) and the branch (Q1 + D5 + D9) interleaved:
+
+| | main | branch |
+|---|---|---|
+| `db/flush/50000` | 599.3 / 580.1 ms | 609.3 / 600.7 / 609.1 ms (+1.7 % … +5 %) |
+| `db/desired_snapshot/10000` | 18.8 / 18.6 ms | 20.0 ms (+8 %) with the pinned seed layout |
+
+- Flush: the settlement now updates the server (GCRA clock) and, in a separate `node_totals` CTE,
+  the node of each entrance (raw/billed totals per node, Q1), and reads the multiplier through
+  `akari_entrance_rate()` twice per entrance of the batch (D9: the lower of now and 30 s ago; a
+  plpgsql lookup that returns the base at once when the entrance has no rules). Within the target
+  (< 1 s for 50k rows) and near the noise; the extra row update is the price of per-node totals
+  under one agent.
+- Snapshot: the user set of a server joins its nodes (`enabled`, inbound present). The first
+  branch runs showed 28 ms: not the query but the seed — the `entrance_users` INSERT … SELECT had no
+  ORDER BY, and with the new trigger/plan one entrance's 10k rows landed on 10k heap pages (main's
+  accidental layout: 183 pages). The seed now orders the rows by entrance (`seed.rs`), so runs
+  compare like with like. Production tables are written user by user (scattered like the 28 ms
+  case on both versions).
+- D5 adds one single-row `UPDATE servers` per heartbeat that passes the existing 5 s history
+  throttle (background task, skipped when the 8 write permits are busy; the counters are
+  cumulative, so a skipped heartbeat loses nothing).
+
 ## Limits and honest caveats
 
 - Flush margin (W22): 0.58 s against the 1 s budget (W11: 0.49 s) for 50k rows; on a slower
