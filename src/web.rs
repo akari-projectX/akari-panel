@@ -79,6 +79,10 @@ pub fn router(state: AppState) -> Router {
                 .delete(api::delete_user),
         )
         .route(
+            "/{prefix}/api/v1/users/{id}/delete-impact",
+            get(api::user_delete_impact),
+        )
+        .route(
             "/{prefix}/api/v1/users/{id}/revoke-sessions",
             post(api::revoke_sessions),
         )

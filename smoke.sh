@@ -580,7 +580,13 @@ grant "$FP_USER"
 check_fp chrome
 [ "$(put_inbound "$(reality_inbound ',"fingerprint":"firefox"')")" = "200" ] || { echo "FAIL: put reality inbound with fingerprint"; exit 1; }
 check_fp firefox
-[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$FP_USER")" = "204" ] || { echo "FAIL: delete fp user"; exit 1; }
+# 中-7: a user delete shows its impact first and needs confirm=true.
+[ "$(code -b "$JAR" "$BASE/api/v1/users/$FP_USER/delete-impact")" = "200" ] \
+  && [ "$(last_json "d['balance_cents']")/$(last_json "d['pending_orders']")" = "0/0" ] \
+  || { echo "FAIL: user delete impact"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$FP_USER")" = "400" ] && last_json "d['code']" | matches -x 'user.delete_confirm_required' \
+  || { echo "FAIL: user deleted without confirm"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$FP_USER?confirm=true")" = "204" ] || { echo "FAIL: delete fp user"; exit 1; }
 [ "$(put_inbound "$GOOD_IB")" = "200" ] || { echo "FAIL: restore inbound"; exit 1; }
 # Same protocol (vless -> vless): smoke-user keeps its credential.
 [ "$(account_of "$USER_ID")" = "$VLESS_A" ] || { echo "FAIL: an inbound edit of the same protocol reissued the credential"; exit 1; }
@@ -886,7 +892,7 @@ SESSION_AFTER=$(grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | python
 [ "$SNAPS_BEFORE" = "$SNAPS_AFTER" ] || { echo "FAIL: banning a user rebuilt xray ($SNAPS_BEFORE -> $SNAPS_AFTER snapshots)"; exit 1; }
 [ "$SESSION_BEFORE" = "$SESSION_AFTER" ] || { echo "FAIL: xray session changed ($SESSION_BEFORE -> $SESSION_AFTER)"; exit 1; }
 grep -q '"msg":"applying user delta"' "$LOG/agent.log" || { echo "FAIL: no user delta in agent log"; exit 1; }
-[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_B")" = "204" ] || { echo "FAIL: delete B"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_B?confirm=true")" = "204" ] || { echo "FAIL: delete B"; exit 1; }
 echo "user delta: ok (no rebuild, session $SESSION_AFTER)"
 
 echo "== 高-3: reset subscription = new credentials; the old client is cut and refused, others keep theirs =="
@@ -912,7 +918,7 @@ done
 touch "$LOG/vless.go"
 wait $VLESS_PID || { echo "FAIL: old-credential client after the reset"; cat "$LOG/vless.out"; exit 1; }
 cat "$LOG/vless.out"
-[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_C")" = "204" ] || { echo "FAIL: delete C"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_C?confirm=true")" = "204" ] || { echo "FAIL: delete C"; exit 1; }
 wait_users 1 10 "user C deleted"
 echo "subscription reset: ok (old credential cut and refused)"
 
@@ -957,7 +963,7 @@ if need_agent "protocol>=4" "W9 Shadowsocks 2022 delta/snapshot"; then
     echo "shadowsocks: removal is a Snapshot (agent protocol $SS_PROTO < 5)"
 fi
 [ "$(node_field last_error)" = "null" ] || { echo "FAIL: last_error after SS changes: $(node_field last_error)"; exit 1; }
-[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_SS")" = "204" ] || { echo "FAIL: delete SS user"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_SS?confirm=true")" = "204" ] || { echo "FAIL: delete SS user"; exit 1; }
 [ "$(put_inbound "$GOOD_IB")" = "200" ] || { echo "FAIL: restore inbound after SS"; exit 1; }
 wait_users 1 15 "after SS inbound removed"
 wait_port open 10
@@ -1500,7 +1506,7 @@ python3 -c "import json; p = json.load(open('/tmp/akari-smoke/last'))['probe']; 
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"display_name":null,"tags":[],"sort":0}')" = "200" ] \
   && [ "$(entrance_patch '{"rate":1,"connect_host":"node1.example.test","connect_port":null}')" = "200" ] \
   || { echo "FAIL: reset W11 fields"; exit 1; }
-[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_D")" = "204" ] || { echo "FAIL: delete D"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_D?confirm=true")" = "204" ] || { echo "FAIL: delete D"; exit 1; }
 # The test-URL server is done (background helpers inherit the caller's
 # flock descriptor: never leave one running).
 kill "$W11_PROBE_PID" 2>/dev/null || true
@@ -1544,7 +1550,7 @@ rl_clear
 echo "rate limit: ok"
 
 echo "== delete user: node converges to users=0 =="
-[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_ID")" = "204" ] || { echo "FAIL: delete user"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_ID?confirm=true")" = "204" ] || { echo "FAIL: delete user"; exit 1; }
 wait_users 0 10 "delete user"
 echo "delete user: ok"
 
@@ -1992,7 +1998,7 @@ VIEWER=$(last_json "d['id']"); VJAR="$LOG/viewer-cookies"
 [ "$(code -b "$VJAR" "$BASE/api/v1/me/shop")" = "200" ] \
   && [ "$(last_json "[x for x in d['plans'] if x['plan_id']=='$PAID_PLAN'][0]['remaining']")" = "4" ] \
   || { echo "FAIL: a pending order does not reserve its slot"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$VIEWER")" = "204" ] || { echo "FAIL: delete viewer"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$VIEWER?confirm=true")" = "204" ] || { echo "FAIL: delete viewer"; exit 1; }
 NOTIFY="$BASE/pay/$METHOD/notify"
 # Tampered amount (signature no longer matches) / wrong amount (validly
 # signed): both the canonical rejection; nothing fulfilled.
@@ -2223,7 +2229,7 @@ done
 # sections expect the node to serve only the R18-3 buyer. The ledger,
 # commission and withdrawal rows outlive the users (user_id -> NULL).
 for u in "$W16U" "$INVITER"; do
-  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$u")" = "204" ] || { echo "FAIL: delete W16 user"; exit 1; }
+  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$u?confirm=true")" = "204" ] || { echo "FAIL: delete W16 user"; exit 1; }
 done
 [ "$(psql_q "SELECT count(*) FROM balance_ledger WHERE user_id IS NULL AND user_label IN ('u-${W16U:0:8}','u-${INVITER:0:8}')")" -ge 5 ] \
   || { echo "FAIL: ledger rows did not outlive the users"; exit 1; }
@@ -2357,7 +2363,7 @@ done
   || { echo "FAIL: cancel batch"; exit 1; }
 [ "$(wait_batch "$(last_json "d['id']")")" = "3/0/0" ] || { echo "FAIL: cancel batch result"; exit 1; }
 for u in $(psql_q "SELECT id FROM users WHERE email LIKE 'smoke-ops-%'"); do
-  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$u")" = "204" ] || { echo "FAIL: delete ops user"; exit 1; }
+  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$u?confirm=true")" = "204" ] || { echo "FAIL: delete ops user"; exit 1; }
 done
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/plans/$OPS_PLAN")" = "204" ] || { echo "FAIL: delete ops plan"; exit 1; }
 echo "ops: ok (batch balance/mail/plan exactly once + audited, users/orders/traffic CSV, manual + gift orders, coupon batch)"
@@ -2529,10 +2535,10 @@ psql_q "UPDATE users SET disabled_reason = 'admin', disabled_note = 'smoke' WHER
   || { echo "FAIL: banned user not signed in to the portal scope"; exit 1; }
 for who in expired quota; do
   RU=$(psql_q "SELECT id FROM users WHERE email='smoke-renew-$who@smoke.test'")
-  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$RU")" = "204" ] || { echo "FAIL: delete $who user"; exit 1; }
+  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$RU?confirm=true")" = "204" ] || { echo "FAIL: delete $who user"; exit 1; }
 done
 # Clean up for the following sections (the node serves nobody again).
-[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$BUYER")" = "204" ] || { echo "FAIL: delete buyer"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$BUYER?confirm=true")" = "204" ] || { echo "FAIL: delete buyer"; exit 1; }
 wait_users 0 10 "buyer deleted"
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/plans/$PAID_PLAN")" = "204" ] || { echo "FAIL: delete paid plan"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/node-groups/$PAID_GROUP")" = "204" ] || { echo "FAIL: delete paid group"; exit 1; }
@@ -2992,7 +2998,7 @@ SV=$(psql_q "SELECT version FROM panel_settings")
     -d "{\"version\":$SV,\"extra_release_keys\":[\"$TEST_RELEASE_PUB TEST-ONLY\"]}")" = "200" ] \
   || { echo "FAIL: default retention again: $(cat /tmp/akari-smoke/last)"; exit 1; }
 # Keep root the last admin (S4-2 assertions below).
-[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$ADMIN2")" = "204" ] || { echo "FAIL: delete 2nd admin"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$ADMIN2?confirm=true")" = "204" ] || { echo "FAIL: delete 2nd admin"; exit 1; }
 "$PANEL" -c "$LOG/panel-b.toml" node add renew-node --out "$LOG/renew-bootstrap.toml" >/dev/null
 # The node domain is one database setting (instance A's port): this agent
 # dials instance B (60 s certificates) under the same certificate name.
@@ -3855,7 +3861,7 @@ ROOT_ID=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))
     -d '{"reason": "x"}')" = "400" ] && last_json "d['code']" | matches '^user.ban_self$' \
   || { echo "FAIL: self-ban not refused"; exit 1; }
 [ "$(patch_code "$BASE/api/v1/users/$ROOT_ID" '{"role": "user"}')" = "409" ] || { echo "FAIL: last admin demote not 409"; exit 1; }
-[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$ROOT_ID")" = "409" ] || { echo "FAIL: last admin delete not 409"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$ROOT_ID?confirm=true")" = "409" ] || { echo "FAIL: last admin delete not 409"; exit 1; }
 JAR2="$LOG/cookies2"
 [ "$(code -c "$JAR2" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
     -d "{\"email\":\"root@smoke.test\",\"password\":\"$ADMIN_PW\"}")" = "200" ] || { echo "FAIL: second login"; exit 1; }

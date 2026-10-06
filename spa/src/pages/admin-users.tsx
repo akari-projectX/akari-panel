@@ -24,7 +24,7 @@ import {
 } from "../lib/api";
 import { adminErrorText } from "../lib/admin-errors";
 import { extendDays, TERM_KINDS, termBody, termDays, termKindZh, type TermKind } from "../lib/admin-terms";
-import { periodZh } from "../lib/billing";
+import { periodZh, yuan } from "../lib/billing";
 import { fmtDate, fmtDateTime, TZ_LABEL } from "../lib/datetime";
 import { copyText, humanBytes } from "../lib/utils";
 import { BatchDialog, BatchJobsCard, ExportLink, exportHref, type BatchSelection } from "./admin-ops";
@@ -93,6 +93,34 @@ export function userStatus(
     return { label: "已到期", variant: "destructive", filter: "expired" };
   }
   return { label: "正常", variant: "success", filter: "active" };
+}
+
+/** GET /users/{id}/delete-impact (中-7). */
+export interface DeleteImpact {
+  email: string;
+  balance_cents: number;
+  withdrawable_cents: number;
+  pending_withdrawals: number;
+  pending_withdrawal_cents: number;
+  pending_orders: number;
+  unfulfilled_orders: number;
+  plan: { name: string; expires_at: string | null } | null;
+}
+
+/** The losses a deletion causes, for the confirmation (empty = none). */
+export function deleteImpactZh(i: DeleteImpact): string {
+  const parts: string[] = [];
+  if (i.balance_cents > 0)
+    parts.push(`余额 ¥${yuan(i.balance_cents)}（其中可提现 ¥${yuan(i.withdrawable_cents)}）将随账户删除`);
+  if (i.pending_withdrawals > 0)
+    parts.push(`${i.pending_withdrawals} 笔待审提现（¥${yuan(i.pending_withdrawal_cents)}）删除后只能批准`);
+  if (i.pending_orders > 0) parts.push(`${i.pending_orders} 笔待付款订单，删除后到账将无法退到余额`);
+  if (i.unfulfilled_orders > 0) parts.push(`${i.unfulfilled_orders} 笔已付款未开通的订单`);
+  if (i.plan)
+    parts.push(
+      `生效中的套餐「${i.plan.name}」${i.plan.expires_at ? `（到期 ${fmtDateTime(i.plan.expires_at)}）` : "（永久）"}`,
+    );
+  return parts.length ? `注意：${parts.join("；")}。` : "";
 }
 
 export function AdminUsers() {
@@ -575,21 +603,28 @@ function ManageUser({
           <Button
             variant="destructive"
             size="sm"
-            onClick={() =>
-              run(
+            onClick={async () => {
+              // 中-7: what the deletion loses, from the server, first.
+              let impact: DeleteImpact;
+              try {
+                impact = await get<DeleteImpact>(`/users/${user.id}/delete-impact`);
+              } catch (err) {
+                return setError(adminErrorText(err));
+              }
+              await run(
                 {
                   title: `永久删除用户「${user.email}」？`,
-                  message: "此操作不可撤销，其订阅与节点权限会立即失效。",
+                  message: `此操作不可撤销，其订阅与节点权限会立即失效。${deleteImpactZh(impact)}`,
                   confirmLabel: "删除",
                   destructive: true,
                 },
                 async () => {
-                  await del(`/users/${user.id}`);
+                  await del(`/users/${user.id}?confirm=true`);
                   onClose();
                 },
                 "已删除。",
-              )
-            }
+              );
+            }}
           >
             删除用户
           </Button>

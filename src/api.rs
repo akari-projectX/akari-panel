@@ -1418,16 +1418,84 @@ async fn apply_delete_user(
     Ok(nodes)
 }
 
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteUserQuery {
+    /// 中-7: the admin saw the impact summary and confirmed.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// DELETE /users/{id}?confirm=true (中-7: the console shows
+/// `GET /users/{id}/delete-impact` first; without `confirm=true` 400
+/// `user.delete_confirm_required`, nothing deleted).
 pub async fn delete_user(
     State(state): State<AppState>,
     user: AuthUser,
     Path((_, id)): Path<(String, Uuid)>,
+    Query(q): Query<DeleteUserQuery>,
 ) -> Result<axum::http::StatusCode, ApiError> {
     user.require_admin()?;
+    if !q.confirm {
+        return Err(bad_request!(
+            "user.delete_confirm_required",
+            "deleting a user needs confirm=true (see GET /users/{{id}}/delete-impact)"
+        ));
+    }
     let mut tx = state.pg().begin().await?;
     apply_delete_user(&mut tx, &Actor::of(&user), id).await?;
     tx.commit().await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+/// GET /users/{id}/delete-impact (运营审查中-7): what deleting the account
+/// loses — its balance (and how much of it is withdrawable commission),
+/// pending withdrawals (already debited: only approvable afterwards),
+/// pending orders (a payment arriving after the deletion cannot be
+/// refunded to a balance), paid orders not fulfilled, and the active
+/// subscription. Reads only. Admin.
+pub async fn user_delete_impact(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((_, id)): Path<(String, Uuid)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    user.require_admin()?;
+    let mut c = state.pg().acquire().await?;
+    type Row = (String, i64, i64, i64, i64, i64);
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT u.email, COALESCE((SELECT balance_cents FROM user_balances WHERE user_id = u.id), 0), \
+           (SELECT count(*) FROM withdrawals WHERE user_id = u.id AND status = 'pending'), \
+           COALESCE((SELECT sum(amount_cents) FROM withdrawals \
+                     WHERE user_id = u.id AND status = 'pending'), 0)::bigint, \
+           (SELECT count(*) FROM orders WHERE user_id = u.id AND status = 'pending'), \
+           (SELECT count(*) FROM orders WHERE user_id = u.id AND status = 'paid' \
+            AND fulfilled_at IS NULL AND refunded_at IS NULL) \
+         FROM users u WHERE u.id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&mut *c)
+    .await?;
+    let Some((email, balance, wd, wd_cents, pending, unfulfilled)) = row else {
+        return Err(ApiError::not_found());
+    };
+    let withdrawable = crate::billing::ledger::withdrawable(&mut c, id).await?;
+    let plan: Option<(String, Option<DateTime<Utc>>)> = sqlx::query_as(
+        "SELECT p.name, up.expires_at FROM user_plans up JOIN plans p ON p.id = up.plan_id \
+         WHERE up.user_id = $1 AND up.status = 'active'",
+    )
+    .bind(id)
+    .fetch_optional(&mut *c)
+    .await?;
+    Ok(Json(json!({
+        "email": email,
+        "balance_cents": balance,
+        "withdrawable_cents": withdrawable,
+        "pending_withdrawals": wd,
+        "pending_withdrawal_cents": wd_cents,
+        "pending_orders": pending,
+        "unfulfilled_orders": unfulfilled,
+        "plan": plan.map(|(name, expires_at)| json!({ "name": name, "expires_at": expires_at })),
+    })))
 }
 
 // ---------------------------------------------------------------------------

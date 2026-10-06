@@ -249,6 +249,16 @@ describe("AdminUsers", () => {
       "GET /users": page([user({})]),
       "GET /plans": [],
       "GET /users/u1": detail(user({})),
+      "GET /users/u1/delete-impact": {
+        email: "alice@example.com",
+        balance_cents: 1500,
+        withdrawable_cents: 500,
+        pending_withdrawals: 1,
+        pending_withdrawal_cents: 300,
+        pending_orders: 0,
+        unfulfilled_orders: 0,
+        plan: { name: "basic", expires_at: null },
+      },
       "DELETE /users/u1": () => ({ status: 204 }),
       "POST /users/u1/revoke-sessions": () => ({ status: 204 }),
       "POST /users/u1/sub-token": { sub_token: "tok-123" },
@@ -269,6 +279,12 @@ describe("AdminUsers", () => {
     expect(await screen.findByText("tok-123")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "删除用户" }));
     await waitFor(() => expect(calls.some((c) => c.method === "DELETE" && c.path === "/users/u1")).toBe(true));
+    // 中-7: the impact from the server was in the question; the delete says it was confirmed.
+    expect(calls.find((c) => c.method === "DELETE")?.search).toBe("?confirm=true");
+    const asked = confirm.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(asked).toContain("余额 ¥15.00（其中可提现 ¥5.00）");
+    expect(asked).toContain("1 笔待审提现（¥3.00）");
+    expect(asked).toContain("生效中的套餐「basic」（永久）");
   });
 
   it("assigns a plan for a term (retired plans not offered)", async () => {
