@@ -308,10 +308,11 @@ async fn order_row(db: &TestDb, user: Uuid, plan: Uuid, cents: i64, days: i32) -
     sqlx::query(
         "INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_id, plan_name, \
          amount_cents, list_price_cents, period, period_days, subject, expires_at, \
-         payment_method_id, action) \
+         payment_method_id, action, prior_user_plan_id) \
          VALUES ($1, $2, $3, 'u', $4, 'p', $5, $5, 'days', $6, 's', \
                  now() + interval '15 minutes', \
-                 (SELECT id FROM payment_methods ORDER BY created_at, id LIMIT 1), 'new')",
+                 (SELECT id FROM payment_methods ORDER BY created_at, id LIMIT 1), 'new', \
+                 (SELECT id FROM user_plans WHERE user_id = $3 AND status = 'active'))",
     )
     .bind(id)
     .bind(&otn)

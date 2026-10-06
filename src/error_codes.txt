@@ -227,6 +227,7 @@ order_admin.refund_external_with_balance
 order_admin.refund_not_paid
 order_admin.refund_user_gone
 order_admin.refunded
+order_admin.superseded
 order_admin.user_gone
 order_admin.user_has_pending
 payments.app_id_invalid

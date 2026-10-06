@@ -208,6 +208,7 @@ export const ADMIN_CODES: Record<string, string> = {
   "order_admin.refund_not_paid": "只有已付款的订单可以退款",
   "order_admin.refund_user_gone": "用户已删除：请线下退款，不要选择「退回余额」",
   "order_admin.refunded": "该订单已退款，不能再开通",
+  "order_admin.superseded": "下单后用户已另购或更换套餐：迟到的付款不替换当前套餐（已自动退回余额）",
   "order_admin.user_gone": "用户已不存在",
   "order_admin.user_has_pending": "该用户有待付款订单，请先取消或等待其结束",
   // 套餐

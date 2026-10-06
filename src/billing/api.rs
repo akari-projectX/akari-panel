@@ -733,10 +733,11 @@ pub async fn create_order(
         "INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_id, plan_name, \
          amount_cents, period, period_days, list_price_cents, credit_cents, credit_order_id, \
          discount_cents, coupon_id, coupon_code, balance_cents, balance_state, \
-         subject, expires_at, payment_method_id, action) \
+         subject, expires_at, payment_method_id, action, prior_user_plan_id) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
                  CASE WHEN $16 > 0 THEN 'held' ELSE 'none' END, $17, \
-                 now() + make_interval(mins => $18), $19, $20) \
+                 now() + make_interval(mins => $18), $19, $20, \
+                 (SELECT id FROM user_plans WHERE user_id = $3 AND status = 'active')) \
          RETURNING {}",
         orders::order_snapshot_sql("orders")
     )))

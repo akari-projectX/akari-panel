@@ -113,9 +113,11 @@ Example: 30.00 for a month, switched with 15 days left → 15.00 credit; a
 **forfeited** (no balance, no refunds) — the shop says so before buying
 (`forfeited_cents`) and the order is paid by the credit. The credit is
 fixed in the order at creation (orders expire after
-`order_timeout_minutes`); if the subscription it came from is no longer the
-one replaced at fulfilment, the payment is still honoured and
-`fulfil_result.credit_source_changed = true` flags it for review.
+`order_timeout_minutes`); a payment that would replace another subscription
+than the one the order was created against is refunded to the balance
+(低-4, above); when the subscription it came from has ended meanwhile, the
+payment is honoured and `fulfil_result.credit_source_changed = true` flags
+it for review.
 
 ### Stock and sale rules
 
@@ -155,6 +157,10 @@ period pass). 运营规则（运营逻辑审查中-1）：续费**不重置**流
 
 - An order that expired or was cancelled locally but is reported paid
   (notify or query) is still fulfilled: Alipay took the money.
+- 运营规则（运营逻辑审查低-4）：订单记录下单时用户的订阅（`orders.prior_user_plan_id`）。迟到的付款
+  如果要**替换**的订阅已经不是下单时那个（用户之后另购、换了套餐）——不替换，转为自动退回余额
+  （`fulfil_error` = "not replaced"，同中-2 的自动退款与告警）。下单时的订阅在此期间到期、现在没有
+  订阅时照常开通（这正是付款要买的）；同一套餐的续费照常续期。
 - If fulfilment fails for a business reason the order stays **paid** with
   `fulfil_error`; Alipay still gets `success`. Plan sold out, deleted or
   disabled, or a reset pack for a plan the user no longer holds: refunded to
