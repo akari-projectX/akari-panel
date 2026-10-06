@@ -26,7 +26,11 @@ test("ALR-01 ALR-02 ALR-03 ALR-04 ALR-05: alert center, acknowledge, settings, c
 }, info) => {
   const name = uniq(info, "alert-host");
   const { id } = await apiJson<{ id: string }>("POST", "/servers", { name });
-  // A firing CPU alert (never-online server: live kinds stay as they are) and a dead notification.
+  // The evaluator (every 30 s) monitors enrolled servers only: an alert on a
+  // never-enrolled one is resolved by the next round. Enrolled but never
+  // online, the server's live kinds (cpu) are undecided and stay as they are.
+  sql(`UPDATE servers SET cert_serial = md5('${name}'), enrolled_at = now() WHERE id = '${id}'`);
+  // A firing CPU alert and a dead notification.
   const alert = sql(
     `INSERT INTO server_alerts (server_id, kind, status, value, detail) VALUES ('${id}', 'cpu', 'firing', '97%', 'CPU 97% for 5 min') RETURNING id`,
   ).split("\n")[0];
