@@ -245,6 +245,9 @@ docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "UPDATE panel_se
 # W15 settings back to the defaults (off; version 0) and an empty outbox.
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM signup_settings; INSERT INTO signup_settings (id) VALUES (1); DELETE FROM mail_settings; INSERT INTO mail_settings (id) VALUES (1); TRUNCATE mail_outbox;" >/dev/null 2>&1 || true
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM auth_settings; INSERT INTO auth_settings (id) VALUES (1);" >/dev/null 2>&1 || true
+# D4/D11: the next start imports this run's data/state.json prefix and draws
+# a new subscription path.
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "UPDATE access_settings SET version = 0, admin_prefix = NULL, admin_allow_cidrs = '{}', sub_path = NULL;" >/dev/null 2>&1 || true
 # W17: alert settings an aborted run may leave (a webhook to a dead receiver).
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE server_alerts, alert_notifications; UPDATE alert_settings SET version = 0, enabled = true, offline_secs = 300, webhook_enabled = false, webhook_url = NULL, webhook_secret_enc = NULL, telegram_enabled = false, telegram_chat_id = NULL, telegram_token_enc = NULL, telegram_api_url = NULL, email_enabled = false, email_to = '{}';" >/dev/null 2>&1 || true
 # Ops: announcements, knowledge base, templates and branding of an earlier run.
@@ -296,8 +299,15 @@ grep -q 'PRIVATE KEY' "$BOOT" && { echo "FAIL: bootstrap file contains a private
 grep -qE '^enrollment_token = "[A-Za-z0-9_-]{43}"$' "$BOOT" || { echo "FAIL: bootstrap file lacks the enrollment token"; exit 1; }
 [ "$(stat -c %a "$BOOT")" = "600" ] || { echo "FAIL: bootstrap file is not 0600"; exit 1; }
 
-PREFIX=$("$PANEL" info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')
-BASE="http://127.0.0.1:8080/$PREFIX"
+# D4/D11: the admin prefix (API + console) and the site-wide subscription
+# path; the portal, install links and payment notifications are on the root.
+PREFIX=$("$PANEL" info | awk '/admin prefix/{sub(/^\//,"",$3); print $3}')
+SUBP=$("$PANEL" info | awk '/sub path/{sub(/^\//,"",$3); print $3}')
+[ -n "$PREFIX" ] && [ -n "$SUBP" ] || { echo "FAIL: akari info: admin prefix / sub path"; "$PANEL" info; exit 1; }
+[ "$PREFIX" = "$(psql_q "SELECT admin_prefix FROM access_settings")" ] || { echo "FAIL: the admin prefix was not imported from data/state.json"; exit 1; }
+ROOT="http://127.0.0.1:8080"
+BASE="$ROOT/$PREFIX"
+SUBBASE="$ROOT/$SUBP"
 code() { curl -s --noproxy '*' -o /tmp/akari-smoke/last -w "%{http_code}" "$@"; }
 last_json() { python3 -c "import json,sys; d=json.load(open('/tmp/akari-smoke/last')); print($1)"; }
 
@@ -313,8 +323,16 @@ head -1 /tmp/akari-smoke/fphead | matches " 404" || { echo "FAIL: rejection is n
 grep -qiE '^(x-frame-options|x-content-type-options|referrer-policy|content-security-policy|content-type):' /tmp/akari-smoke/fphead \
   && { echo "FAIL: rejection carries distinctive headers"; cat /tmp/akari-smoke/fphead; exit 1; }
 for probe in \
-    "http://127.0.0.1:8080/" \
     "-X POST http://127.0.0.1:8080/" \
+    "http://127.0.0.1:8080/admin" \
+    "http://127.0.0.1:8080/app" \
+    "http://127.0.0.1:8080/_/healthz" \
+    "http://127.0.0.1:8080/sub/x" \
+    "$SUBBASE" \
+    "$SUBBASE/" \
+    "$BASE/sub/x" \
+    "$BASE/install/x" \
+    "-X POST $BASE/pay/alipay/notify" \
     "http://127.0.0.1:8080/deadbeef/api/v1/users" \
     "http://127.0.0.1:8080/assets/missing.js" \
     "$BASE" \
@@ -325,7 +343,7 @@ for probe in \
     "-X DELETE $BASE/auth/logout" \
     "-X POST $BASE/healthz" \
     "-X POST $BASE/api/v1/auth/login" \
-    "$BASE/sub/not-a-real-token" \
+    "$SUBBASE/not-a-real-token" \
     "$BASE/assets/missing.js" \
     "$BASE/admin" \
     "$BASE/admin/users" \
@@ -413,6 +431,27 @@ done
     -d "{\"email\":\"root@smoke.test\",\"password\":\"$ADMIN_PW\"}")" = "200" ] || { echo "FAIL: good login failed"; exit 1; }
 grep -q '"role":"admin"' /tmp/akari-smoke/last || { echo "FAIL: login response missing role"; exit 1; }
 echo "login: ok"
+
+echo "== D4/D11: the portal at /, the console and the API under the admin prefix =="
+[ "$(code "$ROOT/")" = "200" ] || { echo "FAIL: the portal is not at /"; exit 1; }
+grep -qF "$PREFIX" /tmp/akari-smoke/last && { echo "FAIL: the portal page carries the admin prefix"; exit 1; }
+curl -s --noproxy '*' -D - -o /dev/null "$ROOT/" | matches -i '^content-security-policy: default-src' \
+  || { echo "FAIL: the portal page lacks the security headers"; exit 1; }
+for p in /shop /tickets /help/x /register /healthz; do
+  [ "$(code "$ROOT$p")" = "200" ] || { echo "FAIL: portal path $p"; exit 1; }
+done
+# The shared login page under the prefix loads its assets there.
+[ "$(code "$BASE/app")" = "200" ] && matches -F "/$PREFIX/assets/" </tmp/akari-smoke/last \
+  || { echo "FAIL: the login page under the admin prefix"; exit 1; }
+# An admin's right password on the portal = the wrong password's answer; an
+# admin session does not exist there.
+PWRONG=$(fpr -X POST "$ROOT/auth/login" -H 'Content-Type: application/json' -d '{"email":"root@smoke.test","password":"wrong-password"}')
+[ "$(fpr -X POST "$ROOT/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"root@smoke.test\",\"password\":\"$ADMIN_PW\"}")" = "$PWRONG" ] \
+  || { echo "FAIL: an admin signs in on the portal"; exit 1; }
+for p in /api/v1/me /api/v1/users /api/v1/settings/access; do
+  [ "$(fp -b "$JAR" "$ROOT$p")" = "$REJ" ] || { echo "FAIL: an admin session answers on the portal: $p"; exit 1; }
+done
+echo "front door: ok"
 
 echo "== D1/D7: email login, no second factor =="
 last_json "d['email'] == 'root@smoke.test' and 'login' not in d and 'stage' not in d" | matches '^True$' \
@@ -549,7 +588,7 @@ grant "$USER_ID"
 echo "api setup: ok (user $USER_ID on node $NODE_ID)"
 
 echo "== subscription =="
-SUB="$BASE/sub/$SUB_TOKEN"
+SUB="$SUBBASE/$SUB_TOKEN"
 curl -s --noproxy '*' "$SUB" | base64 -d 2>/dev/null | matches "vless://.*@node1.example.test:11443" \
   || { echo "FAIL: base64 links missing vless"; exit 1; }
 curl -s --noproxy '*' -A "sing-box/1.12.0" "$SUB" \
@@ -563,7 +602,7 @@ echo "$INFO" | matches "download=0" && echo "$INFO" | matches "total=10737418240
 SIZE=$(curl -s --noproxy '*' -o /tmp/akari-smoke/subbody "$SUB" && wc -c < /tmp/akari-smoke/subbody)
 [ "$SIZE" -ge 8192 ] || { echo "FAIL: body not padded ($SIZE bytes)"; exit 1; }
 # Wrong token: identical rejection (checked above), never quota headers.
-curl -s --noproxy '*' -D - -o /dev/null "$BASE/sub/not-a-real-token" | matches -i "subscription-userinfo" \
+curl -s --noproxy '*' -D - -o /dev/null "$SUBBASE/not-a-real-token" | matches -i "subscription-userinfo" \
   && { echo "FAIL: quota header leaked on rejection"; exit 1; }
 echo "subscription: ok ($SIZE-byte padded body)"
 
@@ -632,7 +671,7 @@ reality_inbound() { # $1 = extra realitySettings JSON members (leading comma) or
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
     -d '{"email":"smoke-fp@smoke.test","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create fp user"; cat /tmp/akari-smoke/last; exit 1; }
 FP_USER=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
-FP_SUB="$BASE/sub/$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['sub_token'])")"
+FP_SUB="$SUBBASE/$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['sub_token'])")"
 check_fp() { # $1 = expected fingerprint
   curl -s --noproxy '*' "$FP_SUB" | base64 -d 2>/dev/null | matches "security=reality.*&fp=$1" \
     || { echo "FAIL: link lacks fp=$1"; exit 1; }
@@ -661,8 +700,10 @@ echo "reality fingerprint: ok"
 
 echo "== M1-9 self-service sub token; M1-10 over the limit = the canonical rejection =="
 UJAR="$LOG/user-cookies"
-[ "$(code -c "$UJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+# D11: users sign in on the portal (root).
+[ "$(code -c "$UJAR" -X POST "$ROOT/auth/login" -H 'Content-Type: application/json' \
     -d '{"email":"smoke-user@smoke.test","password":"user-password-123"}')" = "200" ] || { echo "FAIL: user login"; exit 1; }
+[ "$(code -b "$UJAR" "$ROOT/api/v1/me")" = "200" ] || { echo "FAIL: user session on the portal"; exit 1; }
 [ "$(code -b "$UJAR" -X POST "$BASE/api/v1/me/sub-token" -H 'Content-Type: application/json' -d '{}')" = "200" ] \
   || { echo "FAIL: self-service sub token"; cat /tmp/akari-smoke/last; exit 1; }
 NEW_TOKEN=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['sub_token'])")
@@ -670,7 +711,7 @@ NEW_TOKEN=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'
 # 高-3: the reset also gave the user a new credential on every entrance.
 [ "$(last_json "d['credentials_rotated']")" = "1" ] && [ "$(account_of "$USER_ID")" != "$VLESS_A" ] \
   || { echo "FAIL: subscription reset kept the old credential"; cat /tmp/akari-smoke/last; exit 1; }
-SUB="$BASE/sub/$NEW_TOKEN"
+SUB="$SUBBASE/$NEW_TOKEN"
 # W20 (B1): the link stays retrievable — /me returns it (no-store), and an
 # admin can read it (audited, no token material in the audit row).
 [ "$(code -D "$LOG/me.h" -b "$UJAR" "$BASE/api/v1/me")" = "200" ] \
@@ -1117,7 +1158,7 @@ assert 2 * (b1 - b0) <= r1 - r0, (b0, b1, r0, r1)
 " || { echo "FAIL: node raw/billed totals ($NODE_TOTALS0 -> $NODE_TOTALS1, D raw $RAW_D)"; exit 1; }
 echo "multiplier: ok (raw $RAW_D bytes, billed $USED_D at 0.5x)"
 # Subscription: display name + tags name the proxy, the override is dialed.
-curl -s --noproxy '*' -A 'clash.meta' "$BASE/sub/$SUB_D" >"$LOG/w11-sub.yaml"
+curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" >"$LOG/w11-sub.yaml"
 grep -q '"冒烟 01 | IPLC | 0.5x 直连 0.5x"' "$LOG/w11-sub.yaml" || { echo "FAIL: subscription name"; head -20 "$LOG/w11-sub.yaml"; exit 1; }
 grep -q 'server: 127.0.0.1' "$LOG/w11-sub.yaml" || { echo "FAIL: connect override not in subscription"; exit 1; }
 # Portal: the user's node list (no ids/addresses).
@@ -1134,7 +1175,7 @@ assert 'id' not in v[0] and 'connect_host' not in v[0], v
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"visible":false}')" = "200" ] || { echo "FAIL: hide node"; exit 1; }
 code -b "$DJAR" "$BASE/api/v1/me/nodes" >/dev/null
 [ "$(cat /tmp/akari-smoke/last)" = "[]" ] || { echo "FAIL: hidden node listed to the user"; exit 1; }
-curl -s --noproxy '*' -A 'clash.meta' "$BASE/sub/$SUB_D" >"$LOG/w11-sub-hidden.yaml"
+curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" >"$LOG/w11-sub-hidden.yaml"
 grep -q '冒烟' "$LOG/w11-sub-hidden.yaml" && { echo "FAIL: hidden node in subscription"; exit 1; }
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"visible":true}')" = "200" ] || { echo "FAIL: show node"; exit 1; }
 echo "portal + subscription: ok"
@@ -1302,7 +1343,7 @@ VLESS_DR=$(relay_account "$USER_D")
 for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/11446) 2>/dev/null && break; sleep 0.5; done
 (exec 3<>/dev/tcp/127.0.0.1/11446) 2>/dev/null || { echo "FAIL: derived inbound not listening"; tail -5 "$LOG/agent.log"; exit 1; }
 # The subscription lists the relay as its own proxy, with its multiplier.
-curl -s --noproxy '*' -A 'clash.meta' "$BASE/sub/$SUB_D" >"$LOG/relay-sub.yaml"
+curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" >"$LOG/relay-sub.yaml"
 grep -q '"冒烟 01 | IPLC | 0.5x IPLC 2.0x"' "$LOG/relay-sub.yaml" && grep -q 'port: 11446' "$LOG/relay-sub.yaml" \
   || { echo "FAIL: relay not in the subscription"; cat "$LOG/relay-sub.yaml"; exit 1; }
 # The W11 client with a port and an attempt count (argv 2, 3).
@@ -1412,7 +1453,7 @@ for _ in $(seq 1 30); do [ "$(psql_q "SELECT hidden_since IS NOT NULL FROM entra
   || { echo "FAIL: unreachable relay not hidden"; psql_q "SELECT health_ok, health_failures, health_error FROM entrances WHERE id='$RELAY_ID'"; exit 1; }
 rl_sub_clear() { vk EVAL "for _,k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call('DEL', k) end return 1" 0 'akari:rl:sub:*' >/dev/null; }
 rl_sub_clear
-curl -s --noproxy '*' -A 'clash.meta' "$BASE/sub/$SUB_D" | matches 'IPLC 2.0x' && { echo "FAIL: hidden relay still in the subscription"; exit 1; }
+curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches 'IPLC 2.0x' && { echo "FAIL: hidden relay still in the subscription"; exit 1; }
 for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='firing'")" = "1" ] && break; sleep 1; done
 [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='firing'")" = "1" ] \
   || { echo "FAIL: no entrance_down alert"; exit 1; }
@@ -1420,7 +1461,7 @@ for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE s
 for _ in $(seq 1 20); do [ "$(psql_q "SELECT hidden_since IS NULL FROM entrances WHERE id='$RELAY_ID'")" = "t" ] && break; sleep 1; done
 [ "$(psql_q "SELECT health_ok AND hidden_since IS NULL FROM entrances WHERE id='$RELAY_ID'")" = "t" ] || { echo "FAIL: relay not restored"; exit 1; }
 rl_sub_clear
-curl -s --noproxy '*' -A 'clash.meta' "$BASE/sub/$SUB_D" | matches 'IPLC 2.0x' || { echo "FAIL: restored relay not in the subscription"; exit 1; }
+curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches 'IPLC 2.0x' || { echo "FAIL: restored relay not in the subscription"; exit 1; }
 for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='resolved'")" = "1" ] && break; sleep 1; done
 [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='resolved'")" = "1" ] \
   || { echo "FAIL: entrance_down not resolved"; exit 1; }
@@ -1503,7 +1544,7 @@ RULES='{"rules":[{"weekdays":[1,2,3,4,5,6,7],"start":"00:00","end":"24:00","rate
     -d '{"rules":[{"weekdays":[8],"start":"00:00","end":"24:00","rate":1}]}')" = "400" ] \
   && [ "$(last_json "d['code']")" = "entrance.rate_rule_invalid" ] || { echo "FAIL: bad weekday accepted"; exit 1; }
 rl_sub_clear
-curl -s --noproxy '*' -A 'clash.meta' "$BASE/sub/$SUB_D" | matches '3\.0x' || { echo "FAIL: subscription name lacks the rule's multiplier"; exit 1; }
+curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches '3\.0x' || { echo "FAIL: subscription name lacks the rule's multiplier"; exit 1; }
 [ "$(psql_q "SELECT akari_entrance_rate('$DIRECT_ID', now())")" = "3000" ] || { echo "FAIL: SQL rate"; exit 1; }
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/entrances/$DIRECT_ID/rate-rules" -H 'Content-Type: application/json' -d '{"rules":[]}')" = "200" ] \
   && [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='entrance.rate_rules.set' AND target_id='$DIRECT_ID'")" = "2" ] \
@@ -2155,7 +2196,7 @@ VIEWER=$(last_json "d['id']"); VJAR="$LOG/viewer-cookies"
   && [ "$(last_json "[x for x in d['plans'] if x['plan_id']=='$PAID_PLAN'][0]['remaining']")" = "4" ] \
   || { echo "FAIL: a pending order does not reserve its slot"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$VIEWER?confirm=true")" = "204" ] || { echo "FAIL: delete viewer"; exit 1; }
-NOTIFY="$BASE/pay/$METHOD/notify"
+NOTIFY="$ROOT/pay/$METHOD/notify"
 # Tampered amount (signature no longer matches) / wrong amount (validly
 # signed): both the canonical rejection; nothing fulfilled.
 [ "$(fp -X POST "$NOTIFY" --data-binary "$(python3 "$PAY/notify.py" "$PAY" "$OTN" 0.01 TRADE_SUCCESS 0.02)")" = "$REJ" ] \
@@ -2274,7 +2315,7 @@ CORDER=$(last_json "d['id']"); COTN=$(last_json "d['out_trade_no']")
 [ "$(api_json "$IJAR" POST "$BASE/api/v1/me/orders" "{\"plan_id\":\"$W16_PLAN\",\"period\":\"month\",\"coupon\":\"SMOKE20\"}")" = "409" ] \
   && last_json "d['error']" | matches 'coupon has been used up' || { echo "FAIL: coupon's last use given twice"; cat /tmp/akari-smoke/last; exit 1; }
 # (The pre-R40 notify path still settles an order through its own method.)
-[ "$(curl -s --noproxy '*' -X POST "$BASE/pay/alipay/notify" --data-binary "$(python3 "$PAY/notify.py" "$PAY" "$COTN" 8.00 TRADE_SUCCESS)")" = "success" ] \
+[ "$(curl -s --noproxy '*' -X POST "$ROOT/pay/alipay/notify" --data-binary "$(python3 "$PAY/notify.py" "$PAY" "$COTN" 8.00 TRADE_SUCCESS)")" = "success" ] \
   || { echo "FAIL: coupon order notify"; exit 1; }
 [ "$(psql_q "SELECT status, fulfilled_at IS NOT NULL FROM orders WHERE id='$CORDER'")" = "paid|t" ] || { echo "FAIL: coupon order not fulfilled"; exit 1; }
 [ "$(psql_q "SELECT status || '/' || (SELECT used FROM coupons WHERE code='SMOKE20') FROM coupon_redemptions WHERE order_id='$CORDER'")" = "redeemed/1" ] \
@@ -2351,7 +2392,7 @@ PORDER=$(last_json "d['id']")
 [ "$(api_json "$WJAR" POST "$BASE/api/v1/me/orders" "{\"plan_id\":\"$W16_PLAN\",\"period\":\"month\"}")" = "201" ] \
   || { echo "FAIL: order to refund out of band"; cat /tmp/akari-smoke/last; exit 1; }
 XORDER=$(last_json "d['id']"); XOTN=$(last_json "d['out_trade_no']")
-[ "$(curl -s --noproxy '*' -X POST "$BASE/pay/alipay/notify" --data-binary "$(python3 "$PAY/notify.py" "$PAY" "$XOTN" 10.00 TRADE_SUCCESS)")" = "success" ] \
+[ "$(curl -s --noproxy '*' -X POST "$ROOT/pay/alipay/notify" --data-binary "$(python3 "$PAY/notify.py" "$PAY" "$XOTN" 10.00 TRADE_SUCCESS)")" = "success" ] \
   || { echo "FAIL: out-of-band refund order notify"; exit 1; }
 [ "$(api_json "$JAR" POST "$BASE/api/v1/orders/$XORDER/refund" '{"reason":"支付宝后台已退"}')" = "400" ] \
   && last_json "d['code']" | matches '^order_admin.refund_external_required$' \
@@ -2710,7 +2751,7 @@ echo "== W8 protocol matrix: every template -> agent -> three subscription forma
 # before protocol 4 bumped; protocol >= 4 implies it.
 if need_agent "protocol>=4" "W8 protocol matrix"; then
   # shellcheck disable=SC2097,SC2098 # $LOG is the same value on both sides
-  BASE="$BASE" JAR="$JAR" NODE_ID="$NODE_ID" ACCESS_PLAN="$ACCESS_PLAN" VALKEY_DB="$SMOKE_VALKEY_DB" LOG="$LOG" AGENT_LOG="$LOG/agent.log" \
+  BASE="$BASE" SUB_PATH="$SUBP" JAR="$JAR" NODE_ID="$NODE_ID" ACCESS_PLAN="$ACCESS_PLAN" VALKEY_DB="$SMOKE_VALKEY_DB" LOG="$LOG" AGENT_LOG="$LOG/agent.log" \
     python3 scripts/smoke-protocols.py || { echo "FAIL: W8 protocol matrix"; tail -20 "$LOG/agent.log"; exit 1; }
 fi
 
@@ -2733,7 +2774,7 @@ elif need_agent "protocol>=6" "W10 automatic node certificate"; then
   for _ in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/14000) 2>/dev/null && break; sleep 0.5; done
   docker cp akari-smoke-pebble:/test/certs/pebble.minica.pem "$LOG/acme/pebble-api.pem" >/dev/null
   # shellcheck disable=SC2097,SC2098 # $LOG is the same value on both sides
-  BASE="$BASE" JAR="$JAR" LOG="$LOG" AGENT="$AGENT" PEBBLE_API_ROOT="$LOG/acme/pebble-api.pem" \
+  BASE="$BASE" SUB_PATH="$SUBP" JAR="$JAR" LOG="$LOG" AGENT="$AGENT" PEBBLE_API_ROOT="$LOG/acme/pebble-api.pem" \
     python3 scripts/smoke-acme.py || { echo "FAIL: W10 automatic certificate"; docker logs akari-smoke-pebble 2>&1 | tail -10; exit 1; }
   docker rm -f akari-smoke-pebble akari-smoke-dns >/dev/null
   eval "$PREV_EXIT_TRAP"
@@ -3550,9 +3591,13 @@ assert 'tag' not in ib" \
   || { echo "FAIL: template inbound not stored"; exit 1; }
 [ "$(psql_q "SELECT kind || ' ' || connect_host || ' ' || rate_permille FROM entrances WHERE node_id='$INST_ID'")" = "direct 127.0.0.1 2000" ] \
   || { echo "FAIL: create did not set the direct entrance"; exit 1; }
+# D4/D11: the install link is a public path of its own: neither the link
+# nor the script carries the admin prefix.
+case "$INST_URL" in "$ROOT/install/"*) ;; *) echo "FAIL: install link not at /install/: $INST_URL"; exit 1;; esac
 # The script: complete, POSIX sh, shellcheck-clean.
 [ "$(code "$INST_URL")" = "200" ] || { echo "FAIL: install script not served"; exit 1; }
 cp /tmp/akari-smoke/last "$LOG/install.sh"
+grep -qF "$PREFIX" "$LOG/install.sh" && { echo "FAIL: the install script carries the admin prefix"; exit 1; }
 grep -q '@@' "$LOG/install.sh" && { echo "FAIL: placeholder left in the script"; exit 1; }
 sh -n "$LOG/install.sh" || { echo "FAIL: script does not parse"; exit 1; }
 if [ "${SMOKE_SHELLCHECK:-1}" = 1 ]; then
@@ -3560,7 +3605,7 @@ if [ "${SMOKE_SHELLCHECK:-1}" = 1 ]; then
     || { echo "FAIL: shellcheck"; exit 1; }
 fi
 # Unknown arch / bad token: the canonical rejection.
-for p in "$INST_URL/agent/amd64" "$INST_URL/agent/$(printf "%064d" 0)" "${INST_URL%?}x" "$BASE/install/short"; do
+for p in "$INST_URL/agent/amd64" "$INST_URL/agent/$(printf "%064d" 0)" "${INST_URL%?}x" "$ROOT/install/short"; do
   [ "$(fp "$p")" = "$REJ" ] || { echo "FAIL: install rejection differs for $p"; exit 1; }
 done
 # W32: the installer turns on TCP BBR + fq where it can. The test nodes
@@ -3914,7 +3959,7 @@ docker rm -f akari-smoke-caddy >/dev/null 2>&1 || true
 sed '0,/^{$/s//{\n\tadmin off\n\tlocal_certs\n\tskip_install_trust\n\thttp_port 8447\n\thttps_port 8446/' \
   deploy/caddy/Caddyfile >"$LOG/Caddyfile"
 grep -q '^	https_port 8446$' "$LOG/Caddyfile" || { echo "FAIL: Caddyfile global block not found"; exit 1; }
-docker run -d --name akari-smoke-caddy --network host -e AKARI_PREFIX="$PREFIX" -e AKARI_DOMAIN=myapp.test \
+docker run -d --name akari-smoke-caddy --network host -e AKARI_DOMAIN=myapp.test \
   -e AKARI_UPSTREAM=127.0.0.1:8080 -e AKARI_ASK=http://127.0.0.1:8092/ask \
   -v "$LOG/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.11-alpine >/dev/null
 PREV_EXIT_TRAP=$(trap -p EXIT)
@@ -3928,13 +3973,14 @@ MAIN_URL="https://$R22_MAIN/$PREFIX"
 for _ in $(seq 1 30); do [ "$(code -k "${RES[@]}" "$MAIN_URL/healthz")" = "200" ] && break; sleep 0.5; done
 [ "$(code -k "${RES[@]}" "$MAIN_URL/healthz")" = "200" ] || { echo "FAIL: main domain through Caddy"; docker logs akari-smoke-caddy 2>&1 | tail -5; exit 1; }
 [ "$(code -k "${RES[@]}" "https://sub.akari.test:8446/$PREFIX/healthz")" = "200" ] || { echo "FAIL: sub domain through Caddy (on demand)"; docker logs akari-smoke-caddy 2>&1 | tail -5; exit 1; }
-[ "$(code -k "${RES[@]}" "https://$R22_MAIN/")" = "404" ] || { echo "FAIL: Caddy forwards outside the prefix"; exit 1; }
+# D11: everything reaches the panel; the portal is at /.
+[ "$(code -k "${RES[@]}" "https://$R22_MAIN/")" = "200" ] || { echo "FAIL: the portal through Caddy"; exit 1; }
 curl -sk --noproxy '*' "${RES[@]}" -o /dev/null "https://evil.test:8446/$PREFIX/healthz" \
   && { echo "FAIL: Caddy served a certificate for an unconfigured name"; exit 1; }
-# No prefix oracle through Caddy: Caddy's own 404 and the panel's rejection
-# behind the prefix are byte-identical (headers minus Date, body), on the
-# main domain, the on-demand subscription domain and the bare IP (no SNI),
-# with and without compression negotiated. Server/Via are stripped.
+# No prefix oracle through Caddy: junk and the panel's rejections under the
+# prefix are byte-identical (headers minus Date, body), on the main domain,
+# the on-demand subscription domain and the bare IP (no SNI), with and
+# without compression negotiated. Server/Via are stripped.
 for base in "https://myapp.test:8446" "https://sub.akari.test:8446" "https://127.0.0.1:8446"; do
   for enc in identity "gzip, zstd"; do
     A=$(fp -k "${RES[@]}" -H "Accept-Encoding: $enc" "$base/junk")
@@ -3963,7 +4009,7 @@ done
 # Subscription URLs on the subscription domain (API create response).
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
     -d '{"email":"r22-user@smoke.test","password":"r22-user-password"}')" = "201" ] || { echo "FAIL: create r22 user"; exit 1; }
-python3 -c "import json,sys;v=json.load(open('/tmp/akari-smoke/last'));sys.exit(0 if v['sub_url']=='https://sub.akari.test/$PREFIX/sub/'+v['sub_token'] else 1)" \
+python3 -c "import json,sys;v=json.load(open('/tmp/akari-smoke/last'));sys.exit(0 if v['sub_url']=='https://sub.akari.test/$SUBP/'+v['sub_token'] else 1)" \
   || { echo "FAIL: sub_url not on the subscription domain: $(cat /tmp/akari-smoke/last)"; exit 1; }
 
 # Install command: main domain origin (browser origin ignored), pinned
@@ -3974,7 +4020,7 @@ python3 -c "import json,sys;v=json.load(open('/tmp/akari-smoke/last'));sys.exit(
 cp /tmp/akari-smoke/last "$LOG/r22-create.json"
 R22_URL=$(python3 -c "import json;print(json.load(open('$LOG/r22-create.json'))['install']['url'])")
 R22_PIN=$(python3 -c "import json;print(json.load(open('$LOG/r22-create.json'))['install']['pin'] or '')")
-case "$R22_URL" in "$MAIN_URL/install/"*) ;; *) echo "FAIL: install URL not on the main domain: $R22_URL"; exit 1;; esac
+case "$R22_URL" in "https://$R22_MAIN/install/"*) ;; *) echo "FAIL: install URL not on the main domain (or carries the prefix): $R22_URL"; exit 1;; esac
 [ -n "$R22_PIN" ] || { echo "FAIL: no pin for Caddy's internal certificate"; exit 1; }
 python3 -c "import json;b=json.load(open('$LOG/r22-create.json'))['bootstrap'];assert 'panel_addr = \"grpc.akari.test:8443\"' in b and 'server_name = \"grpc.akari.test\"' in b, b" \
   || { echo "FAIL: bootstrap lacks the node domain"; exit 1; }
@@ -4266,11 +4312,11 @@ AGENT_PID=""
 "$PANEL" settings unset node >/dev/null || { echo "FAIL: settings unset node (S4-3)"; exit 1; }
 echo "sigterm: ok"
 
-echo "== M1-9 rotate-prefix: the old prefix is a rejection after restart =="
+echo "== D4 admin prefix: CLI rotation (database: every instance), API rotation, allowlist; D11 subscription path =="
 OLD_BASE="$BASE"
-"$PANEL" secrets rotate-prefix | matches "new route prefix" || { echo "FAIL: CLI rotate-prefix"; exit 1; }
-PREFIX=$("$PANEL" info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')
-BASE="http://127.0.0.1:8080/$PREFIX"
+"$PANEL" secrets rotate-prefix | matches "new admin prefix" || { echo "FAIL: CLI rotate-prefix"; exit 1; }
+PREFIX=$("$PANEL" info | awk '/admin prefix/{sub(/^\//,"",$3); print $3}')
+BASE="$ROOT/$PREFIX"
 [ "$BASE" != "$OLD_BASE" ] || { echo "FAIL: prefix unchanged"; exit 1; }
 start_panel "$LOG/panel2.log"
 for _ in $(seq 1 20); do [ "$(code "$BASE/healthz")" = "200" ] && break; sleep 0.5; done
@@ -4283,13 +4329,59 @@ matches "imported into 系统设置" <"$LOG/panel2.log" && { echo "FAIL: obsolet
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.import'")" = "1" ] || { echo "FAIL: a second import was audited"; exit 1; }
 [ "$(psql_q "SELECT coalesce(node_domain, '-') FROM panel_settings")" = "-" ] || { echo "FAIL: unset node domain came back from panel.toml"; exit 1; }
 [ "$(fp "$OLD_BASE/healthz")" = "$REJ" ] || { echo "FAIL: old prefix still answers"; exit 1; }
-[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'secrets.rotate_prefix'")" = "1" ] || { echo "FAIL: rotate-prefix not audited"; exit 1; }
-for p in "$PREFIX" "${OLD_BASE##*/}"; do
-  grep -qF "$p" "$LOG/panel.log" "$LOG/panel2.log" && { echo "FAIL: a route prefix appears in the panel log"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.admin_prefix.rotate' AND actor_label = 'cli'")" = "1" ] || { echo "FAIL: rotate-prefix not audited"; exit 1; }
+# The owner rotates through the API (confirmed); the old prefix dies at once,
+# without a restart.
+[ "$(login_root)" = "200" ] || { echo "FAIL: owner login under the new prefix"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/access")" = "200" ] && last_json "d['admin_prefix'] == '$PREFIX' and d['sub_path'] == '$SUBP'" | matches '^True$' \
+  || { echo "FAIL: GET settings/access"; cat /tmp/akari-smoke/last; exit 1; }
+AV=$(last_json "d['version']")
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/access/admin-prefix" -H 'Content-Type: application/json' -d "{\"version\":$AV}")" = "400" ] \
+  && last_json "d['code']" | matches '^settings.confirm_required$' || { echo "FAIL: unconfirmed prefix rotation"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/access/admin-prefix" -H 'Content-Type: application/json' \
+    -d "{\"version\":$AV,\"confirm\":true,\"admin_prefix\":\"smoke-door-2026\"}")" = "200" ] \
+  || { echo "FAIL: API prefix rotation: $(cat /tmp/akari-smoke/last)"; exit 1; }
+OLD2="$BASE"; BASE="$ROOT/smoke-door-2026"
+[ "$(fp "$OLD2/healthz")" = "$REJ" ] && [ "$(code "$BASE/healthz")" = "200" ] || { echo "FAIL: API rotation not effective at once"; exit 1; }
+[ "$(psql_q "SELECT after->>'admin_prefix' FROM audit_log WHERE action = 'settings.admin_prefix.rotate' ORDER BY id DESC LIMIT 1")" = "changed" ] \
+  || { echo "FAIL: the new prefix reached the audit log"; exit 1; }
+# Allowlist: a list without the caller's address is refused; with it, saved;
+# the CLI reopens the prefix.
+AV=$(psql_q "SELECT version FROM access_settings")
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/access/admin-allow" -H 'Content-Type: application/json' \
+    -d "{\"version\":$AV,\"admin_allow_cidrs\":[\"10.0.0.0/8\"]}")" = "409" ] \
+  && last_json "d['code']" | matches '^settings.allowlist_excludes_you$' || { echo "FAIL: allowlist without the caller accepted"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/access/admin-allow" -H 'Content-Type: application/json' \
+    -d "{\"version\":$AV,\"admin_allow_cidrs\":[\"127.0.0.0/8\"]}")" = "200" ] || { echo "FAIL: allowlist: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(code "$BASE/healthz")" = "200" ] || { echo "FAIL: an allowed address shut out"; exit 1; }
+"$PANEL" settings unset admin-allow | matches "admin-allow: cleared" || { echo "FAIL: settings unset admin-allow"; exit 1; }
+[ "$(psql_q "SELECT cardinality(admin_allow_cidrs) FROM access_settings")" = "0" ] || { echo "FAIL: allowlist not cleared"; exit 1; }
+# D11: a new subscription path; the old one dies at once.
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+    -d '{"email":"smoke-subpath@smoke.test","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create sub-path user"; exit 1; }
+SP_TOKEN=$(last_json "d['sub_token']")
+last_json "d['sub_url']" | matches "^/$SUBP/$SP_TOKEN\$" || { echo "FAIL: root-relative sub_url without a domain"; cat /tmp/akari-smoke/last; exit 1; }
+subrl
+[ "$(code "$SUBBASE/$SP_TOKEN")" = "200" ] || { echo "FAIL: subscription on the sub path"; exit 1; }
+AV=$(psql_q "SELECT version FROM access_settings")
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/access/sub-path" -H 'Content-Type: application/json' \
+    -d "{\"version\":$AV,\"sub_path\":\"shop\",\"confirm\":true}")" = "400" ] \
+  && last_json "d['code']" | matches '^settings.path_reserved$' || { echo "FAIL: reserved sub path accepted"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/access/sub-path" -H 'Content-Type: application/json' \
+    -d "{\"version\":$AV,\"sub_path\":\"feed-smoke\",\"confirm\":true,\"notify_users\":false}")" = "200" ] \
+  && last_json "d['notify_job'] is None and d['access']['sub_path'] == 'feed-smoke'" | matches '^True$' \
+  || { echo "FAIL: sub path change: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(fp "$SUBBASE/$SP_TOKEN")" = "$REJ" ] || { echo "FAIL: the old subscription path still answers"; exit 1; }
+subrl
+[ "$(code "$ROOT/feed-smoke/$SP_TOKEN")" = "200" ] || { echo "FAIL: the new subscription path"; exit 1; }
+[ "$(psql_q "SELECT before->>'sub_path' || '>' || (after->>'sub_path') FROM audit_log WHERE action = 'settings.sub_path.update'")" = "$SUBP>feed-smoke" ] \
+  || { echo "FAIL: sub path change not audited"; exit 1; }
+for p in "$PREFIX" "${OLD_BASE##*/}" smoke-door-2026; do
+  grep -qF "$p" "$LOG/panel.log" "$LOG/panel2.log" && { echo "FAIL: an admin prefix appears in the panel log"; exit 1; }
 done
 grep -qF "$NEW_TOKEN" "$LOG/panel.log" "$LOG/panel2.log" && { echo "FAIL: a subscription token appears in the panel log"; exit 1; }
 kill $PANEL_PID 2>/dev/null; wait $PANEL_PID 2>/dev/null || true
-echo "rotate-prefix: ok"
+echo "admin prefix, allowlist, subscription path: ok"
 
 echo
 if [ "${#SKIPPED[@]}" -gt 0 ]; then

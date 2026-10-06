@@ -132,6 +132,19 @@ impl ApiError {
             params,
         }
     }
+    /// The canonical rejection (`reject::not_found`) as an error: an empty
+    /// 404 without security headers (D4: an admin session on the portal).
+    pub fn rejected() -> Self {
+        Self::coded(
+            StatusCode::NOT_FOUND,
+            "",
+            String::new(),
+            serde_json::Map::new(),
+        )
+    }
+    pub fn is_rejected(&self) -> bool {
+        self.code.is_empty()
+    }
     fn plain(status: StatusCode, code: &'static str, message: &str) -> Self {
         Self::coded(status, code, message.to_string(), serde_json::Map::new())
     }
@@ -171,6 +184,9 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        if self.is_rejected() {
+            return crate::reject::not_found();
+        }
         (
             self.status,
             Json(json!({ "error": self.message, "code": self.code, "params": self.params })),
@@ -470,7 +486,17 @@ async fn session(parts: &mut Parts, state: &AppState) -> Result<SessionRow, ApiE
     if (!row.enabled && !row.quota_disabled && !row.banned) || row.session_ver != claims.sv {
         return Err(ApiError::unauthorized());
     }
+    // D4: admin sessions work under the admin prefix only; on the portal
+    // they do not exist (the canonical rejection, not a 401).
+    if row.role == "admin" && portal(parts) {
+        return Err(ApiError::rejected());
+    }
     Ok(row)
+}
+
+/// Whether the request came in through the portal (`access::Via`).
+pub fn portal(parts: &Parts) -> bool {
+    parts.extensions.get::<crate::access::Via>() == Some(&crate::access::Via::Portal)
 }
 
 impl SessionRow {

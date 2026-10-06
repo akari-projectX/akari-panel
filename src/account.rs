@@ -147,7 +147,7 @@ pub async fn regenerate_own_sub_token(
             .await?
             .ok_or_else(ApiError::unauthorized)?;
     tx.commit().await?;
-    let sub_url = state.settings().get().sub_url(state.route_prefix(), &token);
+    let sub_url = state.sub_link(&token);
     Ok(Json(json!({
         "sub_token": token,
         "sub_url": sub_url,
@@ -443,10 +443,7 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
-        assert_eq!(
-            c.get(&format!("/test/sub/{token}")).await.status,
-            StatusCode::OK
-        );
+        assert_eq!(c.get(&format!("/sub/{token}")).await.status, StatusCode::OK);
         sqlx::query("UPDATE users SET expires_at = now() - interval '1 minute' WHERE id = $1")
             .bind(id)
             .execute(&db.pool)
@@ -467,10 +464,7 @@ mod tests {
             StatusCode::UNAUTHORIZED
         );
         let junk = e.get("/test/definitely-not-here").await.fingerprint();
-        assert_eq!(
-            e.get(&format!("/test/sub/{token}")).await.fingerprint(),
-            junk
-        );
+        assert_eq!(e.get(&format!("/sub/{token}")).await.fingerprint(), junk);
         // Allowed: change the own password (this session continues).
         let r = e
             .post(
@@ -509,10 +503,7 @@ mod tests {
             q.post("/test/api/v1/me/sub-token", json!({})).await.status,
             StatusCode::UNAUTHORIZED
         );
-        assert_eq!(
-            q.get(&format!("/test/sub/{token}")).await.fingerprint(),
-            junk
-        );
+        assert_eq!(q.get(&format!("/sub/{token}")).await.fingerprint(), junk);
 
         // Banned by an admin (W28-c): the portal scope only — the account
         // with the ban reason, nothing of the renewal scope.
@@ -576,18 +567,12 @@ mod tests {
         let r = c.post("/test/api/v1/me/sub-token", json!({})).await;
         assert_eq!(r.status, StatusCode::OK);
         let t1 = r.json()["sub_token"].as_str().unwrap().to_string();
-        assert_eq!(
-            c.get(&format!("/test/sub/{t1}")).await.status,
-            StatusCode::OK
-        );
+        assert_eq!(c.get(&format!("/sub/{t1}")).await.status, StatusCode::OK);
         let r = c.post("/test/api/v1/me/sub-token", json!({})).await;
         let t2 = r.json()["sub_token"].as_str().unwrap().to_string();
         let junk = c.get("/test/definitely-not-here").await.fingerprint();
-        assert_eq!(c.get(&format!("/test/sub/{t1}")).await.fingerprint(), junk);
-        assert_eq!(
-            c.get(&format!("/test/sub/{t2}")).await.status,
-            StatusCode::OK
-        );
+        assert_eq!(c.get(&format!("/sub/{t1}")).await.fingerprint(), junk);
+        assert_eq!(c.get(&format!("/sub/{t2}")).await.status, StatusCode::OK);
         for _ in 2..SUB_TOKEN_PER_HOUR {
             assert_eq!(
                 c.post("/test/api/v1/me/sub-token", json!({})).await.status,

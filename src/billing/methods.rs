@@ -476,14 +476,12 @@ pub async fn apply_delete(
 // API (admin, 系统设置 → 支付)
 // ---------------------------------------------------------------------------
 
-/// The notify URL of a method: `<main domain>/<prefix>/pay/<id>/notify`
-/// (None = no main domain: orders are refused). Contains the route prefix.
+/// The notify URL of a method: `<main domain>/pay/<id>/notify` (None = no
+/// main domain: orders are refused). No prefix (D4/D11): the signature is
+/// the gate, and Alipay never learns the admin prefix.
 pub fn notify_url(state: &AppState, method: Uuid) -> Option<String> {
     let origin = state.settings().get().public_origin()?;
-    Some(format!(
-        "{origin}/{}/pay/{method}/notify",
-        state.route_prefix()
-    ))
+    Some(format!("{origin}/pay/{method}/notify"))
 }
 
 #[derive(Debug, Serialize)]

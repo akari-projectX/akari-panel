@@ -1,27 +1,88 @@
-use axum::extract::{Request, State};
+use axum::extract::Request;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde_json::json;
-use subtle::ConstantTimeEq;
 
+use crate::access::{self, Route, Via};
 use crate::{
     account, alerts, api, audit, dashboard, nodeinstall, nodes, nodestat, nodetpl, plans, reject,
     rollout, servers, settings, spa, state::AppState, sub, tickets, updates,
 };
 
+/// The panel's HTTP service. D4/D11: `front` maps the public URL layout
+/// (`access::route`: the portal at `/`, the console and every API under the
+/// secret admin prefix, `/{sub_path}/{token}`, `/install/…`, `/pay/…`) onto
+/// the internal routes `/_/…` and tags each request with its
+/// `access::Via`; every other request — junk, a wrong or bare prefix, a
+/// wrong host, an address outside the admin allowlist — is the same empty
+/// 404 (reject.rs) without the security headers, so nothing behind the
+/// admin prefix is observable without it.
 pub fn router(state: AppState) -> Router {
-    // Routes carry the secret prefix as a {prefix} path parameter (handlers
-    // ignore it). The gate layer wraps every route and the fallback: it runs
-    // after route matching but before any handler, validating the first path
-    // segment in constant time. Every rejection — "/", junk URLs, wrong or
-    // bare prefix, wrong method — is the same empty 404 (reject.rs) without
-    // the security headers, so nothing about the panel is observable without
-    // the prefix.
+    let inner = inner_router(state.clone());
+    // A plain service (not a handler): nothing is added to the responses,
+    // so a rejection stays the canonical empty 404.
+    Router::new().fallback_service(tower::service_fn(move |req: Request| {
+        let (state, inner) = (state.clone(), inner.clone());
+        async move { Ok::<_, std::convert::Infallible>(front(state, inner, req).await) }
+    }))
+}
+
+/// The front door: host gate (R22), then the URL layout. The admin prefix
+/// is compared in constant time and, with an allowlist, only answers the
+/// listed client addresses.
+async fn front(state: AppState, inner: Router, mut req: Request) -> Response {
+    use tower::ServiceExt as _;
+    let host = settings::host_of(req.headers(), req.uri());
+    if !state.settings().get().host_allowed(host.as_deref()) {
+        return reject::not_found();
+    }
+    let layout = state.settings().access();
+    let get = matches!(
+        *req.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD
+    );
+    let (path, via) = match access::route(&layout, req.uri().path(), get) {
+        Route::Reject => return reject::not_found(),
+        Route::Inner { path, via } => (path, via),
+        Route::Admin { path } => {
+            let peer = req
+                .extensions()
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|c| c.0.ip());
+            let allowed = match peer {
+                Some(p) => layout.admin_allowed(state.client_ip(p, req.headers())),
+                None => layout.admin_allow.is_empty() && !layout.admin_locked,
+            };
+            if !allowed {
+                return reject::not_found();
+            }
+            (path, Via::Admin)
+        }
+    };
+    let pq = match req.uri().query() {
+        Some(q) => format!("{path}?{q}"),
+        None => path,
+    };
+    let Ok(uri) = pq.parse::<axum::http::Uri>() else {
+        return reject::not_found();
+    };
+    *req.uri_mut() = uri;
+    req.extensions_mut().insert(via);
+    match inner.oneshot(req).await {
+        Ok(r) => r,
+        Err(e) => match e {},
+    }
+}
+
+fn inner_router(state: AppState) -> Router {
+    // Routes carry the internal prefix (`access::INNER`) as a {prefix} path
+    // parameter (handlers ignore it); `front` is the only way in.
     let routes = Router::new()
         .route("/{prefix}/healthz", get(healthz))
+        .merge(crate::access::routes())
         .merge(crate::billing::routes())
         .merge(crate::billing::methods::routes())
         // W15: registration / reset / invites / 系统设置 → 注册, 邮件.
@@ -331,7 +392,7 @@ pub fn router(state: AppState) -> Router {
         .method_not_allowed_fallback(rejected)
         // Inside the gate: request IDs exist for accepted requests only.
         .layer(middleware::from_fn(crate::request_id::layer))
-        .layer(middleware::from_fn_with_state(state.clone(), prefix_gate))
+        .layer(middleware::from_fn(prefix_gate))
         // Outside the gate, observation only (separate metrics listener).
         .layer(middleware::from_fn(crate::metrics::track_http))
         .with_state(state);
@@ -344,28 +405,16 @@ pub fn router(state: AppState) -> Router {
         .layer(middleware::from_fn(security_headers))
 }
 
-/// Constant-time check of the first path segment against the secret
-/// prefix. A bare correct prefix is rejected too (stealthy even for someone
-/// who knows the prefix). R22 host gate: once the main domain is set in the
-/// system settings, a request addressed to any other DNS name (Host) gets
-/// the same canonical rejection, on every path (IP-literal hosts stay
-/// allowed; `settings::Effective::host_allowed`).
-async fn prefix_gate(State(state): State<AppState>, req: Request, next: Next) -> Response {
-    let host = settings::host_of(req.headers(), req.uri());
-    if !state.settings().get().host_allowed(host.as_deref()) {
-        return reject::not_found();
-    }
+/// Defense in depth behind `front` (the only way in): an internal path
+/// with a `Via` tag, nothing else.
+async fn prefix_gate(req: Request, next: Next) -> Response {
     let path = req.uri().path();
     let stripped = path.strip_prefix('/').unwrap_or(path);
     let (seg, rest) = match stripped.split_once('/') {
         Some((seg, rest)) => (seg, rest),
         None => (stripped, ""),
     };
-    let expected = state.route_prefix();
-    if seg.len() != expected.len() || !bool::from(seg.as_bytes().ct_eq(expected.as_bytes())) {
-        return reject::not_found();
-    }
-    if rest.is_empty() {
+    if seg != access::INNER || rest.is_empty() || req.extensions().get::<Via>().is_none() {
         return reject::not_found();
     }
     next.run(req).await
@@ -459,8 +508,8 @@ mod tests {
             canonical.1.is_empty() && canonical.2.is_empty(),
             "{canonical:?}"
         );
+        // (`/` is the portal since D11: access::tests.)
         for path in [
-            "/",
             "/test",
             "/test/",
             "/tes/healthz",

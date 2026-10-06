@@ -39,7 +39,7 @@ const ME: Me = {
   email_verified: false,
   locale: "en",
   sub_token: TOKEN,
-  sub_url: `https://sub.example/p/sub/${TOKEN}`,
+  sub_url: `https://sub.example/feed/${TOKEN}`,
   sub_legacy: false,
   probe_interval_secs: 600,
 };
@@ -204,9 +204,9 @@ describe("SubscriptionCard", () => {
       ...navigator,
       clipboard: { writeText: vi.fn(async () => Promise.reject(new Error("denied"))) },
     });
-    renderWithClient(<SubscriptionCard me={{ ...ME, sub_url: null }} />);
+    renderWithClient(<SubscriptionCard me={{ ...ME, sub_url: `/feed/${TOKEN}` }} />);
     expect((screen.getByLabelText("Subscription link") as HTMLInputElement).value).toBe(
-      `${location.origin}/sub/${TOKEN}`,
+      `${location.origin}/feed/${TOKEN}`,
     );
     fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
     expect((await screen.findByRole("status")).textContent).toMatch(/Could not copy/);

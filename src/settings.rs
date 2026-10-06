@@ -692,10 +692,11 @@ impl Effective {
 
     /// Subscription URL for a token (subscription domain, else the main
     /// domain); None = not configured (the SPA uses its own origin).
-    pub fn sub_url(&self, prefix: &str, token: &str) -> Option<String> {
+    /// D11: `<sub origin>/<sub_path>/<token>`.
+    pub fn sub_url(&self, sub_path: &str, token: &str) -> Option<String> {
         self.sub
             .as_ref()
-            .map(|o| format!("{}/{prefix}/sub/{token}", o.as_string()))
+            .map(|o| crate::access::sub_url(&o.as_string(), sub_path, token))
     }
 }
 
@@ -706,6 +707,9 @@ impl Effective {
 /// Per-instance view of the settings, kept current by `reload`.
 pub struct Live {
     current: ArcSwap<Effective>,
+    /// D4/D11: the URL layout (admin prefix, allowlist, subscription path),
+    /// reloaded with the settings.
+    access: ArcSwap<crate::access::Access>,
     certs: Arc<CertResolver>,
     reload_lock: tokio::sync::Mutex<()>,
     /// Ask endpoint CPU guard: (window start, answered in window).
@@ -726,6 +730,7 @@ impl Live {
         }
         Self {
             current: ArcSwap::from_pointee(eff),
+            access: ArcSwap::from_pointee(crate::access::Access::boot(&install.route_prefix)),
             certs,
             reload_lock: tokio::sync::Mutex::new(()),
             ask_window: Mutex::new((Instant::now(), 0)),
@@ -734,6 +739,11 @@ impl Live {
 
     pub fn get(&self) -> Arc<Effective> {
         self.current.load_full()
+    }
+
+    /// D4/D11: the URL layout (admin prefix, allowlist, subscription path).
+    pub fn access(&self) -> Arc<crate::access::Access> {
+        self.access.load_full()
     }
 
     pub fn certs(&self) -> &Arc<CertResolver> {
@@ -776,6 +786,7 @@ pub async fn reload(state: &AppState) -> anyhow::Result<()> {
         .execute(&mut *tx)
         .await?;
     let (stored, names) = load(&mut tx).await?;
+    let access = crate::access::load(&mut tx, state.route_prefix()).await?;
     tx.commit().await?;
     let eff = compute(state.cfg(), stored, names);
     let inst = state.install();
@@ -794,6 +805,7 @@ pub async fn reload(state: &AppState) -> anyhow::Result<()> {
         || prev.acme_directory_url != eff.acme_directory_url
         || prev.acme_email != eff.acme_email;
     live.current.store(Arc::new(eff));
+    live.access.store(Arc::new(access));
     // W24: 系统设置 → 支付 shares the notification and this serialization.
     crate::billing::methods::reload(state).await?;
     if agents_changed {
@@ -2863,6 +2875,14 @@ pub async fn cli_unset(cfg: &PanelConfig, pg: &sqlx::PgPool, field: &str) -> any
         )
         .await
         .map_err(msg)?;
+    }
+    if field == "admin-allow" {
+        // D4: a locked-out operator reopens the admin prefix to every
+        // address.
+        drop(tx);
+        crate::access::cli_clear_allowlist(pg).await?;
+        println!("admin-allow: cleared; running panels apply it at once");
+        return Ok(());
     }
     if field == "turnstile" {
         // W27: the Turnstile switches of the public forms (keys kept).

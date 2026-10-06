@@ -804,10 +804,7 @@ async fn invites_domains_and_trial() {
     assert_eq!(list["codes"].as_array().unwrap().len(), 2);
     assert_eq!(list["limit"], 2);
     assert_eq!(list["single_use"], true);
-    assert_eq!(
-        list["link_base"],
-        format!("{ORIGIN}/test/app/register?invite=")
-    );
+    assert_eq!(list["link_base"], format!("{ORIGIN}/register?invite="));
     let admin = db.admin().await;
     let mut ac = Client::new(&st, rand_ip());
     ac.cookie = Some(crate::auth::issue_token(&st, admin, "admin", 0).unwrap());
@@ -993,10 +990,7 @@ async fn reset_flow_invalidates_sessions() {
         .await;
     assert_eq!(r.status, StatusCode::OK);
     let (_, body) = wait_mail(&db, "password_reset", &email).await;
-    assert!(
-        body.contains(&format!("{ORIGIN}/test/app/reset#token=")),
-        "{body}"
-    );
+    assert!(body.contains(&format!("{ORIGIN}/reset#token=")), "{body}");
     let token = token_in(&body);
     // A second request replaces the first link.
     anon.post(

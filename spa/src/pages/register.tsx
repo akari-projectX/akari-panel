@@ -11,7 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { LocaleSwitch, useLocale, useT } from "../i18n";
-import { appBase, register, registerChallenge, registerCode, type AuthOptions } from "../lib/api";
+import { appHome, register, registerChallenge, registerCode, type AuthOptions } from "../lib/api";
 import { solvePow } from "../lib/pow";
 import { errorText } from "../lib/errors";
 import { navigate } from "../lib/router";
@@ -118,7 +118,7 @@ export function Register({ options }: { options: AuthOptions }) {
           ...inviteBody(),
         });
       }
-      navigate(appBase);
+      navigate(appHome);
       await queryClient.invalidateQueries({ queryKey: ["me"] });
     } catch (err) {
       setError(errorText(err, t));
@@ -232,7 +232,7 @@ export function Register({ options }: { options: AuthOptions }) {
               {busy === "submit" ? t("register.submitting") : t("register.submit")}
             </Button>
             <p className="text-center text-sm text-muted-foreground">
-              {t("register.haveAccount")} <AppLink to={appBase}>{t("register.toLogin")}</AppLink>
+              {t("register.haveAccount")} <AppLink to={appHome}>{t("register.toLogin")}</AppLink>
             </p>
           </form>
         </CardContent>

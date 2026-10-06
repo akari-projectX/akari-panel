@@ -7,8 +7,8 @@ identifies the software to unauthenticated probes.
 
 ```
 ┌──────────────── Rust binary (akari) ────────────────┐
-│ axum web        empty 404 for all, panel API behind │
-│                 a per-install random route prefix   │
+│ axum web        portal at /, console + API behind a │
+│                 secret admin prefix, empty 404 else │
 │ tonic gRPC      mTLS AgentChannel (server)          │
 │ PG 18           users / nodes / traffic ledger      │
 │ Valkey 9        liveness TTL keys, heartbeat blobs  │
@@ -43,9 +43,21 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
 - `akari admin add <email>` creates the first account (v0.4 D1: everyone,
   admins too, logs in with the e-mail address; password via
   `AKARI_ADMIN_PASSWORD` env or hidden prompt; argon2id hashing).
-- All panel API lives under a per-install random route prefix. Anything that
-  guesses wrong — including the bare prefix and `/` — gets one identical
-  empty 404 (no body, none of the panel's security headers).
+- **URL layout (v0.4 D4/D11, `access.rs`, front door in `web.rs`)**: the
+  user portal (its pages, `/api/v1/…`, `/auth/…`) is at `/` of the main
+  domain; the console and the API for admins live under the **admin
+  prefix** — the only secret prefix, stored in the database (the first
+  start imports `data/state.json`'s), rotatable by the owner without a
+  restart (the old one dies at once on every instance), optionally limited
+  to a CIDR allowlist; subscriptions at `/<sub path>/<token>` (a site-wide
+  random path drawn at the first start, editable: the old path dies at
+  once; optionally every user is mailed the new link); install links at
+  `/install/…`, payment notifications at `/pay/…`. Admin accounts cannot
+  sign in on the portal (the wrong password's answer) and their sessions do
+  not exist there; the portal never carries or links to the admin prefix,
+  and no public path works under it. Anything else — a wrong or bare
+  prefix, an address outside the allowlist, junk — gets one identical empty
+  404 (no body, none of the panel's security headers).
 - **Bot protection of the public forms (W27, `botguard.rs`)**: login,
   registration (code + submit) and the reset request take an optional
   `guard: {form_token?, website?, turnstile?}`. Honeypot (default on): a
@@ -71,7 +83,7 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   works (a domain change or deleting the last passkey never locks anyone
   out). The login answer's `passkey_prompt` asks the page to offer binding
   one. Lost passkey: `akari admin reset-login <email>`.
-- `POST /{prefix}/auth/login` (`{email, password}`) verifies argon2id hashes
+- `POST /auth/login` (`{email, password}`; admins: `/{admin prefix}/auth/login`) verifies argon2id hashes
   (timing-equalized for unknown addresses; failed attempts rate limited per
   client address — IPv6 per /64 — at 20/15min and per address at 50/15min,
   in Valkey) and issues
@@ -176,7 +188,7 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   multiplier, tags and latency of their visible nodes.
 - Users over `traffic_limit_bytes` are auto-disabled; affected nodes get a
   version bump and connected agents converge immediately.
-- Subscription endpoint: `/{prefix}/sub/{token}` with a 256-bit per-user
+- Subscription endpoint: `/{sub path}/{token}` (D11) with a 256-bit per-user
   token (DB stores only its SHA-256). Output format follows the User-Agent
   (base64 share links / Clash YAML / sing-box JSON); TLS, REALITY and
   WebSocket transport params are mapped from each inbound's streamSettings.
@@ -200,7 +212,8 @@ src/install.rs         CA, server/agent cert issuance
 src/auth.rs            argon2id passwords, JWT sessions, extractor
 src/api.rs             REST handlers (users, nodes, accounts)
 src/spa.rs             embedded frontends (rust-embed): user portal, session-gated admin console
-src/web.rs + reject.rs prefix gate + uniform rejection
+src/access.rs          D4/D11 URL layout: admin prefix + allowlist, subscription path
+src/web.rs + reject.rs front door + uniform rejection
 spa/                   React 19 + Vite 8 + Tailwind 4 frontend
 migrations/            sqlx migrations (run at startup)
 smoke.sh               cross-repo end-to-end check (needs ../akari-agent)
@@ -217,22 +230,24 @@ checked out side by side; `src/CLAUDE.md` has the per-file map.
 (Rolldown), Tailwind 4 and shadcn/ui-style components, with TanStack Query as
 the data layer:
 
-- the **user portal** at `/{prefix}/app` — the login page (shared with
-  admins) and one view per URL (W20; top nav on desktop, bottom tab bar on
-  phones): dashboard `/app` (plan, days and traffic left, the permanent
-  subscription link with copy/QR/format/one-click import, announcements),
-  `/app/shop`, `/app/nodes`, `/app/orders`, `/app/wallet` (invites and
-  balance), `/app/tickets`, `/app/account` (email, password, language)
-  — Chinese/English;
-- the **admin console** at `/{prefix}/admin` — users, plans, orders, nodes,
-  updates, audit, account (Chinese). Its index and assets are served only to
-  an admin session (private, no-store); to anyone else `/admin` is the
-  uniform empty 404. Admins sign in at `/{prefix}/app` and are sent there.
+- the **user portal** at `/` of the main domain (D11) — the login page and
+  one view per URL (W20; top nav on desktop, bottom tab bar on phones):
+  dashboard `/` (plan, days and traffic left, the permanent subscription
+  link with copy/QR/format/one-click import, announcements), `/shop`,
+  `/nodes`, `/orders`, `/wallet` (invites and balance), `/tickets`,
+  `/account` (email, password, language) — Chinese/English. The front door
+  serves only the pages it knows (`access::PORTAL_PAGES`; keep in step with
+  the portal's routes);
+- the **admin console** at `/{admin prefix}/admin` — users, plans, orders,
+  nodes, updates, audit, account (Chinese). Its index and assets are served
+  only to an admin session (private, no-store); to anyone else `/admin` is
+  the uniform empty 404. Admins sign in at `/{admin prefix}/app` (the
+  portal's login page served under the prefix) and are sent there.
 
 The portal bundle contains no console code (a build-time check greps it for
-admin markers). Both bundles are embedded into the binary via rust-embed and
-served only under the secret prefix; Vite's asset URLs are rewritten to the
-prefix at serve time, so nothing about the app leaks without the prefix.
+admin markers). Both bundles are embedded into the binary via rust-embed;
+under the admin prefix Vite's asset URLs are rewritten to the prefix at
+serve time, the portal at `/` never carries it.
 Missing assets return the uniform empty 404, and the dev tree is never served.
 
 ```bash
@@ -273,7 +288,10 @@ distroless image `ghcr.io/akari-projectx/akari-panel`, SBOM, cosign signatures) 
 the effective config, secrets redacted). Optional `[metrics] bind` serves Prometheus metrics on a
 separate loopback listener, never on the public port.
 
-### API surface (all under the secret prefix)
+### API surface
+
+Admins call every endpoint under `/{admin prefix}`; the portal calls the
+same paths at `/` (admin sessions and admin sign-ins do not exist there).
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
@@ -286,7 +304,7 @@ separate loopback listener, never on the public port.
 | POST | /auth/register | — (registration on) | W15: `{email, code \| pow, password, invite_code?, locale?, guard?}` (`code` when 注册需要邮箱验证 is on, else the W24 proof of work); a trapped bot gets the mode's generic refusal → account (address verified) + session `{id, email, role, …}`; wrong/expired/used code = 400 `invalid or expired code` |
 | POST | /auth/password-reset/request | — (reset on) | W15: `{email, guard?}` → `{"ok":true}` for every address (and for a trapped bot: nothing sent); a 30-minute single-use link goes to a verified address |
 | POST | /auth/password-reset | — (reset on) | W15: `{token, password}`: new password, every session ends |
-| GET | /api/v1/me | user (portal scope*) | profile (`email` = the login name, `email_verified`) + traffic usage; `expired` / `quota_exhausted` (R21); W28-c `banned`, `ban_reason` (written by the admin for the user), `banned_at`; W20: `sub_token` + `sub_url` (the subscription link, `Cache-Control: no-store`; null for admins and the renewal scope; an account without a token gets one here), `sub_legacy` (pre-W20 link: works, cannot be shown until reset), `probe_interval_secs` |
+| GET | /api/v1/me | user (portal scope*) | profile (`email` = the login name, `email_verified`) + traffic usage; `expired` / `quota_exhausted` (R21); W28-c `banned`, `ban_reason` (written by the admin for the user), `banned_at`; W20: `sub_token` + `sub_url` (the subscription link, `Cache-Control: no-store`; D11: absolute on the subscription/main domain, root-relative `/<sub path>/<token>` when none is configured; null for admins and the renewal scope; an account without a token gets one here), `sub_legacy` (pre-W20 link: works, cannot be shown until reset), `probe_interval_secs`; R47 `is_owner` |
 | POST | /api/v1/me/sub-token | user (role=user) | reset own subscription (5/hour): new link AND new credentials on every entrance (高-3) — the old link and every imported client stop working (live connections are cut); `credentials_rotated` = how many |
 | GET | /api/v1/me/plan | user | own active plan (or null), usage, enforced limit/expiry, node names + regions (Q3: `plan.next_reset_at` with the site time zone's offset) |
 | GET | /api/v1/me/nodes | user | W11: own visible entrances (W28-a: one row per usable entrance) — node display name, `entrance` name, region, tags, the entrance's multiplier, online, latency (no ids, addresses or machine metrics) |
@@ -302,6 +320,10 @@ separate loopback listener, never on the public port.
 | PUT | /api/v1/me/password-login | user (renewal scope*) | W27: `{enabled}`: the account's own passkey-only switch (off needs a current passkey, 409 `account.passkey_required`) → the GET view |
 | GET | /api/v1/users/{id}/passkeys | admin | W27: an account's login methods (same view) |
 | POST | /api/v1/users/{id}/login-method/reset | admin | W27: lost passkey: delete the account's passkeys, password login back on (audited `user.login_method.reset`) → `{deleted_passkeys}`; CLI `akari admin reset-login <email>` |
+| GET | /api/v1/settings/access | admin | D4/D11: `{version, admin_prefix, admin_url (null without a main domain), admin_allow_cidrs, your_ip (what the allowlist sees), sub_path}` |
+| POST | /api/v1/settings/access/admin-prefix | owner | D4 `{version, confirm: true, admin_prefix?}` (absent = random; 8–64 of `A-Za-z0-9-_`, not a portal path): the new prefix at once on every instance, the old one is the plain rejection; audited `settings.admin_prefix.rotate` (value never recorded). `settings.confirm_required`, `settings.path_invalid`/`path_reserved`/`path_taken`, `settings.version_conflict` → the access view |
+| PUT | /api/v1/settings/access/admin-allow | owner | D4 `{version, admin_allow_cidrs}` (addresses/CIDR blocks, ≤ 64; `[]` = any address): every other client gets the canonical 404 under the prefix; a list without the caller's own address is refused (409 `settings.allowlist_excludes_you`); audited `settings.admin_allowlist.update`. CLI way back in: `akari settings unset admin-allow` |
+| PUT | /api/v1/settings/access/sub-path | admin | D11 `{version, sub_path, confirm: true, notify_users? (default true)}` (4–64 of `A-Za-z0-9-_`, not a portal path): the old path dies at once; audited `settings.sub_path.update`; → `{access, notify_job}` (`notify_job` = the batch job mailing every user with a verified address their new link; null when not asked, unchanged or mail is off) |
 | GET/PUT | /api/v1/settings/auth | admin | W27 bot protection of the public forms and the passkey policies: `{version, turnstile_site_key, turnstile_secret?, turnstile_login, turnstile_register, turnstile_reset, honeypot, min_submit_secs, passkey_only_admins, passkey_only_users, passkey_prompt}` (GET/PUT answer adds `warnings`); the secret is write-only (absent = keep, `""` = remove; sealed with the master key; GET answers `turnstile_secret_set`; audit `settings.auth.update` records it as `"changed"`); a form switch needs both keys (`auth_admin.turnstile_incomplete`); `min_submit_secs` 0–60 (0 = off). CLI way back in: `akari settings unset turnstile` |
 | PUT | /api/v1/settings/subscription | admin | W30 订阅: `{version, rules?, rule_set_clash_url?, rule_set_singbox_url?, formats?, import_clients?}`. PR ② §5: `formats` = the output formats that are on (`clash`, `sing-box`, `links`; `null` = all, `[]` = none; a format that is off answers the uniform rejection — an explicit `?format=` or a recognised client of it gets nothing, an unrecognised client falls through to the first enabled of links, Clash, sing-box), `import_clients` = the portal's one-click buttons (`clash`, `stash`, `shadowrocket`, `sing-box`, `hiddify`; `null` = all; a button whose format is off is hidden too; `GET /me` carries `sub_formats`/`sub_import_clients`); `settings.sub_format_invalid`, `settings.sub_import_client_invalid`. the routing template of the Clash and sing-box subscriptions, `rules: [{type: geosite\|geoip\|domain\|domain_suffix\|domain_keyword\|ip_cidr, value, action: direct\|proxy\|reject}]` (≤ 64, in order, then everything else via PROXY; `null` = the built-in 广告拦截 / 国内直连 / 国外代理, `[]` = none) and the rule list URL templates (`{kind}` = geosite\|geoip, `{name}`; https; `null`/`""` = MetaCubeX meta-rules-dat on jsDelivr). Absent = unchanged; answers the settings view (`subscription`); `settings.sub_rule_invalid {index, detail}`, `settings.sub_rules_too_many`, `settings.sub_rule_set_url_invalid`; audited `settings.subscription.update` |
 | PUT | /api/v1/settings/site | admin | W21 site name + Q3 site time zone: `{version, site_name?, timezone?}` (each: absent = unchanged, `null`/`""` = the default — "Akari" / `Asia/Shanghai`); `timezone` is a full IANA name PostgreSQL knows (`Asia/Shanghai`, `UTC`, `America/New_York`; abbreviations such as `CST`, POSIX strings such as `UTC+8`, wrong case = 400 `settings.timezone_invalid`); answers the settings view (`timezone: {value, effective, default, source}`); audited `settings.site.update`. The time zone sets the day of the traffic history and block rule counts, plan monthly resets and calendar-month terms (local day and time of day; DST keeps the local time), the dashboard's days and the CSV export ranges; it applies from the next write on (stored days are not rewritten) |
@@ -410,7 +432,8 @@ via `panel.toml` (start-up keys only, see `deploy/panel.toml.example`) or
 `akari server enroll-token <id>`
 issues a new one-time server enrollment token.
 `akari secrets rotate-prefix` / `akari secrets rotate-jwt` rotate secrets
-(see "Security").
+(see "Security"); `akari settings unset admin-allow` clears the admin
+prefix's IP allowlist (locked out).
 
 ### Deployment behind a reverse proxy
 
@@ -435,7 +458,8 @@ trusted_proxies = ["127.0.0.1/32"]   # the proxy's address(es) as seen by the pa
   `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` Caddy
   does this by default) and must not be reachable in a way that lets
   clients connect to the panel directly from a trusted address.
-- Forward everything under the route prefix unchanged; do not add
+- Forward every path unchanged (the panel decides: portal, admin prefix,
+  subscriptions, install links, payment notifications); do not add
   distinguishing error pages for the panel's 404s.
 - Shutdown: `SIGTERM`/`SIGINT` stop accepting, end agent streams
   (UNAVAILABLE, agents reconnect), run a final traffic flush (≤ 5 s) and
@@ -517,10 +541,11 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
 - **Per-user counters** are keyed by xray's user `email` field, which is set
   to the panel user id — the identity mapping between panel and core is
   identity itself.
-- **Nothing to fingerprint**: every request that doesn't know the install's
-  random route prefix (including `/`), and every rejection behind it (wrong
-  method, bad token, missing asset), gets the same empty 404 without the
-  panel's security headers, byte-identical apart from `Date`.
+- **Nothing to fingerprint behind the admin prefix**: every request that
+  doesn't know the secret admin prefix (or comes from outside its
+  allowlist), and every rejection (wrong method, bad token, missing asset,
+  unknown path), gets the same empty 404 without the panel's security
+  headers, byte-identical apart from `Date`.
 
 - **Change notification (multi-instance)**: every change of a node's
   desired-state versions (and every node deletion) raises
@@ -689,12 +714,15 @@ at most once per 10 minutes per account. Admins: Audit view, or `GET
 **Secret rotation.**
 - `akari secrets rotate-jwt`: new `data/jwt.key`; every session ends at once
   (all instances); restart every instance to sign with the new key.
-- `akari secrets rotate-prefix`: new route prefix in `data/state.json`,
-  effective when the panel (every instance) restarts; the old prefix then
-  becomes the plain rejection. **Every subscription URL contains the prefix
-  and changes with it**: the portal shows the new link at once (the token
-  itself is unchanged) and users must re-import it; tell them the new
+- `akari secrets rotate-prefix` (or 系统设置 → 访问, owner only): a new
+  admin prefix in the database; every instance switches at once and the old
+  prefix becomes the plain rejection. Subscription, install and payment
+  links do not contain it and are unaffected; tell the other admins the new
   console address.
+- The subscription path (系统设置 → 访问, any admin, confirmed): every
+  subscription link changes with it, the old path dies at once; by default
+  every user with a verified address is mailed their new link (a batch job;
+  `{sub_url}` in an admin batch mail is each recipient's own link).
 - Subscription links (W20): the token is stored hashed (lookup) **and**
   AES-256-GCM-encrypted (AAD = user id, key derived from `data/master.key`),
   so the portal shows the link permanently and admins can copy it (each

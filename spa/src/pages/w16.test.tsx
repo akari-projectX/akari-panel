@@ -323,9 +323,7 @@ describe("portal wallet and invitations", () => {
     expect(screen.getByText("可提现金额 ¥0.00 低于最低提现额 ¥50.00，暂不能申请提现。")).toBeTruthy();
     expect((screen.getByRole("button", { name: "提交申请" }) as HTMLButtonElement).disabled).toBe(true);
     // The first invite code is offered as a link with copy and QR (Minor 6).
-    expect((screen.getByLabelText("你的邀请链接") as HTMLInputElement).value).toContain(
-      "/app/register?invite=abcdefgh23",
-    );
+    expect((screen.getByLabelText("你的邀请链接") as HTMLInputElement).value).toContain("/register?invite=abcdefgh23");
     fireEvent.click(screen.getByRole("button", { name: "显示二维码" }));
     expect(screen.getByRole("img", { name: "邀请链接二维码" })).toBeTruthy();
   });

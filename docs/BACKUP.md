@@ -5,7 +5,7 @@ What must be backed up:
 | What | Where | Why |
 |---|---|---|
 | PostgreSQL | `database_url` | the source of truth: users, nodes, traffic ledger, tombstones |
-| `data_dir` | `/var/lib/akari`, compose volume `akari-data` | **route prefix, the CA private key (`ca.key`), `jwt.key` and `master.key`** |
+| `data_dir` | `/var/lib/akari`, compose volume `akari-data` | **the CA private key (`ca.key`), `jwt.key`, `master.key` (and `state.json`: the seed of the admin prefix, which lives in the database)** |
 | configuration | `panel.toml`; compose `.env`, `env/*.env`; `/etc/akari/install.env` | optional (`AKARI_CONFIG_FILES`): passwords, for reference — a restore generates its own |
 | Valkey | -- | hot state only (liveness, rate-limit counters); not backed up |
 
@@ -44,7 +44,7 @@ The sections below are the same tooling by hand.
 > Backups are therefore always encrypted; keep the decryption key offline, away from the
 > backup storage. Never commit or copy `data/` anywhere unencrypted.
 
-Losing `data/` while keeping the database means: new route prefix, new CA, every agent
+Losing `data/` while keeping the database means: new CA, every agent
 needs a new enrollment token (`akari server enroll-token <id>`, a new bootstrap file), and every
 secret sealed with the master key can no longer be decrypted: enter the SMTP password, payment
 method keys and alert channel secrets again; subscription links keep working but cannot be
@@ -100,7 +100,7 @@ only with a v0.3.x binary.
    `--force`, then moved aside) and loads the database in one transaction. For compose use
    `AKARI_PG_RESTORE_CMD='docker compose exec -T postgres pg_restore -U akari -d akari --no-owner --single-transaction'`
    (into an empty database). `akari-ctl --restore` and the moves recreate the database themselves.
-4. Start the panel; `akari info` shows the **same route prefix**; log in; nodes turn `online` as
+4. Start the panel; `akari info` shows the **same admin prefix**; log in; nodes turn `online` as
    the agents reconnect (their certificates are signed by the restored CA).
 5. Traffic counted between the backup and the failure is lost (users' usage reverts to the
    backup's values); everything else in the database is as of the backup.

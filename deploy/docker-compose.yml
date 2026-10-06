@@ -4,10 +4,8 @@
 #
 #   cp .env.example .env; for f in env/*.example; do cp $f ${f%.example}; done
 #   cp panel.toml.compose.example panel.toml        # then edit names/domain
-#   docker compose up -d postgres valkey panel
-#   docker compose exec panel /akari info          # prints the route prefix
-#   # put it into .env as AKARI_PREFIX, then:
 #   docker compose up -d
+#   docker compose exec panel /akari info          # prints the admin prefix
 #
 # Exposure: only Caddy (80/443) and the panel's gRPC port (8443, mTLS, agents
 # dial it directly) are published. PostgreSQL, Valkey, the panel's web port
@@ -40,7 +38,7 @@ services:
       AKARI_CONFIG: /etc/akari/panel.toml
     command: ["serve"]
     volumes:
-      - akari-data:/data              # route prefix, CA key, jwt.key, master.key: BACK UP (docs/BACKUP.md)
+      - akari-data:/data              # CA key, jwt.key, master.key (+ state.json: the admin prefix seed): BACK UP (docs/BACKUP.md)
       - ./panel.toml:/etc/akari/panel.toml:ro   # from panel.toml.compose.example
     ports:
       - "${AKARI_GRPC_PORT:-8443}:8443"   # gRPC, agents dial this directly (mTLS)
@@ -82,7 +80,6 @@ services:
     restart: unless-stopped
     environment:
       AKARI_DOMAIN: ${AKARI_DOMAIN:?set AKARI_DOMAIN in .env}
-      AKARI_PREFIX: ${AKARI_PREFIX:-set-after-akari-info}
       # The panel's on-demand TLS ask endpoint (panel.toml [tls_ask]).
       AKARI_ASK: http://panel:8082/ask
       # Extra Caddy global options, e.g. `local_certs` for a name without

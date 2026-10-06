@@ -13,7 +13,7 @@ vi.mock("./lib/router", async (importOriginal) => ({
 }));
 
 beforeEach(() => {
-  window.history.pushState(null, "", "/app");
+  window.history.pushState(null, "", "/");
   vi.mocked(loadPage).mockClear();
 });
 afterEach(() => {
@@ -46,10 +46,10 @@ const unauthorized = () => ({ status: 401, body: { error: "unauthorized" } });
 
 describe("adminTarget", () => {
   it("keeps the sub-path of the portal URL an admin opened", () => {
-    expect(adminTarget("/app")).toBe("/admin");
-    expect(adminTarget("/app/")).toBe("/admin");
-    expect(adminTarget("/app/nodes")).toBe("/admin/nodes");
-    expect(adminTarget("/app/plans/extra")).toBe("/admin/plans/extra");
+    expect(adminTarget("/")).toBe("/admin");
+    expect(adminTarget("/")).toBe("/admin");
+    expect(adminTarget("/nodes")).toBe("/admin/nodes");
+    expect(adminTarget("/plans/extra")).toBe("/admin/plans/extra");
   });
 });
 
@@ -61,7 +61,7 @@ describe("App session routing", () => {
   });
 
   it("sends admin sessions to the console (a separate bundle) and renders no console itself", async () => {
-    window.history.pushState(null, "", "/app/audit");
+    window.history.pushState(null, "", "/audit");
     fakeApi({ "GET /me": me("admin") });
     renderWithClient(<App />);
     await waitFor(() => expect(loadPage).toHaveBeenCalledWith("/admin/audit"));
@@ -95,7 +95,7 @@ describe("App session routing", () => {
     // No node view for the renewal scope (the endpoint refuses it).
     expect(screen.queryByRole("link", { name: "Nodes" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Renew now" }));
-    expect(location.pathname).toBe("/app/shop");
+    expect(location.pathname).toBe("/shop");
     expect(await screen.findByRole("heading", { level: 1, name: "Buy a plan" })).toBeTruthy();
     // Account settings: the password can be changed.
     fireEvent.click(screen.getAllByRole("link", { name: "Account settings" })[0]);
@@ -131,7 +131,12 @@ describe("App session routing", () => {
 // W20 (M1): one URL per view; the nav and Back move between them.
 describe("portal views", () => {
   const routes = {
-    "GET /me": { ...me("user"), sub_token: "T".repeat(43), probe_interval_secs: 600 },
+    "GET /me": {
+      ...me("user"),
+      sub_token: "T".repeat(43),
+      sub_url: `/feed/${"T".repeat(43)}`,
+      probe_interval_secs: 600,
+    },
     "GET /me/plan": { plan: null, nodes: [] },
     "GET /me/nodes": [],
     "GET /me/orders": [],
@@ -140,11 +145,11 @@ describe("portal views", () => {
   };
 
   it.each([
-    ["/app/shop", "Buy a plan"],
-    ["/app/nodes", "Nodes"],
-    ["/app/orders", "Orders"],
-    ["/app/tickets", "Tickets"],
-    ["/app/nowhere", "Dashboard"],
+    ["/shop", "Buy a plan"],
+    ["/nodes", "Nodes"],
+    ["/orders", "Orders"],
+    ["/tickets", "Tickets"],
+    ["/nowhere", "Dashboard"],
   ])("deep link %s opens %s", async (path, heading) => {
     window.history.pushState(null, "", path);
     fakeApi(routes);
@@ -158,14 +163,14 @@ describe("portal views", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Dashboard" })).toBeTruthy();
     // The subscription link is on the dashboard, permanently.
     expect(((await screen.findByLabelText("Subscription link")) as HTMLInputElement).value).toBe(
-      `${location.origin}/sub/${"T".repeat(43)}`,
+      `${location.origin}/feed/${"T".repeat(43)}`,
     );
     const navs = screen.getAllByRole("navigation", { name: "Main navigation" });
     expect(navs).toHaveLength(2); // desktop top nav + phone tab bar
     const orders = screen.getAllByRole("link", { name: /Orders/ })[0];
-    expect(orders.getAttribute("href")).toBe("/app/orders");
+    expect(orders.getAttribute("href")).toBe("/orders");
     fireEvent.click(orders);
-    expect(location.pathname).toBe("/app/orders");
+    expect(location.pathname).toBe("/orders");
     expect(await screen.findByRole("heading", { level: 1, name: "Orders" })).toBeTruthy();
     expect(screen.getAllByRole("link", { name: /Orders/ })[0].getAttribute("aria-current")).toBe("page");
     expect(document.title).toBe("Orders · Akari");

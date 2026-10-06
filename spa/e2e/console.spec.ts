@@ -99,7 +99,8 @@ test("user portal: views with navigation and deep links, permanent subscription 
   // W20 (B1): the subscription link is always shown (issued on first view,
   // stored encrypted, the same on every load) and it works.
   const link = page.getByLabel("订阅链接", { exact: true });
-  await expect(link).toHaveValue(/\/sub\/[A-Za-z0-9_-]{43}$/);
+  // D11: `/<site-wide random path>/<token>`, never under the admin prefix.
+  await expect(link).toHaveValue(/:\/\/[^/]+\/[0-9a-f]{16}\/[A-Za-z0-9_-]{43}$/);
   const first = await link.inputValue();
   await page.getByRole("button", { name: "复制链接" }).click();
   await expect(page.getByRole("status").filter({ hasText: "已复制到剪贴板" })).toBeVisible();
@@ -169,6 +170,33 @@ test("user portal: views with navigation and deep links, permanent subscription 
   await page.getByRole("button", { name: "Log out" }).click();
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
   expect(problems).toEqual([]);
+  await ctx.close();
+});
+
+test("D4/D11: the portal at /, admins sign in only under the admin prefix", async ({ browser }) => {
+  const ctx = await browser.newContext({ locale: "en-US" });
+  const page = await ctx.newPage();
+  const problems = watch(page);
+  const prefix = new URL(BASE).pathname.split("/")[1];
+  await page.goto(`${ORIGIN}/`);
+  await login(page, USER, USER_PW);
+  await expect(page.getByRole("heading", { level: 1, name: "Dashboard" })).toBeVisible();
+  await page.goto(`${ORIGIN}/orders`);
+  await expect(page.getByRole("heading", { level: 1, name: "Orders" })).toBeVisible();
+  expect(await page.content()).not.toContain(prefix);
+  await page.getByRole("button", { name: "Log out" }).click();
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  // The right admin password at the portal gets the wrong password's answer.
+  await login(page, ADMIN, ADMIN_PW);
+  await expect(page.getByText("Wrong email or password.")).toBeVisible();
+  await expect(page).toHaveURL(`${ORIGIN}/`);
+  expect(problems).toEqual([]);
+  // Public paths never work under the prefix; the shared login does.
+  const reject = await rejection(ctx.request);
+  for (const p of ["/sub/x", "/install/x", "/pay/alipay/notify"]) {
+    expect(await observe(ctx.request, `${ORIGIN}/${prefix}${p}`)).toBe(reject);
+  }
+  expect((await ctx.request.get(BASE)).status()).toBe(200);
   await ctx.close();
 });
 
@@ -834,7 +862,7 @@ test("W15: 系统设置 注册/邮件, sign up by email code, reset the password
   await expect(page.getByText(`${email} · verified`)).toBeVisible();
   // W20 (Minor 6): registration is open, so the first invite code exists already.
   await page.goto(`${BASE}/wallet`);
-  await expect(page.getByLabel("Your invite link")).toHaveValue(/\/app\/register\?invite=[a-z2-9]{10}$/);
+  await expect(page.getByLabel("Your invite link")).toHaveValue(/:\/\/[^/]+\/register\?invite=[a-z2-9]{10}$/); // D11: the portal at /
   await page.getByRole("button", { name: "Log out" }).click();
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
 

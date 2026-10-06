@@ -143,14 +143,10 @@ pub async fn enqueue(
     .await
 }
 
-/// `<public origin>/<prefix>/app` (the portal), if a main domain is
+/// `<public origin>` (the portal lives at `/`, D11), if a main domain is
 /// configured. Links in mail never derive from a request's Host header.
 pub fn portal_url(state: &AppState) -> Option<String> {
-    state
-        .settings()
-        .get()
-        .public_origin()
-        .map(|o| format!("{o}/{}/app", state.route_prefix()))
+    state.settings().get().public_origin()
 }
 
 // ---------------------------------------------------------------------------

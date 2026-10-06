@@ -2,6 +2,7 @@
 //! (`main.rs`) is the CLI and startup wiring; the library exists so the
 //! benchmark and load tooling (`bench/`) can drive the real code paths.
 
+pub mod access;
 pub mod account;
 pub mod alerts;
 pub mod announcements;

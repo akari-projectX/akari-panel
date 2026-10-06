@@ -1,6 +1,6 @@
 // W20 (B1): the subscription URL in each format and the one-click import
 // links of common clients. Pure functions (unit-tested); the URL itself
-// comes from GET /me (`sub_url`, or the token on this origin).
+// comes from GET /me (`sub_url`, absolute or root-relative on this origin).
 
 /** Formats the panel serves (`?format=`; "auto" = by the client's User-Agent). */
 export type SubFormat = "auto" | "clash" | "sing-box" | "links";

@@ -7,7 +7,7 @@ import { Button } from "./components/ui/button";
 import { ScrollFade } from "./components/ui/table";
 import { ErrorText, Loading } from "./components/status";
 import { FixedLocale, useHtmlLang } from "./i18n";
-import { ApiError, adminBase, appBase, get, logout as apiLogout, type Me } from "./lib/api";
+import { ApiError, adminBase, appBase, appHome, get, logout as apiLogout, type Me } from "./lib/api";
 import { adminErrorText } from "./lib/admin-errors";
 import { loadPage, navigate, usePath } from "./lib/router";
 import { useSiteName } from "./lib/title";
@@ -75,7 +75,7 @@ export function titleOf(v: View, site: string): string {
 /** The sign-in URL for a console path whose session ended: /admin/<view> -> /app/<view> (the login sends it back). */
 export function loginTarget(path: string): string {
   const rest = path.startsWith(adminBase) ? path.slice(adminBase.length) : "";
-  return rest.startsWith("/") && rest.length > 1 ? `${appBase}${rest}` : appBase;
+  return rest.startsWith("/") && rest.length > 1 ? `${appBase}${rest}` : appHome;
 }
 
 function AdminApp() {
@@ -112,7 +112,7 @@ function AdminRoot() {
     }
     // Nothing of the console survives: leave the bundle entirely.
     queryClient.clear();
-    loadPage(appBase);
+    loadPage(appHome);
   }
 
   if (me.isPending || leave) return <Loading label="加载中…" />;

@@ -484,7 +484,8 @@ pub async fn view(
     token: &str,
     expires_at: DateTime<Utc>,
 ) -> Result<InstallView, ApiError> {
-    let url = format!("{}/{}/install/{token}", p.origin, state.route_prefix());
+    // D4/D11: a public path of its own, never the admin prefix.
+    let url = format!("{}/install/{token}", p.origin);
     let (command, command_wget) = match &p.pin {
         Some(pin) => (
             format!("curl -fsSL --proto '=https' -k --pinnedpubkey '{pin}' '{url}' | {AS_ROOT}"),
@@ -714,12 +715,11 @@ fn render_script(
         .as_deref()
         .filter(|_| needs_cert)
         .unwrap_or("");
-    let vars: [(&str, String); 18] = [
+    let vars: [(&str, String); 17] = [
         ("@@UNINSTALL_FN@@", UNINSTALL_FN.trim_end().to_string()),
         ("@@NODE_NAME@@", tame(&link.name)),
         ("@@EXPIRES@@", link.expires_at.to_rfc3339()),
         ("@@ORIGIN@@", sq(&link.origin)?.to_string()),
-        ("@@PREFIX@@", sq(state.route_prefix())?.to_string()),
         ("@@TOKEN@@", sq(token)?.to_string()),
         (
             "@@PIN@@",

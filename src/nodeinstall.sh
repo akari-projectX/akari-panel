@@ -36,10 +36,9 @@ set -eu
 umask 077
 
 ORIGIN='@@ORIGIN@@'
-PREFIX='@@PREFIX@@'
 # The download base carries the token: it is never printed, and URLs reach
 # curl/wget on stdin (not on their command lines).
-BASE="$ORIGIN/$PREFIX/install/@@TOKEN@@"
+BASE="$ORIGIN/install/@@TOKEN@@"
 PIN='@@PIN@@'
 NEEDS_CERT='@@NEEDS_CERT@@'
 # Node TLS domain: the agent obtains and renews its certificate itself.

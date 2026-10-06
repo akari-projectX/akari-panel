@@ -22,7 +22,7 @@ const SELLER_ID: &str = "2088000000000001";
 /// The main domain of the paid test panels (notify URLs derive from it).
 const ORIGIN: &str = "https://panel.example";
 /// Any notify URL (direct gateway calls in tests).
-const NOTIFY: &str = "https://panel.example/test/pay/x/notify";
+const NOTIFY: &str = "https://panel.example/pay/x/notify";
 
 // ---------------------------------------------------------------------------
 // Mock gateway
@@ -400,8 +400,8 @@ async fn post_notify(
     // R40: the per-method route of the panel's first method (the legacy
     // `/pay/alipay/notify` has its own tests in tests/w24.rs).
     let uri = match state.payments().methods.first() {
-        Some(m) => format!("/test/pay/{}/notify", m.id),
-        None => "/test/pay/alipay/notify".to_string(),
+        Some(m) => format!("/pay/{}/notify", m.id),
+        None => "/pay/alipay/notify".to_string(),
     };
     let mut req = axum::http::Request::builder()
         .method(Method::POST)
@@ -736,11 +736,14 @@ async fn notify_rejections_are_canonical() {
     let (_, plan) = priced_plan(&db, "p", 500, 30).await;
     let user = db.user().await;
     let (oid, otn) = order_row(&db, user, plan, 500, 30).await;
-    let canonical = Client::new(&state, rand_ip()).get("/").await.fingerprint();
+    let canonical = Client::new(&state, rand_ip())
+        .get("/no/such/path")
+        .await
+        .fingerprint();
     let (method, _) = method_of(&state);
     for path in [
-        "/test/pay/alipay/notify".to_string(),
-        format!("/test/pay/{method}/notify"),
+        "/pay/alipay/notify".to_string(),
+        format!("/pay/{method}/notify"),
     ] {
         let canonical2 = Client::new(&state, rand_ip())
             .get(&path)
@@ -1508,7 +1511,7 @@ async fn notify_url_follows_the_main_domain() {
     assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
     assert_eq!(
         mock.inner.lock().unwrap().notify_urls,
-        [format!("https://pay.example.com/test/pay/{method}/notify")]
+        [format!("https://pay.example.com/pay/{method}/notify")]
     );
 
     drop(derived);

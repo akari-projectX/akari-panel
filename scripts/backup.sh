@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Encrypted backup of an Akari panel: PostgreSQL (custom format) + the data
-# directory (route prefix, CA private key, jwt.key, master.key). See docs/BACKUP.md.
+# directory (admin prefix seed, CA private key, jwt.key, master.key). See docs/BACKUP.md.
 #
 # Output: $AKARI_BACKUP_DIR/akari-<UTC timestamp>/
 #   db.dump.age     pg_dump --format=custom, age-encrypted

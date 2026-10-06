@@ -315,6 +315,9 @@ server.quota_mode_invalid
 server.reset_day_invalid
 settings.acme_email_invalid
 settings.acme_url_invalid
+settings.allowlist_excludes_you
+settings.allowlist_invalid
+settings.allowlist_too_long
 settings.audit_retention_invalid
 settings.cloudflare_range_invalid
 settings.cloudflare_ranges_too_many
@@ -325,6 +328,9 @@ settings.host_gate
 settings.node_domain_cloudflare
 settings.node_domain_unset
 settings.node_domain_unspecified
+settings.path_invalid
+settings.path_reserved
+settings.path_taken
 settings.probe_interval_range
 settings.probe_url_duplicate
 settings.probe_url_invalid

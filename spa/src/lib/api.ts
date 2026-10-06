@@ -1,18 +1,23 @@
 import type { TFunction } from "../i18n";
 import type { PlanPrice } from "./billing";
 
-// Two bundles are served under the panel's secret route prefix (R23): the
-// user portal at /{prefix}/app and the admin console at /{prefix}/admin.
-// Everything is derived from the current location (the prefix is the first
-// path segment): no prefix knowledge is baked in.
+// W27 (D4/D11): the user portal lives at `/` of the main domain; the admin
+// console and the shared login for admins live under the secret admin
+// prefix (`/{prefix}/admin`, `/{prefix}/app`). Everything is derived from
+// the current location: no prefix knowledge is baked in, and the portal at
+// `/` never learns the admin prefix.
 export const prefixBase: string = (() => {
-  const segs = location.pathname.split("/"); // ["", "<prefix>", "app", ...]
-  return segs.length >= 3 && segs[1] ? `/${segs[1]}` : "";
+  const segs = location.pathname.split("/"); // ["", "<prefix>", "app"|"admin", ...]
+  return segs.length >= 3 && segs[1] && (segs[2] === "app" || segs[2] === "admin") ? `/${segs[1]}` : "";
 })();
-// The user portal (and the shared login page).
-export const appBase: string = `${prefixBase}/app`;
+// The user portal (and the shared login page): `/` on its own, `/{prefix}/app`
+// under the admin prefix.
+export const appBase: string = prefixBase ? `${prefixBase}/app` : "";
+// Where "home" links go (the portal's root).
+export const appHome: string = appBase || "/";
 // The admin console. The user bundle knows it only as a redirect target for
-// admin sessions; the server answers it to admin sessions alone.
+// admin sessions under the admin prefix; the server answers it to admin
+// sessions alone.
 export const adminBase: string = `${prefixBase}/admin`;
 export const apiBase: string = `${prefixBase}/api/v1`;
 export const authBase: string = `${prefixBase}/auth`;
@@ -261,8 +266,9 @@ export interface Me {
   email_verified: boolean;
   locale: "zh" | "en";
   // W20 (B1): the subscription link, always retrievable (stored encrypted).
-  // `sub_url` is null when no subscription/main domain is set (use
-  // subscriptionUrl(sub_token)); both null for admins and the renewal scope.
+  // D11: `sub_url` is absolute when a subscription/main domain is set, else
+  // root-relative on this origin (`/<sub path>/<token>`: absoluteUrl); both
+  // null for admins and the renewal scope.
   sub_token: string | null;
   sub_url: string | null;
   // A pre-W20 link: still works, cannot be shown until it is reset.
@@ -276,8 +282,7 @@ export interface Me {
 
 /** The subscription URL of `me`, or null (none to show). */
 export function mySubUrl(me: Pick<Me, "sub_token" | "sub_url">): string | null {
-  if (me.sub_url) return me.sub_url;
-  return me.sub_token ? subscriptionUrl(me.sub_token) : null;
+  return me.sub_url ? absoluteUrl(me.sub_url) : null;
 }
 
 export interface LoginResult {
@@ -311,8 +316,9 @@ export interface AuditPage {
   next_before: number | null;
 }
 
-// Subscription URL for a token (same origin, current secret prefix).
-export const subscriptionUrl = (token: string): string => `${location.origin}${prefixBase}/sub/${token}`;
+// A link from the API: absolute, or root-relative on this origin (D11: a
+// subscription link when no domain is configured).
+export const absoluteUrl = (u: string): string => (u.startsWith("/") ? `${location.origin}${u}` : u);
 
 export interface UserView {
   id: string;

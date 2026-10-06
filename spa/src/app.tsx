@@ -9,6 +9,7 @@ import {
   ApiError,
   adminBase,
   appBase,
+  appHome,
   authOptions,
   get,
   logout as apiLogout,
@@ -71,7 +72,7 @@ function App() {
     // No previous-user data may survive, and the "me" observer must see the
     // 401 so the app actually leaves the dashboard.
     await resetAfterLogout(queryClient);
-    navigate(appBase); // "/app/" (trailing slash) is not a route: the panel rejects it
+    navigate(appHome); // "/app/" (trailing slash) is not a route: the panel rejects it
   }
 
   if (me.isPending || toConsole) return <UserSurface>{(t) => <Loading label={t("common.loading")} />}</UserSurface>;

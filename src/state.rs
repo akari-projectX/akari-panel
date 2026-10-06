@@ -114,6 +114,9 @@ impl AppState {
     pub fn cfg(&self) -> &PanelConfig {
         &self.0.cfg
     }
+    /// The install's route prefix (data/state.json): only the seed of the
+    /// admin prefix the first start imports (`access::ensure`); the
+    /// effective one is `settings().access().admin_prefix`.
     pub fn route_prefix(&self) -> &str {
         &self.0.route_prefix
     }
@@ -123,6 +126,22 @@ impl AppState {
     pub fn install(&self) -> &Install {
         &self.0.install
     }
+    /// The subscription URL of `token` (D11: `<sub origin>/<sub_path>/<token>`;
+    /// None = no domain configured). For mail and other links leaving the
+    /// panel.
+    pub fn sub_url(&self, token: &str) -> Option<String> {
+        let live = self.settings();
+        live.get().sub_url(&live.access().sub_path, token)
+    }
+
+    /// The subscription link the API hands out: `sub_url`, or without a
+    /// domain the root-relative `/<sub_path>/<token>` (the page that shows
+    /// it prefixes its own origin).
+    pub fn sub_link(&self, token: &str) -> String {
+        self.sub_url(token)
+            .unwrap_or_else(|| format!("/{}/{token}", self.settings().access().sub_path))
+    }
+
     /// The master-key derived keys (data/master.key; masterkey.rs).
     pub fn master_key(&self) -> &crate::masterkey::Keys {
         &self.0.install.keys

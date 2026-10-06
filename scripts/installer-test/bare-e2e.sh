@@ -90,7 +90,8 @@ else
 	admin_email=admin@myapp.test
 fi
 
-prefix() { cx akari-ctl info | sed -n '1s|.*://[^/]*/\([^/]*\)/admin$|\1|p'; }
+# The console URL: /{prefix}/app (v0.4) or /{prefix}/admin (v0.3.x).
+prefix() { cx akari-ctl info | sed -n '1s|.*://[^/]*/\([^/]*\)/\(admin\|app\)$|\1|p'; }
 # GET/POST through Caddy (TLS) inside the container; prints the status.
 https_code() {
 	local url=$1
@@ -102,7 +103,14 @@ check_panel() {
 	p=$(prefix)
 	[ -n "$p" ] || fail "no prefix from akari-ctl info"
 	[ "$(https_code "$origin/$p/healthz")" = 200 ] || fail "healthz through Caddy"
-	[ "$(https_code "$origin/")" = 404 ] || fail "/ is not the plain 404"
+	# v0.4 (D11): the portal at /; unknown paths stay the plain 404.
+	case $want_version in
+	v0.3.*) [ "$(https_code "$origin/")" = 404 ] || fail "/ is not the plain 404" ;;
+	*)
+		[ "$(https_code "$origin/")" = 200 ] || fail "/ is not the portal"
+		[ "$(https_code "$origin/no-such-page")" = 404 ] || fail "an unknown path is not the plain 404"
+		;;
+	esac
 	# A v0.3.x panel (the refused-upgrade check) still takes {"login"}.
 	# v0.4 (W27): the form token from /auth/options, posted no sooner than
 	# the minimum submit time (default 2 s) after it.

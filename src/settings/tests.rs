@@ -208,7 +208,7 @@ fn database_only_no_file_fallback() {
     assert_eq!(e.public_origin(), e.install_origin());
     assert_eq!(
         e.sub_url("pfx", "tok").as_deref(),
-        Some("https://sub.example.org/pfx/sub/tok")
+        Some("https://sub.example.org/pfx/tok")
     );
     assert_eq!(e.main_source, Source::Settings);
     assert_eq!(e.sub_source, Source::Settings);
@@ -498,7 +498,7 @@ async fn change_propagates_to_another_instance() {
     let mut seen = false;
     for _ in 0..100 {
         let e = b.settings().get();
-        if e.sub_url("test", "t").as_deref() == Some("https://sub.example.com/test/sub/t") {
+        if e.sub_url("sub", "t").as_deref() == Some("https://sub.example.com/sub/t") {
             assert!(e.trust_cloudflare && !e.trust.cloudflare.is_empty());
             seen = true;
             break;
@@ -549,13 +549,7 @@ async fn unknown_host_gets_the_canonical_rejection() {
         "panel.example.com.evil.net",
     ] {
         c.headers = vec![("host".into(), host.into())];
-        for path in [
-            "/test/healthz",
-            "/test/api/v1/me",
-            "/",
-            "/test/sub/abc",
-            "/nope",
-        ] {
+        for path in ["/test/healthz", "/test/api/v1/me", "/", "/sub/abc", "/nope"] {
             assert_eq!(c.get(path).await.fingerprint(), canonical, "{host} {path}");
         }
     }
@@ -663,7 +657,7 @@ async fn settings_api() {
     let tok = r.json()["sub_token"].as_str().unwrap().to_string();
     assert_eq!(
         r.json()["sub_url"].as_str().unwrap(),
-        format!("https://new.example.com/test/sub/{tok}")
+        format!("https://new.example.com/sub/{tok}")
     );
 
     // Server names: the current one is locked; an older one is removable
@@ -1417,7 +1411,7 @@ async fn obsolete_keys_are_imported_once() {
     );
     assert_eq!(
         e.sub_url("p", "t").as_deref(),
-        Some("https://sub.example.com/p/sub/t")
+        Some("https://sub.example.com/p/t")
     );
     assert_eq!(e.node.as_ref().unwrap().panel_addr, "127.0.0.1:8443");
     assert!(e.trust_cloudflare && e.cloudflare_source == Source::Settings);

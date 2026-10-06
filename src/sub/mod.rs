@@ -1234,20 +1234,17 @@ rules:
         let junk = a.get("/test/definitely-not-here").await.fingerprint();
         assert_eq!(junk.0, StatusCode::NOT_FOUND);
         assert!(junk.1.is_empty() && junk.2.is_empty(), "{junk:?}");
-        let unknown = format!("/test/sub/{}", generate_token());
+        let unknown = format!("/sub/{}", generate_token());
         assert_eq!(b.get(&unknown).await.fingerprint(), junk);
         // Per token (any address): 3 fetches, then the rejection.
         for c in [&a, &b, &a] {
-            let r = c.get(&format!("/test/sub/{token}")).await;
+            let r = c.get(&format!("/sub/{token}")).await;
             assert_eq!(r.status, StatusCode::OK);
             assert!(r.headers.contains_key("subscription-userinfo"));
         }
+        assert_eq!(b.get(&format!("/sub/{token}")).await.fingerprint(), junk);
         assert_eq!(
-            b.get(&format!("/test/sub/{token}")).await.fingerprint(),
-            junk
-        );
-        assert_eq!(
-            b.get(&format!("/test/sub/{token2}")).await.status,
+            b.get(&format!("/sub/{token2}")).await.status,
             StatusCode::OK
         );
         // Per address: a has made 1 junk + 2 token + ... requests; exhaust it.
@@ -1258,24 +1255,21 @@ rules:
                 break;
             }
             // Keep going until a valid token is refused for this address.
-            let r = a.get(&format!("/test/sub/{token2}")).await;
+            let r = a.get(&format!("/sub/{token2}")).await;
             if r.status != StatusCode::OK {
                 assert_eq!(r.fingerprint(), junk);
                 break;
             }
         }
-        assert_eq!(
-            a.get(&format!("/test/sub/{token2}")).await.fingerprint(),
-            junk
-        );
+        assert_eq!(a.get(&format!("/sub/{token2}")).await.fingerprint(), junk);
         // Another address still gets token2.
         let c = Client::new(&state, rand_ip());
         assert_eq!(
-            c.get(&format!("/test/sub/{token2}")).await.status,
+            c.get(&format!("/sub/{token2}")).await.status,
             StatusCode::OK
         );
         // Implausible tokens never touch Valkey or the database.
-        assert_eq!(c.get("/test/sub/short").await.fingerprint(), junk);
+        assert_eq!(c.get("/sub/short").await.fingerprint(), junk);
         let mut keys = vec![
             format!("akari:rl:sub:user:{u}"),
             format!("akari:rl:sub:user:{u2}"),

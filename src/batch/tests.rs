@@ -414,6 +414,7 @@ async fn resume_after_interruption() {
         let mut tx = db.pool.begin().await.unwrap();
         let step = apply_one(
             &mut tx,
+            &st,
             &Actor::test(),
             &Action::AddBalance {
                 amount_cents: 100,

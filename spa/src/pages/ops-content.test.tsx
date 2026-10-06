@@ -134,17 +134,17 @@ describe("help center", () => {
     fireEvent.change(screen.getByLabelText("搜索帮助文章"), { target: { value: "订阅" } });
     await waitFor(() => expect(calls.some((c) => c.search === `?q=${encodeURIComponent("订阅")}`)).toBe(true));
     fireEvent.click(screen.getByRole("link", { name: "如何导入订阅" }));
-    expect(location.pathname).toBe("/app/help/k1");
+    expect(location.pathname).toBe("/help/k1");
     expect(await screen.findByRole("heading", { name: "如何导入订阅" })).toBeTruthy();
     expect(screen.getByText("客户端").tagName).toBe("EM");
     fireEvent.click(screen.getByRole("button", { name: /返回帮助中心/ }));
-    expect(location.pathname).toBe("/app/help");
+    expect(location.pathname).toBe("/help");
   });
 
   it("parses article paths", () => {
-    expect(helpArticleOf("/app/help/abc")).toBe("abc");
-    expect(helpArticleOf("/app/help")).toBeNull();
-    expect(helpArticleOf("/app/helpx/abc")).toBeNull();
+    expect(helpArticleOf("/help/abc")).toBe("abc");
+    expect(helpArticleOf("/help")).toBeNull();
+    expect(helpArticleOf("/helpx/abc")).toBeNull();
   });
 });
 

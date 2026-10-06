@@ -370,6 +370,7 @@ struct CredRow {
 /// the password login's answer. Every failure: the uniform 401.
 pub async fn login(
     State(state): State<AppState>,
+    entry: crate::access::Entry,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     jar: CookieJar,
@@ -412,7 +413,7 @@ pub async fn login(
     .bind(user_id)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some(row) = row.filter(crate::api::may_sign_in) else {
+    let Some(row) = row.filter(|r| crate::api::may_sign_in(r) && !entry.refuses(&r.role)) else {
         return Err(ApiError::unauthorized());
     };
     let key = DiscoverableKey::from(&cred.passkey.0);

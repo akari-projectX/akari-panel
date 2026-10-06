@@ -386,7 +386,7 @@ async fn refund_notice_mail() {
     let m = mails().await;
     assert_eq!(m.len(), 1);
     assert!(m[0].0.contains("订单已退款"), "{:?}", m[0]);
-    for want in ["¥6.00", "原路退回", "已取消", "/test/app"] {
+    for want in ["¥6.00", "原路退回", "已取消", ORIGIN] {
         assert!(m[0].1.contains(want), "{want}: {}", m[0].1);
     }
     // Switched off: no mail; on again, but the address is unverified.

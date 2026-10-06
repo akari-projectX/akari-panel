@@ -97,7 +97,7 @@ pub struct CodesView {
     single_use: bool,
     /// Accounts this user invited.
     invited: i64,
-    /// `<origin>/<prefix>/app/register?invite=` when a main domain is set
+    /// `<origin>/register?invite=` (the portal at `/`) when a main domain is set
     /// (else the portal uses its own origin).
     link_base: Option<String>,
 }
