@@ -171,6 +171,8 @@ export interface AdminOrder {
   refunded_at: string | null;
   refund_cents: number | null;
   refund_reason: string | null;
+  /** P1: what the refund did to the subscription. */
+  refund_effect: RefundEffect | null;
   status: OrderStatus;
   trade_no: string | null;
   paid_via: "notify" | "query" | "manual" | "credit" | "balance" | "coupon" | null;
@@ -184,6 +186,30 @@ export interface AdminOrder {
   paid_at: string | null;
   ended_at: string | null;
   close_state: string | null;
+}
+
+/** P1: what a refund does to the subscription (billing::refund::Effect). */
+export type RefundEffect =
+  | {
+      kind: "none";
+      why: "keep_plan" | "not_fulfilled" | "reset_pack" | "not_active" | "user_gone" | "untracked";
+    }
+  | { kind: "cancel"; user_plan_id: string; plan_name: string; expires_at: string | null }
+  | { kind: "rollback"; user_plan_id: string; plan_name: string; from: string; to: string }
+  | {
+      kind: "restore";
+      user_plan_id: string;
+      prior_user_plan_id: string;
+      plan_name: string;
+      expires_at: string | null;
+      prior_used_bytes: number;
+    };
+
+/** GET /orders/{id}/refund-preview. */
+export interface RefundPreview {
+  balance_part_cents: number;
+  amount_cents: number;
+  effect: RefundEffect;
 }
 
 export interface PaymentEvent {

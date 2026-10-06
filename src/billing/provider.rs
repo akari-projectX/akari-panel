@@ -151,7 +151,7 @@ pub trait PaymentProvider: Send + Sync + std::fmt::Debug {
     /// The body the provider expects when a notify was accepted.
     fn notify_ack(&self) -> &'static str;
     /// Refund at the provider (optional; refunds are recorded by the
-    /// panel either way, `orders::apply_refund`).
+    /// panel either way, `refund::apply_refund`).
     fn refund<'a>(
         &'a self,
         _out_trade_no: &'a str,

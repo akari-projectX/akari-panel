@@ -71,6 +71,10 @@ pub fn routes() -> Router<AppState> {
         .route("/{prefix}/api/v1/orders/{id}", get(get_order))
         .route("/{prefix}/api/v1/orders/{id}/fulfil", post(fulfil_order))
         .route("/{prefix}/api/v1/orders/{id}/refund", post(refund_order))
+        .route(
+            "/{prefix}/api/v1/orders/{id}/refund-preview",
+            get(refund_preview),
+        )
         // W16: balance, coupons, invite commission, withdrawals.
         .route("/{prefix}/api/v1/me/balance", get(ledger::my_balance))
         .route("/{prefix}/api/v1/me/invite", get(commission::my_invite))
@@ -218,6 +222,8 @@ pub struct OrderView {
     refunded_at: Option<DateTime<Utc>>,
     refund_cents: Option<i64>,
     refund_reason: Option<String>,
+    /// P1: what the refund did to the subscription (billing::refund).
+    refund_effect: Option<Value>,
     status: String,
     trade_no: Option<String>,
     paid_via: Option<String>,
@@ -239,7 +245,8 @@ const ORDER_SQL: &str = "SELECT id, out_trade_no, user_id, user_label, \
      (SELECT u.email FROM users u WHERE u.id = orders.user_id) AS user_email, plan_id, plan_name, \
      amount_cents, period, period_days, list_price_cents, credit_cents, credit_order_id, \
      discount_cents, coupon_id, coupon_code, balance_cents, balance_state, gift_cents, \
-     refunded_at, refund_cents, refund_reason, status, trade_no, paid_via, paid_amount_cents, manual_reason, \
+     refunded_at, refund_cents, refund_reason, refund_effect, status, trade_no, paid_via, \
+     paid_amount_cents, manual_reason, \
      fulfilled_at, fulfil_result, fulfil_error, created_at, expires_at, paid_at, ended_at, \
      close_state, payment_method_id, \
      (SELECT m.display_name FROM payment_methods m WHERE m.id = payment_method_id) \
@@ -1067,10 +1074,26 @@ pub struct RefundReq {
     /// in the Alipay console). The balance part always goes back.
     #[serde(default)]
     pub to_balance: bool,
+    /// P1: refund the money only and leave the subscription as it is
+    /// (default: the order's effect on the subscription is undone).
+    #[serde(default)]
+    pub keep_plan: bool,
 }
 
-/// POST /orders/{id}/refund {reason, to_balance}: W16 support action on a
-/// paid order (orders::apply_refund). Audited `order.refund`.
+/// GET /orders/{id}/refund-preview: what a refund would do now (money and
+/// the subscription effect), for the confirmation dialog. Admin.
+pub async fn refund_preview(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((_, id)): Path<(String, Uuid)>,
+) -> Result<Json<Value>, ApiError> {
+    user.require_admin()?;
+    let mut c = state.pg().acquire().await?;
+    Ok(Json(super::refund::preview(&mut c, id).await?))
+}
+
+/// POST /orders/{id}/refund {reason, to_balance, keep_plan}: W16/P1 support
+/// action on a paid order (billing::refund). Audited `order.refund`.
 pub async fn refund_order(
     State(state): State<AppState>,
     user: AuthUser,
@@ -1087,7 +1110,17 @@ pub async fn refund_order(
         ));
     }
     let mut tx = state.pg().begin().await?;
-    let r = orders::apply_refund(&mut tx, &Actor::of(&user), id, reason, req.to_balance).await?;
+    let r = super::refund::apply_refund(
+        &mut tx,
+        &Actor::of(&user),
+        id,
+        &super::refund::Refund {
+            reason,
+            to_balance: req.to_balance,
+            keep_plan: req.keep_plan,
+        },
+    )
+    .await?;
     tx.commit().await?;
     Ok(Json(r))
 }

@@ -14,6 +14,8 @@ import {
   type OrderDetail,
   type OrderStatus,
   type Prices,
+  type RefundEffect,
+  type RefundPreview,
 } from "../lib/billing";
 import { adminErrorText, adminMessageText } from "../lib/admin-errors";
 import { fmtDateTime } from "../lib/datetime";
@@ -375,7 +377,9 @@ function OrderDetailCard({ id, onClose }: { id: string; onClose: () => void }) {
           <dt className="text-muted-foreground">退款</dt>
           <dd>
             {o.refunded_at
-              ? `${fmt(o.refunded_at)} 退回余额 ¥${yuan(o.refund_cents ?? 0)}（${o.refund_reason ?? ""}）`
+              ? `${fmt(o.refunded_at)} 退回余额 ¥${yuan(o.refund_cents ?? 0)}（${o.refund_reason ?? ""}）${
+                  o.refund_effect ? `；${refundEffectZh(o.refund_effect)}` : ""
+                }`
               : "—"}
           </dd>
           <dt className="text-muted-foreground">实付</dt>
@@ -458,32 +462,63 @@ function OrderDetailCard({ id, onClose }: { id: string; onClose: () => void }) {
   );
 }
 
-// W16: refund a paid order. The balance part always returns to the
+// W16 + P1: refund a paid order. The balance part always returns to the
 // balance; "退到余额" also credits the Alipay amount (otherwise it was
-// refunded in the Alipay console). A pending invite commission is reversed;
-// the plan is not touched.
+// refunded in the Alipay console). A pending invite commission is reversed.
+// The order's effect on the subscription is undone (shown from the server's
+// preview in the confirmation) unless "仅退款" keeps the plan.
+const WHY_ZH: Record<Extract<RefundEffect, { kind: "none" }>["why"], string> = {
+  keep_plan: "套餐保持不变（仅退款）",
+  not_fulfilled: "该订单未开通套餐，套餐不受影响",
+  reset_pack: "流量重置包只退款，已用流量不回滚",
+  not_active: "该订单对应的订阅已不是当前订阅，套餐不受影响",
+  user_gone: "用户已删除",
+  untracked: "该订单的开通记录不含订阅信息，套餐不受影响",
+};
+
+export function refundEffectZh(e: RefundEffect): string {
+  switch (e.kind) {
+    case "none":
+      return WHY_ZH[e.why];
+    case "cancel":
+      return `将取消订阅「${e.plan_name}」并立即断开该用户的节点连接`;
+    case "rollback":
+      return `订阅「${e.plan_name}」到期时间将从 ${fmt(e.from)} 回退到 ${fmt(e.to)}`;
+    case "restore":
+      return `将恢复换套餐前的订阅「${e.plan_name}」（到期 ${e.expires_at ? fmt(e.expires_at) : "永久"}），换套餐前已用流量计回`;
+  }
+}
+
 function RefundForm({ order: o }: { order: AdminOrder }) {
   const queryClient = useQueryClient();
   const confirm = useConfirm();
   const [reason, setReason] = useState("");
   const [toBalance, setToBalance] = useState(false);
+  const [keepPlan, setKeepPlan] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function refund() {
     if (!reason.trim()) return setError("请填写退款原因（写入审计）");
-    const back = (o.balance_state === "held" ? o.balance_cents : 0) + (toBalance ? o.amount_cents : 0);
+    setError(null);
+    let p: RefundPreview;
+    try {
+      p = await get<RefundPreview>(`/orders/${o.id}/refund-preview`);
+    } catch (err) {
+      return setError(errText(err));
+    }
+    const back = p.balance_part_cents + (toBalance ? p.amount_cents : 0);
     const how = toBalance ? "支付宝实付部分也退到用户余额" : "支付宝实付部分请在支付宝商家后台退款";
+    const effect = keepPlan ? WHY_ZH.keep_plan : refundEffectZh(p.effect);
     if (
       !(await confirm({
-        title: `退款：订单 ${o.out_trade_no}，退回余额 ¥${yuan(back)}；${how}。套餐不会自动取消。确定吗？`,
+        title: `退款：订单 ${o.out_trade_no}，退回余额 ¥${yuan(back)}；${how}。${effect}。确定吗？`,
         confirmLabel: "退款",
         destructive: true,
       }))
     )
       return;
-    setError(null);
     try {
-      await post(`/orders/${o.id}/refund`, { reason: reason.trim(), to_balance: toBalance });
+      await post(`/orders/${o.id}/refund`, { reason: reason.trim(), to_balance: toBalance, keep_plan: keepPlan });
       setReason("");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["order-detail", o.id] }),
@@ -503,6 +538,10 @@ function RefundForm({ order: o }: { order: AdminOrder }) {
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={toBalance} onChange={(e) => setToBalance(e.target.checked)} />
         支付宝实付 ¥{yuan(o.amount_cents)} 也退到余额
+      </label>
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={keepPlan} onChange={(e) => setKeepPlan(e.target.checked)} />
+        仅退款（保留套餐）
       </label>
       <Button size="sm" variant="outline" onClick={() => void refund()}>
         退款

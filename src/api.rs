@@ -3755,6 +3755,37 @@ mod tests {
                 true,
             ),
             (
+                "refund: roll a renewal back (P1)",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        let up: Uuid = sqlx::query_scalar(
+                            "SELECT id FROM user_plans WHERE user_id = $1 AND status = 'active'",
+                        )
+                        .bind(u)
+                        .fetch_one(&mut *c)
+                        .await?;
+                        let to: chrono::DateTime<chrono::Utc> =
+                            sqlx::query_scalar("SELECT now() + interval '10 days'")
+                                .fetch_one(&mut *c)
+                                .await?;
+                        crate::plans::apply_refund_revoke(
+                            c,
+                            &crate::audit::Actor::test(),
+                            u,
+                            Uuid::new_v4(),
+                            crate::plans::Revoke::Rollback {
+                                user_plan_id: up,
+                                to,
+                            },
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                }),
+                vec![n1, other],
+                true,
+            ),
+            (
                 "cancel user plan",
                 Box::new(move |c| {
                     Box::pin(async move {
@@ -3781,6 +3812,36 @@ mod tests {
             (
                 "group back (the user regains both)",
                 group_entrances(vec![eo, e1]),
+                vec![other, n1],
+                true,
+            ),
+            (
+                "refund: end the subscription (P1)",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        let up: Uuid = sqlx::query_scalar(
+                            "SELECT id FROM user_plans WHERE user_id = $1 AND status = 'active'",
+                        )
+                        .bind(u)
+                        .fetch_one(&mut *c)
+                        .await?;
+                        crate::plans::apply_refund_revoke(
+                            c,
+                            &crate::audit::Actor::test(),
+                            u,
+                            Uuid::new_v4(),
+                            crate::plans::Revoke::End { user_plan_id: up },
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                }),
+                vec![other, n1],
+                true,
+            ),
+            (
+                "the plan again after the refund",
+                set_plan(),
                 vec![other, n1],
                 true,
             ),

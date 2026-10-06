@@ -139,7 +139,8 @@ quota (that is what the reset pack is for).
 - **Refunds** of the Alipay amount happen in the Alipay merchant console;
   the panel records them (W16, 订单 → 退款, see "Refunds (admin)" below),
   returns the balance part and, if chosen, credits the amount to the
-  balance instead. Cancel the plan by hand if needed.
+  balance instead; P1: the order's effect on the subscription is undone in
+  the same transaction (unless 仅退款).
 - Expiry: the reconcile queries a pending order past `expires_at`; paid →
   fulfilled, otherwise `alipay.trade.close` (best effort) and the order
   becomes `expired`. While the gateway is unreachable the order stays
@@ -300,15 +301,28 @@ then approves with the payout reference (资金 → 提现审核), or rejects wi
 reason (ledger `withdrawal_reversal`); the user may cancel while pending.
 Withdrawals of a deleted user can only be approved.
 
-### Refunds (admin)
+### Refunds (admin) / 退款（管理员）
 
-订单 → 详情 → 退款 (`POST /orders/{id}/refund {reason, to_balance}`), paid
-orders only, once: the held balance part always goes back to the balance;
-with `to_balance` the Alipay amount is credited to the balance too (one
-`refund_to_balance` row for both) — otherwise refund it in the Alipay
-merchant console. A pending commission is reversed. The plan is **not**
-touched (cancel it in 用户 if needed); a refunded order cannot be fulfilled
-again. Audited `order.refund`.
+订单 → 详情 → 退款（`POST /orders/{id}/refund {reason, to_balance, keep_plan?}`），
+只对已付款订单、只能退一次，一个事务内完成：
+
+- **钱**：订单扣的余额部分总是退回余额；勾选「也退到余额」（`to_balance`）时
+  支付宝实付部分也记入余额（两者合为一行 `refund_to_balance` 明细），否则请在
+  支付宝商家后台原路退款。待结算的邀请返利撤销。
+- **套餐（P1）**：默认同时撤销该订单对订阅的效果，写审计 `user.plan.refund`：
+  - 新购：结束该订阅（状态 `cancelled`），用户的节点凭据随即撤销，agent 断开其连接；
+  - 续费：到期时间回退该订单增加的时长（开通时记录 `base`，回退量 = 本单到期 −
+    `base`）；回退后不晚于当前时间则结束该订阅；
+  - 换套餐（含补差价升级）：结束新订阅，恢复换之前的订阅（原套餐、原到期时间；
+    换之前已用的流量加回当前用量）；原订阅在此期间已过期则只结束新订阅；
+  - 流量重置包：只退钱（已用流量无法撤销）；
+  - 订单未开通、或它开通/续费的订阅已不是当前订阅（之后又换了套餐等）：只退钱。
+- 勾选「仅退款（保留套餐）」（`keep_plan: true`）则只退钱，套餐不动。
+- 确认框里的效果来自 `GET /orders/{id}/refund-preview`（`{balance_part_cents,
+  amount_cents, effect}`，`effect.kind` = `none`（带 `why`）/`cancel`/`rollback`/
+  `restore`），与实际执行用同一段计算；已退款或未付款的订单 409。
+- 退款后订单不能再「重试开通」。订单详情显示 `refund_effect`（套餐被怎样处理）。
+  审计 `order.refund`（含 `effect`）。
 
 ### Manual orders (Ops)
 
@@ -499,7 +513,8 @@ Ops additions: `order.create` + `order.paid` (manual orders, `after.manual`,
 `order.expire`, `order.paid` (actor `alipay` for notify/query, the admin
 for manual; includes the fulfilment result), `order.fulfil.retry`,
 `order.payment.rejected`, plus the plan change's own `user.plan.set` /
-`user.plan.renew` row. W16: `order.refund`, `coupon.create` /
+`user.plan.renew` row. W16: `order.refund` (P1: + `user.plan.refund` when
+the subscription is undone), `coupon.create` /
 `coupon.update` / `coupon.delete`, `commission.create` /
 `commission.reverse`, `commission.settings.update`,
 `withdrawal.approved` / `withdrawal.rejected` / `withdrawal.cancelled`, and

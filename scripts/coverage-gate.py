@@ -52,6 +52,8 @@ MODULES = {
     # W27: bot protection of the public forms (tokens, honeypot, Turnstile).
     "src/botguard.rs": 90.0,
     "src/passkey.rs": 90.0,
+    # Phase A PR ①: refunds (money + the subscription effect).
+    "src/billing/refund.rs": 90.0,
 }
 
 TEST_MOD = re.compile(r"^(pub(\(crate\))? )?mod \w+ \{")
