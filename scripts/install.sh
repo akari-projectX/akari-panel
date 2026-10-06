@@ -239,6 +239,136 @@ valid_node_addr() {
 	esac
 }
 
+# Cloudflare edge ranges: the same list as src/cloudflare_ips.txt
+# (installer-test/validators.sh checks they agree). Every IPv6 prefix is
+# /32 or shorter (in_cidr compares the first 32 bits of IPv6).
+CF_RANGES='173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18
+108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15
+104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32
+2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32'
+
+# ip_hi32 IP: IPv4 -> the address as a number; IPv6 -> its first 32 bits
+# (the first two groups) as a number. Fails on anything else.
+ip_hi32() {
+	case "$1" in
+	*:*)
+		re '^[0-9A-Fa-f:.]+$' "$1" || return 1
+		case "$1" in
+		::*) _a=0 _b=0 ;;
+		*)
+			_a=${1%%:*} _r=${1#*:}
+			case "$_r" in :*) _b=0 ;; *) _b=${_r%%:*} ;; esac
+			;;
+		esac
+		[ -n "$_a" ] && [ -n "$_b" ] && [ "${#_a}" -le 4 ] && [ "${#_b}" -le 4 ] || return 1
+		case "$_a$_b" in *.*) return 1 ;; esac
+		echo $((0x$_a * 65536 + 0x$_b))
+		;;
+	*)
+		re '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$' "$1" || return 1
+		_s=$IFS
+		IFS=.
+		# shellcheck disable=SC2086 # split on the dots
+		set -- $1
+		IFS=$_s
+		for _o in "$@"; do
+			# no leading zeros (sh arithmetic reads them as octal)
+			case "$_o" in 0?*) return 1 ;; esac
+			[ "$_o" -le 255 ] || return 1
+		done
+		echo $(((($1 * 256 + $2) * 256 + $3) * 256 + $4))
+		;;
+	esac
+}
+
+# in_cidr IP NET/BITS: IP lies in the range (same family; IPv6 /0../32).
+in_cidr() {
+	_net=${2%/*} _bits=${2#*/}
+	case "$1" in *:*) _f1=6 ;; *) _f1=4 ;; esac
+	case "$_net" in *:*) _f2=6 ;; *) _f2=4 ;; esac
+	[ "$_f1" = "$_f2" ] || return 1
+	case "$_bits" in '' | *[!0-9]*) return 1 ;; esac
+	[ "$_bits" -le 32 ] || return 1
+	_i=$(ip_hi32 "$1") && _n=$(ip_hi32 "$_net") || return 1
+	_sh=$((32 - _bits))
+	[ $((_i >> _sh)) -eq $((_n >> _sh)) ]
+}
+
+cloudflare_ip() {
+	for _c in $CF_RANGES; do
+		in_cidr "$1" "$_c" && return 0
+	done
+	return 1
+}
+
+# public_ipv4 IP: not loopback, private, CGNAT or link-local.
+public_ipv4() {
+	for _c in 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16; do
+		in_cidr "$1" "$_c" && return 1
+	done
+	ip_hi32 "$1" >/dev/null
+}
+
+# host_ips NAME: the addresses NAME resolves to here, one per line
+# (nothing when it does not resolve).
+host_ips() {
+	getent ahosts "$1" 2>/dev/null | cut -d' ' -f1 | sort -u
+}
+
+# behind_cloudflare HOST: a host name that resolves into Cloudflare's edge
+# (an orange-clouded record). IP literals and unresolved names: no.
+behind_cloudflare() {
+	valid_domain "$1" || return 1
+	for _ip in $(host_ips "$1"); do
+		cloudflare_ip "$_ip" && return 0
+	done
+	return 1
+}
+
+# node_host ADDR: the host part of a node address (valid_node_addr syntax).
+node_host() {
+	case "$1" in
+	\[*) _h=${1#\[} && echo "${_h%%\]*}" ;;
+	*:*:*) echo "$1" ;;
+	*) echo "${1%:*}" ;;
+	esac
+}
+
+# check_node_addr: the node address agents dial must reach the panel's gRPC
+# port directly (mTLS end to end): never a Cloudflare-proxied name. With no
+# --node-address the main domain is the default; when that is
+# orange-clouded, ask for another one (DNS-only name or IP) or, without a
+# terminal, stop with how to pass one.
+check_node_addr() {
+	if [ -n "$NODE_ADDR" ]; then
+		behind_cloudflare "$(node_host "$NODE_ADDR")" || return 0
+		_why=$(msg "节点通信地址 $NODE_ADDR 解析到 Cloudflare（橙色云代理）" "the node address $NODE_ADDR resolves to Cloudflare (orange-cloud proxy)")
+	elif [ -n "$DOMAIN" ] && behind_cloudflare "$DOMAIN"; then
+		_why=$(msg "主域名 $DOMAIN 解析到 Cloudflare（橙色云代理），默认会被用作节点通信地址" "the main domain $DOMAIN resolves to Cloudflare (orange-cloud proxy) and would be the node address")
+	else
+		return 0
+	fi
+	warn "$_why：节点 agent 必须直连面板的 gRPC 端口 $GRPC_PORT（双向 TLS），经过 Cloudflare 或其他反向代理就连不上。请使用一个仅 DNS 解析（灰色云）、指向本机的域名，或本机公网 IP" \
+		"$_why: node agents dial the panel's gRPC port $GRPC_PORT directly (mutual TLS) and cannot connect through Cloudflare or any other reverse proxy. Use a DNS-only (grey-cloud) name pointing at this machine, or its public IP"
+	if [ "$INTERACTIVE" != 1 ]; then
+		die "用 --node-address <仅 DNS 的域名或公网 IP>（或 AKARI_NODE_ADDRESS）指定节点通信地址" \
+			"pass the node address with --node-address <DNS-only name or public IP> (or AKARI_NODE_ADDRESS)"
+	fi
+	_def=
+	[ -z "$PUBLIC_IP" ] || ! public_ipv4 "$PUBLIC_IP" || _def=$PUBLIC_IP
+	while :; do
+		ask NODE_ADDR '节点通信地址（仅 DNS 的域名或公网 IP，可带 :端口）' 'node address (DNS-only name or public IP, optional :port)' "$_def"
+		NODE_ADDR=$(printf '%s' "$NODE_ADDR" | tr '[:upper:]' '[:lower:]')
+		if [ -z "$NODE_ADDR" ] || ! valid_node_addr "$NODE_ADDR"; then
+			warn "地址无效：$NODE_ADDR" "invalid address: $NODE_ADDR"
+		elif behind_cloudflare "$(node_host "$NODE_ADDR")"; then
+			warn "$NODE_ADDR 也解析到 Cloudflare：请把它设为仅 DNS（灰色云），或填 IP" "$NODE_ADDR resolves to Cloudflare too: make it DNS-only (grey cloud) or enter an IP"
+		else
+			return 0
+		fi
+	done
+}
+
 port_busy() {
 	ss -Hltn "sport = :$1" 2>/dev/null | matches .
 }
@@ -1233,6 +1363,8 @@ gather_input() {
 	[ -z "$NODE_ADDR" ] || valid_node_addr "$NODE_ADDR" ||
 		die "节点地址无效（主机名、IPv4 或 [IPv6]，可带 :端口）：$NODE_ADDR" \
 			"invalid node address (host name, IPv4 or [IPv6], optional :port): $NODE_ADDR"
+	# A restore keeps the backup's node address.
+	[ -n "$RESTORE_DIR" ] || check_node_addr
 	if [ "$MODE" = docker ] && [ -z "$DOCKER_DIR" ]; then DOCKER_DIR=$DEFAULT_DOCKER_DIR; fi
 	VALKEY_PORT=${VALKEY_PORT:-6379}
 
@@ -1243,6 +1375,7 @@ gather_input() {
 	printf '  %s %s\n' "$(msg '地址：  ' 'address:     ')" "${DOMAIN:-$PUBLIC_IP $(msg '（仅 IP，自签证书）' '(IP only, self-signed certificate)')}"
 	printf '  %s %s\n' "$(msg '管理员：' 'admin:       ')" "$ADMIN"
 	printf '  %s %s/%s/%s\n' "$(msg '端口：  ' 'ports:       ')" "$HTTP_PORT" "$HTTPS_PORT" "$GRPC_PORT"
+	[ -n "$RESTORE_DIR" ] || printf '  %s %s\n' "$(msg '节点：  ' 'node address:')" "${NODE_ADDR:-${DOMAIN:-$PUBLIC_IP}}"
 	[ -z "$RESTORE_DIR" ] || printf '  %s %s\n' "$(msg '恢复自：' 'restore from:')" "$RESTORE_DIR"
 	if ! confirm '继续？' 'continue?' y; then
 		die '已取消' 'cancelled'
@@ -1839,7 +1972,8 @@ Options (environment variable in brackets):
   --email ADDRESS           [AKARI_EMAIL]      ACME account e-mail (optional)
   --admin EMAIL             [AKARI_ADMIN]      admin login (default: --email, else admin@<domain>)
   --admin-password-file F   [AKARI_ADMIN_PASSWORD] default: generated, printed once
-  --node-address HOST[:P]   [AKARI_NODE_ADDRESS] address agents dial (default: domain / IP)
+  --node-address HOST[:P]   [AKARI_NODE_ADDRESS] address agents dial (default: domain / IP;
+                            required when the domain is behind Cloudflare: DNS-only name or IP)
   --http-port N --https-port N --grpc-port N   default 80 / 443 / 8443
   --version vX.Y.Z          [AKARI_VERSION]    default: this installer's release / latest
   --dir DIR                 [AKARI_DOCKER_DIR] compose directory (default /opt/akari)

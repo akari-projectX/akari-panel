@@ -18,6 +18,7 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
 | 证书通知邮箱 | 留空 | 仅用于 Let's Encrypt 通知 |
 | 管理员邮箱 / 密码 | 证书通知邮箱，否则 `admin@<主域名>`（仅 IP：`admin@akari.invalid`）/ 自动生成 | 邮箱就是登录名（v0.4：所有人都用邮箱登录）；自动生成的密码**只在结束时显示一次** |
 | 自定义端口 | 否（80/443/8443） | 8443 是节点 agent 连接面板的 gRPC 端口 |
+| 节点通信地址 | 主域名（仅 IP 安装 = 本机 IP） | **只在主域名解析到 Cloudflare（橙色云）时询问**：agent 经 8443 端口与面板做双向 TLS，必须直连，不能经过 Cloudflare 或其他反向代理。填一个**仅 DNS（灰色云）**、指向本机的域名或本机公网 IP；`--yes` 时用 `--node-address` 指定，否则安装器停下并说明原因 |
 
 结束时会打印管理后台的完整地址（含**机密后台前缀**——不知道前缀的人看不到后台，只得到空 404）、
 用户门户地址（主域名根路径 `/`）以及管理员密码。接下来：登录后台 → **系统设置** 确认主域名/订阅域名/节点通信域名 → **节点** →
@@ -80,7 +81,7 @@ every prompt with a default; `--yes` takes the defaults and the flags/environmen
 | `--email ADDR` | `AKARI_EMAIL` | none (ACME account e-mail) |
 | `--admin LOGIN` | `AKARI_ADMIN` | `admin` |
 | `--admin-password-file F` | `AKARI_ADMIN_PASSWORD` | generated (20 characters), printed once |
-| `--node-address HOST[:PORT]` | `AKARI_NODE_ADDRESS` | the domain (or IP): 系统设置 → 节点通信域名. A host name, IPv4 or `[IPv6]`, optional `:port` |
+| `--node-address HOST[:PORT]` | `AKARI_NODE_ADDRESS` | the domain (or IP): 系统设置 → 节点通信域名. A host name, IPv4 or `[IPv6]`, optional `:port`. When the domain (or this address) resolves into Cloudflare's ranges the installer asks for a DNS-only name or IP instead (`--yes`: it stops and says to pass this option): agents need mutual TLS straight to the gRPC port |
 | `--http-port/--https-port/--grpc-port` | | 80 / 443 / 8443 |
 | `--version vX.Y.Z` | `AKARI_VERSION` | the installer's own release (`latest/download` = newest) |
 | `--dir DIR` (docker) | `AKARI_DOCKER_DIR` | `/opt/akari` |
