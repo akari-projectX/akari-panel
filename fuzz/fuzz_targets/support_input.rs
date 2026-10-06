@@ -120,6 +120,7 @@ fn evaluator(data: &[u8]) {
         latency: b(0) & 2 == 2,
         last_error: b(0) & 4 == 4,
         entrance_down: b(0) & 8 == 8,
+        traffic_quota: b(0) & 16 == 16,
     };
     let rest = &data[32..];
     let text = String::from_utf8_lossy(&rest[16..]).into_owned();
@@ -153,6 +154,13 @@ fn evaluator(data: &[u8]) {
         } else {
             Vec::new()
         },
+        quota_exceeded: (b(6) & 4 == 4).then(|| {
+            (
+                n(16),
+                n(24),
+                (b(6) & 8 == 8).then(|| now + chrono::Duration::days(i64::from(b(5)))),
+            )
+        }),
     };
     let v = evaluate(&facts, &rules, now);
     let mut kinds: Vec<&str> = v.firing.iter().map(|o| o.kind).collect();

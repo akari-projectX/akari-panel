@@ -50,6 +50,7 @@ pub mod pb;
 pub mod plans;
 pub mod protocols;
 pub mod rate;
+pub mod rates;
 pub mod reaper;
 pub mod reject;
 pub mod request_id;

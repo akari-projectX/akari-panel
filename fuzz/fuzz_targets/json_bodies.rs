@@ -77,7 +77,7 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     use akari_panel::*;
-    match sel % 27 {
+    match sel % 28 {
         0 => strict::<api::LoginReq>(body),
         1 => strict::<api::CreateUserReq>(body),
         2 => strict::<api::UpdateUserReq>(body),
@@ -108,6 +108,14 @@ fuzz_target!(|data: &[u8]| {
         }
         24 => strict::<servers::CreateServerReq>(body),
         25 => strict::<servers::UpdateServerReq>(body),
+        26 => {
+            strict::<rates::SetRulesReq>(body);
+            if let Ok(r) = serde_json::from_slice::<rates::SetRulesReq>(body)
+                && let Ok(rules) = rates::parse(&r.rules)
+            {
+                rates::overlap_warnings(&rules);
+            }
+        }
         _ => path(&String::from_utf8_lossy(body)),
     }
 });

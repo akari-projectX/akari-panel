@@ -1003,6 +1003,17 @@ bytes. The node list and detail page show both totals (`traffic_raw_bytes`,
 `traffic_billed_bytes`). 0 = free entrance. Hidden nodes (`visible = false`) keep serving the
 users their plans grant; they are only left out of the portal and the subscription.
 
+**分时段倍率（D9，中文）**：入口的倍率 = 基础倍率（`PATCH /api/v1/entrances/{id}` 的 `rate`）+ 最多 24 条
+时段规则（`PUT /api/v1/entrances/{id}/rate-rules {"rules": [{"weekdays": [1..7], "start": "HH:MM",
+"end": "HH:MM", "rate": 1.5}]}`，整体替换，`{"rules": []}` = 清空）。星期按 ISO（1 = 周一 … 7 = 周日），时间按
+**站点时区**（系统设置 → 站点，默认 Asia/Shanghai），区间为 [开始, 结束)，结束 `24:00`（或 `00:00`）= 当天午夜，
+结束早于开始 = 跨午夜（属于开始那天，延续到次日）。不在任何规则内用基础倍率；多条规则重叠时取**最高**的倍率，
+保存时响应的 `warnings` 会逐条列出重叠的规则与时段。结算只在 SQL 里（`akari_entrance_rate()`），取「结算时刻」与
+「30 秒前」两者中**较低**的倍率：跨时段边界的流量只会少计、不会多计（时段以分钟为单位，30 秒内至多跨一个边界）。
+订阅里的节点名、门户节点列表（`/me/nodes` 的 `rate`）、流量明细（`/me/traffic` 每节点的 `rates`）和后台入口
+（`rate_now`、`rate_rules`）显示的都是**当前**倍率。规则变更写审计 `entrance.rate_rules.set`（前后规则全文）；
+改规则不需要 agent 做任何事（不 bump）。
+
 **Prometheus.** The metrics listener adds fleet aggregates over the nodes connected to that
 instance (`akari_fleet{kind="nodes_reporting"|"online_users"|"connections"|"rx_bytes_per_second"|"tx_bytes_per_second"}`,
 `akari_fleet_cpu_percent_max`; sum over instances). There are no per-node series by design:

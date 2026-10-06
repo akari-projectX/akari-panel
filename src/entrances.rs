@@ -169,6 +169,10 @@ pub const ENTRANCES_JSON_SQL: &str = "coalesce((SELECT jsonb_agg(jsonb_build_obj
      'id', e.id, 'kind', e.kind, 'name', e.name, \
      'connect_host', e.connect_host, 'connect_port', e.connect_port, \
      'rate_permille', e.rate_permille, 'rate', e.rate_permille::float8 / 1000, \
+     'rate_now', akari_entrance_rate(e.id, statement_timestamp())::float8 / 1000, \
+     'rate_rules', (SELECT coalesce(jsonb_agg(jsonb_build_object('weekdays', r.weekdays, \
+        'start', r.start_minute, 'end', r.end_minute, 'rate', r.rate_permille::float8 / 1000) \
+        ORDER BY r.ord), '[]'::jsonb) FROM entrance_rate_rules r WHERE r.entrance_id = e.id), \
      'enabled', e.enabled, 'sort', e.sort, 'wire_no', e.wire_no, \
      'listen_port', e.listen_port, 'source_cidrs', to_jsonb(e.source_cidrs::text[]), \
      'health_ok', e.health_ok, 'health_at', e.health_at, 'health_failures', e.health_failures, \
@@ -190,10 +194,14 @@ pub struct EntranceView {
     /// (null = the inbound's port).
     pub connect_host: Option<String>,
     pub connect_port: Option<i32>,
-    /// Traffic multiplier: permille and as a number (0.5 = half).
+    /// Base traffic multiplier: permille and as a number (0.5 = half).
     pub rate_permille: i32,
     #[sqlx(skip)]
     pub rate: f64,
+    /// D9: the multiplier in effect now (base or a time-window rule) and
+    /// the rules (`rates::RuleView`: weekdays, start/end minute, rate).
+    pub rate_now: f64,
+    pub rate_rules: serde_json::Value,
     pub enabled: bool,
     pub sort: i32,
     /// The entrance's number on its node (0 = direct): its agent inbound
@@ -215,7 +223,13 @@ pub struct EntranceView {
 }
 
 const ENTRANCE_VIEW_SQL: &str = "SELECT e.id, e.node_id, e.kind, e.name, e.connect_host, \
-     e.connect_port, e.rate_permille, e.enabled, e.sort, e.wire_no, e.listen_port, \
+     e.connect_port, e.rate_permille, \
+     akari_entrance_rate(e.id, statement_timestamp())::float8 / 1000 AS rate_now, \
+     (SELECT coalesce(jsonb_agg(jsonb_build_object('weekdays', r.weekdays, \
+        'start', r.start_minute, 'end', r.end_minute, 'rate', r.rate_permille::float8 / 1000) \
+        ORDER BY r.ord), '[]'::jsonb) FROM entrance_rate_rules r WHERE r.entrance_id = e.id) \
+        AS rate_rules, \
+     e.enabled, e.sort, e.wire_no, e.listen_port, \
      e.source_cidrs::text[] AS source_cidrs, e.health_ok, e.health_at, e.health_failures, \
      e.health_error, e.hidden_since, \
      coalesce(ARRAY(SELECT m.group_id FROM entrance_group_members m \

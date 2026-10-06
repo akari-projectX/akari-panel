@@ -118,6 +118,8 @@ export const ADMIN_CODES: Record<string, string> = {
   "entrance.name_exists": "该节点已有同名入口",
   "entrance.port_clash": "端口冲突：{detail}",
   "entrance.rate_invalid": "倍率须在 0–100 之间，最多 3 位小数",
+  "entrance.rate_rule_invalid": "时段倍率规则无效：第 {index} 条（{detail}）",
+  "entrance.rate_rules_too_many": "每个入口最多 {max} 条时段倍率规则",
   "entrance.relay_address": "中转入口必须填写连接地址与连接端口",
   "entrance.relay_only": "监听端口与来源 IP 只属于中转入口",
   "entrance.source_invalid": "中转出口 IP 无效：{detail}",

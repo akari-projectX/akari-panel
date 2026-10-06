@@ -111,7 +111,7 @@ pub struct NodeRow {
 
 mod clash;
 mod links;
-mod proxy;
+pub(crate) mod proxy;
 mod singbox;
 
 use clash::render_clash;
@@ -231,7 +231,8 @@ pub async fn subscription(
         return reject::not_found();
     }
     let rows = match sqlx::query_as::<_, NodeRow>(sqlx::AssertSqlSafe(format!(
-        "SELECT n.name, n.display_name, n.tags, e.name AS entrance, e.rate_permille, n.inbound, \
+        "SELECT n.name, n.display_name, n.tags, e.name AS entrance, \
+         akari_entrance_rate(e.id, statement_timestamp()) AS rate_permille, n.inbound, \
          coalesce(e.connect_host, s.tls_domain) AS server, e.connect_port AS port, \
          eu.protocol, eu.account \
          FROM entrance_users eu \
