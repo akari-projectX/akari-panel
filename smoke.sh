@@ -241,7 +241,7 @@ docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE revoke
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE plans, node_groups, coupons, payment_methods CASCADE;" >/dev/null 2>&1 || true
 # R22 settings left behind by an aborted run (e.g. a node domain the agents
 # here cannot reach): back to "use panel.toml" (the trigger reloads them).
-docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "UPDATE panel_settings SET version = 0, main_domain = NULL, sub_domain = NULL, node_domain = NULL, trust_cloudflare = NULL, probe_interval_secs = NULL, probe_urls = NULL, probe_panel_tcp = NULL, site_name = NULL, cloudflare_ranges = NULL, install_tls_pin = NULL, install_fallback_url = NULL, acme_directory_url = NULL, acme_email = NULL, audit_retention_days = NULL, traffic_daily_retention_days = NULL, remove_mode = NULL, extra_release_keys = NULL; TRUNCATE grpc_server_names, legacy_config_imports;" >/dev/null 2>&1 || true
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM site_domains; UPDATE panel_settings SET version = 0, sub_domain_per_user = NULL, trust_cloudflare = NULL, probe_interval_secs = NULL, probe_urls = NULL, probe_panel_tcp = NULL, site_name = NULL, cloudflare_ranges = NULL, install_tls_pin = NULL, install_fallback_url = NULL, acme_directory_url = NULL, acme_email = NULL, audit_retention_days = NULL, traffic_daily_retention_days = NULL, remove_mode = NULL, extra_release_keys = NULL; TRUNCATE grpc_server_names, legacy_config_imports;" >/dev/null 2>&1 || true
 # W15 settings back to the defaults (off; version 0) and an empty outbox.
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM signup_settings; INSERT INTO signup_settings (id) VALUES (1); DELETE FROM mail_settings; INSERT INTO mail_settings (id) VALUES (1); TRUNCATE mail_outbox;" >/dev/null 2>&1 || true
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM auth_settings; INSERT INTO auth_settings (id) VALUES (1);" >/dev/null 2>&1 || true
@@ -268,7 +268,7 @@ done
 matches "AKARI_TEST_LIMITS is set" <"$LOG/panel.log" || { echo "FAIL: test limits not announced"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.import' AND actor_label = 'system'")" = "1" ] \
   || { echo "FAIL: import not audited once (actor system)"; exit 1; }
-[ "$(psql_q "SELECT node_domain || ' ' || array_to_string(probe_urls, ',') || ' ' || acme_directory_url FROM panel_settings")" \
+[ "$(psql_q "SELECT (SELECT domain FROM site_domains WHERE kind = 'node' AND preferred) || ' ' || array_to_string(probe_urls, ',') || ' ' || acme_directory_url FROM panel_settings")" \
     = "127.0.0.1:8443 http://127.0.0.1:18204/generate_204 https://127.0.0.1:14000/dir" ] \
   || { echo "FAIL: imported values: $(psql_q "SELECT * FROM panel_settings")"; exit 1; }
 [ "$(psql_q "SELECT extra_release_keys[1] FROM panel_settings")" = "$TEST_RELEASE_PUB TEST-ONLY" ] \
@@ -1988,7 +1988,7 @@ mp_mail diag@akari.test 1 | sed -n 1p | matches '^Akari Smoke 测试邮件$' || 
 [ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
 VER=$(last_json "d['version']")
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings" -H "$J" \
-    -d "{\"version\":$VER,\"main_domain\":\"127.0.0.1:8080\",\"sub_domain\":null,\"node_domain\":\"127.0.0.1:8443\",\"trust_cloudflare\":null}")" = "200" ] \
+    -d "{\"version\":$VER,\"main_domains\":[\"127.0.0.1:8080\"],\"sub_domains\":[],\"node_domains\":[\"127.0.0.1:8443\"],\"trust_cloudflare\":null}")" = "200" ] \
   || { echo "FAIL: set main domain"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/signup" -H "$J" -d "{\"version\":0,$SIGNUP_ON}")" = "200" ] \
   || { echo "FAIL: enable registration + reset"; cat /tmp/akari-smoke/last; exit 1; }
@@ -3895,7 +3895,7 @@ VER=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['ve
 # A node domain on Cloudflare is refused (422) unless forced: 104.16.0.1 is a
 # Cloudflare edge address (IP literal: no DNS involved).
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings" -H 'Content-Type: application/json' \
-    -d "{\"version\":$VER,\"main_domain\":null,\"sub_domain\":null,\"node_domain\":\"104.16.0.1\",\"trust_cloudflare\":null}")" = "422" ] \
+    -d "{\"version\":$VER,\"main_domains\":[],\"sub_domains\":[],\"node_domains\":[\"104.16.0.1\"],\"trust_cloudflare\":null,\"confirm_removal\":true}")" = "422" ] \
   || { echo "FAIL: orange-clouded node domain accepted: $(cat /tmp/akari-smoke/last)"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/dns-check" -H 'Content-Type: application/json' \
     -d '{"kind":"node","domain":"104.16.0.1"}')" = "200" ] && grep -q '"level":"block"' /tmp/akari-smoke/last \
@@ -3904,8 +3904,8 @@ VER=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['ve
 # the host gate, so no confirmation needed).
 R22_MAIN=myapp.test:8446
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings" -H 'Content-Type: application/json' \
-    -d "{\"version\":$VER,\"main_domain\":\"$R22_MAIN\",\"sub_domain\":\"sub.akari.test\",
-         \"node_domain\":\"grpc.akari.test\",\"trust_cloudflare\":true}")" = "200" ] \
+    -d "{\"version\":$VER,\"main_domains\":[\"$R22_MAIN\"],\"sub_domains\":[\"sub.akari.test\"],
+         \"node_domains\":[\"grpc.akari.test\"],\"trust_cloudflare\":true,\"confirm_removal\":true}")" = "200" ] \
   || { echo "FAIL: PUT settings: $(cat /tmp/akari-smoke/last)"; exit 1; }
 cp /tmp/akari-smoke/last "$LOG/r22-settings.json"
 python3 - "$LOG/r22-settings.json" <<'PY' || { echo "FAIL: settings view"; cat "$LOG/r22-settings.json"; exit 1; }
@@ -3930,11 +3930,12 @@ done
 [ "$(code http://127.0.0.1:8080/ask?domain=myapp.test)" = "404" ] || { echo "FAIL: ask reachable on the web port"; exit 1; }
 
 # Host gate: unknown DNS names get the canonical rejection even with the
-# right prefix; configured names and IP literals pass.
-for h in evil.test grpc.akari.test www.myapp.test; do
+# right prefix; D8: so do the subscription domain (subscriptions only) and
+# the node communication name (gRPC only); main names and IP literals pass.
+for h in evil.test grpc.akari.test www.myapp.test sub.akari.test; do
   [ "$(fp -H "Host: $h" "$BASE/healthz")" = "$REJ" ] || { echo "FAIL: Host $h not rejected canonically"; exit 1; }
 done
-for h in myapp.test:8446 sub.akari.test 127.0.0.1:8080; do
+for h in myapp.test:8446 127.0.0.1:8080; do
   [ "$(code -H "Host: $h" "$BASE/healthz")" = "200" ] || { echo "FAIL: Host $h refused"; exit 1; }
 done
 # R23-3: the admin console only on the main domain (and IP literals); on the
@@ -3946,7 +3947,9 @@ SID=$(awk '$6=="sid"{print $7}' "$JAR")
 for p in admin admin/users; do
   [ "$(fp -H "Cookie: sid=$SID" -H "Host: sub.akari.test" "$BASE/$p")" = "$REJ" ] || { echo "FAIL: console on the sub domain: $p"; exit 1; }
 done
-[ "$(code -H "Host: sub.akari.test" "$BASE/app")" = "200" ] || { echo "FAIL: portal refused on the sub domain"; exit 1; }
+for p in "$BASE/app" "$ROOT/" "$ROOT/shop" "$ROOT/healthz"; do
+  [ "$(fp -H "Host: sub.akari.test" "$p")" = "$REJ" ] || { echo "FAIL: D8: the sub domain serves $p"; exit 1; }
+done
 for h in myapp.test:8446 127.0.0.1:8080; do
   [ "$(code -H "Cookie: sid=$SID" -H "Host: $h" "$BASE/admin")" = "200" ] || { echo "FAIL: console refused on Host $h"; exit 1; }
 done
@@ -3972,7 +3975,9 @@ MAIN_URL="https://$R22_MAIN/$PREFIX"
 # (managed at start, asynchronously): until then the handshake fails.
 for _ in $(seq 1 30); do [ "$(code -k "${RES[@]}" "$MAIN_URL/healthz")" = "200" ] && break; sleep 0.5; done
 [ "$(code -k "${RES[@]}" "$MAIN_URL/healthz")" = "200" ] || { echo "FAIL: main domain through Caddy"; docker logs akari-smoke-caddy 2>&1 | tail -5; exit 1; }
-[ "$(code -k "${RES[@]}" "https://sub.akari.test:8446/$PREFIX/healthz")" = "200" ] || { echo "FAIL: sub domain through Caddy (on demand)"; docker logs akari-smoke-caddy 2>&1 | tail -5; exit 1; }
+# The on-demand certificate works (the handshake succeeds); D8: the admin
+# prefix does not exist on the subscription domain.
+[ "$(code -k "${RES[@]}" "https://sub.akari.test:8446/$PREFIX/healthz")" = "404" ] || { echo "FAIL: sub domain through Caddy (on demand)"; docker logs akari-smoke-caddy 2>&1 | tail -5; exit 1; }
 # D11: everything reaches the panel; the portal is at /.
 [ "$(code -k "${RES[@]}" "https://$R22_MAIN/")" = "200" ] || { echo "FAIL: the portal through Caddy"; exit 1; }
 curl -sk --noproxy '*' "${RES[@]}" -o /dev/null "https://evil.test:8446/$PREFIX/healthz" \
@@ -4011,6 +4016,38 @@ done
     -d '{"email":"r22-user@smoke.test","password":"r22-user-password"}')" = "201" ] || { echo "FAIL: create r22 user"; exit 1; }
 python3 -c "import json,sys;v=json.load(open('/tmp/akari-smoke/last'));sys.exit(0 if v['sub_url']=='https://sub.akari.test/$SUBP/'+v['sub_token'] else 1)" \
   || { echo "FAIL: sub_url not on the subscription domain: $(cat /tmp/akari-smoke/last)"; exit 1; }
+# D8: the subscription answers on the subscription and main domains, not on
+# the node communication name.
+R22_TOK=$(last_json "d['sub_token']")
+subrl
+for h in sub.akari.test myapp.test:8446; do
+  [ "$(code -H "Host: $h" "$ROOT/$SUBP/$R22_TOK")" = "200" ] || { echo "FAIL: subscription on Host $h"; exit 1; }
+done
+[ "$(fp -H "Host: grpc.akari.test" "$ROOT/$SUBP/$R22_TOK")" = "$REJ" ] || { echo "FAIL: subscription on the node name"; exit 1; }
+# D8 lists: a second main domain answers; removing it needs the impact
+# preview's confirmation; per-user subscription domains.
+[ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings (D8)"; exit 1; }
+VER=$(last_json "d['version']")
+D8_LISTS='"main_domains":["myapp.test:8446","alt.akari.test"],"sub_domains":["sub.akari.test","sub2.akari.test"],"node_domains":["grpc.akari.test"]'
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings" -H 'Content-Type: application/json' \
+    -d "{\"version\":$VER,$D8_LISTS,\"sub_domain_per_user\":true,\"trust_cloudflare\":true}")" = "200" ] \
+  && last_json "len(d['main']['domains']) == 2 and d['sub_domain_per_user'] is True" | matches '^True$' \
+  || { echo "FAIL: D8 domain lists: $(cat /tmp/akari-smoke/last)"; exit 1; }
+VER=$(last_json "d['version']")
+[ "$(code -H "Host: alt.akari.test" "$BASE/healthz")" = "200" ] || { echo "FAIL: the second main domain"; exit 1; }
+[ "$(code "$ASK?domain=sub2.akari.test")" = "200" ] && [ "$(code "$ASK?domain=alt.akari.test")" = "200" ] \
+  || { echo "FAIL: ask refuses a listed name"; exit 1; }
+D8_BACK='"main_domains":["myapp.test:8446"],"sub_domains":["sub.akari.test"],"node_domains":["grpc.akari.test"]'
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/domains/impact" -H 'Content-Type: application/json' -d "{$D8_BACK}")" = "200" ] \
+  && last_json "sorted((r['kind'], r['domain'], r['places'][0]['what']) for r in d['removed']) == [('main', 'alt.akari.test', 'portal_console'), ('sub', 'sub2.akari.test', 'subscription_links')]" | matches '^True$' \
+  || { echo "FAIL: domains impact: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings" -H 'Content-Type: application/json' \
+    -d "{\"version\":$VER,$D8_BACK,\"trust_cloudflare\":true}")" = "409" ] \
+  && last_json "d['code']" | matches '^settings.domain_removal_unconfirmed$' || { echo "FAIL: removal without confirmation"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings" -H 'Content-Type: application/json' \
+    -d "{\"version\":$VER,$D8_BACK,\"trust_cloudflare\":true,\"confirm_removal\":true}")" = "200" ] \
+  || { echo "FAIL: confirmed removal: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(fp -H "Host: alt.akari.test" "$BASE/healthz")" = "$REJ" ] || { echo "FAIL: a removed main domain still answers"; exit 1; }
 
 # Install command: main domain origin (browser origin ignored), pinned
 # (Caddy's internal CA), script carries the node domain.
@@ -4327,7 +4364,7 @@ matches "panel.toml grpc.advertise is obsolete and ignored" <"$LOG/panel2.log" \
   || { echo "FAIL: second start does not warn about the obsolete keys"; grep -i obsolete "$LOG/panel2.log"; exit 1; }
 matches "imported into 系统设置" <"$LOG/panel2.log" && { echo "FAIL: obsolete keys imported twice"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.import'")" = "1" ] || { echo "FAIL: a second import was audited"; exit 1; }
-[ "$(psql_q "SELECT coalesce(node_domain, '-') FROM panel_settings")" = "-" ] || { echo "FAIL: unset node domain came back from panel.toml"; exit 1; }
+[ "$(psql_q "SELECT coalesce((SELECT domain FROM site_domains WHERE kind = 'node'), '-')")" = "-" ] || { echo "FAIL: unset node domain came back from panel.toml"; exit 1; }
 [ "$(fp "$OLD_BASE/healthz")" = "$REJ" ] || { echo "FAIL: old prefix still answers"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.admin_prefix.rotate' AND actor_label = 'cli'")" = "1" ] || { echo "FAIL: rotate-prefix not audited"; exit 1; }
 # The owner rotates through the API (confirmed); the old prefix dies at once,

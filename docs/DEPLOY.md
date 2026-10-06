@@ -217,14 +217,30 @@ obsolete keys from panel.toml**.
 
 ## 1b. Domains (系统设置) and Cloudflare
 
-The admin console's **系统设置** page (`/<admin prefix>/admin/settings`) holds three domains and one switch.
-Once the main domain is saved, the console (`/<admin prefix>/admin`) answers on the main domain only
-(and on IP literals); on the subscription domain it is the uniform empty 404 (R23). They live in the
-database only (table `panel_settings`; an empty field = the built-in behaviour in the table below).
+The admin console's **系统设置** page (`/<admin prefix>/admin/settings`) holds three domain lists and
+one switch. Once a main domain is saved, the console (`/<admin prefix>/admin`) answers on the main
+domains only (and on IP literals); on a subscription domain it is the uniform empty 404 (R23, D8).
+They live in the database only (tables `site_domains` and `panel_settings`; an empty list = the
+built-in behaviour in the table below).
 `akari settings show` prints them; `akari settings set main|sub|node <host[:port]>` /
 `set trust-cloudflare true|false` and `akari settings unset main|sub|node|trust-cloudflare|probe|all`
 change them from the CLI (audited) — e.g. after a mistyped main domain. Changes take effect on every panel instance within a second (database
 notification), **no restart** — including the gRPC certificate.
+
+### 多域名（D8，中文）
+
+主域名、订阅域名、节点通信域名都是**列表**，每类有一个**首选**（列表第一个）。每类域名只能访问规定的内容：
+
+| 类别 | 能访问 | 首选的用途 |
+|---|---|---|
+| 主域名 | 门户、后台（后台前缀）、安装链接、支付回调、订阅 | 安装命令、邮件链接、支付回调地址、通行密钥 |
+| 订阅域名 | **只有订阅**，其他一律空 404 | 订阅链接（开启「每个用户分配订阅域名」后，每个用户固定分到列表中的某一个；增加域名只会把一部分用户移到新域名上） |
+| 节点通信域名 | HTTP 上什么都没有（agent 只连 gRPC 端口）；必须是**灰色云朵** | 新生成的安装命令与注册文件；面板证书包含用过的每一个节点域名（只增不减，已注册节点不断线） |
+
+同一个域名不能既是主域名又是订阅域名；节点通信域名可以和主域名同名（端口不同）。Caddy 会为全部主域名和订阅域名自动签发证书
+（节点通信域名用面板自己的 CA，不经过 Caddy）。删除域名前，后台先显示影响（门户/后台不再可用、改用哪个首选域名、多少待付款订单的回调、
+多少未使用的安装命令、多少用户的订阅链接、多少节点在用），确认后才保存。命令行 `akari settings set main <域名>` 把它设为首选（保留其他），
+`akari settings unset main` 清空整个列表。
 
 | Field | Used for | Cloudflare | When empty |
 |---|---|---|---|

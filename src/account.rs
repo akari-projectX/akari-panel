@@ -147,7 +147,7 @@ pub async fn regenerate_own_sub_token(
             .await?
             .ok_or_else(ApiError::unauthorized)?;
     tx.commit().await?;
-    let sub_url = state.sub_link(&token);
+    let sub_url = state.sub_link(user.id, &token);
     Ok(Json(json!({
         "sub_token": token,
         "sub_url": sub_url,

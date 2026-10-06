@@ -53,7 +53,7 @@
 //! overwrites a newer one; every (re)established LISTEN reloads too.
 
 use crate::auth::{bad_request, conflict};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -66,6 +66,7 @@ use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -245,9 +246,17 @@ pub fn host_of(headers: &HeaderMap, uri: &axum::http::Uri) -> Option<String> {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, sqlx::FromRow)]
 pub struct Stored {
     pub version: i64,
-    pub main_domain: Option<String>,
-    pub sub_domain: Option<String>,
-    pub node_domain: Option<String>,
+    /// D8 (`site_domains`, migration 1015): each kind's names, the
+    /// preferred one first (normalized authorities, `Domain::authority`).
+    #[sqlx(skip)]
+    pub main_domains: Vec<String>,
+    #[sqlx(skip)]
+    pub sub_domains: Vec<String>,
+    #[sqlx(skip)]
+    pub node_domains: Vec<String>,
+    /// D8: each user's subscription link on one of the subscription domains
+    /// (rendezvous hashing) instead of the preferred one (NULL = off).
+    pub sub_domain_per_user: Option<bool>,
     pub trust_cloudflare: Option<bool>,
     /// W12: latency tests (NULL = built-in default).
     pub probe_interval_secs: Option<i32>,
@@ -287,7 +296,7 @@ pub struct Stored {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
-const STORED_COLS: &str = "version, main_domain, sub_domain, node_domain, trust_cloudflare, \
+const STORED_COLS: &str = "version, sub_domain_per_user, trust_cloudflare, \
      probe_interval_secs, probe_urls, probe_panel_tcp, site_name, cloudflare_ranges, \
      install_tls_pin, install_fallback_url, acme_directory_url, acme_email, \
      audit_retention_days, traffic_daily_retention_days, remove_mode, \
@@ -302,7 +311,83 @@ fn select_stored(lock: bool) -> sqlx::AssertSqlSafe<String> {
 }
 
 async fn read_stored(conn: &mut PgConnection, lock: bool) -> sqlx::Result<Stored> {
-    sqlx::query_as(select_stored(lock)).fetch_one(conn).await
+    let mut s: Stored = sqlx::query_as(select_stored(lock))
+        .fetch_one(&mut *conn)
+        .await?;
+    read_domains(conn, &mut s).await?;
+    Ok(s)
+}
+
+/// D8: fill the domain lists of `s` (preferred first, then oldest first).
+async fn read_domains(conn: &mut PgConnection, s: &mut Stored) -> sqlx::Result<()> {
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT kind, domain FROM site_domains ORDER BY kind, preferred DESC, id")
+            .fetch_all(conn)
+            .await?;
+    for (kind, domain) in rows {
+        match DomainKind::parse(&kind) {
+            Some(k) => s.domains_mut(k).push(domain),
+            None => tracing::error!(kind, "site_domains row of an unknown kind; ignored"),
+        }
+    }
+    Ok(())
+}
+
+/// D8: the three domain lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DomainKind {
+    Main,
+    Sub,
+    Node,
+}
+
+impl DomainKind {
+    pub const ALL: [DomainKind; 3] = [DomainKind::Main, DomainKind::Sub, DomainKind::Node];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DomainKind::Main => "main",
+            DomainKind::Sub => "sub",
+            DomainKind::Node => "node",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.as_str() == s)
+    }
+
+    /// The console's name for the list (error texts).
+    fn label(self) -> &'static str {
+        match self {
+            DomainKind::Main => "主域名",
+            DomainKind::Sub => "订阅域名",
+            DomainKind::Node => "节点通信域名",
+        }
+    }
+}
+
+impl Stored {
+    pub fn domains(&self, k: DomainKind) -> &Vec<String> {
+        match k {
+            DomainKind::Main => &self.main_domains,
+            DomainKind::Sub => &self.sub_domains,
+            DomainKind::Node => &self.node_domains,
+        }
+    }
+
+    fn domains_mut(&mut self, k: DomainKind) -> &mut Vec<String> {
+        match k {
+            DomainKind::Main => &mut self.main_domains,
+            DomainKind::Sub => &mut self.sub_domains,
+            DomainKind::Node => &mut self.node_domains,
+        }
+    }
+
+    /// The preferred entry of a kind.
+    pub fn preferred(&self, k: DomainKind) -> Option<&str> {
+        self.domains(k).first().map(String::as_str)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
@@ -387,9 +472,15 @@ pub struct Effective {
     /// import buttons the portal shows (configured and format on).
     pub sub_formats: Vec<String>,
     pub sub_import_clients: Vec<String>,
-    /// Some = the host gate is on (main domain set in the database): DNS
-    /// names allowed as Host.
-    host_gate: Option<HashSet<String>>,
+    /// D8: every subscription origin (preferred first; empty = none set:
+    /// links go to the main domain) and whether each user gets their own.
+    pub subs: Vec<Origin>,
+    pub sub_per_user: bool,
+    /// D8: what each configured DNS host serves over HTTP (`host_role`).
+    roles: HashMap<String, HostRole>,
+    /// The host gate is on (a main domain is set): unknown DNS names get
+    /// the canonical rejection.
+    host_gate: bool,
     /// Names Caddy may obtain certificates for (ask endpoint).
     ask_hosts: HashSet<String>,
     /// Names the gRPC server certificate must cover (sorted).
@@ -511,12 +602,25 @@ pub fn compute(cfg: &PanelConfig, stored: Stored, server_names: Vec<ServerName>)
             }
         }
     };
-    let (main, main_source) = match parsed("main_domain", &stored.main_domain) {
+    let list = |k: DomainKind| -> Vec<Domain> {
+        stored
+            .domains(k)
+            .iter()
+            .filter_map(|v| parsed(k.as_str(), &Some(v.clone())))
+            .collect()
+    };
+    let (mains, sub_domains, nodes) = (
+        list(DomainKind::Main),
+        list(DomainKind::Sub),
+        list(DomainKind::Node),
+    );
+    let (main, main_source) = match mains.first() {
         Some(d) => (Some(d.https_origin()), Source::Settings),
         None => (None, Source::Browser),
     };
-    let (sub, sub_source) = match parsed("sub_domain", &stored.sub_domain) {
-        Some(d) => (Some(d.https_origin()), Source::Settings),
+    let subs: Vec<Origin> = sub_domains.iter().map(Domain::https_origin).collect();
+    let (sub, sub_source) = match subs.first() {
+        Some(o) => (Some(o.clone()), Source::Settings),
         None => (
             main.clone(),
             if main.is_some() {
@@ -526,7 +630,7 @@ pub fn compute(cfg: &PanelConfig, stored: Stored, server_names: Vec<ServerName>)
             },
         ),
     };
-    let (node, node_source) = match parsed("node_domain", &stored.node_domain) {
+    let (node, node_source) = match nodes.first() {
         Some(d) => (
             Some(NodeEndpoint {
                 panel_addr: Domain {
@@ -534,12 +638,24 @@ pub fn compute(cfg: &PanelConfig, stored: Stored, server_names: Vec<ServerName>)
                     port: Some(d.port.unwrap_or(cfg.grpc.bind.port())),
                 }
                 .authority(),
-                server_name: d.host,
+                server_name: d.host.clone(),
             }),
             Source::Settings,
         ),
         None => (None, Source::Unset),
     };
+    // HTTP roles: a main name wins over a node name on the same host (the
+    // node name is for the gRPC port).
+    let mut roles = HashMap::new();
+    for (ds, role) in [
+        (&nodes, HostRole::Node),
+        (&sub_domains, HostRole::Sub),
+        (&mains, HostRole::Main),
+    ] {
+        for d in ds.iter().filter(|d| !d.is_ip()) {
+            roles.insert(request_host(&d.host), role);
+        }
+    }
     let (trust_cloudflare, trust_source) = match stored.trust_cloudflare {
         Some(v) => (v, Source::Settings),
         None => (false, Source::Default),
@@ -553,14 +669,15 @@ pub fn compute(cfg: &PanelConfig, stored: Stored, server_names: Vec<ServerName>)
             Vec::new()
         },
     };
-    let mut ask_hosts = HashSet::new();
-    for o in [&main, &sub].into_iter().flatten() {
-        let h = origin_host(o);
-        if h.parse::<IpAddr>().is_err() {
-            ask_hosts.insert(h);
-        }
-    }
-    let host_gate = (main_source == Source::Settings).then(|| ask_hosts.clone());
+    // Caddy may obtain certificates for every main and subscription name
+    // (node names are the gRPC port's: the panel's own CA).
+    let ask_hosts: HashSet<String> = roles
+        .iter()
+        .filter(|(_, r)| matches!(r, HostRole::Main | HostRole::Sub))
+        .map(|(h, _)| h.clone())
+        .collect();
+    let host_gate = main_source == Source::Settings;
+    let sub_per_user = stored.sub_domain_per_user.unwrap_or(false);
     let sans = sans(
         &server_names,
         node.as_ref().map(|n| n.server_name.as_str()).unwrap_or(""),
@@ -609,6 +726,9 @@ pub fn compute(cfg: &PanelConfig, stored: Stored, server_names: Vec<ServerName>)
         main_source,
         sub,
         sub_source,
+        subs,
+        sub_per_user,
+        roles,
         node,
         node_source,
         trust_cloudflare,
@@ -634,22 +754,46 @@ pub fn sans(history: &[ServerName], node_server_name: &str) -> Vec<String> {
     set.into_iter().collect()
 }
 
+/// D8: what a request's host may reach over HTTP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostRole {
+    /// The main domain (and IP literals, and any name while no main domain
+    /// is set): the portal, the admin prefix, install links, payment
+    /// notifications and subscriptions.
+    Main,
+    /// A subscription domain: subscriptions only.
+    Sub,
+    /// A node communication domain only: nothing over HTTP (agents dial
+    /// the gRPC port).
+    Node,
+}
+
 impl Effective {
-    /// Host gate: may a request addressed to `host` (see `request_host`)
-    /// be served? IP literals always; DNS names only the configured ones
-    /// once the main domain is set in the settings.
-    pub fn host_allowed(&self, host: Option<&str>) -> bool {
-        let Some(gate) = &self.host_gate else {
-            return true;
+    /// Host gate (R22 + D8): what `host` (see `request_host`) may reach;
+    /// None = the canonical rejection for everything. IP literals are the
+    /// main domain's (a mistyped domain never locks the admin out of
+    /// http(s)://<ip>); unknown DNS names are refused once a main domain is
+    /// set.
+    pub fn host_role(&self, host: Option<&str>) -> Option<HostRole> {
+        let Some(h) = host else {
+            return (!self.host_gate).then_some(HostRole::Main);
         };
-        match host {
-            Some(h) => h.parse::<IpAddr>().is_ok() || gate.contains(h),
-            None => false,
+        if h.parse::<IpAddr>().is_ok() {
+            return Some(HostRole::Main);
+        }
+        match self.roles.get(h) {
+            Some(r) => Some(*r),
+            None => (!self.host_gate).then_some(HostRole::Main),
         }
     }
 
+    /// May a request addressed to `host` be served at all (any role)?
+    pub fn host_allowed(&self, host: Option<&str>) -> bool {
+        self.host_role(host).is_some_and(|r| r != HostRole::Node)
+    }
+
     pub fn host_gate_on(&self) -> bool {
-        self.host_gate.is_some()
+        self.host_gate
     }
 
     /// Caddy on-demand TLS: may a certificate be obtained for `domain`?
@@ -690,12 +834,27 @@ impl Effective {
         w
     }
 
-    /// Subscription URL for a token (subscription domain, else the main
-    /// domain); None = not configured (the SPA uses its own origin).
-    /// D11: `<sub origin>/<sub_path>/<token>`.
-    pub fn sub_url(&self, sub_path: &str, token: &str) -> Option<String> {
-        self.sub
-            .as_ref()
+    /// The subscription origin of `user` (D8): the preferred subscription
+    /// domain, or with "per user" one of them chosen by rendezvous hashing
+    /// (stable; adding a domain moves only the users it wins); without
+    /// subscription domains the main domain; None = nothing configured.
+    pub fn sub_origin(&self, user: Uuid) -> Option<&Origin> {
+        if self.sub_per_user && self.subs.len() > 1 {
+            return self.subs.iter().max_by_key(|o| {
+                let mut h = Sha256::new();
+                h.update(user.as_bytes());
+                h.update(o.as_string().as_bytes());
+                let d = h.finalize();
+                u64::from_be_bytes([d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]])
+            });
+        }
+        self.sub.as_ref()
+    }
+
+    /// Subscription URL of `user`'s token (D11:
+    /// `<sub origin>/<sub_path>/<token>`); None = not configured.
+    pub fn sub_url(&self, user: Uuid, sub_path: &str, token: &str) -> Option<String> {
+        self.sub_origin(user)
             .map(|o| crate::access::sub_url(&o.as_string(), sub_path, token))
     }
 }
@@ -886,36 +1045,167 @@ pub async fn node_endpoint(
 // Mutations
 // ---------------------------------------------------------------------------
 
-/// New values (already validated/normalized; None = unset).
+/// New values (already validated/normalized; empty list / None = unset).
+/// D8: each list is preferred-first.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Values {
-    pub main_domain: Option<String>,
-    pub sub_domain: Option<String>,
-    pub node_domain: Option<String>,
+    pub main_domains: Vec<String>,
+    pub sub_domains: Vec<String>,
+    pub node_domains: Vec<String>,
+    pub sub_domain_per_user: Option<bool>,
     pub trust_cloudflare: Option<bool>,
 }
 
 impl Values {
-    fn of(s: &Stored) -> Self {
+    pub fn of(s: &Stored) -> Self {
         Self {
-            main_domain: s.main_domain.clone(),
-            sub_domain: s.sub_domain.clone(),
-            node_domain: s.node_domain.clone(),
+            main_domains: s.main_domains.clone(),
+            sub_domains: s.sub_domains.clone(),
+            node_domains: s.node_domains.clone(),
+            sub_domain_per_user: s.sub_domain_per_user,
             trust_cloudflare: s.trust_cloudflare,
+        }
+    }
+    pub fn domains(&self, k: DomainKind) -> &Vec<String> {
+        match k {
+            DomainKind::Main => &self.main_domains,
+            DomainKind::Sub => &self.sub_domains,
+            DomainKind::Node => &self.node_domains,
+        }
+    }
+    fn domains_mut(&mut self, k: DomainKind) -> &mut Vec<String> {
+        match k {
+            DomainKind::Main => &mut self.main_domains,
+            DomainKind::Sub => &mut self.sub_domains,
+            DomainKind::Node => &mut self.node_domains,
         }
     }
     fn audit(&self) -> serde_json::Value {
         json!({
-            "main_domain": self.main_domain,
-            "sub_domain": self.sub_domain,
-            "node_domain": self.node_domain,
+            "main_domains": self.main_domains,
+            "sub_domains": self.sub_domains,
+            "node_domains": self.node_domains,
+            "sub_domain_per_user": self.sub_domain_per_user,
             "trust_cloudflare": self.trust_cloudflare,
         })
     }
+
+    /// `domain` becomes the preferred entry of `k` (added if absent).
+    pub fn prefer(&mut self, k: DomainKind, domain: String) {
+        let list = self.domains_mut(k);
+        list.retain(|d| *d != domain);
+        list.insert(0, domain);
+    }
+}
+
+/// At most this many names per domain kind.
+pub const MAX_DOMAINS: usize = 16;
+
+/// Pure: the lists are consistent — parseable, no host twice in a kind, no
+/// host both a main and a subscription domain (one HTTP role per host),
+/// a bounded count. Returns the parsed lists.
+pub fn check_domains(v: &Values) -> Result<HashMap<DomainKind, Vec<Domain>>, ApiError> {
+    let mut out = HashMap::new();
+    let mut http: HashMap<String, DomainKind> = HashMap::new();
+    for k in DomainKind::ALL {
+        let list = v.domains(k);
+        if list.len() > MAX_DOMAINS {
+            return Err(bad_request!(
+                "settings.domains_too_many",
+                "{kind}：最多 {max} 个",
+                kind = k.label(),
+                max = MAX_DOMAINS
+            ));
+        }
+        let mut parsed: Vec<Domain> = Vec::new();
+        for raw in list {
+            let d = Domain::parse(raw).map_err(|e| {
+                bad_request!(
+                    "settings.domain_invalid",
+                    "{field}：{e}",
+                    field = k.label(),
+                    e = e
+                )
+            })?;
+            if parsed.iter().any(|p| p.host == d.host) {
+                return Err(bad_request!(
+                    "settings.domain_duplicate",
+                    "{kind}：{domain} 重复",
+                    kind = k.label(),
+                    domain = d.display()
+                ));
+            }
+            if k == DomainKind::Node && d.host.parse::<IpAddr>().is_ok_and(|ip| ip.is_unspecified())
+            {
+                return Err(bad_request!(
+                    "settings.node_domain_unspecified",
+                    "节点通信域名：不能是 0.0.0.0 / ::"
+                ));
+            }
+            if k != DomainKind::Node && !d.is_ip() {
+                let h = request_host(&d.host);
+                if let Some(other) = http.insert(h, k) {
+                    return Err(bad_request!(
+                        "settings.domain_conflict",
+                        "{domain} 不能同时是{a}和{b}（一个域名只能有一种用途）",
+                        domain = d.display(),
+                        a = other.label(),
+                        b = k.label()
+                    ));
+                }
+            }
+            parsed.push(d);
+        }
+        out.insert(k, parsed);
+    }
+    Ok(out)
+}
+
+/// D8: replace the `site_domains` rows by `new` (the caller holds the
+/// panel_settings row lock, which serializes every writer). Returns the
+/// node hosts that were not there before (for the certificate).
+async fn write_domains(
+    conn: &mut PgConnection,
+    before: &Values,
+    new: &Values,
+) -> Result<Vec<String>, ApiError> {
+    let parsed = check_domains(new)?;
+    let mut added_nodes = Vec::new();
+    // Removals first (a host may move between kinds), then the preferred
+    // flags, then the entries.
+    for k in DomainKind::ALL {
+        sqlx::query("DELETE FROM site_domains WHERE kind = $1 AND NOT (domain = ANY($2))")
+            .bind(k.as_str())
+            .bind(new.domains(k))
+            .execute(&mut *conn)
+            .await?;
+    }
+    sqlx::query("UPDATE site_domains SET preferred = false WHERE preferred")
+        .execute(&mut *conn)
+        .await?;
+    for k in DomainKind::ALL {
+        for (i, d) in parsed.get(&k).into_iter().flatten().enumerate() {
+            sqlx::query(
+                "INSERT INTO site_domains (kind, domain, host, preferred) VALUES ($1, $2, $3, $4) \
+                 ON CONFLICT (kind, host) DO UPDATE SET domain = EXCLUDED.domain, \
+                 preferred = EXCLUDED.preferred",
+            )
+            .bind(k.as_str())
+            .bind(d.authority())
+            .bind(request_host(&d.host))
+            .bind(i == 0)
+            .execute(&mut *conn)
+            .await?;
+            if k == DomainKind::Node && !before.node_domains.contains(&d.authority()) {
+                added_nodes.push(d.host.clone());
+            }
+        }
+    }
+    Ok(added_nodes)
 }
 
 /// Write the settings (optimistic: `expected_version` must be current, else
-/// 409). A node domain is added to the gRPC server names. Audited as
+/// 409). Every node domain is added to the gRPC server names. Audited as
 /// `settings.update`. Returns the new row (unchanged values: no write).
 pub async fn apply_update(
     conn: &mut PgConnection,
@@ -934,24 +1224,16 @@ pub async fn apply_update(
     if &before == new {
         return Ok(cur);
     }
-    let row: Stored = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "UPDATE panel_settings SET main_domain = $1, sub_domain = $2, node_domain = $3, \
-             trust_cloudflare = $4, version = version + 1, updated_at = now() \
-         WHERE id = 1 RETURNING {STORED_COLS}"
-    )))
-    .bind(&new.main_domain)
-    .bind(&new.sub_domain)
-    .bind(&new.node_domain)
+    sqlx::query(
+        "UPDATE panel_settings SET sub_domain_per_user = $1, trust_cloudflare = $2, \
+             version = version + 1, updated_at = now() WHERE id = 1",
+    )
+    .bind(new.sub_domain_per_user)
     .bind(new.trust_cloudflare)
-    .fetch_one(&mut *conn)
+    .execute(&mut *conn)
     .await?;
-    if new.node_domain != before.node_domain
-        && let Some(d) = new
-            .node_domain
-            .as_deref()
-            .and_then(|d| Domain::parse(d).ok())
-    {
-        record_server_name(conn, &d.host, "settings").await?;
+    for host in write_domains(conn, &before, new).await? {
+        record_server_name(conn, &host, "settings").await?;
     }
     crate::audit::record(
         conn,
@@ -963,7 +1245,7 @@ pub async fn apply_update(
         Some(new.audit()),
     )
     .await?;
-    Ok(row)
+    Ok(read_stored(conn, false).await?)
 }
 
 /// W12: new latency-test values (validated; None = unset → default).
@@ -1971,14 +2253,6 @@ pub async fn apply_remove_server_name(
 // DNS check
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Kind {
-    Main,
-    Sub,
-    Node,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct AddrView {
     pub ip: IpAddr,
@@ -2013,7 +2287,7 @@ pub async fn resolve(host: &str) -> Result<Vec<IpAddr>, String> {
 }
 
 /// Pure verdict on resolved addresses.
-pub fn judge(kind: Kind, domain: &Domain, addrs: &[IpAddr], cloudflare: &[Cidr]) -> DnsCheck {
+pub fn judge(kind: DomainKind, domain: &Domain, addrs: &[IpAddr], cloudflare: &[Cidr]) -> DnsCheck {
     let addresses: Vec<AddrView> = addrs
         .iter()
         .map(|ip| AddrView {
@@ -2029,7 +2303,7 @@ pub fn judge(kind: Kind, domain: &Domain, addrs: &[IpAddr], cloudflare: &[Cidr])
         .collect::<Vec<_>>()
         .join(", ");
     let (level, message) = match kind {
-        Kind::Node if any_cf => (
+        DomainKind::Node if any_cf => (
             "block",
             format!(
                 "{} 解析到 Cloudflare 的地址（{list}），说明开启了橙色云朵（代理）。节点 agent 与面板之间是 \
@@ -2038,21 +2312,21 @@ pub fn judge(kind: Kind, domain: &Domain, addrs: &[IpAddr], cloudflare: &[Cidr])
                 domain.display()
             ),
         ),
-        Kind::Node => (
+        DomainKind::Node => (
             "ok",
             format!(
                 "{} 解析到 {list}，未经过 Cloudflare 代理（灰色云朵），可以用于节点通信。",
                 domain.display()
             ),
         ),
-        Kind::Sub if all_cf => (
+        DomainKind::Sub if all_cf => (
             "ok",
             format!(
                 "{} 解析到 Cloudflare（{list}），已经过橙色云朵代理。",
                 domain.display()
             ),
         ),
-        Kind::Sub => (
+        DomainKind::Sub => (
             "warn",
             format!(
                 "{} 解析到 {list}，看起来没有经过 Cloudflare 代理（橙色云朵）。如果你打算用 Cloudflare \
@@ -2060,7 +2334,7 @@ pub fn judge(kind: Kind, domain: &Domain, addrs: &[IpAddr], cloudflare: &[Cidr])
                 domain.display()
             ),
         ),
-        Kind::Main => (
+        DomainKind::Main => (
             "ok",
             format!(
                 "{} 解析到 {list}{}。",
@@ -2081,7 +2355,7 @@ pub fn judge(kind: Kind, domain: &Domain, addrs: &[IpAddr], cloudflare: &[Cidr])
     }
 }
 
-async fn check(kind: Kind, domain: &Domain, cloudflare: &[Cidr]) -> DnsCheck {
+async fn check(kind: DomainKind, domain: &Domain, cloudflare: &[Cidr]) -> DnsCheck {
     match resolve(&domain.host).await {
         Ok(addrs) => judge(kind, domain, &addrs, cloudflare),
         Err(e) => DnsCheck {
@@ -2100,12 +2374,34 @@ async fn check(kind: Kind, domain: &Domain, cloudflare: &[Cidr]) -> DnsCheck {
 // Admin API
 // ---------------------------------------------------------------------------
 
+/// D8: one name of a list.
+#[derive(Serialize)]
+pub struct DomainEntry {
+    pub domain: String,
+    /// As people read it (IDN in Unicode).
+    pub display: String,
+    pub preferred: bool,
+}
+
+fn entries(list: &[String]) -> Vec<DomainEntry> {
+    list.iter()
+        .enumerate()
+        .map(|(i, d)| DomainEntry {
+            display: display_of(&Some(d.clone())).unwrap_or_default(),
+            domain: d.clone(),
+            preferred: i == 0,
+        })
+        .collect()
+}
+
 #[derive(Serialize)]
 pub struct DomainView {
-    /// Stored value (None = not set in the settings).
+    /// The preferred entry (None = none set).
     pub value: Option<String>,
-    /// Stored value as people read it (IDN in Unicode).
+    /// The preferred entry as people read it (IDN in Unicode).
     pub display: Option<String>,
+    /// D8: every entry, the preferred one first.
+    pub domains: Vec<DomainEntry>,
     /// Effective origin ("https://host[:port]"), None = browser origin.
     pub effective: Option<String>,
     pub source: Source,
@@ -2115,6 +2411,9 @@ pub struct DomainView {
 pub struct NodeDomainView {
     pub value: Option<String>,
     pub display: Option<String>,
+    /// D8: every entry, the preferred one first (new bootstrap files and
+    /// install scripts use the preferred one).
+    pub domains: Vec<DomainEntry>,
     /// None = not set: no enrollment token can be issued.
     pub panel_addr: Option<String>,
     pub server_name: Option<String>,
@@ -2149,6 +2448,8 @@ pub struct SettingsView {
     pub updated_at: Option<DateTime<Utc>>,
     pub main: DomainView,
     pub sub: DomainView,
+    /// D8: each user's link on one of the subscription domains.
+    pub sub_domain_per_user: bool,
     pub node: NodeDomainView,
     pub trust_cloudflare: TrustView,
     pub server_names: Vec<ServerNameView>,
@@ -2350,20 +2651,24 @@ pub async fn view(state: &AppState, mut warnings: Vec<String>) -> Result<Setting
         version: s.version,
         updated_at: s.updated_at,
         main: DomainView {
-            value: s.main_domain.clone(),
-            display: display_of(&s.main_domain),
+            value: s.main_domains.first().cloned(),
+            display: display_of(&s.main_domains.first().cloned()),
+            domains: entries(&s.main_domains),
             effective: eff.main.as_ref().map(Origin::as_string),
             source: eff.main_source,
         },
         sub: DomainView {
-            value: s.sub_domain.clone(),
-            display: display_of(&s.sub_domain),
+            value: s.sub_domains.first().cloned(),
+            display: display_of(&s.sub_domains.first().cloned()),
+            domains: entries(&s.sub_domains),
             effective: eff.sub.as_ref().map(Origin::as_string),
             source: eff.sub_source,
         },
+        sub_domain_per_user: eff.sub_per_user,
         node: NodeDomainView {
-            value: s.node_domain.clone(),
-            display: display_of(&s.node_domain),
+            value: s.node_domains.first().cloned(),
+            display: display_of(&s.node_domains.first().cloned()),
+            domains: entries(&s.node_domains),
             panel_addr: eff.node.as_ref().map(|n| n.panel_addr.clone()),
             server_name: eff.node.as_ref().map(|n| n.server_name.clone()),
             source: eff.node_source,
@@ -2403,10 +2708,14 @@ pub async fn get_settings(
 pub struct UpdateReq {
     /// The version the form was loaded at (409 if someone saved since).
     pub version: i64,
-    /// PUT replaces all four: null or "" = not set (built-in behaviour).
-    pub main_domain: Option<String>,
-    pub sub_domain: Option<String>,
-    pub node_domain: Option<String>,
+    /// D8: PUT replaces the three lists, each preferred-first ([] = none;
+    /// blank entries are skipped).
+    pub main_domains: Vec<String>,
+    pub sub_domains: Vec<String>,
+    pub node_domains: Vec<String>,
+    /// Each user's link on one of the subscription domains (null = off).
+    #[serde(default)]
+    pub sub_domain_per_user: Option<bool>,
     pub trust_cloudflare: Option<bool>,
     /// Save a node domain that resolves to Cloudflare anyway.
     #[serde(default)]
@@ -2414,20 +2723,232 @@ pub struct UpdateReq {
     /// Save a main domain although the current address will be refused.
     #[serde(default)]
     pub confirm_host_change: bool,
+    /// The console showed what removing names affects
+    /// (`POST /settings/domains/impact`) and the admin confirmed.
+    #[serde(default)]
+    pub confirm_removal: bool,
 }
 
-fn norm(field: &str, v: &Option<String>) -> Result<Option<Domain>, ApiError> {
-    match v.as_deref().map(str::trim) {
-        None | Some("") => Ok(None),
-        Some(s) => Domain::parse(s).map(Some).map_err(|e| {
-            bad_request!(
-                "settings.domain_invalid",
-                "{field}：{e}",
-                field = field,
-                e = e
-            )
-        }),
+/// Pure: normalize the three lists of a request (trimmed, blanks skipped,
+/// parsed, stored form).
+pub fn request_values(
+    main: &[String],
+    sub: &[String],
+    node: &[String],
+    sub_domain_per_user: Option<bool>,
+    trust_cloudflare: Option<bool>,
+) -> Result<Values, ApiError> {
+    let mut v = Values {
+        sub_domain_per_user,
+        trust_cloudflare,
+        ..Values::default()
+    };
+    for (k, raw) in [
+        (DomainKind::Main, main),
+        (DomainKind::Sub, sub),
+        (DomainKind::Node, node),
+    ] {
+        let list = v.domains_mut(k);
+        for r in raw.iter().map(|r| r.trim()).filter(|r| !r.is_empty()) {
+            let d = Domain::parse(r).map_err(|e| {
+                bad_request!(
+                    "settings.domain_invalid",
+                    "{field}：{e}",
+                    field = k.label(),
+                    e = e
+                )
+            })?;
+            list.push(d.authority());
+        }
     }
+    check_domains(&v)?;
+    Ok(v)
+}
+
+/// What removing names would affect (`removal_impact`).
+#[derive(Debug, Serialize)]
+pub struct RemovedDomain {
+    pub kind: DomainKind,
+    pub domain: String,
+    pub preferred: bool,
+    /// What stops working on it, or moves elsewhere. `what`:
+    /// `portal_console` (main: the portal, the console and the admin API no
+    /// longer answer on it), `links` (main, preferred: mail, install and
+    /// payment links use the next preferred name — `count` 0 = none left),
+    /// `pending_orders` (main, preferred: unpaid orders whose payment
+    /// notifications go to it; polling still settles them),
+    /// `install_links` (main: unused install commands on it; node: unused
+    /// bootstrap files/install scripts dialling it), `subscription_links`
+    /// (sub: users whose link is on it: their old link stops working),
+    /// `nodes` (node: enrolled agents dialling it — they keep working, the
+    /// certificate keeps the name; `detail` = their names).
+    pub places: Vec<Place>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Place {
+    pub what: &'static str,
+    pub count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// D8: what removing the names that `new` drops from `cur` affects.
+pub async fn removal_impact(
+    conn: &mut PgConnection,
+    cfg: &PanelConfig,
+    cur: &Stored,
+    new: &Values,
+) -> Result<Vec<RemovedDomain>, ApiError> {
+    let mut out = Vec::new();
+    let after = compute(
+        cfg,
+        Stored {
+            main_domains: new.main_domains.clone(),
+            sub_domains: new.sub_domains.clone(),
+            node_domains: new.node_domains.clone(),
+            sub_domain_per_user: new.sub_domain_per_user,
+            ..cur.clone()
+        },
+        Vec::new(),
+    );
+    let before = compute(cfg, cur.clone(), Vec::new());
+    for k in DomainKind::ALL {
+        for (i, d) in cur.domains(k).iter().enumerate() {
+            if new.domains(k).contains(d) {
+                continue;
+            }
+            let Ok(parsed) = Domain::parse(d) else {
+                continue;
+            };
+            let preferred = i == 0;
+            let mut places = Vec::new();
+            match k {
+                DomainKind::Main => {
+                    places.push(Place {
+                        what: "portal_console",
+                        count: 1,
+                        detail: None,
+                    });
+                    if preferred {
+                        places.push(Place {
+                            what: "links",
+                            count: i64::from(after.main.is_some()),
+                            detail: after.main.as_ref().map(Origin::as_string),
+                        });
+                        let pending: i64 = sqlx::query_scalar(
+                            "SELECT count(*) FROM orders WHERE status = 'pending' \
+                             AND payment_method_id IS NOT NULL",
+                        )
+                        .fetch_one(&mut *conn)
+                        .await?;
+                        places.push(Place {
+                            what: "pending_orders",
+                            count: pending,
+                            detail: None,
+                        });
+                    }
+                    let links: i64 = sqlx::query_scalar(
+                        "SELECT count(*) FROM server_enrollments WHERE install_origin = $1 \
+                         AND used_at IS NULL AND expires_at > now()",
+                    )
+                    .bind(parsed.https_origin().as_string())
+                    .fetch_one(&mut *conn)
+                    .await?;
+                    places.push(Place {
+                        what: "install_links",
+                        count: links,
+                        detail: None,
+                    });
+                }
+                DomainKind::Sub => {
+                    let users: Vec<Uuid> = sqlx::query_scalar(
+                        "SELECT id FROM users WHERE role = 'user' AND sub_token_hash IS NOT NULL",
+                    )
+                    .fetch_all(&mut *conn)
+                    .await?;
+                    let origin = parsed.https_origin().as_string();
+                    let count = users
+                        .iter()
+                        .filter(|u| {
+                            before
+                                .sub_origin(**u)
+                                .is_some_and(|o| o.as_string() == origin)
+                        })
+                        .count();
+                    places.push(Place {
+                        what: "subscription_links",
+                        count: i64::try_from(count).unwrap_or(i64::MAX),
+                        detail: None,
+                    });
+                }
+                DomainKind::Node => {
+                    let nodes = nodes_using(conn, &parsed.host).await?;
+                    places.push(Place {
+                        what: "nodes",
+                        count: i64::try_from(nodes.len()).unwrap_or(i64::MAX),
+                        detail: (!nodes.is_empty()).then(|| {
+                            nodes
+                                .iter()
+                                .map(|n| n.name.clone())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        }),
+                    });
+                    let pending: i64 = sqlx::query_scalar(
+                        "SELECT count(*) FROM server_enrollments WHERE server_name = $1 \
+                         AND used_at IS NULL AND expires_at > now()",
+                    )
+                    .bind(&parsed.host)
+                    .fetch_one(&mut *conn)
+                    .await?;
+                    places.push(Place {
+                        what: "install_links",
+                        count: pending,
+                        detail: None,
+                    });
+                }
+            }
+            out.push(RemovedDomain {
+                kind: k,
+                domain: d.clone(),
+                preferred,
+                places,
+            });
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImpactReq {
+    pub main_domains: Vec<String>,
+    pub sub_domains: Vec<String>,
+    pub node_domains: Vec<String>,
+    #[serde(default)]
+    pub sub_domain_per_user: Option<bool>,
+}
+
+/// POST /api/v1/settings/domains/impact (admin): the lists a save would
+/// write → `{removed: [RemovedDomain]}` (nothing changes).
+pub async fn domains_impact(
+    State(state): State<AppState>,
+    user: AuthUser,
+    ApiJson(req): ApiJson<ImpactReq>,
+) -> Result<Json<Value>, ApiError> {
+    user.require_admin()?;
+    let new = request_values(
+        &req.main_domains,
+        &req.sub_domains,
+        &req.node_domains,
+        req.sub_domain_per_user,
+        None,
+    )?;
+    let mut conn = state.pg().acquire().await?;
+    let cur = read_stored(&mut conn, false).await?;
+    let removed = removal_impact(&mut conn, state.cfg(), &cur, &new).await?;
+    Ok(Json(json!({ "removed": removed })))
 }
 
 /// PUT /api/v1/settings (admin).
@@ -2439,66 +2960,76 @@ pub async fn put_settings(
     ApiJson(req): ApiJson<UpdateReq>,
 ) -> Result<Json<SettingsView>, ApiError> {
     user.require_admin()?;
-    let main = norm("主域名", &req.main_domain)?;
-    let sub = norm("订阅域名", &req.sub_domain)?;
-    let node = norm("节点通信域名", &req.node_domain)?;
-    if let Some(d) = &node
-        && d.host.parse::<IpAddr>().is_ok_and(|ip| ip.is_unspecified())
-    {
-        return Err(bad_request!(
-            "settings.node_domain_unspecified",
-            "节点通信域名：不能是 0.0.0.0 / ::"
-        ));
-    }
-    let new = Values {
-        main_domain: main.as_ref().map(Domain::authority),
-        sub_domain: sub.as_ref().map(Domain::authority),
-        node_domain: node.as_ref().map(Domain::authority),
-        trust_cloudflare: req.trust_cloudflare,
-    };
+    let new = request_values(
+        &req.main_domains,
+        &req.sub_domains,
+        &req.node_domains,
+        req.sub_domain_per_user,
+        req.trust_cloudflare,
+    )?;
     let live = state.settings();
     let current = live.get();
     let mut warnings = Vec::new();
-    // DNS (network I/O) before the transaction, only for changed values.
-    if let Some(d) = &node
-        && current.stored.node_domain.as_deref() != Some(d.authority().as_str())
-    {
-        let c = check(Kind::Node, d, &current.cloudflare).await;
-        match c.level {
-            "block" if !req.force_node_cloudflare => {
-                return Err(crate::auth::api_error!(
-                    UNPROCESSABLE_ENTITY,
-                    "settings.node_domain_cloudflare",
-                    "{detail}",
-                    detail = c.message
-                ));
+    // D8: removing names needs the confirmation the impact preview leads to.
+    let removed: Vec<String> = DomainKind::ALL
+        .into_iter()
+        .flat_map(|k| {
+            current
+                .stored
+                .domains(k)
+                .iter()
+                .filter(|d| !new.domains(k).contains(d))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    if !removed.is_empty() && !req.confirm_removal {
+        return Err(conflict!(
+            "settings.domain_removal_unconfirmed",
+            "删除域名 {domains} 会影响正在使用它的地方：请先查看影响（POST /settings/domains/impact）再确认",
+            domains = removed.join(", ")
+        ));
+    }
+    // DNS (network I/O) before the transaction, only for new names.
+    for k in [DomainKind::Node, DomainKind::Sub] {
+        for raw in new.domains(k) {
+            if current.stored.domains(k).contains(raw) {
+                continue;
             }
-            "ok" => {}
-            _ => warnings.push(c.message),
+            let Ok(d) = Domain::parse(raw) else {
+                continue;
+            };
+            let c = check(k, &d, &current.cloudflare).await;
+            match (k, c.level) {
+                (DomainKind::Node, "block") if !req.force_node_cloudflare => {
+                    return Err(crate::auth::api_error!(
+                        UNPROCESSABLE_ENTITY,
+                        "settings.node_domain_cloudflare",
+                        "{detail}",
+                        detail = c.message
+                    ));
+                }
+                (_, "ok") => {}
+                _ => warnings.push(c.message),
+            }
         }
     }
-    if let Some(d) = &sub
-        && current.stored.sub_domain.as_deref() != Some(d.authority().as_str())
-    {
-        let c = check(Kind::Sub, d, &current.cloudflare).await;
-        if c.level != "ok" {
-            warnings.push(c.message);
-        }
-    }
-    // Host gate: would the address this admin uses right now be refused?
-    if main.is_some() && !req.confirm_host_change {
+    // Host gate: would the address this admin uses right now lose the
+    // console?
+    if !new.main_domains.is_empty() && !req.confirm_host_change {
         let stored = Stored {
-            main_domain: new.main_domain.clone(),
-            sub_domain: new.sub_domain.clone(),
+            main_domains: new.main_domains.clone(),
+            sub_domains: new.sub_domains.clone(),
+            node_domains: new.node_domains.clone(),
             ..Stored::default()
         };
         let next = compute(state.cfg(), stored, Vec::new());
         let host = host_of(&headers, &uri);
-        if !next.host_allowed(host.as_deref()) {
+        if next.host_role(host.as_deref()) != Some(HostRole::Main) {
             return Err(crate::auth::api_error!(
                 UNPROCESSABLE_ENTITY,
                 "settings.host_gate",
-                "保存后面板只接受主域名/订阅域名（以及 IP 地址）的访问，当前访问地址 {host} 将被拒绝。\
+                "保存后后台只在主域名（以及 IP 地址）上提供，当前访问地址 {host} 将被拒绝。\
                  请确认主域名已解析并能打开，再勾选确认后保存。",
                 host = host.unwrap_or_default()
             ));
@@ -2589,7 +3120,7 @@ pub async fn put_probe(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DnsReq {
-    pub kind: Kind,
+    pub kind: DomainKind,
     pub domain: String,
 }
 
@@ -2698,7 +3229,13 @@ pub async fn serve_ask(
 /// `config check`).
 fn describe_lines(eff: &Effective) -> Vec<String> {
     let s = &eff.stored;
-    let show = |v: &Option<String>| v.clone().unwrap_or_else(|| "(not set)".into());
+    let show = |v: &Vec<String>| {
+        if v.is_empty() {
+            "(not set)".to_string()
+        } else {
+            v.join(", ")
+        }
+    };
     let origin = |o: &Option<Origin>| {
         o.as_ref()
             .map(Origin::as_string)
@@ -2707,21 +3244,22 @@ fn describe_lines(eff: &Effective) -> Vec<String> {
     let mut l = vec![
         format!("settings version: {}", s.version),
         format!(
-            "main domain:      {}  -> {} [{:?}]",
-            show(&s.main_domain),
+            "main domains:     {}  -> {} [{:?}]",
+            show(&s.main_domains),
             origin(&eff.main),
             eff.main_source
         ),
         format!(
-            "sub domain:       {}  -> {} [{:?}]",
-            show(&s.sub_domain),
+            "sub domains:      {}  -> {} [{:?}]{}",
+            show(&s.sub_domains),
             origin(&eff.sub),
-            eff.sub_source
+            eff.sub_source,
+            if eff.sub_per_user { " (per user)" } else { "" }
         ),
         match &eff.node {
             Some(n) => format!(
-                "node domain:      {}  -> {} / {} [{:?}]",
-                show(&s.node_domain),
+                "node domains:     {}  -> {} / {} [{:?}]",
+                show(&s.node_domains),
                 n.panel_addr,
                 n.server_name,
                 eff.node_source
@@ -2897,9 +3435,9 @@ pub async fn cli_unset(cfg: &PanelConfig, pg: &sqlx::PgPool, field: &str) -> any
         let cur = read_stored(&mut tx, false).await?;
         let mut new = Values::of(&cur);
         match field {
-            "main" => new.main_domain = None,
-            "sub" => new.sub_domain = None,
-            "node" => new.node_domain = None,
+            "main" => new.main_domains.clear(),
+            "sub" => new.sub_domains.clear(),
+            "node" => new.node_domains.clear(),
             "trust-cloudflare" => new.trust_cloudflare = None,
             "all" => new = Values::default(),
             _ => anyhow::bail!(
@@ -2917,7 +3455,8 @@ pub async fn cli_unset(cfg: &PanelConfig, pg: &sqlx::PgPool, field: &str) -> any
 
 /// `akari settings set <main|sub|node|trust-cloudflare> <value>` (audited,
 /// actor cli): headless setup, e.g. the node domain before the first
-/// login. No DNS check here (the console does it).
+/// login. D8: the name becomes its list's preferred entry (added if
+/// absent; the others stay). No DNS check here (the console does it).
 pub async fn cli_set(
     _cfg: &PanelConfig,
     pg: &sqlx::PgPool,
@@ -2933,14 +3472,14 @@ pub async fn cli_set(
             .map_err(|e| anyhow::anyhow!("{field}: {e}"))
     };
     match field {
-        "main" => new.main_domain = Some(domain()?),
-        "sub" => new.sub_domain = Some(domain()?),
+        "main" => new.prefer(DomainKind::Main, domain()?),
+        "sub" => new.prefer(DomainKind::Sub, domain()?),
         "node" => {
             let d = Domain::parse(value).map_err(|e| anyhow::anyhow!("node: {e}"))?;
             if d.host.parse::<IpAddr>().is_ok_and(|ip| ip.is_unspecified()) {
                 anyhow::bail!("node: 0.0.0.0 / :: is not an address agents can dial");
             }
-            new.node_domain = Some(d.authority());
+            new.prefer(DomainKind::Node, d.authority());
         }
         "trust-cloudflare" => {
             new.trust_cloudflare = Some(
@@ -3019,9 +3558,16 @@ fn legacy_value(
         *slot = Some(v);
         true
     }
+    fn put_first(list: &mut Vec<String>, v: String) -> bool {
+        if !list.is_empty() {
+            return false;
+        }
+        list.push(v);
+        true
+    }
     let domain = |v: &str| Domain::parse(v).map(|d| d.authority());
     Ok(match key {
-        "web.sub_domain" => put(&mut new.sub_domain, domain(&get!(String))?),
+        "web.sub_domain" => put_first(&mut new.sub_domains, domain(&get!(String))?),
         "web.trust_cloudflare" => put(&mut new.trust_cloudflare, get!(bool)),
         "web.cloudflare_ranges" => {
             let list: Vec<String> = get!(Vec<String>);
@@ -3068,7 +3614,7 @@ fn legacy_value(
             {
                 return Err("0.0.0.0 / :: is not an address agents can dial".into());
             }
-            put(&mut new.node_domain, v)
+            put_first(&mut new.node_domains, v)
         }
         "install.public_url" => {
             let o = crate::nodeinstall::parse_origin(&get!(String))?;
@@ -3079,7 +3625,7 @@ fn legacy_value(
                 Some(p) if p != 443 => format!("{}:{p}", o.host),
                 _ => o.host.clone(),
             };
-            put(&mut new.main_domain, domain(&auth)?)
+            put_first(&mut new.main_domains, domain(&auth)?)
         }
         "install.tls_pin" => {
             let v = get!(String);
@@ -3341,20 +3887,17 @@ async fn import_tx(
         record_server_name(&mut tx, n, "config").await?;
     }
     if new != cur {
-        report.host_gate_on = cur.main_domain.is_none() && new.main_domain.is_some();
+        report.host_gate_on = cur.main_domains.is_empty() && !new.main_domains.is_empty();
         sqlx::query(
-            "UPDATE panel_settings SET main_domain = $1, sub_domain = $2, node_domain = $3, \
-                 trust_cloudflare = $4, probe_interval_secs = $5, probe_urls = $6, \
-                 probe_panel_tcp = $7, cloudflare_ranges = $8, install_tls_pin = $9, \
-                 install_fallback_url = $10, acme_directory_url = $11, acme_email = $12, \
-                 audit_retention_days = $13, traffic_daily_retention_days = $14, \
-                 remove_mode = $15, extra_release_keys = $16, \
+            "UPDATE panel_settings SET \
+                 trust_cloudflare = $1, probe_interval_secs = $2, probe_urls = $3, \
+                 probe_panel_tcp = $4, cloudflare_ranges = $5, install_tls_pin = $6, \
+                 install_fallback_url = $7, acme_directory_url = $8, acme_email = $9, \
+                 audit_retention_days = $10, traffic_daily_retention_days = $11, \
+                 remove_mode = $12, extra_release_keys = $13, \
                  version = version + 1, updated_at = now() \
              WHERE id = 1",
         )
-        .bind(&new.main_domain)
-        .bind(&new.sub_domain)
-        .bind(&new.node_domain)
         .bind(new.trust_cloudflare)
         .bind(new.probe_interval_secs)
         .bind(&new.probe_urls)
@@ -3370,6 +3913,12 @@ async fn import_tx(
         .bind(&new.extra_release_keys)
         .execute(&mut *tx)
         .await?;
+        let added = write_domains(&mut tx, &Values::of(&cur), &Values::of(&new))
+            .await
+            .map_err(|e| anyhow::anyhow!("imported domains: {}", e.message()))?;
+        for host in added {
+            record_server_name(&mut tx, &host, "config").await?;
+        }
     }
     if new_tg != cur_tg {
         sqlx::query(

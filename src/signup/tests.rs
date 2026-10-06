@@ -19,7 +19,7 @@ const ORIGIN: &str = "https://panel.example";
 async fn state(db: &TestDb) -> AppState {
     let st = AppState::for_test(db.pool.clone()).await;
     let host = ORIGIN.trim_start_matches("https://");
-    db.settings(&st, &format!("main_domain = '{host}'")).await;
+    db.domains(&st, "main", &[host]).await;
     st
 }
 

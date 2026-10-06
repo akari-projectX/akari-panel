@@ -759,7 +759,7 @@ async fn sub_url_of(
     let Some(crate::sub::Stored::Ready(token)) = stored else {
         return Ok(None);
     };
-    Ok(state.sub_url(&token))
+    Ok(state.sub_url(user, &token))
 }
 
 /// Apply the action to one user (inside the chunk's savepoint). Business

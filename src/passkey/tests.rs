@@ -183,7 +183,7 @@ const ORIGIN: &str = "https://panel.example";
 
 async fn state_with_domain(db: &TestDb, main: &str) -> AppState {
     let st = AppState::for_test(db.pool.clone()).await;
-    db.settings(&st, &format!("main_domain = '{main}'")).await;
+    db.domains(&st, "main", &[main]).await;
     st
 }
 
@@ -745,7 +745,7 @@ async fn main_domain_change_and_unavailable() {
         StatusCode::FORBIDDEN
     );
 
-    db.settings(&st, "main_domain = 'new.example'").await;
+    db.domains(&st, "main", &["new.example"]).await;
     let v = c.get("/test/api/v1/me/passkeys").await.json();
     assert_eq!(
         (v["rp_id"].clone(), v["passkeys"][0]["current"].clone()),
@@ -767,7 +767,7 @@ async fn main_domain_change_and_unavailable() {
 
     // An IP main domain: no passkeys; public endpoints are the canonical
     // rejection, account endpoints a coded 409.
-    db.settings(&st, "main_domain = '127.0.0.1:8080'").await;
+    db.domains(&st, "main", &["127.0.0.1:8080"]).await;
     let canonical = probe.get("/test/no-such-route").await;
     for p in ["/test/auth/passkey/options", "/test/auth/passkey/login"] {
         let r = probe.post(p, json!({})).await;

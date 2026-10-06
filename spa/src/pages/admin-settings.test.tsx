@@ -26,11 +26,13 @@ const view = (over: Partial<SettingsView> = {}): SettingsView => ({
   version: 3,
   updated_at: null,
   site_name: null,
-  main: { value: null, display: null, effective: null, source: "browser" },
-  sub: { value: null, display: null, effective: null, source: "browser" },
+  main: { value: null, display: null, domains: [], effective: null, source: "browser" },
+  sub: { value: null, display: null, domains: [], effective: null, source: "browser" },
+  sub_domain_per_user: false,
   node: {
     value: "127.0.0.1",
     display: "127.0.0.1",
+    domains: [{ domain: "127.0.0.1", display: "127.0.0.1", preferred: true }],
     panel_addr: "127.0.0.1:8443",
     server_name: "127.0.0.1",
     source: "settings",
@@ -104,11 +106,12 @@ describe("host helpers", () => {
     expect(hostOf("[2001:db8::1]:443")).toBe("2001:db8::1");
   });
   it("matches the backend host gate", () => {
-    expect(hostStillAllowed("old.example.com", "", "")).toBe(true);
-    expect(hostStillAllowed("203.0.113.5", "panel.example.com", "")).toBe(true);
-    expect(hostStillAllowed("panel.example.com", "panel.example.com:8443", "")).toBe(true);
-    expect(hostStillAllowed("sub.example.com", "panel.example.com", "sub.example.com")).toBe(true);
-    expect(hostStillAllowed("old.example.com", "panel.example.com", "sub.example.com")).toBe(false);
+    expect(hostStillAllowed("old.example.com", [])).toBe(true);
+    expect(hostStillAllowed("203.0.113.5", ["panel.example.com"])).toBe(true);
+    expect(hostStillAllowed("panel.example.com", ["panel.example.com:8443"])).toBe(true);
+    expect(hostStillAllowed("alt.example.com", ["panel.example.com", "alt.example.com"])).toBe(true);
+    // D8: a subscription domain serves subscriptions only.
+    expect(hostStillAllowed("sub.example.com", ["panel.example.com"])).toBe(false);
   });
 });
 
@@ -131,13 +134,16 @@ describe("AdminSettings", () => {
     const put = calls.find((c) => c.method === "PUT");
     expect(put?.body).toEqual({
       version: 3,
-      main_domain: null,
-      sub_domain: "sub.example.com",
-      node_domain: "127.0.0.1",
+      main_domains: [],
+      sub_domains: ["sub.example.com"],
+      node_domains: ["127.0.0.1"],
+      sub_domain_per_user: false,
       trust_cloudflare: true,
       force_node_cloudflare: false,
       confirm_host_change: false,
+      confirm_removal: false,
     });
+    expect(calls.some((c) => c.path === "/settings/domains/impact")).toBe(false);
   });
 
   it("blocks an orange-clouded node domain until forced, and confirms the change", async () => {
@@ -149,6 +155,16 @@ describe("AdminSettings", () => {
         addresses: [{ ip: "104.16.0.1", cloudflare: true }],
         level: "block",
         message: "解析到 Cloudflare 的地址，说明开启了橙色云朵",
+      },
+      "POST /settings/domains/impact": {
+        removed: [
+          {
+            kind: "node",
+            domain: "127.0.0.1",
+            preferred: true,
+            places: [{ what: "nodes", count: 2, detail: "hk-1, hk-2" }],
+          },
+        ],
       },
       "PUT /settings": () => ({ status: 200, body: view({ version: 4 }) }),
     });
@@ -164,6 +180,9 @@ describe("AdminSettings", () => {
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining("已经注册的节点继续使用"));
     const put = calls.find((c) => c.method === "PUT");
     expect((put?.body as { force_node_cloudflare: boolean }).force_node_cloudflare).toBe(true);
+    // D8: the old node name is dropped: its impact was confirmed.
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("2 个已注册的节点用它连接面板"));
+    expect(put?.body).toMatchObject({ node_domains: ["node.example.com"], confirm_removal: true });
   });
 
   it("requires confirming a main domain that refuses the current address", async () => {
@@ -346,7 +365,15 @@ describe("W25: settings that left panel.toml", () => {
   it("shows an unset node domain and the obsolete panel.toml keys", async () => {
     fakeApi({
       "GET /settings": view({
-        node: { value: null, display: null, panel_addr: null, server_name: null, source: "unset", default_port: 9443 },
+        node: {
+          value: null,
+          display: null,
+          domains: [],
+          panel_addr: null,
+          server_name: null,
+          source: "unset",
+          default_port: 9443,
+        },
         obsolete_config_keys: ["grpc.advertise", "payments.*"],
       }),
     });

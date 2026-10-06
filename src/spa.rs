@@ -5,10 +5,8 @@
 //! independent Vite builds (spa/vite.config.ts), so nothing of the console
 //! ships to users; spa/scripts/check-bundles.mjs and smoke assert that.
 
-use std::net::IpAddr;
-
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, HeaderValue, Uri, header};
+use axum::http::{HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use rust_embed::RustEmbed;
 
@@ -70,11 +68,10 @@ pub async fn asset(Path((_, rel)): Path<(String, String)>) -> Response {
 /// console is as invisible as an unknown path.
 pub async fn admin_index(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    uri: Uri,
     session: Result<AuthUser, ApiError>,
 ) -> Response {
-    if !console_host(&state, &headers, &uri) || !is_admin(&session) {
+    // (D8: the admin prefix exists on the main domain only: web::front.)
+    if !is_admin(&session) {
         return reject::not_found();
     }
     let Some(file) = AdminAssets::get("admin.html") else {
@@ -91,13 +88,10 @@ pub async fn admin_index(
 
 /// Admin console build assets: same gate as the index; never cached.
 pub async fn admin_asset(
-    State(state): State<AppState>,
     Path((_, rel)): Path<(String, String)>,
-    headers: HeaderMap,
-    uri: Uri,
     session: Result<AuthUser, ApiError>,
 ) -> Response {
-    if !console_host(&state, &headers, &uri) || !is_admin(&session) {
+    if !is_admin(&session) {
         return reject::not_found();
     }
     let key = format!("assets/{rel}");
@@ -112,25 +106,6 @@ pub async fn admin_asset(
 /// is refused the same way (no distinguishable 500 under /admin).
 fn is_admin(session: &Result<AuthUser, ApiError>) -> bool {
     matches!(session, Ok(u) if u.role == "admin")
-}
-
-/// R23-3: once the main domain is set in the system settings (R22 host
-/// gate on), the console is served on the main domain only (IP literals
-/// stay allowed, as for the host gate itself): on the subscription domain,
-/// or any other configured name, /admin is the canonical rejection.
-fn console_host(state: &AppState, headers: &HeaderMap, uri: &Uri) -> bool {
-    let eff = state.settings().get();
-    if !eff.host_gate_on() {
-        return true;
-    }
-    let Some(main) = &eff.main else {
-        return true;
-    };
-    let main = crate::settings::request_host(&main.host);
-    match crate::settings::host_of(headers, uri) {
-        Some(h) => h.parse::<IpAddr>().is_ok() || h == main,
-        None => false,
-    }
 }
 
 /// `html` with `href="<from>` / `src="<from>` attribute prefixes replaced.
@@ -304,10 +279,10 @@ mod tests {
         }
     }
 
-    /// R23-3 (with R22): once the main domain is set, the console answers
-    /// on the main domain only (and IP literals); on the subscription
-    /// domain it is the canonical rejection even for an admin session,
-    /// while the portal is still served there.
+    /// R23-3 (with R22, D8): once the main domain is set, the console
+    /// answers on the main domain only (and IP literals); on the
+    /// subscription domain it is the canonical rejection even for an admin
+    /// session, and so is the portal.
     #[tokio::test]
     async fn console_only_on_the_main_domain() {
         let Some(db) = TestDb::new().await else {
@@ -329,8 +304,8 @@ mod tests {
             &crate::audit::Actor::test(),
             0,
             &crate::settings::Values {
-                main_domain: Some("panel.example.com:8446".into()),
-                sub_domain: Some("sub.example.com".into()),
+                main_domains: vec!["panel.example.com:8446".into()],
+                sub_domains: vec!["sub.example.com".into()],
                 ..Default::default()
             },
         )
@@ -348,11 +323,10 @@ mod tests {
             ] {
                 assert_eq!(c.get(p).await.fingerprint(), canonical, "{host} {p}");
             }
-            assert_eq!(
-                c.get("/test/app").await.status,
-                StatusCode::OK,
-                "{host} portal"
-            );
+            // D8: a subscription domain serves subscriptions only.
+            for p in ["/test/app", "/", "/shop"] {
+                assert_eq!(c.get(p).await.fingerprint(), canonical, "{host} {p}");
+            }
         }
         if let Some(p) = admin_asset_path() {
             c.headers = vec![("host".into(), "sub.example.com".into())];

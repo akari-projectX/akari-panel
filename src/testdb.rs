@@ -70,10 +70,13 @@ impl TestDb {
         // W25: a node domain, like the grpc.advertise every test relied on
         // before it moved to 系统设置 (tokens need one). Tests of the unset
         // case clear it.
-        sqlx::query("UPDATE panel_settings SET node_domain = '127.0.0.1:8443'")
-            .execute(&migrator)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO site_domains (kind, domain, host, preferred) \
+             VALUES ('node', '127.0.0.1:8443', '127.0.0.1', true)",
+        )
+        .execute(&migrator)
+        .await
+        .unwrap();
         // v0.4: the minimum submit time is on by default; tests post forms
         // without a form token unless they test the bot protection
         // (`botguard::tests` turns it back on).
@@ -103,6 +106,30 @@ impl TestDb {
         .execute(&self.pool)
         .await
         .unwrap();
+        crate::settings::reload(state).await.unwrap();
+    }
+
+    /// D8: `kind`'s domain list = `domains` (preferred first; [] = none),
+    /// written directly, and `state`'s view reloaded.
+    pub async fn domains(&self, state: &crate::state::AppState, kind: &str, domains: &[&str]) {
+        sqlx::query("DELETE FROM site_domains WHERE kind = $1")
+            .bind(kind)
+            .execute(&self.pool)
+            .await
+            .unwrap();
+        for (i, d) in domains.iter().enumerate() {
+            let host = crate::settings::Domain::parse(d).unwrap().host;
+            sqlx::query(
+                "INSERT INTO site_domains (kind, domain, host, preferred) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(kind)
+            .bind(d)
+            .bind(crate::settings::request_host(&host))
+            .bind(i == 0)
+            .execute(&self.pool)
+            .await
+            .unwrap();
+        }
         crate::settings::reload(state).await.unwrap();
     }
 

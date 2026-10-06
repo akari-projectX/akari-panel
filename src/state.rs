@@ -126,19 +126,20 @@ impl AppState {
     pub fn install(&self) -> &Install {
         &self.0.install
     }
-    /// The subscription URL of `token` (D11: `<sub origin>/<sub_path>/<token>`;
-    /// None = no domain configured). For mail and other links leaving the
-    /// panel.
-    pub fn sub_url(&self, token: &str) -> Option<String> {
+    /// The subscription URL of `user`'s `token` (D11:
+    /// `<sub origin>/<sub_path>/<token>`, D8: the user's subscription
+    /// domain; None = no domain configured). For mail and other links
+    /// leaving the panel.
+    pub fn sub_url(&self, user: uuid::Uuid, token: &str) -> Option<String> {
         let live = self.settings();
-        live.get().sub_url(&live.access().sub_path, token)
+        live.get().sub_url(user, &live.access().sub_path, token)
     }
 
     /// The subscription link the API hands out: `sub_url`, or without a
     /// domain the root-relative `/<sub_path>/<token>` (the page that shows
     /// it prefixes its own origin).
-    pub fn sub_link(&self, token: &str) -> String {
-        self.sub_url(token)
+    pub fn sub_link(&self, user: uuid::Uuid, token: &str) -> String {
+        self.sub_url(user, token)
             .unwrap_or_else(|| format!("/{}/{token}", self.settings().access().sub_path))
     }
 
