@@ -366,6 +366,80 @@ async fn reconcile_node(
     })
 }
 
+/// 运营审查高-3 ("重置订阅"): give `user` a new account on every entrance
+/// they hold one on (same protocol, freshly generated for the node's
+/// inbound), in the caller's transaction (which holds `lock()`): the
+/// user's nodes are locked (ORDER BY id), then their rows, and every node
+/// whose rows changed is bumped — the agent swaps the account and closes
+/// the live connections of the old one (UserOp REPLACE; a Snapshot where
+/// the node needs one), so a leaked or shared client config stops working.
+/// Nodes being deleted are left alone (they serve nothing).
+pub async fn apply_rotate_user(
+    conn: &mut PgConnection,
+    user: Uuid,
+) -> Result<Outcome, crate::auth::ApiError> {
+    let nodes: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT id FROM nodes WHERE id IN ({NODES_OF_USERS}) AND deleting_at IS NULL \
+         ORDER BY id FOR UPDATE"
+    )))
+    .bind([user])
+    .fetch_all(&mut *conn)
+    .await?;
+    // Lock order: nodes → users → entrance_users (the caller then updates
+    // the user row, e.g. the subscription token).
+    sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE")
+        .bind(user)
+        .execute(&mut *conn)
+        .await?;
+    let rows: Vec<(Uuid, Uuid, Option<Value>, String)> = sqlx::query_as(
+        "SELECT eu.entrance_id, e.node_id, n.inbound, eu.protocol FROM entrance_users eu \
+         JOIN entrances e ON e.id = eu.entrance_id JOIN nodes n ON n.id = e.node_id \
+         WHERE eu.user_id = $1 AND e.node_id = ANY($2) ORDER BY eu.entrance_id FOR UPDATE OF eu",
+    )
+    .bind(user)
+    .bind(&nodes)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut entrances = Vec::with_capacity(rows.len());
+    let mut accounts = Vec::with_capacity(rows.len());
+    let mut bumped = Vec::new();
+    for (entrance, node, inbound, proto) in rows {
+        // A row exists only for an issuable inbound of its protocol (the
+        // reconcile keeps them in step); anything else is left as it is.
+        let Some(inbound) = inbound.filter(|i| eligible_protocol(Some(i)) == Some(proto.as_str()))
+        else {
+            continue;
+        };
+        entrances.push(entrance);
+        accounts.push(crate::api::generate_account(&inbound)?);
+        bumped.push(node);
+    }
+    bumped.sort();
+    bumped.dedup();
+    if !entrances.is_empty() {
+        sqlx::query(
+            "UPDATE entrance_users eu SET account = t.a \
+             FROM unnest($2::uuid[], $3::jsonb[]) AS t(e, a) \
+             WHERE eu.user_id = $1 AND eu.entrance_id = t.e",
+        )
+        .bind(user)
+        .bind(&entrances)
+        .bind(&accounts)
+        .execute(&mut *conn)
+        .await?;
+        sqlx::query("UPDATE nodes SET user_version = user_version + 1 WHERE id = ANY($1)")
+            .bind(&bumped)
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(Outcome {
+        bumped,
+        issued: 0,
+        revoked: 0,
+        updated: entrances.len(),
+    })
+}
+
 /// The pairs (entrances `e[i]`, users `u[i]`) lost their rows while the
 /// users still exist: their final counters (reported by the agent after the
 /// removal) stay billable for the departed grace (traffic::FLUSH_SQL). Not

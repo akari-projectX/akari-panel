@@ -594,6 +594,9 @@ UJAR="$LOG/user-cookies"
   || { echo "FAIL: self-service sub token"; cat /tmp/akari-smoke/last; exit 1; }
 NEW_TOKEN=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['sub_token'])")
 [ "$(fp "$SUB")" = "$REJ" ] || { echo "FAIL: old subscription URL still answers differently"; exit 1; }
+# 高-3: the reset also gave the user a new credential on every entrance.
+[ "$(last_json "d['credentials_rotated']")" = "1" ] && [ "$(account_of "$USER_ID")" != "$VLESS_A" ] \
+  || { echo "FAIL: subscription reset kept the old credential"; cat /tmp/akari-smoke/last; exit 1; }
 SUB="$BASE/sub/$NEW_TOKEN"
 # W20 (B1): the link stays retrievable — /me returns it (no-store), and an
 # admin can read it (audited, no token material in the audit row).
@@ -885,6 +888,33 @@ SESSION_AFTER=$(grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | python
 grep -q '"msg":"applying user delta"' "$LOG/agent.log" || { echo "FAIL: no user delta in agent log"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_B")" = "204" ] || { echo "FAIL: delete B"; exit 1; }
 echo "user delta: ok (no rebuild, session $SESSION_AFTER)"
+
+echo "== 高-3: reset subscription = new credentials; the old client is cut and refused, others keep theirs =="
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+    -d '{"email":"smoke-user-c@smoke.test","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create user C"; exit 1; }
+USER_C=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
+grant "$USER_C"
+VLESS_C=$(account_of "$USER_C")
+wait_users 2 10 "user C added"
+APPLIED_BEFORE=$(grep -c '"msg":"state applied"' "$LOG/agent.log")
+rm -f "$LOG/vless.ready" "$LOG/vless.go"
+python3 "$LOG/vless.py" hold "$VLESS_A" "$VLESS_C" "$LOG/vless.ready" "$LOG/vless.go" >"$LOG/vless.out" 2>&1 &
+VLESS_PID=$!
+for _ in $(seq 1 50); do [ -e "$LOG/vless.ready" ] && break; sleep 0.2; done
+[ -e "$LOG/vless.ready" ] || { echo "FAIL: vless client could not connect (reset)"; cat "$LOG/vless.out"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_C/sub-token" -H 'Content-Type: application/json' -d '{}')" = "200" ] \
+  && [ "$(last_json "d['credentials_rotated']")" = "1" ] || { echo "FAIL: reset C's subscription"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(account_of "$USER_C")" != "$VLESS_C" ] || { echo "FAIL: C's credential not rotated"; exit 1; }
+for _ in $(seq 1 20); do
+  [ "$(grep -c '"msg":"state applied"' "$LOG/agent.log")" -gt "$APPLIED_BEFORE" ] && break; sleep 0.5
+done
+[ "$(grep -c '"msg":"state applied"' "$LOG/agent.log")" -gt "$APPLIED_BEFORE" ] || { echo "FAIL: agent did not apply the rotated credential"; exit 1; }
+touch "$LOG/vless.go"
+wait $VLESS_PID || { echo "FAIL: old-credential client after the reset"; cat "$LOG/vless.out"; exit 1; }
+cat "$LOG/vless.out"
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_C")" = "204" ] || { echo "FAIL: delete C"; exit 1; }
+wait_users 1 10 "user C deleted"
+echo "subscription reset: ok (old credential cut and refused)"
 
 echo "== W9: Shadowsocks 2022 removal/re-add = UserDelta (agent protocol >= 5), Snapshot before =="
 # SS2022 is a managed protocol from W8 on (agent protocol >= 4).

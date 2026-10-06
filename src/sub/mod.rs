@@ -333,6 +333,38 @@ pub async fn rotate_token(
     Ok(Some(token))
 }
 
+/// "重置订阅" (运营审查高-3; portal `/me/sub-token`, console
+/// `/users/{id}/sub-token`): a new subscription token AND a new account on
+/// every entrance of the user (`entitle::apply_rotate_user`: the agents
+/// drop the old credentials and their live connections), so a leaked or
+/// shared link — and every client that already imported it — stops
+/// working. In the caller's transaction: `entitle::lock` → nodes → user →
+/// credentials; audited `user.sub_token.rotate` + `user.credentials.rotate`.
+/// `None` if the user does not exist.
+pub async fn apply_reset(
+    conn: &mut sqlx::PgConnection,
+    keys: &crate::totp::Keys,
+    actor: &crate::audit::Actor,
+    user_id: Uuid,
+) -> Result<Option<(String, crate::entitle::Outcome)>, crate::auth::ApiError> {
+    crate::entitle::lock(conn).await?;
+    let outcome = crate::entitle::apply_rotate_user(conn, user_id).await?;
+    let Some(token) = rotate_token(conn, keys, actor, user_id).await? else {
+        return Ok(None);
+    };
+    crate::audit::record(
+        conn,
+        actor,
+        "user.credentials.rotate",
+        "user",
+        Some(user_id.to_string()),
+        None,
+        Some(json!({ "entitlement": outcome.summary() })),
+    )
+    .await?;
+    Ok(Some((token, outcome)))
+}
+
 /// W20: what the panel can show about an account's subscription link.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stored {

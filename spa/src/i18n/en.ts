@@ -473,7 +473,8 @@ export const en: Messages = {
     importHint: "Install the client first; the button opens it and imports the subscription.",
     reset: "Reset subscription link",
     resetTitle: "Reset the subscription link?",
-    resetBody: "The old link stops working immediately; every device that imported it must import the new link.",
+    resetBody:
+      "The old link and every node credential stop working immediately; devices that imported them are disconnected and must import the new link (use this when the link leaked or someone else uses it).",
     resetDone: "A new subscription link was made. Import it again on your devices.",
     legacy:
       "Your subscription link still works, but it was made by an older version and cannot be shown here. Reset it to see and copy it here at any time (devices with the old link must import the new one).",
