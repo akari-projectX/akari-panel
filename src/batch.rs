@@ -79,22 +79,32 @@ pub struct UserFilter {
     pub status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// D10 filters (as `GET /users`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub never_used: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registered_before: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_login_before: Option<String>,
 }
 
 impl UserFilter {
-    fn query(&self) -> UserListQuery {
+    pub(crate) fn query(&self) -> UserListQuery {
         UserListQuery {
             q: self.q.clone(),
             plan_id: self.plan_id.clone(),
             status: self.status.clone(),
             role: self.role.clone(),
+            never_used: self.never_used,
+            registered_before: self.registered_before.clone(),
+            last_login_before: self.last_login_before.clone(),
             ..Default::default()
         }
     }
 }
 
 /// Which users: explicit ids, or everyone matching a filter (exactly one).
-#[derive(Deserialize, Debug, Clone, Default)]
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Selection {
     #[serde(default)]
@@ -242,7 +252,7 @@ pub fn check_action(a: &Action) -> Result<(), ApiError> {
 
 /// Push `WHERE …` (over alias `u`) for the selection into `qb`; returns the
 /// selection kind. An empty id list is a 400.
-fn push_selection(
+pub(crate) fn push_selection(
     qb: &mut sqlx::QueryBuilder<sqlx::Postgres>,
     sel: &Selection,
 ) -> Result<&'static str, ApiError> {

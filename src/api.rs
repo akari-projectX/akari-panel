@@ -245,6 +245,11 @@ pub(crate) async fn finish_login(
     ip: std::net::IpAddr,
     method: &str,
 ) -> Result<(), ApiError> {
+    // D10: a sign-in is activity, and keeps an account the cleanup warned.
+    sqlx::query("UPDATE users SET last_login_at = now(), cleanup_warned_at = NULL WHERE id = $1")
+        .bind(row.id)
+        .execute(state.pg())
+        .await?;
     if row.role == "admin" || login_ok_due(state, row.id).await {
         let mut c = state.pg().acquire().await?;
         crate::audit::record(
@@ -620,6 +625,12 @@ pub struct UserListQuery {
     pub role: Option<String>,
     /// created (default) | -created | email | -traffic | expires.
     pub sort: Option<String>,
+    /// D10: `true` = never used (`cleanup::NEVER_USED`).
+    pub never_used: Option<bool>,
+    /// D10: registered before this site-time-zone day (`YYYY-MM-DD`).
+    pub registered_before: Option<String>,
+    /// D10: last signed in before this day, or never.
+    pub last_login_before: Option<String>,
 }
 
 /// One page of users and the number matching the filters.
@@ -656,6 +667,24 @@ fn like_prefix(s: &str) -> String {
     }
     out.push('%');
     out
+}
+
+/// A `YYYY-MM-DD` day filter (None = absent or blank).
+fn day_filter(field: &str, v: Option<&str>) -> Result<Option<chrono::NaiveDate>, ApiError> {
+    match v.map(str::trim).filter(|v| !v.is_empty()) {
+        None => Ok(None),
+        Some(v) => chrono::NaiveDate::parse_from_str(v, "%Y-%m-%d")
+            .ok()
+            .filter(|d| (2000..3000).contains(&chrono::Datelike::year(d)))
+            .map(Some)
+            .ok_or_else(|| {
+                bad_request!(
+                    "user.date_filter_invalid",
+                    "{field} must be a day YYYY-MM-DD",
+                    field = field.to_string()
+                )
+            }),
+    }
 }
 
 pub(crate) fn push_user_filters(
@@ -726,6 +755,19 @@ pub(crate) fn push_user_filters(
                 "status must be active, expired, quota, banned or erased"
             ));
         }
+    }
+    if q.never_used == Some(true) {
+        qb.push(" AND ").push(crate::cleanup::NEVER_USED);
+    }
+    if let Some(day) = day_filter("registered_before", q.registered_before.as_deref())? {
+        qb.push(" AND u.created_at < (")
+            .push_bind(day)
+            .push("::date)::timestamp AT TIME ZONE akari_site_tz()");
+    }
+    if let Some(day) = day_filter("last_login_before", q.last_login_before.as_deref())? {
+        qb.push(" AND (u.last_login_at IS NULL OR u.last_login_at < (")
+            .push_bind(day)
+            .push("::date)::timestamp AT TIME ZONE akari_site_tz())");
     }
     match q.role.as_deref() {
         None | Some("") => {}

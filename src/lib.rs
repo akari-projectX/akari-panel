@@ -14,6 +14,7 @@ pub mod billing;
 pub mod blockrules;
 pub mod botguard;
 pub mod branding;
+pub mod cleanup;
 pub mod client_ip;
 pub mod cloudflare;
 pub mod config;
