@@ -4285,7 +4285,7 @@ grep -q 'unknown field' "$LOG/typo.out" || { echo "FAIL: typo error not readable
 AKARI_CONFIG="$LOG/bad.toml" "$PANEL" config check >"$LOG/bad-env.out" 2>&1 \
   && { echo "FAIL: AKARI_CONFIG ignored (invalid config accepted)"; exit 1; }
 grep -q 'web.bind: port 0' "$LOG/bad-env.out" || { echo "FAIL: AKARI_CONFIG not honored"; cat "$LOG/bad-env.out"; exit 1; }
-"$PANEL" --version | matches -E '^akari [0-9]+\.[0-9]+\.[0-9]+ \(([0-9a-f]+|unknown)\)' \
+"$PANEL" --version | matches -E '^akari [0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)? \(([0-9a-f]+|unknown)\)' \
   || { echo "FAIL: akari --version"; exit 1; }
 # Metrics live on their own listener only; the public port has no /metrics.
 for probe in "http://127.0.0.1:8080/metrics" "$BASE/metrics"; do
