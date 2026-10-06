@@ -37,6 +37,8 @@ pub struct Rules {
     pub last_error: bool,
     /// W28-a: relay entrances hidden by the health test.
     pub entrance_down: bool,
+    /// D5: the server's traffic quota is used up.
+    pub traffic_quota: bool,
 }
 
 /// What the evaluator knows about one monitored server.
@@ -63,6 +65,8 @@ pub struct Facts {
     /// W28-a: names of the server's relay entrances hidden as unreachable
     /// (`entrance_health.rs`), with their last error.
     pub hidden_entrances: Vec<(String, Option<String>)>,
+    /// D5: the quota is used up: (used bytes, quota bytes, next reset).
+    pub quota_exceeded: Option<(i64, i64, Option<DateTime<Utc>>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -275,6 +279,23 @@ pub fn evaluate(f: &Facts, r: &Rules, now: DateTime<Utc>) -> Verdict {
             ),
         );
     }
+    if r.traffic_quota
+        && let Some((used, quota, next)) = f.quota_exceeded
+    {
+        let human = crate::mail::templates::human_bytes;
+        let until = match next {
+            Some(t) => format!(
+                "{}（北京时间）进入下个周期或提高额度后自动恢复",
+                crate::api::beijing_time(t)
+            ),
+            None => "提高额度后自动恢复".to_string(),
+        };
+        fire(
+            "traffic_quota",
+            format!("{} / {}", human(used), human(quota)),
+            format!("服务器网卡流量已达额度：全部节点已停止服务，{until}"),
+        );
+    }
     v.unknown = unknown;
     v
 }
@@ -378,6 +399,10 @@ struct NodeRow {
     disk_percent: Option<i32>,
     cert_days: Option<i32>,
     hidden_entrances: serde_json::Value,
+    quota_exceeded: bool,
+    quota_used: i64,
+    quota_bytes: Option<i64>,
+    quota_next_reset_at: Option<DateTime<Utc>>,
 }
 
 /// One monitored server: name, whether it is muted, its rules and facts.
@@ -412,6 +437,7 @@ fn rules_of(s: &Settings, n: &NodeRow) -> Rules {
         latency: s.latency_failures && !off("latency"),
         last_error: s.last_error && !off("last_error"),
         entrance_down: !off("entrance_down"),
+        traffic_quota: !off("traffic_quota"),
     }
 }
 
@@ -470,7 +496,11 @@ pub async fn gather(
            coalesce((SELECT jsonb_agg(jsonb_build_array(e.name, e.health_error) ORDER BY e.sort, e.name) \
                FROM entrances e JOIN nodes en ON en.id = e.node_id AND en.enabled \
                WHERE e.server_id = n.id AND e.enabled AND e.hidden_since IS NOT NULL), \
-               '[]'::jsonb) AS hidden_entrances \
+               '[]'::jsonb) AS hidden_entrances, \
+           n.traffic_quota_exceeded_at IS NOT NULL AS quota_exceeded, \
+           LEAST(akari_quota_used(n.traffic_quota_mode, n.traffic_quota_rx_bytes, \
+               n.traffic_quota_tx_bytes), 9223372036854775807)::bigint AS quota_used, \
+           n.traffic_quota_bytes AS quota_bytes, n.traffic_quota_next_reset_at AS quota_next_reset_at \
          FROM servers n LEFT JOIN server_alert_rules r ON r.server_id = n.id \
          WHERE n.deleting_at IS NULL AND n.cert_serial IS NOT NULL \
          ORDER BY n.id",
@@ -493,6 +523,11 @@ pub async fn gather(
                 tls_domain: n.tls_domain.clone(),
                 hidden_entrances: serde_json::from_value(n.hidden_entrances.clone())
                     .unwrap_or_default(),
+                quota_exceeded: n.quota_exceeded.then_some((
+                    n.quota_used,
+                    n.quota_bytes.unwrap_or(0),
+                    n.quota_next_reset_at,
+                )),
                 ..Default::default()
             },
         })

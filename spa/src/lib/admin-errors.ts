@@ -182,6 +182,9 @@ export const ADMIN_CODES: Record<string, string> = {
   "server.deleting": "服务器正在删除，不能修改",
   "server.name_exists": "已存在同名的服务器",
   "server.name_invalid": "服务器名称须为 1–64 个字符，不能含控制字符",
+  "server.quota_invalid": "流量额度须大于 0（留空 = 不限）",
+  "server.quota_mode_invalid": "计费方式须为 双向 / 仅上行 / 仅下行",
+  "server.reset_day_invalid": "重置日须为 1–31（留空 = 不重置）",
   // 节点
   "node.acme_agent_too_old":
     "该服务器的 agent 版本过旧（协议 {p} < {need}），不支持自动证书：请先升级 agent（升级发布，或在服务器上重新运行一次安装命令），或清空服务器域名并手动放置证书",

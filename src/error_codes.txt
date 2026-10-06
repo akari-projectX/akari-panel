@@ -308,6 +308,9 @@ rollout.waves_invalid
 server.deleting
 server.name_exists
 server.name_invalid
+server.quota_invalid
+server.quota_mode_invalid
+server.reset_day_invalid
 settings.acme_email_invalid
 settings.acme_url_invalid
 settings.audit_retention_invalid

@@ -466,6 +466,16 @@ database configuration and then ignored with a warning: delete the section and i
 - **删除节点**：立即删除该节点、它的入口与用户凭据，服务器和其他节点照常运行（删除后才上报的尾部
   流量不再计费）。**删除服务器**：先让 agent 收敛到空配置，再吊销证书并删除服务器及其全部节点
   （两阶段，与以前删除节点相同）。
+- **服务器流量额度（D5）**：`PATCH /api/v1/servers/{id}` 的 `traffic_quota_bytes`（字节，null = 不限）、
+  `traffic_quota_mode`（`both` 双向 / `up` 仅上行 = 服务器发出的流量（多数服务商的"出站流量"）/
+  `down` 仅下行 = 服务器收到的流量）、`traffic_quota_reset_day`（每月几号 00:00（站点时区）开始新周期，
+  1–31，大于当月天数取月末；null = 不重置）。**按服务器网卡计**（agent 心跳里的网卡累计计数，
+  与服务商账单一致，包括 agent 与面板之间、系统更新等全部流量），不是用户的代理字节数。
+  重启后计数从 0 继续累加，换网卡只换基线，不会多计。用完后：此服务器上的**全部节点**下发空配置
+  （与停用节点效果相同，节点的启用状态不变，管理员停用的节点恢复后仍是停用），从订阅与门户中消失，
+  触发告警「流量额度已用完」（告警中心可按服务器关闭）；进入下个周期，或把额度调高到已用量以上
+  （或取消额度）立即自动恢复。服务器列表里 `traffic_quota` 给出本期上下行、已用量与下次重置时间。
+  每次修改写审计 `server.update`，周期重置写 `server.traffic_quota.reset`（操作人 system）。
 - 命令行：`akari server add <名称>`（新服务器 + bootstrap 文件）、`akari server enroll-token <id>`、
   `akari server list`、`akari server delete <id>`。升级时已有的每个节点成为一台同 id 的服务器，
   已安装的 agent 不需要任何操作。
@@ -1147,8 +1157,10 @@ The panel watches the fleet itself; Prometheus is optional. Console → **告警
 firing (and history), the thresholds and the notification channels. Defaults: on, offline >
 300 s, CPU / memory > 90 % for 5 minutes, disk > 90 %, a certificate (the node's automatic TLS
 certificate, W10, or the agent's mTLS certificate) expiring within 14 days, every latency-test
-target of a source failing, a failed config apply. An empty threshold turns a rule off; the node
-page (告警规则) overrides thresholds per node, turns kinds off, or mutes the node (alerts are
+target of a source failing, a failed config apply, a hidden relay entrance (`entrance_down`), and
+(D5) the server's traffic quota used up (`traffic_quota`, resolves when the server is restored).
+Alerts are per **server** (Q1: one agent). An empty threshold turns a rule off; the node
+page (告警规则) overrides thresholds per server, turns kinds off, or mutes the server (alerts are
 recorded, never notified).
 
 - **One evaluator**: every instance runs the round every 30 s (built in) but only the one that wins a PostgreSQL advisory lock evaluates; the others skip.

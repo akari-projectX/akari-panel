@@ -17,10 +17,19 @@ import { fmtDateTime } from "../lib/datetime";
 import { navigate } from "../lib/router";
 
 export type AlertKind =
-  "offline" | "cpu" | "memory" | "disk" | "latency" | "cert" | "agent_cert" | "last_error" | "entrance_down";
+  | "offline"
+  | "cpu"
+  | "memory"
+  | "disk"
+  | "latency"
+  | "cert"
+  | "agent_cert"
+  | "last_error"
+  | "entrance_down"
+  | "traffic_quota";
 
 export const KIND_ZH: Record<AlertKind, string> = {
-  offline: "节点离线",
+  offline: "服务器离线",
   cpu: "CPU 过高",
   memory: "内存过高",
   disk: "磁盘将满",
@@ -29,6 +38,7 @@ export const KIND_ZH: Record<AlertKind, string> = {
   agent_cert: "Agent 证书即将到期",
   last_error: "配置应用失败",
   entrance_down: "中转入口不可用",
+  traffic_quota: "流量额度已用完",
 };
 const KINDS = Object.keys(KIND_ZH) as AlertKind[];
 

@@ -33,7 +33,26 @@ fn all_rules() -> Rules {
         latency: true,
         last_error: true,
         entrance_down: true,
+        traffic_quota: true,
     }
+}
+
+#[test]
+fn traffic_quota_fires_while_exceeded_even_offline() {
+    let mut f = online();
+    f.quota_exceeded = Some((110 << 30, 100 << 30, Some(now() + Duration::days(3))));
+    let v = evaluate(&f, &all_rules(), now());
+    let o = v.firing.iter().find(|o| o.kind == "traffic_quota").unwrap();
+    assert_eq!(o.value, "110.00 GiB / 100.00 GiB");
+    assert!(o.detail.contains("全部节点已停止服务"), "{}", o.detail);
+    // Not a live fact: an offline agent does not freeze it.
+    f.online = false;
+    assert!(kinds(&evaluate(&f, &all_rules(), now())).contains(&"traffic_quota"));
+    let mut r = all_rules();
+    r.traffic_quota = false;
+    assert!(!kinds(&evaluate(&f, &r, now())).contains(&"traffic_quota"));
+    f.quota_exceeded = None;
+    assert!(!kinds(&evaluate(&f, &all_rules(), now())).contains(&"traffic_quota"));
 }
 
 fn kinds(v: &Verdict) -> Vec<&'static str> {
