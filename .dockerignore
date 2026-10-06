@@ -3,6 +3,10 @@ target
 data
 spa/node_modules
 spa/dist
+admin/node_modules
+admin/dist
+admin/playwright-report
+admin/test-results
 *-bootstrap.toml
 deploy/*
 !deploy/systemd

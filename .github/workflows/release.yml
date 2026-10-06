@@ -148,7 +148,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Cargo.lock + spa/package-lock.json: the complete dependency set.
+      # Cargo.lock + spa/ and admin/ package-lock.json: the complete dependency set.
       - uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           path: .
@@ -163,8 +163,11 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: spa/package-lock.json
+          cache-dependency-path: |
+            spa/package-lock.json
+            admin/package-lock.json
       - run: cd spa && npm ci --ignore-scripts
+      - run: cd admin && npm ci --ignore-scripts
       - run: |
           cargo fetch --locked
           python3 scripts/third-party.py -o THIRD_PARTY_LICENSES.txt

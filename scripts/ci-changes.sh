@@ -16,7 +16,8 @@ GROUPS_ALL="rust smoke e2e installer docker fuzz"
 
 # rust: the Rust code and what it compiles in (coverage gate, bench crate).
 # smoke: the panel backend + the cross-repo contract (smoke.sh).
-# e2e: the SPA and the backend that serves it (Playwright, real CSP).
+# e2e: the portal, the admin app and the backend that serves them
+#   (Playwright, real CSP).
 # installer: install/upgrade/backup/restore scripts and the deploy bundle.
 # docker: the image and its dependency inputs (lockfiles, toolchain).
 # fuzz: what the fuzz targets compile.
@@ -36,7 +37,7 @@ groups_of() {
       echo smoke ;;
   esac
   case "$1" in
-    spa/* | src/spa.rs | src/web.rs | scripts/e2e.sh | Makefile | docker-compose.yml)
+    spa/* | admin/* | src/spa.rs | src/console.rs | src/web.rs | scripts/e2e.sh | Makefile | docker-compose.yml)
       echo e2e ;;
   esac
   case "$1" in
@@ -47,7 +48,8 @@ groups_of() {
   esac
   case "$1" in
     Dockerfile | .dockerignore | Cargo.toml | Cargo.lock | rust-toolchain.toml | \
-      spa/package.json | spa/package-lock.json | deploy/prometheus/* | deploy/grafana/* | \
+      spa/package.json | spa/package-lock.json | admin/package.json | admin/package-lock.json | \
+      deploy/prometheus/* | deploy/grafana/* | \
       scripts/monitoring-check.sh)
       echo docker ;;
   esac
