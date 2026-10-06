@@ -116,7 +116,7 @@ export function SubscriptionCard({ me }: { me: Me }) {
             <fieldset className="space-y-2">
               <legend className="text-sm font-medium">{t("sub.format")}</legend>
               <div className="flex flex-wrap gap-2">
-                {SUB_FORMATS.map((f) => (
+                {SUB_FORMATS.filter((f) => f === "auto" || !me.sub_formats || me.sub_formats.includes(f)).map((f) => (
                   <label
                     key={f}
                     className={`flex min-h-10 cursor-pointer items-center gap-2 rounded-lg border px-3 text-sm ${
@@ -141,15 +141,17 @@ export function SubscriptionCard({ me }: { me: Me }) {
                 {t("sub.importTitle")}
               </h3>
               <div className="flex flex-wrap gap-2">
-                {importLinks(base, site).map((l) => (
-                  <a
-                    key={l.id}
-                    href={l.href}
-                    className="inline-flex min-h-10 items-center rounded-lg border border-border px-3 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    {l.name}
-                  </a>
-                ))}
+                {importLinks(base, site)
+                  .filter((l) => !me.sub_import_clients || me.sub_import_clients.includes(l.id))
+                  .map((l) => (
+                    <a
+                      key={l.id}
+                      href={l.href}
+                      className="inline-flex min-h-10 items-center rounded-lg border border-border px-3 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {l.name}
+                    </a>
+                  ))}
               </div>
               <p className="text-xs text-muted-foreground">{t("sub.importHint")}</p>
             </section>

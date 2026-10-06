@@ -513,3 +513,71 @@ async fn reset_rotates_every_entrance_credential() {
     drop(state);
     db.drop().await;
 }
+
+/// PR ② section 5: a subscription format that is off answers exactly
+/// like an unknown token; a recognised client whose format is off gets
+/// nothing, an unknown one falls through to an enabled format; the portal
+/// learns which formats and import buttons are on.
+#[tokio::test]
+async fn format_switches_answer_the_uniform_rejection() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let (_, login) = user_with_password(&db).await;
+    let c = signed_in(&state, &login).await;
+    let me = c.get("/test/api/v1/me").await.json();
+    assert_eq!(me["sub_formats"], json!(["clash", "sing-box", "links"]));
+    assert_eq!(
+        me["sub_import_clients"],
+        json!(["clash", "stash", "shadowrocket", "sing-box", "hiddify"])
+    );
+    let token = me["sub_token"].as_str().unwrap().to_string();
+    let ua_get = |ua: &'static str, query: &'static str| {
+        let mut cl = Client::new(&state, rand_ip());
+        cl.headers.push(("user-agent".into(), ua.into()));
+        let path = format!("/test/sub/{token}{query}");
+        async move { cl.get(&path).await }
+    };
+    let junk = Client::new(&state, rand_ip())
+        .get("/test/sub/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        .await;
+    assert_eq!(junk.status, StatusCode::NOT_FOUND);
+    let reject = junk.fingerprint();
+
+    db.settings(
+        &state,
+        "sub_formats = ARRAY['clash']::text[], sub_import_clients = ARRAY['shadowrocket', 'stash']::text[]",
+    )
+    .await;
+    let me = c.get("/test/api/v1/me").await.json();
+    assert_eq!(me["sub_formats"], json!(["clash"]));
+    assert_eq!(
+        me["sub_import_clients"],
+        json!(["stash"]),
+        "shadowrocket's format is off"
+    );
+    let ok = ua_get("clash-verge/v2", "").await;
+    assert_eq!(ok.status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&ok.body).starts_with("proxies:"));
+    // Unknown client: falls through to Clash.
+    assert_eq!(ua_get("curl/8", "").await.status, StatusCode::OK);
+    for (ua, q) in [
+        ("v2rayN/7.4.2", ""),
+        ("SFA/1.12.0", ""),
+        ("HiddifyNext/2.5.7", ""),
+        ("clash-verge/v2", "?format=links"),
+        ("clash-verge/v2", "?format=sing-box"),
+    ] {
+        assert_eq!(ua_get(ua, q).await.fingerprint(), reject, "{ua} {q}");
+    }
+    // Everything off: only (later) the own client's channel would answer.
+    db.settings(&state, "sub_formats = '{}'::text[]").await;
+    assert_eq!(ua_get("clash-verge/v2", "").await.fingerprint(), reject);
+    assert_eq!(ua_get("curl/8", "").await.fingerprint(), reject);
+    assert_eq!(
+        c.get("/test/api/v1/me").await.json()["sub_import_clients"],
+        json!([])
+    );
+    db.drop().await;
+}

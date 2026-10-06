@@ -279,6 +279,10 @@ pub struct Stored {
     pub sub_rules: Option<Value>,
     pub sub_rule_set_clash_url: Option<String>,
     pub sub_rule_set_singbox_url: Option<String>,
+    /// PR ② section 5: the subscription formats and the portal's import
+    /// buttons that are on (NULL = all).
+    pub sub_formats: Option<Vec<String>>,
+    pub sub_import_clients: Option<Vec<String>>,
     #[serde(skip)]
     pub updated_at: Option<DateTime<Utc>>,
 }
@@ -288,7 +292,7 @@ const STORED_COLS: &str = "version, main_domain, sub_domain, node_domain, trust_
      install_tls_pin, install_fallback_url, acme_directory_url, acme_email, \
      audit_retention_days, traffic_daily_retention_days, remove_mode, \
      extra_release_keys, timezone, sub_rules, sub_rule_set_clash_url, sub_rule_set_singbox_url, \
-     updated_at";
+     sub_formats, sub_import_clients, updated_at";
 
 fn select_stored(lock: bool) -> sqlx::AssertSqlSafe<String> {
     sqlx::AssertSqlSafe(format!(
@@ -379,6 +383,10 @@ pub struct Effective {
     pub release_keys: Vec<crate::updates::ReleaseKey>,
     /// W30: the subscriptions' routing (stored template over the default).
     pub sub_routing: crate::sub::routing::Routing,
+    /// Section 5: the formats the subscription answers with, and the
+    /// import buttons the portal shows (configured and format on).
+    pub sub_formats: Vec<String>,
+    pub sub_import_clients: Vec<String>,
     /// Some = the host gate is on (main domain set in the database): DNS
     /// names allowed as Host.
     host_gate: Option<HashSet<String>>,
@@ -584,6 +592,17 @@ pub fn compute(cfg: &PanelConfig, stored: Stored, server_names: Vec<ServerName>)
             .unwrap_or_default(),
         release_keys: effective_release_keys(&stored),
         sub_routing: crate::sub::routing::Routing::of(&stored),
+        sub_formats: stored
+            .sub_formats
+            .clone()
+            .unwrap_or_else(crate::sub::all_formats),
+        sub_import_clients: crate::sub::import_clients(
+            stored.sub_import_clients.as_deref(),
+            stored
+                .sub_formats
+                .as_deref()
+                .unwrap_or(&crate::sub::all_formats()),
+        ),
         stored,
         server_names,
         main,
@@ -1179,6 +1198,8 @@ pub struct SubscriptionValues {
     pub rules: Option<Vec<crate::sub::routing::Rule>>,
     pub rule_set_clash_url: Option<String>,
     pub rule_set_singbox_url: Option<String>,
+    pub formats: Option<Vec<String>>,
+    pub import_clients: Option<Vec<String>>,
 }
 
 impl SubscriptionValues {
@@ -1190,6 +1211,8 @@ impl SubscriptionValues {
                 .and_then(|v| serde_json::from_value(v.clone()).ok()),
             rule_set_clash_url: s.sub_rule_set_clash_url.clone(),
             rule_set_singbox_url: s.sub_rule_set_singbox_url.clone(),
+            formats: s.sub_formats.clone(),
+            import_clients: s.sub_import_clients.clone(),
         }
     }
 
@@ -1198,6 +1221,8 @@ impl SubscriptionValues {
             "rules": self.rules,
             "rule_set_clash_url": self.rule_set_clash_url,
             "rule_set_singbox_url": self.rule_set_singbox_url,
+            "formats": self.formats,
+            "import_clients": self.import_clients,
         })
     }
 }
@@ -1228,6 +1253,10 @@ pub async fn apply_update_subscription(
         rule_set_singbox_url: change
             .rule_set_singbox_url
             .unwrap_or_else(|| old.rule_set_singbox_url.clone()),
+        formats: change.formats.unwrap_or_else(|| old.formats.clone()),
+        import_clients: change
+            .import_clients
+            .unwrap_or_else(|| old.import_clients.clone()),
     };
     if new == old {
         return Ok(cur);
@@ -1240,12 +1269,14 @@ pub async fn apply_update_subscription(
         .map_err(anyhow::Error::from)?;
     let row: Stored = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "UPDATE panel_settings SET sub_rules = $1, sub_rule_set_clash_url = $2, \
-         sub_rule_set_singbox_url = $3, version = version + 1, updated_at = now() \
-         WHERE id = 1 RETURNING {STORED_COLS}"
+         sub_rule_set_singbox_url = $3, sub_formats = $4, sub_import_clients = $5, \
+         version = version + 1, updated_at = now() WHERE id = 1 RETURNING {STORED_COLS}"
     )))
     .bind(rules)
     .bind(&new.rule_set_clash_url)
     .bind(&new.rule_set_singbox_url)
+    .bind(&new.formats)
+    .bind(&new.import_clients)
     .fetch_one(&mut *conn)
     .await?;
     crate::audit::record(
@@ -1268,6 +1299,8 @@ pub struct SubscriptionChange {
     pub rules: Option<Option<Vec<crate::sub::routing::Rule>>>,
     pub rule_set_clash_url: Option<Option<String>>,
     pub rule_set_singbox_url: Option<Option<String>>,
+    pub formats: Option<Option<Vec<String>>>,
+    pub import_clients: Option<Option<Vec<String>>>,
 }
 
 #[derive(Deserialize)]
@@ -1284,6 +1317,42 @@ pub struct SubscriptionReq {
     pub rule_set_clash_url: Option<Option<String>>,
     #[serde(default, deserialize_with = "crate::api::double_option")]
     pub rule_set_singbox_url: Option<Option<String>>,
+    /// Section 5: the subscription formats that are on (`clash`,
+    /// `sing-box`, `links`; [] = none: every subscription URL answers the
+    /// uniform rejection); absent = unchanged, null = all.
+    #[serde(default, deserialize_with = "crate::api::double_option")]
+    pub formats: Option<Option<Vec<String>>>,
+    /// Section 5: the portal's import buttons that are on (`clash`,
+    /// `stash`, `shadowrocket`, `sing-box`, `hiddify`); absent =
+    /// unchanged, null = all.
+    #[serde(default, deserialize_with = "crate::api::double_option")]
+    pub import_clients: Option<Option<Vec<String>>>,
+}
+
+/// The import client ids (`sub::IMPORT_CLIENTS`).
+fn import_client_ids() -> Vec<&'static str> {
+    crate::sub::IMPORT_CLIENTS.iter().map(|c| c.0).collect()
+}
+
+/// A list of ids from `allowed`, deduplicated in `allowed`'s order.
+fn id_list(
+    v: Option<Option<Vec<String>>>,
+    allowed: &[&str],
+    bad: impl Fn(String) -> ApiError,
+) -> Result<Option<Option<Vec<String>>>, ApiError> {
+    let Some(Some(list)) = v else {
+        return Ok(v);
+    };
+    if let Some(x) = list.iter().find(|x| !allowed.contains(&x.as_str())) {
+        return Err(bad(x.clone()));
+    }
+    Ok(Some(Some(
+        allowed
+            .iter()
+            .filter(|a| list.iter().any(|x| x == *a))
+            .map(|a| (*a).to_string())
+            .collect(),
+    )))
 }
 
 impl SubscriptionReq {
@@ -1305,6 +1374,20 @@ impl SubscriptionReq {
             },
             rule_set_clash_url: url(self.rule_set_clash_url)?,
             rule_set_singbox_url: url(self.rule_set_singbox_url)?,
+            formats: id_list(self.formats, &crate::sub::FORMATS, |v| {
+                bad_request!(
+                    "settings.sub_format_invalid",
+                    "unknown subscription format {value} (clash, sing-box, links)",
+                    value = v
+                )
+            })?,
+            import_clients: id_list(self.import_clients, &import_client_ids(), |v| {
+                bad_request!(
+                    "settings.sub_import_client_invalid",
+                    "unknown import client {value} (clash, stash, shadowrocket, sing-box, hiddify)",
+                    value = v
+                )
+            })?,
         })
     }
 }
@@ -1331,6 +1414,12 @@ pub struct SubscriptionView {
     pub rules: Field<Vec<crate::sub::routing::Rule>>,
     pub rule_set_clash_url: Field<String>,
     pub rule_set_singbox_url: Field<String>,
+    /// Section 5: the formats on and the import buttons on (stored, null =
+    /// all); `import_clients_shown` = the buttons the portal shows (their
+    /// format on too).
+    pub formats: Field<Vec<String>>,
+    pub import_clients: Field<Vec<String>>,
+    pub import_clients_shown: Vec<String>,
 }
 
 impl SubscriptionView {
@@ -1345,6 +1434,18 @@ impl SubscriptionView {
             rule_set_singbox_url: Field::of(
                 v.rule_set_singbox_url,
                 crate::sub::routing::DEFAULT_SINGBOX_URL.to_string(),
+            ),
+            import_clients_shown: crate::sub::import_clients(
+                v.import_clients.as_deref(),
+                v.formats.as_deref().unwrap_or(&crate::sub::all_formats()),
+            ),
+            formats: Field::of(v.formats, crate::sub::all_formats()),
+            import_clients: Field::of(
+                v.import_clients,
+                import_client_ids()
+                    .iter()
+                    .map(|c| (*c).to_string())
+                    .collect(),
             ),
         }
     }

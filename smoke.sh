@@ -566,25 +566,28 @@ curl -s --noproxy '*' -D - -o /dev/null "$BASE/sub/not-a-real-token" | matches -
 echo "subscription: ok ($SIZE-byte padded body)"
 
 echo "== W30: client detection, routing template =="
-# Earlier sections used most of this address's subscription budget (per
-# address, 10 min): start the section with a clean limiter.
-vk EVAL "for _,k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call('DEL', k) end return 1" 0 'akari:rl:sub:*' >/dev/null
+# The subscription rate limit (8 per user per window under AKARI_TEST_LIMITS)
+# would answer these checks with the rejection: a clean limiter before each.
+subrl() { vk EVAL "for _,k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call('DEL', k) end return 1" 0 'akari:rl:sub:*' >/dev/null; }
 # Real User-Agents of the clients: the format each one understands.
 for pair in "clash-verge/v2.2.3=text/yaml" "Stash/2.7.5 Clash/1.11.0=text/yaml" "mihomo.party/v1.7.3=text/yaml" \
             "SFA/1.12.0 (Android 14; sing-box 1.12.0)=application/json" "SFI/1.12.0 (Apple iOS 18.1; sing-box 1.12.0)=application/json" \
             "HiddifyNext/2.5.7 (android) like ClashMeta v2ray sing-box=text/plain" "Shadowrocket/2070 CFNetwork/1410=text/plain" \
             "v2rayN/7.4.2=text/plain"; do
   ua=${pair%=*}; want=${pair##*=}
+  subrl
   curl -s --noproxy '*' -A "$ua" -D - -o /dev/null "$SUB" | matches -i "^content-type: $want" \
     || { echo "FAIL: $ua does not get $want"; exit 1; }
 done
 # The built-in routing: rule-providers (Clash), rule sets + TUN profile (sing-box).
+subrl
 W30_CODE=$(curl -s --noproxy '*' -o "$LOG/w30-clash.yaml" -w "%{http_code}" -A "clash-verge/v2" "$SUB")
 for want in "^rule-providers:" "^  - RULE-SET,geosite-category-ads-all,REJECT" "^  - RULE-SET,geosite-cn,DIRECT" \
             "^  - RULE-SET,geoip-cn,DIRECT,no-resolve" "^  - MATCH,PROXY"; do
   matches "$want" <"$LOG/w30-clash.yaml" \
     || { echo "FAIL: clash routing lacks $want (HTTP $W30_CODE)"; head -c 3000 "$LOG/w30-clash.yaml"; exit 1; }
 done
+subrl
 curl -s --noproxy '*' -A "SFA/1.12.0" "$SUB" \
   | python3 -c "import json,sys; d=json.load(sys.stdin); r=d['route']; assert r['final']=='PROXY' and {s['tag'] for s in r['rule_set']}>={'geosite-cn','geoip-cn','geosite-category-ads-all'} and d['inbounds'][0]['type']=='tun' and d['outbounds'][0]['type']=='selector', r" \
   || { echo "FAIL: sing-box profile"; exit 1; }
@@ -594,14 +597,28 @@ W30_VER=$(last_json "d['version']")
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
     -d "{\"version\":$W30_VER,\"rules\":[{\"type\":\"domain_suffix\",\"value\":\"corp.example\",\"action\":\"direct\"}]}")" = "200" ] \
   || { echo "FAIL: PUT subscription settings"; cat /tmp/akari-smoke/last; exit 1; }
-for _ in $(seq 1 20); do curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" | matches "^  - DOMAIN-SUFFIX,corp.example,DIRECT" && break; sleep 0.25; done
-curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" | matches "^  - DOMAIN-SUFFIX,corp.example,DIRECT" || { echo "FAIL: edited routing not served"; exit 1; }
+for _ in $(seq 1 20); do subrl; curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" | matches "^  - DOMAIN-SUFFIX,corp.example,DIRECT" && break; sleep 0.25; done
+subrl; curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" | matches "^  - DOMAIN-SUFFIX,corp.example,DIRECT" || { echo "FAIL: edited routing not served"; exit 1; }
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
     -d "{\"version\":$((W30_VER + 1)),\"rules\":null}")" = "200" ] || { echo "FAIL: reset routing"; exit 1; }
-[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='settings.subscription.update'")" = "2" ] || { echo "FAIL: routing edits not audited"; exit 1; }
+# Section 5: a format that is off is the uniform rejection; the portal hides
+# its import buttons.
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
+    -d "{\"version\":$((W30_VER + 2)),\"formats\":[\"clash\"],\"import_clients\":[\"clash\",\"shadowrocket\"]}")" = "200" ] \
+  && [ "$(last_json "d['subscription']['import_clients_shown']")" = "['clash']" ] \
+  || { echo "FAIL: format switches"; cat /tmp/akari-smoke/last; exit 1; }
+for _ in $(seq 1 20); do subrl; [ "$(fp -A "v2rayN/7.4.2" "$SUB")" = "$REJ" ] && break; sleep 0.25; done
+subrl; [ "$(fp -A "v2rayN/7.4.2" "$SUB")" = "$REJ" ] || { echo "FAIL: a disabled format is not the canonical rejection"; exit 1; }
+subrl; [ "$(fp "$SUB?format=sing-box")" = "$REJ" ] || { echo "FAIL: ?format of a disabled format answers"; exit 1; }
+subrl; [ "$(code -A "clash-verge/v2" "$SUB")" = "200" ] || { echo "FAIL: the enabled format stopped"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
+    -d "{\"version\":$((W30_VER + 3)),\"formats\":null,\"import_clients\":null}")" = "200" ] || { echo "FAIL: switches back on"; exit 1; }
+for _ in $(seq 1 20); do subrl; [ "$(code -A "v2rayN/7.4.2" "$SUB")" = "200" ] && break; sleep 0.25; done
+subrl; [ "$(code -A "v2rayN/7.4.2" "$SUB")" = "200" ] || { echo "FAIL: links not back"; exit 1; }
 # These fetches must not eat the user's subscription rate budget (M1-10 below).
-vk EVAL "for _,k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call('DEL', k) end return 1" 0 'akari:rl:sub:*' >/dev/null
-echo "w30 client detection + routing: ok"
+subrl
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='settings.subscription.update'")" = "4" ] || { echo "FAIL: subscription settings not audited"; exit 1; }
+echo "w30 client detection + routing + format switches: ok"
 
 echo "== subscription: REALITY inbound carries a uTLS fingerprint (default + admin hint) =="
 # Throwaway REALITY inbound + user; the panel only reads publicKey/fingerprint
@@ -668,11 +685,12 @@ SUB="$BASE/sub/$NEW_TOKEN"
   || { echo "FAIL: admin subscription read not audited (or leaks the token)"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$UJAR" "$BASE/api/v1/users/$USER_ID/subscription")" = "403" ] \
   || { echo "FAIL: a user can read the admin subscription endpoint"; exit 1; }
-# rate_per_token = 8 per window (smoke panel.toml): 5 fetches above + 3 here
-# (W20: the first one picks the format with ?format=, not the User-Agent).
+# rate_per_token = 8 per window (AKARI_TEST_LIMITS): all 8 here, from a clean
+# limiter (W20: the first one picks the format with ?format=, not the UA).
+subrl
 curl -s --noproxy '*' -A "curl/8" -D "$LOG/fmt.h" -o /dev/null "$SUB?format=clash"
 tr -d '\r' <"$LOG/fmt.h" | matches -i '^content-type: text/yaml' || { echo "FAIL: ?format=clash"; cat "$LOG/fmt.h"; exit 1; }
-for i in 2 3; do
+for i in 2 3 4 5 6 7 8; do
   [ "$(code -A "clash-meta/1.19" "$SUB")" = "200" ] || { echo "FAIL: new subscription URL fetch $i"; exit 1; }
 done
 [ "$(fp "$SUB")" = "$REJ" ] || { echo "FAIL: over-limit subscription is not the canonical rejection"; cat /tmp/akari-smoke/fphead; exit 1; }

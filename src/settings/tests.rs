@@ -1844,8 +1844,42 @@ async fn subscription_routing_settings() {
         state.settings().get().sub_routing,
         crate::sub::routing::Routing::default()
     );
+    // Section 5 switches: ids checked, normalized to the canonical order.
+    for (body, code) in [
+        (
+            json!({"version": version + 2, "formats": ["clash", "surge"]}),
+            "settings.sub_format_invalid",
+        ),
+        (
+            json!({"version": version + 2, "import_clients": ["quantumult"]}),
+            "settings.sub_import_client_invalid",
+        ),
+    ] {
+        let r = c.put("/test/api/v1/settings/subscription", body).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST);
+        assert_eq!(r.json()["code"], code);
+    }
+    let r = c
+        .put(
+            "/test/api/v1/settings/subscription",
+            json!({"version": version + 2, "formats": ["links", "clash", "clash"],
+                   "import_clients": ["sing-box", "clash"]}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let v = r.json();
+    assert_eq!(
+        v["subscription"]["formats"]["value"],
+        json!(["clash", "links"])
+    );
+    assert_eq!(v["subscription"]["import_clients_shown"], json!(["clash"]));
+    assert_eq!(state.settings().get().sub_formats, ["clash", "links"]);
     let audits = audit_rows(&db, "settings.subscription.update").await;
-    assert_eq!(audits.len(), 2);
+    assert_eq!(audits.len(), 3);
+    assert_eq!(
+        audits[2].1.as_ref().unwrap()["formats"],
+        json!(["clash", "links"])
+    );
     assert_eq!(
         audits[0].1.as_ref().unwrap()["rules"][0]["value"],
         "corp.example"

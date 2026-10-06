@@ -308,6 +308,8 @@ export const ADMIN_CODES: Record<string, string> = {
   "settings.server_name_locked": "{detail}",
   "settings.timezone_invalid": "未知的时区「{tz}」（请填写 IANA 名称，如 Asia/Shanghai）",
   "settings.site_name_invalid": "站点名称须为 1–{max} 个字符，不能含控制字符",
+  "settings.sub_format_invalid": "未知的订阅格式：{value}（clash、sing-box、links）",
+  "settings.sub_import_client_invalid": "未知的导入客户端：{value}（clash、stash、shadowrocket、sing-box、hiddify）",
   "settings.sub_rule_invalid": "分流规则无效：第 {index} 条（{detail}）",
   "settings.sub_rule_set_url_invalid": "规则列表地址须为 https，并包含 {name}（可选 {kind}）",
   "settings.sub_rules_too_many": "分流规则最多 {max} 条",

@@ -184,6 +184,21 @@ describe("SubscriptionCard", () => {
     expect(screen.getByRole("link", { name: "sing-box" })).toBeTruthy();
   });
 
+  it("shows only the formats and import buttons the admin left on (section 5)", () => {
+    renderWithClient(
+      <SubscriptionCard
+        me={{ ...ME, sub_formats: ["clash", "links"], sub_import_clients: ["clash", "shadowrocket"] }}
+      />,
+    );
+    expect(screen.getByLabelText("Clash / mihomo")).toBeTruthy();
+    expect(screen.queryByLabelText("sing-box")).toBeNull();
+    expect(screen.getByRole("link", { name: "Clash Verge / mihomo" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Shadowrocket" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "sing-box" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Stash" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Hiddify" })).toBeNull();
+  });
+
   it("falls back to this origin when no subscription domain is set, and says when copying fails", async () => {
     vi.stubGlobal("navigator", {
       ...navigator,

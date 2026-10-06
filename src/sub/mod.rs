@@ -45,11 +45,70 @@ pub(crate) fn plausible_token(token: &str) -> bool {
 // Subscription rendering
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy)]
-enum Format {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
     SingBox,
     Clash,
     Links,
+}
+
+/// Every output format, by id (the `panel_settings_sub_formats` CHECK;
+/// section 5 switches). A later own-client format joins this list.
+pub const FORMATS: [&str; 3] = ["clash", "sing-box", "links"];
+
+impl Format {
+    pub fn id(self) -> &'static str {
+        match self {
+            Format::Clash => "clash",
+            Format::SingBox => "sing-box",
+            Format::Links => "links",
+        }
+    }
+}
+
+/// The portal's one-click import clients and the format each one imports
+/// (the `panel_settings_sub_import_clients` CHECK; SPA `sub-links.ts`).
+pub const IMPORT_CLIENTS: [(&str, Format); 5] = [
+    ("clash", Format::Clash),
+    ("stash", Format::Clash),
+    ("shadowrocket", Format::Links),
+    ("sing-box", Format::SingBox),
+    ("hiddify", Format::Links),
+];
+
+/// The import buttons to show: the configured ones (None = all) whose
+/// format is on.
+pub fn import_clients(configured: Option<&[String]>, formats: &[String]) -> Vec<String> {
+    IMPORT_CLIENTS
+        .iter()
+        .filter(|(id, f)| {
+            configured.is_none_or(|c| c.iter().any(|x| x == id))
+                && formats.iter().any(|x| x == f.id())
+        })
+        .map(|(id, _)| (*id).to_string())
+        .collect()
+}
+
+/// Section 5: the format to answer with, among the enabled ones (`None`
+/// = the uniform rejection). An explicit `?format=` that is off, or a
+/// recognised client whose format is off, gets nothing; an unrecognised
+/// client falls through to the first enabled of links, Clash, sing-box.
+pub fn choose_format(query: Option<&str>, user_agent: &str, enabled: &[String]) -> Option<Format> {
+    let on = |f: Format| enabled.iter().any(|x| x == f.id());
+    if let Some(f) = requested_format(query) {
+        return on(f).then_some(f);
+    }
+    match known_client(user_agent) {
+        Some(f) => on(f).then_some(f),
+        None => [Format::Links, Format::Clash, Format::SingBox]
+            .into_iter()
+            .find(|f| on(*f)),
+    }
+}
+
+/// All formats on (the default).
+pub fn all_formats() -> Vec<String> {
+    FORMATS.iter().map(|f| (*f).to_string()).collect()
 }
 
 /// W20: `?format=clash|sing-box|links` on the subscription URL picks the
@@ -66,28 +125,33 @@ fn requested_format(query: Option<&str>) -> Option<Format> {
     })
 }
 
-/// W30: the format a client understands, by its User-Agent:
+/// W30: the format a recognised client understands, by its User-Agent:
 /// - sing-box: the core and the official apps (`SFA/`, `SFI/`, `SFM/`,
 ///   `SFT/` = sing-box for Android/iOS/macOS/tvOS);
 /// - Clash: Clash Verge (Rev), Clash Meta for Android, FlClash, mihomo
-///   (Mihomo Party: `mihomo.party/`), Stash (`Stash/... Clash/...`);
-/// - links (base64 share links): everything else — v2rayN/v2rayNG,
-///   Shadowrocket, Hiddify (its sing-box core is older than the 1.12
-///   configuration the sing-box format targets; it applies its own
-///   routing to imported links), NekoBox, unknown clients.
-fn detect_format(user_agent: &str) -> Format {
+///   (Mihomo Party: `mihomo.party/`), Stash (`Stash/... Clash/...`),
+///   NekoBox ("Prefer ClashMeta Format");
+/// - links (base64 share links): v2rayN/v2rayNG, Shadowrocket, Hiddify
+///   (its sing-box core is older than the 1.12 configuration the sing-box
+///   format targets; it applies its own routing to imported links).
+///
+/// None = not recognised (links when on, `choose_format`).
+fn known_client(user_agent: &str) -> Option<Format> {
     let ua = user_agent.to_ascii_lowercase();
     let sing_box_app = ["sfa/", "sfi/", "sfm/", "sft/"]
         .iter()
         .any(|p| ua.starts_with(p));
-    if ua.contains("hiddify") {
-        Format::Links
+    if ["hiddify", "shadowrocket", "v2ray"]
+        .iter()
+        .any(|c| ua.contains(c))
+    {
+        Some(Format::Links)
     } else if ua.contains("sing-box") || sing_box_app {
-        Format::SingBox
+        Some(Format::SingBox)
     } else if ["clash", "mihomo", "stash"].iter().any(|c| ua.contains(c)) {
-        Format::Clash
+        Some(Format::Clash)
     } else {
-        Format::Links
+        None
     }
 }
 
@@ -160,7 +224,16 @@ pub fn render_for(
     rows: &[NodeRow],
     routing: &routing::Routing,
 ) -> (&'static str, String) {
-    let format = requested_format(query).unwrap_or_else(|| detect_format(user_agent));
+    let format = choose_format(query, user_agent, &all_formats()).unwrap_or(Format::Links);
+    render_as(format, rows, routing)
+}
+
+/// One format's body and content type, padded.
+pub fn render_as(
+    format: Format,
+    rows: &[NodeRow],
+    routing: &routing::Routing,
+) -> (&'static str, String) {
     let proxies = collect_proxies(rows);
     let body = match format {
         Format::SingBox => render_sing_box(&proxies, routing).to_string(),
@@ -277,8 +350,11 @@ pub async fn subscription(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     let settings = state.settings().get();
-    let (content_type, body) =
-        render_for(query.as_deref(), user_agent, &rows, &settings.sub_routing);
+    // Section 5: a format that is off is the uniform rejection.
+    let Some(format) = choose_format(query.as_deref(), user_agent, &settings.sub_formats) else {
+        return reject::not_found();
+    };
+    let (content_type, body) = render_as(format, &rows, &settings.sub_routing);
 
     // Quota header only after every failure path is cleared.
     let expire = user
@@ -610,6 +686,55 @@ mod tests {
             {"inbound_tag": "in-trojan", "protocol": "trojan", "account": {"password": "pw"}},
         ]);
         rows_of("HK 1", Some("hk.example.com"), inbounds, creds)
+    }
+
+    /// Section 5: which format answers, among the enabled ones.
+    #[test]
+    fn format_switches() {
+        let on = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let all = all_formats();
+        assert_eq!(
+            choose_format(None, "clash-verge/v2", &all),
+            Some(Format::Clash)
+        );
+        assert_eq!(choose_format(None, "curl", &all), Some(Format::Links));
+        let clash = on(&["clash"]);
+        assert_eq!(
+            choose_format(None, "clash-verge/v2", &clash),
+            Some(Format::Clash)
+        );
+        assert_eq!(
+            choose_format(None, "curl", &clash),
+            Some(Format::Clash),
+            "falls through"
+        );
+        assert_eq!(
+            choose_format(None, "v2rayN/7", &clash),
+            None,
+            "recognised: no fallback"
+        );
+        assert_eq!(choose_format(None, "SFA/1.12", &clash), None);
+        assert_eq!(
+            choose_format(Some("format=links"), "clash-verge/v2", &clash),
+            None
+        );
+        assert_eq!(
+            choose_format(Some("x=1"), "curl", &on(&["sing-box"])),
+            Some(Format::SingBox)
+        );
+        assert_eq!(choose_format(None, "curl", &[]), None);
+        assert_eq!(
+            import_clients(None, &all),
+            ["clash", "stash", "shadowrocket", "sing-box", "hiddify"]
+        );
+        assert_eq!(
+            import_clients(None, &on(&["links"])),
+            ["shadowrocket", "hiddify"]
+        );
+        assert_eq!(
+            import_clients(Some(&on(&["stash", "hiddify"])), &on(&["clash"])),
+            ["stash"]
+        );
     }
 
     /// A10: the three renderers' exact output (any change to a client-facing

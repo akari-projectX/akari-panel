@@ -267,6 +267,9 @@ export interface Me {
   sub_url: string | null;
   // A pre-W20 link: still works, cannot be shown until it is reset.
   sub_legacy: boolean;
+  /** PR ② section 5: the formats that are on, the import buttons to show (absent = all). */
+  sub_formats?: string[];
+  sub_import_clients?: string[];
   // Effective latency-test interval (seconds), for the node list text.
   probe_interval_secs: number;
 }
