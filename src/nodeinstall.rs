@@ -309,22 +309,97 @@ pub async fn tls_probe(addr: SocketAddr, host: &str, alpn: &[Vec<u8>]) -> Result
     })
 }
 
+/// Happy eyeballs (RFC 8305): wait this long for an attempt before the
+/// next address is tried alongside it.
+const ATTEMPT_DELAY: Duration = Duration::from_millis(250);
+/// Addresses tried per probe at most.
+const MAX_ATTEMPTS: usize = 8;
+
+/// The addresses in attempt order: families alternate, starting with the
+/// resolver's first (RFC 8305 §4); duplicates dropped; at most
+/// `MAX_ATTEMPTS`.
+fn attempt_order(addrs: &[SocketAddr]) -> Vec<SocketAddr> {
+    let mut uniq: Vec<SocketAddr> = Vec::new();
+    for a in addrs {
+        if !uniq.contains(a) {
+            uniq.push(*a);
+        }
+    }
+    let Some(first) = uniq.first() else {
+        return uniq;
+    };
+    let first_v6 = first.is_ipv6();
+    let (mut lead, mut other): (Vec<SocketAddr>, Vec<SocketAddr>) =
+        uniq.into_iter().partition(|a| a.is_ipv6() == first_v6);
+    lead.reverse();
+    other.reverse();
+    let mut out = Vec::new();
+    while out.len() < MAX_ATTEMPTS {
+        match (lead.pop(), other.pop()) {
+            (None, None) => break,
+            (a, b) => out.extend(a.into_iter().chain(b)),
+        }
+    }
+    out.truncate(MAX_ATTEMPTS);
+    out
+}
+
+/// `tls_probe` against every address of a name, IPv6 and IPv4 alike
+/// (happy eyeballs: the next address starts when the previous attempt
+/// failed or after `ATTEMPT_DELAY`); the first handshake that completes
+/// wins and the others are dropped. Err lists every failure.
+pub async fn tls_probe_any(
+    addrs: &[SocketAddr],
+    host: &str,
+    alpn: &[Vec<u8>],
+) -> Result<Probe, String> {
+    let order = attempt_order(addrs);
+    if order.is_empty() {
+        return Err("the name has no address".into());
+    }
+    let mut running = tokio::task::JoinSet::new();
+    let mut pending = order.into_iter();
+    let mut errors = Vec::new();
+    let mut start_next = true;
+    loop {
+        if start_next && let Some(addr) = pending.next() {
+            let (host, alpn) = (host.to_string(), alpn.to_vec());
+            running.spawn(async move { tls_probe(addr, &host, &alpn).await });
+        }
+        let more = !pending.as_slice().is_empty();
+        let done = tokio::select! {
+            r = running.join_next() => r,
+            () = tokio::time::sleep(ATTEMPT_DELAY), if more => {
+                start_next = true;
+                continue;
+            }
+        };
+        match done {
+            None => break,
+            Some(Ok(Ok(p))) => return Ok(p),
+            Some(Ok(Err(e))) => errors.push(e),
+            Some(Err(e)) => errors.push(format!("probe task: {e}")),
+        }
+        start_next = true;
+    }
+    Err(errors.join("; "))
+}
+
 /// Pin for an origin: None = publicly trusted (or plain-http dev origin).
 async fn probe_origin(o: &Origin) -> Result<Option<String>, String> {
     if !o.https {
         return Ok(None);
     }
     let host = o.host.trim_start_matches('[').trim_end_matches(']');
-    let addr = tokio::time::timeout(
+    let addrs: Vec<SocketAddr> = tokio::time::timeout(
         Duration::from_secs(5),
         tokio::net::lookup_host((host, o.port_or_default())),
     )
     .await
     .map_err(|_| "DNS lookup timed out".to_string())?
     .map_err(|e| format!("DNS lookup: {e}"))?
-    .next()
-    .ok_or("the name has no address")?;
-    let p = tls_probe(addr, &o.host, &[]).await?;
+    .collect();
+    let p = tls_probe_any(&addrs, &o.host, &[]).await?;
     if p.trusted && o.ip().is_none() {
         return Ok(None);
     }
