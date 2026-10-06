@@ -91,7 +91,7 @@ else
 fi
 
 # The console URL: /{prefix}/app (v0.4) or /{prefix}/admin (v0.3.x).
-prefix() { cx akari-ctl info | sed -n '1s|.*://[^/]*/\([^/]*\)/\(admin\|app\)$|\1|p'; }
+prefix() { cx akari-ctl info | sed -n -e '1s#.*://[^/]*/\([^/]*\)/admin$#\1#p' -e '1s#.*://[^/]*/\([^/]*\)/app$#\1#p'; }
 # GET/POST through Caddy (TLS) inside the container; prints the status.
 https_code() {
 	local url=$1

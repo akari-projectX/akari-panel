@@ -52,7 +52,7 @@ export AKARI_ADMIN_PASSWORD=$pw AKARI_SOURCE_DIR=$root LANG=C.UTF-8
 local_rel() { env AKARI_RELEASES_URL="file://$rel" AKARI_COSIGN_KEY="$rel/cosign.pub" "$@"; }
 
 # The console URL: /{prefix}/app (v0.4) or /{prefix}/admin (v0.3.x).
-prefix() { akari-ctl info | sed -n '1s|.*://[^/]*/\([^/]*\)/\(admin\|app\)$|\1|p'; }
+prefix() { akari-ctl info | sed -n -e '1s#.*://[^/]*/\([^/]*\)/admin$#\1#p' -e '1s#.*://[^/]*/\([^/]*\)/app$#\1#p'; }
 code() {
 	local url=$1
 	shift
