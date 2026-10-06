@@ -74,7 +74,7 @@ reset pack. Period arithmetic is SQL only (`akari_period_end`, DB clock):
 | The user's active plan | Buying plan P, period X |
 |---|---|
 | none | `new`: P for one X from now, usage reset. Refused for `renewal_only` plans and when P is full (`capacity`). |
-| P with an expiry | `renew`: expiry = one X after max(expiry, now) (`onetime` without days makes it permanent); usage and reset anchor unchanged. Allowed when P is full or renewal-only. |
+| P with an expiry | `renew`: expiry = one X after max(expiry, now) (`onetime` without days makes it permanent); reset anchor unchanged; usage unchanged — except a one-time term or a plan without periodic resets, which starts a fresh quota (中-1). Allowed when P is full or renewal-only. |
 | P without expiry | renewal refused (409 "nothing to renew"); the reset pack is still allowed. |
 | P, X = `reset` | `reset`: used traffic → 0; a user disabled for quota is re-enabled (never an admin-disabled one); audited `user.traffic.reset` with `source: reset_pack`. Only for current subscribers of P — this is what quota-exhausted users (R21 renewal scope) buy. |
 | another plan Q | `switch`: replaces Q (M3 replace semantics, **usage reset**), P for one X from now, charged P's full price **minus the switch credit**. Refused when P has `allow_switch_in = false`, is `renewal_only`, or is full. |
@@ -134,8 +134,10 @@ one replaced at fulfilment, the payment is still honoured and
   groups"); `device_seats` is not enforced until the client ships (R25).
 
 Traffic resets inside the period follow the plan's `reset_period` (M3
-period pass); a renewal of a `none`-period plan extends the time, not the
-quota (that is what the reset pack is for).
+period pass). 运营规则（运营逻辑审查中-1）：续费**不重置**流量的套餐（`reset_period = none`）或一次性
+（`onetime`）时长时，新的一期从满额流量开始（已用清零、因超额被停用的账户恢复、记
+`last_reset_at`）——否则用完流量的用户付了续费仍然连不上。按月重置的套餐续费仍只延长时间
+（流量由周期重置处理）；流量重置包照旧可单独购买。
 
 ### Late payments, failures, refunds
 
