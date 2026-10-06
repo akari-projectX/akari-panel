@@ -347,3 +347,54 @@ async fn off_sale_plans_stay_renewable_for_their_subscribers() {
     drop(state);
     db.drop().await;
 }
+
+/// 低-4: a late payment of an old order never silently replaces a plan the
+/// buyer got since — it goes to the balance; a late renewal of a plan that
+/// expired meanwhile still grants it.
+#[tokio::test]
+async fn late_payment_never_replaces_a_newer_plan() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let (_, a) = catalog_plan(&db, "lo4-a", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    let (_, b) = catalog_plan(&db, "lo4-b", &[(PeriodKind::Month, None, 3000)], |_| {}).await;
+    let u = db.user().await;
+    let c = user_client(&state, u).await;
+    // An order for B, left unpaid; the buyer then bought A instead.
+    let r = buy(&c, b, "month").await;
+    let old_b = order_id(&r);
+    sqlx::query("UPDATE orders SET status = 'expired', ended_at = now() WHERE id = $1")
+        .bind(old_b)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    bought(&db, &c, a, "month").await;
+    // The old B order is paid late: A stays, the money goes to the balance.
+    assert_eq!(pay(&db, old_b).await, Paid::Now { fulfilled: false });
+    assert_eq!(active_plan(&db, u).await.map(|p| p.0), Some(a));
+    let (err, refunded): (Option<String>, Option<i64>) =
+        sqlx::query_as("SELECT fulfil_error, refund_balance_cents FROM orders WHERE id = $1")
+            .bind(old_b)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert!(err.unwrap().contains("not replaced"));
+    assert_eq!(refunded, Some(3000));
+    // A renewal of A whose subscription expired before the payment: granted.
+    let r = buy(&c, a, "month").await;
+    let renewal = order_id(&r);
+    sqlx::query(
+        "UPDATE user_plans SET status = 'expired', ended_at = now() \
+         WHERE user_id = $1 AND status = 'active'",
+    )
+    .bind(u)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(pay(&db, renewal).await, Paid::Now { fulfilled: true });
+    assert_eq!(active_plan(&db, u).await.map(|p| p.0), Some(a));
+    drop(state);
+    db.drop().await;
+}

@@ -83,9 +83,12 @@ pub struct Bought {
     pub period_days: Option<i32>,
     pub credit_cents: i64,
     pub credit_order_id: Option<Uuid>,
+    /// 低-4: the buyer's subscription when the order was created.
+    pub prior_user_plan_id: Option<Uuid>,
 }
 
-const BOUGHT_COLS: &str = "user_id, plan_id, period, period_days, credit_cents, credit_order_id";
+const BOUGHT_COLS: &str =
+    "user_id, plan_id, period, period_days, credit_cents, credit_order_id, prior_user_plan_id";
 
 /// SQL: the audit snapshot of an orders row under `alias`.
 pub fn order_snapshot_sql(alias: &str) -> String {
@@ -221,12 +224,14 @@ pub async fn apply_mark_paid(
 
 /// Fulfilment failures that refund a payment to the balance at once
 /// (中-2): the plan is full, gone or disabled, or a reset pack's plan is
-/// no longer the customer's.
-const AUTO_REFUND: [&str; 4] = [
+/// no longer the customer's; 低-4: a late payment that would replace a
+/// subscription bought after the order.
+const AUTO_REFUND: [&str; 5] = [
     "shop.sold_out",
     "order_admin.plan_gone",
     "plan.disabled",
     "shop.reset_needs_plan",
+    "order_admin.superseded",
 ];
 
 /// 中-2: refund a paid order that could not be fulfilled to the customer's
@@ -243,6 +248,7 @@ async fn refund_unfulfillable(
     let reason = match code {
         "shop.sold_out" => "自动退款：套餐已售罄，未能开通",
         "shop.reset_needs_plan" => "自动退款：已不再持有该套餐，流量重置包无法使用",
+        "order_admin.superseded" => "自动退款：下单后已另购或更换套餐，不替换当前套餐",
         _ => "自动退款：套餐已停用或删除，未能开通",
     };
     let done = super::refund::apply_refund(
@@ -491,6 +497,18 @@ async fn grant(conn: &mut PgConnection, actor: &Actor, b: &Bought) -> Result<Val
             )
         }
         other => {
+            // 低-4: a payment never silently replaces a subscription the
+            // buyer got after creating the order (a late payment of an old
+            // order); with no subscription left (it expired), granting is
+            // what the payment was for.
+            if let Some((current, _, _)) = other
+                && b.prior_user_plan_id != Some(current)
+            {
+                return Err(conflict!(
+                    "order_admin.superseded",
+                    "the buyer's plan changed after the order was created; not replaced"
+                ));
+            }
             // 中-2: the slots taken = active subscribers + the live
             // reservations of OTHER pending orders (this one is paid now).
             let cap: Option<(Option<i32>, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(

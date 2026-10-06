@@ -18,6 +18,7 @@ sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18，再拒绝 v0.3.x
 - **1058（Phase A PR ①，中-2）**：`orders.action` NOT NULL（new/renew/switch/reset，CHECK `orders_action`：reset ⇔ period reset；旧行按 `fulfil_result.kind`/period 回填）、部分索引 `orders_capacity_hold (plan_id, expires_at) WHERE pending AND action IN (new, switch)`（名额预占）；`alert_notifications.event` CHECK 加 `billing`。
 - **1059（Phase A PR ①，中-5）**：`user_plans` 加条款快照 `quota_bytes`/`reset_period`（NOT NULL）/`reset_days`/`speed_limit_mbps`（同 `plans` 的 CHECK），新表 `user_plan_groups`（PK (user_plan_id, group_id)，两边级联，索引 group_id）；触发器 `user_plans_terms`（BEFORE INSERT：`reset_period` 为空则从套餐复制全部条款，`akari_user_plan_terms()`）与 `user_plans_groups`（AFTER INSERT：复制 `plan_groups`，`akari_user_plan_groups()`）；已有订阅按当前套餐回填。
 - **1034（Phase A PR ①，中-6；用本任务的备用号段，与前后迁移无依赖）**：`plans.renew_off_sale` boolean NOT NULL DEFAULT true（下架后现有订阅者仍可续费/买重置包）。
+- **1035（Phase A PR ①，低-4；备用号段，无依赖）**：`orders.prior_user_plan_id`（→ user_plans，SET NULL；下单时的生效订阅，部分索引），待付订单按当前订阅回填。
 - 改列名/加列后，同步检查 `src/` 中所有手写 SQL 与 `FromRow` 结构体（没有编译期 SQL 校验）。
 
 ## 当前表
