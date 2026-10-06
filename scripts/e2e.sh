@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Playwright end-to-end (OPUS-GUIDE A17): a real release panel serving the
-# embedded SPA with its real CSP, driven by Chromium (spa/e2e/).
+# embedded portal and admin app with their real CSP, driven by Chromium:
+# the portal suite (spa/e2e/) and the admin app suite (admin/e2e/, W33-b:
+# every line of admin/INVENTORY.md, desktop + phone).
 #
 # Isolated from smoke and from the dev panel: own database ($E2E_DB, dropped
 # and recreated), own Valkey index ($E2E_VALKEY_DB, flushed), own data dir
@@ -148,13 +150,16 @@ docker compose exec -T postgres psql -U akari -d "$E2E_DB" -qc "
   INSERT INTO traffic_entrance_daily (entrance_id, day, node_id, up_bytes, down_bytes, billed_bytes, users)
   SELECT entrance_id, day, node_id, up_bytes, down_bytes, billed_bytes, 1 FROM traffic_daily;" >/dev/null
 
-echo "e2e: http://$E2E_HOST:$PORT/$PREFIX/app"
-cd spa
-E2E_BASE="http://$E2E_HOST:$PORT/$PREFIX/app" \
-  E2E_ADMIN=e2e-admin@e2e.test E2E_ADMIN_PW="$ADMIN_PW" \
+echo "e2e: portal http://$E2E_HOST:$PORT/  admin http://$E2E_HOST:$PORT/$PREFIX/app"
+export E2E_ADMIN=e2e-admin@e2e.test E2E_ADMIN_PW="$ADMIN_PW" \
   E2E_USER=e2e-user@e2e.test E2E_USER_PW="$USER_PW" \
   E2E_QUOTA_USER=e2e-quota@e2e.test E2E_DB="$E2E_DB" E2E_PAY_DIR="$DIR" \
   E2E_MAILPIT=http://127.0.0.1:18026/api/v1 E2E_SMTP_PORT=11026 \
   E2E_RELEASE_SOURCE="http://127.0.0.1:$REL_PORT/repos/akari-projectX/akari-agent/releases/latest" \
-  NO_PROXY='*' no_proxy='*' \
-  npx playwright test "$@"
+  E2E_ADMIN_BASE="http://$E2E_HOST:$PORT/$PREFIX/admin" \
+  NO_PROXY='*' no_proxy='*'
+# E2E_SUITE=spa|admin runs one suite (default both); extra arguments go to
+# Playwright.
+SUITE=${E2E_SUITE:-all}
+case $SUITE in all | spa) (cd spa && E2E_BASE="http://$E2E_HOST:$PORT" npx playwright test "$@") ;; esac
+case $SUITE in all | admin) (cd admin && E2E_LOGIN="http://$E2E_HOST:$PORT/$PREFIX/app" npx playwright test "$@") ;; esac
