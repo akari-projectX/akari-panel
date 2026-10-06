@@ -624,8 +624,16 @@ until the agent has enrolled with it. It needs 系统设置 → 节点通信 →
 agents dial; without it the panel refuses to issue the command):
 
 ```bash
-curl -fsSL 'https://panel.example.com/install/<token>' | sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'
-# or: wget -qO- 'https://panel.example.com/install/<token>' | sh -c '…same…'
+sh -c 'command -v curl >/dev/null || { echo "…how to install curl…" >&2; exit 1; }' && curl -fsSL 'https://panel.example.com/install/<token>' | sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'
+# or: sh -c 'command -v wget …' && wget -qO- 'https://panel.example.com/install/<token>' | sh -c '…same…'
+```
+
+**节点需要 curl（或 wget）。** 部分精简镜像（例如 Lightsail 的 Debian 13）两者都没有；命令开头的检查
+会停下并提示安装方法，什么都不执行。先在节点上以 root 安装再运行安装命令：
+
+```bash
+apt-get update && apt-get install -y curl      # Debian / Ubuntu（非 root 加 sudo）
+apk add curl                                   # Alpine
 ```
 
 Run it on the node (Linux with systemd >= 250, amd64 or arm64; Debian 12/13, Ubuntu 22.04+ are
@@ -686,7 +694,7 @@ Anything else (an IP-only deployment with Caddy's internal CA) → the command *
 certificate's public key**:
 
 ```bash
-curl -fsSL --proto '=https' -k --pinnedpubkey 'sha256//<base64>' 'https://203.0.113.10/install/<token>' | sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'
+sh -c 'command -v curl …' && curl -fsSL --proto '=https' -k --pinnedpubkey 'sha256//<base64>' 'https://203.0.113.10/install/<token>' | sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'
 ```
 
 curl checks the pin during the handshake, before it sends the request, so a mismatch aborts

@@ -3700,9 +3700,13 @@ python3 - "$LOG/inst-create.json" "$INST_URL" <<'PY' || { echo "FAIL: create res
 import base64, json, sys
 v = json.load(open(sys.argv[1])); i = v["install"]
 as_root = "sh -c '[ \"$(id -u)\" = 0 ] || exec sudo sh; exec sh'"
-assert i["command"] == "curl -fsSL '%s' | %s" % (sys.argv[2], as_root), i["command"]
-assert i["command_wget"] == "wget -qO- '%s' | %s" % (sys.argv[2], as_root), i["command_wget"]
-assert i["pin"] is None and i["command_wget"].startswith("wget -qO- ")
+# A missing curl/wget stops with how to install it (test deployment P3).
+need = lambda t: "sh -c 'command -v %s >/dev/null || { echo " % t
+assert i["command"].startswith(need("curl")) and "apt-get install -y curl" in i["command"], i["command"]
+assert i["command"].endswith("' && curl -fsSL '%s' | %s" % (sys.argv[2], as_root)), i["command"]
+assert i["command_wget"].startswith(need("wget")), i["command_wget"]
+assert i["command_wget"].endswith("' && wget -qO- '%s' | %s" % (sys.argv[2], as_root)), i["command_wget"]
+assert i["pin"] is None
 assert i["releases"]["amd64"]["version"] == "v900.0.1", i["releases"]
 assert sys.argv[2].endswith("/install/" + v["enrollment_token"])
 PY
