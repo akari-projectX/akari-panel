@@ -130,7 +130,9 @@ pub async fn run(args: SeedArgs) -> Result<()> {
     seed_accounts(&pg).await?;
     let t = Instant::now();
     // Every user of group g on the direct entrance of every node of group
-    // g (both numbered by name order), one vless credential per pair.
+    // g (both numbered by name order), one vless credential per pair. Rows
+    // of one entrance are stored together (ORDER BY): the layout no longer
+    // depends on the join plan (Q1 changed it, PERF.md).
     let assigned = sqlx::query(
         "WITH n AS (SELECT id, (row_number() OVER (ORDER BY name) - 1) % $1 AS g FROM nodes), \
               u AS (SELECT id, (row_number() OVER (ORDER BY email) - 1) % $1 AS g FROM users \
@@ -138,7 +140,8 @@ pub async fn run(args: SeedArgs) -> Result<()> {
          INSERT INTO entrance_users (entrance_id, user_id, protocol, account) \
          SELECT e.id, u.id, 'vless', \
              jsonb_build_object('id', gen_random_uuid()::text, 'flow', 'xtls-rprx-vision') \
-         FROM n JOIN u USING (g) JOIN entrances e ON e.node_id = n.id AND e.kind = 'direct'",
+         FROM n JOIN u USING (g) JOIN entrances e ON e.node_id = n.id AND e.kind = 'direct' \
+         ORDER BY e.id, u.id",
     )
     .bind(groups)
     .execute(&pg)
