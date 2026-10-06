@@ -77,7 +77,7 @@ login() {
 check_panel() {
 	local p
 	p=$(prefix)
-	[ -n "$p" ] || fail "no prefix"
+	[ -n "$p" ] || { akari-ctl info || true; fail "no prefix"; }
 	[ "$(code "$origin/$p/healthz")" = 200 ] || fail "healthz through Caddy"
 	# v0.4 (D11): the portal at / (a v0.3.x panel: the plain 404).
 	case $(code "$origin/") in 200 | 404) ;; *) fail "/ answers neither the portal nor the plain 404" ;; esac

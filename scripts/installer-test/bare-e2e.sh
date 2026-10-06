@@ -101,7 +101,7 @@ https_code() {
 check_panel() {
 	local want_version=$1 p ft
 	p=$(prefix)
-	[ -n "$p" ] || fail "no prefix from akari-ctl info"
+	[ -n "$p" ] || { cx akari-ctl info || true; fail "no prefix from akari-ctl info"; }
 	[ "$(https_code "$origin/$p/healthz")" = 200 ] || fail "healthz through Caddy"
 	# v0.4 (D11): the portal at /; unknown paths stay the plain 404.
 	case $want_version in
