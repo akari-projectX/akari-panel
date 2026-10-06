@@ -1629,10 +1629,12 @@ pub async fn rollup_pass(pg: &sqlx::PgPool, keep_days: u32) -> anyhow::Result<u6
         .bind(keep_days as i32)
         .fetch_one(&mut *tx)
         .await?;
+        // End the transaction explicitly either way: a dropped one releases
+        // the history lock only when its pooled connection is next used.
+        tx.commit().await?;
         let Some(n) = n else {
             break;
         };
-        tx.commit().await?;
         moved += n as u64;
     }
     loop {
