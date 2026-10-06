@@ -1,0 +1,90 @@
+/*
+ * 启动画面（index.html 的 #boot）与禁用 JavaScript 时的提示。
+ *
+ * 原来内联在 index.html 里；面板的 CSP 不允许内联样式表，搬到这里随应用样式表一起加载——
+ * 那张样式表在 <head> 里本来就挡首帧，启动画面并不会因此晚出现。
+ * 明暗由 src/boot/boot.js 在首帧前给 <html> 加好的 .dark / .light 决定；
+ * 它没跑起来（隐私模式读不了存储）时退回系统设置。
+ */
+
+html { background: #fff; }
+html.dark { background: #1b1f27; }
+@media (prefers-color-scheme: dark) {
+  html:not(.light) { background: #1b1f27; }
+}
+
+#boot {
+  position: fixed; inset: 0; z-index: 9999;
+  display: none; flex-direction: column; align-items: center; justify-content: center; gap: 26px;
+  background: #fff; color: #12100c;
+  font: 400 13px/1.7 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+        'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  /* 和 src/lib/motion.ts 的 DUR.base / index.css 的 --ease-out 一致：页面入场在它开始淡出时同时开播 */
+  transition: opacity .42s cubic-bezier(.22, 1, .36, 1);
+}
+/* 只在启动脚本跑过时显示：禁用 JavaScript 时它永远收不起来，还会盖住 <noscript> 的提示 */
+html.js #boot { display: flex; }
+html.dark #boot { background: #1b1f27; color: #e8eaf0; }
+@media (prefers-color-scheme: dark) {
+  html:not(.light) #boot { background: #1b1f27; color: #e8eaf0; }
+}
+#boot.boot-out { opacity: 0; pointer-events: none; }
+
+/*
+ * 苹果那只活动指示器：12 根锥形短棒，亮度依次衰减。
+ * 选它是因为它在小尺寸下也认得出来，而且安静——启动画面不该比页面本身还抢眼。
+ * 序号原来写在每根的 style="--i:n" 上；CSP 下改用 :nth-child。
+ */
+#boot .sp { position: relative; width: 30px; height: 30px; }
+#boot .sp i {
+  position: absolute; top: 0; left: 50%;
+  width: 2.3px; height: 8px; margin-left: -1.15px;
+  border-radius: 999px; background: currentColor; opacity: .12;
+  transform-origin: 50% 15px;
+  transform: rotate(calc(var(--i) * 30deg));
+  animation: boot-fade 1s linear infinite;
+  animation-delay: calc(var(--i) * -0.0833s);
+}
+#boot .sp i:nth-child(1) { --i: 0; }
+#boot .sp i:nth-child(2) { --i: 1; }
+#boot .sp i:nth-child(3) { --i: 2; }
+#boot .sp i:nth-child(4) { --i: 3; }
+#boot .sp i:nth-child(5) { --i: 4; }
+#boot .sp i:nth-child(6) { --i: 5; }
+#boot .sp i:nth-child(7) { --i: 6; }
+#boot .sp i:nth-child(8) { --i: 7; }
+#boot .sp i:nth-child(9) { --i: 8; }
+#boot .sp i:nth-child(10) { --i: 9; }
+#boot .sp i:nth-child(11) { --i: 10; }
+#boot .sp i:nth-child(12) { --i: 11; }
+
+/* 八秒还没好，多半不是我们慢，而是网络。给一句话和一个出口。 */
+#boot .slow {
+  max-width: 260px; text-align: center; opacity: 0; font-size: 12.5px; line-height: 1.9;
+  animation: boot-slow .5s ease 8s forwards;
+}
+#boot .slow b { display: block; font-weight: 500; }
+#boot .slow span { opacity: .55; }
+#boot .slow a { color: #1677ff; text-decoration: none; }
+/* 启动守护判定加载失败（src/boot/boot.js）：立即显示，附错误摘要 */
+#boot .slow.failed { animation: none; opacity: 1; }
+#boot .slow code {
+  display: block; margin-top: 10px; opacity: .5; word-break: break-all;
+  font: 11px/1.6 ui-monospace, Menlo, monospace;
+}
+
+@keyframes boot-fade {
+  0% { opacity: 1; }
+  100% { opacity: .12; }
+}
+@keyframes boot-slow { to { opacity: 1; } }
+
+/* 短棒只明暗轮换、不位移，不属于会引起不适的动效；冻住反而像卡死。只放慢一档。 */
+@media (prefers-reduced-motion: reduce) {
+  #boot .sp i { animation-duration: 1.4s; }
+}
+
+/* 禁用 JavaScript 时的提示（<noscript>） */
+.nojs { max-width: 520px; margin: 18vh auto; padding: 0 24px; font: 400 15px/1.9 -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; }
+.nojs h1 { font-size: 22px; margin: 0 0 10px; }
+.nojs p { color: #666; margin: 0; }

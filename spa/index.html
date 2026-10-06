@@ -2,10 +2,33 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/src/assets/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Akari</title>
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1b1f27" media="(prefers-color-scheme: dark)" />
+    <title>Akari 灯塔 — 一直亮着</title>
+    <!--
+      面板的 CSP（default-src 'self'）：这里不能有内联 <script>、内联 <style>、style="" 或 on* 属性，
+      scripts/check-dist.mjs 在 CI 里检查构建产物。
+      首帧前定明暗与启动守护在 src/boot/boot.js（由 vite.config.ts 插到 <head> 最前面），
+      启动画面的样式在 src/boot/boot.css（随应用样式表一起加载，那张样式表本来就挡首帧）。
+    -->
   </head>
   <body>
+    <!-- 启动画面：何时收起由 src/lib/boot.ts 决定；禁用 JavaScript 时不显示（html 上没有 .js） -->
+    <div id="boot">
+      <div class="sp" role="status" aria-label="加载中"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+      <p class="slow">
+        <b>网络似乎有点慢</b>
+        <span>页面还在加载。若长时间停在这里，可<a href="">重新加载</a>。</span>
+      </p>
+    </div>
+    <noscript>
+      <div class="nojs">
+        <h1>此页面需要 JavaScript</h1>
+        <p>当前浏览器禁用了 JavaScript，页面无法加载。请在设置中启用后刷新本页。</p>
+      </div>
+    </noscript>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
