@@ -104,8 +104,10 @@ check_panel() {
 	[ -n "$p" ] || { cx akari-ctl info || true; fail "no prefix from akari-ctl info"; }
 	[ "$(https_code "$origin/$p/healthz")" = 200 ] || fail "healthz through Caddy"
 	# v0.4 (D11): the portal at /; unknown paths stay the plain 404.
-	case $want_version in
-	v0.3.*) [ "$(https_code "$origin/")" = 404 ] || fail "/ is not the plain 404" ;;
+	# (Told apart by akari-ctl info: a v0.3.x console is /{prefix}/admin; the
+	# CI build of this tree is also called v0.3.2-ci.N.)
+	case $(cx akari-ctl info | sed -n 1p) in
+	*/admin) [ "$(https_code "$origin/")" = 404 ] || fail "/ is not the plain 404" ;;
 	*)
 		[ "$(https_code "$origin/")" = 200 ] || fail "/ is not the portal"
 		[ "$(https_code "$origin/no-such-page")" = 404 ] || fail "an unknown path is not the plain 404"
