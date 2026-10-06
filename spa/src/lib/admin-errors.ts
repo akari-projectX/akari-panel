@@ -154,6 +154,8 @@ export const ADMIN_CODES: Record<string, string> = {
   "finance.hold_days_range": "冻结天数须为 0–{max_hold_days}",
   "finance.min_withdrawal_range": "最低提现金额须在 0.01–{max_price_yuan} 元之间",
   "finance.rate_percent_range": "返利比例须为 0–100",
+  "finance.usdt_chain_unknown": "未知的 USDT 网络 {chain}",
+  "finance.usdt_rate_range": "参考汇率须为每 1 USDT 0.01–10000 元",
   "finance.withdrawal_user_gone": "该用户已删除，只能标记为已打款",
   // 节点组
   "group.description_long": "说明最多 {max_description} 个字符",

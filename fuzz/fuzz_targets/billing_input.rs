@@ -10,13 +10,24 @@
 //! once an unknown member is added) and an order body never carries an
 //! amount; the discount (percent floors, fixed capped) is within
 //! [0, list] and a percent discount never exceeds the stated percentage;
-//! the split covers exactly the list price with no negative part.
+//! the split covers exactly the list price with no negative part; R46: an
+//! accepted withdrawal address is the trimmed input of a known chain, a memo
+//! only on TON, and a parsed USDT amount round-trips.
 #![no_main]
 
 use akari_panel::billing::coupons::{mirror, normalize_code};
 use libfuzzer_sys::fuzz_target;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+
+fn usdt_address(chain: &str, address: &str, memo: Option<&str>) {
+    use akari_panel::billing::usdt;
+    if let Ok((a, m)) = usdt::check_address(chain, address, memo) {
+        assert!(usdt::known(chain));
+        assert_eq!(a, address.trim());
+        assert!(m.is_none() || chain == "ton");
+    }
+}
 
 fn strict<T: DeserializeOwned>(body: &[u8]) -> Option<Value> {
     serde_json::from_slice::<T>(body).ok()?;
@@ -103,12 +114,24 @@ fuzz_target!(|data: &[u8]| {
         }
         7 => {
             strict::<commission::WithdrawReq>(body);
+            if let Ok(r) = serde_json::from_slice::<commission::WithdrawReq>(body) {
+                usdt_address(&r.chain, &r.address, r.memo.as_deref());
+            }
         }
         8 => {
             strict::<commission::Settings>(body);
         }
         9 => {
             strict::<commission::ApproveReq>(body);
+            if let Ok(r) = serde_json::from_slice::<commission::ApproveReq>(body) {
+                // A USDT amount is positive, ≤ 6 decimals, and round-trips.
+                if let Some(m) = commission::usdt_micros(&r.usdt_amount) {
+                    assert!(m > 0);
+                    let text = format!("{}.{:06}", m / 1_000_000, m % 1_000_000);
+                    assert_eq!(commission::usdt_micros(&text), Some(m));
+                }
+                let _ = commission::txid_ok(&r.txid);
+            }
         }
         10 => {
             strict::<commission::RejectReq>(body);

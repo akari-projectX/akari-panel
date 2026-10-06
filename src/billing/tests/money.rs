@@ -156,7 +156,7 @@ async fn commission_clawback_after_the_hold() {
     let r = ic
         .post(
             "/test/api/v1/me/withdrawals",
-            json!({"amount_cents": 100, "method": "alipay", "account": "a"}),
+            json!({"amount_cents": 100, "chain": "trc20", "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}),
         )
         .await;
     assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
@@ -164,7 +164,7 @@ async fn commission_clawback_after_the_hold() {
     let r = admin
         .post(
             &format!("/test/api/v1/withdrawals/{wd}/approve"),
-            json!({"payout_reference": "p"}),
+            json!({"usdt_amount": "1", "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}),
         )
         .await;
     assert_eq!(r.status, StatusCode::NO_CONTENT);

@@ -300,3 +300,30 @@ async fn self_service_deletion() {
     assert_eq!(r.json()["code"], "account.banned");
     db.drop().await;
 }
+
+/// A pending withdrawal (money held) blocks the self-deletion.
+#[tokio::test]
+async fn pending_withdrawal_blocks_deletion() {
+    let Some((db, state)) = setup().await else {
+        return;
+    };
+    let u = db.user().await;
+    with_password(&db, u, "user-password-1").await;
+    sqlx::query(
+        "INSERT INTO withdrawals (id, user_id, user_label, amount_cents, chain, address) \
+         VALUES (gen_random_uuid(), $1, 'u', 100, 'trc20', 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t')",
+    )
+    .bind(u)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let c = client_for(&state, u).await;
+    let r = c
+        .post(
+            "/test/api/v1/me/delete",
+            json!({"confirm": true, "password": "user-password-1"}),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "account.delete_pending_withdrawals");
+    db.drop().await;
+}

@@ -16,11 +16,14 @@
 //! - `reverse_for_order` (admin refund of a paid order): a still pending
 //!   commission is reversed and never credited. A credited one stays (the
 //!   hold period is the window for refunds; adjust by hand after it).
-//! - Withdrawals: the amount is debited when requested (funds held, one open
-//!   request per user), the admin approves with the payout reference after
-//!   paying by hand, or rejects (funds back); the user may cancel while
-//!   pending. Withdrawable = min(balance, credited commissions − withdrawals
-//!   not rejected/cancelled).
+//! - Withdrawals (R46: USDT only): the user picks a chain the admin enabled
+//!   and an address (checked per chain, `usdt.rs`); the CNY amount is
+//!   debited when requested (funds held, one open request per user), the
+//!   admin pays by hand on the exchange and approves with the USDT sent and
+//!   the transaction hash, or rejects (funds back); the user may cancel
+//!   while pending. Withdrawable = min(balance, credited commissions −
+//!   withdrawals not rejected/cancelled). The address is shown only to the
+//!   user and to admins.
 
 use crate::auth::{bad_request, conflict};
 use axum::Json;
@@ -40,7 +43,6 @@ use crate::auth::{ApiError, AuthUser};
 use crate::state::AppState;
 
 const MAX_HOLD_DAYS: i32 = 365;
-const MAX_ACCOUNT: usize = 200;
 const MAX_NOTE: usize = 500;
 /// Commissions credited per pass (the rest next pass).
 const CREDIT_BATCH: i64 = 200;
@@ -57,10 +59,16 @@ pub struct Settings {
     pub first_order_only: bool,
     pub hold_days: i32,
     pub min_withdrawal_cents: i64,
+    /// R46: the USDT chains users may withdraw to (absent = all).
+    #[serde(default = "super::usdt::default_chains")]
+    pub usdt_chains: Vec<String>,
+    /// R46: reference rate, CNY fen per 1 USDT (display only; null = none).
+    #[serde(default)]
+    pub usdt_rate_cents: Option<i64>,
 }
 
-const SETTINGS_COLS: &str =
-    "enabled, rate_percent, first_order_only, hold_days, min_withdrawal_cents";
+const SETTINGS_COLS: &str = "enabled, rate_percent, first_order_only, hold_days, \
+     min_withdrawal_cents, usdt_chains, usdt_rate_cents";
 
 pub fn check_settings(s: &Settings) -> Result<(), ApiError> {
     if !(0..=100).contains(&s.rate_percent) {
@@ -81,6 +89,21 @@ pub fn check_settings(s: &Settings) -> Result<(), ApiError> {
             "finance.min_withdrawal_range",
             "min_withdrawal_cents must be 1..={max_price_cents} (integer fen)",
             max_price_cents = MAX_PRICE_CENTS
+        ));
+    }
+    if let Some(c) = s.usdt_chains.iter().find(|c| !super::usdt::known(c)) {
+        return Err(bad_request!(
+            "finance.usdt_chain_unknown",
+            "unknown USDT chain {chain}",
+            chain = c.chars().take(32).collect::<String>()
+        ));
+    }
+    if s.usdt_rate_cents
+        .is_some_and(|r| !(1..=1_000_000).contains(&r))
+    {
+        return Err(bad_request!(
+            "finance.usdt_rate_range",
+            "usdt_rate_cents must be 1..=1000000 (CNY fen per USDT)"
         ));
     }
     Ok(())
@@ -107,15 +130,24 @@ pub async fn apply_update_settings(
     )))
     .fetch_one(&mut *conn)
     .await?;
+    // The chains in the canonical order, each once.
+    let chains: Vec<String> = super::usdt::CHAINS
+        .iter()
+        .map(|(c, _)| c.to_string())
+        .filter(|c| s.usdt_chains.contains(c))
+        .collect();
     sqlx::query(
         "UPDATE commission_settings SET enabled = $1, rate_percent = $2, first_order_only = $3, \
-         hold_days = $4, min_withdrawal_cents = $5, updated_at = now() WHERE id = 1",
+         hold_days = $4, min_withdrawal_cents = $5, usdt_chains = $6, usdt_rate_cents = $7, \
+         updated_at = now() WHERE id = 1",
     )
     .bind(s.enabled)
     .bind(s.rate_percent)
     .bind(s.first_order_only)
     .bind(s.hold_days)
     .bind(s.min_withdrawal_cents)
+    .bind(&chains)
+    .bind(s.usdt_rate_cents)
     .execute(&mut *conn)
     .await?;
     crate::audit::record(
@@ -148,8 +180,9 @@ pub async fn put_settings(
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
     apply_update_settings(&mut tx, &Actor::of(&user), &req).await?;
+    let stored = settings(&mut tx).await?;
     tx.commit().await?;
-    Ok(Json(req))
+    Ok(Json(stored))
 }
 
 // ---------------------------------------------------------------------------
@@ -442,33 +475,16 @@ pub async fn refund_preview(
 // Withdrawals
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Method {
-    Alipay,
-    Wechat,
-    Bank,
-    Other,
-}
-
-impl Method {
-    fn as_str(self) -> &'static str {
-        match self {
-            Method::Alipay => "alipay",
-            Method::Wechat => "wechat",
-            Method::Bank => "bank",
-            Method::Other => "other",
-        }
-    }
-}
-
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct WithdrawReq {
     pub amount_cents: i64,
-    pub method: Method,
-    /// Payee account (e.g. the Alipay account and real name).
-    pub account: String,
+    /// R46: one of the enabled `usdt_chains`.
+    pub chain: String,
+    pub address: String,
+    /// TON only: the deposit memo / comment (optional).
+    #[serde(default)]
+    pub memo: Option<String>,
 }
 
 #[derive(Serialize, sqlx::FromRow, Debug)]
@@ -478,11 +494,16 @@ pub struct WithdrawalView {
     /// Q4: snapshot label; `user_email` = the requester's current address.
     user_label: String,
     user_email: Option<String>,
+    /// CNY debited.
     amount_cents: i64,
-    method: String,
-    account: String,
+    chain: String,
+    /// Only the requester and admins ever see it.
+    address: String,
+    memo: Option<String>,
     status: String,
-    payout_reference: Option<String>,
+    /// The USDT the admin sent (decimal text, 6 places) and the hash.
+    usdt_amount: Option<String>,
+    txid: Option<String>,
     note: Option<String>,
     decided_at: Option<DateTime<Utc>>,
     decided_by: Option<String>,
@@ -491,8 +512,38 @@ pub struct WithdrawalView {
 
 const WITHDRAWAL_SQL: &str = "SELECT id, user_id, user_label, \
      (SELECT u.email FROM users u WHERE u.id = withdrawals.user_id) AS user_email, \
-     amount_cents, method, account, \
-     status, payout_reference, note, decided_at, decided_by, created_at FROM withdrawals";
+     amount_cents, chain, address, memo, status, \
+     CASE WHEN usdt_micros IS NULL THEN NULL \
+          ELSE to_char(usdt_micros / 1000000.0, 'FM999999999990.000000') END AS usdt_amount, \
+     txid, note, decided_at, decided_by, created_at FROM withdrawals";
+
+/// Pure: a USDT amount (decimal text, ≤ 6 places, > 0) in micro-USDT.
+pub fn usdt_micros(text: &str) -> Option<i64> {
+    let t = text.trim();
+    let (int, frac) = match t.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (t, ""),
+    };
+    if int.is_empty()
+        || int.len() > 9
+        || frac.len() > 6
+        || !int.bytes().all(|b| b.is_ascii_digit())
+        || !frac.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let micros =
+        int.parse::<i64>().ok()? * 1_000_000 + format!("{frac:0<6}").parse::<i64>().ok()?;
+    (micros > 0).then_some(micros)
+}
+
+/// Pure: a transaction hash as an explorer shows it (hex, base58 or
+/// base64 characters, 8–128).
+pub fn txid_ok(t: &str) -> bool {
+    (8..=128).contains(&t.len())
+        && t.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'+' | b'/' | b'='))
+}
 
 /// A user's withdrawal request: checked against the withdrawable amount
 /// under the balance row lock, the funds debited at once (ledger
@@ -503,14 +554,6 @@ pub async fn apply_request(
     user_id: Uuid,
     req: &WithdrawReq,
 ) -> Result<Uuid, ApiError> {
-    let account = req.account.trim();
-    if account.is_empty() || account.chars().count() > MAX_ACCOUNT {
-        return Err(bad_request!(
-            "withdrawal.account_length",
-            "account must be 1-{max_account} characters",
-            max_account = MAX_ACCOUNT
-        ));
-    }
     if !(1..=MAX_PRICE_CENTS).contains(&req.amount_cents) {
         return Err(bad_request!(
             "withdrawal.amount_range",
@@ -519,6 +562,15 @@ pub async fn apply_request(
         ));
     }
     let s = settings(conn).await?;
+    if !s.usdt_chains.contains(&req.chain) {
+        return Err(bad_request!(
+            "withdrawal.chain_invalid",
+            "unknown chain {chain}",
+            chain = req.chain.chars().take(32).collect::<String>()
+        ));
+    }
+    let (address, memo) =
+        super::usdt::check_address(&req.chain, &req.address, req.memo.as_deref())?;
     if req.amount_cents < s.min_withdrawal_cents {
         return Err(bad_request!(
             "withdrawal.below_minimum",
@@ -536,15 +588,16 @@ pub async fn apply_request(
     }
     let id = Uuid::new_v4();
     let r = sqlx::query(
-        "INSERT INTO withdrawals (id, user_id, user_label, amount_cents, method, account) \
-         SELECT $1, u.id, $6, $3, $4, $5 FROM users u WHERE u.id = $2",
+        "INSERT INTO withdrawals (id, user_id, user_label, amount_cents, chain, address, memo) \
+         SELECT $1, u.id, $6, $3, $4, $5, $7 FROM users u WHERE u.id = $2",
     )
     .bind(id)
     .bind(user_id)
     .bind(req.amount_cents)
-    .bind(req.method.as_str())
-    .bind(account)
+    .bind(&req.chain)
+    .bind(&address)
     .bind(crate::audit::user_label(user_id))
+    .bind(&memo)
     .execute(&mut *conn)
     .await;
     match r {
@@ -562,7 +615,14 @@ pub async fn apply_request(
     Ok(id)
 }
 
-/// Decide a pending withdrawal: `approved` (payout reference required) or
+/// What an approval records: the USDT sent (micro-USDT) and the hash.
+#[derive(Debug, Clone, Copy)]
+pub struct Payout<'a> {
+    pub usdt_micros: i64,
+    pub txid: &'a str,
+}
+
+/// Decide a pending withdrawal: `approved` (with the payout) or
 /// `rejected`/`cancelled` (funds back: ledger `withdrawal_reversal`).
 /// Audited `withdrawal.<status>`. 409 when no longer pending.
 pub async fn apply_decide(
@@ -571,7 +631,7 @@ pub async fn apply_decide(
     id: Uuid,
     owner: Option<Uuid>,
     status: &str,
-    payout_reference: Option<&str>,
+    payout: Option<Payout<'_>>,
     note: Option<&str>,
 ) -> Result<(), ApiError> {
     // Lock order: the balance row before the withdrawal row (as
@@ -615,12 +675,13 @@ pub async fn apply_decide(
         ledger::apply_entry(conn, actor, &e).await?;
     }
     sqlx::query(
-        "UPDATE withdrawals SET status = $2, payout_reference = $3, note = $4, \
-         decided_at = now(), decided_by = $5 WHERE id = $1",
+        "UPDATE withdrawals SET status = $2, usdt_micros = $3, txid = $4, note = $5, \
+         decided_at = now(), decided_by = $6 WHERE id = $1",
     )
     .bind(id)
     .bind(status)
-    .bind(payout_reference)
+    .bind(payout.map(|p| p.usdt_micros))
+    .bind(payout.map(|p| p.txid))
     .bind(note)
     .bind(&actor.label)
     .execute(&mut *conn)
@@ -632,7 +693,12 @@ pub async fn apply_decide(
         "withdrawal",
         Some(id.to_string()),
         Some(json!({ "status": "pending", "amount_cents": amount, "user_id": user })),
-        Some(json!({ "status": status, "payout_reference": payout_reference, "note": note })),
+        Some(json!({
+            "status": status,
+            "usdt_micros": payout.map(|p| p.usdt_micros),
+            "txid": payout.map(|p| p.txid),
+            "note": note,
+        })),
     )
     .await?;
     Ok(())
@@ -707,6 +773,12 @@ pub async fn my_invite(
         "first_order_only": s.first_order_only,
         "hold_days": s.hold_days,
         "min_withdrawal_cents": s.min_withdrawal_cents,
+        // R46: where withdrawals can go, and the reference rate.
+        "usdt_chains": s.usdt_chains.iter().map(|c| json!({
+            "id": c,
+            "name": super::usdt::CHAINS.iter().find(|(id, _)| id == c).map(|(_, n)| *n),
+        })).collect::<Vec<_>>(),
+        "usdt_rate_cents": s.usdt_rate_cents,
         // W15's per-user codes (registration invite links).
         "invite_codes": invite_codes,
         "invited_count": invited,
@@ -899,7 +971,10 @@ pub async fn list_withdrawals(
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ApproveReq {
-    pub payout_reference: String,
+    /// R46: the USDT actually sent (decimal text, ≤ 6 places).
+    pub usdt_amount: String,
+    /// The transaction hash on the chain.
+    pub txid: String,
     #[serde(default)]
     pub note: Option<String>,
 }
@@ -917,12 +992,19 @@ pub async fn approve_withdrawal(
     ApiJson(req): ApiJson<ApproveReq>,
 ) -> Result<StatusCode, ApiError> {
     user.require_admin()?;
-    let reference = check_text(
-        "payout_reference",
-        Some(&req.payout_reference),
-        MAX_ACCOUNT,
-        true,
-    )?;
+    let micros = usdt_micros(&req.usdt_amount).ok_or_else(|| {
+        bad_request!(
+            "withdrawal.usdt_amount_invalid",
+            "usdt_amount must be a positive amount with at most 6 decimals"
+        )
+    })?;
+    let txid = req.txid.trim();
+    if !txid_ok(txid) {
+        return Err(bad_request!(
+            "withdrawal.txid_invalid",
+            "txid must be the transaction hash (8-128 characters)"
+        ));
+    }
     let note = check_text("note", req.note.as_deref(), MAX_NOTE, false)?;
     let mut tx = state.pg().begin().await?;
     apply_decide(
@@ -931,7 +1013,10 @@ pub async fn approve_withdrawal(
         id,
         None,
         "approved",
-        reference.as_deref(),
+        Some(Payout {
+            usdt_micros: micros,
+            txid,
+        }),
         note.as_deref(),
     )
     .await?;

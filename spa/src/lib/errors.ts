@@ -98,12 +98,17 @@ export const CODE_KEYS: Record<string, MessageKey> = {
   "ticket.subject_required": "errors.ticketSubjectRequired",
   "ticket.unknown_node": "errors.ticketUnknownNode",
   "ticket.unknown_order": "errors.ticketUnknownOrder",
-  "withdrawal.account_length": "errors.withdrawAccountLength",
+  "withdrawal.address_invalid": "errors.withdrawAddressInvalid",
   "withdrawal.amount_range": "errors.withdrawAmountRange",
   "withdrawal.below_minimum": "errors.withdrawBelowMinimum",
+  "withdrawal.chain_invalid": "errors.withdrawChainInvalid",
   "withdrawal.exceeds": "errors.withdrawExceeds",
+  "withdrawal.memo_invalid": "errors.withdrawMemoInvalid",
+  "withdrawal.memo_unexpected": "errors.withdrawMemoUnexpected",
   "withdrawal.not_pending": "errors.withdrawalNotPending",
   "withdrawal.open": "errors.withdrawOpen",
+  "withdrawal.txid_invalid": "errors.withdrawTxidInvalid",
+  "withdrawal.usdt_amount_invalid": "errors.withdrawUsdtAmountInvalid",
 };
 
 /** Message variables of an error: its params as text, plus `<p>_yuan` for each `<p>_cents`. */

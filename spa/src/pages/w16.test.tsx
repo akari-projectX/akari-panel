@@ -193,6 +193,11 @@ const invite = (over: Partial<MyInvite> = {}): MyInvite => ({
   first_order_only: true,
   hold_days: 7,
   min_withdrawal_cents: 5000,
+  usdt_chains: [
+    { id: "trc20", name: "TRC20 (Tron)" },
+    { id: "ton", name: "TON" },
+  ],
+  usdt_rate_cents: 720,
   invite_codes: null,
   invited_count: 3,
   pending_cents: 300,
@@ -223,10 +228,12 @@ const withdrawal = (over: Partial<Withdrawal> = {}): Withdrawal => ({
   user_label: "u-12345678",
   user_email: "alice@example.com",
   amount_cents: 6000,
-  method: "alipay",
-  account: "a@b 张三",
+  chain: "trc20",
+  address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+  memo: null,
   status: "pending",
-  payout_reference: null,
+  usdt_amount: null,
+  txid: null,
   note: null,
   decided_at: null,
   decided_by: null,
@@ -275,17 +282,23 @@ describe("portal wallet and invitations", () => {
     expect(screen.getByText(/Only your friend's first paid order counts/)).toBeTruthy();
     // Withdraw: text amount -> integer fen.
     fireEvent.change(screen.getByLabelText("Amount (CNY)"), { target: { value: "60.5x" } });
-    fireEvent.change(screen.getByLabelText("Payee account and name"), { target: { value: " a@b 张三 " } });
+    fireEvent.change(screen.getByLabelText("Receiving address"), {
+      target: { value: " UQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqEBI " },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Submit request" }));
     expect(await screen.findByText("Enter a valid amount (at most two decimals).")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Amount (CNY)"), { target: { value: "60" } });
-    fireEvent.change(screen.getByLabelText("Payout method"), { target: { value: "wechat" } });
+    // The reference rate (¥7.20 per USDT) gives an estimate.
+    expect(await screen.findByText(/about 8.33 USDT/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("USDT network"), { target: { value: "ton" } });
+    fireEvent.change(screen.getByLabelText("Memo (optional)"), { target: { value: " 88001 " } });
     fireEvent.click(screen.getByRole("button", { name: "Submit request" }));
     await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.path === "/me/withdrawals")).toBe(true));
     expect(calls.find((c) => c.path === "/me/withdrawals" && c.method === "POST")?.body).toEqual({
       amount_cents: 6000,
-      method: "wechat",
-      account: "a@b 张三",
+      chain: "ton",
+      address: "UQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqEBI",
+      memo: "88001",
     });
     expect(await screen.findByText("Withdrawal requested; an admin will process it.")).toBeTruthy();
     fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
@@ -311,13 +324,13 @@ describe("portal wallet and invitations", () => {
       "GET /me/balance": balance({ withdrawable_cents: 0 }),
       "GET /me/invite": invite({ enabled: false, invite_codes: ["abcdefgh23"], commissions: [] }),
       "GET /me/invite-codes": invites({ codes: [{ code: "abcdefgh23", uses: 1, created_at: "2026-10-01T00:00:00Z" }] }),
-      "GET /me/withdrawals": [withdrawal({ status: "approved", payout_reference: "T1" })],
+      "GET /me/withdrawals": [withdrawal({ status: "approved", usdt_amount: "8.330000", txid: "abcdef0123" })],
     });
     renderWithClient(<Wallet me={me()} />);
     expect(await screen.findByText("邀请返利暂未开放。")).toBeTruthy();
     expect(await screen.findByText("abcdefgh23")).toBeTruthy();
     expect(screen.getByText("暂无返利。")).toBeTruthy();
-    expect(await screen.findByText("打款凭证：T1")).toBeTruthy();
+    expect(await screen.findByText("已付 8.330000 USDT，交易哈希 abcdef0123")).toBeTruthy();
     // Nothing withdrawable: the form stays, disabled with the reason (W20, audit Minor 2).
     expect(screen.getByText("申请提现")).toBeTruthy();
     expect(screen.getByText("可提现金额 ¥0.00 低于最低提现额 ¥50.00，暂不能申请提现。")).toBeTruthy();
@@ -504,22 +517,29 @@ describe("console: finance", () => {
         first_order_only: true,
         hold_days: 7,
         min_withdrawal_cents: 10000,
+        usdt_chains: ["trc20", "ton"],
+        usdt_rate_cents: 720,
       },
       "PUT /commission-settings": () => ({ status: 200, body: {} }),
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
     renderAdmin(<AdminFinance />);
-    expect(await screen.findByText("a@b 张三", { exact: false })).toBeTruthy();
+    expect(await screen.findByText("TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t")).toBeTruthy();
+    expect(await screen.findByText("参考 ≈ 8.33 USDT")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "已打款" }));
-    expect(await screen.findByText("请先填写打款凭证（交易号等）")).toBeTruthy();
-    const ref = screen.getByLabelText("提现 alice@example.com 的打款凭证或拒绝原因");
-    fireEvent.change(ref, { target: { value: "2026100222001" } });
+    expect(await screen.findByText("请先填写实付 USDT 数量")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("提现 alice@example.com 的实付 USDT"), { target: { value: "8.33" } });
+    fireEvent.click(screen.getByRole("button", { name: "已打款" }));
+    expect(await screen.findByText("请先填写交易哈希（txid）")).toBeTruthy();
+    const ref = screen.getByLabelText("提现 alice@example.com 的交易哈希或拒绝原因");
+    fireEvent.change(ref, { target: { value: "abababababababababababababababababababababababababababababababab" } });
     fireEvent.click(screen.getByRole("button", { name: "已打款" }));
     await waitFor(() => expect(calls.some((c) => c.path === "/withdrawals/w1/approve")).toBe(true));
     expect(calls.find((c) => c.path === "/withdrawals/w1/approve")?.body).toEqual({
-      payout_reference: "2026100222001",
+      usdt_amount: "8.33",
+      txid: "abababababababababababababababababababababababababababababababab",
     });
-    fireEvent.change(screen.getByLabelText("提现 alice@example.com 的打款凭证或拒绝原因"), {
+    fireEvent.change(screen.getByLabelText("提现 alice@example.com 的交易哈希或拒绝原因"), {
       target: { value: "账号有误" },
     });
     fireEvent.click(screen.getByRole("button", { name: "拒绝" }));
@@ -535,6 +555,9 @@ describe("console: finance", () => {
     expect(await screen.findByText("返利比例须为 0–100 的整数")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("返利比例（%）"), { target: { value: "15" } });
     fireEvent.change(screen.getByLabelText("最低提现（元）"), { target: { value: "50" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "TON" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Polygon" }));
+    fireEvent.change(screen.getByLabelText("参考汇率（元/USDT，可空）"), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
     await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
     expect(calls.find((c) => c.method === "PUT")?.body).toEqual({
@@ -543,6 +566,8 @@ describe("console: finance", () => {
       first_order_only: true,
       hold_days: 7,
       min_withdrawal_cents: 5000,
+      usdt_chains: ["trc20", "polygon"],
+      usdt_rate_cents: null,
     });
     // Balance: find, ledger, signed adjustment.
     fireEvent.click(screen.getByRole("button", { name: "明细与调整" }));
