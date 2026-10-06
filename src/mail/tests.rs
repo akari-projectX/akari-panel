@@ -104,6 +104,7 @@ fn smtp_values_rules() {
         notify_expiry_days: 3,
         notify_expired: true,
         notify_quota: true,
+        notify_refund: None,
     };
     let v = mail_values(&base).unwrap();
     assert_eq!(v.host.as_deref(), Some("smtp.example.com"));
@@ -190,6 +191,7 @@ fn clone_req(r: &MailReq) -> MailReq {
         notify_expiry_days: r.notify_expiry_days,
         notify_expired: r.notify_expired,
         notify_quota: r.notify_quota,
+        notify_refund: r.notify_refund,
     }
 }
 

@@ -364,6 +364,7 @@ Everything here is off until you turn it on; nothing in panel.toml.
    expired", traffic at 80 % and used up (once each per period). Only verified addresses get
    mail; users add theirs in the portal (邮箱 card: current password + emailed code). 到期提醒
    只发给仍在生效的订阅；被取消或退款撤销的订阅不再收到「即将到期 / 已到期」（运营审查低-1）。
+   「订单退款通知」（默认开）：管理员退款时告诉用户退了多少、退到哪里、套餐怎样处理。
 3. **系统设置 → 注册**: **开放注册** (login page shows 注册; the address becomes the login).
    **注册需要邮箱验证** (v0.4: an on/off switch, default off, independent of 必须使用邀请码; on
    needs 邮件发送). Registration can be opened **without SMTP**: people then sign up with email +

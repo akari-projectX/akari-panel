@@ -272,6 +272,7 @@ const smtpView = (over: Partial<SmtpView> = {}): SmtpView => ({
   notify_expiry_days: 3,
   notify_expired: true,
   notify_quota: true,
+  notify_refund: true,
   dead_letters: 1,
   pending: 0,
   warnings: [],

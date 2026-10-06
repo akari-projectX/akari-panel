@@ -46,6 +46,7 @@ export interface SmtpView {
   notify_expiry_days: number;
   notify_expired: boolean;
   notify_quota: boolean;
+  notify_refund: boolean;
   dead_letters: number;
   pending: number;
   warnings: string[];
@@ -79,6 +80,7 @@ export const KIND_LABEL: Record<string, string> = {
   ticket_reply: "工单回复",
   ticket_new: "新工单",
   node_alert: "节点告警",
+  refund: "退款通知",
 };
 
 /** One domain per line or comma; "@" prefixes allowed (the server normalises). */
@@ -348,6 +350,7 @@ function SmtpForm({ data, saved, onSaved }: FormProps<SmtpView>) {
   const [expiryDays, setExpiryDays] = useState(String(data.notify_expiry_days));
   const [expired, setExpired] = useState(data.notify_expired);
   const [quota, setQuota] = useState(data.notify_quota);
+  const [refund, setRefund] = useState(data.notify_refund);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [testTo, setTestTo] = useState("");
@@ -382,6 +385,7 @@ function SmtpForm({ data, saved, onSaved }: FormProps<SmtpView>) {
       notify_expiry_days: days,
       notify_expired: expired,
       notify_quota: quota,
+      notify_refund: refund,
     };
     // Absent = keep the stored password.
     if (password) body.password = password;
@@ -532,6 +536,7 @@ function SmtpForm({ data, saved, onSaved }: FormProps<SmtpView>) {
               checked={quota}
               onChange={setQuota}
             />
+            <Check id="smtp-refund" label="订单退款通知" checked={refund} onChange={setRefund} />
           </fieldset>
           {error && (
             <p role="alert" className="text-sm text-destructive">

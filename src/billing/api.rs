@@ -1117,6 +1117,7 @@ pub async fn refund_order(
             max_reason = MAX_REASON
         ));
     }
+    let portal = crate::mail::portal_url(&state);
     let mut tx = state.pg().begin().await?;
     let r = super::refund::apply_refund(
         &mut tx,
@@ -1127,6 +1128,7 @@ pub async fn refund_order(
             to_balance: req.to_balance,
             external_cents: req.external_cents,
             keep_plan: req.keep_plan,
+            portal: portal.as_deref(),
         },
     )
     .await?;

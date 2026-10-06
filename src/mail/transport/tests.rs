@@ -230,6 +230,7 @@ fn settings(port: u16, security: &str, password: Option<&str>) -> MailSettings {
         notify_expiry_days: 3,
         notify_expired: true,
         notify_quota: true,
+        notify_refund: true,
         site_name: None,
     }
 }

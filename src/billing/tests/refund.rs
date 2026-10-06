@@ -337,3 +337,73 @@ async fn refund_money_only() {
     drop(state);
     db.drop().await;
 }
+
+/// The customer is told: one `refund` mail per refund (in the refund's
+/// transaction), with the amounts and what happened to the plan; none
+/// with the switch off or to an unverified address.
+#[tokio::test]
+async fn refund_notice_mail() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let admin = admin(&state, &db).await;
+    let (_, plan) = catalog_plan(&db, "p1-mail", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    sqlx::query(
+        "UPDATE mail_settings SET enabled = true, host = '127.0.0.1', security = 'none', \
+         from_addr = 'noreply@example.com'",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let u = db.user().await;
+    let email = format!("r{}@example.com", &u.simple().to_string()[..10]);
+    sqlx::query("UPDATE users SET email = $2, email_verified_at = now() WHERE id = $1")
+        .bind(u)
+        .bind(&email)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let mails = || async {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT subject, body_text FROM mail_outbox WHERE kind = 'refund' AND to_addr = $1 \
+             ORDER BY id",
+        )
+        .bind(&email)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap()
+    };
+    let c = user_client(&state, u).await;
+    let o = bought(&db, &c, plan, "month").await;
+    let r = refund(&admin, o, json!({"reason": "r", "external_cents": 600})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let m = mails().await;
+    assert_eq!(m.len(), 1);
+    assert!(m[0].0.contains("订单已退款"), "{:?}", m[0]);
+    for want in ["¥6.00", "原路退回", "已取消", "/test/app"] {
+        assert!(m[0].1.contains(want), "{want}: {}", m[0].1);
+    }
+    // Switched off: no mail; on again, but the address is unverified.
+    sqlx::query("UPDATE mail_settings SET notify_refund = false")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let o2 = bought(&db, &c, plan, "month").await;
+    refund(&admin, o2, json!({"reason": "r", "to_balance": true})).await;
+    sqlx::query("UPDATE mail_settings SET notify_refund = true")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE users SET email_verified_at = NULL WHERE id = $1")
+        .bind(u)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let o3 = bought(&db, &c, plan, "month").await;
+    refund(&admin, o3, json!({"reason": "r", "to_balance": true})).await;
+    assert_eq!(mails().await.len(), 1);
+    drop(state);
+    db.drop().await;
+}

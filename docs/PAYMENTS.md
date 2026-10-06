@@ -338,6 +338,10 @@ Withdrawals of a deleted user can only be approved.
   - 流量重置包：只退钱（已用流量无法撤销）；
   - 订单未开通、或它开通/续费的订阅已不是当前订阅（之后又换了套餐等）：只退钱。
 - 勾选「仅退款（保留套餐）」（`keep_plan: true`）则只退钱，套餐不动。
+- **退款通知邮件**：同一事务（savepoint，发信失败不影响退款）给用户发 `refund` 邮件：退款总额、
+  退回余额 / 原路退回的金额、套餐被怎样处理（已取消 / 到期时间回退到 X / 恢复原套餐 /
+  不受影响 / 未开通）。系统设置 → 邮件 →「订单退款通知」开关（`notify_refund`，默认开）；
+  只发已验证邮箱；模板可在「邮件模板」里改（种类 `refund`，`{order_no}` 必填）。
 - 确认框里的效果来自 `GET /orders/{id}/refund-preview`（`{balance_part_cents,
   amount_cents, effect}`，`effect.kind` = `none`（带 `why`）/`cancel`/`rollback`/
   `restore`），与实际执行用同一段计算；已退款或未付款的订单 409。

@@ -1697,6 +1697,24 @@ for _ in range(60):
 sys.exit("no message #%d to %s" % (n, to))
 PY
 }
+# A delivered message to $1 whose subject contains $2 and text contains $3
+# (any position in the mailbox; waits up to 30 s).
+mp_find() {
+  python3 - "$MP_API" "$1" "$2" "$3" <<'PY'
+import json, sys, time, urllib.parse, urllib.request
+api, to, subj, text = sys.argv[1:5]
+op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+for _ in range(60):
+    d = json.load(op.open(api + "/search?query=" + urllib.parse.quote("to:" + to)))
+    for s in d["messages"]:
+        if subj in s["Subject"]:
+            m = json.load(op.open(api + "/message/" + s["ID"]))
+            if text in m["Text"]:
+                print(m["Subject"]); print(m["Text"]); sys.exit(0)
+    time.sleep(0.5)
+sys.exit("no message to %s with %r / %r" % (to, subj, text))
+PY
+}
 # Fingerprint without the per-request id (X-Request-Id) and Date.
 fpr() {
   curl -s --noproxy '*' -D - -o /tmp/akari-smoke/fpbody "$@" | tr -d '\r' | grep -viE '^(date|x-request-id):' >/tmp/akari-smoke/fphead
@@ -2134,6 +2152,12 @@ XORDER=$(last_json "d['id']"); XOTN=$(last_json "d['out_trade_no']")
   || { echo "FAIL: out-of-band refund"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(psql_q "SELECT refund_cents || '/' || refund_external_cents FROM orders WHERE id='$XORDER'")" = "1000/1000" ] \
   || { echo "FAIL: out-of-band refund not recorded"; exit 1; }
+# The customer is told (one refund notice per refund): amounts and the plan.
+mp_find smoke-w16@smoke.test 订单已退款 "原路退回（支付渠道）：¥10.00" >"$LOG/refund-mail.txt" \
+  && matches '已取消' <"$LOG/refund-mail.txt" \
+  || { echo "FAIL: refund notice mail"; cat "$LOG/refund-mail.txt"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM mail_outbox WHERE kind='refund' AND to_addr='smoke-w16@smoke.test'")" = "2" ] \
+  || { echo "FAIL: not one refund notice per refund"; exit 1; }
 [ "$(psql_q "SELECT balance_cents FROM user_balances WHERE user_id='$W16U'")" = "1100" ] || { echo "FAIL: refund not on the balance"; exit 1; }
 # The money invariants, over everything above.
 [ "$(psql_q "SELECT count(*) FROM users u LEFT JOIN user_balances b ON b.user_id = u.id
@@ -2659,7 +2683,7 @@ echo "branding: ok"
 
 # Editable mail templates: whitelist enforced, stored version used by the
 # outbox (the registration code mail rendered for the next enqueue).
-[ "$(code -b "$JAR" "$BASE/api/v1/settings/mail-templates")" = "200" ] && last_json "len(d)" | matches -x 30 || { echo "FAIL: template list"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/mail-templates")" = "200" ] && last_json "len(d)" | matches -x 32 || { echo "FAIL: template list"; exit 1; }
 [ "$(api_json "$JAR" PUT "$BASE/api/v1/settings/mail-templates/password_reset/zh" '{"version":0,"subject":"x","body":"no link {nope}"}')" = "400" ] \
   && last_json "d['code']" | matches -x 'mail_template.placeholder_unknown' || { echo "FAIL: unknown placeholder accepted"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(api_json "$JAR" PUT "$BASE/api/v1/settings/mail-templates/password_reset/zh" '{"version":0,"subject":"x","body":"没有链接"}')" = "400" ] \
