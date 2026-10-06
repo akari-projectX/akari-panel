@@ -1215,7 +1215,12 @@ RELAY_ID=$(last_json "d['id']")
     -d "$(echo "$RELAY_BODY" | sed 's/"IPLC"/"dup"/')")" = "400" ] && last_json "d['code']" | matches -x 'entrance.port_clash' \
   || { echo "FAIL: a relay on a taken port accepted"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/entrances/$DIRECT_ID")" = "409" ] || { echo "FAIL: direct entrance deletable"; exit 1; }
-[ "$(patch_code "$BASE/api/v1/plans/$ACCESS_PLAN" "{\"group_ids\":[\"$ACCESS_GROUP\",\"$RELAY_GROUP\"]}")" = "200" ] \
+# 中-5: a plan edit changes new purchases unless applied to the existing
+# subscribers (after the impact preview).
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/plans/$ACCESS_PLAN/impact" -H 'Content-Type: application/json' -d '{"traffic_quota_bytes": 1}')" = "200" ] \
+  && [ "$(last_json "d['subscribers'] >= 1 and 0 <= d['over_quota'] <= d['subscribers']")" = "True" ] \
+  || { echo "FAIL: plan impact preview"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(patch_code "$BASE/api/v1/plans/$ACCESS_PLAN" "{\"group_ids\":[\"$ACCESS_GROUP\",\"$RELAY_GROUP\"],\"apply_to_existing\":true}")" = "200" ] \
   || { echo "FAIL: access plan gains the relay group"; cat /tmp/akari-smoke/last; exit 1; }
 relay_account() { psql_q "SELECT account->>'id' FROM entrance_users WHERE user_id='$1' AND entrance_id='$RELAY_ID'"; }
 VLESS_DR=$(relay_account "$USER_D")
@@ -1367,7 +1372,7 @@ if [ -n "$SF_ROOT" ]; then
   [ "$(sf_status)" = None ] || { echo "FAIL: source filter status after removal: $(sf_status)"; exit 1; }
   sudo -n rm -rf "$SF_ROOT"
 fi
-[ "$(patch_code "$BASE/api/v1/plans/$ACCESS_PLAN" "{\"group_ids\":[\"$ACCESS_GROUP\"]}")" = "200" ] || { echo "FAIL: restore access plan"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/plans/$ACCESS_PLAN" "{\"group_ids\":[\"$ACCESS_GROUP\"],\"apply_to_existing\":true}")" = "200" ] || { echo "FAIL: restore access plan"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/node-groups/$RELAY_GROUP")" = "204" ] || { echo "FAIL: delete relay group"; exit 1; }
 # create; update x3 (dead port, port back, leaves its group); delete.
 RELAY_AUDIT=$(psql_q "SELECT string_agg(action || '=' || n, ',' ORDER BY action) FROM (SELECT action, count(*) n FROM audit_log
@@ -2393,10 +2398,10 @@ wait_uv() { # wait until the agent applied the node's current user_version; $1 =
 }
 if need_agent "protocol>=4" "W7 speed limit throughput"; then
   FAST=$(python3 "$LOG/vless_rate.py" "$BUYER_VLESS" 400000) || { echo "FAIL: unlimited transfer"; exit 1; }
-  [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": 1}')" = "200" ] || { echo "FAIL: set speed limit"; exit 1; }
+  [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": 1, "apply_to_existing": true}')" = "200" ] || { echo "FAIL: set speed limit"; exit 1; }
   wait_uv delta
   SLOW=$(python3 "$LOG/vless_rate.py" "$BUYER_VLESS" 400000) || { echo "FAIL: limited transfer"; exit 1; }
-  [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": null}')" = "200" ] || { echo "FAIL: clear speed limit"; exit 1; }
+  [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": null, "apply_to_existing": true}')" = "200" ] || { echo "FAIL: clear speed limit"; exit 1; }
   wait_uv delta
   AGAIN=$(python3 "$LOG/vless_rate.py" "$BUYER_VLESS" 400000) || { echo "FAIL: transfer after clearing the limit"; exit 1; }
   echo "speed limit: unlimited ${FAST}s, 1 Mbps ${SLOW}s (>= ~2.7s expected), cleared ${AGAIN}s for 400 kB each way"
@@ -2405,10 +2410,10 @@ if need_agent "protocol>=4" "W7 speed limit throughput"; then
 else
   # An agent older than protocol 4 (the panel CI runs agent main until the
   # agent PR lands) ignores the field: the node must say so.
-  [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": 1}')" = "200" ] || { echo "FAIL: set speed limit"; exit 1; }
+  [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": 1, "apply_to_existing": true}')" = "200" ] || { echo "FAIL: set speed limit"; exit 1; }
   [ "$(code -b "$JAR" "$BASE/api/v1/nodes")" = "200" ] && grep -q "不支持限速" /tmp/akari-smoke/last \
     || { echo "FAIL: no warning for an agent that cannot enforce speed limits"; cat /tmp/akari-smoke/last; exit 1; }
-  [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": null}')" = "200" ] || { echo "FAIL: clear speed limit"; exit 1; }
+  [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": null, "apply_to_existing": true}')" = "200" ] || { echo "FAIL: clear speed limit"; exit 1; }
   echo "speed limit: NodeView warning for the protocol $AGENT_PROTO agent present (throughput check skipped above)"
 fi
 # Admin views and audit.

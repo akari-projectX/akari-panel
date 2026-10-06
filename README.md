@@ -306,7 +306,8 @@ separate loopback listener, never on the public port.
 | GET/POST | /api/v1/node-groups | admin | list / create `{name, description?, entrance_ids?}` (W28-a: groups hold entrances) |
 | PATCH/DELETE | /api/v1/node-groups/{id} | admin | rename, describe, replace `entrance_ids` / delete |
 | GET/POST | /api/v1/plans | admin | list / create `{name, period, traffic_quota_bytes?, speed_limit_mbps?, device_seats?, sort?, enabled?, group_ids?, description?, capacity?, renewal_only?, allow_switch_in?}` (views include `on_sale` and `prices`) |
-| PATCH/DELETE | /api/v1/plans/{id} | admin | update (same fields; null clears nullable ones) / delete (409 while users hold it) |
+| PATCH/DELETE | /api/v1/plans/{id} | admin | update (same fields; null clears nullable ones; 中-5: changes new purchases only unless `apply_to_existing: true`, which gives the active subscriptions all of the plan's current terms) / delete (409 while users hold it) |
+| POST | /api/v1/plans/{id}/impact | admin | 中-5: body = the PATCH to preview → `{subscribers, over_quota}` (active subscriptions; how many already used more than the resulting quota) |
 | GET/POST | /api/v1/nodes | admin | W17: `?view=summary` = the list's columns only (no inbound JSON, slim heartbeat, best agent latency, `alerts_firing`, `needs_certificate`), with an ETag (`If-None-Match` → 304; `?view=full`, the default, also carries one); full: node list with live status, certificate expiry, last heartbeat (W11: machine status, latency, tags), the node's one `inbound` (W28-a, null = none) and its `entrances` (`[{id, kind, name, connect_host, connect_port, rate_permille, rate, enabled, sort, wire_no, listen_port, source_cidrs, health_ok, health_at, health_failures, health_error, hidden_since, group_ids}]`; a relay hidden by the health test (3 failed TCP connects in a row) is left out of subscriptions and `/me/nodes` until it answers again, and raises the node's `entrance_down` alert, the built-in `direct` entrance first, then the relays), warnings / create a node `{name, region?, tls_domain?, template? \| inbound?, install?: {origin?}, display_name?, sort?, visible?, tags?, direct?: {connect_host?, connect_port?, rate?, enabled?, sort?, group_ids?}}` (one inbound: a template or an xray inbound object without tag; `direct` sets the built-in direct entrance; 201: one-time enrollment token + bootstrap file + one-line install command, shown once) |
 | GET | /api/v1/nodes/{id} | admin | W17: one node, full view (the node page) |
 | GET/PUT | /api/v1/nodes/{id}/alert-rules | admin | W17: per-node alert overrides `{muted, disabled: [kind], offline_secs?, cpu_percent?, cpu_minutes?, mem_percent?, mem_minutes?, disk_percent?, cert_days?}` (null = the global value) |
@@ -554,6 +555,15 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   (with the client, R25) and **not enforced**. A disabled plan is no longer
   offered for new assignments; existing subscribers keep it. Prices, stock
   and sale rules are in docs/PAYMENTS.md.
+- **Plan terms are snapshotted (中-5)**: a subscription keeps the quota,
+  reset period, speed limit and node groups of the plan as it was when the
+  subscription was created (`user_plans` + `user_plan_groups`, copied by
+  triggers on every creation path); renewals keep them too. Editing a plan
+  changes what new purchases get. To change the plan's current subscribers
+  as well, save with **同时应用到现有用户** (`apply_to_existing: true`): they
+  take all of the plan's current terms (audited with the count); the console
+  first shows `POST /plans/{id}/impact` (subscribers, and how many are
+  already over the new quota and would be paused).
 - **User plans (D12)**: one active plan per user (admins cannot have one).
   Users are managed only through plans: an assignment is a plan + term
   (`month` … `three_year`, `days` + N, `onetime` with or without N days),
@@ -568,8 +578,8 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   but reaches only `GET /me` (with the reason) and tickets — subscription,
   nodes, shop and orders refuse it (403 `account.banned`). Traffic resets
   and plan changes never lift a ban.
-- **Entitlement**: the user's entrances = the members of their active
-  plan's groups (W28-a/D3: the only source of access; there is no manual
+- **Entitlement**: the user's entrances = the members of the groups of
+  their active subscription (its snapshot; W28-a/D3: the only source of access; there is no manual
   assignment). Every change to groups, memberships, plans, user plans,
   entrances or a node's inbound reconciles `entrance_users` in the same
   transaction: one credential per granted entrance whose node's inbound is

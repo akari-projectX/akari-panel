@@ -422,9 +422,13 @@ function PlansCard({ plans = [], loading, groups }: { plans?: PlanView[]; loadin
 
 function PlanDialog({ plan, groups, onClose }: { plan: PlanView | null; groups: GroupView[]; onClose: () => void }) {
   const invalidate = useInvalidate();
+  const confirm = useConfirm();
   const [f, setF] = useState<PlanForm>(() => planForm(plan));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // 中-5: an edit changes new purchases; existing subscriptions keep the
+  // terms they bought unless the admin applies it to them too.
+  const [applyExisting, setApplyExisting] = useState(false);
   const set = (p: Partial<PlanForm>) => setF((x) => ({ ...x, ...p }));
   const setPrice = (kind: PeriodKind, p: Partial<PriceDraft>) =>
     setF((x) => ({ ...x, prices: { ...x.prices, [kind]: { ...x.prices[kind], ...p } } }));
@@ -436,7 +440,19 @@ function PlanDialog({ plan, groups, onClose }: { plan: PlanView | null; groups: 
     if (typeof body === "string") return setError(body);
     setBusy(true);
     try {
-      if (plan) await patch(`/plans/${plan.id}`, body);
+      if (plan && applyExisting) {
+        const impact = await post<{ subscribers: number; over_quota: number }>(`/plans/${plan.id}/impact`, body);
+        const over = impact.over_quota > 0 ? `，其中 ${impact.over_quota} 人已超出新额度，会被立即暂停` : "";
+        if (
+          !(await confirm({
+            title: `同时应用到 ${impact.subscribers} 个现有订阅${over}。确定吗？`,
+            confirmLabel: "保存并应用",
+            destructive: impact.over_quota > 0,
+          }))
+        )
+          return;
+      }
+      if (plan) await patch(`/plans/${plan.id}`, applyExisting ? { ...body, apply_to_existing: true } : body);
       else await post<PlanView>("/plans", body);
       await invalidate();
       onClose();
@@ -595,6 +611,22 @@ function PlanDialog({ plan, groups, onClose }: { plan: PlanView | null; groups: 
             上架（在购买页出售）
           </label>
         </fieldset>
+        {plan && plan.active_users > 0 && (
+          <label className="flex items-start gap-1.5 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={applyExisting}
+              onChange={(e) => setApplyExisting(e.target.checked)}
+            />
+            <span>
+              同时应用到现有用户（{plan.active_users} 个订阅）
+              <span className="block text-muted-foreground">
+                不勾选时，流量额度、重置周期、速度上限与节点组的修改只对之后的新购买生效，现有用户保持购买时的条款。
+              </span>
+            </span>
+          </label>
+        )}
         <ErrorText>{error}</ErrorText>
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <Button type="button" variant="outline" onClick={onClose}>

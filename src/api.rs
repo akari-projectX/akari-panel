@@ -1727,8 +1727,7 @@ pub struct HeartbeatMetricsSummary {
 const UNENFORCED_SPEED_LIMITS_SQL: &str = "CASE WHEN agent_protocol < 4 THEN EXISTS (\
      SELECT 1 FROM entrance_users eu JOIN entrances e ON e.id = eu.entrance_id \
         JOIN user_plans up ON up.user_id = eu.user_id AND up.status = 'active' \
-        JOIN plans p ON p.id = up.plan_id \
-        WHERE e.node_id = nodes.id AND p.speed_limit_mbps IS NOT NULL) \
+        WHERE e.node_id = nodes.id AND up.speed_limit_mbps IS NOT NULL) \
      ELSE false END";
 
 pub static NODE_SUMMARY_COLS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
@@ -3195,6 +3194,26 @@ mod tests {
                         plan,
                         &crate::plans::UpdatePlanReq {
                             group_ids: Some(Some(groups.to_vec())),
+                            apply_to_existing: true,
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .map(|_| ())
+                })
+            })
+        };
+        let plan_groups_for_new = move |groups: Vec<Uuid>| -> Op {
+            let groups = std::sync::Arc::new(groups);
+            Box::new(move |c| {
+                let groups = groups.clone();
+                Box::pin(async move {
+                    crate::plans::apply_update_plan(
+                        c,
+                        &crate::audit::Actor::test(),
+                        plan,
+                        &crate::plans::UpdatePlanReq {
+                            group_ids: Some(Some(groups.to_vec())),
                             ..Default::default()
                         },
                     )
@@ -3656,6 +3675,35 @@ mod tests {
                 false,
             ),
             (
+                // 中-5: an edit not applied to existing subscribers changes
+                // nothing they are served.
+                "plan quota edit for new purchases only",
+                Box::new(move |c| {
+                    Box::pin(async move {
+                        crate::plans::apply_update_plan(
+                            c,
+                            &crate::audit::Actor::test(),
+                            plan,
+                            &crate::plans::UpdatePlanReq {
+                                traffic_quota_bytes: Some(Some(1 << 40)),
+                                group_ids: Some(Some(vec![])),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .map(|_| ())
+                    })
+                }),
+                vec![n1, other],
+                false,
+            ),
+            (
+                "plan groups back (new purchases only)",
+                plan_groups_for_new(vec![group]),
+                vec![n1, other],
+                false,
+            ),
+            (
                 "plan speed limit (W7: travels in every user op)",
                 Box::new(move |c| {
                     Box::pin(async move {
@@ -3665,6 +3713,7 @@ mod tests {
                             plan,
                             &crate::plans::UpdatePlanReq {
                                 speed_limit_mbps: Some(Some(50)),
+                                apply_to_existing: true,
                                 ..Default::default()
                             },
                         )

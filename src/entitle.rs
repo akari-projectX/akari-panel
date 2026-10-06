@@ -4,8 +4,9 @@
 //!
 //! Model:
 //! - A user's entrances = the members (`entrance_group_members`) of the
-//!   groups of their ACTIVE plan (`user_plans.status = 'active'`), on nodes
-//!   not being deleted. Plans are the only source (D3: no manual
+//!   groups of their ACTIVE subscription (`user_plans.status = 'active'`;
+//!   the groups are the subscription's snapshot `user_plan_groups`, taken
+//!   from the plan at purchase — 运营审查中-5), on nodes not being deleted. Plans are the only source (D3: no manual
 //!   assignment). Role, enabled, expiry and the entrance's own `enabled`
 //!   do not matter here: what an agent actually runs is still filtered at
 //!   read time (`enforce::SERVED`, enabled entrances of enabled nodes), so
@@ -23,7 +24,8 @@
 //!   final counters the agent reports after the removal are still billed.
 //!
 //! Concurrency: every writer of node_groups, entrance_group_members, plans,
-//! plan_groups, user_plans and of a node's inbound or entrances — and every
+//! plan_groups, user_plans, user_plan_groups and of a node's inbound or
+//! entrances — and every
 //! caller of `apply_reconcile` — takes `lock()` (a transaction-scoped
 //! advisory lock) FIRST, before any row lock. Entitlement changes are
 //! therefore serialized, and the reconcile, reading after the lock, sees
@@ -50,8 +52,8 @@ pub const NODES_OF_USERS: &str = "SELECT e.node_id FROM entrance_users eu \
 /// the entrances in `$1` (uuid[]) and, unless `$2` is NULL, the users in
 /// `$2` (uuid[]).
 const GRANTED_PAIRS: &str = "SELECT DISTINCT m.entrance_id, up.user_id FROM user_plans up \
-     JOIN plan_groups pg ON pg.plan_id = up.plan_id \
-     JOIN entrance_group_members m ON m.group_id = pg.group_id \
+     JOIN user_plan_groups ug ON ug.user_plan_id = up.id \
+     JOIN entrance_group_members m ON m.group_id = ug.group_id \
      WHERE up.status = 'active' AND m.entrance_id = ANY($1) \
      AND ($2::uuid[] IS NULL OR up.user_id = ANY($2))";
 
@@ -151,8 +153,8 @@ async fn scope_nodes(conn: &mut PgConnection, scope: Scope<'_>) -> sqlx::Result<
         Scope::Users(u) => {
             sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
                 "SELECT e.node_id FROM user_plans up \
-                 JOIN plan_groups pg ON pg.plan_id = up.plan_id \
-                 JOIN entrance_group_members m ON m.group_id = pg.group_id \
+                 JOIN user_plan_groups ug ON ug.user_plan_id = up.id \
+                 JOIN entrance_group_members m ON m.group_id = ug.group_id \
                  JOIN entrances e ON e.id = m.entrance_id \
                  WHERE up.status = 'active' AND up.user_id = ANY($1) \
                  UNION {NODES_OF_USERS}"
@@ -478,8 +480,8 @@ pub async fn nodes_of_users(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::Re
 pub async fn granted_pairs(conn: &mut PgConnection) -> HashMap<Uuid, Vec<Uuid>> {
     let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
         "SELECT DISTINCT up.user_id, m.entrance_id FROM user_plans up \
-         JOIN plan_groups pg ON pg.plan_id = up.plan_id \
-         JOIN entrance_group_members m ON m.group_id = pg.group_id \
+         JOIN user_plan_groups ug ON ug.user_plan_id = up.id \
+         JOIN entrance_group_members m ON m.group_id = ug.group_id \
          JOIN entrances e ON e.id = m.entrance_id \
          JOIN nodes n ON n.id = e.node_id AND n.deleting_at IS NULL \
          WHERE up.status = 'active' ORDER BY 1, 2",

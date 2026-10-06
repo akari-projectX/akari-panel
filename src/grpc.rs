@@ -2249,12 +2249,11 @@ async fn desired_state(pg: &sqlx::PgPool, node_id: Uuid) -> anyhow::Result<Optio
             }
         }
         let rows = sqlx::query_as::<_, EntranceUserRow>(sqlx::AssertSqlSafe(format!(
-            "SELECT eu.user_id, e.wire_no, eu.protocol, eu.account, p.speed_limit_mbps \
+            "SELECT eu.user_id, e.wire_no, eu.protocol, eu.account, up.speed_limit_mbps \
              FROM entrance_users eu \
              JOIN entrances e ON e.id = eu.entrance_id AND e.node_id = $1 AND e.enabled \
              JOIN users u ON u.id = eu.user_id \
              LEFT JOIN user_plans up ON up.user_id = eu.user_id AND up.status = 'active' \
-             LEFT JOIN plans p ON p.id = up.plan_id \
              WHERE {} ORDER BY eu.user_id, e.wire_no",
             crate::enforce::SERVED
         )))
