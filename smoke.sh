@@ -2052,6 +2052,9 @@ CORDER=$(last_json "d['id']"); COTN=$(last_json "d['out_trade_no']")
 [ "$(psql_q "SELECT status, fulfilled_at IS NOT NULL FROM orders WHERE id='$CORDER'")" = "paid|t" ] || { echo "FAIL: coupon order not fulfilled"; exit 1; }
 [ "$(psql_q "SELECT status || '/' || (SELECT used FROM coupons WHERE code='SMOKE20') FROM coupon_redemptions WHERE order_id='$CORDER'")" = "redeemed/1" ] \
   || { echo "FAIL: coupon not redeemed once"; exit 1; }
+# High-2: the switch credit is what was paid (800), never the list price (1000).
+[ "$(code -b "$WJAR" "$BASE/api/v1/me/shop")" = "200" ] && [ "$(last_json "d['credit_cents'] <= 800")" = "True" ] \
+  || { echo "FAIL: the coupon's discount became switch credit"; cat /tmp/akari-smoke/last; exit 1; }
 # Commission: 10% of the Alipay amount (800) pending for the inviter.
 [ "$(psql_q "SELECT amount_cents || '/' || status FROM commissions WHERE order_id='$CORDER'")" = "80/pending" ] \
   || { echo "FAIL: commission not pending"; psql_q "SELECT * FROM commissions"; exit 1; }

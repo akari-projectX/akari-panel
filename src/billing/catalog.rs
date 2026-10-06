@@ -478,6 +478,14 @@ pub async fn splits(conn: &mut PgConnection, input: &[SplitIn]) -> sqlx::Result<
 /// plans), and the order it derives from. (0, None) without an active,
 /// expiring subscription with a paid order. All arithmetic in SQL
 /// (`akari_prorate`, DB clock).
+///
+/// The value of an order is what was actually paid for it (ops-logic
+/// review High-2): the list price minus the coupon discount and the gift
+/// part (`list − discount − gift` = gateway amount + balance + the credit
+/// carried from the plan before); refunded orders count for nothing. So a
+/// coupon or a gifted plan cannot be turned into credit for another plan.
+/// The latest such order (even one worth 0) sets the daily value; the total
+/// paid for the subscription caps the credit.
 pub async fn switch_credit(
     conn: &mut PgConnection,
     user_id: Uuid,
@@ -485,16 +493,18 @@ pub async fn switch_credit(
     let row: Option<(Option<Uuid>, i64)> = sqlx::query_as(
         "WITH cur AS (SELECT plan_id, starts_at, expires_at FROM user_plans \
                       WHERE user_id = $1 AND status = 'active'), \
-         paid AS (SELECT o.id, o.list_price_cents, o.period, o.period_days, o.fulfilled_at \
+         paid AS (SELECT o.id, o.list_price_cents - o.discount_cents - o.gift_cents AS value, \
+                         o.period, o.period_days, o.fulfilled_at \
                   FROM orders o JOIN cur ON o.plan_id = cur.plan_id \
                   WHERE o.user_id = $1 AND o.status = 'paid' AND o.fulfilled_at IS NOT NULL \
+                  AND o.refunded_at IS NULL \
                   AND o.fulfilled_at >= cur.starts_at AND o.period <> 'reset'), \
          latest AS (SELECT * FROM paid ORDER BY fulfilled_at DESC, id DESC LIMIT 1) \
          SELECT (SELECT id FROM latest), \
-                akari_prorate((SELECT list_price_cents FROM latest), \
+                akari_prorate((SELECT value FROM latest), \
                               (SELECT akari_period_nominal_days(period, period_days) FROM latest), \
                               extract(epoch FROM cur.expires_at - now()), \
-                              (SELECT sum(list_price_cents) FROM paid)::bigint) \
+                              (SELECT sum(value) FROM paid)::bigint) \
          FROM cur",
     )
     .bind(user_id)
