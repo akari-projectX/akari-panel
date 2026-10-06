@@ -810,7 +810,7 @@ EOF
 # The admin prefix (v0.4 D4: kept in the database; `akari info` falls back
 # to data/state.json, which the first start imports, before that).
 prefix_bare() {
-	akari_cli info 2>/dev/null | sed -n 's|^admin prefix: *\/||p'
+	akari_cli info 2>/dev/null | sed -n -e 's|^admin prefix: *\/||p' -e 's|^route prefix: *\/||p'
 }
 
 # --- health checks ------------------------------------------------------------------
@@ -929,7 +929,7 @@ pull_infra() {
 }
 
 docker_prefix() {
-	dc run --rm --no-deps -T panel info 2>/dev/null | sed -n 's|^admin prefix: *\/||p'
+	dc run --rm --no-deps -T panel info 2>/dev/null | sed -n -e 's|^admin prefix: *\/||p' -e 's|^route prefix: *\/||p'
 }
 
 # Over TCP, not the Unix socket: on a fresh volume the image's entrypoint runs
@@ -1426,7 +1426,7 @@ prefix_current() {
 # The admin prefix from the running panel (rotations happen in its
 # database), else from a one-off container.
 docker_prefix_env() {
-	p=$(dc exec -T panel /akari info 2>/dev/null | sed -n 's|^admin prefix: *\/||p')
+	p=$(dc exec -T panel /akari info 2>/dev/null | sed -n -e 's|^admin prefix: *\/||p' -e 's|^route prefix: *\/||p')
 	[ -n "$p" ] || p=$(docker_prefix)
 	printf '%s' "$p"
 }
