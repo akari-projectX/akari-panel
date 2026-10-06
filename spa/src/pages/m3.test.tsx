@@ -38,6 +38,7 @@ const plan = (over: Partial<PlanView>): PlanView => ({
   capacity: null,
   renewal_only: false,
   allow_switch_in: true,
+  renew_off_sale: true,
   prices: [],
   group_ids: ["g1"],
   active_users: 2,

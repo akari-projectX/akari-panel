@@ -269,3 +269,81 @@ async fn plan_terms_are_snapshotted_at_purchase() {
     drop(state);
     db.drop().await;
 }
+
+/// 中-6: a plan taken off sale stops new purchases only — its subscribers
+/// still renew it and buy its reset pack (`renew_off_sale`, default on);
+/// switched off, or the plan disabled, nobody can buy it.
+#[tokio::test]
+async fn off_sale_plans_stay_renewable_for_their_subscribers() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let admin = admin(&state, &db).await;
+    let prices = [
+        (PeriodKind::Month, None, 1000),
+        (PeriodKind::Reset, None, 200),
+    ];
+    let (_, plan) = catalog_plan(&db, "mi6", &prices, |_| {}).await;
+    let (holder, other) = (db.user().await, db.user().await);
+    let (hc, oc) = (
+        user_client(&state, holder).await,
+        user_client(&state, other).await,
+    );
+    bought(&db, &hc, plan, "month").await;
+    let r = admin
+        .req(
+            axum::http::Method::PUT,
+            &format!("/test/api/v1/plans/{plan}/prices"),
+            Some(json!({"on_sale": false, "prices": [
+                {"period": "month", "price_cents": 1000},
+                {"period": "reset", "price_cents": 200}]})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    let in_shop = |shop: &Value| {
+        shop["plans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["plan_id"] == json!(plan))
+    };
+    assert!(!in_shop(&oc.get("/test/api/v1/me/shop").await.json()));
+    let r = buy(&oc, plan, "month").await;
+    assert_eq!(r.json()["code"], "shop.not_for_sale");
+    let shop = hc.get("/test/api/v1/me/shop").await.json();
+    assert!(in_shop(&shop), "{shop}");
+    bought(&db, &hc, plan, "month").await;
+    bought(&db, &hc, plan, "reset").await;
+    // Switched off: the subscriber cannot renew either.
+    let r = admin
+        .req(
+            axum::http::Method::PATCH,
+            &format!("/test/api/v1/plans/{plan}"),
+            Some(json!({"renew_off_sale": false})),
+        )
+        .await;
+    assert_eq!(r.json()["renew_off_sale"], false);
+    assert_eq!(
+        buy(&hc, plan, "month").await.json()["code"],
+        "shop.not_for_sale"
+    );
+    // On again, but the plan disabled: not sold at all.
+    for body in [json!({"renew_off_sale": true}), json!({"enabled": false})] {
+        let r = admin
+            .req(
+                axum::http::Method::PATCH,
+                &format!("/test/api/v1/plans/{plan}"),
+                Some(body),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK);
+    }
+    assert_eq!(
+        buy(&hc, plan, "month").await.json()["code"],
+        "shop.not_for_sale"
+    );
+    drop(state);
+    db.drop().await;
+}

@@ -178,6 +178,7 @@ export interface PlanForm {
   description: string;
   renewalOnly: boolean;
   allowSwitchIn: boolean;
+  renewOffSale: boolean;
   groupIds: string[];
   onSale: boolean;
   prices: Record<PeriodKind, PriceDraft>;
@@ -195,6 +196,7 @@ export function planForm(plan: PlanView | null): PlanForm {
     description: plan?.description ?? "",
     renewalOnly: plan?.renewal_only ?? false,
     allowSwitchIn: plan?.allow_switch_in ?? true,
+    renewOffSale: plan?.renew_off_sale ?? true,
     groupIds: plan?.group_ids ?? [],
     onSale: plan?.on_sale ?? false,
     prices: priceDrafts(plan),
@@ -229,6 +231,7 @@ export function planBody(f: PlanForm, plan: PlanView | null): Record<string, unk
     description: f.description,
     renewal_only: f.renewalOnly,
     allow_switch_in: f.allowSwitchIn,
+    renew_off_sale: f.renewOffSale,
   };
   if (!plan) {
     // New plan: defaults left out.
@@ -243,6 +246,7 @@ export function planBody(f: PlanForm, plan: PlanView | null): Record<string, unk
     if (f.description.trim() !== "") body.description = f.description;
     if (f.renewalOnly) body.renewal_only = true;
     if (!f.allowSwitchIn) body.allow_switch_in = false;
+    if (!f.renewOffSale) body.renew_off_sale = false;
     body.pricing = pricing;
     return body;
   }
@@ -256,6 +260,7 @@ export function planBody(f: PlanForm, plan: PlanView | null): Record<string, unk
     description: plan.description,
     renewal_only: plan.renewal_only,
     allow_switch_in: plan.allow_switch_in,
+    renew_off_sale: plan.renew_off_sale,
   };
   const body: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(all)) {
@@ -556,6 +561,10 @@ function PlanDialog({ plan, groups, onClose }: { plan: PlanView | null; groups: 
               onChange={(e) => set({ allowSwitchIn: e.target.checked })}
             />
             允许从其他套餐更换到此套餐
+          </label>
+          <label className="flex items-center gap-1.5">
+            <input type="checkbox" checked={f.renewOffSale} onChange={(e) => set({ renewOffSale: e.target.checked })} />
+            下架后现有用户仍可续费和购买流量重置包
           </label>
         </div>
         <fieldset className="space-y-2">
