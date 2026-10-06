@@ -276,10 +276,13 @@ export function Checkbox({
         checked || indeterminate ? "border-primary bg-primary text-primary-foreground" : "border-input bg-card",
       )}
     >
+      {/* The mark is never the click target: inside a <label>, Chromium treats a
+          click on an SVG descendant as outside the control and re-dispatches it
+          to the button, so a checked box clicked on its tick toggled twice. */}
       {indeterminate ? (
-        <span className="h-0.5 w-2 rounded bg-current" />
+        <span className="pointer-events-none h-0.5 w-2 rounded bg-current" />
       ) : (
-        checked && <Icon name="check" size={12} strokeWidth={3} />
+        checked && <Icon name="check" size={12} strokeWidth={3} className="pointer-events-none" />
       )}
     </button>
   );
