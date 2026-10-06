@@ -815,7 +815,8 @@ prefix_bare() {
 
 # --- health checks ------------------------------------------------------------------
 
-# wait_health URL SECONDS: 200 from /healthz.
+# wait_health URL SECONDS: 200 from /<prefix>/healthz (served under the
+# admin prefix by every version; v0.4 also answers /healthz).
 wait_health() {
 	i=0
 	while [ "$i" -lt "$2" ]; do
@@ -828,16 +829,16 @@ wait_health() {
 
 panel_health_url() {
 	if [ "$MODE" = bare ]; then
-		printf 'http://127.0.0.1:%s/healthz' "$WEB_PORT"
+		printf 'http://127.0.0.1:%s/%s/healthz' "$WEB_PORT" "$1"
 	else
 		ip=$(docker_panel_ip)
-		printf 'http://%s:8080/healthz' "${ip:-0.0.0.0}"
+		printf 'http://%s:8080/%s/healthz' "${ip:-0.0.0.0}" "$1"
 	fi
 }
 
-# check_proxy: healthz through Caddy (TLS, the public path).
+# check_proxy PREFIX: healthz through Caddy (TLS, the public path).
 check_proxy() {
-	url="$(origin)/healthz"
+	url="$(origin)/$1/healthz"
 	i=0
 	while [ "$i" -lt 60 ]; do
 		# Through this host's Caddy whatever DNS says (NAT, DNS not yet set).
@@ -1274,7 +1275,7 @@ install_bare() {
 	step '启动面板' 'starting the panel'
 	run systemctl enable akari-panel.service
 	run systemctl restart akari-panel.service
-	wait_health "$(panel_health_url)" 120 ||
+	wait_health "$(panel_health_url "$prefix")" 120 ||
 		die '面板未通过健康检查（journalctl -u akari-panel）' 'the panel did not become healthy (journalctl -u akari-panel)'
 	[ -n "$RESTORE_DIR" ] || apply_settings
 	create_admin
@@ -1306,7 +1307,7 @@ install_docker_mode() {
 	[ -n "$prefix" ] || die '无法读取后台前缀' 'cannot read the admin prefix'
 	step '启动容器' 'starting the containers'
 	run dc up -d || die 'docker compose up 失败（见日志）' 'docker compose up failed (see the log)'
-	wait_health "$(panel_health_url)" 180 ||
+	wait_health "$(panel_health_url "$prefix")" 180 ||
 		die '面板未通过健康检查（docker compose logs panel）' 'the panel did not become healthy (docker compose logs panel)'
 	[ -n "$RESTORE_DIR" ] || apply_settings
 	create_admin
@@ -1329,7 +1330,7 @@ origin() {
 
 finish() {
 	prefix=$1
-	if check_proxy; then
+	if check_proxy "$prefix"; then
 		proxy_ok=1
 	else
 		proxy_ok=0
@@ -1454,7 +1455,7 @@ upgrade_bare() {
 	}
 	mv -f "$BIN.new" "$BIN"
 	run systemctl restart akari-panel.service || true
-	if wait_health "$(panel_health_url)" 120; then
+	if wait_health "$(panel_health_url "$prefix")" 120; then
 		CUR_VERSION=$TAG
 		save_state
 		install_tools
@@ -1468,7 +1469,7 @@ upgrade_bare() {
 	mv -f "$BIN.prev" "$BIN"
 	ln "$BIN" "$BIN.prev" 2>/dev/null || true
 	run systemctl restart akari-panel.service || true
-	if wait_health "$(panel_health_url)" 120; then
+	if wait_health "$(panel_health_url "$prefix")" 120; then
 		upgrade_failed
 		die "升级失败，已回滚到 $CUR_VERSION（面板正常运行）。日志：journalctl -u akari-panel" \
 			"upgrade failed; rolled back to $CUR_VERSION (the panel is healthy). Log: journalctl -u akari-panel"
@@ -1515,7 +1516,7 @@ upgrade_docker() {
 	fi
 	pull_infra
 	run dc up -d --force-recreate panel caddy || true
-	if wait_health "$(panel_health_url)" 180; then
+	if wait_health "$(panel_health_url "$prefix")" 180; then
 		CUR_VERSION=$TAG
 		save_state
 		install_tools
@@ -1529,7 +1530,7 @@ upgrade_docker() {
 	install -m 0644 "$TMP/compose.prev" "$DOCKER_DIR/docker-compose.yml"
 	install -m 0644 "$TMP/Caddyfile.prev" "$DOCKER_DIR/caddy/Caddyfile"
 	run dc up -d --force-recreate panel caddy || true
-	if wait_health "$(panel_health_url)" 180; then
+	if wait_health "$(panel_health_url "$prefix")" 180; then
 		upgrade_failed
 		die "升级失败，已回滚到 $old_image（面板正常运行）" "upgrade failed; rolled back to $old_image (the panel is healthy)"
 	fi
@@ -1752,7 +1753,7 @@ cmd_status() {
 		dc ps
 		prefix=$(docker_prefix_env)
 	fi
-	if [ -n "$prefix" ] && [ "$(http_status "$(panel_health_url)")" = 200 ]; then
+	if [ -n "$prefix" ] && [ "$(http_status "$(panel_health_url "$prefix")")" = 200 ]; then
 		printf '%-10s %s\n' healthz ok
 	else
 		printf '%-10s %s\n' healthz FAILED
