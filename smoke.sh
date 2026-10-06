@@ -565,6 +565,44 @@ curl -s --noproxy '*' -D - -o /dev/null "$BASE/sub/not-a-real-token" | matches -
   && { echo "FAIL: quota header leaked on rejection"; exit 1; }
 echo "subscription: ok ($SIZE-byte padded body)"
 
+echo "== W30: client detection, routing template =="
+# Earlier sections used most of this address's subscription budget (per
+# address, 10 min): start the section with a clean limiter.
+vk EVAL "for _,k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call('DEL', k) end return 1" 0 'akari:rl:sub:*' >/dev/null
+# Real User-Agents of the clients: the format each one understands.
+for pair in "clash-verge/v2.2.3=text/yaml" "Stash/2.7.5 Clash/1.11.0=text/yaml" "mihomo.party/v1.7.3=text/yaml" \
+            "SFA/1.12.0 (Android 14; sing-box 1.12.0)=application/json" "SFI/1.12.0 (Apple iOS 18.1; sing-box 1.12.0)=application/json" \
+            "HiddifyNext/2.5.7 (android) like ClashMeta v2ray sing-box=text/plain" "Shadowrocket/2070 CFNetwork/1410=text/plain" \
+            "v2rayN/7.4.2=text/plain"; do
+  ua=${pair%=*}; want=${pair##*=}
+  curl -s --noproxy '*' -A "$ua" -D - -o /dev/null "$SUB" | matches -i "^content-type: $want" \
+    || { echo "FAIL: $ua does not get $want"; exit 1; }
+done
+# The built-in routing: rule-providers (Clash), rule sets + TUN profile (sing-box).
+W30_CODE=$(curl -s --noproxy '*' -o "$LOG/w30-clash.yaml" -w "%{http_code}" -A "clash-verge/v2" "$SUB")
+for want in "^rule-providers:" "^  - RULE-SET,geosite-category-ads-all,REJECT" "^  - RULE-SET,geosite-cn,DIRECT" \
+            "^  - RULE-SET,geoip-cn,DIRECT,no-resolve" "^  - MATCH,PROXY"; do
+  matches "$want" <"$LOG/w30-clash.yaml" \
+    || { echo "FAIL: clash routing lacks $want (HTTP $W30_CODE)"; head -c 3000 "$LOG/w30-clash.yaml"; exit 1; }
+done
+curl -s --noproxy '*' -A "SFA/1.12.0" "$SUB" \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); r=d['route']; assert r['final']=='PROXY' and {s['tag'] for s in r['rule_set']}>={'geosite-cn','geoip-cn','geosite-category-ads-all'} and d['inbounds'][0]['type']=='tun' and d['outbounds'][0]['type']=='selector', r" \
+  || { echo "FAIL: sing-box profile"; exit 1; }
+# The template is editable (audited); null restores the default.
+[ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings (W30)"; exit 1; }
+W30_VER=$(last_json "d['version']")
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
+    -d "{\"version\":$W30_VER,\"rules\":[{\"type\":\"domain_suffix\",\"value\":\"corp.example\",\"action\":\"direct\"}]}")" = "200" ] \
+  || { echo "FAIL: PUT subscription settings"; cat /tmp/akari-smoke/last; exit 1; }
+for _ in $(seq 1 20); do curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" | matches "^  - DOMAIN-SUFFIX,corp.example,DIRECT" && break; sleep 0.25; done
+curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" | matches "^  - DOMAIN-SUFFIX,corp.example,DIRECT" || { echo "FAIL: edited routing not served"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
+    -d "{\"version\":$((W30_VER + 1)),\"rules\":null}")" = "200" ] || { echo "FAIL: reset routing"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='settings.subscription.update'")" = "2" ] || { echo "FAIL: routing edits not audited"; exit 1; }
+# These fetches must not eat the user's subscription rate budget (M1-10 below).
+vk EVAL "for _,k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call('DEL', k) end return 1" 0 'akari:rl:sub:*' >/dev/null
+echo "w30 client detection + routing: ok"
+
 echo "== subscription: REALITY inbound carries a uTLS fingerprint (default + admin hint) =="
 # Throwaway REALITY inbound + user; the panel only reads publicKey/fingerprint
 # for subscriptions (the keys here are never used by a client).

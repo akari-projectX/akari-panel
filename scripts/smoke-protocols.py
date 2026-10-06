@@ -294,7 +294,8 @@ def subscriptions(label, inb):
         fail(f"clash: not one proxy for {label}")
     clash_all += clash
     st, sb = api("GET", f"/sub/{SUB}", ua="sing-box/1.12.0")
-    outs = [o for o in sb["outbounds"] if o["type"] != "direct"]
+    # W30: the profile also carries the PROXY selector and direct.
+    outs = [o for o in sb["outbounds"] if o["type"] not in ("direct", "selector")]
     xhttp = inb.get("streamSettings", {}).get("network") == "xhttp"
     if len(outs) != (0 if xhttp else 1):
         fail(f"sing-box: {len(outs)} outbounds for {label} (xhttp left out)")

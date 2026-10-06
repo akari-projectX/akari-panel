@@ -137,7 +137,11 @@ describe("subscription links", () => {
     const sr = links.shadowrocket;
     expect(sr.startsWith("shadowrocket://add/sub://")).toBe(true);
     const b64 = sr.slice("shadowrocket://add/sub://".length).split("?")[0];
-    expect(atob(b64)).toBe(`${u}?format=links`);
+    // URL-safe, unpadded (W30): nothing the deep link would read as syntax.
+    expect(b64).toMatch(/^[A-Za-z0-9_-]+$/);
+    const std = b64.replace(/-/g, "+").replace(/_/g, "/");
+    expect(atob(std + "=".repeat((4 - (std.length % 4)) % 4))).toBe(`${u}?format=links`);
+    expect(sr.endsWith("?remark=Akari")).toBe(true);
     expect(links.stash).toContain("stash://install-config?url=");
     expect(links.hiddify).toBe(`hiddify://import/${u}#Akari`);
   });

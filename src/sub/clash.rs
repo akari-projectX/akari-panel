@@ -1,9 +1,12 @@
-//! Clash (mihomo) format: a YAML proxy list, a PROXY select group and a
-//! MATCH rule. Renders the neutral client proxies (`proxy.rs`).
+//! Clash (mihomo, Clash Verge, Stash) format: a YAML proxy list, a PROXY
+//! select group, the routing template's rule-providers and rules (W30,
+//! `routing.rs`) ending with MATCH,PROXY. Renders the neutral client
+//! proxies (`proxy.rs`).
 
 use super::proxy::{Proxy, log_omitted, yaml};
+use super::routing::Routing;
 
-pub(crate) fn render_clash(proxies: &[Proxy]) -> String {
+pub(crate) fn render_clash(proxies: &[Proxy], routing: &Routing) -> String {
     let mut out = String::from("proxies:\n");
     let mut names = Vec::new();
     for p in proxies {
@@ -121,6 +124,8 @@ pub(crate) fn render_clash(proxies: &[Proxy]) -> String {
     for name in &names {
         out.push_str(&format!("      - {name}\n"));
     }
-    out.push_str("rules:\n  - MATCH,PROXY\n");
+    let (providers, rules) = routing.clash("PROXY");
+    out.push_str(&providers);
+    out.push_str(&rules);
     out
 }

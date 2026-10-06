@@ -264,6 +264,10 @@ pub fn router(state: AppState) -> Router {
         .route("/{prefix}/api/v1/settings/probe", put(settings::put_probe))
         .route("/{prefix}/api/v1/settings/site", put(settings::put_site))
         .route(
+            "/{prefix}/api/v1/settings/subscription",
+            put(settings::put_subscription),
+        )
+        .route(
             "/{prefix}/api/v1/settings/nodes",
             put(settings::put_node_ops),
         )
