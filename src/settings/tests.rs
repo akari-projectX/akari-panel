@@ -1757,3 +1757,98 @@ async fn node_ops_and_security_api() {
     );
     db.drop().await;
 }
+
+/// W30: the subscription settings: defaults in the view, a versioned and
+/// audited write, validation codes, null = back to the default, and the
+/// effective routing the subscriptions render after the reload.
+#[tokio::test]
+async fn subscription_routing_settings() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let c = admin_client(&state, &db).await;
+    let v = c.get("/test/api/v1/settings").await.json();
+    assert_eq!(v["subscription"]["rules"]["source"], "default");
+    assert_eq!(
+        v["subscription"]["rules"]["effective"]
+            .as_array()
+            .unwrap()
+            .len(),
+        crate::sub::routing::default_rules().len()
+    );
+    let version = v["version"].as_i64().unwrap();
+
+    for (body, code) in [
+        (
+            json!({"version": version, "rules": [{"type": "geosite", "value": "c n", "action": "direct"}]}),
+            "settings.sub_rule_invalid",
+        ),
+        (
+            json!({"version": version, "rule_set_clash_url": "https://m.example/x.list"}),
+            "settings.sub_rule_set_url_invalid",
+        ),
+    ] {
+        let r = c.put("/test/api/v1/settings/subscription", body).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST);
+        assert_eq!(r.json()["code"], code);
+    }
+    let r = c
+        .put(
+            "/test/api/v1/settings/subscription",
+            json!({"version": version,
+                   "rules": [{"type": "domain_suffix", "value": "Corp.Example", "action": "direct"}],
+                   "rule_set_singbox_url": "https://m.example/{kind}/{name}.srs"}),
+        )
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let v = r.json();
+    assert_eq!(v["subscription"]["rules"]["source"], "settings");
+    assert_eq!(
+        v["subscription"]["rules"]["value"][0]["value"],
+        "corp.example"
+    );
+    assert_eq!(v["version"], version + 1);
+    let eff = state.settings().get();
+    assert_eq!(eff.sub_routing.rules.len(), 1);
+    assert_eq!(
+        eff.sub_routing.singbox_url,
+        "https://m.example/{kind}/{name}.srs"
+    );
+    assert_eq!(
+        eff.sub_routing.clash_url,
+        crate::sub::routing::DEFAULT_CLASH_URL
+    );
+    // Stale version.
+    let r = c
+        .put(
+            "/test/api/v1/settings/subscription",
+            json!({"version": version, "rules": []}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    // null = the default again; one audit row per change.
+    let r = c
+        .put(
+            "/test/api/v1/settings/subscription",
+            json!({"version": version + 1, "rules": null, "rule_set_singbox_url": ""}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(
+        state.settings().get().sub_routing,
+        crate::sub::routing::Routing::default()
+    );
+    let audits = audit_rows(&db, "settings.subscription.update").await;
+    assert_eq!(audits.len(), 2);
+    assert_eq!(
+        audits[0].1.as_ref().unwrap()["rules"][0]["value"],
+        "corp.example"
+    );
+    db.drop().await;
+}

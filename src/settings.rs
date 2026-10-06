@@ -65,7 +65,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -274,6 +274,11 @@ pub struct Stored {
     /// Q3 (W28-a): the site time zone (IANA; NULL = Asia/Shanghai): traffic
     /// history days, plan monthly resets, the dashboard's days.
     pub timezone: Option<String>,
+    /// W30: the subscriptions' routing template (NULL = built-in) and the
+    /// rule list URL templates (NULL = built-in).
+    pub sub_rules: Option<Value>,
+    pub sub_rule_set_clash_url: Option<String>,
+    pub sub_rule_set_singbox_url: Option<String>,
     #[serde(skip)]
     pub updated_at: Option<DateTime<Utc>>,
 }
@@ -282,7 +287,8 @@ const STORED_COLS: &str = "version, main_domain, sub_domain, node_domain, trust_
      probe_interval_secs, probe_urls, probe_panel_tcp, site_name, cloudflare_ranges, \
      install_tls_pin, install_fallback_url, acme_directory_url, acme_email, \
      audit_retention_days, traffic_daily_retention_days, remove_mode, \
-     extra_release_keys, timezone, updated_at";
+     extra_release_keys, timezone, sub_rules, sub_rule_set_clash_url, sub_rule_set_singbox_url, \
+     updated_at";
 
 fn select_stored(lock: bool) -> sqlx::AssertSqlSafe<String> {
     sqlx::AssertSqlSafe(format!(
@@ -371,6 +377,8 @@ pub struct Effective {
     /// W25: every trusted release key: the official ones compiled in, then
     /// the extra ones from the settings.
     pub release_keys: Vec<crate::updates::ReleaseKey>,
+    /// W30: the subscriptions' routing (stored template over the default).
+    pub sub_routing: crate::sub::routing::Routing,
     /// Some = the host gate is on (main domain set in the database): DNS
     /// names allowed as Host.
     host_gate: Option<HashSet<String>>,
@@ -575,6 +583,7 @@ pub fn compute(cfg: &PanelConfig, stored: Stored, server_names: Vec<ServerName>)
             .and_then(RemoveMode::parse)
             .unwrap_or_default(),
         release_keys: effective_release_keys(&stored),
+        sub_routing: crate::sub::routing::Routing::of(&stored),
         stored,
         server_names,
         main,
@@ -1158,6 +1167,187 @@ pub async fn put_site(
     tx.commit().await?;
     reload_logged(&state).await;
     Ok(Json(view(&state, Vec::new()).await?))
+}
+
+// ---------------------------------------------------------------------------
+// W30: subscriptions (订阅): routing template and rule list URLs
+// ---------------------------------------------------------------------------
+
+/// The subscription settings as stored (each None = the built-in default).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubscriptionValues {
+    pub rules: Option<Vec<crate::sub::routing::Rule>>,
+    pub rule_set_clash_url: Option<String>,
+    pub rule_set_singbox_url: Option<String>,
+}
+
+impl SubscriptionValues {
+    fn of(s: &Stored) -> Self {
+        Self {
+            rules: s
+                .sub_rules
+                .as_ref()
+                .and_then(|v| serde_json::from_value(v.clone()).ok()),
+            rule_set_clash_url: s.sub_rule_set_clash_url.clone(),
+            rule_set_singbox_url: s.sub_rule_set_singbox_url.clone(),
+        }
+    }
+
+    fn audit(&self) -> Value {
+        json!({
+            "rules": self.rules,
+            "rule_set_clash_url": self.rule_set_clash_url,
+            "rule_set_singbox_url": self.rule_set_singbox_url,
+        })
+    }
+}
+
+/// W30: write the subscription settings (each None = unchanged, Some(None)
+/// = the default; values already validated). Same row and `version` as the
+/// other settings (409 on a stale form). Audited
+/// `settings.subscription.update` (before/after).
+pub async fn apply_update_subscription(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    expected_version: i64,
+    change: SubscriptionChange,
+) -> Result<Stored, ApiError> {
+    let cur = read_stored(&mut *conn, true).await?;
+    if cur.version != expected_version {
+        return Err(conflict!(
+            "settings.version_conflict",
+            "设置已被修改（可能是其他管理员），请刷新后重试"
+        ));
+    }
+    let old = SubscriptionValues::of(&cur);
+    let new = SubscriptionValues {
+        rules: change.rules.unwrap_or_else(|| old.rules.clone()),
+        rule_set_clash_url: change
+            .rule_set_clash_url
+            .unwrap_or_else(|| old.rule_set_clash_url.clone()),
+        rule_set_singbox_url: change
+            .rule_set_singbox_url
+            .unwrap_or_else(|| old.rule_set_singbox_url.clone()),
+    };
+    if new == old {
+        return Ok(cur);
+    }
+    let rules = new
+        .rules
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(anyhow::Error::from)?;
+    let row: Stored = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "UPDATE panel_settings SET sub_rules = $1, sub_rule_set_clash_url = $2, \
+         sub_rule_set_singbox_url = $3, version = version + 1, updated_at = now() \
+         WHERE id = 1 RETURNING {STORED_COLS}"
+    )))
+    .bind(rules)
+    .bind(&new.rule_set_clash_url)
+    .bind(&new.rule_set_singbox_url)
+    .fetch_one(&mut *conn)
+    .await?;
+    crate::audit::record(
+        conn,
+        actor,
+        "settings.subscription.update",
+        "settings",
+        None,
+        Some(old.audit()),
+        Some(new.audit()),
+    )
+    .await?;
+    Ok(row)
+}
+
+/// A validated change of the subscription settings (None = unchanged,
+/// Some(None) = the default).
+#[derive(Debug, Default)]
+pub struct SubscriptionChange {
+    pub rules: Option<Option<Vec<crate::sub::routing::Rule>>>,
+    pub rule_set_clash_url: Option<Option<String>>,
+    pub rule_set_singbox_url: Option<Option<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubscriptionReq {
+    pub version: i64,
+    /// The routing template: absent = unchanged, null = the built-in
+    /// default, [] = no rules.
+    #[serde(default, deserialize_with = "crate::api::double_option")]
+    pub rules: Option<Option<Vec<crate::sub::routing::Rule>>>,
+    /// Rule list URL templates (`{kind}`, `{name}`): absent = unchanged,
+    /// null or "" = the built-in default.
+    #[serde(default, deserialize_with = "crate::api::double_option")]
+    pub rule_set_clash_url: Option<Option<String>>,
+    #[serde(default, deserialize_with = "crate::api::double_option")]
+    pub rule_set_singbox_url: Option<Option<String>>,
+}
+
+impl SubscriptionReq {
+    /// Validate (before any lock).
+    pub fn change(self) -> Result<SubscriptionChange, ApiError> {
+        let url = |v: Option<Option<String>>| -> Result<Option<Option<String>>, ApiError> {
+            Ok(match v {
+                None => None,
+                Some(None) => Some(None),
+                Some(Some(u)) if u.trim().is_empty() => Some(None),
+                Some(Some(u)) => Some(Some(crate::sub::routing::url_template(&u)?)),
+            })
+        };
+        Ok(SubscriptionChange {
+            rules: match self.rules {
+                None => None,
+                Some(None) => Some(None),
+                Some(Some(r)) => Some(Some(crate::sub::routing::parse(r)?)),
+            },
+            rule_set_clash_url: url(self.rule_set_clash_url)?,
+            rule_set_singbox_url: url(self.rule_set_singbox_url)?,
+        })
+    }
+}
+
+/// PUT /api/v1/settings/subscription (admin): 订阅 settings.
+pub async fn put_subscription(
+    State(state): State<AppState>,
+    user: AuthUser,
+    ApiJson(req): ApiJson<SubscriptionReq>,
+) -> Result<Json<SettingsView>, ApiError> {
+    user.require_admin()?;
+    let version = req.version;
+    let change = req.change()?;
+    let mut tx = state.pg().begin().await?;
+    apply_update_subscription(&mut tx, &Actor::of(&user), version, change).await?;
+    tx.commit().await?;
+    reload_logged(&state).await;
+    Ok(Json(view(&state, Vec::new()).await?))
+}
+
+/// The 订阅 section of the settings view.
+#[derive(Serialize)]
+pub struct SubscriptionView {
+    pub rules: Field<Vec<crate::sub::routing::Rule>>,
+    pub rule_set_clash_url: Field<String>,
+    pub rule_set_singbox_url: Field<String>,
+}
+
+impl SubscriptionView {
+    fn of(s: &Stored) -> Self {
+        let v = SubscriptionValues::of(s);
+        Self {
+            rules: Field::of(v.rules, crate::sub::routing::default_rules()),
+            rule_set_clash_url: Field::of(
+                v.rule_set_clash_url,
+                crate::sub::routing::DEFAULT_CLASH_URL.to_string(),
+            ),
+            rule_set_singbox_url: Field::of(
+                v.rule_set_singbox_url,
+                crate::sub::routing::DEFAULT_SINGBOX_URL.to_string(),
+            ),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1870,6 +2060,8 @@ pub struct SettingsView {
     pub site_name: Option<String>,
     /// Q3: 时区 (traffic history days, monthly resets, dashboard days).
     pub timezone: Field<String>,
+    /// W30: 订阅 (routing template, rule list URLs).
+    pub subscription: SubscriptionView,
     /// W25: obsolete keys in THIS instance's panel.toml (delete them).
     pub obsolete_config_keys: Vec<String>,
     /// Advisory notes from the last save (DNS checks).
@@ -2041,6 +2233,7 @@ pub async fn view(state: &AppState, mut warnings: Vec<String>) -> Result<Setting
     Ok(SettingsView {
         site_name: s.site_name.clone(),
         timezone: Field::of(s.timezone.clone(), DEFAULT_TIMEZONE.to_string()),
+        subscription: SubscriptionView::of(s),
         version: s.version,
         updated_at: s.updated_at,
         main: DomainView {

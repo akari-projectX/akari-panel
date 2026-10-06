@@ -1,0 +1,15 @@
+"clash-verge/v2.2.3" -> text/yaml; charset=utf-8
+"ClashMetaForAndroid/2.11.5.Meta" -> text/yaml; charset=utf-8
+"FlClash/v0.8.80 clash-verge Platform/android" -> text/yaml; charset=utf-8
+"mihomo.party/v1.7.3 (clash.meta)" -> text/yaml; charset=utf-8
+"Stash/2.7.5 Clash/1.11.0" -> text/yaml; charset=utf-8
+"SFA/1.12.0 (Android 14; sing-box 1.12.0; language zh_CN)" -> application/json; charset=utf-8
+"SFI/1.12.0 (Apple iOS 18.1; sing-box 1.12.0; language zh_CN)" -> application/json; charset=utf-8
+"sing-box 1.12.0" -> application/json; charset=utf-8
+"HiddifyNext/2.5.7 (android) like ClashMeta v2ray sing-box" -> text/plain; charset=utf-8
+"Shadowrocket/2070 CFNetwork/1410.0.3 Darwin/22.4.0" -> text/plain; charset=utf-8
+"v2rayN/7.4.2" -> text/plain; charset=utf-8
+"v2rayNG/1.9.30" -> text/plain; charset=utf-8
+"NekoBox/Android/1.3.4 (Prefer ClashMeta Format)" -> text/yaml; charset=utf-8
+"curl/8.5.0" -> text/plain; charset=utf-8
+"" -> text/plain; charset=utf-8

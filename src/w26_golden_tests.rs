@@ -974,7 +974,7 @@ fn w26_golden_subscriptions() {
             ("sing-box", Some("format=sing-box"), "x"),
             ("ua-clash", None, "clash.meta/1"),
         ] {
-            let (ct, body) = render_for(query, ua, &rows);
+            let (ct, body) = render_for(query, ua, &rows, &crate::sub::routing::Routing::default());
             check_golden(
                 &format!("sub_{name}.{fmt}.golden"),
                 &format!("content-type: {ct}\n{body}"),
@@ -992,6 +992,101 @@ fn w26_golden_subscriptions() {
             }
         }
     }
+}
+
+/// W30: which format each client's User-Agent gets (real UA strings of
+/// the clients' current releases), and the routing template of Clash and
+/// sing-box with custom rules and mirror URLs.
+#[test]
+fn w30_golden_client_formats() {
+    let rows = &sub_fixtures()[0].1;
+    let mut out = String::new();
+    for ua in [
+        "clash-verge/v2.2.3",
+        "ClashMetaForAndroid/2.11.5.Meta",
+        "FlClash/v0.8.80 clash-verge Platform/android",
+        "mihomo.party/v1.7.3 (clash.meta)",
+        "Stash/2.7.5 Clash/1.11.0",
+        "SFA/1.12.0 (Android 14; sing-box 1.12.0; language zh_CN)",
+        "SFI/1.12.0 (Apple iOS 18.1; sing-box 1.12.0; language zh_CN)",
+        "sing-box 1.12.0",
+        "HiddifyNext/2.5.7 (android) like ClashMeta v2ray sing-box",
+        "Shadowrocket/2070 CFNetwork/1410.0.3 Darwin/22.4.0",
+        "v2rayN/7.4.2",
+        "v2rayNG/1.9.30",
+        "NekoBox/Android/1.3.4 (Prefer ClashMeta Format)",
+        "curl/8.5.0",
+        "",
+    ] {
+        let (ct, _) = render_for(None, ua, rows, &crate::sub::routing::Routing::default());
+        out.push_str(&format!("{ua:?} -> {ct}\n"));
+    }
+    check_golden("w30_client_formats.golden", &out);
+
+    use crate::sub::routing::{Action, Match, Routing, Rule};
+    let routing = Routing {
+        rules: vec![
+            Rule {
+                kind: Match::DomainSuffix,
+                value: "example.org".into(),
+                action: Action::Proxy,
+            },
+            Rule {
+                kind: Match::DomainKeyword,
+                value: "tracker".into(),
+                action: Action::Reject,
+            },
+            Rule {
+                kind: Match::Domain,
+                value: "intra.example.com".into(),
+                action: Action::Direct,
+            },
+            Rule {
+                kind: Match::IpCidr,
+                value: "10.8.0.0/16".into(),
+                action: Action::Direct,
+            },
+            Rule {
+                kind: Match::IpCidr,
+                value: "fd00::/8".into(),
+                action: Action::Direct,
+            },
+            Rule {
+                kind: Match::Geosite,
+                value: "geolocation-!cn".into(),
+                action: Action::Proxy,
+            },
+            Rule {
+                kind: Match::Geoip,
+                value: "cn".into(),
+                action: Action::Direct,
+            },
+        ],
+        clash_url: "https://mirror.example.net/{kind}/{name}.list".into(),
+        singbox_url: "https://mirror.example.net/{kind}/{name}.srs".into(),
+    };
+    for (fmt, query) in [("clash", "format=clash"), ("sing-box", "format=sing-box")] {
+        let (ct, body) = render_for(Some(query), "x", rows, &routing);
+        check_golden(
+            &format!("w30_custom_routing.{fmt}.golden"),
+            &format!("content-type: {ct}\n{body}"),
+        );
+    }
+    // No rules: only the final rule, no providers / rule sets.
+    let none = Routing {
+        rules: vec![],
+        ..Routing::default()
+    };
+    let (_, clash) = render_for(Some("format=clash"), "x", rows, &none);
+    assert!(
+        clash.trim_end().ends_with("rules:\n  - MATCH,PROXY"),
+        "{clash}"
+    );
+    assert!(!clash.contains("rule-providers"));
+    let (_, sb) = render_for(Some("format=sing-box"), "x", rows, &none);
+    let sb: Value = serde_json::from_str(sb.trim_end()).unwrap();
+    assert!(sb["route"].get("rule_set").is_none());
+    assert!(sb["dns"].get("rules").is_none());
 }
 
 /// Inbounds for the validation goldens: protocols.rs's matrix cases and

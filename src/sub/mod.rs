@@ -66,11 +66,25 @@ fn requested_format(query: Option<&str>) -> Option<Format> {
     })
 }
 
+/// W30: the format a client understands, by its User-Agent:
+/// - sing-box: the core and the official apps (`SFA/`, `SFI/`, `SFM/`,
+///   `SFT/` = sing-box for Android/iOS/macOS/tvOS);
+/// - Clash: Clash Verge (Rev), Clash Meta for Android, FlClash, mihomo
+///   (Mihomo Party: `mihomo.party/`), Stash (`Stash/... Clash/...`);
+/// - links (base64 share links): everything else — v2rayN/v2rayNG,
+///   Shadowrocket, Hiddify (its sing-box core is older than the 1.12
+///   configuration the sing-box format targets; it applies its own
+///   routing to imported links), NekoBox, unknown clients.
 fn detect_format(user_agent: &str) -> Format {
     let ua = user_agent.to_ascii_lowercase();
-    if ua.contains("sing-box") {
+    let sing_box_app = ["sfa/", "sfi/", "sfm/", "sft/"]
+        .iter()
+        .any(|p| ua.starts_with(p));
+    if ua.contains("hiddify") {
+        Format::Links
+    } else if ua.contains("sing-box") || sing_box_app {
         Format::SingBox
-    } else if ua.contains("clash") || ua.contains("mihomo") || ua.contains("stash") {
+    } else if ["clash", "mihomo", "stash"].iter().any(|c| ua.contains(c)) {
         Format::Clash
     } else {
         Format::Links
@@ -112,6 +126,7 @@ pub struct NodeRow {
 mod clash;
 mod links;
 pub(crate) mod proxy;
+pub mod routing;
 mod singbox;
 
 use clash::render_clash;
@@ -131,23 +146,25 @@ fn pad(body: String) -> String {
 }
 
 /// The subscription body for `user_agent` (format by UA) and its content
-/// type, padded (`pad`). Pure: the request path and the benchmarks share it.
+/// type, padded (`pad`), with the built-in routing template. Pure: the
+/// benchmarks and the fuzzer use it.
 pub fn render(user_agent: &str, rows: &[NodeRow]) -> (&'static str, String) {
-    render_for(None, user_agent, rows)
+    render_for(None, user_agent, rows, &routing::Routing::default())
 }
 
 /// `render` with the URL's query string (`requested_format`) taking
-/// precedence over the User-Agent.
+/// precedence over the User-Agent, and the site's routing template.
 pub fn render_for(
     query: Option<&str>,
     user_agent: &str,
     rows: &[NodeRow],
+    routing: &routing::Routing,
 ) -> (&'static str, String) {
     let format = requested_format(query).unwrap_or_else(|| detect_format(user_agent));
     let proxies = collect_proxies(rows);
     let body = match format {
-        Format::SingBox => render_sing_box(&proxies).to_string(),
-        Format::Clash => render_clash(&proxies),
+        Format::SingBox => render_sing_box(&proxies, routing).to_string(),
+        Format::Clash => render_clash(&proxies, routing),
         Format::Links => render_links(&proxies),
     };
     let content_type = match format {
@@ -259,7 +276,9 @@ pub async fn subscription(
         .get(header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let (content_type, body) = render_for(query.as_deref(), user_agent, &rows);
+    let settings = state.settings().get();
+    let (content_type, body) =
+        render_for(query.as_deref(), user_agent, &rows, &settings.sub_routing);
 
     // Quota header only after every failure path is cleared.
     let expire = user
@@ -499,10 +518,14 @@ mod tests {
             let p = [reality_proxy(hint)];
             let links = String::from_utf8(STANDARD.decode(render_links(&p)).unwrap()).unwrap();
             assert!(links.contains(&format!("&fp={want}")), "{links}");
-            assert!(render_clash(&p).contains(&format!("    client-fingerprint: {want}\n")));
-            let sb = render_sing_box(&p);
-            assert_eq!(sb["outbounds"][0]["tls"]["utls"]["fingerprint"], want);
-            assert_eq!(sb["outbounds"][0]["tls"]["utls"]["enabled"], true);
+            assert!(
+                render_clash(&p, &routing::Routing::default())
+                    .contains(&format!("    client-fingerprint: {want}\n"))
+            );
+            let sb = render_sing_box(&p, &routing::Routing::default());
+            // [0] is the PROXY selector (W30).
+            assert_eq!(sb["outbounds"][1]["tls"]["utls"]["fingerprint"], want);
+            assert_eq!(sb["outbounds"][1]["tls"]["utls"]["enabled"], true);
         }
     }
 
@@ -521,8 +544,12 @@ mod tests {
         }];
         let links = String::from_utf8(STANDARD.decode(render_links(&p)).unwrap()).unwrap();
         assert!(!links.contains("fp="));
-        assert!(!render_clash(&p).contains("client-fingerprint"));
-        assert!(render_sing_box(&p)["outbounds"][0].get("tls").is_none());
+        assert!(!render_clash(&p, &routing::Routing::default()).contains("client-fingerprint"));
+        assert!(
+            render_sing_box(&p, &routing::Routing::default())["outbounds"][1]
+                .get("tls")
+                .is_none()
+        );
     }
 
     /// One row per (inbound, credential) pair: a node `name` per inbound
@@ -666,13 +693,51 @@ proxy-groups:
       - "HK 1 in-vless"
       - "HK 1 in-vmess"
       - "HK 1 in-trojan"
+rule-providers:
+  geosite-category-ads-all:
+    type: http
+    behavior: domain
+    format: text
+    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/category-ads-all.list"
+    interval: 86400
+  geosite-private:
+    type: http
+    behavior: domain
+    format: text
+    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/private.list"
+    interval: 86400
+  geoip-private:
+    type: http
+    behavior: ipcidr
+    format: text
+    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/private.list"
+    interval: 86400
+  geosite-cn:
+    type: http
+    behavior: domain
+    format: text
+    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/cn.list"
+    interval: 86400
+  geoip-cn:
+    type: http
+    behavior: ipcidr
+    format: text
+    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/cn.list"
+    interval: 86400
 rules:
+  - RULE-SET,geosite-category-ads-all,REJECT
+  - RULE-SET,geosite-private,DIRECT
+  - RULE-SET,geoip-private,DIRECT,no-resolve
+  - RULE-SET,geosite-cn,DIRECT
+  - RULE-SET,geoip-cn,DIRECT,no-resolve
   - MATCH,PROXY"#
         );
 
         let (ct, body) = render("sing-box 1.12", &rows);
         assert_eq!(ct, "application/json; charset=utf-8");
-        let want = json!({"outbounds": [
+        let want = json!([
+            {"type": "selector", "tag": "PROXY",
+             "outbounds": ["HK 1 in-vless", "HK 1 in-vmess", "HK 1 in-trojan"]},
             {"flow": "xtls-rprx-vision", "server": "hk.example.com", "server_port": 443,
              "tag": "HK 1 in-vless",
              "tls": {"enabled": true, "reality": {"enabled": true, "public_key": "PUBKEY", "short_id": "ab12"},
@@ -683,10 +748,22 @@ rules:
              "type": "vmess", "uuid": "22222222-2222-2222-2222-222222222222"},
             {"password": "pw", "server": "hk.example.com", "server_port": 9443, "tag": "HK 1 in-trojan",
              "tls": {"enabled": true, "server_name": "t.example.com"}, "type": "trojan"},
-            {"tag": "direct", "type": "direct"}]});
+            {"tag": "direct", "type": "direct"}]);
+        let v = serde_json::from_str::<Value>(body.trim_end()).unwrap();
+        assert_eq!(v["outbounds"], want);
+        // W30: a complete client profile: TUN + local mixed inbound, DNS,
+        // the routing template, everything else through PROXY.
+        assert_eq!(v["inbounds"][0]["type"], "tun");
+        assert_eq!(v["inbounds"][1]["listen"], "127.0.0.1");
+        assert_eq!(v["route"]["final"], "PROXY");
+        assert_eq!(v["route"]["rule_set"].as_array().unwrap().len(), 5);
         assert_eq!(
-            serde_json::from_str::<Value>(body.trim_end()).unwrap(),
-            want
+            v["route"]["rules"][2],
+            json!({"rule_set": ["geosite-category-ads-all"], "action": "reject"})
+        );
+        assert_eq!(
+            v["dns"]["rules"],
+            json!([{"rule_set": ["geosite-private", "geosite-cn"], "server": "local"}])
         );
     }
 
@@ -808,7 +885,14 @@ rules:
     fn w8_matrix_sing_box() {
         let (_, body) = render("sing-box/1.12", &matrix_rows());
         let v: Value = serde_json::from_str(body.trim_end()).unwrap();
-        let ob = v["outbounds"].as_array().unwrap();
+        // [0] is the PROXY selector (W30) over the proxies.
+        let all = v["outbounds"].as_array().unwrap();
+        assert_eq!(
+            all[0],
+            json!({"type": "selector", "tag": "PROXY",
+                   "outbounds": ["N hu", "N gr", "N vg", "N ss", "N hy", "N ws"]})
+        );
+        let ob = &all[1..];
         let tags: Vec<&str> = ob.iter().filter_map(|o| o["tag"].as_str()).collect();
         // Both xhttp proxies are left out (sing-box has no xhttp).
         assert_eq!(
@@ -975,10 +1059,20 @@ rules:
             (Some(""), "mihomo", "text/yaml; charset=utf-8"),
             (None, "mihomo", "text/yaml; charset=utf-8"),
         ] {
-            assert_eq!(render_for(q, ua, &rows).0, ct, "{q:?} {ua}");
+            assert_eq!(
+                render_for(q, ua, &rows, &routing::Routing::default()).0,
+                ct,
+                "{q:?} {ua}"
+            );
         }
         assert_eq!(
-            render_for(Some("format=clash"), "", &rows).1,
+            render_for(
+                Some("format=clash"),
+                "",
+                &rows,
+                &routing::Routing::default()
+            )
+            .1,
             render("clash.meta", &rows).1
         );
     }

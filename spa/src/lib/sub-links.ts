@@ -13,12 +13,16 @@ export function withFormat(url: string, format: SubFormat): string {
   return `${url}${url.includes("?") ? "&" : "?"}format=${format}`;
 }
 
-/** Standard base64 of a UTF-8 string (Shadowrocket's `sub://` form). */
-function base64(text: string): string {
+/**
+ * URL-safe base64 without padding of a UTF-8 string (Shadowrocket's
+ * `sub://` form: standard base64's `+`, `/` and `=` would be read as URL
+ * syntax by the deep link, W30).
+ */
+function base64Url(text: string): string {
   const bytes = new TextEncoder().encode(text);
   let bin = "";
   for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 export interface ImportLink {
@@ -30,8 +34,13 @@ export interface ImportLink {
 
 /**
  * One-click import deep links. `name` labels the profile in the client.
- * Each uses the format the client understands, so it does not depend on
- * the client's User-Agent being recognised.
+ * Each uses the format the client understands (W30, verified against the
+ * clients' documented schemes): Clash Verge / FlClash / Mihomo Party /
+ * Clash Meta for Android and Stash take Clash (with the routing rules);
+ * sing-box apps the sing-box profile; Shadowrocket base64 share links.
+ * Hiddify gets the plain URL: a query in its `hiddify://import/` link is
+ * not reliably kept, and the panel recognises its User-Agent (share links,
+ * Hiddify applies its own routing).
  */
 export function importLinks(url: string, name: string): ImportLink[] {
   const enc = encodeURIComponent;
@@ -46,7 +55,7 @@ export function importLinks(url: string, name: string): ImportLink[] {
     {
       id: "shadowrocket",
       name: "Shadowrocket",
-      href: `shadowrocket://add/sub://${base64(withFormat(url, "links"))}?remark=${enc(name)}`,
+      href: `shadowrocket://add/sub://${base64Url(withFormat(url, "links"))}?remark=${enc(name)}`,
     },
     {
       id: "sing-box",

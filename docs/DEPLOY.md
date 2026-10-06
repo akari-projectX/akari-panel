@@ -794,6 +794,37 @@ groups; nodes, groups and plans can change later and every node converges by its
 
 **重新生成订阅令牌** invalidates the old link at once (the user can do it in the portal too).
 
+### 订阅格式、客户端与分流规则（W30，中文）
+
+**按客户端自动选择格式**（User-Agent；链接加 `?format=clash|sing-box|links` 可强制指定）：
+
+| 客户端 | 收到的格式 | 门户「一键导入」 |
+|---|---|---|
+| Clash Verge (Rev)、Clash Meta for Android、FlClash、Mihomo Party | Clash（mihomo）YAML + 分流规则 | `clash://install-config?url=…&name=…` |
+| Stash | Clash YAML + 分流规则 | `stash://install-config?url=…&name=…` |
+| sing-box 官方 App（SFA/SFI/SFM/SFT） | sing-box 1.12+ 完整配置（TUN、本地 mixed 127.0.0.1:2080、DNS、PROXY 选择器、规则集） | `sing-box://import-remote-profile?url=…#名称` |
+| Shadowrocket | base64 分享链接 | `shadowrocket://add/sub://<URL 安全 base64，无填充>?remark=…` |
+| Hiddify | base64 分享链接（Hiddify 内核较旧，且对导入的链接套用自己的分流设置：在 Hiddify 里把「区域」设为中国） | `hiddify://import/<订阅链接>#名称` |
+| v2rayN / v2rayNG / 其他 | base64 分享链接 | — |
+
+每个入口都是订阅里单独的一个节点，倍率不是 1x 时名称里带**当前**倍率（D9）。
+
+**分流规则模板**（系统设置 → 订阅，`PUT /api/v1/settings/subscription`）：Clash 与 sing-box 订阅按顺序带上
+这些规则，最后「其余全部走 PROXY」。内置默认：广告拦截（`geosite:category-ads-all` → 拒绝）、国内直连
+（`geosite:private`、`geoip:private`、`geosite:cn`、`geoip:cn` → 直连）、国外代理（其余）。规则类型：
+geosite / geoip（规则列表名，如 `cn`、`geolocation-!cn`）、domain、domain_suffix、domain_keyword、ip_cidr；
+动作：direct / proxy / reject；最多 64 条；`rules: null` 恢复默认，`[]` = 不带规则。geosite/geoip 在 Clash 里是
+`rule-providers`（文本列表，Stash 也支持），在 sing-box 里是远程规则集（.srs），由**客户端自己下载**，默认来自
+jsDelivr 上的 MetaCubeX meta-rules-dat；国内访问 jsDelivr 不稳定时可改成镜像（`rule_set_clash_url` /
+`rule_set_singbox_url`，必须是 https 且包含 `{name}`，可含 `{kind}` = geosite|geoip）。规则下载在客户端首次
+启动时经代理进行（规则未加载前全部流量走 PROXY）。修改写审计 `settings.subscription.update`。
+
+**验证情况**（云端/CI 没有图形客户端，以下是实际做过的）：mihomo v1.19（`mihomo -t` 校验配置，并实际运行加载
+rule-providers）与 sing-box 1.14（`sing-box check`，并实际运行加载远程规则集）对生成的配置验证通过；黄金文件
+（`testdata/w26/sub_*.golden`、`w30_*.golden`）锁定每种格式与每个客户端 UA 的输出。**未用真实 GUI 客户端验证**：
+Clash Verge Rev、Clash Meta for Android、FlClash、Mihomo Party、Stash、Shadowrocket、SFA/SFI/SFM、Hiddify、
+v2rayN —— 导入链接按各客户端公开文档的格式生成，上线前请在真机上各导入一次。
+
 ## 3b. REALITY inbounds
 
 A REALITY inbound borrows the TLS handshake of a real site (`dest`) and lets clients that know
