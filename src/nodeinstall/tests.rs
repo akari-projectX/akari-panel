@@ -843,3 +843,131 @@ fn openrc_and_bbr_in_the_script() {
     assert!(UNINSTALL_FN.contains("net.ipv4.tcp_congestion_control) ours=bbr ;;"));
     assert!(UNINSTALL_FN.contains("'' | *[!a-z0-9_]*) continue ;;"));
 }
+
+#[test]
+fn attempts_alternate_families() {
+    let a = |s: &str| s.parse::<SocketAddr>().unwrap();
+    // The resolver's first family leads; then strictly alternating.
+    assert_eq!(
+        attempt_order(&[
+            a("[2606:4700::1]:443"),
+            a("[2606:4700::2]:443"),
+            a("104.16.0.1:443"),
+            a("[2606:4700::1]:443"),
+            a("104.16.0.2:443"),
+            a("104.16.0.3:443"),
+        ]),
+        vec![
+            a("[2606:4700::1]:443"),
+            a("104.16.0.1:443"),
+            a("[2606:4700::2]:443"),
+            a("104.16.0.2:443"),
+            a("104.16.0.3:443"),
+        ]
+    );
+    assert_eq!(
+        attempt_order(&[a("1.1.1.1:1"), a("[::1]:1")]),
+        vec![a("1.1.1.1:1"), a("[::1]:1")]
+    );
+    assert!(attempt_order(&[]).is_empty());
+    let many: Vec<SocketAddr> = (1..=20).map(|i| a(&format!("10.0.0.{i}:443"))).collect();
+    assert_eq!(attempt_order(&many).len(), MAX_ATTEMPTS);
+}
+
+/// A TLS server on 127.0.0.1 for one name (self-signed): accepts forever.
+async fn tls_server() -> (SocketAddr, String) {
+    use rustls::pki_types::PrivateKeyDer;
+    let key = rcgen::KeyPair::generate().unwrap();
+    let cert = rcgen::CertificateParams::new(vec!["probe.test".into()])
+        .unwrap()
+        .self_signed(&key)
+        .unwrap();
+    let pin = spki_pin(cert.der()).unwrap();
+    let cfg = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![cert.der().clone()],
+        PrivateKeyDer::try_from(key.serialize_der()).unwrap(),
+    )
+    .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(cfg));
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((s, _)) = l.accept().await {
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                if let Ok(mut tls) = acceptor.accept(s).await {
+                    use tokio::io::AsyncReadExt;
+                    let mut b = [0u8; 1];
+                    let _ = tls.read(&mut b).await;
+                }
+            });
+        }
+    });
+    (addr, pin)
+}
+
+/// Accepts TCP and then says nothing (a black-holed address, as far as a
+/// TLS handshake can tell).
+async fn silent_server() -> SocketAddr {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((s, _)) = l.accept().await {
+            held.push(s);
+        }
+    });
+    addr
+}
+
+/// A port nothing listens on (connection refused at once).
+async fn closed_port() -> SocketAddr {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    l.local_addr().unwrap()
+}
+
+#[tokio::test]
+async fn probe_tries_every_address() {
+    // Test-deployment finding P2: only the first address (IPv6) was
+    // tried; a host without IPv6 routes got a misleading warning.
+    let (good, pin) = tls_server().await;
+    let refused = closed_port().await;
+    let silent = silent_server().await;
+
+    // An address that fails at once, then the working one.
+    let p = tls_probe_any(&[refused, good], "probe.test", &[])
+        .await
+        .unwrap();
+    assert_eq!(p.pin.as_deref(), Some(pin.as_str()));
+    assert!(!p.trusted);
+
+    // An address that hangs does not hold up the next one (it starts
+    // after ATTEMPT_DELAY, far below the 5 s handshake timeout).
+    let t = std::time::Instant::now();
+    let p = tls_probe_any(&[silent, good], "probe.test", &[])
+        .await
+        .unwrap();
+    assert_eq!(p.pin.as_deref(), Some(pin.as_str()));
+    assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+
+    // Every address failing: every failure is reported.
+    let other = closed_port().await;
+    let e = tls_probe_any(&[refused, other], "probe.test", &[])
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        e.contains(&refused.to_string()) && e.contains(&other.to_string()),
+        "{e}"
+    );
+    assert_eq!(
+        tls_probe_any(&[], "probe.test", &[]).await.err().unwrap(),
+        "the name has no address"
+    );
+}

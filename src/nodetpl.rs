@@ -910,15 +910,13 @@ async fn probe_dest(host: &str, port: u16) -> Result<CheckDestView, String> {
     .map_err(|_| "DNS lookup timed out".to_string())?
     .map_err(|e| format!("DNS lookup failed: {e}"))?
     .collect();
-    let addr = addrs
-        .iter()
-        .find(|a| !forbidden_target(a.ip()))
-        .copied()
-        .ok_or_else(|| "the name resolves to no public address".to_string())?;
+    if addrs.is_empty() {
+        return Err("the name resolves to no public address".into());
+    }
     if addrs.iter().any(|a| forbidden_target(a.ip())) {
         return Err("the name resolves to a private address".into());
     }
-    let probe = crate::nodeinstall::tls_probe(addr, host, &[b"h2".to_vec()]).await?;
+    let probe = crate::nodeinstall::tls_probe_any(&addrs, host, &[b"h2".to_vec()]).await?;
     let tls13 = probe.version == Some(tokio_rustls::rustls::ProtocolVersion::TLSv1_3);
     let h2 = probe.alpn.as_deref() == Some(b"h2".as_slice());
     let error = match (tls13, h2) {
