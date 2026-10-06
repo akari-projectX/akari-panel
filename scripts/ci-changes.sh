@@ -16,8 +16,8 @@ GROUPS_ALL="rust smoke e2e installer docker fuzz"
 
 # rust: the Rust code and what it compiles in (coverage gate, bench crate).
 # smoke: the panel backend + the cross-repo contract (smoke.sh).
-# e2e: the portal, the admin app and the backend that serves them
-#   (Playwright, real CSP).
+# e2e: the portal (spa/), the admin app (admin/), what serves them and the
+#   user-facing API the portal drives (Playwright, real CSP).
 # installer: install/upgrade/backup/restore scripts and the deploy bundle.
 # docker: the image and its dependency inputs (lockfiles, toolchain).
 # fuzz: what the fuzz targets compile.
@@ -37,7 +37,11 @@ groups_of() {
       echo smoke ;;
   esac
   case "$1" in
-    spa/* | admin/* | src/spa.rs | src/console.rs | src/web.rs | scripts/e2e.sh | Makefile | docker-compose.yml)
+    spa/* | admin/* | src/spa.rs | src/console.rs | src/web.rs | src/access.rs | src/access/* | src/api.rs | src/auth.rs | \
+      src/account.rs | src/billing/* | src/signup/* | src/passkey.rs | src/botguard.rs | src/erase.rs | \
+      src/kb.rs | src/announcements.rs | src/tickets.rs | src/trafficlog.rs | src/nodestat.rs | \
+      src/branding.rs | src/plans.rs | src/sub/* | src/rates.rs | src/settings.rs | src/error_codes.txt | \
+      migrations/* | scripts/e2e-portal.sh | scripts/e2e.sh | Makefile | docker-compose.yml)
       echo e2e ;;
   esac
   case "$1" in

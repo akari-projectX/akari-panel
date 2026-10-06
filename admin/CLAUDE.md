@@ -34,7 +34,7 @@ npm run build     # 两个包 + check-bundles
 make admin        # 仓库根：同上
 ```
 
-e2e：`scripts/e2e.sh`（`make e2e`；`E2E_SUITE=admin` 只跑本套件）起一个独立的面板 + Mailpit + 本地发布源，Playwright 两个项目 desktop（Desktop Chrome）与 mobile（Pixel 7），中文界面、串行。`e2e/helpers.ts`：`openConsole`（复用缓存的管理员会话）、`signIn`、`sql`（docker compose psql 造数据）、`row`/`dialog`/`toast`/`confirmDialog`。每个 spec 都要能在同一库里先后跑 desktop 与 mobile（名字用 `uniq(info, …)`，改全局设置的用例结束时恢复原样）。`zz-passkeys.spec.ts` 最后跑：把主域名设为 `e2e.localhost:<端口>`（Chromium 把 `*.localhost` 解析到本机且视为安全上下文；面板对 `localhost`/`*.localhost` 主域名同时接受其 http 源，`passkey::Rp::localhost_http`），用 CDP 虚拟认证器，结束后恢复。
+e2e：`scripts/e2e.sh`（`make e2e` 先跑门户套件 `scripts/e2e-portal.sh` 再跑本套件）起一个独立的面板 + Mailpit + 本地发布源，Playwright 两个项目 desktop（Desktop Chrome）与 mobile（Pixel 7），中文界面、串行。`e2e/helpers.ts`：`openConsole`（复用缓存的管理员会话）、`signIn`、`sql`（docker compose psql 造数据）、`row`/`dialog`/`toast`/`confirmDialog`。每个 spec 都要能在同一库里先后跑 desktop 与 mobile（名字用 `uniq(info, …)`，改全局设置的用例结束时恢复原样）。`zz-passkeys.spec.ts` 最后跑：把主域名设为 `e2e.localhost:<端口>`（Chromium 把 `*.localhost` 解析到本机且视为安全上下文；面板对 `localhost`/`*.localhost` 主域名同时接受其 http 源，`passkey::Rp::localhost_http`），用 CDP 虚拟认证器，结束后恢复。
 
 ## 约定
 

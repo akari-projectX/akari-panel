@@ -130,7 +130,8 @@ jobs:
       - run: make bench-lint
 
   spa:
-    name: spa (tsc, auth paths, build)
+    # W36-b: the user portal (spa/, Akari-theme). The admin console is its own app.
+    name: spa (portal: tsc, lint, tests, build)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -146,16 +147,16 @@ jobs:
       - run: npm ci
       # A19: known-vulnerable dependencies fail the build (high and above).
       - run: npm audit --audit-level=high
-      - run: npx tsc --noEmit
-      # ESLint (typescript-eslint, react-hooks, jsx-a11y) + Prettier check.
+      - run: npm run typecheck
+      # oxlint, any warning fails.
       - run: npm run lint
-      - run: node scripts/check-auth-paths.mjs
-      # W21: every server error code (src/error_codes.txt) has SPA text.
-      - run: node scripts/check-error-codes.mjs
-      # M3: frontend unit tests (vitest + Testing Library, jsdom).
-      - run: npx vitest run
-      # R23: both bundles (user portal, admin console) + the guard that the
-      # user bundle carries no admin code (scripts/check-bundles.mjs).
+      # W21: every user-visible server error code (../src/error_codes.txt) has portal text.
+      - run: npm run check:errors
+      # Every Chinese UI string has an English entry, no unused entries.
+      - run: npm run check:i18n
+      - run: npm test
+      # Build + dist checks (CSP-safe index, assets/ only), no console code in
+      # the bundle (check-bundles), bundle-size budget.
       - run: npm run build
 
   admin:
@@ -280,9 +281,10 @@ jobs:
         run: make monitoring-check
 
   e2e:
-    # Browser end-to-end (Playwright, Chromium) against a real panel serving
-    # the embedded SPA with its real CSP (no bypass): login with and without
-    # 2FA, language switch, styled admin pages, no CSP violations.
+    # Browser end-to-end (Playwright, Chromium; desktop + phone) against a real
+    # panel serving the embedded portal at / with its real CSP, behind a TLS
+    # front (passkeys): every line of research/portal-gap.md, no CSP violations
+    # (scripts/e2e-portal.sh, spa/e2e/).
     # Required check; W37: runs when the SPA (or what serves it) changes.
     name: e2e (playwright, real CSP)
     needs: changes
@@ -313,8 +315,9 @@ jobs:
         with:
           name: playwright-report
           path: |
-            spa/playwright-report
+            spa/test-results
             admin/playwright-report
+            /tmp/akari-e2e-portal/*.log
             /tmp/akari-e2e/*.log
           retention-days: 7
       - if: always()

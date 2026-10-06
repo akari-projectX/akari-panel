@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Playwright end-to-end (OPUS-GUIDE A17): a real release panel serving the
-# embedded portal and admin app with their real CSP, driven by Chromium:
-# the portal suite (spa/e2e/) and the admin app suite (admin/e2e/, W33-b:
-# every line of admin/INVENTORY.md, desktop + phone).
+# Admin app end-to-end (OPUS-GUIDE A17, W33-b): a real release panel serving
+# the embedded admin app with its real CSP, driven by Chromium (admin/e2e/:
+# every line of admin/INVENTORY.md, desktop + phone). The portal has its own
+# suite and setup: scripts/e2e-portal.sh (`make e2e` runs both).
 #
 # Isolated from smoke and from the dev panel: own database ($E2E_DB, dropped
 # and recreated), own Valkey index ($E2E_VALKEY_DB, flushed), own data dir
 # (/tmp/akari-e2e), own ports (web 8090, gRPC 8453). Needs `make dev-up`, a
-# release build with the current SPA (`make spa panel`, or `make e2e`), and
+# release build with the current admin app (`make admin panel`, or `make e2e`), and
 # `npx playwright install chromium` once.
 #
 # Host: myapp.test when it resolves (the dev machine maps it to 127.0.0.1,
@@ -27,7 +27,7 @@ fi
 export DATABASE_URL="postgres://akari:akari-dev@localhost:5432/$E2E_DB"
 export VALKEY_URL="redis://127.0.0.1:6379/$E2E_VALKEY_DB"
 
-[ -x "$PANEL" ] || { echo "FAIL: $PANEL missing (make spa panel)"; exit 1; }
+[ -x "$PANEL" ] || { echo "FAIL: $PANEL missing (make admin panel)"; exit 1; }
 psql_admin() { docker compose exec -T postgres psql -U akari -d postgres -qc "$1" >/dev/null; }
 psql_admin "DROP DATABASE IF EXISTS \"$E2E_DB\" WITH (FORCE)"
 psql_admin "CREATE DATABASE \"$E2E_DB\""
@@ -150,7 +150,7 @@ docker compose exec -T postgres psql -U akari -d "$E2E_DB" -qc "
   INSERT INTO traffic_entrance_daily (entrance_id, day, node_id, up_bytes, down_bytes, billed_bytes, users)
   SELECT entrance_id, day, node_id, up_bytes, down_bytes, billed_bytes, 1 FROM traffic_daily;" >/dev/null
 
-echo "e2e: portal http://$E2E_HOST:$PORT/  admin http://$E2E_HOST:$PORT/$PREFIX/app"
+echo "e2e: admin http://$E2E_HOST:$PORT/$PREFIX/app"
 export E2E_ADMIN=e2e-admin@e2e.test E2E_ADMIN_PW="$ADMIN_PW" \
   E2E_USER=e2e-user@e2e.test E2E_USER_PW="$USER_PW" \
   E2E_QUOTA_USER=e2e-quota@e2e.test E2E_DB="$E2E_DB" E2E_PAY_DIR="$DIR" \
@@ -158,8 +158,6 @@ export E2E_ADMIN=e2e-admin@e2e.test E2E_ADMIN_PW="$ADMIN_PW" \
   E2E_RELEASE_SOURCE="http://127.0.0.1:$REL_PORT/repos/akari-projectX/akari-agent/releases/latest" \
   E2E_ADMIN_BASE="http://$E2E_HOST:$PORT/$PREFIX/admin" \
   NO_PROXY='*' no_proxy='*'
-# E2E_SUITE=spa|admin runs one suite (default both); extra arguments go to
-# Playwright.
-SUITE=${E2E_SUITE:-all}
-case $SUITE in all | spa) (cd spa && E2E_BASE="http://$E2E_HOST:$PORT" npx playwright test "$@") ;; esac
-case $SUITE in all | admin) (cd admin && E2E_LOGIN="http://$E2E_HOST:$PORT/$PREFIX/app" npx playwright test "$@") ;; esac
+# Extra arguments go to Playwright.
+cd admin
+E2E_LOGIN="http://$E2E_HOST:$PORT/$PREFIX/app" npx playwright test "$@"
