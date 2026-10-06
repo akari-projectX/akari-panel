@@ -503,3 +503,88 @@ async fn error_bodies_carry_codes() {
     assert_eq!(r.json()["code"], "user.last_admin");
     db.drop().await;
 }
+
+/// 运营审查中-7: deleting a user shows what is lost first (balance and
+/// its withdrawable part, pending withdrawals and orders, the active plan)
+/// and needs `confirm=true`; without it nothing is deleted.
+#[tokio::test]
+async fn user_delete_needs_the_impact_and_a_confirmation() {
+    let Some((db, _state, c)) = setup().await else {
+        return;
+    };
+    let u = user(&db, "leaving", "").await;
+    let mut tx = db.pool.begin().await.unwrap();
+    crate::billing::ledger::apply_adjust(
+        &mut tx,
+        &crate::audit::Actor::test(),
+        u,
+        &crate::billing::ledger::AdjustReq {
+            amount_cents: 1500,
+            reason: "t".into(),
+        },
+    )
+    .await
+    .ok()
+    .unwrap();
+    tx.commit().await.unwrap();
+    let plan: Uuid = sqlx::query_scalar(
+        "INSERT INTO plans (id, name, reset_period) VALUES (gen_random_uuid(), 'leaving', 'none') \
+         RETURNING id",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO user_plans (id, user_id, plan_id, period_anchor, term_kind) \
+         VALUES (gen_random_uuid(), $1, $2, now(), 'onetime')",
+    )
+    .bind(u)
+    .bind(plan)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let r = c
+        .get(&format!("/test/api/v1/users/{u}/delete-impact"))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(
+        r.json(),
+        json!({"email": "leaving@example.com", "balance_cents": 1500, "withdrawable_cents": 0,
+               "pending_withdrawals": 0, "pending_withdrawal_cents": 0, "pending_orders": 0,
+               "unfulfilled_orders": 0, "plan": {"name": "leaving", "expires_at": null}})
+    );
+    assert_eq!(
+        c.get(&format!(
+            "/test/api/v1/users/{}/delete-impact",
+            Uuid::new_v4()
+        ))
+        .await
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    let r = c
+        .req(Method::DELETE, &format!("/test/api/v1/users/{u}"), None)
+        .await;
+    assert_eq!(
+        (r.status, r.json()["code"].clone()),
+        (
+            StatusCode::BAD_REQUEST,
+            json!("user.delete_confirm_required")
+        )
+    );
+    let still: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE id = $1")
+        .bind(u)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(still, 1);
+    let r = c
+        .req(
+            Method::DELETE,
+            &format!("/test/api/v1/users/{u}?confirm=true"),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    db.drop().await;
+}

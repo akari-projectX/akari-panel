@@ -386,6 +386,7 @@ user.admin_no_subscription
 user.ban_reason_required
 user.ban_reason_too_long
 user.ban_self
+user.delete_confirm_required
 user.email_exists
 user.has_plan
 user.last_admin

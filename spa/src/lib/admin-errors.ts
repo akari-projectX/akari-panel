@@ -339,6 +339,7 @@ export const ADMIN_CODES: Record<string, string> = {
   "user.admin_no_plan": "管理员账户不是代理用户，不能分配套餐",
   "user.email_exists": "已有其他账户使用这个邮箱",
   "user.has_plan": "该用户有生效中的套餐：请先取消套餐，再设为管理员",
+  "user.delete_confirm_required": "删除用户前需要先确认影响（余额、提现、订单、套餐）",
   "user.last_admin": "不能封禁、降级或删除最后一个启用的管理员",
   "user.ban_reason_required": "请填写封禁原因（会显示给用户）",
   "user.ban_reason_too_long": "封禁原因最多 {max} 个字符",
