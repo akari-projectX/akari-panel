@@ -203,6 +203,42 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # smoke.sh, whose self-check rejects `| grep -q` and `| sed -n 1p` here too.
 matches() { grep "$@" >/dev/null; }
 
+# Input validators (scripts/installer-test/validators.sh runs them under GNU
+# grep and busybox grep). Portable ERE only: no `\[` / `\]` inside a bracket
+# expression (a backslash is literal there: `[a\]-]` is `[a\]` then `-]`;
+# put `]` first and `-` last instead), no `\d`, `\w`, `\s`, no `\?` / `\|` in
+# BRE: they only work with some greps (e.g. ugrep, the grep of WSL).
+#
+# re ERE VALUE: VALUE is one line (grep matches line by line) and matches.
+re() { [ "$(printf '%s' "$2" | wc -l)" -eq 0 ] && printf '%s' "$2" | matches -E "$1"; }
+LABEL_RE='[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?'
+valid_domain() { [ "${#1}" -le 253 ] && re "^($LABEL_RE\.)*$LABEL_RE\$" "$1"; }
+valid_ip() { re '^[0-9A-Fa-f.:]+$' "$1"; }
+valid_email() { re '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$' "$1"; }
+valid_admin() { re '^[a-z0-9._%+-]{1,64}@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$' "$1"; }
+# valid_node_addr ADDR: the panel's node communication domain syntax
+# (settings::Domain): HOST or HOST:PORT, HOST a DNS name of two labels or
+# more, an IPv4 address or a [bracketed] IPv6 address; or a bare IPv6
+# address (no port). Lowercase names (the caller folds the case).
+valid_node_addr() {
+	case "$1" in
+	\[*\]) _h=${1#\[} _h=${_h%\]} _p=none ;;
+	\[*\]:*) _h=${1%\]:*} _h=${_h#\[} _p=${1##*\]:} ;;
+	*:*:*) _h=$1 _p=none ;;
+	*:*) _h=${1%:*} _p=${1##*:} ;;
+	*) _h=$1 _p=none ;;
+	esac
+	case "$_p" in
+	none) ;;
+	'' | *[!0-9]* | 0*) return 1 ;;
+	*) [ "${#_p}" -le 5 ] && [ "$_p" -le 65535 ] || return 1 ;;
+	esac
+	case "$1" in
+	\[* | *:*:*) re '^[0-9a-f.]*:[0-9a-f:.]*$' "$_h" ;;
+	*) case "$_h" in *.*) valid_domain "$_h" ;; *) return 1 ;; esac ;;
+	esac
+}
+
 port_busy() {
 	ss -Hltn "sport = :$1" 2>/dev/null | matches .
 }
@@ -1129,7 +1165,14 @@ apply_settings() {
 	fi
 	node=${NODE_ADDR:-${DOMAIN:-$PUBLIC_IP}}
 	if [ -n "$node" ]; then
-		[ "$GRPC_PORT" = 8443 ] || case "$node" in *:*) ;; *) node="$node:$GRPC_PORT" ;; esac
+		# A port only where none is given; a bare IPv6 address takes brackets.
+		[ "$GRPC_PORT" = 8443 ] || case "$node" in
+		\[*\]:*) ;;
+		\[*\]) node="$node:$GRPC_PORT" ;;
+		*:*:*) node="[$node]:$GRPC_PORT" ;;
+		*:*) ;;
+		*) node="$node:$GRPC_PORT" ;;
+		esac
 		run panel_cli settings set node "$node" || warn '设置节点通信域名失败（可在 系统设置 中设置）' 'could not set the node address (set it in 系统设置)'
 	fi
 }
@@ -1154,7 +1197,7 @@ gather_input() {
 	if [ -z "${DOMAIN_GIVEN:-}" ]; then
 		ask DOMAIN '主域名（DNS 已指向本机；留空 = 仅用 IP 访问）' 'main domain (DNS pointing here; empty = IP only)' "$DOMAIN"
 	fi
-	DOMAIN=$(printf '%s' "$DOMAIN" | tr '[:upper:]' '[:lower:]' | sed 's|^https\?://||; s|/.*$||')
+	DOMAIN=$(printf '%s' "$DOMAIN" | tr '[:upper:]' '[:lower:]' | sed 's|^http://||; s|^https://||; s|/.*$||')
 	if [ -z "$DOMAIN" ]; then
 		ask PUBLIC_IP '本机公网 IP' 'public IP of this machine' "$PUBLIC_IP"
 		[ -n "$PUBLIC_IP" ] || die '无法确定公网 IP：用 --ip 指定' 'cannot determine the public IP: pass --ip'
@@ -1182,13 +1225,14 @@ gather_input() {
 		[ "$p" -ge 1 ] && [ "$p" -le 65535 ] || die "端口无效：$p" "invalid port: $p"
 	done
 	# These end up in config files: plain names only.
-	[ -z "$DOMAIN" ] || printf '%s' "$DOMAIN" | matches -E '^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]*[a-z0-9])?$' ||
-		die "域名无效：$DOMAIN" "invalid domain: $DOMAIN"
-	[ -z "$PUBLIC_IP" ] || printf '%s' "$PUBLIC_IP" | matches -E '^[0-9A-Fa-f.:]*$' || die "IP 无效：$PUBLIC_IP" "invalid IP: $PUBLIC_IP"
-	[ -z "$EMAIL" ] || printf '%s' "$EMAIL" | matches -E '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$' || die "邮箱无效：$EMAIL" "invalid e-mail: $EMAIL"
-	printf '%s' "$ADMIN" | matches -E '^[a-z0-9._%+-]{1,64}@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$' ||
-		die "管理员邮箱无效：$ADMIN" "invalid admin e-mail: $ADMIN"
-	[ -z "$NODE_ADDR" ] || printf '%s' "$NODE_ADDR" | matches -E '^[A-Za-z0-9.:\[\]-]*$' || die "节点地址无效：$NODE_ADDR" "invalid node address: $NODE_ADDR"
+	[ -z "$DOMAIN" ] || valid_domain "$DOMAIN" || die "域名无效：$DOMAIN" "invalid domain: $DOMAIN"
+	[ -z "$PUBLIC_IP" ] || valid_ip "$PUBLIC_IP" || die "IP 无效：$PUBLIC_IP" "invalid IP: $PUBLIC_IP"
+	[ -z "$EMAIL" ] || valid_email "$EMAIL" || die "邮箱无效：$EMAIL" "invalid e-mail: $EMAIL"
+	valid_admin "$ADMIN" || die "管理员邮箱无效：$ADMIN" "invalid admin e-mail: $ADMIN"
+	NODE_ADDR=$(printf '%s' "$NODE_ADDR" | tr '[:upper:]' '[:lower:]')
+	[ -z "$NODE_ADDR" ] || valid_node_addr "$NODE_ADDR" ||
+		die "节点地址无效（主机名、IPv4 或 [IPv6]，可带 :端口）：$NODE_ADDR" \
+			"invalid node address (host name, IPv4 or [IPv6], optional :port): $NODE_ADDR"
 	if [ "$MODE" = docker ] && [ -z "$DOCKER_DIR" ]; then DOCKER_DIR=$DEFAULT_DOCKER_DIR; fi
 	VALKEY_PORT=${VALKEY_PORT:-6379}
 
@@ -1955,4 +1999,5 @@ main() {
 	esac
 }
 
-main "$@"
+# AKARI_INSTALL_LIB=1: define the functions only (installer-test/validators.sh).
+[ "${AKARI_INSTALL_LIB:-}" = 1 ] || main "$@"

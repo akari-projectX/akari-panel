@@ -80,7 +80,7 @@ every prompt with a default; `--yes` takes the defaults and the flags/environmen
 | `--email ADDR` | `AKARI_EMAIL` | none (ACME account e-mail) |
 | `--admin LOGIN` | `AKARI_ADMIN` | `admin` |
 | `--admin-password-file F` | `AKARI_ADMIN_PASSWORD` | generated (20 characters), printed once |
-| `--node-address HOST[:PORT]` | `AKARI_NODE_ADDRESS` | the domain (or IP): 系统设置 → 节点通信域名 |
+| `--node-address HOST[:PORT]` | `AKARI_NODE_ADDRESS` | the domain (or IP): 系统设置 → 节点通信域名. A host name, IPv4 or `[IPv6]`, optional `:port` |
 | `--http-port/--https-port/--grpc-port` | | 80 / 443 / 8443 |
 | `--version vX.Y.Z` | `AKARI_VERSION` | the installer's own release (`latest/download` = newest) |
 | `--dir DIR` (docker) | `AKARI_DOCKER_DIR` | `/opt/akari` |
@@ -1715,7 +1715,8 @@ and before a release.
   latest published release (v0.3.x) installed from GitHub (real keyless verification), its
   upgrade to the PR build is refused untouched (v0.4 baseline) → purge → fresh
   install of the PR build → healthz through Caddy (`myapp.test` with `local_certs`, resp. IP-only),
-  admin login over the API, a user and its subscription → the broken release rolls back → uninstall keeps data,
+  admin login over the API, the node address (`--node-address`: a host name, resp. `[::1]:9443`)
+  in `akari settings show`, a user and its subscription → the broken release rolls back → uninstall keeps data,
   reinstall keeps prefix/password/subscription → age-encrypted backup → `--purge` → install
   `--restore` from that backup (host move).
 - `installer (host, docker + migration)` — `host-e2e.sh` on the runner: Docker install of the latest
@@ -1723,7 +1724,12 @@ and before a release.
   the PR image (local registry, pinned by digest) → purge; bare
   install of the PR build, a real agent (`../akari-agent`) enrolled, `migrate --to docker` and back
   `--to bare`: same prefix, the agent reconnects without re-enrolling, the subscription still answers.
-- `shellcheck` — `make shellcheck` (also part of `make check`).
+- `shellcheck` — `make shellcheck` (also part of `make check`), which also runs
+  `scripts/installer-test/validators.sh`: the installer's input validators (`valid_domain`,
+  `valid_node_addr`, …, sourced with `AKARI_INSTALL_LIB=1`) against accepted and rejected values
+  under dash + GNU grep; the job runs it again under busybox sh + grep (alpine). Regex dialects
+  differ (ugrep, WSL's grep, accepts `[\]]` in a bracket; GNU grep does not), so keep the
+  installer's patterns to portable ERE and add cases there.
 
 Locally: `scripts/installer-test/bare-e2e.sh debian:13 <releases> <tag> v9.9.9 [<previous>]` needs
 Docker with privileged containers (`EXTRA_CA=<bundle>` behind a TLS-intercepting proxy).

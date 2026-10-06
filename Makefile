@@ -26,12 +26,14 @@ check: check-generated shellcheck
 # Every shell script (installer, backup/restore, smoke, test drivers, the
 # node installer templates). smoke.sh predates the gate: warnings and
 # errors only there; everything else at full strictness. CI job shellcheck.
+# Then the installer's input validators under this machine's sh and grep.
 SHELL_SCRIPTS = scripts/*.sh scripts/installer-test/*.sh fuzz/run.sh src/nodeinstall.sh
 shellcheck:
 	@command -v shellcheck >/dev/null || { echo "shellcheck not installed (apt install shellcheck)"; exit 1; }
 	shellcheck $(SHELL_SCRIPTS)
 	shellcheck -s sh src/nodeinstall-uninstall.sh
 	shellcheck -S warning smoke.sh
+	sh scripts/installer-test/validators.sh
 
 # W26: artifacts generated from proto/protocols.toml (docs/DEPLOY.md §3d
 # matrix, the admin form schema). `gen-protocols` rewrites them after a

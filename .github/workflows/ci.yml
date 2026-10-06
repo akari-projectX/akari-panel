@@ -409,6 +409,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: shellcheck --version && make shellcheck
+      # The installer's validators again under busybox sh + busybox grep
+      # (regex dialects differ: a `\]` in a bracket works with ugrep only).
+      - run: docker run --rm -v "$PWD:/src:ro" alpine:3.22 sh /src/scripts/installer-test/validators.sh
 
   image-cache:
     # Main runs only (push, nightly): refresh the BuildKit layer cache of

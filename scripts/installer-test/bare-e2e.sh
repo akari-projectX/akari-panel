@@ -79,13 +79,17 @@ local_rel=(-e AKARI_RELEASES_URL=file:///rel -e AKARI_COSIGN_KEY=/rel/cosign.pub
 
 # The installer's default admin (v0.4 D1: the e-mail is the login):
 # admin@<domain>, or the reserved admin@akari.invalid on an IP-only install.
+# --node-address: a host name (case folded) on the domain install, an
+# [IPv6]:port on the IP-only one (validators.sh: GNU grep once rejected both).
 if [ "$address" = ip ]; then
-	addr_args=()
+	node_addr='[::1]:9443'
+	addr_args=(--node-address "$node_addr")
 	ip=$(cx sh -c "hostname -I | awk '{print \$1}'")
 	origin="https://$ip"
 	admin_email=admin@akari.invalid
 else
-	addr_args=(--domain myapp.test --local-certs)
+	node_addr=edge-node-communication.myapp.test
+	addr_args=(--domain myapp.test --local-certs --node-address Edge-Node-Communication.MyApp.test)
 	origin="https://myapp.test"
 	admin_email=admin@myapp.test
 fi
@@ -162,7 +166,13 @@ for f in /etc/akari/valkey.conf /etc/akari/caddy.env /etc/akari/install.env /var
 done
 cx sh -c "grep -F -e '$pw' -e '$PREFIX' /var/log/akari-install.log" && fail "a secret is in the install log"
 cx sh -c "journalctl -u caddy --no-pager -o cat | grep -F '$PREFIX'" && fail "the prefix is in Caddy's journal"
-echo "ok: modes, ownership, no secrets in logs"
+settings=$(cx sh -c 'cd / && runuser -u akari -- akari -c /etc/akari/panel.toml settings show') ||
+	fail "akari settings show"
+case $(printf '%s\n' "$settings" | sed -n 's/^node domains: *//p') in
+"$node_addr "*) ;;
+*) fail "the node address is not $node_addr: $settings" ;;
+esac
+echo "ok: modes, ownership, no secrets in logs, node address $node_addr"
 
 log "user + subscription"
 [ "$(https_code "$origin/$PREFIX/api/v1/users" -b /tmp/jar -X POST -H 'Content-Type: application/json' \
