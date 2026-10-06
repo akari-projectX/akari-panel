@@ -39,7 +39,6 @@ struct ConsoleAssets;
 const CONSOLE_CACHE: &str = "private, no-store";
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
-
 /// `/{prefix}/app[/…]`: the admin sign-in page under the admin prefix; the
 /// portal's pages at `/` (D11) otherwise.
 pub async fn app_entry(State(state): State<AppState>, entry: Entry) -> Response {

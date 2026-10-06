@@ -115,11 +115,31 @@ test('#14 #15 branding: footer text and links, external terms link, client downl
   }
 });
 
-test('terms and privacy: the site\'s own text, a neutral default until it is written', async ({ page }) => {
+test('#61 terms and privacy: the site\'s own text, a neutral default until it is written', async ({ page }) => {
   for (const [path, title] of [['/terms', '服务条款'], ['/privacy', '隐私政策']]) {
     await page.goto(path);
     await expect(page.getByRole('heading', { level: 1, name: title })).toBeVisible();
     await expect(page.getByText(/尚未发布这份文件。如有疑问，请登录后提交工单联系我们。/)).toBeVisible();
+  }
+  /* 站长在知识库里写了 slug 为 terms 的已发布文章：条款页显示它；隐私只有草稿，仍是缺省文案 */
+  const a = await admin();
+  const terms = await a.call<{ id: string }>('POST', '/api/v1/kb/articles', {
+    title_zh: 'E2E 服务条款', body_zh: '本站条款 **正文**', published: true, slug: 'terms',
+  });
+  const draft = await a.call<{ id: string }>('POST', '/api/v1/kb/articles', {
+    title_zh: 'E2E 隐私草稿', body_zh: '草稿', published: false, slug: 'privacy',
+  });
+  try {
+    await page.goto('/terms');
+    await expect(page.getByRole('heading', { level: 1, name: 'E2E 服务条款' })).toBeVisible();
+    await expect(page.locator('strong', { hasText: '正文' })).toBeVisible();
+    await expect(page.getByText('最后更新')).toBeVisible();
+    await page.goto('/privacy');
+    await expect(page.getByRole('heading', { level: 1, name: '隐私政策' })).toBeVisible();
+    await expect(page.getByText(/尚未发布这份文件/)).toBeVisible();
+  } finally {
+    await a.call('DELETE', `/api/v1/kb/articles/${terms.id}`);
+    await a.call('DELETE', `/api/v1/kb/articles/${draft.id}`);
   }
 });
 
