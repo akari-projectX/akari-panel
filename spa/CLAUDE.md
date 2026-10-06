@@ -1,5 +1,7 @@
 # akari-panel/spa — 前端
 
+> **W33-b**：管理后台已迁到独立应用 `admin/`（`admin/CLAUDE.md`），面板只下发门户包 `dist/app`；本目录里的旧后台代码（`admin.html`、`src/admin-*`、`pages/admin-*` 等）与 `/{prefix}/app` 旧登录页已不再被下发，由 W36-b 门户重写删除。
+
 React 19 + Vite 8 (Rolldown) + Tailwind 4 + TanStack Query 5；shadcn 风格组件为手拷代码（`src/components/ui/`）。
 **两个独立打包（R23，推翻 M3 的单 SPA）**：用户门户（`index.html` → `src/main.tsx` → `src/app.tsx`，产物 `dist/app`，D11 起在主域名 `/`；后台前缀下的 `/{prefix}/app` 是管理员的登录页）与管理后台（`admin.html` → `src/admin-main.tsx` → `src/admin-app.tsx`，产物 `dist/admin`，在 `/{prefix}/admin`，仅对管理员会话下发）。`npm run build` = tsc + 两次 `vite build`（第二次 `AKARI_BUNDLE=admin`）+ `scripts/check-bundles.mjs`。共用的 `src/mount.tsx`（QueryClient + 挂载）、`lib/`、`components/`、`i18n/` 两边各自打包（不共享 chunk）。产物被 rust-embed 编进二进制。改完前端必须 `make spa && make panel` 才生效。
 

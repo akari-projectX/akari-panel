@@ -88,7 +88,7 @@
 | USR-20 | 转让所有者（仅所有者，目标为启用的管理员，输入确认） | `POST /users/{id}/owner` | R47 | 实现 |
 | USR-21 | 删除用户：先显示影响（余额、可提现、待审提现、待付/未开通订单、有效套餐、是否匿名化保留），输入邮箱确认 | `GET /users/{id}/delete-impact`、`DELETE /users/{id}?confirm=true` | 中-7 | 实现 |
 | USR-22 | 余额与明细；人工调整余额（带符号金额 + 原因） | `GET/POST /users/{id}/balance` | W16 | 实现 |
-| USR-23 | 流量明细：每日折线（下载/上传/计费）+ 按节点 / 入口表（R43） | `GET /users/{id}/traffic` | W22 | 实现 |
+| USR-23 | 流量明细：每日折线（下载/上传/计费）+ 按节点表（API `group=node`） | `GET /users/{id}/traffic` | W22 | 实现 |
 | USR-24 | 勾选（本页全选）→ 批量操作条；"对全部筛选结果批量操作" | — | Ops | 实现 |
 | USR-25 | 批量操作：延长 N 天、重置流量、封禁（原因）、解封、分配/更换套餐、取消套餐、调整余额、发送邮件 —— 先预览人数与样例，再确认 | `POST /users/batch/preview`、`POST /users/batch` | Ops | 实现 |
 | USR-26 | 批量任务列表：进度、明细（失败/跳过在前，错误码翻译）、取消 | `GET /users/batch`、`/users/batch/{id}`、`/cancel` | Ops | 实现 |
