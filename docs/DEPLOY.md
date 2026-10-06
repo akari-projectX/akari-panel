@@ -1,4 +1,4 @@
-# Deploying Akari
+# Deploying Akari（部署 Akari）
 
 ## 快速开始（一键安装，中文）
 
@@ -20,9 +20,13 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
 | 自定义端口 | 否（80/443/8443） | 8443 是节点 agent 连接面板的 gRPC 端口 |
 | 节点通信地址 | 主域名（仅 IP 安装 = 本机 IP） | **只在主域名解析到 Cloudflare（橙色云）时询问**：agent 经 8443 端口与面板做双向 TLS，必须直连，不能经过 Cloudflare 或其他反向代理。填一个**仅 DNS（灰色云）**、指向本机的域名或本机公网 IP；`--yes` 时用 `--node-address` 指定，否则安装器停下并说明原因 |
 
-结束时会打印管理后台的完整地址（含**机密后台前缀**——不知道前缀的人看不到后台，只得到空 404）、
-用户门户地址（主域名根路径 `/`）以及管理员密码。接下来：登录后台 → **系统设置** 确认主域名/订阅域名/节点通信域名 → **节点** →
-添加节点 → 在节点上执行一键安装命令（§3）。
+安装结束时会打印：
+
+- 管理后台的完整地址（含**机密后台前缀**：不知道前缀的人看不到后台，只会得到空 404）；
+- 用户门户地址（主域名根路径 `/`）；
+- 管理员密码。
+
+接下来：登录后台 → **系统设置** 确认主域名 / 订阅域名 / 节点通信域名 → **节点** → 添加节点 → 在节点上执行一键安装命令（§3）。
 
 常用运维命令（安装后可用，以 root 或 `sudo` 执行）：
 
@@ -39,10 +43,15 @@ akari-ctl uninstall                 # 卸载服务，保留数据与配置；--p
 - **备份加密**：在 `/etc/akari/install.env` 设置 `AGE_RECIPIENT=age1…`（`age-keygen` 生成，私钥离线保存），
   之后的备份（含升级前自动备份）都用 age 加密；未设置时为 0600 明文文件并给出警告（docs/BACKUP.md）。
 - **v0.3.x → v0.4 不能升级，只能全新安装**：v0.4 把迁移 0001–0168 压缩为新基线 `1000_baseline.sql`。
-  `akari-ctl upgrade` 在改动任何东西之前拒绝（`database from v0.3.x — fresh install required`），面板启动时也会拒绝
-  v0.3.x 的数据库；v0.3.x 的备份**不能**恢复到 v0.4。做法：`akari-ctl uninstall --purge --confirm purge` 后重新安装（见 §5）。
-- **换服务器**：旧机 `akari-ctl backup` → 把备份目录复制到新机 →
-  新机 `curl … | sh -s -- --restore <目录>`（加密备份加 `--age-identity <私钥>`）→ 改 DNS。
+  - `akari-ctl upgrade` 在改动任何东西之前就会拒绝（`database from v0.3.x — fresh install required`），面板启动时也会拒绝 v0.3.x 的数据库。
+  - v0.3.x 的备份**不能**恢复到 v0.4。
+  - 做法：`akari-ctl uninstall --purge --confirm purge` 后重新安装（见 §5）。
+- **换服务器**：
+  1. 旧机执行 `akari-ctl backup`；
+  2. 把备份目录复制到新机；
+  3. 新机执行 `curl … | sh -s -- --restore <目录>`（加密备份加 `--age-identity <私钥>`）；
+  4. 改 DNS。
+
   路由前缀、CA 与密钥不变，已注册的节点与订阅链接继续可用（§8）。
 - **全自动安装**（脚本/批量）：`… | sh -s -- --yes --mode bare --domain panel.example.com --email you@example.com`，
   密码用环境变量 `AKARI_ADMIN_PASSWORD` 或 `--admin-password-file` 传入（`install.sh --help` 列出全部选项）。
@@ -52,98 +61,89 @@ akari-ctl uninstall                 # 卸载服务，保留数据与配置；--p
 
 ---
 
-The rest of this document is in English.
+以下为部署手册正文。
 
-Two supported layouts: **Docker Compose** (panel + PostgreSQL 18 + Valkey 9 + Caddy) and **bare
-metal** (systemd + PostgreSQL 18 + Valkey 9 + Caddy). The installer below sets up either in one
-command; Appendix A / B are the same layouts by hand (other distributions, nginx, an existing
-database). Nodes (agents) are always a single static binary under systemd (§3).
+支持两种部署形态：**Docker Compose**（panel + PostgreSQL 18 + Valkey 9 + Caddy）和**裸机**
+（systemd + PostgreSQL 18 + Valkey 9 + Caddy）。下面的安装器一条命令即可装好任意一种；附录 A / B 是同样形态的手动做法
+（适用于其他发行版、nginx、已有数据库等情况）。节点（agent）始终是 systemd 下的单个静态二进制（§3）。
 
-Requirements: a Linux VPS for the panel (1 vCPU / 1 GB is enough to start), a DNS name pointing at
-it (`panel.example.com` below; an IP works to try it out), ports 80/443 (TLS proxy) and 8443
-(agent gRPC) reachable.
+要求：
 
-## Quick start: the installer
+- 一台运行面板的 Linux VPS（1 vCPU / 1 GB 即可起步）；
+- 一个指向它的 DNS 名称（下文用 `panel.example.com`；试用时用 IP 也行）；
+- 80/443（TLS 代理）与 8443（agent gRPC）端口可达。
+
+## Quick start: the installer（安装器快速开始）
 
 ```bash
 curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/download/install.sh | sh
 ```
 
-As root, or as a user with sudo (the script re-runs itself through `sudo`, also when piped).
-Supported: Debian 12/13, Ubuntu 22.04/24.04, amd64/arm64, systemd; anything else is refused with
-a pointer to the appendix. Interactive by default (Chinese or English by locale, `--lang zh|en`),
-every prompt with a default; `--yes` takes the defaults and the flags/environment for everything:
+以 root 或有 sudo 的用户运行（脚本会通过 `sudo` 重新执行自身，管道方式下同样如此）。
+支持：Debian 12/13、Ubuntu 22.04/24.04，amd64/arm64，systemd；其他系统一律拒绝，并指向附录。
+默认交互式（按 locale 显示中文或英文，`--lang zh|en`），每个提示都有默认值；`--yes` 取默认值，其余全部由参数/环境变量提供：
 
 | Option | Environment | Default |
 |---|---|---|
 | `--mode bare\|docker` | `AKARI_MODE` | `docker` |
-| `--domain NAME` | `AKARI_DOMAIN` | empty = IP only (Caddy's internal CA; browsers warn) |
-| `--ip ADDR` | `AKARI_PUBLIC_IP` | the source address of the default route |
-| `--email ADDR` | `AKARI_EMAIL` | none (ACME account e-mail) |
+| `--domain NAME` | `AKARI_DOMAIN` | 空 = 仅 IP（Caddy 内部 CA；浏览器会警告） |
+| `--ip ADDR` | `AKARI_PUBLIC_IP` | 默认路由的源地址 |
+| `--email ADDR` | `AKARI_EMAIL` | 无（ACME 账号邮箱） |
 | `--admin LOGIN` | `AKARI_ADMIN` | `admin` |
-| `--admin-password-file F` | `AKARI_ADMIN_PASSWORD` | generated (20 characters), printed once |
-| `--node-address HOST[:PORT]` | `AKARI_NODE_ADDRESS` | the domain (or IP): 系统设置 → 节点通信域名. A host name, IPv4 or `[IPv6]`, optional `:port`. When the domain (or this address) resolves into Cloudflare's ranges the installer asks for a DNS-only name or IP instead (`--yes`: it stops and says to pass this option): agents need mutual TLS straight to the gRPC port |
+| `--admin-password-file F` | `AKARI_ADMIN_PASSWORD` | 自动生成（20 个字符），只显示一次 |
+| `--node-address HOST[:PORT]` | `AKARI_NODE_ADDRESS` | 域名（或 IP）：系统设置 → 节点通信域名。可为主机名、IPv4 或 `[IPv6]`，可带 `:port`。当域名（或该地址）解析到 Cloudflare 的地址段时，安装器会改为询问一个仅 DNS 的名称或 IP（`--yes` 时：停止并提示传入此选项）：agent 需要直连 gRPC 端口做双向 TLS |
 | `--http-port/--https-port/--grpc-port` | | 80 / 443 / 8443 |
-| `--version vX.Y.Z` | `AKARI_VERSION` | the installer's own release (`latest/download` = newest) |
+| `--version vX.Y.Z` | `AKARI_VERSION` | 安装器自身所属的发布版本（`latest/download` = 最新） |
 | `--dir DIR` (docker) | `AKARI_DOCKER_DIR` | `/opt/akari` |
-| `--local-certs` | | Caddy's internal CA for every name (test/LAN names such as `myapp.test`) |
-| `--restore DIR` / `--age-identity F` | | install from a backup (§8 host move) |
+| `--local-certs` | | 所有名称都用 Caddy 内部 CA（测试/局域网名称，如 `myapp.test`） |
+| `--restore DIR` / `--age-identity F` | | 从备份安装（§8 换主机） |
 
-Checks before anything is changed: OS and architecture, root, systemd (bare metal), RAM (≥ 512
-MiB, warning below 1 GiB), free ports (80/443/8443; bare metal also 8080/8082/6379 on loopback),
-an existing installation (→ offers `upgrade` instead; an interrupted install is resumed: every
-step is idempotent). Then:
+改动任何东西之前的检查项：操作系统与架构、root、systemd（裸机）、内存（≥ 512 MiB，低于 1 GiB 警告）、
+端口占用（80/443/8443；裸机另查回环上的 8080/8082/6379）、是否已有安装（有则提示改用 `upgrade`；被中断的安装可续装：每一步都是幂等的）。然后：
 
-- **Docker** (`/opt/akari`): Docker Engine + compose v2 from Docker's apt repository when missing
-  (key fingerprint pinned); the release's compose file, Caddyfile and `panel.toml`; random
-  database/Valkey passwords in `env/*.env` (0600); `.env` (0600) pins `AKARI_IMAGE` to the release's
-  `tag@digest`; `docker compose up -d`.
-- **Bare metal**: PostgreSQL 18 from the PGDG repository (an existing cluster on 5432 is left
-  alone: the 18 cluster takes the next port), Valkey 9 (`akari-valkey.service`, loopback, password,
-  no persistence; see below), Caddy from its repository with the repository's Caddyfile
-  (`/etc/caddy/Caddyfile`; its environment in `/etc/akari/caddy.env`, 0600, via a drop-in that
-  drops `--environ` and the admin API so neither the journal nor local users see it); the `akari` system user (sysusers), `/var/lib/akari` 0700, `/etc/akari/panel.toml`
-  0640 root:akari with only the R39 start-up keys, the hardened `akari-panel.service`; ufw is
-  opened for 80/443/8443 when active.
-- Both: wait for `/healthz`, set 主域名 and 节点通信域名 (`akari settings set`), create the
-  admin (the password reaches the CLI through the environment only), check `https://<domain>/healthz`
-  through Caddy, print the URLs and the password once. `akari-ctl` (= this installer) and the backup
-  scripts land in `/usr/local/sbin` and `/usr/local/lib/akari`; `/etc/akari/install.env` records
-  mode, version, ports (no secrets).
+- **Docker**（`/opt/akari`）：
+  - 缺少 Docker 时，从 Docker 的 apt 仓库安装 Docker Engine + compose v2（密钥指纹已固定）；
+  - 取该发布版本的 compose 文件、Caddyfile 和 `panel.toml`；
+  - 在 `env/*.env`（0600）中生成随机的数据库/Valkey 密码；
+  - `.env`（0600）把 `AKARI_IMAGE` 固定为该发布版本的 `tag@digest`；
+  - 执行 `docker compose up -d`。
+- **裸机**：
+  - 从 PGDG 仓库安装 PostgreSQL 18（5432 上已有的集群不动：18 集群使用下一个端口）；
+  - Valkey 9（`akari-valkey.service`，仅回环、带密码、不持久化；见下）；
+  - 从 Caddy 官方仓库安装 Caddy，使用仓库自带的 Caddyfile（`/etc/caddy/Caddyfile`；其环境变量放在 `/etc/akari/caddy.env`，0600，经 drop-in 去掉 `--environ` 和 admin API，使 journal 和本地用户都看不到它）；
+  - `akari` 系统用户（sysusers）、`/var/lib/akari`（0700）、`/etc/akari/panel.toml`（0640 root:akari，只含 R39 启动键）、加固过的 `akari-panel.service`；
+  - ufw 处于启用状态时放行 80/443/8443。
+- 两种形态共同的收尾步骤：
+  - 等待 `/healthz`，设置主域名和节点通信域名（`akari settings set`），创建管理员（密码只经环境变量交给 CLI）；
+  - 通过 Caddy 检查 `https://<domain>/healthz`，打印各 URL 并仅显示一次密码；
+  - `akari-ctl`（即本安装器）和备份脚本放在 `/usr/local/sbin` 与 `/usr/local/lib/akari`；`/etc/akari/install.env` 记录模式、版本、端口（不含密钥）。
 
-**Supply chain.** The installer downloads the release's `SHA256SUMS` and its Sigstore bundle and
-verifies it with **cosign** against this repository's release workflow at that tag
-(`…/.github/workflows/release.yml@refs/tags/vX.Y.Z`, issuer GitHub Actions; cosign itself is
-fetched with a SHA-256 pinned in the script), then checks every file it uses — the binary, the
-image reference (`akari-panel-image.txt`, so Docker pulls by that digest), the deploy bundle
-(`akari-deploy.tar.gz`) — against those sums. The PGDG, Caddy and Docker apt keys are pinned by
-fingerprint. **Valkey**: Debian/Ubuntu ship < 9 (Debian 13: 8.1; Ubuntu 24.04: 7.2) and Valkey has
-no apt repository, so the installer uses the upstream release build (`download.valkey.io`; the
-`jammy` build for Debian 12/Ubuntu 22.04, `noble` for Debian 13/Ubuntu 24.04), pinned by version
-and SHA-256 in the script, installed under `/opt/akari-valkey` and run as a `DynamicUser` with the
-config as a systemd credential. Upgrading Valkey = a new installer release (bump `VALKEY_VERSION`
-and the four checksums). The script itself is what `curl | sh` runs: read it first if your policy
-requires (`curl -fsSLO …/install.sh`; `akari-ctl` is that file).
+**Supply chain（供应链）。** 安装器下载该发布版本的 `SHA256SUMS` 及其 Sigstore bundle，用 **cosign** 对照本仓库在该 tag 下的发布工作流验证
+（`…/.github/workflows/release.yml@refs/tags/vX.Y.Z`，issuer 为 GitHub Actions；cosign 本身按脚本中固定的 SHA-256 下载），
+再用这些校验和检查它用到的每个文件：二进制、镜像引用（`akari-panel-image.txt`，Docker 据此按 digest 拉取）、部署包（`akari-deploy.tar.gz`）。
+PGDG、Caddy 和 Docker 的 apt 密钥均按指纹固定。**Valkey**：Debian/Ubuntu 自带版本 < 9（Debian 13：8.1；Ubuntu 24.04：7.2），
+而 Valkey 没有 apt 仓库，所以安装器使用上游发布构建（`download.valkey.io`；Debian 12/Ubuntu 22.04 用 `jammy` 构建，Debian 13/Ubuntu 24.04 用 `noble` 构建），
+版本与 SHA-256 在脚本中固定，安装到 `/opt/akari-valkey`，以 `DynamicUser` 运行，配置作为 systemd credential 传入。
+升级 Valkey = 发布新的安装器版本（更新 `VALKEY_VERSION` 和四个校验和）。
+`curl | sh` 执行的就是这个脚本本身：如果你的策略要求，请先审阅（`curl -fsSLO …/install.sh`；`akari-ctl` 就是这个文件）。
 
-**Secrets.** Generated passwords never appear on a command line or in the log
-(`/var/log/akari-install.log`, 0600); the admin password and the console URL with the secret admin prefix are
-printed once to the terminal (`akari-ctl info` prints the URLs again).
+**Secrets（密钥）。** 生成的密码不会出现在命令行或日志（`/var/log/akari-install.log`，0600）中；
+管理员密码和带机密后台前缀的控制台 URL 只在终端打印一次（`akari-ctl info` 可再次打印 URL）。
 
-Private mirrors / tests: `AKARI_RELEASES_URL` (a release base with the GitHub layout, `file://`
-works) and `AKARI_COSIGN_KEY` (verify with a cosign public key instead of the keyless identity —
-still a signature check, never skipped; it prints a warning).
+私有镜像源 / 测试：`AKARI_RELEASES_URL`（采用 GitHub 目录布局的发布根地址，支持 `file://`）和
+`AKARI_COSIGN_KEY`（改用 cosign 公钥验证，而非 keyless 身份；仍然是签名校验，绝不跳过，并会打印警告）。
 
-## 0. Network model (read once)
+## 0. Network model (read once)（网络模型，读一次即可）
 
 | Port | Who connects | Exposure |
 |---|---|---|
-| 443 (80 for ACME) | admins, subscription clients | public, via the TLS reverse proxy (every path forwarded; the panel answers the portal, the admin prefix, subscriptions, install links and payment notifications, everything else is its empty 404) |
-| 8443 gRPC | agents (mTLS, client certificate = node identity; enrollment = server TLS + one-time token) | public or allow-listed to your node IPs; **never behind an HTTP proxy that terminates TLS** |
-| 8080 panel web | the reverse proxy only | loopback / private network, never published |
-| 5432, 6379 | the panel only | never published |
-| 9100 metrics | Prometheus | loopback / private, off by default |
+| 443（ACME 用 80） | 管理员、订阅客户端 | 公开，经 TLS 反向代理（转发所有路径；面板响应门户、后台前缀、订阅、安装链接和支付回调，其余一律返回其空 404） |
+| 8443 gRPC | agent（mTLS，客户端证书 = 节点身份；注册 = 服务端 TLS + 一次性令牌） | 公开，或仅对节点 IP 放行；**绝不能放在终止 TLS 的 HTTP 代理后面** |
+| 8080 panel web | 仅反向代理 | 回环 / 内网，绝不对外发布 |
+| 5432, 6379 | 仅面板 | 绝不对外发布 |
+| 9100 metrics | Prometheus | 回环 / 内网，默认关闭 |
 
-Firewall (nftables example, bare metal; adapt for ufw):
+防火墙（nftables 示例，裸机；ufw 请自行调整）：
 
 ```
 table inet filter {
@@ -160,19 +160,15 @@ table inet filter {
 }
 ```
 
-With Docker, published ports bypass ufw/nftables input rules (Docker writes its own
-rules): publish only what the table above lists. The Compose file does.
+使用 Docker 时，发布的端口会绕过 ufw/nftables 的 input 规则（Docker 自己写规则）：只发布上表列出的端口。Compose 文件就是这样做的。
 
-## 1. Choose the config values
+## 1. Choose the config values（选择配置值）
 
-`panel.toml` holds only what the process needs to start (R39): `data_dir`, `database_url`,
-`valkey_url` (both can come from the environment), the listeners (`web.bind`, `grpc.bind`,
-`metrics.*`, `tls_ask.*`), `web.trusted_proxies` (the proxy's address as the panel sees it) and
-`web.cookie_secure`. See `deploy/panel.toml.example` / `panel.toml.compose.example`; nothing else
-is read from it.
+`panel.toml` 只保存进程启动所需的内容（R39）：`data_dir`、`database_url`、`valkey_url`（后两者也可来自环境变量）、
+监听器（`web.bind`、`grpc.bind`、`metrics.*`、`tls_ask.*`）、`web.trusted_proxies`（面板所见的代理地址）以及 `web.cookie_secure`。
+参见 `deploy/panel.toml.example` / `panel.toml.compose.example`；其余内容都不从该文件读取。
 
-Everything an operator changes at runtime is set in the console under **系统设置** and stored in
-the database — there is no file fallback and no precedence between the two:
+运维人员在运行时改动的一切，都在控制台 **系统设置** 中设置并存入数据库：没有文件回退，两者之间也没有优先级：
 
 ```
 主域名 / 订阅域名 / 信任 Cloudflare     系统设置 → 站点
@@ -183,51 +179,41 @@ latency tests                           系统设置 → 测速
 Telegram API origin (alert channel)     系统设置 → 告警
 ```
 
-Before the first login (or headless) the node domain can also be set from the CLI:
-`akari settings set node panel.example.com` (a domain without a port uses `grpc.bind`'s port).
-Without a node domain no install command or bootstrap file can be issued
-(`settings.node_domain_unset`).
+首次登录之前（或无界面环境），节点域名也可以用 CLI 设置：
+`akari settings set node panel.example.com`（不带端口的域名使用 `grpc.bind` 的端口）。
+没有节点域名就无法签发安装命令或 bootstrap 文件（`settings.node_domain_unset`）。
 
-Internal tuning knobs (rate limits, token lifetimes, the fail-closed lease, billing plausibility
-caps, alert cadence, agent certificate validity…) are built-in constants (`src/CLAUDE.md`
-"Built-in constants").
+内部调优参数（限流、令牌有效期、fail-closed 租约、计费合理性上限、告警节奏、agent 证书有效期等）是内置常量（`src/CLAUDE.md`
+"Built-in constants"）。
 
-`akari config check` validates the file, prints the effective config with secrets redacted, lists
-obsolete keys (warnings) and, when the database is reachable, the 系统设置 values; `akari serve`
-runs the same validation and refuses to start on errors.
+`akari config check` 校验配置文件，打印隐去密钥的生效配置，列出已废弃的键（警告），并在数据库可达时列出 系统设置 的值；
+`akari serve` 执行同样的校验，出错则拒绝启动。
 
-### Upgrading: obsolete keys
+### Upgrading: obsolete keys（升级：废弃的键）
 
-Keys of older releases (`web.advertised_names`, `web.sub_domain`, `web.trust_cloudflare`,
-`web.cloudflare_ranges`, `grpc.advertise`, `grpc.server_name`, `install.*`, `[probe]`, `[acme]`,
-`[audit]`, `[traffic]`, `[auth]`, `[agent]`, `[sub]`, `[updates]`, `[alerts]`,
-`tls_ask.rate_per_sec`, `grpc.lease_seconds`, W24's `[payments]`) never stop the panel:
+旧版本的键（`web.advertised_names`、`web.sub_domain`、`web.trust_cloudflare`、
+`web.cloudflare_ranges`、`grpc.advertise`、`grpc.server_name`、`install.*`、`[probe]`、`[acme]`、
+`[audit]`、`[traffic]`、`[auth]`、`[agent]`、`[sub]`、`[updates]`、`[alerts]`、
+`tls_ask.rate_per_sec`、`grpc.lease_seconds`、W24 的 `[payments]`）不会阻止面板启动：
 
-- Each key that moved to 系统设置 is **imported once** on the first start that sees it, when the
-  database has no value for it yet (one transaction, audited `settings.import` as actor `system`;
-  every instance reloads at once). `web.advertised_names` and `grpc.server_name` join the gRPC
-  certificate's name list (`grpc_server_names`, source `config`) so enrolled agents keep
-  connecting; `install.public_url` becomes the main domain (which turns the host check on — see
-  below); `updates.release_keys` keeps only keys that are not the official one compiled in.
-- From then on the key is **ignored** with a startup warning — also after you change or clear the
-  value in the console (the file never brings it back; `legacy_config_imports` remembers what was
-  handled).
-- Keys that became constants are ignored with a warning.
+- 已迁到 系统设置 的每个键，会在第一次看到它的那次启动中**导入一次**，前提是数据库中还没有对应的值
+  （一个事务，审计记录为 `settings.import`，操作者 `system`；所有实例同时重载）。
+  `web.advertised_names` 和 `grpc.server_name` 并入 gRPC 证书的名称列表（`grpc_server_names`，来源 `config`），
+  使已注册的 agent 继续连得上；`install.public_url` 成为主域名（这会打开 host 检查，见下）；
+  `updates.release_keys` 只保留非内置官方密钥的那些。
+- 此后该键会被**忽略**，并在启动时给出警告：即使你在控制台修改或清空了该值也一样（文件不会让它复活；`legacy_config_imports` 记录已处理的内容）。
+- 已变成常量的键会被忽略并给出警告。
 
-So: upgrade, start once, check 系统设置 (and the `config check` warnings), then **delete the
-obsolete keys from panel.toml**.
+所以：升级、启动一次、检查 系统设置（以及 `config check` 的警告），然后**从 panel.toml 中删除这些废弃的键**。
 
-## 1b. Domains (系统设置) and Cloudflare
+## 1b. Domains (系统设置) and Cloudflare（域名与 Cloudflare）
 
-The admin console's **系统设置** page (`/<admin prefix>/admin/settings`) holds three domain lists and
-one switch. Once a main domain is saved, the console (`/<admin prefix>/admin`) answers on the main
-domains only (and on IP literals); on a subscription domain it is the uniform empty 404 (R23, D8).
-They live in the database only (tables `site_domains` and `panel_settings`; an empty list = the
-built-in behaviour in the table below).
-`akari settings show` prints them; `akari settings set main|sub|node <host[:port]>` /
-`set trust-cloudflare true|false` and `akari settings unset main|sub|node|trust-cloudflare|probe|all`
-change them from the CLI (audited) — e.g. after a mistyped main domain. Changes take effect on every panel instance within a second (database
-notification), **no restart** — including the gRPC certificate.
+管理后台的 **系统设置** 页面（`/<admin prefix>/admin/settings`）包含三个域名列表和一个开关。保存主域名后，控制台（`/<admin prefix>/admin`）
+只在主域名（以及 IP 字面量）上响应；在订阅域名上则是统一的空 404（R23、D8）。
+这些设置只存在数据库中（表 `site_domains` 和 `panel_settings`；列表为空 = 下表中的内置行为）。
+`akari settings show` 会打印它们；`akari settings set main|sub|node <host[:port]>` /
+`set trust-cloudflare true|false` 和 `akari settings unset main|sub|node|trust-cloudflare|probe|all`
+可从 CLI 修改（带审计）：例如主域名填错之后。修改在一秒内对所有面板实例生效（通过数据库通知），**无需重启**，gRPC 证书同样如此。
 
 ### 多域名（D8，中文）
 
@@ -246,100 +232,76 @@ notification), **no restart** — including the gRPC certificate.
 
 | Field | Used for | Cloudflare | When empty |
 |---|---|---|---|
-| 主域名 (main) | admin console, user portal, install links, payment notify URLs | orange or grey | the admin's browser origin; no host check |
-| 订阅域名 (subscription) | every subscription URL the panel hands out (portal, admin, API `sub_url`) | **orange** recommended (hides the server IP) | the main domain |
-| 节点通信域名 (node) | `panel_addr`/`server_name` of NEW install commands and bootstrap files | **grey only** | **no tokens can be issued** |
-| 信任 Cloudflare | real client IP behind Cloudflare (`CF-Connecting-IP`) | — | off |
+| 主域名 (main) | 管理控制台、用户门户、安装链接、支付回调 URL | 橙色或灰色 | 管理员浏览器所用的 origin；不做 host 检查 |
+| 订阅域名 (subscription) | 面板发出的每个订阅 URL（门户、后台、API `sub_url`） | 推荐**橙色**（隐藏服务器 IP） | 主域名 |
+| 节点通信域名 (node) | 新生成的安装命令与 bootstrap 文件中的 `panel_addr`/`server_name` | **只能灰色** | **无法签发令牌** |
+| 信任 Cloudflare | Cloudflare 后面的真实客户端 IP（`CF-Connecting-IP`） | — | 关闭 |
 
-Values are host names (IDN is stored as punycode) or IP addresses, optionally with `:port`; no
-scheme or path. The **DNS 检测** buttons resolve the name from the panel: the subscription domain
-warns if it does not resolve into Cloudflare's ranges; the node domain **refuses to save** if it
-does (the admin can override after an explicit confirmation): agents talk gRPC with mutual TLS
-directly to port 8443, and an orange-clouded record makes Cloudflare terminate TLS (and it does not
-proxy arbitrary ports), so agents cannot connect.
+取值为主机名（IDN 以 punycode 存储）或 IP 地址，可带 `:port`；不带 scheme 和路径。**DNS 检测** 按钮从面板侧解析该名称：
+订阅域名若没有解析到 Cloudflare 的网段会给出警告；节点域名若解析到了 Cloudflare 网段则**拒绝保存**（管理员明确确认后可强制覆盖）：
+agent 以双向 TLS 直连 8443 端口的 gRPC，而橙色云记录会让 Cloudflare 终止 TLS（并且它不代理任意端口），agent 因此连不上。
 
-**Host check.** Once a main domain is saved, the panel answers only requests whose Host is the
-main or subscription domain or an IP address; any other domain
-name gets the same empty 404 as every other rejection. Saving asks for confirmation when the
-address you are using would stop working.
+**Host 检查。** 保存主域名后，面板只响应 Host 为主域名、订阅域名或 IP 地址的请求；其他任何域名都得到与其他拒绝情形相同的空 404。
+当你正在使用的地址会因此失效时，保存前会要求确认。
 
-**Node domain and existing nodes.** An enrolled agent keeps the server name of its bootstrap
-file forever. The panel therefore records every server name it ever wrote into a bootstrap
-(`grpc_server_names`) and its gRPC certificate covers all of them plus `localhost`/`127.0.0.1`:
-changing the node domain only affects new installs, existing nodes keep connecting. A name leaves
-the certificate only through **移除** in the "节点通信证书域名" table, which lists the nodes still
-using it (they must be re-installed afterwards). Nodes enrolled before this release have no
-recorded name and are listed separately (they use the old panel.toml `grpc.server_name`, imported
-into the list with source `config`; it cannot be removed while such nodes exist).
+**节点域名与已有节点。** 已注册的 agent 永远沿用其 bootstrap 文件中的 server name。因此面板记录写进 bootstrap 的每一个 server name
+（`grpc_server_names`），其 gRPC 证书覆盖所有这些名称加上 `localhost`/`127.0.0.1`：更改节点域名只影响新安装，已有节点继续连接。
+名称只能通过“节点通信证书域名”表中的 **移除** 从证书里去掉，该表会列出仍在使用它的节点（之后需要重新安装这些节点）。
+在本版本之前注册的节点没有记录名称，单独列出（它们使用旧 panel.toml 的 `grpc.server_name`，已作为来源 `config` 导入列表；只要还有这类节点，就不能移除）。
 
-**Reverse proxy certificates.** `deploy/caddy/Caddyfile` serves `AKARI_DOMAIN` as before and any
-other name **on demand**: at the first handshake for a new name Caddy asks the panel's
-`ask` endpoint (`[tls_ask] bind`, its own listener: compose `0.0.0.0:8082` on the private network
-with `allow_non_loopback = true`, bare metal `127.0.0.1:8082`; `AKARI_ASK` in Caddy's
-environment). The panel answers 200 only for the configured main and subscription domains
-(rate-limited per instance, built in), so no Caddyfile edit is needed when domains change and
-nobody can make Caddy issue certificates for arbitrary names. Every path is forwarded on every
-domain, and every site block strips `Server`/`Via`, so junk and the panel's rejections behind the
-admin prefix are byte-identical (smoke compares them on the main domain, an on-demand domain and
-the bare IP). Plain `http://` is redirected to https only for
-`AKARI_DOMAIN`; every other host (the bare IP, unknown names, and the 系统设置 domains, whose
-links are always https) gets the same empty 404 on port 80. ACME HTTP-01 challenges are still
-answered there (Caddy handles them before any site route). With nginx, add each domain's `server_name` and certificate yourself.
+**反向代理证书。** `deploy/caddy/Caddyfile` 照旧为 `AKARI_DOMAIN` 提供服务，对其他任何名称则**按需**签发：
+首次为新名称握手时，Caddy 询问面板的 `ask` 端点（`[tls_ask] bind`，独立监听器：compose 为内网上的 `0.0.0.0:8082`，需 `allow_non_loopback = true`；
+裸机为 `127.0.0.1:8082`；Caddy 环境变量里是 `AKARI_ASK`）。面板仅对已配置的主域名和订阅域名返回 200（每个实例限流，内置），
+所以域名变化时无需修改 Caddyfile，也没人能让 Caddy 为任意名称签发证书。
+所有域名上都转发所有路径，且每个站点块都会去掉 `Server`/`Via`，因此垃圾请求和面板在后台前缀之后的拒绝响应逐字节相同
+（smoke 会在主域名、按需域名和裸 IP 上比较）。纯 `http://` 只对 `AKARI_DOMAIN` 重定向到 https；
+其他所有 host（裸 IP、未知名称，以及 系统设置 中的域名，其链接总是 https）在 80 端口得到同样的空 404。
+ACME HTTP-01 挑战仍会在那里被应答（Caddy 在任何站点路由之前处理它们）。使用 nginx 时，需要自行添加每个域名的 `server_name` 和证书。
 
 ### Cloudflare
 
-1. DNS: main domain orange or grey, subscription domain **orange** (proxied), node domain
-   **grey** (DNS only) pointing at the panel's IP. Keep 8443 reachable directly (firewall it to
-   your node IPs if you like).
-2. SSL/TLS mode **Full (strict)**: Cloudflare then verifies the origin certificate Caddy obtained.
-   "Flexible" would make Cloudflare talk plain HTTP to port 80 (Caddy answers 404, or a redirect
-   loop for `AKARI_DOMAIN`); "Full" without strict accepts any origin certificate.
-3. First certificate for an orange-clouded name: Caddy uses the HTTP-01 challenge on port 80,
-   which works through Cloudflare. If "Always Use HTTPS" is on and issuance fails, switch the
-   record to grey until Caddy has the certificate (seconds after the first visit to
-   `https://<domain>/healthz`), then back to orange; renewals work proxied.
-4. In 系统设置 turn on **信任 Cloudflare**. The panel then treats Cloudflare's edge ranges as
-   trusted proxies: a request whose chain is client → Cloudflare → [Caddy →] panel is attributed to
-   `CF-Connecting-IP` (login/subscription rate limits, audit). The header is read only when the
-   nearest genuine hop is a Cloudflare edge reached through trusted proxies (`web.trusted_proxies`
-   = Caddy); someone connecting to the origin directly and forging the header is attributed to
-   their own address. Without the switch, all requests through Cloudflare count as the edge's
-   address (coarser rate limits, nothing breaks).
-5. WebSocket works through the orange cloud (subscription and admin traffic do not need it; a
-   node's own WS inbound behind Cloudflare is a separate, per-node choice). gRPC through
-   Cloudflare needs its "gRPC" network setting and is **never** suitable for the agent channel.
+1. DNS：主域名橙色或灰色均可，订阅域名用**橙色**（代理），节点域名用**灰色**（仅 DNS），都指向面板的 IP。保持 8443 可直连
+   （如有需要，防火墙只对节点 IP 放行）。
+2. SSL/TLS 模式选 **Full (strict)**：这样 Cloudflare 会校验 Caddy 获得的源站证书。
+   “Flexible” 会让 Cloudflare 以明文 HTTP 访问 80 端口（Caddy 返回 404，对 `AKARI_DOMAIN` 则是重定向循环）；
+   不带 strict 的 “Full” 会接受任意源站证书。
+3. 橙色云名称的首张证书：Caddy 在 80 端口用 HTTP-01 挑战，经 Cloudflare 也能通过。如果开启了 “Always Use HTTPS” 而签发失败，
+   先把记录切到灰色，等 Caddy 拿到证书（首次访问 `https://<domain>/healthz` 后几秒内），再切回橙色；续期在代理状态下可以正常进行。
+4. 在 系统设置 中打开 **信任 Cloudflare**。面板随后把 Cloudflare 边缘网段视为可信代理：链路为 客户端 → Cloudflare → [Caddy →] 面板 的请求，
+   会归属到 `CF-Connecting-IP`（登录/订阅限流、审计）。只有当最近的真实一跳是经由可信代理（`web.trusted_proxies` = Caddy）到达的 Cloudflare 边缘时，
+   才会读取该头；直接连源站并伪造该头的人，会被归属到其自身地址。不开此开关时，所有经 Cloudflare 的请求都算作边缘地址
+   （限流更粗，但不会出问题）。
+5. WebSocket 可以通过橙色云工作（订阅和后台流量不需要它；节点自己的 WS 入站放在 Cloudflare 后面是另一个按节点的独立选择）。
+   经 Cloudflare 的 gRPC 需要其 “gRPC” 网络设置，并且**绝不**适用于 agent 通道。
 
-**Updating the Cloudflare ranges.** The list ships in the binary (`src/cloudflare_ips.txt`, from
-https://www.cloudflare.com/ips-v4 and /ips-v6). If Cloudflare announces new ranges before a panel
-release picks them up, paste the full list into 系统设置 → 安全 → **Cloudflare 网段** (one CIDR
-per line; it replaces the shipped list on every instance at once, no restart; empty = shipped):
+**更新 Cloudflare 网段。** 列表随二进制发布（`src/cloudflare_ips.txt`，来自
+https://www.cloudflare.com/ips-v4 和 /ips-v6）。如果 Cloudflare 在面板发布新版之前公布了新网段，把完整列表粘贴到
+系统设置 → 安全 → **Cloudflare 网段**（每行一个 CIDR；它会同时替换所有实例上的内置列表，无需重启；留空 = 使用内置）：
 
 ```bash
 curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # review, paste
 ```
 
-A stale list fails safe: traffic from an unknown edge range is simply attributed to the edge.
-Release maintainers refresh `src/cloudflare_ips.txt` from the same URLs (the unit test
-`cloudflare::tests` checks it parses).
+过期的列表是安全失败：来自未知边缘网段的流量只会被归属到边缘地址。
+发布维护者从相同 URL 刷新 `src/cloudflare_ips.txt`（单元测试 `cloudflare::tests` 检查它能解析）。
 
-## 2. First admin
+## 2. First admin（第一个管理员）
 
-The installer creates it (and sets 主域名 / 节点通信域名, §2b); by hand, or another one later
-(`akari-ctl` installations: compose directory `/opt/akari`):
+安装器会创建它（并设置 主域名 / 节点通信域名，§2b）；也可以手动创建，或之后再建别的管理员
+（`akari-ctl` 安装的环境：compose 目录为 `/opt/akari`）：
 
 ```bash
 # compose:  docker compose exec -e AKARI_ADMIN_PASSWORD='...' panel /akari admin add you@example.com
 # bare metal: sudo -u akari env AKARI_ADMIN_PASSWORD='...' akari -c /etc/akari/panel.toml admin add you@example.com
 ```
 
-Omit the variable to be prompted. The e-mail address is the login name (v0.4: everyone, admins
-too, logs in with the address; it counts as verified). Admins open
-`https://panel.example.com/<admin prefix>/app` (`akari info` / `akari-ctl info`) and log in with the
-address and the password; they are taken to the console at
-`https://panel.example.com/<admin prefix>/admin` (served only to an admin session — without one it
-is the same empty 404 as any unknown path, so bookmark `/app`, not `/admin`). Users use the portal at
-`https://panel.example.com/`; admins cannot sign in there. Forgotten password: `akari admin passwd <email>` (ends the account's sessions).
-(TOTP two-factor authentication was removed in v0.4; passkeys replace it.)
+省略该变量则会提示输入。邮箱地址就是登录名（v0.4：包括管理员在内，所有人都用邮箱登录；它视为已验证）。
+管理员打开 `https://panel.example.com/<admin prefix>/app`（`akari info` / `akari-ctl info`），用邮箱和密码登录；
+随后进入 `https://panel.example.com/<admin prefix>/admin` 的控制台
+（只对管理员会话提供；没有会话时与任何未知路径一样是空 404，所以请收藏 `/app` 而不是 `/admin`）。
+用户使用 `https://panel.example.com/` 的门户；管理员不能在那里登录。
+忘记密码：`akari admin passwd <email>`（会结束该账号的所有会话）。
+（TOTP 两步验证已在 v0.4 移除，由通行密钥取代。）
 
 ### 后台前缀、IP 白名单与订阅路径（D4/D11，中文）
 
@@ -388,14 +350,12 @@ is the same empty 404 as any unknown path, so bookmark `/app`, not `/admin`). Us
 （v0.4 之前的「至少保留一个启用的管理员」规则由「所有者必须是启用的管理员」取代。曾经出现过的"删除账号时提示必须保留一个管理员，
 但明明还有另一位管理员"，原因是那位管理员是在超流量停用状态下被提升的、一直处于停用状态，不算有效管理员；升级迁移会把这类账号恢复。）
 
-## 2b. 系统设置 (main domain)
+## 2b. 系统设置 (main domain)（主域名）
 
-(Installer: already set to `--domain`, and 节点通信域名 to the same name, or the IP for an IP-only
-install; check them.) In the console, **系统设置**: set **主域名** to the name you deployed with (`panel.yourdomain.com`)
-and save. Install links, subscription URLs and payment callbacks are then built from it instead of
-from whatever address a browser happened to use, and the Host check (§1b) turns on: requests for
-any other name get the empty 404. A subscription domain (for Cloudflare) and a node communication
-domain are optional (§1b).
+（安装器：已设为 `--domain`，节点通信域名也设为同一名称，仅 IP 安装则为该 IP；请检查。）
+在控制台 **系统设置** 中，把 **主域名** 设为你部署所用的名称（`panel.yourdomain.com`）并保存。
+安装链接、订阅 URL 和支付回调随后都由它生成，而不再取决于浏览器碰巧使用的地址；同时 Host 检查（§1b）开启：
+请求其他任何名称都会得到空 404。订阅域名（用于 Cloudflare）和节点通信域名是可选的（§1b）。
 
 ### 站点时区（Q3，W28-a，中文）
 
@@ -414,71 +374,56 @@ domain are optional (§1b).
 
 **流量明细的存储**：`traffic_daily` 按月分区（`traffic_daily_YYYYMM`）。面板启动时和每 10 分钟检查一次，保证上个月到后两个月的分区存在；超过「流量明细保留天数」（系统设置 → 安全，默认 400 天）的**整月**汇总进月表后直接删除整个分区，不产生数据库膨胀。因此日明细至少保留设定的天数，最多再多保留不到一个月。
 
-## 2c. Mail, registration and password reset (optional, W15)
+## 2c. Mail, registration and password reset (optional, W15)（邮件、注册与找回密码，可选）
 
-Everything here is off until you turn it on; nothing in panel.toml.
+这里的一切在你打开之前都是关闭的；panel.toml 中没有对应项。
 
-1. **系统设置 → 邮件**: SMTP server, port and security — **STARTTLS** (587) or **SSL/TLS**
-   (465) for a mail provider; **不加密** only for a relay on the same host/private network (the
-   panel refuses credentials over it). Username/password if the provider needs them (the password
-   is sealed with a key derived from `data/master.key`: if that file is lost, enter it again), sender
-   address (the provider must allow it; set SPF/DKIM for that domain at the provider) and sender
-   name (also the site name in mails). Tick **启用邮件发送**, save, then **发送测试邮件** to
-   yourself — the provider's answer is shown when it fails.
-2. Notices (same card): order receipts, plan-expiry reminder N days before (0 = off), "plan
-   expired", traffic at 80 % and used up (once each per period). Only verified addresses get
-   mail; users add theirs in the portal (邮箱 card: current password + emailed code). 到期提醒
+1. **系统设置 → 邮件**：填写 SMTP 服务器、端口和安全方式。邮件服务商用 **STARTTLS**（587）或 **SSL/TLS**（465）；
+   **不加密** 只用于同一主机/内网上的中继（面板拒绝在其上发送凭据）。服务商需要时填用户名/密码
+   （密码用由 `data/master.key` 派生的密钥加密存放：该文件丢失后需重新输入）、发件地址
+   （须被服务商允许；在服务商处为该域名设置 SPF/DKIM）和发件人名称（也是邮件里的站点名）。
+   勾选 **启用邮件发送**，保存，然后给自己 **发送测试邮件**：失败时会显示服务商的应答。
+2. 通知（同一张卡片）：订单收据、到期前 N 天的套餐到期提醒（0 = 关闭）、“套餐已到期”、流量达 80 % 和用尽（每个周期各一次）。
+   只有已验证的地址才会收到邮件；用户在门户的 邮箱 卡片中添加自己的地址（当前密码 + 邮件验证码）。到期提醒
    只发给仍在生效的订阅；被取消或退款撤销的订阅不再收到「即将到期 / 已到期」（运营审查低-1）。
    「订单退款通知」（默认开）：管理员退款时告诉用户退了多少、退到哪里、套餐怎样处理。
-3. **系统设置 → 注册**: **开放注册** (login page shows 注册; the address becomes the login).
-   **注册需要邮箱验证** (v0.4: an on/off switch, default off, independent of 必须使用邀请码; on
-   needs 邮件发送). Registration can be opened **without SMTP**: people then sign up with email +
-   password only; the address is stored **unverified** (no mail to it, no password reset, not
-   unique, not usable for the email form of the login — the login name is the address, any case,
-   so they log in with it). Users verify it later under 账户 once mail works; an admin can mark
-   it verified (用户 → 管理 → 标记邮箱已验证). Anti-abuse without verification: a built-in
-   proof of work the browser solves invisibly (~2^18 SHA-256, no third-party captcha), 5
-   registrations per client address per hour / 20 per day and 5 attempts per address per hour,
-   plus the optional invite code and domain allow-list. Residual oracle: a registration attempt
-   reveals whether an address is taken (one generic "cannot be registered" answer, bounded by
-   those limits) — inherent to sign-up without verification. Optionally
-   **必须使用邀请码** (users create codes/links in the portal; single-use or not;
-   per-user limit), an **邮箱域名白名单** (one per line; subdomains included) and a **试用套餐**
-   with its length in days. **允许通过邮件找回密码** needs the main domain (§2b): reset links
-   are always built from it, never from the address a request came in on.
-4. Delivery: requests only queue mail; every panel instance runs a sender (one message at a time,
-   `FOR UPDATE SKIP LOCKED` + lease, so instances never send the same message concurrently), retries
-   with backoff for about two hours, then keeps a **失败邮件** entry you can retry (codes and reset
-   links expire instead: they are useless late). Sent bodies are erased; rows are kept 30 days
-   (sent) / 90 days (failed). Metric: `akari_mail_deliveries_total{kind,result}`.
-5. Abuse limits (Valkey, all instances): 10 mails per client address per hour, 5 per destination
-   address per hour and 20 per day, 30 code/link completions per client address per 15 minutes;
-   a code burns after 5 wrong tries. With verification, answers never reveal whether an address
-   has an account.
-6. **Bot protection (W27, `PUT /api/v1/settings/auth`; console page in W36-b)** for 登录、注册、找回密码:
-   - **蜜罐 + 最短提交时间**（默认开启：2 秒）: the page fetches a signed form token from
-     `/auth/options` and posts it no sooner than the minimum time; a filled hidden field, a
-     missing/forged/stale token or a too-fast post gets exactly the ordinary failure of that form
-     (no hint for the bot) and only increments `akari_bot_trap_total{form,reason}` — no log
-     lines. Scripts that log in with curl must do the same (`/auth/options` → wait → post
-     `"guard":{"form_token":…}`) or set 最短提交时间 to 0.
-   - **Cloudflare Turnstile** (per form, default off): site key + secret (secret write-only, sealed
-     with `data/master.key`), verified server side; when switched on it **fails closed** (no or a
-     rejected token = 400, Cloudflare unreachable = 503). Locked out by a wrong key:
-     `akari settings unset turnstile` switches it off on every form (audited, keys kept).
-     Content-Security-Policy: while Turnstile protects at least one form, the **portal pages**
-     (and only those: never the API, assets or the console) are served with
-     `script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com`
-     added to the usual `default-src 'self'`, so the widget can load. With it off nothing outside
-     the panel's own origin is allowed.
-7. **Passkeys (W27)** need the main domain (§2b) as an https DNS name: passkeys belong to that
-   name (RP ID). Policies (`PUT /api/v1/settings/auth`): 管理员仅通行密钥 / 用户仅通行密钥 (an
-   account with a passkey must use it; accounts without one keep their password until they add
-   one), and 密码登录后提示绑定 (binding from the prompt switches that account's password login
-   off). An admin needs no second passkey, but losing the only one means:
-   `akari admin reset-login <email>` on the server (deletes the account's passkeys, password login
-   back on, audited). **Changing the main domain** orphans existing passkeys (browsers only offer
-   them on the old name): they show as not current and those accounts fall back to the password.
+3. **系统设置 → 注册**：**开放注册**（登录页显示 注册；邮箱地址就是登录名）。
+   **注册需要邮箱验证**（v0.4：开/关开关，默认关，与 必须使用邀请码 相互独立；开启需要 邮件发送）。
+   注册可以**不配置 SMTP** 开放：此时用户只用邮箱 + 密码注册；地址以**未验证**状态保存
+   （不会给它发邮件、不能找回密码、不要求唯一、不能用于登录的邮箱形式；登录名就是该地址，不区分大小写，所以他们用它登录）。
+   邮件可用后，用户可在 账户 下验证；管理员也可以将其标记为已验证（用户 → 管理 → 标记邮箱已验证）。
+   无验证时的防滥用措施：
+   - 内置工作量证明，由浏览器无感求解（约 2^18 次 SHA-256，不使用第三方验证码）；
+   - 每个客户端地址每小时 5 次注册 / 每天 20 次，每个邮箱地址每小时 5 次尝试；
+   - 可选的邀请码和域名白名单。
+
+   残余的信息泄露：注册尝试会暴露某个地址是否已被占用（统一回答“无法注册”，受上述限流约束），这是无验证注册固有的。
+   还可选择开启 **必须使用邀请码**（用户在门户创建邀请码/链接；可一次性或非一次性；每用户有上限）、
+   **邮箱域名白名单**（每行一个；包含子域名）和 **试用套餐**（含天数）。
+   **允许通过邮件找回密码** 需要主域名（§2b）：重置链接总是由它生成，绝不取自请求所用的地址。
+4. 投递：请求只是把邮件入队；每个面板实例都运行一个发送器（一次一封，`FOR UPDATE SKIP LOCKED` + 租约，
+   实例之间不会并发发送同一封），带退避重试约两小时，之后保留一条可重试的 **失败邮件** 记录
+   （验证码和重置链接则直接过期：迟到就没用了）。已发送的正文会被擦除；记录保留 30 天（已发送）/ 90 天（失败）。
+   指标：`akari_mail_deliveries_total{kind,result}`。
+5. 滥用限制（Valkey，所有实例共享）：每个客户端地址每小时 10 封邮件，每个目标地址每小时 5 封、每天 20 封，
+   每个客户端地址每 15 分钟完成 30 次验证码/链接；验证码输错 5 次即作废。启用验证时，应答绝不暴露某个地址是否有账号。
+6. **机器人防护（W27，`PUT /api/v1/settings/auth`；控制台页面在 W36-b）**，用于 登录、注册、找回密码：
+   - **蜜罐 + 最短提交时间**（默认开启：2 秒）：页面从 `/auth/options` 取一个签名的表单令牌，并且不早于最短时间才提交；
+     隐藏字段被填、令牌缺失/伪造/过期或提交过快，都只会得到该表单的普通失败（不给机器人任何提示），
+     并且只增加 `akari_bot_trap_total{form,reason}`，不写日志。用 curl 登录的脚本必须照做
+     （`/auth/options` → 等待 → 提交 `"guard":{"form_token":…}`），或把 最短提交时间 设为 0。
+   - **Cloudflare Turnstile**（按表单，默认关闭）：站点密钥 + 密钥（密钥只写不读，用 `data/master.key` 加密），在服务端验证；
+     开启后**失败即关闭**（没有令牌或令牌被拒 = 400，Cloudflare 不可达 = 503）。因密钥填错而被锁在外面时：
+     `akari settings unset turnstile` 会在所有表单上关闭它（带审计，密钥保留）。
+     Content-Security-Policy：只要 Turnstile 保护着至少一个表单，**门户页面**（仅这些：绝不包括 API、静态资源或控制台）
+     就会在通常的 `default-src 'self'` 之上加上
+     `script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com`，使组件得以加载。
+     关闭时，面板自身 origin 之外的内容一概不允许。
+7. **通行密钥（W27）** 需要主域名（§2b）是 https 的 DNS 名称：通行密钥属于该名称（RP ID）。
+   策略（`PUT /api/v1/settings/auth`）：管理员仅通行密钥 / 用户仅通行密钥（已有通行密钥的账号必须使用它；没有的账号在添加之前仍可用密码），
+   以及 密码登录后提示绑定（从提示中绑定会关闭该账号的密码登录）。管理员不需要第二个通行密钥，但唯一的一个丢失时：
+   在服务器上执行 `akari admin reset-login <email>`（删除该账号的通行密钥，恢复密码登录，带审计）。
+   **更换主域名** 会让现有通行密钥成为孤儿（浏览器只在旧名称上提供它们）：它们显示为非当前，对应账号回退到密码登录。
 
 ### 发信方式与「测试发信」诊断（W31）
 
@@ -510,18 +455,16 @@ Everything here is off until you turn it on; nothing in panel.toml.
 诊断最多 60 秒，前一步失败后其余步骤标为「未执行」；结果写审计 `settings.mail.test`。原来的
 「发送测试邮件」（`/settings/mail/test`，失败时 502 带服务器回答）保留。
 
-## 2d. Payments (系统设置 → 支付, W24)
+## 2d. Payments (系统设置 → 支付, W24)（支付）
 
-Payment methods are configured only in the console (database; no panel.toml, every instance at
-once): **系统设置 → 支付 → 添加支付方式 → 支付宝当面付**, environment (正式/沙箱), APPID, optional
-商户 PID, paste the app private key (sealed with `data/master.key`, never shown again) and Alipay's
-public key, upload the shown **应用公钥** at the Alipay open platform, enable, then **测试连接**.
-The notify URL is derived from the main domain (§2b) per method — nothing to configure at Alipay.
-Several methods are possible (payers choose at checkout). Details, key rotation and the legacy
-upgrade: docs/PAYMENTS.md. An old panel.toml `[payments.alipay]` is imported once into an empty
-database configuration and then ignored with a warning: delete the section and its key files.
+支付方式只在控制台里配置（存数据库；不在 panel.toml 中，所有实例同时生效）：
+**系统设置 → 支付 → 添加支付方式 → 支付宝当面付**，选择环境（正式/沙箱），填 APPID、可选的 商户 PID，
+粘贴应用私钥（用 `data/master.key` 加密，之后不再显示）和支付宝公钥，把显示的 **应用公钥** 上传到支付宝开放平台，启用，然后 **测试连接**。
+回调 URL 按支付方式由主域名（§2b）生成：支付宝侧无需配置。可以配置多种支付方式（付款人在结账时选择）。
+详情、密钥轮换和旧版升级见 docs/PAYMENTS.md。旧 panel.toml 中的 `[payments.alipay]` 会在数据库配置为空时导入一次，
+之后被忽略并给出警告：请删除该段及其密钥文件。
 
-## 3. Add a node and install the agent
+## 3. Add a node and install the agent（添加节点并安装 agent）
 
 ### 服务器与节点（Q1，中文）
 
@@ -550,87 +493,66 @@ database configuration and then ignored with a warning: delete the section and i
   `akari server list`、`akari server delete <id>`。升级时已有的每个节点成为一台同 id 的服务器，
   已安装的 agent 不需要任何操作。
 
-**In the UI: Nodes → 新建节点.** Fill in the name, the region users see, the 连接地址 clients
-dial (IP or domain), optionally the node's **节点域名** (TLS domain: the agent then gets the
-certificate by itself, §3f) and the node's inbound from the protocol templates (W28-a: one inbound
-per node — a second protocol on the same machine is a second node):
+**界面操作：节点 → 新建节点（In the UI: Nodes → 新建节点）。** 填写名称、用户看到的地区、客户端拨入的 连接地址（IP 或域名），
+可选填节点的 **节点域名**（TLS 域名：agent 会自行获取证书，§3f），并从协议模板中选择节点的入站
+（W28-a：每个节点一个入站，同一台机器上的第二个协议就是第二个节点）：
 
 | Template | Needs on the node | Notes |
 |---|---|---|
-| VLESS + REALITY + Vision (default) | nothing | the panel generates the X25519 key pair and a short id; `dest`/SNI from a list that works with the agent's xray (default `www.apple.com`, see §3b); **检测目标站点** runs a TLS 1.3 + h2 handshake from the panel; Vision (`xtls-rprx-vision`) on unless unticked |
-| VLESS + REALITY + XHTTP | nothing | as above, XHTTP path/mode; no Vision (not raw TCP) |
-| VLESS + TCP + TLS + Vision | certificate | |
-| VLESS + WebSocket + TLS | certificate | WS path random unless set |
-| VMess + WebSocket | certificate only with TLS | plain WS without a domain |
-| VMess + TCP | nothing | plain VMess (AEAD, alterId 0) |
-| Trojan + TLS | certificate | |
-| 自选传输 (VLESS/VMess/Trojan × WS/HTTPUpgrade/XHTTP/gRPC) | certificate with TLS | TLS optional for VLESS/VMess over WS/HTTPUpgrade/XHTTP, required for Trojan and gRPC; path/Host/XHTTP mode/gRPC service name |
-| Shadowsocks 2022 | nothing | multi-user, `2022-blake3-aes-128-gcm` (default) or `-256-gcm`; server key generated; TCP+UDP |
-| Hysteria 2 | certificate | QUIC on UDP |
+| VLESS + REALITY + Vision（默认） | 无 | 面板生成 X25519 密钥对和 short id；`dest`/SNI 取自与 agent 的 xray 兼容的列表（默认 `www.apple.com`，见 §3b）；**检测目标站点** 从面板发起 TLS 1.3 + h2 握手；除非取消勾选，否则启用 Vision（`xtls-rprx-vision`） |
+| VLESS + REALITY + XHTTP | 无 | 同上，带 XHTTP path/mode；没有 Vision（不是原始 TCP） |
+| VLESS + TCP + TLS + Vision | 证书 | |
+| VLESS + WebSocket + TLS | 证书 | 未设置时 WS path 随机 |
+| VMess + WebSocket | 仅 TLS 时需要证书 | 无域名时为明文 WS |
+| VMess + TCP | 无 | 明文 VMess（AEAD，alterId 0） |
+| Trojan + TLS | 证书 | |
+| 自选传输 (VLESS/VMess/Trojan × WS/HTTPUpgrade/XHTTP/gRPC) | TLS 时需要证书 | WS/HTTPUpgrade/XHTTP 上的 VLESS/VMess 可选 TLS，Trojan 和 gRPC 必须 TLS；path/Host/XHTTP mode/gRPC service name |
+| Shadowsocks 2022 | 无 | 多用户，`2022-blake3-aes-128-gcm`（默认）或 `-256-gcm`；服务端密钥自动生成；TCP+UDP |
+| Hysteria 2 | 证书 | 基于 UDP 的 QUIC |
 
-Full matrix (what each client format can carry, what is refused and why): §3d.
+完整矩阵（各客户端格式能承载什么、拒绝什么及原因）：§3d。
 
-"Certificate" = the node's own certificate for the TLS domain. **With 节点域名 set (recommended)
-the agent obtains and renews it itself over ACME (Let's Encrypt), §3f**: no certbot, nothing to do
-on the node beyond a DNS record pointing at it and TCP 80 reachable. The TLS templates then take
-that domain as certificate domain/SNI (leave their domain field empty; another name is refused,
-the certificate covers only the node's domain). Without 节点域名 the certificate is yours to put
-on the node as `/etc/akari-agent/tls/fullchain.pem` and `privkey.pem` (certbot, acme.sh, …;
-root-only files are fine). The installer hands that directory to the agent as systemd credentials
-(the agent runs as a dynamic user and cannot read `/etc` otherwise), read once at service start:
-after putting the certificate there for the first time (before saving a TLS/Hysteria 2 inbound)
-and after every renewal run `systemctl restart akari-agent`. A WS inbound behind the node's own reverse proxy
-or a CDN is not a template (subscriptions would advertise the inbound's local port): write that
-JSON by hand. **高级：直接编辑入站 JSON** shows/edits the generated JSON (one xray inbound object,
-no `tag`: the panel names it); both paths go through the same validation (the §3d matrix, no
-`fakedns`).
+“证书”即节点自己用于 TLS 域名的证书。**设置了 节点域名（推荐）时，agent 通过 ACME（Let's Encrypt）自行获取并续期，§3f**：
+不需要 certbot，节点上除了一条指向它的 DNS 记录和可达的 TCP 80 之外什么都不用做。TLS 模板随后把该域名作为证书域名/SNI
+（其域名字段留空；填别的名称会被拒绝，证书只覆盖节点域名）。没有 节点域名 时，需要你自己把证书放到节点的
+`/etc/akari-agent/tls/fullchain.pem` 和 `privkey.pem`（certbot、acme.sh 等；仅 root 可读的文件也行）。
+安装器把该目录作为 systemd credentials 交给 agent（agent 以动态用户运行，否则读不了 `/etc`），在服务启动时读取一次：
+首次放入证书之后（在保存 TLS/Hysteria 2 入站之前），以及每次续期之后，都要执行 `systemctl restart akari-agent`。
+放在节点自己的反向代理或 CDN 后面的 WS 入站不是模板（订阅会通告入站的本地端口）：请手写那段 JSON。
+**高级：直接编辑入站 JSON** 显示/编辑生成的 JSON（一个 xray inbound 对象，不含 `tag`：由面板命名）；
+两条路径经过相同的校验（§3d 矩阵，不允许 `fakedns`）。
 
-**Entrances (入口, W28-a).** Clients reach a node through its entrances. Every node has a built-in
-**直连** (direct) entrance: 连接地址/连接端口 (empty address = 节点域名, empty port = the inbound's
-port), 倍率 and the node groups it belongs to are the entrance's (节点页 → 展示与计费;
-`PATCH /api/v1/entrances/{id}`). Plans grant node groups, groups hold entrances; a user can use
-exactly the entrances of their plan's groups (there is no manual per-user assignment) and every
-usable entrance is its own subscription entry, named "<显示名称 | 标签> <入口名>" (e.g.
-"香港 01 | IPLC 直连"；倍率不是 1 时名字后附倍率，如 "香港 01 IPLC 2.0x"). Disabling the direct entrance takes its users off the node.
+**Entrances（入口，W28-a）。** 客户端通过节点的入口连接节点。每个节点都有内置的 **直连** 入口：
+连接地址/连接端口（地址为空 = 节点域名，端口为空 = 入站端口）、倍率及其所属节点组都属于该入口
+（节点页 → 展示与计费；`PATCH /api/v1/entrances/{id}`）。套餐授予节点组，组包含入口；
+用户恰好可以使用其套餐所含节点组中的入口（没有按用户手动分配），每个可用入口都是一条独立的订阅条目，
+名称为 "<显示名称 | 标签> <入口名>"（例如 "香港 01 | IPLC 直连"；倍率不是 1 时名字后附倍率，如 "香港 01 IPLC 2.0x"）。
+停用直连入口会让其用户离开该节点。
 
-**中转入口（relay）.** A relay (IPLC, a forwarding VPS) that forwards to the node is added as a
-relay entrance (`POST /api/v1/nodes/{id}/entrances`): its name, the address/port clients dial
-(the relay's), the **listen port** on the node the relay forwards to, the relay's **egress IPs**
-(1–64 addresses/CIDRs), multiplier and node groups. The node then runs a derived inbound: the
-node's inbound with the same protocol and settings on the listen port, with its own credential per
-user (so a relay credential works only on that relay's inbound, and removing a user from one
-entrance never touches another). Open the listen port in the node's firewall for the relay's
-egress IPs. Traffic is counted and billed per entrance at that entrance's multiplier.
+**中转入口（relay）。** 转发到节点的中转（IPLC、转发 VPS）以中转入口的形式添加（`POST /api/v1/nodes/{id}/entrances`）：
+填写名称、客户端拨入的地址/端口（中转机的）、中转转发到的节点上的 **监听端口**、中转的 **出口 IP**（1–64 个地址/CIDR）、倍率和节点组。
+节点随后运行一个派生入站：协议和设置与节点入站相同、监听端口不同，且每个用户有该入站专属的凭据
+（因此中转凭据只在该中转的入站上有效，从一个入口移除用户也不会影响另一个入口）。
+请在节点防火墙中对中转的出口 IP 放行该监听端口。流量按入口计量，并按该入口的倍率计费。
 
-Agents with the `source-filter` capability (W28-a agent releases) add a kernel allowlist for every
-derived inbound: an nftables table `inet akari_sources` of its own, replaced as a whole when the
-relays change and removed when there are none; new connections to a listen port from any other
-address are dropped (existing connections are not cut). **The agent itself has no
-`CAP_NET_ADMIN` (R44)**: it writes the allowlist to a request file in its state directory
-(`update/source-filter-request.json`), and the root updater that already installs self-updates
-(systemd: `akari-agent-update.path` + `.service`; Alpine: the `akari-agent-update` service loop)
-re-validates it, applies it with `nft -f -` within about a second and hands the outcome back; the
-agent reports it with its heartbeat. This needs `nft` on the node (the installer installs the
-`nftables` package when it is missing) and current updater units (nodes installed before this
-release get them with the agent's self-update, or by running the install command again). Until the
-updater has answered, and whenever it fails, the relay entrance still works with credential
-isolation only; a failure or a missing updater shows on the node page as "来源 IP 过滤未生效".
-Older agents ignore the allowlist (warning on the node page) and, below protocol 7, count a user's
-speed limit separately per entrance.
+具备 `source-filter` 能力的 agent（W28-a agent 发布版）会为每个派生入站添加内核白名单：自己的 nftables 表 `inet akari_sources`，
+中转变化时整体替换，没有中转时移除；来自其他地址的、到监听端口的新连接会被丢弃（已有连接不会被切断）。
+**agent 本身没有 `CAP_NET_ADMIN`（R44）**：它把白名单写入状态目录中的请求文件（`update/source-filter-request.json`），
+已负责安装自更新的 root 更新器（systemd：`akari-agent-update.path` + `.service`；Alpine：`akari-agent-update` 服务循环）
+重新校验它，约一秒内用 `nft -f -` 应用，并把结果交还；agent 在心跳中上报结果。
+这需要节点上有 `nft`（缺少时安装器会安装 `nftables` 包）以及最新的更新器 unit
+（在本版本之前安装的节点，会随 agent 自更新获得，或重新运行安装命令）。
+在更新器应答之前，以及它失败的任何时候，中转入口仍可工作，只是仅有凭据隔离；失败或缺少更新器时，节点页显示“来源 IP 过滤未生效”。
+旧版 agent 忽略白名单（节点页警告），并且在协议版本 7 以下，按入口分别计算用户的限速。
 
-**中转入口健康检查.** Every minute the panel opens one TCP connection to each enabled relay
-entrance's address (its 连接地址:连接端口, i.e. the relay itself). After 3 failures in a row
-the relay entrance is hidden from subscriptions and the portal, and the node's **中转入口不可用**
-alert (`entrance_down`) fires on the configured channels. The first successful test brings it
-back and resolves the alert. The node keeps serving it the whole time, so clients already
-connected through the relay are not cut. Changing the relay's address triggers a test right away.
-The check follows 系统设置 → 测速 → 面板 TCP 测速: when that switch is off, no relay is tested or
-hidden. Relays of a UDP-only inbound (Hysteria 2) cannot be TCP-tested and are never hidden.
-The node page shows each relay's last result (`health_ok`, `health_error`, `hidden_since`).
+**中转入口健康检查。** 面板每分钟对每个已启用的中转入口的地址（其 连接地址:连接端口，即中转机本身）发起一次 TCP 连接。
+连续失败 3 次后，该中转入口会从订阅和门户中隐藏，并在已配置的渠道上触发节点的 **中转入口不可用** 告警（`entrance_down`）。
+第一次测试成功即恢复并解除告警。节点始终继续提供服务，所以已通过该中转连接的客户端不会被切断。
+更改中转地址会立即触发一次测试。该检查遵循 系统设置 → 测速 → 面板 TCP 测速：该开关关闭时，不测试也不隐藏任何中转。
+仅 UDP 入站（Hysteria 2）的中转无法做 TCP 测试，也从不隐藏。节点页显示每个中转的最近结果（`health_ok`、`health_error`、`hidden_since`）。
 
-Creating the node shows a **one-line install command**, valid for 1 hour (built in) and only
-until the agent has enrolled with it. It needs 系统设置 → 节点通信 → **节点通信域名** (the address
-agents dial; without it the panel refuses to issue the command):
+创建节点会显示一条**一行安装命令**，有效期 1 小时（内置），且仅在 agent 用它完成注册之前有效。
+它需要 系统设置 → 节点通信 → **节点通信域名**（agent 拨入的地址；没有它面板拒绝签发命令）：
 
 ```bash
 sh -c 'command -v curl >/dev/null || { echo "…how to install curl…" >&2; exit 1; }' && curl -fsSL 'https://panel.example.com/install/<token>' | sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'
@@ -645,77 +567,57 @@ apt-get update && apt-get install -y curl      # Debian / Ubuntu（非 root 加 
 apk add curl                                   # Alpine
 ```
 
-Run it on the node (Linux with systemd >= 250, amd64 or arm64; Debian 12/13, Ubuntu 22.04+ are
-fine; W32: also Alpine Linux with OpenRC >= 0.45, tested on 3.22 — §3h), as root or as a sudo user: the tail runs the script directly as root (images without
-`sudo` work) and through `sudo` otherwise (W10; commands issued before printed `| sudo sh`, which
-needs `sudo` even as root). Without root and without `sudo` it stops at `sudo` and runs nothing.
-It
+在节点上运行它（带 systemd >= 250 的 Linux，amd64 或 arm64；Debian 12/13、Ubuntu 22.04+ 均可；
+W32：也支持带 OpenRC >= 0.45 的 Alpine Linux，已在 3.22 上测试，见 §3h），以 root 或 sudo 用户身份执行：
+命令末尾直接以 root 运行脚本（没有 `sudo` 的镜像也能用），否则经 `sudo` 运行
+（W10；之前签发的命令末尾是 `| sudo sh`，即使是 root 也需要 `sudo`）。既不是 root 也没有 `sudo` 时，它会停在 `sudo` 处，什么都不执行。
+它会：
 
-1. downloads the agent from the panel (the newest complete release uploaded under **Updates**,
-   §5b) and checks its SHA-256 — without an uploaded release it falls back to
-   系统设置 → 节点通信 → **备用下载地址** (default: the latest GitHub release asset, checked
-   against the release's `SHA256SUMS`; can be set to a mirror or turned off); with neither it
-   stops with a clear error before changing anything;
-2. writes `/etc/akari-agent/bootstrap.toml` (0600: panel address, gRPC server name, panel CA,
-   the one-time enrollment token — no private key), the systemd units
-   (`akari-agent.service` and the agent's privileged updater `akari-agent-update.service` +
-   `akari-agent-update.path`; the path unit is enabled, §5b) and a drop-in for the TLS
-   credentials. **The units are the ones the downloaded release carries** (W23: the verified
-   binary prints them, `akari-agent -print-unit <name>`; their canonical copy is the agent
-   repository's `systemd/`). Only releases older than that get the copies embedded in the script
-   (`deploy/systemd/` of the panel, kept byte-identical by the agent's CI); the output then says
-   `does not carry its systemd units`. Self-updates install each new release's units with its
-   binary (§5b), so do not edit the installed unit files: local changes go into a drop-in
-   (`/etc/systemd/system/akari-agent.service.d/*.conf`; an edited unit is reported on the node
-   page and replaced by the next update or reinstall);
-   On Alpine (OpenRC) it installs the release's OpenRC scripts instead (`/etc/init.d/akari-agent`,
-   `/etc/init.d/akari-agent-update`) and a system user `akari-agent` (§3h);
-3. turns on TCP BBR with the fq qdisc where the kernel supports it and the machine allows it
-   (W32, §3h; `--no-bbr` / `AKARI_BBR=0` skips it);
-4. with 节点域名 set: opens TCP 80 in an active `ufw`/`firewalld` (the CA's HTTP-01 check; a
-   cloud firewall / security group is outside the machine, the output reminds you);
-5. starts the agent and waits until it has enrolled and connected (prints `SUCCESS`, or the
-   agent's log and the reason). The certificate follows within seconds; its state is on the node
-   page.
+1. 从面板下载 agent（在 **Updates** 下上传的最新完整发布版本，§5b）并校验其 SHA-256；
+   如果没有上传过发布版本，则回退到 系统设置 → 节点通信 → **备用下载地址**
+   （默认：最新的 GitHub release 资源，对照该发布的 `SHA256SUMS` 校验；可设为镜像或关闭）；两者都没有时，在改动任何东西之前报出明确错误并停止；
+2. 写入 `/etc/akari-agent/bootstrap.toml`（0600：面板地址、gRPC server name、面板 CA、一次性注册令牌，不含私钥）、
+   systemd unit（`akari-agent.service`，以及 agent 的特权更新器 `akari-agent-update.service` +
+   `akari-agent-update.path`；path unit 会被启用，§5b）和一个用于 TLS credentials 的 drop-in。
+   **这些 unit 就是所下载发布版本自带的**（W23：经校验的二进制会打印它们，`akari-agent -print-unit <name>`；
+   其正本在 agent 仓库的 `systemd/`）。只有比这更旧的发布版本才使用脚本里内嵌的副本
+   （面板的 `deploy/systemd/`，由 agent 的 CI 保持逐字节一致）；此时输出会显示 `does not carry its systemd units`。
+   自更新会随二进制一起安装每个新版本的 unit（§5b），所以不要编辑已安装的 unit 文件：本地改动请放进 drop-in
+   （`/etc/systemd/system/akari-agent.service.d/*.conf`；被编辑过的 unit 会在节点页提示，并在下次更新或重装时被替换）；
+   在 Alpine（OpenRC）上则改为安装该发布版本的 OpenRC 脚本（`/etc/init.d/akari-agent`、
+   `/etc/init.d/akari-agent-update`）和系统用户 `akari-agent`（§3h）；
+3. 在内核支持且机器允许时，开启 TCP BBR 和 fq 队列（W32，§3h；`--no-bbr` / `AKARI_BBR=0` 可跳过）；
+4. 设置了 节点域名 时：在已启用的 `ufw`/`firewalld` 中放行 TCP 80（CA 的 HTTP-01 校验；
+   云防火墙/安全组在机器之外，输出里会提醒你）；
+5. 启动 agent，并等待它完成注册和连接（打印 `SUCCESS`，或 agent 的日志及原因）。证书几秒内跟上；其状态可在节点页查看。
 
-Running it again is safe (reinstall/upgrade in place). The node shows `online` within seconds.
-A reinstall also turns the node's entry in a finished (aborted/completed) rollout into history:
-the node list shows it greyed as `…（重装前）` instead of as the node's current update state.
-Uninstall: `akari-agent-uninstall` on the node as root (`sudo akari-agent-uninstall` for a sudo
-user; the installer prints the form that fits how it ran), or a fresh command with
-`| sudo sh -s -- --uninstall` (as root: `| sh -s -- --uninstall`); then delete the node in the
-panel.
+重复运行是安全的（原地重装/升级）。节点几秒内显示为 `online`。
+重装还会把该节点在已结束（中止/完成）的灰度发布中的条目转为历史：节点列表中它显示为灰色的 `…（重装前）`，而不是节点当前的更新状态。
+卸载：在节点上以 root 执行 `akari-agent-uninstall`（sudo 用户用 `sudo akari-agent-uninstall`；安装器会打印适合其运行方式的形式），
+或使用新命令加 `| sudo sh -s -- --uninstall`（root：`| sh -s -- --uninstall`）；然后在面板中删除该节点。
 
-**Security of the link.** The token in the URL *is* the node's enrollment token (256 bit, only
-its SHA-256 stored, single use, short TTL). The panel serves the script and the binary only while
-it is live; once the agent enrolls (or the link expires, or a newer link/token is issued for the
-node, or the node is being deleted) every request is the panel's uniform empty 404, as are wrong
-tokens and sources over the rate limit (20 per 10 min per address, built in). Whoever runs the command first gets the node, exactly as with
-a bootstrap file: copy it over a trusted channel. The script passes the token to no command
-line (downloads read their URL from stdin) and the panel never logs it (`/install/{token}`
-in logs). **重装命令** in the node list issues a new link for an existing node; when the agent
-enrolls with it, the node's previous certificate is revoked.
+**Security of the link（链接的安全性）。** URL 中的令牌*就是*节点的注册令牌（256 位，只存其 SHA-256，一次性，TTL 很短）。
+面板只在其有效期内提供脚本和二进制；一旦 agent 完成注册（或链接过期、或为该节点签发了更新的链接/令牌、或该节点正在被删除），
+每个请求都得到面板统一的空 404，错误令牌和超出限流的来源（每个地址每 10 分钟 20 次，内置）也一样。
+谁先运行该命令谁就得到该节点，与 bootstrap 文件完全一样：请通过可信渠道复制。
+脚本不把令牌传给任何命令行（下载从 stdin 读取其 URL），面板也从不记录它（日志里是 `/install/{token}`）。
+节点列表中的 **重装命令** 为已有节点签发新链接；agent 用它完成注册时，该节点之前的证书会被吊销。
 
-**Where the link points.** The main domain (系统设置 → 站点 → 主域名) if set; otherwise the
-address the admin's browser uses for the panel. When the panel issues a
-command it connects to that origin: a certificate a public CA vouches for → plain `curl`/`wget`.
-Anything else (an IP-only deployment with Caddy's internal CA) → the command **pins the served
-certificate's public key**:
+**Where the link points（链接指向哪里）。** 设置了则为主域名（系统设置 → 站点 → 主域名）；否则为管理员浏览器访问面板所用的地址。
+面板签发命令时会连接该 origin：证书由公共 CA 担保 → 普通 `curl`/`wget`。
+其他情况（仅 IP 部署，使用 Caddy 内部 CA）→ 命令会**钉扎所提供证书的公钥**：
 
 ```bash
 sh -c 'command -v curl …' && curl -fsSL --proto '=https' -k --pinnedpubkey 'sha256//<base64>' 'https://203.0.113.10/install/<token>' | sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'
 ```
 
-curl checks the pin during the handshake, before it sends the request, so a mismatch aborts
-without revealing the token; `-k` only skips the CA check a self-signed panel cannot pass and is
-never emitted without a pin (there is no wget variant: wget cannot pin). The script uses the
-same pin for the binary download. Caddy's internal certificates are short-lived (about 12 h): if
-the command fails with "public key does not match", generate a new one. Set 系统设置 → 节点通信 →
-**安装命令公钥钉扎** (`sha256//<base64>`) to pin a fixed key instead of probing (e.g. when the panel
-cannot reach its own public address).
+curl 在握手期间、发送请求之前检查该钉扎，所以不匹配时会中止而不泄露令牌；`-k` 只是跳过自签面板无法通过的 CA 检查，
+没有钉扎时绝不会输出（没有 wget 变体：wget 无法钉扎）。脚本下载二进制时使用同一个钉扎。
+Caddy 内部证书有效期很短（约 12 小时）：如果命令因 “public key does not match” 失败，请重新生成一条。
+可设置 系统设置 → 节点通信 → **安装命令公钥钉扎**（`sha256//<base64>`）来钉扎固定的密钥而不是探测
+（例如面板无法访问自己的公网地址时）。
 
-**Manual path (CLI / no outbound HTTPS on the node).** The bootstrap file still works (and is
-shown under the install command after a create; **bootstrap** in the node list issues a new one):
+**Manual path（手动路径：CLI / 节点没有出站 HTTPS）。** bootstrap 文件仍然可用（创建之后显示在安装命令下方；节点列表中的 **bootstrap** 签发新的）：
 
 ```bash
 # bare metal, on the panel host
@@ -727,9 +629,8 @@ sudo -u akari akari -c /etc/akari/panel.toml server add tokyo-1 --out /tmp/tokyo
 chmod 600 vps-1-bootstrap.toml
 ```
 
-`server enroll-token <id> --out -` works the same way (then add the server's nodes in the UI or with `POST /api/v1/nodes {"server_id": …}`). The bootstrap token is single use and
-expires after 24 h (built in). Treat the file as a credential until
-the agent has enrolled (copy it over SSH, delete the copy). On the node:
+`server enroll-token <id> --out -` 的用法相同（然后在界面中或用 `POST /api/v1/nodes {"server_id": …}` 添加该服务器的节点）。
+bootstrap 令牌一次性，24 小时后过期（内置）。在 agent 完成注册之前，请把该文件当作凭据对待（通过 SSH 复制，删除副本）。在节点上：
 
 ```bash
 install -m 0755 akari-agent-linux-amd64 /usr/local/bin/akari-agent   # arm64: akari-agent-linux-arm64
@@ -743,50 +644,38 @@ systemctl daemon-reload && systemctl enable --now akari-agent akari-agent-update
 journalctl -u akari-agent -f                                         # "enrolled", then "channel established"
 ```
 
-On its first start the agent generates its key (ECDSA P-256) in its state directory
-(`StateDirectory=akari-agent`, i.e. `/var/lib/private/akari-agent`, mode 0700, files 0600; without
-systemd: `-state-dir`, default the config file's directory), sends a CSR with the token to the
-panel's gRPC port (the one call that works without a client certificate) and stores the issued
-certificate next to the key. The private key never leaves the node. The panel decides the whole
-certificate (CN `agent-<node id>`, client-auth only, valid 90 days — built in; agents renew at a
-third left).
+agent 首次启动时，在其状态目录中生成密钥（ECDSA P-256）
+（`StateDirectory=akari-agent`，即 `/var/lib/private/akari-agent`，目录权限 0700，文件 0600；没有 systemd 时用 `-state-dir`，默认是配置文件所在目录），
+带着令牌把 CSR 发到面板的 gRPC 端口（唯一一个无需客户端证书即可工作的调用），并把签发的证书存放在密钥旁边。
+私钥从不离开节点。证书的全部内容由面板决定（CN `agent-<node id>`，仅用于客户端认证，有效期 90 天，内置；agent 在剩余三分之一时续期）。
 
-The unit grants only `CAP_NET_BIND_SERVICE` (inbounds on 443) and reads the bootstrap file as a
-systemd credential (systemd >= 250). It hides other users' processes (`ProtectProc=invisible`)
-but not the machine-wide `/proc` files the node status reads (`/proc/stat`, `meminfo`,
-`loadavg`, `net/*`): units from before W23 had `ProcSubset=pid`, under which every machine
-metric read 0 — the agent now reports what it cannot read as **未知** (unknown), never as 0, and
-the node page says why (§3e).
+该 unit 只授予 `CAP_NET_BIND_SERVICE`（在 443 上建立入站），并把 bootstrap 文件作为 systemd credential 读取（systemd >= 250）。
+它隐藏其他用户的进程（`ProtectProc=invisible`），但不隐藏节点状态所读取的机器级 `/proc` 文件（`/proc/stat`、`meminfo`、`loadavg`、`net/*`）：
+W23 之前的 unit 带有 `ProcSubset=pid`，导致所有机器指标读出来都是 0；现在 agent 把读不到的内容上报为 **未知**（unknown），绝不是 0，
+节点页会说明原因（§3e）。
 
-**Token expired / agent state lost / certificate expired** (agent offline longer than its
-validity): **重装命令** (or `akari server enroll-token <server id>` for a bootstrap file). The agent
-re-enrolls once when the bootstrap file carries a token it has not used yet; after that the node's
-older certificates are refused. A used, unknown or expired token is refused with one uniform error
-("enrollment refused"), and the agent exits.
+**Token expired / agent state lost / certificate expired（令牌过期 / agent 状态丢失 / 证书过期）**
+（agent 离线时间超过其有效期）：使用 **重装命令**（或为 bootstrap 文件使用 `akari server enroll-token <server id>`）。
+当 bootstrap 文件带着尚未使用的令牌时，agent 会重新注册一次；此后该节点较旧的证书会被拒绝。
+已使用、未知或过期的令牌都被同一个统一错误拒绝（“enrollment refused”），并且 agent 退出。
 
-Enrollment is rate limited per source address and globally (10 / 60 per 10 min, built in).
+注册按来源地址和全局限流（每 10 分钟 10 / 60 次，内置）。
 
-### Certificate renewal
+### Certificate renewal（证书续期）
 
-Agents of protocol 2 renew automatically once less than a third of the validity is left
-(day 60 of 90): a new key and CSR go over the existing mTLS connection, the agent reconnects with
-the new certificate, and the panel revokes the old one the first time it sees the new one. Until
-then the old certificate keeps working, so a crash or network failure in between costs nothing
-(the agent simply renews again). Nodes whose certificate is within 14 days of expiry carry a
-warning in the node list (protocol 1 agents never renew: upgrade them, or re-enroll before the
-certificate expires — an expired certificate is refused at the TLS handshake).
+协议 2 的 agent 在有效期剩余不足三分之一时自动续期（90 天中的第 60 天）：新的密钥和 CSR 经现有的 mTLS 连接发送，
+agent 用新证书重新连接，面板第一次见到新证书时吊销旧证书。在此之前旧证书一直有效，所以中间崩溃或网络故障没有任何代价
+（agent 只会再续期一次）。证书距过期不足 14 天的节点，在节点列表中带有警告
+（协议 1 的 agent 永不续期：请升级它们，或在证书过期前重新注册；过期的证书会在 TLS 握手时被拒绝）。
 
-Back up the agent's state directory if you want to restore a node without re-enrolling it.
+如果想在不重新注册的情况下恢复节点，请备份 agent 的状态目录。
 
-### Nodes added before M1c (bootstrap files with a private key)
+### Nodes added before M1c (bootstrap files with a private key)（M1c 之前添加的节点：带私钥的 bootstrap 文件）
 
-Nothing to do for them to keep working: the agent still accepts `identity.cert_pem` /
-`identity.key_pem` in the bootstrap file (v1), and the panel keeps their certificates (2-year
-validity). Upgrade the agent (section 5) and give it a state directory (the new unit file); at its
-first renewal it moves onto a key generated on the node and the panel revokes the old,
-panel-generated one. Then delete `cert_pem`/`key_pem` from `/etc/akari-agent/bootstrap.toml`. To
-migrate at once instead of at renewal time, issue a new enrollment token for the node and install
-that bootstrap file.
+它们无需任何操作即可继续工作：agent 仍接受 bootstrap 文件（v1）中的 `identity.cert_pem` / `identity.key_pem`，面板也保留其证书（2 年有效期）。
+升级 agent（第 5 节）并给它一个状态目录（新的 unit 文件）；在第一次续期时，它换用节点上生成的密钥，面板吊销旧的、由面板生成的密钥。
+然后从 `/etc/akari-agent/bootstrap.toml` 中删除 `cert_pem`/`key_pem`。如果想立即迁移而不是等到续期，
+请为该节点签发新的注册令牌并安装那份 bootstrap 文件。
 
 ## 3h. 系统支持：BBR + fq 与 Alpine（W32，中文）
 
@@ -851,27 +740,23 @@ CI：agent 仓库的 `openrc self-update` job（Alpine 3.22 容器，OpenRC 为 
 坏版本回滚（重启计数与 supervise-daemon 放弃两种）→ 恶意请求拒绝；面板 smoke 的 W32 段用一键安装
 命令在 Alpine 容器里装节点、验证 BBR 开关、重装与卸载。
 
-## 3g. First user: node group, plan, subscription
+## 3g. First user: node group, plan, subscription（第一个用户：节点组、套餐、订阅）
 
-Access is granted by plan (M3): a user with an active plan may use every node in the plan's node
-groups; nodes, groups and plans can change later and every node converges by itself.
+访问权限按套餐授予（M3）：拥有生效套餐的用户可以使用该套餐所含节点组中的每个节点；节点、组和套餐之后都可以改动，每个节点会自行收敛。
 
-1. **套餐 → 新建节点组**: name it, tick the node(s).
-2. **套餐 → 新建套餐**: traffic quota, reset period (monthly …), optional speed limit;
-   tick the node group (expiry is set per user when assigning, or by the shop period). Prices only
-   matter for the shop (docs/PAYMENTS.md).
-3. **用户 → 新建用户**: login and password, then **分配套餐** on the user. The node receives the
-   user within a second or two (`POST /api/v1/users`, `PUT /api/v1/users/{id}/plan
-   {"plan_id": …, "period": "month"}`; `period` is required: `month` … `three_year`, `days` with
-   `"days": N`, or `onetime` (optional `days`, none = permanent); see the README API table).
-4. The user logs in at `https://panel.yourdomain.com/` (the portal) and copies **订阅链接** (the
-   admin sees the same URL on the user, `sub_url`). The link serves the format the client asks
-   for by its User-Agent: Clash/mihomo YAML, sing-box JSON, or base64 share links (v2rayN,
-   Shadowrocket, …); quota and expiry travel in `subscription-userinfo`.
-5. Import the link in the client and connect. Usage shows up on the user within about 15 s
-   (agent report every 10 s, flush every 5 s).
+1. **套餐 → 新建节点组**：命名并勾选节点。
+2. **套餐 → 新建套餐**：流量额度、重置周期（每月……）、可选的限速；勾选节点组
+   （到期时间在分配给用户时设置，或由商店的购买周期决定）。价格只对商店有意义（docs/PAYMENTS.md）。
+3. **用户 → 新建用户**：登录名和密码，然后在该用户上 **分配套餐**。节点在一两秒内收到该用户
+   （`POST /api/v1/users`、`PUT /api/v1/users/{id}/plan
+   {"plan_id": …, "period": "month"}`；`period` 必填：`month` … `three_year`、带 `"days": N` 的 `days`，
+   或 `onetime`（可选 `days`，不填 = 永久）；见 README 的 API 表）。
+4. 用户在 `https://panel.yourdomain.com/`（门户）登录并复制 **订阅链接**（管理员在该用户上看到同一个 URL，`sub_url`）。
+   链接根据客户端的 User-Agent 返回它所要的格式：Clash/mihomo YAML、sing-box JSON，或 base64 分享链接（v2rayN、Shadowrocket 等）；
+   额度和到期时间通过 `subscription-userinfo` 传递。
+5. 在客户端中导入链接并连接。用量约 15 秒内显示在用户上（agent 每 10 秒上报，每 5 秒刷新一次）。
 
-**重新生成订阅令牌** invalidates the old link at once (the user can do it in the portal too).
+**重新生成订阅令牌** 会立即使旧链接失效（用户也可以在门户里这样做）。
 
 ### 订阅格式、客户端与分流规则（W30，中文）
 
@@ -911,17 +796,15 @@ rule-providers）与 sing-box 1.14（`sing-box check`，并实际运行加载远
 Clash Verge Rev、Clash Meta for Android、FlClash、Mihomo Party、Stash、Shadowrocket、SFA/SFI/SFM、Hiddify、
 v2rayN —— 导入链接按各客户端公开文档的格式生成，上线前请在真机上各导入一次。
 
-## 3b. REALITY inbounds
+## 3b. REALITY inbounds（REALITY 入站）
 
-A REALITY inbound borrows the TLS handshake of a real site (`dest`) and lets clients that know
-your public key through. Three things go wrong in practice.
+REALITY 入站借用真实站点（`dest`）的 TLS 握手，并放行知道你公钥的客户端。实践中有三件事容易出错。
 
-**Pick a `dest` the current xray-core accepts.** Not every site works with every xray release. On
-2026-10-01 with xray 26.3.27, `www.microsoft.com:443` failed (the agent log showed `REALITY:
-processed invalid connection ... handshake did not complete`) while `www.apple.com`,
-`dl.google.com`, `www.cloudflare.com` and `addons.mozilla.org` worked. Re-check after xray
-upgrades. Needs TLS 1.3 and H2 on the target; test it from the node before you rely on it, with
-a standalone xray (any machine with the same xray version, reality client in one file):
+**选一个当前 xray-core 接受的 `dest`。** 并非每个站点都适用于每个 xray 版本。2026-10-01 在 xray 26.3.27 上，
+`www.microsoft.com:443` 失败了（agent 日志显示 `REALITY:
+processed invalid connection ... handshake did not complete`），而 `www.apple.com`、
+`dl.google.com`、`www.cloudflare.com` 和 `addons.mozilla.org` 可用。xray 升级后请重新检查。目标需要支持 TLS 1.3 和 H2；
+在依赖它之前，先从节点上用独立的 xray 测试（任一台 xray 版本相同的机器，reality 客户端写在一个文件里）：
 
 ```bash
 # on the node: key pair for the server side (private key stays in the inbound, public goes to clients)
@@ -934,17 +817,14 @@ xray x25519                      # prints PrivateKey and Password (= the public 
 openssl s_client -connect www.apple.com:443 -tls1_3 -alpn h2 </dev/null 2>/dev/null | grep -E 'Protocol|ALPN'
 ```
 
-The node form's REALITY template does all of the following for you (key pair, short id,
-`publicKey`/`shortId`/`fingerprint`); the rest of this section is for hand-written JSON.
+节点表单的 REALITY 模板会替你完成下面所有这些（密钥对、short id、`publicKey`/`shortId`/`fingerprint`）；本节其余部分是给手写 JSON 的人看的。
 
-**The panel's inbound must carry `publicKey`.** xray's server side only needs `privateKey`; the
-panel builds subscriptions from the same JSON, so it reads the client-side fields from
-`realitySettings` too: `publicKey` (required, subscriptions are broken without it), `shortId`
-(one id handed to clients; must be one of `shortIds`) and optionally `fingerprint`. The panel-only
-fields are not used by xray. Subscriptions always carry a uTLS fingerprint for REALITY (`fp=` in
-links, `client-fingerprint` in Clash, `tls.utls` in sing-box): `fingerprint` if you set one of
-`chrome`, `firefox`, `safari`, `ios`, `android`, `edge`, `360`, `qq`, `random`, `randomized`,
-otherwise (or for any other value) `chrome`.
+**面板的入站必须带 `publicKey`。** xray 服务端只需要 `privateKey`；面板用同一份 JSON 生成订阅，
+所以也从 `realitySettings` 读取客户端侧字段：`publicKey`（必填，没有它订阅就是坏的）、`shortId`
+（发给客户端的一个 id；必须是 `shortIds` 之一）以及可选的 `fingerprint`。这些仅供面板使用的字段 xray 并不使用。
+订阅中的 REALITY 始终带有 uTLS 指纹（链接里的 `fp=`、Clash 里的 `client-fingerprint`、sing-box 里的 `tls.utls`）：
+若设置了 `fingerprint` 且为 `chrome`、`firefox`、`safari`、`ios`、`android`、`edge`、`360`、`qq`、`random`、`randomized` 之一，则用它；
+否则（或为任何其他值）用 `chrome`。
 
 ```json
 {
@@ -969,16 +849,13 @@ otherwise (or for any other value) `chrome`.
 }
 ```
 
-`serverNames[0]` is the SNI clients send. Users get the flow of the inbound's `settings.flow`
-(add `"flow": "xtls-rprx-vision"` to `settings` for Vision, as the template does); changing it
-later updates every user's credential (same id) and subscriptions follow.
+`serverNames[0]` 是客户端发送的 SNI。用户的 flow 取自入站的 `settings.flow`
+（要用 Vision，就像模板那样在 `settings` 中加 `"flow": "xtls-rprx-vision"`）；之后修改它会更新每个用户的凭据（id 不变），订阅随之更新。
 
-## 3d. Protocol / transport matrix (W8, agent xray-core v26.3.27)
+## 3d. Protocol / transport matrix (W8, agent xray-core v26.3.27)（协议 / 传输矩阵）
 
-Every row was checked end to end: template → `validate_inbound` → per-user credential →
-agent apply (gate revocation) → subscription in all three formats → a real client relaying
-traffic (`smoke.sh` W8 section: mihomo 1.19 and sing-box 1.12+ when available; the agent's
-`TestRT_ProtocolMatrix` canary with xray's own client, including billing and revocation).
+每一行都做过端到端检查：模板 → `validate_inbound` → 每用户凭据 → agent 应用（gate 吊销）→ 三种格式的订阅 → 真实客户端转发流量
+（`smoke.sh` W8 段：可用时用 mihomo 1.19 和 sing-box 1.12+；agent 的 `TestRT_ProtocolMatrix` 金丝雀用 xray 自带客户端，含计费和吊销）。
 
 <!-- BEGIN GENERATED protocols-matrix: from proto/protocols.toml by `make gen-protocols`; CI fails when stale -->
 Generated from `proto/protocols.toml` (manifest schema 1, kernel xray-core v26.3.27); edit the manifest, then `make gen-protocols`.
@@ -1021,104 +898,74 @@ Per-user credentials (`account_json`, keys sorted):
 End-to-end scenarios (agent `TestRT_ProtocolMatrix`: real client, billing, speed limit, revocation, re-add): VLESS-REALITY-Vision, VLESS-TLS-Vision, VLESS-REALITY-XHTTP, VLESS-XHTTP, VLESS-XHTTP-TLS, VLESS-HTTPUpgrade, VLESS-HTTPUpgrade-TLS, VLESS-WS-TLS, VLESS-gRPC-TLS, VLESS-REALITY-gRPC, VMess-TCP, VMess-WS, Trojan-WS-TLS, Trojan-gRPC-TLS, SS2022-AES128, SS2022-AES256, Hysteria2.
 <!-- END GENERATED protocols-matrix -->
 
-A proxy a format cannot express is left out of that format (logged at info with the reason)
-instead of being rendered as a config the client rejects.
+格式无法表达的代理会从该格式中省略（以 info 级别记录原因），而不是渲染成客户端会拒绝的配置。
 
-**Shadowsocks 2022 specifics.** Multi-user Shadowsocks needs one of the AES methods:
-`2022-blake3-chacha20-poly1305` has no multi-user server in xray, legacy (non-2022) methods have no
-per-user keys — both are refused (400). `settings.password` is the server PSK (base64, 16 bytes for
-aes-128, 32 for aes-256) and `settings.clients` must be `[]`; each user gets their own key and
-clients connect with `server_psk:user_key`. Changing the method reissues every user key (the
-subscription must be refreshed). xray's multi-user Shadowsocks inbound cannot drop a user from its
-table while running without racing its own connection path (the removed user's in-flight handshake
-can run as another user, or crash the agent). Agents of protocol 5 and later (W9) therefore never
-drop one: a **removed user is revoked in the agent's gate and their key stays in xray's table as a
-tombstone**, so removing (and re-adding the same key, e.g. a renewed plan) is a live delta and other
-users' connections are untouched. **Rotating a user's key still rebuilds the node** (a Snapshot:
-every connection on that node drops once), as does a removal past the tombstone bound
-(max(1024, live users) per inbound; the rebuild compacts). With an older agent, every removal from a
-Shadowsocks inbound rebuilds the node. Additions are always live deltas.
+**Shadowsocks 2022 的特殊之处。** 多用户 Shadowsocks 需要使用 AES 方法：
+`2022-blake3-chacha20-poly1305` 在 xray 中没有多用户服务端，旧式（非 2022）方法没有每用户密钥，二者都会被拒绝（400）。
+`settings.password` 是服务端 PSK（base64，aes-128 为 16 字节，aes-256 为 32 字节），`settings.clients` 必须是 `[]`；
+每个用户有自己的密钥，客户端用 `server_psk:user_key` 连接。更改方法会重新签发所有用户密钥（订阅必须刷新）。
+xray 的多用户 Shadowsocks 入站在运行时无法从其表中去掉用户，否则会与自己的连接路径产生竞争
+（被移除用户正在进行的握手可能以另一个用户的身份运行，或使 agent 崩溃）。因此协议 5 及以后的 agent（W9）从不去除：
+**被移除的用户在 agent 的 gate 中被吊销，其密钥作为墓碑留在 xray 的表里**，所以移除（以及重新加回同一密钥，例如续期的套餐）是实时增量，
+不影响其他用户的连接。**轮换某个用户的密钥仍会重建节点**（Snapshot：该节点上的所有连接断开一次），
+墓碑数量超过上限（每个入站 max(1024, 在线用户数)；重建时会压实）的移除也一样。
+对于较旧的 agent，从 Shadowsocks 入站移除任何用户都会重建节点。新增则始终是实时增量。
 
-**Hysteria 2** uses the node certificate like the TLS templates (automatic with 节点域名, §3f); `hysteriaSettings.auth` must not
-be set (a shared password would bypass per-user auth); bandwidth/congestion settings are left at
-xray's defaults.
+**Hysteria 2** 像 TLS 模板一样使用节点证书（设置 节点域名 时自动获得，§3f）；不得设置 `hysteriaSettings.auth`
+（共享密码会绕过每用户认证）；带宽/拥塞设置保持 xray 的默认值。
 
-**Refused (400)**, with the reason in the error: transports other than raw TCP, WebSocket,
-HTTPUpgrade, XHTTP (`splithttp`), gRPC (and `hysteria` for Hysteria 2) — e.g. mKCP; `security`
-other than none/tls/reality; REALITY with anything but VLESS over raw TCP/XHTTP/gRPC; Vision on
-any transport but raw TCP with TLS/REALITY; VLESS `decryption` other than `none` (VLESS Encryption
-is not in subscriptions); bad paths (must start with `/`, no spaces/quotes/`#`), Host values,
-XHTTP modes (`auto`, `packet-up`, `stream-up`, `stream-one`) or gRPC service names; non-numeric
-ports; an array of inbounds (one inbound per node, W28-a).
-Inbounds stored before these checks keep working; the node list shows them under `warnings`.
+**被拒绝（400）** 的情形，原因在错误信息中给出：原始 TCP、WebSocket、HTTPUpgrade、XHTTP（`splithttp`）、gRPC
+（以及 Hysteria 2 的 `hysteria`）之外的传输，例如 mKCP；`security` 不是 none/tls/reality；
+REALITY 用于 VLESS over 原始 TCP/XHTTP/gRPC 之外的组合；Vision 用在带 TLS/REALITY 的原始 TCP 之外的传输上；
+VLESS `decryption` 不是 `none`（订阅中不含 VLESS Encryption）；非法的 path（必须以 `/` 开头，不含空格/引号/`#`）、Host 值、
+XHTTP mode（`auto`、`packet-up`、`stream-up`、`stream-one`）或 gRPC service name；非数字端口；入站数组（每个节点一个入站，W28-a）。
+在这些检查加入之前保存的入站继续可用；节点列表在 `warnings` 下显示它们。
 
-**gRPC (R26).** gRPC was refused while the agent's grpc-go was affected by GO-2026-6443. The agent
-now pins grpc-go to the fixed upstream commit (`v1.85.0-dev.0.20260825072537-93e31b48545e`;
-moves to v1.85.0 when tagged) and gRPC is back for VLESS/VMess/Trojan. (The advisory concerns
-grpc-go's xDS server path; xray's plain gRPC server was not the vulnerable path, but the pin
-keeps `govulncheck` clean without an allow-list.)
+**gRPC（R26）。** 当 agent 的 grpc-go 受 GO-2026-6443 影响时，gRPC 曾被拒绝。agent 现在把 grpc-go 固定到上游已修复的 commit
+（`v1.85.0-dev.0.20260825072537-93e31b48545e`；v1.85.0 发布后会移到该 tag），VLESS/VMess/Trojan 的 gRPC 已恢复。
+（该公告涉及 grpc-go 的 xDS 服务端路径；xray 的普通 gRPC 服务端不在受影响路径上，但固定版本使 `govulncheck` 无需 allow-list 即可保持干净。）
 
-**Not supported by the embedded core:** TUIC (xray-core has no TUIC). No other core is added.
-Hysteria 2 is supported because xray-core v26.3.27 implements it as a multi-user inbound.
+**内嵌内核不支持：** TUIC（xray-core 没有 TUIC）。不会添加其他内核。
+Hysteria 2 之所以受支持，是因为 xray-core v26.3.27 把它实现为多用户入站。
 
-## 3e. Node status, latency tests and the traffic multiplier (W11)
+## 3e. Node status, latency tests and the traffic multiplier (W11)（节点状态、延迟测试与流量倍率）
 
-**Machine status.** Agents with the `metrics` capability (W11 agents) add a machine-status block
-to every heartbeat (15 s; `akari-agent -heartbeat-interval` changes it, 1 s – 5 min): CPU %,
-load 1/5/15, memory and swap, disk of `/`, the default-route interface (rates since the previous
-heartbeat and totals since boot), TCP/UDP sockets in use, proxied connections, online users
-(distinct users with a live connection), agent RSS, uptime and xray version — all from
-`/proc` and `statfs`, no extra packages or privileges. The panel keeps the latest values in
-Valkey (any instance serves them) and history in PostgreSQL: one row per node and minute
-(48 h) rolled up into hours (90 days) by the reaper loop; at 200 nodes that is at most ~576k
-minute rows and ~432k hour rows, one small upsert per node per heartbeat (throttled to one per
-5 s). A node counts as offline exactly as before (no fresh session for 90 s). Older agents keep
-working: their nodes simply show CPU/memory/connections only.
+**机器状态。** 具备 `metrics` 能力的 agent（W11 agent）在每次心跳（15 秒；`akari-agent -heartbeat-interval` 可改，1 秒 – 5 分钟）中加入机器状态块：
+CPU %、负载 1/5/15、内存和 swap、`/` 的磁盘、默认路由网卡（自上次心跳以来的速率及开机以来的累计）、在用的 TCP/UDP socket、被代理的连接、
+在线用户（有活动连接的不同用户）、agent RSS、运行时间和 xray 版本，全部来自 `/proc` 和 `statfs`，无需额外软件包或权限。
+面板把最新值保存在 Valkey（任何实例都能提供），历史保存在 PostgreSQL：每个节点每分钟一行（48 小时），由 reaper 循环汇总为小时（90 天）；
+200 个节点时最多约 576k 条分钟行和约 432k 条小时行，每个节点每次心跳一次小 upsert（限流为每 5 秒一次）。
+节点是否离线的判定与之前完全一样（90 秒内没有新会话）。较旧的 agent 照常工作：其节点只显示 CPU/内存/连接数。
 
-**Unknown is not 0 (W23).** A value the agent cannot read (its source file missing or hidden by
-the sandbox; a rate on the first heartbeat or after a counter reset) is shown as **未知** — in the
-node list, on the node page and as a gap in the history charts — never as 0, and the CPU/memory
-alert rules treat such minutes as undecided. Agents with the capability `metrics-presence`
-(agent releases from W23 on) leave such values unset; for older agents unset still means 0.
-Nodes installed with the pre-W23 unit (`ProcSubset=pid`) show CPU, memory, load, network and
-sockets as 未知 together with a hint and, from the first W23 agent on, a "systemd 单元" warning:
-run **重装命令** once (§5b "Units").
+**Unknown is not 0（未知不等于 0，W23）。** agent 读不到的值（来源文件缺失或被沙箱隐藏；第一次心跳或计数器重置后的速率）
+显示为 **未知**：在节点列表、节点页和历史图表中表现为断点，绝不是 0；CPU/内存告警规则把这样的分钟视为未决。
+具备 `metrics-presence` 能力的 agent（W23 起的 agent 发布版）把这类值留空；对于较旧的 agent，留空仍表示 0。
+使用 W23 之前 unit（`ProcSubset=pid`）安装的节点，CPU、内存、负载、网络和 socket 显示为 未知，并附带提示，
+从第一个 W23 agent 起还会有 “systemd 单元” 警告：执行一次 **重装命令** 即可（§5b “Units”）。
 
-**Latency (Clash Verge url-test semantics).** Every 测速间隔 (系统设置 → 测速, default 5 h,
-±10 % jitter) and on "立即测速" (admin node detail; at most once per 30 s per node, built in):
+**Latency（延迟，Clash Verge url-test 语义）。** 每个 测速间隔（系统设置 → 测速，默认 5 小时，±10 % 抖动）以及点击 “立即测速” 时
+（管理员节点详情；每个节点最多每 30 秒一次，内置）：
 
-- the agent (capability `latency`) sends `GET` to the first test URL from its **own egress**
-  (never through xray, never via `HTTP(S)_PROXY`) — delay = request start → response headers
-  (DNS + TCP + TLS + first byte, a fresh connection each attempt), median of `attempts`
-  (3, a failed attempt counts as the 5 s timeout; both built in); when every attempt fails
-  it tries the next URL (default `https://www.gstatic.com/generate_204`, then
-  `https://cp.cloudflare.com/generate_204`). Nodes need outbound HTTPS to them;
-- the panel (any instance, rows claimed in the database) measures TCP connect time to each
-  entrance's client-facing address (its 连接地址/连接端口, else 节点域名 and the inbound port;
-  the result's target is the entrance name). UDP-only inbounds (Hysteria 2) show "n/a". Turn
-  面板 TCP 测速 off when the panel host must not dial nodes.
+- agent（能力 `latency`）从**自己的出口**向第一个测试 URL 发 `GET`（不经过 xray，也不经过 `HTTP(S)_PROXY`）：
+  延迟 = 请求开始 → 响应头（DNS + TCP + TLS + 首字节，每次尝试都是新连接），取 `attempts` 次（3 次，失败的尝试按 5 秒超时计；两者都内置）的中位数；
+  当所有尝试都失败时，改试下一个 URL（默认 `https://www.gstatic.com/generate_204`，然后是 `https://cp.cloudflare.com/generate_204`）。
+  节点需要能对它们发起出站 HTTPS；
+- 面板（任一实例，在数据库中领取行）测量到每个入口面向客户端地址（其 连接地址/连接端口，否则为 节点域名 和入站端口；结果的目标是入口名）的 TCP 连接时间。
+  仅 UDP 的入站（Hysteria 2）显示 “n/a”。面板主机不应拨号节点时，请关闭 面板 TCP 测速。
 
-Badges: < 200 ms green, < 500 ms amber, else red, timeout grey. Users see the agent result
-(online, multiplier, tags) of their usable entrances of visible nodes in the portal; never
-addresses or machine data.
+徽标：< 200 ms 绿色，< 500 ms 琥珀色，否则红色，超时灰色。用户在门户中看到可见节点中自己可用入口的 agent 结果（在线、倍率、标签）；
+绝不会看到地址或机器数据。
 
-The interval (600 s – 7 d), the test URLs and 面板 TCP 测速 are set in the admin console only
-(系统设置 → 测速; `PUT /api/v1/settings/probe`; W25: no `[probe]` in panel.toml any more, an
-old section is imported once, see §1 "Upgrading"). Every change is versioned and audited
-(`settings.probe.update`), every panel instance applies it at once and re-sends the new settings
-to connected agents (no restart; agents reschedule on an interval change); a shorter interval
-also pulls already scheduled panel TCP tests forward. `akari settings unset probe` goes back to
-the defaults above.
+间隔（600 秒 – 7 天）、测试 URL 和 面板 TCP 测速 只在管理控制台中设置
+（系统设置 → 测速；`PUT /api/v1/settings/probe`；W25：panel.toml 中不再有 `[probe]`，旧段落会被导入一次，见 §1 “Upgrading”）。
+每次更改都有版本并写入审计（`settings.probe.update`），每个面板实例立即应用，并把新设置重新发给已连接的 agent
+（无需重启；间隔变化时 agent 会重新调度）；间隔缩短也会把已排期的面板 TCP 测试提前。`akari settings unset probe` 恢复上述默认值。
 
-**Traffic multiplier (倍率).** The multiplier is the entrance's (W28-a: a user's traffic is
-counted per entrance and billed with that entrance's rate). Billed bytes = floor(accepted bytes
-× rate) per counter row,
-computed only inside the flush SQL (never in panel memory); the rate in effect when a report is
-flushed applies to that report's increase (changing it never re-bills the past). Departed users'
-final counters are billed the same way; every plausibility cap works on the accepted (raw)
-bytes. The node list and detail page show both totals (`traffic_raw_bytes`,
-`traffic_billed_bytes`). 0 = free entrance. Hidden nodes (`visible = false`) keep serving the
-users their plans grant; they are only left out of the portal and the subscription.
+**流量倍率（倍率）。** 倍率属于入口（W28-a：用户流量按入口计量，并按该入口的倍率计费）。
+计费字节 = 每个计数器行的 floor(已接受字节 × 倍率)，只在刷新 SQL 内计算（绝不在面板内存里）；
+上报被刷新时生效的倍率适用于该上报的增量（更改倍率绝不会重新计过去的账）。已离开用户的最终计数以同样方式计费；
+所有合理性上限都作用于已接受的（原始）字节。节点列表和详情页显示两个总数（`traffic_raw_bytes`、`traffic_billed_bytes`）。
+0 = 免费入口。隐藏的节点（`visible = false`）继续为其套餐所授予的用户提供服务；它们只是不出现在门户和订阅中。
 
 **分时段倍率（D9，中文）**：入口的倍率 = 基础倍率（`PATCH /api/v1/entrances/{id}` 的 `rate`）+ 最多 24 条
 时段规则（`PUT /api/v1/entrances/{id}/rate-rules {"rules": [{"weekdays": [1..7], "start": "HH:MM",
@@ -1131,59 +978,47 @@ users their plans grant; they are only left out of the portal and the subscripti
 （`rate_now`、`rate_rules`）显示的都是**当前**倍率。规则变更写审计 `entrance.rate_rules.set`（前后规则全文）；
 改规则不需要 agent 做任何事（不 bump）。
 
-**Prometheus.** The metrics listener adds fleet aggregates over the nodes connected to that
-instance (`akari_fleet{kind="nodes_reporting"|"online_users"|"connections"|"rx_bytes_per_second"|"tx_bytes_per_second"}`,
-`akari_fleet_cpu_percent_max`; sum over instances). There are no per-node series by design:
-node ids and names would be unbounded label values; per-node history is in the panel
-(`/servers/{id}/metrics`). Per-node alert thresholds are a follow-up.
 
-## 3f. Automatic node certificate (节点域名, W10, agent protocol 6)
+**Prometheus。** metrics 监听器增加了该实例所连接节点的全局汇总
+（`akari_fleet{kind="nodes_reporting"|"online_users"|"connections"|"rx_bytes_per_second"|"tx_bytes_per_second"}`、
+`akari_fleet_cpu_percent_max`；对各实例求和）。按设计没有每节点的序列：节点 id 和名称会是无界的 label 值；
+每节点历史在面板中（`/servers/{id}/metrics`）。每节点的告警阈值留作后续工作。
 
-Set **节点域名** on a server (wizard or node page; `tls_domain` in `POST /api/v1/nodes` for a new server, `PATCH /api/v1/servers/{id}`) and
-every inbound reading the node certificate files gets a Let's Encrypt certificate for it, obtained
-and renewed by the agent. Only nodes with such an inbound order one (a REALITY-only node never
-does). What the admin does: an `A`/`AAAA` record for the domain pointing at the node (DNS only —
-not Cloudflare-proxied), TCP 80 open to the internet. **检查解析** in the form (and the node page
-on failures) compares what the domain resolves to with the node's public address and the address
-its agent connects from; it only warns (the node's address is unknown before the install).
+## 3f. Automatic node certificate (节点域名, W10, agent protocol 6)（节点自动证书）
 
-How the agent does it (details in akari-agent `acme.go`):
+在服务器上设置 **节点域名**（向导或节点页；新服务器用 `POST /api/v1/nodes` 的 `tls_domain`，已有的用 `PATCH /api/v1/servers/{id}`），
+每个读取节点证书文件的入站就会得到该域名的 Let's Encrypt 证书，由 agent 获取并续期。只有带这类入站的节点才会申请
+（仅 REALITY 的节点从不申请）。管理员要做的是：为该域名添加指向节点的 `A`/`AAAA` 记录（仅 DNS，不经 Cloudflare 代理），并向互联网开放 TCP 80。
+表单中的 **检查解析**（失败时节点页也有）会把域名的解析结果与节点的公网地址以及其 agent 连接所用的地址做比较；它只警告
+（安装之前节点地址未知）。
+
+agent 的做法（详见 akari-agent 的 `acme.go`）：
 
 | Situation on the node | Challenge |
 |---|---|
-| TCP 80 not used by an inbound and free | HTTP-01 on :80 (default; the agent listens on :80 only during an order) |
-| 80 used (inbound or another program), TCP 443 not used by an inbound and free | TLS-ALPN-01 on :443 |
-| 80 busy and 443 used by an inbound (e.g. VLESS-WS-TLS on 443) or busy | fails as "80 端口被占用": free TCP 80 |
+| TCP 80 未被入站使用且空闲 | 在 :80 上做 HTTP-01（默认；agent 只在申请期间监听 :80） |
+| 80 被占用（入站或其他程序），TCP 443 未被入站使用且空闲 | 在 :443 上做 TLS-ALPN-01 |
+| 80 被占用且 443 被入站使用（如 443 上的 VLESS-WS-TLS）或被占用 | 失败，提示 “80 端口被占用”：请释放 TCP 80 |
 
-DNS-01 (wildcards, nodes without inbound 80/443) is not supported. After a connection or DNS
-failure the next order tries the other challenge when it is available.
+不支持 DNS-01（通配符、没有入站 80/443 的节点）。连接或 DNS 失败之后，下一次申请在另一种挑战可用时会改用它。
 
-- **Storage**: the agent's state directory (`/var/lib/private/akari-agent/tls/<domain>/`
-  `fullchain.pem` + `privkey.pem`, 0600; the ACME account key in `tls/accounts/`), not
-  `/etc/akari-agent/tls`: the agent runs as a dynamic user under `ProtectSystem=strict`; systemd
-  manages the state directory's ownership. Back it up with the rest of the state directory.
-- **Until the first certificate** the TLS inbounds serve a self-signed placeholder (the other
-  inbounds start normally); the issued certificate replaces it at once, restarting only those
-  TLS inbounds.
-- **Renewal** with a third of the validity left (about day 60 of 90, with jitter; ARI `replaces`).
-  The files are replaced atomically and xray re-reads them within the hour (its own certificate
-  reload; do not set `oneTimeLoading` in hand-written JSON): no rebuild, no dropped connection.
-- **Failures** back off 5 min doubling to 6 h (at least 1 h after a rate-limit answer); one
-  challenge per attempt keeps the failed validations below Let's Encrypt's 5 per hostname per
-  hour. `systemctl restart akari-agent` retries at once (after fixing DNS, say).
-- **Status** (node page, from the agent's heartbeat): 证书有效 + expiry and renewal date, or the
-  error in plain words — 域名无法解析 / 域名未解析到本机 IP x.x.x.x / 80 端口不可达 / 80 端口被占用 /
-  频率限制 / CAA / CA unreachable — with the raw ACME error under 详细错误.
-- **Panel settings** (系统设置 → 节点通信): ACME 目录 (empty = Let's Encrypt
-  production; staging: `https://acme-staging-v02.api.letsencrypt.org/directory`) and ACME 邮箱
-  (optional account contact). A change reaches every connected node at once (a new Snapshot for
-  nodes that use a node certificate). W25: `[acme]` in panel.toml is imported once, then ignored.
-- **Agents older than protocol 6** ignore the domain and read the files of §3 as before; the node
-  page says so (upgrade the agent, §5b). Changing 节点域名 sends the node a new configuration
-  (rebuild: its connections drop once). Subscriptions use 节点域名 as server address when the
-  node has no public address set.
-- Not supported: ZeroSSL / EAB CAs (any CA without external account binding works through
-  `directory_url`), several domains per node, DNS-01.
+- **存储**：agent 的状态目录（`/var/lib/private/akari-agent/tls/<domain>/`
+  `fullchain.pem` + `privkey.pem`，0600；ACME 账号密钥在 `tls/accounts/`），而不是 `/etc/akari-agent/tls`：
+  agent 在 `ProtectSystem=strict` 下以动态用户运行；systemd 管理状态目录的属主。请与状态目录的其余内容一起备份。
+- **在拿到第一张证书之前**，TLS 入站使用自签占位证书（其他入站正常启动）；签发的证书会立即替换它，只重启那些 TLS 入站。
+- **续期**在有效期剩余三分之一时进行（90 天中约第 60 天，带抖动；ARI `replaces`）。文件被原子替换，xray 在一小时内重新读取
+  （它自己的证书重载；不要在手写 JSON 中设置 `oneTimeLoading`）：不重建，不断开连接。
+- **失败**后退避，从 5 分钟翻倍到 6 小时（收到限流应答后至少 1 小时）；每次尝试只做一种挑战，使失败的验证低于 Let's Encrypt 每主机名每小时 5 次的限制。
+  `systemctl restart akari-agent` 会立即重试（例如修好 DNS 之后）。
+- **状态**（节点页，来自 agent 的心跳）：证书有效 + 到期和续期日期，或用大白话说明的错误
+  （域名无法解析 / 域名未解析到本机 IP x.x.x.x / 80 端口不可达 / 80 端口被占用 / 频率限制 / CAA / CA unreachable），
+  原始 ACME 错误在 详细错误 下。
+- **面板设置**（系统设置 → 节点通信）：ACME 目录（空 = Let's Encrypt 正式环境；staging：`https://acme-staging-v02.api.letsencrypt.org/directory`）
+  和 ACME 邮箱（可选的账号联系人）。更改会立即到达每个已连接的节点（对使用节点证书的节点是新的 Snapshot）。
+  W25：panel.toml 中的 `[acme]` 会被导入一次，之后被忽略。
+- **协议低于 6 的 agent** 忽略该域名，照旧读取 §3 的文件；节点页会提示（升级 agent，§5b）。
+  更改 节点域名 会向节点发送新配置（重建：其连接断开一次）。节点没有设置公网地址时，订阅使用 节点域名 作为服务器地址。
+- 不支持：ZeroSSL / EAB CA（任何不需要 external account binding 的 CA 都可通过 `directory_url` 使用）、每个节点多个域名、DNS-01。
 
 ## 3h. 审计规则（节点拦截，W29，agent 能力 `block-rules`）
 
@@ -1216,51 +1051,44 @@ failure the next order tries the other challenge when it is available.
 
 **统计**：`GET /api/v1/nodes/{id}/block-rules?days=7`（1–90）返回开关状态、agent 是否支持、当前生效的规则版本是否与面板一致（`in_sync`、`error`）、以及最近 N 天（按站点时区的日，见 §2b「站点时区」）每条规则的拦截次数；规则列表里的 `hits_7d` 是全部节点近 7 天合计。**只记录每个节点每条规则的拦截次数，不记录任何用户或访问目标。**日数据保留 90 天。
 
-## 3c. Resource footprint (measured)
+## 3c. Resource footprint (measured)（资源占用，实测）
 
-One real deployment on a 1 vCPU-class VPS with 920 MB RAM (Debian 13, compose, IP-only), resident
-memory at idle: panel 5 MB, PostgreSQL 56 MB, Valkey 8 MB, Caddy 17 MB, agent 27 MB. The whole
-stack plus an agent fits a 1 GB machine with room to spare. The first full deployment from this
-guide took about 23 minutes including troubleshooting.
+一次真实部署在 1 vCPU 级别、920 MB 内存的 VPS 上（Debian 13，compose，仅 IP），空闲时的常驻内存：
+panel 5 MB、PostgreSQL 56 MB、Valkey 8 MB、Caddy 17 MB、agent 27 MB。整套服务加一个 agent 可以装进 1 GB 的机器并有富余。
+按本指南完成的第一次完整部署（含排错）用了约 23 分钟。
 
-**Timed fresh-deploy drill (2026-10-02, W14).** Clean Debian 13 machines (systemd containers: a
-panel host with Docker installed from Debian's packages, a node, a client), §A → §2 → §2b → §3 →
-§3g followed literally, the image pulled by digest from a registry (a stand-in for ghcr.io before
-the first release), `myapp.test` with `AKARI_CADDY_OPTIONS=local_certs`. Machine time per step;
-"reading and typing" is an estimate for a person doing the same by hand and in the console.
+**Timed fresh-deploy drill（计时的全新部署演练，2026-10-02，W14）。** 干净的 Debian 13 机器（systemd 容器：
+一台用 Debian 软件包安装 Docker 的面板主机、一个节点、一个客户端），逐字照着 §A → §2 → §2b → §3 → §3g 操作，
+镜像通过 digest 从 registry 拉取（首个发布之前用来代替 ghcr.io），使用 `myapp.test` 与 `AKARI_CADDY_OPTIONS=local_certs`。
+“机器”列是每步的机器耗时；“阅读与输入”是估计的人手工在控制台操作的耗时。
 
 | Step | Machine | Reading and typing |
 |---|---|---|
-| 0. install Docker + git (`apt-get`) | 22 s | 2 min |
-| 1–3. clone, env files, passwords, domain, image line | 2 s | 6 min |
-| 4. `config check` (pulls panel, PostgreSQL, Valkey images) | 39 s | 1 min |
-| 4. `up -d`, `akari info` | 4 s | 1 min |
-| 4. `up -d` (Caddy pull + certificate), `/healthz` 200 | 49 s | 2 min |
-| §2 first admin, log in | 1 s | 2 min |
+| 0. 安装 Docker + git（`apt-get`） | 22 s | 2 min |
+| 1–3. 克隆、env 文件、密码、域名、镜像行 | 2 s | 6 min |
+| 4. `config check`（拉取 panel、PostgreSQL、Valkey 镜像） | 39 s | 1 min |
+| 4. `up -d`、`akari info` | 4 s | 1 min |
+| 4. `up -d`（拉取 Caddy + 证书），`/healthz` 200 | 49 s | 2 min |
+| §2 第一个管理员，登录 | 1 s | 2 min |
 | §2b 主域名 | 1 s | 1 min |
-| §3 新建节点 (REALITY template) → pinned install command | 1 s | 3 min |
-| §3 install command on the node → SUCCESS, node online | 7 s | 2 min |
-| §3g node group, plan, user, assign plan | 1 s | 4 min |
-| §3g subscription into a client (xray 26.3.27), connect, usage billed | 5 s + 15 s | 3 min |
+| §3 新建节点（REALITY 模板）→ 带钉扎的安装命令 | 1 s | 3 min |
+| §3 在节点上运行安装命令 → SUCCESS，节点在线 | 7 s | 2 min |
+| §3g 节点组、套餐、用户、分配套餐 | 1 s | 4 min |
+| §3g 把订阅导入客户端（xray 26.3.27），连接，用量被计费 | 5 s + 15 s | 3 min |
 | **Total** | **~2.5 min** | **~27 min** |
 
-Through the node the client fetched `https://www.gstatic.com/generate_204` (204) and 5 MB, which
-appeared on the user as 5.02 MB within 15 s. Gaps the drill found are fixed in this section (Docker
-install, password/domain/prefix commands, the `config check` notice on an empty database, names
-without public DNS, §2b, §3g) and in the compose file (Debian's compose 2.26 rejected a nested
-`${VAR:?}`).
+客户端通过节点获取了 `https://www.gstatic.com/generate_204`（204）和 5 MB，15 秒内在用户上显示为 5.02 MB。
+演练发现的缺口已在本节修复（Docker 安装、密码/域名/前缀命令、空数据库上的 `config check` 提示、没有公共 DNS 的名称、§2b、§3g），
+并在 compose 文件中修复（Debian 的 compose 2.26 拒绝嵌套的 `${VAR:?}`）。
 
-## 4. Observability (optional)
+## 4. Observability (optional)（可观测性，可选）
 
-Set `[metrics] bind = "127.0.0.1:9100"` and scrape it (`deploy/prometheus/`). Alert rules:
-`deploy/prometheus/alerts.yml` (unit tests in `alerts_test.yml`; `make monitoring-check` runs
-promtool and checks that every dashboard/rule metric exists); dashboards:
-`deploy/grafana/akari-dashboard.json` (panel internals) and `deploy/grafana/akari-fleet.json`
-(W17: fleet health from the W11 heartbeats and the node alerts) — import in Grafana, pick the
-Prometheus data source. Metric labels never contain the admin prefix or a node id: per-node
-detail is the console's node page and 告警中心 (§4b).
-Every response of an accepted request carries `X-Request-Id` (an incoming one is reused if it is
-short and printable); it is on the log lines of that request. Rejections never carry it.
+设置 `[metrics] bind = "127.0.0.1:9100"` 并抓取它（`deploy/prometheus/`）。告警规则：
+`deploy/prometheus/alerts.yml`（单元测试在 `alerts_test.yml`；`make monitoring-check` 运行 promtool，并检查每个仪表盘/规则用到的指标都存在）；
+仪表盘：`deploy/grafana/akari-dashboard.json`（面板内部）和 `deploy/grafana/akari-fleet.json`
+（W17：来自 W11 心跳和节点告警的集群健康）：导入 Grafana，选择 Prometheus 数据源。
+指标 label 从不包含后台前缀或节点 id：每节点的详情在控制台的节点页和 告警中心（§4b）。
+被接受的请求的每个响应都带有 `X-Request-Id`（传入的若短且可打印则复用）；它出现在该请求的日志行中。拒绝响应从不带它。
 
 ## 4a. 系统状态（W31）
 
@@ -1279,40 +1107,28 @@ short and printable); it is on the log lines of that request. Rejections never c
 
 各项检查并发执行、每项最多 3 秒，不读写 agent 路径；读不到的值为 `null`（未知），不当作 0。
 
-## 4b. Node alerts and notifications (告警中心, W17)
+## 4b. Node alerts and notifications (告警中心, W17)（节点告警与通知）
 
-The panel watches the fleet itself; Prometheus is optional. Console → **告警** shows what is
-firing (and history), the thresholds and the notification channels. Defaults: on, offline >
-300 s, CPU / memory > 90 % for 5 minutes, disk > 90 %, a certificate (the node's automatic TLS
-certificate, W10, or the agent's mTLS certificate) expiring within 14 days, every latency-test
-target of a source failing, a failed config apply, a hidden relay entrance (`entrance_down`), and
-(D5) the server's traffic quota used up (`traffic_quota`, resolves when the server is restored).
-Alerts are per **server** (Q1: one agent). An empty threshold turns a rule off; the node
-page (告警规则) overrides thresholds per server, turns kinds off, or mutes the server (alerts are
-recorded, never notified).
+面板自己监视整个集群；Prometheus 是可选的。控制台 → **告警** 显示正在触发的告警（及历史）、阈值和通知渠道。默认值：
+开启，离线 > 300 秒，CPU / 内存 > 90 % 持续 5 分钟，磁盘 > 90 %，证书（节点自动 TLS 证书 W10，或 agent 的 mTLS 证书）14 天内到期，
+某个来源的所有延迟测试目标都失败，配置应用失败，中转入口被隐藏（`entrance_down`），以及
+（D5）服务器流量额度用完（`traffic_quota`，服务器恢复时解除）。
+告警按**服务器**计（Q1：一个 agent）。阈值留空 = 关闭该规则；节点页（告警规则）可按服务器覆盖阈值、关闭某类告警，或静音该服务器（告警被记录，但不通知）。
 
-- **One evaluator**: every instance runs the round every 30 s (built in) but only the one that wins a PostgreSQL advisory lock evaluates; the others skip.
-  Facts come from the database and Valkey, so any instance computes the same thing.
-- **State**: firing → resolved per (node, kind), at most one firing row (dedupe). Live kinds (CPU,
-  memory, disk, latency, node certificate) of an offline node keep their state until it reports
-  again. CPU/memory fire when each of the last N complete minutes averaged above the threshold and
-  clear as soon as the last minute is at or below it. A re-fire within `重复告警冷却` minutes of
-  the last notified one is recorded but not notified; "恢复" is notified only after a notified
-  firing (optional).
-- **Delivery**: one queued notification per channel, delivered by any instance (claim + lease),
-  retried with backoff (30 s doubling, 8 attempts), then marked failed in 通知记录 (retry button).
-  At-least-once: a receiver may see a delivery twice after a crash; dedupe on
-  `X-Akari-Delivery`.
+- **单一评估者**：每个实例每 30 秒（内置）运行一轮，但只有赢得 PostgreSQL advisory lock 的那个才评估，其他的跳过。
+  事实来自数据库和 Valkey，所以任何实例算出的结果相同。
+- **状态**：每个（节点，类型）从 firing → resolved，最多一条 firing 行（去重）。离线节点的实时类型（CPU、内存、磁盘、延迟、节点证书）在它再次上报之前保持其状态。
+  CPU/内存在最近 N 个完整分钟的平均值都高于阈值时触发，最近一分钟不高于阈值时立即解除。
+  在最近一次已通知告警之后的 `重复告警冷却` 分钟内再次触发，只记录不通知；“恢复” 只在已通知的触发之后才通知（可选）。
+- **投递**：每个渠道一条排队的通知，由任一实例投递（领取 + 租约），带退避重试（30 秒起翻倍，8 次），之后在 通知记录 中标记为失败（有重试按钮）。
+  至少一次：崩溃后接收方可能收到两次；请按 `X-Akari-Delivery` 去重。
 
-**Telegram**: create a bot with @BotFather, add it to the group/channel, enter the bot token and
-the chat id (a number, groups and channels are negative, or `@channelname`), save, then 发送测试.
-The panel only calls `sendMessage` (outbound HTTPS to api.telegram.org; nothing to open
-inbound). The token is stored encrypted with a key derived from `data/master.key` and never shown
-again (losing `master.key` means entering it again). For networks that block Telegram, set
-**Telegram API 地址** (系统设置 → 告警) to a self-hosted Bot API server (https; origin only; empty =
-`https://api.telegram.org`). W25: the old `[alerts] telegram_api_url` is imported there once.
+**Telegram**：用 @BotFather 创建 bot，把它加入群组/频道，输入 bot token 和 chat id（数字；群组和频道为负数，或 `@channelname`），保存，然后 发送测试。
+面板只调用 `sendMessage`（向 api.telegram.org 的出站 HTTPS；无需开放入站）。token 用由 `data/master.key` 派生的密钥加密存放，之后不再显示
+（丢失 `master.key` 意味着需要重新输入）。对于屏蔽 Telegram 的网络，请把 **Telegram API 地址**（系统设置 → 告警）设为自托管的 Bot API 服务器
+（https；仅 origin；空 = `https://api.telegram.org`）。W25：旧的 `[alerts] telegram_api_url` 会被导入到这里一次。
 
-**Webhook**: `POST <url>` (https; plain http only to localhost), JSON body:
+**Webhook**：`POST <url>`（https；明文 http 仅限 localhost），JSON body：
 
 ```json
 {"event": "firing", "title": "[告警] hk-1：节点离线", "text": "…",
@@ -1320,13 +1136,11 @@ again (losing `master.key` means entering it again). For networks that block Tel
            "value": "离线 6 分钟", "detail": "…", "fired_at": "…", "resolved_at": null}}
 ```
 
-`event` is `firing`, `resolved`, `test` or `billing` (`alert` is null for a test and for
-billing; a `billing` event — 中-2: a paid order the panel could not fulfil and refunded to the
-customer's balance automatically — carries `billing: {order_id, out_trade_no, code,
-refund_cents}`). Headers:
-`X-Akari-Event`, `X-Akari-Delivery` (notification id), `X-Akari-Timestamp` (unix seconds) and
-`X-Akari-Signature: sha256=<hex>` = HMAC-SHA256(secret, `<timestamp>.<raw body>`). Verify it
-before trusting the body and reject stale timestamps:
+`event` 为 `firing`、`resolved`、`test` 或 `billing`（测试和 billing 时 `alert` 为 null；
+`billing` 事件，中-2：面板无法履约并已自动退款到客户余额的已支付订单，带有 `billing: {order_id, out_trade_no, code,
+refund_cents}`）。请求头：
+`X-Akari-Event`、`X-Akari-Delivery`（通知 id）、`X-Akari-Timestamp`（unix 秒）和
+`X-Akari-Signature: sha256=<hex>` = HMAC-SHA256(secret, `<timestamp>.<raw body>`)。信任 body 之前先验证，并拒绝过期的时间戳：
 
 ```python
 import hashlib, hmac, time
@@ -1336,33 +1150,26 @@ def verify(secret: bytes, headers, body: bytes) -> bool:
     return hmac.compare_digest(want, headers["X-Akari-Signature"]) and abs(time.time() - int(ts)) < 300
 ```
 
-Any 2xx is success; 408/429/5xx and network errors are retried; other 4xx are final.
+任何 2xx 都算成功；408/429/5xx 和网络错误会重试；其他 4xx 为终态。
 
-**Email**: goes through the panel's SMTP outbox (系统设置 → 邮件, W15) to up to 5 addresses;
-the channel can be enabled once SMTP is configured.
+**Email**：经面板的 SMTP 发件箱（系统设置 → 邮件，W15）发给最多 5 个地址；配置好 SMTP 之后即可启用该渠道。
 
-**Prometheus**: `akari_node_alerts_firing{kind}` (from the database: the same on every
-instance, aggregate with `max`), `akari_alert_notifications_total{channel,result}`,
-`akari_alert_rounds_total{result}`; rules `AkariNodeAlertsFiring`, `AkariAlertEvaluatorStalled`,
-`AkariAlertNotificationsFailing` and the fleet rules (`AkariFleet*`) in `alerts.yml`.
+**Prometheus**：`akari_node_alerts_firing{kind}`（来自数据库：每个实例相同，用 `max` 聚合）、
+`akari_alert_notifications_total{channel,result}`、`akari_alert_rounds_total{result}`；
+`alerts.yml` 中的规则 `AkariNodeAlertsFiring`、`AkariAlertEvaluatorStalled`、`AkariAlertNotificationsFailing` 以及集群规则（`AkariFleet*`）。
 
-**Support tickets (工单)**: customers open tickets in the portal (also while expired or over
-quota), staff answer in console → 工单 (filters, assign, close/reopen). A customer can open at
-most 5 tickets per hour and keep at most 5 open; replies 30 per hour. Email notices for new
-tickets and staff replies use the SMTP outbox when configured.
+**Support tickets（工单）**：客户在门户中提交工单（过期或超额时也可以），工作人员在控制台 → 工单 中回复（筛选、指派、关闭/重新打开）。
+每位客户每小时最多提交 5 张工单，同时最多保持 5 张未关闭；回复每小时 30 条。新工单和员工回复的邮件通知在配置了 SMTP 时通过 SMTP 发件箱发送。
 
-### Sizing
+### Sizing（容量规划）
 
-At the M2 target (200 nodes, 50k users, 10k users per node) the database holds about 2M
-`entrance_users` and 2M `traffic_counters` rows. Give PostgreSQL room for that working set
-(`shared_buffers` 2 GB, `effective_cache_size` 6 GB, `max_wal_size` 4 GB were used for the
-measurements in docs/PERF.md; the stock 128 MB `shared_buffers` is too small) and about 1.5 GiB of
-RAM per panel instance at peak.
+在 M2 目标下（200 个节点、5 万用户、每节点 1 万用户），数据库约有 200 万行 `entrance_users` 和 200 万行 `traffic_counters`。
+请给 PostgreSQL 留够这部分工作集所需的空间（docs/PERF.md 中的测量使用 `shared_buffers` 2 GB、`effective_cache_size` 6 GB、`max_wal_size` 4 GB；
+默认的 128 MB `shared_buffers` 太小），并且每个面板实例峰值约需 1.5 GiB 内存。
 
-### Several panel instances (optional)
+### Several panel instances (optional)（多个面板实例，可选）
 
-One instance carries the M2 target (200 nodes / 50k users, docs/PERF.md). Run
-two or more for availability or headroom:
+一个实例即可承载 M2 目标（200 个节点 / 5 万用户，docs/PERF.md）。为了可用性或余量，可以运行两个或更多：
 
 ```
  admins, subscribers --> HTTPS reverse proxy (round-robin to the web ports)  --> panel A :8080, panel B :8080
@@ -1370,85 +1177,64 @@ two or more for availability or headroom:
  panel A, panel B    --> one PostgreSQL (direct connection), one Valkey
 ```
 
-- All instances use the same `database_url`, `valkey_url` and an identical
-  `data_dir` (CA, `jwt.key`, `master.key`: share the directory or
-  copy it byte for byte); each has its own web and gRPC bind addresses.
-- gRPC must be balanced at L4. The balancer must not terminate TLS (the agent's
-  client certificate is the node identity). No stickiness is needed: an agent
-  may land on any instance, and a reconnect elsewhere supersedes the old stream
-  (the old instance notices on its next database read, within 60 s).
-- PostgreSQL must be reached directly: change notification uses `LISTEN`, which
-  PgBouncer in transaction or statement mode breaks.
-- 系统设置 changes reach every instance through the same notification; each
-  re-issues its gRPC certificate when the server-name set changed (no restart).
-- Nothing else to configure: change notification, session revocation, login
-  rate limiting and the flush/reaper/retention loops are database/Valkey
-  based and idempotent, so every instance runs them. Metrics are per instance
-  (scrape each).
-- Upgrade one instance at a time after the agents (section 5); migrations run on
-  the first instance that starts and are forward-only.
-- Verified by `akari-bench multi` and a 200-agent swarm through a balancer
-  (docs/PERF.md).
+- 所有实例使用相同的 `database_url`、`valkey_url` 和完全相同的 `data_dir`（CA、`jwt.key`、`master.key`：共享该目录或逐字节复制）；
+  各自有自己的 web 和 gRPC 绑定地址。
+- gRPC 必须在 L4 做负载均衡。均衡器不能终止 TLS（agent 的客户端证书就是节点身份）。不需要会话保持：
+  agent 可以落到任何实例，在别处重连会取代旧的流（旧实例在下一次读数据库时发现，60 秒内）。
+- 必须直连 PostgreSQL：变更通知使用 `LISTEN`，事务或语句模式的 PgBouncer 会破坏它。
+- 系统设置 的更改经同一个通知到达每个实例；当 server-name 集合变化时，各实例各自重新签发 gRPC 证书（无需重启）。
+- 无需其他配置：变更通知、会话吊销、登录限流以及 flush/reaper/retention 循环都基于数据库/Valkey 且幂等，所以每个实例都运行它们。
+  指标按实例提供（逐个抓取）。
+- 一次升级一个实例，且在 agent 之后（第 5 节）；迁移在第一个启动的实例上运行，且只能前进。
+- 由 `akari-bench multi` 和经均衡器的 200 个 agent 的 swarm 验证（docs/PERF.md）。
 
-## 5. Upgrade (agents BEFORE the panel)
+## 5. Upgrade (agents BEFORE the panel)（升级：agent 先于面板）
 
-### v0.3.x → v0.4: fresh install only
+### v0.3.x → v0.4: fresh install only（v0.3.x → v0.4：只能全新安装）
 
-v0.4 squashed migrations 0001–0168 into a single baseline, `migrations/1000_baseline.sql`
-(same schema; research/db-schema-review.md §7). A database created by v0.3.x cannot be upgraded in
-place:
+v0.4 把迁移 0001–0168 压缩为单一基线 `migrations/1000_baseline.sql`（schema 相同；research/db-schema-review.md §7）。
+v0.3.x 创建的数据库不能原地升级：
 
-- `akari-ctl upgrade` from a v0.3.x installation stops **before anything is changed** (no backup,
-  no switch) with `database from v0.3.x — fresh install required; see docs/DEPLOY.md`;
-- the panel itself refuses to start on such a database (`db::migrate`: any `_sqlx_migrations`
-  version below 1000) with the same message — this also covers a hand-made deployment, a kept
-  data volume and a restored backup;
-- **backups made by v0.3.x cannot be restored into v0.4** (`install --restore` stops with the same
-  message after loading one).
+- 从 v0.3.x 安装执行 `akari-ctl upgrade` 会**在改动任何东西之前**停止（不备份、不切换），并报 `database from v0.3.x — fresh install required; see docs/DEPLOY.md`；
+- 面板本身拒绝在这样的数据库上启动（`db::migrate`：任何 `_sqlx_migrations` 版本低于 1000），报相同的信息；这也涵盖手工部署、保留的数据卷和恢复的备份；
+- **v0.3.x 做的备份不能恢复到 v0.4**（`install --restore` 在加载之后以相同信息停止）。
 
-So: write down what you need (settings, plans, users), `akari-ctl uninstall --purge --confirm
-purge` (backups under `/var/backups/akari` are kept, but are v0.3-only), install v0.4 fresh, and
-re-enroll the nodes (重装命令). Upgrades between v0.4 releases work as below.
+所以：记下你需要的东西（设置、套餐、用户），执行 `akari-ctl uninstall --purge --confirm
+purge`（`/var/backups/akari` 下的备份会保留，但只能用于 v0.3），全新安装 v0.4，并重新注册节点（重装命令）。
+v0.4 各发布版本之间的升级按下文进行。
 
-**With the installer** (any installation made by it, or a §A compose checkout under
-`/opt/akari-panel/deploy` or `/opt/akari`, which it adopts):
+**用安装器升级**（任何由它完成的安装，或 `/opt/akari-panel/deploy` 或 `/opt/akari` 下的 §A compose 检出，它会接管）：
 
 ```bash
 akari-ctl upgrade                    # the newest release; --version vX.Y.Z for a given one
 ```
 
-It runs the target release's own installer (newer upgrade logic), verifies the release exactly as
-an install does (cosign + SHA256SUMS), then:
+它运行目标发布版本自带的安装器（升级逻辑更新），像安装一样验证该发布（cosign + SHA256SUMS），然后：
 
-1. **backup** (`/var/backups/akari/akari-<UTC>/`: database dump, data dir, configuration;
-   age-encrypted when `AGE_RECIPIENT` is set in `/etc/akari/install.env`, otherwise plain 0600
-   files with a warning — docs/BACKUP.md);
-2. bare metal: the new binary must pass `config check` against the live configuration before
-   anything is switched; the old one is kept as `/usr/local/bin/akari.prev`, the new one moved in
-   atomically, units and Caddyfile refreshed from the release's bundle, `systemctl restart`;
-   Docker: compose file/Caddyfile refreshed, `AKARI_IMAGE` set to the new `tag@digest`,
-   `docker compose pull panel` + `up -d` (PostgreSQL/Valkey/Caddy follow their major tags);
-3. **health check**: `/healthz` within 2 minutes (3 with Docker). Migrations run at start,
-   before the panel listens, so a healthy panel is a migrated one;
-4. failure → **automatic rollback** to the previous binary / image (and compose files), health
-   checked again. `akari-ctl`/backup scripts are replaced only after a successful upgrade.
+1. **备份**（`/var/backups/akari/akari-<UTC>/`：数据库转储、数据目录、配置；
+   在 `/etc/akari/install.env` 中设置了 `AGE_RECIPIENT` 时用 age 加密，否则是 0600 明文文件并给出警告，见 docs/BACKUP.md）；
+2. 裸机：新二进制必须先对当前生效的配置通过 `config check`，才会切换任何东西；旧的保留为 `/usr/local/bin/akari.prev`，
+   新的原子地移入，unit 和 Caddyfile 用发布包中的刷新，`systemctl restart`；
+   Docker：刷新 compose 文件/Caddyfile，把 `AKARI_IMAGE` 设为新的 `tag@digest`，
+   `docker compose pull panel` + `up -d`（PostgreSQL/Valkey/Caddy 跟随其大版本 tag）；
+3. **健康检查**：2 分钟内 `/healthz`（Docker 为 3 分钟）。迁移在启动时、面板开始监听之前运行，所以面板健康就意味着已迁移；
+4. 失败 → **自动回滚**到之前的二进制 / 镜像（以及 compose 文件），并再次检查健康。`akari-ctl`/备份脚本只在升级成功之后才被替换。
 
-Migrations are forward-only: when the failed release already migrated the database, the old
-release refuses the newer schema and the rollback cannot become healthy; the installer says so and
-names the pre-upgrade backup to restore (§6). Agents first (below) is still the rule.
+迁移只能前进：当失败的版本已经迁移了数据库时，旧版本会拒绝较新的 schema，回滚无法恢复健康；安装器会说明这一点，
+并指出应当恢复的升级前备份（§6）。仍然遵循“先升级 agent”的规则（见下）。
 
-**By hand** (Appendix A/B installations):
+**手动升级**（附录 A/B 的安装）：
 
-1. Read the release notes for protocol changes. Take a backup (docs/BACKUP.md).
-2. Upgrade every agent (replace the binary, `systemctl restart akari-agent`; the xray rebuild drops live connections once).
-3. Upgrade the panel: compose: verify the new release and set its `AKARI_IMAGE=ghcr.io/akari-projectx/akari-panel:X.Y.Z@sha256:…` line in `.env` ("Verify a release" step 3), then `docker compose pull panel && docker compose up -d panel` (a `.env` from before 0.2 with only `AKARI_VERSION=` still works, unpinned: replace it with `AKARI_IMAGE`); bare metal replace the binary, `systemctl restart akari-panel`. Migrations run automatically at start.
-4. `akari config check`, `/healthz`, check the nodes are `online`.
+1. 阅读发布说明中的协议变更。做一次备份（docs/BACKUP.md）。
+2. 升级每个 agent（替换二进制，`systemctl restart akari-agent`；xray 重建会让现有连接断开一次）。
+3. 升级面板：compose：验证新发布，并在 `.env` 中设置其 `AKARI_IMAGE=ghcr.io/akari-projectx/akari-panel:X.Y.Z@sha256:…` 行（“Verify a release” 第 3 步），
+   然后 `docker compose pull panel && docker compose up -d panel`（0.2 之前、只有 `AKARI_VERSION=` 的 `.env` 仍可用，但未固定：请换成 `AKARI_IMAGE`）；
+   裸机：替换二进制，`systemctl restart akari-panel`。迁移在启动时自动运行。
+4. `akari config check`、`/healthz`，确认节点为 `online`。
 
-**Compose deployments: the deploy files change too.** The checkout under `deploy/` (compose file,
-Caddyfile) is part of the release. panel.toml keeps only the start-up keys (W25); everything
-else lives in 系统设置, so a new release never needs a new panel.toml section, and obsolete keys
-are imported once and then only warned about (§1 "Upgrading: obsolete keys").
-Per upgrade:
+**Compose 部署：deploy 文件也会变。** `deploy/` 下的检出（compose 文件、Caddyfile）是发布的一部分。
+panel.toml 只保留启动键（W25）；其余一切都在 系统设置 中，所以新版本从不需要新的 panel.toml 段落，
+废弃的键会被导入一次，之后只给警告（§1 “Upgrading: obsolete keys”）。每次升级：
 
 ```bash
 cd /opt/akari-panel && git status --short       # local edits to tracked files (e.g. the Caddyfile)?
@@ -1458,207 +1244,147 @@ cd deploy && docker compose run --rm panel config check   # lists obsolete keys 
 docker compose up -d --force-recreate           # Caddyfile is a single-file bind mount (§A)
 ```
 
-Since the 系统设置 release (R22) the compose stack needs `[tls_ask]` in panel.toml (`bind =
-"0.0.0.0:8082"`, `allow_non_loopback = true`, see `panel.toml.compose.example`) and the
-`AKARI_ASK` variable the new compose file passes to Caddy; without the section the panel never
-answers Caddy's `ask`, so domains saved in 系统设置 get no certificate (AKARI_DOMAIN itself is
-unaffected). `config check` run before the new version has started once may end with
-`# 系统设置: database not readable (… relation "panel_settings" does not exist …)` or, on an
-upgrade, `(… column "<name>" does not exist …)` (0.2 → 0.3: `probe_interval_secs`): the
-migrations have not run yet; it is harmless and gone after the first start. The verdict line
-above it (`configuration OK (0 warnings)`) is what counts.
+自 系统设置 版本（R22）起，compose 栈需要 panel.toml 中有 `[tls_ask]`（`bind =
+"0.0.0.0:8082"`、`allow_non_loopback = true`，见 `panel.toml.compose.example`），以及新 compose 文件传给 Caddy 的 `AKARI_ASK` 变量；
+缺少该段时，面板永远不会应答 Caddy 的 `ask`，所以在 系统设置 中保存的域名拿不到证书（AKARI_DOMAIN 本身不受影响）。
+在新版本首次启动之前运行 `config check`，可能以
+`# 系统设置: database not readable (… relation "panel_settings" does not exist …)` 结尾，升级时则是
+`(… column "<name>" does not exist …)`（0.2 → 0.3：`probe_interval_secs`）：迁移尚未运行；这无害，首次启动后即消失。
+真正有意义的是它上面的结论行（`configuration OK (0 warnings)`）。
 
-**Nodes installed before the updater units (W18; agents up to v0.4.0) — once, by hand.** The
-self-update of those agents executes the new binary from its StateDirectory, which systemd ≥ 256
-(Debian 13 ships 257) mounts `noexec` for `DynamicUser` services: the update fails with
-`switch to vX: permission denied` (the rollout shows the reason and the fix; the node view warns
-for every agent without the `updater` capability). Run the node's **重装命令** once (upload the
-current release under **Updates** first): it installs the current agent and the updater units
-(`akari-agent-update.path/.service`) in place, keeping inbounds, users and traffic; from then on
-updates go through the panel. Agents installed by hand need the two unit files too
-(`akari-agent -print-unit akari-agent-update.path` / `akari-agent-update.service`, §3 manual
-path); without them a current agent refuses offers with "updater unit missing".
+**在 updater unit 之前安装的节点（W18；v0.4.0 及之前的 agent）：需手动处理一次。** 这些 agent 的自更新会从其 StateDirectory 执行新二进制，
+而 systemd ≥ 256（Debian 13 带的是 257）会把 `DynamicUser` 服务的该目录以 `noexec` 挂载：更新会失败，报
+`switch to vX: permission denied`（灰度发布会显示原因和修复办法；节点视图对每个没有 `updater` 能力的 agent 都会警告）。
+对该节点执行一次 **重装命令**（先在 **Updates** 下上传当前发布版本）：它会原地安装当前 agent 和 updater unit
+（`akari-agent-update.path/.service`），保留入站、用户和流量；此后更新经由面板进行。手动安装的 agent 也需要这两个 unit 文件
+（`akari-agent -print-unit akari-agent-update.path` / `akari-agent-update.service`，§3 手动路径）；
+没有它们时，当前版本的 agent 会以 “updater unit missing” 拒绝更新提议。
 
-**Nodes whose units predate W23 (agents up to v0.4.x) — once, by hand.** Unit files used to
-change only with a reinstall; from W23 on every update installs the new release's units (§5b
-"Units"). The updater that does this is the node's *installed* updater unit, and the pre-W23
-`akari-agent-update.service` has `/etc/systemd/system` read-only: an update to a W23 release
-still goes through (binary yes, units no — `systemd units NOT refreshed` in
-`journalctl -u akari-agent-update`), and the new agent then reports the stale units (node
-warning "systemd 单元…重装命令"; until then its machine status shows 未知 for CPU, memory, load
-and network, §3e). Run the node's **重装命令** once (after uploading the release under
-**Updates**); from then on units follow the releases with no manual step. There is no way around
-this one step: the old updater unit's own sandbox is what forbids the write, and nothing the new
-release ships runs outside it before that reinstall.
+**unit 早于 W23 的节点（v0.4.x 及之前的 agent）：需手动处理一次。** unit 文件过去只在重装时改变；从 W23 起，每次更新都会安装新发布版本的 unit（§5b “Units”）。
+执行这件事的是节点上*已安装的* updater unit，而 W23 之前的 `akari-agent-update.service` 对 `/etc/systemd/system` 是只读的：
+更新到 W23 版本仍能完成（二进制可以，unit 不行，见 `journalctl -u akari-agent-update` 中的 `systemd units NOT refreshed`），
+随后新 agent 会上报 unit 过期（节点警告 “systemd 单元…重装命令”；在此之前，其机器状态里的 CPU、内存、负载和网络显示为 未知，§3e）。
+对该节点执行一次 **重装命令**（先在 **Updates** 下上传发布版本）；此后 unit 随发布版本更新，无需手动步骤。
+这一步无法绕开：旧 updater unit 自己的沙箱禁止了写入，而新版本带来的任何东西在这次重装之前都无法在其沙箱之外运行。
 
-**Agents without a pinned release key** (protocol 1/2, and protocol 3 builds older than v0.2.0;
-`akari-agent -release-keys` prints "no release keys pinned") cannot self-update (§5b). Upload the
-release under **Updates** (every architecture you run), then on the node's page use **重装命令**
-(`POST /api/v1/servers/{id}/install`) and run the printed command on the node: it installs the
-newest uploaded release in place and re-enrolls the node (its previous certificate is revoked
-once the new one is issued; inbounds, users and traffic stay). The panel may be upgraded first
-in this case: it serves agents down to protocol 1.
+**没有固定发布密钥的 agent**（协议 1/2，以及早于 v0.2.0 的协议 3 构建；`akari-agent -release-keys` 打印 “no release keys pinned”）无法自更新（§5b）。
+在 **Updates** 下上传发布版本（你运行的每种架构），然后在节点页使用 **重装命令**（`POST /api/v1/servers/{id}/install`），并在节点上运行打印出的命令：
+它会原地安装最新上传的发布版本并重新注册该节点（新证书签发后，其之前的证书被吊销；入站、用户和流量保持不变）。
+这种情况下可以先升级面板：它向下兼容到协议 1 的 agent。
 
-W11 (node status, latency, multiplier) needs no protocol bump: features are negotiated through
-`Hello.capabilities`, older agents are served as before (no machine status, no agent latency
-test), so either order works; agents first is still the rule.
+W11（节点状态、延迟、倍率）不需要提升协议版本：功能通过 `Hello.capabilities` 协商，较旧的 agent 照常服务（没有机器状态，没有 agent 延迟测试），
+所以任一顺序都行；但仍然遵循先升级 agent 的规则。
 
-Why this order: a new panel drops traffic reports without `session_id` and serves the empty state
-to agents below `MIN_AGENT_PROTOCOL`. (M1c: protocol 2 agents work with older panels — renewal
-then fails with "unimplemented" and is retried hourly; certificates from before M1c are valid for
-2 years.) The agent unit file gained `StateDirectory=` in M1c: install the new one with the agent.
+为什么是这个顺序：新面板会丢弃没有 `session_id` 的流量上报，并对低于 `MIN_AGENT_PROTOCOL` 的 agent 返回空状态。
+（M1c：协议 2 的 agent 可与旧面板配合：续期会因 “unimplemented” 失败并每小时重试；M1c 之前的证书有效期为 2 年。）
+agent 的 unit 文件在 M1c 中增加了 `StateDirectory=`：请随 agent 一起安装新的 unit。
 
-## 5b. Agent updates (M6: signed self-update, staged rollout)
+## 5b. Agent updates (M6: signed self-update, staged rollout)（agent 更新：签名自更新、分批灰度）
 
-Agents of protocol 3 can be updated from the panel. The panel only **relays**: an agent runs a
-new binary only if its manifest is signed by a release key **compiled into the agent**
-(`release-keys.txt` in akari-agent), the platform matches, and the version is newer than what
-runs (a signed `rollback` manifest is the only way down, and never to a version the node already
-rolled back from). A compromised panel can withhold or delay updates; it cannot push an unsigned,
-foreign or older binary. Protocol 1/2 agents are never offered anything (update them by hand once).
+协议 3 的 agent 可以从面板更新。面板只做**中继**：agent 只有在其 manifest 由**编译进 agent** 的发布密钥签名（akari-agent 中的 `release-keys.txt`）、
+平台匹配、且版本比当前运行的更新时，才会运行新二进制（签名的 `rollback` manifest 是唯一的降级方式，并且永远不会降到该节点已经回滚过的版本）。
+被攻破的面板可以扣留或延迟更新，但不能推送未签名的、外来的或更旧的二进制。协议 1/2 的 agent 永远不会收到任何提议（需手动更新一次）。
 
-**Release key custody.** One Ed25519 key, generated and kept OFFLINE (not on the panel, not on a
-build host): `go run ./cmd/akari-sign keygen -out release.key` in akari-agent prints the public
-line for `release-keys.txt`. Keep `release.key` on encrypted offline media with a second copy;
-whoever holds it can update every node. The agent release workflow signs manifests only if the
-repository secret `AKARI_RELEASE_SIGNING_KEY` holds the key (otherwise the release has no
-manifests, with a warning) and checks them against `release-keys.txt` before publishing.
-Rotation: add the next public key to `release-keys.txt` and release (agents pin both); sign the
-following releases with both keys (`akari-sign countersign`); once every node runs a build that
-pins the next key, remove the old one. A lost or leaked key needs a manual agent release with a
-new key set on every node.
+**Release key custody（发布密钥保管）。** 一把 Ed25519 密钥，离线生成并保管（不在面板上，也不在构建主机上）：
+在 akari-agent 中执行 `go run ./cmd/akari-sign keygen -out release.key`，会打印要加入 `release-keys.txt` 的公钥行。
+请把 `release.key` 放在加密的离线介质上并保留第二份副本；持有它的人可以更新每一个节点。
+agent 发布工作流只有在仓库 secret `AKARI_RELEASE_SIGNING_KEY` 持有该密钥时才对 manifest 签名（否则发布没有 manifest，并带警告），
+并在发布前对照 `release-keys.txt` 检查。
+轮换：把下一把公钥加入 `release-keys.txt` 并发布（agent 同时固定两把）；之后的发布用两把密钥签名（`akari-sign countersign`）；
+一旦每个节点都运行了固定下一把密钥的构建，就移除旧的。密钥丢失或泄露时，需要手动发布 agent，并在每个节点上设置新的密钥集。
 
-The project's production key is `key-f2ad18a8bb718a1a` (pinned in agents since v0.2.0; custody
-and rotation: akari-agent README "Release signing keys").
+项目的生产密钥是 `key-f2ad18a8bb718a1a`（自 v0.2.0 起固定在 agent 中；保管与轮换：akari-agent README “Release signing keys”）。
 
-**Panel side.** The official keys of `release-keys.txt` are compiled into the panel too (a copy
-in `src/release-keys.txt`; CI fails when it differs from akari-agent main), so uploads are checked
-early with no configuration. Keys you sign your own builds with go to 系统设置 → 安全 → 额外信任的
-发布公钥 (one `<base64> [label]` line each, at most 16) — agents still only run what their own
-compiled keys accept. W25: `[updates] release_keys` is imported once into that list when it
-differs from the official set; `max_concurrent_downloads` is built in (8 FetchArtifact streams
-per instance).
+**Panel side（面板侧）。** `release-keys.txt` 中的官方密钥也编译进了面板（副本在 `src/release-keys.txt`；与 akari-agent main 不同时 CI 会失败），
+因此无需任何配置，上传就会被提前检查。你用来给自己构建签名的密钥放到 系统设置 → 安全 → 额外信任的发布公钥
+（每行一个 `<base64> [label]`，最多 16 个）：agent 仍然只运行其自身编译进去的密钥所接受的内容。
+W25：当 `[updates] release_keys` 与官方集合不同时，会被导入该列表一次；`max_concurrent_downloads` 是内置的（每实例 8 个 FetchArtifact 流）。
 
-**Check for updates (one click).** Updates view → 「检查更新」: the panel fetches the latest
-release of `akari-projectX/akari-agent` from the GitHub API, downloads for **each linux platform
-(amd64, arm64)** the binary, its `.manifest.json` and `.manifest.sig`, plus `SHA256SUMS`, and checks
-the manifest signature under the trusted keys (official + extra), every file against `SHA256SUMS`, the platform,
-version = tag, size, and that it is not a rollback manifest. Then it stores the release exactly as a
-manual upload does (same code, manifest bytes verbatim, `agent_release.create`/`.upload` audit
-rows), all platforms in one transaction: any failure stores nothing and the reason (a coded error,
-shown in Chinese) is kept as "上次检查". It never starts a rollout; use the rollout form below.
-- **Source** (发布源): default `https://api.github.com/repos/akari-projectX/akari-agent/releases/latest`;
-  a compatible mirror can be set in the same card (stored in the database, no panel.toml key). The
-  panel contacts only that host (for api.github.com also GitHub's download hosts `github.com`,
-  `objects.githubusercontent.com`, `release-assets.githubusercontent.com`, where asset downloads
-  redirect), over HTTPS (plain http only for loopback), directly (no HTTP proxy support): allow
-  outbound 443 to them. Responses are size-capped and time out; the whole check is bounded at 15 min.
-- **No downgrade:** if the source's latest version is older than the newest release the panel already
-  holds, the check refuses (`agent_update.downgrade`). A signed rollback stays a manual upload.
-- **自动检查** (off by default): every 6 h one panel instance checks the same way (audit actor
-  `system`). Only one check runs at a time across instances (advisory lock): a second click gets
-  "已有更新检查在进行中".
-- The node list and the dashboard show **「有新版本 vX」** when the newest complete release is newer
-  than what some updatable node (protocol ≥ 3, platform covered) runs.
-- API: `GET /api/v1/agent-updates` (settings, last check, newest release, outdated node count),
-  `PUT /api/v1/agent-updates/settings {version, source_url|null, auto_check}`,
-  `POST /api/v1/agent-updates/check` (202; poll the GET for `last_check`).
+**Check for updates（一键检查更新）。** Updates 视图 → 「检查更新」：面板从 GitHub API 获取 `akari-projectX/akari-agent` 的最新 release，
+为**每个 linux 平台（amd64、arm64）**下载二进制、其 `.manifest.json` 和 `.manifest.sig`，外加 `SHA256SUMS`，
+并检查：manifest 签名（在受信任的密钥下：官方 + 额外）、每个文件对照 `SHA256SUMS`、平台、版本 = tag、大小，以及它不是 rollback manifest。
+然后它像手动上传一样存储该发布（同一份代码，manifest 字节原样，审计行 `agent_release.create`/`.upload`），所有平台在一个事务中：
+任何失败都不会存储任何东西，原因（带编码的错误，以中文显示）保留为 “上次检查”。它从不启动灰度；请使用下面的灰度表单。
+- **Source（发布源）**：默认 `https://api.github.com/repos/akari-projectX/akari-agent/releases/latest`；
+  可以在同一张卡片中设置兼容的镜像（存数据库，没有 panel.toml 键）。面板只联系该主机
+  （对 api.github.com 还包括 GitHub 的下载主机 `github.com`、`objects.githubusercontent.com`、`release-assets.githubusercontent.com`，资产下载会重定向到那里），
+  走 HTTPS（明文 http 仅限回环），直连（不支持 HTTP 代理）：请放行到它们的出站 443。响应有大小上限和超时；整个检查最长 15 分钟。
+- **不允许降级：** 如果源的最新版本比面板已持有的最新发布更旧，检查会被拒绝（`agent_update.downgrade`）。签名的 rollback 仍需手动上传。
+- **自动检查**（默认关闭）：每 6 小时由一个面板实例以同样方式检查（审计操作者 `system`）。跨实例同一时间只运行一次检查（advisory lock）：
+  第二次点击会得到 “已有更新检查在进行中”。
+- 当最新的完整发布版本比某个可更新节点（协议 ≥ 3，平台已覆盖）运行的版本更新时，节点列表和仪表盘显示 **「有新版本 vX」**。
+- API：`GET /api/v1/agent-updates`（设置、上次检查、最新发布、过期节点数）、
+  `PUT /api/v1/agent-updates/settings {version, source_url|null, auto_check}`、
+  `POST /api/v1/agent-updates/check`（202；轮询 GET 获取 `last_check`）。
 
-**Publish a release by hand** (advanced; Updates view, or the API): upload `akari-agent-linux-<arch>` with its
-`.manifest.json` and `.manifest.sig` from the GitHub release (verify it first, see "Verify a
-release"). The binary is stored in PostgreSQL (1 MiB rows, every panel instance can serve it;
-backups leave these rows out unless asked for, docs/BACKUP.md) and agents download it over their existing mTLS gRPC connection
-(`AgentChannel.FetchArtifact`): nodes need no extra egress.
+**Publish a release by hand（手动发布，高级；Updates 视图或 API）：** 从 GitHub release 上传 `akari-agent-linux-<arch>` 及其
+`.manifest.json` 和 `.manifest.sig`（先验证，见 “Verify a release”）。二进制存储在 PostgreSQL 中（1 MiB 一行，任何面板实例都能提供；
+备份默认不含这些行，docs/BACKUP.md），agent 通过现有的 mTLS gRPC 连接下载它（`AgentChannel.FetchArtifact`）：节点不需要额外的出站。
 ```bash
 curl -b cookies -H 'Content-Type: application/json' -X POST "$BASE/api/v1/agent-releases" \
   -d "$(jq -n --rawfile m akari-agent-linux-amd64.manifest.json --slurpfile s akari-agent-linux-amd64.manifest.sig '{manifest:$m, sig:$s[0]}')"
 curl -b cookies -X PUT --data-binary @akari-agent-linux-amd64 "$BASE/api/v1/agent-releases/<id>/binary"
 ```
 
-**Roll out** (`POST /api/v1/rollouts {version, percentage?, server_ids?, waves?, health_timeout_secs?,
-max_failure_ratio?}`; defaults 100 %, all enrolled nodes, `[100]`, 600 s, 0.2). Waves are
-cumulative percentages of the selection (e.g. `[10, 50, 100]`) in a fixed random order; the next
-wave starts once every node of the current one is healthy, failed or skipped. A node is
-**healthy** when it reconnects with the new version and acks its configuration within the
-timeout; **failed** when the agent rejects the offer, the download/verification fails, it rolls
-back, or the timeout passes; **skipped** when it cannot be offered (protocol < 3, no artifact for
-its platform, development build, offline for the whole timeout). The rollout **halts** when
-failed / (healthy + failed) > `max_failure_ratio`; a halted rollout can only be aborted. Pause
-stops new offers (in-flight updates finish). Every action and every automatic transition is in
-the audit log (`agent_release.*`, `rollout.*`; automatic ones with actor `system`).
+**Roll out（灰度发布）**（`POST /api/v1/rollouts {version, percentage?, server_ids?, waves?, health_timeout_secs?,
+max_failure_ratio?}`；默认 100 %、所有已注册节点、`[100]`、600 秒、0.2）。waves 是所选节点的累计百分比（如 `[10, 50, 100]`），按固定的随机顺序；
+当前一波的每个节点都健康、失败或被跳过后，下一波才开始。节点在以新版本重新连接并在超时内确认其配置时为 **healthy**；
+在 agent 拒绝提议、下载/验证失败、回滚或超时时为 **failed**；在无法被提供更新时为 **skipped**
+（协议 < 3、没有其平台的构件、开发构建、整个超时期间离线）。当 failed / (healthy + failed) > `max_failure_ratio` 时灰度 **halted**；
+halted 的灰度只能被中止。暂停会停止发出新的提议（进行中的更新会完成）。每个操作和每次自动状态转换都在审计日志中
+（`agent_release.*`、`rollout.*`；自动的以操作者 `system` 记录）。
 
 **一键安装用哪个版本**：节点安装命令下载的是「最新的、完整的、且没有在灰度中失败的」发布。某个版本
 最近一次灰度处于 halted（或 halted 之后被中止）时，新装/重装节点改用此前的版本（最后一个已知良好
 版本），安装卡片给出警告；同一版本之后有一次未失败的灰度（例如修好节点后重新灰度并完成）即恢复使用它。
 确认是坏版本后在「更新」页删除该发布。
 
-**On the node** (W18; the installer sets this up, §3 — nodes installed earlier: run their
-**重装命令** once, §5). The agent runs as a throw-away user and its StateDirectory is mounted
-`noexec` by systemd; that stays so (nothing the agent can write is ever executed). Updates go
-through a separate root unit that only ever runs the **installed** binary:
-- the agent downloads into `$STATE_DIRECTORY/update/staged` (0600, never executable), checks
-  size, SHA-256, signature and version policy, stops xray (live connections drop once, as with
-  any restart), persists its final traffic counters (`update/finals.json`, resent by the next
-  process), sends `RESTARTING` and writes `update/apply-request.json`;
-- `akari-agent-update.path` starts `akari-agent-update.service` (root, no network,
-  `ProtectSystem=strict` with only `/usr/local/bin`, `/etc/systemd/system` (W23) and the agent's
-  state writable), which runs
-  `/usr/local/bin/akari-agent -apply-update /var/lib/private/akari-agent`. It treats the agent's
-  directory as untrusted (no symlink is followed; only regular, single-link files owned by the
-  agent), copies the staged binary into a root-only file next to `/usr/local/bin/akari-agent`,
-  verifies **that copy** with the release keys compiled into **itself** (signature, platform,
-  newer version or signed rollback, never a version this node rolled back from — its own record
-  in `/var/lib/akari-agent-update`), keeps the running binary as `akari-agent.prev`, renames the
-  new one into place, installs the new release's units (below) and restarts `akari-agent`. A
-  refusal goes back to the agent, which reports it (`FAILED`) and keeps running;
-- the new binary is on probation: it must connect and get an apply acknowledged within
-  `-update-self-check` (default 5 min); the updater watches it and puts `akari-agent.prev` back
-  (and restarts the agent) when it crashes `-update-max-boots` times (default 3) or does not
-  pass in time (together with the previous units). The version is then marked failed on that
-  node and reported (`ROLLED_BACK`), which fails the node in the rollout;
-- **Units (W23).** Each release carries its systemd units (compiled in; `akari-agent -print-unit
-  <name>`). After verifying the copy, the updater runs it with `-print-units` (no network, empty
-  environment, 30 s, bounded output — the binary it is about to install anyway, never anything
-  from the agent's directory) and replaces `akari-agent.service`, `akari-agent-update.service`
-  and `akari-agent-update.path` in `/etc/systemd/system` — only those names, only where they
-  exist, only when they differ — atomically (root, 0644), keeping the replaced ones in
-  `/var/lib/akari-agent-update/units.prev/`, then `systemctl daemon-reload`. A rollback puts
-  them back (and reloads). Drop-ins (`akari-agent.service.d/`, e.g. the installer's TLS
-  credential drop-in) are never touched: put local changes there. A release whose units cannot
-  be read is refused. An updater unit from before W23 cannot write the directory: see §5
-  "Nodes whose units predate W23";
-- `journalctl -u akari-agent-update` shows what the updater did; installing a newer agent by
-  hand (or 重装命令) wins over everything the updater recorded;
-- **Alpine / OpenRC (W32)**: the same hand-over, with the `akari-agent-update` service (a root
-  loop that checks for the request once a second) instead of the path unit, the two init scripts
-  instead of the three units, and supervise-daemon's respawn counter instead of `NRestarts`;
-  differences and gaps (no updater sandbox) in §3h; log `/var/log/akari-agent-update.log`;
-- `akari-agent -release-keys` prints the pinned keys ("no release keys pinned" = self-update off).
+**On the node（在节点上）**（W18；安装器会设置好它，§3；更早安装的节点：对其执行一次 **重装命令**，§5）。
+agent 以一次性用户运行，其 StateDirectory 被 systemd 以 `noexec` 挂载；这一点保持不变（agent 能写入的任何东西都不会被执行）。
+更新通过一个单独的 root unit 进行，它只运行**已安装的**二进制：
+- agent 下载到 `$STATE_DIRECTORY/update/staged`（0600，永不可执行），检查大小、SHA-256、签名和版本策略，停止 xray
+  （现有连接断开一次，与任何重启相同），持久化其最终流量计数（`update/finals.json`，由下一个进程重发），发送 `RESTARTING`，并写入 `update/apply-request.json`；
+- `akari-agent-update.path` 启动 `akari-agent-update.service`（root，无网络，`ProtectSystem=strict`，只有 `/usr/local/bin`、`/etc/systemd/system`（W23）和 agent 的状态可写），
+  它运行 `/usr/local/bin/akari-agent -apply-update /var/lib/private/akari-agent`。它把 agent 的目录视为不可信
+  （不跟随符号链接；只收归 agent 所有的普通单链接文件），把暂存的二进制复制到 `/usr/local/bin/akari-agent` 旁边的仅 root 文件中，
+  用**自身**编译进去的发布密钥验证**那份副本**（签名、平台、更新的版本或签名的 rollback，永不降到该节点已回滚过的版本；其自身记录在 `/var/lib/akari-agent-update`），
+  把运行中的二进制保留为 `akari-agent.prev`，把新的重命名到位，安装新发布版本的 unit（见下）并重启 `akari-agent`。
+  拒绝的结果会回传给 agent，agent 上报它（`FAILED`）并继续运行；
+- 新二进制处于试用期：它必须在 `-update-self-check`（默认 5 分钟）内连接上并让一次 apply 被确认；updater 监视它，
+  当它崩溃 `-update-max-boots` 次（默认 3）或未能及时通过时，把 `akari-agent.prev` 放回去（并重启 agent）（连同之前的 unit）。
+  该版本随后在该节点上被标记为失败并上报（`ROLLED_BACK`），使该节点在灰度中失败；
+- **Units（W23）。** 每个发布版本都带有其 systemd unit（编译进去；`akari-agent -print-unit <name>`）。验证副本之后，
+  updater 用 `-print-units` 运行它（无网络、空环境、30 秒、输出有界：这就是它本来就要安装的二进制，绝不是 agent 目录里的任何东西），
+  并替换 `/etc/systemd/system` 中的 `akari-agent.service`、`akari-agent-update.service` 和 `akari-agent-update.path`
+  （只有这些名字、只在它们存在时、只在不同的时候），原子地（root，0644），被替换的保存在 `/var/lib/akari-agent-update/units.prev/`，然后 `systemctl daemon-reload`。
+  回滚会把它们放回去（并重新加载）。drop-in（`akari-agent.service.d/`，例如安装器的 TLS credential drop-in）从不被改动：本地改动请放在那里。
+  unit 无法读取的发布会被拒绝。W23 之前的 updater unit 无法写该目录：见 §5 “Nodes whose units predate W23”；
+- `journalctl -u akari-agent-update` 显示 updater 做了什么；手动安装更新的 agent（或 重装命令）优先于 updater 记录的一切；
+- **Alpine / OpenRC（W32）**：同样的交接，只是用 `akari-agent-update` 服务（一个每秒检查一次请求的 root 循环）代替 path unit，
+  用两个 init 脚本代替三个 unit，用 supervise-daemon 的重启计数代替 `NRestarts`；差异与缺口（没有 updater 沙箱）见 §3h；日志 `/var/log/akari-agent-update.log`；
+- `akari-agent -release-keys` 打印固定的密钥（“no release keys pinned” = 自更新关闭）。
 
-## 6. Rollback
+## 6. Rollback（回滚）
 
-Agents are backward-tolerant, so roll back the **panel** first. `akari-ctl upgrade` does this by
-itself when the new release fails its health check (§5). By hand, or after a "successful" upgrade
-you want to undo:
+agent 向后兼容，所以先回滚**面板**。当新版本未通过健康检查时，`akari-ctl upgrade` 会自动完成这件事（§5）。
+手动回滚，或在一次“成功”的升级之后想撤销它：
 
-- **No migration ran** (same schema): bare metal `mv /usr/local/bin/akari.prev /usr/local/bin/akari
-  && systemctl restart akari-panel`; Docker: put the previous `AKARI_IMAGE` line back in `.env`,
-  `docker compose up -d panel` (or `akari-ctl upgrade --version <previous> --force`).
-- **A migration ran**: migrations are forward-only, the old binary refuses the newer schema.
-  Restore the pre-upgrade backup together with the old binary/image: stop the panel, restore
-  (docs/BACKUP.md "Restore": first recreate the database empty — `DROP DATABASE akari WITH
-  (FORCE); CREATE DATABASE akari OWNER akari;` as `postgres` (bare) / `akari` (Docker) on the
-  `postgres` database, since `pg_restore --clean` cannot drop the partitions of `traffic_daily`;
-  then `AKARI_PG_RESTORE_CMD`/`AKARI_DATA_DIR` as in the installer: bare metal `runuser -u postgres
-  -- pg_restore -p <port> -d akari --no-owner --role=akari --single-transaction`, data dir
-  `/var/lib/akari`; Docker `docker compose exec -T postgres pg_restore -U akari -d akari
-  --no-owner --single-transaction`, data dir = the `akari_akari-data` volume's mountpoint), start
-  the old release. Traffic counted since
-  the backup is lost; everything else is as of the backup.
+- **没有运行迁移**（schema 相同）：裸机 `mv /usr/local/bin/akari.prev /usr/local/bin/akari
+  && systemctl restart akari-panel`；Docker：把之前的 `AKARI_IMAGE` 行放回 `.env`，
+  `docker compose up -d panel`（或 `akari-ctl upgrade --version <previous> --force`）。
+- **运行过迁移**：迁移只能前进，旧二进制会拒绝较新的 schema。把升级前的备份与旧的二进制/镜像一起恢复：停止面板，恢复
+  （docs/BACKUP.md “Restore”：先重新创建空数据库，即以 `postgres`（裸机）/ `akari`（Docker）身份，在 `postgres` 数据库上执行
+  `DROP DATABASE akari WITH
+  (FORCE); CREATE DATABASE akari OWNER akari;`，因为 `pg_restore --clean` 无法删除 `traffic_daily` 的分区；
+  然后像安装器那样使用 `AKARI_PG_RESTORE_CMD`/`AKARI_DATA_DIR`：裸机 `runuser -u postgres
+  -- pg_restore -p <port> -d akari --no-owner --role=akari --single-transaction`，数据目录
+  `/var/lib/akari`；Docker `docker compose exec -T postgres pg_restore -U akari -d akari
+  --no-owner --single-transaction`，数据目录 = `akari_akari-data` 卷的挂载点），然后启动旧版本。
+  备份之后计入的流量会丢失；其余一切都回到备份时的状态。
 
-A restored database with the old `data/` keeps the same admin prefix (database) and agent certificates.
+恢复了数据库、同时保留旧 `data/` 的情况下，后台前缀（在数据库中）和 agent 证书保持不变。
 
-## 7. Uninstall
+## 7. Uninstall（卸载）
 
 ```bash
 akari-ctl uninstall                  # services/units/containers go; data and configuration stay
@@ -1666,33 +1392,28 @@ akari-ctl uninstall --purge          # also database, data dir, configuration: t
                                      # (non-interactive: --yes --purge --confirm purge)
 ```
 
-Plain uninstall keeps: bare metal `/var/lib/akari` (CA key, jwt.key, master.key),
-`/etc/akari/panel.toml`, the PostgreSQL database `akari`; Docker `/opt/akari` and the `akari_*`
-volumes. Running the installer again picks them up (same admin prefix, same accounts). Caddy is stopped
-when the installer installed it, and given back its previous configuration when it was there
-before. `--purge` drops the database and role, the data dir, `/etc/akari`, Valkey and (Docker) the
-volumes; packages (postgresql-18, caddy, Docker) stay installed (`apt purge` them if wanted), and
-**backups in `/var/backups/akari` are never deleted**. After a purge every node needs a new
-enrollment (the CA is gone) unless you restore a backup.
+普通卸载会保留：裸机的 `/var/lib/akari`（CA 密钥、jwt.key、master.key）、`/etc/akari/panel.toml`、PostgreSQL 数据库 `akari`；
+Docker 的 `/opt/akari` 和 `akari_*` 卷。再次运行安装器会接管它们（相同的后台前缀、相同的账号）。
+如果 Caddy 是安装器装的，会被停止；如果之前就有，则恢复其之前的配置。`--purge` 会删除数据库和角色、数据目录、`/etc/akari`、Valkey 以及（Docker）卷；
+软件包（postgresql-18、caddy、Docker）仍保持安装（需要的话自行 `apt purge`），并且
+**`/var/backups/akari` 中的备份永远不会被删除**。purge 之后，每个节点都需要重新注册（CA 已不存在），除非你恢复备份。
 
-## 8. Migration
+## 8. Migration（迁移）
 
-### Same host: bare metal ⇄ Docker
+### Same host: bare metal ⇄ Docker（同一主机：裸机 ⇄ Docker）
 
 ```bash
 akari-ctl migrate --to docker        # or --to bare
 ```
 
-Takes a safety backup (kept, encrypted if configured) and a plain dump for the move (in a 0700
-temporary directory, deleted afterwards), stops the current services, installs the other mode with
-**restore** (database via `pg_restore --single-transaction`, the data dir — CA,
-`jwt.key`, `master.key` — copied with its ownership), waits for health, then retires the old services
-(their data stays until you delete it: bare metal `/var/lib/akari`, database `akari`; Docker the
-`akari_*` volumes). New database/Valkey passwords are generated; 系统设置 (domains, payment
-methods…) live in the database and move with it. Any failure brings the old mode back. The panel is
-down for the move (a minute or two; agents keep serving users and reconnect by themselves).
+它会做一份安全备份（保留，已配置时加密）和一份用于迁移的明文转储（放在 0700 的临时目录，之后删除），停止当前服务，
+以 **restore** 方式安装另一种模式（数据库通过 `pg_restore --single-transaction`，数据目录 CA、
+`jwt.key`、`master.key` 连同属主一起复制），等待健康，然后停用旧服务
+（它们的数据保留到你删除为止：裸机 `/var/lib/akari`、数据库 `akari`；Docker 的 `akari_*` 卷）。
+会生成新的数据库/Valkey 密码；系统设置（域名、支付方式等）存放在数据库中，随之迁移。任何失败都会切回旧模式。
+迁移期间面板不可用（一两分钟；agent 继续为用户服务并自行重连）。
 
-### Host to host
+### Host to host（主机到主机）
 
 ```bash
 # old host
@@ -1703,68 +1424,49 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
   | sh -s -- --restore /root/akari-<UTC> [--age-identity backup.key] [--mode docker|bare] [--domain …]
 ```
 
-The new host gets the same admin prefix (database), CA and keys, so **existing agents and subscription links
-keep working** once their names point at the new host:
+新主机得到相同的后台前缀（数据库）、CA 和密钥，所以一旦域名指向新主机，**现有 agent 和订阅链接继续可用**：
 
-1. Lower the DNS TTL of the main/subscription/node domains a day before (60–300 s).
-2. Stop the old panel right before the final backup (`systemctl stop akari-panel` /
-   `docker compose stop panel`), so no traffic is counted after it (agents keep their counters
-   and report them to the new panel).
-3. Restore on the new host, then switch the A/AAAA records of 主域名, 订阅域名 and 节点通信域名.
-   Agents dial the node domain: they reconnect to the new host as soon as their resolver sees the
-   new address (the node's own certificate pin is the panel CA, which moved with the data dir).
-   Agents enrolled against an **IP address** keep dialing that IP: re-enroll them (重装命令) or keep
-   the old address routed to the new host.
-4. Verify on the new host: `akari-ctl status` (healthz), log in, the nodes turn **online**, fetch
-   a subscription link.
-5. Decommission the old host only then (`akari-ctl uninstall --purge`).
+1. 提前一天降低主域名/订阅域名/节点域名的 DNS TTL（60–300 秒）。
+2. 在最后一次备份之前停止旧面板（`systemctl stop akari-panel` /
+   `docker compose stop panel`），这样之后不会再有流量被计入（agent 保留自己的计数器并向新面板上报）。
+3. 在新主机上恢复，然后切换 主域名、订阅域名 和 节点通信域名 的 A/AAAA 记录。
+   agent 拨入节点域名：只要其解析器看到新地址，就会重新连接到新主机（节点自己固定的证书是面板 CA，它随数据目录一起迁移了）。
+   以 **IP 地址** 注册的 agent 会继续拨那个 IP：请重新注册它们（重装命令），或让旧地址继续路由到新主机。
+4. 在新主机上验证：`akari-ctl status`（healthz）、登录、节点变为 **online**、获取一个订阅链接。
+5. 到此才停用旧主机（`akari-ctl uninstall --purge`）。
 
-Caddy obtains new certificates on the new host (the main domain at start, the others on demand).
+Caddy 会在新主机上获取新证书（主域名在启动时，其他的按需）。
 
-## Installer tests (CI)
+## Installer tests (CI)（安装器测试）
 
-`.github/workflows/ci.yml`, jobs `installer-*`, scripts in `scripts/installer-test/`. On pull
-requests they run when the installer, the deploy bundle, backup/restore or the Dockerfile change
-(`scripts/ci-changes.sh` group `installer`) or with the `full-ci` label; always on main, nightly
-and before a release.
+`.github/workflows/ci.yml`，jobs `installer-*`，脚本在 `scripts/installer-test/`。在 pull request 中，当安装器、部署包、备份/恢复或 Dockerfile 改变时
+（`scripts/ci-changes.sh` 的 `installer` 组）或带有 `full-ci` 标签时运行；在 main 上、每晚和发布之前总是运行。
 
-- `build (static binary + images)`: the PR's static binary and images, built once per run and
-  shared (artifacts) with `docker build (no push)` and the installer jobs. Made like a release
-  (Dockerfile `artifact` → `prebuilt`) but with the CI cargo profile (`Cargo.toml` `[profile.ci]`:
-  no LTO, 16 codegen units; release.yml ships `release`), versioned `<version>-ci.<run>`;
-  dependencies come from the Dockerfile's cargo-chef `deps` stage in the BuildKit GitHub Actions
-  cache (written only by the main-only `image cache (main)` job). `make-release.sh` turns them into a local release (GitHub layout, signed
-  with a throwaway cosign key; plus a deliberately broken release `v9.9.9`).
-- `installer (bare, debian:13 / ubuntu:24.04)` — `bare-e2e.sh` in a fresh systemd container: the
-  latest published release (v0.3.x) installed from GitHub (real keyless verification), its
-  upgrade to the PR build is refused untouched (v0.4 baseline) → purge → fresh
-  install of the PR build → healthz through Caddy (`myapp.test` with `local_certs`, resp. IP-only),
-  admin login over the API, the node address (`--node-address`: a host name, resp. `[::1]:9443`)
-  in `akari settings show`, a user and its subscription → the broken release rolls back → uninstall keeps data,
-  reinstall keeps prefix/password/subscription → age-encrypted backup → `--purge` → install
-  `--restore` from that backup (host move).
-- `installer (host, docker + migration)` — `host-e2e.sh` on the runner: Docker install of the latest
-  release (ghcr image) → its upgrade to the PR image refused untouched → purge → Docker install of
-  the PR image (local registry, pinned by digest) → purge; bare
-  install of the PR build, a real agent (`../akari-agent`) enrolled, `migrate --to docker` and back
-  `--to bare`: same prefix, the agent reconnects without re-enrolling, the subscription still answers.
-- `shellcheck` — `make shellcheck` (also part of `make check`), which also runs
-  `scripts/installer-test/validators.sh`: the installer's input validators (`valid_domain`,
-  `valid_node_addr`, …, sourced with `AKARI_INSTALL_LIB=1`) against accepted and rejected values
-  under dash + GNU grep; the job runs it again under busybox sh + grep (alpine). Regex dialects
-  differ (ugrep, WSL's grep, accepts `[\]]` in a bracket; GNU grep does not), so keep the
-  installer's patterns to portable ERE and add cases there.
+- `build (static binary + images)`：PR 的静态二进制和镜像，每次运行构建一次，并（作为 artifacts）与 `docker build (no push)` 和各安装器 job 共享。
+  像发布一样制作（Dockerfile `artifact` → `prebuilt`），但使用 CI 的 cargo profile（`Cargo.toml` `[profile.ci]`：无 LTO，16 个 codegen unit；release.yml 发布 `release`），
+  版本为 `<version>-ci.<run>`；依赖来自 Dockerfile 的 cargo-chef `deps` 阶段，存放在 BuildKit GitHub Actions 缓存中（只由仅 main 的 `image cache (main)` job 写入）。
+  `make-release.sh` 把它们变成本地发布（GitHub 目录布局，用一次性的 cosign 密钥签名；外加一个故意损坏的发布 `v9.9.9`）。
+- `installer (bare, debian:13 / ubuntu:24.04)`：`bare-e2e.sh` 在全新的 systemd 容器中运行：从 GitHub 安装最新已发布版本（v0.3.x，真实的 keyless 验证），
+  其到 PR 构建的升级被原样拒绝（v0.4 基线）→ purge → 全新安装 PR 构建 → 通过 Caddy 的 healthz
+  （带 `local_certs` 的 `myapp.test`，或仅 IP）、经 API 的管理员登录、`akari settings show` 中的节点地址
+  （`--node-address`：主机名，或 `[::1]:9443`）、一个用户及其订阅 → 损坏的发布会回滚 → 卸载保留数据，重装保留前缀/密码/订阅 →
+  age 加密的备份 → `--purge` → 从该备份 `--restore` 安装（主机迁移）。
+- `installer (host, docker + migration)`：`host-e2e.sh` 在 runner 上运行：Docker 安装最新发布版本（ghcr 镜像）→ 其到 PR 镜像的升级被原样拒绝 → purge →
+  Docker 安装 PR 镜像（本地 registry，按 digest 固定）→ purge；裸机安装 PR 构建，注册一个真实 agent（`../akari-agent`），
+  `migrate --to docker` 再 `--to bare` 回来：前缀相同，agent 无需重新注册即可重连，订阅仍能应答。
+- `shellcheck`：`make shellcheck`（也是 `make check` 的一部分），它还运行 `scripts/installer-test/validators.sh`：
+  安装器的输入校验函数（`valid_domain`、`valid_node_addr` 等，用 `AKARI_INSTALL_LIB=1` 引入）在 dash + GNU grep 下对已接受和已拒绝的值的测试；
+  该 job 还会在 busybox sh + grep（alpine）下再运行一次。正则方言不同（WSL 的 grep 即 ugrep，在方括号里接受 `[\]]`；GNU grep 不接受），
+  所以安装器的模式请保持为可移植的 ERE，并在那里添加用例。
 
-Locally: `scripts/installer-test/bare-e2e.sh debian:13 <releases> <tag> v9.9.9 [<previous>]` needs
-Docker with privileged containers (`EXTRA_CA=<bundle>` behind a TLS-intercepting proxy).
+本地运行：`scripts/installer-test/bare-e2e.sh debian:13 <releases> <tag> v9.9.9 [<previous>]` 需要支持特权容器的 Docker
+（在会拦截 TLS 的代理后面时用 `EXTRA_CA=<bundle>`）。
 
-## Verify a release
+## Verify a release（校验发布版本）
 
-Releases are signed keylessly (GitHub OIDC, Sigstore; there is no project key to lose): each
-signature's certificate names the workflow file **and the tag** that produced it, so verify against
-that exact identity. Needs **cosign >= 3** (`cosign version`; 2.4.x works for blobs only with
-`--new-bundle-format`, older 2.x cannot read the bundles). The release workflow runs these same
-commands against what it has just signed before it publishes.
+发布采用 keyless 签名（GitHub OIDC，Sigstore；没有会丢失的项目密钥）：每个签名的证书都写明产生它的工作流文件**和 tag**，
+所以请对照这个确切的身份来验证。需要 **cosign >= 3**（`cosign version`；2.4.x 仅在带 `--new-bundle-format` 时适用于 blob，更旧的 2.x 无法读取这些 bundle）。
+发布工作流在发布之前，会对刚签名的内容运行同样的命令。
 
 ```bash
 TAG=v0.4.0-rc.2
@@ -1792,17 +1494,14 @@ cosign verify-attestation --type cyclonedx "ghcr.io/akari-projectx/akari-panel@$
 sed -i "s|^AKARI_IMAGE=.*|AKARI_IMAGE=$IMAGE_REF|" deploy/.env    # from the checkout root
 ```
 
-The same reference is at the top of the GitHub release notes. `docker compose pull` then fetches
-exactly that digest for your architecture (the image is a multi-arch index: linux/amd64 and
-linux/arm64). Agent releases: replace `akari-panel` by `akari-agent` in `ID`/`REL` and use its
-`akari-agent-linux-<arch>` files (it publishes binaries only). The SBOM (CycloneDX) is a release
-asset and an attestation on the image; `THIRD_PARTY_LICENSES.txt` lists every bundled crate and
-npm package with its licence text.
+同一个引用位于 GitHub release notes 的顶部。随后 `docker compose pull` 会为你的架构精确拉取该 digest
+（该镜像是多架构 index：linux/amd64 和 linux/arm64）。agent 发布：把 `ID`/`REL` 中的 `akari-panel` 换成 `akari-agent`，
+并使用其 `akari-agent-linux-<arch>` 文件（它只发布二进制）。SBOM（CycloneDX）是发布资产，也是镜像上的 attestation；
+`THIRD_PARTY_LICENSES.txt` 列出每个打包的 crate 和 npm 包及其许可证文本。
 
-### Build the image yourself (fallback)
+### Build the image yourself (fallback)（自行构建镜像，备用）
 
-Without access to ghcr.io, or to run an unreleased commit, build the same image from the checkout
-(about 10 minutes on 4 cores; Docker with BuildKit, nothing else needed) and point compose at it:
+无法访问 ghcr.io，或要运行未发布的 commit 时，从检出自行构建同一个镜像（4 核约 10 分钟；需要支持 BuildKit 的 Docker，不需要别的），并让 compose 指向它：
 
 ```bash
 cd /opt/akari-panel && git checkout v0.4.0-rc.2              # the release you want
@@ -1811,23 +1510,18 @@ sed -i 's|^AKARI_IMAGE=.*|AKARI_IMAGE=akari-panel:local|' deploy/.env
 cd deploy && docker compose up -d                           # skip `docker compose pull` for a local image
 ```
 
-Upgrading such a deployment = check out the new tag, rebuild, `docker compose up -d`.
+升级这样的部署 = 检出新 tag，重新构建，`docker compose up -d`。
 
-## Build notes
+## Build notes（构建说明）
 
-The binary is a static musl build (`rust:alpine`; ring/rustls/sqlx need no system library):
-it runs on any Linux kernel, in distroless/scratch, and needs no glibc on the VPS. musl's own
-allocator serializes this allocation-heavy multi-threaded workload, so the binary uses mimalloc
-(M2). `akari --version` prints version and git sha.
+二进制是静态 musl 构建（`rust:alpine`；ring/rustls/sqlx 不需要系统库）：它能在任何 Linux 内核上运行，包括 distroless/scratch，VPS 上不需要 glibc。
+musl 自带的分配器会使这种分配密集的多线程负载串行化，所以二进制使用 mimalloc（M2）。`akari --version` 打印版本和 git sha。
 
-## Appendix A. Docker Compose by hand
+## Appendix A. Docker Compose by hand（附录 A：手动 Docker Compose）
 
-What the installer does in Docker mode, step by step (another distribution, an existing Docker
-host, or to see every step).
+安装器在 Docker 模式下做的事情，逐步展开（适用于其他发行版、已有的 Docker 主机，或想看每一步的情况）。
 
-
-Commands run as root on the panel host. This section, §2, §2b, §3 and §3g take a clean Debian 13
-machine to a user's proxied connection through a new node (timed drill: §3c).
+以下命令在面板主机上以 root 运行。本节、§2、§2b、§3 和 §3g 把一台干净的 Debian 13 机器带到用户通过新节点完成代理连接（计时演练：§3c）。
 
 ```bash
 # 0. Docker Engine + compose v2 (Debian 13 packages; Docker's own apt repository works the same)
@@ -1859,64 +1553,44 @@ docker compose exec panel /akari info                  # admin prefix: /<prefix>
 curl -s -o /dev/null -w '%{http_code}\n' https://panel.yourdomain.com/healthz   # 200
 ```
 
-The compose file sets `AKARI_CONFIG=/etc/akari/panel.toml` on the panel service, so every
-`/akari ...` you run through `docker compose run` or `exec` reads your `panel.toml` (these
-commands replace the service's `command:`, which is why the path is an environment variable and
-not a `-c` flag). `config check` prints the effective values (listeners, redacted URLs) and then
-`configuration OK`. On a fresh install its output also
-ends with `# 系统设置: database not readable (... relation "panel_settings" does not exist ...)`:
-the database is still empty; that line disappears once the panel has started. The image itself
-sets no default `AKARI_CONFIG`: a bare `docker run` of it uses built-in defaults. Outside compose
-use `-c <file>` or export `AKARI_CONFIG`.
+compose 文件在 panel 服务上设置了 `AKARI_CONFIG=/etc/akari/panel.toml`，所以你通过 `docker compose run` 或 `exec` 运行的每个 `/akari ...`
+都会读取你的 `panel.toml`（这些命令会替换服务的 `command:`，这就是路径用环境变量而不是 `-c` 参数的原因）。
+`config check` 打印生效的值（监听器、已脱敏的 URL），然后是 `configuration OK`。全新安装时，其输出还会以
+`# 系统设置: database not readable (... relation "panel_settings" does not exist ...)` 结尾：数据库仍是空的；面板启动后这一行就会消失。
+镜像本身不设置默认的 `AKARI_CONFIG`：直接 `docker run` 它会使用内置默认值。compose 之外请使用 `-c <file>` 或导出 `AKARI_CONFIG`。
 
-Caddy obtains the certificate for `AKARI_DOMAIN` at its first start (`docker compose logs caddy`:
-"certificate obtained successfully"; the DNS record must already point at the host and ports
-80/443 must be open); domains added later in 系统设置 get theirs on demand (§1b).
+Caddy 在首次启动时为 `AKARI_DOMAIN` 获取证书（`docker compose logs caddy`：“certificate obtained successfully”；
+DNS 记录必须已指向该主机，80/443 端口必须开放）；之后在 系统设置 中添加的域名按需获取证书（§1b）。
 
-**A name without public DNS** (a test or LAN name such as `myapp.test`): Let's Encrypt cannot
-issue for it (`rejectedIdentifier` in Caddy's log). Set `AKARI_CADDY_OPTIONS=local_certs` in `.env`
-and `docker compose up -d --force-recreate caddy`: every certificate then comes from Caddy's
-internal CA (as for an IP, below). The node installer pins that certificate (§3): the panel
-probes its own address for it, so the panel container must resolve the name too (your LAN DNS,
-or a `docker-compose.override.yml` with `services: {panel: {extra_hosts: ["myapp.test:<host IP>"]}}`);
-when it cannot, the install command comes with the warning "could not check the TLS certificate"
-and fails on the node with a certificate error.
+**没有公共 DNS 的名称**（测试或局域网名称，如 `myapp.test`）：Let's Encrypt 无法为其签发（Caddy 日志里的 `rejectedIdentifier`）。
+在 `.env` 中设置 `AKARI_CADDY_OPTIONS=local_certs`，并执行 `docker compose up -d --force-recreate caddy`：之后所有证书都来自 Caddy 的内部 CA（与下面的 IP 情形相同）。
+节点安装器会钉扎该证书（§3）：面板探测自己的地址来获取它，所以面板容器也必须能解析该名称（你的局域网 DNS，或带
+`services: {panel: {extra_hosts: ["myapp.test:<host IP>"]}}` 的 `docker-compose.override.yml`）；
+做不到时，安装命令会带着 “could not check the TLS certificate” 警告，并在节点上因证书错误而失败。
 
-**IP-only deployments (no domain).** With `AKARI_DOMAIN` set to an IP address, Caddy issues the
-certificate from its own internal CA, which no browser or client trusts. That is fine to try the
-admin UI (accept the browser warning once), but subscription clients and browsers will refuse it:
-use a real domain (an A record to the VPS, ports 80/443 open) so Caddy obtains a certificate by
-ACME. The Caddyfile sets `default_sni` to `AKARI_DOMAIN` because clients send no SNI for an IP
-address. The agent's gRPC channel is unaffected: it pins the panel CA, not the web certificate,
-and the one-line node installer pins the web certificate's key (§3).
+**仅 IP 的部署（没有域名）。** 当 `AKARI_DOMAIN` 设为 IP 地址时，Caddy 用自己的内部 CA 签发证书，没有浏览器或客户端信任它。
+试用管理界面没问题（接受一次浏览器警告），但订阅客户端和浏览器会拒绝它：请使用真实域名（指向 VPS 的 A 记录，80/443 端口开放），让 Caddy 通过 ACME 获取证书。
+Caddyfile 把 `default_sni` 设为 `AKARI_DOMAIN`，因为客户端访问 IP 地址时不发送 SNI。
+agent 的 gRPC 通道不受影响：它固定的是面板 CA，而不是 web 证书，而一行节点安装器固定的是 web 证书的密钥（§3）。
 
-**Moving an IP-only deployment to a domain** (verified 2026-10-02; W25: no panel.toml change):
-add the A record (no proxying CDN; ports 80/443 open), set `AKARI_DOMAIN` in `.env`,
-`docker compose up -d` (Caddy obtains the certificate within seconds; `docker compose logs caddy`
-shows "certificate obtained successfully"), then in 系统设置 set **主域名** to the name (install
-commands become plain `curl`, no pin) and, if agents should dial the name from now on, **节点通信域名**.
-Agents enrolled earlier keep dialing the IP with the IP as gRPC server name (their bootstrap file
-says so): the IP stays in the certificate's name list (节点通信证书域名) until you remove it there,
-so nothing strands them. Restart one agent to confirm it reconnects. Any other host name now gets
-the same empty 404.
+**把仅 IP 的部署迁到域名**（2026-10-02 验证；W25：panel.toml 无需改动）：添加 A 记录（不要使用代理型 CDN；80/443 端口开放），
+在 `.env` 中设置 `AKARI_DOMAIN`，`docker compose up -d`（Caddy 几秒内获取证书；`docker compose logs caddy` 显示 “certificate obtained successfully”），
+然后在 系统设置 中把 **主域名** 设为该名称（安装命令变成普通 `curl`，不再钉扎），如果希望 agent 从现在起拨该名称，再设置 **节点通信域名**。
+之前注册的 agent 继续拨 IP，并以该 IP 作为 gRPC server name（其 bootstrap 文件如此写明）：该 IP 会一直留在证书的名称列表中（节点通信证书域名），直到你在那里移除它，
+所以不会有任何节点被丢下。重启一个 agent 以确认它能重新连接。现在任何其他主机名都会得到同样的空 404。
 
-The Caddyfile is bind-mounted as a single file: `git pull`/`git checkout` replace the file (new
-inode) and the running container keeps the old one, so `caddy reload` changes nothing. After
-updating the checkout run `docker compose up -d --force-recreate caddy`.
+Caddyfile 是以单个文件的方式 bind mount 的：`git pull`/`git checkout` 会替换该文件（新的 inode），而运行中的容器保留旧的，所以 `caddy reload` 什么都不会改变。
+更新检出之后请执行 `docker compose up -d --force-recreate caddy`。
 
-Notes: the image is distroless (no shell; `exec panel /akari ...` works because it runs the
-binary directly), runs as UID 65532, state lives in the `akari-data` volume (`/data`).
-There is no container HEALTHCHECK; probe `https://panel.example.com/healthz`
-from your monitoring. The compose `frontend` subnet is fixed (172.28.0.0/24) so that
-`web.trusted_proxies` can name it.
+注意：镜像是 distroless（没有 shell；`exec panel /akari ...` 能用是因为它直接运行二进制），以 UID 65532 运行，状态保存在 `akari-data` 卷（`/data`）中。
+没有容器 HEALTHCHECK；请从你的监控中探测 `https://panel.example.com/healthz`。
+compose 的 `frontend` 子网是固定的（172.28.0.0/24），以便 `web.trusted_proxies` 能指名它。
 
-## Appendix B. Bare metal by hand
+## Appendix B. Bare metal by hand（附录 B：手动裸机部署）
 
-What the installer does in bare-metal mode, by hand (another distribution, an existing PostgreSQL
-≥ 18 / Valkey ≥ 9, nginx instead of Caddy). The installer's choices are a reference: PostgreSQL 18
-from PGDG, Valkey from `deploy/systemd/akari-valkey.service` (upstream build, loopback, password in
-a credential file), Caddy with `/etc/akari/caddy.env` as `EnvironmentFile` and no `--environ`.
-
+安装器在裸机模式下做的事情，手动版（其他发行版、已有的 PostgreSQL ≥ 18 / Valkey ≥ 9、用 nginx 代替 Caddy）。
+安装器的选择可作参考：来自 PGDG 的 PostgreSQL 18，来自 `deploy/systemd/akari-valkey.service` 的 Valkey（上游构建、回环、密码放在 credential 文件中），
+以 `/etc/akari/caddy.env` 作为 `EnvironmentFile` 且没有 `--environ` 的 Caddy。
 
 ```bash
 # binary (verify it first, see "Verify a release")
@@ -1932,8 +1606,6 @@ systemctl daemon-reload && systemctl enable --now akari-panel
 sudo -u akari akari -c /etc/akari/panel.toml info      # admin prefix, sub path
 ```
 
-Then the proxy: **Caddy** (`deploy/caddy/Caddyfile`, set `AKARI_DOMAIN` in its environment,
-upstream `127.0.0.1:8080`) or **nginx** (`deploy/nginx/akari.conf`, replace the domain and the
-certificate paths). Both forward every path (the panel decides and answers everything else with its
-empty 404), append to `X-Forwarded-For`, and keep the URI (admin prefix, subscription tokens) out of
-access logs. `trusted_proxies = ["127.0.0.1/32"]` matches a same-host proxy.
+然后是代理：**Caddy**（`deploy/caddy/Caddyfile`，在其环境中设置 `AKARI_DOMAIN`，上游 `127.0.0.1:8080`）或
+**nginx**（`deploy/nginx/akari.conf`，替换域名和证书路径）。两者都转发所有路径（面板自行判断，其余一律以空 404 应答），追加 `X-Forwarded-For`，
+并且不把 URI（后台前缀、订阅令牌）写入访问日志。`trusted_proxies = ["127.0.0.1/32"]` 适用于同机代理。

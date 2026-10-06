@@ -1,32 +1,30 @@
-# Backup and restore
+# Backup and restore（备份与恢复）
 
-What must be backed up:
+需要备份的内容：
 
-| What | Where | Why |
+| 内容 | 位置 | 原因 |
 |---|---|---|
-| PostgreSQL | `database_url` | the source of truth: users, nodes, traffic ledger, tombstones |
-| `data_dir` | `/var/lib/akari`, compose volume `akari-data` | **the CA private key (`ca.key`), `jwt.key`, `master.key` (and `state.json`: the seed of the admin prefix, which lives in the database)** |
-| configuration | `panel.toml`; compose `.env`, `env/*.env`; `/etc/akari/install.env` | optional (`AKARI_CONFIG_FILES`): passwords, for reference — a restore generates its own |
-| Valkey | -- | hot state only (liveness, rate-limit counters); not backed up |
-| agent release binaries | PostgreSQL tables `agent_releases`, `agent_release_chunks` | **left out by default** (see below) |
+| PostgreSQL | `database_url` | 唯一数据源：用户、节点、流量账本、墓碑记录 |
+| `data_dir` | `/var/lib/akari`, compose volume `akari-data` | **CA 私钥（`ca.key`）、`jwt.key`、`master.key`（以及 `state.json`：管理前缀的种子，前缀本身存在数据库中）** |
+| configuration | `panel.toml`; compose `.env`, `env/*.env`; `/etc/akari/install.env` | 可选（`AKARI_CONFIG_FILES`）：含密码，仅供参考；恢复时会重新生成 |
+| Valkey | -- | 仅存热状态（存活标记、限流计数）；不备份 |
+| agent release binaries | PostgreSQL 表 `agent_releases`、`agent_release_chunks` | **默认不含**（见下） |
 
-### Agent release binaries (left out by default)
+### Agent release binaries（agent 发布二进制，默认不含）
 
-The agent releases uploaded under 更新 (or fetched by 检查更新) live in the database, tens of MB per
-release (six releases made an 84 MB dump in the 2026-10 test deployment). They are copies of public,
-signed GitHub release assets, so backups leave their rows out: the tables are dumped empty
-(`pg_dump --exclude-table-data`) and MANIFEST says `agent_releases=excluded`. After a restore the
-panel has no stored release: 更新 → **检查更新** (or a manual upload) brings them back; until then
-the one-line node install falls back to 系统设置 → 节点通信 → 备用下载地址 (default: the GitHub
-release), and rollouts can only be created once a release is stored again. Agents already
-installed are unaffected (they keep their binary).
+在「更新」页上传（或由「检查更新」拉取）的 agent 发布包存放在数据库中，每个发布几十 MB
+（2026-10 测试部署中 6 个发布生成了 84 MB 的转储）。它们是 GitHub 上公开、已签名的发布资产的副本，
+因此备份默认不含这些行：相关表只转储结构（`pg_dump --exclude-table-data`），MANIFEST 记为
+`agent_releases=excluded`。恢复后面板中没有任何已存储的发布：到 更新 → **检查更新**（或手动上传）即可找回。
+在此之前，节点一键安装会回退到 系统设置 → 节点通信 → 备用下载地址（默认为 GitHub 发布），
+且只有重新存入发布后才能创建灰度发布（rollout）。已安装的 agent 不受影响（保留自己的二进制）。
 
-To include them: `akari-ctl backup --with-agent-releases`, or `AKARI_BACKUP_AGENT_RELEASES=1`
-for `akari-ctl backup` / `scripts/backup.sh` (MANIFEST: `agent_releases=included`).
-`akari-ctl migrate` (same-host move) always includes them; the pre-upgrade backup of
-`akari-ctl upgrade` leaves them out. Restoring either kind works the same way.
+如需包含：使用 `akari-ctl backup --with-agent-releases`，或为 `akari-ctl backup` / `scripts/backup.sh`
+设置 `AKARI_BACKUP_AGENT_RELEASES=1`（MANIFEST：`agent_releases=included`）。
+`akari-ctl migrate`（同机迁移）始终包含；`akari-ctl upgrade` 的升级前备份则不含。
+两种备份的恢复方式相同。
 
-## With the installer (`akari-ctl`)
+## With the installer (`akari-ctl`)（使用安装器）
 
 ```bash
 age-keygen -o akari-backup.key        # once; keep the key OFFLINE, note the "public key: age1..."
@@ -34,55 +32,47 @@ echo 'AGE_RECIPIENT=age1...' >>/etc/akari/install.env     # every backup from no
 akari-ctl backup                      # -> /var/backups/akari/akari-<UTC>/ (--out DIR elsewhere)
 ```
 
-`akari-ctl backup` runs `scripts/backup.sh` (installed as `/usr/local/lib/akari/backup.sh`) with the
-right dump command for the installation (bare metal: `pg_dump` of the local PostgreSQL 18 as
-`postgres`; Docker: `docker compose exec -T postgres pg_dump`), the data dir (Docker: the
-`akari_akari-data` volume) and the configuration files. `akari-ctl upgrade` takes the same backup
-before every upgrade and `akari-ctl migrate` before every move. Without `AGE_RECIPIENT` the backup
-is **plain** (`db.dump`, `data.tar`, `config.tar`; directory 0700, files 0600) and both commands
-print a warning: fine as an on-host safety net, never to be copied off the host as is. Retention:
-14 days, at least the 3 newest (`AKARI_KEEP_DAYS` / `AKARI_KEEP_MIN`). Schedule it, e.g.
-`/etc/cron.d/akari-backup`: `17 3 * * * root /usr/local/sbin/akari-ctl backup --yes >/dev/null`, and
-copy the encrypted directories off the host.
+`akari-ctl backup` 会运行 `scripts/backup.sh`（安装为 `/usr/local/lib/akari/backup.sh`），并按安装方式选择转储命令
+（裸机：以 `postgres` 身份对本机 PostgreSQL 18 执行 `pg_dump`；Docker：`docker compose exec -T postgres pg_dump`）、
+数据目录（Docker：`akari_akari-data` 卷）和配置文件。`akari-ctl upgrade` 在每次升级前、`akari-ctl migrate`
+在每次迁移前都会做同样的备份。未设置 `AGE_RECIPIENT` 时备份为**明文**（`db.dump`、`data.tar`、`config.tar`；
+目录 0700，文件 0600），两个命令都会打印警告：可作为本机的安全网，但绝不能原样复制到主机之外。
+保留策略：14 天，且至少保留最新 3 份（`AKARI_KEEP_DAYS` / `AKARI_KEEP_MIN`）。可加入定时任务，例如
+`/etc/cron.d/akari-backup`：`17 3 * * * root /usr/local/sbin/akari-ctl backup --yes >/dev/null`，
+并把加密后的目录复制到主机之外。
 
-Restore = a fresh install from the backup (also the host-to-host move, docs/DEPLOY.md §8):
+恢复 = 用备份做一次全新安装（跨主机迁移同理，见 docs/DEPLOY.md §8）：
 
 ```bash
 curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/download/install.sh \
   | sh -s -- --restore /path/akari-<UTC> --age-identity akari-backup.key   # plain backups: no key
 ```
 
-The sections below are the same tooling by hand.
+以下各节是手动使用同一套工具的方式。
 
-> **WARNING: `data/` holds the CA private key, `jwt.key` and `master.key`.** Whoever has them can
-> mint agent certificates (impersonate any node, receive its users' credentials) and forge admin
-> sessions; `master.key` together with a database copy decrypts every sealed secret
-> (subscription links, the SMTP password, payment and alert channel secrets).
-> Backups are therefore always encrypted; keep the decryption key offline, away from the
-> backup storage. Never commit or copy `data/` anywhere unencrypted.
+> **警告：`data/` 中存放着 CA 私钥、`jwt.key` 和 `master.key`。** 持有它们的人可以签发 agent 证书
+> （冒充任意节点、接收其用户的凭据）并伪造管理员会话；`master.key` 加上数据库副本即可解密所有加密存放的密钥
+> （订阅链接、SMTP 密码、支付与告警渠道密钥）。
+> 因此备份必须始终加密；解密密钥要离线保存，远离备份存储。切勿将 `data/` 以未加密形式提交或复制到任何地方。
 
-Losing `data/` while keeping the database means: new CA, every agent
-needs a new enrollment token (`akari server enroll-token <id>`, a new bootstrap file), and every
-secret sealed with the master key can no longer be decrypted: enter the SMTP password, payment
-method keys and alert channel secrets again; subscription links keep working but cannot be
-shown until users reset them. `master.key` (named `totp.key` before v0.4; the panel renames it
-once) and the database belong to the same backup: restore them together. Losing the database means losing everything else.
+丢失 `data/` 但保留数据库的后果：需要新建 CA；每个 agent 都需要新的注册令牌
+（`akari server enroll-token <id>`，并生成新的 bootstrap 文件）；所有用 master key 加密的密钥都无法再解密，
+需要重新填写 SMTP 密码、支付方式密钥和告警渠道密钥；订阅链接仍可使用，但在用户重置之前无法显示。
+`master.key`（v0.4 之前叫 `totp.key`，面板会自动改名一次）与数据库属于同一份备份：必须一起恢复。
+丢失数据库则意味着丢失其余一切。
 
-Agents keep their own key and certificate in their state directory (`/var/lib/private/akari-agent`
-under the shipped unit). Losing it means re-enrolling that node with a new token; it is not part of
-the panel backup.
+agent 的密钥和证书保存在它自己的状态目录中（按随附 unit 为 `/var/lib/private/akari-agent`）。
+丢失后需要用新令牌重新注册该节点；它不属于面板备份的范围。
 
-## Tooling (age)
+## Tooling (age)（工具：age）
 
-`scripts/backup.sh` pipes `pg_dump --format=custom` and a `tar` of `data/` through
-[age](https://github.com/FiloSottile/age) to **public** recipients: the backup host holds no key
-that can read its own backups (gpg would need a keyring on the host; age is one static binary).
-Nothing sensitive touches disk unencrypted. Output per backup:
-`akari-<UTC>/{db.dump.age,data.tar.age,[config.tar.age,]MANIFEST,SHA256SUMS}` (`config.tar.age`
-when `AKARI_CONFIG_FILES` names files). Plain mode (`AKARI_BACKUP_PLAINTEXT=1`, explicit; the
-installer's fallback without a recipient) writes `db.dump`, `data.tar`, `config.tar` instead, 0600 in
-a 0700 directory, with a warning; `restore.sh` reads both kinds (an `AGE_IDENTITY_FILE` only for
-`.age`).
+`scripts/backup.sh` 把 `pg_dump --format=custom` 的输出和 `data/` 的 `tar` 通过
+[age](https://github.com/FiloSottile/age) 加密给**公钥**接收方：备份主机上没有任何能读取自己备份的密钥
+（gpg 需要在主机上放密钥环；age 只是一个静态二进制）。敏感内容不会以明文落盘。每次备份的输出：
+`akari-<UTC>/{db.dump.age,data.tar.age,[config.tar.age,]MANIFEST,SHA256SUMS}`
+（设置了 `AKARI_CONFIG_FILES` 才有 `config.tar.age`）。明文模式（`AKARI_BACKUP_PLAINTEXT=1`，须显式指定；
+也是安装器在没有接收方时的回退）改为写出 `db.dump`、`data.tar`、`config.tar`，目录 0700、文件 0600，并给出警告；
+`restore.sh` 两种都能读（仅 `.age` 文件需要 `AGE_IDENTITY_FILE`）。
 
 ```bash
 age-keygen -o akari-backup.key          # keep this file OFFLINE (password manager, safe)
@@ -91,64 +81,54 @@ AGE_RECIPIENT=age1... AKARI_DATA_DIR=/var/lib/akari AKARI_BACKUP_DIR=/var/backup
 DATABASE_URL=postgres://... scripts/backup.sh
 ```
 
-Variables: see the header of `scripts/backup.sh` (`AKARI_KEEP_DAYS` default 14 and
-`AKARI_KEEP_MIN` default 3 for retention; `AGE_RECIPIENTS_FILE` for several recipients;
-`AKARI_PG_DUMP_CMD` e.g. `docker compose exec -T postgres pg_dump -U akari -Fc akari` when the host
-has no matching `pg_dump` (needs the client of PostgreSQL >= 18; the script appends the
-`--exclude-table-data` options to it); `AKARI_BACKUP_AGENT_RELEASES=1` to keep the agent
-releases; `AKARI_VERIFY_IDENTITY`
-to decrypt-and-check each backup right away). Schedule it (cron/systemd timer) and copy the
-directory off the host (the files are ciphertext).
+变量：见 `scripts/backup.sh` 的文件头：保留策略用 `AKARI_KEEP_DAYS`（默认 14）和 `AKARI_KEEP_MIN`（默认 3）；
+多个接收方用 `AGE_RECIPIENTS_FILE`；主机上没有匹配的 `pg_dump` 时用 `AKARI_PG_DUMP_CMD`，
+例如 `docker compose exec -T postgres pg_dump -U akari -Fc akari`（需要 PostgreSQL >= 18 的客户端；
+脚本会在其后追加 `--exclude-table-data` 选项）；`AKARI_BACKUP_AGENT_RELEASES=1` 保留 agent 发布包；
+`AKARI_VERIFY_IDENTITY` 用于在备份完成后立即解密并校验。
+请用 cron / systemd timer 定时执行，并把目录复制到主机之外（文件均为密文）。
 
-## Restore
+## Restore（恢复）
 
-**Backups made by v0.3.x cannot be restored into v0.4**: v0.4 squashed the migrations into a new
-baseline (`migrations/1000_baseline.sql`) and the panel refuses a database whose history predates
-it (`database from v0.3.x — fresh install required`; docs/DEPLOY.md §5). Restore such a backup
-only with a v0.3.x binary.
+**v0.3.x 做的备份无法恢复到 v0.4**：v0.4 把迁移合并成了新基线 （`migrations/1000_baseline.sql`），面板会拒绝历史早于该基线的数据库
+（`database from v0.3.x — fresh install required`；见 docs/DEPLOY.md §5）。这类备份只能用 v0.3.x 二进制恢复。
 
-1. Stop the panel (`systemctl stop akari-panel` / `docker compose stop panel`). Agents keep
-   running and reconnect by themselves.
-2. Provide an empty database (`createdb`; to reuse one, `dropdb` it first — `pg_restore --clean`
-   cannot drop the monthly partitions of `traffic_daily`) and a PostgreSQL >= 18 server.
+1. 停止面板（`systemctl stop akari-panel` / `docker compose stop panel`）。agent 保持运行，会自行重连。
+2. 准备一个空数据库（`createdb`；要复用旧库须先 `dropdb`，因为 `pg_restore --clean` 无法删除 `traffic_daily`
+   的月度分区），服务器须为 PostgreSQL >= 18。
 3. ```bash
    AGE_IDENTITY_FILE=akari-backup.key AKARI_DATA_DIR=/var/lib/akari AKARI_OWNER=akari:akari \
    DATABASE_URL=postgres://... scripts/restore.sh /var/backups/akari/akari-<UTC>
    ```
-   It checks the checksums, extracts `data/` (an existing non-empty data dir is refused unless
-   `--force`, then moved aside) and loads the database in one transaction. For compose use
+   脚本会校验校验和，解出 `data/`（已有的非空数据目录会被拒绝，除非加 `--force`，此时旧目录会被移开），
+   并在一个事务中载入数据库。compose 部署请使用
    `AKARI_PG_RESTORE_CMD='docker compose exec -T postgres pg_restore -U akari -d akari --no-owner --single-transaction'`
-   (into an empty database). `akari-ctl --restore` and the moves recreate the database themselves.
-4. Start the panel; `akari info` shows the **same admin prefix**; log in; nodes turn `online` as
-   the agents reconnect (their certificates are signed by the restored CA).
-5. Traffic counted between the backup and the failure is lost (users' usage reverts to the
-   backup's values); everything else in the database is as of the backup.
+   （恢复到空数据库）。`akari-ctl --restore` 和迁移会自行重建数据库。
+4. 启动面板；`akari info` 显示的是**同一个管理前缀**；登录后，随着 agent 重连，节点会变为 `online`
+   （它们的证书由恢复后的 CA 签发）。
+5. 备份之后到故障之前统计的流量会丢失（用户用量回退到备份时的值）；数据库中的其余内容均为备份时的状态。
 
-## Restore drill (run it quarterly and after changing the procedure)
+## Restore drill (run it quarterly and after changing the procedure)（恢复演练：每季度一次，流程变更后也要做）
 
-`scripts/restore-drill.sh` automates it on the dev stack, in its own database (`DRILL_DB`,
-default `akari_drill`, dropped and recreated) and Valkey db index (`DRILL_VALKEY_DB`, default
-14); it binds the panel's default ports, so serialise it with smoke:
-install -> admin + user + node with a live agent -> backup -> stop panel, wipe database and
-data dir -> restore -> start panel -> assert same prefix, same login, user present, the
-user's sealed subscription link still decrypts (the master key came back), the unchanged agent
-reconnects and the node is online.
+`scripts/restore-drill.sh` 在开发栈上自动执行演练，使用独立的数据库（`DRILL_DB`，默认 `akari_drill`，会被删除重建）
+和 Valkey db 编号（`DRILL_VALKEY_DB`，默认 14）；它绑定面板的默认端口，因此要与 smoke 串行运行。
+流程：安装 -> 创建管理员、用户和带在线 agent 的节点 -> 备份 -> 停止面板、清空数据库和数据目录 -> 恢复 ->
+启动面板 -> 断言：前缀不变、登录不变、用户仍在、用户加密存放的订阅链接仍可解密（master key 已恢复）、
+未做任何改动的 agent 能重连且节点在线。
 
-Result, 2026-10-01 (WSL2 dev stack, PostgreSQL 18.6, age 1.2.1, dump via `docker compose exec`):
+Result（结果），2026-10-01 (WSL2 dev stack, PostgreSQL 18.6, age 1.2.1, dump via `docker compose exec`):
 
 ```
 DRILL PASS: prefix kept, logins and users restored, agent reconnected in 1 s (panel start to online)
 ```
 
-Re-run 2026-10-02 (W14) on the current schema (migrations through 0091, PostgreSQL 18, age 1.2.1):
+2026-10-02（W14）在当时的 schema 上重跑（迁移至 0091，PostgreSQL 18，age 1.2.1）：
 
 ```
 DRILL PASS: prefix kept, logins (with TOTP) and users restored, agent reconnected in 9 s (panel start to online)
 ```
 
-The 9 s (1 s in the first run) is the agent's reconnect backoff after the panel was down for
-the restore, not restore time. Backup 108 KiB (db 86 KiB, data 10 KiB).
+这里的 9 s（首次为 1 s）是面板因恢复而停机期间 agent 的重连退避时间，并非恢复耗时。备份大小 108 KiB（db 86 KiB，data 10 KiB）。
 
-Backup size for the first drill's data: 404 KiB (db 390 KiB, data 10 KiB). A first run of the drill
-found a bug in the drill script itself (the "stopped" panel was an orphan process), not in
-backup/restore; the pass above is the run after that fix.
+首次演练数据的备份大小：404 KiB（db 390 KiB，data 10 KiB）。演练脚本第一次运行时发现的是脚本自身的缺陷
+（「已停止」的面板其实是个孤儿进程），而非备份/恢复的问题；上面的通过结果是修复之后的那次运行。
