@@ -14,6 +14,7 @@
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { parse } from 'parse5';
 
 const DIST = 'dist/app';
 const errors = [];
@@ -23,24 +24,40 @@ const walk = (dir) =>
     return statSync(p).isDirectory() ? walk(p) : [p];
   });
 
-/* ---------- index.html ---------- */
-const html = readFileSync(join(DIST, 'index.html'), 'utf8').replace(/<!--[\s\S]*?-->/g, '');
-for (const m of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
-  if (!/\bsrc\s*=/.test(m[1]) || m[2].trim()) errors.push(`index.html: inline <script>: ${m[0].slice(0, 80)}`);
-}
-if (/<style\b/i.test(html)) errors.push('index.html: inline <style> element');
-for (const m of html.matchAll(/<[a-z][^>]*>/gi)) {
-  const tag = m[0];
-  if (/\son[a-z]+\s*=/i.test(tag)) errors.push(`index.html: inline event handler: ${tag}`);
-  if (/\sstyle\s*=/i.test(tag)) errors.push(`index.html: style attribute: ${tag}`);
-  if (/javascript:/i.test(tag)) errors.push(`index.html: javascript: URL: ${tag}`);
-  for (const a of tag.matchAll(/\s(?:src|href)\s*=\s*"([^"]*)"/gi)) {
-    const url = a[1];
+/* ---------- index.html ----------
+ * 用 HTML 规范的解析器（parse5，浏览器同款算法）建树再逐个元素检查，不用正则：
+ * 注释、引号、大小写、属性写法的各种变体都按浏览器的理解来，不会被绕过。
+ * scriptingEnabled: false 让 <noscript> 里的内容也作为元素被检查（更严）。 */
+const html = readFileSync(join(DIST, 'index.html'), 'utf8');
+const doc = parse(html, { scriptingEnabled: false });
+const show = (el) => `<${el.tagName}${el.attrs.map((a) => ` ${a.name}="${a.value}"`).join('')}>`.slice(0, 120);
+const visit = (node) => {
+  const kids = node.tagName === 'template' ? node.content.childNodes : node.childNodes ?? [];
+  if (node.tagName) checkElement(node);
+  kids.forEach(visit);
+};
+const checkElement = (el) => {
+  const attr = new Map(el.attrs.map((a) => [a.name, a.value]));
+  if (el.tagName === 'script' && (!attr.has('src') || el.childNodes.some((c) => c.nodeName !== '#text' || c.value.trim()))) {
+    errors.push(`index.html: inline <script>: ${show(el)}`);
+  }
+  if (el.tagName === 'style') errors.push('index.html: inline <style> element');
+  for (const { name, value } of el.attrs) {
+    if (name.startsWith('on')) errors.push(`index.html: inline event handler: ${show(el)}`);
+    if (name === 'style') errors.push(`index.html: style attribute: ${show(el)}`);
+    /* 浏览器解析 URL 前会去掉制表、换行与首尾空白，这里同样处理后再看 */
+    if (/javascript:/i.test(value.replace(/\s/g, ''))) errors.push(`index.html: javascript: URL: ${show(el)}`);
+  }
+  for (const name of ['src', 'href']) {
+    if (!attr.has(name)) continue;
+    const url = attr.get(name).trim();
     if (url === '' || url.startsWith('#')) continue;
-    if (/^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith('//')) errors.push(`index.html: external URL: ${url}`);
+    if (/^[a-z][a-z0-9+.-]*:/i.test(url) || /^[\\/]{2}/.test(url)) errors.push(`index.html: external URL: ${url}`);
     else if (!url.startsWith('/assets/')) errors.push(`index.html: URL not under /assets/ (the panel serves only /assets/*): ${url}`);
   }
-}
+  if (attr.has('srcset')) errors.push(`index.html: srcset (not checked; use src): ${show(el)}`);
+};
+visit(doc);
 
 /* ---------- 产物位置 ---------- */
 for (const f of walk(DIST)) {
