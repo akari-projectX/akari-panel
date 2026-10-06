@@ -227,7 +227,7 @@ fn open(
 ) -> Result<String, SendError> {
     let blob = blob.ok_or_else(|| SendError::Permanent(format!("{what} is not configured")))?;
     state
-        .totp()
+        .master_key()
         .open(aad, blob)
         .and_then(|b| String::from_utf8(b).ok())
         .ok_or_else(|| {

@@ -101,7 +101,7 @@ pub async fn request_email_change(
     tokio::spawn(async move {
         let r = async {
             let mut tx = st.pg().begin().await?;
-            apply_send_code(&mut tx, st.totp(), user_id, &addr).await?;
+            apply_send_code(&mut tx, st.master_key(), user_id, &addr).await?;
             tx.commit().await?;
             anyhow::Ok(())
         };
@@ -116,7 +116,7 @@ pub async fn request_email_change(
 /// Returns whether a mail was queued.
 pub async fn apply_send_code(
     conn: &mut PgConnection,
-    keys: &crate::totp::Keys,
+    keys: &crate::masterkey::Keys,
     user: Uuid,
     addr: &str,
 ) -> anyhow::Result<bool> {
@@ -162,7 +162,7 @@ pub async fn apply_send_code(
 /// same 400 as a wrong code.
 pub async fn apply_verify(
     conn: &mut PgConnection,
-    keys: &crate::totp::Keys,
+    keys: &crate::masterkey::Keys,
     actor: &Actor,
     user: Uuid,
     code: &str,
@@ -225,7 +225,7 @@ pub async fn verify_email_change(
     let mut tx = state.pg().begin().await?;
     let done = apply_verify(
         &mut tx,
-        state.totp(),
+        state.master_key(),
         &Actor::of(&user),
         user.id,
         req.code.trim(),

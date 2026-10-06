@@ -398,11 +398,11 @@ async fn within_limit(state: &AppState, key: String, limit: i64, window: i64) ->
 /// Mint a new subscription token for a user (the old one stops working at
 /// commit), in the caller's transaction, audited ("user.sub_token.rotate"
 /// with no token material). The database keeps its SHA-256 (lookup) and,
-/// W20, its ciphertext (`users.sub_token_enc`, `totp::Keys::seal_sub_token`)
+/// W20, its ciphertext (`users.sub_token_enc`, `masterkey::Keys::seal_sub_token`)
 /// so the owner can see the link again. `None` if the user does not exist.
 pub async fn rotate_token(
     conn: &mut sqlx::PgConnection,
-    keys: &crate::totp::Keys,
+    keys: &crate::masterkey::Keys,
     actor: &crate::audit::Actor,
     user_id: Uuid,
 ) -> anyhow::Result<Option<String>> {
@@ -441,7 +441,7 @@ pub async fn rotate_token(
 /// `None` if the user does not exist.
 pub async fn apply_reset(
     conn: &mut sqlx::PgConnection,
-    keys: &crate::totp::Keys,
+    keys: &crate::masterkey::Keys,
     actor: &crate::audit::Actor,
     user_id: Uuid,
 ) -> Result<Option<(String, crate::entitle::Outcome)>, crate::auth::ApiError> {
@@ -488,7 +488,7 @@ struct StoredRow {
 /// concurrent first reads issue exactly one token.
 pub async fn ensure_token(
     conn: &mut sqlx::PgConnection,
-    keys: &crate::totp::Keys,
+    keys: &crate::masterkey::Keys,
     actor: &crate::audit::Actor,
     user_id: Uuid,
 ) -> anyhow::Result<Option<Stored>> {

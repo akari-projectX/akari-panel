@@ -21,7 +21,7 @@ use uuid::Uuid;
 use super::{DiagFuture, OutMsg, Provider, SendError, SendFuture, Transport, open_secret};
 use crate::mail::MailSettings;
 use crate::mail::diagnose::{self as d, Code, Report, Status, clip};
-use crate::totp::Keys;
+use crate::masterkey::Keys;
 
 /// Per-command SMTP timeout (lettre).
 const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);

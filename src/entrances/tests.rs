@@ -238,10 +238,11 @@ async fn node_form_entrance_patch_access_and_subscription() {
     // names.
     let token = {
         let mut tx = db.pool.begin().await.unwrap();
-        let t = crate::sub::rotate_token(&mut tx, state.totp(), &crate::audit::Actor::test(), u)
-            .await
-            .unwrap()
-            .unwrap();
+        let t =
+            crate::sub::rotate_token(&mut tx, state.master_key(), &crate::audit::Actor::test(), u)
+                .await
+                .unwrap()
+                .unwrap();
         tx.commit().await.unwrap();
         t
     };

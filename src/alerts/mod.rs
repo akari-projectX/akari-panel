@@ -28,7 +28,7 @@
 //!   (outbound `sendMessage` only), a generic webhook (HMAC-SHA256 signed
 //!   JSON), email through the W15 outbox (`mailhook`;
 //!   SMTP off = a permanent failure). The bot token and the webhook key are sealed in the database
-//!   (`totp::Keys::seal`) and never returned, logged or audited in clear.
+//!   (`masterkey::Keys::seal`) and never returned, logged or audited in clear.
 //! - **Prometheus**: `akari_server_alerts_firing{kind}` (bounded: the kinds),
 //!   `akari_alert_notifications_total{channel,result}`,
 //!   `akari_alert_rounds_total{result}`; no per-server labels.
@@ -68,7 +68,7 @@ pub const KINDS: [&str; 10] = [
 /// Kinds whose facts come from a live agent (unknown while it is offline).
 pub const LIVE_KINDS: [&str; 5] = ["cpu", "memory", "disk", "latency", "cert"];
 
-/// AAD of the sealed secrets (`totp::Keys::seal`, bound to these fixed ids
+/// AAD of the sealed secrets (`masterkey::Keys::seal`, bound to these fixed ids
 /// instead of a user, so a blob cannot be moved between the two columns).
 pub const TELEGRAM_AAD: Uuid = Uuid::from_u128(0x616b_6172_692d_616c_6572_742d_7467_6d31);
 pub const WEBHOOK_AAD: Uuid = Uuid::from_u128(0x616b_6172_692d_616c_6572_742d_7768_6b31);
@@ -486,7 +486,7 @@ fn audit_snapshot(s: &Settings) -> Value {
 pub async fn apply_update_settings(
     conn: &mut PgConnection,
     actor: &Actor,
-    keys: &crate::totp::Keys,
+    keys: &crate::masterkey::Keys,
     req: &PutSettings,
 ) -> Result<Settings, ApiError> {
     check_put(req)?;
@@ -609,7 +609,7 @@ pub async fn put_settings(
 ) -> Result<Json<SettingsView>, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    let s = apply_update_settings(&mut tx, &Actor::of(&user), state.totp(), &req).await?;
+    let s = apply_update_settings(&mut tx, &Actor::of(&user), state.master_key(), &req).await?;
     let mail = crate::mailhook::available(&mut tx).await?;
     tx.commit().await?;
     Ok(Json(view(

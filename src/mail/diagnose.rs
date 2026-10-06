@@ -788,7 +788,7 @@ pub async fn diagnose(
     };
     let report = match tokio::time::timeout(
         TOTAL_TIMEOUT,
-        provider.diagnose(&settings, state.totp(), &msg),
+        provider.diagnose(&settings, state.master_key(), &msg),
     )
     .await
     {

@@ -5,7 +5,7 @@
 //! per-client rate limits. No third-party captcha (CSP `'self'`, no CDN).
 //!
 //! Challenge (stateless): `v1.<unix secs>.<16 random bytes hex>.<mac>`,
-//! mac = first 16 bytes of HMAC-SHA256 (`totp::Keys::pow_mac`, key from
+//! mac = first 16 bytes of HMAC-SHA256 (`masterkey::Keys::pow_mac`, key from
 //! data/master.key) over everything before it. A solution is a nonce (1–32
 //! ASCII alphanumerics) such that SHA-256(challenge ‖ ":" ‖ nonce) starts
 //! with `BITS` zero bits. Valid for `TTL_SECS`; single use (Valkey
@@ -24,12 +24,12 @@ pub const BITS: u32 = if cfg!(test) { 10 } else { PROD_BITS };
 pub const TTL_SECS: i64 = 600;
 const PREFIX: &str = "v1";
 
-fn mac_hex(keys: &crate::totp::Keys, body: &str) -> String {
+fn mac_hex(keys: &crate::masterkey::Keys, body: &str) -> String {
     hex::encode(&keys.pow_mac(body.as_bytes())[..16])
 }
 
 /// A fresh challenge issued at `now` (unix seconds).
-pub fn issue(keys: &crate::totp::Keys, now: i64) -> String {
+pub fn issue(keys: &crate::masterkey::Keys, now: i64) -> String {
     let body = format!("{PREFIX}.{now}.{}", hex::encode(rand::random::<[u8; 16]>()));
     let mac = mac_hex(keys, &body);
     format!("{body}.{mac}")
@@ -58,7 +58,7 @@ pub enum Refused {
 
 /// Check a solution (pure: no single-use check). `now` = unix seconds.
 pub fn check(
-    keys: &crate::totp::Keys,
+    keys: &crate::masterkey::Keys,
     challenge: &str,
     nonce: &str,
     now: i64,
@@ -107,8 +107,8 @@ pub fn solve(challenge: &str, bits: u32) -> String {
 mod tests {
     use super::*;
 
-    fn keys() -> crate::totp::Keys {
-        crate::totp::Keys::from_material(&[7; 32]).unwrap()
+    fn keys() -> crate::masterkey::Keys {
+        crate::masterkey::Keys::from_material(&[7; 32]).unwrap()
     }
 
     #[test]
@@ -123,7 +123,7 @@ mod tests {
         assert!(check(&k, &c, &n, now + TTL_SECS + 1, 8).is_err());
         assert!(check(&k, &c, &n, now - 61, 8).is_err());
         // Another key, a forged mac, a tampered timestamp.
-        let other = crate::totp::Keys::from_material(&[8; 32]).unwrap();
+        let other = crate::masterkey::Keys::from_material(&[8; 32]).unwrap();
         assert!(check(&other, &c, &n, now, 8).is_err());
         let forged = format!("{}.{}", c.rsplit_once('.').unwrap().0, "00".repeat(16));
         assert!(check(&k, &forged, &n, now, 8).is_err());

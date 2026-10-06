@@ -500,7 +500,7 @@ fn put(version: i64) -> PutSettings {
 
 async fn save(state: &AppState, req: PutSettings) -> Result<Settings, ApiError> {
     let mut tx = state.pg().begin().await.unwrap();
-    let r = apply_update_settings(&mut tx, &Actor::test(), state.totp(), &req).await;
+    let r = apply_update_settings(&mut tx, &Actor::test(), state.master_key(), &req).await;
     if r.is_ok() {
         tx.commit().await.unwrap();
     }

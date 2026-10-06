@@ -447,7 +447,7 @@ pub async fn me(
     .await?
     .ok_or_else(ApiError::unauthorized)?;
     let stored = if user.role == "user" && !expired && !quota_exhausted && !banned {
-        crate::sub::ensure_token(&mut tx, state.totp(), &Actor::of(&user), user.id).await?
+        crate::sub::ensure_token(&mut tx, state.master_key(), &Actor::of(&user), user.id).await?
     } else {
         None
     };
@@ -526,7 +526,7 @@ pub async fn user_subscription(
         }
     }
     let actor = Actor::of(&admin);
-    let stored = crate::sub::ensure_token(&mut tx, state.totp(), &actor, id)
+    let stored = crate::sub::ensure_token(&mut tx, state.master_key(), &actor, id)
         .await?
         .ok_or_else(ApiError::not_found)?;
     let token = match stored {
@@ -822,7 +822,7 @@ pub async fn create_user(
     // Mint the subscription token now (W20: stored encrypted as well, so
     // the user and admins can see the link again).
     let sub_token = crate::sub::generate_token();
-    let sub_enc = state.totp().seal_sub_token(id, &sub_token)?;
+    let sub_enc = state.master_key().seal_sub_token(id, &sub_token)?;
     let actor = Actor::of(&user);
     let mut tx = state.pg().begin().await?;
     // A plan is assigned in the same transaction (its entitlement lock is
@@ -1682,9 +1682,10 @@ pub async fn regenerate_sub_token(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    let (token, outcome) = crate::sub::apply_reset(&mut tx, state.totp(), &Actor::of(&user), id)
-        .await?
-        .ok_or_else(ApiError::not_found)?;
+    let (token, outcome) =
+        crate::sub::apply_reset(&mut tx, state.master_key(), &Actor::of(&user), id)
+            .await?
+            .ok_or_else(ApiError::not_found)?;
     tx.commit().await?;
     let sub_url = state.settings().get().sub_url(state.route_prefix(), &token);
     Ok(Json(json!({
@@ -1692,76 +1693,6 @@ pub async fn regenerate_sub_token(
         "sub_url": sub_url,
         "credentials_rotated": outcome.updated,
     })))
-}
-
-// ---------------------------------------------------------------------------
-// Second factor: admin reset (also `akari admin reset-2fa`).
-// ---------------------------------------------------------------------------
-
-/// Remove an account's TOTP (active or pending) and recovery codes and end
-/// all its sessions, in the caller's transaction; audited
-/// ("user.totp.reset"). The account then logs in with the password alone
-/// (R18; with `auth.require_admin_2fa` an admin gets an enrollment-only
-/// session). Returns what was removed ("active", "pending", "none").
-pub(crate) async fn apply_reset_totp(
-    conn: &mut PgConnection,
-    actor: &Actor,
-    user_id: Uuid,
-) -> Result<&'static str, ApiError> {
-    let found: Option<i32> = sqlx::query_scalar("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
-        .bind(user_id)
-        .fetch_optional(&mut *conn)
-        .await?;
-    if found.is_none() {
-        return Err(ApiError::not_found());
-    }
-    let removed: Option<bool> = sqlx::query_scalar(
-        "DELETE FROM user_totp WHERE user_id = $1 RETURNING enabled_at IS NOT NULL",
-    )
-    .bind(user_id)
-    .fetch_optional(&mut *conn)
-    .await?;
-    let codes = sqlx::query("DELETE FROM user_recovery_codes WHERE user_id = $1")
-        .bind(user_id)
-        .execute(&mut *conn)
-        .await?
-        .rows_affected();
-    sqlx::query("UPDATE users SET session_ver = session_ver + 1 WHERE id = $1")
-        .bind(user_id)
-        .execute(&mut *conn)
-        .await?;
-    let was = match removed {
-        Some(true) => "active",
-        Some(false) => "pending",
-        None => "none",
-    };
-    let after = json!({ "totp": "none", "recovery_codes": 0 });
-    crate::audit::record(
-        conn,
-        actor,
-        "user.totp.reset",
-        "user",
-        Some(user_id.to_string()),
-        Some(json!({ "totp": was, "recovery_codes": codes })),
-        Some(after),
-    )
-    .await?;
-    Ok(was)
-}
-
-/// DELETE /api/v1/users/{id}/totp (admin): reset the account's 2FA and end
-/// its sessions (resetting your own ends this session too). 200 with
-/// `{"totp": <what was removed: "active" | "pending" | "none">}`.
-pub async fn reset_totp(
-    State(state): State<AppState>,
-    user: AuthUser,
-    Path((_, id)): Path<(String, Uuid)>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    user.require_admin()?;
-    let mut tx = state.pg().begin().await?;
-    let was = apply_reset_totp(&mut tx, &Actor::of(&user), id).await?;
-    tx.commit().await?;
-    Ok(Json(json!({ "totp": was })))
 }
 
 /// Test hooks for other modules' tests (plans.rs).
@@ -2566,7 +2497,7 @@ mod tests {
                 "reset subscription (High-3)",
                 Box::new(move |c| {
                     Box::pin(async move {
-                        let keys = crate::totp::Keys::from_material(&[7u8; 32])?;
+                        let keys = crate::masterkey::Keys::from_material(&[7u8; 32])?;
                         crate::sub::apply_reset(c, &keys, &crate::audit::Actor::test(), u)
                             .await
                             .map(|_| ())
@@ -4241,7 +4172,7 @@ mod tests {
         .await
         .unwrap();
         secrets.push("second-password-456".into());
-        let token = crate::sub::rotate_token(&mut tx, state.totp(), &Actor::of(&admin), u)
+        let token = crate::sub::rotate_token(&mut tx, state.master_key(), &Actor::of(&admin), u)
             .await
             .unwrap()
             .unwrap();

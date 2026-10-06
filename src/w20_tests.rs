@@ -10,11 +10,11 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::auth;
+use crate::masterkey;
 use crate::state::AppState;
 use crate::sub::{Stored, hash_token};
 use crate::testdb::TestDb;
 use crate::testdb::http::{Client, rand_ip};
-use crate::totp;
 
 const PW: &str = "w20-password-123";
 
@@ -122,7 +122,7 @@ async fn subscription_link_is_stored_encrypted_and_retrievable() {
         "not plaintext at rest"
     );
     assert_eq!(
-        state.totp().open_sub_token(id, &enc).as_deref(),
+        state.master_key().open_sub_token(id, &enc).as_deref(),
         Some(token.as_str())
     );
     // The same link on every read: no implicit rotation.
@@ -282,7 +282,7 @@ async fn legacy_tokens_are_kept_and_guarded() {
 
     // A ciphertext from another key file (or row) opens to nothing: legacy.
     let mut conn = db.pool.acquire().await.unwrap();
-    let other = totp::Keys::from_material(&[9u8; 32]).unwrap();
+    let other = masterkey::Keys::from_material(&[9u8; 32]).unwrap();
     sqlx::query("UPDATE users SET sub_token_enc = $2 WHERE id = $1")
         .bind(id)
         .bind(other.seal_sub_token(id, &t).unwrap())
@@ -291,7 +291,7 @@ async fn legacy_tokens_are_kept_and_guarded() {
         .unwrap();
     let actor = crate::audit::Actor::cli();
     assert_eq!(
-        crate::sub::ensure_token(&mut conn, state.totp(), &actor, id)
+        crate::sub::ensure_token(&mut conn, state.master_key(), &actor, id)
             .await
             .unwrap(),
         Some(Stored::Legacy)
@@ -299,7 +299,7 @@ async fn legacy_tokens_are_kept_and_guarded() {
     // The trigger: a hand-written hash change drops the ciphertext.
     sqlx::query("UPDATE users SET sub_token_enc = $2 WHERE id = $1")
         .bind(id)
-        .bind(state.totp().seal_sub_token(id, &t).unwrap())
+        .bind(state.master_key().seal_sub_token(id, &t).unwrap())
         .execute(&mut *conn)
         .await
         .unwrap();
@@ -325,12 +325,12 @@ async fn legacy_tokens_are_kept_and_guarded() {
     sqlx::query("UPDATE users SET sub_token_hash = $2, sub_token_enc = $3 WHERE id = $1")
         .bind(id)
         .bind(hash_token(&u))
-        .bind(state.totp().seal_sub_token(id, &t).unwrap())
+        .bind(state.master_key().seal_sub_token(id, &t).unwrap())
         .execute(&mut *conn)
         .await
         .unwrap();
     assert_eq!(
-        crate::sub::ensure_token(&mut conn, state.totp(), &actor, id)
+        crate::sub::ensure_token(&mut conn, state.master_key(), &actor, id)
             .await
             .unwrap(),
         Some(Stored::Legacy)

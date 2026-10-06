@@ -742,10 +742,13 @@ async fn resend_settings_seal_the_key_and_gate_enabling() {
         .await
         .unwrap();
     assert_eq!(
-        state.totp().open(RESEND_AAD, &sealed).as_deref(),
+        state.master_key().open(RESEND_AAD, &sealed).as_deref(),
         Some(&b"re_abc"[..])
     );
-    assert!(state.totp().open(SMTP_AAD, &sealed).is_none(), "own AAD");
+    assert!(
+        state.master_key().open(SMTP_AAD, &sealed).is_none(),
+        "own AAD"
+    );
     let s = load(&mut db.pool.acquire().await.unwrap()).await.unwrap();
     assert!(s.enabled && s.complete() && s.provider == "resend");
     // Absent provider/key = kept; audit says only "changed".

@@ -18,7 +18,7 @@
 //!   registration of the address) is one "invalid or expired code".
 //! - **Codes**: 6 digits, 10 minutes, single use, at most 5 wrong attempts,
 //!   one live code per (purpose, subject); stored as an HMAC
-//!   (`totp::Keys::mail_code_hash`). **Reset links**: 256-bit token in the
+//!   (`masterkey::Keys::mail_code_hash`). **Reset links**: 256-bit token in the
 //!   URL fragment (never sent to a server log), SHA-256 stored, 30 minutes,
 //!   single use, bound to the verified address it was sent to; using it
 //!   changes the password, which bumps `session_ver` (0009 trigger: every
@@ -608,7 +608,7 @@ pub fn plausible_code(c: &str) -> bool {
 /// Store a new code for (purpose, subject), replacing any previous one.
 pub async fn issue_code(
     conn: &mut PgConnection,
-    keys: &crate::totp::Keys,
+    keys: &crate::masterkey::Keys,
     purpose: &str,
     subject: &str,
     email: &str,
@@ -654,7 +654,7 @@ struct CodeRow {
 /// Check and consume the code of (purpose, subject), locking its row.
 pub async fn check_code(
     conn: &mut PgConnection,
-    keys: &crate::totp::Keys,
+    keys: &crate::masterkey::Keys,
     purpose: &str,
     subject: &str,
     code: &str,

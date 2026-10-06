@@ -9,10 +9,6 @@
 //! name is historical (`akari/totp-secret-aead/v1` now seals the SMTP
 //! password and the alert channel secrets; TOTP itself is gone).
 //! `tests::derived_keys_are_unchanged` pins every one of them.
-//!
-//! (The module keeps its name and `AppState::totp()` its accessor name while
-//! other v0.4 work that uses them is in flight; renaming both is a
-//! mechanical follow-up.)
 
 use rand::RngCore;
 use ring::{aead, hmac};

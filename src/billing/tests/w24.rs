@@ -250,11 +250,11 @@ async fn payment_methods_api() {
         .unwrap();
     let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, app.der());
     assert!(!String::from_utf8_lossy(&enc).contains(&b64[..32]));
-    let plain = state.totp().open_payment_secrets(mid, &enc).unwrap();
+    let plain = state.master_key().open_payment_secrets(mid, &enc).unwrap();
     assert!(String::from_utf8(plain).unwrap().contains(&b64));
     assert!(
         state
-            .totp()
+            .master_key()
             .open_payment_secrets(Uuid::new_v4(), &enc)
             .is_none(),
         "AAD = id"
@@ -673,10 +673,16 @@ async fn payments_reload_on_another_instance() {
             req.version = Some(v);
             req.enabled = enabled;
             req.config["order_timeout_minutes"] = json!(timeout);
-            pm::apply_update(&mut tx, a.totp(), &crate::audit::Actor::test(), id, &req)
-                .await
-                .ok()
-                .unwrap();
+            pm::apply_update(
+                &mut tx,
+                a.master_key(),
+                &crate::audit::Actor::test(),
+                id,
+                &req,
+            )
+            .await
+            .ok()
+            .unwrap();
             tx.commit().await.unwrap();
         }
     };

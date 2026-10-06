@@ -49,7 +49,7 @@ use crate::state::AppState;
 pub const FORMS: [&str; 4] = ["login", "register", "register_code", "reset"];
 /// Why a submission was trapped (metric label values).
 pub const TRAP_REASONS: [&str; 3] = ["honeypot", "too_fast", "bad_token"];
-/// AAD of the sealed Turnstile secret (`totp::Keys::seal`).
+/// AAD of the sealed Turnstile secret (`masterkey::Keys::seal`).
 pub const TURNSTILE_AAD: Uuid = Uuid::from_u128(0x616b_6172_692d_7473_2d73_6563_7265_7431);
 /// A form token older than this is refused (a page left open for a day
 /// fetches a new one; the portal refreshes it after each failure).
@@ -141,7 +141,7 @@ pub async fn load(conn: &mut PgConnection) -> sqlx::Result<Settings> {
 // ---------------------------------------------------------------------------
 
 /// A fresh form token issued at `now_ms` (unix milliseconds).
-pub fn issue_token(keys: &crate::totp::Keys, now_ms: i64) -> String {
+pub fn issue_token(keys: &crate::masterkey::Keys, now_ms: i64) -> String {
     let mut buf = [0u8; TOKEN_LEN];
     buf[..8].copy_from_slice(&now_ms.to_be_bytes());
     rand::rng().fill_bytes(&mut buf[8..16]);
@@ -151,7 +151,7 @@ pub fn issue_token(keys: &crate::totp::Keys, now_ms: i64) -> String {
 }
 
 /// The age (ms) of an authentic token; None for anything else.
-fn token_age_ms(keys: &crate::totp::Keys, token: &str, now_ms: i64) -> Option<i64> {
+fn token_age_ms(keys: &crate::masterkey::Keys, token: &str, now_ms: i64) -> Option<i64> {
     if token.len() > 64 {
         return None;
     }
@@ -169,7 +169,7 @@ fn token_age_ms(keys: &crate::totp::Keys, token: &str, now_ms: i64) -> Option<i6
 
 /// Why a submission is a trap, if it is (pure: request + settings + clock).
 pub fn trap_reason(
-    keys: &crate::totp::Keys,
+    keys: &crate::masterkey::Keys,
     s: &Settings,
     guard: Option<&Guard>,
     now_ms: i64,
@@ -215,7 +215,7 @@ pub async fn check(
     client: IpAddr,
 ) -> Result<Verdict, ApiError> {
     let now_ms = chrono::Utc::now().timestamp_millis();
-    if let Some(reason) = trap_reason(state.totp(), s, guard, now_ms) {
+    if let Some(reason) = trap_reason(state.master_key(), s, guard, now_ms) {
         crate::metrics::bot_trap(form.as_str(), reason);
         return Ok(Verdict::Trap);
     }
@@ -228,7 +228,7 @@ pub async fn check(
         let secret = s
             .turnstile_secret_enc
             .as_deref()
-            .and_then(|b| state.totp().open(TURNSTILE_AAD, b))
+            .and_then(|b| state.master_key().open(TURNSTILE_AAD, b))
             .and_then(|b| String::from_utf8(b).ok())
             .ok_or_else(|| {
                 tracing::error!(
@@ -319,7 +319,7 @@ pub fn public_view(state: &AppState, s: &Settings) -> Value {
         })
     });
     let token = (s.min_submit_secs > 0)
-        .then(|| issue_token(state.totp(), chrono::Utc::now().timestamp_millis()));
+        .then(|| issue_token(state.master_key(), chrono::Utc::now().timestamp_millis()));
     json!({
         "form_token": token,
         "form_min_secs": s.min_submit_secs,
@@ -399,7 +399,7 @@ fn valid_key(k: &str) -> bool {
 /// transaction.
 pub async fn apply_update(
     conn: &mut PgConnection,
-    keys: &crate::totp::Keys,
+    keys: &crate::masterkey::Keys,
     actor: &Actor,
     req: &SettingsReq,
 ) -> Result<Settings, ApiError> {
@@ -516,7 +516,7 @@ pub async fn apply_turnstile_off(conn: &mut PgConnection, actor: &Actor) -> Resu
         passkey_prompt: cur.passkey_prompt,
     };
     // No secret is sealed (absent = keep): any key set serves.
-    let keys = crate::totp::Keys::from_material(&[0u8; 32])?;
+    let keys = crate::masterkey::Keys::from_material(&[0u8; 32])?;
     apply_update(conn, &keys, actor, &req).await.map(|_| ())
 }
 
@@ -540,7 +540,7 @@ pub async fn put_settings(
 ) -> Result<Json<SettingsView>, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    let row = apply_update(&mut tx, state.totp(), &Actor::of(&user), &req).await?;
+    let row = apply_update(&mut tx, state.master_key(), &Actor::of(&user), &req).await?;
     let w = crate::passkey::policy_warnings(&state, &mut tx, &row).await?;
     tx.commit().await?;
     Ok(Json(SettingsView::of(&row, w)))
