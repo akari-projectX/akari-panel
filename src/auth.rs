@@ -470,7 +470,8 @@ async fn session(parts: &mut Parts, state: &AppState) -> Result<SessionRow, ApiE
     let row = sqlx::query_as::<_, SessionRow>(sqlx::AssertSqlSafe(format!(
         "SELECT u.id, u.email, u.role, u.enabled, {} AS expired, \
          (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'quota') AS quota_disabled, \
-         (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'admin') AS banned, \
+         (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'admin' \
+          AND u.erased_at IS NULL) AS banned, \
          u.session_ver FROM users u WHERE u.id = $1",
         crate::enforce::EXPIRED
     )))

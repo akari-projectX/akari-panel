@@ -27,6 +27,7 @@ pub mod entitle;
 pub mod entrance_health;
 pub mod entrances;
 pub mod entropy;
+pub mod erase;
 pub mod export;
 #[cfg(fuzzing)]
 #[doc(hidden)]

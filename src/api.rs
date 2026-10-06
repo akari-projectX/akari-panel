@@ -158,7 +158,8 @@ pub(crate) fn login_row_cols() -> String {
     format!(
         "u.id, u.email, u.role, u.enabled, u.password_hash, u.session_ver, {} AS expired, \
          (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'quota') AS quota_disabled, \
-         (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'admin') AS banned",
+         (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'admin' \
+          AND u.erased_at IS NULL) AS banned",
         crate::enforce::EXPIRED
     )
 }
@@ -587,6 +588,8 @@ pub struct UserView {
     email_verified: bool,
     /// R47: the owner.
     is_owner: bool,
+    /// Deleted and kept anonymized (finance records; erase.rs).
+    erased: bool,
 }
 
 /// UserView columns (alias `users` table as itself).
@@ -598,7 +601,8 @@ pub const USER_VIEW_COLS: &str = "id, role, enabled, traffic_limit_bytes, traffi
       WHERE up.user_id = users.id AND up.status = 'active') AS plan_name, \
      (SELECT up.next_reset_at FROM user_plans up \
       WHERE up.user_id = users.id AND up.status = 'active') AS next_reset_at, \
-     email, email_verified_at IS NOT NULL AS email_verified, is_owner";
+     email, email_verified_at IS NOT NULL AS email_verified, is_owner, \
+     erased_at IS NOT NULL AS erased";
 
 /// `GET /users` query (W21, M3): page, search, filters and order.
 #[derive(Deserialize, Default)]
@@ -629,9 +633,12 @@ pub struct UserPage {
 const MAX_USER_QUERY: usize = 64;
 
 /// SQL predicates (over alias `u`) of the derived statuses; mutually
-/// exclusive, in the badge's precedence: banned (any reason but quota) >
-/// over quota > expired (users only, `enforce::EXPIRED`) > active.
-pub const STATUS_BANNED: &str = "(NOT u.enabled AND u.disabled_reason IS DISTINCT FROM 'quota')";
+/// exclusive, in the badge's precedence: erased (an anonymized account,
+/// erase.rs) > banned > over quota > expired (users only,
+/// `enforce::EXPIRED`) > active.
+pub const STATUS_ERASED: &str = "(u.erased_at IS NOT NULL)";
+pub const STATUS_BANNED: &str =
+    "(NOT u.enabled AND u.disabled_reason = 'admin' AND u.erased_at IS NULL)";
 pub const STATUS_QUOTA: &str = "(NOT u.enabled AND u.disabled_reason = 'quota')";
 pub const STATUS_EXPIRED: &str =
     "(u.enabled AND u.role = 'user' AND u.expires_at IS NOT NULL AND u.expires_at <= now())";
@@ -710,10 +717,13 @@ pub(crate) fn push_user_filters(
         Some("banned") => {
             qb.push(" AND ").push(STATUS_BANNED);
         }
+        Some("erased") => {
+            qb.push(" AND ").push(STATUS_ERASED);
+        }
         Some(_) => {
             return Err(bad_request!(
                 "user.status_filter_invalid",
-                "status must be active, expired, quota or banned"
+                "status must be active, expired, quota, banned or erased"
             ));
         }
     }
@@ -851,7 +861,7 @@ pub async fn create_user(
          RETURNING id, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, \
          created_at, disabled_reason, \
          NULL::uuid AS plan_id, NULL::text AS plan_name, NULL::timestamptz AS next_reset_at, \
-         email, email_verified_at IS NOT NULL AS email_verified, is_owner",
+         email, email_verified_at IS NOT NULL AS email_verified, is_owner, false AS erased",
     )
     .bind(id)
     .bind(&email)
@@ -1067,6 +1077,7 @@ pub(crate) async fn apply_update_user(
     // R47: another admin's account (or making one) is the owner's; the
     // owner is never demoted.
     crate::owner::guard_target(conn, actor, id).await?;
+    refuse_erased(conn, id).await?;
     let current: Option<(String, bool)> = sqlx::query_as(
         "SELECT role, NOT enabled AND disabled_reason = 'admin' FROM users WHERE id = $1",
     )
@@ -1159,6 +1170,19 @@ pub(crate) async fn apply_update_user(
     Ok(bump_user_servers(conn, id).await?)
 }
 
+/// An erased (anonymized) account is never changed again (erase.rs).
+async fn refuse_erased(conn: &mut PgConnection, id: Uuid) -> Result<(), ApiError> {
+    let erased: Option<bool> =
+        sqlx::query_scalar("SELECT erased_at IS NOT NULL FROM users WHERE id = $1")
+            .bind(id)
+            .fetch_optional(conn)
+            .await?;
+    if erased == Some(true) {
+        return Err(conflict!("user.erased", "the account was deleted"));
+    }
+    Ok(())
+}
+
 /// Longest ban reason (characters; the portal shows it to the user).
 pub const MAX_BAN_REASON: usize = 500;
 
@@ -1219,6 +1243,7 @@ pub(crate) async fn apply_ban_user(
     }
     crate::owner::guard_target(conn, actor, id).await?;
     crate::owner::protect(conn, id).await?;
+    refuse_erased(conn, id).await?;
     lock_user_servers(conn, id).await?;
     let row: Option<(serde_json::Value, serde_json::Value, Option<String>)> =
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -1262,6 +1287,7 @@ pub(crate) async fn apply_unban_user(
     id: Uuid,
 ) -> Result<Vec<Uuid>, ApiError> {
     crate::owner::guard_target(conn, actor, id).await?;
+    refuse_erased(conn, id).await?;
     lock_user_servers(conn, id).await?;
     let row: Option<(bool, serde_json::Value, serde_json::Value, Option<String>)> =
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -1356,7 +1382,8 @@ async fn user_detail_in(conn: &mut PgConnection, id: Uuid) -> Result<UserDetail,
         "SELECT u.disabled_note AS reason, u.disabled_at AS banned_at, \
          u.disabled_by AS banned_by_id, b.email AS banned_by_email \
          FROM users u LEFT JOIN users b ON b.id = u.disabled_by \
-         WHERE u.id = $1 AND NOT u.enabled AND u.disabled_reason = 'admin'",
+         WHERE u.id = $1 AND NOT u.enabled AND u.disabled_reason = 'admin' \
+         AND u.erased_at IS NULL",
     )
     .bind(id)
     .fetch_optional(&mut *conn)
@@ -1423,7 +1450,7 @@ pub async fn update_user(
 /// Lock the user's nodes, then the user; remove the assignments, bump
 /// exactly those nodes, delete the user — one transaction, so an agent
 /// woken by the bump can never read "new version + old user set".
-async fn apply_delete_user(
+pub(crate) async fn apply_delete_user(
     conn: &mut PgConnection,
     actor: &Actor,
     id: Uuid,
@@ -1517,41 +1544,10 @@ pub async fn user_delete_impact(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     user.require_admin()?;
     let mut c = state.pg().acquire().await?;
-    type Row = (String, i64, i64, i64, i64, i64);
-    let row: Option<Row> = sqlx::query_as(
-        "SELECT u.email, COALESCE((SELECT balance_cents FROM user_balances WHERE user_id = u.id), 0), \
-           (SELECT count(*) FROM withdrawals WHERE user_id = u.id AND status = 'pending'), \
-           COALESCE((SELECT sum(amount_cents) FROM withdrawals \
-                     WHERE user_id = u.id AND status = 'pending'), 0)::bigint, \
-           (SELECT count(*) FROM orders WHERE user_id = u.id AND status = 'pending'), \
-           (SELECT count(*) FROM orders WHERE user_id = u.id AND status = 'paid' \
-            AND fulfilled_at IS NULL AND refunded_at IS NULL) \
-         FROM users u WHERE u.id = $1",
-    )
-    .bind(id)
-    .fetch_optional(&mut *c)
-    .await?;
-    let Some((email, balance, wd, wd_cents, pending, unfulfilled)) = row else {
-        return Err(ApiError::not_found());
-    };
-    let withdrawable = crate::billing::ledger::withdrawable(&mut c, id).await?;
-    let plan: Option<(String, Option<DateTime<Utc>>)> = sqlx::query_as(
-        "SELECT p.name, up.expires_at FROM user_plans up JOIN plans p ON p.id = up.plan_id \
-         WHERE up.user_id = $1 AND up.status = 'active'",
-    )
-    .bind(id)
-    .fetch_optional(&mut *c)
-    .await?;
-    Ok(Json(json!({
-        "email": email,
-        "balance_cents": balance,
-        "withdrawable_cents": withdrawable,
-        "pending_withdrawals": wd,
-        "pending_withdrawal_cents": wd_cents,
-        "pending_orders": pending,
-        "unfulfilled_orders": unfulfilled,
-        "plan": plan.map(|(name, expires_at)| json!({ "name": name, "expires_at": expires_at })),
-    })))
+    crate::erase::impact(&mut c, id)
+        .await?
+        .map(Json)
+        .ok_or_else(ApiError::not_found)
 }
 
 // ---------------------------------------------------------------------------

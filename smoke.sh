@@ -453,6 +453,27 @@ for p in /api/v1/me /api/v1/users /api/v1/settings/access; do
 done
 echo "front door: ok"
 
+echo "== W27: self-service account deletion =="
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+    -d '{"email":"smoke-leaving@smoke.test","password":"leaving-password-1"}')" = "201" ] || { echo "FAIL: create leaving user"; exit 1; }
+LEAVING=$(last_json "d['id']")
+LJAR="$LOG/leaving-cookies"
+[ "$(code -c "$LJAR" -X POST "$ROOT/auth/login" -H 'Content-Type: application/json' \
+    -d '{"email":"smoke-leaving@smoke.test","password":"leaving-password-1"}')" = "200" ] || { echo "FAIL: leaving user login"; exit 1; }
+[ "$(code -b "$LJAR" "$ROOT/api/v1/me/delete-impact")" = "200" ] \
+  && last_json "d['anonymized'] is False and d['balance_cents'] == 0 and d['plan'] is None" | matches '^True$' \
+  || { echo "FAIL: /me/delete-impact: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(code -b "$LJAR" -X POST "$ROOT/api/v1/me/delete" -H 'Content-Type: application/json' -d '{"confirm":true}')" = "400" ] \
+  && last_json "d['code']" | matches '^account.password_required$' || { echo "FAIL: deletion without the password"; exit 1; }
+[ "$(code -b "$LJAR" -c "$LJAR" -X POST "$ROOT/api/v1/me/delete" -H 'Content-Type: application/json' \
+    -d '{"confirm":true,"password":"leaving-password-1"}')" = "204" ] || { echo "FAIL: self-service deletion: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM users WHERE id = '$LEAVING'")" = "0" ] || { echo "FAIL: the account (no finance records) was not deleted"; exit 1; }
+[ "$(psql_q "SELECT after->>'why' FROM audit_log WHERE action = 'user.erase' AND target_id = '$LEAVING'")" = "self_service" ] \
+  || { echo "FAIL: deletion not audited"; exit 1; }
+[ "$(code -X POST "$ROOT/auth/login" -H 'Content-Type: application/json' \
+    -d '{"email":"smoke-leaving@smoke.test","password":"leaving-password-1"}')" = "401" ] || { echo "FAIL: a deleted account signs in"; exit 1; }
+echo "self-service deletion: ok"
+
 echo "== D1/D7: email login, no second factor =="
 last_json "d['email'] == 'root@smoke.test' and 'login' not in d and 'stage' not in d" | matches '^True$' \
   || { echo "FAIL: login response shape"; cat /tmp/akari-smoke/last; exit 1; }

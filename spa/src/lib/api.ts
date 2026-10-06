@@ -332,6 +332,8 @@ export interface UserView {
   // (W28-c). Only "quota" is ever re-enabled automatically (period reset,
   // plan change, traffic reset).
   disabled_reason: "admin" | "quota" | null;
+  // Deleted and kept anonymized (finance records).
+  erased?: boolean;
   // M3: the active plan (null = none) and its next traffic reset.
   plan_id: string | null;
   plan_name: string | null;
