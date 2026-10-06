@@ -31,7 +31,7 @@ const rollout = (over: Partial<RolloutView>): RolloutView => ({
   status: "running",
   waves: [10, 100],
   percentage: 100,
-  explicit_nodes: false,
+  explicit_servers: false,
   current_wave: 0,
   wave_started_at: "2026-10-02T00:00:00Z",
   health_timeout_secs: 600,
@@ -47,6 +47,8 @@ const rollout = (over: Partial<RolloutView>): RolloutView => ({
 
 const node = {
   id: "n1",
+  server_id: "s1",
+  server_name: "tokyo",
   name: "tokyo",
   enrolled: true,
   deleting_at: null,
@@ -76,7 +78,7 @@ const updateStatus = {
   keys_configured: true,
   last_check: null,
   latest: null,
-  outdated_nodes: 0,
+  outdated_servers: 0,
   update_available: null,
 };
 
@@ -102,7 +104,7 @@ describe("AdminUpdates", () => {
       waves: [25, 100],
       health_timeout_secs: 600,
       max_failure_ratio: 0.2,
-      node_ids: ["n1"],
+      server_ids: ["s1"],
     });
   });
 

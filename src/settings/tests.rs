@@ -875,7 +875,7 @@ async fn node_domain_hot_swaps_the_grpc_certificate() {
             .unwrap();
     tx.commit().await.unwrap();
     let old_creds = panel.enroll(&t).await.unwrap();
-    let sn: Option<String> = sqlx::query_scalar("SELECT server_name FROM nodes WHERE id = $1")
+    let sn: Option<String> = sqlx::query_scalar("SELECT server_name FROM servers WHERE id = $1")
         .bind(old_node)
         .fetch_one(&db.pool)
         .await
@@ -936,7 +936,7 @@ async fn node_domain_hot_swaps_the_grpc_certificate() {
         key: key.serialize_pem(),
         ca: issued.ca_pem,
     };
-    let sn: Option<String> = sqlx::query_scalar("SELECT server_name FROM nodes WHERE id = $1")
+    let sn: Option<String> = sqlx::query_scalar("SELECT server_name FROM servers WHERE id = $1")
         .bind(new_node)
         .fetch_one(&db.pool)
         .await
@@ -1130,11 +1130,13 @@ async fn probe_settings_api() {
     assert_eq!(v["probe"]["panel_tcp"]["default"], true);
 
     let (n, _) = db.member().await;
-    sqlx::query("UPDATE nodes SET panel_probe_next_at = now() + interval '4 hours' WHERE id = $1")
-        .bind(n)
-        .execute(&db.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE servers SET panel_probe_next_at = now() + interval '4 hours' WHERE id = $1",
+    )
+    .bind(n)
+    .execute(&db.pool)
+    .await
+    .unwrap();
     let put = |body: Value| {
         let admin = &admin;
         async move {
@@ -1175,7 +1177,7 @@ async fn probe_settings_api() {
         "this instance reloaded"
     );
     let next_in: f64 = sqlx::query_scalar(
-        "SELECT EXTRACT(EPOCH FROM panel_probe_next_at - now())::float8 FROM nodes WHERE id = $1",
+        "SELECT EXTRACT(EPOCH FROM panel_probe_next_at - now())::float8 FROM servers WHERE id = $1",
     )
     .bind(n)
     .fetch_one(&db.pool)
@@ -1241,7 +1243,7 @@ async fn probe_change_reaches_connected_agents() {
     }
     assert_eq!(first.unwrap().interval_seconds, 18_000);
     let caps: Option<Vec<String>> =
-        sqlx::query_scalar("SELECT agent_capabilities FROM nodes WHERE id = $1")
+        sqlx::query_scalar("SELECT agent_capabilities FROM servers WHERE id = $1")
             .bind(n)
             .fetch_one(&db.pool)
             .await

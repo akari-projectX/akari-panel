@@ -1,11 +1,11 @@
-//! Phase 2 of node deletion (R12 D1). Runs on every panel instance; the
-//! node row lock makes concurrent reapers safe (one deletes, the others
+//! Phase 2 of server deletion (R12 D1). Runs on every panel instance; the
+//! server row lock makes concurrent reapers safe (one deletes, the others
 //! find nothing).
 //!
-//! A node marked deleting (phase 1, `api::apply_begin_delete_node`: disabled
+//! A server marked deleting (phase 1, `api::apply_begin_delete_node`: disabled
 //! and bumped, so its agent converges to the empty state while its final
 //! counters are still billed) is deleted once
-//!   - its agent acked the empty state (nodes.delete_acked_at) at least
+//!   - its agent acked the empty state (servers.delete_acked_at) at least
 //!     ACK_SETTLE ago — time for the instance holding the session to flush
 //!     the final counters that arrived before the ack; or
 //!   - no agent is online for it (nothing left to converge or bill); or
@@ -14,7 +14,7 @@
 //! Deleting = in one transaction: lock the row, re-check, tombstone the
 //! certificate serial (revoked_certs), delete the row (its entrances and
 //! their entrance_users cascade; traffic_counters are kept). The delete trigger notifies `del:<id>`; any
-//! session still open for the node reads "gone" and retires (empty state,
+//! session still open for the server reads "gone" and retires (empty state,
 //! close). The tombstoned certificate is served the empty state and closed
 //! on every later connection.
 
@@ -30,7 +30,7 @@ const EVERY: Duration = Duration::from_secs(5);
 const ACK_SETTLE_SECS: f64 = 10.0;
 /// Phase 2 happens at the latest this long after phase 1.
 const DELETE_TIMEOUT_SECS: f64 = 120.0;
-/// A node counts as online if a session refreshed it this recently
+/// A server counts as online if a session refreshed it this recently
 /// (persist_online_loop refreshes every 30 s).
 const ONLINE_FRESH_SECS: f64 = 90.0;
 
@@ -60,7 +60,7 @@ pub async fn reap_loop(state: AppState) {
     loop {
         tick.tick().await;
         if let Err(e) = reap_once(&state).await {
-            tracing::warn!(error = %e, "node reaper failed");
+            tracing::warn!(error = %e, "server reaper failed");
         }
         // M6 rollouts: timeouts, settling, halt, waves (any instance).
         if let Err(e) = crate::rollout::tick(state.pg()).await {
@@ -74,15 +74,15 @@ pub async fn reap_loop(state: AppState) {
         }
         if tokio::time::Instant::now() >= next_retention {
             next_retention = tokio::time::Instant::now() + crate::traffic::RETENTION_EVERY;
-            // W11: node metrics hour rollup + retention (one instance).
+            // W11: server metrics hour rollup + retention (one instance).
             match crate::nodestat::rollup_and_prune(state.pg()).await {
                 Ok(Some(r)) if r.minutes_pruned + r.hours_pruned > 0 => tracing::info!(
                     minutes_pruned = r.minutes_pruned,
                     hours_pruned = r.hours_pruned,
-                    "node metrics retention"
+                    "server metrics retention"
                 ),
                 Ok(_) => {}
-                Err(e) => tracing::warn!(error = %e, "node metrics rollup failed"),
+                Err(e) => tracing::warn!(error = %e, "server metrics rollup failed"),
             }
             match crate::traffic::retention_pass(state.pg(), crate::traffic::RETENTION_MARGIN_SECS)
                 .await
@@ -91,7 +91,7 @@ pub async fn reap_loop(state: AppState) {
                 Ok(r) => tracing::info!(
                     sessions_retired = r.sessions_retired,
                     rows_retired_session = r.rows_retired_session,
-                    rows_deleted_node = r.rows_deleted_node,
+                    rows_deleted_server = r.rows_deleted_server,
                     "traffic counters retention"
                 ),
                 Err(e) => tracing::warn!(error = %e, "traffic counters retention failed"),
@@ -130,7 +130,7 @@ pub async fn reap_loop(state: AppState) {
 
 pub async fn reap_once(state: &AppState) -> anyhow::Result<Vec<Uuid>> {
     let due: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT n.id FROM nodes n WHERE {DUE} ORDER BY n.id"
+        "SELECT n.id FROM servers n WHERE {DUE} ORDER BY n.id"
     )))
     .bind(ACK_SETTLE_SECS)
     .bind(DELETE_TIMEOUT_SECS)
@@ -139,22 +139,22 @@ pub async fn reap_once(state: &AppState) -> anyhow::Result<Vec<Uuid>> {
     .await?;
     let mut done = Vec::new();
     for id in due {
-        // Bill what this instance still buffers for the node first.
-        if let Err(e) = crate::traffic::flush_node(state, id).await {
-            tracing::warn!(node = %id, error = %e, "flush before node deletion failed");
+        // Bill what this instance still buffers for the server first.
+        if let Err(e) = crate::traffic::flush_server(state, id).await {
+            tracing::warn!(server = %id, error = %e, "flush before server deletion failed");
         }
-        // One node's failure must not stall the others.
+        // One server's failure must not stall the others.
         let serial = match finalize_one(state, id).await {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!(node = %id, error = %e, "node deletion (phase 2) failed; retrying next tick");
+                tracing::warn!(server = %id, error = %e, "server deletion (phase 2) failed; retrying next tick");
                 continue;
             }
         };
         if let Some(serial) = serial {
-            tracing::info!(node = %id, serial = serial.as_deref().unwrap_or("-"),
-                "node deleted, certificate revoked");
-            crate::grpc::forget_node(state, id).await;
+            tracing::info!(server = %id, serial = serial.as_deref().unwrap_or("-"),
+                "server deleted, certificate revoked");
+            crate::grpc::forget_server(state, id).await;
             done.push(id);
         }
     }
@@ -169,7 +169,7 @@ async fn finalize_one(state: &AppState, id: Uuid) -> sqlx::Result<Option<Option<
 }
 
 /// Lock, re-check that phase 2 is due, tombstone the serial, delete.
-/// Returns Some(serial) if it deleted the node (serial None: the node never
+/// Returns Some(serial) if it deleted the server (serial None: the server never
 /// had a certificate).
 pub(crate) async fn finalize_delete(
     conn: &mut PgConnection,
@@ -177,7 +177,7 @@ pub(crate) async fn finalize_delete(
 ) -> sqlx::Result<Option<Option<String>>> {
     let row: Option<(Option<String>, Option<String>)> =
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT n.cert_serial, n.prev_cert_serial FROM nodes n WHERE n.id = $4 AND {DUE} FOR UPDATE"
+        "SELECT n.cert_serial, n.prev_cert_serial FROM servers n WHERE n.id = $4 AND {DUE} FOR UPDATE"
     )))
         .bind(ACK_SETTLE_SECS)
         .bind(DELETE_TIMEOUT_SECS)
@@ -188,11 +188,11 @@ pub(crate) async fn finalize_delete(
     let Some((serial, prev)) = row else {
         return Ok(None);
     };
-    // Both certificates the node may still present (M1-8: the one renewed
+    // Both certificates the server may still present (M1-8: the one renewed
     // from stays valid until the newer one is seen).
     for s in [&serial, &prev].into_iter().flatten() {
         sqlx::query(
-            "INSERT INTO revoked_certs (cert_serial, node_id, reason) VALUES ($1, $2, 'deleted') \
+            "INSERT INTO revoked_certs (cert_serial, server_id, reason) VALUES ($1, $2, 'deleted') \
              ON CONFLICT (cert_serial) DO UPDATE SET reason = 'deleted'",
         )
         .bind(s)
@@ -203,12 +203,12 @@ pub(crate) async fn finalize_delete(
     // Certificates superseded by renewals: an agent still holding one is
     // retired (empty state) now, no longer merely refused.
     sqlx::query(
-        "UPDATE revoked_certs SET reason = 'deleted' WHERE node_id = $1 AND reason <> 'deleted'",
+        "UPDATE revoked_certs SET reason = 'deleted' WHERE server_id = $1 AND reason <> 'deleted'",
     )
     .bind(id)
     .execute(&mut *conn)
     .await?;
-    sqlx::query("DELETE FROM nodes WHERE id = $1")
+    sqlx::query("DELETE FROM servers WHERE id = $1")
         .bind(id)
         .execute(&mut *conn)
         .await?;
@@ -227,14 +227,14 @@ mod tests {
         r
     }
 
-    /// Phase 2 waits for the ack (+ settle), a timeout, or an offline node;
-    /// never for a node that is not being deleted.
+    /// Phase 2 waits for the ack (+ settle), a timeout, or an offline server;
+    /// never for a server that is not being deleted.
     #[tokio::test]
     async fn phase_two_conditions() {
         let Some(db) = TestDb::new().await else {
             return;
         };
-        let n = db.node().await;
+        let n = db.server().await;
         let set = |sql: &'static str| {
             let pool = db.pool.clone();
             async move {
@@ -245,23 +245,24 @@ mod tests {
                     .unwrap();
             }
         };
-        set("UPDATE nodes SET status = 'online', last_seen_at = now() WHERE id = $1").await;
+        set("UPDATE servers SET status = 'online', last_seen_at = now() WHERE id = $1").await;
         assert!(!due(&db, n).await, "not deleting");
         let mut tx = db.pool.begin().await.unwrap();
-        crate::api::apply_begin_delete_node(&mut tx, &crate::audit::Actor::test(), n)
+        crate::servers::apply_begin_delete(&mut tx, &crate::audit::Actor::test(), n)
             .await
             .unwrap();
         tx.commit().await.unwrap();
         assert!(!due(&db, n).await, "online, not acked, recent");
-        set("UPDATE nodes SET delete_acked_at = now() WHERE id = $1").await;
+        set("UPDATE servers SET delete_acked_at = now() WHERE id = $1").await;
         assert!(!due(&db, n).await, "acked, not settled");
-        set("UPDATE nodes SET delete_acked_at = now() - interval '11 seconds' WHERE id = $1").await;
+        set("UPDATE servers SET delete_acked_at = now() - interval '11 seconds' WHERE id = $1")
+            .await;
         assert!(due(&db, n).await, "acked and settled");
-        set("UPDATE nodes SET delete_acked_at = NULL, deleting_at = now() - interval '3 minutes' WHERE id = $1").await;
+        set("UPDATE servers SET delete_acked_at = NULL, deleting_at = now() - interval '3 minutes' WHERE id = $1").await;
         assert!(due(&db, n).await, "timed out");
-        set("UPDATE nodes SET deleting_at = now(), last_seen_at = now() - interval '5 minutes' WHERE id = $1").await;
+        set("UPDATE servers SET deleting_at = now(), last_seen_at = now() - interval '5 minutes' WHERE id = $1").await;
         assert!(due(&db, n).await, "stale online status = offline");
-        set("UPDATE nodes SET last_seen_at = now(), status = 'offline' WHERE id = $1").await;
+        set("UPDATE servers SET last_seen_at = now(), status = 'offline' WHERE id = $1").await;
         assert!(due(&db, n).await, "offline");
         db.drop().await;
     }

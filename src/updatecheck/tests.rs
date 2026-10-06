@@ -672,7 +672,7 @@ async fn api_status_settings_and_check() {
     let n1 = db.node().await;
     let n2 = db.node().await;
     sqlx::query(
-        "UPDATE nodes SET agent_version = 'v1.0.0', agent_os = 'linux', agent_arch = 'amd64', \
+        "UPDATE servers SET agent_version = 'v1.0.0', agent_os = 'linux', agent_arch = 'amd64', \
          agent_protocol = CASE WHEN id = $1 THEN 3 ELSE 2 END WHERE id IN ($1, $2)",
     )
     .bind(n1)
@@ -705,7 +705,7 @@ async fn api_status_settings_and_check() {
     assert_eq!(st["last_check"]["ok"], true, "{st}");
     assert_eq!(st["last_check"]["version"], "v1.5.0");
     assert_eq!(st["latest"]["version"], "v1.5.0");
-    assert_eq!(st["outdated_nodes"], 1);
+    assert_eq!(st["outdated_servers"], 1);
     assert_eq!(st["update_available"], "v1.5.0");
     let actor: String =
         sqlx::query_scalar("SELECT actor_label FROM audit_log WHERE action = 'agent_update.check'")
@@ -714,13 +714,13 @@ async fn api_status_settings_and_check() {
             .unwrap();
     assert_ne!(actor, crate::audit::SYSTEM);
     // The node on the new version: no badge.
-    sqlx::query("UPDATE nodes SET agent_version = 'v1.5.0' WHERE id = $1")
+    sqlx::query("UPDATE servers SET agent_version = 'v1.5.0' WHERE id = $1")
         .bind(n1)
         .execute(&db.pool)
         .await
         .unwrap();
     let st = c.get("/test/api/v1/agent-updates").await.json();
-    assert_eq!(st["outdated_nodes"], 0);
+    assert_eq!(st["outdated_servers"], 0);
     assert!(st["update_available"].is_null());
     db.drop().await;
 }

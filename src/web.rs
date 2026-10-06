@@ -8,8 +8,8 @@ use serde_json::json;
 use subtle::ConstantTimeEq;
 
 use crate::{
-    account, alerts, api, audit, dashboard, nodeinstall, nodestat, nodetpl, plans, reject, rollout,
-    settings, spa, state::AppState, sub, tickets, updates,
+    account, alerts, api, audit, dashboard, nodeinstall, nodes, nodestat, nodetpl, plans, reject,
+    rollout, servers, settings, spa, state::AppState, sub, tickets, updates,
 };
 
 pub fn router(state: AppState) -> Router {
@@ -127,26 +127,57 @@ pub fn router(state: AppState) -> Router {
             "/{prefix}/api/v1/plans/{id}/impact",
             axum::routing::post(plans::plan_impact),
         )
+        // Q1: servers (machines, agents) and their nodes (one inbound each).
         .route(
-            "/{prefix}/api/v1/nodes",
-            get(api::list_nodes).post(api::create_node),
+            "/{prefix}/api/v1/servers",
+            get(servers::list_servers).post(servers::create_server),
         )
         .route(
-            "/{prefix}/api/v1/nodes/{id}/enroll-token",
-            post(api::issue_enroll_token),
+            "/{prefix}/api/v1/servers/{id}",
+            get(servers::get_server)
+                .patch(servers::update_server)
+                .delete(servers::delete_server),
+        )
+        .route(
+            "/{prefix}/api/v1/servers/{id}/enroll-token",
+            post(servers::issue_enroll_token),
+        )
+        .route(
+            "/{prefix}/api/v1/servers/{id}/install",
+            post(nodeinstall::issue_install),
+        )
+        // W17: per-server alert overrides.
+        .route(
+            "/{prefix}/api/v1/servers/{id}/alert-rules",
+            get(alerts::get_server_rules).put(alerts::put_server_rules),
+        )
+        // W11: machine status, history, "立即测速".
+        .route(
+            "/{prefix}/api/v1/servers/{id}/status",
+            get(nodestat::server_status),
+        )
+        .route(
+            "/{prefix}/api/v1/servers/{id}/metrics",
+            get(nodestat::server_metrics),
+        )
+        .route(
+            "/{prefix}/api/v1/servers/{id}/probe",
+            post(nodestat::request_probe),
+        )
+        .route(
+            "/{prefix}/api/v1/nodes",
+            get(nodes::list_nodes).post(nodes::create_node),
         )
         .route(
             "/{prefix}/api/v1/nodes/{id}",
-            get(api::get_node)
-                .patch(api::update_node)
-                .delete(api::delete_node),
+            get(nodes::get_node)
+                .patch(nodes::update_node)
+                .delete(nodes::delete_node),
         )
-        // W17: per-node alert overrides.
         .route(
-            "/{prefix}/api/v1/nodes/{id}/alert-rules",
-            get(alerts::get_node_rules).put(alerts::put_node_rules),
+            "/{prefix}/api/v1/nodes/{id}/inbound",
+            put(nodes::set_inbound),
         )
-        .route("/{prefix}/api/v1/nodes/{id}/inbound", put(api::set_inbound))
         .route(
             "/{prefix}/api/v1/entrances/{id}",
             axum::routing::patch(crate::entrances::update_entrance)
@@ -156,23 +187,7 @@ pub fn router(state: AppState) -> Router {
             "/{prefix}/api/v1/nodes/{id}/entrances",
             post(crate::entrances::create_relay),
         )
-        .route(
-            "/{prefix}/api/v1/nodes/{id}/install",
-            post(nodeinstall::issue_install),
-        )
-        // W11: machine status, history, "立即测速"; the portal node list.
-        .route(
-            "/{prefix}/api/v1/nodes/{id}/status",
-            get(nodestat::node_status),
-        )
-        .route(
-            "/{prefix}/api/v1/nodes/{id}/metrics",
-            get(nodestat::node_metrics),
-        )
-        .route(
-            "/{prefix}/api/v1/nodes/{id}/probe",
-            post(nodestat::request_probe),
-        )
+        // The portal node list.
         .route("/{prefix}/api/v1/me/nodes", get(nodestat::my_nodes))
         // W17: support tickets (customers: own tickets only; staff: all).
         .route(

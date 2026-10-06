@@ -148,9 +148,9 @@ pub async fn run(args: SeedArgs) -> Result<()> {
     if args.counters {
         let t = Instant::now();
         let n = sqlx::query(
-            "INSERT INTO traffic_counters (node_id, entrance_id, user_id, session_id, up_bytes, \
+            "INSERT INTO traffic_counters (server_id, entrance_id, user_id, session_id, up_bytes, \
              down_bytes, updated_at, first_seen_at) \
-             SELECT e.node_id, eu.entrance_id, eu.user_id, 'bench-old-session', 1000000, 5000000, \
+             SELECT e.server_id, eu.entrance_id, eu.user_id, 'bench-old-session', 1000000, 5000000, \
                     now() - interval '3 days', now() - interval '10 days' \
              FROM entrance_users eu JOIN entrances e ON e.id = eu.entrance_id",
         )
@@ -228,9 +228,16 @@ async fn seed_nodes(pg: &PgPool, count: usize) -> Result<()> {
         .map(|i| format!("198.51.{}.{}", i / 250, 1 + i % 250))
         .collect();
     let mut tx = pg.begin().await?;
+    // Q1: one server per node, sharing its id (one agent per node).
+    sqlx::query("INSERT INTO servers (id, name) SELECT * FROM unnest($1::uuid[], $2::text[])")
+        .bind(&ids)
+        .bind(&names)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query(
-        "INSERT INTO nodes (id, name, inbound) \
-         SELECT * FROM unnest($1::uuid[], $2::text[], $3::jsonb[])",
+        "INSERT INTO nodes (id, server_id, name, inbound) \
+         SELECT t.id, t.id, t.name, t.inbound \
+         FROM unnest($1::uuid[], $2::text[], $3::jsonb[]) AS t(id, name, inbound)",
     )
     .bind(&ids)
     .bind(&names)
@@ -250,7 +257,7 @@ async fn seed_nodes(pg: &PgPool, count: usize) -> Result<()> {
         .map(|i| akari_panel::enroll::hash_token(&common::enroll_token(i)))
         .collect();
     sqlx::query(
-        "INSERT INTO node_enrollments (node_id, token_hash, expires_at) \
+        "INSERT INTO server_enrollments (server_id, token_hash, expires_at) \
          SELECT id, h, now() + interval '30 days' FROM unnest($1::uuid[], $2::bytea[]) AS t(id, h)",
     )
     .bind(&ids)

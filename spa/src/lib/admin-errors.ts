@@ -178,10 +178,13 @@ export const ADMIN_CODES: Record<string, string> = {
   "mail.test_needs_host": "请先保存 SMTP 服务器和发件地址",
   "mail.to_invalid": "收件地址不是有效的邮箱地址",
   "mail.username_invalid": "SMTP 用户名无效",
+  // 服务器（Q1：一台机器 = 一个 agent）
+  "server.deleting": "服务器正在删除，不能修改",
+  "server.name_exists": "已存在同名的服务器",
+  "server.name_invalid": "服务器名称须为 1–64 个字符，不能含控制字符",
   // 节点
   "node.acme_agent_too_old":
-    "该节点的 agent 版本过旧（协议 {p} < {need}），不支持节点域名自动证书：请先升级 agent（升级发布，或在节点上重新运行一次安装命令），或清空节点域名并手动放置证书",
-  "node.deleting": "节点正在删除，不能修改",
+    "该服务器的 agent 版本过旧（协议 {p} < {need}），不支持自动证书：请先升级 agent（升级发布，或在服务器上重新运行一次安装命令），或清空服务器域名并手动放置证书",
   "node.display_name_invalid": "显示名称最多 {max_display_chars} 个可打印字符",
   "node.max_rate_invalid": "计费速率上限必须大于 0",
   "node.name_empty": "节点名称不能为空",
@@ -190,6 +193,7 @@ export const ADMIN_CODES: Record<string, string> = {
   "node.probe_cooldown": "刚刚已经请求过测速，请稍后再试",
   "node.range_invalid": "时间范围只能是 1h、6h、24h、48h、7d、30d、90d",
   "node.region_long": "地区最多 64 个字符",
+  "node.server_fields": "服务器域名与安装链接属于服务器：在服务器上修改",
   "node.template_and_inbound": "模板与入站 JSON 只能二选一",
   "node.sort_range": "排序值须在 -{sort_limit} 到 {sort_limit} 之间",
   "node.tag_invalid": "每个标签最多 {max_tag_chars} 个可打印字符，且不能含「|」",

@@ -240,7 +240,7 @@ function Rollouts() {
       health_timeout_secs: Number(timeout),
       max_failure_ratio: Number(ratio),
     };
-    if (selected.length > 0) body.node_ids = selected;
+    if (selected.length > 0) body.server_ids = selected;
     try {
       await post<RolloutView>("/rollouts", body);
       setSelected([]);
@@ -323,21 +323,24 @@ function Rollouts() {
         </div>
         <details>
           <summary className="cursor-pointer text-sm text-muted-foreground">
-            仅限这些节点（{selected.length === 0 ? "全部已注册节点" : `已选 ${selected.length} 个`}）
+            仅限这些服务器（{selected.length === 0 ? "全部已注册服务器" : `已选 ${selected.length} 台`}）
           </summary>
           <div className="mt-2 flex flex-wrap gap-3">
+            {/* Q1: an update targets the agent, i.e. the server (one row each). */}
             {(nodes.data ?? [])
-              .filter((n) => n.enrolled && !n.deleting_at)
+              .filter(
+                (n, i, all) => n.enrolled && !n.deleting_at && all.findIndex((m) => m.server_id === n.server_id) === i,
+              )
               .map((n) => (
-                <label key={n.id} className="flex items-center gap-1 text-sm">
+                <label key={n.server_id} className="flex items-center gap-1 text-sm">
                   <input
                     type="checkbox"
-                    checked={selected.includes(n.id)}
+                    checked={selected.includes(n.server_id)}
                     onChange={(e) =>
-                      setSelected((s) => (e.target.checked ? [...s, n.id] : s.filter((x) => x !== n.id)))
+                      setSelected((s) => (e.target.checked ? [...s, n.server_id] : s.filter((x) => x !== n.server_id)))
                     }
                   />
-                  {n.name} <span className="text-xs text-muted-foreground">{n.agent_version ?? "—"}</span>
+                  {n.server_name} <span className="text-xs text-muted-foreground">{n.agent_version ?? "—"}</span>
                 </label>
               ))}
           </div>
@@ -441,10 +444,10 @@ function RolloutRow({
       {open && (
         <TableRow>
           <TableCell colSpan={6}>
-            <Table label="节点更新状态">
+            <Table label="服务器更新状态">
               <TableHeader>
                 <TableRow>
-                  <TableHead>节点</TableHead>
+                  <TableHead>服务器</TableHead>
                   <TableHead>批次</TableHead>
                   <TableHead>状态</TableHead>
                   <TableHead>原版本</TableHead>
@@ -453,8 +456,8 @@ function RolloutRow({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {(detail.data?.nodes ?? []).map((n) => (
-                  <TableRow key={n.node_id}>
+                {(detail.data?.servers ?? []).map((n) => (
+                  <TableRow key={n.server_id}>
                     <TableCell>{n.name}</TableCell>
                     <TableCell>{n.wave + 1}</TableCell>
                     <TableCell className={n.status === "failed" ? "text-destructive" : undefined}>

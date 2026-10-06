@@ -235,7 +235,7 @@ trap 'cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROB
 
 # Reset AFTER startup: fresh volumes have no tables until the panel migrates,
 # and Valkey rate-limit counters would poison the next run's login test.
-docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE nodes CASCADE; TRUNCATE users CASCADE;" >/dev/null 2>&1 || true
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE servers CASCADE; TRUNCATE users CASCADE;" >/dev/null 2>&1 || true
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE revoked_certs, traffic_counters, audit_log, agent_releases, rollouts CASCADE;" >/dev/null 2>&1 || true
 # Catalogue rows a run aborted midway leaves behind (names are unique).
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE plans, node_groups, coupons, payment_methods CASCADE;" >/dev/null 2>&1 || true
@@ -246,7 +246,7 @@ docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "UPDATE panel_se
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM signup_settings; INSERT INTO signup_settings (id) VALUES (1); DELETE FROM mail_settings; INSERT INTO mail_settings (id) VALUES (1); TRUNCATE mail_outbox;" >/dev/null 2>&1 || true
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM auth_settings; INSERT INTO auth_settings (id) VALUES (1);" >/dev/null 2>&1 || true
 # W17: alert settings an aborted run may leave (a webhook to a dead receiver).
-docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE node_alerts, alert_notifications; UPDATE alert_settings SET version = 0, enabled = true, offline_secs = 300, webhook_enabled = false, webhook_url = NULL, webhook_secret_enc = NULL, telegram_enabled = false, telegram_chat_id = NULL, telegram_token_enc = NULL, telegram_api_url = NULL, email_enabled = false, email_to = '{}';" >/dev/null 2>&1 || true
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE server_alerts, alert_notifications; UPDATE alert_settings SET version = 0, enabled = true, offline_secs = 300, webhook_enabled = false, webhook_url = NULL, webhook_secret_enc = NULL, telegram_enabled = false, telegram_chat_id = NULL, telegram_token_enc = NULL, telegram_api_url = NULL, email_enabled = false, email_to = '{}';" >/dev/null 2>&1 || true
 # Ops: announcements, knowledge base, templates and branding of an earlier run.
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE announcements, kb_articles, kb_categories, mail_templates CASCADE; DELETE FROM site_branding; INSERT INTO site_branding (id) VALUES (1);" >/dev/null 2>&1 || true
 vk flushdb >/dev/null
@@ -285,9 +285,11 @@ AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" admin add root@smoke.test 2>&1 | match
 AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" admin add not-an-address 2>&1 | matches "created admin account" \
   && { echo "FAIL: admin add accepted a non-address"; exit 1; } || echo "non-address rejected: ok"
 
-echo "== register node (M1-8: key-less bootstrap with a one-time enrollment token) =="
-"$PANEL" node add test-node --out "$BOOT" >/dev/null
-NODE_ID=$("$PANEL" node list | awk 'NR==2{print $1}')
+echo "== register server (M1-8: key-less bootstrap with a one-time enrollment token) =="
+# Q1: the agent's identity is a server (machine); its node is created on it
+# through the API below.
+"$PANEL" server add test-node --out "$BOOT" >/dev/null
+SERVER_ID=$("$PANEL" server list | awk 'NR==2{print $1}')
 grep -q 'PRIVATE KEY' "$BOOT" && { echo "FAIL: bootstrap file contains a private key"; exit 1; }
 grep -qE '^enrollment_token = "[A-Za-z0-9_-]{43}"$' "$BOOT" || { echo "FAIL: bootstrap file lacks the enrollment token"; exit 1; }
 [ "$(stat -c %a "$BOOT")" = "600" ] || { echo "FAIL: bootstrap file is not 0600"; exit 1; }
@@ -471,6 +473,14 @@ echo "== unauthorized access =="
 echo "unauthorized: ok"
 
 echo "== configure node + user via API =="
+# Q1: the node (one inbound) on the CLI-registered server.
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' \
+    -d "{\"server_id\":\"$SERVER_ID\",\"name\":\"test-node\"}")" = "201" ] \
+  || { echo "FAIL: create the node on the server"; cat /tmp/akari-smoke/last; exit 1; }
+NODE_ID=$(last_json "d['id']")
+[ "$(last_json "d['server_id']")" = "$SERVER_ID" ] && [ "$NODE_ID" != "$SERVER_ID" ] \
+  && [ "$(last_json "'enrollment_token' in d")" = "False" ] \
+  || { echo "FAIL: node not on its server"; cat /tmp/akari-smoke/last; exit 1; }
 # W28-a (D2): a node has one inbound (the panel names it; PUT .../inbound).
 put_inbound() { code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/inbound" -H 'Content-Type: application/json' -d "{\"inbound\":$1}"; }
 GOOD_IB='{"listen":"127.0.0.1","port":11443,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp"}}'
@@ -977,9 +987,9 @@ LEASE=$(node_field lease_remaining_seconds)
 echo "lease: ok (${LEASE}s left)"
 
 echo "== node online + heartbeat =="
-STATUS=$(docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -tAc "SELECT status FROM nodes WHERE id='$NODE_ID'")
+STATUS=$(docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -tAc "SELECT status FROM servers WHERE id='$SERVER_ID'")
 [ "$STATUS" = "online" ] || { echo "FAIL: node status '$STATUS'"; exit 1; }
-vk exists "akari:node:online:$NODE_ID" | matches 1 \
+vk exists "akari:server:online:$SERVER_ID" | matches 1 \
   || { echo "FAIL: online key missing"; exit 1; }
 
 echo "== W11: node form fields, multiplier billing, machine status, latency =="
@@ -1032,7 +1042,7 @@ python3 "$LOG/w11-vless.py" "$VLESS_D" || { echo "FAIL: vless round trip for D";
 for _ in $(seq 1 40); do
   [ "$(psql_q "SELECT traffic_used_bytes FROM users WHERE id='$USER_D'")" -ge 300000 ] && break; sleep 1
 done
-RAW_D=$(psql_q "SELECT coalesce(sum(up_bytes + down_bytes), 0) FROM traffic_counters WHERE node_id='$NODE_ID' AND user_id='$USER_D'")
+RAW_D=$(psql_q "SELECT coalesce(sum(up_bytes + down_bytes), 0) FROM traffic_counters WHERE server_id='$SERVER_ID' AND user_id='$USER_D'")
 USED_D=$(psql_q "SELECT traffic_used_bytes FROM users WHERE id='$USER_D'")
 python3 -c "
 raw, used = $RAW_D, $USED_D
@@ -1062,7 +1072,7 @@ import json; v = json.load(open('/tmp/akari-smoke/last'))
 assert len(v) == 1 and v[0]['name'] == '冒烟 01' and v[0]['entrance'] == '直连' and v[0]['rate'] == 0.5 and v[0]['online'] is True, v
 assert 'id' not in v[0] and 'connect_host' not in v[0], v
 " || { echo "FAIL: /me/nodes content"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(code -b "$DJAR" "$BASE/api/v1/nodes/$NODE_ID/status")" = "403" ] || { echo "FAIL: user reads node status"; exit 1; }
+[ "$(code -b "$DJAR" "$BASE/api/v1/servers/$SERVER_ID/status")" = "403" ] || { echo "FAIL: user reads node status"; exit 1; }
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"visible":false}')" = "200" ] || { echo "FAIL: hide node"; exit 1; }
 code -b "$DJAR" "$BASE/api/v1/me/nodes" >/dev/null
 [ "$(cat /tmp/akari-smoke/last)" = "[]" ] || { echo "FAIL: hidden node listed to the user"; exit 1; }
@@ -1081,7 +1091,7 @@ psql_q "SELECT count(*) FROM pg_inherits WHERE inhparent = 'traffic_daily'::regc
 for _ in $(seq 1 75); do
   # Settled values now (a late final report may still have added a little).
   USED_D=$(psql_q "SELECT traffic_used_bytes FROM users WHERE id='$USER_D'")
-  RAW_D=$(psql_q "SELECT coalesce(sum(up_bytes + down_bytes), 0) FROM traffic_counters WHERE node_id='$NODE_ID' AND user_id='$USER_D'")
+  RAW_D=$(psql_q "SELECT coalesce(sum(up_bytes + down_bytes), 0) FROM traffic_counters WHERE server_id='$SERVER_ID' AND user_id='$USER_D'")
   code -b "$DJAR" "$BASE/api/v1/me/traffic" >/dev/null
   python3 -c "import json,sys; v=json.load(open('/tmp/akari-smoke/last')); sys.exit(0 if v['total']['billed_bytes'] == $USED_D else 1)" 2>/dev/null && break
   sleep 1
@@ -1142,11 +1152,11 @@ W29_RULE=$(last_json "d['id']")
   || { echo "FAIL: bad block rule accepted"; exit 1; }
 [ "$(code -b "$DJAR" "$BASE/api/v1/block-rules")" = "403" ] || { echo "FAIL: user lists block rules"; exit 1; }
 [ "$(code "$BASE/api/v1/nodes/$NODE_ID/block-rules")" = "401" ] || { echo "FAIL: anonymous reads node block rules"; exit 1; }
-W29_V0=$(psql_q "SELECT config_version || ' ' || user_version FROM nodes WHERE id='$NODE_ID'")
+W29_V0=$(psql_q "SELECT config_version || ' ' || user_version FROM servers WHERE id='$SERVER_ID'")
 W29_SNAPS0=$(grep -c '"via":"snapshot"' "$LOG/agent.log" || true)
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/block-rules" -H 'Content-Type: application/json' \
     -d '{"enabled":true}')" = "200" ] && [ "$(last_json "d['changed']")" = "True" ] || { echo "FAIL: block rules switch"; exit 1; }
-[ "$(psql_q "SELECT config_version || ' ' || user_version FROM nodes WHERE id='$NODE_ID'")" = "$W29_V0" ] \
+[ "$(psql_q "SELECT config_version || ' ' || user_version FROM servers WHERE id='$SERVER_ID'")" = "$W29_V0" ] \
   || { echo "FAIL: the block rules switch bumped the node"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='node.block_rules.set' AND target_id='$NODE_ID'")" = "1" ] \
   && [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='block_rule.create' AND target_id='$W29_RULE'")" = "1" ] \
@@ -1201,7 +1211,7 @@ fi
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/block-rules" -H 'Content-Type: application/json' \
     -d '{"enabled":false}')" = "200" ] || { echo "FAIL: block rules switch off"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/block-rules/$W29_RULE")" = "204" ] || { echo "FAIL: delete block rule"; exit 1; }
-[ "$(psql_q "SELECT config_version || ' ' || user_version FROM nodes WHERE id='$NODE_ID'")" = "$W29_V0" ] \
+[ "$(psql_q "SELECT config_version || ' ' || user_version FROM servers WHERE id='$SERVER_ID'")" = "$W29_V0" ] \
   || { echo "FAIL: block rules bumped the node"; exit 1; }
 
 echo "== W28-a: relay entrance (derived inbound, own credentials, per-entrance billing, removal isolation) =="
@@ -1284,7 +1294,7 @@ python3 "$LOG/w28-vless.py" "$VLESS_D" 11446 3 >/dev/null 2>&1 && { echo "FAIL: 
 # others are flagged on the node (credential isolation only).
 SF_REQ="$LOG/state-main/update/source-filter-request.json"
 SF_ROOT=""
-sf_status() { vk get "akari:node:hb:$NODE_ID" | python3 -c "import json,sys; print(json.load(sys.stdin).get('source_filter'))"; }
+sf_status() { vk get "akari:server:hb:$SERVER_ID" | python3 -c "import json,sys; print(json.load(sys.stdin).get('source_filter'))"; }
 # R44: the agent has no CAP_NET_ADMIN; it hands the allowlist to its root
 # updater (akari-agent-update), played here once per request with sudo.
 sf_updater() {
@@ -1300,7 +1310,7 @@ import json, sys
 r = json.load(open(sys.argv[1]))
 assert r["schema"] == 1 and [(f["port"], f["cidrs"]) for f in r["filters"]] == [(11446, ["127.0.0.1/32"])], r
 PY
-  for _ in $(seq 1 30); do vk get "akari:node:hb:$NODE_ID" | matches '"source_filter":{"applied":' && break; sleep 1; done
+  for _ in $(seq 1 30); do vk get "akari:server:hb:$SERVER_ID" | matches '"source_filter":{"applied":' && break; sleep 1; done
   sf_status | matches -F "'error': 'pending: " || { echo "FAIL: no pending source filter status: $(sf_status)"; exit 1; }
   # Pending is not a node warning (the updater answers within seconds).
   [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID")" = "200" ] && ! matches -F '来源 IP 过滤' </tmp/akari-smoke/last \
@@ -1345,16 +1355,16 @@ for _ in $(seq 1 30); do [ "$(psql_q "SELECT hidden_since IS NOT NULL FROM entra
 rl_sub_clear() { vk EVAL "for _,k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call('DEL', k) end return 1" 0 'akari:rl:sub:*' >/dev/null; }
 rl_sub_clear
 curl -s --noproxy '*' -A 'clash.meta' "$BASE/sub/$SUB_D" | matches 'IPLC 2.0x' && { echo "FAIL: hidden relay still in the subscription"; exit 1; }
-for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM node_alerts WHERE node_id='$NODE_ID' AND kind='entrance_down' AND status='firing'")" = "1" ] && break; sleep 1; done
-[ "$(psql_q "SELECT count(*) FROM node_alerts WHERE node_id='$NODE_ID' AND kind='entrance_down' AND status='firing'")" = "1" ] \
+for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='firing'")" = "1" ] && break; sleep 1; done
+[ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='firing'")" = "1" ] \
   || { echo "FAIL: no entrance_down alert"; exit 1; }
 [ "$(patch_code "$BASE/api/v1/entrances/$RELAY_ID" '{"connect_port":11446}')" = "200" ] || { echo "FAIL: relay port back"; exit 1; }
 for _ in $(seq 1 20); do [ "$(psql_q "SELECT hidden_since IS NULL FROM entrances WHERE id='$RELAY_ID'")" = "t" ] && break; sleep 1; done
 [ "$(psql_q "SELECT health_ok AND hidden_since IS NULL FROM entrances WHERE id='$RELAY_ID'")" = "t" ] || { echo "FAIL: relay not restored"; exit 1; }
 rl_sub_clear
 curl -s --noproxy '*' -A 'clash.meta' "$BASE/sub/$SUB_D" | matches 'IPLC 2.0x' || { echo "FAIL: restored relay not in the subscription"; exit 1; }
-for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM node_alerts WHERE node_id='$NODE_ID' AND kind='entrance_down' AND status='resolved'")" = "1" ] && break; sleep 1; done
-[ "$(psql_q "SELECT count(*) FROM node_alerts WHERE node_id='$NODE_ID' AND kind='entrance_down' AND status='resolved'")" = "1" ] \
+for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='resolved'")" = "1" ] && break; sleep 1; done
+[ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='resolved'")" = "1" ] \
   || { echo "FAIL: entrance_down not resolved"; exit 1; }
 echo "relay health: hidden after 3 failures, alert fired, restored and resolved"
 # Removal isolation: the relay leaves the plan's groups; D keeps the direct
@@ -1387,21 +1397,60 @@ RELAY_AUDIT=$(psql_q "SELECT string_agg(action || '=' || n, ',' ORDER BY action)
   || { echo "FAIL: relay entrance not audited: $RELAY_AUDIT"; exit 1; }
 echo "relay entrance: ok (relay raw $RELAY_RAW billed at 2x, removal isolated)"
 
+echo "== Q1: a second node on the same server (one agent, two inbounds) =="
+# Agents before protocol 7 key a second node's users like relays (limits
+# per entrance): the panel serves them, the section needs protocol 7.
+if need_agent "protocol>=7" "Q1 two nodes on one server"; then
+  Q1_IB='{"listen":"127.0.0.1","port":11447,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp"}}'
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' \
+      -d "{\"server_id\":\"$SERVER_ID\",\"name\":\"test-node-b\",\"inbound\":$GOOD_IB}")" = "400" ] \
+    && [ "$(last_json "d['code']")" = "entrance.port_clash" ] || { echo "FAIL: a second node on the first node's port"; exit 1; }
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' \
+      -d "{\"server_id\":\"$SERVER_ID\",\"name\":\"test-node-b\",\"inbound\":$Q1_IB}")" = "201" ] \
+    || { echo "FAIL: second node on the server"; cat /tmp/akari-smoke/last; exit 1; }
+  NODE_B=$(last_json "d['id']")
+  [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_B")" = "200" ] || { echo "FAIL: GET node B"; exit 1; }
+  DIRECT_B=$(last_json "[e['id'] for e in d['entrances'] if e['kind'] == 'direct'][0]")
+  [ "$(last_json "[e['wire_no'] for e in d['entrances']]")" != "[0]" ] || { echo "FAIL: node B reuses entrance number 0"; exit 1; }
+  [ "$(code -b "$JAR" "$BASE/api/v1/servers/$SERVER_ID")" = "200" ] \
+    && [ "$(last_json "sorted(n['name'] for n in d['nodes'])")" = "['test-node', 'test-node-b']" ] \
+    || { echo "FAIL: the server does not list both nodes"; cat /tmp/akari-smoke/last; exit 1; }
+  [ "$(patch_code "$BASE/api/v1/entrances/$DIRECT_B" "{\"group_ids\":[\"$ACCESS_GROUP\"]}")" = "200" ] \
+    || { echo "FAIL: node B joins the access group"; exit 1; }
+  VLESS_DB=$(psql_q "SELECT account->>'id' FROM entrance_users WHERE user_id='$USER_D' AND entrance_id='$DIRECT_B'")
+  [ -n "$VLESS_DB" ] && [ "$VLESS_DB" != "$VLESS_D" ] || { echo "FAIL: no own credential for D on node B"; exit 1; }
+  for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/11447) 2>/dev/null && break; sleep 0.5; done
+  python3 "$LOG/w28-vless.py" "$VLESS_DB" 11447 || { echo "FAIL: vless round trip on node B"; tail -5 "$LOG/agent.log"; exit 1; }
+  python3 "$LOG/w28-vless.py" "$VLESS_D" 11447 3 >/dev/null 2>&1 && { echo "FAIL: node A's credential works on node B"; exit 1; }
+  python3 "$LOG/w28-vless.py" "$VLESS_D" 11443 || { echo "FAIL: node A stopped working"; exit 1; }
+  for _ in $(seq 1 30); do [ "$(psql_q "SELECT traffic_raw_bytes FROM nodes WHERE id='$NODE_B'")" -ge 200000 ] && break; sleep 1; done
+  [ "$(psql_q "SELECT traffic_raw_bytes FROM nodes WHERE id='$NODE_B'")" -ge 200000 ] \
+    && [ "$(psql_q "SELECT string_agg(DISTINCT server_id::text, ',') FROM traffic_counters WHERE entrance_id='$DIRECT_B'")" = "$SERVER_ID" ] \
+    || { echo "FAIL: node B's traffic not billed to node B under its server"; exit 1; }
+  # Deleting the node keeps the server (and node A) running.
+  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$NODE_B")" = "204" ] || { echo "FAIL: delete node B"; exit 1; }
+  for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/11447) 2>/dev/null || break; sleep 0.5; done
+  (exec 3<>/dev/tcp/127.0.0.1/11447) 2>/dev/null && { echo "FAIL: node B's inbound still listening"; exit 1; }
+  python3 "$LOG/w28-vless.py" "$VLESS_D" 11443 || { echo "FAIL: node A stopped after node B's deletion"; exit 1; }
+  [ "$(psql_q "SELECT count(*) FROM servers WHERE id='$SERVER_ID' AND deleting_at IS NULL")" = "1" ] || { echo "FAIL: the server went with its node"; exit 1; }
+  echo "q1 two nodes on one server: ok"
+fi
+
 if need_agent cap:metrics "W11 machine status"; then
   # Machine status: the heartbeat blob carries metrics; history and
   # Prometheus fleet gauges follow.
   for _ in $(seq 1 30); do
-    vk get "akari:node:hb:$NODE_ID" | matches '"online_users"' && break; sleep 1
+    vk get "akari:server:hb:$SERVER_ID" | matches '"online_users"' && break; sleep 1
   done
-  vk get "akari:node:hb:$NODE_ID" | matches '"xray_version"' || { echo "FAIL: heartbeat lacks machine status"; vk get "akari:node:hb:$NODE_ID"; exit 1; }
-  [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID/status")" = "200" ] || { echo "FAIL: node status API"; exit 1; }
+  vk get "akari:server:hb:$SERVER_ID" | matches '"xray_version"' || { echo "FAIL: heartbeat lacks machine status"; vk get "akari:server:hb:$SERVER_ID"; exit 1; }
+  [ "$(code -b "$JAR" "$BASE/api/v1/servers/$SERVER_ID/status")" = "200" ] || { echo "FAIL: node status API"; exit 1; }
   python3 -c "
 import json; v = json.load(open('/tmp/akari-smoke/last')); m = v['heartbeat']['metrics']
 assert v['online'] is True and v['heartbeat']['mem_total_bytes'] > 0, v
 assert m['cpu_count'] >= 1 and m['disk_total_bytes'] > 0 and m['xray_version'], m
 " || { echo "FAIL: node status content"; cat /tmp/akari-smoke/last; exit 1; }
-  for _ in $(seq 1 15); do [ "$(psql_q "SELECT count(*) FROM node_metrics_1m WHERE node_id='$NODE_ID'")" -ge 1 ] && break; sleep 1; done
-  [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID/metrics?range=1h")" = "200" ] || { echo "FAIL: metrics API"; exit 1; }
+  for _ in $(seq 1 15); do [ "$(psql_q "SELECT count(*) FROM server_metrics_1m WHERE server_id='$SERVER_ID'")" -ge 1 ] && break; sleep 1; done
+  [ "$(code -b "$JAR" "$BASE/api/v1/servers/$SERVER_ID/metrics?range=1h")" = "200" ] || { echo "FAIL: metrics API"; exit 1; }
   python3 -c "import json; v = json.load(open('/tmp/akari-smoke/last')); assert v['points'] and v['points'][0]['mem_total'] > 0, v" \
     || { echo "FAIL: no metrics history"; cat /tmp/akari-smoke/last; exit 1; }
   # (to a file: `curl | matches` fails under pipefail when grep exits first)
@@ -1414,7 +1463,7 @@ if need_agent cap:metrics-presence "W23 metrics presence (every value read, none
   # An unsandboxed agent reads everything: no value is null (unknown), and
   # the first heartbeat's rates are the only ones that may be missing.
   for _ in $(seq 1 30); do
-    code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID/status" >/dev/null
+    code -b "$JAR" "$BASE/api/v1/servers/$SERVER_ID/status" >/dev/null
     python3 -c "import json,sys; m=json.load(open('/tmp/akari-smoke/last'))['heartbeat']['metrics']; sys.exit(m['net_rx_bytes_per_sec'] is None)" 2>/dev/null && break
     sleep 1
   done
@@ -1430,21 +1479,21 @@ if need_agent cap:latency "W11 latency test"; then
   # Latency: "立即测速" -> the agent tests the (local) URL from [probe], the
   # panel TCP-tests the inbound's connect address; a second request inside
   # the cooldown is refused.
-  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$NODE_ID/probe")" = "202" ] || { echo "FAIL: probe request"; cat /tmp/akari-smoke/last; exit 1; }
-  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$NODE_ID/probe")" = "429" ] || { echo "FAIL: probe cooldown"; exit 1; }
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/servers/$SERVER_ID/probe")" = "202" ] || { echo "FAIL: probe request"; cat /tmp/akari-smoke/last; exit 1; }
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/servers/$SERVER_ID/probe")" = "429" ] || { echo "FAIL: probe cooldown"; exit 1; }
   for _ in $(seq 1 40); do
-    [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='agent' AND delay_ms IS NOT NULL AND target='http://127.0.0.1:18204/generate_204' AND measured_at > now() - interval '1 minute'")" = "1" ] \
-      && [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='panel' AND target='直连' AND delay_ms IS NOT NULL")" = "1" ] && break
+    [ "$(psql_q "SELECT count(*) FROM server_latency WHERE server_id='$SERVER_ID' AND source='agent' AND delay_ms IS NOT NULL AND target='http://127.0.0.1:18204/generate_204' AND measured_at > now() - interval '1 minute'")" = "1" ] \
+      && [ "$(psql_q "SELECT count(*) FROM server_latency WHERE server_id='$SERVER_ID' AND source='panel' AND target='test-node / 直连' AND delay_ms IS NOT NULL")" = "1" ] && break
     sleep 1
   done
-  [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='agent' AND delay_ms IS NOT NULL")" -ge 1 ] \
-    || { echo "FAIL: no agent latency result"; psql_q "SELECT * FROM node_latency"; grep latency "$LOG/agent.log" | tail -3; exit 1; }
-  [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='panel' AND delay_ms IS NOT NULL")" -ge 1 ] \
-    || { echo "FAIL: no panel TCP latency"; psql_q "SELECT * FROM node_latency"; exit 1; }
+  [ "$(psql_q "SELECT count(*) FROM server_latency WHERE server_id='$SERVER_ID' AND source='agent' AND delay_ms IS NOT NULL")" -ge 1 ] \
+    || { echo "FAIL: no agent latency result"; psql_q "SELECT * FROM server_latency"; grep latency "$LOG/agent.log" | tail -3; exit 1; }
+  [ "$(psql_q "SELECT count(*) FROM server_latency WHERE server_id='$SERVER_ID' AND source='panel' AND delay_ms IS NOT NULL")" -ge 1 ] \
+    || { echo "FAIL: no panel TCP latency"; psql_q "SELECT * FROM server_latency"; exit 1; }
   code -b "$DJAR" "$BASE/api/v1/me/nodes" >/dev/null
   python3 -c "import json; v = json.load(open('/tmp/akari-smoke/last')); assert v[0]['latency_status'] == 'ok' and v[0]['latency_ms'] >= 1, v" \
     || { echo "FAIL: portal latency"; cat /tmp/akari-smoke/last; exit 1; }
-  echo "latency: ok ($(psql_q "SELECT source || ' ' || target || ' ' || delay_ms || 'ms' FROM node_latency WHERE node_id='$NODE_ID' ORDER BY source" | tr '\n' ';'))"
+  echo "latency: ok ($(psql_q "SELECT source || ' ' || target || ' ' || delay_ms || 'ms' FROM server_latency WHERE server_id='$SERVER_ID' ORDER BY source" | tr '\n' ';'))"
 fi
 echo "-- W12: latency-test settings in 系统设置 (versioned, audited, reloaded on every instance) --"
 put_probe() { code -b "$JAR" -X PUT "$BASE/api/v1/settings/probe" -H 'Content-Type: application/json' -d "$1"; }
@@ -1477,14 +1526,14 @@ if need_agent cap:latency "W12 probe settings reach the agent"; then
   # coalesced request when the interval changes at the same time.
   sleep 11
   for _ in $(seq 1 20); do
-    [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$NODE_ID/probe")" = "202" ] && break; sleep 1
+    [ "$(code -b "$JAR" -X POST "$BASE/api/v1/servers/$SERVER_ID/probe")" = "202" ] && break; sleep 1
   done
   for _ in $(seq 1 30); do
-    [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='agent' AND delay_ms IS NOT NULL AND target='http://127.0.0.1:18204/generate_204?via=settings'")" = "1" ] && break
+    [ "$(psql_q "SELECT count(*) FROM server_latency WHERE server_id='$SERVER_ID' AND source='agent' AND delay_ms IS NOT NULL AND target='http://127.0.0.1:18204/generate_204?via=settings'")" = "1" ] && break
     sleep 1
   done
-  [ "$(psql_q "SELECT count(*) FROM node_latency WHERE node_id='$NODE_ID' AND source='agent' AND target='http://127.0.0.1:18204/generate_204?via=settings'")" = "1" ] \
-    || { echo "FAIL: the agent did not test the URL from 系统设置"; psql_q "SELECT * FROM node_latency WHERE source='agent'"; exit 1; }
+  [ "$(psql_q "SELECT count(*) FROM server_latency WHERE server_id='$SERVER_ID' AND source='agent' AND target='http://127.0.0.1:18204/generate_204?via=settings'")" = "1" ] \
+    || { echo "FAIL: the agent did not test the URL from 系统设置"; psql_q "SELECT * FROM server_latency WHERE source='agent'"; exit 1; }
   echo "probe settings reached the agent: ok"
 fi
 # Back to the built-in defaults through the CLI (audited as cli; the
@@ -2395,7 +2444,7 @@ while got < n + 2:
 print("%.3f" % (time.monotonic() - start))
 PY
 wait_uv() { # wait until the agent applied the node's current user_version; $1 = expected via
-  local uv; uv=$(psql_q "SELECT user_version FROM nodes WHERE id='$NODE_ID'")
+  local uv; uv=$(psql_q "SELECT user_version FROM servers WHERE id='$SERVER_ID'")
   for _ in $(seq 1 15); do
     grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | matches "\"user_version\":${uv}[,}]" && break; sleep 1
   done
@@ -2818,16 +2867,16 @@ for line in open(path):
     if not hmac.compare_digest(want, h.get("x-akari-signature", "")):
         sys.exit("bad signature on delivery " + h.get("x-akari-delivery", "?"))
     d = json.loads(b)
-    if h["x-akari-event"] == event and (d.get("alert") or {}).get("node_id") == node and d["alert"]["kind"] == "offline":
+    if h["x-akari-event"] == event and (d.get("alert") or {}).get("server_id") == node and d["alert"]["kind"] == "offline":
         print("ok"); sys.exit(0)
 sys.exit(1)
 PY
 for _ in $(seq 1 60); do
-  python3 "$LOG/hook-check.py" "$LOG/hook.jsonl" "$HOOK_SECRET" "$NODE_ID" firing >/dev/null 2>&1 && break; sleep 2
+  python3 "$LOG/hook-check.py" "$LOG/hook.jsonl" "$HOOK_SECRET" "$SERVER_ID" firing >/dev/null 2>&1 && break; sleep 2
 done
-python3 "$LOG/hook-check.py" "$LOG/hook.jsonl" "$HOOK_SECRET" "$NODE_ID" firing \
-  || { echo "FAIL: no signed firing webhook for the stopped agent"; cat "$LOG/hook.jsonl"; psql_q "SELECT * FROM node_alerts"; exit 1; }
-[ "$(code -b "$JAR" "$BASE/api/v1/alerts?status=firing&kind=offline&node=$NODE_ID")" = "200" ] \
+python3 "$LOG/hook-check.py" "$LOG/hook.jsonl" "$HOOK_SECRET" "$SERVER_ID" firing \
+  || { echo "FAIL: no signed firing webhook for the stopped agent"; cat "$LOG/hook.jsonl"; psql_q "SELECT * FROM server_alerts"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/alerts?status=firing&kind=offline&server=$SERVER_ID")" = "200" ] \
   && [ "$(last_json "len(d['alerts'])")" = "1" ] || { echo "FAIL: alert center lists the offline alert once"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/admin-badges")" = "200" ] && [ "$(last_json "d['alerts_firing'] >= 1")" = "True" ] || { echo "FAIL: alert badge"; exit 1; }
 curl -s --noproxy '*' http://127.0.0.1:9109/metrics | matches '^akari_node_alerts_firing{kind="offline"} [1-9]' \
@@ -2839,12 +2888,12 @@ curl -s --noproxy '*' http://127.0.0.1:9109/metrics | matches '^akari_node_alert
 AGENT_PID=$!
 wait_port open 20
 for _ in $(seq 1 30); do
-  python3 "$LOG/hook-check.py" "$LOG/hook.jsonl" "$HOOK_SECRET" "$NODE_ID" resolved >/dev/null 2>&1 && break; sleep 1
+  python3 "$LOG/hook-check.py" "$LOG/hook.jsonl" "$HOOK_SECRET" "$SERVER_ID" resolved >/dev/null 2>&1 && break; sleep 1
 done
-python3 "$LOG/hook-check.py" "$LOG/hook.jsonl" "$HOOK_SECRET" "$NODE_ID" resolved \
+python3 "$LOG/hook-check.py" "$LOG/hook.jsonl" "$HOOK_SECRET" "$SERVER_ID" resolved \
   || { echo "FAIL: no resolved webhook after the agent came back"; cat "$LOG/hook.jsonl"; exit 1; }
-[ "$(psql_q "SELECT string_agg(status, ',') FROM node_alerts WHERE node_id='$NODE_ID' AND kind='offline'")" = "resolved" ] \
-  || { echo "FAIL: offline alert not resolved exactly once"; psql_q "SELECT * FROM node_alerts"; exit 1; }
+[ "$(psql_q "SELECT string_agg(status, ',') FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='offline'")" = "resolved" ] \
+  || { echo "FAIL: offline alert not resolved exactly once"; psql_q "SELECT * FROM server_alerts"; exit 1; }
 # Later sections stop agents too: quiet channels again.
 QUIET=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); d['version']=int(sys.argv[2]); d['webhook_enabled']=False; d.pop('webhook_secret'); print(json.dumps(d))" \
   "$ALERT_BODY" "$(psql_q "SELECT version FROM alert_settings")")
@@ -2852,7 +2901,7 @@ QUIET=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); d['version']=int
 kill "$HOOK_PID" 2>/dev/null || true
 echo "alerts: ok (fired, signed webhook, resolved)"
 
-echo "== Sprint 3b: node delete = empty state, then revoke + close; billing rows kept =="
+echo "== Sprint 3b: server delete = empty state, then revoke + close; billing rows kept =="
 # Some billed traffic on the node first (a user C with one VLESS round trip).
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
     -d '{"email":"smoke-user-c@smoke.test","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create user C"; exit 1; }
@@ -2879,73 +2928,78 @@ print("vless round trip ok")
 PY
 python3 "$LOG/vless1.py" "$VLESS_C" || { echo "FAIL: vless round trip for C"; exit 1; }
 for _ in $(seq 1 30); do
-  [ "$(psql_q "SELECT count(*) FROM traffic_counters WHERE node_id='$NODE_ID' AND user_id='$USER_C'")" -ge 1 ] && break; sleep 1
+  [ "$(psql_q "SELECT count(*) FROM traffic_counters WHERE server_id='$SERVER_ID' AND user_id='$USER_C'")" -ge 1 ] && break; sleep 1
 done
-COUNTERS_BEFORE=$(psql_q "SELECT count(*) FROM traffic_counters WHERE node_id='$NODE_ID'")
-[ "$(psql_q "SELECT count(*) FROM traffic_counters WHERE node_id='$NODE_ID' AND user_id='$USER_C'")" -ge 1 ] \
+COUNTERS_BEFORE=$(psql_q "SELECT count(*) FROM traffic_counters WHERE server_id='$SERVER_ID'")
+[ "$(psql_q "SELECT count(*) FROM traffic_counters WHERE server_id='$SERVER_ID' AND user_id='$USER_C'")" -ge 1 ] \
   || { echo "FAIL: user C's traffic never reached traffic_counters"; exit 1; }
 [ "$(psql_q "SELECT traffic_used_bytes FROM users WHERE id='$USER_C'")" -ge 200000 ] \
   || { echo "FAIL: user C not billed: $(psql_q "SELECT traffic_used_bytes FROM users WHERE id='$USER_C'")"; exit 1; }
-SERIAL=$(psql_q "SELECT cert_serial FROM nodes WHERE id='$NODE_ID'")
+SERIAL=$(psql_q "SELECT cert_serial FROM servers WHERE id='$SERVER_ID'")
 wait_port open 10
-[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$NODE_ID")" = "202" ] || { echo "FAIL: delete node not 202"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/servers/$SERVER_ID")" = "202" ] || { echo "FAIL: delete server not 202"; cat /tmp/akari-smoke/last; exit 1; }
 grep -q '"deleting":true' /tmp/akari-smoke/last || { echo "FAIL: delete response"; exit 1; }
-[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"enabled": true}')" = "409" ] || { echo "FAIL: deleting node re-enabled"; exit 1; }
-wait_users 0 10 "node deleting"
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"enabled": true}')" = "409" ] \
+  && [ "$(last_json "d['code']")" = "server.deleting" ] || { echo "FAIL: node of a deleting server changed"; exit 1; }
+wait_users 0 10 "server deleting"
 wait_port closed 10
 for _ in $(seq 1 40); do
-  [ "$(psql_q "SELECT count(*) FROM nodes WHERE id='$NODE_ID'")" = "0" ] && break; sleep 1
+  [ "$(psql_q "SELECT count(*) FROM servers WHERE id='$SERVER_ID'")" = "0" ] && break; sleep 1
 done
-[ "$(psql_q "SELECT count(*) FROM nodes WHERE id='$NODE_ID'")" = "0" ] || { echo "FAIL: node row not deleted"; exit 1; }
-[ "$(psql_q "SELECT count(*) FROM revoked_certs WHERE cert_serial='$SERIAL' AND node_id='$NODE_ID'")" = "1" ] \
+[ "$(psql_q "SELECT count(*) FROM servers WHERE id='$SERVER_ID'")" = "0" ] || { echo "FAIL: server row not deleted"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM nodes WHERE id='$NODE_ID'")" = "0" ] || { echo "FAIL: its node outlived the server"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM revoked_certs WHERE cert_serial='$SERIAL' AND server_id='$SERVER_ID'")" = "1" ] \
   || { echo "FAIL: certificate not tombstoned"; exit 1; }
-[ "$(psql_q "SELECT count(*) FROM traffic_counters WHERE node_id='$NODE_ID'")" = "$COUNTERS_BEFORE" ] \
+[ "$(psql_q "SELECT count(*) FROM traffic_counters WHERE server_id='$SERVER_ID'")" = "$COUNTERS_BEFORE" ] \
   || { echo "FAIL: billing rows not kept"; exit 1; }
-for _ in $(seq 1 15); do grep -q 'node deleted' "$LOG/agent.log" && break; sleep 1; done
-grep '"msg":"channel closed"' "$LOG/agent.log" | matches 'Unauthenticated desc = node deleted' \
+for _ in $(seq 1 15); do grep -q 'server deleted' "$LOG/agent.log" && break; sleep 1; done
+grep '"msg":"channel closed"' "$LOG/agent.log" | matches 'Unauthenticated desc = server deleted' \
   || { echo "FAIL: agent stream not closed as deleted"; grep 'channel closed' "$LOG/agent.log" | tail -3; exit 1; }
 # Reconnects with the same (revoked) certificate: accepted only to be closed.
 for _ in $(seq 1 20); do grep -q 'certificate revoked' "$LOG/agent.log" && break; sleep 1; done
 grep '"msg":"channel closed"' "$LOG/agent.log" | matches 'Unauthenticated desc = certificate revoked' \
   || { echo "FAIL: revoked certificate not closed on reconnect"; grep 'channel closed' "$LOG/agent.log" | tail -3; exit 1; }
 port_open && { echo "FAIL: revoked agent serves again"; exit 1; }
-vk exists "akari:node:online:$NODE_ID" | matches 0 \
+vk exists "akari:server:online:$SERVER_ID" | matches 0 \
   || { echo "FAIL: online key left behind"; exit 1; }
-[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$NODE_ID")" = "404" ] || { echo "FAIL: second delete not 404"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/servers/$SERVER_ID")" = "404" ] || { echo "FAIL: second delete not 404"; exit 1; }
 code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
 grep -q "$NODE_ID" /tmp/akari-smoke/last && { echo "FAIL: deleted node still listed"; exit 1; }
-# CLI: an offline node is deleted right away by the running panel.
+code -b "$JAR" "$BASE/api/v1/servers" >/dev/null
+grep -q "$SERVER_ID" /tmp/akari-smoke/last && { echo "FAIL: deleted server still listed"; exit 1; }
+# CLI: an offline server is deleted right away by the running panel.
 # `--out -`: bootstrap on stdout (compose flow), progress on stderr.
-"$PANEL" node add spare-node --out - >"$LOG/spare-bootstrap.toml" 2>"$LOG/spare-add.err"
-grep -q '^enrollment_token = ' "$LOG/spare-bootstrap.toml" || { echo "FAIL: node add --out - lacks bootstrap on stdout"; exit 1; }
-grep -q 'node registered' "$LOG/spare-add.err" || { echo "FAIL: node add --out - progress not on stderr"; exit 1; }
-grep -q 'node registered' "$LOG/spare-bootstrap.toml" && { echo "FAIL: progress leaked into stdout bootstrap"; exit 1; }
-SPARE_ID=$("$PANEL" node list | awk '$2=="spare-node"{print $1}')
-"$PANEL" node delete "$SPARE_ID" | matches "deletion started" || { echo "FAIL: CLI node delete"; exit 1; }
+"$PANEL" server add spare-node --out - >"$LOG/spare-bootstrap.toml" 2>"$LOG/spare-add.err"
+grep -q '^enrollment_token = ' "$LOG/spare-bootstrap.toml" || { echo "FAIL: server add --out - lacks bootstrap on stdout"; exit 1; }
+grep -q 'server registered' "$LOG/spare-add.err" || { echo "FAIL: server add --out - progress not on stderr"; exit 1; }
+grep -q 'server registered' "$LOG/spare-bootstrap.toml" && { echo "FAIL: progress leaked into stdout bootstrap"; exit 1; }
+SPARE_ID=$("$PANEL" server list | awk '$2=="spare-node"{print $1}')
+"$PANEL" server delete "$SPARE_ID" | matches "deletion started" || { echo "FAIL: CLI server delete"; exit 1; }
 for _ in $(seq 1 20); do
-  [ "$(psql_q "SELECT count(*) FROM nodes WHERE id='$SPARE_ID'")" = "0" ] && break; sleep 1
+  [ "$(psql_q "SELECT count(*) FROM servers WHERE id='$SPARE_ID'")" = "0" ] && break; sleep 1
 done
-[ "$(psql_q "SELECT count(*) FROM nodes WHERE id='$SPARE_ID'")" = "0" ] || { echo "FAIL: CLI-deleted offline node not reaped"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM servers WHERE id='$SPARE_ID'")" = "0" ] || { echo "FAIL: CLI-deleted offline server not reaped"; exit 1; }
 # Never enrolled (pending, no certificate): nothing to revoke; its token died
 # with the row.
-[ "$(psql_q "SELECT count(*) FROM revoked_certs WHERE node_id='$SPARE_ID'")" = "0" ] || { echo "FAIL: pending node left a tombstone"; exit 1; }
-[ "$(psql_q "SELECT count(*) FROM node_enrollments WHERE node_id='$SPARE_ID'")" = "0" ] || { echo "FAIL: enrollment token outlived its node"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM revoked_certs WHERE server_id='$SPARE_ID'")" = "0" ] || { echo "FAIL: pending server left a tombstone"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM server_enrollments WHERE server_id='$SPARE_ID'")" = "0" ] || { echo "FAIL: enrollment token outlived its server"; exit 1; }
 kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
 AGENT_PID=""
-echo "node delete: ok (empty state, revoked, closed; $COUNTERS_BEFORE billing rows kept)"
+echo "server delete: ok (empty state, revoked, closed; $COUNTERS_BEFORE billing rows kept)"
 
 echo "== M1-8 enrollment API, token reuse, certificate renewal (2nd instance, 60 s certificates) =="
-# Admin API: create a node -> one-time token + key-less bootstrap (201).
+# Admin API: create a node without server_id -> a server of its own with a
+# one-time token + key-less bootstrap (201).
 [ "$(code -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' -d '{"name":"api-node"}')" = "401" ] \
   || { echo "FAIL: anonymous node create"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' -d '{"name":"api-node"}')" = "201" ] \
   || { echo "FAIL: API node create"; cat /tmp/akari-smoke/last; exit 1; }
-read -r API_NODE API_TOKEN < <(python3 -c "import json;d=json.load(open('/tmp/akari-smoke/last'));print(d['id'],d['enrollment_token'])")
+read -r API_NODE API_SERVER API_TOKEN < <(python3 -c "import json;d=json.load(open('/tmp/akari-smoke/last'));print(d['id'],d['server_id'],d['enrollment_token'])")
 python3 -c "import json,sys;b=json.load(open('/tmp/akari-smoke/last'))['bootstrap'];sys.exit('PRIVATE KEY' in b or 'enrollment_token = \"$API_TOKEN\"' not in b)" \
   || { echo "FAIL: API bootstrap"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' -d '{"name":"api-node"}')" = "409" ] \
   || { echo "FAIL: duplicate node name not 409"; exit 1; }
-[ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$API_NODE/enroll-token")" = "200" ] || { echo "FAIL: API enroll-token"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/servers/$API_SERVER/enroll-token")" = "200" ] || { echo "FAIL: API enroll-token"; exit 1; }
 API_TOKEN2=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['enrollment_token'])")
 [ "$API_TOKEN2" != "$API_TOKEN" ] || { echo "FAIL: enroll-token reused the token"; exit 1; }
 code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
@@ -2953,7 +3007,7 @@ python3 -c "
 import json; n=[x for x in json.load(open('/tmp/akari-smoke/last')) if x['id']=='$API_NODE'][0]
 assert n['enrolled'] is False and n['enroll_token_expires_at'] and n['cert_not_after'] is None, n" \
   || { echo "FAIL: pending node view"; exit 1; }
-[ "$(psql_q "SELECT encode(token_hash,'hex') FROM node_enrollments WHERE node_id='$API_NODE'")" != "$API_TOKEN2" ] \
+[ "$(psql_q "SELECT encode(token_hash,'hex') FROM server_enrollments WHERE server_id='$API_SERVER'")" != "$API_TOKEN2" ] \
   || { echo "FAIL: token stored in clear"; exit 1; }
 
 # Second panel instance (same DB/CA, multi-instance) issuing 60 s
@@ -2999,25 +3053,25 @@ SV=$(psql_q "SELECT version FROM panel_settings")
   || { echo "FAIL: default retention again: $(cat /tmp/akari-smoke/last)"; exit 1; }
 # Keep root the last admin (S4-2 assertions below).
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$ADMIN2?confirm=true")" = "204" ] || { echo "FAIL: delete 2nd admin"; exit 1; }
-"$PANEL" -c "$LOG/panel-b.toml" node add renew-node --out "$LOG/renew-bootstrap.toml" >/dev/null
+"$PANEL" -c "$LOG/panel-b.toml" server add renew-node --out "$LOG/renew-bootstrap.toml" >/dev/null
 # The node domain is one database setting (instance A's port): this agent
 # dials instance B (60 s certificates) under the same certificate name.
 sed -i 's/^panel_addr = "127.0.0.1:8443"$/panel_addr = "127.0.0.1:8444"/' "$LOG/renew-bootstrap.toml"
 grep -q '^panel_addr = "127.0.0.1:8444"$' "$LOG/renew-bootstrap.toml" || { echo "FAIL: renew bootstrap panel_addr"; cat "$LOG/renew-bootstrap.toml"; exit 1; }
-RENEW_ID=$("$PANEL" node list | awk '$2=="renew-node"{print $1}')
+RENEW_ID=$("$PANEL" server list | awk '$2=="renew-node"{print $1}')
 "$AGENT" -config "$LOG/renew-bootstrap.toml" -state-dir "$LOG/state-renew" >"$LOG/renew-agent.log" 2>&1 &
 AGENT_PID=$!
 for _ in $(seq 1 15); do grep -q "channel established" "$LOG/renew-agent.log" && break; sleep 1; done
 grep -q '"msg":"enrolled"' "$LOG/renew-agent.log" || { echo "FAIL: renew agent did not enroll"; cat "$LOG/renew-agent.log"; exit 1; }
-for _ in $(seq 1 10); do [ "$(psql_q "SELECT status FROM nodes WHERE id='$RENEW_ID'")" = "online" ] && break; sleep 1; done
-[ "$(psql_q "SELECT status FROM nodes WHERE id='$RENEW_ID'")" = "online" ] || { echo "FAIL: enrolled node not online"; exit 1; }
-FIRST_SERIAL=$(psql_q "SELECT cert_serial FROM nodes WHERE id='$RENEW_ID'")
+for _ in $(seq 1 10); do [ "$(psql_q "SELECT status FROM servers WHERE id='$RENEW_ID'")" = "online" ] && break; sleep 1; done
+[ "$(psql_q "SELECT status FROM servers WHERE id='$RENEW_ID'")" = "online" ] || { echo "FAIL: enrolled node not online"; exit 1; }
+FIRST_SERIAL=$(psql_q "SELECT cert_serial FROM servers WHERE id='$RENEW_ID'")
 # The same (used) token on a fresh state dir: refused, the agent exits.
 REUSE_RC=0
 timeout 20 "$AGENT" -config "$LOG/renew-bootstrap.toml" -state-dir "$LOG/state-reuse" >"$LOG/reuse-agent.log" 2>&1 || REUSE_RC=$?
 [ "$REUSE_RC" = "1" ] && grep -q "enrollment refused" "$LOG/reuse-agent.log" \
   || { echo "FAIL: reused enrollment token not refused (rc $REUSE_RC)"; cat "$LOG/reuse-agent.log"; exit 1; }
-[ "$(psql_q "SELECT cert_serial FROM nodes WHERE id='$RENEW_ID'")" = "$FIRST_SERIAL" ] || { echo "FAIL: refused enrollment changed the node"; exit 1; }
+[ "$(psql_q "SELECT cert_serial FROM servers WHERE id='$RENEW_ID'")" = "$FIRST_SERIAL" ] || { echo "FAIL: refused enrollment changed the server"; exit 1; }
 # Renewal: < 1/3 of 75 s left -> Renew over mTLS, reconnect, promote; the
 # panel tombstones the first serial when it sees the new one.
 for _ in $(seq 1 90); do grep -q "renewed certificate accepted by the panel" "$LOG/renew-agent.log" && break; sleep 1; done
@@ -3028,20 +3082,20 @@ for _ in $(seq 1 10); do
 done
 [ "$(psql_q "SELECT reason FROM revoked_certs WHERE cert_serial='$FIRST_SERIAL'")" = "rotated" ] \
   || { echo "FAIL: renewed-from certificate not tombstoned"; exit 1; }
-[ "$(psql_q "SELECT cert_serial <> '$FIRST_SERIAL' AND cert_not_after > now() FROM nodes WHERE id='$RENEW_ID'")" = "t" ] \
-  || { echo "FAIL: node does not carry the renewed certificate"; exit 1; }
-for a in node.enroll node.cert.renew node.cert.rotated; do
+[ "$(psql_q "SELECT cert_serial <> '$FIRST_SERIAL' AND cert_not_after > now() FROM servers WHERE id='$RENEW_ID'")" = "t" ] \
+  || { echo "FAIL: server does not carry the renewed certificate"; exit 1; }
+for a in server.enroll server.cert.renew server.cert.rotated; do
   [ "$(psql_q "SELECT count(*) > 0 FROM audit_log WHERE action='$a' AND actor_label='agent' AND target_id='$RENEW_ID'")" = "t" ] \
     || { echo "FAIL: $a not audited"; exit 1; }
 done
 grep -qE '"protocol":([3-9]|[1-9][0-9])' "$LOG/panel-b.log" || { echo "FAIL: agent does not speak protocol 3 (renewal + self-update)"; exit 1; }
-code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
+code -b "$JAR" "$BASE/api/v1/servers" >/dev/null
 python3 -c "
 import json; n=[x for x in json.load(open('/tmp/akari-smoke/last')) if x['id']=='$RENEW_ID'][0]
 assert n['enrolled'] and n['cert_not_after'] and n['enroll_token_expires_at'] is None, n
 assert any('agent 证书将在' in w for w in n['warnings']), n['warnings']
 assert n['heartbeat'] is None or 'uptime_seconds' in n['heartbeat'], n['heartbeat']" \
-  || { echo "FAIL: enrolled node view"; exit 1; }
+  || { echo "FAIL: enrolled server view"; exit 1; }
 # Files 0600; directories (M6: update/, update/bin/) 0700.
 while IFS= read -r f; do
   want=600; [ -d "$f" ] && want=700
@@ -3052,14 +3106,14 @@ kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
 AGENT_PID=""
 kill $PANEL_B 2>/dev/null; wait $PANEL_B 2>/dev/null || true
 PANEL_B=""
-[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$API_NODE")" = "202" ] || { echo "FAIL: delete api-node"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/servers/$API_SERVER")" = "202" ] || { echo "FAIL: delete api-node's server"; exit 1; }
 echo "enrollment + renewal: ok"
 
 echo "== M1-7 audit log: admin view lists the actions, no secrets =="
 [ "$(code -b "$JAR" "$BASE/api/v1/audit?limit=200")" = "200" ] || { echo "FAIL: audit list"; exit 1; }
 for a in user.create node.create node.set_inbound node.update entrance.update user.plan.set user.ban user.unban user.delete \
-         auth.login auth.login_failed user.sub_token.rotate node.delete \
-         node.enroll_token node.enroll node.cert.renew node.cert.rotated; do
+         auth.login auth.login_failed user.sub_token.rotate server.create server.delete \
+         server.enroll_token server.enroll server.cert.renew server.cert.rotated; do
   # (By database: the API's 200 newest rows no longer reach back to the
   # first actions since later sections (W21 …) audit more.)
   [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='$a'")" -ge 1 ] || { echo "FAIL: audit lacks $a"; exit 1; }
@@ -3144,6 +3198,7 @@ if need_agent "cap:updater" "M6 self-update through the updater unit (systemd co
       -d '{"name":"upd-node","install":{"origin":"http://127.0.0.1:8080"}}')" = "201" ] \
     || { echo "FAIL: create upd-node: $(cat /tmp/akari-smoke/last)"; exit 1; }
   UPD_ID=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
+  UPD_SRV=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['server_id'])")
   UPD_CMD=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['install']['command'])")
   docker build -q -t akari-node-test:debian13 scripts/install-test >/dev/null
   docker rm -f akari-smoke-upd >/dev/null 2>&1 || true
@@ -3158,7 +3213,7 @@ if need_agent "cap:updater" "M6 self-update through the updater unit (systemd co
     udx 'journalctl -u akari-agent -o cat --no-pager' >"$LOG/upd-agent.log" 2>&1 || true
     udx 'journalctl -u akari-agent-update -o cat --no-pager' >"$LOG/upd-updater.log" 2>&1 || true
   }
-  upd_node() { psql_q "SELECT $1 FROM nodes WHERE id='$UPD_ID'"; }
+  upd_node() { psql_q "SELECT $1 FROM servers WHERE id='$UPD_SRV'"; }
   for _ in $(seq 1 20); do [ "$(upd_node agent_version)" = "v900.0.0" ] && break; sleep 1; done
   [ "$(upd_node agent_version)" = "v900.0.0" ] && [ "$(upd_node agent_protocol)" -ge 3 ] \
     || { echo "FAIL: update agent not connected ($(upd_node agent_version)/$(upd_node agent_protocol))"; upd_logs; tail -5 "$LOG/upd-agent.log"; exit 1; }
@@ -3174,16 +3229,16 @@ if need_agent "cap:updater" "M6 self-update through the updater unit (systemd co
   [ "$(psql_q "SELECT count(*) FROM agent_releases WHERE complete_at IS NOT NULL")" = "3" ] || { echo "FAIL: releases not stored"; exit 1; }
   # Only the update node takes part: the others run development builds.
   [ "$(code -b "$JAR" -X POST "$BASE/api/v1/rollouts" -H 'Content-Type: application/json' \
-      -d "{\"version\":\"v900.0.1\",\"node_ids\":[\"$UPD_ID\"],\"health_timeout_secs\":90}")" = "201" ] \
+      -d "{\"version\":\"v900.0.1\",\"server_ids\":[\"$UPD_SRV\"],\"health_timeout_secs\":90}")" = "201" ] \
     || { echo "FAIL: rollout create"; cat /tmp/akari-smoke/last; exit 1; }
   RO1=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
   ro_status() { psql_q "SELECT status FROM rollouts WHERE id='$1'"; }
   for _ in $(seq 1 90); do [ "$(ro_status "$RO1")" = "completed" ] && break; sleep 1; done
   upd_logs
   [ "$(ro_status "$RO1")" = "completed" ] || { echo "FAIL: rollout to v900.0.1 not completed ($(ro_status "$RO1"))"; \
-    psql_q "SELECT status, detail FROM rollout_nodes WHERE rollout_id='$RO1'"; tail -20 "$LOG/upd-agent.log" "$LOG/upd-updater.log"; exit 1; }
+    psql_q "SELECT status, detail FROM rollout_servers WHERE rollout_id='$RO1'"; tail -20 "$LOG/upd-agent.log" "$LOG/upd-updater.log"; exit 1; }
   [ "$(upd_node agent_version)" = "v900.0.1" ] || { echo "FAIL: node not on v900.0.1"; exit 1; }
-  [ "$(psql_q "SELECT status FROM rollout_nodes WHERE rollout_id='$RO1'")" = "healthy" ] || { echo "FAIL: node not healthy"; exit 1; }
+  [ "$(psql_q "SELECT status FROM rollout_servers WHERE rollout_id='$RO1'")" = "healthy" ] || { echo "FAIL: node not healthy"; exit 1; }
   for m in "update offer accepted" "agent update verified and staged" "switching to the new agent" "agent update passed its self-check"; do
     grep -q "$m" "$LOG/upd-agent.log" || { echo "FAIL: agent log lacks '$m'"; tail -20 "$LOG/upd-agent.log"; exit 1; }
   done
@@ -3221,7 +3276,7 @@ assert 'updater' in n['agent_capabilities'] and not any('重装命令' in w for 
     grep -q "this agent release does not carry its systemd units" "$LOG/upd-install.out" \
       && { echo "FAIL: installer fell back to its own unit copies"; exit 1; }
     upd_hb() {
-      code -b "$JAR" "$BASE/api/v1/nodes/$UPD_ID/status" >/dev/null
+      code -b "$JAR" "$BASE/api/v1/servers/$UPD_SRV/status" >/dev/null
       python3 -c "
 import json; v = json.load(open('/tmp/akari-smoke/last')); hb = v['heartbeat'] or {}; m = hb.get('metrics') or {}
 nulls = [k for k in ('cpu_percent', 'mem_total_bytes') if hb.get(k) is None]
@@ -3232,7 +3287,7 @@ assert not nulls and hb['mem_total_bytes'] > 0 and m['cpu_count'] > 0, (nulls, h
     }
     for _ in $(seq 1 60); do upd_hb 2>/dev/null && break; sleep 1; done
     upd_hb || { echo "FAIL: machine metrics unknown under the shipped unit"; cat /tmp/akari-smoke/last; exit 1; }
-    [ "$(psql_q "SELECT 'stale-units' = ANY(agent_capabilities) FROM nodes WHERE id='$UPD_ID'")" = "f" ] \
+    [ "$(psql_q "SELECT 'stale-units' = ANY(agent_capabilities) FROM servers WHERE id='$UPD_SRV'")" = "f" ] \
       || { echo "FAIL: fresh install reports stale units"; exit 1; }
     echo "w23 units + machine metrics on a systemd node: ok"
   fi
@@ -3240,15 +3295,15 @@ assert not nulls and hb['mem_total_bytes'] > 0 and m['cpu_count'] > 0, (nulls, h
   # Broken vN+2: the binary dies on start; the updater sees the restarts,
   # puts v900.0.1 back; the agent reports ROLLED_BACK; the rollout halts.
   [ "$(code -b "$JAR" -X POST "$BASE/api/v1/rollouts" -H 'Content-Type: application/json' \
-      -d "{\"version\":\"v900.0.2\",\"node_ids\":[\"$UPD_ID\"],\"health_timeout_secs\":90}")" = "201" ] \
+      -d "{\"version\":\"v900.0.2\",\"server_ids\":[\"$UPD_SRV\"],\"health_timeout_secs\":90}")" = "201" ] \
     || { echo "FAIL: rollout 2 create"; cat /tmp/akari-smoke/last; exit 1; }
   RO2=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
   for _ in $(seq 1 90); do [ "$(ro_status "$RO2")" = "halted" ] && break; sleep 1; done
   upd_logs
   [ "$(ro_status "$RO2")" = "halted" ] || { echo "FAIL: broken rollout not halted ($(ro_status "$RO2"))"; \
-    psql_q "SELECT status, detail FROM rollout_nodes WHERE rollout_id='$RO2'"; tail -20 "$LOG/upd-agent.log" "$LOG/upd-updater.log"; exit 1; }
-  psql_q "SELECT detail FROM rollout_nodes WHERE rollout_id='$RO2'" | matches "rolled back" \
-    || { echo "FAIL: no rollback report: $(psql_q "SELECT status, detail FROM rollout_nodes WHERE rollout_id='$RO2'")"; exit 1; }
+    psql_q "SELECT status, detail FROM rollout_servers WHERE rollout_id='$RO2'"; tail -20 "$LOG/upd-agent.log" "$LOG/upd-updater.log"; exit 1; }
+  psql_q "SELECT detail FROM rollout_servers WHERE rollout_id='$RO2'" | matches "rolled back" \
+    || { echo "FAIL: no rollback report: $(psql_q "SELECT status, detail FROM rollout_servers WHERE rollout_id='$RO2'")"; exit 1; }
   grep -q "broken agent build" "$LOG/upd-agent.log" || { echo "FAIL: broken build never ran"; exit 1; }
   grep -q "rolling back agent update" "$LOG/upd-updater.log" || { echo "FAIL: updater did not roll back"; exit 1; }
   for _ in $(seq 1 20); do [ "$(upd_node agent_version)" = "v900.0.1" ] && [ "$(upd_node status)" = "online" ] && break; sleep 1; done
@@ -3270,7 +3325,7 @@ assert not nulls and hb['mem_total_bytes'] > 0 and m['cpu_count'] > 0, (nulls, h
   # node view asks for the install command).
   if agent_has cap:metrics-presence; then
     udx "printf '# local edit\n' >>/etc/systemd/system/akari-agent.service && systemctl daemon-reload && systemctl restart akari-agent"
-    for _ in $(seq 1 30); do [ "$(psql_q "SELECT 'stale-units' = ANY(agent_capabilities) FROM nodes WHERE id='$UPD_ID'")" = "t" ] && break; sleep 1; done
+    for _ in $(seq 1 30); do [ "$(psql_q "SELECT 'stale-units' = ANY(agent_capabilities) FROM servers WHERE id='$UPD_SRV'")" = "t" ] && break; sleep 1; done
     code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
     python3 -c "
 import json; n=[x for x in json.load(open('/tmp/akari-smoke/last')) if x['id']=='$UPD_ID'][0]
@@ -3288,7 +3343,7 @@ assert 'stale-units' in n['agent_capabilities'] and any('systemd 单元' in w an
 import json; n=[x for x in json.load(open('/tmp/akari-smoke/last')) if x['id']=='$UPD_ID'][0]
 assert n['update_status']['rollout_status']=='aborted' and n['update_status']['superseded'] is False, n['update_status']" \
     || { echo "FAIL: update status before the reinstall"; exit 1; }
-  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$UPD_ID/install" -H 'Content-Type: application/json' \
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/servers/$UPD_SRV/install" -H 'Content-Type: application/json' \
       -d '{"origin":"http://127.0.0.1:8080"}')" = "200" ] || { echo "FAIL: upd-node re-install link"; exit 1; }
   UPD_CMD2=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['command'])")
   udx "$UPD_CMD2" >"$LOG/upd-reinstall.out" 2>&1 || { echo "FAIL: reinstall (update node)"; cat "$LOG/upd-reinstall.out"; exit 1; }
@@ -3302,8 +3357,8 @@ import json; n=[x for x in json.load(open('/tmp/akari-smoke/last')) if x['id']==
 assert n['update_status']['superseded'] is True, n['update_status']" \
     || { echo "FAIL: aborted rollout not superseded by the reinstall"; exit 1; }
   if agent_has cap:metrics-presence; then
-    for _ in $(seq 1 30); do [ "$(psql_q "SELECT 'stale-units' = ANY(agent_capabilities) FROM nodes WHERE id='$UPD_ID'")" = "f" ] && break; sleep 1; done
-    [ "$(psql_q "SELECT 'stale-units' = ANY(agent_capabilities) FROM nodes WHERE id='$UPD_ID'")" = "f" ] \
+    for _ in $(seq 1 30); do [ "$(psql_q "SELECT 'stale-units' = ANY(agent_capabilities) FROM servers WHERE id='$UPD_SRV'")" = "f" ] && break; sleep 1; done
+    [ "$(psql_q "SELECT 'stale-units' = ANY(agent_capabilities) FROM servers WHERE id='$UPD_SRV'")" = "f" ] \
       || { echo "FAIL: reinstall did not replace the edited unit"; exit 1; }
   fi
   echo "w23 reinstall: update status superseded, units current, uninstall hint: ok"
@@ -3312,7 +3367,7 @@ assert n['update_status']['superseded'] is True, n['update_status']" \
   udx 'test ! -e /etc/systemd/system/akari-agent-update.path && test ! -e /etc/systemd/system/akari-agent-update.service && test ! -e /var/lib/akari-agent-update && test ! -e /usr/local/bin/akari-agent.prev' \
     || { echo "FAIL: uninstall left the updater behind"; exit 1; }
   cleanup_upd
-  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$UPD_ID")" = "202" ] || { echo "FAIL: delete upd-node"; exit 1; }
+  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/servers/$UPD_SRV")" = "202" ] || { echo "FAIL: delete upd-node's server"; exit 1; }
   echo "m6 self-update: ok (installer + updater unit on systemd 257, noexec state dir: v900.0.0 -> v900.0.1 healthy; broken v900.0.2 rolled back, rollout halted)"
 else
   # The installer section below still needs the releases.
@@ -3351,6 +3406,7 @@ INST_PORT_R=24443
   || { echo "FAIL: create node with a template: $(cat /tmp/akari-smoke/last)"; exit 1; }
 cp /tmp/akari-smoke/last "$LOG/inst-create.json"
 INST_ID=$(python3 -c "import json;print(json.load(open('$LOG/inst-create.json'))['id'])")
+INST_SRV=$(python3 -c "import json;print(json.load(open('$LOG/inst-create.json'))['server_id'])")
 INST_URL=$(python3 -c "import json;print(json.load(open('$LOG/inst-create.json'))['install']['url'])")
 INST_CMD=$(python3 -c "import json;print(json.load(open('$LOG/inst-create.json'))['install']['command'])")
 python3 - "$LOG/inst-create.json" "$INST_URL" <<'PY' || { echo "FAIL: create response"; exit 1; }
@@ -3429,11 +3485,11 @@ if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
     || { echo "FAIL: installer failed"; cat "$LOG/install.out"; exit 1; }
   grep -q "SUCCESS: the agent enrolled and is connected" "$LOG/install.out" || { echo "FAIL: installer output"; cat "$LOG/install.out"; exit 1; }
   BBR_STATE=$(bbr_installed akari-smoke-node "$LOG/install.out") || { cat "$LOG/install.out"; exit 1; }
-  for _ in $(seq 1 20); do [ "$(psql_q "SELECT status FROM nodes WHERE id='$INST_ID'")" = "online" ] && break; sleep 1; done
-  [ "$(psql_q "SELECT status FROM nodes WHERE id='$INST_ID'")" = "online" ] || { echo "FAIL: installed node not online"; exit 1; }
-  for _ in $(seq 1 20); do [ "$(psql_q "SELECT agent_version FROM nodes WHERE id='$INST_ID'")" = "v900.0.1" ] && break; sleep 1; done
-  [ "$(psql_q "SELECT agent_version || ' ' || coalesce(last_error, 'ok') FROM nodes WHERE id='$INST_ID'")" = "v900.0.1 ok" ] \
-    || { echo "FAIL: installed agent: $(psql_q "SELECT agent_version, last_error FROM nodes WHERE id='$INST_ID'")"; exit 1; }
+  for _ in $(seq 1 20); do [ "$(psql_q "SELECT status FROM servers WHERE id='$INST_SRV'")" = "online" ] && break; sleep 1; done
+  [ "$(psql_q "SELECT status FROM servers WHERE id='$INST_SRV'")" = "online" ] || { echo "FAIL: installed node not online"; exit 1; }
+  for _ in $(seq 1 20); do [ "$(psql_q "SELECT agent_version FROM servers WHERE id='$INST_SRV'")" = "v900.0.1" ] && break; sleep 1; done
+  [ "$(psql_q "SELECT agent_version || ' ' || coalesce(last_error, 'ok') FROM servers WHERE id='$INST_SRV'")" = "v900.0.1 ok" ] \
+    || { echo "FAIL: installed agent: $(psql_q "SELECT agent_version, last_error FROM servers WHERE id='$INST_SRV'")"; exit 1; }
   # xray took the generated REALITY key pair: the inbound listens.
   for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/$INST_PORT_R) 2>/dev/null && break; sleep 1; done
   (exec 3<>/dev/tcp/127.0.0.1/$INST_PORT_R) 2>/dev/null || { echo "FAIL: REALITY inbound not listening"; exit 1; }
@@ -3446,7 +3502,7 @@ if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
   INST_SHA=$(python3 -c "import json;print(json.load(open('$LOG/inst-create.json'))['install']['releases']['amd64']['sha256'])")
   [ "$(fp "$INST_URL/agent/$INST_SHA")" = "$REJ" ] || { echo "FAIL: used install link serves the binary"; exit 1; }
   # Uninstall with a fresh link (re-install command), then reinstall with it.
-  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$INST_ID/install" -H 'Content-Type: application/json' \
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/servers/$INST_SRV/install" -H 'Content-Type: application/json' \
       -d '{"origin":"http://127.0.0.1:8080"}')" = "200" ] || { echo "FAIL: re-install link"; exit 1; }
   INST_URL2=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['url'])")
   docker exec akari-smoke-node sh -c "curl -fsSL '$INST_URL2' | sh -s -- --uninstall" >>"$LOG/install.out" 2>&1 \
@@ -3473,7 +3529,7 @@ if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
 else
   echo "installer container test skipped (SMOKE_INSTALL_CONTAINER=0)"
 fi
-[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$INST_ID")" = "202" ] || { echo "FAIL: delete inst-node"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/servers/$INST_SRV")" = "202" ] || { echo "FAIL: delete inst-node's server"; exit 1; }
 echo "r18-2 node install: ok"
 
 echo "== W32 Alpine node: one-line installer under OpenRC, BBR + fq, reinstall without BBR, uninstall =="
@@ -3493,7 +3549,7 @@ if need_agent "unit:akari-agent" "W32 Alpine install (OpenRC)" \
       -d "{\"name\":\"alp-node\",\"direct\":{\"connect_host\":\"127.0.0.1\"},\"template\":{\"template\":\"vless_reality\",\"port\":$ALP_PORT},
            \"install\":{\"origin\":\"http://127.0.0.1:8080\"}}")" = "201" ] \
     || { echo "FAIL: create alp-node: $(cat /tmp/akari-smoke/last)"; exit 1; }
-  ALP_ID=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
+  ALP_ID=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['server_id'])")
   ALP_CMD=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['install']['command'])")
   BBR_BEFORE=$(host_cc)
   docker build -q -t akari-node-test:alpine3.22 scripts/install-test-alpine >/dev/null
@@ -3508,9 +3564,9 @@ if need_agent "unit:akari-agent" "W32 Alpine install (OpenRC)" \
   grep -q "uninstall later with (as root): /usr/local/sbin/akari-agent-uninstall" "$LOG/alp-install.out" \
     || { echo "FAIL: Alpine uninstall hint"; cat "$LOG/alp-install.out"; exit 1; }
   ALP_BBR=$(bbr_installed akari-smoke-alp "$LOG/alp-install.out") || { cat "$LOG/alp-install.out"; exit 1; }
-  for _ in $(seq 1 20); do [ "$(psql_q "SELECT status || ' ' || coalesce(agent_version, '-') FROM nodes WHERE id='$ALP_ID'")" = "online v900.0.1" ] && break; sleep 1; done
-  [ "$(psql_q "SELECT status || ' ' || coalesce(agent_version, '-') || ' ' || coalesce(last_error, 'ok') FROM nodes WHERE id='$ALP_ID'")" = "online v900.0.1 ok" ] \
-    || { echo "FAIL: Alpine node: $(psql_q "SELECT status, agent_version, last_error FROM nodes WHERE id='$ALP_ID'")"; exit 1; }
+  for _ in $(seq 1 20); do [ "$(psql_q "SELECT status || ' ' || coalesce(agent_version, '-') FROM servers WHERE id='$ALP_ID'")" = "online v900.0.1" ] && break; sleep 1; done
+  [ "$(psql_q "SELECT status || ' ' || coalesce(agent_version, '-') || ' ' || coalesce(last_error, 'ok') FROM servers WHERE id='$ALP_ID'")" = "online v900.0.1 ok" ] \
+    || { echo "FAIL: Alpine node: $(psql_q "SELECT status, agent_version, last_error FROM servers WHERE id='$ALP_ID'")"; exit 1; }
   for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/$ALP_PORT) 2>/dev/null && break; sleep 1; done
   (exec 3<>/dev/tcp/127.0.0.1/$ALP_PORT) 2>/dev/null || { echo "FAIL: Alpine REALITY inbound not listening"; exit 1; }
   # The release's scripts, both services in the default runlevel, the agent
@@ -3527,11 +3583,11 @@ if need_agent "unit:akari-agent" "W32 Alpine install (OpenRC)" \
   [ "$(ax 'stat -c "%a %U" /etc/akari-agent/bootstrap.toml')" = "600 root" ] || { echo "FAIL: Alpine bootstrap.toml mode"; exit 1; }
   ax 'cat /var/log/akari-agent/agent.log' | matches '"updater":true' || { echo "FAIL: Alpine agent does not see its updater"; exit 1; }
   ax 'cat /var/log/akari-agent/agent.log' | matches 'units are not the ones' && { echo "FAIL: Alpine agent reports stale scripts"; exit 1; }
-  [ "$(psql_q "SELECT 'updater' = ANY(agent_capabilities) AND NOT 'stale-units' = ANY(agent_capabilities) FROM nodes WHERE id='$ALP_ID'")" = "t" ] \
+  [ "$(psql_q "SELECT 'updater' = ANY(agent_capabilities) AND NOT 'stale-units' = ANY(agent_capabilities) FROM servers WHERE id='$ALP_ID'")" = "t" ] \
     || { echo "FAIL: Alpine node capabilities"; exit 1; }
   # Reinstall without BBR (AKARI_BBR=0): an earlier install's drop-in goes,
   # the previous settings come back; the node reconnects.
-  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$ALP_ID/install" -H 'Content-Type: application/json' \
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/servers/$ALP_ID/install" -H 'Content-Type: application/json' \
       -d '{"origin":"http://127.0.0.1:8080"}')" = "200" ] || { echo "FAIL: alp-node re-install link"; exit 1; }
   ALP_CMD2=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['command'])")
   docker exec -e AKARI_BBR=0 akari-smoke-alp sh -c "$ALP_CMD2" >"$LOG/alp-reinstall.out" 2>&1 \
@@ -3554,7 +3610,7 @@ if need_agent "unit:akari-agent" "W32 Alpine install (OpenRC)" \
   ax 'ps -o args' | matches '^/usr/local/bin/akari-agent ' && { echo "FAIL: Alpine agent still running after uninstall"; exit 1; }
   docker rm -f akari-smoke-alp >/dev/null
   eval "$PREV_EXIT_TRAP"
-  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$ALP_ID")" = "202" ] || { echo "FAIL: delete alp-node"; exit 1; }
+  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/servers/$ALP_ID")" = "202" ] || { echo "FAIL: delete alp-node's server"; exit 1; }
   for kv in $ALP_RL; do vk set "${kv%%=*}" "${kv#*=}" KEEPTTL >/dev/null; done
   echo "w32 Alpine node: ok (OpenRC install, BBR + fq $ALP_BBR, AKARI_BBR=0 reinstall restored it, uninstall clean)"
 fi
@@ -3656,7 +3712,7 @@ R22_CLI0=$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.updat
 # An agent enrolled BEFORE the change (bootstrap server_name = the node
 # domain imported from the old grpc.advertise, "127.0.0.1"): it must keep
 # connecting afterwards.
-"$PANEL" node add r22-old --out "$LOG/r22-old.toml" >/dev/null
+"$PANEL" server add r22-old --out "$LOG/r22-old.toml" >/dev/null
 grep -q '^server_name = "127.0.0.1"$' "$LOG/r22-old.toml" || { echo "FAIL: CLI bootstrap server_name"; exit 1; }
 "$AGENT" -config "$LOG/r22-old.toml" -state-dir "$LOG/state-r22-old" >"$LOG/r22-old-agent.log" 2>&1 &
 AGENT_PID=$!
@@ -3664,7 +3720,7 @@ for _ in $(seq 1 30); do grep -q "channel established" "$LOG/r22-old-agent.log" 
 grep -q "channel established" "$LOG/r22-old-agent.log" || { echo "FAIL: r22-old agent never connected"; exit 1; }
 kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
 AGENT_PID=""
-[ "$(psql_q "SELECT server_name FROM nodes WHERE name='r22-old'")" = "127.0.0.1" ] || { echo "FAIL: enrolled server name not recorded"; exit 1; }
+[ "$(psql_q "SELECT server_name FROM servers WHERE name='r22-old'")" = "127.0.0.1" ] || { echo "FAIL: enrolled server name not recorded"; exit 1; }
 
 [ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
 VER=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['version'])")
@@ -3812,11 +3868,11 @@ docker rm -f akari-smoke-r22 >/dev/null 2>&1 || true
 docker run -d --name akari-smoke-r22 --network host --add-host grpc.akari.test:127.0.0.1 --user "$(id -u):$(id -g)" \
   -v "$(realpath "$AGENT"):/agent:ro" -v "$LOG:/smoke" alpine:3 \
   /agent -config /smoke/r22-new.toml -state-dir /smoke/state-r22-new >/dev/null
-R22_ID=$(python3 -c "import json;print(json.load(open('$LOG/r22-create.json'))['id'])")
-for _ in $(seq 1 40); do [ "$(psql_q "SELECT status FROM nodes WHERE id='$R22_ID'")" = "online" ] && break; sleep 0.5; done
-[ "$(psql_q "SELECT status FROM nodes WHERE id='$R22_ID'")" = "online" ] \
+R22_ID=$(python3 -c "import json;print(json.load(open('$LOG/r22-create.json'))['server_id'])")
+for _ in $(seq 1 40); do [ "$(psql_q "SELECT status FROM servers WHERE id='$R22_ID'")" = "online" ] && break; sleep 0.5; done
+[ "$(psql_q "SELECT status FROM servers WHERE id='$R22_ID'")" = "online" ] \
   || { echo "FAIL: agent with the new server name did not connect"; docker logs akari-smoke-r22 2>&1 | tail -8; exit 1; }
-[ "$(psql_q "SELECT server_name FROM nodes WHERE id='$R22_ID'")" = "grpc.akari.test" ] || { echo "FAIL: new server name not recorded"; exit 1; }
+[ "$(psql_q "SELECT server_name FROM servers WHERE id='$R22_ID'")" = "grpc.akari.test" ] || { echo "FAIL: new server name not recorded"; exit 1; }
 docker rm -f akari-smoke-r22 >/dev/null
 # The agent enrolled before the change (server name 127.0.0.1) still connects.
 "$AGENT" -config "$LOG/r22-old.toml" -state-dir "$LOG/state-r22-old" >"$LOG/r22-old-agent2.log" 2>&1 &
@@ -3842,7 +3898,7 @@ for _ in $(seq 1 20); do [ "$(code "$ASK?domain=myapp.test")" = "404" ] && break
 [ "$(psql_q "SELECT count(*) FROM grpc_server_names WHERE name = 'grpc.akari.test'")" = "1" ] || { echo "FAIL: server name dropped implicitly"; exit 1; }
 # W25: no node domain = no tokens (no fallback); `settings set` (headless
 # setup) fixes that, audited as cli.
-"$PANEL" node add r22-none --out "$LOG/r22-none.toml" >"$LOG/r22-none.out" 2>&1 \
+"$PANEL" server add r22-none --out "$LOG/r22-none.toml" >"$LOG/r22-none.out" 2>&1 \
   && { echo "FAIL: a token without a node domain"; exit 1; }
 matches '节点通信域名未设置' <"$LOG/r22-none.out" || { echo "FAIL: unset node domain error"; cat "$LOG/r22-none.out"; exit 1; }
 "$PANEL" settings set node 203.0.113.9 >/dev/null || { echo "FAIL: settings set node"; exit 1; }
@@ -4063,7 +4119,7 @@ echo "admin bundle: ok"
 echo "== S4-3 SIGTERM: agent streams end, final flush, clean exit =="
 # R22 left no node domain (W25: no tokens without one): set it for this node.
 "$PANEL" settings set node 127.0.0.1:8443 >/dev/null || { echo "FAIL: settings set node (S4-3)"; exit 1; }
-"$PANEL" node add term-node --out "$LOG/term-bootstrap.toml" >/dev/null
+"$PANEL" server add term-node --out "$LOG/term-bootstrap.toml" >/dev/null
 "$AGENT" -config "$LOG/term-bootstrap.toml" -state-dir "$LOG/state-term" >"$LOG/term-agent.log" 2>&1 &
 AGENT_PID=$!
 for _ in $(seq 1 15); do grep -q "channel established" "$LOG/term-agent.log" && break; sleep 1; done

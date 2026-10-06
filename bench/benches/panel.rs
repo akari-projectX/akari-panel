@@ -254,11 +254,11 @@ fn database(c: &mut Criterion) {
     g.sample_size(20);
     g.measurement_time(Duration::from_secs(10));
 
-    // Snapshot of the biggest node: DB read (REPEATABLE READ) + build.
+    // Snapshot of the biggest server: DB read (REPEATABLE READ) + build.
     let Ok(Some((node, users))) = db.rt.block_on(
         sqlx::query_as::<_, (Uuid, i64)>(
-            "SELECT e.node_id, count(*) FROM entrance_users eu \
-             JOIN entrances e ON e.id = eu.entrance_id GROUP BY e.node_id ORDER BY 2 DESC LIMIT 1",
+            "SELECT e.server_id, count(*) FROM entrance_users eu \
+             JOIN entrances e ON e.id = eu.entrance_id GROUP BY e.server_id ORDER BY 2 DESC LIMIT 1",
         )
         .fetch_optional(&db.pg),
     ) else {
@@ -292,10 +292,10 @@ fn database(c: &mut Criterion) {
     let rows = 50_000i64;
     let Ok(pairs) = db.rt.block_on(
         sqlx::query_as::<_, (Uuid, Uuid, Uuid)>(
-            "SELECT node_id, entrance_id, user_id FROM (SELECT e.node_id, eu.entrance_id, \
-             eu.user_id, row_number() OVER (PARTITION BY e.node_id ORDER BY eu.user_id) AS r \
+            "SELECT server_id, entrance_id, user_id FROM (SELECT e.server_id, eu.entrance_id, \
+             eu.user_id, row_number() OVER (PARTITION BY e.server_id ORDER BY eu.user_id) AS r \
              FROM entrance_users eu JOIN entrances e ON e.id = eu.entrance_id) t \
-             WHERE r <= $1 / (SELECT count(*) FROM nodes) LIMIT $1",
+             WHERE r <= $1 / (SELECT count(*) FROM servers) LIMIT $1",
         )
         .bind(rows)
         .fetch_all(&db.pg),

@@ -437,12 +437,13 @@ pub async fn my_nodes(
 ) -> sqlx::Result<Vec<MyNodeRow>> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT name, {SUMS} FROM ( \
-            SELECT CASE WHEN n.visible AND n.deleting_at IS NULL \
+            SELECT CASE WHEN n.visible AND s.deleting_at IS NULL \
                         THEN coalesce(n.display_name, n.name) END AS name, \
                    t.up_bytes, t.down_bytes, t.billed_bytes \
             FROM (SELECT node_id, {SUMS} FROM traffic_daily \
                   WHERE user_id = $1 AND day BETWEEN $2 AND $3 GROUP BY node_id) t \
-            LEFT JOIN nodes n ON n.id = t.node_id) x \
+            LEFT JOIN nodes n ON n.id = t.node_id \
+            LEFT JOIN servers s ON s.id = n.server_id) x \
          GROUP BY name \
          ORDER BY name IS NULL, sum(billed_bytes) DESC, name"
     )))

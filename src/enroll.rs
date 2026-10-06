@@ -1,6 +1,6 @@
 //! Agent enrollment and certificate rotation (M1-8).
 //!
-//! - `akari node add` / `POST /api/v1/nodes` create the node with a one-time
+//! - `akari server add` / `POST /api/v1/servers` create the server with a one-time
 //!   enrollment token (256-bit random, only its SHA-256 stored, short TTL);
 //!   the bootstrap file carries the panel address, server name, CA and the
 //!   token — never a private key.
@@ -8,12 +8,12 @@
 //!   without a client certificate (TLS client auth is optional at the
 //!   handshake; every AgentChannel method insists on a verified one). The
 //!   CSR is checked first (`install::check_csr`), then the token is burned
-//!   by a conditional UPDATE under the node's row lock: two racing
+//!   by a conditional UPDATE under the server's row lock: two racing
 //!   enrollments with one token → exactly one wins. Unknown, used, expired
-//!   and deleting-node tokens are one uniform PERMISSION_DENIED with the
+//!   and deleting-server tokens are one uniform PERMISSION_DENIED with the
 //!   same database work (one lookup that only matches live tokens).
 //! - `AgentChannel.Renew(CSR)` (mTLS) issues a new certificate for a new
-//!   key. nodes.cert_serial = newest issued; nodes.prev_cert_serial = the
+//!   key. servers.cert_serial = newest issued; servers.prev_cert_serial = the
 //!   one renewed from, accepted until cert_serial is first seen on a
 //!   connection (`promote_on_first_sight`: prev is tombstoned 'rotated') or
 //!   until it expires. A renewal from prev (the agent lost the answer)
@@ -47,7 +47,7 @@ use crate::state::AppState;
 /// The one answer to every token problem (no oracle).
 pub const ENROLL_REFUSED: &str = "enrollment refused";
 
-/// Renewals per node per hour (a healthy agent renews every ~60 days).
+/// Renewals per server per hour (a healthy agent renews every ~60 days).
 const RENEW_PER_HOUR: i64 = 20;
 
 /// A new enrollment token: 32 random bytes, base64url (43 chars).
@@ -69,9 +69,9 @@ pub(crate) fn plausible_token(token: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// Issue (or replace) the node's enrollment token. Locks the node row
-/// (lock order: nodes first); refuses deleting nodes (409) and unknown ones
-/// (404). Audited as `node.enroll_token`. Returns the token (shown once)
+/// Issue (or replace) the server's enrollment token. Locks the server row
+/// (lock order: servers first); refuses deleting servers (409) and unknown ones
+/// (404). Audited as `server.enroll_token`. Returns the token (shown once)
 /// and its expiry.
 /// Where an install link's script downloads from (R18-2). `None` for a
 /// token meant for a bootstrap file (never served as a script).
@@ -92,33 +92,33 @@ pub struct InstallLink<'a> {
 pub async fn apply_issue_token(
     conn: &mut PgConnection,
     actor: &Actor,
-    node_id: Uuid,
+    server_id: Uuid,
     ttl_secs: u64,
     link: Option<InstallLink<'_>>,
     endpoint: &crate::settings::NodeEndpoint,
 ) -> Result<(String, DateTime<Utc>), ApiError> {
     let deleting: Option<bool> =
-        sqlx::query_scalar("SELECT deleting_at IS NOT NULL FROM nodes WHERE id = $1 FOR UPDATE")
-            .bind(node_id)
+        sqlx::query_scalar("SELECT deleting_at IS NOT NULL FROM servers WHERE id = $1 FOR UPDATE")
+            .bind(server_id)
             .fetch_optional(&mut *conn)
             .await?;
     match deleting {
         None => return Err(ApiError::not_found()),
-        Some(true) => return Err(conflict!("node.deleting", "node is being deleted")),
+        Some(true) => return Err(conflict!("server.deleting", "server is being deleted")),
         Some(false) => {}
     }
     let token = generate_token();
     let expires: DateTime<Utc> = sqlx::query_scalar(
-        "INSERT INTO node_enrollments (node_id, token_hash, expires_at, install_origin, install_pin, \
+        "INSERT INTO server_enrollments (server_id, token_hash, expires_at, install_origin, install_pin, \
              panel_addr, server_name) \
          VALUES ($1, $2, now() + make_interval(secs => $3), $4, $5, $6, $7) \
-         ON CONFLICT (node_id) DO UPDATE SET token_hash = EXCLUDED.token_hash, \
+         ON CONFLICT (server_id) DO UPDATE SET token_hash = EXCLUDED.token_hash, \
              created_at = now(), expires_at = EXCLUDED.expires_at, used_at = NULL, \
              install_origin = EXCLUDED.install_origin, install_pin = EXCLUDED.install_pin, \
              panel_addr = EXCLUDED.panel_addr, server_name = EXCLUDED.server_name \
          RETURNING expires_at",
     )
-    .bind(node_id)
+    .bind(server_id)
     .bind(hash_token(&token))
     .bind(ttl_secs as f64)
     .bind(link.map(|l| l.origin))
@@ -131,9 +131,9 @@ pub async fn apply_issue_token(
     crate::audit::record(
         conn,
         actor,
-        "node.enroll_token",
-        "node",
-        Some(node_id.to_string()),
+        "server.enroll_token",
+        "server",
+        Some(server_id.to_string()),
         None,
         Some(json!({
             "token": crate::audit::CHANGED,
@@ -147,9 +147,9 @@ pub async fn apply_issue_token(
     Ok((token, expires))
 }
 
-/// Create a node (pending, no certificate) with its first enrollment
-/// token. Audited as `node.create` + `node.enroll_token`.
-pub async fn apply_create_node(
+/// Create a server (pending, no certificate) with its first enrollment
+/// token. Audited as `server.create` + `server.enroll_token`.
+pub async fn apply_create_server(
     conn: &mut PgConnection,
     actor: &Actor,
     name: &str,
@@ -160,13 +160,13 @@ pub async fn apply_create_node(
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
         return Err(bad_request!(
-            "node.name_invalid",
+            "server.name_invalid",
             "name must be 1-64 characters without control characters"
         ));
     }
     let id = Uuid::new_v4();
     let inserted = sqlx::query(
-        "INSERT INTO nodes (id, name, status) VALUES ($1, $2, 'pending') \
+        "INSERT INTO servers (id, name, status) VALUES ($1, $2, 'pending') \
          ON CONFLICT (name) DO NOTHING",
     )
     .bind(id)
@@ -176,15 +176,15 @@ pub async fn apply_create_node(
     .rows_affected();
     if inserted == 0 {
         return Err(conflict!(
-            "node.name_exists",
-            "a node with this name exists"
+            "server.name_exists",
+            "a server with this name exists"
         ));
     }
     crate::audit::record(
         conn,
         actor,
-        "node.create",
-        "node",
+        "server.create",
+        "server",
         Some(id.to_string()),
         None,
         Some(json!({ "name": name })),
@@ -194,7 +194,7 @@ pub async fn apply_create_node(
     Ok((id, token, expires))
 }
 
-/// The bootstrap file for a node (v2: no private key).
+/// The bootstrap file for a server (v2: no private key).
 pub fn bootstrap_toml(
     name: &str,
     panel_addr: &str,
@@ -204,7 +204,7 @@ pub fn bootstrap_toml(
     expires: DateTime<Utc>,
 ) -> String {
     format!(
-        "# akari agent bootstrap for node '{name}'\n\
+        "# akari agent bootstrap for server '{name}'\n\
          # Contains a one-time enrollment token (expires {exp}); no private key.\n\
          # The agent generates its key locally on first start and enrolls.\n\
          panel_addr = \"{panel_addr}\"\n\
@@ -232,77 +232,81 @@ pub fn peer_cert<T>(req: &Request<T>) -> Result<(String, DateTime<Utc>), Status>
 }
 
 /// Tombstone a superseded serial: refused from now on like an unknown
-/// certificate, and never assignable to a node again.
-async fn tombstone_rotated(conn: &mut PgConnection, serial: &str, node: Uuid) -> sqlx::Result<()> {
+/// certificate, and never assignable to a server again.
+async fn tombstone_rotated(
+    conn: &mut PgConnection,
+    serial: &str,
+    server: Uuid,
+) -> sqlx::Result<()> {
     sqlx::query(
-        "INSERT INTO revoked_certs (cert_serial, node_id, reason) VALUES ($1, $2, 'rotated') \
+        "INSERT INTO revoked_certs (cert_serial, server_id, reason) VALUES ($1, $2, 'rotated') \
          ON CONFLICT (cert_serial) DO NOTHING",
     )
     .bind(serial)
-    .bind(node)
+    .bind(server)
     .execute(conn)
     .await?;
     Ok(())
 }
 
-/// First connection with a node's newest certificate while the one it
+/// First connection with a server's newest certificate while the one it
 /// renewed from is still accepted: tombstone the old one ('rotated').
 /// Conditional on the row still looking like that (multi-instance safe),
 /// audited in the same transaction.
 pub async fn promote_on_first_sight(
     pg: &sqlx::PgPool,
-    node: Uuid,
+    server: Uuid,
     serial: &str,
     ip: Option<IpAddr>,
 ) -> sqlx::Result<()> {
     let mut tx = pg.begin().await?;
     let old: Option<Option<String>> = sqlx::query_scalar(
-        "UPDATE nodes SET prev_cert_serial = NULL \
+        "UPDATE servers SET prev_cert_serial = NULL \
          WHERE id = $1 AND cert_serial = $2 AND prev_cert_serial IS NOT NULL \
          RETURNING old.prev_cert_serial",
     )
-    .bind(node)
+    .bind(server)
     .bind(serial)
     .fetch_optional(&mut *tx)
     .await?;
     let Some(Some(old)) = old else {
         return Ok(());
     };
-    tombstone_rotated(&mut tx, &old, node).await?;
+    tombstone_rotated(&mut tx, &old, server).await?;
     crate::audit::record(
         &mut tx,
         &Actor::agent(ip),
-        "node.cert.rotated",
-        "node",
-        Some(node.to_string()),
+        "server.cert.rotated",
+        "server",
+        Some(server.to_string()),
         Some(json!({ "cert_serial": old })),
         Some(json!({ "cert_serial": serial })),
     )
     .await?;
     tx.commit().await?;
-    tracing::info!(node = %node, "agent switched to its renewed certificate; old one revoked");
+    tracing::info!(server = %server, "agent switched to its renewed certificate; old one revoked");
     Ok(())
 }
 
-/// Record the expiry of a certificate issued before nodes.cert_not_after
+/// Record the expiry of a certificate issued before servers.cert_not_after
 /// existed (v1 bootstrap files), from the certificate the agent presents.
 pub async fn note_legacy_expiry(
     pg: &sqlx::PgPool,
-    node: Uuid,
+    server: Uuid,
     serial: &str,
     not_after: DateTime<Utc>,
 ) {
     let r = sqlx::query(
-        "UPDATE nodes SET cert_not_after = $3 \
+        "UPDATE servers SET cert_not_after = $3 \
          WHERE id = $1 AND cert_serial = $2 AND cert_not_after IS NULL",
     )
-    .bind(node)
+    .bind(server)
     .bind(serial)
     .bind(not_after)
     .execute(pg)
     .await;
     if let Err(e) = r {
-        tracing::warn!(node = %node, error = %e, "failed to record certificate expiry");
+        tracing::warn!(server = %server, error = %e, "failed to record certificate expiry");
     }
 }
 
@@ -398,13 +402,13 @@ async fn burn_and_issue(
     // One indexed lookup that only matches live tokens: unknown, used and
     // expired cost the same.
     let found: Option<(Uuid, Vec<u8>)> = sqlx::query_as(
-        "SELECT node_id, token_hash FROM node_enrollments \
+        "SELECT server_id, token_hash FROM server_enrollments \
          WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()",
     )
     .bind(hash)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((node, stored)) = found else {
+    let Some((server, stored)) = found else {
         return Ok(None);
     };
     // Belt and braces: the index lookup already matched; compare the
@@ -412,12 +416,12 @@ async fn burn_and_issue(
     if !bool::from(subtle::ConstantTimeEq::ct_eq(stored.as_slice(), hash)) {
         return Ok(None);
     }
-    // Lock order: the node row first, then its enrollment row.
+    // Lock order: the server row first, then its enrollment row.
     let row: Option<(bool, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT deleting_at IS NOT NULL, cert_serial, prev_cert_serial FROM nodes \
+        "SELECT deleting_at IS NOT NULL, cert_serial, prev_cert_serial FROM servers \
          WHERE id = $1 FOR UPDATE",
     )
-    .bind(node)
+    .bind(server)
     .fetch_optional(&mut *tx)
     .await?;
     let Some((deleting, old_serial, old_prev)) = row else {
@@ -429,10 +433,10 @@ async fn burn_and_issue(
     // The burn. Conditional: a concurrent enrollment that got here first
     // (it held the row lock) left used_at set → 0 rows.
     let burned = sqlx::query(
-        "UPDATE node_enrollments SET used_at = now() \
-         WHERE node_id = $1 AND token_hash = $2 AND used_at IS NULL AND expires_at > now()",
+        "UPDATE server_enrollments SET used_at = now() \
+         WHERE server_id = $1 AND token_hash = $2 AND used_at IS NULL AND expires_at > now()",
     )
-    .bind(node)
+    .bind(server)
     .bind(hash)
     .execute(&mut *tx)
     .await?
@@ -444,21 +448,21 @@ async fn burn_and_issue(
     let issued = install::sign_agent_csr(
         &inst.ca_pem,
         &inst.ca_key_pem,
-        &node.to_string(),
+        &server.to_string(),
         key,
         state.cfg().limits.cert_validity_secs,
     )?;
-    // Re-enrollment of a node that had certificates: they are superseded.
+    // Re-enrollment of a server that had certificates: they are superseded.
     for s in [&old_serial, &old_prev].into_iter().flatten() {
-        tombstone_rotated(&mut tx, s, node).await?;
+        tombstone_rotated(&mut tx, s, server).await?;
     }
     sqlx::query(
-        "UPDATE nodes SET cert_serial = $2, prev_cert_serial = NULL, cert_not_after = $3, \
-             server_name = (SELECT server_name FROM node_enrollments WHERE node_id = $1), \
+        "UPDATE servers SET cert_serial = $2, prev_cert_serial = NULL, cert_not_after = $3, \
+             server_name = (SELECT server_name FROM server_enrollments WHERE server_id = $1), \
              enrolled_at = now() \
          WHERE id = $1",
     )
-    .bind(node)
+    .bind(server)
     .bind(&issued.serial)
     .bind(issued.not_after)
     .execute(&mut *tx)
@@ -466,15 +470,15 @@ async fn burn_and_issue(
     crate::audit::record(
         &mut tx,
         &Actor::agent(ip),
-        "node.enroll",
-        "node",
-        Some(node.to_string()),
+        "server.enroll",
+        "server",
+        Some(server.to_string()),
         Some(json!({ "cert_serial": old_serial })),
         Some(json!({ "cert_serial": issued.serial, "cert_not_after": issued.not_after })),
     )
     .await?;
     tx.commit().await?;
-    tracing::info!(node = %node, "agent enrolled");
+    tracing::info!(server = %server, "agent enrolled");
     Ok(Some(IssuedCertificate {
         cert_pem: issued.cert_pem,
         ca_pem: inst.ca_pem.clone(),
@@ -546,25 +550,25 @@ async fn renew_in_tx(
         )));
     }
     let row: Option<(Uuid, Option<String>, Option<String>, bool)> = sqlx::query_as(
-        "SELECT id, cert_serial, prev_cert_serial, deleting_at IS NOT NULL FROM nodes \
+        "SELECT id, cert_serial, prev_cert_serial, deleting_at IS NOT NULL FROM servers \
          WHERE cert_serial = $1 OR prev_cert_serial = $1 FOR UPDATE",
     )
     .bind(serial)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((node, current, prev, deleting)) = row else {
+    let Some((server, current, prev, deleting)) = row else {
         return Err(RenewError::Status(Status::unauthenticated(
             "unknown certificate",
         )));
     };
     if deleting {
         return Err(RenewError::Status(Status::failed_precondition(
-            "node is being deleted",
+            "server is being deleted",
         )));
     }
     if !crate::rate::hit(
         state,
-        format!("akari:rl:renew:{node}"),
+        format!("akari:rl:renew:{server}"),
         RENEW_PER_HOUR,
         3600,
     )
@@ -579,7 +583,7 @@ async fn renew_in_tx(
     let issued = install::sign_agent_csr(
         &inst.ca_pem,
         &inst.ca_key_pem,
-        &node.to_string(),
+        &server.to_string(),
         key,
         state.cfg().limits.cert_validity_secs,
     )?;
@@ -595,13 +599,13 @@ async fn renew_in_tx(
         current
     };
     if let Some(s) = &superseded {
-        tombstone_rotated(tx, s, node).await?;
+        tombstone_rotated(tx, s, server).await?;
     }
     sqlx::query(
-        "UPDATE nodes SET cert_serial = $2, prev_cert_serial = $3, cert_not_after = $4 \
+        "UPDATE servers SET cert_serial = $2, prev_cert_serial = $3, cert_not_after = $4 \
          WHERE id = $1",
     )
-    .bind(node)
+    .bind(server)
     .bind(&issued.serial)
     .bind(serial)
     .bind(issued.not_after)
@@ -610,14 +614,14 @@ async fn renew_in_tx(
     crate::audit::record(
         tx,
         &Actor::agent(ip),
-        "node.cert.renew",
-        "node",
-        Some(node.to_string()),
+        "server.cert.renew",
+        "server",
+        Some(server.to_string()),
         Some(json!({ "cert_serial": serial })),
         Some(json!({ "cert_serial": issued.serial, "cert_not_after": issued.not_after })),
     )
     .await?;
-    tracing::info!(node = %node, "agent certificate renewed");
+    tracing::info!(server = %server, "agent certificate renewed");
     Ok(IssuedCertificate {
         cert_pem: issued.cert_pem,
         ca_pem: inst.ca_pem.clone(),
@@ -631,7 +635,7 @@ mod tests {
     use crate::testdb::fake_agent::{AgentCreds, PanelHarness};
     use tonic::Code;
 
-    /// The default config's node endpoint.
+    /// The default config's server endpoint.
     pub(crate) fn test_endpoint() -> crate::settings::NodeEndpoint {
         crate::settings::NodeEndpoint {
             panel_addr: "127.0.0.1:8443".into(),
@@ -639,18 +643,25 @@ mod tests {
         }
     }
 
-    async fn token_for(db: &TestDb, node: Uuid) -> String {
+    async fn token_for(db: &TestDb, server: Uuid) -> String {
         let mut tx = db.pool.begin().await.unwrap();
-        let (t, _) = apply_issue_token(&mut tx, &Actor::test(), node, 3600, None, &test_endpoint())
-            .await
-            .unwrap();
+        let (t, _) = apply_issue_token(
+            &mut tx,
+            &Actor::test(),
+            server,
+            3600,
+            None,
+            &test_endpoint(),
+        )
+        .await
+        .unwrap();
         tx.commit().await.unwrap();
         t
     }
 
-    async fn serials(db: &TestDb, node: Uuid) -> (Option<String>, Option<String>) {
-        sqlx::query_as("SELECT cert_serial, prev_cert_serial FROM nodes WHERE id = $1")
-            .bind(node)
+    async fn serials(db: &TestDb, server: Uuid) -> (Option<String>, Option<String>) {
+        sqlx::query_as("SELECT cert_serial, prev_cert_serial FROM servers WHERE id = $1")
+            .bind(server)
             .fetch_one(&db.pool)
             .await
             .unwrap()
@@ -691,9 +702,9 @@ mod tests {
         }
     }
 
-    async fn actions(db: &TestDb, node: Uuid) -> Vec<(String, String)> {
+    async fn actions(db: &TestDb, server: Uuid) -> Vec<(String, String)> {
         sqlx::query_as("SELECT actor_label, action FROM audit_log WHERE target_id = $1 ORDER BY id")
-            .bind(node.to_string())
+            .bind(server.to_string())
             .fetch_all(&db.pool)
             .await
             .unwrap()
@@ -718,7 +729,7 @@ mod tests {
         };
         let panel = PanelHarness::start(&db).await;
         let mut tx = db.pool.begin().await.unwrap();
-        let (node, token, _) = apply_create_node(
+        let (server, token, _) = apply_create_server(
             &mut tx,
             &Actor::test(),
             "n-enroll",
@@ -729,10 +740,14 @@ mod tests {
         .await
         .unwrap();
         tx.commit().await.unwrap();
-        assert_eq!(serials(&db, node).await, (None, None), "no certificate yet");
+        assert_eq!(
+            serials(&db, server).await,
+            (None, None),
+            "no certificate yet"
+        );
         let stored: Vec<u8> =
-            sqlx::query_scalar("SELECT token_hash FROM node_enrollments WHERE node_id = $1")
-                .bind(node)
+            sqlx::query_scalar("SELECT token_hash FROM server_enrollments WHERE server_id = $1")
+                .bind(server)
                 .fetch_one(&db.pool)
                 .await
                 .unwrap();
@@ -757,18 +772,18 @@ mod tests {
 
         let creds = panel.enroll(&token).await.expect("enroll");
         let serial = serial_of(&creds);
-        assert_eq!(serials(&db, node).await, (Some(serial.clone()), None));
+        assert_eq!(serials(&db, server).await, (Some(serial.clone()), None));
         let enrolled: bool = sqlx::query_scalar(
-            "SELECT enrolled_at > now() - interval '1 minute' FROM nodes WHERE id = $1",
+            "SELECT enrolled_at > now() - interval '1 minute' FROM servers WHERE id = $1",
         )
-        .bind(node)
+        .bind(server)
         .fetch_one(&db.pool)
         .await
         .unwrap();
         assert!(enrolled, "W23: the enrollment time is recorded");
         let not_after: Option<chrono::DateTime<Utc>> =
-            sqlx::query_scalar("SELECT cert_not_after FROM nodes WHERE id = $1")
-                .bind(node)
+            sqlx::query_scalar("SELECT cert_not_after FROM servers WHERE id = $1")
+                .bind(server)
                 .fetch_one(&db.pool)
                 .await
                 .unwrap();
@@ -783,11 +798,11 @@ mod tests {
             (Code::PermissionDenied, ENROLL_REFUSED)
         );
         assert_eq!(
-            actions(&db, node).await,
+            actions(&db, server).await,
             [
-                ("test", "node.create"),
-                ("test", "node.enroll_token"),
-                ("agent", "node.enroll"),
+                ("test", "server.create"),
+                ("test", "server.enroll_token"),
+                ("agent", "server.enroll"),
             ]
             .map(|(a, b)| (a.to_string(), b.to_string()))
         );
@@ -800,7 +815,7 @@ mod tests {
         db.drop().await;
     }
 
-    /// Unknown, used, expired, malformed, deleting-node tokens: one answer.
+    /// Unknown, used, expired, malformed, deleting-server tokens: one answer.
     /// A bad CSR is refused before the token, which stays usable.
     #[tokio::test]
     async fn token_errors_are_uniform_and_csr_checked_first() {
@@ -814,10 +829,10 @@ mod tests {
             token: token.into(),
             csr_der: csr,
         };
-        let node = db.node().await;
+        let server = db.server().await;
 
         // Bad CSRs: INVALID_ARGUMENT, token untouched.
-        let token = token_for(&db, node).await;
+        let token = token_for(&db, server).await;
         let sans = {
             let key = rcgen::KeyPair::generate().unwrap();
             let mut p = rcgen::CertificateParams::default();
@@ -850,29 +865,29 @@ mod tests {
         );
         refusals.push(enroll(st, ip, req("short", csr_der())).await.unwrap_err());
         // expired
-        let n2 = db.node().await;
-        let t2 = token_for(&db, n2).await;
+        let s2 = db.server().await;
+        let t2 = token_for(&db, s2).await;
         sqlx::query(
-            "UPDATE node_enrollments SET expires_at = now() - interval '1 s' WHERE node_id = $1",
+            "UPDATE server_enrollments SET expires_at = now() - interval '1 s' WHERE server_id = $1",
         )
-        .bind(n2)
+        .bind(s2)
         .execute(&db.pool)
         .await
         .unwrap();
         refusals.push(enroll(st, ip, req(&t2, csr_der())).await.unwrap_err());
-        // node being deleted
-        let n3 = db.node().await;
-        let t3 = token_for(&db, n3).await;
+        // server being deleted
+        let s3 = db.server().await;
+        let t3 = token_for(&db, s3).await;
         let mut tx = db.pool.begin().await.unwrap();
-        crate::api::apply_begin_delete_node(&mut tx, &Actor::test(), n3)
+        crate::servers::apply_begin_delete(&mut tx, &Actor::test(), s3)
             .await
             .unwrap();
         tx.commit().await.unwrap();
         refusals.push(enroll(st, ip, req(&t3, csr_der())).await.unwrap_err());
         // A replaced token is dead.
-        let n4 = db.node().await;
-        let old = token_for(&db, n4).await;
-        let _new = token_for(&db, n4).await;
+        let s4 = db.server().await;
+        let old = token_for(&db, s4).await;
+        let _new = token_for(&db, s4).await;
         refusals.push(enroll(st, ip, req(&old, csr_der())).await.unwrap_err());
         for r in &refusals {
             assert_eq!(
@@ -880,9 +895,9 @@ mod tests {
                 (Code::PermissionDenied, ENROLL_REFUSED)
             );
         }
-        // A deleting node cannot get a token either.
+        // A deleting server cannot get a token either.
         let mut tx = db.pool.begin().await.unwrap();
-        let e = apply_issue_token(&mut tx, &Actor::test(), n3, 3600, None, &test_endpoint())
+        let e = apply_issue_token(&mut tx, &Actor::test(), s3, 3600, None, &test_endpoint())
             .await
             .unwrap_err();
         assert_eq!(e.status(), axum::http::StatusCode::CONFLICT);
@@ -899,8 +914,8 @@ mod tests {
         };
         let panel = PanelHarness::start(&db).await;
         for _ in 0..10 {
-            let node = db.node().await;
-            let token = token_for(&db, node).await;
+            let server = db.server().await;
+            let token = token_for(&db, server).await;
             let tasks: Vec<_> = (0..4)
                 .map(|_| {
                     let st = panel.state.clone();
@@ -927,9 +942,9 @@ mod tests {
             }
             assert_eq!(ok, 1);
             let issued: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM audit_log WHERE action = 'node.enroll' AND target_id = $1",
+                "SELECT count(*) FROM audit_log WHERE action = 'server.enroll' AND target_id = $1",
             )
-            .bind(node.to_string())
+            .bind(server.to_string())
             .fetch_one(&db.pool)
             .await
             .unwrap();
@@ -978,15 +993,15 @@ mod tests {
         let Some(db) = TestDb::new().await else {
             return;
         };
-        let (node, _u) = db.member().await;
+        let (server, _u) = db.member().await;
         let panel = PanelHarness::start(&db).await;
-        let token = token_for(&db, node).await;
+        let token = token_for(&db, server).await;
         let a = panel.enroll(&token).await.unwrap();
         served(&panel, &a).await;
 
         let b = panel.renew(Some(&a)).await.expect("renew");
         assert_eq!(
-            serials(&db, node).await,
+            serials(&db, server).await,
             (Some(serial_of(&b)), Some(serial_of(&a)))
         );
         // "Crash" before persisting b: a still works.
@@ -994,7 +1009,7 @@ mod tests {
         // Renew again from a: b (never seen) is superseded.
         let c = panel.renew(Some(&a)).await.expect("renew from prev");
         assert_eq!(
-            serials(&db, node).await,
+            serials(&db, server).await,
             (Some(serial_of(&c)), Some(serial_of(&a)))
         );
         assert_eq!(
@@ -1008,7 +1023,7 @@ mod tests {
         );
         // First sight of c retires a.
         served(&panel, &c).await;
-        assert_eq!(serials(&db, node).await, (Some(serial_of(&c)), None));
+        assert_eq!(serials(&db, server).await, (Some(serial_of(&c)), None));
         assert_eq!(
             tombstone(&db, &serial_of(&a)).await.as_deref(),
             Some("rotated")
@@ -1017,10 +1032,10 @@ mod tests {
         // Renewal from c: plain rotation.
         let d = panel.renew(Some(&c)).await.unwrap();
         assert_eq!(
-            serials(&db, node).await,
+            serials(&db, server).await,
             (Some(serial_of(&d)), Some(serial_of(&c)))
         );
-        let acts: Vec<String> = actions(&db, node)
+        let acts: Vec<String> = actions(&db, server)
             .await
             .into_iter()
             .filter(|(who, _)| who == "agent")
@@ -1029,18 +1044,18 @@ mod tests {
         assert_eq!(
             acts,
             [
-                "node.enroll",
-                "node.cert.renew",
-                "node.cert.renew",
-                "node.cert.rotated",
-                "node.cert.renew"
+                "server.enroll",
+                "server.cert.renew",
+                "server.cert.renew",
+                "server.cert.rotated",
+                "server.cert.renew"
             ]
         );
 
         // Deleting: renewal refused; phase 2 tombstones BOTH live serials
         // as 'deleted' and upgrades the rotated ones.
         let mut tx = db.pool.begin().await.unwrap();
-        crate::api::apply_begin_delete_node(&mut tx, &Actor::test(), node)
+        crate::servers::apply_begin_delete(&mut tx, &Actor::test(), server)
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -1048,14 +1063,14 @@ mod tests {
             panel.renew(Some(&c)).await.unwrap_err().code(),
             Code::FailedPrecondition
         );
-        sqlx::query("UPDATE nodes SET deleting_at = now() - interval '1 hour' WHERE id = $1")
-            .bind(node)
+        sqlx::query("UPDATE servers SET deleting_at = now() - interval '1 hour' WHERE id = $1")
+            .bind(server)
             .execute(&db.pool)
             .await
             .unwrap();
         let mut tx = db.pool.begin().await.unwrap();
         assert!(
-            crate::reaper::finalize_delete(&mut tx, node)
+            crate::reaper::finalize_delete(&mut tx, server)
                 .await
                 .unwrap()
                 .is_some()
@@ -1078,16 +1093,16 @@ mod tests {
         let Some(db) = TestDb::new().await else {
             return;
         };
-        let (node, _u) = db.member().await;
+        let (server, _u) = db.member().await;
         let panel = PanelHarness::start(&db).await;
-        let v1 = panel.register(&db, node).await;
+        let v1 = panel.register(&db, server).await;
         let mut a = panel.connect(&v1).await.unwrap();
         a.hello_v((0, 0), String::new(), 1).await;
         let snap = a.snapshot().await;
         assert_eq!(snap.users.len(), 1, "protocol 1 is served normally");
         let not_after: Option<chrono::DateTime<Utc>> =
-            sqlx::query_scalar("SELECT cert_not_after FROM nodes WHERE id = $1")
-                .bind(node)
+            sqlx::query_scalar("SELECT cert_not_after FROM servers WHERE id = $1")
+                .bind(server)
                 .fetch_one(&db.pool)
                 .await
                 .unwrap();

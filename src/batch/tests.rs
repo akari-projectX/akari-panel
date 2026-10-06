@@ -528,7 +528,7 @@ async fn bumps_only_real_access_changes() {
             for n in [n1, n2] {
                 out.push(
                     sqlx::query_as::<_, (i64, i64)>(
-                        "SELECT config_version, user_version FROM nodes WHERE id = $1",
+                        "SELECT config_version, user_version FROM servers WHERE id = $1",
                     )
                     .bind(n)
                     .fetch_one(&pool)
@@ -772,7 +772,7 @@ async fn plan_actions() {
     let node = db.node().await;
     let plan = plan_with(&db, node).await;
     let us = users(&db, 4).await;
-    let before: i64 = scalar(&db, "SELECT user_version FROM nodes").await;
+    let before: i64 = scalar(&db, "SELECT user_version FROM servers").await;
     create(
         &db,
         ids(&us),
@@ -786,7 +786,7 @@ async fn plan_actions() {
     .unwrap();
     finish(&st).await;
     assert_eq!(scalar(&db, "SELECT count(*) FROM entrance_users").await, 4);
-    assert!(scalar(&db, "SELECT user_version FROM nodes").await > before);
+    assert!(scalar(&db, "SELECT user_version FROM servers").await > before);
     assert_eq!(audits(&db, "user.plan.set").await, 4);
     create(&db, ids(&us[..2]), Action::CancelPlan {})
         .await

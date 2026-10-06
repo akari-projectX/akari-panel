@@ -181,11 +181,20 @@ pub fn user_snapshot_sql(alias: &str) -> String {
 /// `inbound_summary`; cert serial, versions and runtime state are left out).
 pub fn node_snapshot_sql(alias: &str) -> String {
     format!(
-        "jsonb_build_object('name', {a}.name, 'enabled', {a}.enabled, \
-         'region', {a}.region, 'tls_domain', {a}.tls_domain, \
-         'traffic_max_rate_bytes_per_sec', {a}.traffic_max_rate_bytes_per_sec, \
+        "jsonb_build_object('server_id', {a}.server_id, 'name', {a}.name, \
+         'enabled', {a}.enabled, 'region', {a}.region, \
          'display_name', {a}.display_name, 'sort', {a}.sort, 'visible', {a}.visible, \
-         'tags', {a}.tags, 'deleting', {a}.deleting_at IS NOT NULL)",
+         'tags', {a}.tags)",
+        a = alias
+    )
+}
+
+/// SQL expression: the snapshot of a `servers` row (Q1; secrets none).
+pub fn server_snapshot_sql(alias: &str) -> String {
+    format!(
+        "jsonb_build_object('name', {a}.name, 'tls_domain', {a}.tls_domain, \
+         'traffic_max_rate_bytes_per_sec', {a}.traffic_max_rate_bytes_per_sec, \
+         'deleting', {a}.deleting_at IS NOT NULL)",
         a = alias
     )
 }
@@ -193,7 +202,8 @@ pub fn node_snapshot_sql(alias: &str) -> String {
 /// SQL expression: the snapshot of an `entrances` row (W28-a).
 pub fn entrance_snapshot_sql(alias: &str) -> String {
     format!(
-        "jsonb_build_object('node_id', {a}.node_id, 'kind', {a}.kind, 'name', {a}.name, \
+        "jsonb_build_object('node_id', {a}.node_id, 'server_id', {a}.server_id, \
+         'kind', {a}.kind, 'name', {a}.name, \
          'connect_host', {a}.connect_host, 'connect_port', {a}.connect_port, \
          'rate_permille', {a}.rate_permille, 'enabled', {a}.enabled, 'sort', {a}.sort, \
          'wire_no', {a}.wire_no, 'listen_port', {a}.listen_port, \

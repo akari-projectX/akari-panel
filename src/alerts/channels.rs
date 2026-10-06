@@ -53,8 +53,8 @@ impl Message {
     pub fn alert(
         event: &str,
         alert_id: i64,
-        node_id: Uuid,
-        node_name: &str,
+        server_id: Uuid,
+        server_name: &str,
         kind: &str,
         value: &str,
         detail: &str,
@@ -63,17 +63,17 @@ impl Message {
     ) -> Self {
         let label = super::kind_label(kind);
         let (title, text) = if event == "resolved" {
-            let title = format!("[恢复] {node_name}：{label}");
+            let title = format!("[恢复] {server_name}：{label}");
             let text = format!(
-                "{title}\n节点：{node_name}\n告警：{value}\n开始：{}\n恢复：{}",
+                "{title}\n服务器：{server_name}\n告警：{value}\n开始：{}\n恢复：{}",
                 ts(fired_at),
                 resolved_at.map(ts).unwrap_or_default()
             );
             (title, text)
         } else {
-            let title = format!("[告警] {node_name}：{label}");
+            let title = format!("[告警] {server_name}：{label}");
             let text = format!(
-                "{title}\n节点：{node_name}\n情况：{value}\n详情：{detail}\n时间：{}",
+                "{title}\n服务器：{server_name}\n情况：{value}\n详情：{detail}\n时间：{}",
                 ts(fired_at)
             );
             (title, text)
@@ -85,8 +85,8 @@ impl Message {
                 "text": text,
                 "alert": {
                     "id": alert_id,
-                    "node_id": node_id,
-                    "node_name": node_name,
+                    "server_id": server_id,
+                    "server_name": server_name,
                     "kind": kind,
                     "value": value,
                     "detail": detail,

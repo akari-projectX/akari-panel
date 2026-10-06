@@ -83,10 +83,10 @@ check_panel() {
 	akari-ctl status >/dev/null || fail "akari-ctl status"
 	echo "ok: healthy, login ok"
 }
-node_online() {
+server_online() {
 	local p=$1 id=$2
 	for _ in $(seq 90); do
-		code "$origin/$p/api/v1/nodes?view=summary" -b "$work/jar" >/dev/null
+		code "$origin/$p/api/v1/servers" -b "$work/jar" >/dev/null
 		python3 - "$work/last" "$id" <<'PY' && return 0
 import json, sys
 nodes = json.load(open(sys.argv[1]))
@@ -148,15 +148,15 @@ check_panel
 P=$(prefix)
 
 log "agent: enroll and connect"
-(cd / && runuser -u akari -- akari -c /etc/akari/panel.toml node add e2e-node --out -) >"$work/bootstrap.toml" 2>/dev/null ||
-	fail "node add"
+(cd / && runuser -u akari -- akari -c /etc/akari/panel.toml server add e2e-node --out -) >"$work/bootstrap.toml" 2>/dev/null ||
+	fail "server add"
 chmod 600 "$work/bootstrap.toml"
-NODE_ID=$(cd / && runuser -u akari -- akari -c /etc/akari/panel.toml node list | awk '$2 == "e2e-node" { print $1 }')
-[ -n "$NODE_ID" ] || NODE_ID=$(cd / && runuser -u akari -- akari -c /etc/akari/panel.toml node list | awk 'NR == 2 { print $1 }')
+SERVER_ID=$(cd / && runuser -u akari -- akari -c /etc/akari/panel.toml server list | awk '$2 == "e2e-node" { print $1 }')
+[ -n "$SERVER_ID" ] || SERVER_ID=$(cd / && runuser -u akari -- akari -c /etc/akari/panel.toml server list | awk 'NR == 2 { print $1 }')
 "$agent_bin" -config "$work/bootstrap.toml" -state-dir "$work/agent-state" >"$work/agent.log" 2>&1 &
 agent_pid=$!
-node_online "$P" "$NODE_ID" || fail "the agent did not come online"
-echo "ok: node $NODE_ID online"
+server_online "$P" "$SERVER_ID" || fail "the agent did not come online"
+echo "ok: server $SERVER_ID online"
 
 [ "$(code "$origin/$P/api/v1/users" -b "$work/jar" -X POST -H 'Content-Type: application/json' \
 	-d '{"email":"e2e-user@myapp.test","password":"user-password-123"}')" = 201 ] || fail "create user"
@@ -170,7 +170,7 @@ for to in docker bare; do
 	grep -q "^MODE=$to\$" /etc/akari/install.env || fail "install.env does not say $to"
 	check_panel
 	[ "$(prefix)" = "$P" ] || fail "prefix changed by the move to $to"
-	node_online "$P" "$NODE_ID" || fail "the agent did not reconnect after the move to $to"
+	server_online "$P" "$SERVER_ID" || fail "the agent did not reconnect after the move to $to"
 	[ "$(code "$origin/$P/sub/$SUB" -A clash.meta)" = 200 ] || fail "subscription after the move to $to"
 	[ "$(sha256sum "$work/agent-state/identity.pem" | cut -d' ' -f1)" = "$cert_before" ] ||
 		fail "the agent re-enrolled (identity changed)"

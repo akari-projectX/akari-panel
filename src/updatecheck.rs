@@ -894,8 +894,8 @@ pub struct StatusView {
     pub latest: Option<Latest>,
     /// Enrolled nodes (protocol ≥ 3, platform covered by `latest`) running
     /// an older version than `latest`.
-    pub outdated_nodes: i64,
-    /// `latest.version` when `outdated_nodes > 0` (the "有新版本" badge).
+    pub outdated_servers: i64,
+    /// `latest.version` when `outdated_servers > 0` (the "有新版本" badge).
     pub update_available: Option<String>,
 }
 
@@ -928,7 +928,7 @@ pub async fn status(state: &AppState) -> Result<StatusView, ApiError> {
     let mut outdated = 0i64;
     if let Some(l) = &latest {
         let nodes: Vec<(String, String)> = sqlx::query_as(
-            "SELECT agent_version, agent_os || '/' || agent_arch FROM nodes \
+            "SELECT agent_version, agent_os || '/' || agent_arch FROM servers \
              WHERE deleting_at IS NULL AND agent_version IS NOT NULL AND agent_os IS NOT NULL \
              AND agent_arch IS NOT NULL AND agent_protocol >= $1",
         )
@@ -970,7 +970,7 @@ pub async fn status(state: &AppState) -> Result<StatusView, ApiError> {
             .filter(|_| outdated > 0)
             .map(|l| l.version.clone()),
         latest,
-        outdated_nodes: outdated,
+        outdated_servers: outdated,
     })
 }
 

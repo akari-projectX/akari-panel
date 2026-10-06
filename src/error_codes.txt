@@ -195,7 +195,6 @@ mail_template.subject_length
 mail_template.subject_multiline
 mail_template.version_conflict
 node.acme_agent_too_old
-node.deleting
 node.display_name_invalid
 node.max_rate_invalid
 node.name_empty
@@ -204,6 +203,7 @@ node.name_invalid
 node.probe_cooldown
 node.range_invalid
 node.region_long
+node.server_fields
 node.sort_range
 node.tag_invalid
 node.template_and_inbound
@@ -305,6 +305,9 @@ rollout.percentage_range
 rollout.timeout_range
 rollout.version_invalid
 rollout.waves_invalid
+server.deleting
+server.name_exists
+server.name_invalid
 settings.acme_email_invalid
 settings.acme_url_invalid
 settings.audit_retention_invalid

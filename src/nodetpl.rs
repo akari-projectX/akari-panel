@@ -788,7 +788,8 @@ pub async fn check_domain(
         .map(String::from);
     if let Some(id) = req.node_id {
         let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT host(n.agent_addr), e.connect_host FROM nodes n \
+            "SELECT host(s.agent_addr), e.connect_host FROM nodes n \
+                 JOIN servers s ON s.id = n.server_id \
                  LEFT JOIN entrances e ON e.node_id = n.id AND e.kind = 'direct' WHERE n.id = $1",
         )
         .bind(id)

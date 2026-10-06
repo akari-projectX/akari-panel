@@ -1,14 +1,14 @@
-//! W11: node machine status (heartbeat metrics), its history, and latency
+//! W11: server (machine) status (heartbeat metrics), its history, and latency
 //! tests.
 //!
-//! - **Latest values**: the heartbeat blob in Valkey (`akari:node:hb:<id>`,
+//! - **Latest values**: the heartbeat blob in Valkey (`akari:server:hb:<id>`,
 //!   written by `grpc::store_heartbeat` with `heartbeat_blob`), so any
-//!   instance serves them. Offline = the existing node status (the
+//!   instance serves them. Offline = the existing server status (the
 //!   `online_sql` predicate: status 'online' refreshed within 90 s).
-//! - **History**: `node_metrics_1m` (one row per node and minute; the
-//!   instance holding the node's stream upserts each heartbeat into the
-//!   current minute, adding to sums, at most one write per node per
-//!   `MIN_SAMPLE_GAP`) rolled up into `node_metrics_1h` by
+//! - **History**: `server_metrics_1m` (one row per server and minute; the
+//!   instance holding the server's stream upserts each heartbeat into the
+//!   current minute, adding to sums, at most one write per server per
+//!   `MIN_SAMPLE_GAP`) rolled up into `server_metrics_1h` by
 //!   `rollup_and_prune` (reaper loop, every 10 min, one instance at a time
 //!   via an advisory try-lock). Retention: minutes 48 h, hours 90 days.
 //!   Sized for 200 nodes: <= 576k minute rows and 432k hour rows.
@@ -17,12 +17,12 @@
 //!   系统设置 overrides applied, W12 `settings::Effective::probe`) and the
 //!   panel's own TCP connect test to every inbound's client-facing
 //!   address (`panel_probe_loop`, any instance, rows claimed with a
-//!   conditional UPDATE). Results replace the previous set per (node,
-//!   source) in `node_latency`. "立即测速" = `apply_request_probe`.
+//!   conditional UPDATE). Results replace the previous set per (server,
+//!   source) in `server_latency`. "立即测速" = `apply_request_probe`.
 //! - **Prometheus**: fleet aggregates of the nodes connected to THIS
-//!   instance (`Local::fleet`; sum over instances in PromQL). No per-node
-//!   labels: node ids/names are unbounded label values (src/CLAUDE.md
-//!   metrics rule); per-node history is the API's job.
+//!   instance (`Local::fleet`; sum over instances in PromQL). No per-server
+//!   labels: server ids/names are unbounded label values (src/CLAUDE.md
+//!   metrics rule); per-server history is the API's job.
 
 use crate::auth::bad_request;
 use std::collections::HashMap;
@@ -42,14 +42,14 @@ use crate::auth::{ApiError, AuthUser};
 use crate::pb::{Heartbeat, LatencyProbeConfig, LatencyReport};
 use crate::state::AppState;
 
-/// SQL predicate over node alias `a`: the node is online — the same rule
+/// SQL predicate over server alias `a`: the server is online — the same rule
 /// the reaper uses (a session marks it online and refreshes last_seen_at
 /// every 30 s).
 pub fn online_sql(a: &str) -> String {
     format!("({a}.status = 'online' AND {a}.last_seen_at > now() - interval '90 seconds')")
 }
 
-/// At most one history write per node per this long (a heartbeat flood
+/// At most one history write per server per this long (a heartbeat flood
 /// from a misbehaving agent cannot turn into a write flood).
 const MIN_SAMPLE_GAP: Duration = Duration::from_secs(5);
 /// Concurrent history writes per instance; a sample that finds none free
@@ -221,7 +221,7 @@ struct Seen {
     sample: Sample,
 }
 
-/// Per-instance state: the latest sample of each node whose stream this
+/// Per-instance state: the latest sample of each server whose stream this
 /// instance holds (fleet gauges; dropped when the stream ends) and the
 /// history write throttle.
 pub struct Local {
@@ -251,9 +251,9 @@ pub struct Fleet {
 
 impl Local {
     /// Record a heartbeat; true when it is due for a history write.
-    fn observe(&self, node: Uuid, s: Sample, now: Instant) -> bool {
+    fn observe(&self, server: Uuid, s: Sample, now: Instant) -> bool {
         let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
-        let e = seen.entry(node).or_insert(Seen {
+        let e = seen.entry(server).or_insert(Seen {
             at: now,
             written: None,
             sample: s,
@@ -269,12 +269,12 @@ impl Local {
         due
     }
 
-    /// The node's stream on this instance ended.
-    pub fn forget(&self, node: Uuid) {
+    /// The server's stream on this instance ended.
+    pub fn forget(&self, server: Uuid) {
         self.seen
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&node);
+            .remove(&server);
     }
 
     pub fn fleet(&self) -> Fleet {
@@ -297,18 +297,18 @@ impl Local {
     }
 }
 
-/// Upsert one sample into the node's current minute (sums + maxima; the
+/// Upsert one sample into the server's current minute (sums + maxima; the
 /// totals keep the latest value). W23: unknown values are NULL; a NULL sum
 /// stays NULL for the minute (`+` propagates it: an average over partly
 /// unknown samples would be wrong), maxima keep the known values
 /// (GREATEST ignores NULL), the totals keep the latest known value.
 pub const SAMPLE_SQL: &str = "\
-INSERT INTO node_metrics_1m AS m (node_id, bucket, samples, cpu_sum, cpu_max, load1_sum, \
+INSERT INTO server_metrics_1m AS m (server_id, bucket, samples, cpu_sum, cpu_max, load1_sum, \
     mem_used_sum, mem_total, swap_used_sum, swap_total, disk_used, disk_total, rx_bps_sum, \
     tx_bps_sum, rx_bps_max, tx_bps_max, tcp_sum, udp_sum, conns_sum, conns_max, users_sum, users_max) \
 VALUES ($1, date_trunc('minute', now()), 1, $2, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $10, $11, \
     $12, $13, $14, $14, $15, $15) \
-ON CONFLICT (node_id, bucket) DO UPDATE SET \
+ON CONFLICT (server_id, bucket) DO UPDATE SET \
     samples = m.samples + 1, \
     cpu_sum = m.cpu_sum + EXCLUDED.cpu_sum, cpu_max = GREATEST(m.cpu_max, EXCLUDED.cpu_max), \
     load1_sum = m.load1_sum + EXCLUDED.load1_sum, \
@@ -325,9 +325,9 @@ ON CONFLICT (node_id, bucket) DO UPDATE SET \
     conns_sum = m.conns_sum + EXCLUDED.conns_sum, conns_max = GREATEST(m.conns_max, EXCLUDED.conns_max), \
     users_sum = m.users_sum + EXCLUDED.users_sum, users_max = GREATEST(m.users_max, EXCLUDED.users_max)";
 
-pub async fn write_sample(pg: &PgPool, node: Uuid, s: &Sample) -> sqlx::Result<()> {
+pub async fn write_sample(pg: &PgPool, server: Uuid, s: &Sample) -> sqlx::Result<()> {
     sqlx::query(SAMPLE_SQL)
-        .bind(node)
+        .bind(server)
         .bind(s.cpu)
         .bind(s.load1)
         .bind(s.mem_used.map(|v| v as f64))
@@ -350,20 +350,20 @@ pub async fn write_sample(pg: &PgPool, node: Uuid, s: &Sample) -> sqlx::Result<(
 /// Heartbeat hook (grpc.rs, after the Valkey write): fleet gauges and, at
 /// most every MIN_SAMPLE_GAP, a history write in the background (never
 /// delays the stream; skipped when WRITE_PERMITS are all busy).
-pub fn on_heartbeat(state: &AppState, node: Uuid, hb: &Heartbeat) {
+pub fn on_heartbeat(state: &AppState, server: Uuid, hb: &Heartbeat) {
     let s = Sample::from_heartbeat(hb);
-    if !state.nodestat().observe(node, s, Instant::now()) {
+    if !state.nodestat().observe(server, s, Instant::now()) {
         return;
     }
     let Ok(permit) = state.nodestat().permits.clone().try_acquire_owned() else {
-        tracing::debug!(node = %node, "metrics history write skipped (database busy)");
+        tracing::debug!(server = %server, "metrics history write skipped (database busy)");
         return;
     };
     let pg = state.pg().clone();
     tokio::spawn(async move {
-        if let Err(e) = write_sample(&pg, node, &s).await {
-            // A node deleted meanwhile (foreign key) is not worth a warning.
-            tracing::debug!(node = %node, error = %e, "metrics history write failed");
+        if let Err(e) = write_sample(&pg, server, &s).await {
+            // A server deleted meanwhile (foreign key) is not worth a warning.
+            tracing::debug!(server = %server, error = %e, "metrics history write failed");
         }
         drop(permit);
     });
@@ -406,17 +406,17 @@ fn rollup_sql() -> String {
         })
         .collect::<Vec<_>>();
     format!(
-        "INSERT INTO node_metrics_1h AS h (node_id, bucket, samples, cpu_sum, cpu_max, load1_sum, \
+        "INSERT INTO server_metrics_1h AS h (server_id, bucket, samples, cpu_sum, cpu_max, load1_sum, \
     mem_used_sum, mem_total, swap_used_sum, swap_total, disk_used, disk_total, rx_bps_sum, \
     tx_bps_sum, rx_bps_max, tx_bps_max, tcp_sum, udp_sum, conns_sum, conns_max, users_sum, users_max) \
-SELECT node_id, date_trunc('hour', bucket), sum(samples), {cpu}, max(cpu_max), {load1}, \
+SELECT server_id, date_trunc('hour', bucket), sum(samples), {cpu}, max(cpu_max), {load1}, \
     {mem}, max(mem_total), {swap}, max(swap_total), max(disk_used), \
     max(disk_total), {rx}, {tx}, max(rx_bps_max), max(tx_bps_max), \
     {tcp}, {udp}, {conns}, max(conns_max), sum(users_sum), max(users_max) \
-FROM node_metrics_1m \
+FROM server_metrics_1m \
 WHERE bucket >= date_trunc('hour', now()) - interval '2 hours' \
 GROUP BY 1, 2 ORDER BY 1, 2 \
-ON CONFLICT (node_id, bucket) DO UPDATE SET \
+ON CONFLICT (server_id, bucket) DO UPDATE SET \
     samples = EXCLUDED.samples, cpu_sum = EXCLUDED.cpu_sum, cpu_max = EXCLUDED.cpu_max, \
     load1_sum = EXCLUDED.load1_sum, mem_used_sum = EXCLUDED.mem_used_sum, \
     mem_total = EXCLUDED.mem_total, swap_used_sum = EXCLUDED.swap_used_sum, \
@@ -467,13 +467,13 @@ pub async fn rollup_and_prune(pg: &PgPool) -> sqlx::Result<Option<Rollup>> {
     };
     r.minutes_pruned = prune(
         &mut tx,
-        "node_metrics_1m",
+        "server_metrics_1m",
         &format!("now() - interval '{MINUTE_RETENTION_HOURS} hours'"),
     )
     .await?;
     r.hours_pruned = prune(
         &mut tx,
-        "node_metrics_1h",
+        "server_metrics_1h",
         &format!("now() - interval '{HOUR_RETENTION_DAYS} days'"),
     )
     .await?;
@@ -502,7 +502,7 @@ async fn prune(conn: &mut PgConnection, table: &str, cutoff: &str) -> sqlx::Resu
 // Latency
 // ---------------------------------------------------------------------------
 
-/// The agent's test settings from `[probe]`; run_token = the node's latest
+/// The agent's test settings from `[probe]`; run_token = the server's latest
 /// "立即测速" request (epoch microseconds; 0 = none).
 pub fn probe_config(
     cfg: &crate::config::ProbeConfig,
@@ -522,12 +522,16 @@ pub fn probe_config(
 /// At most this many URLs of an agent report are kept.
 const MAX_AGENT_RESULTS: usize = 4;
 
-/// Store an agent's LatencyReport: replaces the node's agent results unless
+/// Store an agent's LatencyReport: replaces the server's agent results unless
 /// a newer set is already stored (a re-sent old report after a newer one).
 /// Agent input is bounded: <= 4 results, URLs <= 512 bytes without control
 /// characters, errors <= 200 characters, timestamps clamped to
 /// [now - 7 d, now].
-pub async fn store_agent_latency(pg: &PgPool, node: Uuid, rep: &LatencyReport) -> sqlx::Result<()> {
+pub async fn store_agent_latency(
+    pg: &PgPool,
+    server: Uuid,
+    rep: &LatencyReport,
+) -> sqlx::Result<()> {
     let now = Utc::now();
     let at = DateTime::<Utc>::from_timestamp(rep.measured_at_unix, 0)
         .unwrap_or(now)
@@ -550,12 +554,12 @@ pub async fn store_agent_latency(pg: &PgPool, node: Uuid, rep: &LatencyReport) -
             if e.is_empty() { "failed".into() } else { e }
         }));
     }
-    replace_latency(pg, node, "agent", at, &targets, &delays, &errors).await
+    replace_latency(pg, server, "agent", at, &targets, &delays, &errors).await
 }
 
 async fn replace_latency(
     pg: &PgPool,
-    node: Uuid,
+    server: Uuid,
     source: &str,
     at: DateTime<Utc>,
     targets: &[String],
@@ -564,28 +568,28 @@ async fn replace_latency(
 ) -> sqlx::Result<()> {
     let mut tx = pg.begin().await?;
     let newest: Option<DateTime<Utc>> = sqlx::query_scalar(
-        "SELECT max(measured_at) FROM node_latency WHERE node_id = $1 AND source = $2",
+        "SELECT max(measured_at) FROM server_latency WHERE server_id = $1 AND source = $2",
     )
-    .bind(node)
+    .bind(server)
     .bind(source)
     .fetch_one(&mut *tx)
     .await?;
     if newest.is_some_and(|n| n > at) {
         return Ok(());
     }
-    sqlx::query("DELETE FROM node_latency WHERE node_id = $1 AND source = $2")
-        .bind(node)
+    sqlx::query("DELETE FROM server_latency WHERE server_id = $1 AND source = $2")
+        .bind(server)
         .bind(source)
         .execute(&mut *tx)
         .await?;
     let ords: Vec<i16> = (0..targets.len() as i16).collect();
     let r = sqlx::query(
-        "INSERT INTO node_latency (node_id, source, target, delay_ms, error, ord, measured_at) \
+        "INSERT INTO server_latency (server_id, source, target, delay_ms, error, ord, measured_at) \
          SELECT $1, $2, t, d, e, o, $7 \
          FROM unnest($3::text[], $4::int[], $5::text[], $6::smallint[]) AS x(t, d, e, o) \
-         WHERE EXISTS (SELECT 1 FROM nodes WHERE id = $1)",
+         WHERE EXISTS (SELECT 1 FROM servers WHERE id = $1)",
     )
-    .bind(node)
+    .bind(server)
     .bind(source)
     .bind(targets)
     .bind(delays)
@@ -595,7 +599,7 @@ async fn replace_latency(
     .execute(&mut *tx)
     .await;
     match r {
-        // The node was deleted meanwhile: nothing to keep.
+        // The server was deleted meanwhile: nothing to keep.
         Err(sqlx::Error::Database(db)) if db.is_foreign_key_violation() => return Ok(()),
         r => r?,
     };
@@ -605,29 +609,29 @@ async fn replace_latency(
 /// "立即测速" (POST /nodes/{id}/probe): record the request (the agent's
 /// session sends the new run_token on its next wake — this transaction
 /// notifies it — and the panel's TCP test is due at once). At most once
-/// per node per `[probe].manual_cooldown_secs` (409 otherwise; DB clock,
+/// per server per `[probe].manual_cooldown_secs` (409 otherwise; DB clock,
 /// so every instance agrees). Audited.
 pub async fn apply_request_probe(
     conn: &mut PgConnection,
     actor: &Actor,
-    node: Uuid,
+    server: Uuid,
     cooldown_secs: u64,
 ) -> Result<DateTime<Utc>, ApiError> {
     let row: Option<(DateTime<Utc>,)> = sqlx::query_as(
-        "UPDATE nodes SET probe_requested_at = now(), panel_probe_next_at = NULL \
+        "UPDATE servers SET probe_requested_at = now(), panel_probe_next_at = NULL \
          WHERE id = $1 AND deleting_at IS NULL \
            AND (probe_requested_at IS NULL OR probe_requested_at <= now() - make_interval(secs => $2)) \
          RETURNING probe_requested_at",
     )
-    .bind(node)
+    .bind(server)
     .bind(cooldown_secs as f64)
     .fetch_optional(&mut *conn)
     .await?;
     let Some((at,)) = row else {
         let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM nodes WHERE id = $1 AND deleting_at IS NULL)",
+            "SELECT EXISTS (SELECT 1 FROM servers WHERE id = $1 AND deleting_at IS NULL)",
         )
-        .bind(node)
+        .bind(server)
         .fetch_one(&mut *conn)
         .await?;
         return Err(if exists {
@@ -640,18 +644,18 @@ pub async fn apply_request_probe(
             ApiError::not_found()
         });
     };
-    // Wake the node's session wherever it is (no version change: the
+    // Wake the server's session wherever it is (no version change: the
     // trigger stays quiet).
     sqlx::query("SELECT pg_notify('akari_change', $1)")
-        .bind(node.to_string())
+        .bind(server.to_string())
         .execute(&mut *conn)
         .await?;
     crate::audit::record(
         conn,
         actor,
-        "node.probe",
-        "node",
-        Some(node.to_string()),
+        "server.probe",
+        "server",
+        Some(server.to_string()),
         None,
         None,
     )
@@ -660,22 +664,22 @@ pub async fn apply_request_probe(
 }
 
 /// The probe request a session should forward (`grpc::maybe_send_probe`).
-pub async fn requested_at(pg: &PgPool, node: Uuid) -> sqlx::Result<Option<DateTime<Utc>>> {
+pub async fn requested_at(pg: &PgPool, server: Uuid) -> sqlx::Result<Option<DateTime<Utc>>> {
     Ok(sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
-        "SELECT probe_requested_at FROM nodes WHERE id = $1",
+        "SELECT probe_requested_at FROM servers WHERE id = $1",
     )
-    .bind(node)
+    .bind(server)
     .fetch_optional(pg)
     .await?
     .flatten())
 }
 
 /// What the panel dials for one entrance: the client-facing host/port
-/// (the entrance's, else the node's TLS domain and the inbound's port) and
+/// (the entrance's, else the server's TLS domain and the inbound's port) and
 /// whether TCP can measure it.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Target {
-    /// The entrance's name (`node_latency.target`).
+    /// The entrance's name (`server_latency.target`).
     pub name: String,
     pub host: Option<String>,
     pub port: Option<u16>,
@@ -774,23 +778,38 @@ pub async fn tcp_latency(
     Ok(u32::try_from(mid.as_millis().max(1)).unwrap_or(u32::MAX))
 }
 
-/// Nodes claimed per round by one instance.
+/// Servers claimed per round by one instance.
 const CLAIM_BATCH: i64 = 8;
 const PANEL_PROBE_TICK: Duration = Duration::from_secs(15);
+/// Targets tested per server and round.
+const MAX_TARGETS: usize = 32;
 
 #[derive(sqlx::FromRow)]
 struct Due {
     id: Uuid,
-    inbound: Option<Value>,
     tls_domain: Option<String>,
-    /// `[EntranceAddr]` of the node's enabled entrances.
-    entrances: Value,
+    /// `[DueNode]`: the server's enabled nodes with an inbound.
+    nodes: Value,
+}
+
+/// One node of a claimed server and its enabled entrances.
+#[derive(Deserialize)]
+struct DueNode {
+    name: String,
+    inbound: Value,
+    entrances: Vec<EntranceAddr>,
+}
+
+/// The latency target name of an entrance: unique on its server (entrance
+/// names are unique per node).
+pub fn target_name(node: &str, entrance: &str) -> String {
+    format!("{node} / {entrance}")
 }
 
 /// The panel's TCP test (any instance): every PANEL_PROBE_TICK claim up to
-/// CLAIM_BATCH enabled nodes whose test is due (next time = now + interval
-/// +-10%, set in the claiming UPDATE, so instances never test the same node
-/// twice) and test their inbounds concurrently.
+/// CLAIM_BATCH servers whose test is due (next time = now + interval
+/// +-10%, set in the claiming UPDATE, so instances never test the same
+/// server twice) and test their nodes' entrances concurrently.
 pub async fn panel_probe_loop(state: AppState) {
     let mut tick = tokio::time::interval(PANEL_PROBE_TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -817,15 +836,20 @@ pub async fn panel_probe_round(
     timeout: Duration,
 ) -> sqlx::Result<usize> {
     let due: Vec<Due> = sqlx::query_as(
-        "UPDATE nodes n SET panel_probe_next_at = now() + make_interval(secs => $1 * (0.9 + 0.2 * random())) \
-         WHERE n.id IN (SELECT id FROM nodes WHERE enabled AND deleting_at IS NULL \
+        "UPDATE servers s SET panel_probe_next_at = now() + make_interval(secs => $1 * (0.9 + 0.2 * random())) \
+         WHERE s.id IN (SELECT id FROM servers WHERE deleting_at IS NULL \
              AND (panel_probe_next_at IS NULL OR panel_probe_next_at <= now()) \
+             AND EXISTS (SELECT 1 FROM nodes n WHERE n.server_id = servers.id AND n.enabled) \
              ORDER BY panel_probe_next_at NULLS FIRST, id LIMIT $2 FOR UPDATE SKIP LOCKED) \
-         RETURNING n.id, n.inbound, n.tls_domain, \
-             coalesce((SELECT jsonb_agg(jsonb_build_object('name', e.name, \
-                 'connect_host', e.connect_host, 'connect_port', e.connect_port) \
-                 ORDER BY e.kind <> 'direct', e.sort, e.created_at, e.id) \
-                 FROM entrances e WHERE e.node_id = n.id AND e.enabled), '[]'::jsonb) AS entrances",
+         RETURNING s.id, s.tls_domain, \
+             coalesce((SELECT jsonb_agg(jsonb_build_object('name', n.name, 'inbound', n.inbound, \
+                 'entrances', coalesce((SELECT jsonb_agg(jsonb_build_object('name', e.name, \
+                     'connect_host', e.connect_host, 'connect_port', e.connect_port) \
+                     ORDER BY e.kind <> 'direct', e.sort, e.created_at, e.id) \
+                     FROM entrances e WHERE e.node_id = n.id AND e.enabled), '[]'::jsonb)) \
+                 ORDER BY n.sort, n.name, n.id) \
+                 FROM nodes n WHERE n.server_id = s.id AND n.enabled AND n.inbound IS NOT NULL), \
+                 '[]'::jsonb) AS nodes",
     )
     .bind(interval_secs as f64)
     .bind(CLAIM_BATCH)
@@ -836,13 +860,22 @@ pub async fn panel_probe_round(
     for d in due {
         let pg = pg.clone();
         set.spawn(async move {
-            let entrances: Vec<EntranceAddr> =
-                serde_json::from_value(d.entrances).unwrap_or_default();
-            let ts = targets(d.inbound.as_ref(), d.tls_domain.as_deref(), &entrances);
+            let nodes: Vec<DueNode> = serde_json::from_value(d.nodes).unwrap_or_default();
+            let ts: Vec<Target> = nodes
+                .iter()
+                .flat_map(|n| {
+                    targets(Some(&n.inbound), d.tls_domain.as_deref(), &n.entrances)
+                        .into_iter()
+                        .map(|t| Target {
+                            name: target_name(&n.name, &t.name),
+                            ..t
+                        })
+                })
+                .collect();
             let mut tags = Vec::new();
             let mut delays = Vec::new();
             let mut errors = Vec::new();
-            for t in ts.iter().take(32) {
+            for t in ts.iter().take(MAX_TARGETS) {
                 let r = match (&t.host, t.port, t.udp_only) {
                     (_, _, true) => Err("udp".to_string()),
                     (Some(h), Some(p), false) => tcp_latency(h, p, attempts, timeout).await,
@@ -863,7 +896,7 @@ pub async fn panel_probe_round(
             if let Err(e) =
                 replace_latency(&pg, d.id, "panel", Utc::now(), &tags, &delays, &errors).await
             {
-                tracing::warn!(node = %d.id, error = %e, "failed to store panel latency");
+                tracing::warn!(server = %d.id, error = %e, "failed to store panel latency");
             }
         });
     }
@@ -884,19 +917,20 @@ pub struct LatencyRow {
     pub measured_at: DateTime<Utc>,
 }
 
-/// JSON array of a node's latency rows (node alias `a`), for NodeView.
+/// JSON array of a node's latency rows (server alias `a`), for NodeView.
 pub fn latency_json_sql(a: &str) -> String {
     format!(
         "(SELECT coalesce(jsonb_agg(jsonb_build_object(\
          'source', l.source, 'target', l.target, 'delay_ms', l.delay_ms, 'error', l.error, \
          'measured_at', l.measured_at) ORDER BY l.source, l.ord), '[]'::jsonb) \
-         FROM node_latency l WHERE l.node_id = {a}.id)"
+         FROM server_latency l WHERE l.server_id = {a}.id)"
     )
 }
 
-/// GET /nodes/{id}/status (admin): the latest heartbeat (Valkey), online
-/// state, latency results and traffic totals of one node.
-pub async fn node_status(
+/// GET /servers/{id}/status (admin): the latest heartbeat (Valkey), online
+/// state, latency results and traffic totals (over its nodes) of one
+/// server.
+pub async fn server_status(
     State(state): State<AppState>,
     user: AuthUser,
     Path((_, id)): Path<(String, Uuid)>,
@@ -913,11 +947,15 @@ pub async fn node_status(
         probe_requested_at: Option<DateTime<Utc>>,
     }
     let row: Row = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT n.status, {} AS online, n.last_seen_at, {} AS latency, \
-         n.traffic_raw_bytes, n.traffic_billed_bytes, n.probe_requested_at \
-         FROM nodes n WHERE n.id = $1",
-        online_sql("n"),
-        latency_json_sql("n")
+        "SELECT s.status, {} AS online, s.last_seen_at, {} AS latency, \
+         coalesce((SELECT sum(n.traffic_raw_bytes) FROM nodes n WHERE n.server_id = s.id), 0)::int8 \
+             AS traffic_raw_bytes, \
+         coalesce((SELECT sum(n.traffic_billed_bytes) FROM nodes n WHERE n.server_id = s.id), 0)::int8 \
+             AS traffic_billed_bytes, \
+         s.probe_requested_at \
+         FROM servers s WHERE s.id = $1",
+        online_sql("s"),
+        latency_json_sql("s")
     )))
     .bind(id)
     .fetch_optional(state.pg())
@@ -941,7 +979,7 @@ async fn heartbeat(state: &AppState, id: Uuid) -> Option<Value> {
     use fred::prelude::KeysInterface;
     match state
         .valkey()
-        .get::<Option<String>, _>(format!("akari:node:hb:{id}"))
+        .get::<Option<String>, _>(format!("akari:server:hb:{id}"))
         .await
     {
         Ok(b) => b.and_then(|b| serde_json::from_str(&b).ok()),
@@ -1012,11 +1050,11 @@ pub struct Point {
     pub users_max: i64,
 }
 
-pub async fn history(pg: &PgPool, node: Uuid, spec: &RangeSpec) -> sqlx::Result<Vec<Point>> {
+pub async fn history(pg: &PgPool, server: Uuid, spec: &RangeSpec) -> sqlx::Result<Vec<Point>> {
     let table = if spec.hourly {
-        "node_metrics_1h"
+        "server_metrics_1h"
     } else {
-        "node_metrics_1m"
+        "server_metrics_1m"
     };
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT to_timestamp(floor(extract(epoch FROM bucket) / $3) * $3) AS t, \
@@ -1030,7 +1068,7 @@ pub async fn history(pg: &PgPool, node: Uuid, spec: &RangeSpec) -> sqlx::Result<
          {tcp} AS tcp, {udp} AS udp, \
          {conns} AS conns, max(conns_max) AS conns_max, \
          (sum(users_sum) / sum(samples))::float8 AS users, max(users_max) AS users_max \
-         FROM {table} WHERE node_id = $1 AND bucket >= now() - make_interval(secs => $2) \
+         FROM {table} WHERE server_id = $1 AND bucket >= now() - make_interval(secs => $2) \
          GROUP BY 1 ORDER BY 1",
         cpu = avg_sql("cpu_sum"),
         load1 = avg_sql("load1_sum"),
@@ -1042,16 +1080,16 @@ pub async fn history(pg: &PgPool, node: Uuid, spec: &RangeSpec) -> sqlx::Result<
         udp = avg_sql("udp_sum"),
         conns = avg_sql("conns_sum"),
     )))
-    .bind(node)
+    .bind(server)
     .bind(spec.secs as f64)
     .bind(spec.step_secs as f64)
     .fetch_all(pg)
     .await
 }
 
-/// GET /nodes/{id}/metrics?range=1h|6h|24h|48h|7d|30d|90d (admin; default
-/// 24h): averaged points (and maxima) of the node's history.
-pub async fn node_metrics(
+/// GET /servers/{id}/metrics?range=1h|6h|24h|48h|7d|30d|90d (admin;
+/// default 24h): averaged points (and maxima) of the server's history.
+pub async fn server_metrics(
     State(state): State<AppState>,
     user: AuthUser,
     Path((_, id)): Path<(String, Uuid)>,
@@ -1065,7 +1103,7 @@ pub async fn node_metrics(
             "range must be one of 1h, 6h, 24h, 48h, 7d, 30d, 90d"
         )
     })?;
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM nodes WHERE id = $1)")
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM servers WHERE id = $1)")
         .bind(id)
         .fetch_one(state.pg())
         .await?;
@@ -1080,8 +1118,8 @@ pub async fn node_metrics(
     })))
 }
 
-/// POST /nodes/{id}/probe (admin): "立即测速". 202 with the request time;
-/// results arrive in GET /nodes/{id}/status (agent: seconds; panel TCP:
+/// POST /servers/{id}/probe (admin): "立即测速". 202 with the request time;
+/// results arrive in GET /servers/{id}/status (agent: seconds; panel TCP:
 /// within ~15 s).
 pub async fn request_probe(
     State(state): State<AppState>,
@@ -1125,8 +1163,8 @@ pub struct MyNodeStatus {
 
 /// GET /me/nodes (user portal): the entrances the caller can use on nodes
 /// shown to users — node and entrance name, region, tags, the entrance's
-/// multiplier, online, latency (the node's). No ids, addresses, inbounds or
-/// machine metrics.
+/// multiplier, online, latency (the node's server's). No ids, addresses,
+/// inbounds or machine metrics.
 pub async fn my_nodes(
     State(state): State<AppState>,
     user: AuthUser,
@@ -1135,20 +1173,21 @@ pub async fn my_nodes(
         "SELECT coalesce(n.display_name, n.name) AS name, e.name AS entrance, n.region, n.tags, \
          (e.rate_permille / 1000.0)::float8 AS rate, {} AS online, \
          l.delay_ms AS latency_ms, \
-         CASE WHEN l.delay_ms IS NOT NULL THEN 'ok' WHEN lf.node_id IS NOT NULL THEN 'timeout' \
+         CASE WHEN l.delay_ms IS NOT NULL THEN 'ok' WHEN lf.server_id IS NOT NULL THEN 'timeout' \
               ELSE 'unknown' END AS latency_status, \
          coalesce(l.measured_at, lf.measured_at) AS latency_measured_at \
          FROM entrance_users eu JOIN entrances e ON e.id = eu.entrance_id \
          JOIN nodes n ON n.id = e.node_id \
-         LEFT JOIN LATERAL (SELECT delay_ms, measured_at FROM node_latency \
-             WHERE node_id = n.id AND source = 'agent' AND delay_ms IS NOT NULL \
+         JOIN servers s ON s.id = n.server_id \
+         LEFT JOIN LATERAL (SELECT delay_ms, measured_at FROM server_latency \
+             WHERE server_id = s.id AND source = 'agent' AND delay_ms IS NOT NULL \
              ORDER BY ord LIMIT 1) l ON true \
-         LEFT JOIN LATERAL (SELECT node_id, measured_at FROM node_latency \
-             WHERE node_id = n.id AND source = 'agent' ORDER BY ord LIMIT 1) lf ON true \
-         WHERE eu.user_id = $1 AND n.enabled AND n.visible AND n.deleting_at IS NULL \
+         LEFT JOIN LATERAL (SELECT server_id, measured_at FROM server_latency \
+             WHERE server_id = s.id AND source = 'agent' ORDER BY ord LIMIT 1) lf ON true \
+         WHERE eu.user_id = $1 AND n.enabled AND n.visible AND s.deleting_at IS NULL \
          AND n.inbound IS NOT NULL AND e.enabled AND e.hidden_since IS NULL \
          ORDER BY n.sort, coalesce(n.display_name, n.name), e.kind <> 'direct', e.sort, e.name",
-        online_sql("n")
+        online_sql("s")
     )))
     .bind(user.id)
     .fetch_all(state.pg())

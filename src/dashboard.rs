@@ -42,15 +42,16 @@ pub struct Window {
 }
 
 #[derive(Serialize, Debug, Default, PartialEq)]
-pub struct Nodes {
+pub struct Servers {
     pub total: i64,
     pub online: i64,
-    /// Enabled, enrolled, not deleting and not online.
+    /// With an enabled node, enrolled, not deleting and not online.
     pub offline: i64,
+    /// No enabled node.
     pub disabled: i64,
     /// Never enrolled yet.
     pub pending: i64,
-    /// Nodes with at least one firing alert.
+    /// Servers with at least one firing alert.
     pub alerting: i64,
 }
 
@@ -99,10 +100,11 @@ pub struct Dashboard {
     pub users_total: i64,
     /// Users with an active plan.
     pub subscribers: i64,
-    /// Sum of the online users the nodes report (a user on two nodes
-    /// counts twice; only nodes online now).
+    /// Sum of the online users the servers report (a user on two servers
+    /// counts twice; only servers online now).
     pub online_users: i64,
-    pub nodes: Nodes,
+    /// Q1: machines (agents), not nodes.
+    pub servers: Servers,
     pub pending: Pending,
     pub latest_orders: Vec<LatestOrder>,
     /// W22 traffic history: the fleet per site day over the last
@@ -163,13 +165,13 @@ const PENDING_SQL: &str = "SELECT \
      (SELECT count(*) FROM mail_outbox WHERE status = 'dead') AS mail_failed, \
      (SELECT count(*) FROM orders WHERE status = 'paid' AND fulfilled_at IS NULL \
         AND fulfil_error IS NOT NULL AND refunded_at IS NULL) AS orders_unfulfilled, \
-     (SELECT count(*) FROM node_alerts WHERE status = 'firing') AS alerts_firing";
+     (SELECT count(*) FROM server_alerts WHERE status = 'firing') AS alerts_firing";
 
 /// How many latest orders the dashboard lists.
 pub const LATEST_ORDERS: i64 = 8;
 
 #[derive(sqlx::FromRow)]
-struct NodeRow {
+struct ServerRow {
     id: Uuid,
     enabled: bool,
     enrolled: bool,
@@ -179,7 +181,7 @@ struct NodeRow {
 }
 
 /// The figures (without the Valkey part: `online_users` = 0, and the ids
-/// of the online nodes to look up).
+/// of the online servers to look up).
 pub async fn read(pool: &sqlx::PgPool) -> Result<(Dashboard, Vec<Uuid>), ApiError> {
     let mut tx = pool.begin().await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
@@ -224,12 +226,13 @@ pub async fn read(pool: &sqlx::PgPool) -> Result<(Dashboard, Vec<Uuid>), ApiErro
         .fetch_one(&mut *tx)
         .await?;
     let pending: Pending = sqlx::query_as(PENDING_SQL).fetch_one(&mut *tx).await?;
-    let rows: Vec<NodeRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT n.id, n.enabled, n.cert_serial IS NOT NULL AS enrolled, \
-         n.deleting_at IS NOT NULL AS deleting, {} AS online, \
-         EXISTS (SELECT 1 FROM node_alerts a WHERE a.node_id = n.id AND a.status = 'firing') \
-         AS alerting FROM nodes n",
-        crate::nodestat::online_sql("n")
+    let rows: Vec<ServerRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT s.id, EXISTS (SELECT 1 FROM nodes n WHERE n.server_id = s.id AND n.enabled) \
+         AS enabled, s.cert_serial IS NOT NULL AS enrolled, \
+         s.deleting_at IS NOT NULL AS deleting, {} AS online, \
+         EXISTS (SELECT 1 FROM server_alerts a WHERE a.server_id = s.id AND a.status = 'firing') \
+         AS alerting FROM servers s",
+        crate::nodestat::online_sql("s")
     )))
     .fetch_all(&mut *tx)
     .await?;
@@ -244,22 +247,24 @@ pub async fn read(pool: &sqlx::PgPool) -> Result<(Dashboard, Vec<Uuid>), ApiErro
     .await?;
     tx.commit().await?;
 
-    let mut nodes = Nodes::default();
+    let mut servers = Servers::default();
     let mut online = Vec::new();
-    for n in rows.iter().filter(|n| !n.deleting) {
-        nodes.total += 1;
-        if n.alerting {
-            nodes.alerting += 1;
+    for s in rows.iter().filter(|s| !s.deleting) {
+        servers.total += 1;
+        if s.alerting {
+            servers.alerting += 1;
         }
-        if !n.enabled {
-            nodes.disabled += 1;
-        } else if n.online {
-            nodes.online += 1;
-            online.push(n.id);
-        } else if !n.enrolled {
-            nodes.pending += 1;
+        if s.online {
+            online.push(s.id);
+        }
+        if !s.enabled {
+            servers.disabled += 1;
+        } else if s.online {
+            servers.online += 1;
+        } else if !s.enrolled {
+            servers.pending += 1;
         } else {
-            nodes.offline += 1;
+            servers.offline += 1;
         }
     }
     let window =
@@ -283,7 +288,7 @@ pub async fn read(pool: &sqlx::PgPool) -> Result<(Dashboard, Vec<Uuid>), ApiErro
             users_total,
             subscribers,
             online_users: 0,
-            nodes,
+            servers,
             pending,
             latest_orders: latest,
             traffic_days: Vec::new(),
@@ -293,16 +298,16 @@ pub async fn read(pool: &sqlx::PgPool) -> Result<(Dashboard, Vec<Uuid>), ApiErro
     ))
 }
 
-/// Online users summed over the heartbeats of `nodes` (best effort: a
+/// Online users summed over the heartbeats of `servers` (best effort: a
 /// Valkey failure counts 0 and is logged).
-pub async fn online_users(state: &AppState, nodes: &[Uuid]) -> i64 {
+pub async fn online_users(state: &AppState, servers: &[Uuid]) -> i64 {
     use fred::prelude::KeysInterface;
-    if nodes.is_empty() {
+    if servers.is_empty() {
         return 0;
     }
-    let keys: Vec<String> = nodes
+    let keys: Vec<String> = servers
         .iter()
-        .map(|id| format!("akari:node:hb:{id}"))
+        .map(|id| format!("akari:server:hb:{id}"))
         .collect();
     match state.valkey().mget::<Vec<Option<String>>, _>(keys).await {
         Ok(blobs) => blobs.iter().flatten().map(|b| blob_users(b)).sum(),

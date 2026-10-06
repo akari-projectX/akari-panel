@@ -46,7 +46,7 @@ export function UpdateAvailableBadge() {
   return (
     <a
       href={`${adminBase}/updates`}
-      title={`${s.outdated_nodes} 个节点运行的版本低于 ${s.update_available}`}
+      title={`${s.outdated_servers} 个节点运行的版本低于 ${s.update_available}`}
       onClick={(e) => {
         e.preventDefault();
         navigate(`${adminBase}/updates`);
@@ -126,7 +126,7 @@ export function UpdateCheck() {
               </Button>
               {s.update_available ? (
                 <Badge variant="success">
-                  有新版本 {s.update_available}（{s.outdated_nodes} 个节点可更新）
+                  有新版本 {s.update_available}（{s.outdated_servers} 个节点可更新）
                 </Badge>
               ) : (
                 s.latest && <span className="text-sm text-muted-foreground">面板最新发布：{s.latest.version}</span>

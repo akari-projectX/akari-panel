@@ -104,7 +104,7 @@ export function AdminNodes() {
       return;
     }
     try {
-      const install = await post<InstallView>(`/nodes/${n.id}/install`, {
+      const install = await post<InstallView>(`/servers/${n.server_id}/install`, {
         origin: location.origin,
       });
       setBootstrap(null);
@@ -130,7 +130,7 @@ export function AdminNodes() {
     }
     try {
       setShown(null);
-      setBootstrap(await post<NodeEnrollment>(`/nodes/${n.id}/enroll-token`, undefined));
+      setBootstrap(await post<NodeEnrollment>(`/servers/${n.server_id}/enroll-token`, undefined));
       await nodes.refetch();
     } catch (err) {
       setError(msg(err, "签发令牌失败"));
@@ -158,14 +158,15 @@ export function AdminNodes() {
     }
   }
 
-  // Deletion revokes the node's certificate for good: the agent is pushed
-  // the empty state, then the node disappears.
+  // Q1: deleting from this list deletes the node's server (the machine:
+  // every node on it), revoking its certificate for good: the agent is
+  // pushed the empty state, then the server and its nodes disappear.
   async function remove(n: NodeSummary) {
     setError(null);
     if (
       !(await confirm({
-        title: `删除节点「${n.name}」？`,
-        message: "节点停止服务，证书永久吊销（不可恢复，重新上线需新建节点）。",
+        title: `删除服务器「${n.server_name}」？`,
+        message: "服务器上的全部节点停止服务，证书永久吊销（不可恢复，重新上线需新建）。",
         confirmLabel: "删除",
         destructive: true,
       }))
@@ -173,7 +174,7 @@ export function AdminNodes() {
       return;
     }
     try {
-      await del(`/nodes/${n.id}`);
+      await del(`/servers/${n.server_id}`);
       if (selected === n.id) setSelected(null);
       await nodes.refetch();
     } catch (err) {
@@ -204,7 +205,7 @@ export function AdminNodes() {
         />
       ) : null}
       {detail && <NodeDetail key={detail.id} node={detail} onClose={() => navigate(`${adminBase}/nodes`)} />}
-      {detail && <NodeAlertRulesCard key={`rules-${detail.id}`} nodeId={detail.id} />}
+      {detail && <NodeAlertRulesCard key={`rules-${detail.server_id}`} nodeId={detail.server_id} />}
       {detailId && detailQ.isError && (
         <p role="alert" className="text-sm text-destructive">
           {adminErrorText(detailQ.error, "节点加载失败")}
@@ -1373,8 +1374,11 @@ function NodeEditor({ node }: { node: NodeView }) {
       await patch(`/nodes/${node.id}`, {
         name: name.trim(),
         region: region.trim() || null,
-        tls_domain: tlsDomain.trim() || null,
       });
+      // Q1: the TLS domain is the server's (one certificate per agent).
+      if (domainChanges) {
+        await patch(`/servers/${node.server_id}`, { tls_domain: tlsDomain.trim() || null });
+      }
       setBasicsMsg({ ok: true, text: "已保存" });
       await queryClient.invalidateQueries({ queryKey: ["nodes"] });
     } catch (err) {

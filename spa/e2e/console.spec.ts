@@ -1018,7 +1018,7 @@ test("agent update check: 检查更新 fetches the signed release, 有新版本 
       "-d",
       E2E_DB,
       "-qc",
-      "UPDATE nodes SET agent_version = 'v0.1.0', agent_os = 'linux', agent_arch = 'amd64', agent_protocol = 3",
+      "UPDATE servers SET agent_version = 'v0.1.0', agent_os = 'linux', agent_arch = 'amd64', agent_protocol = 3",
     ],
     { cwd: "..", stdio: "ignore" },
   );

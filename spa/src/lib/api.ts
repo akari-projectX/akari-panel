@@ -501,6 +501,10 @@ export function directEntrance(n: { entrances: EntranceView[] }): EntranceView |
 
 export interface NodeView {
   id: string;
+  // Q1: the server (machine, agent) the node runs on; the machine fields
+  // below (status, agent, certificate, lease, TLS domain…) are its.
+  server_id: string;
+  server_name: string;
   name: string;
   enabled: boolean;
   status: string;
@@ -565,6 +569,9 @@ export interface NodeView {
 // fetches GET /nodes/{id} (NodeView). Mirror of api.rs NodeSummary.
 export interface NodeSummary {
   id: string;
+  // Q1: the node's server (machine fields below are the server's).
+  server_id: string;
+  server_name: string;
   name: string;
   display_name: string | null;
   enabled: boolean;
@@ -774,7 +781,7 @@ export interface AgentUpdateStatus {
   } | null;
   /** The newest complete (non-rollback) stored release. */
   latest: { version: string; platforms: string[] } | null;
-  outdated_nodes: number;
+  outdated_servers: number;
   /** latest.version when nodes run something older ("有新版本" badge). */
   update_available: string | null;
 }
@@ -788,7 +795,7 @@ export interface RolloutView {
   status: RolloutStatus;
   waves: number[];
   percentage: number;
-  explicit_nodes: boolean;
+  explicit_servers: boolean;
   current_wave: number;
   wave_started_at: string;
   health_timeout_secs: number;
@@ -802,7 +809,7 @@ export interface RolloutView {
 }
 
 export interface RolloutNodeView {
-  node_id: string;
+  server_id: string;
   name: string;
   wave: number;
   position: number;
@@ -815,13 +822,13 @@ export interface RolloutNodeView {
 }
 
 export interface RolloutDetail extends RolloutView {
-  nodes: RolloutNodeView[];
+  servers: RolloutNodeView[];
 }
 
 export interface CreateRollout {
   version: string;
   percentage?: number;
-  node_ids?: string[];
+  server_ids?: string[];
   waves?: number[];
   health_timeout_secs?: number;
   max_failure_ratio?: number;
@@ -890,10 +897,13 @@ export interface CheckDomainView {
   error: string | null;
 }
 
-// One-time enrollment material (POST /nodes, POST /nodes/{id}/enroll-token):
-// shown once, only the token's hash is stored.
+// One-time enrollment material (POST /nodes without server_id: a new
+// server for the node; POST /servers/{id}/enroll-token): shown once, only
+// the token's hash is stored. `id` is the node's (POST /nodes) or the
+// server's (enroll-token).
 export interface NodeEnrollment {
   id: string;
+  server_id?: string;
   name: string;
   enrollment_token: string;
   expires_at: string;

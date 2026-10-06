@@ -261,13 +261,13 @@ async fn history_unknown_values() {
 
     // Hour rollup over a known and an unknown minute: the average is that
     // of the known minute.
-    sqlx::query("DELETE FROM node_metrics_1m WHERE node_id = $1")
+    sqlx::query("DELETE FROM server_metrics_1m WHERE server_id = $1")
         .bind(n)
         .execute(&db.pool)
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO node_metrics_1m (node_id, bucket, samples, cpu_sum, mem_used_sum, mem_total) \
+        "INSERT INTO server_metrics_1m (server_id, bucket, samples, cpu_sum, mem_used_sum, mem_total) \
          VALUES ($1, date_trunc('hour', now()), 2, 20, NULL, NULL), \
                 ($1, date_trunc('hour', now()) + interval '1 minute', 3, NULL, 300, 1000)",
     )
@@ -327,7 +327,7 @@ async fn history_merge_rollup_and_retention() {
 
     // Expired rows on both resolutions, and an old-but-kept hour.
     sqlx::query(
-        "INSERT INTO node_metrics_1m (node_id, bucket, samples, cpu_sum) VALUES \
+        "INSERT INTO server_metrics_1m (server_id, bucket, samples, cpu_sum) VALUES \
          ($1, date_trunc('minute', now()) - interval '49 hours', 1, 5), \
          ($1, date_trunc('minute', now()) - interval '47 hours', 1, 5)",
     )
@@ -336,7 +336,7 @@ async fn history_merge_rollup_and_retention() {
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO node_metrics_1h (node_id, bucket, samples, cpu_sum) VALUES \
+        "INSERT INTO server_metrics_1h (server_id, bucket, samples, cpu_sum) VALUES \
          ($1, date_trunc('hour', now()) - interval '91 days', 1, 5), \
          ($1, date_trunc('hour', now()) - interval '30 days', 1, 5)",
     )
@@ -352,7 +352,7 @@ async fn history_merge_rollup_and_retention() {
     assert!(r.hours_written >= 1);
     // The current hour mirrors its minutes; rerunning is idempotent.
     let hour: (i32, f64) = sqlx::query_as(
-        "SELECT samples, cpu_sum FROM node_metrics_1h WHERE node_id = $1 \
+        "SELECT samples, cpu_sum FROM server_metrics_1h WHERE server_id = $1 \
          AND bucket = date_trunc('hour', now())",
     )
     .bind(n)
@@ -362,7 +362,7 @@ async fn history_merge_rollup_and_retention() {
     assert_eq!(hour, (2, 40.0));
     rollup_and_prune(&db.pool).await.unwrap();
     let again: (i32, f64) = sqlx::query_as(
-        "SELECT samples, cpu_sum FROM node_metrics_1h WHERE node_id = $1 \
+        "SELECT samples, cpu_sum FROM server_metrics_1h WHERE server_id = $1 \
          AND bucket = date_trunc('hour', now())",
     )
     .bind(n)
@@ -374,14 +374,14 @@ async fn history_merge_rollup_and_retention() {
         .await
         .unwrap();
     assert_eq!(pts.len(), 2, "30-day-old hour + this hour");
-    // Deleting the node removes its history.
-    sqlx::query("DELETE FROM nodes WHERE id = $1")
+    // Deleting the server removes its history.
+    sqlx::query("DELETE FROM servers WHERE id = $1")
         .bind(n)
         .execute(&db.pool)
         .await
         .unwrap();
     let left: i64 = sqlx::query_scalar(
-        "SELECT (SELECT count(*) FROM node_metrics_1m) + (SELECT count(*) FROM node_metrics_1h)",
+        "SELECT (SELECT count(*) FROM server_metrics_1m) + (SELECT count(*) FROM server_metrics_1h)",
     )
     .fetch_one(&db.pool)
     .await
@@ -427,7 +427,7 @@ async fn agent_latency_store() {
         let pool = db.pool.clone();
         async move {
             sqlx::query_as::<_, (String, Option<i32>, Option<String>)>(
-                "SELECT target, delay_ms, error FROM node_latency WHERE node_id = $1 ORDER BY ord",
+                "SELECT target, delay_ms, error FROM server_latency WHERE server_id = $1 ORDER BY ord",
             )
             .bind(n)
             .fetch_all(&pool)
@@ -456,7 +456,7 @@ async fn agent_latency_store() {
     assert_eq!(r.len(), 4);
     assert_eq!(r[0].0, "https://h0/");
     let future: bool = sqlx::query_scalar(
-        "SELECT bool_or(measured_at > now() + interval '1 minute') FROM node_latency WHERE node_id = $1",
+        "SELECT bool_or(measured_at > now() + interval '1 minute') FROM server_latency WHERE server_id = $1",
     )
     .bind(n)
     .fetch_one(&db.pool)
@@ -475,8 +475,8 @@ async fn agent_latency_store() {
     .await
     .unwrap();
     assert_eq!(rows(&db).await, vec![("https://y/".into(), Some(2), None)]);
-    // A deleted node: storing is a no-op, not an error.
-    sqlx::query("DELETE FROM nodes WHERE id = $1")
+    // A deleted server: storing is a no-op, not an error.
+    sqlx::query("DELETE FROM servers WHERE id = $1")
         .bind(n)
         .execute(&db.pool)
         .await
@@ -512,12 +512,19 @@ async fn panel_tcp_probe_round() {
         let pool = db.pool.clone();
         async move {
             let n = Uuid::new_v4();
-            sqlx::query("INSERT INTO nodes (id, name, inbound) VALUES ($1, $1::text, $2)")
+            sqlx::query("INSERT INTO servers (id, name) VALUES ($1, $1::text)")
                 .bind(n)
-                .bind(inbound)
                 .execute(&pool)
                 .await
                 .unwrap();
+            sqlx::query(
+                "INSERT INTO nodes (id, server_id, name, inbound) VALUES ($1, $1, $1::text, $2)",
+            )
+            .bind(n)
+            .bind(inbound)
+            .execute(&pool)
+            .await
+            .unwrap();
             sqlx::query(
                 "UPDATE entrances SET connect_host = '127.0.0.1', connect_port = $2 \
                  WHERE node_id = $1",
@@ -544,8 +551,8 @@ async fn panel_tcp_probe_round() {
         let pool = db.pool.clone();
         async move {
             sqlx::query_as::<_, (String, Option<i32>, Option<String>)>(
-                "SELECT target, delay_ms, error FROM node_latency \
-                 WHERE node_id = $1 AND source = 'panel' ORDER BY ord",
+                "SELECT target, delay_ms, error FROM server_latency \
+                 WHERE server_id = $1 AND source = 'panel' ORDER BY ord",
             )
             .bind(n)
             .fetch_all(&pool)
@@ -555,13 +562,13 @@ async fn panel_tcp_probe_round() {
     };
     let rows = result(ok).await;
     assert_eq!(rows.len(), 1, "{rows:?}");
-    assert_eq!(rows[0].0, "直连");
+    assert_eq!(rows[0].0, format!("{ok} / 直连"), "node / entrance");
     assert!(rows[0].1.is_some(), "{rows:?}");
     assert_eq!(result(refused).await[0].2.as_deref(), Some("refused"));
     assert_eq!(result(udp).await[0].2.as_deref(), Some("udp"));
     let n = ok;
     let next: Option<DateTime<Utc>> =
-        sqlx::query_scalar("SELECT panel_probe_next_at FROM nodes WHERE id = $1")
+        sqlx::query_scalar("SELECT panel_probe_next_at FROM servers WHERE id = $1")
             .bind(n)
             .fetch_one(&db.pool)
             .await
@@ -593,13 +600,17 @@ async fn api_status_metrics_probe_and_portal_visibility() {
     db.assign(hidden, u).await;
     db.assign(disabled, u).await;
     sqlx::query(
-        "UPDATE nodes SET display_name = '香港 01', tags = '{IPLC,0.5x}', \
-         status = 'online', last_seen_at = now(), sort = 2 WHERE id = $1",
+        "UPDATE nodes SET display_name = '香港 01', tags = '{IPLC,0.5x}', sort = 2 WHERE id = $1",
     )
     .bind(shown)
     .execute(&db.pool)
     .await
     .unwrap();
+    sqlx::query("UPDATE servers SET status = 'online', last_seen_at = now() WHERE id = $1")
+        .bind(shown)
+        .execute(&db.pool)
+        .await
+        .unwrap();
     sqlx::query("UPDATE entrances SET rate_permille = 500 WHERE node_id = $1")
         .bind(shown)
         .execute(&db.pool)
@@ -675,13 +686,13 @@ async fn api_status_metrics_probe_and_portal_visibility() {
     let _ = unassigned;
     // Users cannot use the admin endpoints.
     for path in [
-        format!("/test/api/v1/nodes/{shown}/status"),
-        format!("/test/api/v1/nodes/{shown}/metrics"),
+        format!("/test/api/v1/servers/{shown}/status"),
+        format!("/test/api/v1/servers/{shown}/metrics"),
     ] {
         assert_eq!(me.get(&path).await.status, StatusCode::FORBIDDEN, "{path}");
     }
     assert_eq!(
-        me.post(&format!("/test/api/v1/nodes/{shown}/probe"), json!({}))
+        me.post(&format!("/test/api/v1/servers/{shown}/probe"), json!({}))
             .await
             .status,
         StatusCode::FORBIDDEN
@@ -689,27 +700,27 @@ async fn api_status_metrics_probe_and_portal_visibility() {
 
     // Admin: status + metrics.
     let r = admin
-        .get(&format!("/test/api/v1/nodes/{shown}/status"))
+        .get(&format!("/test/api/v1/servers/{shown}/status"))
         .await;
     assert_eq!(r.status, StatusCode::OK);
     let v = r.json();
     assert_eq!(v["online"], true);
     assert_eq!(v["latency"].as_array().unwrap().len(), 2);
     let r = admin
-        .get(&format!("/test/api/v1/nodes/{shown}/metrics?range=1h"))
+        .get(&format!("/test/api/v1/servers/{shown}/metrics?range=1h"))
         .await;
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.json()["points"][0]["cpu"], 12.0);
     assert_eq!(
         admin
-            .get(&format!("/test/api/v1/nodes/{shown}/metrics?range=1y"))
+            .get(&format!("/test/api/v1/servers/{shown}/metrics?range=1y"))
             .await
             .status,
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
         admin
-            .get(&format!("/test/api/v1/nodes/{}/status", Uuid::new_v4()))
+            .get(&format!("/test/api/v1/servers/{}/status", Uuid::new_v4()))
             .await
             .status,
         StatusCode::NOT_FOUND
@@ -732,20 +743,20 @@ async fn api_status_metrics_probe_and_portal_visibility() {
     let mut listener = db.listener().await;
     crate::testdb::drain(&mut listener, Duration::from_millis(20)).await;
     let audits = || async {
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM audit_log WHERE action = 'node.probe'")
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM audit_log WHERE action = 'server.probe'")
             .fetch_one(&db.pool)
             .await
             .unwrap()
     };
     let r = admin
-        .post(&format!("/test/api/v1/nodes/{shown}/probe"), json!({}))
+        .post(&format!("/test/api/v1/servers/{shown}/probe"), json!({}))
         .await;
     assert_eq!(r.status, StatusCode::ACCEPTED);
     let got = crate::testdb::drain(&mut listener, Duration::from_millis(200)).await;
     assert!(got.contains(&shown.to_string()), "session woken: {got:?}");
     assert_eq!(audits().await, 1);
     let r = admin
-        .post(&format!("/test/api/v1/nodes/{shown}/probe"), json!({}))
+        .post(&format!("/test/api/v1/servers/{shown}/probe"), json!({}))
         .await;
     assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(audits().await, 1);
@@ -753,7 +764,7 @@ async fn api_status_metrics_probe_and_portal_visibility() {
         admin
             .req(
                 Method::POST,
-                &format!("/test/api/v1/nodes/{}/probe", Uuid::new_v4()),
+                &format!("/test/api/v1/servers/{}/probe", Uuid::new_v4()),
                 None
             )
             .await
@@ -843,7 +854,7 @@ async fn session_probe_config_report_and_heartbeat() {
     let mut ok = false;
     for _ in 0..100 {
         let lat: Option<i32> = sqlx::query_scalar(
-            "SELECT delay_ms FROM node_latency WHERE node_id = $1 AND source = 'agent'",
+            "SELECT delay_ms FROM server_latency WHERE server_id = $1 AND source = 'agent'",
         )
         .bind(n)
         .fetch_optional(&db.pool)
@@ -851,7 +862,7 @@ async fn session_probe_config_report_and_heartbeat() {
         .unwrap()
         .flatten();
         let samples: Option<i32> =
-            sqlx::query_scalar("SELECT samples FROM node_metrics_1m WHERE node_id = $1")
+            sqlx::query_scalar("SELECT samples FROM server_metrics_1m WHERE server_id = $1")
                 .bind(n)
                 .fetch_optional(&db.pool)
                 .await
@@ -914,7 +925,7 @@ async fn session_heartbeat_unknown_values() {
     let mut blob = None;
     for _ in 0..100 {
         let have: Option<Option<f64>> =
-            sqlx::query_scalar("SELECT cpu_sum FROM node_metrics_1m WHERE node_id = $1")
+            sqlx::query_scalar("SELECT cpu_sum FROM server_metrics_1m WHERE server_id = $1")
                 .bind(n)
                 .fetch_optional(&db.pool)
                 .await

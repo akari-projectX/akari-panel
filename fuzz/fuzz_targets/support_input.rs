@@ -16,7 +16,7 @@
 #![no_main]
 
 use akari_panel::alerts::eval::{Facts, Rules, evaluate, heartbeat_facts};
-use akari_panel::alerts::{self, NodeRules, PutSettings, TestReq};
+use akari_panel::alerts::{self, PutSettings, ServerRules, TestReq};
 use akari_panel::tickets::{self, AssignReq, CreateReq, ReplyReq};
 use chrono::{TimeZone, Utc};
 use libfuzzer_sys::fuzz_target;
@@ -200,7 +200,7 @@ fuzz_target!(|data: &[u8]| {
             }
         }
         6 => {
-            if let Some(r) = strict::<NodeRules>(rest)
+            if let Some(r) = strict::<ServerRules>(rest)
                 && r.check().is_ok()
             {
                 assert!(

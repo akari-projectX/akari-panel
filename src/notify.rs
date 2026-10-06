@@ -355,7 +355,7 @@ async fn run(state: &AppState, mut listener: PgListener) -> String {
                         // this instance buffered for the node — off the
                         // listener task (a full buffer scan).
                         let st = state.clone();
-                        tokio::spawn(async move { st.traffic().forget_node(n) });
+                        tokio::spawn(async move { st.traffic().forget_server(n) });
                     }
                     w.dispatch(ev)
                 }
@@ -514,7 +514,7 @@ mod tests {
     }
 
     async fn bump(pool: &sqlx::PgPool, node: Uuid) {
-        sqlx::query("UPDATE nodes SET user_version = user_version + 1 WHERE id = $1")
+        sqlx::query("UPDATE servers SET user_version = user_version + 1 WHERE id = $1")
             .bind(node)
             .execute(pool)
             .await
@@ -556,7 +556,7 @@ mod tests {
         let (n0, other0) = (*rx.borrow_and_update(), *rx_other.borrow_and_update());
 
         let mut tx = a.pg().begin().await.unwrap();
-        crate::api::apply_begin_delete_node(&mut tx, &crate::audit::Actor::test(), n)
+        crate::servers::apply_begin_delete(&mut tx, &crate::audit::Actor::test(), n)
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -623,11 +623,11 @@ mod tests {
         let (n, u) = db.member().await;
         let mut l = db.listener().await;
         for sql in [
-            "UPDATE nodes SET lease_expires_at = now() WHERE id = $1",
-            "UPDATE nodes SET status = 'online', last_seen_at = now(), online_session = gen_random_uuid() WHERE id = $1",
-            "UPDATE nodes SET status = 'offline' WHERE id = $1",
-            "UPDATE nodes SET last_error = 'x', failed_config_version = 1 WHERE id = $1",
-            "UPDATE nodes SET traffic_tat = now(), agent_protocol = 1 WHERE id = $1",
+            "UPDATE servers SET lease_expires_at = now() WHERE id = $1",
+            "UPDATE servers SET status = 'online', last_seen_at = now(), online_session = gen_random_uuid() WHERE id = $1",
+            "UPDATE servers SET status = 'offline' WHERE id = $1",
+            "UPDATE servers SET last_error = 'x', failed_config_version = 1 WHERE id = $1",
+            "UPDATE servers SET traffic_tat = now(), agent_protocol = 1 WHERE id = $1",
             "UPDATE nodes SET name = name || '-x', region = 'h' WHERE id = $1",
         ] {
             sqlx::query(sqlx::AssertSqlSafe(sql))

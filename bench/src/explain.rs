@@ -96,14 +96,26 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
     explain(
         &mut tx,
         p,
-        "grpc::desired_state node",
-        q!("SELECT enabled, inbound, \
-            coalesce((SELECT e.enabled FROM entrances e WHERE e.node_id = nodes.id \
-                AND e.kind = 'direct'), false) AS direct_enabled, \
-            config_version, user_version, \
-            failed_config_version, failed_user_version, failed_held_config_version, \
-            failed_held_user_version, failed_reason, online_session, \
-            deleting_at IS NOT NULL AS deleting, tls_domain FROM nodes WHERE id = $1")
+        "grpc::desired_state server",
+        q!(format!(
+            "SELECT config_version, user_version, \
+             failed_config_version, failed_user_version, failed_held_config_version, \
+             failed_held_user_version, failed_reason, online_session, \
+             deleting_at IS NOT NULL AS deleting, ({}) AS serves, tls_domain \
+             FROM servers s WHERE id = $1",
+            akari_panel::grpc::SERVER_SERVES
+        ))
+        .bind(ids.node),
+    )
+    .await?;
+    explain(
+        &mut tx,
+        p,
+        "grpc::desired_state entrances",
+        q!("SELECT n.inbound, e.wire_no, e.listen_port, e.source_cidrs::text[] AS source_cidrs \
+            FROM entrances e JOIN nodes n ON n.id = e.node_id \
+            WHERE e.server_id = $1 AND e.enabled AND n.enabled AND n.inbound IS NOT NULL \
+            ORDER BY e.wire_no")
         .bind(ids.node),
     )
     .await?;
@@ -112,12 +124,13 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         p,
         "grpc::desired_state users",
         q!(format!(
-            "SELECT eu.user_id, eu.protocol, eu.account, up.speed_limit_mbps \
+            "SELECT eu.user_id, e.wire_no, eu.protocol, eu.account, up.speed_limit_mbps \
              FROM entrance_users eu \
-             JOIN entrances e ON e.id = eu.entrance_id AND e.node_id = $1 AND e.kind = 'direct' \
+             JOIN entrances e ON e.id = eu.entrance_id AND e.server_id = $1 AND e.enabled \
+             JOIN nodes n ON n.id = e.node_id AND n.enabled AND n.inbound IS NOT NULL \
              JOIN users u ON u.id = eu.user_id \
              LEFT JOIN user_plans up ON up.user_id = eu.user_id AND up.status = 'active' \
-             WHERE {} ORDER BY eu.user_id",
+             WHERE {} ORDER BY eu.user_id, e.wire_no",
             enforce::SERVED
         ))
         .bind(ids.node),
@@ -127,11 +140,11 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         &mut tx,
         p,
         "traffic::refresh_members",
-        q!("SELECT eu.entrance_id, eu.user_id FROM entrance_users eu \
-            JOIN entrances e ON e.id = eu.entrance_id WHERE e.node_id = $1 \
-            UNION SELECT d.entrance_id, d.user_id FROM entrance_users_departed d \
+        q!("SELECT eu.entrance_id, eu.user_id, e.wire_no FROM entrance_users eu \
+            JOIN entrances e ON e.id = eu.entrance_id WHERE e.server_id = $1 \
+            UNION SELECT d.entrance_id, d.user_id, e.wire_no FROM entrance_users_departed d \
             JOIN entrances e ON e.id = d.entrance_id \
-            WHERE e.node_id = $1 AND d.departed_at > now() - make_interval(secs => $2)")
+            WHERE e.server_id = $1 AND d.departed_at > now() - make_interval(secs => $2)")
         .bind(ids.node)
         .bind(900f64),
     )
@@ -159,10 +172,10 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
     explain(
         &mut tx,
         p,
-        "enforce lock_nodes_of_ids (1 user)",
+        "enforce lock_servers_of_ids (1 user)",
         q!(format!(
-            "SELECT id FROM nodes WHERE id IN ({}) ORDER BY id FOR UPDATE",
-            akari_panel::entitle::NODES_OF_USERS
+            "SELECT id FROM servers WHERE id IN ({}) ORDER BY id FOR UPDATE",
+            akari_panel::entitle::SERVERS_OF_USERS
         ))
         .bind(vec![ids.user]),
     )
@@ -207,23 +220,15 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
     explain(
         &mut tx,
         p,
-        "api::list_nodes",
-        q!(format!(
-            "SELECT {} {} ORDER BY sort, nodes.created_at, nodes.id",
-            *api::NODE_VIEW_COLS,
-            api::NODE_VIEW_FROM
-        )),
+        "nodes::list_nodes",
+        q!(akari_panel::nodes::node_list_sql()),
     )
     .await?;
     explain(
         &mut tx,
         p,
-        "api::list_nodes (view=summary, W17)",
-        q!(format!(
-            "SELECT {} {} ORDER BY sort, nodes.created_at, nodes.id",
-            *api::NODE_SUMMARY_COLS,
-            api::NODE_SUMMARY_FROM
-        )),
+        "nodes::list_nodes (view=summary, W17)",
+        q!(akari_panel::nodes::node_summary_sql()),
     )
     .await?;
     let audit = "SELECT id, at, actor_id, actor_label, ip, action, target_type, target_id, before, after \
@@ -294,17 +299,19 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         &mut tx,
         p,
         "sub::subscription nodes",
-        q!(
-            "SELECT n.name, n.display_name, n.tags, e.name AS entrance, n.inbound, \
-            coalesce(e.connect_host, n.tls_domain) AS server, e.connect_port AS port, \
-            eu.protocol, eu.account \
+        q!(format!(
+            "SELECT n.name, n.display_name, n.tags, e.name AS entrance, e.rate_permille, \
+            n.inbound, coalesce(e.connect_host, s.tls_domain) AS server, \
+            e.connect_port AS port, eu.protocol, eu.account \
             FROM entrance_users eu \
-            JOIN entrances e ON e.id = eu.entrance_id AND e.enabled \
+            JOIN entrances e ON e.id = eu.entrance_id AND e.enabled AND e.hidden_since IS NULL \
             JOIN nodes n ON n.id = e.node_id AND n.enabled AND n.visible AND n.inbound IS NOT NULL \
+            JOIN servers s ON s.id = n.server_id AND {} \
             JOIN users u ON u.id = eu.user_id AND u.enabled \
             WHERE eu.user_id = $1 \
-            ORDER BY n.sort, coalesce(n.display_name, n.name), n.id, e.kind <> 'direct', e.sort, e.name"
-        )
+            ORDER BY n.sort, coalesce(n.display_name, n.name), n.id, e.kind <> 'direct', e.sort, e.name",
+            akari_panel::grpc::SERVER_SERVES
+        ))
         .bind(ids.user),
     )
     .await?;
@@ -337,7 +344,7 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
     explain(
         &mut tx,
         p,
-        "traffic::RETIRE_SQL (1 node)",
+        "traffic::RETIRE_SQL (1 server)",
         q!(traffic::RETIRE_SQL)
             .bind(ids.node)
             .bind(traffic::RETENTION_MARGIN_SECS as f64),
@@ -346,8 +353,8 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
     explain(
         &mut tx,
         p,
-        "traffic::DEAD_NODES_SQL",
-        q!(traffic::DEAD_NODES_SQL),
+        "traffic::DEAD_SERVERS_SQL",
+        q!(traffic::DEAD_SERVERS_SQL),
     )
     .await?;
 
@@ -361,7 +368,7 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
     let downs: Vec<i64> = vec![654_321; n];
     let ages: Vec<f64> = vec![10.0; n];
     sqlx::query(
-        "SELECT 1 FROM nodes WHERE id IN (SELECT DISTINCT unnest($1::uuid[])) \
+        "SELECT 1 FROM servers WHERE id IN (SELECT DISTINCT unnest($1::uuid[])) \
          ORDER BY id FOR NO KEY UPDATE",
     )
     .bind(&nodes)
@@ -432,19 +439,19 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
 }
 
 async fn ids(pg: &sqlx::PgPool, flush_rows: usize) -> Result<Ids> {
-    let node: Uuid = sqlx::query_scalar("SELECT id FROM nodes ORDER BY name LIMIT 1")
+    let node: Uuid = sqlx::query_scalar("SELECT id FROM servers ORDER BY name LIMIT 1")
         .fetch_one(pg)
         .await
-        .context("no nodes: run akari-bench seed")?;
+        .context("no servers: run akari-bench seed")?;
     let user: Uuid = sqlx::query_scalar(
         "SELECT eu.user_id FROM entrance_users eu JOIN entrances e ON e.id = eu.entrance_id \
-         WHERE e.node_id = $1 LIMIT 1",
+         WHERE e.server_id = $1 LIMIT 1",
     )
     .bind(node)
     .fetch_one(pg)
     .await?;
     let flush: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
-        "SELECT e.node_id, eu.entrance_id, eu.user_id FROM entrance_users eu \
+        "SELECT e.server_id, eu.entrance_id, eu.user_id FROM entrance_users eu \
          JOIN entrances e ON e.id = eu.entrance_id ORDER BY random() LIMIT $1",
     )
     .bind(flush_rows as i64)

@@ -43,10 +43,11 @@ enum Cmd {
         #[command(subcommand)]
         action: ConfigCmd,
     },
-    /// Node management
-    Node {
+    /// Server (machine, agent) management; nodes are added in the console
+    /// or with POST /api/v1/nodes
+    Server {
         #[command(subcommand)]
-        action: NodeCmd,
+        action: ServerCmd,
     },
     /// Admin account management
     Admin {
@@ -97,8 +98,8 @@ enum ConfigCmd {
 }
 
 #[derive(Subcommand)]
-enum NodeCmd {
-    /// Register a node and write an agent bootstrap file (one-time
+enum ServerCmd {
+    /// Register a server and write an agent bootstrap file (one-time
     /// enrollment token, no private key)
     Add {
         name: String,
@@ -108,9 +109,10 @@ enum NodeCmd {
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
-    /// Issue a new one-time enrollment token for an existing node (expired
-    /// token, lost agent state) and write its bootstrap file. The node's
-    /// current certificates are revoked once the agent enrolls with it.
+    /// Issue a new one-time enrollment token for an existing server
+    /// (expired token, lost agent state) and write its bootstrap file. The
+    /// server's current certificates are revoked once the agent enrolls
+    /// with it.
     EnrollToken {
         id: uuid::Uuid,
         /// Where to write the bootstrap file (default:
@@ -119,11 +121,12 @@ enum NodeCmd {
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
-    /// List nodes
+    /// List servers
     List,
-    /// Delete a node and revoke its certificate. Marks it deleting and
-    /// disables it; a running panel finishes the deletion once the agent
-    /// runs the empty state (or after a timeout / at once if offline).
+    /// Delete a server (with its nodes) and revoke its certificate. Marks
+    /// it deleting (it serves nothing); a running panel finishes the
+    /// deletion once the agent runs the empty state (or after a timeout /
+    /// at once if offline).
     Delete { id: uuid::Uuid },
 }
 
@@ -164,11 +167,11 @@ async fn main() -> Result<()> {
                 Ok(())
             }
         },
-        Cmd::Node { action } => match action {
-            NodeCmd::Add { name, out } => nodeops::node_add(cfg, name, out).await,
-            NodeCmd::EnrollToken { id, out } => nodeops::node_enroll_token(cfg, id, out).await,
-            NodeCmd::List => nodeops::node_list(cfg).await,
-            NodeCmd::Delete { id } => nodeops::node_delete(cfg, id).await,
+        Cmd::Server { action } => match action {
+            ServerCmd::Add { name, out } => nodeops::server_add(cfg, name, out).await,
+            ServerCmd::EnrollToken { id, out } => nodeops::server_enroll_token(cfg, id, out).await,
+            ServerCmd::List => nodeops::server_list(cfg).await,
+            ServerCmd::Delete { id } => nodeops::server_delete(cfg, id).await,
         },
         Cmd::Admin { action } => match action {
             AdminCmd::Add { email, role } => nodeops::admin_add(cfg, email, role).await,

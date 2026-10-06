@@ -1,6 +1,6 @@
 # akari-panel/migrations
 
-sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18，再拒绝 v0.3.x 的库）在 `serve`、`node add`、`admin add` 启动时自动执行。
+sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18，再拒绝 v0.3.x 的库）在 `serve`、`server add`、`admin add` 启动时自动执行。
 
 - **基线（v0.4）**：v0.3.x 的迁移 0001–0168 已压缩为 **`1000_baseline.sql`**（research/db-schema-review.md §7；由旧链的 `pg_dump` 生成、按领域分节，含 7 张单行设置表的种子行）。与 0168 的结构相比只有三处有意差异：去掉未用的 `pgcrypto`；37 个匿名 CHECK（`<表>_check`、`<表>_checkN`）改为有意义的名字（如 `orders_paid_at`、`commissions_amount_rate`，完整映射见该 PR）；为缺索引的外键补索引（`mail_outbox_user`、`alert_notifications_alert`、`commissions_invitee`、`coupon_redemptions_user_id`、`ticket_messages_author`、`tickets_node`、`tickets_order`、`orders_coupon`、`withdrawals_user`，`orders_payment_method` 取代 `orders_payment_method_pending`）。基线**不写 `public.`、不改 search_path**（testdb 每个测试在自己的 schema 里迁移）。
 - **启动守卫**：`_sqlx_migrations` 里有任何 version < 1000 → `db::migrate` 拒绝启动（`database from v0.3.x — fresh install required; see docs/DEPLOY.md`），不做任何改动；`akari-ctl upgrade` 在备份之前同样拒绝。本地开发/smoke 库若是 v0.4 之前建的，删库重建（`docker compose exec postgres dropdb -U akari --force <库名>`，再 `createdb`）。
@@ -19,6 +19,8 @@ sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18，再拒绝 v0.3.x
 - **1059（Phase A PR ①，中-5）**：`user_plans` 加条款快照 `quota_bytes`/`reset_period`（NOT NULL）/`reset_days`/`speed_limit_mbps`（同 `plans` 的 CHECK），新表 `user_plan_groups`（PK (user_plan_id, group_id)，两边级联，索引 group_id）；触发器 `user_plans_terms`（BEFORE INSERT：`reset_period` 为空则从套餐复制全部条款，`akari_user_plan_terms()`）与 `user_plans_groups`（AFTER INSERT：复制 `plan_groups`，`akari_user_plan_groups()`）；已有订阅按当前套餐回填。
 - **1034（Phase A PR ①，中-6；用本任务的备用号段，与前后迁移无依赖）**：`plans.renew_off_sale` boolean NOT NULL DEFAULT true（下架后现有订阅者仍可续费/买重置包）。
 - **1035（Phase A PR ①，低-4；备用号段，无依赖）**：`orders.prior_user_plan_id`（→ user_plans，SET NULL；下单时的生效订阅，部分索引），待付订单按当前订阅回填。
+- **1036（Phase A PR ②，Q1 服务器拆分）**：新表 `servers`（一台机器 = 一个 agent 身份；`nodes` 上的全部机器列搬过来：证书/注册/版本/租约/状态/agent 信息/`tls_domain`/`traffic_tat`/计费上限/两阶段删除/测速认领等，fillfactor 70；`entrance_seq` 起始 −1：服务器内入口编号，`akari_node_direct_entrance()` 改为从它分配，第一个节点的直连 = 0）。已有节点各成为一台**同 id** 的服务器（agent 不需任何操作）。`nodes.server_id` NOT NULL（级联）+ UNIQUE (id, server_id)；触发器 `nodes_keep_server`（不能换服务器）。版本通知/删除通知/吊销序列号触发器移到 `servers`。改名：`node_enrollments`→`server_enrollments`、`node_metrics_1m/1h`→`server_metrics_*`、`node_latency`→`server_latency`、`node_alert_rules`/`node_alerts`→`server_alert_rules`/`server_alerts`（`server_alerts_one_firing`）、`rollout_nodes`→`rollout_servers`、`rollouts.explicit_nodes`→`explicit_servers`；`revoked_certs`/`traffic_sessions`/`traffic_counters` 的 `node_id` → `server_id`（外键指向 `servers`）。`entrances.server_id`（复合外键 (node_id, server_id) → nodes），`wire_no` 与 `listen_port` 改为**按服务器**唯一（一个 agent 的统计键与入站 tag 在服务器内唯一）。
+- **1065（Q1，W30 号段的第一个；理由见文件注释）**：W29 的 `node_block_counters`/`node_block_daily` → `server_block_counters`/`server_block_daily`（agent 进程的计数属于服务器）；`nodes_notify_block_rules` 改为通知所属服务器（`akari_notify_node_server()`）。不能放进 1036：新库上 1036 先于 1060 执行。
 - 改列名/加列后，同步检查 `src/` 中所有手写 SQL 与 `FromRow` 结构体（没有编译期 SQL 校验）。
 
 ## 当前表

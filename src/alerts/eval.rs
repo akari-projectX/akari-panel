@@ -1,5 +1,5 @@
-//! The alert evaluator: gather facts, decide per (node, kind) with a pure
-//! function, then move `node_alerts` and queue notifications — all in one
+//! The alert evaluator: gather facts, decide per (server, kind) with a pure
+//! function, then move `server_alerts` and queue notifications — all in one
 //! transaction that holds the round's advisory lock (one instance at a
 //! time; see `alerts` module docs).
 
@@ -24,7 +24,7 @@ const MAX_VALUE: usize = 200;
 // Facts and rules (pure)
 // ---------------------------------------------------------------------------
 
-/// The effective rules of one node (global settings, its overrides and
+/// The effective rules of one server (global settings, its overrides and
 /// disabled kinds applied). None/false = the rule is off.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Rules {
@@ -39,11 +39,11 @@ pub struct Rules {
     pub entrance_down: bool,
 }
 
-/// What the evaluator knows about one monitored node.
+/// What the evaluator knows about one monitored server.
 #[derive(Debug, Clone, Default)]
 pub struct Facts {
     pub online: bool,
-    /// Seconds since the node was last seen (None = never).
+    /// Seconds since the server was last seen (None = never).
     pub seen_age_secs: Option<i64>,
     pub last_error: Option<String>,
     pub agent_cert_not_after: Option<DateTime<Utc>>,
@@ -60,7 +60,7 @@ pub struct Facts {
     /// Latency result sets: (source, measurable targets, failed, a failed
     /// target with its error).
     pub latency: Vec<(String, i64, i64, String)>,
-    /// W28-a: names of the node's relay entrances hidden as unreachable
+    /// W28-a: names of the server's relay entrances hidden as unreachable
     /// (`entrance_health.rs`), with their last error.
     pub hidden_entrances: Vec<(String, Option<String>)>,
 }
@@ -72,7 +72,7 @@ pub struct Observed {
     pub detail: String,
 }
 
-/// The decision for one node: kinds that fire now (with their current
+/// The decision for one server: kinds that fire now (with their current
 /// value) and kinds whose state cannot be decided now (kept as they are).
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Verdict {
@@ -135,7 +135,7 @@ fn days_left(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
     }
 }
 
-/// Decide every kind for one node (pure).
+/// Decide every kind for one server (pure).
 pub fn evaluate(f: &Facts, r: &Rules, now: DateTime<Utc>) -> Verdict {
     let mut v = Verdict::default();
     let mut fire = |kind: &'static str, value: String, detail: String| {
@@ -157,7 +157,7 @@ pub fn evaluate(f: &Facts, r: &Rules, now: DateTime<Utc>) -> Verdict {
         );
     }
     if !f.online {
-        // Live facts of an offline node are stale: keep those alerts as
+        // Live facts of an offline server are stale: keep those alerts as
         // they are until it reports again.
         unknown.extend(LIVE_KINDS);
     } else {
@@ -209,7 +209,7 @@ pub fn evaluate(f: &Facts, r: &Rules, now: DateTime<Utc>) -> Verdict {
             for (source, measurable, failed, sample) in &f.latency {
                 if *measurable > 0 && failed == measurable {
                     let who = if source == "agent" {
-                        "节点出口测速"
+                        "服务器出口测速"
                     } else {
                         "面板 TCP 连接测速"
                     };
@@ -234,7 +234,7 @@ pub fn evaluate(f: &Facts, r: &Rules, now: DateTime<Utc>) -> Verdict {
                             "cert",
                             format!("证书{}", days_left(*at, now)),
                             format!(
-                                "节点域名 {domain} 的证书（自动申请，状态 {state}）将在 {days} 天内到期，agent 未能续期"
+                                "服务器域名 {domain} 的证书（自动申请，状态 {state}）将在 {days} 天内到期，agent 未能续期"
                             ),
                         );
                     }
@@ -283,19 +283,19 @@ pub fn evaluate(f: &Facts, r: &Rules, now: DateTime<Utc>) -> Verdict {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Firing {
     pub id: i64,
-    pub node_id: Uuid,
+    pub server_id: Uuid,
     pub kind: String,
     pub value: String,
     pub detail: String,
     pub notified: bool,
     pub fired_at: DateTime<Utc>,
-    pub node_name: String,
+    pub server_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
     Fire {
-        node: Uuid,
+        server: Uuid,
         obs: Observed,
     },
     Update {
@@ -317,8 +317,8 @@ pub fn plan(firing: &[Firing], verdicts: &HashMap<Uuid, Verdict>) -> Vec<Step> {
     let mut steps = Vec::new();
     let mut seen: HashSet<(Uuid, &str)> = HashSet::new();
     for f in firing {
-        seen.insert((f.node_id, f.kind.as_str()));
-        let Some(v) = verdicts.get(&f.node_id) else {
+        seen.insert((f.server_id, f.kind.as_str()));
+        let Some(v) = verdicts.get(&f.server_id) else {
             steps.push(Step::Resolve {
                 id: f.id,
                 notify: false,
@@ -340,13 +340,13 @@ pub fn plan(firing: &[Firing], verdicts: &HashMap<Uuid, Verdict>) -> Vec<Step> {
             });
         }
     }
-    let mut nodes: Vec<&Uuid> = verdicts.keys().collect();
-    nodes.sort();
-    for node in nodes {
-        for o in &verdicts[node].firing {
-            if !seen.contains(&(*node, o.kind)) {
+    let mut servers: Vec<&Uuid> = verdicts.keys().collect();
+    servers.sort();
+    for server in servers {
+        for o in &verdicts[server].firing {
+            if !seen.contains(&(*server, o.kind)) {
                 steps.push(Step::Fire {
-                    node: *node,
+                    server: *server,
                     obs: o.clone(),
                 });
             }
@@ -380,7 +380,7 @@ struct NodeRow {
     hidden_entrances: serde_json::Value,
 }
 
-/// One monitored node: name, whether it is muted, its rules and facts.
+/// One monitored server: name, whether it is muted, its rules and facts.
 pub struct Monitored {
     pub id: Uuid,
     pub name: String,
@@ -418,7 +418,7 @@ fn rules_of(s: &Settings, n: &NodeRow) -> Rules {
 /// W10 certificate state in a heartbeat: (state, not_after).
 pub type CertFacts = (String, Option<DateTime<Utc>>);
 
-/// A resolved alert: node, kind, value, detail, fired, resolved, node name.
+/// A resolved alert: server, kind, value, detail, fired, resolved, server name.
 type Resolved = (
     Uuid,
     String,
@@ -455,23 +455,24 @@ pub fn heartbeat_facts(blob: &str) -> (Option<(i64, i64)>, Option<CertFacts>) {
     (disk, cert)
 }
 
-/// Every monitored node (enabled, enrolled, not being deleted) with its
-/// rules and facts.
+/// Every monitored server (enrolled, not being deleted) with its rules and
+/// facts.
 pub async fn gather(
     state: &AppState,
     conn: &mut PgConnection,
     s: &Settings,
 ) -> anyhow::Result<Vec<Monitored>> {
     let rows: Vec<NodeRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT n.id, coalesce(n.display_name, n.name) AS name, {} AS online, \
+        "SELECT n.id, n.name, {} AS online, \
            EXTRACT(EPOCH FROM now() - n.last_seen_at)::bigint AS seen_age_secs, n.last_error, \
            n.cert_not_after, n.tls_domain, r.muted, r.disabled, r.offline_secs, r.cpu_percent, \
            r.cpu_minutes, r.mem_percent, r.mem_minutes, r.disk_percent, r.cert_days, \
            coalesce((SELECT jsonb_agg(jsonb_build_array(e.name, e.health_error) ORDER BY e.sort, e.name) \
-               FROM entrances e WHERE e.node_id = n.id AND e.enabled AND e.hidden_since IS NOT NULL), \
+               FROM entrances e JOIN nodes en ON en.id = e.node_id AND en.enabled \
+               WHERE e.server_id = n.id AND e.enabled AND e.hidden_since IS NOT NULL), \
                '[]'::jsonb) AS hidden_entrances \
-         FROM nodes n LEFT JOIN node_alert_rules r ON r.node_id = n.id \
-         WHERE n.enabled AND n.deleting_at IS NULL AND n.cert_serial IS NOT NULL \
+         FROM servers n LEFT JOIN server_alert_rules r ON r.server_id = n.id \
+         WHERE n.deleting_at IS NULL AND n.cert_serial IS NOT NULL \
          ORDER BY n.id",
         crate::nodestat::online_sql("n")
     )))
@@ -513,11 +514,11 @@ pub async fn gather(
         // W23: NULL sums = unknown minutes (no point: the window is then
         // undecided, as for a missing minute).
         let points: Vec<(Uuid, i64, Option<f64>, Option<f64>)> = sqlx::query_as(
-            "SELECT node_id, \
+            "SELECT server_id, \
                (EXTRACT(EPOCH FROM date_trunc('minute', now()) - bucket) / 60)::bigint AS ago, \
                cpu_sum / samples, \
                CASE WHEN mem_total > 0 THEN mem_used_sum / samples * 100 / mem_total END \
-             FROM node_metrics_1m WHERE node_id = ANY($1) \
+             FROM server_metrics_1m WHERE server_id = ANY($1) \
                AND bucket >= date_trunc('minute', now()) - make_interval(mins => $2) \
                AND bucket < date_trunc('minute', now())",
         )
@@ -525,8 +526,8 @@ pub async fn gather(
         .bind(i32::try_from(longest).unwrap_or(60))
         .fetch_all(&mut *conn)
         .await?;
-        for (node, ago, cpu, mem) in points {
-            if let Some(&i) = index.get(&node) {
+        for (server, ago, cpu, mem) in points {
+            if let Some(&i) = index.get(&server) {
                 if let Some(c) = cpu {
                     out[i].facts.cpu.push((ago, c));
                 }
@@ -540,18 +541,18 @@ pub async fn gather(
     // Latency: per source, the measurable targets (UDP-only and
     // address-less inbounds are not failures) and how many failed.
     let lat: Vec<(Uuid, String, i64, i64, Option<String>)> = sqlx::query_as(
-        "SELECT node_id, source, \
+        "SELECT server_id, source, \
            count(*) FILTER (WHERE coalesce(error, '') NOT IN ('udp', 'no address')), \
            count(*) FILTER (WHERE delay_ms IS NULL AND coalesce(error, '') NOT IN ('udp', 'no address')), \
            min(target || ': ' || coalesce(error, 'failed')) FILTER (WHERE delay_ms IS NULL \
                AND coalesce(error, '') NOT IN ('udp', 'no address')) \
-         FROM node_latency WHERE node_id = ANY($1) GROUP BY node_id, source ORDER BY node_id, source",
+         FROM server_latency WHERE server_id = ANY($1) GROUP BY server_id, source ORDER BY server_id, source",
     )
     .bind(&ids)
     .fetch_all(&mut *conn)
     .await?;
-    for (node, source, measurable, failed, sample) in lat {
-        if let Some(&i) = index.get(&node) {
+    for (server, source, measurable, failed, sample) in lat {
+        if let Some(&i) = index.get(&server) {
             out[i]
                 .facts
                 .latency
@@ -561,7 +562,10 @@ pub async fn gather(
 
     // Latest heartbeats (best effort: Valkey down = live kinds undecided).
     use fred::prelude::KeysInterface;
-    let keys: Vec<String> = ids.iter().map(|id| format!("akari:node:hb:{id}")).collect();
+    let keys: Vec<String> = ids
+        .iter()
+        .map(|id| format!("akari:server:hb:{id}"))
+        .collect();
     match state.valkey().mget::<Vec<Option<String>>, _>(keys).await {
         Ok(blobs) => {
             for (m, blob) in out.iter_mut().zip(blobs) {
@@ -617,9 +621,9 @@ pub async fn round(state: &AppState) -> anyhow::Result<Option<RoundStats>> {
         .map(|m| (m.id, evaluate(&m.facts, &m.rules, now)))
         .collect();
     let firing: Vec<Firing> = sqlx::query_as(
-        "SELECT a.id, a.node_id, a.kind, a.value, a.detail, a.notified, a.fired_at, \
-           coalesce(n.display_name, n.name) AS node_name \
-         FROM node_alerts a JOIN nodes n ON n.id = a.node_id WHERE a.status = 'firing' \
+        "SELECT a.id, a.server_id, a.kind, a.value, a.detail, a.notified, a.fired_at, \
+           n.name AS server_name \
+         FROM server_alerts a JOIN servers n ON n.id = a.server_id WHERE a.status = 'firing' \
          ORDER BY a.id",
     )
     .fetch_all(&mut *tx)
@@ -637,22 +641,22 @@ pub async fn round(state: &AppState) -> anyhow::Result<Option<RoundStats>> {
     for step in steps {
         match step {
             Step::Update { id, value, detail } => {
-                sqlx::query("UPDATE node_alerts SET value = $2, detail = $3 WHERE id = $1")
+                sqlx::query("UPDATE server_alerts SET value = $2, detail = $3 WHERE id = $1")
                     .bind(id)
                     .bind(&value)
                     .bind(&detail)
                     .execute(&mut *tx)
                     .await?;
             }
-            Step::Fire { node, obs } => {
-                let (name, muted) = names.get(&node).copied().unwrap_or(("?", true));
+            Step::Fire { server, obs } => {
+                let (name, muted) = names.get(&server).copied().unwrap_or(("?", true));
                 let row: Option<(i64, DateTime<Utc>)> = sqlx::query_as(
-                    "INSERT INTO node_alerts (node_id, kind, status, value, detail) \
+                    "INSERT INTO server_alerts (server_id, kind, status, value, detail) \
                      VALUES ($1, $2, 'firing', $3, $4) \
-                     ON CONFLICT (node_id, kind) WHERE status = 'firing' DO NOTHING \
+                     ON CONFLICT (server_id, kind) WHERE status = 'firing' DO NOTHING \
                      RETURNING id, fired_at",
                 )
-                .bind(node)
+                .bind(server)
                 .bind(obs.kind)
                 .bind(&obs.value)
                 .bind(&obs.detail)
@@ -666,11 +670,11 @@ pub async fn round(state: &AppState) -> anyhow::Result<Option<RoundStats>> {
                     continue;
                 }
                 let cooling: bool = sqlx::query_scalar(
-                    "SELECT EXISTS (SELECT 1 FROM node_alerts WHERE node_id = $1 AND kind = $2 \
+                    "SELECT EXISTS (SELECT 1 FROM server_alerts WHERE server_id = $1 AND kind = $2 \
                        AND notified AND id <> $3 \
                        AND fired_at > now() - make_interval(mins => $4))",
                 )
-                .bind(node)
+                .bind(server)
                 .bind(obs.kind)
                 .bind(id)
                 .bind(s.cooldown_minutes)
@@ -679,14 +683,14 @@ pub async fn round(state: &AppState) -> anyhow::Result<Option<RoundStats>> {
                 if cooling {
                     continue;
                 }
-                sqlx::query("UPDATE node_alerts SET notified = true WHERE id = $1")
+                sqlx::query("UPDATE server_alerts SET notified = true WHERE id = $1")
                     .bind(id)
                     .execute(&mut *tx)
                     .await?;
                 let msg = super::channels::Message::alert(
                     "firing",
                     id,
-                    node,
+                    server,
                     name,
                     obs.kind,
                     &obs.value,
@@ -699,24 +703,24 @@ pub async fn round(state: &AppState) -> anyhow::Result<Option<RoundStats>> {
             Step::Resolve { id, notify } => {
                 let row: Option<Resolved> =
                     sqlx::query_as(
-                        "UPDATE node_alerts a SET status = 'resolved', resolved_at = now() \
-                         FROM nodes n WHERE a.id = $1 AND a.status = 'firing' AND n.id = a.node_id \
-                         RETURNING a.node_id, a.kind, a.value, a.detail, a.fired_at, a.resolved_at, \
-                           coalesce(n.display_name, n.name)",
+                        "UPDATE server_alerts a SET status = 'resolved', resolved_at = now() \
+                         FROM servers n WHERE a.id = $1 AND a.status = 'firing' AND n.id = a.server_id \
+                         RETURNING a.server_id, a.kind, a.value, a.detail, a.fired_at, a.resolved_at, \
+                           n.name",
                     )
                     .bind(id)
                     .fetch_optional(&mut *tx)
                     .await?;
-                let Some((node, kind, value, detail, fired_at, resolved_at, name)) = row else {
+                let Some((server, kind, value, detail, fired_at, resolved_at, name)) = row else {
                     continue;
                 };
                 stats.resolved += 1;
-                let muted = names.get(&node).is_none_or(|n| n.1);
+                let muted = names.get(&server).is_none_or(|n| n.1);
                 if notify && s.notify_resolved && !muted && !channels.is_empty() {
                     let msg = super::channels::Message::alert(
                         "resolved",
                         id,
-                        node,
+                        server,
                         &name,
                         &kind,
                         &value,
@@ -745,7 +749,7 @@ pub async fn round(state: &AppState) -> anyhow::Result<Option<RoundStats>> {
 
 async fn prune(conn: &mut PgConnection) -> sqlx::Result<()> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
-        "DELETE FROM node_alerts WHERE ctid = ANY(ARRAY(SELECT ctid FROM node_alerts \
+        "DELETE FROM server_alerts WHERE ctid = ANY(ARRAY(SELECT ctid FROM server_alerts \
          WHERE status = 'resolved' AND resolved_at < now() - interval '{ALERT_RETENTION_DAYS} days' \
          LIMIT {PRUNE_BATCH}))"
     )))

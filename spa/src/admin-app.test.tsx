@@ -52,7 +52,7 @@ const dashboard = {
   users_total: 120,
   subscribers: 80,
   online_users: 33,
-  nodes: { total: 4, online: 3, offline: 1, disabled: 0, pending: 0, alerting: 1 },
+  servers: { total: 4, online: 3, offline: 1, disabled: 0, pending: 0, alerting: 1 },
   pending: { tickets_open: 2, withdrawals: 0, mail_failed: 1, orders_unfulfilled: 0, alerts_firing: 1 },
   traffic_days: [{ day: "2026-10-01", up_bytes: 1024, down_bytes: 4096, billed_bytes: 5120, users: 3 }],
   traffic_top_nodes: [{ node_id: "n1", name: "香港 01", up_bytes: 1024, down_bytes: 4096, billed_bytes: 5120 }],

@@ -107,17 +107,25 @@ End-to-end verified by `./smoke.sh` (fully API-driven):
   a Markdown-lite description, stock (max subscribers), renewal-only and
   switch-in rules, plan switching with pro-rata credit, and a per-user
   speed limit enforced by the agent (see docs/PAYMENTS.md).
-- `akari node add <name>` (or `POST /api/v1/nodes`, or New node in the UI)
-  creates the node with a one-time enrollment token and writes a bootstrap
-  file without any private key: the agent generates its key (ECDSA P-256)
+- **Servers and nodes (Q1)**: a *server* is one machine = one agent identity
+  (certificate, versions, lease, metrics, alerts, rollouts, TLS domain); a
+  *node* is one inbound (protocol) on a server, with its entrances. One
+  agent runs every node of its server (several protocols on one machine =
+  several nodes on one server); the admin list is grouped server → nodes →
+  entrances (`GET /api/v1/servers`).
+- `akari server add <name>` (or `POST /api/v1/servers`, or `POST
+  /api/v1/nodes` without `server_id`: a server of its own for the node, or
+  New node in the UI) creates the server with a one-time enrollment token
+  and writes a bootstrap file without any private key: the agent generates its key (ECDSA P-256)
   locally and enrolls with a CSR over the gRPC port (the only call that
   works without a client certificate); the panel signs a 90-day client
   certificate. Protocol 2 agents renew it over mTLS when a third is left
   (new key; the old certificate is revoked once the new one is seen).
-  `akari node enroll-token <id>` re-enrolls a node. See docs/DEPLOY.md.
-  `akari node delete <id>` (or
-  `DELETE /api/v1/nodes/{id}`, or the Delete button) retires a node: see
-  "Node deletion" below.
+  `akari server enroll-token <id>` re-enrolls a server. See docs/DEPLOY.md.
+  `akari server delete <id>` (or
+  `DELETE /api/v1/servers/{id}`) retires a server and its nodes: see
+  "Node deletion" below. `DELETE /api/v1/nodes/{id}` removes one node at
+  once and keeps its server.
 - Agent dials out (TLS 1.3, client cert = node identity), sends `Hello` with
   its held config/user versions; node flips to `online`, versions recorded.
 - Panel pushes a `ConfigSnapshot` (xray inbounds + full user set) when the
@@ -237,7 +245,8 @@ make agent-build       # go build of ../akari-agent
 
 ./target/release/akari serve
 AKARI_ADMIN_PASSWORD=... ./target/release/akari admin add root
-./target/release/akari node add test-node   # writes test-node-bootstrap.toml (one-time token)
+./target/release/akari server add test-node   # writes test-node-bootstrap.toml (one-time token)
+# then add a node on it: POST /api/v1/nodes {"server_id": …, "name": …, "inbound" | "template": …}
 (cd ../akari-agent && ./agent -config ../akari-panel/test-node-bootstrap.toml -state-dir /tmp/akari-agent-state)
 make smoke             # full end-to-end check (truncates the dev DB)
 make check             # fmt + clippy + tsc (fast gate); make lint test deny = CI
@@ -309,22 +318,24 @@ separate loopback listener, never on the public port.
 | GET/POST | /api/v1/plans | admin | list / create `{name, period, traffic_quota_bytes?, speed_limit_mbps?, device_seats?, sort?, enabled?, group_ids?, description?, capacity?, renewal_only?, renew_off_sale? (中-6, default true: off sale, subscribers still renew), allow_switch_in?}` (views include `on_sale` and `prices`) |
 | PATCH/DELETE | /api/v1/plans/{id} | admin | update (same fields; null clears nullable ones; 中-5: changes new purchases only unless `apply_to_existing: true`, which gives the active subscriptions all of the plan's current terms) / delete (409 while users hold it) |
 | POST | /api/v1/plans/{id}/impact | admin | 中-5: body = the PATCH to preview → `{subscribers, over_quota}` (active subscriptions; how many already used more than the resulting quota) |
-| GET/POST | /api/v1/nodes | admin | W17: `?view=summary` = the list's columns only (no inbound JSON, slim heartbeat, best agent latency, `alerts_firing`, `needs_certificate`), with an ETag (`If-None-Match` → 304; `?view=full`, the default, also carries one); full: node list with live status, certificate expiry, last heartbeat (W11: machine status, latency, tags), the node's one `inbound` (W28-a, null = none) and its `entrances` (`[{id, kind, name, connect_host, connect_port, rate_permille, rate, enabled, sort, wire_no, listen_port, source_cidrs, health_ok, health_at, health_failures, health_error, hidden_since, group_ids}]`; a relay hidden by the health test (3 failed TCP connects in a row) is left out of subscriptions and `/me/nodes` until it answers again, and raises the node's `entrance_down` alert, the built-in `direct` entrance first, then the relays), warnings / create a node `{name, region?, tls_domain?, template? \| inbound?, install?: {origin?}, display_name?, sort?, visible?, tags?, direct?: {connect_host?, connect_port?, rate?, enabled?, sort?, group_ids?}}` (one inbound: a template or an xray inbound object without tag; `direct` sets the built-in direct entrance; 201: one-time enrollment token + bootstrap file + one-line install command, shown once) |
+| GET/POST | /api/v1/servers | admin | Q1: servers (machines, agents) grouped with their nodes and entrances: `[{id, name, created_at, status, online, agent_version, core_version, agent_os, agent_arch, agent_protocol, agent_capabilities, update_status, config_version, user_version, tls_domain, agent_addr, last_error, last_error_at, failed_config_version, failed_user_version, lease_expires_at, lease_remaining_seconds, traffic_max_rate_bytes_per_sec, deleting_at, last_seen_at, enrolled, cert_not_after, enroll_token_expires_at, latency, probe_requested_at, alerts_firing, heartbeat, warnings, nodes: [{id, name, display_name, enabled, visible, sort, region, tags, protocol, port, block_rules_enabled, entrances: [EntranceView]}]}]` (ETag, `If-None-Match` → 304) / create a server `{name, tls_domain?, install?: {origin?}}` (201: one-time enrollment token + bootstrap file + install command, shown once; nodes are added with `POST /nodes {server_id}`). Audited `server.create`, `server.enroll_token` |
+| GET/PATCH/DELETE | /api/v1/servers/{id} | admin | Q1: one server (as in the list) / `{name?, tls_domain?, traffic_max_rate_bytes_per_sec?}` (`tls_domain` = the server's domain: the agent obtains its certificate itself; a change bumps config_version, DEPLOY §3f; audited `server.update`) / delete (202, two phases: the agent gets the empty state, then the certificates are revoked and the server and its nodes deleted; audited `server.delete`). `409 server.deleting` for any change while it is being deleted |
+| POST | /api/v1/servers/{id}/enroll-token | admin | new one-time enrollment token + bootstrap file (re-enrollment) |
+| POST | /api/v1/servers/{id}/install | admin | new one-line install command `{origin?}` (re-install; replaces the server's unused token) |
+| GET/PUT | /api/v1/servers/{id}/alert-rules | admin | W17: per-server alert overrides `{muted, disabled: [kind], offline_secs?, cpu_percent?, cpu_minutes?, mem_percent?, mem_minutes?, disk_percent?, cert_days?}` (null = the global value) |
+| GET | /api/v1/servers/{id}/status | admin | W11: latest heartbeat + machine status, online, latency results (panel TCP targets `<node> / <entrance>`), raw/billed traffic of its nodes |
+| GET | /api/v1/servers/{id}/metrics | admin | W11: history `?range=1h\|6h\|24h\|48h\|7d\|30d\|90d` (averages and maxima per point, ≤ 360 points) |
+| POST | /api/v1/servers/{id}/probe | admin | W11: "立即测速" (202; 429 within the built-in 30 s cooldown) |
+| GET/POST | /api/v1/nodes | admin | W17: `?view=summary` = the list's columns only (no inbound JSON, slim heartbeat, best agent latency, `alerts_firing`, `needs_certificate`), with an ETag (`If-None-Match` → 304; `?view=full`, the default, also carries one); full: node list, each node with its server (`server_id`, `server_name`) and that server's machine state (status, certificate expiry, last heartbeat, latency, agent, TLS domain: as in `/servers`), the node's one `inbound` (W28-a, null = none) and its `entrances` (`[{id, kind, name, connect_host, connect_port, rate_permille, rate, enabled, sort, wire_no, listen_port, source_cidrs, health_ok, health_at, health_failures, health_error, hidden_since, group_ids}]`; a relay hidden by the health test (3 failed TCP connects in a row) is left out of subscriptions and `/me/nodes` until it answers again, and raises the server's `entrance_down` alert, the built-in `direct` entrance first, then the relays), warnings / create a node `{server_id?, name, region?, template? \| inbound?, display_name?, sort?, visible?, tags?, direct?: {connect_host?, connect_port?, rate?, enabled?, sort?, group_ids?}}` on `server_id`, or — without `server_id` — together with a new server of the same name (then also `tls_domain?`, `install?: {origin?}`; `node.server_fields` with a `server_id`). One inbound: a template (rendered with the server's TLS domain and free ports) or an xray inbound object without tag; its port must not clash with anything the server serves (`entrance.port_clash`); `direct` sets the built-in direct entrance. 201 `{id, server_id, name}` plus, with a new server, its one-time enrollment token + bootstrap file + install command (shown once) |
 | GET | /api/v1/nodes/{id} | admin | W17: one node, full view (the node page) |
-| GET/PUT | /api/v1/nodes/{id}/alert-rules | admin | W17: per-node alert overrides `{muted, disabled: [kind], offline_secs?, cpu_percent?, cpu_minutes?, mem_percent?, mem_minutes?, disk_percent?, cert_days?}` (null = the global value) |
-| POST | /api/v1/nodes/{id}/install | admin | new one-line install command `{origin?}` (re-install; replaces the node's unused token) |
 | GET | /api/v1/inbound-templates | admin | template choices (REALITY dests, fingerprints) |
 | POST | /api/v1/inbound-templates/render | admin | `{template, taken_ports?, tls_domain?}` → `{inbound, needs_certificate}`: one xray inbound object (fresh REALITY keys; nothing stored; a port in `taken_ports` = 400 `template.port_clash`; `tls_domain` = the node's TLS domain, default certificate domain) |
 | POST | /api/v1/inbound-templates/check-domain | admin | `{domain, node_id?, connect_host?}` → what the domain resolves to vs. the node's addresses (agent address, direct entrance host; warn-only pre-flight for 节点域名) |
 | POST | /api/v1/inbound-templates/check-dest | admin | TLS 1.3 + h2 check of a REALITY dest from the panel |
-| POST | /api/v1/nodes/{id}/enroll-token | admin | new one-time enrollment token + bootstrap file (re-enrollment) |
-| PATCH/DELETE | /api/v1/nodes/{id} | admin | enable / rename / region / billing cap override / W11 `display_name`, `sort`, `visible`, `tags` (multiplier, address and groups: `PATCH /entrances/{id}`); delete (202, revokes the certificate); `tls_domain` = 节点域名: the agent obtains its certificate itself (change bumps config_version, DEPLOY §3f) |
-| POST | /api/v1/nodes/{id}/entrances | admin | W28-a: a relay entrance `{name, connect_host, connect_port, listen_port, source_cidrs, rate?, enabled?, sort?, group_ids?}` (201): an external relay forwarding to the node. The node serves it on a derived inbound (its inbound on `listen_port`, own per-user credentials) that accepts new connections only from `source_cidrs` (the relay's egress, 1–64 IPs/CIDRs; enforced by agents with `source-filter`); clients dial `connect_host:connect_port`; numbered `wire_no` (agent key `<user>#<n>`). Refused: a port the node already serves (`entrance.port_clash`), a name the node has (409). Audited `entrance.create` |
+| PATCH/DELETE | /api/v1/nodes/{id} | admin | enable (bumps its server) / rename / region / W11 `display_name`, `sort`, `visible`, `tags` (multiplier, address and groups: `PATCH /entrances/{id}`; TLS domain and billing cap: `PATCH /servers/{id}`); delete (204: the node, its entrances and their credentials at once, the server keeps running; counters reported for them afterwards are not billed; audited `node.delete`) |
+| POST | /api/v1/nodes/{id}/entrances | admin | W28-a: a relay entrance `{name, connect_host, connect_port, listen_port, source_cidrs, rate?, enabled?, sort?, group_ids?}` (201): an external relay forwarding to the node. The node serves it on a derived inbound (its inbound on `listen_port`, own per-user credentials) that accepts new connections only from `source_cidrs` (the relay's egress, 1–64 IPs/CIDRs; enforced by agents with `source-filter`); clients dial `connect_host:connect_port`; numbered `wire_no` per server (agent key `<user>#<n>`). Refused: a port the server already serves (`entrance.port_clash`), a name the node has (409). Audited `entrance.create` |
 | PATCH/DELETE | /api/v1/entrances/{id} | admin | W28-a: an entrance's `{name?, connect_host?, connect_port?, rate?, enabled?, sort?, group_ids?}`, relays also `{listen_port?, source_cidrs?}` (direct: null host = the node's TLS domain, null port = the inbound's; a relay keeps both; `rate` 0–100, 3 decimals; disabling it removes its users from the node; audited `entrance.update`) → the entrance / delete a relay (204; the direct entrance: 409 `entrance.direct_permanent`; audited `entrance.delete`) |
-| GET | /api/v1/nodes/{id}/status | admin | W11: latest heartbeat + machine status, online, latency results, raw/billed traffic |
-| GET | /api/v1/nodes/{id}/metrics | admin | W11: history `?range=1h\|6h\|24h\|48h\|7d\|30d\|90d` (averages and maxima per point, ≤ 360 points) |
-| POST | /api/v1/nodes/{id}/probe | admin | W11: "立即测速" (202; 429 within the built-in 30 s cooldown) |
-| PUT | /api/v1/nodes/{id}/inbound | admin | W28-a: `{inbound}` replaces the node's one xray inbound (an object without tag; null = none; bumps config_version). Users keep their credentials when the protocol stays, get new ones when it changes |
+| PUT | /api/v1/nodes/{id}/inbound | admin | W28-a: `{inbound}` replaces the node's one xray inbound (an object without tag; null = none; its port must not clash on the server; bumps the server's config_version). Users keep their credentials when the protocol stays, get new ones when it changes |
 | POST | /api/v1/users/{id}/sub-token | admin | reset the user's subscription: new token + new credentials on every entrance (高-3, as above) |
 | GET | /api/v1/users/{id}/subscription | admin | W20: the user's subscription link `{sub_token, sub_url, legacy}` (every read is audited as `user.sub_token.read`, without the token; `no-store`) |
 | POST | /api/v1/users/{id}/revoke-sessions | admin | log the account out everywhere (204) |
@@ -369,7 +380,7 @@ separate loopback listener, never on the public port.
 | POST | /api/v1/tickets/{id}/replies \| close \| reopen | admin | W17: `{message, close?}` / close / reopen |
 | PUT | /api/v1/tickets/{id}/assignee | admin | W17: `{assignee_id}` (an enabled admin, or null) |
 | GET | /api/v1/admins, /api/v1/admin-badges | admin | W17: assignable admins; console counters (unread tickets, firing alerts) |
-| GET | /api/v1/alerts | admin | W17: alert center `?status=firing\|resolved&node&kind&before&limit` + `firing` counts by kind |
+| GET | /api/v1/alerts | admin | W17: alert center `?status=firing\|resolved&server&kind&before&limit` + `firing` counts by kind (Q1: alerts are per server: `server_id`, `server_name`) |
 | POST | /api/v1/alerts/{id}/ack | admin | W17: acknowledge (audited once) |
 | GET/PUT | /api/v1/alerts/settings | admin | W17: thresholds and channels (Telegram bot, signed webhook, email); secrets write-only (`*_set` flags), `version` for optimistic concurrency (409) |
 | POST | /api/v1/alerts/test | admin | W17: `{channel}` sends a test message through the saved configuration, `{ok, error?}` |
@@ -386,8 +397,8 @@ via `panel.toml` (start-up keys only, see `deploy/panel.toml.example`) or
 `DATABASE_URL`/`VALKEY_URL`. Everything else is set in the console under
 系统设置 (database; W25/R39) or is a built-in constant.
 `akari admin passwd <email>` resets a password (and ends its sessions).
-`akari node enroll-token <id>`
-issues a new one-time node enrollment token.
+`akari server enroll-token <id>`
+issues a new one-time server enrollment token.
 `akari secrets rotate-prefix` / `akari secrets rotate-jwt` rotate secrets
 (see "Security").
 
@@ -525,7 +536,7 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   that connects again is accepted only to be served the empty state and
   closed (a refused agent would keep running its last config); it is never
   billed and can never be registered again (also the certificate it renewed
-  from, if still accepted). Reinstalling needs a new `akari node add`.
+  from, if still accepted). Reinstalling needs a new `akari server add`.
 - **Billing plausibility caps** (only ever under-bill; the counter is stored
   in full): every cap credits at most a short burst window of elapsed time
   (`traffic.node_burst_secs`, default 120 s) — per (node, user, session)

@@ -6,7 +6,7 @@
 //! - A user's entrances = the members (`entrance_group_members`) of the
 //!   groups of their ACTIVE subscription (`user_plans.status = 'active'`;
 //!   the groups are the subscription's snapshot `user_plan_groups`, taken
-//!   from the plan at purchase — 运营审查中-5), on nodes not being deleted. Plans are the only source (D3: no manual
+//!   from the plan at purchase — 运营审查中-5), on servers not being deleted. Plans are the only source (D3: no manual
 //!   assignment). Role, enabled, expiry and the entrance's own `enabled`
 //!   do not matter here: what an agent actually runs is still filtered at
 //!   read time (`enforce::SERVED`, enabled entrances of enabled nodes), so
@@ -32,8 +32,9 @@
 //! every committed change (READ COMMITTED: fresh snapshot per statement).
 //! Without it, "add entrance E to group G" and "give user U a plan with G"
 //! could each miss the other (write skew). Row locks then follow the
-//! global order: nodes (one statement, ORDER BY id) -> users ->
-//! entrance_users.
+//! global order: servers (one statement, ORDER BY id) -> nodes -> users ->
+//! entrance_users. Versions live on the server (Q1): a reconcile bumps the
+//! servers of the nodes whose rows changed.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -44,8 +45,9 @@ use uuid::Uuid;
 /// Protocols the panel can generate accounts for (protocols.rs).
 pub const ELIGIBLE_PROTOCOLS: [&str; 5] = crate::protocols::MANAGED;
 
-/// SQL: the nodes on which the users in `$1` (uuid[]) hold credentials.
-pub const NODES_OF_USERS: &str = "SELECT e.node_id FROM entrance_users eu \
+/// SQL: the servers on which the users in `$1` (uuid[]) hold credentials
+/// (Q1: what a change to the users' service bumps and locks).
+pub const SERVERS_OF_USERS: &str = "SELECT e.server_id FROM entrance_users eu \
      JOIN entrances e ON e.id = eu.entrance_id WHERE eu.user_id = ANY($1)";
 
 /// SQL: (entrance_id, user_id) pairs granted by active plans, restricted to
@@ -69,9 +71,9 @@ pub async fn lock(conn: &mut PgConnection) -> sqlx::Result<()> {
 /// What a reconcile looks at.
 #[derive(Clone, Copy, Debug)]
 pub enum Scope<'a> {
-    /// Every pair of these users (all entrances). Also locks every node the
-    /// users hold credentials on, so a caller may update the users' rows
-    /// and bump their nodes afterwards in lock order.
+    /// Every pair of these users (all entrances). Also locks every server
+    /// the users hold credentials on, so a caller may update the users'
+    /// rows and bump their servers afterwards in lock order.
     Users(&'a [Uuid]),
     /// Every pair on the entrances of these nodes (all users).
     Nodes(&'a [Uuid]),
@@ -82,7 +84,7 @@ pub enum Scope<'a> {
 /// What a reconcile changed.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Outcome {
-    /// Nodes whose user_version was bumped (sorted).
+    /// Servers whose user_version was bumped (sorted).
     pub bumped: Vec<Uuid>,
     /// Pairs that got a new row.
     pub issued: usize,
@@ -98,7 +100,7 @@ impl Outcome {
             "issued": self.issued,
             "revoked": self.revoked,
             "updated": self.updated,
-            "bumped_nodes": self.bumped,
+            "bumped_servers": self.bumped,
         })
     }
 
@@ -133,11 +135,17 @@ pub(crate) fn fit_account(
     }
 }
 
-async fn lock_nodes(conn: &mut PgConnection, ids: &[Uuid]) -> sqlx::Result<Vec<Uuid>> {
-    sqlx::query_scalar("SELECT id FROM nodes WHERE id = ANY($1) ORDER BY id FOR UPDATE")
-        .bind(ids)
-        .fetch_all(conn)
-        .await
+/// Lock the servers of these nodes (global order: servers by id, before
+/// nodes, users and entrance_users).
+async fn lock_servers_of(conn: &mut PgConnection, nodes: &[Uuid]) -> sqlx::Result<()> {
+    sqlx::query(
+        "SELECT id FROM servers WHERE id IN (SELECT server_id FROM nodes WHERE id = ANY($1)) \
+         ORDER BY id FOR UPDATE",
+    )
+    .bind(nodes)
+    .execute(conn)
+    .await?;
+    Ok(())
 }
 
 /// The nodes a scope may touch, as of now.
@@ -151,14 +159,15 @@ async fn scope_nodes(conn: &mut PgConnection, scope: Scope<'_>) -> sqlx::Result<
                 .await
         }
         Scope::Users(u) => {
-            sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            sqlx::query_scalar(
                 "SELECT e.node_id FROM user_plans up \
                  JOIN user_plan_groups ug ON ug.user_plan_id = up.id \
                  JOIN entrance_group_members m ON m.group_id = ug.group_id \
                  JOIN entrances e ON e.id = m.entrance_id \
                  WHERE up.status = 'active' AND up.user_id = ANY($1) \
-                 UNION {NODES_OF_USERS}"
-            )))
+                 UNION SELECT e.node_id FROM entrance_users eu \
+                 JOIN entrances e ON e.id = eu.entrance_id WHERE eu.user_id = ANY($1)",
+            )
             .bind(u)
             .fetch_all(conn)
             .await
@@ -187,14 +196,22 @@ pub async fn apply_reconcile(
     if users.is_some_and(<[Uuid]>::is_empty) || entrances.is_some_and(<[Uuid]>::is_empty) {
         return Ok(Outcome::default());
     }
-    let nodes = scope_nodes(conn, scope).await?;
+    let mut nodes = scope_nodes(conn, scope).await?;
     if nodes.is_empty() {
         return Ok(Outcome::default());
     }
-    let locked = lock_nodes(conn, &nodes).await?;
+    nodes.sort();
+    nodes.dedup();
+    lock_servers_of(conn, &nodes).await?;
     let mut total = Outcome::default();
-    for node in locked {
+    for node in nodes {
         total.merge(reconcile_node(conn, node, users, entrances).await?);
+    }
+    if !total.bumped.is_empty() {
+        sqlx::query("UPDATE servers SET user_version = user_version + 1 WHERE id = ANY($1)")
+            .bind(&total.bumped)
+            .execute(&mut *conn)
+            .await?;
     }
     Ok(total)
 }
@@ -208,22 +225,28 @@ struct Row {
     account: Value,
 }
 
-/// One locked node: its entrances (all, or those of `only`), all users or
-/// those of `users`.
+/// One node (its server locked): its entrances (all, or those of `only`),
+/// all users or those of `users`. The returned `bumped` names the node's
+/// server when rows changed; the caller bumps it once.
 async fn reconcile_node(
     conn: &mut PgConnection,
     node: Uuid,
     users: Option<&[Uuid]>,
     only: Option<&[Uuid]>,
 ) -> Result<Outcome, crate::auth::ApiError> {
-    let (inbound, deleting): (Option<Value>, bool) =
-        sqlx::query_as("SELECT inbound, deleting_at IS NOT NULL FROM nodes WHERE id = $1")
-            .bind(node)
-            .fetch_one(&mut *conn)
-            .await?;
+    let row: Option<(Option<Value>, bool, Uuid)> = sqlx::query_as(
+        "SELECT n.inbound, s.deleting_at IS NOT NULL, n.server_id FROM nodes n \
+         JOIN servers s ON s.id = n.server_id WHERE n.id = $1",
+    )
+    .bind(node)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((inbound, deleting, server)) = row else {
+        return Ok(Outcome::default());
+    };
     if deleting {
         // Going away: its rows stay (final counters are billed) until
-        // phase 2 deletes the node.
+        // phase 2 deletes the server.
         return Ok(Outcome::default());
     }
     let entrances: Vec<Uuid> = sqlx::query_scalar(
@@ -239,7 +262,7 @@ async fn reconcile_node(
     }
     let proto = eligible_protocol(inbound.as_ref());
     // Granted pairs, the users row-locked FOR KEY SHARE (users after
-    // nodes): a concurrent user deletion then waits for us instead of
+    // servers): a concurrent user deletion then waits for us instead of
     // failing our insert's foreign key check.
     let granted: HashSet<(Uuid, Uuid)> = match proto {
         None => HashSet::new(),
@@ -354,14 +377,8 @@ async fn reconcile_node(
         .await?;
     }
     let changed = !(revoke.is_empty() && write.is_empty());
-    if changed {
-        sqlx::query("UPDATE nodes SET user_version = user_version + 1 WHERE id = $1")
-            .bind(node)
-            .execute(&mut *conn)
-            .await?;
-    }
     Ok(Outcome {
-        bumped: if changed { vec![node] } else { Vec::new() },
+        bumped: if changed { vec![server] } else { Vec::new() },
         issued,
         revoked: revoke.len(),
         updated,
@@ -371,41 +388,41 @@ async fn reconcile_node(
 /// 运营审查高-3 ("重置订阅"): give `user` a new account on every entrance
 /// they hold one on (same protocol, freshly generated for the node's
 /// inbound), in the caller's transaction (which holds `lock()`): the
-/// user's nodes are locked (ORDER BY id), then their rows, and every node
-/// whose rows changed is bumped — the agent swaps the account and closes
-/// the live connections of the old one (UserOp REPLACE; a Snapshot where
-/// the node needs one), so a leaked or shared client config stops working.
-/// Nodes being deleted are left alone (they serve nothing).
+/// user's servers are locked (ORDER BY id), then their rows, and every
+/// server whose rows changed is bumped — the agent swaps the account and
+/// closes the live connections of the old one (UserOp REPLACE; a Snapshot
+/// where the server needs one), so a leaked or shared client config stops
+/// working. Servers being deleted are left alone (they serve nothing).
 pub async fn apply_rotate_user(
     conn: &mut PgConnection,
     user: Uuid,
 ) -> Result<Outcome, crate::auth::ApiError> {
-    let nodes: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT id FROM nodes WHERE id IN ({NODES_OF_USERS}) AND deleting_at IS NULL \
+    let servers: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT id FROM servers WHERE id IN ({SERVERS_OF_USERS}) AND deleting_at IS NULL \
          ORDER BY id FOR UPDATE"
     )))
     .bind([user])
     .fetch_all(&mut *conn)
     .await?;
-    // Lock order: nodes → users → entrance_users (the caller then updates
-    // the user row, e.g. the subscription token).
+    // Lock order: servers → users → entrance_users (the caller then
+    // updates the user row, e.g. the subscription token).
     sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE")
         .bind(user)
         .execute(&mut *conn)
         .await?;
     let rows: Vec<(Uuid, Uuid, Option<Value>, String)> = sqlx::query_as(
-        "SELECT eu.entrance_id, e.node_id, n.inbound, eu.protocol FROM entrance_users eu \
+        "SELECT eu.entrance_id, e.server_id, n.inbound, eu.protocol FROM entrance_users eu \
          JOIN entrances e ON e.id = eu.entrance_id JOIN nodes n ON n.id = e.node_id \
-         WHERE eu.user_id = $1 AND e.node_id = ANY($2) ORDER BY eu.entrance_id FOR UPDATE OF eu",
+         WHERE eu.user_id = $1 AND e.server_id = ANY($2) ORDER BY eu.entrance_id FOR UPDATE OF eu",
     )
     .bind(user)
-    .bind(&nodes)
+    .bind(&servers)
     .fetch_all(&mut *conn)
     .await?;
     let mut entrances = Vec::with_capacity(rows.len());
     let mut accounts = Vec::with_capacity(rows.len());
     let mut bumped = Vec::new();
-    for (entrance, node, inbound, proto) in rows {
+    for (entrance, server, inbound, proto) in rows {
         // A row exists only for an issuable inbound of its protocol (the
         // reconcile keeps them in step); anything else is left as it is.
         let Some(inbound) = inbound.filter(|i| eligible_protocol(Some(i)) == Some(proto.as_str()))
@@ -414,7 +431,7 @@ pub async fn apply_rotate_user(
         };
         entrances.push(entrance);
         accounts.push(crate::api::generate_account(&inbound)?);
-        bumped.push(node);
+        bumped.push(server);
     }
     bumped.sort();
     bumped.dedup();
@@ -429,7 +446,7 @@ pub async fn apply_rotate_user(
         .bind(&accounts)
         .execute(&mut *conn)
         .await?;
-        sqlx::query("UPDATE nodes SET user_version = user_version + 1 WHERE id = ANY($1)")
+        sqlx::query("UPDATE servers SET user_version = user_version + 1 WHERE id = ANY($1)")
             .bind(&bumped)
             .execute(&mut *conn)
             .await?;
@@ -463,11 +480,11 @@ pub(crate) async fn record_departed(
     Ok(())
 }
 
-/// Nodes the users hold credentials on — for bumps after a change to what
-/// they are served.
-pub async fn nodes_of_users(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::Result<Vec<Uuid>> {
+/// Servers the users hold credentials on — for bumps after a change to
+/// what they are served.
+pub async fn servers_of_users(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::Result<Vec<Uuid>> {
     sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT DISTINCT node_id FROM ({NODES_OF_USERS}) n ORDER BY node_id"
+        "SELECT DISTINCT server_id FROM ({SERVERS_OF_USERS}) s ORDER BY server_id"
     )))
     .bind(users)
     .fetch_all(conn)
@@ -483,7 +500,7 @@ pub async fn granted_pairs(conn: &mut PgConnection) -> HashMap<Uuid, Vec<Uuid>> 
          JOIN user_plan_groups ug ON ug.user_plan_id = up.id \
          JOIN entrance_group_members m ON m.group_id = ug.group_id \
          JOIN entrances e ON e.id = m.entrance_id \
-         JOIN nodes n ON n.id = e.node_id AND n.deleting_at IS NULL \
+         JOIN servers s ON s.id = e.server_id AND s.deleting_at IS NULL \
          WHERE up.status = 'active' ORDER BY 1, 2",
     )
     .fetch_all(conn)

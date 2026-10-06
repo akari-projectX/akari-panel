@@ -15,6 +15,8 @@ afterEach(() => {
 const node = (over: Partial<NodeView>): NodeView =>
   ({
     id: "n1",
+    server_id: "s1",
+    server_name: "tokyo",
     name: "tokyo",
     enabled: true,
     status: "online",
@@ -331,13 +333,13 @@ describe("AdminNodes", () => {
   it("re-issues an install command for an enrolled node after confirmation", async () => {
     const calls = fakeApi({
       ...nodeRoutes([node({})]),
-      "POST /nodes/n1/install": { ...install, pin: "sha256//PIN=", command_wget: null },
+      "POST /servers/s1/install": { ...install, pin: "sha256//PIN=", command_wget: null },
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);
     renderWithClient(<AdminNodes />);
     await pickMenu("tokyo", "重装命令");
     await screen.findByText(install.command);
-    expect(calls.find((c) => c.path === "/nodes/n1/install")?.body).toEqual({
+    expect(calls.find((c) => c.path === "/servers/s1/install")?.body).toEqual({
       origin: location.origin,
     });
     expect(screen.queryByText("或 wget")).toBeNull();

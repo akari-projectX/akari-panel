@@ -98,14 +98,14 @@ p admin add root@drill.example >/dev/null
 ALICE="$(jq -r .id "$W/alice.json")"
 SUB="$(jq -r .sub_token "$W/alice.json")"
 [ -n "$SUB" ] && [ "$SUB" != null ] || fail "no subscription token"
-p node add drill-node --out "$W/boot.toml" >/dev/null
+p server add drill-node --out "$W/boot.toml" >/dev/null
 "$AGENT" -config "$W/boot.toml" -state-dir "$W/agent-state" >"$W/agent.log" 2>&1 &
 AGENT_PID=$!
-online() { api "$W/jar" "$BASE/api/v1/nodes" | jq -r '.[0].status'; }
+online() { api "$W/jar" "$BASE/api/v1/servers" | jq -r '.[0].status'; }
 for _ in $(seq 1 30); do [ "$(online)" = online ] && break; sleep 1; done
-[ "$(online)" = online ] || fail "node never came online"
-NODE_ID="$(api "$W/jar" "$BASE/api/v1/nodes" | jq -r '.[0].id')"
-echo "prefix=$PREFIX node=$NODE_ID"
+[ "$(online)" = online ] || fail "server never came online"
+SERVER_ID="$(api "$W/jar" "$BASE/api/v1/servers" | jq -r '.[0].id')"
+echo "prefix=$PREFIX server=$SERVER_ID"
 
 echo "== 2. backup =="
 age-keygen -o "$W/age.key" 2>"$W/age.pub.txt"
@@ -147,6 +147,6 @@ start_panel
   || fail "alice's subscription link does not decrypt after restore (master.key restored?)"
 for _ in $(seq 1 90); do [ "$(online)" = online ] && break; sleep 1; done
 [ "$(online)" = online ] || fail "agent did not reconnect"
-[ "$(api "$W/jar" "$BASE/api/v1/nodes" | jq -r '.[0].id')" = "$NODE_ID" ] || fail "node identity changed"
+[ "$(api "$W/jar" "$BASE/api/v1/servers" | jq -r '.[0].id')" = "$SERVER_ID" ] || fail "server identity changed"
 [ "$(grep -c "channel established" "$W/agent.log")" -ge 2 ] || fail "agent did not re-establish its channel"
 echo "DRILL PASS: prefix kept, logins, users and sealed secrets restored, agent reconnected in $(( $(date +%s) - started )) s (panel start to online)"

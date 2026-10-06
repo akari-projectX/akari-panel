@@ -451,20 +451,20 @@ impl Prepared {
     }
 }
 
-/// Issue the link in the caller's transaction (replaces the node's token;
-/// audited as `node.enroll_token` with `install_link: true`).
+/// Issue the link in the caller's transaction (replaces the server's
+/// token; audited as `server.enroll_token` with `install_link: true`).
 pub async fn apply_issue(
     conn: &mut sqlx::PgConnection,
     state: &AppState,
     actor: &Actor,
-    node: Uuid,
+    server: Uuid,
     p: &Prepared,
 ) -> Result<(String, DateTime<Utc>), ApiError> {
     let endpoint = crate::settings::node_endpoint(conn, state.cfg()).await?;
     crate::enroll::apply_issue_token(
         conn,
         actor,
-        node,
+        server,
         state.cfg().limits.install_token_ttl_secs,
         Some(p.link()),
         &endpoint,
@@ -519,9 +519,9 @@ pub async fn view(
     })
 }
 
-/// POST /nodes/{id}/install {origin?} (admin): a new install link for an
-/// existing node (re-install; replaces any unused token). Once the agent
-/// enrolls with it, the node's previous certificates are revoked.
+/// POST /servers/{id}/install {origin?} (admin): a new install link for an
+/// existing server (re-install; replaces any unused token). Once the agent
+/// enrolls with it, the server's previous certificates are revoked.
 pub async fn issue_install(
     State(state): State<AppState>,
     user: AuthUser,
@@ -541,23 +541,23 @@ pub async fn issue_install(
 // ---------------------------------------------------------------------------
 
 struct Link {
-    node: Uuid,
+    server: Uuid,
     name: String,
     origin: String,
     pin: Option<String>,
     expires_at: DateTime<Utc>,
-    /// What the agent will run (the node's inbound, as an array).
+    /// What the agent will run (the inbounds of the server's nodes).
     inbounds: serde_json::Value,
     /// R22: endpoint fixed when the link was issued (NULL for links issued
     /// before 0060: the current node endpoint).
     panel_addr: Option<String>,
     server_name: Option<String>,
-    /// W10: the node's TLS domain (automatic certificate).
+    /// W10: the server's TLS domain (automatic certificate).
     tls_domain: Option<String>,
 }
 
 /// Rate limit, token shape, then one lookup that only matches a live
-/// install link of a node that is not being deleted. None = reject.
+/// install link of a server that is not being deleted. None = reject.
 async fn live_link(state: &AppState, ip: Option<IpAddr>, token: &str) -> Option<Link> {
     let cfg = &state.cfg().limits;
     let bucket = ip
@@ -586,17 +586,19 @@ async fn live_link(state: &AppState, ip: Option<IpAddr>, token: &str) -> Option<
         Option<String>,
         DateTime<Utc>,
         String,
-        Option<serde_json::Value>,
+        serde_json::Value,
         Option<String>,
         Option<String>,
         Option<String>,
     );
     let row: Option<Row> = match sqlx::query_as(
-        "SELECT e.node_id, e.token_hash, e.install_origin, e.install_pin, e.expires_at, \
-                n.name, n.inbound, e.panel_addr, e.server_name, n.tls_domain \
-         FROM node_enrollments e JOIN nodes n ON n.id = e.node_id \
+        "SELECT e.server_id, e.token_hash, e.install_origin, e.install_pin, e.expires_at, \
+                s.name, coalesce((SELECT jsonb_agg(n.inbound ORDER BY n.id) FROM nodes n \
+                    WHERE n.server_id = s.id AND n.inbound IS NOT NULL), '[]'::jsonb), \
+                e.panel_addr, e.server_name, s.tls_domain \
+         FROM server_enrollments e JOIN servers s ON s.id = e.server_id \
          WHERE e.token_hash = $1 AND e.used_at IS NULL AND e.expires_at > now() \
-           AND e.install_origin IS NOT NULL AND n.deleting_at IS NULL",
+           AND e.install_origin IS NOT NULL AND s.deleting_at IS NULL",
     )
     .bind(&hash)
     .fetch_optional(state.pg())
@@ -610,7 +612,7 @@ async fn live_link(state: &AppState, ip: Option<IpAddr>, token: &str) -> Option<
         }
     };
     let (
-        node,
+        server,
         stored,
         origin,
         pin,
@@ -628,12 +630,12 @@ async fn live_link(state: &AppState, ip: Option<IpAddr>, token: &str) -> Option<
         return None;
     }
     Some(Link {
-        node,
+        server,
         name,
         origin,
         pin,
         expires_at,
-        inbounds: crate::api::inbounds_of(inbounds.as_ref()),
+        inbounds,
         panel_addr,
         server_name,
         tls_domain,
@@ -772,7 +774,7 @@ pub async fn script(
     };
     match render_script(&state, &link, &token, &releases) {
         Ok(body) => {
-            tracing::info!(node = %link.node, "install script served");
+            tracing::info!(server = %link.server, "install script served");
             (
                 [
                     (
@@ -786,7 +788,7 @@ pub async fn script(
                 .into_response()
         }
         Err(e) => {
-            tracing::error!(node = %link.node, error = %e, "install script not rendered");
+            tracing::error!(server = %link.server, error = %e, "install script not rendered");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
@@ -832,7 +834,7 @@ pub async fn binary(
         )
             .into_response();
     };
-    tracing::info!(node = %link.node, release = %rel_id, "install binary download");
+    tracing::info!(server = %link.server, release = %rel_id, "install binary download");
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(2);
     let pg = state.pg().clone();
     tokio::spawn(async move {
