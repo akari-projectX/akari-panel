@@ -211,10 +211,12 @@ src/traffic.rs         delta accounting + limit enforcement
 src/install.rs         CA, server/agent cert issuance
 src/auth.rs            argon2id passwords, JWT sessions, extractor
 src/api.rs             REST handlers (users, nodes, accounts)
-src/spa.rs             embedded frontends (rust-embed): user portal, session-gated admin console
+src/spa.rs             embedded user portal (rust-embed)
+src/console.rs         embedded admin app (rust-embed): sign-in page, session-gated console
 src/access.rs          D4/D11 URL layout: admin prefix + allowlist, subscription path
 src/web.rs + reject.rs front door + uniform rejection
-spa/                   React 19 + Vite 8 + Tailwind 4 frontend
+spa/                   React 19 + Vite 8 + Tailwind 4 user portal
+admin/                 the admin app (W33-b): sign-in page + console, own build and e2e
 migrations/            sqlx migrations (run at startup)
 smoke.sh               cross-repo end-to-end check (needs ../akari-agent)
 ```
@@ -226,32 +228,33 @@ checked out side by side; `src/CLAUDE.md` has the per-file map.
 
 ## Frontend
 
-`spa/` holds two independently built frontends (R23) on React 19, Vite 8
-(Rolldown), Tailwind 4 and shadcn/ui-style components, with TanStack Query as
-the data layer:
+Two independently built frontends (R23, W33-b) on React 19, Vite 8
+(Rolldown) and Tailwind 4, with TanStack Query as the data layer:
 
-- the **user portal** at `/` of the main domain (D11) — the login page and
-  one view per URL (W20; top nav on desktop, bottom tab bar on phones):
-  dashboard `/` (plan, days and traffic left, the permanent subscription
-  link with copy/QR/format/one-click import, announcements), `/shop`,
-  `/nodes`, `/orders`, `/wallet` (invites and balance), `/tickets`,
-  `/account` (email, password, language) — Chinese/English. The front door
-  serves only the pages it knows (`access::PORTAL_PAGES`; keep in step with
-  the portal's routes);
-- the **admin console** at `/{admin prefix}/admin` — users, plans, orders,
-  nodes, updates, audit, account (Chinese). Its index and assets are served
-  only to an admin session (private, no-store); to anyone else `/admin` is
-  the uniform empty 404. Admins sign in at `/{admin prefix}/app` (the
-  portal's login page served under the prefix) and are sent there.
+- the **user portal** (`spa/`) at `/` of the main domain (D11) — the login
+  page and one view per URL (dashboard, shop, nodes, orders, wallet,
+  tickets, account), Chinese/English. The front door serves only the pages
+  it knows (`access::PORTAL_PAGES`; keep in step with the portal's routes);
+- the **admin app** (`admin/`, W33-b): its own **sign-in page** at
+  `/{admin prefix}/app` (email + password, passkeys, the sign-in policies,
+  Turnstile/honeypot when enabled; a non-admin account is signed out again)
+  and the **console** at `/{admin prefix}/admin` — dashboard, status, users,
+  orders, coupons, finance, tickets, content, nodes, plans, alerts, updates,
+  audit, settings, account; Chinese/English, phone-usable. The console's
+  index and assets are served only to an admin session (private, no-store);
+  to anyone else `/admin` is the uniform empty 404. Every function it offers
+  is listed in `admin/INVENTORY.md` and covered by its Playwright suite.
 
-The portal bundle contains no console code (a build-time check greps it for
-admin markers). Both bundles are embedded into the binary via rust-embed;
-under the admin prefix Vite's asset URLs are rewritten to the prefix at
-serve time, the portal at `/` never carries it.
-Missing assets return the uniform empty 404, and the dev tree is never served.
+The bundles share no code: a build check greps each for the others' markers
+(the portal never contains console code, the sign-in page never contains
+the console). All are embedded into the binary via rust-embed; under the
+admin prefix Vite's asset URLs are rewritten to the prefix at serve time,
+the portal at `/` never carries it. CSP is `'self'` only. Missing assets
+return the uniform empty 404, and the dev tree is never served.
 
 ```bash
 make spa               # npm install + vite build (updates spa/dist)
+make admin             # the admin app: checks + both builds (updates admin/dist)
 make panel             # rebuild the binary to embed the new bundle
 ```
 
@@ -339,7 +342,8 @@ same paths at `/` (admin sessions and admin sign-ins do not exist there).
 | POST | /api/v1/mail/outbox/{id}/retry | admin | W15: re-queue a dead letter (not for expired codes/links) |
 | POST | /api/v1/me/password | user/admin | `{current_password, new_password}`: change own password (wrong current = 400, counts against the login rate limit; other sessions end, this one continues) |
 | GET | /api/v1/audit | admin | audit log, `?limit&before&actor&action` (keyset, newest first; `actor` = an exact `actor_label`). Entries: `actor_id`, `actor_label` (Q4: non-personal — `u-<8 hex of the id>`, `cli`, `system`, `agent`, `anonymous`), `actor_email` (the account's current address, null when not an account or deleted) |
-| GET/POST | /api/v1/users | admin | list (`?q&plan_id&status=active\|expired\|quota\|banned\|erased&role&sort&limit&offset`; D10 `never_used=true`, `registered_before=YYYY-MM-DD`, `last_login_before=YYYY-MM-DD` (never signed in counts; days in the site time zone); rows carry `is_owner`, `erased`; `q` = address prefix or id prefix; `sort` created\|-created\|email\|-traffic\|expires) / create `{email, password, role?, plan?: {plan_id, period, days?}}` (D1: the address is required and counts as verified; taken = 409 `user.email_exists`. D12: the plan and its term, assigned in the same transaction; never a traffic limit or expiry) |
+| GET/POST | /api/v1/users | admin | list (`?q&plan_id&status=active\|expired\|quota\|banned\|erased&role&sort&limit&offset`; D10 `never_used=true`, `registered_before=YYYY-MM-DD`, `last_login_before=YYYY-MM-DD` (never signed in counts; days in the site time zone); rows carry `is_owner`, `erased`, `last_login_at`, `balance_cents`, `passkeys` (W33-b); `q` = address prefix or id prefix; `sort` created\|-created\|email\|-traffic\|expires) / create `{email, password, role?, plan?: {plan_id, period, days?}}` (D1: the address is required and counts as verified; taken = 409 `user.email_exists`. D12: the plan and its term, assigned in the same transaction; never a traffic limit or expiry) |
+| GET/POST, PUT/DELETE | /api/v1/kb/articles, /api/v1/kb/articles/{id} | admin | Ops knowledge base articles (categories under `/api/v1/kb/categories`); W33-b: optional `slug` (`^[a-z0-9][a-z0-9-]{0,63}$`, unique; `terms`/`privacy` back the portal's terms and privacy pages; bad = 400 `kb.slug_invalid`, taken = 409 `kb.slug_taken`) |
 | GET | /api/v1/users/{id} | admin | D12/W28-c detail: the list row + `subscription` (null without a plan: `{user_plan_id, plan_id, plan_name, period, period_days, starts_at, expires_at, traffic_used_bytes, traffic_total_bytes, reset_period, last_reset_at, next_reset_at, timezone, speed_limit_mbps, status: active\|expired\|over_quota\|banned}`; Q3: `next_reset_at` is RFC 3339 with the site time zone's offset, e.g. `2026-11-01T00:00:00+08:00`, and `timezone` is that zone) + `ban` (null unless banned: `{reason, banned_at, banned_by_id, banned_by_email}`) |
 | PATCH/DELETE | /api/v1/users/{id} | admin | update `{password?, role?}` (D12: no `traffic_limit_bytes`/`expires_at`; W28-c: no `enabled` — ban instead; unknown fields 400; R47: another admin's account or `role: admin` only by the owner (403 `user.owner_only`), the owner is never demoted (409 `user.owner_protected`), a banned account is not promoted (409 `user.promote_banned`), a promotion lifts a traffic-quota disable) / delete user (中-7: `?confirm=true` required, else 400 `user.delete_confirm_required`; never the owner) |
 | POST | /api/v1/users/delete/preview | admin | D10 `{selection: {ids} \| {filter}}` (the list's filters) → `{total, admins (never deleted), sample, deletable, anonymized (finance records: kept anonymized), confirm_token}` (≤ 2000, else 400 `user.bulk_delete_too_many`) |

@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 #
 # akari panel image (M1-1). Multi-stage:
-#   spa        builds the React bundle (embedded into the binary)
+#   spa        builds the user portal (embedded into the binary)
+#   admin      builds the admin app (embedded into the binary)
 #   chef       rust:alpine + build tools + cargo-chef (pinned)
 #   planner    `cargo chef prepare`: the dependency recipe (manifests and
 #              lockfile only; the crate's own version is masked, so CI's
@@ -42,6 +43,14 @@ RUN npm ci
 COPY spa/ ./
 RUN npm run build
 
+# W33-b: the admin app (sign-in page + console), built on its own.
+FROM ${NODE_IMAGE} AS admin
+WORKDIR /src/admin
+COPY admin/package.json admin/package-lock.json ./
+RUN npm ci
+COPY admin/ ./
+RUN npm run build
+
 FROM ${RUST_IMAGE} AS chef
 RUN apk add --no-cache musl-dev gcc make cmake perl linux-headers mimalloc2
 # rustc on Alpine is a musl program and musl's allocator makes it several
@@ -79,6 +88,7 @@ COPY migrations migrations
 COPY src src
 COPY deploy/systemd deploy/systemd
 COPY --from=spa /src/spa/dist spa/dist
+COPY --from=admin /src/admin/dist admin/dist
 RUN cargo build --profile "$CARGO_PROFILE" --locked \
  && cp "target/$CARGO_PROFILE/akari" /akari
 

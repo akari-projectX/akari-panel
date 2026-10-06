@@ -25,7 +25,7 @@ use uuid::Uuid;
 use crate::announcements::{clean_markdown, clean_title};
 use crate::api::ApiJson;
 use crate::audit::Actor;
-use crate::auth::{ApiError, AuthUser, ShopUser, bad_request};
+use crate::auth::{ApiError, AuthUser, ShopUser, bad_request, conflict};
 use crate::state::AppState;
 
 pub const MAX_NAME: usize = 64;
@@ -64,6 +64,10 @@ pub struct ArticleReq {
     pub sort: i32,
     #[serde(default)]
     pub published: bool,
+    /// W33-b: a fixed address (`terms`, `privacy` = the portal's legal
+    /// pages); absent, null or "" = none.
+    #[serde(default)]
+    pub slug: Option<String>,
 }
 
 /// A category name: one line, 1..=MAX_NAME characters.
@@ -133,6 +137,40 @@ pub struct CleanArticle {
     pub body_en: Option<String>,
     pub sort: i32,
     pub published: bool,
+    pub slug: Option<String>,
+}
+
+/// The slugs the portal reads (its terms of service and privacy pages).
+pub const LEGAL_SLUGS: [&str; 2] = ["terms", "privacy"];
+const MAX_SLUG: usize = 64;
+
+/// Pure: a slug is 1-64 of `a-z 0-9 -`, not starting with `-`; "" = none.
+pub fn clean_slug(s: Option<&str>) -> Result<Option<String>, ApiError> {
+    let Some(s) = s.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let ok = s.len() <= MAX_SLUG
+        && !s.starts_with('-')
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if !ok {
+        return Err(bad_request!(
+            "kb.slug_invalid",
+            "slug: 1-{max} of a-z 0-9 - (not starting with -)",
+            max = MAX_SLUG
+        ));
+    }
+    Ok(Some(s.to_string()))
+}
+
+/// A unique violation on the slug → 409 `kb.slug_taken`.
+fn slug_taken(e: sqlx::Error) -> ApiError {
+    match &e {
+        sqlx::Error::Database(d) if d.constraint() == Some("kb_articles_slug_key") => {
+            conflict!("kb.slug_taken", "another article has this slug")
+        }
+        _ => e.into(),
+    }
 }
 
 pub fn check_article(req: &ArticleReq) -> Result<CleanArticle, ApiError> {
@@ -144,6 +182,7 @@ pub fn check_article(req: &ArticleReq) -> Result<CleanArticle, ApiError> {
         body_en: optional(&req.body_en, clean_markdown)?,
         sort: check_sort(req.sort)?,
         published: req.published,
+        slug: clean_slug(req.slug.as_deref())?,
     })
 }
 
@@ -158,7 +197,7 @@ fn cat_json(c: &CleanCategory) -> serde_json::Value {
 fn art_json(a: &CleanArticle) -> serde_json::Value {
     json!({
         "category_id": a.category_id, "title_zh": a.title_zh, "title_en": a.title_en,
-        "sort": a.sort, "published": a.published,
+        "sort": a.sort, "published": a.published, "slug": a.slug,
         "body_zh_length": a.body_zh.chars().count(),
         "body_en_length": a.body_en.as_ref().map(|b| b.chars().count()),
     })
@@ -288,8 +327,8 @@ pub async fn apply_create_article(
     category_exists(conn, a.category_id).await?;
     let id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO kb_articles (id, category_id, title_zh, title_en, body_zh, body_en, sort, published) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "INSERT INTO kb_articles (id, category_id, title_zh, title_en, body_zh, body_en, sort, published, slug) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(id)
     .bind(a.category_id)
@@ -299,8 +338,10 @@ pub async fn apply_create_article(
     .bind(&a.body_en)
     .bind(a.sort)
     .bind(a.published)
+    .bind(&a.slug)
     .execute(&mut *conn)
-    .await?;
+    .await
+    .map_err(slug_taken)?;
     crate::audit::record(
         conn,
         actor,
@@ -324,9 +365,10 @@ async fn lock_article(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<
         body_en: Option<String>,
         sort: i32,
         published: bool,
+        slug: Option<String>,
     }
     let row: Option<Locked> = sqlx::query_as(
-        "SELECT category_id, title_zh, title_en, body_zh, body_en, sort, published \
+        "SELECT category_id, title_zh, title_en, body_zh, body_en, sort, published, slug \
          FROM kb_articles WHERE id = $1 FOR UPDATE",
     )
     .bind(id)
@@ -340,6 +382,7 @@ async fn lock_article(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<
         body_en: r.body_en,
         sort: r.sort,
         published: r.published,
+        slug: r.slug,
     }))
 }
 
@@ -360,7 +403,7 @@ pub async fn apply_update_article(
     category_exists(conn, a.category_id).await?;
     sqlx::query(
         "UPDATE kb_articles SET category_id = $2, title_zh = $3, title_en = $4, body_zh = $5, \
-           body_en = $6, sort = $7, published = $8, updated_at = now() WHERE id = $1",
+           body_en = $6, sort = $7, published = $8, slug = $9, updated_at = now() WHERE id = $1",
     )
     .bind(id)
     .bind(a.category_id)
@@ -370,8 +413,10 @@ pub async fn apply_update_article(
     .bind(&a.body_en)
     .bind(a.sort)
     .bind(a.published)
+    .bind(&a.slug)
     .execute(&mut *conn)
-    .await?;
+    .await
+    .map_err(slug_taken)?;
     crate::audit::record(
         conn,
         actor,
@@ -436,12 +481,13 @@ pub struct ArticleRow {
     pub body_en: Option<String>,
     pub sort: i32,
     pub published: bool,
+    pub slug: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 const ARTICLE_SELECT: &str = "SELECT a.id, a.category_id, c.name_zh AS category_name, a.title_zh, a.title_en, \
-       a.body_zh, a.body_en, a.sort, a.published, a.created_at, a.updated_at \
+       a.body_zh, a.body_en, a.sort, a.published, a.slug, a.created_at, a.updated_at \
      FROM kb_articles a LEFT JOIN kb_categories c ON c.id = a.category_id";
 
 /// A published article as a user sees it in the list.

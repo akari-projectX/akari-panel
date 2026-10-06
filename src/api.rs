@@ -595,6 +595,11 @@ pub struct UserView {
     is_owner: bool,
     /// Deleted and kept anonymized (finance records; erase.rs).
     erased: bool,
+    /// W33-b (console columns): the last successful sign-in (D10), the
+    /// balance and the number of passkeys.
+    last_login_at: Option<DateTime<Utc>>,
+    balance_cents: i64,
+    passkeys: i64,
 }
 
 /// UserView columns (alias `users` table as itself).
@@ -607,7 +612,10 @@ pub const USER_VIEW_COLS: &str = "id, role, enabled, traffic_limit_bytes, traffi
      (SELECT up.next_reset_at FROM user_plans up \
       WHERE up.user_id = users.id AND up.status = 'active') AS next_reset_at, \
      email, email_verified_at IS NOT NULL AS email_verified, is_owner, \
-     erased_at IS NOT NULL AS erased";
+     erased_at IS NOT NULL AS erased, last_login_at, \
+     coalesce((SELECT b.balance_cents FROM user_balances b WHERE b.user_id = users.id), 0) \
+     AS balance_cents, \
+     (SELECT count(*) FROM webauthn_credentials w WHERE w.user_id = users.id) AS passkeys";
 
 /// `GET /users` query (W21, M3): page, search, filters and order.
 #[derive(Deserialize, Default)]
@@ -903,7 +911,8 @@ pub async fn create_user(
          RETURNING id, role, enabled, traffic_limit_bytes, traffic_used_bytes, expires_at, \
          created_at, disabled_reason, \
          NULL::uuid AS plan_id, NULL::text AS plan_name, NULL::timestamptz AS next_reset_at, \
-         email, email_verified_at IS NOT NULL AS email_verified, is_owner, false AS erased",
+         email, email_verified_at IS NOT NULL AS email_verified, is_owner, false AS erased, \
+         NULL::timestamptz AS last_login_at, 0::bigint AS balance_cents, 0::bigint AS passkeys",
     )
     .bind(id)
     .bind(&email)

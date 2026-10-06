@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """Third-party licences of the panel binary (`make third-party`, release.yml).
 
-The `akari` binary statically links Rust crates and embeds the built SPA
-(spa/dist: the npm packages bundled into it). This writes one text file:
+The `akari` binary statically links Rust crates and embeds the built
+frontends (spa/dist, the portal, and admin/dist, the admin app: the npm
+packages bundled into them). This writes one text file:
 a table of every such component with its declared licence, then the
 licence/notice files those packages ship, verbatim (identical texts once).
 
 Rust: `cargo metadata --locked` for the release targets (linux musl amd64 +
 arm64), walking normal dependencies from akari-panel (build/dev deps and
 proc-macro crates do not end up in the binary); licence files come from the
-crate sources (`cargo fetch --locked` first). npm: spa/package-lock.json
-packages that are not dev-only; licence files from spa/node_modules when
-installed (`npm ci`), else only the declared licence is listed.
+crate sources (`cargo fetch --locked` first). npm: spa/ and admin/
+package-lock.json packages that are not dev-only (each name@version once);
+licence files from node_modules when installed (`npm ci`), else only the
+declared licence is listed.
 
 The licence policy itself is enforced by `cargo deny check` (deny.toml) and
 `npm audit`; this file is the notice that goes with the binary. Usage:
@@ -69,13 +71,23 @@ def cargo_components():
 
 
 def npm_components():
-    lock = json.load(open(os.path.join(ROOT, "spa", "package-lock.json")))
+    out, seen = [], set()
+    for app in ("spa", "admin"):
+        out += npm_app(app, seen)
+    return out
+
+
+def npm_app(app, seen):
+    lock = json.load(open(os.path.join(ROOT, app, "package-lock.json")))
     out = []
     for path, p in sorted(lock.get("packages", {}).items()):
         if not path or p.get("dev") or p.get("devOptional"):
             continue
         name = path.split("node_modules/")[-1]
-        d = os.path.join(ROOT, "spa", path)
+        if (name, p.get("version")) in seen:
+            continue
+        seen.add((name, p.get("version")))
+        d = os.path.join(ROOT, app, path)
         files = []
         if os.path.isdir(d):
             files = [os.path.join(d, f) for f in sorted(os.listdir(d)) if LIC_FILE.match(f)]

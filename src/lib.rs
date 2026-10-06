@@ -19,6 +19,7 @@ pub mod client_ip;
 pub mod cloudflare;
 pub mod config;
 pub mod config_check;
+pub mod console;
 pub mod csvx;
 pub mod dashboard;
 pub mod db;

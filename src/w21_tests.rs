@@ -143,6 +143,51 @@ async fn users_search_filters_sort_and_total() {
     db.drop().await;
 }
 
+/// W33-b console columns: last sign-in, balance and passkey count on each
+/// list row and on the detail.
+#[tokio::test]
+async fn user_rows_carry_console_columns() {
+    let Some((db, _state, c)) = setup().await else {
+        return;
+    };
+    let plain = user(&db, "plain", "").await;
+    let busy = user(&db, "busy", "last_login_at = '2026-10-01T08:00:00Z'").await;
+    let mut tx = db.pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL akari.ledger = 'on'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO user_balances (user_id, balance_cents) VALUES ($1, 1234)")
+        .bind(busy)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    for n in 0..2 {
+        sqlx::query(
+            "INSERT INTO webauthn_credentials (user_id, rp_id, cred_id, passkey, name) \
+             VALUES ($1, 'example.com', $2, '{}'::jsonb, 'k')",
+        )
+        .bind(busy)
+        .bind(vec![n as u8; 16])
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    }
+    let r = c.get("/test/api/v1/users?q=busy").await;
+    let row = &r.json()["users"][0];
+    assert_eq!(row["last_login_at"], "2026-10-01T08:00:00Z");
+    assert_eq!(row["balance_cents"], 1234);
+    assert_eq!(row["passkeys"], 2);
+    let r = c.get(&format!("/test/api/v1/users/{plain}")).await;
+    assert_eq!(r.json()["last_login_at"], Value::Null);
+    assert_eq!(r.json()["balance_cents"], 0);
+    assert_eq!(r.json()["passkeys"], 0);
+    let r = c.get(&format!("/test/api/v1/users/{busy}")).await;
+    assert_eq!(r.json()["passkeys"], 2);
+    db.drop().await;
+}
+
 #[tokio::test]
 async fn create_user_with_email() {
     let Some((db, _state, c)) = setup().await else {

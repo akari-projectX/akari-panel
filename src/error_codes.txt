@@ -177,6 +177,8 @@ kb.name_long
 kb.name_multiline
 kb.name_required
 kb.query_long
+kb.slug_invalid
+kb.slug_taken
 kb.sort_range
 mail.api_key_invalid
 mail.credentials_need_tls

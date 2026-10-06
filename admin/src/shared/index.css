@@ -1,0 +1,258 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens (W33-a). Same names as akari-panel spa/src/index.css
+ * (background/foreground/card/primary/muted/border/destructive/ring) so
+ * W33-b can lift this file as-is, plus the status colours, the sidebar
+ * surface and an elevation scale the console needs.
+ *
+ * Dark mode: `.dark` on <html> (toggled by the top bar, persisted in
+ * localStorage, initial value from prefers-color-scheme).
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle: var(--subtle);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-soft: var(--destructive-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+
+  --shadow-card: 0 1px 2px 0 oklch(0 0 0 / 0.04), 0 1px 3px 0 oklch(0 0 0 / 0.06);
+  --shadow-pop: 0 10px 30px -10px oklch(0 0 0 / 0.25), 0 4px 10px -4px oklch(0 0 0 / 0.12);
+
+  --font-sans:
+    "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+    "Noto Sans CJK SC", sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+:root {
+  --background: oklch(0.985 0.002 260);
+  --foreground: oklch(0.21 0.02 262);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.02 262);
+  --popover: oklch(1 0 0);
+  --primary: oklch(0.52 0.17 264);
+  --primary-foreground: oklch(0.985 0 0);
+  --primary-soft: oklch(0.95 0.03 264);
+  --muted: oklch(0.965 0.004 262);
+  --muted-foreground: oklch(0.5 0.02 262);
+  --subtle: oklch(0.975 0.003 262);
+  --border: oklch(0.915 0.006 262);
+  --input: oklch(0.88 0.008 262);
+  --ring: oklch(0.55 0.16 264);
+  --destructive: oklch(0.56 0.2 25);
+  --destructive-foreground: oklch(0.985 0 0);
+  --destructive-soft: oklch(0.96 0.025 25);
+  --success: oklch(0.56 0.14 155);
+  --success-soft: oklch(0.96 0.035 155);
+  --warning: oklch(0.62 0.15 70);
+  --warning-soft: oklch(0.965 0.045 85);
+  --info: oklch(0.56 0.12 230);
+  --info-soft: oklch(0.96 0.025 230);
+  --sidebar: oklch(0.975 0.004 262);
+  --sidebar-foreground: oklch(0.32 0.02 262);
+  --sidebar-accent: oklch(0.93 0.012 262);
+  --chart-1: oklch(0.55 0.17 264);
+  --chart-2: oklch(0.65 0.14 175);
+  --chart-3: oklch(0.7 0.15 70);
+  --chart-4: oklch(0.62 0.18 330);
+}
+
+.dark {
+  --background: oklch(0.16 0.012 262);
+  --foreground: oklch(0.94 0.006 262);
+  --card: oklch(0.2 0.014 262);
+  --card-foreground: oklch(0.94 0.006 262);
+  --popover: oklch(0.22 0.014 262);
+  --primary: oklch(0.68 0.15 264);
+  --primary-foreground: oklch(0.16 0.012 262);
+  --primary-soft: oklch(0.3 0.06 264);
+  --muted: oklch(0.25 0.014 262);
+  --muted-foreground: oklch(0.7 0.015 262);
+  --subtle: oklch(0.22 0.013 262);
+  --border: oklch(0.3 0.014 262);
+  --input: oklch(0.36 0.016 262);
+  --ring: oklch(0.7 0.14 264);
+  --destructive: oklch(0.66 0.19 25);
+  --destructive-foreground: oklch(0.16 0.012 262);
+  --destructive-soft: oklch(0.3 0.07 25);
+  --success: oklch(0.72 0.14 155);
+  --success-soft: oklch(0.29 0.05 155);
+  --warning: oklch(0.78 0.14 75);
+  --warning-soft: oklch(0.31 0.06 75);
+  --info: oklch(0.72 0.11 230);
+  --info-soft: oklch(0.29 0.05 230);
+  --sidebar: oklch(0.18 0.013 262);
+  --sidebar-foreground: oklch(0.82 0.01 262);
+  --sidebar-accent: oklch(0.26 0.016 262);
+  --chart-1: oklch(0.7 0.15 264);
+  --chart-2: oklch(0.74 0.13 175);
+  --chart-3: oklch(0.8 0.14 75);
+  --chart-4: oklch(0.72 0.17 330);
+}
+
+html {
+  color-scheme: light;
+}
+html.dark {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-background text-foreground antialiased;
+  font-family: var(--font-sans);
+  font-feature-settings: "tnum" 1;
+}
+
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* Skeleton shimmer (respects reduced motion). */
+@keyframes akari-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--muted) 25%, var(--subtle) 37%, var(--muted) 63%);
+  background-size: 400% 100%;
+  animation: akari-shimmer 1.4s ease infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+}
+
+@keyframes akari-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.anim-in {
+  animation: akari-in 140ms ease-out;
+}
+@keyframes akari-drawer {
+  from {
+    transform: translateX(16px);
+    opacity: 0.6;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.anim-drawer {
+  animation: akari-drawer 160ms ease-out;
+}
+
+/* Thin scrollbars inside the shell. */
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--input) transparent;
+}
+
+/* Server-sanitized Markdown HTML (announcements, help articles, previews). */
+.md {
+  font-size: 0.875rem;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.md > * + * {
+  margin-top: 0.75em;
+}
+.md h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+.md h4,
+.md h5,
+.md h6 {
+  font-weight: 600;
+}
+.md a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.md ul {
+  list-style: disc;
+  padding-left: 1.25rem;
+}
+.md ol {
+  list-style: decimal;
+  padding-left: 1.25rem;
+}
+.md blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 0.75rem;
+  color: var(--muted-foreground);
+}
+.md code {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  background: var(--muted);
+  border-radius: 4px;
+  padding: 0.1em 0.3em;
+}
+.md pre {
+  background: var(--muted);
+  border-radius: 6px;
+  padding: 0.75rem;
+  overflow-x: auto;
+}
+.md pre code {
+  background: none;
+  padding: 0;
+}
+.md hr {
+  border: none;
+  border-top: 1px solid var(--border);
+}
+.md img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}

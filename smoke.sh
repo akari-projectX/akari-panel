@@ -500,9 +500,9 @@ curl -s --noproxy '*' -D - -o /dev/null "$ROOT/" | matches -i '^content-security
 for p in /shop /tickets /help/x /register /healthz; do
   [ "$(code "$ROOT$p")" = "200" ] || { echo "FAIL: portal path $p"; exit 1; }
 done
-# The shared login page under the prefix loads its assets there.
-[ "$(code "$BASE/app")" = "200" ] && matches -F "/$PREFIX/assets/" </tmp/akari-smoke/last \
-  || { echo "FAIL: the login page under the admin prefix"; exit 1; }
+# The admin sign-in page under the prefix (W33-b) loads its assets there.
+[ "$(code "$BASE/app")" = "200" ] && matches -F "/$PREFIX/app/assets/" </tmp/akari-smoke/last \
+  || { echo "FAIL: the admin sign-in page under the admin prefix"; exit 1; }
 # An admin's right password on the portal = the wrong password's answer; an
 # admin session does not exist there.
 PWRONG=$(fpr -X POST "$ROOT/auth/login" -H 'Content-Type: application/json' -d '{"email":"root@smoke.test","password":"wrong-password"}')
@@ -4347,31 +4347,39 @@ curl -s --noproxy '*' -D - -o /dev/null -H 'X-Request-Id: smoke-req-1' "$BASE/no
 echo "m1a: ok"
 
 echo "== SPA =="
-[ "$(code "$BASE/app")" = "200" ] || { echo "FAIL: /app not 200"; exit 1; }
-grep -q 'id="root"' /tmp/akari-smoke/last || { echo "FAIL: SPA index has no root div"; exit 1; }
-JS=$(grep -o "/$PREFIX/assets/[^\"]*\.js" /tmp/akari-smoke/last | sed -n 1p)
-[ -n "$JS" ] || { echo "FAIL: SPA index did not reference prefixed asset"; exit 1; }
+# The portal at / (D11): its index, prefix-free assets, its CSP.
+[ "$(code "$ROOT/")" = "200" ] || { echo "FAIL: portal / not 200"; exit 1; }
+grep -q 'id="root"' /tmp/akari-smoke/last || { echo "FAIL: portal index has no root div"; exit 1; }
+JS=$(grep -o '"/assets/[^"]*\.js' /tmp/akari-smoke/last | tr -d '"' | sed -n 1p)
+[ -n "$JS" ] || { echo "FAIL: portal index did not reference its assets"; exit 1; }
 CT=$(curl -s --noproxy '*' -o /dev/null -w "%{content_type}" "http://127.0.0.1:8080$JS")
 echo "$CT" | matches javascript || { echo "FAIL: asset content-type '$CT'"; exit 1; }
-# The SPA's own stylesheet and script must be allowed by the CSP it is served
-# with (a real-browser check found style-src missing 'self': unstyled UI).
-CSP=$(curl -s --noproxy '*' -D - -o /dev/null "$BASE/app" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-security-policy"{print $2}')
-echo "$CSP" | matches -E "style-src[^;]*'self'" || { echo "FAIL: CSP style-src lacks 'self': $CSP"; exit 1; }
-echo "$CSP" | matches -E "default-src[^;]*'self'" || { echo "FAIL: CSP default-src lacks 'self': $CSP"; exit 1; }
-grep -q "/$PREFIX/assets/[^\"]*\.css" /tmp/akari-smoke/last || { echo "FAIL: SPA index has no prefixed stylesheet"; exit 1; }
-[ "$(code "$BASE/app/some-client-route")" = "200" ] || { echo "FAIL: SPA client-route fallback"; exit 1; }
-[ "$(code "$BASE/assets/missing.js")" = "404" ] || { echo "FAIL: missing asset not 404"; exit 1; }
-[ "$(code http://127.0.0.1:8080/assets/missing.js)" = "404" ] || { echo "FAIL: asset path reachable without prefix"; exit 1; }
-# REVIEW P0 #1 regression guards. (a) Behavioural: run the real api.ts with a
-# fake location/fetch and check the URLs it requests. (b) Bundle: the shipped
-# JS derives an `${prefix}/auth` base and never carries a bare "/auth/login"
-# literal (that shape is what gets prefixed with /api/v1 by get/post).
+# The frontends' own stylesheets and scripts must be allowed by the CSP they
+# are served with (a real-browser check found style-src missing 'self').
+for page in "$ROOT/" "$BASE/app"; do
+  CSP=$(curl -s --noproxy '*' -D - -o /dev/null "$page" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-security-policy"{print $2}')
+  echo "$CSP" | matches -E "style-src[^;]*'self'" || { echo "FAIL: CSP style-src lacks 'self' ($page): $CSP"; exit 1; }
+  echo "$CSP" | matches -E "default-src[^;]*'self'" || { echo "FAIL: CSP default-src lacks 'self' ($page): $CSP"; exit 1; }
+done
+# W33-b: the admin sign-in page under the prefix (its own bundle).
+[ "$(code "$BASE/app")" = "200" ] || { echo "FAIL: /app not 200"; exit 1; }
+grep -q 'id="root"' /tmp/akari-smoke/last || { echo "FAIL: sign-in page has no root div"; exit 1; }
+LJS=$(grep -o "/$PREFIX/app/assets/[^\"]*\.js" /tmp/akari-smoke/last | sed -n 1p)
+[ -n "$LJS" ] || { echo "FAIL: sign-in page did not reference prefixed assets"; exit 1; }
+grep -q "/$PREFIX/app/assets/[^\"]*\.css" /tmp/akari-smoke/last || { echo "FAIL: sign-in page has no prefixed stylesheet"; exit 1; }
+[ "$(code "$BASE/app/some-client-route")" = "200" ] || { echo "FAIL: sign-in page client-route fallback"; exit 1; }
+[ "$(code "$BASE/app/assets/missing.js")" = "404" ] || { echo "FAIL: missing asset not 404"; exit 1; }
+[ "$(code "http://127.0.0.1:8080/app/assets/missing.js")" = "404" ] || { echo "FAIL: sign-in assets reachable without prefix"; exit 1; }
+[ "$(code "http://127.0.0.1:8080${LJS#/"$PREFIX"}")" = "404" ] || { echo "FAIL: sign-in asset reachable without prefix"; exit 1; }
+# REVIEW P0 #1 regression guards: the shipped sign-in JS derives a
+# `${prefix}/auth` base and never carries a bare "/auth/login" literal (that
+# shape is what gets prefixed with /api/v1 by get/post).
 node spa/scripts/check-auth-paths.mjs || { echo "FAIL: SPA auth request paths"; exit 1; }
-curl -s --noproxy '*' "http://127.0.0.1:8080$JS" >/tmp/akari-smoke/app.js
+curl -s --noproxy '*' "http://127.0.0.1:8080$LJS" >/tmp/akari-smoke/app.js
 grep -q '}/auth[`"'"'"']' /tmp/akari-smoke/app.js || { echo "FAIL: bundle lacks the {prefix}/auth base"; exit 1; }
 grep -qE '[`"'"'"']/auth/(login|logout)' /tmp/akari-smoke/app.js \
   && { echo "FAIL: bundle posts a bare /auth/* path (would be joined to /api/v1)"; exit 1; }
-echo "spa: ok (asset $JS)"
+echo "spa: ok (portal $JS, sign-in $LJS)"
 
 echo "== R23: separate admin bundle, served to admin sessions only =="
 # Fresh sessions (rotate-jwt above revoked everything).
@@ -4422,33 +4430,24 @@ done
 [ "$(fp -b "$AJAR" "$BASE/admin/assets/missing.js")" = "$REJ" ] || { echo "FAIL: missing console asset not the rejection"; exit 1; }
 [ "$(fp -b "$AJAR" "http://127.0.0.1:8080${AJS/\/admin\/assets\//\/assets\/}")" = "$REJ" ] \
   || { echo "FAIL: console asset served under the public /assets/ path"; exit 1; }
+[ "$(fp -b "$AJAR" "http://127.0.0.1:8080${AJS/\/admin\/assets\//\/app\/assets\/}")" = "$REJ" ] \
+  || { echo "FAIL: console asset served under the sign-in page's asset path"; exit 1; }
 # The portal never references the console's files, and the bundles as served
-# pass the build-time guard: no admin marker in anything the portal loads.
-SERVED="$LOG/served"; rm -rf "$SERVED" && mkdir -p "$SERVED/app" "$SERVED/admin"
-curl -s --noproxy '*' -b "$SJAR" "$BASE/app" >"$SERVED/app/index.html"
+# pass the build-time guard (admin/scripts/check-bundles.mjs): no console
+# marker in the portal or the public sign-in page.
+SERVED="$LOG/served"; rm -rf "$SERVED" && mkdir -p "$SERVED/app" "$SERVED/admin/console" "$SERVED/admin/login"
+curl -s --noproxy '*' -b "$SJAR" "$ROOT/" >"$SERVED/app/index.html"
 grep -q '/admin/' "$SERVED/app/index.html" && { echo "FAIL: portal index references the console"; exit 1; }
-for a in $(grep -o "/$PREFIX/assets/[^\"]*\.\(js\|css\)" "$SERVED/app/index.html"); do
+for a in $(grep -o '"/assets/[^"]*\.\(js\|css\)' "$SERVED/app/index.html" | tr -d '"'); do
   curl -s --noproxy '*' "http://127.0.0.1:8080$a" >"$SERVED/app/$(basename "$a")"
 done
-curl -s --noproxy '*' -b "$AJAR" "$BASE/admin" >"$SERVED/admin/admin.html"
-for a in "$AJS" "$ACSS"; do curl -s --noproxy '*' -b "$AJAR" "http://127.0.0.1:8080$a" >"$SERVED/admin/$(basename "$a")"; done
-# W21: the console is code-split; every chunk the entry imports (relative
-# "./x.js" specifiers) is served under the prefix to the admin session.
-todo="$SERVED/admin/$(basename "$AJS")"
-while [ -n "$todo" ]; do
-  next=""
-  for c in $(cat $todo | grep -o '"\./[A-Za-z0-9_-]*\.js"\|`\./[A-Za-z0-9_-]*\.js`' | tr -d '"`' | sort -u); do
-    f="$SERVED/admin/${c#./}"
-    [ -e "$f" ] && continue
-    url="http://127.0.0.1:8080$(dirname "$AJS")/${c#./}"
-    [ "$(curl -s --noproxy '*' -b "$AJAR" -o "$f" -w '%{http_code}' "$url")" = "200" ] \
-      || { echo "FAIL: console chunk $c not served under the prefix"; exit 1; }
-    next="$next $f"
-  done
-  todo="$next"
+curl -s --noproxy '*' -b "$AJAR" "$BASE/admin" >"$SERVED/admin/console/index.html"
+for a in "$AJS" "$ACSS"; do curl -s --noproxy '*' -b "$AJAR" "http://127.0.0.1:8080$a" >"$SERVED/admin/console/$(basename "$a")"; done
+curl -s --noproxy '*' "$BASE/app" >"$SERVED/admin/login/login.html"
+for a in $(grep -o "/$PREFIX/app/assets/[^\"]*\.\(js\|css\)" "$SERVED/admin/login/login.html"); do
+  curl -s --noproxy '*' "http://127.0.0.1:8080$a" >"$SERVED/admin/login/$(basename "$a")"
 done
-[ "$(ls "$SERVED/admin"/*.js | wc -l)" -gt 3 ] || { echo "FAIL: console chunks not found in the entry"; exit 1; }
-node spa/scripts/check-bundles.mjs "$SERVED/app" "$SERVED/admin" || { echo "FAIL: served portal bundle carries admin code"; exit 1; }
+node admin/scripts/check-bundles.mjs "$SERVED/admin" "$SERVED/app" || { echo "FAIL: served bundles mix portal and console code"; exit 1; }
 echo "admin bundle: ok"
 
 echo "== S4-3 SIGTERM: agent streams end, final flush, clean exit =="

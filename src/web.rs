@@ -8,8 +8,8 @@ use serde_json::json;
 
 use crate::access::{self, Route, Via};
 use crate::{
-    account, alerts, api, audit, dashboard, nodeinstall, nodes, nodestat, nodetpl, plans, reject,
-    rollout, servers, settings, spa, state::AppState, sub, tickets, updates,
+    account, alerts, api, audit, console, dashboard, nodeinstall, nodes, nodestat, nodetpl, plans,
+    reject, rollout, servers, settings, spa, state::AppState, sub, tickets, updates,
 };
 
 /// The panel's HTTP service. D4/D11: `front` maps the public URL layout
@@ -111,15 +111,20 @@ fn inner_router(state: AppState) -> Router {
         .merge(crate::sysstatus::routes())
         // W29: node block rules (审计规则) and the per-node switch.
         .merge(crate::blockrules::routes())
-        // R23: two bundles. The user portal (and shared login) is public;
-        // the admin console's index and assets answer admin sessions only
-        // (everything else under /admin is the canonical rejection).
-        .route("/{prefix}/app", get(spa::index))
-        .route("/{prefix}/app/{*rest}", get(spa::index))
+        // R23 / W33-b: the user portal (`spa`, public at `/`) and the admin
+        // app (`console`: its sign-in page under the prefix's /app, the
+        // console's index and assets for admin sessions only — everything
+        // else under /admin is the canonical rejection).
+        .route("/{prefix}/app", get(console::app_entry))
+        .route("/{prefix}/app/assets/{*path}", get(console::login_asset))
+        .route("/{prefix}/app/{*rest}", get(console::app_entry))
         .route("/{prefix}/assets/{*path}", get(spa::asset))
-        .route("/{prefix}/admin", get(spa::admin_index))
-        .route("/{prefix}/admin/assets/{*path}", get(spa::admin_asset))
-        .route("/{prefix}/admin/{*rest}", get(spa::admin_index))
+        .route("/{prefix}/admin", get(console::console_index))
+        .route(
+            "/{prefix}/admin/assets/{*path}",
+            get(console::console_asset),
+        )
+        .route("/{prefix}/admin/{*rest}", get(console::console_index))
         .route("/{prefix}/sub/{token}", get(sub::subscription))
         .route("/{prefix}/install/{token}", get(nodeinstall::script))
         .route(

@@ -1,6 +1,6 @@
 name: ci
 
-# W37 tiered CI. Fast checks (rust, spa, cargo-deny, release keys,
+# W37 tiered CI. Fast checks (rust, spa, admin, cargo-deny, release keys,
 # shellcheck) run on every PR. Heavy jobs (coverage, bench tooling, smoke,
 # e2e, docker, installer) run only when the `changes` job finds a path they
 # cover (scripts/ci-changes.sh); otherwise they are skipped by their
@@ -158,6 +158,28 @@ jobs:
       # user bundle carries no admin code (scripts/check-bundles.mjs).
       - run: npm run build
 
+  admin:
+    # W33-b: the admin app (admin/: sign-in page + console), built apart
+    # from the portal. Every server error code has zh + en text; the bundle
+    # guard proves the sign-in page and the portal carry no console code.
+    name: admin (tsc, lint, error codes, unit, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: admin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24" # package.json engines: >=22.18
+          cache: npm
+          cache-dependency-path: admin/package-lock.json
+      - run: npm ci
+      - run: npm audit --audit-level=high
+      - run: npm run check
+      - run: npm run build
+
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest
@@ -278,10 +300,13 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: spa/package-lock.json
+          cache-dependency-path: |
+            spa/package-lock.json
+            admin/package-lock.json
       # The runner's own Postgres would collide with compose's port.
       - run: sudo systemctl stop postgresql || true
       - run: cd spa && npm ci && npx playwright install --with-deps chromium
+      - run: cd admin && npm ci
       - run: make e2e
       - if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -289,6 +314,7 @@ jobs:
           name: playwright-report
           path: |
             spa/playwright-report
+            admin/playwright-report
             /tmp/akari-e2e/*.log
           retention-days: 7
       - if: always()
@@ -330,7 +356,9 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: akari-panel/spa/package-lock.json
+          cache-dependency-path: |
+            akari-panel/spa/package-lock.json
+            akari-panel/admin/package-lock.json
       # The runner's own Postgres/Valkey would collide with compose's ports.
       - run: sudo systemctl stop postgresql || true
       # R22: the panel dials its main domain (install-link pin probe).

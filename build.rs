@@ -8,12 +8,14 @@ mod manifest_def;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // rust-embed requires the bundle folders to exist at compile time, but
-    // spa/dist is gitignored (build artifact). Drop in placeholders on fresh
-    // clones; `make spa` replaces them with the real bundles (R23: the user
-    // portal in spa/dist/app, the admin console in spa/dist/admin).
+    // spa/dist and admin/dist are gitignored (build artifacts). Drop in
+    // placeholders on fresh clones; `make spa admin` replaces them with the
+    // real bundles (R23 / W33-b: the user portal in spa/dist/app, the admin
+    // sign-in page in admin/dist/login, the console in admin/dist/console).
     for (dir, file) in [
         ("spa/dist/app", "index.html"),
-        ("spa/dist/admin", "admin.html"),
+        ("admin/dist/login", "login.html"),
+        ("admin/dist/console", "index.html"),
     ] {
         let dir = Path::new(dir);
         std::fs::create_dir_all(dir)?;
@@ -21,11 +23,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if !index.exists() {
             std::fs::write(
                 &index,
-                "<!doctype html><html><body>akari panel: frontend not built yet — run `make spa`.</body></html>",
+                format!(
+                    "<!doctype html><html><body>akari panel: {} not built yet — run `make spa admin`.</body></html>",
+                    dir.display()
+                ),
             )?;
         }
     }
     println!("cargo:rerun-if-changed=spa/dist");
+    println!("cargo:rerun-if-changed=admin/dist");
     emit_git_sha();
     println!("cargo:rerun-if-changed=proto/agent.proto");
 

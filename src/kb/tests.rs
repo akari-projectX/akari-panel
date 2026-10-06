@@ -89,8 +89,10 @@ fn text_rules() {
         body_en: Some("".into()),
         sort: 0,
         published: true,
+        slug: Some(" ".into()),
     };
     assert!(check_article(&a).unwrap().body_en.is_none());
+    assert_eq!(check_article(&a).unwrap().slug, None, "blank slug = none");
     let bad = ArticleReq {
         body_zh: " ".into(),
         ..a
@@ -358,5 +360,92 @@ async fn admin_crud_and_audit() {
             "kb.category.delete"
         ]
     );
+    db.drop().await;
+}
+
+/// W33-b: the slug — format, unique (409), cleared by "", in the list and
+/// the audit row.
+#[tokio::test]
+async fn article_slugs() {
+    assert_eq!(
+        clean_slug(Some(" terms ")).unwrap().as_deref(),
+        Some("terms")
+    );
+    for bad in ["Terms", "-x", "a_b", "a b", &"x".repeat(65)] {
+        assert_eq!(
+            clean_slug(Some(bad)).unwrap_err().code(),
+            "kb.slug_invalid",
+            "{bad}"
+        );
+    }
+    assert_eq!(clean_slug(None).unwrap(), None);
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let admin = client_for(&state, db.admin().await).await;
+    let terms = article(
+        &admin,
+        None,
+        "服务条款",
+        true,
+        json!({ "slug": LEGAL_SLUGS[0] }),
+    )
+    .await;
+    let r = admin
+        .post(
+            "/test/api/v1/kb/articles",
+            json!({ "title_zh": "x", "body_zh": "b", "slug": "terms" }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    assert_eq!(r.json()["code"], "kb.slug_taken");
+    let other = article(&admin, None, "其他", true, json!({})).await;
+    let r = admin
+        .req(
+            Method::PUT,
+            &format!("/test/api/v1/kb/articles/{other}"),
+            Some(json!({ "title_zh": "其他", "body_zh": "b", "slug": "terms" })),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "kb.slug_taken");
+    let r = admin
+        .post(
+            "/test/api/v1/kb/articles",
+            json!({ "title_zh": "x", "body_zh": "b", "slug": "Bad Slug" }),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "kb.slug_invalid");
+    let row = admin
+        .get(&format!("/test/api/v1/kb/articles/{terms}"))
+        .await
+        .json();
+    assert_eq!(row["slug"], "terms");
+    // "" clears it; the slug is then free for another article.
+    let r = admin
+        .req(
+            Method::PUT,
+            &format!("/test/api/v1/kb/articles/{terms}"),
+            Some(json!({ "title_zh": "服务条款", "body_zh": "服务条款 的 **正文**", "published": true, "slug": "" })),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    let r = admin
+        .req(
+            Method::PUT,
+            &format!("/test/api/v1/kb/articles/{other}"),
+            Some(json!({ "title_zh": "其他", "body_zh": "b", "slug": "terms" })),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    let after: Value = sqlx::query_scalar(
+        "SELECT after FROM audit_log WHERE target_id = $1 AND action = 'kb.article.update' \
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(other.to_string())
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(after["slug"], "terms");
     db.drop().await;
 }

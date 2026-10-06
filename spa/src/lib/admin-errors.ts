@@ -72,6 +72,8 @@ export const ADMIN_CODES: Record<string, string> = {
   "kb.name_multiline": "分类名称只能是一行",
   "kb.name_required": "请填写分类名称",
   "kb.sort_range": "排序值须在 ±{max} 之间",
+  "kb.slug_invalid": "固定地址只能用 1–{max} 个小写字母、数字或 -（不能以 - 开头）",
+  "kb.slug_taken": "另一篇文章已经使用这个固定地址",
   "mail_template.body_control": "正文不能含控制字符",
   "mail_template.body_length": "正文须为 1–{max} 个字符",
   "mail_template.kind_unknown": "未知的邮件种类：{kind}",

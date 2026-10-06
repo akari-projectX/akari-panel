@@ -3,8 +3,9 @@
 //! `make gen-protocols` (`AKARI_REGEN=1`) rewrites them.
 //!
 //! - docs/DEPLOY.md §3d: the support matrix (between the GENERATED markers);
-//! - spa/src/lib/admin-protocols.gen.ts: the schema the admin node form is
-//!   built from (`admin-protocol-form.ts`; admin bundle only).
+//! - spa/src/lib/admin-protocols.gen.ts (old console, removed with it in
+//!   W36-b) and admin/src/console/protocols.gen.ts: the schema the admin node
+//!   form is built from (admin bundles only).
 
 use std::collections::BTreeMap;
 
@@ -26,6 +27,11 @@ pub const ARTIFACTS: &[Artifact] = &[
     },
     Artifact {
         path: "spa/src/lib/admin-protocols.gen.ts",
+        marker: None,
+        render: spa_schema,
+    },
+    Artifact {
+        path: "admin/src/console/protocols.gen.ts",
         marker: None,
         render: spa_schema,
     },

@@ -2,7 +2,7 @@ AGENT_DIR ?= ../akari-agent
 
 FUZZ_SECS ?= 30
 
-.PHONY: shellcheck gen-protocols check-generated monitoring-check fuzz fuzz-lint coverage third-party bench-up bench-down dev-up dev-down spa panel agent-build check smoke e2e lint test deny ci bench bench-seed bench-lint
+.PHONY: shellcheck gen-protocols check-generated monitoring-check fuzz fuzz-lint coverage third-party bench-up bench-down dev-up dev-down spa admin panel agent-build check smoke e2e lint test deny ci bench bench-seed bench-lint
 
 dev-up:
 	docker compose up -d --wait
@@ -13,6 +13,10 @@ dev-down:
 spa:
 	cd spa && npm ci && npm run build
 
+# W33-b: the admin app (sign-in page + console), its own build (admin/dist).
+admin:
+	cd admin && npm ci && npm run build
+
 panel:
 	cargo build --release
 
@@ -22,6 +26,7 @@ agent-build:
 check: check-generated shellcheck
 	cargo fmt --check && cargo clippy -- -D warnings
 	cd spa && npx tsc --noEmit && npm run lint && node scripts/check-auth-paths.mjs && node scripts/check-error-codes.mjs && npx vitest run
+	cd admin && npm run check
 
 # Every shell script (installer, backup/restore, smoke, test drivers, the
 # node installer templates). smoke.sh predates the gate: warnings and
@@ -50,7 +55,7 @@ check-generated:
 # Playwright end-to-end against a real panel (release build, real CSP) on its
 # own database / Valkey index / data dir / port 8090 (does not touch smoke's).
 # Needs `make dev-up` and `npx playwright install chromium` once.
-e2e: dev-up spa panel
+e2e: dev-up spa admin panel
 	./scripts/e2e.sh
 
 # Smoke isolation (parallel checkouts): SMOKE_DB=<name> runs against its own
@@ -58,7 +63,7 @@ e2e: dev-up spa panel
 # "akari" = db index 0. Serialise runs on the shared ports (flock) and set
 # COMPOSE_PROJECT_NAME to the shared compose project.
 #   SMOKE_DB=akari_w4 COMPOSE_PROJECT_NAME=akari-panel make smoke   (AGENT_DIR=<agent checkout>)
-smoke: dev-up spa panel agent-build
+smoke: dev-up spa admin panel agent-build
 	AGENT_DIR=$(AGENT_DIR) ./smoke.sh
 
 # --- CI parity: .github/workflows/ci.yml runs exactly these ---------------
@@ -78,9 +83,10 @@ deny:
 ci: lint test deny check
 
 # Third-party licences of the binary (Rust crates linked + npm packages
-# bundled into the embedded SPA, with their licence texts), the notice that
-# ships with releases: target/THIRD_PARTY_LICENSES.txt. Needs `cargo fetch`
-# (crate sources) and, for npm licence texts, `npm ci` in spa/.
+# bundled into the embedded portal and admin app, with their licence texts),
+# the notice that ships with releases: target/THIRD_PARTY_LICENSES.txt. Needs
+# `cargo fetch` (crate sources) and, for npm licence texts, `npm ci` in spa/
+# and admin/.
 third-party:
 	cargo fetch --locked
 	python3 scripts/third-party.py
