@@ -163,8 +163,10 @@ echo "ok: server $SERVER_ID online"
 
 [ "$(code "$origin/$P/api/v1/users" -b "$work/jar" -X POST -H 'Content-Type: application/json' \
 	-d '{"email":"e2e-user@myapp.test","password":"user-password-123"}')" = 201 ] || fail "create user"
-SUB=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['sub_token'])" "$work/last")
-[ "$(code "$origin/$P/sub/$SUB" -A clash.meta)" = 200 ] || fail "subscription"
+# v0.4 D11: subscriptions live at /<sub path>/<token> (outside the admin
+# prefix); the path comes from the answer's sub_url.
+SUBP=$(python3 -c "import json,sys,urllib.parse; print(urllib.parse.urlsplit(json.load(open(sys.argv[1]))['sub_url']).path)" "$work/last")
+[ "$(code "$origin$SUBP" -A clash.meta)" = 200 ] || fail "subscription"
 cert_before=$(sha256sum "$work/agent-state/identity.pem" | cut -d' ' -f1)
 
 for to in docker bare; do
@@ -174,7 +176,7 @@ for to in docker bare; do
 	check_panel
 	[ "$(prefix)" = "$P" ] || fail "prefix changed by the move to $to"
 	server_online "$P" "$SERVER_ID" || fail "the agent did not reconnect after the move to $to"
-	[ "$(code "$origin/$P/sub/$SUB" -A clash.meta)" = 200 ] || fail "subscription after the move to $to"
+	[ "$(code "$origin$SUBP" -A clash.meta)" = 200 ] || fail "subscription after the move to $to"
 	[ "$(sha256sum "$work/agent-state/identity.pem" | cut -d' ' -f1)" = "$cert_before" ] ||
 		fail "the agent re-enrolled (identity changed)"
 	if [ "$to" = docker ]; then
