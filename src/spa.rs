@@ -10,6 +10,7 @@ use axum::response::{IntoResponse, Response};
 use rust_embed::RustEmbed;
 
 use crate::reject;
+use crate::state::AppState;
 
 // The compiled portal (spa/dist/app). build.rs drops a placeholder index
 // on fresh clones so `cargo build` works without a node toolchain; `make
@@ -20,11 +21,31 @@ struct UserAssets;
 
 /// The portal's pages at `/` (D11; `console::app_entry` hands them over).
 /// Client-side routes all land here.
-pub async fn index() -> Response {
+pub async fn index(state: &AppState) -> Response {
     let Some(file) = UserAssets::get("index.html") else {
         return reject::not_found();
     };
-    html_response(String::from_utf8_lossy(&file.data).into_owned(), "no-store")
+    let html = String::from_utf8_lossy(&file.data).into_owned();
+    let mut res = html_response(html, "no-store");
+    if turnstile_on(state).await {
+        res.headers_mut().insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(crate::web::CSP_TURNSTILE),
+        );
+    }
+    res
+}
+
+/// Whether the portal page must allow Turnstile (settings read per request,
+/// like the forms do). Unreadable settings keep the strict policy: the forms
+/// refuse every submission then anyway.
+async fn turnstile_on(state: &AppState) -> bool {
+    let Ok(mut c) = state.pg().acquire().await else {
+        return false;
+    };
+    crate::botguard::load(&mut c)
+        .await
+        .is_ok_and(|s| s.turnstile_on())
 }
 
 /// User portal build assets: fingerprinted, cacheable forever, keyed on the

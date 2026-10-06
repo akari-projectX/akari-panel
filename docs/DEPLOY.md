@@ -344,6 +344,9 @@ is the same empty 404 as any unknown path, so bookmark `/app`, not `/admin`). Us
 ### 后台前缀、IP 白名单与订阅路径（D4/D11，中文）
 
 - **门户**在主域名根路径 `/`（用户登录、注册、购买、订阅等）；门户的页面、接口与回答里**永远不出现后台地址**，登录后也不会跳到后台。
+  门户的页面：`/`、`/shop`、`/orders`、`/wallet`、`/invite`、`/nodes`、`/traffic`、`/tickets`、`/help`、`/announcements`、`/account`、
+  `/login`、`/register`、`/forgot`、`/reset`、`/terms`、`/privacy`（其他顶层路径都是空 404）。**服务条款与隐私政策**取自知识库里
+  slug 为 `terms`、`privacy` 的已发布文章（没写时显示一段中性说明）；也可以在 **系统设置 → 站点** 的品牌设置里填外链，页脚直接指向外链。
 - **后台前缀**是全站唯一的秘密前缀：后台 `/<前缀>/admin`、管理员登录页 `/<前缀>/app` 与全部管理接口都在它下面。安装时随机生成（`data/state.json`），
   第一次启动后保存在数据库里。**系统设置 → 访问**（只有所有者可改）：更换前缀（可随机或自定义，二次确认，写入审计但不记录前缀本身；
   所有面板实例立即生效，旧前缀立即变成空 404）、**IP 白名单**（地址或 CIDR，最多 64 条；名单外的地址访问前缀下的任何路径都是空 404；
@@ -463,6 +466,11 @@ Everything here is off until you turn it on; nothing in panel.toml.
      with `data/master.key`), verified server side; when switched on it **fails closed** (no or a
      rejected token = 400, Cloudflare unreachable = 503). Locked out by a wrong key:
      `akari settings unset turnstile` switches it off on every form (audited, keys kept).
+     Content-Security-Policy: while Turnstile protects at least one form, the **portal pages**
+     (and only those: never the API, assets or the console) are served with
+     `script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com`
+     added to the usual `default-src 'self'`, so the widget can load. With it off nothing outside
+     the panel's own origin is allowed.
 7. **Passkeys (W27)** need the main domain (§2b) as an https DNS name: passkeys belong to that
    name (RP ID). Policies (`PUT /api/v1/settings/auth`): 管理员仅通行密钥 / 用户仅通行密钥 (an
    account with a passkey must use it; accounts without one keep their password until they add

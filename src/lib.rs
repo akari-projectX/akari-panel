@@ -86,4 +86,6 @@ mod w21_tests;
 mod w26_golden_tests;
 #[cfg(test)]
 mod w28c_tests;
+#[cfg(test)]
+mod w36_tests;
 pub mod web;

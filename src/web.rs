@@ -438,6 +438,18 @@ async fn prefix_gate(req: Request, next: Next) -> Response {
     next.run(req).await
 }
 
+/// The Content-Security-Policy of every accepted response: same-origin
+/// only (inline styles for React's `style` props).
+pub const CSP: &str = "default-src 'self'; style-src 'self' 'unsafe-inline'";
+
+/// W36-b: the portal page's policy while Cloudflare Turnstile is on (the
+/// login/register/reset forms load its script, which renders in an
+/// iframe): `CSP` plus exactly that origin for scripts and frames. Set by
+/// `spa::index` and `console::app_entry` (the sign-in page) only; never on
+/// the console, the API or assets.
+pub const CSP_TURNSTILE: &str = "default-src 'self'; style-src 'self' 'unsafe-inline'; \
+     script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com";
+
 /// Security headers for real (prefixed, accepted) responses only. They are
 /// deliberately absent from rejections: that header combination on a 404
 /// would fingerprint the panel.
@@ -459,10 +471,7 @@ async fn security_headers(req: Request, next: Next) -> Response {
         (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         (header::X_FRAME_OPTIONS, "DENY"),
         (header::REFERRER_POLICY, "no-referrer"),
-        (
-            header::CONTENT_SECURITY_POLICY,
-            "default-src 'self'; style-src 'self' 'unsafe-inline'",
-        ),
+        (header::CONTENT_SECURITY_POLICY, CSP),
     ] {
         h.entry(name).or_insert(HeaderValue::from_static(value));
     }
