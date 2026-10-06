@@ -2396,16 +2396,30 @@ done
   || { echo "FAIL: commission not credited"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$IJAR" "$BASE/api/v1/me/invite")" = "200" ] && [ "$(last_json "d['invited_count']")/$(last_json "d['credited_cents']")" = "1/80" ] \
   || { echo "FAIL: /me/invite"; cat /tmp/akari-smoke/last; exit 1; }
-# Withdrawal: over the withdrawable amount refused; 60 held, approved by hand.
-[ "$(api_json "$IJAR" POST "$BASE/api/v1/me/withdrawals" '{"amount_cents":100,"method":"alipay","account":"inviter@example"}')" = "409" ] \
+# Withdrawal (R46: USDT only): over the withdrawable amount refused; a bad
+# address or a disabled chain refused; 60 held, approved by hand with the
+# USDT sent and the transaction hash.
+[ "$(api_json "$IJAR" POST "$BASE/api/v1/me/withdrawals" '{"amount_cents":100,"chain":"trc20","address":"TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}')" = "409" ] \
   || { echo "FAIL: withdrawal over the withdrawable amount"; exit 1; }
-[ "$(api_json "$IJAR" POST "$BASE/api/v1/me/withdrawals" '{"amount_cents":60,"method":"alipay","account":"inviter@example"}')" = "201" ] \
+[ "$(api_json "$IJAR" POST "$BASE/api/v1/me/withdrawals" '{"amount_cents":60,"chain":"trc20","address":"TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6u"}')" = "400" ] \
+  && [ "$(last_json "d['code']")" = "withdrawal.address_invalid" ] \
+  || { echo "FAIL: a bad TRC20 address was accepted"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(api_json "$IJAR" POST "$BASE/api/v1/me/withdrawals" '{"amount_cents":60,"chain":"bitcoin","address":"x"}')" = "400" ] \
+  && [ "$(last_json "d['code']")" = "withdrawal.chain_invalid" ] \
+  || { echo "FAIL: an unknown chain was accepted"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(api_json "$IJAR" POST "$BASE/api/v1/me/withdrawals" '{"amount_cents":60,"chain":"trc20","address":"TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}')" = "201" ] \
   || { echo "FAIL: withdrawal request"; cat /tmp/akari-smoke/last; exit 1; }
 WD=$(last_json "d['id']")
 [ "$(psql_q "SELECT balance_cents FROM user_balances WHERE user_id='$INVITER'")" = "20" ] || { echo "FAIL: withdrawal not held"; exit 1; }
-[ "$(api_json "$JAR" POST "$BASE/api/v1/withdrawals/$WD/approve" '{"payout_reference":"smoke-payout-1"}')" = "204" ] \
+[ "$(api_json "$JAR" POST "$BASE/api/v1/withdrawals/$WD/approve" '{"usdt_amount":"8.1","txid":"short"}')" = "400" ] \
+  || { echo "FAIL: approval without a transaction hash"; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/withdrawals/$WD/approve" '{"usdt_amount":"0.08","txid":"4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f"}')" = "204" ] \
   || { echo "FAIL: approve withdrawal"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(api_json "$JAR" POST "$BASE/api/v1/withdrawals/$WD/approve" '{"payout_reference":"again"}')" = "409" ] \
+[ "$(psql_q "SELECT chain || '/' || address || '/' || usdt_micros || '/' || txid FROM withdrawals WHERE id='$WD'")" = "trc20/TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t/80000/4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f" ] \
+  || { echo "FAIL: the USDT payout was not recorded"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='withdrawal.approved' AND after->>'txid'='4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f' AND (after->>'usdt_micros')::bigint = 80000")" = "1" ] \
+  || { echo "FAIL: the USDT payout was not audited"; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/withdrawals/$WD/approve" '{"usdt_amount":"1","txid":"4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f4b0f"}')" = "409" ] \
   || { echo "FAIL: withdrawal approved twice"; exit 1; }
 # Balance: fully paid order (no Alipay), then a partial one cancelled (refund to balance).
 [ "$(api_json "$JAR" POST "$BASE/api/v1/users/$W16U/balance" '{"amount_cents":1300,"reason":"smoke top-up"}')" = "200" ] \

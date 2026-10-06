@@ -335,12 +335,27 @@ Settings (资金 → 邀请返利设置, `PUT /commission-settings`, audited
 Withdrawable = min(balance, credited commissions − clawed-back commissions
 (中-4) − withdrawals not rejected or cancelled): refunds and admin credits are
 spendable on plans, not cash.
-A request (`POST /me/withdrawals {amount_cents, method, account}`, at least
+A request (`POST /me/withdrawals {amount_cents, chain, address, memo?}`, at least
 `min_withdrawal_cents`, one open request per user) debits the amount at once
-(ledger `withdrawal`). The admin pays out by hand (Alipay/WeChat/bank) and
-then approves with the payout reference (资金 → 提现审核), or rejects with a
-reason (ledger `withdrawal_reversal`); the user may cancel while pending.
-Withdrawals of a deleted user can only be approved.
+(ledger `withdrawal`); the admin approves or rejects with a reason (ledger
+`withdrawal_reversal`); the user may cancel while pending. Withdrawals of a
+deleted user can only be approved.
+
+**只付 USDT（PR ③ R46，迁移 1019，`billing/usdt.rs`）**：提现只能以 USDT 支付，其他收款方式（支付宝/微信/银行卡）已移除。
+
+- 用户在门户「钱包 → 申请提现」选择网络并填写收款地址；可选网络由后台「资金 → 邀请返利设置 → 提现网络」决定
+  （`commission_settings.usdt_chains`，默认全部开启）：TRC20（Tron）、Plasma、Polygon、Arbitrum One、Solana、
+  X Layer、TON。地址按网络校验后才保存（填错直接拒绝 `withdrawal.address_invalid`，不会把钱打到不存在的地址）：
+  TRC20 = Base58Check（`T` 开头 34 位，校验和）；Plasma、Polygon、Arbitrum One、X Layer = EVM 地址（`0x` + 40 位十六进制，
+  大小写混合时校验 EIP-55）；Solana = 32 字节公钥的 Base58；TON = 用户友好格式（48 位，含 CRC，拒绝仅测试网地址）
+  或原始格式 `0:<64 位十六进制>`，可选 Memo（交易所充值备注；只有 TON 可填）。
+- 申请记录网络、地址、Memo 与扣除的人民币金额（`amount_cents`）。**收款地址只对用户本人与管理员可见。**
+- 管理员在「资金 → 提现审核」核对网络与地址，在交易所（如 OKX）人工打款后，填写**实付 USDT 数量**（最多 6 位小数）
+  与**交易哈希（txid）**通过（`POST /withdrawals/{id}/approve {usdt_amount, txid, note?}`），二者写入提现记录与审计
+  `withdrawal.approved`（`usdt_micros`、`txid`）。拒绝照旧退回余额。
+- 可选**参考汇率**（`usdt_rate_cents`，每 1 USDT 多少分人民币）只用于显示：门户与后台显示「约 N USDT」，
+  实际打款数量由管理员按当时行情决定并如实记录。
+- 迁移 1019 遇到已有提现记录的 v0.4 开发库会拒绝执行（自由文本收款账号无法可靠转换），需重建开发库。
 
 ### Refunds (admin) / 退款（管理员）
 

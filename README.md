@@ -381,8 +381,8 @@ same paths at `/` (admin sessions and admin sign-ins do not exist there).
 | GET | /api/v1/me/shop | user (renewal scope*) | plans on sale with every priced period as the caller would buy it now (`action` new/renew/switch/reset, `discount_cents`, `credit_cents`, `balance_cents`, `amount_cents`, or `refusal`), description, stock; the caller's subscription, switch credit and balance. W16: `?coupon=CODE` (rate-limited) prices with a coupon (`coupon.refusal` / per-offer `coupon_refusal`), `?use_balance=true` with the balance |
 | GET/POST | /api/v1/me/orders | user (renewal scope*) | own orders (last 50) / create `{plan_id, period, coupon?, use_balance?}` → order + Alipay QR (the amount is the server's price minus coupon, switch credit and balance, computed in SQL; fully covered orders are paid at once) |
 | GET | /api/v1/me/balance | user (renewal scope*) | W16: balance, withdrawable amount, ledger (`?before&limit`) |
-| GET | /api/v1/me/invite | user | W16: invite programme terms, invited count, commission totals and history (invite codes: W15) |
-| GET/POST | /api/v1/me/withdrawals | user | W16: own withdrawals / request `{amount_cents, method, account}` (debited at once; ≤ withdrawable) |
+| GET | /api/v1/me/invite | user | W16: invite programme terms, invited count, commission totals and history (invite codes: W15; R46: `usdt_chains` `[{id, name}]`, `usdt_rate_cents`) |
+| GET/POST | /api/v1/me/withdrawals | user | W16: own withdrawals / request `{amount_cents, chain, address, memo?}` (R46: USDT only; chain among the enabled ones, address checked per chain, memo TON only; debited at once; ≤ withdrawable) |
 | POST | /api/v1/me/withdrawals/{id}/cancel | user | W16: cancel a pending withdrawal (amount back to the balance) |
 | GET | /api/v1/me/orders/{id} | user (renewal scope*) | order status; a pending order is actively queried at Alipay (throttled) |
 | POST | /api/v1/me/orders/{id}/cancel | user (renewal scope*) | cancel a pending order (queried + closed at Alipay first) |
@@ -408,9 +408,9 @@ same paths at `/` (admin sessions and admin sign-ins do not exist there).
 | GET | /api/v1/balances | admin | W16: customers with a balance (`{user_id, email, …}`), `?email` finds anyone |
 | GET/POST | /api/v1/users/{id}/balance | admin | W16: balance + ledger / adjust `{amount_cents (signed), reason}` (never below 0) |
 | GET | /api/v1/commissions | admin | W16: commissions `?status&email&limit` (`email` = the inviter's); rows: `inviter_label`/`inviter_email`, `invitee_label`/`invitee_email` |
-| GET/PUT | /api/v1/commission-settings | admin | W16: `{enabled, rate_percent, first_order_only, hold_days, min_withdrawal_cents}` |
+| GET/PUT | /api/v1/commission-settings | admin | W16: `{enabled, rate_percent, first_order_only, hold_days, min_withdrawal_cents, usdt_chains?, usdt_rate_cents?}` (R46: the USDT chains offered, default all; reference rate in fen per USDT, display only) |
 | GET | /api/v1/withdrawals | admin | W16: withdrawal requests `?status&email&limit`; rows: `user_label`, `user_email` |
-| POST | /api/v1/withdrawals/{id}/approve \| reject | admin | W16: `{payout_reference, note?}` after paying out by hand / `{reason}` (amount back to the balance) |
+| POST | /api/v1/withdrawals/{id}/approve \| reject | admin | W16: `{usdt_amount, txid, note?}` after paying out in USDT by hand (R46, audited) / `{reason}` (amount back to the balance) |
 | GET/POST | /api/v1/me/tickets | user (portal scope*) | W17: own tickets (unread markers) / open `{subject, category, priority?, message, order_id?, node_id?}` (5/hour, at most 5 not closed) |
 | GET | /api/v1/me/tickets/{id} | user (portal scope*) | W17: own ticket + messages (staff shown as staff, never by name); marks replies read. Anyone else's / unknown / malformed id = the canonical rejection |
 | POST | /api/v1/me/tickets/{id}/replies \| close | user (portal scope*) | W17: `{message}` (30/hour; 409 when closed) / close |

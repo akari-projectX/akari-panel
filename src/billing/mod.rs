@@ -45,6 +45,7 @@ pub mod methods;
 pub mod orders;
 pub mod provider;
 pub mod refund;
+pub mod usdt;
 
 #[cfg(test)]
 mod tests;

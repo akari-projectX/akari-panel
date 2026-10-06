@@ -245,8 +245,8 @@ async fn aggregates_every_source() {
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO withdrawals (id, user_id, user_label, amount_cents, method, account) \
-         VALUES ($1, $2, 'u', 100, 'alipay', 'a')",
+        "INSERT INTO withdrawals (id, user_id, user_label, amount_cents, chain, address) \
+         VALUES ($1, $2, 'u', 100, 'trc20', 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t')",
     )
     .bind(Uuid::new_v4())
     .bind(u)

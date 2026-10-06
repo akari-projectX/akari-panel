@@ -156,6 +156,8 @@ finance.adjust_range
 finance.hold_days_range
 finance.min_withdrawal_range
 finance.rate_percent_range
+finance.usdt_chain_unknown
+finance.usdt_rate_range
 finance.withdrawal_user_gone
 group.description_long
 group.name_exists
@@ -452,9 +454,14 @@ user_plan.term_days_missing
 user_plan.term_days_range
 user_plan.term_days_unexpected
 user_plan.term_reset
-withdrawal.account_length
+withdrawal.address_invalid
 withdrawal.amount_range
 withdrawal.below_minimum
+withdrawal.chain_invalid
 withdrawal.exceeds
+withdrawal.memo_invalid
+withdrawal.memo_unexpected
 withdrawal.not_pending
 withdrawal.open
+withdrawal.txid_invalid
+withdrawal.usdt_amount_invalid

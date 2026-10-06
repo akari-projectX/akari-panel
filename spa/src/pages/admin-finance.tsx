@@ -1,5 +1,5 @@
-// W16 后台（仅中文）：资金。邀请返利设置、提现审核（人工打款后填写打款凭证
-// 通过，或填写原因拒绝——金额退回余额）、返利记录、用户余额与余额明细、
+// W16 后台（仅中文）：资金。邀请返利设置、提现审核（R46：只付 USDT——在交易所
+// 人工打款后填写实付 USDT 与交易哈希通过，或填写原因拒绝——金额退回余额）、返利记录、用户余额与余额明细、
 // 人工调整余额（必须填写原因，写审计）。所有金额为整数分，界面换算为元。
 import { useAdminConfirm as useConfirm } from "../admin-confirm";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -18,7 +18,10 @@ import {
   type UserBalance,
   type Withdrawal,
   type WithdrawalStatus,
-  type WithdrawMethod,
+  type UsdtChain,
+  USDT_CHAINS,
+  chainName,
+  usdtEstimate,
 } from "../lib/billing";
 import { adminErrorText } from "../lib/admin-errors";
 import { fmtDateTime } from "../lib/datetime";
@@ -48,7 +51,6 @@ const W_STATUS_ZH: Record<WithdrawalStatus, string> = {
   cancelled: "用户撤销",
 };
 const C_STATUS_ZH: Record<CommissionStatus, string> = { pending: "冻结中", credited: "已入账", reversed: "已撤销" };
-const METHOD_ZH: Record<WithdrawMethod, string> = { alipay: "支付宝", wechat: "微信", bank: "银行卡", other: "其他" };
 
 export function AdminFinance() {
   return (
@@ -67,7 +69,15 @@ function SettingsCard() {
     queryKey: ["commission-settings"],
     queryFn: () => get<CommissionSettings>("/commission-settings"),
   });
-  const [form, setForm] = useState({ enabled: false, rate: "", hold: "", min: "", first: true });
+  const [form, setForm] = useState({
+    enabled: false,
+    rate: "",
+    hold: "",
+    min: "",
+    first: true,
+    chains: [] as UsdtChain[],
+    usdtRate: "",
+  });
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   useEffect(() => {
@@ -79,6 +89,8 @@ function SettingsCard() {
         hold: String(s.hold_days),
         min: yuan(s.min_withdrawal_cents),
         first: s.first_order_only,
+        chains: s.usdt_chains,
+        usdtRate: s.usdt_rate_cents == null ? "" : yuan(s.usdt_rate_cents),
       });
   }, [settings.data]);
 
@@ -91,6 +103,8 @@ function SettingsCard() {
     if (!(rate >= 0 && rate <= 100)) return setError("返利比例须为 0–100 的整数");
     if (!(hold >= 0 && hold <= 365)) return setError("冻结天数须为 0–365 的整数");
     if (min == null) return setError("最低提现金额无效（元，最多两位小数）");
+    const usdtRate = form.usdtRate.trim() ? parseYuan(form.usdtRate) : null;
+    if (form.usdtRate.trim() && !usdtRate) return setError("参考汇率无效（每 1 USDT 多少元，最多两位小数）");
     setError(null);
     try {
       await put("/commission-settings", {
@@ -99,6 +113,8 @@ function SettingsCard() {
         first_order_only: form.first,
         hold_days: hold,
         min_withdrawal_cents: min,
+        usdt_chains: form.chains,
+        usdt_rate_cents: usdtRate,
       });
       setSaved(true);
       await queryClient.invalidateQueries({ queryKey: ["commission-settings"] });
@@ -163,6 +179,33 @@ function SettingsCard() {
             />
             仅首单返利
           </label>
+          <fieldset className="flex flex-wrap items-center gap-3 text-sm">
+            <legend className="mb-1 text-sm">提现网络（USDT）</legend>
+            {USDT_CHAINS.map((c) => (
+              <label key={c.id} className="flex items-center gap-1">
+                <input
+                  type="checkbox"
+                  checked={form.chains.includes(c.id)}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      chains: e.target.checked ? [...form.chains, c.id] : form.chains.filter((x) => x !== c.id),
+                    })
+                  }
+                />
+                {c.name}
+              </label>
+            ))}
+          </fieldset>
+          <div className="space-y-1">
+            <Label htmlFor="s-usdt-rate">参考汇率（元/USDT，可空）</Label>
+            <Input
+              id="s-usdt-rate"
+              className="w-28"
+              value={form.usdtRate}
+              onChange={(e) => setForm({ ...form, usdtRate: e.target.value })}
+            />
+          </div>
           <Button type="submit" size="sm">
             保存设置
           </Button>
@@ -191,19 +234,27 @@ function WithdrawalsCard() {
     queryFn: () => get<Withdrawal[]>(status ? `/withdrawals?status=${status}` : "/withdrawals"),
     refetchInterval: 15_000,
   });
+  const settings = useQuery({
+    queryKey: ["commission-settings"],
+    queryFn: () => get<CommissionSettings>("/commission-settings"),
+  });
+  const rate = settings.data?.usdt_rate_cents ?? null;
   const [ref, setRef] = useState<Record<string, string>>({});
+  const [usdt, setUsdt] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
 
   async function decide(w: Withdrawal, approve: boolean) {
     setError(null);
     const text = (ref[w.id] ?? "").trim();
-    if (!text) return setError(approve ? "请先填写打款凭证（交易号等）" : "请先填写拒绝原因");
+    const sent = (usdt[w.id] ?? "").trim();
+    if (approve && !sent) return setError("请先填写实付 USDT 数量");
+    if (!text) return setError(approve ? "请先填写交易哈希（txid）" : "请先填写拒绝原因");
     const what = approve
-      ? `确认已向 ${w.user_email ?? w.user_label} 打款 ¥${yuan(w.amount_cents)}？`
+      ? `确认已在 ${chainName(w.chain)} 上向 ${w.address} 支付 ${sent} USDT（申请 ¥${yuan(w.amount_cents)}）？`
       : `拒绝并退回 ¥${yuan(w.amount_cents)} 到余额？`;
     if (!(await confirm({ title: what, confirmLabel: approve ? "确认已打款" : "拒绝", destructive: !approve }))) return;
     try {
-      if (approve) await post(`/withdrawals/${w.id}/approve`, { payout_reference: text });
+      if (approve) await post(`/withdrawals/${w.id}/approve`, { usdt_amount: sent, txid: text });
       else await post(`/withdrawals/${w.id}/reject`, { reason: text });
       setRef({ ...ref, [w.id]: "" });
       await Promise.all([
@@ -223,7 +274,8 @@ function WithdrawalsCard() {
           <h1>提现审核</h1>
         </CardTitle>
         <CardDescription>
-          用户申请时金额已从余额扣出。请先在支付宝/微信/银行人工打款，再填写打款凭证通过；拒绝会把金额退回用户余额。
+          用户申请时金额（人民币）已从余额扣出。提现只付 USDT：请核对网络与地址，在交易所（如 OKX）人工打款后，填写实付
+          USDT 数量与交易哈希通过（写入审计）；拒绝会把金额退回用户余额。收款地址只对用户本人与管理员可见。
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -254,7 +306,7 @@ function WithdrawalsCard() {
                 <TableHead>申请时间</TableHead>
                 <TableHead>用户</TableHead>
                 <TableHead>金额</TableHead>
-                <TableHead>收款方式与账号</TableHead>
+                <TableHead>网络与地址</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>凭证 / 原因</TableHead>
               </TableRow>
@@ -264,9 +316,18 @@ function WithdrawalsCard() {
                 <TableRow key={w.id}>
                   <TableCell>{fmt(w.created_at)}</TableCell>
                   <TableCell>{w.user_email ?? w.user_label}</TableCell>
-                  <TableCell>¥{yuan(w.amount_cents)}</TableCell>
+                  <TableCell>
+                    ¥{yuan(w.amount_cents)}
+                    {usdtEstimate(w.amount_cents, rate) && (
+                      <span className="block text-xs text-muted-foreground">
+                        参考 ≈ {usdtEstimate(w.amount_cents, rate)} USDT
+                      </span>
+                    )}
+                  </TableCell>
                   <TableCell className="text-xs">
-                    {METHOD_ZH[w.method]}：{w.account}
+                    {chainName(w.chain)}
+                    <span className="block break-all font-mono">{w.address}</span>
+                    {w.memo && <span className="block">Memo：{w.memo}</span>}
                   </TableCell>
                   <TableCell>
                     <Badge variant={w.status === "approved" ? "default" : "secondary"}>{W_STATUS_ZH[w.status]}</Badge>
@@ -275,8 +336,17 @@ function WithdrawalsCard() {
                     {w.status === "pending" ? (
                       <div className="flex flex-wrap items-center gap-1">
                         <Input
-                          aria-label={`提现 ${w.user_email ?? w.user_label} 的打款凭证或拒绝原因`}
-                          className="w-48"
+                          aria-label={`提现 ${w.user_email ?? w.user_label} 的实付 USDT`}
+                          placeholder="实付 USDT"
+                          inputMode="decimal"
+                          className="w-28"
+                          value={usdt[w.id] ?? ""}
+                          onChange={(e) => setUsdt({ ...usdt, [w.id]: e.target.value })}
+                        />
+                        <Input
+                          aria-label={`提现 ${w.user_email ?? w.user_label} 的交易哈希或拒绝原因`}
+                          placeholder="交易哈希 / 拒绝原因"
+                          className="w-56"
                           value={ref[w.id] ?? ""}
                           onChange={(e) => setRef({ ...ref, [w.id]: e.target.value })}
                         />
@@ -289,7 +359,7 @@ function WithdrawalsCard() {
                       </div>
                     ) : (
                       <span className="text-xs">
-                        {w.payout_reference ?? w.note ?? "—"}
+                        {w.txid ? `${w.usdt_amount} USDT · ${w.txid}` : (w.note ?? "—")}
                         {w.decided_by && `（${w.decided_by}，${fmt(w.decided_at)}）`}
                       </span>
                     )}

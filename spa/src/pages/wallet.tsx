@@ -19,7 +19,8 @@ import {
   type MyInvite,
   type Withdrawal,
   type WithdrawalStatus,
-  type WithdrawMethod,
+  chainName,
+  usdtEstimate,
 } from "../lib/billing";
 import { errorText } from "../lib/errors";
 import { Badge } from "../components/ui/badge";
@@ -47,13 +48,6 @@ const W_STATUS_KEY = {
   rejected: "wallet.statusRejected",
   cancelled: "wallet.statusCancelled",
 } as const satisfies Record<WithdrawalStatus, MessageKey>;
-
-const METHOD_KEY = {
-  alipay: "wallet.methodAlipay",
-  wechat: "wallet.methodWechat",
-  bank: "wallet.methodBank",
-  other: "wallet.methodOther",
-} as const satisfies Record<WithdrawMethod, MessageKey>;
 
 const C_STATUS_KEY = {
   pending: "invite.statusPending",
@@ -144,12 +138,18 @@ function Withdrawals({ withdrawable }: { withdrawable: number }) {
   const invite = useQuery({ queryKey: ["my-invite"], queryFn: () => get<MyInvite>("/me/invite") });
   const list = useQuery({ queryKey: ["my-withdrawals"], queryFn: () => get<Withdrawal[]>("/me/withdrawals") });
   const [amount, setAmount] = useState("");
-  const [method, setMethod] = useState<WithdrawMethod>("alipay");
-  const [account, setAccount] = useState("");
+  const [chosen, setChain] = useState("");
+  const [address, setAddress] = useState("");
+  const [memo, setMemo] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const [confirm, confirmDialog] = useConfirm();
   const min = invite.data?.min_withdrawal_cents ?? 0;
+  const chains = invite.data?.usdt_chains ?? [];
+  const rate = invite.data?.usdt_rate_cents ?? null;
+  const chain = chains.some((c) => c.id === chosen) ? chosen : (chains[0]?.id ?? "");
+  const cents = parseYuan(amount);
+  const estimate = cents == null ? null : usdtEstimate(cents, rate);
   const rows = list.data ?? [];
   const open = rows.some((w) => w.status === "pending");
   // Audit Minor 2: the form stays visible but disabled, with the reason.
@@ -170,11 +170,15 @@ function Withdrawals({ withdrawable }: { withdrawable: number }) {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setDone(false);
-    const cents = parseYuan(amount);
     if (cents == null) return setError(t("wallet.badAmount"));
     setError(null);
     try {
-      await post("/me/withdrawals", { amount_cents: cents, method, account: account.trim() });
+      await post("/me/withdrawals", {
+        amount_cents: cents,
+        chain,
+        address: address.trim(),
+        ...(chain === "ton" && memo.trim() ? { memo: memo.trim() } : {}),
+      });
       setAmount("");
       setDone(true);
       await refresh();
@@ -227,35 +231,50 @@ function Withdrawals({ withdrawable }: { withdrawable: number }) {
             />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="w-method">{t("wallet.methodLabel")}</Label>
+            <Label htmlFor="w-chain">{t("wallet.chainLabel")}</Label>
             <select
-              id="w-method"
+              id="w-chain"
               className="h-9 rounded-lg border border-border bg-background px-2 text-sm"
-              value={method}
-              onChange={(e) => setMethod(e.target.value as WithdrawMethod)}
+              value={chain}
+              onChange={(e) => setChain(e.target.value)}
             >
-              {(Object.keys(METHOD_KEY) as WithdrawMethod[]).map((m) => (
-                <option key={m} value={m}>
-                  {t(METHOD_KEY[m])}
+              {chains.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
                 </option>
               ))}
             </select>
           </div>
           <div className="space-y-1">
-            <Label htmlFor="w-account">{t("wallet.accountLabel")}</Label>
+            <Label htmlFor="w-address">{t("wallet.addressLabel")}</Label>
             <Input
-              id="w-account"
-              className="w-64"
-              maxLength={200}
-              value={account}
-              onChange={(e) => setAccount(e.target.value)}
+              id="w-address"
+              className="w-80 font-mono"
+              maxLength={128}
+              autoComplete="off"
+              spellCheck={false}
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
             />
           </div>
-          <Button type="submit" disabled={blocked != null || !amount || !account.trim()}>
+          {chain === "ton" && (
+            <div className="space-y-1">
+              <Label htmlFor="w-memo">{t("wallet.memoLabel")}</Label>
+              <Input
+                id="w-memo"
+                className="w-40"
+                maxLength={120}
+                value={memo}
+                onChange={(e) => setMemo(e.target.value)}
+              />
+            </div>
+          )}
+          <Button type="submit" disabled={blocked != null || !amount || !chain || !address.trim()}>
             {t("wallet.submit")}
           </Button>
         </fieldset>
       </form>
+      {estimate && <p className="text-xs text-muted-foreground">{t("wallet.usdtEstimate", { usdt: estimate })}</p>}
       {done && (
         <p role="status" className="text-sm text-muted-foreground">
           {t("wallet.submitted")}
@@ -277,14 +296,17 @@ function Withdrawals({ withdrawable }: { withdrawable: number }) {
                   <TableRow key={w.id}>
                     <TableCell>{fmt(w.created_at)}</TableCell>
                     <TableCell className="tabular-nums">{money(w.amount_cents)}</TableCell>
-                    <TableCell>{t(METHOD_KEY[w.method])}</TableCell>
+                    <TableCell className="text-xs">
+                      {chainName(w.chain)}
+                      <span className="block break-all font-mono">{w.address}</span>
+                    </TableCell>
                     <TableCell>
                       <Badge variant={w.status === "approved" ? "default" : "secondary"}>
                         {t(W_STATUS_KEY[w.status])}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
-                      {w.payout_reference ? t("wallet.reference", { ref: w.payout_reference }) : (w.note ?? "")}
+                      {w.txid ? t("wallet.paid", { usdt: w.usdt_amount ?? "", txid: w.txid }) : (w.note ?? "")}
                     </TableCell>
                     <TableCell>
                       {w.status === "pending" && (

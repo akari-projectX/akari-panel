@@ -392,6 +392,9 @@ export interface MyInvite {
   first_order_only: boolean;
   hold_days: number;
   min_withdrawal_cents: number;
+  // R46: the chains withdrawals can go to; reference rate (CNY fen per USDT).
+  usdt_chains: { id: UsdtChain; name: string }[];
+  usdt_rate_cents: number | null;
   // W15: the account's invite codes (managed via /me/invite-codes).
   invite_codes: string[] | null;
   invited_count: number;
@@ -431,9 +434,24 @@ export interface CommissionSettings {
   first_order_only: boolean;
   hold_days: number;
   min_withdrawal_cents: number;
+  usdt_chains: UsdtChain[];
+  usdt_rate_cents: number | null;
 }
 
-export type WithdrawMethod = "alipay" | "wechat" | "bank" | "other";
+// R46: commission withdrawals are paid in USDT on one of these chains.
+export type UsdtChain = "trc20" | "plasma" | "polygon" | "arbitrum" | "solana" | "xlayer" | "ton";
+export const USDT_CHAINS: { id: UsdtChain; name: string }[] = [
+  { id: "trc20", name: "TRC20 (Tron)" },
+  { id: "plasma", name: "Plasma" },
+  { id: "polygon", name: "Polygon" },
+  { id: "arbitrum", name: "Arbitrum One" },
+  { id: "solana", name: "Solana" },
+  { id: "xlayer", name: "X Layer" },
+  { id: "ton", name: "TON" },
+];
+export const chainName = (c: string) => USDT_CHAINS.find((x) => x.id === c)?.name ?? c;
+// Reference USDT for a CNY amount (display only), 2 decimals.
+export const usdtEstimate = (cents: number, rate: number | null) => (rate ? (cents / rate).toFixed(2) : null);
 export type WithdrawalStatus = "pending" | "approved" | "rejected" | "cancelled";
 
 export interface Withdrawal {
@@ -444,10 +462,14 @@ export interface Withdrawal {
   user_label: string;
   user_email: string | null;
   amount_cents: number;
-  method: WithdrawMethod;
-  account: string;
+  chain: UsdtChain;
+  // Visible only to the requester and admins.
+  address: string;
+  memo: string | null;
   status: WithdrawalStatus;
-  payout_reference: string | null;
+  // The USDT sent (decimal text, 6 places) and the transaction hash.
+  usdt_amount: string | null;
+  txid: string | null;
   note: string | null;
   decided_at: string | null;
   decided_by: string | null;

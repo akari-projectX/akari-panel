@@ -79,6 +79,8 @@ async fn set_commission(db: &TestDb, enabled: bool, rate: i32, first_only: bool,
             first_order_only: first_only,
             hold_days: hold,
             min_withdrawal_cents: 50,
+            usdt_chains: super::super::usdt::default_chains(),
+            usdt_rate_cents: None,
         },
     )
     .await
@@ -1497,6 +1499,8 @@ async fn commission_lifecycle() {
         json!({"enabled": true, "rate_percent": 10, "first_order_only": true, "hold_days": 366, "min_withdrawal_cents": 1}),
         json!({"enabled": true, "rate_percent": 10, "first_order_only": true, "hold_days": 7, "min_withdrawal_cents": 0}),
         json!({"enabled": true, "rate_percent": 10, "first_order_only": true, "hold_days": 7}),
+        json!({"enabled": true, "rate_percent": 10, "first_order_only": true, "hold_days": 7, "min_withdrawal_cents": 1, "usdt_chains": ["btc"]}),
+        json!({"enabled": true, "rate_percent": 10, "first_order_only": true, "hold_days": 7, "min_withdrawal_cents": 1, "usdt_rate_cents": 0}),
     ] {
         let r = admin
             .req(
@@ -1507,7 +1511,9 @@ async fn commission_lifecycle() {
             .await;
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}");
     }
-    let good = json!({"enabled": true, "rate_percent": 10, "first_order_only": true, "hold_days": 7, "min_withdrawal_cents": 50});
+    // R46: chains in the canonical order, each once; a reference rate.
+    let good = json!({"enabled": true, "rate_percent": 10, "first_order_only": true, "hold_days": 7, "min_withdrawal_cents": 50,
+                      "usdt_chains": ["ton", "trc20", "ton"], "usdt_rate_cents": 720});
     let r = admin
         .req(
             Method::PUT,
@@ -1516,9 +1522,11 @@ async fn commission_lifecycle() {
         )
         .await;
     assert_eq!(r.status, StatusCode::OK);
+    let mut want = good.clone();
+    want["usdt_chains"] = json!(["trc20", "ton"]);
     assert_eq!(
         admin.get("/test/api/v1/commission-settings").await.json(),
-        good
+        want
     );
     let inviter = db.user().await;
     let ic = user_client(&state, inviter).await;
@@ -1958,34 +1966,34 @@ async fn withdrawals() {
     };
     for (body, want) in [
         (
-            json!({"amount_cents": 300, "method": "alipay", "account": "a@b"}),
+            json!({"amount_cents": 300, "chain": "trc20", "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}),
             StatusCode::CONFLICT,
         ),
         (
-            json!({"amount_cents": 10, "method": "alipay", "account": "a@b"}),
+            json!({"amount_cents": 10, "chain": "trc20", "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}),
             StatusCode::BAD_REQUEST,
         ),
         (
-            json!({"amount_cents": 100, "method": "paypal", "account": "a@b"}),
+            json!({"amount_cents": 100, "chain": "btc", "address": "a@b"}),
             StatusCode::BAD_REQUEST,
         ),
         (
-            json!({"amount_cents": 100, "method": "alipay", "account": " "}),
+            json!({"amount_cents": 100, "chain": "trc20", "address": " "}),
             StatusCode::BAD_REQUEST,
         ),
         (
-            json!({"amount_cents": 0, "method": "alipay", "account": "a"}),
+            json!({"amount_cents": 0, "chain": "trc20", "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}),
             StatusCode::BAD_REQUEST,
         ),
     ] {
         assert_eq!(req(body.clone()).await.status, want, "{body}");
     }
-    let r = req(json!({"amount_cents": 150, "method": "alipay", "account": "张三 a@b"})).await;
+    let r = req(json!({"amount_cents": 150, "chain": "trc20", "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"})).await;
     assert_eq!(r.status, StatusCode::CREATED);
     let w1: Uuid = r.json()["id"].as_str().unwrap().parse().unwrap();
     assert_eq!(balance(&db, inviter).await, 1050);
     assert_eq!(
-        req(json!({"amount_cents": 50, "method": "bank", "account": "x"}))
+        req(json!({"amount_cents": 50, "chain": "trc20", "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}))
             .await
             .status,
         StatusCode::CONFLICT
@@ -2022,7 +2030,7 @@ async fn withdrawals() {
         StatusCode::CONFLICT
     );
     // Rejected by the admin: funds back.
-    let w2: Uuid = req(json!({"amount_cents": 100, "method": "wechat", "account": "wx"}))
+    let w2: Uuid = req(json!({"amount_cents": 100, "chain": "trc20", "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}))
         .await
         .json()["id"]
         .as_str()
@@ -2051,7 +2059,7 @@ async fn withdrawals() {
     );
     assert_eq!(balance(&db, inviter).await, 1200);
     // Approved with the payout reference: money gone.
-    let w3: Uuid = req(json!({"amount_cents": 200, "method": "alipay", "account": "a@b"}))
+    let w3: Uuid = req(json!({"amount_cents": 200, "chain": "trc20", "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}))
         .await
         .json()["id"]
         .as_str()
@@ -2068,17 +2076,17 @@ async fn withdrawals() {
         }
     };
     assert_eq!(
-        approve(w3, json!({"payout_reference": ""})).await,
+        approve(w3, json!({"usdt_amount": "", "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})).await,
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        approve(w3, json!({"payout_reference": "x".repeat(201)})).await,
+        approve(w3, json!({"usdt_amount": "20", "txid": "x".repeat(201)})).await,
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
         ic.post(
             &format!("/test/api/v1/withdrawals/{w3}/approve"),
-            json!({"payout_reference": "x"})
+            json!({"usdt_amount": "1", "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
         )
         .await
         .status,
@@ -2087,17 +2095,17 @@ async fn withdrawals() {
     assert_eq!(
         approve(
             w3,
-            json!({"payout_reference": "2026100222001", "note": "已转账"})
+            json!({"usdt_amount": "27.5", "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "note": "已转账"})
         )
         .await,
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        approve(w3, json!({"payout_reference": "again"})).await,
+        approve(w3, json!({"usdt_amount": "1", "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})).await,
         StatusCode::CONFLICT
     );
     assert_eq!(
-        approve(Uuid::new_v4(), json!({"payout_reference": "x"})).await,
+        approve(Uuid::new_v4(), json!({"usdt_amount": "1", "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})).await,
         StatusCode::NOT_FOUND
     );
     assert_eq!(balance(&db, inviter).await, 1000);
@@ -2110,7 +2118,12 @@ async fn withdrawals() {
         .get("/test/api/v1/withdrawals?status=approved")
         .await
         .json();
-    assert_eq!(all[0]["payout_reference"], "2026100222001");
+    assert_eq!(
+        all[0]["txid"],
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+    assert_eq!(all[0]["usdt_amount"], "27.500000");
+    assert_eq!(all[0]["address"], "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t");
     assert_eq!(
         admin.get("/test/api/v1/withdrawals?status=x").await.status,
         StatusCode::BAD_REQUEST
@@ -2124,7 +2137,7 @@ async fn withdrawals() {
         admin
             .post(
                 "/test/api/v1/me/withdrawals",
-                json!({"amount_cents": 100, "method": "alipay", "account": "a"})
+                json!({"amount_cents": 100, "chain": "trc20", "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"})
             )
             .await
             .status,
@@ -2132,7 +2145,7 @@ async fn withdrawals() {
     );
     // Nothing withdrawable left.
     assert_eq!(
-        req(json!({"amount_cents": 50, "method": "other", "account": "x"}))
+        req(json!({"amount_cents": 50, "chain": "trc20", "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}))
             .await
             .status,
         StatusCode::CONFLICT
@@ -2258,7 +2271,7 @@ async fn every_money_movement_writes_one_ledger_row_and_audit() {
         let r = ic
             .post(
                 "/test/api/v1/me/withdrawals",
-                json!({"amount_cents": 50, "method": "alipay", "account": "a"}),
+                json!({"amount_cents": 50, "chain": "trc20", "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}),
             )
             .await;
         assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
@@ -2277,14 +2290,14 @@ async fn every_money_movement_writes_one_ledger_row_and_audit() {
         let r = ic
             .post(
                 "/test/api/v1/me/withdrawals",
-                json!({"amount_cents": 50, "method": "alipay", "account": "a"}),
+                json!({"amount_cents": 50, "chain": "trc20", "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}),
             )
             .await;
         let id: Uuid = r.json()["id"].as_str().unwrap().parse().unwrap();
         let r = admin
             .post(
                 &format!("/test/api/v1/withdrawals/{id}/approve"),
-                json!({"payout_reference": "x"}),
+                json!({"usdt_amount": "1", "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}),
             )
             .await;
         assert_eq!(r.status, StatusCode::NO_CONTENT);
@@ -2292,4 +2305,153 @@ async fn every_money_movement_writes_one_ledger_row_and_audit() {
     assert_eq!(steps.len(), 12);
     drop(state);
     db.drop().await;
+}
+
+/// R46: a withdrawal goes to an enabled chain and a valid address for it
+/// (TON may carry a memo); the reference rate is shown; the address is
+/// the requester's and the admins' only.
+#[tokio::test]
+async fn usdt_withdrawal_chains() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    set_commission(&db, true, 10, true, 0).await;
+    sqlx::query(
+        "UPDATE commission_settings SET usdt_chains = ARRAY['polygon', 'ton'], \
+         usdt_rate_cents = 720",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let (_, plan) = catalog_plan(&db, "usdt", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    let inviter = db.user().await;
+    let ic = user_client(&state, inviter).await;
+    let e = db.user().await;
+    invite(&db, inviter, e).await;
+    let ec = user_client(&state, e).await;
+    let r = buy_with(&ec, plan, "month", json!({})).await;
+    let (o, otn) = (order_id(&r), otn_of(&r));
+    mock.pay(&otn);
+    poll_until_paid(&db, &ec, o).await;
+    crate::enforce::run_all(&state).await.unwrap();
+    let inv = ic.get("/test/api/v1/me/invite").await.json();
+    assert_eq!(
+        inv["usdt_chains"],
+        json!([{"id": "polygon", "name": "Polygon"}, {"id": "ton", "name": "TON"}])
+    );
+    assert_eq!(inv["usdt_rate_cents"], 720);
+    let code = |body: Value| {
+        let ic = &ic;
+        async move {
+            ic.post("/test/api/v1/me/withdrawals", body).await.json()["code"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        }
+    };
+    let evm = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
+    let ton = "UQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqEBI";
+    assert_eq!(
+        code(json!({"amount_cents": 60, "chain": "trc20", "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"})).await,
+        "withdrawal.chain_invalid",
+        "not enabled"
+    );
+    assert_eq!(
+        code(json!({"amount_cents": 60, "chain": "polygon", "address": evm.to_lowercase().replace("0x5a", "0x5b").to_uppercase()})).await,
+        "withdrawal.address_invalid"
+    );
+    assert_eq!(
+        code(json!({"amount_cents": 60, "chain": "polygon", "address": evm, "memo": "x"})).await,
+        "withdrawal.memo_unexpected"
+    );
+    let r = ic
+        .post(
+            "/test/api/v1/me/withdrawals",
+            json!({"amount_cents": 60, "chain": "ton", "address": ton, "memo": "88001"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+    let mine = ic.get("/test/api/v1/me/withdrawals").await.json();
+    assert_eq!(
+        (
+            mine[0]["chain"].clone(),
+            mine[0]["address"].clone(),
+            mine[0]["memo"].clone()
+        ),
+        (json!("ton"), json!(ton), json!("88001"))
+    );
+    // Not someone else's to see.
+    let other = user_client(&state, db.user().await).await;
+    assert_eq!(
+        other.get("/test/api/v1/me/withdrawals").await.json(),
+        json!([])
+    );
+    let admin = admin_client(&state, &db).await;
+    let id = mine[0]["id"].as_str().unwrap().to_string();
+    for (body, code) in [
+        (
+            json!({"usdt_amount": "8.1234567", "txid": "a".repeat(64)}),
+            "withdrawal.usdt_amount_invalid",
+        ),
+        (
+            json!({"usdt_amount": "0", "txid": "a".repeat(64)}),
+            "withdrawal.usdt_amount_invalid",
+        ),
+        (
+            json!({"usdt_amount": "8.33", "txid": "short"}),
+            "withdrawal.txid_invalid",
+        ),
+        (
+            json!({"usdt_amount": "8.33", "txid": "has spaces in it"}),
+            "withdrawal.txid_invalid",
+        ),
+    ] {
+        let r = admin
+            .post(&format!("/test/api/v1/withdrawals/{id}/approve"), body)
+            .await;
+        assert_eq!(r.json()["code"], code);
+    }
+    let r = admin
+        .post(
+            &format!("/test/api/v1/withdrawals/{id}/approve"),
+            json!({"usdt_amount": "8.33", "txid": "te6cckEBAQEAAgAAAEysuc0="}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    let after: Value = sqlx::query_scalar(
+        "SELECT after FROM audit_log WHERE action = 'withdrawal.approved' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(after["usdt_micros"], 8_330_000);
+    assert_eq!(after["txid"], "te6cckEBAQEAAgAAAEysuc0=");
+    assert_eq!(
+        ic.get("/test/api/v1/me/withdrawals").await.json()[0]["usdt_amount"],
+        "8.330000"
+    );
+    db.drop().await;
+}
+
+#[test]
+fn usdt_amounts() {
+    for (t, want) in [
+        ("1", Some(1_000_000)),
+        ("0.000001", Some(1)),
+        (" 27.5 ", Some(27_500_000)),
+        ("100000000", Some(100_000_000_000_000)),
+        ("0", None),
+        ("1.", Some(1_000_000)),
+        (".5", None),
+        ("1.0000001", None),
+        ("-1", None),
+        ("1e3", None),
+        ("1000000000", None),
+    ] {
+        assert_eq!(commission::usdt_micros(t), want, "{t}");
+    }
+    assert!(commission::txid_ok(&"f".repeat(64)));
+    assert!(!commission::txid_ok("1234567"));
 }
