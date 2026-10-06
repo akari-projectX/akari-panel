@@ -34,7 +34,7 @@ pub struct SeedArgs {
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub counters: bool,
     /// W22: days of per-day traffic history (traffic_daily, ending today
-    /// UTC) to seed; 0 = none.
+    /// in the site time zone) to seed; 0 = none.
     #[arg(long, default_value_t = 30)]
     pub history_days: u32,
     /// W22: nodes each user had traffic on per day (of its per-group nodes).
@@ -198,7 +198,7 @@ async fn seed_history(pg: &PgPool, args: &SeedArgs, groups: i64) -> Result<()> {
     let k = (args.history_nodes_per_user as i64).min(per_group);
     let t = Instant::now();
     let n = sqlx::query(
-        "WITH n AS (SELECT id, (row_number() OVER (ORDER BY name) - 1) % $1 AS g,                            (row_number() OVER (ORDER BY name) - 1) / $1 AS r FROM nodes),               u AS (SELECT id, (row_number() OVER (ORDER BY email) - 1) % $1 AS g FROM users                     WHERE email LIKE 'bench-user-%'),               p AS (SELECT u.id AS user_id, u.g,                            (now() AT TIME ZONE 'UTC')::date - d AS day,                            abs(hashtextextended(u.id::text, d)) AS h                     FROM u CROSS JOIN generate_series(0, $3 - 1) d)          INSERT INTO traffic_daily (user_id, day, entrance_id, node_id, up_bytes, down_bytes, billed_bytes)          SELECT p.user_id, p.day, e.id, n.id, p.h % 50000000, (p.h % 50000000) * 4, (p.h % 50000000) * 5          FROM p CROSS JOIN LATERAL generate_series(0, $4 - 1) i          JOIN n ON n.g = p.g AND n.r = (p.h + i) % $2          JOIN entrances e ON e.node_id = n.id AND e.kind = 'direct'",
+        "WITH n AS (SELECT id, (row_number() OVER (ORDER BY name) - 1) % $1 AS g,                            (row_number() OVER (ORDER BY name) - 1) / $1 AS r FROM nodes),               u AS (SELECT id, (row_number() OVER (ORDER BY email) - 1) % $1 AS g FROM users                     WHERE email LIKE 'bench-user-%'),               p AS (SELECT u.id AS user_id, u.g,                            akari_site_day(now()) - d AS day,                            abs(hashtextextended(u.id::text, d)) AS h                     FROM u CROSS JOIN generate_series(0, $3 - 1) d)          INSERT INTO traffic_daily (user_id, day, entrance_id, node_id, up_bytes, down_bytes, billed_bytes)          SELECT p.user_id, p.day, e.id, n.id, p.h % 50000000, (p.h % 50000000) * 4, (p.h % 50000000) * 5          FROM p CROSS JOIN LATERAL generate_series(0, $4 - 1) i          JOIN n ON n.g = p.g AND n.r = (p.h + i) % $2          JOIN entrances e ON e.node_id = n.id AND e.kind = 'direct'",
     )
     .bind(groups)
     .bind(per_group)

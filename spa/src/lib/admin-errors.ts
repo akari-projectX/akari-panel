@@ -293,6 +293,7 @@ export const ADMIN_CODES: Record<string, string> = {
   "settings.release_key_invalid": "额外信任的发布公钥：{detail}（每行一个「base64 公钥 标签」）",
   "settings.release_keys_too_many": "额外信任的发布公钥：最多 {max} 个",
   "settings.server_name_locked": "{detail}",
+  "settings.timezone_invalid": "未知的时区「{tz}」（请填写 IANA 名称，如 Asia/Shanghai）",
   "settings.site_name_invalid": "站点名称须为 1–{max} 个字符，不能含控制字符",
   "settings.tls_pin_invalid": "安装命令公钥钉扎：格式应为 sha256//<base64>（留空 = 自动探测）",
   "settings.traffic_retention_invalid": "流量明细保留天数：0（永久）或 32 到 36500",

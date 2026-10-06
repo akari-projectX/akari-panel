@@ -906,9 +906,11 @@ WITH input AS (
     -- so the history is exactly as idempotent as the settlement.
     -- `traffic::compact_pass` folds them into traffic_daily /
     -- traffic_entrance_daily off the flush path.
+    -- Q3: the day in the site time zone (an uncorrelated sub-select: one
+    -- settings lookup per statement).
     INSERT INTO traffic_daily_pending
         (day, user_id, entrance_id, node_id, up_bytes, down_bytes, billed_bytes)
-    SELECT (statement_timestamp() AT TIME ZONE 'UTC')::date, user_id, entrance_id, node_id,
+    SELECT (SELECT akari_site_day(statement_timestamp())), user_id, entrance_id, node_id,
            LEAST(up_acc, 9223372036854775807)::bigint,
            LEAST(billed - up_acc, 9223372036854775807)::bigint,
            LEAST(charge, 9223372036854775807)::bigint
@@ -1524,19 +1526,20 @@ pub const DEFAULT_DAILY_RETENTION_DAYS: u32 = 400;
 /// traffic_daily rows moved per rollup statement.
 const ROLLUP_BATCH: i64 = 10_000;
 
-/// W22: move up to $2 traffic_daily rows older than $1 days (UTC) into
+/// W22: move up to $2 rows of the DEFAULT partition of traffic_daily
+/// (days no monthly partition covered when they were written: the reaper
+/// was down for months, or a day long past) older than $1 days into
 /// traffic_monthly in ONE statement: the DELETE ... RETURNING feeds the
 /// additive upsert, so a row is counted in a month exactly once (a
 /// concurrent pass blocks on the row lock, then skips the deleted row; a
-/// failed statement moves nothing). The flush only writes today's rows, so
-/// it never touches a row this moves; a day row compacted after its day was
-/// rolled up (a compaction stalled for weeks) is rolled up by the next
-/// pass, additively. Returns the rows moved.
-pub const ROLLUP_SQL: &str = "\
+/// failed statement moves nothing). Returns the rows moved. Monthly
+/// partitions are never deleted from row by row: a whole month past the
+/// retention is moved and dropped (`akari_rollup_traffic_partition`).
+pub const ROLLUP_DEFAULT_SQL: &str = "\
 WITH moved AS (
-    DELETE FROM traffic_daily WHERE ctid = ANY(ARRAY(
-        SELECT ctid FROM traffic_daily
-        WHERE day < (statement_timestamp() AT TIME ZONE 'UTC')::date - $1::int LIMIT $2))
+    DELETE FROM traffic_daily_default WHERE ctid = ANY(ARRAY(
+        SELECT ctid FROM traffic_daily_default
+        WHERE day < (SELECT akari_site_day(statement_timestamp())) - $1::int LIMIT $2))
     RETURNING user_id, day, entrance_id, node_id, up_bytes, down_bytes, billed_bytes
 ), rolled AS (
     INSERT INTO traffic_monthly AS t
@@ -1554,24 +1557,91 @@ WITH moved AS (
 )
 SELECT count(*) FROM moved";
 
-/// W22: the traffic_daily retention (reaper loop, every RETENTION_EVERY):
-/// rows older than `keep_days` (0 = keep forever) are rolled up into
-/// traffic_monthly, ROLLUP_BATCH rows per transaction (under the history
-/// lock, like compaction).
+/// Monthly traffic_daily partitions kept created around the current site
+/// month (`akari_ensure_traffic_partitions`): last month (a compaction
+/// that lagged over the month boundary) to two months ahead.
+const PARTITIONS_BACK: i32 = 1;
+const PARTITIONS_AHEAD: i32 = 2;
+/// Partition DDL waits at most this long for the table lock (a long read
+/// of the history must not queue every other reader behind the DDL); the
+/// next pass retries.
+const PARTITION_LOCK_TIMEOUT: &str = "SET LOCAL lock_timeout = '5s'";
+
+/// A history transaction holding the history lock (None: another
+/// instance holds it).
+async fn history_tx(
+    pg: &sqlx::PgPool,
+) -> anyhow::Result<Option<sqlx::Transaction<'static, sqlx::Postgres>>> {
+    let mut tx = pg.begin().await?;
+    let got: bool = sqlx::query_scalar(HISTORY_LOCK_SQL)
+        .fetch_one(&mut *tx)
+        .await?;
+    Ok(got.then_some(tx))
+}
+
+/// Q3 (migration 1033): create the monthly traffic_daily partitions that
+/// are missing around the current site month. Returns how many were
+/// created (0 when another instance holds the history lock).
+pub async fn ensure_partitions(pg: &sqlx::PgPool) -> anyhow::Result<i32> {
+    let Some(mut tx) = history_tx(pg).await? else {
+        return Ok(0);
+    };
+    sqlx::query(PARTITION_LOCK_TIMEOUT)
+        .execute(&mut *tx)
+        .await?;
+    let made: i32 = sqlx::query_scalar("SELECT akari_ensure_traffic_partitions($1, $2)")
+        .bind(PARTITIONS_BACK)
+        .bind(PARTITIONS_AHEAD)
+        .fetch_one(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(made)
+}
+
+/// W22 + Q3: the traffic_daily retention (reaper loop, every
+/// RETENTION_EVERY): creates the partitions ahead of time, then (unless
+/// `keep_days` is 0 = keep forever) moves every whole month whose days
+/// are all older than `keep_days` site days into traffic_monthly and drops
+/// its partition (one month per transaction, under the history lock, like
+/// compaction), and rolls the DEFAULT partition's old rows up row-wise,
+/// ROLLUP_BATCH per transaction. A day is kept per day for at least
+/// `keep_days` (up to a month longer: months go whole). Returns the daily
+/// rows moved.
 pub async fn rollup_pass(pg: &sqlx::PgPool, keep_days: u32) -> anyhow::Result<u64> {
+    let made = ensure_partitions(pg).await?;
+    if made > 0 {
+        tracing::info!(partitions = made, "traffic daily partitions created");
+    }
     if keep_days == 0 {
         return Ok(0);
     }
     let mut moved = 0u64;
     loop {
-        let mut tx = pg.begin().await?;
-        let got: bool = sqlx::query_scalar(HISTORY_LOCK_SQL)
-            .fetch_one(&mut *tx)
+        let Some(mut tx) = history_tx(pg).await? else {
+            return Ok(moved);
+        };
+        sqlx::query(PARTITION_LOCK_TIMEOUT)
+            .execute(&mut *tx)
             .await?;
-        if !got {
+        let n: Option<i64> = sqlx::query_scalar(
+            "SELECT akari_rollup_traffic_partition(akari_site_day(statement_timestamp()) - $1::int)",
+        )
+        .bind(keep_days as i32)
+        .fetch_one(&mut *tx)
+        .await?;
+        // End the transaction explicitly either way: a dropped one releases
+        // the history lock only when its pooled connection is next used.
+        tx.commit().await?;
+        let Some(n) = n else {
             break;
-        }
-        let n: i64 = sqlx::query_scalar(ROLLUP_SQL)
+        };
+        moved += n as u64;
+    }
+    loop {
+        let Some(mut tx) = history_tx(pg).await? else {
+            break;
+        };
+        let n: i64 = sqlx::query_scalar(ROLLUP_DEFAULT_SQL)
             .bind(keep_days as i32)
             .bind(ROLLUP_BATCH)
             .fetch_one(&mut *tx)
@@ -1904,15 +1974,18 @@ mod db_tests {
     }
 
     /// W22: a report's history row: raw up/down as accepted, billed = the
-    /// multiplier charge, the UTC day whatever the session time zone;
+    /// multiplier charge, the site day (Q3, default Asia/Shanghai) whatever
+    /// the session time zone;
     /// staged until compaction; a new day starts a new row and leaves the
     /// old one alone; a replay (fresh buffer = panel restart) adds nothing;
     /// a departed user's final counters land in the history too.
     #[tokio::test]
-    async fn history_split_multiplier_utc_day_boundary_replay_departed() {
-        // A session time zone whose date differs from UTC's right now
-        // (UTC+14 from 10:00 UTC, UTC-12 before 12:00 UTC).
-        let tz = if chrono::Timelike::hour(&chrono::Utc::now()) >= 11 {
+    async fn history_split_multiplier_site_day_boundary_replay_departed() {
+        // A session time zone whose date differs from the site's (Shanghai,
+        // UTC+8) right now: UTC+14 differs from 10:00 to 16:00 UTC, UTC-12
+        // from 16:00 to 12:00 UTC.
+        let hour = chrono::Timelike::hour(&chrono::Utc::now());
+        let tz = if (10..15).contains(&hour) {
             "Pacific/Kiritimati"
         } else {
             "Etc/GMT+12"
@@ -1950,11 +2023,10 @@ mod db_tests {
         );
         assert_eq!(count(&db, "SELECT count(*) FROM traffic_daily").await, 0);
         assert_eq!(compact_pass(&db.pool).await.unwrap(), 1);
-        let today: chrono::NaiveDate =
-            sqlx::query_scalar("SELECT (now() AT TIME ZONE 'UTC')::date")
-                .fetch_one(&db.pool)
-                .await
-                .unwrap();
+        let today: chrono::NaiveDate = sqlx::query_scalar("SELECT akari_site_day(now())")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
         let local: chrono::NaiveDate = sqlx::query_scalar("SELECT now()::date")
             .fetch_one(&tz_pool)
             .await
@@ -1962,7 +2034,7 @@ mod db_tests {
         tz_pool.close().await;
         assert_ne!(
             today, local,
-            "the session date is not UTC's: days must still be UTC"
+            "the session date is not the site's: days must still be site days"
         );
         assert_eq!(history_rows(&db, u).await, vec![(today, 1000, 3000, 2000)]);
         assert_eq!(db.used(u).await, 2000);
@@ -2140,7 +2212,7 @@ mod db_tests {
         sqlx::query(
             "INSERT INTO traffic_daily \
              (user_id, day, entrance_id, node_id, up_bytes, down_bytes, billed_bytes) \
-             SELECT gen_random_uuid(), (now() AT TIME ZONE 'UTC')::date - 450 - (g % 40), $1, $1, \
+             SELECT gen_random_uuid(), akari_site_day(now()) - 450 - (g % 40), $1, $1, \
                     g, 1, 2 \
              FROM generate_series(1, $2::int) g",
         )
@@ -2152,7 +2224,7 @@ mod db_tests {
         sqlx::query(
             "INSERT INTO traffic_daily \
              (user_id, day, entrance_id, node_id, up_bytes, down_bytes, billed_bytes) \
-             SELECT $1, (now() AT TIME ZONE 'UTC')::date - g, $2, $2, g, 2 * g, 3 * g \
+             SELECT $1, akari_site_day(now()) - g, $2, $2, g, 2 * g, 3 * g \
              FROM generate_series(300, 500) g",
         )
         .bind(u)
@@ -2161,12 +2233,11 @@ mod db_tests {
         .await
         .unwrap();
         // An already rolled-up month of u (an earlier pass).
-        let first_month: chrono::NaiveDate = sqlx::query_scalar(
-            "SELECT date_trunc('month', (now() AT TIME ZONE 'UTC')::date - 500)::date",
-        )
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
+        let first_month: chrono::NaiveDate =
+            sqlx::query_scalar("SELECT date_trunc('month', akari_site_day(now()) - 500)::date")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
         sqlx::query(
             "INSERT INTO traffic_monthly \
              (user_id, month, entrance_id, node_id, up_bytes, down_bytes, billed_bytes) \
@@ -2187,7 +2258,7 @@ mod db_tests {
             "SELECT m, sum(u)::bigint, sum(d)::bigint, sum(b)::bigint FROM ( \
                SELECT date_trunc('month', day)::date AS m, up_bytes AS u, down_bytes AS d, \
                       billed_bytes AS b FROM traffic_daily \
-               WHERE user_id = $1 AND day < (now() AT TIME ZONE 'UTC')::date - 400 \
+               WHERE user_id = $1 AND day < akari_site_day(now()) - 400 \
                UNION ALL SELECT month, up_bytes, down_bytes, billed_bytes FROM traffic_monthly \
                WHERE user_id = $1) x GROUP BY m ORDER BY m",
         )
@@ -2217,6 +2288,213 @@ mod db_tests {
         assert_eq!(months, expect);
         let left = history_rows(&db, u).await;
         assert_eq!(left.len(), 101, "days 300..=400 ago stay");
+        db.drop().await;
+    }
+
+    /// Q3: the day boundary is local midnight of the site time zone
+    /// (default Asia/Shanghai = 16:00 UTC), whatever the session's zone;
+    /// UTC as the site zone gives UTC days.
+    #[tokio::test]
+    async fn site_day_boundary() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let day = |ts: &'static str| {
+            let pool = db.pool.clone();
+            async move {
+                sqlx::query_scalar::<_, chrono::NaiveDate>(
+                    "SELECT akari_site_day($1::timestamptz)::date",
+                )
+                .bind(ts)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .to_string()
+            }
+        };
+        assert_eq!(day("2026-10-05T15:59:59.999Z").await, "2026-10-05");
+        assert_eq!(day("2026-10-05T16:00:00Z").await, "2026-10-06");
+        assert_eq!(day("2026-12-31T16:00:00Z").await, "2027-01-01");
+        let offset: i32 = sqlx::query_scalar("SELECT akari_site_offset(now())")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(offset, 8 * 3600);
+        sqlx::query("UPDATE panel_settings SET timezone = 'UTC' WHERE id = 1")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(day("2026-10-05T16:00:00Z").await, "2026-10-05");
+        assert_eq!(day("2026-10-05T23:59:59Z").await, "2026-10-05");
+        db.drop().await;
+    }
+
+    /// The monthly partitions of traffic_daily in the test's schema,
+    /// oldest first (the DEFAULT partition aside).
+    async fn partitions(db: &TestDb) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT c.relname::text FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE i.inhparent = 'traffic_daily'::regclass AND n.nspname = current_schema() \
+               AND c.relname <> 'traffic_daily_default' ORDER BY 1",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .unwrap()
+    }
+
+    /// Q3 (migration 1033): traffic_daily has a partition per month from
+    /// last month to two months ahead (in the test's own schema); whole
+    /// months past the retention move into traffic_monthly and their
+    /// partitions are dropped (exactly once, two passes at once, nothing
+    /// lost); the month holding the cutoff stays whole; a row for a
+    /// dropped month lands in the DEFAULT partition and is rolled up row by
+    /// row; a month whose rows sit in DEFAULT gets no partition.
+    #[tokio::test]
+    async fn monthly_partitions_roll_up_whole_months() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let month = |back: i32| {
+            let pool = db.pool.clone();
+            async move {
+                sqlx::query_scalar::<_, chrono::NaiveDate>(
+                    "SELECT (date_trunc('month', akari_site_day(now())) \
+                             + make_interval(months => $1))::date",
+                )
+                .bind(-back)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        let name = |m: chrono::NaiveDate| format!("traffic_daily_{}", m.format("%Y%m"));
+        let mut want = Vec::new();
+        for i in [1, 0, -1, -2] {
+            want.push(name(month(i).await));
+        }
+        want.sort();
+        assert_eq!(partitions(&db).await, want, "migration window");
+        assert_eq!(ensure_partitions(&db.pool).await.unwrap(), 0);
+        // Fourteen months of history.
+        let made: i32 = sqlx::query_scalar("SELECT akari_ensure_traffic_partitions(14, 2)")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(made, 13);
+        let (n, u) = (Uuid::new_v4(), Uuid::new_v4());
+        sqlx::query(
+            "INSERT INTO traffic_daily \
+             (user_id, day, entrance_id, node_id, up_bytes, down_bytes, billed_bytes) \
+             SELECT $1, akari_site_day(now()) - g, $2, $2, g, 2 * g, 3 * g \
+             FROM generate_series(0, 420) g",
+        )
+        .bind(u)
+        .bind(n)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let in_default = "SELECT count(*) FROM traffic_daily_default";
+        assert_eq!(count(&db, in_default).await, 0, "every day has its month");
+        let totals = "SELECT (SELECT coalesce(sum(up_bytes + down_bytes + billed_bytes), 0) \
+                      FROM traffic_daily)::bigint + \
+                      (SELECT coalesce(sum(up_bytes + down_bytes + billed_bytes), 0) \
+                      FROM traffic_monthly)::bigint";
+        let before = count(&db, totals).await;
+        let keep = 100u32;
+        let cutoff: chrono::NaiveDate =
+            sqlx::query_scalar("SELECT akari_site_day(now()) - $1::int")
+                .bind(keep as i32)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        let first_kept = chrono::Datelike::with_day(&cutoff, 1).unwrap();
+        let expect: Vec<(chrono::NaiveDate, i64, i64, i64)> = sqlx::query_as(
+            "SELECT date_trunc('month', day)::date, sum(up_bytes)::bigint, \
+                    sum(down_bytes)::bigint, sum(billed_bytes)::bigint \
+             FROM traffic_daily WHERE day < $1 GROUP BY 1 ORDER BY 1",
+        )
+        .bind(first_kept)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        let kept_rows: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM traffic_daily WHERE day >= $1")
+                .bind(first_kept)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        let (a, b) = tokio::join!(rollup_pass(&db.pool, keep), rollup_pass(&db.pool, keep));
+        let moved = a.unwrap() + b.unwrap() + rollup_pass(&db.pool, keep).await.unwrap();
+        assert_eq!(
+            moved as i64,
+            421 - kept_rows,
+            "every old month moved exactly once"
+        );
+        assert_eq!(rollup_pass(&db.pool, keep).await.unwrap(), 0);
+        assert_eq!(count(&db, totals).await, before, "nothing lost or doubled");
+        let months: Vec<(chrono::NaiveDate, i64, i64, i64)> = sqlx::query_as(
+            "SELECT month, up_bytes, down_bytes, billed_bytes FROM traffic_monthly \
+             WHERE user_id = $1 ORDER BY month",
+        )
+        .bind(u)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(months, expect);
+        let oldest: chrono::NaiveDate =
+            sqlx::query_scalar("SELECT min(day) FROM traffic_daily WHERE user_id = $1")
+                .bind(u)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(oldest, first_kept, "the cutoff's month stays whole");
+        assert!(oldest <= cutoff);
+        let left = partitions(&db).await;
+        assert_eq!(
+            left.first(),
+            Some(&name(first_kept)),
+            "older partitions dropped"
+        );
+        // A late row for a dropped month: DEFAULT, then rolled up by row.
+        let late = first_kept - chrono::Duration::days(40);
+        sqlx::query(
+            "INSERT INTO traffic_daily \
+             (user_id, day, entrance_id, node_id, up_bytes, down_bytes, billed_bytes) \
+             VALUES ($1, $2, $3, $3, 1, 1, 1)",
+        )
+        .bind(u)
+        .bind(late)
+        .bind(n)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(count(&db, in_default).await, 1);
+        assert_eq!(rollup_pass(&db.pool, keep).await.unwrap(), 1);
+        assert_eq!(count(&db, in_default).await, 0);
+        assert_eq!(count(&db, totals).await, before + 3);
+        // A month whose rows sit in DEFAULT gets no partition (they stay).
+        let far = month(-5).await;
+        sqlx::query(
+            "INSERT INTO traffic_daily \
+             (user_id, day, entrance_id, node_id, up_bytes, down_bytes, billed_bytes) \
+             VALUES ($1, $2, $3, $3, 1, 1, 1)",
+        )
+        .bind(u)
+        .bind(far)
+        .bind(n)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let made: i32 = sqlx::query_scalar("SELECT akari_ensure_traffic_partitions(0, 6)")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(made, 3, "+3, +4 and +6; not +5");
+        assert!(!partitions(&db).await.contains(&name(far)));
+        assert_eq!(count(&db, in_default).await, 1);
+        // keep_days = 0: partitions are still kept ahead, nothing moves.
+        assert_eq!(rollup_pass(&db.pool, 0).await.unwrap(), 0);
         db.drop().await;
     }
 

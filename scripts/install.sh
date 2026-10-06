@@ -1000,15 +1000,24 @@ check_restore_dir() {
 	fi
 }
 
-# restore_into: database + data dir from $RESTORE_DIR into this (fresh)
-# installation. The database must be empty, the data dir empty.
+# restore_into: database + data dir from $RESTORE_DIR into this
+# installation. The database is recreated empty first (a database kept
+# from an earlier install of this mode, e.g. a move back, is replaced):
+# pg_restore --clean cannot drop the partitions of a partitioned table
+# (traffic_daily, migration 1033). The data dir is moved aside.
 restore_into() {
 	step "从备份恢复：$RESTORE_DIR" "restoring from the backup $RESTORE_DIR"
+	recreate_db='DROP DATABASE IF EXISTS akari WITH (FORCE);
+CREATE DATABASE akari OWNER akari;'
 	if [ "$MODE" = bare ]; then
-		load_cmd="cd / && runuser -u postgres -- pg_restore -p $PG_PORT -d akari --clean --if-exists --no-owner --role=akari --exit-on-error --single-transaction"
+		printf '%s\n' "$recreate_db" | psql_pg -d postgres -f - >>"$LOG" 2>&1 ||
+			die '无法重建数据库 akari' 'cannot recreate the database akari'
+		load_cmd="cd / && runuser -u postgres -- pg_restore -p $PG_PORT -d akari --no-owner --role=akari --exit-on-error --single-transaction"
 		data_dir=$DATA owner=akari:akari
 	else
-		load_cmd="cd '$DOCKER_DIR' && docker compose exec -T postgres pg_restore -U akari -d akari --clean --if-exists --no-owner --exit-on-error --single-transaction"
+		printf '%s\n' "$recreate_db" | dc exec -T postgres psql -X -q -v ON_ERROR_STOP=1 -U akari -d postgres -f - >>"$LOG" 2>&1 ||
+			die '无法重建数据库 akari' 'cannot recreate the database akari'
+		load_cmd="cd '$DOCKER_DIR' && docker compose exec -T postgres pg_restore -U akari -d akari --no-owner --exit-on-error --single-transaction"
 		data_dir=$(docker_volume_dir akari-data) owner=65532:65532
 		[ -n "$data_dir" ] || die '找不到数据卷 akari_akari-data' 'no akari_akari-data volume'
 	fi

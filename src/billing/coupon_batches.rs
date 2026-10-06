@@ -419,6 +419,7 @@ pub async fn export(
         return Err(ApiError::not_found());
     }
     let bytes = codes_csv(&mut tx, id).await?;
+    let today = crate::settings::site_clock(&mut *tx).await?.today;
     crate::export::audit(
         &mut tx,
         &Actor::of(&user),
@@ -428,7 +429,7 @@ pub async fn export(
     .await?;
     tx.commit().await?;
     Ok(crate::export::csv_response(
-        crate::export::filename("coupons"),
+        crate::export::filename("coupons", today),
         bytes,
     ))
 }

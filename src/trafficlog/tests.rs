@@ -224,7 +224,11 @@ async fn endpoints_queries_and_permissions() {
         .execute(&db.pool)
         .await
         .unwrap();
-    let today = Utc::now().date_naive();
+    // Q3: days are site days.
+    let today: NaiveDate = sqlx::query_scalar("SELECT (now() AT TIME ZONE akari_site_tz())::date")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
     let y = today - Duration::days(1);
     let old = today - Duration::days(45);
     daily(&db, u1, today, n1, (10, 20, 15)).await;
@@ -253,7 +257,7 @@ async fn endpoints_queries_and_permissions() {
     assert_eq!(r.status, StatusCode::OK);
     let v = r.json();
     assert_eq!(v["group"], "day");
-    assert_eq!(v["timezone"], "UTC");
+    assert_eq!(v["timezone"], "Asia/Shanghai");
     assert_eq!(v["to"], json!(today));
     let rows = v["rows"].as_array().unwrap();
     assert_eq!(rows.len(), 2, "{v}");

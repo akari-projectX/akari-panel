@@ -1,5 +1,8 @@
-// W22: traffic history (mirror of src/trafficlog.rs). Days are UTC
-// calendar days "YYYY-MM-DD"; rows exist only for days with traffic.
+// W22: traffic history (mirror of src/trafficlog.rs). Days are calendar
+// days "YYYY-MM-DD" in the site time zone (Q3, W28-a: the response's
+// `timezone`; default Asia/Shanghai, the console's zone); rows exist only
+// for days with traffic.
+import { TIME_ZONE } from "./datetime";
 
 export interface TrafficBytes {
   up_bytes: number;
@@ -20,7 +23,7 @@ export interface TrafficNodeDay extends TrafficDay {
 export interface MyTraffic {
   from: string;
   to: string;
-  timezone: "UTC";
+  timezone: string;
   daily_since: string | null;
   total: TrafficBytes;
   days: TrafficDay[];
@@ -31,7 +34,7 @@ export interface MyTraffic {
 export interface UserTrafficView {
   from: string;
   to: string;
-  timezone: "UTC";
+  timezone: string;
   group: "day" | "node" | "month";
   daily_since: string | null;
   total: TrafficBytes;
@@ -42,7 +45,7 @@ export interface UserTrafficView {
 export interface NodeTrafficView {
   from: string;
   to: string;
-  timezone: "UTC";
+  timezone: string;
   daily_since: string | null;
   total: TrafficBytes;
   days: TrafficNodeDay[];
@@ -53,7 +56,7 @@ export interface NodeTrafficView {
 export interface TrafficSummaryView {
   from: string;
   to: string;
-  timezone: "UTC";
+  timezone: string;
   total: TrafficBytes;
   days: TrafficNodeDay[];
   top_nodes: (TrafficBytes & { node_id: string; name: string | null })[];
@@ -70,18 +73,25 @@ function fmtDay(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-/** Today's UTC day. */
-export function utcToday(now: Date = new Date()): string {
-  return now.toISOString().slice(0, 10);
+const DAY_FORMAT = new Intl.DateTimeFormat("en-CA", {
+  timeZone: TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+/** Today in the (default) site time zone. */
+export function siteToday(now: Date = new Date()): string {
+  return DAY_FORMAT.format(now);
 }
 
-/** The query string for the last `days` UTC days (today included). */
+/** The query string for the last `days` site days (today included). */
 export function lastDays(days: number, now: Date = new Date()): { from: string; to: string } {
-  const to = utcToday(now);
+  const to = siteToday(now);
   return { from: fmtDay(parseDay(to) - (days - 1) * DAY_MS), to };
 }
 
-/** Every UTC day of [from, to] (at most 400), with the rows' bytes or zeros. */
+/** Every day of [from, to] (at most 400), with the rows' bytes or zeros. */
 export function fillDays<T extends TrafficDay>(rows: T[], from: string, to: string): TrafficDay[] {
   const by = new Map(rows.map((r) => [r.day, r]));
   const out: TrafficDay[] = [];

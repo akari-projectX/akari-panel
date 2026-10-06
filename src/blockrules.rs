@@ -391,10 +391,10 @@ pub fn clean_stats(s: &BlockStats) -> Option<(String, Vec<i64>, Vec<i64>)> {
 }
 
 /// Raise the node's per-epoch baselines and add the increase to today's
-/// (UTC) daily counts, in one statement: a replayed or reordered report
-/// adds nothing (the baseline only grows), counts for unknown rules are
-/// dropped, and a node cannot hold baselines for more than
-/// MAX_EPOCHS_PER_NODE agent processes.
+/// (site time zone, Q3) daily counts, in one statement: a replayed or
+/// reordered report adds nothing (the baseline only grows), counts for
+/// unknown rules are dropped, and a node cannot hold baselines for more
+/// than MAX_EPOCHS_PER_NODE agent processes.
 pub const INGEST_SQL: &str = "\
 WITH input AS (
     SELECT t.rule_id, t.hits FROM unnest($3::bigint[], $4::bigint[]) AS t(rule_id, hits)
@@ -410,7 +410,7 @@ raised AS (
     RETURNING new.rule_id, new.hits - COALESCE(old.hits, 0) AS added
 )
 INSERT INTO node_block_daily AS d (node_id, day, rule_id, hits)
-SELECT $1, (statement_timestamp() AT TIME ZONE 'UTC')::date, rule_id, added
+SELECT $1, (SELECT akari_site_day(statement_timestamp())), rule_id, added
 FROM raised WHERE added > 0
 ON CONFLICT (node_id, day, rule_id) DO UPDATE SET hits = d.hits + EXCLUDED.hits";
 
@@ -448,7 +448,7 @@ pub fn status_json(s: &BlockStats) -> Value {
 pub async fn retention_pass(pg: &sqlx::PgPool) -> sqlx::Result<(u64, u64)> {
     let days = sqlx::query(
         "DELETE FROM node_block_daily \
-         WHERE day < (statement_timestamp() AT TIME ZONE 'UTC')::date - $1",
+         WHERE day < (SELECT akari_site_day(statement_timestamp())) - $1",
     )
     .bind(DAILY_RETENTION_DAYS)
     .execute(pg)
@@ -776,7 +776,7 @@ pub struct RuleView {
     pub entries: usize,
     pub enabled: bool,
     pub sort: i32,
-    /// Blocked connections over the last 7 UTC days, all nodes.
+    /// Blocked connections over the last 7 days (site time zone), all nodes.
     pub hits_7d: i64,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -799,7 +799,7 @@ pub async fn list(
     let mut rules: Vec<RuleView> = sqlx::query_as(
         "SELECT r.id, r.kind, r.builtin_key, r.name, r.pattern, r.enabled, r.sort, \
            COALESCE((SELECT sum(d.hits) FROM node_block_daily d WHERE d.rule_id = r.id \
-             AND d.day > (statement_timestamp() AT TIME ZONE 'UTC')::date - 7), 0)::bigint AS hits_7d, \
+             AND d.day > (SELECT akari_site_day(statement_timestamp())) - 7), 0)::bigint AS hits_7d, \
            r.created_at, r.updated_at \
          FROM block_rules r ORDER BY r.sort, r.id",
     )
@@ -894,7 +894,7 @@ pub struct DayHits {
 
 /// GET /nodes/{id}/block-rules?days=N (admin): the switch, whether the
 /// agent supports it and runs the current policy, and daily hits per rule
-/// over the last N UTC days (default 7, at most 90).
+/// over the last N days (site time zone) (default 7, at most 90).
 pub async fn node_view(
     State(state): State<AppState>,
     user: AuthUser,
@@ -921,7 +921,7 @@ pub async fn node_view(
     let rows: Vec<DayHits> = sqlx::query_as(
         "SELECT d.day, d.rule_id, r.name, d.hits FROM node_block_daily d \
          JOIN block_rules r ON r.id = d.rule_id \
-         WHERE d.node_id = $1 AND d.day > (statement_timestamp() AT TIME ZONE 'UTC')::date - $2::int \
+         WHERE d.node_id = $1 AND d.day > (SELECT akari_site_day(statement_timestamp())) - $2::int \
          ORDER BY d.day, r.sort, d.rule_id",
     )
     .bind(node)

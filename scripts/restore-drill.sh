@@ -130,7 +130,7 @@ wipe_db
 
 echo "== 4. restore =="
 AGE_IDENTITY_FILE="$W/age.key" AKARI_DATA_DIR="$W/data" \
-  AKARI_PG_RESTORE_CMD="docker compose exec -T postgres pg_restore -U akari -d $DRILL_DB --clean --if-exists --no-owner --single-transaction" \
+  AKARI_PG_RESTORE_CMD="docker compose exec -T postgres pg_restore -U akari -d $DRILL_DB --no-owner --single-transaction" \
   scripts/restore.sh "$BACKUP"
 
 echo "== 5. verify: same prefix, logins, users; agent reconnects =="

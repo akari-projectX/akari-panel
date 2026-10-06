@@ -272,7 +272,7 @@ separate loopback listener, never on the public port.
 | POST | /auth/password-reset | — (reset on) | W15: `{token, password}`: new password, every session ends |
 | GET | /api/v1/me | user (portal scope*) | profile (`email` = the login name, `email_verified`) + traffic usage; `expired` / `quota_exhausted` (R21); W28-c `banned`, `ban_reason` (written by the admin for the user), `banned_at`; W20: `sub_token` + `sub_url` (the subscription link, `Cache-Control: no-store`; null for admins and the renewal scope; an account without a token gets one here), `sub_legacy` (pre-W20 link: works, cannot be shown until reset), `probe_interval_secs` |
 | POST | /api/v1/me/sub-token | user (role=user) | reset own subscription link (5/hour); the old link stops working |
-| GET | /api/v1/me/plan | user | own active plan (or null), usage, enforced limit/expiry, node names + regions |
+| GET | /api/v1/me/plan | user | own active plan (or null), usage, enforced limit/expiry, node names + regions (Q3: `plan.next_reset_at` with the site time zone's offset) |
 | GET | /api/v1/me/nodes | user | W11: own visible entrances (W28-a: one row per usable entrance) — node display name, `entrance` name, region, tags, the entrance's multiplier, online, latency (no ids, addresses or machine metrics) |
 | POST | /api/v1/me/email/code | user (renewal scope*) | W15: `{email, password}`: code to the new address (current password required; same answer if the address is taken) |
 | POST | /api/v1/me/email/verify | user (renewal scope*) | W15: `{code}`: the address becomes the account's verified email and its login name (D1) |
@@ -287,6 +287,7 @@ separate loopback listener, never on the public port.
 | GET | /api/v1/users/{id}/passkeys | admin | W27: an account's login methods (same view) |
 | POST | /api/v1/users/{id}/login-method/reset | admin | W27: lost passkey: delete the account's passkeys, password login back on (audited `user.login_method.reset`) → `{deleted_passkeys}`; CLI `akari admin reset-login <email>` |
 | GET/PUT | /api/v1/settings/auth | admin | W27 bot protection of the public forms and the passkey policies: `{version, turnstile_site_key, turnstile_secret?, turnstile_login, turnstile_register, turnstile_reset, honeypot, min_submit_secs, passkey_only_admins, passkey_only_users, passkey_prompt}` (GET/PUT answer adds `warnings`); the secret is write-only (absent = keep, `""` = remove; sealed with the master key; GET answers `turnstile_secret_set`; audit `settings.auth.update` records it as `"changed"`); a form switch needs both keys (`auth_admin.turnstile_incomplete`); `min_submit_secs` 0–60 (0 = off). CLI way back in: `akari settings unset turnstile` |
+| PUT | /api/v1/settings/site | admin | W21 site name + Q3 site time zone: `{version, site_name?, timezone?}` (each: absent = unchanged, `null`/`""` = the default — "Akari" / `Asia/Shanghai`); `timezone` is a full IANA name PostgreSQL knows (`Asia/Shanghai`, `UTC`, `America/New_York`; abbreviations such as `CST`, POSIX strings such as `UTC+8`, wrong case = 400 `settings.timezone_invalid`); answers the settings view (`timezone: {value, effective, default, source}`); audited `settings.site.update`. The time zone sets the day of the traffic history and block rule counts, plan monthly resets and calendar-month terms (local day and time of day; DST keeps the local time), the dashboard's days and the CSV export ranges; it applies from the next write on (stored days are not rewritten) |
 | GET/PUT | /api/v1/settings/mail | admin | W15 系统设置 → 邮件: provider (W31: `smtp` or `resend`; absent = keep), SMTP host/port/security/credentials (password write-only, sealed), Resend `api_key` (write-only, sealed; view: `api_key_set`), sender, notice switches |
 | POST | /api/v1/settings/mail/test | admin | W15: `{to}`: send a test mail now with the saved settings (502 = the server's answer) |
 | POST | /api/v1/settings/mail/diagnose | admin | W31: `{to}`: step-by-step check of the saved provider — config, DNS, TCP, TLS (implicit 465 / STARTTLS 587, mismatch detected), greeting, AUTH, send — always 200 `{provider, ok, steps: [{step, status ok\|warn\|fail\|skip, elapsed_ms, code mail.diag.*, params, message: {zh, en}}]}`; audited `settings.mail.test` |
@@ -296,7 +297,7 @@ separate loopback listener, never on the public port.
 | POST | /api/v1/me/password | user/admin | `{current_password, new_password}`: change own password (wrong current = 400, counts against the login rate limit; other sessions end, this one continues) |
 | GET | /api/v1/audit | admin | audit log, `?limit&before&actor&action` (keyset, newest first; `actor` = an exact `actor_label`). Entries: `actor_id`, `actor_label` (Q4: non-personal — `u-<8 hex of the id>`, `cli`, `system`, `agent`, `anonymous`), `actor_email` (the account's current address, null when not an account or deleted) |
 | GET/POST | /api/v1/users | admin | list (`?q&plan_id&status=active\|expired\|quota\|banned&role&sort&limit&offset`; `q` = address prefix or id prefix; `sort` created\|-created\|email\|-traffic\|expires) / create `{email, password, role?, plan?: {plan_id, period, days?}}` (D1: the address is required and counts as verified; taken = 409 `user.email_exists`. D12: the plan and its term, assigned in the same transaction; never a traffic limit or expiry) |
-| GET | /api/v1/users/{id} | admin | D12/W28-c detail: the list row + `subscription` (null without a plan: `{user_plan_id, plan_id, plan_name, period, period_days, starts_at, expires_at, traffic_used_bytes, traffic_total_bytes, reset_period, last_reset_at, next_reset_at, speed_limit_mbps, status: active\|expired\|over_quota\|banned}`) + `ban` (null unless banned: `{reason, banned_at, banned_by_id, banned_by_email}`) |
+| GET | /api/v1/users/{id} | admin | D12/W28-c detail: the list row + `subscription` (null without a plan: `{user_plan_id, plan_id, plan_name, period, period_days, starts_at, expires_at, traffic_used_bytes, traffic_total_bytes, reset_period, last_reset_at, next_reset_at, timezone, speed_limit_mbps, status: active\|expired\|over_quota\|banned}`; Q3: `next_reset_at` is RFC 3339 with the site time zone's offset, e.g. `2026-11-01T00:00:00+08:00`, and `timezone` is that zone) + `ban` (null unless banned: `{reason, banned_at, banned_by_id, banned_by_email}`) |
 | PATCH/DELETE | /api/v1/users/{id} | admin | update `{password?, role?}` (D12: no `traffic_limit_bytes`/`expires_at`; W28-c: no `enabled` — ban instead; unknown fields 400) / delete user |
 | POST | /api/v1/users/{id}/ban | admin | W28-c `{reason}` (1–500 characters, shown to the user): disable (`disabled_reason = admin`), every node drops the user at once (live connections cut), every session ends, the subscription is the canonical rejection; banning again replaces the reason; not yourself (400 `user.ban_self`), not the last enabled admin (409); audited `user.ban`; returns the detail |
 | POST | /api/v1/users/{id}/unban | admin | W28-c: lift a ban (409 `user.not_banned` otherwise); audited `user.unban`; returns the detail |
@@ -337,9 +338,9 @@ separate loopback listener, never on the public port.
 | PUT | /api/v1/plans/{id}/prices | admin | `{on_sale, prices: [{period, days?, price_cents}]}` replaces the plan's prices (W7 period kinds) |
 | GET | /api/v1/orders | admin | orders, `?status&email&out_trade_no&unfulfilled&via&before&limit` (keyset; `via=manual` = admin-created/confirmed; `email` = the buyer's current address). Rows carry `user_label` (Q4 snapshot) and `user_email` (current address, null once deleted) |
 | POST | /api/v1/orders/manual | admin | Ops: `{user_id, plan_id, period, gift?, reason}` → a paid order through the one pay path (`paid_via` manual; amount = the period's price from SQL, 0 for a gift, never from the client; fulfilment failure = 409 and nothing kept) |
-| GET | /api/v1/orders/export.csv | admin | Ops: orders CSV `?from&to&status&via` (UTC days, ≤366, default last 30; audited) |
+| GET | /api/v1/orders/export.csv | admin | Ops: orders CSV `?from&to&status&via` (days of the site time zone: local midnights; ≤366, default last 30; audited) |
 | GET | /api/v1/users/export.csv | admin | Ops: users CSV with the list filters `?q&plan_id&status&role&sort` (streamed, UTF-8 BOM, formula-safe; audited) |
-| GET | /api/v1/traffic/export.csv | admin | Ops: fleet traffic history CSV `?from&to&group=day\|node` (audited) |
+| GET | /api/v1/traffic/export.csv | admin | Ops: fleet traffic history CSV `?from&to&group=day\|node` (site days, column `day`; audited) |
 | POST | /api/v1/users/batch/preview | admin | Ops: `{selection: {ids} \| {filter}}` → `{total, admins, sample}` |
 | GET/POST | /api/v1/users/batch | admin | Ops: recent jobs / create `{selection, action: {kind: extend_expiry {days} (periodic subscriptions only)\|reset_traffic\|ban {reason}\|unban\|set_plan {plan_id, period, days?}\|cancel_plan\|add_balance\|send_email, …}}` → 202 + job (runs in the background, each user once through the existing `apply_*`, audited per user) |
 | GET | /api/v1/users/batch/{id} | admin | Ops: job progress + items (failed/skipped first) ; `POST …/cancel` skips what is still pending |
@@ -453,10 +454,13 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
   the removal, are still billed for `traffic.departed_grace_secs` (default
   15 min).
 - **Traffic history (W22)**: every flush also records what it settled per
-  user, entrance (with its node) and UTC day (`traffic_daily`,
+  user, entrance (with its node) and day of the site time zone (Q3,
+  default Asia/Shanghai; `traffic_daily`, partitioned by month,
   `traffic_entrance_daily`; folded from a staging table every
   ~30 s); 流量明细保留天数 (系统设置 → 安全, default 400, `0` = forever) days
-  are kept, older ones are rolled up into months (`traffic_monthly`). Admin
+  are kept, older whole months are rolled up into months
+  (`traffic_monthly`) and their partition dropped (so up to a month more
+  is kept per day). Responses carry `timezone`. Admin
   `GET /api/v1/users/{id}/traffic`, `/nodes/{id}/traffic`,
   `/traffic/summary`; users `GET /api/v1/me/traffic` (node names only).
 - **Removal mode** (系统设置 → 节点通信 → 撤权方式): gate (default) removes/rotates
@@ -541,7 +545,7 @@ SQLx 0.9, fred 10 (Valkey client), Go 1.27.
 - **Node groups** collect nodes (a node can be in many groups). **Plans**
   grant groups and set a traffic quota (`null` = unlimited) and a reset
   period: `monthly` (on the anchor's day of month, clamped to the month's
-  end, UTC), `days-N` (every N days, 1–3650) or `none`. `speed_limit_mbps`
+  end, in the site time zone — Q3), `days-N` (every N days, 1–3650) or `none`. `speed_limit_mbps`
   is **enforced** per user by the agent (W7, agent protocol 4: each
   direction, shared by all of the user's connections on a node, XTLS
   splice disabled for limited users; older agents run the user unthrottled

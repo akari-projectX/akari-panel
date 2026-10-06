@@ -90,14 +90,16 @@ only with a v0.3.x binary.
 
 1. Stop the panel (`systemctl stop akari-panel` / `docker compose stop panel`). Agents keep
    running and reconnect by themselves.
-2. Provide an empty database (`createdb`) and a PostgreSQL >= 18 server.
+2. Provide an empty database (`createdb`; to reuse one, `dropdb` it first — `pg_restore --clean`
+   cannot drop the monthly partitions of `traffic_daily`) and a PostgreSQL >= 18 server.
 3. ```bash
    AGE_IDENTITY_FILE=akari-backup.key AKARI_DATA_DIR=/var/lib/akari AKARI_OWNER=akari:akari \
    DATABASE_URL=postgres://... scripts/restore.sh /var/backups/akari/akari-<UTC>
    ```
    It checks the checksums, extracts `data/` (an existing non-empty data dir is refused unless
    `--force`, then moved aside) and loads the database in one transaction. For compose use
-   `AKARI_PG_RESTORE_CMD='docker compose exec -T postgres pg_restore -U akari -d akari --clean --if-exists --no-owner --single-transaction'`.
+   `AKARI_PG_RESTORE_CMD='docker compose exec -T postgres pg_restore -U akari -d akari --no-owner --single-transaction'`
+   (into an empty database). `akari-ctl --restore` and the moves recreate the database themselves.
 4. Start the panel; `akari info` shows the **same route prefix**; log in; nodes turn `online` as
    the agents reconnect (their certificates are signed by the restored CA).
 5. Traffic counted between the backup and the failure is lost (users' usage reverts to the

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { barBox } from "../components/bar-chart";
 import { setLocale } from "../i18n";
-import { fillDays, lastDays, utcToday } from "../lib/traffic";
+import { fillDays, lastDays, siteToday } from "../lib/traffic";
 import { fakeApi, renderAdmin, renderWithClient } from "../test/harness";
 import { NodeTraffic, UserTraffic } from "./admin-traffic";
 import { TrafficCard } from "./portal-traffic";
@@ -19,10 +19,10 @@ afterEach(() => {
 });
 
 describe("helpers", () => {
-  it("lastDays / utcToday / fillDays use UTC days and fill gaps with zeros", () => {
-    const now = new Date("2026-03-02T23:30:00Z");
-    expect(utcToday(now)).toBe("2026-03-02");
-    expect(lastDays(7, now)).toEqual({ from: "2026-02-24", to: "2026-03-02" });
+  it("lastDays / siteToday / fillDays use site days (Asia/Shanghai) and fill gaps with zeros", () => {
+    const now = new Date("2026-03-02T23:30:00Z"); // 2026-03-03 07:30 in Shanghai
+    expect(siteToday(now)).toBe("2026-03-03");
+    expect(lastDays(7, now)).toEqual({ from: "2026-02-25", to: "2026-03-03" });
     const filled = fillDays([{ day: "2026-02-28", ...b(1, 2, 3) }], "2026-02-27", "2026-03-01");
     expect(filled.map((d) => d.day)).toEqual(["2026-02-27", "2026-02-28", "2026-03-01"]);
     expect(filled[1]).toEqual({ day: "2026-02-28", ...b(1, 2, 3) });

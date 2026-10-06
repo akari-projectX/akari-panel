@@ -551,7 +551,7 @@ export const en: Messages = {
   },
   traffic: {
     title: "Usage history",
-    description: "Your usage per day and per node (UTC days, updated within about a minute).",
+    description: "Your usage per day and per node (days in the site's time zone, updated within about a minute).",
     range: "Time range",
     lastDays: "Last {days} days",
     upload: "Upload",

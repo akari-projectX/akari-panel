@@ -64,7 +64,7 @@ reset pack. Period arithmetic is SQL only (`akari_period_end`, DB clock):
 
 | `period` | Adds | Nominal days (proration) |
 |---|---|---|
-| `month` / `quarter` / `half_year` / `year` / `two_year` / `three_year` | 1 / 3 / 6 / 12 / 24 / 36 calendar months, UTC; the day clamps to the month's end (Jan 31 + 1 month = Feb 28/29) | 30 / 90 / 180 / 365 / 730 / 1095 |
+| `month` / `quarter` / `half_year` / `year` / `two_year` / `three_year` | 1 / 3 / 6 / 12 / 24 / 36 calendar months of the site time zone (Q3, 系统设置 → 站点 → 时区, default Asia/Shanghai: a month bought on the 1st, local time, ends on the 1st); the day clamps to the month's end (Jan 31 + 1 month = Feb 28/29) | 30 / 90 / 180 / 365 / 730 / 1095 |
 | `days` (`days` = N, 1–3650) | N × 86400 s (the R18-3 single price migrated to this) | N |
 | `onetime` (`days` = N or null) | N days, or **no expiry** when `days` is null | N (none when permanent) |
 | `reset` | traffic reset pack: zeroes the used traffic of the current plan; no period change, the reset schedule is untouched | — |
