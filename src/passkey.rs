@@ -111,14 +111,35 @@ impl Rp {
     fn webauthn(&self) -> Result<Webauthn, ApiError> {
         WebauthnBuilder::new(&self.id, &self.origin)
             .and_then(|b| {
-                b.rp_name(&self.name)
-                    .timeout(std::time::Duration::from_secs(STATE_TTL_SECS as u64))
-                    .build()
+                let b = b
+                    .rp_name(&self.name)
+                    .timeout(std::time::Duration::from_secs(STATE_TTL_SECS as u64));
+                match self.localhost_http() {
+                    Some(http) => b.append_allowed_origin(&http),
+                    None => b,
+                }
+                .build()
             })
             .map_err(|e| {
                 tracing::error!(error = %e, "passkey relying party not usable");
                 ApiError::internal()
             })
+    }
+}
+
+impl Rp {
+    /// `localhost` and `*.localhost` (RFC 6761: always loopback, never a
+    /// public name) are secure contexts over plain http too: such a main
+    /// domain (origin `https://…`) also accepts ceremonies from its `http://`
+    /// origin — local development and the console's end-to-end passkey test.
+    fn localhost_http(&self) -> Option<Url> {
+        let loopback = self.id == "localhost" || self.id.ends_with(".localhost");
+        if !loopback || self.origin.scheme() != "https" {
+            return None;
+        }
+        let mut http = self.origin.clone();
+        http.set_scheme("http").ok()?;
+        Some(http)
     }
 }
 

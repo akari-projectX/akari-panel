@@ -247,6 +247,25 @@ fn login_body(email: &str, pw: &str) -> Value {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn localhost_accepts_its_http_origin_too() {
+    let rp = Rp::of("https://localhost:8096", "A".into()).unwrap();
+    assert_eq!(
+        rp.localhost_http().map(|u| u.to_string()),
+        Some("http://localhost:8096/".into())
+    );
+    assert!(rp.webauthn().is_ok());
+    let sub = Rp::of("https://e2e.localhost", "A".into()).unwrap();
+    assert_eq!(
+        sub.localhost_http().map(|u| u.to_string()),
+        Some("http://e2e.localhost/".into())
+    );
+    let other = Rp::of("https://panel.example", "A".into()).unwrap();
+    assert!(other.localhost_http().is_none());
+    let plain = Rp::of("http://localhost:8080", "A".into()).unwrap();
+    assert!(plain.localhost_http().is_none());
+}
+
+#[test]
 fn relying_party_needs_an_https_domain() {
     let rp = Rp::of("https://Panel.Example:8443", "A".into()).unwrap();
     assert_eq!(rp.id, "panel.example");
