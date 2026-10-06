@@ -18,6 +18,11 @@
 //! - nothing when the order was never fulfilled, or the subscription it
 //!   touched is no longer the active one (replaced, expired, cancelled).
 //!
+//! The order's coupon use is given back and a refunded order no longer
+//! counts as a purchase (new-customer coupons, first-order commission;
+//! 低-2); its invite commission is reversed (pending) or clawed back
+//! (credited, 中-4).
+//!
 //! `GET /orders/{id}/refund-preview` shows the same computation without
 //! changing anything (the console's confirmation dialog).
 //!
@@ -284,11 +289,20 @@ pub async fn preview(conn: &mut PgConnection, order_id: Uuid) -> Result<Value, A
     let (_, _, _, amount, balance, balance_state) = refundable(conn, order_id, false).await?;
     let effect = effect(conn, order_id).await?;
     let commission = super::commission::refund_preview(conn, order_id).await?;
+    let coupon: Option<String> = sqlx::query_scalar(
+        "SELECT c.code FROM coupon_redemptions r JOIN coupons c ON c.id = r.coupon_id \
+         WHERE r.order_id = $1 AND r.status = 'redeemed'",
+    )
+    .bind(order_id)
+    .fetch_optional(&mut *conn)
+    .await?;
     Ok(json!({
         "balance_part_cents": if balance_state == "held" { balance } else { 0 },
         "amount_cents": amount,
         "effect": effect.to_json(),
         "commission": commission,
+        // 低-2: the coupon whose use the refund gives back.
+        "coupon_released": coupon,
     }))
 }
 
@@ -361,6 +375,8 @@ pub async fn apply_refund(
             ));
         }
     };
+    // 低-2: the coupon use comes back (lock order: orders → coupons).
+    let coupon_released = super::coupons::release_refunded(conn, order_id).await?;
     if let (Some(user), Some(revoke)) = (user, effect.revoke()) {
         crate::plans::apply_refund_revoke(conn, actor, user, order_id, revoke).await?;
     }
@@ -400,6 +416,7 @@ pub async fn apply_refund(
         "effect": effect_json,
         "commission": commission,
         "commission_clawback": clawback,
+        "coupon_released": coupon_released,
         "reason": req.reason,
     });
     crate::audit::record(

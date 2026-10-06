@@ -234,3 +234,81 @@ async fn commission_clawback_after_the_hold() {
     drop(state);
     db.drop().await;
 }
+
+/// 低-2: a refund gives the coupon use back (to the coupon's cap and the
+/// buyer's own count), and a refunded order is not a purchase: a
+/// new-customer coupon applies again, the next order is the first order
+/// for the invite commission.
+#[tokio::test]
+async fn refund_releases_the_coupon_and_is_no_purchase() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let admin = admin(&state, &db).await;
+    let (_, plan) = catalog_plan(&db, "lo2", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    for body in [
+        json!({"code": "ONCE", "kind": "fixed", "value": 100, "max_uses": 1, "per_user_limit": 1}),
+        json!({"code": "NEWBIE", "kind": "fixed", "value": 100, "new_users_only": true}),
+    ] {
+        let r = admin.post("/test/api/v1/coupons", body).await;
+        assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+    }
+    let put = admin
+        .req(
+            axum::http::Method::PUT,
+            "/test/api/v1/commission-settings",
+            Some(
+                json!({"enabled": true, "rate_percent": 10, "first_order_only": true,
+                        "hold_days": 7, "min_withdrawal_cents": 50}),
+            ),
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::OK);
+    let (inviter, u) = (db.user().await, db.user().await);
+    sqlx::query("UPDATE users SET inviter_id = $1 WHERE id = $2")
+        .bind(inviter)
+        .bind(u)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let c = user_client(&state, u).await;
+    let first = bought(&db, &c, plan, "month", json!({"coupon": "ONCE"})).await;
+    let used = || async {
+        sqlx::query_scalar::<_, i32>("SELECT used FROM coupons WHERE code = 'ONCE'")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+    };
+    assert_eq!(used().await, 1);
+    let p = admin
+        .get(&format!("/test/api/v1/orders/{first}/refund-preview"))
+        .await
+        .json();
+    assert_eq!(p["coupon_released"], "ONCE");
+    let r = admin
+        .post(
+            &format!("/test/api/v1/orders/{first}/refund"),
+            json!({"reason": "r", "to_balance": true}),
+        )
+        .await;
+    assert_eq!(r.json()["coupon_released"], true, "{:?}", r.json());
+    assert_eq!(used().await, 0);
+    // The buyer may use it again (per-user limit 1), and the new-customer
+    // coupon applies: the refunded order was no purchase.
+    let shop = c.get("/test/api/v1/me/shop?coupon=ONCE").await.json();
+    assert_eq!(shop["coupon"]["refusal"], Value::Null, "{shop}");
+    let shop = c.get("/test/api/v1/me/shop?coupon=NEWBIE").await.json();
+    assert_eq!(shop["coupon"]["refusal"], Value::Null, "{shop}");
+    // First-order commission: the next paid order is the first one.
+    let second = bought(&db, &c, plan, "month", json!({})).await;
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM commissions WHERE order_id = $1")
+        .bind(second)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+    drop(state);
+    db.drop().await;
+}

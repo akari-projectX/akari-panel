@@ -177,7 +177,7 @@ pub async fn on_paid(
            AND inv.id <> u.id AND inv.role = 'user' \
            AND (NOT s.first_order_only OR NOT EXISTS (SELECT 1 FROM orders p \
                 WHERE p.user_id = u.id AND p.status = 'paid' AND p.amount_cents > 0 \
-                AND p.id <> o.id)) \
+                AND p.refunded_at IS NULL AND p.id <> o.id)) \
          ON CONFLICT (order_id) DO NOTHING \
          RETURNING id, amount_cents, inviter_id, invitee_id, available_at",
             crate::audit::user_label_sql("inv.id"),
