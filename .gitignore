@@ -2,6 +2,7 @@
 spa/node_modules
 spa/dist
 data/
+!spa/src/data/
 *-bootstrap.toml
 /bench/data
 /bench/target
