@@ -136,6 +136,10 @@ one replaced at fulfilment, the payment is still honoured and
   仪表盘「已付款未开通」与订单筛选「未开通」只列未退款的。
 - `renewal_only`: hidden from the shop for everybody except its holders;
   holders renew and buy its reset pack.
+- 运营规则（运营逻辑审查中-6）：**下架（取消「上架」）只停止新购买**。套餐的
+  `renew_off_sale`（「下架后现有用户仍可续费和购买流量重置包」，默认开）开着时，下架套餐对它的
+  现有用户仍出现在商店里，只能续费和买重置包；其他人看不到、下单 400「not for sale」。关掉它则
+  下架即对所有人停售。**停用**（`enabled = false`）则谁都不能买（续费也不行）。
 - `allow_switch_in = false`: holders of another plan cannot switch to it
   (newcomers can buy it).
 - `speed_limit_mbps` is enforced by the agent (see README "Plans and node

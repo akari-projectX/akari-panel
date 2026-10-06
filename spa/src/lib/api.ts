@@ -371,6 +371,8 @@ export interface PlanView {
   capacity: number | null;
   renewal_only: boolean;
   allow_switch_in: boolean;
+  /** 中-6: off sale, its subscribers can still renew / buy the reset pack. */
+  renew_off_sale: boolean;
   prices: PlanPrice[];
   group_ids: string[];
   active_users: number;

@@ -305,14 +305,19 @@ fn price_of(r: &PriceRow) -> Option<Price> {
     })
 }
 
-/// The plans on sale with their taken slots (中-2: active subscribers +
-/// live reservations, `catalog::taken_sql`).
-fn sale_plan_sql() -> String {
+/// The plans user `user` (an SQL placeholder) may buy from, with their
+/// taken slots (中-2: active subscribers + live reservations,
+/// `catalog::taken_sql`): enabled plans on sale, and (中-6) an enabled plan
+/// taken off sale for its current subscriber while `renew_off_sale`
+/// (renewal and reset pack only — `catalog::decide` refuses the rest).
+fn sale_plan_sql(user: &str) -> String {
     format!(
         "SELECT p.id AS plan_id, p.name, p.description, \
          p.traffic_quota_bytes, p.reset_period, p.reset_days, p.speed_limit_mbps, \
          p.device_seats, p.capacity, p.renewal_only, p.allow_switch_in, {} AS taken \
-         FROM plans p WHERE p.enabled AND p.on_sale",
+         FROM plans p WHERE p.enabled AND (p.on_sale OR (p.renew_off_sale AND EXISTS ( \
+           SELECT 1 FROM user_plans up WHERE up.plan_id = p.id AND up.user_id = {user} \
+           AND up.status = 'active')))",
         catalog::taken_sql("p.id")
     )
 }
@@ -367,16 +372,19 @@ pub async fn shop(
         (
             sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "{} ORDER BY p.sort, p.name",
-                sale_plan_sql()
+                sale_plan_sql("$1")
             )))
+            .bind(user.id)
             .fetch_all(&mut *c)
             .await?,
-            sqlx::query_as(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "SELECT pp.plan_id, pp.period, pp.days, pp.price_cents FROM plan_period_prices pp \
-                 JOIN plans p ON p.id = pp.plan_id WHERE p.enabled AND p.on_sale \
+                 WHERE pp.plan_id IN (SELECT s.plan_id FROM ({}) s) \
                  ORDER BY array_position(ARRAY['month', 'quarter', 'half_year', 'year', \
                  'two_year', 'three_year', 'days', 'onetime', 'reset'], pp.period)",
-            )
+                sale_plan_sql("$1")
+            )))
+            .bind(user.id)
             .fetch_all(&mut *c)
             .await?,
         )
@@ -630,9 +638,10 @@ pub async fn create_order(
     crate::entitle::lock(&mut tx).await?;
     let plan: Option<ShopPlanRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{} AND p.id = $1",
-        sale_plan_sql()
+        sale_plan_sql("$2")
     )))
     .bind(req.plan_id)
+    .bind(user.id)
     .fetch_optional(&mut *tx)
     .await?;
     let price: Option<PriceRow> = sqlx::query_as(

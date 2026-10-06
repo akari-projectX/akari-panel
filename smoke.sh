@@ -1944,7 +1944,7 @@ PRICES="$BASE/api/v1/plans/$PAID_PLAN/prices"
 python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); p=[x for x in d['plans'] if x['plan_id']=='$PAID_PLAN'][0]; assert p['on_sale'] and len(p['prices'])==3, d" \
   || { echo "FAIL: plan-prices content"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"description":"Smoke\n- fast","capacity":5,"allow_switch_in":true}')" = "200" ] \
-  && [ "$(last_json "d['capacity']")" = "5" ] || { echo "FAIL: plan catalogue fields"; cat /tmp/akari-smoke/last; exit 1; }
+  && [ "$(last_json "d['capacity']")/$(last_json "d['renew_off_sale']")" = "5/True" ] || { echo "FAIL: plan catalogue fields"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
     -d '{"email":"smoke-buyer@smoke.test","password":"buyer-password-123"}')" = "201" ] || { echo "FAIL: create buyer"; exit 1; }
 BUYER=$(last_json "d['id']")
