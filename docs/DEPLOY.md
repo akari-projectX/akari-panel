@@ -1541,8 +1541,12 @@ requests they run when the installer, the deploy bundle, backup/restore or the D
 (`scripts/ci-changes.sh` group `installer`) or with the `full-ci` label; always on main, nightly
 and before a release.
 
-- `installer (build)`: the PR's static binary and image, made like a release, versioned
-  `<version>-ci.<run>`; `make-release.sh` turns them into a local release (GitHub layout, signed
+- `build (static binary + images)`: the PR's static binary and images, built once per run and
+  shared (artifacts) with `docker build (no push)` and the installer jobs. Made like a release
+  (Dockerfile `artifact` → `prebuilt`) but with the CI cargo profile (`Cargo.toml` `[profile.ci]`:
+  no LTO, 16 codegen units; release.yml ships `release`), versioned `<version>-ci.<run>`;
+  dependencies come from a cargo-chef layer in the BuildKit GitHub Actions cache (written by main
+  runs). `make-release.sh` turns them into a local release (GitHub layout, signed
   with a throwaway cosign key; plus a deliberately broken release `v9.9.9`).
 - `installer (bare, debian:13 / ubuntu:24.04)` — `bare-e2e.sh` in a fresh systemd container: the
   latest published release (v0.3.x) installed from GitHub (real keyless verification), its

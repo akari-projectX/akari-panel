@@ -2,7 +2,14 @@
 #
 # akari panel image (M1-1). Multi-stage:
 #   spa        builds the React bundle (embedded into the binary)
-#   builder    static musl binary (rust:alpine; no system C library
+#   chef       rust:alpine + build tools + cargo-chef (pinned)
+#   planner    `cargo chef prepare`: the dependency recipe (manifests and
+#              lockfile only; the crate's own version is masked, so CI's
+#              version bump does not invalidate it)
+#   builder    `cargo chef cook` compiles the dependencies in their own
+#              layer (cached by BuildKit, e.g. CI's `type=gha` layer cache:
+#              unchanged deps are not rebuilt), then the
+#              static musl binary (rust:alpine; no system C library
 #              dependency — the vendored OpenSSL of the passkey verifier is
 #              compiled in — so the result runs on any Linux kernel)
 #   artifact   FROM scratch holding only the binary: the release workflow
@@ -19,6 +26,10 @@
 #
 # Reproducibility: pinned toolchain tag, `--locked`, fixed path prefix and
 # remapped build paths, SOURCE_DATE_EPOCH from the commit (build arg).
+#
+# CARGO_PROFILE (build arg): `release` (default; what release.yml ships:
+# thin LTO, one codegen unit, stripped) or `ci` (Cargo.toml [profile.ci]:
+# same code, faster to compile; CI's installer/docker checks only).
 
 ARG NODE_IMAGE=node:24-alpine
 ARG RUST_IMAGE=rust:1.99-alpine
@@ -31,27 +42,43 @@ RUN npm ci
 COPY spa/ ./
 RUN npm run build
 
-FROM ${RUST_IMAGE} AS builder
-RUN apk add --no-cache musl-dev gcc make cmake perl linux-headers
+FROM ${RUST_IMAGE} AS chef
+RUN apk add --no-cache musl-dev gcc make cmake perl linux-headers mimalloc2
+# rustc on Alpine is a musl program and musl's allocator makes it several
+# times slower on this crate; mimalloc for the build tools only (the output
+# is unchanged: the static binary links no preloaded library).
+ENV LD_PRELOAD=/usr/lib/libmimalloc.so.2
+ARG CARGO_CHEF_VERSION=0.1.78
+RUN cargo install cargo-chef --locked --version ${CARGO_CHEF_VERSION} \
+ && rm -rf /usr/local/cargo/registry
 WORKDIR /src
-ARG AKARI_GIT_SHA=unknown
+
+FROM chef AS planner
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY src src
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+ARG CARGO_PROFILE=release
 ARG SOURCE_DATE_EPOCH=0
-ENV AKARI_GIT_SHA=${AKARI_GIT_SHA} \
-    SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     CARGO_PROFILE_RELEASE_LTO=thin \
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
     CARGO_PROFILE_RELEASE_STRIP=true \
     RUSTFLAGS="--remap-path-prefix=/src=/akari --remap-path-prefix=/usr/local/cargo=/cargo"
+COPY --from=planner /src/recipe.json recipe.json
+RUN cargo chef cook --profile "$CARGO_PROFILE" --locked --recipe-path recipe.json
+# Per-commit inputs only after the dependency layer.
+ARG AKARI_GIT_SHA=unknown
+ENV AKARI_GIT_SHA=${AKARI_GIT_SHA}
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY proto proto
 COPY migrations migrations
 COPY src src
 COPY deploy/systemd deploy/systemd
 COPY --from=spa /src/spa/dist spa/dist
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
-    cargo build --release --locked \
- && cp target/release/akari /akari
+RUN cargo build --profile "$CARGO_PROFILE" --locked \
+ && cp "target/$CARGO_PROFILE/akari" /akari
 
 # Empty data dir owned by the runtime user (distroless has no shell to mkdir
 # with); a named volume mounted on /data inherits this ownership.
