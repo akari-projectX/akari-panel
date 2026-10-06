@@ -329,11 +329,15 @@ async fn refund_money_only() {
         .await
         .unwrap();
     assert_eq!(pay(&db, o).await, Paid::Now { fulfilled: false });
+    // (中-2: refunded to the balance at once, money only.)
+    let effect: Value = sqlx::query_scalar("SELECT refund_effect FROM orders WHERE id = $1")
+        .bind(o)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(effect, json!({"kind": "none", "why": "not_fulfilled"}));
     let r = refund(&admin, o, json!({"reason": "r", "to_balance": true})).await;
-    assert_eq!(
-        r.json()["effect"],
-        json!({"kind": "none", "why": "not_fulfilled"})
-    );
+    assert_eq!(r.status, StatusCode::CONFLICT);
     drop(state);
     db.drop().await;
 }

@@ -61,7 +61,8 @@ pub struct Pending {
     pub withdrawals: i64,
     /// Dead letters (failed mail).
     pub mail_failed: i64,
-    /// Paid orders whose plan could not be granted (fulfil_error).
+    /// Paid orders whose plan could not be granted (fulfil_error) and
+    /// that were not refunded (中-2 refunds most of them automatically).
     pub orders_unfulfilled: i64,
     pub alerts_firing: i64,
 }
@@ -161,7 +162,7 @@ const PENDING_SQL: &str = "SELECT \
      (SELECT count(*) FROM withdrawals WHERE status = 'pending') AS withdrawals, \
      (SELECT count(*) FROM mail_outbox WHERE status = 'dead') AS mail_failed, \
      (SELECT count(*) FROM orders WHERE status = 'paid' AND fulfilled_at IS NULL \
-        AND fulfil_error IS NOT NULL) AS orders_unfulfilled, \
+        AND fulfil_error IS NOT NULL AND refunded_at IS NULL) AS orders_unfulfilled, \
      (SELECT count(*) FROM node_alerts WHERE status = 'firing') AS alerts_firing";
 
 /// How many latest orders the dashboard lists.

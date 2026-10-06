@@ -388,8 +388,9 @@ pub struct Sale {
     pub plan_id: Uuid,
     pub for_sale: bool,
     pub capacity: Option<i32>,
-    /// Active subscribers now.
-    pub active: i64,
+    /// Slots taken now: active subscribers + the reservations of pending
+    /// new/switch orders (`taken_sql`, 中-2).
+    pub taken: i64,
     pub renewal_only: bool,
     pub allow_switch_in: bool,
 }
@@ -399,6 +400,30 @@ pub struct Sale {
 pub struct Current {
     pub plan_id: Uuid,
     pub expires: bool,
+}
+
+/// SQL: the slots of plan `plan` (an SQL expression) taken now (中-2):
+/// its active subscribers plus the reservations of pending orders that
+/// would take one (new / switch, not yet expired; `orders_capacity_hold`).
+/// An order ends (cancelled, expired, replaced, paid) = its reservation
+/// ends with it.
+pub fn taken_sql(plan: &str) -> String {
+    format!(
+        "((SELECT count(*) FROM user_plans up WHERE up.plan_id = {plan} AND up.status = 'active') \
+         + (SELECT count(*) FROM orders o WHERE o.plan_id = {plan} AND o.status = 'pending' \
+            AND o.action IN ('new', 'switch') AND o.expires_at > now()))"
+    )
+}
+
+/// What buying (plan, period) does for a user whose active plan is `cur`
+/// — the action without the sale rules (admin-created orders).
+pub fn action_for(cur: Option<Uuid>, plan: Uuid, period: PeriodKind) -> Action {
+    match cur {
+        _ if period == PeriodKind::Reset => Action::Reset,
+        Some(c) if c == plan => Action::Renew,
+        Some(_) => Action::Switch,
+        None => Action::New,
+    }
 }
 
 /// The sale rules (pure; see the module docs).
@@ -426,7 +451,7 @@ pub fn decide(cur: Option<Current>, sale: &Sale, period: PeriodKind) -> Result<A
             if other.is_some() && !sale.allow_switch_in {
                 return Err(Refusal::NoSwitch);
             }
-            if sale.capacity.is_some_and(|c| sale.active >= i64::from(c)) {
+            if sale.capacity.is_some_and(|c| sale.taken >= i64::from(c)) {
                 return Err(Refusal::SoldOut);
             }
             Ok(if other.is_some() {
@@ -621,7 +646,7 @@ mod tests {
             plan_id: plan,
             for_sale: true,
             capacity: None,
-            active: 0,
+            taken: 0,
             renewal_only: false,
             allow_switch_in: true,
         }
@@ -723,7 +748,7 @@ mod tests {
         assert_eq!(decide(on_a, &renewal, PeriodKind::Month), Ok(Action::Renew));
         let full = Sale {
             capacity: Some(2),
-            active: 2,
+            taken: 2,
             ..sale(a)
         };
         assert_eq!(

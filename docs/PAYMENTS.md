@@ -121,11 +121,19 @@ one replaced at fulfilment, the payment is still honoured and
 
 - `capacity` (max active subscribers, null = unlimited) is checked at order
   creation and again, authoritatively, at fulfilment under
-  `entitle::lock`. Pending orders reserve nothing: two buyers can pay for
-  the last slot; one is fulfilled, the other stays **paid with
-  `fulfil_error` "plan is sold out"** (money kept; the admin raises the
-  capacity and retries, or refunds out of band). Admin assignment (PUT
-  /users/{id}/plan) ignores capacity and sale rules.
+  `entitle::lock`. Admin assignment (PUT /users/{id}/plan) ignores capacity
+  and sale rules.
+- 运营规则（运营逻辑审查中-2）：**下单即占名额**。订单创建时记录它的动作（`orders.action`：
+  new/renew/switch/reset），待付款的新购/换套餐订单在过期或结束前占一个名额：库存 = 生效订阅数 +
+  其他人未过期的待付款订单（`catalog::taken_sql`），商店的「剩余」与「售罄」、下单与开通时的复查都按它算，
+  所以两个人抢最后一个名额时第二个人在下单时就被拒绝（409「已售罄」），不会出现两人都付款。
+  订单取消/过期/被新订单替换即释放名额。
+- 付款时仍然开通不了（名额在订单过期后被别人占了而又迟到付款、管理员调低了库存、套餐已停用或删除、
+  流量重置包的套餐已不是当前套餐）：**自动退回余额**（支付宝实付 + 订单扣的余额部分，`refund_balance_cents`；
+  优惠券次数还回；不产生返利；不发支付回执而发退款通知邮件，说明「该订单没有开通套餐」），订单保持
+  `fulfil_error` 记录原因，审计 `order.refund`（操作者为支付渠道），并通过「节点告警」里已启用的告警通道
+  （Telegram / webhook / 邮件）通知管理员（事件 `billing`）。管理员人工标记付款的订单不自动退款（由管理员处理）。
+  仪表盘「已付款未开通」与订单筛选「未开通」只列未退款的。
 - `renewal_only`: hidden from the shop for everybody except its holders;
   holders renew and buy its reset pack.
 - `allow_switch_in = false`: holders of another plan cannot switch to it
@@ -143,10 +151,12 @@ period pass). 运营规则（运营逻辑审查中-1）：续费**不重置**流
 
 - An order that expired or was cancelled locally but is reported paid
   (notify or query) is still fulfilled: Alipay took the money.
-- If fulfilment fails for a business reason (plan deleted or disabled,
-  plan sold out, reset pack for a plan the user no longer holds, user
-  deleted or now an admin) the order stays **paid** with
-  `fulfil_error`; Alipay still gets `success`. Admin: 订单 → 状态「已付款未开通」
+- If fulfilment fails for a business reason the order stays **paid** with
+  `fulfil_error`; Alipay still gets `success`. Plan sold out, deleted or
+  disabled, or a reset pack for a plan the user no longer holds: refunded to
+  the balance automatically (中-2, see "Stock and sale rules"). Other
+  failures (user deleted or now an admin, a late payment whose balance part
+  is no longer there): Admin: 订单 → 状态「已付款未开通」
   → 详情 → 重试开通 (reason required, audited `order.fulfil.retry`).
 - Manual mark-paid (support case, e.g. a payment proven out of band):
   same button on an unpaid order; `paid_via = manual`, reason stored and

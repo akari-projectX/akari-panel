@@ -28,8 +28,8 @@ async fn paid_order(db: &TestDb, user: Uuid, cents: i64, paid_at: DateTime<Utc>)
     sqlx::query(
         "INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_name, amount_cents, \
          list_price_cents, period, period_days, subject, expires_at, status, paid_at, paid_via, \
-         created_at) VALUES ($1, $2, $3, 'u', 'p', $4, $4, 'days', 30, 's', $5, 'paid', $5, \
-         'notify', $5)",
+         created_at, action) VALUES ($1, $2, $3, 'u', 'p', $4, $4, 'days', 30, 's', $5, 'paid', $5, \
+         'notify', $5, 'new')",
     )
     .bind(id)
     .bind(otn)
@@ -91,8 +91,9 @@ async fn aggregates_every_source() {
     // Not revenue: pending and before the window.
     sqlx::query(
         "INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_name, amount_cents, \
-         list_price_cents, period, period_days, subject, expires_at) VALUES ($1, 'AKTpending', \
-         $2, 'u', 'p', 999, 999, 'days', 30, 's', now() + interval '15 minutes')",
+         list_price_cents, period, period_days, subject, expires_at, action) VALUES ($1, \
+         'AKTpending', $2, 'u', 'p', 999, 999, 'days', 30, 's', now() + interval '15 minutes', \
+         'new')",
     )
     .bind(Uuid::new_v4())
     .bind(u)

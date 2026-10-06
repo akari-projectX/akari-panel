@@ -182,9 +182,18 @@ pub async fn apply_mark_paid(
         after["coupon"] = c;
     }
     let bought = bought(conn, order_id).await?;
-    let (fulfilled, detail) = fulfil(conn, actor, order_id, &bought).await?;
+    let (fulfilled, detail, failure) = fulfil(conn, actor, order_id, &bought).await?;
     after["fulfilment"] = detail;
-    if let Some((id, cents)) = super::commission::on_paid(conn, actor, order_id).await? {
+    // 中-2: a payment for a plan that cannot be granted any more (full,
+    // gone, disabled, …) goes back to the customer's balance at once —
+    // never "paid, not fulfilled" waiting for an admin. Not for admin
+    // payments (the admin decides) or a deleted customer.
+    let auto_refund = failure
+        .filter(|code| AUTO_REFUND.contains(code))
+        .filter(|_| via != Via::Manual && bought.user_id.is_some());
+    if auto_refund.is_none()
+        && let Some((id, cents)) = super::commission::on_paid(conn, actor, order_id).await?
+    {
         after["commission"] = json!({ "id": id, "amount_cents": cents });
     }
     if let Some(r) = reason {
@@ -200,10 +209,89 @@ pub async fn apply_mark_paid(
         Some(after),
     )
     .await?;
+    if let Some(code) = auto_refund {
+        refund_unfulfillable(conn, actor, order_id, code).await?;
+        return Ok(Paid::Now { fulfilled });
+    }
     // W15: the receipt mail commits with the payment (savepoint: a mail
     // failure never rolls back money; a replay never gets here).
     crate::mail::notices::order_paid(conn, order_id).await?;
     Ok(Paid::Now { fulfilled })
+}
+
+/// Fulfilment failures that refund a payment to the balance at once
+/// (中-2): the plan is full, gone or disabled, or a reset pack's plan is
+/// no longer the customer's.
+const AUTO_REFUND: [&str; 4] = [
+    "shop.sold_out",
+    "order_admin.plan_gone",
+    "plan.disabled",
+    "shop.reset_needs_plan",
+];
+
+/// 中-2: refund a paid order that could not be fulfilled to the customer's
+/// balance (the gateway amount and the held balance part; the coupon use
+/// comes back; the customer gets the refund notice instead of a receipt)
+/// and alert the admins through the alert channels — in the payment's
+/// transaction, as the payment actor.
+async fn refund_unfulfillable(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    order_id: Uuid,
+    code: &str,
+) -> Result<(), ApiError> {
+    let reason = match code {
+        "shop.sold_out" => "自动退款：套餐已售罄，未能开通",
+        "shop.reset_needs_plan" => "自动退款：已不再持有该套餐，流量重置包无法使用",
+        _ => "自动退款：套餐已停用或删除，未能开通",
+    };
+    let done = super::refund::apply_refund(
+        conn,
+        actor,
+        order_id,
+        &super::refund::Refund {
+            reason,
+            to_balance: true,
+            external_cents: None,
+            keep_plan: false,
+            portal: None,
+        },
+    )
+    .await?;
+    let (otn, label, plan, amount): (String, String, String, i64) = sqlx::query_as(
+        "SELECT out_trade_no, user_label, plan_name, amount_cents FROM orders WHERE id = $1",
+    )
+    .bind(order_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    tracing::warn!(order = %order_id, code, "paid order not fulfilled: refunded to the balance");
+    let msg = crate::alerts::channels::Message::billing(
+        &format!("[订单] 已付款未开通，已自动退回余额：{otn}"),
+        &format!(
+            "订单：{otn}\n用户：{label}\n套餐：{plan}\n实付：{}.{:02} 元\n原因：{reason}\n退回余额：{}.{:02} 元",
+            amount / 100,
+            amount % 100,
+            done["refund_balance_cents"].as_i64().unwrap_or(0) / 100,
+            done["refund_balance_cents"].as_i64().unwrap_or(0) % 100,
+        ),
+        json!({ "order_id": order_id, "out_trade_no": otn, "code": code,
+                "refund_cents": done["refund_cents"] }),
+    );
+    // An alert failure never rolls the money back (savepoint).
+    let mut sp = conn.begin().await?;
+    let queued = async {
+        let s = crate::alerts::load(&mut sp).await?;
+        crate::alerts::channels::enqueue(&mut sp, &s.channels(), &msg).await
+    }
+    .await;
+    match queued {
+        Ok(_) => sp.commit().await?,
+        Err(e) => {
+            tracing::warn!(order = %order_id, error = %e, "billing alert not queued");
+            sp.rollback().await?;
+        }
+    }
+    Ok(())
 }
 
 async fn bought(conn: &mut PgConnection, order_id: Uuid) -> sqlx::Result<Bought> {
@@ -218,13 +306,13 @@ async fn bought(conn: &mut PgConnection, order_id: Uuid) -> sqlx::Result<Bought>
 /// Grant/extend the plan of a paid order under a savepoint: a business
 /// failure (plan gone/disabled/sold out, user gone/admin, reset pack
 /// without the plan) rolls back only the plan change and is stored in
-/// `fulfil_error`. Returns (fulfilled, detail).
+/// `fulfil_error`. Returns (fulfilled, detail, the failure's code).
 async fn fulfil(
     conn: &mut PgConnection,
     actor: &Actor,
     order_id: Uuid,
     bought: &Bought,
-) -> Result<(bool, Value), ApiError> {
+) -> Result<(bool, Value, Option<&'static str>), ApiError> {
     let mut sp = conn.begin().await?;
     let res = match retake_balance(&mut sp, actor, order_id).await {
         Ok(()) => grant(&mut sp, actor, bought).await,
@@ -241,7 +329,7 @@ async fn fulfil(
             .bind(&detail)
             .execute(&mut *conn)
             .await?;
-            Ok((true, detail))
+            Ok((true, detail, None))
         }
         Err(e) => {
             sp.rollback().await?;
@@ -257,7 +345,11 @@ async fn fulfil(
                 .bind(&msg)
                 .execute(&mut *conn)
                 .await?;
-            Ok((false, json!({ "error": msg })))
+            Ok((
+                false,
+                json!({ "error": msg, "code": e.code() }),
+                Some(e.code()),
+            ))
         }
     }
 }
@@ -399,20 +491,22 @@ async fn grant(conn: &mut PgConnection, actor: &Actor, b: &Bought) -> Result<Val
             )
         }
         other => {
-            let cap: Option<(Option<i32>, i64)> = sqlx::query_as(
-                "SELECT capacity, (SELECT count(*) FROM user_plans \
-                 WHERE plan_id = $1 AND status = 'active') FROM plans WHERE id = $1",
-            )
+            // 中-2: the slots taken = active subscribers + the live
+            // reservations of OTHER pending orders (this one is paid now).
+            let cap: Option<(Option<i32>, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "SELECT capacity, {} FROM plans WHERE id = $1",
+                super::catalog::taken_sql("$1")
+            )))
             .bind(plan)
             .fetch_optional(&mut *conn)
             .await?;
-            let Some((capacity, holders)) = cap else {
+            let Some((capacity, taken)) = cap else {
                 return Err(conflict!(
                     "order_admin.plan_gone",
                     "the plan no longer exists"
                 ));
             };
-            if capacity.is_some_and(|c| holders >= i64::from(c)) {
+            if capacity.is_some_and(|c| taken >= i64::from(c)) {
                 return Err(conflict!("shop.sold_out", "plan is sold out"));
             }
             // The credit was computed from the subscription active at order
@@ -512,7 +606,7 @@ pub async fn apply_admin_fulfil(
         ));
     }
     let b = bought(conn, order_id).await?;
-    let (fulfilled, detail) = fulfil(conn, actor, order_id, &b).await?;
+    let (fulfilled, detail, _) = fulfil(conn, actor, order_id, &b).await?;
     crate::audit::record(
         conn,
         actor,

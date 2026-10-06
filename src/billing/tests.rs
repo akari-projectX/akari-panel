@@ -308,10 +308,10 @@ async fn order_row(db: &TestDb, user: Uuid, plan: Uuid, cents: i64, days: i32) -
     sqlx::query(
         "INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_id, plan_name, \
          amount_cents, list_price_cents, period, period_days, subject, expires_at, \
-         payment_method_id) \
+         payment_method_id, action) \
          VALUES ($1, $2, $3, 'u', $4, 'p', $5, $5, 'days', $6, 's', \
                  now() + interval '15 minutes', \
-                 (SELECT id FROM payment_methods ORDER BY created_at, id LIMIT 1))",
+                 (SELECT id FROM payment_methods ORDER BY created_at, id LIMIT 1), 'new')",
     )
     .bind(id)
     .bind(&otn)
@@ -1091,10 +1091,60 @@ async fn failed_fulfilment_and_admin_actions() {
         active_plan(&db, user).await.is_none(),
         "plan change rolled back"
     );
+    // 中-2: a plan that cannot be granted refunds the payment to the
+    // balance at once (nothing left for an admin to do).
+    let (refunded, to_balance): (bool, Option<i64>) = sqlx::query_as(
+        "SELECT refunded_at IS NOT NULL, refund_balance_cents FROM orders WHERE id = $1",
+    )
+    .bind(oid)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!((refunded, to_balance), (true, Some(800)));
+    sqlx::query("UPDATE plans SET enabled = true WHERE id = $1")
+        .bind(plan)
+        .execute(&db.pool)
+        .await
+        .unwrap();
 
     let admin = db.admin().await;
     let mut a = Client::new(&state, rand_ip());
     a.cookie = Some(token(&state, admin).await);
+    assert_eq!(
+        a.get("/test/api/v1/orders?unfulfilled=true")
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        0,
+        "refunded: needs no attention"
+    );
+    assert_eq!(
+        a.post(
+            &format!("/test/api/v1/orders/{oid}/fulfil"),
+            json!({ "reason": "x" })
+        )
+        .await
+        .status,
+        StatusCode::CONFLICT
+    );
+    // A failure that is not refunded automatically (the buyer became an
+    // admin meanwhile): paid, not fulfilled, retried by an admin.
+    let (oid, otn) = order_row(&db, user, plan, 800, 30).await;
+    sqlx::query("UPDATE users SET role = 'admin' WHERE id = $1")
+        .bind(user)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let r = post_notify(
+        &state,
+        rand_ip(),
+        form(&notify_params(&otn, "8.00", "TRADE_SUCCESS")),
+    )
+    .await;
+    assert_eq!(r.body, b"success");
+    assert!(!order_status(&db, oid).await.1);
     let r = a.get("/test/api/v1/orders?unfulfilled=true").await;
     assert_eq!(r.json().as_array().unwrap().len(), 1);
     let path = format!("/test/api/v1/orders/{oid}/fulfil");
@@ -1102,8 +1152,8 @@ async fn failed_fulfilment_and_admin_actions() {
         a.post(&path, json!({ "reason": "" })).await.status,
         StatusCode::BAD_REQUEST
     );
-    sqlx::query("UPDATE plans SET enabled = true WHERE id = $1")
-        .bind(plan)
+    sqlx::query("UPDATE users SET role = 'user' WHERE id = $1")
+        .bind(user)
         .execute(&db.pool)
         .await
         .unwrap();
@@ -2187,11 +2237,12 @@ async fn switching_plans_with_proration() {
     db.drop().await;
 }
 
-/// Capacity: two buyers race for the last slot. Both may create orders
-/// (pending orders reserve nothing) and both pay; fulfilment re-checks
-/// under entitle::lock, so exactly one gets the plan and the other stays
-/// paid with fulfil_error (money kept, admin resolves). The shop then shows
-/// the plan sold out and new orders are refused; renewals still work.
+/// Capacity (中-2): a pending order of a limited plan reserves its slot,
+/// so two buyers racing for the last one cannot both order it (the second
+/// is refused at creation, the shop shows it sold out); an order whose
+/// reservation lapsed and is paid late while the slot is taken is refunded
+/// to the balance at once, mailed and alerted — never "paid, not
+/// fulfilled". Renewals of a full plan still work.
 #[tokio::test]
 async fn capacity_race_for_the_last_slot() {
     let Some(db) = TestDb::new().await else {
@@ -2203,6 +2254,12 @@ async fn capacity_race_for_the_last_slot() {
         r.capacity = Some(1)
     })
     .await;
+    sqlx::query(
+        "UPDATE alert_settings SET email_enabled = true, email_to = ARRAY['ops@example.com']",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
     let (u1, u2, u3) = (db.user().await, db.user().await, db.user().await);
     let (c1, c2, c3) = (
         user_client(&state, u1).await,
@@ -2217,25 +2274,75 @@ async fn capacity_race_for_the_last_slot() {
         ),
         (json!(1), json!(false))
     );
-    let o1 = order_id(&buy(&c1, plan, "month").await);
-    let o2 = order_id(&buy(&c2, plan, "month").await);
-    let (r1, r2) = tokio::join!(pay(&db, o1), pay(&db, o2));
-    let mut results = vec![r1, r2];
-    results.sort_by_key(|r| format!("{r:?}"));
+    // The race at creation: exactly one order gets the reservation.
+    let (r1, r2) = tokio::join!(buy(&c1, plan, "month"), buy(&c2, plan, "month"));
+    let mut codes = vec![r1.status, r2.status];
+    codes.sort();
+    assert_eq!(codes, vec![StatusCode::CREATED, StatusCode::CONFLICT]);
+    let (winner, loser_c) = if r1.status == StatusCode::CREATED {
+        (order_id(&r1), &c2)
+    } else {
+        (order_id(&r2), &c1)
+    };
+    let shop = c3.get("/test/api/v1/me/shop").await.json();
     assert_eq!(
-        results,
-        vec![
-            Paid::Now { fulfilled: false },
-            Paid::Now { fulfilled: true }
-        ]
+        (
+            shop["plans"][0]["remaining"].clone(),
+            shop["plans"][0]["sold_out"].clone()
+        ),
+        (json!(0), json!(true)),
+        "a pending order holds the slot"
     );
-    let s1 = order_status(&db, o1).await;
-    let s2 = order_status(&db, o2).await;
-    let first_won = s1.1;
-    let (won, lost) = if first_won { (s1, s2) } else { (s2, s1) };
-    assert_eq!((won.0.as_str(), won.1), ("paid", true));
-    assert_eq!((lost.0.as_str(), lost.1), ("paid", false));
-    assert_eq!(lost.2.as_deref(), Some("plan is sold out"));
+    assert_eq!(shop["plans"][0]["offers"][0]["refusal"], "sold_out");
+    let r = buy(&c3, plan, "month").await;
+    assert_eq!(
+        (r.status, r.json()["error"].clone()),
+        (StatusCode::CONFLICT, json!("plan is sold out"))
+    );
+    // The reservation lapses (the order is past its expiry): somebody else
+    // takes the slot and pays; the late payment of the lapsed order goes
+    // to the balance.
+    sqlx::query("UPDATE orders SET expires_at = now() - interval '1 second' WHERE id = $1")
+        .bind(winner)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let r = buy(loser_c, plan, "month").await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+    let taker = order_id(&r);
+    assert_eq!(pay(&db, taker).await, Paid::Now { fulfilled: true });
+    assert_eq!(pay(&db, winner).await, Paid::Now { fulfilled: false });
+    let (st, fulfilled, err) = order_status(&db, winner).await;
+    assert_eq!((st.as_str(), fulfilled), ("paid", false));
+    assert_eq!(err.as_deref(), Some("plan is sold out"));
+    let late_buyer: Uuid = sqlx::query_scalar("SELECT user_id FROM orders WHERE id = $1")
+        .bind(winner)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    let (refund, effect, balance): (Option<i64>, Value, i64) = sqlx::query_as(
+        "SELECT o.refund_balance_cents, o.refund_effect, \
+         (SELECT balance_cents FROM user_balances WHERE user_id = o.user_id) \
+         FROM orders o WHERE o.id = $1",
+    )
+    .bind(winner)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!((refund, balance), (Some(1000), 1000));
+    assert_eq!(effect, json!({"kind": "none", "why": "not_fulfilled"}));
+    assert!(active_plan(&db, late_buyer).await.is_none());
+    // The admins are alerted (event billing) through the enabled channel.
+    let alerts: Vec<(String, String)> = sqlx::query_as(
+        "SELECT channel, payload->>'title' FROM alert_notifications WHERE event = 'billing'",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(alerts.len(), 1, "{alerts:?}");
+    assert_eq!(alerts[0].0, "email");
+    assert!(alerts[0].1.contains("已自动退回余额"), "{}", alerts[0].1);
+    // No commission, no receipt for it; exactly one active holder.
     assert_eq!(
         count(
             &db,
@@ -2245,42 +2352,9 @@ async fn capacity_race_for_the_last_slot() {
         .await,
         1
     );
-    let shop = c3.get("/test/api/v1/me/shop").await.json();
-    assert_eq!(
-        (
-            shop["plans"][0]["remaining"].clone(),
-            shop["plans"][0]["sold_out"].clone()
-        ),
-        (json!(0), json!(true))
-    );
-    assert_eq!(shop["plans"][0]["offers"][0]["refusal"], "sold_out");
-    let r = buy(&c3, plan, "month").await;
-    assert_eq!(
-        (r.status, r.json()["error"].clone()),
-        (StatusCode::CONFLICT, json!("plan is sold out"))
-    );
     // The holder renews a full plan.
-    let holder = if first_won { &c1 } else { &c2 };
+    let holder = if late_buyer == u1 { &c2 } else { &c1 };
     assert_eq!(buy(holder, plan, "month").await.status, StatusCode::CREATED);
-    // The admin resolves the loser by raising the capacity and retrying.
-    sqlx::query("UPDATE plans SET capacity = 2 WHERE id = $1")
-        .bind(plan)
-        .execute(&db.pool)
-        .await
-        .unwrap();
-    let lost_id = if first_won { o2 } else { o1 };
-    let mut tx = db.pool.begin().await.unwrap();
-    let r = orders::apply_admin_fulfil(
-        &mut tx,
-        &crate::audit::Actor::test(),
-        lost_id,
-        "capacity raised",
-    )
-    .await
-    .ok()
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(r, Paid::Now { fulfilled: true });
     drop(state);
     db.drop().await;
 }
