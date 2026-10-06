@@ -2099,15 +2099,21 @@ PORDER=$(last_json "d['id']")
 [ "$(api_json "$WJAR" POST "$BASE/api/v1/me/orders/$PORDER/cancel" '{}')" = "200" ] && [ "$(last_json "d['status']")" = "cancelled" ] \
   || { echo "FAIL: cancel partial order"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(psql_q "SELECT balance_cents FROM user_balances WHERE user_id='$W16U'")" = "300" ] || { echo "FAIL: balance part not returned"; exit 1; }
-# Admin refund of the coupon order to the balance (the commission was already credited: kept).
+# Admin refund of the coupon order to the balance. 中-4: its commission was
+# credited (80) and partly withdrawn (60): the refund claws it back — the
+# inviter's balance (20) now, the rest (60) owed and kept out of withdrawals.
 # P1: the preview says what happens to the subscription the order created
 # (cancelled: the user's access goes), and the refund does exactly that.
 [ "$(code -b "$JAR" "$BASE/api/v1/orders/$CORDER/refund-preview")" = "200" ] \
   && [ "$(last_json "d['effect']['kind']")/$(last_json "d['amount_cents']")" = "cancel/800" ] \
   || { echo "FAIL: refund preview"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(api_json "$JAR" POST "$BASE/api/v1/orders/$CORDER/refund" '{"reason":"smoke refund","to_balance":true}')" = "200" ] \
-  && [ "$(last_json "d['refund_cents']")/$(last_json "d['commission']")/$(last_json "d['effect']['kind']")" = "800/credited/cancel" ] \
+  && [ "$(last_json "d['refund_cents']")/$(last_json "d['commission']")/$(last_json "d['effect']['kind']")" = "800/clawed_back/cancel" ] \
+  && [ "$(last_json "d['commission_clawback']['recovered_cents']")/$(last_json "d['commission_clawback']['outstanding_cents']")" = "20/60" ] \
   || { echo "FAIL: refund"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$IJAR" "$BASE/api/v1/me/balance")" = "200" ] \
+  && [ "$(last_json "d['balance_cents']")/$(last_json "d['withdrawable_cents']")/$(last_json "d['entries'][0]['kind']")" = "0/0/commission_clawback" ] \
+  || { echo "FAIL: commission clawback on the inviter's balance"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM user_plans WHERE user_id='$W16U' AND status='active'")/$(psql_q "SELECT count(*) FROM entrance_users WHERE user_id='$W16U'")" = "0/0" ] \
   || { echo "FAIL: the refunded subscription kept its access"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/orders/$CORDER/refund-preview")" = "409" ] || { echo "FAIL: preview of a refunded order"; exit 1; }
@@ -2136,7 +2142,7 @@ psql_q "UPDATE user_balances SET balance_cents = balance_cents + 1" >/dev/null 2
 psql_q "DELETE FROM balance_ledger" >/dev/null 2>&1 && { echo "FAIL: ledger is not append-only"; exit 1; }
 for a in coupon.create commission.create commission.settings.update balance.commission balance.withdrawal \
          withdrawal.approved balance.admin_adjust balance.order_payment balance.refund_to_balance order.refund \
-         user.plan.refund; do
+         user.plan.refund commission.clawback balance.commission_clawback; do
   [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='$a'")" -ge 1 ] || { echo "FAIL: audit lacks $a"; exit 1; }
 done
 # Clean up: the W16 buyer holds w16-plan (the paid group's node); later

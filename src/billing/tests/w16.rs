@@ -1612,14 +1612,19 @@ async fn commission_lifecycle() {
         .unwrap();
     assert_eq!(commission::credit_due(&mut c).await.ok().unwrap(), 0);
     assert_eq!(balance(&db, inviter).await, 100);
-    // A refund after the credit leaves it (the hold is the window).
+    // 中-4: a refund after the credit claws it back (the balance covers it).
     let r = admin
         .post(
             &format!("/test/api/v1/orders/{o1}/refund"),
             json!({"reason": "late", "external_cents": 0}),
         )
         .await;
-    assert_eq!(r.json()["commission"], "credited");
+    assert_eq!(r.json()["commission"], "clawed_back");
+    assert_eq!(
+        r.json()["commission_clawback"],
+        json!({"amount_cents": 100, "recovered_cents": 100, "outstanding_cents": 0})
+    );
+    assert_eq!(balance(&db, inviter).await, 0);
     // Coupon part earns nothing: 50% off 1000 -> commission on 500.
     create_coupon(
         &admin,
@@ -2226,7 +2231,9 @@ async fn every_money_movement_writes_one_ledger_row_and_audit() {
         let mut c = db.pool.acquire().await.unwrap();
         assert!(commission::credit_due(&mut c).await.ok().unwrap() >= 1);
     });
-    step!("refund to balance", 1, {
+    // 中-4: the credited commission is clawed back with the refund (one
+    // more ledger row, on the inviter's balance).
+    step!("refund to balance + commission clawback", 2, {
         let r = admin
             .post(
                 &format!("/test/api/v1/orders/{}/refund", paid.get()),
@@ -2234,6 +2241,17 @@ async fn every_money_movement_writes_one_ledger_row_and_audit() {
             )
             .await;
         assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(r.json()["commission"], "clawed_back");
+    });
+    step!("another Alipay order paid", 0, {
+        let r = buy_with(&uc, plan, "month", json!({})).await;
+        let (o, otn) = (order_id(&r), otn_of(&r));
+        mock.pay(&otn);
+        poll_until_paid(&db, &uc, o).await;
+    });
+    step!("its commission credited", 1, {
+        let mut c = db.pool.acquire().await.unwrap();
+        assert!(commission::credit_due(&mut c).await.ok().unwrap() >= 1);
     });
     let w = std::cell::Cell::new(Uuid::nil());
     step!("withdrawal request", 1, {
@@ -2271,7 +2289,7 @@ async fn every_money_movement_writes_one_ledger_row_and_audit() {
             .await;
         assert_eq!(r.status, StatusCode::NO_CONTENT);
     });
-    assert_eq!(steps.len(), 10);
+    assert_eq!(steps.len(), 12);
     drop(state);
     db.drop().await;
 }

@@ -41,6 +41,8 @@ pub enum Kind {
     RefundToBalance,
     Withdrawal,
     WithdrawalReversal,
+    /// 中-4: a refunded order's credited commission taken back (negative).
+    CommissionClawback,
 }
 
 impl Kind {
@@ -52,6 +54,7 @@ impl Kind {
             Kind::RefundToBalance => "refund_to_balance",
             Kind::Withdrawal => "withdrawal",
             Kind::WithdrawalReversal => "withdrawal_reversal",
+            Kind::CommissionClawback => "commission_clawback",
         }
     }
 }
@@ -161,12 +164,13 @@ pub async fn balance(conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result<i64
 }
 
 /// SQL: what user `$1` may withdraw as cash: the balance, but at most the
-/// commissions credited to them minus their withdrawals that were not
+/// commissions credited to them, minus the ones clawed back by a refund
+/// (中-4: recovered or still owed) and their withdrawals that were not
 /// rejected or cancelled (refunds and admin credits are spendable on
 /// orders, not withdrawable).
 pub const WITHDRAWABLE_SQL: &str = "SELECT GREATEST(0, LEAST( \
        COALESCE((SELECT balance_cents FROM user_balances WHERE user_id = $1), 0), \
-       COALESCE((SELECT sum(amount_cents) FROM commissions \
+       COALESCE((SELECT sum(amount_cents) - sum(COALESCE(clawback_cents, 0)) FROM commissions \
                  WHERE inviter_id = $1 AND status = 'credited'), 0) \
        - COALESCE((SELECT sum(amount_cents) FROM withdrawals \
                    WHERE user_id = $1 AND status IN ('pending', 'approved')), 0)))::bigint";
