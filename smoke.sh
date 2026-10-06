@@ -2105,12 +2105,15 @@ PORDER=$(last_json "d['id']")
 # P1: the preview says what happens to the subscription the order created
 # (cancelled: the user's access goes), and the refund does exactly that.
 [ "$(code -b "$JAR" "$BASE/api/v1/orders/$CORDER/refund-preview")" = "200" ] \
-  && [ "$(last_json "d['effect']['kind']")/$(last_json "d['amount_cents']")" = "cancel/800" ] \
+  && [ "$(last_json "d['effect']['kind']")/$(last_json "d['amount_cents']")/$(last_json "d['coupon_released']")" = "cancel/800/SMOKE20" ] \
   || { echo "FAIL: refund preview"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(api_json "$JAR" POST "$BASE/api/v1/orders/$CORDER/refund" '{"reason":"smoke refund","to_balance":true}')" = "200" ] \
   && [ "$(last_json "d['refund_cents']")/$(last_json "d['commission']")/$(last_json "d['effect']['kind']")" = "800/clawed_back/cancel" ] \
   && [ "$(last_json "d['commission_clawback']['recovered_cents']")/$(last_json "d['commission_clawback']['outstanding_cents']")" = "20/60" ] \
   || { echo "FAIL: refund"; cat /tmp/akari-smoke/last; exit 1; }
+# 低-2: the coupon's one use comes back with the refund.
+[ "$(psql_q "SELECT status || '/' || (SELECT used FROM coupons WHERE code='SMOKE20') FROM coupon_redemptions WHERE order_id='$CORDER'")" = "released/0" ] \
+  || { echo "FAIL: refund did not give the coupon use back"; exit 1; }
 [ "$(code -b "$IJAR" "$BASE/api/v1/me/balance")" = "200" ] \
   && [ "$(last_json "d['balance_cents']")/$(last_json "d['withdrawable_cents']")/$(last_json "d['entries'][0]['kind']")" = "0/0/commission_clawback" ] \
   || { echo "FAIL: commission clawback on the inviter's balance"; cat /tmp/akari-smoke/last; exit 1; }

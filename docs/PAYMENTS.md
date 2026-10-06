@@ -326,6 +326,9 @@ Withdrawals of a deleted user can only be approved.
   `refund_balance_cents`（退到余额）、`refund_external_cents`（支付宝后台已退），
   `refund_cents` = 两者之和；仪表盘「退款」与订单 CSV（两列分开）都按它统计。
   待结算的邀请返利撤销，已入账的追回（中-4，见上文「Invite commission」）。
+- **优惠券与首单（低-2）**：退款把该订单用掉的优惠券次数还回去（券的总次数与该用户的
+  每人次数都减一；超限兑现的本来就没计数）。已退款的订单不再算「已购买」：新人券对他重新
+  可用，邀请返利的「仅首单」也不把它算作首单。
 - **套餐（P1）**：默认同时撤销该订单对订阅的效果，写审计 `user.plan.refund`：
   - 新购：结束该订阅（状态 `cancelled`），用户的节点凭据随即撤销，agent 断开其连接；
   - 续费：到期时间回退该订单增加的时长（开通时记录 `base`，回退量 = 本单到期 −

@@ -135,7 +135,8 @@ pub struct Checked {
 const CHECK_SQL: &str = "WITH c AS (SELECT * FROM coupons WHERE lower(code) = lower($1)), \
      u AS (SELECT (SELECT count(*) FROM coupon_redemptions r JOIN c ON r.coupon_id = c.id \
                    WHERE r.user_id = $2 AND r.status <> 'released') AS mine, \
-                  EXISTS (SELECT 1 FROM orders WHERE user_id = $2 AND status = 'paid') AS bought), \
+                  EXISTS (SELECT 1 FROM orders WHERE user_id = $2 AND status = 'paid' \
+                          AND refunded_at IS NULL) AS bought), \
      x AS (SELECT * FROM unnest($3::uuid[], $4::text[], $5::bigint[]) WITH ORDINALITY \
            AS x(plan_id, period, list, ord)) \
      SELECT c.id, c.code, CASE \
@@ -243,6 +244,31 @@ pub async fn release(conn: &mut PgConnection, order_id: Uuid) -> sqlx::Result<bo
         .bind(coupon)
         .execute(conn)
         .await?;
+    Ok(true)
+}
+
+/// 低-2: the order was refunded — its redemption is given back (the
+/// coupon's use count and the buyer's per-user count drop by one; an
+/// over-limit redemption was never counted). Idempotent. Returns whether
+/// a redemption was released.
+pub async fn release_refunded(conn: &mut PgConnection, order_id: Uuid) -> sqlx::Result<bool> {
+    let r: Option<(Uuid, bool)> = sqlx::query_as(
+        "UPDATE coupon_redemptions SET status = 'released', over_limit = false, \
+         updated_at = now() WHERE order_id = $1 AND status = 'redeemed' \
+         RETURNING coupon_id, old.over_limit",
+    )
+    .bind(order_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((coupon, over_limit)) = r else {
+        return Ok(false);
+    };
+    if !over_limit {
+        sqlx::query("UPDATE coupons SET used = used - 1 WHERE id = $1 AND used > 0")
+            .bind(coupon)
+            .execute(conn)
+            .await?;
+    }
     Ok(true)
 }
 
