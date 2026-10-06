@@ -173,6 +173,13 @@ jobs:
     # W25: the panel compiles in the official release keys (early refusal of
     # wrong uploads); src/release-keys.txt must stay a byte-identical copy of
     # akari-agent's release-keys.txt (the agents' trust root) on its main.
+    # Also deploy/systemd/'s copy of the agent units (UNIT_FILES of the
+    # agent's Makefile; its `make check-units` compares the same files
+    # against panel main): a panel edit must not turn the agent's main red.
+    # A unit change merges panel first (agent Makefile): push the agent's
+    # change on an akari-agent branch named like this PR's branch, and the
+    # units are compared against that branch instead of main.
+    # (Job name kept: it is a required check.)
     name: release keys match akari-agent main
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -191,6 +198,38 @@ jobs:
             diff akari-agent/release-keys.txt akari-panel/src/release-keys.txt
             exit 1
           }
+      - id: units-ref
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          ref=main
+          if [ -n "$HEAD_REF" ] && git ls-remote --exit-code --heads \
+            https://github.com/akari-projectX/akari-agent "refs/heads/$HEAD_REF" >/dev/null; then
+            ref="$HEAD_REF"
+          fi
+          echo "agent units: akari-agent $ref"
+          echo "ref=$ref" >>"$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: akari-projectX/akari-agent
+          ref: ${{ steps.units-ref.outputs.ref }}
+          path: akari-agent-units
+      - name: agent units match akari-agent main (or the paired branch)
+        working-directory: akari-agent-units
+        env:
+          REF: ${{ steps.units-ref.outputs.ref }}
+        run: |
+          units="$(sed -n 's/^UNIT_FILES *= *//p' Makefile)"
+          [ -n "$units" ] || { echo "::error::no UNIT_FILES in the akari-agent Makefile"; exit 1; }
+          rc=0
+          for u in $units; do
+            cmp "systemd/$u" "../akari-panel/deploy/systemd/$u" || {
+              echo "::error file=deploy/systemd/$u::differs from akari-agent systemd/$u ($REF): copy it verbatim"
+              diff "systemd/$u" "../akari-panel/deploy/systemd/$u" || true
+              rc=1
+            }
+          done
+          exit $rc
 
   docker:
     # The release Dockerfile must keep building (no push): static binary,

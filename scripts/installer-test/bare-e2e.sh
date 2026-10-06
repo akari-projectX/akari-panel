@@ -105,7 +105,7 @@ check_panel() {
 	[ "$(https_code "$origin/$p/healthz")" = 200 ] || fail "healthz through Caddy"
 	# v0.4 (D11): the portal at /; unknown paths stay the plain 404.
 	# (Told apart by akari-ctl info: a v0.3.x console is /{prefix}/admin; the
-	# CI build of this tree is also called v0.3.2-ci.N.)
+	# CI build of this tree is called <version>-ci.N.)
 	case $(cx akari-ctl info | sed -n 1p) in
 	*/admin) [ "$(https_code "$origin/")" = 404 ] || fail "/ is not the plain 404" ;;
 	*)

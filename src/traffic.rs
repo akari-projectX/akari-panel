@@ -1995,25 +1995,24 @@ mod db_tests {
     }
 
     /// W22: a report's history row: raw up/down as accepted, billed = the
-    /// multiplier charge, the site day (Q3, default Asia/Shanghai) whatever
-    /// the session time zone;
+    /// multiplier charge, the site day (Q3) whatever the session time zone;
     /// staged until compaction; a new day starts a new row and leaves the
     /// old one alone; a replay (fresh buffer = panel restart) adds nothing;
     /// a departed user's final counters land in the history too.
     #[tokio::test]
     async fn history_split_multiplier_site_day_boundary_replay_departed() {
-        // A session time zone whose date differs from the site's (Shanghai,
-        // UTC+8) right now: UTC+14 differs from 10:00 to 16:00 UTC, UTC-12
-        // from 16:00 to 12:00 UTC.
-        let hour = chrono::Timelike::hour(&chrono::Utc::now());
-        let tz = if (10..15).contains(&hour) {
-            "Pacific/Kiritimati"
-        } else {
-            "Etc/GMT+12"
-        };
         let Some(db) = TestDb::new().await else {
             return;
         };
+        // Site UTC+14, session UTC-12: 26 hours apart, so their dates differ
+        // at every instant (no dependence on the time of day the test runs).
+        let site =
+            sqlx::query("UPDATE panel_settings SET timezone = 'Pacific/Kiritimati' WHERE id = 1")
+                .execute(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(site.rows_affected(), 1);
+        let tz = "Etc/GMT+12";
         // sqlx pins TimeZone=UTC at connect: set the zone after it.
         let url = std::env::var("DATABASE_URL")
             .unwrap_or_else(|_| "postgres://akari:akari-dev@localhost:5432/akari".into());
