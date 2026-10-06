@@ -109,10 +109,7 @@ async fn subscription_link_is_stored_encrypted_and_retrievable() {
     let me = me.json();
     let token = me["sub_token"].as_str().unwrap().to_string();
     assert_eq!(me["sub_legacy"], false);
-    assert_eq!(
-        me["sub_url"],
-        format!("https://sub.example/test/sub/{token}")
-    );
+    assert_eq!(me["sub_url"], format!("https://sub.example/sub/{token}"));
     assert!(me["probe_interval_secs"].as_u64().unwrap() >= 600);
     let (hash, enc) = stored(&db, id).await;
     assert_eq!(hash.as_deref(), Some(hash_token(&token).as_str()));
@@ -136,11 +133,11 @@ async fn subscription_link_is_stored_encrypted_and_retrievable() {
     );
     // Lookup is by hash: the link works.
     let anon = Client::new(&state, rand_ip());
-    let sub = anon.get(&format!("/test/sub/{token}")).await;
+    let sub = anon.get(&format!("/sub/{token}")).await;
     assert_eq!(sub.status, StatusCode::OK);
     assert!(sub.headers.get("subscription-userinfo").is_some());
     // ?format= picks the format explicitly.
-    let clash = anon.get(&format!("/test/sub/{token}?format=clash")).await;
+    let clash = anon.get(&format!("/sub/{token}?format=clash")).await;
     assert_eq!(
         clash.headers.get("content-type").unwrap(),
         "text/yaml; charset=utf-8"
@@ -154,13 +151,10 @@ async fn subscription_link_is_stored_encrypted_and_retrievable() {
     assert_ne!(t2, token);
     assert_eq!(c.get("/test/api/v1/me").await.json()["sub_token"], t2);
     assert_eq!(
-        anon.get(&format!("/test/sub/{token}")).await.status,
+        anon.get(&format!("/sub/{token}")).await.status,
         StatusCode::NOT_FOUND
     );
-    assert_eq!(
-        anon.get(&format!("/test/sub/{t2}")).await.status,
-        StatusCode::OK
-    );
+    assert_eq!(anon.get(&format!("/sub/{t2}")).await.status, StatusCode::OK);
     let (hash2, enc2) = stored(&db, id).await;
     assert_eq!(hash2.as_deref(), Some(hash_token(&t2).as_str()));
     assert_ne!(enc2.as_deref(), Some(enc.as_slice()));
@@ -177,10 +171,7 @@ async fn subscription_link_is_stored_encrypted_and_retrievable() {
     assert_eq!(r.headers.get("cache-control").unwrap(), "no-store");
     assert_eq!(r.json()["sub_token"], t2);
     assert_eq!(r.json()["legacy"], false);
-    assert_eq!(
-        r.json()["sub_url"],
-        format!("https://sub.example/test/sub/{t2}")
-    );
+    assert_eq!(r.json()["sub_url"], format!("https://sub.example/sub/{t2}"));
     assert_eq!(
         ac.get(&format!("/test/api/v1/users/{admin}/subscription"))
             .await
@@ -263,7 +254,7 @@ async fn legacy_tokens_are_kept_and_guarded() {
     );
     let anon = Client::new(&state, rand_ip());
     assert_eq!(
-        anon.get(&format!("/test/sub/{legacy}")).await.status,
+        anon.get(&format!("/sub/{legacy}")).await.status,
         StatusCode::OK
     );
     assert!(audit_actions(&db, id).await.is_empty());
@@ -275,9 +266,10 @@ async fn legacy_tokens_are_kept_and_guarded() {
     let me = c.get("/test/api/v1/me").await.json();
     assert_eq!(me["sub_legacy"], false);
     assert_eq!(me["sub_token"], t);
-    assert!(
-        me["sub_url"].is_null(),
-        "no subscription domain: the SPA builds it"
+    assert_eq!(
+        me["sub_url"],
+        format!("/sub/{t}"),
+        "no subscription domain: root-relative on the panel (D11)"
     );
 
     // A ciphertext from another key file (or row) opens to nothing: legacy.
@@ -536,11 +528,11 @@ async fn format_switches_answer_the_uniform_rejection() {
     let ua_get = |ua: &'static str, query: &'static str| {
         let mut cl = Client::new(&state, rand_ip());
         cl.headers.push(("user-agent".into(), ua.into()));
-        let path = format!("/test/sub/{token}{query}");
+        let path = format!("/sub/{token}{query}");
         async move { cl.get(&path).await }
     };
     let junk = Client::new(&state, rand_ip())
-        .get("/test/sub/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        .get("/sub/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
         .await;
     assert_eq!(junk.status, StatusCode::NOT_FOUND);
     let reject = junk.fingerprint();

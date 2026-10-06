@@ -30,9 +30,9 @@
 #     the PGDG, Caddy and Docker apt keys are pinned by fingerprint;
 #   * generated passwords never appear on a command line or in the log
 #     (/var/log/akari-install.log, 0600); the admin password is printed once
-#     to the terminal, and the secret route prefix only in the final summary
+#     to the terminal, and the secret admin prefix only in the final summary
 #     (and by `akari-ctl info`);
-#   * data dir 0700 (route prefix, CA key, jwt.key, master.key), panel.toml
+#   * data dir 0700 (admin prefix seed, CA key, jwt.key, master.key), panel.toml
 #     0640 root:akari, env files 0600.
 #
 # The whole script is a set of functions and a last line that calls main:
@@ -708,10 +708,10 @@ caddy_options() {
 	printf '%s' "$o"
 }
 
-# configure_caddy PREFIX (bare metal): our Caddyfile, the environment (with
-# the secret prefix) in a root-only file, and a drop-in that starts Caddy
-# without --environ (it would print the prefix into the journal) and with
-# the admin API off (it would serve the configuration to local users).
+# configure_caddy (bare metal): our Caddyfile, the environment in a
+# root-only file, and a drop-in that starts Caddy without --environ (it
+# would print the environment into the journal) and with the admin API off
+# (it would serve the configuration to local users).
 configure_caddy() {
 	if [ -f /etc/caddy/Caddyfile ] && ! grep -q 'akari-installer' /etc/caddy/Caddyfile &&
 		[ ! -f /etc/caddy/Caddyfile.pre-akari ]; then
@@ -725,7 +725,6 @@ configure_caddy() {
 	opts=$(caddy_options bare "$NL")
 	{
 		echo "AKARI_DOMAIN=${DOMAIN:-$PUBLIC_IP}"
-		echo "AKARI_PREFIX=$1"
 		echo "AKARI_UPSTREAM=127.0.0.1:$WEB_PORT"
 		echo "AKARI_ASK=http://127.0.0.1:$ASK_PORT/ask"
 		# systemd EnvironmentFile: a quoted value may span lines.
@@ -735,7 +734,7 @@ configure_caddy() {
 	install -d -m 0755 /etc/systemd/system/caddy.service.d
 	cat >"$TMP/caddy-dropin.conf" <<'EOF'
 # Written by the Akari installer.
-# AKARI_DOMAIN / AKARI_PREFIX (secret) / upstream / ask endpoint for
+# AKARI_DOMAIN / upstream / ask endpoint for
 # /etc/caddy/Caddyfile. No --environ (it logs the environment), and the
 # admin API is off (`admin off`), so restart instead of reload.
 [Unit]
@@ -808,13 +807,15 @@ EOF
 	run systemctl daemon-reload
 }
 
+# The admin prefix (v0.4 D4: kept in the database; `akari info` falls back
+# to data/state.json, which the first start imports, before that).
 prefix_bare() {
-	akari_cli info 2>/dev/null | sed -n 's|^route prefix: *\/||p'
+	akari_cli info 2>/dev/null | sed -n 's|^admin prefix: *\/||p'
 }
 
 # --- health checks ------------------------------------------------------------------
 
-# wait_health URL SECONDS: 200 from /<prefix>/healthz.
+# wait_health URL SECONDS: 200 from /healthz.
 wait_health() {
 	i=0
 	while [ "$i" -lt "$2" ]; do
@@ -827,16 +828,16 @@ wait_health() {
 
 panel_health_url() {
 	if [ "$MODE" = bare ]; then
-		printf 'http://127.0.0.1:%s/%s/healthz' "$WEB_PORT" "$1"
+		printf 'http://127.0.0.1:%s/healthz' "$WEB_PORT"
 	else
 		ip=$(docker_panel_ip)
-		printf 'http://%s:8080/%s/healthz' "${ip:-0.0.0.0}" "$1"
+		printf 'http://%s:8080/healthz' "${ip:-0.0.0.0}"
 	fi
 }
 
-# check_proxy PREFIX: healthz through Caddy (TLS, the public path).
+# check_proxy: healthz through Caddy (TLS, the public path).
 check_proxy() {
-	url="$(origin)/$1/healthz"
+	url="$(origin)/healthz"
 	i=0
 	while [ "$i" -lt 60 ]; do
 		# Through this host's Caddy whatever DNS says (NAT, DNS not yet set).
@@ -928,7 +929,7 @@ pull_infra() {
 }
 
 docker_prefix() {
-	dc run --rm --no-deps -T panel info 2>/dev/null | sed -n 's|^route prefix: *\/||p'
+	dc run --rm --no-deps -T panel info 2>/dev/null | sed -n 's|^admin prefix: *\/||p'
 }
 
 # Over TCP, not the Unix socket: on a fresh volume the image's entrypoint runs
@@ -1268,16 +1269,16 @@ install_bare() {
 	refuse_pre_baseline
 	run akari_cli config check || die '配置校验失败（akari config check，见日志）' 'configuration check failed (akari config check, see the log)'
 	prefix=$(prefix_bare)
-	[ -n "$prefix" ] || die '无法读取路由前缀' 'cannot read the route prefix'
+	[ -n "$prefix" ] || die '无法读取后台前缀' 'cannot read the admin prefix'
 
 	step '启动面板' 'starting the panel'
 	run systemctl enable akari-panel.service
 	run systemctl restart akari-panel.service
-	wait_health "$(panel_health_url "$prefix")" 120 ||
+	wait_health "$(panel_health_url)" 120 ||
 		die '面板未通过健康检查（journalctl -u akari-panel）' 'the panel did not become healthy (journalctl -u akari-panel)'
 	[ -n "$RESTORE_DIR" ] || apply_settings
 	create_admin
-	configure_caddy "$prefix"
+	configure_caddy
 	open_firewall
 	finish "$prefix"
 }
@@ -1302,11 +1303,10 @@ install_docker_mode() {
 		refuse_pre_baseline
 	fi
 	prefix=$(docker_prefix)
-	[ -n "$prefix" ] || die '无法读取路由前缀' 'cannot read the route prefix'
-	kv_set "$DOCKER_DIR/.env" AKARI_PREFIX "$prefix"
+	[ -n "$prefix" ] || die '无法读取后台前缀' 'cannot read the admin prefix'
 	step '启动容器' 'starting the containers'
 	run dc up -d || die 'docker compose up 失败（见日志）' 'docker compose up failed (see the log)'
-	wait_health "$(panel_health_url "$prefix")" 180 ||
+	wait_health "$(panel_health_url)" 180 ||
 		die '面板未通过健康检查（docker compose logs panel）' 'the panel did not become healthy (docker compose logs panel)'
 	[ -n "$RESTORE_DIR" ] || apply_settings
 	create_admin
@@ -1329,7 +1329,7 @@ origin() {
 
 finish() {
 	prefix=$1
-	if check_proxy "$prefix"; then
+	if check_proxy; then
 		proxy_ok=1
 	else
 		proxy_ok=0
@@ -1338,14 +1338,14 @@ finish() {
 	save_state
 	o=$(origin)
 	printf '\n\033[1;32m%s\033[0m\n\n' "$(msg '安装完成。' 'Installation complete.')"
-	printf '  %s %s/%s/admin\n' "$(msg '管理后台：' 'admin console: ')" "$o" "$prefix"
-	printf '  %s %s/%s/app\n' "$(msg '用户门户：' 'user portal:   ')" "$o" "$prefix"
+	printf '  %s %s/%s/app\n' "$(msg '管理后台：' 'admin console: ')" "$o" "$prefix"
+	printf '  %s %s/\n' "$(msg '用户门户：' 'user portal:   ')" "$o"
 	if [ "$ADMIN_CREATED" = 1 ]; then
 		printf '  %s %s\n' "$(msg '管理员：  ' 'admin login:   ')" "$ADMIN"
 		printf '  %s %s\n' "$(msg '密码：    ' 'password:      ')" "$ADMIN_PW"
 		printf '  %s\n' "$(msg '（密码只显示这一次，请立即保存）' '(shown only this once: save it now)')"
 	fi
-	printf '\n  %s\n' "$(msg '路由前缀是机密：只有知道它的人才能访问面板。' 'The route prefix is secret: the panel is reachable only with it.')"
+	printf '\n  %s\n' "$(msg '后台地址中的前缀是机密：只有知道它的人才能进入后台（可在系统设置中更换或限制来源 IP）。' 'The admin prefix is secret: only those who know it reach the console (rotate it or restrict source IPs in 系统设置).')"
 	[ "$proxy_ok" = 1 ] || warn "经 Caddy 的 HTTPS 检查未通过：确认 DNS 已指向本机、端口 $HTTP_PORT/$HTTPS_PORT 已放行（云防火墙/安全组），证书签发可能需要几分钟" \
 		"the HTTPS check through Caddy did not pass yet: make sure DNS points here and ports $HTTP_PORT/$HTTPS_PORT are open (cloud firewall / security group); the certificate can take a few minutes"
 	[ -n "$DOMAIN" ] || note '仅 IP：证书由 Caddy 内部 CA 签发，浏览器会警告；正式使用请绑定域名（docs/DEPLOY.md）。' \
@@ -1423,8 +1423,12 @@ prefix_current() {
 	if [ "$MODE" = bare ]; then prefix_bare; else docker_prefix_env; fi
 }
 
+# The admin prefix from the running panel (rotations happen in its
+# database), else from a one-off container.
 docker_prefix_env() {
-	kv_get "$DOCKER_DIR/.env" AKARI_PREFIX
+	p=$(dc exec -T panel /akari info 2>/dev/null | sed -n 's|^admin prefix: *\/||p')
+	[ -n "$p" ] || p=$(docker_prefix)
+	printf '%s' "$p"
 }
 
 upgrade_failed() {
@@ -1450,7 +1454,7 @@ upgrade_bare() {
 	}
 	mv -f "$BIN.new" "$BIN"
 	run systemctl restart akari-panel.service || true
-	if wait_health "$(panel_health_url "$prefix")" 120; then
+	if wait_health "$(panel_health_url)" 120; then
 		CUR_VERSION=$TAG
 		save_state
 		install_tools
@@ -1464,7 +1468,7 @@ upgrade_bare() {
 	mv -f "$BIN.prev" "$BIN"
 	ln "$BIN" "$BIN.prev" 2>/dev/null || true
 	run systemctl restart akari-panel.service || true
-	if wait_health "$(panel_health_url "$prefix")" 120; then
+	if wait_health "$(panel_health_url)" 120; then
 		upgrade_failed
 		die "升级失败，已回滚到 $CUR_VERSION（面板正常运行）。日志：journalctl -u akari-panel" \
 			"upgrade failed; rolled back to $CUR_VERSION (the panel is healthy). Log: journalctl -u akari-panel"
@@ -1511,7 +1515,7 @@ upgrade_docker() {
 	fi
 	pull_infra
 	run dc up -d --force-recreate panel caddy || true
-	if wait_health "$(panel_health_url "$prefix")" 180; then
+	if wait_health "$(panel_health_url)" 180; then
 		CUR_VERSION=$TAG
 		save_state
 		install_tools
@@ -1525,7 +1529,7 @@ upgrade_docker() {
 	install -m 0644 "$TMP/compose.prev" "$DOCKER_DIR/docker-compose.yml"
 	install -m 0644 "$TMP/Caddyfile.prev" "$DOCKER_DIR/caddy/Caddyfile"
 	run dc up -d --force-recreate panel caddy || true
-	if wait_health "$(panel_health_url "$prefix")" 180; then
+	if wait_health "$(panel_health_url)" 180; then
 		upgrade_failed
 		die "升级失败，已回滚到 $old_image（面板正常运行）" "upgrade failed; rolled back to $old_image (the panel is healthy)"
 	fi
@@ -1541,7 +1545,7 @@ cmd_uninstall() {
 	[ -n "$MODE" ] || adopt
 	if [ "$PURGE" = 1 ]; then
 		warn '--purge 会永久删除数据库、数据目录（路由前缀、CA 私钥、jwt.key、master.key）与配置。所有节点都需要重新注册。备份目录保留。' \
-			'--purge permanently deletes the database, the data dir (route prefix, CA key, jwt.key, master.key) and the configuration. Every node would need re-enrolling. Backups are kept.'
+			'--purge permanently deletes the database, the data dir (CA key, jwt.key, master.key) and the configuration. Every node would need re-enrolling. Backups are kept.'
 		if [ "$INTERACTIVE" = 1 ] && [ -z "$CONFIRM_PURGE" ]; then
 			printf '%s ' "$(msg '输入 purge 确认：' 'type purge to confirm:')" >/dev/tty
 			IFS= read -r CONFIRM_PURGE </dev/tty || true
@@ -1748,7 +1752,7 @@ cmd_status() {
 		dc ps
 		prefix=$(docker_prefix_env)
 	fi
-	if [ -n "$prefix" ] && [ "$(http_status "$(panel_health_url "$prefix")")" = 200 ]; then
+	if [ -n "$prefix" ] && [ "$(http_status "$(panel_health_url)")" = 200 ]; then
 		printf '%-10s %s\n' healthz ok
 	else
 		printf '%-10s %s\n' healthz FAILED
@@ -1761,7 +1765,7 @@ cmd_info() {
 	[ -n "$MODE" ] || adopt
 	if [ "$MODE" = bare ]; then prefix=$(prefix_bare); else prefix=$(docker_prefix_env); fi
 	o=$(origin)
-	printf '%s/%s/admin\n%s/%s/app\n' "$o" "$prefix" "$o" "$prefix"
+	printf '%s/%s/app\n%s/\n' "$o" "$prefix" "$o"
 }
 
 # --- arguments, main ---------------------------------------------------------------------

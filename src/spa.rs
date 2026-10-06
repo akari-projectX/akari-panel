@@ -1,6 +1,7 @@
-//! The two embedded frontends (R23): the user portal at `/{prefix}/app`
-//! (public; also the shared login page) and the admin console at
-//! `/{prefix}/admin` (index and assets for admin sessions only). They are
+//! The two embedded frontends (R23): the user portal at `/` of the main
+//! domain (D11; under the admin prefix `/{admin}/app` it is the admins'
+//! login page) and the admin console at `/{admin}/admin` (index and assets
+//! for admin sessions only). They are
 //! independent Vite builds (spa/vite.config.ts), so nothing of the console
 //! ships to users; spa/scripts/check-bundles.mjs and smoke assert that.
 
@@ -29,19 +30,23 @@ struct AdminAssets;
 /// browser or any shared cache (a cached copy would outlive the session).
 const ADMIN_CACHE: &str = "private, no-store";
 
-/// The user portal entry point. Vite emits asset URLs rooted at "/assets/"
-/// — those are rewritten to the secret prefix at serve time, because the
-/// random prefix only exists on the server. Client-side routes (anything
-/// below /app/) all land here.
-pub async fn index(State(state): State<AppState>) -> Response {
+/// The user portal entry point: the portal's pages at `/` (D11) and the
+/// shared login page under the admin prefix (`/{admin}/app`). Vite emits
+/// asset URLs rooted at "/assets/": kept on the portal, rewritten to the
+/// admin prefix under it (the prefix only exists on the server, and the
+/// portal's own page never carries it). Client-side routes all land here.
+pub async fn index(State(state): State<AppState>, entry: crate::access::Entry) -> Response {
     let Some(file) = UserAssets::get("index.html") else {
         return reject::not_found();
     };
-    let html = rewrite(
-        &file.data,
-        "/assets/",
-        &format!("/{}/assets/", state.route_prefix()),
-    );
+    let html = match entry.0 {
+        Some(crate::access::Via::Admin) => rewrite(
+            &file.data,
+            "/assets/",
+            &format!("/{}/assets/", state.settings().access().admin_prefix),
+        ),
+        _ => String::from_utf8_lossy(&file.data).into_owned(),
+    };
     html_response(html, "no-store")
 }
 
@@ -75,7 +80,7 @@ pub async fn admin_index(
     let Some(file) = AdminAssets::get("admin.html") else {
         return reject::not_found();
     };
-    let prefix = state.route_prefix();
+    let prefix = state.settings().access().admin_prefix.clone();
     let html = rewrite(
         &file.data,
         "/admin/assets/",

@@ -1,8 +1,10 @@
 # Caddy in front of the panel (compose service or bare metal).
 #
-# ONLY the secret prefix is forwarded, on every domain. Everything else
-# (including "/") gets an empty 404 from Caddy itself: the panel is not
-# reachable, and not identifiable, without the prefix.
+# Every request is forwarded to the panel, which decides (v0.4 D4/D11): the
+# user portal at "/", the console and the API under the secret admin prefix
+# (kept in the panel's database: rotating it or restricting it to some IP
+# addresses needs no edit here), the subscription path, install links and
+# payment notifications; anything else is the panel's empty 404.
 #
 # Domains (R22): AKARI_DOMAIN is served as before. Every other domain set in
 # the admin "系统设置" (main domain, subscription domain) gets its
@@ -12,7 +14,7 @@
 # the domains change. The node communication domain is NOT served here:
 # agents dial the panel's gRPC port (8443) directly.
 #
-# Bare metal: export AKARI_DOMAIN / AKARI_PREFIX in Caddy's environment and
+# Bare metal: export AKARI_DOMAIN in Caddy's environment and
 #   AKARI_UPSTREAM=127.0.0.1:8080  AKARI_ASK=http://127.0.0.1:8082/ask
 # panel.toml then needs trusted_proxies = ["127.0.0.1/32"] and
 # [tls_ask] bind = "127.0.0.1:8082".
@@ -41,16 +43,17 @@
 
 (akari) {
 	encode zstd gzip
-	# -Via: Caddy adds "Via: 1.1 Caddy" to proxied responses, so the panel's own
-	# rejections would differ from the 404 below (a prefix oracle). Block form:
-	# both deletions apply to every response, proxied or not.
+	# -Via: Caddy adds "Via: 1.1 Caddy" to proxied responses, so the panel's
+	# rejections would differ from Caddy's own 404s (plain http below): an
+	# oracle. Block form: both deletions apply to every response, proxied or
+	# not.
 	header {
 		-Server
 		-Via
 	}
 
 	# Access logging is OFF by default in Caddy. If you enable it, keep the
-	# URI out: it contains the secret prefix and subscription tokens.
+	# URI out: it can contain the admin prefix and subscription tokens.
 	#   log {
 	#       format filter {
 	#           request>uri delete
@@ -58,18 +61,11 @@
 	#       }
 	#   }
 
-	handle /{$AKARI_PREFIX}/* {
-		# Caddy appends the client to X-Forwarded-For (and, because upstream
-		# proxies are not trusted, discards a client-supplied one). The Host
-		# header is passed through: the panel refuses names it does not know.
-		reverse_proxy {$AKARI_UPSTREAM:panel:8080} {
-			header_up X-Request-Id {http.request.uuid}
-		}
-	}
-
-	# Everything else: empty 404.
-	handle {
-		respond 404
+	# Caddy appends the client to X-Forwarded-For (and, because upstream
+	# proxies are not trusted, discards a client-supplied one). The Host
+	# header is passed through: the panel refuses names it does not know.
+	reverse_proxy {$AKARI_UPSTREAM:panel:8080} {
+		header_up X-Request-Id {http.request.uuid}
 	}
 }
 
@@ -92,8 +88,8 @@ http://{$AKARI_DOMAIN} {
 # Any other name: certificate on demand, only for domains the panel
 # confirms through the ask endpoint (unknown names fail the TLS handshake).
 # A request without SNI (https://<ip>) gets AKARI_DOMAIN's certificate
-# (default_sni) and lands here: the same empty 404, and the panel refuses
-# unknown Host names behind the prefix (host gate) with that same 404.
+# (default_sni) and lands here; the panel refuses unknown Host names (host
+# gate) with its empty 404.
 https:// {
 	tls {
 		on_demand

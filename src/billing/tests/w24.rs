@@ -235,7 +235,7 @@ async fn payment_methods_api() {
     assert_eq!(v["active"], true, "this instance reloaded at once");
     assert_eq!(v["version"], 1);
     assert_eq!(v["kind_label"], "支付宝当面付");
-    assert_eq!(v["notify_url"], format!("{ORIGIN}/test/pay/{id}/notify"));
+    assert_eq!(v["notify_url"], format!("{ORIGIN}/pay/{id}/notify"));
     let app = ali::AppKey::parse(APP_KEY).unwrap();
     assert_eq!(v["config"]["app_key_fingerprint"], app.fingerprint());
     assert_eq!(
@@ -317,10 +317,7 @@ async fn payment_methods_api() {
     assert_eq!(r.json()["payment_method_name"], "支付宝");
     assert!(r.json()["qr_code"].is_string());
     let otn = r.json()["out_trade_no"].as_str().unwrap().to_string();
-    assert_eq!(
-        mock.notify_urls(),
-        [format!("{ORIGIN}/test/pay/{id}/notify")]
-    );
+    assert_eq!(mock.notify_urls(), [format!("{ORIGIN}/pay/{id}/notify")]);
 
     // Rotate Alipay's public key, keeping the private key (field omitted):
     // a notify signed with the OLD key (in flight) is still accepted.
@@ -350,7 +347,7 @@ async fn payment_methods_api() {
         after.get("secrets").is_none(),
         "unchanged secrets not reported: {after}"
     );
-    let notify_path = format!("/test/pay/{id}/notify");
+    let notify_path = format!("/pay/{id}/notify");
     let body = form(&notify_params(&otn, "9.90", "TRADE_SUCCESS"));
     let r = post_notify_to(&state, &notify_path, body).await;
     assert_eq!(
@@ -499,10 +496,10 @@ async fn two_methods_are_isolated() {
     let otn = r.json()["out_trade_no"].as_str().unwrap().to_string();
     let oid: Uuid = r.json()["id"].as_str().unwrap().parse().unwrap();
     assert_eq!(ma.calls("alipay.trade.precreate"), 0);
-    assert_eq!(mb.notify_urls(), [format!("{ORIGIN}/test/pay/{b}/notify")]);
+    assert_eq!(mb.notify_urls(), [format!("{ORIGIN}/pay/{b}/notify")]);
     // A validly signed notify for B's order on A's route: unknown order.
     let body = form(&notify_params(&otn, "5.00", "TRADE_SUCCESS"));
-    let r = post_notify_to(&state, &format!("/test/pay/{a}/notify"), body.clone()).await;
+    let r = post_notify_to(&state, &format!("/pay/{a}/notify"), body.clone()).await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
     assert_eq!(order_status(&db, oid).await.0, "pending");
     let ev: String = sqlx::query_scalar(
@@ -516,8 +513,8 @@ async fn two_methods_are_isolated() {
     // Junk method ids: canonical rejection.
     let canonical = cb.get("/test/not/here").await.fingerprint();
     for p in [
-        "/test/pay/nope/notify".to_string(),
-        format!("/test/pay/{}/notify", Uuid::new_v4()),
+        "/pay/nope/notify".to_string(),
+        format!("/pay/{}/notify", Uuid::new_v4()),
     ] {
         assert_eq!(
             post_notify_to(&state, &p, body.clone()).await.fingerprint(),
@@ -526,7 +523,7 @@ async fn two_methods_are_isolated() {
         );
     }
     // The legacy path finds B through the order.
-    let r = post_notify_to(&state, "/test/pay/alipay/notify", body).await;
+    let r = post_notify_to(&state, "/pay/alipay/notify", body).await;
     assert_eq!(
         (r.status, r.body.as_slice()),
         (StatusCode::OK, &b"success"[..])
@@ -549,7 +546,7 @@ async fn two_methods_are_isolated() {
         .unwrap();
     let r = post_notify_to(
         &state,
-        "/test/pay/alipay/notify",
+        "/pay/alipay/notify",
         form(&notify_params(&otn2, "5.00", "TRADE_SUCCESS")),
     )
     .await;
@@ -887,7 +884,7 @@ async fn live_sandbox_db_configured() {
         .provider(id.parse().unwrap())
         .expect("client from the database");
     let otn = format!("AKLIVE{}", hex::encode(rand::random::<[u8; 8]>()));
-    let notify = format!("{ORIGIN}/test/pay/{id}/notify");
+    let notify = format!("{ORIGIN}/pay/{id}/notify");
     let r = p
         .create(super::super::provider::CreateReq {
             out_trade_no: &otn,

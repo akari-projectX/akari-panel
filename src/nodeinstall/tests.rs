@@ -97,7 +97,7 @@ fn token_of(view: &Value) -> String {
 }
 
 async fn junk(c: &Client) -> Fingerprint {
-    c.get("/test/install/not-a-token").await.fingerprint()
+    c.get("/install/not-a-token").await.fingerprint()
 }
 
 async fn create(admin: &Client, name: &str) -> Value {
@@ -135,7 +135,7 @@ async fn install_link_lifecycle() {
     let inst = &v["install"];
     assert_eq!(
         inst["command"],
-        format!("curl -fsSL '{ORIGIN}/test/install/{token}' | {AS_ROOT}")
+        format!("curl -fsSL '{ORIGIN}/install/{token}' | {AS_ROOT}")
     );
     assert_eq!(
         AS_ROOT, r#"sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'"#,
@@ -174,14 +174,14 @@ async fn install_link_lifecycle() {
     // The script: served repeatedly until enrollment, everything filled in.
     let c = Client::new(&st, rand_ip());
     for _ in 0..2 {
-        let r = c.get(&format!("/test/install/{token}")).await;
+        let r = c.get(&format!("/install/{token}")).await;
         assert_eq!(r.status, 200);
         assert_eq!(r.headers["content-type"], "text/plain; charset=utf-8");
         assert_eq!(r.headers["cache-control"], "no-store");
         let s = String::from_utf8(r.body).unwrap();
         assert!(s.starts_with("#!/bin/sh\n"));
         assert!(!s.contains("@@"), "placeholder left");
-        assert!(s.contains(&format!("BASE=\"$ORIGIN/$PREFIX/install/{token}\"")));
+        assert!(s.contains(&format!("BASE=\"$ORIGIN/install/{token}\"")));
         assert!(s.contains(&format!("ORIGIN='{ORIGIN}'")));
         assert!(s.contains(&format!("enrollment_token = \"{token}\"")));
         assert!(s.contains("[identity]\nca_pem = '''"));
@@ -206,15 +206,15 @@ async fn install_link_lifecycle() {
     }
     // No release: the binary endpoint has nothing (canonical reject).
     let r = c
-        .get(&format!("/test/install/{token}/agent/{}", "0".repeat(64)))
+        .get(&format!("/install/{token}/agent/{}", "0".repeat(64)))
         .await;
     assert_eq!(r.fingerprint(), junk(&c).await);
 
     // Enrollment burns it: from now on byte-identical to junk.
     panel.enroll(&token).await.unwrap();
     for p in [
-        format!("/test/install/{token}"),
-        format!("/test/install/{token}/agent/{}", "0".repeat(64)),
+        format!("/install/{token}"),
+        format!("/install/{token}/agent/{}", "0".repeat(64)),
     ] {
         assert_eq!(c.get(&p).await.fingerprint(), junk(&c).await, "{p}");
     }
@@ -235,10 +235,10 @@ async fn install_link_lifecycle() {
         .unwrap()
         .to_string();
     assert_ne!(t2, token);
-    assert_eq!(c.get(&format!("/test/install/{t2}")).await.status, 200);
+    assert_eq!(c.get(&format!("/install/{t2}")).await.status, 200);
     panel.enroll(&t2).await.unwrap();
     assert_eq!(
-        c.get(&format!("/test/install/{t2}")).await.fingerprint(),
+        c.get(&format!("/install/{t2}")).await.fingerprint(),
         junk(&c).await
     );
     drop(st);
@@ -263,15 +263,12 @@ async fn only_live_install_links_are_served() {
     assert_eq!(r.status, 201);
     assert!(r.json().get("install").is_none());
     let boot = r.json()["enrollment_token"].as_str().unwrap().to_string();
-    assert_eq!(
-        c.get(&format!("/test/install/{boot}")).await.fingerprint(),
-        want
-    );
+    assert_eq!(c.get(&format!("/install/{boot}")).await.fingerprint(), want);
 
     // Expired.
     let v = create(&admin, "exp").await;
     let t = token_of(&v);
-    assert_eq!(c.get(&format!("/test/install/{t}")).await.status, 200);
+    assert_eq!(c.get(&format!("/install/{t}")).await.status, 200);
     sqlx::query(
         "UPDATE server_enrollments SET expires_at = now() - interval '1 second' WHERE server_id = $1",
     )
@@ -279,10 +276,7 @@ async fn only_live_install_links_are_served() {
     .execute(st.pg())
     .await
     .unwrap();
-    assert_eq!(
-        c.get(&format!("/test/install/{t}")).await.fingerprint(),
-        want
-    );
+    assert_eq!(c.get(&format!("/install/{t}")).await.fingerprint(), want);
 
     // Server being deleted.
     let v = create(&admin, "del").await;
@@ -299,10 +293,7 @@ async fn only_live_install_links_are_served() {
             .status,
         202
     );
-    assert_eq!(
-        c.get(&format!("/test/install/{t}")).await.fingerprint(),
-        want
-    );
+    assert_eq!(c.get(&format!("/install/{t}")).await.fingerprint(), want);
 
     // Replaced by a newer link.
     let v = create(&admin, "re").await;
@@ -315,10 +306,7 @@ async fn only_live_install_links_are_served() {
         )
         .await;
     assert_eq!(r.status, 200);
-    assert_eq!(
-        c.get(&format!("/test/install/{t}")).await.fingerprint(),
-        want
-    );
+    assert_eq!(c.get(&format!("/install/{t}")).await.fingerprint(), want);
     // Wrong method, bad shapes, unknown arch.
     let t3 = r.json()["url"]
         .as_str()
@@ -328,15 +316,15 @@ async fn only_live_install_links_are_served() {
         .unwrap()
         .to_string();
     for p in [
-        format!("/test/install/{t3}x"),
-        format!("/test/install/{}", &t3[..42]),
-        format!("/test/install/{t3}/agent/amd64"),
-        format!("/test/install/{t3}/agent/{}", "A".repeat(64)),
-        format!("/test/install/{t3}/agent"),
+        format!("/install/{t3}x"),
+        format!("/install/{}", &t3[..42]),
+        format!("/install/{t3}/agent/amd64"),
+        format!("/install/{t3}/agent/{}", "A".repeat(64)),
+        format!("/install/{t3}/agent"),
     ] {
         assert_eq!(c.get(&p).await.fingerprint(), want, "{p}");
     }
-    let r = c.post(&format!("/test/install/{t3}"), json!({})).await;
+    let r = c.post(&format!("/install/{t3}"), json!({})).await;
     assert_eq!(r.fingerprint(), want);
     drop(st);
     db.drop().await;
@@ -353,15 +341,12 @@ async fn install_downloads_are_rate_limited_per_source() {
     let c = Client::new(&st, rand_ip());
     let want = junk(&Client::new(&st, rand_ip())).await;
     for _ in 0..3 {
-        assert_eq!(c.get(&format!("/test/install/{t}")).await.status, 200);
+        assert_eq!(c.get(&format!("/install/{t}")).await.status, 200);
     }
-    assert_eq!(
-        c.get(&format!("/test/install/{t}")).await.fingerprint(),
-        want
-    );
+    assert_eq!(c.get(&format!("/install/{t}")).await.fingerprint(), want);
     // Other sources are unaffected.
     let other = Client::new(&st, rand_ip());
-    assert_eq!(other.get(&format!("/test/install/{t}")).await.status, 200);
+    assert_eq!(other.get(&format!("/install/{t}")).await.status, 200);
     drop(st);
     db.drop().await;
 }
@@ -417,19 +402,19 @@ async fn newest_release_is_served_and_pinned_in_the_script() {
     assert_eq!(v["install"]["releases"]["amd64"]["version"], "v1.10.0");
     let t = token_of(&v);
     let c = Client::new(&st, rand_ip());
-    let s = String::from_utf8(c.get(&format!("/test/install/{t}")).await.body).unwrap();
+    let s = String::from_utf8(c.get(&format!("/install/{t}")).await.body).unwrap();
     let sha = hex::encode(Sha256::digest(&bin));
     assert!(s.contains(&format!("SHA_amd64='{sha}'")));
     assert!(s.contains("VER_amd64='v1.10.0'"));
     assert!(s.contains("SHA_arm64=''"));
-    let r = c.get(&format!("/test/install/{t}/agent/{sha}")).await;
+    let r = c.get(&format!("/install/{t}/agent/{sha}")).await;
     assert_eq!(r.status, 200);
     assert_eq!(r.headers["content-length"], bin.len().to_string());
     assert_eq!(r.body, bin);
     // Only complete linux releases: the incomplete one is not served.
     let partial = hex::encode(Sha256::digest(b"partial"));
     assert_eq!(
-        c.get(&format!("/test/install/{t}/agent/{partial}"))
+        c.get(&format!("/install/{t}/agent/{partial}"))
             .await
             .fingerprint(),
         junk(&c).await
@@ -546,13 +531,13 @@ async fn configured_public_url_and_pin_win() {
     assert_eq!(
         v["install"]["command"],
         format!(
-            "curl -fsSL --proto '=https' -k --pinnedpubkey '{pin}' 'https://203.0.113.7/test/install/{t}' | {AS_ROOT}"
+            "curl -fsSL --proto '=https' -k --pinnedpubkey '{pin}' 'https://203.0.113.7/install/{t}' | {AS_ROOT}"
         )
     );
     assert!(v["install"]["command_wget"].is_null());
     let s = String::from_utf8(
         Client::new(&st, rand_ip())
-            .get(&format!("/test/install/{t}"))
+            .get(&format!("/install/{t}"))
             .await
             .body,
     )
@@ -678,7 +663,7 @@ async fn tls_domain_flows_into_templates_and_script() {
     let token = token_of(&v);
     let s = String::from_utf8(
         Client::new(&st, rand_ip())
-            .get(&format!("/test/install/{token}"))
+            .get(&format!("/install/{token}"))
             .await
             .body,
     )

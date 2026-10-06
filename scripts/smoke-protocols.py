@@ -15,7 +15,7 @@ certificate files, a local TLS 1.3 site as the REALITY target) and check
 Deleting the user then cuts new connections (gate + validator). The node's
 previous inbound is restored at the end.
 
-Env: BASE, JAR, NODE_ID, ACCESS_PLAN (a plan granting the node's direct
+Env: BASE, SUB_PATH (the site-wide subscription path), JAR, NODE_ID, ACCESS_PLAN (a plan granting the node's direct
 entrance), LOG (smoke log dir), AGENT_LOG, VALKEY_DB (smoke's Valkey db:
 the subscription rate limit is reset between templates).
 """
@@ -71,8 +71,13 @@ COOKIE = cookie()
 NOPROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
+# D4/D11: BASE is under the admin prefix; subscriptions are at
+# /<SUB_PATH>/<token> on the panel's root.
+SUB_BASE = BASE.rsplit("/", 1)[0] + "/" + os.environ["SUB_PATH"]
+
+
 def api(method, path, body=None, ua=None, raw=False):
-    req = urllib.request.Request(BASE + path, method=method)
+    req = urllib.request.Request(path if path.startswith("http") else BASE + path, method=method)
     req.add_header("Cookie", COOKIE)
     if ua:
         req.add_header("User-Agent", ua)
@@ -187,7 +192,7 @@ vmess_nets = {"w8-vmess-tcp": "tcp", "w8-vmess-ws": "ws", "w8-vmess-grpc": "grpc
 st, u = api("POST", "/api/v1/users", {"email": "w8-user@smoke.test", "password": "user-password-123"})
 if st != 201:
     fail(f"create w8 user: {st} {u}")
-USER, SUB = u["id"], u["sub_token"]
+USER, SUB = u["id"], f"{SUB_BASE}/{u['sub_token']}"
 # D3: access comes from the plan (it grants the node's direct entrance).
 st, r = api("PUT", f"/api/v1/users/{USER}/plan", {"plan_id": ACCESS_PLAN, "period": "month"})
 if st != 200:
@@ -243,7 +248,7 @@ def apply(label, inb):
 
 def check_link(label, proto, spec, inb):
     reset_sub_limit()
-    st, body = api("GET", f"/sub/{SUB}", ua="v2rayN/7.0", raw=True)
+    st, body = api("GET", SUB, ua="v2rayN/7.0", raw=True)
     links = base64.b64decode(body.strip()).decode().splitlines()
     if len(links) != 1:
         fail(f"links for {label}: {links}")
@@ -288,12 +293,12 @@ def reset_sub_limit():
 
 def subscriptions(label, inb):
     global clash_all
-    st, clash = api("GET", f"/sub/{SUB}", ua="clash.meta/1.19", raw=True)
+    st, clash = api("GET", SUB, ua="clash.meta/1.19", raw=True)
     clash = clash.decode()
     if clash.count("\n  - name: ") + clash.startswith("  - name: ") - 1 != 1:  # minus the group
         fail(f"clash: not one proxy for {label}")
     clash_all += clash
-    st, sb = api("GET", f"/sub/{SUB}", ua="sing-box/1.12.0")
+    st, sb = api("GET", SUB, ua="sing-box/1.12.0")
     # W30: the profile also carries the PROXY selector and direct.
     outs = [o for o in sb["outbounds"] if o["type"] not in ("direct", "selector")]
     xhttp = inb.get("streamSettings", {}).get("network") == "xhttp"

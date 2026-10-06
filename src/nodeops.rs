@@ -350,33 +350,25 @@ pub async fn server_list(cfg: PanelConfig) -> Result<()> {
 /// `akari secrets rotate-prefix`.
 pub async fn secrets_rotate_prefix(cfg: PanelConfig) -> Result<()> {
     let pg = connect(&cfg).await?;
-    let prefix = rotate_prefix(&pg, &cfg.data_dir).await?;
-    println!("new route prefix: /{prefix}");
-    println!("restart every panel instance to apply it; until then the old prefix keeps working.");
-    println!("every subscription URL changes with it: users need their new URL (portal).");
+    let prefix = crate::access::cli_rotate_prefix(&pg).await?;
+    println!("new admin prefix: /{prefix}");
+    println!("every panel instance switches at once; the old prefix no longer works.");
     Ok(())
 }
 
-/// Audit row and file write: the new prefix is written before the commit,
-/// so a committed row always means the file changed. The prefix itself is
-/// never recorded.
-async fn rotate_prefix(pg: &sqlx::PgPool, data_dir: &std::path::Path) -> Result<String> {
-    let mut tx = pg.begin().await?;
-    crate::audit::record(
-        &mut tx,
-        &Actor::cli(),
-        "secrets.rotate_prefix",
-        "install",
-        None,
-        None,
-        Some(serde_json::json!({ "route_prefix": crate::audit::CHANGED })),
+/// `akari info`: the stored admin prefix and subscription path (None
+/// before the first start imports them; no database = None).
+pub async fn stored_access(cfg: &PanelConfig) -> Option<(Option<String>, Option<String>)> {
+    let pg = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&cfg.database_url),
     )
-    .await?;
-    let prefix = install::rotate_prefix(data_dir)?;
-    tx.commit()
-        .await
-        .context("prefix rotated, but recording it in the audit log failed")?;
-    Ok(prefix)
+    .await
+    .ok()?
+    .ok()?;
+    crate::access::cli_read(&pg).await.ok()
 }
 
 /// `akari secrets rotate-jwt`.
@@ -501,13 +493,20 @@ mod tests {
         let after = install::ensure(&cfg).unwrap();
         assert_ne!(after.jwt_secret, before.jwt_secret);
 
-        // Prefix: the next start serves the new one.
-        let p = rotate_prefix(&db.pool, &dir).await.unwrap();
+        // Admin prefix (D4: in the database, effective at once).
+        let p = crate::access::cli_rotate_prefix(&db.pool).await.unwrap();
         assert_ne!(p, before.route_prefix);
-        assert_eq!(install::ensure(&cfg).unwrap().route_prefix, p);
+        assert_eq!(
+            crate::access::cli_read(&db.pool)
+                .await
+                .unwrap()
+                .0
+                .as_deref(),
+            Some(p.as_str())
+        );
 
         let rows = audit_actions(&db).await;
-        let want: Vec<(String, String)> = ["secrets.rotate_jwt", "secrets.rotate_prefix"]
+        let want: Vec<(String, String)> = ["secrets.rotate_jwt", "settings.admin_prefix.rotate"]
             .iter()
             .map(|a| ("cli".to_string(), a.to_string()))
             .collect();

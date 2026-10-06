@@ -51,7 +51,8 @@ grep -q 'myapp.test' /etc/hosts || echo '127.0.0.1 myapp.test' >>/etc/hosts
 export AKARI_ADMIN_PASSWORD=$pw AKARI_SOURCE_DIR=$root LANG=C.UTF-8
 local_rel() { env AKARI_RELEASES_URL="file://$rel" AKARI_COSIGN_KEY="$rel/cosign.pub" "$@"; }
 
-prefix() { akari-ctl info | sed -n '1s|.*://[^/]*/\([^/]*\)/admin$|\1|p'; }
+# The console URL: /{prefix}/app (v0.4) or /{prefix}/admin (v0.3.x).
+prefix() { akari-ctl info | sed -n '1s|.*://[^/]*/\([^/]*\)/\(admin\|app\)$|\1|p'; }
 code() {
 	local url=$1
 	shift
@@ -78,7 +79,9 @@ check_panel() {
 	p=$(prefix)
 	[ -n "$p" ] || fail "no prefix"
 	[ "$(code "$origin/$p/healthz")" = 200 ] || fail "healthz through Caddy"
-	[ "$(code "$origin/")" = 404 ] || fail "/ is not the plain 404"
+	# v0.4 (D11): the portal at / (a v0.3.x panel: the plain 404).
+	case $(code "$origin/") in 200 | 404) ;; *) fail "/ answers neither the portal nor the plain 404" ;; esac
+	[ "$(code "$origin/no-such-page")" = 404 ] || fail "an unknown path is not the plain 404"
 	login "$p"
 	akari-ctl status >/dev/null || fail "akari-ctl status"
 	echo "ok: healthy, login ok"

@@ -142,19 +142,6 @@ pub fn rotate_jwt_key(data_dir: &Path) -> Result<()> {
     write_secret(&data_dir.join("jwt.key"), random_hex(32).as_bytes())
 }
 
-/// `akari secrets rotate-prefix`: a new random route prefix in state.json.
-/// Takes effect when the panel (every instance) restarts; until then the
-/// running panels keep answering on the old one. Returns the new prefix.
-pub fn rotate_prefix(data_dir: &Path) -> Result<String> {
-    fs::create_dir_all(data_dir).context("create data dir")?;
-    let path = data_dir.join("state.json");
-    let st = StateFile {
-        route_prefix: new_prefix(),
-    };
-    write_secret(&path, &serde_json::to_vec_pretty(&st)?)?;
-    Ok(st.route_prefix)
-}
-
 fn new_prefix() -> String {
     random_hex(12)
 }
@@ -523,13 +510,7 @@ mod tests {
         let jwt2 = ensure_jwt_key(&dir).unwrap();
         assert_ne!(jwt, jwt2);
         assert_eq!(jwt2.len(), 64);
-        let p2 = rotate_prefix(&dir).unwrap();
-        assert_ne!(p2, prefix);
-        assert_eq!(
-            ensure_state(&dir).unwrap(),
-            p2,
-            "the next start uses the new prefix"
-        );
+        assert_eq!(ensure_state(&dir).unwrap(), prefix, "stable");
         assert_eq!((mode("jwt.key"), mode("state.json")), (0o600, 0o600));
         // No temp files left behind.
         let names: Vec<String> = fs::read_dir(&dir)

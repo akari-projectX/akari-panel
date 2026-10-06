@@ -85,13 +85,13 @@ describe("viewOf / loginTarget", () => {
     expect(viewOf("/admin/audit")).toBe("audit");
     expect(viewOf("/admin/plans/extra")).toBe("plans");
     expect(viewOf("/admin/nope")).toBe("dashboard");
-    expect(viewOf("/app/audit")).toBe("dashboard");
+    expect(viewOf("/audit")).toBe("dashboard");
     expect(viewOf("/admin/users")).toBe("users");
     for (const v of ["nodes", "orders", "updates", "settings", "account"]) expect(viewOf(`/admin/${v}`)).toBe(v);
   });
   it("sends an ended session to the login page, keeping the view", () => {
-    expect(loginTarget("/admin")).toBe("/app");
-    expect(loginTarget("/admin/nodes")).toBe("/app/nodes");
+    expect(loginTarget("/admin")).toBe("/");
+    expect(loginTarget("/admin/nodes")).toBe("/nodes");
   });
 });
 
@@ -137,14 +137,14 @@ describe("AdminApp", () => {
     window.history.pushState(null, "", "/admin/nodes");
     fakeApi({ "GET /me": unauthorized });
     renderWithClient(<AdminApp />);
-    await waitFor(() => expect(loadPage).toHaveBeenCalledWith("/app/nodes"));
+    await waitFor(() => expect(loadPage).toHaveBeenCalledWith("/nodes"));
     expect(screen.queryByRole("navigation")).toBeNull();
   });
 
   it("a non-admin session never sees the console", async () => {
     fakeApi({ "GET /me": me("user"), ...consoleRoutes });
     renderWithClient(<AdminApp />);
-    await waitFor(() => expect(loadPage).toHaveBeenCalledWith("/app"));
+    await waitFor(() => expect(loadPage).toHaveBeenCalledWith("/"));
     expect(screen.queryByRole("navigation")).toBeNull();
   });
 
@@ -156,7 +156,7 @@ describe("AdminApp", () => {
     });
     renderWithClient(<AdminApp />);
     fireEvent.click(await screen.findByRole("button", { name: "退出登录" }));
-    await waitFor(() => expect(loadPage).toHaveBeenCalledWith("/app"));
+    await waitFor(() => expect(loadPage).toHaveBeenCalledWith("/"));
     expect(calls.some((c) => c.method === "POST" && c.path === "/auth/logout")).toBe(true);
   });
 });

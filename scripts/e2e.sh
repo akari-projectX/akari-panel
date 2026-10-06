@@ -56,7 +56,9 @@ docker rm -f "$MAILPIT" >/dev/null 2>&1 || true
 docker run -d --name "$MAILPIT" --network host -e MP_SMTP_BIND_ADDR=127.0.0.1:11026 \
   -e MP_UI_BIND_ADDR=127.0.0.1:18026 axllent/mailpit:v1.27 >/dev/null
 
-PREFIX=$("$PANEL" -c "$DIR/panel.toml" info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')
+# D4: the admin prefix (the first start imports data/state.json's into the
+# database; `info` prints that one before the first start).
+PREFIX=$("$PANEL" -c "$DIR/panel.toml" info | awk '/admin prefix/{sub(/^\//,"",$3); print $3}')
 # W16: payments on (throwaway keys, a gateway nobody listens on) so the
 # shop, coupons and balance can be driven; the e2e purchases are fully
 # covered by a coupon / the balance and never reach the gateway.
@@ -74,7 +76,7 @@ app_id = "2021000000000000"
 app_private_key_file = "$DIR/app-key.pem"
 alipay_public_key_file = "$DIR/alipay-pub.pem"
 gateway_url = "http://127.0.0.1:9/gateway.do"
-notify_url = "http://$E2E_HOST:$PORT/$PREFIX/pay/alipay/notify"
+notify_url = "http://$E2E_HOST:$PORT/pay/alipay/notify"
 TOML
 # One-click agent update check: a throwaway Ed25519 release key (trusted by
 # this panel only: 系统设置 → 安全's extra keys, set in the database below) and a signed two-platform release behind a local stand-in

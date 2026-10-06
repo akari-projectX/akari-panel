@@ -16,7 +16,7 @@ from smoke's obsolete [acme] directory_url) points at it. Here:
     skip-cert-verify, trusting only that root (SSL_CERT_FILE),
   - the DNS pre-flight endpoint answers.
 
-Env: BASE, JAR, LOG, AGENT (binary), PEBBLE_API_ROOT (pebble's HTTPS cert
+Env: BASE, SUB_PATH (the site-wide subscription path), JAR, LOG, AGENT (binary), PEBBLE_API_ROOT (pebble's HTTPS cert
 root), PEBBLE_MGMT (https://127.0.0.1:15000).
 """
 
@@ -67,8 +67,13 @@ COOKIE = cookie()
 NOPROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
+# D4/D11: BASE is under the admin prefix; subscriptions are at
+# /<SUB_PATH>/<token> on the panel's root.
+SUB_BASE = BASE.rsplit("/", 1)[0] + "/" + os.environ["SUB_PATH"]
+
+
 def api(method, path, body=None, ua=None, raw=False):
-    req = urllib.request.Request(BASE + path, method=method)
+    req = urllib.request.Request(path if path.startswith("http") else BASE + path, method=method)
     req.add_header("Cookie", COOKIE)
     if ua:
         req.add_header("User-Agent", ua)
@@ -224,7 +229,7 @@ try:
     st, u = api("POST", "/api/v1/users", {"email": "acme-user@smoke.test", "password": "user-password-123"})
     if st != 201:
         fail(f"create acme user: {st} {u}")
-    USER, SUB = u["id"], u["sub_token"]
+    USER, SUB = u["id"], f"{SUB_BASE}/{u['sub_token']}"
     st, g = api("POST", "/api/v1/node-groups", {"name": "acme-group", "entrance_ids": [DIRECT]})
     if st != 201:
         fail(f"create acme group: {st} {g}")
@@ -277,7 +282,7 @@ try:
                 with ctx.wrap_socket(s, server_hostname=DOMAIN) as t:
                     if not t.getpeercert():
                         fail(f"{label}: no verified certificate")
-        st, clash = api("GET", f"/sub/{SUB}", ua="clash.meta/1.19", raw=True)
+        st, clash = api("GET", SUB, ua="clash.meta/1.19", raw=True)
         clash = clash.decode()
         if clash.count(f"sni: {DOMAIN}") + clash.count(f"servername: {DOMAIN}") < 1 or "skip-cert-verify: true" in clash:
             fail(f"{label}: clash subscription does not carry the node domain as SNI:\n{clash}")

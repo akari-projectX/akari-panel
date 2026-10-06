@@ -36,7 +36,7 @@ struct Cli {
 enum Cmd {
     /// Run the panel (web + gRPC)
     Serve,
-    /// Show install info: route prefix, listen addresses
+    /// Show install info: admin prefix, subscription path, listen addresses
     Info,
     /// Configuration tools
     Config {
@@ -75,15 +75,15 @@ enum SettingsCmd {
     Set { field: String, value: String },
     /// Clear a stored setting back to the built-in default (audited):
     /// main | sub | node | trust-cloudflare | probe | all; turnstile = switch
-    /// Turnstile off on every form (keys kept)
+    /// Turnstile off on every form (keys kept); admin-allow = clear the
+    /// admin prefix's IP allowlist
     Unset { field: String },
 }
 
 #[derive(Subcommand)]
 enum SecretsCmd {
-    /// New random route prefix in data/state.json. Restart every panel
-    /// instance to apply; the old prefix (and every subscription URL built
-    /// on it) stops working then.
+    /// New random admin prefix (database, audited): every instance switches
+    /// at once and the old prefix stops working.
     RotatePrefix,
     /// New data/jwt.key and every session revoked at once (restart every
     /// panel instance to sign with the new key).
@@ -161,7 +161,7 @@ async fn main() -> Result<()> {
     let cfg = PanelConfig::load(cli.config.as_deref())?;
     match cli.cmd {
         Cmd::Serve => serve(cfg).await,
-        Cmd::Info => info(cfg),
+        Cmd::Info => info(cfg).await,
         Cmd::Config { action } => match action {
             ConfigCmd::Check => {
                 config_check(&cfg)?;
@@ -218,12 +218,22 @@ fn config_check(cfg: &PanelConfig) -> Result<()> {
     Ok(())
 }
 
-fn info(cfg: PanelConfig) -> Result<()> {
+async fn info(cfg: PanelConfig) -> Result<()> {
     let install = install::ensure(&cfg)?;
     println!("data dir:       {}", cfg.data_dir.display());
     println!("web bind:       {}", cfg.web.bind);
     println!("grpc bind:      {}", cfg.grpc.bind);
-    println!("route prefix:   /{}", install.route_prefix);
+    // D4/D11: the database is authoritative (rotations happen there);
+    // before the first start, data/state.json's prefix is what the first
+    // start imports.
+    let (prefix, sub) = nodeops::stored_access(&cfg).await.unwrap_or((None, None));
+    println!(
+        "admin prefix:   /{}",
+        prefix.unwrap_or(install.route_prefix)
+    );
+    if let Some(sub) = sub {
+        println!("sub path:       /{sub}");
+    }
     Ok(())
 }
 
@@ -263,6 +273,9 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
     akari_panel::settings::import_legacy(&state).await;
     // R22: database settings and the gRPC certificate covering every
     // recorded server name, before any agent can connect.
+    // D4/D11: the admin prefix (imported from data/state.json once) and
+    // the subscription path (drawn once) live in the database.
+    akari_panel::access::ensure(&state).await?;
     akari_panel::settings::init(&state).await?;
     for w in state
         .settings()

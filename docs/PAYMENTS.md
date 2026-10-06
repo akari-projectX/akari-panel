@@ -38,8 +38,8 @@ catalogue: `catalog.rs`); migrations `0040_billing.sql`,
    per user: a new order ends the previous pending one (queried and closed
    at Alipay first).
 3. The payment becomes known by any of:
-   - the **async notify** (`POST /{prefix}/pay/{method_id}/notify`; the
-     pre-R40 `/{prefix}/pay/alipay/notify` stays for older orders),
+   - the **async notify** (`POST /pay/{method_id}/notify`; the
+     pre-R40 `/pay/alipay/notify` stays for older orders),
    - **status polling** (`GET /api/v1/me/orders/{id}` queries the order's
      method (`alipay.trade.query`) for a pending order, at most every 3 s
      per order across all instances),
@@ -473,20 +473,19 @@ Rules (`billing::methods`, `provider::ProviderKind::validate`):
   APPID of a method strands its pending orders' notifies (`app_id`
   mismatch → refused); polling/reconcile query with the new APPID. Prefer
   adding a new method for a new merchant.
-- **Notify URL** (shown read-only): `<main domain>/<route prefix>/pay/<method id>/notify`,
+- **Notify URL** (shown read-only): `<main domain>/pay/<method id>/notify` (a public path without the admin prefix: D11),
   the main domain of 系统设置 → 站点 (W25: the only source; an old
   `install.public_url` is imported there once). It is sent
   with every precreate, so nothing is configured at Alipay, and it follows
-  a domain change and `rotate-prefix` by itself. With no main domain
+  a domain change by itself (rotating the admin prefix does not touch it). With no main domain
   configured, orders that need the provider are refused (503 "payments are
   not enabled", no order row; fully covered orders still work) and 系统设置
   / startup warn. Orders created before a main domain change carry the old
   URL; the host gate then refuses notifies to the old name, and
-  polling/the reconcile fulfil those orders. It contains the secret prefix:
-  never logged.
+  polling/the reconcile fulfil those orders. Never logged.
 - Public-key mode, **RSA2** only (certificate mode is not supported).
 - Alipay must reach the notify URL over the internet (HTTPS through your
-  reverse proxy; only the prefix is forwarded, see DEPLOY.md). If it
+  reverse proxy, which forwards every path, see DEPLOY.md). If it
   cannot (development, firewalls), payments are still detected through
   polling and the reconcile — notify only makes it faster.
 - The panel connects to the gateway directly (no HTTP proxy support) with
@@ -503,7 +502,7 @@ startup warning, `config check` reports it as obsolete, and 系统设置 → 支
 shows a warning while it is present. If the key files cannot be read the
 import is skipped (warning) and the start goes on: configure the method in
 the UI. The old explicit `notify_url` is gone; orders created before the
-upgrade keep their old URL `/{prefix}/pay/alipay/notify`, which is still
+upgrade keep their old URL `/pay/alipay/notify`, which is still
 accepted (below).
 
 ### Adding a provider kind (developers)
@@ -519,9 +518,9 @@ error mappings if the kind adds error codes. The money rules stay in
 
 ## Notify endpoint rules
 
-`POST /{prefix}/pay/{method_id}/notify` (per method; unknown, malformed or
+`POST /pay/{method_id}/notify` (per method; unknown, malformed or
 disabled method ids are the canonical rejection) and the legacy
-`POST /{prefix}/pay/alipay/notify` (pre-R40 orders: the claimed
+`POST /pay/alipay/notify` (pre-R40 orders: the claimed
 `out_trade_no` selects the order and thus its method, which must be a
 usable Alipay method). Form-encoded, ≤16 KiB, ≤64 params, no duplicate
 keys, rate-limited per source address (/64) at 120/min in Valkey (fails
@@ -597,7 +596,7 @@ ORDER BY paid_at;
   keys and the buyer account are in the Alipay open platform console
   (开放平台 → 控制台 → 沙箱). Pay with the sandbox Alipay app (沙箱版支付宝)
   logged in as the sandbox **buyer** account.
-- A local panel (e.g. `http://myapp.test:8080/<prefix>/app`) cannot receive
+- A local panel (e.g. `http://myapp.test:8080/`) cannot receive
   notifies from the sandbox; status polling and the reconcile detect the
   payment through `alipay.trade.query` (same exactly-once path).
 - In 系统设置 → 支付 choose 环境 = 沙箱 and paste the sandbox APPID and keys.

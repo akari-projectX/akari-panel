@@ -5,7 +5,7 @@
 //! (token + new password). Both are the canonical rejection while reset is
 //! off.
 //!
-//! The link is `<main domain>/<prefix>/app/reset#token=<token>`: the main
+//! The link is `<main domain>/reset#token=<token>` (portal at `/`): the main
 //! domain from 系统设置 (never the request's Host — that would let anyone
 //! mail a victim a link to their own server), the token in the fragment so
 //! no proxy or access log ever sees it. Token: 256 random bits, SHA-256

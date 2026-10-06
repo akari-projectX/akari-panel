@@ -10,7 +10,7 @@
 #
 # Flow: fresh install -> admin + user + node, agent online -> backup.sh ->
 # stop panel, WIPE database and data dir (agent keeps running) -> restore.sh
-# -> start panel: same route prefix, same logins and users, the user's
+# -> start panel: same admin prefix, same logins and users, the user's
 # stored subscription link still decrypts (data/master.key restored with
 # the database), the (unchanged) agent reconnects and the node is online
 # again.
@@ -86,8 +86,8 @@ login() { # -> http status (W27: with the form token, after the minimum submit t
 
 echo "== 1. fresh install: admin, user, node, agent online =="
 wipe_db
-PREFIX="$(p info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')"
-[ -n "$PREFIX" ] || fail "no route prefix"
+PREFIX="$(p info | awk '/admin prefix/{sub(/^\//,"",$3); print $3}')"
+[ -n "$PREFIX" ] || fail "no admin prefix"
 BASE="http://127.0.0.1:8080/$PREFIX"
 start_panel
 p admin add root@drill.example >/dev/null
@@ -134,8 +134,8 @@ AGE_IDENTITY_FILE="$W/age.key" AKARI_DATA_DIR="$W/data" \
   scripts/restore.sh "$BACKUP"
 
 echo "== 5. verify: same prefix, logins, users; agent reconnects =="
-PREFIX2="$(p info | awk '/route prefix/{sub(/^\//,"",$3); print $3}')"
-[ "$PREFIX2" = "$PREFIX" ] || fail "route prefix changed ($PREFIX -> $PREFIX2)"
+PREFIX2="$(p info | awk '/admin prefix/{sub(/^\//,"",$3); print $3}')"
+[ "$PREFIX2" = "$PREFIX" ] || fail "admin prefix changed ($PREFIX -> $PREFIX2)"
 : >"$W/jar"
 started="$(date +%s)"
 start_panel

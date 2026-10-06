@@ -11,12 +11,12 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import {
+  absoluteUrl,
   del,
   get,
   patch,
   post,
   put,
-  subscriptionUrl,
   type PlanView,
   type UserDetail,
   type UserPage,
@@ -207,7 +207,9 @@ export function AdminUsers() {
               复制订阅链接」再次取得）：
             </p>
             <pre className="overflow-auto rounded-lg bg-muted p-3 text-xs">{subToken.token}</pre>
-            {subToken.url && <pre className="overflow-auto rounded-lg bg-muted p-3 text-xs">{subToken.url}</pre>}
+            {subToken.url && (
+              <pre className="overflow-auto rounded-lg bg-muted p-3 text-xs">{absoluteUrl(subToken.url)}</pre>
+            )}
             <Button variant="ghost" size="sm" onClick={() => setSubToken(null)}>
               隐藏
             </Button>
@@ -495,11 +497,11 @@ function ManageUser({
       const r = await get<{ legacy: boolean; sub_token: string | null; sub_url: string | null }>(
         `/users/${user.id}/subscription`,
       );
-      if (r.legacy || !r.sub_token) {
+      if (r.legacy || !r.sub_token || !r.sub_url) {
         setNotice("该用户的订阅链接是旧版本生成的，无法显示；重新生成订阅令牌后即可复制（旧链接会失效）。");
         return;
       }
-      const url = r.sub_url ?? subscriptionUrl(r.sub_token);
+      const url = absoluteUrl(r.sub_url);
       setNotice((await copyText(url)) ? `已复制「${user.email}」的订阅链接。` : `复制失败，请手动复制：${url}`);
     } catch (err) {
       setError(adminErrorText(err));

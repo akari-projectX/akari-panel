@@ -19,15 +19,15 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
 | 管理员邮箱 / 密码 | 证书通知邮箱，否则 `admin@<主域名>`（仅 IP：`admin@akari.invalid`）/ 自动生成 | 邮箱就是登录名（v0.4：所有人都用邮箱登录）；自动生成的密码**只在结束时显示一次** |
 | 自定义端口 | 否（80/443/8443） | 8443 是节点 agent 连接面板的 gRPC 端口 |
 
-结束时会打印管理后台与用户门户的完整地址（含**机密路由前缀**——没有前缀，面板对外只返回空 404）
-以及管理员密码。接下来：登录后台 → **系统设置** 确认主域名/订阅域名/节点通信域名 → **节点** →
+结束时会打印管理后台的完整地址（含**机密后台前缀**——不知道前缀的人看不到后台，只得到空 404）、
+用户门户地址（主域名根路径 `/`）以及管理员密码。接下来：登录后台 → **系统设置** 确认主域名/订阅域名/节点通信域名 → **节点** →
 添加节点 → 在节点上执行一键安装命令（§3）。
 
 常用运维命令（安装后可用，以 root 或 `sudo` 执行）：
 
 ```bash
 akari-ctl status                    # 服务状态 + 健康检查
-akari-ctl info                      # 再次显示后台/门户地址（含前缀）
+akari-ctl info                      # 再次显示后台地址（含后台前缀）与门户地址
 akari-ctl upgrade                   # 升级到最新版本：先备份 → 校验签名 → 切换 → 健康检查，失败自动回滚
 akari-ctl backup                    # 备份数据库 + 数据目录（CA 私钥、jwt.key、master.key）+ 配置
 akari-ctl migrate --to docker       # 同一台机器上 裸机 → Docker（或 --to bare），保留前缀、密钥与数据
@@ -99,13 +99,12 @@ step is idempotent). Then:
 - **Bare metal**: PostgreSQL 18 from the PGDG repository (an existing cluster on 5432 is left
   alone: the 18 cluster takes the next port), Valkey 9 (`akari-valkey.service`, loopback, password,
   no persistence; see below), Caddy from its repository with the repository's Caddyfile
-  (`/etc/caddy/Caddyfile`; the environment with the secret prefix in `/etc/akari/caddy.env`, 0600,
-  via a drop-in that drops `--environ` and the admin API so neither the journal nor local users
-  see the prefix); the `akari` system user (sysusers), `/var/lib/akari` 0700, `/etc/akari/panel.toml`
+  (`/etc/caddy/Caddyfile`; its environment in `/etc/akari/caddy.env`, 0600, via a drop-in that
+  drops `--environ` and the admin API so neither the journal nor local users see it); the `akari` system user (sysusers), `/var/lib/akari` 0700, `/etc/akari/panel.toml`
   0640 root:akari with only the R39 start-up keys, the hardened `akari-panel.service`; ufw is
   opened for 80/443/8443 when active.
-- Both: wait for `/<prefix>/healthz`, set 主域名 and 节点通信域名 (`akari settings set`), create the
-  admin (the password reaches the CLI through the environment only), check `https://<domain>/<prefix>/healthz`
+- Both: wait for `/healthz`, set 主域名 and 节点通信域名 (`akari settings set`), create the
+  admin (the password reaches the CLI through the environment only), check `https://<domain>/healthz`
   through Caddy, print the URLs and the password once. `akari-ctl` (= this installer) and the backup
   scripts land in `/usr/local/sbin` and `/usr/local/lib/akari`; `/etc/akari/install.env` records
   mode, version, ports (no secrets).
@@ -125,7 +124,7 @@ and the four checksums). The script itself is what `curl | sh` runs: read it fir
 requires (`curl -fsSLO …/install.sh`; `akari-ctl` is that file).
 
 **Secrets.** Generated passwords never appear on a command line or in the log
-(`/var/log/akari-install.log`, 0600); the admin password and the URLs with the secret prefix are
+(`/var/log/akari-install.log`, 0600); the admin password and the console URL with the secret admin prefix are
 printed once to the terminal (`akari-ctl info` prints the URLs again).
 
 Private mirrors / tests: `AKARI_RELEASES_URL` (a release base with the GitHub layout, `file://`
@@ -136,7 +135,7 @@ still a signature check, never skipped; it prints a warning).
 
 | Port | Who connects | Exposure |
 |---|---|---|
-| 443 (80 for ACME) | admins, subscription clients | public, via the TLS reverse proxy; **only the secret prefix path is forwarded** |
+| 443 (80 for ACME) | admins, subscription clients | public, via the TLS reverse proxy (every path forwarded; the panel answers the portal, the admin prefix, subscriptions, install links and payment notifications, everything else is its empty 404) |
 | 8443 gRPC | agents (mTLS, client certificate = node identity; enrollment = server TLS + one-time token) | public or allow-listed to your node IPs; **never behind an HTTP proxy that terminates TLS** |
 | 8080 panel web | the reverse proxy only | loopback / private network, never published |
 | 5432, 6379 | the panel only | never published |
@@ -218,8 +217,8 @@ obsolete keys from panel.toml**.
 
 ## 1b. Domains (系统设置) and Cloudflare
 
-The admin console's **系统设置** page (`/<prefix>/admin/settings`) holds three domains and one switch.
-Once the main domain is saved, the console (`/<prefix>/admin`) answers on the main domain only
+The admin console's **系统设置** page (`/<admin prefix>/admin/settings`) holds three domains and one switch.
+Once the main domain is saved, the console (`/<admin prefix>/admin`) answers on the main domain only
 (and on IP literals); on the subscription domain it is the uniform empty 404 (R23). They live in the
 database only (table `panel_settings`; an empty field = the built-in behaviour in the table below).
 `akari settings show` prints them; `akari settings set main|sub|node <host[:port]>` /
@@ -261,10 +260,10 @@ other name **on demand**: at the first handshake for a new name Caddy asks the p
 with `allow_non_loopback = true`, bare metal `127.0.0.1:8082`; `AKARI_ASK` in Caddy's
 environment). The panel answers 200 only for the configured main and subscription domains
 (rate-limited per instance, built in), so no Caddyfile edit is needed when domains change and
-nobody can make Caddy issue certificates for arbitrary names. Only the secret prefix is forwarded
-on every domain, and every site block strips `Server`/`Via`, so Caddy's own 404 and the panel's
-rejection behind the prefix are byte-identical (smoke compares them on the main domain, an
-on-demand domain and the bare IP). Plain `http://` is redirected to https only for
+nobody can make Caddy issue certificates for arbitrary names. Every path is forwarded on every
+domain, and every site block strips `Server`/`Via`, so junk and the panel's rejections behind the
+admin prefix are byte-identical (smoke compares them on the main domain, an on-demand domain and
+the bare IP). Plain `http://` is redirected to https only for
 `AKARI_DOMAIN`; every other host (the bare IP, unknown names, and the 系统设置 domains, whose
 links are always https) gets the same empty 404 on port 80. ACME HTTP-01 challenges are still
 answered there (Caddy handles them before any site route). With nginx, add each domain's `server_name` and certificate yourself.
@@ -280,7 +279,7 @@ answered there (Caddy handles them before any site route). With nginx, add each 
 3. First certificate for an orange-clouded name: Caddy uses the HTTP-01 challenge on port 80,
    which works through Cloudflare. If "Always Use HTTPS" is on and issuance fails, switch the
    record to grey until Caddy has the certificate (seconds after the first visit to
-   `https://<domain>/<prefix>/healthz`), then back to orange; renewals work proxied.
+   `https://<domain>/healthz`), then back to orange; renewals work proxied.
 4. In 系统设置 turn on **信任 Cloudflare**. The panel then treats Cloudflare's edge ranges as
    trusted proxies: a request whose chain is client → Cloudflare → [Caddy →] panel is attributed to
    `CF-Connecting-IP` (login/subscription rate limits, audit). The header is read only when the
@@ -316,12 +315,27 @@ The installer creates it (and sets 主域名 / 节点通信域名, §2b); by han
 ```
 
 Omit the variable to be prompted. The e-mail address is the login name (v0.4: everyone, admins
-too, logs in with the address; it counts as verified). Open
-`https://panel.example.com/<prefix>/app` and log in with the address and the password; admins are
-taken to the console at `https://panel.example.com/<prefix>/admin` (served only to an admin
-session — without one it is the same empty 404 as any unknown path, so bookmark `/app`, not
-`/admin`). Forgotten password: `akari admin passwd <email>` (ends the account's sessions).
+too, logs in with the address; it counts as verified). Admins open
+`https://panel.example.com/<admin prefix>/app` (`akari info` / `akari-ctl info`) and log in with the
+address and the password; they are taken to the console at
+`https://panel.example.com/<admin prefix>/admin` (served only to an admin session — without one it
+is the same empty 404 as any unknown path, so bookmark `/app`, not `/admin`). Users use the portal at
+`https://panel.example.com/`; admins cannot sign in there. Forgotten password: `akari admin passwd <email>` (ends the account's sessions).
 (TOTP two-factor authentication was removed in v0.4; passkeys replace it.)
+
+### 后台前缀、IP 白名单与订阅路径（D4/D11，中文）
+
+- **门户**在主域名根路径 `/`（用户登录、注册、购买、订阅等）；门户的页面、接口与回答里**永远不出现后台地址**，登录后也不会跳到后台。
+- **后台前缀**是全站唯一的秘密前缀：后台 `/<前缀>/admin`、管理员登录页 `/<前缀>/app` 与全部管理接口都在它下面。安装时随机生成（`data/state.json`），
+  第一次启动后保存在数据库里。**系统设置 → 访问**（只有所有者可改）：更换前缀（可随机或自定义，二次确认，写入审计但不记录前缀本身；
+  所有面板实例立即生效，旧前缀立即变成空 404）、**IP 白名单**（地址或 CIDR，最多 64 条；名单外的地址访问前缀下的任何路径都是空 404；
+  保存时若名单不含你当前的地址会被拒绝）。命令行：`akari secrets rotate-prefix`（随机换新前缀）、
+  `akari settings unset admin-allow`（被白名单锁在外面时清空名单）、`akari info`（查看当前前缀与订阅路径）。
+- **订阅路径**：订阅链接是 `https://<订阅域名>/<订阅路径>/<令牌>`，订阅路径是安装时随机生成、全站共用的一段，不再是固定的 `/sub/`。
+  在 **系统设置 → 访问** 修改（二次确认、写入审计）后**旧路径立即失效**，所有用户的订阅链接随之改变；默认勾选
+  「邮件通知所有用户」：后台批量任务给每个有已验证邮箱的用户发一封带其新链接的邮件（需已启用邮件）。
+- **安装链接**（`/install/…`）与**支付回调**（`/pay/…`）是独立的公开路径，不含后台前缀；后台前缀下也不提供订阅、安装链接与支付回调。
+- 反向代理（Caddy/nginx）把所有路径原样转发给面板，由面板判断；改前缀不需要改代理配置。
 
 ### 所有者（R47，中文）
 
@@ -579,8 +593,8 @@ until the agent has enrolled with it. It needs 系统设置 → 节点通信 →
 agents dial; without it the panel refuses to issue the command):
 
 ```bash
-curl -fsSL 'https://panel.example.com/<prefix>/install/<token>' | sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'
-# or: wget -qO- 'https://panel.example.com/<prefix>/install/<token>' | sh -c '…same…'
+curl -fsSL 'https://panel.example.com/install/<token>' | sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'
+# or: wget -qO- 'https://panel.example.com/install/<token>' | sh -c '…same…'
 ```
 
 Run it on the node (Linux with systemd >= 250, amd64 or arm64; Debian 12/13, Ubuntu 22.04+ are
@@ -630,7 +644,7 @@ it is live; once the agent enrolls (or the link expires, or a newer link/token i
 node, or the node is being deleted) every request is the panel's uniform empty 404, as are wrong
 tokens and sources over the rate limit (20 per 10 min per address, built in). Whoever runs the command first gets the node, exactly as with
 a bootstrap file: copy it over a trusted channel. The script passes the token to no command
-line (downloads read their URL from stdin) and the panel never logs it (`/{prefix}/install/{token}`
+line (downloads read their URL from stdin) and the panel never logs it (`/install/{token}`
 in logs). **重装命令** in the node list issues a new link for an existing node; when the agent
 enrolls with it, the node's previous certificate is revoked.
 
@@ -641,7 +655,7 @@ Anything else (an IP-only deployment with Caddy's internal CA) → the command *
 certificate's public key**:
 
 ```bash
-curl -fsSL --proto '=https' -k --pinnedpubkey 'sha256//<base64>' 'https://203.0.113.10/<prefix>/install/<token>' | sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'
+curl -fsSL --proto '=https' -k --pinnedpubkey 'sha256//<base64>' 'https://203.0.113.10/install/<token>' | sh -c '[ "$(id -u)" = 0 ] || exec sudo sh; exec sh'
 ```
 
 curl checks the pin during the handshake, before it sends the request, so a mismatch aborts
@@ -801,7 +815,7 @@ groups; nodes, groups and plans can change later and every node converges by its
 3. **用户 → 新建用户**: login and password, then **分配套餐** on the user. The node receives the
    user within a second or two (`POST /api/v1/users`, `PUT /api/v1/users/{id}/plan
    {"plan_id": …}`).
-4. The user logs in at `https://panel.yourdomain.com/<prefix>/app` and copies **订阅链接** (the
+4. The user logs in at `https://panel.yourdomain.com/` (the portal) and copies **订阅链接** (the
    admin sees the same URL on the user, `sub_url`). The link serves the format the client asks
    for by its User-Agent: Clash/mihomo YAML, sing-box JSON, or base64 share links (v2rayN,
    Shadowrocket, …); quota and expiry travel in `subscription-userinfo`.
@@ -1171,7 +1185,7 @@ the first release), `myapp.test` with `AKARI_CADDY_OPTIONS=local_certs`. Machine
 | 0. install Docker + git (`apt-get`) | 22 s | 2 min |
 | 1–3. clone, env files, passwords, domain, image line | 2 s | 6 min |
 | 4. `config check` (pulls panel, PostgreSQL, Valkey images) | 39 s | 1 min |
-| 4. `up -d postgres valkey panel`, `akari info`, prefix into `.env` | 4 s | 1 min |
+| 4. `up -d`, `akari info` | 4 s | 1 min |
 | 4. `up -d` (Caddy pull + certificate), `/healthz` 200 | 49 s | 2 min |
 | §2 first admin, log in | 1 s | 2 min |
 | §2b 主域名 | 1 s | 1 min |
@@ -1194,7 +1208,7 @@ Set `[metrics] bind = "127.0.0.1:9100"` and scrape it (`deploy/prometheus/`). Al
 promtool and checks that every dashboard/rule metric exists); dashboards:
 `deploy/grafana/akari-dashboard.json` (panel internals) and `deploy/grafana/akari-fleet.json`
 (W17: fleet health from the W11 heartbeats and the node alerts) — import in Grafana, pick the
-Prometheus data source. Metric labels never contain the route prefix or a node id: per-node
+Prometheus data source. Metric labels never contain the admin prefix or a node id: per-node
 detail is the console's node page and 告警中心 (§4b).
 Every response of an accepted request carries `X-Request-Id` (an incoming one is reused if it is
 short and printable); it is on the log lines of that request. Rejections never carry it.
@@ -1308,7 +1322,7 @@ two or more for availability or headroom:
 ```
 
 - All instances use the same `database_url`, `valkey_url` and an identical
-  `data_dir` (CA, `jwt.key`, `master.key`, route prefix: share the directory or
+  `data_dir` (CA, `jwt.key`, `master.key`: share the directory or
   copy it byte for byte); each has its own web and gRPC bind addresses.
 - gRPC must be balanced at L4. The balancer must not terminate TLS (the agent's
   client certificate is the node identity). No stickiness is needed: an agent
@@ -1365,7 +1379,7 @@ an install does (cosign + SHA256SUMS), then:
    atomically, units and Caddyfile refreshed from the release's bundle, `systemctl restart`;
    Docker: compose file/Caddyfile refreshed, `AKARI_IMAGE` set to the new `tag@digest`,
    `docker compose pull panel` + `up -d` (PostgreSQL/Valkey/Caddy follow their major tags);
-3. **health check**: `/<prefix>/healthz` within 2 minutes (3 with Docker). Migrations run at start,
+3. **health check**: `/healthz` within 2 minutes (3 with Docker). Migrations run at start,
    before the panel listens, so a healthy panel is a migrated one;
 4. failure → **automatic rollback** to the previous binary / image (and compose files), health
    checked again. `akari-ctl`/backup scripts are replaced only after a successful upgrade.
@@ -1588,7 +1602,7 @@ you want to undo:
   the old release. Traffic counted since
   the backup is lost; everything else is as of the backup.
 
-A restored database with the old `data/` keeps the same route prefix and agent certificates.
+A restored database with the old `data/` keeps the same admin prefix (database) and agent certificates.
 
 ## 7. Uninstall
 
@@ -1598,9 +1612,9 @@ akari-ctl uninstall --purge          # also database, data dir, configuration: t
                                      # (non-interactive: --yes --purge --confirm purge)
 ```
 
-Plain uninstall keeps: bare metal `/var/lib/akari` (prefix, CA key, jwt.key, master.key),
+Plain uninstall keeps: bare metal `/var/lib/akari` (CA key, jwt.key, master.key),
 `/etc/akari/panel.toml`, the PostgreSQL database `akari`; Docker `/opt/akari` and the `akari_*`
-volumes. Running the installer again picks them up (same prefix, same accounts). Caddy is stopped
+volumes. Running the installer again picks them up (same admin prefix, same accounts). Caddy is stopped
 when the installer installed it, and given back its previous configuration when it was there
 before. `--purge` drops the database and role, the data dir, `/etc/akari`, Valkey and (Docker) the
 volumes; packages (postgresql-18, caddy, Docker) stay installed (`apt purge` them if wanted), and
@@ -1617,7 +1631,7 @@ akari-ctl migrate --to docker        # or --to bare
 
 Takes a safety backup (kept, encrypted if configured) and a plain dump for the move (in a 0700
 temporary directory, deleted afterwards), stops the current services, installs the other mode with
-**restore** (database via `pg_restore --single-transaction`, the data dir — route prefix, CA,
+**restore** (database via `pg_restore --single-transaction`, the data dir — CA,
 `jwt.key`, `master.key` — copied with its ownership), waits for health, then retires the old services
 (their data stays until you delete it: bare metal `/var/lib/akari`, database `akari`; Docker the
 `akari_*` volumes). New database/Valkey passwords are generated; 系统设置 (domains, payment
@@ -1635,7 +1649,7 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
   | sh -s -- --restore /root/akari-<UTC> [--age-identity backup.key] [--mode docker|bare] [--domain …]
 ```
 
-The new host gets the same route prefix, CA and keys, so **existing agents and subscription links
+The new host gets the same admin prefix (database), CA and keys, so **existing agents and subscription links
 keep working** once their names point at the new host:
 
 1. Lower the DNS TTL of the main/subscription/node domains a day before (60–300 s).
@@ -1778,13 +1792,11 @@ cp panel.toml.compose.example panel.toml            # no names in it: domains ar
 sed -i 's/panel.example.com/panel.yourdomain.com/g' .env
 sed -i 's|^AKARI_IMAGE=.*|AKARI_IMAGE=ghcr.io/akari-projectx/akari-panel:0.3.2@sha256:<digest>|' .env
 
-# 4. check, start, read the route prefix
+# 4. check, start, read the admin prefix
 docker compose run --rm panel config check             # last line: "configuration OK (0 warnings)"
-docker compose up -d postgres valkey panel
-docker compose exec panel /akari info                  # route prefix: /<prefix>
-sed -i "s|^AKARI_PREFIX=.*|AKARI_PREFIX=<prefix without the slash>|" .env
-docker compose up -d                                   # Caddy: certificate, forwards /<prefix>/* only
-curl -s -o /dev/null -w '%{http_code}\n' https://panel.yourdomain.com/<prefix>/healthz   # 200
+docker compose up -d                                   # Caddy: certificate, forwards everything
+docker compose exec panel /akari info                  # admin prefix: /<prefix>, sub path: /<path>
+curl -s -o /dev/null -w '%{http_code}\n' https://panel.yourdomain.com/healthz   # 200
 ```
 
 The compose file sets `AKARI_CONFIG=/etc/akari/panel.toml` on the panel service, so every
@@ -1834,7 +1846,7 @@ updating the checkout run `docker compose up -d --force-recreate caddy`.
 
 Notes: the image is distroless (no shell; `exec panel /akari ...` works because it runs the
 binary directly), runs as UID 65532, state lives in the `akari-data` volume (`/data`).
-There is no container HEALTHCHECK; probe `https://panel.example.com/<prefix>/healthz`
+There is no container HEALTHCHECK; probe `https://panel.example.com/healthz`
 from your monitoring. The compose `frontend` subnet is fixed (172.28.0.0/24) so that
 `web.trusted_proxies` can name it.
 
@@ -1857,11 +1869,11 @@ install -m 0640 -o root -g akari deploy/panel.toml.example /etc/akari/panel.toml
 sudo -u akari akari -c /etc/akari/panel.toml config check
 install -m 0644 deploy/systemd/akari-panel.service /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now akari-panel
-sudo -u akari akari -c /etc/akari/panel.toml info      # route prefix
+sudo -u akari akari -c /etc/akari/panel.toml info      # admin prefix, sub path
 ```
 
-Then the proxy: **Caddy** (`deploy/caddy/Caddyfile`, set `AKARI_DOMAIN`/`AKARI_PREFIX` in its
-environment, upstream `127.0.0.1:8080`) or **nginx** (`deploy/nginx/akari.conf`, replace
-`SECRETPREFIX`, domain, certificate paths). Both return an empty 404 for everything outside the
-prefix, append to `X-Forwarded-For`, and keep the URI (prefix, subscription tokens) out of access
-logs. `trusted_proxies = ["127.0.0.1/32"]` matches a same-host proxy.
+Then the proxy: **Caddy** (`deploy/caddy/Caddyfile`, set `AKARI_DOMAIN` in its environment,
+upstream `127.0.0.1:8080`) or **nginx** (`deploy/nginx/akari.conf`, replace the domain and the
+certificate paths). Both forward every path (the panel decides and answers everything else with its
+empty 404), append to `X-Forwarded-For`, and keep the URI (admin prefix, subscription tokens) out of
+access logs. `trusted_proxies = ["127.0.0.1/32"]` matches a same-host proxy.

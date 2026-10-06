@@ -401,7 +401,7 @@ async fn ban_revokes_and_confines_to_the_portal() {
     let u: Uuid = r.json()["id"].as_str().unwrap().parse().unwrap();
     let token = r.json()["sub_token"].as_str().unwrap().to_string();
     let anon = Client::new(&state, rand_ip());
-    let sub = format!("/test/sub/{token}");
+    let sub = format!("/sub/{token}");
     assert_eq!(anon.get(&sub).await.status, StatusCode::OK);
     let mut uc = Client::new(&state, rand_ip());
     assert_eq!(

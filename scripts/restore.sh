@@ -72,4 +72,4 @@ open "$src/data.tar$ext" | tar -C "$AKARI_DATA_DIR" -xpf -
 echo "restore: database"
 open "$src/db.dump$ext" | load
 
-echo "restore: done. Start the panel and check 'akari info' shows the same route prefix."
+echo "restore: done. Start the panel and check 'akari info' shows the same admin prefix."

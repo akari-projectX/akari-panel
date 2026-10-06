@@ -166,7 +166,7 @@ pub async fn run(a: MultiArgs) -> Result<()> {
         .no_proxy()
         .timeout(Duration::from_secs(30))
         .build()?;
-    let prefix = crate::load::route_prefix(&a.data_dir)?;
+    let (prefix, _) = crate::load::layout(&a.database_url).await?;
     let (pa, pb) = (
         format!("{}/{prefix}", a.web_a),
         format!("{}/{prefix}", a.web_b),

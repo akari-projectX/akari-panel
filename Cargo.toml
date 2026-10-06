@@ -71,6 +71,9 @@ webauthn-rs = { version = "0.5.5", features = ["danger-allow-state-serialisation
 # built from source (vendored) so the static musl build stays
 # self-contained; TLS stays rustls.
 openssl = { version = "0.10.81", features = ["vendored"] }
+# D4/D11 front door (web.rs): `service_fn` + `oneshot` (already in the
+# graph through axum).
+tower = { version = "0.5", features = ["util"] }
 
 [build-dependencies]
 protox = "0.9"
@@ -79,9 +82,6 @@ protox = "0.9"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 tonic-prost-build = "0.14"
-
-[dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
 
 # cargo-fuzz builds the library with `--cfg fuzzing` (src/fuzzing.rs: entry
 # points for fuzz/ only, absent from every other build).

@@ -56,13 +56,13 @@ describe("login page links", () => {
     expect(screen.queryByText("Forgot password?")).toBeNull();
     unmount();
     renderWithClient(<Login options={opts()} />);
-    expect(screen.getByText("Sign up").getAttribute("href")).toBe("/app/register");
-    expect(screen.getByText("Forgot password?").getAttribute("href")).toBe("/app/forgot");
+    expect(screen.getByText("Sign up").getAttribute("href")).toBe("/register");
+    expect(screen.getByText("Forgot password?").getAttribute("href")).toBe("/forgot");
   });
 
   it("routes the public pages by path and falls back to sign-in when disabled", async () => {
     fakeApi({ "GET /auth/options": opts({ register: false }) });
-    history.replaceState(null, "", "/app/register");
+    history.replaceState(null, "", "/register");
     renderWithClient(<PublicPages />);
     // Registration is off: the sign-in page, not the form.
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeTruthy();
@@ -75,7 +75,7 @@ describe("login page links", () => {
 
 describe("Register", () => {
   it("sends the code, then registers with locale and the invite of the link", async () => {
-    history.replaceState(null, "", "/app/register?invite=Abcdefgh");
+    history.replaceState(null, "", "/register?invite=Abcdefgh");
     expect(inviteFromLocation()).toBe("Abcdefgh");
     const calls = fakeApi({
       "POST /auth/register/code": { ok: true },
@@ -141,7 +141,7 @@ describe("password reset", () => {
 
   it("reset: reads the fragment token, drops it from the URL, posts it", async () => {
     const token = "A".repeat(43);
-    history.replaceState(null, "", `/app/reset#token=${token}`);
+    history.replaceState(null, "", `/reset#token=${token}`);
     expect(tokenFromHash()).toBe(token);
     const calls = fakeApi({ "POST /auth/password-reset": { ok: true } });
     renderWithClient(<ResetPassword />);
@@ -157,7 +157,7 @@ describe("password reset", () => {
     renderWithClient(<ResetPassword />);
     expect(screen.getByRole("alert").textContent).toMatch(/incomplete/);
     cleanup();
-    history.replaceState(null, "", `/app/reset#token=${"B".repeat(43)}`);
+    history.replaceState(null, "", `/reset#token=${"B".repeat(43)}`);
     fakeApi({
       "POST /auth/password-reset": () => ({
         status: 400,
@@ -237,7 +237,7 @@ describe("portal cards", () => {
     expect(inviteLink("ab cd", "https://p.example/x/app/register?invite=")).toBe(
       "https://p.example/x/app/register?invite=ab%20cd",
     );
-    expect(inviteLink("abc", null)).toBe(`${location.origin}/app/register?invite=abc`);
+    expect(inviteLink("abc", null)).toBe(`${location.origin}/register?invite=abc`);
   });
 });
 

@@ -19,7 +19,7 @@ import {
   WalletIcon,
 } from "./components/nav-icons";
 import type { MessageKey } from "./i18n";
-import { appBase, type Me } from "./lib/api";
+import { appBase, appHome, type Me } from "./lib/api";
 import { BannedNotice, Dashboard } from "./pages/dashboard";
 import { Help } from "./pages/help";
 import { AccountSettings } from "./pages/portal";
@@ -135,5 +135,5 @@ export function viewOf(path: string, views: PortalView[]): PortalView {
 
 /** The URL of a view. */
 export function viewHref(v: PortalView): string {
-  return v.id ? `${appBase}/${v.id}` : appBase;
+  return v.id ? `${appBase}/${v.id}` : appHome;
 }

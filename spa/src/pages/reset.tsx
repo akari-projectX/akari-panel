@@ -10,7 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { useT } from "../i18n";
-import { appBase, requestReset, resetPassword } from "../lib/api";
+import { appBase, appHome, requestReset, resetPassword } from "../lib/api";
 import { errorText } from "../lib/errors";
 import { AppLink, PublicShell } from "./register";
 
@@ -77,7 +77,7 @@ export function ForgotPassword() {
               {busy ? t("reset.sending") : t("reset.send")}
             </Button>
             <p className="text-center text-sm">
-              <AppLink to={appBase}>{t("reset.toLogin")}</AppLink>
+              <AppLink to={appHome}>{t("reset.toLogin")}</AppLink>
             </p>
           </form>
         </CardContent>
@@ -137,7 +137,7 @@ export function ResetPassword() {
               <p role="status" className="text-sm text-emerald-700">
                 {t("reset.done")}
               </p>
-              <AppLink to={appBase}>{t("reset.toLogin")}</AppLink>
+              <AppLink to={appHome}>{t("reset.toLogin")}</AppLink>
             </div>
           ) : (
             <form className="space-y-4" onSubmit={submit} noValidate>

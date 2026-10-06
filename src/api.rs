@@ -49,6 +49,7 @@ pub struct LoginReq {
 /// message (it carries no credential information).
 pub async fn login(
     State(state): State<AppState>,
+    entry: crate::access::Entry,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     jar: CookieJar,
@@ -99,6 +100,11 @@ pub async fn login(
             // The password was right: whatever follows is not a credential
             // failure.
             attempt.release(&state).await;
+            // D4: admins sign in under the admin prefix; on the portal the
+            // answer is the wrong password's.
+            if entry.refuses(&row.role) {
+                return Err(ApiError::unauthorized());
+            }
             // W27: an account with a passkey may be passkey-only (its own
             // choice or the role's policy); only the holder of the
             // password learns that.
@@ -404,10 +410,11 @@ pub struct MeView {
     email_verified: bool,
     /// W15: language of the account's mails.
     locale: String,
-    /// W20 (B1): the subscription token and URL (the URL is null when no
-    /// subscription/main domain is configured: the portal builds it from
-    /// its own origin). Both null for admins, for the renewal scope (the
-    /// subscription refuses those accounts), and for `sub_legacy`.
+    /// W20 (B1): the subscription token and URL (D11: root-relative
+    /// `/<sub_path>/<token>` when no subscription/main domain is
+    /// configured: the portal prefixes its own origin). Both null for
+    /// admins, for the renewal scope (the subscription refuses those
+    /// accounts), and for `sub_legacy`.
     sub_token: Option<String>,
     sub_url: Option<String>,
     /// W20: a link from before 0120 works but cannot be shown (hash only);
@@ -462,9 +469,7 @@ pub async fn me(
         None => (None, false),
     };
     let settings = state.settings().get();
-    let sub_url = sub_token
-        .as_deref()
-        .and_then(|t| settings.sub_url(state.route_prefix(), t));
+    let sub_url = sub_token.as_deref().map(|t| state.sub_link(t));
     let view = MeView {
         id: user.id,
         role: user.role,
@@ -549,9 +554,7 @@ pub async fn user_subscription(
     )
     .await?;
     tx.commit().await?;
-    let sub_url = token
-        .as_deref()
-        .and_then(|t| state.settings().get().sub_url(state.route_prefix(), t));
+    let sub_url = token.as_deref().map(|t| state.sub_link(t));
     Ok(no_store(Json(json!({
         "legacy": token.is_none(),
         "sub_token": token,
@@ -892,10 +895,7 @@ pub async fn create_user(
                 axum::http::StatusCode::CREATED,
                 Json(CreatedUser {
                     user: view,
-                    sub_url: state
-                        .settings()
-                        .get()
-                        .sub_url(state.route_prefix(), &sub_token),
+                    sub_url: Some(state.sub_link(&sub_token)),
                     sub_token,
                 }),
             ))
@@ -1737,7 +1737,7 @@ pub async fn regenerate_sub_token(
             .await?
             .ok_or_else(ApiError::not_found)?;
     tx.commit().await?;
-    let sub_url = state.settings().get().sub_url(state.route_prefix(), &token);
+    let sub_url = state.sub_link(&token);
     Ok(Json(json!({
         "sub_token": token,
         "sub_url": sub_url,
@@ -3728,6 +3728,7 @@ mod tests {
         }
         let r = super::login(
             State(state.clone()),
+            crate::access::Entry(Some(crate::access::Via::Admin)),
             ConnectInfo(SocketAddr::new(peer, 40000)),
             headers,
             CookieJar::new(),

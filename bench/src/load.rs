@@ -23,7 +23,7 @@ use crate::common;
 pub struct HttpArgs {
     #[arg(long, env = "BENCH_DATABASE_URL", default_value = common::DEFAULT_DB)]
     pub database_url: String,
-    /// The panel's data dir (route prefix, jwt.key).
+    /// The panel's data dir (jwt.key).
     #[arg(long, default_value = "bench/data")]
     pub data_dir: PathBuf,
     /// Panel web base URL(s); several = round-robin per request.
@@ -130,6 +130,8 @@ struct Ctx {
     client: reqwest::Client,
     urls: Vec<String>,
     prefix: String,
+    /// D11: subscriptions at `<url>/<sub_path>/<token>`.
+    sub_path: String,
     cookie: String,
     users: usize,
     user_ids: Vec<Uuid>,
@@ -144,6 +146,9 @@ struct Ctx {
 impl Ctx {
     fn base(&self, i: usize) -> String {
         format!("{}/{}", self.urls[i % self.urls.len()], self.prefix)
+    }
+    fn sub_base(&self, i: usize) -> String {
+        format!("{}/{}", self.urls[i % self.urls.len()], self.sub_path)
     }
 }
 
@@ -178,17 +183,26 @@ pub fn session_cookie(secret: &str, id: Uuid, role: &str, sv: i64) -> Result<Str
     Ok(format!("{}={token}", akari_panel::auth::COOKIE_NAME))
 }
 
-pub fn route_prefix(data_dir: &std::path::Path) -> Result<String> {
-    let s = std::fs::read_to_string(data_dir.join("state.json"))
-        .with_context(|| format!("read {}/state.json", data_dir.display()))?;
-    let v: serde_json::Value = serde_json::from_str(&s)?;
-    v.get("route_prefix")
-        .and_then(|p| p.as_str())
-        .map(str::to_owned)
-        .context("state.json without route_prefix")
+/// D4/D11: the running panel's admin prefix and subscription path (the
+/// database; the panel imports/draws them at its first start).
+pub async fn layout(database_url: &str) -> Result<(String, String)> {
+    let pg = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(database_url)
+        .await?;
+    let row: (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT admin_prefix, sub_path FROM access_settings WHERE id = 1")
+            .fetch_one(&pg)
+            .await?;
+    pg.close().await;
+    match row {
+        (Some(p), Some(s)) => Ok((p, s)),
+        _ => anyhow::bail!("access_settings not set yet: start the panel once"),
+    }
 }
 
 pub async fn run(args: HttpArgs) -> Result<()> {
+    let (prefix, sub_path) = layout(&args.database_url).await?;
     let pg = PgPoolOptions::new()
         .max_connections(2)
         .connect(&args.database_url)
@@ -221,7 +235,8 @@ pub async fn run(args: HttpArgs) -> Result<()> {
             .timeout(Duration::from_secs(30))
             .build()?,
         urls: args.url.clone(),
-        prefix: route_prefix(&args.data_dir)?,
+        prefix,
+        sub_path,
         cookie: admin_cookie(&pg, &args.data_dir).await?,
         users: args.users,
         user_ids,
@@ -376,7 +391,8 @@ async fn request(ctx: &Ctx, s: Scenario, i: usize) -> bool {
                 };
                 ctx.client
                     .get(format!(
-                        "{base}/sub/{}",
+                        "{}/{}",
+                        ctx.sub_base(i),
                         common::sub_token(rng.random_range(0..ctx.users.max(1)))
                     ))
                     .header(reqwest::header::USER_AGENT, ua)

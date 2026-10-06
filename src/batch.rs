@@ -673,7 +673,7 @@ async fn chunk(
             break;
         }
         let mut sp = (*tx).begin().await?;
-        let step = match apply_one(&mut sp, actor, action, *user).await {
+        let step = match apply_one(&mut sp, state, actor, action, *user).await {
             Ok(step) => step,
             Err(e) if e.status().is_server_error() => {
                 return Err(anyhow::anyhow!(e.message().to_string()));
@@ -743,11 +743,31 @@ async fn mail_slot(state: &AppState, conn: &mut PgConnection) -> bool {
     .unwrap_or(false)
 }
 
+/// The placeholder a batch mail may carry (D11): each recipient's own
+/// subscription link.
+pub const SUB_URL: &str = "{sub_url}";
+
+/// The user's subscription link as the portal shows it (issued if the
+/// account has none yet), or None when it cannot be shown.
+async fn sub_url_of(
+    conn: &mut PgConnection,
+    state: &AppState,
+    actor: &Actor,
+    user: Uuid,
+) -> Result<Option<String>, ApiError> {
+    let stored = crate::sub::ensure_token(conn, state.master_key(), actor, user).await?;
+    let Some(crate::sub::Stored::Ready(token)) = stored else {
+        return Ok(None);
+    };
+    Ok(state.sub_url(&token))
+}
+
 /// Apply the action to one user (inside the chunk's savepoint). Business
 /// refusals are `Err(ApiError)` (4xx) and become `failed`; internal errors
 /// (5xx) abort the chunk.
 async fn apply_one(
     conn: &mut PgConnection,
+    state: &AppState,
     actor: &Actor,
     action: &Action,
     user: Uuid,
@@ -849,10 +869,19 @@ async fn apply_one(
             let Some((email, locale)) = to else {
                 return Ok(Step::Skipped("无已验证邮箱".into()));
             };
-            let tpl = Template::AdminNotice {
-                subject: subject.trim().to_string(),
-                body: body.trim().to_string(),
-            };
+            // D11: `{sub_url}` = the recipient's own subscription link (a
+            // link that cannot be shown — pre-0120 or unreadable — skips).
+            // The audit keeps the template (a link is a credential).
+            let (mut subject, mut body) = (subject.trim().to_string(), body.trim().to_string());
+            let audit_subject = subject.clone();
+            if subject.contains(SUB_URL) || body.contains(SUB_URL) {
+                let Some(url) = sub_url_of(conn, state, actor, user).await? else {
+                    return Ok(Step::Skipped("订阅链接无法显示（需重置）".into()));
+                };
+                subject = subject.replace(SUB_URL, &url);
+                body = body.replace(SUB_URL, &url);
+            }
+            let tpl = Template::AdminNotice { subject, body };
             let mail_id = crate::mail::enqueue(
                 conn,
                 &smtp,
@@ -870,7 +899,7 @@ async fn apply_one(
                 "user",
                 Some(user.to_string()),
                 None,
-                Some(json!({ "subject": subject.trim(), "mail_id": mail_id })),
+                Some(json!({ "subject": audit_subject, "mail_id": mail_id })),
             )
             .await?;
         }

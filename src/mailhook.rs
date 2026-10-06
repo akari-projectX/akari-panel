@@ -18,8 +18,9 @@ use crate::state::AppState;
 /// At most this many admins are mailed about one new ticket.
 const MAX_STAFF_RECIPIENTS: i64 = 5;
 
-/// Links put into mail (`<public origin>/<prefix>/{app,admin}`), when a
-/// main domain is configured (never derived from a request's Host).
+/// Links put into mail (the portal `<public origin>`, the console
+/// `<public origin>/<admin prefix>/admin` — staff mail only), when a main
+/// domain is configured (never derived from a request's Host).
 #[derive(Debug, Clone, Default)]
 pub struct Links {
     pub portal: Option<String>,
@@ -29,10 +30,8 @@ pub struct Links {
 impl Links {
     pub fn of(state: &AppState) -> Self {
         let portal = mail::portal_url(state);
-        let console = portal
-            .as_deref()
-            .and_then(|p| p.strip_suffix("/app"))
-            .map(|base| format!("{base}/admin"));
+        let prefix = state.settings().access().admin_prefix.clone();
+        let console = portal.as_deref().map(|o| format!("{o}/{prefix}/admin"));
         Self { portal, console }
     }
 }

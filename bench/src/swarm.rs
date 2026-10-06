@@ -47,7 +47,7 @@ use crate::common;
 pub struct SwarmArgs {
     #[arg(long, env = "BENCH_DATABASE_URL", default_value = common::DEFAULT_DB)]
     pub database_url: String,
-    /// The panel's data dir (CA, route prefix, jwt.key).
+    /// The panel's data dir (CA, jwt.key).
     #[arg(long, default_value = "bench/data")]
     pub data_dir: PathBuf,
     /// Where enrolled agent credentials are kept between runs.
@@ -222,7 +222,7 @@ pub async fn run(args: SwarmArgs) -> Result<()> {
         .no_proxy()
         .timeout(Duration::from_secs(30))
         .build()?;
-    let prefix = crate::load::route_prefix(&args.data_dir)?;
+    let (prefix, _) = crate::load::layout(&args.database_url).await?;
     let cookie = crate::load::admin_cookie(&pg, &args.data_dir).await?;
     let mut each = common::histogram()?;
     let mut all = common::histogram()?;

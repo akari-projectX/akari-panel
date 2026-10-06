@@ -20,7 +20,7 @@
 #
 # Runtime: distroless static, UID 65532 (nonroot), no shell, no package
 # manager. There is no HEALTHCHECK (nothing to run it with): probe
-# GET /<route prefix>/healthz from outside (see docs/DEPLOY.md).
+# GET /healthz from outside (see docs/DEPLOY.md).
 #
 #   docker build -t akari-panel --build-arg AKARI_GIT_SHA=$(git rev-parse --short=12 HEAD) .
 #

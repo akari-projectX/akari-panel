@@ -196,12 +196,7 @@ async fn hidden_relays_leave_subscription_and_portal_and_alert() {
     };
     let me = crate::testdb::http::client_for(&state, u).await;
     async fn sub(me: &crate::testdb::http::Client, token: &str) -> String {
-        String::from_utf8(
-            me.get(&format!("/test/sub/{token}?format=clash"))
-                .await
-                .body,
-        )
-        .unwrap()
+        String::from_utf8(me.get(&format!("/sub/{token}?format=clash")).await.body).unwrap()
     }
     async fn portal(me: &crate::testdb::http::Client) -> Vec<String> {
         me.get("/test/api/v1/me/nodes")

@@ -248,12 +248,8 @@ async fn node_form_entrance_patch_access_and_subscription() {
     };
     let mut sub = crate::testdb::http::Client::new(&state, crate::testdb::http::rand_ip());
     sub.headers = vec![("user-agent".into(), "clash.meta".into())];
-    let body = String::from_utf8(
-        sub.get(&format!("/test/sub/{token}?format=clash"))
-            .await
-            .body,
-    )
-    .unwrap();
+    let body =
+        String::from_utf8(sub.get(&format!("/sub/{token}?format=clash")).await.body).unwrap();
     assert!(body.contains("香港 01 | IPLC 直连"), "{body}");
     assert!(body.contains("server: 1.2.3.4\n    port: 443\n"), "{body}");
 
@@ -280,12 +276,8 @@ async fn node_form_entrance_patch_access_and_subscription() {
         before,
         "display/billing fields never bump"
     );
-    let body = String::from_utf8(
-        sub.get(&format!("/test/sub/{token}?format=clash"))
-            .await
-            .body,
-    )
-    .unwrap();
+    let body =
+        String::from_utf8(sub.get(&format!("/sub/{token}?format=clash")).await.body).unwrap();
     assert!(body.contains("香港 01 | IPLC BGP"), "{body}");
     assert!(body.contains("port: 30443"), "{body}");
     // Disabled: no inbound, out of the subscription; enabled: back.
@@ -299,12 +291,8 @@ async fn node_form_entrance_patch_access_and_subscription() {
         .unwrap()
         .unwrap();
     assert_eq!((snap.inbounds_json.as_str(), snap.users.len()), ("[]", 0));
-    let body = String::from_utf8(
-        sub.get(&format!("/test/sub/{token}?format=clash"))
-            .await
-            .body,
-    )
-    .unwrap();
+    let body =
+        String::from_utf8(sub.get(&format!("/sub/{token}?format=clash")).await.body).unwrap();
     assert!(!body.contains("BGP"), "{body}");
     admin
         .req(Method::PATCH, &path, Some(json!({"enabled": true})))
