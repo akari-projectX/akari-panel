@@ -383,6 +383,7 @@ const adminOrder = (over: Partial<AdminOrder> = {}): AdminOrder => ({
   refunded_at: null,
   refund_cents: null,
   refund_reason: null,
+  refund_effect: null,
   status: "paid",
   trade_no: "2026",
   paid_via: "notify",

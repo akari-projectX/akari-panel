@@ -591,6 +591,7 @@ const adminOrder = (over: Partial<AdminOrder> = {}): AdminOrder => ({
   refunded_at: null,
   refund_cents: null,
   refund_reason: null,
+  refund_effect: null,
   status: "paid",
   trade_no: "2026",
   paid_via: "notify",
@@ -613,6 +614,11 @@ describe("console: refund", () => {
       "GET /plan-prices": { payments_enabled: true, plans: [] },
       "GET /orders": [adminOrder()],
       "GET /orders/o1": { order: adminOrder(), events: [] },
+      "GET /orders/o1/refund-preview": {
+        balance_part_cents: 300,
+        amount_cents: 700,
+        effect: { kind: "cancel", user_plan_id: "up1", plan_name: "Monthly", expires_at: null },
+      },
       "POST /orders/o1/refund": () => ({ status: 200, body: { refund_cents: 1000 } }),
     });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -628,7 +634,46 @@ describe("console: refund", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: /支付宝实付 ¥7.00 也退到余额/ }));
     fireEvent.click(screen.getByRole("button", { name: "退款" }));
     await waitFor(() => expect(calls.some((c) => c.path === "/orders/o1/refund")).toBe(true));
-    expect(calls.find((c) => c.path === "/orders/o1/refund")?.body).toEqual({ reason: "用户申请", to_balance: true });
+    expect(calls.find((c) => c.path === "/orders/o1/refund")?.body).toEqual({
+      reason: "用户申请",
+      to_balance: true,
+      keep_plan: false,
+    });
     expect(confirm.mock.calls[0][0]).toContain("退回余额 ¥10.00");
+    // P1: the subscription effect comes from the server's preview.
+    expect(confirm.mock.calls[0][0]).toContain("将取消订阅「Monthly」");
+  });
+
+  it("keeps the plan when asked (money only)", async () => {
+    const calls = fakeApi({
+      "GET /plan-prices": { payments_enabled: true, plans: [] },
+      "GET /orders": [adminOrder()],
+      "GET /orders/o1": { order: adminOrder(), events: [] },
+      "GET /orders/o1/refund-preview": {
+        balance_part_cents: 300,
+        amount_cents: 700,
+        effect: {
+          kind: "rollback",
+          user_plan_id: "up1",
+          plan_name: "Monthly",
+          from: "2026-11-02T00:00:00Z",
+          to: "2026-10-02T00:00:00Z",
+        },
+      },
+      "POST /orders/o1/refund": () => ({ status: 200, body: { refund_cents: 300 } }),
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderAdmin(<AdminOrders />);
+    fireEvent.click(await screen.findByRole("button", { name: "详情" }));
+    fireEvent.change(await screen.findByLabelText("退款原因（必填，写入审计）"), { target: { value: "x" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /仅退款/ }));
+    fireEvent.click(screen.getByRole("button", { name: "退款" }));
+    await waitFor(() => expect(calls.some((c) => c.path === "/orders/o1/refund")).toBe(true));
+    expect(calls.find((c) => c.path === "/orders/o1/refund")?.body).toEqual({
+      reason: "x",
+      to_balance: false,
+      keep_plan: true,
+    });
+    expect(confirm.mock.calls[0][0]).toContain("套餐保持不变");
   });
 });

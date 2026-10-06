@@ -19,6 +19,9 @@
 //! - `manual` (Ops): admin-created paid orders (gift or offline sale),
 //!   paid through `orders::apply_mark_paid` (paid_via 'manual').
 //! - `coupon_batches` (Ops): N random codes from one coupon template.
+//! - `refund` (W16, P1): admin refunds — the money and what the order did
+//!   to the subscription (cancel / roll a renewal back / restore the plan
+//!   a switch replaced), with a preview.
 //! - `commission` (W16): invite commissions (created in apply_mark_paid,
 //!   credited after the hold by an enforce pass, reversed by a refund) and
 //!   withdrawals.
@@ -41,6 +44,7 @@ pub mod manual;
 pub mod methods;
 pub mod orders;
 pub mod provider;
+pub mod refund;
 
 #[cfg(test)]
 mod tests;

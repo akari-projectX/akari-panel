@@ -349,7 +349,8 @@ separate loopback listener, never on the public port.
 | GET | /api/v1/coupon-batches/{id}/export.csv | admin | Ops: the batch's codes as CSV (audited) |
 | GET | /api/v1/orders/{id} | admin | order + payment events |
 | POST | /api/v1/orders/{id}/fulfil | admin | `{reason}`: mark an unpaid order paid (manual) or retry a failed fulfilment (audited) |
-| POST | /api/v1/orders/{id}/refund | admin | W16 `{reason, to_balance}`: refund a paid order once (balance part back; with `to_balance` the Alipay amount too); reverses a pending commission |
+| POST | /api/v1/orders/{id}/refund | admin | W16 `{reason, to_balance, keep_plan?}`: refund a paid order once (balance part back; with `to_balance` the Alipay amount too); reverses a pending commission; P1: undoes the order's effect on the subscription (new → cancelled, renewal → term taken back, switch → previous plan restored, reset pack → money only) unless `keep_plan` |
+| GET | /api/v1/orders/{id}/refund-preview | admin | P1: `{balance_part_cents, amount_cents, effect}` — what a refund would do now (`effect.kind` none/cancel/rollback/restore); 409 when not refundable |
 | GET/POST | /api/v1/coupons | admin | W16: coupons / create `{code, kind percent\|fixed, value, plan_ids?, periods?, min_amount_cents?, starts_at?, ends_at?, max_uses?, per_user_limit?, new_users_only?, enabled?}` |
 | GET/PATCH/DELETE | /api/v1/coupons/{id} | admin | W16: coupon + redemptions / update (code immutable) / delete (never used only) |
 | GET | /api/v1/balances | admin | W16: customers with a balance (`{user_id, email, …}`), `?email` finds anyone |

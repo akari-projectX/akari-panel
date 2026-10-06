@@ -1617,6 +1617,174 @@ pub async fn apply_cancel_user_plan(
     Ok(res)
 }
 
+/// P1: what a refund undoes on the subscription its order created or
+/// changed (computed by `billing::refund::effect` under the entitlement
+/// lock, applied by `apply_refund_revoke` in the same transaction).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Revoke {
+    /// End the subscription (status `cancelled`; access revoked).
+    End { user_plan_id: Uuid },
+    /// Take a renewal's term back: the expiry becomes `to` (> now).
+    Rollback {
+        user_plan_id: Uuid,
+        to: DateTime<Utc>,
+    },
+    /// Undo a plan switch: end the subscription the order created and
+    /// reactivate the one it replaced, with that one's expiry; the traffic
+    /// used before the switch (`prior_used_bytes`) is added back to what
+    /// was used since.
+    Restore {
+        user_plan_id: Uuid,
+        prior_user_plan_id: Uuid,
+        prior_used_bytes: i64,
+    },
+}
+
+/// P1: apply a refund's `Revoke` to `user_id` (the caller holds
+/// `entitle::lock` and the refunded order's row lock). Nodes are locked
+/// before the user rows (Restore: the replaced plan's nodes too, like
+/// `apply_set_user_plan`); every node of the user is bumped when what they
+/// are served changes. Audited `user.plan.refund` (with the order id).
+pub async fn apply_refund_revoke(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    user_id: Uuid,
+    order_id: Uuid,
+    revoke: Revoke,
+) -> Result<UserPlanChange, ApiError> {
+    let gone = || -> ApiError {
+        anyhow::anyhow!("the refunded subscription changed in its own transaction").into()
+    };
+    let (up_id, before, mut after, prior) = match revoke {
+        Revoke::End { user_plan_id } => {
+            let r: Option<(Uuid, Option<DateTime<Utc>>)> = sqlx::query_as(
+                "UPDATE user_plans SET status = 'cancelled', ended_at = now() \
+                 WHERE id = $1 AND user_id = $2 AND status = 'active' \
+                 RETURNING plan_id, expires_at",
+            )
+            .bind(user_plan_id)
+            .bind(user_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+            let (plan, expires) = r.ok_or_else(gone)?;
+            (
+                user_plan_id,
+                json!({ "status": "active", "plan_id": plan, "expires_at": expires }),
+                json!({ "status": "cancelled" }),
+                None,
+            )
+        }
+        Revoke::Rollback { user_plan_id, to } => {
+            let r: Option<(Uuid, Option<DateTime<Utc>>)> = sqlx::query_as(
+                "UPDATE user_plans SET expires_at = $3 \
+                 WHERE id = $1 AND user_id = $2 AND status = 'active' \
+                 RETURNING plan_id, old.expires_at",
+            )
+            .bind(user_plan_id)
+            .bind(user_id)
+            .bind(to)
+            .fetch_optional(&mut *conn)
+            .await?;
+            let (plan, from) = r.ok_or_else(gone)?;
+            (
+                user_plan_id,
+                json!({ "plan_id": plan, "expires_at": from }),
+                json!({ "expires_at": to }),
+                None,
+            )
+        }
+        Revoke::Restore {
+            user_plan_id,
+            prior_user_plan_id,
+            prior_used_bytes,
+        } => {
+            // Lock order: every node the reconcile will touch (the replaced
+            // plan's and the user's current ones), then the user rows.
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "SELECT id FROM nodes WHERE id IN (SELECT e.node_id FROM user_plans up \
+                 JOIN plan_groups pg ON pg.plan_id = up.plan_id \
+                 JOIN entrance_group_members m ON m.group_id = pg.group_id \
+                 JOIN entrances e ON e.id = m.entrance_id WHERE up.id = $2 \
+                 UNION {}) ORDER BY id FOR UPDATE",
+                entitle::NODES_OF_USERS
+            )))
+            .bind([user_id])
+            .bind(prior_user_plan_id)
+            .execute(&mut *conn)
+            .await?;
+            let cur: Option<Uuid> = sqlx::query_scalar(
+                "UPDATE user_plans SET status = 'cancelled', ended_at = now() \
+                 WHERE id = $1 AND user_id = $2 AND status = 'active' RETURNING plan_id",
+            )
+            .bind(user_plan_id)
+            .bind(user_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+            let cur = cur.ok_or_else(gone)?;
+            let restored: Option<(Uuid, Option<DateTime<Utc>>)> = sqlx::query_as(
+                "UPDATE user_plans SET status = 'active', ended_at = NULL \
+                 WHERE id = $1 AND user_id = $2 AND status = 'replaced' \
+                 RETURNING plan_id, expires_at",
+            )
+            .bind(prior_user_plan_id)
+            .bind(user_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+            let (plan, expires) = restored.ok_or_else(gone)?;
+            (
+                user_plan_id,
+                json!({ "status": "active", "plan_id": cur }),
+                json!({ "status": "cancelled", "restored": {
+                    "user_plan_id": prior_user_plan_id, "plan_id": plan,
+                    "expires_at": expires, "prior_used_bytes": prior_used_bytes } }),
+                Some(prior_used_bytes),
+            )
+        }
+    };
+    // Revokes/issues credentials and locks every node of the user.
+    let mut res = UserPlanChange {
+        outcome: entitle::apply_reconcile(conn, Scope::Users(&[user_id])).await?,
+        ..Default::default()
+    };
+    if let Some(carried) = prior {
+        // The restored plan counts what was used before the switch plus
+        // what was used since (never more than i64::MAX).
+        sqlx::query(
+            "UPDATE users SET traffic_used_bytes = LEAST(traffic_used_bytes::numeric + $2, \
+             9223372036854775807)::bigint WHERE id = $1",
+        )
+        .bind(user_id)
+        .bind(carried.max(0))
+        .execute(&mut *conn)
+        .await?;
+    }
+    if !matches!(revoke, Revoke::End { .. }) {
+        let synced = sync_users_from_plan(conn, &[user_id], false).await?;
+        // A restore may change the speed limit as well: resend everything.
+        if synced.iter().any(|s| s.serve_changed) || prior.is_some() {
+            res.served_bumped = bump_nodes_of_users(conn, &[user_id]).await?;
+        }
+        if let Some(s) = synced.into_iter().next() {
+            after["user"] = s.after;
+        }
+    }
+    after["entitlement"] = res.outcome.summary();
+    after["order_id"] = json!(order_id);
+    let mut before = before;
+    before["user_plan_id"] = json!(up_id);
+    crate::audit::record(
+        conn,
+        actor,
+        "user.plan.refund",
+        "user",
+        Some(user_id.to_string()),
+        Some(before),
+        Some(after),
+    )
+    .await?;
+    Ok(res)
+}
+
 /// W7 traffic reset pack: zero the used traffic of a user whose ACTIVE
 /// plan is `plan_id` and re-enable them if (and only if) they were disabled
 /// for quota; no period change (the reset marker stays). 409 when the user

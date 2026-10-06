@@ -330,101 +330,6 @@ pub async fn release_holds(
     Ok(detail)
 }
 
-/// (status, refunded_at, user_id, amount, balance part, balance_state).
-type RefundRow = (
-    String,
-    Option<DateTime<Utc>>,
-    Option<Uuid>,
-    i64,
-    i64,
-    String,
-);
-
-/// W16: admin refund of a paid order (support action, reason required):
-/// the held balance part always goes back to the balance; with
-/// `to_balance` the Alipay amount is credited to the balance as well
-/// (otherwise it was refunded out of band in the Alipay console). One
-/// ledger row (refund_to_balance) when anything is credited; a pending
-/// invite commission is reversed. The plan is not touched (cancel it by
-/// hand if needed). Once per order (409 afterwards). Audited
-/// `order.refund`.
-pub async fn apply_refund(
-    conn: &mut PgConnection,
-    actor: &Actor,
-    order_id: Uuid,
-    reason: &str,
-    to_balance: bool,
-) -> Result<Value, ApiError> {
-    let row: Option<RefundRow> = sqlx::query_as(
-        "SELECT status, refunded_at, user_id, amount_cents, balance_cents, balance_state \
-             FROM orders WHERE id = $1 FOR UPDATE",
-    )
-    .bind(order_id)
-    .fetch_optional(&mut *conn)
-    .await?;
-    let Some((status, refunded_at, user, amount, balance, balance_state)) = row else {
-        return Err(ApiError::not_found());
-    };
-    if status != "paid" {
-        return Err(conflict!(
-            "order_admin.refund_not_paid",
-            "only a paid order can be refunded"
-        ));
-    }
-    if refunded_at.is_some() {
-        return Err(conflict!(
-            "order_admin.already_refunded",
-            "the order was already refunded"
-        ));
-    }
-    let balance_part = if balance_state == "held" { balance } else { 0 };
-    let cash_part = if to_balance { amount } else { 0 };
-    let credit = balance_part + cash_part;
-    if credit > 0 {
-        let user = user.ok_or_else(|| {
-            conflict!(
-                "order_admin.refund_user_gone",
-                "the user no longer exists; refund out of band without to_balance"
-            )
-        })?;
-        let mut e = super::ledger::Entry::new(user, super::ledger::Kind::RefundToBalance, credit);
-        e.order_id = Some(order_id);
-        e.reason = Some(reason);
-        super::ledger::apply_entry(conn, actor, &e).await?;
-    }
-    sqlx::query(
-        "UPDATE orders SET refunded_at = now(), refund_cents = $2, refund_reason = $3, \
-         balance_state = CASE WHEN balance_state = 'held' THEN 'refunded' ELSE balance_state END \
-         WHERE id = $1",
-    )
-    .bind(order_id)
-    .bind(credit)
-    .bind(reason)
-    .execute(&mut *conn)
-    .await?;
-    let commission =
-        super::commission::reverse_for_order(conn, actor, order_id, "order refunded").await?;
-    let after = json!({
-        "refund_cents": credit,
-        "to_balance": to_balance,
-        "balance_part_cents": balance_part,
-        "cash_part_cents": cash_part,
-        "commission": commission,
-        "reason": reason,
-    });
-    crate::audit::record(
-        conn,
-        actor,
-        "order.refund",
-        "order",
-        Some(order_id.to_string()),
-        Some(json!({ "status": "paid", "refunded": false })),
-        Some(after.clone()),
-    )
-    .await?;
-    Ok(after)
-}
-
 /// The plan change itself (the caller holds `entitle::lock`):
 /// - reset pack: zero the used traffic of the user's active plan, which
 ///   must still be the order's plan;
@@ -434,6 +339,11 @@ pub async fn apply_refund(
 /// - otherwise new/switch: capacity re-checked here (authoritative: under
 ///   the lock, so two payments for the last slot cannot both get it), then
 ///   the plan for one period from now, usage reset (M3 replace semantics).
+///
+/// The detail (`orders.fulfil_result`) records what a refund must undo
+/// (`billing::refund`): the subscription (`user_plan_id`), a renewal's
+/// `base` (the term was added to it), a switch's replaced subscription and
+/// the traffic used on it (`prior`).
 async fn grant(conn: &mut PgConnection, actor: &Actor, b: &Bought) -> Result<Value, ApiError> {
     let user = b
         .user_id
@@ -448,20 +358,28 @@ async fn grant(conn: &mut PgConnection, actor: &Actor, b: &Bought) -> Result<Val
         return Ok(json!({ "kind": "reset" }));
     }
     let term = crate::plans::Term::new(kind, b.period_days)?;
-    let active: Option<(Uuid, Option<DateTime<Utc>>)> = sqlx::query_as(
-        "SELECT plan_id, expires_at FROM user_plans WHERE user_id = $1 AND status = 'active'",
+    // (user plan id, plan, expiry) of the active subscription.
+    let active: Option<(Uuid, Uuid, Option<DateTime<Utc>>)> = sqlx::query_as(
+        "SELECT id, plan_id, expires_at FROM user_plans WHERE user_id = $1 AND status = 'active'",
     )
     .bind(user)
     .fetch_optional(&mut *conn)
     .await?;
     match active {
-        Some((p, None)) if p == plan => {
+        Some((_, p, None)) if p == plan => {
             // Unlimited already (admin-assigned or a permanent purchase);
             // order creation refuses this, so it only happens if the plan
             // changed meanwhile.
             Ok(json!({ "kind": "renew", "expires_at": null, "note": "plan has no expiry" }))
         }
-        Some((p, Some(old))) if p == plan => {
+        Some((up, p, Some(old))) if p == plan => {
+            // The renewal adds its term to max(expiry, now) (DB clock, the
+            // same `now()` apply_renew_user_plan uses): a refund takes
+            // exactly `expires_at - base` back (billing::refund).
+            let base: DateTime<Utc> = sqlx::query_scalar("SELECT GREATEST($1, now())")
+                .bind(old)
+                .fetch_one(&mut *conn)
+                .await?;
             crate::plans::apply_renew_user_plan(
                 conn,
                 actor,
@@ -475,7 +393,10 @@ async fn grant(conn: &mut PgConnection, actor: &Actor, b: &Bought) -> Result<Val
             .bind(user)
             .fetch_one(&mut *conn)
             .await?;
-            Ok(json!({ "kind": "renew", "from": old, "expires_at": new }))
+            Ok(
+                json!({ "kind": "renew", "user_plan_id": up, "from": old, "base": base,
+                       "expires_at": new }),
+            )
         }
         other => {
             let cap: Option<(Option<i32>, i64)> = sqlx::query_as(
@@ -503,10 +424,17 @@ async fn grant(conn: &mut PgConnection, actor: &Actor, b: &Bought) -> Result<Val
                         .bind(b.credit_order_id)
                         .fetch_optional(&mut *conn)
                         .await?;
-                src.flatten() != other.map(|o| o.0)
+                src.flatten() != other.map(|o| o.1)
             } else {
                 false
             };
+            // A refund of this order restores the replaced subscription and
+            // carries its usage (billing::refund).
+            let prior_used: i64 =
+                sqlx::query_scalar("SELECT traffic_used_bytes FROM users WHERE id = $1")
+                    .bind(user)
+                    .fetch_one(&mut *conn)
+                    .await?;
             crate::plans::apply_set_user_plan(
                 conn,
                 actor,
@@ -517,14 +445,18 @@ async fn grant(conn: &mut PgConnection, actor: &Actor, b: &Bought) -> Result<Val
                 },
             )
             .await?;
-            let new: Option<DateTime<Utc>> = sqlx::query_scalar(
-                "SELECT expires_at FROM user_plans WHERE user_id = $1 AND status = 'active'",
+            let (up, new): (Uuid, Option<DateTime<Utc>>) = sqlx::query_as(
+                "SELECT id, expires_at FROM user_plans WHERE user_id = $1 AND status = 'active'",
             )
             .bind(user)
             .fetch_one(&mut *conn)
             .await?;
             let kind = if other.is_some() { "switch" } else { "new" };
-            let mut detail = json!({ "kind": kind, "expires_at": new });
+            let mut detail = json!({ "kind": kind, "user_plan_id": up, "expires_at": new });
+            if let Some((prior, prior_plan, _)) = other {
+                detail["prior"] = json!({ "user_plan_id": prior, "plan_id": prior_plan,
+                                          "used_bytes": prior_used });
+            }
             if b.credit_cents > 0 {
                 detail["credit_cents"] = json!(b.credit_cents);
                 detail["credit_source_changed"] = json!(credit_source_changed);

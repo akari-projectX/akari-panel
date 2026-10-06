@@ -2097,9 +2097,17 @@ PORDER=$(last_json "d['id']")
   || { echo "FAIL: cancel partial order"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(psql_q "SELECT balance_cents FROM user_balances WHERE user_id='$W16U'")" = "300" ] || { echo "FAIL: balance part not returned"; exit 1; }
 # Admin refund of the coupon order to the balance (the commission was already credited: kept).
+# P1: the preview says what happens to the subscription the order created
+# (cancelled: the user's access goes), and the refund does exactly that.
+[ "$(code -b "$JAR" "$BASE/api/v1/orders/$CORDER/refund-preview")" = "200" ] \
+  && [ "$(last_json "d['effect']['kind']")/$(last_json "d['amount_cents']")" = "cancel/800" ] \
+  || { echo "FAIL: refund preview"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(api_json "$JAR" POST "$BASE/api/v1/orders/$CORDER/refund" '{"reason":"smoke refund","to_balance":true}')" = "200" ] \
-  && [ "$(last_json "d['refund_cents']")/$(last_json "d['commission']")" = "800/credited" ] \
+  && [ "$(last_json "d['refund_cents']")/$(last_json "d['commission']")/$(last_json "d['effect']['kind']")" = "800/credited/cancel" ] \
   || { echo "FAIL: refund"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM user_plans WHERE user_id='$W16U' AND status='active'")/$(psql_q "SELECT count(*) FROM entrance_users WHERE user_id='$W16U'")" = "0/0" ] \
+  || { echo "FAIL: the refunded subscription kept its access"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/orders/$CORDER/refund-preview")" = "409" ] || { echo "FAIL: preview of a refunded order"; exit 1; }
 [ "$(psql_q "SELECT balance_cents FROM user_balances WHERE user_id='$W16U'")" = "1100" ] || { echo "FAIL: refund not on the balance"; exit 1; }
 # The money invariants, over everything above.
 [ "$(psql_q "SELECT count(*) FROM users u LEFT JOIN user_balances b ON b.user_id = u.id
@@ -2110,7 +2118,8 @@ PORDER=$(last_json "d['id']")
 psql_q "UPDATE user_balances SET balance_cents = balance_cents + 1" >/dev/null 2>&1 && { echo "FAIL: balance written outside the ledger"; exit 1; }
 psql_q "DELETE FROM balance_ledger" >/dev/null 2>&1 && { echo "FAIL: ledger is not append-only"; exit 1; }
 for a in coupon.create commission.create commission.settings.update balance.commission balance.withdrawal \
-         withdrawal.approved balance.admin_adjust balance.order_payment balance.refund_to_balance order.refund; do
+         withdrawal.approved balance.admin_adjust balance.order_payment balance.refund_to_balance order.refund \
+         user.plan.refund; do
   [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='$a'")" -ge 1 ] || { echo "FAIL: audit lacks $a"; exit 1; }
 done
 # Clean up: the W16 buyer holds w16-plan (the paid group's node); later
