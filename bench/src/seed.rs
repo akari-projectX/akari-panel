@@ -40,9 +40,27 @@ pub struct SeedArgs {
     /// W22: nodes each user had traffic on per day (of its per-group nodes).
     #[arg(long, default_value_t = 2)]
     pub history_nodes_per_user: u32,
+    /// Heap order of the entrance_users rows: `pinned` stores one entrance's
+    /// rows together (reproducible numbers); `scattered` stores them user by
+    /// user, as production writes them (each user's rows on all its
+    /// entrances side by side, so one entrance's rows spread over as many
+    /// heap pages as it has users).
+    #[arg(long, value_enum, default_value_t = Layout::Pinned)]
+    pub layout: Layout,
+    /// Give every bench user an active plan (production: access comes only
+    /// from plans, so the snapshot joins one active `user_plans` row per
+    /// user; off by default to keep the historical numbers comparable).
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+    pub plans: bool,
     /// Drop and recreate the bench database first.
     #[arg(long)]
     pub reset: bool,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum Layout {
+    Pinned,
+    Scattered,
 }
 
 /// Create the bench database if it does not exist (connects to the
@@ -130,10 +148,14 @@ pub async fn run(args: SeedArgs) -> Result<()> {
     seed_accounts(&pg).await?;
     let t = Instant::now();
     // Every user of group g on the direct entrance of every node of group
-    // g (both numbered by name order), one vless credential per pair. Rows
-    // of one entrance are stored together (ORDER BY): the layout no longer
-    // depends on the join plan (Q1 changed it, PERF.md).
-    let assigned = sqlx::query(
+    // g (both numbered by name order), one vless credential per pair. The
+    // ORDER BY fixes the heap layout (`--layout`), so it never depends on
+    // the join plan (Q1 changed it, PERF.md).
+    let order = match args.layout {
+        Layout::Pinned => "e.id, u.id",
+        Layout::Scattered => "u.id, e.id",
+    };
+    let assigned = sqlx::query(sqlx::AssertSqlSafe(format!(
         "WITH n AS (SELECT id, (row_number() OVER (ORDER BY name) - 1) % $1 AS g FROM nodes), \
               u AS (SELECT id, (row_number() OVER (ORDER BY email) - 1) % $1 AS g FROM users \
                     WHERE email LIKE 'bench-user-%') \
@@ -141,13 +163,16 @@ pub async fn run(args: SeedArgs) -> Result<()> {
          SELECT e.id, u.id, 'vless', \
              jsonb_build_object('id', gen_random_uuid()::text, 'flow', 'xtls-rprx-vision') \
          FROM n JOIN u USING (g) JOIN entrances e ON e.node_id = n.id AND e.kind = 'direct' \
-         ORDER BY e.id, u.id",
-    )
+         ORDER BY {order}"
+    )))
     .bind(groups)
     .execute(&pg)
     .await?
     .rows_affected();
     println!("entrance_users: {assigned} rows in {:.1?}", t.elapsed());
+    if args.plans {
+        seed_plans(&pg).await?;
+    }
     if args.counters {
         let t = Instant::now();
         let n = sqlx::query(
@@ -324,5 +349,34 @@ async fn seed_accounts(pg: &PgPool) -> Result<()> {
     sqlx::query("UPDATE auth_settings SET honeypot = false, min_submit_secs = 0")
         .execute(pg)
         .await?;
+    Ok(())
+}
+
+/// `--plans`: one plan and an active subscription (30 days) for every bench
+/// user, inserted in random order (like purchases over time).
+async fn seed_plans(pg: &PgPool) -> Result<()> {
+    let t = Instant::now();
+    let plan: Uuid = sqlx::query_scalar(
+        "INSERT INTO plans (id, name, reset_period) VALUES (gen_random_uuid(), 'bench-plan', \
+         'monthly') RETURNING id",
+    )
+    .fetch_one(pg)
+    .await?;
+    let n = sqlx::query(
+        "INSERT INTO user_plans (id, user_id, plan_id, period_anchor, term_kind, expires_at) \
+         SELECT gen_random_uuid(), id, $1, now() - interval '10 days', 'month', \
+                now() + interval '20 days' \
+         FROM users WHERE email LIKE 'bench-user-%' ORDER BY random()",
+    )
+    .bind(plan)
+    .execute(pg)
+    .await?
+    .rows_affected();
+    sqlx::query(
+        "UPDATE users SET expires_at = now() + interval '20 days' WHERE email LIKE 'bench-user-%'",
+    )
+    .execute(pg)
+    .await?;
+    println!("user_plans: {n} rows in {:.1?}", t.elapsed());
     Ok(())
 }

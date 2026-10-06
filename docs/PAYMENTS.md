@@ -1,88 +1,68 @@
-# Payments: payment methods (Alipay Face-to-Face first)
+# Payments: payment methods (Alipay Face-to-Face first)（支付：支付方式，首个为支付宝当面付）
 
-R18-3 / W24 (R40). The panel sells plans through **payment methods**
-configured in 系统设置 → 支付 (database only, no panel.toml). A method is a
-configured instance of a **provider kind**; the first and for now only kind
-is **Alipay Face-to-Face** (`alipay_f2f`: `alipay.trade.precreate` → QR
-code). Several methods of one kind are allowed (two Alipay merchants).
-Code: `src/billing/` (`provider.rs` traits + registry, `methods.rs`
-methods/API/reload/legacy import, `alipay.rs` the Alipay kind; W7
-catalogue: `catalog.rs`); migrations `0040_billing.sql`,
-`0070_plan_catalog.sql`, `0140_payment_methods.sql`; SPA:
-`spa/src/pages/purchase.tsx`, `orders.tsx`, `admin-orders.tsx`,
-`admin-plans.tsx` (prices), `admin-payments.tsx` (系统设置 → 支付).
+R18-3 / W24 (R40)。面板通过**支付方式**销售套餐，支付方式在 系统设置 → 支付 中配置（仅存数据库，不用 panel.toml）。
+一个支付方式是某个**渠道类型（provider kind）**的一份配置实例；目前唯一的类型是**支付宝当面付**
+（`alipay_f2f`：`alipay.trade.precreate` → 二维码）。同一类型可以有多个支付方式（例如两个支付宝商户）。
 
-## How it works
+- 代码：`src/billing/`（`provider.rs` 为 trait 与注册表，`methods.rs` 为支付方式 / API / 重载 / 旧配置导入，
+  `alipay.rs` 为支付宝类型；W7 套餐目录：`catalog.rs`）
+- 迁移：`0040_billing.sql`、`0070_plan_catalog.sql`、`0140_payment_methods.sql`
+- SPA：`spa/src/pages/purchase.tsx`、`orders.tsx`、`admin-orders.tsx`、`admin-plans.tsx`（价格）、
+  `admin-payments.tsx`（系统设置 → 支付）。
 
-1. An admin prices a plan per period (`PUT /api/v1/plans/{id}/prices`
-   `{on_sale, prices: [{period, days?, price_cents}]}`; SPA: 套餐 → 定价).
-   Money is **integer CNY cents** everywhere. A plan is for sale when
-   `plans.enabled`, `on_sale` and it has a price for the requested period
-   (see "Periods" below).
-2. A user buys (`POST /api/v1/me/orders {plan_id, period}`). The server
-   decides what the purchase is (new / renew / switch / reset pack, or a
-   refusal: sold out, renewal-only, switching not allowed, …), computes the
-   amount (the period's price minus any switch credit) and writes the
-   order row first with `period`, `list_price_cents`, `credit_cents`,
-   `credit_order_id` and `amount_cents` — the client never sends an
-   amount, and `GET /me/shop` shows exactly this computation beforehand.
-   An order whose credit covers the whole price is paid at once (`paid_via
-   = credit`, same `apply_mark_paid` path) and never reaches Alipay.
-   Otherwise the order is bound to a **payment method** (`method_id` in the
-   request; may be omitted when exactly one method is enabled — the portal
-   then skips the picker; `order.method_required` /
-   `order.method_unavailable` otherwise), stored as
-   `orders.payment_method_id`, and the panel calls `alipay.trade.precreate`
-   (`timeout_express` = `order_timeout_minutes`, default 15) and returns
-   the QR payload. The SPA renders the QR locally (no CDN). One open order
-   per user: a new order ends the previous pending one (queried and closed
-   at Alipay first).
-3. The payment becomes known by any of:
-   - the **async notify** (`POST /pay/{method_id}/notify`; the
-     pre-R40 `/pay/alipay/notify` stays for older orders),
-   - **status polling** (`GET /api/v1/me/orders/{id}` queries the order's
-     method (`alipay.trade.query`) for a pending order, at most every 3 s
-     per order across all instances),
-   - the **reconcile** (every instance, every 10 s: pending orders not
-     queried in the last 20 s are queried, each at its own method;
-     `FOR UPDATE SKIP LOCKED` + a claim timestamp keep instances from
-     duplicating work). An order whose method is disabled (or unusable) is
-     not queried; once past its expiry + the close grace it ends with
-     `close_state = method_unavailable` (no remote call).
-4. Every path ends in `orders::apply_mark_paid`: `entitle::lock` →
-   conditional `UPDATE orders SET status='paid' ... WHERE status <> 'paid'`
-   → fulfilment via the M3 `plans::apply_*` functions → audit, **one
-   transaction**. Only the transaction whose UPDATE flips the row fulfils:
-   replayed notifies, concurrent notify + query and several instances
-   fulfil exactly once (tests: `billing::tests::concurrent_duplicates_fulfil_once`).
+## How it works（工作流程）
+
+1. 管理员按周期给套餐定价（`PUT /api/v1/plans/{id}/prices`
+   `{on_sale, prices: [{period, days?, price_cents}]}`；SPA：套餐 → 定价）。金额处处使用**整数人民币分**。
+   套餐可售的条件：`plans.enabled`、`on_sale`，且存在所请求周期的价格（见下文 "Periods"）。
+2. 用户下单（`POST /api/v1/me/orders {plan_id, period}`）。服务器决定这次购买的性质
+   （新购 / 续费 / 换套餐 / 重置包，或拒绝：售罄、仅限续费、不允许换入……），计算金额
+   （该周期价格减去换套餐折算），并先写入订单行，包括 `period`、`list_price_cents`、`credit_cents`、
+   `credit_order_id` 和 `amount_cents`——客户端从不传金额，`GET /me/shop` 会事先展示同样的计算结果。
+   折算额覆盖全部价格的订单立即付清（`paid_via = credit`，走同一个 `apply_mark_paid` 路径），不会到达支付宝。
+   否则订单绑定到一个**支付方式**（请求中的 `method_id`；恰有一个启用的支付方式时可省略，此时门户跳过选择器；
+   否则返回 `order.method_required` / `order.method_unavailable`），存为 `orders.payment_method_id`，
+   面板调用 `alipay.trade.precreate`（`timeout_express` = `order_timeout_minutes`，默认 15）并返回二维码内容。
+   SPA 在本地渲染二维码（不使用 CDN）。每个用户同时只有一个未结订单：新订单会结束上一个待付款订单
+   （先去支付宝查询并关闭）。
+3. 付款结果通过以下任一途径得知：
+   - **异步通知**（`POST /pay/{method_id}/notify`；R40 之前的 `/pay/alipay/notify` 为旧订单保留），
+   - **状态轮询**（`GET /api/v1/me/orders/{id}` 对待付款订单向其支付方式查询（`alipay.trade.query`），
+     所有实例合计每个订单最多每 3 s 一次），
+   - **对账**（每个实例每 10 s 一次：最近 20 s 内未查询过的待付款订单会按各自的支付方式查询；
+     `FOR UPDATE SKIP LOCKED` 加认领时间戳避免实例间重复工作）。支付方式被停用（或不可用）的订单不会被查询；
+     超过过期时间 + 关闭宽限期后，订单以 `close_state = method_unavailable` 结束（不发远程调用）。
+4. 所有路径最终都进入 `orders::apply_mark_paid`：`entitle::lock` →
+   条件更新 `UPDATE orders SET status='paid' ... WHERE status <> 'paid'` →
+   通过 M3 的 `plans::apply_*` 函数开通 → 审计，全部在**同一个事务**中。只有 UPDATE 真正翻转了该行的事务才执行开通：
+   重放的通知、并发的通知 + 查询、多个实例，都恰好开通一次
+   （测试：`billing::tests::concurrent_duplicates_fulfil_once`）。
 
 ### Periods (W7)
 
-Each plan has at most one price per period kind (`plan_period_prices`);
-every price is optional, and `on_sale` needs at least one that is not the
-reset pack. Period arithmetic is SQL only (`akari_period_end`, DB clock):
+每个套餐每种周期至多一个价格（`plan_period_prices`）；价格都是可选的，`on_sale` 至少需要一个非重置包的价格。
+周期运算只在 SQL 中完成（`akari_period_end`，使用数据库时钟）：
 
-| `period` | Adds | Nominal days (proration) |
+| `period` | 增加 | 名义天数（折算用） |
 |---|---|---|
-| `month` / `quarter` / `half_year` / `year` / `two_year` / `three_year` | 1 / 3 / 6 / 12 / 24 / 36 calendar months of the site time zone (Q3, 系统设置 → 站点 → 时区, default Asia/Shanghai: a month bought on the 1st, local time, ends on the 1st); the day clamps to the month's end (Jan 31 + 1 month = Feb 28/29) | 30 / 90 / 180 / 365 / 730 / 1095 |
-| `days` (`days` = N, 1–3650) | N × 86400 s (the R18-3 single price migrated to this) | N |
-| `onetime` (`days` = N or null) | N days, or **no expiry** when `days` is null | N (none when permanent) |
-| `reset` | traffic reset pack: zeroes the used traffic of the current plan; no period change, the reset schedule is untouched | — |
+| `month` / `quarter` / `half_year` / `year` / `two_year` / `three_year` | 站点时区下的 1 / 3 / 6 / 12 / 24 / 36 个自然月（Q3，系统设置 → 站点 → 时区，默认 Asia/Shanghai：本地时间 1 日购买一个月，到下月 1 日结束）；日期超出月末时取月末（1 月 31 日 + 1 个月 = 2 月 28/29 日） | 30 / 90 / 180 / 365 / 730 / 1095 |
+| `days` (`days` = N, 1–3650) | N × 86400 s（R18-3 的单一价格已迁移为此类型） | N |
+| `onetime` (`days` = N or null) | N 天；`days` 为 null 时**永不过期** | N（永久则无） |
+| `reset` | 流量重置包：把当前套餐的已用流量清零；不改变周期，重置计划不变 | — |
 
-### What a purchase does
+### What a purchase does（购买的效果）
 
-| The user's active plan | Buying plan P, period X |
+| 用户当前的套餐 | 购买套餐 P、周期 X |
 |---|---|
-| none | `new`: P for one X from now, usage reset. Refused for `renewal_only` plans and when P is full (`capacity`). |
-| P with an expiry | `renew`: expiry = one X after max(expiry, now) (`onetime` without days makes it permanent); reset anchor unchanged; usage unchanged — except a one-time term or a plan without periodic resets, which starts a fresh quota (中-1). Allowed when P is full or renewal-only. |
-| P without expiry | renewal refused (409 "nothing to renew"); the reset pack is still allowed. |
-| P, X = `reset` | `reset`: used traffic → 0; a user disabled for quota is re-enabled (never an admin-disabled one); audited `user.traffic.reset` with `source: reset_pack`. Only for current subscribers of P — this is what quota-exhausted users (R21 renewal scope) buy. |
-| another plan Q | `switch`: replaces Q (M3 replace semantics, **usage reset**), P for one X from now, charged P's full price **minus the switch credit**. Refused when P has `allow_switch_in = false`, is `renewal_only`, or is full. |
+| 无 | `new`：从现在起获得一个 X 周期的 P，用量清零。`renewal_only` 套餐和 P 已满（`capacity`）时拒绝。 |
+| 有到期时间的 P | `renew`：到期时间 = max(到期时间, 现在) 之后再加一个 X（不带天数的 `onetime` 变为永久）；重置锚点不变；用量不变——但一次性时长或不做周期重置的套餐除外，它们开始新的额度（中-1）。P 已满或仅限续费时也允许。 |
+| 无到期时间的 P | 拒绝续费（409 "nothing to renew"）；仍可购买重置包。 |
+| P，X = `reset` | `reset`：已用流量 → 0；因超额被停用的用户会重新启用（管理员停用的绝不会）；审计 `user.traffic.reset`，`source: reset_pack`。仅限 P 的现有订阅者——这正是流量用尽的用户（R21 续费范围）所买的。 |
+| 另一个套餐 Q | `switch`：替换 Q（M3 替换语义，**用量清零**），从现在起获得一个 X 周期的 P，收取 P 的全价**减去换套餐折算**。P 的 `allow_switch_in = false`、为 `renewal_only` 或已满时拒绝。 |
 
-### Switching plans: the credit
+### Switching plans: the credit（换套餐：折算）
 
-The credit is the unused value of the current subscription, computed in SQL
-(`catalog::switch_credit` → `akari_prorate`) when the order is created:
+折算额是当前订阅尚未使用部分的价值，在创建订单时由 SQL 计算（`catalog::switch_credit` → `akari_prorate`）：
 
 ```
 latest  = the newest paid, fulfilled, non-reset, NOT refunded order of the
@@ -108,23 +88,16 @@ amount  = price − min(credit, price)        -- never negative
 折：流量用完的订阅不值钱，来回换套餐不能只花时间的钱就买到满额流量。新套餐从零开始计流量。
 有周期重置的长订阅按**当前周期**的剩余比例计（只会少折）。不限流量的套餐只按时间算。
 
-Example: 30.00 for a month, switched with 15 days left → 15.00 credit; a
-50.00 plan then costs 35.00. A credit larger than the new price is
-**forfeited** (no balance, no refunds) — the shop says so before buying
-(`forfeited_cents`) and the order is paid by the credit. The credit is
-fixed in the order at creation (orders expire after
-`order_timeout_minutes`); a payment that would replace another subscription
-than the one the order was created against is refunded to the balance
-(低-4, above); when the subscription it came from has ended meanwhile, the
-payment is honoured and `fulfil_result.credit_source_changed = true` flags
-it for review.
+示例：一个月 30.00，剩余 15 天时换套餐 → 折算 15.00；一个 50.00 的套餐此时只需 35.00。
+折算额超过新套餐价格的部分会**作废**（不转余额、不退款）——商店在购买前会提示（`forfeited_cents`），
+订单由折算额全额支付。折算额在创建订单时就固定在订单中（订单在 `order_timeout_minutes` 后过期）；
+如果付款会替换的订阅并非下单时所针对的那个，则退回余额（低-4，见上文）；
+如果折算来源的订阅在此期间已结束，付款仍然生效，并以 `fulfil_result.credit_source_changed = true` 标记待人工复核。
 
-### Stock and sale rules
+### Stock and sale rules（库存与销售规则）
 
-- `capacity` (max active subscribers, null = unlimited) is checked at order
-  creation and again, authoritatively, at fulfilment under
-  `entitle::lock`. Admin assignment (PUT /users/{id}/plan) ignores capacity
-  and sale rules.
+- `capacity`（最大活跃订阅数，null = 不限）在创建订单时检查，并在开通时于 `entitle::lock` 下再次权威检查。
+  管理员指派（PUT /users/{id}/plan）忽略容量和销售规则。
 - 运营规则（运营逻辑审查中-2）：**下单即占名额**。订单创建时记录它的动作（`orders.action`：
   new/renew/switch/reset），待付款的新购/换套餐订单在过期或结束前占一个名额：库存 = 生效订阅数 +
   其他人未过期的待付款订单（`catalog::taken_sql`），商店的「剩余」与「售罄」、下单与开通时的复查都按它算，
@@ -136,63 +109,47 @@ it for review.
   `fulfil_error` 记录原因，审计 `order.refund`（操作者为支付渠道），并通过「节点告警」里已启用的告警通道
   （Telegram / webhook / 邮件）通知管理员（事件 `billing`）。管理员人工标记付款的订单不自动退款（由管理员处理）。
   仪表盘「已付款未开通」与订单筛选「未开通」只列未退款的。
-- `renewal_only`: hidden from the shop for everybody except its holders;
-  holders renew and buy its reset pack.
+- `renewal_only`：对除持有者之外的所有人在商店中隐藏；持有者可续费并购买其重置包。
 - 运营规则（运营逻辑审查中-6）：**下架（取消「上架」）只停止新购买**。套餐的
   `renew_off_sale`（「下架后现有用户仍可续费和购买流量重置包」，默认开）开着时，下架套餐对它的
   现有用户仍出现在商店里，只能续费和买重置包；其他人看不到、下单 400「not for sale」。关掉它则
   下架即对所有人停售。**停用**（`enabled = false`）则谁都不能买（续费也不行）。
-- `allow_switch_in = false`: holders of another plan cannot switch to it
-  (newcomers can buy it).
-- `speed_limit_mbps` is enforced by the agent (see README "Plans and node
-  groups"); `device_seats` is not enforced until the client ships (R25).
+- `allow_switch_in = false`：其他套餐的持有者不能换入（新用户可以购买）。
+- `speed_limit_mbps` 由 agent 执行（见 README "Plans and node groups"）；`device_seats` 在客户端发布之前不执行（R25）。
 
-Traffic resets inside the period follow the plan's `reset_period` (M3
-period pass). 运营规则（运营逻辑审查中-1）：续费**不重置**流量的套餐（`reset_period = none`）或一次性
+周期内的流量重置遵循套餐的 `reset_period`（M3 周期扫描）。运营规则（运营逻辑审查中-1）：续费**不重置**流量的套餐（`reset_period = none`）或一次性
 （`onetime`）时长时，新的一期从满额流量开始（已用清零、因超额被停用的账户恢复、记
 `last_reset_at`）——否则用完流量的用户付了续费仍然连不上。按月重置的套餐续费仍只延长时间
 （流量由周期重置处理）；流量重置包照旧可单独购买。
 
-### Late payments, failures, refunds
+### Late payments, failures, refunds（迟到付款、失败与退款）
 
-- An order that expired or was cancelled locally but is reported paid
-  (notify or query) is still fulfilled: Alipay took the money.
+- 本地已过期或已取消、但（通过通知或查询）被报告为已付款的订单仍会开通：支付宝已经收了钱。
 - 运营规则（运营逻辑审查低-4）：订单记录下单时用户的订阅（`orders.prior_user_plan_id`）。迟到的付款
   如果要**替换**的订阅已经不是下单时那个（用户之后另购、换了套餐）——不替换，转为自动退回余额
   （`fulfil_error` = "not replaced"，同中-2 的自动退款与告警）。下单时的订阅在此期间到期、现在没有
   订阅时照常开通（这正是付款要买的）；同一套餐的续费照常续期。
-- If fulfilment fails for a business reason the order stays **paid** with
-  `fulfil_error`; Alipay still gets `success`. Plan sold out, deleted or
-  disabled, or a reset pack for a plan the user no longer holds: refunded to
-  the balance automatically (中-2, see "Stock and sale rules"). Other
-  failures (user deleted or now an admin, a late payment whose balance part
-  is no longer there): Admin: 订单 → 状态「已付款未开通」
-  → 详情 → 重试开通 (reason required, audited `order.fulfil.retry`).
-- Manual mark-paid (support case, e.g. a payment proven out of band):
-  same button on an unpaid order; `paid_via = manual`, reason stored and
-  audited.
-- **Refunds** of the Alipay amount happen in the Alipay merchant console;
-  the panel records them (W16, 订单 → 退款, see "Refunds (admin)" below),
-  returns the balance part and, if chosen, credits the amount to the
-  balance instead; P1: the order's effect on the subscription is undone in
-  the same transaction (unless 仅退款).
-- Expiry: the reconcile queries a pending order past `expires_at`; paid →
-  fulfilled, otherwise `alipay.trade.close` (best effort) and the order
-  becomes `expired`. While the gateway is unreachable the order stays
-  pending and is retried; after 1 h it is expired anyway (`close_state =
-  failed`; a later notify still fulfils it).
+- 开通因业务原因失败时，订单保持**已付款**并记录 `fulfil_error`；支付宝仍会收到 `success`。
+  套餐售罄、被删除或停用，或重置包对应的套餐用户已不持有：自动退回余额（中-2，见 "Stock and sale rules"）。
+  其他失败（用户已被删除或现在是管理员，迟到付款所需的余额部分已不存在）：管理员到 订单 → 状态「已付款未开通」
+  → 详情 → 重试开通（须填原因，审计 `order.fulfil.retry`）。
+- 手动标记已付款（客服场景，例如已在线下证实的付款）：在未付款订单上用同一个按钮；
+  `paid_via = manual`，原因会被保存并审计。
+- 支付宝金额的**退款**在支付宝商户后台进行；面板负责记录（W16，订单 → 退款，见下文 "Refunds (admin)"），
+  退回余额部分，并在选择时把该金额改记入余额；P1：订单对订阅的影响在同一事务中撤销（选择「仅退款」除外）。
+- 过期：对账会查询超过 `expires_at` 的待付款订单；已付款 → 开通，否则调用 `alipay.trade.close`（尽力而为）
+  并把订单置为 `expired`。网关不可达期间订单保持待付款并重试；1 小时后无论如何置为过期
+  （`close_state = failed`；之后到达的通知仍会开通它）。
 
-## Coupons, balance, invite commission (W16, M7)
+## Coupons, balance, invite commission (W16, M7)（优惠券、余额、邀请返利）
 
-Code: `src/billing/{coupons,ledger,commission}.rs`; migrations
-`0105_inviter.sql` … `0108_commissions.sql`; SPA: purchase page (coupon
-field, "pay with my balance"), portal `wallet.tsx` (余额 + 我的邀请), console
-`admin-coupons.tsx` (优惠券), `admin-finance.tsx` (资金), refund in
-`admin-orders.tsx`.
+代码：`src/billing/{coupons,ledger,commission}.rs`；迁移 `0105_inviter.sql` … `0108_commissions.sql`；
+SPA：购买页（优惠券输入框、"pay with my balance"）、门户 `wallet.tsx`（余额 + 我的邀请）、
+控制台 `admin-coupons.tsx`（优惠券）、`admin-finance.tsx`（资金），退款在 `admin-orders.tsx`。
 
-### How the amount is split
+### How the amount is split（金额如何拆分）
 
-An order's list price (the period's price) is covered, **in this order**:
+订单的标价（该周期的价格）**按以下顺序**被覆盖：
 
 ```
 discount = coupon on the LIST price      percent: floor(list × p / 100); fixed: min(value, list)
@@ -201,129 +158,92 @@ balance  = min(user's balance, list − discount − credit)  only when the buye
 amount   = list − discount − credit − balance  ≥ 0        what Alipay is asked for
 ```
 
-All of it is computed by the server in SQL (`akari_coupon_discount`,
-`akari_split`) at order creation and copied into the order
-(`discount_cents`, `coupon_id`/`coupon_code`, `credit_cents`,
-`balance_cents`, `amount_cents`); the `orders` CHECK enforces
-`amount = list − credit − discount − balance ≥ 0` for every row. The client
-sends `{plan_id, period, coupon?, use_balance?}` — never an amount — and the
-shop (`GET /me/shop?coupon=&use_balance=`) shows the same split beforehand.
-An amount of 0 is paid at creation through `apply_mark_paid` (`paid_via`
-`balance` when the balance took part, else `credit`, else `coupon`) and
-never reaches Alipay.
+以上全部由服务器在创建订单时用 SQL（`akari_coupon_discount`、`akari_split`）计算，并复制到订单中
+（`discount_cents`、`coupon_id`/`coupon_code`、`credit_cents`、`balance_cents`、`amount_cents`）；
+`orders` 表的 CHECK 约束对每一行强制 `amount = list − credit − discount − balance ≥ 0`。
+客户端发送 `{plan_id, period, coupon?, use_balance?}`——从不传金额——商店（`GET /me/shop?coupon=&use_balance=`）
+会事先展示同样的拆分。金额为 0 的订单在创建时经 `apply_mark_paid` 付清（余额参与时 `paid_via` 为 `balance`，
+否则为 `credit`，再否则为 `coupon`），不会到达支付宝。
 
-Why this order: the coupon is a promotion on the advertised price
-("20% off ¥30" is ¥6 whatever the buyer's situation), so it is computed on
-the list price, independent of the credit; the switch credit is the buyer's
-own value and covers what is left; the balance, the buyer's money, is used
-last and only as far as needed. Nothing can turn negative: each part is
-capped at what is left, and the CHECK is the backstop.
+为什么是这个顺序：优惠券是对标价的促销（「¥30 打 8 折」就是 ¥6，与买家的情况无关），所以在标价上计算，
+独立于折算；换套餐折算是买家自己的价值，覆盖剩余部分；余额是买家的钱，最后使用，且只用到够为止。
+任何部分都不会变成负数：每一部分都以剩余金额封顶，CHECK 约束是最后的兜底。
 
-The commission base is **the Alipay amount only** (`amount_cents`): coupon,
-switch credit and balance parts earn nothing (no commission on commission
-paid back in, no commission on discounts).
+返利基数**只含支付宝实付金额**（`amount_cents`）：优惠券、换套餐折算和余额部分都不产生返利
+（不对回流的返利再返利，也不对折扣返利）。
 
-### Coupons
+### Coupons（优惠券）
 
-| Field | Meaning |
+| 字段 | 含义 |
 |---|---|
-| `code` | 3–32 of `[A-Za-z0-9_-]`, unique **case-insensitively**, entered in any case, immutable |
-| `kind`, `value` | `percent` 1–100 (% off the list price, floored to the fen) or `fixed` fen (capped at the list price) |
-| `plan_ids`, `periods` | scope; null = every plan / period kind (the reset pack included) |
-| `min_amount_cents` | the list price must be at least this |
-| `starts_at`, `ends_at` | validity window, DB clock (`ends_at` exclusive) |
-| `max_uses` | total uses (null = unlimited); `used` counts reservations of pending orders + redemptions |
-| `per_user_limit` | uses per buyer (pending orders count) |
-| `new_users_only` | only for buyers without any paid order yet |
-| `enabled` | off = "invalid coupon code" |
+| `code` | 3–32 个 `[A-Za-z0-9_-]` 字符，**不区分大小写**唯一，输入时大小写任意，不可修改 |
+| `kind`, `value` | `percent` 1–100（标价的百分之几，向下取整到分）或 `fixed` 分（以标价封顶） |
+| `plan_ids`, `periods` | 适用范围；null = 所有套餐 / 周期类型（含重置包） |
+| `min_amount_cents` | 标价至少要达到此值 |
+| `starts_at`, `ends_at` | 有效期，使用数据库时钟（`ends_at` 不含） |
+| `max_uses` | 总使用次数（null = 不限）；`used` 统计待付款订单的预留 + 已兑现次数 |
+| `per_user_limit` | 每个买家的使用次数（待付款订单计入） |
+| `new_users_only` | 仅限尚无任何已付款订单的买家 |
+| `enabled` | 关闭 = "invalid coupon code" |
 
-**Reservation, race-free (decision)**: the use is **reserved at order
-creation and released when the order ends unpaid**, rather than counted at
-fulfilment. Counting at fulfilment would let two buyers pay for the last use
-and leave one of them paid at a price the coupon no longer allowed;
-reserving makes the last use go to exactly one buyer before anyone pays.
-Order creation takes `entitle::lock` (the lock apply_mark_paid starts
-with), then the coupon row `FOR UPDATE`, re-checks every rule under that
-lock (the per-user count after the lock, so a buyer racing herself is
-serialised too), then `UPDATE coupons SET used = used + 1 WHERE … AND (max_uses
-IS NULL OR used < max_uses)` and inserts `coupon_redemptions` (`reserved`)
-in the order's transaction; `CHECK (used <= max_uses)` is the backstop. N
-buyers racing for the last use: exactly one order is created with it, the
-others get 409 "coupon has been used up"
-(`billing::tests::w16::coupon_last_use_race_and_per_user_limit`).
+**预留，无竞态（决定）**：使用次数在**创建订单时预留，订单未付款结束时释放**，而不是在开通时才计数。
+若在开通时计数，两个买家可能都为最后一次使用付了款，其中一人付出的价格已不再被优惠券允许；
+预留则保证最后一次使用在任何人付款之前就恰好归属一位买家。创建订单时先取 `entitle::lock`
+（`apply_mark_paid` 开头取的同一把锁），再对优惠券行 `FOR UPDATE`，在该锁下重新检查所有规则
+（每用户计数在加锁之后检查，因此买家自己与自己竞争也会被串行化），然后执行
+`UPDATE coupons SET used = used + 1 WHERE … AND (max_uses IS NULL OR used < max_uses)`，
+并在订单事务中插入 `coupon_redemptions`（`reserved`）；`CHECK (used <= max_uses)` 是兜底。
+N 个买家争抢最后一次使用：恰好一个订单拿到它，其余得到 409 "coupon has been used up"
+（`billing::tests::w16::coupon_last_use_race_and_per_user_limit`）。
 
-- An order that ends unpaid (cancel, a new order replacing it, expiry,
-  precreate failure) releases the reservation in the transaction that ends
-  it (`orders::release_holds`): `released`, `used − 1`.
-- A paid order redeems it inside `apply_mark_paid` (`redeemed`).
-- A **late payment** of an ended order (Alipay took the discounted amount)
-  re-reserves the use if one is free; if the coupon is used up by then the
-  payment is honoured anyway: `redeemed` with `over_limit = true` (not
-  counted; flagged in the order's `order.paid` audit row and the coupon's
-  redemptions for review).
-- A coupon that discounts 0 fen on a given order (1% of a few fen) is not
-  applied to it (no reservation).
-- Coupons used by any order cannot be deleted (409: disable them).
-- The shop preview with a code is rate-limited per user (30 / 10 min) against
-  code guessing; order creation has its own limit (20 / h).
+- 未付款而结束的订单（取消、被新订单替换、过期、precreate 失败）在结束它的事务中释放预留
+  （`orders::release_holds`）：`released`，`used − 1`。
+- 已付款订单在 `apply_mark_paid` 中兑现（`redeemed`）。
+- 已结束订单的**迟到付款**（支付宝收的是折后金额）会在还有名额时重新预留；若此时优惠券已用完，
+  付款仍然生效：记为 `redeemed` 且 `over_limit = true`（不计数；在订单的 `order.paid` 审计行和优惠券的兑现记录中标记，供复核）。
+- 对某订单折扣为 0 分的优惠券（几分钱的 1%）不会应用于该订单（不预留）。
+- 被任何订单使用过的优惠券不能删除（409：请停用）。
+- 带优惠码的商店预览按用户限流（30 次 / 10 分钟），防止猜码；创建订单有自己的限流（20 次 / 小时）。
 
 ### Balance (余额)
 
-`user_balances.balance_cents` (materialised) changes **only** through an
-INSERT into the append-only `balance_ledger`: the ledger's trigger applies
-the amount under the balance row's lock and refuses a negative result
-(SQLSTATE `AK003` → 409 "insufficient balance"); a guard trigger refuses any
-other write of the column; ledger rows cannot be updated or deleted (only
-`user_id → NULL` when the user is deleted; the non-personal `user_label`
-snapshot — `u-` + the first 8 hex digits of the id, never the address —
-stays). So
-`balance = sum(ledger) ≥ 0` for every user, at every commit, whoever writes.
-Every movement is written by `ledger::apply_entry`: **one ledger row + one
-`balance.<kind>` audit row, in the transaction of its cause**.
+`user_balances.balance_cents`（物化值）**只能**通过向仅追加的 `balance_ledger` INSERT 来改变：
+账本的触发器在余额行的锁下应用金额，结果为负则拒绝（SQLSTATE `AK003` → 409 "insufficient balance"）；
+守卫触发器拒绝对该列的任何其他写入；账本行不可更新或删除（仅在用户被删除时 `user_id → NULL`；
+非个人信息的 `user_label` 快照——`u-` 加 id 的前 8 位十六进制，绝不含邮箱——会保留）。
+因此无论谁来写，每个用户在每次提交时都有 `balance = sum(ledger) ≥ 0`。
+每一笔变动都由 `ledger::apply_entry` 写入：**一行账本 + 一行 `balance.<kind>` 审计，与其起因在同一个事务中**。
 
-| kind | sign | when |
+| kind | 符号 | 时机 |
 |---|---|---|
-| `admin_adjust` | ± | 资金 → 用户余额 → 调整 (`POST /users/{id}/balance {amount_cents, reason}`), customers only |
-| `order_payment` | − | the balance part of an order, at creation (held); or re-taken by a late payment |
-| `refund_to_balance` | + | the held balance part of an order that ended unpaid; an admin refund to balance |
-| `commission` | + | an invite commission past its hold |
-| `commission_clawback` | − | 中-4: a refunded order's credited commission taken back from the inviter (at the refund, as far as the balance goes; the rest out of the next commissions) |
-| `withdrawal` | − | a withdrawal request (funds held until decided) |
-| `withdrawal_reversal` | + | a rejected or cancelled withdrawal |
+| `admin_adjust` | ± | 资金 → 用户余额 → 调整（`POST /users/{id}/balance {amount_cents, reason}`），仅限客户 |
+| `order_payment` | − | 订单的余额部分，在创建时扣除（冻结）；或由迟到付款重新扣取 |
+| `refund_to_balance` | + | 未付款结束的订单中被冻结的余额部分；管理员退款到余额 |
+| `commission` | + | 已过冻结期的邀请返利 |
+| `commission_clawback` | − | 中-4：已退款订单已入账的返利从邀请人处追回（退款时按余额能扣多少扣多少，其余从之后的返利中抵扣） |
+| `withdrawal` | − | 提现申请（资金冻结至审核结果） |
+| `withdrawal_reversal` | + | 被拒绝或被取消的提现 |
 
-Paying with the balance (`use_balance: true`): as much of the remainder as
-the balance holds is debited when the order is created (`balance_state`
-`held`). If that covers it, the order is paid at once; otherwise Alipay is
-asked for the rest. When the order ends unpaid, the balance part goes back
-(`refunded`). A late payment of such an order re-takes it inside the
-fulfilment savepoint; if the balance no longer covers it the order stays
-**paid with `fulfil_error` "insufficient balance"** (never a negative
-balance): top the balance up and 重试开通, or refund.
+用余额支付（`use_balance: true`）：创建订单时按余额所能覆盖的程度扣除余下金额（`balance_state` 为 `held`）。
+若已能覆盖则订单立即付清；否则向支付宝请求其余部分。订单未付款结束时，余额部分退回（`refunded`）。
+此类订单的迟到付款会在开通的 savepoint 内重新扣取余额；若余额已不足，订单保持
+**已付款且 `fulfil_error` 为 "insufficient balance"**（余额绝不为负）：请充值余额后点「重试开通」，或退款。
 
 ### Invite commission (邀请返利)
 
-Settings (资金 → 邀请返利设置, `PUT /commission-settings`, audited
-`commission.settings.update`): `enabled`, `rate_percent` (0–100),
-`first_order_only`, `hold_days` (0–365), `min_withdrawal_cents`.
+设置（资金 → 邀请返利设置，`PUT /commission-settings`，审计 `commission.settings.update`）：
+`enabled`、`rate_percent`（0–100）、`first_order_only`、`hold_days`（0–365）、`min_withdrawal_cents`。
 
-- Attribution: `users.inviter_id` (set at registration with an invite code —
-  W15; migration 0105 only guarantees the column and that it never expresses
-  a self-referral or a cycle, trigger `users_inviter_acyclic`, SQLSTATE
-  `AK002` → 409). Only customer (`role=user`) inviters earn.
-- When an invited customer's order is paid (inside `apply_mark_paid`, so
-  exactly once — `commissions.order_id` is UNIQUE too): if the programme is
-  enabled and the Alipay amount is > 0 (and, with `first_order_only`, it is
-  the invitee's first paid order with an Alipay amount), a **pending**
-  commission of `floor(amount_cents × rate / 100)` is created, available
-  `hold_days` after the payment. It is created even when fulfilment failed
-  (the money was received); a refund reverses it.
-- An enforce pass (every instance, every flush tick, `FOR UPDATE SKIP
-  LOCKED`, conditional on `pending`) credits due commissions to the
-  inviter's balance (ledger `commission`) exactly once
-  (`billing::tests::w16::commission_exactly_once_under_duplicates`). An
-  inviter deleted meanwhile → reversed.
-- An admin refund within the hold reverses the pending commission
-  (`commission.reverse`).
+- 归属：`users.inviter_id`（注册时凭邀请码设置——W15；迁移 0105 只保证该列存在，且绝不表达自我邀请或环，
+  由触发器 `users_inviter_acyclic` 保证，SQLSTATE `AK002` → 409）。只有客户（`role=user`）邀请人才有返利。
+- 被邀请客户的订单付款时（在 `apply_mark_paid` 内，因此恰好一次——`commissions.order_id` 也是 UNIQUE）：
+  若返利计划已启用且支付宝实付金额 > 0（并且在 `first_order_only` 下，这是被邀请人第一笔有支付宝金额的已付款订单），
+  就创建一条**待结算**返利，金额 `floor(amount_cents × rate / 100)`，在付款后 `hold_days` 天可用。
+  即使开通失败也会创建（钱已收到）；退款会将其撤销。
+- enforce 扫描（每个实例、每个 flush tick、`FOR UPDATE SKIP LOCKED`、以 `pending` 为条件）把到期的返利
+  恰好一次地记入邀请人余额（账本 `commission`）（`billing::tests::w16::commission_exactly_once_under_duplicates`）。
+  邀请人期间被删除 → 撤销。
+- 冻结期内的管理员退款会撤销待结算的返利（`commission.reverse`）。
 - 运营规则（运营逻辑审查中-4）：冻结期**之后**退款也会追回已入账的返利（`commission.clawback`）：
   邀请人余额够就当场扣回（明细 `commission_clawback`，负数，只追加）；不够（例如已经提现）
   只扣到 0（余额永不为负），差额记为欠款（`commissions.clawback_cents` − `clawback_recovered_cents`），
@@ -332,14 +252,10 @@ Settings (资金 → 邀请返利设置, `PUT /commission-settings`, audited
 
 ### Withdrawals (提现)
 
-Withdrawable = min(balance, credited commissions − clawed-back commissions
-(中-4) − withdrawals not rejected or cancelled): refunds and admin credits are
-spendable on plans, not cash.
-A request (`POST /me/withdrawals {amount_cents, chain, address, memo?}`, at least
-`min_withdrawal_cents`, one open request per user) debits the amount at once
-(ledger `withdrawal`); the admin approves or rejects with a reason (ledger
-`withdrawal_reversal`); the user may cancel while pending. Withdrawals of a
-deleted user can only be approved.
+可提现金额 = min(余额, 已入账返利 − 已追回返利（中-4）− 未被拒绝或取消的提现)：退款和管理员充值的金额可用于购买套餐，但不能提现。
+申请（`POST /me/withdrawals {amount_cents, chain, address, memo?}`，不低于 `min_withdrawal_cents`，每个用户同时只能有一个未结申请）
+会立即扣除金额（账本 `withdrawal`）；管理员附原因批准或拒绝（账本 `withdrawal_reversal`）；用户在待处理时可取消。
+已删除用户的提现只能批准。
 
 **只付 USDT（PR ③ R46，迁移 1019，`billing/usdt.rs`）**：提现只能以 USDT 支付，其他收款方式（支付宝/微信/银行卡）已移除。
 
@@ -407,211 +323,140 @@ original?, original_cents?}`），只对已付款订单、只能退一次。支�
 - 退款后订单不能再「重试开通」。订单详情显示 `refund_effect`（套餐被怎样处理）。
   审计 `order.refund`（含 `effect`）。
 
-### Manual orders (Ops)
+### Manual orders (Ops)（人工订单）
 
-`POST /orders/manual {user_id, plan_id, period, gift?, reason}` (console:
-订单 → 新建人工订单) records a sale made outside the gateway, or a gift.
-It is **not a new pay path**: the order row is created like a customer's
-(the period's price is read from `plan_period_prices` in SQL and copied
-into `list_price_cents`; the request carries no amount and an
-`amount_cents` member is a 400) and is then paid in the same transaction
-by `orders::apply_mark_paid(…, Via::Manual, …, reason)` — `entitle::lock`,
-the conditional flip (exactly once), fulfilment under its savepoint,
-`order.paid` audit. A gift sets `gift_cents` = the list price (migration
-0166; the amount identity becomes `amount = list − credit − discount −
-balance − gift`), so `amount_cents` = 0 and revenue (the sum of
-`amount_cents`) is unchanged. A paid manual order is revenue flagged
-`paid_via = 'manual'`: the dashboard reports `manual_cents` and
-`gift_cents` per window, the orders list filters `?via=manual`, the CSV
-has a `manual` column. Unlike a gateway payment, a manual order whose
-fulfilment fails (plan gone, sold out, reset pack without the plan) is
-rolled back whole (409 `order_admin.manual_not_fulfilled`); a user with a
-pending order gets 409 `order_admin.user_has_pending`. An invite
-commission applies to a paid (non-gift) manual order as to any payment.
+`POST /orders/manual {user_id, plan_id, period, gift?, reason}`（控制台：订单 → 新建人工订单）用于记录网关之外的销售或赠送。
+它**不是新的支付路径**：订单行的创建方式与客户订单一致（该周期价格在 SQL 中从 `plan_period_prices` 读取并复制到
+`list_price_cents`；请求不带金额，带 `amount_cents` 成员则返回 400），然后在同一事务内由
+`orders::apply_mark_paid(…, Via::Manual, …, reason)` 付清——`entitle::lock`、条件翻转（恰好一次）、
+savepoint 内开通、`order.paid` 审计。赠送会令 `gift_cents` = 标价（迁移 0166；金额恒等式变为
+`amount = list − credit − discount − balance − gift`），于是 `amount_cents` = 0，收入（`amount_cents` 之和）不变。
+已付款的人工订单是标记为 `paid_via = 'manual'` 的收入：仪表盘按时间窗口报告 `manual_cents` 和 `gift_cents`，
+订单列表可用 `?via=manual` 过滤，CSV 有 `manual` 列。与网关付款不同，开通失败的人工订单
+（套餐已不存在、售罄、重置包没有对应套餐）会整体回滚（409 `order_admin.manual_not_fulfilled`）；
+有待付款订单的用户会得到 409 `order_admin.user_has_pending`。邀请返利像对待任何付款一样适用于已付款（非赠送）的人工订单。
 
-### Batch coupons (Ops)
+### Batch coupons (Ops)（批量优惠券）
 
-`POST /coupon-batches` generates N (≤5000) codes sharing one template:
-`prefix` (0–16 of `A-Za-z0-9_-`) + `length` (6–16, default 10) characters
-from the OS CSPRNG over `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` (no 0/O/1/I; 32
-symbols, 5 bits each, no modulo bias). Every code is an ordinary
-`coupons` row with `batch_id` (migration 0167), so eligibility, the
-race-safe reservation at order creation, release and redemption are the
-W16 path unchanged; uniqueness is the `coupons_code` unique index
-(`ON CONFLICT DO NOTHING`, collisions re-drawn, bounded rounds). Per-code
-uses default to 1. The single-coupon list hides batch codes; the batch
-list shows codes/used/redeemed, exports the codes as CSV, and revoking
-disables every code (reservations already made stand).
+`POST /coupon-batches` 生成 N（≤5000）个共用一个模板的码：`prefix`（0–16 个 `A-Za-z0-9_-`）加 `length`（6–16，默认 10）个字符，
+字符来自操作系统 CSPRNG，取自 `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`（无 0/O/1/I；32 个符号，每个 5 位，无取模偏差）。
+每个码都是带 `batch_id` 的普通 `coupons` 行（迁移 0167），因此资格检查、创建订单时的无竞态预留、释放与兑现都沿用 W16 的路径；
+唯一性由 `coupons_code` 唯一索引保证（`ON CONFLICT DO NOTHING`，冲突时重新生成，轮数有限）。每个码的使用次数默认为 1。
+单张优惠券列表隐藏批次内的码；批次列表显示 码数/已用/已兑现，可把码导出为 CSV，撤销批次会停用其中所有码
+（已做的预留仍然有效）。
 
-### Lock order
+### Lock order（加锁顺序）
 
-`entitle::lock` (order creation and `apply_mark_paid`) → `orders` row →
-`coupons` / `coupon_redemptions` → `commissions` → `user_balances` →
-`withdrawals`. The commission pass and withdrawals never take an earlier
-lock after a later one.
+`entitle::lock`（创建订单和 `apply_mark_paid`）→ `orders` 行 → `coupons` / `coupon_redemptions` → `commissions` →
+`user_balances` → `withdrawals`。返利扫描和提现绝不会在取得靠后的锁之后再取靠前的锁。
 
-## Configuration (系统设置 → 支付)
+## Configuration (系统设置 → 支付)（配置）
 
-**UI setup is the only path** (database, all instances at once; no restart):
+**只能通过界面配置**（存数据库，所有实例同时生效；无需重启）：
 
 1. 系统设置 → 支付 → 添加支付方式 → 支付宝当面付.
-2. 名称 (shown to payers when more than one method is enabled), 排序.
-3. 环境: 正式 (`https://openapi.alipay.com/gateway.do`), 沙箱
-   (`https://openapi-sandbox.dl.alipaydev.com/gateway.do`) or 自定义网关
-   (https; http only to loopback — test mocks).
-4. APPID, 商户 PID (optional; when set, notifies must carry it), 订单有效期
-   (5–120 minutes).
-5. 应用私钥: paste (PEM or the bare base64 Alipay's key tool writes,
-   PKCS#8 or PKCS#1) or load the file in the browser. It is validated (RSA,
-   ≥ 2048 bits), then stored sealed (AES-256-GCM, key derived from
-   `data/master.key` with the label `akari/payment-secrets-aead/v1`, AAD = the
-   method id) and **never returned**: the page shows 已设置 + the app public
-   key's SHA-256 fingerprint and the derived **应用公钥** (SPKI base64) to
-   upload to the Alipay open platform. Leave it empty when editing to keep it.
-6. 支付宝公钥: paste Alipay's public key (not the app's: pasting the app
-   public key or any private key is refused with a coded error).
-7. 启用, 保存, then **测试连接**: one `alipay.trade.query` of a random
-   `out_trade_no`. Alipay answers `ACQ.TRADE_NOT_EXIST` only after checking
-   the APPID and our signature (= the app private key matches the 应用公钥
-   registered at Alipay) and signs that answer with its key (= the
-   configured 支付宝公钥 is right): `keys_ok`. Other outcomes, in Chinese:
+2. 名称（启用多个支付方式时展示给付款人）、排序。
+3. 环境：正式（`https://openapi.alipay.com/gateway.do`）、沙箱
+   （`https://openapi-sandbox.dl.alipaydev.com/gateway.do`）或自定义网关（https；仅回环地址可用 http——测试 mock）。
+4. APPID、商户 PID（可选；设置后通知必须携带它）、订单有效期（5–120 分钟）。
+5. 应用私钥：粘贴（PEM，或支付宝密钥工具写出的裸 base64，PKCS#8 或 PKCS#1 均可），或在浏览器中加载文件。
+   系统会校验（RSA，≥ 2048 位），然后加密存放（AES-256-GCM，密钥由 `data/master.key` 以标签
+   `akari/payment-secrets-aead/v1` 派生，AAD = 支付方式 id），并且**绝不回显**：页面显示「已设置」、
+   应用公钥的 SHA-256 指纹以及推导出的**应用公钥**（SPKI base64），供上传到支付宝开放平台。编辑时留空即保持不变。
+6. 支付宝公钥：粘贴支付宝的公钥（不是应用公钥：粘贴应用公钥或任何私钥都会被拒绝并返回错误码）。
+7. 启用、保存，然后点**测试连接**：用随机的 `out_trade_no` 发起一次 `alipay.trade.query`。
+   支付宝只有在核对完 APPID 和我们的签名（= 应用私钥与在支付宝登记的应用公钥匹配）之后，才会返回 `ACQ.TRADE_NOT_EXIST`，
+   并用其密钥对该应答签名（= 所配置的支付宝公钥正确）：`keys_ok`。其他结果以中文提示：
+   APPID 无效 / 环境错误、请求签名被拒绝（请上传所示的应用公钥）、应答签名无效（支付宝公钥错误）、网关不可达 / HTTP 错误。
+   2026-10-03 已在真实沙箱上测试：`keys_ok`。 Other outcomes, in Chinese:
    APPID invalid / wrong environment, request signature rejected (upload
    the shown 应用公钥), response signature invalid (wrong 支付宝公钥),
    gateway unreachable / HTTP error. Tested against the real sandbox
    2026-10-03: `keys_ok`.
 
-Rules (`billing::methods`, `provider::ProviderKind::validate`):
+规则（`billing::methods`、`provider::ProviderKind::validate`）：
 
-- Every change is versioned (`version`, stale form → 409
-  `settings.version_conflict`) and audited (`payment_method.create` /
-  `.update` / `.delete` / `.import`; secret fields only as `"changed"`, the
-  non-secret config — public keys, APPID — in clear). The 0060 trigger
-  function notifies every instance, which rebuilds the changed method's
-  client and swaps the whole set atomically; a call in flight keeps the
-  client it took. Enabling requires a configuration that builds.
-- A method used by any order cannot be deleted (409
-  `payments.method_in_use`): disable it. Disabling stops new orders, the
-  notify route (canonical rejection) and the reconcile for its pending
-  orders; paid orders are unaffected.
-- **Key rotation.** Orders never store keys, so in-flight orders keep
-  working across a key change. A new 应用私钥 takes effect at once (upload
-  the new 应用公钥 at Alipay first, or requests fail until you do). A
-  replaced **支付宝公钥** stays valid for verification (notifies and
-  gateway responses) for 48 hours (`PREV_KEY_GRACE_HOURS`; Alipay retries a
-  notify for ~25 h), so a notify signed with the old key just before the
-  rotation still settles its order; after the grace it is refused like any
-  bad signature (polling/the reconcile then use the new key). Changing the
-  APPID of a method strands its pending orders' notifies (`app_id`
-  mismatch → refused); polling/reconcile query with the new APPID. Prefer
-  adding a new method for a new merchant.
-- **Notify URL** (shown read-only): `<main domain>/pay/<method id>/notify` (a public path without the admin prefix: D11),
-  the main domain of 系统设置 → 站点 (W25: the only source; an old
-  `install.public_url` is imported there once). It is sent
-  with every precreate, so nothing is configured at Alipay, and it follows
-  a domain change by itself (rotating the admin prefix does not touch it). With no main domain
-  configured, orders that need the provider are refused (503 "payments are
-  not enabled", no order row; fully covered orders still work) and 系统设置
-  / startup warn. Orders created before a main domain change carry the old
-  URL; the host gate then refuses notifies to the old name, and
-  polling/the reconcile fulfil those orders. Never logged.
-- Public-key mode, **RSA2** only (certificate mode is not supported).
-- Alipay must reach the notify URL over the internet (HTTPS through your
-  reverse proxy, which forwards every path, see DEPLOY.md). If it
-  cannot (development, firewalls), payments are still detected through
-  polling and the reconcile — notify only makes it faster.
-- The panel connects to the gateway directly (no HTTP proxy support) with
-  the webpki root store.
+- 每次变更都带版本（`version`，表单过期 → 409 `settings.version_conflict`）并被审计
+  （`payment_method.create` / `.update` / `.delete` / `.import`；密钥字段只记为 `"changed"`，
+  非密钥配置——公钥、APPID——明文记录）。0060 触发器函数通知所有实例，各实例重建变更的支付方式的客户端，
+  并原子地替换整个集合；进行中的调用继续使用它已取得的客户端。启用要求配置能够构建成功。
+- 被任何订单使用过的支付方式不能删除（409 `payments.method_in_use`）：请停用。停用会停止新订单、
+  notify 路由（返回规范拒绝）以及对其待付款订单的对账；已付款订单不受影响。
+- **密钥轮换。**订单从不存储密钥，因此进行中的订单在换密钥后仍可继续。新的应用私钥立即生效
+  （请先在支付宝上传新的应用公钥，否则在此之前请求都会失败）。被替换的**支付宝公钥**在 48 小时内
+  （`PREV_KEY_GRACE_HOURS`；支付宝对通知重试约 25 小时）仍可用于验证（通知和网关应答），
+  因此轮换前不久用旧密钥签名的通知仍能结算其订单；宽限期之后它会像任何错误签名一样被拒绝
+  （此后轮询/对账使用新密钥）。更改某支付方式的 APPID 会使其待付款订单的通知失效（`app_id` 不匹配 → 拒绝）；
+  轮询/对账则使用新 APPID 查询。给新商户请优先新增一个支付方式。
+- **Notify URL**（只读显示）：`<main domain>/pay/<method id>/notify`（不带管理前缀的公开路径：D11），
+  主域名取自 系统设置 → 站点（W25：唯一来源；旧的 `install.public_url` 会一次性导入到那里）。
+  它随每次 precreate 一起发送，因此无需在支付宝侧配置，并会随域名变更自动更新（轮换管理前缀不影响它）。
+  未配置主域名时，需要渠道参与的订单会被拒绝（503 "payments are not enabled"，不创建订单行；
+  被折算额完全覆盖的订单仍可用），系统设置 / 启动日志会给出警告。主域名变更之前创建的订单带有旧 URL；
+  此时 Host 闸门会拒绝发往旧域名的通知，由轮询/对账来开通这些订单。该 URL 绝不写入日志。
+- 仅支持公钥模式、**RSA2**（不支持证书模式）。
+- 支付宝必须能通过互联网访问 notify URL（经你的反向代理走 HTTPS，且代理转发所有路径，见 DEPLOY.md）。
+  若做不到（开发环境、防火墙），付款仍会通过轮询和对账被发现——notify 只是让它更快。
+- 面板直接连接网关（不支持 HTTP 代理），使用 webpki 根证书库。
 
-**Upgrading from panel.toml (obsolete `[payments.alipay]`).** The section is
-no longer part of the configuration. An old file still starts: on the
-first start with **no payment method** in the database the section (and
-its two key files) is imported once into an Alipay method named 支付宝
-(audit `payment_method.import`, actor `system`, key sealed as above), and
-every pre-0140 order (`payment_method_id` NULL, amount > 0) is assigned to
-it; the log says to delete the section. Afterwards it is ignored with a
-startup warning, `config check` reports it as obsolete, and 系统设置 → 支付
-shows a warning while it is present. If the key files cannot be read the
-import is skipped (warning) and the start goes on: configure the method in
-the UI. The old explicit `notify_url` is gone; orders created before the
-upgrade keep their old URL `/pay/alipay/notify`, which is still
-accepted (below).
+**从 panel.toml 升级（已废弃的 `[payments.alipay]`）。**该段已不再属于配置。旧文件仍可启动：
+当数据库中**没有任何支付方式**的首次启动时，该段（及其两个密钥文件）会被一次性导入为名为「支付宝」的支付宝支付方式
+（审计 `payment_method.import`，操作者 `system`，密钥按上述方式加密存放），并且所有 0140 之前的订单
+（`payment_method_id` 为 NULL、金额 > 0）都会归属于它；日志会提示删除该段。此后它会被忽略并给出启动警告，
+`config check` 报告它已废弃，系统设置 → 支付 在其存在期间显示警告。若密钥文件无法读取，则跳过导入
+（警告）并继续启动：请在界面中配置支付方式。旧的显式 `notify_url` 已取消；升级前创建的订单保留旧 URL
+`/pay/alipay/notify`，该路径仍被接受（见下）。
 
-### Adding a provider kind (developers)
+### Adding a provider kind (developers)（新增渠道类型，面向开发者）
 
-Implement `provider::PaymentProvider` (create → QR or redirect URL, query,
-close, verify_notify, notify_ack, optional refund, test_connection) and
-`provider::ProviderKind` (id, Chinese label, form schema, validate with
-secret fields kept when absent, build, view without secrets,
-peek_out_trade_no), add it to `provider::KINDS`, widen the
-`payment_methods.kind` CHECK in a new migration, and extend the SPA's
-error mappings if the kind adds error codes. The money rules stay in
-`orders.rs`/`api.rs` and do not change per kind.
+实现 `provider::PaymentProvider`（创建 → 二维码或跳转 URL、查询、关闭、verify_notify、notify_ack、可选的退款、test_connection）
+和 `provider::ProviderKind`（id、中文名称、表单 schema、缺省时保留密钥字段的 validate、build、不含密钥的视图、
+peek_out_trade_no），把它加入 `provider::KINDS`，在新的迁移中放宽 `payment_methods.kind` 的 CHECK，
+并在该类型新增错误码时扩展 SPA 的错误映射。金额规则留在 `orders.rs`/`api.rs` 中，不随类型而变。
 
-## Notify endpoint rules
+## Notify endpoint rules（通知端点规则）
 
-`POST /pay/{method_id}/notify` (per method; unknown, malformed or
-disabled method ids are the canonical rejection) and the legacy
-`POST /pay/alipay/notify` (pre-R40 orders: the claimed
-`out_trade_no` selects the order and thus its method, which must be a
-usable Alipay method). Form-encoded, ≤16 KiB, ≤64 params, no duplicate
-keys, rate-limited per source address (/64) at 120/min in Valkey (fails
-open). Checks in order: RSA2 signature (all params except
-`sign`/`sign_type`, URL-decoded, sorted; empty values kept, or dropped as
-some Alipay SDKs do — both are under Alipay's signature; the current
-支付宝公钥 or the previous one within its grace), the method's `app_id`,
-`seller_id` (if configured), an `out_trade_no` **of this method**
-(`orders.payment_method_id` — a validly signed notify routed to method A
-never settles an order of method B: `unknown_order`), `total_amount` = the
-order's amount (strict decimal parse to cents). `TRADE_SUCCESS` /
-`TRADE_FINISHED` → paid; other statuses are acknowledged without effect.
+`POST /pay/{method_id}/notify`（按支付方式；未知、格式错误或已停用的 method id 一律返回规范拒绝）以及旧的
+`POST /pay/alipay/notify`（R40 之前的订单：由声明的 `out_trade_no` 选出订单，进而确定其支付方式，该方式必须是可用的支付宝方式）。
+表单编码，≤16 KiB，≤64 个参数，无重复键，按来源地址（/64）在 Valkey 中限流 120/min（故障时放行）。
+依次检查：RSA2 签名（除 `sign`/`sign_type` 外的所有参数，URL 解码后排序；保留空值，或像某些支付宝 SDK 那样丢弃空值——
+两种都在支付宝的签名之下；使用当前的支付宝公钥，或宽限期内的上一把）、该支付方式的 `app_id`、
+`seller_id`（若已配置）、**属于该支付方式的** `out_trade_no`（`orders.payment_method_id`——签名有效但被路由到方式 A 的通知
+绝不会结算方式 B 的订单：`unknown_order`）、`total_amount` = 订单金额（严格解析十进制并换算为分）。
+`TRADE_SUCCESS` / `TRADE_FINISHED` → 已付款；其他状态只确认而不产生影响。
 
-Answer: `success` (text/plain) only for a verified notify of our order;
-**every** refusal is the canonical rejection (`reject::not_found()`:
-404, empty body, byte-identical to any unknown URL), so Alipay retries and
-nothing about the endpoint is observable. Every notify — verified or not —
-leaves a `payment_events` row (outcome `bad_signature`, `app_id_mismatch`,
-`seller_id_mismatch`, `unknown_order`, `amount_mismatch`, `malformed`,
-`oversized`, `paid`, `paid_unfulfilled`, `duplicate`, `ignored`); the
-`sign` value is stored only as `<redacted>`. Verified-but-wrong notifies
-for a real order are also audited (`order.payment.rejected`). Unverified
-events are pruned after the audit retention (系统设置 → 安全); verified ones are kept.
+应答：只有对我们订单的已验证通知才返回 `success`（text/plain）；**所有**拒绝都是规范拒绝
+（`reject::not_found()`：404、空正文，与任何未知 URL 字节级一致），因此支付宝会重试，且端点的任何信息都无法被探测。
+每个通知——无论是否验证通过——都会留下一行 `payment_events`（结果为 `bad_signature`、`app_id_mismatch`、
+`seller_id_mismatch`、`unknown_order`、`amount_mismatch`、`malformed`、`oversized`、`paid`、`paid_unfulfilled`、
+`duplicate`、`ignored`）；`sign` 的值只存为 `<redacted>`。对真实订单的已验证但有误的通知也会被审计
+（`order.payment.rejected`）。未验证的事件在审计保留期（系统设置 → 安全）之后清理；已验证的保留。
 
-Sync responses (precreate/query/close) are verified too: the signature
-covers the raw `<method>_response` JSON bytes as received; an unsigned or
-badly signed success is an error.
+同步应答（precreate/query/close）同样会被验证：签名覆盖所收到的原始 `<method>_response` JSON 字节；
+未签名或签名错误的成功应答视为错误。
 
-## Audit actions
+## Audit actions（审计动作）
 
-Ops additions: `order.create` + `order.paid` (manual orders, `after.manual`,
-`reason`), `coupon.batch.create` (template + count, never the codes),
-`coupon.batch.revoke`, `export.orders` / `export.users` / `export.traffic`
-/ `export.coupon_batch` (the filters), `user.batch.create` /
-`user.batch.cancel`, and per user the action's own rows
-(`balance.admin_adjust`, `user.update`, `user.plan.*`, `user.traffic.reset`,
-`user.mail.send` (subject only)).
+Ops 新增：`order.create` + `order.paid`（人工订单，`after.manual`、`reason`）、`coupon.batch.create`（模板 + 数量，绝不含码）、
+`coupon.batch.revoke`、`export.orders` / `export.users` / `export.traffic` / `export.coupon_batch`（过滤条件）、
+`user.batch.create` / `user.batch.cancel`，以及每个用户上该动作自身的记录
+（`balance.admin_adjust`、`user.update`、`user.plan.*`、`user.traffic.reset`、`user.mail.send`（仅主题））。
 
 
-`plan.price.set`, `plan.price.delete`, `order.create`, `order.cancel`,
-`order.expire`, `order.paid` (actor `alipay` for notify/query, the admin
-for manual; includes the fulfilment result), `order.fulfil.retry`,
-`order.payment.rejected`, plus the plan change's own `user.plan.set` /
-`user.plan.renew` row. W16: `order.refund` (P1: + `user.plan.refund` when
-the subscription is undone), `coupon.create` /
-`coupon.update` / `coupon.delete`, `commission.create` /
-`commission.reverse`, `commission.settings.update`,
-`withdrawal.approved` / `withdrawal.rejected` / `withdrawal.cancelled`, and
-one `balance.<kind>` row per ledger row (kind as in the ledger table).
-W24: `payment_method.create` / `.update` / `.delete` / `.import`.
-`payment_events.payment_method_id` records the order's method.
+`plan.price.set`、`plan.price.delete`、`order.create`、`order.cancel`、`order.expire`、
+`order.paid`（通知/查询时操作者为 `alipay`，人工付款时为管理员；包含开通结果）、`order.fulfil.retry`、
+`order.payment.rejected`，外加套餐变更自身的 `user.plan.set` / `user.plan.renew` 记录。
+W16：`order.refund`（P1：撤销订阅时另有 `user.plan.refund`）、`coupon.create` / `coupon.update` / `coupon.delete`、
+`commission.create` / `commission.reverse`、`commission.settings.update`、
+`withdrawal.approved` / `withdrawal.rejected` / `withdrawal.cancelled`，以及每行账本对应一行 `balance.<kind>`（kind 同账本表）。
+W24：`payment_method.create` / `.update` / `.delete` / `.import`。`payment_events.payment_method_id` 记录订单所用的支付方式。
 
-## Reconciliation (operator)
+## Reconciliation (operator)（对账，运维）
 
-- 订单 → 筛选「已付款未开通」: paid orders that need attention.
-- Order detail lists every payment event (source, verification, outcome,
-  Alipay trade status, source address).
-- Daily: compare paid orders (`status='paid' AND paid_via <> 'manual'`,
-  `trade_no`, `paid_amount_cents`) with the Alipay merchant statement
-  (账单); SQL:
+- 订单 → 筛选「已付款未开通」：需要处理的已付款订单。
+- 订单详情列出每个支付事件（来源、验证情况、结果、支付宝交易状态、来源地址）。
+- 每日：把已付款订单（`status='paid' AND paid_via <> 'manual'`、`trade_no`、`paid_amount_cents`）
+  与支付宝商户对账单（账单）核对；SQL：
 
 ```sql
 SELECT out_trade_no, trade_no, amount_cents, paid_amount_cents, paid_at, user_label,
@@ -620,100 +465,60 @@ FROM orders WHERE status = 'paid' AND paid_at >= date_trunc('day', now() - inter
 ORDER BY paid_at;
 ```
 
-## Sandbox
+## Sandbox（沙箱）
 
-- Sandbox gateway (official, since the 2023-05 sandbox upgrade):
-  `https://openapi-sandbox.dl.alipaydev.com/gateway.do`. Sandbox APPID,
-  keys and the buyer account are in the Alipay open platform console
-  (开放平台 → 控制台 → 沙箱). Pay with the sandbox Alipay app (沙箱版支付宝)
-  logged in as the sandbox **buyer** account.
-- A local panel (e.g. `http://myapp.test:8080/`) cannot receive
-  notifies from the sandbox; status polling and the reconcile detect the
-  payment through `alipay.trade.query` (same exactly-once path).
-- In 系统设置 → 支付 choose 环境 = 沙箱 and paste the sandbox APPID and keys.
-- Live checks (ignored tests; read the credential files by path —
-  `~/secrets/alipay-sandbox{.env,-app-private.pem,-alipay-public.pem}` by
-  default, `AKARI_ALIPAY_LIVE_{ENV,KEY,PUB}` override — skip when they are
-  absent, print outcomes only, never run in CI). `live_sandbox` drives the
-  client directly; `live_sandbox_db_configured` configures a method
-  **through the admin API** (database, sealed key), runs 测试连接 and a
-  precreate with that client:
+- 沙箱网关（官方，2023-05 沙箱升级后）：`https://openapi-sandbox.dl.alipaydev.com/gateway.do`。
+  沙箱 APPID、密钥和买家账号在支付宝开放平台控制台（开放平台 → 控制台 → 沙箱）。
+  请用沙箱版支付宝（沙箱版支付宝）登录沙箱**买家**账号来付款。
+- 本地面板（如 `http://myapp.test:8080/`）无法接收沙箱的通知；状态轮询和对账会通过 `alipay.trade.query`
+  发现付款（同一条恰好一次的路径）。
+- 在 系统设置 → 支付 中选择 环境 = 沙箱，并粘贴沙箱 APPID 和密钥。
+- 实机检查（被忽略的测试；按路径读取凭据文件——默认 `~/secrets/alipay-sandbox{.env,-app-private.pem,-alipay-public.pem}`，
+  可用 `AKARI_ALIPAY_LIVE_{ENV,KEY,PUB}` 覆盖——文件不存在时跳过，只打印结果，绝不在 CI 中运行）。
+  `live_sandbox` 直接驱动客户端；`live_sandbox_db_configured` **通过管理 API** 配置一个支付方式
+  （数据库、加密密钥），执行 测试连接，并用该客户端发起一次 precreate：
 
 ```bash
 cargo test --lib live_sandbox -- --ignored --nocapture
 ```
 
-**Results 2026-10-03 (W24)**: both live tests passed against the real
-sandbox: 测试连接 `keys_ok` (signed `ACQ.TRADE_NOT_EXIST` verified with the
-sandbox 支付宝公钥), precreate 0.01 CNY → QR, query → not paid, close, and
-the wrong Alipay public key → `BadSignature`.
+**结果 2026-10-03（W24）**：两个实机测试在真实沙箱上均通过：测试连接 `keys_ok`
+（签名的 `ACQ.TRADE_NOT_EXIST` 已用沙箱支付宝公钥验证）、precreate 0.01 元 → 二维码、query → 未支付、close，
+以及错误的支付宝公钥 → `BadSignature`。
 
-**Results 2026-10-02** (this dev machine, real sandbox gateway, keys from
-`~/secrets`, nothing committed): `alipay.trade.precreate` 0.01 CNY →
-`code 10000` with a `https://qr.alipay.com/...` QR, response signature
-verified with the sandbox Alipay public key; `alipay.trade.query` on the
-unscanned order → `40004 ACQ.TRADE_NOT_EXIST` (mapped to "not paid");
-`alipay.trade.close` → `ACQ.TRADE_NOT_EXIST` (nothing to close); the same
-query verified against a wrong Alipay public key → rejected
-(`BadSignature`). The sandbox gateway intermittently answered **HTTP 404
-with an HTML page** (roughly 1 in 4 calls); every gateway call is therefore
-retried up to 3 times on transport errors / non-200 answers (all three
-calls are idempotent per `out_trade_no`), after which the order stays
-pending and polling/reconcile retry. With the retry, repeated live runs
-passed. A scanned
-but unpaid trade (`WAIT_BUYER_PAY`) and a real `TRADE_SUCCESS` need the
-sandbox app and were not exercised live; they are covered by the mock
-gateway tests and smoke.
+**结果 2026-10-02**（本开发机、真实沙箱网关、密钥取自 `~/secrets`、未提交任何内容）：
+`alipay.trade.precreate` 0.01 元 → `code 10000`，返回 `https://qr.alipay.com/...` 二维码，
+应答签名已用沙箱支付宝公钥验证；对未扫码订单的 `alipay.trade.query` → `40004 ACQ.TRADE_NOT_EXIST`（映射为「未支付」）；
+`alipay.trade.close` → `ACQ.TRADE_NOT_EXIST`（无需关闭）；同一个 query 用错误的支付宝公钥验证 → 被拒绝（`BadSignature`）。
+沙箱网关间歇性地返回**带 HTML 页面的 HTTP 404**（大约每 4 次调用出现 1 次），因此每次网关调用在传输错误 / 非 200 应答时
+最多重试 3 次（三种调用按 `out_trade_no` 都是幂等的），之后订单保持待付款，由轮询/对账继续重试。加入重试后，多次实机运行均通过。
+已扫码但未付款的交易（`WAIT_BUYER_PAY`）和真实的 `TRADE_SUCCESS` 需要沙箱应用，未做实机验证；它们由 mock 网关测试和 smoke 覆盖。
 
-## Tests
+## Tests（测试）
 
-- `billing::alipay::tests`: amounts, canonical strings, an openssl-made
-  signature vector, PKCS#1/PKCS#8/bare-base64 keys, key errors (too short,
-  private key as public key, app key as Alipay key), the previous Alipay
-  key's grace window, 测试连接 outcomes, notify and response verification
-  (raw-bytes, `\/` escapes, tampering, unsigned success, signed business
-  errors). `billing::provider::mock`: the trait objects with a mock
-  provider.
-- `billing::tests::w24` (real DB + mock gateways): the methods API (coded
-  validation errors, sealed secrets with AAD = id, never returned or
-  audited, optimistic concurrency, 测试连接, rotation grace, disable =
-  canonical rejection, delete only when unused), two methods (picker
-  errors, cross-method notify isolation, legacy notify path, reconcile per
-  method), unreadable secrets, reload on another instance (LISTEN/NOTIFY,
-  atomic swap), the legacy panel.toml import.
-- `billing::tests` (real DB + a local mock gateway that verifies the
-  panel's request signatures): HTTP purchase flow with poll-based
-  fulfilment, canonical notify rejections, concurrent duplicate
-  notify + query, renew/replace with node bumps and notifications,
-  failed fulfilment + admin retry + manual mark-paid, reconcile expiry and
-  late payment, one open order per user, config validation, key file mode.
-- `billing::tests::w16` (real DB): SQL money functions vs their Rust
-  mirrors; coupon rules, preview, rounding, admin API; the last-use race and
-  per-user limit; release on expiry and late payment (over the limit); the
-  ledger invariants (triggers, append-only, concurrent spends never
-  overdraw); full/partial balance payment, refund on cancel/expiry, late
-  payment with the balance spent; refunds; commission lifecycle (pending →
-  credited by the enforce pass, first order only, reversed by a refund,
-  coupon/balance parts earn nothing, admin inviter, deleted inviter);
-  exactly once under duplicate notifies/queries and concurrent credit
-  passes; withdrawals; one ledger row + one audit row per money movement
-  (table-driven). `api::tests::every_access_change_bumps_affected_nodes`
-  has a balance-adjustment row (money moves, no node bump).
-- Fuzz target `billing_input` (docs/FUZZING.md).
-- `smoke.sh` "W16": coupon order paid by a signed notify, the coupon's last
-  use refused to another buyer, commission pending → credited after a SQL
-  time travel, withdrawal approve, balance-paid and partially balance-paid
-  orders (cancel returns the balance part), refund to balance, ledger
-  invariants in SQL. e2e "W16": console coupon + balance adjustment, user
-  buys with coupon + balance (paid without the gateway).
-- `smoke.sh` "R18-3": throwaway keys made with openssl, a Python mock
-  gateway, price → order → tampered / wrong-amount notify = canonical
-  rejection → signed notify → plan active → VLESS round trip through the
-  node → replay no-op → renewal through polling (+30 days). W24: the mock
-  gateway is added as a payment method through the admin API (app key as
-  Alipay key refused, secrets sealed and never in the view/audit,
-  测试连接 `keys_ok`), notifies go to the per-method route, the W16 order
-  is settled through the legacy path, `config check` lists the methods
-  with secrets redacted. e2e "W24": the method imported from the obsolete
-  panel.toml section, 测试连接 against an unreachable gateway, adding a
-  second method in the form, the checkout picker.
+- `billing::alipay::tests`：金额、规范字符串、openssl 生成的签名向量、PKCS#1/PKCS#8/裸 base64 密钥、
+  密钥错误（过短、把私钥当公钥、把应用公钥当支付宝公钥）、上一把支付宝公钥的宽限期、测试连接的各种结果、
+  通知与应答验证（原始字节、`\/` 转义、篡改、未签名的成功、已签名的业务错误）。
+  `billing::provider::mock`：用 mock provider 测试 trait 对象。
+- `billing::tests::w24`（真实数据库 + mock 网关）：支付方式 API（带错误码的校验错误、AAD = id 的加密存放密钥、
+  绝不回显或审计、乐观并发、测试连接、轮换宽限期、停用 = 规范拒绝、仅未使用时才能删除）；两个支付方式
+  （选择器错误、跨方式通知隔离、旧通知路径、按方式对账）；不可读的密钥；在另一实例上重载
+  （LISTEN/NOTIFY、原子替换）；旧 panel.toml 导入。
+- `billing::tests`（真实数据库 + 校验面板请求签名的本地 mock 网关）：基于轮询开通的 HTTP 购买流程、
+  规范的通知拒绝、并发重复通知 + 查询、带节点 bump 与通知的续费/替换、开通失败 + 管理员重试 + 手动标记已付款、
+  对账过期与迟到付款、每用户一个未结订单、配置校验、密钥文件权限。
+- `billing::tests::w16`（真实数据库）：SQL 金额函数与其 Rust 镜像；优惠券规则、预览、取整、管理 API；
+  最后一次使用的竞争与每用户限制；过期时的释放和迟到付款（超限）；账本不变量（触发器、仅追加、并发消费绝不透支）；
+  全额/部分余额支付、取消/过期时的退款、余额已花掉时的迟到付款；退款；返利生命周期（待结算 → 由 enforce 扫描入账、仅首单、
+  被退款撤销、优惠券/余额部分不产生返利、管理员邀请人、已删除的邀请人）；重复通知/查询与并发入账扫描下恰好一次；提现；
+  每次资金变动一行账本 + 一行审计（表驱动）。`api::tests::every_access_change_bumps_affected_nodes`
+  有一行余额调整（资金变动，不 bump 节点）。
+- fuzz 目标 `billing_input`（docs/FUZZING.md）。
+- `smoke.sh` "W16"：由签名通知付清的优惠券订单、该优惠券的最后一次使用被拒绝给另一买家、返利待结算 → 经 SQL 时间穿越后入账、
+  提现批准、余额支付与部分余额支付的订单（取消会退回余额部分）、退款到余额、SQL 中的账本不变量。
+  e2e "W16"：控制台优惠券 + 余额调整，用户用优惠券 + 余额购买（无需网关即可付清）。
+- `smoke.sh` "R18-3"：用 openssl 生成的一次性密钥、Python mock 网关，定价 → 下单 → 被篡改 / 金额错误的通知 = 规范拒绝 →
+  签名通知 → 套餐生效 → 经节点的 VLESS 往返 → 重放为空操作 → 通过轮询续费（+30 天）。
+  W24：mock 网关通过管理 API 添加为支付方式（应用公钥当支付宝公钥被拒绝，密钥加密存放且绝不出现在视图/审计中，
+  测试连接 `keys_ok`），通知走按方式的路由，W16 订单经旧路径结算，`config check` 列出各支付方式且密钥已脱敏。
+  e2e "W24"：从已废弃的 panel.toml 段导入的支付方式、对不可达网关的测试连接、在表单中添加第二个支付方式、结账时的选择器。
