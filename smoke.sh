@@ -256,6 +256,8 @@ docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM aut
 # D4/D11: the next start imports this run's data/state.json prefix and draws
 # a new subscription path.
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "UPDATE access_settings SET version = 0, admin_prefix = NULL, admin_allow_cidrs = '{}', sub_path = NULL;" >/dev/null 2>&1 || true
+# PR ③ D10: cleanup settings back to their defaults (reruns on one SMOKE_DB).
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM cleanup_settings; INSERT INTO cleanup_settings (id) VALUES (1);" >/dev/null 2>&1 || true
 # W17: alert settings an aborted run may leave (a webhook to a dead receiver).
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE server_alerts, alert_notifications; UPDATE alert_settings SET version = 0, enabled = true, offline_secs = 300, webhook_enabled = false, webhook_url = NULL, webhook_secret_enc = NULL, telegram_enabled = false, telegram_chat_id = NULL, telegram_token_enc = NULL, telegram_api_url = NULL, email_enabled = false, email_to = '{}';" >/dev/null 2>&1 || true
 # Ops: announcements, knowledge base, templates and branding of an earlier run.
@@ -283,7 +285,9 @@ matches "AKARI_TEST_LIMITS is set" <"$LOG/panel.log" || { echo "FAIL: test limit
   || { echo "FAIL: TEST release key not imported as an extra key"; exit 1; }
 [ "$(psql_q "SELECT telegram_api_url FROM alert_settings")" = "https://tg.example.com" ] \
   || { echo "FAIL: alerts.telegram_api_url not imported into 告警"; exit 1; }
-[ "$(psql_q "SELECT string_agg(name || ':' || source, ',' ORDER BY name) FROM grpc_server_names")" = "localhost:config" ] \
+# D8: every node domain is recorded as a certificate name (the imported
+# grpc.advertise host here), besides grpc.server_name.
+[ "$(psql_q "SELECT string_agg(name || ':' || source, ',' ORDER BY name) FROM grpc_server_names")" = "127.0.0.1:config,localhost:config" ] \
   || { echo "FAIL: grpc.server_name not recorded as a certificate name"; psql_q "SELECT * FROM grpc_server_names"; exit 1; }
 echo "w25 import: ok"
 
@@ -440,6 +444,54 @@ done
 grep -q '"role":"admin"' /tmp/akari-smoke/last || { echo "FAIL: login response missing role"; exit 1; }
 echo "login: ok"
 
+echo "== D1/D7: email login, no second factor =="
+last_json "d['email'] == 'root@smoke.test' and 'login' not in d and 'stage' not in d" | matches '^True$' \
+  || { echo "FAIL: login response shape"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/users")" = "200" ] || { echo "FAIL: admin cannot list users"; exit 1; }
+# A5: the login body is strict JSON (400 + JSON error, not axum's 415/422);
+# the removed fields (`login`, the TOTP `code`) are unknown fields.
+for body in "{\"email\":\"root@smoke.test\",\"password\":\"$ADMIN_PW\",\"extra\":1}" \
+            "{\"email\":\"root@smoke.test\",\"password\":\"$ADMIN_PW\",\"code\":\"123456\"}" \
+            "{\"login\":\"root@smoke.test\",\"password\":\"$ADMIN_PW\"}"; do
+  [ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "$body")" = "400" ] && grep -q '"error"' /tmp/akari-smoke/last \
+    || { echo "FAIL: login body not a 400: $body"; exit 1; }
+done
+[ "$(code -X POST "$BASE/auth/login" -d 'not json')" = "400" ] || { echo "FAIL: non-JSON login body not a 400"; exit 1; }
+[ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d '{"email":"root@smoke.test","password":"wrong-password"}')" = "401" ] || { echo "FAIL: wrong password not 401"; exit 1; }
+REJ401=$(cat /tmp/akari-smoke/last)
+[ "$REJ401" = '{"code":"auth.unauthorized","error":"unauthorized","params":{}}' ] || { echo "FAIL: wrong password body: $REJ401"; exit 1; }
+[ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"email\":\"nobody@smoke.test\",\"password\":\"$ADMIN_PW\"}")" = "401" ] \
+  && [ "$(cat /tmp/akari-smoke/last)" = "$REJ401" ] || { echo "FAIL: unknown address not the uniform 401"; exit 1; }
+login_root() { # -> http status; session in $JAR (any case: addresses are case-insensitive)
+  code -c "$JAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"email\":\"ROOT@smoke.test\",\"password\":\"$ADMIN_PW\"}"
+}
+[ "$(login_root)" = "200" ] || { echo "FAIL: login in another case"; exit 1; }
+# The TOTP endpoints are gone: the canonical rejection.
+for p in "$BASE/api/v1/me/totp" "-X POST $BASE/api/v1/me/totp/enroll" "-X POST $BASE/api/v1/me/totp/confirm" \
+         "-X POST $BASE/api/v1/me/totp/recovery-codes" "-X DELETE $BASE/api/v1/users/00000000-0000-4000-8000-000000000000/totp"; do
+  # shellcheck disable=SC2086
+  [ "$(fp -b "$JAR" $p)" = "$REJ" ] || { echo "FAIL: removed TOTP endpoint answers: $p"; exit 1; }
+done
+echo "email login: ok"
+
+echo "-- W25: the imported settings through the API (database only; obsolete keys listed) --"
+[ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
+python3 - "$TEST_RELEASE_PUB" <<'PY' || { echo "FAIL: W25 settings view"; cat /tmp/akari-smoke/last; exit 1; }
+import json, sys
+v = json.load(open("/tmp/akari-smoke/last"))
+assert v["node"]["panel_addr"] == "127.0.0.1:8443" and v["node"]["source"] == "settings", v["node"]
+assert v["probe"]["urls"]["source"] == "settings", v["probe"]
+assert v["node_ops"]["acme_directory_url"] == "https://127.0.0.1:14000/dir", v["node_ops"]
+assert v["security"]["extra_release_keys"] == [sys.argv[1] + " TEST-ONLY"], v["security"]
+assert [k["official"] for k in v["security"]["release_keys"]] == [True, False], v["security"]
+for k in ("grpc.advertise", "acme.directory_url", "sub.rate_per_token", "updates.release_keys"):
+    assert k in v["obsolete_config_keys"], v["obsolete_config_keys"]
+PY
+echo "w25 settings api: ok"
+
 echo "== D4/D11: the portal at /, the console and the API under the admin prefix =="
 [ "$(code "$ROOT/")" = "200" ] || { echo "FAIL: the portal is not at /"; exit 1; }
 grep -qF "$PREFIX" /tmp/akari-smoke/last && { echo "FAIL: the portal page carries the admin prefix"; exit 1; }
@@ -512,54 +564,6 @@ CTOK=$(last_json "d['confirm_token']")
 # A sign-in is recorded (and clears a cleanup warning).
 [ -n "$(psql_q "SELECT last_login_at FROM users WHERE email = 'root@smoke.test'")" ] || { echo "FAIL: last_login_at not recorded"; exit 1; }
 echo "never-used accounts: ok"
-
-echo "== D1/D7: email login, no second factor =="
-last_json "d['email'] == 'root@smoke.test' and 'login' not in d and 'stage' not in d" | matches '^True$' \
-  || { echo "FAIL: login response shape"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(code -b "$JAR" "$BASE/api/v1/users")" = "200" ] || { echo "FAIL: admin cannot list users"; exit 1; }
-# A5: the login body is strict JSON (400 + JSON error, not axum's 415/422);
-# the removed fields (`login`, the TOTP `code`) are unknown fields.
-for body in "{\"email\":\"root@smoke.test\",\"password\":\"$ADMIN_PW\",\"extra\":1}" \
-            "{\"email\":\"root@smoke.test\",\"password\":\"$ADMIN_PW\",\"code\":\"123456\"}" \
-            "{\"login\":\"root@smoke.test\",\"password\":\"$ADMIN_PW\"}"; do
-  [ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' -d "$body")" = "400" ] && grep -q '"error"' /tmp/akari-smoke/last \
-    || { echo "FAIL: login body not a 400: $body"; exit 1; }
-done
-[ "$(code -X POST "$BASE/auth/login" -d 'not json')" = "400" ] || { echo "FAIL: non-JSON login body not a 400"; exit 1; }
-[ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
-    -d '{"email":"root@smoke.test","password":"wrong-password"}')" = "401" ] || { echo "FAIL: wrong password not 401"; exit 1; }
-REJ401=$(cat /tmp/akari-smoke/last)
-[ "$REJ401" = '{"code":"auth.unauthorized","error":"unauthorized","params":{}}' ] || { echo "FAIL: wrong password body: $REJ401"; exit 1; }
-[ "$(code -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
-    -d "{\"email\":\"nobody@smoke.test\",\"password\":\"$ADMIN_PW\"}")" = "401" ] \
-  && [ "$(cat /tmp/akari-smoke/last)" = "$REJ401" ] || { echo "FAIL: unknown address not the uniform 401"; exit 1; }
-login_root() { # -> http status; session in $JAR (any case: addresses are case-insensitive)
-  code -c "$JAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
-    -d "{\"email\":\"ROOT@smoke.test\",\"password\":\"$ADMIN_PW\"}"
-}
-[ "$(login_root)" = "200" ] || { echo "FAIL: login in another case"; exit 1; }
-# The TOTP endpoints are gone: the canonical rejection.
-for p in "$BASE/api/v1/me/totp" "-X POST $BASE/api/v1/me/totp/enroll" "-X POST $BASE/api/v1/me/totp/confirm" \
-         "-X POST $BASE/api/v1/me/totp/recovery-codes" "-X DELETE $BASE/api/v1/users/00000000-0000-4000-8000-000000000000/totp"; do
-  # shellcheck disable=SC2086
-  [ "$(fp -b "$JAR" $p)" = "$REJ" ] || { echo "FAIL: removed TOTP endpoint answers: $p"; exit 1; }
-done
-echo "email login: ok"
-
-echo "-- W25: the imported settings through the API (database only; obsolete keys listed) --"
-[ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
-python3 - "$TEST_RELEASE_PUB" <<'PY' || { echo "FAIL: W25 settings view"; cat /tmp/akari-smoke/last; exit 1; }
-import json, sys
-v = json.load(open("/tmp/akari-smoke/last"))
-assert v["node"]["panel_addr"] == "127.0.0.1:8443" and v["node"]["source"] == "settings", v["node"]
-assert v["probe"]["urls"]["source"] == "settings", v["probe"]
-assert v["node_ops"]["acme_directory_url"] == "https://127.0.0.1:14000/dir", v["node_ops"]
-assert v["security"]["extra_release_keys"] == [sys.argv[1] + " TEST-ONLY"], v["security"]
-assert [k["official"] for k in v["security"]["release_keys"]] == [True, False], v["security"]
-for k in ("grpc.advertise", "acme.directory_url", "sub.rate_per_token", "updates.release_keys"):
-    assert k in v["obsolete_config_keys"], v["obsolete_config_keys"]
-PY
-echo "w25 settings api: ok"
 
 echo "== auth lives at /{prefix}/auth, not /api/v1/auth (REVIEW P0 #1) =="
 # Nothing may depend on the wrong path: it must stay a rejection.
@@ -2083,7 +2087,7 @@ mp_mail "$NEW" 1 | sed -n 1p | matches 'sign-up code' || { echo "FAIL: no code f
 R1=$(fpr -X POST "$BASE/auth/password-reset/request" -H "$J" -d "{\"email\":\"$REG\"}")
 R2=$(fpr -X POST "$BASE/auth/password-reset/request" -H "$J" -d "{\"email\":\"nobody-$NEW\"}")
 [ "$R1" = "$R2" ] || { echo "FAIL: reset answers differ by account existence"; exit 1; }
-RESET_TOKEN=$(mp_mail "$REG" 3 | grep -oE '/app/reset#token=[A-Za-z0-9_-]{43}' | sed -n 1p | sed 's/.*token=//')
+RESET_TOKEN=$(mp_mail "$REG" 3 | grep -oE '/reset#token=[A-Za-z0-9_-]{43}' | sed -n 1p | sed 's/.*token=//')
 [ -n "$RESET_TOKEN" ] || { echo "FAIL: no reset link in the mail"; mp_mail "$REG" 3; exit 1; }
 mp_mail "$REG" 3 | matches 'https\?://127\.0\.0\.1:8080/' || { echo "FAIL: reset link is not on the main domain"; exit 1; }
 [ "$(code -X POST "$BASE/auth/password-reset" -H "$J" -d "{\"token\":\"$RESET_TOKEN\",\"password\":\"reg-password-2\"}")" = "200" ] \
@@ -4185,7 +4189,7 @@ done
 docker rm -f akari-smoke-caddy >/dev/null
 eval "$PREV_EXIT_TRAP"
 # CLI: show + unset (audited); the name history (certificate) stays.
-"$PANEL" settings show | matches 'node domain: *grpc.akari.test' || { echo "FAIL: settings show"; "$PANEL" settings show; exit 1; }
+"$PANEL" settings show | matches 'node domains: *grpc.akari.test' || { echo "FAIL: settings show"; "$PANEL" settings show; exit 1; }
 "$PANEL" settings unset all >/dev/null || { echo "FAIL: settings unset"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.update' AND actor_label = 'cli'")" = "$((R22_CLI0 + 1))" ] || { echo "FAIL: CLI unset not audited"; exit 1; }
 for _ in $(seq 1 20); do [ "$(code "$ASK?domain=myapp.test")" = "404" ] && break; sleep 0.25; done
@@ -4198,7 +4202,7 @@ for _ in $(seq 1 20); do [ "$(code "$ASK?domain=myapp.test")" = "404" ] && break
   && { echo "FAIL: a token without a node domain"; exit 1; }
 matches '节点通信域名未设置' <"$LOG/r22-none.out" || { echo "FAIL: unset node domain error"; cat "$LOG/r22-none.out"; exit 1; }
 "$PANEL" settings set node 203.0.113.9 >/dev/null || { echo "FAIL: settings set node"; exit 1; }
-"$PANEL" settings show | matches 'node domain: *203.0.113.9 *-> 203.0.113.9:8443 / 203.0.113.9' \
+"$PANEL" settings show | matches 'node domains: *203.0.113.9 *-> 203.0.113.9:8443 / 203.0.113.9' \
   || { echo "FAIL: settings show after set"; "$PANEL" settings show; exit 1; }
 "$PANEL" settings unset node >/dev/null || { echo "FAIL: settings unset node"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.update' AND actor_label = 'cli'")" = "$((R22_CLI0 + 3))" ] \
@@ -4247,7 +4251,7 @@ grep -q "password changed for root@smoke.test" "$LOG/passwd.out" || { echo "FAIL
 echo "cli passwd/jwt: ok"
 
 echo "== root + healthz =="
-[ "$(code http://127.0.0.1:8080/)" = "404" ] || { echo "FAIL: / not 404"; exit 1; }
+[ "$(code http://127.0.0.1:8080/)" = "200" ] || { echo "FAIL: / is not the portal (D11)"; exit 1; }
 [ "$(code http://127.0.0.1:8080/definitely-not-here)" = "404" ] || { echo "FAIL: junk not 404"; exit 1; }
 [ "$(code "$BASE/healthz")" = "200" ] || { echo "FAIL: healthz not 200"; exit 1; }
 
