@@ -85,15 +85,22 @@ The credit is the unused value of the current subscription, computed in SQL
 (`catalog::switch_credit` → `akari_prorate`) when the order is created:
 
 ```
-latest  = the newest paid, fulfilled, non-reset order of the user for the
-          current plan, fulfilled since the current subscription started
-value   = latest.list_price_cents (what was paid + any credit it used)
-credit  = floor(value × remaining_seconds / (nominal_days(latest) × 86400))
-credit  = min(credit, Σ list_price_cents of all such orders)   -- never more than was paid
+latest  = the newest paid, fulfilled, non-reset, NOT refunded order of the
+          user for the current plan, fulfilled since the current
+          subscription started
+value   = list_price − discount − gift  (what was actually paid: gateway
+          amount + balance + the credit it carried; High-2)
+credit  = floor(value(latest) × remaining_seconds / (nominal_days(latest) × 86400))
+credit  = min(credit, Σ value of all such orders)   -- never more than was paid
 credit  = 0 when there is no such order (admin-assigned), no expiry,
           nothing remaining, or a permanent one-time purchase
 amount  = price − min(credit, price)        -- never negative
 ```
+
+运营规则（运营逻辑审查 高-2）：折算按**实付价值**算——优惠券折扣和管理员赠送（`gift_cents`）
+不算价值，已退款的订单不参与折算（既不是最新一单，也不计入封顶）。所以「券只限套餐 A」不能
+靠换套餐变成别的套餐的价值，「赠送 A」也不会变成可换任意套餐的余额。最新一单是赠送（价值 0）
+时折算为 0（保守取值，只会少折、不会多折）。
 
 Example: 30.00 for a month, switched with 15 days left → 15.00 credit; a
 50.00 plan then costs 35.00. A credit larger than the new price is
