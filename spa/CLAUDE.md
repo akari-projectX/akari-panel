@@ -86,4 +86,4 @@ initialJs 145（gzip）、initialCss 30、totalJs 440、totalCss 40、fonts 1450
 - 常青浏览器（es2023），不做 polyfill 与旧存储键迁移。
 - `scrollbar-gutter: stable` + `body[data-scroll-locked]`；触屏输入框 16px（不用 `maximum-scale=1`）。
 - 版权与站名用后台的站点名称（`/auth/options.site_name`）；条款、隐私只取知识库内容——**不要在门户里写任何法律承诺或营销断言**（W36-b 删除了主题自带的条款/隐私/FAQ 文本）。
-- 切页动画（`PageTransition`）期间新页面会先在退场容器里渲染一次再重新挂载：e2e 里经按钮切页后要等 `.page-out` 消失再填表单。
+- 切页动画（`PageTransition` + `FrozenOutlet`）：页面分包的 Suspense 在 `FrozenOutlet` **里面**（定格之后）。放在外面时，旧页面分包没下完就切页，定格会按新地址重做，新页面先在退场容器里渲染一遍、头 0.14 秒填的表单丢失；回归测试 `e2e/account.spec.ts`「page transition」（e2e 不需要等 `.page-out` 消失）。

@@ -449,3 +449,84 @@ async fn article_slugs() {
     assert_eq!(after["slug"], "terms");
     db.drop().await;
 }
+
+/// W36-b: GET /pages/{terms|privacy} — public (no session) on the portal,
+/// the published article with that slug, rendered; another slug, nothing
+/// written or a draft is the canonical rejection.
+#[tokio::test]
+async fn public_legal_pages() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let admin = client_for(&state, db.admin().await).await;
+    let anon = Client::new(&state, crate::testdb::http::rand_ip());
+    let canonical = anon.get("/definitely/not/here").await.fingerprint();
+    for p in ["terms", "privacy"] {
+        assert_eq!(
+            anon.get(&format!("/api/v1/pages/{p}")).await.fingerprint(),
+            canonical,
+            "{p}: nothing written yet"
+        );
+    }
+    let terms = article(
+        &admin,
+        None,
+        "服务条款",
+        true,
+        json!({ "slug": "terms", "title_en": "Terms", "body_en": "The *terms*" }),
+    )
+    .await;
+    article(
+        &admin,
+        None,
+        "隐私草稿",
+        false,
+        json!({ "slug": "privacy" }),
+    )
+    .await;
+    article(&admin, None, "关于", true, json!({ "slug": "about" })).await;
+
+    let r = anon.get("/api/v1/pages/terms").await;
+    assert_eq!(r.status, StatusCode::OK);
+    let v = r.json();
+    assert_eq!(v["title_zh"], "服务条款");
+    assert_eq!(v["title_en"], "Terms");
+    assert!(
+        v["html_zh"]
+            .as_str()
+            .unwrap()
+            .contains("<strong>正文</strong>")
+    );
+    assert!(v["html_en"].as_str().unwrap().contains("<em>terms</em>"));
+    assert!(v["updated_at"].is_string());
+    assert!(v.get("id").is_none() && v.get("slug").is_none());
+    // A draft, another published slug, a non-slug, a nested path: rejected.
+    for p in ["privacy", "about", "TERMS", "terms/x", ""] {
+        assert_eq!(
+            anon.get(&format!("/api/v1/pages/{p}")).await.fingerprint(),
+            canonical,
+            "{p}"
+        );
+    }
+    // Read-only.
+    let r = anon
+        .req(Method::PUT, "/api/v1/pages/terms", Some(json!({})))
+        .await;
+    assert_eq!(r.fingerprint(), canonical, "PUT");
+    // Unpublishing takes the page down.
+    let r = admin
+        .req(
+            Method::PUT,
+            &format!("/test/api/v1/kb/articles/{terms}"),
+            Some(json!({ "title_zh": "服务条款", "body_zh": "x", "published": false, "slug": "terms" })),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        anon.get("/api/v1/pages/terms").await.fingerprint(),
+        canonical,
+        "unpublished"
+    );
+    db.drop().await;
+}

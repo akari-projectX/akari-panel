@@ -34,7 +34,6 @@ dict.forEachChild(function k(n) {
 });
 
 /* 不显示的中文：地区 / 平台的匹配写法，以及开发者日志与断言 */
-const SKIP_FILES = new Set(['src/lib/admin-protocols.gen.ts']);
 const notShown = (n) => {
   for (let p = n.parent; p; p = p.parent) {
     if (ts.isVariableDeclaration(p) && p.name.getText() === 'KEYWORDS') return true;
@@ -58,7 +57,7 @@ for (const file of sources(path.join(root, 'src'))) {
     else if (ts.isJsxText(n)) text = n.text.trim();
     if (text !== null) {
       used.add(text);
-      if (HAN.test(text) && !keys.has(text) && !SKIP_FILES.has(rel) && !notShown(n)) missing.set(text, rel);
+      if (HAN.test(text) && !keys.has(text) && !notShown(n)) missing.set(text, rel);
     }
     n.forEachChild(visit);
   };

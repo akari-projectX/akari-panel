@@ -3041,6 +3041,18 @@ KBD=$(last_json "d['id']")
 [ "$(fp -b "$TJA" "$BASE/api/v1/me/help/$KBD")" = "$REJ" ] || { echo "FAIL: draft article not the canonical rejection"; cat /tmp/akari-smoke/fphead; exit 1; }
 [ "$(code -b "$TJA" "$BASE/api/v1/kb/articles")" = "403" ] || { echo "FAIL: customer reached the kb admin"; exit 1; }
 [ "$(psql_q "SELECT string_agg(action, ',' ORDER BY id) FROM audit_log WHERE target_id='$KBA'")" = "kb.article.create" ] || { echo "FAIL: kb audit"; exit 1; }
+# W36-b: the portal's legal pages (public, no session): the published
+# article with slug terms/privacy; a draft, another slug or none written =
+# the canonical rejection (the portal then shows its neutral default).
+[ "$(fp "$ROOT/api/v1/pages/terms")" = "$REJ" ] || { echo "FAIL: unwritten terms page not the canonical rejection"; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/kb/articles" '{"title_zh":"冒烟条款","body_zh":"条款 *正文*","published":true,"slug":"terms"}')" = "201" ] || { echo "FAIL: create terms"; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/kb/articles" '{"title_zh":"冒烟隐私","body_zh":"草稿","published":false,"slug":"privacy"}')" = "201" ] || { echo "FAIL: create privacy draft"; exit 1; }
+[ "$(code "$ROOT/api/v1/pages/terms")" = "200" ] && [ "$(last_json "d['title_zh']=='冒烟条款' and '<em>正文</em>' in d['html_zh']")" = "True" ] \
+  || { echo "FAIL: public terms page"; cat /tmp/akari-smoke/last; exit 1; }
+for p in privacy about; do
+  [ "$(fp "$ROOT/api/v1/pages/$p")" = "$REJ" ] || { echo "FAIL: /pages/$p not the canonical rejection"; exit 1; }
+done
+[ "$(fp -X POST "$ROOT/api/v1/pages/terms")" = "$REJ" ] || { echo "FAIL: /pages/terms accepts POST"; exit 1; }
 echo "knowledge base: ok"
 
 # Branding: PNG only; served under the prefix with cache headers + ETag

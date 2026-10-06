@@ -1,4 +1,4 @@
-import { Suspense, useEffect } from 'react';
+import { useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { DashHeader } from '@/layouts/dash-layout';
@@ -75,9 +75,7 @@ export default function SiteLayout() {
       <main className="flex-1">
         <PageTransition id={pathname}>
           <ErrorBoundary>
-            <Suspense fallback={<DocSkeleton />}>
-              <FrozenOutlet />
-            </Suspense>
+            <FrozenOutlet fallback={<DocSkeleton />} />
           </ErrorBoundary>
         </PageTransition>
       </main>

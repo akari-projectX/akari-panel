@@ -674,6 +674,68 @@ pub async fn my_help_article(
 }
 
 // ---------------------------------------------------------------------------
+// Public API (/pages/*)
+// ---------------------------------------------------------------------------
+
+/// A legal page as the portal shows it (W36-b): the published article with
+/// slug `terms` or `privacy`, rendered like the help articles.
+#[derive(Serialize)]
+pub struct LegalPage {
+    pub title_zh: String,
+    pub title_en: Option<String>,
+    pub html_zh: String,
+    pub html_en: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// The published article with a legal slug (None: unknown slug, none
+/// written, or a draft).
+pub async fn legal_page(conn: &mut PgConnection, slug: &str) -> sqlx::Result<Option<LegalPage>> {
+    if !LEGAL_SLUGS.contains(&slug) {
+        return Ok(None);
+    }
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        title_zh: String,
+        title_en: Option<String>,
+        body_zh: String,
+        body_en: Option<String>,
+        updated_at: DateTime<Utc>,
+    }
+    let r: Option<Row> = sqlx::query_as(
+        "SELECT title_zh, title_en, body_zh, body_en, updated_at FROM kb_articles \
+         WHERE slug = $1 AND published",
+    )
+    .bind(slug)
+    .fetch_optional(conn)
+    .await?;
+    Ok(r.map(|r| LegalPage {
+        title_zh: r.title_zh,
+        title_en: r.title_en,
+        html_zh: crate::markdown::render(&r.body_zh),
+        html_en: r.body_en.as_deref().map(crate::markdown::render),
+        updated_at: r.updated_at,
+    }))
+}
+
+/// GET /pages/{terms|privacy}: public (no session), read-only. Anything
+/// else — another slug, nothing written, a draft — is the canonical
+/// rejection; the portal then shows its neutral default.
+pub async fn public_page(
+    State(state): State<AppState>,
+    Path((_, slug)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    if !LEGAL_SLUGS.contains(&slug.as_str()) {
+        return Ok(crate::reject::not_found());
+    }
+    let mut c = state.pg().acquire().await?;
+    Ok(match legal_page(&mut c, &slug).await? {
+        Some(p) => Json(p).into_response(),
+        None => crate::reject::not_found(),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Admin API (/kb/*)
 // ---------------------------------------------------------------------------
 
@@ -817,6 +879,7 @@ pub fn routes() -> axum::Router<AppState> {
     axum::Router::new()
         .route("/{prefix}/api/v1/me/help", get(my_help))
         .route("/{prefix}/api/v1/me/help/{id}", get(my_help_article))
+        .route("/{prefix}/api/v1/pages/{slug}", get(public_page))
         .route(
             "/{prefix}/api/v1/kb/categories",
             get(list_categories).post(create_category),

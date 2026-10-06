@@ -3,9 +3,8 @@
 //! `make gen-protocols` (`AKARI_REGEN=1`) rewrites them.
 //!
 //! - docs/DEPLOY.md §3d: the support matrix (between the GENERATED markers);
-//! - spa/src/lib/admin-protocols.gen.ts (old console, removed with it in
-//!   W36-b) and admin/src/console/protocols.gen.ts: the schema the admin node
-//!   form is built from (admin bundles only).
+//! - admin/src/console/protocols.gen.ts: the schema the admin node form is
+//!   built from (console bundle only).
 
 use std::collections::BTreeMap;
 
@@ -26,14 +25,9 @@ pub const ARTIFACTS: &[Artifact] = &[
         render: deploy_matrix,
     },
     Artifact {
-        path: "spa/src/lib/admin-protocols.gen.ts",
-        marker: None,
-        render: spa_schema,
-    },
-    Artifact {
         path: "admin/src/console/protocols.gen.ts",
         marker: None,
-        render: spa_schema,
+        render: console_schema,
     },
 ];
 
@@ -266,10 +260,10 @@ fn field_json(f: &super::manifest::Field) -> serde_json::Value {
     })
 }
 
-/// spa/src/lib/admin-protocols.gen.ts: protocols, transports, security
+/// admin/src/console/protocols.gen.ts: protocols, transports, security
 /// layers (with their form fields), rules and format support, as data the
 /// admin form renders from.
-pub fn spa_schema(m: &Manifest) -> String {
+pub fn console_schema(m: &Manifest) -> String {
     use serde_json::json;
     let layer = |id: &str, label: &str, label_zh: &str, fields: &[super::manifest::Field]| {
         json!({

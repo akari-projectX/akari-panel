@@ -2,9 +2,35 @@
  * 账户（research/portal-gap.md §1.2 #17–#26，通行密钥 #24 #25 在 auth.spec.ts）与三种账户范围。
  */
 import { Client, latestMail, psql } from './panel.ts';
-import { expect, login, mine, open, seed, signIn, test } from './fixtures.ts';
+import { admin, expect, login, mine, open, seed, signIn, test } from './fixtures.ts';
 
 test.describe.configure({ mode: 'serial' });
+
+test('page transition: the next page mounts once, after the old one has left; what is typed at once is kept', async ({ page }, info) => {
+  const email = `transition-${info.project.name}-${Date.now()}@e2e.test`;
+  await (await admin()).call('POST', '/api/v1/users', { email, password: seed.password });
+  psql(`UPDATE users SET email_verified_at = NULL WHERE email = '${email}';`);
+  /* 仪表盘分包慢：点「去验证」时旧页面还停在骨架屏——以前这时新页面会先在淡出的旧容器里渲染一遍 */
+  await page.route(/\/assets\/dashboard-[^/]+\.js$/, async (r) => {
+    await new Promise((ok) => setTimeout(ok, 1500));
+    await r.continue();
+  });
+  await signIn(page, email);
+  await expect(page.getByText('邮箱还没有验证')).toBeVisible();
+  await page.evaluate(() => {
+    const w = window as unknown as { leaked?: boolean };
+    w.leaked = false;
+    new MutationObserver(() => {
+      if (document.querySelector('.page-out #email-new')) w.leaked = true;
+    }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+  });
+  await page.getByRole('button', { name: '去验证' }).click();
+  /* 不等切页动画：马上填 */
+  await page.getByLabel('邮箱地址').fill(email);
+  await expect(page.locator('.page-out')).toHaveCount(0);
+  await expect(page.getByLabel('邮箱地址')).toHaveValue(email);
+  expect(await page.evaluate(() => (window as unknown as { leaked?: boolean }).leaked)).toBe(false);
+});
 
 test('#17 #21 #20 #22 #23 account: verify the address, change it, change the password, mail language follows the UI', async ({ page }, info) => {
   const email = mine(info, 'account');
@@ -15,8 +41,6 @@ test('#17 #21 #20 #22 #23 account: verify the address, change it, change the pas
   await page.getByRole('button', { name: '去验证' }).click();
   await expect(page).toHaveURL(/\/account/);
   await expect(page.getByText('未验证')).toBeVisible();
-  /* 切页动画（旧页面淡出）结束、新页面定下来之后再填 */
-  await expect(page.locator('.page-out')).toHaveCount(0);
 
   /* 验证当前地址 */
   await page.getByLabel('邮箱地址').fill(email);

@@ -128,9 +128,7 @@ export default function DashLayout() {
         {/* 旧页面淡出 → 回到页首 → 新页面上浮淡入，和站点页同一套，见 PageTransition */}
         <PageTransition id={loc.pathname}>
           <ErrorBoundary>
-            <Suspense fallback={<DashSkeleton />}>
-              <FrozenOutlet />
-            </Suspense>
+            <FrozenOutlet fallback={<DashSkeleton />} />
           </ErrorBoundary>
         </PageTransition>
       </main>
