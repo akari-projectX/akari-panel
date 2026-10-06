@@ -1014,3 +1014,105 @@ fn missing_download_tool_is_explained() {
     assert!(wget.unwrap().starts_with(&require_tool("wget")));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+async fn insert_release(pg: &sqlx::PgPool, version: &str, data: &[u8]) -> String {
+    let id = Uuid::new_v4();
+    let sha = hex::encode(Sha256::digest(data));
+    sqlx::query(
+        "INSERT INTO agent_releases (id, version, os, arch, sha256, size, manifest, \
+         signatures, key_id, min_panel_protocol, complete_at) \
+         VALUES ($1, $2, 'linux', 'amd64', $3, $4, '\\x00', '[]', 'k', 3, now())",
+    )
+    .bind(id)
+    .bind(version)
+    .bind(&sha)
+    .bind(data.len() as i64)
+    .execute(pg)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO agent_release_chunks (release_id, idx, data) VALUES ($1, 0, $2)")
+        .bind(id)
+        .bind(data)
+        .execute(pg)
+        .await
+        .unwrap();
+    sha
+}
+
+async fn insert_rollout(pg: &sqlx::PgPool, version: &str, status: &str, halted: bool) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO rollouts (id, version, status, waves, percentage, explicit_servers, \
+         health_timeout_secs, max_failure_ratio, seed, halted_reason, created_by, created_at) \
+         VALUES ($1, $2, $3, '{100}', 100, false, 600, 0.2, 1, \
+         CASE WHEN $4 THEN '1 failed / 1 finished > max_failure_ratio 0.2' END, 'admin', \
+         clock_timestamp())",
+    )
+    .bind(id)
+    .bind(version)
+    .bind(status)
+    .bind(halted)
+    .execute(pg)
+    .await
+    .unwrap();
+    id
+}
+
+#[tokio::test]
+async fn release_that_failed_in_a_rollout_is_not_installed() {
+    // Test-deployment finding P7: while the rollout of a bad release was
+    // halted, new installs still downloaded it.
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = AppState::for_test(db.pool.clone()).await;
+    let pg = st.pg().clone();
+    let admin = admin_client(&st, &db).await;
+    let good = insert_release(&pg, "v1.0.0", b"good").await;
+    insert_release(&pg, "v1.1.0", b"bad").await;
+    let served = || async { latest_releases(&pg).await.unwrap()["amd64"].version.clone() };
+
+    // Running (and an admin abort of a rollout that never halted) is not
+    // a verdict on the release.
+    let r = insert_rollout(&pg, "v1.1.0", "running", false).await;
+    assert_eq!(served().await, "v1.1.0");
+    sqlx::query("UPDATE rollouts SET status = 'aborted' WHERE id = $1")
+        .bind(r)
+        .execute(&pg)
+        .await
+        .unwrap();
+    assert_eq!(served().await, "v1.1.0");
+
+    // Halted: the last known good release, in the card and the script.
+    let r = insert_rollout(&pg, "v1.1.0", "halted", true).await;
+    assert_eq!(served().await, "v1.0.0");
+    let v = create(&admin, "held").await;
+    assert_eq!(v["install"]["releases"]["amd64"]["version"], "v1.0.0");
+    let warnings = v["install"]["warnings"].to_string();
+    assert!(warnings.contains("v1.1.0 在灰度更新中失败"), "{warnings}");
+    let t = token_of(&v);
+    let c = Client::new(&st, rand_ip());
+    let s = String::from_utf8(c.get(&format!("/install/{t}")).await.body).unwrap();
+    assert!(s.contains(&format!("SHA_amd64='{good}'")) && s.contains("VER_amd64='v1.0.0'"));
+    assert_eq!(
+        c.get(&format!("/install/{t}/agent/{good}")).await.body,
+        b"good"
+    );
+
+    // Aborted after the halt: still held back.
+    sqlx::query("UPDATE rollouts SET status = 'aborted', finished_at = now() WHERE id = $1")
+        .bind(r)
+        .execute(&pg)
+        .await
+        .unwrap();
+    assert_eq!(served().await, "v1.0.0");
+
+    // A later rollout of the same version that completes clears it.
+    insert_rollout(&pg, "v1.1.0", "completed", false).await;
+    assert_eq!(served().await, "v1.1.0");
+    let v = create(&admin, "cleared").await;
+    assert_eq!(v["install"]["releases"]["amd64"]["version"], "v1.1.0");
+    assert!(!v["install"]["warnings"].to_string().contains("灰度"));
+    drop(st);
+    db.drop().await;
+}
