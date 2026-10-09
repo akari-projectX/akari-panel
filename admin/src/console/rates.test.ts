@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { heatmap, overlaps, parseHhmm, rateAt, segments } from "./rates";
+import { heatmap, overlaps, parseHhmm, parseRate, rateAt, segments } from "./rates";
 
 describe("D9 rate rules (display mirror of rates.rs)", () => {
   it("crosses midnight and the end of the week", () => {
@@ -26,5 +26,15 @@ describe("D9 rate rules (display mirror of rates.rs)", () => {
     expect(parseHhmm("07:30")).toBe(450);
     expect(parseHhmm("7:30")).toBeNull();
     expect(parseHhmm("12:60")).toBeNull();
+  });
+});
+
+describe("multiplier input (next07)", () => {
+  it("never reads an empty field as 0x", () => {
+    for (const bad of ["", "  ", "x", "-1", "100.5", "1.2345", "1e2", ".5", "1."]) expect(parseRate(bad)).toBeNull();
+    expect(parseRate("0")).toBe(0);
+    expect(parseRate(" 10 ")).toBe(10);
+    expect(parseRate("1.25")).toBe(1.25);
+    expect(parseRate("100")).toBe(100);
   });
 });

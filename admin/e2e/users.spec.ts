@@ -266,6 +266,9 @@ test("USR-20 USR-21 USR-22 USR-23: owner transfer and back, delete with impact, 
   await expect(t.getByText("流量明细")).toBeVisible();
   await expect(t.getByRole("img", { name: /每日流量/ })).toBeVisible();
   await expect(t.getByText("已删除的节点").first()).toBeVisible();
+  // Per entrance (never summed per node): node · entrance, raw and billed.
+  await expect(t.getByRole("list", { name: "按入口" })).toContainText("已删除的入口");
+  await expect(t.getByRole("list", { name: "按入口" })).toContainText("原始");
   await t.getByRole("button", { name: "7 天" }).click();
   await expect(t.getByText("已删除的节点").first()).toBeVisible();
   expect(page.url()).toContain(CONSOLE);

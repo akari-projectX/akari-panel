@@ -276,6 +276,21 @@ test("SET-10 SET-11 SET-12: subscription path (with the mail job), routing rules
   }
 });
 
+test("SET-26: multipliers in subscription line names (off by default, confirmed)", async ({ page }) => {
+  await openConsole(page, "/settings/subscription");
+  const s = page.getByRole("switch", { name: "订阅线路名显示倍率" });
+  await expect(s).toHaveAttribute("aria-checked", "false");
+  await s.click();
+  await expect(dialog(page)).toContainText("客户端刷新订阅后会丢失用户选中的线路");
+  await confirmDialog(page);
+  await toast(page, "已保存");
+  await expect(s).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByText(/已开启：修改入口倍率会改变线路名/)).toBeVisible();
+  // Off again (no confirmation needed to turn it off).
+  await setSwitch(s, false);
+  await expect(page.getByText(/已开启：修改入口倍率会改变线路名/)).toHaveCount(0);
+});
+
 test("SET-13 SET-14: sign-up and password reset, bot protection", async ({ page }) => {
   await openConsole(page, "/settings/signup");
   // SET-13: open registration with invite codes, a domain allow-list; then closed again.

@@ -22,7 +22,8 @@ import {
   Skeleton,
   Switch,
 } from "../../shared/ui/primitives";
-import { CopyButton, FormError, Mono, SectionTitle, useErrText, useRun } from "../kit";
+import { CopyButton, FormError, Mono, SectionTitle, useConfirmFree, useErrText, useRun } from "../kit";
+import { parseRate } from "../rates";
 import { setQuery, useRoute } from "../router";
 import type { NodeGroup, ServerView } from "../types";
 import { JsonInbound, TemplateFields, newTemplateForm, parseInbound, toSpec, type TemplateForm } from "./inbound-form";
@@ -290,6 +291,7 @@ export function CreateNodeDialog({
   const [direct, setDirect] = useState<DirectForm>({ host: "", port: "", rate: "1", groups: [] });
   const [error, setError] = useState<unknown>(null);
   const [run, busy] = useRun();
+  const confirmFree = useConfirmFree();
   const submit = async () => {
     const body: Record<string, unknown> = { name: name.trim(), region: region.trim() || undefined };
     if (serverId === "new") {
@@ -312,9 +314,17 @@ export function CreateNodeDialog({
         .map((t) => t.trim())
         .filter(Boolean);
     if (!visible) body.visible = false;
-    const rate = Number(direct.rate);
-    if (!Number.isFinite(rate) || rate < 0 || rate > 100)
-      return setError(new Error(tr("倍率须为 0–100", "The multiplier must be 0–100")));
+    const rate = parseRate(direct.rate);
+    if (rate === null)
+      return setError(
+        new Error(
+          tr(
+            "请填写直连入口的倍率：0–100，最多 3 位小数（留空不会当作 0）",
+            "Enter the direct entrance's multiplier: 0–100, at most 3 decimals (empty is not 0)",
+          ),
+        ),
+      );
+    if (rate === 0 && !(await confirmFree(tr("直连入口", "the direct entrance")))) return;
     const d: Record<string, unknown> = {};
     if (direct.host.trim()) d.connect_host = direct.host.trim();
     if (direct.port.trim()) d.connect_port = Number(direct.port);

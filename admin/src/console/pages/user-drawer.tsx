@@ -6,7 +6,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { del, get, patch, post, put } from "../../shared/api";
-import { bytes, dateOnly, dateTime, daysBefore, parseYuan, pct, siteToday, yuan } from "../../shared/format";
+import { bytes, dateOnly, dateTime, daysBefore, parseYuan, pct, rateText, siteToday, yuan } from "../../shared/format";
 import { useTr, type Tr } from "../../shared/i18n";
 import { LineChart } from "../../shared/ui/line-chart";
 import { Dialog, Drawer, MenuItem, RowMenu, useConfirm, useToast } from "../../shared/ui/overlays";
@@ -1067,7 +1067,18 @@ function BalanceLedger({ id }: { id: string }) {
 }
 
 type DayRow = { day: string; up_bytes: number; down_bytes: number; billed_bytes: number };
-type NodeRow = { node_id: string; name: string | null; up_bytes: number; down_bytes: number; billed_bytes: number };
+// USR-23: per entrance (R43), so a direct 1x and a relay 10x of one node are never summed.
+type EntranceRow = {
+  entrance_id: string;
+  node_id: string;
+  entrance: string | null;
+  kind: "direct" | "relay" | null;
+  node: string | null;
+  rate_now: number | null;
+  up_bytes: number;
+  down_bytes: number;
+  billed_bytes: number;
+};
 
 export function UserTraffic({ id }: { id: string }) {
   const tr = useTr();
@@ -1078,9 +1089,9 @@ export function UserTraffic({ id }: { id: string }) {
     queryKey: ["traffic", "user", id, range],
     queryFn: () => get<{ rows: DayRow[] }>(`/users/${id}/traffic?from=${from}&to=${to}&group=day`),
   });
-  const nodes = useQuery({
-    queryKey: ["traffic", "user-nodes", id, range],
-    queryFn: () => get<{ rows: NodeRow[] }>(`/users/${id}/traffic?from=${from}&to=${to}&group=node`),
+  const entrances = useQuery({
+    queryKey: ["traffic", "user-entrances", id, range],
+    queryFn: () => get<{ rows: EntranceRow[] }>(`/users/${id}/traffic?from=${from}&to=${to}&group=entrance`),
   });
   const all: string[] = [];
   for (let i = Number(range) - 1; i >= 0; i--) all.push(daysBefore(to, i));
@@ -1128,13 +1139,24 @@ export function UserTraffic({ id }: { id: string }) {
           },
         ]}
       />
-      {(nodes.data?.rows.length ?? 0) > 0 && (
-        <ul className="mt-3 divide-y divide-border rounded-md border border-border text-[13px]">
-          {nodes.data?.rows.map((n) => (
-            <li key={n.node_id} className="flex justify-between px-3 py-2">
-              <span>{n.name ?? tr("已删除的节点", "Deleted node")}</span>
+      {(entrances.data?.rows.length ?? 0) > 0 && (
+        <ul
+          className="mt-3 divide-y divide-border rounded-md border border-border text-[13px]"
+          aria-label={tr("按入口", "By entrance")}
+        >
+          {entrances.data?.rows.map((n) => (
+            <li key={n.entrance_id} className="flex flex-wrap justify-between gap-x-3 px-3 py-2">
+              <span>
+                {n.node ?? tr("已删除的节点", "Deleted node")} · {n.entrance ?? tr("已删除的入口", "Deleted entrance")}
+                {n.kind && (
+                  <span className="ml-1.5 text-xs text-muted-foreground">
+                    {n.kind === "relay" ? tr("中转", "relay") : tr("直连", "direct")}
+                    {n.rate_now !== null && ` · ${tr("当前", "now")} ${rateText(Math.round(n.rate_now * 1000))}`}
+                  </span>
+                )}
+              </span>
               <span className="tabular-nums text-muted-foreground">
-                ↓ {bytes(n.down_bytes)} · ↑ {bytes(n.up_bytes)} · {tr("计费", "billed")} {bytes(n.billed_bytes)}
+                {tr("原始", "raw")} {bytes(n.up_bytes + n.down_bytes)} · {tr("计费", "billed")} {bytes(n.billed_bytes)}
               </span>
             </li>
           ))}

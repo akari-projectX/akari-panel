@@ -17,6 +17,8 @@ export type EntranceView = {
   enabled: boolean;
   sort: number;
   wire_no: number;
+  /** Optimistic concurrency: sent back with PATCH, 409 when the entrance changed since. */
+  version: number;
   listen_port: number | null;
   source_cidrs: string[];
   health_ok: boolean | null;

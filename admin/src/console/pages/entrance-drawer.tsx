@@ -1,18 +1,22 @@
-// An entrance (NOD-15…19): direct or relay settings, node groups, the D9
-// time-window multipliers (rules, overlap warnings, 7×24 heatmap, the
-// multiplier now), relay health, delete; and the new-relay dialog.
+// An entrance (NOD-15…19, NOD-22/23): direct or relay settings, node
+// groups, the D9 time-window multipliers (rules, overlap warnings, 7×24
+// heatmap, the multiplier now), relay health, delete, its daily traffic and
+// multiplier history; and the new-relay dialog.
+import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { del, patch, post, put } from "../../shared/api";
-import { ago, dateTime, rateText } from "../../shared/format";
+import { del, get, patch, post, put } from "../../shared/api";
+import { ago, bytes, dateTime, daysBefore, rateText, siteToday } from "../../shared/format";
 import { useLang, useTr, type Tr } from "../../shared/i18n";
+import { LineChart } from "../../shared/ui/line-chart";
 import { Dialog, Drawer, useConfirm, useToast } from "../../shared/ui/overlays";
 import { Badge, Button, Callout, Field, Input, KV, Switch, Textarea } from "../../shared/ui/primitives";
-import { FormError, SectionTitle, useRun } from "../kit";
-import { heatmap, hhmm, overlaps, parseHhmm, rateAt, type Rule } from "../rates";
+import { FormError, SectionTitle, useConfirmFree, useRun } from "../kit";
+import { heatmap, hhmm, overlaps, parseHhmm, parseRate, rateAt, type Rule } from "../rates";
 import { useSite } from "../session";
 import type { EntranceView, NodeGroup, ServerNode, ServerView } from "../types";
 import { GroupPicker } from "./node-dialogs";
 import { entranceState, healthText } from "./nodes";
+import { useSettings } from "./settings";
 
 const WEEKDAYS: [string, string][] = [
   ["一", "Mon"],
@@ -38,6 +42,59 @@ function weekdayText(d: number, tr: Tr) {
   return tr(`周${WEEKDAYS[d - 1][0]}`, WEEKDAYS[d - 1][1]);
 }
 
+const RATE_REQUIRED: [string, string] = [
+  "请填写倍率：0–100，最多 3 位小数（留空不会当作 0）",
+  "Enter a multiplier: 0–100, at most 3 decimals (empty is not 0)",
+];
+
+/** What the entrance form sends for an entrance (the PATCH field shapes). */
+function formBody(
+  f: {
+    name: string;
+    host: string;
+    port: string;
+    rate: number;
+    enabled: boolean;
+    sort: string;
+    groups: string[];
+    listen: string;
+    cidrs: string;
+  },
+  relay: boolean,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    name: f.name.trim(),
+    rate: f.rate,
+    enabled: f.enabled,
+    sort: Number(f.sort) || 0,
+    group_ids: [...f.groups].sort(),
+  };
+  if (relay) {
+    body.connect_host = f.host.trim();
+    body.connect_port = Number(f.port);
+    body.listen_port = Number(f.listen);
+    body.source_cidrs = f.cidrs.split(/[\s,]+/).filter(Boolean);
+  } else {
+    body.connect_host = f.host.trim() || null;
+    body.connect_port = f.port.trim() ? Number(f.port) : null;
+  }
+  return body;
+}
+
+function formOf(e: EntranceView) {
+  return {
+    name: e.name,
+    host: e.connect_host ?? "",
+    port: e.connect_port ? String(e.connect_port) : "",
+    rate: String(e.rate),
+    enabled: e.enabled,
+    sort: String(e.sort),
+    groups: e.group_ids,
+    listen: e.listen_port ? String(e.listen_port) : "",
+    cidrs: e.source_cidrs.join("\n"),
+  };
+}
+
 export function EntranceDrawer({
   entrance: e,
   node,
@@ -56,18 +113,14 @@ export function EntranceDrawer({
   const site = useSite();
   const confirm = useConfirm();
   const toast = useToast();
+  const confirmFree = useConfirmFree();
+  const nameRate = useSettings().data?.subscription.name_rate === true;
   const relay = e.kind === "relay";
-  const [f, setF] = useState({
-    name: e.name,
-    host: e.connect_host ?? "",
-    port: e.connect_port ? String(e.connect_port) : "",
-    rate: String(e.rate),
-    enabled: e.enabled,
-    sort: String(e.sort),
-    groups: e.group_ids,
-    listen: e.listen_port ? String(e.listen_port) : "",
-    cidrs: e.source_cidrs.join("\n"),
-  });
+  // The entrance as the form was opened (or last saved): the baseline of
+  // what changed and the version sent back. `e` itself follows the 10 s
+  // poll, so diffing against it would resend fields another admin changed.
+  const [opened, setOpened] = useState(e);
+  const [f, setF] = useState(() => formOf(e));
   const [rules, setRules] = useState<RuleForm[]>(
     e.rate_rules.map((r) => ({
       weekdays: r.weekdays,
@@ -104,26 +157,18 @@ export function EntranceDrawer({
 
   const save = async () => {
     setError(null);
-    const rate = Number(f.rate);
-    if (!Number.isFinite(rate) || rate < 0 || rate > 100)
-      return setError(new Error(tr("倍率须为 0–100", "The multiplier must be 0–100")));
-    const body: Record<string, unknown> = {
-      name: f.name.trim(),
-      rate,
-      enabled: f.enabled,
-      sort: Number(f.sort) || 0,
-      group_ids: f.groups,
-    };
-    if (relay) {
-      body.connect_host = f.host.trim();
-      body.connect_port = Number(f.port);
-      body.listen_port = Number(f.listen);
-      body.source_cidrs = f.cidrs.split(/[\s,]+/).filter(Boolean);
-    } else {
-      body.connect_host = f.host.trim() || null;
-      body.connect_port = f.port.trim() ? Number(f.port) : null;
-    }
-    if (!f.enabled && e.enabled) {
+    const rate = parseRate(f.rate);
+    if (rate === null) return setError(new Error(tr(...RATE_REQUIRED)));
+    // Only what changed since the form was opened, with the version it was
+    // opened at: a stale form never restores old values (409 instead).
+    const now = formBody({ ...f, rate }, relay);
+    const was = formBody({ ...formOf(opened), rate: opened.rate }, relay);
+    const body: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(now)) if (JSON.stringify(v) !== JSON.stringify(was[k])) body[k] = v;
+    if (Object.keys(body).length === 0) return toast({ tone: "info", title: tr("没有改动", "Nothing changed") });
+    body.version = opened.version;
+    if (body.rate === 0 && !(await confirmFree(e.name))) return;
+    if (body.enabled === false) {
       const ok = await confirm({
         title: tr("停用入口？", "Disable the entrance?"),
         description: tr("用户会失去这个入口（从节点移除）。", "Users lose this entrance (removed from the node)."),
@@ -131,10 +176,18 @@ export function EntranceDrawer({
       });
       if (!ok) return;
     }
-    await run(() => patch(`/entrances/${e.id}`, body), {
+    const saved = await run(() => patch<EntranceView>(`/entrances/${e.id}`, body), {
       ok: tr("入口已保存", "Entrance saved"),
-      invalidate: [["servers"], ["node-groups"]],
+      okDetail:
+        body.rate === undefined
+          ? undefined
+          : tr(
+              `倍率 ${opened.rate}x → ${rate}x：从下一次结算起生效，不追溯；改动后 30 秒内按两者中较低的倍率结算。`,
+              `Multiplier ${opened.rate}x → ${rate}x: from the next settlement on, not retroactive; for 30 s the lower of the two applies.`,
+            ),
+      invalidate: [["servers"], ["node-groups"], ["traffic", "entrance", e.id]],
     });
+    if (saved) setOpened(saved);
   };
   const saveRules = async () => {
     if (parsed.some((r) => r === null))
@@ -259,8 +312,23 @@ export function EntranceDrawer({
             </Field>
           </>
         )}
-        <Field label={tr("基础倍率（0–100）", "Base multiplier (0–100)")}>
-          <Input inputMode="decimal" value={f.rate} onChange={(x) => setF({ ...f, rate: x.target.value })} />
+        <Field
+          label={tr("基础倍率（0–100）", "Base multiplier (0–100)")}
+          hint={
+            nameRate
+              ? tr(
+                  "已开启「订阅线路名显示倍率」：改倍率会改变线路名，客户端刷新订阅后可能切换线路。",
+                  "Multipliers in line names is on: a change renames the line; clients may switch lines after a refresh.",
+                )
+              : undefined
+          }
+        >
+          <Input
+            inputMode="decimal"
+            value={f.rate}
+            aria-invalid={parseRate(f.rate) === null}
+            onChange={(x) => setF({ ...f, rate: x.target.value })}
+          />
         </Field>
         <Field label={tr("排序", "Sort")}>
           <Input inputMode="numeric" value={f.sort} onChange={(x) => setF({ ...f, sort: x.target.value })} />
@@ -436,7 +504,108 @@ export function EntranceDrawer({
       <p className="mt-2 text-xs text-muted-foreground">
         {tr(`最后探测 ${ago(e.health_at, lang)}`, `Last probe ${ago(e.health_at, lang)}`)}
       </p>
+      <EntranceHistory id={e.id} />
     </Drawer>
+  );
+}
+
+type RateChange = {
+  at: string;
+  actor_label: string;
+  actor_email: string | null;
+  action: "entrance.create" | "entrance.update" | "entrance.rate_rules.set";
+  rate_before: number | null;
+  rate_after: number | null;
+  rules_before: { rate: number }[] | null;
+  rules_after: { rate: number }[] | null;
+};
+
+// NOD-22/23: the entrance's own daily raw / billed (never summed with the
+// node's other entrances) and its multiplier changes from the audit log.
+function EntranceHistory({ id }: { id: string }) {
+  const tr = useTr();
+  const to = siteToday();
+  const from = daysBefore(to, 29);
+  const q = useQuery({
+    queryKey: ["traffic", "entrance", id],
+    queryFn: () =>
+      get<{
+        days: { day: string; up_bytes: number; down_bytes: number; billed_bytes: number }[];
+        rate_changes: RateChange[];
+      }>(`/entrances/${id}/traffic?from=${from}&to=${to}`),
+  });
+  const all: string[] = [];
+  for (let i = 29; i >= 0; i--) all.push(daysBefore(to, i));
+  const by = new Map((q.data?.days ?? []).map((r) => [r.day, r]));
+  const rules = (r: { rate: number }[] | null) =>
+    r && r.length ? r.map((x) => `${x.rate}x`).join(" / ") : tr("无规则", "no rules");
+  const what = (c: RateChange) =>
+    c.action === "entrance.rate_rules.set"
+      ? tr(
+          `时段规则 ${rules(c.rules_before)} → ${rules(c.rules_after)}`,
+          `Rules ${rules(c.rules_before)} → ${rules(c.rules_after)}`,
+        )
+      : c.action === "entrance.create"
+        ? tr(`创建 ${c.rate_after}x`, `Created at ${c.rate_after}x`)
+        : `${c.rate_before}x → ${c.rate_after}x`;
+  return (
+    <>
+      <SectionTitle>{tr("入口流量（近 30 天）", "Entrance traffic (30 days)")}</SectionTitle>
+      <LineChart
+        title={tr("每日原始 / 计费（站点时区）", "Daily raw / billed (site days)")}
+        times={all.map((d) => `${d}T12:00:00Z`)}
+        format={bytes}
+        series={[
+          {
+            label: tr("原始", "Raw"),
+            values: all.map((d) => (by.get(d)?.up_bytes ?? 0) + (by.get(d)?.down_bytes ?? 0)),
+            stroke: "stroke-sky-500",
+            swatch: "bg-sky-500",
+          },
+          {
+            label: tr("计费", "Billed"),
+            values: all.map((d) => by.get(d)?.billed_bytes ?? 0),
+            stroke: "stroke-amber-500",
+            swatch: "bg-amber-500",
+          },
+        ]}
+      />
+      {(q.data?.days.length ?? 0) > 0 && (
+        <ul
+          className="mt-2 max-h-48 divide-y divide-border overflow-y-auto rounded-md border border-border text-[13px]"
+          aria-label={tr("每日流量", "Daily traffic")}
+        >
+          {[...(q.data?.days ?? [])].reverse().map((d) => (
+            <li key={d.day} className="flex justify-between px-3 py-1.5">
+              <span className="tabular-nums">{d.day}</span>
+              <span className="tabular-nums text-muted-foreground">
+                {tr("原始", "raw")} {bytes(d.up_bytes + d.down_bytes)} · {tr("计费", "billed")} {bytes(d.billed_bytes)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <SectionTitle>{tr("倍率变更记录", "Multiplier history")}</SectionTitle>
+      {(q.data?.rate_changes.length ?? 0) === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          {tr("审计日志里没有倍率变更", "No multiplier changes in the audit log")}
+        </p>
+      ) : (
+        <ul
+          className="divide-y divide-border rounded-md border border-border text-[13px]"
+          aria-label={tr("倍率变更记录", "Multiplier history")}
+        >
+          {q.data?.rate_changes.map((c, i) => (
+            <li key={i} className="flex flex-wrap justify-between gap-x-3 px-3 py-1.5">
+              <span>{what(c)}</span>
+              <span className="text-xs text-muted-foreground">
+                {dateTime(c.at)} · {c.actor_email ?? c.actor_label}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
   );
 }
 
@@ -453,12 +622,13 @@ export function RelayDialog({ node, groups, onClose }: { node: ServerNode; group
   });
   const [error, setError] = useState<unknown>(null);
   const [run, busy] = useRun();
+  const confirmFree = useConfirmFree();
   const submit = async () => {
-    const rate = Number(f.rate);
+    const rate = parseRate(f.rate);
     if (!f.name.trim() || !f.host.trim() || !f.port || !f.listen || !f.cidrs.trim())
       return setError(new Error(tr("请填写全部必填项", "Fill in every required field")));
-    if (!Number.isFinite(rate) || rate < 0 || rate > 100)
-      return setError(new Error(tr("倍率须为 0–100", "The multiplier must be 0–100")));
+    if (rate === null) return setError(new Error(tr(...RATE_REQUIRED)));
+    if (rate === 0 && !(await confirmFree(f.name.trim()))) return;
     setError(null);
     const r = await run(
       () =>
