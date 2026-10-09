@@ -186,4 +186,28 @@ describe('form guard', () => {
     expect(turnstileOn(t(false))).toBe(false);
     expect(turnstileOn({ guard: null })).toBe(false);
   });
+
+  it('a background refresh with unchanged settings keeps the aged token: a submit right after it does not wait again', async () => {
+    const g = (form_token: string | null, form_min_secs: number) => ({ guard: { form_token, form_min_secs, honeypot: true, turnstile: null } });
+    rememberGuard(g(null, 0));
+    rememberGuard(g('aged', 2), Date.now() - 10_000);
+    expect(guardWait()).toBe(0);
+    replies.push(json(200, g('newer', 2)));
+    await authApi.options();
+    expect(guardWait()).toBe(0);
+    await expect(buildGuard('')).resolves.toEqual({ form_token: 'aged', website: '' });
+    /* 设置变了（2 → 3 秒）：换新令牌，按新的最短时间等 */
+    replies.push(json(200, g('three', 3)));
+    await authApi.options();
+    expect(guardWait()).toBeGreaterThan(3000);
+  });
+
+  it('a held token near the end of its life is replaced on refresh', async () => {
+    const g = (form_token: string | null) => ({ guard: { form_token, form_min_secs: 2, honeypot: true, turnstile: null } });
+    rememberGuard({ guard: { form_token: null, form_min_secs: 0, honeypot: true, turnstile: null } });
+    rememberGuard(g('old'), Date.now() - 7 * 3600_000);
+    replies.push(json(200, g('fresh')));
+    await authApi.options();
+    expect(guardWait()).toBeGreaterThan(2000);
+  });
 });

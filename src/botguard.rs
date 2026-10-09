@@ -26,7 +26,7 @@
 //!   the secret, a secret that cannot be opened — (503
 //!   `auth.captcha_unavailable`, the latter logged at ERROR with Cloudflare's
 //!   error codes only). Every check counts in
-//!   `akari_turnstile_verify_total{result}` (`Outcome::LABELS`).
+//!   `akari_turnstile_verify_total{result}` (`Outcome::ALL`).
 //!
 //! The trap is checked before Turnstile, so a bot never costs a siteverify
 //! call.
@@ -239,7 +239,7 @@ pub async fn check(
             .map(str::trim)
             .filter(|t| !t.is_empty() && t.len() <= MAX_TURNSTILE_TOKEN)
         else {
-            crate::metrics::turnstile_verify(Outcome::NoToken.label());
+            crate::metrics::turnstile_verify(Outcome::NoToken);
             return Err(captcha_failed());
         };
         let Some(secret) = s
@@ -252,7 +252,7 @@ pub async fn check(
                 "the Turnstile secret cannot be opened (data/master.key changed?): \
                  enter it again under 系统设置"
             );
-            crate::metrics::turnstile_verify(Outcome::Misconfigured.label());
+            crate::metrics::turnstile_verify(Outcome::Misconfigured);
             return Err(captcha_unavailable());
         };
         let outcome = siteverify(
@@ -262,7 +262,7 @@ pub async fn check(
             client,
         )
         .await;
-        crate::metrics::turnstile_verify(outcome.label());
+        crate::metrics::turnstile_verify(outcome);
         match outcome {
             Outcome::Ok => {}
             Outcome::NoToken | Outcome::Rejected => return Err(captcha_failed()),
@@ -292,10 +292,16 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    /// Metric label values (bounded).
-    pub const LABELS: [&'static str; 5] =
-        ["ok", "no_token", "rejected", "misconfigured", "unavailable"];
+    /// Every outcome (the metric's label values are their `label`s).
+    pub const ALL: [Outcome; 5] = [
+        Outcome::Ok,
+        Outcome::NoToken,
+        Outcome::Rejected,
+        Outcome::Misconfigured,
+        Outcome::Unavailable,
+    ];
 
+    /// The metric label value.
     pub fn label(self) -> &'static str {
         match self {
             Outcome::Ok => "ok",
@@ -347,13 +353,16 @@ fn error_codes(v: &Value) -> Vec<String> {
 /// Classify a siteverify answer (pure). `success: true` = Ok; otherwise
 /// only answers made entirely of visitor-side codes are the visitor's
 /// failure; an operator-side or unknown code means the site cannot verify
-/// anyone (fail closed, but as "unavailable", and loudly).
+/// anyone (fail closed, but as "unavailable", and loudly). A refusal
+/// without any error code is a malformed answer: Unavailable.
 pub fn classify(v: &Value) -> (Outcome, Vec<String>) {
     let codes = error_codes(v);
     if v.get("success").and_then(Value::as_bool) == Some(true) {
         return (Outcome::Ok, codes);
     }
-    let outcome = if codes.iter().all(|c| USER_ERRORS.contains(&c.as_str())) {
+    let outcome = if codes.is_empty() {
+        Outcome::Unavailable
+    } else if codes.iter().all(|c| USER_ERRORS.contains(&c.as_str())) {
         Outcome::Rejected
     } else if codes
         .iter()

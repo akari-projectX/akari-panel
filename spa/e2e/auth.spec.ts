@@ -208,6 +208,36 @@ test('#11 Turnstile + 2 秒：太快提交时页面替用户等；密码错了�
   }
 });
 
+test('#11 后台定期重新取设置不让最短提交时间重新计时：回到页面马上提交不用再等', async ({ page }) => {
+  const a = await admin();
+  const before = await a.patch('auth', FIELDS.auth, { min_submit_secs: 2 });
+  try {
+    const tokens: string[] = [];
+    page.on('response', async (r) => {
+      if (new URL(r.url()).pathname === '/auth/options') tokens.push((await r.json()).guard?.form_token);
+    });
+    await page.goto('/login');
+    await page.getByLabel('邮箱', { exact: true }).fill('user@e2e.test');
+    await page.getByLabel('密码', { exact: true }).fill(seed.password);
+    await page.waitForTimeout(2500);
+    /* 用户切回标签页：重新取一遍（面板发了新令牌），然后马上提交 */
+    const refetched = page.waitForResponse((r) => new URL(r.url()).pathname === '/auth/options');
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await refetched;
+    const posted = page.waitForRequest((r) => r.url().endsWith('/auth/login'));
+    const clicked = Date.now();
+    await page.getByRole('button', { name: '登录', exact: true }).click();
+    const req = await posted;
+    expect(Date.now() - clicked).toBeLessThan(1500);
+    /* 交上去的是页面一开始拿到的那个（已经够老的）令牌，不是刚取的新令牌 */
+    expect(req.postDataJSON().guard.form_token).toBe(tokens[0]);
+    expect(tokens.at(-1)).not.toBe(tokens[0]);
+    await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible();
+  } finally {
+    await a.patch('auth', FIELDS.auth, before);
+  }
+});
+
 /* 第一次渲染就报错（相当于 Cloudflare 挑战没通过 / 无头浏览器被拦），重置之后才给令牌 */
 const FAILING_TURNSTILE =
   "(function(){var n=0,w={};window.turnstile={render:function(el,o){var id='w'+(++n),k=0;" +

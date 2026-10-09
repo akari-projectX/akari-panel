@@ -174,7 +174,9 @@ test("SH-05: a failed or blocked Turnstile says so, with a retry, instead of a n
   await expect(submit).toBeEnabled();
   await submit.click();
   await page.waitForURL(new RegExp(`^${CONSOLE}`), { timeout: 20_000 });
-  // A blocked script: the same message; retry reloads the page.
+  // A blocked script: the same message; retry reloads the page. (Leave the console first: its
+  // session check would race the next navigation once the cookie is gone.)
+  await page.goto("about:blank");
   await page.context().clearCookies();
   await page.unroute("https://challenges.cloudflare.com/**");
   await page.route("https://challenges.cloudflare.com/**", (r) => r.abort());

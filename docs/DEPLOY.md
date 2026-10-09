@@ -413,7 +413,8 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
      并且只增加 `akari_bot_trap_total{form,reason}`，不写日志。用 curl 登录的脚本必须照做
      （`/auth/options` → 等待 → 提交 `"guard":{"form_token":…}`），或把 最短提交时间 设为 0。
      改了这些设置（或下面的 Turnstile 开关）不需要用户刷新：已经打开的门户页面和后台登录页在表单挂着时每 30 秒、
-     窗口回到前台时、每次提交之后都会重新取 `/auth/options`；页面打开之后才开启的 Turnstile 会让页面自动重新加载一次
+     窗口回到前台时、每次提交之后都会重新取 `/auth/options`（表单令牌不是一次性的：设置没变、令牌还新鲜时沿用手上的，
+     重新取设置不会让最短提交时间重新计时）；页面打开之后才开启的 Turnstile 会让页面自动重新加载一次
      （打开时的 CSP 不放行 Cloudflare 的脚本）。v0.4.0 的页面不会重新取：改设置之后，已打开的页面每次提交都失败
      （「邮箱或密码错误」或「人机验证未通过」），直到刷新。
    - **Cloudflare Turnstile**（按表单，默认关闭）：站点密钥 + 密钥（密钥只写不读，用 `data/master.key` 加密），在服务端验证；
@@ -421,7 +422,7 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
      - 400 `auth.captcha_failed`（「人机验证未通过」）= 访客这边的问题：没有令牌，或 Cloudflare 以
        `missing-input-response` / `invalid-input-response` / `timeout-or-duplicate`（过期或重复使用）拒绝了令牌；
      - 503 `auth.captcha_unavailable`（「人机验证服务暂不可用」）= **站点这边的问题**，所有受保护的表单都会失败：
-       Cloudflare 不可达或出错，或者 **Turnstile 密钥配置错误**——Cloudflare 拒绝了密钥或请求
+       Cloudflare 不可达、出错或答复残缺（拒绝却没有错误码），或者 **Turnstile 密钥配置错误**——Cloudflare 拒绝了密钥或请求
        （`invalid-input-secret`、`missing-input-secret`、`bad-request` 等），或 `data/master.key` 换过导致存储的密钥打不开。
        密钥配置错误时面板日志有一条 ERROR（只含 Cloudflare 的错误码，不含令牌、密钥或客户端地址），
        `akari_turnstile_verify_total{result="misconfigured"}` 增加，Prometheus 告警 `AkariTurnstileMisconfigured` 触发。

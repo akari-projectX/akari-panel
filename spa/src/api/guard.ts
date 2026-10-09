@@ -15,9 +15,21 @@ import type { AuthOptions, FormGuard, FormGuardOptions } from './types';
 let seen: { guard: FormGuardOptions; at: number } | null = null;
 const REFRESH_MS = 6 * 3600_000;
 
-/** 每次拿到 /auth/options 时记下最新的 guard */
+/** 两份 guard 除了表单令牌本身以外是否一样（最短时间、蜜罐、Turnstile、有没有令牌） */
+function sameGuard(a: FormGuardOptions, b: FormGuardOptions): boolean {
+  const strip = (g: FormGuardOptions) => JSON.stringify({ ...g, form_token: g.form_token ? 1 : null });
+  return strip(a) === strip(b);
+}
+
+/**
+ * 每次拿到 /auth/options 时记下 guard。表单令牌不是一次性的（面板只看它的年龄：最短时间到 24 小时之间），
+ * 所以手上的令牌还新鲜、设置也没变时**留着它**：后台定期重新取设置不会让最短提交时间重新计时。
+ * 设置变了（比如最短时间从 0 改成 2 秒，旧的是 null）或令牌快过期了才换新的。
+ */
 export function rememberGuard(o: Pick<AuthOptions, 'guard'>, now = Date.now()) {
-  if (o.guard) seen = { guard: o.guard, at: now };
+  if (!o.guard) return;
+  if (seen?.guard.form_token && now - seen.at <= REFRESH_MS && sameGuard(seen.guard, o.guard)) return;
+  seen = { guard: o.guard, at: now };
 }
 
 /** 两份 /auth/options 除了表单令牌以外是否一样（一样就不必让页面重渲染） */

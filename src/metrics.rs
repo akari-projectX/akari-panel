@@ -270,8 +270,8 @@ impl Metrics {
             }
         }
         m.registry.register(Box::new(m.turnstile_verify.clone()))?;
-        for r in crate::botguard::Outcome::LABELS {
-            m.turnstile_verify.with_label_values(&[r]);
+        for r in crate::botguard::Outcome::ALL {
+            m.turnstile_verify.with_label_values(&[r.label()]);
         }
         for l in ["enroll", "sub"] {
             for r in ["allowed", "limited"] {
@@ -462,17 +462,23 @@ pub fn bot_trap(form: &'static str, reason: &'static str) {
     }
 }
 
-/// A Turnstile check of a public form (`result`: `botguard::Outcome::LABELS`).
-pub fn turnstile_verify(result: &'static str) {
+/// A Turnstile check of a public form.
+pub fn turnstile_verify(result: crate::botguard::Outcome) {
     if let Some(m) = m() {
-        m.turnstile_verify.with_label_values(&[result]).inc();
+        m.turnstile_verify
+            .with_label_values(&[result.label()])
+            .inc();
     }
 }
 
 /// The current `akari_turnstile_verify_total{result}` (tests).
 #[cfg(test)]
-pub fn turnstile_verify_count(result: &str) -> u64 {
-    m().map_or(0, |m| m.turnstile_verify.with_label_values(&[result]).get())
+pub fn turnstile_verify_count(result: crate::botguard::Outcome) -> u64 {
+    m().map_or(0, |m| {
+        m.turnstile_verify
+            .with_label_values(&[result.label()])
+            .get()
+    })
 }
 
 pub fn login_attempt(allowed: bool) {
@@ -643,7 +649,7 @@ mod tests {
         billed(-5);
         enforcement_pass("limits", true);
         login_attempt(false);
-        turnstile_verify("ok");
+        turnstile_verify(crate::botguard::Outcome::Ok);
     }
 
     #[test]

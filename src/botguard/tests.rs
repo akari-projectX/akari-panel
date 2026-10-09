@@ -159,7 +159,12 @@ impl Verifier {
                     Some(c) => {
                         json!({ "success": false, "error-codes": c.split(',').collect::<Vec<_>>() })
                     }
-                    None => json!({ "success": response == "good-token" }),
+                    None if response == "good-token" => {
+                        json!({ "success": true, "error-codes": [] })
+                    }
+                    // A malformed refusal: no error codes at all.
+                    None if response == "no-codes" => json!({ "success": false }),
+                    None => json!({ "success": false, "error-codes": ["invalid-input-response"] }),
                 };
                 (StatusCode::from_u16(s).unwrap(), answer.to_string())
             }
@@ -631,7 +636,12 @@ fn siteverify_answers_are_classified() {
         c(json!({ "success": true, "error-codes": [] })),
         Outcome::Ok
     );
-    assert_eq!(c(json!({ "success": false })), Outcome::Rejected);
+    // A refusal without codes is a malformed answer, not the visitor's fault.
+    assert_eq!(c(json!({ "success": false })), Outcome::Unavailable);
+    assert_eq!(
+        c(json!({ "success": false, "error-codes": [] })),
+        Outcome::Unavailable
+    );
     for code in USER_ERRORS {
         assert_eq!(
             c(json!({ "success": false, "error-codes": [code] })),
@@ -681,15 +691,9 @@ fn siteverify_answers_are_classified() {
             .len(),
         8
     );
-    // Metric label values are a closed set.
-    let all = [
-        Outcome::Ok,
-        Outcome::NoToken,
-        Outcome::Rejected,
-        Outcome::Misconfigured,
-        Outcome::Unavailable,
-    ];
-    assert_eq!(all.map(Outcome::label), Outcome::LABELS);
+    // Metric label values: one per outcome, distinct.
+    let labels: std::collections::HashSet<_> = Outcome::ALL.map(Outcome::label).into();
+    assert_eq!(labels.len(), Outcome::ALL.len());
 }
 
 /// Through the login route: a wrong secret (Cloudflare's
@@ -723,7 +727,7 @@ async fn turnstile_misconfiguration_is_not_the_visitors_failure() {
     let (_, email) = account(&db, &pw).await;
     let c = Client::new(&st, rand_ip());
     let count = crate::metrics::turnstile_verify_count;
-    let before: Vec<u64> = Outcome::LABELS.iter().map(|l| count(l)).collect();
+    let before = Outcome::ALL.map(count);
     let login = |t: &str| {
         c.post(
             "/test/auth/login",
@@ -743,6 +747,8 @@ async fn turnstile_misconfiguration_is_not_the_visitors_failure() {
     assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE);
     let r = login("codes:internal-error").await;
     assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE);
+    let r = login("no-codes").await;
+    assert_eq!(r.json()["code"], "auth.captcha_unavailable");
     let r = login("codes:timeout-or-duplicate").await;
     assert_eq!(
         (r.status, r.json()["code"].clone()),
@@ -763,16 +769,16 @@ async fn turnstile_misconfiguration_is_not_the_visitors_failure() {
     assert_eq!(r.json()["code"], "auth.captcha_unavailable");
 
     // Counters are process-wide (tests run in parallel): at least ours.
-    let after: Vec<u64> = Outcome::LABELS.iter().map(|l| count(l)).collect();
-    let grew = |label: &str| {
-        let i = Outcome::LABELS.iter().position(|l| *l == label).unwrap();
+    let after = Outcome::ALL.map(count);
+    let grew = |o: Outcome| {
+        let i = Outcome::ALL.iter().position(|x| *x == o).unwrap();
         after[i] - before[i]
     };
-    assert!(grew("misconfigured") >= 3, "{before:?} {after:?}");
-    assert!(grew("unavailable") >= 1);
-    assert!(grew("rejected") >= 1);
-    assert!(grew("no_token") >= 1);
-    assert!(grew("ok") >= 1);
+    assert!(grew(Outcome::Misconfigured) >= 3, "{before:?} {after:?}");
+    assert!(grew(Outcome::Unavailable) >= 1);
+    assert!(grew(Outcome::Rejected) >= 1);
+    assert!(grew(Outcome::NoToken) >= 1);
+    assert!(grew(Outcome::Ok) >= 1);
     // Captcha refusals are not credential failures: no login-limit slot.
     let n: Option<i64> =
         fred::prelude::KeysInterface::get(st.valkey(), &crate::login_limit::keys("x", &email)[1])

@@ -9,6 +9,7 @@ import { afterLogin, loadPage, prefixBase } from "../shared/base";
 import { errorTextWith, type ErrorTable } from "../shared/errors";
 import { useLang, useSetLang, useTr } from "../shared/i18n";
 import { createCredential, getAssertion, passkeysSupported } from "../shared/passkey";
+import { mergeOptions } from "./guard";
 import { useTheme } from "../shared/theme";
 import { Icon } from "../shared/ui/icons";
 import { Button, Callout, Checkbox, Field, Input } from "../shared/ui/primitives";
@@ -230,9 +231,10 @@ export function LoginApp() {
   // The form token's age is checked against the minimum submit time: a fast
   // (autofilled) submission waits out the rest instead of being refused.
   const loadedAt = useRef(0);
+  const formToken = opts?.guard?.form_token;
   useEffect(() => {
     loadedAt.current = Date.now();
-  }, [opts]);
+  }, [formToken]);
 
   // The guard settings (minimum time, Turnstile on sign-in) can change while
   // this page is open, and a submission caught with stale ones only gets the
@@ -242,7 +244,8 @@ export function LoginApp() {
     authGet<AuthOptions>("/options")
       .then((o) => {
         setTurnstileAllowed((cur) => cur ?? !!o.guard?.turnstile?.login);
-        setOpts(o);
+        // A held, still fresh form token survives the refetch (mergeOptions): no new wait.
+        setOpts((cur) => mergeOptions(cur, o, Date.now() - loadedAt.current));
       })
       .catch(() => setOpts((cur) => cur ?? { site_name: "Akari", branding: null, guard: null, passkey: false }));
   }, []);
