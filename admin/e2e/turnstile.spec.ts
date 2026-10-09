@@ -150,3 +150,37 @@ test("SH-05: a refused non-admin account and a wrong password each get a fresh t
   expect(new Set(sent).size, sent.join("\n")).toBe(3);
   for (const t of sent) expect(t).toMatch(/^tok-/);
 });
+
+// The widget fails its first challenge (what a blocked headless browser gets); a reset passes.
+const FAILING =
+  "(function(){var n=0,w={};window.turnstile={render:function(el,o){var id='w'+(++n),k=0;" +
+  "w[id]=function(){k++;setTimeout(function(){k===1?o['error-callback']('300030'):o.callback('tok-'+id+'-'+k)},50)};" +
+  "w[id]();return id},reset:function(id){w[id]&&w[id]()},remove:function(){}}})();";
+
+test("SH-05: a failed or blocked Turnstile says so, with a retry, instead of a network error", async ({ page }) => {
+  await page.route("https://challenges.cloudflare.com/**", (r) =>
+    r.fulfill({ contentType: "text/javascript", body: FAILING }),
+  );
+  await page.goto(LOGIN);
+  await page.locator("#email").fill(ADMIN);
+  await page.locator("#password").fill(ADMIN_PW);
+  const alert = page.getByRole("alert").filter({ hasText: "人机验证加载失败，请刷新重试" });
+  await expect(alert).toBeVisible();
+  await expect(page.getByText(/网络/)).toHaveCount(0);
+  const submit = page.locator("form button[type=submit]");
+  await expect(submit).toBeDisabled();
+  await alert.getByRole("button", { name: "重试" }).click();
+  await expect(alert).toHaveCount(0);
+  await expect(submit).toBeEnabled();
+  await submit.click();
+  await page.waitForURL(new RegExp(`^${CONSOLE}`), { timeout: 20_000 });
+  // A blocked script: the same message; retry reloads the page.
+  await page.context().clearCookies();
+  await page.unroute("https://challenges.cloudflare.com/**");
+  await page.route("https://challenges.cloudflare.com/**", (r) => r.abort());
+  await page.goto(LOGIN);
+  await expect(alert).toBeVisible();
+  const reloaded = page.waitForResponse((r) => r.request().resourceType() === "document");
+  await alert.getByRole("button", { name: "重试" }).click();
+  await reloaded;
+});

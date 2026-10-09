@@ -62,33 +62,47 @@ const GUARD_POLL_MS = 30_000;
 
 const TURNSTILE_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
+/** Why the widget is not there: its script did not load (reload the page) or it failed / timed out (reset it). */
+type TurnstileFailure = "script" | "widget";
+
 /**
  * The Turnstile widget (only when switched on for logins; the page's CSP then allows it).
  * A token is single-use: the page bumps `resetKey` after every attempt that sent one, and the
  * held token is dropped before the widget fetches a new one. Expired, failed or timed-out
- * challenges drop it too, so the button stays disabled until a fresh token arrives.
+ * challenges drop it too, so the button stays disabled until a fresh token arrives; failures
+ * and a script that cannot load are reported (`onFail`) so the page says so, with a retry.
  */
 function TurnstileBox({
   siteKey,
   onToken,
+  onFail,
   resetKey,
 }: {
   siteKey: string;
   onToken: (t: string) => void;
+  onFail: (kind: TurnstileFailure) => void;
   resetKey: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const widget = useRef<string | null>(null);
+  const fail = useRef(onFail);
+  useEffect(() => {
+    fail.current = onFail;
+  });
   useEffect(() => {
     let cancelled = false;
+    const failed = (kind: TurnstileFailure) => () => {
+      onToken("");
+      if (!cancelled) fail.current(kind);
+    };
     const mount = () => {
       if (cancelled || !ref.current || !window.turnstile || widget.current) return;
       widget.current = window.turnstile.render(ref.current, {
         sitekey: siteKey,
         callback: (t: string) => onToken(t),
         "expired-callback": () => onToken(""),
-        "error-callback": () => onToken(""),
-        "timeout-callback": () => onToken(""),
+        "error-callback": failed("widget"),
+        "timeout-callback": failed("widget"),
       });
     };
     if (window.turnstile) mount();
@@ -101,6 +115,7 @@ function TurnstileBox({
         document.head.appendChild(s);
       }
       s.addEventListener("load", mount);
+      s.addEventListener("error", failed("script"));
     }
     return () => {
       cancelled = true;
@@ -194,6 +209,19 @@ export function LoginApp() {
   const [website, setWebsite] = useState("");
   const [captcha, setCaptcha] = useState("");
   const [captchaReset, setCaptchaReset] = useState(0);
+  const [captchaFailed, setCaptchaFailed] = useState<TurnstileFailure | null>(null);
+  const onCaptcha = useCallback((t: string) => {
+    setCaptcha(t);
+    if (t) setCaptchaFailed(null);
+  }, []);
+  const retryCaptcha = () => {
+    if (captchaFailed === "script") {
+      location.reload();
+      return;
+    }
+    setCaptchaFailed(null);
+    setCaptchaReset((n) => n + 1);
+  };
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [passkeyOnly, setPasskeyOnly] = useState(false);
@@ -430,7 +458,27 @@ export function LoginApp() {
                     </div>
                   )}
                   {turnstile && (
-                    <TurnstileBox siteKey={turnstile.site_key} onToken={setCaptcha} resetKey={captchaReset} />
+                    <>
+                      <TurnstileBox
+                        siteKey={turnstile.site_key}
+                        onToken={onCaptcha}
+                        onFail={setCaptchaFailed}
+                        resetKey={captchaReset}
+                      />
+                      {captchaFailed && (
+                        <div role="alert" className="flex items-center gap-3 text-[13px] text-destructive">
+                          <span>
+                            {tr(
+                              "人机验证加载失败，请刷新重试",
+                              "Human verification could not load, reload and try again",
+                            )}
+                          </span>
+                          <Button type="button" variant="ghost" size="sm" onClick={retryCaptcha}>
+                            {tr("重试", "Retry")}
+                          </Button>
+                        </div>
+                      )}
+                    </>
                   )}
                   <Button
                     type="submit"

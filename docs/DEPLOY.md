@@ -427,6 +427,8 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
        `akari_turnstile_verify_total{result="misconfigured"}` 增加，Prometheus 告警 `AkariTurnstileMisconfigured` 触发。
        检查方法：看日志里的错误码；到 系统设置 → 注册与人机验证 重新填写**密钥**（不是站点密钥），并确认
        站点密钥与密钥来自 Cloudflare 控制台里的同一个组件、组件的主机名包含本站域名。
+     - 浏览器里组件加载失败（脚本被拦、挑战没通过、交互超时，常见于无头浏览器或拦截插件）时，门户和后台登录页显示
+       「人机验证加载失败，请刷新重试」和「重试」按钮，不会提交表单。
      - 指标 `akari_turnstile_verify_total{result}`：`ok`、`no_token`、`rejected`（访客侧）、`misconfigured`、`unavailable`。
      - 后台的密钥输入框只写：留空保存 = 保持原密钥（保存同一张卡片上的其他设置，比如最短提交时间，不会改动它）；
        输入框关闭了浏览器/密码管理器的自动填充，免得把管理员密码当成密钥存进去（SMTP 密码、Resend 密钥、支付密钥、

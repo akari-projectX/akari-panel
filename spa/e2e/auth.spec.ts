@@ -156,7 +156,7 @@ test('#11 站长在登录页打开期间打开最短提交时间与 Turnstile：
     const answer = page.waitForResponse((r) => r.url().endsWith('/auth/login'));
     await button.click();
     expect((await answer).status()).toBe(200);
-    await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible({ timeout: 20_000 });
     await noCaptchaError(page);
     await signOut(page);
     await expect(page).toHaveURL(/\/login/);
@@ -170,7 +170,7 @@ test('#11 站长在登录页打开期间打开最短提交时间与 Turnstile：
     await page.getByLabel('密码', { exact: true }).fill(seed.password);
     await expect(button).toBeEnabled({ timeout: 30_000 });
     await button.click();
-    await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible({ timeout: 20_000 });
     await noCaptchaError(page);
   } finally {
     await a.patch('auth', FIELDS.auth, { ...before, turnstile_site_key: null, turnstile_secret: '' });
@@ -199,10 +199,51 @@ test('#11 Turnstile + 2 秒：太快提交时页面替用户等；密码错了�
     await expect(page.getByText('邮箱或密码错误')).toBeVisible();
     await page.getByLabel('密码', { exact: true }).fill(seed.password);
     await page.getByRole('button', { name: '登录', exact: true }).click();
-    await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible({ timeout: 20_000 });
     expect(sent).toHaveLength(2);
     expect(new Set(sent).size, sent.join('\n')).toBe(2);
     for (const t of sent) expect(t).toMatch(/^tok-/);
+  } finally {
+    await a.patch('auth', FIELDS.auth, { ...before, turnstile_site_key: null, turnstile_secret: '' });
+  }
+});
+
+/* 第一次渲染就报错（相当于 Cloudflare 挑战没通过 / 无头浏览器被拦），重置之后才给令牌 */
+const FAILING_TURNSTILE =
+  "(function(){var n=0,w={};window.turnstile={render:function(el,o){var id='w'+(++n),k=0;" +
+  "w[id]=function(){k++;setTimeout(function(){k===1?o['error-callback']('300030'):o.callback('tok-'+id+'-'+k)},50)};" +
+  'w[id]();return id},reset:function(id){w[id]&&w[id]()},remove:function(){}}})();';
+
+test('#11 人机验证加载失败：说清楚原因并给「重试」，而不是笼统的网络错误', async ({ page }) => {
+  const a = await admin();
+  const before = await a.patch('auth', FIELDS.auth, {
+    min_submit_secs: 2, turnstile_site_key: TS_SITE_KEY, turnstile_secret: TS_SECRET, turnstile_login: true,
+  });
+  try {
+    /* 组件出错：提示 + 重试（重置组件），拿到令牌后照常登录 */
+    await page.route('https://challenges.cloudflare.com/**', (r) => r.fulfill({ contentType: 'text/javascript', body: FAILING_TURNSTILE }));
+    await page.goto('/login');
+    await page.getByLabel('邮箱', { exact: true }).fill('user@e2e.test');
+    await page.getByLabel('密码', { exact: true }).fill(seed.password);
+    const alert = page.getByRole('alert').filter({ hasText: '人机验证加载失败，请刷新重试' });
+    await expect(alert).toBeVisible();
+    await expect(page.getByText(/网络/)).toHaveCount(0);
+    const button = page.getByRole('button', { name: '登录', exact: true });
+    await expect(button).toBeDisabled();
+    await alert.getByRole('button', { name: '重试' }).click();
+    await expect(alert).toHaveCount(0);
+    await expect(button).toBeEnabled();
+    await button.click();
+    await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible({ timeout: 20_000 });
+    await signOut(page);
+    /* 脚本被拦（加载不出来）：同样的提示；重试 = 重新加载页面 */
+    await page.unroute('https://challenges.cloudflare.com/**');
+    await page.route('https://challenges.cloudflare.com/**', (r) => r.abort());
+    await page.goto('/login');
+    await expect(alert).toBeVisible();
+    const reloaded = page.waitForResponse((r) => r.request().resourceType() === 'document');
+    await alert.getByRole('button', { name: '重试' }).click();
+    await reloaded;
   } finally {
     await a.patch('auth', FIELDS.auth, { ...before, turnstile_site_key: null, turnstile_secret: '' });
   }

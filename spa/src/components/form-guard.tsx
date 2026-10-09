@@ -1,3 +1,4 @@
+import { RotateCw } from 'lucide-react';
 import Turnstile from '@/components/turnstile';
 import type { FormGuardState } from '@/lib/form-guard';
 import { useT } from '@/i18n';
@@ -5,7 +6,7 @@ import { useT } from '@/i18n';
 /**
  * 公开表单里的防护字段：
  *   · 蜜罐：一个叫 website 的输入框，人看不见、读屏跳过、浏览器不自动填；机器人填了就会被面板按普通失败拒掉；
- *   · Turnstile：站长为这张表单开了才出现。
+ *   · Turnstile：站长为这张表单开了才出现；加载失败（脚本被拦、组件出错、交互超时）时显示原因和「重试」。
  */
 export default function GuardFields({ guard }: { guard: FormGuardState }) {
   const tr = useT();
@@ -26,10 +27,15 @@ export default function GuardFields({ guard }: { guard: FormGuardState }) {
         <div className="space-y-1.5">
           <Turnstile
             siteKey={guard.siteKey} resetKey={guard.resetKey}
-            onToken={guard.setToken} onError={() => guard.setFailed(true)}
+            onToken={guard.onToken} onError={guard.setFailed}
           />
           {guard.failed && (
-            <p className="text-[12.5px] text-destructive">{tr('人机验证没有加载出来，请检查网络或关闭拦截插件后刷新页面。')}</p>
+            <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-destructive">
+              <span>{tr('人机验证加载失败，请刷新重试')}</span>
+              <button type="button" onClick={guard.retry} className="inline-flex items-center gap-1 font-medium underline-offset-4 hover:underline">
+                <RotateCw className="size-3.5" />{tr('重试')}
+              </button>
+            </div>
           )}
         </div>
       )}

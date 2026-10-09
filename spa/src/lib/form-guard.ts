@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { authApi, type FormGuard } from '@/api';
 import { buildGuard, guardStale } from '@/api/guard';
 import { useSiteOptions } from '@/lib/auth';
+import type { TurnstileFailure } from '@/components/turnstile';
 
 export type GuardedForm = 'login' | 'register' | 'reset';
 
@@ -30,7 +31,8 @@ export function useFormGuard(form: GuardedForm) {
   const [website, setWebsite] = useState('');
   const [token, setToken] = useState<string | null>(null);
   const [resetKey, setResetKey] = useState(0);
-  const [failed, setFailed] = useState(false);
+  /* 人机验证加载失败：脚本没加载（只能刷新页面）/ 组件出错或超时（重置组件） */
+  const [failed, setFailed] = useState<TurnstileFailure | null>(null);
 
   useEffect(() => {
     const again = () => void refresh();
@@ -60,6 +62,22 @@ export function useFormGuard(form: GuardedForm) {
     return buildGuard(website, token);
   }, [website, token]);
 
+  /* 拿到令牌就说明组件好了 */
+  const onToken = useCallback((t: string | null) => {
+    setToken(t);
+    if (t) setFailed(null);
+  }, []);
+
+  /* 「重试」：脚本没加载出来只能重新加载页面；组件自己出错就重置它 */
+  const retry = useCallback(() => {
+    if (failed === 'script') {
+      window.location.reload();
+      return;
+    }
+    setFailed(null);
+    setResetKey((k) => k + 1);
+  }, [failed]);
+
   const after = useCallback(() => {
     if (siteKey) setResetKey((k) => k + 1);
     void refresh();
@@ -68,7 +86,7 @@ export function useFormGuard(form: GuardedForm) {
   return {
     honeypot: !!g?.honeypot,
     website, setWebsite,
-    siteKey, token, setToken, resetKey, failed, setFailed,
+    siteKey, token, onToken, resetKey, failed, setFailed, retry,
     /** 设置读不出来（guard: null）：面板会拒绝这张表单，干脆不让提交 */
     unavailable: !!options && g === null,
     /** 需要 Turnstile 时，拿到令牌才能提交 */
