@@ -22,7 +22,8 @@
   - `i18n.tsx`：内联 `tr("中文", "English")`；语言存 `akari.admin.lang`。
   - `format.ts`：时间一律按**站点时区**（`/settings` 的 `timezone`）显示，不用浏览器时区。
   - `ui/`：`DataTable`（筛选、勾选批量、列选择、手机卡片）、`Drawer`/`Dialog`、`useConfirm`（破坏性操作 = 影响数量 + 输入确认文字）、`useToast`、骨架/空/错误状态。
-- `src/login/`：邮箱 + 密码、通行密钥（可发现凭据）、仅通行密钥提示（含 `akari admin reset-login`）、密码登录后的绑定引导、蜜罐 + 最短提交时间 + Turnstile；非管理员账户登录后立即登出并提示。
+- `src/login/`：邮箱 + 密码、通行密钥（可发现凭据）、仅通行密钥提示（含 `akari admin reset-login`）、密码登录后的绑定引导、蜜罐 + 最短提交时间 + Turnstile；非管理员账户登录后立即登出并提示。每次尝试（含非管理员）后 Turnstile 令牌作废换新，并重新取 `/auth/options`（另有每 30 秒与窗口回到前台）；打开后才开启的登录 Turnstile 让页面重新加载一次（CSP）；组件出错/超时/脚本加载失败显示「人机验证加载失败，请刷新重试」+「重试」。
+- 只写的秘密输入框（Turnstile 密钥、SMTP 密码、Resend 密钥、支付密钥、告警通道密钥）一律用 `shared/ui/primitives` 的 `SecretInput` / `secretInputProps`（`new-password` + 1Password/LastPass/Bitwarden 忽略属性）：浏览器无视 `autocomplete="off"`，会把管理员密码填进去再随保存存成密钥；留空 = 不发送 = 不改。
 - `src/console/`：`router.ts`（history 路由，URL 即视图，查询串即筛选）、`nav.ts`（侧边栏）、`shell.tsx`（可折叠侧边栏、手机抽屉、Ctrl+K 命令面板、账户菜单）、`kit.tsx`（`useRun`：执行 + 等待失效查询重读 + 提示）、`pages/*`（每个导航项一个页面；`protocols.gen.ts` 由 `make gen-protocols` 从 `proto/protocols.toml` 生成）。
 
 ## 命令

@@ -55,3 +55,21 @@ tests:
             exp_annotations:
               summary: "No panel instance evaluated node alerts for 10 minutes"
               description: "Node alerts are not being evaluated (database errors? see akari_alert_rounds_total{result=\"error\"} and the panel log)."
+
+  - interval: 1m
+    input_series:
+      - series: 'akari_turnstile_verify_total{result="misconfigured", instance="a"}'
+        values: '0x5 1 2x10'
+      - series: 'akari_turnstile_verify_total{result="rejected", instance="a"}'
+        values: '0+5x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: AkariTurnstileMisconfigured
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: AkariTurnstileMisconfigured
+        exp_alerts:
+          - exp_labels: { severity: critical, instance: a, result: misconfigured }
+            exp_annotations:
+              summary: "Cloudflare refuses the site's Turnstile configuration"
+              description: "a: every form protected by Turnstile answers 503 auth.captcha_unavailable (wrong Turnstile secret?). The panel log has Cloudflare's error codes; fix the secret under 系统设置 → 注册与人机验证 or run `akari settings unset turnstile`."

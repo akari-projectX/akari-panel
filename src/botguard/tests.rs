@@ -148,14 +148,25 @@ impl Verifier {
         let app = axum::Router::new().fallback(move |body: String| {
             let vv = vv.clone();
             async move {
-                let ok = form_urlencoded::parse(body.as_bytes())
-                    .any(|(k, val)| k == "response" && val == "good-token");
+                let response = form_urlencoded::parse(body.as_bytes())
+                    .find(|(k, _)| k == "response")
+                    .map(|(_, v)| v.into_owned())
+                    .unwrap_or_default();
                 vv.got.lock().unwrap().push(body);
                 let s = *vv.status.lock().unwrap();
-                (
-                    StatusCode::from_u16(s).unwrap(),
-                    json!({ "success": ok }).to_string(),
-                )
+                // "codes:a,b" = a refusal carrying Cloudflare's error codes.
+                let answer = match response.strip_prefix("codes:") {
+                    Some(c) => {
+                        json!({ "success": false, "error-codes": c.split(',').collect::<Vec<_>>() })
+                    }
+                    None if response == "good-token" => {
+                        json!({ "success": true, "error-codes": [] })
+                    }
+                    // A malformed refusal: no error codes at all.
+                    None if response == "no-codes" => json!({ "success": false }),
+                    None => json!({ "success": false, "error-codes": ["invalid-input-response"] }),
+                };
+                (StatusCode::from_u16(s).unwrap(), answer.to_string())
             }
         });
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -612,5 +623,167 @@ async fn turnstile_other_forms_fail_closed() {
     .unwrap();
     drop(conn);
     assert_eq!(who, "cli");
+    db.drop().await;
+}
+
+/// Cloudflare's answers: only visitor-side error codes are the visitor's
+/// failure; a refused secret / request or an unknown code is the site's
+/// (503 + ERROR log), Cloudflare's own error is "unavailable".
+#[test]
+fn siteverify_answers_are_classified() {
+    let c = |v: Value| classify(&v).0;
+    assert_eq!(
+        c(json!({ "success": true, "error-codes": [] })),
+        Outcome::Ok
+    );
+    // A refusal without codes is a malformed answer, not the visitor's fault.
+    assert_eq!(c(json!({ "success": false })), Outcome::Unavailable);
+    assert_eq!(
+        c(json!({ "success": false, "error-codes": [] })),
+        Outcome::Unavailable
+    );
+    for code in USER_ERRORS {
+        assert_eq!(
+            c(json!({ "success": false, "error-codes": [code] })),
+            Outcome::Rejected,
+            "{code}"
+        );
+    }
+    assert_eq!(
+        c(
+            json!({ "success": false, "error-codes": ["invalid-input-response", "timeout-or-duplicate"] })
+        ),
+        Outcome::Rejected
+    );
+    for code in [
+        "missing-input-secret",
+        "invalid-input-secret",
+        "invalid-parsed-secret",
+        "invalid-widget-id",
+        "bad-request",
+        "something-new",
+    ] {
+        assert_eq!(
+            c(json!({ "success": false, "error-codes": [code] })),
+            Outcome::Misconfigured,
+            "{code}"
+        );
+    }
+    // A misconfiguration wins over a visitor-side code in the same answer.
+    assert_eq!(
+        c(
+            json!({ "success": false, "error-codes": ["invalid-input-response", "invalid-input-secret"] })
+        ),
+        Outcome::Misconfigured
+    );
+    assert_eq!(
+        c(json!({ "success": false, "error-codes": ["internal-error"] })),
+        Outcome::Unavailable
+    );
+    // Codes are sanitised for the log: no foreign text, bounded.
+    let (_, codes) = classify(&json!({ "success": false,
+        "error-codes": ["Invalid Secret <script>", "x".repeat(41), "bad-request", 7] }));
+    assert_eq!(codes, ["(unrecognised)", "(unrecognised)", "bad-request"]);
+    let many: Vec<String> = (0..20).map(|i| format!("c{i}")).collect();
+    assert_eq!(
+        classify(&json!({ "success": false, "error-codes": many }))
+            .1
+            .len(),
+        8
+    );
+    // Metric label values: one per outcome, distinct.
+    let labels: std::collections::HashSet<_> = Outcome::ALL.map(Outcome::label).into();
+    assert_eq!(labels.len(), Outcome::ALL.len());
+}
+
+/// Through the login route: a wrong secret (Cloudflare's
+/// `invalid-input-secret`) is 503 `auth.captcha_unavailable`, not the
+/// visitor's `auth.captcha_failed`; a replayed token stays 400; neither
+/// takes a login-limit slot; every check counts in
+/// `akari_turnstile_verify_total{result}`.
+#[tokio::test]
+async fn turnstile_misconfiguration_is_not_the_visitors_failure() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    crate::metrics::init().unwrap();
+    let (_verifier, url) = Verifier::start().await;
+    let st =
+        AppState::for_test_with(db.pool.clone(), |c| c.limits.turnstile_verify_url = url).await;
+    let enc = st
+        .master_key()
+        .seal(TURNSTILE_AAD, b"0x4AAAAAAA-secret")
+        .unwrap();
+    sqlx::query(
+        "UPDATE auth_settings SET turnstile_site_key = 'site', turnstile_secret_enc = $1, \
+         turnstile_login = true WHERE id = 1",
+    )
+    .bind(&enc)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    // Generated: test credentials are not constants.
+    let pw = format!("pw-{}", Uuid::new_v4().simple());
+    let (_, email) = account(&db, &pw).await;
+    let c = Client::new(&st, rand_ip());
+    let count = crate::metrics::turnstile_verify_count;
+    let before = Outcome::ALL.map(count);
+    let login = |t: &str| {
+        c.post(
+            "/test/auth/login",
+            login_body(&email, &pw, json!({ "turnstile": t })),
+        )
+    };
+
+    let r = login("codes:invalid-input-secret").await;
+    assert_eq!(
+        (r.status, r.json()["code"].clone()),
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!("auth.captcha_unavailable")
+        )
+    );
+    let r = login("codes:missing-input-secret").await;
+    assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE);
+    let r = login("codes:internal-error").await;
+    assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE);
+    let r = login("no-codes").await;
+    assert_eq!(r.json()["code"], "auth.captcha_unavailable");
+    let r = login("codes:timeout-or-duplicate").await;
+    assert_eq!(
+        (r.status, r.json()["code"].clone()),
+        (StatusCode::BAD_REQUEST, json!("auth.captcha_failed"))
+    );
+    let r = c
+        .post("/test/auth/login", login_body(&email, &pw, json!({})))
+        .await;
+    assert_eq!(r.json()["code"], "auth.captcha_failed");
+    let r = login("good-token").await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    // A secret that cannot be opened (master.key changed): the site's too.
+    sqlx::query("UPDATE auth_settings SET turnstile_secret_enc = '\\x00' WHERE id = 1")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let r = login("good-token").await;
+    assert_eq!(r.json()["code"], "auth.captcha_unavailable");
+
+    // Counters are process-wide (tests run in parallel): at least ours.
+    let after = Outcome::ALL.map(count);
+    let grew = |o: Outcome| {
+        let i = Outcome::ALL.iter().position(|x| *x == o).unwrap();
+        after[i] - before[i]
+    };
+    assert!(grew(Outcome::Misconfigured) >= 3, "{before:?} {after:?}");
+    assert!(grew(Outcome::Unavailable) >= 1);
+    assert!(grew(Outcome::Rejected) >= 1);
+    assert!(grew(Outcome::NoToken) >= 1);
+    assert!(grew(Outcome::Ok) >= 1);
+    // Captcha refusals are not credential failures: no login-limit slot.
+    let n: Option<i64> =
+        fred::prelude::KeysInterface::get(st.valkey(), &crate::login_limit::keys("x", &email)[1])
+            .await
+            .unwrap();
+    assert_eq!(n.unwrap_or(0), 0);
     db.drop().await;
 }

@@ -52,8 +52,8 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
   - 蜜罐（默认开启）：`website`（人看不见的字段）非空即判为机器人。
   - 最短提交时间（默认 2 秒，0 = 关闭）：`form_token`（来自 `/auth/options`，是以 `data/master.key` 派生密钥对签发时间做的 HMAC，有效期 24 小时）至少要存在这么久。
   - 被拦截的请求得到的应答与该表单的普通失败完全一致（登录：统一的 401，按密码错误计数；邮件请求：`{"ok":true}`，不发送任何邮件；注册：通用拒绝），并且只增加 `akari_bot_trap_total{form,reason}`（不写日志）。
-  - Cloudflare Turnstile（按表单设置，默认关闭）在上述检查之后于服务端校验，失败即拒绝（400/503）。
-  - 客户端流程：取 `/auth/options`，等待 `form_min_secs`，再提交 `guard.form_token`。控制台的 Turnstile 组件（CSP：`challenges.cloudflare.com`）尚未实现（W36-b）。
+  - Cloudflare Turnstile（按表单设置，默认关闭）在上述检查之后于服务端校验，失败即拒绝（400 访客侧 / 503 站点侧，含密钥配置错误），指标 `akari_turnstile_verify_total{result}`。
+  - 客户端流程：取 `/auth/options`，等待 `form_min_secs`，再提交 `guard.form_token`；门户与后台登录页在表单挂着时定期、窗口回到前台时、每次提交后重新取 `/auth/options`（站长改了设置也不必刷新），Turnstile 令牌每次提交后作废换新。
 - **Passkey（W27，`passkey.rs`，webauthn-rs）**：RP ID = 主域名的主机名（须为 https DNS 名称，否则 passkey 不可用，也不适用任何策略）。
   - 无用户名登录（不发送地址，因此没有账号探测）；仪式状态存于 Valkey，一次性，5 分钟。
   - 当账号在当前 RP ID 下有 passkey，且选择了仅 passkey 或其角色策略要求时，密码登录会被拒绝（403 `auth.passkey_required`，仅在密码正确之后）。没有当前有效的 passkey 时，密码始终可用（换域名或删除最后一个 passkey 都不会把任何人锁在门外）。
@@ -188,7 +188,7 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| POST | /auth/login | — | `{email, password, guard?}`（D1：地址不区分大小写，已验证与否均可）：argon2id 校验，设置会话 cookie；→ `{id, email, role, expired, quota_exhausted, banned, passkey_prompt}`（R21 续费范围；W28-c：被封禁的 role=user 账号登录后进入门户范围*）。所有失败都返回统一的 401，包括被拦截的机器人（W27 `guard`，见下）。开启 Turnstile 时：400 `auth.captcha_failed`（令牌缺失/被拒）/ 503 `auth.captcha_unavailable`（校验服务不可达） |
+| POST | /auth/login | — | `{email, password, guard?}`（D1：地址不区分大小写，已验证与否均可）：argon2id 校验，设置会话 cookie；→ `{id, email, role, expired, quota_exhausted, banned, passkey_prompt}`（R21 续费范围；W28-c：被封禁的 role=user 账号登录后进入门户范围*）。所有失败都返回统一的 401，包括被拦截的机器人（W27 `guard`，见下）。开启 Turnstile 时：400 `auth.captcha_failed`（令牌缺失，或 Cloudflare 以访客侧错误码拒绝）/ 503 `auth.captcha_unavailable`（校验服务不可达，或 Turnstile 密钥配置错误：Cloudflare 拒绝密钥/请求、存储的密钥打不开；记 ERROR 日志） |
 | POST | /auth/passkey/options | — (passkeys available) | W27：可发现凭据登录的挑战 `{state, options}`（`options` = WebAuthn `publicKey` 请求选项；`no-store`；每客户端地址 30 次/分钟）。没有 https 主域名 = 标准拒绝 |
 | POST | /auth/passkey/login | — (passkeys available) | W27：`{state, credential}`（浏览器的 `PublicKeyCredential` JSON）→ 会话 cookie + 登录应答。所有失败都返回统一的 401 |
 | POST | /auth/logout | — | 清除 cookie，并终止该账号的所有会话 |

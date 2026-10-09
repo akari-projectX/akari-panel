@@ -153,6 +153,27 @@ export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElem
   return <input className={cn(control, className)} {...props} />;
 }
 
+/**
+ * Attributes of a write-only secret field (API keys, SMTP password, Turnstile
+ * secret…). Browsers ignore autocomplete="off" on password inputs and would
+ * fill the admin's saved console password in, which a save then stores as
+ * the secret; "new-password" plus the password managers' opt-outs keep the
+ * field empty unless the operator types into it.
+ */
+export const secretInputProps = {
+  type: "password",
+  autoComplete: "new-password",
+  spellCheck: false,
+  "data-1p-ignore": "true",
+  "data-lpignore": "true",
+  "data-bwignore": "true",
+  "data-form-type": "other",
+} as const;
+
+export function SecretInput(props: Omit<InputHTMLAttributes<HTMLInputElement>, "type" | "autoComplete">) {
+  return <Input {...secretInputProps} {...props} />;
+}
+
 export function Textarea({ className, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
   return <textarea className={cn(control, "h-auto min-h-20 py-2 font-mono text-[13px]", className)} {...props} />;
 }
