@@ -753,15 +753,17 @@ WITH input AS (
 ), ef AS MATERIALIZED (
     -- One row per entrance of the batch: its server (a server bills only
     -- its own entrances), its node (history and node totals) and its
-    -- multiplier: D9, the lower of the rates now and 30 s ago
-    -- (akari_entrance_rate: base or time-window rule, site time zone), so
-    -- bytes moved in a cheaper window are never billed at a dearer one.
-    -- Without rules both instants are the base rate (what the function
-    -- returns at once): read it here instead of two calls per entrance.
+    -- multiplier: D9, akari_entrance_settle_rate = the lower of the rates
+    -- now and 30 s ago (akari_entrance_rate: base or time-window rule,
+    -- site time zone; before a manual change, the old rate: 1100), so
+    -- bytes moved at a cheaper rate are never billed at a dearer one.
+    -- Without rules and without a change in the window both instants are
+    -- the base rate (what the function returns at once): read it here
+    -- instead of two calls per entrance.
     SELECT e.id AS entrance_id, e.server_id, e.node_id,
            CASE WHEN EXISTS (SELECT 1 FROM entrance_rate_rules r WHERE r.entrance_id = e.id)
-                THEN LEAST(akari_entrance_rate(e.id, statement_timestamp()),
-                           akari_entrance_rate(e.id, statement_timestamp() - interval '30 seconds'))
+                     OR e.rate_changed_at > statement_timestamp() - akari_rate_window()
+                THEN akari_entrance_settle_rate(e.id)
                 ELSE e.rate_permille END::numeric AS mult
     FROM entrances e WHERE e.id IN (SELECT DISTINCT entrance_id FROM input)
 ), classified AS (
@@ -3079,7 +3081,9 @@ mod db_tests {
         db.drop().await;
     }
 
-    /// The multiplier of the node's direct entrance.
+    /// The multiplier of the node's direct entrance, in effect for longer
+    /// than the settlement window (the change's record is aged out; see
+    /// `rate_change_*` for the window itself).
     async fn set_rate(db: &TestDb, node: Uuid, permille: i32) {
         sqlx::query("UPDATE entrances SET rate_permille = $2 WHERE node_id = $1")
             .bind(node)
@@ -3087,6 +3091,14 @@ mod db_tests {
             .execute(&db.pool)
             .await
             .unwrap();
+        sqlx::query(
+            "UPDATE entrances SET rate_changed_at = rate_changed_at - interval '1 minute' \
+             WHERE node_id = $1 AND rate_changed_at IS NOT NULL",
+        )
+        .bind(node)
+        .execute(&db.pool)
+        .await
+        .unwrap();
     }
 
     async fn node_totals(db: &TestDb, node: Uuid) -> (i64, i64) {
@@ -3132,6 +3144,132 @@ mod db_tests {
         db.flush(&b).await;
         assert_eq!(db.used(u).await, 1800);
         assert_eq!(node_totals(&db, half).await, (7001, 1200));
+        assert_history(&db).await;
+        db.drop().await;
+    }
+
+    /// Ages an entrance's recorded multiplier change past the settlement
+    /// window (as if `secs` had passed since it).
+    async fn age_rate_change(db: &TestDb, node: Uuid, secs: i64) {
+        sqlx::query(
+            "UPDATE entrances SET rate_changed_at = rate_changed_at - make_interval(secs => $2) \
+             WHERE node_id = $1 AND rate_changed_at IS NOT NULL",
+        )
+        .bind(node)
+        .bind(secs as f64)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    }
+
+    /// The multiplier of the node's direct entrance now and as a flush
+    /// bills it now (permille).
+    async fn rates_now(db: &TestDb, node: Uuid) -> (i32, i32) {
+        sqlx::query_as(
+            "SELECT akari_entrance_rate(id, statement_timestamp()), akari_entrance_settle_rate(id) \
+             FROM entrances WHERE node_id = $1 AND kind = 'direct'",
+        )
+        .bind(node)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+    }
+
+    /// next07 (migration 1100): a manual multiplier change is a D9
+    /// boundary. Bytes reported before the change but flushed after it
+    /// (pending in the buffer while the admin saves) bill at the lower of
+    /// the old and new rates for the settlement window (30 s ≥ one agent
+    /// report + one flush + margin): 1x -> 10x bills them at 1x, 10x -> 1x
+    /// at 1x; each row never more than either rate alone. Display (the
+    /// rate now) switches at once; after the window the new rate bills.
+    /// Changes in quick succession compose (1x -> 10x -> 100x: 1x), and a
+    /// rule change is a boundary too.
+    #[tokio::test]
+    async fn rate_change_boundary_only_undercounts() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = db.member().await;
+        let b = buf(&db).await;
+        b.update(n, "s1", &report(u, 1000, 0));
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, 1000);
+
+        // 1x -> 10x with 1000 bytes pending (reported before the save).
+        b.update(n, "s1", &report(u, 2000, 0));
+        sqlx::query("UPDATE entrances SET rate_permille = 10000 WHERE node_id = $1")
+            .bind(n)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(rates_now(&db, n).await, (10000, 1000));
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, 2000, "straddling bytes at the old 1x");
+        // Within the window new bytes still bill at most at 1x; after it at
+        // 10x.
+        age_rate_change(&db, n, 31).await;
+        assert_eq!(rates_now(&db, n).await, (10000, 10000));
+        b.update(n, "s1", &report(u, 3000, 0));
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, 12_000);
+
+        // 10x -> 1x with 1000 pending: billed at 1x, not 10x.
+        b.update(n, "s1", &report(u, 4000, 0));
+        sqlx::query("UPDATE entrances SET rate_permille = 1000 WHERE node_id = $1")
+            .bind(n)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(rates_now(&db, n).await, (1000, 1000));
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, 13_000);
+        age_rate_change(&db, n, 31).await;
+
+        // Two raises within the window: the lowest (1x) holds.
+        b.update(n, "s1", &report(u, 5000, 0));
+        for r in [10_000, 100_000] {
+            sqlx::query("UPDATE entrances SET rate_permille = $2 WHERE node_id = $1")
+                .bind(n)
+                .bind(r)
+                .execute(&db.pool)
+                .await
+                .unwrap();
+        }
+        assert_eq!(rates_now(&db, n).await, (100_000, 1000));
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, 14_000);
+        // Back to 1x, aged: a rule raising every minute to 10x is a
+        // boundary too (rates::apply_set_rules records it).
+        sqlx::query("UPDATE entrances SET rate_permille = 1000 WHERE node_id = $1")
+            .bind(n)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        age_rate_change(&db, n, 31).await;
+        let e = crate::entrances::direct_of(&mut db.pool.acquire().await.unwrap(), n)
+            .await
+            .unwrap()
+            .unwrap();
+        let all_week = crate::rates::parse(&[crate::rates::RuleReq {
+            weekdays: vec![1, 2, 3, 4, 5, 6, 7],
+            start: "00:00".into(),
+            end: "24:00".into(),
+            rate: 10.0,
+        }])
+        .unwrap();
+        let mut tx = db.pool.begin().await.unwrap();
+        crate::rates::apply_set_rules(&mut tx, &crate::audit::Actor::test(), e, &all_week)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(rates_now(&db, n).await, (10_000, 1000));
+        b.update(n, "s1", &report(u, 6000, 0));
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, 15_000);
+        age_rate_change(&db, n, 31).await;
+        b.update(n, "s1", &report(u, 7000, 0));
+        db.flush(&b).await;
+        assert_eq!(db.used(u).await, 25_000);
         assert_history(&db).await;
         db.drop().await;
     }
