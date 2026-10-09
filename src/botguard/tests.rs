@@ -718,14 +718,16 @@ async fn turnstile_misconfiguration_is_not_the_visitors_failure() {
     .execute(&db.pool)
     .await
     .unwrap();
-    let (_, email) = account(&db, "right-password").await;
+    // Generated: test credentials are not constants.
+    let pw = format!("pw-{}", Uuid::new_v4().simple());
+    let (_, email) = account(&db, &pw).await;
     let c = Client::new(&st, rand_ip());
     let count = crate::metrics::turnstile_verify_count;
     let before: Vec<u64> = Outcome::LABELS.iter().map(|l| count(l)).collect();
     let login = |t: &str| {
         c.post(
             "/test/auth/login",
-            login_body(&email, "right-password", json!({ "turnstile": t })),
+            login_body(&email, &pw, json!({ "turnstile": t })),
         )
     };
 
@@ -747,10 +749,7 @@ async fn turnstile_misconfiguration_is_not_the_visitors_failure() {
         (StatusCode::BAD_REQUEST, json!("auth.captcha_failed"))
     );
     let r = c
-        .post(
-            "/test/auth/login",
-            login_body(&email, "right-password", json!({})),
-        )
+        .post("/test/auth/login", login_body(&email, &pw, json!({})))
         .await;
     assert_eq!(r.json()["code"], "auth.captcha_failed");
     let r = login("good-token").await;
