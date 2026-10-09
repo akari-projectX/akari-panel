@@ -17,8 +17,9 @@
 # local_certs; ip = IP-only), KEEP=1 keeps the container, EXTRA_CA = a CA
 # bundle to trust inside the container (TLS-intercepting proxies).
 #
-# Flow: [PREV_TAG install -> refused upgrade -> purge] -> install ->
-# healthz through Caddy, admin login (API), user + subscription -> broken
+# Flow: a stale Caddy Cloudsmith apt source answering 402 (turned off by
+# the installer; Caddy from its pinned GitHub release) -> [PREV_TAG install
+# -> refused upgrade -> purge] -> install -> healthz through Caddy, admin login (API), user + subscription -> broken
 # upgrade (backup, switch, failed health) rolls
 # back -> uninstall keeps data -> reinstall: same prefix, same password,
 # same subscription -> backup with the agent releases -> age-encrypted
@@ -58,8 +59,10 @@ cg=(--cgroupns=private)
 if [ "$(stat -fc %T /sys/fs/cgroup)" = cgroup2fs ]; then
 	cg=(--cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw)
 fi
+# dl.cloudsmith.io (Caddy's old apt repository) is unreachable: the
+# installer must not need it.
 docker run -d --name "$c" --privileged "${cg[@]}" --tmpfs /run --tmpfs /run/lock \
-	--add-host myapp.test:127.0.0.1 \
+	--add-host myapp.test:127.0.0.1 --add-host dl.cloudsmith.io:127.0.0.1 \
 	-v "$root:/src:ro" -v "$rel:/rel:ro" "$img" >/dev/null
 for _ in $(seq 60); do
 	s=$(docker exec "$c" systemctl is-system-running 2>/dev/null || true)
@@ -72,6 +75,21 @@ if [ -n "${EXTRA_CA:-}" ]; then
 fi
 
 cx() { docker exec -e LANG=C.UTF-8 "$c" "$@"; }
+
+# A host set up by an older installer: Caddy's Cloudsmith apt source, which
+# answers 402 since 2026-10-09 (a local stand-in: same host name, plain
+# HTTP on 8402). apt-get update fails on it; the installer must turn that
+# source off and go on.
+grep -q 'https://dl\.cloudsmith\.io' "$root/scripts/install.sh" && fail "install.sh still downloads from dl.cloudsmith.io"
+# shellcheck disable=SC2016 # perl code
+cx systemd-run --unit fake-cloudsmith perl -MIO::Socket::INET -e '
+	my $s = IO::Socket::INET->new(LocalAddr => "127.0.0.1", LocalPort => 8402, Listen => 5, ReuseAddr => 1) or die;
+	while (my $c = $s->accept) {
+		while (<$c>) { last if /^\r?$/ }
+		print $c "HTTP/1.1 402 Payment Required\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+		close $c;
+	}' >/dev/null || fail "fake Cloudsmith"
+cx sh -c 'echo "deb [signed-by=/etc/apt/keyrings/caddy.asc] http://dl.cloudsmith.io:8402/public/caddy/stable/deb/debian any-version main" >/etc/apt/sources.list.d/caddy-stable.list'
 # The installer from the source tree (deploy files too); env passed by name.
 inst() {
 	docker exec -e LANG=C.UTF-8 -e AKARI_ADMIN_PASSWORD="$pw" -e AKARI_SOURCE_DIR=/src "$@"
@@ -137,29 +155,50 @@ check_panel() {
 }
 
 if [ -n "$prev" ]; then
-	# v0.4 squashed the v0.3.x migrations (1000_baseline): upgrading a v0.3.x
-	# install must be refused before anything changes; then purge and
-	# install fresh.
 	log "install $prev from GitHub (keyless cosign) — bare, $address"
 	inst "$c" sh /src/scripts/install.sh --yes --mode bare --version "$prev" "${addr_args[@]}" || fail "install $prev"
 	check_panel "$prev"
-	log "upgrade $prev -> $new must be refused"
-	if inst "${local_rel[@]}" "$c" akari-ctl upgrade --yes --version "$new" >/tmp/akari-refused.log 2>&1; then
+	case $prev in
+	v0.3.*)
+		# v0.4 squashed the v0.3.x migrations (1000_baseline): upgrading a
+		# v0.3.x install must be refused before anything changes.
+		log "upgrade $prev -> $new must be refused"
+		if inst "${local_rel[@]}" "$c" akari-ctl upgrade --yes --version "$new" >/tmp/akari-refused.log 2>&1; then
+			cat /tmp/akari-refused.log
+			fail "the upgrade from $prev was not refused"
+		fi
 		cat /tmp/akari-refused.log
-		fail "the upgrade from $prev was not refused"
-	fi
-	cat /tmp/akari-refused.log
-	grep -q 'fresh install required; see docs/DEPLOY.md' /tmp/akari-refused.log || fail "no clear refusal message"
-	cx sh -c 'ls -d /var/backups/akari/akari-* >/dev/null 2>&1' && fail "the refused upgrade made a backup"
-	cx grep -q "^VERSION=$prev\$" /etc/akari/install.env || fail "install.env changed by the refused upgrade"
-	check_panel "$prev"
-	echo "ok: upgrade from $prev refused cleanly"
+		grep -q 'fresh install required; see docs/DEPLOY.md' /tmp/akari-refused.log || fail "no clear refusal message"
+		cx sh -c 'ls -d /var/backups/akari/akari-* >/dev/null 2>&1' && fail "the refused upgrade made a backup"
+		cx grep -q "^VERSION=$prev\$" /etc/akari/install.env || fail "install.env changed by the refused upgrade"
+		check_panel "$prev"
+		echo "ok: upgrade from $prev refused cleanly"
+		;;
+	*)
+		# A v0.4+ release: the in-place upgrade to this build must work.
+		log "upgrade $prev -> $new"
+		inst "${local_rel[@]}" "$c" akari-ctl upgrade --yes --version "$new" || fail "upgrade $prev -> $new"
+		cx grep -q "^VERSION=$new\$" /etc/akari/install.env || fail "install.env does not record $new"
+		check_panel "$new"
+		echo "ok: upgrade from $prev"
+		;;
+	esac
+	# Then purge and install fresh.
 	inst "$c" sh /src/scripts/install.sh uninstall --yes --purge --confirm purge || fail "purge $prev"
 fi
 log "install $new — bare, $address"
 inst "${local_rel[@]}" "$c" sh /src/scripts/install.sh --yes --mode bare --version "$new" "${addr_args[@]}" || fail "install $new"
 PREFIX=$(prefix)
 check_panel "$new"
+cx test -e /etc/apt/sources.list.d/caddy-stable.list && fail "the dead Cloudsmith source is still on"
+cx test -f /etc/apt/sources.list.d/caddy-stable.list.akari.disabled || fail "the Cloudsmith source was not kept as *.akari.disabled"
+cx grep -q 'disabled Caddy.s Cloudsmith apt repository' /var/log/akari-install.log || fail "no message about the Cloudsmith source"
+cx apt-get update >/dev/null 2>&1 || fail "apt-get update still fails"
+want_caddy=$(sed -n "s/^CADDY_VERSION='\(.*\)'$/\1/p" "$root/scripts/install.sh")
+cx caddy version | grep -q "^v$want_caddy " || fail "Caddy is not the pinned release $want_caddy"
+cx grep -qx 'source=release' /etc/caddy/.installed-by-akari || fail "Caddy's origin not recorded"
+cx systemctl is-active caddy.service >/dev/null || fail "caddy.service is not active"
+echo "ok: Caddy $want_caddy from the GitHub release, the dead Cloudsmith source turned off"
 cx stat -c '%a %U' /var/lib/akari | grep -qx '700 akari' || fail "data dir is not 0700 akari"
 cx stat -c '%a %U:%G' /etc/akari/panel.toml | grep -qx '640 root:akari' || fail "panel.toml is not 0640 root:akari"
 for f in /etc/akari/valkey.conf /etc/akari/caddy.env /etc/akari/install.env /var/log/akari-install.log; do
@@ -236,6 +275,8 @@ cx test -e /var/lib/akari && fail "data dir still there"
 cx test -e /etc/akari && fail "/etc/akari still there"
 cx sh -c 'cd / && runuser -u postgres -- psql -At -c "SELECT 1 FROM pg_database WHERE datname = '"'akari'"'"' | grep -q 1 && fail "database still there"
 cx sh -c 'ls -d /var/backups/akari/akari-*' >/dev/null || fail "purge removed the backups"
+cx test -e /usr/bin/caddy && fail "purge left the Caddy release binary"
+cx test -e /etc/systemd/system/caddy.service && fail "purge left caddy.service"
 echo "ok: purged (backups kept)"
 
 log "host move: fresh install from the encrypted backup (--restore)"
