@@ -32,7 +32,8 @@ test("DSH-01 DSH-02 DSH-03 DSH-04 DSH-05 DSH-07: tiles, traffic, needs-attention
   await expect(page.getByText(/¥42\.00/).first()).toBeVisible();
   await expect(page.getByText("近 14 天全网流量（计费）")).toBeVisible();
   await expect(page.getByText("流量最多的节点")).toBeVisible();
-  await expect(page.getByText("已删除的节点")).toBeVisible();
+  // Other specs leave history of deleted nodes behind: more than one row is fine.
+  await expect(page.getByText("已删除的节点").first()).toBeVisible();
   // Latest orders → the order drawer.
   await page.getByRole("button", { name: new RegExp(order.out_trade_no) }).click();
   await expect(dialog(page, order.out_trade_no)).toBeVisible();
