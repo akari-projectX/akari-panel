@@ -16,6 +16,7 @@
 #    same subscription link answers.
 #
 # myapp.test must resolve to 127.0.0.1 (/etc/hosts); Caddy uses local_certs.
+# dl.cloudsmith.io is pointed at 127.0.0.1 (the installer must not use it).
 # PARTS=docker|migrate|all (default all) runs a part only.
 set -euo pipefail
 # The CI job exports the dev stack's DATABASE_URL/VALKEY_URL for every step;
@@ -47,6 +48,9 @@ cleanup() {
 trap cleanup EXIT
 
 grep -q 'myapp.test' /etc/hosts || echo '127.0.0.1 myapp.test' >>/etc/hosts
+# Caddy's old apt repository (Cloudsmith, 402 since 2026-10-09): the
+# installer must not need it.
+grep -q 'dl.cloudsmith.io' /etc/hosts || echo '127.0.0.1 dl.cloudsmith.io' >>/etc/hosts
 
 export AKARI_ADMIN_PASSWORD=$pw AKARI_SOURCE_DIR=$root LANG=C.UTF-8
 local_rel() { env AKARI_RELEASES_URL="file://$rel" AKARI_COSIGN_KEY="$rel/cosign.pub" "$@"; }

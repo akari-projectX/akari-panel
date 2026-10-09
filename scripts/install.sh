@@ -5,7 +5,7 @@
 #
 # One command installs the panel on a fresh Debian 12/13 or Ubuntu 22.04/24.04
 # machine, either on bare metal (PostgreSQL 18 from PGDG, Valkey 9 from the
-# upstream release builds, Caddy from its apt repository, systemd units) or
+# upstream release builds, Caddy from its GitHub release, systemd units) or
 # with Docker Compose (Docker Engine from Docker's apt repository). It is
 # interactive by default (Chinese or English prompts by locale, every prompt
 # has a default) and fully scriptable with flags/environment (--yes).
@@ -26,8 +26,8 @@
 #     checked against the release's SHA256SUMS, whose cosign keyless
 #     signature must come from this repository's release workflow at that
 #     tag (cosign itself is downloaded with a pinned SHA-256);
-#   * Valkey is the upstream release build, pinned by SHA-256 in this file;
-#     the PGDG, Caddy and Docker apt keys are pinned by fingerprint;
+#   * Valkey and Caddy are the upstream release builds, pinned by SHA-256 in
+#     this file; the PGDG and Docker apt keys are pinned by fingerprint;
 #   * generated passwords never appear on a command line or in the log
 #     (/var/log/akari-install.log, 0600); the admin password is printed once
 #     to the terminal, and the secret admin prefix only in the final summary
@@ -59,8 +59,18 @@ VALKEY_SHA_noble_arm64='058508f7243c950e2c49a808e40db04e4386ea36ab6ddb1d1f2fe1a7
 VALKEY_SHA_jammy_x86_64='b79800f433bc4f26177b437f63fc9e0b4a02b73049e927407fb1269d0d59d41b'
 VALKEY_SHA_jammy_arm64='c8bcafe7351a40f4932d9c0522d9de26faba59905d86a731699b54c3bb4eb0aa'
 
+# Caddy: the upstream release tarball from GitHub (its Cloudsmith apt
+# repository answers 402 since 2026-10-09 and is not used). Bump = new
+# version + the two SHA-256 of caddy_<version>_linux_{amd64,arm64}.tar.gz,
+# checked against the release's caddy_<version>_checksums.txt (SHA-512).
+CADDY_VERSION='2.11.7'
+CADDY_SHA_amd64='727b91701a392de6ebc5027509f548bf39979e5216340d0faed8fa5e69c84f8b'
+CADDY_SHA_arm64='d8fc6d179a5d283028a472a5618564f6ad8a86fed513e64f032b3b0b7cc45e42'
+# An apt source of that repository (older installers added one): an apt-get
+# update that fails only because of it turns it off (apt_update).
+CADDY_APT_RE='dl\.cloudsmith\.io(:[0-9]+)?/public/caddy/'
+
 PGDG_KEY_FPR='B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8'
-CADDY_KEY_FPR='65760C51EDEA2017CEA2CA15155B6D79CA56EA34'
 DOCKER_KEY_FPR='9DC858229FC7DD38854AE2D88D81803C0EBFCD88'
 
 ETC=/etc/akari
@@ -478,8 +488,42 @@ apt_has() {
 
 APT_UPDATED=0
 apt_update() {
-	run env DEBIAN_FRONTEND=noninteractive apt-get update || die 'apt-get update 失败' 'apt-get update failed'
+	if ! apt_update_once; then
+		disable_caddy_apt_source || die 'apt-get update 失败' 'apt-get update failed'
+		apt_update_once || die 'apt-get update 失败' 'apt-get update failed'
+	fi
 	APT_UPDATED=1
+}
+
+apt_update_once() {
+	log "+ apt-get update"
+	if env DEBIAN_FRONTEND=noninteractive apt-get update >"$TMP/apt-update.out" 2>&1 </dev/null; then
+		cat "$TMP/apt-update.out" >>"$LOG"
+		return 0
+	fi
+	cat "$TMP/apt-update.out" >>"$LOG"
+	return 1
+}
+
+# disable_caddy_apt_source: after a failed apt-get update whose every error
+# is about Caddy's Cloudsmith repository, rename the sources.list.d files
+# that use it to *.akari.disabled (apt ignores them). Fails otherwise.
+disable_caddy_apt_source() {
+	grep -q '^E:' "$TMP/apt-update.out" || return 1
+	! grep '^E:' "$TMP/apt-update.out" | grep -qvE "$CADDY_APT_RE" || return 1
+	if grep -qsE "^[^#]*$CADDY_APT_RE" /etc/apt/sources.list; then
+		die "/etc/apt/sources.list 含 Caddy 的 Cloudsmith 软件源（已失效，402），请删除该行后重试" \
+			"/etc/apt/sources.list has Caddy's Cloudsmith repository (unavailable: 402); remove that line and retry"
+	fi
+	found=
+	for f in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+		[ -f "$f" ] && grep -qE "^[^#]*$CADDY_APT_RE" "$f" || continue
+		mv -f "$f" "$f.akari.disabled"
+		warn "已停用 Caddy 的 Cloudsmith 软件源（不可用，402）：$f → $f.akari.disabled（docs/DEPLOY.md）" \
+			"disabled Caddy's Cloudsmith apt repository (unavailable: 402): $f -> $f.akari.disabled (docs/DEPLOY.md)"
+		found=1
+	done
+	[ -n "$found" ]
 }
 
 base_packages() {
@@ -841,20 +885,60 @@ write_valkey_conf() {
 	install -m 0644 "$BUNDLE/deploy/systemd/akari-valkey.service" /etc/systemd/system/akari-valkey.service
 }
 
+# install_caddy: a Caddy already on the host (e.g. the Debian package) is
+# used as it is; otherwise the pinned release binary goes to /usr/bin/caddy
+# with the user, directory and unit of Caddy's own package.
 install_caddy() {
-	step '安装 Caddy（官方源）' 'installing Caddy (its apt repository)'
-	if ! have caddy; then
-		if ! grep -rqs 'dl.cloudsmith.io/public/caddy' /etc/apt/sources.list /etc/apt/sources.list.d; then
-			add_apt_key https://dl.cloudsmith.io/public/caddy/stable/gpg.key "$CADDY_KEY_FPR" caddy
-			printf 'deb [signed-by=/etc/apt/keyrings/caddy.asc] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main\n' \
-				>/etc/apt/sources.list.d/caddy-stable.list
-		fi
-		apt_update
-		apt_install caddy
+	if have caddy; then
+		step 'Caddy 已安装，沿用' 'Caddy is already installed, using it'
+	else
+		step "安装 Caddy $CADDY_VERSION（官方构建，SHA-256 固定）" "installing Caddy $CADDY_VERSION (upstream build, pinned SHA-256)"
+		f="caddy_${CADDY_VERSION}_linux_$ARCH.tar.gz"
+		case "$ARCH" in
+		amd64) want=$CADDY_SHA_amd64 ;;
+		*) want=$CADDY_SHA_arm64 ;;
+		esac
+		fetch "https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION/$f" "$TMP/$f" ||
+			die '下载 Caddy 失败' 'cannot download Caddy'
+		[ "$(sha_of "$TMP/$f")" = "$want" ] || die 'Caddy 的 SHA-256 不符' 'SHA-256 mismatch for Caddy'
+		mkdir -p "$TMP/caddy"
+		tar -xzf "$TMP/$f" -C "$TMP/caddy" caddy || die '解压 Caddy 失败' 'cannot unpack Caddy'
+		install -m 0755 -o root -g root "$TMP/caddy/caddy" /usr/bin/caddy
+		getent group caddy >/dev/null || run groupadd --system caddy || die '创建 caddy 组失败' 'cannot create the caddy group'
+		getent passwd caddy >/dev/null || run useradd --system --gid caddy --create-home --home-dir /var/lib/caddy \
+			--shell /usr/sbin/nologin --comment 'Caddy web server' caddy || die '创建 caddy 用户失败' 'cannot create the caddy user'
+		install -d -m 0755 /etc/caddy
+		cat >"$TMP/caddy.service" <<'UNIT'
+# Written by the Akari installer: the unit of Caddy's Debian package
+# (caddyserver/dist init/caddy.service) for the release binary.
+[Unit]
+Description=Caddy
+Documentation=https://caddyserver.com/docs/
+After=network.target network-online.target
+Requires=network-online.target
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
+ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile --force
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+PrivateTmp=true
+ProtectSystem=full
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+		install -m 0644 "$TMP/caddy.service" /etc/systemd/system/caddy.service
+		run systemctl daemon-reload
 		# Remembered beside Caddy's config (install.env goes with a plain
 		# uninstall): uninstalling stops a Caddy that came with the panel,
-		# and restarts one that served something before.
-		: >/etc/caddy/.installed-by-akari
+		# and restarts one that served something before; source=release
+		# = our binary and unit, which --purge removes.
+		echo 'source=release' >/etc/caddy/.installed-by-akari
 	fi
 	if [ -f /etc/caddy/.installed-by-akari ]; then CADDY_OURS=1; else CADDY_OURS=preexisting; fi
 }
@@ -1782,7 +1866,12 @@ uninstall_bare() {
 		rm -rf "$DATA" "$VALKEY_ROOT"
 		rm -f /usr/lib/sysusers.d/akari.conf
 		run userdel akari || true
-		note '保留软件包 postgresql-18、caddy（apt purge 可删除）' 'packages postgresql-18 and caddy are left installed (apt purge removes them)'
+		if grep -qs '^source=release' /etc/caddy/.installed-by-akari; then
+			# Our release binary and unit; Caddy's data (/var/lib/caddy) stays.
+			rm -f /usr/bin/caddy /etc/systemd/system/caddy.service /etc/caddy/.installed-by-akari
+			run systemctl daemon-reload
+		fi
+		note '保留软件包 postgresql-18 与 apt 装的 caddy（apt purge 可删除）' 'the packages postgresql-18 and an apt-installed caddy are left installed (apt purge removes them)'
 	fi
 }
 
