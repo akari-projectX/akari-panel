@@ -1434,9 +1434,9 @@ VLESS_DR=$(relay_account "$USER_D")
 [ -n "$VLESS_DR" ] && [ "$VLESS_DR" != "$VLESS_D" ] || { echo "FAIL: no independent relay credential for D"; exit 1; }
 for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/11446) 2>/dev/null && break; sleep 0.5; done
 (exec 3<>/dev/tcp/127.0.0.1/11446) 2>/dev/null || { echo "FAIL: derived inbound not listening"; tail -5 "$LOG/agent.log"; exit 1; }
-# The subscription lists the relay as its own proxy, with its multiplier.
+# The subscription lists the relay as its own proxy (next07: no multiplier in the name).
 curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" >"$LOG/relay-sub.yaml"
-grep -q '"冒烟 01 | IPLC | 0.5x IPLC 2.0x"' "$LOG/relay-sub.yaml" && grep -q 'port: 11446' "$LOG/relay-sub.yaml" \
+grep -q '"冒烟 01 | IPLC | 0.5x IPLC"' "$LOG/relay-sub.yaml" && grep -q 'port: 11446' "$LOG/relay-sub.yaml" \
   || { echo "FAIL: relay not in the subscription"; cat "$LOG/relay-sub.yaml"; exit 1; }
 # The W11 client with a port and an attempt count (argv 2, 3).
 sed -e 's/("127.0.0.1", 11443)/("127.0.0.1", int(sys.argv[2]))/' \
@@ -1574,7 +1574,7 @@ for _ in $(seq 1 30); do [ "$(psql_q "SELECT hidden_since IS NOT NULL FROM entra
   || { echo "FAIL: unreachable relay not hidden"; psql_q "SELECT health_ok, health_failures, health_error FROM entrances WHERE id='$RELAY_ID'"; exit 1; }
 rl_sub_clear() { vk EVAL "for _,k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call('DEL', k) end return 1" 0 'akari:rl:sub:*' >/dev/null; }
 rl_sub_clear
-curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches 'IPLC 2.0x' && { echo "FAIL: hidden relay still in the subscription"; exit 1; }
+curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '0.5x IPLC"' && { echo "FAIL: hidden relay still in the subscription"; exit 1; }
 for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='firing'")" = "1" ] && break; sleep 1; done
 [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='firing'")" = "1" ] \
   || { echo "FAIL: no entrance_down alert"; exit 1; }
@@ -1582,7 +1582,7 @@ for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE s
 for _ in $(seq 1 20); do [ "$(psql_q "SELECT hidden_since IS NULL FROM entrances WHERE id='$RELAY_ID'")" = "t" ] && break; sleep 1; done
 [ "$(psql_q "SELECT health_ok AND hidden_since IS NULL FROM entrances WHERE id='$RELAY_ID'")" = "t" ] || { echo "FAIL: relay not restored"; exit 1; }
 rl_sub_clear
-curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches 'IPLC 2.0x' || { echo "FAIL: restored relay not in the subscription"; exit 1; }
+curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '0.5x IPLC"' || { echo "FAIL: restored relay not in the subscription"; exit 1; }
 for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='resolved'")" = "1" ] && break; sleep 1; done
 [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='resolved'")" = "1" ] \
   || { echo "FAIL: entrance_down not resolved"; exit 1; }
@@ -1665,7 +1665,7 @@ RULES='{"rules":[{"weekdays":[1,2,3,4,5,6,7],"start":"00:00","end":"24:00","rate
     -d '{"rules":[{"weekdays":[8],"start":"00:00","end":"24:00","rate":1}]}')" = "400" ] \
   && [ "$(last_json "d['code']")" = "entrance.rate_rule_invalid" ] || { echo "FAIL: bad weekday accepted"; exit 1; }
 rl_sub_clear
-curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches '3\.0x' || { echo "FAIL: subscription name lacks the rule's multiplier"; exit 1; }
+curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches '3\.0x' && { echo "FAIL: subscription name carries the rule's multiplier (names must stay stable)"; exit 1; }
 [ "$(psql_q "SELECT akari_entrance_rate('$DIRECT_ID', now())")" = "3000" ] || { echo "FAIL: SQL rate"; exit 1; }
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/entrances/$DIRECT_ID/rate-rules" -H 'Content-Type: application/json' -d '{"rules":[]}')" = "200" ] \
   && [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='entrance.rate_rules.set' AND target_id='$DIRECT_ID'")" = "2" ] \

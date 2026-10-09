@@ -91,7 +91,10 @@ CREATE FUNCTION akari_entrance_settle_rate(entrance uuid) RETURNS integer
 $$;
 
 -- Record a base change (every write path). In a BEFORE trigger the
--- function still reads the old row.
+-- function still reads the old row. A rate set in the transaction that
+-- created the entrance (POST /nodes with `direct.rate`: the built-in
+-- direct entrance is inserted at 1x by nodes_direct_entrance, then set) is
+-- its creation rate, not a change: no bytes were billed at the old one.
 CREATE FUNCTION akari_entrance_rate_changed() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -102,5 +105,5 @@ BEGIN
 END $$;
 
 CREATE TRIGGER entrances_rate_changed BEFORE UPDATE OF rate_permille ON entrances
-    FOR EACH ROW WHEN (OLD.rate_permille IS DISTINCT FROM NEW.rate_permille)
+    FOR EACH ROW WHEN (OLD.rate_permille IS DISTINCT FROM NEW.rate_permille AND OLD.created_at <> now())
     EXECUTE FUNCTION akari_entrance_rate_changed();

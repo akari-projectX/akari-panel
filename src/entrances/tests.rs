@@ -199,6 +199,15 @@ async fn node_form_entrance_patch_access_and_subscription() {
     assert_eq!(e["rate_permille"], 500);
     assert_eq!(e["group_ids"], json!([g]));
     let eid = e["id"].as_str().unwrap().to_string();
+    // next07: a rate set in the creating transaction is the creation rate,
+    // not a change (no 30 s lower-of window after it).
+    let changed: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT rate_changed_at FROM entrances WHERE id = $1::uuid")
+            .bind(&eid)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert!(changed.is_none());
 
     // A user with a plan granting the group gets a credential there.
     let u = db.user().await;
