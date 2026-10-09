@@ -13,11 +13,15 @@
 //! `parse_query`), the queries (public, for the admin dashboard) and the
 //! four endpoints:
 //!
-//! - admin `GET /users/{id}/traffic?from&to&group=day|node|month`
+//! - admin `GET /users/{id}/traffic?from&to&group=day|entrance|month`
 //! - admin `GET /nodes/{id}/traffic?from&to&limit` (per day + top users)
+//! - admin `GET /entrances/{id}/traffic?from&to` (per day + the entrance's
+//!   multiplier changes from the audit log)
 //! - admin `GET /traffic/summary?from&to&limit` (fleet per day + top nodes)
-//! - user `GET /me/traffic?from&to` (own rows only: per day, per node NAME;
-//!   no node ids; hidden or deleted nodes merged into one unnamed row)
+//! - user `GET /me/traffic?from&to` (own rows only: per day, per entrance
+//!   by public NAME with its multiplier now and its time-window rules; no
+//!   ids; entrances of hidden or deleted nodes, and deleted entrances,
+//!   merged into one unnamed row)
 //!
 //! Dates are `YYYY-MM-DD` days in the site time zone (Q3,
 //! `panel_settings.timezone`, default Asia/Shanghai), `to` inclusive;
@@ -63,7 +67,7 @@ const SUMS: &str = concat!(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Group {
     Day,
-    Node,
+    Entrance,
     Month,
 }
 
@@ -71,7 +75,7 @@ impl Group {
     fn as_str(self) -> &'static str {
         match self {
             Group::Day => "day",
-            Group::Node => "node",
+            Group::Entrance => "entrance",
             Group::Month => "month",
         }
     }
@@ -84,7 +88,7 @@ pub enum Params {
     User,
     /// from, to, limit (admin node history, fleet summary)
     Top,
-    /// from, to (the user's own history)
+    /// from, to (the user's own history, an entrance's history)
     Me,
 }
 
@@ -157,9 +161,9 @@ pub fn parse_query(raw: Option<&str>, today: NaiveDate, params: Params) -> Resul
     }
     let group = match group.as_deref() {
         None | Some("day") => Group::Day,
-        Some("node") => Group::Node,
+        Some("entrance") => Group::Entrance,
         Some("month") => Group::Month,
-        Some(_) => return Err("group must be day, node or month".into()),
+        Some(_) => return Err("group must be day, entrance or month".into()),
     };
     let limit = match limit.as_deref() {
         None => DEFAULT_LIMIT,
@@ -233,8 +237,23 @@ pub struct DayRow {
     pub bytes: Bytes,
 }
 
-/// One node of a user's history (admin view: id + current name; name null
-/// = deleted node).
+/// One entrance of a user's history (admin view, R43): ids, current names
+/// (null = deleted), kind and the multiplier now (null = deleted).
+#[derive(Debug, Clone, PartialEq, Serialize, sqlx::FromRow)]
+pub struct EntranceRow {
+    pub entrance_id: Uuid,
+    pub node_id: Uuid,
+    pub entrance: Option<String>,
+    pub kind: Option<String>,
+    pub node: Option<String>,
+    pub rate_now: Option<f64>,
+    #[sqlx(flatten)]
+    #[serde(flatten)]
+    pub bytes: Bytes,
+}
+
+/// One node of the fleet's history (admin view: id + current name; name
+/// null = deleted node).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
 pub struct NodeRow {
     pub node_id: Uuid,
@@ -265,18 +284,43 @@ pub struct UserRow {
     pub bytes: Bytes,
 }
 
-/// One node of the user's own history: its public name, or null for nodes
-/// that are hidden or gone (merged into one row).
+/// One entrance of the user's own history (next07: per entrance, so a
+/// direct 1x and a relay 10x of one node are never mixed): the node's
+/// public name and the entrance's name, or both null for the merged row of
+/// hidden or gone ones.
 #[derive(Debug, Clone, PartialEq, Serialize, sqlx::FromRow)]
-pub struct MyNodeRow {
+pub struct MyEntranceRow {
     pub name: Option<String>,
-    /// D9: the multipliers in effect now on the user's entrances of the
-    /// node (distinct, ascending; empty for the merged hidden/deleted row).
-    pub rates: Vec<f64>,
+    pub entrance: Option<String>,
+    /// D9: the multiplier in effect now and the time-window rules
+    /// (`[{weekdays, start, end, rate}]`, minutes of the day in the site
+    /// time zone); null / [] for the merged row.
+    pub rate: Option<f64>,
+    pub rules: Value,
     #[sqlx(flatten)]
     #[serde(flatten)]
     pub bytes: Bytes,
 }
+
+/// One multiplier change of an entrance (audit log): when, who (label and
+/// current email, null for system/CLI or a deleted admin), what
+/// (`entrance.create` / `entrance.update` with a different base /
+/// `entrance.rate_rules.set`), base multiplier before/after (null when not
+/// applicable), rules before/after (rule changes only).
+#[derive(Debug, Clone, PartialEq, Serialize, sqlx::FromRow)]
+pub struct RateChange {
+    pub at: chrono::DateTime<chrono::Utc>,
+    pub actor_label: String,
+    pub actor_email: Option<String>,
+    pub action: String,
+    pub rate_before: Option<f64>,
+    pub rate_after: Option<f64>,
+    pub rules_before: Option<Value>,
+    pub rules_after: Option<Value>,
+}
+
+/// Most recent multiplier changes listed per entrance.
+pub const RATE_CHANGES_LIMIT: i64 = 100;
 
 /// A user's history per day (rows only for days with traffic).
 pub async fn user_days(
@@ -296,20 +340,23 @@ pub async fn user_days(
     .await
 }
 
-/// A user's history per node over the range, most billed first.
-pub async fn user_nodes(
+/// A user's history per entrance over the range, most billed first.
+pub async fn user_entrances(
     pg: &sqlx::PgPool,
     user: Uuid,
     from: NaiveDate,
     to: NaiveDate,
-) -> sqlx::Result<Vec<NodeRow>> {
+) -> sqlx::Result<Vec<EntranceRow>> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT t.node_id, coalesce(n.display_name, n.name) AS name, \
+        "SELECT t.entrance_id, t.node_id, e.name AS entrance, e.kind, \
+                coalesce(n.display_name, n.name) AS node, \
+                akari_entrance_rate(e.id, statement_timestamp())::float8 / 1000 AS rate_now, \
                 t.up_bytes, t.down_bytes, t.billed_bytes \
-         FROM (SELECT node_id, {SUMS} FROM traffic_daily \
-               WHERE user_id = $1 AND day BETWEEN $2 AND $3 GROUP BY node_id) t \
+         FROM (SELECT entrance_id, node_id, {SUMS} FROM traffic_daily \
+               WHERE user_id = $1 AND day BETWEEN $2 AND $3 GROUP BY entrance_id, node_id) t \
+         LEFT JOIN entrances e ON e.id = t.entrance_id \
          LEFT JOIN nodes n ON n.id = t.node_id \
-         ORDER BY t.billed_bytes DESC, t.up_bytes + t.down_bytes DESC, t.node_id"
+         ORDER BY t.billed_bytes DESC, t.up_bytes::numeric + t.down_bytes DESC, t.entrance_id"
     )))
     .bind(user)
     .bind(from)
@@ -360,6 +407,48 @@ pub async fn node_days(
     .bind(node)
     .bind(from)
     .bind(to)
+    .fetch_all(pg)
+    .await
+}
+
+/// An entrance per day (traffic_entrance_daily).
+pub async fn entrance_days(
+    pg: &sqlx::PgPool,
+    entrance: Uuid,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> sqlx::Result<Vec<NodeDayRow>> {
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT day, {SUMS}, sum(users)::bigint AS users FROM traffic_entrance_daily \
+         WHERE entrance_id = $1 AND day BETWEEN $2 AND $3 GROUP BY day ORDER BY day"
+    )))
+    .bind(entrance)
+    .bind(from)
+    .bind(to)
+    .fetch_all(pg)
+    .await
+}
+
+/// An entrance's multiplier changes from the audit log, newest first (at
+/// most `RATE_CHANGES_LIMIT`; the log keeps `audit.retention_days`).
+pub async fn rate_changes(pg: &sqlx::PgPool, entrance: Uuid) -> sqlx::Result<Vec<RateChange>> {
+    sqlx::query_as(
+        "SELECT a.at, a.actor_label, u.email AS actor_email, a.action, \
+                CASE WHEN a.action <> 'entrance.rate_rules.set' \
+                     THEN (a.before->>'rate_permille')::float8 / 1000 END AS rate_before, \
+                CASE WHEN a.action <> 'entrance.rate_rules.set' \
+                     THEN (a.after->>'rate_permille')::float8 / 1000 END AS rate_after, \
+                CASE WHEN a.action = 'entrance.rate_rules.set' THEN a.before END AS rules_before, \
+                CASE WHEN a.action = 'entrance.rate_rules.set' THEN a.after END AS rules_after \
+         FROM audit_log a LEFT JOIN users u ON u.id = a.actor_id \
+         WHERE a.target_type = 'entrance' AND a.target_id = $1::text \
+           AND (a.action IN ('entrance.create', 'entrance.rate_rules.set') \
+                OR (a.action = 'entrance.update' \
+                    AND a.before->'rate_permille' IS DISTINCT FROM a.after->'rate_permille')) \
+         ORDER BY a.id DESC LIMIT $2",
+    )
+    .bind(entrance)
+    .bind(RATE_CHANGES_LIMIT)
     .fetch_all(pg)
     .await
 }
@@ -429,30 +518,41 @@ pub async fn fleet_top_nodes(
     .await
 }
 
-/// The user's own per-node view: public names only (display name or name,
-/// as in /me/nodes); nodes hidden from users or deleted are merged into
-/// one row with a null name.
-pub async fn my_nodes(
+/// The user's own per-entrance view: public names only (the node's display
+/// name or name, as in /me/nodes, and the entrance's name); entrances of
+/// nodes hidden from users or deleted, and deleted entrances, are merged
+/// into one row with null names. The multiplier is the one in effect now
+/// (never a historical billed/raw ratio).
+pub async fn my_entrances(
     pg: &sqlx::PgPool,
     user: Uuid,
     from: NaiveDate,
     to: NaiveDate,
-) -> sqlx::Result<Vec<MyNodeRow>> {
+) -> sqlx::Result<Vec<MyEntranceRow>> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT name, CASE WHEN name IS NULL THEN '{{}}'::float8[] ELSE coalesce(( \
-                SELECT array_agg(DISTINCT akari_entrance_rate(e.id, statement_timestamp())::float8 / 1000) \
-                FROM entrances e JOIN entrance_users eu ON eu.entrance_id = e.id AND eu.user_id = $1 \
-                WHERE e.node_id = ANY (array_agg(x.node_id)) AND e.enabled), '{{}}') END AS rates, \
+        "SELECT name, entrance, \
+                CASE WHEN name IS NULL THEN NULL \
+                     ELSE akari_entrance_rate(eid, statement_timestamp())::float8 / 1000 \
+                END AS rate, \
+                CASE WHEN name IS NULL THEN '[]'::jsonb ELSE ( \
+                    SELECT coalesce(jsonb_agg(jsonb_build_object('weekdays', r.weekdays, \
+                        'start', r.start_minute, 'end', r.end_minute, \
+                        'rate', r.rate_permille::float8 / 1000) ORDER BY r.ord), '[]'::jsonb) \
+                    FROM entrance_rate_rules r WHERE r.entrance_id = eid) END AS rules, \
             {SUMS} FROM ( \
-            SELECT CASE WHEN n.visible AND s.deleting_at IS NULL \
-                        THEN coalesce(n.display_name, n.name) END AS name, \
-                   t.node_id, t.up_bytes, t.down_bytes, t.billed_bytes \
-            FROM (SELECT node_id, {SUMS} FROM traffic_daily \
-                  WHERE user_id = $1 AND day BETWEEN $2 AND $3 GROUP BY node_id) t \
+            SELECT CASE WHEN v.shown THEN t.entrance_id END AS eid, \
+                   CASE WHEN v.shown THEN coalesce(n.display_name, n.name) END AS name, \
+                   CASE WHEN v.shown THEN e.name END AS entrance, \
+                   t.up_bytes, t.down_bytes, t.billed_bytes \
+            FROM (SELECT entrance_id, node_id, {SUMS} FROM traffic_daily \
+                  WHERE user_id = $1 AND day BETWEEN $2 AND $3 GROUP BY entrance_id, node_id) t \
+            LEFT JOIN entrances e ON e.id = t.entrance_id \
             LEFT JOIN nodes n ON n.id = t.node_id \
-            LEFT JOIN servers s ON s.id = n.server_id) x \
-         GROUP BY name \
-         ORDER BY name IS NULL, sum(billed_bytes) DESC, name"
+            LEFT JOIN servers s ON s.id = n.server_id \
+            CROSS JOIN LATERAL (SELECT e.id IS NOT NULL AND coalesce(n.visible, false) \
+                                       AND s.deleting_at IS NULL AS shown) v) x \
+         GROUP BY eid, name, entrance \
+         ORDER BY name IS NULL, sum(billed_bytes) DESC, name, entrance"
     )))
     .bind(user)
     .bind(from)
@@ -511,8 +611,8 @@ pub async fn user_traffic(
                 sum,
             )
         }
-        Group::Node => {
-            let rows = user_nodes(pg, id, r.from, r.to).await?;
+        Group::Entrance => {
+            let rows = user_entrances(pg, id, r.from, r.to).await?;
             let sum = total(rows.iter().map(|d| &d.bytes));
             (
                 serde_json::to_value(rows).map_err(anyhow::Error::from)?,
@@ -556,6 +656,37 @@ pub async fn node_traffic(
     })))
 }
 
+/// GET /entrances/{id}/traffic?from&to (admin): the entrance per day (raw,
+/// billed, users) and its multiplier changes (audit log, all retained).
+pub async fn entrance_traffic(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((_, id)): Path<(String, Uuid)>,
+    RawQuery(q): RawQuery,
+) -> Result<Json<Value>, ApiError> {
+    user.require_admin()?;
+    let pg = state.pg();
+    let clock = site_clock(pg).await?;
+    let r = parse(q, Params::Me, &clock)?;
+    exists(
+        pg,
+        "SELECT EXISTS (SELECT 1 FROM entrances WHERE id = $1)",
+        id,
+    )
+    .await?;
+    let days = entrance_days(pg, id, r.from, r.to).await?;
+    let changes = rate_changes(pg, id).await?;
+    Ok(Json(json!({
+        "from": r.from,
+        "to": r.to,
+        "timezone": clock.tz,
+        "daily_since": daily_since(&state, &clock),
+        "total": total(days.iter().map(|d| &d.bytes)),
+        "days": days,
+        "rate_changes": changes,
+    })))
+}
+
 /// GET /traffic/summary?from&to&limit (admin): fleet totals per day + top
 /// nodes (the admin dashboard's source).
 pub async fn summary(
@@ -580,7 +711,7 @@ pub async fn summary(
 }
 
 /// GET /me/traffic?from&to (user portal): the caller's own history per day
-/// and per node name.
+/// and per entrance (public names, the multiplier now and its rules).
 pub async fn my_traffic(
     State(state): State<AppState>,
     user: AuthUser,
@@ -590,7 +721,7 @@ pub async fn my_traffic(
     let clock = site_clock(pg).await?;
     let r = parse(q, Params::Me, &clock)?;
     let days = user_days(pg, user.id, r.from, r.to).await?;
-    let nodes = my_nodes(pg, user.id, r.from, r.to).await?;
+    let entrances = my_entrances(pg, user.id, r.from, r.to).await?;
     Ok(Json(json!({
         "from": r.from,
         "to": r.to,
@@ -598,7 +729,7 @@ pub async fn my_traffic(
         "daily_since": daily_since(&state, &clock),
         "total": total(days.iter().map(|d| &d.bytes)),
         "days": days,
-        "nodes": nodes,
+        "entrances": entrances,
     })))
 }
 
@@ -607,6 +738,10 @@ pub fn routes() -> axum::Router<AppState> {
     axum::Router::new()
         .route("/{prefix}/api/v1/users/{id}/traffic", get(user_traffic))
         .route("/{prefix}/api/v1/nodes/{id}/traffic", get(node_traffic))
+        .route(
+            "/{prefix}/api/v1/entrances/{id}/traffic",
+            get(entrance_traffic),
+        )
         .route("/{prefix}/api/v1/traffic/summary", get(summary))
         .route("/{prefix}/api/v1/me/traffic", get(my_traffic))
 }

@@ -55,7 +55,7 @@ flush 现在还会按用户、节点和 UTC 日记录它结算了什么。设计
 | 场景 | 4 客户端 p99 | 8 客户端 p99 | 16 客户端 p99 |
 |---|---|---|---|
 | `traffic_user`（`/users/{id}/traffic`，按天） | 2.1 ms | 5.6 ms | 15.0 ms |
-| `traffic_user_nodes`（`group=node`） | — | — | 14.4 ms |
+| `traffic_user_entrances`（`group=entrance`；next07 前为 `traffic_user_nodes` `group=node`） | — | — | 14.4 ms |
 | `traffic_node`（`/nodes/{id}/traffic`，按天 + top 20 用户） | 10.4 ms | 11.0 ms | 55.4 ms |
 | `traffic_summary`（`/traffic/summary`） | 3.5 ms | 8.8 ms | 20.3 ms |
 | `traffic_me`（`/me/traffic`） | 2.3 ms | 7.9 ms | 5.2 ms |
@@ -63,7 +63,7 @@ flush 现在还会按用户、节点和 UTC 日记录它结算了什么。设计
 `traffic_node` 每个请求聚合约 1.5 万个日行（每次约 10 ms CPU）：16 个并发客户端会让机器核心饱和（770 req/s），此时的 p99 是排队造成的，而不是查询本身；8 个并发的管理员节点页仍保持在 11 ms。节点和全局图表读取 `traffic_node_daily`（每节点每天一行）；只有 top 用户列表会访问 `traffic_daily`（索引 `(node_id, day)`；自 0151 起为覆盖索引，见 "Node top users"）。
 
 复现：`make bench-seed`（现在还会写入 `--history-days 30
---history-nodes-per-user 2`）、`make bench`，然后在 bench 数据集上启动面板并运行 `akari-bench http --only traffic_user,traffic_user_nodes,traffic_node,traffic_summary,traffic_me`；
+--history-nodes-per-user 2`）、`make bench`，然后在 bench 数据集上启动面板并运行 `akari-bench http --only traffic_user,traffic_user_entrances,traffic_node,traffic_summary,traffic_me`；
 `akari-bench explain` 包含 `COMPACT_SQL` 和 `ROLLUP_SQL`。
 
 ## Node top users (2026-10-03)（节点 top 用户）

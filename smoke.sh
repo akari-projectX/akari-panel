@@ -1225,9 +1225,22 @@ assert 2 * (b1 - b0) <= r1 - r0, (b0, b1, r0, r1)
 " || { echo "FAIL: node raw/billed totals ($NODE_TOTALS0 -> $NODE_TOTALS1, D raw $RAW_D)"; exit 1; }
 echo "multiplier: ok (raw $RAW_D bytes, billed $USED_D at 0.5x)"
 # Subscription: display name + tags name the proxy, the override is dialed.
-curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" >"$LOG/w11-sub.yaml"
-grep -q '"冒烟 01 | IPLC | 0.5x 直连 0.5x"' "$LOG/w11-sub.yaml" || { echo "FAIL: subscription name"; head -20 "$LOG/w11-sub.yaml"; exit 1; }
+# next07: the name does not carry the multiplier (a rename on every rate
+# change made clients drop the user's selection) unless the operator turns
+# on 订阅线路名显示倍率 (base multiplier only).
+subrl; curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" >"$LOG/w11-sub.yaml"
+grep -q '"冒烟 01 | IPLC | 0.5x 直连"' "$LOG/w11-sub.yaml" || { echo "FAIL: subscription name"; head -20 "$LOG/w11-sub.yaml"; exit 1; }
 grep -q 'server: 127.0.0.1' "$LOG/w11-sub.yaml" || { echo "FAIL: connect override not in subscription"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings (next07)"; exit 1; }
+N07_VER=$(last_json "d['version']")
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
+    -d "{\"version\":$N07_VER,\"name_rate\":true}")" = "200" ] && last_json "d['subscription']['name_rate']" | matches -x 'True' \
+  || { echo "FAIL: turn on multipliers in line names"; cat /tmp/akari-smoke/last; exit 1; }
+for _ in $(seq 1 20); do subrl; curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '"冒烟 01 | IPLC | 0.5x 直连 0.5x"' && break; sleep 0.25; done
+subrl; curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '"冒烟 01 | IPLC | 0.5x 直连 0.5x"' || { echo "FAIL: name_rate not served"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
+    -d "{\"version\":$((N07_VER + 1)),\"name_rate\":false}")" = "200" ] || { echo "FAIL: name_rate off"; exit 1; }
+subrl
 # Portal: the user's node list (no ids/addresses).
 DJAR="$LOG/w11-d.jar"
 [ "$(code -c "$DJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
@@ -1270,22 +1283,34 @@ assert t['billed_bytes'] == $USED_D, ('billed', t, $USED_D)
 assert t['up_bytes'] + t['down_bytes'] == $RAW_D, ('raw', t, $RAW_D)
 assert t['up_bytes'] > 0 and t['down_bytes'] > 0, t
 assert [d['day'] for d in v['days']] == ['$TODAY_SITE'], v['days']
-assert [n['name'] for n in v['nodes']] == ['冒烟 01'], v['nodes']
-assert 'node_id' not in json.dumps(v) and '$NODE_ID' not in json.dumps(v), v
+e = v['entrances']
+assert [(n['name'], n['entrance'], n['rate'], n['rules']) for n in e] == [('冒烟 01', '直连', 0.5, [])], e
+assert 'node_id' not in json.dumps(v) and '$NODE_ID' not in json.dumps(v) and '$DIRECT_ID' not in json.dumps(v), v
 " || { echo "FAIL: /me/traffic content"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(psql_q "SELECT DISTINCT tableoid::regclass FROM traffic_daily WHERE user_id = '$USER_D'")" = "traffic_daily_$(echo "$TODAY_SITE" | tr -d '-' | cut -c1-6)" ] \
   || { echo "FAIL: today's rows outside this month's partition"; exit 1; }
 [ "$(code -b "$DJAR" "$BASE/api/v1/me/traffic?group=node")" = "400" ] || { echo "FAIL: /me/traffic accepted group"; exit 1; }
-for p in "users/$USER_D/traffic" "nodes/$NODE_ID/traffic" "traffic/summary"; do
+for p in "users/$USER_D/traffic" "nodes/$NODE_ID/traffic" "entrances/$DIRECT_ID/traffic" "traffic/summary"; do
   [ "$(code -b "$DJAR" "$BASE/api/v1/$p")" = "403" ] || { echo "FAIL: user reads admin $p"; exit 1; }
   [ "$(code "$BASE/api/v1/$p")" = "401" ] || { echo "FAIL: anonymous reads $p"; exit 1; }
 done
-[ "$(code -b "$JAR" "$BASE/api/v1/users/$USER_D/traffic?group=node")" = "200" ] || { echo "FAIL: admin user traffic"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/users/$USER_D/traffic?group=entrance")" = "200" ] || { echo "FAIL: admin user traffic"; exit 1; }
 python3 -c "
 import json; v = json.load(open('/tmp/akari-smoke/last')); r = v['rows']
-assert len(r) == 1 and r[0]['node_id'] == '$NODE_ID' and r[0]['name'] == '冒烟 01', r
+assert len(r) == 1 and r[0]['node_id'] == '$NODE_ID' and r[0]['entrance_id'] == '$DIRECT_ID', r
+assert (r[0]['node'], r[0]['entrance'], r[0]['kind'], r[0]['rate_now']) == ('冒烟 01', '直连', 'direct', 0.5), r
 assert r[0]['billed_bytes'] == $USED_D, r
 " || { echo "FAIL: admin user traffic content"; cat /tmp/akari-smoke/last; exit 1; }
+# next07: an entrance's own days and its multiplier changes (audit log).
+[ "$(code -b "$JAR" "$BASE/api/v1/entrances/$DIRECT_ID/traffic")" = "200" ] || { echo "FAIL: admin entrance traffic"; exit 1; }
+python3 -c "
+import json; v = json.load(open('/tmp/akari-smoke/last'))
+d = [x for x in v['days'] if x['day'] == '$TODAY_SITE']
+assert d and d[0]['users'] >= 1 and d[0]['billed_bytes'] >= $USED_D, v['days']
+c = [x for x in v['rate_changes'] if x['action'] == 'entrance.update']
+assert c and (c[0]['rate_before'], c[0]['rate_after']) == (1.0, 0.5) and c[0]['actor_email'], v['rate_changes']
+" || { echo "FAIL: admin entrance traffic content"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/entrances/00000000-0000-0000-0000-000000000000/traffic")" = "404" ] || { echo "FAIL: unknown entrance traffic"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID/traffic")" = "200" ] || { echo "FAIL: admin node traffic"; exit 1; }
 python3 -c "
 import json; v = json.load(open('/tmp/akari-smoke/last'))
