@@ -110,7 +110,7 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
 - **裸机**：
   - 从 PGDG 仓库安装 PostgreSQL 18（5432 上已有的集群不动：18 集群使用下一个端口）；
   - Valkey 9（`akari-valkey.service`，仅回环、带密码、不持久化；见下）；
-  - 从 Caddy 官方仓库安装 Caddy，使用仓库自带的 Caddyfile（`/etc/caddy/Caddyfile`；其环境变量放在 `/etc/akari/caddy.env`，0600，经 drop-in 去掉 `--environ` 和 admin API，使 journal 和本地用户都看不到它）；
+  - Caddy：本机已有（例如 Debian 包）就沿用；否则从 GitHub 安装 Caddy 官方发布构建（见下文 **Caddy**），使用仓库自带的 Caddyfile（`/etc/caddy/Caddyfile`；其环境变量放在 `/etc/akari/caddy.env`，0600，经 drop-in 去掉 `--environ` 和 admin API，使 journal 和本地用户都看不到它）；
   - `akari` 系统用户（sysusers）、`/var/lib/akari`（0700）、`/etc/akari/panel.toml`（0640 root:akari，只含 R39 启动键）、加固过的 `akari-panel.service`；
   - ufw 处于启用状态时放行 80/443/8443。
 - 两种形态共同的收尾步骤：
@@ -121,10 +121,23 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
 **Supply chain（供应链）。** 安装器下载该发布版本的 `SHA256SUMS` 及其 Sigstore bundle，用 **cosign** 对照本仓库在该 tag 下的发布工作流验证
 （`…/.github/workflows/release.yml@refs/tags/vX.Y.Z`，issuer 为 GitHub Actions；cosign 本身按脚本中固定的 SHA-256 下载），
 再用这些校验和检查它用到的每个文件：二进制、镜像引用（`akari-panel-image.txt`，Docker 据此按 digest 拉取）、部署包（`akari-deploy.tar.gz`）。
-PGDG、Caddy 和 Docker 的 apt 密钥均按指纹固定。**Valkey**：Debian/Ubuntu 自带版本 < 9（Debian 13：8.1；Ubuntu 24.04：7.2），
+PGDG 和 Docker 的 apt 密钥均按指纹固定。**Valkey**：Debian/Ubuntu 自带版本 < 9（Debian 13：8.1；Ubuntu 24.04：7.2），
 而 Valkey 没有 apt 仓库，所以安装器使用上游发布构建（`download.valkey.io`；Debian 12/Ubuntu 22.04 用 `jammy` 构建，Debian 13/Ubuntu 24.04 用 `noble` 构建），
 版本与 SHA-256 在脚本中固定，安装到 `/opt/akari-valkey`，以 `DynamicUser` 运行，配置作为 systemd credential 传入。
 升级 Valkey = 发布新的安装器版本（更新 `VALKEY_VERSION` 和四个校验和）。
+**Caddy**：不再使用 Caddy 的 Cloudsmith apt 仓库（`dl.cloudsmith.io` 自 2026-10-09 起因流量配额耗尽返回 402 Payment Required，上游无恢复时间）。
+本机没有 `caddy` 时，安装器从 GitHub 下载官方发布 `caddy_<版本>_linux_<amd64|arm64>.tar.gz`（版本 `CADDY_VERSION` 与两个 SHA-256 固定在脚本中），
+装到 `/usr/bin/caddy`，按 Caddy 官方 Debian 包的做法创建 `caddy` 系统用户（家目录 `/var/lib/caddy`，证书存这里）、`/etc/caddy` 和
+`/etc/systemd/system/caddy.service`（与官方包的单元相同），并在 `/etc/caddy/.installed-by-akari` 记 `source=release`。
+本机已有 Caddy（例如以前用 apt 装的官方包）则原样沿用，不重装、不替换。`akari-ctl upgrade` 不碰 Caddy（升级 Caddy = 发布新的安装器版本；
+已装的二进制不会被自动替换，需要时手动换 `/usr/bin/caddy` 后 `systemctl restart caddy`）。
+升级固定版本（维护者）：改 `CADDY_VERSION`，下载两个 tarball 与该发布的 `caddy_<版本>_checksums.txt`，`sha512sum -c` 核对后把 `sha256sum` 的结果填入
+`CADDY_SHA_amd64`/`CADDY_SHA_arm64`。
+
+**已配置 Cloudsmith 源的旧主机。** 旧版安装器添加过 `/etc/apt/sources.list.d/caddy-stable.list`。安装器/`akari-ctl` 每次执行 `apt-get update`
+时，若失败且**所有**错误都来自该仓库，就把引用它的 `sources.list.d` 文件改名为 `<原名>.akari.disabled`（apt 忽略该后缀），打印警告后重试；
+其他软件源的错误照常报错退出，`/etc/apt/sources.list` 主文件里的该源只提示手动删除（不改主文件）。已装的 Caddy 照常运行，只是不再经 apt 更新。
+Cloudsmith 恢复后如需改回 apt 更新：把文件改回原名即可。CI 的安装器测试把 `dl.cloudsmith.io` 解析到 127.0.0.1，并用本地 402 服务模拟旧源。
 `curl | sh` 执行的就是这个脚本本身：如果你的策略要求，请先审阅（`curl -fsSLO …/install.sh`；`akari-ctl` 就是这个文件）。
 
 **Secrets（密钥）。** 生成的密码不会出现在命令行或日志（`/var/log/akari-install.log`，0600）中；
@@ -1416,7 +1429,7 @@ akari-ctl uninstall --purge          # also database, data dir, configuration: t
 普通卸载会保留：裸机的 `/var/lib/akari`（CA 密钥、jwt.key、master.key）、`/etc/akari/panel.toml`、PostgreSQL 数据库 `akari`；
 Docker 的 `/opt/akari` 和 `akari_*` 卷。再次运行安装器会接管它们（相同的后台前缀、相同的账号）。
 如果 Caddy 是安装器装的，会被停止；如果之前就有，则恢复其之前的配置。`--purge` 会删除数据库和角色、数据目录、`/etc/akari`、Valkey 以及（Docker）卷；
-软件包（postgresql-18、caddy、Docker）仍保持安装（需要的话自行 `apt purge`），并且
+软件包（postgresql-18、apt 装的 caddy、Docker）仍保持安装（需要的话自行 `apt purge`；安装器从 GitHub 装的 Caddy 二进制与单元会被删除，`/var/lib/caddy` 保留），并且
 **`/var/backups/akari` 中的备份永远不会被删除**。purge 之后，每个节点都需要重新注册（CA 已不存在），除非你恢复备份。
 
 ## 8. Migration（迁移）
@@ -1467,7 +1480,7 @@ Caddy 会在新主机上获取新证书（主域名在启动时，其他的按�
   像发布一样制作（Dockerfile `artifact` → `prebuilt`），但使用 CI 的 cargo profile（`Cargo.toml` `[profile.ci]`：无 LTO，16 个 codegen unit；release.yml 发布 `release`），
   版本为 `<version>-ci.<run>`；依赖来自 Dockerfile 的 cargo-chef `deps` 阶段，存放在 BuildKit GitHub Actions 缓存中（只由仅 main 的 `image cache (main)` job 写入）。
   `make-release.sh` 把它们变成本地发布（GitHub 目录布局，用一次性的 cosign 密钥签名；外加一个故意损坏的发布 `v9.9.9`）。
-- `installer (bare, debian:13 / ubuntu:24.04)`：`bare-e2e.sh` 在全新的 systemd 容器中运行：从 GitHub 安装最新已发布版本（v0.3.x，真实的 keyless 验证），
+- `installer (bare, debian:13 / ubuntu:24.04)`：`bare-e2e.sh` 在全新的 systemd 容器中运行（`dl.cloudsmith.io` 指向本机，预置一个回答 402 的旧 Caddy 源，断言安装器停用它、Caddy 来自固定版本的 GitHub 发布）：从 GitHub 安装最新已发布版本（v0.3.x，真实的 keyless 验证），
   其到 PR 构建的升级被原样拒绝（v0.4 基线）→ purge → 全新安装 PR 构建 → 通过 Caddy 的 healthz
   （带 `local_certs` 的 `myapp.test`，或仅 IP）、经 API 的管理员登录、`akari settings show` 中的节点地址
   （`--node-address`：主机名，或 `[::1]:9443`）、一个用户及其订阅 → 损坏的发布会回滚 → 卸载保留数据，重装保留前缀/密码/订阅 →
