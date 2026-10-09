@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, accountApi, authApi, inviteApi, meApi, onSessionEvent, orderApi, pageApi, passkeyApi, shopApi, ticketApi, walletApi } from './index';
-import { buildGuard, guardWait, rememberGuard } from './guard';
+import { buildGuard, guardWait, rememberGuard, sameSiteOptions, turnstileOn } from './guard';
+import type { AuthOptions } from './types';
 
 type Call = { url: string; init: RequestInit };
 let calls: Call[] = [];
@@ -154,5 +155,35 @@ describe('form guard', () => {
     rememberGuard({ guard: { form_token: null, form_min_secs: 0, honeypot: false, turnstile: null } });
     expect(guardWait()).toBe(0);
     await expect(buildGuard('bot-filled')).resolves.toEqual({ website: 'bot-filled' });
+  });
+
+  it('a refetched /auth/options replaces the guard: a newly switched-on minimum time is honoured', async () => {
+    rememberGuard({ guard: { form_token: null, form_min_secs: 0, honeypot: true, turnstile: null } }, Date.now() - 60_000);
+    expect(guardWait()).toBe(0);
+    replies.push(json(200, { guard: { form_token: 'fresh', form_min_secs: 2, honeypot: true, turnstile: null } }));
+    await authApi.options();
+    expect(guardWait()).toBeGreaterThan(2000);
+    await expect(buildGuard('', 'ts')).resolves.toEqual({ form_token: 'fresh', website: '', turnstile: 'ts' });
+  });
+
+  it('options that differ only in the form token are the same site settings', () => {
+    const g = (token: string | null, min: number, login = false) => ({
+      site_name: 'A',
+      guard: { form_token: token, form_min_secs: min, honeypot: true, turnstile: login ? { site_key: 'k', login, register: false, reset: false } : null },
+    }) as unknown as AuthOptions;
+    expect(sameSiteOptions(g('a', 2), g('b', 2))).toBe(true);
+    expect(sameSiteOptions(g(null, 0), g('b', 2))).toBe(false);
+    expect(sameSiteOptions(g('a', 2), g('b', 2, true))).toBe(false);
+    expect(sameSiteOptions({ ...g('a', 2), guard: null }, g('a', 2))).toBe(false);
+  });
+
+  it('Turnstile is on (the page CSP allows Cloudflare) when a form uses it', () => {
+    const t = (login: boolean, register = false) => ({
+      guard: { form_token: null, form_min_secs: 0, honeypot: true, turnstile: { site_key: 'k', login, register, reset: false } },
+    });
+    expect(turnstileOn(t(true))).toBe(true);
+    expect(turnstileOn(t(false, true))).toBe(true);
+    expect(turnstileOn(t(false))).toBe(false);
+    expect(turnstileOn({ guard: null })).toBe(false);
   });
 });

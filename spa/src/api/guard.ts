@@ -6,7 +6,10 @@ import type { AuthOptions, FormGuard, FormGuardOptions } from './types';
  *   · 每次 GET /auth/options 都带一个新的 form_token（签名的签发时间），表单要在 form_min_secs 之后才能交；
  *     太快交上去面板按「普通失败」答复，前端分不出来——所以这里替用户等够时间再发；
  *   · 蜜罐是一个人看不见的 website 输入框，必须原样（空）交回；
- *   · 令牌在服务端活 24 小时，页面开太久了就先换一个新的。
+ *   · 令牌在服务端活 24 小时，页面开太久了就先换一个新的；
+ *   · 站长随时可能在后台改这些设置（打开最短提交时间、给表单开 Turnstile）。被拦下的提交面板只答「普通失败」，
+ *     前端分不出来，所以拿着旧设置会一直失败（「邮箱或密码错误」「人机验证未通过」）直到刷新页面——
+ *     lib/form-guard 在表单挂着时定期、窗口回到前台时、每次提交之后都重新取 /auth/options。
  */
 
 let seen: { guard: FormGuardOptions; at: number } | null = null;
@@ -15,6 +18,19 @@ const REFRESH_MS = 6 * 3600_000;
 /** 每次拿到 /auth/options 时记下最新的 guard */
 export function rememberGuard(o: Pick<AuthOptions, 'guard'>, now = Date.now()) {
   if (o.guard) seen = { guard: o.guard, at: now };
+}
+
+/** 两份 /auth/options 除了表单令牌以外是否一样（一样就不必让页面重渲染） */
+export function sameSiteOptions(a: AuthOptions, b: AuthOptions): boolean {
+  const strip = (o: AuthOptions) =>
+    JSON.stringify({ ...o, guard: o.guard && { ...o.guard, form_token: o.guard.form_token ? 1 : null } });
+  return strip(a) === strip(b);
+}
+
+/** 有没有表单开了 Turnstile（= 面板给门户页面的 CSP 放行 challenges.cloudflare.com，web::CSP_TURNSTILE） */
+export function turnstileOn(o: Pick<AuthOptions, 'guard'>): boolean {
+  const t = o.guard?.turnstile;
+  return !!t && (t.login || t.register || t.reset);
 }
 
 /** 现在需不需要重新取 /auth/options */

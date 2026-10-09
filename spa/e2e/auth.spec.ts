@@ -1,6 +1,7 @@
 /*
  * 登录、注册、找回密码、通行密钥、公开表单防护（research/portal-gap.md §1.1 #1–#16）。
  */
+import type { Page } from '@playwright/test';
 import { FIELDS, latestMail } from './panel.ts';
 import { admin, authenticator, expect, login, mine, open, seed, signIn, signOut, test } from './fixtures.ts';
 
@@ -117,6 +118,91 @@ test('#11 Turnstile: its origin is allowed only while on; the widget token goes 
     await page.getByRole('button', { name: '登录', exact: true }).click();
     /* 面板拿假令牌去 Cloudflare 校验：不通过或校验不可达，两种都有对应文案 */
     await expect(page.getByText(/人机验证未通过|人机验证服务暂不可用/)).toBeVisible({ timeout: 20_000 });
+  } finally {
+    await a.patch('auth', FIELDS.auth, { ...before, turnstile_site_key: null, turnstile_secret: '' });
+  }
+});
+
+/* Cloudflare 公开的测试密钥：组件总是通过、siteverify 总是接受 */
+const TS_SITE_KEY = '1x00000000000000000000AA';
+const TS_SECRET = '1x0000000000000000000000000000000AA';
+const noCaptchaError = (page: Page) => expect(page.getByText(/人机验证未通过|人机验证服务暂不可用|邮箱或密码错误/)).toHaveCount(0);
+
+test('#11 站长在登录页打开期间打开最短提交时间与 Turnstile：回到页面后第一次登录就成功', async ({ page }) => {
+  const a = await admin();
+  const before = await a.patch('auth', FIELDS.auth, { min_submit_secs: 0 });
+  try {
+    /* 页面按「没有最短时间、没有 Turnstile」打开（拿到的表单令牌是 null） */
+    await page.goto('/login');
+    await page.getByLabel('邮箱', { exact: true }).fill('user@e2e.test');
+    await page.getByLabel('密码', { exact: true }).fill(seed.password);
+    /* 这时站长在后台：最短提交时间 2 秒 + 登录用 Turnstile（v0.4.0：这页从此每次提交都是「人机验证未通过」） */
+    await a.patch('auth', FIELDS.auth, {
+      min_submit_secs: 2, turnstile_site_key: TS_SITE_KEY, turnstile_secret: TS_SECRET, turnstile_login: true,
+    });
+    /*
+     * 用户切回这个标签页：页面重新取防护设置。这一页打开时没有表单开 Turnstile，CSP 不放行 Cloudflare 的脚本，
+     * 所以页面自己重新加载一次；之后组件出现，拿到令牌前按钮不可用
+     */
+    await page.waitForTimeout(1000);
+    const reloaded = page.waitForResponse((r) => r.request().resourceType() === 'document' && new URL(r.url()).pathname === '/login');
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    expect((await reloaded).headers()['content-security-policy']).toContain('https://challenges.cloudflare.com');
+    await page.waitForLoadState();
+    await page.getByLabel('邮箱', { exact: true }).fill('user@e2e.test');
+    await page.getByLabel('密码', { exact: true }).fill(seed.password);
+    const button = page.getByRole('button', { name: '登录', exact: true });
+    await expect(button).toBeEnabled({ timeout: 30_000 });
+    const answer = page.waitForResponse((r) => r.url().endsWith('/auth/login'));
+    await button.click();
+    expect((await answer).status()).toBe(200);
+    await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible();
+    await noCaptchaError(page);
+    await signOut(page);
+    await expect(page).toHaveURL(/\/login/);
+    /* 已经打开的单页应用里从别的页面进登录页（设置在那之前改过）：进来时就重新取 */
+    await a.patch('auth', FIELDS.auth, { min_submit_secs: 3 });
+    await page.getByRole('link', { name: '注册', exact: true }).last().click();
+    await expect(page).toHaveURL(/\/register/);
+    await page.getByRole('link', { name: '登录', exact: true }).last().click();
+    await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
+    await page.getByLabel('邮箱', { exact: true }).fill('user@e2e.test');
+    await page.getByLabel('密码', { exact: true }).fill(seed.password);
+    await expect(button).toBeEnabled({ timeout: 30_000 });
+    await button.click();
+    await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible();
+    await noCaptchaError(page);
+  } finally {
+    await a.patch('auth', FIELDS.auth, { ...before, turnstile_site_key: null, turnstile_secret: '' });
+  }
+});
+
+/* 每次渲染、重置都给一个新令牌的替身组件（测试站点密钥总是给同一个假令牌，重复使用看不出来）；校验仍走 Cloudflare 的测试密钥 */
+const STUB_TURNSTILE =
+  "(function(){var n=0,w={};window.turnstile={render:function(el,o){var id='w'+(++n);" +
+  "w[id]=function(){setTimeout(function(){o.callback('tok-'+id+'-'+Date.now()+'-'+Math.random().toString(36).slice(2))},50)};" +
+  'w[id]();return id},reset:function(id){w[id]&&w[id]()},remove:function(){}}})();';
+
+test('#11 Turnstile + 2 秒：太快提交时页面替用户等；密码错了重试用的是新令牌，然后成功', async ({ page }) => {
+  const a = await admin();
+  const before = await a.patch('auth', FIELDS.auth, {
+    min_submit_secs: 2, turnstile_site_key: TS_SITE_KEY, turnstile_secret: TS_SECRET, turnstile_login: true,
+  });
+  try {
+    await page.route('https://challenges.cloudflare.com/**', (r) => r.fulfill({ contentType: 'text/javascript', body: STUB_TURNSTILE }));
+    const sent: string[] = [];
+    page.on('request', (r) => {
+      if (r.method() === 'POST' && r.url().endsWith('/auth/login')) sent.push(String(JSON.parse(r.postData() ?? '{}').guard?.turnstile));
+    });
+    /* 打开就立刻提交（不到 2 秒）：不会被当成机器人 */
+    await login(page, 'user@e2e.test', 'not-the-password');
+    await expect(page.getByText('邮箱或密码错误')).toBeVisible();
+    await page.getByLabel('密码', { exact: true }).fill(seed.password);
+    await page.getByRole('button', { name: '登录', exact: true }).click();
+    await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible();
+    expect(sent).toHaveLength(2);
+    expect(new Set(sent).size, sent.join('\n')).toBe(2);
+    for (const t of sent) expect(t).toMatch(/^tok-/);
   } finally {
     await a.patch('auth', FIELDS.auth, { ...before, turnstile_site_key: null, turnstile_secret: '' });
   }

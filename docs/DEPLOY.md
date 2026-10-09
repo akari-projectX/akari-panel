@@ -412,8 +412,26 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
      隐藏字段被填、令牌缺失/伪造/过期或提交过快，都只会得到该表单的普通失败（不给机器人任何提示），
      并且只增加 `akari_bot_trap_total{form,reason}`，不写日志。用 curl 登录的脚本必须照做
      （`/auth/options` → 等待 → 提交 `"guard":{"form_token":…}`），或把 最短提交时间 设为 0。
+     改了这些设置（或下面的 Turnstile 开关）不需要用户刷新：已经打开的门户页面和后台登录页在表单挂着时每 30 秒、
+     窗口回到前台时、每次提交之后都会重新取 `/auth/options`；页面打开之后才开启的 Turnstile 会让页面自动重新加载一次
+     （打开时的 CSP 不放行 Cloudflare 的脚本）。v0.4.0 的页面不会重新取：改设置之后，已打开的页面每次提交都失败
+     （「邮箱或密码错误」或「人机验证未通过」），直到刷新。
    - **Cloudflare Turnstile**（按表单，默认关闭）：站点密钥 + 密钥（密钥只写不读，用 `data/master.key` 加密），在服务端验证；
-     开启后**失败即关闭**（没有令牌或令牌被拒 = 400，Cloudflare 不可达 = 503）。因密钥填错而被锁在外面时：
+     开启后**失败即关闭**：
+     - 400 `auth.captcha_failed`（「人机验证未通过」）= 访客这边的问题：没有令牌，或 Cloudflare 以
+       `missing-input-response` / `invalid-input-response` / `timeout-or-duplicate`（过期或重复使用）拒绝了令牌；
+     - 503 `auth.captcha_unavailable`（「人机验证服务暂不可用」）= **站点这边的问题**，所有受保护的表单都会失败：
+       Cloudflare 不可达或出错，或者 **Turnstile 密钥配置错误**——Cloudflare 拒绝了密钥或请求
+       （`invalid-input-secret`、`missing-input-secret`、`bad-request` 等），或 `data/master.key` 换过导致存储的密钥打不开。
+       密钥配置错误时面板日志有一条 ERROR（只含 Cloudflare 的错误码，不含令牌、密钥或客户端地址），
+       `akari_turnstile_verify_total{result="misconfigured"}` 增加，Prometheus 告警 `AkariTurnstileMisconfigured` 触发。
+       检查方法：看日志里的错误码；到 系统设置 → 注册与人机验证 重新填写**密钥**（不是站点密钥），并确认
+       站点密钥与密钥来自 Cloudflare 控制台里的同一个组件、组件的主机名包含本站域名。
+     - 指标 `akari_turnstile_verify_total{result}`：`ok`、`no_token`、`rejected`（访客侧）、`misconfigured`、`unavailable`。
+     - 后台的密钥输入框只写：留空保存 = 保持原密钥（保存同一张卡片上的其他设置，比如最短提交时间，不会改动它）；
+       输入框关闭了浏览器/密码管理器的自动填充，免得把管理员密码当成密钥存进去（SMTP 密码、Resend 密钥、支付密钥、
+       告警通道密钥同理）。
+     因密钥填错而被锁在外面时：
      `akari settings unset turnstile` 会在所有表单上关闭它（带审计，密钥保留）。
      Content-Security-Policy：只要 Turnstile 保护着至少一个表单，**门户页面**（仅这些：绝不包括 API、静态资源或控制台）
      就会在通常的 `default-src 'self'` 之上加上

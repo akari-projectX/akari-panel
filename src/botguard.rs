@@ -20,8 +20,13 @@
 //!   reset). The browser widget's token is verified server-side
 //!   (siteverify, with the client address); the secret is sealed with the
 //!   master key (`TURNSTILE_AAD`). Fail closed: a switched-on form refuses
-//!   a missing or rejected token (400 `auth.captcha_failed`) and an
-//!   unreachable or unreadable verifier (503 `auth.captcha_unavailable`).
+//!   a missing or rejected token (400 `auth.captcha_failed`: only
+//!   Cloudflare's visitor-side codes, `classify`) and an unreachable or
+//!   unreadable verifier or a site misconfiguration — Cloudflare refusing
+//!   the secret, a secret that cannot be opened — (503
+//!   `auth.captcha_unavailable`, the latter logged at ERROR with Cloudflare's
+//!   error codes only). Every check counts in
+//!   `akari_turnstile_verify_total{result}` (`Outcome::LABELS`).
 //!
 //! The trap is checked before Turnstile, so a bot never costs a siteverify
 //! call.
@@ -229,35 +234,136 @@ pub async fn check(
         return Ok(Verdict::Trap);
     }
     if form.turnstile(s) {
-        let token = guard
+        let Some(token) = guard
             .and_then(|g| g.turnstile.as_deref())
             .map(str::trim)
             .filter(|t| !t.is_empty() && t.len() <= MAX_TURNSTILE_TOKEN)
-            .ok_or_else(captcha_failed)?;
-        let secret = s
+        else {
+            crate::metrics::turnstile_verify(Outcome::NoToken.label());
+            return Err(captcha_failed());
+        };
+        let Some(secret) = s
             .turnstile_secret_enc
             .as_deref()
             .and_then(|b| state.master_key().open(TURNSTILE_AAD, b))
             .and_then(|b| String::from_utf8(b).ok())
-            .ok_or_else(|| {
-                tracing::error!(
-                    "the Turnstile secret cannot be opened (data/master.key changed?): \
-                     enter it again under 系统设置"
-                );
-                captcha_unavailable()
-            })?;
-        if !siteverify(
+        else {
+            tracing::error!(
+                "the Turnstile secret cannot be opened (data/master.key changed?): \
+                 enter it again under 系统设置"
+            );
+            crate::metrics::turnstile_verify(Outcome::Misconfigured.label());
+            return Err(captcha_unavailable());
+        };
+        let outcome = siteverify(
             &state.cfg().limits.turnstile_verify_url,
             &secret,
             token,
             client,
         )
-        .await?
-        {
-            return Err(captcha_failed());
+        .await;
+        crate::metrics::turnstile_verify(outcome.label());
+        match outcome {
+            Outcome::Ok => {}
+            Outcome::NoToken | Outcome::Rejected => return Err(captcha_failed()),
+            Outcome::Misconfigured | Outcome::Unavailable => return Err(captcha_unavailable()),
         }
     }
     Ok(Verdict::Pass)
+}
+
+/// The result of one Turnstile check (`akari_turnstile_verify_total{result}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// Cloudflare accepted the token.
+    Ok,
+    /// The form carried no (usable) token: the visitor's side.
+    NoToken,
+    /// Cloudflare refused the token itself (missing, invalid, expired or
+    /// already used): the visitor's side, 400 `auth.captcha_failed`.
+    Rejected,
+    /// The site's configuration is wrong (Cloudflare refuses the secret or
+    /// the request, or the stored secret cannot be opened): 503
+    /// `auth.captcha_unavailable` + an ERROR log for the operator.
+    Misconfigured,
+    /// Cloudflare unreachable, an error status, an unreadable answer or
+    /// its own internal error: 503 `auth.captcha_unavailable`.
+    Unavailable,
+}
+
+impl Outcome {
+    /// Metric label values (bounded).
+    pub const LABELS: [&'static str; 5] =
+        ["ok", "no_token", "rejected", "misconfigured", "unavailable"];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Outcome::Ok => "ok",
+            Outcome::NoToken => "no_token",
+            Outcome::Rejected => "rejected",
+            Outcome::Misconfigured => "misconfigured",
+            Outcome::Unavailable => "unavailable",
+        }
+    }
+}
+
+/// Cloudflare's error codes that are the visitor's (a missing, malformed,
+/// expired or replayed token). Every other code is the site's or
+/// Cloudflare's problem.
+const USER_ERRORS: [&str; 3] = [
+    "missing-input-response",
+    "invalid-input-response",
+    "timeout-or-duplicate",
+];
+/// Cloudflare's own failure: retry later, nothing to fix here.
+const CLOUDFLARE_ERRORS: [&str; 1] = ["internal-error"];
+
+/// The siteverify answer's error codes, sanitised for a log line: at most
+/// 8 codes of `[a-z0-9-]`, each at most 40 characters (Cloudflare's codes
+/// carry no request data; this keeps a hostile or broken answer out of the
+/// logs).
+fn error_codes(v: &Value) -> Vec<String> {
+    v.get("error-codes")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(|c| {
+                    if c.len() <= 40
+                        && c.bytes()
+                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                    {
+                        c.to_string()
+                    } else {
+                        "(unrecognised)".to_string()
+                    }
+                })
+                .take(8)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Classify a siteverify answer (pure). `success: true` = Ok; otherwise
+/// only answers made entirely of visitor-side codes are the visitor's
+/// failure; an operator-side or unknown code means the site cannot verify
+/// anyone (fail closed, but as "unavailable", and loudly).
+pub fn classify(v: &Value) -> (Outcome, Vec<String>) {
+    let codes = error_codes(v);
+    if v.get("success").and_then(Value::as_bool) == Some(true) {
+        return (Outcome::Ok, codes);
+    }
+    let outcome = if codes.iter().all(|c| USER_ERRORS.contains(&c.as_str())) {
+        Outcome::Rejected
+    } else if codes
+        .iter()
+        .all(|c| USER_ERRORS.contains(&c.as_str()) || CLOUDFLARE_ERRORS.contains(&c.as_str()))
+    {
+        Outcome::Unavailable
+    } else {
+        Outcome::Misconfigured
+    };
+    (outcome, codes)
 }
 
 /// `check` with the settings read now (per request: every instance sees a
@@ -290,26 +396,48 @@ fn captcha_unavailable() -> ApiError {
     )
 }
 
-/// One siteverify call: Ok(true) = a valid token. Errors (network, a
-/// non-200 or unreadable answer) are 503s: fail closed.
-async fn siteverify(url: &str, secret: &str, token: &str, ip: IpAddr) -> Result<bool, ApiError> {
+/// One siteverify call, classified (`classify`). Only Cloudflare's error
+/// codes are logged — never the token, the secret or the client address:
+/// a visitor's refusal at debug, a site misconfiguration at ERROR.
+async fn siteverify(url: &str, secret: &str, token: &str, ip: IpAddr) -> Outcome {
     let body = form_urlencoded::Serializer::new(String::new())
         .append_pair("secret", secret)
         .append_pair("response", token)
         .append_pair("remoteip", &crate::client_ip::canonical(ip).to_string())
         .finish();
-    let (status, bytes) = crate::billing::http::post_form(url, body, VERIFY_TIMEOUT)
-        .await
-        .map_err(|e| {
+    let (status, bytes) = match crate::billing::http::post_form(url, body, VERIFY_TIMEOUT).await {
+        Ok(r) => r,
+        Err(e) => {
             tracing::warn!(error = %e, "turnstile siteverify unreachable");
-            captcha_unavailable()
-        })?;
+            return Outcome::Unavailable;
+        }
+    };
     if status != 200 {
         tracing::warn!(status, "turnstile siteverify answered an error");
-        return Err(captcha_unavailable());
+        return Outcome::Unavailable;
     }
-    let v: Value = serde_json::from_slice(&bytes).map_err(|_| captcha_unavailable())?;
-    Ok(v.get("success").and_then(Value::as_bool) == Some(true))
+    let Ok(v) = serde_json::from_slice::<Value>(&bytes) else {
+        tracing::warn!("turnstile siteverify answer is not JSON");
+        return Outcome::Unavailable;
+    };
+    let (outcome, codes) = classify(&v);
+    let codes = codes.join(",");
+    match outcome {
+        Outcome::Ok => {}
+        Outcome::NoToken | Outcome::Rejected => {
+            tracing::debug!(codes = %codes, "turnstile token refused");
+        }
+        Outcome::Unavailable => {
+            tracing::warn!(codes = %codes, "turnstile siteverify failed on Cloudflare's side");
+        }
+        Outcome::Misconfigured => tracing::error!(
+            codes = %codes,
+            "Cloudflare refuses this site's Turnstile configuration (wrong secret key?): \
+             every protected form is refused until the secret is corrected under \
+             系统设置 → 注册与人机验证 (or `akari settings unset turnstile`)"
+        ),
+    }
+    outcome
 }
 
 // ---------------------------------------------------------------------------

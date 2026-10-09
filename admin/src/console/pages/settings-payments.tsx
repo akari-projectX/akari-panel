@@ -17,6 +17,7 @@ import {
   CardHeader,
   Field,
   Input,
+  secretInputProps,
   Select,
   Skeleton,
   Switch,
@@ -371,9 +372,8 @@ function MethodDrawer({ kind, method, onClose }: { kind: Kind; method: Method | 
               hint={f.secret && isSet ? tr("已设置；留空 = 不修改", "Set; empty = keep") : undefined}
             >
               <Input
-                type={f.secret ? "password" : "text"}
+                {...(f.secret ? secretInputProps : { type: "text", autoComplete: "off" })}
                 inputMode={f.type === "number" ? "numeric" : undefined}
-                autoComplete="off"
                 value={values[f.name]}
                 onChange={(e) => set(f.name, e.target.value)}
               />

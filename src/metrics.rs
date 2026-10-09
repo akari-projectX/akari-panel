@@ -55,6 +55,7 @@ struct Metrics {
     handshakes_dropped: IntCounter,
     local_limits: IntCounterVec,
     bot_traps: IntCounterVec,
+    turnstile_verify: IntCounterVec,
 }
 
 static METRICS: OnceLock<Metrics> = OnceLock::new();
@@ -127,6 +128,13 @@ impl Metrics {
                 "Public form submissions refused by the honeypot / minimum submit time \
                  (answered like an ordinary failure), by form and reason",
                 &["form", "reason"],
+            )?,
+            turnstile_verify: cv(
+                "akari_turnstile_verify_total",
+                "Turnstile checks of the public forms by result (ok, no_token, rejected = the \
+                 visitor's; misconfigured = the site's secret or request, see the ERROR log; \
+                 unavailable = Cloudflare unreachable or failing)",
+                &["result"],
             )?,
             login_attempts: cv(
                 "akari_login_attempts_total",
@@ -260,6 +268,10 @@ impl Metrics {
             for r in crate::botguard::TRAP_REASONS {
                 m.bot_traps.with_label_values(&[f, r]);
             }
+        }
+        m.registry.register(Box::new(m.turnstile_verify.clone()))?;
+        for r in crate::botguard::Outcome::LABELS {
+            m.turnstile_verify.with_label_values(&[r]);
         }
         for l in ["enroll", "sub"] {
             for r in ["allowed", "limited"] {
@@ -450,6 +462,19 @@ pub fn bot_trap(form: &'static str, reason: &'static str) {
     }
 }
 
+/// A Turnstile check of a public form (`result`: `botguard::Outcome::LABELS`).
+pub fn turnstile_verify(result: &'static str) {
+    if let Some(m) = m() {
+        m.turnstile_verify.with_label_values(&[result]).inc();
+    }
+}
+
+/// The current `akari_turnstile_verify_total{result}` (tests).
+#[cfg(test)]
+pub fn turnstile_verify_count(result: &str) -> u64 {
+    m().map_or(0, |m| m.turnstile_verify.with_label_values(&[result]).get())
+}
+
 pub fn login_attempt(allowed: bool) {
     if let Some(m) = m() {
         m.login_attempts
@@ -598,6 +623,7 @@ mod tests {
             "akari_notify_listener_connects_total",
             "akari_notify_queue_usage_ratio",
             "akari_login_attempts_total",
+            "akari_turnstile_verify_total",
             "akari_fleet",
             "akari_fleet_cpu_percent_max",
             "akari_grpc_handshakes_dropped_total",
@@ -617,6 +643,7 @@ mod tests {
         billed(-5);
         enforcement_pass("limits", true);
         login_attempt(false);
+        turnstile_verify("ok");
     }
 
     #[test]
