@@ -44,7 +44,7 @@ CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typechec
 | `/wallet` | 余额、流水、USDT 提现（R46：网络、地址提示、TON Memo、参考汇率、实付与交易哈希；提现仅 full） | full、renewal |
 | `/invite` | 邀请链接（面板给的 `link_base`）、邀请码、返佣 | full |
 | `/nodes` | 可用入口（每个入口一行；倍率 = 此刻生效的倍率，D9；额度用完的服务器面板直接不给，D5） | full |
-| `/traffic` | 流量明细（站点时区的日界） | full |
+| `/traffic` | 流量明细（站点时区的日界；按线路 = 每个入口一行，显示此刻倍率与时段规则，不显示计费 ÷ 原始的混合比值） | full |
 | `/tickets` | 工单 | full、renewal、banned |
 | `/help`、`/announcements` | 知识库、公告 | full、renewal |
 | `/account` | 账号、邮箱验证与更换、语言（= 邮件语言）、注销；`?tab=security`：密码、通行密钥、只用通行密钥、订阅与重置 | full、renewal |

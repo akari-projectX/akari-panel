@@ -19,7 +19,7 @@ import { useApi } from '@/hooks/use-api';
 import { K } from '@/lib/cache';
 import { useAuth } from '@/lib/auth';
 import { addDays, daysLeft, formatDate, monthStart, siteToday, toGB, trafficUsage } from '@/lib/format';
-import { trafficByNode, trafficDays } from '@/lib/traffic';
+import { ruleText, trafficByEntrance, trafficDays } from '@/lib/traffic';
 import { useT, useTp } from '@/i18n';
 
 const COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)'];
@@ -52,7 +52,7 @@ export default function Traffic() {
   /* 日界按全站时区（面板 Q3），接口返回的 timezone 就是它 */
   const logs = useApi(() => meApi.traffic(from, to), [from, to], { key: K.traffic(from, to), keepPrevious: true });
   const data = useMemo(() => trafficDays(logs.data), [logs.data]);
-  const rates = useMemo(() => trafficByNode(logs.data, tr('其他（已隐藏或删除的线路）')), [logs.data, tr]);
+  const rates = useMemo(() => trafficByEntrance(logs.data, tr('其他（已隐藏或删除的线路）')), [logs.data, tr]);
 
   const cfg = useMemo(() => CFG(tr), [tr]);
   const billedCfg = useMemo(() => BILLED_CFG(tr), [tr]);
@@ -214,7 +214,7 @@ export default function Traffic() {
           </Section>
 
           {rates.length > 0 && (
-            <Section title={tr('按线路')} desc={tr('有效倍率 = 计费流量 ÷ 原始流量')}>
+            <Section title={tr('按线路')} desc={tr('当前倍率是此刻生效的倍率；有时段倍率的线路按全站时区的时段计费')}>
               <div className="overflow-x-auto">
                 <Table>
                   <TableHeader>
@@ -222,7 +222,7 @@ export default function Traffic() {
                       <TableHead className="pl-0">{tr('线路')}</TableHead>
                       <TableHead className="w-32">{tr('原始')}</TableHead>
                       <TableHead className="w-32">{tr('计费')}</TableHead>
-                      <TableHead className="w-28 pr-0">{tr('有效倍率')}</TableHead>
+                      <TableHead className="w-40 pr-0">{tr('当前倍率')}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -231,7 +231,12 @@ export default function Traffic() {
                         <TableCell className="pl-0">{n.name}</TableCell>
                         <TableCell className="tnum">{n.value} GB</TableCell>
                         <TableCell className="tnum">{n.billed} GB</TableCell>
-                        <TableCell className="tnum pr-0">{n.rate != null ? `×${n.rate}` : '—'}</TableCell>
+                        <TableCell className="tnum pr-0">
+                          {n.rate != null ? `×${n.rate}` : '—'}
+                          {n.rules.map((x, i) => (
+                            <div key={i} className="text-[12px] text-muted-foreground">{ruleText(x, tr)}</div>
+                          ))}
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
