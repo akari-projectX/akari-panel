@@ -1,13 +1,15 @@
 // 系统设置 → 订阅 (SET-10…12): the site-wide subscription path (D11: the
 // old one dies at once; optional mail to every user), the routing template
 // of the Clash / sing-box subscriptions (W30), rule-list URLs, and the
-// format / one-click import switches (PR ② §5).
+// format / one-click import switches (PR ② §5), multipliers in line names
+// (SET-26, next07).
 import { useEffect, useState } from "react";
 import { put } from "../../shared/api";
 import { useTr, type Tr } from "../../shared/i18n";
 import { useConfirm, useToast } from "../../shared/ui/overlays";
 import {
   Button,
+  Callout,
   Card,
   CardBody,
   CardHeader,
@@ -16,6 +18,7 @@ import {
   Input,
   Select,
   Skeleton,
+  Switch,
 } from "../../shared/ui/primitives";
 import { Mono, useErrText, useRun } from "../kit";
 import { useSettings, type Rule } from "./settings";
@@ -73,6 +76,7 @@ export function SubscriptionTab() {
       <SubPath />
       <RoutingRules />
       <Switches />
+      <NameRate />
     </div>
   );
 }
@@ -367,6 +371,67 @@ function Switches() {
             ))}
           </div>
         </fieldset>
+      </CardBody>
+    </Card>
+  );
+}
+
+// SET-26: off by default. Clients remember the selected line by its name;
+// a name that changes with the multiplier makes them fall back to the first
+// line (the direct entrance) after a refresh.
+function NameRate() {
+  const tr = useTr();
+  const s = useSettings();
+  const confirm = useConfirm();
+  const [run, busy] = useRun();
+  const d = s.data;
+  if (!d) return null;
+  const on = d.subscription.name_rate;
+  const set = async (v: boolean) => {
+    if (
+      v &&
+      !(await confirm({
+        title: tr("在订阅线路名里显示倍率？", "Show multipliers in subscription line names?"),
+        description: tr(
+          "之后每次修改入口的基础倍率都会改变该线路的名字；客户端刷新订阅后会丢失用户选中的线路，可能回落到第一条（直连）。时段倍率不会显示。",
+          "Every change of an entrance's base multiplier then renames its line; after a subscription refresh clients lose the user's selected line and may fall back to the first (direct). Time-window multipliers are never shown.",
+        ),
+        tone: "warning",
+      }))
+    )
+      return;
+    void run(() => put("/settings/subscription", { version: d.version, name_rate: v }), {
+      ok: tr("已保存", "Saved"),
+      invalidate: [["settings"]],
+    });
+  };
+  return (
+    <Card>
+      <CardHeader
+        title={tr("订阅线路名显示倍率", "Multipliers in subscription line names")}
+        description={tr(
+          "默认关闭：线路名不随倍率变化，客户端记住的选择不会丢。开启后只显示入口的基础倍率（1x 不显示），不显示时段倍率。",
+          "Off by default: line names never change with the multiplier, so clients keep the user's selection. When on, names show the entrance's base multiplier (not 1x), never a time-window one.",
+        )}
+      />
+      <CardBody className="space-y-3 text-[13px]">
+        <label className="flex items-center gap-2">
+          <Switch
+            checked={on}
+            disabled={busy}
+            label={tr("订阅线路名显示倍率", "Multipliers in line names")}
+            onChange={(v) => void set(v)}
+          />
+          {tr("订阅线路名显示倍率", "Multipliers in line names")}
+        </label>
+        {on && (
+          <Callout tone="warning">
+            {tr(
+              "已开启：修改入口倍率会改变线路名，用户刷新订阅后客户端可能切换到其他线路。",
+              "On: changing an entrance's multiplier renames its line; after a refresh clients may switch to another line.",
+            )}
+          </Callout>
+        )}
       </CardBody>
     </Card>
   );

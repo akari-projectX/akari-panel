@@ -2281,7 +2281,7 @@ mod tests {
                                 connect_port: 30443,
                                 listen_port: 20443,
                                 source_cidrs: vec!["203.0.113.7".into()],
-                                rate: Some(2.0),
+                                rate: 2.0,
                                 enabled: None,
                                 sort: None,
                                 group_ids: None,

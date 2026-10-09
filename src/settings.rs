@@ -292,6 +292,9 @@ pub struct Stored {
     /// buttons that are on (NULL = all).
     pub sub_formats: Option<Vec<String>>,
     pub sub_import_clients: Option<Vec<String>>,
+    /// next07: subscription line names carry the base multiplier (NULL =
+    /// off).
+    pub sub_name_rate: Option<bool>,
     #[serde(skip)]
     pub updated_at: Option<DateTime<Utc>>,
 }
@@ -301,7 +304,7 @@ const STORED_COLS: &str = "version, sub_domain_per_user, trust_cloudflare, \
      install_tls_pin, install_fallback_url, acme_directory_url, acme_email, \
      audit_retention_days, traffic_daily_retention_days, remove_mode, \
      extra_release_keys, timezone, sub_rules, sub_rule_set_clash_url, sub_rule_set_singbox_url, \
-     sub_formats, sub_import_clients, updated_at";
+     sub_formats, sub_import_clients, sub_name_rate, updated_at";
 
 fn select_stored(lock: bool) -> sqlx::AssertSqlSafe<String> {
     sqlx::AssertSqlSafe(format!(
@@ -472,6 +475,10 @@ pub struct Effective {
     /// import buttons the portal shows (configured and format on).
     pub sub_formats: Vec<String>,
     pub sub_import_clients: Vec<String>,
+    /// next07: subscription line names carry the entrance's base multiplier
+    /// (off by default: a name that changes with the rate makes clients
+    /// lose the user's selection).
+    pub sub_name_rate: bool,
     /// D8: every subscription origin (preferred first; empty = none set:
     /// links go to the main domain) and whether each user gets their own.
     pub subs: Vec<Origin>,
@@ -720,6 +727,7 @@ pub fn compute(cfg: &PanelConfig, stored: Stored, server_names: Vec<ServerName>)
                 .as_deref()
                 .unwrap_or(&crate::sub::all_formats()),
         ),
+        sub_name_rate: stored.sub_name_rate.unwrap_or(false),
         stored,
         server_names,
         main,
@@ -1501,6 +1509,8 @@ pub struct SubscriptionValues {
     pub rule_set_singbox_url: Option<String>,
     pub formats: Option<Vec<String>>,
     pub import_clients: Option<Vec<String>>,
+    /// next07: multipliers in line names (false = off, stored as NULL).
+    pub name_rate: bool,
 }
 
 impl SubscriptionValues {
@@ -1514,6 +1524,7 @@ impl SubscriptionValues {
             rule_set_singbox_url: s.sub_rule_set_singbox_url.clone(),
             formats: s.sub_formats.clone(),
             import_clients: s.sub_import_clients.clone(),
+            name_rate: s.sub_name_rate.unwrap_or(false),
         }
     }
 
@@ -1524,6 +1535,7 @@ impl SubscriptionValues {
             "rule_set_singbox_url": self.rule_set_singbox_url,
             "formats": self.formats,
             "import_clients": self.import_clients,
+            "name_rate": self.name_rate,
         })
     }
 }
@@ -1558,6 +1570,7 @@ pub async fn apply_update_subscription(
         import_clients: change
             .import_clients
             .unwrap_or_else(|| old.import_clients.clone()),
+        name_rate: change.name_rate.unwrap_or(old.name_rate),
     };
     if new == old {
         return Ok(cur);
@@ -1571,13 +1584,14 @@ pub async fn apply_update_subscription(
     let row: Stored = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "UPDATE panel_settings SET sub_rules = $1, sub_rule_set_clash_url = $2, \
          sub_rule_set_singbox_url = $3, sub_formats = $4, sub_import_clients = $5, \
-         version = version + 1, updated_at = now() WHERE id = 1 RETURNING {STORED_COLS}"
+         sub_name_rate = $6, version = version + 1, updated_at = now() WHERE id = 1 RETURNING {STORED_COLS}"
     )))
     .bind(rules)
     .bind(&new.rule_set_clash_url)
     .bind(&new.rule_set_singbox_url)
     .bind(&new.formats)
     .bind(&new.import_clients)
+    .bind(new.name_rate.then_some(true))
     .fetch_one(&mut *conn)
     .await?;
     crate::audit::record(
@@ -1602,6 +1616,7 @@ pub struct SubscriptionChange {
     pub rule_set_singbox_url: Option<Option<String>>,
     pub formats: Option<Option<Vec<String>>>,
     pub import_clients: Option<Option<Vec<String>>>,
+    pub name_rate: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -1628,6 +1643,11 @@ pub struct SubscriptionReq {
     /// unchanged, null = all.
     #[serde(default, deserialize_with = "crate::api::double_option")]
     pub import_clients: Option<Option<Vec<String>>>,
+    /// next07: subscription line names carry the entrance's base
+    /// multiplier (renames the line on every rate change); absent =
+    /// unchanged.
+    #[serde(default)]
+    pub name_rate: Option<bool>,
 }
 
 /// The import client ids (`sub::IMPORT_CLIENTS`).
@@ -1689,6 +1709,7 @@ impl SubscriptionReq {
                     value = v
                 )
             })?,
+            name_rate: self.name_rate,
         })
     }
 }
@@ -1721,6 +1742,8 @@ pub struct SubscriptionView {
     pub formats: Field<Vec<String>>,
     pub import_clients: Field<Vec<String>>,
     pub import_clients_shown: Vec<String>,
+    /// next07: line names carry the base multiplier (default off).
+    pub name_rate: bool,
 }
 
 impl SubscriptionView {
@@ -1736,6 +1759,7 @@ impl SubscriptionView {
                 v.rule_set_singbox_url,
                 crate::sub::routing::DEFAULT_SINGBOX_URL.to_string(),
             ),
+            name_rate: v.name_rate,
             import_clients_shown: crate::sub::import_clients(
                 v.import_clients.as_deref(),
                 v.formats.as_deref().unwrap_or(&crate::sub::all_formats()),

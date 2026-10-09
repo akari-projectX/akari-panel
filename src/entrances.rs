@@ -173,7 +173,7 @@ pub const ENTRANCES_JSON_SQL: &str = "coalesce((SELECT jsonb_agg(jsonb_build_obj
      'rate_rules', (SELECT coalesce(jsonb_agg(jsonb_build_object('weekdays', r.weekdays, \
         'start', r.start_minute, 'end', r.end_minute, 'rate', r.rate_permille::float8 / 1000) \
         ORDER BY r.ord), '[]'::jsonb) FROM entrance_rate_rules r WHERE r.entrance_id = e.id), \
-     'enabled', e.enabled, 'sort', e.sort, 'wire_no', e.wire_no, \
+     'enabled', e.enabled, 'sort', e.sort, 'wire_no', e.wire_no, 'version', e.version, \
      'listen_port', e.listen_port, 'source_cidrs', to_jsonb(e.source_cidrs::text[]), \
      'health_ok', e.health_ok, 'health_at', e.health_at, 'health_failures', e.health_failures, \
      'health_error', e.health_error, 'hidden_since', e.hidden_since, \
@@ -207,6 +207,9 @@ pub struct EntranceView {
     /// The entrance's number on its node (0 = direct): its agent inbound
     /// tag and traffic key suffix.
     pub wire_no: i32,
+    /// Optimistic concurrency (1100): +1 on every update; PATCH may send it
+    /// back (`EntranceReq::version`) to refuse a stale form.
+    pub version: i64,
     /// Relay: the derived inbound's port on the node and the relay's
     /// egress networks allowed to reach it (direct: null / []).
     pub listen_port: Option<i32>,
@@ -229,7 +232,7 @@ const ENTRANCE_VIEW_SQL: &str = "SELECT e.id, e.node_id, e.kind, e.name, e.conne
         'start', r.start_minute, 'end', r.end_minute, 'rate', r.rate_permille::float8 / 1000) \
         ORDER BY r.ord), '[]'::jsonb) FROM entrance_rate_rules r WHERE r.entrance_id = e.id) \
         AS rate_rules, \
-     e.enabled, e.sort, e.wire_no, e.listen_port, \
+     e.enabled, e.sort, e.wire_no, e.version, e.listen_port, \
      e.source_cidrs::text[] AS source_cidrs, e.health_ok, e.health_at, e.health_failures, \
      e.health_error, e.hidden_since, \
      coalesce(ARRAY(SELECT m.group_id FROM entrance_group_members m \
@@ -278,6 +281,12 @@ pub struct EntranceReq {
     /// "198.51.100.0/24"; 1..=64).
     #[serde(default, deserialize_with = "double_option")]
     pub source_cidrs: Option<Option<Vec<String>>>,
+    /// The `version` the form was opened at (EntranceView): the update is
+    /// refused (409 `entrance.version_conflict`) when the entrance changed
+    /// since. Absent = no check (API clients that send only what they
+    /// change).
+    #[serde(default)]
+    pub version: Option<i64>,
 }
 
 impl EntranceReq {
@@ -544,7 +553,20 @@ pub async fn apply_update(
     if let (Some(port), Some(ib)) = (c.listen_port, &inbound) {
         port_clash(conn, server, Some(node), ib, Some((Some(id), port))).await?;
     }
-    let mut qb = sqlx::QueryBuilder::new("UPDATE entrances SET updated_at = now()");
+    if let Some(expected) = req.version {
+        let current: i64 = sqlx::query_scalar("SELECT version FROM entrances WHERE id = $1")
+            .bind(id)
+            .fetch_one(&mut *conn)
+            .await?;
+        if current != expected {
+            return Err(conflict!(
+                "entrance.version_conflict",
+                "入口已被修改（可能是其他管理员），请关闭后重新打开再保存"
+            ));
+        }
+    }
+    let mut qb =
+        sqlx::QueryBuilder::new("UPDATE entrances SET updated_at = now(), version = version + 1");
     if let Some(v) = &c.name {
         qb.push(", name = ").push_bind(v.clone());
     }
@@ -649,8 +671,9 @@ pub struct CreateRelayReq {
     pub listen_port: i32,
     /// The relay's egress networks (1..=64).
     pub source_cidrs: Vec<String>,
-    #[serde(default)]
-    pub rate: Option<f64>,
+    /// Traffic multiplier 0..=100, at most 3 decimals: required (a missing
+    /// multiplier is never taken as a default or as 0x).
+    pub rate: f64,
     #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]
@@ -682,7 +705,7 @@ pub async fn apply_create_relay(
     listen_port(Some(req.listen_port))?;
     let listen = req.listen_port;
     let cidrs = clean_cidrs(&req.source_cidrs)?;
-    let rate = req.rate.map(rate_permille).transpose()?.unwrap_or(1000);
+    let rate = rate_permille(req.rate)?;
     let sort = req
         .sort
         .map(crate::nodemeta::sort)

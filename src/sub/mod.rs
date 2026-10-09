@@ -172,10 +172,14 @@ pub struct NodeRow {
     /// W11 (`nodemeta.rs`): user-facing name and tags (proxy names).
     pub display_name: Option<String>,
     pub tags: Vec<String>,
-    /// The entrance's name ("直连", "IPLC") and multiplier (permille;
-    /// shown in the proxy name when it is not 1x).
+    /// The entrance's name ("直连", "IPLC") and the multiplier the proxy
+    /// name shows (permille; None = none, the default: names must not
+    /// change with the rate, clients remember the selected proxy by name).
+    /// With the operator switch (`panel_settings.sub_name_rate`) it is the
+    /// entrance's base multiplier, shown when not 1x, never a time-window
+    /// rule's.
     pub entrance: String,
-    pub rate_permille: i32,
+    pub name_rate_permille: Option<i32>,
     /// The node's inbound (xray JSON).
     pub inbound: Value,
     /// What clients dial: the entrance's host (else the server's TLS
@@ -322,7 +326,7 @@ pub async fn subscription(
     }
     let rows = match sqlx::query_as::<_, NodeRow>(sqlx::AssertSqlSafe(format!(
         "SELECT n.name, n.display_name, n.tags, e.name AS entrance, \
-         akari_entrance_rate(e.id, statement_timestamp()) AS rate_permille, n.inbound, \
+         CASE WHEN $2 THEN e.rate_permille END AS name_rate_permille, n.inbound, \
          coalesce(e.connect_host, s.tls_domain) AS server, e.connect_port AS port, \
          eu.protocol, eu.account \
          FROM entrance_users eu \
@@ -335,6 +339,7 @@ pub async fn subscription(
         crate::grpc::SERVER_SERVES
     )))
     .bind(user.id)
+    .bind(state.settings().get().sub_name_rate)
     .fetch_all(state.pg())
     .await
     {
@@ -652,7 +657,7 @@ mod tests {
                 display_name: None,
                 tags: vec![],
                 entrance: tag.into(),
-                rate_permille: 1000,
+                name_rate_permille: None,
                 inbound: ib.clone(),
                 server: server.map(String::from),
                 port: None,
@@ -1063,13 +1068,13 @@ rules:
         }
         rows[2].server = Some("relay.example.net".into());
         rows[2].port = Some(30443);
-        rows[2].rate_permille = 2000;
+        rows[2].name_rate_permille = Some(2000);
         let single = |name: &str, server: Option<&str>| NodeRow {
             name: name.into(),
             display_name: Some("东京".into()),
             tags: vec![],
             entrance: "直连".into(),
-            rate_permille: 1000,
+            name_rate_permille: None,
             inbound: json!({"protocol": "trojan", "port": 443,
                 "streamSettings": {"network": "tcp", "security": "tls",
                     "tlsSettings": {"serverName": "x.example.com"}}}),

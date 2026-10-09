@@ -49,7 +49,10 @@ fn parse_defaults_and_partial_ranges() {
 
 #[test]
 fn parse_groups_limits_and_spans() {
-    assert_eq!(p("group=node", Params::User).unwrap().group, Group::Node);
+    assert_eq!(
+        p("group=entrance", Params::User).unwrap().group,
+        Group::Entrance
+    );
     assert_eq!(p("group=day", Params::User).unwrap().group, Group::Day);
     assert_eq!(p("group=month", Params::User).unwrap().group, Group::Month);
     assert!(p("group=week", Params::User).is_err());
@@ -137,7 +140,7 @@ fn bytes_total_saturates() {
     let t = total([big, big].iter());
     assert_eq!(t.up_bytes, i64::MAX);
     assert_eq!((t.down_bytes, t.billed_bytes), (2, 4));
-    assert_eq!(Group::Node.as_str(), "node");
+    assert_eq!(Group::Entrance.as_str(), "entrance");
 }
 
 async fn admin_client(state: &AppState, db: &TestDb) -> Client {
@@ -158,33 +161,47 @@ async fn user_client(state: &AppState, user: Uuid) -> Client {
     c
 }
 
+/// The node's direct entrance (a deleted node: its id stands for a deleted
+/// entrance).
+async fn direct(db: &TestDb, node: Uuid) -> Uuid {
+    sqlx::query_scalar("SELECT id FROM entrances WHERE node_id = $1 AND kind = 'direct'")
+        .bind(node)
+        .fetch_optional(&db.pool)
+        .await
+        .unwrap()
+        .unwrap_or(node)
+}
+
 async fn daily(db: &TestDb, user: Uuid, day: NaiveDate, node: Uuid, b: (i64, i64, i64)) {
+    let entrance = direct(db, node).await;
     sqlx::query(
         "INSERT INTO traffic_daily \
          (user_id, day, entrance_id, node_id, up_bytes, down_bytes, billed_bytes) \
-         VALUES ($1, $2, $3, $3, $4, $5, $6)",
+         VALUES ($1, $2, $3, $7, $4, $5, $6)",
     )
     .bind(user)
     .bind(day)
-    .bind(node)
+    .bind(entrance)
     .bind(b.0)
     .bind(b.1)
     .bind(b.2)
+    .bind(node)
     .execute(&db.pool)
     .await
     .unwrap();
     sqlx::query(
         "INSERT INTO traffic_entrance_daily AS t \
          (entrance_id, node_id, day, up_bytes, down_bytes, billed_bytes, users) \
-         VALUES ($1, $1, $2, $3, $4, $5, 1) ON CONFLICT (entrance_id, day) DO UPDATE SET \
+         VALUES ($1, $6, $2, $3, $4, $5, 1) ON CONFLICT (entrance_id, day) DO UPDATE SET \
          up_bytes = t.up_bytes + EXCLUDED.up_bytes, down_bytes = t.down_bytes + EXCLUDED.down_bytes, \
          billed_bytes = t.billed_bytes + EXCLUDED.billed_bytes, users = t.users + 1",
     )
-    .bind(node)
+    .bind(entrance)
     .bind(day)
     .bind(b.0)
     .bind(b.1)
     .bind(b.2)
+    .bind(node)
     .execute(&db.pool)
     .await
     .unwrap();
@@ -266,20 +283,34 @@ async fn endpoints_queries_and_permissions() {
     assert_eq!(bytes(&rows[1]), (15, 25, 20));
     assert_eq!(bytes(&v["total"]), (116, 227, 323));
     assert!(v["daily_since"].is_string());
-    // Per node: most billed first; the deleted node has no name.
+    // Per entrance (R43): most billed first, node and entrance names, kind
+    // and the multiplier now; the deleted ones have none.
+    let (e1, e2) = (direct(&db, n1).await, direct(&db, n2).await);
+    sqlx::query("UPDATE entrances SET rate_permille = 2500 WHERE id = $1")
+        .bind(e1)
+        .execute(&db.pool)
+        .await
+        .unwrap();
     let r = admin
-        .get(&format!("/test/api/v1/users/{u1}/traffic?group=node"))
+        .get(&format!("/test/api/v1/users/{u1}/traffic?group=entrance"))
         .await;
     let v = r.json();
+    assert_eq!(v["group"], "entrance");
     let rows = v["rows"].as_array().unwrap();
     assert_eq!(rows.len(), 3, "{v}");
+    assert_eq!(rows[0]["entrance_id"], json!(e2));
     assert_eq!(rows[0]["node_id"], json!(n2));
-    assert_eq!(rows[0]["name"], "secret");
-    assert_eq!(rows[1]["node_id"], json!(n1));
-    assert_eq!(rows[1]["name"], "香港 01");
+    assert_eq!(rows[0]["node"], "secret");
+    assert_eq!(rows[0]["entrance"], "直连");
+    assert_eq!(rows[0]["kind"], "direct");
+    assert_eq!(rows[0]["rate_now"], 1.0);
+    assert_eq!(rows[1]["entrance_id"], json!(e1));
+    assert_eq!(rows[1]["node"], "香港 01");
+    assert_eq!(rows[1]["rate_now"], 2.5);
     assert_eq!(bytes(&rows[1]), (11, 22, 18));
     assert_eq!(rows[2]["node_id"], json!(gone));
-    assert!(rows[2]["name"].is_null());
+    assert!(rows[2]["node"].is_null() && rows[2]["entrance"].is_null());
+    assert!(rows[2]["rate_now"].is_null());
     assert_eq!(bytes(&v["total"]), (116, 227, 323));
     // Per month: rolled-up months + kept days, whole months.
     let from = m;
@@ -347,26 +378,44 @@ async fn endpoints_queries_and_permissions() {
     let v = r.json();
     assert_eq!(bytes(&v["total"]), (116, 227, 323));
     assert_eq!(v["days"].as_array().unwrap().len(), 2);
-    let nodes = v["nodes"].as_array().unwrap();
-    assert_eq!(nodes.len(), 2, "{v}");
-    assert_eq!(nodes[0]["name"], "香港 01");
-    assert_eq!(bytes(&nodes[0]), (11, 22, 18));
-    assert!(nodes[1]["name"].is_null());
-    assert_eq!(bytes(&nodes[1]), (105, 205, 305));
-    // D9: the current multipliers of the user's entrances (none here for
-    // the merged row; an array for the named one).
-    assert_eq!(nodes[1]["rates"], json!([]));
-    assert!(nodes[0]["rates"].is_array());
+    let rows = v["entrances"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{v}");
+    assert_eq!(rows[0]["name"], "香港 01");
+    assert_eq!(rows[0]["entrance"], "直连");
+    assert_eq!(bytes(&rows[0]), (11, 22, 18));
+    assert!(rows[1]["name"].is_null() && rows[1]["entrance"].is_null());
+    assert_eq!(bytes(&rows[1]), (105, 205, 305));
+    // next07: the multiplier now (never billed ÷ raw: 18 / 33 here) and the
+    // time-window rules; none for the merged row.
+    assert_eq!(rows[0]["rate"], 2.5);
+    assert_eq!(rows[0]["rules"], json!([]));
+    assert!(rows[1]["rate"].is_null());
+    assert_eq!(rows[1]["rules"], json!([]));
+    sqlx::query(
+        "INSERT INTO entrance_rate_rules (entrance_id, ord, weekdays, start_minute, end_minute, \
+         rate_permille) VALUES ($1, 0, '{1,2,3,4,5}', 1200, 1440, 2000)",
+    )
+    .bind(e1)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let v = me.get("/test/api/v1/me/traffic").await.json();
+    assert_eq!(
+        v["entrances"][0]["rules"],
+        json!([{"weekdays": [1, 2, 3, 4, 5], "start": 1200, "end": 1440, "rate": 2}])
+    );
     let body = v.to_string();
     for leak in [
         n1.to_string(),
         n2.to_string(),
         gone.to_string(),
+        e1.to_string(),
+        e2.to_string(),
         "secret".into(),
     ] {
         assert!(!body.contains(&leak), "{leak} leaked: {body}");
     }
-    assert!(!body.contains("node_id"));
+    assert!(!body.contains("node_id") && !body.contains("entrance_id"));
     let other = user_client(&state, u2).await;
     let v = other.get("/test/api/v1/me/traffic").await.json();
     assert_eq!(bytes(&v["total"]), (1000, 1000, 2000));
@@ -379,6 +428,7 @@ async fn endpoints_queries_and_permissions() {
         format!("/test/api/v1/users/{u1}/traffic"),
         format!("/test/api/v1/users/{u2}/traffic"),
         format!("/test/api/v1/nodes/{n1}/traffic"),
+        format!("/test/api/v1/entrances/{e1}/traffic"),
         "/test/api/v1/traffic/summary".to_string(),
     ] {
         assert_eq!(me.get(&path).await.status, StatusCode::FORBIDDEN, "{path}");
@@ -410,10 +460,19 @@ async fn endpoints_queries_and_permissions() {
             .status,
         StatusCode::NOT_FOUND
     );
+    assert_eq!(
+        admin
+            .get(&format!("/test/api/v1/entrances/{nobody}/traffic"))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
     for path in [
         format!("/test/api/v1/users/{u1}/traffic?group=year"),
         format!("/test/api/v1/users/{u1}/traffic?limit=3"),
         format!("/test/api/v1/nodes/{n1}/traffic?limit=0"),
+        format!("/test/api/v1/users/{u1}/traffic?group=node"),
+        format!("/test/api/v1/entrances/{e1}/traffic?limit=3"),
         "/test/api/v1/traffic/summary?from=2020-01-01&to=2026-01-01".to_string(),
         "/test/api/v1/me/traffic?group=node".to_string(),
         "/test/api/v1/me/traffic?user_id=x".to_string(),
@@ -426,5 +485,106 @@ async fn endpoints_queries_and_permissions() {
         me.get("/test/api/v1/me/traffic?group=node").await.json()["error"],
         "unknown parameter"
     );
+    db.drop().await;
+}
+
+/// next07: GET /entrances/{id}/traffic — the entrance's own days (never
+/// mixed with the node's other entrances) and its multiplier changes from
+/// the audit log (base changes through PATCH, rule sets; a PATCH that
+/// leaves the multiplier alone is not listed), newest first.
+#[tokio::test]
+async fn entrance_days_and_rate_history() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let admin = admin_client(&state, &db).await;
+    let (n1, u1) = db.member().await;
+    let e1 = direct(&db, n1).await;
+    let today: NaiveDate = sqlx::query_scalar("SELECT (now() AT TIME ZONE akari_site_tz())::date")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    daily(&db, u1, today, n1, (10, 20, 30)).await;
+    // Another entrance of the same node: not in e1's days.
+    let relay = admin
+        .post(
+            &format!("/test/api/v1/nodes/{n1}/entrances"),
+            json!({"name": "IPLC", "connect_host": "relay.example.net", "connect_port": 30443,
+                   "listen_port": 20443, "source_cidrs": ["203.0.113.7"], "rate": 10}),
+        )
+        .await;
+    assert_eq!(relay.status, StatusCode::CREATED, "{:?}", relay.json());
+    let relay_id: Uuid = serde_json::from_value(relay.json()["id"].clone()).unwrap();
+    sqlx::query(
+        "INSERT INTO traffic_entrance_daily (entrance_id, node_id, day, up_bytes, down_bytes, \
+         billed_bytes, users) VALUES ($1, $2, $3, 100, 100, 2000, 1)",
+    )
+    .bind(relay_id)
+    .bind(n1)
+    .bind(today)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    for body in [
+        json!({"rate": 10}),
+        json!({"name": "主线"}),
+        json!({"rate": 1.5}),
+    ] {
+        let r = admin
+            .req(
+                axum::http::Method::PATCH,
+                &format!("/test/api/v1/entrances/{e1}"),
+                Some(body),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    }
+    let r = admin
+        .put(
+            &format!("/test/api/v1/entrances/{e1}/rate-rules"),
+            json!({"rules": [{"weekdays": [6, 7], "start": "00:00", "end": "24:00", "rate": 0.5}]}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+
+    let r = admin
+        .get(&format!("/test/api/v1/entrances/{e1}/traffic"))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let v = r.json();
+    let days = v["days"].as_array().unwrap();
+    assert_eq!(days.len(), 1, "{v}");
+    assert_eq!(bytes(&days[0]), (10, 20, 30));
+    assert_eq!(days[0]["users"], 1);
+    assert_eq!(bytes(&v["total"]), (10, 20, 30));
+    let ch = v["rate_changes"].as_array().unwrap();
+    assert_eq!(ch.len(), 3, "{v}");
+    assert_eq!(ch[0]["action"], "entrance.rate_rules.set");
+    assert_eq!(ch[0]["rules_before"], json!([]));
+    assert_eq!(ch[0]["rules_after"][0]["rate"], 0.5);
+    assert!(ch[0]["rate_before"].is_null());
+    assert_eq!(ch[1]["action"], "entrance.update");
+    assert_eq!(
+        (ch[1]["rate_before"].as_f64(), ch[1]["rate_after"].as_f64()),
+        (Some(10.0), Some(1.5))
+    );
+    assert_eq!(
+        (ch[2]["rate_before"].as_f64(), ch[2]["rate_after"].as_f64()),
+        (Some(1.0), Some(10.0))
+    );
+    for c in ch {
+        assert!(c["actor_email"].is_string() && c["at"].is_string(), "{c}");
+        assert!(c["actor_label"].as_str().unwrap().starts_with("u-"), "{c}");
+    }
+    // The relay: its own day and its creation (at 10x).
+    let v = admin
+        .get(&format!("/test/api/v1/entrances/{relay_id}/traffic"))
+        .await
+        .json();
+    assert_eq!(bytes(&v["total"]), (100, 100, 2000));
+    assert_eq!(v["rate_changes"][0]["action"], "entrance.create");
+    assert!(v["rate_changes"][0]["rate_before"].is_null());
+    assert_eq!(v["rate_changes"][0]["rate_after"], 10.0);
     db.drop().await;
 }

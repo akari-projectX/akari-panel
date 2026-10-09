@@ -228,6 +228,15 @@ pub async fn apply_set_rules(
     .fetch_optional(&mut *conn)
     .await?;
     let before = found.ok_or_else(ApiError::not_found)?;
+    // A rule change is a rate change (1100): for the settlement window the
+    // bytes moved before it bill at most at the old configuration's rate.
+    sqlx::query(
+        "UPDATE entrances SET rate_prev_permille = akari_entrance_settle_rate(id), \
+         rate_changed_at = statement_timestamp() WHERE id = $1",
+    )
+    .bind(entrance)
+    .execute(&mut *conn)
+    .await?;
     sqlx::query("DELETE FROM entrance_rate_rules WHERE entrance_id = $1")
         .bind(entrance)
         .execute(&mut *conn)

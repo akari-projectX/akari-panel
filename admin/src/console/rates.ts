@@ -6,6 +6,18 @@ const WEEK = 7 * DAY;
 
 export type Rule = { weekdays: number[]; start: number; end: number; rate: number };
 
+/**
+ * A multiplier typed by the admin: 0–100 with at most 3 decimals, or null.
+ * Empty (or blank) is null — never 0x (`Number("")` is 0); saving 0x needs
+ * an explicit 0 and a confirmation.
+ */
+export function parseRate(text: string): number | null {
+  const t = text.trim();
+  if (!/^\d+(\.\d{1,3})?$/.test(t)) return null;
+  const rate = Number(t);
+  return rate >= 0 && rate <= 100 ? rate : null;
+}
+
 export function segments(r: Rule): [number, number][] {
   const len = r.end > r.start ? r.end - r.start : DAY - r.start + r.end;
   const out: [number, number][] = [];

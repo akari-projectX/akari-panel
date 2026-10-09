@@ -305,7 +305,7 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         "sub::subscription nodes",
         q!(format!(
             "SELECT n.name, n.display_name, n.tags, e.name AS entrance, \
-            akari_entrance_rate(e.id, statement_timestamp()) AS rate_permille, \
+            CASE WHEN $2 THEN e.rate_permille END AS name_rate_permille, \
             n.inbound, coalesce(e.connect_host, s.tls_domain) AS server, \
             e.connect_port AS port, eu.protocol, eu.account \
             FROM entrance_users eu \
@@ -317,7 +317,8 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
             ORDER BY n.sort, coalesce(n.display_name, n.name), n.id, e.kind <> 'direct', e.sort, e.name",
             akari_panel::grpc::SERVER_SERVES
         ))
-        .bind(ids.user),
+        .bind(ids.user)
+        .bind(false),
     )
     .await?;
     explain(

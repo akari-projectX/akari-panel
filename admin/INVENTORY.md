@@ -88,7 +88,7 @@
 | USR-20 | 转让所有者（仅所有者，目标为启用的管理员，输入确认） | `POST /users/{id}/owner` | R47 | 实现 |
 | USR-21 | 删除用户：先显示影响（余额、可提现、待审提现、待付/未开通订单、有效套餐、是否匿名化保留），输入邮箱确认 | `GET /users/{id}/delete-impact`、`DELETE /users/{id}?confirm=true` | 中-7 | 实现 |
 | USR-22 | 余额与明细；人工调整余额（带符号金额 + 原因） | `GET/POST /users/{id}/balance` | W16 | 实现 |
-| USR-23 | 流量明细：每日折线（下载/上传/计费）+ 按节点表（API `group=node`） | `GET /users/{id}/traffic` | W22 | 实现 |
+| USR-23 | 流量明细：每日折线（下载/上传/计费）+ 按入口表（节点 · 入口、直连/中转、当前倍率、原始/计费；API `group=entrance`，next07 起取代按节点） | `GET /users/{id}/traffic` | W22 + next07 | 实现 |
 | USR-24 | 勾选（本页全选）→ 批量操作条；"对全部筛选结果批量操作" | — | Ops | 实现 |
 | USR-25 | 批量操作：延长 N 天、重置流量、封禁（原因）、解封、分配/更换套餐、取消套餐、调整余额、发送邮件 —— 先预览人数与样例，再确认 | `POST /users/batch/preview`、`POST /users/batch` | Ops | 实现 |
 | USR-26 | 批量任务列表：进度、明细（失败/跳过在前，错误码翻译）、取消 | `GET /users/batch`、`/users/batch/{id}`、`/cancel` | Ops | 实现 |
@@ -172,6 +172,8 @@
 | NOD-19 | 分时段倍率（D9）：基础倍率 + 规则（星期、起止时间、倍率）、站点时区、重叠警告、7×24 热力图、当前倍率 | `PUT /entrances/{id}/rate-rules` | D9 | 实现 |
 | NOD-20 | 节点流量：每日折线 + 用量最高的用户 | `GET /nodes/{id}/traffic` | W22 | 实现 |
 | NOD-21 | 节点组（套餐页"节点组"标签）：新建、改名/说明、选择入口（按服务器列出）、删除 | `/node-groups*` | W28-a | 实现 |
+| NOD-22 | 倍率输入安全与并发：倍率留空 = 校验错误（不会当作 0x，不发请求）；保存 0x 需确认"免费"；入口抽屉只发送改动过的字段并带打开时的 `version`，期间被别人改过 → 409 提示"请关闭后重新打开"，不覆盖；改倍率提示"从下一次结算起生效、不追溯、30 秒内按较低倍率" | `PATCH /entrances/{id}`、`POST /nodes/{id}/entrances`、`POST /nodes` | next07 | 实现 |
+| NOD-23 | 入口抽屉：本入口近 30 天每日原始/计费（折线 + 列表，不与同节点其他入口相加）、倍率变更记录（审计：时间、操作人、旧 → 新、时段规则变更） | `GET /entrances/{id}/traffic` | next07 | 实现 |
 
 ## 11. 套餐
 
@@ -236,6 +238,7 @@
 | SET-23 | 账号清理（D10）：自动清理（默认关）、天数 N、删除前邮件提醒与等待天数；上次运行结果、当前符合条件的数量并可跳到用户列表筛选 | `GET/PUT /settings/cleanup` | D10 | 实现 |
 | SET-24 | 品牌：Logo / favicon 上传与删除、页脚文字与链接、服务条款/隐私链接、客户端下载链接 | `/settings/branding*` | Ops | 实现 |
 | SET-25 | panel.toml 中已废弃的键横幅（`obsolete_config_keys`） | `GET /settings` | W25 | 实现 |
+| SET-26 | 订阅线路名显示倍率（默认关；开启前确认"改倍率会改线路名、客户端可能切换线路"，开启时入口抽屉的倍率框也提示；只显示基础倍率，不显示时段倍率） | `PUT /settings/subscription` `{name_rate}` | next07 | 实现 |
 
 ## 16. 我的账户
 
@@ -302,6 +305,7 @@
 | `GET/PUT /nodes/{id}/block-rules` | NOD-14 |
 | `POST /nodes/{id}/entrances`、`PATCH/DELETE /entrances/{id}`、`PUT /entrances/{id}/rate-rules` | NOD-15…19 |
 | `GET /nodes/{id}/traffic`、`GET /traffic/summary` | NOD-20、DSH-03 |
+| `GET /entrances/{id}/traffic` | NOD-23 |
 | `GET/POST /node-groups`、`PATCH/DELETE /node-groups/{id}` | NOD-21 |
 | `GET/POST /plans`、`PATCH/DELETE /plans/{id}`、`POST /plans/{id}/impact`、`GET /plan-prices`、`PUT /plans/{id}/prices` | PLN-* |
 | `GET /alerts`、`POST /alerts/{id}/ack`、`GET/PUT /alerts/settings`、`POST /alerts/test`、`GET /alerts/notifications`、`POST …/retry` | ALR-* |
@@ -310,7 +314,7 @@
 | `GET/PUT /settings`、`PUT /settings/site`、`POST /settings/dns-check`、`/domains/impact`、`/server-names/remove` | SET-01…05、25 |
 | `GET /settings/access`、`POST …/admin-prefix`、`PUT …/admin-allow`、`PUT …/sub-path` | SET-06、07、10 |
 | `GET/PUT /settings/auth` | SET-08、14 |
-| `PUT /settings/security`、`/settings/nodes`、`/settings/probe`、`/settings/subscription` | SET-09、20、21、11、12 |
+| `PUT /settings/security`、`/settings/nodes`、`/settings/probe`、`/settings/subscription` | SET-09、20、21、11、12、26 |
 | `GET/PUT /settings/signup` | SET-13 |
 | `GET/PUT /settings/mail`、`POST …/test`、`/diagnose`、`GET /mail/outbox`、`POST …/retry`、`/settings/mail-templates*` | SET-15…18 |
 | `/settings/payments*` | SET-19 |

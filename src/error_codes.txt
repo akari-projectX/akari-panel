@@ -148,6 +148,7 @@ entrance.relay_address
 entrance.relay_only
 entrance.source_invalid
 entrance.too_many
+entrance.version_conflict
 export.group_invalid
 export.range_invalid
 export.range_too_long

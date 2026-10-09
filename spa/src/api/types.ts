@@ -191,9 +191,15 @@ export type MyTraffic = {
   daily_since: string | null;
   total: TrafficBytes;
   days: (TrafficBytes & { day: string })[];
-  /** name 为 null：隐藏或已删除的节点合在一起 */
-  nodes: (TrafficBytes & { name: string | null })[];
+  /**
+   * 按入口（直连 1x 与中转 10x 不会加在一起）。name / entrance 为 null：隐藏或已删除的线路合在一起。
+   * rate 是此刻生效的倍率，rules 是该入口的时段规则（全站时区）；都不是历史上的计费 ÷ 原始。
+   */
+  entrances: (TrafficBytes & { name: string | null; entrance: string | null; rate: number | null; rules: RateRule[] })[];
 };
+
+/** 入口的时段倍率规则：ISO 星期（1 = 周一），一天里的分钟 [start, end)，end < start 跨午夜，1440 = 24:00 */
+export type RateRule = { weekdays: number[]; start: number; end: number; rate: number };
 
 /* ───────────── 商店与订单 ───────────── */
 

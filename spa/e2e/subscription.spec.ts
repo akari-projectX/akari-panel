@@ -99,7 +99,7 @@ test('#32 #33 D9 D5 entrances: one row per entrance, the multiplier in effect no
   }
 });
 
-test('#34 traffic history by the site\'s days, per line', async ({ page }) => {
+test('#34 traffic history by the site\'s days, per entrance with the multiplier now', async ({ page }) => {
   await signIn(page, 'user@e2e.test');
   await open(page, '/traffic');
   await expect(page.getByRole('heading', { name: '使用明细' })).toBeVisible();
@@ -108,4 +108,13 @@ test('#34 traffic history by the site\'s days, per line', async ({ page }) => {
   await expect(line()).toBeVisible();
   await page.getByRole('tab', { name: '近 30 天' }).click();
   await expect(line()).toBeVisible();
+  // Per entrance, each with the multiplier in effect now (and its time-window
+  // rules), never a billed ÷ raw ratio mixing a 1× direct and a 2× relay.
+  const rowOf = (name: string) => page.getByRole('row').filter({ hasText: name });
+  await expect(page.getByRole('columnheader', { name: '当前倍率' })).toBeVisible();
+  await expect(rowOf('香港 01 · 直连')).toContainText('×1');
+  await expect(rowOf('香港 01 · IPLC')).toContainText('×2');
+  await expect(rowOf('日本 01 · 直连')).toContainText('×0.5');
+  await expect(rowOf('日本 01 · 直连')).toContainText('每天 00:00–24:00 ×0.5');
+  await expect(page.getByText('有效倍率')).toHaveCount(0);
 });

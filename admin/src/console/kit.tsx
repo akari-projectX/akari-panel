@@ -3,7 +3,7 @@ import { useQueryClient, type QueryKey } from "@tanstack/react-query";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { errorCode, errorText } from "../shared/errors";
 import { useLang, useTr } from "../shared/i18n";
-import { useToast } from "../shared/ui/overlays";
+import { useConfirm, useToast } from "../shared/ui/overlays";
 import { Icon } from "../shared/ui/icons";
 import { Badge, Button, type Tone } from "../shared/ui/primitives";
 import { copyText } from "../shared/format";
@@ -151,4 +151,19 @@ export function Stat({
       {hint && <div className="mt-1 text-xs text-muted-foreground">{hint}</div>}
     </div>
   );
+}
+
+/** Saving 0x makes the entrance free: ask first (never reached from an empty field). */
+export function useConfirmFree() {
+  const tr = useTr();
+  const confirm = useConfirm();
+  return (name: string) =>
+    confirm({
+      title: tr(`把 ${name} 设为 0x（免费）？`, `Make ${name} 0x (free)?`),
+      description: tr(
+        "0x 入口的流量不计入用户已用流量。确认要免费吗？",
+        "Traffic on a 0x entrance is not counted against users' quota. Make it free?",
+      ),
+      tone: "warning",
+    });
 }

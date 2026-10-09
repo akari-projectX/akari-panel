@@ -86,6 +86,8 @@ export type SettingsView = {
     rule_set_singbox_url: { value: string | null; effective: string; default: string };
     formats: { value: string[] | null; effective: string[] };
     import_clients: { value: string[] | null; effective: string[] };
+    /** next07: line names carry the entrance's base multiplier (default off). */
+    name_rate: boolean;
   };
 };
 export type Rule = { type: string; value: string; action: string };

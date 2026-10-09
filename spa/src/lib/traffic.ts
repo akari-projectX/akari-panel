@@ -1,4 +1,4 @@
-import type { MyTraffic } from '@/api';
+import type { MyTraffic, RateRule } from '@/api';
 import { fillDays, formatMonthDay, toGB } from '@/lib/format';
 
 /** 图表与明细表用的一天：GB，保留两位小数 */
@@ -22,15 +22,30 @@ export function trafficDays(t: MyTraffic | undefined): TrafficDay[] {
 }
 
 /**
- * 按节点汇总（原始流量 GB，从多到少）。name 为 null 的是隐藏或已删除的节点，合成一项。
- * rate 是这段时间的有效倍率：计费 ÷ 原始（D9 分时段倍率之后同一节点不同时段倍率不同，只能这样算）。
+ * 按入口汇总（原始流量 GB，从多到少）：线路名 =「节点 · 入口」，name 为 null 的是隐藏或已删除的线路，合成一项。
+ * rate 是此刻生效的倍率（面板按 D9 时段规则算好），不是计费 ÷ 原始——同一节点的直连与中转倍率不同，混在一起的比值没有意义。
  */
-export function trafficByNode(t: MyTraffic | undefined, other: string) {
-  return (t?.nodes ?? [])
-    .map((n) => {
-      const raw = n.up_bytes + n.down_bytes;
-      return { name: n.name ?? other, value: gb(raw), billed: gb(n.billed_bytes), rate: raw > 0 ? +(n.billed_bytes / raw).toFixed(2) : null };
-    })
+export function trafficByEntrance(t: MyTraffic | undefined, other: string) {
+  return (t?.entrances ?? [])
+    .map((n) => ({
+      name: n.name === null ? other : `${n.name} · ${n.entrance ?? ''}`,
+      value: gb(n.up_bytes + n.down_bytes),
+      billed: gb(n.billed_bytes),
+      rate: n.rate,
+      rules: n.rules,
+    }))
     .filter((n) => n.value > 0)
     .sort((a, b) => b.value - a.value);
+}
+
+const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+
+/** 一条时段规则的说明：「工作日 20:00–24:00 ×2」；t 是翻译函数（星期名走词典） */
+export function ruleText(r: RateRule, t: (s: string) => string): string {
+  const d = [...r.weekdays].sort((a, b) => a - b).join(',');
+  const days = d === '1,2,3,4,5,6,7' ? t('每天') : d === '1,2,3,4,5' ? t('工作日') : d === '6,7' ? t('周末')
+    : r.weekdays.map((w) => t(WEEKDAYS[w - 1])).join(' ');
+  const end = r.end === 1440 || r.end === 0 ? '24:00' : hhmm(r.end);
+  return `${days} ${hhmm(r.start)}–${end} ×${r.rate}`;
 }

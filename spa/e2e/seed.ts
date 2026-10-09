@@ -120,6 +120,10 @@ psql(`UPDATE user_plans SET expires_at = now() - interval '1 day' WHERE user_id 
 psql(`INSERT INTO traffic_daily (user_id, day, node_id, entrance_id, up_bytes, down_bytes, billed_bytes)
       SELECT '${main.id}', akari_site_day(now()) - d, '${hk.id}', '${direct(hk)}', (2 - d) * 536870912::bigint, (2 - d) * 1073741824::bigint, (2 - d) * 1610612736::bigint
       FROM generate_series(0, 1) d;`);
+/* 同一节点的中转（2×）与时段倍率入口（日本，全天 0.5×）：门户按入口列出、显示此刻的倍率，不把直连与中转混成一个比值 */
+psql(`INSERT INTO traffic_daily (user_id, day, node_id, entrance_id, up_bytes, down_bytes, billed_bytes) VALUES
+      ('${main.id}', akari_site_day(now()), '${hk.id}', '${relay.id}', 0, 1073741824, 2147483648),
+      ('${main.id}', akari_site_day(now()), '${jp.id}', '${direct(jp)}', 0, 536870912, 268435456);`);
 
 /* ── 返佣与提现：邀请人 + 被邀请人（邀请关系只在注册时写，这里直接写库），被邀请人经支付宝付款 → 佣金入账 ── */
 for (const p of PROJECTS) {

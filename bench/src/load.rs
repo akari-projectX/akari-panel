@@ -62,7 +62,7 @@ enum Scenario {
     Login,
     // W22 traffic history (30 days by default).
     TrafficUser,
-    TrafficUserNodes,
+    TrafficUserEntrances,
     TrafficNode,
     TrafficSummary,
     TrafficMe,
@@ -88,7 +88,7 @@ impl Scenario {
         Scenario::SubLinks,
         Scenario::Login,
         Scenario::TrafficUser,
-        Scenario::TrafficUserNodes,
+        Scenario::TrafficUserEntrances,
         Scenario::TrafficNode,
         Scenario::TrafficSummary,
         Scenario::TrafficMe,
@@ -118,7 +118,7 @@ impl Scenario {
             Scenario::SubLinks => "sub_links",
             Scenario::Login => "login",
             Scenario::TrafficUser => "traffic_user",
-            Scenario::TrafficUserNodes => "traffic_user_nodes",
+            Scenario::TrafficUserEntrances => "traffic_user_entrances",
             Scenario::TrafficNode => "traffic_node",
             Scenario::TrafficSummary => "traffic_summary",
             Scenario::TrafficMe => "traffic_me",
@@ -397,7 +397,7 @@ async fn request(ctx: &Ctx, s: Scenario, i: usize) -> bool {
                     ))
                     .header(reqwest::header::USER_AGENT, ua)
             }
-            Scenario::TrafficUser | Scenario::TrafficUserNodes => {
+            Scenario::TrafficUser | Scenario::TrafficUserEntrances => {
                 let Some(id) = ctx
                     .user_ids
                     .get(rng.random_range(0..ctx.user_ids.len().max(1)))
@@ -407,7 +407,7 @@ async fn request(ctx: &Ctx, s: Scenario, i: usize) -> bool {
                 let group = if matches!(s, Scenario::TrafficUser) {
                     "day"
                 } else {
-                    "node"
+                    "entrance"
                 };
                 admin(format!("users/{id}/traffic?group={group}"))
             }

@@ -1,7 +1,7 @@
 // INVENTORY §10 (servers, nodes, entrances) and §11 (plans, node groups).
 import { expect, test, type Page } from "@playwright/test";
 
-import { USER, apiJson, confirmDialog, dialog, openConsole, sql, toast, uniq } from "./helpers";
+import { ADMIN, USER, apiJson, confirmDialog, dialog, openConsole, sql, toast, uniq } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
 
@@ -199,6 +199,71 @@ test("NOD-10 NOD-11 NOD-12 NOD-13 NOD-14 NOD-15 NOD-16 NOD-17 NOD-18 NOD-19 NOD-
   await confirmDialog(page, node);
   await toast(page, "节点已删除");
   await expect(row).toHaveCount(0);
+});
+
+test("NOD-22 NOD-23: multiplier input safety, stale forms refused, the entrance's own traffic and multiplier history", async ({
+  page,
+}, info) => {
+  const { id: serverId } = await apiJson<{ id: string }>("POST", "/servers", { name: uniq(info, "rate-host") });
+  const node = uniq(info, "rate-node");
+  const { id: nodeId } = await apiJson<{ id: string }>("POST", "/nodes", {
+    server_id: serverId,
+    name: node,
+    inbound: { protocol: "vmess", port: 21000 + Math.floor(Math.random() * 20000), settings: { clients: [] } },
+  });
+  const view = () =>
+    apiJson<{ entrances: { id: string; name: string; rate_permille: number; sort: number; version: number }[] }>(
+      "GET",
+      `/nodes/${nodeId}`,
+    ).then((n) => n.entrances[0]);
+  const e = await view();
+  sql(
+    `INSERT INTO traffic_entrance_daily (entrance_id, node_id, day, up_bytes, down_bytes, billed_bytes, users) ` +
+      `VALUES ('${e.id}', '${nodeId}', akari_site_day(now()), 1048576, 2097152, 3145728, 1)`,
+  );
+  const url = `/nodes?open=entrance:${e.id}`;
+  await openConsole(page, url);
+  let d = dialog(page);
+  const rate = d.getByLabel("基础倍率（0–100）");
+  // NOD-22: an empty multiplier is an error (never 0x), nothing is sent.
+  await rate.fill("");
+  await d.getByRole("button", { name: "保存入口" }).click();
+  await expect(d.getByText(/请填写倍率/)).toBeVisible();
+  expect((await view()).rate_permille).toBe(1000);
+  // 0x asks first; cancelling sends nothing.
+  await rate.fill("0");
+  await d.getByRole("button", { name: "保存入口" }).click();
+  await expect(dialog(page)).toContainText("0x（免费）");
+  await dialog(page).getByRole("button", { name: "取消" }).click();
+  expect((await view()).rate_permille).toBe(1000);
+
+  // Two forms on the same entrance: the first save wins, the second is
+  // refused (409) and overwrites nothing.
+  const other = await page.context().newPage();
+  await openConsole(other, url);
+  const d2 = dialog(other);
+  await expect(d2.getByLabel("基础倍率（0–100）")).toHaveValue("1");
+  await rate.fill("10");
+  await d.getByRole("button", { name: "保存入口" }).click();
+  await toast(page, "入口已保存");
+  await expect(page.locator("[data-toast]", { hasText: "不追溯" }).first()).toBeVisible();
+  await d2.getByLabel("排序").fill("7");
+  await d2.getByRole("button", { name: "保存入口" }).click();
+  await toast(other, "入口已被修改（可能是其他管理员），请关闭后重新打开再保存");
+  await other.close();
+  const after = await view();
+  expect([after.rate_permille, after.sort]).toEqual([10000, 0]);
+
+  // NOD-23: the entrance's own days and its multiplier history (who, old → new).
+  d = dialog(page);
+  await expect(d.getByText("入口流量（近 30 天）")).toBeVisible();
+  const days = d.getByRole("list", { name: "每日流量" });
+  await expect(days).toContainText("原始 3.0 MiB");
+  const history = d.getByRole("list", { name: "倍率变更记录" });
+  await expect(history.getByText("1x → 10x")).toBeVisible();
+  await expect(history).toContainText(ADMIN);
+  await page.keyboard.press("Escape");
+  await apiJson("DELETE", `/nodes/${nodeId}`);
 });
 
 test("NOD-21 PLN-01 PLN-02 PLN-03 PLN-04: node groups, plans with prices and groups, term changes applied to subscribers, disable, delete", async ({
