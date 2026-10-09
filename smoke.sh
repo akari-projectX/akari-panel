@@ -1824,6 +1824,14 @@ python3 -c "import json; p = json.load(open('/tmp/akari-smoke/last'))['probe']; 
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"display_name":null,"tags":[],"sort":0}')" = "200" ] \
   && [ "$(entrance_patch '{"rate":1,"connect_host":"node1.example.test","connect_port":null}')" = "200" ] \
   || { echo "FAIL: reset W11 fields"; exit 1; }
+# next07 (migration 1100): for 30 s after 0.5x -> 1x the settlement bills
+# the lower rate (only under-bills). The quota steps below need 1x at once:
+# age the change past the window (the window itself is tested in
+# traffic::db_tests::rate_change_boundary_only_undercounts).
+[ "$(psql_q "SELECT akari_entrance_settle_rate('$DIRECT_ID') || '/' || akari_entrance_rate('$DIRECT_ID', now())")" = "500/1000" ] \
+  || { echo "FAIL: a raise does not settle at the lower rate within the window"; exit 1; }
+psql_q "UPDATE entrances SET rate_changed_at = rate_changed_at - interval '1 minute' WHERE id = '$DIRECT_ID'" >/dev/null
+[ "$(psql_q "SELECT akari_entrance_settle_rate('$DIRECT_ID')")" = "1000" ] || { echo "FAIL: settle rate after the window"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_D?confirm=true")" = "204" ] || { echo "FAIL: delete D"; exit 1; }
 # The test-URL server is done (background helpers inherit the caller's
 # flock descriptor: never leave one running).
