@@ -772,3 +772,257 @@ async fn relay_entrance_lifecycle() {
     drop(state);
     db.drop().await;
 }
+
+/// next07: the multiplier is never taken as 0x (or a default) from a
+/// missing or empty value — a relay needs one, PATCH without it keeps the
+/// current one, null / "" are refused — and a stale form cannot overwrite
+/// newer values: PATCH with the `version` it was opened at is refused 409
+/// `entrance.version_conflict` once the entrance changed, nothing written.
+#[tokio::test]
+async fn rate_input_safety_and_stale_forms() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = crate::state::AppState::for_test(db.pool.clone()).await;
+    let admin = client_for(&state, db.admin().await).await;
+    let n = db.node().await;
+    let relay = json!({"name": "IPLC", "connect_host": "relay.example.net", "connect_port": 30443,
+                       "listen_port": 20443, "source_cidrs": ["203.0.113.7"]});
+    let path = format!("/test/api/v1/nodes/{n}/entrances");
+    for rate in [None, Some(json!(null)), Some(json!("")), Some(json!(-1))] {
+        let mut b = relay.clone();
+        if let Some(r) = &rate {
+            b["rate"] = r.clone();
+        }
+        let r = admin.post(&path, b).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{rate:?}");
+    }
+    let n_entrances: i64 = sqlx::query_scalar("SELECT count(*) FROM entrances WHERE node_id = $1")
+        .bind(n)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(n_entrances, 1, "nothing created");
+
+    let e: Uuid = sqlx::query_scalar("SELECT id FROM entrances WHERE node_id = $1")
+        .bind(n)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    let epath = format!("/test/api/v1/entrances/{e}");
+    let patch = |body: serde_json::Value| {
+        let (admin, epath) = (&admin, epath.clone());
+        async move { admin.req(Method::PATCH, &epath, Some(body)).await }
+    };
+    let r = patch(json!({"rate": 10})).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let v1 = r.json()["version"].as_i64().unwrap();
+    assert_eq!(r.json()["rate_permille"], 10_000);
+    // Absent = unchanged; null and "" refused.
+    let r = patch(json!({"name": "主线"})).await;
+    assert_eq!(r.json()["rate_permille"], 10_000);
+    for bad in [json!(null), json!("")] {
+        let r = patch(json!({ "rate": bad })).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    // Explicit 0x is allowed (the console asks for confirmation).
+    let r = patch(json!({"rate": 0})).await;
+    assert_eq!(r.json()["rate_permille"], 0);
+    let current = r.json()["version"].as_i64().unwrap();
+    assert!(current > v1);
+
+    // Two forms opened at `current`: the first save wins, the second is
+    // refused and writes nothing.
+    let r = patch(json!({"rate": 10, "version": current})).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json()["version"], current + 1);
+    let r = patch(json!({"name": "stale", "rate": 1, "version": current})).await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    assert_eq!(r.json()["code"], "entrance.version_conflict");
+    let (name, rate, version): (String, i32, i64) =
+        sqlx::query_as("SELECT name, rate_permille, version FROM entrances WHERE id = $1")
+            .bind(e)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (name.as_str(), rate, version),
+        ("主线", 10_000, current + 1)
+    );
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'entrance.update' AND target_id = $1",
+    )
+    .bind(e.to_string())
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(audits, 4, "the refused save is not audited");
+    db.drop().await;
+}
+
+/// next07: subscription line names are stable. Clients (mihomo / Clash
+/// Verge, sing-box, Stash, Hiddify, Shadowrocket, v2rayN) remember the
+/// user's selection by proxy name; a name carrying the live multiplier
+/// changed on every rate change and time-window flip and the selection fell
+/// back to the first proxy (the direct entrance). Every format's whole body
+/// is byte-identical across a base change and a time-window rule taking
+/// effect. With the operator switch (系统设置 → 订阅 "订阅线路名显示倍率")
+/// names show the base multiplier, never the time-window one.
+#[tokio::test]
+async fn subscription_names_are_stable_across_rate_changes() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = crate::state::AppState::for_test_with(db.pool.clone(), |c| {
+        c.limits.sub_rate_per_token = 1000;
+        c.limits.sub_rate_per_ip = 1000;
+    })
+    .await;
+    let admin = client_for(&state, db.admin().await).await;
+    let g = admin
+        .post("/test/api/v1/node-groups", json!({"name": "all"}))
+        .await
+        .json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = admin
+        .post(
+            "/test/api/v1/nodes",
+            json!({
+                "name": "hk",
+                "inbound": {"protocol": "vless", "port": 443,
+                            "settings": {"clients": [], "decryption": "none"}},
+                "display_name": "香港 01",
+                "direct": {"connect_host": "1.2.3.4", "group_ids": [g]}
+            }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let node: Uuid = r.json()["id"].as_str().unwrap().parse().unwrap();
+    let r = admin
+        .post(
+            &format!("/test/api/v1/nodes/{node}/entrances"),
+            json!({"name": "中转A", "connect_host": "relay.example.net", "connect_port": 30443,
+                   "listen_port": 20443, "source_cidrs": ["203.0.113.7"], "rate": 1,
+                   "group_ids": [g]}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let relay = r.json()["id"].as_str().unwrap().to_string();
+    let u = db.user().await;
+    let p = admin
+        .post(
+            "/test/api/v1/plans",
+            json!({"name": "basic", "period": "monthly", "group_ids": [g]}),
+        )
+        .await
+        .json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = admin
+        .put(
+            &format!("/test/api/v1/users/{u}/plan"),
+            json!({"plan_id": p, "period": "month"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let token = {
+        let mut tx = db.pool.begin().await.unwrap();
+        let t =
+            crate::sub::rotate_token(&mut tx, state.master_key(), &crate::audit::Actor::test(), u)
+                .await
+                .unwrap()
+                .unwrap();
+        tx.commit().await.unwrap();
+        t
+    };
+    let uas = [
+        "clash.meta",
+        "mihomo/1.19.32",
+        "clash-verge/v2.2.3",
+        "Stash/2.4",
+        "sing-box 1.14.2",
+        "HiddifyNext/2.5",
+        "Shadowrocket/2070",
+        "v2rayN/7.0",
+        "",
+    ];
+    let fetch_all = || {
+        let (state, token) = (&state, &token);
+        async move {
+            let mut out = Vec::new();
+            for ua in uas {
+                let mut c = crate::testdb::http::Client::new(state, crate::testdb::http::rand_ip());
+                c.headers = vec![("user-agent".into(), ua.into())];
+                let r = c.get(&format!("/sub/{token}")).await;
+                assert_eq!(r.status, StatusCode::OK, "{ua}");
+                out.push(String::from_utf8(r.body).unwrap());
+            }
+            out
+        }
+    };
+    let before = fetch_all().await;
+    assert!(before[0].contains("香港 01 中转A"), "{}", before[0]);
+    let rpath = format!("/test/api/v1/entrances/{relay}");
+    let r = admin
+        .req(Method::PATCH, &rpath, Some(json!({"rate": 10})))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let after_base = fetch_all().await;
+    // A time-window rule in effect now (every minute of the week).
+    let r = admin
+        .put(
+            &format!("{rpath}/rate-rules"),
+            json!({"rules": [{"weekdays": [1, 2, 3, 4, 5, 6, 7], "start": "00:00", "end": "24:00",
+                              "rate": 2}]}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json()["entrance"]["rate_now"], 2.0);
+    let in_window = fetch_all().await;
+    for (i, ua) in uas.iter().enumerate() {
+        assert_eq!(before[i], after_base[i], "{ua}: base change renamed");
+        assert_eq!(before[i], in_window[i], "{ua}: time window renamed");
+        for b in [&before[i], &in_window[i]] {
+            assert!(!b.contains("10.0x") && !b.contains("2.0x"), "{ua}: {b}");
+        }
+    }
+
+    // The operator switch: the base multiplier (10x), never the window's
+    // (2x); 1x lines unchanged.
+    let version = admin.get("/test/api/v1/settings").await.json()["version"]
+        .as_i64()
+        .unwrap();
+    let r = admin
+        .put(
+            "/test/api/v1/settings/subscription",
+            json!({"version": version, "name_rate": true}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json()["subscription"]["name_rate"], true);
+    let named = fetch_all().await;
+    assert!(named[0].contains("香港 01 中转A 10.0x"), "{}", named[0]);
+    assert!(!named[0].contains("2.0x"));
+    assert!(named[0].contains("香港 01 直连"));
+    // Back off: the original names.
+    let r = admin
+        .put(
+            "/test/api/v1/settings/subscription",
+            json!({"version": version + 1, "name_rate": false}),
+        )
+        .await;
+    assert_eq!(r.json()["subscription"]["name_rate"], false);
+    assert_eq!(fetch_all().await, before);
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'settings.subscription.update' \
+         AND after->>'name_rate' IS NOT NULL",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(audits, 2);
+    db.drop().await;
+}

@@ -148,6 +148,7 @@ export const ERRORS: Record<string, [zh: string, en: string]> = {
   "entrance.relay_only": ["监听端口与来源 IP 只属于中转入口", "Listen_port and source_cidrs belong to relay entrances"],
   "entrance.source_invalid": ["中转出口 IP 无效：{detail}", "Source_cidrs: {detail}"],
   "entrance.too_many": ["该节点的入口编号已用尽", "The server has used up its entrance numbers"],
+  "entrance.version_conflict": ["入口已被修改（可能是其他管理员），请关闭后重新打开再保存", "The entrance was changed meanwhile (perhaps by another admin); close and reopen it, then save again"],
   "export.group_invalid": ["分组只能是按日或按节点", "Group must be day or node"],
   "export.range_invalid": ["开始日期不能晚于结束日期", "From must not be after to"],
   "export.range_too_long": ["日期范围不能超过 {max_range_days} 天", "Range longer than {max_range_days} days"],
