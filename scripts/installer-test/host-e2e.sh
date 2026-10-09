@@ -107,28 +107,41 @@ PY
 
 parts=${PARTS:-all}
 
-# --- 1. Docker mode: refused v0.3 upgrade, install --------------------------------------------
+# --- 1. Docker mode: upgrade from the previous release (refused from v0.3), install --------------------------------------------
 if [ "$parts" = migrate ]; then
 	:
 else
 	if [ -n "$prev" ]; then
-		# v0.4 squashed the v0.3.x migrations (1000_baseline): the upgrade
-		# must be refused before anything changes; then purge.
 		log "docker: install $prev from GitHub"
 		sh "$root/scripts/install.sh" --yes --mode docker --version "$prev" --domain myapp.test --local-certs || fail "docker install $prev"
 		check_panel
 		img_before=$(grep '^AKARI_IMAGE=' /opt/akari/.env)
-		log "docker: upgrade $prev -> $new must be refused"
-		if local_rel akari-ctl upgrade --yes --version "$new" >"$work/refused.log" 2>&1; then
+		case $prev in
+		v0.3.*)
+			# v0.4 squashed the v0.3.x migrations (1000_baseline): the
+			# upgrade must be refused before anything changes.
+			log "docker: upgrade $prev -> $new must be refused"
+			if local_rel akari-ctl upgrade --yes --version "$new" >"$work/refused.log" 2>&1; then
+				cat "$work/refused.log"
+				fail "the docker upgrade from $prev was not refused"
+			fi
 			cat "$work/refused.log"
-			fail "the docker upgrade from $prev was not refused"
-		fi
-		cat "$work/refused.log"
-		grep -q 'fresh install required; see docs/DEPLOY.md' "$work/refused.log" || fail "no clear refusal message"
-		ls -d /var/backups/akari/akari-* >/dev/null 2>&1 && fail "the refused upgrade made a backup"
-		[ "$(grep '^AKARI_IMAGE=' /opt/akari/.env)" = "$img_before" ] || fail ".env changed by the refused upgrade"
-		check_panel
-		echo "ok: docker upgrade from $prev refused cleanly"
+			grep -q 'fresh install required; see docs/DEPLOY.md' "$work/refused.log" || fail "no clear refusal message"
+			ls -d /var/backups/akari/akari-* >/dev/null 2>&1 && fail "the refused upgrade made a backup"
+			[ "$(grep '^AKARI_IMAGE=' /opt/akari/.env)" = "$img_before" ] || fail ".env changed by the refused upgrade"
+			check_panel
+			echo "ok: docker upgrade from $prev refused cleanly"
+			;;
+		*)
+			# A v0.4+ release: the in-place upgrade to this build must work.
+			log "docker: upgrade $prev -> $new"
+			local_rel akari-ctl upgrade --yes --version "$new" || fail "docker upgrade $prev -> $new"
+			grep -q "^AKARI_IMAGE=.*:${new#v}@sha256:" /opt/akari/.env || fail ".env does not pin $new after the upgrade"
+			check_panel
+			echo "ok: docker upgrade from $prev"
+			;;
+		esac
+		# Then purge and install fresh.
 		akari-ctl uninstall --yes --purge --confirm purge || fail "docker purge $prev"
 	fi
 	log "docker: install $new"

@@ -155,23 +155,35 @@ check_panel() {
 }
 
 if [ -n "$prev" ]; then
-	# v0.4 squashed the v0.3.x migrations (1000_baseline): upgrading a v0.3.x
-	# install must be refused before anything changes; then purge and
-	# install fresh.
 	log "install $prev from GitHub (keyless cosign) — bare, $address"
 	inst "$c" sh /src/scripts/install.sh --yes --mode bare --version "$prev" "${addr_args[@]}" || fail "install $prev"
 	check_panel "$prev"
-	log "upgrade $prev -> $new must be refused"
-	if inst "${local_rel[@]}" "$c" akari-ctl upgrade --yes --version "$new" >/tmp/akari-refused.log 2>&1; then
+	case $prev in
+	v0.3.*)
+		# v0.4 squashed the v0.3.x migrations (1000_baseline): upgrading a
+		# v0.3.x install must be refused before anything changes.
+		log "upgrade $prev -> $new must be refused"
+		if inst "${local_rel[@]}" "$c" akari-ctl upgrade --yes --version "$new" >/tmp/akari-refused.log 2>&1; then
+			cat /tmp/akari-refused.log
+			fail "the upgrade from $prev was not refused"
+		fi
 		cat /tmp/akari-refused.log
-		fail "the upgrade from $prev was not refused"
-	fi
-	cat /tmp/akari-refused.log
-	grep -q 'fresh install required; see docs/DEPLOY.md' /tmp/akari-refused.log || fail "no clear refusal message"
-	cx sh -c 'ls -d /var/backups/akari/akari-* >/dev/null 2>&1' && fail "the refused upgrade made a backup"
-	cx grep -q "^VERSION=$prev\$" /etc/akari/install.env || fail "install.env changed by the refused upgrade"
-	check_panel "$prev"
-	echo "ok: upgrade from $prev refused cleanly"
+		grep -q 'fresh install required; see docs/DEPLOY.md' /tmp/akari-refused.log || fail "no clear refusal message"
+		cx sh -c 'ls -d /var/backups/akari/akari-* >/dev/null 2>&1' && fail "the refused upgrade made a backup"
+		cx grep -q "^VERSION=$prev\$" /etc/akari/install.env || fail "install.env changed by the refused upgrade"
+		check_panel "$prev"
+		echo "ok: upgrade from $prev refused cleanly"
+		;;
+	*)
+		# A v0.4+ release: the in-place upgrade to this build must work.
+		log "upgrade $prev -> $new"
+		inst "${local_rel[@]}" "$c" akari-ctl upgrade --yes --version "$new" || fail "upgrade $prev -> $new"
+		cx grep -q "^VERSION=$new\$" /etc/akari/install.env || fail "install.env does not record $new"
+		check_panel "$new"
+		echo "ok: upgrade from $prev"
+		;;
+	esac
+	# Then purge and install fresh.
 	inst "$c" sh /src/scripts/install.sh uninstall --yes --purge --confirm purge || fail "purge $prev"
 fi
 log "install $new — bare, $address"
