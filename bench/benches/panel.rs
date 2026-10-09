@@ -157,7 +157,7 @@ fn sub_rows(nodes: usize) -> Vec<akari_panel::sub::NodeRow> {
             display_name: None,
             tags: vec![],
             entrance: entrance.into(),
-            rate_permille: 1000,
+            name_rate_permille: None,
             inbound,
             server: Some(format!("198.51.100.{}", 1 + i % 250)),
             port: None,
