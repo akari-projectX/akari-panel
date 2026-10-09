@@ -9,6 +9,7 @@ import { afterLogin, loadPage, prefixBase } from "../shared/base";
 import { errorTextWith, type ErrorTable } from "../shared/errors";
 import { useLang, useSetLang, useTr } from "../shared/i18n";
 import { createCredential, getAssertion, passkeysSupported } from "../shared/passkey";
+import { mergeOptions } from "./guard";
 import { useTheme } from "../shared/theme";
 import { Icon } from "../shared/ui/icons";
 import { Button, Callout, Checkbox, Field, Input } from "../shared/ui/primitives";
@@ -57,28 +58,52 @@ declare global {
   }
 }
 
+/** How often an open sign-in page fetches the guard settings again. */
+const GUARD_POLL_MS = 30_000;
+
 const TURNSTILE_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
-/** The Turnstile widget (only when switched on for logins; the page's CSP then allows it). */
+/** Why the widget is not there: its script did not load (reload the page) or it failed / timed out (reset it). */
+type TurnstileFailure = "script" | "widget";
+
+/**
+ * The Turnstile widget (only when switched on for logins; the page's CSP then allows it).
+ * A token is single-use: the page bumps `resetKey` after every attempt that sent one, and the
+ * held token is dropped before the widget fetches a new one. Expired, failed or timed-out
+ * challenges drop it too, so the button stays disabled until a fresh token arrives; failures
+ * and a script that cannot load are reported (`onFail`) so the page says so, with a retry.
+ */
 function TurnstileBox({
   siteKey,
   onToken,
+  onFail,
   resetKey,
 }: {
   siteKey: string;
   onToken: (t: string) => void;
+  onFail: (kind: TurnstileFailure) => void;
   resetKey: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const widget = useRef<string | null>(null);
+  const fail = useRef(onFail);
+  useEffect(() => {
+    fail.current = onFail;
+  });
   useEffect(() => {
     let cancelled = false;
+    const failed = (kind: TurnstileFailure) => () => {
+      onToken("");
+      if (!cancelled) fail.current(kind);
+    };
     const mount = () => {
       if (cancelled || !ref.current || !window.turnstile || widget.current) return;
       widget.current = window.turnstile.render(ref.current, {
         sitekey: siteKey,
         callback: (t: string) => onToken(t),
         "expired-callback": () => onToken(""),
+        "error-callback": failed("widget"),
+        "timeout-callback": failed("widget"),
       });
     };
     if (window.turnstile) mount();
@@ -91,6 +116,7 @@ function TurnstileBox({
         document.head.appendChild(s);
       }
       s.addEventListener("load", mount);
+      s.addEventListener("error", failed("script"));
     }
     return () => {
       cancelled = true;
@@ -98,8 +124,8 @@ function TurnstileBox({
   }, [siteKey, onToken]);
   useEffect(() => {
     if (resetKey && widget.current && window.turnstile) {
-      window.turnstile.reset(widget.current);
       onToken("");
+      window.turnstile.reset(widget.current);
     }
   }, [resetKey, onToken]);
   return <div ref={ref} data-testid="turnstile" className="min-h-16" />;
@@ -178,11 +204,25 @@ export function LoginApp() {
   const setLang = useSetLang();
   const [theme, toggleTheme] = useTheme();
   const [opts, setOpts] = useState<AuthOptions | null>(null);
+  const [turnstileAllowed, setTurnstileAllowed] = useState<boolean | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [website, setWebsite] = useState("");
   const [captcha, setCaptcha] = useState("");
   const [captchaReset, setCaptchaReset] = useState(0);
+  const [captchaFailed, setCaptchaFailed] = useState<TurnstileFailure | null>(null);
+  const onCaptcha = useCallback((t: string) => {
+    setCaptcha(t);
+    if (t) setCaptchaFailed(null);
+  }, []);
+  const retryCaptcha = () => {
+    if (captchaFailed === "script") {
+      location.reload();
+      return;
+    }
+    setCaptchaFailed(null);
+    setCaptchaReset((n) => n + 1);
+  };
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [passkeyOnly, setPasskeyOnly] = useState(false);
@@ -191,29 +231,67 @@ export function LoginApp() {
   // The form token's age is checked against the minimum submit time: a fast
   // (autofilled) submission waits out the rest instead of being refused.
   const loadedAt = useRef(0);
+  const formToken = opts?.guard?.form_token;
   useEffect(() => {
     loadedAt.current = Date.now();
-  }, [opts]);
+  }, [formToken]);
 
-  useEffect(() => {
+  // The guard settings (minimum time, Turnstile on sign-in) can change while
+  // this page is open, and a submission caught with stale ones only gets the
+  // ordinary failure: fetch them again (with a fresh form token) after every
+  // attempt, every GUARD_POLL_MS and when the window comes back.
+  const loadOptions = useCallback(() => {
     authGet<AuthOptions>("/options")
       .then((o) => {
-        setOpts(o);
-        document.title = `${o.site_name} · ${lang === "en" ? "Admin sign-in" : "管理后台登录"}`;
-        const fav = o.branding?.favicon_url;
-        if (fav) {
-          const link = document.createElement("link");
-          link.rel = "icon";
-          link.href = `${prefixBase}/${fav}`;
-          document.head.appendChild(link);
-        }
+        setTurnstileAllowed((cur) => cur ?? !!o.guard?.turnstile?.login);
+        // A held, still fresh form token survives the refetch (mergeOptions): no new wait.
+        setOpts((cur) => mergeOptions(cur, o, Date.now() - loadedAt.current));
       })
-      .catch(() => setOpts({ site_name: "Akari", branding: null, guard: null, passkey: false }));
-  }, [lang]);
+      .catch(() => setOpts((cur) => cur ?? { site_name: "Akari", branding: null, guard: null, passkey: false }));
+  }, []);
+  useEffect(() => {
+    loadOptions();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") loadOptions();
+    };
+    const timer = window.setInterval(loadOptions, GUARD_POLL_MS);
+    window.addEventListener("focus", loadOptions);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", loadOptions);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [loadOptions]);
+
+  // The page's CSP allows Cloudflare's script only if Turnstile was on for
+  // sign-ins when the page was served (console::app_entry): switched on
+  // later, the widget cannot load (nor is it mounted), so load the page again.
+  const wantTurnstile = !!opts?.guard?.turnstile?.login;
+  useEffect(() => {
+    if (wantTurnstile && turnstileAllowed === false) location.reload();
+  }, [wantTurnstile, turnstileAllowed]);
+
+  const siteName = opts?.site_name;
+  useEffect(() => {
+    if (siteName) document.title = `${siteName} · ${lang === "en" ? "Admin sign-in" : "管理后台登录"}`;
+  }, [siteName, lang]);
+  const favicon = opts?.branding?.favicon_url;
+  useEffect(() => {
+    if (!favicon) return;
+    const link = document.createElement("link");
+    link.rel = "icon";
+    link.href = `${prefixBase}/${favicon}`;
+    document.head.appendChild(link);
+    return () => link.remove();
+  }, [favicon]);
 
   const finish = async (answer: LoginAnswer) => {
     if (answer.role !== "admin") {
       await logout().catch(() => {});
+      // The token was spent on this attempt: the next one needs a fresh one.
+      setCaptchaReset((n) => n + 1);
+      loadOptions();
       setBusy(false);
       setError(
         tr("这不是管理员账户。用户请在门户登录。", "This is not an admin account. Users sign in on the portal."),
@@ -245,6 +323,7 @@ export function LoginApp() {
     } catch (err) {
       setBusy(false);
       setCaptchaReset((n) => n + 1);
+      loadOptions();
       if (err instanceof ApiError && err.code === "auth.passkey_required") {
         setPasskeyOnly(true);
         setError(null);
@@ -276,7 +355,7 @@ export function LoginApp() {
     }
   };
 
-  const turnstile = opts?.guard?.turnstile?.login ? opts.guard.turnstile : null;
+  const turnstile = opts?.guard?.turnstile?.login && turnstileAllowed ? opts.guard.turnstile : null;
   const logo = opts?.branding?.logo_url;
   const passkeyOk = !!opts?.passkey && passkeysSupported();
 
@@ -382,7 +461,27 @@ export function LoginApp() {
                     </div>
                   )}
                   {turnstile && (
-                    <TurnstileBox siteKey={turnstile.site_key} onToken={setCaptcha} resetKey={captchaReset} />
+                    <>
+                      <TurnstileBox
+                        siteKey={turnstile.site_key}
+                        onToken={onCaptcha}
+                        onFail={setCaptchaFailed}
+                        resetKey={captchaReset}
+                      />
+                      {captchaFailed && (
+                        <div role="alert" className="flex items-center gap-3 text-[13px] text-destructive">
+                          <span>
+                            {tr(
+                              "人机验证加载失败，请刷新重试",
+                              "Human verification could not load, reload and try again",
+                            )}
+                          </span>
+                          <Button type="button" variant="ghost" size="sm" onClick={retryCaptcha}>
+                            {tr("重试", "Retry")}
+                          </Button>
+                        </div>
+                      )}
+                    </>
                   )}
                   <Button
                     type="submit"
@@ -390,7 +489,7 @@ export function LoginApp() {
                     size="lg"
                     className="w-full"
                     loading={busy}
-                    disabled={!email || !password || (!!turnstile && !captcha)}
+                    disabled={!email || !password || (wantTurnstile && (!turnstile || !captcha))}
                   >
                     {tr("登录", "Sign in")}
                   </Button>

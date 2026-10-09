@@ -8,6 +8,7 @@ import {
   AuthCtx, SiteCtx, safeRedirect, scopeOf, useAuth, type AuthCtxValue, type Scope,
 } from '@/lib/auth';
 import { setSiteTimeZone } from '@/lib/format';
+import { sameSiteOptions, turnstileOn } from '@/api/guard';
 import { PageLoading } from '@/components/loading';
 import { useLocale } from '@/i18n';
 
@@ -16,20 +17,37 @@ import { useLocale } from '@/i18n';
 export function SiteProvider({ children }: { children: ReactNode }) {
   const [options, setOptions] = useState<AuthOptions>();
   const [error, setError] = useState<Error>();
-  const [tick, setTick] = useState(0);
+  const current = useRef<AuthOptions | undefined>(undefined);
+  /* 这一页的 CSP 是否放行了 Turnstile：面板在打开页面那一刻有表单开了 Turnstile 才放行（web::CSP_TURNSTILE） */
+  const [turnstileAllowed, setTurnstileAllowed] = useState<boolean>();
+
+  /*
+   * 重新取一遍（每次都带新的表单令牌，记在 api/guard 里）。站长随时可能在后台改防护设置（最短提交时间、
+   * Turnstile 开关）：公开表单挂着、提交失败、窗口回到前台时都会再取，见 lib/form-guard。
+   * 只有表单令牌以外的内容变了才换 options，免得每次都整页重渲染。
+   */
+  const refresh = useCallback(
+    () =>
+      authApi.options().then(
+        (o) => {
+          setTurnstileAllowed((cur) => cur ?? turnstileOn(o));
+          if (!current.current || !sameSiteOptions(current.current, o)) {
+            current.current = o;
+            setOptions(o);
+          }
+          setError(undefined);
+          setSiteTimeZone(o.timezone);
+        },
+        (e: Error) => {
+          if (!current.current) setError(e);
+        },
+      ),
+    [],
+  );
 
   useEffect(() => {
-    let alive = true;
-    authApi.options()
-      .then((o) => {
-        if (!alive) return;
-        setOptions(o);
-        setError(undefined);
-        setSiteTimeZone(o.timezone);
-      })
-      .catch((e: Error) => { if (alive) setError(e); });
-    return () => { alive = false; };
-  }, [tick]);
+    void refresh();
+  }, [refresh]);
 
   /* 站长配的 favicon 和站点名：换掉 index.html 里的默认值 */
   useEffect(() => {
@@ -41,8 +59,10 @@ export function SiteProvider({ children }: { children: ReactNode }) {
     link.removeAttribute('type');
   }, [options?.branding?.favicon_url]);
 
-  const reload = useCallback(() => setTick((n) => n + 1), []);
-  const value = useMemo(() => ({ options, error, reload }), [options, error, reload]);
+  const value = useMemo(
+    () => ({ options, error, refresh, turnstileAllowed }),
+    [options, error, refresh, turnstileAllowed],
+  );
   return <SiteCtx.Provider value={value}>{children}</SiteCtx.Provider>;
 }
 

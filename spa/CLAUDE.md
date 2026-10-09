@@ -24,7 +24,7 @@ CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typechec
 
 | 路径 | 内容 |
 |---|---|
-| `src/api/` | **与面板的唯一边界**，页面只从 `@/api` 导入：`base.ts`（`/api/v1`、`/auth`、品牌图片、深链接）、`http.ts`（请求、`ApiError{status,code,params}`、会话事件：401 / 403 `account.banned` 广播给 AuthProvider）、`types.ts`（面板视图的形状，手工镜像 Rust 视图——改后端字段要同步）、`index.ts`（全部调用：auth / me / account（注销）/ passkey / shop / order / wallet / invite / ticket / content / page）、`guard.ts`（表单令牌、最短提交时间、蜜罐、Turnstile 令牌）、`pow.ts`（关闭邮箱验证时注册的工作量证明）、`webauthn.ts`（options ↔ 浏览器 API 的 base64url 编解码） |
+| `src/api/` | **与面板的唯一边界**，页面只从 `@/api` 导入：`base.ts`（`/api/v1`、`/auth`、品牌图片、深链接）、`http.ts`（请求、`ApiError{status,code,params}`、会话事件：401 / 403 `account.banned` 广播给 AuthProvider）、`types.ts`（面板视图的形状，手工镜像 Rust 视图——改后端字段要同步）、`index.ts`（全部调用：auth / me / account（注销）/ passkey / shop / order / wallet / invite / ticket / content / page）、`guard.ts`（表单令牌、最短提交时间、蜜罐、Turnstile 令牌；`lib/form-guard` 在表单挂着时定期/回到前台/每次提交后经 `SiteProvider.refresh` 重新取 `/auth/options`，打开后才开启的 Turnstile 让页面重新加载一次；组件出错/超时/脚本加载失败时 `components/form-guard` 显示「人机验证加载失败，请刷新重试」+「重试」（脚本失败 = 重新加载页面，组件失败 = 重置组件））、`pow.ts`（关闭邮箱验证时注册的工作量证明）、`webauthn.ts`（options ↔ 浏览器 API 的 base64url 编解码） |
 | `src/lib/routes.ts` | 路由表与每页的账户范围（`PAGE_SCOPES`）。**顶层路径必须与面板 `access::PORTAL_PAGES` 一致**：面板测试 `access::tests::routes_match_the_portal` 读这个文件比对 |
 | `src/lib/auth.ts`、`auth-provider.tsx` | 登录态：`GET /me` 为准（401 或统一拒绝 404 = 没登录；同一浏览器里的管理员会话在门户上就是 404）；范围 `scopeOf`：full（AuthUser）/ renewal（到期或流量用完，ShopUser）/ banned（PortalUser）。管理员不在门户里（D4） |
 | `src/lib/sub-links.ts` | 订阅地址只用 `me.sub_url`（D11 随机路径、D8 订阅域名；相对地址补本站 origin）；格式选择按 `me.sub_formats`，一键导入按 `me.sub_import_clients`（面板 `sub::IMPORT_CLIENTS`，已按开着的格式筛过）在前端按各客户端 scheme 拼链接 |

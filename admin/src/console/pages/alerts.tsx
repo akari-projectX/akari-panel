@@ -16,6 +16,7 @@ import {
   Field,
   Input,
   PageHeader,
+  SecretInput,
   Select,
   Skeleton,
   Switch,
@@ -431,7 +432,7 @@ function AlertSettings() {
               label={tr("Bot token（只写）", "Bot token (write-only)")}
               hint={f.telegram_token_set ? tr("已保存；留空 = 不修改", "Saved; empty = keep") : undefined}
             >
-              <Input type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} />
+              <SecretInput value={token} onChange={(e) => setToken(e.target.value)} />
             </Field>
             <Field label="Chat ID">
               <Input
@@ -479,7 +480,7 @@ function AlertSettings() {
               hint={f.webhook_secret_set ? tr("已保存；留空 = 不修改", "Saved; empty = keep") : undefined}
             >
               <div className="flex gap-2">
-                <Input type="password" autoComplete="off" value={secret} onChange={(e) => setSecret(e.target.value)} />
+                <SecretInput value={secret} onChange={(e) => setSecret(e.target.value)} />
                 <Button onClick={randomSecret}>{tr("随机生成", "Random")}</Button>
               </div>
             </Field>

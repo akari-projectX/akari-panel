@@ -14,6 +14,7 @@ import {
   CardHeader,
   Field,
   Input,
+  SecretInput,
   Select,
   Skeleton,
   Switch,
@@ -191,7 +192,7 @@ function BotCard() {
             label={tr("Turnstile 密钥（只写）", "Turnstile secret (write-only)")}
             hint={f.turnstile_secret_set ? tr("已保存；留空 = 不修改", "Saved; empty = keep") : undefined}
           >
-            <Input type="password" autoComplete="off" value={secret} onChange={(e) => setSecret(e.target.value)} />
+            <SecretInput value={secret} onChange={(e) => setSecret(e.target.value)} />
           </Field>
         </div>
         {sw("turnstile_login", tr("登录使用 Turnstile", "Turnstile on sign-in"))}

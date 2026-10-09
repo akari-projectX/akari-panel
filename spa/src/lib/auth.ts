@@ -47,8 +47,17 @@ export function useAuth() {
   return c;
 }
 
-/** 站点公开配置（/auth/options）：注册开关、邀请码、Turnstile、品牌……由 SiteProvider 取一次 */
-export type SiteCtxValue = { options?: AuthOptions; error?: Error; reload: () => void };
+/**
+ * 站点公开配置（/auth/options）：注册开关、邀请码、Turnstile、品牌……由 SiteProvider 启动时取，
+ * refresh 再取一遍（公开表单用它跟上站长对防护设置的改动）
+ */
+export type SiteCtxValue = {
+  options?: AuthOptions;
+  error?: Error;
+  refresh: () => Promise<void>;
+  /** 这一页的 CSP 是否放行 Turnstile（页面打开时有表单开了 Turnstile；还不知道是 undefined） */
+  turnstileAllowed?: boolean;
+};
 export const SiteCtx = createContext<SiteCtxValue | null>(null);
 
 export function useSiteOptions() {

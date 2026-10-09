@@ -97,6 +97,13 @@ groups:
           summary: "Many logins hit the rate limit"
           description: "{{ $value }} rate-limited login attempts in 10 minutes: password guessing, or a proxy misconfiguration (trusted_proxies) lumping clients together."
 
+      - alert: AkariTurnstileMisconfigured
+        expr: increase(akari_turnstile_verify_total{result="misconfigured"}[10m]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "Cloudflare refuses the site's Turnstile configuration"
+          description: "{{ $labels.instance }}: every form protected by Turnstile answers 503 auth.captcha_unavailable (wrong Turnstile secret?). The panel log has Cloudflare's error codes; fix the secret under 系统设置 → 注册与人机验证 or run `akari settings unset turnstile`."
+
       - alert: AkariHigh5xxRate
         expr: |
           sum by (instance) (rate(akari_http_request_duration_seconds_count{status=~"5.."}[5m]))

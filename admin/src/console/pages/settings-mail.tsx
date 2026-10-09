@@ -18,6 +18,7 @@ import {
   CardHeader,
   Field,
   Input,
+  SecretInput,
   Segmented,
   Select,
   Skeleton,
@@ -162,18 +163,21 @@ function MailCard() {
               </Field>
             </div>
             <Field label={tr("用户名", "User name")}>
-              <Input value={f.username ?? ""} onChange={(e) => setF({ ...f, username: e.target.value })} />
+              <Input
+                autoComplete="off"
+                data-1p-ignore="true"
+                data-lpignore="true"
+                data-bwignore="true"
+                data-form-type="other"
+                value={f.username ?? ""}
+                onChange={(e) => setF({ ...f, username: e.target.value })}
+              />
             </Field>
             <Field
               label={tr("密码（只写）", "Password (write-only)")}
               hint={f.password_set ? tr("已保存；留空 = 不修改", "Saved; empty = keep") : undefined}
             >
-              <Input
-                type="password"
-                autoComplete="off"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
+              <SecretInput value={password} onChange={(e) => setPassword(e.target.value)} />
             </Field>
           </div>
         ) : (
@@ -181,7 +185,7 @@ function MailCard() {
             label={tr("Resend API key（只写）", "Resend API key (write-only)")}
             hint={f.api_key_set ? tr("已保存；留空 = 不修改", "Saved; empty = keep") : undefined}
           >
-            <Input type="password" autoComplete="off" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+            <SecretInput value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
           </Field>
         )}
         <div className="grid gap-3 sm:grid-cols-2">
