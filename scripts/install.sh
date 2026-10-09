@@ -510,7 +510,8 @@ apt_update_once() {
 # that use it to *.akari.disabled (apt ignores them). Fails otherwise.
 disable_caddy_apt_source() {
 	grep -q '^E:' "$TMP/apt-update.out" || return 1
-	! grep '^E:' "$TMP/apt-update.out" | grep -qvE "$CADDY_APT_RE" || return 1
+	grep '^E:' "$TMP/apt-update.out" >"$TMP/apt-update.errors"
+	! grep -qvE "$CADDY_APT_RE" "$TMP/apt-update.errors" || return 1
 	if grep -qsE "^[^#]*$CADDY_APT_RE" /etc/apt/sources.list; then
 		die "/etc/apt/sources.list 含 Caddy 的 Cloudsmith 软件源（已失效，402），请删除该行后重试" \
 			"/etc/apt/sources.list has Caddy's Cloudsmith repository (unavailable: 402); remove that line and retry"
