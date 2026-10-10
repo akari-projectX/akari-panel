@@ -339,8 +339,9 @@ const KEPT_SECTIONS: &[&str] = &["web", "grpc", "metrics", "tls_ask"];
 pub const LEASE_SECONDS: u64 = 86_400;
 /// Per (node, user, session) plausibility cap of billed bytes per second.
 pub const TRAFFIC_MAX_RATE_BYTES_PER_SEC: i64 = 1_250_000_000;
-/// Per-node aggregate cap (a node's `traffic_max_rate_bytes_per_sec`
-/// overrides it).
+/// Per-server aggregate cap of billed upload + download bytes per second
+/// (10 Gbit/s; a server's `traffic_max_rate_bytes_per_sec` overrides it).
+/// It is the sum of both directions: a full-duplex NIC of N moves up to 2N.
 pub const TRAFFIC_NODE_MAX_RATE_BYTES_PER_SEC: i64 = 1_250_000_000;
 /// Burst window of the billing caps (R13).
 pub const DEFAULT_NODE_BURST_SECS: u64 = 120;

@@ -48,7 +48,7 @@ test("NOD-01 NOD-02 NOD-03 NOD-04 NOD-05 NOD-06 NOD-07 NOD-08 NOD-09: servers �
   await d.getByRole("button", { name: "检查解析" }).click();
   await expect(d.getByRole("status")).not.toHaveText(/检查中/);
   await d.getByLabel("服务器域名（TLS）").fill("");
-  await d.getByLabel("计费速率上限（Mbps，留空 = 默认）").fill("100");
+  await d.getByLabel("计费速率上限（上下行合计 Mbps，留空 = 默认）").fill("100");
   await d.getByRole("button", { name: "保存" }).click();
   await toast(page, "已保存");
   // NOD-06: the traffic quota.
