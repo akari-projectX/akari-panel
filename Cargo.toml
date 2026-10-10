@@ -55,7 +55,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 x509-parser = "0.18"
 # W31: free/total space of the data directory (statvfs, no unsafe).
-rustix = { version = "1", default-features = false, features = ["fs", "std"] }
+rustix = { version = "1", default-features = false, features = ["fs", "std", "system"] }
 # R18-2: REALITY key pairs (curve25519-dalek 4 is already linked via ed25519-dalek).
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 prometheus = { version = "0.14", default-features = false }
