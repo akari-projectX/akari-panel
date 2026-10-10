@@ -997,4 +997,11 @@ export const EN: Record<string, string> = {
   'Memo（选填）': 'Memo (optional)',
   '{site} 尚未发布这份文件。如有疑问，请登录后提交工单联系我们。': '{site} has not published this document yet. Questions? Sign in and open a ticket.',
   '订阅二维码': 'Subscription QR code',
+  '维护中': 'Maintenance',
+  '负载低': 'Low load',
+  '负载中': 'Medium load',
+  '负载高': 'High load',
+  '（暂停使用，订阅里暂时没有它）': '(paused; left out of your subscription for now)',
+  '负载按节点的 CPU 与带宽占用分为低 / 中 / 高；延迟是面板到线路的连接测速，仅供参考。': 'Load is low / medium / high from the node\'s CPU and bandwidth use; latency is a connection test from the panel to the line, for reference only.',
+  '每 {n} 秒自动刷新。': ' Refreshes every {n} seconds.',
 };

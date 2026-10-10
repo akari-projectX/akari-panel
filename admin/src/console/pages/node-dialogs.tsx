@@ -262,7 +262,7 @@ export function CreateServerDialog({ onClose, onShown }: { onClose: () => void; 
   );
 }
 
-type DirectForm = { host: string; port: string; rate: string; groups: string[] };
+type DirectForm = { host: string; port: string; rate: string; tags: string; groups: string[] };
 
 export function CreateNodeDialog({
   servers,
@@ -282,13 +282,12 @@ export function CreateNodeDialog({
   const [name, setName] = useState("");
   const [region, setRegion] = useState("");
   const [display, setDisplay] = useState("");
-  const [tags, setTags] = useState("");
   const [visible, setVisible] = useState(true);
   const [domain, setDomain] = useState("");
   const [mode, setMode] = useState<"template" | "json">("template");
   const [tpl, setTpl] = useState<TemplateForm>(newTemplateForm());
   const [json, setJson] = useState('{\n  "protocol": "vless",\n  "port": 443\n}');
-  const [direct, setDirect] = useState<DirectForm>({ host: "", port: "", rate: "1", groups: [] });
+  const [direct, setDirect] = useState<DirectForm>({ host: "", port: "", rate: "1", tags: "", groups: [] });
   const [error, setError] = useState<unknown>(null);
   const [run, busy] = useRun();
   const confirmFree = useConfirmFree();
@@ -308,11 +307,6 @@ export function CreateNodeDialog({
       body.inbound = ib;
     }
     if (display.trim()) body.display_name = display.trim();
-    if (tags.trim())
-      body.tags = tags
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean);
     if (!visible) body.visible = false;
     const rate = parseRate(direct.rate);
     if (rate === null)
@@ -330,6 +324,7 @@ export function CreateNodeDialog({
     if (direct.port.trim()) d.connect_port = Number(direct.port);
     if (rate !== 1) d.rate = rate;
     if (direct.groups.length) d.group_ids = direct.groups;
+    if (splitTags(direct.tags).length) d.tags = splitTags(direct.tags);
     if (Object.keys(d).length) body.direct = d;
     setError(null);
     const r = await run(
@@ -401,9 +396,6 @@ export function CreateNodeDialog({
           <Field label={tr("显示名称（用户可见，可选）", "Display name (optional)")}>
             <Input value={display} onChange={(e) => setDisplay(e.target.value)} />
           </Field>
-          <Field label={tr("标签（逗号分隔）", "Tags (comma separated)")}>
-            <Input value={tags} onChange={(e) => setTags(e.target.value)} />
-          </Field>
           <div className="flex items-end gap-2 pb-2 text-[13px]">
             <Switch checked={visible} onChange={setVisible} label={tr("对用户显示", "Shown to users")} />
             {tr("对用户显示", "Shown to users")}
@@ -462,10 +454,34 @@ function DirectFields({
       <Field label={tr("倍率", "Multiplier")}>
         <Input inputMode="decimal" value={value.rate} onChange={(e) => onChange({ ...value, rate: e.target.value })} />
       </Field>
+      <TagsField value={value.tags} onChange={(v) => onChange({ ...value, tags: v })} />
       <div className="sm:col-span-2">
         <GroupPicker groups={groups} value={value.groups} onChange={(g) => onChange({ ...value, groups: g })} />
       </div>
     </div>
+  );
+}
+
+/** "IPLC, 原生" → ["IPLC", "原生"] (the panel trims and deduplicates). */
+export function splitTags(v: string): string[] {
+  return v
+    .split(/[,，]/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+export function TagsField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const tr = useTr();
+  return (
+    <Field
+      label={tr("标签（逗号分隔，用户可见）", "Tags (comma separated, shown to users)")}
+      hint={tr(
+        "显示在订阅线路名与门户线路列表里节点名之后，只属于这个入口（最多 8 个）。",
+        "Shown after the node's name in subscriptions and the portal's line list; this entrance only (at most 8).",
+      )}
+    >
+      <Input value={value} onChange={(e) => onChange(e.target.value)} placeholder="IPLC" />
+    </Field>
   );
 }
 
@@ -907,7 +923,6 @@ function NodeBasics({ n, onSaved }: { n: FullNode; onSaved: () => void }) {
     name: n.name,
     display_name: n.display_name ?? "",
     region: n.region ?? "",
-    tags: n.tags.join(", "),
     sort: String(n.sort),
     visible: n.visible,
   });
@@ -919,10 +934,6 @@ function NodeBasics({ n, onSaved }: { n: FullNode; onSaved: () => void }) {
           name: f.name.trim(),
           display_name: f.display_name.trim() || null,
           region: f.region.trim() || null,
-          tags: f.tags
-            .split(",")
-            .map((t) => t.trim())
-            .filter(Boolean),
           sort: Number(f.sort) || 0,
           visible: f.visible,
         }),
@@ -942,9 +953,6 @@ function NodeBasics({ n, onSaved }: { n: FullNode; onSaved: () => void }) {
         </Field>
         <Field label={tr("地区", "Region")}>
           <Input value={f.region} onChange={(e) => setF({ ...f, region: e.target.value })} />
-        </Field>
-        <Field label={tr("标签（逗号分隔）", "Tags (comma separated)")}>
-          <Input value={f.tags} onChange={(e) => setF({ ...f, tags: e.target.value })} />
         </Field>
         <Field label={tr("排序", "Sort")}>
           <Input inputMode="numeric" value={f.sort} onChange={(e) => setF({ ...f, sort: e.target.value })} />

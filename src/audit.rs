@@ -208,7 +208,7 @@ pub fn entrance_snapshot_sql(alias: &str) -> String {
          'kind', {a}.kind, 'name', {a}.name, \
          'connect_host', {a}.connect_host, 'connect_port', {a}.connect_port, \
          'rate_permille', {a}.rate_permille, 'enabled', {a}.enabled, 'sort', {a}.sort, \
-         'wire_no', {a}.wire_no, 'listen_port', {a}.listen_port, \
+         'tags', {a}.tags, 'wire_no', {a}.wire_no, 'listen_port', {a}.listen_port, \
          'source_cidrs', {a}.source_cidrs::text[])",
         a = alias
     )

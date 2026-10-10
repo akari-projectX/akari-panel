@@ -16,6 +16,8 @@ export type EntranceView = {
   rate_rules: RateRuleView[];
   enabled: boolean;
   sort: number;
+  /** Shown after the node's name in subscriptions and the portal (per entrance). */
+  tags: string[];
   wire_no: number;
   /** Optimistic concurrency: sent back with PATCH, 409 when the entrance changed since. */
   version: number;

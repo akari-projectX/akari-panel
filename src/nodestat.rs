@@ -1210,48 +1210,141 @@ pub struct MyNodeStatus {
     /// Traffic multiplier (1.0 = billed as used).
     pub rate: f64,
     pub online: bool,
+    /// online | offline | maintenance. Maintenance = the entrance failed
+    /// the relay health check or its server is over its traffic quota: the
+    /// line stays listed (greyed out) but the subscription omits it.
+    pub status: String,
+    /// low | medium | high, from the server's last heartbeat (CPU and NIC
+    /// rate against the server's rate cap); null when not online or
+    /// unknown. Never the numbers themselves.
+    pub load: Option<String>,
+    /// The panel's TCP test of this entrance (panel → node), ms; null when
+    /// the test is off, failed or has not run.
+    pub probe_ms: Option<i32>,
     /// The agent's latest url-test result: delay of the first URL that
     /// answered, null when none did or no test ran yet.
     pub latency_ms: Option<i32>,
     /// ok | timeout | unknown
     pub latency_status: String,
     pub latency_measured_at: Option<DateTime<Utc>>,
+    #[serde(skip)]
+    server_id: uuid::Uuid,
+    #[serde(skip)]
+    max_rate: Option<i64>,
+}
+
+/// The load level of one heartbeat blob: the larger of CPU use and NIC
+/// rate (rx + tx) over the server's rate cap (when one is set); < 50 % low,
+/// < 80 % medium, else high. None when the blob has neither value (the
+/// agent's input is untrusted: non-finite or negative values are ignored).
+pub fn load_level(blob: &str, max_rate: Option<i64>) -> Option<&'static str> {
+    let v: Value = serde_json::from_str(blob).ok()?;
+    let num = |p: &str| {
+        v.pointer(p)
+            .and_then(Value::as_f64)
+            .filter(|x| x.is_finite() && *x >= 0.0)
+    };
+    let cpu = num("/cpu_percent").map(|c| c / 100.0);
+    let net = max_rate.filter(|m| *m > 0).and_then(|m| {
+        let rx = num("/metrics/net_rx_bytes_per_sec");
+        let tx = num("/metrics/net_tx_bytes_per_sec");
+        (rx.is_some() || tx.is_some()).then(|| (rx.unwrap_or(0.0) + tx.unwrap_or(0.0)) / m as f64)
+    });
+    let x = match (cpu, net) {
+        (Some(a), Some(b)) => a.max(b),
+        (Some(a), None) | (None, Some(a)) => a,
+        (None, None) => return None,
+    };
+    Some(if x < 0.5 {
+        "low"
+    } else if x < 0.8 {
+        "medium"
+    } else {
+        "high"
+    })
 }
 
 /// GET /me/nodes (user portal): the entrances the caller can use on nodes
 /// shown to users — node and entrance name, region, tags, the entrance's
-/// multiplier, online, latency (the node's server's). No ids, addresses,
-/// inbounds or machine metrics.
+/// multiplier, status (online / offline / maintenance), a load level,
+/// latency (the panel's TCP test of the entrance and the server's
+/// url-test). No ids, addresses, inbounds or machine metrics. Entrances
+/// hidden by the health check and servers over quota are listed as
+/// maintenance (the subscription still omits them); deleting servers,
+/// disabled or hidden nodes and disabled entrances are not listed.
 pub async fn my_nodes(
     State(state): State<AppState>,
     user: AuthUser,
 ) -> Result<Json<Vec<MyNodeStatus>>, ApiError> {
-    let rows = sqlx::query_as::<_, MyNodeStatus>(sqlx::AssertSqlSafe(format!(
-        "SELECT coalesce(n.display_name, n.name) AS name, e.name AS entrance, n.region, n.tags, \
+    let mut rows = sqlx::query_as::<_, MyNodeStatus>(sqlx::AssertSqlSafe(format!(
+        "SELECT coalesce(n.display_name, n.name) AS name, e.name AS entrance, n.region, e.tags, \
          (akari_entrance_rate(e.id, statement_timestamp()) / 1000.0)::float8 AS rate, \
-         {} AS online, \
+         {online} AS online, \
+         CASE WHEN e.hidden_since IS NOT NULL OR s.traffic_quota_exceeded_at IS NOT NULL \
+              THEN 'maintenance' WHEN {online} THEN 'online' ELSE 'offline' END AS status, \
+         NULL::text AS load, \
+         p.delay_ms AS probe_ms, \
          l.delay_ms AS latency_ms, \
          CASE WHEN l.delay_ms IS NOT NULL THEN 'ok' WHEN lf.server_id IS NOT NULL THEN 'timeout' \
               ELSE 'unknown' END AS latency_status, \
-         coalesce(l.measured_at, lf.measured_at) AS latency_measured_at \
+         coalesce(l.measured_at, lf.measured_at) AS latency_measured_at, \
+         s.id AS server_id, s.traffic_max_rate_bytes_per_sec AS max_rate \
          FROM entrance_users eu JOIN entrances e ON e.id = eu.entrance_id \
          JOIN nodes n ON n.id = e.node_id \
          JOIN servers s ON s.id = n.server_id \
+         LEFT JOIN server_latency p ON p.server_id = s.id AND p.source = 'panel' \
+             AND p.target = n.name || ' / ' || e.name \
          LEFT JOIN LATERAL (SELECT delay_ms, measured_at FROM server_latency \
              WHERE server_id = s.id AND source = 'agent' AND delay_ms IS NOT NULL \
              ORDER BY ord LIMIT 1) l ON true \
          LEFT JOIN LATERAL (SELECT server_id, measured_at FROM server_latency \
              WHERE server_id = s.id AND source = 'agent' ORDER BY ord LIMIT 1) lf ON true \
-         WHERE eu.user_id = $1 AND n.enabled AND n.visible AND {serves} \
-         AND n.inbound IS NOT NULL AND e.enabled AND e.hidden_since IS NULL \
+         WHERE eu.user_id = $1 AND n.enabled AND n.visible AND s.deleting_at IS NULL \
+         AND n.inbound IS NOT NULL AND e.enabled \
          ORDER BY n.sort, coalesce(n.display_name, n.name), e.kind <> 'direct', e.sort, e.name",
-        online_sql("s"),
-        serves = crate::grpc::SERVER_SERVES
+        online = online_sql("s"),
     )))
     .bind(user.id)
     .fetch_all(state.pg())
     .await?;
+    attach_load(&state, &mut rows).await;
     Ok(Json(rows))
+}
+
+/// The load level of each online row (one MGET; best effort: a Valkey
+/// failure leaves the level unknown).
+async fn attach_load(state: &AppState, rows: &mut [MyNodeStatus]) {
+    use fred::prelude::KeysInterface;
+    let mut servers: Vec<uuid::Uuid> = rows
+        .iter()
+        .filter(|r| r.status == "online")
+        .map(|r| r.server_id)
+        .collect();
+    servers.sort_unstable();
+    servers.dedup();
+    if servers.is_empty() {
+        return;
+    }
+    let keys: Vec<String> = servers
+        .iter()
+        .map(|id| format!("akari:server:hb:{id}"))
+        .collect();
+    let blobs = match state.valkey().mget::<Vec<Option<String>>, _>(keys).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(error = %e, "portal heartbeat lookup failed");
+            return;
+        }
+    };
+    let by_server: std::collections::HashMap<uuid::Uuid, Option<String>> =
+        servers.into_iter().zip(blobs).collect();
+    for r in rows.iter_mut().filter(|r| r.status == "online") {
+        r.load = by_server
+            .get(&r.server_id)
+            .and_then(|b| b.as_deref())
+            .and_then(|b| load_level(b, r.max_rate))
+            .map(str::to_owned);
+    }
 }
 
 #[cfg(test)]

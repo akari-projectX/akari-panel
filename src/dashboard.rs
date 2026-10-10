@@ -15,6 +15,14 @@
 //! Days are site days (Q3: 系统设置 → 站点 → 时区, default Asia/Shanghai):
 //! "today" starts at 00:00 in the site time zone; "7d"/"30d" are the last 7/30
 //! calendar days including today. Money is integer fen.
+//!
+//! Revenue is net: channel money collected in the window (paid orders'
+//! `amount_cents` by `paid_at`) minus channel money refunded in the window
+//! (`refund_gateway_cents` by `refunded_at`, whichever day the order was
+//! paid on). Balance, credit, coupon and gift parts are never revenue, so
+//! giving back an order's balance part does not lower it; refunding the
+//! channel part, to the balance or in the provider's console, does
+//! (docs/PAYMENTS.md "Revenue").
 
 use axum::Json;
 use axum::extract::State;
@@ -25,18 +33,22 @@ use uuid::Uuid;
 use crate::auth::{ApiError, AuthUser};
 use crate::state::AppState;
 
-/// Revenue and order count of one window (paid orders by `paid_at`;
-/// `revenue_cents` = what was collected through the gateway, i.e. the
-/// orders' `amount_cents`; balance/credit/coupon parts are not revenue).
+/// Revenue and order count of one window (see the module docs).
 #[derive(Serialize, Debug, Default, PartialEq, sqlx::FromRow)]
 pub struct Window {
+    /// Net: `gross_cents` − `refunds_cents` (negative on a day with more
+    /// refunded than collected).
     pub revenue_cents: i64,
-    /// Ops: the part of `revenue_cents` recorded by admins (paid_via
+    /// Channel money collected: paid orders' `amount_cents` by `paid_at`.
+    pub gross_cents: i64,
+    /// Ops: the part of `gross_cents` recorded by admins (paid_via
     /// 'manual': offline sales and confirmed payments).
     pub manual_cents: i64,
     /// Ops: list price forgiven by admin gift orders (not revenue).
     pub gift_cents: i64,
     pub orders: i64,
+    /// Channel money refunded in the window (`refund_gateway_cents` by
+    /// `refunded_at`): to the balance or in the provider's console.
     pub refunds_cents: i64,
     pub signups: i64,
 }
@@ -146,9 +158,9 @@ const MANUAL_SQL: &str = "SELECT \
      FROM orders WHERE status = 'paid' AND paid_via = 'manual' AND paid_at >= $3";
 
 const REFUNDS_SQL: &str = "SELECT \
-     coalesce(sum(refund_cents) FILTER (WHERE refunded_at >= $1), 0)::bigint, \
-     coalesce(sum(refund_cents) FILTER (WHERE refunded_at >= $2), 0)::bigint, \
-     coalesce(sum(refund_cents), 0)::bigint \
+     coalesce(sum(refund_gateway_cents) FILTER (WHERE refunded_at >= $1), 0)::bigint, \
+     coalesce(sum(refund_gateway_cents) FILTER (WHERE refunded_at >= $2), 0)::bigint, \
+     coalesce(sum(refund_gateway_cents), 0)::bigint \
      FROM orders WHERE refunded_at >= $3";
 
 /// Sign-ups per window and the user total in ONE pass over users (two
@@ -268,8 +280,9 @@ pub async fn read(pool: &sqlx::PgPool) -> Result<(Dashboard, Vec<Uuid>), ApiErro
         }
     }
     let window =
-        |(revenue_cents, manual_cents, gift_cents), orders, refunds_cents, signups| Window {
-            revenue_cents,
+        |(gross_cents, manual_cents, gift_cents), orders, refunds_cents: i64, signups| Window {
+            revenue_cents: gross_cents - refunds_cents,
+            gross_cents,
             manual_cents,
             gift_cents,
             orders,

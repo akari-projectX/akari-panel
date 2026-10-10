@@ -310,7 +310,9 @@ original?, original_cents?}`），只对已付款订单、只能退一次。支�
   支付宝商家后台原路退款，并在面板填写**实际退款金额**（`external_cents`，0 到实付金额；
   有实付金额时必填，运营审查中-3：以前登记为 0，仪表盘与导出漏记）。订单记录
   `refund_balance_cents`（退到余额）、`refund_external_cents`（支付宝后台已退），
-  `refund_cents` = 两者之和；仪表盘「退款」与订单 CSV（两列分开）都按它统计。
+  `refund_cents` = 两者之和，另记 `refund_gateway_cents` = 其中支付渠道的钱
+  （`to_balance` 时为整个实付金额，否则为 `refund_external_cents`；迁移 1103）。
+  订单 CSV 三列都有；仪表盘按下文「Revenue」只扣渠道部分。
   待结算的邀请返利撤销，已入账的追回（中-4，见上文「Invite commission」）。
 - **优惠券与首单（低-2）**：退款把该订单用掉的优惠券次数还回去（券的总次数与该用户的
   每人次数都减一；超限兑现的本来就没计数）。已退款的订单不再算「已购买」：新人券对他重新
@@ -333,6 +335,22 @@ original?, original_cents?}`），只对已付款订单、只能退一次。支�
   `restore`），与实际执行用同一段计算；已退款或未付款的订单 409。
 - 退款后订单不能再「重试开通」。订单详情显示 `refund_effect`（套餐被怎样处理）。
   审计 `order.refund`（含 `effect`）。
+
+### Revenue（营收口径）
+
+营收 = 经支付渠道实际收到的钱。余额、换套餐抵扣、优惠券、赠送部分**都不是营收**
+（余额来自退款、返利或管理员加款，充值不存在；用余额付款只是花掉已记过账的钱）。
+
+- **实收**（`gross_cents`）：窗口内付款的订单的 `amount_cents`（按 `paid_at`）；
+- **退款**（`refunds_cents`）：窗口内退款的订单的 `refund_gateway_cents`（按 `refunded_at`，
+  不管订单哪天付的款）：原路退款、支付宝后台手工退款、退到余额的渠道部分都算；
+  退回的余额部分不算（它本来就不是营收）；
+- **净额**（`revenue_cents`）= 实收 − 退款，可以为负（当天退的比收的多）。
+
+日界为站点时区的日（Q3）。仪表盘「今日营收」显示净额，悬停/展开可看今日、7 天、30 天的
+实收 / 退款 / 净额；订单 CSV 用 `amount_cents`（实收）与 `refund_gateway_cents`（退款）
+可按同一口径自行汇总。人工订单的实付算营收（`manual_cents` 是实收里的人工部分），
+赠送不算（`gift_cents` 单列）。
 
 ### Manual orders (Ops)（人工订单）
 

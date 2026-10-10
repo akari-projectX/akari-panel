@@ -424,6 +424,7 @@ pub async fn apply_refund(
     sqlx::query(
         "UPDATE orders SET refunded_at = now(), refund_cents = $2 + $5, refund_reason = $3, \
          refund_effect = $4, refund_balance_cents = $2, refund_external_cents = $5, \
+         refund_gateway_cents = $6, \
          balance_state = CASE WHEN balance_state = 'held' THEN 'refunded' ELSE balance_state END \
          WHERE id = $1",
     )
@@ -432,12 +433,14 @@ pub async fn apply_refund(
     .bind(req.reason)
     .bind(&effect_json)
     .bind(external)
+    .bind(cash_part + external)
     .execute(&mut *conn)
     .await?;
     let after = json!({
         "refund_cents": credit + external,
         "refund_balance_cents": credit,
         "refund_external_cents": external,
+        "refund_gateway_cents": cash_part + external,
         "to_balance": req.to_balance,
         "balance_part_cents": balance_part,
         "cash_part_cents": cash_part,

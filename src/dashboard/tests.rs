@@ -42,6 +42,35 @@ async fn paid_order(db: &TestDb, user: Uuid, cents: i64, paid_at: DateTime<Utc>)
     id
 }
 
+/// A paid order with a balance part (held), `channel` cents through the
+/// payment channel.
+async fn balance_order(
+    db: &TestDb,
+    user: Uuid,
+    balance: i64,
+    channel: i64,
+    paid_at: DateTime<Utc>,
+) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_name, amount_cents, \
+         list_price_cents, balance_cents, balance_state, period, period_days, subject, \
+         expires_at, status, paid_at, paid_via, created_at, action) VALUES ($1, $2, $3, 'u', \
+         'p', $4, $4 + $5, $5, 'held', 'days', 30, 's', $6, 'paid', $6, \
+         CASE WHEN $4 > 0 THEN 'notify' ELSE 'balance' END, $6, 'new')",
+    )
+    .bind(id)
+    .bind(format!("AKT{}", id.simple()))
+    .bind(user)
+    .bind(channel)
+    .bind(balance)
+    .bind(paid_at)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    id
+}
+
 #[tokio::test]
 async fn aggregates_every_source() {
     let Some(db) = TestDb::new().await else {
@@ -78,16 +107,44 @@ async fn aggregates_every_source() {
     paid_order(&db, u, 200, d1 - Duration::days(2)).await;
     paid_order(&db, u, 400, d1 - Duration::days(20)).await;
     paid_order(&db, u, 800, d1 - Duration::days(40)).await;
-    let refunded = paid_order(&db, u, 1600, d1 - Duration::days(6)).await;
-    sqlx::query(
-        "UPDATE orders SET refunded_at = $2, refund_cents = 50, refund_balance_cents = 50, \
-         refund_external_cents = 0, refund_effect = '{}', refund_reason = 'r' WHERE id = $1",
+    // Refunded today, paid on an earlier day (the refund lowers today's
+    // net, the payment stays on its own day):
+    // A: 1600 paid 6 days ago, 600 refunded in the provider's console;
+    // B: 1000 list = 300 balance + 700 channel, 10 days ago, all to the
+    //    balance: only the 700 channel part reverses revenue;
+    // C: paid fully from the balance yesterday (no revenue), refunded.
+    let a = paid_order(&db, u, 1600, d1 - Duration::days(6)).await;
+    let b = balance_order(&db, u, 300, 700, d1 - Duration::days(10)).await;
+    let c = balance_order(&db, u, 500, 0, d1 - Duration::days(1)).await;
+    for (id, to_balance, external_cents) in
+        [(a, false, Some(600)), (b, true, None), (c, false, None)]
+    {
+        let mut tx = db.pool.begin().await.unwrap();
+        crate::billing::refund::apply_refund(
+            &mut tx,
+            &crate::audit::Actor::system(),
+            id,
+            &crate::billing::refund::Refund {
+                reason: "r",
+                to_balance,
+                external_cents,
+                keep_plan: true,
+                portal: None,
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+    let split: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT refund_cents, refund_gateway_cents FROM orders WHERE id = ANY($1) \
+         ORDER BY amount_cents DESC",
     )
-    .bind(refunded)
-    .bind(d1 + Duration::seconds(1))
-    .execute(&db.pool)
+    .bind(vec![a, b, c])
+    .fetch_all(&db.pool)
     .await
     .unwrap();
+    assert_eq!(split, [(600, 600), (1000, 700), (500, 0)]);
     // Not revenue: pending and before the window.
     sqlx::query(
         "INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_name, amount_cents, \
@@ -114,9 +171,10 @@ async fn aggregates_every_source() {
     assert_eq!(
         d.today,
         Window {
-            revenue_cents: 100,
+            revenue_cents: 100 - 1300,
+            gross_cents: 100,
             orders: 1,
-            refunds_cents: 50,
+            refunds_cents: 1300,
             signups: 1,
             ..Default::default()
         }
@@ -124,9 +182,10 @@ async fn aggregates_every_source() {
     assert_eq!(
         d.d7,
         Window {
-            revenue_cents: 1900,
-            orders: 3,
-            refunds_cents: 50,
+            revenue_cents: 1900 - 1300,
+            gross_cents: 1900,
+            orders: 4,
+            refunds_cents: 1300,
             signups: 1,
             ..Default::default()
         }
@@ -134,15 +193,16 @@ async fn aggregates_every_source() {
     assert_eq!(
         d.d30,
         Window {
-            revenue_cents: 2300,
-            orders: 4,
-            refunds_cents: 50,
+            revenue_cents: 3000 - 1300,
+            gross_cents: 3000,
+            orders: 6,
+            refunds_cents: 1300,
             signups: 1,
             ..Default::default()
         }
     );
     assert_eq!(d.users_total, 2, "role=user only");
-    assert_eq!(d.latest_orders.len(), 6);
+    assert_eq!(d.latest_orders.len(), 8);
     assert_eq!(d.latest_orders[0].status, "pending", "newest first");
 
     // Subscribers.
@@ -293,8 +353,8 @@ async fn aggregates_every_source() {
             alerts_firing: 3,
         }
     );
-    assert_eq!(d.d30.revenue_cents, 2300, "the 50-day-old order is outside");
-    assert_eq!(d.latest_orders.len(), 7, "all of them (< LATEST_ORDERS)");
+    assert_eq!(d.d30.revenue_cents, 1700, "the 50-day-old order is outside");
+    assert_eq!(d.latest_orders.len() as i64, LATEST_ORDERS, "capped");
     db.drop().await;
 }
 

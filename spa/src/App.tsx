@@ -3,6 +3,7 @@ import { BrowserRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import ErrorBoundary from '@/components/error-boundary';
 import ErrorScreen from '@/components/error-screen';
+import DocumentTitle from '@/components/document-title';
 import OfflineBar from '@/components/offline-bar';
 import { PageLoading } from '@/components/loading';
 import SiteLayout from '@/layouts/site-layout';
@@ -109,6 +110,7 @@ export default function App() {
       <SiteProvider>
       <AuthProvider>
         <ScrollTop />
+        <DocumentTitle />
         <WarmOtherLocale />
         {/*
           兜底的 ErrorBoundary 在最外层：布局本身崩了也还有一页可看。

@@ -101,7 +101,17 @@ export function nodeCC(n: Pick<MyNode, 'name' | 'region'>): string | null {
 }
 
 /**
- * 能连。D5：服务器流量额度用完的入口面板直接不给（/me/nodes 里没有这一行），
- * 所以这里只看在线。倍率是面板给的此刻倍率（D9，`n.rate`）。
+ * 能连：只看状态。维护中（中转入口健康检查失败、服务器流量额度用完）与离线的都列出来但置灰，
+ * 订阅里没有维护中的线路。倍率是面板给的此刻倍率（D9，`n.rate`）。
  */
-export const nodeUp = (n: MyNode) => n.online;
+export const nodeUp = (n: Pick<MyNode, 'status'>) => n.status === 'online';
+
+/** 延迟参考：优先面板到入口的 TCP 测速，没有再用节点自己的测速 */
+export const nodeLatency = (n: Pick<MyNode, 'probe_ms' | 'latency_ms'>) => n.probe_ms ?? n.latency_ms;
+
+/** 状态与负载的文案（tr 的键） */
+export const STATUS_TEXT = { online: '在线', offline: '离线', maintenance: '维护中' } as const;
+export const LOAD_TEXT = { low: '负载低', medium: '负载中', high: '负载高' } as const;
+
+/** 线路状态多久重新取一次 */
+export const NODES_REFRESH_MS = 30_000;

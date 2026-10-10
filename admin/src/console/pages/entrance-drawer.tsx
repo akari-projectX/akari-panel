@@ -15,7 +15,7 @@ import { entryAsEgress } from "../egress";
 import { heatmap, hhmm, overlaps, parseHhmm, parseRate, rateAt, type Rule } from "../rates";
 import { useSite } from "../session";
 import type { EntranceView, NodeGroup, ServerNode, ServerView } from "../types";
-import { GroupPicker } from "./node-dialogs";
+import { GroupPicker, splitTags, TagsField } from "./node-dialogs";
 import { entranceState, healthText } from "./nodes";
 import { useSettings } from "./settings";
 
@@ -82,6 +82,7 @@ function formBody(
     rate: number;
     enabled: boolean;
     sort: string;
+    tags: string;
     groups: string[];
     listen: string;
     cidrs: string;
@@ -93,6 +94,7 @@ function formBody(
     rate: f.rate,
     enabled: f.enabled,
     sort: Number(f.sort) || 0,
+    tags: splitTags(f.tags),
     group_ids: [...f.groups].sort(),
   };
   if (relay) {
@@ -115,6 +117,7 @@ function formOf(e: EntranceView) {
     rate: String(e.rate),
     enabled: e.enabled,
     sort: String(e.sort),
+    tags: e.tags.join(", "),
     groups: e.group_ids,
     listen: e.listen_port ? String(e.listen_port) : "",
     cidrs: e.source_cidrs.join("\n"),
@@ -350,6 +353,7 @@ export function EntranceDrawer({
         <Field label={tr("排序", "Sort")}>
           <Input inputMode="numeric" value={f.sort} onChange={(x) => setF({ ...f, sort: x.target.value })} />
         </Field>
+        <TagsField value={f.tags} onChange={(v) => setF({ ...f, tags: v })} />
         <div className="sm:col-span-2">
           <GroupPicker groups={groups} value={f.groups} onChange={(g) => setF({ ...f, groups: g })} />
           <p className="mt-1 text-xs text-muted-foreground">
@@ -635,6 +639,7 @@ export function RelayDialog({ node, groups, onClose }: { node: ServerNode; group
     listen: "",
     cidrs: "",
     rate: "1",
+    tags: "",
     groups: [] as string[],
   });
   const [error, setError] = useState<unknown>(null);
@@ -656,6 +661,7 @@ export function RelayDialog({ node, groups, onClose }: { node: ServerNode; group
           listen_port: Number(f.listen),
           source_cidrs: f.cidrs.split(/[\s,]+/).filter(Boolean),
           rate,
+          tags: splitTags(f.tags),
           group_ids: f.groups,
         }),
       { ok: tr("中转入口已添加", "Relay entrance added"), invalidate: [["servers"], ["node-groups"]] },
@@ -706,6 +712,7 @@ export function RelayDialog({ node, groups, onClose }: { node: ServerNode; group
           <Input inputMode="numeric" value={f.listen} onChange={(e) => setF({ ...f, listen: e.target.value })} />
         </Field>
         <EgressField host={f.host} value={f.cidrs} onChange={(v) => setF({ ...f, cidrs: v })} />
+        <TagsField value={f.tags} onChange={(v) => setF({ ...f, tags: v })} />
         <div className="sm:col-span-2">
           <GroupPicker groups={groups} value={f.groups} onChange={(g) => setF({ ...f, groups: g })} />
         </div>

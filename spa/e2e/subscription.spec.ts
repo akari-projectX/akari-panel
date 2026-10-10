@@ -76,7 +76,7 @@ test('#31 the current plan: quota, reset period and next reset, expiry, speed', 
   await expect(page.getByText('300 Mbps')).toBeVisible();
 });
 
-test('#32 #33 D9 D5 entrances: one row per entrance, the multiplier in effect now, a server over its quota is gone', async ({ page }) => {
+test('#32 #33 D9 D5 entrances: one row per entrance, the multiplier in effect now, status with a legend', async ({ page }) => {
   await signIn(page, 'user@e2e.test');
   await open(page, '/nodes');
   await expect(page.getByRole('heading', { name: '节点状态' })).toBeVisible();
@@ -87,15 +87,29 @@ test('#32 #33 D9 D5 entrances: one row per entrance, the multiplier in effect no
   /* 日本 01 的直连入口全天 0.5×（时段规则，按站点时区，面板 SQL 算好） */
   await expect(shown('×0.5')).toBeVisible();
   await expect(shown('日本 01')).toBeVisible();
+  /* 图例说明三种状态与负载/延迟的来源；e2e 里没有 agent，线路都是离线 */
+  await expect(page.locator('[data-node-legend]')).toContainText('维护中');
+  await expect(page.locator('[data-node-legend]')).toContainText('每 30 秒自动刷新');
+  await expect(page.locator('[data-node-status="offline"]').locator('visible=true').first()).toBeVisible();
 
-  /* D5：日本 01 所在服务器流量额度用完 → 它的入口不再出现在门户里 */
-  psql(`UPDATE servers s SET traffic_quota_bytes = 1, traffic_quota_rx_bytes = 10 FROM nodes n WHERE n.server_id = s.id AND n.name = '日本 01';`);
+  /* 香港 01 的服务器在线（agent 会话由面板标记）、日本 01 所在服务器流量额度用完：
+     日本 01 仍列出来，但是「维护中」并置灰（订阅里没有它） */
+  psql(`UPDATE servers s SET status = 'online', last_seen_at = now() FROM nodes n WHERE n.server_id = s.id AND n.name = '香港 01';
+        UPDATE servers s SET traffic_quota_bytes = 1, traffic_quota_rx_bytes = 10 FROM nodes n WHERE n.server_id = s.id AND n.name = '日本 01';`);
   try {
     await page.reload();
     await expect(shown('IPLC')).toBeVisible();
-    await expect(page.getByText('日本 01', { exact: true })).toHaveCount(0);
+    await expect(shown('日本 01')).toBeVisible();
+    await expect(page.locator('[data-node-status="maintenance"]').locator('visible=true').first()).toBeVisible();
+    await expect(page.locator('[data-node-status="online"]').locator('visible=true').first()).toBeVisible();
+    /* 仪表盘的「订阅内的线路」同样显示状态与图例 */
+    await open(page, '/');
+    const pane = page.locator('[data-node-legend]').locator('visible=true').first();
+    await expect(pane).toBeVisible();
+    await expect(page.locator('[data-node-status="maintenance"]').locator('visible=true').first()).toBeVisible();
   } finally {
-    psql(`UPDATE servers s SET traffic_quota_bytes = NULL FROM nodes n WHERE n.server_id = s.id AND n.name = '日本 01';`);
+    psql(`UPDATE servers s SET traffic_quota_bytes = NULL FROM nodes n WHERE n.server_id = s.id AND n.name = '日本 01';
+          UPDATE servers s SET status = 'offline' FROM nodes n WHERE n.server_id = s.id AND n.name = '香港 01';`);
   }
 });
 
