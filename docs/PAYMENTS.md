@@ -62,15 +62,17 @@ R18-3 / W24 (R40)。面板通过**支付方式**销售套餐，支付方式在 �
 
 ### Switching plans: the credit（换套餐：折算）
 
-折算额是当前订阅尚未使用部分的价值，在创建订单时由 SQL 计算（`catalog::switch_credit` → `akari_prorate`）：
+折算额是当前订阅尚未使用部分的价值，在创建订单时由 SQL 计算（`catalog::switch_credit`）：
 
 ```
-latest  = the newest paid, fulfilled, non-reset, NOT refunded order of the
-          user for the current plan, fulfilled since the current
-          subscription started
+paid    = the paid, fulfilled, non-reset, NOT refunded orders of the user
+          for the current plan, fulfilled since the current subscription
+          started; each covers nominal_days(order) × 86400 seconds
 value   = list_price − discount − gift  (what was actually paid: gateway
           amount + balance + the credit it carried; High-2)
-credit  = floor(value(latest) × remaining_seconds / (nominal_days(latest) × 86400))
+covered = the remaining seconds are taken from the newest order backwards
+          (the newest order covers the last part of the term, B1)
+credit  = floor(Σ value(o) × covered(o) / (nominal_days(o) × 86400))
 credit  = min(credit, Σ value of all such orders)   -- never more than was paid
 credit  = min(credit, floor(Σ value × traffic_left / quota))   -- High-1, quota plans only
 credit  = 0 when there is no such order (admin-assigned), no expiry,
@@ -78,10 +80,14 @@ credit  = 0 when there is no such order (admin-assigned), no expiry,
 amount  = price − min(credit, price)        -- never negative
 ```
 
+运营规则（计费审查 B1，2026-10-10）：剩余时间**逐单**按各自的日单价折算，最新一单只覆盖它自己买的那段时间。
+以前用最新一单的日单价折算整个剩余期：年付 100 元、临近到期续 1 天（1 元）后，剩余 67 天按 1 元/天
+折成约 67 元（公平值约 19 元）。没有任何已付订单覆盖的剩余时间（管理员延长、31 天月份多出的那天）不折算。
+
 运营规则（运营逻辑审查 高-2）：折算按**实付价值**算——优惠券折扣和管理员赠送（`gift_cents`）
-不算价值，已退款的订单不参与折算（既不是最新一单，也不计入封顶）。所以「券只限套餐 A」不能
-靠换套餐变成别的套餐的价值，「赠送 A」也不会变成可换任意套餐的余额。最新一单是赠送（价值 0）
-时折算为 0（保守取值，只会少折、不会多折）。
+不算价值，已退款的订单不参与折算（既不占剩余时间，也不计入封顶）。所以「券只限套餐 A」不能
+靠换套餐变成别的套餐的价值，「赠送 A」也不会变成可换任意套餐的余额。赠送订单（价值 0）覆盖的
+那段时间折算为 0（保守取值，只会少折、不会多折）。
 
 运营规则（运营逻辑审查高-1，lead 定的默认值）：折算 = 实付 × min(剩余时间比例, 剩余流量比例)。
 有流量额度的订阅（`users.traffic_limit_bytes`，即当前订阅的执行额度）按「剩余流量 / 额度」再打一次
@@ -252,7 +258,12 @@ N 个买家争抢最后一次使用：恰好一个订单拿到它，其余得到
 
 ### Withdrawals (提现)
 
-可提现金额 = min(余额, 已入账返利 − 已追回返利（中-4）− 未被拒绝或取消的提现)：退款和管理员充值的金额可用于购买套餐，但不能提现。
+可提现金额 = min(余额, 已入账返利 − 已追回返利（中-4）− 未被拒绝或取消的提现, 余额中仍是返利的部分)：退款和管理员充值的金额可用于购买套餐，但不能提现。
+
+「余额中仍是返利的部分」（计费审查 C1，迁移 1102 `akari_withdrawable_part`）按账本顺序重放：余额分成返利部分与其他部分，
+返利和提现退回进返利部分，管理员充值和支付宝部分的退款进其他部分；下单用余额时**先用其他部分**，再用返利部分，
+订单未付结束或退款时余额部分按原样退回各自的部分；管理员扣减先扣其他部分，追回返利先扣返利部分。
+所以花在订单上的返利不会因为之后有别的钱进入余额而重新变成可提现。
 申请（`POST /me/withdrawals {amount_cents, chain, address, memo?}`，不低于 `min_withdrawal_cents`，每个用户同时只能有一个未结申请）
 会立即扣除金额（账本 `withdrawal`）；管理员附原因批准或拒绝（账本 `withdrawal_reversal`）；用户在待处理时可取消。
 已删除用户的提现只能批准。

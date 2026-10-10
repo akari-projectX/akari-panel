@@ -312,3 +312,166 @@ async fn refund_releases_the_coupon_and_is_no_purchase() {
     drop(state);
     db.drop().await;
 }
+
+/// B1 (billing review 2026-10-09): the switch credit values the remaining
+/// time order by order. A one-day renewal at a high daily price no longer
+/// prices the whole remaining term at that rate: only its own day is at
+/// its price, the rest at the yearly order's.
+#[tokio::test]
+async fn switch_credit_values_each_order_for_its_own_time() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    // A year at 100 fen a day; one day at 1000 fen.
+    let (_, a) = catalog_plan(
+        &db,
+        "b1-a",
+        &[
+            (PeriodKind::Year, None, 36500),
+            (PeriodKind::Days, Some(1), 1000),
+        ],
+        |_| {},
+    )
+    .await;
+    let (_, _b) = catalog_plan(&db, "b1-b", &[(PeriodKind::Year, None, 99999)], |_| {}).await;
+    let u = db.user().await;
+    let c = user_client(&state, u).await;
+    bought(&db, &c, a, "year", json!({})).await;
+    // 300 days of the year have passed: 65 days left.
+    sqlx::query(
+        "UPDATE user_plans SET expires_at = now() + interval '65 days' \
+         WHERE user_id = $1 AND status = 'active'",
+    )
+    .bind(u)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let year_only = credit(&c).await;
+    assert!(
+        (6490..=6500).contains(&year_only),
+        "65 days of the year: {year_only}"
+    );
+    // Renew one day: 66 days left, the last one bought at 1000.
+    bought(&db, &c, a, "days", json!({})).await;
+    let cr = credit(&c).await;
+    // Old rule: 1000 x 66 days, capped at the 37500 paid. Now: the renewed
+    // day at its price + 65 days of the year.
+    assert!(
+        (7490..=7500).contains(&cr),
+        "one day + 65 days of the year: {cr}"
+    );
+    // Time no paid order covers (an admin extension) is worth nothing.
+    sqlx::query(
+        "UPDATE user_plans SET expires_at = expires_at + interval '1000 days' \
+         WHERE user_id = $1 AND status = 'active'",
+    )
+    .bind(u)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        credit(&c).await,
+        37500,
+        "all paid time, capped by what was paid"
+    );
+    drop(state);
+    db.drop().await;
+}
+
+/// C1 (billing review 2026-10-09): commission money spent on an order is
+/// not withdrawable again when other money reaches the balance later; an
+/// order that ends unpaid gives the commission back as withdrawable.
+#[tokio::test]
+async fn spent_commission_is_not_withdrawable() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let admin = admin(&state, &db).await;
+    let (_, plan) = catalog_plan(
+        &db,
+        "c1",
+        &[
+            (PeriodKind::Month, None, 1000),
+            (PeriodKind::Days, Some(1), 150),
+        ],
+        |_| {},
+    )
+    .await;
+    let put = admin
+        .req(
+            axum::http::Method::PUT,
+            "/test/api/v1/commission-settings",
+            Some(
+                json!({"enabled": true, "rate_percent": 10, "first_order_only": false,
+                        "hold_days": 7, "min_withdrawal_cents": 50}),
+            ),
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::OK);
+    let (inviter, invitee) = (db.user().await, db.user().await);
+    sqlx::query("UPDATE users SET inviter_id = $1 WHERE id = $2")
+        .bind(inviter)
+        .bind(invitee)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let ic = user_client(&state, inviter).await;
+    let ec = user_client(&state, invitee).await;
+    bought(&db, &ec, plan, "month", json!({})).await;
+    credit_now(&db).await;
+    assert_eq!(withdrawable_of(&db, inviter).await, 100);
+    // An order holding the balance that ends unpaid: the commission is
+    // withdrawable again.
+    let r = ic
+        .post(
+            "/test/api/v1/me/orders",
+            json!({"plan_id": plan, "period": "month", "use_balance": true}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+    let held = order_id(&r);
+    assert_eq!(withdrawable_of(&db, inviter).await, 0);
+    let r = ic
+        .post(&format!("/test/api/v1/me/orders/{held}/cancel"), json!({}))
+        .await;
+    assert!(r.status.is_success(), "{:?}", r.json());
+    assert_eq!(balance_of(&db, inviter).await, 100);
+    assert_eq!(withdrawable_of(&db, inviter).await, 100);
+    // Spent on a paid order, then an admin credit refills the balance: the
+    // credit is spendable only.
+    bought(&db, &ic, plan, "month", json!({"use_balance": true})).await;
+    assert_eq!(balance_of(&db, inviter).await, 0);
+    let r = admin
+        .post(
+            &format!("/test/api/v1/users/{inviter}/balance"),
+            json!({"amount_cents": 100, "reason": "goodwill"}),
+        )
+        .await;
+    assert!(r.status.is_success(), "{:?}", r.json());
+    assert_eq!(balance_of(&db, inviter).await, 100);
+    assert_eq!(withdrawable_of(&db, inviter).await, 0, "spent commission");
+    let r = ic
+        .post(
+            "/test/api/v1/me/withdrawals",
+            json!({"amount_cents": 100, "chain": "trc20", "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.json());
+    assert_eq!(r.json()["code"], "withdrawal.exceeds");
+    // A new commission on top of the admin credit is withdrawable.
+    bought(&db, &ec, plan, "month", json!({})).await;
+    credit_now(&db).await;
+    assert_eq!(balance_of(&db, inviter).await, 200);
+    assert_eq!(withdrawable_of(&db, inviter).await, 100);
+    // Spending takes the non-withdrawable part first: 150 = the 100 admin
+    // credit + 50 of the commission.
+    bought(&db, &ic, plan, "days", json!({"use_balance": true})).await;
+    assert_eq!(balance_of(&db, inviter).await, 50);
+    assert_eq!(withdrawable_of(&db, inviter).await, 50);
+    drop(state);
+    db.drop().await;
+}
