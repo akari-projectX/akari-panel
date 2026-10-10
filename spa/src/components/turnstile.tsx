@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useLocale } from '@/i18n';
+import { useTheme } from '@/lib/theme';
 
 /**
  * Cloudflare Turnstile 人机验证组件。
@@ -11,6 +12,9 @@ import { useLocale } from '@/i18n';
  * 令牌一次性：每次提交之后（不论成败）父组件改 resetKey，组件先丢掉手里的令牌再重置、拿一个新令牌；
  * 令牌过期、出错、交互超时也都丢掉，按钮在拿到新令牌前保持不可用；出错、超时、脚本加载失败都经 onError
  * 告诉父组件，表单上显示「人机验证加载失败」和重试按钮（components/form-guard），而不是笼统的网络错误。
+ *
+ * 外观：interaction-only（只有 Cloudflare 要人工确认时才出现，平时看不见）、flexible（与输入框同宽）、
+ * 明暗跟随站点、语言跟随界面；明暗或语言变了重新渲染组件。
  */
 
 export const TURNSTILE_ORIGIN = 'https://challenges.cloudflare.com';
@@ -57,6 +61,7 @@ export default function Turnstile({
   const cb = useRef({ onToken, onError });
   useEffect(() => { cb.current = { onToken, onError }; });
   const { locale } = useLocale();
+  const { resolvedTheme } = useTheme();
 
   useEffect(() => {
     let alive = true;
@@ -65,6 +70,9 @@ export default function Turnstile({
         if (!alive || !box.current) return;
         const id = api.render(box.current, {
           sitekey: siteKey,
+          appearance: 'interaction-only',
+          size: 'flexible',
+          theme: resolvedTheme,
           language: locale === 'en' ? 'en' : 'zh-cn',
           callback: (t: string) => cb.current.onToken(t),
           'expired-callback': () => cb.current.onToken(null),
@@ -78,8 +86,9 @@ export default function Turnstile({
       alive = false;
       if (widget.current) widget.current.api.remove(widget.current.id);
       widget.current = null;
+      cb.current.onToken(null);
     };
-  }, [siteKey, locale]);
+  }, [siteKey, locale, resolvedTheme]);
 
   useEffect(() => {
     if (resetKey === 0 || !widget.current) return;
@@ -87,5 +96,5 @@ export default function Turnstile({
     widget.current.api.reset(widget.current.id);
   }, [resetKey]);
 
-  return <div ref={box} className="min-h-[65px]" />;
+  return <div ref={box} data-testid="turnstile" className="w-full empty:hidden" />;
 }

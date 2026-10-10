@@ -665,6 +665,7 @@ export const EN: Record<string, string> = {
   "不能从当前套餐更换到此套餐": "Not available as a switch from your plan",
   "个人数据立即删除": "Your personal data is deleted at once",
   "人机验证加载失败，请刷新重试": "Human verification could not load, reload and try again",
+  "正在进行人机验证…": "Verifying you are human…",
   "仅限现有用户续费": "Renewal for current subscribers only",
   "付款后立即生效": "Takes effect on payment",
   "付款成功，但套餐没能开通": "Paid, but the plan could not be activated",

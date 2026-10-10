@@ -431,6 +431,8 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
      （打开时的 CSP 不放行 Cloudflare 的脚本）。v0.4.0 的页面不会重新取：改设置之后，已打开的页面每次提交都失败
      （「邮箱或密码错误」或「人机验证未通过」），直到刷新。
    - **Cloudflare Turnstile**（按表单，默认关闭）：站点密钥 + 密钥（密钥只写不读，用 `data/master.key` 加密），在服务端验证；
+     门户与后台登录页以 `interaction-only` 渲染组件（平时看不见，只有需要人工确认时出现，与输入框同宽，明暗与语言跟随页面），
+     建议在 Cloudflare 把组件模式设为「托管」（Managed）或「隐形」（Invisible）；
      开启后**失败即关闭**：
      - 400 `auth.captcha_failed`（「人机验证未通过」）= 访客这边的问题：没有令牌，或 Cloudflare 以
        `missing-input-response` / `invalid-input-response` / `timeout-or-duplicate`（过期或重复使用）拒绝了令牌；

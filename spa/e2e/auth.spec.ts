@@ -106,13 +106,18 @@ test('#11 Turnstile: its origin is allowed only while on; the widget token goes 
     /* 用一个假的 Turnstile 脚本代替 Cloudflare 的（测试不连外网）：渲染时直接回调一个令牌 */
     await page.route('https://challenges.cloudflare.com/**', (route) => route.fulfill({
       contentType: 'text/javascript',
-      body: 'window.turnstile={render:function(el,o){var b=document.createElement("span");b.textContent="turnstile";el.appendChild(b);setTimeout(function(){o.callback("fake-token")},50);return "w1"},reset:function(){},remove:function(){}};',
+      body: 'window.__ts=[];window.turnstile={render:function(el,o){window.__ts.push({appearance:o.appearance,size:o.size,theme:o.theme,language:o.language});var b=document.createElement("span");b.textContent="turnstile";el.appendChild(b);setTimeout(function(){o.callback("fake-token")},50);return "w1"},reset:function(){},remove:function(){}};',
     }));
     const on = await page.goto('/login');
     const csp = on?.headers()['content-security-policy'] ?? '';
     expect(csp).toContain("script-src 'self' https://challenges.cloudflare.com");
     expect(csp).toContain('frame-src https://challenges.cloudflare.com');
     await expect(page.getByText('turnstile', { exact: true })).toBeAttached();
+    /* 外观：只在需要人工确认时出现、与输入框同宽、明暗与语言跟随站点 */
+    const opts = await page.evaluate(() => (window as unknown as { __ts: Record<string, string>[] }).__ts.at(-1));
+    const dark = await page.evaluate(() => document.documentElement.classList.contains('dark'));
+    expect(opts).toEqual({ appearance: 'interaction-only', size: 'flexible', theme: dark ? 'dark' : 'light', language: 'zh-cn' });
+    await expect(page.getByText('正在进行人机验证…')).toHaveCount(0);
     await page.getByLabel('邮箱', { exact: true }).fill('user@e2e.test');
     await page.getByLabel('密码', { exact: true }).fill(seed.password);
     await page.getByRole('button', { name: '登录', exact: true }).click();
