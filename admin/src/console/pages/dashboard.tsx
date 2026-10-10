@@ -26,7 +26,9 @@ import { OrderStatus } from "./orders";
 import { UpdateBadge } from "./updates";
 
 type Window = {
+  /** Net: gross − refunds (docs/PAYMENTS.md "Revenue"). */
   revenue_cents: number;
+  gross_cents: number;
   manual_cents: number;
   gift_cents: number;
   orders: number;
@@ -126,10 +128,17 @@ export function DashboardPage() {
   const maxV = Math.max(1, ...series);
   const unit = maxV >= 1024 ** 4 ? 1024 ** 4 : maxV >= 1024 ** 3 ? 1024 ** 3 : 1024 ** 2;
   const unitName = unit === 1024 ** 4 ? "TiB" : unit === 1024 ** 3 ? "GiB" : "MiB";
+  // Net revenue with its two parts: collected (by payment day) and refunded
+  // channel money (by refund day).
+  const split = (w: Window) =>
+    tr(
+      `实收 ${yuan(w.gross_cents)} · 退款 ${yuan(w.refunds_cents)} · 净额 ${yuan(w.revenue_cents)}`,
+      `collected ${yuan(w.gross_cents)} · refunded ${yuan(w.refunds_cents)} · net ${yuan(w.revenue_cents)}`,
+    );
   const window = (w: Window) =>
     tr(
-      `${yuan(w.revenue_cents)} · ${w.orders} 单${w.refunds_cents ? ` · 退款 ${yuan(w.refunds_cents)}` : ""}`,
-      `${yuan(w.revenue_cents)} · ${w.orders} orders${w.refunds_cents ? ` · refunds ${yuan(w.refunds_cents)}` : ""}`,
+      `${yuan(w.revenue_cents)} · ${w.orders} 单${w.refunds_cents ? ` · 已扣退款 ${yuan(w.refunds_cents)}` : ""}`,
+      `${yuan(w.revenue_cents)} · ${w.orders} orders${w.refunds_cents ? ` · after ${yuan(w.refunds_cents)} refunds` : ""}`,
     );
   const s = d?.servers;
 
@@ -158,10 +167,28 @@ export function DashboardPage() {
           <>
             <Stat
               icon="wallet"
-              label={tr("今日营收", "Revenue today")}
+              label={
+                <span
+                  data-revenue-split
+                  title={[
+                    tr(`今日 ${split(d.today)}`, `Today ${split(d.today)}`),
+                    tr(`7 天 ${split(d.d7)}`, `7d ${split(d.d7)}`),
+                    tr(`30 天 ${split(d.d30)}`, `30d ${split(d.d30)}`),
+                    tr(
+                      "按付款日计实收、按退款日扣退款；余额、抵扣、优惠券部分不算营收",
+                      "Collected by payment day, refunds by refund day; balance, credit and coupon parts are not revenue",
+                    ),
+                  ].join("\n")}
+                >
+                  {tr("今日营收", "Revenue today")}
+                </span>
+              }
               value={yuan(d.today.revenue_cents)}
+              tone={d.today.revenue_cents < 0 ? "danger" : undefined}
               hint={
                 <>
+                  {tr(`今日 ${split(d.today)}`, `Today ${split(d.today)}`)}
+                  <br />
                   {tr(`7 天 ${window(d.d7)}`, `7d ${window(d.d7)}`)}
                   <br />
                   {tr(`30 天 ${window(d.d30)}`, `30d ${window(d.d30)}`)}

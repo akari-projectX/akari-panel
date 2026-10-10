@@ -30,6 +30,9 @@ test("DSH-01 DSH-02 DSH-03 DSH-04 DSH-05 DSH-07: tiles, traffic, needs-attention
   for (const t of ["今日营收", "有效订阅", "当前在线用户", "服务器在线"])
     await expect(page.getByText(t, { exact: true })).toBeVisible();
   await expect(page.getByText(/¥42\.00/).first()).toBeVisible();
+  // Net revenue: collected, refunded (channel money, by refund day), net.
+  await expect(page.getByText(/今日 实收 ¥[\d.]+ · 退款 ¥[\d.]+ · 净额 -?¥[\d.]+/)).toBeVisible();
+  await expect(page.locator("[data-revenue-split]")).toHaveAttribute("title", /余额、抵扣、优惠券部分不算营收/);
   await expect(page.getByText("近 14 天全网流量（计费）")).toBeVisible();
   await expect(page.getByText("流量最多的节点")).toBeVisible();
   // Other specs leave history of deleted nodes behind: more than one row is fine.
