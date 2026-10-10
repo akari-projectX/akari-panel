@@ -1,6 +1,7 @@
 /*
  * 账户（research/portal-gap.md §1.2 #17–#26，通行密钥 #24 #25 在 auth.spec.ts）与三种账户范围。
  */
+import type { Page } from '@playwright/test';
 import { Client, latestMail, psql } from './panel.ts';
 import { admin, expect, login, mine, open, seed, signIn, test } from './fixtures.ts';
 
@@ -117,18 +118,33 @@ test('#26 self-service deletion: impact first, pending orders block it, then the
   await expect(page.getByText('邮箱或密码错误')).toBeVisible();
 });
 
-test('#19 renewal scope (expired): banner, no nodes or subscription, the shop still works', async ({ page }) => {
+/* 提醒条在页面标题下方、同一个提醒区里（每一页都是） */
+async function bannerBelowTitle(page: Page, title: string, banner: string) {
+  const h = page.getByRole('heading', { level: 1, name: title });
+  const b = page.locator('[data-page-notices]').getByText(banner);
+  await expect(h).toBeVisible();
+  await expect(b).toBeVisible();
+  const [hb, bb] = [await h.boundingBox(), await b.boundingBox()];
+  expect(bb!.y).toBeGreaterThan(hb!.y + hb!.height);
+}
+
+test('#19 renewal scope (expired): banner, no nodes or subscription, the shop still works', async ({ page }, info) => {
   await signIn(page, 'expired@e2e.test');
   await expect(page.getByText('套餐已到期，服务已暂停')).toBeVisible();
+  await bannerBelowTitle(page, '仪表盘', '套餐已到期，服务已暂停');
+  await info.attach('banner-dashboard', { body: await page.screenshot(), contentType: 'image/png' });
   await expect(page.getByRole('button', { name: '复制订阅链接' })).toHaveCount(0);
   await open(page, '/nodes');
   await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible();
   await open(page, '/shop');
   await expect(page.getByRole('heading', { name: '商店' })).toBeVisible();
+  await bannerBelowTitle(page, '商店', '套餐已到期，服务已暂停');
+  await info.attach('banner-shop', { body: await page.screenshot(), contentType: 'image/png' });
   /* 套餐到期后订阅已结束：可以重新订阅 */
   await expect(page.locator('.plan-col').filter({ hasText: seed.plan }).getByRole('button', { name: '立即订阅' })).toBeVisible();
   await open(page, '/wallet');
   await expect(page.getByRole('heading', { name: '钱包' })).toBeVisible();
+  await bannerBelowTitle(page, '钱包', '套餐已到期，服务已暂停');
 });
 
 test('#19 renewal scope (quota used up): the shop preselects the traffic reset pack', async ({ page }) => {

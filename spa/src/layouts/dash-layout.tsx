@@ -18,7 +18,6 @@ import { useT, useTp } from '@/i18n';
 import { prefetchDash, whenIdle } from '@/lib/prefetch';
 import { useAuth } from '@/lib/auth';
 import { allowed, R } from '@/lib/routes';
-import AccountBanners from '@/components/account-banners';
 
 /* 登录后的通行密钥引导用到弹窗组件，只有登录答复里带了 passkey_prompt 才加载 */
 const PasskeyPrompt = lazy(() => import('@/components/passkey-prompt'));
@@ -123,8 +122,6 @@ export default function DashLayout() {
     <div className="flex min-h-screen flex-col bg-background">
       <DashHeader />
       <main className="page-wrap flex-1 pb-14">
-        {/* 续费范围、未验证邮箱的提醒条：每一页都在，不随页面切换闪一下 */}
-        <AccountBanners />
         {/* 旧页面淡出 → 回到页首 → 新页面上浮淡入，和站点页同一套，见 PageTransition */}
         <PageTransition id={loc.pathname}>
           <ErrorBoundary>
