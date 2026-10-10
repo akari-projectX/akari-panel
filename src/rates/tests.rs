@@ -277,3 +277,103 @@ async fn put_rules_through_the_api_and_settle() {
     assert_eq!(r.status, StatusCode::CONFLICT);
     db.drop().await;
 }
+
+/// The SQL mean rate between two site-local times.
+async fn mean_at(db: &TestDb, e: Uuid, from: &str, to: &str) -> f64 {
+    sqlx::query_scalar(
+        "SELECT akari_entrance_mean_rate($1, ($2::timestamp AT TIME ZONE akari_site_tz()), \
+                ($3::timestamp AT TIME ZONE akari_site_tz()))::float8",
+    )
+    .bind(e)
+    .bind(from)
+    .bind(to)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap()
+}
+
+/// 1101 `akari_entrance_mean_rate`: the time-weighted mean of
+/// `akari_entrance_rate` over an interval (rule edges, midnight-crossing
+/// windows, no rules); a manual change inside the interval caps it at the
+/// recorded old rate (only under-bills).
+#[tokio::test]
+async fn sql_mean_rate_weights_rules_by_time() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let node = db.node().await;
+    let e = db.direct(node).await;
+    // No rules: the base, whatever the interval.
+    assert_eq!(
+        mean_at(&db, e, "2026-10-05 00:00:00", "2026-10-07 13:17:05").await,
+        1000.0
+    );
+    let rules = parse(&[
+        req(&[1, 2, 3, 4, 5], "18:00", "23:00", 2.0),
+        req(&[5], "22:00", "02:00", 3.0),
+    ])
+    .unwrap();
+    let mut tx = db.pool.begin().await.unwrap();
+    apply_set_rules(&mut tx, &Actor::system(), e, &rules)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    sqlx::query(
+        "UPDATE entrances SET rate_prev_permille = NULL, rate_changed_at = NULL WHERE id = $1",
+    )
+    .bind(e)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let close = |got: f64, want: f64| assert!((got - want).abs() < 1e-6, "{got} != {want}");
+    // Monday 16:00-20:00: 2 h at 1x, 2 h at 2x.
+    close(
+        mean_at(&db, e, "2026-10-05 16:00:00", "2026-10-05 20:00:00").await,
+        1500.0,
+    );
+    // A whole Monday: 19 h at 1x, 5 h at 2x.
+    close(
+        mean_at(&db, e, "2026-10-05 00:00:00", "2026-10-06 00:00:00").await,
+        29_000.0 / 24.0,
+    );
+    // Friday 21:00 to Saturday 03:00: 1 h 2x, 1 h 2x/3x overlap (3x), 1 h
+    // 3x, 2 h 3x after midnight (Friday's window), 1 h 1x.
+    close(
+        mean_at(&db, e, "2026-10-09 21:00:00", "2026-10-10 03:00:00").await,
+        15_000.0 / 6.0,
+    );
+    // Mid-minute edges.
+    close(
+        mean_at(&db, e, "2026-10-05 17:59:30", "2026-10-05 18:00:30").await,
+        1500.0,
+    );
+    // An empty interval: the rate at its end.
+    close(
+        mean_at(&db, e, "2026-10-05 19:00:00", "2026-10-05 19:00:00").await,
+        2000.0,
+    );
+    // Sunday noon to Monday noon: no window.
+    close(
+        mean_at(&db, e, "2026-10-11 12:00:00", "2026-10-12 12:00:00").await,
+        1000.0,
+    );
+
+    // A manual change (1x -> 5x) inside the interval: capped at the old rate.
+    sqlx::query("UPDATE entrances SET rate_permille = 5000 WHERE id = $1")
+        .bind(e)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let (capped, after): (f64, f64) = sqlx::query_as(
+        "SELECT akari_entrance_mean_rate($1, now() - interval '2 hours', now())::float8, \
+                akari_entrance_mean_rate($1, now() + interval '1 second', \
+                                         now() + interval '2 seconds')::float8",
+    )
+    .bind(e)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert!(capped <= 1000.0, "change inside the interval: {capped}");
+    assert!(after >= 2000.0, "interval after the change: {after}");
+    db.drop().await;
+}

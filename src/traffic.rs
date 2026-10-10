@@ -760,12 +760,13 @@ WITH input AS (
     -- Without rules and without a change in the window both instants are
     -- the base rate (what the function returns at once): read it here
     -- instead of two calls per entrance.
-    SELECT e.id AS entrance_id, e.server_id, e.node_id,
-           CASE WHEN EXISTS (SELECT 1 FROM entrance_rate_rules r WHERE r.entrance_id = e.id)
-                     OR e.rate_changed_at > statement_timestamp() - akari_rate_window()
-                THEN akari_entrance_settle_rate(e.id)
-                ELSE e.rate_permille END::numeric AS mult
-    FROM entrances e WHERE e.id IN (SELECT DISTINCT entrance_id FROM input)
+    SELECT x.entrance_id, x.server_id, x.node_id, x.has_rules, x.rate_changed_at,
+           CASE WHEN x.has_rules OR x.rate_changed_at > statement_timestamp() - akari_rate_window()
+                THEN akari_entrance_settle_rate(x.entrance_id)
+                ELSE x.rate_permille END::numeric AS mult
+    FROM (SELECT e.id AS entrance_id, e.server_id, e.node_id, e.rate_permille, e.rate_changed_at,
+                 EXISTS (SELECT 1 FROM entrance_rate_rules r WHERE r.entrance_id = e.id) AS has_rules
+          FROM entrances e WHERE e.id IN (SELECT DISTINCT entrance_id FROM input)) x
 ), classified AS (
     SELECT i.*,
            COALESCE(ef.server_id = i.server_id, false)
@@ -881,7 +882,7 @@ WITH input AS (
     ) p USING (server_id, entrance_id, user_id)
 ), row2 AS (
     SELECT server_id, entrance_id, user_id, departed_at IS NOT NULL AS departed, rate, floor,
-           raw, up_raw,
+           start, raw, up_raw,
            GREATEST(COALESCE(traffic_tat, statement_timestamp() - interval '60 seconds'), floor) AS tat,
            CASE WHEN departed_at IS NOT NULL AND pair_total > pair_allowance
                 THEN floor(amount * pair_allowance / pair_total)
@@ -893,15 +894,35 @@ WITH input AS (
            rate * GREATEST(extract(epoch FROM statement_timestamp() - tat), 0) AS server_allowance
     FROM row2
 ), scaled AS (
-    SELECT server_id, entrance_id, user_id, departed, rate, tat, raw, up_raw,
+    SELECT server_id, entrance_id, user_id, departed, rate, tat, start, raw, up_raw,
            server_total > server_allowance AS server_clamped,
            CASE WHEN server_total > server_allowance
                 THEN floor(amount * server_allowance / server_total)
                 ELSE amount END AS billed
     FROM server_cap
+), backlog AS MATERIALIZED (
+    -- Backlogged rows (1101): a delta that starts before the burst window
+    -- (only under a reconnect or flush-outage credit, `nf.floor`) covers
+    -- the whole outage. On an entrance whose rate can vary (rules, or a
+    -- manual change since the delta's start) it is billed at the
+    -- time-weighted mean rate over [start, now] instead of the rate of
+    -- the moment of settlement. One mean per entrance and 10 s bin of
+    -- start: an outage's rows share a handful of starts (a function call
+    -- per row would make a reconnect flush of 10k users slow).
+    SELECT b.entrance_id, b.bin,
+           akari_entrance_mean_rate(b.entrance_id, b.bin, statement_timestamp()) AS mult
+    FROM (SELECT DISTINCT s.entrance_id,
+                 date_bin('10 seconds', s.start, '2000-01-01 00:00:00+00') AS bin
+          FROM scaled s JOIN ef USING (entrance_id)
+          WHERE s.billed > 0 AND s.start < statement_timestamp() - make_interval(secs => $13)
+            AND (ef.has_rules OR ef.rate_changed_at > s.start)
+            -- Normally no server of the batch has a credit: skip the scan.
+            AND EXISTS (SELECT 1 FROM nf
+                        WHERE nf.floor < statement_timestamp() - make_interval(secs => $13))) b
 ), charged AS (
     -- The entrance's traffic multiplier (`ef.mult`: D9 base or time-window
-    -- rule, see ef; W28-a: per entrance, R43): users are charged
+    -- rule, see ef; backlogged rows: the mean over their interval, see
+    -- backlog; W28-a: per entrance, R43): users are charged
     -- floor(billed x permille / 1000) per row, never more than billed x
     -- rate. Every cap above works on the accepted (raw) bytes; departed
     -- allowances and the server GCRA stay raw.
@@ -909,7 +930,13 @@ WITH input AS (
     -- the row's raw deltas (up floored, down = the rest: up + down =
     -- billed exactly).
     SELECT s.server_id, ef.node_id, s.entrance_id, s.user_id, s.billed, s.rate, s.tat,
-           floor(s.billed * ef.mult / 1000) AS charge,
+           floor(s.billed * CASE
+               WHEN s.start < statement_timestamp() - make_interval(secs => $13)
+                    AND (ef.has_rules OR ef.rate_changed_at > s.start)
+               THEN (SELECT bl.mult FROM backlog bl
+                     WHERE bl.entrance_id = s.entrance_id
+                       AND bl.bin = date_bin('10 seconds', s.start, '2000-01-01 00:00:00+00'))
+               ELSE ef.mult END / 1000) AS charge,
            CASE WHEN s.raw > 0 THEN floor(s.billed * s.up_raw / s.raw) ELSE 0 END AS up_acc
     FROM scaled s JOIN ef USING (entrance_id)
 ), staged AS (
@@ -4535,6 +4562,78 @@ mod db_tests {
         write(&db, &[row(n, u, "s1", 2 * TB, 1.0)]).await;
         let more = db.used(u).await - billed;
         assert!(more <= RATE, "reconnects minted {more}");
+        assert_history(&db).await;
+        db.drop().await;
+    }
+
+    /// 1101: traffic that reaches the panel only after a reconnect gap is
+    /// billed at the time-weighted mean multiplier of the gap, not at the
+    /// rate of the moment it arrives. A 4 h gap whose first half fell in a
+    /// 3x window (now 1x): ~2x, not 1x. The same rows without a gap (no
+    /// credit) keep the settle rate of now.
+    #[tokio::test]
+    async fn backlog_after_a_gap_is_billed_at_the_mean_rate() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, u) = db.member().await;
+        let e = db.direct(n).await;
+        // A daily 3x window from 4 h ago to 2 h ago, site-local minutes.
+        let (from, to): (String, String) = sqlx::query_as(
+            "SELECT to_char((now() - interval '4 hours') AT TIME ZONE akari_site_tz(), 'HH24:MI'), \
+                    to_char((now() - interval '2 hours') AT TIME ZONE akari_site_tz(), 'HH24:MI')",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        let to = if to == "00:00" {
+            "24:00".to_string()
+        } else {
+            to
+        };
+        let rules = crate::rates::parse(&[crate::rates::RuleReq {
+            weekdays: (1..=7).collect(),
+            start: from,
+            end: to,
+            rate: 3.0,
+        }])
+        .unwrap();
+        let mut tx = db.pool.begin().await.unwrap();
+        crate::rates::apply_set_rules(&mut tx, &crate::audit::Actor::system(), e, &rules)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        // The rule edit just now is a recorded change; the gap started
+        // before it. Model the rules as long-standing.
+        sqlx::query(
+            "UPDATE entrances SET rate_prev_permille = NULL, rate_changed_at = NULL WHERE id = $1",
+        )
+        .bind(e)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        seed(&db, n, u, "s1", 0, 14_400.0).await;
+        sqlx::query(
+            "UPDATE servers SET status = 'offline', last_seen_at = now() - interval '14400 seconds', \
+             traffic_tat = now() - interval '1 day' WHERE id = $1",
+        )
+        .bind(n)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        crate::grpc::reconnect_for_test(&db.pool, n).await;
+        const GB: i64 = 1_000_000_000;
+        write(&db, &[row(n, u, "s1", GB, 1.0)]).await;
+        let billed = db.used(u).await;
+        assert!(
+            (197 * GB / 100..=201 * GB / 100).contains(&billed),
+            "4 h gap, 2 h of it at 3x: billed {billed}, want ~2x"
+        );
+
+        // In steady state (no gap) the next delta settles at the rate now.
+        write(&db, &[row(n, u, "s1", 2 * GB, 1.0)]).await;
+        assert_eq!(db.used(u).await - billed, GB);
         assert_history(&db).await;
         db.drop().await;
     }
