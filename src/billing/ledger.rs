@@ -167,9 +167,14 @@ pub async fn balance(conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result<i64
 /// commissions credited to them, minus the ones clawed back by a refund
 /// (中-4: recovered or still owed) and their withdrawals that were not
 /// rejected or cancelled (refunds and admin credits are spendable on
-/// orders, not withdrawable).
+/// orders, not withdrawable), and at most the commission money still in
+/// the balance (C1, migration 1102 `akari_withdrawable_part`: a ledger
+/// replay where orders spend the non-withdrawable part first; commission
+/// money spent on an order does not become withdrawable again when other
+/// money reaches the balance later).
 pub const WITHDRAWABLE_SQL: &str = "SELECT GREATEST(0, LEAST( \
        COALESCE((SELECT balance_cents FROM user_balances WHERE user_id = $1), 0), \
+       akari_withdrawable_part($1), \
        COALESCE((SELECT sum(amount_cents) - sum(COALESCE(clawback_cents, 0)) FROM commissions \
                  WHERE inviter_id = $1 AND status = 'credited'), 0) \
        - COALESCE((SELECT sum(amount_cents) FROM withdrawals \

@@ -13,14 +13,15 @@
 //! - Another active plan: `switch` (needs `allow_switch_in`, not
 //!   `renewal_only`; capacity). The new plan's full period price is
 //!   charged minus a credit for the unused part of the current plan:
-//!   value of the latest paid order of the current subscription
-//!   (list price = what was paid + any credit it used) x remaining time /
-//!   that order's nominal period length, floored to the fen, capped by the
-//!   total value paid for this subscription, never negative (SQL
-//!   `akari_prorate`). A credit larger than the price is forfeited (no
-//!   balance, no refunds): the amount is then 0 and the order is paid by
-//!   the credit at creation. Admin-assigned subscriptions without a paid
-//!   order earn no credit.
+//!   the remaining time is valued order by order, newest first: each
+//!   paid order of the current subscription covers its nominal period and
+//!   contributes its value (what was paid + any credit it used) x the part
+//!   of the remaining time it covers / that period (B1), floored to the
+//!   fen, capped by the total value paid for this subscription, never
+//!   negative (SQL, `switch_credit`). A credit larger than the price is
+//!   forfeited (no balance, no refunds): the amount is then 0 and the
+//!   order is paid by the credit at creation. Admin-assigned subscriptions
+//!   without a paid order earn no credit.
 //! - The credit and the amount are computed by the server when the order
 //!   is created and copied into it (the client never sends amounts); the
 //!   shop shows the same computation beforehand.
@@ -509,8 +510,16 @@ pub async fn splits(conn: &mut PgConnection, input: &[SplitIn]) -> sqlx::Result<
 /// part (`list − discount − gift` = gateway amount + balance + the credit
 /// carried from the plan before); refunded orders count for nothing. So a
 /// coupon or a gifted plan cannot be turned into credit for another plan.
-/// The latest such order (even one worth 0) sets the daily value; the total
-/// paid for the subscription caps the credit.
+/// The remaining time is valued order by order (billing review B1): the
+/// subscription's paid orders are laid end to end, newest last, each
+/// covering its nominal period (`akari_period_nominal_days`), and the
+/// remaining time `expires_at − now` is taken from the newest backwards;
+/// each order contributes `value × covered / its period`. So a one-day
+/// renewal of a yearly plan prices only the last day at the daily price,
+/// the rest at the year's. Remaining time no paid order covers (an admin
+/// extension, the extra day of a 31-day month) is worth nothing. The total
+/// paid for the subscription caps the credit; the latest order is the one
+/// recorded as the credit's source.
 ///
 /// The credit is also limited by the traffic left (ops-logic review
 /// High-1, the lead's default): `min(time credit, paid × traffic left /
@@ -533,13 +542,22 @@ pub async fn switch_credit(
                   WHERE o.user_id = $1 AND o.status = 'paid' AND o.fulfilled_at IS NOT NULL \
                   AND o.refunded_at IS NULL \
                   AND o.fulfilled_at >= cur.starts_at AND o.period <> 'reset'), \
-         latest AS (SELECT * FROM paid ORDER BY fulfilled_at DESC, id DESC LIMIT 1) \
+         latest AS (SELECT * FROM paid ORDER BY fulfilled_at DESC, id DESC LIMIT 1), \
+         spans AS (SELECT value, secs, \
+                          COALESCE(sum(secs) OVER (ORDER BY fulfilled_at DESC, id DESC \
+                                                   ROWS BETWEEN UNBOUNDED PRECEDING \
+                                                   AND 1 PRECEDING), 0) AS newer \
+                   FROM (SELECT id, value, fulfilled_at, \
+                                akari_period_nominal_days(period, period_days)::numeric \
+                                * 86400 AS secs FROM paid) p \
+                   WHERE secs > 0 AND value > 0), \
+         rem AS (SELECT GREATEST(COALESCE(extract(epoch FROM expires_at - now()), 0), 0) AS s \
+                 FROM cur) \
          SELECT (SELECT id FROM latest), \
-                LEAST(akari_prorate((SELECT value FROM latest), \
-                                    (SELECT akari_period_nominal_days(period, period_days) \
-                                     FROM latest), \
-                                    extract(epoch FROM cur.expires_at - now()), \
-                                    (SELECT sum(value) FROM paid)::bigint), \
+                LEAST(GREATEST(LEAST(COALESCE((SELECT floor(sum(value \
+                                     * GREATEST(LEAST(rem.s - newer, secs), 0) / secs)) \
+                                     FROM spans, rem), 0), \
+                                     COALESCE((SELECT sum(value) FROM paid), 0)), 0)::bigint, \
                       CASE WHEN u.traffic_limit_bytes IS NULL THEN NULL \
                            WHEN u.traffic_limit_bytes <= 0 THEN 0 \
                            ELSE floor((SELECT sum(value) FROM paid) \
