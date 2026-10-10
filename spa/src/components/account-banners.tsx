@@ -10,20 +10,20 @@ const NUDGE_KEY = 'akari.verify-nudge';
 
 /**
  * 页面提醒区：每一页都在页面标题下方（PageTitle 自带；没有 PageTitle 的页面在自己的标题下放一个），
- * 账户提醒在前，页面自己的提醒（未付订单、工单回复、公告…）在后，同一种样式与间距。
+ * 账户提醒（`account`，只有仪表盘开）在前，页面自己的提醒（未付订单、工单回复、公告…）在后，同一种样式与间距。
  * 账户提醒只读登录态与 sessionStorage，渲染是同步的：切页时随页面一起过渡，不会先空后出现。
  */
-export function PageNotices({ children }: { children?: ReactNode }) {
+export function PageNotices({ children, account = false }: { children?: ReactNode; account?: boolean }) {
   return (
     <div data-page-notices className="mt-5 flex flex-col gap-3 empty:hidden">
-      <AccountBanners />
+      {account && <AccountBanners />}
       {children}
     </div>
   );
 }
 
 /**
- * 账户提醒条，每一页都显示：
+ * 账户提醒条，只在仪表盘显示（其他页面不打扰）：
  *   · 续费范围（已过期 / 流量用完）：节点和订阅被面板停了，只剩续费能做——直接给「去续费」；
  *   · 邮箱未验证（中-8）：到期、流量、收据这些邮件只发到已验证的地址。可以关掉，本次会话不再出现。
  * 封禁和管理员不在这里：仪表盘整页就是说明。

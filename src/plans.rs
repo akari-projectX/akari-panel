@@ -2199,6 +2199,7 @@ pub async fn subscription(
 #[derive(Serialize, sqlx::FromRow)]
 struct MyNode {
     name: String,
+    tags: Vec<String>,
     region: Option<String>,
 }
 
@@ -2219,8 +2220,9 @@ struct MyPlanRow {
 }
 
 /// GET /api/v1/me/plan (any full session): the caller's active plan (or
-/// null), usage, enforced limit/expiry, and the nodes they can use (names
-/// and regions only — no addresses, ids or inbounds).
+/// null), usage, enforced limit/expiry, and the entrances they can use
+/// (entrance names, tags and regions only — no node or server names,
+/// addresses, ids or inbounds).
 /// GET /api/v1/me/plan (renewal scope: also for expired users, R21).
 pub async fn my_plan(
     State(state): State<AppState>,
@@ -2245,14 +2247,15 @@ pub async fn my_plan(
     .bind(user.id)
     .fetch_optional(&mut *c)
     .await?;
+    // One per usable entrance, by its name and tags: users never see node
+    // or server names.
     let nodes = sqlx::query_as::<_, MyNode>(
-        "SELECT DISTINCT ON (n.sort, coalesce(n.display_name, n.name), n.id) \
-         coalesce(n.display_name, n.name) AS name, n.region FROM entrance_users eu \
+        "SELECT e.name, e.tags, n.region FROM entrance_users eu \
          JOIN entrances e ON e.id = eu.entrance_id AND e.enabled \
          JOIN nodes n ON n.id = e.node_id \
          JOIN servers s ON s.id = n.server_id \
          WHERE eu.user_id = $1 AND n.enabled AND n.visible AND s.deleting_at IS NULL \
-         ORDER BY n.sort, coalesce(n.display_name, n.name), n.id",
+         ORDER BY n.sort, n.id, e.kind <> 'direct', e.sort, e.name",
     )
     .bind(user.id)
     .fetch_all(&mut *c)
@@ -3793,7 +3796,10 @@ mod tests {
         assert_eq!(v["plan"]["name"], "basic");
         assert_eq!(v["plan"]["period"], "monthly");
         assert_eq!(v["traffic_limit_bytes"], 1000);
-        assert_eq!(v["nodes"], json!([{ "name": "jp-1", "region": "Tokyo" }]));
+        assert_eq!(
+            v["nodes"],
+            json!([{ "name": "直连", "tags": [], "region": "Tokyo" }])
+        );
         // Q3: in the site time zone (Asia/Shanghai).
         let next = v["plan"]["next_reset_at"].as_str().unwrap();
         assert!(next.ends_with("+08:00"), "{next}");

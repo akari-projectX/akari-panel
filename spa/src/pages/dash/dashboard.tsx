@@ -150,6 +150,7 @@ function Overview({ full }: { full: boolean }) {
       <PageTitle
         title={tr('仪表盘')}
         sub={tr('你的账号状态、流量走势与订阅信息一览。')}
+        accountNotices
         notices={
           <>
             {openOrder.order && <OpenOrderNotice order={openOrder.order} onChanged={openOrder.reload} />}
@@ -418,19 +419,18 @@ function Overview({ full }: { full: boolean }) {
                       const rate = n.rate;
                       return (
                         <Row
-                          key={nodeKey(n)} index={(page - 1) * pageSize + i + 1} className={cn(!up && 'is-off')}
+                          key={nodeKey(n, i)} index={(page - 1) * pageSize + i + 1} className={cn(!up && 'is-off')}
                           avatar={cc
                             ? <Flag cc={cc} className="h-[15px] w-[22px]" />
                             : <span className="inline-block h-[15px] w-[22px] shrink-0 rounded-[3px] bg-muted" />}
                           title={
                             <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                              {stripFlag(n.name)}<NodeTags tags={n.tags} />
+                              {stripFlag(n.entrance)}<NodeTags tags={n.tags} />
                             </span>
                           }
                           desc={
                             <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
                               <NodeState n={n} className="text-[12.5px]" />
-                              <span>· {n.entrance}</span>
                               {up && nodeLatency(n) != null && <span className="tnum">· {nodeLatency(n)} ms</span>}
                               {up && <NodeLoad n={n} />}
                             </span>
@@ -477,8 +477,8 @@ function NodeSummary({ nodes, online, avgLatency, regions }: {
         <div className="mt-2 text-[13px] text-muted-foreground">{tr('可用')}</div>
         {nodes.length <= 24 ? (
           <div className="mt-3 flex gap-[3px]">
-            {nodes.map((n) => (
-              <i key={nodeKey(n)} className={cn('h-1.5 flex-1 rounded-[2px]', nodeUp(n) ? 'bg-brand' : 'bg-border')} />
+            {nodes.map((n, i) => (
+              <i key={nodeKey(n, i)} className={cn('h-1.5 flex-1 rounded-[2px]', nodeUp(n) ? 'bg-brand' : 'bg-border')} />
             ))}
           </div>
         ) : <Progress value={nodes.length ? (online / nodes.length) * 100 : 0} className="mt-3 h-1.5" />}

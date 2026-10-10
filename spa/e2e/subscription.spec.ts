@@ -86,7 +86,9 @@ test('#32 #33 D9 D5 entrances: one row per entrance, the multiplier in effect no
   await expect(shown('×2')).toBeVisible();
   /* 日本 01 的直连入口全天 0.5×（时段规则，按站点时区，面板 SQL 算好） */
   await expect(shown('×0.5')).toBeVisible();
-  await expect(shown('日本 01')).toBeVisible();
+  await expect(shown('直连')).toBeVisible();
+  /* 只显示入口名与标签：节点（服务器）名不出现 */
+  await expect(page.getByText(/香港 01|日本 01/)).toHaveCount(0);
   /* 图例说明三种状态与负载/延迟的来源；e2e 里没有 agent，线路都是离线 */
   await expect(page.locator('[data-node-legend]')).toContainText('维护中');
   await expect(page.locator('[data-node-legend]')).toContainText('每 30 秒自动刷新');
@@ -99,7 +101,7 @@ test('#32 #33 D9 D5 entrances: one row per entrance, the multiplier in effect no
   try {
     await page.reload();
     await expect(shown('IPLC')).toBeVisible();
-    await expect(shown('日本 01')).toBeVisible();
+    await expect(shown('直连')).toBeVisible();
     await expect(page.locator('[data-node-status="maintenance"]').locator('visible=true').first()).toBeVisible();
     await expect(page.locator('[data-node-status="online"]').locator('visible=true').first()).toBeVisible();
     /* 仪表盘的「订阅内的线路」同样显示状态与图例 */

@@ -40,7 +40,6 @@ export default function Nodes() {
     const k = kw.trim().toLowerCase();
     return all
       .filter((n) => !k
-        || stripFlag(n.name).toLowerCase().includes(k)
         || n.entrance.toLowerCase().includes(k)
         || (n.region ?? '').toLowerCase().includes(k)
         || n.tags.some((t) => t.toLowerCase().includes(k)))
@@ -97,8 +96,8 @@ export default function Nodes() {
           <div className="relative">
             <Search aria-hidden className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-faint" />
             <Input
-              aria-label={tr('搜索节点、入口、地区或线路')}
-              className="h-9 pl-9" placeholder={tr('搜索节点、入口、地区或线路')}
+              aria-label={tr('搜索线路、地区或标签')}
+              className="h-9 pl-9" placeholder={tr('搜索线路、地区或标签')}
               value={kw} onChange={(e) => setKw(e.target.value)}
             />
           </div>
@@ -110,21 +109,23 @@ export default function Nodes() {
           : data.length === 0 ? <Empty title="没有匹配的线路" desc="换个关键词试试。" />
           : (
             <>
-            {/* 窄屏：一行一条线路，左边国旗 + 名称 + 入口，右边倍率 */}
+            {/* 窄屏：一行一条线路，左边国旗 + 入口名 + 标签，右边倍率（不显示节点、服务器名） */}
             <div className="md:hidden">
               {data.map((n, i) => {
                 const cc = nodeCC(n);
                 const ok = nodeUp(n);
                 return (
                   <Row
-                    key={nodeKey(n)} index={i} className={cn(!ok && 'is-off')}
+                    key={nodeKey(n, i)} index={i} className={cn(!ok && 'is-off')}
                     avatar={cc
                       ? <Flag cc={cc} className="h-[15px] w-[22px]" />
                       : <span className="inline-block h-[15px] w-[22px] shrink-0 rounded-[3px] bg-muted" />}
-                    title={stripFlag(n.name)}
+                    title={stripFlag(n.entrance)}
                     desc={
                       <span className="flex min-w-0 items-center gap-2">
-                        <span className="min-w-0 truncate">{[n.entrance, ...sortTags(n.tags)].join(' · ')}</span>
+                        {(n.tags.length > 0 || n.region) && (
+                          <span className="min-w-0 truncate">{[...sortTags(n.tags), ...(n.region ? [n.region] : [])].join(' · ')}</span>
+                        )}
                         <NodeState n={n} />
                         {ok && <NodeLoad n={n} />}
                       </span>
@@ -138,9 +139,8 @@ export default function Nodes() {
               <Table>
                 <TableHeader>
                   <TableRow className="flat-head hover:bg-transparent">
-                    <TableHead className="min-w-[200px] pl-0">{tr('节点')}</TableHead>
-                    <TableHead className="w-40">{tr('入口')}</TableHead>
-                    <TableHead className="w-52">{tr('线路')}</TableHead>
+                    <TableHead className="min-w-[200px] pl-0">{tr('线路')}</TableHead>
+                    <TableHead className="w-52">{tr('标签')}</TableHead>
                     <TableHead className="w-28">{tr('延迟')}</TableHead>
                     <TableHead className="w-28" aria-sort={sortAsc ? 'ascending' : 'descending'}>
                       <button type="button" className="inline-flex cursor-pointer items-center gap-1 rounded-sm" onClick={() => setSortAsc((v) => !v)}>
@@ -155,7 +155,7 @@ export default function Nodes() {
                     const cc = nodeCC(n);
                     return (
                       <tr
-                        key={nodeKey(n)}
+                        key={nodeKey(n, i)}
                         {...enter({ delay: stagger(i), y: NUDGE, duration: DUR.fast })}
                         className={cn('border-b transition-colors hover:bg-brand/[.03]', !nodeUp(n) && 'opacity-55')}
                       >
@@ -165,12 +165,11 @@ export default function Nodes() {
                               ? <Flag cc={cc} className="h-4 w-6" />
                               : <span className="inline-block h-4 w-6 shrink-0 rounded-[3px] bg-muted" />}
                             <div className="min-w-0">
-                              <div className="truncate font-medium">{stripFlag(n.name)}</div>
+                              <div className="truncate font-medium">{stripFlag(n.entrance)}</div>
                               {n.region && <div className="text-[12.5px] text-muted-foreground">{n.region}</div>}
                             </div>
                           </div>
                         </TableCell>
-                        <TableCell className="text-sm">{n.entrance}</TableCell>
                         <TableCell>
                           {n.tags.length ? <NodeTags tags={n.tags} /> : <span className="text-[13px] text-muted-foreground">—</span>}
                         </TableCell>

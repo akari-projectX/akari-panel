@@ -8,7 +8,6 @@
 export const EN: Record<string, string> = {
   /* ── 导航与外壳 ── */
   '更多': 'More',
-  '节点': 'Nodes',
   '流量': 'Traffic',
   '套餐': 'Plans',
   '工单': 'Tickets',
@@ -67,6 +66,7 @@ export const EN: Record<string, string> = {
   '在线': 'Online',
   '延迟': 'Latency',
   '线路': 'Route',
+  '标签': 'Tags',
   '流量倍率': 'Traffic multiplier',
   '流量用量': 'Traffic usage',
   '流量走势': 'Traffic trend',
@@ -688,7 +688,6 @@ export const EN: Record<string, string> = {
   "佣金追回": "Commission clawback",
   "使用": "Apply",
   "先添加一个通行密钥，才能关闭密码登录。": "Add a passkey before turning off password sign-in.",
-  "入口": "Entrance",
   "全部线路": "All lines",
   "共 {n} 条线路在订阅内": "{n} lines in your subscription",
   "共 {n} 条线路，点击「倍率」列可切换排序": "{n} lines; click the multiplier column to change the order",
@@ -797,7 +796,7 @@ export const EN: Record<string, string> = {
   "提现记录": "Withdrawals",
   "提现退回": "Withdrawal returned",
   "提现金额（元）": "Amount (CNY)",
-  "搜索节点、入口、地区或线路": "Search node, entrance, region or line",
+  "搜索线路、地区或标签": "Search line, region or tag",
   "撤回": "Cancel",
   "收支流水": "Ledger",
   "新地址验证通过后就是你的登录名。": "Once verified, the new address is your sign-in name.",

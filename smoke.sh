@@ -1252,7 +1252,8 @@ DJAR="$LOG/w11-d.jar"
 [ "$(code -b "$DJAR" "$BASE/api/v1/me/nodes")" = "200" ] || { echo "FAIL: /me/nodes"; exit 1; }
 python3 -c "
 import json; v = json.load(open('/tmp/akari-smoke/last'))
-assert len(v) == 1 and v[0]['name'] == '冒烟 01' and v[0]['entrance'] == '直连' and v[0]['rate'] == 0.5 and v[0]['online'] is True, v
+assert len(v) == 1 and 'name' not in v[0] and v[0]['entrance'] == '直连' and v[0]['rate'] == 0.5 and v[0]['online'] is True, v
+assert '冒烟' not in json.dumps(v, ensure_ascii=False), v
 assert v[0]['tags'] == ['IPLC', '0.5x'], v
 assert 'id' not in v[0] and 'connect_host' not in v[0] and 'server_id' not in v[0] and 'max_rate' not in v[0], v
 assert v[0]['status'] == 'online' and v[0]['load'] in ('low', 'medium', 'high', None), v
@@ -1945,7 +1946,7 @@ PJAR="$LOG/plan-user-cookies"
 [ "$(code -c "$PJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
     -d '{"email":"smoke-plan-user@smoke.test","password":"plan-password-123"}')" = "200" ] || { echo "FAIL: plan user login"; exit 1; }
 [ "$(code -b "$PJAR" "$BASE/api/v1/me/plan")" = "200" ] || { echo "FAIL: /me/plan"; exit 1; }
-python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); assert d['plan']['name']=='smoke-plan' and d['plan']['period']=='monthly' and d['plan']['next_reset_at'].endswith('+08:00') and d['nodes']==[{'name':'test-node','region':'Smokeland'}], d" \
+python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); assert d['plan']['name']=='smoke-plan' and d['plan']['period']=='monthly' and d['plan']['next_reset_at'].endswith('+08:00') and '直连' in [n['name'] for n in d['nodes']] and all(n['region']=='Smokeland' for n in d['nodes']) and 'test-node' not in json.dumps(d), d" \
   || { echo "FAIL: /me/plan content"; cat /tmp/akari-smoke/last; exit 1; }
 grep -q "$NODE_ID" /tmp/akari-smoke/last && { echo "FAIL: /me/plan exposes node ids"; exit 1; }
 [ "$(code -b "$PJAR" "$BASE/api/v1/plans")" = "403" ] || { echo "FAIL: user reached the plans API"; exit 1; }
