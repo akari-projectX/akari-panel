@@ -431,6 +431,8 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
      （打开时的 CSP 不放行 Cloudflare 的脚本）。v0.4.0 的页面不会重新取：改设置之后，已打开的页面每次提交都失败
      （「邮箱或密码错误」或「人机验证未通过」），直到刷新。
    - **Cloudflare Turnstile**（按表单，默认关闭）：站点密钥 + 密钥（密钥只写不读，用 `data/master.key` 加密），在服务端验证；
+     门户与后台登录页以 `interaction-only` 渲染组件（平时看不见，只有需要人工确认时出现，与输入框同宽，明暗与语言跟随页面），
+     建议在 Cloudflare 把组件模式设为「托管」（Managed）或「隐形」（Invisible）；
      开启后**失败即关闭**：
      - 400 `auth.captcha_failed`（「人机验证未通过」）= 访客这边的问题：没有令牌，或 Cloudflare 以
        `missing-input-response` / `invalid-input-response` / `timeout-or-duplicate`（过期或重复使用）拒绝了令牌；
@@ -1148,7 +1150,10 @@ panel 5 MB、PostgreSQL 56 MB、Valkey 8 MB、Caddy 17 MB、agent 27 MB。整套
 
 - **面板实例**：每个实例每 10 秒把自己的心跳写进 Valkey（`akari:status:instances`，实例 id →
   主机 CPU/内存/负载/数据目录磁盘、进程内存、版本、持有的 agent 连接数、数据库连接池、后台任务统计）。
-  30 秒没有心跳 = 离线，24 小时后自动移除。多实例部署时任一实例都能给出全部实例的状态。
+  30 秒没有心跳 = 已退出。每次重启 / 升级都是新的实例 id：同一主机（按主机名）上有更晚启动的在线实例时，
+  已退出的旧实例立即移除；否则 10 分钟后移除。后台任务统计只计在线实例。多实例部署时任一实例都能给出全部实例的状态。
+  主机 CPU / 内存 / 负载读自 `/proc/stat`、`/proc/meminfo`、`/proc/loadavg`：v0.4.1 之前的面板单元带
+  `ProcSubset=pid`，这些文件被隐藏，页面显示「未知」并提示原因；运行 `akari-ctl upgrade`（安装新单元）即可。
 - **PostgreSQL**：版本、是否只读副本、连接数 / `max_connections`、库大小、往返延迟。
 - **Valkey**：版本、内存、客户端数、运行时长、往返延迟。
 - **Caddy（反向代理）**：经系统设置的主域名探测（TCP → TLS（证书到期时间）→ `HEAD /`，任何 HTTP

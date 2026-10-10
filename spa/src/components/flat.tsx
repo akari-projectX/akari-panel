@@ -5,6 +5,7 @@ import CountUp from './count-up';
 import { useT, useTp } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { DUR, NUDGE, stagger, useEnter } from '@/lib/motion';
+import { PageNotices } from '@/components/account-banners';
 
 /** 区块：标题 + 右侧操作 + 顶部细分隔线 */
 export function Section({
@@ -93,17 +94,22 @@ export function Split({ left, right }: { left: ReactNode; right: ReactNode }) {
   );
 }
 
-/** 页面大标题（编辑式排版，shadcn 版专有） */
-export function PageTitle({ title, sub, extra }: { title: string; sub?: ReactNode; extra?: ReactNode }) {
+/** 页面大标题（编辑式排版，shadcn 版专有）；下方是本页的提醒区（账户提醒 + `notices`） */
+export function PageTitle({
+  title, sub, extra, notices,
+}: { title: string; sub?: ReactNode; extra?: ReactNode; notices?: ReactNode }) {
   const enter = useEnter();
   return (
-    <div className="flex flex-wrap items-end justify-between gap-6 pt-12 pb-2" {...enter()}>
-      <div>
-        <h1 className="page-title">{title}</h1>
-        {sub && <p className="page-sub">{sub}</p>}
+    <>
+      <div className="flex flex-wrap items-end justify-between gap-6 pt-12 pb-2" {...enter()}>
+        <div>
+          <h1 className="page-title">{title}</h1>
+          {sub && <p className="page-sub">{sub}</p>}
+        </div>
+        {extra}
       </div>
-      {extra}
-    </div>
+      <PageNotices>{notices}</PageNotices>
+    </>
   );
 }
 

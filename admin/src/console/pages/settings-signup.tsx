@@ -182,7 +182,13 @@ function BotCard() {
       />
       <CardBody className="space-y-3">
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label={tr("Turnstile 站点密钥", "Turnstile site key")}>
+          <Field
+            label={tr("Turnstile 站点密钥", "Turnstile site key")}
+            hint={tr(
+              "建议在 Cloudflare 把组件模式设为「托管」（Managed）或「隐形」（Invisible）：页面上的组件平时不显示，只有需要人工确认时才出现。",
+              "Set the widget mode to Managed or Invisible in Cloudflare: the widget stays hidden and only shows when an interaction is needed.",
+            )}
+          >
             <Input
               value={f.turnstile_site_key ?? ""}
               onChange={(e) => setF({ ...f, turnstile_site_key: e.target.value })}

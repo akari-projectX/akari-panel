@@ -1,4 +1,5 @@
 import { RotateCw } from 'lucide-react';
+import { Spinner } from '@/components/loading';
 import Turnstile from '@/components/turnstile';
 import type { FormGuardState } from '@/lib/form-guard';
 import { useT } from '@/i18n';
@@ -29,6 +30,11 @@ export default function GuardFields({ guard }: { guard: FormGuardState }) {
             siteKey={guard.siteKey} resetKey={guard.resetKey}
             onToken={guard.onToken} onError={guard.setFailed}
           />
+          {!guard.token && !guard.failed && (
+            <p role="status" className="flex items-center gap-2 text-[12.5px] text-muted-foreground">
+              <Spinner size={12} tone="current" />{tr('正在进行人机验证…')}
+            </p>
+          )}
           {guard.failed && (
             <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-destructive">
               <span>{tr('人机验证加载失败，请刷新重试')}</span>

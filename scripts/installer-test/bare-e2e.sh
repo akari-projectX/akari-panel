@@ -214,6 +214,15 @@ case $(printf '%s\n' "$settings" | sed -n 's/^node domains: *//p') in
 esac
 echo "ok: modes, ownership, no secrets in logs, node address $node_addr"
 
+log "system status: host metrics readable under the panel unit"
+# The pre-v0.4.1 unit had ProcSubset=pid: /proc/stat, meminfo, loadavg
+# hidden, CPU / memory / load all "unknown" on the status page.
+[ "$(https_code "$origin/$PREFIX/api/v1/system/status" -b /tmp/jar)" = 200 ] || fail "system status"
+cx grep -q '"proc_hidden":false' /tmp/last || fail "the panel unit hides /proc: $(cx cat /tmp/last)"
+cx grep -q '"mem_total_bytes":[1-9]' /tmp/last || fail "no memory total: $(cx cat /tmp/last)"
+cx grep -q '"load":\[' /tmp/last || fail "no load average: $(cx cat /tmp/last)"
+echo "ok: system status host metrics"
+
 log "user + subscription"
 [ "$(https_code "$origin/$PREFIX/api/v1/users" -b /tmp/jar -X POST -H 'Content-Type: application/json' \
 	-d '{"email":"e2e-user@example.com","password":"user-password-123"}')" = 201 ] || fail "create user"

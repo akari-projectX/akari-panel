@@ -32,6 +32,8 @@ type Host = {
   disk_total_bytes: number | null;
   disk_used_bytes: number | null;
   rss_bytes: number | null;
+  /** /proc/stat, meminfo, loadavg hidden by the service sandbox. */
+  proc_hidden?: boolean;
 };
 type Instance = {
   id: string;
@@ -156,6 +158,8 @@ export function StatusPage() {
     );
   const mail = s.jobs.find((j) => j.job === "mail");
   const dead = mail?.backlog?.dead ?? 0;
+  const live = s.instances.filter((i) => i.alive);
+  const exited = s.instances.filter((i) => !i.alive);
   return (
     <>
       {header}
@@ -178,8 +182,28 @@ export function StatusPage() {
           <Callout tone="danger">{s.instances_error}</Callout>
         </div>
       )}
+      {exited.length > 0 && (
+        <div className="mb-4">
+          <Callout tone="info" title={tr(`${exited.length} 个已退出的实例`, `${exited.length} exited instance(s)`)}>
+            <p className="text-xs text-muted-foreground">
+              {tr(
+                "重启或升级前的面板进程；不计入后台任务统计，10 分钟后（同一主机有新实例时立即）自动移除。",
+                "Panel processes from before a restart or upgrade; not counted in the job stats, removed after 10 minutes (at once when a new instance runs on the same host).",
+              )}
+            </p>
+            <ul className="mt-1 text-xs">
+              {exited.map((i) => (
+                <li key={i.id}>
+                  {i.host.hostname ?? i.id.slice(0, 8)} · v{i.version} · {tr("最后心跳", "last heartbeat")}{" "}
+                  {ago(i.beat_at, lang)}
+                </li>
+              ))}
+            </ul>
+          </Callout>
+        </div>
+      )}
       <div className="grid gap-4 xl:grid-cols-2">
-        {s.instances.map((i) => {
+        {live.map((i) => {
           const h = i.host;
           const mem = h.mem_total_bytes ? pct(h.mem_used_bytes ?? 0, h.mem_total_bytes) : null;
           const disk = h.disk_total_bytes ? pct(h.disk_used_bytes ?? 0, h.disk_total_bytes) : null;
@@ -193,9 +217,19 @@ export function StatusPage() {
                   </span>
                 }
                 description={`v${i.version} (${i.git_sha.slice(0, 12)}) · ${tr("运行", "up")} ${duration((Date.now() - Date.parse(i.started_at)) / 1000, lang)}`}
-                actions={<Health ok={i.alive} label={i.alive ? tr("在线", "Alive") : tr("失联", "Lost")} />}
+                actions={<Health ok label={tr("在线", "Alive")} />}
               />
               <CardBody>
+                {h.proc_hidden && (
+                  <div className="mb-3">
+                    <Callout tone="warning">
+                      {tr(
+                        "读不到 /proc/stat、/proc/meminfo、/proc/loadavg：旧版面板 systemd 单元的 ProcSubset=pid 把它们隐藏了，所以 CPU、内存、负载显示为未知。运行 akari-ctl upgrade 安装新单元即可。",
+                        "/proc/stat, /proc/meminfo and /proc/loadavg are hidden by ProcSubset=pid in an older panel systemd unit, so CPU, memory and load are unknown. Run akari-ctl upgrade to install the new unit.",
+                      )}
+                    </Callout>
+                  </div>
+                )}
                 <div className="flex flex-wrap items-center justify-around gap-4">
                   {[
                     ["CPU", h.cpu_percent == null ? null : Math.round(h.cpu_percent)],

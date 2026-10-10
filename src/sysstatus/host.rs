@@ -82,6 +82,12 @@ pub struct Host {
     pub disk_used_bytes: Option<u64>,
     /// This panel process.
     pub rss_bytes: Option<u64>,
+    /// The machine-wide `/proc` files (stat, meminfo, loadavg) cannot be
+    /// read while this process's own can: the service sandbox hides them
+    /// (systemd `ProcSubset=pid`, in panel units before v0.4.1). The page
+    /// says so instead of a bare "unknown".
+    #[serde(default)]
+    pub proc_hidden: bool,
 }
 
 fn read(path: &str) -> Option<String> {
@@ -106,7 +112,10 @@ pub struct Sampler {
 impl Sampler {
     /// Read everything now (blocking file reads: small, in /proc).
     pub fn sample(&self, data_dir: &std::path::Path) -> Host {
-        let cpu = read("/proc/stat").as_deref().and_then(parse_cpu);
+        let stat = read("/proc/stat");
+        let rss = read("/proc/self/status");
+        let proc_hidden = stat.is_none() && rss.is_some();
+        let cpu = stat.as_deref().and_then(parse_cpu);
         let cpu_percent = match (cpu, self.prev.lock()) {
             (Some(cur), Ok(mut prev)) => {
                 let p = prev.and_then(|p| cpu_percent(p, cur));
@@ -118,10 +127,18 @@ impl Sampler {
         let mem = read("/proc/meminfo").as_deref().and_then(parse_meminfo);
         let disk = disk(data_dir);
         Host {
-            hostname: read("/proc/sys/kernel/hostname")
-                .map(|h| h.trim().to_string())
-                .filter(|h| !h.is_empty())
-                .or_else(|| std::env::var("HOSTNAME").ok()),
+            // uname(2), not /proc/sys/kernel/hostname: readable under any
+            // /proc sandbox, and the key that tells a restart on the same
+            // host from another instance (`super::prune`).
+            hostname: Some(
+                rustix::system::uname()
+                    .nodename()
+                    .to_string_lossy()
+                    .trim()
+                    .to_string(),
+            )
+            .filter(|h| !h.is_empty())
+            .or_else(|| std::env::var("HOSTNAME").ok()),
             cores: std::thread::available_parallelism()
                 .ok()
                 .map(|n| n.get() as u64),
@@ -131,7 +148,8 @@ impl Sampler {
             mem_used_bytes: mem.map(|m| m.0 - m.1),
             disk_total_bytes: disk.map(|d| d.0),
             disk_used_bytes: disk.map(|d| d.1),
-            rss_bytes: read("/proc/self/status").as_deref().and_then(parse_rss),
+            rss_bytes: rss.as_deref().and_then(parse_rss),
+            proc_hidden,
         }
     }
 }

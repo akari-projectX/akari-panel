@@ -69,3 +69,39 @@ test("ST-01 ST-02 ST-03 ST-04: panel instances, PostgreSQL, Valkey, proxy, backg
   // ST-04: dead letters link to the mail settings (none yet: the banner is absent).
   await expect(page.getByText(/封邮件发送失败/)).toHaveCount(0);
 });
+
+test("ST-05: exited instances are folded away; hidden /proc is explained", async ({ page }) => {
+  // The live answer, plus an exited instance and this instance's /proc hidden
+  // (the pre-v0.4.1 unit's ProcSubset=pid).
+  await page.route(/\/api\/v1\/system\/status$/, async (route) => {
+    const res = await route.fetch();
+    const j = await res.json();
+    const me = j.instances.find((i: { this: boolean }) => i.this);
+    me.host = {
+      ...me.host,
+      cpu_percent: null,
+      load: null,
+      mem_total_bytes: null,
+      mem_used_bytes: null,
+      proc_hidden: true,
+    };
+    j.instances.push({
+      ...me,
+      id: "00000000-0000-4000-8000-000000000001",
+      this: false,
+      alive: false,
+      version: "0.4.1-rc.1",
+      host: { ...me.host, hostname: "old-panel" },
+      beat_at: new Date(Date.now() - 300_000).toISOString(),
+      agent_sessions: 42,
+    });
+    await route.fulfill({ response: res, json: j });
+  });
+  await openConsole(page, "/status");
+  await expect(page.getByText("1 个已退出的实例")).toBeVisible();
+  await expect(page.getByText(/old-panel · v0\.4\.1-rc\.1/)).toBeVisible();
+  await expect(page.getByText("失联")).toHaveCount(0);
+  await expect(page.getByText(/ProcSubset=pid/)).toBeVisible();
+  // Only the live instance gets a card (its agent sessions, not the exited one's 42).
+  await expect(page.getByText("agent 会话")).toHaveCount(1);
+});

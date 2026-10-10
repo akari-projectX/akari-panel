@@ -51,6 +51,7 @@ export type AuthOptions = {
 type Turnstile = {
   render: (el: HTMLElement, o: Record<string, unknown>) => string;
   reset: (id: string) => void;
+  remove: (id: string) => void;
 };
 declare global {
   interface Window {
@@ -78,11 +79,15 @@ function TurnstileBox({
   onToken,
   onFail,
   resetKey,
+  theme,
+  lang,
 }: {
   siteKey: string;
   onToken: (t: string) => void;
   onFail: (kind: TurnstileFailure) => void;
   resetKey: number;
+  theme: "light" | "dark";
+  lang: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const widget = useRef<string | null>(null);
@@ -100,6 +105,12 @@ function TurnstileBox({
       if (cancelled || !ref.current || !window.turnstile || widget.current) return;
       widget.current = window.turnstile.render(ref.current, {
         sitekey: siteKey,
+        // Invisible unless Cloudflare wants an interaction; then as wide as
+        // the inputs, in the page's theme and language.
+        appearance: "interaction-only",
+        size: "flexible",
+        theme,
+        language: lang === "en" ? "en" : "zh-cn",
         callback: (t: string) => onToken(t),
         "expired-callback": () => onToken(""),
         "error-callback": failed("widget"),
@@ -120,15 +131,18 @@ function TurnstileBox({
     }
     return () => {
       cancelled = true;
+      if (widget.current && window.turnstile) window.turnstile.remove(widget.current);
+      widget.current = null;
+      onToken("");
     };
-  }, [siteKey, onToken]);
+  }, [siteKey, onToken, theme, lang]);
   useEffect(() => {
     if (resetKey && widget.current && window.turnstile) {
       onToken("");
       window.turnstile.reset(widget.current);
     }
   }, [resetKey, onToken]);
-  return <div ref={ref} data-testid="turnstile" className="min-h-16" />;
+  return <div ref={ref} data-testid="turnstile" className="w-full empty:hidden" />;
 }
 
 function BindPasskey({ onDone }: { onDone: () => void }) {
@@ -467,7 +481,15 @@ export function LoginApp() {
                         onToken={onCaptcha}
                         onFail={setCaptchaFailed}
                         resetKey={captchaReset}
+                        theme={theme}
+                        lang={lang}
                       />
+                      {!captcha && !captchaFailed && (
+                        <p role="status" className="flex items-center gap-2 text-[13px] text-muted-foreground">
+                          <span className="size-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                          {tr("正在进行人机验证…", "Verifying you are human…")}
+                        </p>
+                      )}
                       {captchaFailed && (
                         <div role="alert" className="flex items-center gap-3 text-[13px] text-destructive">
                           <span>

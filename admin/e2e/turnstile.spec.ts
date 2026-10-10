@@ -186,3 +186,26 @@ test("SH-05: a failed or blocked Turnstile says so, with a retry, instead of a n
   await alert.getByRole("button", { name: "重试" }).click();
   await reloaded;
 });
+
+// The widget's look: invisible unless an interaction is needed, as wide as the inputs, in the
+// page's theme and language; re-rendered when either changes. "Verifying" shows until a token.
+const RECORDING =
+  "(function(){var n=0;window.__ts=[];window.turnstile={render:function(el,o){var id='w'+(++n);" +
+  "window.__ts.push({appearance:o.appearance,size:o.size,theme:o.theme,language:o.language});" +
+  "setTimeout(function(){o.callback('tok-'+id)},400);return id},reset:function(){},remove:function(){}}})();";
+
+test("SH-05: Turnstile follows the page (interaction-only, flexible, theme, language)", async ({ page }) => {
+  await page.route("https://challenges.cloudflare.com/**", (r) =>
+    r.fulfill({ contentType: "text/javascript", body: RECORDING }),
+  );
+  await page.goto(LOGIN);
+  await expect(page.getByText("正在进行人机验证…")).toBeVisible();
+  await expect(page.getByText("正在进行人机验证…")).toHaveCount(0);
+  const seen = () => page.evaluate(() => (window as unknown as { __ts: Record<string, string>[] }).__ts);
+  const first = (await seen())[0];
+  expect(first).toMatchObject({ appearance: "interaction-only", size: "flexible", language: "zh-cn" });
+  const theme = first.theme;
+  expect(["light", "dark"]).toContain(theme);
+  await page.getByRole("button", { name: "切换主题" }).click();
+  await expect.poll(async () => (await seen()).at(-1)?.theme).toBe(theme === "dark" ? "light" : "dark");
+});

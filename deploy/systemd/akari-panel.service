@@ -48,8 +48,11 @@ ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
+# Other users' processes stay hidden. No ProcSubset=pid: it also hides
+# /proc/stat, /proc/meminfo and /proc/loadavg, the host metrics on the
+# system status page (W31; they all read "unknown" under it, as the
+# agent's did in W23).
 ProtectProc=invisible
-ProcSubset=pid
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictNamespaces=yes
 RestrictRealtime=yes

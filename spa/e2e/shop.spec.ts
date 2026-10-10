@@ -96,20 +96,50 @@ test('#45 a pending order can be cancelled', async ({ page }) => {
   await expect(page.getByText('订单已取消').first()).toBeVisible();
 });
 
-test('#40 coupons: refused in the UI language, accepted with the discount itemized', async ({ page }) => {
+test('#40 coupons are entered in the order confirmation: refused in the UI language, plan-limited, accepted with the server quote and with balance', async ({ page }) => {
   const a = await admin();
-  const code = `E2E${Date.now().toString(36).toUpperCase()}`;
+  const stamp = Date.now().toString(36).toUpperCase();
+  const code = `E2E${stamp}`;
+  const plans = await a.call<{ id: string; name: string }[]>('GET', '/api/v1/plans');
+  const standard = plans.find((p) => p.name === seed.plan)!;
   await a.call('POST', '/api/v1/coupons', { code, kind: 'percent', value: 10 });
+  await a.call('POST', '/api/v1/coupons', { code: `${code}S`, kind: 'percent', value: 10, plan_ids: [standard.id] });
   await signIn(page, 'user@e2e.test');
   await open(page, '/shop');
-  await page.getByLabel('优惠码').fill('NOPE');
-  await page.getByRole('button', { name: '使用', exact: true }).click();
-  await expect(page.getByText('优惠码无效').first()).toBeVisible();
-  await page.getByLabel('优惠码').fill(code);
-  await page.getByRole('button', { name: '使用', exact: true }).click();
-  await page.locator('.plan-col').filter({ hasText: seed.premium }).getByRole('button').last().click();
-  await expect(page.getByRole('dialog').getByText('优惠码')).toBeVisible();
-  await expect(page.getByRole('dialog').getByText(/^[−-]¥3(\.00)?$/)).toBeVisible();
+  await expect(page.locator('.plan-col').filter({ hasText: seed.premium })).toBeVisible();
+  /* 商店列表上没有优惠码框 */
+  await expect(page.getByLabel('优惠码')).toHaveCount(0);
+
+  const premium = page.locator('.plan-col').filter({ hasText: seed.premium }).getByRole('button').last();
+  const dialog = page.getByRole('dialog');
+  const apply = async (c: string) => {
+    await dialog.getByLabel('优惠码').fill(c);
+    await dialog.getByRole('button', { name: '使用', exact: true }).click();
+  };
+  await premium.click();
+  await apply('NOPE');
+  await expect(dialog.getByText('优惠码无效')).toBeVisible();
+  /* 限定套餐的码：用在别的套餐上 */
+  await apply(`${code}S`);
+  await expect(dialog.getByText('该优惠码不适用于此套餐')).toBeVisible();
+  /* 有效：服务端报价里的折扣与应付金额 */
+  await apply(code);
+  await expect(dialog.getByText(new RegExp(`优惠码 ${code} 已生效`))).toBeVisible();
+  await expect(dialog.getByText(/^[−-]¥3(\.00)?$/)).toBeVisible();
+  /* 关掉再开：优惠码清空，价格回到不带码的报价 */
+  await page.keyboard.press('Escape');
+  await premium.click();
+  await expect(dialog.getByLabel('优惠码')).toHaveValue('');
+  await expect(dialog.getByText(/^[−-]¥3(\.00)?$/)).toHaveCount(0);
+  await page.keyboard.press('Escape');
+
+  /* 与余额一起用（换套餐的折算同在这份报价里，见 #37） */
+  await page.getByRole('switch', { name: '用余额抵扣' }).click();
+  await premium.click();
+  await apply(code);
+  await expect(dialog.getByText(/^[−-]¥3(\.00)?$/)).toBeVisible();
+  await expect(dialog.getByText('余额抵扣')).toBeVisible();
+  await page.keyboard.press('Escape');
 });
 
 test('#38 #48 refusals: renewal-only plans are not offered to newcomers, sold-out plans say so', async ({ page }) => {

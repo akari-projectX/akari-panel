@@ -143,39 +143,41 @@ function Overview({ full }: { full: boolean }) {
 
   return (
     <>
-      <PageTitle title={tr('仪表盘')} sub={tr('你的账号状态、流量走势与订阅信息一览。')} />
+      {/* 页面提醒按急迫程度排（在账户提醒之后）：没付完的订单 → 客服回复了工单 → 最新公告 */}
+      <PageTitle
+        title={tr('仪表盘')}
+        sub={tr('你的账号状态、流量走势与订阅信息一览。')}
+        notices={
+          <>
+            {openOrder.order && <OpenOrderNotice order={openOrder.order} onChanged={openOrder.reload} />}
 
-      {/* 顶上的提醒条，按急迫程度排：没付完的订单 → 客服回复了工单 → 最新公告 */}
-      {(openOrder.order || replied.length > 0 || latest) && (
-        <div className="mt-5 flex flex-col gap-3">
-          {openOrder.order && <OpenOrderNotice order={openOrder.order} onChanged={openOrder.reload} />}
-
-          {replied.length > 0 && (
-            <div className="notice">
-              <Headphones className="size-4 shrink-0 text-success" />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-[14.5px] font-medium">{tr('管理员已回复你的工单')}</div>
-                <div className="mt-0.5 truncate text-[12.5px] text-muted-foreground">
-                  {replied[0].subject}
-                  {replied.length > 1 && <> {tp('等 {n} 张', { n: replied.length })}</>}
+            {replied.length > 0 && (
+              <div className="notice">
+                <Headphones className="size-4 shrink-0 text-success" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[14.5px] font-medium">{tr('管理员已回复你的工单')}</div>
+                  <div className="mt-0.5 truncate text-[12.5px] text-muted-foreground">
+                    {replied[0].subject}
+                    {replied.length > 1 && <> {tp('等 {n} 张', { n: replied.length })}</>}
+                  </div>
                 </div>
+                <Button size="sm" variant="outline" onClick={() => nav(R.ticket(replied[0].id))}>{tr('查看回复')}</Button>
               </div>
-              <Button size="sm" variant="outline" onClick={() => nav(R.ticket(replied[0].id))}>{tr('查看回复')}</Button>
-            </div>
-          )}
+            )}
 
-          {latest && latestText && (
-            <div className="notice">
-              <Megaphone className="size-4 shrink-0 text-brand" />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-[14.5px] font-medium">{latestText.title}</div>
-                {brief && <div className="mt-0.5 truncate text-[12.5px] text-muted-foreground">{brief}</div>}
+            {latest && latestText && (
+              <div className="notice">
+                <Megaphone className="size-4 shrink-0 text-brand" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[14.5px] font-medium">{latestText.title}</div>
+                  {brief && <div className="mt-0.5 truncate text-[12.5px] text-muted-foreground">{brief}</div>}
+                </div>
+                <Button size="sm" variant="outline" onClick={() => openNotice(latest)}>{tr('查看详情')}</Button>
               </div>
-              <Button size="sm" variant="outline" onClick={() => openNotice(latest)}>{tr('查看详情')}</Button>
-            </div>
-          )}
-        </div>
-      )}
+            )}
+          </>
+        }
+      />
 
       <Section>
         <StatRow

@@ -91,6 +91,52 @@ fn beat_with(id: Uuid, age_secs: i64, jobs: HashMap<Job, JobStat>) -> Beat {
     }
 }
 
+/// Restarts and upgrades get new ids: an exited instance goes as soon as a
+/// live one on the same host replaced it, and anyway after `FORGET_AFTER`.
+#[test]
+fn exited_instances_are_pruned() {
+    let now = Utc::now();
+    let on = |host: Option<&str>, age_secs: i64, started_mins_ago: i64| {
+        let mut b = beat_with(Uuid::new_v4(), age_secs, HashMap::new());
+        b.host.hostname = host.map(str::to_string);
+        b.started_at = now - ChronoDuration::minutes(started_mins_ago);
+        b
+    };
+    let old = on(Some("panel-a"), 300, 120); // rc.1, exited 5 min ago
+    let new = on(Some("panel-a"), 2, 4); // rc.2 on the same host
+    let other_host = on(Some("panel-b"), 300, 120); // exited, no successor
+    let peer = on(Some("panel-a"), 1, 60); // second live instance, same host
+    let ancient = on(Some("panel-c"), FORGET_AFTER + 5, 600);
+    let nameless = on(None, 300, 120);
+    let all = [&old, &new, &other_host, &peer, &ancient, &nameless]
+        .iter()
+        .map(|b| (b.id.to_string(), serde_json::to_string(b).unwrap()))
+        .chain([("junk".to_string(), "{".to_string())])
+        .collect();
+    let (kept, mut forget) = prune(all, now);
+    let kept: Vec<Uuid> = kept.iter().map(|b| b.id).collect();
+    for b in [&new, &other_host, &peer, &nameless] {
+        assert!(kept.contains(&b.id));
+    }
+    forget.sort();
+    let mut want = vec![
+        old.id.to_string(),
+        ancient.id.to_string(),
+        "junk".to_string(),
+    ];
+    want.sort();
+    assert_eq!(forget, want);
+    // A live instance is never replaced, and an exited one is not replaced
+    // by an instance that started before it.
+    let early = on(Some("panel-d"), 1, 600);
+    let later_exit = on(Some("panel-d"), 300, 30);
+    let all = [&early, &later_exit]
+        .iter()
+        .map(|b| (b.id.to_string(), serde_json::to_string(b).unwrap()))
+        .collect();
+    assert_eq!(prune(all, now).0.len(), 2);
+}
+
 #[test]
 fn job_aggregation_across_instances() {
     let now = Utc::now();

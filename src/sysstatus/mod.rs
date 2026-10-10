@@ -7,10 +7,12 @@
 //! **Multi-instance**: every instance publishes a heartbeat every
 //! `BEAT_EVERY` into the Valkey hash `akari:status:instances` (field =
 //! instance id, value = JSON with its host metrics and job stats; the hash
-//! expires a day after the last beat, fields older than `FORGET_AFTER` are
-//! dropped by the next beat). Any instance answers the endpoint from that
-//! hash, so the page shows the whole fleet; an instance whose last beat is
-//! older than `ALIVE_SECS` is shown offline. No table (schema review §W31).
+//! expires `FORGET_AFTER` after the last beat). Any instance answers the
+//! endpoint from that hash, so the page shows the whole fleet; an instance
+//! whose last beat is older than `ALIVE_SECS` is shown as exited. Every
+//! restart or upgrade is a new instance id, so exited instances are dropped
+//! as soon as a live instance on the same host replaced them, and anyway
+//! after `FORGET_AFTER` (`prune`). No table (schema review §W31).
 //!
 //! **Cost**: the answer is built at most once per `CACHE_FOR` per instance
 //! (a cached copy is served meanwhile, single flight); every check has a
@@ -41,8 +43,9 @@ const INSTANCES_KEY: &str = "akari:status:instances";
 pub const BEAT_EVERY: Duration = Duration::from_secs(10);
 /// A heartbeat older than this = instance offline.
 pub const ALIVE_SECS: i64 = 30;
-/// Offline instances are listed this long, then forgotten.
-const FORGET_AFTER: i64 = 24 * 3600;
+/// Exited instances are listed this long (unless replaced sooner by a live
+/// instance on the same host), then forgotten.
+const FORGET_AFTER: i64 = 10 * 60;
 /// The status answer is reused this long.
 pub const CACHE_FOR: Duration = Duration::from_secs(5);
 /// Timeout of each check (database, Valkey, proxy).
@@ -230,14 +233,12 @@ pub async fn heartbeat_loop(state: AppState) {
     }
 }
 
-/// Every instance heartbeat (forgetting those past `FORGET_AFTER`).
-async fn instances(state: &AppState) -> Result<Vec<Beat>, String> {
-    let all: HashMap<String, String> =
-        tokio::time::timeout(CHECK_TIMEOUT, state.valkey().hgetall(INSTANCES_KEY))
-            .await
-            .map_err(|_| "timed out".to_string())?
-            .map_err(|e| e.to_string())?;
-    let now = Utc::now();
+/// Split heartbeats into those to list and the ids to forget: unreadable
+/// ones, those past `FORGET_AFTER`, and exited ones replaced by a live
+/// instance on the same host that started after them (a restart or an
+/// upgrade gets a new id; the old one must not linger as "lost" with
+/// stale numbers).
+pub fn prune(all: Vec<(String, String)>, now: DateTime<Utc>) -> (Vec<Beat>, Vec<String>) {
     let mut beats = Vec::new();
     let mut forget = Vec::new();
     for (field, v) in all {
@@ -246,12 +247,45 @@ async fn instances(state: &AppState) -> Result<Vec<Beat>, String> {
             _ => forget.push(field),
         }
     }
+    let alive = |b: &Beat| (now - b.beat_at).num_seconds() <= ALIVE_SECS;
+    let replaced: Vec<Uuid> = beats
+        .iter()
+        .filter(|old| {
+            !alive(old)
+                && old.host.hostname.is_some()
+                && beats.iter().any(|new| {
+                    alive(new)
+                        && new.id != old.id
+                        && new.host.hostname == old.host.hostname
+                        && new.started_at >= old.started_at
+                })
+        })
+        .map(|b| b.id)
+        .collect();
+    beats.retain(|b| {
+        let gone = replaced.contains(&b.id);
+        if gone {
+            forget.push(b.id.to_string());
+        }
+        !gone
+    });
+    beats.sort_by(|a, b| a.started_at.cmp(&b.started_at).then(a.id.cmp(&b.id)));
+    (beats, forget)
+}
+
+/// Every instance heartbeat worth listing (forgetting the rest, `prune`).
+async fn instances(state: &AppState) -> Result<Vec<Beat>, String> {
+    let all: HashMap<String, String> =
+        tokio::time::timeout(CHECK_TIMEOUT, state.valkey().hgetall(INSTANCES_KEY))
+            .await
+            .map_err(|_| "timed out".to_string())?
+            .map_err(|e| e.to_string())?;
+    let (beats, forget) = prune(all.into_iter().collect(), Utc::now());
     if !forget.is_empty()
         && let Err(e) = state.valkey().hdel::<(), _, _>(INSTANCES_KEY, forget).await
     {
         tracing::warn!(error = %e, "status: forgetting old instances failed");
     }
-    beats.sort_by(|a, b| a.started_at.cmp(&b.started_at).then(a.id.cmp(&b.id)));
     Ok(beats)
 }
 

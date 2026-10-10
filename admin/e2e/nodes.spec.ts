@@ -150,10 +150,16 @@ test("NOD-10 NOD-11 NOD-12 NOD-13 NOD-14 NOD-15 NOD-16 NOD-17 NOD-18 NOD-19 NOD-
   d = dialog(page);
   await d.getByLabel("名称", { exact: true }).fill("IPLC");
   await d.getByLabel("倍率").fill("2");
-  await d.getByLabel("连接地址（中转机）").fill("relay.example.com");
   await d.getByLabel("连接端口").fill("30001");
   await d.getByLabel("监听端口（节点上）").fill(String(port + 2));
+  // The egress hint; the dial IP typed in as the egress is called out.
+  await expect(d.getByText(/curl -4 ifconfig\.me/).first()).toBeVisible();
+  await d.getByLabel("连接地址（中转机）").fill("198.51.100.4");
+  await d.getByLabel("中转机出口 IP / CIDR").fill("198.51.100.4");
+  await expect(d.getByText(/连接地址也在出口列表里/)).toBeVisible();
+  await d.getByLabel("连接地址（中转机）").fill("relay.example.com");
   await d.getByLabel("中转机出口 IP / CIDR").fill("203.0.113.0/24");
+  await expect(d.getByText(/连接地址也在出口列表里/)).toHaveCount(0);
   await d.getByRole("button", { name: "添加" }).click();
   await toast(page, "中转入口已添加");
   await expect(row.locator("tr[data-entrance]")).toHaveCount(2);
