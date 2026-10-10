@@ -50,6 +50,28 @@ export default function Invite() {
   const link = primary ? inviteLink(primary.code, c?.link_base ?? null) : '';
   const i = invite.data;
 
+  /*
+   * 返佣条款单独成块：关闭注册时邀请链接用不了，但返佣开关是另一回事，
+   * 照样显示比例与条款，免得看起来像「返佣已关闭」。
+   */
+  const rebateCard = (
+    <div className="rounded-[14px] border border-border p-6">
+      <div className="text-[13px] text-muted-foreground">{tr('返佣比例')}</div>
+      <div className="mt-4 flex items-baseline gap-1">
+        <span className="tnum text-[40px] leading-none font-medium tracking-[-0.035em]">{i?.enabled ? i.rate_percent : 0}</span>
+        <span className="text-[18px] font-medium text-muted-foreground">%</span>
+      </div>
+      {i && (
+        <ul className="mt-4 space-y-1.5 border-t border-border pt-4 text-[12.5px] leading-[1.8] text-muted-foreground">
+          {!i.enabled && <li>{tr('站点暂未开启邀请返佣。')}</li>}
+          {i.enabled && <li>{i.first_order_only ? tr('只返被邀请人的首单') : tr('被邀请人的每一笔订单都返')}</li>}
+          {i.enabled && <li>{tp('佣金冻结 {n} 天后入账（期间退款会撤销）', { n: i.hold_days })}</li>}
+          {i.min_withdrawal_cents > 0 && <li>{tp('最低提现 {v}', { v: formatMoney(i.min_withdrawal_cents) })}</li>}
+        </ul>
+      )}
+    </div>
+  );
+
   const copy = async (key: string, text: string, what: string) => {
     if (await copyText(text, key)) toast.success(tp('{what}已复制', { what: tr(what) }));
   };
@@ -86,9 +108,12 @@ export default function Invite() {
         {codes.loading && !c ? <Loading />
           : codes.error && !c ? <LoadError error={codes.error} onRetry={codes.reload} />
           : c && !c.register_enabled ? (
-            <p className="max-w-[62ch] text-[13.5px] leading-[1.9] text-muted-foreground">
-              {tr('站点现在关闭了注册，邀请链接暂时用不了。重新开放注册后这里会恢复。')}
-            </p>
+            <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_320px]">
+              <p className="max-w-[62ch] text-[13.5px] leading-[1.9] text-muted-foreground">
+                {tr('站点现在关闭了注册，邀请链接暂时用不了。重新开放注册后这里会恢复。')}
+              </p>
+              {rebateCard}
+            </div>
           ) : c && (
             <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_320px]">
               <div>
@@ -153,21 +178,7 @@ export default function Invite() {
                 )}
               </div>
 
-              <div className="rounded-[14px] border border-border p-6">
-                <div className="text-[13px] text-muted-foreground">{tr('返佣比例')}</div>
-                <div className="mt-4 flex items-baseline gap-1">
-                  <span className="tnum text-[40px] leading-none font-medium tracking-[-0.035em]">{i?.enabled ? i.rate_percent : 0}</span>
-                  <span className="text-[18px] font-medium text-muted-foreground">%</span>
-                </div>
-                {i && (
-                  <ul className="mt-4 space-y-1.5 border-t border-border pt-4 text-[12.5px] leading-[1.8] text-muted-foreground">
-                    {!i.enabled && <li>{tr('站点暂未开启邀请返佣。')}</li>}
-                    {i.enabled && <li>{i.first_order_only ? tr('只返被邀请人的首单') : tr('被邀请人的每一笔订单都返')}</li>}
-                    {i.enabled && <li>{tp('佣金冻结 {n} 天后入账（期间退款会撤销）', { n: i.hold_days })}</li>}
-                    {i.min_withdrawal_cents > 0 && <li>{tp('最低提现 {v}', { v: formatMoney(i.min_withdrawal_cents) })}</li>}
-                  </ul>
-                )}
-              </div>
+              {rebateCard}
             </div>
           )}
       </Section>
