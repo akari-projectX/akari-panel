@@ -14,13 +14,15 @@ import Flag from '@/components/flag';
 import ResetSubscription from '@/components/reset-subscription';
 import OpenOrderNotice from '@/components/pending-order';
 import NodeTags from '@/components/node-tags';
+import { NodeLegend, NodeLoad, NodeState } from '@/components/node-status';
 import DocCategoryIcon from '@/components/doc-category-icon';
 import { useOpenOrder } from '@/hooks/use-open-order';
 import { contentApi, meApi, ticketApi, walletApi, type Announcement, type MyNode } from '@/api';
 import { useApi } from '@/hooks/use-api';
+import { useAutoReload } from '@/hooks/use-auto-reload';
 import { K } from '@/lib/cache';
 import { useAuth } from '@/lib/auth';
-import { nodeCC, nodeKey, nodeUp, rateTone, stripFlag } from '@/lib/node';
+import { NODES_REFRESH_MS, nodeCC, nodeKey, nodeLatency, nodeUp, rateTone, stripFlag } from '@/lib/node';
 import { addDays, daysLeft, formatDate, formatDateTime, formatMoney, formatRate, fromNow, siteToday, toGB, trafficUsage } from '@/lib/format';
 import { trafficDays } from '@/lib/traffic';
 import { summarize } from '@/lib/content-text';
@@ -97,6 +99,7 @@ function Overview({ full }: { full: boolean }) {
   const from = addDays(to, -6);
   const traffic = useApi(() => meApi.traffic(from, to), [from, to], { key: K.traffic(from, to), enabled: full });
   const nodes = useApi(() => meApi.nodes(), [], { key: K.nodes, enabled: full });
+  useAutoReload(nodes.reload, NODES_REFRESH_MS, full);
   const balance = useApi(() => walletApi.balance({ limit: 1 }), [], { key: K.balance });
   const openOrder = useOpenOrder();
   const docs = useApi(() => contentApi.help(), [], { key: K.help() });
@@ -106,10 +109,10 @@ function Overview({ full }: { full: boolean }) {
   const totalDown = week.reduce((n, d) => n + d.down, 0);
   const totalUp = week.reduce((n, d) => n + d.up, 0);
 
-  /* 能连的排前面（延迟低的在上），暂停 / 离线的沉底——也列出来，用户才知道哪条线路暂时用不了 */
+  /* 能连的排前面（延迟低的在上），维护中 / 离线的沉底——也列出来，用户才知道哪条线路暂时用不了 */
   const list = useMemo(() => {
     const all = nodes.data ?? [];
-    const lat = (n: MyNode) => n.latency_ms ?? Number.POSITIVE_INFINITY;
+    const lat = (n: MyNode) => nodeLatency(n) ?? Number.POSITIVE_INFINITY;
     return [...all.filter(nodeUp).sort((a, b) => lat(a) - lat(b)), ...all.filter((n) => !nodeUp(n))];
   }, [nodes.data]);
   const onlineCount = list.filter(nodeUp).length;
@@ -120,7 +123,7 @@ function Overview({ full }: { full: boolean }) {
   const paged = list.slice((page - 1) * pageSize, page * pageSize);
   const regions = useMemo(() => [...new Set(list.map(nodeCC).filter((c): c is string => !!c))], [list]);
   const avgLatency = useMemo(() => {
-    const xs = list.filter(nodeUp).map((n) => n.latency_ms).filter((x): x is number => x != null);
+    const xs = list.filter(nodeUp).map(nodeLatency).filter((x): x is number => x != null);
     return xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null;
   }, [list]);
 
@@ -408,6 +411,7 @@ function Overview({ full }: { full: boolean }) {
                 : (
                   <>
                     <NodeSummary nodes={list} online={onlineCount} avgLatency={avgLatency} regions={regions} />
+                    <NodeLegend className="border-b border-border py-3.5" />
                     {paged.map((n, i) => {
                       const cc = nodeCC(n);
                       const up = nodeUp(n);
@@ -424,20 +428,14 @@ function Overview({ full }: { full: boolean }) {
                             </span>
                           }
                           desc={
-                            <span className="flex items-center gap-1.5">
-                              <span className={cn('size-1.5 shrink-0 rounded-full', up ? 'bg-emerald-500 shadow-[0_0_0_3px_rgb(16_185_129/.16)]' : 'bg-muted-foreground/50')} />
-                              {n.entrance}
-                              {up && n.latency_ms != null && ` · ${n.latency_ms} ms`}
+                            <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                              <NodeState n={n} className="text-[12.5px]" />
+                              <span>· {n.entrance}</span>
+                              {up && nodeLatency(n) != null && <span className="tnum">· {nodeLatency(n)} ms</span>}
+                              {up && <NodeLoad n={n} />}
                             </span>
                           }
-                          extra={up
-                            ? <Badge variant="secondary" className={cn('rounded-full', rateTone(rate))}>×{formatRate(rate)}</Badge>
-                            : (
-                              <Badge variant="secondary" className="gap-1.5 rounded-full bg-muted font-normal text-muted-foreground">
-                                <i className="size-1.5 rounded-full bg-muted-foreground/60" />
-                                {tr('离线')}
-                              </Badge>
-                            )}
+                          extra={<Badge variant="secondary" className={cn('rounded-full', up ? rateTone(rate) : 'bg-muted text-muted-foreground')}>×{formatRate(rate)}</Badge>}
                         />
                       );
                     })}

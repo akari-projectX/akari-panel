@@ -9,18 +9,20 @@ import { PageTitle, Row, Section, StatRow } from '@/components/flat';
 import { Empty, LoadError, Loading } from '@/components/data-state';
 import Flag from '@/components/flag';
 import NodeTags from '@/components/node-tags';
+import { NodeLegend, NodeLoad, NodeState } from '@/components/node-status';
 import { meApi, type MyNode } from '@/api';
 import { useApi } from '@/hooks/use-api';
+import { useAutoReload } from '@/hooks/use-auto-reload';
 import { useAuth } from '@/lib/auth';
 import { K } from '@/lib/cache';
-import { nodeCC, nodeKey, nodeUp, rateTone, sortTags, stripFlag } from '@/lib/node';
+import { NODES_REFRESH_MS, nodeCC, nodeKey, nodeLatency, nodeUp, rateTone, sortTags, stripFlag } from '@/lib/node';
 import { formatRate, fromNow } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { useT, useTp } from '@/i18n';
 
 /**
- * 可用线路：/me/nodes 每行是「节点 + 入口」（直连或中转），只有名字、入口、地区、标签、倍率、在线、延迟——
- * 面板不给 id、地址、协议或机器指标。倍率按入口计（W28-a）；D9 合并后显示此刻的倍率和时段规则（rates 开关）。
+ * 可用线路：/me/nodes 每行是「节点 + 入口」（直连或中转），只有名字、入口、地区、标签、倍率、
+ * 状态（在线 / 离线 / 维护中）、负载等级、延迟——面板不给 id、地址、协议或机器指标的数字。倍率按入口计（W28-a）；D9 合并后显示此刻的倍率和时段规则（rates 开关）。
  */
 export default function Nodes() {
   const enter = useEnter();
@@ -31,6 +33,7 @@ export default function Nodes() {
   const [sortAsc, setSortAsc] = useState(true);
 
   const nodes = useApi(() => meApi.nodes(), [], { key: K.nodes });
+  useAutoReload(nodes.reload, NODES_REFRESH_MS);
   const all = useMemo(() => nodes.data ?? [], [nodes.data]);
 
   const data = useMemo(() => {
@@ -89,6 +92,7 @@ export default function Nodes() {
         title={tr('全部线路')}
         desc={data.length ? tp('共 {n} 条线路，点击「倍率」列可切换排序', { n: data.length }) : undefined}
       >
+        <NodeLegend className="mb-4" />
         <div className="mb-4.5 md:max-w-[480px]">
           <div className="relative">
             <Search aria-hidden className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-faint" />
@@ -121,7 +125,8 @@ export default function Nodes() {
                     desc={
                       <span className="flex min-w-0 items-center gap-2">
                         <span className="min-w-0 truncate">{[n.entrance, ...sortTags(n.tags)].join(' · ')}</span>
-                        <State n={n} />
+                        <NodeState n={n} />
+                        {ok && <NodeLoad n={n} />}
                       </span>
                     }
                     extra={<RateBadge n={n} />}
@@ -170,12 +175,17 @@ export default function Nodes() {
                           {n.tags.length ? <NodeTags tags={n.tags} /> : <span className="text-[13px] text-muted-foreground">—</span>}
                         </TableCell>
                         <TableCell className="tnum text-sm">
-                          {n.latency_ms != null
-                            ? `${n.latency_ms} ms`
+                          {nodeUp(n) && nodeLatency(n) != null
+                            ? `${nodeLatency(n)} ms`
                             : <span className="text-muted-foreground">{tr(n.latency_status === 'timeout' ? '超时' : '—')}</span>}
                         </TableCell>
                         <TableCell><RateBadge n={n} /></TableCell>
-                        <TableCell className="pr-0"><State n={n} /></TableCell>
+                        <TableCell className="pr-0">
+                          <span className="flex flex-col gap-0.5">
+                            <NodeState n={n} />
+                            {nodeUp(n) && <NodeLoad n={n} />}
+                          </span>
+                        </TableCell>
                       </tr>
                     );
                   })}
@@ -186,17 +196,6 @@ export default function Nodes() {
           )}
       </Section>
     </>
-  );
-}
-
-function State({ n }: { n: MyNode }) {
-  const tr = useT();
-  const ok = nodeUp(n);
-  return (
-    <span className={cn('inline-flex shrink-0 items-center gap-1.5 text-sm whitespace-nowrap', !ok && 'text-warning')}>
-      <span className={cn('size-1.5 rounded-full', ok ? 'bg-emerald-500' : 'bg-amber-500')} />
-      {tr(ok ? '在线' : '离线')}
-    </span>
   );
 }
 

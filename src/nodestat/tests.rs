@@ -597,8 +597,25 @@ async fn api_status_metrics_probe_and_portal_visibility() {
     let hidden = db.node().await;
     let disabled = db.node().await;
     let unassigned = db.node().await;
+    let over_quota = db.node().await;
     db.assign(hidden, u).await;
     db.assign(disabled, u).await;
+    db.assign(over_quota, u).await;
+    // Over its traffic quota: listed as maintenance (the trigger sets
+    // traffic_quota_exceeded_at).
+    sqlx::query(
+        "UPDATE servers SET traffic_quota_bytes = 1, traffic_quota_rx_bytes = 5, \
+         status = 'online', last_seen_at = now() WHERE id = $1",
+    )
+    .bind(over_quota)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE nodes SET sort = 9 WHERE id = $1")
+        .bind(over_quota)
+        .execute(&db.pool)
+        .await
+        .unwrap();
     sqlx::query(
         "UPDATE nodes SET display_name = '香港 01', tags = '{节点级}', sort = 2 WHERE id = $1",
     )
@@ -663,6 +680,25 @@ async fn api_status_metrics_probe_and_portal_visibility() {
     .await
     .unwrap();
 
+    // The panel's TCP test of the direct entrance, and a heartbeat: CPU
+    // 60 % with no rate cap = medium; the cap lifts it to high.
+    sqlx::query(
+        "INSERT INTO server_latency (server_id, source, target, delay_ms, ord, measured_at) \
+         SELECT $1, 'panel', n.name || ' / 直连', 23, 0, now() FROM nodes n WHERE n.id = $1",
+    )
+    .bind(shown)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    crate::valkey_util::store_heartbeat(
+        &state,
+        shown,
+        json!({"cpu_percent": 60.0,
+               "metrics": {"net_rx_bytes_per_sec": 400, "net_tx_bytes_per_sec": 500}})
+        .to_string(),
+    )
+    .await;
+
     // Portal.
     let me = user_client(&state, u).await;
     let r = me.get("/test/api/v1/me/nodes").await;
@@ -671,9 +707,13 @@ async fn api_status_metrics_probe_and_portal_visibility() {
     let list = v.as_array().unwrap();
     assert_eq!(
         list.len(),
-        1,
+        2,
         "hidden, disabled and unassigned nodes are not listed: {v}"
     );
+    let q = &list[1];
+    assert_eq!(q["status"], "maintenance", "{v}");
+    assert_eq!(q["online"], true);
+    assert_eq!(q["load"], Value::Null, "no load for lines in maintenance");
     let n = &list[0];
     assert_eq!(n["name"], "香港 01");
     assert_eq!(n["entrance"], "直连");
@@ -682,7 +722,18 @@ async fn api_status_metrics_probe_and_portal_visibility() {
     assert_eq!(n["online"], true);
     assert_eq!(n["latency_ms"], 88);
     assert_eq!(n["latency_status"], "ok");
-    for leak in ["id", "connect_host", "inbound", "heartbeat", "cpu_percent"] {
+    assert_eq!(n["status"], "online");
+    assert_eq!(n["load"], "medium");
+    assert_eq!(n["probe_ms"], 23);
+    for leak in [
+        "id",
+        "server_id",
+        "max_rate",
+        "connect_host",
+        "inbound",
+        "heartbeat",
+        "cpu_percent",
+    ] {
         assert!(n.get(leak).is_none(), "{leak} leaked to users");
     }
     let _ = unassigned;
@@ -707,7 +758,11 @@ async fn api_status_metrics_probe_and_portal_visibility() {
     assert_eq!(r.status, StatusCode::OK);
     let v = r.json();
     assert_eq!(v["online"], true);
-    assert_eq!(v["latency"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        v["latency"].as_array().unwrap().len(),
+        3,
+        "agent x2 + panel"
+    );
     let r = admin
         .get(&format!("/test/api/v1/servers/{shown}/metrics?range=1h"))
         .await;
@@ -739,7 +794,7 @@ async fn api_status_metrics_probe_and_portal_visibility() {
     assert_eq!(row["display_name"], "香港 01");
     assert_eq!(row["entrances"][0]["rate"], 0.5);
     assert_eq!(row["online"], true);
-    assert_eq!(row["latency"].as_array().unwrap().len(), 2);
+    assert_eq!(row["latency"].as_array().unwrap().len(), 3);
 
     // 立即测速: notify + audit, then the cooldown.
     let mut listener = db.listener().await;
@@ -947,4 +1002,27 @@ async fn session_heartbeat_unknown_values() {
     assert_eq!(hb["metrics"]["disk_total_bytes"], 100);
     panel.stop().await;
     db.drop().await;
+}
+
+#[test]
+fn load_levels() {
+    let b = |cpu: f64, rx: i64| {
+        json!({"cpu_percent": cpu, "metrics": {"net_rx_bytes_per_sec": rx}}).to_string()
+    };
+    assert_eq!(load_level(&b(10.0, 0), None), Some("low"));
+    assert_eq!(load_level(&b(49.9, 0), None), Some("low"));
+    assert_eq!(load_level(&b(50.0, 0), None), Some("medium"));
+    assert_eq!(load_level(&b(80.0, 0), None), Some("high"));
+    // The NIC rate over the server's cap counts too (rx + tx).
+    assert_eq!(load_level(&b(10.0, 600), Some(1000)), Some("medium"));
+    assert_eq!(load_level(&b(10.0, 900), Some(1000)), Some("high"));
+    assert_eq!(load_level(&b(10.0, 900), None), Some("low"));
+    // Unknown or untrusted values.
+    assert_eq!(load_level("{}", Some(1000)), None);
+    assert_eq!(load_level("not json", None), None);
+    assert_eq!(load_level(r#"{"cpu_percent": -5}"#, None), None);
+    assert_eq!(
+        load_level(r#"{"metrics": {"net_tx_bytes_per_sec": 2000}}"#, Some(1000)),
+        Some("high")
+    );
 }

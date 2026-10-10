@@ -1254,7 +1254,8 @@ python3 -c "
 import json; v = json.load(open('/tmp/akari-smoke/last'))
 assert len(v) == 1 and v[0]['name'] == '冒烟 01' and v[0]['entrance'] == '直连' and v[0]['rate'] == 0.5 and v[0]['online'] is True, v
 assert v[0]['tags'] == ['IPLC', '0.5x'], v
-assert 'id' not in v[0] and 'connect_host' not in v[0], v
+assert 'id' not in v[0] and 'connect_host' not in v[0] and 'server_id' not in v[0] and 'max_rate' not in v[0], v
+assert v[0]['status'] == 'online' and v[0]['load'] in ('low', 'medium', 'high', None), v
 " || { echo "FAIL: /me/nodes content"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$DJAR" "$BASE/api/v1/servers/$SERVER_ID/status")" = "403" ] || { echo "FAIL: user reads node status"; exit 1; }
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"visible":false}')" = "200" ] || { echo "FAIL: hide node"; exit 1; }
@@ -1767,7 +1768,7 @@ if need_agent cap:latency "W11 latency test"; then
   [ "$(psql_q "SELECT count(*) FROM server_latency WHERE server_id='$SERVER_ID' AND source='panel' AND delay_ms IS NOT NULL")" -ge 1 ] \
     || { echo "FAIL: no panel TCP latency"; psql_q "SELECT * FROM server_latency"; exit 1; }
   code -b "$DJAR" "$BASE/api/v1/me/nodes" >/dev/null
-  python3 -c "import json; v = json.load(open('/tmp/akari-smoke/last')); assert v[0]['latency_status'] == 'ok' and v[0]['latency_ms'] >= 1, v" \
+  python3 -c "import json; v = json.load(open('/tmp/akari-smoke/last')); assert v[0]['latency_status'] == 'ok' and v[0]['latency_ms'] >= 1 and v[0]['probe_ms'] is not None, v" \
     || { echo "FAIL: portal latency"; cat /tmp/akari-smoke/last; exit 1; }
   echo "latency: ok ($(psql_q "SELECT source || ' ' || target || ' ' || delay_ms || 'ms' FROM server_latency WHERE server_id='$SERVER_ID' ORDER BY source" | tr '\n' ';'))"
 fi

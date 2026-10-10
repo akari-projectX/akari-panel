@@ -175,6 +175,15 @@ export type MyNode = {
   /** 入口此刻生效的倍率（D9：基础倍率 + 站点时区的时段规则，面板在 SQL 里算） */
   rate: number;
   online: boolean;
+  /**
+   * 在线 / 离线 / 维护中。维护中 = 中转入口没通过健康检查或服务器流量额度用完：
+   * 仍列出来（置灰），但订阅里没有它。
+   */
+  status: 'online' | 'offline' | 'maintenance';
+  /** 负载等级（CPU 与网卡速率，面板按心跳算好；不给数字）；不在线或未知为 null */
+  load: 'low' | 'medium' | 'high' | null;
+  /** 面板 → 入口的 TCP 测速（ms），没开或没测到为 null */
+  probe_ms: number | null;
   latency_ms: number | null;
   latency_status: 'ok' | 'timeout' | 'unknown';
   latency_measured_at: string | null;
