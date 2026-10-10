@@ -586,9 +586,9 @@ function NodeRow({
                         {e.name}
                         {e.kind === "relay" && <Badge tone="info">{tr("中转", "relay")}</Badge>}
                         {e.tags.map((t) => (
-                          <Badge key={t} tone="outline" data-entrance-tag>
-                            {t}
-                          </Badge>
+                          <span key={t} data-entrance-tag>
+                            <Badge tone="outline">{t}</Badge>
+                          </span>
                         ))}
                       </span>
                     </td>
