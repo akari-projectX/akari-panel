@@ -245,8 +245,8 @@ async fn node_form_entrance_patch_access_and_subscription() {
     assert_eq!(snap.users[0].user_id, u.to_string());
     assert_eq!(snap.users[0].inbound_users[0].inbound_tag, DIRECT_TAG);
 
-    // The subscription: the entrance's address, the node's and entrance's
-    // names.
+    // The subscription: the entrance's address, its name and tags (never
+    // the node's name).
     let token = {
         let mut tx = db.pool.begin().await.unwrap();
         let t =
@@ -261,7 +261,8 @@ async fn node_form_entrance_patch_access_and_subscription() {
     sub.headers = vec![("user-agent".into(), "clash.meta".into())];
     let body =
         String::from_utf8(sub.get(&format!("/sub/{token}?format=clash")).await.body).unwrap();
-    assert!(body.contains("香港 01 | IPLC 直连"), "{body}");
+    assert!(body.contains("\"直连 | IPLC\""), "{body}");
+    assert!(!body.contains("香港 01"), "node name leaked: {body}");
     assert!(
         !body.contains("节点级"),
         "1104: node-level tags name nothing"
@@ -325,7 +326,7 @@ async fn node_form_entrance_patch_access_and_subscription() {
     );
     let body =
         String::from_utf8(sub.get(&format!("/sub/{token}?format=clash")).await.body).unwrap();
-    assert!(body.contains("香港 01 | IPLC | 原生 BGP"), "{body}");
+    assert!(body.contains("\"BGP | IPLC | 原生\""), "{body}");
     assert!(body.contains("port: 30443"), "{body}");
     // Disabled: no inbound, out of the subscription; enabled: back.
     let r = admin
@@ -1023,7 +1024,8 @@ async fn subscription_names_are_stable_across_rate_changes() {
         }
     };
     let before = fetch_all().await;
-    assert!(before[0].contains("香港 01 中转A"), "{}", before[0]);
+    assert!(before[0].contains("\"中转A\""), "{}", before[0]);
+    assert!(!before[0].contains("香港 01"), "{}", before[0]);
     let rpath = format!("/test/api/v1/entrances/{relay}");
     let r = admin
         .req(Method::PATCH, &rpath, Some(json!({"rate": 10})))
@@ -1063,9 +1065,9 @@ async fn subscription_names_are_stable_across_rate_changes() {
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.json()["subscription"]["name_rate"], true);
     let named = fetch_all().await;
-    assert!(named[0].contains("香港 01 中转A 10.0x"), "{}", named[0]);
+    assert!(named[0].contains("\"中转A 10.0x\""), "{}", named[0]);
     assert!(!named[0].contains("2.0x"));
-    assert!(named[0].contains("香港 01 直连"));
+    assert!(named[0].contains("\"直连\""));
     // Back off: the original names.
     let r = admin
         .put(
