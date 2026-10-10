@@ -37,6 +37,7 @@ sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18，再拒绝 v0.3.x
 - **1101（积压流量的倍率，2026-10-10 用户裁决「按时段平均」）**：函数 `akari_entrance_mean_rate(entrance, from, to)`（plpgsql STABLE，numeric 千分比）= `akari_entrance_rate` 在区间上的时间加权平均（倍率只在规则起止的当地分钟、当地午夜、记录的变更窗口边界处变化，逐段累加；入口不存在 → NULL；空区间 → 终点处的倍率）；区间内有手动变更（`rate_changed_at > from`）→ 不超过记录的旧倍率 `rate_prev_permille`（只少计）。`traffic::FLUSH_SQL` 只对起点早于突发窗口的行（只有重连/面板 flush 故障额度下才会出现 = 失联积压）且入口有规则或起点后改过倍率时调用（`backlog` CTE，每入口每 10 秒起点一格算一次）。
 - **1102（计费审查 C1）**：函数 `akari_withdrawable_part(user)`（plpgsql STABLE）= 按 `balance_ledger` 的 id 顺序重放，余额分成返利部分 W 与其他部分 N（W+N = 余额）：commission/withdrawal_reversal → W；admin_adjust 正数 → N；order_payment 与负的 admin_adjust 先扣 N 再扣 W（每单记下扣了多少 W）；refund_to_balance 先把该单扣过的 W 还回 W，其余进 N；withdrawal/commission_clawback 先扣 W。返回 W（夹到 [0, 余额]）。`billing::ledger::WITHDRAWABLE_SQL` 把它与原有上限取 LEAST（欠款等不在账本里的仍由原公式管）。
 - **1103（next-version，净营收）**：`orders.refund_gateway_cents`（退款中支付渠道的钱：`to_balance` 时 = `amount_cents`，否则 = `refund_external_cents`；`billing::refund::apply_refund` 写入），CHECK `orders_refund_gateway`（与 `refunded_at` 同空/非空，0..LEAST(实付, refund_cents)）；已有退款按 `refund_balance_cents − 余额部分` 回填；`orders_refunded_at` 索引重建为 INCLUDE (refund_cents, refund_gateway_cents)。仪表盘营收 = 实收 − 它（docs/PAYMENTS.md「Revenue」）。
+- **1104（next-version，入口标签）**：`entrances.tags` text[] NOT NULL DEFAULT '{}'（CHECK `entrances_tags`：≤8、无 NULL；细则同 `nodemeta::tags`）；已有节点的 `nodes.tags` 复制到其每个入口。订阅线路名、门户 `/me/nodes`、后台入口表只读入口标签；`nodes.tags` 保留（旧 API 仍可写）但不再显示在任何地方。
 - 改列名/加列后，同步检查 `src/` 中所有手写 SQL 与 `FromRow` 结构体（没有编译期 SQL 校验）。
 
 ## 当前表

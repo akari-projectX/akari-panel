@@ -169,7 +169,7 @@ struct SubUser {
 #[derive(FromRow)]
 pub struct NodeRow {
     pub name: String,
-    /// W11 (`nodemeta.rs`): user-facing name and tags (proxy names).
+    /// W11 (`nodemeta.rs`): user-facing name; `tags` are the entrance's (1104).
     pub display_name: Option<String>,
     pub tags: Vec<String>,
     /// The entrance's name ("直连", "IPLC") and the multiplier the proxy
@@ -325,7 +325,7 @@ pub async fn subscription(
         return reject::not_found();
     }
     let rows = match sqlx::query_as::<_, NodeRow>(sqlx::AssertSqlSafe(format!(
-        "SELECT n.name, n.display_name, n.tags, e.name AS entrance, \
+        "SELECT n.name, n.display_name, e.tags, e.name AS entrance, \
          CASE WHEN $2 THEN e.rate_permille END AS name_rate_permille, n.inbound, \
          coalesce(e.connect_host, s.tls_domain) AS server, e.connect_port AS port, \
          eu.protocol, eu.account \

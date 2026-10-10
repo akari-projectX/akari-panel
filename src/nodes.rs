@@ -53,7 +53,8 @@ pub struct NodeView {
     /// M3: free-text region shown to users (portal node list).
     region: Option<String>,
     /// W11 (xboard-style form, `nodemeta.rs`): user-facing name (null =
-    /// `name`), display order, shown to users, tags.
+    /// `name`), display order, shown to users. `tags`: legacy node-level
+    /// labels, shown nowhere since tags moved to entrances (1104).
     display_name: Option<String>,
     sort: i32,
     visible: bool,
@@ -391,6 +392,8 @@ pub struct CreateNodeReq {
     pub sort: Option<i32>,
     #[serde(default)]
     pub visible: Option<bool>,
+    /// Legacy node-level labels (shown nowhere; 1104 moved tags to
+    /// entrances: `direct.tags`).
     #[serde(default)]
     pub tags: Option<Vec<String>>,
     /// W28-a: settings of the built-in direct entrance (address, port,
@@ -632,7 +635,8 @@ pub struct UpdateNodeReq {
     /// Shown to users (portal, subscription); hidden nodes keep serving.
     #[serde(default, deserialize_with = "double_option")]
     pub visible: Option<Option<bool>>,
-    /// Labels ([] clears).
+    /// Legacy node-level labels ([] clears; shown nowhere since 1104:
+    /// tags are per entrance).
     #[serde(default, deserialize_with = "double_option")]
     pub tags: Option<Option<Vec<String>>>,
 }

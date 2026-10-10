@@ -167,8 +167,9 @@ async fn node_form_entrance_patch_access_and_subscription() {
                 "name": "w28-a",
                 "inbound": {"tag": "ignored", "protocol": "vless", "port": 443,
                             "settings": {"clients": [], "decryption": "none"}},
-                "display_name": "香港 01", "sort": 5, "visible": true, "tags": ["IPLC"],
-                "direct": {"connect_host": "1.2.3.4", "rate": 0.5, "group_ids": [g]}
+                "display_name": "香港 01", "sort": 5, "visible": true, "tags": ["节点级"],
+                "direct": {"connect_host": "1.2.3.4", "rate": 0.5, "group_ids": [g],
+                           "tags": ["IPLC"]}
             }),
         )
         .await;
@@ -198,6 +199,7 @@ async fn node_form_entrance_patch_access_and_subscription() {
     assert_eq!(e["rate"], 0.5);
     assert_eq!(e["rate_permille"], 500);
     assert_eq!(e["group_ids"], json!([g]));
+    assert_eq!(e["tags"], json!(["IPLC"]));
     let eid = e["id"].as_str().unwrap().to_string();
     // next07: a rate set in the creating transaction is the creation rate,
     // not a change (no 30 s lower-of window after it).
@@ -260,6 +262,10 @@ async fn node_form_entrance_patch_access_and_subscription() {
     let body =
         String::from_utf8(sub.get(&format!("/sub/{token}?format=clash")).await.body).unwrap();
     assert!(body.contains("香港 01 | IPLC 直连"), "{body}");
+    assert!(
+        !body.contains("节点级"),
+        "1104: node-level tags name nothing"
+    );
     assert!(body.contains("server: 1.2.3.4\n    port: 443\n"), "{body}");
 
     // PATCH: rename, another port, a multiplier — no bump.
@@ -269,7 +275,8 @@ async fn node_form_entrance_patch_access_and_subscription() {
         .req(
             Method::PATCH,
             &path,
-            Some(json!({"name": "BGP", "connect_port": 30443, "rate": 2})),
+            Some(json!({"name": "BGP", "connect_port": 30443, "rate": 2,
+                         "tags": [" IPLC ", "原生", "IPLC", ""]})),
         )
         .await;
     assert_eq!(
@@ -281,13 +288,44 @@ async fn node_form_entrance_patch_access_and_subscription() {
     assert_eq!(r.json()["name"], "BGP");
     assert_eq!(r.json()["rate"], 2.0);
     assert_eq!(
+        r.json()["tags"],
+        json!(["IPLC", "原生"]),
+        "trimmed, deduplicated"
+    );
+    for (bad, code) in [
+        (json!(["a|b"]), "node.tag_invalid"),
+        (json!(["x".repeat(25)]), "node.tag_invalid"),
+        (
+            json!((0..9).map(|i| i.to_string()).collect::<Vec<_>>()),
+            "node.too_many_tags",
+        ),
+    ] {
+        let r = admin
+            .req(Method::PATCH, &path, Some(json!({ "tags": bad })))
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST);
+        assert_eq!(r.json()["code"], code);
+    }
+    let r = admin
+        .req(Method::PATCH, &path, Some(json!({ "tags": null })))
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "null is not []");
+    let audited: serde_json::Value = sqlx::query_scalar(
+        "SELECT after->'tags' FROM audit_log WHERE action = 'entrance.update' \
+         ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(audited, json!(["IPLC", "原生"]));
+    assert_eq!(
         db.versions(id).await,
         before,
         "display/billing fields never bump"
     );
     let body =
         String::from_utf8(sub.get(&format!("/sub/{token}?format=clash")).await.body).unwrap();
-    assert!(body.contains("香港 01 | IPLC BGP"), "{body}");
+    assert!(body.contains("香港 01 | IPLC | 原生 BGP"), "{body}");
     assert!(body.contains("port: 30443"), "{body}");
     // Disabled: no inbound, out of the subscription; enabled: back.
     let r = admin
@@ -469,7 +507,7 @@ async fn relay_entrance_lifecycle() {
     let path = format!("/test/api/v1/nodes/{n}/entrances");
     let relay = json!({"name": "IPLC", "connect_host": "relay.example.net", "connect_port": 30443,
                        "listen_port": 20443, "source_cidrs": ["203.0.113.7", "198.51.100.0/24"],
-                       "rate": 2, "group_ids": [g_relay]});
+                       "rate": 2, "tags": ["专线"], "group_ids": [g_relay]});
     // Refusals first: nothing is created.
     for (body, status, code) in [
         (
@@ -501,6 +539,11 @@ async fn relay_entrance_lifecycle() {
             json!({"group_ids": [Uuid::new_v4()]}),
             StatusCode::BAD_REQUEST,
             "group.unknown",
+        ),
+        (
+            json!({"tags": ["a|b"]}),
+            StatusCode::BAD_REQUEST,
+            "node.tag_invalid",
         ),
     ] {
         let mut b = relay.clone();
@@ -552,6 +595,7 @@ async fn relay_entrance_lifecycle() {
     );
     assert_eq!(v["rate_permille"], 2000);
     assert_eq!(v["group_ids"], json!([g_relay]));
+    assert_eq!(v["tags"], json!(["专线"]));
     assert!(
         db.versions(n).await.0 > before.0,
         "a new inbound: config_version"
@@ -565,6 +609,12 @@ async fn relay_entrance_lifecycle() {
     let node = admin.get(&format!("/test/api/v1/nodes/{n}")).await.json();
     assert_eq!(node["entrances"][0]["kind"], "direct");
     assert_eq!(node["entrances"][1]["id"], json!(rid));
+    assert_eq!(
+        node["entrances"][0]["tags"],
+        json!([]),
+        "the direct one keeps its own"
+    );
+    assert_eq!(node["entrances"][1]["tags"], json!(["专线"]));
 
     // A plan with both groups: one credential per entrance, independent.
     let u = db.user().await;

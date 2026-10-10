@@ -182,7 +182,7 @@ pub(crate) fn collect_proxies(rows: &[NodeRow]) -> Vec<Proxy> {
             Some(f) if flow_applies(&spec.id, &net) => f,
             _ => "",
         };
-        // W11 display name and tags, then the entrance ("香港 01 | IPLC
+        // W11 display name, the entrance's tags (1104), then the entrance ("香港 01 | IPLC
         // 直连"), and only with the operator switch its base multiplier
         // when not 1x ("香港 01 IPLC 2.0x"); names stay unique across the
         // subscription and stable across rate changes and time windows

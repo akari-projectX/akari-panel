@@ -1162,13 +1162,16 @@ echo "== W11: node form fields, multiplier billing, machine status, latency =="
 # Agent-side assertions need the agent capabilities "metrics" / "latency"
 # (W12 gates); the panel-side ones always run.
 # xboard-style fields: display name, tags, multiplier, connect override.
-# W28-a: multiplier and address belong to the (direct) entrance.
-[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"display_name":"冒烟 01","tags":["IPLC","0.5x"],"sort":1}')" = "200" ] \
+# W28-a: multiplier and address belong to the (direct) entrance; 1104: so
+# do the tags (node-level tags are legacy and named nowhere).
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"display_name":"冒烟 01","tags":["节点级"],"sort":1}')" = "200" ] \
   || { echo "FAIL: W11 node fields"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"traffic_rate":0.5}')" = "400" ] || { echo "FAIL: node-level multiplier accepted"; exit 1; }
-[ "$(entrance_patch '{"rate":0.5,"connect_host":"127.0.0.1","connect_port":11443}')" = "200" ] \
+[ "$(entrance_patch '{"rate":0.5,"connect_host":"127.0.0.1","connect_port":11443,"tags":["IPLC","0.5x"]}')" = "200" ] \
   || { echo "FAIL: W11 entrance fields"; cat /tmp/akari-smoke/last; exit 1; }
-last_json "(d['rate_permille'], d['connect_port'])" | matches -Fx '(500, 11443)' || { echo "FAIL: multiplier not stored"; exit 1; }
+last_json "(d['rate_permille'], d['connect_port'], d['tags'])" | matches -Fx "(500, 11443, ['IPLC', '0.5x'])" || { echo "FAIL: multiplier/tags not stored"; exit 1; }
+[ "$(entrance_patch '{"tags":["a|b"]}')" = "400" ] && last_json "d['code']" | matches -x 'node.tag_invalid' \
+  || { echo "FAIL: bad entrance tag accepted"; exit 1; }
 [ "$(entrance_patch '{"rate":0.0001}')" = "400" ] && last_json "d['code']" | matches -x 'entrance.rate_invalid' \
   || { echo "FAIL: bad multiplier accepted"; exit 1; }
 [ "$(entrance_patch '{"connect_port":70000}')" = "400" ] || { echo "FAIL: bad connect port accepted"; exit 1; }
@@ -1230,6 +1233,7 @@ echo "multiplier: ok (raw $RAW_D bytes, billed $USED_D at 0.5x)"
 # on 订阅线路名显示倍率 (base multiplier only).
 subrl; curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" >"$LOG/w11-sub.yaml"
 grep -q '"冒烟 01 | IPLC | 0.5x 直连"' "$LOG/w11-sub.yaml" || { echo "FAIL: subscription name"; head -20 "$LOG/w11-sub.yaml"; exit 1; }
+! grep -q '节点级' "$LOG/w11-sub.yaml" || { echo "FAIL: node-level tags in the subscription (1104)"; exit 1; }
 grep -q 'server: 127.0.0.1' "$LOG/w11-sub.yaml" || { echo "FAIL: connect override not in subscription"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings (next07)"; exit 1; }
 N07_VER=$(last_json "d['version']")
@@ -1249,6 +1253,7 @@ DJAR="$LOG/w11-d.jar"
 python3 -c "
 import json; v = json.load(open('/tmp/akari-smoke/last'))
 assert len(v) == 1 and v[0]['name'] == '冒烟 01' and v[0]['entrance'] == '直连' and v[0]['rate'] == 0.5 and v[0]['online'] is True, v
+assert v[0]['tags'] == ['IPLC', '0.5x'], v
 assert 'id' not in v[0] and 'connect_host' not in v[0], v
 " || { echo "FAIL: /me/nodes content"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$DJAR" "$BASE/api/v1/servers/$SERVER_ID/status")" = "403" ] || { echo "FAIL: user reads node status"; exit 1; }
@@ -1413,7 +1418,7 @@ echo "== W28-a: relay entrance (derived inbound, own credentials, per-entrance b
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/node-groups" -H 'Content-Type: application/json' -d '{"name":"smoke-relay"}')" = "201" ] \
   || { echo "FAIL: create relay group"; exit 1; }
 RELAY_GROUP=$(last_json "d['id']")
-RELAY_BODY="{\"name\":\"IPLC\",\"connect_host\":\"127.0.0.1\",\"connect_port\":11446,\"listen_port\":11446,\"source_cidrs\":[\"127.0.0.1\"],\"rate\":2,\"group_ids\":[\"$RELAY_GROUP\"]}"
+RELAY_BODY="{\"name\":\"IPLC\",\"connect_host\":\"127.0.0.1\",\"connect_port\":11446,\"listen_port\":11446,\"source_cidrs\":[\"127.0.0.1\"],\"rate\":2,\"tags\":[\"专线\"],\"group_ids\":[\"$RELAY_GROUP\"]}"
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes/$NODE_ID/entrances" -H 'Content-Type: application/json' -d "$RELAY_BODY")" = "201" ] \
   && last_json "(d['kind'], d['wire_no'], d['source_cidrs'])" | matches -Fx "('relay', 1, ['127.0.0.1/32'])" \
   || { echo "FAIL: create relay entrance"; cat /tmp/akari-smoke/last; exit 1; }
@@ -1434,9 +1439,11 @@ VLESS_DR=$(relay_account "$USER_D")
 [ -n "$VLESS_DR" ] && [ "$VLESS_DR" != "$VLESS_D" ] || { echo "FAIL: no independent relay credential for D"; exit 1; }
 for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/11446) 2>/dev/null && break; sleep 0.5; done
 (exec 3<>/dev/tcp/127.0.0.1/11446) 2>/dev/null || { echo "FAIL: derived inbound not listening"; tail -5 "$LOG/agent.log"; exit 1; }
-# The subscription lists the relay as its own proxy (next07: no multiplier in the name).
+# The subscription lists the relay as its own proxy (next07: no multiplier
+# in the name), with its own tags (1104: not the direct entrance's).
 curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" >"$LOG/relay-sub.yaml"
-grep -q '"冒烟 01 | IPLC | 0.5x IPLC"' "$LOG/relay-sub.yaml" && grep -q 'port: 11446' "$LOG/relay-sub.yaml" \
+grep -q '"冒烟 01 | 专线 IPLC"' "$LOG/relay-sub.yaml" && grep -q '"冒烟 01 | IPLC | 0.5x 直连"' "$LOG/relay-sub.yaml" \
+  && grep -q 'port: 11446' "$LOG/relay-sub.yaml" \
   || { echo "FAIL: relay not in the subscription"; cat "$LOG/relay-sub.yaml"; exit 1; }
 # The W11 client with a port and an attempt count (argv 2, 3).
 sed -e 's/("127.0.0.1", 11443)/("127.0.0.1", int(sys.argv[2]))/' \
@@ -1574,7 +1581,7 @@ for _ in $(seq 1 30); do [ "$(psql_q "SELECT hidden_since IS NOT NULL FROM entra
   || { echo "FAIL: unreachable relay not hidden"; psql_q "SELECT health_ok, health_failures, health_error FROM entrances WHERE id='$RELAY_ID'"; exit 1; }
 rl_sub_clear() { vk EVAL "for _,k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call('DEL', k) end return 1" 0 'akari:rl:sub:*' >/dev/null; }
 rl_sub_clear
-curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '0.5x IPLC"' && { echo "FAIL: hidden relay still in the subscription"; exit 1; }
+curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '专线 IPLC"' && { echo "FAIL: hidden relay still in the subscription"; exit 1; }
 for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='firing'")" = "1" ] && break; sleep 1; done
 [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='firing'")" = "1" ] \
   || { echo "FAIL: no entrance_down alert"; exit 1; }
@@ -1582,7 +1589,7 @@ for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE s
 for _ in $(seq 1 20); do [ "$(psql_q "SELECT hidden_since IS NULL FROM entrances WHERE id='$RELAY_ID'")" = "t" ] && break; sleep 1; done
 [ "$(psql_q "SELECT health_ok AND hidden_since IS NULL FROM entrances WHERE id='$RELAY_ID'")" = "t" ] || { echo "FAIL: relay not restored"; exit 1; }
 rl_sub_clear
-curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '0.5x IPLC"' || { echo "FAIL: restored relay not in the subscription"; exit 1; }
+curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '专线 IPLC"' || { echo "FAIL: restored relay not in the subscription"; exit 1; }
 for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='resolved'")" = "1" ] && break; sleep 1; done
 [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='resolved'")" = "1" ] \
   || { echo "FAIL: entrance_down not resolved"; exit 1; }
@@ -1822,7 +1829,7 @@ python3 -c "import json; p = json.load(open('/tmp/akari-smoke/last'))['probe']; 
   || { echo "FAIL: CLI probe unset not audited"; exit 1; }
 # Back to the defaults the rest of the smoke expects.
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"display_name":null,"tags":[],"sort":0}')" = "200" ] \
-  && [ "$(entrance_patch '{"rate":1,"connect_host":"node1.example.test","connect_port":null}')" = "200" ] \
+  && [ "$(entrance_patch '{"rate":1,"connect_host":"node1.example.test","connect_port":null,"tags":[]}')" = "200" ] \
   || { echo "FAIL: reset W11 fields"; exit 1; }
 # next07 (migration 1100): for 30 s after 0.5x -> 1x the settlement bills
 # the lower rate (only under-bills). The quota steps below need 1x at once:

@@ -600,7 +600,7 @@ async fn api_status_metrics_probe_and_portal_visibility() {
     db.assign(hidden, u).await;
     db.assign(disabled, u).await;
     sqlx::query(
-        "UPDATE nodes SET display_name = '香港 01', tags = '{IPLC,0.5x}', sort = 2 WHERE id = $1",
+        "UPDATE nodes SET display_name = '香港 01', tags = '{节点级}', sort = 2 WHERE id = $1",
     )
     .bind(shown)
     .execute(&db.pool)
@@ -611,11 +611,13 @@ async fn api_status_metrics_probe_and_portal_visibility() {
         .execute(&db.pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE entrances SET rate_permille = 500 WHERE node_id = $1")
-        .bind(shown)
-        .execute(&db.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE entrances SET rate_permille = 500, tags = '{IPLC,0.5x}' WHERE node_id = $1",
+    )
+    .bind(shown)
+    .execute(&db.pool)
+    .await
+    .unwrap();
     sqlx::query("UPDATE nodes SET visible = false WHERE id = $1")
         .bind(hidden)
         .execute(&db.pool)

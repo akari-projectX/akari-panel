@@ -104,6 +104,8 @@ test("NOD-10 NOD-11 NOD-12 NOD-13 NOD-14 NOD-15 NOD-16 NOD-17 NOD-18 NOD-19 NOD-
   await d.getByLabel("协议模板").selectOption("vless_reality");
   await d.getByLabel("端口", { exact: true }).fill(String(port));
   await d.getByLabel("倍率").fill("1.5");
+  // Tags are the entrance's (the direct one here), not the node's.
+  await d.getByLabel("标签（逗号分隔，用户可见）").fill("原生, 流媒体");
   await d.getByRole("button", { name: "检测目标站点" }).click();
   await expect(d.getByRole("status")).toBeVisible();
   await d.getByRole("button", { name: "添加", exact: true }).click();
@@ -115,6 +117,7 @@ test("NOD-10 NOD-11 NOD-12 NOD-13 NOD-14 NOD-15 NOD-16 NOD-17 NOD-18 NOD-19 NOD-
   await expect(row.locator("tr[data-entrance]")).toHaveCount(1);
   await expect(row.locator("tr[data-entrance]").first()).toContainText("1.5x");
   await expect(row.locator("tr[data-entrance]").first()).toContainText("显示");
+  await expect(row.locator("tr[data-entrance]").first().locator("[data-entrance-tag]")).toHaveText(["原生", "流媒体"]);
   // NOD-14: the node's block-rules switch (confirmed).
   await row.getByRole("switch", { name: `${node} 的审计规则` }).click();
   await confirmDialog(page);
@@ -128,7 +131,6 @@ test("NOD-10 NOD-11 NOD-12 NOD-13 NOD-14 NOD-15 NOD-16 NOD-17 NOD-18 NOD-19 NOD-
   await row.getByRole("button", { name: node, exact: true }).click();
   d = dialog(page);
   await d.getByLabel("显示名称").fill(`${node} 显示`);
-  await d.getByLabel("标签（逗号分隔）").fill("流媒体, 高速");
   await d.getByRole("button", { name: "保存展示设置" }).click();
   await toast(page, "已保存");
   await expect(d.getByText("已开启")).toBeVisible();
@@ -150,6 +152,7 @@ test("NOD-10 NOD-11 NOD-12 NOD-13 NOD-14 NOD-15 NOD-16 NOD-17 NOD-18 NOD-19 NOD-
   d = dialog(page);
   await d.getByLabel("名称", { exact: true }).fill("IPLC");
   await d.getByLabel("倍率").fill("2");
+  await d.getByLabel("标签（逗号分隔，用户可见）").fill("IPLC 专线");
   await d.getByLabel("连接端口").fill("30001");
   await d.getByLabel("监听端口（节点上）").fill(String(port + 2));
   // The egress hint; the dial IP typed in as the egress is called out.
@@ -166,6 +169,7 @@ test("NOD-10 NOD-11 NOD-12 NOD-13 NOD-14 NOD-15 NOD-16 NOD-17 NOD-18 NOD-19 NOD-
   const relay = row.locator("tr[data-entrance]", { hasText: "IPLC" });
   await expect(relay).toContainText("中转");
   await expect(relay).toContainText("relay.example.com:30001");
+  await expect(relay.locator("[data-entrance-tag]")).toHaveText(["IPLC 专线"]);
   // NOD-18: a relay that fails its probe.
   sql(
     `UPDATE entrances SET hidden_since = now() WHERE name = 'IPLC' AND node_id = (SELECT id FROM nodes WHERE name = '${node}')`,
@@ -177,8 +181,11 @@ test("NOD-10 NOD-11 NOD-12 NOD-13 NOD-14 NOD-15 NOD-16 NOD-17 NOD-18 NOD-19 NOD-
   d = dialog(page);
   await expect(d.getByText("当前倍率")).toBeVisible();
   await d.getByLabel("基础倍率（0–100）").fill("1");
+  await d.getByLabel("标签（逗号分隔，用户可见）").fill("原生，高速");
   await d.getByRole("button", { name: "保存入口" }).click();
   await toast(page, "入口已保存");
+  await expect(row.locator("tr[data-entrance]").first().locator("[data-entrance-tag]")).toHaveText(["原生", "高速"]);
+  await expect(relay.locator("[data-entrance-tag]")).toHaveText(["IPLC 专线"]);
   await d.getByRole("button", { name: "添加规则" }).click();
   await d.getByRole("button", { name: "添加规则" }).click();
   await expect(d.getByRole("status").filter({ hasText: /重叠/ })).toBeVisible();

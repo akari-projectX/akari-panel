@@ -173,7 +173,8 @@ pub const ENTRANCES_JSON_SQL: &str = "coalesce((SELECT jsonb_agg(jsonb_build_obj
      'rate_rules', (SELECT coalesce(jsonb_agg(jsonb_build_object('weekdays', r.weekdays, \
         'start', r.start_minute, 'end', r.end_minute, 'rate', r.rate_permille::float8 / 1000) \
         ORDER BY r.ord), '[]'::jsonb) FROM entrance_rate_rules r WHERE r.entrance_id = e.id), \
-     'enabled', e.enabled, 'sort', e.sort, 'wire_no', e.wire_no, 'version', e.version, \
+     'enabled', e.enabled, 'sort', e.sort, 'tags', to_jsonb(e.tags), \
+     'wire_no', e.wire_no, 'version', e.version, \
      'listen_port', e.listen_port, 'source_cidrs', to_jsonb(e.source_cidrs::text[]), \
      'health_ok', e.health_ok, 'health_at', e.health_at, 'health_failures', e.health_failures, \
      'health_error', e.health_error, 'hidden_since', e.hidden_since, \
@@ -204,6 +205,9 @@ pub struct EntranceView {
     pub rate_rules: serde_json::Value,
     pub enabled: bool,
     pub sort: i32,
+    /// Shown after the node's name in subscriptions and the portal
+    /// ("香港 01 | IPLC 中转"; 1104: per entrance, not per node).
+    pub tags: Vec<String>,
     /// The entrance's number on its node (0 = direct): its agent inbound
     /// tag and traffic key suffix.
     pub wire_no: i32,
@@ -232,7 +236,7 @@ const ENTRANCE_VIEW_SQL: &str = "SELECT e.id, e.node_id, e.kind, e.name, e.conne
         'start', r.start_minute, 'end', r.end_minute, 'rate', r.rate_permille::float8 / 1000) \
         ORDER BY r.ord), '[]'::jsonb) FROM entrance_rate_rules r WHERE r.entrance_id = e.id) \
         AS rate_rules, \
-     e.enabled, e.sort, e.wire_no, e.version, e.listen_port, \
+     e.enabled, e.sort, e.tags, e.wire_no, e.version, e.listen_port, \
      e.source_cidrs::text[] AS source_cidrs, e.health_ok, e.health_at, e.health_failures, \
      e.health_error, e.hidden_since, \
      coalesce(ARRAY(SELECT m.group_id FROM entrance_group_members m \
@@ -271,6 +275,10 @@ pub struct EntranceReq {
     pub enabled: Option<Option<bool>>,
     #[serde(default, deserialize_with = "double_option")]
     pub sort: Option<Option<i32>>,
+    /// Tags shown after the node's name (the complete list; [] = none;
+    /// `nodemeta::tags` rules).
+    #[serde(default, deserialize_with = "double_option")]
+    pub tags: Option<Option<Vec<String>>>,
     /// Node groups (the complete list; [] = none).
     #[serde(default, deserialize_with = "double_option")]
     pub group_ids: Option<Option<Vec<Uuid>>>,
@@ -297,6 +305,7 @@ impl EntranceReq {
             || self.rate.is_some()
             || self.enabled.is_some()
             || self.sort.is_some()
+            || self.tags.is_some()
             || self.listen_port.is_some()
             || self.source_cidrs.is_some()
     }
@@ -450,6 +459,7 @@ struct Clean {
     rate: Option<i32>,
     enabled: Option<bool>,
     sort: Option<i32>,
+    tags: Option<Vec<String>>,
     groups: Option<Vec<Uuid>>,
     listen_port: Option<i32>,
     source_cidrs: Option<Vec<String>>,
@@ -482,6 +492,9 @@ fn clean(req: &EntranceReq) -> Result<Clean, ApiError> {
         enabled: non_null("enabled", &req.enabled)?,
         sort: non_null("sort", &req.sort)?
             .map(crate::nodemeta::sort)
+            .transpose()?,
+        tags: non_null("tags", &req.tags)?
+            .map(|t| crate::nodemeta::tags(&t))
             .transpose()?,
         groups,
         listen_port: non_null("listen_port", &req.listen_port)?
@@ -590,6 +603,9 @@ pub async fn apply_update(
     if let Some(v) = c.sort {
         qb.push(", sort = ").push_bind(v);
     }
+    if let Some(v) = &c.tags {
+        qb.push(", tags = ").push_bind(v.clone());
+    }
     if let Some(v) = c.listen_port {
         qb.push(", listen_port = ").push_bind(v);
     }
@@ -679,6 +695,8 @@ pub struct CreateRelayReq {
     #[serde(default)]
     pub sort: Option<i32>,
     #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
     pub group_ids: Option<Vec<Uuid>>,
 }
 
@@ -711,6 +729,7 @@ pub async fn apply_create_relay(
         .map(crate::nodemeta::sort)
         .transpose()?
         .unwrap_or(0);
+    let tags = crate::nodemeta::tags(req.tags.as_deref().unwrap_or_default())?;
     let groups = req.group_ids.clone().map(|mut g| {
         g.sort();
         g.dedup();
@@ -752,8 +771,9 @@ pub async fn apply_create_relay(
     let id = Uuid::new_v4();
     let after: serde_json::Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "INSERT INTO entrances AS e (id, node_id, server_id, kind, name, connect_host, \
-         connect_port, rate_permille, enabled, sort, wire_no, listen_port, source_cidrs) \
-         VALUES ($1, $2, $12, 'relay', $3, $4, $5, $6, $7, $8, $9, $10, $11::cidr[]) RETURNING {}",
+         connect_port, rate_permille, enabled, sort, wire_no, listen_port, source_cidrs, tags) \
+         VALUES ($1, $2, $12, 'relay', $3, $4, $5, $6, $7, $8, $9, $10, $11::cidr[], $13) \
+         RETURNING {}",
         crate::audit::entrance_snapshot_sql("e")
     )))
     .bind(id)
@@ -768,6 +788,7 @@ pub async fn apply_create_relay(
     .bind(listen)
     .bind(&cidrs)
     .bind(server)
+    .bind(&tags)
     .fetch_one(&mut *conn)
     .await
     .map_err(listen_port_taken)?;

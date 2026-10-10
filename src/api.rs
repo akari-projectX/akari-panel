@@ -2284,6 +2284,7 @@ mod tests {
                                 rate: 2.0,
                                 enabled: None,
                                 sort: None,
+                                tags: None,
                                 group_ids: None,
                             },
                         )
