@@ -74,9 +74,13 @@ export default function Shop() {
   const [ack, setAck] = useState(false);
   const [submitting, run] = usePending();
 
+  /* 优惠码只在确认订单里填：每次打开弹窗从空开始，关掉时清掉（列表上的价格不带优惠码） */
+  const clearCoupon = () => { setCoupon(''); setCouponInput(''); };
+  const closeBuy = () => { setBuy(null); clearCoupon(); };
   const openBuy = (p: ShopPlan, o: Offer | undefined, resetOnly = false) => {
     if (!o) return;
     setAck(false);
+    clearCoupon();
     setBuy({ planId: p.plan_id, key: offerKey(o), resetOnly });
   };
 
@@ -92,7 +96,7 @@ export default function Shop() {
         ...(useBalance ? { use_balance: true } : {}),
         ...(method && (offer.amount_cents ?? 0) > 0 ? { method_id: method.id } : {}),
       });
-      setBuy(null);
+      closeBuy();
       openOrder.reload();
       shop.reload();
       if (order.status === 'paid') {
@@ -180,45 +184,16 @@ export default function Shop() {
         )}
       </Section>
 
-      {/* ── 优惠码与余额：面板按它们重新给每一档报价 ── */}
-      <Section>
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <form
-            onSubmit={(e) => { e.preventDefault(); applyCoupon(); }}
-            className="flex max-w-md flex-1 gap-2.5"
-          >
-            <div className="relative flex-1">
-              <TicketPercent aria-hidden className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-faint" />
-              <Input
-                aria-label={tr('优惠码')} value={couponInput} onChange={(e) => setCouponInput(e.target.value)}
-                placeholder={tr('有优惠码就填在这里')} className="h-10 pl-9"
-              />
-            </div>
-            <Button type="submit" variant="outline" className="h-10 shrink-0" disabled={shop.loading || couponInput.trim() === coupon}>
-              {tr('使用')}
-            </Button>
-            {coupon && (
-              <Button type="button" variant="ghost" className="h-10 shrink-0 text-muted-foreground" onClick={() => { setCoupon(''); setCouponInput(''); }}>
-                {tr('清除')}
-              </Button>
-            )}
-          </form>
-          {data && data.balance_cents > 0 && (
-            <label className="flex items-center gap-3 text-[13.5px]">
-              <Wallet className="size-4 text-brand" />
-              <span>{tp('用余额抵扣（余额 {v}）', { v: formatMoney(data.balance_cents) })}</span>
-              <Switch checked={useBalance} onCheckedChange={setUseBalance} aria-label={tr('用余额抵扣')} />
-            </label>
-          )}
-        </div>
-        {data?.coupon && (
-          <p className={cn('mt-3 text-[12.5px]', couponRefusal ? 'text-destructive' : 'text-success')}>
-            {couponRefusal
-              ? tr(COUPON_REFUSAL_TEXT[couponRefusal])
-              : tp('优惠码 {c} 已生效，下面的价格已按它计算', { c: data.coupon.code })}
-          </p>
-        )}
-      </Section>
+      {/* ── 余额：面板按它重新给每一档报价（优惠码在确认订单里填） ── */}
+      {data && data.balance_cents > 0 && (
+        <Section>
+          <label className="flex items-center gap-3 text-[13.5px]">
+            <Wallet className="size-4 text-brand" />
+            <span>{tp('用余额抵扣（余额 {v}）', { v: formatMoney(data.balance_cents) })}</span>
+            <Switch checked={useBalance} onCheckedChange={setUseBalance} aria-label={tr('用余额抵扣')} />
+          </label>
+        </Section>
+      )}
 
       {/* ── 套餐列表 ── */}
       <Section title={tr('选择套餐')} desc={tr('价格按你现在下单计算：续费从到期日顺延，换套餐时旧套餐按剩余价值折算')}>
@@ -314,7 +289,7 @@ export default function Shop() {
 
       {/* ── 确认下单 ── */}
       <FlowDialog
-        open={!!buy && !!buyPlan} onOpenChange={(o) => !o && setBuy(null)}
+        open={!!buy && !!buyPlan} onOpenChange={(o) => !o && closeBuy()}
         icon={<Crown />}
         title={tr('确认订单')}
         description={tr('价格由服务端计算，下面就是你要付的金额')}
@@ -367,11 +342,40 @@ export default function Shop() {
               )}
 
               {offer && (
+                <FlowStep n={++n} title={tr('优惠码')} aside={tr('选填')}>
+                  <form
+                    onSubmit={(e) => { e.preventDefault(); applyCoupon(); }}
+                    className="flex gap-2.5"
+                  >
+                    <div className="relative flex-1">
+                      <TicketPercent aria-hidden className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-faint" />
+                      <Input
+                        aria-label={tr('优惠码')} value={couponInput} onChange={(e) => setCouponInput(e.target.value)}
+                        placeholder={tr('有优惠码就填在这里')} className="h-10 pl-9"
+                      />
+                    </div>
+                    <Button type="submit" variant="outline" className="h-10 shrink-0" disabled={shop.loading || couponInput.trim() === coupon}>
+                      {tr('使用')}
+                    </Button>
+                    {coupon && (
+                      <Button type="button" variant="ghost" className="h-10 shrink-0 text-muted-foreground" onClick={clearCoupon}>
+                        {tr('清除')}
+                      </Button>
+                    )}
+                  </form>
+                  {coupon && data?.coupon && !shop.loading && (
+                    couponRefusal || offer.coupon_refusal
+                      ? <p role="alert" className="text-[12.5px] text-destructive">{tr(COUPON_REFUSAL_TEXT[(couponRefusal ?? offer.coupon_refusal)!])}</p>
+                      : <p role="status" className="text-[12.5px] text-success">{tp('优惠码 {c} 已生效，优惠 {v}', { c: data.coupon.code, v: formatMoney(offer.discount_cents) })}</p>
+                  )}
+                </FlowStep>
+              )}
+
+              {offer && (
                 <FlowStep n={++n} title={tr('金额明细')}>
                   <div className="space-y-1.5 text-[13px]">
                     <Line k={tr('价格')} v={formatMoney(offer.price_cents)} />
                     {offer.discount_cents > 0 && <Line k={tr('优惠码')} v={`−${formatMoney(offer.discount_cents)}`} tone="text-success" />}
-                    {offer.coupon_refusal && <p className="text-[12px] text-destructive">{tr(COUPON_REFUSAL_TEXT[offer.coupon_refusal])}</p>}
                     {offer.credit_cents > 0 && <Line k={tr('旧套餐折算抵扣')} v={`−${formatMoney(offer.credit_cents)}`} tone="text-success" />}
                     {offer.forfeited_cents > 0 && <Line k={tr('折算作废')} v={formatMoney(offer.forfeited_cents)} tone="text-warning" />}
                     {offer.balance_cents > 0 && <Line k={tr('余额抵扣')} v={`−${formatMoney(offer.balance_cents)}`} tone="text-success" />}
@@ -411,7 +415,7 @@ export default function Shop() {
                   </div>
                 }
               >
-                <Button variant="outline" className="hidden sm:inline-flex" onClick={() => setBuy(null)}>{tr('取消')}</Button>
+                <Button variant="outline" className="hidden sm:inline-flex" onClick={closeBuy}>{tr('取消')}</Button>
                 <Button
                   disabled={submitting || !offer?.action || !!openOrder.order || noPayment
                     || (confirmSwitch && !ack) || (pickMethod && !method)}

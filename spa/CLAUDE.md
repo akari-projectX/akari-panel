@@ -39,7 +39,7 @@ CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typechec
 | 路径 | 页面 | 账户范围 |
 |---|---|---|
 | `/` | 仪表盘（续费范围：缩减版 + 续费横幅；封禁：封禁说明） | 全部 |
-| `/shop` | 商店（服务端报价、优惠码、余额抵扣、折算与作废确认、拒绝原因、支付方式） | full、renewal |
+| `/shop` | 商店（服务端报价、优惠码（只在确认订单弹窗里填，列表不带码）、余额抵扣、折算与作废确认、拒绝原因、支付方式） | full、renewal |
 | `/orders`、`/orders/:id` | 订单列表（类型列 `action`）、详情与付款（二维码 / 收银台，轮询）、退款去向 | full、renewal |
 | `/wallet` | 余额、流水、USDT 提现（R46：网络、地址提示、TON Memo、参考汇率、实付与交易哈希；提现仅 full） | full、renewal |
 | `/invite` | 邀请链接（面板给的 `link_base`）、邀请码、返佣 | full |
