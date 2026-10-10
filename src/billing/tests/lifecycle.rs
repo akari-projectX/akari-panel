@@ -72,6 +72,44 @@ async fn switch_credit_counts_the_traffic_left() {
     db.drop().await;
 }
 
+/// With a periodic reset the quota is per period: only the current period
+/// is limited by the traffic left, the time after the next reset keeps its
+/// full value (a quarter on a monthly-reset plan with this month used up
+/// still carries about two months over).
+#[tokio::test]
+async fn switch_credit_limits_only_the_current_period() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let (_, a) = catalog_plan(&db, "cp-a", &[(PeriodKind::Quarter, None, 9000)], |_| {}).await;
+    let (_, _b) = catalog_plan(&db, "cp-b", &[(PeriodKind::Quarter, None, 9000)], |_| {}).await;
+    let u = db.user().await;
+    let c = user_client(&state, u).await;
+    bought(&db, &c, a, "quarter").await;
+    assert_eq!(credit(&c).await, 9000, "fresh quarter");
+    // This month used up: the two months after the next reset remain
+    // (9000 × 59..62 days / 90).
+    set_used(&db, u, 1 << 30).await;
+    let after_reset = credit(&c).await;
+    assert!(
+        (5800..=6300).contains(&after_reset),
+        "used up this month: {after_reset}"
+    );
+    // A quarter of this month's quota left: plus a quarter of this month's
+    // value (9000 − the part after the reset).
+    set_used(&db, u, 3 << 28).await;
+    let partial = credit(&c).await;
+    let month = 9000 - after_reset;
+    assert!(
+        (partial - after_reset - month / 4).abs() <= 1,
+        "quarter of this month left: {partial} (after reset {after_reset})"
+    );
+    drop(state);
+    db.drop().await;
+}
+
 async fn quota_disabled(db: &TestDb, user: Uuid, used: i64) {
     sqlx::query(
         "UPDATE users SET traffic_used_bytes = $2, enabled = false, disabled_reason = 'quota' \
