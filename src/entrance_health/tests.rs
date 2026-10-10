@@ -198,24 +198,36 @@ async fn hidden_relays_leave_subscription_and_portal_and_alert() {
     async fn sub(me: &crate::testdb::http::Client, token: &str) -> String {
         String::from_utf8(me.get(&format!("/sub/{token}?format=clash")).await.body).unwrap()
     }
-    async fn portal(me: &crate::testdb::http::Client) -> Vec<String> {
+    // The portal still lists a hidden relay, greyed out as maintenance.
+    async fn portal(me: &crate::testdb::http::Client) -> Vec<(String, bool)> {
         me.get("/test/api/v1/me/nodes")
             .await
             .json()
             .as_array()
             .unwrap()
             .iter()
-            .map(|r| r["entrance"].as_str().unwrap().to_string())
+            .map(|r| {
+                (
+                    r["entrance"].as_str().unwrap().to_string(),
+                    r["status"] == "maintenance",
+                )
+            })
             .collect()
     }
     assert!(sub(&me, &token).await.contains("IPLC"));
-    assert_eq!(portal(&me).await, vec!["直连", "IPLC"]);
+    assert_eq!(
+        portal(&me).await,
+        vec![("直连".into(), false), ("IPLC".into(), false)]
+    );
     for _ in 0..crate::config::ENTRANCE_HEALTH_FAILURES {
         record(&db.pool, e, Err("timeout".into())).await.unwrap();
     }
     let body = sub(&me, &token).await;
     assert!(!body.contains("IPLC") && body.contains("直连"), "{body}");
-    assert_eq!(portal(&me).await, vec!["直连"]);
+    assert_eq!(
+        portal(&me).await,
+        vec![("直连".into(), false), ("IPLC".into(), true)]
+    );
     // The alert facts carry it.
     let mut tx = db.pool.begin().await.unwrap();
     let settings = crate::alerts::load(&mut tx).await.unwrap();
