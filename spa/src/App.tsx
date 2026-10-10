@@ -16,7 +16,7 @@ import { warmHanFont } from '@/lib/han-font';
 import { fastNetwork, whenIdle } from '@/lib/prefetch';
 import { R } from '@/lib/routes';
 import {
-  Account, Announcements, Dashboard, Forgot, Help, Invite, Login, Nodes, OrderDetail, Orders, Privacy, Register,
+  Account, AccountDeleted, Announcements, Dashboard, Forgot, Help, Invite, Login, Nodes, OrderDetail, Orders, Privacy, Register,
   Reset, Shop, Terms, Tickets, Traffic, Wallet,
 } from '@/pages/registry';
 
@@ -58,7 +58,7 @@ function WarmOtherLocale() {
 }
 
 /* 刷新后回到页首的站点页（用户中心保留浏览器恢复的位置） */
-const SITE_PATHS = new Set<string>([R.terms, R.privacy, R.login, R.register, R.forgot, R.reset]);
+const SITE_PATHS = new Set<string>([R.terms, R.privacy, R.login, R.register, R.forgot, R.reset, R.deleted]);
 
 function ScrollTop() {
   const { pathname, hash } = useLocation();
@@ -129,6 +129,8 @@ export default function App() {
                 <Route path={R.forgot} element={<GuestOnly><Forgot /></GuestOnly>} />
                 {/* 邮件里的重置链接（#token=…）：登录与否都能用 */}
                 <Route path={R.reset} element={<Reset />} />
+                {/* 注销之后：会话已经没了，这一页公开 */}
+                <Route path={R.deleted} element={<AccountDeleted />} />
               </Route>
               <Route element={<RequireAuth><DashLayout /></RequireAuth>}>
                 <Route index element={<Dashboard />} />

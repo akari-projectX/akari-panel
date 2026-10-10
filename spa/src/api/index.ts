@@ -8,7 +8,7 @@ import { api, auth, qs } from './http';
 import { rememberGuard } from './guard';
 import { creationOptions, credentialJSON, requestOptions } from './webauthn';
 import type {
-  Announcements, AuthOptions, CreateOrder, DeleteImpact, FormGuard, HelpArticle, HelpList, InviteCodes, LegalPage,
+  Announcements, AuthOptions, CreateOrder, DeleteImpact, FormGuard, HelpArticle, HelpList, HolderProof, InviteCodes, LegalPage,
   LoginMethods, LoginResult, Me, MyBalance, MyInvite, MyNode, MyOrder, MyPlan, MyTraffic, NewTicket, PasskeyChallenge,
   Shop, SubTokenReset, TicketDetail, TicketRow, UsdtChain, Withdrawal,
 } from './types';
@@ -79,8 +79,11 @@ export const meApi = {
   setLocale: (locale: 'zh' | 'en') => api.put<void>('/me/locale', { locale }),
   changePassword: (current_password: string, new_password: string) =>
     api.post<void>('/me/password', { current_password, new_password }),
-  /** 绑定或更换邮箱第一步：验证码发到新地址（地址被占用时答复一样） */
-  emailCode: (email: string, password: string) => api.post<void>('/me/email/code', { email, password }),
+  /**
+   * 验证码发到这个地址：账户自己当前（未验证）的地址不用确认身份；换成别的地址要当前密码或通行密钥
+   * （只用通行密钥的账户必须用通行密钥）。地址被别的账户占用时答复一样，验证那一步才失败。
+   */
+  emailCode: (email: string, confirm?: HolderProof) => api.post<void>('/me/email/code', { email, ...confirm }),
   emailVerify: (code: string) => api.post<{ email: string }>('/me/email/verify', { code }),
 };
 
@@ -89,9 +92,8 @@ export const meApi = {
 export const accountApi = {
   /** 注销会丢掉什么（与后台的 delete-impact 同形） */
   deleteImpact: () => api.get<DeleteImpact>('/me/delete-impact'),
-  /** 删除个人数据，财务记录匿名化保留；只用通行密钥登录的账户不传 password。成功后面板清掉会话 cookie */
-  deleteAccount: (password: string | undefined) =>
-    api.post<void>('/me/delete', { confirm: true, ...(password ? { password } : {}) }),
+  /** 删除个人数据，财务记录匿名化保留；要当前密码或通行密钥确认（面板校验）。成功后面板清掉会话 cookie */
+  deleteAccount: (confirm: HolderProof) => api.post<void>('/me/delete', { confirm: true, ...confirm }),
 };
 
 /* ───────────── 通行密钥（已登录） ───────────── */
@@ -112,6 +114,16 @@ export const passkeyApi = {
       name,
       ...(disablePassword ? { disable_password: true } : {}),
     });
+  },
+
+  /** 用本账户的通行密钥确认是本人（注销、换邮箱）：取挑战 → 设备签名 → 交给要确认的那个接口 */
+  confirm: async (): Promise<HolderProof> => {
+    const ch = await api.post<PasskeyChallenge>('/me/reauth/options');
+    const cred = (await navigator.credentials.get({
+      publicKey: requestOptions(ch.options.publicKey),
+    })) as PublicKeyCredential | null;
+    if (!cred) throw new DOMException('cancelled', 'NotAllowedError');
+    return { passkey: { state: ch.state, credential: credentialJSON(cred) } };
   },
 
   rename: (id: string, name: string) => api.patch<{ id: string; name: string }>(`/me/passkeys/${id}`, { name }),

@@ -161,6 +161,9 @@ export type LoginMethods = {
 /** WebAuthn 挑战：state 原样交回，options 是 publicKey 选项（base64url 编码） */
 export type PasskeyChallenge = { state: string; options: { publicKey: Record<string, unknown> } };
 
+/** 危险操作前确认是本人：当前密码，或通行密钥的签名（passkeyApi.confirm） */
+export type HolderProof = { password: string } | { passkey: { state: string; credential: Record<string, unknown> } };
+
 /* ───────────── 订阅、节点、流量 ───────────── */
 
 export type SubFormat = 'auto' | 'clash' | 'sing-box' | 'links';
@@ -532,6 +535,11 @@ export type DeleteImpact = {
   /** 已付款但没能开通的订单 */
   unfulfilled_orders: number;
   plan: { name: string; expires_at: string | null } | null;
+  /** 还在冻结期、没入账的邀请返利（注销后作废） */
+  pending_commission_cents: number;
+  pending_commissions: number;
+  /** 通过本账户邀请注册的人（之后的消费不再给返利） */
+  invitees: number;
   /** 有财务记录：账户匿名化保留，而不是整个删除 */
   anonymized: boolean;
 };

@@ -25,6 +25,7 @@ export const Tickets = lazyRetry(() => import('@/pages/dash/tickets'));
 export const Help = lazyRetry(() => import('@/pages/dash/help'));
 export const Announcements = lazyRetry(() => import('@/pages/dash/announcements'));
 export const Account = lazyRetry(() => import('@/pages/dash/account'));
+export const AccountDeleted = lazyRetry(() => import('@/pages/auth').then((m) => ({ default: m.AccountDeleted })));
 export const Terms = lazyRetry(() => import('@/pages/legal').then((m) => ({ default: m.Terms })));
 export const Privacy = lazyRetry(() => import('@/pages/legal').then((m) => ({ default: m.Privacy })));
 

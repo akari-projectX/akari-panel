@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react';
-import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Fingerprint, KeyRound, Lock, Mail, Pencil, Plus, ShieldCheck, Trash2, TriangleAlert, UserX } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ConfirmDialog } from '@/components/ui/panels';
+import { FlowDialog, FlowFooter } from '@/components/ui/panels';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -14,6 +14,9 @@ import { PageTitle, Row, Section } from '@/components/flat';
 import { Empty, LoadError, Loading } from '@/components/data-state';
 import ResetSubscription from '@/components/reset-subscription';
 import Subscribe from '@/components/subscribe';
+import HolderConfirm from '@/components/holder-confirm';
+import { useHolderConfirm } from '@/hooks/use-holder-confirm';
+import VerifyEmailDialog from '@/components/verify-email-dialog';
 import { accountApi, meApi, passkeyApi, type LoginMethods } from '@/api';
 import { isUserCancel, webauthnSupported } from '@/api/webauthn';
 import { useApi, usePending, type ApiState } from '@/hooks/use-api';
@@ -49,6 +52,7 @@ function Account() {
   const tp = useTp();
   const { me, plan } = useAuth();
   const { locale, setLocale } = useLocale();
+  const [verifying, setVerifying] = useState(false);
   const p = plan?.plan;
 
   return (
@@ -60,7 +64,13 @@ function Account() {
             {me?.email}
             {me?.email_verified
               ? <Badge variant="secondary" className="rounded-full bg-emerald-500/12 text-success">{tr('已验证')}</Badge>
-              : <Badge variant="secondary" className="rounded-full bg-amber-500/12 text-warning">{tr('未验证')}</Badge>}
+              : (
+                <>
+                  <Badge variant="secondary" className="rounded-full bg-amber-500/12 text-warning">{tr('未验证')}</Badge>
+                  <Button size="sm" variant="link" className="h-auto px-0" onClick={() => setVerifying(true)}>{tr('验证这个邮箱')}</Button>
+                  <VerifyEmailDialog open={verifying} onOpenChange={setVerifying} />
+                </>
+              )}
           </div>
           <div className="mt-2 flex flex-wrap gap-2">
             <Badge variant="secondary" className="rounded-full bg-brand/10 text-brand-ink">{p?.name ?? tr('未订阅')}</Badge>
@@ -101,36 +111,33 @@ function Account() {
 }
 
 /**
- * 绑定 / 更换邮箱：当前密码 + 新地址 → 验证码发到新地址 → 填码。验证通过后新地址就是登录名（D1）。
- * 地址已被占用时面板的答复和成功一样（不泄露哪些地址注册过），验证那一步才会失败。
+ * 更换邮箱：新地址 + 确认是本人（当前密码，只用通行密钥的账户用通行密钥）→ 验证码发到新地址 → 填码。
+ * 验证通过后新地址就是登录名（D1）。地址已被占用时面板的答复和成功一样（不泄露哪些地址注册过），验证那一步才会失败。
+ * 验证当前这个地址不在这里：提醒条与上面的「验证」按钮弹出验证码弹窗（VerifyEmailDialog）。
  */
 function EmailSection() {
   const tr = useT();
   const tp = useTp();
   const errText = useErrorText();
-  const { me, refresh } = useAuth();
+  const { refresh } = useAuth();
+  const methods = useApi(() => passkeyApi.list(), [], { key: K.passkeys });
+  const holder = useHolderConfirm(methods.data);
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [sentTo, setSentTo] = useState<string | null>(null);
   const [busy, run] = usePending();
-  const { hash } = useLocation();
-
-  /* 未验证邮箱的提醒条点「去验证」会带 #email 过来：滚到这一块 */
-  useEffect(() => {
-    if (hash === '#email') document.getElementById('email')?.scrollIntoView({ behavior: 'smooth' });
-  }, [hash]);
 
   const send = (e: React.FormEvent) => {
     e.preventDefault();
     run(async () => {
       try {
-        await meApi.emailCode(email.trim(), password);
-        setSentTo(email.trim());
-        setPassword('');
-        toast.success(tr('验证码已发出'), { description: tp('请查收 {e} 的邮件', { e: email.trim() }) });
+        const to = email.trim();
+        await meApi.emailCode(to, await holder.proof());
+        setSentTo(to);
+        holder.reset();
+        toast.success(tr('验证码已发出'), { description: tp('请查收 {e} 的邮件', { e: to }) });
       } catch (err) {
-        toast.error(errText(err));
+        if (!isUserCancel(err)) toast.error(errText(err));
       }
     });
   };
@@ -144,26 +151,22 @@ function EmailSection() {
         setCode('');
         setEmail('');
         await refresh();
-        toast.success(tr('邮箱已验证'), { description: tp('以后用 {e} 登录', { e: r.email }) });
+        toast.success(tr('邮箱已更换'), { description: tp('以后用 {e} 登录', { e: r.email }) });
       } catch (err) {
         toast.error(errText(err));
       }
     });
   };
 
-  const unverified = me && !me.email_verified;
-
   return (
     <div id="email">
       <Section
-        title={<><Mail className="size-4 text-brand" />{unverified ? tr('验证邮箱') : tr('更换邮箱')}</>}
-        desc={unverified
-          ? tr('到期提醒、流量提醒、付款收据和找回密码都只发到已验证的邮箱。可以验证现在这个地址，也可以换一个。')
-          : tr('新地址验证通过后就是你的登录名。')}
+        title={<><Mail className="size-4 text-brand" />{tr('更换邮箱')}</>}
+        desc={tr('新地址验证通过后就是你的登录名，到期提醒、收据和找回密码也改发到新地址。')}
       >
         {sentTo ? (
           <form onSubmit={verify} className="max-w-115 space-y-4">
-            <p className="text-[13px] text-muted-foreground">{tp('验证码已发到 {e}，30 分钟内有效。', { e: sentTo })}</p>
+            <p className="text-[13px] text-muted-foreground">{tp('验证码已发到 {e}，10 分钟内有效。', { e: sentTo })}</p>
             <div className="space-y-2">
               <Label htmlFor="email-code">{tr('邮箱验证码')}</Label>
               <Input
@@ -172,27 +175,21 @@ function EmailSection() {
               />
             </div>
             <div className="flex gap-2">
-              <Button className="h-10" disabled={busy}>{busy ? tr('提交中') : tr('验证')}</Button>
+              <Button className="h-10" disabled={busy}>{busy ? tr('提交中') : tr('确认更换')}</Button>
               <Button type="button" variant="ghost" className="h-10" onClick={() => setSentTo(null)}>{tr('换个地址')}</Button>
             </div>
           </form>
         ) : (
           <form onSubmit={send} className="max-w-115 space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="email-new">{tr('邮箱地址')}</Label>
+              <Label htmlFor="email-new">{tr('新邮箱地址')}</Label>
               <Input
                 id="email-new" type="email" className="h-10" autoComplete="email" required
-                value={email} onChange={(e) => setEmail(e.target.value)} placeholder={unverified ? me?.email : 'you@example.com'}
+                value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com"
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="email-password">{tr('当前密码')}</Label>
-              <Input
-                id="email-password" type="password" className="h-10" autoComplete="current-password" required
-                value={password} onChange={(e) => setPassword(e.target.value)}
-              />
-            </div>
-            <Button className="h-10" disabled={busy}>{busy ? tr('发送中') : tr('发送验证码')}</Button>
+            <HolderConfirm h={holder} id="email-password" />
+            <Button className="h-10" disabled={busy || holder.stuck || !holder.ready}>{busy ? tr('发送中') : tr('发送验证码')}</Button>
           </form>
         )}
       </Section>
@@ -202,79 +199,108 @@ function EmailSection() {
 
 /**
  * 自助注销：删除个人数据；有财务记录的账户匿名化保留（面板 erase.rs）。
- * 先给影响摘要（余额、待审提现、待付订单、当前套餐）。有待支付订单或待审核提现时面板拒绝（409），
- * 这里直接说清楚要先处理哪一样，不让人点了再碰壁。密码确认：只用通行密钥登录的账户不需要。
+ * 点「注销账户」弹出危险操作弹窗：先列出会失去什么（`GET /me/delete-impact`），有待支付订单或待审核提现时
+ * 面板拒绝（409），弹窗里直接说要先处理哪一样；要确认是本人（当前密码，只用通行密钥的账户用通行密钥，面板校验）
+ * 并勾选「不可恢复」才能提交。成功后面板清掉会话，这里退出登录并到结果页。
  */
 function DeleteAccount() {
+  const tr = useT();
+  const [open, setOpen] = useState(false);
+  return (
+    <Section title={<><UserX className="size-4 text-danger" />{tr('注销账户')}</>} desc={tr('删除你的个人数据。付款与退款记录按法规匿名保留。注销后不能恢复。')}>
+      <Button variant="outline" className="h-10 text-destructive hover:text-destructive" onClick={() => setOpen(true)}>
+        {tr('注销账户')}
+      </Button>
+      <DeleteAccountDialog open={open} onOpenChange={setOpen} />
+    </Section>
+  );
+}
+
+function DeleteAccountDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const tr = useT();
   const tp = useTp();
   const errText = useErrorText();
   const nav = useNavigate();
   const { signOut } = useAuth();
-  const [open, setOpen] = useState(false);
-  const impact = useApi(() => accountApi.deleteImpact(), [], { enabled: open });
+  const impact = useApi(() => accountApi.deleteImpact(), [open], { enabled: open });
   const methods = useApi(() => passkeyApi.list(), [], { key: K.passkeys, enabled: open });
-  const [password, setPassword] = useState('');
+  const holder = useHolderConfirm(methods.data);
+  const [ack, setAck] = useState(false);
   const [busy, run] = usePending();
-  /* 面板只在这个账户还能用密码登录时要密码（与登录策略同一个判断） */
-  const needPassword = methods.data?.password_login ?? true;
 
-  const remove = () => run(async () => {
-    try {
-      await accountApi.deleteAccount(needPassword ? password : undefined);
-      /* 面板已清掉会话 cookie；本地状态照常收尾 */
-      await signOut().catch(() => {});
-      toast.success(tr('账户已注销'));
-      nav(R.login, { replace: true });
-    } catch (e) {
-      toast.error(errText(e));
-    }
-  });
+  const close = (o: boolean) => {
+    if (busy) return;
+    if (!o) { setAck(false); holder.reset(); }
+    onOpenChange(o);
+  };
 
   const d = impact.data;
   const blocked = !!d && (d.pending_orders > 0 || d.pending_withdrawals > 0);
+  const canSubmit = !!d && !blocked && ack && !holder.stuck && holder.ready && !busy;
+
+  const remove = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canSubmit) return;
+    run(async () => {
+      try {
+        await accountApi.deleteAccount(await holder.proof());
+        /* 面板已清掉会话 cookie：先离开受保护的页面，再收尾本地登录态 */
+        nav(R.deleted, { replace: true, state: { anonymized: d?.anonymized ?? false } });
+        await signOut().catch(() => {});
+      } catch (err) {
+        if (!isUserCancel(err)) toast.error(errText(err));
+      }
+    });
+  };
+
+  const lose: string[] = d ? [
+    ...(d.plan ? [tp('套餐「{p}」立即失效，剩余时长作废', { p: d.plan.name })] : []),
+    ...(d.balance_cents !== 0 ? [tp('账户余额 {v} 作废，不能再提现', { v: formatMoney(d.balance_cents) })] : []),
+    ...(d.pending_commission_cents > 0 ? [tp('{n} 笔还在冻结期的邀请返利（{v}）不再入账', { n: d.pending_commissions, v: formatMoney(d.pending_commission_cents) })] : []),
+    ...(d.invitees > 0 ? [tp('你邀请的 {n} 位用户之后的消费不再给你返利', { n: d.invitees })] : []),
+    ...(d.unfulfilled_orders > 0 ? [tp('{n} 笔已付款但未开通的订单不再处理', { n: d.unfulfilled_orders })] : []),
+    tr('订阅链接、通行密钥、工单、流量明细全部删除，所有设备立即断线'),
+    d.anonymized ? tr('账户有付款记录：财务记录匿名保留，其余个人数据删除') : tr('账户会被整个删除'),
+  ] : [];
+
   return (
-    <Section title={<><UserX className="size-4 text-danger" />{tr('注销账户')}</>} desc={tr('删除你的个人数据。付款与退款记录按法规匿名保留。注销后不能恢复。')}>
-      {!open ? (
-        <Button variant="outline" className="h-10 text-destructive hover:text-destructive" onClick={() => setOpen(true)}>
-          {tr('我要注销账户')}
-        </Button>
-      ) : impact.loading && !d ? <Loading rows={2} />
+    <FlowDialog open={open} onOpenChange={close} tone="danger" icon={<TriangleAlert />} title={tr('注销账户')} description={tr('这是不可恢复的操作，请先看清会失去什么。')}>
+      {impact.loading && !d ? <Loading rows={3} />
         : impact.error && !d ? <LoadError error={impact.error} onRetry={impact.reload} />
         : d && (
-          <div className="max-w-115 space-y-4">
-            <ul className="space-y-1.5 rounded-xl bg-red-500/[.06] px-4 py-3.5 text-[13px] leading-[1.8]">
-              {d.plan && <li>{tp('套餐「{p}」立即失效，剩余时长作废', { p: d.plan.name })}</li>}
-              {d.balance_cents !== 0 && <li>{tp('账户余额 {v} 作废', { v: formatMoney(d.balance_cents) })}</li>}
-              {d.unfulfilled_orders > 0 && <li>{tp('{n} 笔已付款但未开通的订单不再处理', { n: d.unfulfilled_orders })}</li>}
-              <li>{tr('订阅链接、通行密钥、工单全部删除')}</li>
-              <li>{d.anonymized ? tr('账户有付款记录：财务记录匿名保留，其余个人数据删除') : tr('账户会被整个删除')}</li>
-            </ul>
+          <form id="delete-account" onSubmit={remove} className="space-y-5 pb-2">
+            <div role="note" className="rounded-xl border border-red-500/30 bg-red-500/[.06] px-4 py-3.5">
+              <div className="flex items-center gap-2 text-[13.5px] font-medium text-danger">
+                <TriangleAlert className="size-4" />{tr('注销后你将失去')}
+              </div>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-[13px] leading-[1.75]">
+                {lose.map((l) => <li key={l}>{l}</li>)}
+              </ul>
+            </div>
             {blocked && (
               <ul role="alert" className="space-y-1.5 rounded-xl border border-amber-500/30 bg-amber-500/[.07] px-4 py-3 text-[13px] leading-[1.8]">
                 {d.pending_orders > 0 && <li>{tp('还有 {n} 笔待支付订单：请先在订单页取消', { n: d.pending_orders })}</li>}
                 {d.pending_withdrawals > 0 && <li>{tp('还有 {n} 笔待审核的提现（{v}）：请先在钱包页撤回', { n: d.pending_withdrawals, v: formatMoney(d.pending_withdrawal_cents) })}</li>}
               </ul>
             )}
-            {needPassword && (
-              <div className="space-y-2">
-                <Label htmlFor="delete-password">{tr('输入当前密码确认')}</Label>
-                <Input id="delete-password" type="password" className="h-10" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
-              </div>
+            {!blocked && (
+              <>
+                <HolderConfirm h={holder} id="delete-password" label={tr('输入当前密码确认')} />
+                <label className="flex cursor-pointer items-start gap-2.5 text-[13px] leading-[1.7]">
+                  <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} className="mt-1 accent-red-600" />
+                  <span>{tr('我已了解：注销后账户和上面这些内容都不可恢复')}</span>
+                </label>
+              </>
             )}
-            <ConfirmDialog
-              trigger={<Button className="h-10 bg-red-600 text-white hover:bg-red-700" disabled={busy || blocked || (needPassword && !password)}>{tr('注销账户')}</Button>}
-              tone="danger"
-              icon={<TriangleAlert />}
-              title={tr('确定注销账户？')}
-              consequences={[tr('个人数据立即删除'), tr('所有设备立即断线并退出登录'), tr('此操作不可撤销')]}
-              confirmLabel={tr('确认注销')}
-              pending={busy}
-              onConfirm={remove}
-            />
-          </div>
+          </form>
         )}
-    </Section>
+      <FlowFooter>
+        <Button variant="outline" disabled={busy} onClick={() => close(false)}>{tr('取消')}</Button>
+        <Button type="submit" form="delete-account" className="bg-red-600 text-white hover:bg-red-700" disabled={!canSubmit}>
+          {busy ? tr('注销中') : tr('永久注销')}
+        </Button>
+      </FlowFooter>
+    </FlowDialog>
   );
 }
 

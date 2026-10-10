@@ -426,6 +426,8 @@ done
   || { echo "FAIL: GET /me/passkeys"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/me/passkeys/options")" = "409" ] && last_json "d['code']" | matches '^account.passkey_unavailable$' \
   || { echo "FAIL: passkey registration without a main domain"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/me/reauth/options")" = "409" ] && last_json "d['code']" | matches '^account.passkey_unavailable$' \
+  || { echo "FAIL: passkey confirmation without a main domain"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/me/password-login" -H 'Content-Type: application/json' -d '{"enabled":false}')" = "409" ] \
   && last_json "d['code']" | matches '^account.passkey_required$' || { echo "FAIL: password login off without a passkey"; exit 1; }
 "$PANEL" admin reset-login ROOT@smoke.test | matches '0 passkey' || { echo "FAIL: akari admin reset-login"; exit 1; }
@@ -2304,6 +2306,8 @@ assert sorted(o)==['days','month'] and o['days']['price_cents']==1 and o['days']
 BUYER_MAIL="smoke-buyer@akari.test"
 [ "$(code -b "$BJAR" -X POST "$BASE/api/v1/me/email/code" -H "$J" -d "{\"email\":\"$BUYER_MAIL\",\"password\":\"wrong\"}")" = "400" ] \
   || { echo "FAIL: email change without the password"; exit 1; }
+[ "$(code -b "$BJAR" -X POST "$BASE/api/v1/me/email/code" -H "$J" -d "{\"email\":\"$BUYER_MAIL\"}")" = "400" ] \
+  && last_json "d['code']" | matches '^account.password_required$' || { echo "FAIL: email change with no confirmation"; exit 1; }
 [ "$(code -b "$BJAR" -X POST "$BASE/api/v1/me/email/code" -H "$J" -d "{\"email\":\"$BUYER_MAIL\",\"password\":\"buyer-password-123\"}")" = "200" ] \
   || { echo "FAIL: email change code"; cat /tmp/akari-smoke/last; exit 1; }
 BUYER_CODE=$(mp_mail "$BUYER_MAIL" 1 | grep -oE '\b[0-9]{6}\b' | sed -n 1p)
@@ -4428,7 +4432,7 @@ echo "$CT" | matches javascript || { echo "FAIL: asset content-type '$CT'"; exit
 CSP=$(curl -s --noproxy '*' -D - -o /dev/null "$ROOT/" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-security-policy"{print $2}')
 [ "$CSP" = "default-src 'self'; style-src 'self' 'unsafe-inline'" ] || { echo "FAIL: portal CSP: $CSP"; exit 1; }
 # Every client-side route answers the index (W36-b route table), deep paths too.
-for r in shop orders orders/x wallet invite nodes traffic tickets help announcements account login register forgot reset terms privacy; do
+for r in shop orders orders/x wallet invite nodes traffic tickets help announcements account login register forgot reset deleted terms privacy; do
   [ "$(code "$ROOT/$r")" = "200" ] || { echo "FAIL: portal route /$r"; exit 1; }
 done
 [ "$(fp "$ROOT/dashboard")" = "$REJ" ] || { echo "FAIL: an unknown portal path is not the rejection"; exit 1; }

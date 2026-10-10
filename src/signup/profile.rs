@@ -1,17 +1,21 @@
 //! Portal account settings (W15): set/change the account's email address
 //! (verified by an emailed code) and the language of its mails.
 //!
-//! `POST /me/email/code {email, password}`: the current password is
-//! required (a stolen session must not be able to move the address that
-//! password resets go to); a wrong one is 400 "invalid password" and counts
-//! against the login rate limit like `/me/password`. The answer is the same
+//! `POST /me/email/code {email, password? | passkey?}`: moving to another
+//! address needs the holder's confirmation (`passkey::confirm_holder`: the
+//! current password, or a passkey; a passkey-only account must use a
+//! passkey) — a stolen session must not be able to move the address that
+//! password resets go to; a wrong password is 400 "invalid password" and
+//! counts against the login rate limit like `/me/password`. Verifying the
+//! account's own current (unverified) address needs no confirmation (it
+//! moves nothing; already verified = 400 `account.email_unchanged`). The answer is the same
 //! whether or not the address belongs to another account (the code mail is
 //! only queued when it does not, after the response).
 //! `POST /me/email/verify {code}`: sets `email` + `email_verified_at` (D1:
 //! the address is the login name, so the account now logs in with the new
 //! address). Verifying the CURRENT unverified
 //! address of an account registered without verification is the same flow
-//! (request a code for that address). Both use the renewal scope (`ShopUser`, like `/me/password`).
+//! (request a code for that address; the portal's verify dialog). Both use the renewal scope (`ShopUser`, like `/me/password`).
 
 use crate::auth::{bad_request, conflict};
 use axum::Json;
@@ -24,7 +28,7 @@ use uuid::Uuid;
 use super::{CodeCheck, email};
 use crate::api::ApiJson;
 use crate::audit::Actor;
-use crate::auth::{self, ApiError, ShopUser};
+use crate::auth::{ApiError, ShopUser};
 use crate::mail::{Locale, Template};
 use crate::state::AppState;
 
@@ -34,7 +38,12 @@ pub const PURPOSE: &str = "change_email";
 #[serde(deny_unknown_fields)]
 pub struct EmailCodeReq {
     pub email: String,
-    pub password: String,
+    /// Moving to another address: the current password, unless a passkey
+    /// confirms the holder.
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub passkey: Option<crate::passkey::PasskeyProof>,
 }
 
 #[derive(Deserialize)]
@@ -63,38 +72,33 @@ pub async fn request_email_change(
             return Err(conflict!("account.mail_off", "mail sending is not enabled"));
         }
     }
+    // The current address (verifying it moves nothing): no confirmation.
+    // Another address: the holder confirms (password or passkey).
+    if addr == user.email {
+        let verified: Option<bool> =
+            sqlx::query_scalar("SELECT email_verified_at IS NOT NULL FROM users WHERE id = $1")
+                .bind(user.id)
+                .fetch_optional(state.pg())
+                .await?;
+        if verified.ok_or_else(ApiError::unauthorized)? {
+            return Err(bad_request!(
+                "account.email_unchanged",
+                "this is already the account's verified address"
+            ));
+        }
+    } else {
+        crate::passkey::confirm_holder(
+            &state,
+            &user,
+            req.password.as_deref(),
+            req.passkey.as_ref(),
+        )
+        .await?;
+    }
     let bucket = user
         .ip
         .map(crate::client_ip::bucket)
         .unwrap_or_else(|| "unknown".into());
-    let attempt = crate::login_limit::Attempt::reserve(&state, &bucket, &user.email)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "login rate limit unavailable");
-            ApiError::internal()
-        })?
-        .ok_or_else(ApiError::too_many)?;
-    let hash: Option<Option<String>> =
-        match sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
-            .bind(user.id)
-            .fetch_optional(state.pg())
-            .await
-        {
-            Ok(h) => h,
-            Err(e) => {
-                attempt.release(&state).await;
-                return Err(e.into());
-            }
-        };
-    let Some(hash) = hash else {
-        attempt.release(&state).await;
-        return Err(ApiError::unauthorized());
-    };
-    if !auth::verify_password_async(&req.password, hash.as_deref().unwrap_or_default()).await {
-        attempt.fail();
-        return Err(bad_request!("account.invalid_password", "invalid password"));
-    }
-    attempt.release(&state).await;
     super::limit_send(&state, &bucket, &addr).await?;
     let st = state.clone();
     let user_id = user.id;

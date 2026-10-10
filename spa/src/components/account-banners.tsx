@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Mail, TriangleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import VerifyEmailDialog from '@/components/verify-email-dialog';
 import { useAuth } from '@/lib/auth';
 import { R } from '@/lib/routes';
 import { useT } from '@/i18n';
@@ -25,13 +26,15 @@ export function PageNotices({ children, account = false }: { children?: ReactNod
 /**
  * 账户提醒条，只在仪表盘显示（其他页面不打扰）：
  *   · 续费范围（已过期 / 流量用完）：节点和订阅被面板停了，只剩续费能做——直接给「去续费」；
- *   · 邮箱未验证（中-8）：到期、流量、收据这些邮件只发到已验证的地址。可以关掉，本次会话不再出现。
+ *   · 邮箱未验证（中-8）：到期、流量、收据这些邮件只发到已验证的地址。「去验证」就在当前页弹出验证码弹窗；
+ *     可以关掉，本次会话不再出现。
  * 封禁和管理员不在这里：仪表盘整页就是说明。
  */
 export default function AccountBanners() {
   const tr = useT();
   const nav = useNavigate();
   const { me, scope } = useAuth();
+  const [verifying, setVerifying] = useState(false);
   const [hidden, setHidden] = useState(() => {
     try { return sessionStorage.getItem(NUDGE_KEY) === '1'; } catch { return false; }
   });
@@ -71,10 +74,12 @@ export default function AccountBanners() {
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
             <Button size="sm" variant="ghost" className="text-muted-foreground" onClick={hide}>{tr('稍后')}</Button>
-            <Button size="sm" variant="outline" onClick={() => nav(`${R.account}#email`)}>{tr('去验证')}</Button>
+            <Button size="sm" variant="outline" onClick={() => setVerifying(true)}>{tr('去验证')}</Button>
           </div>
         </div>
       )}
+      {/* 在当前页验证；验证通过后 /me 刷新，这条提醒随之消失 */}
+      <VerifyEmailDialog open={verifying} onOpenChange={setVerifying} />
     </>
   );
 }

@@ -21,6 +21,7 @@ const TITLES: Record<string, string> = {
   [R.register]: '注册',
   [R.forgot]: '找回密码',
   [R.reset]: '重置密码',
+  [R.deleted]: '账户已注销',
   [R.terms]: '服务条款',
   [R.privacy]: '隐私政策',
 };

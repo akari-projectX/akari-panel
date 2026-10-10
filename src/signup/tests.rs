@@ -1132,6 +1132,58 @@ async fn reset_flow_invalidates_sessions() {
 // Email change, locale
 // ---------------------------------------------------------------------------
 
+/// The portal's verify dialog: a code for the account's own unverified
+/// address needs no password (it moves nothing); once verified it is
+/// refused; another address still needs the holder's confirmation.
+#[tokio::test]
+async fn verifying_the_current_address_needs_no_password() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = state(&db).await;
+    enable_mail(&db).await;
+    let id = with_password(&db, "own-pw-1").await;
+    sqlx::query("UPDATE users SET email_verified_at = NULL WHERE id = $1")
+        .bind(id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let own = email_of(&db, id).await;
+    let mut c = Client::new(&st, rand_ip());
+    assert_eq!(c.login(&own, "own-pw-1").await.status, StatusCode::OK);
+    let r = c
+        .post(
+            "/test/api/v1/me/email/code",
+            json!({ "email": own.to_uppercase() }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let (_, body) = wait_mail(&db, "email_code", &own).await;
+    let r = c
+        .post(
+            "/test/api/v1/me/email/verify",
+            json!({ "code": code_in(&body) }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(
+        c.get("/test/api/v1/me").await.json()["email_verified"],
+        true
+    );
+    let r = c
+        .post("/test/api/v1/me/email/code", json!({ "email": own }))
+        .await;
+    assert_eq!(
+        (r.status, r.json()["code"].clone()),
+        (StatusCode::BAD_REQUEST, json!("account.email_unchanged"))
+    );
+    let r = c
+        .post("/test/api/v1/me/email/code", json!({ "email": addr() }))
+        .await;
+    assert_eq!(r.json()["code"], "account.password_required");
+    db.drop().await;
+}
+
 #[tokio::test]
 async fn email_change_needs_password_and_code() {
     let Some(db) = TestDb::new().await else {

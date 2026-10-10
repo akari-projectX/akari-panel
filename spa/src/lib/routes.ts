@@ -25,6 +25,8 @@ export const R = {
   register: '/register',
   forgot: '/forgot',
   reset: '/reset',
+  /** 注销账户之后的结果页（公开：那时已经没有会话） */
+  deleted: '/deleted',
   terms: '/terms',
   privacy: '/privacy',
 } as const;

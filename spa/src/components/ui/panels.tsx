@@ -165,10 +165,12 @@ export function ConfirmDialog({
 /* ───────────────────────── 流程 ───────────────────────── */
 
 export function FlowDialog({
-  open, onOpenChange, icon, title, description, toolbar, children, className,
+  open, onOpenChange, tone = 'brand', icon, title, description, toolbar, children, className,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
+  /** 图标底色：危险流程（注销账户）用 danger */
+  tone?: Tone;
   icon?: ReactNode;
   title: ReactNode;
   description?: ReactNode;
@@ -190,7 +192,7 @@ export function FlowDialog({
         >
           <Grabber />
           <header className="relative flex shrink-0 items-start gap-3.5 px-6 pt-5 pb-4 sm:px-7 sm:pt-6">
-            {icon && <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand/10 text-brand-ink [&_svg]:size-[18px]">{icon}</span>}
+            {icon && <span className={cn('grid size-9 shrink-0 place-items-center rounded-xl [&_svg]:size-[18px]', TONE[tone].disc)}>{icon}</span>}
             <div className="min-w-0 pr-8">
               <DialogPrimitive.Title className="text-[17px] leading-[1.4] font-medium tracking-[-0.015em]">{title}</DialogPrimitive.Title>
               {description && <DialogPrimitive.Description className="mt-0.5 text-[13px] leading-[1.6] text-muted-foreground">{description}</DialogPrimitive.Description>}
