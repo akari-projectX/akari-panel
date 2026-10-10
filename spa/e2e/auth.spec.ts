@@ -367,3 +367,21 @@ test('#16 signing out ends the account\'s sessions on every device', async ({ pa
   await expect(elsewhere).toHaveURL(/\/login/);
   await other.close();
 });
+
+test('the tab title is "page · site name" and follows a renamed site, before and after sign-in', async ({ page }, info) => {
+  const a = await admin();
+  const name = `E2E 站点 ${info.project.name}`;
+  const s = await a.call<{ version: number; site_name: string | null }>('GET', '/api/v1/settings');
+  await a.call('PUT', '/api/v1/settings/site', { version: s.version, site_name: name });
+  try {
+    await page.goto('/login');
+    await expect(page).toHaveTitle(`登录 · ${name}`);
+    await signIn(page, 'user@e2e.test');
+    await expect(page).toHaveTitle(`仪表盘 · ${name}`);
+    await open(page, '/shop');
+    await expect(page).toHaveTitle(`商店 · ${name}`);
+  } finally {
+    const now = await a.call<{ version: number }>('GET', '/api/v1/settings');
+    await a.call('PUT', '/api/v1/settings/site', { version: now.version, site_name: s.site_name });
+  }
+});
