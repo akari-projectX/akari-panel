@@ -11,6 +11,7 @@ import { Dialog } from "../../shared/ui/overlays";
 import {
   Badge,
   Button,
+  Callout,
   Card,
   CardBody,
   CardHeader,
@@ -490,6 +491,12 @@ function Commissions() {
 function InviteSettings() {
   const tr = useTr();
   const q = useQuery({ queryKey: ["commission-settings"], queryFn: () => get<Settings>("/commission-settings") });
+  // 返利只发生在「被邀请人经邀请链接注册」之后：注册关着时门户的邀请链接不可用，
+  // 返利开着也不会有新的被邀请人。这里提示一句，免得两个开关看起来互相矛盾。
+  const signup = useQuery({
+    queryKey: ["settings", "signup"],
+    queryFn: () => get<{ register_enabled: boolean }>("/settings/signup"),
+  });
   const [f, setF] = useState<
     (Omit<Settings, "min_withdrawal_cents" | "usdt_rate_cents"> & { min: string; rate: string }) | null
   >(null);
@@ -534,6 +541,16 @@ function InviteSettings() {
         )}
       />
       <CardBody>
+        {signup.data && !signup.data.register_enabled && (
+          <div className="mb-4">
+            <Callout tone="warning" title={tr("注册未开放", "Registration is closed")}>
+              {tr(
+                "门户的邀请链接要在「系统设置 → 注册与人机验证」打开「开放注册」后才能使用；关闭注册期间不会有新的被邀请人，返利也就不会产生。",
+                "Portal invite links only work once registration is open (Settings → Sign-up and bots → Open registration); while it is closed there are no new invitees, so no commissions.",
+              )}
+            </Callout>
+          </div>
+        )}
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="flex items-center gap-2 text-[13px] sm:col-span-2">
             <Switch
