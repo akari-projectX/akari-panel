@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Check, Eye, EyeOff, KeyRound, MailCheck } from 'lucide-react';
 import { useEnter } from '@/lib/motion';
 import { toast } from '@/lib/toast';
@@ -628,6 +628,34 @@ export function Reset() {
           {loading ? tr('提交中') : tr('重置密码')}
         </Button>
       </form>
+    </Shell>
+  );
+}
+
+/**
+ * 注销之后的结果页（公开：会话已被面板清掉）。注销那一步把「是否匿名化保留」放在路由 state 里；
+ * 刷新后 state 没了，就只说账户已注销。
+ */
+export function AccountDeleted() {
+  const tr = useT();
+  const { state } = useLocation() as { state: { anonymized?: boolean } | null };
+  const anonymized = state?.anonymized;
+  return (
+    <Shell>
+      <Title
+        h="账户已注销"
+        sub={anonymized === true
+          ? tr('你的个人数据已删除；付款与退款记录按法规匿名保留，不再与你关联。')
+          : anonymized === false
+            ? tr('你的账户和个人数据已全部删除。')
+            : tr('你的账户已注销，所有设备上的登录都已结束。')}
+      />
+      <p className="mb-6 text-[13.5px] leading-[1.8] text-muted-foreground">
+        {tr('已经退出登录。这个邮箱以后可以重新注册，但原来的套餐、余额和记录不会回来。')}
+      </p>
+      <Button asChild className="h-11 w-full rounded-xl text-[15px]">
+        <Link to={R.login} replace>{tr('返回登录页')}</Link>
+      </Button>
     </Shell>
   );
 }

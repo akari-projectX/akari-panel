@@ -16,8 +16,8 @@
 //! Both paths are audited `user.erase` (`anonymized`, `why`).
 //!
 //! Self-service (`GET /me/delete-impact`, `POST /me/delete`): role=user,
-//! not banned; the password is required unless the account signs in with
-//! passkeys only; refused while orders or withdrawals are pending (cancel
+//! not banned; the holder confirms with the current password or a passkey
+//! (a passkey-only account: a passkey); refused while orders or withdrawals are pending (cancel
 //! them first: their money would otherwise be stranded).
 
 use axum::Json;
@@ -179,7 +179,8 @@ async fn record(
 
 /// What deleting `id` loses (the console's and the portal's confirmation):
 /// balance (and its withdrawable part), pending withdrawals and orders,
-/// paid orders not fulfilled, the active plan, and whether the account is
+/// paid orders not fulfilled, the active plan, the invite rebate still
+/// frozen and the accounts invited, and whether the account is
 /// kept anonymized (finance records). None = no such account.
 pub async fn impact(conn: &mut PgConnection, id: Uuid) -> Result<Option<Value>, ApiError> {
     type Row = (String, i64, i64, i64, i64, i64, bool);
@@ -201,6 +202,17 @@ pub async fn impact(conn: &mut PgConnection, id: Uuid) -> Result<Option<Value>, 
         return Ok(None);
     };
     let withdrawable = crate::billing::ledger::withdrawable(conn, id).await?;
+    // The invite rebate: still frozen (lost with the account) and the
+    // accounts this one invited (their future orders earn nothing more).
+    let (rebate_pending, rebate_count, invitees): (i64, i64, i64) = sqlx::query_as(
+        "SELECT COALESCE((SELECT sum(amount_cents) FROM commissions \
+                          WHERE inviter_id = $1 AND status = 'pending'), 0)::bigint, \
+                (SELECT count(*) FROM commissions WHERE inviter_id = $1 AND status = 'pending'), \
+                (SELECT count(*) FROM users WHERE inviter_id = $1 AND erased_at IS NULL)",
+    )
+    .bind(id)
+    .fetch_one(&mut *conn)
+    .await?;
     let plan: Option<(String, Option<DateTime<Utc>>)> = sqlx::query_as(
         "SELECT p.name, up.expires_at FROM user_plans up JOIN plans p ON p.id = up.plan_id \
          WHERE up.user_id = $1 AND up.status = 'active'",
@@ -217,6 +229,9 @@ pub async fn impact(conn: &mut PgConnection, id: Uuid) -> Result<Option<Value>, 
         "pending_orders": pending,
         "unfulfilled_orders": unfulfilled,
         "plan": plan.map(|(name, expires_at)| json!({ "name": name, "expires_at": expires_at })),
+        "pending_commission_cents": rebate_pending,
+        "pending_commissions": rebate_count,
+        "invitees": invitees,
         "anonymized": finance,
     })))
 }
@@ -246,15 +261,22 @@ pub async fn my_impact(
 #[serde(deny_unknown_fields)]
 pub struct DeleteReq {
     pub confirm: bool,
-    /// Required unless the account signs in with passkeys only.
+    /// The current password, unless a passkey confirms the holder.
     #[serde(default)]
     pub password: Option<String>,
+    /// A passkey assertion (`POST /me/reauth/options`); required for an
+    /// account that signs in with passkeys only.
+    #[serde(default)]
+    pub passkey: Option<crate::passkey::PasskeyProof>,
 }
 
-/// POST /api/v1/me/delete `{confirm: true, password?}` (role=user, renewal
-/// scope, not banned): erase the own account; the session cookie is
-/// cleared. 204. A wrong password = 400 `account.invalid_password` (counts
-/// against the login rate limit); pending orders or withdrawals = 409.
+/// POST /api/v1/me/delete `{confirm: true, password? | passkey?}`
+/// (role=user, renewal scope, not banned): erase the own account; the
+/// session cookie is cleared. 204. The holder is confirmed by
+/// `passkey::confirm_holder`: a wrong password = 400
+/// `account.invalid_password` (counts against the login rate limit), a
+/// passkey-only account without a passkey proof = 400
+/// `account.passkey_confirm_required`; pending orders or withdrawals = 409.
 pub async fn delete_me(
     State(state): State<AppState>,
     auth::ShopUser { user, .. }: auth::ShopUser,
@@ -268,37 +290,8 @@ pub async fn delete_me(
             "deleting the account needs confirm=true"
         ));
     }
-    let policy = crate::passkey::login_policy(&state, user.id, &user.role).await?;
-    if !policy.password_refused {
-        let Some(pw) = req.password.as_deref().filter(|p| !p.is_empty()) else {
-            return Err(bad_request!(
-                "account.password_required",
-                "the current password is required"
-            ));
-        };
-        let bucket = user
-            .ip
-            .map(crate::client_ip::bucket)
-            .unwrap_or_else(|| "unknown".into());
-        let attempt = crate::login_limit::Attempt::reserve(&state, &bucket, &user.email)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "login rate limit unavailable");
-                ApiError::internal()
-            })?
-            .ok_or_else(ApiError::too_many)?;
-        let hash: Option<String> =
-            sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
-                .bind(user.id)
-                .fetch_optional(state.pg())
-                .await?
-                .flatten();
-        if !auth::verify_password_async(pw, hash.as_deref().unwrap_or_default()).await {
-            attempt.fail();
-            return Err(bad_request!("account.invalid_password", "invalid password"));
-        }
-        attempt.release(&state).await;
-    }
+    crate::passkey::confirm_holder(&state, &user, req.password.as_deref(), req.passkey.as_ref())
+        .await?;
     let mut tx = state.pg().begin().await?;
     let (orders, withdrawals): (i64, i64) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM orders WHERE user_id = $1 AND status = 'pending'), \

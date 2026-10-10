@@ -41,8 +41,9 @@ use serde_json::{Value, json};
 use sqlx::PgConnection;
 use uuid::Uuid;
 use webauthn_rs::prelude::{
-    DiscoverableAuthentication, DiscoverableKey, Passkey, PasskeyRegistration, PublicKeyCredential,
-    RegisterPublicKeyCredential, Url, Webauthn, WebauthnBuilder,
+    DiscoverableAuthentication, DiscoverableKey, Passkey, PasskeyAuthentication,
+    PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential, Url, Webauthn,
+    WebauthnBuilder,
 };
 
 use crate::api::ApiJson;
@@ -516,6 +517,205 @@ pub async fn my_passkeys(
     user: ShopUser,
 ) -> Result<Json<Value>, ApiError> {
     Ok(Json(methods_view(&state, user.user.id).await?))
+}
+
+// ---------------------------------------------------------------------------
+// Confirming the account holder (dangerous self-service steps)
+// ---------------------------------------------------------------------------
+
+/// Re-authentications per account per hour.
+const REAUTH_PER_HOUR: i64 = 30;
+
+#[derive(Serialize, Deserialize)]
+struct ReauthState {
+    user: Uuid,
+    rp_id: String,
+    auth: PasskeyAuthentication,
+}
+
+/// A passkey assertion answering `POST /me/reauth/options`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PasskeyProof {
+    pub state: String,
+    pub credential: PublicKeyCredential,
+}
+
+/// POST /api/v1/me/reauth/options: a challenge only the account's own
+/// current passkeys can answer (deleting the account, moving its address).
+pub async fn reauth_options(
+    State(state): State<AppState>,
+    user: ShopUser,
+) -> Result<Response, ApiError> {
+    let me = user.user;
+    let rp = Rp::current(&state).ok_or_else(unavailable)?;
+    if !crate::rate::hit(
+        &state,
+        format!("akari:rl:passkey-reauth:{}", me.id),
+        REAUTH_PER_HOUR,
+        3600,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "passkey rate limit unavailable");
+        ApiError::internal()
+    })? {
+        return Err(ApiError::too_many());
+    }
+    let mut c = state.pg().acquire().await?;
+    let keys: Vec<sqlx::types::Json<Passkey>> = sqlx::query_scalar(
+        "SELECT passkey FROM webauthn_credentials WHERE user_id = $1 AND rp_id = $2 \
+         ORDER BY created_at, id",
+    )
+    .bind(me.id)
+    .bind(&rp.id)
+    .fetch_all(&mut *c)
+    .await?;
+    if keys.is_empty() {
+        return Err(conflict!(
+            "account.passkey_none",
+            "the account has no passkey for this site"
+        ));
+    }
+    let keys: Vec<Passkey> = keys.into_iter().map(|k| k.0).collect();
+    let (rcr, auth) = rp
+        .webauthn()?
+        .start_passkey_authentication(&keys)
+        .map_err(|e| {
+            tracing::error!(error = %e, "passkey challenge");
+            ApiError::internal()
+        })?;
+    let token = put_state(
+        &state,
+        "reauth",
+        &ReauthState {
+            user: me.id,
+            rp_id: rp.id.clone(),
+            auth,
+        },
+    )
+    .await?;
+    Ok((
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Json(json!({ "state": token, "options": serde_json::to_value(&rcr)? })),
+    )
+        .into_response())
+}
+
+/// Check a passkey proof of `user` (single use; the challenge must be the
+/// account's own, for today's main domain). False = not verified.
+pub async fn verify_reauth(
+    state: &AppState,
+    user: Uuid,
+    proof: &PasskeyProof,
+) -> Result<bool, ApiError> {
+    let Some(rp) = Rp::current(state) else {
+        return Ok(false);
+    };
+    let Some(st) = take_state::<ReauthState>(state, "reauth", &proof.state)
+        .await?
+        .filter(|s| s.user == user && s.rp_id == rp.id)
+    else {
+        return Ok(false);
+    };
+    let Ok(result) = rp
+        .webauthn()?
+        .finish_passkey_authentication(&proof.credential, &st.auth)
+    else {
+        return Ok(false);
+    };
+    let cred_id: &[u8] = result.cred_id().as_ref();
+    let mut tx = state.pg().begin().await?;
+    let cred: Option<CredRow> = sqlx::query_as(
+        "SELECT id, passkey FROM webauthn_credentials \
+         WHERE rp_id = $1 AND cred_id = $2 AND user_id = $3 FOR UPDATE",
+    )
+    .bind(&rp.id)
+    .bind(cred_id)
+    .bind(user)
+    .fetch_optional(&mut *tx)
+    .await?;
+    // Deleted meanwhile: no longer the account's.
+    let Some(mut cred) = cred else {
+        return Ok(false);
+    };
+    cred.passkey.0.update_credential(&result);
+    sqlx::query("UPDATE webauthn_credentials SET passkey = $2, last_used_at = now() WHERE id = $1")
+        .bind(cred.id)
+        .bind(&cred.passkey)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// Confirm the account holder before a dangerous self-service step: a
+/// passkey proof (any account with a current passkey), else the current
+/// password — refused for a passkey-only account, which must use a
+/// passkey. A wrong password counts against the login rate limit (like
+/// `/me/password`); a passkey that does not verify is 400
+/// `account.passkey_failed`.
+pub async fn confirm_holder(
+    state: &AppState,
+    user: &AuthUser,
+    password: Option<&str>,
+    passkey: Option<&PasskeyProof>,
+) -> Result<(), ApiError> {
+    if let Some(proof) = passkey {
+        if verify_reauth(state, user.id, proof).await? {
+            return Ok(());
+        }
+        return Err(bad_request!(
+            "account.passkey_failed",
+            "the passkey could not be verified; try again"
+        ));
+    }
+    let policy = login_policy(state, user.id, &user.role).await?;
+    if policy.password_refused {
+        return Err(bad_request!(
+            "account.passkey_confirm_required",
+            "this account signs in with passkeys only: confirm with a passkey"
+        ));
+    }
+    let Some(pw) = password.filter(|p| !p.is_empty()) else {
+        return Err(bad_request!(
+            "account.password_required",
+            "the current password is required"
+        ));
+    };
+    let bucket = user
+        .ip
+        .map(crate::client_ip::bucket)
+        .unwrap_or_else(|| "unknown".into());
+    let attempt = crate::login_limit::Attempt::reserve(state, &bucket, &user.email)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "login rate limit unavailable");
+            ApiError::internal()
+        })?
+        .ok_or_else(ApiError::too_many)?;
+    let hash: Option<Option<String>> =
+        match sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
+            .bind(user.id)
+            .fetch_optional(state.pg())
+            .await
+        {
+            Ok(h) => h,
+            Err(e) => {
+                attempt.release(state).await;
+                return Err(e.into());
+            }
+        };
+    let Some(hash) = hash else {
+        attempt.release(state).await;
+        return Err(ApiError::unauthorized());
+    };
+    if !crate::auth::verify_password_async(pw, hash.as_deref().unwrap_or_default()).await {
+        attempt.fail();
+        return Err(bad_request!("account.invalid_password", "invalid password"));
+    }
+    attempt.release(state).await;
+    Ok(())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1006,6 +1206,7 @@ pub fn routes() -> axum::Router<AppState> {
             "/{prefix}/api/v1/me/passkeys/options",
             post(register_options),
         )
+        .route("/{prefix}/api/v1/me/reauth/options", post(reauth_options))
         .route(
             "/{prefix}/api/v1/me/passkeys/{id}",
             patch(rename).delete(delete),

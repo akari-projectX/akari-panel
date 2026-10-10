@@ -96,6 +96,7 @@ pub const PORTAL_PAGES: &[&str] = &[
     "register",
     "forgot",
     "reset",
+    "deleted",
     "terms",
     "privacy",
 ];
@@ -136,6 +137,7 @@ pub const RESERVED: &[&str] = &[
     "nodes",
     "plan",
     "invite",
+    "deleted",
     "terms",
     "privacy",
     "favicon.ico",

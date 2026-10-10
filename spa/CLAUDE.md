@@ -47,8 +47,9 @@ CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typechec
 | `/traffic` | 流量明细（站点时区的日界；按线路 = 每个入口一行，显示此刻倍率与时段规则，不显示计费 ÷ 原始的混合比值） | full |
 | `/tickets` | 工单 | full、renewal、banned |
 | `/help`、`/announcements` | 知识库、公告 | full、renewal |
-| `/account` | 账号、邮箱验证与更换、语言（= 邮件语言）、注销；`?tab=security`：密码、通行密钥、只用通行密钥、订阅与重置 | full、renewal |
+| `/account` | 账号（未验证时「验证这个邮箱」弹窗）、更换邮箱（新地址 + 当前密码 / 通行密钥 + 验证码）、语言（= 邮件语言）、注销（危险弹窗：`/me/delete-impact` 列出会失去的内容 + 密码或通行密钥 + 勾选不可恢复）；`?tab=security`：密码、通行密钥、只用通行密钥、订阅与重置。验证当前邮箱的弹窗是 `components/verify-email-dialog`（仪表盘提醒条也用它），确认是本人的输入是 `components/holder-confirm` + `hooks/use-holder-confirm` | full、renewal |
 | `/login`、`/register`、`/forgot`、`/reset` | 登录（密码 / 通行密钥）、注册（PoW 或邮箱验证码，`?invite=` 预填）、申请重置链接、按 `#token=` 设新密码 | 未登录 |
+| `/deleted` | 注销之后的结果页（会话已清掉；路由 state 带是否匿名化保留） | 公开 |
 | `/terms`、`/privacy` | 条款、隐私：知识库里 slug 为 `terms` / `privacy` 的已发布文章（公开接口 `GET /api/v1/pages/{slug}`）；没写时显示中性缺省文案（门户不内置任何法律文本）；品牌设置里配了外链时页脚直接指向外链 | 公开 |
 
 面板邮件里的链接（到期提醒 `/shop`、重置 `/reset#token=…`、邀请 `/register?invite=…`）都在这张表里。不在表里的顶层路径由面板直接回答统一的拒绝。

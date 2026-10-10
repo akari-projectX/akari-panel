@@ -800,3 +800,135 @@ async fn main_domain_change_and_unavailable() {
     assert_eq!(r.json()["code"], "account.passkey_unavailable");
     db.drop().await;
 }
+
+/// Answer a re-authentication challenge with `key`.
+async fn reauth_proof(c: &Client, key: &mut SoftKey) -> Value {
+    let r = c.post("/test/api/v1/me/reauth/options", json!({})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.headers["cache-control"], "no-store");
+    let o = r.json();
+    let cred = key.get(&o["options"], RP, ORIGIN);
+    json!({ "state": o["state"], "credential": cred })
+}
+
+/// The holder's confirmation for deleting the account: a passkey-only
+/// account must answer a challenge of its own passkeys (the password is
+/// refused); the challenge is single use and bound to the account.
+#[tokio::test]
+async fn reauth_confirms_account_deletion() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = state_with_domain(&db, RP).await;
+    let (id, email) = account(&db, "user", "user-password-1").await;
+    let mut c = Client::new(&st, rand_ip());
+    c.login(&email, "user-password-1").await;
+    // No passkey yet: nothing to challenge.
+    let r = c.post("/test/api/v1/me/reauth/options", json!({})).await;
+    assert_eq!(
+        (r.status, r.json()["code"].clone()),
+        (StatusCode::CONFLICT, json!("account.passkey_none"))
+    );
+    let mut key = SoftKey::new();
+    bind(&c, &mut key, "Phone", false).await;
+    let o = c
+        .post("/test/api/v1/me/reauth/options", json!({}))
+        .await
+        .json();
+    assert_eq!(
+        o["options"]["publicKey"]["allowCredentials"][0]["id"],
+        json!(B64.encode(&key.cred_id))
+    );
+
+    // Passkey only: the right password no longer confirms.
+    let r = c
+        .put(
+            "/test/api/v1/me/password-login",
+            json!({ "enabled": false }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let del = |body: Value| {
+        let c = &c;
+        async move { c.post("/test/api/v1/me/delete", body).await }
+    };
+    let r = del(json!({ "confirm": true, "password": "user-password-1" })).await;
+    assert_eq!(
+        (r.status, r.json()["code"].clone()),
+        (
+            StatusCode::BAD_REQUEST,
+            json!("account.passkey_confirm_required")
+        )
+    );
+    assert_eq!(
+        del(json!({ "confirm": true })).await.json()["code"],
+        "account.passkey_confirm_required"
+    );
+
+    // Another account's challenge (or another account answering this one)
+    // proves nothing.
+    let (_, other_email) = account(&db, "user", "user-password-2").await;
+    let mut other = Client::new(&st, rand_ip());
+    other.login(&other_email, "user-password-2").await;
+    let mut other_key = SoftKey::new();
+    bind(&other, &mut other_key, "Other", false).await;
+    let foreign = reauth_proof(&other, &mut other_key).await;
+    let r = del(json!({ "confirm": true, "passkey": foreign })).await;
+    assert_eq!(r.json()["code"], "account.passkey_failed");
+    // A forged signature: refused, and the challenge is spent.
+    let mut proof = reauth_proof(&c, &mut key).await;
+    proof["credential"]["response"]["signature"] = json!(B64.encode([0u8; 70]));
+    let r = del(json!({ "confirm": true, "passkey": proof.clone() })).await;
+    assert_eq!(r.json()["code"], "account.passkey_failed");
+    let mut good = reauth_proof(&c, &mut key).await;
+    good["state"] = proof["state"].clone();
+    assert_eq!(
+        del(json!({ "confirm": true, "passkey": good }))
+            .await
+            .json()["code"],
+        "account.passkey_failed"
+    );
+    let still: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)")
+        .bind(id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert!(still);
+
+    // The account's own passkey: deleted.
+    let proof = reauth_proof(&c, &mut key).await;
+    let r = del(json!({ "confirm": true, "passkey": proof.clone() })).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{:?}", r.json());
+    let gone: bool = sqlx::query_scalar("SELECT NOT EXISTS (SELECT 1 FROM users WHERE id = $1)")
+        .bind(id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert!(gone);
+    db.drop().await;
+}
+
+/// Without a main domain there is no passkey: the options are refused and
+/// a proof never verifies.
+#[tokio::test]
+async fn reauth_without_passkeys_available() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = AppState::for_test(db.pool.clone()).await;
+    let (id, _) = account(&db, "user", "user-password-1").await;
+    let c = client_for(&st, id).await;
+    let r = c.post("/test/api/v1/me/reauth/options", json!({})).await;
+    assert_eq!(r.json()["code"], "account.passkey_unavailable");
+    let mut key = SoftKey::new();
+    key.user = Some(id);
+    let cred = key.get(
+        &json!({ "publicKey": { "challenge": B64.encode([1u8; 32]) } }),
+        RP,
+        ORIGIN,
+    );
+    let proof: PasskeyProof =
+        serde_json::from_value(json!({ "state": "0".repeat(64), "credential": cred })).unwrap();
+    assert!(!verify_reauth(&st, id, &proof).await.unwrap());
+    db.drop().await;
+}

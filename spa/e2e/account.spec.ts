@@ -11,7 +11,7 @@ test('page transition: the next page mounts once, after the old one has left; wh
   const email = `transition-${info.project.name}-${Date.now()}@e2e.test`;
   await (await admin()).call('POST', '/api/v1/users', { email, password: seed.password });
   psql(`UPDATE users SET email_verified_at = NULL WHERE email = '${email}';`);
-  /* 仪表盘分包慢：点「去验证」时旧页面还停在骨架屏——以前这时新页面会先在淡出的旧容器里渲染一遍 */
+  /* 仪表盘分包慢：切到设置时旧页面还停在骨架屏——以前这时新页面会先在淡出的旧容器里渲染一遍 */
   await page.route(/\/assets\/dashboard-[^/]+\.js$/, async (r) => {
     await new Promise((ok) => setTimeout(ok, 1500));
     await r.continue();
@@ -25,44 +25,48 @@ test('page transition: the next page mounts once, after the old one has left; wh
       if (document.querySelector('.page-out #email-new')) w.leaked = true;
     }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
   });
-  await page.getByRole('button', { name: '去验证' }).click();
+  /* 账户菜单里的「设置」：客户端切页 */
+  await page.locator('header button[aria-haspopup="menu"]:visible').last().click();
+  await page.getByRole('menuitem', { name: '设置' }).click();
   /* 不等切页动画：马上填 */
-  await page.getByLabel('邮箱地址').fill(email);
+  await page.getByLabel('新邮箱地址').fill(email);
   await expect(page.locator('.page-out')).toHaveCount(0);
-  await expect(page.getByLabel('邮箱地址')).toHaveValue(email);
+  await expect(page.getByLabel('新邮箱地址')).toHaveValue(email);
   expect(await page.evaluate(() => (window as unknown as { leaked?: boolean }).leaked)).toBe(false);
 });
 
-test('#17 #21 #20 #22 #23 account: verify the address, change it, change the password, mail language follows the UI', async ({ page }, info) => {
+test('#17 #21 #20 #22 #23 account: verify the address in a dialog, change it, change the password, mail language follows the UI', async ({ page }, info) => {
   const email = mine(info, 'account');
   psql(`UPDATE users SET email_verified_at = NULL WHERE email = '${email}';`);
   await signIn(page, email);
-  /* 未验证：仪表盘提示去验证 */
+  /* 未验证：仪表盘提醒条「去验证」就在当前页弹出验证码弹窗 */
   await expect(page.getByText('邮箱还没有验证')).toBeVisible();
   await page.getByRole('button', { name: '去验证' }).click();
-  await expect(page).toHaveURL(/\/account/);
-  await expect(page.getByText('未验证')).toBeVisible();
-
-  /* 验证当前地址 */
-  await page.getByLabel('邮箱地址').fill(email);
-  await expect(page.getByLabel('邮箱地址')).toHaveValue(email);
-  await page.getByLabel('当前密码').first().fill(seed.password);
+  const dialog = page.getByRole('dialog', { name: '验证邮箱' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText(email)).toBeVisible();
   let sent = Date.now() - 1000;
-  await page.getByRole('button', { name: '发送验证码' }).click();
+  await dialog.getByRole('button', { name: '发送验证码' }).click();
+  /* 重发有倒计时 */
+  await expect(dialog.getByRole('button', { name: /秒后重发/ })).toBeDisabled();
   let code = /\b(\d{6})\b/.exec(await latestMail(email, sent))?.[1] ?? '';
-  await page.getByLabel('邮箱验证码').fill(code);
-  await page.getByRole('button', { name: '验证', exact: true }).click();
-  await expect(page.getByText('已验证').first()).toBeVisible();
+  await dialog.getByLabel('邮箱验证码').fill(code);
+  await dialog.getByRole('button', { name: '完成验证' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByText('邮箱还没有验证')).toHaveCount(0);
+  await expect(page).toHaveURL(/\/$/);
 
-  /* 换一个地址：验证通过后就是新的登录名 */
+  /* 设置页只负责更换邮箱：新地址 + 当前密码 → 验证码 → 确认，通过后就是新的登录名 */
+  await open(page, '/account');
+  await expect(page.getByText('已验证').first()).toBeVisible();
   const next = `moved-${Date.now()}-${info.project.name}@e2e.test`;
-  await page.getByLabel('邮箱地址').fill(next);
+  await page.getByLabel('新邮箱地址').fill(next);
   await page.getByLabel('当前密码').first().fill(seed.password);
   sent = Date.now() - 1000;
   await page.getByRole('button', { name: '发送验证码' }).click();
   code = /\b(\d{6})\b/.exec(await latestMail(next, sent))?.[1] ?? '';
   await page.getByLabel('邮箱验证码').fill(code);
-  await page.getByRole('button', { name: '验证', exact: true }).click();
+  await page.getByRole('button', { name: '确认更换' }).click();
   await expect(page.getByText(next).first()).toBeVisible();
 
   /* 改密码（安全设置页签）：其他会话结束，本会话保留 */
@@ -88,9 +92,9 @@ test('#17 #21 #20 #22 #23 account: verify the address, change it, change the pas
   await signIn(page, next, pw);
 });
 
-test('#26 self-service deletion: impact first, pending orders block it, then the account is gone', async ({ page }, info) => {
+test('#26 self-service deletion: a danger dialog with the impact; pending orders block it; wrong password, cancel, then the account is gone', async ({ page }, info) => {
   const email = mine(info, 'delete');
-  /* 一笔待支付订单：面板拒绝注销，页面先说清楚 */
+  /* 一笔待支付订单：面板拒绝注销，弹窗先说清楚 */
   const c = await Client.user(email, seed.password);
   const plans = await c.call<{ plans: { plan_id: string; name: string }[] }>('GET', '/api/v1/me/shop');
   const plan = plans.plans.find((p) => p.name === seed.plan)?.plan_id;
@@ -98,22 +102,39 @@ test('#26 self-service deletion: impact first, pending orders block it, then the
 
   await signIn(page, email);
   await open(page, '/account');
-  await page.getByRole('button', { name: '我要注销账户' }).click();
-  /* 有订单（哪怕没付）就是财务记录：账户匿名化保留 */
-  await expect(page.getByText('账户有付款记录：财务记录匿名保留，其余个人数据删除')).toBeVisible();
-  await expect(page.getByRole('alert').getByText(/待支付订单/)).toBeVisible();
-  await page.getByLabel('输入当前密码确认').fill(seed.password);
-  await expect(page.getByRole('button', { name: '注销账户', exact: true })).toBeDisabled();
-
-  await c.call('POST', `/api/v1/me/orders/${order.id}/cancel`);
-  await page.reload();
-  await page.getByRole('button', { name: '我要注销账户' }).click();
-  await expect(page.getByRole('alert').getByText(/待支付订单/)).toHaveCount(0);
-  await page.getByLabel('输入当前密码确认').fill(seed.password);
   await page.getByRole('button', { name: '注销账户', exact: true }).click();
-  await page.getByRole('button', { name: '确认注销' }).click();
-  await expect(page.getByText('账户已注销')).toBeVisible();
-  await expect(page).toHaveURL(/\/login/);
+  const dialog = page.getByRole('dialog', { name: '注销账户' });
+  await expect(dialog.getByText('注销后你将失去')).toBeVisible();
+  /* 有订单（哪怕没付）就是财务记录：账户匿名化保留 */
+  await expect(dialog.getByText('账户有付款记录：财务记录匿名保留，其余个人数据删除')).toBeVisible();
+  await expect(dialog.getByRole('alert').getByText(/待支付订单/)).toBeVisible();
+  await expect(dialog.getByRole('button', { name: '永久注销' })).toBeDisabled();
+
+  /* 取消：什么都没发生 */
+  await c.call('POST', `/api/v1/me/orders/${order.id}/cancel`);
+  await dialog.getByRole('button', { name: '取消' }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(psql(`SELECT count(*) FROM users WHERE email = '${email}' AND erased_at IS NULL;`)).toBe('1');
+
+  await page.getByRole('button', { name: '注销账户', exact: true }).click();
+  await expect(dialog.getByRole('alert').getByText(/待支付订单/)).toHaveCount(0);
+  /* 密码与「不可恢复」都要有才能提交 */
+  await dialog.getByLabel('输入当前密码确认').fill('not-the-password');
+  await expect(dialog.getByRole('button', { name: '永久注销' })).toBeDisabled();
+  await dialog.getByLabel('我已了解：注销后账户和上面这些内容都不可恢复').check();
+  /* 密码错误：面板拒绝（不是只有前端在拦），弹窗留着 */
+  await dialog.getByRole('button', { name: '永久注销' }).click();
+  await expect(page.getByText('当前密码不正确')).toBeVisible();
+  await expect(dialog).toBeVisible();
+  expect(psql(`SELECT count(*) FROM users WHERE email = '${email}' AND erased_at IS NULL;`)).toBe('1');
+
+  await dialog.getByLabel('输入当前密码确认').fill(seed.password);
+  await dialog.getByRole('button', { name: '永久注销' }).click();
+  /* 退出登录，结果页 */
+  await expect(page).toHaveURL(/\/deleted$/);
+  await expect(page.getByRole('heading', { name: '账户已注销' })).toBeVisible();
+  await expect(page.getByText('付款与退款记录按法规匿名保留', { exact: false })).toBeVisible();
+  await page.getByRole('link', { name: '返回登录页' }).click();
   await login(page, email);
   await expect(page.getByText('邮箱或密码错误')).toBeVisible();
 });

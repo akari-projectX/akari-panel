@@ -103,7 +103,7 @@ describe('endpoints', () => {
     await inviteApi.deleteCode('A B');
     await ticketApi.reply('t1', 'hi');
     await meApi.traffic('2026-10-01', '2026-10-06');
-    await meApi.emailCode('n@x.y', 'pw');
+    await meApi.emailCode('n@x.y', { password: 'pw' });
     await passkeyApi.setPasswordLogin(false);
     expect(calls.map((c) => `${c.init.method ?? 'GET'} ${c.url}`)).toEqual([
       'GET /api/v1/me/balance?before=42&limit=30',
@@ -116,13 +116,14 @@ describe('endpoints', () => {
       'PUT /api/v1/me/password-login',
     ]);
     expect(body(1)).toEqual({ amount_cents: 990, chain: 'ton', address: 'UQx', memo: '42' });
+    expect(body(6)).toEqual({ email: 'n@x.y', password: 'pw' });
     expect(body(7)).toEqual({ enabled: false });
   });
 
   it('maps self-delete and the public legal pages', async () => {
     for (let i = 0; i < 3; i++) replies.push(json(200, {}));
     await accountApi.deleteImpact();
-    await accountApi.deleteAccount('pw');
+    await accountApi.deleteAccount({ password: 'pw' });
     await pageApi.get('privacy');
     expect(calls.map((c) => `${c.init.method ?? 'GET'} ${c.url}`)).toEqual([
       'GET /api/v1/me/delete-impact',
