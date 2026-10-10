@@ -290,10 +290,8 @@ pub struct UserRow {
 /// hidden or gone ones.
 #[derive(Debug, Clone, PartialEq, Serialize, sqlx::FromRow)]
 pub struct MyEntranceRow {
-    /// The entrance's name and tags (never the node's or the server's
-    /// name); null / [] for the merged row.
     pub name: Option<String>,
-    pub tags: Vec<String>,
+    pub entrance: Option<String>,
     /// D9: the multiplier in effect now and the time-window rules
     /// (`[{weekdays, start, end, rate}]`, minutes of the day in the site
     /// time zone); null / [] for the merged row.
@@ -520,10 +518,10 @@ pub async fn fleet_top_nodes(
     .await
 }
 
-/// The user's own per-entrance view: public names only (the entrance's name
-/// and tags, as in /me/nodes; no node or server names); entrances of nodes
-/// hidden from users or deleted, and deleted entrances, are merged into one
-/// row with a null name. The multiplier is the one in effect now
+/// The user's own per-entrance view: public names only (the node's display
+/// name or name, as in /me/nodes, and the entrance's name); entrances of
+/// nodes hidden from users or deleted, and deleted entrances, are merged
+/// into one row with null names. The multiplier is the one in effect now
 /// (never a historical billed/raw ratio).
 pub async fn my_entrances(
     pg: &sqlx::PgPool,
@@ -532,7 +530,7 @@ pub async fn my_entrances(
     to: NaiveDate,
 ) -> sqlx::Result<Vec<MyEntranceRow>> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT name, tags, \
+        "SELECT name, entrance, \
                 CASE WHEN name IS NULL THEN NULL \
                      ELSE akari_entrance_rate(eid, statement_timestamp())::float8 / 1000 \
                 END AS rate, \
@@ -543,8 +541,8 @@ pub async fn my_entrances(
                     FROM entrance_rate_rules r WHERE r.entrance_id = eid) END AS rules, \
             {SUMS} FROM ( \
             SELECT CASE WHEN v.shown THEN t.entrance_id END AS eid, \
-                   CASE WHEN v.shown THEN e.name END AS name, \
-                   CASE WHEN v.shown THEN e.tags ELSE '{{}}'::text[] END AS tags, \
+                   CASE WHEN v.shown THEN coalesce(n.display_name, n.name) END AS name, \
+                   CASE WHEN v.shown THEN e.name END AS entrance, \
                    t.up_bytes, t.down_bytes, t.billed_bytes \
             FROM (SELECT entrance_id, node_id, {SUMS} FROM traffic_daily \
                   WHERE user_id = $1 AND day BETWEEN $2 AND $3 GROUP BY entrance_id, node_id) t \
@@ -553,8 +551,8 @@ pub async fn my_entrances(
             LEFT JOIN servers s ON s.id = n.server_id \
             CROSS JOIN LATERAL (SELECT e.id IS NOT NULL AND coalesce(n.visible, false) \
                                        AND s.deleting_at IS NULL AS shown) v) x \
-         GROUP BY eid, name, tags \
-         ORDER BY name IS NULL, sum(billed_bytes) DESC, name, eid"
+         GROUP BY eid, name, entrance \
+         ORDER BY name IS NULL, sum(billed_bytes) DESC, name, entrance"
     )))
     .bind(user)
     .bind(from)

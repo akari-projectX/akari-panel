@@ -1,6 +1,6 @@
 content-type: text/yaml; charset=utf-8
 proxies:
-  - name: "t0 | IPLC | 0.5x"
+  - name: "东京 01 | IPLC | 0.5x t0"
     type: vless
     server: relay.example.net
     port: 30443
@@ -13,7 +13,7 @@ proxies:
     reality-opts:
       public-key: 5Jb27oX8W738ZxUIXkYUhgRdCa094FSJXhP9YvUkUjU
       short-id: 54743dc5e24d2a41
-  - name: "t1 | IPLC | 0.5x"
+  - name: "东京 01 | IPLC | 0.5x t1"
     type: vless
     server: 203.0.113.7
     port: 444
@@ -25,7 +25,7 @@ proxies:
     reality-opts:
       public-key: vQV2yDqkaV19psaYsR47O9PZ7m5wVh_XTJzv3SNmcSw
       short-id: ea88e527a819b062
-  - name: "t2 | IPLC | 0.5x"
+  - name: "东京 01 | IPLC | 0.5x t2"
     type: vless
     server: 203.0.113.7
     port: 445
@@ -40,7 +40,7 @@ proxies:
     xhttp-opts:
       path: /c680488a0d74b233
       mode: stream-one
-  - name: "t3 | IPLC | 0.5x"
+  - name: "东京 01 | IPLC | 0.5x t3"
     type: vless
     server: 203.0.113.7
     port: 446
@@ -49,7 +49,7 @@ proxies:
     network: tcp
     tls: true
     servername: node.example.com
-  - name: "t4 | IPLC | 0.5x"
+  - name: "东京 01 | IPLC | 0.5x t4"
     type: vless
     server: 203.0.113.7
     port: 447
@@ -59,7 +59,7 @@ proxies:
     servername: node.example.com
     ws-opts:
       path: /vl
-  - name: "t5 | IPLC | 0.5x"
+  - name: "东京 01 | IPLC | 0.5x t5"
     type: vmess
     server: 203.0.113.7
     port: 448
@@ -69,7 +69,7 @@ proxies:
     network: ws
     ws-opts:
       path: /c9769a35fb136de4
-  - name: "t6 | IPLC | 0.5x"
+  - name: "东京 01 | IPLC | 0.5x t6"
     type: vmess
     server: 203.0.113.7
     port: 449
@@ -81,7 +81,7 @@ proxies:
     servername: node.example.com
     ws-opts:
       path: /a4f4557f17fef863
-  - name: "t7 | IPLC | 0.5x"
+  - name: "东京 01 | IPLC | 0.5x t7"
     type: vmess
     server: 203.0.113.7
     port: 450
@@ -89,7 +89,7 @@ proxies:
     alterId: 0
     cipher: auto
     network: tcp
-  - name: "t8 | IPLC | 0.5x"
+  - name: "东京 01 | IPLC | 0.5x t8"
     type: trojan
     server: 203.0.113.7
     port: 451
@@ -97,7 +97,7 @@ proxies:
     network: tcp
     tls: true
     sni: node.example.com
-  - name: "t9 | IPLC | 0.5x"
+  - name: "东京 01 | IPLC | 0.5x t9"
     type: vless
     server: 203.0.113.7
     port: 452
@@ -110,7 +110,7 @@ proxies:
       headers:
         Host: cdn.example.com
       v2ray-http-upgrade: true
-  - name: "t11 | IPLC | 0.5x"
+  - name: "东京 01 | IPLC | 0.5x t11"
     type: trojan
     server: 203.0.113.7
     port: 454
@@ -120,21 +120,21 @@ proxies:
     sni: node.example.com
     grpc-opts:
       grpc-service-name: 081f5b7d6c24c39b
-  - name: "t12 | IPLC | 0.5x"
+  - name: "东京 01 | IPLC | 0.5x t12"
     type: ss
     server: 203.0.113.7
     port: 18388
     cipher: 2022-blake3-aes-128-gcm
     password: "D4SCUD+QykMDrsw++ZuN8g==:VpMbq1DuxbJ4K7+2OZjLRA=="
     udp: true
-  - name: "t13 | IPLC | 0.5x"
+  - name: "东京 01 | IPLC | 0.5x t13"
     type: ss
     server: 203.0.113.7
     port: 456
     cipher: 2022-blake3-aes-256-gcm
     password: "ToH1n8izc5aaDQX0Zz71ob9Biwvc7tQfagD2Xx5TNUM=:YMEFSB8ZlmWBrEeUAjjV8PnmNBzVO0/23vvDfFDywFE="
     udp: true
-  - name: "t14 | IPLC | 0.5x"
+  - name: "东京 01 | IPLC | 0.5x t14"
     type: hysteria2
     server: 203.0.113.7
     port: 443
@@ -142,7 +142,7 @@ proxies:
     sni: node.example.com
     alpn:
       - h3
-  - name: "t15 | IPLC | 0.5x"
+  - name: "东京 01 | IPLC | 0.5x t15"
     type: vless
     server: 203.0.113.7
     port: 457
@@ -152,20 +152,20 @@ proxies:
     servername: node.example.com
     grpc-opts:
       grpc-service-name: grpc-svc
-  - name: "vless-kcp | IPLC | 0.5x"
+  - name: "东京 01 | IPLC | 0.5x vless-kcp"
     type: vless
     server: 203.0.113.7
     port: 9002
     uuid: c4a57424-7065-4ff5-91ea-f8209906ba4b
     network: kcp
-  - name: "ss-tcp | IPLC | 0.5x"
+  - name: "东京 01 | IPLC | 0.5x ss-tcp"
     type: ss
     server: 203.0.113.7
     port: 9004
     cipher: 2022-blake3-aes-128-gcm
     password: "AAAAAAAAAAAAAAAAAAAAAA==:4blVDvXrbBABiSMfkVTDqA=="
     udp: false
-  - name: "vless-split | IPLC | 0.5x"
+  - name: "东京 01 | IPLC | 0.5x vless-split"
     type: vless
     server: 203.0.113.7
     port: 9005
@@ -173,7 +173,7 @@ proxies:
     network: xhttp
     xhttp-opts:
       path: /s
-  - name: "t8 | Same"
+  - name: "Same t8"
     type: trojan
     server: a.example.com
     port: 451
@@ -181,7 +181,7 @@ proxies:
     network: tcp
     tls: true
     sni: node.example.com
-  - name: "t8 | Same #2"
+  - name: "Same t8 #2"
     type: trojan
     server: nat.example.org
     port: 451
@@ -193,26 +193,26 @@ proxy-groups:
   - name: PROXY
     type: select
     proxies:
-      - "t0 | IPLC | 0.5x"
-      - "t1 | IPLC | 0.5x"
-      - "t2 | IPLC | 0.5x"
-      - "t3 | IPLC | 0.5x"
-      - "t4 | IPLC | 0.5x"
-      - "t5 | IPLC | 0.5x"
-      - "t6 | IPLC | 0.5x"
-      - "t7 | IPLC | 0.5x"
-      - "t8 | IPLC | 0.5x"
-      - "t9 | IPLC | 0.5x"
-      - "t11 | IPLC | 0.5x"
-      - "t12 | IPLC | 0.5x"
-      - "t13 | IPLC | 0.5x"
-      - "t14 | IPLC | 0.5x"
-      - "t15 | IPLC | 0.5x"
-      - "vless-kcp | IPLC | 0.5x"
-      - "ss-tcp | IPLC | 0.5x"
-      - "vless-split | IPLC | 0.5x"
-      - "t8 | Same"
-      - "t8 | Same #2"
+      - "东京 01 | IPLC | 0.5x t0"
+      - "东京 01 | IPLC | 0.5x t1"
+      - "东京 01 | IPLC | 0.5x t2"
+      - "东京 01 | IPLC | 0.5x t3"
+      - "东京 01 | IPLC | 0.5x t4"
+      - "东京 01 | IPLC | 0.5x t5"
+      - "东京 01 | IPLC | 0.5x t6"
+      - "东京 01 | IPLC | 0.5x t7"
+      - "东京 01 | IPLC | 0.5x t8"
+      - "东京 01 | IPLC | 0.5x t9"
+      - "东京 01 | IPLC | 0.5x t11"
+      - "东京 01 | IPLC | 0.5x t12"
+      - "东京 01 | IPLC | 0.5x t13"
+      - "东京 01 | IPLC | 0.5x t14"
+      - "东京 01 | IPLC | 0.5x t15"
+      - "东京 01 | IPLC | 0.5x vless-kcp"
+      - "东京 01 | IPLC | 0.5x ss-tcp"
+      - "东京 01 | IPLC | 0.5x vless-split"
+      - "Same t8"
+      - "Same t8 #2"
 rule-providers:
   geosite-category-ads-all:
     type: http
@@ -251,358 +251,6 @@ rules:
   - RULE-SET,geosite-cn,DIRECT
   - RULE-SET,geoip-cn,DIRECT,no-resolve
   - MATCH,PROXY
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

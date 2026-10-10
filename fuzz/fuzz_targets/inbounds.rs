@@ -53,6 +53,8 @@ fuzz_target!(|data: &[u8]| {
         "fresh account does not fit its inbound"
     );
     let rows = [NodeRow {
+        name: "fuzz".into(),
+        display_name: None,
         tags: vec!["t".into()],
         entrance: "直连".into(),
         name_rate_permille: None,

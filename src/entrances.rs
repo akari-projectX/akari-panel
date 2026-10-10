@@ -205,8 +205,8 @@ pub struct EntranceView {
     pub rate_rules: serde_json::Value,
     pub enabled: bool,
     pub sort: i32,
-    /// Shown after the entrance's name in subscriptions and the portal
-    /// ("中转 | IPLC"; 1104: per entrance, not per node).
+    /// Shown after the node's name in subscriptions and the portal
+    /// ("香港 01 | IPLC 中转"; 1104: per entrance, not per node).
     pub tags: Vec<String>,
     /// The entrance's number on its node (0 = direct): its agent inbound
     /// tag and traffic key suffix.

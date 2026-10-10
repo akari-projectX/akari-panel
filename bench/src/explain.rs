@@ -304,7 +304,7 @@ pub async fn run(args: ExplainArgs) -> Result<()> {
         p,
         "sub::subscription nodes",
         q!(format!(
-            "SELECT e.tags, e.name AS entrance, \
+            "SELECT n.name, n.display_name, n.tags, e.name AS entrance, \
             CASE WHEN $2 THEN e.rate_permille END AS name_rate_permille, \
             n.inbound, coalesce(e.connect_host, s.tls_domain) AS server, \
             e.connect_port AS port, eu.protocol, eu.account \

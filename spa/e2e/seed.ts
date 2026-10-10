@@ -63,9 +63,6 @@ async function node(name: string, region: string, port: number): Promise<NodeVie
 const hk = await node('香港 01', '香港', 21443);
 const jp = await node('日本 01', '日本', 21444);
 const direct = (n: NodeView) => n.entrances.find((e) => e.kind === 'direct')?.id ?? '';
-/* 用户只看见入口名与标签（节点名「香港 01」「日本 01」是运营方的，门户与订阅里都不出现） */
-await admin.call('PATCH', `/api/v1/entrances/${direct(hk)}`, { name: '香港直连' });
-await admin.call('PATCH', `/api/v1/entrances/${direct(jp)}`, { name: '日本直连', tags: ['原生'] });
 const relay = await admin.call<{ id: string }>('POST', `/api/v1/nodes/${hk.id}/entrances`, {
   name: 'IPLC', connect_host: '127.0.0.1', connect_port: 21446, listen_port: 21446, source_cidrs: ['127.0.0.1'], rate: 2,
 });

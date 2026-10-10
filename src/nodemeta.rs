@@ -71,11 +71,13 @@ pub fn tags(v: &[String]) -> Result<Vec<String>, ApiError> {
     Ok(out)
 }
 
-/// The subscription name of an entrance: its name, then its tags
-/// ("直连 | IPLC | 0.5x"). Users never see the node's or the server's name
-/// (next-version, lam 2026-10-10): those are the operator's.
-pub fn public_name(entrance: &str, tags: &[String]) -> String {
-    let mut s = entrance.to_string();
+/// The subscription / portal name of a node: display name (else name),
+/// then its tags: "香港 01 | IPLC | 0.5x".
+pub fn public_name(name: &str, display: Option<&str>, tags: &[String]) -> String {
+    let mut s = display
+        .filter(|d| !d.is_empty())
+        .unwrap_or(name)
+        .to_string();
     for t in tags {
         s.push_str(" | ");
         s.push_str(t);
@@ -100,10 +102,10 @@ mod tests {
         assert_eq!(display_name(Some("  ")).unwrap(), None);
         assert_eq!(display_name(Some(" 东京 ")).unwrap(), Some("东京".into()));
         assert!(display_name(Some(&"x".repeat(65))).is_err());
-        assert_eq!(public_name("直连", &[]), "直连");
+        assert_eq!(public_name("hk-1", None, &[]), "hk-1");
         assert_eq!(
-            public_name("直连", &["IPLC".into(), "0.5x".into()]),
-            "直连 | IPLC | 0.5x"
+            public_name("hk-1", Some("香港 01"), &["IPLC".into(), "0.5x".into()]),
+            "香港 01 | IPLC | 0.5x"
         );
         assert!(sort(1_000_001).is_err());
         assert_eq!(sort(-5).unwrap(), -5);

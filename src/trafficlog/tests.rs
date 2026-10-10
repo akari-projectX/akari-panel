@@ -380,12 +380,10 @@ async fn endpoints_queries_and_permissions() {
     assert_eq!(v["days"].as_array().unwrap().len(), 2);
     let rows = v["entrances"].as_array().unwrap();
     assert_eq!(rows.len(), 2, "{v}");
-    // The entrance's name and tags only: never the node's name.
-    assert_eq!(rows[0]["name"], "直连");
-    assert!(rows[0].get("entrance").is_none(), "{v}");
-    assert!(!v.to_string().contains("香港 01"), "node name leaked: {v}");
+    assert_eq!(rows[0]["name"], "香港 01");
+    assert_eq!(rows[0]["entrance"], "直连");
     assert_eq!(bytes(&rows[0]), (11, 22, 18));
-    assert!(rows[1]["name"].is_null() && rows[1]["tags"] == json!([]));
+    assert!(rows[1]["name"].is_null() && rows[1]["entrance"].is_null());
     assert_eq!(bytes(&rows[1]), (105, 205, 305));
     // next07: the multiplier now (never billed ÷ raw: 18 / 33 here) and the
     // time-window rules; none for the merged row.
