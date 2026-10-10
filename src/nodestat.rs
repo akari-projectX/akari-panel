@@ -1201,9 +1201,8 @@ pub async fn request_probe(
 
 #[derive(Serialize, sqlx::FromRow)]
 pub struct MyNodeStatus {
-    /// The node's user-facing name and the entrance's (W28-a: one row per
-    /// usable entrance, "香港 01" + "直连").
-    pub name: String,
+    /// The entrance's name and tags (W28-a: one row per usable entrance).
+    /// Never the node's or the server's name: those are the operator's.
     pub entrance: String,
     pub region: Option<String>,
     pub tags: Vec<String>,
@@ -1265,7 +1264,8 @@ pub fn load_level(blob: &str, max_rate: Option<i64>) -> Option<&'static str> {
 }
 
 /// GET /me/nodes (user portal): the entrances the caller can use on nodes
-/// shown to users — node and entrance name, region, tags, the entrance's
+/// shown to users — entrance name, region, tags (no node or server
+/// names), the entrance's
 /// multiplier, status (online / offline / maintenance), a load level,
 /// latency (the panel's TCP test of the entrance and the server's
 /// url-test). No ids, addresses, inbounds or machine metrics. Entrances
@@ -1277,7 +1277,7 @@ pub async fn my_nodes(
     user: AuthUser,
 ) -> Result<Json<Vec<MyNodeStatus>>, ApiError> {
     let mut rows = sqlx::query_as::<_, MyNodeStatus>(sqlx::AssertSqlSafe(format!(
-        "SELECT coalesce(n.display_name, n.name) AS name, e.name AS entrance, n.region, e.tags, \
+        "SELECT e.name AS entrance, n.region, e.tags, \
          (akari_entrance_rate(e.id, statement_timestamp()) / 1000.0)::float8 AS rate, \
          {online} AS online, \
          CASE WHEN e.hidden_since IS NOT NULL OR s.traffic_quota_exceeded_at IS NOT NULL \

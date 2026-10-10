@@ -22,13 +22,15 @@ export function trafficDays(t: MyTraffic | undefined): TrafficDay[] {
 }
 
 /**
- * 按入口汇总（原始流量 GB，从多到少）：线路名 =「节点 · 入口」，name 为 null 的是隐藏或已删除的线路，合成一项。
+ * 按入口汇总（原始流量 GB，从多到少）：线路名 =「入口 · 标签…」（不显示节点、服务器名；同名的加 #2），
+ * name 为 null 的是隐藏或已删除的线路，合成一项。
  * rate 是此刻生效的倍率（面板按 D9 时段规则算好），不是计费 ÷ 原始——同一节点的直连与中转倍率不同，混在一起的比值没有意义。
  */
 export function trafficByEntrance(t: MyTraffic | undefined, other: string) {
+  const seen = new Map<string, number>();
   return (t?.entrances ?? [])
     .map((n) => ({
-      name: n.name === null ? other : `${n.name} · ${n.entrance ?? ''}`,
+      name: n.name === null ? other : unique(seen, [n.name, ...n.tags].join(' · ')),
       value: gb(n.up_bytes + n.down_bytes),
       billed: gb(n.billed_bytes),
       rate: n.rate,
@@ -48,4 +50,11 @@ export function ruleText(r: RateRule, t: (s: string) => string): string {
     : r.weekdays.map((w) => t(WEEKDAYS[w - 1])).join(' ');
   const end = r.end === 1440 || r.end === 0 ? '24:00' : hhmm(r.end);
   return `${days} ${hhmm(r.start)}–${end} ×${r.rate}`;
+}
+
+/** 线路名在图表与表格里当键用：重名的依次加 #2、#3（与订阅里同名线路的写法一致） */
+function unique(seen: Map<string, number>, name: string): string {
+  const n = (seen.get(name) ?? 0) + 1;
+  seen.set(name, n);
+  return n === 1 ? name : `${name} #${n}`;
 }

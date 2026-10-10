@@ -182,13 +182,12 @@ pub(crate) fn collect_proxies(rows: &[NodeRow]) -> Vec<Proxy> {
             Some(f) if flow_applies(&spec.id, &net) => f,
             _ => "",
         };
-        // W11 display name, the entrance's tags (1104), then the entrance ("香港 01 | IPLC
-        // 直连"), and only with the operator switch its base multiplier
-        // when not 1x ("香港 01 IPLC 2.0x"); names stay unique across the
-        // subscription and stable across rate changes and time windows
-        // (clients key proxies, and the user's selection, by name).
-        let base = crate::nodemeta::public_name(&row.name, row.display_name.as_deref(), &row.tags);
-        let mut name = format!("{base} {}", row.entrance);
+        // The entrance's name and tags ("直连 | IPLC"; never the node's or
+        // the server's name), and only with the operator switch its base
+        // multiplier when not 1x ("直连 | IPLC 2.0x"); names stay unique
+        // across the subscription and stable across rate changes and time
+        // windows (clients key proxies, and the user's selection, by name).
+        let mut name = crate::nodemeta::public_name(&row.entrance, &row.tags);
         if let Some(rate) = row.name_rate_permille.filter(|r| *r != 1000) {
             name.push(' ');
             name.push_str(&rate_label(rate));

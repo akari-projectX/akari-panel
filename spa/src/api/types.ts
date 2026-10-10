@@ -132,7 +132,8 @@ export type MyPlan = {
   traffic_used_bytes: number;
   traffic_limit_bytes: number | null;
   expires_at: string | null;
-  nodes: { name: string; region: string | null }[];
+  /** 可用入口：入口名与标签（不给节点、服务器名） */
+  nodes: { name: string; tags: string[]; region: string | null }[];
 };
 
 export type PasskeyItem = {
@@ -166,9 +167,8 @@ export type SubFormat = 'auto' | 'clash' | 'sing-box' | 'links';
 
 export type SubTokenReset = { sub_token: string; sub_url: string | null; credentials_rotated: number };
 
-/** GET /me/nodes 的一行：一个可用入口 */
+/** GET /me/nodes 的一行：一个可用入口（只给入口名与标签，不给节点、服务器名） */
 export type MyNode = {
-  name: string;
   entrance: string;
   region: string | null;
   tags: string[];
@@ -201,10 +201,11 @@ export type MyTraffic = {
   total: TrafficBytes;
   days: (TrafficBytes & { day: string })[];
   /**
-   * 按入口（直连 1x 与中转 10x 不会加在一起）。name / entrance 为 null：隐藏或已删除的线路合在一起。
+   * 按入口（直连 1x 与中转 10x 不会加在一起）。name 是入口名（不给节点、服务器名），tags 是入口标签；
+   * name 为 null：隐藏或已删除的线路合在一起。
    * rate 是此刻生效的倍率，rules 是该入口的时段规则（全站时区）；都不是历史上的计费 ÷ 原始。
    */
-  entrances: (TrafficBytes & { name: string | null; entrance: string | null; rate: number | null; rules: RateRule[] })[];
+  entrances: (TrafficBytes & { name: string | null; tags: string[]; rate: number | null; rules: RateRule[] })[];
 };
 
 /** 入口的时段倍率规则：ISO 星期（1 = 周一），一天里的分钟 [start, end)，end < start 跨午夜，1440 = 24:00 */

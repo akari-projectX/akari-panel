@@ -222,10 +222,8 @@ fn subscription_formats_follow_the_manifest() {
         let tag = format!("c{i}");
         ib["port"] = json!(1000 + i);
         rows.push(crate::sub::NodeRow {
-            name: "N".into(),
-            display_name: None,
             tags: vec![],
-            entrance: tag.clone(),
+            entrance: format!("N {tag}"),
             name_rate_permille: None,
             account: super::generate_account(&ib).unwrap(),
             protocol: m.protocol(&p).unwrap().wire.clone(),

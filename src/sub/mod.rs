@@ -168,9 +168,8 @@ struct SubUser {
 /// address and the user's credential on it (input of `render`).
 #[derive(FromRow)]
 pub struct NodeRow {
-    pub name: String,
-    /// W11 (`nodemeta.rs`): user-facing name; `tags` are the entrance's (1104).
-    pub display_name: Option<String>,
+    /// The entrance's tags (1104); with its name, all a user sees of the
+    /// line (no node or server names).
     pub tags: Vec<String>,
     /// The entrance's name ("直连", "IPLC") and the multiplier the proxy
     /// name shows (permille; None = none, the default: names must not
@@ -325,7 +324,7 @@ pub async fn subscription(
         return reject::not_found();
     }
     let rows = match sqlx::query_as::<_, NodeRow>(sqlx::AssertSqlSafe(format!(
-        "SELECT n.name, n.display_name, e.tags, e.name AS entrance, \
+        "SELECT e.tags, e.name AS entrance, \
          CASE WHEN $2 THEN e.rate_permille END AS name_rate_permille, n.inbound, \
          coalesce(e.connect_host, s.tls_domain) AS server, e.connect_port AS port, \
          eu.protocol, eu.account \
@@ -633,8 +632,8 @@ mod tests {
         );
     }
 
-    /// One row per (inbound, credential) pair: a node `name` per inbound
-    /// (D2), its entrance named after the inbound's tag, at `server`.
+    /// One row per (inbound, credential) pair: an entrance named
+    /// "`name` <inbound tag>", at `server`.
     pub(crate) fn rows_of(
         name: &str,
         server: Option<&str>,
@@ -653,10 +652,8 @@ mod tests {
                 continue;
             };
             rows.push(NodeRow {
-                name: name.into(),
-                display_name: None,
                 tags: vec![],
-                entrance: tag.into(),
+                entrance: format!("{name} {tag}"),
                 name_rate_permille: None,
                 inbound: ib.clone(),
                 server: server.map(String::from),
@@ -1054,8 +1051,8 @@ rules:
         assert!(ob[5].get("flow").is_none());
     }
 
-    /// W11/W28-a: display name + tags + the entrance name (+ its
-    /// multiplier when not 1x) name the proxies; the
+    /// W11/W28-a: the entrance name + its tags (+ its multiplier when not
+    /// 1x) name the proxies, never the node's name; the
     /// entrance's address and port are what clients dial in all three
     /// formats; without any address (no host, no TLS domain) the entrance is
     /// left out; equal names stay unique.
@@ -1063,16 +1060,13 @@ rules:
     fn w11_names_and_entrance_addresses() {
         let mut rows = snapshot_rows();
         for r in &mut rows {
-            r.display_name = Some("香港 01".into());
             r.tags = vec!["IPLC".into(), "0.5x".into()];
         }
         rows[2].server = Some("relay.example.net".into());
         rows[2].port = Some(30443);
         rows[2].name_rate_permille = Some(2000);
-        let single = |name: &str, server: Option<&str>| NodeRow {
-            name: name.into(),
-            display_name: Some("东京".into()),
-            tags: vec![],
+        let single = |server: Option<&str>| NodeRow {
+            tags: vec!["东京".into()],
             entrance: "直连".into(),
             name_rate_permille: None,
             inbound: json!({"protocol": "trojan", "port": 443,
@@ -1083,19 +1077,19 @@ rules:
             protocol: "trojan".into(),
             account: json!({"password": "p"}),
         };
-        rows.push(single("jp-1", Some("jp1.example.com")));
-        rows.push(single("jp-2", Some("nat.example.org")));
-        rows.push(single("jp-3", None));
+        rows.push(single(Some("jp1.example.com")));
+        rows.push(single(Some("nat.example.org")));
+        rows.push(single(None));
         let proxies = collect_proxies(&rows);
         let names: Vec<&str> = proxies.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
             [
-                "香港 01 | IPLC | 0.5x in-vless",
-                "香港 01 | IPLC | 0.5x in-vmess",
-                "香港 01 | IPLC | 0.5x in-trojan 2.0x",
-                "东京 直连",
-                "东京 直连 #2",
+                "HK 1 in-vless | IPLC | 0.5x",
+                "HK 1 in-vmess | IPLC | 0.5x",
+                "HK 1 in-trojan | IPLC | 0.5x 2.0x",
+                "直连 | 东京",
+                "直连 | 东京 #2",
             ]
         );
         let trojan = &proxies[2];

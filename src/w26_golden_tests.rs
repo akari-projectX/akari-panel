@@ -779,7 +779,7 @@ fn w26_golden_state_hash() {
 }
 
 /// One subscription row per credential whose inbound (by tag) exists.
-fn rows(name: &str, server: Option<&str>, inbounds: &Value, creds: &[Cred]) -> Vec<NodeRow> {
+fn rows(server: Option<&str>, inbounds: &Value, creds: &[Cred]) -> Vec<NodeRow> {
     creds
         .iter()
         .filter_map(|(tag, protocol, account)| {
@@ -788,8 +788,6 @@ fn rows(name: &str, server: Option<&str>, inbounds: &Value, creds: &[Cred]) -> V
                 .iter()
                 .find(|i| i["tag"] == tag.as_str())?;
             Some(NodeRow {
-                name: name.into(),
-                display_name: None,
                 tags: vec![],
                 entrance: tag.clone(),
                 name_rate_permille: None,
@@ -809,10 +807,9 @@ fn sub_fixtures() -> Vec<(&'static str, Vec<NodeRow>)> {
     inbounds.extend(hand_inbounds());
     let arr = Value::Array(inbounds);
     let creds = credentials_for(&arr, 1).remove(0).1;
-    let templates = rows("HK 1", Some("hk.example.com"), &arr, &creds);
-    let mut named = rows("jp-1", Some("203.0.113.7"), &arr, &creds);
+    let templates = rows(Some("hk.example.com"), &arr, &creds);
+    let mut named = rows(Some("203.0.113.7"), &arr, &creds);
     for r in &mut named {
-        r.display_name = Some("东京 01".into());
         r.tags = vec!["IPLC".into(), "0.5x".into()];
         // Entrance addresses: another host and port, or only a port.
         match r.entrance.as_str() {
@@ -826,14 +823,14 @@ fn sub_fixtures() -> Vec<(&'static str, Vec<NodeRow>)> {
     }
     // Single-credential nodes whose display name repeats (unique names);
     // the last has no address at all (left out).
-    let one = |name: &str, server: Option<&str>| {
-        let mut r = rows(name, server, &arr, &creds[8..9]);
-        r[0].display_name = Some("Same".into());
+    let one = |server: Option<&str>| {
+        let mut r = rows(server, &arr, &creds[8..9]);
+        r[0].tags = vec!["Same".into()];
         r
     };
-    named.extend(one("a", Some("a.example.com")));
-    named.extend(one("b", Some("nat.example.org")));
-    named.extend(one("c", None));
+    named.extend(one(Some("a.example.com")));
+    named.extend(one(Some("nat.example.org")));
+    named.extend(one(None));
 
     let edge_inbounds = json!([
         {"tag": "kcp", "protocol": "vless", "port": 1, "streamSettings": {"network": "kcp"}},
@@ -926,28 +923,22 @@ fn sub_fixtures() -> Vec<(&'static str, Vec<NodeRow>)> {
         c("kcp", "vmess", json!({})),
         c("tls-vision", "trojan", json!({"password": 5})),
     ];
-    let mut edge = rows(
-        "Edge: \"quoted\" - true",
-        Some("edge.example.com"),
-        &edge_inbounds,
-        &edge_creds,
-    );
+    let mut edge = rows(Some("edge.example.com"), &edge_inbounds, &edge_creds);
     for r in &mut edge {
         if r.entrance == "kcp" {
             r.port = Some(65535);
         }
+        // Names that need YAML/JSON quoting.
+        r.entrance = format!("Edge: \"quoted\" - true {}", r.entrance);
     }
     // An empty address is no address; an inbound that is not one is
     // nothing to render.
     edge.extend(rows(
-        "no-server",
         Some(""),
         &edge_inbounds,
         &[c("dup", "vmess", json!({"id": "c1"}))],
     ));
     edge.push(NodeRow {
-        name: "123".into(),
-        display_name: None,
         tags: vec![],
         entrance: "a".into(),
         name_rate_permille: None,

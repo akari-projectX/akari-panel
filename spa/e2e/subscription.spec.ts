@@ -84,9 +84,13 @@ test('#32 #33 D9 D5 entrances: one row per entrance, the multiplier in effect no
   const shown = (text: string) => page.getByText(text, { exact: true }).locator('visible=true').first();
   await expect(shown('IPLC')).toBeVisible();
   await expect(shown('×2')).toBeVisible();
-  /* 日本 01 的直连入口全天 0.5×（时段规则，按站点时区，面板 SQL 算好） */
+  /* 日本直连全天 0.5×（时段规则，按站点时区，面板 SQL 算好） */
   await expect(shown('×0.5')).toBeVisible();
-  await expect(shown('日本 01')).toBeVisible();
+  await expect(shown('日本直连')).toBeVisible();
+  await expect(shown('原生')).toBeVisible();
+  /* 只显示入口名与标签：节点（服务器）名不出现 */
+  await expect(page.getByText('日本 01')).toHaveCount(0);
+  await expect(page.getByText('香港 01')).toHaveCount(0);
   /* 图例说明三种状态与负载/延迟的来源；e2e 里没有 agent，线路都是离线 */
   await expect(page.locator('[data-node-legend]')).toContainText('维护中');
   await expect(page.locator('[data-node-legend]')).toContainText('每 30 秒自动刷新');
@@ -99,7 +103,7 @@ test('#32 #33 D9 D5 entrances: one row per entrance, the multiplier in effect no
   try {
     await page.reload();
     await expect(shown('IPLC')).toBeVisible();
-    await expect(shown('日本 01')).toBeVisible();
+    await expect(shown('日本直连')).toBeVisible();
     await expect(page.locator('[data-node-status="maintenance"]').locator('visible=true').first()).toBeVisible();
     await expect(page.locator('[data-node-status="online"]').locator('visible=true').first()).toBeVisible();
     /* 仪表盘的「订阅内的线路」同样显示状态与图例 */
@@ -118,7 +122,7 @@ test('#34 traffic history by the site\'s days, per entrance with the multiplier 
   await open(page, '/traffic');
   await expect(page.getByRole('heading', { name: '使用明细' })).toBeVisible();
   await expect(page.getByText(/日期按 Asia\/Shanghai 计算/)).toBeVisible();
-  const line = () => page.getByText('香港 01').locator('visible=true').first();
+  const line = () => page.getByText('香港直连').locator('visible=true').first();
   await expect(line()).toBeVisible();
   await page.getByRole('tab', { name: '近 30 天' }).click();
   await expect(line()).toBeVisible();
@@ -126,9 +130,11 @@ test('#34 traffic history by the site\'s days, per entrance with the multiplier 
   // rules), never a billed ÷ raw ratio mixing a 1× direct and a 2× relay.
   const rowOf = (name: string) => page.getByRole('row').filter({ hasText: name });
   await expect(page.getByRole('columnheader', { name: '当前倍率' })).toBeVisible();
-  await expect(rowOf('香港 01 · 直连')).toContainText('×1');
-  await expect(rowOf('香港 01 · IPLC')).toContainText('×2');
-  await expect(rowOf('日本 01 · 直连')).toContainText('×0.5');
-  await expect(rowOf('日本 01 · 直连')).toContainText('每天 00:00–24:00 ×0.5');
+  await expect(rowOf('香港直连')).toContainText('×1');
+  await expect(rowOf('IPLC')).toContainText('×2');
+  await expect(rowOf('日本直连 · 原生')).toContainText('×0.5');
+  await expect(rowOf('日本直连 · 原生')).toContainText('每天 00:00–24:00 ×0.5');
+  /* 节点（服务器）名不出现 */
+  await expect(page.getByText(/香港 01|日本 01/)).toHaveCount(0);
   await expect(page.getByText('有效倍率')).toHaveCount(0);
 });

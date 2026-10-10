@@ -111,10 +111,11 @@ describe('traffic and knowledge base shaping', () => {
     total: { up_bytes: 0, down_bytes: 0, billed_bytes: 0 },
     days: [{ day: '2026-10-02', up_bytes: 1024 ** 3, down_bytes: 2 * 1024 ** 3, billed_bytes: 1.5 * 1024 ** 3 }],
     entrances: [
-      { name: 'HK', entrance: '直连', rate: 1, rules: [], up_bytes: 1024 ** 3, down_bytes: 0, billed_bytes: 1024 ** 3 },
-      { name: 'HK', entrance: '中转', rate: 10, rules: [{ weekdays: [1, 2, 3, 4, 5], start: 1200, end: 1440, rate: 2 }],
+      { name: '直连', tags: ['香港'], rate: 1, rules: [], up_bytes: 1024 ** 3, down_bytes: 0, billed_bytes: 1024 ** 3 },
+      { name: '直连', tags: ['香港'], rate: 1, rules: [], up_bytes: 1024 ** 3, down_bytes: 0, billed_bytes: 1024 ** 3 },
+      { name: '中转', tags: [], rate: 10, rules: [{ weekdays: [1, 2, 3, 4, 5], start: 1200, end: 1440, rate: 2 }],
         up_bytes: 0, down_bytes: 2 * 1024 ** 3, billed_bytes: 20 * 1024 ** 3 },
-      { name: null, entrance: null, rate: null, rules: [], up_bytes: 0, down_bytes: 1024 ** 3, billed_bytes: 1024 ** 3 },
+      { name: null, tags: [], rate: null, rules: [], up_bytes: 0, down_bytes: 1024 ** 3, billed_bytes: 1024 ** 3 },
     ],
   };
   it('fills every day of the range', () => {
@@ -122,12 +123,13 @@ describe('traffic and knowledge base shaping', () => {
   });
   it('lists each entrance with its multiplier now, never a mixed billed ÷ raw ratio', () => {
     expect(trafficByEntrance(t, 'other').map((n) => [n.name, n.value, n.billed, n.rate])).toEqual([
-      ['HK · 中转', 2, 20, 10],
-      ['HK · 直连', 1, 1, 1],
+      ['中转', 2, 20, 10],
+      ['直连 · 香港', 1, 1, 1],
+      ['直连 · 香港 #2', 1, 1, 1],
       ['other', 1, 1, null],
     ]);
     const id = (s: string) => s;
-    expect(ruleText(t.entrances[1].rules[0], id)).toBe('工作日 20:00–24:00 ×2');
+    expect(ruleText(t.entrances[2].rules[0], id)).toBe('工作日 20:00–24:00 ×2');
     expect(ruleText({ weekdays: [7, 6], start: 1320, end: 120, rate: 0.5 }, id)).toBe('周末 22:00–02:00 ×0.5');
     expect(ruleText({ weekdays: [1, 3], start: 0, end: 1440, rate: 3 }, id)).toBe('周一 周三 00:00–24:00 ×3');
   });
