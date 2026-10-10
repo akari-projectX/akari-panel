@@ -94,10 +94,10 @@ export function Split({ left, right }: { left: ReactNode; right: ReactNode }) {
   );
 }
 
-/** 页面大标题（编辑式排版，shadcn 版专有）；下方是本页的提醒区（账户提醒 + `notices`） */
+/** 页面大标题（编辑式排版，shadcn 版专有）；下方是本页的提醒区（`accountNotices`：账户提醒，只有仪表盘开；`notices`：本页提醒） */
 export function PageTitle({
-  title, sub, extra, notices,
-}: { title: string; sub?: ReactNode; extra?: ReactNode; notices?: ReactNode }) {
+  title, sub, extra, notices, accountNotices = false,
+}: { title: string; sub?: ReactNode; extra?: ReactNode; notices?: ReactNode; accountNotices?: boolean }) {
   const enter = useEnter();
   return (
     <>
@@ -108,7 +108,7 @@ export function PageTitle({
         </div>
         {extra}
       </div>
-      <PageNotices>{notices}</PageNotices>
+      <PageNotices account={accountNotices}>{notices}</PageNotices>
     </>
   );
 }

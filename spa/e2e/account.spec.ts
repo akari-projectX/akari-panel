@@ -118,7 +118,7 @@ test('#26 self-service deletion: impact first, pending orders block it, then the
   await expect(page.getByText('邮箱或密码错误')).toBeVisible();
 });
 
-/* 提醒条在页面标题下方、同一个提醒区里（每一页都是） */
+/* 提醒条在页面标题下方、同一个提醒区里（只有仪表盘有账户提醒） */
 async function bannerBelowTitle(page: Page, title: string, banner: string) {
   const h = page.getByRole('heading', { level: 1, name: title });
   const b = page.locator('[data-page-notices]').getByText(banner);
@@ -138,13 +138,13 @@ test('#19 renewal scope (expired): banner, no nodes or subscription, the shop st
   await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible();
   await open(page, '/shop');
   await expect(page.getByRole('heading', { name: '商店' })).toBeVisible();
-  await bannerBelowTitle(page, '商店', '套餐已到期，服务已暂停');
-  await info.attach('banner-shop', { body: await page.screenshot(), contentType: 'image/png' });
+  /* 账户提醒只在仪表盘 */
+  await expect(page.getByText('套餐已到期，服务已暂停')).toHaveCount(0);
   /* 套餐到期后订阅已结束：可以重新订阅 */
   await expect(page.locator('.plan-col').filter({ hasText: seed.plan }).getByRole('button', { name: '立即订阅' })).toBeVisible();
   await open(page, '/wallet');
   await expect(page.getByRole('heading', { name: '钱包' })).toBeVisible();
-  await bannerBelowTitle(page, '钱包', '套餐已到期，服务已暂停');
+  await expect(page.getByText('套餐已到期，服务已暂停')).toHaveCount(0);
 });
 
 test('#19 renewal scope (quota used up): the shop preselects the traffic reset pack', async ({ page }) => {

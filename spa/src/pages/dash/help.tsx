@@ -8,7 +8,6 @@ import { DUR, NUDGE, stagger, useEnter } from '@/lib/motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { PageTitle } from '@/components/flat';
-import { PageNotices } from '@/components/account-banners';
 import { Empty, LoadError, Loading } from '@/components/data-state';
 import ServerHtml from '@/components/server-html';
 import DocCategoryIcon from '@/components/doc-category-icon';
@@ -482,7 +481,6 @@ function ArticleView({ id }: { id: string }) {
           )}
         </div>
       </header>
-      <PageNotices />
 
       <div className="mt-8 space-y-6">
       {/* 移动端目录折叠抽屉 */}

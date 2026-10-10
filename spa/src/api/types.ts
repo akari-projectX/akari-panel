@@ -132,7 +132,8 @@ export type MyPlan = {
   traffic_used_bytes: number;
   traffic_limit_bytes: number | null;
   expires_at: string | null;
-  nodes: { name: string; region: string | null }[];
+  /** 可用入口：入口名与标签（不给节点、服务器名） */
+  nodes: { name: string; tags: string[]; region: string | null }[];
 };
 
 export type PasskeyItem = {
@@ -166,9 +167,8 @@ export type SubFormat = 'auto' | 'clash' | 'sing-box' | 'links';
 
 export type SubTokenReset = { sub_token: string; sub_url: string | null; credentials_rotated: number };
 
-/** GET /me/nodes 的一行：一个可用入口 */
+/** GET /me/nodes 的一行：一个可用入口（只给入口名与标签，不给节点、服务器名） */
 export type MyNode = {
-  name: string;
   entrance: string;
   region: string | null;
   tags: string[];

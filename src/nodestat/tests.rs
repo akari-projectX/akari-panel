@@ -715,7 +715,8 @@ async fn api_status_metrics_probe_and_portal_visibility() {
     assert_eq!(q["online"], true);
     assert_eq!(q["load"], Value::Null, "no load for lines in maintenance");
     let n = &list[0];
-    assert_eq!(n["name"], "香港 01");
+    // The entrance's name and tags: never the node's or the server's name.
+    assert!(!v.to_string().contains("香港 01"), "node name leaked: {v}");
     assert_eq!(n["entrance"], "直连");
     assert_eq!(n["tags"], json!(["IPLC", "0.5x"]));
     assert_eq!(n["rate"], 0.5);
@@ -726,6 +727,7 @@ async fn api_status_metrics_probe_and_portal_visibility() {
     assert_eq!(n["load"], "medium");
     assert_eq!(n["probe_ms"], 23);
     for leak in [
+        "name",
         "id",
         "server_id",
         "max_rate",

@@ -92,12 +92,14 @@ export function sortTags(tags: string[] | null | undefined): string[] {
 /* ───────────── /me/nodes 的一行 ───────────── */
 
 
-/** 一行的稳定键：节点名 + 入口名（面板不给 id） */
-export const nodeKey = (n: Pick<MyNode, 'name' | 'entrance'>) => `${n.name}\u0000${n.entrance}`;
+/** 一行的键：入口名 + 标签 + 序号（面板不给 id，也不给节点名；不同节点的入口可以同名） */
+export const nodeKey = (n: Pick<MyNode, 'entrance' | 'tags'>, i: number) => `${i}\u0000${n.entrance}\u0000${n.tags.join('\u0000')}`;
 
-/** 国旗：先认面板的 region，认不出再从节点名里猜 */
-export function nodeCC(n: Pick<MyNode, 'name' | 'region'>): string | null {
-  return (n.region ? guessCC(n.region) : null) ?? guessCC(n.name);
+/** 国旗：先认面板的 region，认不出再从入口名、标签里猜 */
+export function nodeCC(n: Pick<MyNode, 'entrance' | 'tags' | 'region'>): string | null {
+  return (n.region ? guessCC(n.region) : null)
+    ?? guessCC(n.entrance)
+    ?? n.tags.reduce<string | null>((cc, t) => cc ?? guessCC(t), null);
 }
 
 /**
