@@ -527,15 +527,21 @@ pub async fn splits(conn: &mut PgConnection, input: &[SplitIn]) -> sqlx::Result<
 /// subscription's enforced limit (`users.traffic_limit_bytes`) — a used-up
 /// subscription is worth nothing, so switching back and forth cannot buy
 /// fresh quota for the price of the time alone. With a periodic reset the
-/// current period's fraction applies to the whole remaining value (it can
-/// only lower the credit). Unlimited traffic: time only.
+/// quota is per period, so the traffic left only limits the current
+/// period: the time after the next reset (a fresh quota each period) is
+/// credited in full by time, and the rest of the current period is worth
+/// `min(its time credit, the whole period's value × traffic left / quota)`
+/// (the period starts at the last reset, else the subscription start).
+/// Before, the current period's fraction applied to the whole remaining
+/// value: a monthly-reset plan with this month used up and two months left
+/// was worth nothing. Unlimited traffic: time only.
 pub async fn switch_credit(
     conn: &mut PgConnection,
     user_id: Uuid,
 ) -> sqlx::Result<(i64, Option<Uuid>)> {
     let row: Option<(Option<Uuid>, i64)> = sqlx::query_as(
-        "WITH cur AS (SELECT plan_id, starts_at, expires_at FROM user_plans \
-                      WHERE user_id = $1 AND status = 'active'), \
+        "WITH cur AS (SELECT plan_id, starts_at, expires_at, last_reset_at, next_reset_at \
+                      FROM user_plans WHERE user_id = $1 AND status = 'active'), \
          paid AS (SELECT o.id, o.list_price_cents - o.discount_cents - o.gift_cents AS value, \
                          o.period, o.period_days, o.fulfilled_at \
                   FROM orders o JOIN cur ON o.plan_id = cur.plan_id \
@@ -551,19 +557,28 @@ pub async fn switch_credit(
                                 akari_period_nominal_days(period, period_days)::numeric \
                                 * 86400 AS secs FROM paid) p \
                    WHERE secs > 0 AND value > 0), \
-         rem AS (SELECT GREATEST(COALESCE(extract(epoch FROM expires_at - now()), 0), 0) AS s \
-                 FROM cur) \
+         win AS (SELECT GREATEST(COALESCE(extract(epoch FROM expires_at - now()), 0), 0) AS rem, \
+                        CASE WHEN next_reset_at IS NULL THEN 0 \
+                             ELSE GREATEST(COALESCE(extract(epoch FROM expires_at \
+                                  - GREATEST(next_reset_at, now())), 0), 0) END AS fut, \
+                        GREATEST(COALESCE(extract(epoch FROM expires_at \
+                                 - COALESCE(last_reset_at, starts_at)), 0), 0) AS per, \
+                        next_reset_at IS NOT NULL AS resets \
+                 FROM cur), \
+         val AS (SELECT COALESCE(sum(value * GREATEST(LEAST(win.rem - newer, secs), 0) / secs), 0) AS t, \
+                        COALESCE(sum(value * GREATEST(LEAST(win.fut - newer, secs), 0) / secs), 0) AS f, \
+                        COALESCE(sum(value * GREATEST(LEAST(win.per - newer, secs), 0) / secs), 0) AS p \
+                 FROM win LEFT JOIN spans ON true), \
+         total AS (SELECT COALESCE(sum(value), 0) AS paid FROM paid) \
          SELECT (SELECT id FROM latest), \
-                LEAST(GREATEST(LEAST(COALESCE((SELECT floor(sum(value \
-                                     * GREATEST(LEAST(rem.s - newer, secs), 0) / secs)) \
-                                     FROM spans, rem), 0), \
-                                     COALESCE((SELECT sum(value) FROM paid), 0)), 0)::bigint, \
-                      CASE WHEN u.traffic_limit_bytes IS NULL THEN NULL \
-                           WHEN u.traffic_limit_bytes <= 0 THEN 0 \
-                           ELSE floor((SELECT sum(value) FROM paid) \
-                                      * GREATEST(u.traffic_limit_bytes - u.traffic_used_bytes, 0) \
-                                      / u.traffic_limit_bytes)::bigint END) \
-         FROM cur JOIN users u ON u.id = $1",
+                GREATEST(LEAST(total.paid, CASE \
+                    WHEN u.traffic_limit_bytes IS NULL THEN floor(val.t) \
+                    WHEN u.traffic_limit_bytes <= 0 THEN 0 \
+                    ELSE floor(val.f + LEAST(val.t - val.f, \
+                         CASE WHEN win.resets THEN val.p - val.f ELSE total.paid END \
+                         * GREATEST(u.traffic_limit_bytes - u.traffic_used_bytes, 0) \
+                         / u.traffic_limit_bytes)) END), 0)::bigint \
+         FROM cur, win, val, total, users u WHERE u.id = $1",
     )
     .bind(user_id)
     .fetch_optional(conn)

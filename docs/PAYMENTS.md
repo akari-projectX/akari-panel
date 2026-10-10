@@ -74,7 +74,12 @@ covered = the remaining seconds are taken from the newest order backwards
           (the newest order covers the last part of the term, B1)
 credit  = floor(Σ value(o) × covered(o) / (nominal_days(o) × 86400))
 credit  = min(credit, Σ value of all such orders)   -- never more than was paid
-credit  = min(credit, floor(Σ value × traffic_left / quota))   -- High-1, quota plans only
+credit  = min(credit, floor(Σ value × traffic_left / quota))   -- High-1, quota plans
+          without a periodic reset
+with a periodic reset (the quota is per period):
+          F = credit of the time after the next reset (full by time)
+          P = value of the whole current period (since the last reset)
+credit  = min(Σ value, floor(F + min(credit − F, P × traffic_left / quota)))
 credit  = 0 when there is no such order (admin-assigned), no expiry,
           nothing remaining, or a permanent one-time purchase
 amount  = price − min(credit, price)        -- never negative
@@ -92,7 +97,10 @@ amount  = price − min(credit, price)        -- never negative
 运营规则（运营逻辑审查高-1，lead 定的默认值）：折算 = 实付 × min(剩余时间比例, 剩余流量比例)。
 有流量额度的订阅（`users.traffic_limit_bytes`，即当前订阅的执行额度）按「剩余流量 / 额度」再打一次
 折：流量用完的订阅不值钱，来回换套餐不能只花时间的钱就买到满额流量。新套餐从零开始计流量。
-有周期重置的长订阅按**当前周期**的剩余比例计（只会少折）。不限流量的套餐只按时间算。
+有周期重置的订阅额度是**每个周期**的：剩余流量只限制当前周期这一段——下次重置之后的时间（每期都有满额流量）
+按时间全额折算；当前周期剩下的部分取「它的时间折算」与「整个当前周期的价值 × 剩余流量 / 额度」中较小者
+（周期从上次重置算起，没有重置过则从订阅开始算）。以前把当前周期的剩余比例乘到全部剩余价值上：每月重置、
+当月流量用完、还剩两个月的订阅折算为 0（2026-10-10 用户报告）。不限流量的套餐只按时间算。
 
 示例：一个月 30.00，剩余 15 天时换套餐 → 折算 15.00；一个 50.00 的套餐此时只需 35.00。
 折算额超过新套餐价格的部分会**作废**（不转余额、不退款）——商店在购买前会提示（`forfeited_cents`），
