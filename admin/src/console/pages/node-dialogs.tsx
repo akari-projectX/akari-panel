@@ -598,7 +598,16 @@ export function ServerEditDialog({ server, onClose }: { server: ServerView; onCl
             {check}
           </p>
         )}
-        <Field label={tr("计费速率上限（Mbps，留空 = 默认）", "Billing rate cap (Mbps; empty = default)")}>
+        <Field
+          label={tr(
+            "计费速率上限（上下行合计 Mbps，留空 = 默认）",
+            "Billing rate cap (upload + download Mbps; empty = default)",
+          )}
+          hint={tr(
+            "这台服务器全部用户上行与下行之和的上限，超出部分不计费（防止 agent 被攻破后虚报）。按网卡带宽填写时请填带宽的 2 倍：1000 Mbps 全双工网卡填 2000，否则满载时会少计。默认 10000。",
+            "Cap on the sum of all users' upload and download on this server; bytes above it are not billed (guards against a compromised agent over-reporting). If you size it by the NIC, enter twice its speed: 2000 for a 1000 Mbps full-duplex NIC, or a busy server is under-billed. Default 10000.",
+          )}
+        >
           <Input inputMode="numeric" value={cap} onChange={(e) => setCap(e.target.value)} />
         </Field>
       </div>
