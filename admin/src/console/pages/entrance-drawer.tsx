@@ -11,6 +11,7 @@ import { LineChart } from "../../shared/ui/line-chart";
 import { Dialog, Drawer, useConfirm, useToast } from "../../shared/ui/overlays";
 import { Badge, Button, Callout, Field, Input, KV, Switch, Textarea } from "../../shared/ui/primitives";
 import { FormError, SectionTitle, useConfirmFree, useRun } from "../kit";
+import { entryAsEgress } from "../egress";
 import { heatmap, hhmm, overlaps, parseHhmm, parseRate, rateAt, type Rule } from "../rates";
 import { useSite } from "../session";
 import type { EntranceView, NodeGroup, ServerNode, ServerView } from "../types";
@@ -46,6 +47,31 @@ const RATE_REQUIRED: [string, string] = [
   "请填写倍率：0–100，最多 3 位小数（留空不会当作 0）",
   "Enter a multiplier: 0–100, at most 3 decimals (empty is not 0)",
 ];
+
+/** The relay egress field (edit drawer and new-relay dialog). */
+function EgressField({ host, value, onChange }: { host: string; value: string; onChange: (v: string) => void }) {
+  const tr = useTr();
+  return (
+    <Field
+      label={tr("中转机出口 IP / CIDR（每行一个）", "Relay egress IPs / CIDRs (one per line)")}
+      hint={tr(
+        "填最后一跳（转发到本节点的那台机器）的出口 IP：在该机器上运行 curl -4 ifconfig.me 查看。不是连接地址；多跳中转只填最后一跳。只接受这些地址的新连接，隔离主要靠独立凭据，白名单是附加防护。",
+        "Enter the egress IP of the last hop (the machine that forwards to this node): run curl -4 ifconfig.me on it. Not the dial address; for a multi-hop relay only the last hop. Only these addresses may open connections; isolation rests on separate credentials, the allowlist is extra.",
+      )}
+      error={
+        entryAsEgress(host, value)
+          ? tr(
+              "连接地址也在出口列表里：中转机的入口 IP 通常不是它的出口 IP，填错会让中转不通。请在最后一跳机器上用 curl -4 ifconfig.me 确认。",
+              "The dial address is listed as an egress: a relay's entry IP is usually not its egress IP, and a wrong one breaks the relay. Check with curl -4 ifconfig.me on the last hop.",
+            )
+          : undefined
+      }
+      className="sm:col-span-2"
+    >
+      <Textarea rows={3} value={value} onChange={(x) => onChange(x.target.value)} placeholder="203.0.113.7" />
+    </Field>
+  );
+}
 
 /** What the entrance form sends for an entrance (the PATCH field shapes). */
 function formBody(
@@ -300,16 +326,7 @@ export function EntranceDrawer({
             <Field label={tr("监听端口（节点上的派生入站）", "Listen port (derived inbound on the node)")}>
               <Input inputMode="numeric" value={f.listen} onChange={(x) => setF({ ...f, listen: x.target.value })} />
             </Field>
-            <Field
-              label={tr("中转机出口 IP / CIDR（每行一个）", "Relay egress IPs / CIDRs (one per line)")}
-              hint={tr(
-                "隔离主要靠独立凭据，IP 白名单是附加防护。",
-                "Isolation rests on separate credentials; the allowlist is extra.",
-              )}
-              className="sm:col-span-2"
-            >
-              <Textarea rows={3} value={f.cidrs} onChange={(x) => setF({ ...f, cidrs: x.target.value })} />
-            </Field>
+            <EgressField host={f.host} value={f.cidrs} onChange={(v) => setF({ ...f, cidrs: v })} />
           </>
         )}
         <Field
@@ -688,14 +705,7 @@ export function RelayDialog({ node, groups, onClose }: { node: ServerNode; group
         <Field label={tr("监听端口（节点上）", "Listen port (on the node)")}>
           <Input inputMode="numeric" value={f.listen} onChange={(e) => setF({ ...f, listen: e.target.value })} />
         </Field>
-        <Field label={tr("中转机出口 IP / CIDR", "Relay egress IPs / CIDRs")} className="sm:col-span-2">
-          <Textarea
-            rows={3}
-            value={f.cidrs}
-            onChange={(e) => setF({ ...f, cidrs: e.target.value })}
-            placeholder="203.0.113.7"
-          />
-        </Field>
+        <EgressField host={f.host} value={f.cidrs} onChange={(v) => setF({ ...f, cidrs: v })} />
         <div className="sm:col-span-2">
           <GroupPicker groups={groups} value={f.groups} onChange={(g) => setF({ ...f, groups: g })} />
         </div>
