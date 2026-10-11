@@ -352,6 +352,8 @@ settings.host_gate
 settings.node_domain_cloudflare
 settings.node_domain_unset
 settings.node_domain_unspecified
+settings.passkey_domain_clash
+settings.passkey_domain_invalid
 settings.path_invalid
 settings.path_reserved
 settings.path_taken

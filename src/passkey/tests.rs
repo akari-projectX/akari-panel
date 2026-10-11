@@ -932,3 +932,298 @@ async fn reauth_without_passkeys_available() {
     assert!(!verify_reauth(&st, id, &proof).await.unwrap());
     db.drop().await;
 }
+
+// ---------------------------------------------------------------------------
+// Passkey centre (related origins)
+// ---------------------------------------------------------------------------
+
+const CENTRE: &str = "passkey.example.org";
+
+fn on_host(c: &mut Client, host: &str) {
+    c.headers.retain(|(k, _)| !k.eq_ignore_ascii_case("host"));
+    c.headers.push(("host".into(), host.into()));
+}
+
+/// A passkey login from `host`, the authenticator signing for `rp` at
+/// `origin`; the status of the login.
+async fn centre_login(
+    st: &AppState,
+    key: &mut SoftKey,
+    host: &str,
+    origin: &str,
+    rp: &str,
+) -> StatusCode {
+    let mut p = Client::new(st, rand_ip());
+    on_host(&mut p, host);
+    let opts = p.get("/test/auth/options").await;
+    assert_eq!(opts.status, StatusCode::OK, "{host}");
+    assert_eq!(opts.json()["passkey_rp"], CENTRE);
+    let r = p.post("/test/auth/passkey/options", json!({})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let o = r.json();
+    let cred = key.get(&o["options"], rp, origin);
+    p.post(
+        "/test/auth/passkey/login",
+        json!({ "state": o["state"], "credential": cred }),
+    )
+    .await
+    .status
+}
+
+#[test]
+fn registrable_labels_ignore_subdomains_and_suffixes() {
+    use crate::settings::registrable_label as l;
+    assert_eq!(l("akari.cc"), "akari");
+    assert_eq!(l("a.b.akari.com"), "akari");
+    assert_eq!(l("shop.example.co.uk"), "example");
+    assert_eq!(l("mwny.net"), "mwny");
+    assert_eq!(l("localhost"), "localhost");
+}
+
+#[tokio::test]
+async fn centre_serves_the_related_origins_and_nothing_else() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = AppState::for_test(db.pool.clone()).await;
+    db.domains(
+        &st,
+        "main",
+        &["panel.example", "other.net:8443", "203.0.113.9"],
+    )
+    .await;
+    db.domains(&st, "sub", &["sub.example"]).await;
+    db.passkey_domain(&st, Some(CENTRE)).await;
+
+    let mut c = Client::new(&st, rand_ip());
+    on_host(&mut c, CENTRE);
+    let r = c.get("/.well-known/webauthn").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.headers["content-type"], "application/json");
+    assert_eq!(r.headers["cache-control"], "public, max-age=300");
+    // The https main domains only: no IP literal, no subscription domain.
+    assert_eq!(
+        r.json(),
+        json!({ "origins": ["https://panel.example", "https://other.net:8443"] })
+    );
+
+    // Everything else on the centre is the canonical rejection.
+    let canonical = Client::new(&st, rand_ip()).get("/no-such-route").await;
+    for (method, path) in [
+        (Method::GET, "/"),
+        (Method::GET, "/test/app"),
+        (Method::GET, "/test/healthz"),
+        (Method::GET, "/.well-known/webauthn/x"),
+        (Method::POST, "/.well-known/webauthn"),
+        (Method::GET, "/auth/options"),
+    ] {
+        let r = c.req(method.clone(), path, None).await;
+        assert_eq!(r.fingerprint(), canonical.fingerprint(), "{method} {path}");
+    }
+
+    // A main domain does not serve the file.
+    let mut m = Client::new(&st, rand_ip());
+    on_host(&mut m, "panel.example");
+    assert_eq!(
+        m.get("/.well-known/webauthn").await.fingerprint(),
+        canonical.fingerprint()
+    );
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn one_passkey_works_on_every_main_domain() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = AppState::for_test(db.pool.clone()).await;
+    db.domains(&st, "main", &["panel.example", "other.net"])
+        .await;
+    db.passkey_domain(&st, Some(CENTRE)).await;
+    let (_, email) = account(&db, "user", "user-password-1").await;
+
+    // Bound once, on the first main domain: the RP ID is the centre's.
+    let mut c = Client::new(&st, rand_ip());
+    on_host(&mut c, "panel.example");
+    c.login(&email, "user-password-1").await;
+    let mut key = SoftKey::new();
+    let r = c.post("/test/api/v1/me/passkeys/options", json!({})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let o = r.json();
+    let cred = key.create(&o["options"], CENTRE, "https://panel.example");
+    let r = c
+        .post(
+            "/test/api/v1/me/passkeys",
+            json!({ "state": o["state"], "credential": cred, "name": "phone" }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+    let v = c.get("/test/api/v1/me/passkeys").await.json();
+    assert_eq!(v["rp_id"], CENTRE);
+    assert_eq!(v["passkeys"][0]["current"], true);
+
+    // Every main domain and the centre's own origin sign in with it.
+    assert_eq!(
+        centre_login(
+            &st,
+            &mut key,
+            "panel.example",
+            "https://panel.example",
+            CENTRE
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        centre_login(&st, &mut key, "other.net", "https://other.net", CENTRE).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        centre_login(
+            &st,
+            &mut key,
+            "other.net",
+            "https://passkey.example.org",
+            CENTRE
+        )
+        .await,
+        StatusCode::OK
+    );
+    // A domain that is not a main domain (nor a subdomain of one), and an
+    // authenticator that signed for another RP ID, are refused.
+    assert_eq!(
+        centre_login(&st, &mut key, "other.net", "https://evil.example", CENTRE).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        centre_login(
+            &st,
+            &mut key,
+            "other.net",
+            "https://sub.panel.example",
+            CENTRE
+        )
+        .await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        centre_login(&st, &mut key, "other.net", "https://other.net", "other.net").await,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // A main domain added later is in the list at once; one removed is out.
+    db.domains(&st, "main", &["panel.example", "new.example"])
+        .await;
+    assert_eq!(
+        centre_login(&st, &mut key, "new.example", "https://new.example", CENTRE).await,
+        StatusCode::OK
+    );
+    // (The browser on the removed domain never gets here: its host is
+    // refused; an authenticator still signing for it is out of the list.)
+    assert_eq!(
+        centre_login(&st, &mut key, "panel.example", "https://other.net", CENTRE).await,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Without a centre the preferred main domain is the RP again; the
+    // centre's credentials are no longer current.
+    db.passkey_domain(&st, None).await;
+    let v = c.get("/test/api/v1/me/passkeys").await.json();
+    assert_eq!(
+        (v["rp_id"].clone(), v["passkeys"][0]["current"].clone()),
+        (json!("panel.example"), json!(false))
+    );
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn the_centre_is_a_domain_of_its_own() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = AppState::for_test(db.pool.clone()).await;
+    db.domains(&st, "main", &["panel.example"]).await;
+    db.domains(&st, "sub", &["sub.example"]).await;
+    db.domains(&st, "node", &["grpc.example"]).await;
+    let actor = crate::audit::Actor::cli();
+    let version = |db: &TestDb| {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT version FROM panel_settings WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+
+    // The value: a DNS name, never an IP literal.
+    use crate::settings::passkey_domain_value as value;
+    assert_eq!(value(None).unwrap(), None);
+    assert_eq!(value(Some("  ")).unwrap(), None);
+    assert_eq!(
+        value(Some("Passkey.Example.ORG")).unwrap().as_deref(),
+        Some(CENTRE)
+    );
+    for bad in ["203.0.113.9", "nodots", "https://x.example", "a b.example"] {
+        assert!(value(Some(bad)).is_err(), "{bad}");
+    }
+
+    // No host of another kind may be the centre.
+    for taken in ["panel.example", "sub.example", "grpc.example"] {
+        let mut tx = db.pool.begin().await.unwrap();
+        let err = crate::settings::apply_update_passkey_domain(
+            &mut tx,
+            &actor,
+            version(&db).await,
+            Some(taken.into()),
+        )
+        .await
+        .unwrap_err();
+        tx.rollback().await.unwrap();
+        assert_eq!(err.code(), "settings.passkey_domain_clash", "{taken}");
+    }
+    let mut tx = db.pool.begin().await.unwrap();
+    crate::settings::apply_update_passkey_domain(
+        &mut tx,
+        &actor,
+        version(&db).await,
+        Some(CENTRE.into()),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // ... and the other way round: a list may not take the centre's host.
+    for kind in [
+        crate::settings::DomainKind::Main,
+        crate::settings::DomainKind::Sub,
+        crate::settings::DomainKind::Node,
+    ] {
+        let mut new = crate::settings::Values::default();
+        new.prefer(kind, CENTRE.to_string());
+        let mut tx = db.pool.begin().await.unwrap();
+        let err = crate::settings::apply_update(&mut tx, &actor, version(&db).await, &new)
+            .await
+            .unwrap_err();
+        tx.rollback().await.unwrap();
+        assert_eq!(err.code(), "settings.passkey_domain_clash", "{kind:?}");
+    }
+
+    // Stale form: 409.
+    let mut tx = db.pool.begin().await.unwrap();
+    let err = crate::settings::apply_update_passkey_domain(&mut tx, &actor, 0, None)
+        .await
+        .unwrap_err();
+    tx.rollback().await.unwrap();
+    assert_eq!(err.code(), "settings.version_conflict");
+
+    // Audited, and the view tells the admin what browsers are told.
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'settings.passkey_domain.update'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 1);
+    db.drop().await;
+}

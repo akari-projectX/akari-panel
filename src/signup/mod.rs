@@ -440,6 +440,7 @@ pub async fn options(State(state): State<AppState>) -> Response {
     });
     // W27: whether the login page offers "sign in with a passkey".
     v["passkey"] = crate::passkey::public_view(&state);
+    v["passkey_rp"] = crate::passkey::public_rp_id(&state);
     // Q3: the site time zone, for the portal's dates before sign-in.
     v["timezone"] = json!(state.settings().get().timezone());
     ([(axum::http::header::CACHE_CONTROL, "no-store")], Json(v)).into_response()
