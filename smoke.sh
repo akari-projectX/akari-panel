@@ -1593,7 +1593,7 @@ for _ in $(seq 1 30); do [ "$(psql_q "SELECT hidden_since IS NOT NULL FROM entra
   || { echo "FAIL: unreachable relay not hidden"; psql_q "SELECT health_ok, health_failures, health_error FROM entrances WHERE id='$RELAY_ID'"; exit 1; }
 rl_sub_clear() { vk EVAL "for _,k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call('DEL', k) end return 1" 0 'akari:rl:sub:*' >/dev/null; }
 rl_sub_clear
-curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '专线 IPLC"' && { echo "FAIL: hidden relay still in the subscription"; exit 1; }
+curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '"IPLC | 专线"' && { echo "FAIL: hidden relay still in the subscription"; exit 1; }
 for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='firing'")" = "1" ] && break; sleep 1; done
 [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='firing'")" = "1" ] \
   || { echo "FAIL: no entrance_down alert"; exit 1; }
@@ -1601,7 +1601,7 @@ for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE s
 for _ in $(seq 1 20); do [ "$(psql_q "SELECT hidden_since IS NULL FROM entrances WHERE id='$RELAY_ID'")" = "t" ] && break; sleep 1; done
 [ "$(psql_q "SELECT health_ok AND hidden_since IS NULL FROM entrances WHERE id='$RELAY_ID'")" = "t" ] || { echo "FAIL: relay not restored"; exit 1; }
 rl_sub_clear
-curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '专线 IPLC"' || { echo "FAIL: restored relay not in the subscription"; exit 1; }
+curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '"IPLC | 专线"' || { echo "FAIL: restored relay not in the subscription"; exit 1; }
 for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='resolved'")" = "1" ] && break; sleep 1; done
 [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='resolved'")" = "1" ] \
   || { echo "FAIL: entrance_down not resolved"; exit 1; }
