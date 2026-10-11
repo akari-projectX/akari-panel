@@ -3,9 +3,12 @@
 # codes in the source; spa/scripts/check-error-codes.mjs requires a SPA
 # mapping for each.
 account.banned
+account.bind_no_code
 account.delete_confirm_required
 account.delete_pending_orders
 account.delete_pending_withdrawals
+account.email_bound
+account.email_required
 account.email_unchanged
 account.invalid_password
 account.locale_invalid
@@ -352,6 +355,8 @@ settings.host_gate
 settings.node_domain_cloudflare
 settings.node_domain_unset
 settings.node_domain_unspecified
+settings.passkey_domain_clash
+settings.passkey_domain_invalid
 settings.path_invalid
 settings.path_reserved
 settings.path_taken
@@ -391,6 +396,7 @@ signup_admin.domain_invalid
 signup_admin.invites_range
 signup_admin.mail_off
 signup_admin.needs_main_domain
+signup_admin.passkey_unavailable
 signup_admin.too_many_domains
 signup_admin.trial_days_range
 signup_admin.unknown_trial_plan
@@ -435,6 +441,7 @@ user.bulk_delete_too_many
 user.date_filter_invalid
 user.delete_confirm_required
 user.email_exists
+user.email_pending
 user.erase_admin
 user.erased
 user.has_plan

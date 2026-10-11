@@ -295,6 +295,10 @@ pub struct Stored {
     /// next07: subscription line names carry the base multiplier (NULL =
     /// off).
     pub sub_name_rate: Option<bool>,
+    /// The passkey centre (WebAuthn RP ID, `Domain::authority`; NULL = no
+    /// centre: the preferred main domain is the RP). Never one of the
+    /// main / subscription / node domains.
+    pub passkey_domain: Option<String>,
     #[serde(skip)]
     pub updated_at: Option<DateTime<Utc>>,
 }
@@ -304,7 +308,7 @@ const STORED_COLS: &str = "version, sub_domain_per_user, trust_cloudflare, \
      install_tls_pin, install_fallback_url, acme_directory_url, acme_email, \
      audit_retention_days, traffic_daily_retention_days, remove_mode, \
      extra_release_keys, timezone, sub_rules, sub_rule_set_clash_url, sub_rule_set_singbox_url, \
-     sub_formats, sub_import_clients, sub_name_rate, updated_at";
+     sub_formats, sub_import_clients, sub_name_rate, passkey_domain, updated_at";
 
 fn select_stored(lock: bool) -> sqlx::AssertSqlSafe<String> {
     sqlx::AssertSqlSafe(format!(
@@ -438,6 +442,11 @@ pub struct Effective {
     pub stored: Stored,
     pub server_names: Vec<ServerName>,
     pub main: Option<Origin>,
+    /// Every main-domain origin, preferred first (the related origins of
+    /// the passkey centre).
+    pub main_origins: Vec<Origin>,
+    /// The passkey centre (None = the preferred main domain is the RP).
+    pub passkey: Option<Origin>,
     pub main_source: Source,
     pub sub: Option<Origin>,
     pub sub_source: Source,
@@ -625,6 +634,9 @@ pub fn compute(cfg: &PanelConfig, stored: Stored, server_names: Vec<ServerName>)
         Some(d) => (Some(d.https_origin()), Source::Settings),
         None => (None, Source::Browser),
     };
+    let main_origins: Vec<Origin> = mains.iter().map(Domain::https_origin).collect();
+    let passkey_domain = parsed("passkey_domain", &stored.passkey_domain);
+    let passkey = passkey_domain.as_ref().map(Domain::https_origin);
     let subs: Vec<Origin> = sub_domains.iter().map(Domain::https_origin).collect();
     let (sub, sub_source) = match subs.first() {
         Some(o) => (Some(o.clone()), Source::Settings),
@@ -654,6 +666,11 @@ pub fn compute(cfg: &PanelConfig, stored: Stored, server_names: Vec<ServerName>)
     // HTTP roles: a main name wins over a node name on the same host (the
     // node name is for the gRPC port).
     let mut roles = HashMap::new();
+    // The passkey centre first: the API keeps it apart from every other
+    // domain, and anything else would override it here.
+    if let Some(d) = passkey_domain.as_ref().filter(|d| !d.is_ip()) {
+        roles.insert(request_host(&d.host), HostRole::Passkey);
+    }
     for (ds, role) in [
         (&nodes, HostRole::Node),
         (&sub_domains, HostRole::Sub),
@@ -680,7 +697,7 @@ pub fn compute(cfg: &PanelConfig, stored: Stored, server_names: Vec<ServerName>)
     // (node names are the gRPC port's: the panel's own CA).
     let ask_hosts: HashSet<String> = roles
         .iter()
-        .filter(|(_, r)| matches!(r, HostRole::Main | HostRole::Sub))
+        .filter(|(_, r)| matches!(r, HostRole::Main | HostRole::Sub | HostRole::Passkey))
         .map(|(h, _)| h.clone())
         .collect();
     let host_gate = main_source == Source::Settings;
@@ -731,6 +748,8 @@ pub fn compute(cfg: &PanelConfig, stored: Stored, server_names: Vec<ServerName>)
         stored,
         server_names,
         main,
+        main_origins,
+        passkey,
         main_source,
         sub,
         sub_source,
@@ -762,6 +781,31 @@ pub fn sans(history: &[ServerName], node_server_name: &str) -> Vec<String> {
     set.into_iter().collect()
 }
 
+/// Chrome ignores related origins beyond this many distinct registrable
+/// labels (Firefox the same, `kMaxLabels`).
+pub const PASSKEY_LABEL_LIMIT: usize = 5;
+
+/// The browsers' "label" of a host for the related-origins cap: the part of
+/// the registrable domain before the public suffix (`akari.cc` and
+/// `akari.com` are both `akari`; subdomains do not count). Approximate: no
+/// public-suffix list, only the common `co.uk` / `com.cn` style suffixes.
+pub fn registrable_label(host: &str) -> String {
+    let parts: Vec<&str> = host.trim_end_matches('.').split('.').collect();
+    let n = parts.len();
+    if n < 2 {
+        return host.to_string();
+    }
+    let second_level = matches!(
+        parts[n - 2],
+        "co" | "com" | "net" | "org" | "gov" | "edu" | "ac"
+    ) && parts[n - 1].len() == 2;
+    if second_level && n >= 3 {
+        parts[n - 3].to_string()
+    } else {
+        parts[n - 2].to_string()
+    }
+}
+
 /// D8: what a request's host may reach over HTTP.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostRole {
@@ -774,6 +818,9 @@ pub enum HostRole {
     /// A node communication domain only: nothing over HTTP (agents dial
     /// the gRPC port).
     Node,
+    /// The passkey centre: only `/.well-known/webauthn` (the related
+    /// origins of the WebAuthn RP ID), nothing else.
+    Passkey,
 }
 
 impl Effective {
@@ -804,7 +851,26 @@ impl Effective {
 
     /// May a request addressed to `host` be served at all (any role)?
     pub fn host_allowed(&self, host: Option<&str>) -> bool {
-        self.host_role(host).is_some_and(|r| r != HostRole::Node)
+        self.host_role(host)
+            .is_some_and(|r| r != HostRole::Node && r != HostRole::Passkey)
+    }
+
+    /// The body of `/.well-known/webauthn` (WebAuthn related origins): the
+    /// https main-domain origins, preferred first (IP literals cannot be
+    /// RPs' origins for passkeys, so they are left out).
+    pub fn related_origins(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for o in &self.main_origins {
+            let s = o.as_string();
+            if o.https
+                && !o.host.starts_with('[')
+                && o.host.parse::<IpAddr>().is_err()
+                && !out.contains(&s)
+            {
+                out.push(s);
+            }
+        }
+        out
     }
 
     pub fn host_gate_on(&self) -> bool {
@@ -846,7 +912,27 @@ impl Effective {
                     .into(),
             );
         }
+        let labels = self.related_label_count();
+        if self.passkey.is_some() && labels > PASSKEY_LABEL_LIMIT {
+            w.push(format!(
+                "主域名涉及 {labels} 个不同的注册域，超过浏览器通行密钥跨域名（关联来源）的上限 {PASSKEY_LABEL_LIMIT}：超出的域名上通行密钥无法使用，请删除已弃用的域名"
+            ));
+        }
+        if self.passkey.is_none() && self.main_origins.len() > 1 {
+            w.push("有多个主域名但没有设置通行密钥中心域名：通行密钥只在首选主域名上可用".into());
+        }
         w
+    }
+
+    /// How many distinct registrable-domain labels the passkey related
+    /// origins span (browsers cap it: `PASSKEY_LABEL_LIMIT`).
+    pub fn related_label_count(&self) -> usize {
+        self.main_origins
+            .iter()
+            .filter(|o| o.https && !o.host.starts_with('[') && o.host.parse::<IpAddr>().is_err())
+            .map(|o| registrable_label(&o.host.to_ascii_lowercase()))
+            .collect::<HashSet<_>>()
+            .len()
     }
 
     /// The subscription origin of `user` (D8): the preferred subscription
@@ -1185,6 +1271,21 @@ async fn write_domains(
     new: &Values,
 ) -> Result<Vec<String>, ApiError> {
     let parsed = check_domains(new)?;
+    // The passkey centre is a domain of its own: no other kind may use it.
+    let centre: Option<String> =
+        sqlx::query_scalar("SELECT passkey_domain FROM panel_settings WHERE id = 1")
+            .fetch_one(&mut *conn)
+            .await?;
+    if let Some(c) = centre.as_deref().and_then(|c| Domain::parse(c).ok()) {
+        let h = request_host(&c.host);
+        if parsed
+            .values()
+            .flatten()
+            .any(|d| request_host(&d.host) == h)
+        {
+            return Err(passkey_clash(&c));
+        }
+    }
     let mut added_nodes = Vec::new();
     // Removals first (a host may move between kinds), then the preferred
     // flags, then the entries.
@@ -1492,6 +1593,114 @@ pub async fn put_site(
         Some(tz) => Some(timezone_value(&mut tx, tz.as_deref()).await?),
     };
     apply_update_site(&mut tx, &Actor::of(&user), req.version, name, timezone).await?;
+    tx.commit().await?;
+    reload_logged(&state).await;
+    Ok(Json(view(&state, Vec::new()).await?))
+}
+
+fn passkey_clash(d: &Domain) -> ApiError {
+    conflict!(
+        "settings.passkey_domain_clash",
+        "{domain} 已用作主域名、订阅域名或节点通信域名，通行密钥中心域名必须是单独的域名",
+        domain = d.display()
+    )
+}
+
+/// The passkey centre as typed: empty/null = none; a DNS name (no IP
+/// literal) with a dot, or a `*.localhost` name (development).
+pub fn passkey_domain_value(raw: Option<&str>) -> Result<Option<String>, ApiError> {
+    let Some(raw) = raw.map(str::trim).filter(|r| !r.is_empty()) else {
+        return Ok(None);
+    };
+    let d = Domain::parse(raw).map_err(|e| {
+        bad_request!(
+            "settings.domain_invalid",
+            "{field}：{e}",
+            field = "通行密钥中心域名",
+            e = e
+        )
+    })?;
+    let host = request_host(&d.host);
+    if d.is_ip() || !(host.contains('.') || host == "localhost") {
+        return Err(bad_request!(
+            "settings.passkey_domain_invalid",
+            "通行密钥中心域名必须是带点的域名（不能是 IP）"
+        ));
+    }
+    Ok(Some(d.authority()))
+}
+
+/// Set (or clear) the passkey centre: the same row and `version` as the
+/// domains (409 on a stale form), never a host of any domain list (409
+/// `settings.passkey_domain_clash`). Audited `settings.passkey_domain.update`.
+pub async fn apply_update_passkey_domain(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    expected_version: i64,
+    domain: Option<String>,
+) -> Result<Stored, ApiError> {
+    let cur = read_stored(&mut *conn, true).await?;
+    if cur.version != expected_version {
+        return Err(conflict!(
+            "settings.version_conflict",
+            "设置已被修改（可能是其他管理员），请刷新后重试"
+        ));
+    }
+    if cur.passkey_domain == domain {
+        return Ok(cur);
+    }
+    if let Some(c) = domain.as_deref().and_then(|c| Domain::parse(c).ok()) {
+        let h = request_host(&c.host);
+        let lists = [&cur.main_domains, &cur.sub_domains, &cur.node_domains];
+        if lists
+            .iter()
+            .flat_map(|l| l.iter())
+            .filter_map(|d| Domain::parse(d).ok())
+            .any(|d| request_host(&d.host) == h)
+        {
+            return Err(passkey_clash(&c));
+        }
+    }
+    let row: Stored = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "UPDATE panel_settings SET passkey_domain = $1, version = version + 1, \
+         updated_at = now() WHERE id = 1 RETURNING {STORED_COLS}"
+    )))
+    .bind(&domain)
+    .fetch_one(&mut *conn)
+    .await?;
+    crate::audit::record(
+        conn,
+        actor,
+        "settings.passkey_domain.update",
+        "settings",
+        None,
+        Some(json!({ "passkey_domain": cur.passkey_domain })),
+        Some(json!({ "passkey_domain": domain })),
+    )
+    .await?;
+    Ok(row)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PasskeyDomainReq {
+    pub version: i64,
+    /// null or "" = no centre (the preferred main domain is the RP).
+    #[serde(default)]
+    pub domain: Option<String>,
+}
+
+/// PUT /api/v1/settings/passkey-domain (admin). Changing the centre makes
+/// every stored passkey unusable (they are bound to the RP ID).
+pub async fn put_passkey_domain(
+    State(state): State<AppState>,
+    user: AuthUser,
+    ApiJson(req): ApiJson<PasskeyDomainReq>,
+) -> Result<Json<SettingsView>, ApiError> {
+    user.require_admin()?;
+    let domain = passkey_domain_value(req.domain.as_deref())?;
+    let mut tx = state.pg().begin().await?;
+    apply_update_passkey_domain(&mut tx, &Actor::of(&user), req.version, domain).await?;
     tx.commit().await?;
     reload_logged(&state).await;
     Ok(Json(view(&state, Vec::new()).await?))
@@ -2505,12 +2714,27 @@ pub struct SettingsView {
     pub site_name: Option<String>,
     /// Q3: 时区 (traffic history days, monthly resets, dashboard days).
     pub timezone: Field<String>,
+    /// The passkey centre (stored value null = none: the preferred main
+    /// domain is the RP) and what the browsers are told.
+    pub passkey: PasskeyView,
     /// W30: 订阅 (routing template, rule list URLs).
     pub subscription: SubscriptionView,
     /// W25: obsolete keys in THIS instance's panel.toml (delete them).
     pub obsolete_config_keys: Vec<String>,
     /// Advisory notes from the last save (DNS checks).
     pub warnings: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct PasskeyView {
+    pub domain: Option<String>,
+    /// The WebAuthn RP ID in effect (null = passkeys unavailable).
+    pub rp_id: Option<String>,
+    /// `/.well-known/webauthn` `origins` (empty without a centre).
+    pub related_origins: Vec<String>,
+    /// Distinct registrable labels among them / the browsers' cap.
+    pub labels: usize,
+    pub label_limit: usize,
 }
 
 /// One editable value: stored (null = not set), effective, the built-in
@@ -2678,6 +2902,17 @@ pub async fn view(state: &AppState, mut warnings: Vec<String>) -> Result<Setting
     Ok(SettingsView {
         site_name: s.site_name.clone(),
         timezone: Field::of(s.timezone.clone(), DEFAULT_TIMEZONE.to_string()),
+        passkey: PasskeyView {
+            domain: s.passkey_domain.clone(),
+            rp_id: crate::passkey::Rp::of_settings(&eff).map(|r| r.id),
+            related_origins: if eff.passkey.is_some() {
+                eff.related_origins()
+            } else {
+                Vec::new()
+            },
+            labels: eff.related_label_count(),
+            label_limit: PASSKEY_LABEL_LIMIT,
+        },
         subscription: SubscriptionView::of(s),
         version: s.version,
         updated_at: s.updated_at,
@@ -3281,6 +3516,12 @@ fn describe_lines(eff: &Effective) -> Vec<String> {
             eff.main_source
         ),
         format!(
+            "passkey centre:   {}",
+            s.passkey_domain
+                .as_deref()
+                .unwrap_or("(not set: the preferred main domain is the RP)")
+        ),
+        format!(
             "sub domains:      {}  -> {} [{:?}]{}",
             show(&s.sub_domains),
             origin(&eff.sub),
@@ -3451,6 +3692,17 @@ pub async fn cli_unset(cfg: &PanelConfig, pg: &sqlx::PgPool, field: &str) -> any
         drop(tx);
         crate::access::cli_clear_allowlist(pg).await?;
         println!("admin-allow: cleared; running panels apply it at once");
+        return Ok(());
+    }
+    if field == "passkey-domain" {
+        // The passkey centre: back to "none" (the preferred main domain is
+        // the RP again).
+        let cur = read_stored(&mut tx, false).await?;
+        apply_update_passkey_domain(&mut tx, &Actor::cli(), cur.version, None)
+            .await
+            .map_err(msg)?;
+        tx.commit().await?;
+        println!("passkey-domain: cleared; running panels apply it at once");
         return Ok(());
     }
     if field == "turnstile" {

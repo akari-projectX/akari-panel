@@ -241,7 +241,7 @@ export function UserDrawer({ id, plans, onClose }: { id: string; plans: PlanView
                 >
                   {tr("踢下线（结束全部会话）", "Sign out everywhere")}
                 </MenuItem>
-                {!u.email_verified && (
+                {!u.email_verified && !u.email_pending && (
                   <MenuItem
                     icon="mail"
                     disabled={ownerOnly}

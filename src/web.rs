@@ -38,8 +38,12 @@ pub fn router(state: AppState) -> Router {
 async fn front(state: AppState, inner: Router, mut req: Request) -> Response {
     use tower::ServiceExt as _;
     let host = settings::host_of(req.headers(), req.uri());
-    let role = match state.settings().get().host_role(host.as_deref()) {
+    let eff = state.settings().get();
+    let role = match eff.host_role(host.as_deref()) {
         Some(settings::HostRole::Node) | None => return reject::not_found(),
+        // The passkey centre serves its related-origins file and nothing
+        // else (no portal, no admin prefix, no routes).
+        Some(settings::HostRole::Passkey) => return passkey_centre(&eff, &req),
         Some(r) => r,
     };
     let layout = state.settings().access();
@@ -82,6 +86,29 @@ async fn front(state: AppState, inner: Router, mut req: Request) -> Response {
         Ok(r) => r,
         Err(e) => match e {},
     }
+}
+
+/// The only thing the passkey centre answers: `GET /.well-known/webauthn`
+/// → `{"origins": [every https main-domain origin]}` (WebAuthn related
+/// origins, built from the live settings, so a changed domain list is in
+/// effect at once; the short cache bounds how long browsers keep an old
+/// list). Everything else is the canonical rejection.
+fn passkey_centre(eff: &settings::Effective, req: &Request) -> Response {
+    let get = matches!(
+        *req.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD
+    );
+    if !get || req.uri().path() != "/.well-known/webauthn" {
+        return reject::not_found();
+    }
+    (
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "public, max-age=300"),
+        ],
+        Json(json!({ "origins": eff.related_origins() })),
+    )
+        .into_response()
 }
 
 fn inner_router(state: AppState) -> Router {
@@ -339,6 +366,10 @@ fn inner_router(state: AppState) -> Router {
         )
         .route("/{prefix}/api/v1/settings/probe", put(settings::put_probe))
         .route("/{prefix}/api/v1/settings/site", put(settings::put_site))
+        .route(
+            "/{prefix}/api/v1/settings/passkey-domain",
+            put(settings::put_passkey_domain),
+        )
         .route(
             "/{prefix}/api/v1/settings/subscription",
             put(settings::put_subscription),

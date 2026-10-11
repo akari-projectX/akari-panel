@@ -1,7 +1,14 @@
 //! W27 (v0.4 D7): passkeys (WebAuthn, kanidm `webauthn-rs`).
 //!
-//! - **Relying party** = the main domain (`Rp::current`): RP ID = its host,
-//!   the only accepted origin = its origin. Without a main domain that is a
+//! - **Relying party** (`Rp::current`): with a passkey centre
+//!   (`panel_settings.passkey_domain`, a domain of its own) the RP ID is the
+//!   centre's host and every https main domain is a WebAuthn *related
+//!   origin* (the centre serves them at `/.well-known/webauthn`, see
+//!   `web::passkey_centre`): a passkey is bound once and works on every main
+//!   domain (browsers cap the distinct registrable domains at 5; where the
+//!   browser has no related-origins support the password still works).
+//!   Without a centre the preferred main domain is the RP: RP ID = its
+//!   host, the only accepted origin = its origin. Without a main domain that is a
 //!   DNS name over https (or `localhost`) passkeys are unavailable: the
 //!   public endpoints are the canonical rejection and no policy can refuse a
 //!   password.
@@ -68,23 +75,43 @@ const REGISTER_PER_HOUR: i64 = 20;
 /// The relying party passkeys are bound to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rp {
-    /// The main domain's host (lower case, no port).
+    /// The RP ID: the centre's (or the preferred main domain's) host (lower
+    /// case, no port).
     pub id: String,
+    /// The RP's own origin.
     pub origin: Url,
     pub name: String,
+    /// Related origins (the https main domains) besides `origin`.
+    pub related: Vec<Url>,
 }
 
 impl Rp {
     /// From the effective settings; None = passkeys unavailable.
     pub fn current(state: &AppState) -> Option<Rp> {
-        let eff = state.settings().get();
-        let main = eff.main.as_ref()?;
+        Self::of_settings(&state.settings().get())
+    }
+
+    /// Pure: the RP of `eff` (the centre with the main domains as related
+    /// origins, else the preferred main domain).
+    pub fn of_settings(eff: &crate::settings::Effective) -> Option<Rp> {
         let name = eff
             .stored
             .site_name
             .clone()
             .unwrap_or_else(|| "Akari".into());
-        Self::of(&main.as_string(), name)
+        match &eff.passkey {
+            Some(centre) => {
+                let mut rp = Self::of(&centre.as_string(), name)?;
+                rp.related = eff
+                    .related_origins()
+                    .iter()
+                    .filter_map(|o| Url::parse(o).ok())
+                    .filter(|o| *o != rp.origin)
+                    .collect();
+                Some(rp)
+            }
+            None => Self::of(&eff.main.as_ref()?.as_string(), name),
+        }
     }
 
     /// Pure: the RP for a main-domain origin (`https://host[:port]`).
@@ -106,20 +133,23 @@ impl Rp {
             id: host,
             origin,
             name,
+            related: Vec::new(),
         })
     }
 
-    fn webauthn(&self) -> Result<Webauthn, ApiError> {
+    pub(crate) fn webauthn(&self) -> Result<Webauthn, ApiError> {
         WebauthnBuilder::new(&self.id, &self.origin)
             .and_then(|b| {
-                let b = b
+                let mut b = b
                     .rp_name(&self.name)
                     .timeout(std::time::Duration::from_secs(STATE_TTL_SECS as u64));
-                match self.localhost_http() {
-                    Some(http) => b.append_allowed_origin(&http),
-                    None => b,
+                for o in &self.related {
+                    b = b.append_allowed_origin(o);
                 }
-                .build()
+                if let Some(http) = self.localhost_http() {
+                    b = b.append_allowed_origin(&http);
+                }
+                b.build()
             })
             .map_err(|e| {
                 tracing::error!(error = %e, "passkey relying party not usable");
@@ -147,7 +177,7 @@ impl Rp {
 fn unavailable() -> ApiError {
     conflict!(
         "account.passkey_unavailable",
-        "passkeys need the main domain (a DNS name over https)"
+        "passkeys need the main domain or the passkey centre (a DNS name over https)"
     )
 }
 
@@ -159,7 +189,11 @@ fn state_key(kind: &str, token: &str) -> String {
     format!("akari:passkey:{kind}:{token}")
 }
 
-async fn put_state<T: Serialize>(state: &AppState, kind: &str, v: &T) -> Result<String, ApiError> {
+pub(crate) async fn put_state<T: Serialize>(
+    state: &AppState,
+    kind: &str,
+    v: &T,
+) -> Result<String, ApiError> {
     let mut b = [0u8; 32];
     rand::rng().fill_bytes(&mut b);
     let token = hex::encode(b);
@@ -182,7 +216,7 @@ async fn put_state<T: Serialize>(state: &AppState, kind: &str, v: &T) -> Result<
 }
 
 /// Take (and delete) a stored ceremony state. None = unknown/expired/used.
-async fn take_state<T: DeserializeOwned>(
+pub(crate) async fn take_state<T: DeserializeOwned>(
     state: &AppState,
     kind: &str,
     token: &str,
@@ -775,7 +809,17 @@ pub async fn register_options(
     )
     .await?;
     let mut options = serde_json::to_value(&ccr)?;
-    // Passkeys are discoverable (the login sends no address).
+    discoverable(&mut options);
+    Ok((
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Json(json!({ "state": token, "options": options })),
+    )
+        .into_response())
+}
+
+/// Passkeys are discoverable (the login sends no address): ask the
+/// authenticator for a resident key.
+pub(crate) fn discoverable(options: &mut Value) {
     if let Some(sel) = options
         .pointer_mut("/publicKey/authenticatorSelection")
         .and_then(Value::as_object_mut)
@@ -783,11 +827,6 @@ pub async fn register_options(
         sel.insert("residentKey".into(), json!("required"));
         sel.insert("requireResidentKey".into(), json!(true));
     }
-    Ok((
-        [(axum::http::header::CACHE_CONTROL, "no-store")],
-        Json(json!({ "state": token, "options": options })),
-    )
-        .into_response())
 }
 
 fn limit_reached() -> ApiError {
@@ -806,7 +845,7 @@ fn invalid_name() -> ApiError {
     )
 }
 
-fn clean_name(raw: &str) -> Result<String, ApiError> {
+pub(crate) fn clean_name(raw: &str) -> Result<String, ApiError> {
     let n = raw.trim();
     if n.is_empty() || n.chars().count() > NAME_MAX || n.chars().any(char::is_control) {
         return Err(invalid_name());
@@ -1191,6 +1230,13 @@ pub async fn cli_reset_login(pg: &sqlx::PgPool, email: &str) -> anyhow::Result<i
 /// Whether passkeys work (for `/auth/options`).
 pub fn public_view(state: &AppState) -> Value {
     json!(Rp::current(state).is_some())
+}
+
+/// The RP ID in effect (for `/auth/options`: the page compares it with its
+/// own host to tell the visitor that a cross-domain passkey needs a
+/// browser with related-origins support). None = passkeys unavailable.
+pub fn public_rp_id(state: &AppState) -> Value {
+    json!(Rp::current(state).map(|r| r.id))
 }
 
 pub fn routes() -> axum::Router<AppState> {

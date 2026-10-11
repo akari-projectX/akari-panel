@@ -24,6 +24,8 @@ export type Site = {
   emailVerify: boolean;
   emailDomains: string[];
   passkey: boolean;
+  /** 注册页可以「用通行密钥注册」 */
+  passkeyRegister: boolean;
   /** 配置还没取到 */
   loading: boolean;
 };
@@ -45,6 +47,7 @@ export function siteFrom(o: AuthOptions | undefined): Site {
     emailVerify: !!o?.email_verify,
     emailDomains: o?.email_domains ?? [],
     passkey: !!o?.passkey,
+    passkeyRegister: !!o?.passkey_register,
     loading: !o,
   };
 }

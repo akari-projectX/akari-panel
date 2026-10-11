@@ -34,6 +34,8 @@ type Signup = {
   trial_days: number;
   reset_enabled: boolean;
   email_verify: boolean;
+  passkey_register: boolean;
+  passkey_available: boolean;
   mail_enabled: boolean;
   public_origin: string | null;
   warnings: string[];
@@ -72,11 +74,18 @@ function SignupCard() {
           trial_days: Number(f.trial_days) || 0,
           reset_enabled: f.reset_enabled,
           email_verify: f.email_verify,
+          passkey_register: f.passkey_register,
         }),
       { ok: tr("注册设置已保存", "Sign-up settings saved"), invalidate: [["settings", "signup"]] },
     ).then((r) => r && setF({ ...r, domains: r.email_domains.join(", ") }));
   const sw = (
-    k: "register_enabled" | "email_verify" | "invite_required" | "invite_single_use" | "reset_enabled",
+    k:
+      | "register_enabled"
+      | "email_verify"
+      | "passkey_register"
+      | "invite_required"
+      | "invite_single_use"
+      | "reset_enabled",
     label: string,
   ) => (
     <label className="flex items-center gap-2 text-[13px]">
@@ -92,6 +101,21 @@ function SignupCard() {
         {sw(
           "email_verify",
           tr("注册需要验证邮箱（需要邮件发送）", "Registration needs email verification (needs mail)"),
+        )}
+        {sw(
+          "passkey_register",
+          tr(
+            "允许用通行密钥注册（注册后必须绑定邮箱，24 小时内未绑定自动清理）",
+            "Allow registering with a passkey (the email must be bound after; unbound accounts are removed after 24 hours)",
+          ),
+        )}
+        {!f.passkey_available && (
+          <Callout tone="warning">
+            {tr(
+              "通行密钥当前不可用：需要 https 主域名或通行密钥中心域名（系统设置 → 站点与域名）。",
+              "Passkeys are not available: set an https main domain or the passkey centre (Settings → Site and domains).",
+            )}
+          </Callout>
         )}
         {sw("invite_required", tr("注册需要邀请码", "Registration needs an invite code"))}
         {sw("invite_single_use", tr("邀请码只能用一次", "Invite codes are single use"))}

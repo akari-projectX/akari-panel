@@ -98,7 +98,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const m = await meApi.get();
       const scope = scopeOf(m);
       /* 套餐：banned 拿不到（面板答 403） */
-      const p = scope === 'full' || scope === 'renewal' ? await meApi.plan() : undefined;
+      const p = (scope === 'full' || scope === 'renewal') && !m.email_pending ? await meApi.plan() : undefined;
       return { me: m, plan: p };
     } catch (e) {
       /* 401 = 没登录；404 = 统一的拒绝（同一浏览器里的管理员会话在门户上就是这个）：都按没登录处理 */

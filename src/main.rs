@@ -74,7 +74,7 @@ enum SettingsCmd {
     /// <host[:port]>, trust-cloudflare <true|false>
     Set { field: String, value: String },
     /// Clear a stored setting back to the built-in default (audited):
-    /// main | sub | node | trust-cloudflare | probe | all; turnstile = switch
+    /// main | sub | node | passkey-domain | trust-cloudflare | probe | all; turnstile = switch
     /// Turnstile off on every form (keys kept); admin-allow = clear the
     /// admin prefix's IP allowlist
     Unset { field: String },

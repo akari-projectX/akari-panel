@@ -165,10 +165,12 @@ export function ConfirmDialog({
 /* ───────────────────────── 流程 ───────────────────────── */
 
 export function FlowDialog({
-  open, onOpenChange, tone = 'brand', icon, title, description, toolbar, children, className,
+  open, onOpenChange, tone = 'brand', icon, title, description, toolbar, children, className, dismissible = true,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
+  /** false = 不可关闭：没有关闭按钮，点遮罩、按 Esc 都不关（必须完成的步骤，如绑定邮箱） */
+  dismissible?: boolean;
   /** 图标底色：危险流程（注销账户）用 danger */
   tone?: Tone;
   icon?: ReactNode;
@@ -188,6 +190,11 @@ export function FlowDialog({
           data-slot="flow-content"
           /* 没有说明文字时告诉 Radix 别找它，不然控制台里一条警告 */
           {...(description ? {} : { 'aria-describedby': undefined })}
+          {...(dismissible ? {} : {
+            onEscapeKeyDown: (e: Event) => e.preventDefault(),
+            onPointerDownOutside: (e: Event) => e.preventDefault(),
+            onInteractOutside: (e: Event) => e.preventDefault(),
+          })}
           className={cn(sheet, 'sm:max-h-[min(88vh,820px)] sm:max-w-[560px]', className)}
         >
           <Grabber />
@@ -197,7 +204,7 @@ export function FlowDialog({
               <DialogPrimitive.Title className="text-[17px] leading-[1.4] font-medium tracking-[-0.015em]">{title}</DialogPrimitive.Title>
               {description && <DialogPrimitive.Description className="mt-0.5 text-[13px] leading-[1.6] text-muted-foreground">{description}</DialogPrimitive.Description>}
             </div>
-            <CloseX />
+            {dismissible && <CloseX />}
           </header>
           {toolbar && <div className="shrink-0 px-6 pb-4 sm:px-7">{toolbar}</div>}
           <div className="min-h-0 flex-1 overflow-y-auto px-6 sm:px-7">

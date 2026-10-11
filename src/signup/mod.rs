@@ -32,6 +32,7 @@
 
 pub mod email;
 pub mod invite;
+pub mod passkey_register;
 pub mod pow;
 pub(crate) mod profile;
 pub(crate) mod register;
@@ -94,10 +95,14 @@ pub struct SignupSettings {
     /// 注册需要邮箱验证 (v0.4 D1: an explicit switch, default off,
     /// independent of 必须邀请码).
     pub email_verify: bool,
+    /// The registration page offers "register with a passkey" (the address
+    /// is bound after, `passkey_register.rs`; default off).
+    pub passkey_register: bool,
 }
 
 const SETTINGS_COLS: &str = "version, register_enabled, invite_required, invite_single_use, \
-     invite_codes_per_user, email_domains, trial_plan_id, trial_days, reset_enabled, email_verify";
+     invite_codes_per_user, email_domains, trial_plan_id, trial_days, reset_enabled, email_verify, \
+     passkey_register";
 
 pub async fn load_settings(conn: &mut PgConnection) -> sqlx::Result<SignupSettings> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -139,6 +144,11 @@ pub struct SignupView {
     reset_enabled: bool,
     /// v0.4 D1: registration verifies the address by an emailed code.
     email_verify: bool,
+    /// "Register with a passkey" is offered (needs passkeys to work).
+    passkey_register: bool,
+    /// Passkeys work (a main domain or passkey centre that is a DNS name
+    /// over https): the switch above can be on.
+    passkey_available: bool,
     /// SMTP sending is enabled (verified registration and reset need it).
     mail_enabled: bool,
     /// A main domain is configured (reset links need it).
@@ -170,6 +180,18 @@ async fn view(state: &AppState, conn: &mut PgConnection) -> Result<SignupView, A
     if s.reset_enabled && origin.is_none() {
         warnings.push("未设置主域名：找回密码的重置链接无法生成".into());
     }
+    if s.passkey_register && s.register_enabled {
+        if crate::passkey::Rp::current(state).is_none() {
+            warnings.push(
+                "通行密钥不可用（需要主域名或通行密钥中心域名）：注册页不会显示「用通行密钥注册」"
+                    .into(),
+            );
+        }
+        warnings.push(
+            "通行密钥注册的账户先以待绑定状态创建，登录后必须绑定邮箱才能使用；".to_string()
+                + "未绑定的账户 24 小时后自动清理。防滥用依赖工作量证明、限速与人机校验",
+        );
+    }
     if let Some(p) = s.trial_plan_id {
         let enabled: Option<bool> = sqlx::query_scalar("SELECT enabled FROM plans WHERE id = $1")
             .bind(p)
@@ -190,6 +212,8 @@ async fn view(state: &AppState, conn: &mut PgConnection) -> Result<SignupView, A
         trial_days: s.trial_days,
         reset_enabled: s.reset_enabled,
         email_verify: s.email_verify,
+        passkey_register: s.passkey_register,
+        passkey_available: crate::passkey::Rp::current(state).is_some(),
         mail_enabled: smtp.enabled,
         public_origin: origin,
         warnings,
@@ -220,6 +244,9 @@ pub struct SignupReq {
     pub reset_enabled: bool,
     /// v0.4 D1: 注册需要邮箱验证 (default off).
     pub email_verify: bool,
+    /// 允许用通行密钥注册 (default off; older clients omit it).
+    #[serde(default)]
+    pub passkey_register: bool,
 }
 
 /// Validate and normalise a settings request (domains → punycode, deduped).
@@ -268,6 +295,7 @@ pub async fn apply_update_settings(
     conn: &mut PgConnection,
     actor: &Actor,
     has_origin: bool,
+    passkey_ok: bool,
     v: &SignupReq,
 ) -> Result<(), ApiError> {
     let cur: SignupSettings = sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -294,6 +322,12 @@ pub async fn apply_update_settings(
             "enable mail sending (系统设置 → 邮件) first"
         ));
     }
+    if v.passkey_register && !cur.passkey_register && !passkey_ok {
+        return Err(conflict!(
+            "signup_admin.passkey_unavailable",
+            "passkeys are not available: set a main domain (an https DNS name) or the passkey centre first"
+        ));
+    }
     if v.reset_enabled && !cur.reset_enabled && !has_origin {
         return Err(conflict!(
             "signup_admin.needs_main_domain",
@@ -316,7 +350,7 @@ pub async fn apply_update_settings(
         "UPDATE signup_settings SET version = version + 1, register_enabled = $1, \
          invite_required = $2, invite_single_use = $3, invite_codes_per_user = $4, \
          email_domains = $5, trial_plan_id = $6, trial_days = $7, reset_enabled = $8, \
-         email_verify = $9, updated_at = now() WHERE id = 1",
+         email_verify = $9, passkey_register = $10, updated_at = now() WHERE id = 1",
     )
     .bind(v.register_enabled)
     .bind(v.invite_required)
@@ -327,6 +361,7 @@ pub async fn apply_update_settings(
     .bind(v.trial_days)
     .bind(v.reset_enabled)
     .bind(v.email_verify)
+    .bind(v.passkey_register)
     .execute(&mut *conn)
     .await?;
     let snap =
@@ -337,8 +372,9 @@ pub async fn apply_update_settings(
                 "trial_days": td, "reset_enabled": re,
             })
         };
-    let with_verify = |mut j: serde_json::Value, ev: bool| {
-        j["email_verify"] = json!(ev);
+    let with_verify = |mut j: serde_json::Value, ev: (bool, bool)| {
+        j["email_verify"] = json!(ev.0);
+        j["passkey_register"] = json!(ev.1);
         j
     };
     crate::audit::record(
@@ -358,7 +394,7 @@ pub async fn apply_update_settings(
                 cur.trial_days,
                 cur.reset_enabled,
             ),
-            cur.email_verify,
+            (cur.email_verify, cur.passkey_register),
         )),
         Some(with_verify(
             snap(
@@ -371,7 +407,7 @@ pub async fn apply_update_settings(
                 v.trial_days,
                 v.reset_enabled,
             ),
-            v.email_verify,
+            (v.email_verify, v.passkey_register),
         )),
     )
     .await?;
@@ -387,8 +423,9 @@ pub async fn put_signup_settings(
     user.require_admin()?;
     let v = signup_values(&req)?;
     let has_origin = state.settings().get().public_origin().is_some();
+    let passkey_ok = crate::passkey::Rp::current(&state).is_some();
     let mut tx = state.pg().begin().await?;
-    apply_update_settings(&mut tx, &Actor::of(&user), has_origin, &v).await?;
+    apply_update_settings(&mut tx, &Actor::of(&user), has_origin, passkey_ok, &v).await?;
     let out = view(&state, &mut tx).await?;
     tx.commit().await?;
     Ok(Json(out))
@@ -424,13 +461,16 @@ pub async fn options(State(state): State<AppState>) -> Response {
                 // W24: false = register with email + password (no code;
                 // a proof-of-work challenge instead).
                 "email_verify": verify,
+                // "Register with a passkey" (address bound afterwards).
+                "passkey_register": s.register_enabled && s.passkey_register
+                    && crate::passkey::Rp::current(&state).is_some(),
                 "reset": s.reset_enabled,
                 "site_name": site_name,
                 "branding": branding,
             })
         }
         None => {
-            json!({ "register": false, "invite_required": false, "email_domains": [], "email_verify": false, "reset": false, "site_name": site_name, "branding": branding })
+            json!({ "register": false, "invite_required": false, "email_domains": [], "email_verify": false, "passkey_register": false, "reset": false, "site_name": site_name, "branding": branding })
         }
     };
     // The forms refuse every submission while their settings cannot be
@@ -440,6 +480,7 @@ pub async fn options(State(state): State<AppState>) -> Response {
     });
     // W27: whether the login page offers "sign in with a passkey".
     v["passkey"] = crate::passkey::public_view(&state);
+    v["passkey_rp"] = crate::passkey::public_rp_id(&state);
     // Q3: the site time zone, for the portal's dates before sign-in.
     v["timezone"] = json!(state.settings().get().timezone());
     ([(axum::http::header::CACHE_CONTROL, "no-store")], Json(v)).into_response()
@@ -564,6 +605,35 @@ pub(crate) async fn limit_register(
     .await
     .map_err(valkey_err)?;
     if h && d && t {
+        Ok(())
+    } else {
+        Err(ApiError::too_many())
+    }
+}
+
+/// Count one passkey registration attempt (no address yet): the same
+/// per-client windows as `limit_register`.
+pub(crate) async fn limit_register_client(
+    state: &AppState,
+    client_bucket: &str,
+) -> Result<(), ApiError> {
+    let h = crate::rate::hit(
+        state,
+        format!("akari:rl:register:ip:h:{client_bucket}"),
+        REGISTER_PER_IP_HOUR,
+        3600,
+    )
+    .await
+    .map_err(valkey_err)?;
+    let d = crate::rate::hit(
+        state,
+        format!("akari:rl:register:ip:d:{client_bucket}"),
+        REGISTER_PER_IP_DAY,
+        86_400,
+    )
+    .await
+    .map_err(valkey_err)?;
+    if h && d {
         Ok(())
     } else {
         Err(ApiError::too_many())
@@ -727,6 +797,14 @@ pub fn routes() -> axum::Router<AppState> {
         )
         .route("/{prefix}/auth/register", post(register::register))
         .route(
+            "/{prefix}/auth/register/passkey/options",
+            post(passkey_register::options),
+        )
+        .route(
+            "/{prefix}/auth/register/passkey",
+            post(passkey_register::finish),
+        )
+        .route(
             "/{prefix}/auth/password-reset/request",
             post(reset::request_reset),
         )
@@ -744,6 +822,11 @@ pub fn routes() -> axum::Router<AppState> {
             "/{prefix}/api/v1/me/email/verify",
             post(verify_email_change),
         )
+        .route(
+            "/{prefix}/api/v1/me/email/bind/code",
+            post(profile::bind_code),
+        )
+        .route("/{prefix}/api/v1/me/email/bind", post(profile::bind))
         .route("/{prefix}/api/v1/me/locale", put(set_locale))
         .route(
             "/{prefix}/api/v1/users/{id}/email/verify",

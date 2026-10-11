@@ -133,6 +133,17 @@ impl TestDb {
         crate::settings::reload(state).await.unwrap();
     }
 
+    /// The passkey centre (`None` = none), written directly, and `state`'s
+    /// view reloaded.
+    pub async fn passkey_domain(&self, state: &crate::state::AppState, domain: Option<&str>) {
+        sqlx::query("UPDATE panel_settings SET passkey_domain = $1 WHERE id = 1")
+            .bind(domain)
+            .execute(&self.pool)
+            .await
+            .unwrap();
+        crate::settings::reload(state).await.unwrap();
+    }
+
     /// A plain enabled role=user account (email `<id>@test.invalid`).
     pub async fn user(&self) -> Uuid {
         let id = Uuid::new_v4();

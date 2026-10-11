@@ -932,3 +932,730 @@ async fn reauth_without_passkeys_available() {
     assert!(!verify_reauth(&st, id, &proof).await.unwrap());
     db.drop().await;
 }
+
+// ---------------------------------------------------------------------------
+// Passkey centre (related origins)
+// ---------------------------------------------------------------------------
+
+const CENTRE: &str = "passkey.example.org";
+
+fn on_host(c: &mut Client, host: &str) {
+    c.headers.retain(|(k, _)| !k.eq_ignore_ascii_case("host"));
+    c.headers.push(("host".into(), host.into()));
+}
+
+/// A password nobody could have guessed (CodeQL: no literal passwords).
+fn random_pw() -> String {
+    format!("pw-{}", Uuid::new_v4().simple())
+}
+
+/// A passkey login from `host`, the authenticator signing for `rp` at
+/// `origin`; the status of the login.
+async fn centre_login(
+    st: &AppState,
+    key: &mut SoftKey,
+    host: &str,
+    origin: &str,
+    rp: &str,
+) -> StatusCode {
+    let mut p = Client::new(st, rand_ip());
+    on_host(&mut p, host);
+    let opts = p.get("/test/auth/options").await;
+    assert_eq!(opts.status, StatusCode::OK, "{host}");
+    assert_eq!(opts.json()["passkey_rp"], CENTRE);
+    let r = p.post("/test/auth/passkey/options", json!({})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let o = r.json();
+    let cred = key.get(&o["options"], rp, origin);
+    p.post(
+        "/test/auth/passkey/login",
+        json!({ "state": o["state"], "credential": cred }),
+    )
+    .await
+    .status
+}
+
+#[test]
+fn registrable_labels_ignore_subdomains_and_suffixes() {
+    use crate::settings::registrable_label as l;
+    assert_eq!(l("akari.cc"), "akari");
+    assert_eq!(l("a.b.akari.com"), "akari");
+    assert_eq!(l("shop.example.co.uk"), "example");
+    assert_eq!(l("mwny.net"), "mwny");
+    assert_eq!(l("localhost"), "localhost");
+}
+
+#[tokio::test]
+async fn centre_serves_the_related_origins_and_nothing_else() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = AppState::for_test(db.pool.clone()).await;
+    db.domains(
+        &st,
+        "main",
+        &["panel.example", "other.net:8443", "203.0.113.9"],
+    )
+    .await;
+    db.domains(&st, "sub", &["sub.example"]).await;
+    db.passkey_domain(&st, Some(CENTRE)).await;
+
+    let mut c = Client::new(&st, rand_ip());
+    on_host(&mut c, CENTRE);
+    let r = c.get("/.well-known/webauthn").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.headers["content-type"], "application/json");
+    assert_eq!(r.headers["cache-control"], "public, max-age=300");
+    // The https main domains only: no IP literal, no subscription domain.
+    assert_eq!(
+        r.json(),
+        json!({ "origins": ["https://panel.example", "https://other.net:8443"] })
+    );
+
+    // Everything else on the centre is the canonical rejection.
+    let canonical = Client::new(&st, rand_ip()).get("/no-such-route").await;
+    for (method, path) in [
+        (Method::GET, "/"),
+        (Method::GET, "/test/app"),
+        (Method::GET, "/test/healthz"),
+        (Method::GET, "/.well-known/webauthn/x"),
+        (Method::POST, "/.well-known/webauthn"),
+        (Method::GET, "/auth/options"),
+    ] {
+        let r = c.req(method.clone(), path, None).await;
+        assert_eq!(r.fingerprint(), canonical.fingerprint(), "{method} {path}");
+    }
+
+    // A main domain does not serve the file.
+    let mut m = Client::new(&st, rand_ip());
+    on_host(&mut m, "panel.example");
+    assert_eq!(
+        m.get("/.well-known/webauthn").await.fingerprint(),
+        canonical.fingerprint()
+    );
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn one_passkey_works_on_every_main_domain() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = AppState::for_test(db.pool.clone()).await;
+    db.domains(&st, "main", &["panel.example", "other.net"])
+        .await;
+    db.passkey_domain(&st, Some(CENTRE)).await;
+    let pw = random_pw();
+    let (_, email) = account(&db, "user", &pw).await;
+
+    // Bound once, on the first main domain: the RP ID is the centre's.
+    let mut c = Client::new(&st, rand_ip());
+    on_host(&mut c, "panel.example");
+    c.login(&email, &pw).await;
+    let mut key = SoftKey::new();
+    let r = c.post("/test/api/v1/me/passkeys/options", json!({})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let o = r.json();
+    let cred = key.create(&o["options"], CENTRE, "https://panel.example");
+    let r = c
+        .post(
+            "/test/api/v1/me/passkeys",
+            json!({ "state": o["state"], "credential": cred, "name": "phone" }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+    let v = c.get("/test/api/v1/me/passkeys").await.json();
+    assert_eq!(v["rp_id"], CENTRE);
+    assert_eq!(v["passkeys"][0]["current"], true);
+
+    // Every main domain and the centre's own origin sign in with it.
+    assert_eq!(
+        centre_login(
+            &st,
+            &mut key,
+            "panel.example",
+            "https://panel.example",
+            CENTRE
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        centre_login(&st, &mut key, "other.net", "https://other.net", CENTRE).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        centre_login(
+            &st,
+            &mut key,
+            "other.net",
+            "https://passkey.example.org",
+            CENTRE
+        )
+        .await,
+        StatusCode::OK
+    );
+    // A domain that is not a main domain (nor a subdomain of one), and an
+    // authenticator that signed for another RP ID, are refused.
+    assert_eq!(
+        centre_login(&st, &mut key, "other.net", "https://evil.example", CENTRE).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        centre_login(
+            &st,
+            &mut key,
+            "other.net",
+            "https://sub.panel.example",
+            CENTRE
+        )
+        .await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        centre_login(&st, &mut key, "other.net", "https://other.net", "other.net").await,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // A main domain added later is in the list at once; one removed is out.
+    db.domains(&st, "main", &["panel.example", "new.example"])
+        .await;
+    assert_eq!(
+        centre_login(&st, &mut key, "new.example", "https://new.example", CENTRE).await,
+        StatusCode::OK
+    );
+    // (The browser on the removed domain never gets here: its host is
+    // refused; an authenticator still signing for it is out of the list.)
+    assert_eq!(
+        centre_login(&st, &mut key, "panel.example", "https://other.net", CENTRE).await,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Without a centre the preferred main domain is the RP again; the
+    // centre's credentials are no longer current.
+    db.passkey_domain(&st, None).await;
+    let v = c.get("/test/api/v1/me/passkeys").await.json();
+    assert_eq!(
+        (v["rp_id"].clone(), v["passkeys"][0]["current"].clone()),
+        (json!("panel.example"), json!(false))
+    );
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn the_centre_is_a_domain_of_its_own() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = AppState::for_test(db.pool.clone()).await;
+    db.domains(&st, "main", &["panel.example"]).await;
+    db.domains(&st, "sub", &["sub.example"]).await;
+    db.domains(&st, "node", &["grpc.example"]).await;
+    let actor = crate::audit::Actor::cli();
+    let version = |db: &TestDb| {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT version FROM panel_settings WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+
+    // The value: a DNS name, never an IP literal.
+    use crate::settings::passkey_domain_value as value;
+    assert_eq!(value(None).unwrap(), None);
+    assert_eq!(value(Some("  ")).unwrap(), None);
+    assert_eq!(
+        value(Some("Passkey.Example.ORG")).unwrap().as_deref(),
+        Some(CENTRE)
+    );
+    for bad in ["203.0.113.9", "nodots", "https://x.example", "a b.example"] {
+        assert!(value(Some(bad)).is_err(), "{bad}");
+    }
+
+    // No host of another kind may be the centre.
+    for taken in ["panel.example", "sub.example", "grpc.example"] {
+        let mut tx = db.pool.begin().await.unwrap();
+        let err = crate::settings::apply_update_passkey_domain(
+            &mut tx,
+            &actor,
+            version(&db).await,
+            Some(taken.into()),
+        )
+        .await
+        .unwrap_err();
+        tx.rollback().await.unwrap();
+        assert_eq!(err.code(), "settings.passkey_domain_clash", "{taken}");
+    }
+    let mut tx = db.pool.begin().await.unwrap();
+    crate::settings::apply_update_passkey_domain(
+        &mut tx,
+        &actor,
+        version(&db).await,
+        Some(CENTRE.into()),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // ... and the other way round: a list may not take the centre's host.
+    for kind in [
+        crate::settings::DomainKind::Main,
+        crate::settings::DomainKind::Sub,
+        crate::settings::DomainKind::Node,
+    ] {
+        let mut new = crate::settings::Values::default();
+        new.prefer(kind, CENTRE.to_string());
+        let mut tx = db.pool.begin().await.unwrap();
+        let err = crate::settings::apply_update(&mut tx, &actor, version(&db).await, &new)
+            .await
+            .unwrap_err();
+        tx.rollback().await.unwrap();
+        assert_eq!(err.code(), "settings.passkey_domain_clash", "{kind:?}");
+    }
+
+    // Stale form: 409.
+    let mut tx = db.pool.begin().await.unwrap();
+    let err = crate::settings::apply_update_passkey_domain(&mut tx, &actor, 0, None)
+        .await
+        .unwrap_err();
+    tx.rollback().await.unwrap();
+    assert_eq!(err.code(), "settings.version_conflict");
+
+    // Audited, and the view tells the admin what browsers are told.
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'settings.passkey_domain.update'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 1);
+    db.drop().await;
+}
+
+// ---------------------------------------------------------------------------
+// Registering with a passkey; binding the address afterwards
+// ---------------------------------------------------------------------------
+
+async fn signup_set(db: &TestDb, sql: &str) {
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE signup_settings SET {sql} WHERE id = 1"
+    )))
+    .execute(&db.pool)
+    .await
+    .unwrap();
+}
+
+async fn pow_for(c: &Client) -> Value {
+    let r = c.get("/test/auth/register/challenge").await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let j = r.json();
+    let ch = j["challenge"].as_str().unwrap();
+    let nonce = crate::signup::pow::solve(ch, j["bits"].as_u64().unwrap() as u32);
+    json!({ "challenge": ch, "nonce": nonce })
+}
+
+/// Register with `key`: options + finish; the finish answer. On success the
+/// client keeps the session.
+async fn passkey_signup(
+    c: &mut Client,
+    key: &mut SoftKey,
+    extra: Value,
+) -> crate::testdb::http::Resp {
+    let mut body = json!({ "pow": pow_for(c).await });
+    if let Value::Object(m) = extra {
+        body.as_object_mut().unwrap().extend(m);
+    }
+    let r = c.post("/test/auth/register/passkey/options", body).await;
+    if r.status != StatusCode::OK {
+        return r;
+    }
+    let o = r.json();
+    let sel = &o["options"]["publicKey"]["authenticatorSelection"];
+    assert_eq!(sel["residentKey"], "required");
+    let cred = key.create(&o["options"], RP, ORIGIN);
+    let r = c
+        .post(
+            "/test/auth/register/passkey",
+            json!({ "state": o["state"], "credential": cred, "name": "laptop" }),
+        )
+        .await;
+    if let Some(cookie) = r.session_cookie() {
+        c.cookie = Some(cookie);
+    }
+    r
+}
+
+#[tokio::test]
+async fn registering_with_a_passkey_then_binding_the_address() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = state_with_domain(&db, RP).await;
+    let first_pw = random_pw();
+    let mut c = Client::new(&st, rand_ip());
+    let canonical = c.get("/test/no-such-route").await;
+
+    // Off by default (and while registration itself is off): the canonical
+    // rejection, before any body is read.
+    for sql in [
+        "passkey_register = true",
+        "register_enabled = true, passkey_register = false",
+    ] {
+        signup_set(&db, sql).await;
+        for p in [
+            "/test/auth/register/passkey/options",
+            "/test/auth/register/passkey",
+        ] {
+            let r = c.post(p, json!({})).await;
+            assert_eq!(r.fingerprint(), canonical.fingerprint(), "{sql} {p}");
+        }
+    }
+    signup_set(
+        &db,
+        "register_enabled = true, passkey_register = true, email_verify = false",
+    )
+    .await;
+    let opts = c.get("/test/auth/options").await.json();
+    assert_eq!(opts["passkey_register"], true);
+
+    // A request without a solved challenge is refused.
+    let r = c
+        .post(
+            "/test/auth/register/passkey/options",
+            json!({ "pow": { "challenge": "x", "nonce": "1" } }),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "signup.challenge_invalid");
+
+    let mut key = SoftKey::new();
+    let r = passkey_signup(&mut c, &mut key, json!({ "locale": "en" })).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["email_pending"], true);
+    let id: Uuid = r.json()["id"].as_str().unwrap().parse().unwrap();
+    let (email, pending, method, verified, has_pw, locale): (
+        String,
+        bool,
+        String,
+        bool,
+        bool,
+        String,
+    ) = sqlx::query_as(
+        "SELECT email, email_pending, signup_method, email_verified_at IS NOT NULL, \
+             password_hash IS NOT NULL, locale FROM users WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(email, format!("pending-{id}@pending.invalid"));
+    assert_eq!(
+        (pending, method.as_str(), verified, has_pw, locale.as_str()),
+        (true, "passkey", false, false, "en")
+    );
+    let (n, rp): (i64, String) =
+        sqlx::query_as("SELECT count(*), min(rp_id) FROM webauthn_credentials WHERE user_id = $1")
+            .bind(id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!((n, rp.as_str()), (1, RP));
+    // The audit row names the method; the sign-up has no password.
+    let audit: Value = sqlx::query_scalar(
+        "SELECT after FROM audit_log WHERE action = 'user.register' AND target_id = $1",
+    )
+    .bind(id.to_string())
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit["signup_method"], "passkey");
+
+    // Pending: GET /me (no email shown, no subscription) and the binding
+    // endpoints only.
+    let me = c.get("/test/api/v1/me").await;
+    assert_eq!(me.status, StatusCode::OK, "{:?}", me.json());
+    assert_eq!(me.json()["email_pending"], true);
+    assert_eq!(me.json()["email"], "");
+    assert!(me.json()["sub_url"].is_null());
+    for p in [
+        "/test/api/v1/me/passkeys",
+        "/test/api/v1/me/plan",
+        "/test/api/v1/me/nodes",
+        "/test/api/v1/me/tickets",
+        "/test/api/v1/me/shop",
+        "/test/api/v1/me/orders",
+    ] {
+        let r = c.get(p).await;
+        assert_eq!(
+            (r.status, r.json()["code"].clone()),
+            (StatusCode::FORBIDDEN, json!("account.email_required")),
+            "{p}"
+        );
+    }
+    // The second registration with the same credential is refused.
+    // Another account's address: the generic refusal.
+    let other = format!(
+        "taken{}@example.com",
+        &Uuid::new_v4().simple().to_string()[..8]
+    );
+    sqlx::query("INSERT INTO users (id, email) VALUES ($1, $2)")
+        .bind(Uuid::new_v4())
+        .bind(&other)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let r = c
+        .post("/test/api/v1/me/email/bind", json!({ "email": other }))
+        .await;
+    assert_eq!(r.json()["code"], "signup.unavailable");
+    // The code step does not exist while the site does not verify.
+    let r = c
+        .post(
+            "/test/api/v1/me/email/bind/code",
+            json!({ "email": "a@example.com" }),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "account.bind_no_code");
+
+    // Bind (optional password in the same step).
+    let mine = format!(
+        "mine{}@example.com",
+        &Uuid::new_v4().simple().to_string()[..8]
+    );
+    let r = c
+        .post(
+            "/test/api/v1/me/email/bind",
+            json!({ "email": mine, "password": first_pw }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["password_set"], true);
+    c.cookie = r.session_cookie();
+    let (email, pending, verified): (String, bool, bool) = sqlx::query_as(
+        "SELECT email, email_pending, email_verified_at IS NOT NULL FROM users WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (email.as_str(), pending, verified),
+        (mine.as_str(), false, false)
+    );
+    // Everything works now; the binding endpoints do not.
+    assert_eq!(
+        c.get("/test/api/v1/me/passkeys").await.status,
+        StatusCode::OK
+    );
+    let r = c
+        .post(
+            "/test/api/v1/me/email/bind",
+            json!({ "email": "z@example.com" }),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "account.email_bound");
+    // The address is the login name; the password set while binding works.
+    let mut p = Client::new(&st, rand_ip());
+    assert_eq!(p.login(&mine, &first_pw).await.status, StatusCode::OK);
+    // And the passkey signs in (a second device would too).
+    assert_eq!(passkey_login(&p, &mut key).await.status, StatusCode::OK);
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn binding_with_a_mailed_code_and_a_first_password_by_passkey() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let (first_pw, second_pw) = (random_pw(), random_pw());
+    let st = state_with_domain(&db, RP).await;
+    sqlx::query(
+        "UPDATE mail_settings SET enabled = true, host = '127.0.0.1', port = 1025, \
+         security = 'none', from_addr = 'noreply@example.com' WHERE id = 1",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    signup_set(
+        &db,
+        "register_enabled = true, passkey_register = true, email_verify = true",
+    )
+    .await;
+    let mut c = Client::new(&st, rand_ip());
+    let mut key = SoftKey::new();
+    let r = passkey_signup(&mut c, &mut key, json!({})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let id: Uuid = r.json()["id"].as_str().unwrap().parse().unwrap();
+
+    let mine = format!(
+        "mine{}@example.com",
+        &Uuid::new_v4().simple().to_string()[..8]
+    );
+    let r = c
+        .post("/test/api/v1/me/email/bind/code", json!({ "email": mine }))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    // The code mail (the spawned work may lag).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let body = loop {
+        let b: Option<String> = sqlx::query_scalar(
+            "SELECT body_text FROM mail_outbox WHERE kind = 'email_code' AND to_addr = $1",
+        )
+        .bind(&mine)
+        .fetch_optional(&db.pool)
+        .await
+        .unwrap();
+        if let Some(b) = b {
+            break b;
+        }
+        assert!(std::time::Instant::now() < deadline, "no code mail");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    let code: String = body
+        .split(|ch: char| !ch.is_ascii_digit())
+        .find(|w| w.len() == 6)
+        .unwrap()
+        .to_string();
+    // A wrong code is the one generic refusal; the account stays pending.
+    let r = c
+        .post("/test/api/v1/me/email/bind", json!({ "code": "000000" }))
+        .await;
+    assert_eq!(r.json()["code"], "signup.invalid_code");
+    let r = c
+        .post("/test/api/v1/me/email/bind", json!({ "code": code }))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["email_verified"], true);
+    let (email, pending, verified): (String, bool, bool) = sqlx::query_as(
+        "SELECT email, email_pending, email_verified_at IS NOT NULL FROM users WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (email.as_str(), pending, verified),
+        (mine.as_str(), false, true)
+    );
+
+    // No password yet: the first one needs a passkey proof, not a guess.
+    let r = c
+        .post(
+            "/test/api/v1/me/password",
+            json!({ "new_password": first_pw }),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "account.passkey_confirm_required");
+    let proof = reauth_proof(&c, &mut key).await;
+    let r = c
+        .post(
+            "/test/api/v1/me/password",
+            json!({ "new_password": first_pw, "passkey": proof }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{:?}", r.json());
+    // The password change ends the other sessions; this one continues.
+    c.cookie = r.session_cookie();
+    let mut p = Client::new(&st, rand_ip());
+    assert_eq!(p.login(&mine, &first_pw).await.status, StatusCode::OK);
+    // With a password the ordinary rule is back: the current one.
+    let r = c
+        .post(
+            "/test/api/v1/me/password",
+            json!({ "new_password": second_pw }),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "account.password_required");
+    db.drop().await;
+}
+
+#[tokio::test]
+async fn passkey_signup_gates_and_purge() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = state_with_domain(&db, RP).await;
+    signup_set(
+        &db,
+        "register_enabled = true, passkey_register = true, invite_required = true",
+    )
+    .await;
+    let mut c = Client::new(&st, rand_ip());
+    let mut key = SoftKey::new();
+    // The invite code is required, and must exist.
+    let r = passkey_signup(&mut c, &mut key, json!({})).await;
+    assert_eq!(r.json()["code"], "signup.invite_required");
+    let r = passkey_signup(&mut c, &mut key, json!({ "invite_code": "abcdefgh" })).await;
+    assert_eq!(r.json()["code"], "signup.invalid_invite");
+    // A filled honeypot gets the generic refusal and nothing is created.
+    signup_set(&db, "invite_required = false").await;
+    sqlx::query("UPDATE auth_settings SET honeypot = true")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let r = passkey_signup(
+        &mut c,
+        &mut key,
+        json!({ "guard": { "form_token": "x", "website": "http://spam.example" } }),
+    )
+    .await;
+    assert_eq!(r.json()["code"], "signup.unavailable");
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE email_pending")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+    sqlx::query("UPDATE auth_settings SET honeypot = false")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+    // Passkeys must work for the switch to be turned on (admin API).
+    let r = passkey_signup(&mut c, &mut key, json!({})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let id: Uuid = r.json()["id"].as_str().unwrap().parse().unwrap();
+
+    // Pending accounts older than the limit are deleted (with their
+    // passkeys); fresh ones stay. Audited as `system`.
+    let fresh = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO users (id, email, role, signup_method, email_pending) \
+         VALUES ($1, $2, 'user', 'passkey', true)",
+    )
+    .bind(fresh)
+    .bind(crate::signup::passkey_register::pending_email(fresh))
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE users SET created_at = now() - interval '25 hours' WHERE id = $1")
+        .bind(id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        crate::signup::passkey_register::purge_pending(&db.pool)
+            .await
+            .unwrap(),
+        1
+    );
+    let left: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE email_pending")
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(left, vec![fresh]);
+    let creds: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM webauthn_credentials WHERE user_id = $1")
+            .bind(id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(creds, 0);
+    assert_eq!(
+        crate::signup::passkey_register::purge_pending(&db.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    db.drop().await;
+}

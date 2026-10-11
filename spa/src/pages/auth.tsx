@@ -195,6 +195,11 @@ function usePasskeyLogin(to: string) {
     } catch (e) {
       /* 用户在系统弹窗里点了取消，不算错误 */
       if (isUserCancel(e)) return;
+      /* 浏览器认为这个域名不能用该通行密钥（不支持跨域名通行密钥的浏览器） */
+      if (e instanceof DOMException && e.name === 'SecurityError') {
+        toast.error(tr('当前浏览器不支持在这个域名上使用该通行密钥，请改用密码登录'));
+        return;
+      }
       toast.error(e instanceof ApiError && e.status === 401 ? tr('通行密钥登录失败，请重试或改用密码登录') : errText(e));
     }
   });
@@ -372,6 +377,33 @@ export function Register() {
     }
   };
 
+  /* 用通行密钥注册：不填邮箱和密码，账号建好后在弹窗里绑定邮箱（面板：待绑定邮箱状态） */
+  const passkeySignup = async () => {
+    if (phase !== 'idle') return;
+    if (site.inviteRequired && !invite.trim()) { toast.error(tr('请填写邀请码')); return; }
+    try {
+      setPhase('pow');
+      const ch = await authApi.registerChallenge();
+      const pow = { challenge: ch.challenge, nonce: await solvePow(ch.challenge, ch.bits) };
+      setPhase('submit');
+      const result = await authApi.registerPasskey({
+        pow,
+        ...(invite.trim() ? { invite_code: invite.trim() } : {}),
+        locale: mailLocale(locale),
+        guard: await guard.build(),
+      });
+      await signIn(result);
+      toast.success(tr('账号已创建'), { description: tr('接下来请绑定一个邮箱') });
+      nav(R.dashboard, { replace: true });
+    } catch (err) {
+      /* 用户在系统弹窗里点了取消，不算错误 */
+      if (!isUserCancel(err)) toast.error(errText(err));
+    } finally {
+      guard.after();
+      setPhase('idle');
+    }
+  };
+
   if (site.loading) {
     return <Shell><div className="flex justify-center py-16"><Spinner /></div></Shell>;
   }
@@ -455,6 +487,23 @@ export function Register() {
         </Button>
         {phase === 'pow' && (
           <p className="text-center text-[12px] text-muted-foreground">{tr('浏览器正在做一次计算来证明你不是机器人，通常只要几秒。')}</p>
+        )}
+
+        {site.passkeyRegister && webauthnSupported() && (
+          <>
+            <Divider />
+            <Button
+              type="button" variant="outline" onClick={() => void passkeySignup()}
+              disabled={busy || !guard.ready || guard.unavailable}
+              className="h-11 w-full rounded-xl text-[15px]"
+            >
+              <KeyRound className="size-4" />
+              {tr('用通行密钥注册')}
+            </Button>
+            <p className="text-center text-[12px] text-muted-foreground">
+              {tr('不用设置密码；创建后需要绑定一个邮箱才能使用。')}
+            </p>
+          </>
         )}
 
         <p className="text-center text-[12.5px] leading-relaxed text-muted-foreground">

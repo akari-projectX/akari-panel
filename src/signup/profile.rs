@@ -28,7 +28,7 @@ use uuid::Uuid;
 use super::{CodeCheck, email};
 use crate::api::ApiJson;
 use crate::audit::Actor;
-use crate::auth::{ApiError, ShopUser};
+use crate::auth::{ApiError, PendingUser, ShopUser};
 use crate::mail::{Locale, Template};
 use crate::state::AppState;
 
@@ -185,11 +185,14 @@ pub async fn apply_verify(
         .fetch_optional(&mut *conn)
         .await?;
     let mut sp = sqlx::Connection::begin(&mut *conn).await?;
-    let r = sqlx::query("UPDATE users SET email = $2, email_verified_at = now() WHERE id = $1")
-        .bind(user)
-        .bind(&addr)
-        .execute(&mut *sp)
-        .await;
+    let r = sqlx::query(
+        "UPDATE users SET email = $2, email_verified_at = now(), email_pending = false \
+         WHERE id = $1",
+    )
+    .bind(user)
+    .bind(&addr)
+    .execute(&mut *sp)
+    .await;
     match r {
         Ok(_) => sp.commit().await?,
         Err(sqlx::Error::Database(d)) if d.is_unique_violation() => {
@@ -273,6 +276,17 @@ pub async fn apply_admin_verify(
     user: Uuid,
 ) -> Result<String, ApiError> {
     crate::owner::guard_target(conn, actor, user).await?;
+    // The placeholder address of a passkey registration is nobody's.
+    let pending: Option<bool> = sqlx::query_scalar("SELECT email_pending FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_optional(&mut *conn)
+        .await?;
+    if pending == Some(true) {
+        return Err(conflict!(
+            "user.email_pending",
+            "the account has not bound an email address yet"
+        ));
+    }
     let row: Option<(String, bool)> = sqlx::query_as(
         "UPDATE users SET email_verified_at = COALESCE(email_verified_at, now()) \
          WHERE id = $1 RETURNING new.email, old.email_verified_at IS NULL",
@@ -309,4 +323,229 @@ pub async fn admin_verify_email(
     let addr = apply_admin_verify(&mut tx, &Actor::of(&user), id).await?;
     tx.commit().await?;
     Ok(Json(json!({ "email": addr, "email_verified": true })))
+}
+
+// ---------------------------------------------------------------------------
+// Binding the address of a passkey registration (`email_pending`)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BindCodeReq {
+    pub email: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BindReq {
+    /// Registration without verification: the address.
+    #[serde(default)]
+    pub email: Option<String>,
+    /// Registration with verification: the emailed code.
+    #[serde(default)]
+    pub code: Option<String>,
+    /// Optional: set a password now (it can also be set later).
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+/// The address checks of the binding (the registration's: syntax and the
+/// allowed domains).
+fn bind_address(raw: &str, s: &super::SignupSettings) -> Result<String, ApiError> {
+    let addr = email::parse(raw)
+        .ok_or_else(|| bad_request!("signup.invalid_email", "invalid email address"))?;
+    if !email::domain_allowed(&addr, &s.email_domains) {
+        return Err(bad_request!(
+            "signup.domain_not_allowed",
+            "email domain not allowed"
+        ));
+    }
+    Ok(addr)
+}
+
+fn bucket_of(user: &crate::auth::AuthUser) -> String {
+    user.ip
+        .map(crate::client_ip::bucket)
+        .unwrap_or_else(|| "unknown".into())
+}
+
+/// POST /api/v1/me/email/bind/code {email}: the code for the address to
+/// bind (the site verifies addresses: 注册需要邮箱验证 on, mail sending on).
+/// The same answer whether or not the address belongs to another account.
+pub async fn bind_code(
+    State(state): State<AppState>,
+    PendingUser { user }: PendingUser,
+    ApiJson(req): ApiJson<BindCodeReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let s = super::settings_or_none(&state)
+        .await
+        .ok_or_else(ApiError::internal)?;
+    if !s.email_verify {
+        return Err(conflict!(
+            "account.bind_no_code",
+            "this site does not verify addresses: bind the address directly"
+        ));
+    }
+    let addr = bind_address(&req.email, &s)?;
+    {
+        let mut c = state.pg().acquire().await?;
+        if !crate::mail::load(&mut c).await?.enabled {
+            return Err(conflict!("account.mail_off", "mail sending is not enabled"));
+        }
+    }
+    super::limit_send(&state, &bucket_of(&user), &addr).await?;
+    let st = state.clone();
+    let user_id = user.id;
+    tokio::spawn(async move {
+        let r = async {
+            let mut tx = st.pg().begin().await?;
+            apply_send_code(&mut tx, st.master_key(), user_id, &addr).await?;
+            tx.commit().await?;
+            anyhow::Ok(())
+        };
+        if let Err(e) = r.await {
+            tracing::warn!(error = %e, "email binding code not queued");
+        }
+    });
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Bind `addr` (unverified) to the pending account, in the caller's
+/// transaction: address lock → taken by another account = the generic
+/// `signup.unavailable` → conditional UPDATE (still pending) → audit
+/// `user.email.bind`. Registration without verification only.
+pub async fn apply_bind_unverified(
+    conn: &mut PgConnection,
+    actor: &Actor,
+    user: Uuid,
+    addr: &str,
+) -> Result<(), ApiError> {
+    super::lock_address(conn, addr).await?;
+    let taken: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE email = $1)")
+        .bind(addr)
+        .fetch_one(&mut *conn)
+        .await?;
+    if taken {
+        return Err(super::register::unavailable());
+    }
+    let mut sp = sqlx::Connection::begin(&mut *conn).await?;
+    let r = sqlx::query(
+        "UPDATE users SET email = $2, email_pending = false WHERE id = $1 AND email_pending",
+    )
+    .bind(user)
+    .bind(addr)
+    .execute(&mut *sp)
+    .await;
+    match r {
+        Ok(done) if done.rows_affected() == 1 => sp.commit().await?,
+        Ok(_) => {
+            sp.rollback().await?;
+            return Err(conflict!(
+                "account.email_bound",
+                "the account already has an email address"
+            ));
+        }
+        Err(sqlx::Error::Database(d)) if d.is_unique_violation() => {
+            sp.rollback().await?;
+            return Err(super::register::unavailable());
+        }
+        Err(e) => return Err(e.into()),
+    }
+    crate::audit::record(
+        conn,
+        actor,
+        "user.email.bind",
+        "user",
+        Some(user.to_string()),
+        None,
+        Some(json!({ "email": addr, "verified": false })),
+    )
+    .await?;
+    Ok(())
+}
+
+/// POST /api/v1/me/email/bind: ends the pending state.
+/// Site verifies addresses: `{code, password?}` (the code mailed to the
+/// address by `bind/code`); else `{email, password?}`. The optional
+/// password is set in the same transaction (the session continues with a
+/// fresh cookie: the password change ends the others).
+pub async fn bind(
+    State(state): State<AppState>,
+    PendingUser { user }: PendingUser,
+    jar: axum_extra::extract::CookieJar,
+    ApiJson(req): ApiJson<BindReq>,
+) -> Result<(axum_extra::extract::CookieJar, Json<serde_json::Value>), ApiError> {
+    let s = super::settings_or_none(&state)
+        .await
+        .ok_or_else(ApiError::internal)?;
+    let bucket = bucket_of(&user);
+    let hash = match req.password.as_deref().filter(|p| !p.is_empty()) {
+        Some(p) => {
+            super::check_password(p)?;
+            Some(crate::auth::hash_password_async(p).await?)
+        }
+        None => None,
+    };
+    let actor = Actor::of(&user);
+    let mut tx = state.pg().begin().await?;
+    let addr = if s.email_verify {
+        super::limit_complete(&state, &bucket).await?;
+        match apply_verify(
+            &mut tx,
+            state.master_key(),
+            &actor,
+            user.id,
+            req.code.as_deref().unwrap_or_default().trim(),
+        )
+        .await?
+        {
+            Some(addr) => addr,
+            None => {
+                // Keep the counted attempt.
+                tx.commit().await?;
+                return Err(super::register::invalid_code());
+            }
+        }
+    } else {
+        let addr = bind_address(req.email.as_deref().unwrap_or_default(), &s)?;
+        super::limit_register(&state, &bucket, &addr).await?;
+        apply_bind_unverified(&mut tx, &actor, user.id, &addr).await?;
+        addr
+    };
+    let mut session = None;
+    if let Some(hash) = &hash {
+        let (role, sv): (String, i64) = sqlx::query_as(
+            "UPDATE users SET password_hash = $2 WHERE id = $1 RETURNING role, session_ver",
+        )
+        .bind(user.id)
+        .bind(hash)
+        .fetch_one(&mut *tx)
+        .await?;
+        crate::audit::record(
+            &mut tx,
+            &actor,
+            "user.password.change",
+            "user",
+            Some(user.id.to_string()),
+            None,
+            Some(json!({ "password": crate::audit::CHANGED, "self_service": true, "bind": true })),
+        )
+        .await?;
+        session = Some((role, sv));
+    }
+    tx.commit().await?;
+    let jar = match session {
+        Some((role, sv)) => {
+            let token = crate::auth::issue_token(&state, user.id, &role, sv)?;
+            jar.add(crate::auth::session_cookie(&state, token))
+        }
+        None => jar,
+    };
+    Ok((
+        jar,
+        Json(json!({
+            "email": addr, "email_verified": s.email_verify,
+            "password_set": hash.is_some(),
+        })),
+    ))
 }

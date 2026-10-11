@@ -47,6 +47,10 @@ export type UserRow = {
   last_login_at: string | null;
   balance_cents: number;
   passkeys: number;
+  /** How the account registered: password | passkey. */
+  signup_method: "password" | "passkey";
+  /** Registered with a passkey and no address bound yet (`email` is a placeholder). */
+  email_pending: boolean;
 };
 
 const PAGE = 50;
@@ -127,7 +131,12 @@ export function UsersPage() {
           <span className="font-medium">{u.email}</span>
           {u.is_owner && <Badge tone="primary">{tr("所有者", "Owner")}</Badge>}
           {u.role === "admin" && !u.is_owner && <Badge tone="outline">{tr("管理员", "Admin")}</Badge>}
-          {!u.email_verified && !u.erased && (
+          {u.email_pending && (
+            <Badge tone="warning" className="text-[10px]">
+              {tr("待绑定邮箱", "Email pending")}
+            </Badge>
+          )}
+          {!u.email_verified && !u.erased && !u.email_pending && (
             <Badge tone="warning" className="text-[10px]">
               {tr("未验证", "Unverified")}
             </Badge>
@@ -183,6 +192,12 @@ export function UsersPage() {
       align: "right",
     },
     { key: "passkeys", header: tr("通行密钥", "Passkeys"), optional: true, cell: (u) => u.passkeys, align: "right" },
+    {
+      key: "signup",
+      header: tr("注册方式", "Signed up with"),
+      optional: true,
+      cell: (u) => (u.signup_method === "passkey" ? tr("通行密钥", "Passkey") : tr("密码", "Password")),
+    },
     { key: "reset", header: tr("下次重置", "Next reset"), optional: true, cell: (u) => dateOnly(u.next_reset_at) },
   ];
 

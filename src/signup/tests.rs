@@ -228,6 +228,7 @@ fn req(domains: &[&str]) -> SignupReq {
         trial_days: 3,
         reset_enabled: false,
         email_verify: false,
+        passkey_register: false,
     }
 }
 
@@ -341,7 +342,8 @@ async fn disabled_endpoints_are_the_canonical_rejection() {
     assert_eq!(
         v,
         json!({ "register": false, "invite_required": false, "email_domains": [], "reset": false,
-                "email_verify": false, "site_name": "Akari", "timezone": "Asia/Shanghai" })
+                "email_verify": false, "passkey_register": false, "passkey_rp": "panel.example",
+                "site_name": "Akari", "timezone": "Asia/Shanghai" })
     );
 
     // Enabled for one feature only: the other stays rejected.

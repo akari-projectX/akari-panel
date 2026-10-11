@@ -344,7 +344,7 @@ pub async fn apply_register(
 
 /// Give the new account the trial plan for `days` (savepoint: a disabled
 /// or deleted plan only skips the trial, never the registration).
-async fn grant_trial(
+pub(super) async fn grant_trial(
     conn: &mut PgConnection,
     actor: &Actor,
     user: Uuid,
@@ -382,9 +382,13 @@ pub fn unavailable() -> ApiError {
 /// GET /{prefix}/auth/register/challenge → `{challenge, bits}` (W24;
 /// registration without verification only, else the canonical rejection).
 pub async fn challenge(State(state): State<AppState>) -> Response {
-    let open = super::settings_or_none(&state)
-        .await
-        .is_some_and(|s| s.register_enabled && !s.email_verify);
+    // Registration without verification, and registration with a passkey,
+    // both start with a proof of work.
+    let open = super::settings_or_none(&state).await.is_some_and(|s| {
+        s.register_enabled
+            && (!s.email_verify
+                || s.passkey_register && crate::passkey::Rp::current(&state).is_some())
+    });
     if !open {
         return crate::reject::not_found();
     }
@@ -397,7 +401,7 @@ pub async fn challenge(State(state): State<AppState>) -> Response {
 }
 
 /// Single use of a solved challenge (all instances; fail closed).
-async fn spend_challenge(state: &AppState, challenge: &str) -> Result<bool, ApiError> {
+pub(super) async fn spend_challenge(state: &AppState, challenge: &str) -> Result<bool, ApiError> {
     use fred::prelude::*;
     let key = format!(
         "akari:pow:{}",
@@ -420,7 +424,7 @@ async fn spend_challenge(state: &AppState, challenge: &str) -> Result<bool, ApiE
     Ok(r.is_some())
 }
 
-fn bad_pow() -> ApiError {
+pub(super) fn bad_pow() -> ApiError {
     bad_request!(
         "signup.challenge_invalid",
         "the anti-bot check failed or expired; try again"

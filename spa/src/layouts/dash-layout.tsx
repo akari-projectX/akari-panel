@@ -21,6 +21,8 @@ import { allowed, R } from '@/lib/routes';
 
 /* 登录后的通行密钥引导用到弹窗组件，只有登录答复里带了 passkey_prompt 才加载 */
 const PasskeyPrompt = lazy(() => import('@/components/passkey-prompt'));
+/* 用通行密钥注册、还没绑定邮箱的账户：只有这个不可关闭的弹窗，别的什么都没有 */
+const BindEmailDialog = lazy(() => import('@/components/bind-email-dialog'));
 
 /**
  * 顶部只留四项加「更多」：低频的收进「更多」。
@@ -115,7 +117,8 @@ export function DashHeader() {
 
 export default function DashLayout() {
   const loc = useLocation();
-  const { scope, passkeyPrompt } = useAuth();
+  const { scope, passkeyPrompt, me } = useAuth();
+  const pending = !!me?.email_pending;
   useEffect(() => whenIdle(() => prefetchDash(scope)), [scope]);
 
   return (
@@ -125,12 +128,14 @@ export default function DashLayout() {
         {/* 旧页面淡出 → 回到页首 → 新页面上浮淡入，和站点页同一套，见 PageTransition */}
         <PageTransition id={loc.pathname}>
           <ErrorBoundary>
-            <FrozenOutlet fallback={<DashSkeleton />} />
+            {/* 待绑定邮箱时面板对其余接口一律 403：不渲染页面，免得一屏报错 */}
+            {pending ? <DashSkeleton /> : <FrozenOutlet fallback={<DashSkeleton />} />}
           </ErrorBoundary>
         </PageTransition>
       </main>
 
       <SiteFooter />
+      {pending && <Suspense fallback={null}><BindEmailDialog /></Suspense>}
       {passkeyPrompt && <Suspense fallback={null}><PasskeyPrompt /></Suspense>}
     </div>
   );

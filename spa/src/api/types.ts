@@ -53,6 +53,10 @@ export type AuthOptions = {
   guard: FormGuardOptions | null;
   /** 这里能用通行密钥登录（需要 https 主域名） */
   passkey: boolean;
+  /** 通行密钥的 RP ID（通行密钥中心域名，没设置时是首选主域名）；null = 通行密钥不可用 */
+  passkey_rp: string | null;
+  /** 注册页提供「用通行密钥注册」（注册后再绑定邮箱） */
+  passkey_register: boolean;
   /** 全站时区（IANA 名）：日期一律按它显示 */
   timezone: string;
 };
@@ -69,6 +73,8 @@ export type LoginResult = {
   passkey_prompt?: boolean;
   /** 注册时赠送了试用套餐 */
   trial?: boolean;
+  /** 用通行密钥注册、还没绑定邮箱：登录后必须先绑定（不可关闭的弹窗） */
+  email_pending?: boolean;
 };
 
 /** 表单的 guard 段：表单令牌 + 留空的蜜罐 + Turnstile 令牌 */
@@ -79,6 +85,8 @@ export type FormGuard = { form_token?: string; website: string; turnstile?: stri
 export type Me = {
   id: string;
   role: Role;
+  /** 用通行密钥注册、邮箱还没绑定：除绑定邮箱外什么都不能用（email 为空串） */
+  email_pending: boolean;
   /** 计费后的已用流量 */
   traffic_used_bytes: number;
   traffic_limit_bytes: number | null;

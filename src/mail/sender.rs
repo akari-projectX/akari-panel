@@ -220,6 +220,7 @@ pub async fn maintain(pg: &PgPool) -> sqlx::Result<()> {
     .execute(pg)
     .await?;
     crate::signup::prune(pg).await?;
+    crate::signup::passkey_register::purge_pending(pg).await?;
     Ok(())
 }
 
