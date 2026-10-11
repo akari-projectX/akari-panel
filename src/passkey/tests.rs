@@ -944,6 +944,11 @@ fn on_host(c: &mut Client, host: &str) {
     c.headers.push(("host".into(), host.into()));
 }
 
+/// A password nobody could have guessed (CodeQL: no literal passwords).
+fn random_pw() -> String {
+    format!("pw-{}", Uuid::new_v4().simple())
+}
+
 /// A passkey login from `host`, the authenticator signing for `rp` at
 /// `origin`; the status of the login.
 async fn centre_login(
@@ -1040,12 +1045,13 @@ async fn one_passkey_works_on_every_main_domain() {
     db.domains(&st, "main", &["panel.example", "other.net"])
         .await;
     db.passkey_domain(&st, Some(CENTRE)).await;
-    let (_, email) = account(&db, "user", "user-password-1").await;
+    let pw = random_pw();
+    let (_, email) = account(&db, "user", &pw).await;
 
     // Bound once, on the first main domain: the RP ID is the centre's.
     let mut c = Client::new(&st, rand_ip());
     on_host(&mut c, "panel.example");
-    c.login(&email, "user-password-1").await;
+    c.login(&email, &pw).await;
     let mut key = SoftKey::new();
     let r = c.post("/test/api/v1/me/passkeys/options", json!({})).await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
@@ -1287,6 +1293,7 @@ async fn registering_with_a_passkey_then_binding_the_address() {
         return;
     };
     let st = state_with_domain(&db, RP).await;
+    let first_pw = random_pw();
     let mut c = Client::new(&st, rand_ip());
     let canonical = c.get("/test/no-such-route").await;
 
@@ -1419,7 +1426,7 @@ async fn registering_with_a_passkey_then_binding_the_address() {
     let r = c
         .post(
             "/test/api/v1/me/email/bind",
-            json!({ "email": mine, "password": "first-password-1" }),
+            json!({ "email": mine, "password": first_pw }),
         )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
@@ -1450,10 +1457,7 @@ async fn registering_with_a_passkey_then_binding_the_address() {
     assert_eq!(r.json()["code"], "account.email_bound");
     // The address is the login name; the password set while binding works.
     let mut p = Client::new(&st, rand_ip());
-    assert_eq!(
-        p.login(&mine, "first-password-1").await.status,
-        StatusCode::OK
-    );
+    assert_eq!(p.login(&mine, &first_pw).await.status, StatusCode::OK);
     // And the passkey signs in (a second device would too).
     assert_eq!(passkey_login(&p, &mut key).await.status, StatusCode::OK);
     db.drop().await;
@@ -1464,6 +1468,7 @@ async fn binding_with_a_mailed_code_and_a_first_password_by_passkey() {
     let Some(db) = TestDb::new().await else {
         return;
     };
+    let (first_pw, second_pw) = (random_pw(), random_pw());
     let st = state_with_domain(&db, RP).await;
     sqlx::query(
         "UPDATE mail_settings SET enabled = true, host = '127.0.0.1', port = 1025, \
@@ -1538,7 +1543,7 @@ async fn binding_with_a_mailed_code_and_a_first_password_by_passkey() {
     let r = c
         .post(
             "/test/api/v1/me/password",
-            json!({ "new_password": "first-password-1" }),
+            json!({ "new_password": first_pw }),
         )
         .await;
     assert_eq!(r.json()["code"], "account.passkey_confirm_required");
@@ -1546,22 +1551,19 @@ async fn binding_with_a_mailed_code_and_a_first_password_by_passkey() {
     let r = c
         .post(
             "/test/api/v1/me/password",
-            json!({ "new_password": "first-password-1", "passkey": proof }),
+            json!({ "new_password": first_pw, "passkey": proof }),
         )
         .await;
     assert_eq!(r.status, StatusCode::NO_CONTENT, "{:?}", r.json());
     // The password change ends the other sessions; this one continues.
     c.cookie = r.session_cookie();
     let mut p = Client::new(&st, rand_ip());
-    assert_eq!(
-        p.login(&mine, "first-password-1").await.status,
-        StatusCode::OK
-    );
+    assert_eq!(p.login(&mine, &first_pw).await.status, StatusCode::OK);
     // With a password the ordinary rule is back: the current one.
     let r = c
         .post(
             "/test/api/v1/me/password",
-            json!({ "new_password": "second-password-2" }),
+            json!({ "new_password": second_pw }),
         )
         .await;
     assert_eq!(r.json()["code"], "account.password_required");
