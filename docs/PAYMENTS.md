@@ -129,7 +129,7 @@ amount  = price − min(credit, price)        -- never negative
   现有用户仍出现在商店里，只能续费和买重置包；其他人看不到、下单 400「not for sale」。关掉它则
   下架即对所有人停售。**停用**（`enabled = false`）则谁都不能买（续费也不行）。
 - `allow_switch_in = false`：其他套餐的持有者不能换入（新用户可以购买）。
-- `speed_limit_mbps` 由 agent 执行（见 README "Plans and node groups"）；`device_seats` 在客户端发布之前不执行（R25）。
+- `speed_limit_mbps` 由 agent 执行（见 docs/REFERENCE.md "Plans and node groups"）；`device_seats` 在客户端发布之前不执行（R25）。
 
 周期内的流量重置遵循套餐的 `reset_period`（M3 周期扫描）。运营规则（运营逻辑审查中-1）：续费**不重置**流量的套餐（`reset_period = none`）或一次性
 （`onetime`）时长时，新的一期从满额流量开始（已用清零、因超额被停用的账户恢复、记

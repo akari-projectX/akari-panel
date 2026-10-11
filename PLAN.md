@@ -1,6 +1,6 @@
 # Akari 开发计划（终态：三仓库）
 
-> 配套文档：`HANDOVER.md`（现状交接与踩坑）、`README.md`（架构与 API）。
+> 配套文档：`HANDOVER.md`（现状交接与踩坑）、`docs/REFERENCE.md`（架构与 API）。
 > 本计划 2026-09-30 制定，反映三个已确认的战略决策：
 >
 > 1. **三仓库结构**：控制面板 / agent(内嵌 xray-core) / 自研客户端(内嵌 mihomo)

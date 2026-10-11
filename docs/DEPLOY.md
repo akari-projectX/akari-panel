@@ -789,7 +789,7 @@ CI：agent 仓库的 `openrc self-update` job（Alpine 3.22 容器，OpenRC 为 
 3. **用户 → 新建用户**：登录名和密码，然后在该用户上 **分配套餐**。节点在一两秒内收到该用户
    （`POST /api/v1/users`、`PUT /api/v1/users/{id}/plan
    {"plan_id": …, "period": "month"}`；`period` 必填：`month` … `three_year`、带 `"days": N` 的 `days`，
-   或 `onetime`（可选 `days`，不填 = 永久）；见 README 的 API 表）。
+   或 `onetime`（可选 `days`，不填 = 永久）；见 docs/REFERENCE.md 的 API 表）。
 4. 用户在 `https://panel.yourdomain.com/`（门户）登录并复制 **订阅链接**（管理员在该用户上看到同一个 URL，`sub_url`）。
    链接根据客户端的 User-Agent 返回它所要的格式：Clash/mihomo YAML、sing-box JSON，或 base64 分享链接（v2rayN、Shadowrocket 等）；
    额度和到期时间通过 `subscription-userinfo` 传递。
