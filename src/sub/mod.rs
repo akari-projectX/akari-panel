@@ -372,6 +372,11 @@ pub async fn subscription(
         user.traffic_limit_bytes.unwrap_or(0)
     );
 
+    let site = settings
+        .stored
+        .site_name
+        .as_deref()
+        .unwrap_or(crate::settings::DEFAULT_SITE_NAME);
     (
         [
             (header::CONTENT_TYPE, HeaderValue::from_static(content_type)),
@@ -384,14 +389,55 @@ pub async fn subscription(
                 header::HeaderName::from_static("profile-update-interval"),
                 HeaderValue::from_static("24"),
             ),
+            (header::CONTENT_DISPOSITION, disposition(site)),
             (
-                header::CONTENT_DISPOSITION,
-                HeaderValue::from_static("attachment; filename=\"akari\""),
+                header::HeaderName::from_static("profile-title"),
+                profile_title(site),
             ),
         ],
         body,
     )
         .into_response()
+}
+
+/// `Content-Disposition` naming the profile after the site (站点名称):
+/// `filename*` (RFC 5987) carries the exact name, the plain `filename` an
+/// ASCII token for clients that read only that (never a quoted string: some
+/// clients keep the quotes and show `"akari"` as the profile name).
+fn disposition(site: &str) -> HeaderValue {
+    let token: String = site
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        .collect();
+    let token = if token.is_empty() {
+        "akari".into()
+    } else {
+        token
+    };
+    let mut enc = String::new();
+    for b in site.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                enc.push(b as char)
+            }
+            _ => enc.push_str(&format!("%{b:02X}")),
+        }
+    }
+    HeaderValue::from_str(&format!(
+        "attachment; filename={token}; filename*=UTF-8''{enc}"
+    ))
+    .unwrap_or_else(|_| HeaderValue::from_static("attachment; filename=akari"))
+}
+
+/// `Profile-Title: base64:<name>` (Hiddify, v2rayN and other clients that
+/// read it; base64 keeps non-ASCII names intact).
+fn profile_title(site: &str) -> HeaderValue {
+    use base64::Engine as _;
+    HeaderValue::from_str(&format!(
+        "base64:{}",
+        base64::engine::general_purpose::STANDARD.encode(site)
+    ))
+    .unwrap_or_else(|_| HeaderValue::from_static("base64:QWthcmk="))
 }
 
 async fn within_limit(state: &AppState, key: String, limit: i64, window: i64) -> bool {
@@ -758,7 +804,7 @@ mod tests {
         assert_eq!(
             lines[0],
             "vless://11111111-1111-1111-1111-111111111111@hk.example.com:443?type=tcp&security=reality\
-             &flow=xtls-rprx-vision&sni=www.apple.com&pbk=PUBKEY&sid=ab12&fp=firefox#HK%201%20in-vless"
+             &flow=xtls-rprx-vision&sni=www.apple.com&pbk=PUBKEY&sid=ab12&fp=firefox#in-vless"
         );
         let vmess: Value = serde_json::from_slice(
             &STANDARD
@@ -770,12 +816,12 @@ mod tests {
             vmess,
             json!({"add": "hk.example.com", "aid": "0", "host": "cdn.example.com",
                    "id": "22222222-2222-2222-2222-222222222222", "net": "ws", "path": "/ws",
-                   "port": "8443", "ps": "HK 1 in-vmess", "scy": "auto", "sni": "", "tls": "",
+                   "port": "8443", "ps": "in-vmess", "scy": "auto", "sni": "", "tls": "",
                    "type": "none", "v": "2"})
         );
         assert_eq!(
             lines[2],
-            "trojan://pw@hk.example.com:9443?type=tcp&security=tls&sni=t.example.com#HK%201%20in-trojan"
+            "trojan://pw@hk.example.com:9443?type=tcp&security=tls&sni=t.example.com#in-trojan"
         );
 
         let (ct, body) = render("clash.meta", &rows);
@@ -783,7 +829,7 @@ mod tests {
         assert_eq!(
             body.trim_end(),
             r#"proxies:
-  - name: "HK 1 in-vless"
+  - name: "in-vless"
     type: vless
     server: hk.example.com
     port: 443
@@ -796,7 +842,7 @@ mod tests {
     reality-opts:
       public-key: PUBKEY
       short-id: ab12
-  - name: "HK 1 in-vmess"
+  - name: "in-vmess"
     type: vmess
     server: hk.example.com
     port: 8443
@@ -808,7 +854,7 @@ mod tests {
       path: /ws
       headers:
         Host: cdn.example.com
-  - name: "HK 1 in-trojan"
+  - name: "in-trojan"
     type: trojan
     server: hk.example.com
     port: 9443
@@ -820,9 +866,9 @@ proxy-groups:
   - name: PROXY
     type: select
     proxies:
-      - "HK 1 in-vless"
-      - "HK 1 in-vmess"
-      - "HK 1 in-trojan"
+      - "in-vless"
+      - "in-vmess"
+      - "in-trojan"
 rule-providers:
   geosite-category-ads-all:
     type: http
@@ -867,16 +913,16 @@ rules:
         assert_eq!(ct, "application/json; charset=utf-8");
         let want = json!([
             {"type": "selector", "tag": "PROXY",
-             "outbounds": ["HK 1 in-vless", "HK 1 in-vmess", "HK 1 in-trojan"]},
+             "outbounds": ["in-vless", "in-vmess", "in-trojan"]},
             {"flow": "xtls-rprx-vision", "server": "hk.example.com", "server_port": 443,
-             "tag": "HK 1 in-vless",
+             "tag": "in-vless",
              "tls": {"enabled": true, "reality": {"enabled": true, "public_key": "PUBKEY", "short_id": "ab12"},
                      "server_name": "www.apple.com", "utls": {"enabled": true, "fingerprint": "firefox"}},
              "type": "vless", "uuid": "11111111-1111-1111-1111-111111111111"},
-            {"server": "hk.example.com", "server_port": 8443, "tag": "HK 1 in-vmess",
+            {"server": "hk.example.com", "server_port": 8443, "tag": "in-vmess",
              "transport": {"headers": {"Host": "cdn.example.com"}, "path": "/ws", "type": "ws"},
              "type": "vmess", "uuid": "22222222-2222-2222-2222-222222222222"},
-            {"password": "pw", "server": "hk.example.com", "server_port": 9443, "tag": "HK 1 in-trojan",
+            {"password": "pw", "server": "hk.example.com", "server_port": 9443, "tag": "in-trojan",
              "tls": {"enabled": true, "server_name": "t.example.com"}, "type": "trojan"},
             {"tag": "direct", "type": "direct"}]);
         let v = serde_json::from_str::<Value>(body.trim_end()).unwrap();
@@ -943,17 +989,17 @@ rules:
         assert_eq!(
             l[0],
             "vless://11111111-1111-1111-1111-111111111111@n.example.com:443?type=xhttp&security=reality\
-            &sni=www.apple.com&pbk=PUB&sid=ab&fp=chrome&path=%2Fxh&mode=stream-one#N%20rx"
+            &sni=www.apple.com&pbk=PUB&sid=ab&fp=chrome&path=%2Fxh&mode=stream-one#rx"
         );
         assert_eq!(
             l[1],
             "vless://22222222-2222-2222-2222-222222222222@n.example.com:2083?type=httpupgrade&security=tls\
-            &sni=n.example.com&path=%2Fup&host=n.example.com#N%20hu"
+            &sni=n.example.com&path=%2Fup&host=n.example.com#hu"
         );
         assert_eq!(
             l[2],
             "trojan://tp@n.example.com:2087?type=grpc&security=tls&sni=n.example.com\
-            &serviceName=svc&mode=gun#N%20gr"
+            &serviceName=svc&mode=gun#gr"
         );
         let vm = |s: &str| -> Value {
             serde_json::from_slice(
@@ -976,15 +1022,15 @@ rules:
         assert_eq!(
             l[5],
             "ss://2022-blake3-aes-128-gcm:%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2B%2F%2Bw%3D%3D%3AdXNlcmtleXVzZXJrZXkxMg%3D%3D\
-            @n.example.com:8388#N%20ss"
+            @n.example.com:8388#ss"
         );
         assert_eq!(
             l[6],
-            "hysteria2://a1b2@n.example.com:443/?sni=n.example.com#N%20hy"
+            "hysteria2://a1b2@n.example.com:443/?sni=n.example.com#hy"
         );
         assert_eq!(
             l[7],
-            "vless://55555555-5555-5555-5555-555555555555@n.example.com:8443?type=ws&path=%2Fw#N%20ws"
+            "vless://55555555-5555-5555-5555-555555555555@n.example.com:8443?type=ws&path=%2Fw#ws"
         );
     }
 
@@ -993,14 +1039,14 @@ rules:
         let (_, body) = render("mihomo/1.19", &matrix_rows());
         let y = body.trim_end();
         // vmess+xhttp has no mihomo equivalent: left out (and out of the group).
-        assert!(!y.contains("N vx"), "{y}");
+        assert!(!y.contains("vx"), "{y}");
         for want in [
-            "  - name: \"N rx\"\n    type: vless\n    server: n.example.com\n    port: 443\n    uuid: 11111111-1111-1111-1111-111111111111\n    network: xhttp\n    tls: true\n    servername: www.apple.com\n    client-fingerprint: chrome\n    reality-opts:\n      public-key: PUB\n      short-id: ab\n    xhttp-opts:\n      path: /xh\n      mode: stream-one\n",
+            "  - name: \"rx\"\n    type: vless\n    server: n.example.com\n    port: 443\n    uuid: 11111111-1111-1111-1111-111111111111\n    network: xhttp\n    tls: true\n    servername: www.apple.com\n    client-fingerprint: chrome\n    reality-opts:\n      public-key: PUB\n      short-id: ab\n    xhttp-opts:\n      path: /xh\n      mode: stream-one\n",
             "    network: ws\n    tls: true\n    servername: n.example.com\n    ws-opts:\n      path: /up\n      headers:\n        Host: n.example.com\n      v2ray-http-upgrade: true\n",
             "    type: trojan\n    server: n.example.com\n    port: 2087\n    password: tp\n    network: grpc\n    tls: true\n    sni: n.example.com\n    grpc-opts:\n      grpc-service-name: svc\n",
             "    type: vmess\n    server: n.example.com\n    port: 2096\n    uuid: 33333333-3333-3333-3333-333333333333\n    alterId: 0\n    cipher: auto\n    network: grpc\n    grpc-opts:\n      grpc-service-name: vs\n",
-            "  - name: \"N ss\"\n    type: ss\n    server: n.example.com\n    port: 8388\n    cipher: 2022-blake3-aes-128-gcm\n    password: \"+/+/+/+/+/+/+/+/+/+/+w==:dXNlcmtleXVzZXJrZXkxMg==\"\n    udp: true\n",
-            "  - name: \"N hy\"\n    type: hysteria2\n    server: n.example.com\n    port: 443\n    password: a1b2\n    sni: n.example.com\n    alpn:\n      - h3\n",
+            "  - name: \"ss\"\n    type: ss\n    server: n.example.com\n    port: 8388\n    cipher: 2022-blake3-aes-128-gcm\n    password: \"+/+/+/+/+/+/+/+/+/+/+w==:dXNlcmtleXVzZXJrZXkxMg==\"\n    udp: true\n",
+            "  - name: \"hy\"\n    type: hysteria2\n    server: n.example.com\n    port: 443\n    password: a1b2\n    sni: n.example.com\n    alpn:\n      - h3\n",
             "    uuid: 55555555-5555-5555-5555-555555555555\n    network: ws\n    ws-opts:\n      path: /w\n",
         ] {
             assert!(y.contains(want), "missing:\n{want}\nin:\n{y}");
@@ -1008,7 +1054,7 @@ rules:
         assert!(!y.contains("flow:"), "stale vision flow rendered: {y}");
         // 7 proxies (+ the PROXY group's own "- name:"), all in the group.
         assert_eq!(y.matches("  - name: ").count(), 8);
-        assert_eq!(y.matches("      - \"N ").count(), 7);
+        assert_eq!(y.matches("      - \"").count(), 7);
     }
 
     #[test]
@@ -1020,15 +1066,12 @@ rules:
         assert_eq!(
             all[0],
             json!({"type": "selector", "tag": "PROXY",
-                   "outbounds": ["N hu", "N gr", "N vg", "N ss", "N hy", "N ws"]})
+                   "outbounds": ["hu", "gr", "vg", "ss", "hy", "ws"]})
         );
         let ob = &all[1..];
         let tags: Vec<&str> = ob.iter().filter_map(|o| o["tag"].as_str()).collect();
         // Both xhttp proxies are left out (sing-box has no xhttp).
-        assert_eq!(
-            tags,
-            ["N hu", "N gr", "N vg", "N ss", "N hy", "N ws", "direct"]
-        );
+        assert_eq!(tags, ["hu", "gr", "vg", "ss", "hy", "ws", "direct"]);
         assert_eq!(
             ob[0]["transport"],
             json!({"type": "httpupgrade", "path": "/up", "host": "n.example.com"})
@@ -1043,12 +1086,12 @@ rules:
         );
         assert_eq!(
             ob[3],
-            json!({"tag": "N ss", "type": "shadowsocks", "server": "n.example.com", "server_port": 8388,
+            json!({"tag": "ss", "type": "shadowsocks", "server": "n.example.com", "server_port": 8388,
             "method": "2022-blake3-aes-128-gcm", "password": "+/+/+/+/+/+/+/+/+/+/+w==:dXNlcmtleXVzZXJrZXkxMg=="})
         );
         assert_eq!(
             ob[4],
-            json!({"tag": "N hy", "type": "hysteria2", "server": "n.example.com", "server_port": 443,
+            json!({"tag": "hy", "type": "hysteria2", "server": "n.example.com", "server_port": 443,
             "password": "a1b2", "tls": {"enabled": true, "server_name": "n.example.com", "alpn": ["h3"]}})
         );
         assert!(ob[5].get("flow").is_none());
@@ -1091,11 +1134,11 @@ rules:
         assert_eq!(
             names,
             [
-                "香港 01 | IPLC | 0.5x in-vless",
-                "香港 01 | IPLC | 0.5x in-vmess",
-                "香港 01 | IPLC | 0.5x in-trojan 2.0x",
-                "东京 直连",
-                "东京 直连 #2",
+                "in-vless | IPLC | 0.5x",
+                "in-vmess | IPLC | 0.5x",
+                "in-trojan | IPLC | 0.5x 2.0x",
+                "直连",
+                "直连 #2",
             ]
         );
         let trojan = &proxies[2];
@@ -1246,6 +1289,13 @@ rules:
             let r = c.get(&format!("/sub/{token}")).await;
             assert_eq!(r.status, StatusCode::OK);
             assert!(r.headers.contains_key("subscription-userinfo"));
+            // The profile is named after the site (default "Akari"), with no
+            // quoted filename (clients showed it as \"akari\").
+            assert_eq!(
+                r.headers["content-disposition"],
+                "attachment; filename=Akari; filename*=UTF-8''Akari"
+            );
+            assert_eq!(r.headers["profile-title"], "base64:QWthcmk=");
         }
         assert_eq!(b.get(&format!("/sub/{token}")).await.fingerprint(), junk);
         assert_eq!(
@@ -1288,5 +1338,26 @@ rules:
         let _: i64 = state.valkey().del(keys).await.unwrap();
         drop(state);
         db.drop().await;
+    }
+
+    #[test]
+    fn profile_name_headers_carry_the_site_name() {
+        assert_eq!(
+            disposition("Akari"),
+            "attachment; filename=Akari; filename*=UTF-8''Akari"
+        );
+        // Non-ASCII: the exact name in filename*, an ASCII token (or
+        // "akari") in filename; never a quoted string.
+        assert_eq!(
+            disposition("星云加速"),
+            "attachment; filename=akari; filename*=UTF-8''%E6%98%9F%E4%BA%91%E5%8A%A0%E9%80%9F"
+        );
+        assert_eq!(
+            disposition("My VPN \"1\""),
+            "attachment; filename=MyVPN1; filename*=UTF-8''My%20VPN%20%221%22"
+        );
+        assert!(!disposition("Akari").to_str().unwrap().contains('"'));
+        assert_eq!(profile_title("Akari"), "base64:QWthcmk=");
+        assert_eq!(profile_title("星云"), "base64:5pif5LqR");
     }
 }
