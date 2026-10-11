@@ -476,8 +476,8 @@ export function TagsField({ value, onChange }: { value: string; onChange: (v: st
     <Field
       label={tr("标签（逗号分隔，用户可见）", "Tags (comma separated, shown to users)")}
       hint={tr(
-        "显示在订阅线路名与门户线路列表里节点名之后，只属于这个入口（最多 8 个）。",
-        "Shown after the node's name in subscriptions and the portal's line list; this entrance only (at most 8).",
+        "显示在订阅线路名里入口名称之后，也显示在门户线路列表里，只属于这个入口（最多 8 个）。",
+        "Shown after the entrance's name in subscription line names and in the portal's line list; this entrance only (at most 8).",
       )}
     >
       <Input value={value} onChange={(e) => onChange(e.target.value)} placeholder="IPLC" />

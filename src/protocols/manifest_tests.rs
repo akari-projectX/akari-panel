@@ -257,9 +257,9 @@ fn subscription_formats_follow_the_manifest() {
             .collect::<Vec<_>>()
             .join("\n");
         for (tag, p, t, s) in &expect {
-            let present = text.contains(&format!("N {tag}\""))
-                || text.contains(&format!("N%20{tag}\n"))
-                || text.ends_with(&format!("N%20{tag}"));
+            let present = text.contains(&format!("\"{tag}\""))
+                || text.contains(&format!("#{tag}\n"))
+                || text.ends_with(&format!("#{tag}"));
             let want = m.unsupported_in(&f.id, p, t, s).is_none();
             assert_eq!(present, want, "format {} {p}/{t}/{s}", f.id);
         }

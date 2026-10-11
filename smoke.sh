@@ -1229,21 +1229,29 @@ assert r1 - r0 >= $RAW_D - 1, (r0, r1)
 assert 2 * (b1 - b0) <= r1 - r0, (b0, b1, r0, r1)
 " || { echo "FAIL: node raw/billed totals ($NODE_TOTALS0 -> $NODE_TOTALS1, D raw $RAW_D)"; exit 1; }
 echo "multiplier: ok (raw $RAW_D bytes, billed $USED_D at 0.5x)"
-# Subscription: display name + tags name the proxy, the override is dialed.
+# Subscription: the entrance's name + its tags name the proxy (not the
+# landing node's name), the override is dialed.
 # next07: the name does not carry the multiplier (a rename on every rate
 # change made clients drop the user's selection) unless the operator turns
 # on 订阅线路名显示倍率 (base multiplier only).
 subrl; curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" >"$LOG/w11-sub.yaml"
-grep -q '"冒烟 01 | IPLC | 0.5x 直连"' "$LOG/w11-sub.yaml" || { echo "FAIL: subscription name"; head -20 "$LOG/w11-sub.yaml"; exit 1; }
+grep -q '"直连 | IPLC | 0.5x"' "$LOG/w11-sub.yaml" || { echo "FAIL: subscription name"; head -20 "$LOG/w11-sub.yaml"; exit 1; }
+! grep -q '冒烟 01' "$LOG/w11-sub.yaml" || { echo "FAIL: the landing node's name is in a subscription line name"; exit 1; }
 ! grep -q '节点级' "$LOG/w11-sub.yaml" || { echo "FAIL: node-level tags in the subscription (1104)"; exit 1; }
 grep -q 'server: 127.0.0.1' "$LOG/w11-sub.yaml" || { echo "FAIL: connect override not in subscription"; exit 1; }
+# The profile is named after the site: no quoted filename (clients showed
+# it as \"akari\"), the exact name in filename* and Profile-Title.
+subrl; curl -s --noproxy '*' -A 'clash.meta' -D "$LOG/w11-sub.h" -o /dev/null "$SUBBASE/$SUB_D"
+tr -d '\r' <"$LOG/w11-sub.h" | matches -iF "content-disposition: attachment; filename=Akari; filename*=UTF-8''Akari" \
+  && tr -d '\r' <"$LOG/w11-sub.h" | matches -iFx 'profile-title: base64:QWthcmk=' \
+  || { echo "FAIL: subscription profile name headers"; cat "$LOG/w11-sub.h"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings (next07)"; exit 1; }
 N07_VER=$(last_json "d['version']")
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
     -d "{\"version\":$N07_VER,\"name_rate\":true}")" = "200" ] && last_json "d['subscription']['name_rate']" | matches -x 'True' \
   || { echo "FAIL: turn on multipliers in line names"; cat /tmp/akari-smoke/last; exit 1; }
-for _ in $(seq 1 20); do subrl; curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '"冒烟 01 | IPLC | 0.5x 直连 0.5x"' && break; sleep 0.25; done
-subrl; curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '"冒烟 01 | IPLC | 0.5x 直连 0.5x"' || { echo "FAIL: name_rate not served"; exit 1; }
+for _ in $(seq 1 20); do subrl; curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '"直连 | IPLC | 0.5x 0.5x"' && break; sleep 0.25; done
+subrl; curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '"直连 | IPLC | 0.5x 0.5x"' || { echo "FAIL: name_rate not served"; exit 1; }
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
     -d "{\"version\":$((N07_VER + 1)),\"name_rate\":false}")" = "200" ] || { echo "FAIL: name_rate off"; exit 1; }
 subrl
@@ -1446,7 +1454,7 @@ for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/11446) 2>/dev/null && break
 # The subscription lists the relay as its own proxy (next07: no multiplier
 # in the name), with its own tags (1104: not the direct entrance's).
 curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" >"$LOG/relay-sub.yaml"
-grep -q '"冒烟 01 | 专线 IPLC"' "$LOG/relay-sub.yaml" && grep -q '"冒烟 01 | IPLC | 0.5x 直连"' "$LOG/relay-sub.yaml" \
+grep -q '"IPLC | 专线"' "$LOG/relay-sub.yaml" && grep -q '"直连 | IPLC | 0.5x"' "$LOG/relay-sub.yaml" \
   && grep -q 'port: 11446' "$LOG/relay-sub.yaml" \
   || { echo "FAIL: relay not in the subscription"; cat "$LOG/relay-sub.yaml"; exit 1; }
 # The W11 client with a port and an attempt count (argv 2, 3).
@@ -1585,7 +1593,7 @@ for _ in $(seq 1 30); do [ "$(psql_q "SELECT hidden_since IS NOT NULL FROM entra
   || { echo "FAIL: unreachable relay not hidden"; psql_q "SELECT health_ok, health_failures, health_error FROM entrances WHERE id='$RELAY_ID'"; exit 1; }
 rl_sub_clear() { vk EVAL "for _,k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call('DEL', k) end return 1" 0 'akari:rl:sub:*' >/dev/null; }
 rl_sub_clear
-curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '专线 IPLC"' && { echo "FAIL: hidden relay still in the subscription"; exit 1; }
+curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '"IPLC | 专线"' && { echo "FAIL: hidden relay still in the subscription"; exit 1; }
 for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='firing'")" = "1" ] && break; sleep 1; done
 [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='firing'")" = "1" ] \
   || { echo "FAIL: no entrance_down alert"; exit 1; }
@@ -1593,7 +1601,7 @@ for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE s
 for _ in $(seq 1 20); do [ "$(psql_q "SELECT hidden_since IS NULL FROM entrances WHERE id='$RELAY_ID'")" = "t" ] && break; sleep 1; done
 [ "$(psql_q "SELECT health_ok AND hidden_since IS NULL FROM entrances WHERE id='$RELAY_ID'")" = "t" ] || { echo "FAIL: relay not restored"; exit 1; }
 rl_sub_clear
-curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '专线 IPLC"' || { echo "FAIL: restored relay not in the subscription"; exit 1; }
+curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches -F '"IPLC | 专线"' || { echo "FAIL: restored relay not in the subscription"; exit 1; }
 for _ in $(seq 1 20); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='resolved'")" = "1" ] && break; sleep 1; done
 [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='entrance_down' AND status='resolved'")" = "1" ] \
   || { echo "FAIL: entrance_down not resolved"; exit 1; }
