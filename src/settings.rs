@@ -3516,6 +3516,12 @@ fn describe_lines(eff: &Effective) -> Vec<String> {
             eff.main_source
         ),
         format!(
+            "passkey centre:   {}",
+            s.passkey_domain
+                .as_deref()
+                .unwrap_or("(not set: the preferred main domain is the RP)")
+        ),
+        format!(
             "sub domains:      {}  -> {} [{:?}]{}",
             show(&s.sub_domains),
             origin(&eff.sub),

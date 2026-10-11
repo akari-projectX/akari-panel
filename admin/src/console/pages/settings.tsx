@@ -55,6 +55,13 @@ export type SettingsView = {
   host_gate: boolean;
   site_name: string | null;
   timezone: { value: string | null; effective: string; default: string };
+  passkey: {
+    domain: string | null;
+    rp_id: string | null;
+    related_origins: string[];
+    labels: number;
+    label_limit: number;
+  };
   obsolete_config_keys: string[];
   warnings: string[];
   probe: {
@@ -208,6 +215,7 @@ function SiteTab() {
   const s = useSettings();
   const [siteName, setSiteName] = useState<string | null>(null);
   const [tz, setTz] = useState<string | null>(null);
+  const [pkDomain, setPkDomain] = useState<string | null>(null);
   const [lists, setLists] = useState<Lists | null>(null);
   const [perUser, setPerUser] = useState<boolean | null>(null);
   const [trust, setTrust] = useState<string | null>(null);
@@ -242,6 +250,28 @@ function SiteTab() {
         setTz(null);
       }
     });
+
+  const savePasskeyDomain = async () => {
+    const domain = (pkDomain ?? d.passkey.domain ?? "").trim();
+    if (
+      d.passkey.domain !== null &&
+      !(await confirm({
+        title: tr("更换通行密钥中心域名？", "Change the passkey centre?"),
+        description: tr(
+          "通行密钥绑定在中心域名上。更换或清除之后，所有账户已绑定的通行密钥都不能再用，用户需要用密码登录后重新绑定。",
+          "Passkeys are bound to the centre. After changing or clearing it every stored passkey stops working; users sign in with a password and bind again.",
+        ),
+        tone: "warning",
+        confirmLabel: tr("仍然更换", "Change anyway"),
+      }))
+    )
+      return;
+    const r = await run(() => put("/settings/passkey-domain", { version: d.version, domain: domain || null }), {
+      ok: tr("通行密钥中心域名已保存", "Passkey centre saved"),
+      invalidate: [["settings"]],
+    });
+    if (r !== undefined) setPkDomain(null);
+  };
 
   const dns = async (kind: string, domain: string) => {
     setChecks((c) => ({ ...c, [`${kind}:${domain}`]: tr("检测中…", "Checking…") }));
@@ -430,6 +460,52 @@ function SiteTab() {
             </Field>
           </div>
           <Button className="mt-3" variant="primary" size="sm" loading={busy} onClick={() => void saveSite()}>
+            {tr("保存", "Save")}
+          </Button>
+        </CardBody>
+      </Card>
+      <Card>
+        <CardHeader
+          title={tr("通行密钥中心域名", "Passkey centre")}
+          description={tr(
+            "通行密钥绑定在这个域名上（WebAuthn 的 RP ID），所有主域名通过它共用同一套通行密钥：在任一主域名绑定一次，全部主域名都能用。必须是单独的域名，不能同时是主域名、订阅域名或节点通信域名；它只提供 /.well-known/webauthn，不提供门户和后台。不要轮换它：更换后所有已绑定的通行密钥失效。留空 = 以首选主域名为 RP（多个主域名时只有首选主域名能用通行密钥）。",
+            "Passkeys are bound to this domain (the WebAuthn RP ID); every main domain shares one set through it: bind once on any main domain and it works on all. It must be a domain of its own (not a main, subscription or node domain) and serves only /.well-known/webauthn. Do not rotate it: changing it invalidates every bound passkey. Empty = the preferred main domain is the RP (with several main domains only that one can use passkeys).",
+          )}
+        />
+        <CardBody className="space-y-3">
+          <Field label={tr("中心域名", "Centre domain")}>
+            <Input
+              value={pkDomain ?? d.passkey.domain ?? ""}
+              placeholder="passkey.example.com"
+              onChange={(e) => setPkDomain(e.target.value)}
+            />
+          </Field>
+          {d.passkey.domain && (
+            <div className="space-y-1 text-[12.5px] text-muted-foreground">
+              <div>
+                RP ID: <span className="font-mono">{d.passkey.rp_id ?? "—"}</span>
+              </div>
+              <div>
+                {tr("关联来源（well-known 文件内容）", "Related origins (the well-known file)")}:{" "}
+                <span className="font-mono">{d.passkey.related_origins.join(", ") || "—"}</span>
+              </div>
+              <div>
+                {tr(
+                  `涉及 ${d.passkey.labels} 个不同的注册域（浏览器上限 ${d.passkey.label_limit}）`,
+                  `${d.passkey.labels} distinct registrable domains (browsers cap at ${d.passkey.label_limit})`,
+                )}
+              </div>
+            </div>
+          )}
+          {d.passkey.domain && d.passkey.labels > d.passkey.label_limit && (
+            <Callout tone="warning">
+              {tr(
+                "主域名涉及的注册域超过浏览器上限，超出的域名上通行密钥无法使用；请删除已弃用的域名。",
+                "The main domains span more registrable domains than browsers allow; the extra ones cannot use passkeys. Remove retired domains.",
+              )}
+            </Callout>
+          )}
+          <Button size="sm" variant="primary" loading={busy} onClick={() => void savePasskeyDomain()}>
             {tr("保存", "Save")}
           </Button>
         </CardBody>

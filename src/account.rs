@@ -16,7 +16,13 @@ use crate::state::AppState;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChangePasswordReq {
-    pub current_password: String,
+    /// The current password (accounts that have one).
+    #[serde(default)]
+    pub current_password: Option<String>,
+    /// An account without a password (registered with a passkey) sets its
+    /// first one by proving a passkey (`POST /me/reauth/options`).
+    #[serde(default)]
+    pub passkey: Option<crate::passkey::PasskeyProof>,
     pub new_password: String,
 }
 
@@ -37,6 +43,40 @@ pub async fn change_own_password(
         return Err(bad_request!(
             "account.password_too_short",
             "password must be at least 8 characters"
+        ));
+    }
+    // An account without a password (registered with a passkey): the first
+    // password is set on the proof of a passkey; nothing to guess, so no
+    // login-limit attempt.
+    let has_password: Option<bool> =
+        sqlx::query_scalar("SELECT password_hash IS NOT NULL FROM users WHERE id = $1")
+            .bind(user.id)
+            .fetch_optional(state.pg())
+            .await?;
+    if has_password == Some(false) {
+        let Some(proof) = req.passkey.as_ref() else {
+            return Err(bad_request!(
+                "account.passkey_confirm_required",
+                "this account signs in with passkeys only: confirm with a passkey"
+            ));
+        };
+        if !crate::passkey::verify_reauth(&state, user.id, proof).await? {
+            return Err(bad_request!(
+                "account.passkey_failed",
+                "the passkey could not be verified; try again"
+            ));
+        }
+        let (role, sv) = set_password(&state, &user, &req.new_password, true).await?;
+        let token = auth::issue_token(&state, user.id, &role, sv)?;
+        return Ok((
+            jar.add(auth::session_cookie(&state, token)),
+            axum::http::StatusCode::NO_CONTENT,
+        ));
+    }
+    if req.current_password.as_deref().is_none_or(str::is_empty) {
+        return Err(bad_request!(
+            "account.password_required",
+            "the current password is required"
         ));
     }
     let bucket = user
@@ -85,31 +125,55 @@ async fn change_password_inner(
     let Some(hash) = hash else {
         return Err(ApiError::unauthorized());
     };
-    if !auth::verify_password_async(&req.current_password, hash.as_deref().unwrap_or_default())
-        .await
-    {
+    let current = req.current_password.as_deref().unwrap_or_default();
+    if !auth::verify_password_async(current, hash.as_deref().unwrap_or_default()).await {
         return Ok(None);
     }
     let new_hash = auth::hash_password_async(&req.new_password).await?;
+    let out = write_password(&mut tx, user, &new_hash, false).await?;
+    tx.commit().await?;
+    Ok(Some(out))
+}
+
+/// Set the first password of an account without one (audited; the 0009
+/// trigger ends the other sessions).
+async fn set_password(
+    state: &AppState,
+    user: &AuthUser,
+    password: &str,
+    first: bool,
+) -> Result<(String, i64), ApiError> {
+    let new_hash = auth::hash_password_async(password).await?;
+    let mut tx = state.pg().begin().await?;
+    let out = write_password(&mut tx, user, &new_hash, first).await?;
+    tx.commit().await?;
+    Ok(out)
+}
+
+async fn write_password(
+    conn: &mut sqlx::PgConnection,
+    user: &AuthUser,
+    new_hash: &str,
+    first: bool,
+) -> Result<(String, i64), ApiError> {
     let (role, sv): (String, i64) = sqlx::query_as(
         "UPDATE users SET password_hash = $2 WHERE id = $1 RETURNING role, session_ver",
     )
     .bind(user.id)
-    .bind(&new_hash)
-    .fetch_one(&mut *tx)
+    .bind(new_hash)
+    .fetch_one(&mut *conn)
     .await?;
     crate::audit::record(
-        &mut tx,
+        conn,
         &Actor::of(user),
         "user.password.change",
         "user",
         Some(user.id.to_string()),
         None,
-        Some(json!({ "password": crate::audit::CHANGED, "self_service": true })),
+        Some(json!({ "password": crate::audit::CHANGED, "self_service": true, "first": first })),
     )
     .await?;
-    tx.commit().await?;
-    Ok(Some((role, sv)))
+    Ok((role, sv))
 }
 
 /// Self-service subscription token regenerations per account per hour.

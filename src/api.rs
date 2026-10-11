@@ -149,6 +149,9 @@ pub(crate) struct LoginRow {
     /// role=user banned by an admin: may log in to the portal scope only
     /// (the ban reason and tickets, W28-c).
     pub banned: bool,
+    /// Registered with a passkey, address not bound yet (the portal asks
+    /// for it; `auth::PendingUser`).
+    pub email_pending: bool,
     pub password_hash: Option<String>,
     pub session_ver: i64,
 }
@@ -159,7 +162,7 @@ pub(crate) fn login_row_cols() -> String {
         "u.id, u.email, u.role, u.enabled, u.password_hash, u.session_ver, {} AS expired, \
          (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'quota') AS quota_disabled, \
          (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'admin' \
-          AND u.erased_at IS NULL) AS banned",
+          AND u.erased_at IS NULL) AS banned, u.email_pending",
         crate::enforce::EXPIRED
     )
 }
@@ -186,6 +189,7 @@ pub(crate) fn login_response(
             "id": row.id, "email": row.email, "role": row.role,
             "expired": row.expired, "quota_exhausted": row.quota_disabled,
             "banned": row.banned, "passkey_prompt": passkey_prompt,
+            "email_pending": row.email_pending,
         })),
     )
         .into_response())
@@ -397,6 +401,10 @@ struct MeRow {
 pub struct MeView {
     id: Uuid,
     role: String,
+    /// Registered with a passkey and the address is not bound yet: the
+    /// portal asks for it (a dialog that cannot be closed) and nothing else
+    /// works (`email` is empty then).
+    email_pending: bool,
     traffic_used_bytes: i64,
     traffic_limit_bytes: Option<i64>,
     expires_at: Option<DateTime<Utc>>,
@@ -453,6 +461,7 @@ pub async fn me(
         expired,
         quota_exhausted,
         banned,
+        email_pending,
     }: PortalUser,
 ) -> Result<Response, ApiError> {
     let mut tx = state.pg().begin().await?;
@@ -465,7 +474,8 @@ pub async fn me(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(ApiError::unauthorized)?;
-    let stored = if user.role == "user" && !expired && !quota_exhausted && !banned {
+    let stored = if user.role == "user" && !expired && !quota_exhausted && !banned && !email_pending
+    {
         crate::sub::ensure_token(&mut tx, state.master_key(), &Actor::of(&user), user.id).await?
     } else {
         None
@@ -481,6 +491,7 @@ pub async fn me(
     let view = MeView {
         id: user.id,
         role: user.role,
+        email_pending,
         traffic_used_bytes: row.traffic_used_bytes,
         traffic_limit_bytes: row.traffic_limit_bytes,
         expires_at: row.expires_at,
@@ -489,7 +500,11 @@ pub async fn me(
         banned,
         ban_reason: if banned { row.disabled_note } else { None },
         banned_at: if banned { row.disabled_at } else { None },
-        email: row.email,
+        email: if email_pending {
+            String::new()
+        } else {
+            row.email
+        },
         email_verified: row.email_verified,
         locale: row.locale,
         sub_token,
@@ -603,6 +618,11 @@ pub struct UserView {
     last_login_at: Option<DateTime<Utc>>,
     balance_cents: i64,
     passkeys: i64,
+    /// How the account was registered: password | passkey.
+    signup_method: String,
+    /// Registered with a passkey and no address bound yet (`email` is the
+    /// placeholder; the account is removed after 24 hours).
+    email_pending: bool,
 }
 
 /// UserView columns (alias `users` table as itself).
@@ -618,7 +638,8 @@ pub const USER_VIEW_COLS: &str = "id, role, enabled, traffic_limit_bytes, traffi
      erased_at IS NOT NULL AS erased, last_login_at, \
      coalesce((SELECT b.balance_cents FROM user_balances b WHERE b.user_id = users.id), 0) \
      AS balance_cents, \
-     (SELECT count(*) FROM webauthn_credentials w WHERE w.user_id = users.id) AS passkeys";
+     (SELECT count(*) FROM webauthn_credentials w WHERE w.user_id = users.id) AS passkeys, \
+     signup_method, email_pending";
 
 /// `GET /users` query (W21, M3): page, search, filters and order.
 #[derive(Deserialize, Default)]
@@ -915,7 +936,8 @@ pub async fn create_user(
          created_at, disabled_reason, \
          NULL::uuid AS plan_id, NULL::text AS plan_name, NULL::timestamptz AS next_reset_at, \
          email, email_verified_at IS NOT NULL AS email_verified, is_owner, false AS erased, \
-         NULL::timestamptz AS last_login_at, 0::bigint AS balance_cents, 0::bigint AS passkeys",
+         NULL::timestamptz AS last_login_at, 0::bigint AS balance_cents, 0::bigint AS passkeys, \
+         signup_method, email_pending",
     )
     .bind(id)
     .bind(&email)

@@ -447,6 +447,9 @@ struct SessionRow {
     /// role=user banned by an admin (disabled_reason 'admin'): the portal
     /// scope only (`PortalUser`: the account, the ban reason, tickets).
     banned: bool,
+    /// Registered with a passkey and no address bound yet: the binding
+    /// endpoints only (`PendingUser`); every other extractor refuses.
+    email_pending: bool,
     session_ver: i64,
 }
 
@@ -472,7 +475,7 @@ async fn session(parts: &mut Parts, state: &AppState) -> Result<SessionRow, ApiE
          (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'quota') AS quota_disabled, \
          (u.role = 'user' AND NOT u.enabled AND u.disabled_reason = 'admin' \
           AND u.erased_at IS NULL) AS banned, \
-         u.session_ver FROM users u WHERE u.id = $1",
+         u.email_pending, u.session_ver FROM users u WHERE u.id = $1",
         crate::enforce::EXPIRED
     )))
     .bind(claims.sub)
@@ -506,6 +509,19 @@ impl SessionRow {
         self.expired || !self.enabled
     }
 
+    /// A passkey registration whose address is not bound yet reaches only
+    /// `PendingUser` (and `GET /me`, `PortalUser`).
+    fn refuse_pending(&self) -> Result<(), ApiError> {
+        if self.email_pending {
+            return Err(api_error!(
+                FORBIDDEN,
+                "account.email_required",
+                "bind your email address first"
+            ));
+        }
+        Ok(())
+    }
+
     /// W28-c: a banned account's session reaches only `PortalUser`
     /// endpoints; everything else answers this (the portal shows the ban).
     fn refuse_banned(&self) -> Result<(), ApiError> {
@@ -529,6 +545,7 @@ impl FromRequestParts<AppState> for AuthUser {
     ) -> Result<Self, Self::Rejection> {
         let row = session(parts, state).await?;
         row.refuse_banned()?;
+        row.refuse_pending()?;
         if row.restricted() {
             return Err(ApiError::unauthorized());
         }
@@ -566,6 +583,13 @@ impl FromRequestParts<AppState> for ShopUser {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let p = PortalUser::from_request_parts(parts, state).await?;
+        if p.email_pending {
+            return Err(api_error!(
+                FORBIDDEN,
+                "account.email_required",
+                "bind your email address first"
+            ));
+        }
         if p.banned {
             return Err(api_error!(
                 FORBIDDEN,
@@ -591,6 +615,8 @@ pub struct PortalUser {
     pub expired: bool,
     pub quota_exhausted: bool,
     pub banned: bool,
+    /// The address is not bound yet (passkey registration): `GET /me` only.
+    pub email_pending: bool,
 }
 
 impl FromRequestParts<AppState> for PortalUser {
@@ -605,6 +631,40 @@ impl FromRequestParts<AppState> for PortalUser {
             expired: row.expired,
             quota_exhausted: row.quota_disabled,
             banned: row.banned,
+            email_pending: row.email_pending,
+            user: AuthUser {
+                id: row.id,
+                email: row.email,
+                role: row.role,
+                ip: request_ip(parts, state),
+            },
+        })
+    }
+}
+
+/// The session of an account that registered with a passkey and has not
+/// bound an address yet (`users.email_pending`): the only extractor of the
+/// binding endpoints. Any other account is 409 `account.email_bound`.
+pub struct PendingUser {
+    pub user: AuthUser,
+}
+
+impl FromRequestParts<AppState> for PendingUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let row = session(parts, state).await?;
+        if !row.email_pending {
+            return Err(api_error!(
+                CONFLICT,
+                "account.email_bound",
+                "the account already has an email address"
+            ));
+        }
+        Ok(PendingUser {
             user: AuthUser {
                 id: row.id,
                 email: row.email,

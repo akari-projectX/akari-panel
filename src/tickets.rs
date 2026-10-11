@@ -717,6 +717,14 @@ fn customer(u: &PortalUser) -> Result<Author, ApiError> {
     if u.user.role != "user" {
         return Err(ApiError::forbidden());
     }
+    // A passkey registration binds its address before anything else.
+    if u.email_pending {
+        return Err(crate::auth::api_error!(
+            FORBIDDEN,
+            "account.email_required",
+            "bind your email address first"
+        ));
+    }
     Ok(Author::of(&u.user))
 }
 

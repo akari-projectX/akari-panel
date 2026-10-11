@@ -137,7 +137,7 @@ impl Rp {
         })
     }
 
-    fn webauthn(&self) -> Result<Webauthn, ApiError> {
+    pub(crate) fn webauthn(&self) -> Result<Webauthn, ApiError> {
         WebauthnBuilder::new(&self.id, &self.origin)
             .and_then(|b| {
                 let mut b = b
@@ -189,7 +189,11 @@ fn state_key(kind: &str, token: &str) -> String {
     format!("akari:passkey:{kind}:{token}")
 }
 
-async fn put_state<T: Serialize>(state: &AppState, kind: &str, v: &T) -> Result<String, ApiError> {
+pub(crate) async fn put_state<T: Serialize>(
+    state: &AppState,
+    kind: &str,
+    v: &T,
+) -> Result<String, ApiError> {
     let mut b = [0u8; 32];
     rand::rng().fill_bytes(&mut b);
     let token = hex::encode(b);
@@ -212,7 +216,7 @@ async fn put_state<T: Serialize>(state: &AppState, kind: &str, v: &T) -> Result<
 }
 
 /// Take (and delete) a stored ceremony state. None = unknown/expired/used.
-async fn take_state<T: DeserializeOwned>(
+pub(crate) async fn take_state<T: DeserializeOwned>(
     state: &AppState,
     kind: &str,
     token: &str,
@@ -805,7 +809,17 @@ pub async fn register_options(
     )
     .await?;
     let mut options = serde_json::to_value(&ccr)?;
-    // Passkeys are discoverable (the login sends no address).
+    discoverable(&mut options);
+    Ok((
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Json(json!({ "state": token, "options": options })),
+    )
+        .into_response())
+}
+
+/// Passkeys are discoverable (the login sends no address): ask the
+/// authenticator for a resident key.
+pub(crate) fn discoverable(options: &mut Value) {
     if let Some(sel) = options
         .pointer_mut("/publicKey/authenticatorSelection")
         .and_then(Value::as_object_mut)
@@ -813,11 +827,6 @@ pub async fn register_options(
         sel.insert("residentKey".into(), json!("required"));
         sel.insert("requireResidentKey".into(), json!(true));
     }
-    Ok((
-        [(axum::http::header::CACHE_CONTROL, "no-store")],
-        Json(json!({ "state": token, "options": options })),
-    )
-        .into_response())
 }
 
 fn limit_reached() -> ApiError {
@@ -836,7 +845,7 @@ fn invalid_name() -> ApiError {
     )
 }
 
-fn clean_name(raw: &str) -> Result<String, ApiError> {
+pub(crate) fn clean_name(raw: &str) -> Result<String, ApiError> {
     let n = raw.trim();
     if n.is_empty() || n.chars().count() > NAME_MAX || n.chars().any(char::is_control) {
         return Err(invalid_name());

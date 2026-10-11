@@ -47,6 +47,24 @@ export const authApi = {
     guard: FormGuard;
   }) => auth.post<LoginResult>('/register', body),
 
+  /**
+   * 用通行密钥注册（站长开了才有）：工作量证明 → 取挑战 → 设备创建通行密钥 → 交回。
+   * 账户先以「待绑定邮箱」状态建好并登录，登录后必须先绑定邮箱（`meApi.emailBind`）。
+   */
+  registerPasskey: async (body: {
+    pow: { challenge: string; nonce: string };
+    invite_code?: string;
+    locale?: string;
+    guard: FormGuard;
+  }): Promise<LoginResult> => {
+    const ch = await auth.post<PasskeyChallenge>('/register/passkey/options', body);
+    const cred = (await navigator.credentials.create({
+      publicKey: creationOptions(ch.options.publicKey),
+    })) as PublicKeyCredential | null;
+    if (!cred) throw new DOMException('cancelled', 'NotAllowedError');
+    return auth.post<LoginResult>('/register/passkey', { state: ch.state, credential: credentialJSON(cred) });
+  },
+
   /** 申请重置链接（发到已验证的地址；对任何地址都答 ok） */
   resetRequest: (email: string, guard: FormGuard) =>
     auth.post<{ ok: true }>('/password-reset/request', { email, guard }),
@@ -85,6 +103,14 @@ export const meApi = {
    */
   emailCode: (email: string, confirm?: HolderProof) => api.post<void>('/me/email/code', { email, ...confirm }),
   emailVerify: (code: string) => api.post<{ email: string }>('/me/email/verify', { code }),
+  /** 待绑定邮箱的账户：站点要验证邮箱时先发码（对任何地址都答 ok） */
+  emailBindCode: (email: string) => api.post<{ ok: true }>('/me/email/bind/code', { email }),
+  /** 绑定邮箱：要验证 = { code }，不验证 = { email }；password 选填（也可以以后在设置页设置） */
+  emailBind: (body: { email?: string; code?: string; password?: string }) =>
+    api.post<{ email: string; email_verified: boolean; password_set: boolean }>('/me/email/bind', body),
+  /** 没有密码的账户（通行密钥注册）第一次设置密码：要通行密钥确认（passkeyApi.confirm） */
+  setFirstPassword: (new_password: string, proof: HolderProof) =>
+    api.post<void>('/me/password', { new_password, ...proof }),
 };
 
 /* ───────────── 自助注销 ───────────── */

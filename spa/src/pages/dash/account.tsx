@@ -331,11 +331,48 @@ function Security() {
     });
   };
 
-  /* 没有密码的账户（password_set=false）不显示改密码 */
+  /* 没有密码的账户（password_set=false，通行密钥注册）：用通行密钥确认后设置第一个密码 */
   const passwordSet = methods.data?.password_set ?? true;
+  const [firstPwd, setFirstPwd] = useState('');
+  const [firstConfirm, setFirstConfirm] = useState('');
+  const firstSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (firstPwd !== firstConfirm) { toast.error(tr('两次输入的新密码不一致')); return; }
+    run(async () => {
+      try {
+        await meApi.setFirstPassword(firstPwd, await passkeyApi.confirm());
+        setFirstPwd(''); setFirstConfirm('');
+        methods.reload();
+        toast.success(tr('密码已设置'), { description: tr('以后可以用邮箱和密码登录') });
+      } catch (err) {
+        if (!isUserCancel(err)) toast.error(errText(err));
+      }
+    });
+  };
 
   return (
     <>
+      {methods.data && !passwordSet && (
+        <Section
+          title={<><Lock className="size-4 text-brand" />{tr('设置密码')}</>}
+          desc={tr('这个账号还没有密码，只能用通行密钥登录。设置密码需要先用通行密钥确认是你本人。')}
+        >
+          <form className="max-w-115 space-y-4" onSubmit={firstSubmit}>
+            <div className="space-y-2">
+              <Label htmlFor="first-password">{tr('新密码')}</Label>
+              <Input id="first-password" type="password" className="h-10" autoComplete="new-password" required minLength={8}
+                     value={firstPwd} onChange={(e) => setFirstPwd(e.target.value)} placeholder={tr('至少 8 位')} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="first-password-confirm">{tr('确认新密码')}</Label>
+              <Input id="first-password-confirm" type="password" className="h-10" autoComplete="new-password" required minLength={8}
+                     value={firstConfirm} onChange={(e) => setFirstConfirm(e.target.value)} placeholder={tr('再次输入新密码')} />
+            </div>
+            <Button className="h-10" disabled={saving}>{saving ? tr('提交中') : tr('用通行密钥确认并设置')}</Button>
+          </form>
+        </Section>
+      )}
+
       {passwordSet && (
         <Section
           title={<><Lock className="size-4 text-brand" />{tr('修改密码')}</>}
