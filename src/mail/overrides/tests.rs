@@ -302,3 +302,218 @@ async fn edited_template_is_used_by_enqueue() {
     assert_eq!(n, 0);
     db.drop().await;
 }
+
+/// An HTML source replaces the whole HTML part (the panel's shell included)
+/// for the next mail, keeps the plain-text alternative, is validated at the
+/// API and in the preview, comes back in the list and can be dropped again.
+#[tokio::test]
+async fn html_source_replaces_the_html_part() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let admin = client_for(&state, db.admin().await).await;
+    let user = client_for(&state, db.user().await).await;
+    sqlx::query(
+        "UPDATE mail_settings SET enabled = true, host = '127.0.0.1', port = 1025, security = 'none', \
+         from_addr = 'noreply@example.com' WHERE id = 1",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE panel_settings SET site_name = 'Akari <Test>' WHERE id = 1")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let path = "/test/api/v1/settings/mail-templates/register_code/zh";
+    let put = |body: serde_json::Value| {
+        let admin = &admin;
+        async move { admin.req(Method::PUT, path, Some(body)).await }
+    };
+    let source = "<!doctype html><html><body style=\"background:#fff\">\
+                  <h2>{site}</h2><p class=\"code\">{code}</p><p>{minutes} 分钟</p></body></html>";
+
+    // Validation: the same placeholder rules as the text, plus the HTML ones.
+    for (html, code) in [
+        ("<p>{site}</p>", "mail_template.placeholder_missing"),
+        ("<p>{code}{nope}</p>", "mail_template.placeholder_unknown"),
+        (
+            "<script>x</script><p>{code}</p>",
+            "mail_template.html_forbidden",
+        ),
+        (
+            "<a href=\"javascript:x\">{code}</a>",
+            "mail_template.html_forbidden",
+        ),
+        ("   ", "mail_template.html_length"),
+    ] {
+        let r = put(json!({ "version": 0, "subject": "x", "body": "{code}", "html_source": html }))
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{html}");
+        assert_eq!(r.json()["code"], code, "{html}");
+    }
+    assert_eq!(
+        user.req(
+            Method::PUT,
+            path,
+            Some(json!({ "version": 0, "subject": "x", "body": "{code}", "html_source": source }))
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    // Nothing was stored by the refusals.
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM mail_templates")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+
+    // The preview validates too and renders the source with sample values.
+    let preview = |html: Option<&str>| {
+        let admin = &admin;
+        let html = html.map(String::from);
+        async move {
+            admin
+                .req(
+                    Method::POST,
+                    "/test/api/v1/settings/mail-templates/preview",
+                    Some(
+                        json!({ "kind": "register_code", "locale": "zh", "subject": "S {site}",
+                                 "body": "{code}", "html_source": html }),
+                    ),
+                )
+                .await
+        }
+    };
+    let r = preview(Some("<p>nothing</p>")).await;
+    assert_eq!(r.json()["code"], "mail_template.placeholder_missing");
+    let r = preview(Some(source)).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let html = r.json()["html"].as_str().unwrap().to_string();
+    assert!(
+        html.starts_with(
+            "<!doctype html><html><body style=\"background:#fff\"><h2>Akari &lt;Test&gt;</h2>"
+        ),
+        "{html}"
+    );
+    assert!(
+        !html.contains("max-width:520px"),
+        "the panel shell is gone: {html}"
+    );
+    // Without a source the panel's shell is still used.
+    let r = preview(None).await;
+    assert!(
+        r.json()["html"]
+            .as_str()
+            .unwrap()
+            .contains("max-width:520px")
+    );
+
+    // Store it; the list shows it and the starter; the mail uses it.
+    let r = put(json!({ "version": 0, "subject": "[{site}] {code}", "body": "Your code:\n\n{code}", "html_source": source })).await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let list = admin
+        .get("/test/api/v1/settings/mail-templates")
+        .await
+        .json();
+    let rows = list.as_array().unwrap();
+    let row = rows
+        .iter()
+        .find(|r| r["kind"] == "register_code" && r["locale"] == "zh")
+        .unwrap();
+    assert_eq!(row["html_source"], source);
+    let starter = row["starter_html"].as_str().unwrap();
+    assert!(
+        starter.contains("{code}") && starter.contains("{site}"),
+        "{starter}"
+    );
+    let other = rows
+        .iter()
+        .find(|r| r["kind"] == "register_code" && r["locale"] == "en")
+        .unwrap();
+    assert_eq!(other["html_source"], serde_json::Value::Null);
+
+    let smtp = crate::mail::load(&mut db.pool.acquire().await.unwrap())
+        .await
+        .unwrap();
+    let tpl = crate::mail::Template::RegisterCode {
+        code: "246810".into(),
+        minutes: 10,
+    };
+    let enqueue = || async {
+        let mut c = db.pool.acquire().await.unwrap();
+        crate::mail::enqueue(
+            &mut c,
+            &smtp,
+            &tpl,
+            Locale::Zh,
+            "a@example.com",
+            None,
+            Some(600),
+        )
+        .await
+        .unwrap();
+    };
+    let last = || async {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT body_text, body_html FROM mail_outbox ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+    };
+    enqueue().await;
+    let (text, html) = last().await;
+    assert_eq!(
+        html,
+        "<!doctype html><html><body style=\"background:#fff\">\
+         <h2>Akari &lt;Test&gt;</h2><p class=\"code\">246810</p><p>10 分钟</p></body></html>"
+    );
+    assert!(text.contains("Your code:\n\n    246810"), "{text}");
+
+    // Saving again without a source drops it (the body alone is the template).
+    let r = put(json!({ "version": 1, "subject": "s {site}", "body": "{code}" })).await;
+    assert_eq!(r.status, StatusCode::OK);
+    enqueue().await;
+    assert!(last().await.1.contains("max-width:520px"));
+    // Reset removes the row (and with it any source).
+    let r =
+        put(json!({ "version": 2, "subject": "s", "body": "{code}", "html_source": source })).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let r = admin.req(Method::DELETE, path, None).await;
+    assert_eq!(r.json()["reset"], true);
+    enqueue().await;
+    assert!(last().await.1.contains("max-width:520px"));
+
+    // The audit rows carry the source's length, never the source.
+    let rows: Vec<(String, Option<serde_json::Value>)> = sqlx::query_as(
+        "SELECT action, after FROM audit_log WHERE target_id = 'register_code/zh' ORDER BY id",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 4);
+    assert_eq!(
+        rows[0].1.as_ref().unwrap()["html_length"],
+        source.chars().count()
+    );
+    assert_eq!(
+        rows[1].1.as_ref().unwrap()["html_length"],
+        serde_json::Value::Null
+    );
+    let leaked: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action LIKE 'settings.mail_template.%' \
+         AND (after::text LIKE '%class=%' OR before::text LIKE '%class=%')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(leaked, 0);
+    db.drop().await;
+}

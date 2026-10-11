@@ -39,6 +39,7 @@ sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18，再拒绝 v0.3.x
 - **1103（next-version，净营收）**：`orders.refund_gateway_cents`（退款中支付渠道的钱：`to_balance` 时 = `amount_cents`，否则 = `refund_external_cents`；`billing::refund::apply_refund` 写入），CHECK `orders_refund_gateway`（与 `refunded_at` 同空/非空，0..LEAST(实付, refund_cents)）；已有退款按 `refund_balance_cents − 余额部分` 回填；`orders_refunded_at` 索引重建为 INCLUDE (refund_cents, refund_gateway_cents)。仪表盘营收 = 实收 − 它（docs/PAYMENTS.md「Revenue」）。
 - **1104（next-version，入口标签）**：`entrances.tags` text[] NOT NULL DEFAULT '{}'（CHECK `entrances_tags`：≤8、无 NULL；细则同 `nodemeta::tags`）；已有节点的 `nodes.tags` 复制到其每个入口。订阅线路名、门户 `/me/nodes`、后台入口表只读入口标签；`nodes.tags` 保留（旧 API 仍可写）但不再显示在任何地方。
 - **1105（next-version，通行密钥跨域名与通行密钥注册）**：`panel_settings.passkey_domain`（通行密钥中心域名，NULL = 以首选主域名为 RP；长度 CHECK；与 `site_domains` 三类域名互斥由 API 在 `panel_settings` 行锁下保证）；`users.signup_method`（`password`/`passkey`，CHECK）、`users.email_pending`（待绑定邮箱，CHECK `users_email_pending`：待绑定 ⇔ role=user ∧ 通行密钥注册 ∧ 未验证 ∧ 占位地址 `pending-<id>@pending.invalid`；部分索引 `users_email_pending_created` 供 24h 清理）；`signup_settings.passkey_register`（默认关）。
+- **1106（邮件模板 HTML 源码）**：`mail_templates.html_source` text NULL（CHECK `mail_templates_html_check`：非空时 1–100000 字符；内容规则由 API 的 `templates::validate_html` 保证）；NULL = 沿用面板的 HTML 外壳。
 - 改列名/加列后，同步检查 `src/` 中所有手写 SQL 与 `FromRow` 结构体（没有编译期 SQL 校验）。
 
 ## 当前表

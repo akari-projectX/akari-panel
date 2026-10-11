@@ -206,6 +206,9 @@ mail.to_invalid
 mail.username_invalid
 mail_template.body_control
 mail_template.body_length
+mail_template.html_control
+mail_template.html_forbidden
+mail_template.html_length
 mail_template.kind_unknown
 mail_template.locale_invalid
 mail_template.placeholder_missing

@@ -11,6 +11,11 @@
 //! (`settings.mail_template.update` / `.reset`; the text itself is in the
 //! row, the audit carries lengths only). The preview and the test mail
 //! render the kind's sample values (`Template::sample`).
+//!
+//! An override may also carry an HTML source (`html_source`, migration
+//! 1106) that replaces the whole HTML part, the panel's shell included
+//! (`templates::validate_html` / `render_source`); the text body stays as
+//! the plain-text alternative.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -29,6 +34,7 @@ use crate::state::AppState;
 pub struct Override {
     pub subject: String,
     pub body: String,
+    pub html_source: Option<String>,
     pub version: i64,
 }
 
@@ -39,7 +45,7 @@ pub async fn load(
     locale: Locale,
 ) -> sqlx::Result<Option<Override>> {
     sqlx::query_as(
-        "SELECT subject, body, version FROM mail_templates WHERE kind = $1 AND locale = $2",
+        "SELECT subject, body, html_source, version FROM mail_templates WHERE kind = $1 AND locale = $2",
     )
     .bind(kind)
     .bind(locale.as_str())
@@ -57,7 +63,14 @@ pub async fn render_for(
 ) -> sqlx::Result<Rendered> {
     let kind = tpl.outbox_kind();
     Ok(match load(conn, kind, locale).await? {
-        Some(o) => templates::render_custom(&o.subject, &o.body, &tpl.values(locale), locale, site),
+        Some(o) => templates::render_custom_html(
+            &o.subject,
+            &o.body,
+            o.html_source.as_deref(),
+            &tpl.values(locale),
+            locale,
+            site,
+        ),
         None => templates::render(tpl, locale, site),
     })
 }
@@ -87,6 +100,15 @@ fn known_kind(kind: &str) -> Result<&'static str, ApiError> {
 // Mutations (caller's transaction; audited)
 // ---------------------------------------------------------------------------
 
+/// What an admin submits for one (kind, locale).
+#[derive(Debug, Clone, Copy)]
+pub struct Fields<'a> {
+    pub subject: &'a str,
+    pub body: &'a str,
+    /// The HTML source; None = the panel's own HTML shell.
+    pub html_source: Option<&'a str>,
+}
+
 /// Store an override. `expected_version`: 0 when none is stored yet, else
 /// the stored row's version (409 on mismatch). Returns the new version.
 pub async fn apply_set(
@@ -95,15 +117,23 @@ pub async fn apply_set(
     kind: &str,
     locale: Locale,
     expected_version: i64,
-    subject: &str,
-    body: &str,
+    fields: Fields<'_>,
 ) -> Result<i64, ApiError> {
+    let Fields {
+        subject,
+        body,
+        html_source,
+    } = fields;
     let kind = known_kind(kind)?;
     templates::validate(kind, subject, body)?;
+    if let Some(h) = html_source {
+        templates::validate_html(kind, h)?;
+    }
+    let html_source = html_source.map(|h| h.replace("\r\n", "\n").replace('\r', "\n"));
     let subject = subject.trim();
     let body = body.replace("\r\n", "\n").replace('\r', "\n");
     let cur: Option<Override> = sqlx::query_as(
-        "SELECT subject, body, version FROM mail_templates WHERE kind = $1 AND locale = $2 FOR UPDATE",
+        "SELECT subject, body, html_source, version FROM mail_templates WHERE kind = $1 AND locale = $2 FOR UPDATE",
     )
     .bind(kind)
     .bind(locale.as_str())
@@ -117,9 +147,10 @@ pub async fn apply_set(
         ));
     }
     let version: i64 = sqlx::query_scalar(
-        "INSERT INTO mail_templates (kind, locale, subject, body, version, updated_by) \
-         VALUES ($1, $2, $3, $4, 1, $5) \
+        "INSERT INTO mail_templates (kind, locale, subject, body, html_source, version, updated_by) \
+         VALUES ($1, $2, $3, $4, $5, 1, $6) \
          ON CONFLICT (kind, locale) DO UPDATE SET subject = EXCLUDED.subject, body = EXCLUDED.body, \
+           html_source = EXCLUDED.html_source, \
            version = mail_templates.version + 1, updated_at = now(), updated_by = EXCLUDED.updated_by \
          RETURNING version",
     )
@@ -127,6 +158,7 @@ pub async fn apply_set(
     .bind(locale.as_str())
     .bind(subject)
     .bind(&body)
+    .bind(&html_source)
     .bind(&actor.label)
     .fetch_one(&mut *conn)
     .await?;
@@ -136,8 +168,8 @@ pub async fn apply_set(
         "settings.mail_template.update",
         "mail_template",
         Some(format!("{kind}/{}", locale.as_str())),
-        cur.map(|c| json!({ "version": c.version, "subject": c.subject, "body_length": c.body.chars().count() })),
-        Some(json!({ "version": version, "subject": subject, "body_length": body.chars().count() })),
+        cur.map(|c| json!({ "version": c.version, "subject": c.subject, "body_length": c.body.chars().count(), "html_length": c.html_source.as_ref().map(|h| h.chars().count()) })),
+        Some(json!({ "version": version, "subject": subject, "body_length": body.chars().count(), "html_length": html_source.as_ref().map(|h| h.chars().count()) })),
     )
     .await?;
     Ok(version)
@@ -153,7 +185,7 @@ pub async fn apply_reset(
 ) -> Result<bool, ApiError> {
     let kind = known_kind(kind)?;
     let gone: Option<Override> = sqlx::query_as(
-        "DELETE FROM mail_templates WHERE kind = $1 AND locale = $2 RETURNING subject, body, version",
+        "DELETE FROM mail_templates WHERE kind = $1 AND locale = $2 RETURNING subject, body, html_source, version",
     )
     .bind(kind)
     .bind(locale.as_str())
@@ -168,7 +200,7 @@ pub async fn apply_reset(
         "settings.mail_template.reset",
         "mail_template",
         Some(format!("{kind}/{}", locale.as_str())),
-        Some(json!({ "version": old.version, "subject": old.subject, "body_length": old.body.chars().count() })),
+        Some(json!({ "version": old.version, "subject": old.subject, "body_length": old.body.chars().count(), "html_length": old.html_source.as_ref().map(|h| h.chars().count()) })),
         None,
     )
     .await?;
@@ -187,6 +219,12 @@ pub struct TemplateView {
     /// The effective subject / body (the override, else the default).
     pub subject: String,
     pub body: String,
+    /// The HTML source of the override, when it has one (else the panel
+    /// builds the HTML from `body`).
+    pub html_source: Option<String>,
+    /// What the editor's "edit the source" starts from: the HTML built from
+    /// the effective subject and body, placeholders left in.
+    pub starter_html: String,
     pub default_subject: &'static str,
     pub default_body: &'static str,
     /// An override is stored (`version` > 0).
@@ -197,26 +235,31 @@ pub struct TemplateView {
 }
 
 async fn view_all(conn: &mut PgConnection) -> Result<Vec<TemplateView>, ApiError> {
-    let rows: Vec<(String, String, String, String, i64)> =
-        sqlx::query_as("SELECT kind, locale, subject, body, version FROM mail_templates")
-            .fetch_all(&mut *conn)
-            .await?;
+    let rows: Vec<(String, String, String, String, Option<String>, i64)> = sqlx::query_as(
+        "SELECT kind, locale, subject, body, html_source, version FROM mail_templates",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
     let mut out = Vec::with_capacity(KINDS.len() * 2);
     for kind in KINDS {
         let (allowed, required) = templates::spec(kind).unwrap_or((&[], &[]));
         for locale in [Locale::Zh, Locale::En] {
             let (ds, db) = templates::defaults(kind, locale).unwrap_or(("", ""));
             let stored = rows.iter().find(|r| r.0 == kind && r.1 == locale.as_str());
+            let subject = stored.map_or_else(|| ds.to_string(), |r| r.2.clone());
+            let body = stored.map_or_else(|| db.to_string(), |r| r.3.clone());
             out.push(TemplateView {
                 kind,
                 label: templates::kind_label(kind),
                 locale: locale.as_str(),
-                subject: stored.map_or_else(|| ds.to_string(), |r| r.2.clone()),
-                body: stored.map_or_else(|| db.to_string(), |r| r.3.clone()),
+                starter_html: templates::starter_html(&subject, &body, locale),
+                subject,
+                body,
+                html_source: stored.and_then(|r| r.4.clone()),
                 default_subject: ds,
                 default_body: db,
                 custom: stored.is_some(),
-                version: stored.map_or(0, |r| r.4),
+                version: stored.map_or(0, |r| r.5),
                 placeholders: COMMON.iter().chain(allowed.iter()).copied().collect(),
                 required,
             });
@@ -242,6 +285,9 @@ pub struct PutReq {
     pub version: i64,
     pub subject: String,
     pub body: String,
+    /// The HTML source; absent or null = none (the panel's own HTML shell).
+    #[serde(default)]
+    pub html_source: Option<String>,
 }
 
 /// PUT /api/v1/settings/mail-templates/{kind}/{locale} (admin).
@@ -260,8 +306,11 @@ pub async fn put(
         &kind,
         loc,
         req.version,
-        &req.subject,
-        &req.body,
+        Fields {
+            subject: &req.subject,
+            body: &req.body,
+            html_source: req.html_source.as_deref(),
+        },
     )
     .await?;
     tx.commit().await?;
@@ -289,6 +338,8 @@ pub struct PreviewReq {
     pub locale: String,
     pub subject: String,
     pub body: String,
+    #[serde(default)]
+    pub html_source: Option<String>,
 }
 
 /// POST /api/v1/settings/mail-templates/preview (admin): render the
@@ -303,14 +354,18 @@ pub async fn preview(
     let kind = known_kind(&req.kind)?;
     let loc = parse_locale(&req.locale)?;
     templates::validate(kind, &req.subject, &req.body)?;
+    if let Some(h) = &req.html_source {
+        templates::validate_html(kind, h)?;
+    }
     let sample = Template::sample(kind).ok_or_else(ApiError::internal)?;
     let site = {
         let mut c = state.pg().acquire().await?;
         super::load(&mut c).await?.site().to_string()
     };
-    Ok(Json(templates::render_custom(
+    Ok(Json(templates::render_custom_html(
         &req.subject,
         &req.body,
+        req.html_source.as_deref(),
         &sample.values(loc),
         loc,
         &site,
