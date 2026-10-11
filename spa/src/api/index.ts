@@ -1,7 +1,7 @@
 /**
  * 接口层：页面能调的全部函数。与面板之间的唯一边界——页面只从 '@/api' 导入。
  *
- * 每个函数对应面板的一个用户接口（akari-panel docs/REFERENCE.md「API surface」），形状见 ./types。
+ * 每个函数对应面板的一个用户接口（akari-panel README「API surface」），形状见 ./types。
  */
 
 import { api, auth, qs } from './http';

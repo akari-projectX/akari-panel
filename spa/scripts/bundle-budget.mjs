@@ -6,7 +6,7 @@
  *   · totalJs / totalCss = dist/app/assets 下全部 .js / .css 的 gzip 之和（含按需加载的分包、字体声明）；
  *   · fonts = 全部 .woff2 的原始字节（已压缩，不再 gzip；按 unicode-range 用到哪片才下载哪片）。
  * 超出预算即非零退出。`--report` 只打印不判定（测基线用）。
- * 预算的来源与调整规则见 spa/CLAUDE.md「体积预算」。
+ * 预算的来源与调整规则见 README「体积预算」。
  */
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
