@@ -123,7 +123,7 @@ fn markdown(md: &str) {
 }
 
 fn template(data: &[u8]) {
-    // kind index, then subject \0 body.
+    // kind index, then subject \0 body [\0 html source].
     let Some((&k, rest)) = data.split_first() else {
         return;
     };
@@ -146,6 +146,11 @@ fn template(data: &[u8]) {
     let kind = kinds[usize::from(k) % kinds.len()];
     let text = String::from_utf8_lossy(rest);
     let (subject, body) = text.split_once('\0').unwrap_or((&text, ""));
+    let (body, source) = body.split_once('\0').unwrap_or((body, ""));
+    // An accepted HTML source never renders a script, whatever the values.
+    if let Some(out) = fuzzing::mail_template_html(kind, source) {
+        assert!(!out.to_ascii_lowercase().contains("<script"));
+    }
     if let Some((s, _t, html)) = fuzzing::mail_template(kind, subject, body) {
         assert!(
             !s.chars().any(char::is_control),

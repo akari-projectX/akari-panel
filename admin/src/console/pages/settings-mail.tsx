@@ -417,6 +417,10 @@ type Template = {
   locale: "zh" | "en";
   subject: string;
   body: string;
+  /** The HTML source of the override (replaces the whole HTML part), if any. */
+  html_source: string | null;
+  /** The HTML the panel builds from the saved subject/body, placeholders left in. */
+  starter_html: string;
   default_subject: string;
   default_body: string;
   custom: boolean;
@@ -443,31 +447,40 @@ export function TemplatesTab() {
   const cur = list.data?.find((t) => t.kind === (kind || kinds[0]?.[0]) && t.locale === locale);
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
+  // The HTML source: off = the panel lays the body out itself.
+  const [mode, setMode] = useState<"auto" | "source">("auto");
+  const [html, setHtml] = useState("");
+  const [focus, setFocus] = useState<"body" | "html">("body");
   const [to, setTo] = useState(me.email);
   useEffect(() => {
     if (cur) {
       setSubject(cur.subject);
       setBody(cur.body);
+      setMode(cur.html_source === null ? "auto" : "source");
+      setHtml(cur.html_source ?? "");
+      setFocus("body");
     }
   }, [cur]);
   const ds = useDebounced(subject, 400);
   const db = useDebounced(body, 400);
+  const dh = useDebounced(mode === "source" ? html : "", 400);
   const preview = useQuery({
-    queryKey: ["mail-template-preview", cur?.kind, locale, ds, db],
+    queryKey: ["mail-template-preview", cur?.kind, locale, ds, db, mode, dh],
     queryFn: () =>
       post<{ subject: string; text: string; html: string }>("/settings/mail-templates/preview", {
         kind: cur?.kind,
         locale,
         subject: ds,
         body: db,
+        html_source: mode === "source" ? dh : null,
       }),
-    enabled: !!cur && !!ds && !!db,
+    enabled: !!cur && !!ds && !!db && (mode === "auto" || !!dh),
   });
   const [run, busy] = useRun();
   if (!list.data) return list.error ? <FormError error={list.error} /> : <Skeleton className="h-96" />;
   if (!cur) return null;
   const allowed = cur.placeholders.map((p) => p.name);
-  const unknown = [...(subject + body).matchAll(/\{([a-z0-9_]+)\}/g)]
+  const unknown = [...(subject + body + (mode === "source" ? html : "")).matchAll(/\{([a-z0-9_]+)\}/g)]
     .map((m) => m[1])
     .filter((n, i, a) => !allowed.includes(n) && a.indexOf(n) === i);
   const path = `/settings/mail-templates/${cur.kind}/${locale}`;
@@ -476,8 +489,8 @@ export function TemplatesTab() {
       <CardHeader
         title={tr("邮件模板", "Mail templates")}
         description={tr(
-          "每种邮件中、英各一份，按收件人语言发送；正文空行分段，单独成段的链接占位符显示为按钮。",
-          "One per kind and language (sent in the recipient's); blank lines split paragraphs; a link placeholder alone is a button.",
+          "每种邮件中、英各一份，按收件人语言发送；自动排版时正文空行分段，单独成段的链接占位符显示为按钮；也可以直接编辑 HTML 源码。",
+          "One per kind and language (sent in the recipient's); in automatic layout blank lines split paragraphs and a link placeholder alone is a button; or edit the HTML source directly.",
         )}
       />
       <CardBody className="space-y-3">
@@ -512,7 +525,11 @@ export function TemplatesTab() {
               size="sm"
               variant="ghost"
               title={p.description}
-              onClick={() => setBody((b) => `${b}{${p.name}}`)}
+              onClick={() =>
+                focus === "html" && mode === "source"
+                  ? setHtml((h) => `${h}{${p.name}}`)
+                  : setBody((b) => `${b}{${p.name}}`)
+              }
             >
               {`{${p.name}}`}
               {cur.required.includes(p.name) ? " *" : ""}
@@ -520,9 +537,79 @@ export function TemplatesTab() {
           ))}
         </div>
         <div className="grid gap-3 lg:grid-cols-2">
-          <Field label={tr("邮件正文", "Body")}>
-            <Textarea rows={14} value={body} onChange={(e) => setBody(e.target.value)} />
-          </Field>
+          <div className="space-y-3">
+            <Field
+              label={tr("邮件正文", "Body")}
+              hint={
+                mode === "source"
+                  ? tr(
+                      "纯文本备选部分（不支持 HTML 的客户端显示这一份），仍须填写。",
+                      "The plain-text alternative (shown by clients without HTML); still required.",
+                    )
+                  : undefined
+              }
+            >
+              <Textarea
+                rows={mode === "source" ? 6 : 14}
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                onFocus={() => setFocus("body")}
+              />
+            </Field>
+            <Segmented
+              value={mode}
+              onChange={setMode}
+              options={[
+                { value: "auto", label: tr("自动排版", "Automatic layout") },
+                { value: "source", label: tr("HTML 源码", "HTML source") },
+              ]}
+            />
+            {mode === "source" && (
+              <>
+                <Callout tone="info">
+                  {tr(
+                    '源码替换整封邮件的 HTML（含外层样式）。{占位符} 被替换为已转义的文本：链接就是网址文本，请写成 <a href="{link}">…</a>；允许 style 与内联 CSS，不允许脚本、表单、iframe、onclick 之类的事件属性和 javascript: 链接。',
+                    'The source replaces the whole HTML part, outer styling included. {placeholders} become escaped text: a link is the URL text, so write <a href="{link}">…</a>. Inline CSS and <style> are fine; scripts, forms, iframes, event attributes such as onclick and javascript: links are refused.',
+                  )}
+                </Callout>
+                <Field label={tr("HTML 源码", "HTML source")}>
+                  <Textarea
+                    rows={16}
+                    spellCheck={false}
+                    className="font-mono text-[12px]"
+                    value={html}
+                    onChange={(e) => setHtml(e.target.value)}
+                    onFocus={() => setFocus("html")}
+                  />
+                </Field>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={async () => {
+                    if (
+                      !html.trim() ||
+                      (await confirm({
+                        title: tr("用起点替换当前源码？", "Replace the source with the starting point?"),
+                        description: tr(
+                          "当前的 HTML 源码会被覆盖（不影响已保存的版本）。",
+                          "The HTML source in the editor is overwritten (the saved version is not touched).",
+                        ),
+                        action: async () => undefined,
+                      }))
+                    ) {
+                      setHtml(cur.starter_html);
+                      setFocus("html");
+                    }
+                  }}
+                >
+                  {tr(
+                    "载入起点（由已保存的主题与正文生成）",
+                    "Load a starting point (from the saved subject and body)",
+                  )}
+                </Button>
+              </>
+            )}
+          </div>
           <div>
             <div className="mb-1.5 text-[13px] font-medium">{tr("预览（示例数据）", "Preview (sample data)")}</div>
             {preview.data && <div className="mb-1 text-[13px] font-medium">{preview.data.subject}</div>}
@@ -544,12 +631,15 @@ export function TemplatesTab() {
           <Button
             variant="primary"
             loading={busy}
-            disabled={unknown.length > 0}
+            disabled={unknown.length > 0 || (mode === "source" && !html.trim())}
             onClick={() =>
-              void run(() => put(path, { version: cur.version, subject, body }), {
-                ok: tr("模板已保存", "Template saved"),
-                invalidate: [["mail-templates"]],
-              })
+              void run(
+                () => put(path, { version: cur.version, subject, body, html_source: mode === "source" ? html : null }),
+                {
+                  ok: tr("模板已保存", "Template saved"),
+                  invalidate: [["mail-templates"]],
+                },
+              )
             }
           >
             {tr("保存", "Save")}
@@ -560,7 +650,10 @@ export function TemplatesTab() {
               onClick={async () => {
                 const ok = await confirm({
                   title: tr("恢复默认模板？", "Reset to the default?"),
-                  description: tr("自定义的主题与正文会被删除。", "The custom subject and body are deleted."),
+                  description: tr(
+                    "自定义的主题、正文与 HTML 源码会被删除。",
+                    "The custom subject, body and HTML source are deleted.",
+                  ),
                   action: () => del(path),
                 });
                 if (ok)

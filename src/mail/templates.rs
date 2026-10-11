@@ -919,6 +919,8 @@ pub fn defaults(kind: &str, locale: Locale) -> Option<(&'static str, &'static st
 /// Longest subject / body an admin may store (characters).
 pub const MAX_SUBJECT: usize = 200;
 pub const MAX_TEMPLATE_BODY: usize = 20_000;
+/// Longest HTML source an admin may store (characters).
+pub const MAX_TEMPLATE_HTML: usize = 100_000;
 
 /// The `{name}` tokens of a template text (lower-case letters, digits,
 /// underscores). Anything else in braces is literal text.
@@ -1014,6 +1016,182 @@ pub fn validate(kind: &str, subject: &str, body: &str) -> Result<(), ApiError> {
         }
     }
     Ok(())
+}
+
+/// Tags an HTML source may not contain: they run code, load other pages or
+/// submit data. (A mail client strips most of them anyway; refusing them
+/// here keeps a typo or a pasted web page from becoming a phishing form.)
+const FORBIDDEN_TAGS: [&str; 10] = [
+    "script", "iframe", "frame", "frameset", "object", "embed", "applet", "form", "base", "link",
+];
+
+/// Why an HTML source is refused, if it is: a forbidden tag, an inline
+/// event handler, a script-capable URL or a style import.
+fn forbidden_html(html: &str) -> Option<&'static str> {
+    let lower = html.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    // Tags: `<name` followed by whitespace, `/` or `>`.
+    for tag in FORBIDDEN_TAGS {
+        let needle = format!("<{tag}");
+        let mut from = 0;
+        while let Some(i) = lower[from..].find(&needle) {
+            let end = from + i + needle.len();
+            match bytes.get(end) {
+                None | Some(b'>' | b'/') => return Some("<script>、<iframe>、<form> 等标签"),
+                Some(c) if c.is_ascii_whitespace() => {
+                    return Some("<script>、<iframe>、<form> 等标签");
+                }
+                _ => {}
+            }
+            from = end;
+        }
+    }
+    // Inline event handlers: ` onxxx=` after whitespace, a quote or `/`.
+    let mut i = 0;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'o'
+            && bytes[i + 1] == b'n'
+            && i > 0
+            && (bytes[i - 1].is_ascii_whitespace() || matches!(bytes[i - 1], b'"' | b'\'' | b'/'))
+        {
+            let mut j = i + 2;
+            while j < bytes.len() && bytes[j].is_ascii_lowercase() {
+                j += 1;
+            }
+            if j > i + 2 {
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if bytes.get(j) == Some(&b'=') {
+                    return Some("onclick= 之类的事件属性");
+                }
+            }
+        }
+        i += 1;
+    }
+    // Script-capable URLs: browsers ignore whitespace and control
+    // characters inside a scheme, so look at a copy without them.
+    let squeezed: String = lower
+        .chars()
+        .filter(|c| !c.is_whitespace() && !c.is_control())
+        .collect();
+    for needle in [
+        "javascript:",
+        "vbscript:",
+        "data:text/html",
+        "@import",
+        "expression(",
+    ] {
+        if squeezed.contains(needle) {
+            return Some("javascript: 链接、@import 等");
+        }
+    }
+    if squeezed.contains("http-equiv") {
+        return Some("<meta http-equiv>");
+    }
+    None
+}
+
+/// Check an admin's HTML source for a kind: size, no control characters,
+/// nothing script-capable, only whitelisted placeholders, every required
+/// one present (the HTML part must carry the code or the link too).
+pub fn validate_html(kind: &str, html: &str) -> Result<(), ApiError> {
+    let Some((allowed, required)) = spec(kind) else {
+        return Err(bad_request!(
+            "mail_template.kind_unknown",
+            "unknown template kind: {kind}",
+            kind = kind
+        ));
+    };
+    if html.trim().is_empty() || html.chars().count() > MAX_TEMPLATE_HTML {
+        return Err(bad_request!(
+            "mail_template.html_length",
+            "html source must be 1-{max} characters",
+            max = MAX_TEMPLATE_HTML
+        ));
+    }
+    if html
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t' && c != '\r')
+    {
+        return Err(bad_request!(
+            "mail_template.html_control",
+            "html source must not contain control characters"
+        ));
+    }
+    if let Some(what) = forbidden_html(html) {
+        return Err(bad_request!(
+            "mail_template.html_forbidden",
+            "html source must not contain {what}",
+            what = what
+        ));
+    }
+    let known = |name: &str| name == "site" || allowed.iter().any(|p| p.name == name);
+    let found = placeholders_in(html);
+    for name in &found {
+        if !known(name) {
+            return Err(bad_request!(
+                "mail_template.placeholder_unknown",
+                "unknown placeholder {{{name}}}",
+                name = *name
+            ));
+        }
+    }
+    for r in required {
+        if !found.contains(r) {
+            return Err(bad_request!(
+                "mail_template.placeholder_missing",
+                "the template must contain {{{name}}}",
+                name = *r
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Fill an admin's HTML source with the mail's values. `{name}` becomes the
+/// value's text, HTML-escaped (so it is safe in text and in a double-quoted
+/// attribute: `<a href="{reset_link}">`); multi-line text gets `<br>`; the
+/// one value that is already HTML (an announcement's body) goes in as is.
+pub fn render_source(src: &str, values: &[Value], site: &str) -> String {
+    let src = src.replace("\r\n", "\n").replace('\r', "\n");
+    substitute(&src, |name| {
+        if name == "site" {
+            return Some(esc(site));
+        }
+        values
+            .iter()
+            .find(|v| v.name == name)
+            .map(|v| match &v.style {
+                Style::Html(h) => h.clone(),
+                Style::Link(_) => esc(&v.text),
+                Style::Text | Style::Code => esc(&v.text).replace('\n', "<br>"),
+            })
+    })
+}
+
+/// `render_custom`, with the HTML part replaced by the admin's source when
+/// there is one (subject and plain text are rendered the same either way).
+pub fn render_custom_html(
+    subject: &str,
+    body: &str,
+    html_source: Option<&str>,
+    values: &[Value],
+    locale: Locale,
+    site: &str,
+) -> Rendered {
+    let mut r = render_custom(subject, body, values, locale, site);
+    if let Some(src) = html_source {
+        r.html = render_source(src, values, site);
+    }
+    r
+}
+
+/// The starting point of the editor's "edit the source" button: the HTML
+/// the panel builds from this subject and body, with the `{placeholders}`
+/// left in (including `{site}`).
+pub fn starter_html(subject: &str, body: &str, locale: Locale) -> String {
+    render_custom(subject, body, &[], locale, "{site}").html
 }
 
 /// Substitute `{name}` tokens with `f(name)` (None = keep the token).
@@ -1194,6 +1372,137 @@ pub fn render(t: &Template, locale: Locale, site: &str) -> Rendered {
 
 #[cfg(test)]
 mod tests {
+    const REG: &str = "register_code";
+
+    fn html_err(kind: &str, html: &str) -> Option<String> {
+        validate_html(kind, html).err().map(|e| format!("{e:?}"))
+    }
+
+    #[test]
+    fn html_source_validation() {
+        let ok = "<!doctype html><html><head><meta charset=\"utf-8\"><style>p{margin:0}</style></head>\
+                  <body><h1>{site}</h1><p style=\"color:#333\">{code}</p>\
+                  <a href=\"https://example.com/?a=1&b=2\" title=\"online\">link</a></body></html>";
+        assert!(validate_html(REG, ok).is_ok(), "{:?}", html_err(REG, ok));
+        // Required and unknown placeholders are checked like in the text body.
+        assert!(
+            html_err(REG, "<p>{site}</p>")
+                .unwrap()
+                .contains("placeholder_missing")
+        );
+        assert!(
+            html_err(REG, "<p>{code}{nope}</p>")
+                .unwrap()
+                .contains("placeholder_unknown")
+        );
+        assert!(
+            html_err("nope", "<p>x</p>")
+                .unwrap()
+                .contains("kind_unknown")
+        );
+        // Size and control characters.
+        assert!(html_err(REG, "  ").unwrap().contains("html_length"));
+        let big = format!("{{code}}{}", "x".repeat(MAX_TEMPLATE_HTML));
+        assert!(html_err(REG, &big).unwrap().contains("html_length"));
+        assert!(
+            html_err(REG, "{code}\u{0}")
+                .unwrap()
+                .contains("html_control")
+        );
+        // Script-capable constructs, in the spellings a browser accepts.
+        for bad in [
+            "<script>alert(1)</script>{code}",
+            "<SCRIPT src=x>{code}",
+            "<iframe src=\"https://x\"></iframe>{code}",
+            "<form action=\"https://x\"><input></form>{code}",
+            "<object data=x>{code}",
+            "<embed src=x>{code}",
+            "<base href=\"https://x/\">{code}",
+            "<link rel=\"stylesheet\" href=\"https://x/a.css\">{code}",
+            "<img src=x onerror=alert(1)>{code}",
+            "<a href=\"x\" OnClick = \"y()\">{code}</a>",
+            "<p style=\"a\"onmouseover=\"y\">{code}</p>",
+            "<a href=\"javascript:alert(1)\">{code}</a>",
+            "<a href=\"java\tscript:alert(1)\">{code}</a>",
+            "<a href=\" JavaScript:alert(1)\">{code}</a>",
+            "<a href=\"vbscript:x\">{code}</a>",
+            "<a href=\"data:text/html,<b>x</b>\">{code}</a>",
+            "<style>@import url(https://x/a.css);</style>{code}",
+            "<meta http-equiv=\"refresh\" content=\"0;url=https://x\">{code}",
+        ] {
+            assert!(
+                html_err(REG, bad)
+                    .unwrap_or_default()
+                    .contains("html_forbidden"),
+                "accepted: {bad}"
+            );
+        }
+        // Look-alikes that are fine: a word that merely starts with a tag
+        // name or contains "on", and text about scripts.
+        for fine in [
+            "<p>{code} <formal>x</formal> <linked>y</linked> <scripted>z</scripted></p>",
+            "<p>{code} Please confirm: one, two, only this</p>",
+            "<p style=\"font-weight:600\">{code} javascript is not mentioned as a scheme</p>",
+        ] {
+            assert!(
+                validate_html(REG, fine).is_ok(),
+                "{:?}: {fine}",
+                html_err(REG, fine)
+            );
+        }
+    }
+
+    #[test]
+    fn html_source_renders_escaped_values() {
+        let t = Template::sample("password_reset").unwrap();
+        let v = t.values(Locale::En);
+        let link = v.iter().find(|x| x.name == "link").unwrap().text.clone();
+        let src = "<a href=\"{link}\">go</a> <b>{site}</b> {not a placeholder} p{margin:0}";
+        let out = render_source(src, &v, "Fish & <Chips>");
+        assert!(
+            out.contains(&format!("<a href=\"{}\">go</a>", esc(&link))),
+            "{out}"
+        );
+        assert!(out.contains("<b>Fish &amp; &lt;Chips&gt;</b>"), "{out}");
+        // Not a token (space, ':'): left alone, so CSS braces survive.
+        assert!(out.contains("{not a placeholder} p{margin:0}"), "{out}");
+        // A value with quotes cannot leave a double-quoted attribute.
+        let evil = vec![Value {
+            name: "link",
+            text: "x\" onclick=\"y".into(),
+            style: Style::Link("L".into()),
+        }];
+        let out = render_source("<a href=\"{link}\">", &evil, "S");
+        assert_eq!(out, "<a href=\"x&quot; onclick=&quot;y\">");
+        // Subject and text part are rendered as without a source.
+        let a = render_custom_html("S {site}", "{link}", None, &v, Locale::En, "Q");
+        let b = render_custom_html(
+            "S {site}",
+            "{link}",
+            Some("<p>{link}</p>"),
+            &v,
+            Locale::En,
+            "Q",
+        );
+        assert_eq!((&a.subject, &a.text), (&b.subject, &b.text));
+        assert_ne!(a.html, b.html);
+        assert_eq!(b.html, format!("<p>{}</p>", esc(&link)));
+    }
+
+    #[test]
+    fn starter_html_keeps_the_placeholders() {
+        let (subject, body) = defaults("register_code", Locale::En).unwrap();
+        let h = starter_html(subject, body, Locale::En);
+        assert!(h.starts_with("<!doctype html>"), "{h}");
+        assert!(h.contains("{code}") && h.contains("{site}"), "{h}");
+        // The starter is itself a valid source for its kind.
+        assert!(
+            validate_html("register_code", &h).is_ok(),
+            "{:?}",
+            html_err("register_code", &h)
+        );
+    }
+
     use super::*;
 
     fn all(code: &str) -> Vec<Template> {

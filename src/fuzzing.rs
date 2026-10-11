@@ -294,6 +294,19 @@ pub fn mail_template(kind: &str, subject: &str, body: &str) -> Option<(String, S
     Some((r.subject, r.text, r.html))
 }
 
+/// `mail::templates::validate_html`, then `render_source` with the kind's
+/// sample values: Some(html) when the source is accepted.
+pub fn mail_template_html(kind: &str, html: &str) -> Option<String> {
+    use crate::mail::templates::{Locale, Template, render_source, validate_html};
+    validate_html(kind, html).ok()?;
+    let sample = Template::sample(kind)?;
+    Some(render_source(
+        html,
+        &sample.values(Locale::En),
+        "Site & <Co>",
+    ))
+}
+
 /// `branding::png_dimensions` and `branding::check` on a strict body.
 pub fn branding_png(bytes: &[u8]) -> Option<(u32, u32)> {
     crate::branding::png_dimensions(bytes)

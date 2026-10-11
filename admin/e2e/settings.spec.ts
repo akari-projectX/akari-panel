@@ -222,6 +222,23 @@ test("SET-15 SET-16 SET-17 SET-18: mail via SMTP, step-by-step diagnosis, the ou
   await page.getByLabel("测试收件地址（发送已保存的版本，使用示例数据）").fill(to);
   await page.getByRole("button", { name: "发送测试" }).click();
   await toast(page, `测试邮件已发出：${to}`);
+  // SET-18 (HTML source): start from the generated HTML, edit it, a forbidden tag is refused in the
+  // preview, save it, and it is still the source after a reload.
+  await page.getByRole("button", { name: "HTML 源码", exact: true }).click();
+  await page.getByRole("button", { name: /载入起点/ }).click();
+  const source = page.getByRole("textbox", { name: "HTML 源码", exact: true });
+  await expect(source).toHaveValue(/<!doctype html>/);
+  const generated = await source.inputValue();
+  await source.fill(`${generated}\n<p>E2E 源码</p>\n<script>alert(1)</script>`);
+  await expect(page.getByText("HTML 源码不能包含")).toBeVisible();
+  await source.fill(`${generated}\n<p>E2E 源码</p>`);
+  await expect(page.frameLocator("iframe[title='邮件 HTML 预览']").getByText("E2E 源码")).toBeVisible();
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await toast(page, "模板已保存");
+  await page.reload();
+  await tab(page, "邮件模板");
+  await page.getByLabel("邮件种类").selectOption({ index: 0 });
+  await expect(page.getByRole("textbox", { name: "HTML 源码", exact: true })).toHaveValue(/E2E 源码/);
   await page.getByRole("button", { name: "恢复默认" }).click();
   await confirmDialog(page);
   await toast(page, "已恢复默认");
