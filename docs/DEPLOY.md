@@ -1563,7 +1563,7 @@ sed -i "s|^AKARI_IMAGE=.*|AKARI_IMAGE=$IMAGE_REF|" deploy/.env    # from the che
 无法访问 ghcr.io，或要运行未发布的 commit 时，从检出自行构建同一个镜像（4 核约 10 分钟；需要支持 BuildKit 的 Docker，不需要别的），并让 compose 指向它：
 
 ```bash
-cd /opt/akari-panel && git checkout v0.4.3              # the release you want
+cd /opt/akari-panel && git checkout v0.4.4              # the release you want
 docker build -t akari-panel:local --build-arg AKARI_GIT_SHA="$(git rev-parse --short=12 HEAD)" .
 sed -i 's|^AKARI_IMAGE=.*|AKARI_IMAGE=akari-panel:local|' deploy/.env
 cd deploy && docker compose up -d                           # skip `docker compose pull` for a local image
@@ -1588,7 +1588,7 @@ apt-get update && apt-get install -y docker.io docker-compose git
 docker compose version                                 # v2.x
 
 # 1. the deploy files of the release you install (the tag matches the image in step 3)
-git clone -b v0.4.3 https://github.com/akari-projectX/akari-panel /opt/akari-panel
+git clone -b v0.4.4 https://github.com/akari-projectX/akari-panel /opt/akari-panel
 cd /opt/akari-panel/deploy
 cp .env.example .env
 for f in env/*.example; do cp "$f" "${f%.example}"; done
@@ -1603,7 +1603,7 @@ sed -i "s/CHANGE-ME-valkey/$VKPW/" env/panel.env env/valkey.env
 #    ("Verify a release" below)
 cp panel.toml.compose.example panel.toml            # no names in it: domains are set in 系统设置
 sed -i 's/panel.example.com/panel.yourdomain.com/g' .env
-sed -i 's|^AKARI_IMAGE=.*|AKARI_IMAGE=ghcr.io/akari-projectx/akari-panel:0.4.3@sha256:<digest>|' .env
+sed -i 's|^AKARI_IMAGE=.*|AKARI_IMAGE=ghcr.io/akari-projectx/akari-panel:0.4.4@sha256:<digest>|' .env
 
 # 4. check, start, read the admin prefix
 docker compose run --rm panel config check             # last line: "configuration OK (0 warnings)"
