@@ -42,7 +42,15 @@ export function setQuery(patch: Record<string, string | null | undefined>, repla
   }
   const search = q.toString();
   if (`?${search}` === loc.search || (search === "" && loc.search === "")) return;
-  void router.navigate({ pathname: loc.pathname, search: search ? `?${search}` : "" }, { replace });
+  // `router.state.location.pathname` still carries the basename, and
+  // `navigate` prepends it again: strip it (else "/{prefix}/admin/{prefix}/
+  // admin/users" matches nothing and the catch-all sends us to the dashboard).
+  const base = (router.basename ?? "/").replace(/\/+$/, "");
+  const pathname =
+    base && (loc.pathname === base || loc.pathname.startsWith(`${base}/`))
+      ? loc.pathname.slice(base.length) || "/"
+      : loc.pathname;
+  void router.navigate({ pathname, search: search ? `?${search}` : "" }, { replace });
 }
 
 /** A query parameter of the current URL with a setter. */
