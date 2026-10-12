@@ -12,7 +12,6 @@ import { Group } from "../../shared/ui/card";
 import { useConfirm } from "../../shared/ui/confirm";
 import { Dialog } from "../../shared/ui/dialog";
 import { Field, Input, Textarea } from "../../shared/ui/form";
-import { Callout } from "../../shared/ui/layout";
 import { useAction } from "../data";
 import { CopyButton, Mono } from "../kit";
 import { useMe } from "../session";
@@ -22,7 +21,6 @@ import {
   FieldRow,
   InfoRow,
   Loaded,
-  OwnerBadge,
   intError,
   intOf,
   lines,
@@ -106,25 +104,20 @@ function AccessForm({ a }: { a: Access }) {
   });
   return (
     <>
-      {!owner && (
-        <Callout tone="info" title={tr("仅所有者可修改", "Owner only")}>
-          {tr(
-            "后台前缀与 IP 白名单只有所有者能修改；这里只能查看。",
-            "Only the owner changes the prefix and the allowlist; you can view them.",
-          )}
-        </Callout>
-      )}
       <Group
-        title={
-          <span className="flex items-center gap-2">
-            {tr("后台地址", "Console address")}
-            <OwnerBadge />
-          </span>
+        title={tr("后台地址", "Console address")}
+        footer={
+          tr(
+            "全站唯一的秘密前缀；门户不会链接到这里。不要把它写进公开的地方。",
+            "The site's only secret prefix; the portal never links here. Keep it out of public places.",
+          ) +
+          (owner
+            ? ""
+            : tr(
+                "前缀与白名单只有所有者能修改，你只能查看。",
+                " Only the owner changes the prefix and the allowlist; you can view them.",
+              ))
         }
-        footer={tr(
-          "全站唯一的秘密前缀；门户不会链接到这里。不要把它写进公开的地方。",
-          "The site's only secret prefix; the portal never links here. Keep it out of public places.",
-        )}
       >
         <InfoRow label={tr("当前地址", "Current address")}>
           <Mono>{shown ? url : masked}</Mono>

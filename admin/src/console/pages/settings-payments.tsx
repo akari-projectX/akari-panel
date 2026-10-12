@@ -6,30 +6,32 @@
 // delete in the danger zone (typed name). Keys and accounts are the owner's
 // (R47): other admins see the section read-only.
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, CreditCard, Plus, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, CreditCard, GripVertical, Lock, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { del, get, post, put } from "../../shared/api";
+import { cn } from "../../shared/cn";
 import { centsToYuanText, parseYuan } from "../../shared/format";
 import { useTr } from "../../shared/i18n";
 import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
-import { Group } from "../../shared/ui/card";
+import { Group, Tile } from "../../shared/ui/card";
 import { useConfirm } from "../../shared/ui/confirm";
 import { Dialog } from "../../shared/ui/dialog";
 import { Checkbox, Field, Input, Select, Switch, SwitchField, Textarea, secretInputProps } from "../../shared/ui/form";
 import { Callout } from "../../shared/ui/layout";
+import { MenuItem, RowMenu } from "../../shared/ui/menu";
 import { EmptyState } from "../../shared/ui/states";
 import { useToast } from "../../shared/ui/toast";
 import { settled, useAction } from "../data";
 import { CopyButton, Mono, useErrText } from "../kit";
 import { useMe } from "../session";
 import { fresh } from "./settings-data";
+import { PAY_TILE_DEFAULT, PAY_TILES } from "./settings-ia";
 import {
   DangerZone,
   FieldRow,
   InfoRow,
   Loaded,
-  OwnerBadge,
   SwitchRow,
   Warnings,
   intError,
@@ -160,28 +162,30 @@ function PaymentList({ p }: { p: Payments }) {
     },
   });
   const nextSort = (Math.max(0, ...p.methods.map((m) => m.sort)) || 0) + 10;
+  const [dragging, setDragging] = useState<string | null>(null);
+  const dropOn = (target: string) => {
+    if (!dragging || dragging === target) return;
+    const n = order.filter((x) => x !== dragging);
+    n.splice(n.indexOf(target) + (order.indexOf(dragging) < order.indexOf(target) ? 1 : 0), 0, dragging);
+    f.set("order", n);
+  };
+  const notify = p.methods.filter((m) => m.notify_url);
   return (
     <>
-      {!owner && (
-        <Callout tone="info" title={tr("仅所有者可修改", "Owner only")}>
-          {tr(
-            "支付方式的新建、删除、密钥与账号只有所有者能改；这里只能查看与测试。",
-            "Only the owner creates, deletes or changes keys and accounts of payment methods; you can view and test them.",
-          )}
-        </Callout>
-      )}
       <Warnings items={p.warnings} />
       <Group
-        title={
-          <span className="flex items-center gap-2">
-            {tr("收款渠道", "Payment channels")}
-            <OwnerBadge />
-          </span>
+        title={tr("收款渠道", "Payment channels")}
+        footer={
+          owner
+            ? tr(
+                "拖动（或用 ↑↓ 键）调整门户里的显示顺序；启停与顺序在保存栏保存。",
+                "Drag (or use ↑↓) to set the order on the portal; enabling and order are saved in the save bar.",
+              )
+            : tr(
+                "新建、删除、启停、排序以及密钥与账号只有所有者能改；你可以查看与测试。",
+                "Only the owner creates, deletes, enables, orders and changes keys and accounts; you can view and test.",
+              )
         }
-        footer={tr(
-          "用箭头调整门户里的显示顺序；启停与顺序在保存栏保存。",
-          "Arrows set the order on the portal; enabling and order are saved in the save bar.",
-        )}
       >
         {order.length === 0 && (
           <EmptyState
@@ -201,6 +205,9 @@ function PaymentList({ p }: { p: Payments }) {
               owner={owner}
               first={i === 0}
               last={i === order.length - 1}
+              dragging={dragging === id}
+              onDrag={(x) => setDragging(x ? id : null)}
+              onDrop={() => dropOn(id)}
               onMove={(dir) => move(i, dir)}
               onToggle={(x) => f.set("enabled", { ...v.enabled, [id]: x })}
               onEdit={() => {
@@ -213,30 +220,29 @@ function PaymentList({ p }: { p: Payments }) {
         {owner && (
           <div className="px-4 py-2.5">
             <Button size="sm" variant="soft" icon={Plus} onClick={() => setChoosing(true)}>
-              {tr("添加支付方式", "Add a payment method")}
+              {tr("添加渠道", "Add a channel")}
+              <Lock className="!size-3 opacity-70" aria-hidden="true" />
             </Button>
           </div>
         )}
       </Group>
-      {p.methods.some((m) => m.notify_url) && (
+      {notify.length > 0 && (
         <Group
           title={tr("支付通知地址", "Payment notice URLs")}
           footer={tr(
-            "填到支付平台的「异步通知地址」。地址里含后台前缀，不要公开。",
-            "Enter it as the platform's notify URL. It contains the console prefix: keep it private.",
+            "填到支付平台的「授权回调 / 异步通知地址」。地址里含后台前缀，不要公开。",
+            "Enter it as the platform's callback / notify URL. It contains the console prefix: keep it private.",
           )}
         >
-          {p.methods
-            .filter((m) => m.notify_url)
-            .map((m) => (
-              <InfoRow
-                key={m.id}
-                label={m.display_name}
-                description={<span className="font-mono break-all">{m.notify_url}</span>}
-              >
-                <CopyButton text={m.notify_url!} />
-              </InfoRow>
-            ))}
+          {notify.map((m) => (
+            <InfoRow
+              key={m.id}
+              label={<span className="block font-mono text-footnote break-all">{m.notify_url}</span>}
+              description={notify.length > 1 ? m.display_name : undefined}
+            >
+              <CopyButton text={m.notify_url!} />
+            </InfoRow>
+          ))}
         </Group>
       )}
       {owner && p.methods.length > 0 && (
@@ -244,7 +250,12 @@ function PaymentList({ p }: { p: Payments }) {
           {p.methods.map((m) => (
             <InfoRow
               key={m.id}
-              label={tr(`删除「${m.display_name}」`, `Delete "${m.display_name}"`)}
+              label={
+                <span className="flex items-center gap-1.5">
+                  {tr(`删除「${m.display_name}」`, `Delete "${m.display_name}"`)}
+                  <Lock className="size-3 text-faint" aria-label={tr("仅所有者", "Owner only")} />
+                </span>
+              }
               description={tr(
                 "只能删除从未被订单使用过的支付方式；用过的请停用。",
                 "Only methods no order ever used can be deleted; disable used ones instead.",
@@ -297,12 +308,25 @@ function PaymentList({ p }: { p: Payments }) {
   );
 }
 
+/** The coloured tile of a payment kind (system-settings style; colours are tile data like the IA's). */
+function KindTile({ kind, size = 32 }: { kind: string; size?: number }) {
+  const t = PAY_TILES[kind];
+  return (
+    <Tile color={t?.tint ?? PAY_TILE_DEFAULT} size={size}>
+      {t ? <span className="text-callout font-bold not-italic">{t.glyph}</span> : <CreditCard />}
+    </Tile>
+  );
+}
+
 function PaymentRow({
   m,
   on,
   owner,
   first,
   last,
+  dragging,
+  onDrag,
+  onDrop,
   onMove,
   onToggle,
   onEdit,
@@ -312,6 +336,9 @@ function PaymentRow({
   owner: boolean;
   first: boolean;
   last: boolean;
+  dragging: boolean;
+  onDrag: (on: boolean) => void;
+  onDrop: () => void;
   onMove: (dir: -1 | 1) => void;
   onToggle: (v: boolean) => void;
   onEdit: () => void;
@@ -337,41 +364,65 @@ function PaymentRow({
       setTesting(false);
     }
   };
+  const app = typeof m.config.app_id === "string" && m.config.app_id ? m.config.app_id : null;
   return (
-    <div className="px-4 py-3" data-method={m.display_name}>
+    <div
+      className={cn("px-4 py-3 transition-opacity", dragging && "opacity-50")}
+      data-method={m.display_name}
+      draggable={owner}
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = "move";
+        onDrag(true);
+      }}
+      onDragEnd={() => onDrag(false)}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
+        e.preventDefault();
+        onDrop();
+      }}
+    >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         {owner && (
-          <div className="flex items-center gap-0.5">
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              icon={ArrowUp}
-              aria-label={tr(`上移 ${m.display_name}`, `Move ${m.display_name} up`)}
-              disabled={first}
-              onClick={() => onMove(-1)}
-            />
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              icon={ArrowDown}
-              aria-label={tr(`下移 ${m.display_name}`, `Move ${m.display_name} down`)}
-              disabled={last}
-              onClick={() => onMove(1)}
-            />
-          </div>
+          <button
+            type="button"
+            className="-ml-1 inline-flex size-6 cursor-grab items-center justify-center rounded-sm text-faint hover:text-muted-foreground focus-visible:ring-[3px] focus-visible:ring-ring focus-visible:outline-none active:cursor-grabbing pointer-coarse:hidden"
+            aria-label={tr(`调整顺序 ${m.display_name}（↑↓）`, `Reorder ${m.display_name} (↑↓)`)}
+            title={tr("拖动或用 ↑↓ 键调整顺序", "Drag or press ↑↓ to reorder")}
+            onKeyDown={(e) => {
+              if (e.key === "ArrowUp" && !first) {
+                e.preventDefault();
+                onMove(-1);
+              } else if (e.key === "ArrowDown" && !last) {
+                e.preventDefault();
+                onMove(1);
+              }
+            }}
+          >
+            <GripVertical className="size-4" aria-hidden="true" />
+          </button>
         )}
+        <KindTile kind={m.kind} />
         <div className="min-w-0 flex-1 basis-40">
           <div className="text-body font-semibold">{m.display_name}</div>
           <div className="flex flex-wrap items-center gap-1.5 text-footnote text-muted-foreground">
-            {m.kind_label}
+            <span className="truncate">
+              {m.kind_label}
+              {app && tr(` · 应用 ${app.slice(0, 7)}…`, ` · app ${app.slice(0, 7)}…`)}
+            </span>
             {m.config.environment === "sandbox" && <Badge tone="info">{tr("沙箱", "Sandbox")}</Badge>}
           </div>
         </div>
         <Badge tone={!m.enabled ? "outline" : m.active ? "success" : "warning"} dot={m.enabled}>
-          {!m.enabled ? tr("已停用", "Disabled") : m.active ? tr("可用", "Active") : tr("不可用", "Unusable")}
+          {!m.enabled ? tr("停用", "Off") : m.active ? tr("启用", "On") : tr("不可用", "Unusable")}
         </Badge>
-        <Button size="sm" variant="outline" loading={testing} onClick={() => void test()}>
-          {tr("测试连接", "Test")}
+        <Button
+          size="sm"
+          variant="outline"
+          loading={testing}
+          aria-label={tr(`测试连接 ${m.display_name}`, `Test ${m.display_name}`)}
+          onClick={() => void test()}
+        >
+          {tr("测试", "Test")}
         </Button>
         <Button
           size="sm"
@@ -381,6 +432,22 @@ function PaymentRow({
         >
           {owner ? tr("编辑", "Edit") : tr("查看", "View")}
         </Button>
+        {owner && (
+          <span className="pointer-fine:hidden">
+            <RowMenu label={tr(`调整顺序 ${m.display_name}`, `Reorder ${m.display_name}`)}>
+              {() => (
+                <>
+                  <MenuItem icon={ArrowUp} disabled={first} onClick={() => onMove(-1)}>
+                    {tr("上移", "Move up")}
+                  </MenuItem>
+                  <MenuItem icon={ArrowDown} disabled={last} onClick={() => onMove(1)}>
+                    {tr("下移", "Move down")}
+                  </MenuItem>
+                </>
+              )}
+            </RowMenu>
+          </span>
+        )}
         <Switch
           label={tr(`启用 ${m.display_name}`, `Enable ${m.display_name}`)}
           checked={on}
@@ -388,7 +455,9 @@ function PaymentRow({
           onChange={onToggle}
         />
       </div>
-      {m.warnings.length > 0 && <p className="mt-1.5 text-footnote text-warning">{m.warnings.join("；")}</p>}
+      {m.warnings.length > 0 && (
+        <p className="mt-1.5 text-footnote text-warning sm:pl-[4.25rem]">{m.warnings.join("；")}</p>
+      )}
     </div>
   );
 }

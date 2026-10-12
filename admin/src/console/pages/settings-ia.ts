@@ -62,6 +62,8 @@ export type Section = {
   danger?: boolean;
   /** A link to another page instead of a section. */
   href?: string;
+  /** Where it lived before the 2026-10 redesign (the overview's "从哪里搬来"). */
+  from: [string, string];
   /** Search words: old names and the settings inside. */
   keywords: string;
 };
@@ -75,6 +77,7 @@ export const SETTINGS_IA: SectionGroup[] = [
     sections: [
       {
         id: "site",
+        from: ["站点 tab 的站点卡 + 品牌 tab", "the Site tab's site card + the Branding tab"],
         zh: "站点与品牌",
         en: "Site and branding",
         icon: Brush,
@@ -89,6 +92,10 @@ export const SETTINGS_IA: SectionGroup[] = [
       },
       {
         id: "domains",
+        from: [
+          "站点 tab 的域名、通行密钥中心与证书域名 + 安全 tab 的 Cloudflare 网段",
+          "the Site tab's domains, passkey centre and certificate names + the Security tab's Cloudflare ranges",
+        ],
         zh: "域名与证书",
         en: "Domains and certificates",
         icon: Globe,
@@ -109,6 +116,7 @@ export const SETTINGS_IA: SectionGroup[] = [
     sections: [
       {
         id: "signup",
+        from: ["注册 tab 的注册卡", "the Sign-up tab's registration card"],
         zh: "注册与邀请",
         en: "Sign-up and invites",
         icon: UserPlus,
@@ -122,6 +130,10 @@ export const SETTINGS_IA: SectionGroup[] = [
       },
       {
         id: "login",
+        from: [
+          "安全 tab 的登录方式 + 注册 tab 的人机验证",
+          "the Security tab's sign-in methods + the Sign-up tab's bot protection",
+        ],
         zh: "登录与人机验证",
         en: "Sign-in and bot protection",
         icon: Fingerprint,
@@ -136,6 +148,7 @@ export const SETTINGS_IA: SectionGroup[] = [
       },
       {
         id: "cleanup",
+        from: ["账号清理 tab", "the Account cleanup tab"],
         zh: "账号清理",
         en: "Account cleanup",
         icon: UserMinus,
@@ -155,6 +168,10 @@ export const SETTINGS_IA: SectionGroup[] = [
     sections: [
       {
         id: "subscription",
+        from: [
+          "订阅 tab 的格式、导入按钮与线路名 + 安全 tab 的订阅路径",
+          "the Subscriptions tab's formats, import buttons and line names + the Security tab's subscription path",
+        ],
         zh: "订阅链接与格式",
         en: "Subscription links and formats",
         icon: Cable,
@@ -169,6 +186,7 @@ export const SETTINGS_IA: SectionGroup[] = [
       },
       {
         id: "routing",
+        from: ["订阅 tab 的分流规则", "the Subscriptions tab's routing rules"],
         zh: "分流规则",
         en: "Routing rules",
         icon: Route,
@@ -187,6 +205,7 @@ export const SETTINGS_IA: SectionGroup[] = [
     sections: [
       {
         id: "install",
+        from: ["节点 tab 的安装命令与证书", "the Nodes tab's install command and certificates"],
         zh: "安装与证书",
         en: "Install and certificates",
         icon: Download,
@@ -199,6 +218,7 @@ export const SETTINGS_IA: SectionGroup[] = [
       },
       {
         id: "probe",
+        from: ["节点 tab 的延迟测试", "the Nodes tab's latency probes"],
         zh: "测速与健康检查",
         en: "Probes and health checks",
         icon: Radar,
@@ -212,6 +232,10 @@ export const SETTINGS_IA: SectionGroup[] = [
       },
       {
         id: "block",
+        from: [
+          "审计规则 tab（改名，避免与审计日志混淆）",
+          "the Audit rules tab (renamed so it is not mistaken for the audit log)",
+        ],
         zh: "出站拦截规则",
         en: "Outbound block rules",
         icon: ShieldBan,
@@ -225,6 +249,7 @@ export const SETTINGS_IA: SectionGroup[] = [
       },
       {
         id: "updates",
+        from: ["更新页的设置 + 安全 tab 的发布公钥", "the Updates page's settings + the Security tab's release keys"],
         zh: "更新源与验签",
         en: "Update source and signing keys",
         icon: ArrowRightLeft,
@@ -244,6 +269,7 @@ export const SETTINGS_IA: SectionGroup[] = [
     sections: [
       {
         id: "payments",
+        from: ["支付 tab", "the Payments tab"],
         zh: "支付方式",
         en: "Payment methods",
         icon: CreditCard,
@@ -258,6 +284,7 @@ export const SETTINGS_IA: SectionGroup[] = [
       },
       {
         id: "commission",
+        from: ["资金页的邀请返利设置", "the Finance page's commission settings"],
         zh: "邀请返利",
         en: "Invite commissions",
         icon: Gift,
@@ -276,6 +303,7 @@ export const SETTINGS_IA: SectionGroup[] = [
     sections: [
       {
         id: "mail",
+        from: ["邮件 tab 的发信方式与测试发信", "the Mail tab's transport and test mail"],
         zh: "发信通道",
         en: "Mail transport",
         icon: Mail,
@@ -288,6 +316,7 @@ export const SETTINGS_IA: SectionGroup[] = [
       },
       {
         id: "templates",
+        from: ["邮件模板 tab", "the Mail templates tab"],
         zh: "邮件模板",
         en: "Mail templates",
         icon: MailOpen,
@@ -300,6 +329,7 @@ export const SETTINGS_IA: SectionGroup[] = [
       },
       {
         id: "notices",
+        from: ["邮件 tab 里的通知开关", "the notice switches in the Mail tab"],
         zh: "通知种类",
         en: "Notices",
         icon: Bell,
@@ -312,6 +342,7 @@ export const SETTINGS_IA: SectionGroup[] = [
       },
       {
         id: "alerts",
+        from: ["告警页的设置 tab", "the Alerts page's settings tab"],
         zh: "告警通道与阈值",
         en: "Alert channels and thresholds",
         icon: BellRing,
@@ -330,6 +361,7 @@ export const SETTINGS_IA: SectionGroup[] = [
     sections: [
       {
         id: "access",
+        from: ["安全 tab 的后台地址", "the Security tab's console address"],
         zh: "后台入口",
         en: "Console address",
         icon: DoorClosed,
@@ -344,6 +376,7 @@ export const SETTINGS_IA: SectionGroup[] = [
       },
       {
         id: "retention",
+        from: ["安全 tab 的「安全与数据保留」", "the Security tab's security and retention card"],
         zh: "数据保留",
         en: "Data retention",
         icon: Database,
@@ -354,6 +387,7 @@ export const SETTINGS_IA: SectionGroup[] = [
       },
       {
         id: "account",
+        from: ["我的账户页（保留独立页面，这里只放入口）", "the My account page (still its own page; linked here)"],
         zh: "我的账户与通行密钥",
         en: "My account and passkeys",
         icon: KeyRound,
@@ -368,6 +402,12 @@ export const SETTINGS_IA: SectionGroup[] = [
     ],
   },
 ];
+
+/** Tiles of the payment kinds (brand colour and glyph); unknown kinds get a card icon. */
+export const PAY_TILES: Record<string, { tint: string; glyph: string }> = {
+  alipay_f2f: { tint: "#1677ff", glyph: "支" },
+};
+export const PAY_TILE_DEFAULT = "#2563eb";
 
 /** The overview's tile colour (neutral graphite, like 系统设置 in the sidebar). */
 export const OVERVIEW_TINT = "#6b7280";
