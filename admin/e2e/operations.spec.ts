@@ -12,7 +12,7 @@ test("CPN-01 CPN-02 CPN-03 CPN-04: coupons — create (checked numbers), search,
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, "");
   await openConsole(page, "/coupons");
-  await page.getByRole("button", { name: "新建优惠券" }).click();
+  await page.getByRole("button", { name: "新建优惠券" }).first().click();
   const c = dialog(page, "新建优惠券");
   await c.getByLabel(/优惠码/).fill(code);
   await c.getByLabel("备注名称").fill("e2e coupon");

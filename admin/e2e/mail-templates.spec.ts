@@ -52,6 +52,8 @@ async function pane(page: Page, info: TestInfo, name: "编辑" | "预览" | "变
   if (isMobile(info)) await page.getByRole("button", { name, exact: true }).click();
 }
 
+/** The editor's language switch (the shell toolbar has its own "English" button). */
+const langs = (page: Page) => page.getByRole("group", { name: "语言" });
 const errors = (page: Page) => page.getByRole("alert", { name: "模板错误" });
 const saveButton = (page: Page) => page.getByRole("button", { name: /^保存/ });
 const preview = (page: Page) => page.frameLocator("iframe[title='邮件 HTML 预览']");
@@ -122,14 +124,17 @@ test("SET-18: mail templates — placeholders checked while typing, preview, sav
   }
 
   // Unsaved changes: switching the language asks; keep editing, then discard.
-  await page.getByRole("button", { name: "English", exact: true }).click();
+  await langs(page).getByRole("button", { name: "English", exact: true }).click();
   await expect(dialog(page, "放弃未保存的修改？")).toBeVisible();
   await page.getByRole("alertdialog").getByRole("button", { name: "取消" }).click();
   await expect(page.getByRole("button", { name: "中文", exact: true })).toHaveAttribute("aria-pressed", "true");
-  await page.getByRole("button", { name: "English", exact: true }).click();
+  await langs(page).getByRole("button", { name: "English", exact: true }).click();
   await confirmDialog(page, undefined, "放弃修改");
   await expect(page).toHaveURL(/lang=en/);
-  await expect(page.getByRole("button", { name: "English", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(langs(page).getByRole("button", { name: "English", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
   await page.getByRole("button", { name: "中文", exact: true }).click();
   await expect(page.getByRole("button", { name: "中文", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByText("已自定义 · 已保存")).toBeVisible();

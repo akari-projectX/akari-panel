@@ -32,7 +32,9 @@ test("ORD-07 ORD-01 ORD-02 ORD-03 ORD-05 ORD-06: manual orders, list and filters
   await page.getByRole("button", { name: "人工订单", exact: true }).first().click();
   const m = dialog(page, "新建人工订单");
   // Nothing chosen yet: the fields say what is missing (nothing is sent).
-  await m.getByRole("button", { name: "创建并开通" }).click();
+  // Submitted with Enter from the focused email field once the plans are in.
+  await expect(m.getByLabel("套餐")).toBeEnabled();
+  await m.getByLabel("用户邮箱").press("Enter");
   await expect(m.getByText("请选择一个用户")).toBeVisible();
   await m.getByLabel("用户邮箱").fill("nobody-such-user");
   await expect(m.getByText(/没有匹配的用户/)).toBeVisible();
