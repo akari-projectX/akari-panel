@@ -16,7 +16,7 @@ import {
   Wifi,
   type LucideIcon,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { Suspense, lazy, type ReactNode } from "react";
 import { Link } from "react-router";
 import { get } from "../../shared/api";
 import { cn } from "../../shared/cn";
@@ -25,7 +25,6 @@ import { useTr, type Tr } from "../../shared/i18n";
 import { Badge, Dot } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
 import { Card, CardHeader } from "../../shared/ui/card";
-import { TrendChart } from "../../shared/ui/charts";
 import { PageHeader } from "../../shared/ui/layout";
 import { Meter, usageTone } from "../../shared/ui/meter";
 import { ErrorState, Skeleton } from "../../shared/ui/states";
@@ -33,6 +32,10 @@ import { navigate } from "../router";
 import { useServers } from "../servers";
 import type { ServerView } from "../types";
 import { OrderStatus } from "./order-status";
+
+// recharts is the biggest library on this page: the chart streams in after
+// the cards (its own chunk), so the first screen does not wait for it.
+const TrendChart = lazy(() => import("../../shared/ui/charts").then((m) => ({ default: m.TrendChart })));
 import { UpdateBadge } from "./update-status";
 
 type Window = {
@@ -192,11 +195,6 @@ export function DashboardPage() {
   const billed = days.map((day) => byDay.get(day)?.billed_bytes ?? 0);
   // Net revenue with its two parts: collected (by payment day) and refunded
   // channel money (by refund day).
-  const split = (w: Window) =>
-    tr(
-      `实收 ${yuan(w.gross_cents)} · 退款 ${yuan(w.refunds_cents)} · 净额 ${yuan(w.revenue_cents)}`,
-      `collected ${yuan(w.gross_cents)} · refunded ${yuan(w.refunds_cents)} · net ${yuan(w.revenue_cents)}`,
-    );
   const s = d?.servers;
 
   const todos: [LucideIcon, string, number, string, string][] = d
@@ -282,15 +280,17 @@ export function DashboardPage() {
             {loading ? (
               <Skeleton className="h-52 w-full" />
             ) : (
-              <TrendChart
-                title={tr("计费流量", "Billed traffic")}
-                times={days}
-                axisLabel={(t) => t.slice(5).replace("-", "/")}
-                tipLabel={(t) => t}
-                format={bytes}
-                series={[{ label: tr("计费", "Billed"), values: billed, slot: 1 }]}
-                height={200}
-              />
+              <Suspense fallback={<Skeleton className="h-52 w-full" />}>
+                <TrendChart
+                  title={tr("计费流量", "Billed traffic")}
+                  times={days}
+                  axisLabel={(t) => t.slice(5).replace("-", "/")}
+                  tipLabel={(t) => t}
+                  format={bytes}
+                  series={[{ label: tr("计费", "Billed"), values: billed, slot: 1 }]}
+                  height={200}
+                />
+              </Suspense>
             )}
             {d && d.traffic_top_nodes.length > 0 && (
               <div className="mt-3 border-t border-separator pt-3">
@@ -356,19 +356,34 @@ export function DashboardPage() {
             {d
               ? (
                   [
-                    [tr("今日", "Today"), d.today],
-                    [tr("7 天", "7d"), d.d7],
-                    [tr("30 天", "30d"), d.d30],
-                  ] as [string, Window][]
-                ).map(([k, w]) => (
-                  <div key={k} className="grid gap-0.5 px-3 py-2.5">
+                    ["today", tr("今日", "Today"), d.today],
+                    ["d7", tr("7 天", "7d"), d.d7],
+                    ["d30", tr("30 天", "30d"), d.d30],
+                  ] as [string, string, Window][]
+                ).map(([id, k, w]) => (
+                  <div key={id} data-revenue-window={id} className="grid gap-1.5 px-3 py-2.5">
                     <dt className="flex items-baseline justify-between gap-2 text-body">
-                      <span className="text-muted-foreground">{k}</span>
+                      <span className="text-muted-foreground">
+                        {k}
+                        <span className="ml-1.5 text-footnote text-faint">
+                          {tr(`${w.orders} 单`, `${w.orders} orders`)}
+                        </span>
+                      </span>
                       <span className="tnum text-callout font-semibold">{yuan(w.revenue_cents)}</span>
                     </dt>
-                    <dd className="text-footnote text-muted-foreground">
-                      {`${k} ${split(w)}`}
-                      {tr(` · ${w.orders} 单`, ` · ${w.orders} orders`)}
+                    <dd className="grid grid-cols-3 gap-2 text-footnote">
+                      {(
+                        [
+                          [tr("实收", "Collected"), w.gross_cents],
+                          [tr("退款", "Refunded"), w.refunds_cents],
+                          [tr("净额", "Net"), w.revenue_cents],
+                        ] as [string, number][]
+                      ).map(([label, cents]) => (
+                        <span key={label} className="grid min-w-0">
+                          <span className="text-faint">{label}</span>
+                          <span className="tnum truncate text-muted-foreground">{yuan(cents)}</span>
+                        </span>
+                      ))}
                     </dd>
                   </div>
                 ))

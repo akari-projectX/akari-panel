@@ -21,6 +21,14 @@ const PAGES: [string, string][] = [
   ["07-plans", "/plans"],
   ["08-tickets", "/tickets"],
   ["09-settings", "/settings"],
+  ["09-settings-domains", "/settings/domains"],
+  ["09-settings-payments", "/settings/payments"],
+  ["09-mail-templates", "/settings/mail-templates"],
+  ["11-finance", "/finance"],
+  ["11-coupons", "/coupons"],
+  ["12-alerts", "/alerts"],
+  ["12-updates", "/updates"],
+  ["12-audit", "/audit"],
   ["10-status", "/status"],
 ];
 
@@ -28,7 +36,7 @@ test.describe.configure({ mode: "serial" });
 
 async function shot(page: Page, file: string): Promise<void> {
   mkdirSync(OUT, { recursive: true });
-  await page.evaluate(() => document.fonts.ready.then(() => undefined));
+  await Promise.race([page.evaluate(() => document.fonts.ready.then(() => undefined)), page.waitForTimeout(5_000)]);
   await page.waitForTimeout(700); // charts and the page-in transition
   await page.screenshot({ path: join(OUT, `${file}.png`), fullPage: true, animations: "disabled" });
 }
@@ -46,10 +54,17 @@ async function attempt(what: string, fn: () => Promise<void>, failed: string[]):
   }
 }
 
-async function screens(browser: Browser, device: keyof typeof DEVICES, scheme: "light" | "dark"): Promise<string[]> {
+async function screens(
+  browser: Browser,
+  device: keyof typeof DEVICES,
+  scheme: "light" | "dark",
+  userId: string,
+): Promise<string[]> {
   const failed: string[] = [];
   const ctx = await browser.newContext({ ...DEVICES[device], locale: "zh-CN", colorScheme: scheme });
   const page = await ctx.newPage();
+  // A stuck step must not eat the whole set: every action and wait gives up quickly.
+  page.setDefaultTimeout(15_000);
   const tag = `${device}-${scheme}`;
   await attempt(
     "login",
@@ -71,6 +86,15 @@ async function screens(browser: Browser, device: keyof typeof DEVICES, scheme: "
       },
       failed,
     );
+  await attempt(
+    "user detail",
+    async () => {
+      await page.goto(`${CONSOLE}/users?open=${userId}`);
+      await expect(page.getByRole("dialog")).toBeVisible();
+      await shot(page, `04-users-detail-${tag}`);
+    },
+    failed,
+  );
   await attempt(
     "palette",
     async () => {
@@ -127,7 +151,7 @@ test("screens: desktop + phone × light + dark", async ({ browser }, info) => {
   const failed: string[] = [];
   for (const device of ["desktop", "mobile"] as const)
     for (const scheme of SCHEMES)
-      failed.push(...(await screens(browser, device, scheme)).map((f) => `${device}/${scheme} ${f}`));
+      failed.push(...(await screens(browser, device, scheme, u.id)).map((f) => `${device}/${scheme} ${f}`));
   // Reported, not fatal: the set is for review.
   if (failed.length) console.log(`screens not taken:\n${failed.join("\n")}`);
   info.annotations.push({ type: "screens", description: failed.length ? failed.join("; ") : "all taken" });

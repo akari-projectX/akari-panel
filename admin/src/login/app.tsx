@@ -428,9 +428,7 @@ export function LoginApp() {
               <h1 className="text-title3 font-bold tracking-[-0.015em]">
                 {tr(`登录 ${name} 管理后台`, `Sign in to ${name} admin console`)}
               </h1>
-              <p className="mt-1 text-footnote text-muted-foreground">
-                {tr("仅限管理员。门户不会链接到这里。", "Admins only. The portal never links here.")}
-              </p>
+              <p className="mt-1 text-footnote text-muted-foreground">{tr("仅限管理员登录", "Administrators only")}</p>
             </div>
             {passkeyOk && (
               <Button
