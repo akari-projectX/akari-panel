@@ -456,7 +456,7 @@ const TONE_ICON = {
   info: <Info className="size-4 text-info" aria-hidden="true" />,
 };
 
-export function Attention({ items, compact }: { items: Attn[]; compact?: boolean }) {
+export function Attention({ items }: { items: Attn[]; compact?: boolean }) {
   const tr = useTr();
   if (items.length === 0) return null;
   const danger = items.filter((a) => a.tone === "danger").length;
@@ -470,9 +470,9 @@ export function Attention({ items, compact }: { items: Attn[]; compact?: boolean
       </div>
       <ul className="divide-y divide-separator">
         {items.map((a) => (
-          <li key={a.key} className="flex flex-wrap items-start gap-x-3 gap-y-2 px-4 py-3">
+          <li key={a.key} className="flex items-start gap-x-3 px-4 py-3">
             <span className="mt-0.5">{TONE_ICON[a.tone]}</span>
-            <div className="min-w-0 flex-1 basis-56">
+            <div className="min-w-0 flex-1">
               <div className="text-body font-semibold break-words">{a.title}</div>
               {a.body && <div className="mt-0.5 text-footnote break-words text-muted-foreground">{a.body}</div>}
               {a.copy && (
@@ -484,12 +484,7 @@ export function Attention({ items, compact }: { items: Attn[]; compact?: boolean
               )}
             </div>
             {a.cta && (
-              <Button
-                asChild
-                size="sm"
-                variant={a.tone === "danger" ? "primary" : "outline"}
-                className={cn(compact && "max-sm:ml-7")}
-              >
+              <Button asChild size="sm" variant={a.tone === "danger" ? "primary" : "outline"} className="shrink-0">
                 <Link to={a.to}>{a.cta}</Link>
               </Button>
             )}

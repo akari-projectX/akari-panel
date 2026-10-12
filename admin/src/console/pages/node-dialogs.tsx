@@ -6,6 +6,7 @@
 // on ?ntab=) and the entrance dialogs (entrance-dialog.tsx).
 import { useQuery } from "@tanstack/react-query";
 import {
+  ChevronRight,
   Braces,
   CircleCheck,
   Download,
@@ -283,11 +284,17 @@ function CommandDialog({ shown, onClose }: { shown: Shown; onClose: () => void }
               caption={tr("bash · 以 root 执行（一次性）", "bash · run as root (single use)")}
             />
             {install.command_wget && (
-              <details>
-                <summary className="flex min-h-11 cursor-default items-center text-body text-muted-foreground">
+              <details className="group rounded-lg ring-1 ring-border ring-inset">
+                <summary className="flex min-h-11 cursor-default list-none items-center gap-1.5 px-3 text-body font-medium [&::-webkit-details-marker]:hidden">
+                  <ChevronRight
+                    className="size-4 text-faint transition-transform group-open:rotate-90"
+                    aria-hidden="true"
+                  />
                   {tr("没有 curl？用 wget", "No curl? Use wget")}
                 </summary>
-                <CopyText block value={install.command_wget} label={tr("wget 命令", "the wget command")} />
+                <div className="px-3 pb-3">
+                  <CopyText block value={install.command_wget} label={tr("wget 命令", "the wget command")} />
+                </div>
               </details>
             )}
             <Steps items={steps} />
@@ -307,11 +314,17 @@ function CommandDialog({ shown, onClose }: { shown: Shown; onClose: () => void }
                 )}
               </p>
             )}
-            <details>
-              <summary className="flex min-h-11 cursor-default items-center text-body text-muted-foreground">
+            <details className="group rounded-lg ring-1 ring-border ring-inset">
+              <summary className="flex min-h-11 cursor-default list-none items-center gap-1.5 px-3 text-body font-medium [&::-webkit-details-marker]:hidden">
+                <ChevronRight
+                  className="size-4 text-faint transition-transform group-open:rotate-90"
+                  aria-hidden="true"
+                />
                 {tr("卸载命令", "Uninstall command")}
               </summary>
-              <CopyText block value={install.uninstall_command} label={tr("卸载命令", "the uninstall command")} />
+              <div className="px-3 pb-3">
+                <CopyText block value={install.uninstall_command} label={tr("卸载命令", "the uninstall command")} />
+              </div>
             </details>
           </div>
         )}

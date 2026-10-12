@@ -361,7 +361,8 @@ html.dark {
 }
 
 /* 小控件的可点区域不小于 44px（复选框、开关、芯片关闭钮）：伪元素扩大命中区，不改布局 */
-.hit-44 {
+/* Not over an absolutely / fixed placed control (Tailwind utilities are layered and would lose). */
+.hit-44:not(.absolute, .fixed) {
   position: relative;
 }
 .hit-44::after {

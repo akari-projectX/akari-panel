@@ -786,8 +786,8 @@ function EntranceForm({
           title={tr("探测失败，已从订阅隐藏。", "Probe failing; hidden from subscriptions.")}
         >
           {tr(
-            `自 ${dateTime(e.hidden_since)}，连续失败 ${e.health_failures} 次。已发告警，恢复后自动显示。先检查中转机到 ${server?.tls_domain ?? "?"}:${e.listen_port ?? "?"} 是否放行。`,
-            `Since ${dateTime(e.hidden_since)}, ${e.health_failures} failures in a row. Alerted; it comes back automatically. Check the relay can reach ${server?.tls_domain ?? "?"}:${e.listen_port ?? "?"}.`,
+            `自 ${dateTime(e.hidden_since)}，连续失败 ${e.health_failures} 次。已发告警，恢复后自动显示。先检查中转机到落地机 ${server?.tls_domain ?? server?.name ?? ""} 的 ${e.listen_port ?? "?"} 端口是否放行。`,
+            `Since ${dateTime(e.hidden_since)}, ${e.health_failures} failures in a row. Alerted; it comes back automatically. Check the relay can reach ${server?.tls_domain ?? server?.name ?? "the node"} on port ${e.listen_port ?? "?"}.`,
           )}
         </Banner>
       )}

@@ -350,7 +350,11 @@ function ServerBody({ s }: { s: ServerView }) {
                   )}
                   {canUpdate && (
                     <Link to="/updates">
-                      <Badge tone="primary" title={tr(`可更新到 ${newer}`, `${newer} available`)}>
+                      <Badge
+                        tone="primary"
+                        className="shrink-0 whitespace-nowrap"
+                        title={tr(`可更新到 ${newer}`, `${newer} available`)}
+                      >
                         {tr("可更新", "Update")}
                       </Badge>
                     </Link>
