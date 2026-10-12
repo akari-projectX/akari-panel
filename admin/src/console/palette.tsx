@@ -221,7 +221,7 @@ export function CommandPalette({
     },
     {
       id: "language",
-      label: tr("切换界面语言（中 / EN）", "Switch language (中 / EN)"),
+      label: tr("切换界面语言（中 / EN）", "Switch language (中 / EN)"), // i18n-ok: both languages named
       keys: "language english chinese 语言 中文",
       icon: <Languages />,
       run: () => {

@@ -10,7 +10,7 @@
     "test": "vitest run",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
-    "check": "tsc --noEmit && npm run lint && node scripts/check-error-codes.mjs && node scripts/check-tokens.mjs && vitest run",
+    "check": "tsc --noEmit && npm run lint && node scripts/check-error-codes.mjs && node scripts/check-i18n.mjs && node scripts/check-tokens.mjs && vitest run",
     "e2e": "playwright test"
   },
   "dependencies": {

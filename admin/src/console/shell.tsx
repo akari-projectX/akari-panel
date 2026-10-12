@@ -57,6 +57,9 @@ const loadPalette = () => import("./palette");
 const CommandPalette = lazy(() => loadPalette().then((m) => ({ default: m.CommandPalette })));
 const BellPanel = lazy(() => import("./components/shell-bell").then((m) => ({ default: m.BellPanel })));
 
+/** The language toggle's Chinese half (the same in both languages). */
+const ZH = "中"; // i18n-ok: a language's own name
+
 function readCollapsed() {
   try {
     return localStorage.getItem("akari.admin.sidebar") === "collapsed";
@@ -655,7 +658,8 @@ export function Shell({ page, children }: { page: string; children: ReactNode })
                 aria-label={tr("切换界面语言", "Switch language")}
                 className="inline-flex h-8 items-center rounded-full px-2.5 text-footnote font-semibold transition-colors hover:bg-accent"
               >
-                <span className={lang === "zh" ? "text-foreground" : "text-faint"}>中</span>
+                {/* The toggle names both languages: */}
+                <span className={lang === "zh" ? "text-foreground" : "text-faint"}>{ZH}</span>
                 <span className="mx-1 text-faint">/</span>
                 <span className={lang === "en" ? "text-foreground" : "text-faint"}>EN</span>
               </button>

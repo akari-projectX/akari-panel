@@ -21,7 +21,7 @@ import ts from "typescript";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "../src");
-const CJK = /[㐀-鿿！-～　-〿]/;
+const CJK = /[\u3400-\u9fff\uff01-\uff5e\u3000-\u303f]/;
 
 function* files(dir) {
   for (const name of readdirSync(dir)) {
@@ -32,7 +32,7 @@ function* files(dir) {
 }
 
 const SKIP = new Set(["shared/errors.gen.ts"]);
-const KEEP_PROPS = new Set(["keywords", "glyph"]);
+const KEEP_PROPS = new Set(["keywords", "keys", "glyph"]);
 const BASELINE_FILE = join(here, "i18n-baseline.json");
 
 function calleeText(call, sf) {
