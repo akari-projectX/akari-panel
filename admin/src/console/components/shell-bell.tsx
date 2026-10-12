@@ -108,7 +108,7 @@ export function BellPanel({ onClose }: { onClose: () => void }) {
       )}
       <div className="flex items-center justify-between border-t border-separator px-3.5 py-2 text-footnote text-faint">
         <span>{tr("每 30 秒评估一次", "Evaluated every 30 s")}</span>
-        <Link to="/alerts/notifications" onClick={onClose} className="text-muted-foreground hover:text-foreground">
+        <Link to="/alerts/outbox" onClick={onClose} className="text-muted-foreground hover:text-foreground">
           {tr("通知记录", "Deliveries")}
         </Link>
       </div>

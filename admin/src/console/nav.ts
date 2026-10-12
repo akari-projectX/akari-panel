@@ -102,7 +102,8 @@ export const SUB_LABELS: Record<string, { zh: string; en: string }> = {
   "finance/balances": { zh: "余额", en: "Balances" },
   "finance/commissions": { zh: "返利", en: "Commissions" },
   "plans/groups": { zh: "节点组", en: "Node groups" },
-  "alerts/notifications": { zh: "通知记录", en: "Deliveries" },
+  "coupons/batches": { zh: "批量码", en: "Code batches" },
+  "alerts/outbox": { zh: "通知记录", en: "Deliveries" },
 };
 
 /** Generic names for an object opened with `?open=` before (or without) its own name. */
