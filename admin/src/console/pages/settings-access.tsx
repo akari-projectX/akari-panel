@@ -1,19 +1,23 @@
 // 系统设置 → 管理与安全：后台入口 (SET-06 masked address and prefix rotation,
 // SET-07 IP allowlist; owner only, R47 — other admins see it read-only) and
 // 数据保留 (the retention days of SET-09; shortening is confirmed on save).
-import { useQueryClient } from "@tanstack/react-query";
-import { Eye, EyeOff, RotateCw } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowRight, Eye, EyeOff, Fingerprint, KeyRound, RotateCw } from "lucide-react";
 import { useState } from "react";
-import { post, put } from "../../shared/api";
+import { Link } from "react-router";
+import { get, post, put } from "../../shared/api";
 import { loadPage } from "../../shared/base";
+import { dateTime } from "../../shared/format";
 import { useTr } from "../../shared/i18n";
+import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
-import { Group } from "../../shared/ui/card";
+import { Card, Group } from "../../shared/ui/card";
 import { useConfirm } from "../../shared/ui/confirm";
 import { Dialog } from "../../shared/ui/dialog";
 import { Field, Input, Textarea } from "../../shared/ui/form";
 import { useAction } from "../data";
 import { CopyButton, Mono } from "../kit";
+import { Avatar } from "../components/kit";
 import { useMe } from "../session";
 import { fresh, useAccess, useSettings, type Access, type SettingsView } from "./settings-data";
 import {
@@ -21,6 +25,7 @@ import {
   FieldRow,
   InfoRow,
   Loaded,
+  SRow,
   intError,
   intOf,
   lines,
@@ -387,5 +392,105 @@ function RetentionForm({ d }: { d: SettingsView }) {
         )}
       </FieldRow>
     </Group>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 我的账户与通行密钥 (an entry card: the account lives on /account)
+// ---------------------------------------------------------------------------
+
+type MyPasskeys = {
+  available: boolean;
+  passkeys: { id: string; name: string; last_used_at: string | null; current: boolean }[];
+  password_login: boolean;
+};
+
+export function AccountSection() {
+  const tr = useTr();
+  const me = useMe();
+  const q = useQuery({ queryKey: ["passkeys"], queryFn: () => get<MyPasskeys>("/me/passkeys") });
+  const keys = (q.data?.passkeys ?? []).filter((p) => p.current);
+  return (
+    <>
+      <Card className="grid gap-4 p-5">
+        <div className="flex items-center gap-3">
+          <Avatar name={me.email} size={44} />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2 text-headline font-semibold break-all">
+              {me.email}
+              <Badge tone={me.is_owner ? "primary" : "neutral"}>
+                {me.is_owner ? tr("所有者", "Owner") : tr("管理员", "Admin")}
+              </Badge>
+            </div>
+            <div className="text-footnote text-muted-foreground">
+              {q.data
+                ? tr(`${keys.length} 把通行密钥`, `${keys.length} ${keys.length === 1 ? "passkey" : "passkeys"}`)
+                : tr("正在读取通行密钥…", "Loading passkeys…")}
+            </div>
+          </div>
+        </div>
+        {keys.length > 0 && (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {keys.map((p) => (
+              <div
+                key={p.id}
+                className="flex items-center gap-3 rounded-lg bg-window px-3 py-2.5 ring-1 ring-border ring-inset"
+              >
+                <KeyRound className="size-4 text-muted-foreground" aria-hidden="true" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-body font-medium">{p.name}</div>
+                  <div className="text-caption text-faint">
+                    {p.last_used_at
+                      ? tr(`最后使用 ${dateTime(p.last_used_at)}`, `Last used ${dateTime(p.last_used_at)}`)
+                      : tr("还没有用过", "Never used")}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-2 border-t border-separator pt-3">
+          <span className="min-w-0 flex-1 basis-60 text-footnote text-muted-foreground">
+            {q.data &&
+              (q.data.password_login
+                ? tr("密码登录：开启。", "Password sign-in: on. ")
+                : tr("密码登录：关闭（只用通行密钥）。", "Password sign-in: off (passkeys only). "))}
+            {tr(
+              "修改密码、增删通行密钥和「只用通行密钥登录」都在「我的账户」。",
+              "Change the password, add or remove passkeys and passkey-only sign-in in My account.",
+            )}
+          </span>
+          <Button asChild variant="primary">
+            <Link to="/account">
+              {tr("打开我的账户", "Open My account")}
+              <ArrowRight aria-hidden="true" />
+            </Link>
+          </Button>
+        </div>
+      </Card>
+      <Group title={tr("相关的站点设置", "Related site settings")}>
+        <SRow
+          icon={<Fingerprint className="size-4 text-faint" aria-hidden="true" />}
+          label={tr("登录与人机验证", "Sign-in and bot protection")}
+          description={tr(
+            "用户与管理员的登录方式、管理员只用通行密钥",
+            "How users and admins sign in, admins passkey only",
+          )}
+        >
+          <Button asChild size="sm" variant="ghost">
+            <Link to="/settings/login">{tr("前往", "Open")}</Link>
+          </Button>
+        </SRow>
+        <SRow
+          icon={<KeyRound className="size-4 text-faint" aria-hidden="true" />}
+          label={tr("通行密钥中心域名", "Passkey centre")}
+          description={tr("在「域名与证书」的危险操作区", "In the danger zone of Domains and certificates")}
+        >
+          <Button asChild size="sm" variant="ghost">
+            <Link to="/settings/domains">{tr("前往", "Open")}</Link>
+          </Button>
+        </SRow>
+      </Group>
+    </>
   );
 }

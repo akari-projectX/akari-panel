@@ -332,6 +332,8 @@ function mount(path: string) {
 
 const IDS = [
   "site",
+  "brand",
+  "links",
   "domains",
   "signup",
   "login",
@@ -345,11 +347,11 @@ const IDS = [
   "payments",
   "commission",
   "mail",
-  "templates",
   "notices",
   "alerts",
   "access",
   "retention",
+  "account",
 ];
 
 for (const id of IDS)
@@ -362,9 +364,9 @@ for (const id of IDS)
 test("overview", async () => {
   mount("/settings");
   const strip = await screen.findByRole("region", { name: "需要注意" });
-  expect(strip.textContent).toContain("panel.toml 中有已废弃的键");
+  expect(strip.textContent).toContain("个已废弃的键");
   // Summaries are real values once their queries land.
-  await screen.findByText(/^主 \d+ · 订阅 \d+ · 节点 \d+$/);
+  await screen.findByText("Asia/Shanghai");
 });
 
 test("edit, bar, save", async () => {
@@ -419,13 +421,21 @@ test("guard on leave", async () => {
   await act(async () => {
     void router.navigate("/settings/domains");
   });
-  await screen.findByRole("alertdialog");
+  const dlg = await screen.findByRole("dialog", { name: "有未保存的修改" });
+  expect(dlg.textContent).toContain("放弃修改，去「域名与证书」");
   expect(router.state.location.pathname).toBe("/settings/site");
 });
 
 test("redirects", async () => {
   const r = mount("/settings/security");
   await waitFor(() => expect(r.state.location.pathname).toBe("/settings/access"));
+  cleanup();
+  const r3 = mount("/settings/branding");
+  await waitFor(() => expect(r3.state.location.pathname).toBe("/settings/brand"));
+  cleanup();
+  const r4 = mount("/settings?section=notify");
+  await waitFor(() => expect(r4.state.location.pathname).toBe("/settings/notices"));
+  cleanup();
   const r2 = mount("/settings/mail?outbox=dead");
   await waitFor(() => expect(r2.state.location.pathname + r2.state.location.search).toBe("/status?mail=dead"));
 });
