@@ -33,6 +33,7 @@ import {
   useSearchParam,
   waited,
 } from "../components/people-finance";
+import { WEEKDAYS } from "../components/ops-bits";
 import { navigate, useQS, useRoute } from "../router";
 import { AdjustBalanceDialog } from "./user-detail";
 
@@ -489,15 +490,13 @@ type Commission = {
   created_at: string;
 };
 type CStatus = "" | "pending" | "credited" | "reversed";
-const WEEK_ZH = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-const WEEK_EN = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTH_EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 function dayTitle(day: string, tr: Tr): [string, string] {
   const [y, m, d] = day.split("-").map(Number);
   const wd = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
   const title = day === siteToday() ? tr("今天", "Today") : tr(`${m} 月 ${d} 日`, `${MONTH_EN[m - 1]} ${d}`);
-  return [title, tr(WEEK_ZH[wd], WEEK_EN[wd])];
+  return [title, tr(...WEEKDAYS[wd])];
 }
 
 function CommissionBadge({ c }: { c: Commission }) {
@@ -556,7 +555,7 @@ function Commissions() {
     : !cs.enabled
       ? tr("邀请返利未开启。", "Invite commissions are off.")
       : tr(
-          `比例 ${cs.rate_percent}%${cs.first_order_only ? " · 仅首单" : ""} · 冻结 ${cs.hold_days} 天后可提现 · 最低提现 ${yuan(cs.min_withdrawal_cents)}`,
+          `比例 ${cs.rate_percent}%${cs.first_order_only ? tr(" · 仅首单", " · first order only") : ""} · 冻结 ${cs.hold_days} 天后可提现 · 最低提现 ${yuan(cs.min_withdrawal_cents)}`,
           `${cs.rate_percent}%${cs.first_order_only ? " · first order only" : ""} · held ${cs.hold_days} days · minimum withdrawal ${yuan(cs.min_withdrawal_cents)}`,
         );
   const clear = () => {

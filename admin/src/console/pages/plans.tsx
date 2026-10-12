@@ -323,7 +323,7 @@ function Board({
         <span className="max-sm:hidden">
           {tr("卡片顺序就是门户里的展示顺序，按住 ", "Card order is the portal order: drag ")}
           <GripVertical className="inline size-3.5" aria-hidden="true" />
-          {tr(" 拖动调整，或用 ⋯ 菜单上移 / 下移。", " to reorder, or use 上移 / 下移 in the ⋯ menu.")}
+          {tr(" 拖动调整，或用 ⋯ 菜单上移 / 下移。", " to reorder, or use Move up / Move down in the ⋯ menu.")}
         </span>
         <span className="sm:hidden">
           {tr(

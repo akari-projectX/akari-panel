@@ -272,10 +272,11 @@ export function ChangePlanDialog({
               </div>
               <div className="tnum text-footnote text-muted-foreground">
                 {current
-                  ? tr(
-                      `已用 ${bytes(current.traffic_used_bytes)} · ${current.expires_at ? `${dateOnly(current.expires_at)} 到期` : "不过期"}`,
-                      `${bytes(current.traffic_used_bytes)} used · ${current.expires_at ? `expires ${dateOnly(current.expires_at)}` : "no expiry"}`,
-                    )
+                  ? `${tr(`已用 ${bytes(current.traffic_used_bytes)}`, `${bytes(current.traffic_used_bytes)} used`)} · ${
+                      current.expires_at
+                        ? tr(`${dateOnly(current.expires_at)} 到期`, `expires ${dateOnly(current.expires_at)}`)
+                        : tr("不过期", "no expiry")
+                    }`
                   : "—"}
               </div>
             </div>
@@ -305,10 +306,25 @@ export function ChangePlanDialog({
         {current && (
           <p className="flex items-start gap-1.5 text-footnote text-warning">
             <CircleAlert className="mt-px size-3.5 shrink-0" aria-hidden="true" />
-            {tr(
-              `从现在开始重新计算：原套餐剩余的${left !== null ? ` ${left} 天` : "时间"}${leftBytes !== null ? `和 ${bytes(leftBytes)} 流量` : ""}不折算。`,
-              `Starts over now: the remaining${left !== null ? ` ${left} days` : " time"}${leftBytes !== null ? ` and ${bytes(leftBytes)}` : ""} of the old plan are not credited.`,
-            )}
+            {left !== null && leftBytes !== null
+              ? tr(
+                  `从现在开始重新计算：原套餐剩余的 ${left} 天和 ${bytes(leftBytes)} 流量不折算。`,
+                  `Starts over now: the remaining ${left} days and ${bytes(leftBytes)} of the old plan are not credited.`,
+                )
+              : left !== null
+                ? tr(
+                    `从现在开始重新计算：原套餐剩余的 ${left} 天不折算。`,
+                    `Starts over now: the remaining ${left} days of the old plan are not credited.`,
+                  )
+                : leftBytes !== null
+                  ? tr(
+                      `从现在开始重新计算：原套餐剩余的时间和 ${bytes(leftBytes)} 流量不折算。`,
+                      `Starts over now: the remaining time and ${bytes(leftBytes)} of the old plan are not credited.`,
+                    )
+                  : tr(
+                      "从现在开始重新计算：原套餐剩余的时间不折算。",
+                      "Starts over now: the remaining time of the old plan is not credited.",
+                    )}
           </p>
         )}
       </div>

@@ -125,16 +125,16 @@ const DAYS: Record<Range, number> = { today: 1, "7d": 7, "30d": 30 };
 /** "2026 年 10 月 12 日 星期一" / "Monday, October 12, 2026" for a site day (YYYY-MM-DD). */
 function longDate(day: string, lang: Lang): string {
   const d = new Date(`${day}T12:00:00Z`);
-  if (lang === "en")
-    return d.toLocaleDateString("en-US", {
-      timeZone: "UTC",
-      weekday: "long",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    });
   const wd = d.toLocaleDateString("zh-CN", { timeZone: "UTC", weekday: "long" });
-  return `${d.getUTCFullYear()} 年 ${d.getUTCMonth() + 1} 月 ${d.getUTCDate()} 日 ${wd}`;
+  return lang === "en"
+    ? d.toLocaleDateString("en-US", {
+        timeZone: "UTC",
+        weekday: "long",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      })
+    : `${d.getUTCFullYear()} 年 ${d.getUTCMonth() + 1} 月 ${d.getUTCDate()} 日 ${wd}`;
 }
 
 const sumOf = (rows: Day[], f: (d: Day) => number) => rows.reduce((a, d) => a + f(d), 0);

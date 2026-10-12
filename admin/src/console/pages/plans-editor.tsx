@@ -228,7 +228,7 @@ function termChanges(
   const quota = (v: number | null) => (v ? bytes(v) : tr("不限", "Unlimited"));
   const speed = (v: number | null) => (v ? `${v} Mbps` : tr("不限", "Unlimited"));
   const names = (ids: string[]) =>
-    ids.length ? ids.map((id) => groups.find((g) => g.id === id)?.name ?? "?").join("、") : tr("无", "None");
+    ids.length ? ids.map((id) => groups.find((g) => g.id === id)?.name ?? "?").join(tr("、", ", ")) : tr("无", "None");
   const out: { k: string; from: string; to: string }[] = [];
   if ("traffic_quota_bytes" in body)
     out.push({

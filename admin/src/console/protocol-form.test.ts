@@ -5,7 +5,10 @@ import { describe, expect, it } from "vitest";
 
 import { MANIFEST } from "./protocols.gen";
 import {
+  FIELD_EN,
   enumValues,
+  fieldHelp,
+  fieldLabel,
   fieldDefault,
   networkOptionLabel,
   protocolL4,
@@ -55,6 +58,33 @@ describe("generated protocol form", () => {
     expect(enumValues("protocol", "ss2022", "method")).toEqual(["2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm"]);
     expect(enumValues("security", "reality", "fingerprint")[0]).toBe("chrome");
     expect(fieldDefault("security", "reality", "fingerprint")).toBe("chrome");
+  });
+
+  it("has an English twin for every console label of the manifest (SH-13)", () => {
+    const cjk = /[\u3400-\u9fff\uff01-\uff5e\u3000-\u303f]/;
+    const owners = [
+      ...MANIFEST.securities.map((s) => ["security", s.id, s.fields] as const),
+      ...MANIFEST.transports.map((t) => ["transport", t.id, t.fields] as const),
+      ...MANIFEST.protocols.map((p) => ["protocol", p.id, p.options] as const),
+    ];
+    const keys: string[] = [];
+    for (const [owner, id, fields] of owners) {
+      for (const f of fields) {
+        const key = `${owner}.${id}.${f.name}`;
+        keys.push(key);
+        const en = FIELD_EN[key];
+        expect(en?.label, key).toBeTruthy();
+        expect(cjk.test(en.label), key).toBe(false);
+        if (f.help_zh !== null) expect(en.help && !cjk.test(en.help), `${key} help`).toBe(true);
+        if (f.value_labels_zh.length) expect(en.values?.length, `${key} values`).toBe(f.value_labels_zh.length);
+        expect(fieldLabel(owner, id, f, "en")).toBe(en.label);
+        expect(fieldHelp(owner, id, f, "zh")).toBe(f.help_zh ?? "");
+      }
+    }
+    for (const l of [...MANIFEST.securities, ...MANIFEST.transports, ...MANIFEST.protocols])
+      expect(cjk.test(l.label), l.id).toBe(false);
+    expect(Object.keys(FIELD_EN).sort()).toEqual(keys.sort());
+    expect(networkOptionLabel("vmess", "xhttp", "en")).toBe("XHTTP (no Clash (mihomo); no sing-box)");
   });
 
   it("derives L4 from the manifest", () => {

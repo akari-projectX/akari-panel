@@ -204,9 +204,13 @@ export function BatchDialog({
     case "ban": {
       const note = reason.trim();
       if (banReason === "other" && note.length < 2)
-        errors.reason = tr("选了「其他」，请写明原因", "With 其他 (other), write the reason");
+        errors.reason = tr("选了「其他」，请写明原因", "With “Other”, write the reason");
       const text =
-        banReason === "other" ? note : note ? `${banReasonText(banReason, tr)}：${note}` : banReasonText(banReason, tr);
+        banReason === "other"
+          ? note
+          : note
+            ? `${banReasonText(banReason, tr)}${tr("：", ": ")}${note}`
+            : banReasonText(banReason, tr);
       action = { kind, reason: text.slice(0, 500) };
       break;
     }
@@ -245,7 +249,7 @@ export function BatchDialog({
   const start = async () => {
     const r = await run(() => post<{ id: string }>("/users/batch", { selection, action }), {
       ok: tr("批量任务已创建", "Batch job created"),
-      okDetail: tr("可在页头「批量任务」查看进度", "Follow it under 批量任务 in the header"),
+      okDetail: tr("可在页头「批量任务」查看进度", "Follow it under “Batch jobs” in the header"),
     });
     if (r !== undefined) onDone(r?.id);
   };
@@ -269,7 +273,9 @@ export function BatchDialog({
       case "cancel_plan":
         return tr("取消套餐，剩余天数与流量作废", "Cancel the plan; the rest of the term and traffic is gone");
       case "add_balance":
-        return `${credit === "credit" ? tr("增加", "Credit") : tr("扣减", "Debit")} ${amount.trim()} ${tr("元", "yuan")}（${reason.trim()}）`;
+        return credit === "credit"
+          ? tr(`增加 ${amount.trim()} 元（${reason.trim()}）`, `Credit ${amount.trim()} yuan (${reason.trim()})`)
+          : tr(`扣减 ${amount.trim()} 元（${reason.trim()}）`, `Debit ${amount.trim()} yuan (${reason.trim()})`);
       case "send_email":
         return tr(`发送邮件「${subject.trim()}」`, `Send "${subject.trim()}"`);
     }
@@ -993,7 +999,7 @@ export function useBulkDelete(): [(selection: Selection, label: string) => Promi
           {p.sample.length > 0 && (
             <p className="break-words">
               {tr("样例：", "Sample: ")}
-              {p.sample.slice(0, 5).join("、")}
+              {p.sample.slice(0, 5).join(tr("、", ", "))}
             </p>
           )}
         </div>

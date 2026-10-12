@@ -215,10 +215,11 @@ export function ManualOrderDialog({ onClose }: { onClose: () => void }) {
                           <span className="block truncate text-body font-medium">{u.email}</span>
                           <span className="block truncate text-footnote text-muted-foreground">
                             {u.plan_name
-                              ? tr(
-                                  `${u.plan_name} · 到期 ${u.expires_at ? dateOnly(u.expires_at) : "不限"}`,
-                                  `${u.plan_name} · expires ${u.expires_at ? dateOnly(u.expires_at) : "never"}`,
-                                )
+                              ? `${u.plan_name} · ${
+                                  u.expires_at
+                                    ? tr(`到期 ${dateOnly(u.expires_at)}`, `expires ${dateOnly(u.expires_at)}`)
+                                    : tr("到期 不限", "expires never")
+                                }`
                               : tr("当前无套餐", "No plan")}
                             {tr(" · 余额 ", " · balance ")}
                             {yuan(u.balance_cents)}
@@ -342,7 +343,7 @@ export function ManualOrderDialog({ onClose }: { onClose: () => void }) {
               <>
                 {tr("记为", "recorded as a ")}
                 <b className="font-semibold text-primary">{tr("赠送", "gift")}</b>
-                {"（¥0）"}
+                {tr("（¥0）", " (¥0)")}
               </>
             ) : (
               <>

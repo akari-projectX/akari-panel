@@ -431,7 +431,7 @@ function Pill({
         trigger={
           <button
             type="button"
-            aria-label={value ? `${label}：${value}` : label}
+            aria-label={value ? `${label}${tr("：", ": ")}${value}` : label}
             className={cn(
               "inline-flex h-full items-center gap-1.5 rounded-full pl-3 outline-none focus-visible:ring-[3px] focus-visible:ring-ring",
               value ? "pr-1" : "pr-2",
@@ -964,7 +964,11 @@ function EntryDialog({ e, loading, onClose }: { e: Entry | undefined; loading: b
           <KV
             cols={3}
             items={[
-              { k: tr("时间", "Time"), v: `${dateTime(e.at)}（${siteTimeZone()}）`, span: 2 },
+              {
+                k: tr("时间", "Time"),
+                v: tr(`${dateTime(e.at)}（${siteTimeZone()}）`, `${dateTime(e.at)} (${siteTimeZone()})`),
+                span: 2,
+              },
               { k: tr("动作代码", "Action code"), v: e.action, mono: true },
               {
                 k: tr("操作者", "Actor"),
