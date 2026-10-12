@@ -533,6 +533,19 @@ async fn mailing_batches_the_audience() {
     let r = mail(id).await;
     assert_eq!(r.status, StatusCode::CONFLICT);
     assert_eq!(r.json()["code"], "announcement.mail_in_progress");
+    // The refused request's transaction locked the row and was dropped; sqlx
+    // rolls it back lazily when the connection goes back to the pool. Wait
+    // for that lock here, or the first SKIP LOCKED pass below can find
+    // nothing (CI flake: [0, 1, 1, 1, 0, 0]).
+    {
+        let mut tx = db.pool.begin().await.unwrap();
+        sqlx::query("SELECT 1 FROM announcements WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.rollback().await.unwrap();
+    }
     let smtp = crate::mail::load(&mut db.pool.acquire().await.unwrap())
         .await
         .unwrap();
