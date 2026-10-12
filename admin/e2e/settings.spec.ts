@@ -103,7 +103,8 @@ async function guardAndShortcut(page: Page, info: TestInfo) {
   await expect(bar(page)).toContainText("1 项未保存的修改");
   const leave = () =>
     isMobile(info)
-      ? page.getByRole("link", { name: "返回系统设置" }).click()
+      ? // The phone top bar has its own back arrow too: use the page's.
+        page.getByRole("main").getByRole("link", { name: "返回系统设置" }).click()
       : sections(page)
           .getByRole("link", { name: /域名与证书/ })
           .click();

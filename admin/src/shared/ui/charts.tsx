@@ -1,5 +1,6 @@
-// Time-series charts (recharts; only in the chunks of the pages that draw
-// them: dashboard, user traffic, node / entrance / server monitoring).
+// Time-series charts (recharts). Its own chunk, loaded only when a chart
+// first renders: the dashboard imports MetricChart lazily, the details
+// (user traffic, node / entrance / server monitoring) use line-chart.tsx.
 // Conventions (proposal §1): fixed 8-slot categorical palette, the colour
 // follows the entity (direct = slot 1, relay = slot 2; never reassigned by a
 // filter); 2px lines, area fill 16% → 0, bars ≤18px with 4px top corners;
@@ -24,7 +25,7 @@ import {
   YAxis,
 } from "recharts";
 import { cn } from "../cn";
-import { bytes, dateOnly, dateTime, yuan } from "../format";
+import { bytes, yuan } from "../format";
 import { useTr } from "../i18n";
 
 export type Series = {
@@ -272,16 +273,6 @@ export function TrendChart({
       )}
     </figure>
   );
-}
-
-/** Axis and tooltip labels for ISO times in the site time zone: "10-02" over days, else "14:05". */
-export function timeLabels(times: string[]): { axisLabel: (t: string) => string; tipLabel: (t: string) => string } {
-  const n = times.length;
-  const days = n > 0 && Date.parse(times[n - 1]) - Date.parse(times[0]) > 2 * 86_400_000;
-  return {
-    axisLabel: (t) => (days ? dateOnly(t).slice(5) : dateTime(t).slice(11, 16)),
-    tipLabel: (t) => (days ? dateOnly(t) : dateTime(t)),
-  };
 }
 
 // ---------------------------------------------------------------------------

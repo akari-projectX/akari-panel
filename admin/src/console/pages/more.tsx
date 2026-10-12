@@ -16,7 +16,9 @@ import { Tile } from "../../shared/ui/card";
 import { Segmented } from "../../shared/ui/form";
 import { PageHeader } from "../../shared/ui/layout";
 import { Spin } from "../components/kit";
+import { SECONDARY } from "../data";
 import { NAV, pathOf } from "../nav";
+import { prefetchOn } from "../pages";
 import { useBadges, useMe, useSite } from "../session";
 
 /** Open the command palette (the shell listens for ⌘/Ctrl K). */
@@ -35,6 +37,7 @@ export function MorePage() {
   const keys = useQuery({
     queryKey: ["passkeys"],
     queryFn: () => get<{ passkeys: { current: boolean }[] }>("/me/passkeys"),
+    meta: SECONDARY,
   });
   const [leaving, setLeaving] = useState(false);
   const nKeys = keys.data?.passkeys.filter((p) => p.current).length;
@@ -82,7 +85,11 @@ export function MorePage() {
                         : 0;
                   return (
                     <li key={it.id} className="group">
-                      <Link to={pathOf(it.id)} className="flex h-12 items-center gap-3 pl-4 active:bg-accent">
+                      <Link
+                        to={pathOf(it.id)}
+                        {...prefetchOn(it.id)}
+                        className="flex h-12 items-center gap-3 pl-4 active:bg-accent"
+                      >
                         <Tile color={it.tint} size={30}>
                           <it.icon />
                         </Tile>

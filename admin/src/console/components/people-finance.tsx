@@ -102,7 +102,7 @@ export function useMedia(query: string): boolean {
 
 /**
  * A search box bound (debounced) to a query parameter; typing replaces the
- * history entry and closes an open record. Follows outside changes (clear
+ * history entry and closes an open record at once. Follows outside changes (clear
  * filters, Back).
  */
 export function useSearchParam(key: string): [string, string, (v: string) => void] {
@@ -114,14 +114,20 @@ export function useSearchParam(key: string): [string, string, (v: string) => voi
   useEffect(() => {
     if (d === written.current) return;
     written.current = d;
-    setQuery({ [key]: d || null, open: null }, true);
+    setQuery({ [key]: d || null }, true);
   }, [d, key]);
   useEffect(() => {
     if (value === written.current) return;
     written.current = value;
     setText(value);
   }, [value]);
-  return [value, text, setText];
+  // Typing closes the open record at once — not when the debounced term
+  // lands, which would close a record opened right after typing.
+  const type = (v: string) => {
+    setText(v);
+    if (query.get("open")) setQuery({ open: null }, true);
+  };
+  return [value, text, type];
 }
 
 /** "3 小时" / "2 天 4 小时" since `iso`; `long` = a day or more. */

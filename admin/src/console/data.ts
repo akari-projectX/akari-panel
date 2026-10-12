@@ -27,6 +27,13 @@ export function makeQueryClient(): QueryClient {
   });
 }
 
+/**
+ * `meta` for a query whose data is a detail of its page (a count in a
+ * subtitle, "last changed", a probe): the page's main[data-ready] (shell.tsx)
+ * does not wait for it. The page still shows it when it arrives.
+ */
+export const SECONDARY = { secondary: true } as const;
+
 /** Counters and summaries many writes move. */
 const GLOBAL = ["dashboard", "admin-badges", "system-status"];
 const USERS = ["users", "user", "balances", "balance", "batch-jobs", "traffic", "commissions", "withdrawals"];
